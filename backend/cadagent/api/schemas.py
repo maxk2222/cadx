@@ -39,6 +39,12 @@ class ProjectOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     version_count: int = 0
+    latest_version_status: VersionStatus | None = None
+    latest_thumbnail_url: str | None = None
+
+
+class AssetUpdate(BaseModel):
+    caption: str | None = None
 
 
 class AssetOut(BaseModel):

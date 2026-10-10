@@ -13,12 +13,43 @@ from sqlmodel import col, func, select
 from cadagent import storage
 from cadagent.api.deps import get_session
 from cadagent.api.schemas import ProjectCreate, ProjectOut, ProjectUpdate
-from cadagent.db.models import AgentTrace, Artifact, Asset, Job, Project, Version
+from cadagent.db.models import (
+    AgentTrace,
+    Artifact,
+    Asset,
+    Job,
+    Project,
+    Version,
+    VersionStatus,
+)
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 
-def _out(p: Project, count: int = 0) -> ProjectOut:
+async def _latest_meta(project_id: uuid.UUID, db: AsyncSession) -> tuple[VersionStatus | None, str | None]:
+    """Status + thumbnail url of the highest-numbered version (for project cards)."""
+    lv = await db.execute(
+        select(Version)
+        .where(Version.project_id == project_id)
+        .order_by(col(Version.number).desc())
+        .limit(1)
+    )
+    v = lv.scalars().first()
+    if v is None:
+        return None, None
+    t = await db.execute(
+        select(Artifact).where(Artifact.version_id == v.id, Artifact.kind == "thumbnail")
+    )
+    thumb = t.scalars().first()
+    return v.status, (f"/api/artifacts/{thumb.id}/file" if thumb else None)
+
+
+def _out(
+    p: Project,
+    count: int = 0,
+    latest_status: VersionStatus | None = None,
+    latest_thumbnail_url: str | None = None,
+) -> ProjectOut:
     return ProjectOut(
         id=p.id,
         name=p.name,
@@ -27,6 +58,8 @@ def _out(p: Project, count: int = 0) -> ProjectOut:
         created_at=p.created_at,
         updated_at=p.updated_at,
         version_count=count,
+        latest_version_status=latest_status,
+        latest_thumbnail_url=latest_thumbnail_url,
     )
 
 
@@ -52,7 +85,8 @@ async def list_projects(db: AsyncSession = Depends(get_session)):
         c = await db.execute(
             select(func.count()).select_from(Version).where(Version.project_id == p.id)
         )
-        out.append(_out(p, c.scalar_one()))
+        status, thumb = await _latest_meta(p.id, db)
+        out.append(_out(p, c.scalar_one(), status, thumb))
     return out
 
 
@@ -64,7 +98,8 @@ async def get_project(project_id: uuid.UUID, db: AsyncSession = Depends(get_sess
     c = await db.execute(
         select(func.count()).select_from(Version).where(Version.project_id == p.id)
     )
-    return _out(p, c.scalar_one())
+    status, thumb = await _latest_meta(p.id, db)
+    return _out(p, c.scalar_one(), status, thumb)
 
 
 @router.patch("/{project_id}", response_model=ProjectOut)

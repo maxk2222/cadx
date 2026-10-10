@@ -11,7 +11,7 @@ from sqlmodel import col, select
 
 from cadagent import storage
 from cadagent.api.deps import get_session
-from cadagent.api.schemas import AssetOut
+from cadagent.api.schemas import AssetOut, AssetUpdate
 from cadagent.db.models import Asset, AssetKind, Project
 
 router = APIRouter(tags=["assets"])
@@ -112,6 +112,20 @@ async def asset_file(asset_id: uuid.UUID, db: AsyncSession = Depends(get_session
     if not p.exists():
         raise HTTPException(404, "file missing")
     return FileResponse(p, media_type=a.mime or None, filename=a.filename)
+
+
+@router.patch("/assets/{asset_id}", response_model=AssetOut)
+async def update_asset(
+    asset_id: uuid.UUID, body: AssetUpdate, db: AsyncSession = Depends(get_session)
+):
+    a = await db.get(Asset, asset_id)
+    if not a:
+        raise HTTPException(404, "asset not found")
+    if body.caption is not None:
+        a.caption = body.caption
+    await db.commit()
+    await db.refresh(a)
+    return _out(a)
 
 
 @router.delete("/assets/{asset_id}")
