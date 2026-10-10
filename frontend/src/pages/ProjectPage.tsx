@@ -1,61 +1,86 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useNavigate, useParams, Link } from "react-router-dom";
-import { api } from "../lib/api";
-import type { Asset, GenMode, Project, VersionSummary } from "../lib/types";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Pencil, Search, Sparkles, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import AssetManager from "../components/AssetManager";
 import ModeSelector from "../components/ModeSelector";
+import ProjectFormModal from "../components/ProjectFormModal";
 import VersionTree from "../components/VersionTree";
+import {
+  Btn,
+  Card,
+  ConfirmModal,
+  Crumbs,
+  EmptyState,
+  SectionTitle,
+  Spinner,
+  inputCls,
+  useDebounced,
+} from "../components/ui";
+import { api } from "../lib/api";
+import type { GenMode } from "../lib/types";
+
+const GEN_MODES: GenMode[] = ["auto", "cad", "mesh", "hybrid"];
 
 export default function ProjectPage() {
-  const { id } = useParams<{ id: string }>();
+  const { id = "" } = useParams<{ id: string }>();
   const nav = useNavigate();
-  const [project, setProject] = useState<Project | null>(null);
-  const [assets, setAssets] = useState<Asset[]>([]);
-  const [versions, setVersions] = useState<VersionSummary[]>([]);
-  const [prompt, setPrompt] = useState("");
+  const qc = useQueryClient();
+  const [prompt, setPrompt] = useState(
+    () => localStorage.getItem(`draft:${id}`) ?? ""
+  );
   const [mode, setMode] = useState<GenMode>("auto");
+  const [modeInit, setModeInit] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [busy, setBusy] = useState(false);
+  const [vFilter, setVFilter] = useState("");
+  const vq = useDebounced(vFilter);
+  const [editOpen, setEditOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const [error, setError] = useState("");
-  const fileRef = useRef<HTMLInputElement>(null);
 
-  const load = useCallback(() => {
-    if (!id) return;
-    api.getProject(id).then((p) => {
-      setProject(p);
-      const gm = (p.settings as Record<string, unknown>)?.gen_mode;
-      if (gm === "auto" || gm === "cad" || gm === "mesh" || gm === "hybrid") setMode(gm);
-    }).catch(() => nav("/"));
-    api.listAssets(id).then(setAssets).catch(() => {});
-    api.listVersions(id).then(setVersions).catch(() => {});
-  }, [id]);
+  const project = useQuery({
+    queryKey: ["project", id],
+    queryFn: () => api.getProject(id),
+  });
+  const assets = useQuery({
+    queryKey: ["assets", id],
+    queryFn: () => api.listAssets(id),
+  });
+  const versions = useQuery({
+    queryKey: ["versions", id],
+    queryFn: () => api.listVersions(id),
+    refetchInterval: (q) =>
+      (q.state.data ?? []).some((v) => ["queued", "running"].includes(v.status))
+        ? 4000
+        : false,
+  });
 
-  useEffect(load, [load]);
-  // poll versions while any is active
+  // adopt project default gen mode once loaded
   useEffect(() => {
-    const active = versions.some((v) => ["queued", "running"].includes(v.status));
-    if (!active) return;
-    const t = setInterval(load, 4000);
-    return () => clearInterval(t);
-  }, [versions, load]);
-
-  const upload = async (files: FileList | null) => {
-    if (!files?.length || !id) return;
-    await api.uploadAssets(id, Array.from(files));
-    load();
-  };
-
-  const generate = async () => {
-    if (!prompt.trim() || !id) return;
-    setBusy(true);
-    setError("");
-    try {
-      const r = await api.generate(id, prompt, [...selected], mode);
-      nav(`/versions/${r.version_id}?job=${r.job_id}`);
-    } catch (e) {
-      setError(String(e));
-      setBusy(false);
+    if (modeInit || !project.data) return;
+    const gm = (project.data.settings as Record<string, unknown>)?.gen_mode;
+    if (typeof gm === "string" && GEN_MODES.includes(gm as GenMode)) {
+      setMode(gm as GenMode);
     }
-  };
+    setModeInit(true);
+  }, [project.data, modeInit]);
+
+  const generate = useMutation({
+    mutationFn: () => api.generate(id, prompt, [...selected], mode),
+    onSuccess: (r) => {
+      localStorage.removeItem(`draft:${id}`);
+      nav(`/versions/${r.version_id}?job=${r.job_id}`);
+    },
+    onError: (e) => setError(String(e)),
+  });
+
+  const del = useMutation({
+    mutationFn: () => api.deleteProject(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["projects"] });
+      nav("/");
+    },
+  });
 
   const toggle = (aid: string) =>
     setSelected((s) => {
@@ -64,80 +89,165 @@ export default function ProjectPage() {
       return n;
     });
 
-  if (!project) return <div className="p-6 text-zinc-500">loading…</div>;
+  const onPromptChange = (v: string) => {
+    setPrompt(v);
+    localStorage.setItem(`draft:${id}`, v);
+  };
+
+  const filteredVersions = useMemo(() => {
+    const list = versions.data ?? [];
+    const needle = vq.trim().toLowerCase();
+    if (!needle) return list;
+    return list.filter((v) => v.prompt.toLowerCase().includes(needle));
+  }, [versions.data, vq]);
+
+  if (project.isLoading)
+    return (
+      <div className="flex justify-center py-24 text-zinc-500">
+        <Spinner className="h-6 w-6" />
+      </div>
+    );
+  if (!project.data)
+    return (
+      <div className="mx-auto max-w-3xl p-6">
+        <EmptyState title="Project not found" hint="It may have been deleted." />
+      </div>
+    );
+  const p = project.data;
 
   return (
-    <div className="mx-auto grid max-w-6xl grid-cols-1 gap-6 p-6 lg:grid-cols-3">
-      <div className="lg:col-span-2">
-        <div className="mb-4 flex items-center justify-between">
-          <h1 className="text-2xl font-bold">{project.name}</h1>
-          <button
-            className="text-sm text-red-400 hover:text-red-300"
-            onClick={() => confirm("Delete project and all files?") && api.deleteProject(id!).then(() => nav("/"))}
-          >
-            delete
-          </button>
-        </div>
-
-        {/* assets */}
-        <div
-          className="mb-4 rounded border-2 border-dashed border-zinc-700 p-4 text-center text-sm text-zinc-400"
-          onDragOver={(e) => e.preventDefault()}
-          onDrop={(e) => {
-            e.preventDefault();
-            upload(e.dataTransfer.files);
-          }}
-        >
-          Drop reference images / STEP / STL / DXF here, or{" "}
-          <button className="text-blue-400 underline" onClick={() => fileRef.current?.click()}>
-            browse
-          </button>
-          <input ref={fileRef} type="file" multiple hidden accept="image/*,.step,.stp,.stl,.dxf" onChange={(e) => upload(e.target.files)} />
-        </div>
-        <div className="mb-4 grid grid-cols-4 gap-2">
-          {assets.map((a) => (
+    <div className="mx-auto grid max-w-6xl grid-cols-1 gap-5 p-6 lg:grid-cols-3">
+      <div className="flex flex-col gap-5 lg:col-span-2">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <Crumbs
+              items={[
+                <Link key="p" to="/" className="hover:text-zinc-300">
+                  projects
+                </Link>,
+                <span key="n" className="font-medium text-zinc-200">
+                  {p.name}
+                </span>,
+              ]}
+            />
+            <h1 className="mt-1 truncate text-2xl font-bold">{p.name}</h1>
+            {p.description && (
+              <div className="mt-0.5 text-sm text-zinc-500">{p.description}</div>
+            )}
+          </div>
+          <div className="flex shrink-0 gap-1">
             <button
-              key={a.id}
-              onClick={() => toggle(a.id)}
-              className={`relative rounded border-2 ${selected.has(a.id) ? "border-blue-500" : "border-zinc-800"}`}
-              title={`${a.filename}${a.caption ? ` — ${a.caption}` : ""}`}
+              className="flex items-center gap-1 rounded-md px-2 py-1 text-sm text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+              onClick={() => setEditOpen(true)}
             >
-              {a.kind === "image" ? (
-                <img src={a.url} className="h-20 w-full rounded object-cover" alt={a.filename} />
-              ) : (
-                <div className="flex h-20 items-center justify-center text-xs text-zinc-400">{a.filename}</div>
-              )}
-              <span className="absolute right-1 top-1 rounded bg-black/70 px-1 text-[9px]">{a.kind.replace("reference_", "")}</span>
+              <Pencil className="h-3.5 w-3.5" /> edit
             </button>
-          ))}
+            <button
+              className="flex items-center gap-1 rounded-md px-2 py-1 text-sm text-red-400 hover:bg-red-950/50"
+              onClick={() => setDeleteOpen(true)}
+            >
+              <Trash2 className="h-3.5 w-3.5" /> delete
+            </button>
+          </div>
         </div>
 
-        {/* prompt */}
-        <textarea
-          className="mb-2 h-32 w-full rounded bg-zinc-800 p-3 text-sm"
-          placeholder={
-            "Describe the part: shape, dimensions (X length × Y width × Z height), holes, threads, tolerances, material, process (FDM/CNC)…\n\nExample: Mounting plate 80×60×8mm, four M4 clearance holes at 10mm from corners, countersunk, PLA for FDM."
-          }
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-        />
-        {error && <div className="mb-2 text-sm text-red-400">{error}</div>}
-        <div className="mb-2">
-          <ModeSelector value={mode} onChange={setMode} />
-        </div>
-        <button
-          onClick={generate}
-          disabled={busy || !prompt.trim()}
-          className="w-full rounded bg-blue-600 py-2 font-semibold hover:bg-blue-500 disabled:opacity-50"
+        <Card className="p-4">
+          <SectionTitle
+            right={
+              <span className="text-[11px] normal-case tracking-normal text-zinc-600">
+                Ctrl+Enter to generate
+              </span>
+            }
+          >
+            Describe your part
+          </SectionTitle>
+          <textarea
+            className={`${inputCls} h-32 resize-y`}
+            placeholder={
+              "Describe the part: shape, dimensions (X length × Y width × Z height), holes, threads, tolerances, material, process (FDM/CNC)…\n\nExample: Mounting plate 80×60×8mm, four M4 clearance holes at 10mm from corners, countersunk, PLA for FDM."
+            }
+            value={prompt}
+            onChange={(e) => onPromptChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                e.preventDefault();
+                if (prompt.trim()) generate.mutate();
+              }
+            }}
+          />
+          {error && <div className="mt-2 text-sm text-red-400">{error}</div>}
+          <div className="mt-3">
+            <ModeSelector value={mode} onChange={setMode} />
+          </div>
+          <Btn
+            className="mt-3 w-full py-2"
+            onClick={() => generate.mutate()}
+            busy={generate.isPending}
+            disabled={!prompt.trim()}
+          >
+            <Sparkles className="h-4 w-4" />
+            Generate model{selected.size ? ` · ${selected.size} asset${selected.size === 1 ? "" : "s"}` : ""}
+          </Btn>
+        </Card>
+
+        <Card className="p-4">
+          <SectionTitle
+            right={
+              selected.size > 0 && (
+                <button
+                  className="text-[11px] normal-case tracking-normal text-blue-400 hover:text-blue-300"
+                  onClick={() => setSelected(new Set())}
+                >
+                  clear selection ({selected.size})
+                </button>
+              )
+            }
+          >
+            Reference assets{selected.size ? ` — ${selected.size} selected` : ""}
+          </SectionTitle>
+          <AssetManager
+            projectId={id}
+            assets={assets.data ?? []}
+            selected={selected}
+            onToggle={toggle}
+          />
+        </Card>
+      </div>
+
+      <Card className="h-fit p-3">
+        <SectionTitle
+          right={<span className="text-[11px] normal-case tracking-normal">{versions.data?.length ?? 0}</span>}
         >
-          {busy ? "starting…" : `Generate model${selected.size ? ` (${selected.size} assets)` : ""}`}
-        </button>
-      </div>
+          Versions
+        </SectionTitle>
+        {(versions.data?.length ?? 0) > 4 && (
+          <div className="relative mb-2">
+            <Search className="pointer-events-none absolute left-2 top-2 h-3.5 w-3.5 text-zinc-500" />
+            <input
+              className={`${inputCls} py-1.5 pl-7 text-xs`}
+              placeholder="filter prompts…"
+              value={vFilter}
+              onChange={(e) => setVFilter(e.target.value)}
+            />
+          </div>
+        )}
+        <VersionTree versions={filteredVersions} />
+      </Card>
 
-      <div>
-        <h2 className="mb-2 text-sm font-semibold text-zinc-300">Versions</h2>
-        <VersionTree versions={versions} />
-      </div>
+      {editOpen && <ProjectFormModal project={p} onClose={() => setEditOpen(false)} />}
+      <ConfirmModal
+        open={deleteOpen}
+        onClose={() => setDeleteOpen(false)}
+        onConfirm={() => del.mutate()}
+        busy={del.isPending}
+        title="Delete project"
+        body={
+          <>
+            Delete <b className="text-zinc-200">{p.name}</b> and all of its versions, assets
+            and files? This cannot be undone.
+          </>
+        }
+      />
     </div>
   );
 }

@@ -47,6 +47,12 @@ export const api = {
     return r.json();
   },
   deleteAsset: (id: string) => req<{ ok: boolean }>(`/assets/${id}`, { method: "DELETE" }),
+  updateAsset: (id: string, caption: string) =>
+    req<Asset>(`/assets/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ caption }),
+    }),
 
   generate: (pid: string, prompt: string, asset_ids: string[], mode?: GenMode) =>
     req<{ version_id: string; job_id: string }>(

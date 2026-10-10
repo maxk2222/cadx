@@ -1,6 +1,9 @@
+import { Check, CircleDot, XCircle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api, jobEventsUrl } from "../lib/api";
+import { fmtDuration } from "../lib/format";
 import type { Job } from "../lib/types";
+import { Btn, ProgressBar, useStickyBottom } from "./ui";
 
 interface Event {
   type: string;
@@ -9,31 +12,122 @@ interface Event {
   message?: string;
   status?: string;
   score?: number;
-  questions?: unknown[];
 }
 
-export default function JobLog({ jobId, onDone }: { jobId: string | null; onDone?: () => void }) {
+const STEP_LABEL: Record<string, string> = {
+  intake: "intake",
+  plan: "plan",
+  meshgen: "mesh gen",
+  orient: "orient",
+  meshprocess: "mesh process",
+  codegen: "codegen",
+  repair: "repair",
+  execute: "build",
+  critique: "critique",
+  dfm: "dfm",
+  finalize: "export",
+  budget: "budget",
+  done: "done",
+};
+
+function stepLabel(s: string) {
+  return STEP_LABEL[s] ?? s;
+}
+
+function PipelineChips({ events, done }: { events: Event[]; done: boolean }) {
+  const steps: { step: string; iteration: number }[] = [];
+  const seen = new Set<string>();
+  for (const e of events) {
+    if (e.type !== "step" || !e.step) continue;
+    const k = `${e.step}`;
+    if (!seen.has(k)) {
+      seen.add(k);
+      steps.push({ step: e.step, iteration: e.iteration ?? 0 });
+    }
+  }
+  if (!steps.length) return null;
+  const last = steps[steps.length - 1];
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      {steps.map((s, i) => {
+        const active = !done && i === steps.length - 1;
+        return (
+          <span
+            key={`${s.step}-${i}`}
+            className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium ${
+              active
+                ? "bg-blue-900/60 text-blue-300"
+                : "bg-zinc-800 text-zinc-400"
+            }`}
+          >
+            {active ? (
+              <CircleDot className="h-3 w-3 animate-pulse" />
+            ) : (
+              <Check className="h-3 w-3 text-emerald-500" />
+            )}
+            {stepLabel(s.step)}
+          </span>
+        );
+      })}
+      {done && last.step !== "done" && (
+        <span className="flex items-center gap-1 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] font-medium text-zinc-400">
+          <Check className="h-3 w-3 text-emerald-500" /> done
+        </span>
+      )}
+    </div>
+  );
+}
+
+export default function JobLog({
+  jobId,
+  jobs,
+  onSelectJob,
+  onDone,
+}: {
+  jobId: string | null;
+  jobs?: Job[];
+  onSelectJob?: (id: string) => void;
+  onDone?: () => void;
+}) {
   const [events, setEvents] = useState<Event[]>([]);
   const [job, setJob] = useState<Job | null>(null);
+  const [progress, setProgress] = useState(0);
   const [answers, setAnswers] = useState<string[]>([]);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const [, setTick] = useState(0);
+  const { ref: bottomRef, onScroll } = useStickyBottom(events);
+  const logBoxRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setEvents([]);
     setJob(null);
+    setProgress(0);
+    setAnswers([]);
     if (!jobId) return;
     let closed = false;
-    api.getJob(jobId).then(setJob).catch(() => {});
+    api.getJob(jobId).then((j) => {
+      setJob(j);
+      setProgress(j.progress);
+      setAnswers((j.questions ?? []).map(() => ""));
+    }).catch(() => {});
     const es = new EventSource(jobEventsUrl(jobId));
     es.addEventListener("status", (e) => {
       const d = JSON.parse((e as MessageEvent).data);
-      if (d.log) setEvents((ev) => [...ev, ...d.log.trim().split("\n").map((l: string) => ({ type: "log", message: l }))]);
+      if (d.log)
+        setEvents((ev) => [
+          ...ev,
+          ...d.log
+            .trim()
+            .split("\n")
+            .filter(Boolean)
+            .map((l: string) => ({ type: "log", message: l })),
+        ]);
     });
     es.addEventListener("step", (e) => {
-      setEvents((ev) => [...ev, JSON.parse((e as MessageEvent).data)]);
-    });
-    es.addEventListener("question", (e) => {
       const d = JSON.parse((e as MessageEvent).data);
+      setEvents((ev) => [...ev, d]);
+      setProgress((p) => Math.min(0.95, p + 0.05));
+    });
+    es.addEventListener("question", () => {
       setEvents((ev) => [...ev, { type: "question", message: "waiting for your answers" }]);
       api.getJob(jobId).then((j) => {
         setJob(j);
@@ -43,6 +137,8 @@ export default function JobLog({ jobId, onDone }: { jobId: string | null; onDone
     es.addEventListener("done", (e) => {
       const d = JSON.parse((e as MessageEvent).data);
       setEvents((ev) => [...ev, { type: "done", ...d }]);
+      setProgress(1);
+      api.getJob(jobId).then(setJob).catch(() => {});
       if (!closed) onDone?.();
       es.close();
     });
@@ -56,52 +152,157 @@ export default function JobLog({ jobId, onDone }: { jobId: string | null; onDone
     };
   }, [jobId]);
 
+  const running = job?.status === "running" || job?.status === "queued";
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [events]);
+    if (!running) return;
+    const t = setInterval(() => setTick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [running]);
 
   const waiting = job?.status === "waiting_for_input" && job.questions?.length;
+  const isDone = ["succeeded", "failed", "cancelled"].includes(job?.status ?? "");
 
   return (
     <div className="flex flex-col gap-2">
-      <div className="h-56 overflow-y-auto rounded bg-zinc-900 p-2 font-mono text-xs leading-5">
+      {(jobs?.length ?? 0) > 1 && (
+        <select
+          className="w-full rounded-md border border-zinc-700 bg-zinc-800/80 px-2 py-1 text-xs text-zinc-300"
+          value={jobId ?? ""}
+          onChange={(e) => onSelectJob?.(e.target.value)}
+        >
+          {jobs!.map((j) => (
+            <option key={j.id} value={j.id}>
+              {j.type} · {new Date(j.created_at).toLocaleTimeString()} · {j.status}
+            </option>
+          ))}
+        </select>
+      )}
+
+      <PipelineChips events={events} done={isDone} />
+
+      <div className="flex items-center gap-2">
+        <ProgressBar
+          value={progress}
+          className="flex-1"
+          tone={
+            job?.status === "failed"
+              ? "red"
+              : job?.status === "waiting_for_input"
+                ? "amber"
+                : isDone
+                  ? "green"
+                  : "blue"
+          }
+        />
+        <span className="w-14 text-right font-mono text-[10px] text-zinc-500">
+          {job?.started_at ? fmtDuration(job.started_at, job.finished_at) : "—"}
+        </span>
+      </div>
+
+      <div
+        ref={logBoxRef}
+        onScroll={onScroll}
+        className="h-56 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-950 p-2 font-mono text-[11px] leading-5"
+      >
         {events.map((e, i) => (
-          <div key={i} className={e.type === "done" ? "text-emerald-400" : e.type === "question" ? "text-amber-400" : "text-zinc-300"}>
-            {e.step ? `[${e.step}${e.iteration ? `:${e.iteration}` : ""}] ` : ""}
+          <div
+            key={i}
+            className={
+              e.type === "done"
+                ? e.status === "failed"
+                  ? "text-red-400"
+                  : "text-emerald-400"
+                : e.type === "question"
+                  ? "text-amber-400"
+                  : /error|fail/i.test(e.message ?? "")
+                    ? "text-red-300"
+                    : "text-zinc-400"
+            }
+          >
+            {e.step ? (
+              <span className="text-zinc-600">
+                [{e.step}
+                {e.iteration ? `:${e.iteration}` : ""}]{" "}
+              </span>
+            ) : (
+              ""
+            )}
             {e.message ?? e.type}
-            {e.type === "done" ? ` (${e.status}${e.score != null ? `, score ${e.score}` : ""})` : ""}
+            {e.type === "done"
+              ? ` (${e.status}${e.score != null ? `, score ${e.score}` : ""})`
+              : ""}
           </div>
         ))}
+        {!events.length && (
+          <div className="py-4 text-center text-zinc-600">
+            {jobId ? "connecting to job stream…" : "no job selected"}
+          </div>
+        )}
         <div ref={bottomRef} />
       </div>
+
+      <div className="flex items-center justify-between text-[10px] text-zinc-600">
+        <span>
+          {job ? (
+            <>
+              {job.type} · {job.status}
+              {job.cancel_requested ? " · cancel requested" : ""}
+            </>
+          ) : (
+            ""
+          )}
+        </span>
+        {running && job && (
+          <button
+            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-red-400 hover:bg-red-950/50"
+            onClick={() => api.cancelJob(job.id).then(() => api.getJob(job.id)).then(setJob)}
+          >
+            <XCircle className="h-3 w-3" /> cancel job
+          </button>
+        )}
+      </div>
+
       {waiting ? (
-        <div className="rounded border border-amber-700 bg-amber-950/40 p-3">
-          <div className="mb-2 text-sm font-semibold text-amber-300">The agent needs answers:</div>
+        <div className="rounded-lg border border-amber-700 bg-amber-950/40 p-3">
+          <div className="mb-2 text-sm font-semibold text-amber-300">
+            The agent needs answers:
+          </div>
           {job!.questions!.map((q, i) => (
             <div key={i} className="mb-2">
               <div className="text-xs text-zinc-300">{q.question}</div>
-              {q.why_it_matters ? <div className="text-[10px] text-zinc-500">{q.why_it_matters}</div> : null}
+              {q.why_it_matters ? (
+                <div className="text-[10px] text-zinc-500">{q.why_it_matters}</div>
+              ) : null}
               <input
-                className="mt-1 w-full rounded bg-zinc-800 px-2 py-1 text-sm"
+                className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm"
                 placeholder={q.default_assumption ? `default: ${q.default_assumption}` : ""}
                 value={answers[i] ?? ""}
-                onChange={(e) => setAnswers((a) => a.map((v, j) => (j === i ? e.target.value : v)))}
+                onChange={(e) =>
+                  setAnswers((a) => a.map((v, j) => (j === i ? e.target.value : v)))
+                }
               />
             </div>
           ))}
-          <button
-            className="mt-1 rounded bg-amber-600 px-3 py-1 text-sm font-medium hover:bg-amber-500"
+          <Btn
+            variant="primary"
+            className="mt-1 bg-amber-600 hover:bg-amber-500"
             onClick={() =>
               api
-                .answerJob(jobId!, answers.map((a, i) => ({ answer: a || job!.questions![i].default_assumption || "use the default" })))
+                .answerJob(
+                  jobId!,
+                  answers.map((a, i) => ({
+                    answer: a || job!.questions![i].default_assumption || "use the default",
+                  }))
+                )
                 .then((r) => {
                   setJob(null);
+                  onSelectJob?.(r.job_id); // answering spawns a resume job
                   onDone?.();
                 })
             }
           >
             Submit answers
-          </button>
+          </Btn>
         </div>
       ) : null}
     </div>

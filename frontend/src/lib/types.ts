@@ -6,6 +6,8 @@ export interface Project {
   created_at: string;
   updated_at: string;
   version_count: number;
+  latest_version_status: VersionStatus | null;
+  latest_thumbnail_url: string | null;
 }
 
 export interface Asset {
@@ -97,9 +99,64 @@ export interface DfmWarning {
   message: string;
 }
 
+export interface SpecDim {
+  value?: number;
+  unit?: string;
+  source?: "stated" | "inferred" | "assumed" | string;
+}
+
+export interface SpecFeature {
+  name?: string;
+  type?: string;
+  description?: string;
+  dims?: Record<string, number>;
+  position?: string;
+  count?: number;
+  source?: string;
+  standard?: string;
+}
+
+export interface OpenQuestion {
+  question: string;
+  why_it_matters?: string;
+  default_assumption?: string;
+  blocking?: boolean;
+}
+
+export interface PartSpec {
+  name?: string;
+  summary?: string;
+  units?: string;
+  length_x?: SpecDim;
+  width_y?: SpecDim;
+  height_z?: SpecDim;
+  orientation_note?: string;
+  features?: SpecFeature[];
+  symmetry?: string;
+  process?: string;
+  material?: string;
+  tolerances_note?: string;
+  assumptions?: string[];
+  open_questions?: OpenQuestion[];
+  must_keep?: string[];
+}
+
+export interface ModelingPlan {
+  approach?: string;
+  approach_reason?: string;
+  mesh_subject?: string;
+  mesh_source_images?: string[];
+  mesh_up_hint?: string;
+  hybrid_cad_features?: string[];
+  steps?: string[];
+  params?: ParamDef[];
+  standard_parts?: string[];
+  notes?: string;
+}
+
 export interface VersionDetail extends VersionSummary {
-  spec: Record<string, unknown> | null;
-  plan: Record<string, unknown> | null;
+  spec: PartSpec | null;
+  plan: ModelingPlan | null;
   code: string | null;
   params: Record<string, unknown> | null;
   params_schema: ParamDef[] | null;
@@ -123,6 +180,8 @@ export interface Job {
   log: string;
   questions: { question: string; why_it_matters: string; default_assumption: string; blocking: boolean }[] | null;
   cancel_requested: boolean;
+  started_at: string | null;
+  finished_at: string | null;
   created_at: string;
 }
 

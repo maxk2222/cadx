@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom";
+import { timeAgo } from "../lib/format";
 import type { VersionSummary } from "../lib/types";
 import StatusBadge from "./StatusBadge";
 
@@ -62,7 +63,10 @@ export default function VersionTree({
               )}
               {v.score != null && <span className="ml-1 text-zinc-500">· {v.score}</span>}
             </div>
-            <div className="truncate text-xs text-zinc-500">{v.prompt}</div>
+            <div className="truncate text-xs text-zinc-500">
+              {v.prompt}
+              <span className="ml-1 text-zinc-600">· {timeAgo(v.created_at)}</span>
+            </div>
           </div>
           <StatusBadge status={v.status} />
         </Link>
