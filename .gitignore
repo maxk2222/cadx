@@ -12,3 +12,4 @@ dist/
 .ruff_cache/
 .DS_Store
 uv.lock.d
+*.tsbuildinfo
