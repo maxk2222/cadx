@@ -19,6 +19,7 @@ from pathlib import Path
 ALLOWED_MODULES = {
     "build123d",
     "bd_warehouse",
+    "cadlib",
     "math",
     "numpy",
     "np",
@@ -76,6 +77,9 @@ def main() -> int:  # noqa: C901
     mesh_bbox = spec.get("mesh_bbox")
 
     sys.meta_path.insert(0, _ImportGuard())
+    # python -I strips the script dir; add it back so `import cadlib` resolves.
+    # Other modules on this path are still blocked by _ImportGuard.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
 
     from build123d import (
         Compound,

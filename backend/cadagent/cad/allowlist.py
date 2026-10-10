@@ -1,6 +1,7 @@
 """Static pre-checks for LLM-generated code (AST-level, runs before execution).
 
-Allowed import roots: build123d, bd_warehouse, math, numpy, typing, dataclasses.
+Allowed import roots: build123d, bd_warehouse, cadlib, math, numpy, typing,
+dataclasses.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from dataclasses import dataclass, field
 ALLOWED_MODULES = {
     "build123d",
     "bd_warehouse",
+    "cadlib",
     "math",
     "numpy",
     "np",

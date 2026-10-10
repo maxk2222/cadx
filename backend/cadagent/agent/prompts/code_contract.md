@@ -2,7 +2,9 @@
 
 1. Only these imports are allowed: `build123d` (incl. `from build123d import *`),
    `bd_warehouse.*` (fastener, thread, gear, bearing, bushing, o_rings, retaining_ring,
-   shaft_key, sprocket, pipe, flange, open_builds), `math`, `numpy`, `typing`, `dataclasses`.
+   shaft_key, sprocket, pipe, flange, open_builds), `cadlib`, `math`, `numpy`,
+   `typing`, `dataclasses`. Prefer `cadlib` helpers (see cadlib reference) for
+   common features instead of hand-rolled geometry.
    No file I/O, no network, no exports, no `open()`/`eval()`/`exec()`. `print()` only for
    short debug values.
 2. At the top of the file: a dict literal named `PARAMS` with every tunable value:
@@ -47,6 +49,3 @@
    and `manufacturing_compensation=PARAMS["thread_comp"]` for FDM.
 9. Keep the code deterministic, under ~200 lines, with a short comment naming the feature
    each block creates.
-10. Return your answer as JSON: {"reasoning": "...", "params": [...], "expected_bbox":
-    [x, y, z], "code": "..."}. `params` must list exactly the keys of PARAMS with
-    unit/min/max/description; `expected_bbox` is the bounding box your code should produce.
