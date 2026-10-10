@@ -90,10 +90,20 @@ result = core + thread  # fuse -> one solid
 ```python
 gear = SpurGear(module=1.0, tooth_count=20, pressure_angle=20, thickness=6)  # module system, mm
 # bore/keyway: model the gear, then cut a Hole / keyway slot on top of it.
-# also available: HelicalGear, RackGear, WormGear; o_rings (+ gland grooves),
-# retaining_ring (+ grooves), shaft_key (+ keyways), bushing, sprocket, pipe, flange,
-# open_builds (V-Slot profiles).
+# also available: HelicalGear, RackGear, WormGear, WormWheel; ORing (iso3601 sizes);
+# ExternalSnapRing/InternalSnapRing (+ RetainingRingGroove); ShaftKey (+ Keyway);
+# HexFlangedEccentricBushing; Sprocket; Pipe (nps/material/identifier);
+# Flange family (BlindFlange, LappedFlange, SlipOnFlange, SocketWeldFlange,
+# WeldNeckFlange — nps + flange_class); open_builds (V-Slot/C-Beam profiles,
+# spacers, gantry plates — see catalog for exact class names).
 ```
+
+### Catalog excerpt
+When the request names standard parts, the user message contains a
+"STANDARD PARTS — valid catalog values" section listing the exact `type` and
+`size` strings each class accepts. ALWAYS take type/size strings from that list —
+anything else fails the static pre-check. If the size you need is not listed,
+pick the nearest valid one and note it in `reasoning`.
 
 ### Rules
 - size string must exist in the norm table — when in doubt use the common pitch table above;
