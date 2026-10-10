@@ -1,5 +1,8 @@
 # WebGUI Masterplan — UX/Design/Feature-Optimierung
 
+> Status: implementiert und verifiziert (Oktober 2026) — siehe Commits
+> `587c32f` (API), `555f8c7` (UI), `d034e28` (Scroll-Fix).
+
 Ziel: Das Web-GUI soll die Fähigkeiten des Agentensystems vollständig sichtbar machen,
 konsistenter aussehen und besser navigierbar sein. Scope: vorwiegend Frontend
 (React/Vite/Three.js/Tailwind), plus kleine Backend-Ergänzungen, die die UI freischalten.
