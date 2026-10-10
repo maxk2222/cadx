@@ -1,0 +1,142 @@
+name: cadagent
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cadagent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cadagent}
+      POSTGRES_DB: ${POSTGRES_DB:-cadagent}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cadagent} -d ${POSTGRES_DB:-cadagent}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", ""]
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: backend
+      target: api
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cadagent}:${POSTGRES_PASSWORD:-cadagent}@postgres:5432/${POSTGRES_DB:-cadagent}
+      REDIS_URL: redis://redis:6379/0
+      DATA_DIR: /data
+    volumes:
+      - ./data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [public, internal]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+
+  worker:
+    build:
+      context: backend
+      target: worker
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cadagent}:${POSTGRES_PASSWORD:-cadagent}@postgres:5432/${POSTGRES_DB:-cadagent}
+      REDIS_URL: redis://redis:6379/0
+      DATA_DIR: /data
+      # mesh server usually runs NATIVELY on the host (no GPU in docker/macOS);
+      # override to http://mesh-server:8765 when using the 'gpu' profile
+      MESH_BASE_URL: ${MESH_BASE_URL:-http://host.docker.internal:8765}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [public, internal]
+
+  cad-executor:
+    build:
+      context: backend
+      target: executor
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cadagent}:${POSTGRES_PASSWORD:-cadagent}@postgres:5432/${POSTGRES_DB:-cadagent}
+      REDIS_URL: redis://redis:6379/0
+      DATA_DIR: /data
+      PYVISTA_OFF_SCREEN: "true"
+    volumes:
+      - ./data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [internal]
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 6g
+    cpus: 4
+
+  # GPU mesh generator — only on CUDA hosts; on macOS run it natively instead
+  # (make mesh-server). Enable with: docker compose --profile gpu up -d
+  mesh-server:
+    profiles: ["gpu"]
+    build:
+      context: mesh_server
+      dockerfile: Dockerfile.cuda
+    environment:
+      MESH_DEVICE: cuda
+      MESH_FAKE: ${MESH_FAKE:-}
+      HF_HOME: /models/hf
+    volumes:
+      - mesh_models:/models
+    networks: [internal, public]  # internal: reachable by worker; public: HF model downloads
+
+  frontend:
+    build:
+      context: frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [public]
+
+networks:
+  public:
+  internal:
+    internal: true
+
+volumes:
+  pgdata:
+  mesh_models:

@@ -1,0 +1,50 @@
+# AGENTS.md — working rules for this repo
+
+## What this is
+LLM-driven CAD agent ("cadagent"): images + text prompt → parametric build123d code →
+verified 3D model (STEP/STL/3MF/GLB/DXF/SVG) for 3D printing & CNC.
+Stack: FastAPI + SQLModel/Postgres + arq/Redis + build123d/bd_warehouse + React/Vite/Three.js.
+The authoritative design document is `docs/architecture.md` (derived from the master plan).
+
+## Commands (run from repo root)
+- Setup env once:        `python3 -m venv .venv && .venv/bin/python -m pip install uv`
+- Install backend deps:  `make sync`            (creates backend/.venv via uv)
+- Infra for local dev:   `make infra`           (postgres+redis via docker-compose.dev.yml)
+- Run api (local):       `make dev-api`
+- Run agent worker:      `make dev-worker`
+- Run cad executor:      `make dev-executor`
+- Run frontend dev:      `cd frontend && npm install && npm run dev`
+- Full stack (docker):   `make up` → http://localhost:8080
+- Tests:                 `make test`  (or `cd backend && ../.venv/bin/uv run pytest tests -x -q`)
+- Lint/format check:     `make lint`, autofix `make fmt`
+- Eval harness:          `make eval`
+- Mesh sidecar (dev):    `make mesh-sync && make mesh-server`  (own uv env in
+  `mesh_server/`; `MESH_FAKE=1` for GPU-free runs; see `docs/mesh-generation.md`)
+- Mesh-server tests:     `cd mesh_server && uv run pytest`
+
+## Conventions (must follow)
+- Python: type hints everywhere; `ruff` line-length 100; async FastAPI handlers;
+  pydantic v2 for all JSON; no business logic in routers; `structlog` not `print`.
+- TypeScript strict; functional components; TanStack Query for server state; Tailwind only.
+- Never put the LLM API key in DB/logs/traces. Trace messages replace image data with placeholders.
+- Every prompt lives in `backend/cadagent/agent/prompts/*.md` — never inline prompt text in Python.
+- All file paths go through `cadagent/storage.py`. All DB writes in short transactions.
+- LLM-generated code must ONLY ever run through `cad/sandbox.py` (AST allow-list + subprocess
+  rlimits + import hook) inside the executor environment. Never `exec()` user code in-process.
+- Allowed imports for generated code: build123d, bd_warehouse.*, math, numpy, typing, dataclasses.
+- Coordinate frame contract: X=length, Y=width (+Y front), Z=height; part rests on XY plane,
+  centered at origin; mm units. Result must be assigned to `result`; flat parts may also
+  assign `flat_profile`. The same contract applies to post-processed meshes
+  (`cad/mesh_ops.py`) — raw generator output lives in normalized space and is
+  oriented/scaled by the executor pipeline, never by the mesh server.
+- Mesh generation: only the worker talks to `mesh_server` (`MeshPort` in
+  `agent/mesh_client.py`); the executor receives GLBs as `DATA_DIR` files via
+  the `process_mesh` task. `load_mesh_solid()` exists in generated code only
+  for `resolved_mode="hybrid"`.
+- Commits: one per milestone step, descriptive message.
+
+## Testing
+- `tests/cad` must run both natively and inside the executor image
+  (`docker compose run cad-executor pytest tests/cad` — requires tests mounted; use local run).
+- Agent loop tests use `FakeLLM` — never call a real LLM in tests.
+- Renders: pyvista offscreen; tests must skip gracefully if rendering unavailable.

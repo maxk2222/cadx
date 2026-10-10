@@ -1,0 +1,58 @@
+{
+  "prompt": "100x60x8 plate, 4x M4 countersunk clearance holes",
+  "expected_bbox": [
+    100,
+    60,
+    8
+  ],
+  "tolerance_mm": 1.5,
+  "settings": {
+    "max_iterations": 2
+  },
+  "llm_script": [
+    {
+      "name": "plate with holes",
+      "summary": "100x60x8 plate, 4x M4 countersunk clearance holes",
+      "units": "mm",
+      "length_x": {
+        "value": 100,
+        "source": "stated"
+      },
+      "width_y": {
+        "value": 60,
+        "source": "stated"
+      },
+      "height_z": {
+        "value": 8,
+        "source": "stated"
+      },
+      "features": [],
+      "open_questions": []
+    },
+    {
+      "steps": [
+        "build"
+      ],
+      "params": [],
+      "standard_parts": [],
+      "notes": ""
+    },
+    {
+      "reasoning": "bench",
+      "params": [],
+      "expected_bbox": [
+        100,
+        60,
+        8
+      ],
+      "code": "from build123d import *\nfrom bd_warehouse.fastener import CounterSunkScrew, ClearanceHole\n\nPARAMS = {\n    \"length\": 100.0,\n    \"width\": 60.0,\n    \"thickness\": 8.0,\n    \"screw\": \"M4-0.7\",\n}\n\nscrew = CounterSunkScrew(size=PARAMS[\"screw\"], fastener_type=\"iso10642\", length=12)\n\nwith BuildPart() as p:\n    Box(PARAMS[\"length\"], PARAMS[\"width\"], PARAMS[\"thickness\"],\n        align=(Align.CENTER, Align.CENTER, Align.MIN))\n    with Locations(p.faces().sort_by(Axis.Z)[-1]):\n        with GridLocations(PARAMS[\"length\"] - 20, PARAMS[\"width\"] - 20, 2, 2):\n            ClearanceHole(fastener=screw, fit=\"Normal\", counter_sunk=True)\nresult = p.part\n"
+    },
+    {
+      "score": 95,
+      "passed": true,
+      "discrepancies": [],
+      "matches": [],
+      "confidence": 0.9
+    }
+  ]
+}

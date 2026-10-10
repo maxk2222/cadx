@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+data/
+.venv/
+__pycache__/
+*.pyc
+node_modules/
+dist/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.DS_Store
+uv.lock.d

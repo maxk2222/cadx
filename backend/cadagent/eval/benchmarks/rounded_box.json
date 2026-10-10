@@ -1,0 +1,58 @@
+{
+  "prompt": "40x20x10 block with 1.5mm edge fillets",
+  "expected_bbox": [
+    40,
+    20,
+    10
+  ],
+  "tolerance_mm": 1.5,
+  "settings": {
+    "max_iterations": 2
+  },
+  "llm_script": [
+    {
+      "name": "rounded box",
+      "summary": "40x20x10 block with 1.5mm edge fillets",
+      "units": "mm",
+      "length_x": {
+        "value": 40,
+        "source": "stated"
+      },
+      "width_y": {
+        "value": 20,
+        "source": "stated"
+      },
+      "height_z": {
+        "value": 10,
+        "source": "stated"
+      },
+      "features": [],
+      "open_questions": []
+    },
+    {
+      "steps": [
+        "build"
+      ],
+      "params": [],
+      "standard_parts": [],
+      "notes": ""
+    },
+    {
+      "reasoning": "bench",
+      "params": [],
+      "expected_bbox": [
+        40,
+        20,
+        10
+      ],
+      "code": "from build123d import *\n\nPARAMS = {\n    \"length\": 40.0,\n    \"width\": 20.0,\n    \"height\": 10.0,\n    \"fillet_r\": 1.5,\n}\n\nwith BuildPart() as p:\n    Box(PARAMS[\"length\"], PARAMS[\"width\"], PARAMS[\"height\"], align=(Align.CENTER, Align.CENTER, Align.MIN))\n    fillet(p.edges().filter_by(Axis.Z), radius=PARAMS[\"fillet_r\"])\nresult = p.part\n"
+    },
+    {
+      "score": 95,
+      "passed": true,
+      "discrepancies": [],
+      "matches": [],
+      "confidence": 0.9
+    }
+  ]
+}

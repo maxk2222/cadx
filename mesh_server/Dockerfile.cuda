@@ -1,0 +1,51 @@
+# mesh-server on NVIDIA (CUDA 12.4): TRELLIS.2 + TripoSG adapters.
+#
+# Build:  docker build -f mesh_server/Dockerfile.cuda -t meshserver:cuda .
+# Run:    docker run --gpus all -p 8765:8765 -v mesh_models:/models meshserver:cuda
+#
+# Heavy model deps (TRELLIS.2 submodules, flash-attn) are installed via the
+# setup script — keep image builds repeatable by pinning the repo commit.
+FROM nvidia/cuda:12.4.1-devel-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1 \
+    MESH_MODEL_DIR=/models \
+    MESH_DEVICE=cuda \
+    MESH_PORT=8765 \
+    HF_HOME=/models/hf
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 python3.11-venv python3.11-dev python3-pip \
+    git git-lfs build-essential ninja-build curl ca-certificates \
+    libgl1 libglib2.0-0 && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN python3.11 -m pip install --upgrade pip uv
+
+WORKDIR /app
+COPY pyproject.toml README.md ./
+COPY meshserver ./meshserver
+
+# core deps + torch CUDA build
+RUN uv venv /opt/venv && \
+    . /opt/venv/bin/activate && \
+    uv pip install -e ".[cuda]" && \
+    uv pip install "torch==2.6.*" --index-url https://download.pytorch.org/whl/cu124
+
+ENV PATH=/opt/venv/bin:$PATH
+
+# Optional adapter sources — uncomment to bake TRELLIS.2 into the image, or run
+# scripts/install_trellis2.sh inside the container.
+# ARG TRELLIS2_COMMIT=main
+# RUN git clone --depth 1 --recursive https://github.com/microsoft/TRELLIS.2.git /opt/trellis2 && \
+#     cd /opt/trellis2 && . /opt/venv/bin/activate && \
+#     . ./setup.sh --new-env --basic --flash-attn --cumesh --o-voxel --flexgemm || \
+#     uv pip install -e .
+
+VOLUME /models
+EXPOSE 8765
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s \
+    CMD curl -sf http://localhost:8765/v1/health || exit 1
+
+CMD ["meshserver", "serve", "--host", "0.0.0.0", "--port", "8765"]
