@@ -369,14 +369,16 @@ export function useDebounced<T>(value: T, ms = 250): T {
 }
 
 export function useStickyBottom(dep: unknown) {
-  const ref = useRef<HTMLDivElement>(null);
+  const boxRef = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const onScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
     stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
   };
   useEffect(() => {
-    if (stick.current) ref.current?.scrollIntoView({ behavior: "smooth" });
+    // scroll the log container directly — scrollIntoView would also scroll the window
+    if (stick.current && boxRef.current)
+      boxRef.current.scrollTop = boxRef.current.scrollHeight;
   }, [dep]);
-  return { ref, onScroll };
+  return { boxRef, onScroll };
 }

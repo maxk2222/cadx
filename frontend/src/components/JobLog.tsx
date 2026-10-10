@@ -1,5 +1,5 @@
 import { Check, CircleDot, XCircle } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { api, jobEventsUrl } from "../lib/api";
 import { fmtDuration } from "../lib/format";
 import type { Job } from "../lib/types";
@@ -94,8 +94,7 @@ export default function JobLog({
   const [progress, setProgress] = useState(0);
   const [answers, setAnswers] = useState<string[]>([]);
   const [, setTick] = useState(0);
-  const { ref: bottomRef, onScroll } = useStickyBottom(events);
-  const logBoxRef = useRef<HTMLDivElement>(null);
+  const { boxRef: logBoxRef, onScroll } = useStickyBottom(events);
 
   useEffect(() => {
     setEvents([]);
@@ -238,7 +237,7 @@ export default function JobLog({
             {jobId ? "connecting to job stream…" : "no job selected"}
           </div>
         )}
-        <div ref={bottomRef} />
+        <div />
       </div>
 
       <div className="flex items-center justify-between text-[10px] text-zinc-600">
