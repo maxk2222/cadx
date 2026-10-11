@@ -6,15 +6,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from cadagent.agent.mesh_client import make_mesh_client
 from cadagent.api.deps import get_session
 from cadagent.api.schemas import MeshHealthOut, MeshModelOut
-from cadagent.db.models import AppSetting
+from cadagent.runtime_config import load_runtime_settings
 
 router = APIRouter(prefix="/mesh", tags=["mesh"])
 
 
 async def _client(db: AsyncSession):
-    row = await db.get(AppSetting, "mesh")
-    base_url = (row.value or {}).get("mesh_base_url") if row else None
-    return make_mesh_client(base_url=base_url)
+    return make_mesh_client(runtime_settings=await load_runtime_settings(db))
 
 
 @router.get("/health", response_model=MeshHealthOut)

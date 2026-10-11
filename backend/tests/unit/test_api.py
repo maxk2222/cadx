@@ -84,6 +84,47 @@ async def test_project_crud_and_generate_flow(client):
     assert r.status_code == 409
 
 
+async def test_edit_library_parts_inherit_replace_and_clear(client):
+    from cadagent.db.models import Version, VersionStatus
+    from cadagent.db.session import session_scope
+
+    project = (await client.post("/api/projects", json={"name": "library-edit"})).json()
+    created = await client.post(
+        f"/api/projects/{project['id']}/generate", json={"prompt": "a bracket"}
+    )
+    version_id = created.json()["version_id"]
+    inherited = [str(uuid.uuid4())]
+    async with session_scope() as db:
+        parent = await db.get(Version, uuid.UUID(version_id))
+        assert parent is not None
+        parent.status = VersionStatus.succeeded
+        parent.code = "from build123d import *\\nPARAMS = {}\\nresult = Box(1, 1, 1)"
+        parent.library_part_ids = inherited
+        await db.commit()
+
+    child = await client.post(f"/api/versions/{version_id}/edit", json={"prompt": "keep"})
+    assert child.status_code == 200, child.text
+    detail = (await client.get(f"/api/versions/{child.json()['version_id']}")).json()
+    assert detail["library_part_ids"] == inherited
+
+    cleared = await client.post(
+        f"/api/versions/{version_id}/edit",
+        json={"prompt": "clear", "library_part_ids": []},
+    )
+    assert cleared.status_code == 200, cleared.text
+    detail = (await client.get(f"/api/versions/{cleared.json()['version_id']}")).json()
+    assert detail["library_part_ids"] == []
+
+    selected = [str(uuid.uuid4())]
+    replaced = await client.post(
+        f"/api/versions/{version_id}/edit",
+        json={"prompt": "replace", "library_part_ids": selected},
+    )
+    assert replaced.status_code == 200, replaced.text
+    detail = (await client.get(f"/api/versions/{replaced.json()['version_id']}")).json()
+    assert detail["library_part_ids"] == selected
+
+
 async def test_project_delete_cascades(client):
     r = await client.post("/api/projects", json={"name": "del"})
     pid = r.json()["id"]
@@ -142,6 +183,7 @@ async def test_generate_mode_persisted(client):
 
 
 async def test_mesh_endpoints_unconfigured(client):
+    # no runtime row / empty mesh_base_url in the test DB → unconfigured
     r = await client.get("/api/mesh/health")
     assert r.status_code == 200
     assert r.json()["ok"] is False
@@ -155,7 +197,65 @@ async def test_catalog(client):
     r = await client.get("/api/catalog")
     assert r.status_code == 200
     cat = r.json()
-    assert "screws" in cat or "nuts" in cat
+    assert "screws" in cat and "gears" in cat
+    entry = cat["screws"]["CounterSunkScrew"]
+    assert entry["kind"] == "normed" and "iso10642" in entry["types"]
+
+    r = await client.get("/api/catalog/search?q=m4")
+    assert r.status_code == 200 and r.json()["results"]
+
+    r = await client.get(
+        "/api/catalog/lookup",
+        params={"class_name": "CounterSunkScrew", "fastener_type": "iso10642", "size": "M4-0.7"},
+    )
+    assert r.status_code == 200
+    assert r.json()["clearance_hole_diameters"]["Normal"] == 4.5
+
+    r = await client.get("/api/catalog/lookup", params={"class_name": "Bogus"})
+    assert r.status_code == 404
+
+
+async def test_optimize_endpoint(client):
+    from cadagent.db.models import Version, VersionStatus
+    from cadagent.db.session import session_scope
+
+    r = await client.post("/api/projects", json={"name": "opt"})
+    pid = r.json()["id"]
+    r = await client.post(
+        f"/api/projects/{pid}/generate", json={"prompt": "bracket", "mode": "cad"}
+    )
+    vid = r.json()["version_id"]
+
+    # optimize is only allowed on finished versions
+    r = await client.post(f"/api/versions/{vid}/optimize", json={})
+    assert r.status_code == 409
+
+    async with session_scope() as db:
+        v = await db.get(Version, uuid.UUID(vid))
+        assert v is not None
+        v.status = VersionStatus.succeeded
+        await db.commit()
+
+    r = await client.post(
+        f"/api/versions/{vid}/optimize",
+        json={
+            "load_cases": [
+                {
+                    "name": "c",
+                    "fixed": [{"kind": "face", "axis": "-x"}],
+                    "loads": [{"region": {"kind": "face", "axis": "+x"}, "force_n": [0, 0, -50]}],
+                }
+            ],
+            "optimize": {"target_volume_fraction": 0.4},
+        },
+    )
+    assert r.status_code == 200, r.text
+    vid2 = r.json()["version_id"]
+    v2 = (await client.get(f"/api/versions/{vid2}")).json()
+    assert v2["kind"] == "optimize"
+    assert v2["gen_mode"] == "topopt"
+    assert v2["parent_id"] == vid
+    assert v2["options"].get("topopt") is True
 
 
 async def test_404s(client):

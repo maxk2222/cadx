@@ -157,9 +157,11 @@ export default function Viewer3D({ url }: { url: string | null }) {
     title: string,
     active: boolean,
     onClick: () => void,
-    icon: ReactNode
+    icon: ReactNode,
+    key?: string
   ) => (
     <IconBtn
+      key={key}
       title={title}
       onClick={onClick}
       className={`bg-zinc-900/80 backdrop-blur ${active ? "text-blue-400" : ""}`}
@@ -206,9 +208,10 @@ export default function Viewer3D({ url }: { url: string | null }) {
       <div className="absolute left-2 top-2 flex gap-1">
         {VIEWS.map((v) =>
           toolBtn(v.title, false, () => setViewCmd({ view: v.id, n: Date.now() }),
-            <span key={v.id} className="px-0.5 text-[10px] font-semibold uppercase">
+            <span className="px-0.5 text-[10px] font-semibold uppercase">
               {v.id}
-            </span>
+            </span>,
+            v.id
           )
         )}
       </div>

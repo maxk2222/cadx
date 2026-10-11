@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from cadagent.cad.allowlist import apply_params_override, check_code, validate_overrides
-from cadagent.config import get_settings
+from cadagent.runtime_config import RuntimeSettings
 
 RUNNER = Path(__file__).parent / "runner_entry.py"
 
@@ -38,6 +38,7 @@ class RunnerOutput:
     stdout: str = ""
     params_used: dict[str, object] = field(default_factory=dict)
     thread_count: int = 0
+    bom: list[dict[str, object]] = field(default_factory=list)
     brep_path: Path | None = None
     flat_brep_path: Path | None = None
     duration_s: float = 0.0
@@ -73,7 +74,7 @@ def run_user_code(
     timeout_s: int | None = None,
     mem_mb: int | None = None,
 ) -> RunnerOutput:
-    settings = get_settings()
+    settings = RuntimeSettings()
     timeout_s = timeout_s or settings.exec_timeout_s
     mem_mb = mem_mb or settings.exec_mem_limit_mb
     workdir.mkdir(parents=True, exist_ok=True)
@@ -164,6 +165,7 @@ def run_user_code(
         stdout=data.get("stdout", ""),
         params_used=data.get("params_used", {}) or {},
         thread_count=int(data.get("thread_count", 0)),
+        bom=list(data.get("bom") or []),
         brep_path=(workdir / "model.brep") if (workdir / "model.brep").exists() else None,
         flat_brep_path=(
             (workdir / "flat_profile.brep") if (workdir / "flat_profile.brep").exists() else None

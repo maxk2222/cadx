@@ -1,13 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Clock, Cpu, Gauge, Layers, Plus, Trash2, TriangleAlert } from "lucide-react";
+import { Activity, Clock, Cpu, Gauge, Layers, Plus, Shrink, Trash2, TriangleAlert } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import ArtifactsTable from "../components/ArtifactsTable";
 import CodeView from "../components/CodeView";
 import DfmPanel from "../components/DfmPanel";
 import ExportPanel from "../components/ExportPanel";
+import FemPanel from "../components/FemPanel";
 import JobLog from "../components/JobLog";
 import ModeSelector from "../components/ModeSelector";
+import OptimizeDialog from "../components/OptimizeDialog";
+import OptionsPanel, { OptionChips } from "../components/OptionsPanel";
 import ParamsPanel from "../components/ParamsPanel";
 import PlanPanel from "../components/PlanPanel";
 import RenderGallery from "../components/RenderGallery";
@@ -29,9 +32,73 @@ import {
 } from "../components/ui";
 import { api } from "../lib/api";
 import { fmtDuration, fmtTokens } from "../lib/format";
-import type { GenMode, Job } from "../lib/types";
+import type { GenMode, Job, RunOptions } from "../lib/types";
 
 type Tab = "overview" | "spec" | "code" | "quality" | "files";
+
+function SaveToLibrary({
+  versionId,
+  hasCode,
+}: {
+  versionId: string;
+  hasCode: boolean;
+}) {
+  const qc = useQueryClient();
+  const [name, setName] = useState("");
+  const [asTemplate, setAsTemplate] = useState(false);
+  const [done, setDone] = useState(false);
+  const save = useMutation({
+    mutationFn: () => api.saveToLibrary(versionId, name.trim(), asTemplate),
+    onSuccess: () => {
+      setDone(true);
+      setName("");
+      qc.invalidateQueries({ queryKey: ["library"] });
+    },
+  });
+  return (
+    <Card className="p-4">
+      <SectionTitle>Save to part library</SectionTitle>
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          className={inputCls + " w-48 text-xs"}
+          placeholder="part name…"
+          value={name}
+          onChange={(e) => {
+            setName(e.target.value);
+            setDone(false);
+          }}
+        />
+        {hasCode && (
+          <label className="flex items-center gap-1.5 text-xs text-zinc-400">
+            <input
+              type="checkbox"
+              checked={asTemplate}
+              onChange={(e) => setAsTemplate(e.target.checked)}
+            />
+            as code template (parametric)
+          </label>
+        )}
+        <Btn
+          variant="ghost"
+          disabled={!name.trim()}
+          busy={save.isPending}
+          onClick={() => save.mutate()}
+        >
+          save {asTemplate ? "template" : "STEP body"}
+        </Btn>
+        {done && <span className="text-xs text-emerald-400">saved ✓</span>}
+        {save.isError && (
+          <span className="text-xs text-red-400">{String(save.error)}</span>
+        )}
+      </div>
+      <div className="mt-1.5 text-[11px] text-zinc-600">
+        Saved parts can be attached to new generations via the library picker on
+        the project page; bodies are available to generated code through
+        load_reference().
+      </div>
+    </Card>
+  );
+}
 
 export default function VersionPage() {
   const { id = "" } = useParams<{ id: string }>();
@@ -42,9 +109,13 @@ export default function VersionPage() {
   const [jobId, setJobId] = useState<string | null>(sp.get("job"));
   const [editPrompt, setEditPrompt] = useState("");
   const [editAssets, setEditAssets] = useState<Set<string>>(new Set());
+  const [editLibraryParts, setEditLibraryParts] = useState<Set<string>>(new Set());
   const [editMode, setEditMode] = useState<GenMode>("auto");
+  const [editOptions, setEditOptions] = useState<RunOptions>({});
+  const [optFor, setOptFor] = useState("");
   const [regenMesh, setRegenMesh] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [optimizeOpen, setOptimizeOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const version = useQuery({
@@ -74,6 +145,11 @@ export default function VersionPage() {
     queryFn: () => api.listAssets(v!.project_id),
     enabled: !!v?.project_id,
   });
+  const library = useQuery({
+    queryKey: ["library"],
+    queryFn: api.listLibrary,
+    staleTime: 30_000,
+  });
   const jobs = useQuery({
     queryKey: ["jobs", id],
     queryFn: () => api.listJobs(id),
@@ -83,6 +159,19 @@ export default function VersionPage() {
   useEffect(() => {
     if (!jobId && jobs.data?.length) setJobId(jobs.data[0].id);
   }, [jobs.data, jobId]);
+
+  // initialize edit options from the version once per version id
+  useEffect(() => {
+    if (v && v.id !== optFor) {
+      setEditPrompt("");
+      setEditAssets(new Set());
+      setEditMode("auto");
+      setRegenMesh(false);
+      setEditOptions(v.options ?? {});
+      setEditLibraryParts(new Set(v.library_part_ids ?? []));
+      setOptFor(v.id);
+    }
+  }, [v, optFor]);
 
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ["version", id] });
@@ -95,8 +184,18 @@ export default function VersionPage() {
       api.edit(id, editPrompt, [...editAssets], {
         mode: editMode,
         regenerate_mesh: regenMesh,
+        options: editOptions,
+        library_part_ids: [...editLibraryParts],
       }),
     onSuccess: (r) => nav(`/versions/${r.version_id}?job=${r.job_id}`),
+  });
+
+  const optimize = useMutation({
+    mutationFn: (body: Parameters<typeof api.optimize>[1]) => api.optimize(id, body),
+    onSuccess: (r) => {
+      setOptimizeOpen(false);
+      nav(`/versions/${r.version_id}?job=${r.job_id}`);
+    },
   });
 
   const del = useMutation({
@@ -187,6 +286,7 @@ export default function VersionPage() {
                 : ""}
             </Chip>
           )}
+          <OptionChips options={v.options} />
           {v.score != null && (
             <Chip tone={v.score >= 80 ? "green" : v.score >= 50 ? "amber" : "red"}>
               <Gauge className="h-3 w-3" /> score {v.score}/100
@@ -227,6 +327,21 @@ export default function VersionPage() {
           {dfmCount > 0 && (
             <Chip tone="amber" title="manufacturability warnings">
               <TriangleAlert className="h-3 w-3" /> {dfmCount} DfM
+            </Chip>
+          )}
+          {v.fem && (
+            <Chip
+              tone={
+                Math.min(
+                  ...v.fem.cases.map((c) => c.safety_factor ?? Infinity)
+                ) < 1
+                  ? "red"
+                  : "purple"
+              }
+              title="FEM safety factor"
+            >
+              <Activity className="h-3 w-3" /> SF{" "}
+              {Math.min(...v.fem.cases.map((c) => c.safety_factor ?? Infinity)).toFixed(2)}
             </Chip>
           )}
         </div>
@@ -336,6 +451,7 @@ export default function VersionPage() {
 
         {tab === "quality" && (
           <div className="flex flex-col gap-4">
+            {v.fem && <FemPanel fem={v.fem} artifacts={v.artifacts} />}
             <Card className="p-4">
               <SectionTitle>Manufacturability (DfM)</SectionTitle>
               {v.dfm ? (
@@ -344,6 +460,52 @@ export default function VersionPage() {
                 <div className="text-sm text-zinc-500">No DfM report for this version.</div>
               )}
             </Card>
+            {!!v.bom?.length && (
+              <Card className="p-4">
+                <SectionTitle>Bill of materials (standard parts used)</SectionTitle>
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-left text-zinc-500">
+                      <th className="pb-1 pr-2">count</th>
+                      <th className="pb-1 pr-2">class</th>
+                      <th className="pb-1 pr-2">type</th>
+                      <th className="pb-1">size</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {v.bom.map((e, i) => (
+                      <tr key={i} className="border-t border-zinc-800/60 text-zinc-300">
+                        <td className="py-1 pr-2 font-mono">{e.count}×</td>
+                        <td className="py-1 pr-2 font-mono">{e.part_class}</td>
+                        <td className="py-1 pr-2 font-mono text-zinc-500">{e.type ?? "—"}</td>
+                        <td className="py-1 font-mono text-zinc-500">{e.size ?? "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </Card>
+            )}
+            {!!v.issues?.length && (
+              <Card className="p-4">
+                <SectionTitle>Detected issues</SectionTitle>
+                {v.issues.map((it, i) => (
+                  <div key={i} className="mb-1 text-xs text-zinc-400">
+                    <span
+                      className={
+                        it.severity === "major" ? "text-red-400" : "text-amber-400"
+                      }
+                    >
+                      [{it.severity}]
+                    </span>{" "}
+                    <span className="text-zinc-500">({it.source})</span> {it.what}
+                    {it.where ? ` @ ${it.where}` : ""}
+                    {it.fix_hint ? (
+                      <span className="text-zinc-600"> — fix: {it.fix_hint}</span>
+                    ) : null}
+                  </div>
+                ))}
+              </Card>
+            )}
             {v.critique && (
               <Card className="p-4">
                 <SectionTitle
@@ -391,7 +553,15 @@ export default function VersionPage() {
           </div>
         )}
 
-        {tab === "files" && <ArtifactsTable artifacts={v.artifacts} />}
+        {tab === "files" && (
+          <div className="flex flex-col gap-4">
+            <ArtifactsTable artifacts={v.artifacts} />
+            {(v.status === "succeeded" || v.status === "needs_review") &&
+              (v.code || v.artifacts.some((a) => a.kind === "step")) && (
+                <SaveToLibrary versionId={v.id} hasCode={!!v.code} />
+              )}
+          </div>
+        )}
       </div>
 
       {/* side column */}
@@ -405,6 +575,18 @@ export default function VersionPage() {
             onDone={refresh}
           />
         </Card>
+
+        {(v.status === "succeeded" || v.status === "needs_review") &&
+          v.resolved_mode !== "topopt" && (
+            <Btn
+              variant="ghost"
+              className="w-full border border-teal-800/60 text-teal-300 hover:bg-teal-950/40"
+              onClick={() => setOptimizeOpen(true)}
+              title="topology-optimize this part (SIMP + FEM verification)"
+            >
+              <Shrink className="h-4 w-4" /> Topology-optimize this part
+            </Btn>
+          )}
 
         {(v.status === "succeeded" || v.status === "needs_review") && (
           <Card className="p-3">
@@ -461,6 +643,43 @@ export default function VersionPage() {
             <div className="my-2">
               <ModeSelector value={editMode} onChange={setEditMode} />
             </div>
+            <div className="my-2">
+              <OptionsPanel value={editOptions} onChange={setEditOptions} />
+            </div>
+            {(library.data ?? []).length > 0 && (
+              <div className="my-2">
+                <div className="mb-1 text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+                  Library parts{editLibraryParts.size ? ` — ${editLibraryParts.size} selected` : ""}
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {(library.data ?? []).map((p) => {
+                    const on = editLibraryParts.has(p.id);
+                    return (
+                      <button
+                        key={p.id}
+                        type="button"
+                        title={`${p.kind}: ${p.caption || p.filename || p.name}`}
+                        className={`rounded-full border px-2.5 py-1 text-xs transition-colors ${
+                          on
+                            ? "border-blue-600 bg-blue-950/60 text-blue-200"
+                            : "border-zinc-700 bg-zinc-900 text-zinc-400 hover:border-zinc-600 hover:text-zinc-300"
+                        }`}
+                        onClick={() =>
+                          setEditLibraryParts((s) => {
+                            const n = new Set(s);
+                            n.has(p.id) ? n.delete(p.id) : n.add(p.id);
+                            return n;
+                          })
+                        }
+                      >
+                        {p.name}
+                        <span className="ml-1 text-[10px] text-zinc-600">{p.kind}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
             {v.resolved_mode === "hybrid" && (
               <label className="my-2 flex items-center gap-2 text-xs text-zinc-400">
                 <input
@@ -512,6 +731,20 @@ export default function VersionPage() {
           </>
         }
       />
+
+      <OptimizeDialog
+        key={v.id}
+        open={optimizeOpen}
+        onClose={() => setOptimizeOpen(false)}
+        busy={optimize.isPending}
+        initial={v.spec?.load_cases}
+        onSubmit={(body) => optimize.mutate(body)}
+      />
+      {optimize.isError && (
+        <div className="fixed bottom-4 right-4 rounded-lg border border-red-800 bg-red-950/80 px-3 py-2 text-xs text-red-300">
+          {String(optimize.error)}
+        </div>
+      )}
     </div>
   );
 }

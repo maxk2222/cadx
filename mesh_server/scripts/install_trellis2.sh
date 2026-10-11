@@ -13,6 +13,18 @@ if [ ! -d "$VENV" ]; then
 fi
 PY="$VENV/bin/python"
 
+# uv-managed venvs ship without pip — prefer uv when available
+if "$PY" -m pip --version >/dev/null 2>&1; then
+  INSTALL() { "$PY" -m pip install "$@"; }
+elif command -v uv >/dev/null 2>&1; then
+  INSTALL() { uv pip install --python "$PY" "$@"; }
+elif [ -x ".venv/bin/uv" ]; then
+  INSTALL() { .venv/bin/uv pip install --python "$PY" "$@"; }
+else
+  echo "neither pip nor uv available — install uv or add pip to $VENV" >&2
+  exit 1
+fi
+
 echo "== cloning $TRELLIS_REPO (recursive submodules!) =="
 mkdir -p "$(dirname "$SRC")"
 if [ ! -d "$SRC/.git" ]; then
@@ -25,7 +37,7 @@ echo "== TRELLIS.2 setup (basic + flash-attn + cumesh + o-voxel + flexgemm) =="
 cd "$SRC"
 . ./setup.sh --new-env --basic --flash-attn --cumesh --o-voxel --flexgemm
 cd - >/dev/null
-"$PY" -m pip install -e "$SRC"
+INSTALL -e "$SRC"
 
 echo "== downloading weights =="
 "$PY" - <<'EOF'

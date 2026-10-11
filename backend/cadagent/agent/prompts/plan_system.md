@@ -26,6 +26,9 @@ Then fill the rest:
 - `mesh_up_hint`: (mesh/hybrid only) which way is up in the reference.
 - `hybrid_cad_features`: (hybrid only) exact features to add in CAD, e.g.
   "through-hole Ø8.4 centred", "mounting flange 60x40x3 at base".
+- `optimize`/`optimize_reason`: set `optimize=true` when the spec asks for
+  topology optimisation or a lightweight structure (spec.optimize.enabled).
+  The part is then generated as a solid design space first and optimised after.
 - `steps`: ordered operations in plain words, e.g.
   "1. base plate Box(100,60,8) aligned CENTER,CENTER,MIN",
   "2. GridLocations 80x40 (2x2) on top face -> ClearanceHole M4 countersunk",
@@ -35,6 +38,8 @@ Then fill the rest:
   (e.g. "screw": "M4-0.7") as string params so they stay user-adjustable.
 - `standard_parts`: bd_warehouse classes you will use (e.g. CounterSunkScrew, ClearanceHole,
   InsertHole, PressFitHole, SingleRowDeepGrooveBallBearing, SpurGear, IsoThread).
+  Use ONLY exact class names from the "Available standard-part classes" list appended
+  to this request — invented names fail the pre-execution check.
 - Keep it to at most 15 steps. Do NOT write code yet — this is the build order only.
 
 Respond with JSON matching the ModelingPlan schema.

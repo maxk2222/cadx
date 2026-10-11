@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import io
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
@@ -13,10 +14,14 @@ from cadagent import storage
 from cadagent.api.deps import get_session
 from cadagent.api.schemas import AssetOut, AssetUpdate
 from cadagent.db.models import Asset, AssetKind, Project
+from cadagent.llm.images import normalize
+from cadagent.logging import get_logger
+
+log = get_logger(__name__)
 
 router = APIRouter(tags=["assets"])
 
-_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".heic", ".heif"}
 _REF_EXT = {
     ".step": AssetKind.reference_step,
     ".stp": AssetKind.reference_step,
@@ -36,6 +41,7 @@ def _out(a: Asset) -> AssetOut:
         width=a.width,
         height=a.height,
         caption=a.caption,
+        derived_from=a.derived_from,
         created_at=a.created_at,
         url=f"/api/assets/{a.id}/file",
     )
@@ -66,26 +72,39 @@ async def upload_assets(
         kind = _kind_for(f.filename or "", None)
         if kind is None:
             raise HTTPException(415, f"{f.filename}: unsupported type")
+        filename = f.filename or "file"
+        mime = f.content_type or ""
+        width: int | None = None
+        height: int | None = None
+        if kind == AssetKind.image:
+            norm = normalize(data)
+            if norm is not None:
+                data, width, height = norm
+                filename = filename.rsplit(".", 1)[0] + ".jpg"
+                mime = "image/jpeg"
+            else:
+                log.warning("asset.normalize_failed", filename=filename)
+                try:
+                    from PIL import Image
+
+                    with Image.open(io.BytesIO(data)) as im:
+                        width, height = im.size
+                except Exception:
+                    pass
         asset = Asset(
             project_id=project_id,
             kind=kind,
-            filename=storage.safe_filename(f.filename or "file"),
+            filename=storage.safe_filename(filename),
             path="",  # filled below
-            mime=f.content_type or "",
+            mime=mime,
+            width=width,
+            height=height,
             caption=caption,
         )
         path = storage.asset_path(project_id, asset.id, asset.filename)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
         asset.path = storage.relpath(path)
-        if kind == AssetKind.image:
-            try:
-                from PIL import Image
-
-                with Image.open(path) as im:
-                    asset.width, asset.height = im.size
-            except Exception:
-                pass
         db.add(asset)
         out.append(asset)
     await db.commit()
@@ -112,6 +131,117 @@ async def asset_file(asset_id: uuid.UUID, db: AsyncSession = Depends(get_session
     if not p.exists():
         raise HTTPException(404, "file missing")
     return FileResponse(p, media_type=a.mime or None, filename=a.filename)
+
+
+_rembg_sess = None
+
+
+def _rembg_session():
+    """Lazy shared u2net session (downloads the model on first call)."""
+    global _rembg_sess
+    if _rembg_sess is None:
+        import rembg
+
+        _rembg_sess = rembg.new_session("u2net")
+    return _rembg_sess
+
+
+def _store_derivative(src: Asset, png: bytes, suffix: str) -> Asset | None:
+    """Persist an edited image as a new asset linked to `src`.
+
+    Returns None when the payload is not a decodable PNG. Alpha is preserved —
+    normalize() would flatten it to JPEG.
+    """
+    from PIL import Image
+
+    try:
+        with Image.open(io.BytesIO(png)) as im:
+            width, height = im.size
+            if im.format != "PNG":
+                return None
+    except Exception:
+        return None
+    stem = src.filename.rsplit(".", 1)[0]
+    asset = Asset(
+        project_id=src.project_id,
+        kind=AssetKind.image,
+        filename=storage.safe_filename(f"{stem}-{suffix}.png"),
+        path="",
+        mime="image/png",
+        width=width,
+        height=height,
+        caption=src.caption,
+        derived_from=src.id,
+    )
+    path = storage.asset_path(src.project_id, asset.id, asset.filename)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(png)
+    asset.path = storage.relpath(path)
+    return asset
+
+
+@router.post("/assets/{asset_id}/derivative", response_model=AssetOut, status_code=201)
+async def create_derivative(
+    asset_id: uuid.UUID, file: UploadFile, db: AsyncSession = Depends(get_session)
+):
+    """Store a client-edited PNG (crop/mask result) as a new asset."""
+    src = await db.get(Asset, asset_id)
+    if not src:
+        raise HTTPException(404, "asset not found")
+    if src.kind != AssetKind.image:
+        raise HTTPException(400, "not an image asset")
+    png = await file.read()
+    if len(png) > MAX_ASSET_BYTES:
+        raise HTTPException(413, f"exceeds {MAX_ASSET_BYTES // 2**20}MB")
+    asset = _store_derivative(src, png, "edit")
+    if asset is None:
+        raise HTTPException(415, "expected a PNG image")
+    db.add(asset)
+    await db.commit()
+    return _out(asset)
+
+
+@router.post("/assets/{asset_id}/remove-bg")
+async def remove_bg(asset_id: uuid.UUID, db: AsyncSession = Depends(get_session)):
+    """Cut out the subject via rembg. Returns RGBA PNG bytes (not stored yet —
+    the editor applies it and persists via /derivative on save)."""
+    src = await db.get(Asset, asset_id)
+    if not src:
+        raise HTTPException(404, "asset not found")
+    if src.kind != AssetKind.image:
+        raise HTTPException(400, "not an image asset")
+    try:
+        p = storage.resolve(src.path)
+        data = p.read_bytes()
+    except (ValueError, FileNotFoundError):
+        raise HTTPException(404, "asset file missing") from None
+    try:
+        import rembg
+    except ImportError:
+        raise HTTPException(
+            503, "rembg is not installed — install the backend with rembg support"
+        ) from None
+    try:
+        import asyncio
+
+        from PIL import Image
+
+        img = Image.open(io.BytesIO(data)).convert("RGB")
+        # u2net (~170 MB) instead of the bria-rmbg default (~1 GB) — keeps RAM
+        # and download size sane inside the container.
+        out = await asyncio.to_thread(lambda: rembg.remove(img, session=_rembg_session()))
+        if isinstance(out, (bytes, bytearray)):
+            png = bytes(out)
+        else:
+            buf = io.BytesIO()
+            out.convert("RGBA").save(buf, format="PNG")
+            png = buf.getvalue()
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.warning("asset.remove_bg_failed", asset=str(asset_id), error=str(e))
+        raise HTTPException(500, f"background removal failed: {e}") from e
+    return Response(content=png, media_type="image/png")
 
 
 @router.patch("/assets/{asset_id}", response_model=AssetOut)

@@ -50,6 +50,30 @@ def migrate() -> None:
     subprocess.run(["alembic", "upgrade", "head"], cwd=backend, check=True)
 
 
+@app.command(name="import-legacy-env")
+def import_legacy_env(path: Path = typer.Argument(..., exists=True, dir_okay=False)) -> None:
+    """Import known app settings from a legacy .env file into the database."""
+    from cadagent.db.session import session_scope
+    from cadagent.runtime_config import import_legacy_env as do_import
+
+    async def _import() -> dict[str, Any]:
+        async with session_scope() as db:
+            result = await do_import(db, path)
+            await db.commit()
+            return result
+
+    result = asyncio.run(_import())
+    imported = result.get("imported") or []
+    ignored = result.get("ignored_infrastructure") or []
+    print(f"legacy app settings imported: {len(imported)}")
+    if imported:
+        print("keys: " + ", ".join(imported))
+    if ignored:
+        print("infrastructure/dev keys not imported: " + ", ".join(ignored))
+    if result.get("already_imported"):
+        print("database already marked as migrated")
+
+
 @app.command(name="exec")
 def exec_code(
     code_file: Path = typer.Argument(..., exists=True),
@@ -178,6 +202,7 @@ def run(
         from cadagent.db.models import ProjectSettings
         from cadagent.llm.client import LLMClient
         from cadagent.llm.fake import FakeLLM
+        from cadagent.runtime_config import runtime_from_db_or_default
 
         vid = uuid.uuid4()
         assets = [
@@ -190,8 +215,11 @@ def run(
             )
             for p in images
         ]
-        llm = FakeLLM(_fake_script(mode)) if fake else LLMClient()
-        mesh = make_mesh_client(fake=True) if fake_mesh else make_mesh_client()
+        runtime = await runtime_from_db_or_default()
+        llm = FakeLLM(_fake_script(mode)) if fake else LLMClient(runtime_settings=runtime)
+        mesh = (
+            make_mesh_client(fake=True) if fake_mesh else make_mesh_client(runtime_settings=runtime)
+        )
         emitted: list[str] = []
 
         async def emit(step: str, iteration: int, message: str) -> None:
@@ -211,6 +239,7 @@ def run(
             mode="generate",
             prompt=prompt,
             settings=ProjectSettings(max_iterations=4, clarification_mode="assume"),
+            runtime_settings=runtime,
             assets=assets,
             gen_mode=mode,
             mesh=mesh,
@@ -235,10 +264,13 @@ def mesh_gen(
 
     async def _run() -> None:
         from cadagent.agent.mesh_client import MeshGenRequest, make_mesh_client
+        from cadagent.runtime_config import runtime_from_db_or_default
 
-        client = make_mesh_client(base_url=base_url)
+        client = make_mesh_client(
+            base_url=base_url, runtime_settings=await runtime_from_db_or_default()
+        )
         if client is None:
-            print("mesh server not configured (MESH_BASE_URL or --url)")
+            print("mesh server not configured (set mesh_base_url in Settings or --url)")
             raise typer.Exit(1)
 
         async def prog(msg: str, p: float) -> None:
@@ -335,10 +367,13 @@ def mesh_health(
 
     async def _run() -> None:
         from cadagent.agent.mesh_client import make_mesh_client
+        from cadagent.runtime_config import runtime_from_db_or_default
 
-        client = make_mesh_client(base_url=base_url)
+        client = make_mesh_client(
+            base_url=base_url, runtime_settings=await runtime_from_db_or_default()
+        )
         if client is None:
-            print("mesh server not configured (MESH_BASE_URL or --url)")
+            print("mesh server not configured (set mesh_base_url in Settings or --url)")
             raise typer.Exit(1)
         h = await client.health()
         print(json.dumps(h.model_dump(), indent=2))

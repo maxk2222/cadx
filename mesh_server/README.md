@@ -8,18 +8,19 @@ runtime lives in its own uv project/venv.
 ## Quick start (macOS / Apple Silicon)
 
 ```bash
-# from the repo root
-make mesh-sync        # creates mesh_server/.venv with the right extras (mlx on arm64)
-make mesh-server      # serves on http://127.0.0.1:8765
-make mesh-models      # downloads the default weights
+# from the repo root — auto-detects the GPU tier and installs the adapter
+../scripts/setup.sh     # (or: make autosetup / scripts/start.sh for the full stack)
+make mesh-server        # serves on http://127.0.0.1:8765
+
+# manual equivalent:
+make mesh-sync          # creates mesh_server/.venv with the right extras (mlx on arm64)
+make mesh-models        # downloads the default weights
 ```
 
-Then point cadagent at it:
-
-```bash
-# .env
-MESH_BASE_URL=http://localhost:8765
-```
+Then point cadagent at it — set `mesh_base_url` to `http://localhost:8765`
+in **Settings** (the app stores it in its database; `start.sh` seeds the
+right value on first boot, e.g. `http://host.docker.internal:8765` for the
+docker stack reaching a native sidecar).
 
 Check status:
 

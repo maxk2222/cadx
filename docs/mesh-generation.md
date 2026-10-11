@@ -9,7 +9,7 @@ cadagent can generate geometry in three ways and lets a planner pick:
 | `hybrid` | mesh → faceted B-Rep solid → build123d booleans | organic shape + exact features, all exports (STEP tessellated) |
 | `auto` | planner decides (`plan.approach`) | — |
 
-`auto` is the default (`AGENT_DEFAULT_GEN_MODE`, project settings,
+`auto` is the default (`agent_default_gen_mode` runtime setting, project settings,
 `GenerateRequest.mode`, CLI `--mode`). Guard rails: `mesh`/`hybrid` need
 **at least one image** and a **reachable mesh server** — otherwise the run
 falls back to CAD with a note in the job log and `resolved_mode="cad"`.
@@ -32,8 +32,9 @@ hybrid only:  runner_entry injects load_mesh_solid() + MESH_BBOX
 - The **worker** calls the mesh server (`public` network); the **executor**
   only sees files under `DATA_DIR` (internal, sealed).
 - Mesh post-params (scale, up, front, rotate_z, decimate, flatten, mirror)
-  are stored as `version.params` — the params job re-runs the pipeline
-  **without any LLM call** (`MeshPostParams` in `cad/mesh_ops.py`).
+  plus the recorded transform **ops** are stored as `version.params` — the
+  params job re-runs the pipeline **without any LLM call**
+  (`MeshPostParams`/`MeshOp` in `cad/mesh_ops.py`).
 - Mesh versions have `code = None` — the "show code" UI is hidden and
   `model.py` is only written when code exists.
 
@@ -59,19 +60,32 @@ with MLX, the `mv` variant when ≥2 view-tagged images exist, otherwise
 
 ## Install
 
+The fastest path is the auto-setup — it detects the GPU tier and installs
+the matching adapter:
+
+```bash
+./scripts/setup.sh        # detects: mlx (arm64 mac) | cuda (local nvidia) | none
+./scripts/start.sh        # starts the whole stack incl. native mesh-server
+./scripts/setup.sh --doctor   # diagnostics (tier, adapter availability, legacy .env)
+```
+
+Manual alternative:
+
 ```bash
 # macOS (native — docker has no GPU access)
 make mesh-sync
 mesh_server/scripts/install_hunyuan_mlx.sh     # or install_hunyuan_torch.sh
 make mesh-server                               # :8765
-# .env: MESH_BASE_URL=http://localhost:8765 (native dev)
-#       compose handles host.docker.internal automatically
+# native dev: Settings → mesh_base_url = http://localhost:8765
+# docker: start.sh seeds host.docker.internal automatically
 
 # CUDA box
 docker build -f mesh_server/Dockerfile.cuda -t meshserver:cuda .
 docker run --gpus all -p 8765:8765 -v mesh_models:/models meshserver:cuda
 # or: docker compose --profile gpu up -d mesh-server
 #     → MESH_BASE_URL=http://mesh-server:8765 for the worker
+# native (no container): scripts/setup.sh picks trellis2 (>=20 GB VRAM,
+# override via MESH_TRELLIS_MIN_VRAM_GB) or triposg automatically
 ```
 
 ## Flow details
@@ -79,12 +93,30 @@ docker run --gpus all -p 8765:8765 -v mesh_models:/models meshserver:cuda
 **mesh**: `MESH_GENERATE` (seed = `mesh_seed` or per-version base + iteration)
 → `ORIENT` (6 candidates rendered in the executor, vision LLM picks
 `MeshOrientation{up,front}`; heuristic fallback; parent orientation is reused
-on edits) → `PROCESS_MESH` → dim-check → `CRITIQUE` → best candidate →
-exports. Iterations vary the seed; `edit` = regenerate, `params` =
-post-params rerun.
+on edits) → `PROCESS_MESH` → `MESH_REFINE` shape session → dim-check →
+`CRITIQUE` → issues-seeded `MESH_REFINE` repair round(s) → best candidate →
+exports. Remaining iterations vary the seed (a refine session can also force
+a re-roll via `regenerate`); `edit` = regenerate, `params` =
+post-params+ops rerun.
+
+**MESH_REFINE** (`agent/steps/mesh_refine.py`, workbench in
+`agent/mesh_tools.py`) is a tool session on the vision role: the agent
+inspects the baseline-processed mesh (`mesh_inspect`), renders it
+(`mesh_preview`, capped at `agent_mesh_preview_max`), applies bounded
+transforms — `set_up`, `rotate` (any axis), `mirror`, `scale` (uniform or
+per-axis), `flatten_bottom`, `slice`, `crop`, `decimate`, `smooth`,
+`keep_largest`, `drop_small`, `repair`, `boolean_add`/`boolean_cut` with
+box/cylinder/sphere primitives — and commits with `done`. Every call is
+validated through the op's pydantic model (`OPS_REGISTRY`), applied to a
+worker-side trimesh state, and the mesh is re-grounded after each op so
+session preview and executor output can never drift. The session only
+*records* ops — the authoritative result is re-produced by a
+`process_mesh` run in the executor. Limits: `agent_mesh_tools`,
+`agent_mesh_max_ops`, `agent_mesh_preview_max`, `agent_mesh_refine_rounds`;
+unavailable sessions fall back to the plain seed-rotation loop.
 
 **hybrid**: same mesh prep in `iterations/0` → `mesh_to_solid` (decimated to
-`MESH_MAX_FACES_FOR_CAD` first; one retry at ≤15k faces) → CAD loop with
+`mesh_max_faces_for_cad` first; one retry at ≤15k faces) → CAD loop with
 `load_mesh_solid()`/`MESH_BBOX` injected into the sandbox → the code contract
 restricts hybrid code to boolean ops (no fillet/edge-select on mesh faces).
 `mesh_to_solid` failure → `resolved_mode="mesh"` fallback; generation failure
@@ -97,7 +129,7 @@ restricts hybrid code to boolean ops (no fillet/edge-select on mesh faces).
 versions/<vid>/mesh/mesh_raw.glb    raw generator output (ArtifactKind mesh_raw)
 versions/<vid>/mesh/mesh_clean.stl  post-processed (mm, oriented, scaled)
 versions/<vid>/mesh/solid.brep      hybrid: faceted solid fed into build123d
-versions/<vid>/mesh/mesh.json       provenance: model, seed, orientation, post-params
+versions/<vid>/mesh/mesh.json       provenance: model, seed, orientation, post-params, ops, ops_report
 versions/<vid>/iterations/0/        hybrid mesh prep (generation + orient + solid)
 versions/<vid>/iterations/<n>/      per-iteration runs
 ```
@@ -107,12 +139,12 @@ STEP export for mesh/hybrid results is **tessellated** (faceted), marked
 
 ## Troubleshooting
 
-- **`mesh server not configured (MESH_BASE_URL)`** — set it; on compose the
-  worker gets `http://host.docker.internal:8765` automatically (native
-  sidecar) or `http://mesh-server:8765` (`gpu` profile).
-- **`no adapter available … on device 'cpu'`** — no GPU detected and
-  `MESH_FAKE` off; install an adapter (see `mesh_server/README.md`) or run
-  `MESH_FAKE=1`.
+- **`mesh server not configured`** — set `mesh_base_url` on the Settings
+  page; on compose it is seeded once with `http://host.docker.internal:8765`
+  (native sidecar) or use `http://mesh-server:8765` (`gpu` profile).
+- **`no adapter available … on device 'cpu'`** — no GPU detected and the fake
+  adapter is off; install an adapter (see `mesh_server/README.md`) or run
+  `scripts/start.sh --fake`.
 - **wrong up/front axis** — change the `up`/`front` post-params and re-run
   params (no LLM); the orientation source is recorded
   (`mesh.orientation_source`: `llm | heuristic | parent`).

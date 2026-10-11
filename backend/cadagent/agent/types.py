@@ -10,6 +10,7 @@ from typing import Any, Protocol
 
 from cadagent.db.models import ProjectSettings
 from cadagent.llm.schemas import ModelingPlan, PartSpec
+from cadagent.runtime_config import RuntimeSettings
 
 
 @dataclass
@@ -57,6 +58,8 @@ class ExecutorPort(Protocol):
     async def execute(self, payload: dict[str, Any]) -> dict[str, Any]: ...
     async def export_all(self, payload: dict[str, Any]) -> dict[str, Any]: ...
     async def process_mesh(self, payload: dict[str, Any]) -> dict[str, Any]: ...
+    async def fem_analyze(self, payload: dict[str, Any]) -> dict[str, Any]: ...
+    async def optimize(self, payload: dict[str, Any]) -> dict[str, Any]: ...
 
 
 @dataclass
@@ -75,7 +78,13 @@ class AgentCtx:
     mode: str  # "generate" | "edit" | "resume"
     prompt: str
     settings: ProjectSettings
+    runtime_settings: RuntimeSettings = field(default_factory=RuntimeSettings)
     assets: list[InputAsset] = field(default_factory=list)
+    # reusable library: file parts are appended to `assets` (load_reference),
+    # code templates land here for the prompt only
+    library_templates: list[dict[str, Any]] = field(default_factory=list)
+    # ids the agent attached itself via attach_library_part during tool sessions
+    library_attached: list[str] = field(default_factory=list)
     parent: ParentContext = field(default_factory=ParentContext)
     gen_mode: str = "auto"  # requested generation mode: auto | cad | mesh | hybrid
     resolved_mode: str | None = None  # effective mode: cad | mesh | hybrid
@@ -87,6 +96,7 @@ class AgentCtx:
     mesh_info: dict[str, Any] = field(default_factory=dict)  # persisted to version.mesh
     mesh_orientation: dict[str, str] | None = None  # {up, front} — LLM/heuristic choice per job
     mesh_raw_reuse: Path | None = None  # already-generated raw GLB to reuse (edit/fallback)
+    topopt_requested: bool = False  # gen_mode=topopt: base generation + SIMP phase
 
     # filled by steps
     spec: PartSpec | None = None

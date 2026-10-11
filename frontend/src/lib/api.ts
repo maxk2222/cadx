@@ -1,20 +1,54 @@
 import type {
   Asset,
+  CatalogEntry,
+  CatalogSearchHit,
   GenMode,
   Job,
+  LibraryPart,
+  LoadCase,
   MeshHealth,
   MeshModelInfo,
+  OptimizeSpec,
   Project,
+  ProviderTestResult,
+  RunOptions,
   Settings,
+  SettingsUpdate,
   VersionDetail,
   VersionSummary,
 } from "./types";
 
 const BASE = "/api";
 
+/** Friendly message for a failed response — JSON detail, else status text
+ *  (proxies may answer with an HTML error page that must not reach the UI).
+ *  FastAPI validation errors arrive as a detail array of {loc, msg}. */
+async function errText(r: Response): Promise<string> {
+  const body = await r.text();
+  try {
+    const d = (JSON.parse(body) as { detail?: unknown }).detail;
+    if (Array.isArray(d)) {
+      return d
+        .map((x) => {
+          const loc = Array.isArray(x?.loc)
+            ? x.loc.filter((p: unknown) => p !== "body").join(".")
+            : "";
+          return loc ? `${loc}: ${x?.msg}` : String(x?.msg ?? x);
+        })
+        .join("; ");
+    }
+    if (typeof d === "string" && d) return d;
+    if (d) return JSON.stringify(d).slice(0, 300);
+  } catch {
+    /* not JSON */
+  }
+  if (body.trimStart().startsWith("<")) return `${r.status} ${r.statusText}`;
+  return `${r.status} ${body.slice(0, 300)}`;
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(BASE + path, init);
-  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+  if (!r.ok) throw new Error(await errText(r));
   return r.json();
 }
 
@@ -43,10 +77,22 @@ export const api = {
       method: "POST",
       body: fd,
     });
-    if (!r.ok) throw new Error(await r.text());
+    if (!r.ok) throw new Error(await errText(r));
     return r.json();
   },
   deleteAsset: (id: string) => req<{ ok: boolean }>(`/assets/${id}`, { method: "DELETE" }),
+  deriveAsset: async (id: string, png: Blob): Promise<Asset> => {
+    const fd = new FormData();
+    fd.append("file", png, "edit.png");
+    const r = await fetch(`${BASE}/assets/${id}/derivative`, { method: "POST", body: fd });
+    if (!r.ok) throw new Error(await errText(r));
+    return r.json();
+  },
+  removeAssetBg: async (id: string): Promise<Blob> => {
+    const r = await fetch(`${BASE}/assets/${id}/remove-bg`, { method: "POST" });
+    if (!r.ok) throw new Error(await errText(r));
+    return r.blob();
+  },
   updateAsset: (id: string, caption: string) =>
     req<Asset>(`/assets/${id}`, {
       method: "PATCH",
@@ -54,20 +100,29 @@ export const api = {
       body: JSON.stringify({ caption }),
     }),
 
-  generate: (pid: string, prompt: string, asset_ids: string[], mode?: GenMode) =>
+  generate: (
+    pid: string,
+    prompt: string,
+    asset_ids: string[],
+    mode?: GenMode,
+    options?: RunOptions,
+    library_part_ids?: string[],
+  ) =>
     req<{ version_id: string; job_id: string }>(
       `/projects/${pid}/generate`,
-      json({ prompt, asset_ids, mode })
+      json({ prompt, asset_ids, library_part_ids: library_part_ids ?? [], mode, options })
     ),
-  edit: (vid: string, prompt: string, asset_ids: string[], opts?: { mode?: GenMode; regenerate_mesh?: boolean }) =>
+  edit: (vid: string, prompt: string, asset_ids: string[], opts?: { mode?: GenMode; regenerate_mesh?: boolean; options?: RunOptions; library_part_ids?: string[] }) =>
     req<{ version_id: string; job_id: string }>(
       `/versions/${vid}/edit`,
-      json({ prompt, asset_ids, mode: opts?.mode, regenerate_mesh: opts?.regenerate_mesh ?? false })
+      json({ prompt, asset_ids, library_part_ids: opts?.library_part_ids ?? [], mode: opts?.mode, regenerate_mesh: opts?.regenerate_mesh ?? false, options: opts?.options })
     ),
   setParams: (vid: string, params: Record<string, unknown>) =>
     req<{ version_id: string; job_id: string }>(`/versions/${vid}/params`, json({ params })),
   reexport: (vid: string) =>
     req<{ version_id: string; job_id: string }>(`/versions/${vid}/reexport`, { method: "POST" }),
+  optimize: (vid: string, body: { load_cases: LoadCase[]; optimize: Partial<OptimizeSpec>; material?: string }) =>
+    req<{ version_id: string; job_id: string }>(`/versions/${vid}/optimize`, json(body)),
 
   listVersions: (pid: string) => req<VersionSummary[]>(`/projects/${pid}/versions`),
   getVersion: (id: string) => req<VersionDetail>(`/versions/${id}`),
@@ -81,10 +136,45 @@ export const api = {
   cancelJob: (id: string) => req<{ ok: boolean }>(`/jobs/${id}/cancel`, { method: "POST" }),
 
   getSettings: () => req<Settings>("/settings"),
-  updateSettings: (body: Partial<Settings>) =>
+  updateSettings: (body: SettingsUpdate) =>
     req<Settings>("/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+  testProvider: () => req<ProviderTestResult>("/settings/test", { method: "POST" }),
 
-  getCatalog: () => req<Record<string, Record<string, Record<string, string[]>>>>("/catalog"),
+  getCatalog: () => req<Record<string, Record<string, CatalogEntry>>>("/catalog"),
+  searchCatalog: (q: string) =>
+    req<{ results: CatalogSearchHit[] }>(`/catalog/search?q=${encodeURIComponent(q)}`),
+  lookupPart: (p: { class_name: string; fastener_type?: string; size?: string }) =>
+    req<Record<string, unknown>>(
+      `/catalog/lookup?${new URLSearchParams(
+        Object.fromEntries(Object.entries(p).filter(([, v]) => v != null)) as Record<
+          string,
+          string
+        >
+      ).toString()}`
+    ),
+
+  listLibrary: () => req<LibraryPart[]>("/library"),
+  uploadLibrary: async (files: File[], name = "", caption = ""): Promise<LibraryPart[]> => {
+    const fd = new FormData();
+    files.forEach((f) => fd.append("files", f));
+    const q = new URLSearchParams({ name, caption });
+    const r = await fetch(`${BASE}/library?${q}`, { method: "POST", body: fd });
+    if (!r.ok) throw new Error(await errText(r));
+    return r.json();
+  },
+  saveToLibrary: (vid: string, name: string, asTemplate: boolean, caption = "") =>
+    req<LibraryPart>(
+      `/library/from-version/${vid}`,
+      json({ name, caption, as_template: asTemplate })
+    ),
+  updateLibraryPart: (id: string, body: { name?: string; caption?: string }) =>
+    req<LibraryPart>(`/library/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  deleteLibraryPart: (id: string) =>
+    req<{ ok: boolean }>(`/library/${id}`, { method: "DELETE" }),
 
   meshHealth: () => req<MeshHealth>("/mesh/health"),
   meshModels: () => req<MeshModelInfo[]>("/mesh/models"),

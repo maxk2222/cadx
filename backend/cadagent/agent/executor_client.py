@@ -10,9 +10,15 @@ import arq
 from arq.connections import ArqRedis, create_pool
 from arq.jobs import Job, JobStatus
 
-from cadagent.cad.tasks import run_execute_payload, run_mesh_payload
+from cadagent.cad.tasks import (
+    run_execute_payload,
+    run_fem_payload,
+    run_mesh_payload,
+    run_optimize_payload,
+)
 from cadagent.config import get_settings
 from cadagent.logging import get_logger
+from cadagent.runtime_config import RuntimeSettings
 
 log = get_logger(__name__)
 
@@ -30,6 +36,12 @@ class InProcessExecutor:
 
     async def process_mesh(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await asyncio.to_thread(run_mesh_payload, payload)
+
+    async def fem_analyze(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await asyncio.to_thread(run_fem_payload, payload)
+
+    async def optimize(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await asyncio.to_thread(run_optimize_payload, payload)
 
     async def export_all(self, payload: dict[str, Any]) -> dict[str, Any]:
         import uuid as _uuid
@@ -69,8 +81,11 @@ class InProcessExecutor:
 class QueueExecutor:
     """Enqueues work on the 'cad' arq queue and polls the job until complete."""
 
-    def __init__(self, pool: ArqRedis | None = None) -> None:
+    def __init__(
+        self, pool: ArqRedis | None = None, *, runtime_settings: RuntimeSettings | None = None
+    ) -> None:
         self._pool = pool
+        self.runtime_settings = runtime_settings or RuntimeSettings()
 
     async def _get_pool(self) -> ArqRedis:
         if self._pool is None:
@@ -100,12 +115,20 @@ class QueueExecutor:
         return {"ok": False, "error": f"executor task '{func}' timed out after {timeout_s}s"}
 
     async def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
-        timeout = get_settings().exec_timeout_s * 2 + 120
+        timeout = self.runtime_settings.exec_timeout_s * 2 + 120
         return await self._run_task("execute_version", payload, timeout)
 
     async def process_mesh(self, payload: dict[str, Any]) -> dict[str, Any]:
-        timeout = get_settings().exec_timeout_s + get_settings().mesh_timeout_s + 120
+        timeout = self.runtime_settings.exec_timeout_s + self.runtime_settings.mesh_timeout_s + 120
         return await self._run_task("process_mesh", payload, timeout)
+
+    async def fem_analyze(self, payload: dict[str, Any]) -> dict[str, Any]:
+        timeout = self.runtime_settings.fem_timeout_s + 120
+        return await self._run_task("fem_analyze", payload, timeout)
+
+    async def optimize(self, payload: dict[str, Any]) -> dict[str, Any]:
+        timeout = self.runtime_settings.topopt_timeout_s + 120
+        return await self._run_task("optimize", payload, timeout)
 
     async def export_all(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await self._run_task("export_all", payload, 300)

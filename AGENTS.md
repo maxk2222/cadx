@@ -7,6 +7,10 @@ Stack: FastAPI + SQLModel/Postgres + arq/Redis + build123d/bd_warehouse + React/
 The authoritative design document is `docs/architecture.md` (derived from the master plan).
 
 ## Commands (run from repo root)
+- One-command start:     `make start` / `./scripts/start.sh` — auto-detects GPU
+  tier (mlx|cuda|none), installs the mesh adapter, starts docker stack +
+  native mesh-server. `make stop`, `make status`, `make autosetup`,
+  `scripts/setup.sh --doctor`
 - Setup env once:        `python3 -m venv .venv && .venv/bin/python -m pip install uv`
 - Install backend deps:  `make sync`            (creates backend/.venv via uv)
 - Infra for local dev:   `make infra`           (postgres+redis via docker-compose.dev.yml)
@@ -31,7 +35,17 @@ The authoritative design document is `docs/architecture.md` (derived from the ma
 - All file paths go through `cadagent/storage.py`. All DB writes in short transactions.
 - LLM-generated code must ONLY ever run through `cad/sandbox.py` (AST allow-list + subprocess
   rlimits + import hook) inside the executor environment. Never `exec()` user code in-process.
-- Allowed imports for generated code: build123d, bd_warehouse.*, math, numpy, typing, dataclasses.
+- Allowed imports for generated code: build123d, bd_warehouse.*, cadlib, math, numpy,
+  typing, dataclasses. `cadlib` (`cadagent/cad/cadlib/`) is the reviewed helper library —
+  extend it deliberately, never import unlisted modules from it (the runtime guard
+  treats its internals like generated code).
+- Agent robustness pipeline (local-model friendly): `cad/errordiag.py` classifies
+  exec failures, `cad/patch.py` applies `PatchResponse` find/replace hunks
+  (contract-validated), `cad/features.py` measures geometry (holes, countersinks,
+  rounds, chamfers) for feedback, `agent/autofix.py` retries dim errors via
+  `params_override` without an LLM call, `agent/steps/improve.py` patches the
+  best-so-far code instead of regenerating. Structured iteration issues persist
+  on `Version.issues`.
 - Coordinate frame contract: X=length, Y=width (+Y front), Z=height; part rests on XY plane,
   centered at origin; mm units. Result must be assigned to `result`; flat parts may also
   assign `flat_profile`. The same contract applies to post-processed meshes
@@ -41,6 +55,12 @@ The authoritative design document is `docs/architecture.md` (derived from the ma
   `agent/mesh_client.py`); the executor receives GLBs as `DATA_DIR` files via
   the `process_mesh` task. `load_mesh_solid()` exists in generated code only
   for `resolved_mode="hybrid"`.
+- Mesh refine: agent mesh transforms are recorded as `MeshOp` lists
+  (`cad/mesh_ops.py` `OPS_REGISTRY` → `MeshPostParams.ops` → `version.params`)
+  and replayed deterministically in the executor (`baseline_mesh` +
+  `apply_ops`). The worker-side workbench (`agent/mesh_tools.py`) previews
+  the same code path — never treat the workbench mesh as the authoritative
+  output.
 - Commits: one per milestone step, descriptive message.
 
 ## Testing

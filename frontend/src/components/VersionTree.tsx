@@ -54,7 +54,9 @@ export default function VersionTree({
                       ? "bg-zinc-700 text-zinc-300"
                       : v.resolved_mode === "mesh"
                         ? "bg-purple-800 text-purple-200"
-                        : "bg-teal-800 text-teal-200"
+                        : v.resolved_mode === "topopt"
+                          ? "bg-amber-800 text-amber-200"
+                          : "bg-teal-800 text-teal-200"
                   }`}
                   title={`requested: ${v.gen_mode}`}
                 >

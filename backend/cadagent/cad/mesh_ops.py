@@ -11,17 +11,18 @@ from __future__ import annotations
 
 import math
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal, cast
 
 import numpy as np
 import trimesh
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from cadagent.cad.analysis import Analysis
-from cadagent.config import get_settings
 from cadagent.llm.schemas import ParamDef, PartSpec
 from cadagent.logging import get_logger
+from cadagent.runtime_config import RuntimeSettings
 
 log = get_logger(__name__)
 
@@ -44,6 +45,17 @@ UP_CHOICES: list[AxisName] = ["+z", "-z", "+y", "-y", "+x", "-x"]
 # --------------------------------------------------------------------------- #
 
 
+class MeshOp(BaseModel):
+    """One recorded mesh transformation — serialisable + replayable.
+
+    `op` keys the OPS_REGISTRY; `args` are validated by the op's pydantic
+    param model when applied (never trusted from the LLM).
+    """
+
+    op: str
+    args: dict[str, Any] = Field(default_factory=dict)
+
+
 class MeshPostParams(BaseModel):
     """Deterministic post-processing knobs. Stored as version.params and
     re-runnable via the params job — same UX as CAD PARAMS."""
@@ -55,6 +67,7 @@ class MeshPostParams(BaseModel):
     decimate_faces: int | None = None  # target triangle count (None = keep all)
     flatten_bottom_mm: float = 0.0  # cut + cap at this height above bbox min Z
     mirror_x: bool = False
+    ops: list[MeshOp] = Field(default_factory=list)  # agent-applied transform sequence
 
 
 def mesh_params_schema() -> list[ParamDef]:
@@ -364,6 +377,387 @@ def flatten_bottom(mesh: trimesh.Trimesh, height_mm: float) -> trimesh.Trimesh:
 
 
 # --------------------------------------------------------------------------- #
+# agent ops — validated, recordable mesh transformations                       #
+# --------------------------------------------------------------------------- #
+#
+# Ops run in the final frame (mm, +Z up, resting on XY, centred) AFTER the
+# deterministic baseline. Each op is validated by its own pydantic model —
+# LLM-supplied args are never trusted — and applied to a copy so a failed op
+# leaves the working mesh untouched.
+
+CartesianAxis = Literal["x", "y", "z"]
+_CARTESIAN: dict[str, np.ndarray] = {
+    "x": np.array([1.0, 0.0, 0.0]),
+    "y": np.array([0.0, 1.0, 0.0]),
+    "z": np.array([0.0, 0.0, 1.0]),
+}
+BOOLEAN_MAX_FACES = 200_000
+_MAX_PRIMITIVE_MM = 2000.0
+
+
+class OpSetUp(BaseModel):
+    """Re-orient in the current frame: the named source axes map to +Z/+Y."""
+
+    up: AxisName = "+z"
+    front: AxisName | None = None
+
+
+class OpRotate(BaseModel):
+    axis: CartesianAxis = "z"
+    deg: float = Field(ge=-360.0, le=360.0)
+
+
+class OpMirror(BaseModel):
+    axis: CartesianAxis = "x"
+
+
+class OpScale(BaseModel):
+    """Uniform (`factor`) or per-axis (`x`/`y`/`z`) scaling about the bbox center."""
+
+    factor: float | None = Field(default=None, ge=0.01, le=100.0)
+    x: float | None = Field(default=None, ge=0.01, le=100.0)
+    y: float | None = Field(default=None, ge=0.01, le=100.0)
+    z: float | None = Field(default=None, ge=0.01, le=100.0)
+
+
+class OpFlattenBottom(BaseModel):
+    height_mm: float = Field(gt=0.0, le=50.0)
+
+
+class OpSlice(BaseModel):
+    """Cut + cap with an axis-aligned plane at `at_mm`; keep the chosen side."""
+
+    axis: CartesianAxis = "z"
+    at_mm: float = 0.0
+    keep: Literal["low", "high"] = "high"
+
+
+class OpCrop(BaseModel):
+    """Keep only geometry inside the min/max box (mm)."""
+
+    min: list[float] = Field(min_length=3, max_length=3)
+    max: list[float] = Field(min_length=3, max_length=3)
+
+
+class OpDecimate(BaseModel):
+    faces: int = Field(ge=100, le=2_000_000)
+
+
+class OpSmooth(BaseModel):
+    iterations: int = Field(default=5, ge=1, le=20)
+    scheme: Literal["laplacian", "taubin"] = "laplacian"
+
+
+class OpKeepLargest(BaseModel):
+    pass
+
+
+class OpDropSmall(BaseModel):
+    """Drop disconnected bodies below `min_volume_frac` of the largest body."""
+
+    min_volume_frac: float = Field(gt=0.0, lt=0.5)
+
+
+class OpRepair(BaseModel):
+    pass
+
+
+class OpBoolean(BaseModel):
+    """Union/difference with a primitive placed in mm frame coordinates."""
+
+    op: Literal["union", "difference"] = "difference"
+    shape: Literal["box", "cylinder", "sphere"] = "box"
+    size: float | None = Field(default=None, gt=0.0, le=_MAX_PRIMITIVE_MM)
+    size_xyz: list[float] | None = Field(default=None, min_length=3, max_length=3)
+    radius: float | None = Field(default=None, gt=0.0, le=_MAX_PRIMITIVE_MM)
+    height: float | None = Field(default=None, gt=0.0, le=_MAX_PRIMITIVE_MM)
+    center: list[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0])
+    axis: CartesianAxis = "z"  # cylinder orientation
+    rotate_z_deg: float = Field(default=0.0, ge=-360.0, le=360.0)
+
+
+_OpFn = Callable[[trimesh.Trimesh, Any], trimesh.Trimesh]
+
+
+def _bbox_center(mesh: trimesh.Trimesh) -> np.ndarray:
+    b = np.asarray(mesh.bounds, dtype=float)
+    return (b[0] + b[1]) / 2.0
+
+
+def _op_set_up(mesh: trimesh.Trimesh, p: OpSetUp) -> trimesh.Trimesh:
+    return rest_on_xy_center(orient(mesh, p.up, p.front))
+
+
+def _op_rotate(mesh: trimesh.Trimesh, p: OpRotate) -> trimesh.Trimesh:
+    out = mesh.copy()
+    m = trimesh.transformations.rotation_matrix(
+        math.radians(p.deg), _CARTESIAN[p.axis], _bbox_center(mesh)
+    )
+    out.apply_transform(m)
+    return out
+
+
+def _op_mirror(mesh: trimesh.Trimesh, p: OpMirror) -> trimesh.Trimesh:
+    out = mesh.copy()
+    m = np.eye(4)
+    idx = "xyz".index(p.axis)
+    m[idx, idx] = -1.0
+    out.apply_transform(m)
+    out.invert()  # reflection flips winding
+    return out
+
+
+def _op_scale(mesh: trimesh.Trimesh, p: OpScale) -> trimesh.Trimesh:
+    if p.factor is None and p.x is None and p.y is None and p.z is None:
+        raise ValueError("scale needs `factor` or at least one of x/y/z")
+    factors = np.array([p.x or p.factor or 1.0, p.y or p.factor or 1.0, p.z or p.factor or 1.0])
+    out = mesh.copy()
+    c = _bbox_center(mesh)
+    m = np.eye(4)
+    m[:3, :3] = np.diag(factors)
+    m[:3, 3] = c - factors * c
+    out.apply_transform(m)
+    return out
+
+
+def _op_flatten_bottom(mesh: trimesh.Trimesh, p: OpFlattenBottom) -> trimesh.Trimesh:
+    return flatten_bottom(mesh, p.height_mm)
+
+
+def _op_slice(mesh: trimesh.Trimesh, p: OpSlice) -> trimesh.Trimesh:
+    idx = "xyz".index(p.axis)
+    b = np.asarray(mesh.bounds)
+    lo, hi = float(b[0][idx]), float(b[1][idx])
+    if not lo + 1e-4 < p.at_mm < hi - 1e-4:
+        raise ValueError(f"at_mm {p.at_mm:g} outside mesh range [{lo:.2f}, {hi:.2f}] on {p.axis}")
+    normal = _CARTESIAN[p.axis].copy()
+    origin = np.zeros(3)
+    origin[idx] = p.at_mm
+    if p.keep == "low":
+        normal = -normal  # slice_plane keeps the positive-normal side
+    out = mesh.slice_plane(plane_origin=origin, plane_normal=normal, cap=True)
+    if out is None or not len(getattr(out, "faces", [])):
+        raise ValueError("slice removed the whole mesh")
+    return cast(trimesh.Trimesh, out)
+
+
+def _op_crop(mesh: trimesh.Trimesh, p: OpCrop) -> trimesh.Trimesh:
+    mn, mx = np.asarray(p.min, dtype=float), np.asarray(p.max, dtype=float)
+    if np.any(mx <= mn):
+        raise ValueError("crop max must be > min on every axis")
+    out = mesh
+    for i in range(3):
+        for at, axis_sign in ((mn[i], 1.0), (mx[i], -1.0)):
+            normal = _CARTESIAN["xyz"[i]] * axis_sign
+            origin = np.zeros(3)
+            origin[i] = at
+            cut = out.slice_plane(plane_origin=origin, plane_normal=normal, cap=True)
+            if cut is not None and len(cut.faces):
+                out = cut
+    if not len(out.faces):
+        raise ValueError("crop removed the whole mesh")
+    return out
+
+
+def _op_decimate(mesh: trimesh.Trimesh, p: OpDecimate) -> trimesh.Trimesh:
+    return decimate(mesh, p.faces)
+
+
+def _op_smooth(mesh: trimesh.Trimesh, p: OpSmooth) -> trimesh.Trimesh:
+    from trimesh.smoothing import filter_laplacian, filter_taubin
+
+    out = mesh.copy()
+    if p.scheme == "taubin":
+        filter_taubin(out, iterations=p.iterations)
+    else:
+        filter_laplacian(out, iterations=p.iterations)
+    return out
+
+
+def _body_sizes(bodies: list[trimesh.Trimesh]) -> np.ndarray:
+    def size(b: trimesh.Trimesh) -> float:
+        try:
+            return max(abs(float(b.volume)), 1e-12)
+        except Exception:
+            return float(b.area)
+
+    return np.array([size(b) for b in bodies])
+
+
+def _op_keep_largest(mesh: trimesh.Trimesh, p: OpKeepLargest) -> trimesh.Trimesh:
+    bodies = mesh.split(only_watertight=False)
+    if len(bodies) <= 1:
+        return mesh
+    return bodies[int(np.argmax(_body_sizes(bodies)))]
+
+
+def _op_drop_small(mesh: trimesh.Trimesh, p: OpDropSmall) -> trimesh.Trimesh:
+    bodies = mesh.split(only_watertight=False)
+    if len(bodies) <= 1:
+        return mesh
+    vols = _body_sizes(bodies)
+    keep = [b for b, v in zip(bodies, vols, strict=True) if v >= vols.max() * p.min_volume_frac]
+    if not keep:
+        raise ValueError("drop_small would remove every body")
+    return cast(trimesh.Trimesh, trimesh.util.concatenate(keep))
+
+
+def _op_repair(mesh: trimesh.Trimesh, p: OpRepair) -> trimesh.Trimesh:
+    return clean(mesh)
+
+
+def _boolean_primitive(p: OpBoolean) -> trimesh.Trimesh:
+    if p.shape == "box":
+        ext = list(p.size_xyz) if p.size_xyz else [p.size] * 3 if p.size else None
+        if ext is None:
+            raise ValueError("box needs `size` or `size_xyz`")
+        if any(float(v) <= 0 or float(v) > _MAX_PRIMITIVE_MM for v in ext):
+            raise ValueError("box size out of bounds")
+        prim = trimesh.creation.box(extents=ext)
+        if p.rotate_z_deg:
+            prim.apply_transform(
+                trimesh.transformations.rotation_matrix(math.radians(p.rotate_z_deg), [0, 0, 1])
+            )
+    elif p.shape == "cylinder":
+        if not p.radius or not p.height:
+            raise ValueError("cylinder needs `radius` and `height`")
+        prim = trimesh.creation.cylinder(radius=p.radius, height=p.height, sections=48)
+        if p.axis == "x":
+            prim.apply_transform(trimesh.transformations.rotation_matrix(math.pi / 2, [0, 1, 0]))
+        elif p.axis == "y":
+            prim.apply_transform(trimesh.transformations.rotation_matrix(-math.pi / 2, [1, 0, 0]))
+    else:
+        if not p.radius:
+            raise ValueError("sphere needs `radius`")
+        prim = trimesh.creation.icosphere(subdivisions=3, radius=p.radius)
+    prim.apply_translation(np.asarray(p.center, dtype=float))
+    return prim
+
+
+def _op_boolean(mesh: trimesh.Trimesh, p: OpBoolean) -> trimesh.Trimesh:
+    if len(mesh.faces) > BOOLEAN_MAX_FACES:
+        raise ValueError(
+            f"mesh too dense for boolean ({len(mesh.faces)} faces > {BOOLEAN_MAX_FACES}) "
+            "— run mesh_decimate first"
+        )
+    prim = _boolean_primitive(p)
+    try:
+        if p.op == "union":
+            out = mesh.union(prim, engine="manifold")
+        else:
+            out = mesh.difference(prim, engine="manifold")
+    except Exception as e:
+        raise ValueError(
+            f"boolean {p.op} failed: {e} — mesh may be non-watertight; try mesh_repair"
+        ) from e
+    if out is None or not len(getattr(out, "faces", [])):
+        raise ValueError(f"boolean {p.op} produced an empty mesh")
+    return cast(trimesh.Trimesh, out)
+
+
+OPS_REGISTRY: dict[str, tuple[type[BaseModel], _OpFn]] = {
+    "set_up": (OpSetUp, _op_set_up),
+    "rotate": (OpRotate, _op_rotate),
+    "mirror": (OpMirror, _op_mirror),
+    "scale": (OpScale, _op_scale),
+    "flatten_bottom": (OpFlattenBottom, _op_flatten_bottom),
+    "slice": (OpSlice, _op_slice),
+    "crop": (OpCrop, _op_crop),
+    "decimate": (OpDecimate, _op_decimate),
+    "smooth": (OpSmooth, _op_smooth),
+    "keep_largest": (OpKeepLargest, _op_keep_largest),
+    "drop_small": (OpDropSmall, _op_drop_small),
+    "repair": (OpRepair, _op_repair),
+    "boolean": (OpBoolean, _op_boolean),
+}
+
+
+def apply_op(mesh: trimesh.Trimesh, op: MeshOp | dict[str, Any]) -> trimesh.Trimesh:
+    """Validate + apply one op. Raises ValueError on bad args or op failure."""
+    mo = op if isinstance(op, MeshOp) else MeshOp.model_validate(op)
+    entry = OPS_REGISTRY.get(mo.op)
+    if entry is None:
+        raise ValueError(
+            f"unknown mesh op '{mo.op}' — available: {', '.join(sorted(OPS_REGISTRY))}"
+        )
+    params_t, fn = entry
+    params = params_t.model_validate(mo.args)
+    return fn(mesh, params)
+
+
+def apply_ops(
+    mesh: trimesh.Trimesh, ops: list[MeshOp | dict[str, Any]]
+) -> tuple[trimesh.Trimesh, list[dict[str, Any]]]:
+    """Apply an op list in order; returns (mesh, per-op report).
+
+    The part is re-grounded (`rest_on_xy_center`) after every op so positional
+    ops (slice/crop/boolean) always see a centred, on-XY frame — identical in
+    the refine session and the executor pipeline.
+    """
+    report: list[dict[str, Any]] = []
+    for raw in ops:
+        mo = raw if isinstance(raw, MeshOp) else MeshOp.model_validate(raw)
+        faces_in = len(mesh.faces)
+        mesh = rest_on_xy_center(apply_op(mesh, mo))
+        report.append(
+            {
+                "op": mo.op,
+                "args": mo.args,
+                "faces_in": faces_in,
+                "faces_out": len(mesh.faces),
+                "watertight": bool(mesh.is_watertight),
+            }
+        )
+    return mesh, report
+
+
+def baseline_mesh(
+    raw: trimesh.Trimesh,
+    post: MeshPostParams,
+    spec: PartSpec | None,
+    *,
+    cad_cap_faces: int | None = None,
+) -> tuple[trimesh.Trimesh, dict[str, Any]]:
+    """Deterministic baseline: clean -> decimate -> orient -> scale -> flatten -> rest.
+
+    Shared by the executor pipeline (steps 1-5 of run_mesh_pipeline) and the
+    worker-side refine session so preview and final result never drift.
+    """
+    mesh = clean(raw)
+
+    target = post.decimate_faces or 0
+    if cad_cap_faces:
+        target = target or cad_cap_faces
+    if target:
+        mesh = decimate(mesh, target)
+
+    mesh = orient(mesh, post.up, post.front, post.rotate_z_deg, post.mirror_x)
+
+    mesh, factor, dim_issues = scale_to_spec(mesh, spec)
+    if post.scale and abs(post.scale - 1.0) > 1e-9:
+        mesh.apply_scale(post.scale)
+        factor *= post.scale
+
+    if post.flatten_bottom_mm > 0:
+        mesh = flatten_bottom(mesh, post.flatten_bottom_mm)
+    mesh = rest_on_xy_center(mesh)
+
+    info = {
+        "input_triangles": len(raw.faces),
+        "triangles": len(mesh.faces),
+        "orientation": {
+            "up": post.up,
+            "front": post.front,
+            "rotate_z_deg": post.rotate_z_deg,
+            "mirror_x": post.mirror_x,
+        },
+        "scale_factor": round(factor, 6),
+        "dim_issues": dim_issues,
+    }
+    return mesh, info
+
+
+# --------------------------------------------------------------------------- #
 # mesh -> solid (hybrid bridge)                                                #
 # --------------------------------------------------------------------------- #
 
@@ -372,12 +766,12 @@ def mesh_to_solid(mesh: trimesh.Trimesh, *, max_faces: int | None = None) -> Any
     """Convert a (watertight) trimesh into a build123d Solid via STL + sewing.
 
     Returns a build123d Solid/Part. Raises on failure — caller decides the
-    fallback. Decimates first when the mesh exceeds `max_faces` (default
-    MESH_MAX_FACES_FOR_CAD).
+    fallback. Decimates first when the mesh exceeds `max_faces` (default from
+    runtime settings).
     """
     from build123d import Solid
 
-    max_faces = max_faces or get_settings().mesh_max_faces_for_cad
+    max_faces = max_faces or RuntimeSettings().mesh_max_faces_for_cad
     if len(mesh.faces) > max_faces:
         mesh = decimate(mesh, max_faces)
     if len(mesh.faces) > max_faces * 4:

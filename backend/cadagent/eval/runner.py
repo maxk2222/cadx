@@ -31,6 +31,7 @@ class Benchmark:
     expected_bbox: list[float] | None = None
     tolerance_mm: float = 1.0
     llm_script: list[Any] | None = None  # FakeLLM responses; None -> real LLM
+    llm_tools: str = "off"  # FakeLLM tools_mode: "auto" -> steps use tool sessions
     settings: dict[str, Any] = field(default_factory=dict)
     gen_mode: str = "auto"  # auto | cad | mesh | hybrid
     fake_mesh: bool = False  # use FakeMeshClient instead of a real mesh server
@@ -60,15 +61,20 @@ def load_benchmarks() -> list[Benchmark]:
 async def run_benchmark(bm: Benchmark, llm: Any | None = None) -> EvalResult:
     from cadagent.agent.mesh_client import make_mesh_client
     from cadagent.llm.client import LLMClient
+    from cadagent.runtime_config import runtime_from_db_or_default
 
     project_id = uuid.uuid4()
     version_id = uuid.uuid4()
+    runtime = await runtime_from_db_or_default()
     if bm.llm_script is not None:
         llm = FakeLLM(bm.llm_script)
+        llm.tools_mode = bm.llm_tools
     elif llm is None:
-        llm = LLMClient()
+        llm = LLMClient(runtime_settings=runtime)
 
-    mesh = make_mesh_client(fake=True) if bm.fake_mesh else make_mesh_client()
+    mesh = (
+        make_mesh_client(fake=True) if bm.fake_mesh else make_mesh_client(runtime_settings=runtime)
+    )
     assets = []
     if bm.images:
         from cadagent.agent.types import InputAsset
@@ -104,6 +110,7 @@ async def run_benchmark(bm: Benchmark, llm: Any | None = None) -> EvalResult:
         mode="generate",
         prompt=bm.prompt,
         settings=ProjectSettings(clarification_mode="assume", **bm.settings),
+        runtime_settings=runtime,
         assets=assets,
         gen_mode=bm.gen_mode,
         mesh=mesh,

@@ -12,11 +12,21 @@ growing conversation, only the slices relevant to the current call.
 | `plan_system.md`     | PLAN     | Ordered construction steps, PARAMS table schema, standard-parts selection, manufacturing notes — plus `approach` (`build123d|mesh|hybrid`) used by `auto` mode. |
 | `mesh_orient_system.md` | ORIENT | Vision call on the 6-candidate contact sheet: pick `up`/`front` axes for the generated mesh (`MeshOrientation`). |
 | `codegen_system.md`  | CODEGEN  | build123d coding rules for generated `model.py`. |
-| `code_contract.md`   | CODEGEN/REPAIR | Hard contract: `PARAMS` dict at top, part assigned to `result` (or `part`/`model`), mm units, coordinate frame (X=length, Y=width, Z=height, part on XY plane, centered), JSON response shape `{reasoning, params, expected_bbox, code}`. Hybrid addendum: `load_mesh_solid()`/`MESH_BBOX` are injected and only boolean ops may touch the mesh solid (no fillet/edge-select on mesh faces). |
-| `repair_system.md`   | REPAIR   | Minimal-diff fixing using error text + failing code; keep PARAMS names stable. |
-| `critique_system.md` | CRITIQUE | Vision judge: compare renders/contact sheet against inputs; emit score, discrepancies, matches, confidence. |
+| `code_examples.md`   | CODEGEN  | Few-shot model.py example (PARAMS, counterbored plate, chamfer) — appended to the codegen system prompt. |
+| `code_contract.md`   | CODEGEN/REPAIR/IMPROVE | Hard contract (rules only, no output format): `PARAMS` dict at top, part assigned to `result` (or `part`/`model`), mm units, coordinate frame (X=length, Y=width, Z=height, part on XY plane, centered). Hybrid addendum: `load_mesh_solid()`/`MESH_BBOX` are injected and only boolean ops may touch the mesh solid (no fillet/edge-select on mesh faces). |
+| `code_contract_responses.md` | +CODEGEN/REPAIR/IMPROVE (legacy) | Output-channel contract for non-tool calls: `CodeResponse` / `PatchResponse` JSON shapes. |
+| `code_contract_responses_tools.md` | +CODEGEN (tool sessions) | Output-channel contract with tools: call `submit_code`. |
+| `tools_protocol.md`   | all tool sessions | How tool calls work, line numbering (`NNN │`), session lifecycle, `done`/`submit_code` contract. |
+| `repair_system.md`   | REPAIR   | Patch-first fixing: diagnosed error (category/failing line/hint) + spec/plan/measured analysis + failing code → `PatchResponse`; keep PARAMS names stable. |
+| `repair_tools.md`    | REPAIR (tools) | Interactive repair: read/search the numbered code, surgical line/param edits, `check_code`, optional `verify`, then `done`. |
+| `improve_system.md`  | IMPROVE  | Same contract as repair but the input is the best-so-far code + structured issue list (dims, measured features, critique, DfM); minimal edits that preserve all unrelated features. |
+| `improve_tools.md`   | IMPROVE (tools) | Same issues input but interactive: fix listed issues with minimal edits, re-check before `done`. |
+| `critique_system.md` | CRITIQUE | Vision judge: compare renders/contact sheet against inputs + measured facts; emit score, `feature_verdicts` per spec feature, concrete discrepancies with fix_hints, confidence. |
 | `build123d_reference.md` | CODEGEN/REPAIR | Condensed API cheatsheet: workplane idioms, fillet/chamfer, Hole/CounterBoreHole, patterns, algebra mode pitfalls. |
 | `bd_warehouse_reference.md` | PLAN/CODEGEN | Standard parts usage: screw/nut/washer/bearing class names, thread sizes, countersink angles, clearance/heat-set inserts. |
+| `cadlib_reference.md`  | CODEGEN | Reviewed deterministic helpers (`cadagent/cad/cadlib/`): hole grids, bosses, ribs, snap fits, knurl rings, dovetail slots, insert pockets, bearing seats — callable inside the sandbox. |
+| `tools_info.md`        | info sessions (intake/plan) | Optional exploratory tools before the final JSON: `search_catalog`/`lookup_part`/`cadlib_lookup`, plus `search_library`/`library_part`/`attach_library_part` to reuse saved user parts. |
+| `tools_inspect.md`     | CRITIQUE (tools) | Read-only inspection of the candidate code (`read_lines`/`search_code`) and catalog/library lookups for cross-checking dimensions. |
 | `dfm_rules.md`       | PLAN/CODEGEN | Process rules (FDM walls/overhangs, CNC pockets/inside radii) so the model is born manufacturable. |
 
 ## Conventions baked into prompts

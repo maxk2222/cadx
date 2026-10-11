@@ -15,6 +15,7 @@ from cadagent.api.schemas import (
     EditRequest,
     EnqueueResponse,
     GenerateRequest,
+    OptimizeRequest,
     ParamsRequest,
     VersionDetail,
     VersionSummary,
@@ -73,6 +74,7 @@ async def _detail(v: Version, db: AsyncSession) -> VersionDetail:
     rows = await db.execute(select(Artifact).where(Artifact.version_id == v.id))
     return VersionDetail(
         **base.model_dump(),
+        options=v.options or {},
         spec=v.spec,
         plan=v.plan,
         code=v.code,
@@ -81,9 +83,13 @@ async def _detail(v: Version, db: AsyncSession) -> VersionDetail:
         analysis=v.analysis,
         critique=v.critique,
         dfm=v.dfm,
+        bom=v.bom,
+        issues=v.issues,
         mesh=v.mesh,
+        fem=v.fem,
         usage=v.usage,
         asset_ids=v.asset_ids,
+        library_part_ids=v.library_part_ids,
         artifacts=[_artifact_out(a) for a in rows.scalars().all()],
     )
 
@@ -104,6 +110,7 @@ async def _spawn(
     prompt: str,
     parent: Version | None = None,
     asset_ids: list[uuid.UUID] | None = None,
+    library_part_ids: list[uuid.UUID] | None = None,
     extra_version: dict | None = None,
     extra_job: dict | None = None,
 ) -> EnqueueResponse:
@@ -114,6 +121,7 @@ async def _spawn(
         kind=kind,
         prompt=prompt,
         asset_ids=[str(a) for a in (asset_ids or [])],
+        library_part_ids=[str(p) for p in (library_part_ids or [])],
         **(extra_version or {}),
     )
     db.add(v)
@@ -134,7 +142,12 @@ async def generate(
         raise HTTPException(404, "project not found")
     if not body.prompt.strip():
         raise HTTPException(422, "prompt required")
-    gen_mode = body.mode or (project.settings or {}).get("gen_mode") or "auto"
+    opts = body.options.model_dump(exclude_none=True) if body.options else {}
+    gen_mode = (
+        "topopt"
+        if opts.get("topopt")
+        else (body.mode or (project.settings or {}).get("gen_mode") or "auto")
+    )
     return await _spawn(
         db,
         project,
@@ -143,7 +156,8 @@ async def generate(
         "run_agent_job",
         body.prompt,
         asset_ids=body.asset_ids,
-        extra_version={"gen_mode": gen_mode},
+        library_part_ids=body.library_part_ids,
+        extra_version={"gen_mode": gen_mode, "options": opts},
     )
 
 
@@ -159,8 +173,15 @@ async def edit(version_id: uuid.UUID, body: EditRequest, db: AsyncSession = Depe
     project = await db.get(Project, parent.project_id)
     if project is None:
         raise HTTPException(404, "project not found")
+    opts = (
+        body.options.model_dump(exclude_none=True)
+        if body.options is not None
+        else (parent.options or {})
+    )
     gen_mode = (
-        body.mode or parent.resolved_mode or (project.settings or {}).get("gen_mode") or "auto"
+        "topopt"
+        if opts.get("topopt")
+        else body.mode or parent.resolved_mode or (project.settings or {}).get("gen_mode") or "auto"
     )
     extra_job = {"resume_state": {"regenerate_mesh": True}} if body.regenerate_mesh else None
     return await _spawn(
@@ -172,7 +193,12 @@ async def edit(version_id: uuid.UUID, body: EditRequest, db: AsyncSession = Depe
         body.prompt,
         parent=parent,
         asset_ids=body.asset_ids,
-        extra_version={"gen_mode": gen_mode},
+        library_part_ids=(
+            body.library_part_ids
+            if "library_part_ids" in body.model_fields_set
+            else [uuid.UUID(p) for p in parent.library_part_ids]
+        ),
+        extra_version={"gen_mode": gen_mode, "options": opts},
         extra_job=extra_job,
     )
 
@@ -195,6 +221,7 @@ async def params(
         params={**(parent.params or {}), **body.params},
         params_schema=parent.params_schema,
         code=parent.code,
+        options=parent.options or {},
     )
     db.add(v)
     await db.flush()
@@ -204,6 +231,46 @@ async def params(
     await enqueue(
         "run_params_job",
         {"job_id": str(job.id), "version_id": str(v.id), "params": body.params},
+    )
+    return EnqueueResponse(version_id=v.id, job_id=job.id)
+
+
+@router.post("/versions/{version_id}/optimize", response_model=EnqueueResponse)
+async def optimize(
+    version_id: uuid.UUID, body: OptimizeRequest, db: AsyncSession = Depends(get_session)
+):
+    """Spawn a topology-optimized child version (no LLM involved)."""
+    parent = await db.get(Version, version_id)
+    if not parent:
+        raise HTTPException(404, "version not found")
+    if parent.status not in (VersionStatus.succeeded, VersionStatus.needs_review):
+        raise HTTPException(409, f"cannot optimize version in status {parent.status}")
+    if parent.resolved_mode == "topopt":
+        raise HTTPException(409, "version is already topology-optimized")
+    v = Version(
+        project_id=parent.project_id,
+        parent_id=parent.id,
+        number=await _next_number(db, parent.project_id),
+        kind=VersionKind.optimize,
+        prompt=f"optimize {parent.prompt}"[:500],
+        gen_mode="topopt",
+        asset_ids=parent.asset_ids or [],
+        options={**(parent.options or {}), "topopt": True},
+    )
+    db.add(v)
+    await db.flush()
+    job = Job(version_id=v.id, type=JobType.optimize)
+    db.add(job)
+    await db.commit()
+    await enqueue(
+        "run_optimize_job",
+        {
+            "job_id": str(job.id),
+            "version_id": str(v.id),
+            "load_cases": body.load_cases,
+            "optimize": body.optimize,
+            "material": body.material,
+        },
     )
     return EnqueueResponse(version_id=v.id, job_id=job.id)
 

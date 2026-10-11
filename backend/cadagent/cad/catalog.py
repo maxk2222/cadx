@@ -77,7 +77,7 @@ def _literal_values(annotation: Any) -> list[str]:
 def _sig_params(cls: type) -> list[str]:
     """Constructor params as 'name=default' strings (short, LLM/UI friendly)."""
     try:
-        sig = inspect.signature(getattr(cls, "__init__"))  # wrapped ctors hide cls signature
+        sig = inspect.signature(cls.__init__)  # type: ignore[misc]  # wrapped ctors hide cls signature
     except Exception:
         return []
     out: list[str] = []
@@ -417,7 +417,7 @@ def lookup_part(
 
     params = set()
     with contextlib.suppress(Exception):
-        sig = inspect.signature(cls.__init__)  # wrapped ctors hide cls signature
+        sig = inspect.signature(cls.__init__)  # type: ignore[misc]  # wrapped ctors hide cls signature
         params = set(sig.parameters)
 
     kwargs: dict[str, Any] = {}

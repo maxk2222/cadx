@@ -79,11 +79,7 @@ async def _mk_version() -> tuple[Job, Version]:
 async def test_run_agent_job_end_to_end(_db, monkeypatch):
     monkeypatch.setattr(wj, "QueueExecutor", lambda *a, **k: InProcessExecutor())
     llm = FakeLLM([SPEC, PLAN, CODE, CRITIQUE])
-
-    async def fake_llm(db):
-        return llm
-
-    monkeypatch.setattr(wj, "_make_llm", fake_llm)
+    monkeypatch.setattr(wj, "_make_llm", lambda rt: llm)
 
     job, version = await _mk_version()
     result = await wj.run_agent_job({}, {"job_id": str(job.id), "version_id": str(version.id)})
@@ -110,11 +106,7 @@ async def test_run_agent_job_waiting_then_resume(_db, monkeypatch):
     spec = dict(SPEC)
     spec["open_questions"] = [{"question": "wall?", "blocking": True, "default_assumption": "2"}]
     llm = FakeLLM([spec])
-
-    async def fake_llm(db):
-        return llm
-
-    monkeypatch.setattr(wj, "_make_llm", fake_llm)
+    monkeypatch.setattr(wj, "_make_llm", lambda rt: llm)
     job, version = await _mk_version()
     # force clarification_mode=ask via project settings
     async with async_session() as db:
@@ -204,3 +196,67 @@ async def test_run_params_job_mesh_parent(_db, monkeypatch):
         )
         kinds = {a.kind.value for a in arts}
         assert "mesh_raw" in kinds
+
+
+@pytest.mark.slow
+async def test_run_params_job_mesh_ops_replayed(_db, monkeypatch):
+    """persisted ops lists replay deterministically on params reruns."""
+    import trimesh
+
+    monkeypatch.setattr(wj, "QueueExecutor", lambda *a, **k: InProcessExecutor())
+
+    ops = [
+        {"op": "flatten_bottom", "args": {"height_mm": 1.0}},
+        {"op": "scale", "args": {"factor": 1.5}},
+    ]
+    async with async_session() as db:
+        p = Project(name="mesh-ops-params")
+        db.add(p)
+        await db.flush()
+        parent = Version(
+            project_id=p.id,
+            number=1,
+            kind=VersionKind.generate,
+            prompt="organic knob",
+            status=VersionStatus.succeeded,
+            resolved_mode="mesh",
+            gen_mode="mesh",
+            params={"scale": 1.0, "ops": ops},
+            spec=SPEC,
+            mesh={"post": {"scale": 1.0, "ops": ops}, "generation": {"model": "fake"}},
+        )
+        db.add(parent)
+        await db.flush()
+        child = Version(
+            project_id=p.id,
+            number=2,
+            parent_id=parent.id,
+            kind=VersionKind.params,
+            prompt="tweak",
+        )
+        db.add(child)
+        await db.flush()
+        job = Job(version_id=child.id, type=JobType.params)
+        db.add(job)
+        await db.commit()
+        await db.refresh(job)
+        await db.refresh(child)
+        await db.refresh(parent)
+
+    mesh_dir = storage.ensure(storage.version_dir(parent.project_id, parent.id) / "mesh")
+    blob = trimesh.creation.icosphere(subdivisions=1, radius=0.5)
+    blob.export(str(mesh_dir / "mesh_raw.glb"), file_type="glb")
+
+    result = await wj.run_params_job(
+        {},
+        {"job_id": str(job.id), "version_id": str(child.id), "params": {"scale": 1.2}},
+    )
+    assert result["ok"] is True, result.get("error")
+
+    async with async_session() as db:
+        v = await db.get(Version, child.id)
+        assert v.status == VersionStatus.succeeded
+        # parent ops inherited by merge_post_params, scale override applied
+        assert [o["op"] for o in v.params["ops"]] == ["flatten_bottom", "scale"]
+        assert v.params["scale"] == 1.2
+        assert [r["op"] for r in v.mesh["ops_report"]] == ["flatten_bottom", "scale"]

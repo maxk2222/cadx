@@ -155,12 +155,53 @@ async def test_waiting_for_input_on_blocking_questions():
 @pytest.mark.slow
 async def test_repair_then_succeed():
     bad_code = dict(CODE, code="this is not python")
-    llm = _llm(SPEC, PLAN, bad_code, CODE, PASS_CRITIQUE)
+    patch = {"reasoning": "rewrite from scratch", "edits": [], "full_code": BOX_CODE}
+    llm = _llm(SPEC, PLAN, bad_code, patch, PASS_CRITIQUE)
     ctx = _ctx(llm)
     outcome = await run_generation(ctx)
 
     assert outcome.status == "succeeded"
     assert outcome.iterations == 1
+
+
+@pytest.mark.slow
+async def test_repair_via_patch_edits():
+    """Repair applies find/replace edits instead of a full rewrite."""
+    broken = BOX_CODE.replace("fillet_r': 1.5", "fillet_r': 99.0").replace(
+        '"fillet_r": 1.5', '"fillet_r": 99.0'
+    )
+    if broken == BOX_CODE:
+        broken = BOX_CODE.replace("1.5", "99.0", 1)
+    bad_code = dict(CODE, code=broken)
+    patch = {
+        "reasoning": "fillet too big",
+        "edits": [{"find": "99.0", "replace": "1.5"}],
+    }
+    llm = _llm(SPEC, PLAN, bad_code, patch, PASS_CRITIQUE)
+    ctx = _ctx(llm)
+    outcome = await run_generation(ctx)
+
+    assert outcome.status == "succeeded"
+    assert "99.0" not in outcome.code
+
+
+@pytest.mark.slow
+async def test_param_autofix_no_llm():
+    """Wrong PARAMS height is corrected via params_override without an LLM call."""
+    wrong = BOX_CODE.replace("height': 10.0", "height': 12.0").replace(
+        'height": 10.0', 'height": 12.0'
+    )
+    if wrong == BOX_CODE:
+        wrong = BOX_CODE.replace("'height': 10", "'height': 12")
+    code_wrong = dict(CODE, code=wrong, expected_bbox=[40, 20, 12])
+    llm = _llm(SPEC, PLAN, code_wrong, PASS_CRITIQUE)
+    ctx = _ctx(llm)
+    outcome = await run_generation(ctx)
+
+    assert outcome.status == "succeeded"
+    assert outcome.analysis["bbox_size"][2] == pytest.approx(10.0, abs=0.6)
+    # autofix path: intake, plan, codegen, critique — no repair/improve calls
+    assert len(llm.calls) == 4
 
 
 @pytest.mark.slow
@@ -171,6 +212,73 @@ async def test_needs_review_when_critique_fails():
 
     assert outcome.status == "needs_review"
     assert outcome.score == 55
+
+
+@pytest.mark.slow
+async def test_improve_uses_previous_code():
+    """Iteration 2 passes the best code + issues to the improve step."""
+    patch = {
+        "reasoning": "adjust fillet",
+        "edits": [{"find": '"fillet_r": 1.5', "replace": '"fillet_r": 1.6'}],
+    }
+    llm = _llm(SPEC, PLAN, CODE, FAIL_CRITIQUE, patch, PASS_CRITIQUE)
+    ctx = _ctx(llm, settings=ProjectSettings(clarification_mode="assume", max_iterations=2))
+    outcome = await run_generation(ctx)
+
+    assert outcome.status == "succeeded"
+    improve_calls = [c for c in llm.calls if "CURRENT CODE" in json.dumps(c["messages"])]
+    assert improve_calls, "improve step never invoked"
+    assert "ISSUES TO FIX" in json.dumps(improve_calls[0]["messages"])
+
+
+def _call(tool: str, **args) -> dict:
+    return {"tool_calls": [{"name": tool, "arguments": args}]}
+
+
+@pytest.mark.slow
+async def test_repair_via_tool_session():
+    """With tools_mode=auto the repair is an interactive edit session."""
+    bad_code = dict(CODE, code="this is not python")
+    llm = _llm(
+        SPEC,
+        PLAN,
+        bad_code,
+        _call("read_lines", start=1, end=5),
+        _call("find_replace", find="this is not python", replace=BOX_CODE),
+        _call("check_code"),
+        _call("done", reasoning="rewrote broken code"),
+        PASS_CRITIQUE,
+    )
+    llm.tools_mode = "auto"
+    ctx = _ctx(llm)
+    outcome = await run_generation(ctx)
+
+    assert outcome.status == "succeeded"
+    assert outcome.code == BOX_CODE
+    # tool results were fed back as role:"tool" messages
+    assert any(m.get("role") == "tool" for c in llm.calls for m in c["messages"])
+
+
+@pytest.mark.slow
+async def test_improve_via_tool_session():
+    """Improve iteration edits the best candidate via set_param + done."""
+    llm = _llm(
+        SPEC,
+        PLAN,
+        CODE,
+        FAIL_CRITIQUE,
+        _call("set_param", name="fillet_r", value=1.6),
+        _call("done", reasoning="slightly bigger fillet"),
+        PASS_CRITIQUE,
+    )
+    llm.tools_mode = "auto"
+    ctx = _ctx(llm, settings=ProjectSettings(clarification_mode="assume", max_iterations=2))
+    outcome = await run_generation(ctx)
+
+    assert outcome.status == "succeeded"
+    assert '"fillet_r": 1.6' in outcome.code
+    # numbered code was presented for line-addressable editing
+    assert any("line-numbered" in json.dumps(c["messages"]) for c in llm.calls)
 
 
 @pytest.mark.slow

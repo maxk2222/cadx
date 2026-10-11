@@ -1,8 +1,9 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Check, FileBox, ImageIcon, Trash2, Upload } from "lucide-react";
+import { Check, FileBox, ImageIcon, Pencil, Trash2, Upload } from "lucide-react";
 import { useRef, useState } from "react";
 import { api } from "../lib/api";
 import type { Asset } from "../lib/types";
+import ImageEditorModal from "./ImageEditorModal";
 import { EmptyState, IconBtn, Lightbox, Spinner, inputCls } from "./ui";
 
 const KIND_ICON: Record<string, React.ReactNode> = {
@@ -14,16 +15,19 @@ export default function AssetManager({
   assets,
   selected,
   onToggle,
+  onAssetReplaced,
 }: {
   projectId: string;
   assets: Asset[];
   selected?: Set<string>;
   onToggle?: (id: string) => void;
+  onAssetReplaced?: (srcId: string, newId: string) => void;
 }) {
   const qc = useQueryClient();
   const fileRef = useRef<HTMLInputElement>(null);
   const [drag, setDrag] = useState(false);
   const [lightbox, setLightbox] = useState<string | null>(null);
+  const [editing, setEditing] = useState<Asset | null>(null);
   const [editingCaption, setEditingCaption] = useState<string | null>(null);
   const [caption, setCaption] = useState("");
   const [uploading, setUploading] = useState(false);
@@ -33,6 +37,12 @@ export default function AssetManager({
 
   const upload = async (files: FileList | null) => {
     if (!files?.length) return;
+    const MAX_MB = 25;
+    const tooBig = Array.from(files).filter((f) => f.size > MAX_MB * 1024 * 1024);
+    if (tooBig.length) {
+      setErr(`${tooBig.map((f) => f.name).join(", ")} exceeds the ${MAX_MB} MB limit`);
+      return;
+    }
     setUploading(true);
     setErr("");
     try {
@@ -137,6 +147,14 @@ export default function AssetManager({
                 <span className="absolute left-1 top-1 rounded bg-black/70 px-1 text-[9px] uppercase">
                   {a.kind.replace("reference_", "")}
                 </span>
+                {a.derived_from && (
+                  <span
+                    className="absolute left-1 top-5 rounded bg-purple-800/80 px-1 text-[9px] text-purple-200"
+                    title="edited copy — original kept"
+                  >
+                    edited
+                  </span>
+                )}
                 {onToggle && sel && (
                   <span className="absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-blue-500">
                     <Check className="h-3 w-3 text-white" />
@@ -154,9 +172,18 @@ export default function AssetManager({
                     {a.caption || a.filename}
                   </button>
                   {a.kind === "image" && (
-                    <IconBtn title="view" className="h-5 w-5" onClick={() => setLightbox(a.url)}>
-                      <ImageIcon className="h-3 w-3" />
-                    </IconBtn>
+                    <>
+                      <IconBtn
+                        title="edit image (crop / mask / remove bg)"
+                        className="h-5 w-5"
+                        onClick={() => setEditing(a)}
+                      >
+                        <Pencil className="h-3 w-3" />
+                      </IconBtn>
+                      <IconBtn title="view" className="h-5 w-5" onClick={() => setLightbox(a.url)}>
+                        <ImageIcon className="h-3 w-3" />
+                      </IconBtn>
+                    </>
                   )}
                   <IconBtn
                     title="delete asset"
@@ -198,6 +225,17 @@ export default function AssetManager({
         </div>
       )}
       <Lightbox src={lightbox} onClose={() => setLightbox(null)} />
+      {editing && (
+        <ImageEditorModal
+          asset={editing}
+          onClose={() => setEditing(null)}
+          onSaved={(a) => {
+            setEditing(null);
+            refresh();
+            onAssetReplaced?.(editing.id, a.id);
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -13,6 +13,18 @@ if [ ! -d "$VENV" ]; then
 fi
 PY="$VENV/bin/python"
 
+# uv-managed venvs ship without pip — prefer uv when available
+if "$PY" -m pip --version >/dev/null 2>&1; then
+  INSTALL() { "$PY" -m pip install "$@"; }
+elif command -v uv >/dev/null 2>&1; then
+  INSTALL() { uv pip install --python "$PY" "$@"; }
+elif [ -x ".venv/bin/uv" ]; then
+  INSTALL() { .venv/bin/uv pip install --python "$PY" "$@"; }
+else
+  echo "neither pip nor uv available — install uv or add pip to $VENV" >&2
+  exit 1
+fi
+
 echo "== cloning $TRIPOSG_REPO =="
 mkdir -p "$(dirname "$SRC")"
 if [ ! -d "$SRC/.git" ]; then
@@ -20,11 +32,11 @@ if [ ! -d "$SRC/.git" ]; then
 fi
 
 echo "== installing TripoSG requirements =="
-"$PY" -m pip install 'torch>=2.3' diffusers transformers accelerate rembg onnxruntime
+INSTALL 'torch>=2.3' diffusers transformers accelerate rembg onnxruntime
 if [ -f "$SRC/requirements.txt" ]; then
-  "$PY" -m pip install -r "$SRC/requirements.txt"
+  INSTALL -r "$SRC/requirements.txt"
 fi
-"$PY" -m pip install -e "$SRC"
+INSTALL -e "$SRC"
 
 echo "== downloading weights =="
 "$PY" - <<'EOF'

@@ -5,8 +5,11 @@ You are shown:
 - the spec the part should implement,
 - a CONTACT SHEET image: rendered views (front/back/left/right/top/bottom/iso) of the
   generated model plus a stats tile,
-- numeric check results (dimensions are verified numerically — do NOT estimate scale or
+- numeric check results (dimensions verified numerically — do NOT estimate scale or
   absolute sizes from images yourself),
+- MEASURED GEOMETRY facts (hole counts/diameters, countersinks, fillets — these are
+  ground truth from the solid; treat them as authoritative for counts and sizes),
+- a GEOMETRIC FEATURE CHECK comparing spec features vs measured geometry,
 - DfM warnings, if any.
 
 Evaluate:
@@ -18,10 +21,25 @@ Evaluate:
   ignore faceting/shading artifacts of triangle meshes; judge silhouette,
   proportions and the requested features.
 
-Score 0-100. `passed=true` requires: no major discrepancy, no dimension issue reported in
-the numeric results, and shape/features matching the spec. For each discrepancy give a
-concrete `fix_hint` referring to features and axes (e.g. "increase slot length to 25 mm",
-"holes are on the wrong face — they must be on +Z", "missing the countersink").
+## feature_verdicts (REQUIRED)
+
+For EVERY feature listed in the spec's `features` array, add one verdict:
+{name, status, note} where status is present|missing|wrong|unsure.
+- present: the feature exists with the right type, size and position.
+- missing: the feature does not exist at all.
+- wrong: the feature exists but wrong type/size/position (explain in `note`).
+- unsure: not determinable from the images (say why in `note`).
+
+## Score and discrepancies
+
+Score 0-100. `passed=true` requires: no major discrepancy, no dimension issue
+reported in the numeric results, and shape/features matching the spec.
+For each discrepancy give a concrete `fix_hint` referring to features and axes
+(e.g. "increase slot length to 25 mm", "holes are on the wrong face — they must
+be on +Z", "missing the countersink").
+A score below the pass threshold or passed=false REQUIRES at least one
+discrepancy per real problem — never return a failing score with an empty
+discrepancies list.
 `confidence` reflects how sure you are given the images (0-1).
 
 Respond with JSON matching the Critique schema.

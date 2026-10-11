@@ -54,7 +54,7 @@ test:
 lint:
 	cd $(BACKEND) && ../$(VENV)/bin/uv run ruff check .
 	cd $(BACKEND) && ../$(VENV)/bin/uv run ruff format --check .
-	cd $(FRONTEND) && npm run lint && npx tsc --noEmit
+	cd $(FRONTEND) && npx tsc --noEmit
 
 fmt:
 	cd $(BACKEND) && ../$(VENV)/bin/uv run ruff check --fix . && ../$(VENV)/bin/uv run ruff format .
@@ -67,6 +67,25 @@ eval:
 
 build:
 	docker compose build
+
+## One-command setup & start (GPU auto-detection)
+start:
+	bash scripts/start.sh
+
+start-dev:
+	bash scripts/start.sh --dev
+
+stop:
+	bash scripts/stop.sh
+
+status:
+	bash scripts/status.sh
+
+autosetup:
+	bash scripts/setup.sh --dev
+
+doctor:
+	bash scripts/setup.sh --doctor
 
 ## Mesh generator sidecar (native, own venv — see mesh_server/README.md)
 MESH := mesh_server

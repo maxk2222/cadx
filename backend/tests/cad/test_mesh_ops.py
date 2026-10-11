@@ -3,9 +3,14 @@
 import numpy as np
 import pytest
 import trimesh
+from pydantic import ValidationError
 
 from cadagent.cad.mesh_ops import (
+    MeshOp,
     MeshPostParams,
+    apply_op,
+    apply_ops,
+    baseline_mesh,
     candidate_meshes,
     clean,
     decimate,
@@ -235,3 +240,175 @@ def test_mesh_analysis_open_mesh_flagged():
     a = mesh_analysis(m)
     assert a.watertight is False
     assert any("watertight" in w or "manifold" in w for w in a.warnings)
+
+
+# --------------------------------------------------------------------------- #
+# agent ops — apply_op / apply_ops / registry                                  #
+# --------------------------------------------------------------------------- #
+
+
+def test_op_rotate_swaps_extents():
+    m, _ = apply_ops(_box(10, 20, 30), [{"op": "rotate", "args": {"axis": "z", "deg": 90}}])
+    assert m.extents[0] == pytest.approx(20, abs=0.2)
+    assert m.extents[1] == pytest.approx(10, abs=0.2)
+    # apply_ops re-grounds: part rests on XY, centred
+    assert m.bounds[0][2] == pytest.approx(0, abs=1e-6)
+    assert (m.bounds[0][0] + m.bounds[1][0]) / 2 == pytest.approx(0, abs=1e-6)
+
+
+def test_op_mirror_keeps_watertight():
+    m = apply_op(_box(10, 20, 30), MeshOp(op="mirror", args={"axis": "x"}))
+    assert m.is_watertight
+    assert m.extents[0] == pytest.approx(10, abs=0.1)
+
+
+def test_op_set_up():
+    m = apply_op(_box(10, 20, 30), MeshOp(op="set_up", args={"up": "+x"}))
+    assert m.extents[2] == pytest.approx(10, abs=0.2)
+    assert m.bounds[0][2] == pytest.approx(0, abs=1e-6)
+
+
+def test_op_scale_uniform_and_per_axis():
+    m = apply_op(_box(10, 20, 30), MeshOp(op="scale", args={"factor": 2.0}))
+    assert list(m.extents) == pytest.approx([20, 40, 60], abs=0.1)
+    m2 = apply_op(_box(10, 20, 30), MeshOp(op="scale", args={"y": 0.5}))
+    assert m2.extents[1] == pytest.approx(10, abs=0.1)
+    assert m2.extents[0] == pytest.approx(10, abs=0.1)
+    with pytest.raises(ValueError, match="factor"):
+        apply_op(_box(), MeshOp(op="scale", args={}))  # no factor at all
+
+
+def test_op_slice_keeps_side():
+    m = _box(10, 10, 10)
+    m.apply_translation([0, 0, 5])  # z in [0, 10]
+    hi = apply_op(m, MeshOp(op="slice", args={"axis": "z", "at_mm": 4.0, "keep": "high"}))
+    assert hi.bounds[0][2] == pytest.approx(4.0, abs=0.5)
+    assert hi.extents[2] == pytest.approx(6.0, abs=0.5)
+    assert hi.is_watertight
+    lo = apply_op(m, MeshOp(op="slice", args={"axis": "z", "at_mm": 4.0, "keep": "low"}))
+    assert lo.bounds[1][2] == pytest.approx(4.0, abs=0.5)
+    with pytest.raises(ValueError, match="outside"):
+        apply_op(m, MeshOp(op="slice", args={"axis": "z", "at_mm": 99.0, "keep": "high"}))
+
+
+def test_op_crop():
+    m = _box(20, 20, 20)
+    out = apply_op(m, MeshOp(op="crop", args={"min": [-5, -5, -5], "max": [5, 5, 5]}))
+    assert out.extents[0] == pytest.approx(10, abs=0.5)
+    with pytest.raises(ValueError):
+        apply_op(m, MeshOp(op="crop", args={"min": [0, 0, 0], "max": [0, 1, 1]}))
+
+
+def test_op_decimate_and_smooth():
+    m = trimesh.creation.icosphere(subdivisions=4)
+    out = apply_op(m, MeshOp(op="decimate", args={"faces": 500}))
+    assert len(out.faces) <= 600
+    moved = apply_op(m, MeshOp(op="smooth", args={"iterations": 3}))
+    assert not np.allclose(moved.vertices, m.vertices)
+    assert moved.is_watertight
+
+
+def test_op_keep_largest_and_drop_small():
+    big = _box(30, 30, 30)
+    tiny = _box(1, 1, 1)
+    tiny.apply_translation([100, 0, 0])
+    combined = trimesh.util.concatenate([big, tiny])
+    m = apply_op(combined, MeshOp(op="keep_largest", args={}))
+    assert m.extents[0] == pytest.approx(30, abs=0.5)
+    m2 = apply_op(combined, MeshOp(op="drop_small", args={"min_volume_frac": 0.1}))
+    assert m2.extents[0] == pytest.approx(30, abs=0.5)
+
+
+def test_op_repair_open_mesh():
+    m = _box(10, 10, 10)
+    m.faces = m.faces[:-2]
+    out = apply_op(m, MeshOp(op="repair", args={}))
+    assert out is not None and len(out.faces) > 0
+
+
+def test_op_boolean_union_and_difference():
+    base = _box(40, 20, 10)
+    v0 = abs(base.volume)
+    with_plate = apply_op(
+        base,
+        MeshOp(
+            op="boolean",
+            args={
+                "op": "union",
+                "shape": "box",
+                "size_xyz": [50, 25, 3],
+                "center": [0, 0, -1.5],
+            },
+        ),
+    )
+    assert abs(with_plate.volume) > v0
+    assert with_plate.is_watertight
+    drilled = apply_op(
+        with_plate,
+        MeshOp(
+            op="boolean",
+            args={
+                "op": "difference",
+                "shape": "cylinder",
+                "radius": 3,
+                "height": 30,
+                "center": [0, 0, 0],
+            },
+        ),
+    )
+    assert abs(drilled.volume) < abs(with_plate.volume)
+    assert drilled.is_watertight
+
+
+def test_op_boolean_arg_validation():
+    with pytest.raises(ValidationError):
+        apply_op(_box(), MeshOp(op="boolean", args={"op": "union", "shape": "torus"}))
+    with pytest.raises(ValueError, match="box needs"):
+        apply_op(_box(), MeshOp(op="boolean", args={"op": "union", "shape": "box"}))
+    with pytest.raises(ValueError, match="cylinder needs"):
+        apply_op(
+            _box(),
+            MeshOp(op="boolean", args={"op": "union", "shape": "cylinder", "radius": 2}),
+        )
+
+
+def test_op_unknown_and_bad_args():
+    with pytest.raises(ValueError, match="unknown mesh op"):
+        apply_op(_box(), MeshOp(op="explode", args={}))
+    with pytest.raises(ValidationError):
+        apply_op(_box(), MeshOp(op="rotate", args={"axis": "z", "deg": 999}))
+
+
+def test_apply_ops_order_and_report():
+    _m, rep = apply_ops(
+        _box(10, 10, 10),
+        [
+            {"op": "rotate", "args": {"axis": "z", "deg": 45}},
+            {"op": "scale", "args": {"factor": 2}},
+        ],
+    )
+    assert len(rep) == 2
+    assert rep[0]["op"] == "rotate" and rep[1]["op"] == "scale"
+    assert rep[1]["faces_in"] == rep[0]["faces_out"]
+    # mesh serialises deterministically through MeshPostParams
+    post = MeshPostParams(ops=[MeshOp(op="scale", args={"factor": 1.5})])
+    assert MeshPostParams(**post.model_dump()).ops[0].args["factor"] == 1.5
+
+
+def test_merge_post_params_ops_replaced_only_when_given():
+    base = MeshPostParams(ops=[MeshOp(op="rotate", args={"axis": "z", "deg": 10})])
+    merged = merge_post_params(base, {"scale": 2.0})
+    assert merged.ops == base.ops  # untouched
+    merged2 = merge_post_params(base, {"ops": [{"op": "mirror", "args": {"axis": "y"}}]})
+    assert merged2.ops[0].op == "mirror"
+
+
+def test_baseline_mesh_matches_pipeline_sequence():
+    raw = _box(1, 2, 3)
+    post = MeshPostParams(up="+z", front="+y", rotate_z_deg=90)
+    m, info = baseline_mesh(raw, post, _spec(x=60, y=30, z=10))
+    assert info["orientation"]["rotate_z_deg"] == 90
+    # orient runs first: 90° yaw turns [1,2,3] into [2,1,3]; the largest
+    # stated dim (x=60) then drives factor=30 -> [60,30,90]
+    assert sorted(m.extents) == pytest.approx([30, 60, 90], rel=0.02)
+    assert m.bounds[0][2] == pytest.approx(0, abs=1e-6)

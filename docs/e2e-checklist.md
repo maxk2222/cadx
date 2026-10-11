@@ -6,8 +6,8 @@ Run against `make up` (full compose stack) at http://localhost:8080.
 
 - [ ] `docker compose up -d` → all 6 services healthy (`api`, `worker`,
       `cad-executor`, `postgres`, `redis`, `frontend`)
-- [ ] Settings page → enter `LLM_BASE_URL` + `LLM_API_KEY` + models →
-      "Test connection" returns OK
+- [ ] Settings page → enter provider base URL + API key + models →
+      "Test provider" returns OK
 
 ## Generate
 
@@ -42,9 +42,11 @@ Run against `make up` (full compose stack) at http://localhost:8080.
 
 ## Mesh & hybrid modes
 
-Prereq: mesh server running (native: `make mesh-server`, or compose
-`--profile gpu`, or `MESH_FAKE=1` for the deterministic fake). Settings →
-"Mesh generator" shows device + available models.
+Prereq: mesh server running — easiest via `./scripts/start.sh` (auto-detects
+the GPU tier and installs+starts the native mesh-server); alternatives:
+`make mesh-server`, compose `--profile gpu`, or `start.sh --fake` for the
+deterministic fake. Settings → "Mesh generator" shows device + available
+models.
 
 - [ ] Generate with mode **mesh** + a reference photo → version shows a mesh
       badge, STL/3MF/GLB exports download, no `model.py` code panel,
@@ -62,13 +64,51 @@ Prereq: mesh server running (native: `make mesh-server`, or compose
 - [ ] Stop the mesh server mid-generation → job fails cleanly / falls back;
       version is `failed`, not stuck `running`
 
+## User library, BOM & agent tools
+
+- [ ] In Settings → Reusable part library, upload STEP/STL, rename/caption,
+      download, and delete a test entry.
+- [ ] Generate with a library body/template selected; inspect Version detail
+      and confirm the selected library IDs are preserved. Save a finished
+      version to the library as both a STEP body and (when code exists) template.
+- [ ] Edit a version: inherited library parts are selected; toggle one off/on
+      and confirm the child reflects exactly the new selection. Confirm an
+      explicit empty selection clears inherited parts.
+- [ ] Inspect Quality: a `bd_warehouse` screw/insert used by the model appears
+      in the BOM with class/type/size/count.
+- [ ] With `llm_tools=auto`, inspect the trace/job activity for per-step tool
+      calls. Force one model role to reject tools and confirm only that role
+      falls back; `llm_tools=off` still runs legacy behavior.
+
+## FEM & topology optimization
+
+FEM/TopOpt defaults live under Settings → "FEM & topology optimization". Use
+explicit supports and loads; the numerical results are engineering estimates,
+not certification.
+
+- [ ] Generate a CAD part with `Options → FEM check`; state fixtures and loads
+      in the note/prompt and confirm the stored version has a report artifact.
+- [ ] Inspect the Quality tab: each load case shows max von Mises stress,
+      displacement, safety factor, solver status, and any warnings.
+- [ ] Manually optimize a completed version with `Topology-optimize this part`;
+      enter fixed/load faces, force magnitude/direction, material and target
+      volume fraction; confirm a child version and job progress are created.
+- [ ] Confirm the optimized child is `topopt`, exposes FEM results, and has
+      density/history and mesh exports in Files; compare volume against the
+      target while remembering boundary regularization can add a small amount.
+- [ ] Generate in `TopOpt` mode with explicit load/fixture requirements;
+      confirm the agent creates a base version then runs SIMP and records its
+      worst safety factor.
+- [ ] Omit load cases for TopOpt and confirm the job reports a clear skip/error
+      rather than presenting an unverified optimized result.
+
 ## Robustness
 
 - [ ] Switch LLM base URL to Ollama (`http://host.docker.internal:11434/v1`)
       with a model that lacks JSON mode → graceful fallback / clear error
 - [ ] Prompt an impossible part → job ends `failed`/`needs_review` with a
       useful error, not a crash
-- [ ] Upload >`AGENT_MAX_INPUT_IMAGES` images → capped cleanly
+- [ ] Upload more than `agent_max_input_images` images → capped cleanly
 
 ## Teardown
 

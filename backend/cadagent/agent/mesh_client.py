@@ -28,8 +28,8 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, Field
 
-from cadagent.config import get_settings
 from cadagent.logging import get_logger
+from cadagent.runtime_config import RuntimeSettings
 
 log = get_logger(__name__)
 
@@ -103,9 +103,9 @@ class MeshPort:
 
 
 class HttpMeshClient(MeshPort):
-    def __init__(self, base_url: str, *, timeout_s: float | None = None) -> None:
+    def __init__(self, base_url: str, *, timeout_s: float = 900) -> None:
         self.base_url = base_url.rstrip("/")
-        self.timeout_s = timeout_s or float(get_settings().mesh_timeout_s)
+        self.timeout_s = timeout_s
 
     async def health(self) -> MeshHealth:
         try:
@@ -284,14 +284,17 @@ class CachedMeshAvailability:
 
 
 def make_mesh_client(
-    *, fake: bool | None = None, base_url: str | None = None, timeout_s: float | None = None
+    *,
+    fake: bool = False,
+    base_url: str | None = None,
+    timeout_s: float | None = None,
+    runtime_settings: RuntimeSettings | None = None,
 ) -> MeshPort | None:
-    """Factory honoring env config. Returns None when no mesh server is configured."""
-    s = get_settings()
-    use_fake = s.mesh_fake if fake is None else fake
-    if use_fake:
+    """Build the sidecar client from an explicit DB-backed runtime snapshot."""
+    settings = runtime_settings or RuntimeSettings()
+    if fake:
         return FakeMeshClient()
-    url = (base_url or s.mesh_base_url).strip()
+    url = (base_url if base_url is not None else settings.mesh_base_url).strip()
     if not url:
         return None
-    return HttpMeshClient(url, timeout_s=timeout_s)
+    return HttpMeshClient(url, timeout_s=timeout_s or settings.mesh_timeout_s)

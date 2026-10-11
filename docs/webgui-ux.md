@@ -1,116 +1,88 @@
-# WebGUI Masterplan — UX/Design/Feature-Optimierung
+# Web GUI
 
-> Status: implementiert und verifiziert (Oktober 2026) — siehe Commits
-> `587c32f` (API), `555f8c7` (UI), `d034e28` (Scroll-Fix).
+The React/Vite application exposes the generation, editing, analysis, and
+library workflows through four pages: Projects, Project, Version, and Settings.
+The UI is served by nginx at `:8080` in Docker mode or Vite at `:5173` in
+native development mode.
 
-Ziel: Das Web-GUI soll die Fähigkeiten des Agentensystems vollständig sichtbar machen,
-konsistenter aussehen und besser navigierbar sein. Scope: vorwiegend Frontend
-(React/Vite/Three.js/Tailwind), plus kleine Backend-Ergänzungen, die die UI freischalten.
+## User workflows
 
-## Ist-Analyse
+### Projects and generation
 
-### Agentensystem (was die API bereits hergibt)
+- Create, rename, search, and delete projects.
+- Upload and manage image/reference assets.
+- Start a generation with a text prompt, selected assets, mode, per-run options,
+and optional reusable library parts.
+- Modes: `Auto`, `CAD`, `Mesh`, `Hybrid`, `TopOpt`. Mesh and Hybrid require an
+  available mesh server and at least one image; TopOpt generates a base CAD
+  design then optimizes it.
+- Per-run options include manufacturing process, material, FEM analysis,
+  topology optimization/target volume, and standard fasteners.
 
-- Pipeline-Schritte mit Live-Events (SSE `step`-Events):
-  `intake → plan → (meshgen → meshprocess/orient | codegen → execute → repair) → critique → finalize`,
-  dazu `budget`, `done`, `question`. `Job` trägt `progress` (0→1), `step`, `iteration`,
-  `log`, `questions`, `started_at`/`finished_at`.
-- `VersionDetail` liefert u.a. `spec` (PartSpec: Maße mit Quelle, Features, Prozess,
-  Material, Annahmen, offene Fragen), `plan` (ModelingPlan: Ansatz+Begründung, Steps,
-  Parameter, Standardteile), `usage` (Token-Verbrauch), `critique` (Score, Discrepancies,
-  Matches), `dfm`, `mesh` (Provenienz/Orientierung/Skalierung), `artifacts`.
-- Versionsbaum: `generate | edit | params` mit `gen_mode`/`resolved_mode`.
-- Endpunkte vorhanden aber im UI ungenutzt: `GET /catalog` (bd_warehouse-Standardteile),
-  `jobs/{id}/answer`, Job-Historie pro Version, `usage`, `spec`, `plan`.
-- Health: `GET /health` (api ok, llm_configured), `GET /mesh/health` (device, modelle).
+### Version detail
 
-### Schwächen des aktuellen GUI
+The Version page provides:
 
-1. **Versteckte Daten**: `spec`, `plan`, `usage`, `iterations`, Job-Laufzeiten und
-   Critique-Matches werden abgerufen, aber nie angezeigt.
-2. **Job-Observability**: JobLog ist ein roher Textstream — keine Pipeline-Ansicht,
-   kein Fortschrittsbalken, keine Job-Auswahl (mehrere Jobs pro Version, z.B. resume),
-   keine Laufzeit.
-3. **Viewer3D**: nur OrbitControls — keine Ansichtspresets, kein Wireframe/Autorotate,
-   kein Screenshot, kein Fullscreen, kein Loading-/Error-State.
-4. **Projektliste**: einfache Zeilen ohne Thumbnails, Zeitstempel oder letzten
-   Jobstatus; Anlegen nur mit Name (kein Beschreibungsfeld); kein Umbenennen/Löschen
-   aus der Liste.
-5. **Assets**: kein Löschen, keine Caption-Anzeige/-Bearbeitung, keine Lightbox;
-   Auswahlzustand nur per Rahmen sichtbar.
-6. **Navigation**: keine Breadcrumbs, keine Kontextinfo (Projektname auf
-   Versionsseite nur als „← project"-Link), keine Statusindikatoren in der Top-Bar.
-7. **Design**: kein gemeinsames UI-Kit — uneinheitliche Abstände/Buttons, native
-   `confirm()`-Dialoge, keine Empty-States/Skeletons, keine Toasts.
-8. **Server-State**: Ad-hoc `useEffect`-Polling; AGENTS.md schreibt TanStack Query
-   vor (bislang gar nicht installiert).
-9. Kleine UX-Lücken: kein Ctrl+Enter-Submit, kein Copy-Button für Code/Prompt,
-   Code-Ansicht ohne Download, Params ohne Reset, Versionsliste ohne Filter,
-   Artifact-Tabelle (alle Dateien inkl. `mesh_raw`) nicht sichtbar.
+- Overview: 3D viewer, dimensions/volume/validity, renders, exports.
+- Spec: extracted PartSpec and construction plan.
+- Code: generated source and parameter controls.
+- Quality: DfM warnings, measured issues, vision critique, BOM, and FEM report
+  including stress/deformation artifacts when available.
+- Files: all version artifacts, downloads, and saving successful/reviewed
+  versions to the reusable part library.
+- Side panel: job progress/log and history, prompt/image edits, mode/options,
+  inherited or selected library parts, parameter-only reruns, and manual
+  topology optimization for eligible versions.
 
-## Plan (Meilensteine)
+Edits create child versions. Library selections are carried forward by default
+and can be changed in the edit form. The API distinguishes an omitted selection
+(inherit) from an explicit empty list (clear).
 
-### M0 — Backend-Support (klein, additiv)
-- `ProjectOut` um `latest_thumbnail_url` + `latest_version_status` erweitern
-  (Thumbnail des Versionszweigs mit höchster Nummer → Projekt-Karten).
-- `PATCH /assets/{id}` zum Editieren der Caption.
-- Frontend-Typen: `Job.started_at/finished_at` ergänzen (API liefert sie bereits).
+### Settings and reusable part library
 
-### M1 — Foundation
-- Deps: `@tanstack/react-query` (Server-State, Polling via `refetchInterval`,
-  Invalidierung nach Mutationen), `lucide-react` (Icons).
-- `components/ui.tsx`: Card, SectionTitle, Chip, Btn (Varianten), IconBtn, Spinner,
-  EmptyState, Modal, ConfirmButton (ersetzt `window.confirm`), Lightbox (geteilt),
-  ProgressBar, Tabs, CopyButton.
-- `index.css`: Scrollbars, Focus-Rings, Selection, Card-Flächen.
-- AppShell: Top-Bar mit Logo, Breadcrumb, Health-Dots (API/LLM/Mesh, 30s-Polling),
-  Settings-Link.
+Settings includes LLM/provider configuration, health status, the standard-part
+catalog, and the user library. The library supports STEP/STL upload, download,
+rename/caption editing, deletion, and saving a version as either a STEP body or
+parametric code template. Parts may be pinned on generation/edit or discovered
+and attached by the agent's library tools. See `docs/parts-library.md`.
 
-### M2 — ProjectsPage
-- Karten-Grid: Thumbnail der letzten Version, Name, Beschreibung,
-  Versionsanzahl, Status des letzten Laufs, „updated … ago".
-- Create-Dialog (Name + Beschreibung), Inline-Rename, Delete mit Confirm-Modal,
-  Client-Search-Filter.
+## Agent visibility
 
-### M3 — ProjectPage
-- Header: Titel/Beschreibung inline editierbar, Meta-Zeile.
-- Asset-Manager: Grid mit Lightbox, Delete, Caption-Edit, „n Bilder ausgewählt",
-  Select-all/none, Drag&Drop-Highlight.
-- Prompt-Composer: größere Textarea, Ctrl+Enter, Draft im localStorage,
-  Asset-Counter, ModeSelector unverändert.
-- Versionsliste: Filter-Input, relatives Datum, bestehender Tree.
+The UI consumes `VersionDetail` and artifact endpoints; fields are displayed in
+context rather than duplicated across pages. Agent tool calls and their results
+are captured in backend trace records for debugging. The current JobLog shows
+phase-level progress, not individual tool-call payloads. Tool schemas are
+step-scoped: edit tools are not available in critique, and critique library
+tools are read-only.
 
-### M4 — VersionPage
-- Header: Breadcrumb `projekt / vN`, Status, Mode-Badges, Score, Iterationen.
-- Metrics-Strip: Dauer, Tokens (usage), Iterationen, DfM-Warnungen-Zähler.
-- Tabs statt Endlos-Scrollen:
-  `Overview` (Viewer + Mesh-/Analyse-Chips + Renders + Exports),
-  `Spec & Plan` (PartSpec-Panel + ModelingPlan-Panel),
-  `Code` (Viewer mit Copy/Download),
-  `Quality` (DfM + Critique inkl. Matches),
-  `Files` (Tabelle aller Artifacts mit Größe/Download).
-- Sidebar: Agent-Aktivität (JobLog), Edit-Card, Params, Versionsbaum.
+## Verification checklist
 
-### M5 — JobLog / Observability
-- Pipeline-Chips: gruppierte Schritte (Intake, Plan, Mesh, Code, Build, Critique,
-  Export) mit pending/active/done-Zustand aus dem Event-Stream.
-- Progress-Bar (lokal gespiegelt: +0.05/Step, done=1), Elapsed-Timer
-  (`started_at`→jetzt/`finished_at`), Job-Auswahl über `listJobs`, Cancel im Log-Header,
-  farbcodierte Logzeilen, Auto-Scroll nur wenn am unteren Rand.
+Run the commands from the repository root:
 
-### M6 — Viewer3D-Toolbar
-- Overlay-Toolbar: Fit/Reset, Ansichtspresets (Iso/Front/Top/Right), Autorotate,
-  Wireframe, Grid-Toggle, Screenshot-PNG (`preserveDrawingBuffer`), Fullscreen,
-  Loading-Overlay, Fehlerzustand.
+```bash
+cd frontend && npx tsc --noEmit && npm run build
+cd ../backend && ../.venv/bin/uv run pytest tests/unit/test_api.py tests/unit/test_library.py -q
+```
 
-### M7 — SettingsPage & Extras
-- Health-Cards oben (API/LLM-Key/Mesh inkl. Device + Modelle).
-- Katalog-Browser (`GET /catalog`, lazy, collapsible pro Kategorie).
-- `agent_clarification_mode` anzeigen; Kleinigkeiten: Copy-Buttons,
-  Esc/Click-outside für Modals, Tastaturkürzel Ctrl+Enter.
+Manual smoke test:
 
-## Verifikation
-- `cd frontend && npm run build` (tsc strict + vite).
-- Backend nach Schema-Änderung: `pytest tests -x -q`, `ruff check`, `mypy cadagent`.
-- Smoke: `make infra` + `make dev-api` + `npm run dev`, Browser-Preview der drei
-  Hauptseiten.
+1. Open Settings, upload a STEP/STL body, edit its name/caption, download it,
+   and remove it.
+2. Generate a CAD model with a library part selected; confirm its id is stored
+   in version details. Save the resulting version as a template and confirm it
+   appears in Settings and the project picker.
+3. Edit a version, confirm its selected library parts are preselected, change
+   the selection, and verify the child version reflects the new selection.
+4. Enable FEM or TopOpt options, complete a run with explicit load cases, and
+   inspect the Quality and Files tabs. Trigger manual topology optimization on
+   a completed non-TopOpt version and confirm it opens a child version.
+5. Confirm the job log continues polling while queued/running and stops polling
+   after completion.
+
+## Scope and limitations
+
+The GUI is for a local, single-user deployment; it does not provide
+authentication or multi-user library isolation. FEM/TopOpt values are
+engineering estimates, not certification. The manual optimization dialog
+currently represents simple face supports and axial face forces; richer region
+loads are available through the API/spec contract. See `docs/fem-topopt.md`.

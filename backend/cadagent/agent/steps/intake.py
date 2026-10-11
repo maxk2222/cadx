@@ -11,6 +11,8 @@ from cadagent.agent.context import (
     system_prompt,
     user_block,
 )
+from cadagent.agent.toolloop import run_session, tools_enabled
+from cadagent.agent.toolspecs import ToolSession
 from cadagent.agent.types import AgentCtx
 from cadagent.llm.schemas import PartSpec
 
@@ -26,12 +28,37 @@ async def run(ctx: AgentCtx) -> PartSpec:
         user_content.append({"type": "text", "text": ref})
     if ctx.mode == "edit" and (ctx.parent.spec or ctx.parent.code):
         user_content += parent_block(ctx.parent.code, ctx.parent.spec, ctx.parent.contact_sheet)
-    user_content += images_block(ctx.assets)
+    user_content += images_block(ctx.assets, ctx.runtime_settings.agent_max_input_images)
 
+    use_tools = tools_enabled(ctx, "vision")
+    system = system_prompt("intake_system.md")
+    if use_tools:
+        system += "\n\n" + system_prompt("tools_info.md")
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": system_prompt("intake_system.md")},
+        {"role": "system", "content": system},
         {"role": "user", "content": user_content},
     ]
+    if use_tools:
+        session = ToolSession(ctx, kind="info")
+        res = await run_session(
+            ctx,
+            "vision",
+            messages,
+            session=session,
+            json_schema=PartSpec,
+            max_calls=ctx.runtime_settings.agent_tool_max_calls_info,
+            step=STEP,
+            temperature=0.0,
+        )
+        if res.response is None or not isinstance(res.response.parsed, PartSpec):
+            from cadagent.llm.structured import LLMFormatError
+
+            raise LLMFormatError("intake session produced no spec")
+        spec = res.response.parsed
+        if not spec.process:
+            spec.process = ctx.settings.process
+        ctx.spec = spec
+        return spec
     resp = await ctx.llm.chat("vision", messages, json_schema=PartSpec, temperature=0.0)
     assert isinstance(resp.parsed, PartSpec)
     await ctx.trace.record(

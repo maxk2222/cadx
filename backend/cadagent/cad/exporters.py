@@ -161,6 +161,7 @@ def export_mesh_all(
     name: str = "model",
     *,
     try_step: bool = True,
+    max_faces: int | None = None,
 ) -> dict[str, str | None]:
     """Export STL/3MF/GLB directly from a trimesh; STEP via mesh_to_solid.
 
@@ -180,7 +181,7 @@ def export_mesh_all(
         try:
             from cadagent.cad.mesh_ops import mesh_to_solid
 
-            solid = mesh_to_solid(mesh)
+            solid = mesh_to_solid(mesh, max_faces=max_faces)
             step_path = out_dir / f"{name}.step"
             export_step(solid, str(step_path))
             results["step"] = f"{name}.step"

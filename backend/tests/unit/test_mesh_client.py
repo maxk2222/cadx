@@ -60,18 +60,11 @@ async def test_fake_client_health():
     assert h.models[0].id == "fake"
 
 
-def test_make_mesh_client_none_without_url(monkeypatch):
-    from cadagent.config import get_settings
-
-    monkeypatch.setenv("MESH_FAKE", "0")
-    monkeypatch.setenv("MESH_BASE_URL", "")
-    get_settings.cache_clear()
-    try:
-        assert make_mesh_client() is None
-        assert isinstance(make_mesh_client(fake=True), FakeMeshClient)
-        assert isinstance(make_mesh_client(base_url="http://x:8765"), HttpMeshClient)
-    finally:
-        get_settings.cache_clear()
+def test_make_mesh_client_none_without_url():
+    # default RuntimeSettings have no mesh_base_url → unconfigured
+    assert make_mesh_client() is None
+    assert isinstance(make_mesh_client(fake=True), FakeMeshClient)
+    assert isinstance(make_mesh_client(base_url="http://x:8765"), HttpMeshClient)
 
 
 async def test_cached_availability_single_probe():

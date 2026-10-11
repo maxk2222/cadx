@@ -3,8 +3,8 @@
 import pytest
 import trimesh
 
-from cadagent.cad.engine import run_mesh_candidates, run_mesh_pipeline
-from cadagent.cad.mesh_ops import MeshPostParams
+from cadagent.cad.engine import run_mesh_candidates, run_mesh_pipeline, run_mesh_preview
+from cadagent.cad.mesh_ops import MeshPostParams, flat_base_ratio
 from cadagent.cad.render import render_available
 from cadagent.db.models import ProjectSettings
 from cadagent.llm.schemas import PartSpec
@@ -84,6 +84,74 @@ def test_mesh_pipeline_post_params(knob_glb, tmp_path):
     assert res.ok, res.error
     # stated X=40, post scale 2 → 80 mm
     assert res.analysis.bbox_size[0] == pytest.approx(80, abs=1.0)
+
+
+def test_mesh_pipeline_ops_applied(knob_glb, tmp_path):
+    """post.ops run after the baseline; report lands in res.mesh['ops_report']."""
+    res = run_mesh_pipeline(
+        mesh_path=knob_glb,
+        out_dir=tmp_path / "it1",
+        post=MeshPostParams(
+            up="+z",
+            front="+y",
+            ops=[
+                {"op": "flatten_bottom", "args": {"height_mm": 2.0}},
+                {
+                    "op": "boolean",
+                    "args": {
+                        "op": "union",
+                        "shape": "box",
+                        "size_xyz": [45, 45, 3],
+                        "center": [0, 0, 1.5],
+                    },
+                },
+            ],
+        ),
+        spec=_spec(),
+        settings=ProjectSettings(process="fdm"),
+    )
+    assert res.ok, res.error
+    assert [r["op"] for r in res.mesh["ops_report"]] == ["flatten_bottom", "boolean"]
+    assert res.mesh["post"]["ops"][0]["op"] == "flatten_bottom"
+    # union succeeded: the result is a single watertight body with a flat plate
+    assert res.analysis.watertight is True
+    run_stl = tmp_path / "it1" / "_run" / "model.stl"
+    m = trimesh.load(str(run_stl))
+    assert flat_base_ratio(m) > 0.05
+
+
+def test_mesh_pipeline_bad_op_fails(knob_glb, tmp_path):
+    res = run_mesh_pipeline(
+        mesh_path=knob_glb,
+        out_dir=tmp_path / "it1",
+        post=MeshPostParams(
+            ops=[{"op": "slice", "args": {"axis": "z", "at_mm": 999, "keep": "high"}}]
+        ),
+        spec=_spec(),
+        settings=ProjectSettings(process="fdm"),
+    )
+    assert not res.ok
+    assert "op failed" in (res.error or "")
+
+
+def test_mesh_preview(knob_glb, tmp_path):
+    if not render_available():
+        pytest.skip("offscreen rendering unavailable")
+    out = run_mesh_preview(mesh_path=knob_glb, out_dir=tmp_path / "it0")
+    assert out["ok"], out.get("error")
+    assert set(out["images"]) == {"iso", "front", "top"}
+    for png in out["images"].values():
+        assert (tmp_path / "it0" / "preview" / png).exists()
+    assert out["stats"]["triangles"] > 0
+
+
+def test_mesh_preview_no_render(knob_glb, tmp_path, monkeypatch):
+    # render_available is imported inside run_mesh_preview — patch at source
+    monkeypatch.setattr("cadagent.cad.render.render_available", lambda: False)
+    out = run_mesh_preview(mesh_path=knob_glb, out_dir=tmp_path / "it0")
+    assert out["ok"] is False
+    assert "unavailable" in (out["error"] or "")
+    assert out["stats"]["triangles"] > 0
 
 
 def test_mesh_pipeline_bad_file(tmp_path):

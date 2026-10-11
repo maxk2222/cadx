@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from cadagent.agent.context import references_block, spec_block, system_prompt
+from cadagent.agent.context import (
+    catalog_listing_block,
+    references_block,
+    spec_block,
+    system_prompt,
+)
+from cadagent.agent.toolloop import run_session, tools_enabled
+from cadagent.agent.toolspecs import ToolSession
 from cadagent.agent.types import AgentCtx
 from cadagent.llm.schemas import ModelingPlan, PartSpec
 
@@ -31,10 +38,35 @@ async def run(ctx: AgentCtx, spec: PartSpec) -> ModelingPlan:
         mode_ctx += '\nNOTE: no reference images — `approach` must be "cad".'
 
     user = spec_block(spec) + ("\n\n" + ref if ref else "") + "\n\n" + mode_ctx
+    listing = catalog_listing_block()
+    if listing:
+        user += "\n\n" + listing
+    use_tools = tools_enabled(ctx, "code")
+    system = system_prompt("plan_system.md")
+    if use_tools:
+        system += "\n\n" + system_prompt("tools_info.md")
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": system_prompt("plan_system.md")},
+        {"role": "system", "content": system},
         {"role": "user", "content": [{"type": "text", "text": user}]},
     ]
+    if use_tools:
+        session = ToolSession(ctx, kind="info")
+        res = await run_session(
+            ctx,
+            "code",
+            messages,
+            session=session,
+            json_schema=ModelingPlan,
+            max_calls=ctx.runtime_settings.agent_tool_max_calls_info,
+            step=STEP,
+            temperature=0.0,
+        )
+        if res.response is None or not isinstance(res.response.parsed, ModelingPlan):
+            from cadagent.llm.structured import LLMFormatError
+
+            raise LLMFormatError("plan session produced no plan")
+        ctx.plan = res.response.parsed
+        return res.response.parsed
     resp = await ctx.llm.chat("code", messages, json_schema=ModelingPlan, temperature=0.0)
     assert isinstance(resp.parsed, ModelingPlan)
     await ctx.trace.record(

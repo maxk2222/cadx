@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import AssetManager from "../components/AssetManager";
 import ModeSelector from "../components/ModeSelector";
+import OptionsPanel from "../components/OptionsPanel";
 import ProjectFormModal from "../components/ProjectFormModal";
 import VersionTree from "../components/VersionTree";
 import {
@@ -18,9 +19,9 @@ import {
   useDebounced,
 } from "../components/ui";
 import { api } from "../lib/api";
-import type { GenMode } from "../lib/types";
+import type { GenMode, RunOptions } from "../lib/types";
 
-const GEN_MODES: GenMode[] = ["auto", "cad", "mesh", "hybrid"];
+const GEN_MODES: GenMode[] = ["auto", "cad", "mesh", "hybrid", "topopt"];
 
 export default function ProjectPage() {
   const { id = "" } = useParams<{ id: string }>();
@@ -30,13 +31,25 @@ export default function ProjectPage() {
     () => localStorage.getItem(`draft:${id}`) ?? ""
   );
   const [mode, setMode] = useState<GenMode>("auto");
+  const [options, setOptions] = useState<RunOptions>({});
   const [modeInit, setModeInit] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [selectedLib, setSelectedLib] = useState<Set<string>>(new Set());
   const [vFilter, setVFilter] = useState("");
   const vq = useDebounced(vFilter);
   const [editOpen, setEditOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    setPrompt(localStorage.getItem(`draft:${id}`) ?? "");
+    setMode("auto");
+    setOptions({});
+    setModeInit(false);
+    setSelected(new Set());
+    setSelectedLib(new Set());
+    setError("");
+  }, [id]);
 
   const project = useQuery({
     queryKey: ["project", id],
@@ -45,6 +58,11 @@ export default function ProjectPage() {
   const assets = useQuery({
     queryKey: ["assets", id],
     queryFn: () => api.listAssets(id),
+  });
+  const library = useQuery({
+    queryKey: ["library"],
+    queryFn: api.listLibrary,
+    staleTime: 30_000,
   });
   const versions = useQuery({
     queryKey: ["versions", id],
@@ -66,7 +84,8 @@ export default function ProjectPage() {
   }, [project.data, modeInit]);
 
   const generate = useMutation({
-    mutationFn: () => api.generate(id, prompt, [...selected], mode),
+    mutationFn: () =>
+      api.generate(id, prompt, [...selected], mode, options, [...selectedLib]),
     onSuccess: (r) => {
       localStorage.removeItem(`draft:${id}`);
       nav(`/versions/${r.version_id}?job=${r.job_id}`);
@@ -179,6 +198,43 @@ export default function ProjectPage() {
           <div className="mt-3">
             <ModeSelector value={mode} onChange={setMode} />
           </div>
+          <div className="mt-2">
+            <OptionsPanel value={options} onChange={setOptions} />
+          </div>
+          {(library.data ?? []).length > 0 && (
+            <div className="mt-3">
+              <div className="mb-1 text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+                Library parts{selectedLib.size ? ` — ${selectedLib.size} selected` : ""}
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {(library.data ?? []).map((p) => {
+                  const on = selectedLib.has(p.id);
+                  return (
+                    <button
+                      key={p.id}
+                      type="button"
+                      title={`${p.kind}: ${p.caption || p.filename || p.name}`}
+                      className={`rounded-full border px-2.5 py-1 text-xs transition-colors ${
+                        on
+                          ? "border-blue-600 bg-blue-950/60 text-blue-200"
+                          : "border-zinc-700 bg-zinc-900 text-zinc-400 hover:border-zinc-600 hover:text-zinc-300"
+                      }`}
+                      onClick={() =>
+                        setSelectedLib((s) => {
+                          const n = new Set(s);
+                          n.has(p.id) ? n.delete(p.id) : n.add(p.id);
+                          return n;
+                        })
+                      }
+                    >
+                      {p.name}
+                      <span className="ml-1 text-[10px] text-zinc-600">{p.kind}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           <Btn
             className="mt-3 w-full py-2"
             onClick={() => generate.mutate()}
@@ -210,6 +266,15 @@ export default function ProjectPage() {
             assets={assets.data ?? []}
             selected={selected}
             onToggle={toggle}
+            onAssetReplaced={(srcId, newId) =>
+              setSelected((s) => {
+                if (!s.has(srcId)) return s;
+                const n = new Set(s);
+                n.delete(srcId);
+                n.add(newId);
+                return n;
+              })
+            }
           />
         </Card>
       </div>

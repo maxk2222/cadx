@@ -6,7 +6,6 @@ Runs in the `worker` service (queue "agent"). CAD work is delegated to the
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import uuid
 from datetime import UTC, datetime
@@ -22,7 +21,6 @@ from cadagent.agent.orchestrator import RunOutcome, run_generation
 from cadagent.agent.trace import MemoryTrace, sanitize_messages
 from cadagent.agent.types import AgentCtx, InputAsset, ParentContext
 from cadagent.cad.mesh_ops import MeshPostParams, merge_post_params
-from cadagent.config import get_settings
 from cadagent.db.models import (
     AgentTrace,
     Artifact,
@@ -31,6 +29,7 @@ from cadagent.db.models import (
     Job,
     JobStatus,
     JobType,
+    LibraryPart,
     Project,
     ProjectSettings,
     Version,
@@ -40,6 +39,7 @@ from cadagent.db.session import session_scope
 from cadagent.llm.client import LLMClient
 from cadagent.llm.schemas import PartSpec
 from cadagent.logging import get_logger
+from cadagent.runtime_config import RuntimeSettings, load_runtime_settings
 
 log = get_logger(__name__)
 
@@ -127,6 +127,16 @@ def register_artifacts(
                     size=size,
                 )
             )
+        elif key.startswith("fem:"):
+            session.add(
+                Artifact(
+                    version_id=version_id,
+                    kind=ArtifactKind.fem,
+                    view=key.split(":", 1)[1],
+                    path=rel,
+                    size=size,
+                )
+            )
         elif key in ("contact_sheet", "thumbnail"):
             session.add(
                 Artifact(
@@ -149,6 +159,42 @@ def _input_assets(assets: list[Asset]) -> list[InputAsset]:
         )
         for a in assets
     ]
+
+
+async def _load_library(
+    db: AsyncSession, version: Version
+) -> tuple[list[InputAsset], list[dict[str, Any]]]:
+    """Resolve version.library_part_ids into extra reference assets + templates."""
+    extra_assets: list[InputAsset] = []
+    templates: list[dict[str, Any]] = []
+    if not version.library_part_ids:
+        return extra_assets, templates
+    rows = await db.execute(
+        select(LibraryPart).where(
+            col(LibraryPart.id).in_([_u(p) for p in version.library_part_ids])
+        )
+    )
+    for part in rows.scalars().all():
+        if part.kind == "template":
+            templates.append(
+                {
+                    "name": part.name,
+                    "caption": part.caption,
+                    "code": part.code or "",
+                    "params": part.params or {},
+                }
+            )
+        elif part.path:
+            extra_assets.append(
+                InputAsset(
+                    asset_id=str(part.id),
+                    kind="reference_step" if part.kind == "step" else "reference_stl",
+                    path=storage.resolve(part.path),
+                    caption=f"{part.name} — {part.caption}".rstrip(" —"),
+                    filename=part.filename,
+                )
+            )
+    return extra_assets, templates
 
 
 def _parent_ctx(version: Version, parent: Version | None) -> ParentContext:
@@ -206,15 +252,17 @@ async def run_agent_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[st
                 j = await s3.get(Job, job_id)
                 return bool(j and j.cancel_requested)
 
-        # llm config (AppSetting overrides env)
-        llm = await _make_llm(db)
-        executor = QueueExecutor(ctx.get("arq_redis"))
+        runtime_settings = await load_runtime_settings(db)
+        llm = _make_llm(runtime_settings)
+        executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=runtime_settings)
         trace = DbTrace(db, job_id)
-        mesh = await _make_mesh(db)
+        mesh = _make_mesh(runtime_settings)
 
         project = await db.get(Project, version.project_id)
-        settings = ProjectSettings(**(project.settings or {})) if project else ProjectSettings()
-        settings = _fill_settings(settings)
+        settings = _fill_settings(
+            _merge_settings((project.settings or {}) if project else {}, version.options or {}),
+            runtime_settings,
+        )
 
         # assets
         asset_ids = version.asset_ids or []
@@ -228,11 +276,18 @@ async def run_agent_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[st
             rows = await db.execute(select(Asset).where(Asset.project_id == version.project_id))
             assets = list(rows.scalars().all())
 
+        # reusable library parts selected for this version: file parts become
+        # reference assets (loadable via load_reference(part_id)), code
+        # templates are surfaced in the codegen context only
+        input_assets = _input_assets(assets)
+        extra_assets, library_templates = await _load_library(db, version)
+        input_assets += extra_assets
+
         parent = await db.get(Version, version.parent_id) if version.parent_id else None
         parent_ctx = _parent_ctx(version, parent)
 
         mode = "edit" if job.type == JobType.edit else "generate"
-        gen_mode = version.gen_mode or settings.gen_mode or s_default_gen_mode()
+        gen_mode = version.gen_mode or settings.gen_mode or runtime_settings.agent_default_gen_mode
         # hybrid edit keeps the parent's solid unless the user asked for regeneration
         regenerate_mesh = bool(job.resume_state and job.resume_state.get("regenerate_mesh"))
         if mode == "edit" and gen_mode in ("auto", "mesh", "hybrid"):
@@ -264,11 +319,14 @@ async def run_agent_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[st
             mode=mode,
             prompt=version.prompt,
             settings=settings,
-            assets=_input_assets(assets),
+            runtime_settings=runtime_settings,
+            assets=input_assets,
+            library_templates=library_templates,
             parent=parent_ctx,
             gen_mode=gen_mode,
             mesh=mesh_client,
             mesh_available=mesh_available,
+            budget_tokens=runtime_settings.agent_max_tokens_per_job,
         )
         if job.type == JobType.resume and job.resume_state and job.resume_state.get("spec"):
             actx.spec = PartSpec(**job.resume_state["spec"])
@@ -278,6 +336,12 @@ async def run_agent_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[st
         except Exception as e:
             log.exception("agent.job_crashed", job=str(job_id))
             outcome = RunOutcome(status="failed", error=f"agent crashed: {e}")
+
+        if actx.library_attached:
+            # record library parts the agent selected itself via tools
+            version.library_part_ids = sorted(
+                set(version.library_part_ids) | set(actx.library_attached)
+            )
 
         await _persist_outcome(db, job, version, outcome, emit)
         return {"ok": outcome.status in ("succeeded", "needs_review"), "status": outcome.status}
@@ -325,15 +389,27 @@ async def run_params_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[s
                     {"type": "step", "step": step, "iteration": iteration, "message": message},
                 )
 
-        executor = QueueExecutor(ctx.get("arq_redis"))
+        runtime_settings = await load_runtime_settings(db)
+        executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=runtime_settings)
         project = await db.get(Project, version.project_id)
         settings = _fill_settings(
-            ProjectSettings(**(project.settings or {})) if project else ProjectSettings()
+            _merge_settings(
+                (project.settings or {}) if project else {},
+                version.options or (parent.options if parent else {}) or {},
+            ),
+            runtime_settings,
         )
 
         if parent_mode == "mesh":
             exec_result = await _run_mesh_params(
-                executor, job_id, version, parent, settings, payload.get("params") or {}, emit
+                executor,
+                job_id,
+                version,
+                parent,
+                settings,
+                runtime_settings,
+                payload.get("params") or {},
+                emit,
             )
         else:
             await emit("execute", 1, "re-executing with new parameters")
@@ -349,6 +425,7 @@ async def run_params_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[s
                     "params_override": payload.get("params") or {},
                     "references": [],
                     "settings": settings.model_dump(),
+                    "runtime_settings": runtime_settings.executor_values(),
                     "full_exports": True,
                     "name": "model",
                     "mesh_solid": str(solid)
@@ -392,8 +469,10 @@ async def run_params_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[s
         import json
 
         if parent_mode == "mesh":
-            # mesh params child: inherit mesh provenance + copy intermediates
+            # mesh params child: inherit mesh provenance + copy intermediates;
+            # overlay the fresh run's mesh info (post, triangles, ops_report)
             version.mesh = dict(parent.mesh or {})
+            version.mesh.update(exec_result.get("mesh") or {})
             version.mesh["post"] = version.params
             version.mesh["from_params_of"] = str(parent.id)
             artifacts.update(
@@ -424,6 +503,7 @@ async def _run_mesh_params(
     version: Version,
     parent: Version,
     settings: ProjectSettings,
+    runtime_settings: RuntimeSettings,
     overrides: dict[str, Any],
     emit: Any,
 ) -> dict[str, Any]:
@@ -448,10 +528,200 @@ async def _run_mesh_params(
             "post": post.model_dump(),
             "spec": parent.spec,
             "settings": settings.model_dump(),
+            "runtime_settings": runtime_settings.executor_values(),
             "full_exports": True,
             "name": "model",
         }
     )
+
+
+def _parent_stl(parent: Version) -> str | None:
+    """Best available triangle-mesh artifact of a version (relpath)."""
+    v_dir = storage.version_dir(parent.project_id, parent.id)
+    for cand in (
+        v_dir / "exports" / "model.stl",
+        v_dir / "mesh" / "mesh_clean.stl",
+    ):
+        if cand.exists():
+            return storage.relpath(cand)
+    # last iteration's working STL (cad: renders/mesh.stl, mesh: _run/model.stl)
+    it_dir = storage.iteration_dir(parent.project_id, parent.id, parent.iterations or 1)
+    for cand in (
+        it_dir / "_run" / "model.stl",
+        it_dir / "renders" / "mesh.stl",
+        it_dir / "_run" / "mesh.stl",
+    ):
+        if cand.exists():
+            return storage.relpath(cand)
+    return None
+
+
+async def run_optimize_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    """Manual topology optimization (LLM-free, like params): child version gets
+    the optimized mesh + FEM report + artifacts."""
+    job_id = _u(payload["job_id"])
+    async with session_scope() as db:
+        job = await db.get(Job, job_id)
+        version = await db.get(Version, _u(payload["version_id"]))
+        parent = await db.get(Version, version.parent_id) if version and version.parent_id else None
+        if job is None or version is None or parent is None:
+            if job:
+                job.status = JobStatus.failed
+                job.log = (job.log or "") + "optimize job: missing parent\n"
+                await db.commit()
+            return {"ok": False, "error": "missing parent version"}
+
+        job.status = JobStatus.running
+        job.started_at = datetime.now(UTC)
+        version.status = VersionStatus.running
+        await db.commit()
+
+        async def emit(step: str, iteration: int, message: str) -> None:
+            async with session_scope() as s2:
+                j = await s2.get(Job, job_id)
+                if j is not None:
+                    j.step = step
+                    j.progress = min(0.95, j.progress + 0.03)
+                    j.log = (j.log or "") + f"[{step}] {message}\n"
+                    await s2.commit()
+            with contextlib.suppress(Exception):
+                await events.publish(
+                    str(job_id),
+                    {"type": "step", "step": step, "iteration": iteration, "message": message},
+                )
+
+        mesh_rel = _parent_stl(parent)
+        if mesh_rel is None:
+            version.status = VersionStatus.failed
+            version.error = "parent has no mesh artifact to optimize"
+            job.status = JobStatus.failed
+            job.finished_at = datetime.now(UTC)
+            await db.commit()
+            return {"ok": False, "error": version.error}
+
+        # load cases: request payload -> parent spec -> none
+        spec = PartSpec(**parent.spec) if parent.spec else None
+        load_cases = payload.get("load_cases") or [
+            c.model_dump() for c in (spec.load_cases if spec else [])
+        ]
+        if not load_cases:
+            version.status = VersionStatus.failed
+            version.error = "no load cases — declare loads in the prompt or the optimize dialog"
+            job.status = JobStatus.failed
+            job.finished_at = datetime.now(UTC)
+            await db.commit()
+            return {"ok": False, "error": version.error}
+
+        runtime_settings = await load_runtime_settings(db)
+        project = await db.get(Project, version.project_id)
+        settings = _fill_settings(
+            ProjectSettings(**(project.settings or {})) if project else ProjectSettings(),
+            runtime_settings,
+        )
+        optimize = {
+            **(spec.optimize.model_dump() if spec and spec.optimize else {}),
+            **(
+                {"target_volume_fraction": settings.topopt_volfrac}
+                if settings.topopt_volfrac
+                else {}
+            ),
+            "max_iterations": settings.topopt_iterations,
+            **(payload.get("optimize") or {}),
+        }
+        material = (
+            payload.get("material") or settings.fem_material or (spec.material if spec else "")
+        )
+
+        await emit("optimize", 1, f"SIMP on {mesh_rel} ({len(load_cases)} load case(s))")
+        executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=runtime_settings)
+        result = await executor.optimize(
+            {
+                "job_id": str(job_id),
+                "project_id": str(version.project_id),
+                "version_id": str(version.id),
+                "iteration": 1,
+                "mesh_rel": mesh_rel,
+                "load_cases": load_cases,
+                "optimize": optimize,
+                "material": material,
+                "voxel_mm": settings.fem_voxel_mm,
+                "runtime_settings": runtime_settings.executor_values(),
+                "name": "model",
+            }
+        )
+
+        if not result.get("ok"):
+            version.status = VersionStatus.failed
+            version.error = result.get("error") or "optimization failed"
+            job.status = JobStatus.failed
+            job.finished_at = datetime.now(UTC)
+            job.log = (job.log or "") + f"failed: {version.error}\n"
+            await db.commit()
+            return {"ok": False, "error": version.error}
+
+        # persist: artifacts + fem report + topopt metadata on the child version
+        artifacts = _copy_best_artifacts_ctxless(version.project_id, version.id, 1, result)
+        for fmt, rel in (result.get("exports") or {}).items():
+            if rel:
+                artifacts[f"export:{fmt}"] = rel
+        it_dir = storage.iteration_dir(version.project_id, version.id, 1)
+        v_dir = storage.ensure(storage.version_dir(version.project_id, version.id))
+        fem_dir = storage.ensure(v_dir / "fem")
+        fem_art = 0
+        import shutil
+
+        for png in (it_dir / "fem").glob("*.png") if (it_dir / "fem").exists() else []:
+            shutil.copy2(png, fem_dir / png.name)
+            artifacts[f"fem:{png.stem}"] = storage.relpath(fem_dir / png.name)
+            fem_art += 1
+        for extra in ("topopt/density.npz", "topopt/history.json", "fem/report.json"):
+            src = it_dir / extra
+            if src.exists():
+                dst = (
+                    fem_dir / src.name
+                    if src.parent.name == "fem"
+                    else storage.ensure(v_dir / "topopt") / src.name
+                )
+                shutil.copy2(src, dst)
+                artifacts[f"fem:{src.stem}"] = storage.relpath(dst)
+                fem_art += 1
+
+        topopt = result.get("topopt") or {}
+        fem = result.get("fem") or {}
+        version.gen_mode = "topopt"
+        version.resolved_mode = "topopt"
+        version.spec = parent.spec
+        version.fem = fem
+        version.mesh = {
+            **(result.get("mesh") or {}),
+            "topopt": topopt,
+            "from_optimize_of": str(parent.id),
+        }
+        version.analysis = result.get("analysis")
+        version.params = {"optimize": optimize, "load_cases": load_cases, "material": material}
+        version.iterations = 1
+        # structural review: flag unsafe results instead of silent success
+        sfs = [c.get("safety_factor") for c in fem.get("cases", []) if c.get("safety_factor")]
+        worst_sf = min(sfs) if sfs else None
+        version.status = (
+            VersionStatus.needs_review
+            if (worst_sf is not None and worst_sf < 1.0)
+            else VersionStatus.succeeded
+        )
+        register_artifacts(db, version.id, artifacts, tessellated_step=False)
+        await emit(
+            "optimize",
+            1,
+            f"done: volfrac {topopt.get('volfrac_achieved')}, SF {worst_sf}, "
+            f"{topopt.get('iterations')} iterations",
+        )
+        job.status = JobStatus.succeeded
+        job.finished_at = datetime.now(UTC)
+        job.progress = 1.0
+        job.log = (job.log or "") + "done\n"
+        await db.commit()
+        await _publish(str(job_id), {"type": "done", "status": "succeeded"})
+        return {"ok": True}
 
 
 async def run_reexport_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
@@ -464,7 +734,8 @@ async def run_reexport_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict
             return {"ok": False}
         job.status = JobStatus.running
         await db.commit()
-        executor = QueueExecutor(ctx.get("arq_redis"))
+        runtime_settings = await load_runtime_settings(db)
+        executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=runtime_settings)
         result = await executor.export_all(
             {
                 "job_id": str(job_id),
@@ -472,6 +743,7 @@ async def run_reexport_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict
                 "version_id": str(version.id),
                 "iteration": payload.get("iteration") or 1,
                 "name": "model",
+                "runtime_settings": runtime_settings.executor_values(),
             }
         )
         artifacts = {}
@@ -490,72 +762,44 @@ async def run_reexport_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict
 # --------------------------------------------------------------------------- #
 
 
-def _fill_settings(settings: ProjectSettings) -> ProjectSettings:
-    s = get_settings()
-    for k, default in (
-        ("clarification_mode", s.agent_clarification_mode),
-        ("max_iterations", s.agent_max_iterations),
-        ("max_repairs", s.agent_max_repairs),
-        ("pass_score", s.agent_pass_score),
-        ("dim_tolerance_pct", s.agent_dim_tolerance_pct),
-        ("dim_tolerance_mm", s.agent_dim_tolerance_mm),
+def _merge_settings(
+    project_settings: dict[str, Any], version_options: dict[str, Any]
+) -> ProjectSettings:
+    """project defaults < per-run options (GUI options panel)."""
+    s = ProjectSettings(**{**project_settings, **version_options})
+    if s.fem and not s.fem_material and s.material:
+        s.fem_material = s.material
+    return s
+
+
+def _fill_settings(settings: ProjectSettings, runtime: RuntimeSettings) -> ProjectSettings:
+    for key, default in (
+        ("clarification_mode", runtime.agent_clarification_mode),
+        ("max_iterations", runtime.agent_max_iterations),
+        ("max_repairs", runtime.agent_max_repairs),
+        ("pass_score", runtime.agent_pass_score),
+        ("dim_tolerance_pct", runtime.agent_dim_tolerance_pct),
+        ("dim_tolerance_mm", runtime.agent_dim_tolerance_mm),
+        ("fem_voxel_mm", runtime.fem_voxel_mm),
+        ("topopt_volfrac", runtime.topopt_default_volfrac),
+        ("topopt_iterations", runtime.topopt_max_iterations),
     ):
-        if getattr(settings, k) is None:
-            setattr(settings, k, default)
+        if getattr(settings, key) is None:
+            setattr(settings, key, default)
+    if not settings.mesh_model:
+        settings.mesh_model = runtime.mesh_model
     return settings
 
 
-def s_default_gen_mode() -> str:
-    return get_settings().agent_default_gen_mode
+def _make_mesh(runtime: RuntimeSettings) -> MeshPort | None:
+    return make_mesh_client(
+        base_url=runtime.mesh_base_url,
+        timeout_s=runtime.mesh_timeout_s,
+    )
 
 
-async def _make_mesh(db: AsyncSession) -> MeshPort | None:
-    """Mesh generator client honoring AppSetting 'mesh' overrides + env."""
-    from cadagent.db.models import AppSetting
-
-    base_url: str | None = None
-    try:
-        row = await db.get(AppSetting, "mesh")
-        if row and row.value:
-            base_url = row.value.get("mesh_base_url") or None
-    except Exception:
-        pass
-    return make_mesh_client(base_url=base_url)
-
-
-async def _make_llm(db: AsyncSession) -> Any:
-    """LLMClient with optional AppSetting 'llm' overrides (key stays in env).
-
-    LLM_FAKE_SCRIPT (path to JSON script or inline JSON) swaps in FakeLLM —
-    used for deterministic end-to-end tests without a real provider.
-    """
-    import json as _json
-    from pathlib import Path
-
-    from cadagent.db.models import AppSetting
-    from cadagent.llm.fake import FakeLLM
-
-    fake = get_settings().llm_fake_script
-    if fake:
-        p = Path(fake)
-        try:
-            text = await asyncio.to_thread(p.read_text, encoding="utf-8")
-        except OSError:
-            text = fake
-        return FakeLLM(_json.loads(text))
-
-    row = await db.get(AppSetting, "llm")
-    kwargs: dict[str, Any] = {}
-    if row and row.value:
-        for src, dst in (
-            ("llm_base_url", "base_url"),
-            ("llm_model_vision", "model_vision"),
-            ("llm_model_code", "model_code"),
-            ("llm_json_mode", "json_mode"),
-        ):
-            if row.value.get(src):
-                kwargs[dst] = row.value[src]
-    return LLMClient(**kwargs)
+def _make_llm(runtime: RuntimeSettings) -> LLMClient:
+    return LLMClient(runtime_settings=runtime)
 
 
 def _copy_best_artifacts_ctxless(
@@ -638,7 +882,10 @@ async def _persist_outcome(
     version.analysis = outcome.analysis
     version.critique = outcome.critique
     version.dfm = outcome.dfm
+    version.bom = outcome.bom
+    version.issues = outcome.issues or None
     version.mesh = outcome.mesh
+    version.fem = outcome.fem
     version.resolved_mode = outcome.resolved_mode
     version.score = outcome.score
     version.iterations = outcome.iterations

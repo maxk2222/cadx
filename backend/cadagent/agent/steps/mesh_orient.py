@@ -89,7 +89,7 @@ async def run(ctx: AgentCtx, iteration: int, mesh_rel: str) -> dict[str, str]:
         with contextlib.suppress(Exception):
             parts.append(image_part(sheet))
     parts.append({"type": "text", "text": "USER REFERENCE IMAGES:"})
-    parts += images_block(ctx.assets)
+    parts += images_block(ctx.assets, ctx.runtime_settings.agent_max_input_images)
 
     try:
         resp = await ctx.llm.chat(

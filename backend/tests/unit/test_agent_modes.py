@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 
 from cadagent.agent.executor_client import InProcessExecutor
-from cadagent.agent.mesh_client import FakeMeshClient
-from cadagent.agent.orchestrator import resolve_mode, run_generation
+from cadagent.agent.mesh_client import FakeMeshClient, MeshHealth, MeshModelInfo
+from cadagent.agent.orchestrator import _resolve_mesh_adapter, resolve_mode, run_generation
 from cadagent.agent.trace import MemoryTrace
 from cadagent.agent.types import AgentCtx, InputAsset
 from cadagent.db.models import ProjectSettings
@@ -196,6 +196,74 @@ async def test_mesh_mode_falls_back_without_server():
     assert outcome.code is not None
 
 
+async def test_topopt_mode_runs_optimization_after_base_generation(monkeypatch):
+    """TopOpt mode generates a base CAD part, then optimizes it with FEM feedback."""
+    box_code = (FIXTURES / "simple_box.py").read_text()
+    spec = {
+        **MESH_SPEC,
+        "load_cases": [
+            {
+                "name": "cantilever",
+                "fixed": [{"kind": "face", "axis": "-x"}],
+                "loads": [{"region": {"kind": "face", "axis": "+x"}, "force_n": [0, 0, -50]}],
+            }
+        ],
+        "optimize": {"enabled": True, "target_volume_fraction": 0.5},
+    }
+    code = {
+        "reasoning": "base bracket",
+        "params": [],
+        "expected_bbox": [40, 20, 10],
+        "code": box_code,
+    }
+    llm = FakeLLM([spec, {**MESH_PLAN, "approach": "cad"}, code, MESH_CRITIQUE])
+    ctx = _ctx(
+        llm=llm,
+        gen_mode="topopt",
+        settings=ProjectSettings(clarification_mode="assume", max_iterations=1, topopt_volfrac=0.3),
+        prompt="lightweight 40x20x10 bracket, fixed at left, 50 N down at right",
+    )
+    calls: list[dict] = []
+
+    async def fake_optimize(payload: dict) -> dict:
+        calls.append(payload)
+        return {
+            "ok": True,
+            "fem": {
+                "material": {"name": "PLA"},
+                "grid": {"elements": 100},
+                "cases": [
+                    {
+                        "name": "cantilever",
+                        "max_vm_mpa": 12.0,
+                        "max_disp_mm": 0.3,
+                        "safety_factor": 2.0,
+                        "compliance_j": 1.0,
+                        "converged": True,
+                        "solver": "direct",
+                        "warnings": [],
+                    }
+                ],
+                "warnings": [],
+            },
+            "topopt": {"iterations": 12, "converged": True, "volfrac_achieved": 0.3},
+            "analysis": {"is_valid": True, "volume": 3000.0},
+            "exports": {},
+        }
+
+    monkeypatch.setattr(ctx.executor, "optimize", fake_optimize)
+    outcome = await run_generation(ctx)
+
+    assert outcome.status == "succeeded"
+    assert outcome.resolved_mode == "topopt"
+    assert outcome.mesh["pipeline"] == "topopt"
+    assert outcome.fem["cases"][0]["safety_factor"] == 2.0
+    assert len(calls) == 1
+    assert calls[0]["load_cases"][0]["name"] == "cantilever"
+    assert calls[0]["optimize"]["target_volume_fraction"] == 0.3
+    assert calls[0]["mesh_rel"].endswith("renders/mesh.stl")
+
+
 async def test_hybrid_mode_generation(tmp_path):
     code = (
         "from build123d import *\n\n"
@@ -244,3 +312,217 @@ async def test_hybrid_mode_generation(tmp_path):
     # faceted solid was built and kept for the version
     assert ctx.hybrid_solid is not None and ctx.hybrid_solid.exists()
     assert outcome.mesh.get("generation", {}).get("model") == "fake"
+
+
+# --------------------------------------------------------------------------- #
+# _resolve_mesh_adapter — client-side model/image-cap resolution
+
+
+class _StubMesh(FakeMeshClient):
+    """FakeMeshClient whose health reports a custom device + model list."""
+
+    def __init__(self, models: list[MeshModelInfo], device: str = "mlx") -> None:
+        super().__init__()
+        self._h = MeshHealth(ok=True, device=device, backend="stub", models=models)
+
+    async def health(self) -> MeshHealth:
+        return self._h
+
+
+def _model(mid: str, device: str, *, mv: bool = False, max_img: int = 1) -> MeshModelInfo:
+    return MeshModelInfo(
+        id=mid,
+        name=mid,
+        device=device,
+        backend="stub",
+        supports_multiview=mv,
+        max_images=max_img,
+        available=True,
+    )
+
+
+async def test_resolve_adapter_multiview_cap():
+    """multi-image request picks the multiview adapter and its image cap."""
+    mesh = _StubMesh(
+        [
+            _model("single-mlx", "mlx"),
+            _model("mv-4", "mps", mv=True, max_img=4),
+            _model("mv-8-cuda", "cuda", mv=True, max_img=8),
+        ]
+    )
+    ctx = _ctx(mesh=mesh)
+    model, cap = await _resolve_mesh_adapter(ctx, 5)
+    assert model == "mv-8-cuda" and cap == 8  # highest max_images wins
+
+
+async def test_resolve_adapter_degrades_to_hero():
+    """mlx case: only a single-image adapter exists → cap=1, explicit model."""
+    mesh = _StubMesh([_model("hunyuan3d-2.1-mlx", "mlx")], device="mlx")
+    ctx = _ctx(mesh=mesh)
+    model, cap = await _resolve_mesh_adapter(ctx, 4)
+    assert model == "hunyuan3d-2.1-mlx" and cap == 1
+
+
+async def test_resolve_adapter_single_image_stays_auto():
+    mesh = _StubMesh([_model("hunyuan3d-2.1-mlx", "mlx")], device="mlx")
+    ctx = _ctx(mesh=mesh)
+    model, cap = await _resolve_mesh_adapter(ctx, 1)
+    assert model == "auto" and cap == 1
+
+
+async def test_resolve_adapter_explicit_model_caps_images():
+    mesh = _StubMesh([_model("chosen", "mlx", max_img=2)], device="mlx")
+    ctx = _ctx(mesh=mesh, settings=ProjectSettings(mesh_model="chosen"))
+    model, cap = await _resolve_mesh_adapter(ctx, 5)
+    assert model == "chosen" and cap == 2
+
+
+# --------------------------------------------------------------------------- #
+# MESH_REFINE tool sessions (agent_mesh_tools)
+
+
+def _tc(name: str, args: dict | None = None) -> dict:
+    return {"tool_calls": [{"name": name, "arguments": args or {}}]}
+
+
+async def test_mesh_refine_session_applies_ops(tmp_path):
+    """The shape session's recorded ops replay into the final post params."""
+    llm = FakeLLM(
+        [
+            MESH_SPEC,
+            MESH_PLAN,
+            MESH_ORIENT,
+            _tc("mesh_inspect"),
+            _tc("mesh_rotate", {"axis": "z", "deg": 90}),
+            _tc("done", {"reasoning": "aligned"}),
+            MESH_CRITIQUE,
+        ]
+    )
+    mesh = FakeMeshClient()
+    ctx = _ctx(
+        llm=llm,
+        gen_mode="mesh",
+        assets=[_img()],
+        mesh=mesh,
+        mesh_available=True,
+        prompt="organic knob 40mm",
+    )
+    outcome = await run_generation(ctx)
+    assert outcome.status in ("succeeded", "needs_review")
+    ops = outcome.params.get("ops") or []
+    assert [o["op"] for o in ops] == ["rotate"]
+    assert outcome.mesh["ops"][0]["args"]["deg"] == 90
+
+
+async def test_mesh_refine_regenerate_triggers_new_seed(tmp_path):
+    """`regenerate` in the shape session re-rolls the mesh with a new seed."""
+    llm = FakeLLM(
+        [
+            MESH_SPEC,
+            MESH_PLAN,
+            MESH_ORIENT,
+            _tc("regenerate", {"subject_hint": "flatter knob", "note": "wrong shape"}),
+            # iteration 2: orientation is cached, refine session accepts as-is
+            _tc("done", {"reasoning": "baseline is fine"}),
+            MESH_CRITIQUE,
+        ]
+    )
+    mesh = FakeMeshClient()
+    ctx = _ctx(
+        llm=llm,
+        gen_mode="mesh",
+        assets=[_img()],
+        mesh=mesh,
+        mesh_available=True,
+        prompt="organic knob 40mm",
+        settings=ProjectSettings(clarification_mode="assume", max_iterations=2),
+    )
+    outcome = await run_generation(ctx)
+    assert outcome.status in ("succeeded", "needs_review")
+    assert len(mesh.calls) == 2
+    assert mesh.calls[1]["seed"] != mesh.calls[0]["seed"]
+    # accepted as-is → no ops on the final params
+    assert not (outcome.params.get("ops") or [])
+
+
+async def test_mesh_refine_repair_round_after_failed_critique(tmp_path):
+    """A failing critique seeds an issues-driven repair session; its ops fix
+    the candidate in place instead of re-rolling the seed."""
+    fail_critique = {
+        "score": 40,
+        "passed": False,
+        "discrepancies": [{"feature": "base", "issue": "wobbly underside", "severity": "major"}],
+        "matches": [],
+        "confidence": 0.8,
+    }
+    llm = FakeLLM(
+        [
+            MESH_SPEC,
+            MESH_PLAN,
+            MESH_ORIENT,
+            _tc("done", {"reasoning": "shape ok"}),  # shape session: accept
+            fail_critique,
+            _tc("mesh_flatten_bottom", {"height_mm": 2.0}),  # repair session
+            _tc("done", {"reasoning": "flattened the base"}),
+            MESH_CRITIQUE,  # re-evaluation passes
+        ]
+    )
+    mesh = FakeMeshClient()
+    ctx = _ctx(
+        llm=llm,
+        gen_mode="mesh",
+        assets=[_img()],
+        mesh=mesh,
+        mesh_available=True,
+        prompt="organic knob 40mm",
+    )
+    outcome = await run_generation(ctx)
+    assert outcome.status == "succeeded"
+    assert len(mesh.calls) == 1  # fixed in place — no re-generation
+    assert [o["op"] for o in outcome.params.get("ops", [])] == ["flatten_bottom"]
+
+
+async def test_mesh_tools_disabled_keeps_seed_loop(tmp_path):
+    """agent_mesh_tools=False → no sessions, previous behaviour unchanged."""
+    from cadagent.runtime_config import RuntimeSettings
+
+    llm = FakeLLM([MESH_SPEC, MESH_PLAN, MESH_ORIENT, MESH_CRITIQUE])
+    mesh = FakeMeshClient()
+    ctx = _ctx(
+        llm=llm,
+        gen_mode="mesh",
+        assets=[_img()],
+        mesh=mesh,
+        mesh_available=True,
+        prompt="organic knob 40mm",
+        runtime_settings=RuntimeSettings(agent_mesh_tools=False),
+    )
+    outcome = await run_generation(ctx)
+    assert outcome.status in ("succeeded", "needs_review")
+    assert not (outcome.params.get("ops") or [])
+    # no refine-session LLM calls: spec, plan, orient, critique = 4 calls
+    assert llm.total_usage["calls"] == 4
+
+
+async def test_mesh_refine_unavailable_falls_back(tmp_path, monkeypatch):
+    """Refine returning None (tools stripped mid-job, workbench failed) keeps
+    the loop on the plain critique path."""
+    from cadagent.agent.steps import mesh_refine
+
+    async def no_session(*a, **k):
+        return None
+
+    monkeypatch.setattr(mesh_refine, "run", no_session)
+    llm = FakeLLM([MESH_SPEC, MESH_PLAN, MESH_ORIENT, MESH_CRITIQUE])
+    mesh = FakeMeshClient()
+    ctx = _ctx(
+        llm=llm,
+        gen_mode="mesh",
+        assets=[_img()],
+        mesh=mesh,
+        mesh_available=True,
+        prompt="organic knob 40mm",
+    )
+    outcome = await run_generation(ctx)
+    assert outcome.status in ("succeeded", "needs_review")
+    assert not (outcome.params.get("ops") or [])

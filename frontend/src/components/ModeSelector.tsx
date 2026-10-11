@@ -7,6 +7,7 @@ const MODES: { id: GenMode; label: string; title: string }[] = [
   { id: "cad", label: "CAD", title: "parametric build123d code only — precise, dimension-true parts" },
   { id: "mesh", label: "Mesh", title: "image → generated mesh — organic/sculptural shapes (needs ≥1 image + mesh server)" },
   { id: "hybrid", label: "Hybrid", title: "generated organic mesh + exact CAD features on top (needs ≥1 image + mesh server)" },
+  { id: "topopt", label: "TopOpt", title: "base part + topology optimization — organic lightweight structure, FEM-verified (describe loads in the prompt)" },
 ];
 
 export default function ModeSelector({
@@ -54,6 +55,12 @@ export default function ModeSelector({
       {value === "auto" && !meshOk && (
         <div className="mt-1 text-[11px] text-zinc-500">
           mesh server unreachable — auto mode will only use CAD.
+        </div>
+      )}
+      {value === "topopt" && (
+        <div className="mt-1 text-[11px] text-zinc-500">
+          describe loads & fixtures in the prompt (e.g. "fixed at the holes, 100 N on
+          top") — the agent picks the base geometry, then optimizes it.
         </div>
       )}
     </div>

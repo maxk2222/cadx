@@ -28,6 +28,7 @@ class VersionKind(enum.StrEnum):
     generate = "generate"
     edit = "edit"
     params = "params"
+    optimize = "optimize"
 
 
 class VersionStatus(enum.StrEnum):
@@ -46,6 +47,7 @@ class JobType(enum.StrEnum):
     params = "params"
     reexport = "reexport"
     resume = "resume"
+    optimize = "optimize"
 
 
 class JobStatus(enum.StrEnum):
@@ -68,11 +70,12 @@ class ArtifactKind(enum.StrEnum):
     contact_sheet = "contact_sheet"
     thumbnail = "thumbnail"
     mesh_raw = "mesh_raw"
+    fem = "fem"  # FEM stress/deformation renders + reports
 
 
 ProcessType = Literal["fdm", "sla", "cnc3", "cnc2d"]
 
-GenMode = Literal["auto", "cad", "mesh", "hybrid"]
+GenMode = Literal["auto", "cad", "mesh", "hybrid", "topopt"]
 
 
 class ProjectSettings(BaseModel):
@@ -99,6 +102,14 @@ class ProjectSettings(BaseModel):
     mesh_guidance: float | None = None
     mesh_resolution: int | None = None
     mesh_seed: int | None = None
+    # FEM / topology optimization overrides
+    fem: bool = False  # run FEM structural analysis (fill spec.load_cases)
+    fem_note: str = ""  # loads/fixtures description from the options panel
+    fem_material: str = ""  # material table key: pla|petg|abs|asa|pa|pc|resin|aluminum|steel
+    fem_voxel_mm: float | None = None
+    topopt: bool = False  # apply topology optimization after base generation
+    topopt_volfrac: float | None = None
+    topopt_iterations: int | None = None
 
 
 class Project(SQLModel, table=True):
@@ -120,6 +131,7 @@ class Asset(SQLModel, table=True):
     width: int | None = None
     height: int | None = None
     caption: str = ""
+    derived_from: uuid.UUID | None = None  # source asset for edited copies
     created_at: datetime = SField(default_factory=utcnow)
 
 
@@ -130,9 +142,11 @@ class Version(SQLModel, table=True):
     number: int
     kind: VersionKind
     prompt: str = ""
-    gen_mode: str = "auto"  # requested: auto | cad | mesh | hybrid
-    resolved_mode: str | None = None  # effective: cad | mesh | hybrid
+    gen_mode: str = "auto"  # requested: auto | cad | mesh | hybrid | topopt
+    resolved_mode: str | None = None  # effective: cad | mesh | hybrid | topopt
+    options: dict[str, Any] = SField(default_factory=dict, sa_column=Column(JSON))
     asset_ids: list[str] = SField(default_factory=list, sa_column=Column(JSON))
+    library_part_ids: list[str] = SField(default_factory=list, sa_column=Column(JSON))
     status: VersionStatus = VersionStatus.queued
     spec: dict[str, Any] | None = SField(default=None, sa_column=Column(JSON))
     plan: dict[str, Any] | None = SField(default=None, sa_column=Column(JSON))
@@ -142,7 +156,10 @@ class Version(SQLModel, table=True):
     analysis: dict[str, Any] | None = SField(default=None, sa_column=Column(JSON))
     critique: dict[str, Any] | None = SField(default=None, sa_column=Column(JSON))
     dfm: dict[str, Any] | None = SField(default=None, sa_column=Column(JSON))
+    bom: list[dict[str, Any]] | None = SField(default=None, sa_column=Column(JSON))
+    issues: list[dict[str, Any]] | None = SField(default=None, sa_column=Column(JSON))
     mesh: dict[str, Any] | None = SField(default=None, sa_column=Column(JSON))
+    fem: dict[str, Any] | None = SField(default=None, sa_column=Column(JSON))
     iterations: int = 0
     score: int | None = None
     usage: dict[str, Any] = SField(default_factory=dict, sa_column=Column(JSON))
@@ -196,3 +213,19 @@ class AgentTrace(SQLModel, table=True):
 class AppSetting(SQLModel, table=True):
     key: str = SField(primary_key=True)
     value: dict[str, Any] = SField(default_factory=dict, sa_column=Column(JSON))
+
+
+class LibraryPart(SQLModel, table=True):
+    """Project-independent reusable part: an uploaded STEP/STL body or a
+    saved parametric code template from a successful version."""
+
+    id: uuid.UUID = SField(default_factory=uuid.uuid4, primary_key=True)
+    name: str
+    kind: str = "step"  # step | stl | template
+    filename: str = ""
+    path: str = ""  # relative to DATA_DIR (file parts only)
+    code: str | None = None  # build123d source (template parts only)
+    params: dict[str, Any] | None = SField(default=None, sa_column=Column(JSON))
+    caption: str = ""
+    source_version_id: uuid.UUID | None = None
+    created_at: datetime = SField(default_factory=utcnow)

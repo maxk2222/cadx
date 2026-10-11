@@ -26,7 +26,9 @@ from cadagent.db.models import (
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 
-async def _latest_meta(project_id: uuid.UUID, db: AsyncSession) -> tuple[VersionStatus | None, str | None]:
+async def _latest_meta(
+    project_id: uuid.UUID, db: AsyncSession
+) -> tuple[VersionStatus | None, str | None]:
     """Status + thumbnail url of the highest-numbered version (for project cards)."""
     lv = await db.execute(
         select(Version)

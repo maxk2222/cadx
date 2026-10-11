@@ -13,10 +13,11 @@ in-process executor, no queues required.
   "prompt": "40x20x10 block with 1.5mm edge fillets",
   "expected_bbox": [40, 20, 10],
   "tolerance_mm": 1.5,
-  "mode": "cad",                  // optional: auto|cad|mesh|hybrid
+  "mode": "cad",                  // optional: auto|cad|mesh|hybrid|topopt
   "images": ["fixtures/images/knob_ref.png"],  // optional input images
   "fake_mesh": {"size": [30, 22, 18]},         // optional: in-process fake mesh server
   "settings": {"max_iterations": 2},
+  "llm_tools": "auto",             // optional: enable scripted tool sessions
   "llm_script": [ ... ]          // optional: deterministic FakeLLM run
 }
 ```

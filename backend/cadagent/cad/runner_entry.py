@@ -172,15 +172,53 @@ def main() -> int:  # noqa: C901
 
         # count real (non-simple) thread objects present in the namespace
         thread_count = 0
+        bom: dict[tuple, dict] = {}
         for v in namespace.values():
             cls_name = type(v).__name__
-            mod = type(v).__module__
+            mod = type(v).__module__ or ""
             if (
                 mod.startswith("bd_warehouse.thread")
                 and cls_name.endswith("Thread")
                 and not getattr(v, "simple", True)
             ):
                 thread_count += 1
+            if not mod.startswith("bd_warehouse"):
+                continue
+            # BOM row: one per distinct (class, type, size); count reflects
+            # recorded hole placements when the part drove hole operations.
+            # `.size` is a numeric OCP-internal on many classes — the human
+            # size string lives in *_size attributes.
+            size = next(
+                (
+                    getattr(v, a)
+                    for a in (
+                        "screw_size",
+                        "nut_size",
+                        "washer_size",
+                        "insert_size",
+                        "bearing_size",
+                        "ring_size",
+                        "key_size",
+                        "size",
+                    )
+                    if isinstance(getattr(v, a, None), str)
+                ),
+                None,
+            )
+            part_type = next(
+                (
+                    getattr(v, a)
+                    for a in ("fastener_type", "bearing_type", "thread_type", "part_type")
+                    if isinstance(getattr(v, a, None), str)
+                ),
+                None,
+            )
+            key = (cls_name, part_type, size)
+            count = len(getattr(v, "hole_locations", None) or []) or 1
+            if key in bom:
+                bom[key]["count"] += count
+            else:
+                bom[key] = {"part_class": cls_name, "type": key[1], "size": key[2], "count": count}
 
         params_used = namespace.get("PARAMS", {})
         try:
@@ -194,6 +232,10 @@ def main() -> int:  # noqa: C901
                 "params_used": params_used,
                 "thread_count": thread_count,
                 "solid_count": len(solids),
+                "bom": sorted(
+                    bom.values(),
+                    key=lambda e: (e["part_class"], e["type"] or "", e["size"] or ""),
+                ),
             }
         )
     except Exception:

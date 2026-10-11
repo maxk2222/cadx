@@ -20,9 +20,10 @@ from typing import Any, Literal
 import httpx
 from pydantic import BaseModel
 
-from cadagent.config import get_settings
 from cadagent.llm.structured import LLMFormatError, parse_model
+from cadagent.llm.tools import ToolCall, _StreamToolAcc, parse_content_tool_call, parse_tool_calls
 from cadagent.logging import get_logger
+from cadagent.runtime_config import RuntimeSettings
 
 log = get_logger(__name__)
 
@@ -37,6 +38,8 @@ class LLMResponse:
     completion_tokens: int = 0
     latency_ms: int = 0
     model: str = ""
+    tool_calls: list[ToolCall] | None = None
+    finish_reason: str = ""
 
 
 class LLMError(Exception):
@@ -57,23 +60,30 @@ class LLMClient:
         model_code: str | None = None,
         json_mode: str | None = None,
         timeout_s: float | None = None,
+        runtime_settings: RuntimeSettings | None = None,
     ) -> None:
-        s = get_settings()
-        self.base_url = (base_url or s.llm_base_url).rstrip("/")
-        self.api_key = api_key if api_key is not None else s.llm_api_key
+        settings = runtime_settings or RuntimeSettings()
+        self.runtime_settings = settings
+        self.base_url = (base_url or settings.llm_base_url).rstrip("/")
+        self.api_key = api_key if api_key is not None else settings.llm_api_key.get_secret_value()
         self.models: dict[Role, str] = {
-            "vision": model_vision or s.llm_model_vision,
-            "code": model_code or s.llm_model_code,
+            "vision": model_vision or settings.llm_model_vision,
+            "code": model_code or settings.llm_model_code,
         }
-        self.json_mode = json_mode or s.llm_json_mode
-        self.timeout_s = timeout_s or s.llm_timeout_s
-        self.stream = s.llm_stream
-        self.idle_timeout_s = s.llm_idle_timeout_s
-        self.total_timeout_s = s.llm_total_timeout_s
+        self.json_mode = json_mode or settings.llm_json_mode
+        self.timeout_s = timeout_s or settings.llm_timeout_s
+        self.stream = settings.llm_stream
+        self.idle_timeout_s = settings.llm_idle_timeout_s
+        self.total_timeout_s = settings.llm_total_timeout_s
+        self.tools_mode = settings.llm_tools  # auto|on|off
+        # per-role probe state: absent = unprobed; False = role's model rejects
+        # `tools` payloads (e.g. the vision model can lack tool support while
+        # the code model still has it — the fallback must not bleed across)
+        self.tools_ok: dict[Role, bool] = {}
         self.extra_body: dict[str, Any] = {}
-        if s.llm_extra_body:
+        if settings.llm_extra_body:
             try:
-                parsed = json.loads(s.llm_extra_body)
+                parsed = json.loads(settings.llm_extra_body)
                 if isinstance(parsed, dict):
                     self.extra_body = parsed
                 else:
@@ -96,7 +106,7 @@ class LLMClient:
             }
         return {"type": "json_object"}
 
-    async def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _post(self, payload: dict[str, Any], role: Role) -> dict[str, Any]:
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -108,13 +118,7 @@ class LLMClient:
                     resp = await client.post(
                         f"{self.base_url}/chat/completions", json=payload, headers=headers
                     )
-                    if resp.status_code == 400 and "response_format" in payload:
-                        # provider does not support response_format -> retry without it
-                        log.warning("llm.response_format.unsupported", status=resp.status_code)
-                        payload = {k: v for k, v in payload.items() if k != "response_format"}
-                        resp = await client.post(
-                            f"{self.base_url}/chat/completions", json=payload, headers=headers
-                        )
+                    resp, payload = await self._handle_400(client, resp, payload, headers, role)
                 if resp.status_code in (429, 500, 502, 503, 504):
                     last_err = LLMError(f"HTTP {resp.status_code}: {resp.text[:300]}")
                     await asyncio.sleep(delay)
@@ -130,6 +134,36 @@ class LLMClient:
                 delay *= 2
         raise last_err or LLMError("request failed")
 
+    async def _handle_400(
+        self,
+        client: httpx.AsyncClient,
+        resp: httpx.Response,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+        role: Role,
+    ) -> tuple[httpx.Response, dict[str, Any]]:
+        """Retry a 400 by stripping optional payload keys providers may reject.
+
+        Order: `response_format` first (some builds reject it together with
+        tools), then `tools`+`tool_choice`. Stripping tools marks
+        tools_ok[role]=False so later calls for THIS role skip them entirely.
+        With tools_mode="on" tools are never stripped — the 400 propagates.
+        """
+        for key in ("response_format", "tools"):
+            if resp.status_code != 400 or key not in payload:
+                continue
+            if key == "tools" and self.tools_mode == "on":
+                continue  # strict mode: let the 400 surface as LLMError
+            log.warning("llm.payload_key.unsupported", key=key, status=resp.status_code)
+            drop: list[str] = [key, "tool_choice"] if key == "tools" else [key]
+            if key == "tools":
+                self.tools_ok[role] = False
+            payload = {k: v for k, v in payload.items() if k not in drop}
+            resp = await client.post(
+                f"{self.base_url}/chat/completions", json=payload, headers=headers
+            )
+        return resp, payload
+
     async def _consume_stream(self, resp: httpx.Response) -> dict[str, Any]:
         """Read SSE lines and assemble them into a normal response dict."""
         t0 = time.monotonic()
@@ -137,6 +171,7 @@ class LLMClient:
         usage: dict[str, Any] = {}
         finish: str | None = None
         chunks = 0
+        tool_acc = _StreamToolAcc()
         async for line in resp.aiter_lines():
             chunks += 1
             if chunks == 1 or chunks % 200 == 0:
@@ -157,24 +192,41 @@ class LLMClient:
             except json.JSONDecodeError:
                 continue
             for ch in chunk.get("choices") or []:
-                piece = (ch.get("delta") or {}).get("content")
+                delta = ch.get("delta") or {}
+                piece = delta.get("content")
                 if piece:
                     text_parts.append(piece)
+                if delta.get("tool_calls"):
+                    tool_acc.feed(delta["tool_calls"])
                 if ch.get("finish_reason"):
                     finish = ch["finish_reason"]
             if chunk.get("usage"):
                 usage = chunk["usage"]
+        calls = tool_acc.result()
         return {
             "choices": [
                 {
-                    "message": {"role": "assistant", "content": "".join(text_parts)},
-                    "finish_reason": finish,
+                    "message": {
+                        "role": "assistant",
+                        "content": "".join(text_parts),
+                        "tool_calls": [
+                            {
+                                "id": c.id,
+                                "type": "function",
+                                "function": {"name": c.name, "arguments": c.raw_arguments},
+                            }
+                            for c in calls
+                        ]
+                        if calls
+                        else None,
+                    },
+                    "finish_reason": finish or ("tool_calls" if calls else None),
                 }
             ],
             "usage": usage,
         }
 
-    async def _post_stream(self, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _post_stream(self, payload: dict[str, Any], role: Role) -> dict[str, Any]:
         """POST with stream=true; idle timeout applies between chunks so a
         slow-but-progressing call keeps going while a stalled one aborts."""
         payload = dict(payload, stream=True, stream_options={"include_usage": True})
@@ -222,6 +274,10 @@ class LLMClient:
                 raise
         raise last_err or LLMError("stream request failed")
 
+    def _send_tools(self, tools: list[dict[str, Any]] | None, role: Role) -> bool:
+        """Whether to attach `tools` to the next request for this role."""
+        return bool(tools) and self.tools_mode != "off" and self.tools_ok.get(role) is not False
+
     async def chat(
         self,
         role: Role,
@@ -230,16 +286,23 @@ class LLMClient:
         json_schema: type[BaseModel] | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str = "auto",
     ) -> LLMResponse:
-        s = get_settings()
         model = self.models[role]
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
-            "temperature": s.llm_temperature_code if temperature is None else temperature,
-            "max_tokens": max_tokens or s.llm_max_tokens,
+            "temperature": (
+                self.runtime_settings.llm_temperature_code if temperature is None else temperature
+            ),
+            "max_tokens": max_tokens or self.runtime_settings.llm_max_tokens,
         }
         payload.update(self.extra_body)
+        send_tools = self._send_tools(tools, role)
+        if send_tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = tool_choice
         rf = self._response_format(json_schema)
         if rf:
             payload["response_format"] = rf
@@ -247,18 +310,32 @@ class LLMClient:
         t0 = time.monotonic()
         if self.stream:
             try:
-                data = await self._post_stream(payload)
+                data = await self._post_stream(payload, role)
             except _RetryNoStream:
                 log.warning("llm.stream.unsupported")
-                data = await self._post(payload)
+                data = await self._post(payload, role)
         else:
-            data = await self._post(payload)
+            data = await self._post(payload, role)
         latency_ms = int((time.monotonic() - t0) * 1000)
 
         try:
-            text = data["choices"][0]["message"]["content"] or ""
+            msg = data["choices"][0]["message"]
+            text = msg.get("content") or ""
+            tool_calls = parse_tool_calls(msg)
+            finish = data["choices"][0].get("finish_reason") or ""
         except (KeyError, IndexError, TypeError) as e:
             raise LLMError(f"unexpected response shape: {data}") from e
+
+        if not tool_calls and tools and text:
+            # model smuggled the call into content -> synthetic tool call.
+            # `tools` (not send_tools): sessions must keep working after a
+            # 400-strip removed tools from the wire.
+            synthetic = parse_content_tool_call(text)
+            if synthetic and any(
+                t.get("function", {}).get("name") == synthetic.name for t in tools
+            ):
+                tool_calls = [synthetic]
+                finish = "tool_calls"
 
         usage = data.get("usage") or {}
         prompt_tokens = int(usage.get("prompt_tokens", 0))
@@ -268,7 +345,7 @@ class LLMClient:
         self.total_usage["calls"] += 1
 
         parsed: BaseModel | None = None
-        if json_schema is not None and text:
+        if json_schema is not None and text and not tool_calls:
             try:
                 parsed = parse_model(text, json_schema)
             except LLMFormatError:
@@ -284,8 +361,11 @@ class LLMClient:
                         ),
                     },
                 ]
-                payload2 = dict(payload, messages=retry_messages)
-                data2 = await self._post(payload2)
+                # re-ask must not offer tools — a tool call here would fail
+                # the schema parse again
+                payload2 = {k: v for k, v in payload.items() if k not in ("tools", "tool_choice")}
+                payload2["messages"] = retry_messages
+                data2 = await self._post(payload2, role)
                 try:
                     text2 = data2["choices"][0]["message"]["content"] or ""
                 except (KeyError, IndexError, TypeError) as e:
@@ -304,6 +384,8 @@ class LLMClient:
             completion_tokens=completion_tokens,
             latency_ms=latency_ms,
             model=model,
+            tool_calls=tool_calls or None,
+            finish_reason=finish,
         )
 
     async def test(self) -> dict[str, Any]:

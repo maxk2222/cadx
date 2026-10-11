@@ -30,13 +30,16 @@ services:
     build:
       context: backend
       target: api
-    env_file:
-      - path: .env
-        required: false
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-cadagent}:${POSTGRES_PASSWORD:-cadagent}@postgres:5432/${POSTGRES_DB:-cadagent}
       REDIS_URL: redis://redis:6379/0
       DATA_DIR: /data
+      # bootstrap seed only — used once to create the DB runtime row when it
+      # does not exist yet; afterwards the DB value wins and this is ignored
+      MESH_BASE_URL: ${MESH_BASE_URL:-http://host.docker.internal:8765}
+      # keep the rembg u2net model (~170 MB, first bg-removal call) on the
+      # data volume so container recreates don't re-download it
+      U2NET_HOME: /data/rembg
     volumes:
       - ./data:/data
     depends_on:
@@ -56,15 +59,11 @@ services:
     build:
       context: backend
       target: worker
-    env_file:
-      - path: .env
-        required: false
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-cadagent}:${POSTGRES_PASSWORD:-cadagent}@postgres:5432/${POSTGRES_DB:-cadagent}
       REDIS_URL: redis://redis:6379/0
       DATA_DIR: /data
-      # mesh server usually runs NATIVELY on the host (no GPU in docker/macOS);
-      # override to http://mesh-server:8765 when using the 'gpu' profile
+      # bootstrap seed only — see api service; change it in the Settings UI
       MESH_BASE_URL: ${MESH_BASE_URL:-http://host.docker.internal:8765}
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -81,9 +80,6 @@ services:
     build:
       context: backend
       target: executor
-    env_file:
-      - path: .env
-        required: false
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-cadagent}:${POSTGRES_PASSWORD:-cadagent}@postgres:5432/${POSTGRES_DB:-cadagent}
       REDIS_URL: redis://redis:6379/0

@@ -19,6 +19,7 @@ export interface Asset {
   width: number | null;
   height: number | null;
   caption: string;
+  derived_from: string | null;
   created_at: string;
   url: string;
 }
@@ -32,21 +33,34 @@ export type VersionStatus =
   | "failed"
   | "cancelled";
 
-export type GenMode = "auto" | "cad" | "mesh" | "hybrid";
+export type GenMode = "auto" | "cad" | "mesh" | "hybrid" | "topopt";
+
+export type ProcessType = "fdm" | "sla" | "cnc3" | "cnc2d";
+
+/** Per-run overrides from the options panel (merged over project settings). */
+export interface RunOptions {
+  process?: ProcessType;
+  material?: string;
+  include_fasteners?: boolean;
+  fem?: boolean;
+  fem_note?: string;
+  topopt?: boolean;
+  topopt_volfrac?: number;
+}
 
 export interface VersionSummary {
   id: string;
   project_id: string;
   parent_id: string | null;
   number: number;
-  kind: "generate" | "edit" | "params";
+  kind: "generate" | "edit" | "params" | "optimize";
   prompt: string;
   status: VersionStatus;
   score: number | null;
   iterations: number;
   error: string | null;
   gen_mode: GenMode;
-  resolved_mode: "cad" | "mesh" | "hybrid" | null;
+  resolved_mode: "cad" | "mesh" | "hybrid" | "topopt" | null;
   created_at: string;
   thumbnail_url: string | null;
 }
@@ -139,6 +153,58 @@ export interface PartSpec {
   assumptions?: string[];
   open_questions?: OpenQuestion[];
   must_keep?: string[];
+  load_cases?: LoadCase[];
+  optimize?: OptimizeSpec | null;
+}
+
+export interface RegionSpec {
+  kind?: "face" | "cylinder" | "box" | "all";
+  axis?: string;
+  center?: number[];
+  diameter_mm?: number | null;
+  margin_mm?: number;
+  description?: string;
+}
+
+export interface LoadSpec {
+  region: RegionSpec;
+  force_n?: number[];
+  pressure_mpa?: number | null;
+}
+
+export interface LoadCase {
+  name: string;
+  fixed: RegionSpec[];
+  loads: LoadSpec[];
+}
+
+export interface OptimizeSpec {
+  enabled?: boolean;
+  target_volume_fraction?: number;
+  safety_factor_min?: number;
+  keep_regions?: RegionSpec[];
+  note?: string;
+}
+
+export interface FemCaseResult {
+  name: string;
+  max_vm_mpa: number;
+  max_disp_mm: number;
+  safety_factor: number | null;
+  compliance_j: number;
+  converged: boolean;
+  solver: string;
+  warnings: string[];
+  vonmises_png?: string | null;
+  deformed_png?: string | null;
+}
+
+export interface FemReport {
+  material: Record<string, unknown>;
+  grid: Record<string, unknown>;
+  cases: FemCaseResult[];
+  warnings: string[];
+  note?: string;
 }
 
 export interface ModelingPlan {
@@ -155,6 +221,7 @@ export interface ModelingPlan {
 }
 
 export interface VersionDetail extends VersionSummary {
+  options: RunOptions;
   spec: PartSpec | null;
   plan: ModelingPlan | null;
   code: string | null;
@@ -163,9 +230,13 @@ export interface VersionDetail extends VersionSummary {
   analysis: Record<string, unknown> | null;
   critique: { score: number; passed: boolean; discrepancies: { what: string; where: string; severity: string; fix_hint: string }[] } | null;
   dfm: { warnings: DfmWarning[]; metrics?: Record<string, unknown> } | null;
+  bom?: BomEntry[] | null;
+  issues: { source: string; severity: string; what: string; where?: string; fix_hint?: string }[] | null;
   mesh: MeshInfo | null;
+  fem: FemReport | null;
   usage: Record<string, number>;
   asset_ids: string[];
+  library_part_ids: string[];
   artifacts: Artifact[];
 }
 
@@ -191,16 +262,66 @@ export interface Settings {
   llm_model_code: string;
   llm_json_mode: string;
   llm_api_key_set: boolean;
-  data_dir: string;
+  llm_temperature_code: number;
+  llm_max_tokens: number;
+  llm_timeout_s: number;
+  llm_stream: boolean;
+  llm_idle_timeout_s: number;
+  llm_total_timeout_s: number;
+  llm_extra_body: string;
+  llm_tools: "auto" | "on" | "off";
   agent_max_iterations: number;
   agent_max_repairs: number;
   agent_pass_score: number;
-  agent_clarification_mode: string;
-  exec_timeout_s: number;
-  exec_memory_mb: number;
+  agent_dim_tolerance_pct: number;
+  agent_dim_tolerance_mm: number;
+  agent_clarification_mode: "assume" | "ask";
+  agent_max_input_images: number;
+  agent_max_tokens_per_job: number;
+  agent_max_wall_s: number;
   agent_default_gen_mode: GenMode;
+  agent_param_autofix: boolean;
+  agent_patch_mode: "auto" | "always" | "never";
+  agent_patch_retries: number;
+  agent_feature_feedback: boolean;
+  agent_critique_reask: boolean;
+  agent_tool_max_calls: number;
+  agent_tool_max_calls_info: number;
+  agent_tool_verify: boolean;
+  agent_tool_verify_max: number;
+  agent_mesh_tools: boolean;
+  agent_mesh_max_ops: number;
+  agent_mesh_preview_max: number;
+  agent_mesh_refine_rounds: number;
+  fem_voxel_mm: number;
+  fem_max_elements: number;
+  fem_timeout_s: number;
+  topopt_timeout_s: number;
+  topopt_max_iterations: number;
+  topopt_default_volfrac: number;
+  topopt_default_rmin_mm: number;
   mesh_base_url: string;
   mesh_model: string;
+  mesh_timeout_s: number;
+  mesh_decimate_faces: number;
+  mesh_max_faces_for_cad: number;
+  exec_timeout_s: number;
+  exec_mem_limit_mb: number;
+  data_dir: string;
+}
+
+/** PUT /settings payload — all fields optional; key is write-only. */
+export interface SettingsUpdate extends Partial<Omit<Settings, "llm_api_key_set" | "data_dir">> {
+  llm_api_key?: string;
+  clear_llm_api_key?: boolean;
+}
+
+export interface ProviderTestResult {
+  ok: boolean;
+  vision_ok: boolean;
+  latency_ms: number;
+  error: string | null;
+  vision_error?: string;
 }
 
 export interface MeshModelInfo {
@@ -221,4 +342,40 @@ export interface MeshHealth {
   backend: string;
   error: string | null;
   models: MeshModelInfo[];
+}
+
+export interface CatalogEntry {
+  kind: "normed" | "parametric";
+  category: string;
+  doc: string;
+  types?: Record<string, string[]>;
+  params?: string[];
+  holes?: string[];
+}
+
+export interface CatalogSearchHit {
+  class: string;
+  category: string;
+  kind: string;
+  score: number;
+  matched_sizes: string[];
+}
+
+export interface BomEntry {
+  part_class: string;
+  type: string | null;
+  size: string | null;
+  count: number;
+}
+
+export interface LibraryPart {
+  id: string;
+  name: string;
+  kind: string; // step | stl | template
+  filename: string;
+  caption: string;
+  params: Record<string, unknown> | null;
+  source_version_id: string | null;
+  created_at: string;
+  url: string;
 }

@@ -86,6 +86,22 @@ def export_dir(
     return iteration_dir(project_id, version_id, iteration) / "exports"
 
 
+def library_dir() -> Path:
+    return data_root() / "library"
+
+
+def library_part_path(part_id: uuid.UUID | str, filename: str) -> Path:
+    return library_dir() / str(part_id) / filename
+
+
+def delete_library_dir(part_id: uuid.UUID | str) -> None:
+    import shutil
+
+    d = library_dir() / str(part_id)
+    if d.exists():
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def tmp_dir() -> Path:
     p = data_root() / "tmp"
     p.mkdir(parents=True, exist_ok=True)

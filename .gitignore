@@ -13,3 +13,6 @@ dist/
 .DS_Store
 uv.lock.d
 *.tsbuildinfo
+mesh_server/.src/
+run/
+logs/
