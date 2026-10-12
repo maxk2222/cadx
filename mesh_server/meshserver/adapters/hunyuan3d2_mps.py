@@ -53,6 +53,68 @@ def _mps_ok() -> bool:
         return False
 
 
+# transformers>=5 renamed DINOv2 params — the bundled Tencent checkpoints
+# still carry the tf4 layout, so remap before the pipeline's plain
+# load_state_dict sees them:
+#   attention.attention.{query,key,value} -> attention.{q,k,v}_proj
+#   attention.output.dense                -> attention.o_proj
+#   mlp.weights_in (fused SwiGLU w12)     -> mlp.gate_proj + mlp.up_proj
+#   mlp.weights_out                       -> mlp.down_proj
+# tf4 Dinov2SwiGLUFFN chunked weights_in as (x1=gate, x2=up): silu(x1) * x2 —
+# so the first half of the fused weight is gate_proj, the second is up_proj.
+_TF5_DINO_REMAP = {
+    "attention.attention.query.": "attention.q_proj.",
+    "attention.attention.key.": "attention.k_proj.",
+    "attention.attention.value.": "attention.v_proj.",
+    "attention.output.dense.": "attention.o_proj.",
+    "mlp.weights_out.": "mlp.down_proj.",
+}
+
+
+def _remap_tf5_dino(state_dict):
+    fixed = {}
+    for k, v in state_dict.items():
+        if "mlp.weights_in." in k:
+            half = v.shape[0] // 2  # fused w12: [gate | up] — tf4 chunk order
+            suffix = k.split("mlp.weights_in.", 1)[1]  # weight | bias
+            fixed[f"{k.split('mlp.weights_in.', 1)[0]}mlp.gate_proj.{suffix}"] = v[:half]
+            fixed[f"{k.split('mlp.weights_in.', 1)[0]}mlp.up_proj.{suffix}"] = v[half:]
+            continue
+        for old, new in _TF5_DINO_REMAP.items():
+            if old in k:
+                k = k.replace(old, new)
+                break
+        fixed[k] = v
+    return fixed
+
+
+def _patch_tf5_dino_keys() -> None:
+    try:
+        import transformers
+
+        if int(transformers.__version__.split(".")[0]) < 5:
+            return
+        from hy3dgen.shapegen.models import conditioner
+    except Exception:
+        return
+
+    def _wrap(cls) -> None:
+        if getattr(cls, "_tf5_keys_patched", False):
+            return
+        orig = cls.load_state_dict
+
+        def patched(self, state_dict, *args, **kwargs):
+            return orig(self, _remap_tf5_dino(state_dict), *args, **kwargs)
+
+        cls.load_state_dict = patched
+        cls._tf5_keys_patched = True
+
+    for name in ("SingleImageEncoder", "DualImageEncoder"):
+        cls = getattr(conditioner, name, None)
+        if cls is not None:
+            _wrap(cls)
+
+
 class _Hy3DTorchBase(MeshAdapter):
     device = "mps"
     backend = "torch-mps"
@@ -78,6 +140,7 @@ class _Hy3DTorchBase(MeshAdapter):
             from hy3dgen.shapegen import FaceReducer, FloaterRemover, DegenerateFaceRemover
         except Exception as e:  # pragma: no cover
             missing(type(self), str(e))
+        _patch_tf5_dino_keys()
         repo, subfolder, variant = self._variant()
         device = "mps" if _mps_ok() else "cpu"
         self._pipe = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
