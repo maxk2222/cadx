@@ -6,6 +6,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import delete as sa_delete
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, func, select
 
@@ -325,6 +326,13 @@ async def delete_version(version_id: uuid.UUID, db: AsyncSession = Depends(get_s
     from cadx import storage
 
     jids = select(Job.id).where(col(Job.version_id) == v.id)
+    # signal in-flight tasks before deleting their rows — a worker polling
+    # cancel between the two commits stops gracefully; afterwards the
+    # missing job row cancels the task outright (no zombie runs)
+    await db.execute(
+        sa_update(Job).where(col(Job.version_id) == v.id).values(cancel_requested=True)
+    )
+    await db.commit()
     await db.execute(sa_delete(AgentTrace).where(col(AgentTrace.job_id).in_(jids)))
     await db.execute(sa_delete(Job).where(col(Job.version_id) == v.id))
     await db.execute(sa_delete(Artifact).where(col(Artifact.version_id) == v.id))

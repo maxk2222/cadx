@@ -366,3 +366,70 @@ def test_fit_ops_z_extreme_still_rejects():
 
     ops, _ = _fit_ops_to_stated(_stated_spec(), [119.0, 38.0, 80.0])
     assert ops == []
+
+
+async def test_trace_orphan_circuit_breaker(monkeypatch):
+    """FK violation → DbTrace goes dead, stops hitting the DB, keeps memory."""
+
+    class OrphanSession:
+        calls = 0
+
+        async def __aenter__(self):
+            OrphanSession.calls += 1
+            raise RuntimeError(
+                'insert or update on table "agenttrace" violates foreign key '
+                'constraint "agenttrace_job_id_fkey"'
+            )
+
+        async def __aexit__(self, *a):
+            return False
+
+    monkeypatch.setattr(wj, "session_scope", lambda: OrphanSession())
+    trace = DbTrace(__import__("uuid").uuid4())
+    kw = dict(
+        step="codegen",
+        iteration=1,
+        model="m",
+        messages=[],
+        response_text="x",
+        parsed={},
+        prompt_tokens=1,
+        completion_tokens=1,
+        latency_ms=1,
+    )
+    await trace.record(**kw)
+    assert trace._dead
+    await trace.record(**kw)
+    assert OrphanSession.calls == 1  # second record never touched the DB
+    assert len(trace.records) == 2  # memory trace still grows
+
+
+async def test_executor_startup_does_not_reap_agent_jobs(monkeypatch):
+    """cad_startup must not reap running agent-queue jobs — every Job row is
+    enqueued on the 'agent' queue, so only an agent-worker restart orphans
+    them. Regression test for the shared agent_startup reaping live jobs
+    whenever the cad-executor container was rebuilt mid-run."""
+    import arq.connections
+
+    from cadx.queue import AgentWorkerSettings, CadWorkerSettings, agent_startup, cad_startup
+
+    assert AgentWorkerSettings.on_startup is agent_startup
+    assert CadWorkerSettings.on_startup is cad_startup
+
+    async def fake_pool(*a, **k):
+        return None
+
+    monkeypatch.setattr(arq.connections, "create_pool", fake_pool)
+
+    job = await _mk_job()
+    async with async_session() as db:
+        (await db.get(Job, job.id)).status = JobStatus.running
+        await db.commit()
+
+    await cad_startup({})  # executor restart — must not touch the job
+    async with async_session() as db:
+        assert (await db.get(Job, job.id)).status == JobStatus.running
+
+    await agent_startup({})  # agent worker restart — reaps it
+    async with async_session() as db:
+        assert (await db.get(Job, job.id)).status == JobStatus.failed

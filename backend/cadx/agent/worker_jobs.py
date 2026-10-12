@@ -175,9 +175,15 @@ class DbTrace(MemoryTrace):
     def __init__(self, job_id: uuid.UUID) -> None:
         super().__init__()
         self._job_id = job_id
+        self._dead = False
 
     async def record(self, **kwargs: Any) -> None:
         await super().record(**kwargs)
+        if self._dead:
+            # job row was deleted mid-run — the task is orphaned and will stop
+            # at the next cancellation checkpoint; keep recording to memory but
+            # stop hammering the DB with FK violations
+            return
         try:
             async with session_scope() as s:
                 s.add(
@@ -196,7 +202,13 @@ class DbTrace(MemoryTrace):
                 )
                 await s.commit()
         except Exception as e:
-            log.warning("agent.trace_persist_failed", job=str(self._job_id), error=str(e)[:200])
+            if "agenttrace" in str(e) and (
+                "ForeignKeyViolation" in str(e) or "violates foreign key" in str(e)
+            ):
+                self._dead = True
+                log.info("agent.trace_orphaned", job=str(self._job_id))
+            else:
+                log.warning("agent.trace_persist_failed", job=str(self._job_id), error=str(e)[:200])
 
 
 def register_artifacts(
@@ -356,12 +368,24 @@ async def run_agent_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[st
         async def check_cancel() -> bool:
             async with session_scope() as s3:
                 j = await s3.get(Job, job_id)
-                return bool(j and j.cancel_requested)
+                # a deleted job row means the version was deleted mid-run; a
+                # terminal status means the reaper or another guard already
+                # finalised it — either way the task is orphaned and must
+                # stop, not run to completion
+                return (
+                    j is None
+                    or bool(j.cancel_requested)
+                    or j.status in (JobStatus.failed, JobStatus.cancelled, JobStatus.succeeded)
+                )
 
         async def check_finish() -> bool:
             async with session_scope() as s3:
                 j = await s3.get(Job, job_id)
-                return bool(j and j.finish_requested)
+                return (
+                    j is None
+                    or bool(j.finish_requested)
+                    or j.status in (JobStatus.failed, JobStatus.cancelled, JobStatus.succeeded)
+                )
 
         runtime_settings = await load_runtime_settings(db)
         llm = _make_llm(runtime_settings)
@@ -691,7 +715,12 @@ async def _try_optimize_session(
     async def check_cancel() -> bool:
         async with session_scope() as s3:
             j = await s3.get(Job, job_id)
-            return bool(j and j.cancel_requested)
+            # deleted row or externally-finalised status → orphaned task
+            return (
+                j is None
+                or bool(j.cancel_requested)
+                or j.status in (JobStatus.failed, JobStatus.cancelled, JobStatus.succeeded)
+            )
 
     sheet = storage.version_dir(parent.project_id, parent.id) / "contact_sheet.png"
     actx = AgentCtx(

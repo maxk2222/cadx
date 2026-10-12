@@ -22,7 +22,7 @@ def _redis() -> RedisSettings:
     return RedisSettings.from_dsn(get_settings().redis_url)
 
 
-async def agent_startup(ctx: dict[str, Any]) -> None:
+async def _startup_common(ctx: dict[str, Any]) -> None:
     from arq.connections import create_pool
 
     ctx["arq_redis"] = await create_pool(_redis())
@@ -35,8 +35,15 @@ async def agent_startup(ctx: dict[str, Any]) -> None:
                 await db.commit()
     except Exception:
         pass
+
+
+async def agent_startup(ctx: dict[str, Any]) -> None:
+    await _startup_common(ctx)
     # reaper: a worker restart orphans in-flight arq tasks (max_tries=1), but
-    # their job/version rows keep status='running' forever — fail them here
+    # their job/version rows keep status='running' forever — fail them here.
+    # Only the AGENT-queue worker may reap: every Job row is enqueued on
+    # "agent" (cad-queue arq tasks carry no Job row), so an executor restart
+    # must not mark live agent jobs as failed.
     try:
         from datetime import UTC, datetime
 
@@ -66,6 +73,10 @@ async def agent_startup(ctx: dict[str, Any]) -> None:
                 await db.commit()
     except Exception:
         pass
+
+
+async def cad_startup(ctx: dict[str, Any]) -> None:
+    await _startup_common(ctx)
 
 
 async def worker_shutdown(ctx: dict[str, Any]) -> None:
@@ -98,7 +109,7 @@ class CadWorkerSettings:
     """Run with: uv run arq cadx.queue.CadWorkerSettings"""
 
     functions = [execute_version, export_all, process_mesh, fem_analyze, optimize]  # noqa: RUF012
-    on_startup = agent_startup
+    on_startup = cad_startup
     on_shutdown = worker_shutdown
     redis_settings = _redis()
     queue_name = "cad"
