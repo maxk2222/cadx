@@ -226,16 +226,23 @@ class Hunyuan3D2MvAdapter(_Hy3DTorchBase):
     _variant_key = "hunyuan3d-2mv"
 
     def _images_arg(self, images: list[Image.Image], opts: GenOpts):
-        # multiview pipelines take a {view: image} mapping
+        # multiview pipelines take a {view: image} mapping. Only feed views
+        # whose role was actually identified — an unlabeled "other" image
+        # dropped into the wrong slot (e.g. a second front shot as "back")
+        # is worse than a missing view, it corrupts the latent geometry.
         roles = (opts.image_roles or [])[: len(images)]
         wanted = ["front", "back", "left", "right"]
         mapping: dict[str, Image.Image] = {}
         for role, img in zip(roles, images, strict=False):
             if role in wanted and role not in mapping:
                 mapping[role] = img
-        for img, want in zip(images, wanted, strict=False):
-            mapping.setdefault(want, img)
-        return mapping or {"front": images[0]}
+        # unlabeled images fill the front slot only — never other views
+        if "front" not in mapping:
+            mapping["front"] = next(
+                (img for role, img in zip(roles, images, strict=False) if role in ("other", "")),
+                images[0],
+            )
+        return mapping
 
 
 class Hunyuan3D2MvTurboAdapter(Hunyuan3D2MvAdapter):
