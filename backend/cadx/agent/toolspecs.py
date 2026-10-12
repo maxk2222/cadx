@@ -1009,6 +1009,8 @@ class ToolSession:
                         "seed": result.seed,
                         "steps": result.steps,
                         "guidance": result.guidance,
+                        "width": side,
+                        "height": side,
                         "duration_s": result.duration_s,
                         "source": "concept_tool",
                         "job_id": self.ctx.job_id,

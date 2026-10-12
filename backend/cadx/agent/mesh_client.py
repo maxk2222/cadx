@@ -77,6 +77,8 @@ class MeshModelInfo(BaseModel):
     loaded: bool = False
     available: bool = True
     last_error: str | None = None  # badlisted after a load/OOM failure
+    default_size: int | None = None  # image adapters: default output side
+    max_count: int | None = None  # image adapters: max images per job
 
 
 class MeshHealth(BaseModel):

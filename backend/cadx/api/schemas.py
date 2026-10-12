@@ -452,6 +452,8 @@ class MeshModelOut(BaseModel):
     loaded: bool = False
     available: bool = True
     last_error: str | None = None
+    default_size: int | None = None
+    max_count: int | None = None
 
 
 class ImageGenerateIn(BaseModel):

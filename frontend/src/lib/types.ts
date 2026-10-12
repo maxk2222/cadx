@@ -395,6 +395,8 @@ export interface MeshModelInfo {
   loaded: boolean;
   available: boolean;
   last_error: string | null;
+  default_size: number | null;
+  max_count: number | null;
 }
 
 export interface MeshHealth {

@@ -769,6 +769,8 @@ async def _autogen_hero_image(ctx: AgentCtx, spec: PartSpec | None, plan: Any) -
                     "seed": result.seed,
                     "steps": result.steps,
                     "guidance": result.guidance,
+                    "width": side,
+                    "height": side,
                     "duration_s": result.duration_s,
                     "source": "hero_autogen",
                 },

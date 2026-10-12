@@ -57,7 +57,9 @@ async def generate_images(
     if not models:
         raise HTTPException(503, "no image adapter available on the mesh server")
 
-    model = body.model or settings.image_model
+    # "auto" (or absent) means the runtime default — an explicit adapter id
+    # overrides it; settings.image_model itself defaults to "auto".
+    model = body.model if body.model and body.model != "auto" else settings.image_model
     tmp_dir = tempfile.mkdtemp(prefix="cadx-imggen-")
     req = ImageGenRequest(
         prompt=body.prompt,
@@ -95,6 +97,8 @@ async def generate_images(
                 "seed": result.seed,
                 "steps": result.steps,
                 "guidance": result.guidance,
+                "width": req.width,
+                "height": req.height,
                 "duration_s": result.duration_s,
                 "requested_model": model,
             },
