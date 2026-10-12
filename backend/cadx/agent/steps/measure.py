@@ -32,13 +32,22 @@ def _reference_from_prompt(prompt: str) -> float | None:
     return float(m.group(1).replace(",", ".")) if m else None
 
 
+def _spec_is_flat(spec: PartSpec) -> bool:
+    """Height is a small fraction of the footprint — plate/scale-like part."""
+    x, y, z = spec.length_x.value, spec.width_y.value, spec.height_z.value
+    return z > 0 and z < 0.35 * max(x, y, 1e-9)
+
+
 def _candidate_role(asset: Any, roles: dict[str, str], spec: PartSpec) -> str | None:
     """Planned role for an asset, or 'top' when its silhouette aspect matches."""
     if (r := roles.get(asset.asset_id)) in PLAN_ROLES:
         return r
-    if r is not None:
+    flat_roles = {"front": "top", "back": "bottom"}
+    if r is not None and not (_spec_is_flat(spec) and r in flat_roles):
         return None
-    # fallback: unroled image whose silhouette aspect fits length/width ±25%.
+    # fallback: unroled image — or, for flat parts, a front/back face shot
+    # whose silhouette aspect fits length/width ±25% (the face-up photo of a
+    # scale IS its plan view).
     # Uploads are normalized to JPEG (alpha flattened), so without alpha we
     # get the silhouette from _mask (rembg) instead.
     try:
@@ -60,7 +69,7 @@ def _candidate_role(asset: Any, roles: dict[str, str], spec: PartSpec) -> str | 
         # aspect ~0.32 while stated length/width is ~3.1 — compare long/short
         fit = max(aspect, 1 / aspect) / max(stated, 1 / stated)
         if 0.8 <= fit <= 1.25:
-            return "top"
+            return flat_roles.get(r, "top") if r is not None else "top"
     except Exception:
         return None
     return None

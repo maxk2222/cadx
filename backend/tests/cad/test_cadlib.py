@@ -178,3 +178,35 @@ def test_sandbox_cadlib_cannot_import_disallowed(tmp_path):
     out = run_user_code(code, tmp_path / "work")
     assert not out.ok
     assert "static" in (out.error or "")
+
+
+def test_closed_polyline_tolerates_duplicates():
+    pts = [(0, 0), (10, 0), (10, 0), (10, 5), (5, 8), (0, 5), (0, 5), (0, 0)]
+    face = cadlib.closed_polyline(pts)
+    assert face.area > 40
+
+
+def test_closed_polyline_strips_repeated_closing_point():
+    pts = [(0, 0), (10, 0), (10, 5), (0, 5), (0, 0), (0, 0)]
+    face = cadlib.closed_polyline(pts)
+    assert face.area > 40
+
+
+def test_closed_polyline_rejects_degenerate():
+    with pytest.raises(ValueError):
+        cadlib.closed_polyline([(0, 0), (1, 0), (1, 0)])
+
+
+def test_sandbox_closed_polyline(tmp_path):
+    code = (
+        "PARAMS = {}\n"
+        "import cadlib\n"
+        "from build123d import *\n"
+        "import math\n"
+        "pts = [(30*math.cos(t), 10*math.sin(t)) for t in [i*0.1 for i in range(63)]]\n"
+        "pts += pts[:2]  # duplicate samples + repeated closing point\n"
+        "face = cadlib.closed_polyline(pts)\n"
+        "result = extrude(face, amount=8)\n"
+    )
+    out = run_user_code(code, tmp_path / "work")
+    assert out.ok, out.error

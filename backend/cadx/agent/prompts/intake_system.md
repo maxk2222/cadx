@@ -19,6 +19,10 @@ Rules:
   useless (otherwise we proceed with the assumption).
 - Assign each input image a role (front/back/left/right/top/bottom/iso/detail/drawing/other)
   in `image_roles` — one entry per provided asset, never leave it empty.
+  For FLAT parts (plates, scales, gaskets — height ≪ length×width) photographed
+  face-up or face-down, label the broad-face view `top` or `bottom`: that face
+  is the plan view our measurement pipeline extracts the outline from. Do NOT
+  call it front — a face-up photo of a flat part is its top view.
 - List EVERY geometric feature visible in the images or mentioned in the text
   in `features` — one entry each: through/blind/counterbored/countersunk holes
   (diameter, depth, counterbore/countersink dims, position along the part),

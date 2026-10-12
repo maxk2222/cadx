@@ -241,6 +241,25 @@ def main() -> int:  # noqa: C901
         never guess positions from the bbox."""
         return [dict(h) for h in anchor_holes_list]
 
+    def _smooth_ring(pts_xy: list[list[float]], window: int = 5) -> list[list[float]]:
+        """Circular moving-average smoothing on a closed outline ring.
+
+        Measured outlines carry pixel noise; a periodic Spline through every
+        raw point keeps the jitter as visible faceting. A small wrap-around
+        moving average (~window * point spacing ≈ 4-5 mm) smooths the noise
+        while preserving real features like a finger choil.
+        """
+        n = len(pts_xy)
+        if n <= window:
+            return pts_xy
+        half = window // 2
+        out = []
+        for i in range(n):
+            xs = sum(pts_xy[(i + k) % n][0] for k in range(-half, half + 1)) / window
+            ys = sum(pts_xy[(i + k) % n][1] for k in range(-half, half + 1)) / window
+            out.append([xs, ys])
+        return out
+
     def load_image_profile() -> Face:
         """Measured plan-view outline as a planar Face on the XY plane (Frame
         coords). RuntimeError when no measured top view is available."""
@@ -249,6 +268,7 @@ def main() -> int:  # noqa: C901
         pts_xy = [list(map(float, p)) for p in image_profile_pts]
         if pts_xy[0] == pts_xy[-1]:
             pts_xy = pts_xy[:-1]  # closed ring stored with repeated first point
+        pts_xy = _smooth_ring(pts_xy)
         pts = [Vector(x, y, 0.0) for x, y in pts_xy]
         try:
             wire = Spline(*pts, periodic=True)

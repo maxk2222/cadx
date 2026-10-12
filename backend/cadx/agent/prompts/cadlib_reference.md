@@ -63,3 +63,10 @@ No BuildPart context needed. Parts rest on XY (min Z = 0), centred — place wit
   top (`crown_mm` raises an inset loft cap) and top-edge fillet. The result
   rests on XY centred exactly like the outline — the fastest correct way to
   turn a measured top view into a solid.
+- `closed_polyline(pts, tol=1e-3)` — planar Face from a dense sampled outline
+  `[(x, y), ...]`; tolerates consecutive duplicates, a repeated closing point
+  and stray spikes that would crash raw `Polyline`. USE THIS whenever you
+  generate an outline from sampled math (S-curves, parametric sweeps) instead
+  of calling `Polyline` yourself — duplicate-sample crashes are the most
+  common exec error. Then `extrude(face, amount=h)` or feed it to
+  `profile_body`.

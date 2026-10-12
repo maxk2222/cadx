@@ -20,7 +20,7 @@ from .cutouts import (
     t_slot,
     through_hole,
 )
-from .profile import profile_body
+from .profile import closed_polyline, profile_body
 from .shapes import (
     boss,
     filleted_box,
@@ -36,6 +36,7 @@ from .shapes import (
 __all__ = [
     "bearing_seat",
     "boss",
+    "closed_polyline",
     "dovetail_slot",
     "filleted_box",
     "hole_grid",
