@@ -88,3 +88,20 @@ def test_diff_summary():
     new = CODE.replace('"height": 10.0', '"height": 8.0')
     s = diff_summary(CODE, new)
     assert "height" in s
+
+
+def test_ws_tolerant_find_matches():
+    """find with drifted indentation/blank lines still applies once."""
+    # model sends flat lines, file has them indented inside `with` + blank gap
+    code = CODE.replace(
+        '    Box(PARAMS["length"], PARAMS["width"], PARAMS["height"],',
+        '    Box(PARAMS["length"], PARAMS["width"], PARAMS["height"],\n',
+    )
+    find = (
+        "with BuildPart() as p:\n"
+        'Box(PARAMS["length"], PARAMS["width"], PARAMS["height"],\n'
+        "align=(Align.CENTER, Align.CENTER, Align.MIN))"
+    )
+    out, errs = apply_edits(code, [_e(find, "with BuildPart() as p:\n    pass")])
+    assert errs == [], errs
+    assert out is not None and "pass" in out

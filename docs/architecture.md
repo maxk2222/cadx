@@ -90,6 +90,7 @@ data/projects/<pid>/
     exports/model.{step,stl,3mf,glb,dxf,svg}
     iterations/<n>/              per-iteration run dir (_run/, renders/, …)
     iterations/0/                hybrid: mesh generation + orientation + solid prep
+    _scratch/                    transient GUI previews (ops GLBs, region PNGs)
 data/library/<part_id>/<file>    reusable user library (uploaded STEP/STL bodies;
                                 parametric code templates are stored in the DB row)
 ```
@@ -125,6 +126,13 @@ data/library/<part_id>/<file>    reusable user library (uploaded STEP/STL bodies
   stress/safety-factor feedback into the agent; SIMP TopOpt runs as a post-phase
   or an LLM-free child job. Assumptions, API contract, artifacts and limits:
   `docs/fem-topopt.md`.
+- **Visual editing**: the web GUI ships a mesh editor and a structural editor.
+  Both reuse the deterministic executor paths — `MeshOp`/`OPS_REGISTRY`
+  replays (`mesh_edit` child versions, `ops_preview` scratch GLBs) and the
+  voxel FEM region/preview pipeline (`fem` jobs, `points` regions painted on
+  the surface). Preview artifacts live in `versions/<vid>/_scratch/` and are
+  served through a whitelisted route; GUI state persists under
+  `version.options["ui_editor"]`. See `docs/webgui-ux.md`.
 - **No auth**: single-user local. Do not expose the stack on a network.
 
 ## Security notes

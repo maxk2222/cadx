@@ -34,11 +34,13 @@ Base URL: `MESH_BASE_URL`, e.g. `http://localhost:8765` (native) or
   "name": "Hunyuan3D-2.1 Shape (MLX)",
   "device": "mlx",
   "backend": "mlx",
+  "kind": "mesh",                   // "mesh" | "image" — second adapter family
   "supports_multiview": false,
   "max_images": 1,
   "license_note": "Tencent Hunyuan Community License — …",
   "loaded": false,
-  "available": true                 // deps + weights usable on this host
+  "available": true,                // deps + weights usable on this host
+  "last_error": null                // set after a load/OOM failure ("badlisted")
 }
 ```
 
@@ -97,6 +99,60 @@ is full. One generation job runs at a time; the rest queue.
 Cancels a queued job and deletes its result. A running job is marked
 cancelled; its result is discarded (model calls are not interruptible
 mid-flight). `200 {"ok": true, "deleted": bool}`.
+
+## Text-to-image jobs
+
+Second adapter family (`kind: "image"` in `/v1/models`): FLUX.1-schnell via
+`mflux` on Apple Silicon, FLUX.1-schnell / SDXL / SD1.5 via diffusers on CUDA,
+`fake-image` for tests. Same job queue — a running mesh job blocks image jobs
+and vice versa; at most one heavyweight model is resident at a time (loading
+a model unloads all others).
+
+### `POST /v1/image-jobs`
+
+Plain JSON body `ImageGenParams` (no multipart — there are no inputs):
+
+```json
+{
+  "prompt": "studio photo of a red gear",
+  "negative": "",
+  "model": "auto",          // image adapter id or "auto"
+  "seed": 42,
+  "count": 1,               // 1..max_count per adapter
+  "width": 768,
+  "height": 768,
+  "steps": 4,               // optional
+  "guidance": 3.5           // optional
+}
+```
+
+Response `200`: `{ "job_id": "…" }` — `422` on invalid params, `503` when no
+image adapter is installed.
+
+### `GET /v1/image-jobs/{id}`
+
+Same shape as mesh jobs plus `"images": <n>` (result count) and `"backend"`.
+
+### `GET /v1/image-jobs/{id}/image?i=0`
+
+`200` → PNG bytes of result image `i` (0-indexed). `409` while the job is not
+`succeeded`, `404` unknown id/index.
+
+### `DELETE /v1/image-jobs/{id}`
+
+Same semantics as mesh job deletion.
+
+## VRAM / OOM behaviour
+
+- One heavyweight model resident: loading a model unloads all others.
+- OOM during load or inference → job `failed` with a human-readable message
+  ("VRAM exhausted — try a smaller model or fewer/smaller images"), the
+  adapter is `unload()`ed and badlisted (`last_error` in `/v1/models`).
+- `model: "auto"` selection skips badlisted adapters (automatic fallback
+  flux → sdxl → sd15); an explicitly requested model surfaces its real error.
+- `MESH_CUDA_OFFLOAD=auto|model|sequential|none` controls diffusers
+  CPU offload on CUDA (default `auto` = model offload when VRAM is tight).
+- Request `width`/`height`/`count` are clamped per adapter before generation.
 
 ## Semantics
 

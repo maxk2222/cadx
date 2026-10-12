@@ -23,6 +23,13 @@ to apply at that workplane (usually a face, e.g. `p.faces().sort_by(Axis.Z)[-1]`
   retain="pressfit", groove_offset=2.0, on=None)` — press-fit bore; `retain`
   ∈ pressfit | through | snapring (snapring adds an internal snap-ring groove
   `groove_offset` mm below the workplane).
+- `through_hole(diameter, depth=None, csk_dia=None, csk_angle=90,
+  cbore_dia=None, cbore_depth=None, on=None)` — Ø`diameter` bore along the
+  workplane normal, guaranteed through (oversized cutter — never leaves a
+  membrane). `depth` makes it blind; `csk_dia` adds a countersink cone and
+  `cbore_dia`/`cbore_depth` a counterbore, both opening at the workplane.
+  Safest way to place holes at measured anchor positions:
+  `with Locations(Pos(x, y, 0)): through_hole(5.0)`.
 - `keyhole_slot(big_d, small_d, spacing, thickness, direction="+x", on=None)` —
   keyhole cutout cutting `thickness` mm down from the workplane.
 - `t_slot(bolt_d, head_w, head_h, slot_w, length, on=None)` — T-slot groove

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from cadx import storage
-from cadx.agent.types import AgentCtx
+from cadx.agent.types import IMAGE_INPUT_KINDS, AgentCtx
 from cadx.llm.schemas import PartSpec
 from cadx.logging import get_logger
 from cadx.vision.measure import measure_plan_view, render_overlay
@@ -38,16 +38,22 @@ def _candidate_role(asset: Any, roles: dict[str, str], spec: PartSpec) -> str | 
         return r
     if r is not None:
         return None
-    # fallback: unroled image with alpha whose aspect fits length/width ±25%
+    # fallback: unroled image whose silhouette aspect fits length/width ±25%.
+    # Uploads are normalized to JPEG (alpha flattened), so without alpha we
+    # get the silhouette from _mask (rembg) instead.
     try:
         import numpy as np
         from PIL import Image
 
         a = np.asarray(Image.open(asset.path).convert("RGBA"))[..., 3]
-        if float((a < 128).mean()) <= 0.02:
-            return None
-        cols = np.flatnonzero((a >= 128).any(axis=0))
-        rows = np.flatnonzero((a >= 128).any(axis=1))
+        if float((a < 128).mean()) > 0.02:
+            mask = a >= 128
+        else:
+            from cadx.vision.measure import _mask
+
+            mask, _filled, _rgb = _mask(Path(asset.path))
+        cols = np.flatnonzero(mask.any(axis=0))
+        rows = np.flatnonzero(mask.any(axis=1))
         aspect = (cols[-1] - cols[0] + 1) / max(rows[-1] - rows[0] + 1, 1)
         stated = spec.length_x.value / max(spec.width_y.value, 1e-9)
         # orientation-agnostic: a portrait top view of a 119x38 part has
@@ -62,7 +68,7 @@ def _candidate_role(asset: Any, roles: dict[str, str], spec: PartSpec) -> str | 
 
 async def run(ctx: AgentCtx, spec: PartSpec) -> dict[str, dict[str, Any]]:
     """Measure plan-view images. Returns {asset_id: ImageMeasurement dict}."""
-    images = [a for a in ctx.assets if a.kind == "image"]
+    images = [a for a in ctx.assets if a.kind in IMAGE_INPUT_KINDS]
     if not images or spec.length_x.value <= 0:
         return {}
     roles = {r.asset_id: r.role for r in spec.image_roles}

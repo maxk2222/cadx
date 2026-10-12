@@ -11,6 +11,7 @@
 #   --fake                      enable the deterministic test adapter (tier none)
 #   --extra mps                 additionally install torch/MPS adapters (Apple Silicon)
 #   --skip-mesh                 do not install any mesh adapter
+#   --skip-image                do not install a text-to-image adapter
 #   --dry-run                   print the plan, change nothing
 #   --doctor                    print diagnostics and exit
 set -euo pipefail
@@ -21,7 +22,7 @@ source scripts/lib/gpu_detect.sh
 
 # ---------- flags ----------
 TIER_OVERRIDE=""
-DEV=0; FAKE=0; SKIP_MESH=0; DRY=0; DOCTOR=0; EXTRA_MPS=0
+DEV=0; FAKE=0; SKIP_MESH=0; SKIP_IMAGE=0; DRY=0; DOCTOR=0; EXTRA_MPS=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --tier)   TIER_OVERRIDE="$2"; shift 2 ;;
@@ -29,6 +30,7 @@ while [ $# -gt 0 ]; do
     --fake)   FAKE=1; shift ;;
     --extra)  [ "$2" = "mps" ] && EXTRA_MPS=1; shift 2 ;;
     --skip-mesh) SKIP_MESH=1; shift ;;
+    --skip-image) SKIP_IMAGE=1; shift ;;
     --dry-run) DRY=1; shift ;;
     --doctor) DOCTOR=1; shift ;;
     *) echo "unknown flag: $1" >&2; exit 2 ;;
@@ -39,6 +41,7 @@ done
 TIER=$(gpu_detect_tier)
 [ "$FAKE" = 1 ] && [ "$TIER" = "none" ] && TIER=fake
 MODEL=$(gpu_default_model "$TIER")
+IMG_MODEL=$(gpu_default_image_model "$TIER")
 
 say()  { printf '\033[1m== %s\033[0m\n' "$*"; }
 info() { printf '   %s\n' "$*"; }
@@ -63,10 +66,12 @@ if [ "$DOCTOR" = 1 ]; then
   info "vram:              $(gpu_vram_mb) MiB"
   info "default model:     ${MODEL:-<none>}"
   info "install script:    $(gpu_install_script "$TIER")"
+  info "image model:       ${IMG_MODEL:-<none>}"
+  info "image installer:   $(gpu_image_install_script "$TIER")"
   info "backend venv:      $([ -x .venv/bin/python ] && echo ok || echo MISSING)"
   info "mesh venv:         $([ -x mesh_server/.venv/bin/python ] && echo ok || echo MISSING)"
   info "node_modules:      $([ -d frontend/node_modules ] && echo ok || echo MISSING)"
-  info "legacy .env:       $([ -f .env ] && echo 'present — will be imported once at next start' || echo none)"
+  info ".env overrides:    $([ -f .env ] && echo 'present — used by docker compose for POSTGRES_* etc.' || echo none)"
   if [ -x mesh_server/.venv/bin/meshserver ]; then
     info "adapters:"
     mesh_server/.venv/bin/python - <<'PY' 2>/dev/null
@@ -110,6 +115,7 @@ info "ok"
 case "$TIER" in
   mlx|cuda|fake)
     info "mesh default: $MODEL — start.sh will seed it into the app settings"
+    [ -n "$IMG_MODEL" ] && info "image default: $IMG_MODEL"
     ;;
   none)
     info "no GPU tier — mesh generation disabled (CAD fallback active)"
@@ -134,6 +140,16 @@ if [ "$SKIP_MESH" = 0 ] && [ "$TIER" != "none" ]; then
     if [ "$EXTRA_MPS" = 1 ]; then
       say "extra: torch/MPS adapters (hunyuan3d-2mini/-mv)"
       run "VENV=mesh_server/.venv bash mesh_server/scripts/install_hunyuan_torch.sh"
+    fi
+    # text-to-image adapter (same sidecar, second adapter family)
+    IMG_SCRIPT=$(gpu_image_install_script "$TIER")
+    if [ "$SKIP_IMAGE" = 0 ] && [ -n "$IMG_SCRIPT" ]; then
+      if mesh_model_available "$IMG_MODEL"; then
+        info "image adapter '$IMG_MODEL' already available — skipping install"
+      else
+        say "installing image adapter: $IMG_MODEL"
+        run "VENV=mesh_server/.venv bash mesh_server/scripts/$IMG_SCRIPT"
+      fi
     fi
   else
     info "fake tier — no adapter to install (MESH_FAKE=1)"

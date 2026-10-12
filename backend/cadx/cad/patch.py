@@ -11,6 +11,26 @@ from cadx.cad.allowlist import check_code
 from cadx.llm.schemas import PatchEdit
 
 
+def _ws_tolerant_match(code: str, find: str) -> str | None:
+    """Locate `find` in `code` ignoring per-line leading/trailing whitespace.
+
+    Returns the raw code span matching it (so `replace` keeps the file's
+    indentation style), or None when there is no unique match.
+    """
+    needle = [ln.strip() for ln in find.splitlines() if ln.strip()]
+    if not needle:
+        return None
+    lines = code.splitlines(keepends=True)
+    nonempty = [i for i, ln in enumerate(lines) if ln.strip()]
+    hits: list[str] = []
+    n = len(needle)
+    for j in range(len(nonempty) - n + 1):
+        if [lines[i].strip() for i in nonempty[j : j + n]] == needle:
+            # raw span from first to last matched line (keeps inner blank lines)
+            hits.append("".join(lines[nonempty[j] : nonempty[j + n - 1] + 1]))
+    return hits[0] if len(hits) == 1 else None
+
+
 def apply_edits(code: str, edits: list[PatchEdit]) -> tuple[str | None, list[str]]:
     """Apply find/replace hunks in order. Returns (patched_code, errors).
 
@@ -26,6 +46,13 @@ def apply_edits(code: str, edits: list[PatchEdit]) -> tuple[str | None, list[str
             errors.append(f"edit {i}: empty `find` block")
             continue
         n = out.count(find)
+        if n == 0:
+            # tolerant retry: weak models drift on whitespace/blank lines —
+            # match per-line stripped before declaring a miss
+            raw = _ws_tolerant_match(out, find)
+            if raw is not None:
+                find = raw
+                n = 1
         if n == 0:
             errors.append(
                 f"edit {i}: `find` block not found in the code "

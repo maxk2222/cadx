@@ -51,6 +51,25 @@ class ServerConfig:
     bg_removal: str = field(
         default_factory=lambda: os.environ.get("MESH_BG_REMOVAL", "auto")
     )  # auto | always | never
+    # text-to-image adapter family
+    image_default_model: str = field(
+        default_factory=lambda: os.environ.get("MESH_IMAGE_MODEL", "auto")
+    )
+    flux_mlx_quant: int = field(
+        default_factory=lambda: int(os.environ.get("MESH_FLUX_MLX_QUANT", "4"))
+    )  # bit depth for the mflux weight file (4|8|16)
+    # diffusers CPU-offload ladder: auto|model|sequential|none —
+    # 'auto' enables model-level offload below cuda_offload_vram_gb free VRAM
+    cuda_offload: str = field(
+        default_factory=lambda: os.environ.get("MESH_CUDA_OFFLOAD", "auto")
+    )
+    cuda_offload_vram_gb: float = field(
+        default_factory=lambda: float(os.environ.get("MESH_CUDA_OFFLOAD_VRAM_GB", "24"))
+    )
+    # optional MLX unified-memory cap (0 = unlimited)
+    mlx_mem_limit_gb: float = field(
+        default_factory=lambda: float(os.environ.get("MESH_MLX_MEM_LIMIT_GB", "0"))
+    )
 
 
 def get_config() -> ServerConfig:

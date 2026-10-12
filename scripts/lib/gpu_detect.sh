@@ -73,6 +73,30 @@ gpu_install_script() {
   esac
 }
 
+gpu_default_image_model() {
+  # text-to-image adapter id for a tier (same sidecar as the mesh adapters)
+  local tier="${1:-$(gpu_detect_tier)}"
+  case "$tier" in
+    mlx)  echo "flux-schnell-mlx" ;;
+    cuda)
+      # FLUX.1-schnell via diffusers — the adapter itself applies CPU offload
+      # on smaller cards (MESH_CUDA_OFFLOAD), so schnell works everywhere;
+      # sdxl remains selectable as the light fallback.
+      echo "flux-schnell" ;;
+    fake) echo "fake-image" ;;
+    *)    echo "" ;;
+  esac
+}
+
+gpu_image_install_script() {
+  local tier="${1:-$(gpu_detect_tier)}"
+  case "$tier" in
+    mlx)  echo "install_image_mlx.sh" ;;
+    cuda) echo "install_image_torch.sh" ;;
+    *)    echo "" ;;
+  esac
+}
+
 # --- CLI mode ---
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   _tier=$(gpu_detect_tier)

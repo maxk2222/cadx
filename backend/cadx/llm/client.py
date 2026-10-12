@@ -146,6 +146,29 @@ def _stream_tail_degenerate(text_parts: list[str], tool_acc: _StreamToolAcc) -> 
     return _looks_degenerate("".join(text_parts)[-384:]) or _looks_degenerate(args_tail[-384:])
 
 
+def _chunk_has_reasoning(chunk: dict[str, Any]) -> bool:
+    for ch in chunk.get("choices") or []:
+        delta = ch.get("delta") or {}
+        if delta.get("reasoning_content") or delta.get("reasoning"):
+            return True
+    return False
+
+
+def _absorb_chunk(
+    chunk: dict[str, Any], text_parts: list[str], tool_acc: _StreamToolAcc
+) -> str | None:
+    for ch in chunk.get("choices") or []:
+        delta = ch.get("delta") or {}
+        piece = delta.get("content")
+        if piece:
+            text_parts.append(piece)
+        if delta.get("tool_calls"):
+            tool_acc.feed(delta["tool_calls"])
+        if ch.get("finish_reason"):
+            return ch["finish_reason"]
+    return None
+
+
 class LLMClient:
     def __init__(
         self,
@@ -269,8 +292,19 @@ class LLMClient:
         finish: str | None = None
         chunks = 0
         tool_acc = _StreamToolAcc()
+        # content-stall watchdog: proxies/keepalives can keep the socket
+        # "alive" while the model emits nothing — abort when no real
+        # content arrived for idle_timeout_s
+        last_progress = t0
+        last_content_size = -1
         async for line in resp.aiter_lines():
             chunks += 1
+            content_size = sum(map(len, text_parts)) + reasoning_parts + tool_acc.size
+            if content_size != last_content_size:
+                last_content_size = content_size
+                last_progress = time.monotonic()
+            elif time.monotonic() - last_progress > self.idle_timeout_s:
+                raise LLMError(f"stream stalled: no content for {self.idle_timeout_s:.0f}s")
             if chunks == 1 or chunks % 200 == 0:
                 tail_src = "".join(text_parts) or tool_acc.debug_tail()
                 log.debug(
@@ -295,17 +329,8 @@ class LLMClient:
                 chunk = json.loads(data)
             except json.JSONDecodeError:
                 continue
-            for ch in chunk.get("choices") or []:
-                delta = ch.get("delta") or {}
-                piece = delta.get("content")
-                if piece:
-                    text_parts.append(piece)
-                if delta.get("reasoning_content") or delta.get("reasoning"):
-                    reasoning_parts += 1
-                if delta.get("tool_calls"):
-                    tool_acc.feed(delta["tool_calls"])
-                if ch.get("finish_reason"):
-                    finish = ch["finish_reason"]
+            finish = _absorb_chunk(chunk, text_parts, tool_acc) or finish
+            reasoning_parts += 1 if _chunk_has_reasoning(chunk) else 0
             if chunk.get("usage"):
                 usage = chunk["usage"]
         calls = tool_acc.result()

@@ -86,6 +86,11 @@ class _StreamToolAcc:
             for i, (_, v) in enumerate(sorted(self._by_index.items()))
         ]
 
+    @property
+    def size(self) -> int:
+        """Accumulated content bytes — stream stall detection."""
+        return sum(len(v["id"]) + len(v["name"]) + len(v["args"]) for v in self._by_index.values())
+
     def debug_tail(self) -> str:
         """Most recent accumulated tool-call args — stream progress diagnostics."""
         if not self._by_index:

@@ -21,7 +21,13 @@ from typing import Any
 import trimesh
 from PIL import Image
 
-from meshserver.adapters.base import AdapterGenResult, GenOpts, MeshAdapter, missing
+from meshserver.adapters.base import (
+    AdapterGenResult,
+    GenOpts,
+    MeshAdapter,
+    hard_unload,
+    missing,
+)
 
 WEIGHTS_REPO = "dgrauet/hunyuan3d-2.1-mlx"
 
@@ -125,6 +131,7 @@ class Hunyuan3D21MlxAdapter(MeshAdapter):
             mx.clear_cache()
         except Exception:
             pass
+        hard_unload()
         self._loaded = False
 
     def generate(

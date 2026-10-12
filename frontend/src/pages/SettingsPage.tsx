@@ -68,6 +68,12 @@ const NUM_FIELDS = new Set<string>([
   "mesh_timeout_s",
   "mesh_decimate_faces",
   "mesh_max_faces_for_cad",
+  "image_steps",
+  "image_guidance",
+  "image_max_side",
+  "image_max_count",
+  "image_tool_budget",
+  "image_timeout_s",
   "exec_timeout_s",
   "exec_mem_limit_mb",
 ]);
@@ -79,6 +85,7 @@ const BOOL_FIELDS = new Set<string>([
   "agent_critique_reask",
   "agent_tool_verify",
   "agent_mesh_tools",
+  "image_autogen_mesh",
 ]);
 
 // mirrors the bounds in backend SettingsUpdate — keep in sync with schemas.py
@@ -118,6 +125,12 @@ const FIELD_BOUNDS: Record<
   mesh_timeout_s: { min: 1, max: 86_400, int: true },
   mesh_decimate_faces: { min: 1, int: true },
   mesh_max_faces_for_cad: { min: 1, int: true },
+  image_steps: { min: 1, max: 200, int: true },
+  image_guidance: { min: 0, max: 50 },
+  image_max_side: { min: 64, max: 4096, int: true },
+  image_max_count: { min: 1, max: 16, int: true },
+  image_tool_budget: { min: 0, max: 50, int: true },
+  image_timeout_s: { min: 1, max: 86_400, int: true },
   exec_timeout_s: { min: 1, max: 86_400, int: true },
   exec_mem_limit_mb: { min: 256, max: 1_048_576, int: true },
 };
@@ -170,6 +183,12 @@ export default function SettingsPage() {
     refetchInterval: 30_000,
     retry: false,
   });
+  const imageModels = useQuery({
+    queryKey: ["imageModels"],
+    queryFn: api.imageModels,
+    refetchInterval: 30_000,
+    retry: false,
+  });
   const testProvider = useMutation({
     mutationFn: api.testProvider,
   });
@@ -181,7 +200,7 @@ export default function SettingsPage() {
     const out: Record<string, string> = {};
     for (const [k, v] of Object.entries(d)) {
       if (k === "data_dir" || k === "llm_api_key_set") continue;
-      out[k] = String(v);
+      out[k] = v == null ? "" : String(v); // nullable fields show empty = default
     }
     setForm(out);
     setInitial(out);
@@ -612,6 +631,77 @@ export default function SettingsPage() {
           <div className="mb-2 text-xs text-zinc-500">
             start the sidecar with <code>make mesh-server</code>. Mesh/hybrid modes fall back
             to CAD while it is unreachable.
+          </div>
+        )}
+      </Card>
+      )}
+
+      {tab === "mesh" && (
+      <Card className="p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <SectionTitle>Image generation (local models)</SectionTitle>
+          {imageModels.data && imageModels.data.length > 0 && (
+            <Chip tone="green">online · {imageModels.data.filter((m) => m.available).length} adapter(s)</Chip>
+          )}
+        </div>
+        <div className="mb-3 text-xs text-zinc-500">
+          text-to-image on the same mesh-server sidecar — for concept images,
+          design ideation and auto-generated hero images for mesh mode.
+        </div>
+        <Field label="Default image model">
+          <select
+            className={inputCls}
+            value={form.image_model}
+            onChange={(e) => set("image_model", e.target.value)}
+          >
+            <option value="auto">auto (device default)</option>
+            {(imageModels.data ?? []).map((m) => (
+              <option key={m.id} value={m.id} disabled={!m.available}>
+                {m.name || m.id} ({m.device}){m.available ? "" : " — not installed"}
+              </option>
+            ))}
+            {form.image_model &&
+              !["auto", ...(imageModels.data ?? []).map((m) => m.id)].includes(
+                form.image_model
+              ) && <option value={form.image_model}>{form.image_model}</option>}
+          </select>
+        </Field>
+        {field({ key: "image_steps", label: "Steps (empty = adapter default)", kind: "number" })}
+        {field({ key: "image_guidance", label: "Guidance (empty = adapter default)", kind: "number" })}
+        {field({ key: "image_max_side", label: "Max image side (px)", kind: "number" })}
+        {field({ key: "image_max_count", label: "Max images per request", kind: "number" })}
+        {field({ key: "image_timeout_s", label: "Generation timeout (s)", kind: "number" })}
+        {field({
+          key: "image_autogen_mesh",
+          label: "Auto hero image for mesh runs",
+          hint: "synthesise a reference image when a mesh/hybrid job has no input images",
+          kind: "bool",
+        })}
+        {field({
+          key: "image_tool_budget",
+          label: "Agent concept-image calls per session",
+          kind: "number",
+        })}
+        {(imageModels.data ?? []).length > 0 ? (
+          <div className="mb-2 flex flex-col gap-1 text-xs text-zinc-500">
+            {(imageModels.data ?? []).map((m) => (
+              <div key={m.id}>
+                <b className="text-zinc-300">{m.id}</b> · {m.device}
+                {m.loaded ? " · loaded" : ""}
+                {m.available ? "" : " · not installed"}
+                {m.last_error ? (
+                  <div className="text-amber-500">last error: {m.last_error}</div>
+                ) : null}
+                {m.license_note ? (
+                  <div className="text-zinc-600">license: {m.license_note}</div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="mb-2 text-xs text-zinc-500">
+            no image adapter installed — see <code>docs/image-generation.md</code> for
+            setup (FLUX.1-schnell on MLX/CUDA, SDXL fallback).
           </div>
         )}
       </Card>

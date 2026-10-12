@@ -148,6 +148,31 @@ def _box_cells(domain: VoxelDomain, center: list[float], edge: float) -> np.ndar
     return np.asarray(inside & domain.solid)
 
 
+def _points_cells(domain: VoxelDomain, region: RegionSpec) -> np.ndarray:
+    """Solid cells within `radius_mm` of any painted surface point (GUI brush).
+
+    Picked points sit ON the surface, so a sphere of `radius` selects a patch
+    of near-surface material — the natural target for clamps and load pads."""
+    if len(region.points) == 0:
+        return np.zeros(domain.dims, dtype=bool)
+    radius = region.radius_mm or max(2.0 * region.margin_mm, 3.0)
+    radius += domain.pitch  # centres of boundary cells sit ~pitch behind the skin
+    centers = domain.element_centers().reshape((*domain.dims, 3))
+    sel = np.zeros(domain.dims, dtype=bool)
+    pts = np.asarray([p[:3] for p in region.points if len(p) >= 3], dtype=float)
+    for p in pts[:600]:
+        d2 = np.sum((centers - p[None, None, None, :]) ** 2, axis=-1)
+        sel |= d2 <= radius * radius
+    return np.asarray(sel & domain.solid)
+
+
+def _dominant_axis(normal: list[float] | np.ndarray) -> str:
+    """'+x'/'-z'/... for the dominant component of a free-form normal."""
+    n = np.asarray(normal, dtype=float)
+    idx = int(np.argmax(np.abs(n)))
+    return f"{'-' if n[idx] < 0 else '+'}{'xyz'[idx]}"
+
+
 def region_cell_mask(
     domain: VoxelDomain, region: RegionSpec, anchors: list[dict] | None = None
 ) -> np.ndarray:
@@ -169,6 +194,8 @@ def region_cell_mask(
     if kind == "box":
         edge = region.diameter_mm or 4 * region.margin_mm
         return _box_cells(domain, region.center, edge)
+    if kind == "points":
+        return _points_cells(domain, region)
     return np.zeros(domain.dims, dtype=bool)
 
 
@@ -184,6 +211,18 @@ def region_node_mask(
 
 def region_face_normal(region: RegionSpec) -> np.ndarray | None:
     """Outward unit normal for face-like regions (used for pressure loads)."""
+    if region.kind == "points":
+        if len(region.normal) >= 3:
+            n = np.asarray(region.normal[:3], dtype=float)
+            mag = float(np.linalg.norm(n))
+            if mag > 1e-6:
+                return n / mag
+        if region.axis:
+            idx, sign = _axis_parts(region.axis)
+            v = np.zeros(3)
+            v[idx] = float(sign)
+            return v
+        return None
     if region.kind not in ("face", "surface", "area"):
         return None
     idx, sign = _axis_parts(region.axis or "+z")
@@ -262,12 +301,15 @@ def resolve_case(
             # real selected surface area shared onto the face nodes;
             # pressure acts AGAINST the outward normal (into the part)
             cells = region_cell_mask(domain, load.region, anchors)
-            areas = surface_area_per_node(domain, cells, load.region.axis or "+z")
+            axis = load.region.axis or (
+                _dominant_axis(load.region.normal) if len(load.region.normal) >= 3 else "+z"
+            )
+            areas = surface_area_per_node(domain, cells, axis)
             idx = np.flatnonzero(areas > 0)
             if not len(idx):
                 warnings.append(
                     f"case '{case.name}': pressure region has no surface facing "
-                    f"{load.region.axis or '+z'} — check axis/area"
+                    f"{axis} — check axis/area"
                 )
                 continue
             f = -n * float(load.pressure_mpa)

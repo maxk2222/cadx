@@ -1,12 +1,13 @@
-"""Adapter interface for image-to-3D backends."""
+"""Adapter interfaces: image-to-3D (MeshAdapter) and text-to-image (ImageAdapter)."""
 
 from __future__ import annotations
 
+import gc
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import trimesh
 from PIL import Image
@@ -44,6 +45,7 @@ class MeshAdapter(ABC):
     name: str = "?"
     device: str = "?"  # cuda | mps | mlx | cpu | fake
     backend: str = "?"  # short backend tag reported to clients
+    kind: ClassVar[str] = "mesh"  # registry task family — image adapters use "image"
     supports_multiview: bool = False
     max_images: int = 1
     license_note: str = ""
@@ -85,8 +87,33 @@ class MeshAdapter(ABC):
         raise NotImplementedError
 
 
-def missing(cls: type[MeshAdapter], what: str) -> None:
+def missing(cls: type, what: str) -> None:
     raise RuntimeError(
         f"adapter '{cls.id}' is not available: {what}. "
         "Install the matching optional dependencies (see mesh_server/README.md)."
     )
+
+
+def hard_unload() -> None:
+    """gc + device cache clear — call after every adapter.unload() and on OOM.
+
+    Plain `del`/None assignment only drops Python references; torch/MLX keep
+    their allocator caches, so the freed memory is invisible to the next model
+    load without an explicit cache purge.
+    """
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+    except Exception:
+        pass
+    try:
+        import mlx.core as mx
+
+        mx.clear_cache()
+    except Exception:
+        pass

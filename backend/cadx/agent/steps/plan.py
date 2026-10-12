@@ -13,7 +13,7 @@ from cadx.agent.context import (
 )
 from cadx.agent.toolloop import run_session, tools_enabled
 from cadx.agent.toolspecs import ToolSession
-from cadx.agent.types import AgentCtx
+from cadx.agent.types import IMAGE_INPUT_KINDS, AgentCtx
 from cadx.llm.schemas import ModelingPlan, PartSpec
 
 STEP = "plan"
@@ -22,7 +22,7 @@ STEP = "plan"
 async def run(ctx: AgentCtx, spec: PartSpec) -> ModelingPlan:
     ref = references_block(ctx.assets)
     forced = ctx.gen_mode if ctx.gen_mode in ("cad", "mesh", "hybrid") else "auto"
-    images_n = sum(1 for a in ctx.assets if a.kind == "image")
+    images_n = sum(1 for a in ctx.assets if a.kind in IMAGE_INPUT_KINDS)
     mode_ctx = (
         f"GENERATION CONTEXT: requested mode = {forced}"
         f" | mesh server available = {ctx.mesh_available}"

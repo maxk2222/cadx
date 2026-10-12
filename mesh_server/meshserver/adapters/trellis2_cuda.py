@@ -15,7 +15,13 @@ from typing import Any
 import trimesh
 from PIL import Image
 
-from meshserver.adapters.base import AdapterGenResult, GenOpts, MeshAdapter, missing
+from meshserver.adapters.base import (
+    AdapterGenResult,
+    GenOpts,
+    MeshAdapter,
+    hard_unload,
+    missing,
+)
 from meshserver.adapters.hunyuan3d21_mlx import _to_trimesh
 
 
@@ -62,6 +68,7 @@ class Trellis2Adapter(MeshAdapter):
             self._torch.cuda.empty_cache()
         except Exception:
             pass
+        hard_unload()
         self._loaded = False
 
     def generate(

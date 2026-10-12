@@ -70,11 +70,13 @@ class MeshModelInfo(BaseModel):
     name: str = ""
     device: str = ""
     backend: str = ""
+    kind: str = "mesh"  # "mesh" | "image" — second adapter family on the sidecar
     supports_multiview: bool = False
     max_images: int = 1
     license_note: str = ""
     loaded: bool = False
     available: bool = True
+    last_error: str | None = None  # badlisted after a load/OOM failure
 
 
 class MeshHealth(BaseModel):

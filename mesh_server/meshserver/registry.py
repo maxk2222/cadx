@@ -6,8 +6,10 @@ import platform
 import threading
 import time
 
-from meshserver.adapters.base import MeshAdapter
+from meshserver.adapters.base import MeshAdapter, hard_unload
 from meshserver.adapters.fake import FakeAdapter
+from meshserver.adapters.fake_image import FakeImageAdapter
+from meshserver.adapters.image_base import ImageAdapter
 from meshserver.config import ServerConfig
 from meshserver.schemas import ModelInfo
 
@@ -40,16 +42,26 @@ def detect_device(cfg: ServerConfig) -> str:
     return "cpu"
 
 
+def _is_fake(cls: type) -> bool:
+    return str(getattr(cls, "id", "")).startswith("fake")
+
+
 class Registry:
-    """Knows every adapter class, instantiates available ones lazily."""
+    """Knows every adapter class, instantiates available ones lazily.
+
+    One heavyweight model stays loaded at a time across BOTH adapter families
+    (mesh + image): loading a different model unloads all others first — the
+    same VRAM/unified-memory budget is shared.
+    """
 
     def __init__(self, cfg: ServerConfig) -> None:
         self.cfg = cfg
         self.device = detect_device(cfg)
         self._lock = threading.Lock()
-        self._instances: dict[str, MeshAdapter] = {}
+        self._instances: dict[str, object] = {}
         self._last_used: dict[str, float] = {}
-        self._classes: list[type[MeshAdapter]] = self._adapter_classes()
+        self._failed: dict[str, str] = {}  # adapter id -> last load/OOM error
+        self._classes: list[type] = self._adapter_classes() + self._image_adapter_classes()
 
     @staticmethod
     def _adapter_classes() -> list[type[MeshAdapter]]:
@@ -75,7 +87,22 @@ class Registry:
         ]
         return classes
 
-    def _probe(self, cls: type[MeshAdapter]) -> bool:
+    @staticmethod
+    def _image_adapter_classes() -> list[type[ImageAdapter]]:
+        classes: list[type[ImageAdapter]] = [FakeImageAdapter]
+        from meshserver.adapters.flux_diffusers import FluxSchnellAdapter
+        from meshserver.adapters.flux_mlx import FluxSchnellMlxAdapter
+        from meshserver.adapters.sd_torch import Sd15Adapter, SdxlAdapter
+
+        classes += [
+            FluxSchnellMlxAdapter,
+            FluxSchnellAdapter,
+            SdxlAdapter,
+            Sd15Adapter,
+        ]
+        return classes
+
+    def _probe(self, cls: type) -> bool:
         try:
             return cls.available(self.cfg)
         except Exception:
@@ -84,8 +111,8 @@ class Registry:
     def models(self) -> list[ModelInfo]:
         out: list[ModelInfo] = []
         for cls in self._classes:
-            if cls.id == "fake" and not self.cfg.fake:
-                # the fake adapter is only listed when explicitly enabled
+            if _is_fake(cls) and not self.cfg.fake:
+                # the fake adapters are only listed when explicitly enabled
                 avail = False
             else:
                 avail = self._probe(cls)
@@ -96,24 +123,32 @@ class Registry:
                     name=cls.name,
                     device=cls.device,
                     backend=cls.backend,
-                    supports_multiview=cls.supports_multiview,
-                    max_images=cls.max_images,
+                    kind=getattr(cls, "kind", "mesh"),
+                    supports_multiview=getattr(cls, "supports_multiview", False),
+                    max_images=getattr(cls, "max_images", 0),
                     license_note=cls.license_note,
                     loaded=bool(inst and inst.loaded),
                     available=avail,
+                    last_error=self._failed.get(cls.id),
+                    default_size=getattr(cls, "default_size", None),
+                    max_count=getattr(cls, "max_count", None),
                 )
             )
         return out
 
-    def available(self) -> list[type[MeshAdapter]]:
+    def available(self) -> list[type]:
         return [cls for cls in self._classes if self._probe(cls)]
 
     def select(self, requested: str, n_images: int = 1) -> type[MeshAdapter] | None:
-        """Pick an adapter class for a request. 'auto' chooses by device."""
-        avail = {cls.id: cls for cls in self.available()}
+        """Pick a mesh adapter class for a request. 'auto' chooses by device
+        and skips models that failed to load/OOM'd earlier in this process."""
+        all_mesh = {
+            cls.id: cls for cls in self.available() if getattr(cls, "kind", "mesh") == "mesh"
+        }
         if requested and requested != "auto":
-            cls = avail.get(requested)
-            return cls  # explicit but unavailable -> None (error to client)
+            cls = all_mesh.get(requested)
+            return cls  # explicit but unavailable/failed -> None (error to client)
+        avail = {k: v for k, v in all_mesh.items() if k not in self._failed}
         # auto
         device = self.device
         pref: list[str]
@@ -137,7 +172,33 @@ class Registry:
                 return cls
         return avail.get("fake") if self.cfg.fake else None
 
-    def get(self, cls: type[MeshAdapter]) -> MeshAdapter:
+    def select_image(self, requested: str) -> type[ImageAdapter] | None:
+        """Pick an image adapter class. Same rules as select(): 'auto' follows
+        the device preference ladder and skips badlisted adapters; explicit
+        requests surface their own error."""
+        all_img = {
+            cls.id: cls for cls in self.available() if getattr(cls, "kind", "mesh") == "image"
+        }
+        if requested and requested != "auto":
+            return all_img.get(requested)
+        avail = {k: v for k, v in all_img.items() if k not in self._failed}
+        device = self.device
+        if device == "cuda":
+            pref = ["flux-schnell", "sdxl", "sd15"]
+        elif device == "mlx":
+            pref = ["flux-schnell-mlx", "sdxl", "sd15"]
+        elif device == "mps":
+            pref = ["sdxl", "sd15"]
+        elif self.cfg.fake:
+            pref = ["fake-image"]
+        else:
+            pref = ["sd15"] if self.cfg.allow_cpu else []
+        for pid in pref:
+            if cls := avail.get(pid):
+                return cls
+        return avail.get("fake-image") if self.cfg.fake else None
+
+    def get(self, cls: type) -> object:
         """Instantiate + load the adapter; only one model stays loaded."""
         with self._lock:
             inst = self._instances.get(cls.id)
@@ -152,9 +213,35 @@ class Registry:
                             other.unload()
                         except Exception:
                             pass
-                inst.load()
+                try:
+                    inst.load()
+                except Exception as e:
+                    # remember the failure so 'auto' skips this adapter next
+                    # time; purge whatever half-loaded state remains
+                    self._failed[cls.id] = str(e)[:300]
+                    try:
+                        inst.unload()
+                    except Exception:
+                        pass
+                    hard_unload()
+                    raise
             self._last_used[cls.id] = time.monotonic()
             return inst
+
+    def mark_failed(self, adapter_id: str, error: str) -> None:
+        """Record an inference-time failure (e.g. OOM inside generate())."""
+        self._failed[adapter_id] = error[:300]
+
+    def unload_all(self) -> None:
+        """Unload every resident model + purge device caches (OOM recovery)."""
+        with self._lock:
+            for inst in self._instances.values():
+                if inst.loaded:
+                    try:
+                        inst.unload()
+                    except Exception:
+                        pass
+        hard_unload()
 
     def maybe_unload_idle(self) -> None:
         if self.cfg.unload_idle_s <= 0:
@@ -162,10 +249,7 @@ class Registry:
         now = time.monotonic()
         with self._lock:
             for aid, inst in self._instances.items():
-                if (
-                    inst.loaded
-                    and now - self._last_used.get(aid, 0.0) > self.cfg.unload_idle_s
-                ):
+                if inst.loaded and now - self._last_used.get(aid, 0.0) > self.cfg.unload_idle_s:
                     try:
                         inst.unload()
                     except Exception:

@@ -1,12 +1,10 @@
-"""DB-backed application runtime settings and one-time legacy environment import."""
+"""DB-backed application runtime settings."""
 
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any, Literal
 
-from dotenv import dotenv_values
 from pydantic import BaseModel, Field, SecretStr, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -68,6 +66,14 @@ class RuntimeSettings(BaseModel):
     topopt_smooth_iterations: int = Field(default=6, ge=0, le=30)
     mesh_base_url: str = ""
     mesh_model: str = "auto"
+    image_model: str = "auto"
+    image_steps: int | None = None  # None = adapter default (FLUX:4, SDXL:30)
+    image_guidance: float | None = None  # None = adapter default
+    image_max_side: int = Field(default=1024, ge=64, le=4096)  # w/h clamp — OOM prevention
+    image_max_count: int = Field(default=4, ge=1, le=16)  # per-request clamp
+    image_autogen_mesh: bool = True  # synthesise hero image for mesh jobs w/o inputs
+    image_tool_budget: int = Field(default=4, ge=0, le=50)  # concept-image calls per session
+    image_timeout_s: int = Field(default=300, ge=1, le=86_400)
     mesh_timeout_s: int = Field(default=900, ge=1, le=86_400)
     mesh_decimate_faces: int = Field(default=30_000, ge=1)
     mesh_max_faces_for_cad: int = Field(default=60_000, ge=1)
@@ -93,9 +99,8 @@ class RuntimeSettings(BaseModel):
         return value
 
     def to_storage(self) -> dict[str, Any]:
-        """Sparse dict: only non-default values are persisted. This keeps the
-        legacy-env import precedence honest — fields still at their default
-        were never configured and may be filled by an import."""
+        """Sparse dict: only non-default values are persisted — an absent key
+        means 'use the code default'."""
         value = self.model_dump(mode="python", exclude_defaults=True)
         key = self.llm_api_key.get_secret_value()
         if key:
@@ -126,173 +131,26 @@ _EXECUTOR_FIELDS = {
     "mesh_smooth_after_flatten_iters",
 }
 
-_SETTING_KEYS = {
-    "llm": {
-        "llm_base_url": "llm_base_url",
-        "llm_model_vision": "llm_model_vision",
-        "llm_model_code": "llm_model_code",
-        "llm_json_mode": "llm_json_mode",
-    },
-    "mesh": {
-        "mesh_base_url": "mesh_base_url",
-        "mesh_model": "mesh_model",
-        "agent_default_gen_mode": "agent_default_gen_mode",
-    },
-}
-
-_ENV_TO_FIELD = {
-    "LLM_BASE_URL": "llm_base_url",
-    "LLM_API_KEY": "llm_api_key",
-    "LLM_MODEL_VISION": "llm_model_vision",
-    "LLM_MODEL_CODE": "llm_model_code",
-    "LLM_JSON_MODE": "llm_json_mode",
-    "LLM_TEMPERATURE_CODE": "llm_temperature_code",
-    "LLM_MAX_TOKENS": "llm_max_tokens",
-    "LLM_TIMEOUT_S": "llm_timeout_s",
-    "LLM_STREAM": "llm_stream",
-    "LLM_IDLE_TIMEOUT_S": "llm_idle_timeout_s",
-    "LLM_TOTAL_TIMEOUT_S": "llm_total_timeout_s",
-    "LLM_EXTRA_BODY": "llm_extra_body",
-    "LLM_TOOLS": "llm_tools",
-    "AGENT_MAX_ITERATIONS": "agent_max_iterations",
-    "AGENT_MAX_REPAIRS": "agent_max_repairs",
-    "AGENT_PASS_SCORE": "agent_pass_score",
-    "AGENT_DIM_TOLERANCE_PCT": "agent_dim_tolerance_pct",
-    "AGENT_DIM_TOLERANCE_MM": "agent_dim_tolerance_mm",
-    "AGENT_CLARIFICATION_MODE": "agent_clarification_mode",
-    "AGENT_MAX_INPUT_IMAGES": "agent_max_input_images",
-    "AGENT_MAX_TOKENS_PER_JOB": "agent_max_tokens_per_job",
-    "AGENT_MAX_WALL_S": "agent_max_wall_s",
-    "AGENT_DEFAULT_GEN_MODE": "agent_default_gen_mode",
-    "AGENT_PARAM_AUTOFIX": "agent_param_autofix",
-    "AGENT_PATCH_MODE": "agent_patch_mode",
-    "AGENT_PATCH_RETRIES": "agent_patch_retries",
-    "AGENT_FEATURE_FEEDBACK": "agent_feature_feedback",
-    "AGENT_CRITIQUE_REASK": "agent_critique_reask",
-    "AGENT_TOOL_MAX_CALLS": "agent_tool_max_calls",
-    "AGENT_TOOL_MAX_CALLS_INFO": "agent_tool_max_calls_info",
-    "AGENT_TOOL_VERIFY": "agent_tool_verify",
-    "AGENT_TOOL_VERIFY_MAX": "agent_tool_verify_max",
-    "AGENT_MESH_TOOLS": "agent_mesh_tools",
-    "AGENT_MESH_MAX_OPS": "agent_mesh_max_ops",
-    "AGENT_MESH_PREVIEW_MAX": "agent_mesh_preview_max",
-    "AGENT_MESH_REFINE_ROUNDS": "agent_mesh_refine_rounds",
-    "AGENT_MAX_APPROACHES": "agent_max_approaches",
-    "AGENT_SWITCH_SCORE": "agent_switch_score",
-    "AGENT_SWITCH_AFTER_ITERS": "agent_switch_after_iters",
-    "AGENT_STRUCT_TOOLS": "agent_struct_tools",
-    "AGENT_TOPOPT_MAX_RUNS": "agent_topopt_max_runs",
-    "AGENT_FEM_MAX_RUNS": "agent_fem_max_runs",
-    "FEM_VOXEL_MM": "fem_voxel_mm",
-    "FEM_MAX_ELEMENTS": "fem_max_elements",
-    "FEM_TIMEOUT_S": "fem_timeout_s",
-    "TOPOPT_TIMEOUT_S": "topopt_timeout_s",
-    "TOPOPT_MAX_ITERATIONS": "topopt_max_iterations",
-    "TOPOPT_DEFAULT_VOLFRAC": "topopt_default_volfrac",
-    "TOPOPT_DEFAULT_RMIN_MM": "topopt_default_rmin_mm",
-    "TOPOPT_SMOOTH_ITERATIONS": "topopt_smooth_iterations",
-    "MESH_BASE_URL": "mesh_base_url",
-    "MESH_MODEL": "mesh_model",
-    "MESH_TIMEOUT_S": "mesh_timeout_s",
-    "MESH_DECIMATE_FACES": "mesh_decimate_faces",
-    "MESH_MAX_FACES_FOR_CAD": "mesh_max_faces_for_cad",
-    "MESH_SMOOTH_AFTER_FLATTEN_ITERS": "mesh_smooth_after_flatten_iters",
-    "MESH_CANDIDATES_PER_ITER": "mesh_candidates_per_iter",
-    "MESH_CANDIDATE_STEPS": "mesh_candidate_steps",
-    "MESH_PREP_IMAGES": "mesh_prep_images",
-    "MESH_CACHE_ENABLED": "mesh_cache_enabled",
-    "EXEC_TIMEOUT_S": "exec_timeout_s",
-    "EXEC_MEM_LIMIT_MB": "exec_mem_limit_mb",
-}
-
-_INFRA_ENV_KEYS = {
-    "DATABASE_URL",
-    "REDIS_URL",
-    "DATA_DIR",
-    "POSTGRES_USER",
-    "POSTGRES_PASSWORD",
-    "POSTGRES_DB",
-    "MESH_HOST",
-    "MESH_PORT",
-    "MESH_DEVICE",
-    "MESH_MODEL_DIR",
-    "MESH_JOB_DIR",
-    "MESH_JOB_TTL_S",
-    "MESH_MAX_QUEUE",
-    "MESH_UNLOAD_IDLE_S",
-    "MESH_FAKE",
-    "PYVISTA_OFF_SCREEN",
-    "LOG_LEVEL",
-}
-
-
-def _legacy_db_values(
-    runtime_row: AppSetting | None, legacy_rows: dict[str, AppSetting | None]
-) -> dict[str, Any]:
-    values: dict[str, Any] = {}
-    for group, key_map in _SETTING_KEYS.items():
-        row = legacy_rows.get(group)
-        if row:
-            values.update(
-                {field: row.value[key] for key, field in key_map.items() if key in row.value}
-            )
-    if runtime_row:
-        raw = runtime_row.value or {}
-        values.update(raw.get("settings", raw))
-    return values
-
 
 async def load_runtime_settings(db: AsyncSession) -> RuntimeSettings:
-    runtime_row = await db.get(AppSetting, "runtime")
-    legacy_rows = {key: await db.get(AppSetting, key) for key in _SETTING_KEYS}
+    row = await db.get(AppSetting, "runtime")
     values = RuntimeSettings().to_storage()
-    values.update(_legacy_db_values(runtime_row, legacy_rows))
+    if row:
+        raw = row.value or {}
+        values.update(raw.get("settings", raw))
     return RuntimeSettings.model_validate(values)
 
 
-async def save_runtime_settings(
-    db: AsyncSession,
-    settings: RuntimeSettings,
-    *,
-    legacy_env_imported: bool | None = None,
-    seeded: bool = False,
-) -> None:
+async def save_runtime_settings(db: AsyncSession, settings: RuntimeSettings) -> None:
     row = await db.get(AppSetting, "runtime")
-    old = (row.value or {}) if row else {}
-    imported = legacy_env_imported
-    if imported is None:
-        imported = bool(old.get("legacy_env_imported", False))
     stored = {
         "schema_version": 1,
-        "legacy_env_imported": imported,
-        "seeded": seeded,
         "settings": settings.to_storage(),
     }
     if row is None:
         db.add(AppSetting(key="runtime", value=stored))
     else:
         row.value = stored
-    for key in _SETTING_KEYS:
-        legacy = await db.get(AppSetting, key)
-        if legacy is not None:
-            await db.delete(legacy)
-
-
-def legacy_env_values(path: Path) -> tuple[dict[str, Any], list[str]]:
-    raw = dotenv_values(path)
-    imported: dict[str, Any] = {}
-    ignored: list[str] = []
-    for key, value in raw.items():
-        if key in _ENV_TO_FIELD:
-            if value is not None and value != "":
-                imported[_ENV_TO_FIELD[key]] = value
-        elif key in _INFRA_ENV_KEYS or key == "LLM_FAKE_SCRIPT":
-            ignored.append(key)
-        elif value is not None:
-            raise ValueError(
-                f"unsupported legacy setting '{key}'; preserve the file and migrate it manually"
-            )
-    return imported, ignored
 
 
 async def runtime_from_db_or_default() -> RuntimeSettings:
@@ -307,9 +165,10 @@ async def runtime_from_db_or_default() -> RuntimeSettings:
 
 
 async def ensure_runtime_seeded(db: AsyncSession) -> bool:
-    """Create the 'runtime' row once. mesh_base_url/mesh_model are seeded from
-    MESH_BASE_URL/MESH_MODEL env vars (deployment topology set by the launcher);
-    afterwards the DB row is the only source and env changes are ignored."""
+    """Create the 'runtime' row once. mesh_base_url/mesh_model/image_model are
+    seeded from MESH_BASE_URL/MESH_MODEL/MESH_IMAGE_MODEL env vars (deployment
+    topology set by the launcher); afterwards the DB row is the only source and
+    env changes are ignored."""
     import os
 
     if await db.get(AppSetting, "runtime") is not None:
@@ -321,32 +180,8 @@ async def ensure_runtime_seeded(db: AsyncSession) -> bool:
     seed_model = os.environ.get("MESH_MODEL", "").strip()
     if seed_model:
         settings.mesh_model = seed_model
-    await save_runtime_settings(db, settings, legacy_env_imported=False, seeded=True)
+    seed_img = os.environ.get("MESH_IMAGE_MODEL", "").strip()
+    if seed_img:
+        settings.image_model = seed_img
+    await save_runtime_settings(db, settings)
     return True
-
-
-async def import_legacy_env(db: AsyncSession, path: Path) -> dict[str, Any]:
-    row = await db.get(AppSetting, "runtime")
-    if row and (row.value or {}).get("legacy_env_imported"):
-        return {"already_imported": True, "imported": [], "ignored": []}
-
-    current = await load_runtime_settings(db)
-    legacy_rows = {key: await db.get(AppSetting, key) for key in _SETTING_KEYS}
-    # an auto-seeded row holds only defaults/env seed — it must not block a
-    # legacy .env import; real (user-saved) DB values always win
-    seed_only = bool(
-        row and (row.value or {}).get("seeded") and not (row.value or {}).get("legacy_env_imported")
-    )
-    existing = _legacy_db_values(None if seed_only else row, legacy_rows)
-    imported, ignored = legacy_env_values(path)
-    for key in existing:
-        imported.pop(key, None)
-    values = current.to_storage()
-    values.update(imported)
-    settings = RuntimeSettings.model_validate(values)
-    await save_runtime_settings(db, settings, legacy_env_imported=True)
-    return {
-        "already_imported": False,
-        "imported": sorted(imported),
-        "ignored_infrastructure": sorted(ignored),
-    }

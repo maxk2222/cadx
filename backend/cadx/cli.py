@@ -50,30 +50,6 @@ def migrate() -> None:
     subprocess.run(["alembic", "upgrade", "head"], cwd=backend, check=True)
 
 
-@app.command(name="import-legacy-env")
-def import_legacy_env(path: Path = typer.Argument(..., exists=True, dir_okay=False)) -> None:
-    """Import known app settings from a legacy .env file into the database."""
-    from cadx.db.session import session_scope
-    from cadx.runtime_config import import_legacy_env as do_import
-
-    async def _import() -> dict[str, Any]:
-        async with session_scope() as db:
-            result = await do_import(db, path)
-            await db.commit()
-            return result
-
-    result = asyncio.run(_import())
-    imported = result.get("imported") or []
-    ignored = result.get("ignored_infrastructure") or []
-    print(f"legacy app settings imported: {len(imported)}")
-    if imported:
-        print("keys: " + ", ".join(imported))
-    if ignored:
-        print("infrastructure/dev keys not imported: " + ", ".join(ignored))
-    if result.get("already_imported"):
-        print("database already marked as migrated")
-
-
 @app.command(name="exec")
 def exec_code(
     code_file: Path = typer.Argument(..., exists=True),
@@ -357,6 +333,53 @@ def mesh_process(
     }
     result = run_mesh_payload(payload)
     print(json.dumps(result, indent=2, default=str))
+
+
+@app.command(name="image-gen")
+def image_gen(
+    prompt: str = typer.Argument(...),
+    out_dir: Path = typer.Option(Path.cwd(), "-o", "--out-dir"),
+    model: str = typer.Option("auto", "--model"),
+    seed: int = typer.Option(0, "--seed"),
+    count: int = typer.Option(1, "--count", min=1, max=4),
+    width: int = typer.Option(768, "--width"),
+    height: int = typer.Option(768, "--height"),
+    steps: int | None = typer.Option(None, "--steps"),
+    base_url: str | None = typer.Option(None, "--url", help="mesh-server base URL"),
+) -> None:
+    """Generate images locally via the mesh-server image adapters (no DB)."""
+
+    async def _run() -> None:
+        from cadx.agent.image_client import ImageGenRequest, make_image_client
+        from cadx.runtime_config import runtime_from_db_or_default
+
+        client = make_image_client(
+            base_url=base_url, runtime_settings=await runtime_from_db_or_default()
+        )
+        if client is None:
+            print("mesh server not configured (set mesh_base_url in Settings or --url)")
+            raise typer.Exit(1)
+
+        async def prog(msg: str, p: float) -> None:
+            print(f"{int(p * 100):3d}% {msg}")
+
+        req = ImageGenRequest(
+            prompt=prompt,
+            model=model,
+            seed=seed,
+            count=count,
+            width=width,
+            height=height,
+            steps=steps,
+            out_dir=out_dir,
+        )
+        result = await client.generate(req, prog)
+        paths = ", ".join(str(p) for p in result.image_paths)
+        print(
+            f"images: {paths} (model={result.model}, seed={result.seed}, {result.duration_s:.1f}s)"
+        )
+
+    asyncio.run(_run())
 
 
 @app.command(name="mesh-health")

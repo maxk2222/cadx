@@ -66,7 +66,7 @@ the matching adapter:
 ```bash
 ./scripts/setup.sh        # detects: mlx (arm64 mac) | cuda (local nvidia) | none
 ./scripts/start.sh        # starts the whole stack incl. native mesh-server
-./scripts/setup.sh --doctor   # diagnostics (tier, adapter availability, legacy .env)
+./scripts/setup.sh --doctor   # diagnostics (tier, adapter availability, .env overrides)
 ```
 
 Manual alternative:

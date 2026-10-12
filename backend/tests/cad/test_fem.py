@@ -184,6 +184,62 @@ def test_pressure_force_total_matches_area() -> None:
     assert any("800" in x or "MPa" in x for x in w)
 
 
+def test_region_points_selects_surface_patch() -> None:
+    """GUI brush: solid cells within radius of painted surface points."""
+    dom = voxelize(_box_mesh(), 2.0, 150_000)  # 60x24x12, z top at 12
+    cells = region_cell_mask(
+        dom,
+        RegionSpec(kind="points", points=[[10.0, 0.0, 12.0]], radius_mm=5.0),
+    )
+    assert cells.any()
+    centers = dom.element_centers().reshape((*dom.dims, 3))
+    sel = centers[cells]
+    # all selected cells near the picked point
+    assert np.linalg.norm(sel - [10.0, 0.0, 12.0], axis=1).max() < 5.0 + dom.pitch + 1e-6
+    # the far corner is untouched
+    assert not cells[0, 0, 0]
+    # multiple points union
+    cells2 = region_cell_mask(
+        dom,
+        RegionSpec(
+            kind="points",
+            points=[[10.0, 0.0, 12.0], [-20.0, 0.0, 12.0]],
+            radius_mm=5.0,
+        ),
+    )
+    assert cells2.sum() > cells.sum()
+
+
+def test_region_points_empty_and_nodes() -> None:
+    dom = voxelize(_box_mesh(), 2.0, 150_000)
+    empty = region_cell_mask(dom, RegionSpec(kind="points"))
+    assert not empty.any()
+    mask = region_node_mask(dom, RegionSpec(kind="points", points=[[0.0, 0.0, 12.0]]))
+    assert mask.any()
+
+
+def test_points_pressure_uses_picked_normal() -> None:
+    """Pressure on a painted patch: total force ≈ pressure * painted area,
+    acting against the stored surface normal (here +z → -z force)."""
+    mesh = _box_mesh(40.0, 20.0, 4.0)
+    dom = voxelize(mesh, 2.0, 150_000)
+    region = RegionSpec(
+        kind="points", points=[[0.0, 0.0, 4.0]], radius_mm=5.0, normal=[0.0, 0.0, 1.0]
+    )
+    case = LoadCase(
+        name="paint",
+        fixed=[RegionSpec(kind="surface", axis="-z")],
+        loads=[LoadSpec(region=region, pressure_mpa=1.0)],
+    )
+    fixed, F, _w = resolve_case(dom, case)
+    assert fixed.any()
+    total = F.reshape(-1, 3).sum(axis=0)
+    assert total[2] < 0  # pushes into the part
+    cells = region_cell_mask(dom, region)
+    expected = float(cells.sum()) * dom.pitch**2  # rough painted area upper bound
+    assert 0 < abs(total[2]) <= expected * 1.5
+
+
 def test_resolve_case_empty_region_warns() -> None:
     dom = voxelize(_box_mesh(), 2.0, 150_000)
     case = LoadCase(

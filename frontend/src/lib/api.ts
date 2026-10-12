@@ -2,15 +2,19 @@ import type {
   Asset,
   CatalogEntry,
   CatalogSearchHit,
+  FemPreviewResult,
   GenMode,
   Job,
   LibraryPart,
   LoadCase,
   MeshHealth,
   MeshModelInfo,
+  MeshOp,
+  MeshPreviewResult,
   OptimizeSpec,
   Project,
   ProviderTestResult,
+  RegionSpec,
   RunOptions,
   Settings,
   SettingsUpdate,
@@ -100,6 +104,24 @@ export const api = {
       body: JSON.stringify({ caption }),
     }),
 
+  // local text-to-image generation (mesh-server image adapters)
+  imageModels: () => req<MeshModelInfo[]>("/images/models"),
+  generateImages: (
+    pid: string,
+    body: {
+      prompt: string;
+      negative?: string;
+      model?: string;
+      seed?: number;
+      count?: number;
+      width?: number;
+      height?: number;
+      steps?: number;
+      guidance?: number;
+      caption?: string;
+    },
+  ) => req<Asset[]>(`/projects/${pid}/images`, json(body)),
+
   generate: (
     pid: string,
     prompt: string,
@@ -123,6 +145,22 @@ export const api = {
     req<{ version_id: string; job_id: string }>(`/versions/${vid}/reexport`, { method: "POST" }),
   optimize: (vid: string, body: { load_cases: LoadCase[]; optimize: Partial<OptimizeSpec>; material?: string }) =>
     req<{ version_id: string; job_id: string }>(`/versions/${vid}/optimize`, json(body)),
+
+  // visual mesh editor + structural editor
+  meshPreview: (vid: string, body: { ops: MeshOp[]; post?: Record<string, unknown> }) =>
+    req<MeshPreviewResult>(`/versions/${vid}/mesh-preview`, json(body)),
+  meshEdit: (vid: string, body: { ops: MeshOp[]; post?: Record<string, unknown>; note?: string }) =>
+    req<{ version_id: string; job_id: string }>(`/versions/${vid}/mesh-edit`, json(body)),
+  femPreview: (vid: string, body: { load_cases: LoadCase[]; keep_regions?: RegionSpec[] }) =>
+    req<FemPreviewResult>(`/versions/${vid}/fem-preview`, json(body)),
+  runFem: (vid: string, body: { load_cases: LoadCase[]; keep_regions?: RegionSpec[]; material?: string }) =>
+    req<{ version_id: string; job_id: string }>(`/versions/${vid}/fem`, json(body)),
+  saveEditorState: (vid: string, ui_editor: Record<string, unknown>) =>
+    req<{ ok: boolean }>(`/versions/${vid}/editor-state`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ui_editor }),
+    }),
 
   listVersions: (pid: string) => req<VersionSummary[]>(`/projects/${pid}/versions`),
   getVersion: (id: string) => req<VersionDetail>(`/versions/${id}`),

@@ -70,6 +70,12 @@ def iteration_dir(project_id: uuid.UUID | str, version_id: uuid.UUID | str, iter
     return version_dir(project_id, version_id) / "iterations" / str(iteration)
 
 
+def scratch_dir(project_id: uuid.UUID | str, version_id: uuid.UUID | str) -> Path:
+    """Transient GUI preview output (ops previews, region renders). Not part of
+    the version's artifact set — served via the /scratch API route only."""
+    return version_dir(project_id, version_id) / "_scratch"
+
+
 def render_dir(
     project_id: uuid.UUID | str, version_id: uuid.UUID | str, iteration: int | None = None
 ) -> Path:
@@ -84,6 +90,30 @@ def export_dir(
     if iteration is None:
         return version_dir(project_id, version_id) / "exports"
     return iteration_dir(project_id, version_id, iteration) / "exports"
+
+
+def best_mesh_relpath(
+    project_id: uuid.UUID | str, version_id: uuid.UUID | str, iterations: int = 1
+) -> str | None:
+    """Best available triangle-mesh file of a version (relpath), for mesh-level
+    operations on any version kind (edit, FEM, optimize, exports)."""
+    v_dir = version_dir(project_id, version_id)
+    for cand in (
+        v_dir / "exports" / "model.stl",
+        v_dir / "mesh" / "mesh_clean.stl",
+    ):
+        if cand.exists():
+            return relpath(cand)
+    # last iteration's working STL (cad: renders/mesh.stl, mesh: _run/model.stl)
+    it_dir = iteration_dir(project_id, version_id, iterations or 1)
+    for cand in (
+        it_dir / "_run" / "model.stl",
+        it_dir / "renders" / "mesh.stl",
+        it_dir / "_run" / "mesh.stl",
+    ):
+        if cand.exists():
+            return relpath(cand)
+    return None
 
 
 def library_dir() -> Path:

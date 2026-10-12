@@ -87,7 +87,7 @@ def download(
     from meshserver.registry import Registry
 
     reg = Registry(get_config())
-    cls = reg.select(model)
+    cls = reg.select(model) or reg.select_image(model)
     if cls is None:
         print(f"adapter '{model}' not installed — see mesh_server/README.md")
         raise typer.Exit(1)
@@ -95,6 +95,38 @@ def download(
     print(f"loading {cls.name} (downloads weights on first use)…")
     inst.load()
     print("ok")
+
+
+@app.command()
+def image(
+    prompt: str = typer.Argument(...),
+    model: str = typer.Option("auto", "--model"),
+    seed: int = typer.Option(0, "--seed"),
+    count: int = typer.Option(1, "--count", min=1, max=4),
+    width: int = typer.Option(768, "--width"),
+    height: int = typer.Option(768, "--height"),
+    out: Path = typer.Option(Path("."), "-o", "--out"),
+) -> None:
+    """Generate image(s) in-process (no HTTP) — adapter debugging."""
+    from meshserver.adapters.image_base import ImageGenOpts
+    from meshserver.config import get_config
+    from meshserver.registry import Registry
+
+    cfg = get_config()
+    reg = Registry(cfg)
+    cls = reg.select_image(model)
+    if cls is None:
+        print(f"no image adapter available for '{model}' on device '{reg.device}'")
+        raise typer.Exit(1)
+    adapter = reg.get(cls)
+    result = adapter.generate(
+        ImageGenOpts(prompt=prompt, seed=seed, count=count, width=width, height=height)
+    )
+    out.mkdir(parents=True, exist_ok=True)
+    for i, img in enumerate(result.images):
+        p = out / f"image{i}.png"
+        img.save(p)
+        print(f"{p}  (model={result.model}, seed={result.seed + i * 1000})")
 
 
 if __name__ == "__main__":

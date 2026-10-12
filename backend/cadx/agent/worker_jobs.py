@@ -20,11 +20,12 @@ from sqlmodel import col, select
 
 from cadx import events, storage
 from cadx.agent.executor_client import QueueExecutor
+from cadx.agent.image_client import ImagePort, make_image_client
 from cadx.agent.mesh_client import MeshPort, make_mesh_client
 from cadx.agent.orchestrator import RunOutcome, run_generation
 from cadx.agent.trace import MemoryTrace, sanitize_messages
 from cadx.agent.types import AgentCtx, InputAsset, ParentContext
-from cadx.cad.mesh_ops import MeshPostParams, merge_post_params
+from cadx.cad.mesh_ops import MeshOp, MeshPostParams, merge_post_params
 from cadx.db.models import (
     AgentTrace,
     Artifact,
@@ -367,6 +368,7 @@ async def run_agent_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[st
         executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=runtime_settings)
         trace = DbTrace(job_id)
         mesh = _make_mesh(runtime_settings)
+        image = _make_image(runtime_settings)
 
         project = await db.get(Project, version.project_id)
         merged = _merge_settings((project.settings or {}) if project else {}, version.options or {})
@@ -409,12 +411,9 @@ async def run_agent_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[st
                 gen_mode = "mesh"
 
         mesh_client: MeshPort | None = mesh
-        mesh_available = False
-        if mesh_client is not None:
-            try:
-                mesh_available = (await mesh_client.health()).ok
-            except Exception:
-                mesh_available = False
+        mesh_available = await _mesh_available(mesh_client)
+        image_client: ImagePort | None = image
+        image_available = await _image_available(image_client)
 
         actx = AgentCtx(
             llm=llm,
@@ -436,6 +435,8 @@ async def run_agent_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[st
             gen_mode=gen_mode,
             mesh=mesh_client,
             mesh_available=mesh_available,
+            image=image_client,
+            image_available=image_available,
             budget_tokens=runtime_settings.agent_max_tokens_per_job,
             explicit_max_iterations=explicit_max_iterations,
         )
@@ -453,6 +454,10 @@ async def run_agent_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[st
             version.library_part_ids = sorted(
                 set(version.library_part_ids) | set(actx.library_attached)
             )
+        if actx.generated_asset_ids:
+            # hero/concept images the agent generated itself become permanent
+            # inputs of this version (provenance + mesh source on edits)
+            version.asset_ids = sorted(set(version.asset_ids or []) | set(actx.generated_asset_ids))
 
         await _persist_outcome(db, job, version, outcome, emit)
         return {"ok": outcome.status in ("succeeded", "needs_review"), "status": outcome.status}
@@ -748,23 +753,7 @@ async def _try_optimize_session(
 
 def _parent_stl(parent: Version) -> str | None:
     """Best available triangle-mesh artifact of a version (relpath)."""
-    v_dir = storage.version_dir(parent.project_id, parent.id)
-    for cand in (
-        v_dir / "exports" / "model.stl",
-        v_dir / "mesh" / "mesh_clean.stl",
-    ):
-        if cand.exists():
-            return storage.relpath(cand)
-    # last iteration's working STL (cad: renders/mesh.stl, mesh: _run/model.stl)
-    it_dir = storage.iteration_dir(parent.project_id, parent.id, parent.iterations or 1)
-    for cand in (
-        it_dir / "_run" / "model.stl",
-        it_dir / "renders" / "mesh.stl",
-        it_dir / "_run" / "mesh.stl",
-    ):
-        if cand.exists():
-            return storage.relpath(cand)
-    return None
+    return storage.best_mesh_relpath(parent.project_id, parent.id, parent.iterations or 1)
 
 
 @_guarded
@@ -958,6 +947,259 @@ async def run_optimize_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict
 
 
 @_guarded
+async def run_mesh_edit_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    """GUI visual edit: a recorded MeshOp stack applied to the parent's mesh —
+    produces a tessellated child version (kind=mesh_edit, no LLM).
+
+    mesh parents: baseline + ops replayed on mesh/mesh_raw.glb (same path as a
+    params rerun). Other parents: ops-only pipeline on the finished STL —
+    already in the mm frame, so no orient/scale baseline runs.
+    """
+    job_id = _u(payload["job_id"])
+    async with session_scope() as db:
+        job = await db.get(Job, job_id)
+        version = await db.get(Version, _u(payload["version_id"]))
+        parent = await db.get(Version, version.parent_id) if version and version.parent_id else None
+        if job is None or version is None or parent is None:
+            if job:
+                job.status = JobStatus.failed
+                await _append_job_log(db, job, "mesh_edit job: missing parent\n")
+                await db.commit()
+            return {"ok": False, "error": "missing parent version"}
+        if job.status in (JobStatus.succeeded, JobStatus.failed, JobStatus.cancelled):
+            return {"ok": False, "error": f"job already {job.status}"}
+        job.status = JobStatus.running
+        job.started_at = datetime.now(UTC)
+        version.status = VersionStatus.running
+        await db.commit()
+
+        emit = make_emit(job_id)
+        parent_mode = parent.resolved_mode or "cad"
+        raw_ops = payload.get("ops") or []
+
+        try:
+            ops = [MeshOp.model_validate(o) for o in raw_ops]
+        except Exception as e:
+            version.status = VersionStatus.failed
+            version.error = f"invalid mesh ops: {e}"[:500]
+            job.status = JobStatus.failed
+            job.finished_at = datetime.now(UTC)
+            await db.commit()
+            return {"ok": False, "error": version.error}
+
+        mesh_rel: str | None = None
+        ops_only = parent_mode != "mesh"
+        spec: dict[str, Any] | None = None
+        if parent_mode == "mesh":
+            raw = storage.version_dir(parent.project_id, parent.id) / "mesh" / "mesh_raw.glb"
+            if raw.exists():
+                mesh_rel = storage.relpath(raw)
+                spec = parent.spec
+        else:
+            mesh_rel = storage.best_mesh_relpath(
+                parent.project_id, parent.id, parent.iterations or 1
+            )
+        if mesh_rel is None:
+            version.status = VersionStatus.failed
+            version.error = "parent has no mesh to edit"
+            job.status = JobStatus.failed
+            job.finished_at = datetime.now(UTC)
+            await db.commit()
+            return {"ok": False, "error": version.error}
+
+        if ops_only:
+            post = MeshPostParams(ops=ops)
+        else:
+            post = merge_post_params(
+                MeshPostParams(**(parent.params or {})), payload.get("post") or {}
+            )
+            post = post.model_copy(update={"ops": ops})
+
+        runtime_settings = await load_runtime_settings(db)
+        executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=runtime_settings)
+        project = await db.get(Project, version.project_id)
+        settings = _fill_settings(
+            _merge_settings(
+                (project.settings or {}) if project else {},
+                version.options or (parent.options if parent else {}) or {},
+            ),
+            runtime_settings,
+        )
+        await emit(
+            "meshedit",
+            1,
+            f"applying {len(ops)} mesh op(s) ({'ops-only' if ops_only else 'baseline+ops'})",
+        )
+        exec_result = await executor.process_mesh(
+            {
+                "job_id": str(job_id),
+                "project_id": str(version.project_id),
+                "version_id": str(version.id),
+                "iteration": 1,
+                "mode": "final",
+                "mesh_rel": mesh_rel,
+                "post": post.model_dump(),
+                "spec": spec,
+                "settings": settings.model_dump(),
+                "runtime_settings": runtime_settings.executor_values(),
+                "full_exports": True,
+                "name": "model",
+                "ops_only": ops_only,
+            }
+        )
+
+        if not exec_result.get("ok"):
+            was_cancelled = (exec_result.get("error") or "") == "cancelled"
+            version.status = VersionStatus.cancelled if was_cancelled else VersionStatus.failed
+            version.error = exec_result.get("error") or "mesh edit failed"
+            job.status = JobStatus.cancelled if was_cancelled else JobStatus.failed
+            job.finished_at = datetime.now(UTC)
+            await _append_job_log(
+                db, job, f"{'cancelled' if was_cancelled else 'failed'}: {version.error}\n"
+            )
+            await db.commit()
+            return {"ok": False, "error": version.error}
+
+        artifacts = _copy_best_artifacts_ctxless(version.project_id, version.id, 1, exec_result)
+        for fmt, rel in (exec_result.get("exports") or {}).items():
+            if rel:
+                artifacts[f"export:{fmt}"] = rel
+        artifacts.update(_copy_mesh_artifacts_ctxless(version.project_id, version.id, 1, parent))
+
+        import json
+
+        version.gen_mode = "mesh" if ops_only else parent_mode
+        version.resolved_mode = "mesh"
+        version.spec = parent.spec
+        version.params = post.model_dump()
+        version.params_schema = parent.params_schema if parent_mode == "mesh" else None
+        version.analysis = exec_result.get("analysis")
+        version.dfm = exec_result.get("dfm")
+        version.iterations = 1
+        version.status = VersionStatus.succeeded
+        version.mesh = dict(parent.mesh or {})
+        version.mesh.update(exec_result.get("mesh") or {})
+        version.mesh["post"] = version.params
+        version.mesh["from_edit_of"] = str(parent.id)
+        version.mesh["edited"] = True
+        register_artifacts(db, version.id, artifacts, tessellated_step=True)
+
+        v_dir = storage.ensure(storage.version_dir(version.project_id, version.id))
+        m_dir = storage.ensure(v_dir / "mesh")
+        (m_dir / "mesh.json").write_text(json.dumps(version.mesh, indent=2), encoding="utf-8")
+        (v_dir / "params.json").write_text(
+            json.dumps(version.params or {}, indent=2), encoding="utf-8"
+        )
+        job.status = JobStatus.succeeded
+        job.finished_at = datetime.now(UTC)
+        job.progress = 1.0
+        await _append_job_log(db, job, "done\n")
+        await db.commit()
+        await _publish(str(job_id), {"type": "done", "status": "succeeded"})
+        return {"ok": True}
+
+
+@_guarded
+async def run_fem_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    """Standalone FEM check on the SAME version (no child) — GUI-declared load
+    cases incl. painted 'points' regions. Writes version.fem + fem artifacts;
+    flags the version needs_review when the worst safety factor drops < 1."""
+    job_id = _u(payload["job_id"])
+    async with session_scope() as db:
+        job = await db.get(Job, job_id)
+        version = await db.get(Version, _u(payload["version_id"]))
+        if job is None or version is None:
+            return {"ok": False, "error": "job or version not found"}
+        if job.status in (JobStatus.succeeded, JobStatus.failed, JobStatus.cancelled):
+            return {"ok": False, "error": f"job already {job.status}"}
+        prev_status = version.status
+        job.status = JobStatus.running
+        job.started_at = datetime.now(UTC)
+        version.status = VersionStatus.running
+        await db.commit()
+
+        emit = make_emit(job_id)
+        mesh_rel = storage.best_mesh_relpath(
+            version.project_id, version.id, version.iterations or 1
+        )
+        load_cases = payload.get("load_cases") or []
+        if mesh_rel is None or not load_cases:
+            version.status = prev_status
+            version.error = (
+                "no load cases declared" if load_cases else "version has no mesh to analyse"
+            )
+            job.status = JobStatus.failed
+            job.finished_at = datetime.now(UTC)
+            await _append_job_log(db, job, f"failed: {version.error}\n")
+            await db.commit()
+            return {"ok": False, "error": version.error}
+
+        runtime_settings = await load_runtime_settings(db)
+        executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=runtime_settings)
+        await emit("fem", 1, f"FEM check on {mesh_rel} ({len(load_cases)} load case(s))")
+        result = await executor.fem_analyze(
+            {
+                "job_id": str(job_id),
+                "project_id": str(version.project_id),
+                "version_id": str(version.id),
+                "iteration": version.iterations or 1,
+                "mesh_rel": mesh_rel,
+                "load_cases": load_cases,
+                "keep_regions": payload.get("keep_regions") or [],
+                "material": payload.get("material") or "",
+                "voxel_mm": payload.get("voxel_mm"),
+                "runtime_settings": runtime_settings.executor_values(),
+                "anchors": (version.analysis or {}).get("anchors", {}).get("holes"),
+            }
+        )
+
+        if not result.get("ok"):
+            version.status = prev_status
+            version.error = result.get("error") or "FEM failed"
+            job.status = JobStatus.failed
+            job.finished_at = datetime.now(UTC)
+            await _append_job_log(db, job, f"failed: {version.error}\n")
+            await db.commit()
+            return {"ok": False, "error": version.error}
+
+        # persist report + stress/deformation renders on the version itself
+        import shutil
+
+        it_dir = storage.iteration_dir(version.project_id, version.id, version.iterations or 1)
+        fem_dir = storage.ensure(storage.version_dir(version.project_id, version.id) / "fem")
+        artifacts: dict[str, str] = {}
+        if (it_dir / "fem").exists():
+            for png in (it_dir / "fem").glob("*.png"):
+                shutil.copy2(png, fem_dir / png.name)
+                artifacts[f"fem:{png.stem}"] = storage.relpath(fem_dir / png.name)
+            report = it_dir / "fem" / "report.json"
+            if report.exists():
+                shutil.copy2(report, fem_dir / "report.json")
+                artifacts["fem:report"] = storage.relpath(fem_dir / "report.json")
+
+        fem = result.get("fem") or {}
+        version.fem = fem or None
+        sfs = [c.get("safety_factor") for c in fem.get("cases", []) if c.get("safety_factor")]
+        worst_sf = min(sfs) if sfs else None
+        version.status = (
+            VersionStatus.needs_review
+            if (worst_sf is not None and worst_sf < 1.0)
+            or prev_status == VersionStatus.needs_review
+            else VersionStatus.succeeded
+        )
+        version.error = None
+        register_artifacts(db, version.id, artifacts)
+        await emit("fem", 1, f"done: worst SF {worst_sf}")
+        job.status = JobStatus.succeeded
+        job.finished_at = datetime.now(UTC)
+        job.progress = 1.0
+        await _append_job_log(db, job, "done\n")
+        await db.commit()
+        await _publish(str(job_id), {"type": "done", "status": "succeeded"})
+        return {"ok": True}
+
+
+@_guarded
 async def run_reexport_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     """Re-export formats from the best iteration BREP."""
     job_id = _u(payload["job_id"])
@@ -1001,8 +1243,16 @@ async def run_reexport_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict
 def _merge_settings(
     project_settings: dict[str, Any], version_options: dict[str, Any]
 ) -> ProjectSettings:
-    """project defaults < per-run options (GUI options panel)."""
-    s = ProjectSettings(**{**project_settings, **version_options})
+    """project defaults < per-run options (GUI options panel).
+
+    `ui_*` keys (e.g. ui_editor) are GUI state persisted on the version —
+    they must never reach run settings."""
+    s = ProjectSettings(
+        **{
+            **project_settings,
+            **{k: v for k, v in version_options.items() if not k.startswith("ui_")},
+        }
+    )
     if s.fem and not s.fem_material and s.material:
         s.fem_material = s.material
     return s
@@ -1032,6 +1282,32 @@ def _make_mesh(runtime: RuntimeSettings) -> MeshPort | None:
         base_url=runtime.mesh_base_url,
         timeout_s=runtime.mesh_timeout_s,
     )
+
+
+def _make_image(runtime: RuntimeSettings) -> ImagePort | None:
+    return make_image_client(
+        base_url=runtime.mesh_base_url,  # same sidecar hosts the image adapters
+        timeout_s=runtime.image_timeout_s,
+    )
+
+
+async def _image_available(client: ImagePort | None) -> bool:
+    """health() is ok even with zero image adapters — check models() instead."""
+    if client is None:
+        return False
+    try:
+        return any(m.available for m in await client.models())
+    except Exception:
+        return False
+
+
+async def _mesh_available(client: MeshPort | None) -> bool:
+    if client is None:
+        return False
+    try:
+        return (await client.health()).ok
+    except Exception:
+        return False
 
 
 def _make_llm(runtime: RuntimeSettings) -> LLMClient:

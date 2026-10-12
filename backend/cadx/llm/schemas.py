@@ -134,10 +134,13 @@ class RegionSpec(BaseModel):
     - box:      cube centred at `center` with edge `diameter_mm` (or 4*margin)
     - hole:     measured hole/feature region — `hole_index` (1-based) refers
                 to the anchors listed in the context
+    - points:   surface patch painted in the GUI — solid cells within
+                `radius_mm` of any of `points` ([x,y,z] mm); `normal` is the
+                averaged surface normal at the pick (drives pressure loads)
     - all:      the whole solid
     """
 
-    kind: Literal["face", "surface", "area", "cylinder", "box", "hole", "all"] = "face"
+    kind: Literal["face", "surface", "area", "cylinder", "box", "hole", "points", "all"] = "face"
     axis: Annotated[str, Field(max_length=8)] = (
         ""  # +x|-x|+y|-y|+z|-z (face normal or cylinder axis)
     )
@@ -148,6 +151,11 @@ class RegionSpec(BaseModel):
     x_range: list[float] = Field(default_factory=list, max_length=2)  # [min,max] mm (area)
     y_range: list[float] = Field(default_factory=list, max_length=2)  # [min,max] mm (area)
     hole_index: int | None = None  # 1-based index into the measured anchors (hole)
+    points: list[list[float]] = Field(
+        default_factory=list, max_length=600
+    )  # painted surface points [x,y,z] mm (points)
+    radius_mm: float | None = None  # brush radius (points); default max(2*margin_mm, 3)
+    normal: list[float] = Field(default_factory=list, max_length=3)  # avg surface normal (points)
     description: M = ""  # human label, e.g. "mounting holes"
 
 

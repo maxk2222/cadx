@@ -8,6 +8,8 @@ from arq.connections import RedisSettings
 
 from cadx.agent.worker_jobs import (
     run_agent_job,
+    run_fem_job,
+    run_mesh_edit_job,
     run_optimize_job,
     run_params_job,
     run_reexport_job,
@@ -75,7 +77,14 @@ async def worker_shutdown(ctx: dict[str, Any]) -> None:
 class AgentWorkerSettings:
     """Run with: uv run arq cadx.queue.AgentWorkerSettings"""
 
-    functions = [run_agent_job, run_params_job, run_reexport_job, run_optimize_job]  # noqa: RUF012
+    functions = [  # noqa: RUF012
+        run_agent_job,
+        run_params_job,
+        run_reexport_job,
+        run_optimize_job,
+        run_mesh_edit_job,
+        run_fem_job,
+    ]
     on_startup = agent_startup
     on_shutdown = worker_shutdown
     redis_settings = _redis()

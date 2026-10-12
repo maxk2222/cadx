@@ -18,6 +18,7 @@ from .cutouts import (
     insert_pocket,
     keyhole_slot,
     t_slot,
+    through_hole,
 )
 from .profile import profile_body
 from .shapes import (
@@ -49,4 +50,5 @@ __all__ = [
     "snap_fit_cantilever",
     "t_slot",
     "text_label",
+    "through_hole",
 ]

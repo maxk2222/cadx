@@ -13,7 +13,7 @@ from sqlmodel import col, select
 from cadx import storage
 from cadx.api.deps import get_session
 from cadx.api.schemas import AssetOut, AssetUpdate
-from cadx.db.models import Asset, AssetKind, Project
+from cadx.db.models import IMAGE_ASSET_KINDS, Asset, AssetKind, Project
 from cadx.llm.images import normalize
 from cadx.logging import get_logger
 
@@ -42,6 +42,7 @@ def _out(a: Asset) -> AssetOut:
         height=a.height,
         caption=a.caption,
         derived_from=a.derived_from,
+        gen_params=a.gen_params,
         created_at=a.created_at,
         url=f"/api/assets/{a.id}/file",
     )
@@ -188,7 +189,7 @@ async def create_derivative(
     src = await db.get(Asset, asset_id)
     if not src:
         raise HTTPException(404, "asset not found")
-    if src.kind != AssetKind.image:
+    if src.kind not in IMAGE_ASSET_KINDS:
         raise HTTPException(400, "not an image asset")
     png = await file.read()
     if len(png) > MAX_ASSET_BYTES:
@@ -208,7 +209,7 @@ async def remove_bg(asset_id: uuid.UUID, db: AsyncSession = Depends(get_session)
     src = await db.get(Asset, asset_id)
     if not src:
         raise HTTPException(404, "asset not found")
-    if src.kind != AssetKind.image:
+    if src.kind not in IMAGE_ASSET_KINDS:
         raise HTTPException(400, "not an image asset")
     try:
         p = storage.resolve(src.path)

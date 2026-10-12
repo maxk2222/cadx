@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, Clock, Cpu, Gauge, Layers, Plus, Shrink, Trash2, TriangleAlert } from "lucide-react";
+import { Activity, Clock, Cpu, Gauge, Layers, PencilRuler, Plus, Shrink, Trash2, TriangleAlert } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import ArtifactsTable from "../components/ArtifactsTable";
@@ -10,7 +10,7 @@ import FemPanel from "../components/FemPanel";
 import TopOptPanel from "../components/TopOptPanel";
 import JobLog from "../components/JobLog";
 import ModeSelector from "../components/ModeSelector";
-import OptimizeDialog from "../components/OptimizeDialog";
+import StructuralEditor from "../components/StructuralEditor";
 import OptionsPanel, { OptionChips } from "../components/OptionsPanel";
 import ParamsPanel from "../components/ParamsPanel";
 import PlanPanel from "../components/PlanPanel";
@@ -223,14 +223,10 @@ export default function VersionPage() {
     onSuccess: (r) => nav(`/versions/${r.version_id}?job=${r.job_id}`),
   });
 
-  const optimize = useMutation({
-    mutationFn: (body: Parameters<typeof api.optimize>[1]) => api.optimize(id, body),
-    onSuccess: (r) => {
-      setOptimizeOpen(false);
-      nav(`/versions/${r.version_id}?job=${r.job_id}`);
-    },
-    onError: (e) => toast(String(e), "error"),
-  });
+  const structuralStarted = (r: { version_id: string; job_id: string }) => {
+    setOptimizeOpen(false);
+    nav(`/versions/${r.version_id}?job=${r.job_id}`);
+  };
 
   const del = useMutation({
     mutationFn: () => api.deleteVersion(id),
@@ -627,16 +623,27 @@ export default function VersionPage() {
         </Card>
 
         {(v.status === "succeeded" || v.status === "needs_review") &&
-          v.resolved_mode !== "topopt" && (
+          v.artifacts.some((a) => a.kind === "glb") && (
             <Btn
               variant="ghost"
-              className="w-full border border-teal-800/60 text-teal-300 hover:bg-teal-950/40"
-              onClick={() => setOptimizeOpen(true)}
-              title="topology-optimize this part (SIMP + FEM verification)"
+              className="w-full border border-zinc-700 text-zinc-200 hover:bg-zinc-800"
+              onClick={() => nav(`/versions/${v.id}/edit`)}
+              title="visual mesh editor — orient, cut, smooth, boolean…"
             >
-              <Shrink className="h-4 w-4" /> Topology-optimize this part
+              <PencilRuler className="h-4 w-4" /> Edit mesh visually
             </Btn>
           )}
+
+        {(v.status === "succeeded" || v.status === "needs_review") && (
+          <Btn
+            variant="ghost"
+            className="w-full border border-teal-800/60 text-teal-300 hover:bg-teal-950/40"
+            onClick={() => setOptimizeOpen(true)}
+            title="paint support / load / keep regions — FEM check or topology optimization"
+          >
+            <Shrink className="h-4 w-4" /> Structural editor (FEM / TopOpt)
+          </Btn>
+        )}
 
         {(v.status === "succeeded" || v.status === "needs_review") && (
           <Card className="p-3">
@@ -782,13 +789,13 @@ export default function VersionPage() {
         }
       />
 
-      <OptimizeDialog
+      <StructuralEditor
         key={v.id}
         open={optimizeOpen}
         onClose={() => setOptimizeOpen(false)}
-        busy={optimize.isPending}
-        initial={v.spec?.load_cases}
-        onSubmit={(body) => optimize.mutate(body)}
+        version={v}
+        canTopopt={v.resolved_mode !== "topopt"}
+        onJobStarted={structuralStarted}
       />
     </div>
   );

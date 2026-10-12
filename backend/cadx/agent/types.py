@@ -16,10 +16,14 @@ from cadx.runtime_config import RuntimeSettings
 @dataclass
 class InputAsset:
     asset_id: str
-    kind: str  # image | reference_step | reference_stl | reference_dxf
+    kind: str  # image | generated_image | reference_step | reference_stl | reference_dxf
     path: Path  # absolute path inside this process
     caption: str = ""
     filename: str = ""
+
+
+# Asset kinds usable as image inputs (LLM context, mesh source images).
+IMAGE_INPUT_KINDS = ("image", "generated_image")
 
 
 @dataclass
@@ -92,6 +96,11 @@ class AgentCtx:
     resolved_mode: str | None = None  # effective mode: cad | mesh | hybrid
     mesh: Any = None  # MeshPort | None — mesh generator client
     mesh_available: bool = False
+    image: Any = None  # ImagePort | None — text-to-image client (same sidecar)
+    image_available: bool = False  # at least one image adapter is installed
+    # asset ids the agent created itself (hero/concept images) — merged into
+    # version.asset_ids by the worker so provenance survives restarts
+    generated_asset_ids: list[str] = field(default_factory=list)
     # hybrid bridge: filled by _run_hybrid before the CAD loop starts
     hybrid_solid: Path | None = None  # path to solid.brep derived from the generated mesh
     hybrid_mesh_info: dict[str, Any] = field(default_factory=dict)  # bbox/volume/triangles

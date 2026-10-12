@@ -20,14 +20,17 @@ Tool sets per step:
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import inspect
 import json
+import shutil
 import uuid
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any, Literal
 
 from cadx import storage
-from cadx.agent.types import AgentCtx, InputAsset
+from cadx.agent.types import IMAGE_INPUT_KINDS, AgentCtx, InputAsset
 from cadx.cad import catalog, codeedits
 from cadx.cad.allowlist import check_code
 from cadx.cad.partspec import check_standard_part_calls
@@ -178,6 +181,23 @@ IMAGE_TOOLS = [
         "one specific view.",
         {"asset_id": _s("asset id from the image labels")},
         ["asset_id"],
+    ),
+]
+
+CONCEPT_IMAGE_TOOLS = [
+    _fn(
+        "generate_concept_image",
+        "Generate a design-concept image with the LOCAL text-to-image model "
+        "(FLUX/SDXL on the mesh server) and view it. Use to ideate shapes, "
+        "proportions or style before committing to a modeling plan. The image "
+        "is stored as a project asset (kind=generated_image) and may serve as "
+        "a reference for image-to-3D generation. Limited calls per session.",
+        {
+            "prompt": _s("what to render — subject, view, style"),
+            "count": _i("number of variants, 1 or 2 (default 1)"),
+            "seed": _i("optional seed for reproducibility"),
+        },
+        ["prompt"],
     ),
 ]
 
@@ -679,6 +699,10 @@ class ToolSession:
         self.fem_left = (
             settings.agent_fem_max_runs if (fem_fn and settings.agent_struct_tools) else 0
         )
+        # generate_concept_image calls left (each call may yield up to 2 images)
+        self.image_left = (
+            settings.image_tool_budget if (ctx.image is not None and ctx.image_available) else 0
+        )
         self.topopt_left = (
             settings.agent_topopt_max_runs if (topopt_fn and settings.agent_struct_tools) else 0
         )
@@ -735,7 +759,11 @@ class ToolSession:
                 or (t["function"]["name"] == "preview_regions" and self.preview_fn)
             ]
             return out + OPTIMIZE_DONE_TOOLS + IMAGE_TOOLS
-        return [*INFO_TOOLS, *LIBRARY_TOOLS, *IMAGE_TOOLS]
+        # info sessions (intake/plan): catalog/library lookups + image gen
+        out = [*INFO_TOOLS, *LIBRARY_TOOLS, *IMAGE_TOOLS]
+        if self.image_left > 0:
+            out += CONCEPT_IMAGE_TOOLS
+        return out
 
     def allowed_names(self) -> set[str]:
         """Tool names this session offers — guard against hallucinated calls
@@ -810,11 +838,17 @@ class ToolSession:
     def _tool_replace_lines(self, a: dict[str, Any]) -> dict[str, Any]:
         if err := self._edit_kind():
             return err
-        return self._apply(
-            codeedits.replace_lines(
-                self.buffer, int(a["start"]), int(a["end"]), str(a.get("code", ""))
-            )
-        )
+        start, end, text = int(a["start"]), int(a["end"]), str(a.get("code", ""))
+        n_lines = len(self.buffer.splitlines())
+        if not text.strip() and (end - start + 1) >= max(5, int(0.7 * n_lines)):
+            # weak models sometimes "fix" by wiping the file — refuse, the
+            # buffer is the session's only copy
+            return {
+                "ok": False,
+                "error": "refused: that would clear most of the file — "
+                "replace only the lines that need changing",
+            }
+        return self._apply(codeedits.replace_lines(self.buffer, start, end, text))
 
     def _tool_insert_after(self, a: dict[str, Any]) -> dict[str, Any]:
         if err := self._edit_kind():
@@ -833,9 +867,19 @@ class ToolSession:
     def _tool_find_replace(self, a: dict[str, Any]) -> dict[str, Any]:
         if err := self._edit_kind():
             return err
-        return self._apply(
-            codeedits.find_replace(self.buffer, str(a.get("find", "")), str(a.get("replace", "")))
-        )
+        find, replace = str(a.get("find", "")), str(a.get("replace", ""))
+        n_lines = len(self.buffer.splitlines())
+        if (
+            not replace.strip()
+            and find.strip()
+            and len(find.splitlines()) >= max(5, int(0.7 * n_lines))
+        ):
+            return {
+                "ok": False,
+                "error": "refused: that would clear most of the file — "
+                "replace only the lines that need changing",
+            }
+        return self._apply(codeedits.find_replace(self.buffer, find, replace))
 
     def _tool_set_param(self, a: dict[str, Any]) -> dict[str, Any]:
         if err := self._edit_kind():
@@ -890,7 +934,7 @@ class ToolSession:
         """Return the image file via `_images` — toolloop forwards it as a
         user message with image parts (tool messages can't carry images)."""
         aid = str(a.get("asset_id", "")).strip()
-        images = [x for x in self.ctx.assets if x.kind == "image"]
+        images = [x for x in self.ctx.assets if x.kind in IMAGE_INPUT_KINDS]
         match = next((x for x in images if x.asset_id == aid), None)
         if match is None and aid:
             cands = [x for x in images if x.asset_id.startswith(aid)]
@@ -911,6 +955,98 @@ class ToolSession:
             "caption": match.caption,
             "_images": [str(match.path)],
         }
+
+    async def _tool_generate_concept_image(self, a: dict[str, Any]) -> dict[str, Any]:
+        """Local text-to-image call — budget-capped per session; the result is
+        persisted as a generated_image asset AND forwarded via `_images`."""
+        if self.image_left <= 0:
+            return {"ok": False, "error": "concept image budget exhausted"}
+        prompt = str(a.get("prompt", "")).strip()
+        if not prompt:
+            return {"ok": False, "error": "prompt is required"}
+        count = max(1, min(2, int(a.get("count", 1) or 1)))
+        self.image_left -= 1
+
+        import tempfile
+
+        from cadx.agent.image_client import ImageGenRequest
+
+        s = self.ctx.runtime_settings
+        tmp = Path(tempfile.mkdtemp(prefix="cadx-concept-"))
+        try:
+            side = min(768, s.image_max_side)
+            seed = a.get("seed")
+            if seed is None:
+                # deterministic per job+prompt so retries stay reproducible
+                h = hashlib.sha256(f"{self.ctx.job_id}:{prompt}".encode()).digest()
+                seed = int.from_bytes(h[:4]) % 100_000
+            req = ImageGenRequest(
+                prompt=prompt,
+                model=s.image_model,
+                seed=int(seed),
+                count=count,
+                width=side,
+                height=side,
+                steps=s.image_steps,
+                guidance=s.image_guidance,
+                out_dir=tmp,
+            )
+            result = await self.ctx.image.generate(req, None, self.ctx.check_cancel)
+            from cadx.agent.image_assets import persist_generated_images
+            from cadx.db.session import session_scope
+
+            async with session_scope() as db:
+                assets = persist_generated_images(
+                    db,
+                    self.ctx.project_id,
+                    result.image_paths,
+                    prompt=prompt,
+                    caption=f"concept — {prompt[:120]}",
+                    gen_params={
+                        "prompt": prompt,
+                        "model": result.model,
+                        "backend": result.backend,
+                        "seed": result.seed,
+                        "steps": result.steps,
+                        "guidance": result.guidance,
+                        "duration_s": result.duration_s,
+                        "source": "concept_tool",
+                        "job_id": self.ctx.job_id,
+                    },
+                )
+                await db.commit()
+            out_assets: list[dict[str, Any]] = []
+            for asset in assets:
+                self.ctx.assets.append(
+                    InputAsset(
+                        asset_id=str(asset.id),
+                        kind="generated_image",
+                        path=storage.resolve(asset.path),
+                        caption=asset.caption,
+                        filename=asset.filename,
+                    )
+                )
+                self.ctx.generated_asset_ids.append(str(asset.id))
+                out_assets.append({"asset_id": str(asset.id), "filename": asset.filename})
+            return {
+                "ok": True,
+                "model": result.model,
+                "seed": result.seed,
+                "calls_left": self.image_left,
+                "assets": out_assets,
+                "note": "image(s) shown below and stored as generated_image assets — "
+                "usable as image inputs for mesh generation",
+                "_images": [str(storage.resolve(asset.path)) for asset in assets],
+            }
+        except Exception as e:
+            log.warning("tool_session.concept_image_failed", error=str(e))
+            return {
+                "ok": False,
+                "error": f"image generation failed: {e}",
+                "calls_left": self.image_left,
+            }
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
     # -- library tools ---------------------------------------------------------- #
 

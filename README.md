@@ -63,14 +63,15 @@ and brings up the whole stack (docker services + native mesh-server):
 | `none` | no GPU | none — CAD fallback (or `--fake` for tests) |
 
 Open http://localhost:8080 → **Settings** and set the LLM provider URL,
-models and API key there. All app configuration lives in the app database —
-an old `.env` is imported once on start and then deleted.
+models and API key there. All app configuration lives in the app database.
+A `.env` file is only read by docker compose for infrastructure overrides
+(`POSTGRES_*`, `MESH_BASE_URL` seed) — never by the app itself.
 
 ```bash
 scripts/status.sh    # health of all components (make status)
 scripts/stop.sh      # stop everything           (make stop)
 scripts/setup.sh     # re-run the installer      (make autosetup)
-scripts/setup.sh --doctor   # diagnostics: tier, adapters, legacy .env
+scripts/setup.sh --doctor   # diagnostics: tier, adapters, .env overrides
 ```
 
 Native dev mode instead of docker: `scripts/start.sh --dev` (api/worker/
@@ -112,6 +113,15 @@ torch/MPS Hunyuan3D-2 mini/multi-view adapters on Apple Silicon.
 Details: `docs/mesh-generation.md`, `mesh_server/README.md`. Licensing note:
 Hunyuan models carry the Tencent Community License (EU/UK/KR excluded) —
 TRELLIS.2 / TripoSG are MIT; licenses are shown in Settings.
+
+### Local image generation (optional, auto-installed)
+
+The same sidecar hosts a text-to-image adapter family (FLUX.1-schnell via
+`mflux` on Apple Silicon, FLUX/SDXL via diffusers on CUDA) — used for concept
+images in the asset manager, the agent's `generate_concept_image` tool, and
+automatic hero images for mesh mode without reference photos. Setup installs
+it alongside the mesh adapter (`--skip-image` opts out). Details:
+`docs/image-generation.md`.
 
 ## Local development
 
@@ -212,6 +222,7 @@ parametric templates are guidance to adapt, not automatically executed modules.
 - User parts library and standard-part catalog: `docs/parts-library.md`
 - FEM and topology optimization: `docs/fem-topopt.md`
 - Mesh adapters and hardware setup: `docs/mesh-generation.md`
+- Local text-to-image (concept/hero images): `docs/image-generation.md`
 - Full manual smoke checklist: `docs/e2e-checklist.md`
 
 ## API sketch
@@ -221,6 +232,8 @@ POST /api/projects                       create project
 POST /api/projects/{id}/assets           upload images/STEP/STL/DXF (multipart)
 POST /api/assets/{id}/derivative         save an edited image (PNG, keeps alpha) as a new asset
 POST /api/assets/{id}/remove-bg          rembg subject cutout -> PNG bytes (editor applies it)
+POST /api/projects/{id}/images           local text-to-image -> generated_image assets
+GET  /api/images/models                  installed image adapters
 POST /api/projects/{id}/generate         {prompt, asset_ids, library_part_ids, mode, options}
 POST /api/versions/{id}/edit             {prompt, asset_ids, library_part_ids, mode, options}
 POST /api/versions/{id}/params           {params}  (new version, no LLM)

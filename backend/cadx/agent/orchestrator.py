@@ -12,6 +12,7 @@ import itertools
 import json
 import re
 import shutil
+import tempfile
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -30,7 +31,7 @@ from cadx.agent.steps import mesh_orient as mesh_orient_step
 from cadx.agent.steps import mesh_refine as mesh_refine_step
 from cadx.agent.steps import optimize as optimize_step
 from cadx.agent.steps import plan as plan_step
-from cadx.agent.types import AgentCtx
+from cadx.agent.types import IMAGE_INPUT_KINDS, AgentCtx, InputAsset
 from cadx.cad.allowlist import check_code
 from cadx.cad.features import compare_features
 from cadx.cad.fem.analyze import FemReport, fem_feedback_lines
@@ -290,7 +291,7 @@ def resolve_mode(ctx: AgentCtx) -> tuple[str, str]:
         # (planner's approach), then run SIMP + FEM verification on it
         ctx.topopt_requested = True
         requested = "auto"
-    has_images = any(a.kind == "image" for a in ctx.assets)
+    has_images = any(a.kind in IMAGE_INPUT_KINDS for a in ctx.assets)
     approach = ctx.plan.approach if ctx.plan and ctx.plan.approach else "cad"
     mesh_ok = ctx.mesh_available
 
@@ -584,7 +585,7 @@ def _mesh_source_images(
     view of a flat part feeds the generator's "front" slot (its hero view),
     side/back views map to their namesake roles, everything else is "other".
     """
-    images = [a for a in ctx.assets if a.kind == "image"]
+    images = [a for a in ctx.assets if a.kind in IMAGE_INPUT_KINDS]
     if not images:
         return [], []
     by_id = {a.asset_id: a for a in images}
@@ -685,9 +686,111 @@ def _base_seed(ctx: AgentCtx) -> int:
     h = hashlib.sha256()
     h.update(str(ctx.project_id).encode())
     h.update((ctx.prompt or "").encode())
-    for aid in sorted(a.asset_id for a in ctx.assets if a.kind == "image"):
+    for aid in sorted(a.asset_id for a in ctx.assets if a.kind in IMAGE_INPUT_KINDS):
         h.update(str(aid).encode())
     return int.from_bytes(h.digest()[:4]) % 100_000
+
+
+async def _autogen_hero_image(ctx: AgentCtx, spec: PartSpec | None, plan: Any) -> None:
+    """Synthesise a hero reference image for mesh/hybrid runs without inputs.
+
+    Runs between PLAN and mode resolution: appending the generated asset to
+    ctx.assets makes `has_images` true, so the existing mesh/hybrid guards
+    and seed/mode logic work unchanged. Every failure degrades silently to
+    the previous CAD fallback.
+    """
+    if ctx.image is None or not ctx.runtime_settings.image_autogen_mesh:
+        return
+    if any(a.kind in IMAGE_INPUT_KINDS for a in ctx.assets):
+        return
+    requested = ctx.gen_mode or "auto"
+    if requested == "topopt":
+        requested = "auto"  # topopt resolves like auto for the base part
+    approach = plan.approach if plan and plan.approach else "cad"
+    if not (
+        requested in ("mesh", "hybrid") or (requested == "auto" and approach in ("mesh", "hybrid"))
+    ):
+        return
+    try:
+        models = await ctx.image.models()
+    except Exception:
+        models = []
+    if not any(m.available and not m.last_error for m in models):
+        return
+
+    # same fallback chain as the mesh subject (:866)
+    subject = (
+        ctx.mesh_info.get("_regen_hint")
+        or (plan.mesh_subject if plan else "")
+        or (spec.name if spec else "")
+        or ctx.prompt[:80]
+    )
+    from cadx.agent.context import read_prompt
+
+    s = ctx.runtime_settings
+    prompt = read_prompt("image_hero.md").format(subject=subject, prompt=ctx.prompt.strip())
+    await ctx.emit("imagegen", 0, "no reference image — generating a hero image")
+
+    async def _prog(msg: str, _p: float) -> None:
+        await ctx.emit("imagegen", 0, msg)
+
+    tmp = Path(tempfile.mkdtemp(prefix="cadx-hero-"))
+    try:
+        from cadx.agent.image_client import ImageGenRequest
+
+        side = min(1024, s.image_max_side)
+        req = ImageGenRequest(
+            prompt=prompt,
+            model=s.image_model,
+            seed=_base_seed(ctx),
+            count=1,
+            width=side,
+            height=side,
+            steps=s.image_steps,
+            guidance=s.image_guidance,
+            out_dir=tmp,
+        )
+        result = await ctx.image.generate(req, _prog, ctx.check_cancel)
+        from cadx.agent.image_assets import persist_generated_images
+        from cadx.db.session import session_scope
+
+        async with session_scope() as db:
+            assets = persist_generated_images(
+                db,
+                ctx.project_id,
+                result.image_paths,
+                prompt=subject,
+                caption=f"generated hero — {subject}",
+                gen_params={
+                    "prompt": prompt,
+                    "subject": subject,
+                    "model": result.model,
+                    "backend": result.backend,
+                    "seed": result.seed,
+                    "steps": result.steps,
+                    "guidance": result.guidance,
+                    "duration_s": result.duration_s,
+                    "source": "hero_autogen",
+                },
+            )
+            await db.commit()
+        for a in assets:
+            ctx.assets.append(
+                InputAsset(
+                    asset_id=str(a.id),
+                    kind="generated_image",
+                    path=storage.resolve(a.path),
+                    caption=a.caption,
+                    filename=a.filename,
+                )
+            )
+            ctx.generated_asset_ids.append(str(a.id))
+        await ctx.emit("imagegen", 0, f"hero image generated ({result.model})")
+    except Exception as e:
+        log.warning("agent.hero_image_failed", error=str(e))
+        await ctx.emit("imagegen", 0, f"hero image generation failed: {e} — continuing without")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 async def _candidate_seed(
@@ -873,9 +976,20 @@ async def _generate_mesh(
     # image preprocessing: isolated-object square crops generate cleaner meshes
     images = _prepped_gen_images(ctx, it_dir, images)
 
-    # disk cache: identical inputs+params never hit the generator twice
+    # disk cache: identical inputs+params never hit the generator twice.
+    # `subject` is planner-generated prose that varies run to run — keying
+    # on the user prompt keeps restarts hitting the cache.
     key, hit = await _mesh_cache_lookup(
-        ctx, iteration, images, roles[: len(images)], model, seed, steps, subject, out_path, rel
+        ctx,
+        iteration,
+        images,
+        roles[: len(images)],
+        model,
+        seed,
+        steps,
+        ctx.prompt[:80],
+        out_path,
+        rel,
     )
     if hit:
         return rel
@@ -1909,6 +2023,17 @@ async def _apply_flat_back(
     bow = _bottom_bow_mm(storage.resolve(stl_rel))
     if bow <= 0.35:
         return exec_result, post
+    # a sag far beyond the stated thickness means the mesh rests on the wrong
+    # axis — voxel-flattening a tall domain is a memory bomb; let the dim
+    # gate / pre-gate reject the mesh instead
+    hz = spec.height_z.value
+    if hz > 0 and bow > 4 * hz:
+        await ctx.emit(
+            "meshprocess",
+            it,
+            f"skipping flat-back: {bow:.0f} mm sag exceeds 4x stated thickness ({hz:.0f} mm)",
+        )
+        return exec_result, post
     smooth_iters = ctx.runtime_settings.mesh_smooth_after_flatten_iters
     ops = _flat_back_ops(post, bow, smooth_iters)
     flat_post = merge_post_params(post, {"ops": ops})
@@ -2338,7 +2463,7 @@ async def _run_strategy(
     s = ctx.runtime_settings
     forced = ctx.gen_mode not in (None, "auto", "topopt")
     approaches = [mode] if forced else (list(plan.strategy) if plan and plan.strategy else [mode])
-    has_images = any(a.kind == "image" for a in ctx.assets)
+    has_images = any(a.kind in IMAGE_INPUT_KINDS for a in ctx.assets)
     viable: list[str] = []
     for a in approaches[: s.agent_max_approaches]:
         if a in ("mesh", "hybrid") and (not has_images or not ctx.mesh_available):
@@ -2487,7 +2612,7 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
         capped = adaptive_max_iterations(
             spec,
             max_iterations,
-            n_images=sum(1 for a in ctx.assets if a.kind == "image"),
+            n_images=sum(1 for a in ctx.assets if a.kind in IMAGE_INPUT_KINDS),
             organic=ctx.gen_mode in ("mesh", "hybrid"),
         )
         if capped < max_iterations:
@@ -2518,6 +2643,11 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
             plan = None
     ctx.plan = plan
     outcome.plan = plan.model_dump() if plan else None
+
+    # ---------- HERO IMAGE AUTOGEN ----------
+    # mesh/hybrid without input images: synthesise a reference first so the
+    # mode guards below see has_images=True (failures degrade to CAD as before)
+    await _autogen_hero_image(ctx, spec, plan)
 
     # ---------- MODE RESOLUTION ----------
     mode, mode_note = resolve_mode(ctx)

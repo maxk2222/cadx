@@ -77,6 +77,12 @@ result = extrude(s.sketch, amount=3)
 
 ### PITFALLS (fix these first when a run fails)
 - Primitives are centred in ALL axes by default -> ALWAYS pass `align=(Align.CENTER, Align.CENTER, Align.MIN)` for base bodies (contract requires bottom on XY).
+- `Pos(x, y, z) * Cylinder(r, h)` puts the cylinder's CENTRE at (x, y, z), not its
+  base — `Pos(x, y, -1) * Cylinder(r, h)` therefore stops short and leaves a thin
+  membrane sealing the hole (renders "look like" holes but nothing goes through).
+  For a through-hole either pass `align=(Align.CENTER, Align.CENTER, Align.MIN)`
+  so z is the cutter base, centre the cutter at the part's mid-height with extra
+  height, or use `cadlib.through_hole(d)` inside a `Locations` scope.
 - `Hole(radius)` not diameter. `CounterSinkHole(radius, counter_sink_radius, counter_sink_angle)` also uses radii.
 - Custom countersink Ø`d`×`depth` opening at the TOP face (z_top) — subtract
   `Pos(x, y, z_top - depth/2) * Cone(bottom_radius=r, top_radius=d/2, height=depth)`:

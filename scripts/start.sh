@@ -32,6 +32,7 @@ die()  { warn "$*"; exit 1; }
 
 TIER=$(gpu_detect_tier)
 MODEL=$(gpu_default_model "$TIER")
+IMG_MODEL=$(gpu_default_image_model "$TIER")
 mkdir -p run logs
 
 # ---------- 1. setup check ----------
@@ -69,6 +70,7 @@ if [ "$NO_MESH" = 0 ] && [ "$TIER" != "none" ]; then
     MESH_URL="http://host.docker.internal:$MESH_PORT"
   fi
   export MESH_BASE_URL="$MESH_URL" MESH_MODEL="${MESH_MODEL:-$MODEL}"
+  export MESH_IMAGE_MODEL="${MESH_IMAGE_MODEL:-$IMG_MODEL}"
   [ "$TIER" = "fake" ] && export MESH_FAKE=1
 fi
 
@@ -78,13 +80,6 @@ if [ "$DEV" = 1 ]; then
   docker compose -f docker-compose.dev.yml up -d postgres redis
   say "migrations"
   (cd backend && ../.venv/bin/uv run alembic upgrade head >/dev/null)
-
-  if [ -f .env ]; then
-    say "legacy .env import"
-    (cd backend && ../.venv/bin/uv run cadx import-legacy-env "$ROOT/.env") \
-      && rm .env \
-      || warn "import failed — keeping .env; fix the file or check logs"
-  fi
 
   start_bg() { # name workdir command...
     local name="$1" dir="$2"; shift 2
@@ -114,14 +109,6 @@ else
   done
   curl -sf http://localhost:8080/api/health >/dev/null 2>&1 \
     || warn "api not healthy yet — check 'docker compose logs api'"
-
-  if [ -f .env ]; then
-    say "legacy .env import"
-    docker compose cp .env api:/tmp/legacy.env \
-      && docker compose exec -T api cadx import-legacy-env /tmp/legacy.env \
-      && rm .env \
-      || warn "import failed — keeping .env; fix the file or check logs"
-  fi
   APP_URL="http://localhost:8080"
 fi
 

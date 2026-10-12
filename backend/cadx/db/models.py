@@ -19,9 +19,14 @@ def utcnow() -> datetime:
 
 class AssetKind(enum.StrEnum):
     image = "image"
+    generated_image = "generated_image"
     reference_step = "reference_step"
     reference_stl = "reference_stl"
     reference_dxf = "reference_dxf"
+
+
+# Kinds that can serve as image inputs (LLM context, mesh source images).
+IMAGE_ASSET_KINDS = (AssetKind.image, AssetKind.generated_image)
 
 
 class VersionKind(enum.StrEnum):
@@ -29,6 +34,7 @@ class VersionKind(enum.StrEnum):
     edit = "edit"
     params = "params"
     optimize = "optimize"
+    mesh_edit = "mesh_edit"  # visual mesh-level edit (GUI ops stack)
 
 
 class VersionStatus(enum.StrEnum):
@@ -48,6 +54,8 @@ class JobType(enum.StrEnum):
     reexport = "reexport"
     resume = "resume"
     optimize = "optimize"
+    mesh_edit = "mesh_edit"  # GUI ops stack -> tessellated child version
+    fem = "fem"  # standalone FEM check on the same version
 
 
 class JobStatus(enum.StrEnum):
@@ -132,6 +140,9 @@ class Asset(SQLModel, table=True):
     height: int | None = None
     caption: str = ""
     derived_from: uuid.UUID | None = None  # source asset for edited copies
+    gen_params: dict[str, Any] | None = SField(
+        default=None, sa_column=Column(JSON)
+    )  # provenance for generated_image assets
     created_at: datetime = SField(default_factory=utcnow)
 
 

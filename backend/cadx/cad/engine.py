@@ -309,11 +309,15 @@ def run_mesh_pipeline(  # noqa: C901
     full_exports: bool = False,
     name: str = "model",
     make_solid: bool = False,
+    skip_baseline: bool = False,
 ) -> ExecResult:
     """Mesh-mode pipeline: clean -> orient -> scale -> analyse -> render -> DfM -> export.
 
     Input is the raw generator output (GLB/STL/...) in arbitrary normalized
     space; the result follows the frame contract (mm, +Z up, on XY, centred).
+    With `skip_baseline` the input is already a finished mm-frame model
+    (GUI mesh edit on a produced STL): only a light clean runs before the
+    recorded ops — no decimate/orient/scale/flatten.
     """
     res = ExecResult()
     settings = settings or ProjectSettings()
@@ -329,10 +333,15 @@ def run_mesh_pipeline(  # noqa: C901
     except Exception as e:
         res.error = f"failed to load generated mesh: {e}"
         return res
-    mesh, base_info = baseline_mesh(
-        raw, post, spec, cad_cap_faces=rt.mesh_max_faces_for_cad if make_solid else None
-    )
-    res.mesh.update(base_info)
+    if skip_baseline:
+        mesh = clean(raw)
+        res.mesh["ops_only"] = True
+        res.mesh["input_triangles"] = len(raw.faces)
+    else:
+        mesh, base_info = baseline_mesh(
+            raw, post, spec, cad_cap_faces=rt.mesh_max_faces_for_cad if make_solid else None
+        )
+        res.mesh.update(base_info)
 
     # 5b. agent transform ops (validated MeshOp list inside post.params)
     if post.ops:

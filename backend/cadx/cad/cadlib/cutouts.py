@@ -10,12 +10,14 @@ feature at that workplane directly.
         hole_grid(screw, nx=2, ny=2, pitch_x=60, pitch_y=24, on=top)
 """
 
+import math
 from typing import Literal
 
 from build123d import (
     Align,
     Box,
     BuildPart,
+    Cone,
     Cylinder,
     GridLocations,
     Locations,
@@ -116,6 +118,61 @@ def hole_grid(
     _in_scope(on, make)
 
 
+def through_hole(
+    diameter: float,
+    *,
+    depth: float | None = None,
+    csk_dia: float | None = None,
+    csk_angle: float = 90.0,
+    cbore_dia: float | None = None,
+    cbore_depth: float | None = None,
+    on=None,
+) -> None:
+    """Ø``diameter`` hole along the current workplane normal — through by default.
+
+    The cutter is taller than the part diagonal, so it always cuts completely
+    through regardless of where along the axis the location sits — this avoids
+    the classic ``Pos(x, y, -1) * Cylinder`` mistake that leaves a membrane
+    sealing the hole. ``depth`` instead makes a blind hole ``depth`` mm deep
+    below the workplane. ``csk_dia`` adds a countersink cone (``csk_angle``
+    degrees, opening at the workplane); ``cbore_dia`` + ``cbore_depth`` a
+    cylindrical counterbore — both measured down from the workplane.
+
+        with Locations(Pos(-15, 0, 0)):            # anywhere along the axis
+            through_hole(5.0)                    # guaranteed through
+        through_hole(5.0, csk_dia=8.4, on=top_face)   # countersunk, 90°
+    """
+    ctx = _require_context("through_hole")
+    r = diameter / 2
+    if depth is None:
+        bb = ctx.part.bounding_box()
+        s = bb.size
+        height = math.sqrt(s.X * s.X + s.Y * s.Y + s.Z * s.Z) + 10.0
+        z_mid = 0.0
+    else:
+        height = depth + 1.0  # 1 mm overshoot above the workplane
+        z_mid = (1.0 - depth) / 2
+
+    def make() -> None:
+        with Locations(Pos(0, 0, z_mid)):
+            Cylinder(radius=r, height=height, mode=Mode.SUBTRACT)
+        if csk_dia and csk_dia > diameter:
+            csk_depth = (csk_dia - diameter) / (2 * math.tan(math.radians(csk_angle) / 2))
+            with Locations(Pos(0, 0, -csk_depth / 2)):
+                Cone(
+                    bottom_radius=r,
+                    top_radius=csk_dia / 2,
+                    height=csk_depth,
+                    mode=Mode.SUBTRACT,
+                )
+        if cbore_dia and cbore_dia > diameter:
+            cd = cbore_depth if cbore_depth else (cbore_dia - diameter) / 2
+            with Locations(Pos(0, 0, -cd / 2)):
+                Cylinder(radius=cbore_dia / 2, height=cd, mode=Mode.SUBTRACT)
+
+    _in_scope(on, make)
+
+
 def insert_pocket(
     insert,
     *,
@@ -203,12 +260,14 @@ def keyhole_slot(
             radius=big_d / 2,
             height=thickness + 2,
             align=(Align.CENTER, Align.CENTER, Align.CENTER),
+            mode=Mode.SUBTRACT,
         )
         with Locations(Pos(dx / 2, dy / 2, 0)):
             Cylinder(
                 radius=small_d / 2,
                 height=thickness + 2,
                 align=(Align.CENTER, Align.CENTER, Align.CENTER),
+                mode=Mode.SUBTRACT,
             )
             # bridge the two openings into one slot
             Box(
@@ -216,6 +275,7 @@ def keyhole_slot(
                 abs(dy) + small_d,
                 thickness + 2,
                 align=(Align.CENTER, Align.CENTER, Align.CENTER),
+                mode=Mode.SUBTRACT,
             )
 
     _in_scope(on, make)

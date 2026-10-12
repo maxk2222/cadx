@@ -47,9 +47,20 @@ def _mask(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         mask = a >= 128
     else:
         try:
-            from rembg import remove
+            import rembg
 
-            mask = np.asarray(remove(img))[..., 3] >= 128
+            # u2net (~170 MB) — the 1 GB default model OOMs the worker and,
+            # like prep.py, a small frame is enough for a silhouette.
+            session = rembg.new_session("u2net")
+            small = img.copy()
+            small.thumbnail((768, 768), Image.Resampling.LANCZOS)
+            cut = rembg.remove(small, session=session)
+            mask = np.asarray(cut)[..., 3] >= 128
+            if mask.shape != a.shape:
+                m_img = Image.fromarray(mask.astype(np.uint8) * 255).resize(
+                    img.size, Image.Resampling.LANCZOS
+                )
+                mask = np.asarray(m_img) >= 128
         except Exception as e:
             raise ValueError(f"background removal failed: {e}") from e
     lab, n = ndi.label(mask)
@@ -112,7 +123,9 @@ def _surface_holes_px(
             dia_mm = 2.0 * np.sqrt(area / np.pi) / px_per_mm
             if not (2.5 <= dia_mm <= 15.0):
                 continue
-            if 4.0 * np.pi * area / (per * per) < 0.45:
+            # photos make hole edges ragged (JPEG ringing, speculars) —
+            # looser roundness than alpha voids; contrast+size still gate
+            if 4.0 * np.pi * area / (per * per) < 0.3:
                 continue
             region = lab == prop.label
             ring = ndi.binary_dilation(region, iterations=ring_iters) & inside & ~region
@@ -198,6 +211,16 @@ def measure_plan_view(
     px_per_mm = float(bbox_px[0]) / length_mm if length_mm > 0 else px_per_mm
     bbox_mm = [float(bbox_px[0]) / px_per_mm, float(bbox_px[1]) / px_per_mm]
 
+    # anisotropic calibration: a slightly tilted photo inflates one axis —
+    # when the stated width deviates <15 %, scale Y independently so the
+    # measured outline matches BOTH stated dims (holes stay proportional)
+    sy_per_mm: float | None = None
+    if width_mm and width_mm > 0:
+        sy = float(bbox_px[1]) / width_mm
+        if sy > 0 and 0.85 <= sy / px_per_mm <= 1.18:
+            sy_per_mm = sy
+            bbox_mm[1] = width_mm
+
     if width_mm:
         dev = abs(bbox_mm[1] - width_mm) / max(width_mm, 1e-9)
         if dev > 0.08:
@@ -225,11 +248,13 @@ def measure_plan_view(
             )
 
     # hole centres through the same alignment as the outline
+    scale_xy = np.array([px_per_mm, sy_per_mm or px_per_mm])
+
     holes: list[MeasuredHole] = []
     if holes_px:
         centres_px = np.array([[cx, cy] for cy, cx, _ in holes_px], dtype=float)
         centres_aligned = _to_frame(centres_px, rot, mean, flip_y=(role == "bottom"))
-        centres_mm = centres_aligned / px_per_mm
+        centres_mm = centres_aligned / scale_xy
         for (cx, cy), (hi, (_, _, dia_px)) in zip(centres_mm, enumerate(holes_px), strict=True):
             holes.append(
                 MeasuredHole(
@@ -242,10 +267,10 @@ def measure_plan_view(
             )
         holes.sort(key=lambda h: h.x)
 
-    outline_mm = aligned / px_per_mm
+    outline_mm = aligned / scale_xy
     outline_mm = outline_mm - (outline_mm.max(axis=0) + outline_mm.min(axis=0)) / 2.0
     # recentre holes with the same offset
-    off = (aligned.max(axis=0) + aligned.min(axis=0)) / 2.0 / px_per_mm
+    off = (aligned.max(axis=0) + aligned.min(axis=0)) / 2.0 / scale_xy
     for h in holes:
         h.x = round(h.x - float(off[0]), 2)
         h.y = round(h.y - float(off[1]), 2)

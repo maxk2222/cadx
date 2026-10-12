@@ -9,9 +9,11 @@ from build123d import (
     Box,
     BuildPart,
     CounterBoreHole,
+    Cylinder,
     GridLocations,
     Hole,
     Locations,
+    Pos,
     chamfer,
     fillet,
 )
@@ -132,3 +134,58 @@ def test_compare_no_holes_measured():
     spec = [Feature(name="mounting", type="hole", count=4, standard="M4 clearance")]
     findings = compare_features(spec, m)
     assert any(f.severity == "major" for f in findings)
+
+
+def test_extract_membrane_blocked_hole_is_blind():
+    """The Pos(x, y, -1) * Cylinder mis-centring leaves a membrane sealing the
+    top of the bore — must classify as blind, not through."""
+    with BuildPart() as p:
+        Box(60, 40, 6, align=(Align.CENTER, Align.CENTER, Align.MIN))
+        p.part -= Pos(0, 0, -1) * Cylinder(2.5, 9)
+    m = extract_features(p.part)
+    assert m.total_holes == 1
+    assert m.hole_groups[0].depth_class == "blind"
+
+
+def test_compare_blocked_hole_flagged():
+    m = MeasuredFeatures(
+        hole_groups=[MeasuredHoleGroup(diameter=5.0, count=3, axis="+z", depth_class="blind")],
+        total_holes=3,
+    )
+    spec = [Feature(name="mounting", type="hole", count=3, standard="M5 clearance")]
+    findings = compare_features(spec, m)
+    assert any(f.severity == "major" and "through" in f.expected for f in findings)
+
+
+def test_compare_blind_spec_hole_not_flagged():
+    m = MeasuredFeatures(
+        hole_groups=[MeasuredHoleGroup(diameter=5.0, count=3, axis="+z", depth_class="blind")],
+        total_holes=3,
+    )
+    spec = [Feature(name="pocket", type="insert", count=3)]
+    findings = compare_features(spec, m)
+    assert not any("through" in f.expected for f in findings)
+
+
+def test_compare_fine_grained_hole_types_checked():
+    """Intake emits fine-grained types (through_hole etc.) — they must reach
+    the same deterministic checks as the coarse 'hole' type."""
+    m = MeasuredFeatures(
+        hole_groups=[MeasuredHoleGroup(diameter=5.0, count=2, axis="+z", depth_class="through")],
+        total_holes=2,
+    )
+    for t in ("through_hole", "clearance_hole", "through_hole_with_countersink"):
+        spec = [Feature(name="mounting", type=t, count=3, standard="M5 clearance")]
+        findings = compare_features(spec, m)
+        assert findings, f"type {t} produced no findings"
+        assert any(f.severity == "major" for f in findings)
+
+
+def test_compare_insert_type_not_counted_as_through_hole():
+    """An 'insert' spec (blind pocket) must not demand a through verdict."""
+    m = MeasuredFeatures(
+        hole_groups=[MeasuredHoleGroup(diameter=4.4, count=1, axis="+z", depth_class="blind")],
+        total_holes=1,
+    )
+    spec = [Feature(name="insert pocket", type="insert", count=1)]
+    assert not any("through" in f.expected for f in compare_features(spec, m))

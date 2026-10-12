@@ -32,20 +32,37 @@ watertight export. FEM verification uses the corresponding voxel mask rather
 than the smoothed export mesh, so export smoothing does not change the
 reported structural result.
 
-### Manual optimization
+### Manual optimization and FEM check (structural editor)
 
-On a completed version, use **Topology-optimize this part** to create an
-LLM-free child version. The dialog accepts one or more load cases, face
-supports/loads, force magnitude and direction, material, and target volume
-fraction. When the dialog receives no load cases from the parent spec, define
-them there. The worker persists the optimized mesh, report, and optimizer
-history on the child version.
+On a completed version, **Structural editor** opens a full-screen 3D editor
+where support, load and keep regions are painted directly on the part surface
+with an adjustable brush (or declared as axis faces). Painted picks are stored
+as `RegionSpec kind="points"` — a list of `[x,y,z]` mm surface points, a brush
+radius (`radius_mm`), and the averaged surface normal (drives pressure loads).
+Resolution selects solid cells within `radius_mm + pitch` of any painted
+point, i.e. a near-surface patch of material.
+
+Three actions share the declared load cases:
+
+- **Check regions** — server-side voxel resolution only (`preview_only`):
+  returns grid pitch/dims, per-case fixed/loaded node counts, total force and
+  warnings, plus colored overlay renders (fixed blue, load red, keep green)
+  served from the version's `_scratch/` directory.
+- **FEM check** — a standalone FEM run on the *same* version (`JobType.fem`,
+  no child): writes `version.fem` plus stress/deformation artifacts and flags
+  the version `needs_review` when the worst safety factor drops below 1.
+- **Optimize** — creates an LLM-free `optimize` child version (SIMP + FEM
+  verification) as before; `keep_regions` hold their material solid.
+
+Selections, material and target volume persist on the version under
+`options.ui_editor` (`ui_*` keys are stripped before settings merge).
 
 ## Load-case contract
 
 Coordinates are millimeters; forces are Newtons; pressure and stress are MPa
 (N/mm²). Each case contains fully fixed regions and one or more loads. Regions
-can be a bounding-box face, cylinder, box, or the whole domain. Axes use
+can be a bounding-box face, cylinder, box, hole anchor, painted surface patch
+(`points`), or the whole domain. Axes use
 `+x`, `-x`, `+y`, `-y`, `+z`, `-z`.
 
 Example request fragment:
@@ -71,11 +88,12 @@ Example request fragment:
 ```
 
 A force load distributes its vector over its selected region. A pressure load
-uses `pressure_mpa` instead of `force_n`. For generated parts, make the
-physical attachment/load locations explicit (for example, clamp the mounting
-holes rather than an unrelated outer face). The manual dialog currently
-models simple axial face forces; detailed region types and multi-component
-forces can be expressed through the API/schema or prompt-derived spec.
+uses `pressure_mpa` instead of `force_n` and acts against the region normal —
+for `points` regions the GUI records the averaged surface normal for this.
+For generated parts, make the physical attachment/load locations explicit
+(for example, clamp the mounting holes rather than an unrelated outer face).
+Painted `points` regions, face regions, force magnitude/direction and keep
+regions are all editable in the structural editor UI.
 
 ## Numerical method and outputs
 

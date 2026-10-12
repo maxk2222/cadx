@@ -13,13 +13,15 @@ export interface Project {
 export interface Asset {
   id: string;
   project_id: string;
-  kind: "image" | "reference_step" | "reference_stl" | "reference_dxf";
+  kind: "image" | "generated_image" | "reference_step" | "reference_stl" | "reference_dxf";
   filename: string;
   mime: string;
   width: number | null;
   height: number | null;
   caption: string;
   derived_from: string | null;
+  /** provenance for generated images (prompt/model/seed/…) */
+  gen_params: Record<string, unknown> | null;
   created_at: string;
   url: string;
 }
@@ -56,7 +58,7 @@ export interface VersionSummary {
   project_id: string;
   parent_id: string | null;
   number: number;
-  kind: "generate" | "edit" | "params" | "optimize";
+  kind: "generate" | "edit" | "params" | "optimize" | "mesh_edit";
   prompt: string;
   status: VersionStatus;
   score: number | null;
@@ -161,11 +163,19 @@ export interface PartSpec {
 }
 
 export interface RegionSpec {
-  kind?: "face" | "cylinder" | "box" | "all";
+  kind?: "face" | "surface" | "area" | "cylinder" | "box" | "hole" | "points" | "all";
   axis?: string;
   center?: number[];
   diameter_mm?: number | null;
   margin_mm?: number;
+  polygon?: number[][];
+  x_range?: number[];
+  y_range?: number[];
+  hole_index?: number | null;
+  /** GUI brush: painted surface points [x,y,z] mm + brush radius + avg normal. */
+  points?: number[][];
+  radius_mm?: number | null;
+  normal?: number[];
   description?: string;
 }
 
@@ -187,6 +197,40 @@ export interface OptimizeSpec {
   safety_factor_min?: number;
   keep_regions?: RegionSpec[];
   note?: string;
+}
+
+/** One recorded mesh transform (server-side OPS_REGISTRY). */
+export interface MeshOp {
+  op: string;
+  args: Record<string, unknown>;
+}
+
+export interface MeshPreviewResult {
+  ok: boolean;
+  glb_url: string | null;
+  stats: {
+    faces?: number;
+    watertight?: boolean;
+    bbox_size?: number[];
+    ops_applied?: number;
+  };
+  error: string | null;
+}
+
+export interface FemPreviewResult {
+  ok: boolean;
+  pitch_mm: number | null;
+  dims: number[];
+  solid_elements: number;
+  cases: {
+    case: string;
+    fixed_nodes: number;
+    loaded_nodes: number;
+    total_force_n: number;
+    warnings: string[];
+  }[];
+  pngs: string[];
+  error: string | null;
 }
 
 export interface FemCaseResult {
@@ -308,6 +352,14 @@ export interface Settings {
   topopt_default_rmin_mm: number;
   mesh_base_url: string;
   mesh_model: string;
+  image_model: string;
+  image_steps: number | null;
+  image_guidance: number | null;
+  image_max_side: number;
+  image_max_count: number;
+  image_autogen_mesh: boolean;
+  image_tool_budget: number;
+  image_timeout_s: number;
   mesh_timeout_s: number;
   mesh_decimate_faces: number;
   mesh_max_faces_for_cad: number;
@@ -335,11 +387,14 @@ export interface MeshModelInfo {
   name: string;
   device: string;
   backend: string;
+  /** "mesh" | "image" — the sidecar hosts both adapter families */
+  kind: string;
   supports_multiview: boolean;
   max_images: number;
   license_note: string;
   loaded: boolean;
   available: boolean;
+  last_error: string | null;
 }
 
 export interface MeshHealth {

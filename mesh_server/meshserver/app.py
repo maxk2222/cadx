@@ -1,4 +1,5 @@
-"""FastAPI app: /v1/health, /v1/models, /v1/jobs CRUD + mesh download."""
+"""FastAPI app: /v1/health, /v1/models, /v1/jobs CRUD + mesh download,
+/v1/image-jobs CRUD + PNG download (text-to-image adapter family)."""
 
 from __future__ import annotations
 
@@ -10,10 +11,17 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import Response
 
 from meshserver.config import ServerConfig, get_config
-from meshserver.jobs import JobManager
+from meshserver.jobs import ImageJob, JobManager, MeshJob
 from meshserver.logging import configure_logging, get_logger
 from meshserver.registry import Registry
-from meshserver.schemas import GenParams, Health, JobCreated, JobStatus, ModelInfo
+from meshserver.schemas import (
+    GenParams,
+    Health,
+    ImageGenParams,
+    JobCreated,
+    JobStatus,
+    ModelInfo,
+)
 
 log = get_logger(__name__)
 
@@ -87,6 +95,43 @@ def create_app(cfg: ServerConfig | None = None) -> FastAPI:
 
     @app.delete("/v1/jobs/{job_id}")
     async def job_delete(job_id: str) -> dict:
+        await manager.cancel(job_id)
+        deleted = await manager.delete(job_id)
+        return {"ok": True, "deleted": deleted}
+
+    # -- text-to-image jobs ------------------------------------------------ #
+
+    @app.post("/v1/image-jobs", response_model=JobCreated)
+    async def create_image_job(params: ImageGenParams) -> JobCreated:
+        job = await manager.submit_image(params)
+        if job is None:
+            raise HTTPException(429, "job queue full")
+        return JobCreated(job_id=job.id)
+
+    @app.get("/v1/image-jobs/{job_id}", response_model=JobStatus)
+    async def image_job_status(job_id: str) -> JobStatus:
+        job = manager.get(job_id)
+        if job is None or not isinstance(job, ImageJob):
+            raise HTTPException(404, "job not found")
+        return job.to_status()
+
+    @app.get("/v1/image-jobs/{job_id}/image")
+    async def image_job_image(job_id: str, i: int = 0) -> Response:
+        job = manager.get(job_id)
+        if job is None or not isinstance(job, ImageJob):
+            raise HTTPException(404, "job not found")
+        if job.status != "succeeded":
+            raise HTTPException(409, f"job is {job.status}, image unavailable")
+        if i < 0 or i >= len(job.images):
+            raise HTTPException(400, f"image index {i} out of range ({len(job.images)})")
+        return Response(
+            content=job.images[i],
+            media_type="image/png",
+            headers={"Content-Disposition": f"attachment; filename=image{i}.png"},
+        )
+
+    @app.delete("/v1/image-jobs/{job_id}")
+    async def image_job_delete(job_id: str) -> dict:
         await manager.cancel(job_id)
         deleted = await manager.delete(job_id)
         return {"ok": True, "deleted": deleted}

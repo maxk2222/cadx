@@ -9,6 +9,7 @@ import {
 import HealthDots from "./components/HealthDots";
 import Logo from "./components/Logo";
 import { ToastProvider } from "./components/ui";
+import EditPage from "./pages/EditPage";
 import ProjectPage from "./pages/ProjectPage";
 import ProjectsPage from "./pages/ProjectsPage";
 import SettingsPage from "./pages/SettingsPage";
@@ -101,6 +102,7 @@ export default function App() {
               <Route path="/" element={<ProjectsPage />} />
               <Route path="/projects/:id" element={<ProjectPage />} />
               <Route path="/versions/:id" element={<VersionPage />} />
+              <Route path="/versions/:id/edit" element={<EditPage />} />
               <Route path="/settings" element={<SettingsPage />} />
             </Routes>
           </main>

@@ -38,6 +38,51 @@ Edits create child versions. Library selections are carried forward by default
 and can be changed in the edit form. The API distinguishes an omitted selection
 (inherit) from an explicit empty list (clear).
 
+### Mesh editor (`/versions/<id>/edit`)
+
+A dedicated page for visual, mesh-level editing of any finished version. The
+tool panel builds a stack of validated `MeshOp` operations — the same
+`OPS_REGISTRY` replay the executor uses for agent-side mesh refinement:
+
+- **Orient / Rotate / Mirror / Scale** (uniform or per-axis)
+- **Flatten bottom, Slice, Crop box** — slice position and crop corners can be
+  picked on the model surface (mm coordinates)
+- **Smooth, Smooth-preserve, Decimate**
+- **Boolean add/cut** with a box/cylinder/sphere primitive placed by clicking
+  the surface (ghost preview)
+- **Keep largest / Drop small bodies / Repair**
+- **Measure** — two-click surface distance (not recorded)
+
+The op stack supports per-op removal, undo and reset. **Preview** sends the
+stack to the `cad` queue and swaps the viewer to a server-generated GLB (with
+face count, bbox and watertight stats). **Apply as new version** creates an
+immutable `mesh_edit` child version: for mesh-mode parents the full baseline +
+ops replay runs on `mesh/mesh_raw.glb`, for every other parent the ops run
+directly on the finished STL (`ops_only` — no re-orient/re-scale). Drafts are
+persisted on the version (`options.ui_editor.ops`) so reopening the editor
+restores the stack.
+
+### Structural editor (FEM / TopOpt regions)
+
+The structural editor replaces the old face-only optimize dialog. It paints
+boundary regions directly on the model surface via a brush (adjustable radius,
+mm):
+
+- **Support regions** (blue) — fixed nodes per load case
+- **Load regions** (red) — force application per load case, with magnitude +
+  direction per load
+- **Keep regions** (green) — TopOpt design-preserve volumes
+
+Face-axis regions remain available as an alternative to painting. Painted
+picks become `RegionSpec kind="points"` (points + brush radius + averaged
+surface normal) resolved on the voxel domain — the same contract the agent
+uses. Three actions share the declared cases: **Check regions** (server-side
+voxel resolution → hit counts, warnings, colored overlay PNGs), **FEM check**
+(standalone stress analysis written to the same version, `needs_review` when
+safety factor < 1), and **Optimize** (SIMP TopOpt child version with keep
+regions). Selections, material and volume fraction persist under
+`options.ui_editor`.
+
 ### Settings and reusable part library
 
 Settings includes LLM/provider configuration, health status, the standard-part
@@ -83,6 +128,9 @@ Manual smoke test:
 
 The GUI is for a local, single-user deployment; it does not provide
 authentication or multi-user library isolation. FEM/TopOpt values are
-engineering estimates, not certification. The manual optimization dialog
-currently represents simple face supports and axial face forces; richer region
-loads are available through the API/spec contract. See `docs/fem-topopt.md`.
+engineering estimates, not certification. The mesh editor operates on
+tessellated geometry — it records replayable `MeshOp` transforms, it does not
+patch parametric code; booleans are capped at 200k faces (decimate first).
+Region painting selects near-surface voxel cells within the brush radius —
+thin features below ~2 voxel pitches may not resolve reliably. See
+`docs/fem-topopt.md`.

@@ -64,6 +64,7 @@ class AssetOut(BaseModel):
     height: int | None
     caption: str
     derived_from: uuid.UUID | None = None
+    gen_params: dict[str, Any] | None = None  # provenance for generated images
     created_at: datetime
     url: str = ""
 
@@ -159,6 +160,73 @@ class OptimizeRequest(BaseModel):
     load_cases: list[dict[str, Any]] = Field(default_factory=list)
     optimize: dict[str, Any] = Field(default_factory=dict)
     material: str = ""
+
+
+# --------------------------------------------------------------------------- #
+# visual mesh editor + structural editor (GUI)                                  #
+# --------------------------------------------------------------------------- #
+
+
+class MeshOpIn(BaseModel):
+    """One recorded mesh transform — validated server-side by OPS_REGISTRY."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    op: str = Field(max_length=40)
+    args: dict[str, Any] = Field(default_factory=dict)
+
+
+class MeshPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ops: list[MeshOpIn] = Field(default_factory=list, max_length=48)
+    post: dict[str, Any] | None = None  # MeshPostParams overrides (mesh parents)
+
+
+class MeshPreviewOut(BaseModel):
+    ok: bool
+    glb_url: str | None = None
+    stats: dict[str, Any] = Field(default_factory=dict)
+    error: str | None = None
+
+
+class MeshEditRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ops: list[MeshOpIn] = Field(default_factory=list, max_length=48)
+    post: dict[str, Any] | None = None  # MeshPostParams overrides (mesh parents)
+    note: str = Field(default="", max_length=200)
+
+
+class FemRegionRequest(BaseModel):
+    """Region preview / standalone FEM check payload. `load_cases` and
+    `keep_regions` follow the LLM contract (LoadCase / RegionSpec) and may
+    contain painted `points` regions from the GUI."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    load_cases: list[dict[str, Any]] = Field(default_factory=list, max_length=8)
+    keep_regions: list[dict[str, Any]] = Field(default_factory=list, max_length=10)
+    material: str = Field(default="", max_length=40)
+
+
+class FemPreviewOut(BaseModel):
+    ok: bool
+    pitch_mm: float | None = None
+    dims: list[int] = Field(default_factory=list)
+    solid_elements: int = 0
+    cases: list[dict[str, Any]] = Field(default_factory=list)
+    pngs: list[str] = Field(default_factory=list)  # /versions/<vid>/scratch/... URLs
+    error: str | None = None
+
+
+class EditorStateRequest(BaseModel):
+    """Persist GUI editor state (painted regions, ops draft) on the version —
+    stored under options['ui_editor'], stripped before settings merge."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ui_editor: dict[str, Any] = Field(default_factory=dict)
 
 
 class AnswerItem(BaseModel):
@@ -357,6 +425,14 @@ class SettingsUpdate(BaseModel):
     topopt_default_rmin_mm: float | None = Field(default=None, gt=0, le=1000)
     mesh_base_url: str | None = None
     mesh_model: str | None = Field(default=None, max_length=200)
+    image_model: str | None = Field(default=None, max_length=200)
+    image_steps: int | None = Field(default=None, ge=1, le=200)
+    image_guidance: float | None = Field(default=None, ge=0, le=50)
+    image_max_side: int | None = Field(default=None, ge=64, le=4096)
+    image_max_count: int | None = Field(default=None, ge=1, le=16)
+    image_autogen_mesh: bool | None = None
+    image_tool_budget: int | None = Field(default=None, ge=0, le=50)
+    image_timeout_s: int | None = Field(default=None, ge=1, le=86_400)
     mesh_timeout_s: int | None = Field(default=None, ge=1, le=86_400)
     mesh_decimate_faces: int | None = Field(default=None, ge=1)
     mesh_max_faces_for_cad: int | None = Field(default=None, ge=1)
@@ -369,11 +445,28 @@ class MeshModelOut(BaseModel):
     name: str = ""
     device: str = ""
     backend: str = ""
+    kind: str = "mesh"  # "mesh" | "image"
     supports_multiview: bool = False
     max_images: int = 1
     license_note: str = ""
     loaded: bool = False
     available: bool = True
+    last_error: str | None = None
+
+
+class ImageGenerateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    prompt: str = Field(min_length=1, max_length=4000)
+    negative: str = ""
+    model: str | None = None  # None → runtime image_model default
+    seed: int = 0
+    count: int = Field(default=1, ge=1, le=16)  # clamped by image_max_count
+    width: int = Field(default=768, ge=64, le=4096)  # clamped by image_max_side
+    height: int = Field(default=768, ge=64, le=4096)
+    steps: int | None = Field(default=None, ge=1, le=200)
+    guidance: float | None = Field(default=None, ge=0, le=50)
+    caption: str = ""
 
 
 class MeshHealthOut(BaseModel):

@@ -77,8 +77,12 @@ result = cadlib.profile_body(
     edge_fillet=PARAMS["edge_fillet"],
 )
 for h in anchor_holes():
+    # cutter BASE at z=-1 via Align.MIN — Pos() alone would centre the
+    # cylinder at z=-1 and leave a membrane sealing the top of the hole
     result -= Pos(h["x"], h["y"], -1) * Cylinder(
-        radius=PARAMS["hole_dia"] / 2, height=PARAMS["thickness"] + 2
+        radius=PARAMS["hole_dia"] / 2,
+        height=PARAMS["thickness"] + 2,
+        align=(Align.CENTER, Align.CENTER, Align.MIN),
     )
 ```
 

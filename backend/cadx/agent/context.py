@@ -10,7 +10,7 @@ import contextlib
 from pathlib import Path
 from typing import Any
 
-from cadx.agent.types import InputAsset
+from cadx.agent.types import IMAGE_INPUT_KINDS, InputAsset
 from cadx.db.models import ProjectSettings
 from cadx.llm.images import image_part
 from cadx.llm.schemas import PartSpec
@@ -115,7 +115,7 @@ def images_block(assets: list[InputAsset], max_n: int) -> list[dict[str, Any]]:
     parts: list[dict[str, Any]] = []
     n = 0
     for a in assets:
-        if a.kind != "image":
+        if a.kind not in IMAGE_INPUT_KINDS:
             continue
         n += 1
         if n > max_n:

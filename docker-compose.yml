@@ -82,6 +82,7 @@ services:
     build:
       context: backend
       target: executor
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-cadx}:${POSTGRES_PASSWORD:-cadx}@postgres:5432/${POSTGRES_DB:-cadx}
       REDIS_URL: redis://redis:6379/0

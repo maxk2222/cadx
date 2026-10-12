@@ -110,6 +110,49 @@ def test_keyhole_and_t_slot():
     assert p.part.volume < 60 * 40 * 12
 
 
+def test_keyhole_slot_actually_cuts():
+    """Regression: primitives without Mode.SUBTRACT were ADDED, not cut."""
+    with BuildPart() as p:
+        Box(60, 40, 12, align=_ALIGN_MIN)
+        cadlib.keyhole_slot(10, 5, 15, 4, on=Pos(0, -15, 12))
+    assert not p.part.is_inside((0.0, -15.0, 11.0))
+
+
+def test_through_hole_cuts_fully():
+    """Oversized cutter: the bore clears the part even when the location sits
+    mid-height — no sealing membrane."""
+    with BuildPart() as p:
+        Box(60, 40, 6, align=_ALIGN_MIN)
+        cadlib.through_hole(5.0, on=Pos(-15, 0, 2))
+    for z in (0.5, 3.0, 5.5):
+        assert not p.part.is_inside((-15.0, 0.0, z))
+
+
+def test_through_hole_countersink():
+    from build123d import GeomType
+
+    with BuildPart() as p:
+        Box(60, 40, 6, align=_ALIGN_MIN)
+        top = p.faces().sort_by(Axis.Z)[-1]
+        cadlib.through_hole(5.0, csk_dia=9.0, on=top)
+    assert any(f.geom_type == GeomType.CONE for f in p.part.faces())
+    assert not p.part.is_inside((0.0, 0.0, 3.0))
+
+
+def test_through_hole_blind_depth():
+    with BuildPart() as p:
+        Box(60, 40, 10, align=_ALIGN_MIN)
+        top = p.faces().sort_by(Axis.Z)[-1]
+        cadlib.through_hole(6.0, depth=4.0, on=top)
+    assert not p.part.is_inside((0.0, 0.0, 9.0))
+    assert p.part.is_inside((0.0, 0.0, 5.0))
+
+
+def test_through_hole_requires_buildpart():
+    with pytest.raises(RuntimeError, match="BuildPart"):
+        cadlib.through_hole(5.0)
+
+
 def test_sandbox_import_cadlib(tmp_path):
     code = (
         'PARAMS = {"plate_l": 60.0}\n'

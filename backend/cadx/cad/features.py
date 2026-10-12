@@ -25,6 +25,7 @@ class MeasuredHoleGroup(BaseModel):
     axis: str = ""  # dominant axis direction: +x|-x|+y|-y|+z|-z
     depth_class: str = "through"  # through | blind | unknown
     centers: list[list[float]] = Field(default_factory=list)  # per-hole [x, y]
+    blocked: int = 0  # bores in this group sealed by a membrane (tunnel-verified)
 
 
 class MeasuredFeatures(BaseModel):
@@ -67,7 +68,20 @@ _CLEARANCE_DIA = {
     20: 21.0,
 }
 _TAP_DIA = {3: 2.5, 4: 3.3, 5: 4.2, 6: 5.0, 8: 6.8, 10: 8.5, 12: 10.2}
-_HOLE_TYPES = {"hole", "insert", "thread", "bearing_seat"}
+_HOLE_TYPES = {
+    "hole",
+    "insert",
+    "thread",
+    "bearing_seat",
+    # intake emits fine-grained hole types — they all must reach the check
+    "through_hole",
+    "blind_hole",
+    "countersink_hole",
+    "counterbore_hole",
+    "through_hole_with_countersink",
+    "clearance_hole",
+    "tapped_hole",
+}
 _CSK_RE = re.compile(r"countersunk|csk|senk(?!.*zylinder)|flat.?head", re.I)
 _CBORE_RE = re.compile(r"counterbore|cbore|zylindersenk|socket.?head", re.I)
 _TAP_RE = re.compile(r"\btap(ped)?\b|gewinde|thread", re.I)
@@ -373,11 +387,17 @@ def extract_features(  # noqa: C901 — sequential measurement passes
         dom = _dominant_axis(axis)
         ax_idx = "xyz".index(dom[-1])
         depth = "through" if vspan >= _THROUGH_FRACTION * extent[ax_idx] else "blind"
-        # vspan is capped by LOCAL thickness — a through bore in a dipped
-        # region always looks "blind" against the global extent. Verify with
+        # vspan is measured on the CUT face's parameter range — it can claim
+        # "through" even when a membrane seals the bore, and it is capped by
+        # LOCAL thickness so a real through bore in a dipped region always
+        # looks "blind" against the global extent. Verify both directions with
         # a tunnel ray when the tessellation is available.
-        if depth == "blind" and mesh is not None and _ray_tunnel(mesh, center, ax_idx, r):
-            depth = "through"
+        if mesh is not None:
+            tunnel = _ray_tunnel(mesh, center, ax_idx, r)
+            if depth == "through" and not tunnel:
+                depth = "blind"
+            elif depth == "blind" and tunnel:
+                depth = "through"
         dia = 2.0 * r
         cxy = [round(float(center[0]), 2), round(float(center[1]), 2)]
         for g in groups:
@@ -387,6 +407,8 @@ def extract_features(  # noqa: C901 — sequential measurement passes
                 g.centers.append(cxy)
                 if g.depth_class != depth:
                     g.depth_class = "unknown"
+                if depth == "blind":
+                    g.blocked += 1
                 break
         else:
             groups.append(
@@ -396,6 +418,7 @@ def extract_features(  # noqa: C901 — sequential measurement passes
                     axis=dom,
                     depth_class=depth,
                     centers=[cxy],
+                    blocked=1 if depth == "blind" else 0,
                 )
             )
 
@@ -530,6 +553,36 @@ def _check_hole_feature(
                 fix_hint=(
                     f"set hole diameter to {want_dia}mm — for a standard "
                     f"({f.standard or 'metric'}) use the matching bd_warehouse hole"
+                ),
+            )
+        )
+
+    # a bore that stops short leaves a membrane sealing the hole — it LOOKS
+    # like a hole in renders but nothing goes through. Spec holes default to
+    # through unless they are explicitly blind (insert pockets, depth-limited).
+    dims = f.dims or {}
+    desc = f"{std_desc} {f.name or ''}".lower()
+    wants_blind = (
+        f.type == "insert"
+        or "blind" in desc
+        or "sackloch" in desc
+        or any(k in dims for k in ("depth", "tiefe"))
+    )
+    if (group.depth_class == "blind" or group.blocked > 0) and not wants_blind:
+        findings.append(
+            FeatureFinding(
+                feature=name,
+                expected="through hole(s)",
+                actual=(
+                    f"{max(group.blocked, 1)}/{group.count} bore(s) blocked — "
+                    "the hole does not go through (a membrane seals it)"
+                ),
+                severity="major",
+                fix_hint=(
+                    "the cutting cylinder is too short or mis-centred — use "
+                    "cadlib.through_hole() or a cutter whose base is below the "
+                    "part, e.g. Pos(x, y, -1) * Cylinder(..., "
+                    "align=(Align.CENTER, Align.CENTER, Align.MIN))"
                 ),
             )
         )

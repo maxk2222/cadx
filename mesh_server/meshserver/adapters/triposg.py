@@ -18,7 +18,13 @@ from typing import Any
 import trimesh
 from PIL import Image
 
-from meshserver.adapters.base import AdapterGenResult, GenOpts, MeshAdapter, missing
+from meshserver.adapters.base import (
+    AdapterGenResult,
+    GenOpts,
+    MeshAdapter,
+    hard_unload,
+    missing,
+)
 from meshserver.adapters.hunyuan3d21_mlx import _to_trimesh
 
 
@@ -76,6 +82,7 @@ class TripoSGAdapter(MeshAdapter):
 
     def unload(self) -> None:
         self._pipe = None
+        hard_unload()
         self._loaded = False
 
     def generate(

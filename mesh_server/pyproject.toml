@@ -49,6 +49,23 @@ bg = [
     "rembg>=2.0.57",
     "onnxruntime>=1.18",
 ]
+# text-to-image: Apple Silicon — FLUX.1-schnell via mflux (scripts/install_image_mlx.sh)
+image-mlx = [
+    "mflux>=0.9",
+    "mlx>=0.20",
+    "safetensors>=0.4",
+]
+# text-to-image: CUDA/MPS/CPU — FLUX.1-schnell / SDXL / SD1.5 via diffusers
+image-torch = [
+    "torch>=2.3",
+    "diffusers>=0.30,<0.36",
+    "transformers>=4.45,<5",
+    "huggingface_hub<1",
+    "accelerate>=0.33",
+    "sentencepiece>=0.2",
+    "protobuf",
+    "safetensors>=0.4",
+]
 
 [dependency-groups]
 dev = [

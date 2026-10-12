@@ -158,6 +158,9 @@ def run_mesh_payload(payload: dict[str, Any]) -> dict[str, Any]:
         d["images"] = {k: f"{it_rel}/preview/{v}" for k, v in d.get("images", {}).items()}
         return d
 
+    if mode == "ops_preview":
+        return _ops_preview(payload, mesh_path, project_id, version_id)
+
     settings = ProjectSettings(**(payload.get("settings") or {}))
     spec = PartSpec(**payload["spec"]) if payload.get("spec") else None
     post = MeshPostParams(**(payload.get("post") or {}))
@@ -172,6 +175,7 @@ def run_mesh_payload(payload: dict[str, Any]) -> dict[str, Any]:
         full_exports=bool(payload.get("full_exports")),
         name=payload.get("name", "model"),
         make_solid=bool(payload.get("make_solid")),
+        skip_baseline=bool(payload.get("ops_only")),
     )
 
     d = result.to_dict()
@@ -187,6 +191,59 @@ def run_mesh_payload(payload: dict[str, Any]) -> dict[str, Any]:
     d["mesh"]["stl_relpath"] = f"{it_rel}/_run/model.stl"
     log.info("process_mesh", version=str(version_id), ok=d["ok"], timings=d["timings"])
     return d
+
+
+def _ops_preview(
+    payload: dict[str, Any], mesh_path: Path, project_id: uuid.UUID, version_id: uuid.UUID
+) -> dict[str, Any]:
+    """GUI mesh-editor preview: baseline (mesh parents) or ops-only (others),
+    then apply the draft op list and export a GLB into _scratch/."""
+    from cadx.cad.mesh_ops import (
+        MeshOp,
+        apply_ops,
+        baseline_mesh,
+        clean,
+        load_mesh,
+        rest_on_xy_center,
+    )
+
+    try:
+        mesh = load_mesh(mesh_path)
+    except Exception as e:
+        return {"ok": False, "error": f"failed to load mesh: {e}"}
+    post = MeshPostParams(**(payload.get("post") or {}))
+    spec = PartSpec(**payload["spec"]) if payload.get("spec") else None
+    try:
+        if payload.get("ops_only"):
+            mesh = clean(mesh)
+        else:
+            mesh, _ = baseline_mesh(mesh, post, spec)
+        ops = [MeshOp.model_validate(o) for o in payload.get("ops") or post.ops]
+        if ops:
+            mesh, report = apply_ops(mesh, ops)
+        else:
+            report = []
+        mesh = rest_on_xy_center(mesh)
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:400]}
+
+    sdir = storage.ensure(storage.scratch_dir(project_id, version_id))
+    out = sdir / f"preview_{uuid.uuid4().hex[:8]}.glb"
+    try:
+        mesh.export(str(out))
+    except Exception as e:
+        return {"ok": False, "error": f"preview export failed: {e}"}
+    b = mesh.bounds
+    return {
+        "ok": True,
+        "glb": storage.relpath(out),
+        "stats": {
+            "faces": len(mesh.faces),
+            "watertight": bool(mesh.is_watertight),
+            "bbox_size": [round(float(v), 3) for v in (b[1] - b[0])],
+            "ops_applied": len(report),
+        },
+    }
 
 
 async def process_mesh(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
@@ -218,11 +275,17 @@ def _relpath_exports(d: dict[str, Any], result: ExecResult, out_dir: Path) -> di
 
 def run_fem_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Synchronous part of fem_analyze — shared with InProcessExecutor."""
-    out_dir = storage.iteration_dir(
-        uuid.UUID(payload["project_id"]),
-        uuid.UUID(payload["version_id"]),
-        int(payload.get("iteration", 1)),
-    )
+    if payload.get("scratch"):
+        # GUI region preview — write renders into the transient _scratch dir
+        out_dir = storage.scratch_dir(
+            uuid.UUID(payload["project_id"]), uuid.UUID(payload["version_id"])
+        )
+    else:
+        out_dir = storage.iteration_dir(
+            uuid.UUID(payload["project_id"]),
+            uuid.UUID(payload["version_id"]),
+            int(payload.get("iteration", 1)),
+        )
     mesh_path = storage.resolve(payload["mesh_rel"])
     d = run_fem_pipeline(
         mesh_path=mesh_path,

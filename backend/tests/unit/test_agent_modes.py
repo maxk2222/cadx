@@ -15,6 +15,7 @@ from cadx.agent.types import AgentCtx, InputAsset
 from cadx.db.models import ProjectSettings
 from cadx.llm.fake import FakeLLM
 from cadx.llm.schemas import ModelingPlan, PartSpec
+from cadx.runtime_config import RuntimeSettings
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 
@@ -478,6 +479,7 @@ async def test_mesh_refine_repair_round_after_failed_critique(tmp_path):
         mesh=mesh,
         mesh_available=True,
         prompt="organic knob 40mm",
+        runtime_settings=RuntimeSettings(mesh_candidates_per_iter=1),  # no best-of-N
     )
     outcome = await run_generation(ctx)
     assert outcome.status == "succeeded"
