@@ -1524,6 +1524,20 @@ async def _run_cad(  # noqa: C901
             outcome.switch_requested = True
             break
 
+        # stall early-exit: no new best for `agent_stall_patience` iterations —
+        # more improve loops are unlikely to converge, finalise what we have
+        if (
+            best is not None
+            and s.agent_stall_patience
+            and it - best.iteration >= s.agent_stall_patience
+        ):
+            await ctx.emit(
+                "finalize",
+                it,
+                f"no improvement for {s.agent_stall_patience} iterations — keeping best",
+            )
+            break
+
     outcome.iterations = iterations_done
 
     # ---------- FINALIZE ----------
@@ -1861,6 +1875,18 @@ async def _run_mesh(  # noqa: C901
                 break
         else:
             hard_fails = 0
+        # stall early-exit: best mesh unchanged for `agent_stall_patience` seeds
+        if (
+            best is not None
+            and s.agent_stall_patience
+            and it - best.iteration >= s.agent_stall_patience
+        ):
+            await ctx.emit(
+                "finalize",
+                it,
+                f"no improvement for {s.agent_stall_patience} iterations — keeping best",
+            )
+            break
         # otherwise next iteration: new seed (+ optional regen subject hint)
 
     outcome.iterations = iterations_done

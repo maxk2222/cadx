@@ -88,8 +88,10 @@ async def test_hero_autogen_for_mesh_mode(tmp_path):
 
     async with session_scope() as db:
         rows = (
-            await db.execute(select(Asset).where(Asset.project_id == ctx.project_id))
-        ).scalars().all()
+            (await db.execute(select(Asset).where(Asset.project_id == ctx.project_id)))
+            .scalars()
+            .all()
+        )
     assert len(rows) == 1
     a = rows[0]
     assert a.kind == AssetKind.generated_image

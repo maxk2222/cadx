@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from cadx.agent.context import (
@@ -27,6 +28,16 @@ from cadx.llm.schemas import (
 )
 
 STEP = "codegen"
+
+_CODE_FENCE = re.compile(r"```(?:python|py)?\s*\n(.*?)```", re.DOTALL)
+
+
+def _extract_code_block(text: str) -> str | None:
+    """Pull a fenced ```python block out of a prose answer, if present."""
+    if not text:
+        return None
+    m = _CODE_FENCE.search(text)
+    return m.group(1).strip() if m else None
 
 
 def _user_parts(
@@ -265,6 +276,14 @@ async def _repair_session(
             reasoning=str(sub.get("reasoning", "")),
             expected_bbox=list(sub.get("expected_bbox") or []),
             full_code=res.code,
+        )
+    # last resort: the model ignored the tools but answered with a fenced
+    # code block — still usable, better than failing the whole iteration
+    fenced = _extract_code_block(res.response.text if res.response else "")
+    if fenced and fenced != prev_code:
+        return PatchResponse(
+            reasoning="model answered with a fenced code block instead of tool edits",
+            full_code=fenced,
         )
     return PatchResponse(reasoning="tool session produced no changes")
 

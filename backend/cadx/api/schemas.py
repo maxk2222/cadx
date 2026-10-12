@@ -357,6 +357,7 @@ class SettingsOut(BaseModel):
     agent_mesh_refine_rounds: int
     agent_mesh_hard_fail_score: int
     agent_mesh_hard_fail_limit: int
+    agent_stall_patience: int
     fem_voxel_mm: float
     fem_max_elements: int
     fem_timeout_s: int
@@ -416,6 +417,7 @@ class SettingsUpdate(BaseModel):
     agent_mesh_refine_rounds: int | None = Field(default=None, ge=0, le=10)
     agent_mesh_hard_fail_score: int | None = Field(default=None, ge=0, le=100)
     agent_mesh_hard_fail_limit: int | None = Field(default=None, ge=1, le=20)
+    agent_stall_patience: int | None = Field(default=None, ge=0, le=50)
     fem_voxel_mm: float | None = Field(default=None, gt=0, le=100)
     fem_max_elements: int | None = Field(default=None, ge=1, le=5_000_000)
     fem_timeout_s: int | None = Field(default=None, ge=1, le=86_400)
