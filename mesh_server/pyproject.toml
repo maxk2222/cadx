@@ -58,7 +58,7 @@ image-mlx = [
 # text-to-image: CUDA/MPS/CPU — FLUX.1-schnell / SDXL / SD1.5 via diffusers
 image-torch = [
     "torch>=2.3",
-    "diffusers>=0.30,<0.36",
+    "diffusers>=0.41",  # >=0.41 required for transformers 5 compat (mflux pulls tf5)
     "transformers>=4.45,<5",
     "huggingface_hub<1",
     "accelerate>=0.33",
