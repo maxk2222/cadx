@@ -1162,6 +1162,7 @@ async def _run_cad(  # noqa: C901
     s = ctx.runtime_settings
     patch_mode = s.agent_patch_mode
     best: Candidate | None = None
+    best_issues: list[dict[str, Any]] = []  # issue list belonging to `best`
     issues: list[dict[str, Any]] = []
     iterations_done = 0
     improve_failures = 0
@@ -1314,12 +1315,16 @@ async def _run_cad(  # noqa: C901
 
         if not exec_result.get("ok"):
             issues = [
+                *best_issues,
                 {
                     "source": "exec",
                     "severity": "major",
-                    "what": "code failed to execute after repairs — write simpler geometry",
+                    "what": (
+                        "the last patch produced code that fails to execute — "
+                        "avoid that change and write simpler geometry"
+                    ),
                     "fix_hint": (exec_result.get("error") or "")[:400],
-                }
+                },
             ]
             continue
 
@@ -1488,8 +1493,16 @@ async def _run_cad(  # noqa: C901
 
         cand = Candidate(it, code_resp, exec_result, critique, dim_issues)
         cand.feature_findings = feature_findings
+        cur_issues = (
+            pre_issues
+            + fem_issues
+            + build_issues(critique, dim_issues, feature_findings, exec_result.get("dfm"))
+        )
         if best is None or cand.rank > best.rank:
             best = cand
+            # improve always patches best.code — its issue list must describe
+            # that same code, not a regressed later candidate
+            best_issues = cur_issues
 
         major = [d for d in critique.discrepancies if d.severity == "major"]
         await ctx.emit(
@@ -1508,11 +1521,7 @@ async def _run_cad(  # noqa: C901
         ):
             await ctx.emit("done", it, "all checks passed")
             break
-        issues = (
-            pre_issues
-            + fem_issues
-            + build_issues(critique, dim_issues, feature_findings, exec_result.get("dfm"))
-        )
+        issues = best_issues
 
         # strategy plateau hook — a second approach may do better than more
         # iterations on a candidate stuck below the switch score
