@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# cadagent one-shot installer — detects the GPU tier and installs everything.
+# CADX one-shot installer — detects the GPU tier and installs everything.
 # Idempotent: re-running only performs the missing steps.
 #
 # Usage:
@@ -81,7 +81,7 @@ PY
   exit 0
 fi
 
-say "cadagent setup — tier: $TIER, model: ${MODEL:-none} $([ "$DRY" = 1 ] && echo '(dry-run)')"
+say "CADX setup — tier: $TIER, model: ${MODEL:-none} $([ "$DRY" = 1 ] && echo '(dry-run)')"
 
 # ---------- 1. prerequisites ----------
 say "prerequisites"

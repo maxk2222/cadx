@@ -1,6 +1,6 @@
 # mesh-server HTTP API
 
-Contract between `cadagent` (worker → `agent/mesh_client.py`) and the
+Contract between `cadx` (worker → `agent/mesh_client.py`) and the
 `mesh_server/` sidecar. Both sides keep their own pydantic models — there is
 **no code sharing** between the two projects; this document is the contract.
 
@@ -101,7 +101,7 @@ mid-flight). `200 {"ok": true, "deleted": bool}`.
 ## Semantics
 
 - Meshes are cleaned on the server (floaters, normals, holes) but **not**
-  scaled/oriented — cadagent's `cad/mesh_ops.py` owns the frame contract.
+  scaled/oriented — CADX's `cad/mesh_ops.py` owns the frame contract.
 - Results expire after `MESH_JOB_TTL_S` (default 1 h).
 - The client cancels the server job whenever its own agent job is cancelled.
 

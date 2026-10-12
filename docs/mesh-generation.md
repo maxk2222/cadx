@@ -1,6 +1,6 @@
 # Mesh generation (v2: cad | mesh | hybrid | auto)
 
-cadagent can generate geometry in three ways and lets a planner pick:
+CADX can generate geometry in three ways and lets a planner pick:
 
 | mode | what runs | output |
 |------|-----------|--------|

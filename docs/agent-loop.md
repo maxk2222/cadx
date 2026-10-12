@@ -1,6 +1,6 @@
 # Agent loop
 
-State machine in `backend/cadagent/agent/orchestrator.py`:
+State machine in `backend/cadx/agent/orchestrator.py`:
 
 ```
 INTAKE → CLARIFY? → PLAN → resolve_mode →
@@ -49,9 +49,11 @@ Tools (`agent/toolspecs.py`, primitives in `cad/codeedits.py`):
 |------|-------|
 | intake / plan | `search_catalog`, `lookup_part`, `cadlib_lookup`, `search_library`, `library_part`, `attach_library_part` |
 | codegen | + `check_snippet`, `submit_code` (catalog + library tools too) |
-| repair / improve | `read_lines`, `search_code`, `replace_lines`, `insert_after`/`insert_before`, `find_replace`, `set_param`, `check_code`, `verify`* + catalog/library lookups + `done` |
+| repair / improve | `read_lines`, `search_code`, `replace_lines`, `insert_after`/`insert_before`, `find_replace`, `set_param`, `check_code`, `verify`*, `render_model`* + catalog/library lookups + `done` |
 | critique | `read_lines`, `search_code`, `lookup_part`, `search_library`, `library_part` (read-only — no attach) |
 | mesh_refine | `mesh_inspect`, `mesh_preview`* + `mesh_*` transforms (`set_up`, `rotate`, `mirror`, `scale`, `flatten_bottom`, `slice`, `crop`, `decimate`, `smooth`, `keep_largest`, `drop_small`, `repair`, `boolean_add`, `boolean_cut`) + `mesh_undo`/`mesh_reset` + `done` + `regenerate` |
+| optimize | `analyze_fem(load_cases, material?, voxel_mm?)`, `topopt_run(target_volume_fraction?, max_iterations?, keep_regions?, load_cases?, material?, voxel_mm?)` + `done(run_index)` — agent-driven FEM/SIMP parameter search |
+| all sessions | `view_image` — re-view an uploaded reference image by `asset_id` (ids are in the "Image N (asset <id>)" context labels; useful when `agent_max_input_images` capped the initial set or a detail needs a second look). The image returns via the `_images` tool-result channel. |
 
 *`mesh_preview` renders the workbench state via the executor
 (`process_mesh mode="preview"`) and returns the images as `_images` tool
@@ -71,6 +73,9 @@ job persists.
 *`verify` executes the session buffer in the CAD sandbox (`full_exports=False`)
 and returns the error diagnosis or measured geometry — capped at
 `agent_tool_verify_max` calls per session, disabled via `agent_tool_verify=false`.
+`render_model` runs the same sandbox execution but additionally attaches the
+labeled contact-sheet render via `_images`, so the model can *see* the
+geometry — both tools share the same execution budget.
 
 Session rules: code is presented **line-numbered** (`NNN │`), line numbers
 refer to the current buffer, `done` runs the contract check (failures are fed
@@ -123,7 +128,7 @@ via `llm_tools: "auto"`.
 | ORIENT | yes (vision) | Once per version: 6 up-axis candidates are rendered in the executor and the vision model picks `MeshOrientation{up,front}`; heuristic/parent fallback otherwise. |
 | PROCESS_MESH | no (cad queue) | `run_mesh_pipeline`: `baseline_mesh` (clean → decimate → orient → scale-to-spec → flatten → rest) → recorded `ops` → analysis → renders → DfM(mesh) → exports; `make_solid` additionally writes `_run/model.brep` (faceted solid) for hybrid. `mode="preview"` runs the same baseline + ops and renders 3 views without exports. |
 | MESH_REFINE | yes (vision) | Interactive mesh-transformation session (`agent/mesh_tools.py`): the workbench holds the baseline-processed mesh, each `mesh_*` tool applies a validated `MeshOp` and re-grounds the part; `done` submits the op list, `regenerate` asks for a new seed. Runs twice — a shape pass after PROCESS_MESH and issues-seeded repair passes after a failed critique (`agent_mesh_refine_rounds`). Disabled/unavailable → the previous seed-rotation loop. |
-| OPTIMIZE | no (cad queue) | In TopOpt mode or when requested by plan/options, run SIMP on the best base geometry and FEM-verify the result; missing load cases are recorded as a skip. |
+| OPTIMIZE | yes (vision) | In TopOpt mode or when requested by plan/options/spec the agent runs an interactive structural session on the best base geometry: `analyze_fem` probes load cases, `topopt_run` executes SIMP+FEM-verify with varied parameters (volfrac, keep regions, material, voxel pitch). Each call occupies its own iteration dir; `done(run_index)` commits the chosen run's artifacts exactly like the deterministic path, `run_index:-1` keeps the base part. Unavailable (tools off/session failed) → single-shot SIMP fallback. Budgets: `agent_struct_tools` (master switch), `agent_topopt_max_runs` (4), `agent_fem_max_runs` (3). |
 | FINALIZE| no | Pick best candidate `(no dim errors, −major issues, score)`, copy artifacts, write exports + `model.py`/`params.json`, set status. |
 
 ## Edit flow
@@ -155,16 +160,55 @@ parents the code re-runs against the parent's `mesh/solid.brep`.
 - `waiting_for_input` — clarification pending.
 - `cancelled` — via `POST /jobs/{id}/cancel` (checked between steps).
 
+A terminal job can be replayed via `POST /jobs/{id}/restart`: generate/edit
+jobs spawn a sibling version cloned from the original inputs, params jobs a
+new params child with the same effective overrides, optimize jobs a new
+optimize child of the same parent (replaying the stored `optimize_request`,
+falling back to spec-derived load cases), and reexport jobs simply enqueue
+another export on the same version. The UI shows a "restart" button on
+finished jobs.
+
 Budgets: `agent_max_iterations` (outer loop), `agent_max_repairs` (per
 iteration), `agent_patch_retries` (per improve/repair call),
-`agent_max_wall_s`, `agent_max_tokens_per_job`.
+`agent_max_wall_s`, `agent_max_tokens_per_job`. The effective iteration
+budget is capped adaptively for simple dimensioned specs (≥2 stated dims +
+≤2 features → 5; stated dims + ≤6 features → 15) unless the version/project
+sets `max_iterations` explicitly.
+
+Mesh loop hard gates: an iteration counts as a *hard fail* when it produces
+dimension issues on a stated spec, or a critique score ≤
+`agent_mesh_hard_fail_score` (default 30) with major discrepancies. After
+`agent_mesh_hard_fail_limit` (default 3) consecutive hard fails the loop
+stops; dimensioned specs fall back to the CAD loop instead of burning more
+seeds.
+
+Before the hybrid base-mesh dim gate rejects, a deterministic fit rescues
+proportion-off generations (shape right, envelope wrong): bounded per-axis
+scale ops (0.4–2.5 planar, 0.2–2.0 thickness). Ops are appended and
+re-measured for up to 3 rounds (each round fixes the residual), and recorded
+in `post.ops` so params jobs replay them. A fitted candidate whose volume
+collapses below ~8% of its own bbox (a crust/sliver) is still rejected.
+
+Robustness plumbing: step events are deduplicated (identical
+step/iteration/message repeats are dropped — mesh-server polls otherwise
+flood the log), agent traces persist on their own session (a failed
+`AgentTrace` insert can no longer poison the job's session), every
+`run_*_job` is crash-guarded (unhandled errors mark job+version `failed`
+instead of leaving them `running`), a worker-boot reaper fails orphaned
+`running` jobs, and jobs refuse to start below 2 GB free disk.
+
+Topology optimization converges early when the compliance objective stalls
+(`converge_patience`, default 5 iterations within `tol`), and the SIMP loop
+polls the job's Redis cancel key mid-iteration so cancellation lands
+promptly instead of after the full run.
 
 Robustness toggles (aimed at weak/local models): `agent_param_autofix`,
 `agent_patch_mode` (`auto|always|never`), `agent_feature_feedback`,
 `agent_critique_reask`.
 
 Tool sessions: `llm_tools` (`auto|on|off`), `agent_tool_max_calls`,
-`agent_tool_max_calls_info`, `agent_tool_verify`, `agent_tool_verify_max`.
+`agent_tool_max_calls_info`, `agent_tool_verify`, `agent_tool_verify_max`,
+`agent_struct_tools`, `agent_topopt_max_runs`, `agent_fem_max_runs`.
 
 Every iteration produces a structured `issues` list (dims / measured
 features / critique / DfM) that is persisted on `Version.issues` and shown
@@ -178,5 +222,5 @@ in the UI quality tab.
 - Structured parsing (`llm/structured.py`) extracts JSON even from fenced
   prose, validates against Pydantic schemas, and re-asks once on failure.
 - `FakeLLM` replays a JSON script for deterministic end-to-end runs —
-  dev/test only via `cadagent run --fake` and eval benchmarks
+  dev/test only via `cadx run --fake` and eval benchmarks
   (`llm_script`/`llm_tools` fields), not a production runtime option.

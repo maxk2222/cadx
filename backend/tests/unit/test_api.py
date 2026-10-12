@@ -9,13 +9,13 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from PIL import Image
 
-from cadagent.db.session import create_all
+from cadx.db.session import create_all
 
 
 @pytest.fixture(scope="module")
 async def client():
     await create_all()
-    from cadagent.main import app
+    from cadx.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
@@ -85,8 +85,8 @@ async def test_project_crud_and_generate_flow(client):
 
 
 async def test_edit_library_parts_inherit_replace_and_clear(client):
-    from cadagent.db.models import Version, VersionStatus
-    from cadagent.db.session import session_scope
+    from cadx.db.models import Version, VersionStatus
+    from cadx.db.session import session_scope
 
     project = (await client.post("/api/projects", json={"name": "library-edit"})).json()
     created = await client.post(
@@ -216,8 +216,8 @@ async def test_catalog(client):
 
 
 async def test_optimize_endpoint(client):
-    from cadagent.db.models import Version, VersionStatus
-    from cadagent.db.session import session_scope
+    from cadx.db.models import Version, VersionStatus
+    from cadx.db.session import session_scope
 
     r = await client.post("/api/projects", json={"name": "opt"})
     pid = r.json()["id"]
@@ -264,3 +264,132 @@ async def test_404s(client):
     assert (await client.get(f"/api/versions/{z}")).status_code == 404
     assert (await client.get(f"/api/jobs/{z}")).status_code == 404
     assert (await client.get(f"/api/assets/{z}/file")).status_code == 404
+
+
+async def test_version_preview_endpoint(client):
+    """Provisional renders are served while a job runs; newest iteration wins."""
+    from cadx import storage
+
+    pid = (await client.post("/api/projects", json={"name": "preview"})).json()["id"]
+    vid = (await client.post(f"/api/projects/{pid}/generate", json={"prompt": "x"})).json()[
+        "version_id"
+    ]
+
+    assert (await client.get(f"/api/versions/{vid}/preview")).status_code == 404
+
+    # iteration 1 render appears (iso preferred over other views)
+    d1 = storage.iteration_dir(pid, vid, 1) / "renders"
+    d1.mkdir(parents=True)
+    (d1 / "front.png").write_bytes(_png_bytes(size=(16, 16)))
+    (d1 / "iso.png").write_bytes(_png_bytes(size=(24, 24)))
+    r = await client.get(f"/api/versions/{vid}/preview")
+    assert r.status_code == 200 and r.headers["content-type"] == "image/png"
+    assert r.headers["cache-control"] == "no-store"
+    assert Image.open(io.BytesIO(r.content)).size == (24, 24)
+
+    # iteration 2 only has a contact sheet — newest iteration wins
+    d2 = storage.iteration_dir(pid, vid, 2) / "renders"
+    d2.mkdir(parents=True)
+    (d2 / "contact_sheet.png").write_bytes(_png_bytes(size=(32, 32)))
+    r = await client.get(f"/api/versions/{vid}/preview")
+    assert Image.open(io.BytesIO(r.content)).size == (32, 32)
+
+
+async def test_job_finish_endpoint(client):
+    from cadx.db.models import Job, JobStatus
+    from cadx.db.session import session_scope
+
+    pid = (await client.post("/api/projects", json={"name": "finish-test"})).json()["id"]
+    created = await client.post(f"/api/projects/{pid}/generate", json={"prompt": "a block"})
+    jid = created.json()["job_id"]
+
+    # queued jobs can't 'finish early' — nothing to keep yet
+    r = await client.post(f"/api/jobs/{jid}/finish")
+    assert r.status_code == 409
+
+    async with session_scope() as s:
+        j = await s.get(Job, uuid.UUID(jid))
+        j.status = JobStatus.running
+        await s.commit()
+
+    r = await client.post(f"/api/jobs/{jid}/finish")
+    assert r.status_code == 200
+    j = (await client.get(f"/api/jobs/{jid}")).json()
+    assert j["finish_requested"] is True
+
+    # terminal states reject it
+    async with session_scope() as s:
+        j = await s.get(Job, uuid.UUID(jid))
+        j.status = JobStatus.failed
+        await s.commit()
+    r = await client.post(f"/api/jobs/{jid}/finish")
+    assert r.status_code == 409
+
+    r = await client.post(f"/api/jobs/{uuid.uuid4()}/finish")
+    assert r.status_code == 404
+
+
+async def test_job_restart_generate(client):
+    """Restarting a terminal generate job clones inputs into a new version."""
+    pid = (await client.post("/api/projects", json={"name": "restart-gen"})).json()["id"]
+    r = await client.post(
+        f"/api/projects/{pid}/assets",
+        files=[("files", ("ref.png", _png_bytes(), "image/png"))],
+    )
+    aid = r.json()[0]["id"]
+    r = await client.post(
+        f"/api/projects/{pid}/generate",
+        json={"prompt": "a knob", "asset_ids": [aid], "mode": "cad"},
+    )
+    jid, vid = r.json()["job_id"], r.json()["version_id"]
+
+    # running/queued jobs can't restart
+    r = await client.post(f"/api/jobs/{jid}/restart")
+    assert r.status_code == 409
+
+    await client.post(f"/api/jobs/{jid}/cancel")
+    r = await client.post(f"/api/jobs/{jid}/restart")
+    assert r.status_code == 200, r.text
+    new = r.json()
+    assert new["version_id"] != vid and new["job_id"] != jid
+
+    nv = (await client.get(f"/api/versions/{new['version_id']}")).json()
+    assert nv["prompt"] == "a knob"
+    assert nv["asset_ids"] == [aid]
+    assert nv["gen_mode"] == "cad"
+    assert nv["status"] == "queued"
+    nj = (await client.get(f"/api/jobs/{new['job_id']}")).json()
+    assert nj["type"] == "generate" and nj["version_id"] == new["version_id"]
+
+    r = await client.post(f"/api/jobs/{uuid.uuid4()}/restart")
+    assert r.status_code == 404
+
+
+async def test_job_restart_params(client):
+    """A params job restart carries the same effective overrides."""
+    from cadx.db.models import Job, JobStatus, Version
+    from cadx.db.session import session_scope
+
+    pid = (await client.post("/api/projects", json={"name": "restart-params"})).json()["id"]
+    r = await client.post(f"/api/projects/{pid}/generate", json={"prompt": "a block"})
+    vid, jid = r.json()["version_id"], r.json()["job_id"]
+
+    # give the parent code + succeeded so /params is allowed
+    async with session_scope() as s:
+        v = await s.get(Version, uuid.UUID(vid))
+        v.code = 'PARAMS = {"w": 10}\nresult = None\n'
+        v.status = "succeeded"
+        j = await s.get(Job, uuid.UUID(jid))
+        j.status = JobStatus.succeeded
+        await s.commit()
+
+    r = await client.post(f"/api/versions/{vid}/params", json={"params": {"w": 20}})
+    assert r.status_code == 200, r.text
+    p_jid = r.json()["job_id"]
+
+    await client.post(f"/api/jobs/{p_jid}/cancel")
+    r = await client.post(f"/api/jobs/{p_jid}/restart")
+    assert r.status_code == 200, r.text
+    nv = (await client.get(f"/api/versions/{r.json()['version_id']}")).json()
+    assert nv["kind"] == "params" and nv["params"]["w"] == 20
+    assert nv["parent_id"] == vid

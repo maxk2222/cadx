@@ -3,11 +3,11 @@
 import pytest
 import trimesh
 
-from cadagent.cad.engine import run_mesh_candidates, run_mesh_pipeline, run_mesh_preview
-from cadagent.cad.mesh_ops import MeshPostParams, flat_base_ratio
-from cadagent.cad.render import render_available
-from cadagent.db.models import ProjectSettings
-from cadagent.llm.schemas import PartSpec
+from cadx.cad.engine import run_mesh_candidates, run_mesh_pipeline, run_mesh_preview
+from cadx.cad.mesh_ops import MeshPostParams, flat_base_ratio
+from cadx.cad.render import render_available
+from cadx.db.models import ProjectSettings
+from cadx.llm.schemas import PartSpec
 
 
 @pytest.fixture
@@ -147,7 +147,7 @@ def test_mesh_preview(knob_glb, tmp_path):
 
 def test_mesh_preview_no_render(knob_glb, tmp_path, monkeypatch):
     # render_available is imported inside run_mesh_preview — patch at source
-    monkeypatch.setattr("cadagent.cad.render.render_available", lambda: False)
+    monkeypatch.setattr("cadx.cad.render.render_available", lambda: False)
     out = run_mesh_preview(mesh_path=knob_glb, out_dir=tmp_path / "it0")
     assert out["ok"] is False
     assert "unavailable" in (out["error"] or "")

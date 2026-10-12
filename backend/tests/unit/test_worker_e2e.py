@@ -11,10 +11,10 @@ from pathlib import Path
 import pytest
 from sqlmodel import select
 
-import cadagent.agent.worker_jobs as wj
-from cadagent import storage
-from cadagent.agent.executor_client import InProcessExecutor
-from cadagent.db.models import (
+import cadx.agent.worker_jobs as wj
+from cadx import storage
+from cadx.agent.executor_client import InProcessExecutor
+from cadx.db.models import (
     Artifact,
     Job,
     JobStatus,
@@ -24,8 +24,8 @@ from cadagent.db.models import (
     VersionKind,
     VersionStatus,
 )
-from cadagent.db.session import async_session, create_all
-from cadagent.llm.fake import FakeLLM
+from cadx.db.session import async_session, create_all
+from cadx.llm.fake import FakeLLM
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 BOX_CODE = (FIXTURES / "simple_box.py").read_text()
@@ -98,6 +98,35 @@ async def test_run_agent_job_end_to_end(_db, monkeypatch):
         )
         kinds = {a.kind.value for a in arts}
         assert {"step", "stl", "glb", "contact_sheet", "thumbnail"} <= kinds
+
+
+async def test_guarded_cancelled_marks_job_failed(_db):
+    """arq job_timeout cancels the task with CancelledError (BaseException) —
+    the crash guard must still fail the job/version rows instead of leaving
+    them stuck in 'running'."""
+    import asyncio
+
+    job, version = await _mk_version()
+    async with async_session() as db:
+        j = await db.get(Job, job.id)
+        j.status = JobStatus.running
+        v = await db.get(Version, version.id)
+        v.status = VersionStatus.running
+        await db.commit()
+
+    async def _boom(ctx, payload):
+        raise asyncio.CancelledError
+
+    guarded = wj._guarded(_boom)
+    with pytest.raises(asyncio.CancelledError):
+        await guarded({}, {"job_id": str(job.id), "version_id": str(version.id)})
+
+    async with async_session() as db:
+        j = await db.get(Job, job.id)
+        v = await db.get(Version, version.id)
+        assert j.status == JobStatus.failed
+        assert v.status == VersionStatus.failed
+        assert "cancelled" in (j.log or "")
 
 
 @pytest.mark.slow

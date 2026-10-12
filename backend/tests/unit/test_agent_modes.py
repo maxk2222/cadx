@@ -7,14 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from cadagent.agent.executor_client import InProcessExecutor
-from cadagent.agent.mesh_client import FakeMeshClient, MeshHealth, MeshModelInfo
-from cadagent.agent.orchestrator import _resolve_mesh_adapter, resolve_mode, run_generation
-from cadagent.agent.trace import MemoryTrace
-from cadagent.agent.types import AgentCtx, InputAsset
-from cadagent.db.models import ProjectSettings
-from cadagent.llm.fake import FakeLLM
-from cadagent.llm.schemas import ModelingPlan
+from cadx.agent.executor_client import InProcessExecutor
+from cadx.agent.mesh_client import FakeMeshClient, MeshHealth, MeshModelInfo
+from cadx.agent.orchestrator import _resolve_mesh_adapter, resolve_mode, run_generation
+from cadx.agent.trace import MemoryTrace
+from cadx.agent.types import AgentCtx, InputAsset
+from cadx.db.models import ProjectSettings
+from cadx.llm.fake import FakeLLM
+from cadx.llm.schemas import ModelingPlan, PartSpec
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 
@@ -427,6 +427,8 @@ async def test_mesh_refine_regenerate_triggers_new_seed(tmp_path):
             MESH_CRITIQUE,
         ]
     )
+    from cadx.runtime_config import RuntimeSettings
+
     mesh = FakeMeshClient()
     ctx = _ctx(
         llm=llm,
@@ -435,6 +437,7 @@ async def test_mesh_refine_regenerate_triggers_new_seed(tmp_path):
         mesh=mesh,
         mesh_available=True,
         prompt="organic knob 40mm",
+        runtime_settings=RuntimeSettings(mesh_candidates_per_iter=1),  # no best-of-N
         settings=ProjectSettings(clarification_mode="assume", max_iterations=2),
     )
     outcome = await run_generation(ctx)
@@ -484,7 +487,7 @@ async def test_mesh_refine_repair_round_after_failed_critique(tmp_path):
 
 async def test_mesh_tools_disabled_keeps_seed_loop(tmp_path):
     """agent_mesh_tools=False → no sessions, previous behaviour unchanged."""
-    from cadagent.runtime_config import RuntimeSettings
+    from cadx.runtime_config import RuntimeSettings
 
     llm = FakeLLM([MESH_SPEC, MESH_PLAN, MESH_ORIENT, MESH_CRITIQUE])
     mesh = FakeMeshClient()
@@ -507,7 +510,7 @@ async def test_mesh_tools_disabled_keeps_seed_loop(tmp_path):
 async def test_mesh_refine_unavailable_falls_back(tmp_path, monkeypatch):
     """Refine returning None (tools stripped mid-job, workbench failed) keeps
     the loop on the plain critique path."""
-    from cadagent.agent.steps import mesh_refine
+    from cadx.agent.steps import mesh_refine
 
     async def no_session(*a, **k):
         return None
@@ -526,3 +529,235 @@ async def test_mesh_refine_unavailable_falls_back(tmp_path, monkeypatch):
     outcome = await run_generation(ctx)
     assert outcome.status in ("succeeded", "needs_review")
     assert not (outcome.params.get("ops") or [])
+
+
+async def test_mesh_regen_exhaustion_falls_back_to_cad(monkeypatch, tmp_path):
+    """Every refine session rejects the mesh (regenerate) → iterations burn →
+    with ≥2 stated dims the outcome must request the CAD fallback."""
+    from cadx.agent.steps import mesh_refine as mesh_refine_step
+
+    async def always_regen(*a, **kw):
+        return mesh_refine_step.RefineResult(regenerate=True, reasoning="flat slab")
+
+    monkeypatch.setattr(mesh_refine_step, "run", always_regen)
+
+    spec = dict(MESH_SPEC)
+    spec["width_y"] = {"value": 40.0, "unit": "mm", "source": "stated"}
+    spec["height_z"] = {"value": 30.0, "unit": "mm", "source": "stated"}
+    box_code = (FIXTURES / "simple_box.py").read_text()
+    llm = FakeLLM(
+        [
+            spec,
+            MESH_PLAN,
+            MESH_ORIENT,
+            # CAD fallback: codegen + critique
+            {
+                "reasoning": "box",
+                "params": [],
+                "expected_bbox": [40, 20, 10],
+                "code": box_code,
+            },
+            MESH_CRITIQUE,
+        ]
+    )
+    ctx = _ctx(
+        llm=llm,
+        gen_mode="mesh",
+        assets=[_img()],
+        mesh=FakeMeshClient(),
+        mesh_available=True,
+        prompt="40x40x30 block",
+        settings=ProjectSettings(clarification_mode="assume", max_iterations=2),
+    )
+    outcome = await run_generation(ctx)
+    assert outcome.resolved_mode == "cad"
+    assert "fallback" in (outcome.mode_note or "")
+    assert outcome.code is not None
+    assert outcome.status in ("succeeded", "needs_review")
+
+
+async def test_topopt_agent_session_selects_run(monkeypatch):
+    """Agent session drives two SIMP runs with varied volfrac and commits the
+    second (higher SF) — the deterministic single-shot path is bypassed."""
+    box_code = (FIXTURES / "simple_box.py").read_text()
+    spec = {
+        **MESH_SPEC,
+        "load_cases": [
+            {
+                "name": "cantilever",
+                "fixed": [{"kind": "face", "axis": "-x"}],
+                "loads": [{"region": {"kind": "face", "axis": "+x"}, "force_n": [0, 0, -50]}],
+            }
+        ],
+        "optimize": {"enabled": True, "target_volume_fraction": 0.5},
+    }
+    code = {
+        "reasoning": "base bracket",
+        "params": [],
+        "expected_bbox": [40, 20, 10],
+        "code": box_code,
+    }
+    llm = FakeLLM(
+        [
+            spec,
+            {**MESH_PLAN, "approach": "cad"},
+            code,
+            MESH_CRITIQUE,
+            # optimize session: two runs + done on the second
+            {"tool_calls": [{"name": "topopt_run", "arguments": {"target_volume_fraction": 0.3}}]},
+            {"tool_calls": [{"name": "topopt_run", "arguments": {"target_volume_fraction": 0.7}}]},
+            {"tool_calls": [{"name": "done", "arguments": {"run_index": 1, "reasoning": "SF ok"}}]},
+        ]
+    )
+    ctx = _ctx(
+        llm=llm,
+        gen_mode="topopt",
+        settings=ProjectSettings(clarification_mode="assume", max_iterations=1),
+        prompt="lightweight 40x20x10 bracket, fixed left, 50 N down at right",
+    )
+    calls: list[dict] = []
+
+    async def fake_optimize(payload: dict) -> dict:
+        calls.append(payload)
+        vf = payload["optimize"]["target_volume_fraction"]
+        sf = 0.9 if vf < 0.5 else 2.1
+        return {
+            "ok": True,
+            "fem": {
+                "material": {"name": "PLA"},
+                "grid": {"elements": 100},
+                "cases": [
+                    {
+                        "name": "cantilever",
+                        "max_vm_mpa": 12.0,
+                        "max_disp_mm": 0.3,
+                        "safety_factor": sf,
+                        "compliance_j": 1.0,
+                        "converged": True,
+                        "solver": "direct",
+                        "warnings": [],
+                    }
+                ],
+                "warnings": [],
+            },
+            "topopt": {
+                "iterations": 12,
+                "converged": True,
+                "volfrac_target": vf,
+                "volfrac_achieved": vf,
+            },
+            "analysis": {"is_valid": True, "volume": 3000.0},
+            "exports": {},
+        }
+
+    monkeypatch.setattr(ctx.executor, "optimize", fake_optimize)
+    outcome = await run_generation(ctx)
+
+    assert len(calls) == 2
+    assert [c["optimize"]["target_volume_fraction"] for c in calls] == [0.3, 0.7]
+    # each run occupied its own iteration dir
+    assert calls[0]["iteration"] != calls[1]["iteration"]
+    assert outcome.resolved_mode == "topopt"
+    assert outcome.fem["cases"][0]["safety_factor"] == 2.1
+    assert outcome.status in ("succeeded", "needs_review")
+
+
+async def test_topopt_agent_declines_keeps_base(monkeypatch):
+    """done(run_index=-1) → no optimization, no extra executor call."""
+    box_code = (FIXTURES / "simple_box.py").read_text()
+    spec = {
+        **MESH_SPEC,
+        "load_cases": [
+            {
+                "name": "cantilever",
+                "fixed": [{"kind": "face", "axis": "-x"}],
+                "loads": [{"region": {"kind": "face", "axis": "+x"}, "force_n": [0, 0, -50]}],
+            }
+        ],
+    }
+    code = {
+        "reasoning": "base bracket",
+        "params": [],
+        "expected_bbox": [40, 20, 10],
+        "code": box_code,
+    }
+    llm = FakeLLM(
+        [
+            spec,
+            {**MESH_PLAN, "approach": "cad"},
+            code,
+            MESH_CRITIQUE,
+            {
+                "tool_calls": [
+                    {"name": "done", "arguments": {"run_index": -1, "reasoning": "strong enough"}}
+                ]
+            },
+        ]
+    )
+    ctx = _ctx(
+        llm=llm,
+        gen_mode="topopt",
+        settings=ProjectSettings(clarification_mode="assume", max_iterations=1),
+        prompt="40x20x10 bracket",
+    )
+
+    async def fake_optimize(payload: dict) -> dict:
+        raise AssertionError("optimize must not be called")
+
+    monkeypatch.setattr(ctx.executor, "optimize", fake_optimize)
+    outcome = await run_generation(ctx)
+    assert outcome.resolved_mode != "topopt"
+    assert "kept the base part" in outcome.mode_note
+
+
+# --------------------------------------------------------------------------- #
+# T21: intake role mapping for mesh-source images
+# T26: meshgen disk cache
+
+
+def test_mesh_source_images_maps_intake_roles():
+    """Flat part with a top view: the top view becomes the generator's hero
+    (role 'front'), a second view degrades to 'other'."""
+    from cadx.agent.orchestrator import _mesh_source_images
+
+    top = _img()
+    iso = _img()
+    spec = PartSpec(
+        name="handle",
+        length_x={"value": 120.0, "source": "stated"},
+        width_y={"value": 38.0, "source": "stated"},
+        height_z={"value": 8.0, "source": "stated"},
+        image_roles=[
+            {"asset_id": top.asset_id, "role": "top"},
+            {"asset_id": iso.asset_id, "role": "iso"},
+        ],
+    )
+    ctx = _ctx(assets=[top, iso])
+    ordered, roles = _mesh_source_images(ctx, 1, spec)
+    assert ordered[0].asset_id == top.asset_id  # hero = the plan view
+    assert roles == ["front", "other"]
+
+
+async def test_generate_mesh_cache_hit_skips_server(tmp_path):
+    """Second identical generation is served from the disk cache."""
+    from cadx.agent.orchestrator import _generate_mesh
+    from cadx.runtime_config import RuntimeSettings
+
+    spec = PartSpec(
+        name="knob",
+        length_x={"value": 40.0, "source": "stated"},
+        width_y={"value": 40.0, "source": "stated"},
+        height_z={"value": 30.0, "source": "stated"},
+    )
+    mesh = FakeMeshClient()
+    ctx = _ctx(
+        assets=[_img()],
+        mesh=mesh,
+        mesh_available=True,
+        runtime_settings=RuntimeSettings(mesh_prep_images=False),
+    )
+    rel1 = await _generate_mesh(ctx, 1, spec, None)
+    rel2 = await _generate_mesh(ctx, 1, spec, None)  # same request → cache hit
+    assert rel1 and rel2
+    assert len(mesh.calls) == 1  # second call served from cache
+    assert ctx.mesh_info["generation"]["cached"] is True

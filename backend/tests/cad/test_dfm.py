@@ -12,11 +12,11 @@ from build123d import (
     fillet,
 )
 
-from cadagent.cad.analysis import analyze
-from cadagent.cad.dfm.cnc import cnc_checks
-from cadagent.cad.dfm.common import load_mesh
-from cadagent.cad.dfm.fdm import fdm_checks
-from cadagent.cad.exporters import quick_stl
+from cadx.cad.analysis import analyze
+from cadx.cad.dfm.cnc import cnc_checks
+from cadx.cad.dfm.common import load_mesh
+from cadx.cad.dfm.fdm import fdm_checks
+from cadx.cad.exporters import quick_stl
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 

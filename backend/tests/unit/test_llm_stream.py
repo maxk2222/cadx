@@ -5,8 +5,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from cadagent.llm import client as client_mod
-from cadagent.llm.client import LLMClient
+from cadx.llm import client as client_mod
+from cadx.llm.client import LLMClient
 
 
 def _sse(*chunks: dict, usage: dict | None = None) -> bytes:
@@ -100,3 +100,115 @@ async def test_stream_error_raises_llmerror(monkeypatch):
     c = _mk()
     with pytest.raises(client_mod.LLMError, match="403"):
         await c.chat("code", [{"role": "user", "content": "hi"}])
+
+
+def test_looks_degenerate_word_salad():
+    from cadx.llm.client import _looks_degenerate
+
+    salad = "_".join(
+        ["hunger", "appetite", "thirst", "need", "want", "wish", "aim", "end", "goal", "object"]
+        * 15
+    )
+    assert _looks_degenerate(salad)
+    code = "part -= Pos(x, 0, 4) * Cylinder(radius=2, height=20)\n" * 10
+    assert not _looks_degenerate(code)
+    prose = "the back face is flat and the top has pockets. " * 10
+    assert not _looks_degenerate(prose)
+    # space-separated category listing — what real weak models emit
+    space_salad = " ".join(
+        [
+            "titanium",
+            "vanadium",
+            "chromium",
+            "manganese",
+            "cobalt",
+            "nickel",
+            "copper",
+            "zinc",
+            "gallium",
+            "germanium",
+            "arsenic",
+            "selenium",
+        ]
+        * 4
+    )
+    assert _looks_degenerate(space_salad)
+
+
+def test_trim_degenerate_cuts_salad_suffix():
+    from cadx.llm.client import _trim_degenerate
+
+    salad = "_" + "_".join(["location", "position", "site", "setting", "layout"] * 20)
+    text = "x = 1\ny = 2\n" + salad
+    assert _trim_degenerate(text) == "x = 1\ny = 2\n"
+    assert _trim_degenerate("x = 1\n") == "x = 1\n"
+
+
+async def test_stream_aborts_on_word_salad(monkeypatch):
+    salad_piece = "_".join(
+        ["hunger", "appetite", "thirst", "need", "want", "wish", "aim", "end", "goal", "object"]
+    )
+    chunks = [{"choices": [{"delta": {"content": "x = 1\n"}}]}]
+    chunks += [{"choices": [{"delta": {"content": salad_piece}}]} for _ in range(80)]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=_sse(*chunks),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    _patch_transport(monkeypatch, handler)
+    c = _mk()
+    r = await c.chat("code", [{"role": "user", "content": "hi"}], temperature=0.0)
+    assert r.text == "x = 1\n"
+    assert r.finish_reason == "degenerate"
+
+
+async def test_stream_aborts_on_tool_arg_salad(monkeypatch):
+    """Degeneration inside streamed tool-call arguments also aborts early."""
+    salad_piece = " " + " ".join(
+        [
+            "titanium",
+            "vanadium",
+            "chromium",
+            "manganese",
+            "cobalt",
+            "nickel",
+            "copper",
+            "zinc",
+            "gallium",
+            "germanium",
+        ]
+        * 2
+    )
+    chunks = [
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_1",
+                                "function": {"name": "done", "arguments": salad_piece},
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+        for _ in range(80)
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=_sse(*chunks),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    _patch_transport(monkeypatch, handler)
+    c = _mk()
+    r = await c.chat("code", [{"role": "user", "content": "hi"}], temperature=0.0)
+    assert r.finish_reason == "degenerate"

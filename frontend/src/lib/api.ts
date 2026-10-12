@@ -126,6 +126,7 @@ export const api = {
 
   listVersions: (pid: string) => req<VersionSummary[]>(`/projects/${pid}/versions`),
   getVersion: (id: string) => req<VersionDetail>(`/versions/${id}`),
+  previewUrl: (id: string) => `${BASE}/versions/${id}/preview`,
   deleteVersion: (id: string) => req<{ ok: boolean }>(`/versions/${id}`, { method: "DELETE" }),
   getCode: (id: string) => fetch(`${BASE}/versions/${id}/code`).then((r) => r.text()),
 
@@ -134,6 +135,9 @@ export const api = {
   answerJob: (id: string, answers: { answer: string }[]) =>
     req<{ version_id: string; job_id: string }>(`/jobs/${id}/answer`, json({ answers })),
   cancelJob: (id: string) => req<{ ok: boolean }>(`/jobs/${id}/cancel`, { method: "POST" }),
+  finishJob: (id: string) => req<{ ok: boolean }>(`/jobs/${id}/finish`, { method: "POST" }),
+  restartJob: (id: string) =>
+    req<{ version_id: string; job_id: string }>(`/jobs/${id}/restart`, { method: "POST" }),
 
   getSettings: () => req<Settings>("/settings"),
   updateSettings: (body: SettingsUpdate) =>

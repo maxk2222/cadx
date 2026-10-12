@@ -10,8 +10,8 @@ from build123d import (
     Pos,
 )
 
-from cadagent.cad import cadlib
-from cadagent.cad.sandbox import run_user_code
+from cadx.cad import cadlib
+from cadx.cad.sandbox import run_user_code
 
 _ALIGN_MIN = (Align.CENTER, Align.CENTER, Align.MIN)
 

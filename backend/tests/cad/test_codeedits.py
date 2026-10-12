@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from cadagent.cad import codeedits as ce
+from cadx.cad import codeedits as ce
 
 CODE = """PARAMS = {
     "length": 100.0,  # mm overall

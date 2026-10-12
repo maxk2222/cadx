@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# cadagent launcher — runs setup if needed, then starts the full stack
+# CADX launcher — runs setup if needed, then starts the full stack
 # (docker by default, --dev for native) plus the mesh-server natively.
 #
 # Usage:
@@ -81,7 +81,7 @@ if [ "$DEV" = 1 ]; then
 
   if [ -f .env ]; then
     say "legacy .env import"
-    (cd backend && ../.venv/bin/uv run cadagent import-legacy-env "$ROOT/.env") \
+    (cd backend && ../.venv/bin/uv run cadx import-legacy-env "$ROOT/.env") \
       && rm .env \
       || warn "import failed — keeping .env; fix the file or check logs"
   fi
@@ -98,9 +98,9 @@ if [ "$DEV" = 1 ]; then
   }
 
   say "services (native)"
-  start_bg api      backend  ../.venv/bin/uv run uvicorn cadagent.main:app --port 8000
-  start_bg worker   backend  ../.venv/bin/uv run arq cadagent.queue.AgentWorkerSettings
-  start_bg executor backend  ../.venv/bin/uv run arq cadagent.queue.CadWorkerSettings
+  start_bg api      backend  ../.venv/bin/uv run uvicorn cadx.main:app --port 8000
+  start_bg worker   backend  ../.venv/bin/uv run arq cadx.queue.AgentWorkerSettings
+  start_bg executor backend  ../.venv/bin/uv run arq cadx.queue.CadWorkerSettings
   start_bg web      frontend npm run dev -- --port 5173
   APP_URL="http://localhost:5173"
 else
@@ -118,7 +118,7 @@ else
   if [ -f .env ]; then
     say "legacy .env import"
     docker compose cp .env api:/tmp/legacy.env \
-      && docker compose exec -T api cadagent import-legacy-env /tmp/legacy.env \
+      && docker compose exec -T api cadx import-legacy-env /tmp/legacy.env \
       && rm .env \
       || warn "import failed — keeping .env; fix the file or check logs"
   fi

@@ -8,14 +8,14 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from PIL import Image
 
-from cadagent.db.session import create_all
-from cadagent.llm.images import normalize
+from cadx.db.session import create_all
+from cadx.llm.images import normalize
 
 
 @pytest.fixture(scope="module")
 async def client():
     await create_all()
-    from cadagent.main import app
+    from cadx.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c

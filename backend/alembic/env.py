@@ -9,7 +9,7 @@ from sqlalchemy import engine_from_config, pool
 from sqlmodel import SQLModel
 
 from alembic import context
-from cadagent.db import models  # noqa: F401  (registers tables on SQLModel.metadata)
+from cadx.db import models  # noqa: F401  (registers tables on SQLModel.metadata)
 
 config = context.config
 if config.config_file_name is not None:
@@ -21,7 +21,7 @@ target_metadata = SQLModel.metadata
 def _url() -> str:
     url = os.environ.get("DATABASE_URL")
     if not url:
-        from cadagent.config import get_settings
+        from cadx.config import get_settings
 
         url = get_settings().database_url
     # sync driver for migrations

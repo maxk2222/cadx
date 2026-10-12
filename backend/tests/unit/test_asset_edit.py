@@ -9,14 +9,14 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from PIL import Image
 
-from cadagent.db.session import create_all
-from cadagent.llm.images import prepare
+from cadx.db.session import create_all
+from cadx.llm.images import prepare
 
 
 @pytest.fixture(scope="module")
 async def client():
     await create_all()
-    from cadagent.main import app
+    from cadx.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
@@ -129,7 +129,7 @@ async def test_remove_bg_returns_png(client, monkeypatch):
             return out
 
     monkeypatch.setitem(sys.modules, "rembg", _FakeRembg)
-    monkeypatch.setattr("cadagent.api.routers.assets._rembg_sess", None)
+    monkeypatch.setattr("cadx.api.routers.assets._rembg_sess", None)
     r = await client.post(f"/api/assets/{src['id']}/remove-bg")
     assert r.status_code == 200, r.text
     assert r.headers["content-type"] == "image/png"

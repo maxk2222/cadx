@@ -1,0 +1,308 @@
+"""Single-solve FEM verification: mesh -> voxel grid -> per-case stress report.
+
+Writes fem/report.json plus pyvista renders (von Mises clip + exaggerated
+deformation) into <out_dir>/fem/. Pure function — used by the fem_analyze
+task and by the TopOpt post-verification.
+"""
+
+from __future__ import annotations
+
+import math
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import trimesh
+from pydantic import BaseModel, Field
+
+from cadx.cad.fem.materials import MaterialProps, resolve_material
+from cadx.cad.fem.regions import resolve_case
+from cadx.cad.fem.solver import FemSolution, solve
+from cadx.cad.fem.voxelize import VoxelDomain, volume_of_solid, voxelize
+from cadx.llm.schemas import LoadCase
+from cadx.logging import get_logger
+
+log = get_logger(__name__)
+
+
+class FemCaseResult(BaseModel):
+    name: str
+    max_vm_mpa: float = 0.0
+    max_disp_mm: float = 0.0
+    safety_factor: float | None = None
+    compliance_j: float = 0.0
+    converged: bool = True
+    solver: str = ""
+    warnings: list[str] = Field(default_factory=list)
+    vonmises_png: str | None = None
+    deformed_png: str | None = None
+
+
+class FemReport(BaseModel):
+    material: dict = Field(default_factory=dict)
+    grid: dict = Field(default_factory=dict)  # pitch, dims, elements, dofs
+    cases: list[FemCaseResult] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    note: str = (
+        "voxel-FEM estimate (linear elasticity, ~10-20% accuracy) — "
+        "design feedback, not certification"
+    )
+
+    @property
+    def worst_safety_factor(self) -> float | None:
+        sfs = [c.safety_factor for c in self.cases if c.safety_factor is not None]
+        return min(sfs) if sfs else None
+
+
+def _grid_image(domain: VoxelDomain, elem_scalar: np.ndarray, node_vec: np.ndarray):
+    """pyvista ImageData with per-cell scalar + per-node vector arrays."""
+    import pyvista as pv
+
+    grid = pv.ImageData(
+        dimensions=tuple(d + 1 for d in domain.dims),
+        spacing=(domain.pitch,) * 3,
+        origin=tuple(domain.origin),
+    )
+    grid.cell_data["vm"] = elem_scalar
+    grid.cell_data["solid"] = domain.solid.ravel().astype(np.uint8)
+    grid.point_data["u"] = node_vec
+    return grid
+
+
+def _render_case(
+    domain: VoxelDomain,
+    sol: FemSolution,
+    case_name: str,
+    out_dir: Path,
+    suffix: str = "",
+) -> tuple[str | None, str | None]:
+    """Render von-Mises clip + exaggerated deformed shape. Returns filenames."""
+    try:
+        import pyvista as pv
+    except Exception:
+        return None, None
+
+    vm_png = f"vonmises{suffix}_{case_name}.png"
+    def_png = f"deformed{suffix}_{case_name}.png"
+    try:
+        grid = _grid_image(domain, sol.elem_vm, sol.node_disp)
+        body = grid.threshold(0.5, scalars="solid")
+
+        pl: Any = pv.Plotter(off_screen=True, window_size=[900, 700])
+        pl.set_background("white")
+        vmax = max(float(sol.elem_vm.max()), 1e-9)
+        pl.add_mesh(
+            body.clip(normal="-x"),
+            scalars="vm",
+            cmap="jet",
+            clim=[0, vmax],
+            scalar_bar_args={"title": "von Mises [MPa]"},
+        )
+        pl.add_mesh(body.outline(), color="black", line_width=1.5)
+        pl.camera_position = "iso"
+        pl.reset_camera()
+        pl.add_text(
+            f"{case_name}: max {sol.max_vm_mpa:.1f} MPa, max disp {sol.max_disp_mm:.2f} mm",
+            position="upper_edge",
+            font_size=10,
+            color="black",
+        )
+        pl.screenshot(str(out_dir / vm_png))
+        pl.close()
+
+        scale = domain.pitch * min(domain.dims) * 0.15 / max(sol.max_disp_mm, 1e-6)
+        factor = min(scale, domain.pitch * min(domain.dims))
+        warped = body.warp_by_vector("u", factor=factor)
+        pl = pv.Plotter(off_screen=True, window_size=[900, 700])
+        pl.set_background("white")
+        pl.add_mesh(warped, scalars="vm", cmap="jet", clim=[0, vmax], show_scalar_bar=False)
+        pl.add_mesh(body.outline(), color="#888888", line_width=1.0)
+        pl.camera_position = "iso"
+        pl.reset_camera()
+        pl.add_text(
+            f"{case_name}: deformed x{factor:.0f}",
+            position="upper_edge",
+            font_size=10,
+            color="black",
+        )
+        pl.screenshot(str(out_dir / def_png))
+        pl.close()
+    except Exception as e:
+        log.warning("fem.render_failed", case=case_name, error=str(e)[:200])
+        return None, None
+    return vm_png, def_png
+
+
+def _report_skeleton(mat: MaterialProps) -> FemReport:
+    return FemReport(
+        material={
+            "name": mat.name,
+            "elastic_modulus_mpa": mat.elastic_modulus_mpa,
+            "poisson": mat.poisson,
+            "yield_mpa": mat.yield_mpa,
+            "density_g_cm3": mat.density_g_cm3,
+        }
+    )
+
+
+def run_fem(
+    mesh: trimesh.Trimesh,
+    load_cases: list[LoadCase],
+    material_name: str = "",
+    *,
+    material: MaterialProps | None = None,
+    voxel_mm: float = 1.5,
+    max_elements: int = 150_000,
+    out_dir: Path | None = None,
+    anchors: list[dict] | None = None,
+    suffix: str = "",
+) -> FemReport:
+    """Solve each load case on the voxelized mesh. Always returns a report —
+    per-case failures are captured in case.warnings."""
+    mat = material or resolve_material(material_name)
+    report = _report_skeleton(mat)
+    try:
+        domain = voxelize(mesh, voxel_mm, max_elements)
+    except Exception as e:
+        report.warnings.append(f"voxelization failed: {e}")
+        return report
+    _solve_cases(domain, mat, load_cases, report, out_dir, anchors, suffix)
+    return report
+
+
+def run_fem_domain(
+    domain: VoxelDomain,
+    solid_mask: np.ndarray,
+    load_cases: list[LoadCase],
+    material_name: str = "",
+    *,
+    material: MaterialProps | None = None,
+    out_dir: Path | None = None,
+    anchors: list[dict] | None = None,
+    suffix: str = "",
+) -> FemReport:
+    """Verify a structure defined directly on an existing grid — used for
+    TopOpt post-verification where re-voxelizing the smoothed export mesh
+    would drop thin members."""
+    mat = material or resolve_material(material_name)
+    report = _report_skeleton(mat)
+    sub = VoxelDomain(
+        origin=domain.origin,
+        pitch=domain.pitch,
+        dims=domain.dims,
+        solid=np.asarray(solid_mask, dtype=bool).reshape(domain.dims),
+        pitch_requested=domain.pitch,
+    )
+    _solve_cases(sub, mat, load_cases, report, out_dir, anchors, suffix)
+    return report
+
+
+def _solve_cases(
+    domain: VoxelDomain,
+    mat: MaterialProps,
+    load_cases: list[LoadCase],
+    report: FemReport,
+    out_dir: Path | None,
+    anchors: list[dict] | None = None,
+    suffix: str = "",
+) -> None:
+    report.grid = {
+        "pitch_mm": round(domain.pitch, 4),
+        "dims": list(domain.dims),
+        "solid_elements": domain.solid_count,
+        "volume_mm3": round(volume_of_solid(domain), 1),
+    }
+
+    if not load_cases:
+        report.warnings.append("no load cases provided")
+        return
+
+    elem_E = np.where(domain.solid.ravel(), mat.elastic_modulus_mpa, 0.0)
+
+    fem_dir = (out_dir / "fem") if out_dir else None
+    if fem_dir:
+        fem_dir.mkdir(parents=True, exist_ok=True)
+
+    for i, case in enumerate(load_cases):
+        res = FemCaseResult(name=case.name or f"case{i + 1}")
+        fixed, F, warnings = resolve_case(domain, case, anchors)
+        res.warnings += warnings
+        if not fixed.any() or not np.any(F):
+            report.cases.append(res)
+            continue
+        sol = solve(
+            domain,
+            elem_E,
+            mat.poisson,
+            fixed,
+            F,
+            E_ref=mat.elastic_modulus_mpa,
+        )
+        res.warnings += sol.warnings
+        res.max_vm_mpa = round(sol.max_vm_mpa, 3)
+        res.max_disp_mm = round(sol.max_disp_mm, 4)
+        res.compliance_j = round(sol.compliance_j / 1000.0, 6)  # N*mm -> J
+        res.converged = sol.converged
+        res.solver = sol.solver
+        res.safety_factor = round(mat.yield_mpa / sol.max_vm_mpa, 2) if sol.max_vm_mpa > 0 else None
+        if res.safety_factor is not None and res.safety_factor < 1.0:
+            res.warnings.append(f"safety factor {res.safety_factor} < 1 — likely failure")
+        report.grid["dofs"] = sol.dofs
+        if fem_dir:
+            vm_png, def_png = _render_case(domain, sol, res.name, fem_dir, suffix)
+            res.vonmises_png = vm_png
+            res.deformed_png = def_png
+        report.cases.append(res)
+
+    report.warnings.append(
+        "boundary resolution is voxel-limited; stresses near load/fix regions are approximate"
+    )
+
+
+def report_to_json(report: FemReport, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+
+
+def default_load_case() -> LoadCase:
+    """Placeholder when no loads were declared: fixed bottom, 100 N on top."""
+    from cadx.llm.schemas import LoadSpec, RegionSpec
+
+    return LoadCase(
+        name="default",
+        fixed=[RegionSpec(kind="face", axis="-z", description="bottom face")],
+        loads=[
+            LoadSpec(
+                region=RegionSpec(kind="face", axis="+z", description="top face"),
+                force_n=[0.0, 0.0, -100.0],
+            )
+        ],
+    )
+
+
+def fem_feedback_lines(report: FemReport, sf_min: float) -> list[str]:
+    """Short engineering feedback strings for the agent's build_feedback."""
+    lines: list[str] = []
+    for c in report.cases:
+        sf = c.safety_factor
+        if sf is None:
+            continue
+        if sf < 1.0:
+            lines.append(
+                f"fem[{c.name}]: safety factor {sf:.2f} < 1 — part fails under the "
+                f"declared load (max stress {c.max_vm_mpa:.1f} MPa); add material "
+                f"near the load/fix regions"
+            )
+        elif sf < sf_min:
+            lines.append(
+                f"fem[{c.name}]: safety factor {sf:.2f} below target {sf_min:g} — "
+                f"strengthen the load path (walls, ribs, fillets near mounts)"
+            )
+        elif sf > 3.0 * sf_min:
+            lines.append(
+                f"fem[{c.name}]: safety factor {sf:.2f} well above target {sf_min:g} — "
+                f"part could be lightened (thinner walls or topology optimization)"
+            )
+        if not math.isfinite(c.max_disp_mm) or c.max_disp_mm <= 0:
+            continue
+    return lines

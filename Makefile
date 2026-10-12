@@ -1,4 +1,4 @@
-# cadagent — LLM-driven CAD agent for 3D printing & CNC
+# CADX — LLM-driven CAD agent for 3D printing & CNC
 # Requires: uv (python -m pip install uv), node >= 20, docker compose
 
 VENV := .venv
@@ -26,13 +26,13 @@ infra:
 	docker compose -f docker-compose.dev.yml up -d postgres redis
 
 dev-api:
-	cd $(BACKEND) && ../$(VENV)/bin/uv run alembic upgrade head && ../$(VENV)/bin/uv run uvicorn cadagent.main:app --reload --port 8000
+	cd $(BACKEND) && ../$(VENV)/bin/uv run alembic upgrade head && ../$(VENV)/bin/uv run uvicorn cadx.main:app --reload --port 8000
 
 dev-worker:
-	cd $(BACKEND) && ../$(VENV)/bin/uv run arq cadagent.queue.AgentWorkerSettings
+	cd $(BACKEND) && ../$(VENV)/bin/uv run arq cadx.queue.AgentWorkerSettings
 
 dev-executor:
-	cd $(BACKEND) && ../$(VENV)/bin/uv run arq cadagent.queue.CadWorkerSettings
+	cd $(BACKEND) && ../$(VENV)/bin/uv run arq cadx.queue.CadWorkerSettings
 
 dev-web:
 	cd $(FRONTEND) && npm run dev
@@ -63,7 +63,7 @@ migrate:
 	cd $(BACKEND) && ../$(VENV)/bin/uv run alembic upgrade head
 
 eval:
-	cd $(BACKEND) && ../$(VENV)/bin/uv run cadagent eval
+	cd $(BACKEND) && ../$(VENV)/bin/uv run cadx eval
 
 build:
 	docker compose build

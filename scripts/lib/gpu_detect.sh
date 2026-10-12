@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# GPU tier detection for cadagent mesh-server auto-setup.
+# GPU tier detection for CADX mesh-server auto-setup.
 #
 # Usage:
 #   source scripts/lib/gpu_detect.sh   # -> gpu_detect_tier / gpu_vram_mb / gpu_default_model

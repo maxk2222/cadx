@@ -7,16 +7,16 @@ import uuid
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from cadagent.agent.context import user_block
-from cadagent.agent.worker_jobs import _merge_settings
-from cadagent.db.models import ProjectSettings, Version, VersionStatus
-from cadagent.db.session import create_all, session_scope
+from cadx.agent.context import user_block
+from cadx.agent.worker_jobs import _merge_settings
+from cadx.db.models import ProjectSettings, Version, VersionStatus
+from cadx.db.session import create_all, session_scope
 
 
 @pytest.fixture(scope="module")
 async def client():
     await create_all()
-    from cadagent.main import app
+    from cadx.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c

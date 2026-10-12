@@ -1,6 +1,6 @@
 """Shared pydantic models for the mesh-server HTTP API.
 
-Contract documented in docs/mesh-server-api.md — the cadagent backend keeps
+Contract documented in docs/mesh-server-api.md — the CADX backend keeps
 its own copy of these types (no cross-import between the two projects).
 """
 

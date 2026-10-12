@@ -1,0 +1,368 @@
+"""Hardening fixes from the live E2E test: emit dedup, crash guard, disk
+guard, trace isolation, adaptive budget, critique score clamp."""
+
+from __future__ import annotations
+
+import pytest
+
+import cadx.agent.worker_jobs as wj
+from cadx.agent.orchestrator import (
+    adaptive_max_iterations,
+    stated_dim_count,
+)
+from cadx.agent.steps.critique import normalize_score
+from cadx.agent.worker_jobs import (
+    DbTrace,
+    make_emit,
+)
+from cadx.db.models import Job, JobStatus, JobType, Project, Version, VersionKind, VersionStatus
+from cadx.db.session import async_session, create_all
+from cadx.llm.schemas import Critique, Discrepancy, Feature, FeatureVerdict, PartSpec
+
+SPEC = {
+    "name": "block",
+    "summary": "40x20x10 block",
+    "units": "mm",
+    "length_x": {"value": 40.0, "source": "stated"},
+    "width_y": {"value": 20.0, "source": "stated"},
+    "height_z": {"value": 10.0, "source": "stated"},
+    "open_questions": [],
+}
+
+
+@pytest.fixture(scope="module", autouse=True)
+async def _db():
+    await create_all()
+
+
+async def _mk_job() -> Job:
+    async with async_session() as db:
+        p = Project(name="hardening")
+        db.add(p)
+        await db.flush()
+        v = Version(project_id=p.id, number=1, kind=VersionKind.generate, prompt="x")
+        db.add(v)
+        await db.flush()
+        j = Job(version_id=v.id, type=JobType.generate)
+        db.add(j)
+        await db.commit()
+        await db.refresh(j)
+        return j
+
+
+# --------------------------------------------------------------------------- #
+# emit dedup
+
+
+async def test_emit_dedups_identical_messages(monkeypatch):
+    job = await _mk_job()
+    published: list[dict] = []
+
+    async def fake_publish(job_id: str, event: dict) -> None:
+        published.append(event)
+
+    monkeypatch.setattr(wj.events, "publish", fake_publish)
+    emit = make_emit(job.id)
+    for _ in range(20):  # the mesh-server poll pattern
+        await emit("meshgen", 1, "preprocessing images (0%)")
+    await emit("meshgen", 1, "running hunyuan3d-2mv (9%)")
+    await emit("meshgen", 1, "running hunyuan3d-2mv (9%)")
+
+    async with async_session() as db:
+        j = await db.get(Job, job.id)
+        lines = [ln for ln in (j.log or "").splitlines() if ln]
+        assert len(lines) == 2  # deduped, not 22
+        assert "preprocessing" in lines[0]
+        assert "9%" in lines[1]
+    assert len(published) == 2
+
+
+async def test_emit_same_message_different_iteration_passes():
+    job = await _mk_job()
+    emit = make_emit(job.id)
+    await emit("meshgen", 1, "generating")
+    await emit("meshgen", 2, "generating")
+    async with async_session() as db:
+        j = await db.get(Job, job.id)
+        assert len((j.log or "").splitlines()) == 2
+
+
+# --------------------------------------------------------------------------- #
+# crash guard
+
+
+async def test_guarded_marks_job_and_version_failed(monkeypatch):
+    monkeypatch.setattr(wj, "_disk_free_gb", lambda: 99.0)
+    job = await _mk_job()
+
+    @wj._guarded
+    async def boom(ctx, payload):
+        raise RuntimeError("finalize exploded")
+
+    result = await boom({}, {"job_id": str(job.id), "version_id": str(job.version_id)})
+    assert result["ok"] is False
+
+    async with async_session() as db:
+        j = await db.get(Job, job.id)
+        v = await db.get(Version, j.version_id)
+        assert j.status == JobStatus.failed
+        assert v.status == VersionStatus.failed
+        assert "finalize exploded" in (v.error or "")
+
+
+async def test_disk_guard_refuses_job(monkeypatch):
+    monkeypatch.setattr(wj, "_disk_free_gb", lambda: 0.5)
+    job = await _mk_job()
+    ran = False
+
+    @wj._guarded
+    async def work(ctx, payload):
+        nonlocal ran
+        ran = True
+        return {"ok": True}
+
+    result = await work({}, {"job_id": str(job.id), "version_id": str(job.version_id)})
+    assert result["ok"] is False
+    assert ran is False
+    async with async_session() as db:
+        j = await db.get(Job, job.id)
+        assert j.status == JobStatus.failed
+        assert "free" in (j.log or "")
+
+
+# --------------------------------------------------------------------------- #
+# trace isolation
+
+
+async def test_trace_record_survives_db_failure(monkeypatch):
+    """A broken trace insert must never propagate into the agent step."""
+
+    class BrokenSession:
+        async def __aenter__(self):
+            raise RuntimeError("fk violation — job deleted")
+
+        async def __aexit__(self, *a):
+            return False
+
+    monkeypatch.setattr(wj, "session_scope", lambda: BrokenSession())
+    trace = DbTrace(__import__("uuid").uuid4())
+    await trace.record(
+        step="codegen",
+        iteration=1,
+        model="m",
+        messages=[],
+        response_text="x",
+        parsed={},
+        prompt_tokens=1,
+        completion_tokens=1,
+        latency_ms=1,
+    )  # must not raise
+    assert trace.records[0]["step"] == "codegen"  # memory trace still written
+
+
+# --------------------------------------------------------------------------- #
+# adaptive budget
+
+
+def test_adaptive_budget_simple_dimensioned_part():
+    spec = PartSpec(**{**SPEC, "features": [{"name": "hole", "type": "hole"}]})
+    assert adaptive_max_iterations(spec, 100) == 5
+
+
+def test_adaptive_budget_medium_part():
+    feats = [{"name": f"f{i}", "type": "hole"} for i in range(4)]
+    spec = PartSpec(**{**SPEC, "features": feats})
+    assert adaptive_max_iterations(spec, 100) == 15
+
+
+def test_adaptive_budget_no_stated_dims():
+    spec = PartSpec(
+        **{
+            **SPEC,
+            "length_x": {"value": 40.0, "source": "inferred"},
+            "width_y": {"value": 20.0, "source": "assumed"},
+            "height_z": {"value": 10.0, "source": "inferred"},
+        }
+    )
+    assert stated_dim_count(spec) == 0
+    assert adaptive_max_iterations(spec, 100) == 100
+
+
+def test_adaptive_budget_many_features_unrestricted():
+    feats = [{"name": f"f{i}", "type": "other"} for i in range(8)]
+    spec = PartSpec(**{**SPEC, "features": feats})
+    assert adaptive_max_iterations(spec, 100) == 100
+
+
+def test_adaptive_budget_multi_image_never_simple():
+    # image-driven parts need the full loop even when intake under-reports
+    # features (weak models drop them -> stated spec looks "simple")
+    spec = PartSpec(**{**SPEC, "features": [{"name": "hole", "type": "hole"}]})
+    assert adaptive_max_iterations(spec, 100, n_images=2) == 100
+    assert adaptive_max_iterations(spec, 100, n_images=4) == 100
+
+
+def test_adaptive_budget_organic_mode_never_simple():
+    spec = PartSpec(**{**SPEC, "features": []})
+    assert adaptive_max_iterations(spec, 100, organic=True) == 100
+
+
+def test_adaptive_budget_single_image_still_capped():
+    spec = PartSpec(**{**SPEC, "features": [{"name": "hole", "type": "hole"}]})
+    assert adaptive_max_iterations(spec, 100, n_images=1) == 5
+
+
+# --------------------------------------------------------------------------- #
+# LLM JSON-schema required fields
+
+
+def test_critique_schema_requires_actionable_fields():
+    # guided decoding must not allow {"score":N,"passed":false} shorthand —
+    # the model is forced to emit discrepancies + per-feature verdicts
+    req = Critique.model_json_schema()["required"]
+    for f in ("score", "passed", "discrepancies", "feature_verdicts", "matches"):
+        assert f in req
+
+
+def test_flat_bottom_cue_detection():
+    from cadx.agent.orchestrator import _spec_wants_flat_bottom
+
+    def spec(summary: str) -> PartSpec:
+        return PartSpec(**{**SPEC, "summary": summary})
+
+    assert _spec_wants_flat_bottom(spec("organic top, flat back (-z)"))
+    assert _spec_wants_flat_bottom(spec("rueckseite flach"))
+    assert _spec_wants_flat_bottom(spec("ebene Unterseite"))
+    assert not _spec_wants_flat_bottom(spec("flat top face"))
+    assert not _spec_wants_flat_bottom(spec("rounded back"))
+
+
+def test_flat_back_ops_appends_smooth_preserve():
+    from cadx.agent.orchestrator import _flat_back_ops
+    from cadx.cad.mesh_ops import MeshPostParams
+
+    ops = _flat_back_ops(MeshPostParams(), bow_mm=5.0, smooth_iters=10)
+    assert [o["op"] for o in ops] == ["flatten_bottom", "smooth_preserve"]
+    assert ops[0]["args"]["height_mm"] == 5.0
+    assert ops[1]["args"]["iterations"] == 10
+    # smoothing disabled → flatten only
+    ops0 = _flat_back_ops(MeshPostParams(), bow_mm=5.0, smooth_iters=0)
+    assert [o["op"] for o in ops0] == ["flatten_bottom"]
+
+
+def test_partspec_schema_requires_features_and_roles():
+    schema = PartSpec.model_json_schema()
+    for f in ("length_x", "width_y", "height_z", "features", "image_roles"):
+        assert f in schema["required"]
+    assert "name" in Feature.model_json_schema()["required"]
+    assert "status" in FeatureVerdict.model_json_schema()["required"]
+    assert "severity" in Discrepancy.model_json_schema()["required"]
+
+
+# --------------------------------------------------------------------------- #
+# critique score clamp
+
+
+def test_normalize_score_zero_with_no_issues():
+    c = Critique(score=0, passed=False, discrepancies=[], confidence=0.0)
+    assert normalize_score(c).score == 60
+
+
+def test_normalize_score_ceiling_by_severity():
+    c = Critique(
+        score=92,
+        passed=False,
+        discrepancies=[
+            Discrepancy(what="a", severity="major"),
+            Discrepancy(what="b", severity="minor"),
+        ],
+        confidence=0.5,
+    )
+    assert normalize_score(c).score == 65  # 100 - 25 - 10
+
+
+def test_normalize_score_consistent_untouched():
+    c = Critique(score=40, passed=False, discrepancies=[Discrepancy(what="a", severity="major")])
+    assert normalize_score(c).score == 40  # already below the 75 ceiling
+
+
+# --------------------------------------------------------------------------- #
+# mesh fit-to-stated rescue
+
+
+def _stated_spec(x=119.0, y=38.0, z=8.0):
+    return PartSpec(
+        **{
+            **SPEC,
+            "length_x": {"value": x, "source": "stated"},
+            "width_y": {"value": y, "source": "stated"},
+            "height_z": {"value": z, "source": "stated"},
+        }
+    )
+
+
+def test_fit_ops_plate_too_thick_scales_z():
+    """Live case: 119x73x27 mesh vs 119x38x8 spec → bounded per-axis scale.
+
+    A slice would keep only the top crust of the fat mesh — z-scale preserves
+    the shape (relief gets shallower, which matches a thin scale)."""
+    from cadx.agent.orchestrator import _fit_ops_to_stated
+
+    ops, _note = _fit_ops_to_stated(_stated_spec(), [119.0, 73.0, 27.0])
+    assert [o.op for o in ops] == ["scale"]
+    assert ops[0].args["y"] == round(38 / 73, 4)
+    assert ops[0].args["z"] == round(8 / 27, 4)
+    assert "x" not in ops[0].args
+
+
+def test_fit_ops_exact_dims_no_ops():
+    from cadx.agent.orchestrator import _fit_ops_to_stated
+
+    ops, _ = _fit_ops_to_stated(_stated_spec(), [119.0, 38.0, 8.0])
+    assert ops == []
+
+
+def test_fit_ops_extreme_factor_rejects():
+    """10x off is the wrong object, not a proportion error."""
+    from cadx.agent.orchestrator import _fit_ops_to_stated
+
+    ops, _ = _fit_ops_to_stated(_stated_spec(), [1190.0, 73.0, 27.0])
+    assert ops == []
+
+
+def test_fit_ops_thin_mesh_scales_up():
+    from cadx.agent.orchestrator import _fit_ops_to_stated
+
+    ops, _ = _fit_ops_to_stated(_stated_spec(), [119.0, 38.0, 5.0])
+    assert [o.op for o in ops] == ["scale"]
+    assert ops[0].args["z"] == 1.6
+
+
+def test_fit_ops_blocky_part_scales_z():
+    """Non-plate parts (height not smallest stated) get Z scaled, not sliced."""
+    from cadx.agent.orchestrator import _fit_ops_to_stated
+
+    spec = _stated_spec(x=30.0, y=30.0, z=40.0)
+    ops, _ = _fit_ops_to_stated(spec, [30.0, 30.0, 90.0])
+    assert [o.op for o in ops] == ["scale"]
+    assert ops[0].args["z"] == round(40 / 90, 4)
+
+
+def test_fit_ops_inflated_mesh_strong_z_squash():
+    """Live case: 119x73.9x52.1 blob vs 119x38x8 spec — hunyuan3d-2mv inflates
+    flat parts ~6x; fz=0.153 must still fit (degenerate-volume guard catches
+    crusts downstream)."""
+    from cadx.agent.orchestrator import _fit_ops_to_stated
+
+    ops, _note = _fit_ops_to_stated(_stated_spec(), [119.0, 73.92, 52.12])
+    assert [o.op for o in ops] == ["scale"]
+    assert ops[0].args["y"] == round(38 / 73.92, 4)
+    assert ops[0].args["z"] == round(8 / 52.12, 4)
+
+
+def test_fit_ops_z_extreme_still_rejects():
+    """fz below 0.12 (8x+ off) is the wrong object even for a flat part."""
+    from cadx.agent.orchestrator import _fit_ops_to_stated
+
+    ops, _ = _fit_ops_to_stated(_stated_spec(), [119.0, 38.0, 80.0])
+    assert ops == []

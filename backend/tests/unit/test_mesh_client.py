@@ -9,7 +9,7 @@ import httpx
 import pytest
 import trimesh
 
-from cadagent.agent.mesh_client import (
+from cadx.agent.mesh_client import (
     CachedMeshAvailability,
     FakeMeshClient,
     HttpMeshClient,
@@ -162,8 +162,8 @@ def fake_server(monkeypatch):
     async def _sleep(_):
         return None
 
-    monkeypatch.setattr("cadagent.agent.mesh_client.httpx.AsyncClient", _async_client)
-    monkeypatch.setattr("cadagent.agent.mesh_client.httpx.Client", _sync_client)
+    monkeypatch.setattr("cadx.agent.mesh_client.httpx.AsyncClient", _async_client)
+    monkeypatch.setattr("cadx.agent.mesh_client.httpx.Client", _sync_client)
     monkeypatch.setattr(asyncio, "sleep", _sleep)
     return srv
 

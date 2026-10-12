@@ -72,7 +72,7 @@ export default function AssetManager({
     <div>
       <div
         className={`rounded-lg border-2 border-dashed p-4 text-center text-sm transition-colors ${
-          drag ? "border-blue-500 bg-blue-950/20 text-blue-300" : "border-zinc-700 text-zinc-400"
+          drag ? "border-brand-500 bg-brand-950/20 text-brand-300" : "border-zinc-700 text-zinc-400"
         }`}
         onDragOver={(e) => {
           e.preventDefault();
@@ -94,7 +94,7 @@ export default function AssetManager({
             <Upload className="mr-1.5 inline h-4 w-4 align-[-2px]" />
             Drop reference images / STEP / STL / DXF here, or{" "}
             <button
-              className="text-blue-400 underline"
+              className="text-brand-400 underline"
               onClick={() => fileRef.current?.click()}
             >
               browse
@@ -124,7 +124,7 @@ export default function AssetManager({
               <div
                 key={a.id}
                 className={`group relative overflow-hidden rounded-md border-2 transition-colors ${
-                  sel ? "border-blue-500" : "border-zinc-800 hover:border-zinc-600"
+                  sel ? "border-brand-500" : "border-zinc-800 hover:border-zinc-600"
                 }`}
               >
                 <button
@@ -156,7 +156,7 @@ export default function AssetManager({
                   </span>
                 )}
                 {onToggle && sel && (
-                  <span className="absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-blue-500">
+                  <span className="absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-brand-500">
                     <Check className="h-3 w-3 text-white" />
                   </span>
                 )}

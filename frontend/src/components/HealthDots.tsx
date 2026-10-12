@@ -37,7 +37,7 @@ export default function HealthDots() {
 
   return (
     <Link
-      to="/settings"
+      to="/settings?tab=provider"
       className="flex items-center gap-3 rounded-md px-2 py-1 hover:bg-zinc-900"
       title="service status — open settings"
     >

@@ -73,12 +73,13 @@ class _Hy3DTorchBase(MeshAdapter):
         except Exception as e:  # pragma: no cover
             missing(type(self), str(e))
         repo, subfolder, variant = self._variant()
+        device = "mps" if _mps_ok() else "cpu"
         self._pipe = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
-            repo, subfolder=subfolder, variant=variant
+            repo, subfolder=subfolder, variant=variant, device=device
         )
         # MPS: keep float16 where supported, fall back otherwise
         try:
-            self._pipe.to("mps")
+            self._pipe.to(device)
         except Exception:
             pass
         self._cleaner = [FloaterRemover(), DegenerateFaceRemover(), FaceReducer()]

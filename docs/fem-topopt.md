@@ -135,6 +135,6 @@ Run from `backend/`:
 
 ```bash
 .venv/bin/python -m pytest tests/cad/test_fem.py tests/unit/test_agent_modes.py tests/unit/test_api.py -q
-.venv/bin/ruff check cadagent tests
-.venv/bin/python -m mypy cadagent
+.venv/bin/ruff check cadx tests
+.venv/bin/python -m mypy cadx
 ```

@@ -1,6 +1,6 @@
 # Architecture
 
-cadagent is a local, single-user system that turns multimodal input
+CADX is a local, single-user system that turns multimodal input
 (images + text + dimensions) into manufacturing-ready CAD via an
 OpenAI-compatible LLM. Generated geometry is build123d *code* — parametric,
 diffable, re-runnable.
@@ -47,7 +47,7 @@ Browser ──> nginx (:8080) ──> api:8000
                         SSE /events/jobs/<id> ──> browser progress
 ```
 
-## Code layout (backend/cadagent)
+## Code layout (backend/cadx)
 
 - `agent/` — orchestrator state machine, per-step modules (`steps/`),
   context/trace/types, `worker_jobs.py` (arq job runners)
@@ -62,7 +62,7 @@ Browser ──> nginx (:8080) ──> api:8000
   `schemas.py` (Pydantic contracts), `fake.py` (deterministic test LLM)
 - `api/` — FastAPI routers, schemas, deps
 - `db/` — SQLModel tables, async session, Alembic migrations
-- `eval/` — benchmark harness (`cadagent eval`)
+- `eval/` — benchmark harness (`cadx eval`)
 - `queue.py` — arq `WorkerSettings` for both queues
 - `storage.py`, `config.py`, `events.py`, `logging.py`, `cli.py`, `main.py`
 

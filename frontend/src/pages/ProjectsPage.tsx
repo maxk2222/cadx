@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { FolderPlus, Pencil, Search, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import Logo from "../components/Logo";
 import ProjectFormModal from "../components/ProjectFormModal";
 import StatusBadge from "../components/StatusBadge";
 import {
@@ -9,17 +10,21 @@ import {
   ConfirmModal,
   EmptyState,
   IconBtn,
-  Spinner,
+  Skeleton,
   inputCls,
   useDebounced,
+  useToast,
 } from "../components/ui";
 import { api } from "../lib/api";
 import { timeAgo } from "../lib/format";
 import type { Project } from "../lib/types";
+import { useTitle } from "../lib/useTitle";
 
 export default function ProjectsPage() {
+  useTitle("Projects");
   const qc = useQueryClient();
   const nav = useNavigate();
+  const toast = useToast();
   const [search, setSearch] = useState("");
   const q = useDebounced(search);
   const [createOpen, setCreateOpen] = useState(false);
@@ -33,7 +38,9 @@ export default function ProjectsPage() {
     onSuccess: () => {
       setDeleting(null);
       qc.invalidateQueries({ queryKey: ["projects"] });
+      toast("project deleted", "success");
     },
+    onError: (e) => toast(String(e), "error"),
   });
 
   const filtered = useMemo(() => {
@@ -68,13 +75,22 @@ export default function ProjectsPage() {
       </div>
 
       {projects.isLoading ? (
-        <div className="flex justify-center py-16 text-zinc-500">
-          <Spinner className="h-6 w-6" />
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="overflow-hidden rounded-lg border border-zinc-800">
+              <Skeleton className="h-32 rounded-none" />
+              <div className="space-y-2 p-3">
+                <Skeleton className="h-4 w-2/3" />
+                <Skeleton className="h-3 w-1/3" />
+              </div>
+            </div>
+          ))}
         </div>
       ) : projects.isError ? (
         <EmptyState title="Could not load projects" hint="Is the API running?" />
       ) : !filtered.length ? (
         <EmptyState
+          icon={<Logo size={44} />}
           title={q ? "No projects match your search" : "No projects yet"}
           hint={q ? undefined : "Create a project to start generating 3D models."}
         />

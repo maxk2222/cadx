@@ -1,6 +1,6 @@
 const COLORS: Record<string, string> = {
   queued: "bg-zinc-600",
-  running: "bg-blue-600 animate-pulse",
+  running: "bg-brand-600 animate-pulse",
   waiting_for_input: "bg-amber-600",
   succeeded: "bg-emerald-600",
   needs_review: "bg-amber-700",

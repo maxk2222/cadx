@@ -5,7 +5,7 @@ import pytest
 import trimesh
 from pydantic import ValidationError
 
-from cadagent.cad.mesh_ops import (
+from cadx.cad.mesh_ops import (
     MeshOp,
     MeshPostParams,
     apply_op,
@@ -27,7 +27,7 @@ from cadagent.cad.mesh_ops import (
     scale_to_spec,
     suggest_up,
 )
-from cadagent.llm.schemas import PartSpec
+from cadx.llm.schemas import PartSpec
 
 
 def _box(x=10.0, y=20.0, z=30.0):
@@ -199,6 +199,26 @@ def test_flatten_bottom():
     assert flat_base_ratio(out) > 0.0
     # height_mm <= 0 is a no-op
     assert flatten_bottom(m, 0) is m
+
+
+def test_flatten_bottom_fills_overhang_voids():
+    # a T-part: 20x20 base slab z∈[8,12] with a 4mm overhang wing at z∈[14,16]
+    # hovering over void — a plane cut can never make the wing's underside flat.
+    base = _box(20, 20, 4)
+    base.apply_translation([0, 0, 10])
+    wing = _box(8, 8, 2)
+    wing.apply_translation([8, 0, 15])
+    m = trimesh.util.concatenate([base, wing])
+    out = flatten_bottom(m, 2.0)
+    down = out.face_normals[:, 2] < -0.9
+    zf = out.vertices[out.faces[down]][:, :, 2]
+    assert down.sum() > 0
+    # every down-facing face sits on a single plane (the capped cut)
+    assert zf.max() - zf.min() == pytest.approx(0.0, abs=0.2)
+    # the overhang column is filled: solid reaches the floor under the wing
+    ray = trimesh.ray.ray_triangle.RayMeshIntersector(out)
+    hits, _, _ = ray.intersects_location([[8, 0, -1]], [[0, 0, 1]], multiple_hits=True)
+    assert hits.size and hits[:, 2].min() <= out.bounds[0][2] + 0.3
 
 
 # --------------------------------------------------------------------------- #
@@ -403,6 +423,33 @@ def test_merge_post_params_ops_replaced_only_when_given():
     assert merged2.ops[0].op == "mirror"
 
 
+def test_smooth_preserve_keeps_floor_and_envelope():
+    from cadx.cad.mesh_ops import smooth_preserve, surface_roughness_deg
+
+    m = trimesh.creation.icosphere(subdivisions=3, radius=20)
+    flat = flatten_bottom(m, 10.0)
+    flat = rest_on_xy_center(flat)
+    b0 = np.asarray(flat.bounds)
+    rough_before = surface_roughness_deg(flat)
+    out = smooth_preserve(flat, iterations=10)
+    assert out.is_watertight
+    # the floor stays a single plane at min z
+    down = out.face_normals[:, 2] < -0.9
+    zf = out.vertices[out.faces[down]][:, :, 2]
+    assert down.sum() > 0
+    assert zf.max() - zf.min() <= 0.05
+    # XY envelope preserved
+    for axis in (0, 1):
+        assert (out.bounds[1][axis] - out.bounds[0][axis]) == pytest.approx(
+            b0[1][axis] - b0[0][axis], abs=0.3
+        )
+    # smoothing actually reduced the voxel striations
+    assert surface_roughness_deg(out) <= rough_before * 0.6
+    # works through the ops registry
+    out2, rep = apply_ops(flat, [{"op": "smooth_preserve", "args": {"iterations": 5}}])
+    assert rep[0]["op"] == "smooth_preserve" and out2.is_watertight
+
+
 def test_baseline_mesh_matches_pipeline_sequence():
     raw = _box(1, 2, 3)
     post = MeshPostParams(up="+z", front="+y", rotate_z_deg=90)
@@ -412,3 +459,45 @@ def test_baseline_mesh_matches_pipeline_sequence():
     # stated dim (x=60) then drives factor=30 -> [60,30,90]
     assert sorted(m.extents) == pytest.approx([30, 60, 90], rel=0.02)
     assert m.bounds[0][2] == pytest.approx(0, abs=1e-6)
+
+
+def test_orient_by_plan_view_flat_box():
+    """A flat box standing on edge must be re-laid flat by the plan view."""
+    from cadx.cad.mesh_ops import orient_by_plan_view
+
+    mesh = trimesh.creation.box(extents=[100, 30, 8])
+    # stand it on edge: the 30 mm side becomes vertical (wrong pose)
+    mesh.apply_transform(trimesh.transformations.rotation_matrix(np.radians(90), [1, 0, 0]))
+    outline = [[-50, -15], [50, -15], [50, 15], [-50, 15], [-50, -15]]
+    hit = orient_by_plan_view(mesh, outline)
+    assert hit is not None
+    up, _front, _mirror_x, iou = hit
+    assert iou >= 0.9
+    assert up in ("+y", "-y")  # the original flat pose restored
+
+
+def test_orient_by_plan_view_returns_none_without_match():
+    from cadx.cad.mesh_ops import orient_by_plan_view
+
+    mesh = trimesh.creation.icosphere(subdivisions=2, radius=10)
+    outline = [[-50, -2], [50, -2], [50, 2], [-50, 2], [-50, -2]]  # sliver
+    assert orient_by_plan_view(mesh, outline) is None
+
+
+def test_clip_to_outline():
+    from cadx.cad.mesh_ops import clip_to_outline
+
+    mesh = trimesh.creation.icosphere(subdivisions=3, radius=20)
+    outline = [[-15, -15], [15, -15], [15, 15], [-15, 15], [-15, -15]]
+    out = clip_to_outline(mesh, outline, margin_mm=0.3)
+    assert out.is_watertight
+    ext = [float(v) for v in out.extents]
+    assert ext[0] == pytest.approx(30.6, abs=0.4)
+    assert ext[1] == pytest.approx(30.6, abs=0.4)
+
+
+def test_clip_to_outline_bad_outline_returns_input():
+    from cadx.cad.mesh_ops import clip_to_outline
+
+    mesh = trimesh.creation.box(extents=[10, 10, 10])
+    assert clip_to_outline(mesh, []) is mesh

@@ -16,13 +16,13 @@ from build123d import (
     fillet,
 )
 
-from cadagent.cad.features import (
+from cadx.cad.features import (
     MeasuredFeatures,
     MeasuredHoleGroup,
     compare_features,
     extract_features,
 )
-from cadagent.llm.schemas import Feature
+from cadx.llm.schemas import Feature
 
 
 def _plate(with_chamfer: bool = True, fillet_r: float | None = None):

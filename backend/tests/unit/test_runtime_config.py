@@ -5,9 +5,9 @@ from __future__ import annotations
 import pytest
 from pydantic import SecretStr
 
-from cadagent.db.models import AppSetting
-from cadagent.db.session import create_all, session_scope
-from cadagent.runtime_config import (
+from cadx.db.models import AppSetting
+from cadx.db.session import create_all, session_scope
+from cadx.runtime_config import (
     RuntimeSettings,
     ensure_runtime_seeded,
     import_legacy_env,

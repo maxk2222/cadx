@@ -37,6 +37,9 @@ export function optionsCount(o: RunOptions): number {
   if (o.include_fasteners) n++;
   if (o.fem) n++;
   if (o.topopt) n++;
+  if (o.max_iterations != null) n++;
+  if (o.max_repairs != null) n++;
+  if (o.pass_score != null) n++;
   return n;
 }
 
@@ -97,7 +100,7 @@ function Opt({
       onClick={onClick}
       className={`inline-flex items-center gap-1 rounded border px-2 py-1 text-[11px] font-medium transition-colors ${
         active
-          ? "border-blue-700 bg-blue-950/60 text-blue-300"
+          ? "border-brand-700 bg-brand-950/60 text-brand-300"
           : "border-zinc-700 bg-zinc-800/60 text-zinc-400 hover:border-zinc-500 hover:text-zinc-200"
       }`}
     >
@@ -143,7 +146,7 @@ export default function OptionsPanel({
         <Settings2 className="h-3.5 w-3.5" />
         Options
         {count > 0 && (
-          <span className="rounded-full bg-blue-600 px-1.5 text-[10px] text-white">
+          <span className="rounded-full bg-brand-600 px-1.5 text-[10px] text-white">
             {count}
           </span>
         )}
@@ -184,7 +187,7 @@ export default function OptionsPanel({
               </Opt>
             ))}
             <input
-              className="w-32 rounded border border-zinc-700 bg-zinc-800/80 px-2 py-1 text-[11px] text-zinc-200 placeholder-zinc-600 outline-none focus:border-blue-600"
+              className="w-32 rounded border border-zinc-700 bg-zinc-800/80 px-2 py-1 text-[11px] text-zinc-200 placeholder-zinc-600 outline-none focus:border-brand-600"
               placeholder="custom material…"
               value={customMaterial}
               onChange={(e) => set({ material: e.target.value || undefined })}
@@ -219,7 +222,7 @@ export default function OptionsPanel({
 
           {!!value.fem && (
             <input
-              className="mt-2 w-full rounded border border-zinc-700 bg-zinc-800/80 px-2 py-1.5 text-[11px] text-zinc-200 placeholder-zinc-600 outline-none focus:border-blue-600"
+              className="mt-2 w-full rounded border border-zinc-700 bg-zinc-800/80 px-2 py-1.5 text-[11px] text-zinc-200 placeholder-zinc-600 outline-none focus:border-brand-600"
               placeholder="loads & fixtures (optional) — e.g. 'fixed at M4 holes, 100 N on top face'"
               value={value.fem_note ?? ""}
               onChange={(e) => set({ fem_note: e.target.value || undefined })}
@@ -233,7 +236,7 @@ export default function OptionsPanel({
                 min={10}
                 max={90}
                 step={5}
-                className="w-40 accent-blue-500"
+                className="w-40 accent-brand-500"
                 value={Math.round((value.topopt_volfrac ?? 0.4) * 100)}
                 onChange={(e) =>
                   set({ topopt_volfrac: Number(e.target.value) / 100 })
@@ -244,6 +247,43 @@ export default function OptionsPanel({
               </span>
             </div>
           )}
+
+          <Group label="Agent budget (override defaults)">
+            {(
+              [
+                ["max_iterations", "max iterations", 1, 200],
+                ["max_repairs", "max repairs", 0, 200],
+                ["pass_score", "pass score", 0, 100],
+              ] as const
+            ).map(([key, label, min, max]) => (
+              <label
+                key={key}
+                className="flex items-center gap-1.5 rounded border border-zinc-700 bg-zinc-800/60 px-2 py-1 text-[11px] text-zinc-400"
+              >
+                {label}
+                <input
+                  type="number"
+                  min={min}
+                  max={max}
+                  step={1}
+                  className="w-16 rounded border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 text-[11px] text-zinc-200 outline-none focus:border-brand-600"
+                  placeholder="auto"
+                  value={value[key] ?? ""}
+                  onChange={(e) =>
+                    set({
+                      [key]:
+                        e.target.value === ""
+                          ? undefined
+                          : Math.max(
+                              min,
+                              Math.min(max, Math.round(Number(e.target.value)))
+                            ),
+                    })
+                  }
+                />
+              </label>
+            ))}
+          </Group>
         </div>
       )}
     </div>

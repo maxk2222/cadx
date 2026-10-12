@@ -4,9 +4,9 @@ import pytest
 import trimesh
 from build123d import export_brep
 
-from cadagent.cad.engine import run_pipeline
-from cadagent.cad.mesh_ops import mesh_to_solid
-from cadagent.db.models import ProjectSettings
+from cadx.cad.engine import run_pipeline
+from cadx.cad.mesh_ops import mesh_to_solid
+from cadx.db.models import ProjectSettings
 
 HYBRID_CODE = """\
 from build123d import *
@@ -51,6 +51,31 @@ from build123d import *
 
 PARAMS = {}
 assert isinstance(MESH_BBOX, (tuple, list)) and len(MESH_BBOX) == 3
+result = load_mesh_solid()
+"""
+    res = run_pipeline(
+        code=code,
+        out_dir=tmp_path / "it1",
+        settings=ProjectSettings(process="fdm"),
+        mesh_solid=mesh_brep,
+        mesh_bbox=[40.0, 40.0, 40.0],
+    )
+    assert res.ok, res.error
+
+
+def test_top_z_reports_local_surface(mesh_brep, tmp_path):
+    """Sphere r=20 resting on XY: top_z over centre = 40, drops off-axis,
+    falls back to MESH_BBOX[2] outside the silhouette."""
+    code = """\
+from build123d import *
+
+PARAMS = {}
+top_mid = top_z(0.0, 0.0)
+top_off = top_z(15.0, 0.0)
+top_out = top_z(50.0, 0.0)
+assert abs(top_mid - 40.0) < 0.6, top_mid
+assert 30.0 < top_off < 37.0, top_off
+assert top_out == 40.0, top_out  # fallback: MESH_BBOX[2]
 result = load_mesh_solid()
 """
     res = run_pipeline(

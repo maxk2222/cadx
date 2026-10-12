@@ -1,17 +1,17 @@
-name: cadagent
+name: cadx
 
 services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-cadagent}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cadagent}
-      POSTGRES_DB: ${POSTGRES_DB:-cadagent}
+      POSTGRES_USER: ${POSTGRES_USER:-cadx}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cadx}
+      POSTGRES_DB: ${POSTGRES_DB:-cadx}
     volumes:
       - pgdata:/var/lib/postgresql/data
     networks: [internal]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cadagent} -d ${POSTGRES_DB:-cadagent}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cadx} -d ${POSTGRES_DB:-cadx}"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -31,7 +31,7 @@ services:
       context: backend
       target: api
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-cadagent}:${POSTGRES_PASSWORD:-cadagent}@postgres:5432/${POSTGRES_DB:-cadagent}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cadx}:${POSTGRES_PASSWORD:-cadx}@postgres:5432/${POSTGRES_DB:-cadx}
       REDIS_URL: redis://redis:6379/0
       DATA_DIR: /data
       # bootstrap seed only — used once to create the DB runtime row when it
@@ -59,8 +59,9 @@ services:
     build:
       context: backend
       target: worker
+    restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-cadagent}:${POSTGRES_PASSWORD:-cadagent}@postgres:5432/${POSTGRES_DB:-cadagent}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cadx}:${POSTGRES_PASSWORD:-cadx}@postgres:5432/${POSTGRES_DB:-cadx}
       REDIS_URL: redis://redis:6379/0
       DATA_DIR: /data
       # bootstrap seed only — see api service; change it in the Settings UI
@@ -69,6 +70,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./data:/data
+      - rembg_models:/root/.rembg
     depends_on:
       postgres:
         condition: service_healthy
@@ -81,10 +83,14 @@ services:
       context: backend
       target: executor
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-cadagent}:${POSTGRES_PASSWORD:-cadagent}@postgres:5432/${POSTGRES_DB:-cadagent}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cadx}:${POSTGRES_PASSWORD:-cadx}@postgres:5432/${POSTGRES_DB:-cadx}
       REDIS_URL: redis://redis:6379/0
       DATA_DIR: /data
       PYVISTA_OFF_SCREEN: "true"
+      # read-only root fs: redirect cache/config dirs into the /tmp tmpfs
+      HOME: /tmp
+      MPLCONFIGDIR: /tmp/mpl
+      XDG_CACHE_HOME: /tmp/.cache
     volumes:
       - ./data:/data
     depends_on:
@@ -136,3 +142,4 @@ networks:
 volumes:
   pgdata:
   mesh_models:
+  rembg_models:

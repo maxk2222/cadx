@@ -27,7 +27,10 @@ else
 fi
 
 echo "== torch + pipeline deps =="
-INSTALL 'torch>=2.3' diffusers transformers accelerate rembg onnxruntime
+# transformers>=5 renames Dinov2 modules (q_proj/gate_proj) — the Hunyuan3D
+# checkpoints (incl. 2mv) use the pre-v5 layout, and diffusers>=0.32 forces
+# huggingface_hub>=1 which conflicts with transformers<5. Pin the tested set.
+INSTALL 'torch>=2.3' 'transformers==4.57.3' 'diffusers==0.31.0' 'huggingface_hub<1' accelerate rembg onnxruntime 'gradio<6'
 
 echo "== cloning $HUNYUAN_REPO =="
 mkdir -p "$(dirname "$SRC")"

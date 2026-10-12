@@ -1,6 +1,8 @@
-# cadagent
+# CADX
 
-**Images + text in — manufacturing-ready CAD out.** cadagent uses a multimodal
+<p><img src="frontend/public/favicon.svg" width="56" alt="CADX logo"></p>
+
+**Images + text in — manufacturing-ready CAD out.** CADX uses a multimodal
 LLM (any OpenAI-compatible API) to turn reference photos, drawings and a text
 description into parametric, verified 3D models you can 3D print or CNC mill.
 
@@ -78,6 +80,20 @@ Services: `postgres`, `redis`, `api`, `worker`, `cad-executor`, `frontend`,
 plus the native `mesh-server`. Models, renders and exports persist under
 `./data/`.
 
+### Upgrading from `cadagent`
+
+The system was renamed to **CADX** (package `cadx`, CLI `cadx`, compose project
+`cadx`). Existing installs keep their data by running the one-shot migration —
+it clones the old `cadagent_*` docker volumes and renames the Postgres
+role/database inside:
+
+```bash
+scripts/migrate-cadx.sh
+```
+
+Or keep the old credentials without migrating: `POSTGRES_USER=cadagent
+POSTGRES_PASSWORD=cadagent POSTGRES_DB=cadagent` in `.env`.
+
 ## Mesh generation (optional, auto-installed)
 
 A local mesh server turns photos into 3D meshes — required for `mesh` and
@@ -115,9 +131,9 @@ Without a full stack you can still exercise everything in-process:
 
 ```bash
 cd backend
-../.venv/bin/uv run cadagent run "a 40x20x10 block with 1.5mm edge fillets" --fake   # no LLM needed
-../.venv/bin/uv run cadagent exec ../path/to/model.py                               # pipeline only
-../.venv/bin/uv run cadagent eval                                                   # benchmarks
+../.venv/bin/uv run cadx run "a 40x20x10 block with 1.5mm edge fillets" --fake   # no LLM needed
+../.venv/bin/uv run cadx exec ../path/to/model.py                               # pipeline only
+../.venv/bin/uv run cadx eval                                                   # benchmarks
 ```
 
 ## LLM provider configuration
@@ -234,7 +250,7 @@ cd backend
 ../.venv/bin/uv run pytest tests/cad -q        # CAD executor only
 ../.venv/bin/uv run ruff check .               # lint
 ../.venv/bin/uv run ruff format --check .      # formatting
-../.venv/bin/uv run mypy cadagent/             # types
+../.venv/bin/uv run mypy cadx/             # types
 ```
 
 The suite covers the sandbox security model (blocked imports, builtin

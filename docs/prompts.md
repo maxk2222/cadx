@@ -1,6 +1,6 @@
 # Prompts
 
-Prompt sources live in `backend/cadagent/agent/prompts/` and are loaded with
+Prompt sources live in `backend/cadx/agent/prompts/` and are loaded with
 explicit UTF-8 encoding. They are assembled per step — the LLM never sees a
 growing conversation, only the slices relevant to the current call.
 
@@ -24,7 +24,7 @@ growing conversation, only the slices relevant to the current call.
 | `critique_system.md` | CRITIQUE | Vision judge: compare renders/contact sheet against inputs + measured facts; emit score, `feature_verdicts` per spec feature, concrete discrepancies with fix_hints, confidence. |
 | `build123d_reference.md` | CODEGEN/REPAIR | Condensed API cheatsheet: workplane idioms, fillet/chamfer, Hole/CounterBoreHole, patterns, algebra mode pitfalls. |
 | `bd_warehouse_reference.md` | PLAN/CODEGEN | Standard parts usage: screw/nut/washer/bearing class names, thread sizes, countersink angles, clearance/heat-set inserts. |
-| `cadlib_reference.md`  | CODEGEN | Reviewed deterministic helpers (`cadagent/cad/cadlib/`): hole grids, bosses, ribs, snap fits, knurl rings, dovetail slots, insert pockets, bearing seats — callable inside the sandbox. |
+| `cadlib_reference.md`  | CODEGEN | Reviewed deterministic helpers (`cadx/cad/cadlib/`): hole grids, bosses, ribs, snap fits, knurl rings, dovetail slots, insert pockets, bearing seats — callable inside the sandbox. |
 | `tools_info.md`        | info sessions (intake/plan) | Optional exploratory tools before the final JSON: `search_catalog`/`lookup_part`/`cadlib_lookup`, plus `search_library`/`library_part`/`attach_library_part` to reuse saved user parts. |
 | `tools_inspect.md`     | CRITIQUE (tools) | Read-only inspection of the candidate code (`read_lines`/`search_code`) and catalog/library lookups for cross-checking dimensions. |
 | `dfm_rules.md`       | PLAN/CODEGEN | Process rules (FDM walls/overhangs, CNC pockets/inside radii) so the model is born manufacturable. |

@@ -1,6 +1,6 @@
 """Static standard-part validation (AST + PARAMS resolution vs catalog)."""
 
-from cadagent.cad.partspec import check_standard_part_calls
+from cadx.cad.partspec import check_standard_part_calls
 
 GOOD = """from build123d import *
 from bd_warehouse.fastener import CounterSunkScrew, ClearanceHole

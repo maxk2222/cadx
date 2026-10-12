@@ -7,13 +7,13 @@ import uuid
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from cadagent.db.session import create_all, session_scope
+from cadx.db.session import create_all, session_scope
 
 
 @pytest.fixture(scope="module")
 async def client():
     await create_all()
-    from cadagent.main import app
+    from cadx.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
@@ -63,8 +63,8 @@ async def test_save_version_as_template_and_step(client):
     pid = await _project(client)
 
     # fabricate a finished version with code + a STEP artifact on disk
-    from cadagent import storage
-    from cadagent.db.models import Artifact, ArtifactKind, Version, VersionKind
+    from cadx import storage
+    from cadx.db.models import Artifact, ArtifactKind, Version, VersionKind
 
     async with session_scope() as db:
         v = Version(
@@ -128,7 +128,7 @@ async def test_generate_accepts_library_part_ids(client):
 
     from sqlmodel import select
 
-    from cadagent.db.models import Version
+    from cadx.db.models import Version
 
     async with session_scope() as db:
         row = (

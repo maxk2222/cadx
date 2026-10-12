@@ -21,11 +21,16 @@ export default function FemPanel({
   const femImgs = artifacts.filter(
     (a) => a.kind === "fem" && /\.(png|jpg)$/i.test(a.path)
   );
-  const sfs = fem.cases
+  const cases = fem.cases ?? [];
+  const warnings = [
+    ...(fem.warnings ?? []),
+    ...cases.flatMap((c) => c.warnings ?? []),
+  ];
+  const sfs = cases
     .map((c) => c.safety_factor)
     .filter((s): s is number => s != null);
   const worst = sfs.length ? Math.min(...sfs) : null;
-  const grid = fem.grid as { pitch_mm?: number; elements?: number };
+  const grid = (fem.grid ?? {}) as { pitch_mm?: number; elements?: number };
 
   return (
     <Card className="p-4">
@@ -44,7 +49,7 @@ export default function FemPanel({
       </SectionTitle>
 
       <div className="mb-2 text-[11px] text-zinc-500">
-        {(fem.material.name as string) ?? "material"}
+        {(fem.material?.name as string) ?? "material"}
         {grid.pitch_mm != null && ` · voxel ${grid.pitch_mm} mm`}
         {grid.elements != null && ` · ${grid.elements} elements`}
       </div>
@@ -59,7 +64,7 @@ export default function FemPanel({
           </tr>
         </thead>
         <tbody>
-          {fem.cases.map((c) => (
+          {cases.map((c) => (
             <tr key={c.name} className="border-t border-zinc-800/60 text-zinc-300">
               <td className="py-1 pr-2">{c.name}</td>
               <td className="py-1 pr-2">{c.max_vm_mpa.toFixed(1)}</td>
@@ -72,13 +77,11 @@ export default function FemPanel({
         </tbody>
       </table>
 
-      {[...fem.warnings, ...fem.cases.flatMap((c) => c.warnings)].length > 0 && (
+      {warnings.length > 0 && (
         <div className="mt-2 space-y-0.5 text-[11px] text-amber-400/90">
-          {[...new Set([...fem.warnings, ...fem.cases.flatMap((c) => c.warnings)])].map(
-            (w, i) => (
-              <div key={i}>⚠ {w}</div>
-            )
-          )}
+          {[...new Set(warnings)].map((w, i) => (
+            <div key={i}>⚠ {w}</div>
+          ))}
         </div>
       )}
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from cadagent.cad.errordiag import diag_block, diagnose
+from cadx.cad.errordiag import diag_block, diagnose
 
 CODE = "line1\nline2\nline3\nline4\nline5\nline6\nline7\n"
 

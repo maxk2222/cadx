@@ -1,4 +1,4 @@
-from cadagent.cad.allowlist import apply_params_override, check_code, validate_overrides
+from cadx.cad.allowlist import apply_params_override, check_code, validate_overrides
 
 GOOD = """from build123d import *
 PARAMS = {"length": 10.0, "name": "a", "flag": True}

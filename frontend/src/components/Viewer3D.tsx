@@ -164,7 +164,7 @@ export default function Viewer3D({ url }: { url: string | null }) {
       key={key}
       title={title}
       onClick={onClick}
-      className={`bg-zinc-900/80 backdrop-blur ${active ? "text-blue-400" : ""}`}
+      className={`bg-zinc-900/80 backdrop-blur ${active ? "text-brand-400" : ""}`}
     >
       {icon}
     </IconBtn>

@@ -1,12 +1,12 @@
 # Evaluation
 
-`cadagent eval` (`make eval`) runs the benchmark suite through the real
+`cadx eval` (`make eval`) runs the benchmark suite through the real
 agent loop — INTAKE→PLAN→CODEGEN→EXECUTE→ANALYZE→CRITIQUE→FINALIZE — with an
 in-process executor, no queues required.
 
 ## Benchmarks
 
-`backend/cadagent/eval/benchmarks/*.json`:
+`backend/cadx/eval/benchmarks/*.json`:
 
 ```json
 {
@@ -27,7 +27,7 @@ in-process executor, no queues required.
   pipeline itself.
 - With `fake_mesh`: no mesh server is needed — a `FakeMeshClient` generates a
   deterministic parametric blob (knob-ish sphere + stem) at the given size.
-- `cadagent eval --mode mesh` runs only benchmarks with that `mode`.
+- `cadx eval --mode mesh` runs only benchmarks with that `mode`.
 - Without: the configured real provider/mesh server is used. Useful for
   measuring prompt/model quality.
 

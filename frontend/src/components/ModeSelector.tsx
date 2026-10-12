@@ -39,7 +39,7 @@ export default function ModeSelector({
               disabled={disabled}
               onClick={() => onChange(m.id)}
               className={`flex-1 rounded px-2 py-1 text-xs font-medium transition-colors ${
-                active ? "bg-blue-600 text-white" : "text-zinc-400 hover:text-zinc-200"
+                active ? "bg-brand-600 text-white" : "text-zinc-400 hover:text-zinc-200"
               } ${disabled ? "cursor-not-allowed opacity-40" : ""}`}
             >
               {m.label}

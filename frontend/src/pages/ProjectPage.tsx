@@ -17,9 +17,11 @@ import {
   Spinner,
   inputCls,
   useDebounced,
+  useToast,
 } from "../components/ui";
 import { api } from "../lib/api";
 import type { GenMode, RunOptions } from "../lib/types";
+import { useTitle } from "../lib/useTitle";
 
 const GEN_MODES: GenMode[] = ["auto", "cad", "mesh", "hybrid", "topopt"];
 
@@ -27,6 +29,7 @@ export default function ProjectPage() {
   const { id = "" } = useParams<{ id: string }>();
   const nav = useNavigate();
   const qc = useQueryClient();
+  const toast = useToast();
   const [prompt, setPrompt] = useState(
     () => localStorage.getItem(`draft:${id}`) ?? ""
   );
@@ -55,6 +58,7 @@ export default function ProjectPage() {
     queryKey: ["project", id],
     queryFn: () => api.getProject(id),
   });
+  useTitle(project.data?.name ?? "Project");
   const assets = useQuery({
     queryKey: ["assets", id],
     queryFn: () => api.listAssets(id),
@@ -90,15 +94,20 @@ export default function ProjectPage() {
       localStorage.removeItem(`draft:${id}`);
       nav(`/versions/${r.version_id}?job=${r.job_id}`);
     },
-    onError: (e) => setError(String(e)),
+    onError: (e) => {
+      setError(String(e));
+      toast(String(e), "error");
+    },
   });
 
   const del = useMutation({
     mutationFn: () => api.deleteProject(id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["projects"] });
+      toast("project deleted", "success");
       nav("/");
     },
+    onError: (e) => toast(String(e), "error"),
   });
 
   const toggle = (aid: string) =>
@@ -216,7 +225,7 @@ export default function ProjectPage() {
                       title={`${p.kind}: ${p.caption || p.filename || p.name}`}
                       className={`rounded-full border px-2.5 py-1 text-xs transition-colors ${
                         on
-                          ? "border-blue-600 bg-blue-950/60 text-blue-200"
+                          ? "border-brand-600 bg-brand-950/60 text-brand-200"
                           : "border-zinc-700 bg-zinc-900 text-zinc-400 hover:border-zinc-600 hover:text-zinc-300"
                       }`}
                       onClick={() =>
@@ -251,7 +260,7 @@ export default function ProjectPage() {
             right={
               selected.size > 0 && (
                 <button
-                  className="text-[11px] normal-case tracking-normal text-blue-400 hover:text-blue-300"
+                  className="text-[11px] normal-case tracking-normal text-brand-400 hover:text-brand-300"
                   onClick={() => setSelected(new Set())}
                 >
                   clear selection ({selected.size})

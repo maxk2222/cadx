@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from cadagent.cad.sandbox import run_user_code
+from cadx.cad.sandbox import run_user_code
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 
@@ -79,7 +79,7 @@ def test_load_reference(workdir, tmp_path):
     code = "PARAMS = {}\nref = load_reference('a1')\nresult = ref\n"
     out = run_user_code(code, workdir, references=[])  # missing ref -> error
     assert not out.ok
-    from cadagent.cad.sandbox import Reference
+    from cadx.cad.sandbox import Reference
 
     out2 = run_user_code(code, workdir, references=[Reference(asset_id="a1", path=str(ref))])
     assert out2.ok, (out2.error, out2.traceback)

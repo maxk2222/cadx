@@ -7,14 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from cadagent.agent.executor_client import InProcessExecutor
-from cadagent.agent.toolloop import run_session, tools_enabled
-from cadagent.agent.toolspecs import ToolSession
-from cadagent.agent.trace import MemoryTrace
-from cadagent.agent.types import AgentCtx
-from cadagent.db.models import ProjectSettings
-from cadagent.llm.fake import FakeLLM
-from cadagent.llm.schemas import PatchResponse
+from cadx.agent.executor_client import InProcessExecutor
+from cadx.agent.toolloop import run_session, tools_enabled
+from cadx.agent.toolspecs import ToolSession
+from cadx.agent.trace import MemoryTrace
+from cadx.agent.types import AgentCtx
+from cadx.db.models import ProjectSettings
+from cadx.llm.fake import FakeLLM
+from cadx.llm.schemas import PatchResponse
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 BOX_CODE = (FIXTURES / "simple_box.py").read_text()
@@ -143,7 +143,7 @@ async def test_info_session_final_answer():
     )
     llm.tools_mode = "auto"
     ctx = _ctx(llm)
-    from cadagent.llm.schemas import Critique
+    from cadx.llm.schemas import Critique
 
     session = ToolSession(ctx, kind="info")
     res = await run_session(
@@ -218,7 +218,7 @@ async def test_unlisted_tool_call_rejected():
     )
     llm.tools_mode = "auto"
     ctx = _ctx(llm)
-    from cadagent.llm.schemas import Critique
+    from cadx.llm.schemas import Critique
 
     session = ToolSession(ctx, kind="inspect", code=BOX_CODE)
     res = await run_session(
@@ -265,7 +265,7 @@ async def test_grace_turn_rescues_schema_answer():
     )
     llm.tools_mode = "auto"
     ctx = _ctx(llm)
-    from cadagent.llm.schemas import Critique
+    from cadx.llm.schemas import Critique
 
     session = ToolSession(ctx, kind="info")
     res = await run_session(
@@ -286,8 +286,8 @@ async def test_grace_turn_rescues_schema_answer():
 
 async def test_library_tools_search_and_attach():
     """search_library / library_part / attach_library_part on the user library."""
-    from cadagent.db.models import LibraryPart
-    from cadagent.db.session import create_all, session_scope
+    from cadx.db.models import LibraryPart
+    from cadx.db.session import create_all, session_scope
 
     await create_all()
     async with session_scope() as db:
@@ -355,8 +355,8 @@ async def test_library_tools_search_and_attach():
 
 async def test_library_attach_via_session():
     """An info session can pick a library part mid-conversation."""
-    from cadagent.db.models import LibraryPart
-    from cadagent.db.session import create_all, session_scope
+    from cadx.db.models import LibraryPart
+    from cadx.db.session import create_all, session_scope
 
     await create_all()
     part = LibraryPart(
@@ -401,8 +401,8 @@ async def test_inspect_session_cannot_attach():
 def test_result_messages_with_images():
     """`_images` in a tool result becomes a user message with image parts —
     OpenAI tool messages can't carry images."""
-    from cadagent.agent.toolloop import _result_messages
-    from cadagent.llm.tools import _mk_call
+    from cadx.agent.toolloop import _result_messages
+    from cadx.llm.tools import _mk_call
 
     img = FIXTURES / "images" / "knob.png"
     tc = _mk_call("call_1", "mesh_preview", "{}")
@@ -422,8 +422,8 @@ def test_result_messages_with_images():
 
 def test_result_messages_missing_image_skipped(tmp_path):
     """A missing image file must not break the message chain."""
-    from cadagent.agent.toolloop import _result_messages
-    from cadagent.llm.tools import _mk_call
+    from cadx.agent.toolloop import _result_messages
+    from cadx.llm.tools import _mk_call
 
     tc = _mk_call("call_2", "mesh_preview", "{}")
     res = {"ok": True, "_images": [str(tmp_path / "gone.png")]}
@@ -435,8 +435,8 @@ def test_result_messages_missing_image_skipped(tmp_path):
 def _mesh_wb(ctx: AgentCtx, tmp_path: Path, **kw):
     import trimesh
 
-    from cadagent.agent.mesh_tools import MeshWorkbench
-    from cadagent.cad.mesh_ops import MeshPostParams
+    from cadx.agent.mesh_tools import MeshWorkbench
+    from cadx.cad.mesh_ops import MeshPostParams
 
     raw = tmp_path / "raw.glb"
     trimesh.creation.box([10, 10, 10]).export(str(raw), file_type="glb")
@@ -521,7 +521,7 @@ async def test_mesh_session_preview(tmp_path, monkeypatch):
 
     async def fake_process(payload):
         captured.append(payload)
-        from cadagent import storage
+        from cadx import storage
 
         png = storage.data_root() / "prev_iso.png"
         png.write_bytes((FIXTURES / "images" / "knob.png").read_bytes())
@@ -567,3 +567,217 @@ async def test_mesh_session_regenerate_rejected_in_other_kinds():
     session = ToolSession(ctx, kind="edit", code=BOX_CODE)
     res = await session.execute("regenerate", {"subject_hint": "x"})
     assert res["ok"] is False  # regenerate isn't in the edit schema at all
+
+
+async def test_view_image_tool_returns_image():
+    """view_image resolves an image asset and returns it via _images."""
+    from cadx.agent.types import InputAsset
+
+    ctx = _ctx(FakeLLM([]))
+    asset = InputAsset(
+        asset_id="abcd1234-0000-0000-0000-000000000000",
+        kind="image",
+        path=FIXTURES / "images" / "knob.png",
+        filename="knob.png",
+        caption="front view",
+    )
+    ctx.assets.append(asset)
+    session = ToolSession(ctx, kind="inspect")
+    assert "view_image" in session.allowed_names()
+
+    res = await session.execute("view_image", {"asset_id": asset.asset_id})
+    assert res["ok"] and res["_images"] == [str(asset.path)]
+    assert res["caption"] == "front view"
+
+    # unique prefix also resolves
+    res = await session.execute("view_image", {"asset_id": "abcd1234"})
+    assert res["ok"]
+
+
+async def test_view_image_unknown_and_missing(tmp_path):
+    from cadx.agent.types import InputAsset
+
+    ctx = _ctx(FakeLLM([]))
+    ctx.assets.append(
+        InputAsset(
+            asset_id="a1b2",
+            kind="image",
+            path=tmp_path / "gone.png",
+            filename="gone.png",
+        )
+    )
+    session = ToolSession(ctx, kind="info")
+    res = await session.execute("view_image", {"asset_id": "nope"})
+    assert res["ok"] is False and res["available"] == ["a1b2"]
+    res = await session.execute("view_image", {"asset_id": "a1b2"})
+    assert res["ok"] is False and "missing" in res["error"]
+
+
+async def test_render_model_returns_contact_sheet():
+    """render_model executes the buffer and attaches the render via _images."""
+    from cadx import storage
+
+    llm = FakeLLM([_call("render_model"), _call("done")])
+    llm.tools_mode = "auto"
+    ctx = _ctx(llm)
+
+    sheet = storage.data_root() / "render_sheet_test.png"
+    sheet.write_bytes((FIXTURES / "images" / "knob.png").read_bytes())
+
+    async def verify_fn(code: str):
+        return {
+            "ok": True,
+            "analysis": {"bbox_size": [40, 20, 10], "is_valid": True, "watertight": True},
+            "contact_sheet": storage.relpath(sheet),
+        }
+
+    session = ToolSession(ctx, kind="edit", code=BOX_CODE, verify_fn=verify_fn)
+    assert "render_model" in session.allowed_names()
+    res = await run_session(ctx, "code", MESSAGES, session=session, max_calls=10, step="improve")
+    result = res.tool_log[0]["result"]
+    assert result["ok"] and result["bbox_size"] == [40, 20, 10]
+    assert result["_images"] == [str(sheet)]
+
+
+async def test_render_model_exec_failure_diag():
+    """A failed run returns the same diagnosis shape as verify."""
+
+    async def verify_fn(code: str):
+        return {"ok": False, "error": "NameError: nope"}
+
+    ctx = _ctx(FakeLLM([]))
+    session = ToolSession(ctx, kind="edit", code=BOX_CODE, verify_fn=verify_fn)
+    res = await session.execute("render_model", {})
+    assert res["ok"] is False and res["render"] == "execution failed"
+    assert res["error"]
+
+
+async def test_render_model_shares_verify_budget():
+    """render and verify draw on the same sandbox-execution budget."""
+    ctx = _ctx(FakeLLM([]))
+
+    async def verify_fn(code: str):
+        return {"ok": True, "analysis": {}}
+
+    session = ToolSession(ctx, kind="edit", code=BOX_CODE, verify_fn=verify_fn)
+    session.verify_left = 1
+    res = await session.execute("render_model", {})
+    assert res["ok"]
+    res = await session.execute("verify", {})
+    assert res["ok"] is False
+    # spent budget drops both tools from the recomputed schema
+    assert "render_model" not in session.allowed_names()
+    assert "verify" not in session.allowed_names()
+
+
+# --------------------------------------------------------------------------- #
+# optimize session (structural tools)                                          #
+
+_FEM_RES = {
+    "ok": True,
+    "fem": {
+        "material": {"name": "PLA"},
+        "grid": {"pitch": 1.5, "elements": 100, "dofs": 300},
+        "cases": [
+            {
+                "name": "c1",
+                "safety_factor": 3.0,
+                "max_vm_mpa": 10.0,
+                "max_disp_mm": 0.2,
+                "converged": True,
+                "warnings": [],
+            }
+        ],
+        "warnings": [],
+    },
+}
+_TOP_RES = {
+    "ok": True,
+    "topopt": {
+        "volfrac_target": 0.4,
+        "volfrac_achieved": 0.41,
+        "iterations": 20,
+        "converged": True,
+        "warnings": [],
+    },
+    "fem": {"cases": [{"name": "c1", "safety_factor": 1.8}], "warnings": []},
+    "_iteration": 7,
+}
+_LC = {
+    "name": "c1",
+    "fixed": [{"kind": "face", "axis": "-x"}],
+    "loads": [{"region": {"kind": "face", "axis": "+x"}, "force_n": [0, 0, -10]}],
+}
+
+
+async def test_optimize_session_fem_topopt_done():
+    """analyze_fem + topopt_run + done(run_index) — compact metrics, run stored."""
+
+    async def fem_fn(a):
+        return _FEM_RES
+
+    async def top_fn(a):
+        return _TOP_RES
+
+    llm = FakeLLM(
+        [
+            _call("analyze_fem", load_cases=[_LC]),
+            _call("topopt_run", target_volume_fraction=0.4),
+            _call("done", run_index=0, reasoning="meets SF"),
+        ]
+    )
+    ctx = _ctx(llm)
+    session = ToolSession(ctx, kind="optimize", fem_fn=fem_fn, topopt_fn=top_fn)
+    res = await run_session(ctx, "vision", MESSAGES, session=session, max_calls=10, step="optimize")
+    assert res.submitted == {"chosen_run": 0, "reasoning": "meets SF"}
+    assert len(session.struct_runs) == 1
+    assert session.struct_runs[0]["iteration"] == 7
+    fem_log = next(t for t in session.tool_log if t["name"] == "analyze_fem")
+    assert fem_log["result"]["cases"][0]["safety_factor"] == 3.0
+    top_log = next(t for t in session.tool_log if t["name"] == "topopt_run")
+    assert top_log["result"]["run_index"] == 0
+    assert top_log["result"]["worst_safety_factor"] == 1.8
+
+
+async def test_optimize_done_invalid_index_rejected():
+    """done(run_index) out of range errors; -1 declines cleanly."""
+    ctx = _ctx(FakeLLM([]))
+    session = ToolSession(ctx, kind="optimize")
+    res = await session.execute("done", {"run_index": 5})
+    assert res["ok"] is False
+    res = await session.execute("done", {"run_index": -1, "reasoning": "base is fine"})
+    assert res["ok"] and session.submitted["chosen_run"] == -1
+
+
+async def test_optimize_budget_drops_tools():
+    """Exhausted budgets remove the tools from the schema."""
+    from cadx.runtime_config import RuntimeSettings
+
+    async def top_fn(a):
+        return _TOP_RES
+
+    ctx = _ctx(FakeLLM([]))
+    ctx.runtime_settings = RuntimeSettings(agent_topopt_max_runs=1, agent_fem_max_runs=0)
+    session = ToolSession(ctx, kind="optimize", topopt_fn=top_fn)
+    names = session.allowed_names()
+    assert "topopt_run" in names and "analyze_fem" not in names
+    res = await session.execute("topopt_run", {})
+    assert res["ok"] and res["topopt_calls_left"] == 0
+    assert "topopt_run" not in session.allowed_names()
+    res = await session.execute("topopt_run", {})
+    assert res["ok"] is False
+
+
+async def test_optimize_fem_requires_cases():
+    """analyze_fem without load_cases fails before touching the executor."""
+    called = False
+
+    async def fem_fn(a):
+        nonlocal called
+        called = True
+        return _FEM_RES
+
+    ctx = _ctx(FakeLLM([]))
+    session = ToolSession(ctx, kind="optimize", fem_fn=fem_fn)
+    res = await session.execute("analyze_fem", {})
+    assert res["ok"] is False and not called

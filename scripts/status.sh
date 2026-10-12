@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Show status of the cadagent stack + mesh-server.
+# Show status of the CADX stack + mesh-server.
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 source scripts/lib/gpu_detect.sh

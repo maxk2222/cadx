@@ -1,5 +1,6 @@
-import { Check, CircleDot, XCircle } from "lucide-react";
+import { Check, CircleDot, Flag, RotateCcw, XCircle } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { api, jobEventsUrl } from "../lib/api";
 import { fmtDuration } from "../lib/format";
 import type { Job } from "../lib/types";
@@ -20,7 +21,11 @@ const STEP_LABEL: Record<string, string> = {
   meshgen: "mesh gen",
   orient: "orient",
   meshprocess: "mesh process",
+  meshrefine: "mesh refine",
   codegen: "codegen",
+  improve: "improve",
+  autofix: "autofix",
+  fem: "fem",
   repair: "repair",
   execute: "build",
   critique: "critique",
@@ -56,7 +61,7 @@ function PipelineChips({ events, done }: { events: Event[]; done: boolean }) {
             key={`${s.step}-${i}`}
             className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium ${
               active
-                ? "bg-blue-900/60 text-blue-300"
+                ? "bg-brand-900/60 text-brand-300"
                 : "bg-zinc-800 text-zinc-400"
             }`}
           >
@@ -93,7 +98,9 @@ export default function JobLog({
   const [job, setJob] = useState<Job | null>(null);
   const [progress, setProgress] = useState(0);
   const [answers, setAnswers] = useState<string[]>([]);
+  const [restarting, setRestarting] = useState(false);
   const [, setTick] = useState(0);
+  const nav = useNavigate();
   const { boxRef: logBoxRef, onScroll } = useStickyBottom(events);
 
   useEffect(() => {
@@ -245,18 +252,48 @@ export default function JobLog({
           {job ? (
             <>
               {job.type} · {job.status}
+              {job.step ? ` · ${stepLabel(job.step)}${job.iteration ? ` #${job.iteration}` : ""}` : ""}
               {job.cancel_requested ? " · cancel requested" : ""}
+              {job.finish_requested ? " · finishing early" : ""}
             </>
           ) : (
             ""
           )}
         </span>
         {running && job && (
+          <span className="flex items-center gap-2">
+            {job.status === "running" && !job.finish_requested && (
+              <button
+                className="flex items-center gap-1 rounded px-1.5 py-0.5 text-amber-400 hover:bg-amber-950/50"
+                title="stop after this iteration and keep the best result so far"
+                onClick={() => api.finishJob(job.id).then(() => api.getJob(job.id)).then(setJob)}
+              >
+                <Flag className="h-3 w-3" /> finish &amp; keep best
+              </button>
+            )}
+            <button
+              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-red-400 hover:bg-red-950/50"
+              title="abort the job — discards the result"
+              onClick={() => api.cancelJob(job.id).then(() => api.getJob(job.id)).then(setJob)}
+            >
+              <XCircle className="h-3 w-3" /> cancel job
+            </button>
+          </span>
+        )}
+        {isDone && job && (
           <button
-            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-red-400 hover:bg-red-950/50"
-            onClick={() => api.cancelJob(job.id).then(() => api.getJob(job.id)).then(setJob)}
+            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-brand-400 hover:bg-brand-950/50 disabled:opacity-40"
+            title="re-run this job with the same inputs (new version)"
+            disabled={restarting}
+            onClick={() => {
+              setRestarting(true);
+              api
+                .restartJob(job.id)
+                .then((r) => nav(`/versions/${r.version_id}?job=${r.job_id}`))
+                .catch(() => setRestarting(false));
+            }}
           >
-            <XCircle className="h-3 w-3" /> cancel job
+            <RotateCcw className="h-3 w-3" /> {restarting ? "restarting…" : "restart"}
           </button>
         )}
       </div>

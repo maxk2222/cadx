@@ -379,7 +379,7 @@ export default function ImageEditorModal({
   const toolBtn = (t: Tool, icon: React.ReactNode, label: string) => (
     <button
       className={`flex items-center gap-1.5 rounded px-2.5 py-1.5 text-xs ${
-        tool === t ? "bg-blue-600 text-white" : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
+        tool === t ? "bg-brand-600 text-white" : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
       }`}
       onClick={() => {
         setTool(t);

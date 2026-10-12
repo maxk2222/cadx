@@ -8,14 +8,14 @@ from pathlib import Path
 
 import pytest
 
-from cadagent import storage
-from cadagent.agent.executor_client import InProcessExecutor
-from cadagent.agent.orchestrator import build_feedback, compare_dims, run_generation
-from cadagent.agent.trace import MemoryTrace
-from cadagent.agent.types import AgentCtx, ParentContext
-from cadagent.db.models import ProjectSettings
-from cadagent.llm.fake import FakeLLM
-from cadagent.llm.schemas import PartSpec
+from cadx import storage
+from cadx.agent.executor_client import InProcessExecutor
+from cadx.agent.orchestrator import build_feedback, compare_dims, run_generation
+from cadx.agent.trace import MemoryTrace
+from cadx.agent.types import AgentCtx, ParentContext
+from cadx.db.models import ProjectSettings
+from cadx.llm.fake import FakeLLM
+from cadx.llm.schemas import PartSpec
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 BOX_CODE = (FIXTURES / "simple_box.py").read_text()
@@ -105,7 +105,7 @@ def test_compare_dims_mismatch_and_swap():
 
 def test_build_feedback_includes_major_and_dims():
     crit_json = dict(FAIL_CRITIQUE)
-    from cadagent.llm.schemas import Critique
+    from cadx.llm.schemas import Critique
 
     fb = build_feedback(Critique(**crit_json), ["length/X: spec 40 vs 41"], None)
     assert "length/X" in fb

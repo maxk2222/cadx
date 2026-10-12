@@ -200,7 +200,7 @@ export default function OptimizeDialog({
             min={10}
             max={90}
             step={5}
-            className="mt-2 w-full accent-blue-500"
+            className="mt-2 w-full accent-brand-500"
             value={Math.round(volfrac * 100)}
             onChange={(e) => setVolfrac(Number(e.target.value) / 100)}
           />

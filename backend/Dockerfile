@@ -16,19 +16,19 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 COPY alembic.ini ./
 COPY alembic ./alembic
-COPY cadagent ./cadagent
+COPY cadx ./cadx
 RUN uv sync --frozen --no-dev
 
 ENV PATH="/app/.venv/bin:$PATH"
 
 FROM base AS api
-CMD ["sh", "-c", "alembic upgrade head && uvicorn cadagent.main:app --host 0.0.0.0 --port 8000"]
+CMD ["sh", "-c", "alembic upgrade head && uvicorn cadx.main:app --host 0.0.0.0 --port 8000"]
 
 FROM base AS worker
-CMD ["arq", "cadagent.queue.AgentWorkerSettings"]
+CMD ["arq", "cadx.queue.AgentWorkerSettings"]
 
 FROM base AS executor
 RUN groupadd -r cad && useradd -r -g cad -u 1000 -m cad \
     && mkdir -p /data && chown -R cad:cad /data
 USER cad
-CMD ["arq", "cadagent.queue.CadWorkerSettings"]
+CMD ["arq", "cadx.queue.CadWorkerSettings"]

@@ -233,7 +233,7 @@ wheels = [
 ]
 
 [[package]]
-name = "cadagent"
+name = "cadx"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

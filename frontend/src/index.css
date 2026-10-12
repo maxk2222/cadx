@@ -32,6 +32,6 @@ body {
 
 @layer utilities {
   .focus-ring {
-    @apply outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60;
+    @apply outline-none focus-visible:ring-2 focus-visible:ring-brand-500/60;
   }
 }

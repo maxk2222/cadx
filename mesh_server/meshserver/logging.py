@@ -1,4 +1,4 @@
-"""Minimal structlog setup (mirrors cadagent style)."""
+"""Minimal structlog setup (mirrors CADX style)."""
 
 from __future__ import annotations
 

@@ -7,6 +7,7 @@ import CodeView from "../components/CodeView";
 import DfmPanel from "../components/DfmPanel";
 import ExportPanel from "../components/ExportPanel";
 import FemPanel from "../components/FemPanel";
+import TopOptPanel from "../components/TopOptPanel";
 import JobLog from "../components/JobLog";
 import ModeSelector from "../components/ModeSelector";
 import OptimizeDialog from "../components/OptimizeDialog";
@@ -26,13 +27,16 @@ import {
   Crumbs,
   EmptyState,
   SectionTitle,
+  Skeleton,
   Spinner,
   Tabs,
   inputCls,
+  useToast,
 } from "../components/ui";
 import { api } from "../lib/api";
 import { fmtDuration, fmtTokens } from "../lib/format";
 import type { GenMode, Job, RunOptions } from "../lib/types";
+import { useTitle } from "../lib/useTitle";
 
 type Tab = "overview" | "spec" | "code" | "quality" | "files";
 
@@ -100,11 +104,37 @@ function SaveToLibrary({
   );
 }
 
+/** Provisional render overlay while the job runs — the executor writes
+ *  renders per iteration; `?t=` re-requests on each version poll and the
+ *  browser keeps the last frame while the next image loads. */
+function LivePreview({ versionId, tick }: { versionId: string; tick: number }) {
+  const [ok, setOk] = useState(false);
+  return (
+    <>
+      <img
+        src={`${api.previewUrl(versionId)}?t=${tick}`}
+        alt="live render preview"
+        className={`absolute inset-0 h-full w-full bg-zinc-950 object-contain transition-opacity duration-300 ${
+          ok ? "opacity-100" : "opacity-0"
+        }`}
+        onLoad={() => setOk(true)}
+        onError={() => setOk(false)}
+      />
+      {ok && (
+        <span className="absolute left-2 top-2 flex items-center gap-1.5 rounded bg-black/70 px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-brand-300">
+          <Spinner className="h-3 w-3" /> live preview
+        </span>
+      )}
+    </>
+  );
+}
+
 export default function VersionPage() {
   const { id = "" } = useParams<{ id: string }>();
   const [sp] = useSearchParams();
   const nav = useNavigate();
   const qc = useQueryClient();
+  const toast = useToast();
   const [tab, setTab] = useState<Tab>("overview");
   const [jobId, setJobId] = useState<string | null>(sp.get("job"));
   const [editPrompt, setEditPrompt] = useState("");
@@ -154,6 +184,9 @@ export default function VersionPage() {
     queryKey: ["jobs", id],
     queryFn: () => api.listJobs(id),
   });
+  useTitle(
+    version.data ? `v${version.data.number} · ${project.data?.name ?? ""}` : "Version"
+  );
 
   // pick latest job once loaded (jobs are sorted newest-first)
   useEffect(() => {
@@ -196,6 +229,7 @@ export default function VersionPage() {
       setOptimizeOpen(false);
       nav(`/versions/${r.version_id}?job=${r.job_id}`);
     },
+    onError: (e) => toast(String(e), "error"),
   });
 
   const del = useMutation({
@@ -204,6 +238,7 @@ export default function VersionPage() {
       qc.invalidateQueries({ queryKey: ["versions", v?.project_id] });
       nav(`/projects/${v?.project_id}`);
     },
+    onError: (e) => toast(String(e), "error"),
   });
 
   const uploadEditAssets = async (files: FileList | null) => {
@@ -215,8 +250,17 @@ export default function VersionPage() {
 
   if (version.isLoading)
     return (
-      <div className="flex justify-center py-24 text-zinc-500">
-        <Spinner className="h-6 w-6" />
+      <div className="mx-auto grid max-w-7xl grid-cols-1 gap-5 p-6 xl:grid-cols-4">
+        <div className="space-y-4 xl:col-span-3">
+          <Skeleton className="h-4 w-56" />
+          <Skeleton className="h-8 w-80" />
+          <Skeleton className="h-10 w-full" />
+          <Skeleton className="h-[460px]" />
+        </div>
+        <div className="space-y-4">
+          <Skeleton className="h-64" />
+          <Skeleton className="h-44" />
+        </div>
       </div>
     );
   if (!v)
@@ -309,7 +353,7 @@ export default function VersionPage() {
         )}
 
         {/* metrics strip */}
-        <div className="mb-4 flex flex-wrap gap-1.5 text-xs">
+        <div className="mb-4 flex flex-wrap gap-1.5 text-xs tabular-nums">
           <Chip title="agent iterations">
             <Layers className="h-3 w-3" /> {v.iterations} iteration
             {v.iterations === 1 ? "" : "s"}
@@ -329,7 +373,7 @@ export default function VersionPage() {
               <TriangleAlert className="h-3 w-3" /> {dfmCount} DfM
             </Chip>
           )}
-          {v.fem && (
+          {!!v.fem?.cases?.length && (
             <Chip
               tone={
                 Math.min(
@@ -373,8 +417,11 @@ export default function VersionPage() {
 
         {tab === "overview" && (
           <>
-            <div className="mb-4 h-[460px] overflow-hidden rounded-lg border border-zinc-800">
+            <div className="relative mb-4 h-[460px] overflow-hidden rounded-lg border border-zinc-800">
               <Viewer3D url={glb ? glb.url : null} />
+              {active && !glb && (
+                <LivePreview versionId={v.id} tick={version.dataUpdatedAt} />
+              )}
             </div>
 
             {v.mesh && (
@@ -451,7 +498,10 @@ export default function VersionPage() {
 
         {tab === "quality" && (
           <div className="flex flex-col gap-4">
-            {v.fem && <FemPanel fem={v.fem} artifacts={v.artifacts} />}
+            {!!v.mesh?.topopt && (
+              <TopOptPanel topopt={v.mesh.topopt as never} />
+            )}
+            {!!v.fem?.cases?.length && <FemPanel fem={v.fem} artifacts={v.artifacts} />}
             <Card className="p-4">
               <SectionTitle>Manufacturability (DfM)</SectionTitle>
               {v.dfm ? (
@@ -617,7 +667,7 @@ export default function VersionPage() {
                       })
                     }
                     className={`h-10 w-10 overflow-hidden rounded border-2 ${
-                      editAssets.has(as.id) ? "border-blue-500" : "border-zinc-700"
+                      editAssets.has(as.id) ? "border-brand-500" : "border-zinc-700"
                     }`}
                     title={as.filename}
                   >
@@ -661,7 +711,7 @@ export default function VersionPage() {
                         title={`${p.kind}: ${p.caption || p.filename || p.name}`}
                         className={`rounded-full border px-2.5 py-1 text-xs transition-colors ${
                           on
-                            ? "border-blue-600 bg-blue-950/60 text-blue-200"
+                            ? "border-brand-600 bg-brand-950/60 text-brand-200"
                             : "border-zinc-700 bg-zinc-900 text-zinc-400 hover:border-zinc-600 hover:text-zinc-300"
                         }`}
                         onClick={() =>
@@ -686,7 +736,7 @@ export default function VersionPage() {
                   type="checkbox"
                   checked={regenMesh}
                   onChange={(e) => setRegenMesh(e.target.checked)}
-                  className="accent-blue-500"
+                  className="accent-brand-500"
                 />
                 regenerate the organic base mesh (otherwise the parent mesh is reused)
               </label>
@@ -740,11 +790,6 @@ export default function VersionPage() {
         initial={v.spec?.load_cases}
         onSubmit={(body) => optimize.mutate(body)}
       />
-      {optimize.isError && (
-        <div className="fixed bottom-4 right-4 rounded-lg border border-red-800 bg-red-950/80 px-3 py-2 text-xs text-red-300">
-          {String(optimize.error)}
-        </div>
-      )}
     </div>
   );
 }

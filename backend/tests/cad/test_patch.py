@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from cadagent.cad.patch import apply_edits, apply_patch, diff_summary
-from cadagent.llm.schemas import PatchEdit
+from cadx.cad.patch import apply_edits, apply_patch, diff_summary
+from cadx.llm.schemas import PatchEdit
 
 CODE = """from build123d import *
 

@@ -12,6 +12,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   Btn,
   Card,
@@ -24,6 +25,7 @@ import {
 } from "../components/ui";
 import { api } from "../lib/api";
 import type { Settings, SettingsUpdate } from "../lib/types";
+import { useTitle } from "../lib/useTitle";
 
 interface FieldSpec {
   key: keyof Settings;
@@ -54,6 +56,8 @@ const NUM_FIELDS = new Set<string>([
   "agent_mesh_max_ops",
   "agent_mesh_preview_max",
   "agent_mesh_refine_rounds",
+  "agent_mesh_hard_fail_score",
+  "agent_mesh_hard_fail_limit",
   "fem_voxel_mm",
   "fem_max_elements",
   "fem_timeout_s",
@@ -102,6 +106,8 @@ const FIELD_BOUNDS: Record<
   agent_mesh_max_ops: { min: 1, max: 200, int: true },
   agent_mesh_preview_max: { min: 0, max: 20, int: true },
   agent_mesh_refine_rounds: { min: 0, max: 10, int: true },
+  agent_mesh_hard_fail_score: { min: 0, max: 100, int: true },
+  agent_mesh_hard_fail_limit: { min: 1, max: 20, int: true },
   fem_voxel_mm: { min: 0, max: 100, exclusiveMin: true },
   fem_max_elements: { min: 1, max: 5_000_000, int: true },
   fem_timeout_s: { min: 1, max: 86_400, int: true },
@@ -126,11 +132,24 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "library", label: "Library" },
 ];
 
+const TAB_IDS = new Set<string>(TABS.map((t) => t.id));
+
 export default function SettingsPage() {
+  useTitle("Settings");
   const qc = useQueryClient();
-  const [tab, setTab] = useState<TabId>(
-    () => (localStorage.getItem("settings.tab") as TabId) || "provider",
-  );
+  const [sp, setSp] = useSearchParams();
+  const [tab, setTab] = useState<TabId>(() => {
+    const q = sp.get("tab") ?? "";
+    return TAB_IDS.has(q)
+      ? (q as TabId)
+      : (localStorage.getItem("settings.tab") as TabId) || "provider";
+  });
+
+  // deep links like /settings?tab=library while already on the page
+  useEffect(() => {
+    const q = sp.get("tab") ?? "";
+    if (TAB_IDS.has(q) && q !== tab) setTab(q as TabId);
+  }, [sp]);
   const [form, setForm] = useState<Record<string, string> | null>(null);
   const [initial, setInitial] = useState<Record<string, string> | null>(null);
   const [apiKey, setApiKey] = useState("");
@@ -344,6 +363,7 @@ export default function SettingsPage() {
             onClick={() => {
               setTab(tb.id);
               localStorage.setItem("settings.tab", tb.id);
+              setSp({ tab: tb.id }, { replace: true });
             }}
             className={`whitespace-nowrap rounded-md px-3 py-1.5 text-sm transition-colors ${
               tab === tb.id
@@ -518,6 +538,18 @@ export default function SettingsPage() {
         {field({ key: "agent_mesh_max_ops", label: "Max ops per mesh session", kind: "number" })}
         {field({ key: "agent_mesh_preview_max", label: "Preview renders per session", kind: "number" })}
         {field({ key: "agent_mesh_refine_rounds", label: "Post-critique repair rounds", kind: "number" })}
+        {field({
+          key: "agent_mesh_hard_fail_score",
+          label: "Mesh hard-fail score",
+          hint: "a generation scoring ≤ this with major issues counts as a hard fail",
+          kind: "number",
+        })}
+        {field({
+          key: "agent_mesh_hard_fail_limit",
+          label: "Mesh hard-fail limit",
+          hint: "after this many consecutive hard fails the mesh loop stops (CAD fallback for dimensioned parts)",
+          kind: "number",
+        })}
       </Card>
       )}
 

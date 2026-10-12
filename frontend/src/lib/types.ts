@@ -46,6 +46,9 @@ export interface RunOptions {
   fem_note?: string;
   topopt?: boolean;
   topopt_volfrac?: number;
+  max_iterations?: number;
+  max_repairs?: number;
+  pass_score?: number;
 }
 
 export interface VersionSummary {
@@ -251,6 +254,7 @@ export interface Job {
   log: string;
   questions: { question: string; why_it_matters: string; default_assumption: string; blocking: boolean }[] | null;
   cancel_requested: boolean;
+  finish_requested: boolean;
   started_at: string | null;
   finished_at: string | null;
   created_at: string;
@@ -293,6 +297,8 @@ export interface Settings {
   agent_mesh_max_ops: number;
   agent_mesh_preview_max: number;
   agent_mesh_refine_rounds: number;
+  agent_mesh_hard_fail_score: number;
+  agent_mesh_hard_fail_limit: number;
   fem_voxel_mm: number;
   fem_max_elements: number;
   fem_timeout_s: number;

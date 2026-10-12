@@ -28,8 +28,9 @@ mlx = [
 # Apple Silicon: official Hunyuan3D-2 torch pipeline on MPS (install repo via scripts/install_hunyuan_torch.sh)
 mps = [
     "torch>=2.3",
-    "diffusers>=0.30",
-    "transformers>=4.45",
+    "diffusers>=0.30,<0.32",
+    "transformers>=4.45,<5",
+    "huggingface_hub<1",
     "accelerate>=0.33",
     "rembg>=2.0.57",
     "onnxruntime>=1.18",
@@ -37,8 +38,9 @@ mps = [
 # NVIDIA: TRELLIS.2 + TripoSG (heavy deps are installed by Dockerfile.cuda / setup scripts)
 cuda = [
     "torch>=2.4",
-    "diffusers>=0.30",
-    "transformers>=4.45",
+    "diffusers>=0.30,<0.32",
+    "transformers>=4.45,<5",
+    "huggingface_hub<1",
     "accelerate>=0.33",
     "rembg>=2.0.57",
 ]

@@ -10,17 +10,17 @@ import numpy as np
 import pytest
 import trimesh
 
-from cadagent.cad.fem.analyze import FemReport, run_fem, run_fem_domain
-from cadagent.cad.fem.extract import _regularize_mask, _surface_mesh, density_to_mesh
-from cadagent.cad.fem.regions import (
+from cadx.cad.fem.analyze import FemReport, run_fem, run_fem_domain
+from cadx.cad.fem.extract import _regularize_mask, _surface_mesh, density_to_mesh
+from cadx.cad.fem.regions import (
     region_cell_mask,
     region_node_mask,
     resolve_case,
 )
-from cadagent.cad.fem.solver import solve
-from cadagent.cad.fem.topopt import TopOptParams, passive_solid_mask, simp
-from cadagent.cad.fem.voxelize import VoxelDomain, voxelize
-from cadagent.llm.schemas import LoadCase, LoadSpec, RegionSpec
+from cadx.cad.fem.solver import solve
+from cadx.cad.fem.topopt import TopOptParams, passive_solid_mask, simp
+from cadx.cad.fem.voxelize import VoxelDomain, voxelize
+from cadx.llm.schemas import LoadCase, LoadSpec, RegionSpec
 
 E_PLA = 3500.0
 NU = 0.36
@@ -90,6 +90,16 @@ def test_region_face_masks() -> None:
     assert neg[0].all() and pos[-1].all()
 
 
+def test_region_face_masks_padded_grid() -> None:
+    """When the bbox is not a multiple of the pitch, voxelize pads the high
+    side of each axis with void cells — face regions must anchor at the solid
+    extent, not the grid edge."""
+    dom = voxelize(_box_mesh(61.0, 25.0, 13.0), 2.0, 150_000)
+    assert not dom.solid[-1].any()  # padded high-x layer is void
+    for ax in ("+x", "-x", "+y", "-y", "+z", "-z"):
+        assert region_cell_mask(dom, RegionSpec(kind="face", axis=ax)).sum() > 0, ax
+
+
 def test_region_all_and_box() -> None:
     dom = voxelize(_box_mesh(), 2.0, 150_000)
     allm = region_cell_mask(dom, RegionSpec(kind="all"))
@@ -108,6 +118,70 @@ def test_resolve_case_forces() -> None:
     assert fixed.sum() > 0
     assert np.isclose(F.sum(), -100.0, atol=1e-6)
     assert w == []
+
+
+def test_region_surface_follows_curved_shape() -> None:
+    """'surface +z' on a hemisphere must select cells BELOW the bbox top —
+    the actual upper skin, not a global bbox layer."""
+    m = trimesh.creation.icosphere(subdivisions=2, radius=15)
+    half = m.slice_plane(plane_origin=[0, 0, 0], plane_normal=[0, 0, 1], cap=True)
+    half.apply_translation([0, 0, 0])
+    dom = voxelize(half, 1.5, 150_000)
+    cells = region_cell_mask(dom, RegionSpec(kind="surface", axis="+z", margin_mm=1.5))
+    assert cells.any()
+    z_idxs = np.nonzero(cells.any(axis=(0, 1)))[0]
+    # cells on the sloping flanks sit well below the top of the dome
+    assert z_idxs.min() < 0.6 * (dom.dims[2] - 1)
+    # face is an alias with identical coverage now
+    face = region_cell_mask(dom, RegionSpec(kind="face", axis="+z", margin_mm=1.5))
+    assert (cells == face).all()
+
+
+def test_region_area_selects_xy_subregion() -> None:
+    dom = voxelize(_box_mesh(), 2.0, 150_000)  # 60x24x12 centred, x in [-30,30]
+    cells = region_cell_mask(
+        dom, RegionSpec(kind="area", axis="+z", x_range=[0.0, 30.0], margin_mm=1.0)
+    )
+    assert cells.any()
+    centers = dom.element_centers().reshape((*dom.dims, 3))
+    xs = centers[..., 0][cells]
+    assert xs.min() >= -dom.pitch  # only the +x half (voxel tolerance)
+    xs_neg = centers[..., 0][~cells & dom.solid]
+    assert xs_neg.min() < 0  # the -x half is not selected
+    # polygon triangle selects only inside vertices
+    tri = [[0.0, -20.0], [30.0, -20.0], [30.0, 20.0]]
+    pcells = region_cell_mask(dom, RegionSpec(kind="area", polygon=tri, margin_mm=1.0))
+    assert pcells.any()
+    assert centers[..., 0][pcells].min() > -dom.pitch
+
+
+def test_region_hole_anchor() -> None:
+    dom = voxelize(_box_mesh(), 2.0, 150_000)
+    anchors = [{"x": 10.0, "y": 0.0, "dia": 4.0}]
+    cells = region_cell_mask(dom, RegionSpec(kind="hole", hole_index=1, margin_mm=2.0), anchors)
+    assert cells.any()
+    centers = dom.element_centers().reshape((*dom.dims, 3))
+    sel = centers[cells]
+    assert np.linalg.norm(sel[:, :2] - [10.0, 0.0], axis=1).max() < 2.0 + 2.0 + dom.pitch
+    # out-of-range index selects nothing
+    empty = region_cell_mask(dom, RegionSpec(kind="hole", hole_index=9), anchors)
+    assert not empty.any()
+
+
+def test_pressure_force_total_matches_area() -> None:
+    """1 MPa on the +z face of a 40x20 plate = 800 N distributed over nodes."""
+    mesh = _box_mesh(40.0, 20.0, 4.0)
+    dom = voxelize(mesh, 2.0, 150_000)
+    case = LoadCase(
+        name="press",
+        fixed=[RegionSpec(kind="surface", axis="-z")],
+        loads=[LoadSpec(region=RegionSpec(kind="surface", axis="+z"), pressure_mpa=1.0)],
+    )
+    fixed, F, w = resolve_case(dom, case)
+    assert fixed.any()
+    total = F.reshape(-1, 3).sum(axis=0)
+    assert total[2] == pytest.approx(-800.0, rel=0.05)
+    assert any("800" in x or "MPa" in x for x in w)
 
 
 def test_resolve_case_empty_region_warns() -> None:
@@ -226,7 +300,7 @@ def test_regularize_removes_diagonal_edges() -> None:
 
 
 def test_run_fem_pipeline(tmp_path: Path) -> None:
-    from cadagent.cad.engine import run_fem_pipeline
+    from cadx.cad.engine import run_fem_pipeline
 
     src = tmp_path / "b.stl"
     _box_mesh().export(str(src))
@@ -245,7 +319,7 @@ def test_run_fem_pipeline(tmp_path: Path) -> None:
 
 
 def test_run_topopt_pipeline(tmp_path: Path) -> None:
-    from cadagent.cad.engine import run_topopt_pipeline
+    from cadx.cad.engine import run_topopt_pipeline
 
     src = tmp_path / "b.stl"
     _box_mesh().export(str(src))
@@ -261,6 +335,11 @@ def test_run_topopt_pipeline(tmp_path: Path) -> None:
     assert res.topopt["converged"] or res.topopt["iterations"] > 0
     assert 0.3 <= res.topopt["volfrac_achieved"] <= 0.5
     assert res.fem["cases"][0]["safety_factor"] is not None
+    # export verification + printability metrics
+    assert res.fem_export
+    assert res.topopt["sf_export"] is not None
+    assert res.topopt["min_member_mm"] > 0
+    assert 0.0 <= res.topopt["thin_fraction"] <= 1.0
     stl = tmp_path / "o" / "_run" / "model.stl"
     assert stl.exists()
     m = trimesh.load(str(stl), force="mesh", process=False)
@@ -268,6 +347,48 @@ def test_run_topopt_pipeline(tmp_path: Path) -> None:
     assert m.is_watertight
     assert (tmp_path / "o" / "topopt" / "density.npz").exists()
     assert (tmp_path / "o" / "fem" / "report.json").exists()
+    assert (tmp_path / "o" / "fem" / "report_export.json").exists()
+
+
+def test_run_topopt_pipeline_retries_on_low_sf(tmp_path: Path) -> None:
+    """sf_export below target → automatic retry at volfrac +0.1."""
+    from cadx.cad.engine import run_topopt_pipeline
+
+    src = tmp_path / "b.stl"
+    _box_mesh().export(str(src))
+    res = run_topopt_pipeline(
+        mesh_path=src,
+        out_dir=tmp_path / "o",
+        load_cases=[_cantilever_case().model_dump()],
+        optimize={"target_volume_fraction": 0.4, "safety_factor_min": 1e6},
+        material="pla",
+        voxel_mm=3.0,
+    )
+    assert res.ok, res.error
+    assert "retry" in res.topopt
+    assert res.topopt["retry"]["volfrac_second"] == pytest.approx(0.5)
+
+
+def test_run_fem_pipeline_preview_only(tmp_path: Path) -> None:
+    from cadx.cad.engine import run_fem_pipeline
+
+    src = tmp_path / "b.stl"
+    _box_mesh().export(str(src))
+    out = run_fem_pipeline(
+        mesh_path=src,
+        out_dir=tmp_path / "o",
+        load_cases=[_cantilever_case().model_dump()],
+        voxel_mm=3.0,
+        preview_only=True,
+    )
+    assert out["ok"]
+    cases = out["preview"]["cases"]
+    assert cases[0]["fixed_nodes"] > 0
+    assert cases[0]["loaded_nodes"] > 0
+    assert cases[0]["total_force_n"] == pytest.approx(100.0)
+    if out["preview"]["regions_png"]:  # requires pyvista
+        assert (tmp_path / "o" / "fem" / out["preview"]["regions_png"][0]).exists()
+        assert (tmp_path / "o" / "fem" / out["preview"]["regions_png"][0]).stat().st_size > 5000
 
 
 def test_run_fem_domain_matches_mask(simp_setup) -> None:

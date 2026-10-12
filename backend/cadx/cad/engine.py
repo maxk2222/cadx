@@ -1,0 +1,955 @@
+"""Pipeline executed inside the cad-executor: sandbox -> analysis -> renders -> DfM -> exports.
+
+Pure function (no DB, no queue) so it can be reused by the arq task, the CLI and tests.
+All inputs are file paths + plain settings dicts; output is an ExecResult.
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+import time
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+from build123d import import_brep
+
+from cadx.cad.analysis import Analysis, analyze
+from cadx.cad.contact_sheet import make_contact_sheet
+from cadx.cad.dfm import DfmReport
+from cadx.cad.dfm.cnc import cnc_checks, cnc_mesh_checks
+from cadx.cad.dfm.common import common_checks, load_mesh
+from cadx.cad.dfm.fdm import fdm_checks, fdm_mesh_checks
+from cadx.cad.dfm.report import DfmWarning
+from cadx.cad.exporters import export_2d, export_all_3d, export_mesh_all, quick_stl
+from cadx.cad.mesh_ops import (
+    MeshPostParams,
+    apply_ops,
+    baseline_mesh,
+    candidate_meshes,
+    clean,
+    decimate,
+    flat_base_ratio,
+    is_flat_bottom,
+    mesh_analysis,
+    mesh_to_solid,
+    rest_on_xy_center,
+    smooth_preserve,
+)
+from cadx.cad.mesh_ops import (
+    load_mesh as load_triangle_mesh,
+)
+from cadx.cad.render import render_thumbnail, render_views
+from cadx.cad.sandbox import Reference, RunnerOutput, run_user_code
+from cadx.db.models import ProjectSettings
+from cadx.llm.schemas import PartSpec
+from cadx.logging import get_logger
+from cadx.runtime_config import RuntimeSettings
+
+log = get_logger(__name__)
+
+
+class ExecResult:
+    def __init__(self) -> None:
+        self.ok: bool = False
+        self.error: str | None = None
+        self.traceback: str | None = None
+        self.stdout: str = ""
+        self.params_used: dict[str, Any] = {}
+        self.analysis: Analysis | None = None
+        self.renders: dict[str, str] = {}  # view -> relpath from out_dir
+        self.contact_sheet: str | None = None
+        self.thumbnail: str | None = None
+        self.exports: dict[str, str | None] = {}
+        self.dfm: DfmReport | None = None
+        self.mesh: dict[str, Any] = {}
+        self.features: dict[str, Any] = {}
+        self.fem: dict[str, Any] = {}
+        self.fem_export: dict[str, Any] = {}
+        self.topopt: dict[str, Any] = {}
+        self.thread_count: int = 0
+        self.bom: list[dict[str, Any]] = []
+        self.timings: dict[str, float] = {}
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "error": self.error,
+            "traceback": self.traceback,
+            "stdout": self.stdout,
+            "params_used": self.params_used,
+            "analysis": self.analysis.model_dump() if self.analysis else None,
+            "renders": self.renders,
+            "contact_sheet": self.contact_sheet,
+            "thumbnail": self.thumbnail,
+            "exports": self.exports,
+            "dfm": self.dfm.model_dump() if self.dfm else None,
+            "mesh": self.mesh,
+            "features": self.features,
+            "fem": self.fem,
+            "fem_export": self.fem_export,
+            "topopt": self.topopt,
+            "thread_count": self.thread_count,
+            "bom": self.bom,
+            "timings": self.timings,
+        }
+
+    @staticmethod
+    def from_dict(d: dict[str, Any]) -> ExecResult:
+        r = ExecResult()
+        r.ok = bool(d.get("ok"))
+        r.error = d.get("error")
+        r.traceback = d.get("traceback")
+        r.stdout = d.get("stdout", "")
+        r.params_used = d.get("params_used") or {}
+        r.renders = d.get("renders") or {}
+        r.contact_sheet = d.get("contact_sheet")
+        r.thumbnail = d.get("thumbnail")
+        r.exports = d.get("exports") or {}
+        r.thread_count = int(d.get("thread_count") or 0)
+        r.bom = list(d.get("bom") or [])
+        r.timings = d.get("timings") or {}
+        if d.get("analysis"):
+            r.analysis = Analysis(**d["analysis"])
+        if d.get("dfm"):
+            r.dfm = DfmReport(**d["dfm"])
+        r.mesh = d.get("mesh") or {}
+        r.features = d.get("features") or {}
+        r.fem = d.get("fem") or {}
+        r.fem_export = d.get("fem_export") or {}
+        r.topopt = d.get("topopt") or {}
+        return r
+
+
+def run_pipeline(
+    *,
+    code: str,
+    out_dir: Path,
+    params_override: dict[str, object] | None = None,
+    references: list[Reference] | None = None,
+    settings: ProjectSettings | None = None,
+    runtime: RuntimeSettings | None = None,
+    full_exports: bool = False,
+    name: str = "model",
+    mesh_solid: Path | None = None,
+    mesh_bbox: list[float] | None = None,
+    anchors: dict[str, Any] | None = None,
+) -> ExecResult:
+    """Full executor pipeline for one candidate. out_dir receives all artifacts."""
+    res = ExecResult()
+    settings = settings or ProjectSettings()
+    rt = runtime or RuntimeSettings()
+    t0 = time.monotonic()
+
+    # 1. sandboxed execution
+    workdir = out_dir / "_run"
+    ro: RunnerOutput = run_user_code(
+        code,
+        workdir,
+        params_override=params_override,
+        references=references,
+        mesh_solid=mesh_solid,
+        mesh_bbox=mesh_bbox,
+        anchors=anchors,
+        timeout_s=rt.exec_timeout_s,
+        mem_mb=rt.exec_mem_limit_mb,
+    )
+    res.stdout = ro.stdout
+    res.params_used = ro.params_used
+    res.thread_count = ro.thread_count
+    res.bom = ro.bom
+    res.timings["execute_s"] = round(ro.duration_s, 2)
+    if not ro.ok or ro.brep_path is None:
+        res.error = ro.error or "execution failed"
+        res.traceback = ro.traceback
+        return res
+
+    # 2. load shape
+    try:
+        shape = import_brep(str(ro.brep_path))
+    except Exception as e:
+        res.error = f"failed to load generated shape: {e}"
+        return res
+
+    # 3. quick STL for mesh analysis + renders
+    t = time.monotonic()
+    mesh_dir = out_dir / "renders"
+    try:
+        stl_path = quick_stl(shape, mesh_dir, name="mesh")
+    except Exception as e:
+        res.error = f"tessellation failed: {e}"
+        return res
+    res.timings["tessellate_s"] = round(time.monotonic() - t, 2)
+
+    # 4. analysis
+    res.analysis = analyze(shape, stl_path)
+
+    # 4b. deterministic feature extraction (feedback-only, never blocks)
+    try:
+        from cadx.cad.features import extract_features
+
+        res.features = extract_features(shape, stl_path).model_dump()
+    except Exception as e:
+        log.warning("features.extract_failed", error=str(e)[:200])
+
+    # 4c. footprint agreement with the measured plan view (image outline)
+    if anchors and anchors.get("image_outline"):
+        try:
+            import trimesh
+            from shapely.geometry import Polygon
+
+            from cadx.cad.mesh_features import detect_mesh_features
+
+            tm = trimesh.load(str(stl_path), force="mesh", process=False)
+            if not isinstance(tm, trimesh.Trimesh):
+                raise TypeError("not a single mesh")
+            out_pts = detect_mesh_features(tm, step_mm=1.0).outline_mm
+            if len(out_pts) >= 3:
+                a = Polygon(anchors["image_outline"]).buffer(0)
+                b = Polygon(out_pts).buffer(0)
+                union = a.union(b).area
+                if union > 0:
+                    res.analysis.footprint_iou = round(float(a.intersection(b).area / union), 3)
+        except Exception as e:
+            log.warning("features.footprint_iou_failed", error=str(e)[:200])
+
+    # 5. renders + contact sheet + thumbnail
+    t = time.monotonic()
+    render_paths = render_views(stl_path, mesh_dir, res.analysis.bbox_size)
+    res.renders = {v: p.name for v, p in render_paths.items()}
+    thumb = render_thumbnail(stl_path, out_dir / "thumbnail.png")
+    res.thumbnail = thumb.name if thumb else None
+    stats = [
+        f"bbox: {res.analysis.bbox_size[0]:.1f} x {res.analysis.bbox_size[1]:.1f} x {res.analysis.bbox_size[2]:.1f} mm",
+        f"volume: {res.analysis.volume:.0f} mm^3",
+        f"solids: {res.analysis.solid_count}",
+        f"valid: {res.analysis.is_valid}",
+        f"watertight: {res.analysis.watertight}",
+    ]
+    sheet = make_contact_sheet(render_paths, out_dir / "contact_sheet.png", stats)
+    res.contact_sheet = sheet.name if sheet else None
+    res.timings["render_s"] = round(time.monotonic() - t, 2)
+
+    # 6. DfM
+    t = time.monotonic()
+    mesh = load_mesh(stl_path)
+    warnings = common_checks(res.analysis, mesh, settings.build_volume)
+    if settings.process in ("fdm", "sla"):
+        warnings += fdm_checks(
+            shape,
+            mesh,
+            res.analysis,
+            min_wall_mm=settings.min_wall_mm,
+            nozzle_mm=settings.nozzle_mm,
+            thread_count=res.thread_count,
+            thread_compensation_mm=settings.thread_compensation_mm,
+        )
+    if settings.process in ("cnc3", "cnc2d"):
+        warnings += cnc_checks(
+            shape,
+            mesh,
+            res.analysis,
+            tool_radius_mm=settings.tool_radius_mm,
+            thread_count=res.thread_count,
+        )
+    res.dfm = DfmReport(process=settings.process, warnings=warnings).sort()
+    res.timings["dfm_s"] = round(time.monotonic() - t, 2)
+
+    # 7. exports
+    t = time.monotonic()
+    exp_dir = out_dir / "exports"
+    if full_exports:
+        res.exports = export_all_3d(shape, exp_dir, name=name)
+        res.exports.update(export_2d(shape, exp_dir, name, ro.flat_brep_path))
+    else:
+        # iterations only need the STL (already exported for renders)
+        res.exports = {"stl": None}
+    res.timings["export_s"] = round(time.monotonic() - t, 2)
+
+    res.ok = True
+    res.timings["total_s"] = round(time.monotonic() - t0, 2)
+    return res
+
+
+def export_from_brep(
+    brep_path: Path, out_dir: Path, name: str = "model", flat_brep: Path | None = None
+) -> dict[str, str | None]:
+    """Full export set from an existing BREP (used by FINALIZE / reexport)."""
+    shape = import_brep(str(brep_path))
+    out = export_all_3d(shape, out_dir, name=name)
+    out.update(export_2d(shape, out_dir, name, flat_brep))
+    return out
+
+
+def export_from_mesh(
+    stl_path: Path, out_dir: Path, name: str = "model", *, max_faces: int | None = None
+) -> dict[str, str | None]:
+    """Export set for mesh-mode versions from a stored STL (used by FINALIZE / reexport)."""
+    mesh = load_triangle_mesh(stl_path)
+    out = export_mesh_all(mesh, out_dir, name=name, max_faces=max_faces)
+    out["dxf"] = None
+    out["svg"] = None
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# mesh pipeline (mesh / hybrid modes)                                          #
+# --------------------------------------------------------------------------- #
+
+
+def run_mesh_pipeline(  # noqa: C901
+    *,
+    mesh_path: Path,
+    out_dir: Path,
+    post: MeshPostParams | None = None,
+    spec: PartSpec | None = None,
+    settings: ProjectSettings | None = None,
+    runtime: RuntimeSettings | None = None,
+    full_exports: bool = False,
+    name: str = "model",
+    make_solid: bool = False,
+) -> ExecResult:
+    """Mesh-mode pipeline: clean -> orient -> scale -> analyse -> render -> DfM -> export.
+
+    Input is the raw generator output (GLB/STL/...) in arbitrary normalized
+    space; the result follows the frame contract (mm, +Z up, on XY, centred).
+    """
+    res = ExecResult()
+    settings = settings or ProjectSettings()
+    rt = runtime or RuntimeSettings()
+    post = post or MeshPostParams()
+    t0 = time.monotonic()
+    workdir = out_dir / "_run"
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    # 1-5. baseline: clean -> decimate -> orient -> scale -> flatten -> rest
+    try:
+        raw = load_triangle_mesh(mesh_path)
+    except Exception as e:
+        res.error = f"failed to load generated mesh: {e}"
+        return res
+    mesh, base_info = baseline_mesh(
+        raw, post, spec, cad_cap_faces=rt.mesh_max_faces_for_cad if make_solid else None
+    )
+    res.mesh.update(base_info)
+
+    # 5b. agent transform ops (validated MeshOp list inside post.params)
+    if post.ops:
+        t = time.monotonic()
+        try:
+            mesh, op_report = apply_ops(mesh, post.ops)
+        except Exception as e:
+            res.error = f"mesh op failed: {e}"
+            return res
+        res.mesh["ops_report"] = op_report
+        res.timings["mesh_ops_s"] = round(time.monotonic() - t, 2)
+        mesh = rest_on_xy_center(mesh)
+
+    res.mesh["post"] = post.model_dump()
+    res.mesh["triangles"] = len(mesh.faces)
+
+    # 6. STL into _run (drives renders, analysis, exports)
+    stl_path = workdir / "model.stl"
+    try:
+        mesh.export(str(stl_path), file_type="stl")
+    except Exception as e:
+        res.error = f"failed to write STL: {e}"
+        return res
+
+    # 7. analysis
+    res.analysis = mesh_analysis(mesh)
+
+    # 7b. deterministic feature detection (holes, dimples, XY outline) —
+    # feeds worker-side anchor reconciliation with the measured top view
+    if make_solid:
+        try:
+            from cadx.cad.mesh_features import detect_mesh_features
+
+            res.mesh["features"] = detect_mesh_features(mesh).model_dump()
+        except Exception as e:
+            log.warning("mesh_features.failed", error=str(e)[:200])
+
+    # 8. optional solid conversion (hybrid bridge + tessellated STEP)
+    if make_solid:
+        t = time.monotonic()
+        try:
+            solid = mesh_to_solid(mesh, max_faces=rt.mesh_max_faces_for_cad)
+            from build123d import export_brep
+
+            brep = workdir / "model.brep"
+            export_brep(solid, str(brep))
+            res.mesh["solid_ok"] = True
+            res.mesh["solid_faces"] = len(mesh.faces)
+        except Exception as e:
+            res.mesh["solid_ok"] = False
+            res.mesh["solid_error"] = str(e)[:500]
+            log.warning("mesh.solid_failed", error=str(e)[:300])
+        res.timings["mesh_to_solid_s"] = round(time.monotonic() - t, 2)
+
+    # 9. renders + contact sheet + thumbnail
+    t = time.monotonic()
+    render_dir = out_dir / "renders"
+    render_paths = render_views(stl_path, render_dir, res.analysis.bbox_size)
+    res.renders = {v: p.name for v, p in render_paths.items()}
+    thumb = render_thumbnail(stl_path, out_dir / "thumbnail.png")
+    res.thumbnail = thumb.name if thumb else None
+    stats = [
+        f"bbox: {res.analysis.bbox_size[0]:.1f} x {res.analysis.bbox_size[1]:.1f} x {res.analysis.bbox_size[2]:.1f} mm",
+        f"volume: {res.analysis.volume:.0f} mm^3",
+        f"triangles: {res.analysis.triangle_count}",
+        f"watertight: {res.analysis.watertight}",
+    ]
+    sheet = make_contact_sheet(render_paths, out_dir / "contact_sheet.png", stats)
+    res.contact_sheet = sheet.name if sheet else None
+    res.timings["render_s"] = round(time.monotonic() - t, 2)
+
+    # 10. DfM (mesh-based checks only — no analytic B-Rep)
+    t = time.monotonic()
+    warnings: list[DfmWarning] = common_checks(res.analysis, mesh, settings.build_volume)
+    if res.analysis.triangle_count > 500_000:
+        warnings.append(
+            DfmWarning(
+                code="high_triangle_count",
+                severity="low",
+                message=f"mesh has {res.analysis.triangle_count} triangles — consider decimating",
+                value=float(res.analysis.triangle_count),
+                threshold=500_000.0,
+            )
+        )
+    base_ratio = flat_base_ratio(mesh)
+    if base_ratio < 0.02:
+        warnings.append(
+            DfmWarning(
+                code="no_flat_base",
+                severity="medium",
+                message="almost no flat contact surface with the build plate — "
+                "use brim/raft or flatten_bottom",
+                value=round(base_ratio * 100, 1),
+                threshold=2.0,
+            )
+        )
+    if settings.process in ("fdm", "sla"):
+        warnings += fdm_mesh_checks(
+            mesh,
+            res.analysis,
+            min_wall_mm=settings.min_wall_mm,
+            nozzle_mm=settings.nozzle_mm,
+        )
+    if settings.process in ("cnc3", "cnc2d"):
+        warnings += cnc_mesh_checks(mesh, res.analysis)
+    res.dfm = DfmReport(process=settings.process, warnings=warnings).sort()
+    res.timings["dfm_s"] = round(time.monotonic() - t, 2)
+
+    # 11. exports
+    t = time.monotonic()
+    if full_exports:
+        # STEP comes from the same solid built above when available
+        res.exports = export_mesh_all(mesh, out_dir / "exports", name=name, try_step=False)
+        brep = workdir / "model.brep"
+        if brep.exists():
+            try:
+                shape = import_brep(str(brep))
+                from build123d import export_step
+
+                export_step(shape, str(out_dir / "exports" / f"{name}.step"))
+                res.exports["step"] = f"{name}.step"
+                res.mesh["step_tessellated"] = True
+            except Exception:
+                res.exports["step"] = None
+        else:
+            try:
+                res.exports["step"] = export_mesh_all(
+                    mesh, out_dir / "exports", name=name, try_step=True
+                )["step"]
+                if res.exports["step"]:
+                    res.mesh["step_tessellated"] = True
+            except Exception:
+                res.exports["step"] = None
+        res.exports["dxf"] = None
+        res.exports["svg"] = None
+    else:
+        res.exports = {"stl": None}
+    res.timings["export_s"] = round(time.monotonic() - t, 2)
+
+    res.ok = True
+    res.timings["total_s"] = round(time.monotonic() - t0, 2)
+    return res
+
+
+def run_mesh_candidates(*, mesh_path: Path, out_dir: Path, size: int = 512) -> dict[str, Any]:
+    """Render the 6 up-axis orientation candidates into a labelled contact sheet.
+
+    Returns {ok, candidates: {up: relpath}, sheet: relpath|None, stats: {...}}.
+    Used once per version by the ORIENT step (vision LLM picks up/front).
+    """
+    from cadx.cad.render import render_available
+
+    out: dict[str, Any] = {"ok": False, "candidates": {}, "sheet": None, "stats": {}}
+    try:
+        raw = load_triangle_mesh(mesh_path)
+    except Exception as e:
+        out["error"] = f"failed to load mesh: {e}"
+        return out
+    mesh = clean(raw)
+    mesh = decimate(mesh, 60_000)
+    out["stats"] = {
+        "triangles": len(mesh.faces),
+        "watertight": bool(mesh.is_watertight),
+        "extents": [round(float(v), 3) for v in mesh.extents],
+    }
+    if not render_available():
+        out["error"] = "offscreen rendering unavailable"
+        return out
+
+    import tempfile
+
+    import pyvista as pv
+    from PIL import Image, ImageDraw
+
+    cand_dir = out_dir / "orient"
+    cand_dir.mkdir(parents=True, exist_ok=True)
+    tiles: list[tuple[str, Path]] = []
+    with tempfile.TemporaryDirectory() as td:
+        stl = Path(td) / "cand.stl"
+        for up, m in candidate_meshes(mesh).items():
+            m.export(str(stl), file_type="stl")
+            pvm = pv.read(str(stl))
+            pl: Any = pv.Plotter(off_screen=True, window_size=[size, size])
+            pl.set_background("white")
+            pl.add_mesh(pvm, color="#9aa3ad", smooth_shading=True)
+            fedges = pvm.extract_feature_edges(30)
+            if fedges.n_points:
+                pl.add_mesh(fedges, color="#222222", line_width=1.0)
+            pl.add_mesh(pvm.outline(), color="#888888", line_width=2)
+            pl.camera_position = "iso"
+            pl.reset_camera()
+            pl.camera.zoom(1.15)
+            pl.add_axes(color="black")
+            png = cand_dir / f"up_{up.replace('+', 'p').replace('-', 'm')}.png"
+            pl.screenshot(str(png))
+            pl.close()
+            tiles.append((up, png))
+            out["candidates"][up] = png.name
+
+    # labelled contact sheet: 3x2
+    cols, rows = 3, 2
+    label_h = 40
+    sheet = Image.new("RGB", (cols * size, rows * (size + label_h)), "white")
+    draw = ImageDraw.Draw(sheet)
+    for i, (up, png) in enumerate(tiles):
+        x, y = (i % cols) * size, (i // cols) * (size + label_h)
+        sheet.paste(Image.open(png), (x, y + label_h))
+        draw.text((x + 10, y + 12), f"option {i + 1}: up = {up}", fill="black")
+    sheet_path = out_dir / "orient_sheet.png"
+    sheet.save(sheet_path)
+    out["sheet"] = sheet_path.name
+    out["ok"] = True
+    return out
+
+
+def run_mesh_preview(
+    *, mesh_path: Path, out_dir: Path, views: tuple[str, ...] = ("iso", "front", "top")
+) -> dict[str, Any]:
+    """Cheap render-only pass for the mesh-refine session's preview tool.
+
+    Renders the mesh as stored (no baseline/ops — the session writes the
+    current working state itself). Returns {ok, images: {view: relname}, stats}.
+    """
+    from cadx.cad.render import render_available
+
+    out: dict[str, Any] = {"ok": False, "images": {}, "stats": {}}
+    try:
+        mesh = load_triangle_mesh(mesh_path)
+    except Exception as e:
+        out["error"] = f"failed to load mesh: {e}"
+        return out
+    out["stats"] = {
+        "triangles": len(mesh.faces),
+        "watertight": bool(mesh.is_watertight),
+        "extents": [round(float(v), 3) for v in mesh.extents],
+    }
+    if not render_available():
+        out["error"] = "offscreen rendering unavailable"
+        return out
+
+    import tempfile
+
+    prev_dir = out_dir / "preview"
+    prev_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            stl = Path(td) / "preview.stl"
+            mesh.export(str(stl), file_type="stl")
+            render_paths = render_views(stl, prev_dir, [float(v) for v in mesh.extents], size=512)
+        out["images"] = {v: p.name for v, p in render_paths.items() if v in views}
+        out["ok"] = bool(out["images"])
+    except Exception as e:
+        out["error"] = f"preview render failed: {e}"
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# FEM / topology optimization                                                  #
+# --------------------------------------------------------------------------- #
+
+
+def run_fem_pipeline(
+    *,
+    mesh_path: Path,
+    out_dir: Path,
+    load_cases: list[dict[str, Any]],
+    material: str = "",
+    voxel_mm: float | None = None,
+    max_elements: int | None = None,
+    keep_regions: list[dict[str, Any]] | None = None,
+    anchors: list[dict] | None = None,
+    preview_only: bool = False,
+    runtime: RuntimeSettings | None = None,
+) -> dict[str, Any]:
+    """FEM verification on an existing mesh artifact. Writes fem/report.json +
+    stress renders into <out_dir>/fem/. Returns the report as a dict.
+
+    preview_only=True skips the solve and only renders which cells the
+    declared regions select (fixed=blue load=red keep=green) — lets the
+    agent sanity-check region definitions before running TopOpt."""
+    from cadx.cad.fem.analyze import report_to_json, run_fem
+    from cadx.llm.schemas import LoadCase, RegionSpec
+
+    s = runtime or RuntimeSettings()
+    cases = [LoadCase(**c) for c in load_cases]
+    keep = [RegionSpec(**r) for r in (keep_regions or [])]
+    try:
+        mesh = load_triangle_mesh(mesh_path)
+    except Exception as e:
+        return {"ok": False, "error": f"failed to load mesh for FEM: {e}"}
+
+    if preview_only:
+        from cadx.cad.fem.preview import render_regions, resolve_case_summary
+        from cadx.cad.fem.voxelize import voxelize
+
+        try:
+            domain = voxelize(mesh, voxel_mm or s.fem_voxel_mm, max_elements or s.fem_max_elements)
+        except Exception as e:
+            return {"ok": False, "error": f"voxelization failed: {e}"}
+        pngs = render_regions(domain, cases, keep, out_dir / "fem", anchors)
+        return {
+            "ok": True,
+            "preview": {
+                "pitch_mm": round(domain.pitch, 4),
+                "dims": list(domain.dims),
+                "solid_elements": domain.solid_count,
+                "cases": [resolve_case_summary(domain, c, anchors) for c in cases],
+                "regions_png": pngs,
+            },
+        }
+
+    report = run_fem(
+        mesh,
+        cases,
+        material,
+        voxel_mm=voxel_mm or s.fem_voxel_mm,
+        max_elements=max_elements or s.fem_max_elements,
+        out_dir=out_dir,
+        anchors=anchors,
+    )
+    report_to_json(report, out_dir / "fem" / "report.json")
+    return {"ok": True, "fem": report.model_dump()}
+
+
+def run_topopt_pipeline(
+    *,
+    mesh_path: Path,
+    out_dir: Path,
+    load_cases: list[dict[str, Any]],
+    optimize: dict[str, Any] | None = None,
+    material: str = "",
+    voxel_mm: float | None = None,
+    max_elements: int | None = None,
+    anchors: list[dict] | None = None,
+    name: str = "model",
+    cancelled: Any = None,
+    runtime: RuntimeSettings | None = None,
+) -> ExecResult:
+    """SIMP topology optimization on the part's voxelized design domain.
+
+    Input mesh defines the design space (its solid voxels). keep/load/fix
+    regions are pinned solid; everything else is optimized down to
+    `volfrac`. Writes optimized mesh exports + density field + history +
+    FEM verification into out_dir.
+
+    Two verifications per pass: `sf_mask` on the exact voxel structure and
+    `sf_export` on the re-voxelized smoothed export mesh — the latter is the
+    structure that actually gets printed. When `sf_export` misses the target
+    the pass is retried once at volfrac +0.1 and the better result wins.
+    """
+    from scipy import ndimage
+
+    from cadx.cad.fem.analyze import report_to_json, run_fem_domain
+    from cadx.cad.fem.extract import density_to_mesh
+    from cadx.cad.fem.preview import render_regions
+    from cadx.cad.fem.regions import (
+        keep_element_mask,
+        region_node_mask,
+        resolve_case,
+    )
+    from cadx.cad.fem.topopt import TopOptParams, passive_solid_mask, simp
+    from cadx.cad.fem.voxelize import voxelize
+    from cadx.llm.schemas import LoadCase, OptimizeSpec
+
+    res = ExecResult()
+    s = runtime or RuntimeSettings()
+    opt = OptimizeSpec(**(optimize or {}))
+    t0 = time.monotonic()
+
+    try:
+        mesh = load_triangle_mesh(mesh_path)
+    except Exception as e:
+        res.error = f"failed to load mesh for optimization: {e}"
+        return res
+
+    cases = [LoadCase(**c) for c in load_cases]
+    if not cases:
+        res.error = "topology optimization requires at least one load case"
+        return res
+
+    # --- design domain -------------------------------------------------------
+    try:
+        domain = voxelize(mesh, voxel_mm or s.fem_voxel_mm, max_elements or s.fem_max_elements)
+    except Exception as e:
+        res.error = f"voxelization failed: {e}"
+        return res
+
+    fixed_node_masks: list[Any] = []
+    load_node_masks: list[Any] = []
+    resolved: list[tuple[Any, Any]] = []
+    for c in cases:
+        fixed, F, w = resolve_case(domain, c, anchors)
+        res.topopt.setdefault("warnings", []).extend(w)
+        if not fixed.any() or not np.any(F):
+            res.topopt["warnings"].append(
+                f"case '{c.name}' skipped — no fixed region or no effective load"
+            )
+            continue
+        resolved.append((fixed, F))
+        fixed_node_masks.append(fixed)
+        for load in c.loads:
+            load_node_masks.append(region_node_mask(domain, load.region, anchors))
+    if not resolved:
+        res.error = "no solvable load case — check fixed/load regions"
+        return res
+
+    keep_cells = keep_element_mask(domain, list(opt.keep_regions), anchors)
+    passive = passive_solid_mask(domain, [keep_cells], fixed_node_masks, load_node_masks)
+
+    # region-selection previews so the agent/user can see where forces land
+    res.topopt["regions_png"] = render_regions(
+        domain, cases, list(opt.keep_regions), out_dir / "fem", anchors
+    )
+
+    params = TopOptParams(
+        volfrac=opt.target_volume_fraction or s.topopt_default_volfrac,
+        rmin_mm=s.topopt_default_rmin_mm,
+        max_iter=opt.max_iterations or s.topopt_max_iterations,
+    )
+    mat_name = material or ""
+
+    from cadx.cad.fem.materials import resolve_material
+
+    mat = resolve_material(mat_name)
+    opt_dir = out_dir / "topopt"
+    opt_dir.mkdir(parents=True, exist_ok=True)
+    base_flat = is_flat_bottom(mesh)
+
+    def _one_pass(volfrac: float) -> dict[str, Any]:
+        """One SIMP run at `volfrac` + extraction, smoothing and both FEM
+        verifications. Returns the pieces needed for artifacts/retry."""
+        out: dict[str, Any] = {"volfrac": volfrac}
+        p = TopOptParams(volfrac=volfrac, rmin_mm=params.rmin_mm, max_iter=params.max_iter)
+        t = time.monotonic()
+        result = simp(
+            domain,
+            mat.elastic_modulus_mpa,
+            mat.poisson,
+            resolved,
+            passive,
+            p,
+            cancelled=cancelled,
+            progress_file=opt_dir / f"history_{volfrac:.2f}.json",
+        )
+        out["simp_s"] = round(time.monotonic() - t, 2)
+        out["result"] = result
+        out["params"] = p
+
+        opt_mesh, final_mask, extract_warnings = density_to_mesh(
+            domain,
+            result.density,
+            threshold=p.threshold,
+            passive_solid=passive,
+            smooth_iterations=s.topopt_smooth_iterations,
+        )
+        out["extract_warnings"] = extract_warnings
+        # floor-pinned smoothing: keeps a flat manufacturing base flat
+        opt_mesh = smooth_preserve(opt_mesh, iterations=4, pin_floor=base_flat)
+        out["opt_mesh"] = opt_mesh
+        out["final_mask"] = final_mask
+
+        # thin-member metrics (printability feedback for the agent)
+        edt = ndimage.distance_transform_edt(final_mask)
+        inside = edt[final_mask]
+        out["thin_fraction"] = float((inside <= 1.0).mean()) if len(inside) else 0.0
+        out["min_member_mm"] = (
+            round(2 * domain.pitch * float(np.percentile(inside, 5)), 2) if len(inside) else 0.0
+        )
+
+        t = time.monotonic()
+        verify = run_fem_domain(
+            domain, final_mask, cases, mat_name, out_dir=out_dir, anchors=anchors
+        )
+        out["verify"] = verify
+        out["verify_s"] = round(time.monotonic() - t, 2)
+
+        # export verification: re-voxelize the smoothed mesh that gets printed
+        try:
+            domain_exp = voxelize(opt_mesh, domain.pitch, max_elements or s.fem_max_elements)
+            verify_exp = run_fem_domain(
+                domain_exp,
+                domain_exp.solid,
+                cases,
+                mat_name,
+                out_dir=out_dir,
+                anchors=anchors,
+                suffix="_export",
+            )
+        except Exception as e:
+            log.warning("topopt.verify_export.failed", error=str(e)[:200])
+            verify_exp = verify
+        out["verify_export"] = verify_exp
+        return out
+
+    p1 = _one_pass(params.volfrac)
+    res.timings["simp_s"] = p1["simp_s"]
+    res.timings["verify_s"] = p1["verify_s"]
+    best = p1
+
+    sf_exp = p1["verify_export"].worst_safety_factor
+    if (
+        sf_exp is not None
+        and sf_exp < opt.safety_factor_min
+        and params.volfrac + 0.1 <= 0.9
+        and (cancelled is None or not cancelled())
+    ):
+        p2 = _one_pass(params.volfrac + 0.1)
+        sf_exp2 = p2["verify_export"].worst_safety_factor
+        res.topopt["retry"] = {
+            "volfrac_first": params.volfrac,
+            "volfrac_second": params.volfrac + 0.1,
+            "sf_export_first": sf_exp,
+            "sf_export_second": sf_exp2,
+        }
+        res.timings["simp_s"] += p2["simp_s"]
+        res.timings["verify_s"] += p2["verify_s"]
+        if sf_exp2 is not None and sf_exp2 > sf_exp:
+            best = p2
+
+    result = best["result"]
+    opt_mesh = best["opt_mesh"]
+    final_mask = best["final_mask"]
+    verify = best["verify"]
+    verify_export = best["verify_export"]
+    res.topopt["warnings"] += best["extract_warnings"]
+    res.topopt.update(
+        {
+            "iterations": result.iterations,
+            "converged": result.converged,
+            "volfrac_target": best["volfrac"],
+            "volfrac_achieved": round(
+                float(result.density[domain.solid.ravel()].sum()) / max(int(domain.solid.sum()), 1),
+                4,
+            ),
+            "history": result.history[-50:],
+            "warnings": res.topopt.get("warnings", []) + result.warnings,
+            "material": mat.name,
+            "sf_mask": verify.worst_safety_factor,
+            "sf_export": verify_export.worst_safety_factor,
+            "min_member_mm": best["min_member_mm"],
+            "thin_fraction": round(best["thin_fraction"], 4),
+        }
+    )
+
+    np.savez_compressed(
+        opt_dir / "density.npz",
+        density=result.density.astype(np.float32),
+        mask=final_mask,
+        origin=domain.origin,
+        pitch=np.float64(domain.pitch),
+        dims=np.asarray(domain.dims),
+    )
+    report_to_json(verify, out_dir / "fem" / "report.json")
+    report_to_json(verify_export, out_dir / "fem" / "report_export.json")
+    res.fem = verify.model_dump()
+    res.fem_export = verify_export.model_dump()
+
+    # --- artifacts: STL/GLB/3MF + STL copy used for renders/analysis ----------
+    run_dir = out_dir / "_run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    stl_path = run_dir / "model.stl"
+    try:
+        opt_mesh.export(str(stl_path), file_type="stl")
+    except Exception as e:
+        res.error = f"failed to write optimized STL: {e}"
+        return res
+    res.exports = export_mesh_all(opt_mesh, out_dir / "exports", name=name, try_step=False)
+    res.exports["dxf"] = None
+    res.exports["svg"] = None
+    res.analysis = mesh_analysis(opt_mesh)
+    res.mesh = {
+        "pipeline": "topopt",
+        "triangles": len(opt_mesh.faces),
+        "volume_mm3": round(float(opt_mesh.volume), 1),
+        "solid_elements": int(final_mask.sum()),
+        "pitch_mm": domain.pitch,
+    }
+
+    # renders
+    t = time.monotonic()
+    render_dir = out_dir / "renders"
+    render_paths = render_views(stl_path, render_dir, res.analysis.bbox_size)
+    res.renders = {v: p.name for v, p in render_paths.items()}
+    thumb = render_thumbnail(stl_path, out_dir / "thumbnail.png")
+    res.thumbnail = thumb.name if thumb else None
+    sf_mask_s = verify.worst_safety_factor
+    sf_exp_s = verify_export.worst_safety_factor
+    stats = [
+        f"bbox: {res.analysis.bbox_size[0]:.1f} x {res.analysis.bbox_size[1]:.1f} "
+        f"x {res.analysis.bbox_size[2]:.1f} mm",
+        f"volume: {res.analysis.volume:.0f} mm^3 (target {best['volfrac']:.0%})",
+        f"triangles: {res.analysis.triangle_count}",
+        f"watertight: {res.analysis.watertight}",
+        f"SF mask/export: {sf_mask_s} / {sf_exp_s}",
+        f"min member: {best['min_member_mm']} mm",
+    ]
+    sheet = make_contact_sheet(render_paths, out_dir / "contact_sheet.png", stats)
+    res.contact_sheet = sheet.name if sheet else None
+    res.timings["render_s"] = round(time.monotonic() - t, 2)
+
+    if not opt_mesh.is_watertight:
+        res.topopt["warnings"].append(
+            "optimized mesh is not watertight — inspect before manufacturing"
+        )
+    res.ok = True
+    res.timings["total_s"] = round(time.monotonic() - t0, 2)
+    return res
+
+
+def copy_artifacts(src: Path, dst: Path, names: list[str]) -> None:
+    dst.mkdir(parents=True, exist_ok=True)
+    for n in names:
+        s = src / n
+        if s.exists():
+            shutil.copy2(s, dst / n)
+
+
+def write_json(path: Path, data: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")

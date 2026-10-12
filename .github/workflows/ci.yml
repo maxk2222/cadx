@@ -23,7 +23,7 @@ jobs:
           uv run ruff format --check .
       - name: Mypy
         working-directory: backend
-        run: uv run mypy cadagent || true
+        run: uv run mypy cadx || true
       - name: Pytest (non-render)
         working-directory: backend
         run: uv run pytest tests -x -q -m "not render"

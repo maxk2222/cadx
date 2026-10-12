@@ -1,7 +1,7 @@
 # AGENTS.md — working rules for this repo
 
 ## What this is
-LLM-driven CAD agent ("cadagent"): images + text prompt → parametric build123d code →
+LLM-driven CAD agent ("CADX"): images + text prompt → parametric build123d code →
 verified 3D model (STEP/STL/3MF/GLB/DXF/SVG) for 3D printing & CNC.
 Stack: FastAPI + SQLModel/Postgres + arq/Redis + build123d/bd_warehouse + React/Vite/Three.js.
 The authoritative design document is `docs/architecture.md` (derived from the master plan).
@@ -31,12 +31,12 @@ The authoritative design document is `docs/architecture.md` (derived from the ma
   pydantic v2 for all JSON; no business logic in routers; `structlog` not `print`.
 - TypeScript strict; functional components; TanStack Query for server state; Tailwind only.
 - Never put the LLM API key in DB/logs/traces. Trace messages replace image data with placeholders.
-- Every prompt lives in `backend/cadagent/agent/prompts/*.md` — never inline prompt text in Python.
-- All file paths go through `cadagent/storage.py`. All DB writes in short transactions.
+- Every prompt lives in `backend/cadx/agent/prompts/*.md` — never inline prompt text in Python.
+- All file paths go through `cadx/storage.py`. All DB writes in short transactions.
 - LLM-generated code must ONLY ever run through `cad/sandbox.py` (AST allow-list + subprocess
   rlimits + import hook) inside the executor environment. Never `exec()` user code in-process.
 - Allowed imports for generated code: build123d, bd_warehouse.*, cadlib, math, numpy,
-  typing, dataclasses. `cadlib` (`cadagent/cad/cadlib/`) is the reviewed helper library —
+  typing, dataclasses. `cadlib` (`cadx/cad/cadlib/`) is the reviewed helper library —
   extend it deliberately, never import unlisted modules from it (the runtime guard
   treats its internals like generated code).
 - Agent robustness pipeline (local-model friendly): `cad/errordiag.py` classifies

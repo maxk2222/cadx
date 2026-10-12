@@ -4,9 +4,9 @@ import pytest
 import trimesh
 from build123d import import_brep, import_step
 
-from cadagent.cad.exporters import export_2d, export_all_3d, quick_stl
-from cadagent.cad.render import render_available, render_views
-from cadagent.cad.sandbox import run_user_code
+from cadx.cad.exporters import export_2d, export_all_3d, quick_stl
+from cadx.cad.render import render_available, render_views
+from cadx.cad.sandbox import run_user_code
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 

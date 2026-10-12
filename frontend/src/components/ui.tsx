@@ -1,5 +1,13 @@
-import { Check, Copy, Loader2, X } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Check, CheckCircle2, Copy, Info, Loader2, X, XCircle } from "lucide-react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
 /* ---------- primitives ---------- */
 
@@ -42,7 +50,7 @@ type Tone = "zinc" | "blue" | "green" | "amber" | "red" | "purple" | "teal";
 
 const CHIP_TONES: Record<Tone, string> = {
   zinc: "border-zinc-700 bg-zinc-800 text-zinc-300",
-  blue: "border-blue-800 bg-blue-950/60 text-blue-300",
+  blue: "border-brand-800 bg-brand-950/60 text-brand-300",
   green: "border-emerald-800 bg-emerald-950/60 text-emerald-300",
   amber: "border-amber-800 bg-amber-950/60 text-amber-300",
   red: "border-red-800 bg-red-950/60 text-red-300",
@@ -76,7 +84,7 @@ export function Chip({
 type BtnVariant = "primary" | "ghost" | "danger" | "success";
 
 const BTN: Record<BtnVariant, string> = {
-  primary: "bg-blue-600 text-white hover:bg-blue-500",
+  primary: "bg-brand-600 text-white hover:bg-brand-500",
   success: "bg-emerald-600 text-white hover:bg-emerald-500",
   danger: "bg-red-700 text-white hover:bg-red-600",
   ghost: "bg-zinc-800 text-zinc-300 hover:bg-zinc-700 hover:text-zinc-100",
@@ -180,7 +188,7 @@ export function ProgressBar({
   tone?: "blue" | "green" | "amber" | "red";
 }) {
   const colors = {
-    blue: "bg-blue-500",
+    blue: "bg-brand-500",
     green: "bg-emerald-500",
     amber: "bg-amber-500",
     red: "bg-red-500",
@@ -340,7 +348,7 @@ export function Field({
 }
 
 export const inputCls =
-  "w-full rounded-md border border-zinc-700 bg-zinc-800/80 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 outline-none transition-colors focus:border-blue-600 focus:ring-1 focus:ring-blue-600/40";
+  "w-full rounded-md border border-zinc-700 bg-zinc-800/80 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 outline-none transition-colors focus:border-brand-600 focus:ring-1 focus:ring-brand-600/40";
 
 /* ---------- crumbs ---------- */
 
@@ -355,6 +363,75 @@ export function Crumbs({ items }: { items: ReactNode[] }) {
       ))}
     </nav>
   );
+}
+
+/* ---------- toasts ---------- */
+
+type ToastTone = "success" | "error" | "info";
+interface Toast {
+  id: number;
+  tone: ToastTone;
+  text: string;
+}
+
+const ToastCtx = createContext<(text: string, tone?: ToastTone) => void>(() => {});
+
+/** Push a transient notification. Usage: `const toast = useToast(); toast("saved", "success")` */
+export function useToast() {
+  return useContext(ToastCtx);
+}
+
+export function ToastProvider({ children }: { children: ReactNode }) {
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const nextId = useRef(1);
+
+  const push = useCallback((text: string, tone: ToastTone = "info") => {
+    const id = nextId.current++;
+    setToasts((t) => [...t.slice(-4), { id, tone, text }]);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 4500);
+  }, []);
+
+  return (
+    <ToastCtx.Provider value={push}>
+      {children}
+      <div className="pointer-events-none fixed bottom-4 right-4 z-[60] flex w-80 flex-col gap-2">
+        {toasts.map((t) => (
+          <div
+            key={t.id}
+            className={`pointer-events-auto flex items-start gap-2 rounded-lg border px-3 py-2 text-sm shadow-xl backdrop-blur ${
+              t.tone === "success"
+                ? "border-emerald-800 bg-emerald-950/90 text-emerald-200"
+                : t.tone === "error"
+                  ? "border-red-800 bg-red-950/90 text-red-200"
+                  : "border-zinc-700 bg-zinc-900/90 text-zinc-300"
+            }`}
+          >
+            {t.tone === "success" ? (
+              <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+            ) : t.tone === "error" ? (
+              <XCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            ) : (
+              <Info className="mt-0.5 h-4 w-4 shrink-0" />
+            )}
+            <span className="min-w-0 flex-1 break-words">{t.text}</span>
+            <button
+              className="shrink-0 text-current opacity-50 hover:opacity-100"
+              aria-label="dismiss"
+              onClick={() => setToasts((ts) => ts.filter((x) => x.id !== t.id))}
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        ))}
+      </div>
+    </ToastCtx.Provider>
+  );
+}
+
+/* ---------- skeletons ---------- */
+
+export function Skeleton({ className = "" }: { className?: string }) {
+  return <div className={`animate-pulse rounded bg-zinc-800 ${className}`} />;
 }
 
 /* ---------- misc ---------- */

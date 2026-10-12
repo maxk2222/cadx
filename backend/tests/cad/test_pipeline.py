@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from cadagent.cad.engine import run_pipeline
-from cadagent.db.models import ProjectSettings
+from cadx.cad.engine import run_pipeline
+from cadx.db.models import ProjectSettings
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 
