@@ -1251,6 +1251,20 @@ class ToolSession:
     # -- structural tools (optimize kind) --------------------------------------- #
 
     @staticmethod
+    def _coerce_obj_list(raw: Any) -> Any:
+        """Models often send a single object or a JSON string where a list is
+        required — accept `{...}` → `[{...}]` and `'[{...}]'` → parsed."""
+        if isinstance(raw, dict):
+            return [raw]
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+            except (ValueError, TypeError):
+                return raw
+            return [parsed] if isinstance(parsed, dict) else parsed
+        return raw
+
+    @staticmethod
     def _fem_compact(fem: dict[str, Any]) -> dict[str, Any]:
         """Compact FEM report for the model: per-case numbers + warnings."""
         return {
@@ -1274,10 +1288,10 @@ class ToolSession:
     async def _tool_preview_regions(self, a: dict[str, Any]) -> dict[str, Any]:
         if self.preview_fn is None:
             return {"ok": False, "error": "preview_regions not available"}
-        cases = a.get("load_cases")
+        cases = self._coerce_obj_list(a.get("load_cases"))
         if not isinstance(cases, list) or not cases:
             return {"ok": False, "error": "load_cases must be a non-empty list"}
-        res = await self.preview_fn(dict(a))
+        res = await self.preview_fn({**a, "load_cases": cases, "keep_regions": self._coerce_obj_list(a.get("keep_regions"))})
         if not res.get("ok"):
             return {"ok": False, "error": res.get("error") or "preview failed"}
         prev = res.get("preview") or {}
@@ -1299,11 +1313,11 @@ class ToolSession:
     async def _tool_analyze_fem(self, a: dict[str, Any]) -> dict[str, Any]:
         if self.fem_fn is None or self.fem_left <= 0:
             return {"ok": False, "error": "analyze_fem not available (budget exhausted)"}
-        cases = a.get("load_cases")
+        cases = self._coerce_obj_list(a.get("load_cases"))
         if not isinstance(cases, list) or not cases:
             return {"ok": False, "error": "load_cases must be a non-empty list"}
         self.fem_left -= 1
-        res = await self.fem_fn(dict(a))
+        res = await self.fem_fn({**a, "load_cases": cases})
         if not res.get("ok"):
             return {"ok": False, "error": res.get("error") or "FEM failed"}
         fem = res.get("fem") or {}
@@ -1318,7 +1332,13 @@ class ToolSession:
         if self.topopt_fn is None or self.topopt_left <= 0:
             return {"ok": False, "error": "topopt_run not available (budget exhausted)"}
         self.topopt_left -= 1
-        res = await self.topopt_fn(dict(a))
+        res = await self.topopt_fn(
+            {
+                **a,
+                "load_cases": self._coerce_obj_list(a.get("load_cases")),
+                "keep_regions": self._coerce_obj_list(a.get("keep_regions")),
+            }
+        )
         if not res.get("ok"):
             return {"ok": False, "error": res.get("error") or "optimization failed"}
         top = res.get("topopt") or {}

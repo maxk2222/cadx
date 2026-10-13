@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from pathlib import Path
 
@@ -803,3 +804,34 @@ async def test_optimize_fem_requires_cases():
     session = ToolSession(ctx, kind="optimize", fem_fn=fem_fn)
     res = await session.execute("analyze_fem", {})
     assert res["ok"] is False and not called
+
+
+async def test_optimize_tools_coerce_single_objects():
+    """Models that send {obj} or a JSON string instead of [obj] get coerced."""
+    seen: dict = {}
+
+    async def fem_fn(a):
+        seen["cases"] = a.get("load_cases")
+        return _FEM_RES
+
+    ctx = _ctx(FakeLLM([]))
+    session = ToolSession(ctx, kind="optimize", fem_fn=fem_fn)
+    res = await session.execute("analyze_fem", {"load_cases": _LC})
+    assert res["ok"] and seen["cases"] == [_LC]
+    res = await session.execute("analyze_fem", {"load_cases": json.dumps([_LC])})
+    assert res["ok"] and seen["cases"] == [_LC]
+
+
+async def test_optimize_topopt_coerces_keep_regions():
+    """topopt_run with a single keep_region dict reaches the executor as a list."""
+    seen: dict = {}
+
+    async def top_fn(a):
+        seen["keep"] = a.get("keep_regions")
+        return _TOP_RES
+
+    ctx = _ctx(FakeLLM([]))
+    session = ToolSession(ctx, kind="optimize", topopt_fn=top_fn)
+    region = {"kind": "face", "axis": "-z", "margin_mm": 1.0}
+    res = await session.execute("topopt_run", {"keep_regions": region})
+    assert res["ok"] and seen["keep"] == [region]
