@@ -48,6 +48,7 @@ class SessionResult:
     submitted: dict[str, Any] | None = None
     code: str | None = None
     exhausted: bool = False
+    cancelled: bool = False
     tool_calls_made: int = 0
     tool_log: list[dict[str, Any]] = field(default_factory=list)
 
@@ -126,6 +127,16 @@ async def run_session(
     native = True  # per-response: all calls in one response share the mode
 
     while True:
+        # cancellation is polled once per turn — a single tool session can
+        # span dozens of LLM calls and must not outlive a cancelled job
+        if await ctx.check_cancel():
+            log.info("tool_session.cancelled", step=step, calls=calls)
+            return SessionResult(
+                cancelled=True,
+                exhausted=True,
+                tool_calls_made=calls,
+                tool_log=session.tool_log,
+            )
         # fresh each turn: e.g. `verify` drops out once its budget is spent
         tools = session.tools()
         resp = await ctx.llm.chat(

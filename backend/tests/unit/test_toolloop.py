@@ -66,6 +66,28 @@ async def test_edit_session_read_edit_done():
     assert res.submitted is not None
     assert res.code is not None and '"fillet_r": 2.0' in res.code
     assert res.tool_calls_made == 3
+
+
+async def test_session_stops_when_job_cancelled():
+    """check_cancel is polled once per turn — a session must not keep
+    burning LLM calls after the job was cancelled/finalised externally."""
+    llm = FakeLLM([_call("search_code", pattern="x"), {"text": "final answer"}])
+    llm.tools_mode = "auto"
+    ctx = _ctx(llm)
+
+    calls = 0
+
+    async def cancelled_from_second_turn() -> bool:
+        nonlocal calls
+        calls += 1
+        return calls > 1
+
+    ctx.check_cancel = cancelled_from_second_turn
+    session = ToolSession(ctx, kind="edit", code=BOX_CODE)
+    res = await run_session(ctx, "code", MESSAGES, session=session, max_calls=10, step="improve")
+    assert res.cancelled is True
+    assert res.exhausted is True
+    assert res.tool_calls_made == 1  # first turn ran, second turn aborted before the LLM call
     # protocol: assistant echo + tool results fed back
     assert any(m.get("role") == "tool" for c in llm.calls for m in c["messages"])
 
