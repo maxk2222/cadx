@@ -173,6 +173,17 @@ export default function ModelCanvas({
 
   useEffect(() => () => cancelAnimationFrame(raf.current), []);
 
+  // releasing the button off-model must still end the drag — the group's
+  // onPointerUp only fires for hits inside it
+  useEffect(() => {
+    const up = () => {
+      dragging.current = false;
+      if (controlsRef.current) controlsRef.current.enabled = true;
+    };
+    window.addEventListener("pointerup", up);
+    return () => window.removeEventListener("pointerup", up);
+  }, []);
+
   const handlers = pickEnabled
     ? {
         onPointerDown: (e: ThreeEvent<PointerEvent>) => {
