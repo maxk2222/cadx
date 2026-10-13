@@ -117,4 +117,5 @@ class CadWorkerSettings:
     # generous outer cap — per-job limits come from RuntimeSettings payload
     # (topopt_timeout_s up to 2700s+); QueueExecutor enforces the real timeout
     job_timeout = 7200
-    max_tries = 1
+    # idempotent recompute tasks — a container restart mid-task may retry once
+    max_tries = 2

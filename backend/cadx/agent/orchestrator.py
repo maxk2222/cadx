@@ -1163,6 +1163,11 @@ async def _run_cad(  # noqa: C901
     patch_mode = s.agent_patch_mode
     best: Candidate | None = None
     best_issues: list[dict[str, Any]] = []  # issue list belonging to `best`
+    # score plateau tracker — a later candidate can outrank `best` on fewer
+    # dim issues/majors while the critique score stays flat; that must not
+    # reset the stall window forever
+    best_score = 0
+    best_score_it = start_iteration - 1
     issues: list[dict[str, Any]] = []
     iterations_done = 0
     improve_failures = 0
@@ -1503,6 +1508,10 @@ async def _run_cad(  # noqa: C901
             # improve always patches best.code — its issue list must describe
             # that same code, not a regressed later candidate
             best_issues = cur_issues
+        cur_score = cand.critique.score if cand.critique else 0
+        if cur_score > best_score:
+            best_score = cur_score
+            best_score_it = it
 
         major = [d for d in critique.discrepancies if d.severity == "major"]
         await ctx.emit(
@@ -1534,11 +1543,12 @@ async def _run_cad(  # noqa: C901
             break
 
         # stall early-exit: no new best for `agent_stall_patience` iterations —
-        # more improve loops are unlikely to converge, finalise what we have
-        if (
-            best is not None
-            and s.agent_stall_patience
-            and it - best.iteration >= s.agent_stall_patience
+        # more improve loops are unlikely to converge, finalise what we have.
+        # Score plateau counts too: a reshuffling `best` on dim-issues while
+        # the critique score stays flat is still a stall.
+        if best is not None and s.agent_stall_patience and (
+            it - best.iteration >= s.agent_stall_patience
+            or it - best_score_it >= s.agent_stall_patience
         ):
             await ctx.emit(
                 "finalize",
