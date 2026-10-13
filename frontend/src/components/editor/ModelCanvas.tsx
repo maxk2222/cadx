@@ -5,6 +5,7 @@ import {
   Component,
   Suspense,
   useEffect,
+  useMemo,
   useRef,
   type ReactNode,
   type RefObject,
@@ -22,9 +23,9 @@ export const VIEWS: { id: ViewPreset; dir: [number, number, number]; title: stri
 ];
 
 export interface PickInfo {
-  /** hit point in model space — GLB coords are the mm frame (X=len, Y=wid, Z=up). */
+  /** hit point in displayed-model space (mm — includes the preview matrix). */
   point: [number, number, number];
-  /** face normal in model space. */
+  /** face normal in the same space, flipped toward the camera. */
   normal: [number, number, number];
 }
 
@@ -96,17 +97,28 @@ class GlBoundary extends Component<{ children: ReactNode }, { err: boolean }> {
   }
 }
 
-/** Converts an r3f intersection into model-space mm coordinates. */
-function pickFrom(e: ThreeEvent<PointerEvent>): PickInfo | null {
-  const p = e.object.worldToLocal(e.point.clone());
-  const n = e.face?.normal;
+const IDENTITY = new THREE.Matrix4();
+const NO_RAYCAST = () => null;
+
+/**
+ * Converts an r3f intersection into displayed-model mm coordinates: the pick
+ * frame wraps the GLB (and carries the instant-preview matrix), so picked
+ * points/normals always describe the visible surface — the same frame new
+ * ops/region points are written in. The normal is flipped toward the camera
+ * ray so painted load normals point outward, not into the body.
+ */
+function pickFrom(e: ThreeEvent<PointerEvent>, frame: THREE.Object3D): PickInfo | null {
+  frame.updateWorldMatrix(true, false);
+  const p = frame.worldToLocal(e.point.clone());
+  const n = e.face?.normal.clone() ?? new THREE.Vector3(0, 0, 1);
+  n.transformDirection(e.object.matrixWorld); // world space
+  if (n.dot(e.ray.direction) > 0) n.negate(); // face the camera
+  n.transformDirection(frame.matrixWorld.clone().invert()); // -> frame local
   return {
     point: [p.x, p.y, p.z],
-    normal: n ? [n.x, n.y, n.z] : [0, 0, 1],
+    normal: [n.x, n.y, n.z],
   };
 }
-
-const NO_RAYCAST = () => null;
 
 export default function ModelCanvas({
   url,
@@ -117,6 +129,7 @@ export default function ModelCanvas({
   fitKey = 0,
   glRef,
   pickEnabled = false,
+  modelMatrix,
   onPick,
   onHover,
   onModel,
@@ -131,22 +144,41 @@ export default function ModelCanvas({
   glRef?: { current: THREE.WebGLRenderer | null };
   /** enable pointer picking on the model surface (mm coords). */
   pickEnabled?: boolean;
+  /** instant-preview transform applied to the model only (never overlays). */
+  modelMatrix?: THREE.Matrix4 | null;
   /** pointerdown + dragging-move picks (brush strokes). */
   onPick?: (info: PickInfo) => void;
-  /** hover picks (brush cursor) — null when the pointer leaves the model. */
+  /** hover picks (brush cursor) — rAF-throttled; null when leaving the model. */
   onHover?: (info: PickInfo | null) => void;
-  /** called once when the model group ref is populated. */
+  /** called once when the model content group (inside the pick frame) is ready —
+   *  use it for static analysis like the AABB evaluator. */
   onModel?: (g: THREE.Group) => void;
   children?: ReactNode;
 }) {
   const modelRef = useRef<THREE.Group | null>(null);
+  const frameRef = useRef<THREE.Group | null>(null);
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
   const dragging = useRef(false);
+  const hoverPending = useRef<PickInfo | null>(null);
+  const raf = useRef(0);
 
-  const pickHandlers = pickEnabled
+  const emitHover = () => {
+    raf.current = 0;
+    onHover?.(hoverPending.current);
+  };
+  const queueHover = (info: PickInfo | null) => {
+    hoverPending.current = info;
+    if (!raf.current) raf.current = requestAnimationFrame(emitHover);
+  };
+
+  useEffect(() => () => cancelAnimationFrame(raf.current), []);
+
+  const handlers = pickEnabled
     ? {
         onPointerDown: (e: ThreeEvent<PointerEvent>) => {
-          const info = pickFrom(e);
+          const frame = frameRef.current;
+          if (!frame) return;
+          const info = pickFrom(e, frame);
           if (!info) return;
           dragging.current = true;
           if (controlsRef.current) controlsRef.current.enabled = false;
@@ -154,8 +186,10 @@ export default function ModelCanvas({
           onPick?.(info);
         },
         onPointerMove: (e: ThreeEvent<PointerEvent>) => {
-          const info = pickFrom(e);
-          onHover?.(info);
+          const frame = frameRef.current;
+          if (!frame) return;
+          const info = pickFrom(e, frame);
+          queueHover(info);
           if (dragging.current && info) onPick?.(info);
         },
         onPointerUp: () => {
@@ -165,10 +199,12 @@ export default function ModelCanvas({
         onPointerLeave: () => {
           dragging.current = false;
           if (controlsRef.current) controlsRef.current.enabled = true;
-          onHover?.(null);
+          queueHover(null);
         },
       }
     : {};
+
+  const matrix = useMemo(() => modelMatrix ?? IDENTITY, [modelMatrix]);
 
   return (
     <Canvas camera={{ position: [60, 45, 60], fov: 40 }} gl={{ preserveDrawingBuffer: true }}>
@@ -186,12 +222,18 @@ export default function ModelCanvas({
               <group
                 ref={(g) => {
                   modelRef.current = g;
-                  if (g) onModel?.(g);
                 }}
-                {...pickHandlers}
+                {...handlers}
               >
-                <Gltf src={url} />
-                {/* overlays render in model space (mm) but must not intercept picks */}
+                {/* pick frame: carries the instant-preview matrix — picks and
+                    the AABB evaluator share this displayed-model space */}
+                <group ref={frameRef} matrixAutoUpdate={false} matrix={matrix}>
+                  <group ref={(g) => g && onModel?.(g)}>
+                    <Gltf src={url} />
+                  </group>
+                </group>
+                {/* overlays render in displayed-model space but must not
+                    intercept picks */}
                 <group raycast={NO_RAYCAST}>{children}</group>
               </group>
             </Center>
