@@ -577,6 +577,48 @@ def _write_mesh_json(project_id: Any, version_id: Any, info: dict[str, Any]) -> 
 # --------------------------------------------------------------------------- #
 
 
+def _synth_back_view(ctx: AgentCtx, iteration: int, outline_mm: list[list[float]]) -> Any | None:
+    """Filled-silhouette render of the measured plan-view outline as a
+    synthetic 'back' view — anchors a flat part's underside for the generator
+    without implying wrong bottom features (a mirrored photo would)."""
+    if len(outline_mm) < 3:
+        return None
+    try:
+        from PIL import Image, ImageDraw
+
+        xs = [p[0] for p in outline_mm]
+        ys = [p[1] for p in outline_mm]
+        x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+        span = max(x1 - x0, y1 - y0, 1e-9)
+        size = 512
+        pad = size * 0.08
+        scale = (size - 2 * pad) / span
+
+        def px(p: list[float]) -> tuple[float, float]:
+            return (
+                (p[0] - (x0 + x1) / 2) * scale + size / 2,
+                size / 2 - (p[1] - (y0 + y1) / 2) * scale,
+            )
+
+        img = Image.new("RGB", (size, size), "white")
+        ImageDraw.Draw(img).polygon([px(p) for p in outline_mm], fill="black")
+        out = storage.iteration_dir(ctx.project_id, ctx.version_id, iteration) / ("_synth_back.png")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        img.save(out)
+        from cadx.agent.types import InputAsset
+
+        return InputAsset(
+            asset_id="_synth_back",
+            kind="generated_image",
+            path=out,
+            caption="synthetic bottom silhouette (measured outline)",
+            filename="_synth_back.png",
+        )
+    except Exception:
+        log.debug("mesh.synth_back_failed", exc_info=True)
+        return None
+
+
 def _mesh_source_images(
     ctx: AgentCtx, iteration: int, spec: PartSpec | None = None
 ) -> tuple[list[Any], list[str]]:
@@ -586,6 +628,8 @@ def _mesh_source_images(
     Generator roles come from the intake's image_roles when available — a top
     view of a flat part feeds the generator's "front" slot (its hero view),
     side/back views map to their namesake roles, everything else is "other".
+    A flat part with no real bottom view additionally gets a filled-silhouette
+    'back' rendered from the measured outline.
     """
     images = [a for a in ctx.assets if a.kind in IMAGE_INPUT_KINDS]
     if not images:
@@ -615,8 +659,17 @@ def _mesh_source_images(
             if m.get("role") in ("top", "bottom"):
                 intake_roles[aid] = str(m["role"])
     if not intake_roles:
-        return ordered, ["front"] + ["other"] * (len(ordered) - 1)
-    return _map_gen_roles(ordered, intake_roles, flat)
+        roles = ["front"] + ["other"] * (len(ordered) - 1)
+    else:
+        ordered, roles = _map_gen_roles(ordered, intake_roles, flat)
+    if flat and "back" not in roles:
+        outline = _measured_plan_outline(ctx)
+        if outline:
+            synth = _synth_back_view(ctx, iteration, outline)
+            if synth is not None:
+                ordered = [*ordered, synth]
+                roles = [*roles, "back"]
+    return ordered, roles
 
 
 def _map_gen_roles(
@@ -652,14 +705,18 @@ def _map_gen_roles(
     return ordered, roles
 
 
-async def _resolve_mesh_adapter(ctx: AgentCtx, n_images: int) -> tuple[str, int]:
+async def _resolve_mesh_adapter(
+    ctx: AgentCtx, n_images: int, prefer: str | None = None, spec: Any | None = None
+) -> tuple[str, int]:
     """Pick (model_id, max_images) so the sidecar never sees an impossible request.
 
-    'auto' stays 'auto' for single-image runs (server-side device preference);
+    'auto' stays 'auto' for single-image runs unless bench data says otherwise;
     multi-image runs pick an explicit multiview adapter when one is available,
     else degrade to the best single-image adapter and cap the image list.
+    `prefer` is an explicit adapter override (candidate-screening winner).
+    Model choice is data-driven via DATA_DIR/mesh_bench.json when present.
     """
-    configured = ctx.settings.mesh_model or ctx.runtime_settings.mesh_model
+    configured = prefer or ctx.settings.mesh_model or ctx.runtime_settings.mesh_model
     try:
         health = await ctx.mesh.health() if ctx.mesh else None
     except Exception:
@@ -671,16 +728,21 @@ async def _resolve_mesh_adapter(ctx: AgentCtx, n_images: int) -> tuple[str, int]
         return configured, (m.max_images if m else n_images)
     if not models:
         return "auto", n_images
-    if n_images > 1:
-        multiview = [m for m in models if m.supports_multiview]
-        if multiview:
-            pick = sorted(
-                multiview, key=lambda m: (m.device == device, m.max_images), reverse=True
-            )[0]
-            return pick.id, pick.max_images
-        pick = sorted(models, key=lambda m: m.device == device, reverse=True)[0]
-        return pick.id, 1
-    return "auto", n_images
+    from cadx.agent.model_pick import load_bench, part_class, pick_adapter
+
+    bench = load_bench()
+    pick = pick_adapter(
+        models,
+        part_class(spec),
+        need_multiview=n_images > 1,
+        bench=bench,
+        device=device,
+    )
+    if pick is None:
+        return "auto", n_images
+    if bench is None and n_images <= 1:
+        return "auto", n_images  # no data — keep server-side device preference
+    return pick.id, (pick.max_images if n_images > 1 else n_images)
 
 
 def _base_seed(ctx: AgentCtx) -> int:
@@ -808,6 +870,31 @@ async def _autogen_hero_image(ctx: AgentCtx, spec: PartSpec | None, plan: Any) -
 _CANDIDATE_VIABLE_SCORE = 0.25
 
 
+async def _candidate_adapters(ctx: AgentCtx, n: int) -> list[str]:
+    """Adapter ids competing in best-of-N screening.
+
+    `mesh_candidate_adapters` (csv) pins the set explicitly; "" spreads the
+    candidates over the available adapters (device-native first) so different
+    models compete instead of only seeds."""
+    configured = [
+        a.strip()
+        for a in (ctx.runtime_settings.mesh_candidate_adapters or "").split(",")
+        if a.strip()
+    ]
+    if configured:
+        return configured[:n]
+    try:
+        health = await ctx.mesh.health() if ctx.mesh else None
+    except Exception:
+        health = None
+    models = [m for m in (health.models if health else []) if m.available and m.id != "fake"]
+    if len(models) <= 1:
+        return []
+    device = health.device if health else ""
+    models.sort(key=lambda m: (m.device == device, m.supports_multiview), reverse=True)
+    return [m.id for m in models[:n]]
+
+
 async def _candidate_seed(
     ctx: AgentCtx, iteration: int, spec: PartSpec, plan: Any, t0: float
 ) -> int | None:
@@ -818,67 +905,172 @@ async def _candidate_seed(
     the first roll but saves critique cycles on bad seeds."""
     s = ctx.runtime_settings
     n = s.mesh_candidates_per_iter
-    if n <= 1 or ctx.mesh_info.get("_candidates_done") or ctx.mesh is None:
+    if ctx.mesh_info.get("_candidates_done"):
         return None
     if iteration == 1 and ctx.mesh_raw_reuse is not None:
         return None  # parent mesh reuse — no fresh candidates needed
+    ctx.mesh_info["_candidates_done"] = True
+
+    # deterministic heightfield candidate for flat parts — exact footprint by
+    # construction. Without candidate screening it stands alone; with
+    # screening it competes against the generated candidates below.
+    hf = _try_heightfield_candidate(ctx, iteration, spec)
+    if hf is not None and (n <= 1 or ctx.mesh is None):
+        hf_rel, hf_score = hf
+        ctx.mesh_info["_heightfield_rel"] = hf_rel
+        await ctx.emit(
+            "meshgen",
+            iteration,
+            f"heightfield candidate scored {hf_score} — using deterministic flat-part mesh",
+        )
+        return None
+    if n <= 1 or ctx.mesh is None:
+        return None
     from cadx.config import get_settings
 
     if get_settings().agent_job_timeout_s - (time.monotonic() - t0) < 1800:
         return None
-    ctx.mesh_info["_candidates_done"] = True
     outline = _measured_plan_outline(ctx)
     base = _base_seed(ctx)
-    scores: dict[int, float] = {}
+    adapters = await _candidate_adapters(ctx, n)
+    scores: dict[tuple[int, str | None], float] = {}
     for i in range(n):
         seed_i = base + i * 1000
+        model_i = adapters[i % len(adapters)] if adapters else None
         rel = await _generate_mesh(
-            ctx, iteration, spec, plan, seed=seed_i, steps=s.mesh_candidate_steps, tag=f"_cand{i}"
+            ctx,
+            iteration,
+            spec,
+            plan,
+            seed=seed_i,
+            steps=s.mesh_candidate_steps,
+            tag=f"_cand{i}",
+            model=model_i,
         )
         if rel is None:
             continue
-        try:
-            import trimesh
-
-            from cadx.agent.mesh_score import score_raw_mesh
-            from cadx.cad.mesh_ops import (
-                orient,
-                orient_by_plan_view,
-                rest_on_xy_center,
-                scale_to_spec,
+        sc = _score_candidate_mesh(rel, spec, outline)
+        if sc is not None:
+            scores[(seed_i, model_i)] = sc
+    best_gen = 0.0
+    best_key: tuple[int, str | None] | None = None
+    if scores:
+        best_key = max(scores, key=lambda k: scores[k])
+        if scores[best_key] < _CANDIDATE_VIABLE_SCORE:
+            # every cheap roll missed aspect/footprint badly — the full-res
+            # generation would produce the same failure at 10x the cost
+            ctx.mesh_info["_mesh_hopeless"] = True
+            await ctx.emit(
+                "meshgen",
+                iteration,
+                f"candidate seeds scored: {scores} — none viable, skipping generation",
+            )
+        else:
+            best_gen = scores[best_key]
+            seed_i, model_i = best_key
+            ctx.mesh_info["_candidate_model"] = model_i
+            await ctx.emit(
+                "meshgen",
+                iteration,
+                f"candidate seeds scored: {scores} → using seed {seed_i}"
+                + (f" on adapter '{model_i}'" if model_i else ""),
             )
 
-            m = trimesh.load(storage.resolve(rel), force="mesh")
-            if not isinstance(m, trimesh.Trimesh):
-                continue
-            if outline:
-                hit = orient_by_plan_view(m, outline)
-                if hit is not None:
-                    m = orient(m, hit[0], hit[1], mirror_x=hit[2])
-            m, _, _ = scale_to_spec(m, spec)
-            m = rest_on_xy_center(m)
-            scores[seed_i] = score_raw_mesh(m, spec, outline)
-        except Exception as e:
-            log.warning("mesh.candidate_score_failed", seed=seed_i, error=str(e)[:160])
-    if not scores:
+    # heightfield candidate (built above) competes against the best seed
+    if hf is not None:
+        hf_rel, hf_score = hf
+        if hf_score > best_gen:
+            ctx.mesh_info["_heightfield_rel"] = hf_rel
+            ctx.mesh_info["_mesh_hopeless"] = False
+            await ctx.emit(
+                "meshgen",
+                iteration,
+                f"heightfield candidate scored {hf_score} > best seed {best_gen} — "
+                "using deterministic flat-part mesh",
+            )
+            return None
+    if best_key is None or ctx.mesh_info.get("_mesh_hopeless"):
         return None
-    best_seed = max(scores, key=lambda k: scores[k])
-    if scores[best_seed] < _CANDIDATE_VIABLE_SCORE:
-        # every cheap roll missed aspect/footprint badly — the full-res
-        # generation would produce the same failure at 10x the cost
-        ctx.mesh_info["_mesh_hopeless"] = True
-        await ctx.emit(
-            "meshgen",
-            iteration,
-            f"candidate seeds scored: {scores} — none viable, skipping generation",
+    return best_key[0]
+
+
+def _score_candidate_mesh(
+    rel: str, spec: PartSpec, outline: list[list[float]] | None
+) -> float | None:
+    """Load + orient + spec-scale a raw candidate GLB and score it."""
+    try:
+        import trimesh
+
+        from cadx.agent.mesh_score import score_raw_mesh
+        from cadx.cad.mesh_ops import (
+            orient,
+            orient_by_plan_view,
+            rest_on_xy_center,
+            scale_to_spec,
         )
+
+        m = trimesh.load(storage.resolve(rel), force="mesh")
+        if not isinstance(m, trimesh.Trimesh):
+            return None
+        if outline:
+            hit = orient_by_plan_view(m, outline)
+            if hit is not None:
+                m = orient(m, hit[0], hit[1], mirror_x=hit[2])
+        m, _, _ = scale_to_spec(m, spec)
+        m = rest_on_xy_center(m)
+        return score_raw_mesh(m, spec, outline)
+    except Exception as e:
+        log.warning("mesh.candidate_score_failed", rel=rel, error=str(e)[:160])
         return None
-    await ctx.emit(
-        "meshgen",
-        iteration,
-        f"candidate seeds scored: {scores} → using seed {best_seed}",
-    )
-    return best_seed
+
+
+def _try_heightfield_candidate(
+    ctx: AgentCtx, iteration: int, spec: PartSpec | None
+) -> tuple[str, float] | None:
+    """Build+score the deterministic flat-part candidate. Returns (glb relpath,
+    score) or None when not applicable/unbuildable."""
+    if spec is None or not getattr(ctx.runtime_settings, "mesh_heightfield_flat", True):
+        return None
+    outline = _measured_plan_outline(ctx)
+    # the measurement dict that produced the outline carries px_per_mm and
+    # points at the source image for the relief map
+    meas = None
+    for m in (ctx.measurements or {}).values():
+        if m.get("outline_mm") == outline:
+            meas = m
+            break
+    img_path = None
+    px_per_mm = None
+    if meas:
+        px_per_mm = meas.get("px_per_mm")
+        by_id = {a.asset_id: a for a in ctx.assets}
+        src = by_id.get(str(meas.get("asset_id")))
+        img_path = src.path if src else None
+    from cadx.agent.mesh_score import score_raw_mesh
+    from cadx.cad.heightfield import heightfield_candidate
+
+    mesh = heightfield_candidate(spec, outline, image_path=img_path, px_per_mm=px_per_mm)
+    if mesh is None:
+        return None
+    score = score_raw_mesh(mesh, spec, outline)
+    if score < _CANDIDATE_VIABLE_SCORE:
+        return None
+    it_dir = storage.iteration_dir(ctx.project_id, ctx.version_id, iteration)
+    it_dir.mkdir(parents=True, exist_ok=True)
+    out = it_dir / "mesh_raw_hf.glb"
+    try:
+        mesh.export(str(out), file_type="glb")
+    except Exception:
+        return None
+    ctx.mesh_info["generation"] = {
+        "model": "heightfield",
+        "seed": None,
+        "cached": False,
+        "heightfield": True,
+        "mesh_rel": storage.relpath(out),
+        "images": [],
+    }
+    return storage.relpath(out), score
 
 
 def _prepped_gen_images(ctx: AgentCtx, it_dir: Path, images: list[Any]) -> list[Any]:
@@ -953,6 +1145,7 @@ async def _generate_mesh(
     steps: int | None = None,
     tag: str = "",
     t0: float | None = None,
+    model: str | None = None,
 ) -> str | None:
     """MESH_GENERATE step. Returns the relpath of the raw GLB or None."""
     if ctx.mesh is None:
@@ -962,6 +1155,10 @@ async def _generate_mesh(
     # best-of-N: pick the strongest seed once per job before the full run
     if seed is None and t0 is not None:
         seed = await _candidate_seed(ctx, iteration, spec, plan, t0)
+        hf_rel = ctx.mesh_info.get("_heightfield_rel")
+        if hf_rel:
+            await ctx.emit("meshgen", iteration, "using heightfield candidate mesh")
+            return str(hf_rel)
 
     it_dir = storage.iteration_dir(ctx.project_id, ctx.version_id, iteration)
     out_path = it_dir / f"mesh_raw{tag}.glb"
@@ -983,7 +1180,9 @@ async def _generate_mesh(
     base_seed = _base_seed(ctx)
     if seed is None:
         seed = base_seed + iteration - 1
-    model, img_cap = await _resolve_mesh_adapter(ctx, len(images))
+    model, img_cap = await _resolve_mesh_adapter(
+        ctx, len(images), prefer=model or ctx.mesh_info.get("_candidate_model"), spec=spec
+    )
     if len(images) > img_cap:
         await ctx.emit(
             "meshgen",

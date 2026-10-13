@@ -837,3 +837,116 @@ async def test_generate_mesh_cache_hit_skips_server(tmp_path):
     assert rel1 and rel2
     assert len(mesh.calls) == 1  # second call served from cache
     assert ctx.mesh_info["generation"]["cached"] is True
+
+
+# --------------------------------------------------------------------------- #
+# M2: silhouette back view + heightfield candidate + multi-adapter screening
+
+
+def test_mesh_source_images_adds_synth_back_view_for_flat_parts():
+    """Flat part with a measured outline and no bottom view gets a synthetic
+    filled-silhouette 'back' so the generator anchors the underside."""
+    from cadx.agent.orchestrator import _mesh_source_images
+
+    top = _img()
+    spec = PartSpec(
+        name="scale",
+        length_x={"value": 119.0, "source": "stated"},
+        width_y={"value": 34.0, "source": "stated"},
+        height_z={"value": 8.0, "source": "stated"},
+        image_roles=[{"asset_id": top.asset_id, "role": "top"}],
+    )
+    ctx = _ctx(assets=[top])
+    ctx.measurements = {
+        top.asset_id: {
+            "role": "top",
+            "confidence": 0.9,
+            "outline_mm": [[-60, -17], [60, -17], [60, 17], [-60, 17], [-60, -17]],
+        }
+    }
+    ordered, roles = _mesh_source_images(ctx, 1, spec)
+    assert roles[0] == "front"
+    assert roles[-1] == "back"
+    assert ordered[-1].asset_id == "_synth_back"
+    assert ordered[-1].path.exists()
+
+
+def test_mesh_source_images_no_synth_back_when_outline_missing():
+    from cadx.agent.orchestrator import _mesh_source_images
+
+    top = _img()
+    spec = PartSpec(
+        name="scale",
+        length_x={"value": 119.0, "source": "stated"},
+        width_y={"value": 34.0, "source": "stated"},
+        height_z={"value": 8.0, "source": "stated"},
+        image_roles=[{"asset_id": top.asset_id, "role": "top"}],
+    )
+    ctx = _ctx(assets=[top])
+    ctx.measurements = {top.asset_id: {"role": "top", "confidence": 0.9}}
+    _ordered, roles = _mesh_source_images(ctx, 1, spec)
+    assert roles == ["front"]
+
+
+async def test_candidate_adapters_prefers_configured_csv():
+    from cadx.agent.orchestrator import _candidate_adapters
+
+    ctx = _ctx(
+        runtime_settings=RuntimeSettings(mesh_candidate_adapters="triposg, hunyuan3d, trellis2")
+    )
+    assert await _candidate_adapters(ctx, 2) == ["triposg", "hunyuan3d"]
+
+
+async def test_candidate_adapters_auto_spreads_over_health():
+    from cadx.agent.orchestrator import _candidate_adapters
+
+    class _Multi(FakeMeshClient):
+        async def health(self):
+            return MeshHealth(
+                ok=True,
+                device="mps",
+                models=[
+                    MeshModelInfo(id="hunyuan3d", device="mps", supports_multiview=True),
+                    MeshModelInfo(id="triposg", device="cpu", supports_multiview=True),
+                    MeshModelInfo(id="dead", available=False),
+                ],
+            )
+
+    ctx = _ctx(mesh=_Multi())
+    got = await _candidate_adapters(ctx, 4)
+    assert got == ["hunyuan3d", "triposg"]  # device-native first, dead skipped
+
+
+async def test_generate_mesh_uses_heightfield_for_flat_part():
+    """With a measured outline + flat spec the deterministic heightfield
+    candidate wins even without candidate screening — no generator call."""
+    import time
+
+    from cadx.agent.orchestrator import _generate_mesh
+
+    top = _img()
+    spec = PartSpec(
+        name="scale",
+        length_x={"value": 119.0, "source": "stated"},
+        width_y={"value": 34.0, "source": "stated"},
+        height_z={"value": 8.0, "source": "stated"},
+        image_roles=[{"asset_id": top.asset_id, "role": "top"}],
+    )
+    mesh = FakeMeshClient()
+    ctx = _ctx(
+        assets=[top],
+        mesh=mesh,
+        mesh_available=True,
+        runtime_settings=RuntimeSettings(mesh_candidates_per_iter=1, mesh_prep_images=False),
+    )
+    ctx.measurements = {
+        top.asset_id: {
+            "role": "top",
+            "confidence": 0.9,
+            "outline_mm": [[-60, -17], [60, -17], [60, 17], [-60, 17], [-60, -17]],
+        }
+    }
+    rel = await _generate_mesh(ctx, 1, spec, None, t0=time.monotonic())
+    assert rel and rel.endswith("mesh_raw_hf.glb")
+    assert mesh.calls == []  # generator never ran
+    assert ctx.mesh_info["generation"]["heightfield"] is True

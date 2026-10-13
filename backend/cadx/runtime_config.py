@@ -81,6 +81,8 @@ class RuntimeSettings(BaseModel):
     mesh_smooth_after_flatten_iters: int = Field(default=10, ge=0, le=30)
     mesh_candidates_per_iter: int = Field(default=2, ge=1, le=4)
     mesh_candidate_steps: int = Field(default=15, ge=5, le=100)
+    mesh_candidate_adapters: str = ""  # csv adapter ids; "" = auto spread over available
+    mesh_heightfield_flat: bool = True  # deterministic flat-part candidate
     mesh_prep_images: bool = True
     mesh_cache_enabled: bool = True
     exec_timeout_s: int = Field(default=180, ge=1, le=86_400)

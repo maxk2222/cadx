@@ -12,6 +12,19 @@ from __future__ import annotations
 from typing import Any
 
 
+def _height_score(z: float, spec: Any) -> float:
+    """How close the part's Z extent is to the stated height (1 = exact).
+
+    Catches the classic failure where a plan-view input becomes a standing
+    volumetric object (119x113x111 instead of 119x34x8) — the X/Y aspect term
+    alone lets that slip when L/W coincidentally match."""
+    H = float(spec.height_z.value or 0)
+    if H <= 0 or z <= 0:
+        return 0.5  # no stated height — neutral
+    dev = abs(z - H) / H
+    return max(0.0, 1.0 - min(dev, 1.0))
+
+
 def score_mesh_candidate(
     exec_result: dict[str, Any],
     spec: Any,
@@ -19,9 +32,8 @@ def score_mesh_candidate(
 ) -> float:
     """Score a processed-mesh exec_result in [0, 1].
 
-    0.4 aspect ratio agreement + 0.4 footprint IoU (when a measured outline
-    exists; weight folds into aspect otherwise) + 0.2 detected tunnel count
-    vs declared hole features.
+    aspect ratio + footprint IoU (when a measured outline exists) + height
+    agreement + detected tunnel count vs declared hole features.
     """
     analysis = exec_result.get("analysis") or {}
     bbox = analysis.get("bbox_size") or []
@@ -31,6 +43,7 @@ def score_mesh_candidate(
     if L > 0 and W > 0 and len(bbox) == 3 and bbox[0] > 0 and bbox[1] > 0:
         dev = abs(bbox[0] / bbox[1] - L / W) / (L / W)
         aspect = max(0.0, 1.0 - min(dev, 1.0))
+    height = _height_score(float(bbox[2]) if len(bbox) == 3 else 0.0, spec)
 
     iou = 0.0
     feats = (exec_result.get("mesh") or {}).get("features") or {}
@@ -57,13 +70,13 @@ def score_mesh_candidate(
     if has_outline:
         if spec_holes:
             holes = min(len(tunnels) / spec_holes, 1.0)
-            return round(0.4 * aspect + 0.4 * iou + 0.2 * holes, 3)
-        # no declared holes — tunnels would be artefacts; weight aspect+IoU
-        return round(0.5 * aspect + 0.5 * iou, 3)
+            return round(0.3 * aspect + 0.3 * iou + 0.2 * height + 0.2 * holes, 3)
+        # no declared holes — tunnels would be artefacts; weight the rest
+        return round(0.35 * aspect + 0.4 * iou + 0.25 * height, 3)
     if spec_holes:
         holes = min(len(tunnels) / spec_holes, 1.0)
-        return round(0.7 * aspect + 0.3 * holes, 3)
-    return round(aspect, 3)
+        return round(0.5 * aspect + 0.3 * height + 0.2 * holes, 3)
+    return round(0.6 * aspect + 0.4 * height, 3)
 
 
 def score_raw_mesh(mesh: Any, spec: Any, plan_outline: list[list[float]] | None = None) -> float:
@@ -115,12 +128,13 @@ def score_raw_mesh(mesh: Any, spec: Any, plan_outline: list[list[float]] | None 
     )
     tunnels = [h for h in feats.holes if h.kind == "tunnel"]
 
+    height = _height_score(ext[2], spec)
     if has_outline:
         if spec_holes:
             holes = min(len(tunnels) / spec_holes, 1.0)
-            return round(0.4 * aspect + 0.4 * iou + 0.2 * holes, 3)
-        return round(0.5 * aspect + 0.5 * iou, 3)
+            return round(0.3 * aspect + 0.3 * iou + 0.2 * height + 0.2 * holes, 3)
+        return round(0.35 * aspect + 0.4 * iou + 0.25 * height, 3)
     if spec_holes:
         holes = min(len(tunnels) / spec_holes, 1.0)
-        return round(0.7 * aspect + 0.3 * holes, 3)
-    return round(aspect, 3)
+        return round(0.5 * aspect + 0.3 * height + 0.2 * holes, 3)
+    return round(0.6 * aspect + 0.4 * height, 3)

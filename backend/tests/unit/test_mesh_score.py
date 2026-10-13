@@ -49,5 +49,13 @@ def test_blob_candidate_scores_low():
 def test_no_outline_falls_back_to_aspect():
     res = _res([119.0, 38.0, 8.0])
     assert score_mesh_candidate(res, _Spec(), None) > 0.9
-    res = _res([60.0, 60.0, 8.0])
+    res = _res([60.0, 60.0, 30.0])
     assert score_mesh_candidate(res, _Spec(), None) < 0.5
+
+
+def test_banana_candidate_killed_by_height():
+    """A standing volumetric mesh from a plan-view input scores hopeless."""
+    res = _res([119.0, 113.0, 111.0])
+    assert score_mesh_candidate(res, _Spec(), RECT) < 0.3
+    res = _res([119.0, 113.0, 111.0])
+    assert score_mesh_candidate(res, _Spec(), None) < 0.25
