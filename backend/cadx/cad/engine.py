@@ -24,6 +24,7 @@ from cadx.cad.dfm.fdm import fdm_checks, fdm_mesh_checks
 from cadx.cad.dfm.report import DfmWarning
 from cadx.cad.exporters import export_2d, export_all_3d, export_mesh_all, quick_stl
 from cadx.cad.mesh_ops import (
+    MESH_OPS_VERSION,
     MeshPostParams,
     apply_ops,
     baseline_mesh,
@@ -310,6 +311,7 @@ def run_mesh_pipeline(  # noqa: C901
     name: str = "model",
     make_solid: bool = False,
     skip_baseline: bool = False,
+    anchors: dict[str, Any] | None = None,
 ) -> ExecResult:
     """Mesh-mode pipeline: clean -> orient -> scale -> analyse -> render -> DfM -> export.
 
@@ -345,9 +347,19 @@ def run_mesh_pipeline(  # noqa: C901
 
     # 5b. agent transform ops (validated MeshOp list inside post.params)
     if post.ops:
+        if post.ops_version and post.ops_version != MESH_OPS_VERSION:
+            log.warning(
+                "mesh.ops_version_mismatch",
+                recorded=post.ops_version,
+                current=MESH_OPS_VERSION,
+            )
+            res.mesh["ops_version_warning"] = (
+                f"ops recorded with version {post.ops_version}, replayed with "
+                f"{MESH_OPS_VERSION} — semantics may differ"
+            )
         t = time.monotonic()
         try:
-            mesh, op_report = apply_ops(mesh, post.ops)
+            mesh, op_report = apply_ops(mesh, post.ops, anchors=anchors)
         except Exception as e:
             res.error = f"mesh op failed: {e}"
             return res

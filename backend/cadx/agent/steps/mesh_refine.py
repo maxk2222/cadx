@@ -38,6 +38,18 @@ log = get_logger(__name__)
 STEP = "meshrefine"
 
 
+def _measured_outline(ctx: AgentCtx) -> list[list[float]]:
+    """Best measured plan-view outline (confidence >= 0.5) — same selection
+    the orchestrator uses for footprint scoring/clipping."""
+    best: tuple[float, list[list[float]]] | None = None
+    for m in (ctx.measurements or {}).values():
+        conf = float(m.get("confidence") or 0)
+        outline = m.get("outline_mm") or []
+        if conf >= 0.5 and len(outline) >= 3 and (best is None or conf > best[0]):
+            best = (conf, outline)
+    return best[1] if best else []
+
+
 @dataclass
 class RefineResult:
     ops: list[MeshOp] = field(default_factory=list)
@@ -117,6 +129,8 @@ async def run(
         initial_ops=initial,
         preview_budget=getattr(s, "agent_mesh_preview_max", 4),
         max_ops=getattr(s, "agent_mesh_max_ops", 24),
+        anchors=ctx.anchors,
+        measured_outline=_measured_outline(ctx),
     )
     if wb.work is None:
         log.warning("mesh.refine_no_workbench", error=wb.error)

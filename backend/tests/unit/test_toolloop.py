@@ -463,7 +463,8 @@ def _mesh_wb(ctx: AgentCtx, tmp_path: Path, **kw):
 
     raw = tmp_path / "raw.glb"
     trimesh.creation.box([10, 10, 10]).export(str(raw), file_type="glb")
-    return MeshWorkbench(ctx, raw_path=raw, post=MeshPostParams(), spec=None, iteration=1, **kw)
+    kw.setdefault("spec", None)
+    return MeshWorkbench(ctx, raw_path=raw, post=MeshPostParams(), iteration=1, **kw)
 
 
 async def test_mesh_session_transform_and_done(tmp_path):
@@ -835,3 +836,63 @@ async def test_optimize_topopt_coerces_keep_regions():
     region = {"kind": "face", "axis": "-z", "margin_mm": 1.0}
     res = await session.execute("topopt_run", {"keep_regions": region})
     assert res["ok"] and seen["keep"] == [region]
+
+
+async def test_mesh_session_measure_section_overlay(tmp_path):
+    """New inspect tools: measure vs spec/anchors, section + overlay images."""
+    from cadx.llm.schemas import Dim, PartSpec
+
+    spec = PartSpec(
+        name="t",
+        summary="t",
+        units="mm",
+        length_x=Dim(value=10.0, unit="mm", source="stated"),
+        width_y=Dim(value=10.0, unit="mm", source="stated"),
+        height_z=Dim(value=10.0, unit="mm", source="stated"),
+        features=[],
+    )
+    anchors = {"holes": [{"index": 1, "x": 0.0, "y": 0.0, "dia": 4.0, "source": "image"}]}
+    outline = [[-5, -5], [5, -5], [5, 5], [-5, 5], [-5, -5]]
+    ctx = _ctx(FakeLLM([]))
+    wb = _mesh_wb(
+        ctx, tmp_path, spec=spec, anchors=anchors, measured_outline=outline
+    )
+    r = await wb.handle("mesh_inspect", {})
+    assert r["ok"] and r["features"]["outline_points"] >= 3 and r["anchors"]
+    r = await wb.handle("mesh_measure", {})
+    assert r["ok"] and r["spec_delta_mm"]["length_x"] == pytest.approx(0.0, abs=0.1)
+    assert r["missing_holes"] == 1 and "drill_holes" in r["hint"]
+    r = await wb.handle("mesh_overlay", {})
+    assert r["ok"] and r["_images"] and r["preview_left"] == 3
+    r = await wb.handle("mesh_section", {"axis": "z"})
+    assert r["ok"] and r["_images"]
+    r = await wb.handle("mesh_section", {"axis": "z", "at_mm": 99.0})
+    assert r["ok"] is False and "outside" in r["error"]
+
+
+async def test_mesh_session_drill_holes_via_tool(tmp_path):
+    """mesh_drill_holes with from_anchors drills a real tunnel."""
+    ctx = _ctx(FakeLLM([]))
+    wb = _mesh_wb(
+        ctx, tmp_path, anchors={"holes": [{"index": 1, "x": 0.0, "y": 0.0, "dia": 4.0}]}
+    )
+    r = await wb.handle("mesh_drill_holes", {"from_anchors": True})
+    assert r["ok"], r
+    assert wb.ops[-1].op == "drill_holes"
+    m = await wb.handle("mesh_measure", {})
+    assert m["missing_holes"] == 0  # tunnel now exists at the anchor position
+
+
+async def test_mesh_session_new_ops_via_tools(tmp_path):
+    ctx = _ctx(FakeLLM([]))
+    wb = _mesh_wb(ctx, tmp_path)
+    assert (await wb.handle("mesh_clip_height", {"z_max": 5.0}))["ok"]
+    assert wb.work.bounds[1][2] == pytest.approx(5.0, abs=0.5)
+    assert (await wb.handle("mesh_symmetrize", {"axis": "y"}))["ok"]
+    assert wb.work.is_watertight
+    assert (await wb.handle("mesh_remesh", {"voxel_mm": 1.0}))["ok"]
+    # part is only 5 mm thick after clip_height — use a thin shell
+    assert (await wb.handle("mesh_shell", {"thickness_mm": 1.0, "opening": "bottom"}))["ok"]
+    # unknown tool still rejected
+    res = await wb.handle("mesh_teleport", {})
+    assert res["ok"] is False and "unknown mesh tool" in res["error"]

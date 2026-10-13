@@ -180,6 +180,7 @@ def run_mesh_payload(payload: dict[str, Any]) -> dict[str, Any]:
         name=payload.get("name", "model"),
         make_solid=bool(payload.get("make_solid")),
         skip_baseline=bool(payload.get("ops_only")),
+        anchors=payload.get("anchors"),
     )
 
     d = result.to_dict()

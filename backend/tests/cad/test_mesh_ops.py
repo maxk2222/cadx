@@ -501,3 +501,117 @@ def test_clip_to_outline_bad_outline_returns_input():
 
     mesh = trimesh.creation.box(extents=[10, 10, 10])
     assert clip_to_outline(mesh, []) is mesh
+
+
+# --------------------------------------------------------------------------- #
+# new ops: clip_height / symmetrize / remesh / drill_holes / shell
+# --------------------------------------------------------------------------- #
+
+
+def test_op_clip_height():
+    m = _box(10, 10, 30)
+    m.apply_translation([0, 0, 15])  # z in [0, 30]
+    out = apply_op(m, MeshOp(op="clip_height", args={"z_max": 8.0}))
+    assert out.extents[2] == pytest.approx(8.0, abs=0.5)
+    assert out.is_watertight
+    # no-op when nothing is above the ceiling
+    same = apply_op(m, MeshOp(op="clip_height", args={"z_max": 99.0}))
+    assert same.extents[2] == pytest.approx(30.0, abs=0.1)
+    # z_max below the mesh floor (floating mesh) removes everything
+    floating = _box(10, 10, 30)
+    floating.apply_translation([0, 0, 20])
+    with pytest.raises(ValueError, match="whole mesh"):
+        apply_op(floating, MeshOp(op="clip_height", args={"z_max": 5.0}))
+    with pytest.raises(ValidationError):
+        apply_op(m, MeshOp(op="clip_height", args={"z_max": 0.0}))
+
+
+def test_op_symmetrize_makes_symmetric():
+    # asymmetric: box + small bump on +y side only
+    base = _box(20, 20, 10)
+    base.apply_translation([0, 0, 5])
+    bump = trimesh.creation.icosphere(subdivisions=2, radius=3)
+    bump.apply_translation([0, 8, 8])
+    asym = base.union(bump, engine="manifold")
+    out = apply_op(asym, MeshOp(op="symmetrize", args={"axis": "y", "keep": "neg"}))
+    assert out.is_watertight
+    # result is symmetric about its own bbox centre on the y axis
+    c = float((out.bounds[0][1] + out.bounds[1][1]) / 2.0)
+    neg = out.slice_plane([0, c, 0], [0, -1, 0], cap=True)
+    pos = out.slice_plane([0, c, 0], [0, 1, 0], cap=True)
+    assert abs(neg.volume) == pytest.approx(abs(pos.volume), rel=0.05)
+    # keep='neg' drops the +y bump → volume ≈ plain box
+    assert abs(out.volume) == pytest.approx(4000.0, rel=0.1)
+
+
+def test_op_remesh_watertight():
+    m = trimesh.creation.icosphere(subdivisions=2, radius=15)
+    out = apply_op(m, MeshOp(op="remesh", args={"voxel_mm": 1.0}))
+    assert out.is_watertight
+    assert len(out.faces) > 0
+    # pitch guard fires before voxelizing (huge extent at fine pitch)
+    big = _box(500, 500, 500)
+    with pytest.raises(ValueError, match="too fine"):
+        apply_op(big, MeshOp(op="remesh", args={"voxel_mm": 0.5}))
+    with pytest.raises(ValidationError):
+        apply_op(m, MeshOp(op="remesh", args={"voxel_mm": 0.01}))
+
+
+def test_op_drill_holes_explicit():
+    m = _box(40, 30, 8)
+    m.apply_translation([0, 0, 4])
+    out = apply_op(
+        m,
+        MeshOp(
+            op="drill_holes",
+            args={"holes": [{"x": 0.0, "y": 0.0, "dia": 6.0}]},
+        ),
+    )
+    assert out.is_watertight
+    assert abs(out.volume) < abs(m.volume)
+    # the hole must be a real tunnel
+    from cadx.cad.mesh_features import detect_mesh_features
+
+    feats = detect_mesh_features(out, step_mm=0.5)
+    tunnels = [h for h in feats.holes if h.kind == "tunnel"]
+    assert len(tunnels) == 1
+    assert tunnels[0].x == pytest.approx(0.0, abs=1.0)
+    assert tunnels[0].dia == pytest.approx(6.0, abs=1.5)
+
+
+def test_op_drill_holes_countersink_and_anchors():
+    m = _box(40, 30, 8)
+    m.apply_translation([0, 0, 4])
+    anchors = {"holes": [{"x": 10.0, "y": -5.0, "dia": 5.0}]}
+    out = apply_op(
+        m,
+        MeshOp(
+            op="drill_holes",
+            args={
+                "from_anchors": True,
+                "holes": [
+                    {"x": -10.0, "y": 5.0, "dia": 4.0, "csk_dia": 8.0, "csk_angle_deg": 90.0}
+                ],
+            },
+        ),
+        anchors=anchors,
+    )
+    assert out.is_watertight
+    assert abs(out.volume) < abs(m.volume)
+    with pytest.raises(ValueError, match="no anchors"):
+        apply_op(m, MeshOp(op="drill_holes", args={"from_anchors": True}))
+    with pytest.raises(ValueError, match="no holes"):
+        apply_op(m, MeshOp(op="drill_holes", args={}))
+
+
+def test_op_shell_open_bottom():
+    m = _box(40, 40, 40)
+    m.apply_translation([0, 0, 20])
+    out = apply_op(m, MeshOp(op="shell", args={"thickness_mm": 4.0, "opening": "bottom"}))
+    assert len(out.faces) > 0
+    # hollow → less volume than the solid box, still has the outer shell
+    assert abs(out.volume) < abs(m.volume) * 0.9
+    sealed = apply_op(m, MeshOp(op="shell", args={"thickness_mm": 4.0, "opening": "none"}))
+    assert sealed.is_watertight
+    with pytest.raises(ValueError, match="too thin"):
+        apply_op(_box(4, 4, 4), MeshOp(op="shell", args={"thickness_mm": 8.0}))

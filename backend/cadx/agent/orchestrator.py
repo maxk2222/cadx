@@ -36,6 +36,7 @@ from cadx.cad.allowlist import check_code
 from cadx.cad.features import compare_features
 from cadx.cad.fem.analyze import FemReport, fem_feedback_lines
 from cadx.cad.mesh_ops import (
+    MESH_OPS_VERSION,
     MeshOp,
     MeshPostParams,
     merge_post_params,
@@ -368,6 +369,7 @@ def _mesh_payload(
         "mode": mode,
         "mesh_rel": mesh_rel,
         "post": (post or MeshPostParams()).model_dump(),
+        "anchors": ctx.anchors,
         "spec": spec.model_dump() if spec else None,
         "settings": ctx.settings.model_dump(),
         "runtime_settings": ctx.runtime_settings.executor_values(),
@@ -1567,9 +1569,13 @@ async def _run_cad(  # noqa: C901
         # more improve loops are unlikely to converge, finalise what we have.
         # Score plateau counts too: a reshuffling `best` on dim-issues while
         # the critique score stays flat is still a stall.
-        if best is not None and s.agent_stall_patience and (
-            it - best.iteration >= s.agent_stall_patience
-            or it - best_score_it >= s.agent_stall_patience
+        if (
+            best is not None
+            and s.agent_stall_patience
+            and (
+                it - best.iteration >= s.agent_stall_patience
+                or it - best_score_it >= s.agent_stall_patience
+            )
         ):
             await ctx.emit(
                 "finalize",
@@ -1727,6 +1733,8 @@ async def _run_mesh(  # noqa: C901
         it: int, mesh_rel: str, post: MeshPostParams, rr: mesh_refine_step.RefineResult
     ) -> dict[str, Any]:
         post.ops = rr.ops
+        if rr.ops:
+            post.ops_version = MESH_OPS_VERSION
         await ctx.emit("meshprocess", it, f"re-processing mesh with {len(rr.ops)} op(s)")
         res = await _process_mesh(ctx, it, mesh_rel, spec, post)
         ctx.mesh_info["post"] = post.model_dump()

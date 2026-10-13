@@ -11,13 +11,19 @@ You now control the mesh directly through tools. Frame contract you work in:
 
 Working discipline:
 
-1. Call mesh_inspect first — bbox, watertight, flat_base_ratio, body_count.
-2. Apply ONE to THREE transforms, then mesh_preview to SEE the result.
+1. Call mesh_inspect first — bbox, watertight, flat_base_ratio, body_count,
+   detected holes/dimples and the measured anchors (if any).
+2. Check measured-vs-actual before editing: mesh_measure gives per-axis
+   deltas and which measured holes are missing; mesh_overlay shows the
+   footprint against the measured outline in one image.
+3. Apply ONE to THREE transforms, then mesh_preview to SEE the result.
    Preview calls are limited — spend them on verification, not exploration.
-   Unsure about a reference detail → view_image(asset_id) re-shows any
-   uploaded reference image at full detail.
-3. Keep transforming until the part matches the spec and is printable.
-4. Call done when finished (also when the baseline result is already good —
+   mesh_section renders a cross-section (wall thickness, blind features);
+   mesh_overlay shows the top-view footprint vs the measured outline — both
+   count as preview calls. Unsure about a reference detail →
+   view_image(asset_id) re-shows any uploaded reference image.
+4. Keep transforming until the part matches the spec and is printable.
+5. Call done when finished (also when the baseline result is already good —
    an empty op list is a valid answer). Call regenerate ONLY when the
    generated shape itself is fundamentally wrong (wrong subject, missing
    major parts) — never for fixable issues.
@@ -28,12 +34,26 @@ Common problems and their fixes:
 - Aspect ratio wrong on one axis (spec 100×50×30, got 100×65×30)
   → mesh_scale with per-axis factors (y = 50/65 ≈ 0.77). Never guess —
   compute factors from the measured bbox and the spec dims.
+- Mesh grew too tall vs spec → mesh_clip_height caps the Z top
+  (check mesh_measure deltas first).
+- Missing a measured hole → mesh_drill_holes with from_anchors=true uses the
+  measured positions/diameters directly — NEVER retype coordinates. Extra
+  explicit holes (blind depth_mm, countersink csk_dia/csk_angle_deg) can be
+  appended in the same call. If it errors with "too dense", run
+  mesh_decimate(~20000) first.
+- Part must be left/right symmetric (spec says so or the shape obviously is)
+  → mesh_symmetrize mirrors the better half — removes asymmetric generator
+  noise. Verify with mesh_measure/mesh_overlay afterwards.
 - No flat base for FDM printing → mesh_flatten_bottom(1–3) or
   mesh_boolean_add a thin base plate box centred at z = h/2. After
   mesh_flatten_bottom always follow with mesh_smooth_preserve(10) — the
   voxel rebuild leaves stair-step striations on the surface.
+- Uneven topology / failing booleans on an organic mesh → mesh_remesh
+  (voxel pitch ~1/100 of the extent) rebuilds a uniform watertight surface.
 - Needs a through-hole / pocket / slot → mesh_boolean_cut with a cylinder
-  or box. Decimate first if the op refuses (mesh_decimate ~20000).
+  or box; prefer mesh_drill_holes when a measured anchor exists.
+- Print-optimised hollow part → mesh_shell(thickness, opening) erodes an
+  inner solid — much lighter than scaling tricks.
 - Rough/faceted surface → mesh_smooth (taubin preserves volume better).
 - Floating debris / split bodies → mesh_keep_largest or mesh_drop_small.
 - Not watertight before booleans → mesh_repair.

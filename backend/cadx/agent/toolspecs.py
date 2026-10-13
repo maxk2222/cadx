@@ -466,8 +466,8 @@ MESH_INFO_TOOLS = [
     _fn(
         "mesh_inspect",
         "Measured facts about the CURRENT working mesh: bbox, volume, "
-        "watertight, triangle count, flat-base ratio, body count, ops applied "
-        "so far.",
+        "watertight, triangle count, flat-base ratio, body count, detected "
+        "holes/dimples, measured anchors, ops applied so far.",
         {},
         [],
     ),
@@ -475,6 +475,36 @@ MESH_INFO_TOOLS = [
         "mesh_preview",
         "Render the current working mesh (iso/front/top views) and see the "
         "result as images. Limited calls — use to verify your transforms.",
+        {},
+        [],
+    ),
+    _fn(
+        "mesh_measure",
+        "Compare the working mesh against the spec: per-axis bbox deltas (mm), "
+        "detected tunnels vs measured anchor positions (dist + dia), "
+        "missing-hole count. No image output — pure numbers.",
+        {},
+        [],
+    ),
+    _fn(
+        "mesh_section",
+        "Rasterised cross-section of the mesh at an axis-aligned plane — "
+        "inspect internal structure, wall thickness, blind features. "
+        "Counts as a preview call.",
+        {
+            "axis": _AXIS,
+            "at_mm": {
+                "type": "number",
+                "description": "plane position in mm (default: bbox centre)",
+            },
+        },
+        ["axis"],
+    ),
+    _fn(
+        "mesh_overlay",
+        "Top-view overlay image: measured outline (red) vs current mesh "
+        "footprint (blue) vs anchor positions (green). Best single check for "
+        "footprint/hole alignment.",
         {},
         [],
     ),
@@ -577,6 +607,71 @@ MESH_TRANSFORM_TOOLS = [
         "mesh_repair",
         "Re-run the cleaning pass: merge vertices, fix normals, fill holes, drop tiny floaters.",
         {},
+        [],
+    ),
+    _fn(
+        "mesh_clip_height",
+        "Cut + cap everything above `z_max` mm — a hard ceiling on height "
+        "(e.g. a mesh that grew too tall vs the spec).",
+        {"z_max": {"type": "number", "description": "max height in mm"}},
+        ["z_max"],
+    ),
+    _fn(
+        "mesh_symmetrize",
+        "Mirror the better half across the symmetry plane at the bbox centre. "
+        "For parts that must be left/right symmetric — picks the bigger half "
+        "by default (keep: auto|pos|neg).",
+        {
+            "axis": _AXIS,
+            "keep": {"type": "string", "enum": ["auto", "pos", "neg"]},
+        },
+        [],
+    ),
+    _fn(
+        "mesh_remesh",
+        "Uniform voxel remesh — watertight by construction, evens topology. "
+        "Use before booleans on organic meshes or when faces are uneven.",
+        {"voxel_mm": {"type": "number", "description": "voxel pitch in mm (0.05-5)"}},
+        ["voxel_mm"],
+    ),
+    _fn(
+        "mesh_shell",
+        "Hollow the part: erode an inner solid by `thickness_mm` and subtract "
+        "it — print-optimised hollow shell. `opening` slices one face open.",
+        {
+            "thickness_mm": {"type": "number", "description": "wall thickness mm"},
+            "opening": {"type": "string", "enum": ["none", "bottom", "top"]},
+        },
+        ["thickness_mm"],
+    ),
+    _fn(
+        "mesh_drill_holes",
+        "Drill vertical holes at MEASURED positions — with "
+        "from_anchors=true the measured anchor positions/diameters are used "
+        "directly (never retype coordinates). An explicit holes list may add "
+        "extra holes; depth_mm for blind holes, csk_dia/csk_angle_deg for "
+        "countersinks.",
+        {
+            "from_anchors": {
+                "type": "boolean",
+                "description": "drill all measured anchor holes",
+            },
+            "holes": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "x": {"type": "number"},
+                        "y": {"type": "number"},
+                        "dia": {"type": "number"},
+                        "depth_mm": {"type": "number"},
+                        "csk_dia": {"type": "number"},
+                        "csk_angle_deg": {"type": "number"},
+                    },
+                    "required": ["x", "y", "dia"],
+                },
+            },
+        },
         [],
     ),
     _fn(
@@ -1291,7 +1386,9 @@ class ToolSession:
         cases = self._coerce_obj_list(a.get("load_cases"))
         if not isinstance(cases, list) or not cases:
             return {"ok": False, "error": "load_cases must be a non-empty list"}
-        res = await self.preview_fn({**a, "load_cases": cases, "keep_regions": self._coerce_obj_list(a.get("keep_regions"))})
+        res = await self.preview_fn(
+            {**a, "load_cases": cases, "keep_regions": self._coerce_obj_list(a.get("keep_regions"))}
+        )
         if not res.get("ok"):
             return {"ok": False, "error": res.get("error") or "preview failed"}
         prev = res.get("preview") or {}

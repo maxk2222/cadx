@@ -9,6 +9,7 @@ resting on XY, centred at origin).
 
 from __future__ import annotations
 
+import contextlib
 import math
 import tempfile
 from collections.abc import Callable, Sequence
@@ -68,6 +69,7 @@ class MeshPostParams(BaseModel):
     flatten_bottom_mm: float = 0.0  # cut + cap at this height above bbox min Z
     mirror_x: bool = False
     ops: list[MeshOp] = Field(default_factory=list)  # agent-applied transform sequence
+    ops_version: int = 0  # MESH_OPS_VERSION at record time; 0 = legacy/unknown
 
 
 def mesh_params_schema() -> list[ParamDef]:
@@ -596,6 +598,60 @@ class OpRepair(BaseModel):
     pass
 
 
+class OpClipHeight(BaseModel):
+    """Cut + cap everything above `z_max` mm — a hard ceiling on height."""
+
+    z_max: float = Field(gt=0.1, le=2000.0)
+
+
+class OpSymmetrize(BaseModel):
+    """Mirror the better half across the symmetry plane at the bbox centre.
+
+    `keep` selects which half survives: 'pos'/'neg' force a side, 'auto'
+    keeps the half with more volume (more material ≈ more detail)."""
+
+    axis: CartesianAxis = "y"
+    keep: Literal["auto", "pos", "neg"] = "auto"
+
+
+class OpRemesh(BaseModel):
+    """Uniform voxel remesh — watertight by construction, even topology.
+
+    Improves boolean robustness and gives smoothing a uniform base at the
+    cost of some surface detail (set by `voxel_mm`)."""
+
+    voxel_mm: float = Field(gt=0.05, le=5.0)
+
+
+class DrillHole(BaseModel):
+    """One vertical hole at a measured XY position (mm, frame coords)."""
+
+    x: float
+    y: float
+    dia: float = Field(gt=0.05, le=500.0)
+    depth_mm: float | None = Field(default=None, gt=0.0)  # None = through
+    csk_dia: float | None = Field(default=None, gt=0.05, le=500.0)  # countersink at +Z
+    csk_angle_deg: float = Field(default=90.0, gt=30.0, lt=180.0)
+
+
+class OpDrillHoles(BaseModel):
+    """Drill vertical holes — explicit `holes` list or `from_anchors` resolves
+    `version.analysis.anchors.holes` (x, y, dia) at replay time."""
+
+    holes: list[DrillHole] = Field(default_factory=list, max_length=64)
+    from_anchors: bool = False
+
+
+class OpShell(BaseModel):
+    """Hollow the part: erode an inner solid by `thickness_mm` and subtract it.
+
+    `opening` slices a face open after hollowing (FDM-friendly shell);
+    'none' produces a sealed hollow body."""
+
+    thickness_mm: float = Field(gt=0.2, le=20.0)
+    opening: Literal["none", "bottom", "top"] = "bottom"
+
+
 class OpBoolean(BaseModel):
     """Union/difference with a primitive placed in mm frame coordinates."""
 
@@ -748,6 +804,216 @@ def _op_repair(mesh: trimesh.Trimesh, p: OpRepair) -> trimesh.Trimesh:
     return clean(mesh)
 
 
+def _op_clip_height(mesh: trimesh.Trimesh, p: OpClipHeight) -> trimesh.Trimesh:
+    z0, z1 = float(mesh.bounds[0][2]), float(mesh.bounds[1][2])
+    if p.z_max <= z0 + 1e-3:
+        raise ValueError(f"z_max {p.z_max:g} would remove the whole mesh (min z = {z0:.2f})")
+    if p.z_max >= z1 - 1e-4:
+        return mesh  # nothing above the ceiling — no-op
+    out = mesh.slice_plane(plane_origin=[0.0, 0.0, p.z_max], plane_normal=[0, 0, -1], cap=True)
+    if out is None or not len(getattr(out, "faces", [])):
+        raise ValueError("clip_height removed the whole mesh")
+    return cast(trimesh.Trimesh, out)
+
+
+def _safe_volume(m: trimesh.Trimesh) -> float:
+    try:
+        return abs(float(m.volume))
+    except Exception:
+        return float(m.area)
+
+
+def _op_symmetrize(mesh: trimesh.Trimesh, p: OpSymmetrize) -> trimesh.Trimesh:
+    idx = "xyz".index(p.axis)
+    axis_vec = _CARTESIAN[p.axis]
+    c = float((mesh.bounds[0][idx] + mesh.bounds[1][idx]) / 2.0)
+    origin = np.zeros(3)
+    origin[idx] = c
+    neg = mesh.slice_plane(plane_origin=origin, plane_normal=-axis_vec, cap=True)
+    pos = mesh.slice_plane(plane_origin=origin, plane_normal=axis_vec, cap=True)
+    if neg is None or pos is None or not len(neg.faces) or not len(pos.faces):
+        raise ValueError("symmetrize cut produced an empty half")
+    if p.keep == "auto":
+        keep = neg if _safe_volume(neg) >= _safe_volume(pos) else pos
+    else:
+        keep = pos if p.keep == "pos" else neg
+    # reflect the kept half across the centre plane
+    m = np.eye(4)
+    m[:3, :3] = np.eye(3) - 2.0 * np.outer(axis_vec, axis_vec)
+    m[:3, 3] = 2.0 * c * axis_vec
+    mirrored = keep.copy()
+    mirrored.apply_transform(m)
+    mirrored.invert()  # reflection flips winding
+
+    # drop the coincident cap faces on the mirror plane — without that the
+    # seam edges would be shared by 4 faces (non-manifold)
+    def _drop_cap_faces(part: trimesh.Trimesh) -> trimesh.Trimesh:
+        centers = np.asarray(part.triangles_center)
+        normals = np.asarray(part.face_normals)
+        on_plane = np.abs(centers[:, idx] - c) < 1e-4
+        facing = np.abs(normals @ axis_vec) > 0.9
+        mask = ~(on_plane & facing)
+        if not mask.any():
+            return part
+        out = part.copy()
+        out.update_faces(mask)
+        out.remove_unreferenced_vertices()
+        return out
+
+    out = cast(
+        trimesh.Trimesh,
+        trimesh.util.concatenate([_drop_cap_faces(keep), _drop_cap_faces(mirrored)]),
+    )
+    out.merge_vertices()
+    return clean(out, min_component_frac=0.0)
+
+
+def _voxel_remesh(mesh: trimesh.Trimesh, pitch_mm: float) -> trimesh.Trimesh:
+    """Voxelize + fill + marching-cubes, cropped back to the original bounds
+    (voxel padding grows the envelope ~1 pitch on every side)."""
+    vg = mesh.voxelized(pitch_mm)
+    with contextlib.suppress(Exception):
+        vg = vg.fill()  # fails on open meshes — remesh surface voxels as-is
+    mat = np.asarray(vg.matrix)
+    if not mat.any():
+        raise ValueError("voxelization produced an empty grid")
+    rebuilt = trimesh.voxel.VoxelGrid(mat, transform=vg.transform).marching_cubes
+    rebuilt.apply_transform(vg.transform)
+    if not len(rebuilt.faces):
+        raise ValueError("remesh produced an empty mesh")
+    lo, hi = np.asarray(mesh.bounds[0]), np.asarray(mesh.bounds[1])
+    for axis in range(3):
+        for at, sign in ((lo[axis], 1.0), (hi[axis], -1.0)):
+            normal = np.zeros(3)
+            normal[axis] = sign
+            origin = np.zeros(3)
+            origin[axis] = float(at)
+            cut = rebuilt.slice_plane(plane_origin=origin, plane_normal=normal, cap=True)
+            if isinstance(cut, trimesh.Trimesh) and len(cut.faces):
+                rebuilt = cut
+    return rebuilt
+
+
+def _op_remesh(mesh: trimesh.Trimesh, p: OpRemesh) -> trimesh.Trimesh:
+    ext = np.asarray(mesh.extents, dtype=float)
+    if float((ext / p.voxel_mm).max()) > 900:
+        raise ValueError(
+            f"voxel_mm {p.voxel_mm:g} too fine for {ext.max():.0f} mm extent "
+            f"(>900 cells/axis) — use a coarser pitch"
+        )
+    out = _voxel_remesh(mesh, p.voxel_mm)
+    if len(out.faces) > 500_000:
+        out = decimate(out, 500_000)
+    return out
+
+
+def _resolve_drill_holes(p: OpDrillHoles, anchors: dict[str, Any] | None) -> list[DrillHole]:
+    holes = list(p.holes)
+    if p.from_anchors:
+        for a in (anchors or {}).get("holes") or []:
+            try:
+                holes.append(DrillHole(x=float(a["x"]), y=float(a["y"]), dia=float(a["dia"])))
+            except Exception:
+                continue
+    return holes
+
+
+def _drill_tool(mesh: trimesh.Trimesh, h: DrillHole) -> trimesh.Trimesh:
+    """Cylindrical (+ optional countersink) cutting solid for one hole."""
+    z0, z1 = float(mesh.bounds[0][2]), float(mesh.bounds[1][2])
+    if h.depth_mm is not None:
+        bot, top = z1 - h.depth_mm, z1 + 1.0
+    else:
+        bot, top = z0 - 1.0, z1 + 1.0
+    cyl = trimesh.creation.cylinder(radius=h.dia / 2.0, height=top - bot, sections=48)
+    cyl.apply_translation([h.x, h.y, (top + bot) / 2.0])
+    tools = [cyl]
+    if h.csk_dia and h.csk_dia > h.dia:
+        # cone widening from the bore dia to csk_dia over h_csk of depth;
+        # the cone is extended 0.5 mm past the top surface so the boolean
+        # cut leaves a clean rim (surface dia stays exactly csk_dia)
+        h_csk = (h.csk_dia - h.dia) / 2.0 / math.tan(math.radians(h.csk_angle_deg) / 2.0)
+        if h_csk > 0.01:
+            h_cone = h_csk + 0.5
+            r_cone = (h.csk_dia / 2.0) * h_cone / h_csk
+            cone = trimesh.creation.cone(radius=r_cone, height=h_cone)
+            # trimesh cone: base at z=-h/2, apex at +h/2 — flip so the apex
+            # points down, then seat the apex at depth h_csk below the top
+            cone.apply_transform(trimesh.transformations.rotation_matrix(math.pi, [1, 0, 0]))
+            cone.apply_translation([h.x, h.y, z1 - h_csk + h_cone / 2.0])
+            tools.append(cone)
+    return cast(trimesh.Trimesh, trimesh.util.concatenate(tools))
+
+
+def _op_drill_holes(mesh: trimesh.Trimesh, p: OpDrillHoles) -> trimesh.Trimesh:
+    if len(mesh.faces) > BOOLEAN_MAX_FACES:
+        raise ValueError(
+            f"mesh too dense for drill_holes ({len(mesh.faces)} faces > {BOOLEAN_MAX_FACES}) "
+            "— run mesh_decimate first"
+        )
+    if not p.holes:
+        raise ValueError("drill_holes: no holes given (empty list and no anchors resolved)")
+    out = mesh
+    for i, h in enumerate(p.holes):
+        tool = _drill_tool(out, h)
+        try:
+            res = out.difference(tool, engine="manifold")
+        except Exception as e:
+            raise ValueError(
+                f"drill_holes failed on hole {i} (x={h.x}, y={h.y}): {e} "
+                "— mesh may be non-watertight; try mesh_repair"
+            ) from e
+        if res is None or not len(getattr(res, "faces", [])):
+            raise ValueError(f"drill_holes produced an empty mesh at hole {i}")
+        out = cast(trimesh.Trimesh, res)
+    return out
+
+
+def _op_shell(mesh: trimesh.Trimesh, p: OpShell) -> trimesh.Trimesh:
+    import scipy.ndimage as ndi
+
+    ext = np.asarray(mesh.extents, dtype=float)
+    if float(ext.min()) < p.thickness_mm * 3.0:
+        raise ValueError(f"part is too thin ({ext.min():.1f} mm) for a {p.thickness_mm:g} mm shell")
+    pitch = float(np.clip(min(p.thickness_mm / 2.0, float(ext.min()) / 80.0), 0.15, 1.0))
+    vg = mesh.voxelized(pitch)
+    with contextlib.suppress(Exception):
+        vg = vg.fill()
+    mat = np.asarray(vg.matrix)
+    iters = max(1, math.ceil(p.thickness_mm / pitch))
+    inner_mat = ndi.binary_erosion(mat, iterations=iters)
+    if not inner_mat.any():
+        raise ValueError(f"part too thin for a {p.thickness_mm:g} mm shell at this pitch")
+    inner = trimesh.voxel.VoxelGrid(inner_mat, transform=vg.transform).marching_cubes
+    inner.apply_transform(vg.transform)
+    if not len(inner.faces):
+        raise ValueError("shell erosion produced an empty inner solid")
+    try:
+        out = mesh.difference(inner, engine="manifold")
+    except Exception as e:
+        raise ValueError(f"shell boolean failed: {e} — try mesh_repair first") from e
+    if out is None or not len(getattr(out, "faces", [])):
+        raise ValueError("shell produced an empty mesh")
+    out = cast(trimesh.Trimesh, out)
+    if p.opening != "none":
+        # slice a thin skin off the opening face with cap=False — the
+        # cavity becomes reachable; walls stay standing to the rim
+        eps = min(0.3, p.thickness_mm * 0.3)
+        z = (
+            float(mesh.bounds[0][2]) + eps
+            if p.opening == "bottom"
+            else float(mesh.bounds[1][2]) - eps
+        )
+        normal = np.array([0, 0, -1.0]) if p.opening == "bottom" else np.array([0, 0, 1.0])
+        try:
+            cut = out.slice_plane(plane_origin=[0.0, 0.0, z], plane_normal=normal, cap=False)
+            if isinstance(cut, trimesh.Trimesh) and len(cut.faces):
+                out = cut
+        except Exception:
+            log.warning("mesh.shell.opening_failed", exc_info=True)
+    return out
+
+
 def _boolean_primitive(p: OpBoolean) -> trimesh.Trimesh:
     if p.shape == "box":
         ext = list(p.size_xyz) if p.size_xyz else [p.size] * 3 if p.size else None
@@ -812,11 +1078,22 @@ OPS_REGISTRY: dict[str, tuple[type[BaseModel], _OpFn]] = {
     "keep_largest": (OpKeepLargest, _op_keep_largest),
     "drop_small": (OpDropSmall, _op_drop_small),
     "repair": (OpRepair, _op_repair),
+    "clip_height": (OpClipHeight, _op_clip_height),
+    "symmetrize": (OpSymmetrize, _op_symmetrize),
+    "remesh": (OpRemesh, _op_remesh),
+    "drill_holes": (OpDrillHoles, _op_drill_holes),
+    "shell": (OpShell, _op_shell),
     "boolean": (OpBoolean, _op_boolean),
 }
 
+# bump when an op's semantics change so old version.params replays are
+# recognised as pre-change (stored alongside params, warn-not-fail)
+MESH_OPS_VERSION = 2
 
-def apply_op(mesh: trimesh.Trimesh, op: MeshOp | dict[str, Any]) -> trimesh.Trimesh:
+
+def apply_op(
+    mesh: trimesh.Trimesh, op: MeshOp | dict[str, Any], *, anchors: dict[str, Any] | None = None
+) -> trimesh.Trimesh:
     """Validate + apply one op. Raises ValueError on bad args or op failure."""
     mo = op if isinstance(op, MeshOp) else MeshOp.model_validate(op)
     entry = OPS_REGISTRY.get(mo.op)
@@ -826,11 +1103,19 @@ def apply_op(mesh: trimesh.Trimesh, op: MeshOp | dict[str, Any]) -> trimesh.Trim
         )
     params_t, fn = entry
     params = params_t.model_validate(mo.args)
+    if isinstance(params, OpDrillHoles) and params.from_anchors:
+        holes = _resolve_drill_holes(params, anchors)
+        if not holes:
+            raise ValueError("drill_holes: from_anchors set but no anchors available")
+        params = params.model_copy(update={"holes": holes})
     return fn(mesh, params)
 
 
 def apply_ops(
-    mesh: trimesh.Trimesh, ops: Sequence[MeshOp | dict[str, Any]]
+    mesh: trimesh.Trimesh,
+    ops: Sequence[MeshOp | dict[str, Any]],
+    *,
+    anchors: dict[str, Any] | None = None,
 ) -> tuple[trimesh.Trimesh, list[dict[str, Any]]]:
     """Apply an op list in order; returns (mesh, per-op report).
 
@@ -842,7 +1127,7 @@ def apply_ops(
     for raw in ops:
         mo = raw if isinstance(raw, MeshOp) else MeshOp.model_validate(raw)
         faces_in = len(mesh.faces)
-        mesh = rest_on_xy_center(apply_op(mesh, mo))
+        mesh = rest_on_xy_center(apply_op(mesh, mo, anchors=anchors))
         report.append(
             {
                 "op": mo.op,
