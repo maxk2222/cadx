@@ -25,6 +25,7 @@ from cadx.db.models import (
     AgentTrace,
     Artifact,
     Job,
+    JobStatus,
     JobType,
     Project,
     Version,
@@ -47,7 +48,22 @@ def _artifact_out(a: Artifact) -> ArtifactOut:
     )
 
 
-async def _summary(v: Version, db: AsyncSession) -> VersionSummary:
+def _active_job_dict(j: Job | None) -> dict | None:
+    """Compact live-job summary embedded in VersionSummary."""
+    if j is None:
+        return None
+    return {
+        "id": str(j.id),
+        "type": str(j.type),
+        "status": str(j.status),
+        "step": j.step,
+        "iteration": j.iteration,
+        "progress": j.progress,
+        "max_iterations": (j.live or {}).get("max_iterations"),
+    }
+
+
+async def _summary(v: Version, db: AsyncSession, active_job: Job | None = None) -> VersionSummary:
     thumb = await db.execute(
         select(Artifact).where(Artifact.version_id == v.id, Artifact.kind == "thumbnail")
     )
@@ -67,6 +83,7 @@ async def _summary(v: Version, db: AsyncSession) -> VersionSummary:
         resolved_mode=v.resolved_mode,
         created_at=v.created_at,
         thumbnail_url=f"/api/artifacts/{t.id}/file" if t else None,
+        active_job=_active_job_dict(active_job),
     )
 
 
@@ -304,7 +321,23 @@ async def version_tree(project_id: uuid.UUID, db: AsyncSession = Depends(get_ses
     rows = await db.execute(
         select(Version).where(Version.project_id == project_id).order_by(col(Version.number))
     )
-    return [await _summary(v, db) for v in rows.scalars().all()]
+    versions = list(rows.scalars().all())
+    vids = [v.id for v in versions]
+    active: dict[uuid.UUID, Job] = {}
+    if vids:
+        jr = await db.execute(
+            select(Job)
+            .where(
+                col(Job.version_id).in_(vids),
+                col(Job.status).in_(
+                    [JobStatus.queued, JobStatus.running, JobStatus.waiting_for_input]
+                ),
+            )
+            .order_by(col(Job.created_at).desc())
+        )
+        for j in jr.scalars().all():
+            active.setdefault(j.version_id, j)  # newest non-terminal job wins
+    return [await _summary(v, db, active.get(v.id)) for v in versions]
 
 
 @router.get("/versions/{version_id}", response_model=VersionDetail)

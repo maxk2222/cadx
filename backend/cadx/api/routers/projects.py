@@ -28,8 +28,8 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 
 async def _latest_meta(
     project_id: uuid.UUID, db: AsyncSession
-) -> tuple[VersionStatus | None, str | None]:
-    """Status + thumbnail url of the highest-numbered version (for project cards)."""
+) -> tuple[uuid.UUID | None, VersionStatus | None, str | None]:
+    """(id, status, thumbnail url) of the highest-numbered version (project cards)."""
     lv = await db.execute(
         select(Version)
         .where(Version.project_id == project_id)
@@ -38,17 +38,18 @@ async def _latest_meta(
     )
     v = lv.scalars().first()
     if v is None:
-        return None, None
+        return None, None, None
     t = await db.execute(
         select(Artifact).where(Artifact.version_id == v.id, Artifact.kind == "thumbnail")
     )
     thumb = t.scalars().first()
-    return v.status, (f"/api/artifacts/{thumb.id}/file" if thumb else None)
+    return v.id, v.status, (f"/api/artifacts/{thumb.id}/file" if thumb else None)
 
 
 def _out(
     p: Project,
     count: int = 0,
+    latest_version_id: uuid.UUID | None = None,
     latest_status: VersionStatus | None = None,
     latest_thumbnail_url: str | None = None,
 ) -> ProjectOut:
@@ -62,6 +63,13 @@ def _out(
         version_count=count,
         latest_version_status=latest_status,
         latest_thumbnail_url=latest_thumbnail_url,
+        latest_version_id=latest_version_id,
+        running_version_id=(
+            latest_version_id
+            if latest_status
+            in (VersionStatus.queued, VersionStatus.running, VersionStatus.waiting_for_input)
+            else None
+        ),
     )
 
 
@@ -87,8 +95,8 @@ async def list_projects(db: AsyncSession = Depends(get_session)):
         c = await db.execute(
             select(func.count()).select_from(Version).where(Version.project_id == p.id)
         )
-        status, thumb = await _latest_meta(p.id, db)
-        out.append(_out(p, c.scalar_one(), status, thumb))
+        vid, status, thumb = await _latest_meta(p.id, db)
+        out.append(_out(p, c.scalar_one(), vid, status, thumb))
     return out
 
 
@@ -100,8 +108,8 @@ async def get_project(project_id: uuid.UUID, db: AsyncSession = Depends(get_sess
     c = await db.execute(
         select(func.count()).select_from(Version).where(Version.project_id == p.id)
     )
-    status, thumb = await _latest_meta(p.id, db)
-    return _out(p, c.scalar_one(), status, thumb)
+    vid, status, thumb = await _latest_meta(p.id, db)
+    return _out(p, c.scalar_one(), vid, status, thumb)
 
 
 @router.patch("/{project_id}", response_model=ProjectOut)

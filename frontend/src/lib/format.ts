@@ -34,6 +34,15 @@ export function fmtDuration(startIso: string | null | undefined, endIso?: string
   return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
 }
 
+/** Seconds → "42s" / "3m 12s" / "1h 5m" — for step durations and ETAs. */
+export function fmtSecs(s: number | null | undefined): string {
+  if (s == null || !Number.isFinite(s)) return "—";
+  const sec = Math.max(0, s);
+  if (sec < 60) return `${sec.toFixed(0)}s`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ${Math.floor(sec % 60)}s`;
+  return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`;
+}
+
 export function fmtTokens(n: number | null | undefined): string {
   if (n == null) return "—";
   if (n < 1000) return `${n}`;

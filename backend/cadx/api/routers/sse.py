@@ -29,7 +29,18 @@ async def _stream(job_id: str, db: AsyncSession):
     async def gen():
         j = await db.get(Job, uuid.UUID(job_id))
         if j:
-            yield _fmt("status", {"status": j.status.value, "step": j.step, "log": j.log})
+            yield _fmt(
+                "status",
+                {
+                    "status": j.status.value,
+                    "step": j.step,
+                    "iteration": j.iteration,
+                    "progress": j.progress,
+                    "started_at": j.started_at,
+                    "live": j.live,
+                    "log": j.log,
+                },
+            )
             if j.status in _TERMINAL:
                 yield _fmt("end", {})
                 return

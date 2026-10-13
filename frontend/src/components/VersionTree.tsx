@@ -1,5 +1,7 @@
+import { CircleDot } from "lucide-react";
 import { Link } from "react-router-dom";
 import { timeAgo } from "../lib/format";
+import { stepLabel } from "../lib/steps";
 import type { VersionSummary } from "../lib/types";
 import StatusBadge from "./StatusBadge";
 
@@ -32,7 +34,11 @@ export default function VersionTree({
       {rows.map(({ v, depth }) => (
         <Link
           key={v.id}
-          to={`/versions/${v.id}`}
+          to={
+            v.active_job
+              ? `/versions/${v.id}?job=${v.active_job.id}`
+              : `/versions/${v.id}`
+          }
           className={`flex items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-zinc-800 ${
             v.id === activeId ? "bg-zinc-800 ring-1 ring-zinc-600" : ""
           }`}
@@ -68,6 +74,20 @@ export default function VersionTree({
             <div className="truncate text-xs text-zinc-500">
               {v.prompt}
               <span className="ml-1 text-zinc-600">· {timeAgo(v.created_at)}</span>
+              {v.active_job && (
+                <span
+                  className="ml-1 inline-flex items-center gap-1 text-brand-400"
+                  title={`${v.active_job.type} job ${v.active_job.status}`}
+                >
+                  <CircleDot className="h-2.5 w-2.5 animate-pulse" />
+                  {stepLabel(v.active_job.step) || v.active_job.type}
+                  {v.active_job.max_iterations
+                    ? ` ${Math.min(v.active_job.iteration, v.active_job.max_iterations)}/${v.active_job.max_iterations}`
+                    : v.active_job.iteration
+                      ? ` #${v.active_job.iteration}`
+                      : ""}
+                </span>
+              )}
             </div>
           </div>
           <StatusBadge status={v.status} />

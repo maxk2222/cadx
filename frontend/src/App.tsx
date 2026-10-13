@@ -1,4 +1,5 @@
-import { FolderOpen, Library, Settings, type LucideIcon } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { Activity, FolderOpen, Library, Settings, type LucideIcon } from "lucide-react";
 import {
   BrowserRouter,
   Link,
@@ -9,7 +10,9 @@ import {
 import HealthDots from "./components/HealthDots";
 import Logo from "./components/Logo";
 import { ToastProvider } from "./components/ui";
+import { api } from "./lib/api";
 import EditPage from "./pages/EditPage";
+import JobsPage from "./pages/JobsPage";
 import ProjectPage from "./pages/ProjectPage";
 import ProjectsPage from "./pages/ProjectsPage";
 import SettingsPage from "./pages/SettingsPage";
@@ -20,11 +23,13 @@ function NavItem({
   icon: Icon,
   label,
   active,
+  badge,
 }: {
   to: string;
   icon: LucideIcon;
   label: string;
   active: boolean;
+  badge?: number;
 }) {
   return (
     <Link
@@ -42,6 +47,11 @@ function NavItem({
       )}
       <Icon className="h-[18px] w-[18px] shrink-0" />
       <span className="hidden md:inline">{label}</span>
+      {badge ? (
+        <span className="absolute right-1.5 top-1/2 flex h-4 min-w-4 -translate-y-1/2 items-center justify-center rounded-full bg-brand-600 px-1 text-[10px] font-semibold text-white md:static md:translate-y-0">
+          {badge}
+        </span>
+      ) : null}
     </Link>
   );
 }
@@ -50,6 +60,11 @@ function SideNav() {
   const loc = useLocation();
   const tab = new URLSearchParams(loc.search).get("tab");
   const onSettings = loc.pathname === "/settings";
+  const activeJobs = useQuery({
+    queryKey: ["jobs-active-count"],
+    queryFn: () => api.listJobsAll({ active: true, limit: 50 }),
+    refetchInterval: 8000,
+  });
   return (
     <aside className="sticky top-0 z-40 flex h-screen w-14 shrink-0 flex-col border-r border-zinc-800/80 bg-zinc-950 md:w-56">
       <Link
@@ -70,6 +85,13 @@ function SideNav() {
           icon={FolderOpen}
           label="Projects"
           active={loc.pathname === "/"}
+        />
+        <NavItem
+          to="/jobs"
+          icon={Activity}
+          label="Jobs"
+          active={loc.pathname === "/jobs"}
+          badge={activeJobs.data?.length}
         />
         <NavItem
           to="/settings?tab=library"
@@ -103,6 +125,7 @@ export default function App() {
               <Route path="/projects/:id" element={<ProjectPage />} />
               <Route path="/versions/:id" element={<VersionPage />} />
               <Route path="/versions/:id/edit" element={<EditPage />} />
+              <Route path="/jobs" element={<JobsPage />} />
               <Route path="/settings" element={<SettingsPage />} />
             </Routes>
           </main>

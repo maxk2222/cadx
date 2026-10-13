@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { FolderPlus, Pencil, Search, Trash2 } from "lucide-react";
+import { CircleDot, FolderPlus, Pencil, Search, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import Logo from "../components/Logo";
@@ -20,6 +20,43 @@ import { timeAgo } from "../lib/format";
 import type { Project } from "../lib/types";
 import { useTitle } from "../lib/useTitle";
 
+/** Card thumbnail: latest render, overlaid with the live preview of the
+ *  running version's newest iteration (if any). `tick` cache-busts the live
+ *  image on each projects refetch. */
+function ProjectThumb({ p, tick }: { p: Project; tick: number }) {
+  const [ok, setOk] = useState(false);
+  const live = !!p.running_version_id;
+  return (
+    <div className="relative flex h-32 items-center justify-center overflow-hidden bg-zinc-950">
+      {p.latest_thumbnail_url ? (
+        <img
+          src={p.latest_thumbnail_url}
+          alt=""
+          className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+        />
+      ) : (
+        <span className="text-xs text-zinc-700">no render yet</span>
+      )}
+      {live && (
+        <>
+          <img
+            src={`${api.previewUrl(p.running_version_id!)}?t=${tick}`}
+            alt=""
+            className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ${
+              ok ? "opacity-100" : "opacity-0"
+            }`}
+            onLoad={() => setOk(true)}
+            onError={() => setOk(false)}
+          />
+          <span className="absolute left-2 top-2 flex items-center gap-1 rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-brand-300">
+            <CircleDot className="h-3 w-3 animate-pulse" /> live
+          </span>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function ProjectsPage() {
   useTitle("Projects");
   const qc = useQueryClient();
@@ -31,7 +68,12 @@ export default function ProjectsPage() {
   const [editing, setEditing] = useState<Project | null>(null);
   const [deleting, setDeleting] = useState<Project | null>(null);
 
-  const projects = useQuery({ queryKey: ["projects"], queryFn: api.listProjects });
+  const projects = useQuery({
+    queryKey: ["projects"],
+    queryFn: api.listProjects,
+    refetchInterval: (q) =>
+      (q.state.data ?? []).some((p) => p.running_version_id) ? 4000 : false,
+  });
 
   const del = useMutation({
     mutationFn: (id: string) => api.deleteProject(id),
@@ -102,17 +144,7 @@ export default function ProjectsPage() {
               className="group relative overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900 transition-colors hover:border-zinc-600"
             >
               <Link to={`/projects/${p.id}`} className="block">
-                <div className="flex h-32 items-center justify-center overflow-hidden bg-zinc-950">
-                  {p.latest_thumbnail_url ? (
-                    <img
-                      src={p.latest_thumbnail_url}
-                      alt=""
-                      className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
-                    />
-                  ) : (
-                    <span className="text-xs text-zinc-700">no render yet</span>
-                  )}
-                </div>
+                <ProjectThumb p={p} tick={projects.dataUpdatedAt} />
                 <div className="p-3">
                   <div className="flex items-center gap-2">
                     <span className="min-w-0 flex-1 truncate font-medium">{p.name}</span>

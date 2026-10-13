@@ -808,7 +808,7 @@ async def _autogen_hero_image(ctx: AgentCtx, spec: PartSpec | None, plan: Any) -
     await ctx.emit("imagegen", 0, "no reference image — generating a hero image")
 
     async def _prog(msg: str, _p: float) -> None:
-        await ctx.emit("imagegen", 0, msg)
+        await ctx.emit("imagegen", 0, msg, sub_progress=_p, sub_label=msg)
 
     tmp = Path(tempfile.mkdtemp(prefix="cadx-hero-"))
     try:
@@ -1287,7 +1287,13 @@ async def _generate_mesh(
     )
 
     async def on_progress(msg: str, p: float) -> None:
-        await ctx.emit("meshgen", iteration, f"{msg} ({int(p * 100)}%)")
+        await ctx.emit(
+            "meshgen",
+            iteration,
+            f"{msg} ({int(p * 100)}%)",
+            sub_progress=p,
+            sub_label=msg,
+        )
 
     try:
         result = await ctx.mesh.generate(req, on_progress, should_abort=ctx.check_cancel)
@@ -1796,6 +1802,7 @@ async def _run_cad(  # noqa: C901
             it,
             f"score {critique.score}/100 — {len(major)} major, "
             f"{len(critique.discrepancies) - len(major)} minor issues",
+            score=critique.score,
         )
 
         if (
@@ -1956,6 +1963,7 @@ async def _run_mesh(  # noqa: C901
             it,
             f"score {c.score}/100 — {len(major)} major, "
             f"{len(c.discrepancies) - len(major)} minor issues",
+            score=c.score,
         )
         return c, dim_issues
 
@@ -2976,6 +2984,7 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
                 "intake",
                 0,
                 f"simple stated spec — iteration budget capped at {max_iterations}",
+                max_iterations=max_iterations,
             )
 
     # ---------- CLARIFY ----------
@@ -2984,7 +2993,12 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
         outcome.status = "waiting_for_input"
         outcome.questions = [q.model_dump() for q in spec.open_questions]
         outcome.resume_state = {"spec": spec.model_dump()}
-        await ctx.emit("intake", 0, f"waiting for answers ({len(blocking)} blocking questions)")
+        await ctx.emit(
+            "intake",
+            0,
+            f"waiting for answers ({len(blocking)} blocking questions)",
+            max_iterations=max_iterations,
+        )
         return outcome
 
     # ---------- PLAN ----------
@@ -3009,7 +3023,7 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
     ctx.resolved_mode = mode
     outcome.resolved_mode = mode
     outcome.mode_note = mode_note
-    await ctx.emit("plan", 0, f"approach: {mode} — {mode_note}")
+    await ctx.emit("plan", 0, f"approach: {mode} — {mode_note}", max_iterations=max_iterations)
 
     kwargs: dict[str, Any] = dict(
         max_iterations=max_iterations,

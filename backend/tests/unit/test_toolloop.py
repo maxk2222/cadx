@@ -22,7 +22,7 @@ BOX_CODE = (FIXTURES / "simple_box.py").read_text()
 
 
 def _ctx(llm: FakeLLM) -> AgentCtx:
-    async def emit(step: str, it: int, msg: str) -> None:
+    async def emit(step: str, it: int, msg: str, **_f) -> None:
         pass
 
     async def no_cancel() -> bool:

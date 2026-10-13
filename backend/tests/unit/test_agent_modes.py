@@ -21,7 +21,7 @@ FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 
 
 def _ctx(llm: FakeLLM | None = None, **kw) -> AgentCtx:
-    async def emit(step: str, it: int, msg: str) -> None:
+    async def emit(step: str, it: int, msg: str, **_f) -> None:
         pass
 
     async def no_cancel() -> bool:

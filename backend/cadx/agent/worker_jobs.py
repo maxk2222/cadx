@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import functools
 import shutil
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -70,32 +71,88 @@ async def _append_job_log(db: AsyncSession, job: Job, text: str) -> None:
     job.log = (cur or "") + text
 
 
-def make_emit(job_id: uuid.UUID) -> Callable[[str, int, str], Awaitable[None]]:
-    """Job emit helper: writes step/iteration/log + publishes the event.
+def make_emit(
+    job_id: uuid.UUID, tokens_fn: Callable[[], dict[str, Any]] | None = None
+) -> Callable[..., Awaitable[None]]:
+    """Job emit helper: writes step/iteration/progress/log + publishes the event.
 
     Deduplicates consecutive identical (step, iteration, message) emissions —
     mesh-server polls otherwise flood the log with e.g. 'preprocessing images
     (0%)' dozens of times.
+
+    Optional structured fields on the call (`score=`, `max_iterations=`,
+    `sub_progress=`, `sub_label=`) are merged into the published SSE event and
+    rolled into the persisted Job.live snapshot (iteration budget, score
+    history, per-step timings, token usage) so reconnects restore the full UI.
     """
     last: tuple[str, int, str] | None = None
+    live: dict[str, Any] = {"scores": [], "step_history": []}
+    cur_step: str | None = None
+    step_t0 = time.monotonic()
 
-    async def emit(step: str, iteration: int, message: str) -> None:
-        nonlocal last
+    async def emit(step: str, iteration: int, message: str, **fields: Any) -> None:
+        nonlocal last, cur_step, step_t0
         sig = (step, iteration, message)
         if sig == last:
             return
         last = sig
+        now = time.monotonic()
+        if step != cur_step:
+            if cur_step is not None:
+                hist = live.setdefault("step_history", [])
+                hist.append({"step": cur_step, "it": iteration, "dt_s": round(now - step_t0, 1)})
+                del hist[:-40]
+            cur_step = step
+            step_t0 = now
+            live["step"] = step
+            live["step_started_ts"] = datetime.now(UTC).isoformat()
+            live.pop("sub_progress", None)
+            live.pop("sub_label", None)
+        for k in ("max_iterations", "sub_progress", "sub_label"):
+            if fields.get(k) is not None:
+                live[k] = fields[k]
+        if (score := fields.get("score")) is not None:
+            scores = live.setdefault("scores", [])
+            if not any(s["it"] == iteration for s in scores):
+                scores.append({"it": iteration, "score": score})
+        if tokens_fn is not None:
+            with contextlib.suppress(Exception):
+                live["tokens"] = tokens_fn()
+        max_it = live.get("max_iterations")
+        if isinstance(max_it, int) and max_it > 0 and iteration > 0:
+            sub = float(live.get("sub_progress") or 0.0)
+            progress = min(0.95, max(0.0, (iteration - 1 + sub) / max_it))
+        else:
+            progress = None  # no budget known yet — keep the +0.05 bump
+        job_progress: float | None = None
         async with session_scope() as s2:
             j = await s2.get(Job, job_id)
             if j is not None:
                 j.step = step
                 j.iteration = iteration
-                j.progress = min(0.95, j.progress + 0.05)
+                # monotonic: iteration-derived progress must never pull the
+                # bar backwards after setup-step bumps (it=0 events)
+                j.progress = (
+                    max(j.progress, progress)
+                    if progress is not None
+                    else min(0.95, j.progress + 0.05)
+                )
+                j.live = dict(live)  # reassign — JSON columns don't track in-place edits
                 j.log = (j.log or "") + f"[{step}:{iteration}] {message}\n"
+                job_progress = j.progress
                 await s2.commit()
         await _publish(
             str(job_id),
-            {"type": "step", "step": step, "iteration": iteration, "message": message},
+            {
+                "type": "step",
+                "step": step,
+                "iteration": iteration,
+                "message": message,
+                "ts": datetime.now(UTC).isoformat(),
+                "progress": job_progress,
+                "live": dict(live),
+                **fields,
+            },
         )
 
     return emit
@@ -363,8 +420,6 @@ async def run_agent_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[st
         version.status = VersionStatus.running
         await db.commit()
 
-        emit = make_emit(job_id)
-
         async def check_cancel() -> bool:
             async with session_scope() as s3:
                 j = await s3.get(Job, job_id)
@@ -389,6 +444,7 @@ async def run_agent_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[st
 
         runtime_settings = await load_runtime_settings(db)
         llm = _make_llm(runtime_settings)
+        emit = make_emit(job_id, tokens_fn=lambda: dict(getattr(llm, "total_usage", {}) or {}))
         executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=runtime_settings)
         trace = DbTrace(job_id)
         mesh = _make_mesh(runtime_settings)

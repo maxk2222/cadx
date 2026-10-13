@@ -5,7 +5,9 @@ import type {
   FemPreviewResult,
   GenMode,
   Job,
+  JobListItem,
   LibraryPart,
+  LiveRenders,
   LoadCase,
   MeshHealth,
   MeshModelInfo,
@@ -151,7 +153,7 @@ export const api = {
     req<MeshPreviewResult>(`/versions/${vid}/mesh-preview`, json(body)),
   meshEdit: (vid: string, body: { ops: MeshOp[]; post?: Record<string, unknown>; note?: string }) =>
     req<{ version_id: string; job_id: string }>(`/versions/${vid}/mesh-edit`, json(body)),
-  femPreview: (vid: string, body: { load_cases: LoadCase[]; keep_regions?: RegionSpec[] }) =>
+  femPreview: (vid: string, body: { load_cases: LoadCase[]; keep_regions?: RegionSpec[]; render_pngs?: boolean }) =>
     req<FemPreviewResult>(`/versions/${vid}/fem-preview`, json(body)),
   runFem: (vid: string, body: { load_cases: LoadCase[]; keep_regions?: RegionSpec[]; material?: string }) =>
     req<{ version_id: string; job_id: string }>(`/versions/${vid}/fem`, json(body)),
@@ -164,12 +166,20 @@ export const api = {
 
   listVersions: (pid: string) => req<VersionSummary[]>(`/projects/${pid}/versions`),
   getVersion: (id: string) => req<VersionDetail>(`/versions/${id}`),
-  previewUrl: (id: string) => `${BASE}/versions/${id}/preview`,
+  previewUrl: (id: string, view?: string) =>
+    `${BASE}/versions/${id}/preview${view ? `?view=${encodeURIComponent(view)}` : ""}`,
+  liveRenders: (id: string) => req<LiveRenders>(`/versions/${id}/live-renders`),
   deleteVersion: (id: string) => req<{ ok: boolean }>(`/versions/${id}`, { method: "DELETE" }),
   getCode: (id: string) => fetch(`${BASE}/versions/${id}/code`).then((r) => r.text()),
 
   getJob: (id: string) => req<Job>(`/jobs/${id}`),
   listJobs: (vid: string) => req<Job[]>(`/versions/${vid}/jobs`),
+  listJobsAll: (opts?: { active?: boolean; limit?: number }) => {
+    const q = new URLSearchParams();
+    if (opts?.active) q.set("active", "true");
+    if (opts?.limit) q.set("limit", String(opts.limit));
+    return req<JobListItem[]>(`/jobs${q.size ? `?${q}` : ""}`);
+  },
   answerJob: (id: string, answers: { answer: string }[]) =>
     req<{ version_id: string; job_id: string }>(`/jobs/${id}/answer`, json({ answers })),
   cancelJob: (id: string) => req<{ ok: boolean }>(`/jobs/${id}/cancel`, { method: "POST" }),

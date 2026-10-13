@@ -8,6 +8,8 @@ export interface Project {
   version_count: number;
   latest_version_status: VersionStatus | null;
   latest_thumbnail_url: string | null;
+  latest_version_id: string | null;
+  running_version_id: string | null;
 }
 
 export interface Asset {
@@ -68,6 +70,16 @@ export interface VersionSummary {
   resolved_mode: "cad" | "mesh" | "hybrid" | "topopt" | null;
   created_at: string;
   thumbnail_url: string | null;
+  /** newest non-terminal job on this version — live step/iteration state */
+  active_job?: {
+    id: string;
+    type: string;
+    status: string;
+    step: string | null;
+    iteration: number;
+    progress: number;
+    max_iterations: number | null;
+  } | null;
 }
 
 export interface Artifact {
@@ -213,6 +225,16 @@ export interface MeshPreviewResult {
     watertight?: boolean;
     bbox_size?: number[];
     ops_applied?: number;
+    /** 0-based index of the op that failed (error responses). */
+    failed_op?: number;
+    /** per-op report: faces in/out + watertight (up to and excluding the failed op). */
+    report?: {
+      op: string;
+      args?: Record<string, unknown>;
+      faces_in?: number;
+      faces_out?: number;
+      watertight?: boolean;
+    }[];
   };
   error: string | null;
 }
@@ -228,6 +250,14 @@ export interface FemPreviewResult {
     loaded_nodes: number;
     total_force_n: number;
     warnings: string[];
+  }[];
+  /** resolved selection on the voxel domain — subsampled cell centres (mm)
+   *  per case, for the 3D overlay in the structural editor. */
+  cells: {
+    case: string;
+    fixed: number[][];
+    load: number[][];
+    keep: number[][];
   }[];
   pngs: string[];
   error: string | null;
@@ -287,6 +317,18 @@ export interface VersionDetail extends VersionSummary {
   artifacts: Artifact[];
 }
 
+/** Structured live progress state persisted on Job.live. */
+export interface JobLive {
+  max_iterations?: number;
+  scores?: { it: number; score: number }[];
+  step?: string;
+  step_started_ts?: string;
+  step_history?: { step: string; it: number; dt_s: number }[];
+  sub_progress?: number;
+  sub_label?: string;
+  tokens?: Record<string, number>;
+}
+
 export interface Job {
   id: string;
   version_id: string;
@@ -296,12 +338,30 @@ export interface Job {
   iteration: number;
   progress: number;
   log: string;
+  live: JobLive | null;
   questions: { question: string; why_it_matters: string; default_assumption: string; blocking: boolean }[] | null;
   cancel_requested: boolean;
   finish_requested: boolean;
   started_at: string | null;
   finished_at: string | null;
   created_at: string;
+}
+
+/** Job row with version/project context — GET /jobs. */
+export interface JobListItem extends Job {
+  version_number: number;
+  version_status: VersionStatus;
+  prompt: string;
+  project_id: string;
+  project_name: string;
+}
+
+/** Available live render views of a version — GET /versions/{id}/live-renders. */
+export interface LiveRenders {
+  iteration: number | null;
+  views: string[];
+  mtime: number;
+  final: boolean;
 }
 
 export interface Settings {

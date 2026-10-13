@@ -9,11 +9,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
 from cadx.api.deps import enqueue, get_pool, get_session
-from cadx.api.schemas import AnswerRequest, EnqueueResponse, JobOut
+from cadx.api.schemas import AnswerRequest, EnqueueResponse, JobListItem, JobOut
 from cadx.db.models import (
     Job,
     JobStatus,
     JobType,
+    Project,
     Version,
     VersionKind,
     VersionStatus,
@@ -32,6 +33,7 @@ def _out(j: Job) -> JobOut:
         iteration=j.iteration,
         progress=j.progress,
         log=j.log,
+        live=j.live,
         questions=j.questions,
         cancel_requested=j.cancel_requested,
         finish_requested=j.finish_requested,
@@ -47,6 +49,43 @@ async def get_job(job_id: uuid.UUID, db: AsyncSession = Depends(get_session)):
     if not j:
         raise HTTPException(404, "job not found")
     return _out(j)
+
+
+@router.get("/jobs", response_model=list[JobListItem])
+async def list_jobs(
+    active: bool = False,
+    limit: int = 200,
+    db: AsyncSession = Depends(get_session),
+):
+    """Global job list for the Jobs page — newest first, optionally only
+    non-terminal (queued/running/waiting_for_input) jobs."""
+    q = (
+        select(Job, Version, Project)
+        .join(Version, Job.version_id == Version.id)
+        .join(Project, Version.project_id == Project.id)
+        .order_by(col(Job.created_at).desc())
+        .limit(limit)
+    )
+    if active:
+        q = q.where(
+            col(Job.status).in_([JobStatus.queued, JobStatus.running, JobStatus.waiting_for_input])
+        )
+    rows = await db.execute(q)
+    out: list[JobListItem] = []
+    for j, v, p in rows.all():
+        d = _out(j).model_dump()
+        d["log"] = (d.get("log") or "")[-500:]  # tail only — full logs are heavy
+        out.append(
+            JobListItem(
+                **d,
+                version_number=v.number,
+                version_status=v.status,
+                prompt=(v.prompt or "")[:140],
+                project_id=p.id,
+                project_name=p.name,
+            )
+        )
+    return out
 
 
 @router.get("/versions/{version_id}/jobs", response_model=list[JobOut])

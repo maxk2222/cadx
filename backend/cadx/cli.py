@@ -198,7 +198,7 @@ def run(
         )
         emitted: list[str] = []
 
-        async def emit(step: str, iteration: int, message: str) -> None:
+        async def emit(step: str, iteration: int, message: str, **_fields: Any) -> None:
             line = f"[{step}:{iteration}] {message}"
             emitted.append(line)
             print(line)

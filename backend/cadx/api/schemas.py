@@ -46,6 +46,8 @@ class ProjectOut(BaseModel):
     version_count: int = 0
     latest_version_status: VersionStatus | None = None
     latest_thumbnail_url: str | None = None
+    latest_version_id: uuid.UUID | None = None
+    running_version_id: uuid.UUID | None = None  # set while the latest version is active
 
 
 class AssetUpdate(BaseModel):
@@ -208,6 +210,7 @@ class FemRegionRequest(BaseModel):
     load_cases: list[dict[str, Any]] = Field(default_factory=list, max_length=8)
     keep_regions: list[dict[str, Any]] = Field(default_factory=list, max_length=10)
     material: str = Field(default="", max_length=40)
+    render_pngs: bool = False  # legacy 2D region renders; the 3D cells overlay is default
 
 
 class FemPreviewOut(BaseModel):
@@ -216,6 +219,7 @@ class FemPreviewOut(BaseModel):
     dims: list[int] = Field(default_factory=list)
     solid_elements: int = 0
     cases: list[dict[str, Any]] = Field(default_factory=list)
+    cells: list[dict[str, Any]] = Field(default_factory=list)  # 3D overlay point clouds
     pngs: list[str] = Field(default_factory=list)  # /versions/<vid>/scratch/... URLs
     error: str | None = None
 
@@ -257,6 +261,9 @@ class VersionSummary(BaseModel):
     resolved_mode: str | None = None
     created_at: datetime
     thumbnail_url: str | None = None
+    # newest non-terminal job on this version (queued/running/waiting) —
+    # {id, type, status, step, iteration, max_iterations, progress}
+    active_job: dict[str, Any] | None = None
 
 
 class ArtifactOut(BaseModel):
@@ -298,12 +305,23 @@ class JobOut(BaseModel):
     iteration: int
     progress: float
     log: str
+    live: dict[str, Any] | None = None
     questions: list[dict[str, Any]] | None
     cancel_requested: bool
     finish_requested: bool
     started_at: datetime | None
     finished_at: datetime | None
     created_at: datetime
+
+
+class JobListItem(JobOut):
+    """Job row with version/project context — for the global Jobs page."""
+
+    version_number: int
+    version_status: VersionStatus
+    prompt: str = ""
+    project_id: uuid.UUID
+    project_name: str = ""
 
 
 class EnqueueResponse(BaseModel):

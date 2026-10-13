@@ -30,7 +30,7 @@ class _Trace:
 def _ctx(**kw) -> AgentCtx:
     emitted: list[tuple[str, str]] = []
 
-    async def emit(step: str, it: int, msg: str) -> None:
+    async def emit(step: str, it: int, msg: str, **_f) -> None:
         emitted.append((step, msg))
 
     async def no_cancel() -> bool:

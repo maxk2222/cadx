@@ -17,7 +17,7 @@ FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 
 
 def _ctx(llm: FakeLLM, emits: list | None = None, **kw) -> AgentCtx:
-    async def emit(step: str, it: int, msg: str) -> None:
+    async def emit(step: str, it: int, msg: str, **_f) -> None:
         if emits is not None:
             emits.append((step, it, msg))
 

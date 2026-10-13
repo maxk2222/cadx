@@ -34,8 +34,10 @@ import {
   useToast,
 } from "../components/ui";
 import { api } from "../lib/api";
-import { fmtDuration, fmtTokens } from "../lib/format";
+import { fmtDuration, fmtSecs, fmtTokens } from "../lib/format";
+import { stepLabel } from "../lib/steps";
 import type { GenMode, Job, RunOptions } from "../lib/types";
+import { useJobEvents } from "../lib/useJobEvents";
 import { useTitle } from "../lib/useTitle";
 
 type Tab = "overview" | "spec" | "code" | "quality" | "files";
@@ -104,15 +106,28 @@ function SaveToLibrary({
   );
 }
 
-/** Provisional render overlay while the job runs — the executor writes
- *  renders per iteration; `?t=` re-requests on each version poll and the
- *  browser keeps the last frame while the next image loads. */
-function LivePreview({ versionId, tick }: { versionId: string; tick: number }) {
+/** Provisional render overlay while the job runs — polls the live-renders
+ *  manifest (available views + newest iteration) and shows the selected view
+ *  with an iteration label. `?t=<mtime>` cache-busts when a render is
+ *  rewritten; the browser keeps the last frame while the next image loads. */
+function LivePreview({ versionId }: { versionId: string }) {
+  const { data } = useQuery({
+    queryKey: ["live-renders", versionId],
+    queryFn: () => api.liveRenders(versionId),
+    refetchInterval: 2500,
+  });
+  const [view, setView] = useState<string | null>(null);
   const [ok, setOk] = useState(false);
+  const views = data?.views ?? [];
+  const cur =
+    view && views.includes(view) ? view : views.includes("iso") ? "iso" : views[0];
+  const src = `${api.previewUrl(versionId, cur)}${cur ? "&" : "?"}t=${
+    data ? Math.floor(data.mtime) : 0
+  }`;
   return (
     <>
       <img
-        src={`${api.previewUrl(versionId)}?t=${tick}`}
+        src={src}
         alt="live render preview"
         className={`absolute inset-0 h-full w-full bg-zinc-950 object-contain transition-opacity duration-300 ${
           ok ? "opacity-100" : "opacity-0"
@@ -124,6 +139,26 @@ function LivePreview({ versionId, tick }: { versionId: string; tick: number }) {
         <span className="absolute left-2 top-2 flex items-center gap-1.5 rounded bg-black/70 px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-brand-300">
           <Spinner className="h-3 w-3" /> live preview
         </span>
+      )}
+      {ok && data?.iteration != null && (
+        <span className="absolute right-2 top-2 rounded bg-black/70 px-2 py-1 font-mono text-[10px] font-medium text-zinc-300">
+          {data.final ? "final" : `it ${data.iteration}`}
+        </span>
+      )}
+      {ok && views.length > 1 && (
+        <div className="absolute bottom-2 left-2 flex flex-wrap gap-1">
+          {views.map((w) => (
+            <button
+              key={w}
+              onClick={() => setView(w)}
+              className={`rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
+                w === cur ? "text-brand-300" : "text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              {w.replace("contact_sheet", "sheet").replace(/^fem:/, "fem ")}
+            </button>
+          ))}
+        </div>
       )}
     </>
   );
@@ -210,7 +245,12 @@ export default function VersionPage() {
     qc.invalidateQueries({ queryKey: ["version", id] });
     qc.invalidateQueries({ queryKey: ["jobs", id] });
     qc.invalidateQueries({ queryKey: ["versions", v?.project_id] });
+    qc.invalidateQueries({ queryKey: ["live-renders", id] });
   };
+
+  // single SSE stream shared between the JobLog card and the live chips —
+  // one EventSource per selected job, drives both (no extra polling)
+  const stream = useJobEvents(jobId, refresh);
 
   const edit = useMutation({
     mutationFn: () =>
@@ -266,7 +306,7 @@ export default function VersionPage() {
       </div>
     );
 
-  const active = ["queued", "running"].includes(v.status);
+  const active = ["queued", "running", "waiting_for_input"].includes(v.status);
   const glb = v.artifacts.find((a) => a.kind === "glb");
   const a = v.analysis as {
     bbox_size?: number[];
@@ -276,6 +316,12 @@ export default function VersionPage() {
     triangle_count?: number;
   } | null;
   const curJob: Job | undefined = (jobs.data ?? []).find((j) => j.id === jobId);
+  const liveJob =
+    stream.job &&
+    ["queued", "running", "waiting_for_input"].includes(stream.job.status)
+      ? stream.job
+      : null;
+  const liveMax = stream.live.max_iterations;
   const dfmCount = v.dfm?.warnings?.length ?? 0;
   const usageEntries = Object.entries(v.usage ?? {}).filter(
     ([, n]) => typeof n === "number" && n > 0
@@ -351,12 +397,33 @@ export default function VersionPage() {
         {/* metrics strip */}
         <div className="mb-4 flex flex-wrap gap-1.5 text-xs tabular-nums">
           <Chip title="agent iterations">
-            <Layers className="h-3 w-3" /> {v.iterations} iteration
-            {v.iterations === 1 ? "" : "s"}
+            <Layers className="h-3 w-3" />{" "}
+            {liveJob && liveMax
+              ? `it ${Math.min(liveJob.iteration, liveMax)}/${liveMax}`
+              : `${v.iterations} iteration${v.iterations === 1 ? "" : "s"}`}
           </Chip>
-          {curJob?.started_at && (
-            <Chip title={`started ${curJob.started_at}`}>
-              <Clock className="h-3 w-3" /> {fmtDuration(curJob.started_at, curJob.finished_at)}
+          {liveJob?.step && (
+            <Chip tone="blue" title="current pipeline step">
+              {stepLabel(liveJob.step)}
+              {liveJob.iteration > 0 ? ` #${liveJob.iteration}` : ""}
+            </Chip>
+          )}
+          {(liveJob ?? curJob)?.started_at && (
+            <Chip title={`started ${(liveJob ?? curJob)!.started_at}`}>
+              <Clock className="h-3 w-3" />{" "}
+              {fmtDuration((liveJob ?? curJob)!.started_at, (liveJob ?? curJob)!.finished_at)}
+              {liveJob && stream.live.step_started_ts && (
+                <span className="text-zinc-500">
+                  {" "}
+                  · step{" "}
+                  {fmtSecs(
+                    Math.max(
+                      0,
+                      (Date.now() - new Date(stream.live.step_started_ts).getTime()) / 1000
+                    )
+                  )}
+                </span>
+              )}
             </Chip>
           )}
           {usageEntries.map(([k, n]) => (
@@ -415,9 +482,7 @@ export default function VersionPage() {
           <>
             <div className="relative mb-4 h-[460px] overflow-hidden rounded-lg border border-zinc-800">
               <Viewer3D url={glb ? glb.url : null} />
-              {active && !glb && (
-                <LivePreview versionId={v.id} tick={version.dataUpdatedAt} />
-              )}
+              {active && !glb && <LivePreview versionId={v.id} />}
             </div>
 
             {v.mesh && (
@@ -616,6 +681,7 @@ export default function VersionPage() {
           <SectionTitle>Agent activity</SectionTitle>
           <JobLog
             jobId={jobId}
+            stream={stream}
             jobs={jobs.data}
             onSelectJob={setJobId}
             onDone={refresh}

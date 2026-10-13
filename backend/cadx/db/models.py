@@ -202,6 +202,9 @@ class Job(SQLModel, table=True):
     resume_state: dict[str, Any] | None = SField(default=None, sa_column=Column(JSON))
     cancel_requested: bool = False
     finish_requested: bool = False
+    live: dict[str, Any] | None = SField(
+        default=None, sa_column=Column(JSON)
+    )  # structured live state: max_iterations, scores, step timings, tokens
     started_at: datetime | None = None
     finished_at: datetime | None = None
     created_at: datetime = SField(default_factory=utcnow)
