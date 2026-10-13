@@ -22,11 +22,21 @@ same `mesh_server` sidecar as the image→3D generators. Three use cases:
 | mlx   | `flux-schnell-mlx` | FLUX.1-schnell via `mflux`, 4-bit | `install_image_mlx.sh`    |
 | cuda  | `flux-schnell`     | FLUX.1-schnell via diffusers | `install_image_torch.sh`     |
 | cuda  | `sdxl` / `sd15`    | fallbacks for small VRAM     | (same)                       |
+| mlx   | `flux-kontext-mlx` | FLUX.1-Kontext-dev — instruction image **editing** (mflux, 4-bit) | `MESH_FLUX_KONTEXT=1` opt-in |
 | fake  | `fake-image`       | deterministic test adapter   | `MESH_FAKE=1`                |
 
 FLUX.1-schnell is **Apache-2.0** and ungated on HuggingFace. Weights download
 on first use (~12 GB 4-bit MLX, ~24 GB fp16 diffusers). SDXL (~7 GB) and SD1.5
 (~4 GB) are the fallbacks for tight memory.
+
+### Image editing (img2img)
+
+Edit jobs carry an init image + `strength` (`POST /v1/image-edit-jobs`,
+multipart). `sdxl`/`sd15` run img2img via `AutoPipelineForImage2Image`
+(shared weights, `supports_edit`); `flux-kontext-mlx` does instruction
+editing and is edit-only (`requires_image`, gated on `MESH_FLUX_KONTEXT=1`
+so a bare availability probe never triggers the ~12 GB download). The mesh
+pipeline uses this for `mesh_regen_edit` — see `mesh-generation.md`.
 
 Manual check:
 

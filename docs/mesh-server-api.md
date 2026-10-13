@@ -129,6 +129,14 @@ Plain JSON body `ImageGenParams` (no multipart — there are no inputs):
 Response `200`: `{ "job_id": "…" }` — `422` on invalid params, `503` when no
 image adapter is installed.
 
+### `POST /v1/image-edit-jobs`
+
+Multipart variant carrying an init image for edit-capable adapters
+(`supports_edit` in `/v1/models`): fields `json` (same `ImageGenParams`,
+plus optional `strength` 0..1) and `image` (the PNG/JPEG to edit). Job
+lifecycle + result download are the same as `/v1/image-jobs`. `model="auto"`
+picks only adapters that accept an init image.
+
 ### `GET /v1/image-jobs/{id}`
 
 Same shape as mesh jobs plus `"images": <n>` (result count) and `"backend"`.

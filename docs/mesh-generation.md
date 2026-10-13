@@ -60,6 +60,10 @@ with MLX, the `mv` variant when ≥2 view-tagged images exist, otherwise
 `hunyuan3d-2mini`/`triposg`. When `DATA_DIR/mesh_bench.json` exists (written
 by `mesh_server/scripts/bench_adapters.py`), `auto` additionally ranks
 available adapters by their measured per-class results (`agent/model_pick.py`).
+Rows include `roughness_deg` (mean dihedral on non-horizontal faces —
+stair-stepping proxy) and the corpus carries `detailed_gear.json`
+(14-tooth silhouette + bore) to catch fine-detail loss; the flat-class
+pick score weights edge sharpness slightly.
 
 ## Generation inputs & candidates
 
