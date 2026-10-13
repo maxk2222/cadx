@@ -1755,6 +1755,20 @@ async def _run_mesh(  # noqa: C901
             )
             post = merge_post_params(post, {})
 
+            # measured plan-view outline is the authoritative footprint for
+            # flat parts — clip first so a drifted generator shape (banana)
+            # cannot poison scoring and downstream CAD conversion
+            outline = _measured_plan_outline(ctx)
+            dims = (spec.length_x.value, spec.width_y.value, spec.height_z.value)
+            flat = dims[2] > 0 and dims[2] < 0.3 * max(dims[0], dims[1], 1e-9)
+            if flat and outline:
+                post.ops = [
+                    MeshOp(
+                        op="clip_to_outline",
+                        args={"outline": outline, "margin_mm": 0.5},
+                    )
+                ]
+
             # PROCESS_MESH baseline
             await ctx.emit("meshprocess", it, "cleaning, orienting and scaling mesh")
             exec_result = await _process_mesh(ctx, it, mesh_rel, spec, post)
