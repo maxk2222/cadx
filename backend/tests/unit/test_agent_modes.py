@@ -917,6 +917,41 @@ async def test_candidate_adapters_auto_spreads_over_health():
     assert got == ["hunyuan3d", "triposg"]  # device-native first, dead skipped
 
 
+async def test_candidate_adapters_skips_image_adapters():
+    """Image-generation adapters (flux/sdxl) must never become mesh candidates —
+    they report available + max_images=0 and would poison candidate screening."""
+    from cadx.agent.orchestrator import _candidate_adapters
+
+    class _Mixed(FakeMeshClient):
+        async def health(self):
+            return MeshHealth(
+                ok=True,
+                device="mlx",
+                models=[
+                    MeshModelInfo(id="hunyuan3d-2.1-mlx", device="mlx", supports_multiview=False),
+                    MeshModelInfo(id="triposg", device="mps", supports_multiview=False),
+                    MeshModelInfo(id="flux-schnell-mlx", device="mlx", kind="image", max_images=0),
+                    MeshModelInfo(id="sdxl", device="mps", kind="image", max_images=0),
+                ],
+            )
+
+    ctx = _ctx(mesh=_Mixed())
+    got = await _candidate_adapters(ctx, 4)
+    assert got == ["hunyuan3d-2.1-mlx", "triposg"]  # no image adapters
+
+
+def test_pick_adapter_skips_image_adapters():
+    from cadx.agent.mesh_client import MeshModelInfo
+    from cadx.agent.model_pick import pick_adapter
+
+    models = [
+        MeshModelInfo(id="flux-schnell-mlx", device="mlx", kind="image", available=True),
+        MeshModelInfo(id="triposg", device="mps", available=True),
+    ]
+    pick = pick_adapter(models, "flat")
+    assert pick is not None and pick.id == "triposg"
+
+
 async def test_generate_mesh_uses_heightfield_for_flat_part():
     """With a measured outline + flat spec the deterministic heightfield
     candidate wins even without candidate screening — no generator call."""

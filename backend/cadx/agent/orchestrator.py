@@ -721,7 +721,11 @@ async def _resolve_mesh_adapter(
         health = await ctx.mesh.health() if ctx.mesh else None
     except Exception:
         health = None
-    models = [m for m in (health.models if health else []) if m.available and m.id != "fake"]
+    models = [
+        m
+        for m in (health.models if health else [])
+        if m.available and m.id != "fake" and getattr(m, "kind", "mesh") == "mesh"
+    ]
     device = health.device if health else ""
     if configured and configured != "auto":
         m = next((m for m in models if m.id == configured), None)
@@ -887,7 +891,11 @@ async def _candidate_adapters(ctx: AgentCtx, n: int) -> list[str]:
         health = await ctx.mesh.health() if ctx.mesh else None
     except Exception:
         health = None
-    models = [m for m in (health.models if health else []) if m.available and m.id != "fake"]
+    models = [
+        m
+        for m in (health.models if health else [])
+        if m.available and m.id != "fake" and getattr(m, "kind", "mesh") == "mesh"
+    ]
     if len(models) <= 1:
         return []
     device = health.device if health else ""

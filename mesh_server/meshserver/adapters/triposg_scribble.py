@@ -27,13 +27,29 @@ from meshserver.adapters.base import (
     hard_unload,
     missing,
 )
-from meshserver.adapters.triposg import _device_ok, _RunDevice, _triposg_to_trimesh
+from meshserver.adapters.triposg import (
+    _device_ok,
+    _install_diso_shim,
+    _load_triposg_pipe,
+    _RunDevice,
+    _triposg_src,
+    _triposg_to_trimesh,
+)
 
 _MODEL_ID = "VAST-AI/TripoSG-scribble"
 
 
 def _scribble_pipeline_cls() -> Any:
-    """Locate the scribble pipeline across triposg package layouts."""
+    """Locate the scribble pipeline across triposg package layouts.
+
+    Applies the same sys.path + diso shims as the base adapter first."""
+    import sys
+
+    src = _triposg_src()
+    if src is not None:
+        _install_diso_shim()
+        if str(src) not in sys.path:
+            sys.path.insert(0, str(src))
     for mod, attr in (
         ("triposg.pipelines.pipeline_triposg_scribble", "TripoSGScribblePipeline"),
         ("triposg.pipeline_triposg_scribble", "TripoSGScribblePipeline"),
@@ -71,7 +87,7 @@ class TripoSGScribbleAdapter(MeshAdapter):
             missing(type(self), "triposg scribble pipeline not importable")
         self._device = _device_ok() or "cpu"
         dtype = torch.float16 if self._device == "cuda" else torch.float32
-        self._pipe = cls.from_pretrained(_MODEL_ID, torch_dtype=dtype).to(self._device)
+        self._pipe = _load_triposg_pipe(cls, dtype, model_id=_MODEL_ID).to(self._device)
         self._torch = torch
         self._loaded = True
 

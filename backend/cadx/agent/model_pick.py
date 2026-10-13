@@ -74,7 +74,13 @@ def pick_adapter(
     """Rank available mesh models for a part class. Returns the best
     MeshModelInfo or None. Falls back to the static heuristic when no bench
     data exists for a model (scored -1 → sorted last but still eligible)."""
-    avail = [m for m in models if getattr(m, "available", False) and m.id != "fake"]
+    avail = [
+        m
+        for m in models
+        if getattr(m, "available", False)
+        and getattr(m, "kind", "mesh") == "mesh"
+        and m.id != "fake"
+    ]
     if need_multiview:
         multi = [m for m in avail if getattr(m, "supports_multiview", False)]
         if multi:
