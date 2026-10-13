@@ -953,6 +953,8 @@ def _op_drill_holes(mesh: trimesh.Trimesh, p: OpDrillHoles) -> trimesh.Trimesh:
         )
     if not p.holes:
         raise ValueError("drill_holes: no holes given (empty list and no anchors resolved)")
+    if not (mesh.is_watertight and mesh.is_winding_consistent):
+        mesh = _ensure_watertight(mesh)  # manifold needs closed input
     out = mesh
     for i, h in enumerate(p.holes):
         tool = _drill_tool(out, h)
@@ -1050,10 +1052,14 @@ def _op_boolean(mesh: trimesh.Trimesh, p: OpBoolean) -> trimesh.Trimesh:
         )
     prim = _boolean_primitive(p)
     try:
+        if not (mesh.is_watertight and mesh.is_winding_consistent):
+            mesh = _ensure_watertight(mesh)  # manifold needs closed input
         if p.op == "union":
             out = mesh.union(prim, engine="manifold")
         else:
             out = mesh.difference(prim, engine="manifold")
+    except ValueError:
+        raise
     except Exception as e:
         raise ValueError(
             f"boolean {p.op} failed: {e} — mesh may be non-watertight; try mesh_repair"
@@ -1191,15 +1197,81 @@ def baseline_mesh(
 # --------------------------------------------------------------------------- #
 
 
+def _ensure_watertight(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+    """Best-effort repair ladder before boolean/B-Rep conversion.
+
+    1) process + merge + fill_holes + normals (cheap, preserves detail)
+    2) manifold3d roundtrip (enforces 2-manifold where possible)
+    3) voxel remesh (always closed; lossy — last resort)
+    Returns the repaired mesh or raises ValueError when nothing works.
+    """
+    if mesh.is_watertight and mesh.is_winding_consistent:
+        return mesh
+    m = mesh.copy()
+    for fn in (
+        lambda: m.process(validate=True),
+        m.merge_vertices,
+        m.remove_unreferenced_vertices,
+        m.remove_infinite_values,
+        m.fix_normals,
+        lambda: trimesh.repair.fill_holes(m),
+    ):
+        with contextlib.suppress(Exception):
+            fn()
+    if m.is_watertight and m.is_winding_consistent:
+        return m
+    try:
+        from manifold3d import Manifold
+        from manifold3d import Mesh as MMesh
+
+        man = Manifold(
+            mesh=MMesh(
+                vert_properties=np.asarray(m.vertices, dtype=np.float32),
+                tri_verts=np.asarray(m.faces, dtype=np.uint32),
+            )
+        )
+        if int(man.status()) == 0:
+            om = man.to_mesh()
+            out = trimesh.Trimesh(
+                vertices=np.asarray(om.vert_properties)[:, :3],
+                faces=np.asarray(om.tri_verts),
+                process=False,
+            )
+            if len(out.faces) and out.is_watertight:
+                return out
+    except Exception:
+        pass
+    try:
+        pitch = max(float(max(m.extents)) / 220.0, 0.15)
+        vg = m.voxelized(pitch).fill()
+        rem = vg.marching_cubes
+        rem.apply_transform(vg.transform)
+        if len(rem.faces) and rem.is_watertight:
+            log.warning(
+                "mesh.repair_voxel_fallback",
+                faces_in=len(mesh.faces),
+                faces_out=len(rem.faces),
+            )
+            return rem
+    except Exception:
+        pass
+    raise ValueError(
+        f"mesh could not be made watertight ({len(mesh.faces)} faces) — "
+        "run mesh_repair/mesh_keep_largest first"
+    )
+
+
 def mesh_to_solid(mesh: trimesh.Trimesh, *, max_faces: int | None = None) -> Any:
     """Convert a (watertight) trimesh into a build123d Solid via STL + sewing.
 
     Returns a build123d Solid/Part. Raises on failure — caller decides the
-    fallback. Decimates first when the mesh exceeds `max_faces` (default from
-    runtime settings).
+    fallback. Repairs non-watertight input (process/fill/manifold/voxel
+    ladder) and decimates first when the mesh exceeds `max_faces` (default
+    from runtime settings).
     """
     from build123d import Solid
 
+    mesh = _ensure_watertight(mesh)
     max_faces = max_faces or RuntimeSettings().mesh_max_faces_for_cad
     if len(mesh.faces) > max_faces:
         mesh = decimate(mesh, max_faces)

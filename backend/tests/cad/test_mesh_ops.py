@@ -615,3 +615,37 @@ def test_op_shell_open_bottom():
     assert sealed.is_watertight
     with pytest.raises(ValueError, match="too thin"):
         apply_op(_box(4, 4, 4), MeshOp(op="shell", args={"thickness_mm": 8.0}))
+
+
+def test_ensure_watertight_repairs_missing_face():
+    from cadx.cad.mesh_ops import _ensure_watertight
+
+    m = _box(30, 30, 30)
+    m.update_faces(np.arange(len(m.faces)) > 10)  # knock out 11 faces
+    assert not m.is_watertight
+    out = _ensure_watertight(m)
+    assert out.is_watertight
+
+
+def test_boolean_auto_repairs_open_mesh():
+    m = _box(30, 30, 30)
+    m.update_faces(np.arange(len(m.faces)) > 5)
+    out = apply_op(
+        m,
+        MeshOp(
+            op="boolean",
+            args={"op": "difference", "shape": "cylinder", "radius": 5.0, "height": 60.0},
+        ),
+    )
+    assert len(out.faces) > 0
+
+
+def test_mesh_to_solid_repairs_then_converts():
+    pytest.importorskip("build123d")
+    from cadx.cad.mesh_ops import mesh_to_solid
+
+    m = _box(30, 30, 30)
+    m.update_faces(np.arange(len(m.faces)) > 8)
+    solid = mesh_to_solid(m)
+    assert solid is not None
+    assert solid.volume > 0
