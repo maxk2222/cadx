@@ -23,6 +23,48 @@ log = get_logger(__name__)
 _FIXED, _LOAD, _KEEP = 1, 2, 3
 
 
+def case_region_masks(
+    domain: VoxelDomain,
+    case: LoadCase,
+    keep_regions: list[RegionSpec],
+    anchors: list[dict] | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(fixed, load, keep) boolean cell masks for one case on the domain."""
+    fixed = np.zeros(domain.dims, dtype=bool)
+    load = np.zeros(domain.dims, dtype=bool)
+    keep = np.zeros(domain.dims, dtype=bool)
+    for r in case.fixed:
+        fixed |= region_cell_mask(domain, r, anchors)
+    for ld in case.loads:
+        load |= region_cell_mask(domain, ld.region, anchors)
+    for r in keep_regions:
+        keep |= region_cell_mask(domain, r, anchors)
+    return fixed, load, keep
+
+
+def cells_preview(
+    domain: VoxelDomain,
+    cases: list[LoadCase],
+    keep_regions: list[RegionSpec],
+    anchors: list[dict] | None = None,
+    max_points: int = 4000,
+) -> list[dict[str, Any]]:
+    """Subsampled cell-centre coordinates per case for a 3D overlay in the
+    structural editor — the actual resolved selection, not a 2D render."""
+    centers = domain.element_centers().reshape((*domain.dims, 3))
+    out: list[dict[str, Any]] = []
+    for case in cases:
+        fixed, load, keep = case_region_masks(domain, case, keep_regions, anchors)
+        entry: dict[str, Any] = {"case": case.name}
+        for name, mask in (("fixed", fixed), ("load", load), ("keep", keep)):
+            c = centers[mask]
+            if len(c) > max_points:
+                c = c[np.linspace(0, len(c) - 1, max_points).astype(int)]
+            entry[name] = [[round(float(v), 3) for v in row] for row in c]
+        out.append(entry)
+    return out
+
+
 def render_regions(
     domain: VoxelDomain,
     cases: list[LoadCase],
@@ -37,19 +79,12 @@ def render_regions(
         log.warning("fem.preview.no_pyvista")
         return []
     out_dir.mkdir(parents=True, exist_ok=True)
-    keep_cells = np.zeros(domain.dims, dtype=bool)
-    for r in keep_regions:
-        keep_cells |= region_cell_mask(domain, r, anchors)
 
     written: list[str] = []
     for case in cases:
-        fixed_cells = np.zeros(domain.dims, dtype=bool)
-        load_cells = np.zeros(domain.dims, dtype=bool)
+        fixed_cells, load_cells, keep_cells = case_region_masks(domain, case, keep_regions, anchors)
         force_n = 0.0
-        for r in case.fixed:
-            fixed_cells |= region_cell_mask(domain, r, anchors)
         for load in case.loads:
-            load_cells |= region_cell_mask(domain, load.region, anchors)
             if load.force_n and len(load.force_n) == 3:
                 force_n += float(np.linalg.norm(np.asarray(load.force_n, dtype=float)))
             elif load.pressure_mpa is not None:

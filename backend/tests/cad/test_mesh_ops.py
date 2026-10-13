@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from cadx.cad.mesh_ops import (
     MeshOp,
+    MeshOpError,
     MeshPostParams,
     apply_op,
     apply_ops,
@@ -413,6 +414,31 @@ def test_apply_ops_order_and_report():
     # mesh serialises deterministically through MeshPostParams
     post = MeshPostParams(ops=[MeshOp(op="scale", args={"factor": 1.5})])
     assert MeshPostParams(**post.model_dump()).ops[0].args["factor"] == 1.5
+
+
+def test_apply_ops_error_carries_index_and_partial_report():
+    """A mid-stack failure must identify the offending op so the GUI can
+    highlight it — including the report of the ops that did succeed."""
+    with pytest.raises(MeshOpError) as ei:
+        apply_ops(
+            _box(10, 10, 10),
+            [
+                {"op": "rotate", "args": {"axis": "z", "deg": 90}},
+                {"op": "not_a_real_op", "args": {}},
+                {"op": "mirror", "args": {"axis": "x"}},
+            ],
+        )
+    e = ei.value
+    assert e.op_index == 1
+    assert e.op_name == "not_a_real_op"
+    assert len(e.report) == 1 and e.report[0]["op"] == "rotate"
+    assert isinstance(e, ValueError)  # back-compat with existing except-ValueError
+
+    # arg-validation failures wrap the same way, at index 0
+    with pytest.raises(MeshOpError) as ei2:
+        apply_ops(_box(10, 10, 10), [{"op": "scale", "args": {"factor": -1.0}}])
+    assert ei2.value.op_index == 0
+    assert ei2.value.report == []
 
 
 def test_merge_post_params_ops_replaced_only_when_given():

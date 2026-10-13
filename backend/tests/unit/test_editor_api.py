@@ -88,8 +88,8 @@ async def test_mesh_preview_ok_and_scratch_file(client, monkeypatch):
 
     pid, vid = await _succeeded_version_with_stl(client, "mp-ok")
 
-    async def fake_run_cad(func: str, payload: dict, timeout_s: float) -> dict:
-        assert func == "process_mesh" and payload["mode"] == "ops_preview"
+    async def fake_run_preview(fn: str, payload: dict) -> dict:
+        assert fn == "mesh" and payload["mode"] == "ops_preview"
         sdir = storage.ensure(storage.scratch_dir(pid, vid))
         (sdir / "preview_test.glb").write_bytes(b"glTFfake")
         return {
@@ -98,7 +98,7 @@ async def test_mesh_preview_ok_and_scratch_file(client, monkeypatch):
             "stats": {"faces": 12, "watertight": True, "bbox_size": [10, 10, 10]},
         }
 
-    monkeypatch.setattr(editor, "_run_cad", fake_run_cad)
+    monkeypatch.setattr(editor, "_run_preview", fake_run_preview)
     r = await client.post(
         f"/api/versions/{vid}/mesh-preview",
         json={"ops": [{"op": "rotate", "args": {"axis": "z", "deg": 45}}]},
@@ -161,9 +161,10 @@ async def test_fem_preview_and_check(client, monkeypatch):
     r = await client.post(f"/api/versions/{vid}/fem", json={})
     assert r.status_code == 422
 
-    async def fake_run_cad(func: str, payload: dict, timeout_s: float) -> dict:
-        assert func == "fem_analyze" and payload["preview_only"] is True
+    async def fake_run_preview(fn: str, payload: dict) -> dict:
+        assert fn == "fem" and payload["preview_only"] is True
         assert payload["load_cases"][0]["fixed"][0]["kind"] == "points"
+        assert payload["render_pngs"] is False
         return {
             "ok": True,
             "preview": {
@@ -179,11 +180,19 @@ async def test_fem_preview_and_check(client, monkeypatch):
                         "warnings": [],
                     }
                 ],
+                "cells": [
+                    {
+                        "case": "c1",
+                        "fixed": [[1, 2, 3]],
+                        "load": [[4, 5, 6]],
+                        "keep": [],
+                    }
+                ],
                 "regions_png": ["projects/x/_scratch/fem/regions_iso.png"],
             },
         }
 
-    monkeypatch.setattr(editor, "_run_cad", fake_run_cad)
+    monkeypatch.setattr(editor, "_run_preview", fake_run_preview)
     r = await client.post(
         f"/api/versions/{vid}/fem-preview",
         json={"load_cases": [_case()], "keep_regions": [{"kind": "all"}]},
@@ -192,6 +201,7 @@ async def test_fem_preview_and_check(client, monkeypatch):
     d = r.json()
     assert d["ok"] and d["solid_elements"] == 800
     assert d["cases"][0]["fixed_nodes"] == 12
+    assert d["cells"][0]["fixed"] == [[1, 2, 3]]
     assert d["pngs"] and d["pngs"][0].startswith(f"/api/versions/{vid}/scratch/")
 
     # FEM check creates a fem-type job on the SAME version (enqueue may fail
@@ -223,6 +233,17 @@ async def test_editor_state_roundtrip(client):
     v = (await client.get(f"/api/versions/{vid}")).json()
     assert v["options"]["ui_editor"]["ops"][0]["op"] == "rotate"
     assert v["options"]["ui_editor"]["load_cases"][0]["fixed"][0]["kind"] == "points"
+
+    # merges: a second PATCH with only ops keys must not wipe structural state
+    r = await client.patch(
+        f"/api/versions/{vid}/editor-state",
+        json={"ui_editor": {"ops": [{"op": "mirror", "args": {"axis": "x"}}]}},
+    )
+    assert r.status_code == 200
+    v = (await client.get(f"/api/versions/{vid}")).json()
+    assert v["options"]["ui_editor"]["ops"][0]["op"] == "mirror"
+    assert v["options"]["ui_editor"]["load_cases"][0]["name"] == "c1"
+    assert v["options"]["ui_editor"]["material"] == "petg"
 
     # unknown fields are rejected (forbid extra)
     r = await client.patch(f"/api/versions/{vid}/editor-state", json={"bogus": 1})

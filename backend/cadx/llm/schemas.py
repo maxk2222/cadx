@@ -154,7 +154,7 @@ class RegionSpec(BaseModel):
         default=None, ge=1
     )  # 1-based index into the measured anchors (hole)
     points: list[list[float]] = Field(
-        default_factory=list, max_length=600
+        default_factory=list, max_length=4000
     )  # painted surface points [x,y,z] mm (points)
     radius_mm: float | None = None  # brush radius (points); default max(2*margin_mm, 3)
     normal: list[float] = Field(default_factory=list, max_length=3)  # avg surface normal (points)

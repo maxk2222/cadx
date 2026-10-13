@@ -267,6 +267,35 @@ def test_points_pressure_uses_picked_normal() -> None:
     assert 0 < abs(total[2]) <= expected * 1.5
 
 
+def test_region_points_rasterized_matches_naive() -> None:
+    """Index-space rasterisation must select exactly the naive full-domain
+    sphere union — the fast path must not drop boundary cells."""
+    dom = voxelize(_box_mesh(), 2.0, 150_000)
+    pts = [[-15.0, 0.0, 12.0], [10.0, 5.0, 12.0]]
+    cells = region_cell_mask(dom, RegionSpec(kind="points", points=pts, radius_mm=5.0))
+    centers = dom.element_centers().reshape((*dom.dims, 3))
+    radius = 5.0 + dom.pitch  # same dilation as _points_cells
+    naive = np.zeros(dom.dims, dtype=bool)
+    for p in pts:
+        naive |= np.sum((centers - np.asarray(p)) ** 2, axis=-1) <= radius * radius
+    naive &= dom.solid
+    assert (cells == naive).all()
+
+
+def test_region_points_dense_stroke_dedupes() -> None:
+    """A 2000-point stroke of near-duplicates must not blow up cost or
+    selection — it resolves to ~the same patch as a single point."""
+    dom = voxelize(_box_mesh(), 2.0, 150_000)
+    pts = [[10.0 + i * 0.001, 0.0, 12.0] for i in range(2000)]
+    cells = region_cell_mask(dom, RegionSpec(kind="points", points=pts, radius_mm=5.0))
+    ref = region_cell_mask(
+        dom, RegionSpec(kind="points", points=[[10.0, 0.0, 12.0]], radius_mm=5.0)
+    )
+    assert cells.any()
+    # dedupe keeps a handful of spheres — the patch grows by ~the 2mm spread
+    assert int(cells.sum()) <= int(ref.sum()) + 60
+
+
 def test_resolve_case_empty_region_warns() -> None:
     dom = voxelize(_box_mesh(), 2.0, 150_000)
     case = LoadCase(
@@ -474,6 +503,34 @@ def test_run_fem_pipeline_preview_only(tmp_path: Path) -> None:
     if out["preview"]["regions_png"]:  # requires pyvista
         assert (tmp_path / "o" / "fem" / out["preview"]["regions_png"][0]).exists()
         assert (tmp_path / "o" / "fem" / out["preview"]["regions_png"][0]).stat().st_size > 5000
+
+
+def test_run_fem_pipeline_preview_cells_no_pngs(tmp_path: Path) -> None:
+    """GUI region check: render_pngs=False skips renders but still returns
+    the resolved cell clouds for the 3D overlay."""
+    from cadx.cad.engine import run_fem_pipeline
+
+    src = tmp_path / "b.stl"
+    _box_mesh().export(str(src))
+    out = run_fem_pipeline(
+        mesh_path=src,
+        out_dir=tmp_path / "o",
+        load_cases=[_cantilever_case().model_dump()],
+        voxel_mm=3.0,
+        preview_only=True,
+        render_pngs=False,
+    )
+    assert out["ok"]
+    prev = out["preview"]
+    assert prev["regions_png"] == []
+    cells = prev["cells"]
+    assert cells and cells[0]["case"] == "tip"
+    assert len(cells[0]["fixed"]) > 0
+    assert len(cells[0]["load"]) > 0
+    # cell centres lie inside the part's world bounds (60x24x12, centred)
+    arr = np.asarray(cells[0]["fixed"], dtype=float)
+    assert arr[:, 0].min() >= -30.0 - 0.01 and arr[:, 0].max() <= 30.0 + 0.01
+    assert arr[:, 2].min() >= -0.01 and arr[:, 2].max() <= 12.0 + 0.01
 
 
 def test_run_fem_domain_matches_mask(simp_setup) -> None:

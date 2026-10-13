@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import hashlib
+import json
 import os
 import uuid
 from collections.abc import Callable
@@ -198,13 +201,44 @@ def run_mesh_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return d
 
 
+def _preview_source_cache(
+    sdir: Path,
+    payload: dict[str, Any],
+    mesh_path: Path,
+    post: MeshPostParams,
+    spec: PartSpec | None,
+) -> Path | None:
+    """Cache path for the processed preview source (baseline or cleaned mesh).
+
+    Keyed by source file content + the inputs that change the result — a hit
+    skips the load/clean/decimate/orient/scale baseline on repeat previews."""
+    try:
+        st = mesh_path.stat()
+        key = hashlib.sha1(
+            json.dumps(
+                {
+                    "rel": payload.get("mesh_rel"),
+                    "mtime": st.st_mtime_ns,
+                    "size": st.st_size,
+                    "post": post.model_dump(mode="json", exclude={"ops"}),
+                    "spec": spec.model_dump(mode="json") if spec else None,
+                    "ops_only": bool(payload.get("ops_only")),
+                },
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()[:12]
+        return sdir / f"preview_base_{key}.glb"
+    except Exception:
+        return None
+
+
 def _ops_preview(
     payload: dict[str, Any], mesh_path: Path, project_id: uuid.UUID, version_id: uuid.UUID
 ) -> dict[str, Any]:
     """GUI mesh-editor preview: baseline (mesh parents) or ops-only (others),
     then apply the draft op list and export a GLB into _scratch/."""
     from cadx.cad.mesh_ops import (
-        MeshOp,
+        MeshOpError,
         apply_ops,
         baseline_mesh,
         clean,
@@ -212,27 +246,46 @@ def _ops_preview(
         rest_on_xy_center,
     )
 
-    try:
-        mesh = load_mesh(mesh_path)
-    except Exception as e:
-        return {"ok": False, "error": f"failed to load mesh: {e}"}
+    sdir = storage.ensure(storage.scratch_dir(project_id, version_id))
     post = MeshPostParams(**(payload.get("post") or {}))
     spec = PartSpec(**payload["spec"]) if payload.get("spec") else None
+    cache = _preview_source_cache(sdir, payload, mesh_path, post, spec)
+
     try:
-        if payload.get("ops_only"):
-            mesh = clean(mesh)
-        else:
-            mesh, _ = baseline_mesh(mesh, post, spec)
-        ops = [MeshOp.model_validate(o) for o in payload.get("ops") or post.ops]
+        mesh = None
+        if cache is not None and cache.exists():
+            with contextlib.suppress(Exception):
+                mesh = load_mesh(cache)
+            if mesh is None:
+                cache.unlink(missing_ok=True)  # corrupt cache — recompute
+        if mesh is None:
+            try:
+                mesh = load_mesh(mesh_path)
+            except Exception as e:
+                return {"ok": False, "error": f"failed to load mesh: {e}"}
+            if payload.get("ops_only"):
+                mesh = clean(mesh)
+            else:
+                mesh, _ = baseline_mesh(mesh, post, spec)
+            if cache is not None:
+                with contextlib.suppress(Exception):
+                    mesh.export(str(cache))
+        ops = payload.get("ops") or post.ops
         if ops:
             mesh, report = apply_ops(mesh, ops, anchors=payload.get("anchors"))
         else:
             report = []
         mesh = rest_on_xy_center(mesh)
+    except MeshOpError as e:
+        return {
+            "ok": False,
+            "error": str(e)[:400],
+            "failed_op": e.op_index,
+            "report": e.report,
+        }
     except Exception as e:
         return {"ok": False, "error": str(e)[:400]}
 
-    sdir = storage.ensure(storage.scratch_dir(project_id, version_id))
     out = sdir / f"preview_{uuid.uuid4().hex[:8]}.glb"
     try:
         mesh.export(str(out))
@@ -247,6 +300,7 @@ def _ops_preview(
             "watertight": bool(mesh.is_watertight),
             "bbox_size": [round(float(v), 3) for v in (b[1] - b[0])],
             "ops_applied": len(report),
+            "report": report,
         },
     }
 
@@ -302,6 +356,7 @@ def run_fem_payload(payload: dict[str, Any]) -> dict[str, Any]:
         keep_regions=payload.get("keep_regions"),
         anchors=payload.get("anchors"),
         preview_only=bool(payload.get("preview_only")),
+        render_pngs=bool(payload.get("render_pngs", True)),
         runtime=_runtime(payload),
     )
     preview = d.get("preview") or {}

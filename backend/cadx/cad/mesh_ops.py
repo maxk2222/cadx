@@ -1069,6 +1069,21 @@ def _op_boolean(mesh: trimesh.Trimesh, p: OpBoolean) -> trimesh.Trimesh:
     return cast(trimesh.Trimesh, out)
 
 
+class MeshOpError(ValueError):
+    """An op in an apply_ops stack failed — carries the 0-based index of the
+    failing op plus the per-op report accumulated so far (GUI highlights the
+    offending stack entry)."""
+
+    def __init__(
+        self, op_index: int, op_name: str, cause: Exception, report: list[dict[str, Any]]
+    ) -> None:
+        super().__init__(f"op {op_index + 1} '{op_name}' failed: {cause}")
+        self.op_index = op_index
+        self.op_name = op_name
+        self.cause = cause
+        self.report = report
+
+
 OPS_REGISTRY: dict[str, tuple[type[BaseModel], _OpFn]] = {
     "set_up": (OpSetUp, _op_set_up),
     "rotate": (OpRotate, _op_rotate),
@@ -1130,10 +1145,17 @@ def apply_ops(
     the refine session and the executor pipeline.
     """
     report: list[dict[str, Any]] = []
-    for raw in ops:
-        mo = raw if isinstance(raw, MeshOp) else MeshOp.model_validate(raw)
+    for i, raw in enumerate(ops):
+        try:
+            mo = raw if isinstance(raw, MeshOp) else MeshOp.model_validate(raw)
+        except Exception as e:
+            name = raw.get("op", "?") if isinstance(raw, dict) else "?"
+            raise MeshOpError(i, str(name), e, report) from e
         faces_in = len(mesh.faces)
-        mesh = rest_on_xy_center(apply_op(mesh, mo, anchors=anchors))
+        try:
+            mesh = rest_on_xy_center(apply_op(mesh, mo, anchors=anchors))
+        except Exception as e:
+            raise MeshOpError(i, mo.op, e, report) from e
         report.append(
             {
                 "op": mo.op,

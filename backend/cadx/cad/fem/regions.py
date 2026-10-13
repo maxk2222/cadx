@@ -16,6 +16,8 @@ LLM loads step or to continue without that region).
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 from cadx.cad.fem.voxelize import VoxelDomain, shift_mask
@@ -165,17 +167,42 @@ def _points_cells(domain: VoxelDomain, region: RegionSpec) -> np.ndarray:
     """Solid cells within `radius_mm` of any painted surface point (GUI brush).
 
     Picked points sit ON the surface, so a sphere of `radius` selects a patch
-    of near-surface material — the natural target for clamps and load pads."""
+    of near-surface material — the natural target for clamps and load pads.
+
+    Rasterised in index space: each point only visits the cells inside its
+    sphere's bounding box instead of scanning the whole domain. Dense
+    strokes are deduplicated on a half-pitch grid so heavy painting can't
+    blow up the cost."""
     if len(region.points) == 0:
         return np.zeros(domain.dims, dtype=bool)
     radius = region.radius_mm or max(2.0 * region.margin_mm, 3.0)
     radius += domain.pitch  # centres of boundary cells sit ~pitch behind the skin
-    centers = domain.element_centers().reshape((*domain.dims, 3))
+    dims = np.asarray(domain.dims)
+    r2 = radius * radius
+    ext_cells = radius / domain.pitch
     sel = np.zeros(domain.dims, dtype=bool)
-    pts = np.asarray([p[:3] for p in region.points if len(p) >= 3], dtype=float)
-    for p in pts[:600]:
-        d2 = np.sum((centers - p[None, None, None, :]) ** 2, axis=-1)
-        sel |= d2 <= radius * radius
+    seen: set[tuple[int, int, int]] = set()
+    half = domain.pitch * 0.5
+    for p in region.points[:4000]:
+        if len(p) < 3:
+            continue
+        pt = np.asarray(p[:3], dtype=float)
+        # dedupe stroke points closer than half a pitch — same ~cell patch
+        key = tuple(math.floor(float(v) / half) for v in (pt - domain.origin))
+        if key in seen:
+            continue
+        seen.add(key)
+        rel = (pt - domain.origin) / domain.pitch - 0.5
+        lo = np.maximum(np.floor(rel - ext_cells).astype(int), 0)
+        hi = np.minimum(np.floor(rel + ext_cells).astype(int) + 1, dims)
+        if np.any(hi <= lo):
+            continue
+        gi, gj, gk = np.mgrid[lo[0] : hi[0], lo[1] : hi[1], lo[2] : hi[2]]
+        c0 = domain.origin[None, :] + domain.pitch * (
+            np.stack([gi, gj, gk], axis=-1).astype(float) + 0.5
+        )
+        d2 = np.sum((c0 - pt[None, None, None, :]) ** 2, axis=-1)
+        sel[lo[0] : hi[0], lo[1] : hi[1], lo[2] : hi[2]] |= d2 <= r2
     return np.asarray(sel & domain.solid)
 
 

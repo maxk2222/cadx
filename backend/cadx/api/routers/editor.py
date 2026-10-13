@@ -1,8 +1,9 @@
 """Visual editor endpoints: mesh-ops previews, mesh-edit children, FEM region
 preview + standalone FEM check, and GUI editor-state persistence.
 
-Previews enqueue work on the 'cad' queue directly and poll for the result —
-they run seconds, not minutes, so a synchronous request is the right UX.
+Previews run the same synchronous payload functions the cad-executor uses,
+but in-process on a worker thread — they take seconds, not minutes, so the
+queue round-trip would be pure overhead.
 """
 
 from __future__ import annotations
@@ -12,14 +13,12 @@ import mimetypes
 import uuid
 from typing import Any
 
-from arq.jobs import Job as ArqJob
-from arq.jobs import JobStatus as ArqJobStatus
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cadx import storage
-from cadx.api.deps import enqueue, get_pool, get_session
+from cadx.api.deps import enqueue, get_session
 from cadx.api.routers.versions import _next_number
 from cadx.api.schemas import (
     EditorStateRequest,
@@ -36,29 +35,28 @@ from cadx.db.models import Job, JobType, Version, VersionKind, VersionStatus
 
 router = APIRouter(tags=["editor"])
 
-_CAD_QUEUE = "cad"
 _SCRATCH_SUFFIXES = {".glb", ".png", ".json"}
 _PREVIEW_TIMEOUT_S = 180.0
 
 
-async def _run_cad(func: str, payload: dict[str, Any], timeout_s: float) -> dict[str, Any]:
-    """Enqueue on the 'cad' queue and poll until complete (QueueExecutor pattern)."""
-    pool = await get_pool()
-    job_id = f"{func}-{uuid.uuid4()}"
-    await pool.enqueue_job(func, payload, _queue_name=_CAD_QUEUE, _job_id=job_id)
-    job = ArqJob(job_id, pool)
-    waited = 0.0
-    while waited < timeout_s:
-        status = await job.status()
-        if status == ArqJobStatus.complete:
-            try:
-                result = await job.result()
-            except Exception as e:
-                return {"ok": False, "error": f"executor task failed: {e}"}
-            return result if isinstance(result, dict) else {"ok": False, "error": "bad result"}
-        await asyncio.sleep(1.0)
-        waited += 1.0
-    return {"ok": False, "error": f"executor task '{func}' timed out after {timeout_s}s"}
+async def _run_preview(fn: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    """Run the synchronous preview pipeline in a worker thread.
+
+    These previews take seconds, not minutes — running them in-process
+    skips the cad-queue enqueue+poll overhead entirely (the API image ships
+    the same deps as the executor)."""
+    from cadx.cad.tasks import run_fem_payload, run_mesh_payload
+
+    impl = {"mesh": run_mesh_payload, "fem": run_fem_payload}[fn]
+    try:
+        result = await asyncio.wait_for(
+            asyncio.to_thread(impl, payload), timeout=_PREVIEW_TIMEOUT_S
+        )
+    except TimeoutError:
+        return {"ok": False, "error": f"preview timed out after {_PREVIEW_TIMEOUT_S:.0f}s"}
+    except Exception as e:
+        return {"ok": False, "error": f"preview failed: {e}"}
+    return result if isinstance(result, dict) else {"ok": False, "error": "bad result"}
 
 
 def _validate_ops(ops: list[MeshOpIn]) -> list[dict[str, Any]]:
@@ -112,8 +110,8 @@ async def mesh_preview(
         post = merge_post_params(MeshPostParams(**(v.params or {})), body.post or {})
         post = post.model_copy(update={"ops": ops})
 
-    result = await _run_cad(
-        "process_mesh",
+    result = await _run_preview(
+        "mesh",
         {
             "job_id": f"preview-{uuid.uuid4()}",
             "project_id": str(v.project_id),
@@ -127,13 +125,17 @@ async def mesh_preview(
             "spec": v.spec,
             "anchors": (v.analysis or {}).get("anchors"),
         },
-        _PREVIEW_TIMEOUT_S,
     )
     glb = result.get("glb")
+    stats = dict(result.get("stats") or {})
+    if result.get("report") is not None:
+        stats["report"] = result["report"]
+    if result.get("failed_op") is not None:
+        stats["failed_op"] = result["failed_op"]
     return MeshPreviewOut(
         ok=bool(result.get("ok")),
         glb_url=_scratch_url(v.id, glb) if glb else None,
-        stats=result.get("stats") or {},
+        stats=stats,
         error=result.get("error"),
     )
 
@@ -212,8 +214,8 @@ async def fem_preview(
     if not body.load_cases:
         raise HTTPException(422, "at least one load case is required")
 
-    result = await _run_cad(
-        "fem_analyze",
+    result = await _run_preview(
+        "fem",
         {
             "job_id": f"fem-preview-{uuid.uuid4()}",
             "project_id": str(v.project_id),
@@ -224,9 +226,9 @@ async def fem_preview(
             "keep_regions": body.keep_regions,
             "anchors": (v.analysis or {}).get("anchors", {}).get("holes"),
             "preview_only": True,
+            "render_pngs": body.render_pngs,
             "scratch": True,
         },
-        _PREVIEW_TIMEOUT_S,
     )
     prev = result.get("preview") or {}
     pngs = [_scratch_url(v.id, p) for p in prev.get("regions_png") or []]
@@ -236,6 +238,7 @@ async def fem_preview(
         dims=prev.get("dims") or [],
         solid_elements=prev.get("solid_elements") or 0,
         cases=prev.get("cases") or [],
+        cells=prev.get("cells") or [],
         pngs=pngs,
         error=result.get("error"),
     )
@@ -278,10 +281,18 @@ async def editor_state(
     version_id: uuid.UUID, body: EditorStateRequest, db: AsyncSession = Depends(get_session)
 ):
     """Persist GUI editor state (painted regions/ops draft) on the version —
-    stored under options['ui_editor']; 'ui_' keys never reach run settings."""
+    stored under options['ui_editor']; 'ui_' keys never reach run settings.
+    Merges into the existing block so the mesh-editor ops draft and the
+    structural-editor state don't clobber each other."""
     v = await db.get(Version, version_id)
     if not v:
         raise HTTPException(404, "version not found")
-    v.options = {**(v.options or {}), "ui_editor": body.ui_editor}
+    existing = (v.options or {}).get("ui_editor") or {}
+    if not isinstance(existing, dict):
+        existing = {}
+    v.options = {
+        **(v.options or {}),
+        "ui_editor": {**existing, **body.ui_editor},
+    }
     await db.commit()
     return {"ok": True}

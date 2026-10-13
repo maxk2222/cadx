@@ -626,6 +626,7 @@ def run_fem_pipeline(
     keep_regions: list[dict[str, Any]] | None = None,
     anchors: list[dict] | None = None,
     preview_only: bool = False,
+    render_pngs: bool = True,
     runtime: RuntimeSettings | None = None,
 ) -> dict[str, Any]:
     """FEM verification on an existing mesh artifact. Writes fem/report.json +
@@ -646,14 +647,18 @@ def run_fem_pipeline(
         return {"ok": False, "error": f"failed to load mesh for FEM: {e}"}
 
     if preview_only:
-        from cadx.cad.fem.preview import render_regions, resolve_case_summary
+        from cadx.cad.fem.preview import (
+            cells_preview,
+            render_regions,
+            resolve_case_summary,
+        )
         from cadx.cad.fem.voxelize import voxelize
 
         try:
             domain = voxelize(mesh, voxel_mm or s.fem_voxel_mm, max_elements or s.fem_max_elements)
         except Exception as e:
             return {"ok": False, "error": f"voxelization failed: {e}"}
-        pngs = render_regions(domain, cases, keep, out_dir / "fem", anchors)
+        pngs = render_regions(domain, cases, keep, out_dir / "fem", anchors) if render_pngs else []
         return {
             "ok": True,
             "preview": {
@@ -661,6 +666,7 @@ def run_fem_pipeline(
                 "dims": list(domain.dims),
                 "solid_elements": domain.solid_count,
                 "cases": [resolve_case_summary(domain, c, anchors) for c in cases],
+                "cells": cells_preview(domain, cases, keep, anchors),
                 "regions_png": pngs,
             },
         }
