@@ -225,7 +225,7 @@ def _ops_preview(
             mesh, _ = baseline_mesh(mesh, post, spec)
         ops = [MeshOp.model_validate(o) for o in payload.get("ops") or post.ops]
         if ops:
-            mesh, report = apply_ops(mesh, ops)
+            mesh, report = apply_ops(mesh, ops, anchors=payload.get("anchors"))
         else:
             report = []
         mesh = rest_on_xy_center(mesh)

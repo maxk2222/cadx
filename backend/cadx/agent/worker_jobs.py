@@ -25,7 +25,7 @@ from cadx.agent.mesh_client import MeshPort, make_mesh_client
 from cadx.agent.orchestrator import RunOutcome, run_generation
 from cadx.agent.trace import MemoryTrace, sanitize_messages
 from cadx.agent.types import AgentCtx, InputAsset, ParentContext
-from cadx.cad.mesh_ops import MeshOp, MeshPostParams, merge_post_params
+from cadx.cad.mesh_ops import MESH_OPS_VERSION, MeshOp, MeshPostParams, merge_post_params
 from cadx.db.models import (
     AgentTrace,
     Artifact,
@@ -1047,6 +1047,7 @@ async def run_mesh_edit_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dic
                 MeshPostParams(**(parent.params or {})), payload.get("post") or {}
             )
             post = post.model_copy(update={"ops": ops})
+        post.ops_version = MESH_OPS_VERSION
 
         runtime_settings = await load_runtime_settings(db)
         executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=runtime_settings)

@@ -950,3 +950,33 @@ async def test_generate_mesh_uses_heightfield_for_flat_part():
     assert rel and rel.endswith("mesh_raw_hf.glb")
     assert mesh.calls == []  # generator never ran
     assert ctx.mesh_info["generation"]["heightfield"] is True
+
+
+async def test_generate_mesh_hopeless_gate_skips_full_generation():
+    """All cheap candidates below the viability threshold → no full-res roll.
+
+    Regression: _generate_mesh must return None (callers route to the CAD
+    fallback) instead of re-rolling the same hopeless inputs at full cost.
+    """
+    import time
+
+    from cadx.agent.orchestrator import _generate_mesh
+
+    spec = PartSpec(
+        name="scale",
+        length_x={"value": 119.0, "source": "stated"},
+        width_y={"value": 34.0, "source": "stated"},
+        height_z={"value": 8.0, "source": "stated"},
+    )
+    mesh = FakeMeshClient()
+    ctx = _ctx(
+        assets=[_img()],
+        mesh=mesh,
+        mesh_available=True,
+        runtime_settings=RuntimeSettings(mesh_candidates_per_iter=2, mesh_prep_images=False),
+    )
+    # no measurements → no outline → no heightfield candidate
+    rel = await _generate_mesh(ctx, 1, spec, None, t0=time.monotonic())
+    assert rel is None
+    assert ctx.mesh_info["_mesh_hopeless"] is True
+    assert len(mesh.calls) == 2  # only the two cheap candidates ran

@@ -935,6 +935,8 @@ async def _candidate_seed(
     adapters = await _candidate_adapters(ctx, n)
     scores: dict[tuple[int, str | None], float] = {}
     for i in range(n):
+        if await ctx.check_cancel():
+            return None
         seed_i = base + i * 1000
         model_i = adapters[i % len(adapters)] if adapters else None
         rel = await _generate_mesh(
@@ -952,6 +954,27 @@ async def _candidate_seed(
         sc = _score_candidate_mesh(rel, spec, outline)
         if sc is not None:
             scores[(seed_i, model_i)] = sc
+    return await _select_candidate(ctx, iteration, scores, hf)
+
+
+async def _select_candidate(
+    ctx: AgentCtx,
+    iteration: int,
+    scores: dict[tuple[int, str | None], float],
+    hf: tuple[str, float] | None,
+) -> int | None:
+    """Pick the winning (seed, adapter) from cheap candidates, or let the
+    deterministic heightfield take over when it outscores the generator."""
+
+    def _fmt(scores: dict) -> str:
+        return (
+            "{"
+            + ", ".join(
+                (f"{k[0]}@{k[1]}" if k[1] else str(k[0])) + f": {v}" for k, v in scores.items()
+            )
+            + "}"
+        )
+
     best_gen = 0.0
     best_key: tuple[int, str | None] | None = None
     if scores:
@@ -963,7 +986,7 @@ async def _candidate_seed(
             await ctx.emit(
                 "meshgen",
                 iteration,
-                f"candidate seeds scored: {scores} — none viable, skipping generation",
+                f"candidate seeds scored: {_fmt(scores)} — none viable, skipping generation",
             )
         else:
             best_gen = scores[best_key]
@@ -972,7 +995,7 @@ async def _candidate_seed(
             await ctx.emit(
                 "meshgen",
                 iteration,
-                f"candidate seeds scored: {scores} → using seed {seed_i}"
+                f"candidate seeds scored: {_fmt(scores)} → using seed {seed_i}"
                 + (f" on adapter '{model_i}'" if model_i else ""),
             )
 
@@ -1135,6 +1158,35 @@ async def _mesh_cache_lookup(
     return key, True
 
 
+async def _arrange_gen_images(
+    ctx: AgentCtx,
+    iteration: int,
+    images: list[Any],
+    roles: list[str],
+    spec: PartSpec,
+    prefer: str | None,
+) -> tuple[str, list[Any], list[str]]:
+    """Resolve the adapter, reorder for sketch-conditioned models, cap to the
+    adapter's image budget (roles stay aligned). Returns (model, images, roles)."""
+    model, img_cap = await _resolve_mesh_adapter(ctx, len(images), prefer=prefer, spec=spec)
+    if model.endswith("-scribble"):
+        # sketch-conditioned adapters read image[0] as the scribble — put the
+        # measured-outline silhouette first, photos stay as context
+        si = next((i for i, a in enumerate(images) if a.asset_id == "_synth_back"), None)
+        if si:
+            images.insert(0, images.pop(si))
+            roles.insert(0, roles.pop(si))
+    if len(images) > img_cap:
+        await ctx.emit(
+            "meshgen",
+            iteration,
+            f"adapter '{model}' accepts max {img_cap} image(s) — using first {img_cap}",
+        )
+        images = images[:img_cap]
+        roles = roles[:img_cap]
+    return model, images, roles
+
+
 async def _generate_mesh(
     ctx: AgentCtx,
     iteration: int,
@@ -1159,6 +1211,8 @@ async def _generate_mesh(
         if hf_rel:
             await ctx.emit("meshgen", iteration, "using heightfield candidate mesh")
             return str(hf_rel)
+        if ctx.mesh_info.get("_mesh_hopeless") and seed is None:
+            return None
 
     it_dir = storage.iteration_dir(ctx.project_id, ctx.version_id, iteration)
     out_path = it_dir / f"mesh_raw{tag}.glb"
@@ -1180,16 +1234,9 @@ async def _generate_mesh(
     base_seed = _base_seed(ctx)
     if seed is None:
         seed = base_seed + iteration - 1
-    model, img_cap = await _resolve_mesh_adapter(
-        ctx, len(images), prefer=model or ctx.mesh_info.get("_candidate_model"), spec=spec
+    model, images, roles = await _arrange_gen_images(
+        ctx, iteration, images, roles, spec, prefer=model or ctx.mesh_info.get("_candidate_model")
     )
-    if len(images) > img_cap:
-        await ctx.emit(
-            "meshgen",
-            iteration,
-            f"adapter '{model}' accepts max {img_cap} image(s) — using first {img_cap}",
-        )
-        images = images[:img_cap]
     subject = (
         ctx.mesh_info.get("_regen_hint")
         or (plan.mesh_subject if plan else "")

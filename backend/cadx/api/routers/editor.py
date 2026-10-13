@@ -125,6 +125,7 @@ async def mesh_preview(
             "ops": ops,
             "ops_only": ops_only,
             "spec": v.spec,
+            "anchors": (v.analysis or {}).get("anchors"),
         },
         _PREVIEW_TIMEOUT_S,
     )
