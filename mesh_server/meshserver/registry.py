@@ -75,6 +75,7 @@ class Registry:
         from meshserver.adapters.hunyuan3d21_mlx import Hunyuan3D21MlxAdapter
         from meshserver.adapters.trellis2_cuda import Trellis2Adapter
         from meshserver.adapters.triposg import TripoSGAdapter
+        from meshserver.adapters.triposg_scribble import TripoSGScribbleAdapter
 
         classes += [
             Hunyuan3D21MlxAdapter,
@@ -84,6 +85,7 @@ class Registry:
             Hunyuan3D2MvTurboAdapter,
             Trellis2Adapter,
             TripoSGAdapter,
+            TripoSGScribbleAdapter,
         ]
         return classes
 

@@ -41,10 +41,17 @@ def _device_ok() -> str:
     return ""
 
 
+class _RunDevice:
+    """Reports the device the adapter would actually run on."""
+
+    def __get__(self, obj: Any, owner: type | None = None) -> str:
+        return _device_ok() or "cuda"
+
+
 class TripoSGAdapter(MeshAdapter):
     id = "triposg"
     name = "TripoSG 1.5B"
-    device = "cuda"
+    device = _RunDevice()
     backend = "triposg"
     supports_multiview = False
     max_images = 1
@@ -74,8 +81,11 @@ class TripoSGAdapter(MeshAdapter):
             except Exception as e:  # pragma: no cover
                 missing(type(self), str(e))
         self._device = _device_ok() or "cpu"
+        # fp16 is unstable on MPS (rectified-flow DiT + Metal) — run fp32 there;
+        # CUDA keeps the fast fp16 path
+        dtype = torch.float16 if self._device == "cuda" else torch.float32
         self._pipe = TripoSGPipeline.from_pretrained(
-            "VAST-AI/TripoSG", torch_dtype=torch.float16
+            "VAST-AI/TripoSG", torch_dtype=dtype
         ).to(self._device)
         self._torch = torch
         self._loaded = True
@@ -96,14 +106,17 @@ class TripoSGAdapter(MeshAdapter):
             self.load()
         if progress:
             progress(0.05, "running TripoSG")
-        gen = self._torch.Generator(device=self._device).manual_seed(
-            opts.seed & 0xFFFFFFFF
-        )
         kwargs: dict[str, Any] = {
             "image": images[0],
-            "generator": gen,
             "num_inference_steps": opts.steps or 30,
         }
+        if self._device == "cuda":
+            kwargs["generator"] = self._torch.Generator(device="cuda").manual_seed(
+                opts.seed & 0xFFFFFFFF
+            )
+        else:
+            # torch.Generator(mps/cpu) is flaky across versions — seed globally
+            self._torch.manual_seed(opts.seed & 0xFFFFFFFF)
         if opts.guidance is not None:
             kwargs["guidance_scale"] = opts.guidance
         out = self._pipe(**kwargs)
