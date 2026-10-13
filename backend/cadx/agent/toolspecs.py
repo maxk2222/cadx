@@ -508,6 +508,28 @@ MESH_INFO_TOOLS = [
         {},
         [],
     ),
+    _fn(
+        "mesh_regen_edit",
+        "Text-steered regeneration round-trip: edits the conditioning image "
+        "with a local image-edit model (your prompt describes the change, e.g. "
+        "'add deeper knurled grip grooves'), regenerates the mesh from the "
+        "edited image with the SAME model+seed, and re-baselines it. Use for "
+        "surface-detail/shape changes that ops cannot express. ALL recorded "
+        "ops are discarded — re-apply needed transforms afterwards. Fails "
+        "cleanly when no edit-capable image adapter is installed.",
+        {
+            "prompt": {
+                "type": "string",
+                "description": "edit instruction for the reference image",
+            },
+            "strength": {
+                "type": "number",
+                "description": "img2img strength 0.3..0.9 (default 0.6; lower "
+                "keeps more of the original shape)",
+            },
+        },
+        ["prompt"],
+    ),
 ]
 
 MESH_TRANSFORM_TOOLS = [
@@ -837,6 +859,9 @@ class ToolSession:
             out = list(MESH_INFO_TOOLS)
             if self.workbench is None or self.workbench.preview_left <= 0:
                 out = [t for t in out if t["function"]["name"] != "mesh_preview"]
+            if self.ctx.image is None:
+                # no image sidecar → the edit round-trip cannot work
+                out = [t for t in out if t["function"]["name"] != "mesh_regen_edit"]
             return (
                 out
                 + MESH_TRANSFORM_TOOLS

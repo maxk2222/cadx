@@ -55,6 +55,10 @@ Common problems and their fixes:
 - Print-optimised hollow part → mesh_shell(thickness, opening) erodes an
   inner solid — much lighter than scaling tricks.
 - Rough/faceted surface → mesh_smooth (taubin preserves volume better).
+- Shape needs text-describable detail changes (different grip texture,
+  added/removed features, styling) → mesh_regen_edit edits the conditioning
+  image and regenerates the mesh in place. It DISCARDS all recorded ops —
+  use it early, then rebuild transforms on the new mesh.
 - Floating debris / split bodies → mesh_keep_largest or mesh_drop_small.
 - Not watertight before booleans → mesh_repair.
 - Overhangs/steep leaning → mesh_rotate small amounts, or mesh_slice the

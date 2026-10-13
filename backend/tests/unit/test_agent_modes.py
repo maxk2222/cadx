@@ -43,13 +43,31 @@ def _ctx(llm: FakeLLM | None = None, **kw) -> AgentCtx:
     )
 
 
+_IMG_TMP = Path(__file__).resolve().parent / "_img_tmp"
+
+
 def _img() -> InputAsset:
-    return InputAsset(
-        asset_id=str(uuid.uuid4()),
-        kind="image",
-        path=FIXTURES / "images" / "knob.png",
-        filename="knob.png",
-    )
+    """Distinct pixels per asset — the multiview aHash dedup would merge
+    identical fixture copies into one."""
+    import tempfile
+
+    from PIL import Image, ImageDraw
+
+    aid = str(uuid.uuid4())
+    p = Path(tempfile.mkdtemp(prefix="cadx-img-")) / f"{aid[:8]}.png"
+    # deterministic distinct pattern per asset: seed-derived block mosaic —
+    # aHash-safe (64 cells each ~50% chance to flip)
+    import random
+
+    rng = random.Random(int(aid[:8], 16))
+    img = Image.new("RGB", (64, 64))
+    dr = ImageDraw.Draw(img)
+    for gy in range(0, 64, 8):
+        for gx in range(0, 64, 8):
+            v = rng.choice((30, 225))
+            dr.rectangle([gx, gy, gx + 8, gy + 8], fill=(v, v, v))
+    img.save(p)
+    return InputAsset(asset_id=aid, kind="image", path=p, filename=p.name)
 
 
 def _plan(approach: str) -> ModelingPlan:
@@ -1015,3 +1033,35 @@ async def test_generate_mesh_hopeless_gate_skips_full_generation():
     assert rel is None
     assert ctx.mesh_info["_mesh_hopeless"] is True
     assert len(mesh.calls) == 2  # only the two cheap candidates ran
+
+
+def test_mesh_source_images_dedupes_near_identical(tmp_path):
+    """Two uploads of the same photo (near-identical aHash) must not both
+    reach the generator — it would waste a view slot on the same pose."""
+    from PIL import Image
+
+    from cadx.agent.orchestrator import _mesh_source_images
+
+    a = _img()
+    # byte-different but perceptually identical copy of a's image
+    dup_path = tmp_path / "dup.png"
+    img = Image.open(a.path).convert("RGB")
+    img.save(dup_path, quality=95)
+    b = InputAsset(asset_id=str(uuid.uuid4()), kind="image", path=dup_path, filename="dup.png")
+    c = _img()
+    spec = PartSpec(
+        name="knob",
+        length_x={"value": 40.0, "source": "stated"},
+        width_y={"value": 40.0, "source": "stated"},
+        height_z={"value": 25.0, "source": "stated"},
+        image_roles=[
+            {"asset_id": a.asset_id, "role": "front"},
+            {"asset_id": b.asset_id, "role": "back"},
+            {"asset_id": c.asset_id, "role": "left"},
+        ],
+    )
+    ctx = _ctx(assets=[a, b, c])
+    ordered, _roles = _mesh_source_images(ctx, 1, spec)
+    ids = [o.asset_id for o in ordered]
+    assert b.asset_id not in ids
+    assert set(ids) == {a.asset_id, c.asset_id}

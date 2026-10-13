@@ -206,7 +206,7 @@ def decimate(mesh: trimesh.Trimesh, target_faces: int) -> trimesh.Trimesh:
     except Exception:
         pass
     try:
-        return mesh.simplify_quadric_decimation(target_faces)
+        return mesh.simplify_quadric_decimation(face_count=target_faces)
     except Exception:
         log.warning("mesh.decimate.failed", exc_info=True)
         return mesh
@@ -378,7 +378,7 @@ def flatten_bottom(mesh: trimesh.Trimesh, height_mm: float) -> trimesh.Trimesh:
     try:
         lo, hi = np.asarray(mesh.bounds[0], dtype=float), np.asarray(mesh.bounds[1], dtype=float)
         ext = hi - lo
-        pitch = float(np.clip(min(ext[0], ext[1]) / 150.0, 0.3, 0.8))
+        pitch = float(np.clip(min(ext[0], ext[1]) / 200.0, 0.2, 0.6))
         vg = mesh.voxelized(pitch)
         mat = np.asarray(vg.matrix)
         if mat.any():
@@ -387,6 +387,9 @@ def flatten_bottom(mesh: trimesh.Trimesh, height_mm: float) -> trimesh.Trimesh:
             rebuilt = trimesh.voxel.VoxelGrid(filled, transform=vg.transform).marching_cubes
             rebuilt.apply_transform(vg.transform)
             if len(rebuilt.faces):
+                # knock the marching-cubes stair steps down — floor is pinned,
+                # XY envelope rescaled, so the silhouette stays true
+                rebuilt = smooth_preserve(rebuilt, 4)
                 # voxel padding grows the envelope ~1 pitch on every side —
                 # crop the XY silhouette back to the original bounds
                 for axis in (0, 1):
@@ -412,6 +415,8 @@ def flatten_bottom(mesh: trimesh.Trimesh, height_mm: float) -> trimesh.Trimesh:
                 out = sliced
         except Exception:
             log.warning("mesh.flatten_bottom.slice.failed", exc_info=True)
+    if len(out.faces) > _REBUILD_MAX_FACES:
+        out = decimate(out, _REBUILD_MAX_FACES)
     return out
 
 
@@ -516,7 +521,11 @@ _CARTESIAN: dict[str, np.ndarray] = {
     "y": np.array([0.0, 1.0, 0.0]),
     "z": np.array([0.0, 0.0, 1.0]),
 }
-BOOLEAN_MAX_FACES = 200_000
+# manifold3d booleans stay fast well past this; voxel-rebuild ops
+# (flatten_bottom/remesh) cap their output just below it so rebuild→boolean
+# stacks remain composable
+BOOLEAN_MAX_FACES = 500_000
+_REBUILD_MAX_FACES = BOOLEAN_MAX_FACES - 50_000
 _MAX_PRIMITIVE_MM = 2000.0
 
 
@@ -618,9 +627,12 @@ class OpRemesh(BaseModel):
     """Uniform voxel remesh — watertight by construction, even topology.
 
     Improves boolean robustness and gives smoothing a uniform base at the
-    cost of some surface detail (set by `voxel_mm`)."""
+    cost of some surface detail (set by `voxel_mm`). `smooth_iters` applies
+    a light Taubin pass afterwards to knock marching-cubes stair steps
+    down (floor pinned, XY envelope preserved)."""
 
     voxel_mm: float = Field(gt=0.05, le=5.0)
+    smooth_iters: int = Field(default=4, ge=0, le=30)
 
 
 class DrillHole(BaseModel):
@@ -902,8 +914,10 @@ def _op_remesh(mesh: trimesh.Trimesh, p: OpRemesh) -> trimesh.Trimesh:
             f"(>900 cells/axis) — use a coarser pitch"
         )
     out = _voxel_remesh(mesh, p.voxel_mm)
-    if len(out.faces) > 500_000:
-        out = decimate(out, 500_000)
+    if p.smooth_iters:
+        out = smooth_preserve(out, p.smooth_iters)
+    if len(out.faces) > BOOLEAN_MAX_FACES:
+        out = decimate(out, BOOLEAN_MAX_FACES)
     return out
 
 
@@ -990,6 +1004,8 @@ def _op_shell(mesh: trimesh.Trimesh, p: OpShell) -> trimesh.Trimesh:
     inner.apply_transform(vg.transform)
     if not len(inner.faces):
         raise ValueError("shell erosion produced an empty inner solid")
+    # smooth the eroded cutter — the cavity walls inherit its stair steps
+    inner = smooth_preserve(inner, 4, pin_floor=False)
     try:
         out = mesh.difference(inner, engine="manifold")
     except Exception as e:
@@ -1109,7 +1125,7 @@ OPS_REGISTRY: dict[str, tuple[type[BaseModel], _OpFn]] = {
 
 # bump when an op's semantics change so old version.params replays are
 # recognised as pre-change (stored alongside params, warn-not-fail)
-MESH_OPS_VERSION = 2
+MESH_OPS_VERSION = 3  # remesh/shell now finish with a light Taubin pass
 
 
 def apply_op(

@@ -95,6 +95,8 @@ class MeshWorkbench:
         self.work: trimesh.Trimesh | None = None
         self._work_counter = 0
         self._features: Any = None  # cached detect_mesh_features result
+        self._post = post  # kept for re-baselining after mesh_regen_edit
+        self.new_mesh_rel: str | None = None  # set by mesh_regen_edit
         try:
             raw = load_mesh(raw_path)
             self.baseline = baseline_mesh(raw, post, spec)[0]
@@ -180,6 +182,8 @@ class MeshWorkbench:
             return await asyncio.to_thread(self._section, args)
         if name == "mesh_overlay":
             return await asyncio.to_thread(self._overlay)
+        if name == "mesh_regen_edit":
+            return await self._regen_edit(args)
         op_name = _OP_TOOLS.get(name)
         if op_name is None:
             return {"ok": False, "error": f"unknown mesh tool '{name}'"}
@@ -376,6 +380,133 @@ class MeshWorkbench:
             "preview_left": self.preview_left,
             "note": "red = measured outline, blue = mesh footprint, green = anchors",
         }
+
+    async def _regen_edit(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Text-steered regeneration: edit the conditioning image with a local
+        img2img/instruction-edit adapter, regenerate the mesh from the edited
+        image (same model+seed), then re-baseline. Recorded ops are discarded
+        — they were tuned for the previous shape."""
+        prompt = str(args.get("prompt", "")).strip()
+        if not prompt:
+            return {"ok": False, "error": "prompt is required"}
+        if self.ctx.image is None:
+            return {"ok": False, "error": "no image adapter configured (ctx.image is None)"}
+        if self.ctx.mesh is None:
+            return {"ok": False, "error": "no mesh backend configured"}
+
+        # 1. pick the conditioning image this mesh was generated from
+        src = self._gen_source_image()
+        if src is None:
+            return {"ok": False, "error": "no source image available to edit"}
+
+        # 2. image edit via a supports_edit adapter (server-side selection)
+        from cadx.agent.image_client import ImageGenRequest
+
+        s = self.ctx.runtime_settings
+        tmp = self._session_dir() / "edit"
+        tmp.mkdir(parents=True, exist_ok=True)
+        strength = args.get("strength")
+        try:
+            edit_res = await self.ctx.image.generate(
+                ImageGenRequest(
+                    prompt=prompt,
+                    model=str(args.get("image_model") or "auto"),
+                    seed=int(args.get("seed") or 0),
+                    count=1,
+                    width=min(768, s.image_max_side),
+                    height=min(768, s.image_max_side),
+                    steps=getattr(s, "image_steps", None),
+                    init_image=src,
+                    strength=float(strength) if strength is not None else 0.6,
+                    out_dir=tmp,
+                ),
+                None,
+                self.ctx.check_cancel,
+            )
+        except Exception as e:
+            return {"ok": False, "error": f"image edit failed: {e}"}
+        if not edit_res.image_paths:
+            return {"ok": False, "error": "image edit returned no image"}
+        edited = edit_res.image_paths[0]
+
+        # 3. regenerate the mesh from the edited image, same model+seed
+        from cadx.agent.mesh_client import MeshGenRequest
+
+        gen = self.ctx.mesh_info.get("generation") or {}
+        self._edit_counter = getattr(self, "_edit_counter", 0) + 1
+        out = (
+            storage.iteration_dir(self.ctx.project_id, self.ctx.version_id, self.iteration)
+            / f"mesh_raw_edit{self._edit_counter}.glb"
+        )
+        try:
+            await self.ctx.mesh.generate(
+                MeshGenRequest(
+                    images=[edited],
+                    image_roles=["front"],
+                    subject=str(gen.get("subject") or self.ctx.prompt[:80]),
+                    model=str(gen.get("model") or "auto"),
+                    seed=int(gen.get("seed") or 0),
+                    steps=self.ctx.settings.mesh_steps,
+                    guidance=self.ctx.settings.mesh_guidance,
+                    resolution=self.ctx.settings.mesh_resolution,
+                    out_path=out,
+                    job_id=self.ctx.job_id,
+                ),
+                None,
+                self.ctx.check_cancel,
+            )
+        except Exception as e:
+            return {"ok": False, "error": f"mesh regeneration failed: {e}"}
+        if not out.exists():
+            return {"ok": False, "error": "mesh regeneration produced no file"}
+
+        # 4. re-baseline on the new raw mesh; previous ops no longer apply
+        try:
+            raw = await asyncio.to_thread(load_mesh, out)
+            self.baseline = await asyncio.to_thread(
+                lambda: baseline_mesh(raw, self._post, self.spec)[0]
+            )
+            dropped = len(self.ops)
+            self.ops.clear()
+            self.work = rest_on_xy_center(self.baseline.copy())
+            self._features = None
+        except Exception as e:
+            return {"ok": False, "error": f"new mesh failed baseline processing: {e}"}
+        self.new_mesh_rel = storage.relpath(out)
+        gen["edit"] = {
+            "prompt": prompt,
+            "image_model": edit_res.model,
+            "mesh_rel": self.new_mesh_rel,
+        }
+        self.ctx.mesh_info["generation"] = gen
+        return {
+            "ok": True,
+            "new_mesh_rel": self.new_mesh_rel,
+            "edited_image": str(edited),
+            "ops_dropped": dropped,
+            **self._stats(),
+            "note": "mesh regenerated from the edited image — previous ops were "
+            "discarded; inspect and re-apply transforms as needed",
+        }
+
+    def _gen_source_image(self) -> Path | None:
+        """The conditioning image used for the current mesh generation —
+        asset ids in ctx.mesh_info['generation']['images'] resolved against
+        ctx.assets; falls back to the first input image."""
+        from cadx.agent.types import IMAGE_INPUT_KINDS
+
+        gen_ids = {str(i) for i in (self.ctx.mesh_info.get("generation") or {}).get("images") or []}
+        for a in self.ctx.assets:
+            if str(a.asset_id) in gen_ids and getattr(a, "path", None):
+                p = Path(a.path)
+                if p.exists():
+                    return p
+        for a in self.ctx.assets:
+            if a.kind in IMAGE_INPUT_KINDS and getattr(a, "path", None):
+                p = Path(a.path)
+                if p.exists():
+                    return p
+        return None
 
     async def _transform(self, op_name: str, tool: str, args: dict[str, Any]) -> dict[str, Any]:
         if len(self.ops) >= self.max_ops:

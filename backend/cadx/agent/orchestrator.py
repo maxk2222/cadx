@@ -619,6 +619,41 @@ def _synth_back_view(ctx: AgentCtx, iteration: int, outline_mm: list[list[float]
         return None
 
 
+def _ahash(path: Path) -> int | None:
+    """8x8 grayscale average-hash — cheap perceptual fingerprint."""
+    try:
+        from PIL import Image
+
+        img = Image.open(path).convert("L").resize((8, 8), Image.LANCZOS)
+        px = list(img.getdata())
+        avg = sum(px) / len(px)
+        return sum(1 << i for i, v in enumerate(px) if v > avg)
+    except Exception:
+        return None
+
+
+def _dedupe_near_identical(ctx: AgentCtx, ordered: list[Any]) -> list[Any]:
+    """Drop near-duplicate conditioning images (same pose uploaded twice).
+    A duplicate view adds nothing but wastes a conditioning slot — the
+    generator treats it as a different view. aHash Hamming < 6 = dup."""
+    if len(ordered) <= 1:
+        return ordered
+    seen: list[int] = []
+    out: list[Any] = []
+    dropped: list[str] = []
+    for a in ordered:
+        h = _ahash(a.path)
+        if h is not None and any(bin(h ^ h2).count("1") < 6 for h2 in seen):
+            dropped.append(a.asset_id)
+            continue
+        if h is not None:
+            seen.append(h)
+        out.append(a)
+    if dropped:
+        log.info("mesh.dedupe_dropped", assets=dropped)
+    return out
+
+
 def _mesh_source_images(
     ctx: AgentCtx, iteration: int, spec: PartSpec | None = None
 ) -> tuple[list[Any], list[str]]:
@@ -641,6 +676,7 @@ def _mesh_source_images(
             if aid in by_id and by_id[aid] not in ordered:
                 ordered.append(by_id[aid])
     ordered += [a for a in images if a not in ordered]
+    ordered = _dedupe_near_identical(ctx, ordered)
     if iteration > 1 and len(ordered) > 1:
         ordered = ordered[1:] + ordered[:1]  # rotate hero
 
@@ -954,6 +990,7 @@ async def _candidate_seed(
             plan,
             seed=seed_i,
             steps=s.mesh_candidate_steps,
+            resolution=256,  # screening only — full gen runs at settings res
             tag=f"_cand{i}",
             model=model_i,
         )
@@ -1133,6 +1170,7 @@ async def _mesh_cache_lookup(
     subject: str,
     out_path: Path,
     rel: str,
+    resolution: int | None = None,
 ) -> tuple[str, bool]:
     """Return (cache_key, hit); on a hit copy the cached GLB to out_path
     and fill ctx.mesh_info['generation'] so the caller can return early."""
@@ -1147,7 +1185,7 @@ async def _mesh_cache_lookup(
         seed=seed,
         steps=steps if steps is not None else ctx.settings.mesh_steps,
         guidance=ctx.settings.mesh_guidance,
-        resolution=ctx.settings.mesh_resolution,
+        resolution=resolution if resolution is not None else ctx.settings.mesh_resolution,
         subject=subject,
     )
     cached = mesh_cache.lookup(key)
@@ -1206,6 +1244,7 @@ async def _generate_mesh(
     tag: str = "",
     t0: float | None = None,
     model: str | None = None,
+    resolution: int | None = None,
 ) -> str | None:
     """MESH_GENERATE step. Returns the relpath of the raw GLB or None."""
     if ctx.mesh is None:
@@ -1269,6 +1308,7 @@ async def _generate_mesh(
         ctx.prompt[:80],
         out_path,
         rel,
+        resolution=resolution,
     )
     if hit:
         return rel
@@ -1281,7 +1321,7 @@ async def _generate_mesh(
         seed=seed,
         steps=steps if steps is not None else ctx.settings.mesh_steps,
         guidance=ctx.settings.mesh_guidance,
-        resolution=ctx.settings.mesh_resolution,
+        resolution=resolution if resolution is not None else ctx.settings.mesh_resolution,
         out_path=out_path,
         job_id=ctx.job_id,
     )
@@ -1406,18 +1446,20 @@ async def _process_mesh(
     post: MeshPostParams,
     *,
     make_solid: bool = False,
+    solid_max_faces: int | None = None,
 ) -> dict[str, Any]:
-    return await ctx.executor.process_mesh(
-        _mesh_payload(
-            ctx,
-            iteration,
-            mode="final",
-            mesh_rel=mesh_rel,
-            post=post,
-            spec=spec,
-            make_solid=make_solid,
-        )
+    payload = _mesh_payload(
+        ctx,
+        iteration,
+        mode="final",
+        mesh_rel=mesh_rel,
+        post=post,
+        spec=spec,
+        make_solid=make_solid,
     )
+    if solid_max_faces is not None:
+        payload["solid_max_faces"] = solid_max_faces
+    return await ctx.executor.process_mesh(payload)
 
 
 # --------------------------------------------------------------------------- #
@@ -2091,7 +2133,11 @@ async def _run_mesh(  # noqa: C901
                     else:
                         hard_fails = 0
                     continue
-                if rr is not None and rr.changed:
+                if rr is not None and (rr.changed or rr.new_mesh_rel):
+                    if rr.new_mesh_rel:
+                        # mesh_regen_edit swapped the baseline mid-session —
+                        # reprocess the regenerated raw, not the original
+                        mesh_rel = rr.new_mesh_rel
                     exec_result = await _apply_ops(it, mesh_rel, post, rr)
 
         if not exec_result or not exec_result.get("ok"):
@@ -2159,8 +2205,10 @@ async def _run_mesh(  # noqa: C901
                     ctx.mesh_info["_regen_hint"] = rr.subject_hint
                 await ctx.emit("meshrefine", it, f"regenerating — {rr.reasoning[:100]}")
                 break
-            if not rr.changed:
+            if not (rr.changed or rr.new_mesh_rel):
                 break
+            if rr.new_mesh_rel:
+                mesh_rel = rr.new_mesh_rel
             new_exec = await _apply_ops(it, mesh_rel, post, rr)
             if not new_exec.get("ok"):
                 log.warning("mesh.refine_reprocess_failed", error=new_exec.get("error"))
@@ -2653,14 +2701,17 @@ async def _prepare_hybrid_mesh(
         ctx.hybrid_solid = storage.resolve(exec_result["mesh"]["solid_relpath"])
         return True, "mesh solid ready"
 
-    # retry once with stronger decimation for OCCT stability
+    # retry once with a tighter cap on the *solid copy* only — the pipeline
+    # mesh and its exports stay at full resolution
     s = ctx.runtime_settings
-    post2 = merge_post_params(post, {"decimate_faces": min(15_000, s.mesh_decimate_faces)})
+    cap = min(15_000, s.mesh_decimate_faces)
     await ctx.emit("meshprocess", it, "solid conversion failed — retrying with fewer faces")
-    exec_result = await _process_mesh(ctx, it, mesh_rel, spec, post2, make_solid=True)
+    exec_result = await _process_mesh(
+        ctx, it, mesh_rel, spec, post, make_solid=True, solid_max_faces=cap
+    )
     if exec_result.get("ok") and (exec_result.get("mesh") or {}).get("solid_ok"):
         ctx.hybrid_solid = storage.resolve(exec_result["mesh"]["solid_relpath"])
-        ctx.mesh_info["post"] = post2.model_dump()
+        ctx.mesh_info["post"] = post.model_dump()
         ctx.mesh_info["bbox_size"] = (exec_result.get("analysis") or {}).get("bbox_size")
         ctx.hybrid_mesh_info = {
             "bbox_size": (exec_result.get("analysis") or {}).get("bbox_size"),

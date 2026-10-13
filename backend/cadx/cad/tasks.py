@@ -184,6 +184,7 @@ def run_mesh_payload(payload: dict[str, Any]) -> dict[str, Any]:
         make_solid=bool(payload.get("make_solid")),
         skip_baseline=bool(payload.get("ops_only")),
         anchors=payload.get("anchors"),
+        solid_max_faces=payload.get("solid_max_faces"),
     )
 
     d = result.to_dict()

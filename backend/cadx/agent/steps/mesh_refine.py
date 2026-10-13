@@ -57,6 +57,9 @@ class RefineResult:
     subject_hint: str = ""
     changed: bool = False  # ops differ from the session's initial ops
     reasoning: str = ""
+    # set by the mesh_regen_edit tool: a fresh raw mesh replaced the baseline
+    # mid-session — the caller must reprocess this rel instead of mesh_rel
+    new_mesh_rel: str | None = None
 
 
 def _parts(
@@ -178,11 +181,12 @@ async def run(
     if sub is None:
         # model ended with a plain answer instead of done/regenerate — treat
         # ops applied so far as its result when they changed anything
-        if wb.ops != initial:
+        if wb.ops != initial or wb.new_mesh_rel:
             return RefineResult(
                 ops=list(wb.ops),
                 changed=True,
                 reasoning="session ended without done — keeping applied ops",
+                new_mesh_rel=wb.new_mesh_rel,
             )
         return None
     if sub.get("regenerate"):
@@ -195,6 +199,7 @@ async def run(
     ops = [MeshOp.model_validate(o) for o in sub.get("ops", [])]
     return RefineResult(
         ops=ops,
-        changed=ops != initial,
+        changed=ops != initial or wb.new_mesh_rel is not None,
         reasoning=str(sub.get("reasoning", "")),
+        new_mesh_rel=wb.new_mesh_rel,
     )

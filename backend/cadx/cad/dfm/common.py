@@ -74,10 +74,20 @@ def wall_thickness_stats(mesh: trimesh.Trimesh, min_wall: float) -> tuple[float,
 
     Edge/corner samples produce grazing hits and false small values, so a
     warning should require BOTH a low percentile and a meaningful fraction.
+
+    thickness() queries every sample against the face soup — quadratic on
+    dense meshes — so the probe runs on a ~20k-face decimated copy (the
+    warning-level check doesn't need full fidelity).
     """
     try:
-        pts = sample_surface(mesh, 2000)
-        th = trimesh.proximity.thickness(mesh, pts, exterior=False)
+        probe = mesh
+        if len(mesh.faces) > 20_000:
+            probe = mesh.simplify_quadric_decimation(face_count=20_000)
+            if not probe.is_watertight:  # decimation may open the surface
+                probe = mesh.copy()
+                probe.update_faces(probe.nondegenerate_faces())
+        pts = sample_surface(probe, 2000)
+        th = trimesh.proximity.thickness(probe, pts, exterior=False)
         p5 = float(np.percentile(th, 5))
         frac = float((th < min_wall).mean())
         return p5, frac

@@ -312,6 +312,7 @@ def run_mesh_pipeline(  # noqa: C901
     make_solid: bool = False,
     skip_baseline: bool = False,
     anchors: dict[str, Any] | None = None,
+    solid_max_faces: int | None = None,
 ) -> ExecResult:
     """Mesh-mode pipeline: clean -> orient -> scale -> analyse -> render -> DfM -> export.
 
@@ -340,9 +341,9 @@ def run_mesh_pipeline(  # noqa: C901
         res.mesh["ops_only"] = True
         res.mesh["input_triangles"] = len(raw.faces)
     else:
-        mesh, base_info = baseline_mesh(
-            raw, post, spec, cad_cap_faces=rt.mesh_max_faces_for_cad if make_solid else None
-        )
+        # full resolution through the mesh pipeline — mesh_to_solid decimates
+        # its own copy (mesh_max_faces_for_cad), STL/GLB/analysis keep detail
+        mesh, base_info = baseline_mesh(raw, post, spec)
         res.mesh.update(base_info)
 
     # 5b. agent transform ops (validated MeshOp list inside post.params)
@@ -395,7 +396,8 @@ def run_mesh_pipeline(  # noqa: C901
     if make_solid:
         t = time.monotonic()
         try:
-            solid = mesh_to_solid(mesh, max_faces=rt.mesh_max_faces_for_cad)
+            # decimates a copy when over the cap — `mesh` keeps full detail
+            solid = mesh_to_solid(mesh, max_faces=solid_max_faces or rt.mesh_max_faces_for_cad)
             from build123d import export_brep
 
             brep = workdir / "model.brep"

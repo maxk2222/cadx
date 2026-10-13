@@ -59,8 +59,14 @@ def _score(model_stats: dict[str, Any], cls: str) -> float:
     aspect = 1.0 - min(float(st.get("aspect_err", 1.0)), 1.0)
     height = 1.0 - min(float(st.get("height_err", 1.0)), 1.0)
     watertight = float(st.get("watertight", 0.0))
+    score = 0.45 * success + 0.25 * iou + 0.15 * aspect + 0.1 * height + 0.05 * watertight
+    if cls in ("flat", "detail"):
+        # edge sharpness matters on technical silhouettes; organic geometry
+        # legitimately has high dihedral means, so this term is flat-only
+        detail = 1.0 - min(float(st.get("roughness_deg", 0.0)) / 45.0, 1.0)
+        score += 0.05 * detail
     # latency is a tie-breaker flavour, not a quality signal
-    return round(0.45 * success + 0.25 * iou + 0.15 * aspect + 0.1 * height + 0.05 * watertight, 4)
+    return round(score, 4)
 
 
 def pick_adapter(

@@ -26,7 +26,7 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, Field
 
-from cadx.agent.mesh_client import MeshHealth, MeshModelInfo, ProgressFn
+from cadx.agent.mesh_client import MeshHealth, MeshModelInfo, ProgressFn, _dumps
 from cadx.logging import get_logger
 from cadx.runtime_config import RuntimeSettings
 
@@ -53,6 +53,8 @@ class ImageGenRequest(BaseModel):
     height: int = 768
     steps: int | None = None
     guidance: float | None = None
+    init_image: Path | None = None  # image-edit request (img2img/kontext)
+    strength: float | None = None  # img2img noise level 0..1
     out_dir: Path
 
 
@@ -117,11 +119,25 @@ class HttpImageClient(ImagePort):
         on_progress: ProgressFn | None,
         should_abort: Callable[[], Awaitable[bool]] | None = None,
     ) -> ImageGenResult:
-        params = req.model_dump(exclude={"out_dir"}, exclude_none=True)
+        params = req.model_dump(exclude={"out_dir", "init_image"}, exclude_none=True)
 
         submit_timeout = min(60.0, self.timeout_s)
         async with httpx.AsyncClient(timeout=submit_timeout) as client:
-            r = await client.post(f"{self.base_url}/v1/image-jobs", json=params)
+            if req.init_image is not None:
+                files: list[tuple[str, tuple[str, bytes, str]]] = [
+                    ("json", ("params.json", _dumps(params), "application/json")),
+                    (
+                        "image",
+                        (
+                            req.init_image.name or "init.png",
+                            req.init_image.read_bytes(),
+                            "application/octet-stream",
+                        ),
+                    ),
+                ]
+                r = await client.post(f"{self.base_url}/v1/image-edit-jobs", files=files)
+            else:
+                r = await client.post(f"{self.base_url}/v1/image-jobs", json=params)
             if r.status_code != 200:
                 raise ImageGenError(f"image-server submit failed: {r.status_code} {r.text[:300]}")
             server_job = r.json()["job_id"]
@@ -219,11 +235,33 @@ class FakeImageClient(ImagePort):
 
         from PIL import Image, ImageDraw
 
-        self.calls.append({"model": req.model, "seed": req.seed, "prompt": req.prompt})
+        self.calls.append(
+            {
+                "model": req.model,
+                "seed": req.seed,
+                "prompt": req.prompt,
+                "init_image": str(req.init_image) if req.init_image else None,
+            }
+        )
         if on_progress:
             await on_progress("fake image generation", 0.5)
         req.out_dir.mkdir(parents=True, exist_ok=True)
         paths = []
+        if req.init_image is not None and req.init_image.exists():
+            # edit request: echo the init image — deterministic and keeps the
+            # downstream silhouette intact for mesh-regen tests
+            p = req.out_dir / "image0.png"
+            p.write_bytes(req.init_image.read_bytes())
+            paths.append(p)
+            return ImageGenResult(
+                model="fake-image-edit",
+                backend="fake",
+                seed=req.seed,
+                steps=req.steps or 0,
+                guidance=req.guidance,
+                duration_s=0.1,
+                image_paths=paths,
+            )
         for i in range(max(1, req.count)):
             seed = req.seed + i * 1000
             h = int(hashlib.sha256(f"{seed}-{req.prompt}".encode()).hexdigest()[:8], 16)

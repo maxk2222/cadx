@@ -79,6 +79,8 @@ class MeshModelInfo(BaseModel):
     last_error: str | None = None  # badlisted after a load/OOM failure
     default_size: int | None = None  # image adapters: default output side
     max_count: int | None = None  # image adapters: max images per job
+    supports_edit: bool = False  # image adapters: accepts an init image
+    requires_image: bool = False  # image adapters: edit-only, no txt2img
 
 
 class MeshHealth(BaseModel):

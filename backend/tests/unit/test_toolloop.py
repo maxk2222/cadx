@@ -12,7 +12,7 @@ from cadx.agent.executor_client import InProcessExecutor
 from cadx.agent.toolloop import run_session, tools_enabled
 from cadx.agent.toolspecs import ToolSession
 from cadx.agent.trace import MemoryTrace
-from cadx.agent.types import AgentCtx
+from cadx.agent.types import AgentCtx, InputAsset
 from cadx.db.models import ProjectSettings
 from cadx.llm.fake import FakeLLM
 from cadx.llm.schemas import PatchResponse
@@ -892,3 +892,66 @@ async def test_mesh_session_new_ops_via_tools(tmp_path):
     # unknown tool still rejected
     res = await wb.handle("mesh_teleport", {})
     assert res["ok"] is False and "unknown mesh tool" in res["error"]
+
+
+async def test_mesh_regen_edit_swaps_baseline(tmp_path):
+    """mesh_regen_edit: image-edit → mesh regen → new baseline, ops dropped,
+    new_mesh_rel surfaced for the caller to reprocess."""
+    from cadx.agent.image_client import FakeImageClient
+    from cadx.agent.mesh_client import FakeMeshClient
+
+    ctx = _ctx(FakeLLM([]))
+    ctx.mesh = FakeMeshClient()
+    ctx.image = FakeImageClient()
+    src = tmp_path / "src.png"
+    from PIL import Image
+
+    Image.new("RGB", (64, 64), (90, 90, 200)).save(src)
+    ctx.assets = [InputAsset(asset_id="a-src", kind="image", path=src, filename="src.png")]
+    ctx.mesh_info["generation"] = {
+        "model": "fake",
+        "seed": 7,
+        "images": ["a-src"],
+        "subject": "knob",
+    }
+    wb = _mesh_wb(ctx, tmp_path)
+    # record an op first — the regen must discard it
+    r = await wb.handle("mesh_scale", {"factor": 1.2})
+    assert r["ok"] and len(wb.ops) == 1
+
+    res = await wb.handle("mesh_regen_edit", {"prompt": "deeper knurling"})
+    assert res["ok"], res
+    assert wb.new_mesh_rel and "mesh_raw_edit" in wb.new_mesh_rel
+    assert wb.ops == []  # previous ops were baseline-specific
+    assert res["ops_dropped"] == 1
+    assert wb.work is not None and wb.work.is_watertight
+    # the fake mesh client got a regen call on the edited image
+    assert len(ctx.mesh.calls) == 1
+    # generation metadata records the edit
+    assert ctx.mesh_info["generation"]["edit"]["mesh_rel"] == wb.new_mesh_rel
+
+
+async def test_mesh_regen_edit_fails_cleanly_without_image_port(tmp_path):
+    from cadx.agent.mesh_client import FakeMeshClient
+
+    ctx = _ctx(FakeLLM([]))
+    ctx.mesh = FakeMeshClient()
+    ctx.image = None
+    wb = _mesh_wb(ctx, tmp_path)
+    res = await wb.handle("mesh_regen_edit", {"prompt": "x"})
+    assert res["ok"] is False and "image" in res["error"]
+
+
+async def test_mesh_regen_edit_fails_cleanly_without_source(tmp_path):
+    """No conditioning image (e.g. text-only gen) → clean error, not crash."""
+    from cadx.agent.image_client import FakeImageClient
+    from cadx.agent.mesh_client import FakeMeshClient
+
+    ctx = _ctx(FakeLLM([]))
+    ctx.mesh = FakeMeshClient()
+    ctx.image = FakeImageClient()
+    ctx.assets = []
+    ctx.mesh_info["generation"] = {"model": "fake", "seed": 1, "images": []}
+    wb = _mesh_wb(ctx, tmp_path)
+    res = await wb.handle("mesh_regen_edit", {"prompt": "x"})
+    assert res["ok"] is False and "source image" in res["error"]

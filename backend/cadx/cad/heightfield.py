@@ -22,36 +22,135 @@ from cadx.logging import get_logger
 log = get_logger(__name__)
 
 
-def _lum_relief(
-    image_path: Path,
-    px_per_mm: float,
-    xs: np.ndarray,
-    ys: np.ndarray,
-) -> np.ndarray | None:
-    """(nx, ny) normalised luminance [0..1] at the mm grid points, sampled from
-    the measured top-view image. Returns None when sampling is impossible."""
+def _lum_sampler(image_path: Path, px_per_mm: float, bounds: np.ndarray) -> Any | None:
+    """Bilinear luminance sampler over the measured top-view image.
+
+    Returns f(x, y) -> normalised luminance [0..1] for mm coords, or None."""
     try:
         from cadx.vision.measure import _mask
 
         mask, _filled, rgb = _mask(image_path)
-        gray = rgb[..., :3].mean(axis=2) if rgb.ndim == 3 else rgb
-        # mask centroid in px maps to the outline centroid (frame-centred)
+        gray = np.asarray(rgb[..., :3].mean(axis=2) if rgb.ndim == 3 else rgb, dtype=float) / 255.0
         ii, jj = np.nonzero(mask)
+        if len(ii) < 8:
+            return None
         cy, cx = float(ii.mean()), float(jj.mean())
-        # mm -> px: image +y is down, frame +y is up
+        step = 1.0 / px_per_mm  # mm per px — sample at native image resolution
+        xs = np.arange(bounds[0], bounds[2] + step, step)
+        ys = np.arange(bounds[1], bounds[3] + step, step)
         xx, yy = np.meshgrid(xs, ys, indexing="ij")
         px = np.clip((cx + xx * px_per_mm).astype(int), 0, mask.shape[1] - 1)
         py = np.clip((cy - yy * px_per_mm).astype(int), 0, mask.shape[0] - 1)
-        lum = gray[py, px] / 255.0
-        inside = mask[py, px]
-        vals = lum[inside]
+        lum = gray[py, px] * mask[py, px]
+        vals = lum[lum > 0]
         if len(vals) < 8 or float(vals.max() - vals.min()) < 0.05:
             return None  # flat/no usable texture
         lo, hi = float(vals.min()), float(vals.max())
-        return np.clip((lum - lo) / (hi - lo), 0.0, 1.0) * inside
+        lum = np.clip((lum - lo) / (hi - lo), 0.0, 1.0)
+
+        from scipy.interpolate import RegularGridInterpolator
+
+        interp = RegularGridInterpolator((xs, ys), lum, bounds_error=False, fill_value=0.0)
+
+        def sample(xy: np.ndarray) -> np.ndarray:
+            return np.clip(interp(xy), 0.0, 1.0)
+
+        return sample
     except Exception:
         log.debug("heightfield.relief_failed", exc_info=True)
         return None
+
+
+def _cap_tris(poly: Any) -> tuple[np.ndarray, np.ndarray]:
+    """Earcut triangulation. Returns (vert_xy, faces) indexing *its own*
+    vertex list — callers map them onto the mesh arrays via _ring_index_map."""
+    from trimesh.creation import triangulate_polygon
+
+    v, f = triangulate_polygon(poly)
+    return np.asarray(v, dtype=float), np.asarray(f, dtype=np.int64)
+
+
+def _ring_index_map(cap_xy: np.ndarray, ring_xy: np.ndarray) -> np.ndarray:
+    """Map cap-triangulation vertex indices -> indices into `ring_xy`.
+
+    Both vertex sets describe the same polygon rings; earcut may append
+    closing duplicates, so matching is coordinate-based (rounded key)."""
+    from collections import defaultdict
+
+    tab: defaultdict[tuple[int, int], int] = defaultdict(int)
+    for j, p in enumerate(np.round(ring_xy / 1e-4).astype(np.int64)):
+        tab[(p[0], p[1])] = j
+    out = np.zeros(len(cap_xy), dtype=np.int64)
+    for i, p in enumerate(np.round(cap_xy / 1e-4).astype(np.int64)):
+        j = tab.get((p[0], p[1]), -1)
+        if j < 0:
+            raise ValueError("cap vertex not on the outline ring")
+        out[i] = j
+    return out
+
+
+def _walls(n_ring: int, top_i0: int, bot_i0: int) -> np.ndarray:
+    """Quad-strip triangles between the top and bottom copy of one ring.
+
+    No winding flip needed for hole rings: shapely interiors are already
+    CW-wound (vs CCW exterior), so the same edge order yields outward-facing
+    normals on both."""
+    a = top_i0 + np.arange(n_ring)
+    b = top_i0 + (np.arange(n_ring) + 1) % n_ring
+    c = bot_i0 + (np.arange(n_ring) + 1) % n_ring
+    d = bot_i0 + np.arange(n_ring)
+    tris = np.stack([np.stack([a, b, c], axis=1), np.stack([a, c, d], axis=1)], axis=1)
+    return tris.reshape(-1, 3)
+
+
+def _densify_ring(r: np.ndarray, pitch: float) -> np.ndarray:
+    """Subdivide ring edges so consecutive verts are <= pitch apart — dense
+    rings make Delaunay include the boundary edges (conformance check still
+    guards correctness)."""
+    out: list[np.ndarray] = []
+    n = len(r)
+    for i in range(n):
+        a, b2 = r[i], r[(i + 1) % n]
+        k = max(1, int(np.ceil(float(np.linalg.norm(b2 - a)) / pitch)))
+        for t in range(k):
+            out.append(a + (b2 - a) * (t / k))
+    return np.asarray(out)
+
+
+def _top_sheet_delaunay(poly: Any, top_xy: np.ndarray, n_rings: list[int]) -> np.ndarray | None:
+    """Delaunay over ring + interior top verts, clipped to the polygon.
+
+    The sheet is only usable when every ring edge appears as a triangle edge —
+    otherwise the rim wouldn't meet the side walls (not watertight). Returns
+    None in that case; the caller falls back to flat earcut caps."""
+    from scipy.spatial import Delaunay
+    from shapely import contains_xy
+
+    try:
+        tris = np.asarray(Delaunay(top_xy).simplices, dtype=np.int64)
+    except Exception:
+        return None
+    cent = top_xy[tris].mean(axis=1)
+    tris = tris[contains_xy(poly.buffer(1e-6), cent[:, 0], cent[:, 1])]
+    if not len(tris):
+        return None
+
+    # boundary conformance: every ring edge must appear as a sheet edge —
+    # per-ring offsets so the wrap-around edge of each ring is checked
+    # within its own ring, never across rings
+    used = set()
+    for t in tris:
+        for i in range(3):
+            a, b2 = int(t[i]), int(t[(i + 1) % 3])
+            used.add((min(a, b2), max(a, b2)))
+    off = 0
+    for n in n_rings:
+        for i in range(n):
+            a, b2 = off + i, off + (i + 1) % n
+            if (min(a, b2), max(a, b2)) not in used:
+                return None
+        off += n
+    return tris
 
 
 def build_heightfield_mesh(
@@ -65,59 +164,94 @@ def build_heightfield_mesh(
 ) -> trimesh.Trimesh:
     """Column-solid over the measured outline, extruded to `height_mm`.
 
-    Watertight by construction (voxel columns + marching cubes). Frame:
-    centred XY, resting on z=0 — same convention as processed meshes.
+    Watertight by construction: exact polygon side walls + earcut caps —
+    no voxel raster, so neither the silhouette nor the top surface is
+    quantised. Frame: centred XY, resting on z=0.
+    `pitch_mm` only controls the optional relief interior grid density.
     """
-    from shapely.geometry import Polygon
+    from shapely.geometry import MultiPolygon, Polygon
 
     poly = Polygon(outline_mm)
     poly = poly.buffer(0)
+    if isinstance(poly, MultiPolygon):
+        poly = max(poly.geoms, key=lambda g: g.area)
     if poly.is_empty or not poly.is_valid:
         raise ValueError("outline polygon is empty/invalid")
     b = np.asarray(poly.bounds, dtype=float)  # minx, miny, maxx, maxy
     span = float(max(b[2] - b[0], b[3] - b[1]))
-    pitch = float(pitch_mm or np.clip(min(span / 150.0, height_mm / 4.0), 0.2, 0.8))
-    xs = np.arange(b[0] - pitch, b[2] + pitch, pitch)
-    ys = np.arange(b[1] - pitch, b[3] + pitch, pitch)
-    nx, ny = len(xs), len(ys)
 
-    # inside-mask via PIL rasterisation (fast, no per-point shapely calls)
-    from PIL import Image, ImageDraw
+    # ring arrays without the duplicated closing vertex
+    rings = [np.asarray(poly.exterior.coords, dtype=float)[:-1]]
+    rings += [np.asarray(r.coords, dtype=float)[:-1] for r in poly.interiors]
 
-    W = ny
-    Hh = nx
-    img = Image.new("L", (W, Hh), 0)
-
-    def px(p: tuple[float, float]) -> tuple[float, float]:
-        return ((p[1] - b[1]) / pitch, (p[0] - b[0]) / pitch)
-
-    ImageDraw.Draw(img).polygon([px((float(x), float(y))) for x, y in outline_mm], fill=1)
-    # array[row, col]: rows index the image height (x axis here), cols the
-    # width (y axis) — shape is already (nx, ny), no transpose needed
-    inside = np.asarray(img, dtype=bool)
-
-    top = np.full((nx, ny), float(height_mm))
+    sampler = None
     if relief_mm > 0 and relief_image is not None and px_per_mm:
-        lum = _lum_relief(relief_image, px_per_mm, xs, ys)
-        if lum is not None:
-            top = top + lum * relief_mm
+        sampler = _lum_sampler(relief_image, px_per_mm, b)
 
-    nz = int(np.ceil(top.max() / pitch)) + 1
-    k_top = np.clip(np.round(top / pitch).astype(int), 1, nz - 1)
-    idx = np.arange(nz)[None, None, :]
-    mat = inside[:, :, None] & (idx <= k_top[:, :, None])
-    if not mat.any():
-        raise ValueError("heightfield produced an empty solid")
+    # ---- vertices -------------------------------------------------------- #
+    # layout: [top_ring (n_ring) | top_interior (m) | bottom_ring (n_ring)]
+    interior = np.zeros((0, 2))
+    if sampler is not None:
+        pitch = float(pitch_mm or np.clip(span / 250.0, 0.2, 0.6))
+        # dense ring → Delaunay follows the silhouette edge exactly
+        rings = [_densify_ring(r, pitch) for r in rings]
+        gx, gy = np.meshgrid(
+            np.arange(b[0], b[2] + pitch, pitch),
+            np.arange(b[1], b[3] + pitch, pitch),
+        )
+        from shapely import contains_xy
 
-    tf = np.eye(4)
-    tf[0, 0] = tf[1, 1] = tf[2, 2] = pitch
-    tf[:3, 3] = [float(b[0] - pitch), float(b[1] - pitch), 0.0]
-    mesh = trimesh.voxel.VoxelGrid(mat, transform=tf).marching_cubes
-    mesh.apply_transform(tf)
-    if not len(mesh.faces):
-        raise ValueError("heightfield marching-cubes produced no faces")
-    # marching cubes offsets vertices by up to ±pitch/2 — restore the frame
-    # contract exactly: centred XY, resting on z=0
+        grid = np.stack([gx.ravel(), gy.ravel()], axis=1)
+        grid = grid[contains_xy(poly.buffer(-pitch * 0.5), grid[:, 0], grid[:, 1])]
+        if len(grid) > 60_000:
+            grid = grid[np.unique(np.linspace(0, len(grid) - 1, 60_000).astype(int))]
+        interior = grid
+
+    n_rings = [len(r) for r in rings]
+    ring_xy = np.vstack(rings)
+    n_ring = len(ring_xy)
+
+    # caps must tile the *actual* ring vertex set — when rings were densified
+    # for the relief sheet, triangulate the densified polygon as-is (no
+    # buffer/simplify — that could drop collinear verts and break the map)
+    cap_poly: Any = Polygon(rings[0], [r for r in rings[1:]])
+
+    top_xy = np.vstack([ring_xy, interior])
+    top_z = np.full(len(top_xy), float(height_mm))
+    if sampler is not None and len(interior):
+        top_z[n_ring:] += sampler(interior) * relief_mm
+    bot = np.column_stack([ring_xy, np.zeros(n_ring)])
+
+    # ---- faces ----------------------------------------------------------- #
+    top_sheet = _top_sheet_delaunay(poly, top_xy, n_rings) if sampler is not None else None
+    if top_sheet is None:
+        interior = np.zeros((0, 2))
+        top_xy = ring_xy
+
+    verts = np.vstack([np.column_stack([top_xy, top_z[: len(top_xy)]]), bot])
+    bot_i0 = len(top_xy)
+
+    cap_xy, cap_f = _cap_tris(cap_poly)
+    remap = _ring_index_map(cap_xy, ring_xy)
+    faces: list[np.ndarray] = []
+    if top_sheet is not None:
+        faces.append(top_sheet)
+    else:
+        faces.append(remap[cap_f])  # flat earcut cap onto top ring verts
+    faces.append(np.fliplr(remap[cap_f]) + bot_i0)  # bottom, reversed winding
+
+    off = 0
+    for n in n_rings:
+        faces.append(_walls(n, off, bot_i0 + off))
+        off += n
+
+    mesh = trimesh.Trimesh(vertices=verts, faces=np.vstack(faces), process=True, validate=True)
+    if mesh.volume < 0:
+        mesh.invert()
+    if not mesh.is_watertight:
+        raise ValueError("heightfield mesh is not watertight")
+
+    # frame contract: centred XY, resting on z=0
     lo, hi = mesh.bounds
     mesh.apply_translation([-(lo[0] + hi[0]) / 2, -(lo[1] + hi[1]) / 2, -lo[2]])
     return mesh
