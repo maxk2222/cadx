@@ -215,7 +215,9 @@ def test_extract_countersunk_bore_is_one_hole():
     with BuildPart() as p:
         Box(60, 40, 8, align=(Align.CENTER, Align.CENTER, Align.MIN))
         p.part -= Pos(0, 0, -0.5) * Cylinder(2.5, 9.0)
-        p.part -= Pos(0, 0, 6.0) * Cone(2.5, 4.25, 2.0, align=(Align.CENTER, Align.CENTER, Align.MIN))
+        p.part -= Pos(0, 0, 6.0) * Cone(
+            2.5, 4.25, 2.0, align=(Align.CENTER, Align.CENTER, Align.MIN)
+        )
     m = extract_features(p.part)
     assert m.total_holes == 1
     assert m.countersinks == 1

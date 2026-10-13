@@ -349,7 +349,9 @@ def test_simp_preserves_passive_regions(simp_setup) -> None:
 
 def test_extract_solid_box_watertight() -> None:
     dom = voxelize(_box_mesh(), 2.0, 150_000)
-    mesh, _mask, _w, _nc = density_to_mesh(dom, dom.solid.ravel().astype(float), smooth_iterations=0)
+    mesh, _mask, _w, _nc = density_to_mesh(
+        dom, dom.solid.ravel().astype(float), smooth_iterations=0
+    )
     assert mesh.is_watertight and mesh.is_winding_consistent
     assert math.isclose(mesh.volume, 60 * 24 * 12, rel_tol=0.02)
 

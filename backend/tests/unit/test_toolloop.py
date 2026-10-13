@@ -854,9 +854,7 @@ async def test_mesh_session_measure_section_overlay(tmp_path):
     anchors = {"holes": [{"index": 1, "x": 0.0, "y": 0.0, "dia": 4.0, "source": "image"}]}
     outline = [[-5, -5], [5, -5], [5, 5], [-5, 5], [-5, -5]]
     ctx = _ctx(FakeLLM([]))
-    wb = _mesh_wb(
-        ctx, tmp_path, spec=spec, anchors=anchors, measured_outline=outline
-    )
+    wb = _mesh_wb(ctx, tmp_path, spec=spec, anchors=anchors, measured_outline=outline)
     r = await wb.handle("mesh_inspect", {})
     assert r["ok"] and r["features"]["outline_points"] >= 3 and r["anchors"]
     r = await wb.handle("mesh_measure", {})
@@ -873,9 +871,7 @@ async def test_mesh_session_measure_section_overlay(tmp_path):
 async def test_mesh_session_drill_holes_via_tool(tmp_path):
     """mesh_drill_holes with from_anchors drills a real tunnel."""
     ctx = _ctx(FakeLLM([]))
-    wb = _mesh_wb(
-        ctx, tmp_path, anchors={"holes": [{"index": 1, "x": 0.0, "y": 0.0, "dia": 4.0}]}
-    )
+    wb = _mesh_wb(ctx, tmp_path, anchors={"holes": [{"index": 1, "x": 0.0, "y": 0.0, "dia": 4.0}]})
     r = await wb.handle("mesh_drill_holes", {"from_anchors": True})
     assert r["ok"], r
     assert wb.ops[-1].op == "drill_holes"
