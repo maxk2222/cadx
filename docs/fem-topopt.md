@@ -36,18 +36,24 @@ reported structural result.
 
 On a completed version, **Structural editor** opens a full-screen 3D editor
 where support, load and keep regions are painted directly on the part surface
-with an adjustable brush (or declared as axis faces). Painted picks are stored
-as `RegionSpec kind="points"` — a list of `[x,y,z]` mm surface points, a brush
+with an adjustable brush (per-region radius, with eraser + per-stroke undo),
+or declared as geometric regions: `face`/`surface` (+axis), `area`, `cylinder`,
+`box`, `hole` (measured anchors), or `all`. Painted picks are stored as
+`RegionSpec kind="points"` — up to 4000 `[x,y,z]` mm surface points, a brush
 radius (`radius_mm`), and the averaged surface normal (drives pressure loads).
-Resolution selects solid cells within `radius_mm + pitch` of any painted
-point, i.e. a near-surface patch of material.
+Resolution rasterizes each point in index space (deduplicating stroke points
+closer than half a pitch) and selects solid cells within `radius_mm + pitch`,
+i.e. a near-surface patch of material. Loads accept a force vector
+`force_n = [fx,fy,fz]` or `pressure_mpa`.
 
 Three actions share the declared load cases:
 
 - **Check regions** — server-side voxel resolution only (`preview_only`):
-  returns grid pitch/dims, per-case fixed/loaded node counts, total force and
-  warnings, plus colored overlay renders (fixed blue, load red, keep green)
-  served from the version's `_scratch/` directory.
+  returns grid pitch/dims, per-case fixed/loaded node counts, total force,
+  warnings, and the *resolved* selection as subsampled cell-centre point
+  clouds (`cells` — fixed/load/keep per case) for a 3D overlay. Legacy 2D
+  overlay renders (fixed blue, load red, keep green PNGs) are only produced
+  when `render_pngs` is set; the agent-side optimize session still uses them.
 - **FEM check** — a standalone FEM run on the *same* version (`JobType.fem`,
   no child): writes `version.fem` plus stress/deformation artifacts and flags
   the version `needs_review` when the worst safety factor drops below 1.

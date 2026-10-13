@@ -45,43 +45,63 @@ tool panel builds a stack of validated `MeshOp` operations — the same
 `OPS_REGISTRY` replay the executor uses for agent-side mesh refinement:
 
 - **Orient / Rotate / Mirror / Scale** (uniform or per-axis)
-- **Flatten bottom, Slice, Crop box** — slice position and crop corners can be
-  picked on the model surface (mm coordinates)
-- **Smooth, Smooth-preserve, Decimate**
-- **Boolean add/cut** with a box/cylinder/sphere primitive placed by clicking
-  the surface (ghost preview)
+- **Flatten bottom, Slice, Crop box, Clip height** — slice and clip planes and
+  crop corners can be picked on the model surface *or* dragged with an
+  on-screen transform gizmo (mm coordinates)
+- **Smooth, Smooth-preserve, Decimate, Remesh, Symmetrize, Shell**
+- **Drill holes** — vertical holes at picked XY points (dia / depth /
+  countersink), optionally from measured anchors
+- **Boolean add/cut** with a box/cylinder/sphere primitive — place by clicking
+  the surface, then fine-tune with a move/rotate gizmo (ghost preview)
 - **Keep largest / Drop small bodies / Repair**
 - **Measure** — two-click surface distance (not recorded)
 
-The op stack supports per-op removal, undo and reset. **Preview** sends the
-stack to the `cad` queue and swaps the viewer to a server-generated GLB (with
-face count, bbox and watertight stats). **Apply as new version** creates an
-immutable `mesh_edit` child version: for mesh-mode parents the full baseline +
-ops replay runs on `mesh/mesh_raw.glb`, for every other parent the ops run
-directly on the finished STL (`ops_only` — no re-orient/re-scale). Drafts are
-persisted on the version (`options.ui_editor.ops`) so reopening the editor
-restores the stack.
+The op stack supports per-op removal, reorder, duplication, inline arg
+editing, undo and reset; a failing op is highlighted in red using the
+`failed_op` index + per-op report returned by the preview.
+
+**Preview** runs the same synchronous baseline + ops replay the executor
+uses, but in-process (no queue round-trip) with a cached baseline, and swaps
+the viewer to a server-generated GLB (face count, bbox, watertight stats).
+Stacks containing only rigid ops past the recorded prefix (orient, rotate,
+mirror, scale) are evaluated instantly client-side — the model is
+transformed locally, no request at all ("instant preview" badge). With
+*auto* enabled, geometry-op stacks re-preview automatically ~0.7 s after the
+last change. **Apply as new version** creates an immutable `mesh_edit` child
+version: for mesh-mode parents the full baseline + ops replay runs on
+`mesh/mesh_raw.glb`, for every other parent the ops run directly on the
+finished STL (`ops_only` — no re-orient/re-scale). Drafts are autosaved on
+the version (`options.ui_editor.ops`, merged server-side) so reopening the
+editor restores the stack.
 
 ### Structural editor (FEM / TopOpt regions)
 
-The structural editor replaces the old face-only optimize dialog. It paints
-boundary regions directly on the model surface via a brush (adjustable radius,
-mm):
+The structural editor paints boundary regions directly on the model surface
+with a brush (per-region radius, mm) and supports the full `RegionSpec`
+vocabulary:
 
 - **Support regions** (blue) — fixed nodes per load case
-- **Load regions** (red) — force application per load case, with magnitude +
-  direction per load
+- **Load regions** (red) — force vector `[fx,fy,fz]` N *or* pressure MPa per
+  load (pressure follows the region's stored surface normal)
 - **Keep regions** (green) — TopOpt design-preserve volumes
 
-Face-axis regions remain available as an alternative to painting. Painted
-picks become `RegionSpec kind="points"` (points + brush radius + averaged
-surface normal) resolved on the voxel domain — the same contract the agent
-uses. Three actions share the declared cases: **Check regions** (server-side
-voxel resolution → hit counts, warnings, colored overlay PNGs), **FEM check**
-(standalone stress analysis written to the same version, `needs_review` when
-safety factor < 1), and **Optimize** (SIMP TopOpt child version with keep
-regions). Selections, material and volume fraction persist under
-`options.ui_editor`.
+Region kinds: `points` (painted — points + radius + averaged surface
+normal), `face`/`surface` (+axis), `area` (XY footprint), `cylinder`, `box`,
+`hole` (measured anchor holes, 1-based index) and `all`. Geometric regions
+offer click-to-place centers and an expandable detail row (center, diameter/
+edge, margin, label). Painted regions render as vertex-coloured fills on the
+model — the live approximation of the voxel-domain selection — and support
+an **eraser** and per-stroke **undo**.
+
+Three actions share the declared cases: **Check regions** (server-side voxel
+resolution → hit counts, warnings, and a 3D overlay of the *resolved* cell
+selection — `fem-preview` returns subsampled cell centres per case; legacy
+2D PNGs via `render_pngs`), **FEM check** (standalone stress analysis
+written to the same version, `needs_review` when safety factor < 1), and
+**Optimize** (SIMP TopOpt child version with keep regions). Selections,
+material and volume fraction autosave under `options.ui_editor` (merged —
+the mesh-editor ops draft and structural state no longer clobber each
+other).
 
 ### Settings and reusable part library
 
