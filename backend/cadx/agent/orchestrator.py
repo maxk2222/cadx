@@ -803,6 +803,9 @@ async def _autogen_hero_image(ctx: AgentCtx, spec: PartSpec | None, plan: Any) -
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+_CANDIDATE_VIABLE_SCORE = 0.25
+
+
 async def _candidate_seed(
     ctx: AgentCtx, iteration: int, spec: PartSpec, plan: Any, t0: float
 ) -> int | None:
@@ -858,6 +861,16 @@ async def _candidate_seed(
     if not scores:
         return None
     best_seed = max(scores, key=lambda k: scores[k])
+    if scores[best_seed] < _CANDIDATE_VIABLE_SCORE:
+        # every cheap roll missed aspect/footprint badly — the full-res
+        # generation would produce the same failure at 10x the cost
+        ctx.mesh_info["_mesh_hopeless"] = True
+        await ctx.emit(
+            "meshgen",
+            iteration,
+            f"candidate seeds scored: {scores} — none viable, skipping generation",
+        )
+        return None
     await ctx.emit(
         "meshgen",
         iteration,
@@ -1744,6 +1757,15 @@ async def _run_mesh(  # noqa: C901
             await ctx.emit("meshgen", it, f"generating mesh (iteration {it}/{max_iterations})")
             mesh_rel = await _generate_mesh(ctx, it, spec, plan, t0=t0)
             if mesh_rel is None:
+                if ctx.mesh_info.get("_mesh_hopeless"):
+                    outcome.fallback_to_cad = stated_dim_count(spec) >= 2
+                    await ctx.emit(
+                        "meshgen",
+                        it,
+                        "no viable mesh candidate — "
+                        + ("CAD fallback" if outcome.fallback_to_cad else "stopping"),
+                    )
+                    break
                 continue
 
             # ORIENT (once per job)
@@ -2274,6 +2296,8 @@ async def _prepare_hybrid_mesh(
     await ctx.emit("meshgen", it, "generating organic base mesh")
     mesh_rel = await _generate_mesh(ctx, it, spec, plan, t0=t0)
     if mesh_rel is None:
+        if ctx.mesh_info.get("_mesh_hopeless"):
+            return False, "no viable mesh candidate — inputs cannot produce the spec'd shape"
         return False, "mesh generation failed"
     ctx.mesh_raw_reuse = storage.resolve(mesh_rel)
 
