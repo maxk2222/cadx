@@ -68,7 +68,9 @@ class MeshJob:
 
 
 class ImageJob:
-    def __init__(self, job_id: str, params: ImageGenParams) -> None:
+    def __init__(
+        self, job_id: str, params: ImageGenParams, init_image_path: Path | None = None
+    ) -> None:
         self.id = job_id
         self.params = params
         self.status = "queued"
@@ -80,6 +82,7 @@ class ImageJob:
         self.started: float | None = None
         self.finished: float | None = None
         self.images: list[bytes] = []  # PNG payloads
+        self.init_image_path = init_image_path
         self.model = params.model
         self.backend = ""
         self.seed = params.seed
@@ -155,11 +158,13 @@ class JobManager:
         await self._queue.put(job.id)
         return job
 
-    async def submit_image(self, params: ImageGenParams) -> ImageJob | None:
+    async def submit_image(
+        self, params: ImageGenParams, init_image_path: Path | None = None
+    ) -> ImageJob | None:
         self._gc()
         if self._queued() >= self.cfg.max_queue:
             return None
-        job = ImageJob(str(uuid.uuid4()), params)
+        job = ImageJob(str(uuid.uuid4()), params, init_image_path)
         self.jobs[job.id] = job
         await self._queue.put(job.id)
         return job
@@ -304,13 +309,17 @@ class JobManager:
         job.started = time.monotonic()
         job.message = "selecting image adapter"
 
-        cls = self.registry.select_image(job.params.model)
+        cls = self.registry.select_image(
+            job.params.model, need_edit=job.init_image_path is not None
+        )
         if cls is None:
             job.status = "failed"
             job.error = (
                 f"no image adapter available for model '{job.params.model}' "
                 f"on device '{self.registry.device}' — see /v1/models"
             )
+            if job.init_image_path is not None:
+                job.error += " (edit job needs a supports_edit adapter)"
             job.finished = time.monotonic()
             return
         job.model = cls.id
@@ -341,6 +350,8 @@ class JobManager:
                 steps=job.params.steps,
                 guidance=job.params.guidance,
                 work_dir=self.cfg.job_dir / job.id,
+                image_path=job.init_image_path,
+                image_strength=job.params.strength,
             ),
             progress=progress,
             cancelled=cancelled,

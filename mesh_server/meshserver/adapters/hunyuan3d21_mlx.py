@@ -149,7 +149,9 @@ class Hunyuan3D21MlxAdapter(MeshAdapter):
         kwargs: dict[str, Any] = {
             "image": images[0],
             "num_inference_steps": opts.steps or 50,
-            "octree_resolution": opts.resolution or 256,
+            # upstream demo default is 384 — 256 leaves ~0.5mm MC cells on
+            # palm-sized parts (visible stair steps, lost sub-mm features)
+            "octree_resolution": opts.resolution or 384,
             "seed": opts.seed,
         }
         if opts.guidance is not None:

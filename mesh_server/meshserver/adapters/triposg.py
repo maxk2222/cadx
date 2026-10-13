@@ -228,6 +228,17 @@ class TripoSGAdapter(MeshAdapter):
             "image": images[0],
             "num_inference_steps": opts.steps or 30,
         }
+        # resolution → octree depth (grid = 2**depth); upstream defaults are
+        # dense=8 / hierarchical=9 (512). Detail loss shows up mainly in the
+        # hierarchical depth — derive it from opts.resolution when set.
+        if opts.resolution:
+            import math
+
+            depth = int(math.ceil(math.log2(max(opts.resolution, 64))))
+            depth = min(max(depth, 7), 10)
+            kwargs["hierarchical_octree_depth"] = depth
+            kwargs["dense_octree_depth"] = max(depth - 1, 5)
+            kwargs["flash_octree_depth"] = depth
         if self._device == "cuda":
             kwargs["generator"] = self._torch.Generator(device="cuda").manual_seed(
                 opts.seed & 0xFFFFFFFF
@@ -252,6 +263,7 @@ class TripoSGAdapter(MeshAdapter):
             seed=opts.seed,
             steps=kwargs["num_inference_steps"],
             guidance=opts.guidance,
+            resolution=opts.resolution,
         )
 
 

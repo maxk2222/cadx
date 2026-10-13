@@ -168,3 +168,67 @@ def test_mesh_and_image_jobs_share_queue(app):
             time.sleep(0.1)
         assert results["mesh"] == "succeeded"
         assert results["image"] == "succeeded"
+
+
+def test_image_edit_job_roundtrip(app, tmp_path):
+    """POST /v1/image-edit-jobs (multipart json+image) → fake adapter echoes
+    the init image back as the result."""
+    import json as _json
+
+    from fastapi.testclient import TestClient
+    from PIL import Image
+
+    src = tmp_path / "init.png"
+    img = Image.new("RGB", (40, 40), (10, 200, 30))
+    img.save(src)
+
+    with TestClient(app) as c:
+        r = c.post(
+            "/v1/image-edit-jobs",
+            files={
+                "json": (
+                    "p.json",
+                    _json.dumps({"prompt": "add grip", "seed": 3}),
+                    "application/json",
+                ),
+                "image": ("init.png", src.read_bytes(), "image/png"),
+            },
+        )
+        assert r.status_code == 200, r.text
+        job_id = r.json()["job_id"]
+        st = {}
+        for _ in range(50):
+            st = c.get(f"/v1/image-jobs/{job_id}").json()
+            if st["status"] in ("succeeded", "failed", "cancelled"):
+                break
+            time.sleep(0.1)
+        assert st["status"] == "succeeded", st
+        dl = c.get(f"/v1/image-jobs/{job_id}/image")
+        assert dl.status_code == 200
+        out = Image.open(io.BytesIO(dl.content))
+        assert out.size == (40, 40)
+
+
+def test_select_image_need_edit(tmp_path):
+    """Edit jobs only match supports_edit adapters; txt2img jobs never pick
+    a requires_image adapter."""
+    from meshserver.adapters.fake_image import FakeImageAdapter
+    from meshserver.registry import Registry
+
+    cfg = ServerConfig(fake=True, job_dir=tmp_path / "jobs")
+    reg = Registry(cfg)
+
+    class TxtOnly(FakeImageAdapter):
+        id = "txt-only"
+        supports_edit = False
+
+    class EditOnly(FakeImageAdapter):
+        id = "edit-only"
+        supports_edit = True
+        requires_image = True
+
+    reg._classes = [TxtOnly, EditOnly]
+    assert reg.select_image("auto").id == "txt-only"  # edit-only hidden
+    assert reg.select_image("auto", need_edit=True).id == "edit-only"
+    assert reg.select_image("txt-only", need_edit=True) is None
+    assert reg.select_image("edit-only", need_edit=True).id == "edit-only"

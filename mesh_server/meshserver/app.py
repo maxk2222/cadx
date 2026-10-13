@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -104,6 +105,23 @@ def create_app(cfg: ServerConfig | None = None) -> FastAPI:
     @app.post("/v1/image-jobs", response_model=JobCreated)
     async def create_image_job(params: ImageGenParams) -> JobCreated:
         job = await manager.submit_image(params)
+        if job is None:
+            raise HTTPException(429, "job queue full")
+        return JobCreated(job_id=job.id)
+
+    @app.post("/v1/image-edit-jobs", response_model=JobCreated)
+    async def create_image_edit_job(
+        params_file: UploadFile = File(alias="json"),
+        image: UploadFile = File(...),
+    ) -> JobCreated:
+        """Multipart variant of /v1/image-jobs carrying an init image for
+        img2img / instruction-edit adapters (supports_edit=True)."""
+        params = ImageGenParams(**json_loads(await params_file.read()))
+        job_dir = cfg.job_dir / "incoming"
+        job_dir.mkdir(parents=True, exist_ok=True)
+        init_path = job_dir / f"edit_{image.filename or 'init.png'}.{uuid.uuid4().hex[:8]}"
+        init_path.write_bytes(await image.read())
+        job = await manager.submit_image(params, init_image_path=init_path)
         if job is None:
             raise HTTPException(429, "job queue full")
         return JobCreated(job_id=job.id)

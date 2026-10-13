@@ -109,7 +109,7 @@ class OkFallbackAdapter(ImageAdapter):
         )
 
 
-def _select_pref(self, requested):
+def _select_pref(self, requested, need_edit=False):  # noqa: ARG002
     """select_image stand-in with a test preference ladder."""
     all_img = {
         cls.id: cls for cls in self.available() if getattr(cls, "kind", "mesh") == "image"

@@ -25,6 +25,7 @@ class FakeImageAdapter(ImageAdapter):
     default_size = 512
     max_count = 4
     max_side = 2048
+    supports_edit = True  # echoes the init image — covers the edit API in tests
 
     @classmethod
     def available(cls, cfg) -> bool:  # noqa: ARG003
@@ -42,6 +43,18 @@ class FakeImageAdapter(ImageAdapter):
         del cancelled
         if progress:
             progress(0.5, "fake image generation")
+        if opts.image_path is not None:
+            try:
+                return ImageGenResult(
+                    images=[Image.open(opts.image_path).convert("RGB")],
+                    model=self.id,
+                    backend=self.backend,
+                    seed=opts.seed,
+                    steps=opts.steps or 0,
+                    guidance=opts.guidance,
+                )
+            except Exception as e:
+                raise ValueError(f"fake edit: unreadable init image: {e}") from e
         imgs = [
             self._fake_png(opts.seed + i * 1000, opts.prompt, opts.width, opts.height)
             for i in range(max(1, opts.count))

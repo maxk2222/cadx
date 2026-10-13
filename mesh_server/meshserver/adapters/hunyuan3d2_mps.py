@@ -178,7 +178,9 @@ class _Hy3DTorchBase(MeshAdapter):
         kwargs: dict[str, Any] = {
             "image": self._images_arg(images, opts),
             "num_inference_steps": opts.steps or 30,
-            "octree_resolution": opts.resolution or 256,
+            # upstream demo default is 384 — 256 leaves ~0.5mm MC cells on
+            # palm-sized parts (visible stair steps, lost sub-mm features)
+            "octree_resolution": opts.resolution or 384,
             "generator": gen,
             "output_type": "trimesh",
         }

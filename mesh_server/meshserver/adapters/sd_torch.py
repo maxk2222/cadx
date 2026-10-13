@@ -14,6 +14,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from PIL import Image
+
 from meshserver.adapters.base import hard_unload, missing
 from meshserver.adapters.image_base import ImageAdapter, ImageGenOpts, ImageGenResult
 
@@ -34,6 +36,7 @@ def _device_ok(device: str, cfg: Any) -> bool:
 class _SdBase(ImageAdapter):
     repo: str = "?"
     device_candidates: tuple[str, ...] = ()
+    supports_edit = True  # img2img via AutoPipelineForImage2Image.from_pipe
 
     @classmethod
     def available(cls, cfg: Any) -> bool:
@@ -73,8 +76,17 @@ class _SdBase(ImageAdapter):
         self._gen_device = dev
         self._loaded = True
 
+    def _edit_pipe(self) -> Any:
+        """img2img pipeline sharing the txt2img weights (no extra VRAM)."""
+        if getattr(self, "_pipe_edit", None) is None:
+            from diffusers import AutoPipelineForImage2Image
+
+            self._pipe_edit = AutoPipelineForImage2Image.from_pipe(self._pipe)
+        return self._pipe_edit
+
     def unload(self) -> None:
         self._pipe = None
+        self._pipe_edit = None
         self._loaded = False
         hard_unload()
 
@@ -95,15 +107,26 @@ class _SdBase(ImageAdapter):
             if progress:
                 progress(0.1 + 0.8 * i / max(1, opts.count), f"{self.id} image {i + 1}")
             gen = torch.Generator(device=self._gen_device).manual_seed(seed)
-            out = self._pipe(
-                prompt=opts.prompt,
-                negative_prompt=opts.negative or None,
-                num_inference_steps=opts.steps or 25,
-                guidance_scale=opts.guidance if opts.guidance is not None else 7.5,
-                width=opts.width,
-                height=opts.height,
-                generator=gen,
-            )
+            if opts.image_path is not None:
+                out = self._edit_pipe()(
+                    prompt=opts.prompt,
+                    negative_prompt=opts.negative or None,
+                    image=Image.open(opts.image_path).convert("RGB"),
+                    strength=min(max(opts.image_strength or 0.6, 0.05), 0.99),
+                    num_inference_steps=opts.steps or 25,
+                    guidance_scale=opts.guidance if opts.guidance is not None else 7.5,
+                    generator=gen,
+                )
+            else:
+                out = self._pipe(
+                    prompt=opts.prompt,
+                    negative_prompt=opts.negative or None,
+                    num_inference_steps=opts.steps or 25,
+                    guidance_scale=opts.guidance if opts.guidance is not None else 7.5,
+                    width=opts.width,
+                    height=opts.height,
+                    generator=gen,
+                )
             images.append(out.images[0])
         return ImageGenResult(
             images=images,

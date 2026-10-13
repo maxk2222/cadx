@@ -113,12 +113,23 @@ class TripoSGScribbleAdapter(MeshAdapter):
         }
         if opts.subject:
             kwargs["prompt"] = opts.subject  # scribble variant is text-guided
+        if opts.resolution:
+            import math
+
+            depth = int(math.ceil(math.log2(max(opts.resolution, 64))))
+            depth = min(max(depth, 7), 10)
+            kwargs["hierarchical_octree_depth"] = depth
+            kwargs["dense_octree_depth"] = max(depth - 1, 5)
+            kwargs["flash_octree_depth"] = depth
         if self._device == "cuda":
             kwargs["generator"] = self._torch.Generator(device="cuda").manual_seed(
                 opts.seed & 0xFFFFFFFF
             )
         else:
+            # same MPS constraints as the base triposg adapter: seed globally,
+            # flash decoder (DiffDMC) is CUDA-only → hierarchical skimage path
             self._torch.manual_seed(opts.seed & 0xFFFFFFFF)
+            kwargs["use_flash_decoder"] = False
         if opts.guidance is not None:
             kwargs["guidance_scale"] = opts.guidance
         out = self._pipe(**kwargs)
@@ -134,4 +145,5 @@ class TripoSGScribbleAdapter(MeshAdapter):
             seed=opts.seed,
             steps=kwargs["num_inference_steps"],
             guidance=opts.guidance,
+            resolution=opts.resolution,
         )

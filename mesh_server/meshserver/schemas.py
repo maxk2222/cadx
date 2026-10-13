@@ -33,6 +33,7 @@ class ImageGenParams(BaseModel):
     height: int = Field(default=768, ge=256, le=2048)
     steps: int | None = None
     guidance: float | None = None
+    strength: float | None = None  # img2img edit strength 0..1
 
 
 class JobCreated(BaseModel):
@@ -70,6 +71,8 @@ class ModelInfo(BaseModel):
     last_error: str | None = None  # badlisted after a load/OOM failure ('auto' skips it)
     default_size: int | None = None  # image adapters: default output side
     max_count: int | None = None  # image adapters: max images per job
+    supports_edit: bool = False  # image adapters: accepts an init image
+    requires_image: bool = False  # image adapters: edit-only, no txt2img
 
 
 class Health(BaseModel):

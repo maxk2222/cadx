@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from PIL import Image, ImageOps
 
@@ -15,11 +16,28 @@ def load_image(path: Path) -> Image.Image:
     return img.convert("RGBA") if img.mode == "P" else img
 
 
+_BG_MODEL = "birefnet-general"  # sharper edges than u2net on product shots
+_session = None
+
+
+def _bg_session() -> Any:
+    global _session
+    if _session is None:
+        from rembg import new_session  # type: ignore[import-not-found]
+
+        try:
+            _session = new_session(_BG_MODEL)
+        except Exception:
+            _session = new_session()  # fall back to the default u2net
+    return _session
+
+
 def remove_bg(img: Image.Image) -> Image.Image:
-    """Subject isolation via rembg (u2net). Returns RGBA with transparent bg."""
+    """Subject isolation via rembg (birefnet when available, u2net fallback).
+    Returns RGBA with transparent bg."""
     from rembg import remove  # type: ignore[import-not-found]
 
-    out = remove(img.convert("RGB"))
+    out = remove(img.convert("RGB"), session=_bg_session())
     if isinstance(out, (bytes, bytearray)):
         import io
 

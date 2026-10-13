@@ -101,6 +101,27 @@ def _footprint_iou(mesh, outline: list[list[float]], size: int = 256) -> float:
     return float((a & b).sum() / union) if union else 0.0
 
 
+def _edge_roughness_deg(mesh) -> float:
+    """Mean dihedral angle (deg) between adjacent non-horizontal faces —
+    stair-stepping proxy: voxel/MC artifacts raise it on side surfaces,
+    flat tops/floors (|nz| >= 0.95) are excluded so genuinely flat parts
+    don't score as 'rough'."""
+    import numpy as np
+
+    try:
+        angles = np.asarray(mesh.face_adjacency_angles, dtype=float)
+        if not len(angles):
+            return 0.0
+        pairs = np.asarray(mesh.face_adjacency, dtype=np.int64)
+        normals = np.asarray(mesh.face_normals, dtype=float)
+        vertical = np.abs(normals[:, 2]) < 0.95
+        mask = vertical[pairs[:, 0]] & vertical[pairs[:, 1]]
+        sel = angles[mask]
+        return float(np.degrees(np.mean(sel))) if len(sel) else 0.0
+    except Exception:
+        return 0.0
+
+
 def _metrics(mesh, entry: dict, latency: float) -> dict:
     import numpy as np
 
@@ -138,6 +159,7 @@ def _metrics(mesh, entry: dict, latency: float) -> dict:
         "watertight": 1.0 if mesh.is_watertight else 0.0,
         "bodies": bodies,
         "faces": len(mesh.faces),
+        "roughness_deg": round(_edge_roughness_deg(mesh), 2),
         "holes_expected": len(entry.get("holes") or []),
         "holes_found": holes_found,
     }
@@ -159,6 +181,7 @@ def _agg(rows: list[dict]) -> dict:
         "height_err": mean("height_err"),
         "watertight": mean("watertight"),
         "faces": mean("faces"),
+        "roughness_deg": mean("roughness_deg"),
         "hole_recall": mean("hole_recall"),
     }
 
@@ -240,6 +263,7 @@ def main() -> int:
                     row.setdefault("height_err", 1.0)
                     row.setdefault("watertight", 0.0)
                     row.setdefault("faces", 0)
+                    row.setdefault("roughness_deg", 0.0)
                     row.setdefault("hole_recall", 0.0)
                     reg.mark_failed(cls.id, str(e))
                 rows_by_class.setdefault(entry["class"], []).append(row)

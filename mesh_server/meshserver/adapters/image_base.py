@@ -28,6 +28,10 @@ class ImageGenOpts:
     steps: int | None = None
     guidance: float | None = None
     work_dir: Path | None = None
+    # image-edit (img2img / instruction-edit) inputs — only honoured by
+    # adapters with supports_edit=True (flux-kontext-mlx, sd_* img2img)
+    image_path: Path | None = None
+    image_strength: float | None = None  # img2img noise level 0..1
 
 
 @dataclass
@@ -53,6 +57,8 @@ class ImageAdapter(ABC):
     default_size: int = 768
     max_count: int = 4
     max_side: int = 1024  # request clamp: width/height <= max_side
+    supports_edit: ClassVar[bool] = False  # accepts an init image to edit
+    requires_image: ClassVar[bool] = False  # edit-only adapters (no txt2img)
 
     @classmethod
     def available(cls, cfg: Any) -> bool:

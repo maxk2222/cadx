@@ -93,10 +93,12 @@ class Registry:
     def _image_adapter_classes() -> list[type[ImageAdapter]]:
         classes: list[type[ImageAdapter]] = [FakeImageAdapter]
         from meshserver.adapters.flux_diffusers import FluxSchnellAdapter
+        from meshserver.adapters.flux_kontext_mlx import FluxKontextMlxAdapter
         from meshserver.adapters.flux_mlx import FluxSchnellMlxAdapter
         from meshserver.adapters.sd_torch import Sd15Adapter, SdxlAdapter
 
         classes += [
+            FluxKontextMlxAdapter,
             FluxSchnellMlxAdapter,
             FluxSchnellAdapter,
             SdxlAdapter,
@@ -133,6 +135,8 @@ class Registry:
                     available=avail,
                     last_error=self._failed.get(cls.id),
                     default_size=getattr(cls, "default_size", None),
+                    supports_edit=getattr(cls, "supports_edit", False),
+                    requires_image=getattr(cls, "requires_image", False),
                     max_count=getattr(cls, "max_count", None),
                 )
             )
@@ -174,31 +178,57 @@ class Registry:
                 return cls
         return avail.get("fake") if self.cfg.fake else None
 
-    def select_image(self, requested: str) -> type[ImageAdapter] | None:
+    def select_image(
+        self, requested: str, need_edit: bool = False
+    ) -> type[ImageAdapter] | None:
         """Pick an image adapter class. Same rules as select(): 'auto' follows
         the device preference ladder and skips badlisted adapters; explicit
-        requests surface their own error."""
+        requests surface their own error. Edit jobs (init image) only match
+        adapters with supports_edit."""
         all_img = {
-            cls.id: cls for cls in self.available() if getattr(cls, "kind", "mesh") == "image"
+            cls.id: cls
+            for cls in self.available()
+            if getattr(cls, "kind", "mesh") == "image"
         }
+        # edit-only adapters can't serve plain txt2img; non-edit adapters
+        # can't serve edit jobs — filter by job type
+        if need_edit:
+            all_img = {
+                k: v for k, v in all_img.items() if getattr(v, "supports_edit", False)
+            }
+        else:
+            all_img = {
+                k: v for k, v in all_img.items() if not getattr(v, "requires_image", False)
+            }
         if requested and requested != "auto":
-            return all_img.get(requested)
+            cls = all_img.get(requested)
+            if need_edit and cls is not None and not getattr(cls, "supports_edit", False):
+                return None
+            return cls
         avail = {k: v for k, v in all_img.items() if k not in self._failed}
         device = self.device
-        if device == "cuda":
+        if self.cfg.fake:
+            # fixture runs must never touch a real model, even when installed
+            pref = ["fake-image"]
+        elif need_edit:
+            pref = (
+                ["flux-kontext-mlx", "sdxl", "sd15"]
+                if device in ("cuda", "mlx")
+                else (["sdxl", "sd15"] if device == "mps" else ["sd15"])
+            )
+        elif device == "cuda":
             pref = ["flux-schnell", "sdxl", "sd15"]
         elif device == "mlx":
             pref = ["flux-schnell-mlx", "sdxl", "sd15"]
         elif device == "mps":
             pref = ["sdxl", "sd15"]
-        elif self.cfg.fake:
-            pref = ["fake-image"]
         else:
             pref = ["sd15"] if self.cfg.allow_cpu else []
         for pid in pref:
             if cls := avail.get(pid):
                 return cls
-        return avail.get("fake-image") if self.cfg.fake else None
+        # no ladder hit — any remaining adapter is better than failing
+        return next(iter(avail.values()), None)
 
     def get(self, cls: type) -> object:
         """Instantiate + load the adapter; only one model stays loaded."""
