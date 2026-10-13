@@ -1,0 +1,95 @@
+{
+  "prompt": "pistol grip scale, flat panel 119x34x8mm with three countersunk screw holes",
+  "expected_bbox": [
+    119,
+    34,
+    8
+  ],
+  "tolerance_mm": 4.0,
+  "gen_mode": "mesh",
+  "fake_mesh": true,
+  "images": [
+    "backend/tests/fixtures/images/knob.png"
+  ],
+  "settings": {
+    "max_iterations": 1
+  },
+  "llm_script": [
+    {
+      "name": "grip scale",
+      "summary": "flat grip scale panel 119x34x8, three countersunk holes",
+      "units": "mm",
+      "length_x": {
+        "value": 119.0,
+        "source": "stated"
+      },
+      "width_y": {
+        "value": 34.0,
+        "source": "stated"
+      },
+      "height_z": {
+        "value": 8.0,
+        "source": "stated"
+      },
+      "features": [
+        {
+          "name": "screw holes",
+          "type": "hole",
+          "count": 3,
+          "standard": "M4 countersunk",
+          "description": "three countersunk mounting holes along the spine"
+        }
+      ],
+      "open_questions": []
+    },
+    {
+      "approach": "mesh",
+      "approach_reason": "curved ergonomic outline from the photo",
+      "mesh_subject": "flat pistol grip scale panel",
+      "steps": [],
+      "params": [],
+      "standard_parts": [],
+      "notes": ""
+    },
+    {
+      "up": "+z",
+      "front": "+y",
+      "confidence": 0.9,
+      "reason": "panel lies flat"
+    },
+    {
+      "tool_calls": [
+        {
+          "name": "done",
+          "arguments": {
+            "reasoning": "nothing worth rescuing"
+          }
+        }
+      ]
+    },
+    {
+      "reasoning": "fallback: flat plate with three countersunk holes",
+      "params": [],
+      "expected_bbox": [
+        119,
+        34,
+        8
+      ],
+      "code": "from build123d import *\nfrom bd_warehouse.fastener import CounterSunkScrew, ClearanceHole\n\nPARAMS = {\n    \"length\": 119.0,\n    \"width\": 34.0,\n    \"thickness\": 8.0,\n    \"hole_spacing\": 45.0,\n}\n\nscrew = CounterSunkScrew(size=\"M4-0.7\", fastener_type=\"iso10642\", length=10)\n\nwith BuildPart() as p:\n    Box(PARAMS[\"length\"], PARAMS[\"width\"], PARAMS[\"thickness\"],\n        align=(Align.CENTER, Align.CENTER, Align.MIN))\n    with Locations(p.faces().sort_by(Axis.Z)[-1]):\n        with GridLocations(PARAMS[\"hole_spacing\"], 0.0, 3, 1):\n            ClearanceHole(fastener=screw, fit=\"Normal\", counter_sunk=True)\nresult = p.part\n"
+    },
+    {
+      "score": 82,
+      "passed": true,
+      "discrepancies": [],
+      "matches": [
+        "flat panel",
+        "three holes"
+      ],
+      "confidence": 0.8
+    }
+  ],
+  "llm_tools": "auto",
+  "runtime": {
+    "mesh_candidates_per_iter": 1
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "class": "flat",
+  "subject": "pistol grip scale panel, flat slab with ergonomic curved outline and screw holes",
+  "expect_aspect": 3.2,
+  "expect_height_ratio": 0.07,
+  "outline": [[0.05,0.42],[0.2,0.36],[0.55,0.34],[0.9,0.38],[0.95,0.46],[0.93,0.55],[0.7,0.62],[0.35,0.64],[0.1,0.58],[0.05,0.5],[0.05,0.42]],
+  "holes": [[0.2,0.48,0.025],[0.5,0.47,0.025],[0.82,0.49,0.025]]
+}

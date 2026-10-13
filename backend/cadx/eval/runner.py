@@ -36,6 +36,7 @@ class Benchmark:
     gen_mode: str = "auto"  # auto | cad | mesh | hybrid
     fake_mesh: bool = False  # use FakeMeshClient instead of a real mesh server
     images: list[str] = field(default_factory=list)  # fixture image paths (repo-relative)
+    runtime: dict[str, Any] = field(default_factory=dict)  # RuntimeSettings overrides
 
 
 @dataclass
@@ -66,6 +67,8 @@ async def run_benchmark(bm: Benchmark, llm: Any | None = None) -> EvalResult:
     project_id = uuid.uuid4()
     version_id = uuid.uuid4()
     runtime = await runtime_from_db_or_default()
+    if bm.runtime:
+        runtime = runtime.model_copy(update=bm.runtime)
     if bm.llm_script is not None:
         llm = FakeLLM(bm.llm_script)
         llm.tools_mode = bm.llm_tools

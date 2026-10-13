@@ -17,6 +17,7 @@ in-process executor, no queues required.
   "images": ["fixtures/images/knob_ref.png"],  // optional input images
   "fake_mesh": {"size": [30, 22, 18]},         // optional: in-process fake mesh server
   "settings": {"max_iterations": 2},
+  "runtime": {"mesh_candidates_per_iter": 1},  // optional: RuntimeSettings overrides
   "llm_tools": "auto",             // optional: enable scripted tool sessions
   "llm_script": [ ... ]          // optional: deterministic FakeLLM run
 }
@@ -36,6 +37,7 @@ Mesh benchmarks shipped:
 | benchmark | mode | what it checks |
 |---|---|---|
 | `organic_knob_mesh.json` | mesh | MESH_GENERATE→ORIENT→PROCESS→CRITIQUE→export, fake mesh |
+| `flat_scale_mesh.json` | mesh | hopeless-candidate pre-gate → CAD fallback → codegen, fake mesh |
 | `knob_with_m4_insert_hybrid.json` | hybrid | mesh→solid→`load_mesh_solid()`→boolean cut→export |
 
 ## Results

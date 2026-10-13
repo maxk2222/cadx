@@ -44,6 +44,7 @@ hybrid only:  runner_entry injects load_mesh_solid() + MESH_BBOX
 |---|---|---|---|
 | `trellis2` | TRELLIS.2-4B (shape only) | CUDA ≥ ~24 GB | **MIT** |
 | `triposg` | TripoSG 1.5B | CUDA, MPS exp. | **MIT** |
+| `triposg-scribble` | TripoSG-scribble (sketch+text) | CUDA, MPS exp. | **MIT** (experimental) |
 | `hunyuan3d-2.1-mlx` | Hunyuan3D-2.1 shape | arm64 Mac (MLX) | Tencent* |
 | `hunyuan3d-2mini` / `-turbo` | Hunyuan3D-2 mini | torch MPS | Tencent* |
 | `hunyuan3d-2mv` / `-mv-turbo` | Hunyuan3D-2 multi-view | torch MPS | Tencent* |
@@ -56,7 +57,29 @@ Model + license are surfaced in Settings → "Mesh generator" and in
 
 `model="auto"` chooses: `trellis2` on CUDA, `hunyuan3d-2.1-mlx` on arm64 Macs
 with MLX, the `mv` variant when ≥2 view-tagged images exist, otherwise
-`hunyuan3d-2mini`/`triposg`.
+`hunyuan3d-2mini`/`triposg`. When `DATA_DIR/mesh_bench.json` exists (written
+by `mesh_server/scripts/bench_adapters.py`), `auto` additionally ranks
+available adapters by their measured per-class results (`agent/model_pick.py`).
+
+## Generation inputs & candidates
+
+- **View roles** come from intake `image_roles`, overridden by the measure
+  step's deterministic plan-view classification for flat parts.
+- **Synthetic back view**: a flat part without a real bottom view gets a
+  filled-silhouette PNG rendered from the measured outline (`back` role) —
+  anchors the underside without inventing features.
+- **Best-of-N screening** (`mesh_candidates_per_iter`, default 2): cheap
+  low-step candidates are scored deterministically (aspect + footprint IoU +
+  height agreement + hole count) before the full run; all-hopeless
+  candidates skip generation entirely and degrade to CAD.
+- **Multi-adapter candidates** (`mesh_candidate_adapters`, csv): candidates
+  spread over several models; the winning adapter is reused for the full
+  generation. "" spreads over all available adapters automatically.
+- **Heightfield candidate** (`mesh_heightfield_flat`, default on): flat parts
+  get a deterministic watertight column-solid built from the measured
+  outline + stated height (optional luminance relief). It competes on score
+  and stands alone when no candidate screening runs — this eliminates the
+  classic "standing banana" failure for flat parts structurally.
 
 ## Install
 
@@ -86,7 +109,23 @@ docker run --gpus all -p 8765:8765 -v mesh_models:/models meshserver:cuda
 #     → MESH_BASE_URL=http://mesh-server:8765 for the worker
 # native (no container): scripts/setup.sh picks trellis2 (>=20 GB VRAM,
 # override via MESH_TRELLIS_MIN_VRAM_GB) or triposg automatically
+mesh_server/scripts/install_trellis2.sh   # TRELLIS.2-4B on the CUDA box
+mesh_server/scripts/install_triposg.sh    # TripoSG (+ -scribble via same pkg)
 ```
+
+## Adapter benchmark
+
+```bash
+cd mesh_server && uv run python scripts/bench_adapters.py \
+    --out <DATA_DIR>/mesh_bench.json          # all available adapters
+uv run python scripts/bench_adapters.py --adapters triposg,hunyuan3d-2.1-mlx \
+    --seeds 2                                # subset / more rolls
+```
+
+Measures per model × part class (`flat` | `organic`): success, latency,
+footprint IoU, aspect/height error, watertightness, hole recall. The backend
+uses the report for `auto` adapter selection; stale reports are harmless
+(absent → static heuristic).
 
 ## Flow details
 
@@ -105,8 +144,14 @@ inspects the baseline-processed mesh (`mesh_inspect`), renders it
 (`mesh_preview`, capped at `agent_mesh_preview_max`), applies bounded
 transforms — `set_up`, `rotate` (any axis), `mirror`, `scale` (uniform or
 per-axis), `flatten_bottom`, `slice`, `crop`, `decimate`, `smooth`,
-`keep_largest`, `drop_small`, `repair`, `boolean_add`/`boolean_cut` with
-box/cylinder/sphere primitives — and commits with `done`. Every call is
+`keep_largest`, `drop_small`, `repair`, `clip_height` (Z-clamp + cap),
+`symmetrize` (mirror best half), `remesh` (voxel rebuild), `drill_holes`
+(explicit positions or `from_anchors` using the measured hole anchors),
+`shell` (hollow + opening), `boolean_add`/`boolean_cut` with
+box/cylinder/sphere primitives — plus inspection tools `mesh_measure`
+(bbox/volume/watertight), `mesh_section` (cross-section image),
+`mesh_overlay` (mesh footprint vs measured outline) — and commits with
+`done`. Every call is
 validated through the op's pydantic model (`OPS_REGISTRY`), applied to a
 worker-side trimesh state, and the mesh is re-grounded after each op so
 session preview and executor output can never drift. The session only
