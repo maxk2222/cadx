@@ -170,8 +170,29 @@ def test_region_hole_anchor() -> None:
     warnings = empty_region_warnings(dom, [RegionSpec(kind="hole", hole_index=9)], anchors)
     assert warnings and "no cells" in warnings[0]
     # 1-based contract: index 0 is rejected at the schema boundary, not dropped
-    with pytest.raises(Exception):
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
         RegionSpec(kind="hole", hole_index=0)
+
+
+def test_region_hole_grows_past_countersink() -> None:
+    """Measured anchor dia (2.5) smaller than the real bore (5+): the region
+    must grow past the void bore until it grips material."""
+    dom = voxelize(_box_mesh(), 2.0, 150_000)
+    # bore out a Ø10 cylinder at the anchor point — the initial disc
+    # (radius 1.25 + 2.0 margin) lands fully inside the void
+    centers = dom.element_centers().reshape((*dom.dims, 3))
+    bore = (centers[..., 0] - 10.0) ** 2 + (centers[..., 1] - 0.0) ** 2 <= 5.0**2
+    solid = dom.solid & ~bore
+    dom = VoxelDomain(dom.origin, dom.pitch, dom.dims, solid)
+    anchors = [{"x": 10.0, "y": 0.0, "dia": 2.5}]
+    cells = region_cell_mask(dom, RegionSpec(kind="hole", hole_index=1, margin_mm=2.0), anchors)
+    assert cells.any()
+    sel = centers[cells]
+    d = np.linalg.norm(sel[:, :2] - [10.0, 0.0], axis=1)
+    assert d.min() >= 5.0  # the ring, not the bore
+    assert d.max() <= 5.0 + 4 * 2.0 + dom.pitch
 
 
 def test_pressure_force_total_matches_area() -> None:

@@ -109,14 +109,27 @@ def _area_cells(domain: VoxelDomain, region: RegionSpec) -> np.ndarray:
 
 def _hole_cells(domain: VoxelDomain, region: RegionSpec, anchors: list[dict] | None) -> np.ndarray:
     """Material around a measured hole anchor: cylinder along z at the
-    anchor's (x, y) with radius = hole radius + margin."""
+    anchor's (x, y). The bore itself is void, so the disc degenerates to the
+    material ring clamped by the pin.
+
+    The measured dia can undersize the real bore (countersinks, tolerances)
+    which would leave the disc fully inside the void — grow until it hits
+    solid material."""
     if not anchors or not region.hole_index or region.hole_index < 1:
         return np.zeros(domain.dims, dtype=bool)
     if region.hole_index > len(anchors):
         return np.zeros(domain.dims, dtype=bool)
     a = anchors[region.hole_index - 1]
-    radius = float(a.get("dia") or 0.0) / 2 + region.margin_mm
-    return _cylinder_cells(domain, "+z", [float(a["x"]), float(a["y"])], radius)
+    margin = max(region.margin_mm, domain.pitch)
+    radius = float(a.get("dia") or 0.0) / 2 + margin
+    center = [float(a["x"]), float(a["y"])]
+    cells = _cylinder_cells(domain, "+z", center, radius)
+    for _ in range(4):
+        if cells.any():
+            break
+        radius += margin
+        cells = _cylinder_cells(domain, "+z", center, radius)
+    return cells
 
 
 def _cylinder_cells(
