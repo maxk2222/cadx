@@ -322,7 +322,7 @@ def test_simp_preserves_passive_regions(simp_setup) -> None:
 
 def test_extract_solid_box_watertight() -> None:
     dom = voxelize(_box_mesh(), 2.0, 150_000)
-    mesh, _mask, _w = density_to_mesh(dom, dom.solid.ravel().astype(float), smooth_iterations=0)
+    mesh, _mask, _w, _nc = density_to_mesh(dom, dom.solid.ravel().astype(float), smooth_iterations=0)
     assert mesh.is_watertight and mesh.is_winding_consistent
     assert math.isclose(mesh.volume, 60 * 24 * 12, rel_tol=0.02)
 
@@ -330,7 +330,7 @@ def test_extract_solid_box_watertight() -> None:
 def test_extract_topopt_watertight(simp_setup) -> None:
     dom, case, fixed, res = simp_setup
     passive = passive_solid_mask(dom, [], [fixed], [region_node_mask(dom, case.loads[0].region)])
-    mesh, _mask, _w = density_to_mesh(dom, res.density, passive_solid=passive)
+    mesh, _mask, _w, _nc = density_to_mesh(dom, res.density, passive_solid=passive)
     assert mesh.is_watertight
     assert mesh.is_winding_consistent
     assert mesh.volume > 0
@@ -451,7 +451,7 @@ def test_run_fem_domain_matches_mask(simp_setup) -> None:
     """Verification on the exact voxel mask (what extraction exports)."""
     dom, case, fixed, res = simp_setup
     passive = passive_solid_mask(dom, [], [fixed], [region_node_mask(dom, case.loads[0].region)])
-    _, mask, _ = density_to_mesh(dom, res.density, passive_solid=passive)
+    _, mask, _, _nc = density_to_mesh(dom, res.density, passive_solid=passive)
     rep = run_fem_domain(dom, mask, [case], "pla")
     c = rep.cases[0]
     assert c.safety_factor is not None
@@ -461,3 +461,29 @@ def test_run_fem_domain_matches_mask(simp_setup) -> None:
 def test_run_fem_no_cases(tmp_path: Path) -> None:
     rep = run_fem(_box_mesh(), [], "pla", voxel_mm=4.0)
     assert "no load cases provided" in rep.warnings
+
+
+def test_extract_flags_disconnected_keep_island() -> None:
+    """A keep region that ends up as its own island must surface as
+    n_components > 1 + a warning — a floating ring is a multi-body defect,
+    not a successful optimization."""
+    dom = voxelize(_box_mesh(), 2.0, 150_000)
+    nx, ny, nz = dom.dims
+    density = np.zeros(nx * ny * nz)
+    # main blob: half the bar is dense
+    dense = np.zeros(dom.dims, dtype=bool)
+    dense[:5] = True
+    # island: a small dense cube at the far end, spatially disconnected
+    dense[nx - 4 : nx - 1, 4:7, 2:5] = True
+    density[dense.ravel()] = 1.0
+    # passive = fix/load cells on the main blob + keep cells on the island —
+    # like a mounting ring whose material bridge got optimized away
+    passive = np.zeros(dom.dims, dtype=bool)
+    passive[0] = True
+    passive[nx - 4 : nx - 1, 4:7, 2:5] = True
+    mesh, _mask, warnings, n_components = density_to_mesh(
+        dom, density, passive_solid=passive.ravel(), smooth_iterations=0
+    )
+    assert n_components == 2
+    assert any("disconnected" in w for w in warnings)
+    assert len(mesh.split()) == 2

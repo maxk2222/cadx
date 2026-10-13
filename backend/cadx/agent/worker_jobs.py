@@ -952,12 +952,14 @@ async def run_optimize_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict
         version.params = {"optimize": optimize, "load_cases": load_cases, "material": material}
         version.iterations = result_it
         # structural review: flag unsafe results instead of silent success;
-        # a FEM-less result (no solvable case) is unverified, not clean
+        # a FEM-less result (no solvable case) is unverified, not clean;
+        # disconnected keep/load islands make a multi-body part = defect
         sfs = [c.get("safety_factor") for c in fem.get("cases", []) if c.get("safety_factor")]
         worst_sf = min(sfs) if sfs else None
+        n_bodies = topopt.get("n_components") or 1
         version.status = (
             VersionStatus.needs_review
-            if worst_sf is None or worst_sf < 1.0
+            if worst_sf is None or worst_sf < 1.0 or n_bodies > 1
             else VersionStatus.succeeded
         )
         register_artifacts(db, version.id, artifacts, tessellated_step=False)

@@ -790,7 +790,7 @@ def run_topopt_pipeline(
         out["result"] = result
         out["params"] = p
 
-        opt_mesh, final_mask, extract_warnings = density_to_mesh(
+        opt_mesh, final_mask, extract_warnings, n_components = density_to_mesh(
             domain,
             result.density,
             threshold=p.threshold,
@@ -798,6 +798,7 @@ def run_topopt_pipeline(
             smooth_iterations=s.topopt_smooth_iterations,
         )
         out["extract_warnings"] = extract_warnings
+        out["n_components"] = n_components
         # floor-pinned smoothing: keeps a flat manufacturing base flat
         opt_mesh = smooth_preserve(opt_mesh, iterations=4, pin_floor=base_flat)
         out["opt_mesh"] = opt_mesh
@@ -883,6 +884,7 @@ def run_topopt_pipeline(
             "sf_export": verify_export.worst_safety_factor,
             "min_member_mm": best["min_member_mm"],
             "thin_fraction": round(best["thin_fraction"], 4),
+            "n_components": best["n_components"],
         }
     )
 

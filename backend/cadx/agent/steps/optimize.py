@@ -70,6 +70,7 @@ def _run_summary(r: dict[str, Any], chosen: bool, reasoning: Any) -> dict[str, A
         "worst_sf": min(sfs) if sfs else None,
         "min_member_mm": top.get("min_member_mm"),
         "thin_fraction": top.get("thin_fraction"),
+        "n_components": top.get("n_components"),
         "warnings": (top.get("warnings") or [])[:5],
         "chosen": chosen,
         **({"reasoning": str(reasoning)} if chosen and reasoning else {}),

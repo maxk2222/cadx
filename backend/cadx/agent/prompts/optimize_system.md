@@ -80,6 +80,9 @@ Each `topopt_run` reports:
   `voxel_mm`-independent features via keep regions.
 - `thin_fraction` — share of material within 1 voxel of air; high values
   mean a fragile crust.
+- `n_components` — number of disconnected bodies. >1 means a keep/load
+  region became a floating island: reject or enlarge keep regions / raise
+  volfrac so it reconnects.
 - A render of the optimized shape — LOOK at it: disconnected struts, lost
   mounting features or a dissolved surface are a reject regardless of SF.
 

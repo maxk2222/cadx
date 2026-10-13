@@ -134,7 +134,7 @@ def density_to_mask(
     *,
     threshold: float = 0.5,
     passive_solid: np.ndarray | None = None,
-) -> tuple[np.ndarray, list[str]]:
+) -> tuple[np.ndarray, list[str], int]:
     """Threshold + clean the density field into a final solid mask (nx,ny,nz).
 
     Applies passive-region union, connectivity pruning and non-manifold-edge
@@ -161,7 +161,17 @@ def density_to_mask(
             f"({100 * dropped / max(int(mask.sum()) + dropped, 1):.0f}% of material)"
         )
     mask = _regularize_mask(mask)
-    return mask, warnings
+    # kept components can still be disjoint: a keep/load region forming its
+    # own island touches `required` trivially, so pruning cannot see it —
+    # report it so the caller/agent can adjust regions or volfrac
+    structure = ndimage.generate_binary_structure(3, 1)
+    _labels, n_components = ndimage.label(mask, structure=structure)
+    if n_components > 1:
+        warnings.append(
+            f"{n_components} disconnected bodies — a keep/load region is not "
+            f"connected to the main structure (enlarge keep regions or raise volfrac)"
+        )
+    return mask, warnings, n_components
 
 
 def density_to_mesh(
@@ -171,15 +181,16 @@ def density_to_mesh(
     threshold: float = 0.5,
     passive_solid: np.ndarray | None = None,
     smooth_iterations: int = 3,
-) -> tuple[trimesh.Trimesh, np.ndarray, list[str]]:
+) -> tuple[trimesh.Trimesh, np.ndarray, list[str], int]:
     """Convert the optimized density field into a trimesh.
 
-    Returns (mesh, final_mask, warnings). The mesh is in mm in the domain
+    Returns (mesh, final_mask, warnings, n_components). The mesh is in mm in
+    the domain
     frame; `final_mask` (nx,ny,nz) is the exact voxel structure — use it
     (via run_fem_domain) for verification instead of re-voxelizing the
     smoothed mesh, which would erode thin members.
     """
-    mask, warnings = density_to_mask(
+    mask, warnings, n_components = density_to_mask(
         domain, density, threshold=threshold, passive_solid=passive_solid
     )
     mesh = _surface_mesh(domain, mask)
@@ -188,4 +199,4 @@ def density_to_mesh(
             trimesh.smoothing.filter_taubin(mesh, lamb=0.5, nu=-0.53, iterations=smooth_iterations)
         except Exception:
             log.warning("topopt.smooth_failed", exc_info=True)
-    return mesh, mask, warnings
+    return mesh, mask, warnings, n_components
