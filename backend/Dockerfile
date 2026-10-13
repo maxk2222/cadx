@@ -31,4 +31,7 @@ FROM base AS executor
 RUN groupadd -r cad && useradd -r -g cad -u 1000 -m cad \
     && mkdir -p /data && chown -R cad:cad /data
 USER cad
-CMD ["arq", "cadx.queue.CadWorkerSettings"]
+ENV PYTHONFAULTHANDLER=1
+# diag wrapper: logs incoming signals and arq's exit code so silent
+# clean-exit restarts reveal whether docker or the process ended it
+CMD ["sh", "-c", "trap 'echo \"[diag] got SIGTERM, forwarding\" >&2; kill -TERM $C' TERM; trap 'echo \"[diag] got SIGINT, forwarding\" >&2; kill -INT $C' INT; arq cadx.queue.CadWorkerSettings & C=$!; rc=0; while kill -0 $C 2>/dev/null; do wait $C; rc=$?; done; echo \"[diag] arq exited rc=$rc\" >&2; exit $rc"]
