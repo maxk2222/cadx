@@ -122,7 +122,8 @@ _RULES: list[tuple[re.Pattern[str], str, str]] = [
         re.compile(r"AttributeError", re.I),
         "api-misuse",
         "Wrong attribute/method name — check the build123d reference in context. "
-        "Common: Edge/Face has no `.pos` (use `.center()`), ShapeList uses "
+        "Common: Edge/Face has no `.pos` (use `.center()`), Vector uses "
+        "uppercase `.X`/`.Y`/`.Z` (not `.x`), ShapeList uses "
         ".filter_by/.sort_by not .filter(), Axis uses Axis.X not 'x'.",
     ),
     (
