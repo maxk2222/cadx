@@ -363,6 +363,19 @@ def extract_features(  # noqa: C901 — sequential measurement passes
         else:
             out.rounds.append(round(r, 3))
 
+    # merge coaxial same-diameter segments: a countersink/counterbore step
+    # splits one physical bore into several cylinder faces (bore below the
+    # cone + remnant above) — they are ONE hole, not two.
+    merged: list[list[Any]] = []
+    for r, axis, center, vspan in holes:
+        for m in merged:
+            if abs(m[0] - r) <= _GROUP_DIA_TOL and _coaxial(m[2], m[1], center, axis):
+                m[3] += vspan
+                break
+        else:
+            merged.append([r, axis, center, vspan])
+    holes = [(m[0], m[1], m[2], m[3]) for m in merged]
+
     # cones coaxial to a hole -> countersink; others count as chamfer faces
     csk = 0
     cbore = 0

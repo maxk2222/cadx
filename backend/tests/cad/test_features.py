@@ -8,6 +8,7 @@ from build123d import (
     Axis,
     Box,
     BuildPart,
+    Cone,
     CounterBoreHole,
     Cylinder,
     GridLocations,
@@ -189,3 +190,32 @@ def test_compare_insert_type_not_counted_as_through_hole():
     )
     spec = [Feature(name="insert pocket", type="insert", count=1)]
     assert not any("through" in f.expected for f in compare_features(spec, m))
+
+
+def test_extract_coaxial_bore_segments_count_once():
+    """A countersink/cone step splits one bore into several coaxial cylinder
+    faces — they must merge into a single hole (regression: a 3-csk-hole
+    scale read as 6 holes and got a false 'hole count' major)."""
+    with BuildPart() as p:
+        Box(120, 34, 8, align=(Align.CENTER, Align.CENTER, Align.MIN))
+        # three anchors, each bore cut as two stacked same-radius cylinders —
+        # exactly what a countersink transition leaves in the B-Rep
+        for x in (-46.0, 2.0, 45.0):
+            p.part -= Pos(x, 0.0, -0.5) * Cylinder(2.5, 6.0)
+            p.part -= Pos(x, 0.0, 5.5) * Cylinder(2.5, 4.0)
+    m = extract_features(p.part)
+    assert m.total_holes == 3
+    g = next(g for g in m.hole_groups if abs(g.diameter - 5.0) < 0.1)
+    assert g.count == 3
+    assert len(g.centers) == 3
+
+
+def test_extract_countersunk_bore_is_one_hole():
+    """Bore + cone countersink at the same axis: one hole, one countersink."""
+    with BuildPart() as p:
+        Box(60, 40, 8, align=(Align.CENTER, Align.CENTER, Align.MIN))
+        p.part -= Pos(0, 0, -0.5) * Cylinder(2.5, 9.0)
+        p.part -= Pos(0, 0, 6.0) * Cone(2.5, 4.25, 2.0, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    m = extract_features(p.part)
+    assert m.total_holes == 1
+    assert m.countersinks == 1
