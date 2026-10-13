@@ -604,6 +604,14 @@ def _mesh_source_images(
         intake_roles = {r.asset_id: r.role for r in spec.image_roles if r.asset_id}
         dims = (spec.length_x.value, spec.width_y.value, spec.height_z.value)
         flat = dims[2] > 0 and dims[2] < 0.3 * max(dims[0], dims[1], 1e-9)
+    if flat:
+        # The measure step classifies plan views deterministically (silhouette
+        # aspect vs. stated dims). It beats intake labels — models keep calling
+        # a face-up photo of a flat part "front", which feeds the generator a
+        # plan view as its hero slot and produces a standing object.
+        for aid, m in (ctx.measurements or {}).items():
+            if m.get("role") in ("top", "bottom"):
+                intake_roles[aid] = str(m["role"])
     if not intake_roles:
         return ordered, ["front"] + ["other"] * (len(ordered) - 1)
     return _map_gen_roles(ordered, intake_roles, flat)

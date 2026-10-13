@@ -740,6 +740,80 @@ def test_mesh_source_images_maps_intake_roles():
     assert roles == ["front", "other"]
 
 
+def test_mesh_source_images_blank_intake_roles_use_measurements():
+    """Local models emit image_roles with blank asset_id/role. When intake
+    produced no usable roles, the deterministic measure step's plan-view
+    classification must drive the generator mapping (regression: blank roles
+    collapsed to front+other x3 -> a standing 'banana' mesh for a flat scale)."""
+    from cadx.agent.orchestrator import _mesh_source_images
+
+    top = _img()
+    side = _img()
+    spec = PartSpec(
+        name="scale",
+        length_x={"value": 119.0, "source": "stated"},
+        width_y={"value": 34.0, "source": "inferred"},
+        height_z={"value": 8.0, "source": "stated"},
+        image_roles=[{"asset_id": "", "role": ""}, {"asset_id": "", "role": ""}],
+    )
+    ctx = _ctx(assets=[top, side])
+    ctx.measurements = {top.asset_id: {"role": "top"}}
+    ordered, roles = _mesh_source_images(ctx, 1, spec)
+    assert ordered[0].asset_id == top.asset_id
+    assert roles == ["front", "other"]
+
+
+def test_mesh_source_images_measured_plan_overrides_intake_side():
+    """For flat parts a measured 'top' beats an intake that mislabeled the
+    face-up photo as a side elevation."""
+    from cadx.agent.orchestrator import _mesh_source_images
+
+    face = _img()
+    side = _img()
+    spec = PartSpec(
+        name="scale",
+        length_x={"value": 119.0, "source": "stated"},
+        width_y={"value": 34.0, "source": "stated"},
+        height_z={"value": 8.0, "source": "stated"},
+        image_roles=[
+            {"asset_id": face.asset_id, "role": "left"},
+            {"asset_id": side.asset_id, "role": "right"},
+        ],
+    )
+    ctx = _ctx(assets=[face, side])
+    ctx.measurements = {face.asset_id: {"role": "top"}}
+    ordered, roles = _mesh_source_images(ctx, 1, spec)
+    assert ordered[0].asset_id == face.asset_id
+    assert roles == ["front", "right"]
+
+
+def test_intake_repairs_blank_image_roles_positionally():
+    """_repair_image_roles binds all-blank asset_ids by image order."""
+    from cadx.agent.steps.intake import _repair_image_roles
+
+    a, b = _img(), _img()
+    spec = PartSpec(
+        name="scale",
+        length_x={"value": 119.0, "source": "stated"},
+        width_y={"value": 34.0, "source": "stated"},
+        height_z={"value": 8.0, "source": "stated"},
+        image_roles=[{"asset_id": "", "role": "top"}, {"asset_id": "", "role": "left"}],
+    )
+    ctx = _ctx(assets=[a, b])
+    _repair_image_roles(spec, ctx)
+    assert [r.asset_id for r in spec.image_roles] == [a.asset_id, b.asset_id]
+    # partial/blank roles are left alone once ids are bound
+    spec2 = PartSpec(
+        name="x",
+        length_x={"value": 10.0, "source": "stated"},
+        width_y={"value": 10.0, "source": "stated"},
+        height_z={"value": 5.0, "source": "stated"},
+        image_roles=[{"asset_id": a.asset_id, "role": "top"}, {"asset_id": "", "role": "left"}],
+    )
+    _repair_image_roles(spec2, ctx)
+    assert spec2.image_roles[1].asset_id == ""
+
+
 async def test_generate_mesh_cache_hit_skips_server(tmp_path):
     """Second identical generation is served from the disk cache."""
     from cadx.agent.orchestrator import _generate_mesh

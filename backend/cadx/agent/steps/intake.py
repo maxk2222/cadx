@@ -13,10 +13,26 @@ from cadx.agent.context import (
 )
 from cadx.agent.toolloop import run_session, tools_enabled
 from cadx.agent.toolspecs import ToolSession
-from cadx.agent.types import AgentCtx
+from cadx.agent.types import IMAGE_INPUT_KINDS, AgentCtx
 from cadx.llm.schemas import PartSpec
 
 STEP = "intake"
+
+
+def _repair_image_roles(spec: PartSpec, ctx: AgentCtx) -> None:
+    """Bind blank image_roles entries to assets positionally.
+
+    Local vision models regularly emit one entry per image but leave
+    `asset_id` (and sometimes `role`) blank. Entries are one-per-image in
+    image order, so a count match lets us recover the ids the model meant.
+    """
+    imgs = [a for a in ctx.assets if a.kind in IMAGE_INPUT_KINDS]
+    shown = imgs[: ctx.runtime_settings.agent_max_input_images]
+    if not shown or len(spec.image_roles) != len(shown):
+        return
+    if all(not r.asset_id for r in spec.image_roles):
+        for r, a in zip(spec.image_roles, shown, strict=False):
+            r.asset_id = a.asset_id
 
 
 async def run(ctx: AgentCtx) -> PartSpec:
@@ -55,6 +71,7 @@ async def run(ctx: AgentCtx) -> PartSpec:
 
             raise LLMFormatError("intake session produced no spec")
         spec = res.response.parsed
+        _repair_image_roles(spec, ctx)
         if not spec.process:
             spec.process = ctx.settings.process
         ctx.spec = spec
@@ -73,6 +90,7 @@ async def run(ctx: AgentCtx) -> PartSpec:
         latency_ms=resp.latency_ms,
     )
     spec = resp.parsed
+    _repair_image_roles(spec, ctx)
     if not spec.process:
         spec.process = ctx.settings.process
     ctx.spec = spec
