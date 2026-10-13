@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 from collections.abc import Callable
@@ -90,7 +91,9 @@ async def execute_version(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[
         r.error = "cancelled"
         return r.to_dict()
 
-    d = run_execute_payload(payload)
+    # CPU-blocking pipeline — must run in a thread so the arq event loop
+    # keeps dequeuing other jobs, health checks and cancel flags
+    d = await asyncio.to_thread(run_execute_payload, payload)
 
     if await _cancelled(ctx, cancel_key):
         d["ok"] = False
@@ -112,12 +115,13 @@ async def export_all(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, 
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if brep.exists():
-        exports = export_from_brep(
-            brep, out_dir, name=name, flat_brep=flat if flat.exists() else None
+        exports = await asyncio.to_thread(
+            export_from_brep, brep, out_dir, name=name, flat_brep=flat if flat.exists() else None
         )
     elif (it_dir / "_run" / "model.stl").exists():
         # mesh-mode version: export from the stored STL
-        exports = export_from_mesh(
+        exports = await asyncio.to_thread(
+            export_from_mesh,
             it_dir / "_run" / "model.stl",
             out_dir,
             name=name,
@@ -254,7 +258,7 @@ async def process_mesh(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str
         r.error = "cancelled"
         return r.to_dict()
 
-    d = run_mesh_payload(payload)
+    d = await asyncio.to_thread(run_mesh_payload, payload)
 
     if await _cancelled(ctx, cancel_key):
         d["ok"] = False
@@ -310,7 +314,7 @@ async def fem_analyze(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str,
     """arq task (queue "cad"): FEM verification of a stored mesh artifact."""
     if await _cancelled(ctx, f"cancel:{payload.get('job_id')}" if payload.get("job_id") else None):
         return {"ok": False, "error": "cancelled"}
-    d = run_fem_payload(payload)
+    d = await asyncio.to_thread(run_fem_payload, payload)
     fem = d.get("fem") or {}
     log.info(
         "fem_analyze",
@@ -400,7 +404,9 @@ async def optimize(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, An
         r = ExecResult()
         r.error = "cancelled"
         return r.to_dict()
-    d = run_optimize_payload(payload, cancelled=_sync_cancel_checker(cancel_key))
+    d = await asyncio.to_thread(
+        run_optimize_payload, payload, cancelled=_sync_cancel_checker(cancel_key)
+    )
     if await _cancelled(ctx, cancel_key):
         d["ok"] = False
         d["error"] = "cancelled"

@@ -433,3 +433,43 @@ async def test_executor_startup_does_not_reap_agent_jobs(monkeypatch):
     await agent_startup({})  # agent worker restart — reaps it
     async with async_session() as db:
         assert (await db.get(Job, job.id)).status == JobStatus.failed
+
+
+async def test_cad_tasks_offload_blocking_payloads(monkeypatch):
+    """arq tasks must run their heavy sync payloads in a worker thread —
+    a blocking call on the event loop starves dequeue/health/cancel for the
+    whole worker. Regression: a ~50min SIMP run froze the cad queue, so
+    process_mesh and execute_version calls timed out without ever starting."""
+    import asyncio
+    import time
+
+    import cadx.cad.tasks as tasks
+
+    def slow(payload: dict, **kw) -> dict:
+        time.sleep(0.15)
+        return {"ok": True}
+
+    monkeypatch.setattr(tasks, "run_execute_payload", slow)
+    monkeypatch.setattr(tasks, "run_mesh_payload", slow)
+    monkeypatch.setattr(tasks, "run_fem_payload", slow)
+    monkeypatch.setattr(tasks, "run_optimize_payload", slow)
+
+    async def run_one(coro):
+        ticked = False
+
+        async def ticker() -> None:
+            nonlocal ticked
+            await asyncio.sleep(0.02)
+            ticked = True
+
+        result, _ = await asyncio.gather(coro({}, {"job_id": None}), ticker())
+        assert result["ok"] is True
+        assert ticked, f"{coro.__name__} blocked the event loop"
+
+    for coro in (
+        tasks.execute_version,
+        tasks.process_mesh,
+        tasks.fem_analyze,
+        tasks.optimize,
+    ):
+        await run_one(coro)
