@@ -13,6 +13,7 @@ import trimesh
 from cadx.cad.fem.analyze import FemReport, run_fem, run_fem_domain
 from cadx.cad.fem.extract import _regularize_mask, _surface_mesh, density_to_mesh
 from cadx.cad.fem.regions import (
+    empty_region_warnings,
     region_cell_mask,
     region_node_mask,
     resolve_case,
@@ -166,6 +167,11 @@ def test_region_hole_anchor() -> None:
     # out-of-range index selects nothing
     empty = region_cell_mask(dom, RegionSpec(kind="hole", hole_index=9), anchors)
     assert not empty.any()
+    warnings = empty_region_warnings(dom, [RegionSpec(kind="hole", hole_index=9)], anchors)
+    assert warnings and "no cells" in warnings[0]
+    # 1-based contract: index 0 is rejected at the schema boundary, not dropped
+    with pytest.raises(Exception):
+        RegionSpec(kind="hole", hole_index=0)
 
 
 def test_pressure_force_total_matches_area() -> None:

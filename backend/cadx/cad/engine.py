@@ -698,6 +698,7 @@ def run_topopt_pipeline(
     from cadx.cad.fem.extract import density_to_mesh
     from cadx.cad.fem.preview import render_regions
     from cadx.cad.fem.regions import (
+        empty_region_warnings,
         keep_element_mask,
         region_node_mask,
         resolve_case,
@@ -748,6 +749,9 @@ def run_topopt_pipeline(
         res.error = "no solvable load case — check fixed/load regions"
         return res
 
+    res.topopt.setdefault("warnings", []).extend(
+        empty_region_warnings(domain, list(opt.keep_regions), anchors)
+    )
     keep_cells = keep_element_mask(domain, list(opt.keep_regions), anchors)
     passive = passive_solid_mask(domain, [keep_cells], fixed_node_masks, load_node_masks)
 

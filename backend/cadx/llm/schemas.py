@@ -150,7 +150,9 @@ class RegionSpec(BaseModel):
     polygon: list[list[float]] = Field(default_factory=list, max_length=40)  # XY mm polygon (area)
     x_range: list[float] = Field(default_factory=list, max_length=2)  # [min,max] mm (area)
     y_range: list[float] = Field(default_factory=list, max_length=2)  # [min,max] mm (area)
-    hole_index: int | None = None  # 1-based index into the measured anchors (hole)
+    hole_index: int | None = Field(
+        default=None, ge=1
+    )  # 1-based index into the measured anchors (hole)
     points: list[list[float]] = Field(
         default_factory=list, max_length=600
     )  # painted surface points [x,y,z] mm (points)

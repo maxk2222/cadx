@@ -338,3 +338,16 @@ def keep_element_mask(
     for r in regions:
         mask |= region_cell_mask(domain, r, anchors).ravel()
     return mask
+
+
+def empty_region_warnings(
+    domain: VoxelDomain, regions: list[RegionSpec], anchors: list[dict] | None = None
+) -> list[str]:
+    """One warning per region that resolves to zero cells — such regions are
+    silently ignored downstream, so make the miss explicit."""
+    out = []
+    for r in regions:
+        if not region_cell_mask(domain, r, anchors).any():
+            idx = f"#{r.hole_index}" if r.hole_index else ""
+            out.append(f"region {r.kind} {r.axis or ''}{idx} matched no cells — ignored")
+    return out
