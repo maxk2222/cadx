@@ -163,7 +163,13 @@ limits. Changes apply to new jobs; a running job keeps its startup snapshot.
 | `llm_tools` | `auto` | `auto` probes native tool support per role; `on` is strict; `off` uses legacy JSON |
 | `agent_tool_max_calls` | `10` | tool turns per edit/codegen session |
 | `agent_tool_max_calls_info` | `6` | lookup turns per intake/plan/critique session |
+| `agent_tool_max_turns` | `24` | hard turn cap per tool session |
+| `agent_tool_churn_limit` | `6` | nudge → abort after this many edits without a check |
 | `agent_tool_verify` | `true` | allow bounded sandbox verification in edit sessions |
+
+Local ~27B models need higher budgets but tighter guards than the hosted-model
+defaults — see "Recommended settings for local ~27B models" in
+`docs/agent-loop.md`.
 
 The Settings page also carries a **Test provider** button that probes the
 saved code + vision models without exposing the key. Infrastructure

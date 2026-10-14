@@ -207,8 +207,26 @@ Robustness toggles (aimed at weak/local models): `agent_param_autofix`,
 `agent_critique_reask`.
 
 Tool sessions: `llm_tools` (`auto|on|off`), `agent_tool_max_calls`,
-`agent_tool_max_calls_info`, `agent_tool_verify`, `agent_tool_verify_max`,
+`agent_tool_max_calls_info`, `agent_tool_max_turns`, `agent_tool_churn_limit`
+(edits-without-check guard), `agent_tool_verify`, `agent_tool_verify_max`,
 `agent_struct_tools`, `agent_topopt_max_runs`, `agent_fem_max_runs`.
+
+### Recommended settings for local ~27B models
+
+The code defaults assume a strong hosted model. For a local code/vision
+model (e.g. qwen3-27b via vLLM) the following values keep sessions
+productive and bounded — set via the Settings GUI or `PUT /api/settings`:
+
+| Setting | Recommended |
+|---|---|
+| `agent_max_iterations` | 12 |
+| `agent_tool_max_calls` | 30 |
+| `agent_tool_max_calls_info` | 10 |
+| `agent_tool_max_turns` | 24 |
+| `agent_max_tokens_per_job` | 3,000,000 |
+| `agent_max_wall_s` | 3600 |
+| `agent_patch_retries` | 3 |
+| `agent_pass_score` | 65 |
 
 Every iteration produces a structured `issues` list (dims / measured
 features / critique / DfM) that is persisted on `Version.issues` and shown

@@ -1,0 +1,117 @@
+{
+  "prompt": "L-Winkel (L-bracket) aus PETG: Fuss 60 mm lang (X) x 40 mm breit (Y) x 4 mm dick, senkrechter Schenkel 50 mm hoch (Z) x 40 mm breit x 4 mm dick am -X Ende. Im Fuss zwei Durchgangsloecher Ø5.5 mm, Abstand 30 mm in X, mittig in Y. Im Schenkel ein Langloch 6.5 mm breit, 15 mm lang (entlang Z), mittig. Innenkante zwischen Fuss und Schenkel mit Radius 3 mm verrunden, zwei Dreiecks-Verstaerkungsrippen 3 mm dick an den Aussenseiten.",
+  "gen_mode": "cad",
+  "expected_bbox": [
+    60,
+    40,
+    54
+  ],
+  "tolerance_mm": 4.0,
+  "expected_features": [
+    {
+      "type": "hole",
+      "count": 2,
+      "dia": 5.5
+    },
+    {
+      "type": "fillet"
+    }
+  ],
+  "expect_watertight": true,
+  "settings": {
+    "max_iterations": 2
+  },
+  "llm_script": [
+    {
+      "name": "l_bracket",
+      "summary": "L-bracket 60x40 foot, 50mm leg, 2 holes, slot, ribs",
+      "units": "mm",
+      "length_x": {
+        "value": 60,
+        "source": "stated"
+      },
+      "width_y": {
+        "value": 40,
+        "source": "stated"
+      },
+      "height_z": {
+        "value": 54,
+        "source": "stated"
+      },
+      "features": [
+        {
+          "name": "foot holes",
+          "type": "hole",
+          "dims": {
+            "diameter": 5.5
+          },
+          "count": 2
+        },
+        {
+          "name": "leg slot",
+          "type": "slot",
+          "dims": {
+            "width": 6.5,
+            "length": 15.0
+          },
+          "count": 1
+        },
+        {
+          "name": "inner fillet",
+          "type": "fillet",
+          "dims": {
+            "radius": 3.0
+          },
+          "count": 1
+        },
+        {
+          "name": "ribs",
+          "type": "rib",
+          "dims": {
+            "thickness": 3.0
+          },
+          "count": 2
+        }
+      ],
+      "open_questions": []
+    },
+    {
+      "approach": "cad",
+      "approach_reason": "technical bracket",
+      "strategy": [
+        "cad"
+      ],
+      "steps": [
+        "l_bracket body",
+        "holes + slot",
+        "fillet + ribs"
+      ],
+      "params": [],
+      "standard_parts": [],
+      "notes": ""
+    },
+    {
+      "reasoning": "scripted L-bracket",
+      "params": [],
+      "expected_bbox": [
+        60,
+        40,
+        54
+      ],
+      "code": "PARAMS = {\n    \"leg_x\": 60.0,\n    \"width\": 40.0,\n    \"thickness\": 4.0,\n    \"leg_h\": 50.0,\n    \"hole_d\": 5.5,\n    \"hole_pitch\": 30.0,\n    \"slot_w\": 6.5,\n    \"slot_l\": 15.0,\n    \"fillet_r\": 3.0,\n    \"rib_t\": 3.0,\n}\nfrom build123d import *\nimport cadlib\n\n_CZ = (Align.CENTER, Align.CENTER, Align.MIN)\n_CC = (Align.CENTER, Align.CENTER, Align.CENTER)\n\nt = PARAMS[\"thickness\"]\nleg_x_face = -PARAMS[\"leg_x\"] / 2 + t  # inner face of the vertical leg\n\n# foot plate: centred XY, rests on Z=0\nresult = Box(PARAMS[\"leg_x\"], PARAMS[\"width\"], t, align=_CZ)\n# vertical leg at the -X end (x in [-30, -26]), standing on the foot\nresult += Pos(-PARAMS[\"leg_x\"] / 2 + t / 2, 0, t + PARAMS[\"leg_h\"] / 2) * Box(\n    t, PARAMS[\"width\"], PARAMS[\"leg_h\"], align=_CC\n)\n# two through holes in the foot, 30 mm apart in X, centred in Y\nfor x in (5 - PARAMS[\"hole_pitch\"] / 2, 5 + PARAMS[\"hole_pitch\"] / 2):\n    result -= Pos(x, 0, -1) * Cylinder(PARAMS[\"hole_d\"] / 2, t + 2, align=_CZ)\n# slot through the leg, centred, length along Z\nresult -= Pos(-PARAMS[\"leg_x\"] / 2 + t / 2, 0, t + PARAMS[\"leg_h\"] / 2) * Box(\n    t + 2, PARAMS[\"slot_w\"], PARAMS[\"slot_l\"], align=_CC\n)\n# inner fillet where leg meets foot: the two concave Y-running edges\ninner = result.edges().filter_by(Axis.Y).filter_by_position(Axis.X, leg_x_face - 0.2, leg_x_face + 0.2).filter_by_position(Axis.Z, t - 0.2, t + 0.2)\nif len(inner) >= 1:\n    result = fillet(inner, radius=PARAMS[\"fillet_r\"])\n# two triangular ribs on the outer faces of the leg\nfor y in (-PARAMS[\"width\"] / 2 + PARAMS[\"rib_t\"] / 2, PARAMS[\"width\"] / 2 - PARAMS[\"rib_t\"] / 2):\n    result += Pos(leg_x_face, y, t) * cadlib.rib(20.0, 20.0, PARAMS[\"rib_t\"])\n"
+    },
+    {
+      "score": 92,
+      "passed": true,
+      "discrepancies": [],
+      "matches": [
+        "foot",
+        "leg",
+        "holes",
+        "slot",
+        "ribs"
+      ],
+      "confidence": 0.9
+    }
+  ]
+}
