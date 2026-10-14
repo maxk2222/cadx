@@ -1666,6 +1666,7 @@ async def _run_cad(  # noqa: C901
     for it in range(start_iteration, start_iteration + max_iterations):
         iterations_done = it
         if await cancelled():
+            outcome.status = "cancelled"
             return outcome
         if best is not None and await finish_early():
             await ctx.emit("finalize", it, "finish requested — keeping best candidate")
@@ -1746,6 +1747,7 @@ async def _run_cad(  # noqa: C901
         prev_err_sig = ""
         for repair_n in range(max_repairs + 1):
             if await cancelled():
+                outcome.status = "cancelled"
                 return outcome
             if best is not None and await finish_early():
                 break
@@ -2233,6 +2235,7 @@ async def _run_mesh(  # noqa: C901
     for it in range(start_iteration, start_iteration + max_iterations):
         iterations_done = it
         if await cancelled():
+            outcome.status = "cancelled"
             return outcome
         if best is not None and await finish_early():
             await ctx.emit("finalize", it, "finish requested — keeping best candidate")
@@ -2378,6 +2381,7 @@ async def _run_mesh(  # noqa: C901
         # MESH_REFINE repair session(s) — fix this mesh instead of a new seed
         for _round in range(refine_rounds):
             if await cancelled():
+                outcome.status = "cancelled"
                 return outcome
             if await finish_early():
                 break
@@ -3038,6 +3042,24 @@ async def _run_approach(
     return outcome
 
 
+def _viable_approaches(ctx: AgentCtx, mode: str, plan: Any) -> tuple[list[str], int]:
+    """Ordered approach list with resolve_mode's guards applied per entry.
+
+    Returns (viable, planned_count) — planned_count keeps the unfiltered
+    strategy length so the mode note can say 'strategy: a → b' even when
+    guards dropped an approach."""
+    s = ctx.runtime_settings
+    forced = ctx.gen_mode not in (None, "auto", "topopt")
+    approaches = [mode] if forced else (list(plan.strategy) if plan and plan.strategy else [mode])
+    has_images = any(a.kind in IMAGE_INPUT_KINDS for a in ctx.assets)
+    viable: list[str] = []
+    for a in approaches[: s.agent_max_approaches]:
+        if a in ("mesh", "hybrid") and (not has_images or not ctx.mesh_available):
+            continue  # resolve_mode's guards, applied per strategy entry
+        viable.append(a)
+    return viable or [mode], len(approaches)
+
+
 async def _run_strategy(
     ctx: AgentCtx,
     outcome: RunOutcome,
@@ -3060,16 +3082,7 @@ async def _run_strategy(
     outcome across approaches wins; iteration counters continue so artifacts
     are never overwritten."""
     s = ctx.runtime_settings
-    forced = ctx.gen_mode not in (None, "auto", "topopt")
-    approaches = [mode] if forced else (list(plan.strategy) if plan and plan.strategy else [mode])
-    has_images = any(a.kind in IMAGE_INPUT_KINDS for a in ctx.assets)
-    viable: list[str] = []
-    for a in approaches[: s.agent_max_approaches]:
-        if a in ("mesh", "hybrid") and (not has_images or not ctx.mesh_available):
-            continue  # resolve_mode's guards, applied per strategy entry
-        viable.append(a)
-    if not viable:
-        viable = [mode]
+    viable, n_planned = _viable_approaches(ctx, mode, plan)
     n = len(viable)
 
     def _rank(o: RunOutcome) -> tuple[bool, int]:
@@ -3125,12 +3138,21 @@ async def _run_strategy(
         if best is None or _rank(sub) > _rank(best):
             best = sub
         start_it = max(start_it, sub.iterations + 1)
+        if await ctx.check_cancel():
+            sub.status = "cancelled"
+            best = sub
+            break
         if best.status == "succeeded":
             break
         if not sub.switch_requested and sub.status != "failed":
             break  # completed (needs_review) — switching just repeats the loop
-    assert best is not None
-    if len(approaches) > 1:
+    if best is None:
+        outcome.status = "cancelled"
+        return outcome
+    if best.status == "cancelled":
+        ctx.resolved_mode = best.resolved_mode or used[-1]
+        return best
+    if n_planned > 1:
         best.mode_note += f" | strategy: {' → '.join(used)}"
     ctx.resolved_mode = best.resolved_mode or used[-1]
     return best
@@ -3348,6 +3370,8 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
             await ctx.emit(
                 "optimize", 0, f"intake missed loads — retry extracted {len(cases)} case(s)"
             )
+    if wants_opt and outcome.status == "cancelled":
+        wants_opt = False
     if wants_opt:
         if ctx.topopt_requested:
             why = "requested by user"

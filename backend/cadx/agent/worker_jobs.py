@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import math
 import shutil
 import time
 import uuid
@@ -57,6 +58,17 @@ log = get_logger(__name__)
 
 def _u(s: str | uuid.UUID) -> uuid.UUID:
     return s if isinstance(s, uuid.UUID) else uuid.UUID(str(s))
+
+
+def _json_safe(obj: Any) -> Any:
+    """Replace NaN/±Inf recursively (Postgres JSON rejects non-finite floats)."""
+    if isinstance(obj, float) and not math.isfinite(obj):
+        return None
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    return obj
 
 
 async def _publish(job_id: str, event: dict[str, Any]) -> None:
@@ -165,15 +177,20 @@ async def _fail_job_and_version(payload: dict[str, Any], error: str) -> None:
         async with session_scope() as db:
             job = await db.get(Job, _u(payload["job_id"]))
             version = await db.get(Version, _u(payload["version_id"]))
+            # a user-requested cancel is not a failure — keep the distinction
+            # even when the task died via timeout/shutdown mid-cancel
+            user_cancelled = bool(job.cancel_requested) if job is not None else False
             if job is not None and job.status in (JobStatus.queued, JobStatus.running):
-                job.status = JobStatus.failed
+                job.status = JobStatus.cancelled if user_cancelled else JobStatus.failed
                 job.finished_at = datetime.now(UTC)
-                await _append_job_log(db, job, f"failed: {error}\n")
+                await _append_job_log(
+                    db, job, f"{'cancelled' if user_cancelled else 'failed'}: {error}\n"
+                )
             if version is not None and version.status in (
                 VersionStatus.queued,
                 VersionStatus.running,
             ):
-                version.status = VersionStatus.failed
+                version.status = VersionStatus.cancelled if user_cancelled else VersionStatus.failed
                 version.error = error[:500]
             await db.commit()
         await _publish(payload["job_id"], {"type": "done", "status": "failed"})
@@ -251,7 +268,7 @@ class DbTrace(MemoryTrace):
                         model=kwargs["model"],
                         messages=sanitize_messages(kwargs["messages"]),
                         response=kwargs["response_text"][:20_000],
-                        parsed=kwargs["parsed"],
+                        parsed=_json_safe(kwargs["parsed"]),
                         prompt_tokens=kwargs["prompt_tokens"],
                         completion_tokens=kwargs["completion_tokens"],
                         latency_ms=kwargs["latency_ms"],
@@ -528,7 +545,9 @@ async def run_agent_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[st
             outcome = await run_generation(actx)
         except Exception as e:
             log.exception("agent.job_crashed", job=str(job_id))
-            outcome = RunOutcome(status="failed", error=f"agent crashed: {e}")
+            outcome = RunOutcome(
+                status="failed", error=f"agent crashed: {type(e).__name__}: {e!r}"[:500]
+            )
 
         if actx.library_attached:
             # record library parts the agent selected itself via tools
@@ -1629,23 +1648,23 @@ async def _persist_outcome(
         job.questions = outcome.questions
         job.resume_state = outcome.resume_state
         version.status = VersionStatus.waiting_for_input
-        version.spec = outcome.spec
+        version.spec = _json_safe(outcome.spec)
         await db.commit()
         await _publish(str(job.id), {"type": "question", "questions": outcome.questions})
         return
 
-    version.spec = outcome.spec
-    version.plan = outcome.plan
+    version.spec = _json_safe(outcome.spec)
+    version.plan = _json_safe(outcome.plan)
     version.code = outcome.code
-    version.params = outcome.params
-    version.params_schema = outcome.params_schema
-    version.analysis = outcome.analysis
-    version.critique = outcome.critique
-    version.dfm = outcome.dfm
-    version.bom = outcome.bom
-    version.issues = outcome.issues or None
-    version.mesh = outcome.mesh
-    version.fem = outcome.fem or None  # {} would be truthy-but-shapeless in the UI
+    version.params = _json_safe(outcome.params)
+    version.params_schema = _json_safe(outcome.params_schema)
+    version.analysis = _json_safe(outcome.analysis)
+    version.critique = _json_safe(outcome.critique)
+    version.dfm = _json_safe(outcome.dfm)
+    version.bom = _json_safe(outcome.bom)
+    version.issues = _json_safe(outcome.issues) or None
+    version.mesh = _json_safe(outcome.mesh)
+    version.fem = _json_safe(outcome.fem) or None  # {} would be truthy-but-shapeless in the UI
     version.resolved_mode = outcome.resolved_mode
     version.score = outcome.score
     version.iterations = outcome.iterations
@@ -1677,7 +1696,7 @@ async def _persist_outcome(
         if outcome.code:
             (v_dir / "model.py").write_text(outcome.code, encoding="utf-8")
         (v_dir / "params.json").write_text(
-            json.dumps(outcome.params or {}, indent=2), encoding="utf-8"
+            json.dumps(_json_safe(outcome.params) or {}, indent=2), encoding="utf-8"
         )
 
     mapping = {

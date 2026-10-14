@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import math
 import re
-from typing import Annotated, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Short/Medium/Long string bounds — guided decoding honours `maxLength`, which
 # stops a weak model looping inside an unbounded string field (observed: an
@@ -331,6 +332,21 @@ class ParamDef(BaseModel):
     min: float | None = None
     max: float | None = None
     description: M = ""
+
+    @field_validator("min", "max", mode="before")
+    @classmethod
+    def _bound_finite_or_none(cls, v: Any) -> Any:
+        """Postgres JSON has no NaN/±Inf — drop non-finite bounds instead of crashing."""
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and not math.isfinite(float(v)):
+            return None
+        return v
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def _value_finite(cls, v: Any) -> Any:
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and not math.isfinite(float(v)):
+            return 0.0
+        return v
 
 
 class ModelingPlan(BaseModel):
