@@ -208,8 +208,40 @@ class _Checker(ast.NodeVisitor):
     def visit_Call(self, node: ast.Call) -> None:
         if isinstance(node.func, ast.Name) and node.func.id in FORBIDDEN_NAMES:
             self._err(node, f"call to '{node.func.id}' is not allowed")
+        # float('…') with a non-numeric string — observed model corruption
+        # (`float('.')`) that parses fine but raises at exec time
+        if (
+            isinstance(node.func, ast.Name)
+            and node.func.id == "float"
+            and len(node.args) == 1
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            try:
+                float(node.args[0].value)
+            except ValueError:
+                self._warn(
+                    node,
+                    f"float({node.args[0].value!r}) raises ValueError at runtime — "
+                    "the literal is not numeric (corrupted output?)",
+                )
         self._check_rotate_self_axis(node)
         self._check_2d_boolean_method(node)
+        self.generic_visit(node)
+
+    def visit_Constant(self, node: ast.Constant) -> None:
+        # absurd magnitude — models emit e.g. -8e+67 when sampling degenerates;
+        # no real part dimension exceeds ~1e5 mm
+        if (
+            isinstance(node.value, int | float)
+            and not isinstance(node.value, bool)
+            and abs(node.value) > 1e6
+        ):
+            self._warn(
+                node,
+                f"suspicious literal {node.value!r} — far beyond any plausible mm "
+                "dimension (corrupted output?)",
+            )
         self.generic_visit(node)
 
     def visit_Name(self, node: ast.Name) -> None:
