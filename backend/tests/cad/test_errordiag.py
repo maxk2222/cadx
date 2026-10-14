@@ -85,3 +85,13 @@ def test_diag_block_contains_all_sections():
     assert "the error" in txt
     assert "the traceback" in txt
     assert "print output" in txt
+
+
+def test_diagnose_2d_shape_in_boolean():
+    d = diagnose(
+        "TypeError: cut() expected a solid tool, got Curve",
+        "Traceback:\n  File model.py, line 42\nTypeError: cut() expected a solid tool",
+        "result = mesh.cut(Pos(1,1,0) * Ellipse(3, 2))\n",
+    )
+    assert d.category == "hybrid-2d"
+    assert "2D" in d.hint or "Cylinder" in d.hint

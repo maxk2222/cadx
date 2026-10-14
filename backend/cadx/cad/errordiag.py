@@ -119,6 +119,17 @@ _RULES: list[tuple[re.Pattern[str], str, str]] = [
         "smaller fillets, coarser revolve/sweep segments, avoid huge GridLocations.",
     ),
     (
+        re.compile(
+            r"(cut|fuse|intersect|boolean).*(Curve|Ellipse|Circle|Rectangle|Geom2d|2D)"
+            r"|expected.*(solid|TopoDS_Solid)|incompatible.*(shape|type)",
+            re.I,
+        ),
+        "hybrid-2d",
+        "A 2D shape (Ellipse/Circle/Rectangle/curve) cannot be a boolean tool on "
+        "a solid. Use extruded primitives instead: Cylinder for round holes, Box "
+        "for pockets, or extrude(...) a sketch first.",
+    ),
+    (
         re.compile(r"AttributeError", re.I),
         "api-misuse",
         "Wrong attribute/method name — check the build123d reference in context. "
