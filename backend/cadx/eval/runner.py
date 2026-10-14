@@ -79,8 +79,11 @@ def _features_ok(expected: list[dict[str, Any]], features: dict[str, Any] | None
         if dia is None:
             return int(feats.get("total_holes") or 0)
         tol = max(0.5, dia * 0.1)
-        return sum(int(g.get("count") or 0) for g in groups
-                   if abs(float(g.get("diameter") or 0) - dia) <= tol)
+        return sum(
+            int(g.get("count") or 0)
+            for g in groups
+            if abs(float(g.get("diameter") or 0) - dia) <= tol
+        )
 
     for ef in expected:
         ftype = str(ef.get("type", "")).lower()
@@ -97,9 +100,8 @@ def _features_ok(expected: list[dict[str, Any]], features: dict[str, Any] | None
         elif ftype in ("fillet", "round"):
             if not (feats.get("rounds") or []):
                 return False
-        elif ftype == "chamfer":
-            if int(feats.get("chamfer_faces") or 0) < 1:
-                return False
+        elif ftype == "chamfer" and int(feats.get("chamfer_faces") or 0) < 1:
+            return False
     return True
 
 
@@ -174,7 +176,11 @@ async def run_benchmark(bm: Benchmark, llm: Any | None = None) -> EvalResult:
     t0 = time.monotonic()
     outcome: RunOutcome = await run_generation(ctx)
     wall = time.monotonic() - t0
+    return _judge(bm, outcome, wall, storage.version_dir(project_id, version_id))
 
+
+def _judge(bm: Benchmark, outcome: RunOutcome, wall: float, version_dir: Path) -> EvalResult:
+    """Score a finished run against the benchmark's expectations."""
     bbox = None
     dim_ok = None
     if outcome.analysis and outcome.analysis.get("bbox_size"):
@@ -214,7 +220,7 @@ async def run_benchmark(bm: Benchmark, llm: Any | None = None) -> EvalResult:
         dim_ok=dim_ok,
         wall_s=round(wall, 1),
         error=outcome.error,
-        version_dir=str(storage.version_dir(project_id, version_id)),
+        version_dir=str(version_dir),
         features_ok=features_ok,
         watertight=bool(watertight) if watertight is not None else None,
         prompt_tokens=prompt_tokens,
