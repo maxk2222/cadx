@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql import func
 from sqlmodel import col, select
 
 from cadx import events, storage
@@ -40,6 +41,7 @@ from cadx.db.models import (
     Project,
     ProjectSettings,
     Version,
+    VersionKind,
     VersionStatus,
 )
 from cadx.db.session import session_scope
@@ -862,8 +864,66 @@ def _parent_stl(parent: Version) -> str | None:
     return storage.best_mesh_relpath(parent.project_id, parent.id, parent.iterations or 1)
 
 
+async def _maybe_spawn_refine(
+    db: AsyncSession,
+    parent: Version,
+    *,
+    spec: PartSpec | None,
+    optimize: dict[str, Any],
+    load_cases: list[dict[str, Any]],
+    material: str,
+) -> bool:
+    """Create + enqueue a 'refine' child version on a finished optimize run
+    (OptimizeSpec.auto_refine_features or request flag). Returns True when
+    enqueued."""
+    auto_refine = bool(
+        optimize.get("auto_refine_features")
+        or (spec.optimize.auto_refine_features if spec and spec.optimize else False)
+    )
+    if not auto_refine or parent.status not in (
+        VersionStatus.succeeded,
+        VersionStatus.needs_review,
+    ):
+        return False
+    from cadx.api.deps import enqueue as enqueue_agent
+
+    max_num = (
+        await db.execute(
+            select(func.max(Version.number)).where(Version.project_id == parent.project_id)
+        )
+    ).scalar() or 0
+    child = Version(
+        project_id=parent.project_id,
+        parent_id=parent.id,
+        number=max_num + 1,
+        kind=VersionKind.refine,
+        prompt=f"refine {parent.prompt}"[:500],
+        gen_mode=parent.gen_mode,
+        asset_ids=parent.asset_ids or [],
+        options={**(parent.options or {}), "auto_refined": True},
+    )
+    db.add(child)
+    await db.flush()
+    rjob = Job(version_id=child.id, type=JobType.refine)
+    db.add(rjob)
+    await db.commit()
+    await enqueue_agent(
+        "run_refine_job",
+        {
+            "job_id": str(rjob.id),
+            "version_id": str(child.id),
+            "load_cases": load_cases,
+            "keep_regions": optimize.get("keep_regions") or [],
+            "material": material,
+        },
+    )
+    return True
+
+
 @_guarded
-async def run_optimize_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+async def run_optimize_job(  # noqa: C901
+    ctx: dict[str, Any], payload: dict[str, Any]
+) -> dict[str, Any]:
     """Manual topology optimization (LLM-free, like params): child version gets
     the optimized mesh + FEM report + artifacts."""
     job_id = _u(payload["job_id"])
@@ -1050,8 +1110,30 @@ async def run_optimize_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict
         job.finished_at = datetime.now(UTC)
         job.progress = 1.0
         await _append_job_log(db, job, "done\n")
+
+        # auto feature-finishing: OptimizeSpec.auto_refine_features (or the
+        # request-level flag) spawns a refine child version right after the
+        # optimize succeeded — bores/threads/keep surfaces are re-cut exact
+        refine_enqueued = await _maybe_spawn_refine(
+            db,
+            version,
+            spec=spec,
+            optimize=optimize,
+            load_cases=load_cases,
+            material=material,
+        )
+        if refine_enqueued:
+            await _append_job_log(db, job, "auto-refine enqueued\n")
+
         await db.commit()
-        await _publish(str(job_id), {"type": "done", "status": "succeeded"})
+        await _publish(
+            str(job_id),
+            {
+                "type": "done",
+                "status": "succeeded",
+                **({"refine_enqueued": True} if refine_enqueued else {}),
+            },
+        )
         return {"ok": True}
 
 
@@ -1201,6 +1283,180 @@ async def run_topopt_resample_job(ctx: dict[str, Any], payload: dict[str, Any]) 
             "optimize",
             1,
             f"resample done: threshold {topopt.get('threshold')}, SF {worst_sf}",
+        )
+        job.status = JobStatus.succeeded
+        job.finished_at = datetime.now(UTC)
+        job.progress = 1.0
+        await _append_job_log(db, job, "done\n")
+        await db.commit()
+        await _publish(str(job_id), {"type": "done", "status": "succeeded"})
+        return {"ok": True}
+
+
+@_guarded
+async def run_refine_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    """Post-TopOpt feature finishing (LLM-free): re-cut exact bores/threads/
+    inserts at measured anchors and restore keep-region surfaces from the
+    pre-optimization part. Produces a 'refine' child version."""
+    job_id = _u(payload["job_id"])
+    async with session_scope() as db:
+        job = await db.get(Job, job_id)
+        version = await db.get(Version, _u(payload["version_id"]))
+        parent = await db.get(Version, version.parent_id) if version and version.parent_id else None
+        if job is None or version is None or parent is None:
+            if job:
+                job.status = JobStatus.failed
+                await _append_job_log(db, job, "refine job: missing parent\n")
+                await db.commit()
+            return {"ok": False, "error": "missing parent version"}
+        if job.status in (JobStatus.succeeded, JobStatus.failed, JobStatus.cancelled):
+            return {"ok": False, "error": f"job already {job.status}"}
+        job.status = JobStatus.running
+        job.started_at = datetime.now(UTC)
+        version.status = VersionStatus.running
+        await db.commit()
+
+        emit = make_emit(job_id)
+
+        mesh_rel = _parent_stl(parent)
+        if mesh_rel is None:
+            version.status = VersionStatus.failed
+            version.error = "parent has no mesh artifact to refine"
+            job.status = JobStatus.failed
+            job.finished_at = datetime.now(UTC)
+            await db.commit()
+            return {"ok": False, "error": version.error}
+
+        # keep-restore source: the part BEFORE optimization — for a topopt
+        # child that is its own parent (the base); otherwise the parent itself
+        base_rel = _parent_stl(parent)
+        if parent.resolved_mode == "topopt" and parent.parent_id:
+            grand = await db.get(Version, parent.parent_id)
+            if grand is not None:
+                base_rel = _parent_stl(grand) or base_rel
+
+        spec = PartSpec(**parent.spec) if parent.spec else None
+        parent_params = parent.params or {}
+        load_cases = (
+            payload.get("load_cases")
+            or parent_params.get("load_cases")
+            or [c.model_dump() for c in (spec.load_cases if spec else [])]
+        )
+        optimize_params = parent_params.get("optimize") or {}
+        keep_regions = (
+            payload.get("keep_regions")
+            or optimize_params.get("keep_regions")
+            or (spec.optimize.keep_regions if spec and spec.optimize else [])
+        )
+        keep_regions = [r.model_dump() if hasattr(r, "model_dump") else r for r in keep_regions]
+        material = (
+            payload.get("material")
+            or parent_params.get("material")
+            or (spec.material if spec else "")
+        )
+        anchors = (
+            payload.get("anchors")
+            or ((parent.mesh or {}).get("topopt") or {}).get("anchors")
+            or (parent.analysis or {}).get("anchors", {}).get("holes")
+        )
+        spec_features = payload.get("spec_features") or [
+            f.model_dump() for f in (spec.features if spec else [])
+        ]
+
+        runtime_settings = await load_runtime_settings(db)
+        executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=runtime_settings)
+        n_feat = len(payload.get("features") or []) or len(spec_features)
+        await emit(
+            "refine", 1, f"feature finishing — {n_feat} feature(s), {len(anchors or [])} anchor(s)"
+        )
+        result = await executor.refine(
+            {
+                "job_id": str(job_id),
+                "project_id": str(version.project_id),
+                "version_id": str(version.id),
+                "iteration": 1,
+                "mesh_rel": mesh_rel,
+                "base_mesh_rel": base_rel if base_rel != mesh_rel else None,
+                "features": payload.get("features"),
+                "spec_features": spec_features,
+                "anchors": anchors,
+                "keep_regions": keep_regions,
+                "load_cases": load_cases,
+                "material": material,
+                "voxel_mm": payload.get("voxel_mm"),
+                "restore_planes": bool(
+                    payload.get("restore_planes")
+                    if payload.get("restore_planes") is not None
+                    else (spec.optimize.restore_planes if spec and spec.optimize else True)
+                ),
+                "runtime_settings": runtime_settings.executor_values(),
+                "name": "model",
+            }
+        )
+
+        if not result.get("ok"):
+            version.status = VersionStatus.failed
+            version.error = result.get("error") or "refine failed"
+            job.status = JobStatus.failed
+            job.finished_at = datetime.now(UTC)
+            await _append_job_log(db, job, f"failed: {version.error}\n")
+            await db.commit()
+            return {"ok": False, "error": version.error}
+
+        artifacts = _copy_best_artifacts_ctxless(version.project_id, version.id, 1, result)
+        for fmt, rel in (result.get("exports") or {}).items():
+            if rel:
+                artifacts[f"export:{fmt}"] = rel
+        it_dir = storage.iteration_dir(version.project_id, version.id, 1)
+        v_dir = storage.ensure(storage.version_dir(version.project_id, version.id))
+        fem_dir = storage.ensure(v_dir / "fem")
+        import shutil
+
+        for png in (it_dir / "fem").glob("*.png") if (it_dir / "fem").exists() else []:
+            shutil.copy2(png, fem_dir / png.name)
+            artifacts[f"fem:{png.stem}"] = storage.relpath(fem_dir / png.name)
+        for extra in ("fem/report.json", "fem/report_export.json"):
+            src = it_dir / extra
+            if src.exists():
+                shutil.copy2(src, fem_dir / src.name)
+                artifacts[f"fem:{src.stem}"] = storage.relpath(fem_dir / src.name)
+
+        refine_report = (result.get("features") or {}).get("refine") or {}
+        fem = result.get("fem") or {}
+        version.gen_mode = parent.gen_mode
+        version.resolved_mode = parent.resolved_mode
+        version.spec = parent.spec
+        version.fem = fem or None
+        version.mesh = {
+            **(result.get("mesh") or {}),
+            "refine": refine_report,
+            "refined_from": str(parent.id),
+        }
+        version.analysis = result.get("analysis")
+        version.params = {
+            "refine": {
+                "features": payload.get("features"),
+                "load_cases": load_cases,
+                "material": material,
+            }
+        }
+        version.iterations = 1
+        sfs = [c.get("safety_factor") for c in fem.get("cases", []) if c.get("safety_factor")]
+        worst_sf = min(sfs) if sfs else None
+        n_skipped = len(refine_report.get("skipped") or [])
+        version.status = (
+            VersionStatus.needs_review
+            if (worst_sf is not None and worst_sf < 1.0)
+            or (n_skipped and not refine_report.get("applied"))
+            else VersionStatus.succeeded
+        )
+        register_artifacts(db, version.id, artifacts, tessellated_step=False)
+        await emit(
+            "refine",
+            1,
+            f"done: {len(refine_report.get('applied') or [])} feature(s) re-cut, "
+            f"{refine_report.get('restored_regions') or 0} keep surface(s) restored"
+            + (f", SF {worst_sf}" if worst_sf else ""),
         )
         job.status = JobStatus.succeeded
         job.finished_at = datetime.now(UTC)

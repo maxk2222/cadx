@@ -247,6 +247,17 @@ export interface OptimizeSpec {
   density_threshold?: number | null;
   /** re-optimize an already-optimized version instead of refusing. */
   allow_reopt?: boolean;
+  /** auto-enqueue feature finishing (exact bores/threads) after optimize. */
+  auto_refine_features?: boolean;
+  /** 45° AM support filter — no unsupported overhangs (print_direction). */
+  self_supporting?: boolean;
+  print_direction?: "+x" | "-x" | "+y" | "-y" | "+z" | "-z";
+  /** density filter — heaviside gives crisp 0/1 fields. */
+  filter?: "cone" | "heaviside";
+  /** coarse 2x-pitch SIMP warm-starts the fine grid (~3x faster). */
+  multires?: boolean;
+  /** union original keep-region surfaces back during refine (default on). */
+  restore_planes?: boolean;
   note?: string;
 }
 

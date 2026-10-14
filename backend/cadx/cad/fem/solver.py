@@ -123,12 +123,18 @@ def assemble(
     elem_E: np.ndarray,
     nu: float,
     cell_mask: np.ndarray | None = None,
+    ij: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> tuple[sparse.csr_matrix, np.ndarray, np.ndarray]:
     """Assemble K over selected cells.
 
     elem_E: (ncells,) per-cell Young's modulus (only cells in cell_mask are
     assembled). Returns (K, edof, active_elem_idx): K is (3*nnodes, 3*nnodes)
     csr, edof is (nelem,24), active_elem_idx maps rows to flat cell ids.
+
+    `ij` may carry a precomputed (iK, jK) sparsity pattern — valid only when
+    `cell_mask` selects the same cells it was built for (SIMP assembles ALL
+    cells every iteration, so the pattern is constant and caching it skips an
+    O(nelem·576) index build per solve).
     """
     mask = domain.solid.ravel() if cell_mask is None else np.asarray(cell_mask).ravel()
     active = np.flatnonzero(mask)
@@ -136,9 +142,11 @@ def assemble(
     edof = element_dofs(en)
     ke = _ke_unit(nu, domain.pitch)
 
-    len(active)
-    iK = np.repeat(edof, 24, axis=1).ravel()
-    jK = np.tile(edof, (1, 24)).ravel()
+    if ij is None:
+        iK = np.repeat(edof, 24, axis=1).ravel()
+        jK = np.tile(edof, (1, 24)).ravel()
+    else:
+        iK, jK = ij
     sK = (elem_E[active][:, None, None] * ke[None]).reshape(-1)
     K = sparse.coo_matrix(
         (sK, (iK, jK)), shape=(3 * domain.node_count, 3 * domain.node_count)

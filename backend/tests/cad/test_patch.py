@@ -120,10 +120,12 @@ def test_fuzzy_match_paraphrased_block():
     """Small edits inside the find block (changed value) still match."""
     code = (
         CODE
-        + 'leg = Pos(25, 0, 6) * Box(10, 40, 48,\n'
-        + '    align=(Align.CENTER, Align.CENTER, Align.MIN))\n'
+        + "leg = Pos(25, 0, 6) * Box(10, 40, 48,\n"
+        + "    align=(Align.CENTER, Align.CENTER, Align.MIN))\n"
     )
-    find = "leg = Pos(25, 0, 6) * Box(10, 40, 54,\n    align=(Align.CENTER, Align.CENTER, Align.MIN))"
+    find = (
+        "leg = Pos(25, 0, 6) * Box(10, 40, 54,\n    align=(Align.CENTER, Align.CENTER, Align.MIN))"
+    )
     out, errs = apply_edits(code, [_e(find, "leg = Pos(25, 0, 6) * Box(10, 40, 54) # ok")])
     assert errs == [], errs
     assert "# ok" in out
@@ -132,9 +134,7 @@ def test_fuzzy_match_paraphrased_block():
 def test_fuzzy_ambiguous_rejected():
     """Two similar regions must NOT be fuzzy-guessed."""
     code = (
-        CODE
-        + "a = Pos(-20, 0, 6) * Box(10, 40, 48)\n"
-        + "b = Pos(+20, 0, 6) * Box(10, 40, 48)\n"
+        CODE + "a = Pos(-20, 0, 6) * Box(10, 40, 48)\n" + "b = Pos(+20, 0, 6) * Box(10, 40, 48)\n"
     )
     find = "c = Pos(0, 0, 6) * Box(10, 40, 48)"
     _out, errs = apply_edits(code, [_e(find, "X = 1")])
@@ -142,7 +142,5 @@ def test_fuzzy_ambiguous_rejected():
 
 
 def test_fuzzy_no_match_rejected():
-    _out, errs = apply_edits(
-        CODE, [_e("totally different code with enough characters here", "x")]
-    )
+    _out, errs = apply_edits(CODE, [_e("totally different code with enough characters here", "x")])
     assert any("not found" in e for e in errs)

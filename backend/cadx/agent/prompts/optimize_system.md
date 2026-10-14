@@ -37,8 +37,22 @@ pick the best one.
     anchor (fast default when bolts are involved).
   - `void_regions`: regions that MUST stay EMPTY (cable runs, clearance).
   - `min_member_mm`: enforce minimum member thickness (≈1.6 for FDM).
+  - `self_supporting` + `print_direction`: 45° AM support filter — every
+    cell needs supported material below it; use for support-free FDM prints.
+  - `multires`: coarse 2×-pitch SIMP warm-starts the fine grid — ~3× faster
+    on large parts, use when a run would be slow.
+  - `filter:"heaviside"`: crisp near-0/1 density — better surfaces and
+    threshold-robust resampling, at more iterations.
   - `load_cases`: override/extend the spec cases (same schema).
   - `material`, `voxel_mm`, `max_iterations`, `density_threshold`.
+- `refine_features(run_index, features?, restore_planes?, load_cases?)` —
+  feature finishing on a completed run: re-cuts EXACT bores, printed threads
+  (tap-drill for `thread_spec`/`standard` M-sizes), inserts, bearing seats,
+  countersinks/counterbores at the measured anchors — the smoothed SIMP
+  surface is only approximately exact. Also restores keep-region surfaces
+  that smoothing shrank. FEM re-verified; returns a NEW run_index usable in
+  `done()`. Call it on your best candidate BEFORE committing when the part
+  has threads/inserts/precision bores.
 - `done(run_index, reasoning)` — commit one run as the version result.
   `run_index: -1` keeps the base part unoptimized (e.g. when every run
   weakened it below the target safety factor or destroyed required features).

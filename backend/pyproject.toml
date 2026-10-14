@@ -23,6 +23,7 @@ dependencies = [
     "lxml>=5.0",
     "fast-simplification>=0.1.7,<0.3",
     "manifold3d>=2.3,<4",
+    "scikit-image>=0.24",  # marching-cubes density extraction
     "shapely>=2.0",
     "rtree>=1.0",
     "pyvista>=0.44",

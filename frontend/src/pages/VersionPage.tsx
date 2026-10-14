@@ -559,9 +559,10 @@ export default function VersionPage() {
 
         {tab === "quality" && (
           <div className="flex flex-col gap-4">
-            {!!v.mesh?.topopt && (
+            {(!!v.mesh?.topopt || !!v.mesh?.refine) && (
               <TopOptPanel
-                topopt={v.mesh.topopt as never}
+                topopt={(v.mesh.topopt ?? {}) as never}
+                refine={v.mesh.refine as never}
                 versionId={v.id}
                 onJobStarted={structuralStarted}
               />

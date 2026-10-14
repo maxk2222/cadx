@@ -100,6 +100,9 @@ class Feature(BaseModel):
     standard: Annotated[str, Field(max_length=160)] = (
         ""  # e.g. "M4 ISO 10642 countersunk, normal fit"
     )
+    thread_spec: Annotated[str, Field(max_length=16)] = (
+        ""  # 'M4' | 'M4x0.5' — re-cut as exact thread after topopt finishing
+    )
 
 
 class ImageRole(BaseModel):
@@ -285,6 +288,23 @@ class OptimizeSpec(BaseModel):
     density_threshold: float | None = None  # iso threshold 0.2..0.9 (default 0.5)
     warm_density_relpath: Annotated[str, Field(max_length=300)] = (
         ""  # density.npz to warm-start SIMP from
+    )
+    multires: bool = False  # coarse SIMP at 2x pitch, warm-start the fine grid (~3x faster)
+    # manufacturability filters (SIMP)
+    self_supporting: bool = False  # AM filter: cells need 45° support from below — no overhangs
+    print_direction: Annotated[str, Field(max_length=3)] = (
+        "+z"  # build direction for the self-supporting filter (+x/-x/...)
+    )
+    filter: Annotated[str, Field(max_length=16)] = (
+        "cone"  # cone | heaviside (crisp 0/1, threshold-robust extraction)
+    )
+    penal: float | None = None  # SIMP penalization exponent (default 3.0)
+    # post-optimization feature finishing (POST /versions/{id}/refine)
+    auto_refine_features: bool = (
+        False  # auto-enqueue feature re-cut (bores/threads/inserts) after optimize
+    )
+    restore_planes: bool = (
+        True  # union original keep-region surfaces back (Taubin shrinks them ~1 pitch)
     )
     note: M = ""
 

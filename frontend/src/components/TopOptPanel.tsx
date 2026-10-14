@@ -1,4 +1,4 @@
-import { Loader2, Shrink } from "lucide-react";
+import { Loader2, Shrink, Wrench } from "lucide-react";
 import { useState } from "react";
 import { api } from "../lib/api";
 import { Btn, Card, SectionTitle, useToast } from "./ui";
@@ -24,6 +24,22 @@ interface TopOptInfo {
   [key: string]: unknown;
 }
 
+interface RefineFeature {
+  kind?: string;
+  axis?: string;
+  dia?: number;
+  depth?: number;
+  anchor_index?: number;
+  [key: string]: unknown;
+}
+
+export interface RefineInfo {
+  applied?: RefineFeature[];
+  skipped?: { feature?: RefineFeature; reason?: string }[];
+  restored_regions?: number;
+  warnings?: string[];
+}
+
 function sfTone(sf: number | null | undefined): string {
   if (sf == null) return "text-zinc-400";
   if (sf < 1) return "text-red-400 font-semibold";
@@ -33,10 +49,12 @@ function sfTone(sf: number | null | undefined): string {
 
 export default function TopOptPanel({
   topopt,
+  refine,
   versionId,
   onJobStarted,
 }: {
   topopt: TopOptInfo;
+  refine?: RefineInfo;
   versionId?: string;
   onJobStarted?: (r: { version_id: string; job_id: string }) => void;
 }) {
@@ -46,7 +64,9 @@ export default function TopOptPanel({
   );
   const [minMember, setMinMember] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [restorePlanes, setRestorePlanes] = useState(true);
   const resamplable = !!versionId && !!(topopt.density_relpath as string | undefined);
+  const refinable = !!versionId && !!onJobStarted;
 
   const resample = async () => {
     if (!versionId || !onJobStarted) return;
@@ -56,6 +76,18 @@ export default function TopOptPanel({
         density_threshold: threshold,
         min_member_mm: minMember || undefined,
       });
+      onJobStarted(r);
+    } catch (e) {
+      toast(String(e), "error");
+      setBusy(false);
+    }
+  };
+
+  const runRefine = async () => {
+    if (!versionId || !onJobStarted) return;
+    setBusy(true);
+    try {
+      const r = await api.refine(versionId, { restore_planes: restorePlanes });
       onJobStarted(r);
     } catch (e) {
       toast(String(e), "error");
@@ -171,6 +203,69 @@ export default function TopOptPanel({
               Resample
             </Btn>
           </div>
+        </div>
+      )}
+      {(refinable || refine) && (
+        <div className="mt-3 border-t border-zinc-800 pt-2.5">
+          <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+            feature finishing
+          </div>
+          {refine ? (
+            <div className="mb-2 text-[11px] text-zinc-400">
+              {refine.applied?.length
+                ? refine.applied.map((f, i) => (
+                    <div key={i}>
+                      ✓ {f.kind ?? "feature"}
+                      {f.dia ? ` ⌀${f.dia}mm` : ""}
+                      {f.axis ? ` ${f.axis}` : ""}
+                      {f.depth ? ` ×${f.depth}mm` : ""}
+                    </div>
+                  ))
+                : "no features re-cut"}
+              {!!refine.restored_regions &&
+                ` · ${refine.restored_regions} keep surface(s) restored`}
+              {(refine.skipped ?? []).map((s, i) => (
+                <div key={`s${i}`} className="text-amber-400/90">
+                  skipped: {s.reason ?? "unmatched"}
+                </div>
+              ))}
+              {(refine.warnings ?? []).map((w, i) => (
+                <div key={`w${i}`} className="text-amber-400/90">
+                  {w}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="mb-2 text-[10px] text-zinc-600">
+              re-cuts exact bores / printed threads / inserts at measured anchors and
+              restores keep-region surfaces — FEM re-verified, child version
+            </div>
+          )}
+          {refinable && (
+            <div className="flex items-center gap-3">
+              <label className="flex items-center gap-1.5 text-[11px] text-zinc-400">
+                <input
+                  type="checkbox"
+                  className="accent-brand-500"
+                  checked={restorePlanes}
+                  onChange={(e) => setRestorePlanes(e.target.checked)}
+                />
+                restore keep surfaces
+              </label>
+              <span className="flex-1" />
+              <Btn
+                variant="ghost"
+                className="border border-zinc-700"
+                disabled={busy}
+                busy={busy}
+                onClick={runRefine}
+                title="re-cut exact features on this mesh — creates a refine child version"
+              >
+                {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wrench className="h-3.5 w-3.5" />}
+                Finish features
+              </Btn>
+            </div>
+          )}
         </div>
       )}
     </Card>

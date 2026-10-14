@@ -955,3 +955,53 @@ async def test_mesh_regen_edit_fails_cleanly_without_source(tmp_path):
     wb = _mesh_wb(ctx, tmp_path)
     res = await wb.handle("mesh_regen_edit", {"prompt": "x"})
     assert res["ok"] is False and "source image" in res["error"]
+
+
+_REFINE_RES = {
+    "ok": True,
+    "_iteration": 8,
+    "features": {
+        "refine": {
+            "applied": [{"name": "anchor 1", "kind": "hole", "dia": 6.0}],
+            "skipped": [],
+            "restored_regions": 1,
+            "warnings": [],
+        }
+    },
+    "fem": {"cases": [{"name": "c1", "safety_factor": 2.5}], "warnings": []},
+}
+
+
+async def test_optimize_refine_features_flow():
+    """refine_features: gated on a completed run, registers a new run index,
+    refuses to refine the same run twice."""
+
+    async def top_fn(a):
+        return _TOP_RES
+
+    async def refine_fn(a):
+        return {**_REFINE_RES, "_run": a["_run"]}
+
+    ctx = _ctx(FakeLLM([]))
+    session = ToolSession(ctx, kind="optimize", topopt_fn=top_fn, refine_fn=refine_fn)
+    # not advertised/callable before a run exists
+    assert "refine_features" not in session.allowed_names()
+    res = await session.execute("refine_features", {"run_index": 0})
+    assert res["ok"] is False
+    await session.execute("topopt_run", {})
+    res = await session.execute("refine_features", {"run_index": 0})
+    assert res["ok"] and res["run_index"] == 1 and res["refined_from_run"] == 0
+    assert res["features_applied"][0]["dia"] == 6.0
+    assert len(session.struct_runs) == 2
+    # double refine of the same run is refused
+    res = await session.execute("refine_features", {"run_index": 0})
+    assert res["ok"] is False and "already refined" in res["error"]
+
+
+async def test_optimize_refine_features_gated_without_fn():
+    """Without a refine callback the tool must not be advertised or callable."""
+    ctx = _ctx(FakeLLM([]))
+    session = ToolSession(ctx, kind="optimize")
+    assert "refine_features" not in session.allowed_names()
+    res = await session.execute("refine_features", {"run_index": 0})
+    assert res["ok"] is False

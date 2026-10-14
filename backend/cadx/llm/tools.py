@@ -39,7 +39,9 @@ def sanitize_args(v: Any) -> Any:
     if isinstance(v, str):
         return sanitize_text(v)
     if isinstance(v, dict):
-        return {sanitize_text(k) if isinstance(k, str) else k: sanitize_args(x) for k, x in v.items()}
+        return {
+            sanitize_text(k) if isinstance(k, str) else k: sanitize_args(x) for k, x in v.items()
+        }
     if isinstance(v, list):
         return [sanitize_args(x) for x in v]
     return v

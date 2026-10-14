@@ -50,8 +50,6 @@ async def test_run_benchmark_dumps_trace_on_crash(monkeypatch, tmp_path) -> None
     import cadx.eval.runner as runner
     from cadx import storage
 
-
-
     async def boom(ctx):
         await ctx.trace.record(
             step="intake",

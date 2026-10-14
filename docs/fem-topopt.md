@@ -45,6 +45,50 @@ keep ring around every detected anchor (`topopt_auto_keep_margin_mm`),
 field can be re-extracted at a different threshold/min-member without a new
 SIMP run via `POST /versions/{id}/topopt-resample` (`JobType.resample`).
 
+Printability and filter options (`optimize.*`):
+
+- `self_supporting` + `print_direction` — 45° AM filter: a cell is only solid
+  when enough material supports it from below along the build direction
+  (stencil approximates the 45° overhang rule). Use for support-free FDM.
+- `filter: "heaviside"` — cone filter + projected physical density with a
+  β-continuation schedule; produces crisp near-0/1 fields whose extraction is
+  insensitive to `density_threshold`, at the cost of more iterations.
+- `multires` — a coarse SIMP pass at 2× pitch warm-starts the fine grid
+  (~3× fewer fine iterations on large parts); skipped below a domain-size
+  floor and when an explicit `warm_density_relpath` is given.
+- `penal` — SIMP penalization exponent (default 3); leave alone unless
+  experimenting.
+
+### Feature finishing (post-TopOpt)
+
+The extracted+smoothed mesh is only approximately exact at functional
+interfaces — `POST /versions/{id}/refine` (`JobType.refine`, `VersionKind
+.refine` child) deterministically re-cuts them via `cad/fem/refine.py`:
+
+- **Subtractive re-cut** — explicit `features` or auto-resolution from the
+  spec's declared `features` merged with scanned anchors produces cutter
+  solids (bores, `thread`/`tap` at tap-drill diameter `D − pitch`, inserts
+  at `D + 0.1`, bearing seats, countersinks/counterbores) tessellated and
+  subtracted with manifold3d booleans at the measured anchor axis/position.
+- **Keep-surface restore** — `opt ∪ (base ∩ grown keep-box)` unions the
+  ORIGINAL part surface back inside keep regions / anchor rings (Taubin
+  smoothing shrinks pinned regions by ~one pitch). Gated by
+  `optimize.restore_planes` / the request's `restore_planes` (default on);
+  needs the pre-optimization base mesh (resolved from the grandparent for
+  topopt children).
+- **FEM re-verification** — the declared load cases re-run on the finished
+  mesh; the version is flagged `needs_review` when the worst safety factor
+  drops below 1 or every feature was skipped.
+
+`optimize.auto_refine_features: true` (spec or request) auto-enqueues the
+refine child right after a successful optimize. `Feature.thread_spec`
+(`"M4"`, `"M6x0.75"`, `"M8-6H"`…) overrides the nominal diameter for thread
+re-cuts; `optimize.restore_planes` controls the keep-surface union (default
+on, needs the pre-optimize base mesh on the parent/grandparent version). In
+the agent optimize session the `refine_features(run_index)` tool does the
+same on any completed `topopt_run` and registers the finished mesh as a new
+selectable run index.
+
 ### Feature anchors
 
 Measured anchors drive `hole`/`anchor`/`bore` regions on ANY axis. Sources:
@@ -147,6 +191,10 @@ equilibrium sanity.
   update, and cone sensitivity filter; multiple load cases contribute to the
   objective (weighted via `LoadCase.weight`). Per-cell Young's modulus
   supports material zones; `x0` warm-starts from a prior density field.
+  Element-assembly index arrays (`iK`/`jK`) are cached across iterations
+  since the sparsity pattern is constant for a fixed domain.
+- Mesh extraction uses marching cubes (scikit-image) when available and falls
+  back to the voxel-boundary surface, so `skimage` is optional at runtime.
 - The solver accepts per-DOF `(nnodes,3)` fixed masks; systems beyond
   `fem_spsolve_dofs` use SSOR-preconditioned conjugate gradients.
 - Grid pitch starts at `fem_voxel_mm` and is adaptively coarsened to stay
@@ -214,4 +262,4 @@ Run from `backend/`:
 
 - [Configuration](configuration.md) — all `fem_*` / `topopt_*` settings
 - [Web GUI](webgui-ux.md) — the structural editor
-- [HTTP API](api.md) — `/fem`, `/fem-preview`, `/optimize`, `/topopt-resample`, `/anchors`
+- [HTTP API](api.md) — `/fem`, `/fem-preview`, `/optimize`, `/topopt-resample`, `/refine`, `/anchors`

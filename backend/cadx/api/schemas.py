@@ -182,6 +182,29 @@ class TopoptResampleRequest(BaseModel):
     material: str = ""
 
 
+class RefineRequest(BaseModel):
+    """Post-TopOpt feature finishing: re-cut exact bores/threads/inserts at
+    measured anchors and restore keep-region surfaces from the pre-optimization
+    part. Creates a 'refine' child version.
+
+    `features`  explicit selection — each entry matches a FeatureSpec subset
+                ({kind|anchor_index|dia|pos|axis|...}). Empty → deterministic
+                auto-resolution from the spec's declared features + scanned
+                anchors.
+    Empty `load_cases`/`keep_regions`/`material` fall back to the parent's
+    declared values (the re-verify is skipped entirely when no cases exist).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    features: list[dict[str, Any]] = Field(default_factory=list, max_length=40)
+    load_cases: list[dict[str, Any]] = Field(default_factory=list, max_length=8)
+    keep_regions: list[dict[str, Any]] = Field(default_factory=list, max_length=10)
+    material: str = Field(default="", max_length=40)
+    voxel_mm: float | None = Field(default=None, ge=0.3, le=8.0)
+    restore_planes: bool | None = None  # None → OptimizeSpec.restore_planes (default on)
+
+
 # --------------------------------------------------------------------------- #
 # visual mesh editor + structural editor (GUI)                                  #
 # --------------------------------------------------------------------------- #

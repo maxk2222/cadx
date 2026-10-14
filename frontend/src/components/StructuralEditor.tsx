@@ -813,6 +813,9 @@ export default function StructuralEditor({
   const [keepMode, setKeepMode] = useState<"manual" | "auto">("manual");
   const [minMember, setMinMember] = useState(0);
   const [densityThreshold, setDensityThreshold] = useState(0.5);
+  const [autoRefine, setAutoRefine] = useState(false);
+  const [selfSupport, setSelfSupport] = useState(false);
+  const [multires, setMultires] = useState(false);
   const [material, setMaterial] = useState("");
   const [anchors, setAnchors] = useState<FeatureAnchor[]>([]);
   const [brushR, setBrushR] = useState(4);
@@ -841,6 +844,9 @@ export default function StructuralEditor({
           keep_mode?: "manual" | "auto";
           min_member_mm?: number;
           density_threshold?: number;
+          auto_refine?: boolean;
+          self_supporting?: boolean;
+          multires?: boolean;
         }
       | undefined;
     const specOpt = version.spec?.optimize;
@@ -853,6 +859,9 @@ export default function StructuralEditor({
       setKeepMode(saved.keep_mode ?? "manual");
       setMinMember(saved.min_member_mm ?? specOpt?.min_member_mm ?? 0);
       setDensityThreshold(saved.density_threshold ?? specOpt?.density_threshold ?? 0.5);
+      setAutoRefine(saved.auto_refine ?? specOpt?.auto_refine_features ?? false);
+      setSelfSupport(saved.self_supporting ?? specOpt?.self_supporting ?? false);
+      setMultires(saved.multires ?? specOpt?.multires ?? false);
     } else if (version.spec?.load_cases?.length) {
       setCases(version.spec.load_cases);
       setKeep(specOpt?.keep_regions ?? []);
@@ -861,6 +870,9 @@ export default function StructuralEditor({
       setKeepMode(specOpt?.keep_mode ?? "manual");
       setMinMember(specOpt?.min_member_mm ?? 0);
       setDensityThreshold(specOpt?.density_threshold ?? 0.5);
+      setAutoRefine(specOpt?.auto_refine_features ?? false);
+      setSelfSupport(specOpt?.self_supporting ?? false);
+      setMultires(specOpt?.multires ?? false);
     } else {
       setCases([{ name: "case1", fixed: [], loads: [] }]);
       setKeep([]);
@@ -1050,6 +1062,9 @@ export default function StructuralEditor({
       keep_mode: keepMode,
       min_member_mm: minMember || undefined,
       density_threshold: densityThreshold,
+      auto_refine: autoRefine,
+      self_supporting: selfSupport,
+      multires,
     });
 
   // autosave draft state (merged into ui_editor server-side)
@@ -1064,7 +1079,7 @@ export default function StructuralEditor({
       if (saveTimer.current) clearTimeout(saveTimer.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cases, keep, voids, material, volfrac, keepMode, minMember, densityThreshold, open]);
+  }, [cases, keep, voids, material, volfrac, keepMode, minMember, densityThreshold, autoRefine, selfSupport, multires, open]);
 
   const checkRegions = async () => {
     setBusy("preview");
@@ -1117,6 +1132,9 @@ export default function StructuralEditor({
           keep_mode: keepMode,
           min_member_mm: minMember || undefined,
           density_threshold: densityThreshold,
+          auto_refine_features: autoRefine || undefined,
+          self_supporting: selfSupport || undefined,
+          multires: multires || undefined,
           allow_reopt: version.kind === "optimize" || undefined,
         },
         material: material || undefined,
@@ -1806,6 +1824,39 @@ export default function StructuralEditor({
                     className="w-full"
                     onChange={(n) => setDensityThreshold(Math.min(0.9, Math.max(0.2, n)))}
                   />
+                </Field>
+                <Field label="Finishing" hint="re-cut features after">
+                  <label className="flex h-7 items-center gap-1.5 text-[11px] text-zinc-400">
+                    <input
+                      type="checkbox"
+                      className="accent-brand-500"
+                      checked={autoRefine}
+                      onChange={(e) => setAutoRefine(e.target.checked)}
+                    />
+                    auto-refine
+                  </label>
+                </Field>
+                <Field label="45° support" hint="no overhangs (FDM)">
+                  <label className="flex h-7 items-center gap-1.5 text-[11px] text-zinc-400">
+                    <input
+                      type="checkbox"
+                      className="accent-brand-500"
+                      checked={selfSupport}
+                      onChange={(e) => setSelfSupport(e.target.checked)}
+                    />
+                    self-supporting
+                  </label>
+                </Field>
+                <Field label="Multires" hint="coarse warm-start">
+                  <label className="flex h-7 items-center gap-1.5 text-[11px] text-zinc-400">
+                    <input
+                      type="checkbox"
+                      className="accent-brand-500"
+                      checked={multires}
+                      onChange={(e) => setMultires(e.target.checked)}
+                    />
+                    fast start
+                  </label>
                 </Field>
               </div>
             )}

@@ -539,11 +539,64 @@ STRUCT_TOOLS = [
                 "type": "number",
                 "description": "iso threshold 0.2-0.9 for mesh extraction (default 0.5)",
             },
+            "self_supporting": {
+                "type": "boolean",
+                "description": "AM filter — cells need 45° support from below; "
+                "use when the part is printed without supports",
+            },
+            "print_direction": {
+                "type": "string",
+                "enum": ["+x", "-x", "+y", "-y", "+z", "-z"],
+                "description": "build direction for self_supporting (default +z)",
+            },
+            "filter": {
+                "type": "string",
+                "enum": ["cone", "heaviside"],
+                "description": "density filter — 'heaviside' gives crisp 0/1 "
+                "fields (threshold-robust extraction, slower)",
+            },
+            "multires": {
+                "type": "boolean",
+                "description": "coarse SIMP at 2x pitch warm-starts the fine "
+                "grid — ~3x faster on big parts",
+            },
             "load_cases": _LOAD_CASES_SCHEMA,
             "material": _s("material name — empty = spec default"),
             "voxel_mm": {"type": "number", "description": "voxel pitch in mm"},
         },
         [],
+    ),
+    _fn(
+        "refine_features",
+        "Feature finishing on a completed topopt_run: re-cuts EXACT bores, "
+        "printed threads (tap-drill), inserts, bearing seats, countersinks and "
+        "counterbores at measured anchor positions on the optimized mesh, and "
+        "restores keep-region surfaces that voxel smoothing shrank (needs the "
+        "original part). Returns a NEW run_index you can pass to done(). "
+        "Each run can be refined once.",
+        {
+            "run_index": {
+                "type": "integer",
+                "description": "the topopt_run to finish",
+            },
+            "features": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "description": "FeatureSpec subset: {kind, anchor_index|dia|pos, "
+                    "axis, depth, thread_spec, cbore_dia, cbore_depth, csk_dia, "
+                    "csk_angle, length, section}. Empty → auto-resolve from the "
+                    "spec's declared features + scanned anchors.",
+                },
+                "description": "explicit features to re-cut; omit for auto-resolution",
+            },
+            "restore_planes": {
+                "type": "boolean",
+                "description": "union original keep-region surfaces back (default on)",
+            },
+            "load_cases": _LOAD_CASES_SCHEMA,
+        },
+        ["run_index"],
     ),
 ]
 
@@ -906,6 +959,7 @@ class ToolSession:
         topopt_fn: StructFn | None = None,
         preview_fn: StructFn | None = None,
         anchors_fn: StructFn | None = None,
+        refine_fn: StructFn | None = None,
     ) -> None:
         self.ctx = ctx
         self.kind = kind
@@ -916,6 +970,8 @@ class ToolSession:
         self.topopt_fn = topopt_fn
         self.preview_fn = preview_fn
         self.anchors_fn = anchors_fn
+        self.refine_fn = refine_fn
+        self._refined_runs: set[int] = set()
         settings = ctx.runtime_settings
         self.verify_left = (
             settings.agent_tool_verify_max if (verify_fn and settings.agent_tool_verify) else 0
@@ -986,6 +1042,11 @@ class ToolSession:
                 or (t["function"]["name"] == "preview_regions" and self.preview_fn)
                 or (t["function"]["name"] == "check_load" and self.preview_fn)
                 or (t["function"]["name"] == "list_anchors" and self.anchors_fn)
+                or (
+                    t["function"]["name"] == "refine_features"
+                    and self.refine_fn
+                    and self.struct_runs
+                )
             ]
             return out + OPTIMIZE_DONE_TOOLS + IMAGE_TOOLS
         # info sessions (intake/plan): catalog/library lookups + image gen
@@ -1629,6 +1690,65 @@ class ToolSession:
             "cases": self._fem_compact(fem).get("cases"),
             "warnings": (top.get("warnings") or [])[:10],
             "topopt_calls_left": self.topopt_left,
+        }
+        images = [str(p) for p in res.get("_images") or []]
+        if images:
+            out["_images"] = images
+        return out
+
+    async def _tool_refine_features(self, a: dict[str, Any]) -> dict[str, Any]:
+        if self.refine_fn is None:
+            return {"ok": False, "error": "refine_features not available"}
+        idx = a.get("run_index")
+        if (
+            not isinstance(idx, int)
+            or isinstance(idx, bool)
+            or not (0 <= idx < len(self.struct_runs))
+        ):
+            return {
+                "ok": False,
+                "error": f"run_index must be 0..{len(self.struct_runs) - 1} "
+                "(a completed topopt_run)",
+            }
+        if idx in self._refined_runs:
+            return {"ok": False, "error": f"run {idx} already refined"}
+        res = await self.refine_fn(
+            {
+                **a,
+                "load_cases": self._coerce_obj_list(a.get("load_cases")),
+                "features": self._coerce_obj_list(a.get("features")),
+                "_run": self.struct_runs[idx],
+            }
+        )
+        if not res.get("ok"):
+            return {"ok": False, "error": res.get("error") or "refine failed"}
+        self._refined_runs.add(idx)
+        rep = (res.get("features") or {}).get("refine") or {}
+        fem = res.get("fem") or {}
+        sfs = [
+            c.get("safety_factor")
+            for c in fem.get("cases") or []
+            if c.get("safety_factor") is not None
+        ]
+        new_idx = len(self.struct_runs)
+        self.struct_runs.append(
+            {
+                "index": new_idx,
+                "iteration": res.get("_iteration"),
+                "res": res,
+                "params": {"refine_of": idx, "features": a.get("features") or "auto"},
+            }
+        )
+        out: dict[str, Any] = {
+            "ok": True,
+            "run_index": new_idx,
+            "refined_from_run": idx,
+            "features_applied": rep.get("applied") or [],
+            "features_skipped": rep.get("skipped") or [],
+            "restored_regions": rep.get("restored_regions") or 0,
+            "worst_safety_factor": min(sfs) if sfs else None,
+            "cases": self._fem_compact(fem).get("cases") if fem else None,
+            "warnings": (rep.get("warnings") or [])[:10],
         }
         images = [str(p) for p in res.get("_images") or []]
         if images:

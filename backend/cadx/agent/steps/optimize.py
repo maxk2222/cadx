@@ -116,6 +116,7 @@ class _SessionOps:
 
     ctx: AgentCtx
     base: dict[str, Any]
+    spec: PartSpec
     spec_cases: list[dict[str, Any]]
     default_material: str
     alloc: Any
@@ -153,7 +154,28 @@ def _make_fem_fn(ops: _SessionOps) -> Any:
     return fem_fn
 
 
-def _make_topopt_fn(ops: _SessionOps) -> Any:  # noqa: C901
+def _opt_overrides(a: dict[str, Any]) -> dict[str, Any]:
+    """Map `topopt_run` tool args onto `OptimizeSpec` fields."""
+    opt: dict[str, Any] = {}
+    num = {
+        "target_volume_fraction": float,
+        "max_iterations": int,
+        "density_threshold": float,
+        "min_member_mm": float,
+    }
+    for k, conv in num.items():
+        if a.get(k) is not None:
+            opt[k] = conv(a[k])
+    for k in ("keep_mode", "print_direction", "filter"):
+        if a.get(k):
+            opt[k] = str(a[k])
+    for k in ("self_supporting", "multires"):
+        if a.get(k) is not None:
+            opt[k] = bool(a[k])
+    return opt
+
+
+def _make_topopt_fn(ops: _SessionOps) -> Any:
     ctx = ops.ctx
 
     async def topopt_fn(a: dict[str, Any]) -> dict[str, Any]:
@@ -161,17 +183,7 @@ def _make_topopt_fn(ops: _SessionOps) -> Any:  # noqa: C901
         if err:
             return {"ok": False, "error": err}
         it = next(ops.alloc)
-        opt: dict[str, Any] = {}
-        if a.get("target_volume_fraction") is not None:
-            opt["target_volume_fraction"] = float(a["target_volume_fraction"])
-        if a.get("max_iterations") is not None:
-            opt["max_iterations"] = int(a["max_iterations"])
-        if a.get("density_threshold") is not None:
-            opt["density_threshold"] = float(a["density_threshold"])
-        if a.get("min_member_mm") is not None:
-            opt["min_member_mm"] = float(a["min_member_mm"])
-        if a.get("keep_mode"):
-            opt["keep_mode"] = str(a["keep_mode"])
+        opt = _opt_overrides(a)
         keep, kerr = _valid_regions(a.get("keep_regions"))
         if kerr:
             return {"ok": False, "error": kerr}
@@ -253,6 +265,63 @@ def _make_preview_fn(ops: _SessionOps) -> Any:
     return preview_fn
 
 
+def _make_refine_fn(ops: _SessionOps) -> Any:
+    ctx = ops.ctx
+
+    async def refine_fn(a: dict[str, Any]) -> dict[str, Any]:
+        """Feature finishing on one completed topopt run — the tool handler
+        resolves `_run` (struct_runs entry); we locate that run's STL, refine
+        it, and let the handler register the result as a new run."""
+        run = a.get("_run") or {}
+        run_it = run.get("iteration")
+        src = (
+            storage.iteration_dir(ctx.project_id, ctx.version_id, run_it) / "_run" / "model.stl"
+            if run_it
+            else None
+        )
+        if src is None or not src.exists():
+            return {"ok": False, "error": f"run {run.get('index')} has no mesh artifact"}
+        cases, err = _valid_cases(a.get("load_cases"))
+        if err:
+            return {"ok": False, "error": err}
+        run_params = run.get("params") or {}
+        spec_opt = ops.spec.optimize
+        it = next(ops.alloc)
+        await ctx.emit("optimize", it, f"feature finishing — run {run.get('index')}")
+        res = await ctx.executor.refine(
+            {
+                **ops.base,  # mesh_rel (base part), anchors, runtime
+                "iteration": it,
+                "mesh_rel": storage.relpath(src),
+                "base_mesh_rel": ops.base["mesh_rel"],
+                "features": a.get("features"),
+                "spec_features": [f.model_dump() for f in ops.spec.features],
+                "keep_regions": (
+                    run_params.get("keep_regions")
+                    or [r.model_dump() for r in (spec_opt.keep_regions if spec_opt else [])]
+                ),
+                "load_cases": cases if cases is not None else ops.spec_cases,
+                "material": ops.default_material,
+                "restore_planes": (
+                    a.get("restore_planes")
+                    if a.get("restore_planes") is not None
+                    else (spec_opt.restore_planes if spec_opt else True)
+                ),
+                "voxel_mm": ctx.settings.fem_voxel_mm or None,
+            }
+        )
+        res["_iteration"] = it
+        images: list[str] = []
+        for key in ("contact_sheet", "thumbnail"):
+            if rel := res.get(key):
+                with contextlib.suppress(ValueError):
+                    images.append(str(storage.resolve(rel)))
+        res["_images"] = images
+        return res
+
+    return refine_fn
+
+
 def _make_anchors_fn(ops: _SessionOps) -> Any:
     ctx = ops.ctx
 
@@ -273,6 +342,7 @@ def _setup_session(
     *,
     base_stl: Path,
     base_it: int,
+    spec: PartSpec,
     spec_cases: list[dict[str, Any]],
     default_material: str,
     anchors: list[dict[str, Any]] | None,
@@ -282,6 +352,7 @@ def _setup_session(
     allocates its own iteration dir and attaches renders as `_images`."""
     ops = _SessionOps(
         ctx=ctx,
+        spec=spec,
         base={
             "job_id": ctx.job_id,
             "project_id": str(ctx.project_id),
@@ -303,6 +374,7 @@ def _setup_session(
         topopt_fn=_make_topopt_fn(ops),
         preview_fn=_make_preview_fn(ops),
         anchors_fn=_make_anchors_fn(ops),
+        refine_fn=_make_refine_fn(ops),
     )
 
 
@@ -388,6 +460,7 @@ async def run(
         ctx,
         base_stl=base_stl,
         base_it=base_it,
+        spec=spec,
         spec_cases=spec_cases,
         default_material=default_material,
         anchors=(ctx.anchors or {}).get("holes") or None,

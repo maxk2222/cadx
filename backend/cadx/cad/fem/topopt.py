@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -49,6 +50,17 @@ class TopOptParams:
     converge_patience: int = 5  # also stop after N iters of stalled compliance
     move: float = 0.2  # OC move limit
     threshold: float = 0.5  # iso threshold for extraction
+    # M3.1: density filter variant — "cone" (classic sensitivity filter) or
+    # "heaviside" (cone filter + smoothed Heaviside projection; beta doubles
+    # on every compliance stall up to beta_max → crisp 0/1 designs whose
+    # extraction is threshold-robust)
+    filter: str = "cone"
+    beta0: float = 1.0  # initial Heaviside sharpness
+    beta_max: float = 8.0  # cap — beyond this the projection is ~binary
+    # M2: Langelaar-style additive-manufacturing filter — a cell only counts
+    # as printed if its 45° support cone below is printed
+    self_supporting: bool = False
+    print_direction: str = "+z"  # build direction; overhangs vs the bed
 
 
 @dataclass
@@ -59,6 +71,117 @@ class TopOptResult:
     history: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     passive_frac: float = 0.0  # fraction of solid pinned by keep/load/fixed cells
+
+
+_AXES = {"+x": 0, "-x": 0, "+y": 1, "-y": 1, "+z": 2, "-z": 2}
+_ETA = 0.5  # Heaviside projection threshold
+
+
+def _heaviside(x: np.ndarray, beta: float) -> np.ndarray:
+    """Smoothed Heaviside projection (Wang et al.): 1 at x>eta, ~x at beta->0."""
+    den = math.tanh(beta * _ETA) + math.tanh(beta * (1.0 - _ETA))
+    return (math.tanh(beta * _ETA) + np.tanh(beta * (x - _ETA))) / den
+
+
+def _heaviside_d(x: np.ndarray, beta: float) -> np.ndarray:
+    den = math.tanh(beta * _ETA) + math.tanh(beta * (1.0 - _ETA))
+    return beta * (1.0 - np.tanh(beta * (x - _ETA)) ** 2) / den
+
+
+def _am_setup(domain: VoxelDomain, direction: str) -> list[tuple[np.ndarray, np.ndarray | None]]:
+    """Bottom-up layers for the additive-manufacturing support filter.
+
+    Each layer entry is (flat cell ids, support ids (m,5) with -1 = out of
+    grid). The 45° cone: a cell is supported by the 5 cells one layer down —
+    straight below + the 4 lateral neighbours. `direction` is the build
+    direction ('+z' → bed at the -z side of the domain).
+    """
+    ax = _AXES[direction]
+    au = (ax + 1) % 3
+    av = (ax + 2) % 3
+    dims = domain.dims
+    solid = domain.solid.ravel()
+    n = domain.cell_count
+    # flat id grid with -1 padding so out-of-grid lookups stay cheap
+    ids = np.full(tuple(d + 2 for d in dims), -1, dtype=np.int64)
+    core = tuple(slice(1, d + 1) for d in dims)
+    ids[core] = np.arange(n, dtype=np.int64).reshape(dims)
+    # layer coordinate along the build axis; builds bottom-up along `direction`
+    coord = np.indices(dims)[ax]
+    if direction[0] == "-":
+        coord = dims[ax] - 1 - coord
+    flat = ids[core].ravel()
+    layers: list[tuple[np.ndarray, np.ndarray | None]] = []
+    for lv in range(dims[ax]):
+        cells = np.flatnonzero((coord.ravel() == lv) & solid)
+        if not cells.size:
+            continue
+        if lv == 0:
+            layers.append((flat[cells], None))  # on the build plate — free
+            continue
+        cells = flat[cells]
+        g = np.unravel_index(cells, dims)
+        # the five support positions one layer down: centre + lateral cross.
+        # `ids` is padded by 1 per side, so grid coord c indexes as c + 1;
+        # the layer below is g[ax] - 1 for "+dir" and g[ax] + 1 for "-dir".
+        below = g[ax] + (1 if direction[0] == "-" else -1) + 1
+        offs = [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)]
+        sup = np.empty((cells.size, len(offs)), dtype=np.int64)
+        for si, (du, dv) in enumerate(offs):
+            pos = [below, below, below]
+            pos[au] = g[au] + du + 1
+            pos[av] = g[av] + dv + 1
+            sup[:, si] = ids[tuple(pos)]
+        layers.append((cells, sup))
+    return layers
+
+
+def _am_forward(
+    x: np.ndarray,
+    solid: np.ndarray,
+    layers: list[tuple[np.ndarray, np.ndarray | None]],
+) -> np.ndarray:
+    """Langelaar AM filter: printed density p_e = min(x_e, mean(p_supports)).
+    Air cells never support (p=0 there); the bed layer prints freely."""
+    p = np.zeros_like(x)
+    for cells, sup in layers:
+        if sup is None:
+            p[cells] = x[cells]
+            continue
+        vals = np.where(sup >= 0, p[np.clip(sup, 0, None)], 0.0)
+        # air cells carry no material — cannot support
+        vals = np.where((sup >= 0) & solid[np.clip(sup, 0, None)], vals, 0.0)
+        m = vals.sum(axis=1) / sup.shape[1]
+        p[cells] = np.minimum(x[cells], m)
+    return p
+
+
+def _am_backward(
+    dp: np.ndarray,
+    x: np.ndarray,
+    p: np.ndarray,
+    solid: np.ndarray,
+    layers: list[tuple[np.ndarray, np.ndarray | None]],
+) -> np.ndarray:
+    """Chain-rule gradient dC/dx for the AM filter — top-down accumulation:
+    where the min() picked the cell's own blueprint the gradient stays local;
+    where it picked the support mean it is distributed to the support cells."""
+    g = dp.copy()
+    gx = np.zeros_like(x)
+    for cells, sup in reversed(layers):
+        if sup is None:
+            gx[cells] += g[cells]
+            continue
+        vals = np.where(sup >= 0, p[np.clip(sup, 0, None)], 0.0)
+        vals = np.where((sup >= 0) & solid[np.clip(sup, 0, None)], vals, 0.0)
+        m = vals.sum(axis=1) / sup.shape[1]
+        own = x[cells] <= m
+        gx[cells] += np.where(own, g[cells], 0.0)
+        share = np.where(own, 0.0, g[cells] / sup.shape[1])
+        ok = sup >= 0
+        share5 = np.broadcast_to(share[:, None], sup.shape)
+        np.add.at(g, sup[ok], share5[ok])
+    return gx
 
 
 def _filter_matrix(domain: VoxelDomain, rmin_cells: float) -> sparse.csr_matrix:
@@ -196,6 +319,9 @@ def simp(  # noqa: C901
     ke = _ke_unit(nu, domain.pitch)
     en = domain.element_nodes()
     edof = element_dofs(en)
+    # SIMP assembles ALL cells each iteration — the sparsity pattern is
+    # constant, so build the COO index arrays once and reuse them
+    ij_cache = (np.repeat(edof, 24, axis=1).ravel(), np.tile(edof, (1, 24)).ravel())
 
     # sensitivity filter over solid cells
     rmin_cells = max(1.2, params.rmin_mm / domain.pitch)
@@ -203,6 +329,26 @@ def simp(  # noqa: C901
     Hs = np.asarray(H.sum(axis=1)).ravel()
     Hs[Hs <= 0] = 1.0
     solid_idx = np.flatnonzero(solid)
+
+    # M3.1 Heaviside projection + M2 AM support filter
+    heaviside = params.filter == "heaviside"
+    beta = params.beta0
+    am_layers = _am_setup(domain, params.print_direction) if params.self_supporting else None
+    if am_layers is not None and not am_layers:
+        warnings.append("self_supporting: no solid cells found — AM filter inactive")
+        am_layers = None
+
+    def _physical(xb: np.ndarray) -> np.ndarray:
+        """blueprint density -> physical printed density (flat cell order)."""
+        xp = xb
+        if heaviside:
+            xp = np.full(domain.cell_count, RHO_MIN)
+            xp[solid_idx] = _heaviside(np.asarray(H @ xb[solid_idx]).ravel() / Hs, beta)
+            xp[passive_solid] = 1.0
+            xp[pvoid] = RHO_MIN
+        if am_layers is not None:
+            return _am_forward(xp, solid, am_layers)
+        return xp
 
     # free DOFs: union over cases (all cells assembled — void gets Emin)
     used_dofs = np.unique(edof.ravel())
@@ -233,8 +379,18 @@ def simp(  # noqa: C901
             warnings.append(f"cancelled after iteration {it - 1}")
             break
 
-        E_e = Emin + np.power(x, params.penal) * (E0 - Emin)
-        K, _, _ = assemble(domain, E_e, nu, np.ones(domain.cell_count, dtype=bool))
+        # physical density: blueprint -> (cone filter -> Heaviside) -> AM filter
+        xp = x.copy()
+        xt: np.ndarray | None = None
+        if heaviside:
+            xt = np.asarray(H @ x[solid_idx]).ravel() / Hs  # cone-filtered
+            xp[solid_idx] = _heaviside(xt, beta)
+            xp[passive_solid] = 1.0
+            xp[pvoid] = RHO_MIN
+        p = _am_forward(xp, solid, am_layers) if am_layers is not None else xp
+
+        E_e = Emin + np.power(p, params.penal) * (E0 - Emin)
+        K, _, _ = assemble(domain, E_e, nu, np.ones(domain.cell_count, dtype=bool), ij=ij_cache)
 
         # factorization/preconditioner is identical for all cases — build once
         Kf = K[free][:, free].tocsr()
@@ -252,13 +408,23 @@ def simp(  # noqa: C901
             ce += w * ce_i
             objective += w * float(F[free] @ u[free])
 
-        # sensitivity (summed over cases), cone-filtered on solid cells
-        dc = -params.penal * np.power(np.clip(x, 1e-3, None), params.penal - 1) * (E0 - Emin) * ce
-        xdc = H @ (x[solid_idx] * dc[solid_idx])
-        dcf = dc.copy()
-        dcf[solid_idx] = xdc / np.clip(x[solid_idx] * Hs, 1e-3, None)
+        # sensitivity w.r.t. physical density, then chain-rule back through
+        # the filters to the blueprint variable x
+        dc = -params.penal * np.power(np.clip(p, 1e-3, None), params.penal - 1) * (E0 - Emin) * ce
+        if am_layers is not None:
+            dc = _am_backward(dc, xp, p, solid, am_layers)
+        if heaviside:
+            # p = heaviside(H x / Hs): dx = H^T (dc * dh/dx̃ / Hs), H symmetric
+            dxt = dc[solid_idx] * _heaviside_d(xt, beta)
+            dcf = dc.copy()
+            dcf[:] = 0.0
+            dcf[solid_idx] = np.asarray(H @ (dxt / Hs)).ravel()
+        else:
+            xdc = H @ (x[solid_idx] * dc[solid_idx])
+            dcf = dc.copy()
+            dcf[solid_idx] = xdc / np.clip(x[solid_idx] * Hs, 1e-3, None)
 
-        # OC update with bisection on the volume constraint (solid cells only)
+        # OC update with bisection on the PHYSICAL volume constraint
         xnew = x.copy()
         l1, l2 = 0.0, 1e9
         for _ in range(60):
@@ -269,7 +435,11 @@ def simp(  # noqa: C901
             cand[~solid] = RHO_MIN
             cand[passive_solid] = 1.0
             cand[pvoid] = RHO_MIN
-            if cand[solid_idx].sum() > v_target:
+            if heaviside or am_layers is not None:
+                vol_c = _physical(cand)[solid_idx].sum()
+            else:
+                vol_c = cand[solid_idx].sum()
+            if vol_c > v_target:
                 l1 = lmid
             else:
                 l2 = lmid
@@ -279,7 +449,7 @@ def simp(  # noqa: C901
 
         change = float(np.abs(xnew - x).max())
         x = xnew
-        vol_now = float(x[solid_idx].sum()) / nsolid
+        vol_now = float(_physical(x)[solid_idx].sum()) / nsolid
         rec = {
             "iteration": it,
             "compliance_mj": round(objective, 3),
@@ -287,6 +457,8 @@ def simp(  # noqa: C901
             "change": round(change, 5),
             "elapsed_s": round(time.monotonic() - t0, 1),
         }
+        if heaviside:
+            rec["beta"] = round(beta, 2)
         history.append(rec)
         if progress_cb:
             progress_cb(it, rec)
@@ -297,11 +469,18 @@ def simp(  # noqa: C901
                 )
 
         # secondary convergence: OC 'change' can stay at the move limit while
-        # the objective already settled — stop on stalled compliance too
+        # the objective already settled — stop on stalled compliance too.
+        # With a Heaviside filter a stall first doubles beta (continuation)
+        # until the cap, THEN counts as converged.
         if prev_objective is not None and prev_objective > 0:
             rel = abs(objective - prev_objective) / prev_objective
             stall = stall + 1 if rel < params.tol else 0
             if stall >= params.converge_patience:
+                if heaviside and beta < params.beta_max:
+                    beta = min(beta * 2.0, params.beta_max)
+                    stall = 0
+                    warnings.append(f"beta continuation -> {beta:g} at iteration {it}")
+                    continue
                 warnings.append(
                     f"converged: compliance stalled (<{params.tol:g} rel. change "
                     f"for {stall} iterations) at iteration {it}"
@@ -309,6 +488,8 @@ def simp(  # noqa: C901
                 break
         prev_objective = objective
 
+    # return the PHYSICAL (printed) density — extraction thresholds it at 0.5;
+    # with Heaviside it is near-binary anyway
     warnings_out = warnings
     converged = change <= params.tol or stall >= params.converge_patience
     passive_frac = float(passive_solid.sum()) / nsolid
@@ -322,7 +503,7 @@ def simp(  # noqa: C901
             "very few free design cells (<5%) — keep regions cover most of the part"
         )
     return TopOptResult(
-        density=x,
+        density=_physical(x),
         iterations=it,
         converged=converged,
         history=history,

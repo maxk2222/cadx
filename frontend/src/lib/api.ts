@@ -153,6 +153,8 @@ export const api = {
     req<{ version_id: string; job_id: string }>(`/versions/${vid}/optimize`, json(body)),
   topoptResample: (vid: string, body: { density_threshold?: number; min_member_mm?: number }) =>
     req<{ version_id: string; job_id: string }>(`/versions/${vid}/topopt-resample`, json(body)),
+  refine: (vid: string, body: { features?: Record<string, unknown>[]; load_cases?: LoadCase[]; keep_regions?: RegionSpec[]; material?: string; voxel_mm?: number; restore_planes?: boolean }) =>
+    req<{ version_id: string; job_id: string }>(`/versions/${vid}/refine`, json(body)),
   anchors: (vid: string) => req<AnchorsResult>(`/versions/${vid}/anchors`),
 
   // visual mesh editor + structural editor

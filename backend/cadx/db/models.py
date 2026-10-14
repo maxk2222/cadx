@@ -34,6 +34,7 @@ class VersionKind(enum.StrEnum):
     edit = "edit"
     params = "params"
     optimize = "optimize"
+    refine = "refine"  # post-TopOpt feature finishing child version
     mesh_edit = "mesh_edit"  # visual mesh-level edit (GUI ops stack)
 
 
@@ -55,6 +56,7 @@ class JobType(enum.StrEnum):
     resume = "resume"
     optimize = "optimize"
     resample = "resample"  # density threshold re-extract — no new SIMP run
+    refine = "refine"  # post-TopOpt feature finishing (exact bores/threads)
     mesh_edit = "mesh_edit"  # GUI ops stack -> tessellated child version
     fem = "fem"  # standalone FEM check on the same version
 

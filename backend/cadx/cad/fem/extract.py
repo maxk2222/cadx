@@ -128,6 +128,27 @@ def _surface_mesh(domain: VoxelDomain, mask: np.ndarray) -> trimesh.Trimesh:
     return trimesh.Trimesh(vertices=coords, faces=remap[tris], process=False)
 
 
+def _surface_mesh_mc(domain: VoxelDomain, mask: np.ndarray) -> trimesh.Trimesh:
+    """Marching-cubes iso-surface at 0.5 — sub-voxel smooth contours (no
+    staircase aliasing on diagonal faces) compared to the boundary-quad
+    fallback. Vertices land in index space; map to mm via origin+pitch."""
+    from skimage.measure import marching_cubes
+
+    padded = np.pad(mask.astype(np.float32), 1, mode="constant")
+    verts, faces, _, _ = marching_cubes(padded, level=0.5)
+    if not len(verts) or not len(faces):
+        raise ValueError("iso-surface is empty")
+    # samples are cell-centers: padded index v ↔ original v-1 ↔ center at
+    # origin + (v-1+0.5)*pitch — the iso then lands exactly on cell faces
+    coords = domain.origin[None, :] + (verts - 0.5) * domain.pitch
+    # marching_cubes emits inward-facing windings — flip for +volume/normals
+    mesh = trimesh.Trimesh(vertices=coords, faces=faces[:, ::-1], process=False)
+    mesh.remove_unreferenced_vertices()
+    if mesh.volume < 0:  # belt & suspenders: never export inverted solids
+        mesh.invert()
+    return mesh
+
+
 def _enforce_min_member(
     mask: np.ndarray, pitch: float, min_mm: float, max_passes: int = 0
 ) -> tuple[np.ndarray, int]:
@@ -233,7 +254,14 @@ def density_to_mesh(
         passive_solid=passive_solid,
         min_member_mm=min_member_mm,
     )
-    mesh = _surface_mesh(domain, mask)
+    try:
+        mesh = _surface_mesh_mc(domain, mask)
+    except Exception:
+        log.warning("topopt.marching_cubes_fallback", exc_info=True)
+        mesh = _surface_mesh(domain, mask)
+        # staircase edges need one extra smoothing pass to reach the same
+        # finish as the marching-cubes surface
+        smooth_iterations += 1
     if smooth_iterations > 0:
         try:
             trimesh.smoothing.filter_taubin(mesh, lamb=0.5, nu=-0.53, iterations=smooth_iterations)

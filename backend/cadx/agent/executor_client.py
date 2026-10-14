@@ -48,6 +48,11 @@ class InProcessExecutor:
 
         return await asyncio.to_thread(run_topopt_resample_payload, payload)
 
+    async def refine(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from cadx.cad.tasks import run_refine_payload
+
+        return await asyncio.to_thread(run_refine_payload, payload)
+
     async def export_all(self, payload: dict[str, Any]) -> dict[str, Any]:
         import uuid as _uuid
 
@@ -139,6 +144,11 @@ class QueueExecutor:
         # re-extraction + FEM verify only — no SIMP loop, much cheaper
         timeout = self.runtime_settings.fem_timeout_s + 120
         return await self._run_task("topopt_resample", payload, timeout)
+
+    async def refine(self, payload: dict[str, Any]) -> dict[str, Any]:
+        # booleans + optional FEM verify — same envelope as a FEM check
+        timeout = self.runtime_settings.fem_timeout_s + 120
+        return await self._run_task("refine", payload, timeout)
 
     async def export_all(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await self._run_task("export_all", payload, 300)

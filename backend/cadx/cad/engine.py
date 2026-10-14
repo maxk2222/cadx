@@ -831,66 +831,77 @@ def run_topopt_pipeline(  # noqa: C901
     res.topopt["anchors"] = anchors
 
     # --- resolve load cases (with direction-cone expansion for robustness) ---
-    fixed_node_masks: list[Any] = []
-    load_node_masks: list[Any] = []
-    resolved: list[tuple[Any, Any]] = []
-    case_weights: list[float] = []
     max_cases = s.fem_max_effective_cases
 
-    def _add_case(case: LoadCase, weight: float) -> None:
-        fixed3, F, w = resolve_case_dofs(domain, case, anchors, density_g_cm3=mat.density_g_cm3)
-        res.topopt.setdefault("warnings", []).extend(w)
-        if not fixed3.any() or not np.any(F):
-            res.topopt["warnings"].append(
-                f"case '{case.name}' skipped — no fixed region or no effective load"
-            )
-            return
-        resolved.append((fixed3, F))
-        case_weights.append(weight)
+    def _resolve_cases_on(dom: Any, warn: bool = True):
+        """Re-resolve the load cases + passive-pin node masks on `dom` —
+        needed again on the coarse multiresolution grid (masks are
+        domain-specific)."""
+        r_resolved: list[tuple[np.ndarray, np.ndarray]] = []
+        r_weights: list[float] = []
+        r_fixed_nm: list[np.ndarray] = []
+        r_load_nm: list[np.ndarray] = []
 
-    for c in cases:
-        cone_idx = [
-            li
-            for li, ld in enumerate(c.loads)
-            if (ld.direction_cone_deg or 0) > 0 and ld.force_n and len(ld.force_n) == 3
-        ]
-        _add_case(c, float(c.weight))
-        for li in cone_idx:
-            ld = c.loads[li]
-            variants = expand_cone(
-                np.asarray(ld.force_n, dtype=float), float(ld.direction_cone_deg or 0.0)
-            )
-            for vi, fvar in enumerate(variants):
-                if len(resolved) >= max_cases:
+        def _add(c: LoadCase, weight: float) -> None:
+            fixed3, F, w = resolve_case_dofs(dom, c, anchors, density_g_cm3=mat.density_g_cm3)
+            if warn:
+                res.topopt.setdefault("warnings", []).extend(w)
+            if not fixed3.any() or not np.any(F):
+                if warn:
                     res.topopt["warnings"].append(
-                        f"direction-cone expansion capped at {max_cases} cases"
+                        f"case '{c.name}' skipped — no fixed region or no effective load"
                     )
-                    break
-                vc = c.model_copy(deep=True)
-                vc.name = f"{c.name}_cone{vi + 1}"
-                vc.loads[li].force_n = [float(v) for v in fvar]
-                if vc.loads[li].bearing_dir:
-                    vc.loads[li].bearing_dir = [float(v) for v in fvar]
-                vc.loads[li].direction_cone_deg = None
-                _add_case(vc, float(c.weight))
-        for load in c.loads:
-            # don't pin body-load or whole-part regions — gravity acts on
-            # whatever material survives and `all` re-matches the extracted
-            # mesh; pinning them would freeze the entire design domain.
-            concentrated = bool(
-                load.force_n
-                or load.pressure_mpa
-                or load.moment_nm
-                or load.preload_n
-                or load.remote_point
-            )
-            if load.g_load and not concentrated:
-                continue
-            if getattr(load.region, "kind", "") == "all":
-                continue
-            load_node_masks.append(region_node_mask(domain, load.region, anchors))
-    for f3, _ in resolved:
-        fixed_node_masks.append(np.asarray(f3).any(axis=1) if np.ndim(f3) == 2 else f3)
+                return
+            r_resolved.append((fixed3, F))
+            r_weights.append(weight)
+
+        for c in cases:
+            cone_idx = [
+                li
+                for li, ld in enumerate(c.loads)
+                if (ld.direction_cone_deg or 0) > 0 and ld.force_n and len(ld.force_n) == 3
+            ]
+            _add(c, float(c.weight))
+            for li in cone_idx:
+                ld = c.loads[li]
+                variants = expand_cone(
+                    np.asarray(ld.force_n, dtype=float), float(ld.direction_cone_deg or 0.0)
+                )
+                for vi, fvar in enumerate(variants):
+                    if len(r_resolved) >= max_cases:
+                        if warn:
+                            res.topopt["warnings"].append(
+                                f"direction-cone expansion capped at {max_cases} cases"
+                            )
+                        break
+                    vc = c.model_copy(deep=True)
+                    vc.name = f"{c.name}_cone{vi + 1}"
+                    vc.loads[li].force_n = [float(v) for v in fvar]
+                    if vc.loads[li].bearing_dir:
+                        vc.loads[li].bearing_dir = [float(v) for v in fvar]
+                    vc.loads[li].direction_cone_deg = None
+                    _add(vc, float(c.weight))
+            for load in c.loads:
+                # don't pin body-load or whole-part regions — gravity acts on
+                # whatever material survives and `all` re-matches the
+                # extracted mesh; pinning them would freeze the domain.
+                concentrated = bool(
+                    load.force_n
+                    or load.pressure_mpa
+                    or load.moment_nm
+                    or load.preload_n
+                    or load.remote_point
+                )
+                if load.g_load and not concentrated:
+                    continue
+                if getattr(load.region, "kind", "") == "all":
+                    continue
+                r_load_nm.append(region_node_mask(dom, load.region, anchors))
+        for f3, _ in r_resolved:
+            r_fixed_nm.append(np.asarray(f3).any(axis=1) if np.ndim(f3) == 2 else f3)
+        return r_resolved, r_weights, r_fixed_nm, r_load_nm
+
+    resolved, case_weights, fixed_node_masks, load_node_masks = _resolve_cases_on(domain)
     if not resolved:
         res.error = "no solvable load case — check fixed/load regions"
         return res
@@ -918,6 +929,10 @@ def run_topopt_pipeline(  # noqa: C901
         rmin_mm=max(s.topopt_default_rmin_mm, min_member / 2),
         max_iter=opt.max_iterations or s.topopt_max_iterations,
         threshold=float(opt.density_threshold or 0.5),
+        filter=str(getattr(opt, "filter", "cone") or "cone"),
+        self_supporting=bool(getattr(opt, "self_supporting", False)),
+        print_direction=str(getattr(opt, "print_direction", "+z") or "+z"),
+        penal=float(opt.penal or 3.0),
     )
 
     # insert/material zones: keep-regions with `material` change E per cell
@@ -939,6 +954,59 @@ def run_topopt_pipeline(  # noqa: C901
         except Exception as e:
             res.topopt["warnings"].append(f"warm-start density unreadable: {e}")
 
+    # multiresolution: run a coarse SIMP at 2x pitch first, upsample the
+    # density and warm-start the fine grid — converges ~3x faster on big parts
+    if getattr(opt, "multires", False) and x0 is None and domain.solid_count > 4000:
+        t_mr = time.monotonic()
+        try:
+            coarse = voxelize(mesh, domain.pitch * 2.0, max_elements or s.fem_max_elements)
+            if coarse.cell_count >= domain.cell_count // 8:
+                res.topopt["warnings"].append("multires: coarse grid not much coarser — skipped")
+            else:
+                res_c, w_c, fix_c, load_nm_c = _resolve_cases_on(coarse, warn=False)
+                if not res_c:
+                    res.topopt["warnings"].append(
+                        "multires: no solvable case on the coarse grid — skipped"
+                    )
+                else:
+                    keep_c = keep_element_mask(coarse, keep_list, anchors)
+                    void_c = keep_element_mask(coarse, list(opt.void_regions), anchors)
+                    passive_c = passive_solid_mask(coarse, [keep_c], fix_c, load_nm_c)
+                    E0_c = mat.elastic_modulus_mpa * material_cell_factors(
+                        coarse, keep_list, anchors, mat.elastic_modulus_mpa
+                    )
+                    pc = TopOptParams(
+                        volfrac=params.volfrac,
+                        rmin_mm=params.rmin_mm,
+                        max_iter=max(10, params.max_iter // 3),  # coarse pass is cheap
+                        threshold=params.threshold,
+                        filter="cone",  # no projection on the coarse pass
+                        penal=params.penal,
+                        self_supporting=params.self_supporting,
+                        print_direction=params.print_direction,
+                    )
+                    warm_r = simp(
+                        coarse,
+                        E0_c,
+                        mat.poisson,
+                        res_c,
+                        passive_c,
+                        pc,
+                        passive_void=void_c,
+                        case_weights=np.asarray(w_c),
+                        spsolve_dofs=s.fem_spsolve_dofs,
+                        cancelled=cancelled,
+                    )
+                    x0 = _upsample_density(warm_r.density.reshape(coarse.dims), coarse, domain)
+                    res.topopt["multires"] = {
+                        "coarse_pitch_mm": coarse.pitch,
+                        "coarse_cells": int(coarse.solid_count),
+                        "coarse_iterations": warm_r.iterations,
+                        "seconds": round(time.monotonic() - t_mr, 2),
+                    }
+        except Exception as e:
+            res.topopt["warnings"].append(f"multires coarse pass failed: {e}")
+
     opt_dir = out_dir / "topopt"
     opt_dir.mkdir(parents=True, exist_ok=True)
     base_flat = is_flat_bottom(mesh)
@@ -952,6 +1020,9 @@ def run_topopt_pipeline(  # noqa: C901
             rmin_mm=params.rmin_mm,
             max_iter=params.max_iter,
             threshold=params.threshold,
+            filter=params.filter,
+            self_supporting=params.self_supporting,
+            print_direction=params.print_direction,
         )
         t = time.monotonic()
         result = simp(
@@ -1319,6 +1390,157 @@ def run_topopt_resample(
     res.ok = True
     res.timings["total_s"] = round(time.monotonic() - t0, 2)
     return res
+
+
+def run_refine(
+    *,
+    mesh_path: Path,
+    out_dir: Path,
+    features: list[dict[str, Any]] | None = None,
+    spec_features: list[dict[str, Any]] | None = None,
+    anchors: list[dict[str, Any]] | None = None,
+    keep_regions: list[dict[str, Any]] | None = None,
+    load_cases: list[dict[str, Any]] | None = None,
+    base_mesh_path: Path | None = None,
+    restore_planes: bool = True,
+    material: str = "",
+    voxel_mm: float | None = None,
+    max_elements: int | None = None,
+    name: str = "model",
+    runtime: RuntimeSettings | None = None,
+) -> ExecResult:
+    """Post-TopOpt feature finishing: re-cut exact bores/threads/inserts and
+    restore keep-region surfaces on a (usually optimized) mesh.
+
+    Subtractive cuts use tessellated cutter solids + manifold booleans — the
+    optimized surface is voxel-smoothed, so exact functional geometry is
+    re-applied at measured anchors. Keep-region restore unions the ORIGINAL
+    base surface back (Taubin shrinks pinned regions by ~a pitch).
+
+    `features`   explicit selection (UI/agent) — overrides auto-resolution
+    `spec_features` + `anchors` drive the deterministic auto pass
+    `base_mesh_path` the pre-optimization part (keep restore source)
+    """
+    from cadx.cad.fem.analyze import report_to_json, run_fem
+    from cadx.cad.fem.refine import apply_refine, resolve_refine_features
+    from cadx.llm.schemas import LoadCase
+
+    res = ExecResult()
+    s = runtime or RuntimeSettings()
+    t0 = time.monotonic()
+
+    try:
+        mesh = load_triangle_mesh(mesh_path)
+    except Exception as e:
+        res.error = f"failed to load mesh for refine: {e}"
+        return res
+
+    base_mesh = None
+    if base_mesh_path is not None:
+        try:
+            base_mesh = load_triangle_mesh(base_mesh_path)
+        except Exception as e:
+            res.features.setdefault("warnings", []).append(
+                f"base mesh unreadable — keep restore disabled: {e}"
+            )
+
+    feats, res_warnings = resolve_refine_features(anchors, spec_features, features)
+    out, rep = apply_refine(
+        mesh,
+        feats,
+        base_mesh=base_mesh,
+        keep_regions=keep_regions or [],
+        anchors=anchors or [],
+        restore_keeps=restore_planes and base_mesh is not None,
+    )
+    warnings = res_warnings + rep.warnings
+
+    if not rep.applied and not rep.restored_regions:
+        res.error = "nothing to refine — no cuttable features or keep regions matched"
+        res.features["refine"] = {
+            "applied": [],
+            "skipped": rep.skipped,
+            "warnings": warnings,
+        }
+        return res
+
+    run_dir = out_dir / "_run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    stl_path = run_dir / "model.stl"
+    try:
+        out.export(str(stl_path), file_type="stl")
+    except Exception as e:
+        res.error = f"failed to write refined STL: {e}"
+        return res
+
+    res.features["refine"] = {
+        "applied": rep.applied,
+        "skipped": rep.skipped,
+        "restored_regions": rep.restored_regions,
+        "warnings": warnings,
+    }
+
+    # FEM re-verify — the cuts remove material, the SF must be re-issued
+    cases = [LoadCase(**c) for c in (load_cases or [])]
+    if cases:
+        verify = run_fem(
+            out,
+            cases,
+            material,
+            voxel_mm=voxel_mm or s.fem_voxel_mm,
+            max_elements=max_elements or s.fem_max_elements,
+            out_dir=out_dir,
+            anchors=anchors,
+            spsolve_dofs=s.fem_spsolve_dofs,
+        )
+        report_to_json(verify, out_dir / "fem" / "report.json")
+        res.fem = verify.model_dump()
+
+    res.exports = export_mesh_all(out, out_dir / "exports", name=name, try_step=False)
+    res.exports["dxf"] = None
+    res.exports["svg"] = None
+    res.analysis = mesh_analysis(out)
+    _repair_analysis_mesh(res.analysis, stl_path)
+    if res.analysis.watertight is False:
+        _repair_export_meshes(res.exports, out_dir / "exports")
+    res.mesh = {
+        "pipeline": "refine",
+        "triangles": len(out.faces),
+        "volume_mm3": round(float(out.volume), 1),
+    }
+    render_dir = out_dir / "renders"
+    render_paths = render_views(stl_path, render_dir, res.analysis.bbox_size)
+    res.renders = {v: p.name for v, p in render_paths.items()}
+    thumb = render_thumbnail(stl_path, out_dir / "thumbnail.png")
+    res.thumbnail = thumb.name if thumb else None
+    if not out.is_watertight:
+        warnings.append("refined mesh is not watertight — inspect before manufacturing")
+    res.ok = True
+    res.timings["total_s"] = round(time.monotonic() - t0, 2)
+    return res
+
+
+def _upsample_density(
+    rho_c: np.ndarray,
+    dom_c: Any,
+    dom_f: Any,
+) -> np.ndarray:
+    """Trilinearly resample a coarse SIMP density field onto the fine domain's
+    cell grid (multiresolution warm start). Both grids are bbox-aligned so
+    index coords map through world mm."""
+    from scipy import ndimage
+
+    coords = []
+    for a in range(3):
+        centers = dom_f.origin[a] + (np.arange(dom_f.dims[a]) + 0.5) * dom_f.pitch
+        coords.append((centers - dom_c.origin[a]) / dom_c.pitch - 0.5)
+    gi, gj, gk = np.meshgrid(*coords, indexing="ij")
+    # "nearest" so boundary cells past the last coarse centre inherit the
+    # edge cell's value instead of attenuating towards 0
+    vals = ndimage.map_coordinates(
+        rho_c.astype(float), [gi, gj, gk], order=1, mode="nearest"
+    )
+    return np.clip(vals.ravel(), 0.0, 1.0)
 
 
 def copy_artifacts(src: Path, dst: Path, names: list[str]) -> None:

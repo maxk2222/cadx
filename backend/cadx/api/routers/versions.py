@@ -18,6 +18,7 @@ from cadx.api.schemas import (
     GenerateRequest,
     OptimizeRequest,
     ParamsRequest,
+    RefineRequest,
     TopoptResampleRequest,
     VersionDetail,
     VersionSummary,
@@ -357,6 +358,62 @@ async def topopt_resample(
                 "density_threshold": body.density_threshold,
                 "min_member_mm": body.min_member_mm or None,
             },
+        },
+    )
+    return EnqueueResponse(version_id=v.id, job_id=job.id)
+
+
+@router.post("/versions/{version_id}/refine", response_model=EnqueueResponse)
+async def refine_version(
+    version_id: uuid.UUID, body: RefineRequest, db: AsyncSession = Depends(get_session)
+):
+    """Post-TopOpt feature finishing: re-cut exact bores/threads/inserts at
+    measured anchors and restore keep-region surfaces from the
+    pre-optimization part. Creates a 'refine' child version (no LLM)."""
+    parent = await db.get(Version, version_id)
+    if not parent:
+        raise HTTPException(404, "version not found")
+    if parent.status not in (VersionStatus.succeeded, VersionStatus.needs_review):
+        raise HTTPException(409, f"cannot refine version in status {parent.status}")
+    if parent.kind == VersionKind.refine:
+        raise HTTPException(409, "version is already refined — refine a sibling instead")
+    v = Version(
+        project_id=parent.project_id,
+        parent_id=parent.id,
+        number=await _next_number(db, parent.project_id),
+        kind=VersionKind.refine,
+        prompt=f"refine {parent.prompt}"[:500],
+        gen_mode=parent.gen_mode,
+        asset_ids=parent.asset_ids or [],
+        options={
+            **(parent.options or {}),
+            "topopt": (parent.options or {}).get("topopt", False),
+            "refine_request": {
+                "features": body.features,
+                "load_cases": body.load_cases,
+                "keep_regions": body.keep_regions,
+                "material": body.material,
+                "voxel_mm": body.voxel_mm,
+                "restore_planes": body.restore_planes,
+            },
+        },
+    )
+    db.add(v)
+    await db.flush()
+    job = Job(version_id=v.id, type=JobType.refine)
+    db.add(job)
+    await db.commit()
+    await enqueue(
+        "run_refine_job",
+        {
+            "job_id": str(job.id),
+            "version_id": str(v.id),
+            "features": body.features,
+            "load_cases": body.load_cases,
+            "keep_regions": body.keep_regions,
+            "material": body.material,
+            "voxel_mm": body.voxel_mm,
+            "restore_planes": body.restore_planes,
         },
     )
     return EnqueueResponse(version_id=v.id, job_id=job.id)
