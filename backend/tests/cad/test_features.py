@@ -137,6 +137,31 @@ def test_compare_no_holes_measured():
     assert any(f.severity == "major" for f in findings)
 
 
+def test_compare_axis_mismatch_flagged():
+    """T0.3: a spec bore along +y with measured holes only on +z is a major
+    axis mismatch — the firesteel failure mode (boss bore on wrong axis)."""
+    m = MeasuredFeatures(
+        hole_groups=[MeasuredHoleGroup(diameter=8.0, count=1, axis="+z")],
+        total_holes=1,
+    )
+    spec = [Feature(name="boss bore", type="hole", count=1, axis="y", dims={"diameter": 8.0})]
+    findings = compare_features(spec, m)
+    assert any(
+        f.severity == "major" and "axis" in f.actual.lower() and "y axis" in f.expected
+        for f in findings
+    )
+
+
+def test_compare_axis_sign_insensitive():
+    """A through-bore on -z satisfies a spec asking for the z axis."""
+    m = MeasuredFeatures(
+        hole_groups=[MeasuredHoleGroup(diameter=4.5, count=4, axis="-z")],
+        total_holes=4,
+    )
+    spec = [Feature(name="mounting", type="hole", count=4, axis="+z")]
+    assert not any("axis" in f.actual.lower() for f in compare_features(spec, m))
+
+
 def test_extract_membrane_blocked_hole_is_blind():
     """The Pos(x, y, -1) * Cylinder mis-centring leaves a membrane sealing the
     top of the bore — must classify as blind, not through."""

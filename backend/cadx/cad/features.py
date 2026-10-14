@@ -485,6 +485,11 @@ def _expected_dia(feature: Any) -> float | None:
 
 
 def _feature_axis_hint(feature: Any) -> str | None:
+    # structured field first ("x"|"y"|"z"|"+z"…) — intake emits it explicitly;
+    # the text fallback below only covers top/bottom/through vocabulary
+    ax = str(getattr(feature, "axis", "") or "").strip().lower()
+    if ax and ax.lstrip("+-") in ("x", "y", "z"):
+        return ax if ax.startswith(("+", "-")) else f"+{ax}"
     pos = f"{feature.position or ''} {feature.description or ''}".lower()
     if not _AXIS_HINT_RE.search(pos):
         return None
@@ -495,20 +500,26 @@ def _feature_axis_hint(feature: Any) -> str | None:
     return None
 
 
+def _axis_letter(axis: str) -> str:
+    """'x'|'y'|'z' — a through-bore on '-y' has the same orientation as '+y'."""
+    return (axis or "").lstrip("+-").lower()
+
+
 def _match_hole_group(
     groups: list[MeasuredHoleGroup], want_dia: float | None, want_axis: str | None
 ) -> MeasuredHoleGroup | None:
     """Best matching hole group: diameter(+axis) first, then axis, then largest."""
+    want_ax = _axis_letter(want_axis or "")
     for g in groups:
         if (
             want_dia
             and abs(g.diameter - want_dia) <= max(0.2 * want_dia, 0.5)
-            and (want_axis is None or g.axis == want_axis)
+            and (not want_ax or _axis_letter(g.axis) == want_ax)
         ):
             return g
-    if want_axis:
+    if want_ax:
         for g in groups:
-            if g.axis == want_axis:
+            if _axis_letter(g.axis) == want_ax:
                 return g
     if groups:
         return max(groups, key=lambda g: g.count)
@@ -532,6 +543,28 @@ def _check_hole_feature(
     wants_cbore = bool(_CBORE_RE.search(std_desc))
     csk_needed = want_n if wants_csk else 0
     cbore_needed = want_n if wants_cbore else 0
+
+    # definitive check before matching: spec wants a bore along a specific
+    # axis and measured holes exist only on other axes → report the axis
+    # mismatch explicitly (e.g. boss bore +z instead of spec +y), not a
+    # generic "no holes" that hides orientation errors
+    if want_axis and measured.hole_groups:
+        want_ax = _axis_letter(want_axis)
+        if not any(_axis_letter(g.axis) == want_ax for g in measured.hole_groups):
+            actual_axes = ", ".join(sorted({_axis_letter(g.axis) for g in measured.hole_groups}))
+            findings.append(
+                FeatureFinding(
+                    feature=name,
+                    expected=f"{want_n}x hole along the {want_ax} axis",
+                    actual=f"holes detected only on the {actual_axes} axis",
+                    severity="major",
+                    fix_hint=(
+                        f"the bore axis is wrong — rotate the cutter so the hole "
+                        f"runs along {want_ax} (spec axis '{want_axis}')"
+                    ),
+                )
+            )
+            return findings, csk_needed, cbore_needed
 
     group = _match_hole_group(measured.hole_groups, want_dia, want_axis)
     if group is None:
