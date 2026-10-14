@@ -400,7 +400,11 @@ def measured_features_block(features: dict[str, Any] | None) -> str:
     """Compact measured-geometry summary (ground truth) for improve/critique."""
     if not features:
         return ""
-    lines = ["MEASURED GEOMETRY (ground truth from the solid):"]
+    lines = [
+        "MEASURED GEOMETRY (ground truth from the solid) — every feature "
+        "listed here already exists and MUST be preserved; if you rewrite "
+        "code, keep every hole/fillet/chamfer:"
+    ]
     for g in features.get("hole_groups") or []:
         lines.append(
             f"- {g['count']}x hole Ø{g['diameter']}mm, axis {g['axis']}, {g['depth_class']}"

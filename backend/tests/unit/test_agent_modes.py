@@ -1112,3 +1112,28 @@ def test_hybrid_missing_mesh_ranks_lower():
     good = Candidate(1, None, {}, Critique(score=70, passed=True), [])
     bad = Candidate(2, None, {}, Critique(score=90, passed=True), [], hybrid_missing=True)
     assert good.rank > bad.rank
+
+
+def test_feature_regression_ranks_lower():
+    """A rewrite that drops previously measured features must not outrank the
+    iteration that still has them — even with a higher critique score."""
+    from cadx.agent.orchestrator import Candidate
+    from cadx.llm.schemas import Critique
+
+    with_feats = Candidate(
+        1,
+        None,
+        {"features": {"total_holes": 2, "rounds": [2.0, 2.0]}},
+        Critique(score=40, passed=False),
+        [],
+    )
+    dropped = Candidate(
+        2,
+        None,
+        {"features": {"total_holes": 0}},
+        Critique(score=80, passed=True),
+        [],
+    )
+    assert with_feats.measured_feature_count == 4
+    assert dropped.measured_feature_count == 0
+    assert with_feats.rank > dropped.rank

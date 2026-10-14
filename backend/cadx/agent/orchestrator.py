@@ -62,7 +62,24 @@ class Candidate:
     hybrid_missing: bool = False  # code dropped load_mesh_solid()
 
     @property
-    def rank(self) -> tuple[int, int, int, int]:
+    def measured_feature_count(self) -> int:
+        """Geometric features actually measured on this candidate's result.
+
+        Ground truth for the regression penalty: a rewrite that drops
+        previously-built holes/rounds must not outrank an iteration that
+        still has them — LLM critiques miss losses too often.
+        """
+        f = self.exec_result.get("features") or {}
+        return (
+            int(f.get("total_holes") or 0)
+            + int(f.get("countersinks") or 0)
+            + int(f.get("counterbores") or 0)
+            + len(f.get("rounds") or [])
+            + int(f.get("chamfer_faces") or 0)
+        )
+
+    @property
+    def rank(self) -> tuple[int, int, int, int, int]:
         major = (
             sum(1 for d in self.critique.discrepancies if d.severity == "major")
             if self.critique
@@ -70,7 +87,13 @@ class Candidate:
         )
         score = self.critique.score if self.critique else 0
         # hybrid-missing first: a parametric stand-in is never the organic body
-        return (0 if self.hybrid_missing else 1, 0 if self.dim_issues else 1, -major, score)
+        return (
+            0 if self.hybrid_missing else 1,
+            0 if self.dim_issues else 1,
+            self.measured_feature_count,
+            -major,
+            score,
+        )
 
 
 @dataclass
