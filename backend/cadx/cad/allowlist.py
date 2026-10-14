@@ -247,7 +247,9 @@ class _Checker(ast.NodeVisitor):
     def _check_ctor_kwargs(self, node: ast.Call) -> None:
         if not (isinstance(node.func, ast.Name) and node.func.id in self._CTOR_KWARGS):
             return
-        bad = [k.arg for k in node.keywords if k.arg and k.arg not in self._CTOR_KWARGS[node.func.id]]
+        bad = [
+            k.arg for k in node.keywords if k.arg and k.arg not in self._CTOR_KWARGS[node.func.id]
+        ]
         if bad:
             self._warn(
                 node,

@@ -127,9 +127,10 @@ class MeshWorkbench:
             # workbench is preview-only and runs in the worker process — cap
             # faces so voxel/boolean ops can't OOM the worker (the executor
             # replays ops on its own baseline for the authoritative result)
-            cap = getattr(
-                getattr(self.ctx, "runtime_settings", None), "mesh_decimate_faces", None
-            ) or 30_000
+            cap = (
+                getattr(getattr(self.ctx, "runtime_settings", None), "mesh_decimate_faces", None)
+                or 30_000
+            )
             self.baseline = baseline_mesh(raw, post, spec)[0]
             if len(self.baseline.faces) > cap:
                 self.baseline = decimate(self.baseline, cap)
@@ -496,9 +497,10 @@ class MeshWorkbench:
 
         # 4. re-baseline on the new raw mesh; previous ops no longer apply
         try:
-            cap = getattr(
-                getattr(self.ctx, "runtime_settings", None), "mesh_decimate_faces", None
-            ) or 30_000
+            cap = (
+                getattr(getattr(self.ctx, "runtime_settings", None), "mesh_decimate_faces", None)
+                or 30_000
+            )
             raw = await asyncio.to_thread(load_mesh, out)
             self.baseline = await asyncio.to_thread(
                 lambda: baseline_mesh(raw, self._post, self.spec)[0]
