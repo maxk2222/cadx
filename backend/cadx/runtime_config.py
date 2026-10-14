@@ -95,6 +95,10 @@ class RuntimeSettings(BaseModel):
     image_tool_budget: int = Field(default=4, ge=0, le=50)  # concept-image calls per session
     image_timeout_s: int = Field(default=300, ge=1, le=86_400)
     mesh_timeout_s: int = Field(default=900, ge=1, le=86_400)
+    # abort polling a server job whose (progress,message) pair hasn't moved
+    # for this long — MPS/MLX adapters can freeze at 0% CPU and would
+    # otherwise be polled until the full timeout (observed: 9.5% for >10min)
+    mesh_stall_timeout_s: int = Field(default=300, ge=1, le=86_400)
     mesh_decimate_faces: int = Field(default=30_000, ge=1)
     # face cap for the hybrid work-solid (sew+boolean in OCCT) — dominates
     # hybrid iteration latency; the export GLB keeps full detail. Keep at or

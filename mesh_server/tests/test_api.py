@@ -70,6 +70,46 @@ def test_full_job_flow(app):
         assert r.status_code == 404
 
 
+def test_stalled_running_job_marked_failed(tmp_path):
+    """A 'running' job whose progress hasn't moved past job_stall_s is
+    reported as failed (frozen MPS/MLX adapter) instead of polling forever."""
+    import time
+
+    from meshserver.jobs import JobManager, MeshJob
+    from meshserver.registry import Registry
+    from meshserver.schemas import GenParams
+
+    cfg = ServerConfig(fake=True, job_dir=tmp_path / "jobs", job_stall_s=5)
+    mgr = JobManager(cfg, Registry(cfg))
+    job = MeshJob("j-stall", GenParams(model="fake"), [])
+    job.status = "running"
+    job.last_progress_at = time.monotonic() - 10  # stalled 10s > 5s budget
+    mgr.jobs[job.id] = job
+
+    got = mgr.get(job.id)
+    assert got is not None
+    assert got.status == "failed"
+    assert "stalled" in (got.error or "")
+    assert got.cancelled is True  # adapter thread should see the cancel flag
+
+
+def test_fresh_running_job_not_stalled(tmp_path):
+    import time
+
+    from meshserver.jobs import JobManager, MeshJob
+    from meshserver.registry import Registry
+    from meshserver.schemas import GenParams
+
+    cfg = ServerConfig(fake=True, job_dir=tmp_path / "jobs", job_stall_s=60)
+    mgr = JobManager(cfg, Registry(cfg))
+    job = MeshJob("j-fresh", GenParams(model="fake"), [])
+    job.status = "running"
+    job.last_progress_at = time.monotonic()
+    mgr.jobs[job.id] = job
+
+    assert mgr.get(job.id).status == "running"
+
+
 def test_no_image_rejected(app):
     from fastapi.testclient import TestClient
 

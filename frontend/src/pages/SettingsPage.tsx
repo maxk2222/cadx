@@ -40,6 +40,7 @@ const NUM_FIELDS = new Set<string>([
   "llm_max_tokens",
   "llm_timeout_s",
   "llm_idle_timeout_s",
+  "llm_degenerate_stall_s",
   "llm_total_timeout_s",
   "agent_max_iterations",
   "agent_max_repairs",
@@ -66,6 +67,7 @@ const NUM_FIELDS = new Set<string>([
   "topopt_default_volfrac",
   "topopt_default_rmin_mm",
   "mesh_timeout_s",
+  "mesh_stall_timeout_s",
   "mesh_decimate_faces",
   "mesh_max_faces_for_cad",
   "image_steps",
@@ -98,6 +100,7 @@ const FIELD_BOUNDS: Record<
   llm_max_tokens: { min: 1, max: 2_000_000, int: true },
   llm_timeout_s: { min: 0, exclusiveMin: true },
   llm_idle_timeout_s: { min: 0, exclusiveMin: true },
+  llm_degenerate_stall_s: { min: 0, exclusiveMin: true },
   llm_total_timeout_s: { min: 0, exclusiveMin: true },
   agent_max_iterations: { min: 1, max: 200, int: true },
   agent_max_repairs: { min: 0, max: 200, int: true },
@@ -124,6 +127,7 @@ const FIELD_BOUNDS: Record<
   topopt_default_volfrac: { min: 0, max: 1, exclusiveMin: true },
   topopt_default_rmin_mm: { min: 0, max: 1000, exclusiveMin: true },
   mesh_timeout_s: { min: 1, max: 86_400, int: true },
+  mesh_stall_timeout_s: { min: 1, max: 86_400, int: true },
   mesh_decimate_faces: { min: 1, int: true },
   mesh_max_faces_for_cad: { min: 1, int: true },
   image_steps: { min: 1, max: 200, int: true },
@@ -469,6 +473,7 @@ export default function SettingsPage() {
         {field({ key: "llm_stream", label: "Streaming", kind: "bool" })}
         {field({ key: "llm_timeout_s", label: "Request timeout (s)", kind: "number" })}
         {field({ key: "llm_idle_timeout_s", label: "Stream idle timeout (s)", kind: "number" })}
+        {field({ key: "llm_degenerate_stall_s", label: "Degenerate stream abort (s)", kind: "number" })}
         {field({ key: "llm_total_timeout_s", label: "Stream total cap (s)", kind: "number" })}
         {field({
           key: "llm_extra_body",
@@ -611,6 +616,7 @@ export default function SettingsPage() {
           </select>
         </Field>
         {field({ key: "mesh_timeout_s", label: "Generation timeout (s)", kind: "number" })}
+        {field({ key: "mesh_stall_timeout_s", label: "Stall abort — no progress (s)", kind: "number" })}
         {field({ key: "mesh_decimate_faces", label: "Decimate target (faces)", kind: "number" })}
         {field({ key: "mesh_max_faces_for_cad", label: "Max faces for CAD conversion", kind: "number" })}
         {models.length > 0 && (

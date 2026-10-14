@@ -114,9 +114,12 @@ class MeshPort:
 
 
 class HttpMeshClient(MeshPort):
-    def __init__(self, base_url: str, *, timeout_s: float = 900) -> None:
+    def __init__(
+        self, base_url: str, *, timeout_s: float = 900, stall_timeout_s: float = 300
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_s = timeout_s
+        self.stall_timeout_s = stall_timeout_s
 
     async def health(self) -> MeshHealth:
         try:
@@ -173,6 +176,11 @@ class HttpMeshClient(MeshPort):
         poll = 2.0
         waited = 0.0
         status: dict[str, Any] = {}
+        # stall watchdog: the server can freeze mid-generation (MPS/MLX memory
+        # waits run at 0% CPU) while still reporting "running" — abort when
+        # the (progress, message) pair stops moving
+        last_sig: tuple[float, str] | None = None
+        last_change_at = 0.0
         try:
             while waited < deadline:
                 await asyncio.sleep(poll)
@@ -189,9 +197,18 @@ class HttpMeshClient(MeshPort):
                     break
                 if s in ("failed", "cancelled"):
                     raise MeshGenError(status.get("error") or f"mesh job {s}")
+                sig = (float(status.get("progress") or 0.0), str(status.get("message") or ""))
+                if sig != last_sig:
+                    last_sig = sig
+                    last_change_at = waited
+                elif waited - last_change_at >= self.stall_timeout_s:
+                    raise MeshGenError(
+                        f"mesh job stalled at {sig[0]:.0%} for "
+                        f"{self.stall_timeout_s:.0f}s ({sig[1] or 'no message'})"
+                    )
                 if on_progress:
                     msg = status.get("message") or "mesh generation running"
-                    await on_progress(msg, float(status.get("progress") or 0.0))
+                    await on_progress(msg, sig[0])
             else:
                 raise MeshGenError(f"mesh generation timed out after {deadline}s")
 
@@ -320,4 +337,8 @@ def make_mesh_client(
     url = (base_url if base_url is not None else settings.mesh_base_url).strip()
     if not url:
         return None
-    return HttpMeshClient(url, timeout_s=timeout_s or settings.mesh_timeout_s)
+    return HttpMeshClient(
+        url,
+        timeout_s=timeout_s or settings.mesh_timeout_s,
+        stall_timeout_s=settings.mesh_stall_timeout_s,
+    )

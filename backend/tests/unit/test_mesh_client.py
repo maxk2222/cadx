@@ -207,6 +207,48 @@ async def test_http_client_job_failed(fake_server, tmp_path):
         await HttpMeshClient("http://mesh.test").generate(_req(tmp_path), None)
 
 
+async def test_http_client_stalled_job_aborts(fake_server, tmp_path):
+    """A 'running' job whose progress never moves is aborted, not polled
+    until the full timeout (observed live: hunyuan3d-2mv froze at 9.5%
+    with 0% CPU for >10min)."""
+    srv = fake_server
+
+    def frozen(request: httpx.Request) -> httpx.Response | None:
+        if request.url.path == "/v1/jobs" and request.method == "POST":
+            srv.jobs["js"] = {"status": "running", "progress": 0.095, "message": "generating"}
+            return httpx.Response(200, json={"job_id": "js"})
+        return None
+
+    srv.override = frozen
+    c = HttpMeshClient("http://mesh.test", timeout_s=900, stall_timeout_s=6)
+    with pytest.raises(Exception, match="stalled"):
+        await c.generate(_req(tmp_path), None)
+
+
+async def test_http_client_progress_resets_stall_clock(fake_server, tmp_path):
+    """Progress that keeps advancing must not trip the stall watchdog."""
+    srv = fake_server
+    state = {"n": 0}
+
+    def slow(request: httpx.Request) -> httpx.Response | None:
+        if request.url.path == "/v1/jobs" and request.method == "POST":
+            srv.jobs["jp"] = {"status": "running", "progress": 0.1, "message": "generating"}
+            return httpx.Response(200, json={"job_id": "jp"})
+        if request.url.path == "/v1/jobs/jp":
+            state["n"] += 1
+            # progress advances every second poll — inside stall window
+            if state["n"] % 2 == 0:
+                srv.jobs["jp"]["progress"] = min(0.1 + state["n"] * 0.05, 0.9)
+            if state["n"] > 10:
+                srv.jobs["jp"] = {"status": "succeeded", "model": "fake", "triangles": 5}
+        return None
+
+    srv.override = slow
+    c = HttpMeshClient("http://mesh.test", timeout_s=900, stall_timeout_s=5)
+    res = await c.generate(_req(tmp_path), None)
+    assert res.model == "fake"
+
+
 def test_request_schema_defaults(tmp_path):
     r = _req(tmp_path)
     d = json.loads(r.model_dump_json())

@@ -36,6 +36,12 @@ class ServerConfig:
     job_ttl_s: int = field(
         default_factory=lambda: int(os.environ.get("MESH_JOB_TTL_S", "3600"))
     )
+    # a running job whose (progress, message) pair hasn't changed for this
+    # long is marked failed — MPS/MLX stalls freeze at 0% CPU forever and
+    # would otherwise hold the single-flight queue indefinitely
+    job_stall_s: int = field(
+        default_factory=lambda: int(os.environ.get("MESH_JOB_STALL_S", "600"))
+    )
     max_queue: int = field(
         default_factory=lambda: int(os.environ.get("MESH_MAX_QUEUE", "8"))
     )

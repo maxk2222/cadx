@@ -49,6 +49,9 @@ class MeshJob:
         self.steps = params.steps
         self.guidance = params.guidance
         self.resolution = params.resolution
+        # monotonic timestamp of the last *observable* progress change —
+        # the stall watchdog reads this via JobManager.get()
+        self.last_progress_at = time.monotonic()
 
     def to_status(self) -> JobStatus:
         dur = (self.finished or time.monotonic()) - (self.started or self.created)
@@ -90,6 +93,7 @@ class ImageJob:
         self.seed = params.seed
         self.steps = params.steps
         self.guidance = params.guidance
+        self.last_progress_at = time.monotonic()
 
     def to_status(self) -> JobStatus:
         dur = (self.finished or time.monotonic()) - (self.started or self.created)
@@ -176,7 +180,25 @@ class JobManager:
 
     def get(self, job_id: str) -> MeshJob | ImageJob | None:
         self._gc()
-        return self.jobs.get(job_id)
+        job = self.jobs.get(job_id)
+        # stall watchdog: a 'running' job whose progress hasn't moved is
+        # dead — the adapter thread may be frozen on MPS/MLX memory waits.
+        # Mark it failed so clients stop polling; the thread still gets to
+        # unwind and its result is discarded via the cancelled flag.
+        if (
+            job is not None
+            and job.status == "running"
+            and time.monotonic() - job.last_progress_at > self.cfg.job_stall_s
+        ):
+            job.status = "failed"
+            job.error = (
+                f"stalled — no progress for {self.cfg.job_stall_s}s; "
+                "the worker thread may still be unwinding"
+            )
+            job.finished = time.monotonic()
+            job.cancelled = True  # adapter checks this and aborts early
+            log.warning("job.stalled", job=job_id, model=job.model)
+        return job
 
     async def cancel(self, job_id: str) -> bool:
         job = self.jobs.get(job_id)
@@ -306,7 +328,10 @@ class JobManager:
             images = images[: cls.max_images]
 
         def progress(frac: float, msg: str) -> None:
-            job.progress = 0.05 + min(frac, 1.0) * 0.9
+            new_p = 0.05 + min(frac, 1.0) * 0.9
+            if new_p != job.progress or msg != job.message:
+                job.last_progress_at = time.monotonic()
+            job.progress = new_p
             job.message = msg
 
         def cancelled() -> bool:
@@ -335,6 +360,7 @@ class JobManager:
 
         job.message = "cleaning + exporting"
         job.progress = 0.95
+        job.last_progress_at = time.monotonic()
         mesh = clean_mesh(result.mesh)
         job.glb = export_glb(mesh)
         job.triangles = len(mesh.faces)
@@ -373,7 +399,10 @@ class JobManager:
         height = min(job.params.height, getattr(cls, "max_side", 1024))
 
         def progress(frac: float, msg: str) -> None:
-            job.progress = 0.05 + min(frac, 1.0) * 0.9
+            new_p = 0.05 + min(frac, 1.0) * 0.9
+            if new_p != job.progress or msg != job.message:
+                job.last_progress_at = time.monotonic()
+            job.progress = new_p
             job.message = msg
 
         def cancelled() -> bool:

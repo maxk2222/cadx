@@ -401,6 +401,7 @@ class SettingsOut(BaseModel):
     llm_timeout_s: float
     llm_stream: bool
     llm_idle_timeout_s: float
+    llm_degenerate_stall_s: float
     llm_total_timeout_s: float
     llm_extra_body: str
     llm_tools: Literal["auto", "on", "off"]
@@ -457,6 +458,7 @@ class SettingsOut(BaseModel):
     image_timeout_s: int
     image_default_strength: float
     mesh_timeout_s: int
+    mesh_stall_timeout_s: int
     mesh_decimate_faces: int
     mesh_max_faces_for_cad: int
     exec_timeout_s: int
@@ -478,6 +480,7 @@ class SettingsUpdate(BaseModel):
     llm_timeout_s: float | None = Field(default=None, gt=0)
     llm_stream: bool | None = None
     llm_idle_timeout_s: float | None = Field(default=None, gt=0)
+    llm_degenerate_stall_s: float | None = Field(default=None, gt=0)
     llm_total_timeout_s: float | None = Field(default=None, gt=0)
     llm_extra_body: str | None = Field(default=None, max_length=20_000)
     llm_tools: Literal["auto", "on", "off"] | None = None
@@ -534,6 +537,7 @@ class SettingsUpdate(BaseModel):
     image_tool_budget: int | None = Field(default=None, ge=0, le=50)
     image_timeout_s: int | None = Field(default=None, ge=1, le=86_400)
     mesh_timeout_s: int | None = Field(default=None, ge=1, le=86_400)
+    mesh_stall_timeout_s: int | None = Field(default=None, ge=1, le=86_400)
     mesh_decimate_faces: int | None = Field(default=None, ge=1)
     mesh_max_faces_for_cad: int | None = Field(default=None, ge=1)
     exec_timeout_s: int | None = Field(default=None, ge=1, le=86_400)
