@@ -113,9 +113,12 @@ class _Checker(ast.NodeVisitor):
 
     def _contains_2d_ctor(self, node: ast.AST) -> str | None:
         for sub in ast.walk(node):
-            if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name):
-                if sub.func.id in _2D_CTORS:
-                    return sub.func.id
+            if (
+                isinstance(sub, ast.Call)
+                and isinstance(sub.func, ast.Name)
+                and sub.func.id in _2D_CTORS
+            ):
+                return sub.func.id
         return None
 
     def visit_Expr(self, node: ast.Expr) -> None:
