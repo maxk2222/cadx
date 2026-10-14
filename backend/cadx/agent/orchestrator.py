@@ -1917,6 +1917,29 @@ async def _run_cad(  # noqa: C901
                     break
                 new_code, perrs = _resolve_patch(code, presp, patch_mode)
                 if new_code is None:
+                    # hunks missed AND no usable full_code — retry once asking
+                    # for the complete file before giving up on this repair
+                    await ctx.emit(
+                        "repair", it, "patch hunks missed — retrying with full_code"
+                    )
+                    try:
+                        presp = await codegen_step.repair(
+                            ctx,
+                            code,
+                            spec,
+                            plan,
+                            exec_result.get("error"),
+                            exec_result.get("traceback"),
+                            exec_result.get("stdout"),
+                            iteration=it,
+                            repair_n=repair_n + 1,
+                            verify_fn=_session_verify_fn(ctx, it),
+                            prefer_full_code=True,
+                        )
+                        new_code, perrs = _resolve_patch(code, presp, "never")
+                    except Exception as e:
+                        log.warning("agent.repair_failed", iteration=it, error=str(e))
+                if new_code is None:
                     await ctx.emit("repair", it, f"patch did not apply ({len(perrs)} hunk errors)")
                     log.warning("agent.repair_patch_failed", iteration=it, errors=perrs[:3])
                     break
@@ -2514,17 +2537,17 @@ async def _run_mesh(  # noqa: C901
         if best is None or cand.rank > best.rank:
             best = cand
 
-        def _passed(c: Critique, di: list[str]) -> bool:
+        def _passed(c: Critique, di: list[str], res: dict[str, Any]) -> bool:
             major = [d for d in c.discrepancies if d.severity == "major"]
             return (
                 c.passed
                 and c.score >= pass_score
                 and not di
                 and not major
-                and not _multi_solid(exec_result)
+                and not _multi_solid(res)
             )
 
-        if _passed(critique, dim_issues):
+        if _passed(critique, dim_issues, exec_result):
             await ctx.emit("done", it, "all checks passed")
             break
 
@@ -2567,10 +2590,10 @@ async def _run_mesh(  # noqa: C901
             if best is None or cand.rank > best.rank:
                 best = cand
             critique, dim_issues = critique2, dim_issues2
-            if _passed(critique, dim_issues):
+            if _passed(critique, dim_issues, exec_result):
                 break
 
-        if _passed(critique, dim_issues):
+        if _passed(critique, dim_issues, exec_result):
             await ctx.emit("done", it, "all checks passed after refine")
             break
 

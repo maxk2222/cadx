@@ -162,6 +162,7 @@ async def repair(
     iteration: int,
     repair_n: int,
     verify_fn: VerifyFn | None = None,
+    prefer_full_code: bool = False,
 ) -> PatchResponse:
     """Ask the model to fix broken code — tool session when the provider
     supports it, else one-shot PatchResponse (edits preferred, full_code
@@ -184,9 +185,18 @@ async def repair(
             verify_fn=verify_fn,
             max_calls=ctx.runtime_settings.agent_tool_max_calls,
         )
-    user = (
-        "Fix this code. Return a PatchResponse JSON object — prefer `edits` for "
-        "localised fixes, `full_code` only when the fix is structural.\n\n"
+    if prefer_full_code:
+        user = (
+            "Fix this code. Return a PatchResponse JSON object with `full_code` "
+            "containing the COMPLETE corrected file — earlier `edits` hunks did "
+            "not match the code text, do NOT return `edits`.\n\n"
+        )
+    else:
+        user = (
+            "Fix this code. Return a PatchResponse JSON object — prefer `edits` for "
+            "localised fixes, `full_code` only when the fix is structural.\n\n"
+        )
+    user += (
         "PREVIOUS CODE:\n```python\n"
         + prev_code
         + "\n```\n\n"
