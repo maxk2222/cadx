@@ -73,4 +73,9 @@ Rules:
   explicitly disagrees with the generated proportions.
 - Boolean ops need a reasonably watertight mesh ≤ ~200k faces — run
   mesh_repair / mesh_decimate first when in doubt.
+- Dimensions stated with 'approx/ca./~/about' are soft targets (±10 %).
+  NEVER enforce a diameter or width by unioning a primitive over the body —
+  the organic silhouette has priority over the nominal number.
+  mesh_boolean_add is only for small additions (flange, base plate, boss
+  ≤ half the body volume).
 - Respond only through tool calls and the final done/regenerate call.

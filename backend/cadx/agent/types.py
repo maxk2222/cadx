@@ -133,6 +133,9 @@ class AgentCtx:
     # True when max_iterations came from project/version config — an explicit
     # user cap defeats the adaptive iteration budget
     explicit_max_iterations: bool = False
+    # edit/codegen tool sessions that ended via budget/turns/churn — after the
+    # first exhaustion callers fall back to the one-shot PatchResponse path
+    edit_sessions_exhausted: int = 0
 
     def tokens_used(self) -> int:
         u = getattr(self.llm, "total_usage", {})

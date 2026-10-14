@@ -42,6 +42,8 @@ class RuntimeSettings(BaseModel):
     agent_critique_reask: bool = True
     agent_tool_max_calls: int = Field(default=10, ge=1, le=100)
     agent_tool_max_calls_info: int = Field(default=6, ge=1, le=100)
+    agent_tool_max_turns: int = Field(default=24, ge=1, le=200)
+    agent_tool_churn_limit: int = Field(default=6, ge=2, le=50)
     agent_tool_verify: bool = True
     agent_tool_verify_max: int = Field(default=2, ge=0, le=20)
     agent_mesh_tools: bool = True

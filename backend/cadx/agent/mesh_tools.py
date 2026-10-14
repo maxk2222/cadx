@@ -40,6 +40,30 @@ if TYPE_CHECKING:
 
 log = get_logger(__name__)
 
+
+def _primitive_volume(args: dict[str, Any]) -> float | None:
+    """Bounding volume of a boolean primitive in mm³ (None when unknown)."""
+    import math
+
+    shape = str(args.get("shape") or "box")
+    if shape == "cylinder":
+        r, h = args.get("radius"), args.get("height")
+        if r and h:
+            return math.pi * float(r) ** 2 * float(h)
+    elif shape == "sphere":
+        r = args.get("radius")
+        if r:
+            return 4.0 / 3.0 * math.pi * float(r) ** 3
+    else:
+        ext = args.get("size_xyz")
+        if ext and len(ext) == 3:
+            return float(ext[0]) * float(ext[1]) * float(ext[2])
+        s = args.get("size")
+        if s:
+            return float(s) ** 3
+    return None
+
+
 # tool name -> op name; boolean direction is injected into args
 _OP_TOOLS: dict[str, str] = {
     "mesh_set_up": "set_up",
@@ -515,6 +539,19 @@ class MeshWorkbench:
                 "error": f"op budget reached ({self.max_ops}) — call done or mesh_undo first",
             }
         op_args = dict(args)
+        if tool == "mesh_boolean_add" and self.work is not None:
+            prim_vol = _primitive_volume(op_args)
+            body_vol = float(abs(self.work.volume)) if self.work.is_volume else 0.0
+            if body_vol and prim_vol is not None and prim_vol > 0.5 * body_vol:
+                return {
+                    "ok": False,
+                    "error": (
+                        "refused: the added primitive is larger than half the body — "
+                        "it would replace the organic shape. Use mesh_scale / "
+                        "mesh_clip_height to adjust size; boolean_add is for small "
+                        "flanges, bases and bosses only."
+                    ),
+                }
         if tool == "mesh_boolean_add":
             op_args["op"] = "union"
         elif tool == "mesh_boolean_cut":

@@ -69,6 +69,37 @@ def tools_enabled(ctx: AgentCtx, role: str) -> bool:
     return ok is not False  # legacy bool/None shape
 
 
+# tools that validate progress — a turn without any of these counts as churn
+_CHECK_TOOLS = {
+    "check_code",
+    "verify",
+    "render_model",
+    "done",
+    "submit_code",
+    "mesh_preview",
+    "mesh_measure",
+}
+
+
+def _trim_tool_results(msgs: list[dict[str, Any]], keep_last: int = 6) -> None:
+    """Replace bodies of old read-only tool results with a stub (in place)."""
+    idx = [
+        i
+        for i, m in enumerate(msgs)
+        if m.get("role") == "tool"
+        or (m.get("role") == "user" and str(m.get("content", "")).startswith("TOOL RESULT for"))
+    ]
+    for i in idx[:-keep_last]:
+        m = msgs[i]
+        body = m.get("content")
+        if (
+            isinstance(body, str)
+            and len(body) > 200
+            and ('"lines"' in body or "read_lines" in body or "search_code" in body)
+        ):
+            m["content"] = body[:120] + " …[elided — call read_lines again if needed]"
+
+
 def _assistant_echo(resp: LLMResponse, native: bool) -> dict[str, Any]:
     if native:
         return {
@@ -124,13 +155,18 @@ async def run_session(
     """Run the tool-call turn loop. Returns when the model stops calling tools."""
     msgs = list(messages)
     calls = 0
+    turns = 0
     error_streak = 0
     last_sig = ""
     last_text = ""
     repeat_streak = 0
+    edits_since_check = 0
+    nudged = False
+    churn_exceeded = False
     native = True  # per-response: all calls in one response share the mode
 
     while True:
+        turns += 1
         # cancellation is polled once per turn — a single tool session can
         # span dozens of LLM calls and must not outlive a cancelled job
         if await ctx.check_cancel():
@@ -141,6 +177,7 @@ async def run_session(
                 tool_calls_made=calls,
                 tool_log=session.tool_log,
             )
+        _trim_tool_results(msgs)
         # fresh each turn: e.g. `verify` drops out once its budget is spent
         tools = session.tools()
         resp = await ctx.llm.chat(
@@ -210,11 +247,45 @@ async def run_session(
         text_hit = len(text_sig) >= 16 and text_sig == last_text
         repeat_streak = repeat_streak + 1 if (sig == last_sig or text_hit) else 0
         last_sig, last_text = sig, text_sig
-        if calls >= max_calls or error_streak >= 4 or repeat_streak >= 2:
+        # churn detector: weak models burn turns on read/edit pairs without
+        # ever validating — nudge once, then end the session
+        names = {tc.name for tc in tool_calls}
+        edits_since_check = 0 if names & _CHECK_TOOLS else edits_since_check + 1
+        if (
+            edits_since_check >= ctx.runtime_settings.agent_tool_churn_limit
+            and session.kind in ("edit", "codegen")
+        ):
+            if not nudged:
+                nudged = True
+                msgs.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "You have made many edits without checking. "
+                            "Call check_code now, then done."
+                        ),
+                    }
+                )
+                edits_since_check = 0
+            else:
+                churn_exceeded = True
+        if (
+            calls >= max_calls
+            or turns >= ctx.runtime_settings.agent_tool_max_turns
+            or error_streak >= 4
+            or repeat_streak >= 2
+            or churn_exceeded
+        ):
             reason = (
                 "budget"
                 if calls >= max_calls
-                else ("error_streak" if error_streak >= 4 else "repeat_loop")
+                else "turns"
+                if turns >= ctx.runtime_settings.agent_tool_max_turns
+                else "error_streak"
+                if error_streak >= 4
+                else "churn"
+                if churn_exceeded
+                else "repeat_loop"
             )
             log.info("tool_session.end", step=step, calls=calls, reason=reason)
             # rescue turn: schema-final sessions (intake/plan/critique/codegen)

@@ -22,7 +22,13 @@ from cadx.cad.dfm.cnc import cnc_checks, cnc_mesh_checks
 from cadx.cad.dfm.common import common_checks, load_mesh
 from cadx.cad.dfm.fdm import fdm_checks, fdm_mesh_checks
 from cadx.cad.dfm.report import DfmWarning
-from cadx.cad.exporters import export_2d, export_all_3d, export_mesh_all, quick_stl
+from cadx.cad.exporters import (
+    export_2d,
+    export_all_3d,
+    export_mesh_all,
+    quick_stl,
+    repair_mesh_file,
+)
 from cadx.cad.mesh_ops import (
     MESH_OPS_VERSION,
     MeshPostParams,
@@ -185,6 +191,17 @@ def run_pipeline(
 
     # 4. analysis
     res.analysis = analyze(shape, stl_path)
+    if res.analysis.watertight is False:
+        # a leaky tessellation must not be handed to the slicer as-is —
+        # repair the analysis STL in place so downstream consumers
+        # (renders, DfM, critique) see the post-repair state
+        try:
+            res.analysis.watertight_after_repair = repair_mesh_file(stl_path)
+        except Exception as e:
+            log.warning("export.repair_failed", error=str(e)[:200])
+            res.analysis.watertight_after_repair = False
+    else:
+        res.analysis.watertight_after_repair = res.analysis.watertight
 
     # 4b. deterministic feature extraction (feedback-only, never blocks)
     try:
@@ -226,7 +243,7 @@ def run_pipeline(
         f"volume: {res.analysis.volume:.0f} mm^3",
         f"solids: {res.analysis.solid_count}",
         f"valid: {res.analysis.is_valid}",
-        f"watertight: {res.analysis.watertight}",
+        f"watertight: {res.analysis.watertight_after_repair}",
     ]
     sheet = make_contact_sheet(render_paths, out_dir / "contact_sheet.png", stats)
     res.contact_sheet = sheet.name if sheet else None
@@ -263,6 +280,16 @@ def run_pipeline(
     if full_exports:
         res.exports = export_all_3d(shape, exp_dir, name=name)
         res.exports.update(export_2d(shape, exp_dir, name, ro.flat_brep_path))
+        if res.analysis.watertight is False:
+            # same repair the analysis STL got — the shipped mesh formats
+            # must not leak non-watertight geometry to the slicer
+            for fmt in ("stl", "3mf", "glb"):
+                fname = res.exports.get(fmt)
+                if fname:
+                    try:
+                        repair_mesh_file(exp_dir / fname)
+                    except Exception as e:
+                        log.warning("export.repair_failed", fmt=fmt, error=str(e)[:200])
     else:
         # iterations only need the STL (already exported for renders)
         res.exports = {"stl": None}
@@ -381,6 +408,16 @@ def run_mesh_pipeline(  # noqa: C901
 
     # 7. analysis
     res.analysis = mesh_analysis(mesh)
+    if res.analysis.watertight is False:
+        # a leaky export must not reach the slicer — repair the STL in
+        # place so renders/DfM/critique see the post-repair state
+        try:
+            res.analysis.watertight_after_repair = repair_mesh_file(stl_path)
+        except Exception as e:
+            log.warning("export.repair_failed", error=str(e)[:200])
+            res.analysis.watertight_after_repair = False
+    else:
+        res.analysis.watertight_after_repair = res.analysis.watertight
 
     # 7b. deterministic feature detection (holes, dimples, XY outline) —
     # feeds worker-side anchor reconciliation with the measured top view
@@ -421,7 +458,7 @@ def run_mesh_pipeline(  # noqa: C901
         f"bbox: {res.analysis.bbox_size[0]:.1f} x {res.analysis.bbox_size[1]:.1f} x {res.analysis.bbox_size[2]:.1f} mm",
         f"volume: {res.analysis.volume:.0f} mm^3",
         f"triangles: {res.analysis.triangle_count}",
-        f"watertight: {res.analysis.watertight}",
+        f"watertight: {res.analysis.watertight_after_repair}",
     ]
     sheet = make_contact_sheet(render_paths, out_dir / "contact_sheet.png", stats)
     res.contact_sheet = sheet.name if sheet else None
@@ -491,6 +528,15 @@ def run_mesh_pipeline(  # noqa: C901
                 res.exports["step"] = None
         res.exports["dxf"] = None
         res.exports["svg"] = None
+        if res.analysis.watertight is False:
+            exp_dir = out_dir / "exports"
+            for fmt in ("stl", "3mf", "glb"):
+                fname = res.exports.get(fmt)
+                if fname:
+                    try:
+                        repair_mesh_file(exp_dir / fname)
+                    except Exception as e:
+                        log.warning("export.repair_failed", fmt=fmt, error=str(e)[:200])
     else:
         res.exports = {"stl": None}
     res.timings["export_s"] = round(time.monotonic() - t, 2)
@@ -1071,6 +1117,21 @@ def run_topopt_pipeline(  # noqa: C901
     res.exports["dxf"] = None
     res.exports["svg"] = None
     res.analysis = mesh_analysis(opt_mesh)
+    if res.analysis.watertight is False:
+        try:
+            res.analysis.watertight_after_repair = repair_mesh_file(stl_path)
+            for fmt in ("stl", "3mf", "glb"):
+                fname = res.exports.get(fmt)
+                if fname:
+                    try:
+                        repair_mesh_file(out_dir / "exports" / fname)
+                    except Exception as e:
+                        log.warning("export.repair_failed", fmt=fmt, error=str(e)[:200])
+        except Exception as e:
+            log.warning("export.repair_failed", error=str(e)[:200])
+            res.analysis.watertight_after_repair = False
+    else:
+        res.analysis.watertight_after_repair = res.analysis.watertight
     res.mesh = {
         "pipeline": "topopt",
         "triangles": len(opt_mesh.faces),
@@ -1093,7 +1154,7 @@ def run_topopt_pipeline(  # noqa: C901
         f"x {res.analysis.bbox_size[2]:.1f} mm",
         f"volume: {res.analysis.volume:.0f} mm^3 (target {best['volfrac']:.0%})",
         f"triangles: {res.analysis.triangle_count}",
-        f"watertight: {res.analysis.watertight}",
+        f"watertight: {res.analysis.watertight_after_repair}",
         f"SF mask/export: {sf_mask_s} / {sf_exp_s}",
         f"min member: {best['min_member_mm']} mm",
     ]

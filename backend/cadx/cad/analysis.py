@@ -26,6 +26,7 @@ class Analysis(BaseModel):
     solid_count: int = 0
     is_valid: bool = False
     watertight: bool | None = None
+    watertight_after_repair: bool | None = None
     face_count: int = 0
     edge_count: int = 0
     cylindrical_faces: list[CylFace] = Field(default_factory=list)

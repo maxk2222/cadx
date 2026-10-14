@@ -1054,6 +1054,29 @@ async def _candidate_seed(
         sc = _score_candidate_mesh(rel, spec, outline)
         if sc is not None:
             scores[(seed_i, model_i)] = sc
+    # weak screening round: one extra roll on a fresh seed before giving up —
+    # a single bad candidate must not doom the whole generation
+    if scores and max(scores.values()) < 0.5 and len(scores) < 4:
+        if await ctx.check_cancel():
+            return None
+        seed_i = base + 2000
+        model_i = adapters[(len(scores)) % len(adapters)] if adapters else None
+        await ctx.emit("meshgen", iteration, "weak candidates — drawing one extra roll")
+        rel = await _generate_mesh(
+            ctx,
+            iteration,
+            spec,
+            plan,
+            seed=seed_i,
+            steps=s.mesh_candidate_steps,
+            resolution=256,
+            tag="_cand_extra",
+            model=model_i,
+        )
+        if rel is not None:
+            sc = _score_candidate_mesh(rel, spec, outline)
+            if sc is not None:
+                scores[(seed_i, model_i)] = sc
     return await _select_candidate(ctx, iteration, scores, hf)
 
 
@@ -1099,10 +1122,15 @@ async def _select_candidate(
                 + (f" on adapter '{model_i}'" if model_i else ""),
             )
 
-    # heightfield candidate (built above) competes against the best seed
+    # heightfield candidate (built above) competes against the best seed —
+    # but only as a rescue: a viable generated mesh keeps its organic detail
+    # instead of being replaced by a flat slab that merely matches the outline
     if hf is not None:
         hf_rel, hf_score = hf
-        if hf_score > best_gen:
+        gen_weak = best_gen < _CANDIDATE_VIABLE_SCORE or (
+            best_gen < 0.5 and hf_score > best_gen + 0.25
+        )
+        if gen_weak and hf_score > best_gen:
             ctx.mesh_info["_heightfield_rel"] = hf_rel
             ctx.mesh_info["_mesh_hopeless"] = False
             await ctx.emit(
@@ -1112,6 +1140,13 @@ async def _select_candidate(
                 "using deterministic flat-part mesh",
             )
             return None
+        if hf_score > best_gen:
+            await ctx.emit(
+                "meshgen",
+                iteration,
+                f"heightfield {hf_score} available but generator {best_gen} kept "
+                "(organic detail wins)",
+            )
     if best_key is None or ctx.mesh_info.get("_mesh_hopeless"):
         return None
     return best_key[0]
@@ -1281,6 +1316,27 @@ async def _arrange_gen_images(
     """Resolve the adapter, reorder for sketch-conditioned models, cap to the
     adapter's image budget (roles stay aligned). Returns (model, images, roles)."""
     model, img_cap = await _resolve_mesh_adapter(ctx, len(images), prefer=prefer, spec=spec)
+    if img_cap > 1 and len(images) > 1:
+        # multiview slots are semantically labelled (front/back/left/right) —
+        # feeding a perspective shot into a view slot makes the generator
+        # treat it as an orthographic view. Drop unlabelled extras.
+        keep = {"front", "back", "left", "right", "scribble"}
+        labelled = [
+            (a, r) for a, r in zip(images, roles, strict=True) if r in keep
+        ]
+        if len(labelled) < len(images):
+            dropped = len(images) - len(labelled)
+            if not labelled:
+                labelled = [(images[0], roles[0])]
+                dropped -= 1
+            await ctx.emit(
+                "meshgen",
+                iteration,
+                f"multiview: sending {len(labelled)} labelled view(s), "
+                f"dropped {dropped} 'other' image(s)",
+            )
+            images = [a for a, _ in labelled]
+            roles = [r for _, r in labelled]
     if model.endswith("-scribble"):
         # sketch-conditioned adapters read image[0] as the scribble — prefer a
         # user/agent-marked sketch (role_hint or intake 'scribble' role), fall
@@ -1486,6 +1542,30 @@ async def _orient_mesh(ctx: AgentCtx, iteration: int, mesh_rel: str) -> dict[str
             await ctx.emit("orient", iteration, f"orientation from top view (IoU {iou:.2f})")
             return ctx.mesh_orientation
 
+    table = None
+    rank_fn = None
+    if ctx.spec:
+        s = ctx.runtime_settings
+        table, rank_fn = _orientation_ranking(
+            mesh_rel, ctx.spec, s.agent_dim_tolerance_pct, s.agent_dim_tolerance_mm
+        )
+        if table and len(table) >= 2:
+            # decisive deterministic ranking: no stated-dim violation and a
+            # clear margin to the runner-up — the LLM orient call adds cost
+            # but cannot improve on this pick, so skip it entirely
+            (best_key, best_choice), (second_key, _) = table[0], table[1]
+            margin = second_key[1] - best_key[1]
+            if best_key[0] == 0 and margin >= 0.15:
+                ctx.mesh_orientation = dict(best_choice)
+                ctx.mesh_info["orientation_source"] = "deterministic"
+                await ctx.emit(
+                    "orient",
+                    iteration,
+                    f"orientation from deterministic ranking "
+                    f"{best_choice['up']}/{best_choice['front']} (margin {margin:.2f})",
+                )
+                return ctx.mesh_orientation
+
     choice = await mesh_orient_step.run(ctx, iteration, mesh_rel)
     # deterministic sanity: the LLM can orient a flat part standing on its
     # edge (up=+y on a handle scale → z-extent 40x the stated thickness) —
@@ -1495,12 +1575,10 @@ async def _orient_mesh(ctx: AgentCtx, iteration: int, mesh_rel: str) -> dict[str
     # violation term degenerates to 0 for every candidate and ranking falls
     # back to the raw-mesh score alone — the same metric the pre-gate uses,
     # so a catastrophic LLM pick still gets corrected before downstream work.
-    if ctx.spec:
-        s = ctx.runtime_settings
-        det, llm_bad, det_bad = _rank_orientations(
-            mesh_rel, ctx.spec, choice, s.agent_dim_tolerance_pct, s.agent_dim_tolerance_mm
-        )
-        if det is not None and det_bad < llm_bad:
+    if table and rank_fn is not None:
+        llm_bad = rank_fn(choice)
+        det_bad, det = table[0]
+        if det_bad < llm_bad:
             if det_bad[0] < llm_bad[0]:
                 reason = (
                     f"violates {llm_bad[0]} stated dim(s) "
@@ -1520,18 +1598,22 @@ async def _orient_mesh(ctx: AgentCtx, iteration: int, mesh_rel: str) -> dict[str
     return ctx.mesh_orientation
 
 
-def _rank_orientations(
+def _orientation_ranking(
     mesh_rel: str,
     spec: PartSpec,
-    llm_choice: dict[str, Any],
     tol_pct: float,
     tol_mm: float,
-) -> tuple[dict[str, str] | None, tuple[int, float], tuple[int, float]]:
+) -> tuple[
+    list[tuple[tuple[int, float], dict[str, str]]] | None,
+    Any,
+]:
     """Score every (up, front) orientation: (#stated-dim violations, -score).
 
-    The LLM pick is scored with the same ruler; the best deterministic
-    orientation is returned so the caller can override a physically
-    impossible choice (e.g. a flat scale standing on its edge)."""
+    Returns (table, key_fn): `table` is the (up, front) candidates sorted best
+    first; `key_fn(choice)` scores an arbitrary LLM pick with the same ruler
+    so the caller can override a physically impossible choice (e.g. a flat
+    scale standing on its edge). Both are None when the mesh cannot be
+    loaded."""
     try:
         import trimesh
 
@@ -1540,7 +1622,7 @@ def _rank_orientations(
 
         m = trimesh.load(storage.resolve(mesh_rel), force="mesh")
         if not isinstance(m, trimesh.Trimesh):
-            return None, (0, 0.0), (0, 0.0)
+            return None, None
 
         def _key(up: str, front: str, mirror: bool = False) -> tuple[int, float]:
             c = rest_on_xy_center(orient(m, up, front, mirror_x=mirror))
@@ -1550,34 +1632,48 @@ def _rank_orientations(
             )
             return n, -(score_raw_mesh(c, spec, None) or 0.0)
 
+        def _key_choice(choice: dict[str, Any]) -> tuple[int, float]:
+            return _key(
+                str(choice.get("up") or "+z"),
+                str(choice.get("front") or "+y"),
+                bool(choice.get("mirror_x")),
+            )
+
         axes = ("+x", "-x", "+y", "-y", "+z", "-z")
-        best_choice: dict[str, str] | None = None
-        best_key: tuple[int, float] | None = None
+        table: list[tuple[tuple[int, float], dict[str, str]]] = []
         for up in axes:
             for front in axes:
                 if up[-1] == front[-1]:
                     continue
-                k = _key(up, front)
-                if best_key is None or k < best_key:
-                    best_key, best_choice = k, {"up": up, "front": front}
-        llm_key = _key(
-            str(llm_choice.get("up") or "+z"),
-            str(llm_choice.get("front") or "+y"),
-            bool(llm_choice.get("mirror_x")),
-        )
-        return best_choice, llm_key, best_key or (0, 0.0)
+                table.append((_key(up, front), {"up": up, "front": front}))
+        table.sort(key=lambda t: t[0])
+        return table, _key_choice
     except Exception as e:
         log.warning("orient.sanity_failed", error=str(e)[:200])
-        return None, (0, 0.0), (0, 0.0)
+        return None, None
+
+
+def _measurement_authoritative(ctx: AgentCtx) -> bool:
+    """True when at least one measurement was taken from an explicitly
+    labelled plan view with clean quality (set by the measure step)."""
+    return any(bool(m.get("authoritative")) for m in (ctx.measurements or {}).values())
 
 
 def _measured_plan_outline(ctx: AgentCtx) -> list[list[float]] | None:
-    """Best measured plan-view outline (confidence >= 0.5) for orientation,
-    footprint scoring and clipping."""
+    """Best measured plan-view outline for orientation, footprint scoring
+    and clipping.
+
+    Only AUTHORITATIVE measurements feed silhouette reconstruction — an
+    aspect-ratio fallback hit on a perspective photo must not become ground
+    truth. When the planner explicitly asked for `use_image_profile` the best
+    outline is still used (that is what the flag is for)."""
+    want_profile = bool(getattr(ctx.plan, "use_image_profile", False))
     best: tuple[float, list[list[float]]] | None = None
     for m in (ctx.measurements or {}).values():
         conf = float(m.get("confidence") or 0)
         outline = m.get("outline_mm") or []
+        if not want_profile and not m.get("authoritative"):
+            continue
         if conf >= 0.5 and len(outline) >= 3 and (best is None or conf > best[0]):
             best = (conf, outline)
     return best[1] if best else None
@@ -1905,15 +2001,24 @@ async def _run_cad(  # noqa: C901
                 log.warning("features.anchor_compare_failed", error=str(e)[:200])
         f_iou = (analysis or {}).get("footprint_iou")
         if f_iou is not None and f_iou < 0.85:
+            # only an authoritative plan-view measurement (or an explicit
+            # use_image_profile plan) may demand an outline rebuild — an
+            # advisory measurement downgrades the finding to a hint
+            authoritative = _measurement_authoritative(ctx) or bool(
+                getattr(plan, "use_image_profile", False)
+            )
             feature_findings.append(
                 {
                     "feature": "footprint",
                     "expected": "matches the measured plan-view outline",
                     "actual": f"footprint IoU {f_iou:.2f}",
-                    "severity": "major",
+                    "severity": "major" if authoritative else "minor",
                     "fix_hint": (
                         "rebuild the body from the measured outline — "
                         "use load_image_profile() / profile_body()"
+                        if authoritative
+                        else "footprint deviates from the reference outline — "
+                        "adjust proportions, do not rebuild from the outline"
                     ),
                 }
             )
@@ -3240,6 +3345,23 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
         ctx.spec = spec
         for note in dim_notes:
             await ctx.emit("intake", 0, note)
+
+    # ---- degenerate-spec second chance ----
+    # a spec that echoes a tool name or drops every feature the prompt names
+    # would produce a confident-but-wrong part downstream (observed: bracket
+    # prompt -> `name:"search_catalog"` -> plain box scored 95)
+    gaps = intake_step.spec_gaps(spec, prompt)
+    if gaps:
+        await ctx.emit("intake", 0, "spec incomplete: " + "; ".join(gaps) + " — re-asking")
+        fixed = await intake_step.extract_features(ctx, spec)
+        if fixed.features:
+            spec.features = fixed.features
+        if fixed.name.strip() and any("tool echo" in g for g in gaps):
+            spec.name, spec.summary = fixed.name, fixed.summary or spec.summary
+        outcome.spec = spec.model_dump()
+        ctx.spec = spec
+        await ctx.emit("intake", 0, f"recovered {len(spec.features)} feature(s)")
+
     if prompt_hints_loads and not spec.load_cases:
         tried_load_extraction = True
         cases, opt = await intake_step.extract_load_cases(ctx, spec)

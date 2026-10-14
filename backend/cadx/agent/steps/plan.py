@@ -8,6 +8,7 @@ from cadx.agent.context import (
     catalog_listing_block,
     measurements_block,
     references_block,
+    request_block,
     spec_block,
     system_prompt,
 )
@@ -46,7 +47,13 @@ async def run(ctx: AgentCtx, spec: PartSpec) -> ModelingPlan:
         else:
             mode_ctx += '\nNOTE: no reference images — `approach` must be "cad".'
 
-    user = spec_block(spec) + ("\n\n" + ref if ref else "") + "\n\n" + mode_ctx
+    user = (
+        (request_block(ctx.prompt) + "\n\n" if request_block(ctx.prompt) else "")
+        + spec_block(spec)
+        + ("\n\n" + ref if ref else "")
+        + "\n\n"
+        + mode_ctx
+    )
     mm = measurements_block(ctx.measurements)
     if mm:
         user += "\n\n" + mm

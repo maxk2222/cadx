@@ -14,6 +14,7 @@ from cadx.agent.context import (
     numbered_code_block,
     plan_block,
     references_block,
+    request_block,
     spec_block,
 )
 from cadx.agent.toolloop import run_session, tools_enabled
@@ -46,7 +47,11 @@ def _user_parts(
     plan: ModelingPlan | None,
     feedback: str | None,
 ) -> list[dict[str, Any]]:
-    parts: list[dict[str, Any]] = [{"type": "text", "text": spec_block(spec)}]
+    parts: list[dict[str, Any]] = []
+    rb = request_block(ctx.prompt)
+    if rb:
+        parts.append({"type": "text", "text": rb})
+    parts.append({"type": "text", "text": spec_block(spec)})
     if plan is not None:
         parts.append({"type": "text", "text": plan_block(plan)})
     cat = catalog_block(plan, spec)
@@ -118,7 +123,10 @@ async def run(
     if tools_enabled(ctx, "code"):
         return await _codegen_session(ctx, spec, plan, iteration=iteration, feedback=feedback)
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": codegen_system()},
+        {
+            "role": "system",
+            "content": codegen_system(plan=plan, spec=spec, fresh=True),
+        },
         {"role": "user", "content": _user_parts(ctx, spec, plan, feedback)},
     ]
     resp = await ctx.llm.chat("code", messages, json_schema=CodeResponse)
@@ -161,7 +169,7 @@ async def repair(
     from cadx.agent.context import system_prompt
 
     diag = diagnose(error, traceback, prev_code)
-    if tools_enabled(ctx, "code"):
+    if tools_enabled(ctx, "code") and ctx.edit_sessions_exhausted < 1:
         return await _repair_session(
             ctx,
             prev_code,
@@ -185,6 +193,9 @@ async def repair(
         + diag_block(diag, error, traceback, stdout)
     )
     parts: list[dict[str, Any]] = [{"type": "text", "text": user}]
+    rb = request_block(ctx.prompt)
+    if rb:
+        parts.append({"type": "text", "text": rb})
     if spec is not None:
         parts.append({"type": "text", "text": spec_block(spec)})
     if plan is not None:
@@ -195,7 +206,9 @@ async def repair(
     messages: list[dict[str, Any]] = [
         {
             "role": "system",
-            "content": system_prompt("repair_system.md") + "\n\n" + codegen_system(),
+            "content": system_prompt("repair_system.md")
+            + "\n\n"
+            + codegen_system(plan=plan, spec=spec, fresh=False),
         },
         {"role": "user", "content": parts},
     ]
@@ -243,6 +256,9 @@ async def _repair_session(
         {"type": "text", "text": numbered_code_block(prev_code, "PREVIOUS CODE")},
         {"type": "text", "text": diag_block(diag, error, traceback, stdout)},
     ]
+    rb = request_block(ctx.prompt)
+    if rb:
+        parts.append({"type": "text", "text": rb})
     if spec is not None:
         parts.append({"type": "text", "text": spec_block(spec)})
     if plan is not None:
@@ -254,7 +270,7 @@ async def _repair_session(
         [
             system_prompt("repair_tools.md"),
             system_prompt("tools_protocol.md"),
-            codegen_system(),
+            codegen_system(plan=plan, spec=spec, fresh=False),
         ]
     )
     res = await run_session(
@@ -270,6 +286,8 @@ async def _repair_session(
         iteration=iteration,
         temperature=0.1,
     )
+    if res.exhausted:
+        ctx.edit_sessions_exhausted += 1
     if res.code and res.code != prev_code:
         sub = res.submitted or {}
         return PatchResponse(
@@ -306,7 +324,10 @@ async def _codegen_session(
 
     session = ToolSession(ctx, kind="codegen")
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": codegen_tools_system()},
+        {
+            "role": "system",
+            "content": codegen_tools_system(plan=plan, spec=spec, fresh=True),
+        },
         {"role": "user", "content": _user_parts(ctx, spec, plan, feedback)},
     ]
     res = await run_session(

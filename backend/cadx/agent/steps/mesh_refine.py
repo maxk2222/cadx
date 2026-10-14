@@ -22,6 +22,7 @@ from cadx.agent.context import (
     images_block,
     issues_block,
     renders_block,
+    request_block,
     spec_block,
     system_prompt,
 )
@@ -94,6 +95,9 @@ def _parts(
                 + "\n".join(f"- {o.op}({o.args})" for o in initial_ops),
             }
         )
+    rb = request_block(ctx.prompt)
+    if rb:
+        parts.append({"type": "text", "text": rb})
     parts.append({"type": "text", "text": spec_block(spec)})
     parts += renders_block(contact_sheet, analysis)
     dfm_txt = dfm_block(dfm)

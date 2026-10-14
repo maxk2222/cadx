@@ -294,6 +294,23 @@ async def test_hybrid_mode_generation(tmp_path):
     llm = FakeLLM(
         [
             MESH_SPEC,
+            # intake gate: prompt says "M4 hole" but spec.features is empty →
+            # the focused re-ask recovers it before planning
+            {
+                "name": "knob",
+                "summary": "organic knob with M4 hole",
+                "features": [
+                    {
+                        "name": "m4 hole",
+                        "type": "hole",
+                        "description": "centered M4 through-hole",
+                        "dims": {"diameter": 4.2},
+                        "position": "center",
+                        "count": 1,
+                        "source": "stated",
+                    }
+                ],
+            },
             {
                 "approach": "hybrid",
                 "approach_reason": "organic + precise hole",
@@ -879,6 +896,7 @@ def test_mesh_source_images_adds_synth_back_view_for_flat_parts():
         top.asset_id: {
             "role": "top",
             "confidence": 0.9,
+            "authoritative": True,
             "outline_mm": [[-60, -17], [60, -17], [60, 17], [-60, 17], [-60, -17]],
         }
     }
@@ -996,6 +1014,7 @@ async def test_generate_mesh_uses_heightfield_for_flat_part():
         top.asset_id: {
             "role": "top",
             "confidence": 0.9,
+            "authoritative": True,
             "outline_mm": [[-60, -17], [60, -17], [60, 17], [-60, 17], [-60, -17]],
         }
     }
@@ -1070,3 +1089,16 @@ def test_mesh_source_images_dedupes_near_identical(tmp_path):
     ids = [o.asset_id for o in ordered]
     assert b.asset_id not in ids
     assert set(ids) == {a.asset_id, c.asset_id}
+
+
+def test_hybrid_missing_mesh_ranks_lower():
+    """T4.5: an improve result that dropped load_mesh_solid() must rank below
+    any candidate that kept the organic base body — regardless of score."""
+    from cadx.agent.orchestrator import Candidate
+    from cadx.llm.schemas import Critique
+
+    good = Candidate(1, None, {}, Critique(score=70, passed=True), [])
+    bad = Candidate(
+        2, None, {}, Critique(score=90, passed=True), [], hybrid_missing=True
+    )
+    assert good.rank > bad.rank

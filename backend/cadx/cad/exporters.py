@@ -169,6 +169,25 @@ def quick_stl(shape: Shape, out_dir: Path, name: str = "mesh") -> Path:
     return path
 
 
+def repair_mesh_file(path: Path) -> bool:
+    """In-place repair of an STL/3MF/GLB export; returns watertight state
+    afterwards. Best-effort: vertex merge, degenerate-face drop, hole fill,
+    normal fix, then the voxel rebuild as a last resort."""
+    m = trimesh.load(str(path), force="mesh")
+    m.merge_vertices()
+    m.update_faces(m.nondegenerate_faces())
+    m.remove_unreferenced_vertices()
+    if not m.is_watertight:
+        m.fill_holes()
+    m.fix_normals()
+    if not m.is_watertight:
+        from cadx.cad.mesh_ops import _ensure_watertight
+
+        m = _ensure_watertight(m)
+    m.export(str(path))
+    return bool(m.is_watertight and m.is_winding_consistent)
+
+
 # --------------------------------------------------------------------------- #
 # mesh-mode exports (trimesh-based; STEP via faceted solid)                     #
 # --------------------------------------------------------------------------- #

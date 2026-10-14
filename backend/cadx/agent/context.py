@@ -7,6 +7,7 @@ content into a single user message built from blocks.
 from __future__ import annotations
 
 import contextlib
+import re
 from pathlib import Path
 from typing import Any
 
@@ -26,31 +27,108 @@ def system_prompt(name: str) -> str:
     return read_prompt(name)
 
 
-def _reference_docs() -> str:
-    return "\n\n".join(
-        read_prompt(n)
-        for n in (
-            "build123d_reference.md",
-            "bd_warehouse_reference.md",
-            "cadlib_reference.md",
-            "code_examples.md",
-            "dfm_rules.md",
-        )
+# helpers that are always relevant regardless of the spec's feature list
+_CADLIB_ALWAYS = {"through_hole", "profile_body"}
+
+
+def _cadlib_sections(spec: PartSpec | None) -> str:
+    """cadlib_reference.md filtered to the helpers the spec actually needs.
+
+    Sections are delimited by `### <helper_name>`; a section is kept when its
+    helper name shares a word with a spec feature type/name. With no spec (or
+    no features) the full reference is returned — codegen from scratch gets
+    the complete toolbox."""
+    text = read_prompt("cadlib_reference.md")
+    if spec is None or not spec.features:
+        return text
+    words: set[str] = set()
+    for f in spec.features:
+        for w in re.split(r"[^a-z]+", f"{f.type} {f.name}".lower()):
+            if w:
+                words.add(w)
+    # shared vocabulary: feature wording -> helper names
+    for alias, helpers in {
+        "hole": {"through_hole", "hole_grid"},
+        "bore": {"through_hole"},
+        "insert": {"insert_pocket", "hole_grid"},
+        "screw": {"hole_grid", "boss"},
+        "boss": {"boss"},
+        "rib": {"rib"},
+        "gusset": {"rib"},
+        "ear": {"mounting_ear"},
+        "slot": {"keyhole_slot", "t_slot", "dovetail_slot"},
+        "keyhole": {"keyhole_slot"},
+        "bearing": {"bearing_seat"},
+        "hinge": {"living_hinge"},
+        "snap": {"snap_fit_cantilever"},
+        "knurl": {"knurl_ring"},
+        "text": {"text_label"},
+        "label": {"text_label"},
+        "bracket": {"l_bracket"},
+        "box": {"filleted_box"},
+        "outline": {"profile_body", "closed_polyline"},
+        "profile": {"profile_body", "closed_polyline"},
+    }.items():
+        if alias in words:
+            words.update(helpers)
+    keep = words | _CADLIB_ALWAYS
+
+    lines = text.split("\n")
+    out: list[str] = []
+    cur_ok = True
+    section: list[str] = []
+
+    def _flush() -> None:
+        if section and cur_ok:
+            out.extend(section)
+
+    for line in lines:
+        if line.startswith("### "):
+            _flush()
+            name = line[4:].strip().split("(")[0].strip()
+            cur_ok = name in keep
+            section = [line]
+        else:
+            section.append(line)
+    _flush()
+    return "\n".join(out)
+
+
+def _reference_docs(
+    *, plan: Any | None = None, spec: PartSpec | None = None, fresh: bool = True
+) -> str:
+    """Staged reference docs: build123d always; bd_warehouse only when the
+    plan/spec references standard parts; cadlib filtered to needed helpers;
+    full examples only for fresh codegen (repairs get the terse contract)."""
+    parts = [read_prompt("build123d_reference.md")]
+    needs_bd = bool(getattr(plan, "standard_parts", None)) or any(
+        getattr(f, "standard", "") for f in (spec.features if spec else [])
     )
+    if needs_bd:
+        parts.append(read_prompt("bd_warehouse_reference.md"))
+    parts.append(_cadlib_sections(spec))
+    if fresh:
+        parts.append(read_prompt("code_examples.md"))
+    parts.append(read_prompt("dfm_rules.md"))
+    return "\n\n".join(p for p in parts if p)
 
 
-def codegen_system() -> str:
+def codegen_system(
+    *, plan: Any | None = None, spec: PartSpec | None = None, fresh: bool = True
+) -> str:
     return "\n\n".join(
         [
             read_prompt("codegen_system.md"),
             read_prompt("code_contract.md"),
             read_prompt("code_contract_responses.md"),
-            _reference_docs(),
+            _reference_docs(plan=plan, spec=spec, fresh=fresh),
         ]
     )
 
 
-def codegen_tools_system() -> str:
+def codegen_tools_system(
+    *, plan: Any | None = None, spec: PartSpec | None = None, fresh: bool = True
+) -> str:
     """Codegen system prompt for tool sessions — submit_code replaces the
     CodeResponse channel, the file contract stays identical."""
     return "\n\n".join(
@@ -59,7 +137,7 @@ def codegen_tools_system() -> str:
             read_prompt("tools_protocol.md"),
             read_prompt("code_contract.md"),
             read_prompt("code_contract_responses_tools.md"),
-            _reference_docs(),
+            _reference_docs(plan=plan, spec=spec, fresh=fresh),
         ]
     )
 
@@ -169,6 +247,17 @@ def library_block(templates: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def request_block(prompt: str) -> str:
+    """Verbatim user request — authoritative when it conflicts with the spec."""
+    p = (prompt or "").strip()
+    if not p:
+        return ""
+    return (
+        "USER REQUEST (verbatim — every feature and dimension named here MUST be "
+        "implemented; if the PART SPEC below misses something, the request wins):\n" + p
+    )
+
+
 def spec_block(spec: PartSpec) -> str:
     s: str = spec.model_dump_json(indent=2)
     return "PART SPEC (JSON):\n" + s
@@ -235,6 +324,9 @@ def renders_block(
     parts: list[dict[str, Any]] = []
     if analysis:
         size = analysis.get("bbox_size", "?")
+        # watertight_after_repair is the export-quality signal — the raw
+        # pre-repair flag must not tank the score when the shipped file is clean
+        wt = analysis.get("watertight_after_repair", analysis.get("watertight"))
         parts.append(
             {
                 "type": "text",
@@ -242,7 +334,7 @@ def renders_block(
                     f"GENERATED MODEL — measured bbox {size}, "
                     f"volume {analysis.get('volume')} mm^3, "
                     f"solids {analysis.get('solid_count')}, "
-                    f"valid {analysis.get('is_valid')}, watertight {analysis.get('watertight')}, "
+                    f"valid {analysis.get('is_valid')}, watertight {wt}, "
                     f"warnings {analysis.get('warnings')}"
                 ),
             }
@@ -332,7 +424,10 @@ def measurements_block(measurements: dict[str, Any] | None) -> str:
     """Image-measurement summary (plan-view silhouette + holes) for prompts."""
     if not measurements:
         return ""
-    lines = ["MEASURED PLAN VIEW(S) (ground truth from the images):"]
+    lines = [
+        "MEASURED PLAN VIEW(S) (entries marked authoritative are ground truth; "
+        "the rest are hints only):"
+    ]
     for asset_id, m in measurements.items():
         bb = m.get("bbox_mm") or []
         holes = m.get("holes") or []
@@ -342,6 +437,7 @@ def measurements_block(measurements: dict[str, Any] | None) -> str:
         lines.append(
             f"- asset {asset_id} ({m.get('role', 'top')}): outline "
             f"{bb[0]:.1f} x {bb[1]:.1f} mm, confidence {m.get('confidence', 0):.2f}"
+            f" | authoritative: {'yes' if m.get('authoritative') else 'no'}"
         )
         if hole_txt:
             lines.append(f"  holes: {hole_txt}")
