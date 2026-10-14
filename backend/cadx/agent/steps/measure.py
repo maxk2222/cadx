@@ -111,7 +111,9 @@ async def run(ctx: AgentCtx, spec: PartSpec) -> dict[str, dict[str, Any]]:
                 and not width_warn
                 and m.confidence >= MEASURE_AUTHORITATIVE_CONF
             )
-            (out_dir / f"{asset.asset_id}.json").write_text(m.model_dump_json(indent=2))
+            (out_dir / f"{asset.asset_id}.json").write_text(
+                m.model_dump_json(indent=2), encoding="utf-8"
+            )
             try:
                 render_overlay(Path(asset.path), m, out_dir / f"{asset.asset_id}_overlay.png")
             except Exception as e:
