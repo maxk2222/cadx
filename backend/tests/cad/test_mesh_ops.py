@@ -675,3 +675,20 @@ def test_mesh_to_solid_repairs_then_converts():
     solid = mesh_to_solid(m)
     assert solid is not None
     assert solid.volume > 0
+
+
+def test_mesh_analysis_counts_disconnected_components():
+    """T0.2: a fractured mesh must report its real solid count — the
+    hard-coded solid_count=1 hid two-piece grips (grip_mesh score-0 case)."""
+    import trimesh
+
+    from cadx.cad.mesh_ops import mesh_analysis
+
+    a = trimesh.creation.box(extents=(10, 10, 10))
+    b = trimesh.creation.box(extents=(5, 5, 5))
+    b.apply_translation([30, 0, 0])
+    mesh = trimesh.util.concatenate([a, b])
+
+    ana = mesh_analysis(mesh)
+    assert ana.solid_count == 2
+    assert any("2 disconnected solids" in w for w in ana.warnings)

@@ -1381,6 +1381,12 @@ def mesh_analysis(mesh: trimesh.Trimesh) -> Analysis:
         warnings.append("part does not rest on the XY plane (min Z != 0)")
     if not centered:
         warnings.append("part is not centred at the origin in XY")
+    try:
+        solid_count = max(1, len(mesh.split(only_watertight=False)))
+    except Exception:
+        solid_count = 1
+    if solid_count != 1:
+        warnings.append(f"part has {solid_count} disconnected solids (expected 1)")
     return Analysis(
         bbox_min=[round(float(v), 4) for v in b[0]],
         bbox_max=[round(float(v), 4) for v in b[1]],
@@ -1388,7 +1394,7 @@ def mesh_analysis(mesh: trimesh.Trimesh) -> Analysis:
         volume=round(volume, 3),
         surface_area=round(float(mesh.area), 3),
         center_of_mass=com,
-        solid_count=1,
+        solid_count=solid_count,
         is_valid=watertight,
         watertight=watertight,
         face_count=len(mesh.faces),

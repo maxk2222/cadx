@@ -184,9 +184,24 @@ def build_issues(
     dim_issues: list[str],
     feature_findings: list[dict[str, Any]],
     dfm: dict[str, Any] | None,
+    analysis: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Structured issue list for the IMPROVE step + trace/UI persistence."""
     issues: list[dict[str, Any]] = []
+    # deterministic gate: specs describe one part — a fractured result must
+    # never look acceptable just because dims/watertightness are fine
+    solid_count = int((analysis or {}).get("solid_count") or 1)
+    if solid_count > 1:
+        issues.append(
+            {
+                "source": "solids",
+                "severity": "major",
+                "what": f"part consists of {solid_count} disconnected solids — "
+                "the spec describes a single joined part",
+                "fix_hint": "rebuild so all features are fused into one body "
+                "(boolean additions must overlap the base body)",
+            }
+        )
     for i in dim_issues:
         issues.append({"source": "dims", "severity": "major", "what": f"dimension mismatch — {i}"})
     for f in feature_findings:
@@ -224,6 +239,11 @@ def build_issues(
             if w.get("severity") == "high":
                 issues.append({"source": "dfm", "severity": "major", "what": w["message"]})
     return issues[:12]
+
+
+def _multi_solid(exec_result: dict[str, Any] | None) -> bool:
+    """Deterministic hard gate: specs describe one joined part."""
+    return int(((exec_result or {}).get("analysis") or {}).get("solid_count") or 1) > 1
 
 
 def _resolve_patch(
@@ -2123,7 +2143,13 @@ async def _run_cad(  # noqa: C901
             pre_issues
             + fem_issues
             + hybrid_issues
-            + build_issues(critique, dim_issues, feature_findings, exec_result.get("dfm"))
+            + build_issues(
+                critique,
+                dim_issues,
+                feature_findings,
+                exec_result.get("dfm"),
+                exec_result.get("analysis"),
+            )
         )
         if best is None or cand.rank > best.rank:
             best = cand
@@ -2151,6 +2177,7 @@ async def _run_cad(  # noqa: C901
             and not major
             and not fem_issues
             and not hybrid_missing
+            and not _multi_solid(exec_result)
         ):
             await ctx.emit("done", it, "all checks passed")
             break
@@ -2210,7 +2237,12 @@ async def _run_cad(  # noqa: C901
 
     outcome.status = (
         "succeeded"
-        if (best.critique and best.critique.passed and not best.dim_issues)
+        if (
+            best.critique
+            and best.critique.passed
+            and not best.dim_issues
+            and not _multi_solid(best.exec_result)
+        )
         else "needs_review"
     )
     outcome.fem = best.exec_result.get("fem")
@@ -2484,7 +2516,13 @@ async def _run_mesh(  # noqa: C901
 
         def _passed(c: Critique, di: list[str]) -> bool:
             major = [d for d in c.discrepancies if d.severity == "major"]
-            return c.passed and c.score >= pass_score and not di and not major
+            return (
+                c.passed
+                and c.score >= pass_score
+                and not di
+                and not major
+                and not _multi_solid(exec_result)
+            )
 
         if _passed(critique, dim_issues):
             await ctx.emit("done", it, "all checks passed")
@@ -2497,7 +2535,9 @@ async def _run_mesh(  # noqa: C901
                 return outcome
             if await finish_early():
                 break
-            issues = build_issues(critique, dim_issues, [], exec_result.get("dfm"))
+            issues = build_issues(
+                critique, dim_issues, [], exec_result.get("dfm"), exec_result.get("analysis")
+            )
             rr = await _refine(it, mesh_rel, post, exec_result, issues=issues)
             if rr is None:
                 break  # sessions unavailable
@@ -2600,7 +2640,12 @@ async def _run_mesh(  # noqa: C901
 
     outcome.status = (
         "succeeded"
-        if (best.critique and best.critique.passed and not best.dim_issues)
+        if (
+            best.critique
+            and best.critique.passed
+            and not best.dim_issues
+            and not _multi_solid(best.exec_result)
+        )
         else "needs_review"
     )
     outcome.code = None
