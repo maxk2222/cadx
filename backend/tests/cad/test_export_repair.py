@@ -39,11 +39,7 @@ def test_run_pipeline_reports_watertight_after_repair(tmp_path):
     from cadx.cad.engine import run_pipeline
     from cadx.db.models import ProjectSettings
 
-    code = (
-        "PARAMS = {}\n"
-        "from build123d import *\n"
-        "result = Pos(0, 0, 0) * Box(30, 20, 10)\n"
-    )
+    code = "PARAMS = {}\nfrom build123d import *\nresult = Pos(0, 0, 0) * Box(30, 20, 10)\n"
     res = run_pipeline(
         code=code,
         out_dir=tmp_path / "it1",

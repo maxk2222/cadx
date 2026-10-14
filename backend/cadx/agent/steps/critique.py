@@ -285,9 +285,7 @@ def _finalize_critique(
     ceiling = fact_ceiling(dim_issues, feature_findings)
     if critique.score > ceiling:
         critique.score = ceiling
-    floor = (
-        fact_floor(critique, dim_issues, feature_findings) if had_llm_discrepancies else 0
-    )
+    floor = fact_floor(critique, dim_issues, feature_findings) if had_llm_discrepancies else 0
     if floor:
         for d in critique.discrepancies:
             if d.source in ("other", "dfm") and d.severity == "major":

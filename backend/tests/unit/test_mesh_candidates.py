@@ -76,16 +76,17 @@ async def test_arrange_gen_images_drops_unlabelled_views():
 
     class _Mesh:
         async def health(self):
+            class M:
+                id = "mv"
+                available = True
+                max_images = 4
+                kind = "mesh"
+
             class H:
                 device = "cpu"
 
-                class M:
-                    id = "mv"
-                    available = True
-                    max_images = 4
-                    kind = "mesh"
-
-                models = [M()]
+                def __init__(self) -> None:
+                    self.models = [M()]
 
             return H()
 
@@ -97,9 +98,7 @@ async def test_arrange_gen_images_drops_unlabelled_views():
         width_y={"value": 40.0, "source": "stated"},
         height_z={"value": 20.0, "source": "stated"},
     )
-    model, out_imgs, out_roles = await _arrange_gen_images(
-        ctx, 1, imgs, roles, spec, prefer="mv"
-    )
+    model, out_imgs, out_roles = await _arrange_gen_images(ctx, 1, imgs, roles, spec, prefer="mv")
     assert out_roles == ["front", "back"]
     assert len(out_imgs) == 2
     assert model == "mv"

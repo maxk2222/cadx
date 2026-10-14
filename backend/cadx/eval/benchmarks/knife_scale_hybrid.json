@@ -7,12 +7,26 @@
     "backend/tests/fixtures/images/knife_scale_3.jpg",
     "backend/tests/fixtures/images/knife_scale_4.jpg"
   ],
-  "expected_bbox": [119, 34, 8],
+  "expected_bbox": [
+    119,
+    34,
+    8
+  ],
   "tolerance_mm": 4.0,
   "expected_features": [
-    { "type": "hole", "count": 3, "dia": 5.5 },
-    { "type": "countersink", "count": 3 }
+    {
+      "type": "hole",
+      "count": 3,
+      "dia": 5.5
+    },
+    {
+      "type": "countersink",
+      "count": 3
+    }
   ],
   "expect_watertight": true,
-  "settings": { "max_iterations": 10 }
+  "settings": {
+    "max_iterations": 10
+  },
+  "real_only": true
 }

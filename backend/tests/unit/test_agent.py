@@ -211,7 +211,10 @@ async def test_needs_review_when_critique_fails():
     outcome = await run_generation(ctx)
 
     assert outcome.status == "needs_review"
-    assert outcome.score == 55
+    # measured geometry is clean (rounds present) — the invented "missing
+    # fillet" complaint is unsourced, so fact_floor lifts 55 -> 60; the
+    # failed verdict itself keeps status needs_review
+    assert outcome.score == 60
 
 
 @pytest.mark.slow

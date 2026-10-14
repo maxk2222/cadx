@@ -1098,7 +1098,5 @@ def test_hybrid_missing_mesh_ranks_lower():
     from cadx.llm.schemas import Critique
 
     good = Candidate(1, None, {}, Critique(score=70, passed=True), [])
-    bad = Candidate(
-        2, None, {}, Critique(score=90, passed=True), [], hybrid_missing=True
-    )
+    bad = Candidate(2, None, {}, Critique(score=90, passed=True), [], hybrid_missing=True)
     assert good.rank > bad.rank

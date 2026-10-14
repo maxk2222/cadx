@@ -129,6 +129,31 @@ class ExecResult:
         return r
 
 
+def _repair_analysis_mesh(analysis: Analysis, stl_path: Path) -> None:
+    """A leaky tessellation must not be handed to the slicer as-is — repair the
+    analysis STL in place so downstream consumers (renders, DfM, critique)
+    see the post-repair state."""
+    if analysis.watertight is False:
+        try:
+            analysis.watertight_after_repair = repair_mesh_file(stl_path)
+        except Exception as e:
+            log.warning("export.repair_failed", error=str(e)[:200])
+            analysis.watertight_after_repair = False
+    else:
+        analysis.watertight_after_repair = analysis.watertight
+
+
+def _repair_export_meshes(exports: dict[str, str | None], exp_dir: Path) -> None:
+    """Apply the same in-place repair to the shipped mesh formats."""
+    for fmt in ("stl", "3mf", "glb"):
+        fname = exports.get(fmt)
+        if fname:
+            try:
+                repair_mesh_file(exp_dir / fname)
+            except Exception as e:
+                log.warning("export.repair_failed", fmt=fmt, error=str(e)[:200])
+
+
 def run_pipeline(
     *,
     code: str,
@@ -191,17 +216,7 @@ def run_pipeline(
 
     # 4. analysis
     res.analysis = analyze(shape, stl_path)
-    if res.analysis.watertight is False:
-        # a leaky tessellation must not be handed to the slicer as-is —
-        # repair the analysis STL in place so downstream consumers
-        # (renders, DfM, critique) see the post-repair state
-        try:
-            res.analysis.watertight_after_repair = repair_mesh_file(stl_path)
-        except Exception as e:
-            log.warning("export.repair_failed", error=str(e)[:200])
-            res.analysis.watertight_after_repair = False
-    else:
-        res.analysis.watertight_after_repair = res.analysis.watertight
+    _repair_analysis_mesh(res.analysis, stl_path)
 
     # 4b. deterministic feature extraction (feedback-only, never blocks)
     try:
@@ -283,13 +298,7 @@ def run_pipeline(
         if res.analysis.watertight is False:
             # same repair the analysis STL got — the shipped mesh formats
             # must not leak non-watertight geometry to the slicer
-            for fmt in ("stl", "3mf", "glb"):
-                fname = res.exports.get(fmt)
-                if fname:
-                    try:
-                        repair_mesh_file(exp_dir / fname)
-                    except Exception as e:
-                        log.warning("export.repair_failed", fmt=fmt, error=str(e)[:200])
+            _repair_export_meshes(res.exports, exp_dir)
     else:
         # iterations only need the STL (already exported for renders)
         res.exports = {"stl": None}
@@ -408,16 +417,7 @@ def run_mesh_pipeline(  # noqa: C901
 
     # 7. analysis
     res.analysis = mesh_analysis(mesh)
-    if res.analysis.watertight is False:
-        # a leaky export must not reach the slicer — repair the STL in
-        # place so renders/DfM/critique see the post-repair state
-        try:
-            res.analysis.watertight_after_repair = repair_mesh_file(stl_path)
-        except Exception as e:
-            log.warning("export.repair_failed", error=str(e)[:200])
-            res.analysis.watertight_after_repair = False
-    else:
-        res.analysis.watertight_after_repair = res.analysis.watertight
+    _repair_analysis_mesh(res.analysis, stl_path)
 
     # 7b. deterministic feature detection (holes, dimples, XY outline) —
     # feeds worker-side anchor reconciliation with the measured top view
@@ -529,14 +529,7 @@ def run_mesh_pipeline(  # noqa: C901
         res.exports["dxf"] = None
         res.exports["svg"] = None
         if res.analysis.watertight is False:
-            exp_dir = out_dir / "exports"
-            for fmt in ("stl", "3mf", "glb"):
-                fname = res.exports.get(fmt)
-                if fname:
-                    try:
-                        repair_mesh_file(exp_dir / fname)
-                    except Exception as e:
-                        log.warning("export.repair_failed", fmt=fmt, error=str(e)[:200])
+            _repair_export_meshes(res.exports, out_dir / "exports")
     else:
         res.exports = {"stl": None}
     res.timings["export_s"] = round(time.monotonic() - t, 2)
@@ -1117,21 +1110,9 @@ def run_topopt_pipeline(  # noqa: C901
     res.exports["dxf"] = None
     res.exports["svg"] = None
     res.analysis = mesh_analysis(opt_mesh)
+    _repair_analysis_mesh(res.analysis, stl_path)
     if res.analysis.watertight is False:
-        try:
-            res.analysis.watertight_after_repair = repair_mesh_file(stl_path)
-            for fmt in ("stl", "3mf", "glb"):
-                fname = res.exports.get(fmt)
-                if fname:
-                    try:
-                        repair_mesh_file(out_dir / "exports" / fname)
-                    except Exception as e:
-                        log.warning("export.repair_failed", fmt=fmt, error=str(e)[:200])
-        except Exception as e:
-            log.warning("export.repair_failed", error=str(e)[:200])
-            res.analysis.watertight_after_repair = False
-    else:
-        res.analysis.watertight_after_repair = res.analysis.watertight
+        _repair_export_meshes(res.exports, out_dir / "exports")
     res.mesh = {
         "pipeline": "topopt",
         "triangles": len(opt_mesh.faces),

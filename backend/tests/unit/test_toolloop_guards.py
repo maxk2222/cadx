@@ -51,9 +51,7 @@ MESSAGES = [{"role": "system", "content": "sys"}, {"role": "user", "content": "g
 async def test_churn_guard_nudges_then_exhausts():
     """read_lines-only turns: one nudge at the churn limit, then the
     session ends as exhausted when the churn continues."""
-    llm = FakeLLM(
-        [_call("read_lines", start=i * 10 + 1, end=i * 10 + 5) for i in range(14)]
-    )
+    llm = FakeLLM([_call("read_lines", start=i * 10 + 1, end=i * 10 + 5) for i in range(14)])
     llm.tools_mode = "auto"
     ctx = _ctx(llm, agent_tool_churn_limit=4)
     session = ToolSession(ctx, kind="edit", code=BOX_CODE)
@@ -109,9 +107,5 @@ async def test_trim_runs_during_session():
     session = ToolSession(ctx, kind="edit", code=BOX_CODE)
     await run_session(ctx, "code", MESSAGES, session=session, max_calls=20, step="improve")
     last_msgs = llm.calls[-1]["messages"]
-    big = [
-        m
-        for m in last_msgs
-        if m.get("role") == "tool" and len(str(m.get("content", ""))) > 400
-    ]
+    big = [m for m in last_msgs if m.get("role") == "tool" and len(str(m.get("content", ""))) > 400]
     assert len(big) <= 6

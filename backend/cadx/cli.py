@@ -440,6 +440,11 @@ def eval(
             if not bms:
                 print(f"no benchmarks with mode '{mode}'")
                 raise typer.Exit(1)
+        if not real_llm:
+            skipped = [b.name for b in bms if b.real_only or b.llm_script is None]
+            bms = [b for b in bms if not b.real_only and b.llm_script is not None]
+            for name in skipped:
+                print(f"{name}: skipped (real-only benchmark — use `cadx eval --real`)")
         llm = LLMClient() if real_llm else None
         for bm in bms:
             if real_llm:

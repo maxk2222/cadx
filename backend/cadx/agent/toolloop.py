@@ -251,9 +251,9 @@ async def run_session(
         # ever validating — nudge once, then end the session
         names = {tc.name for tc in tool_calls}
         edits_since_check = 0 if names & _CHECK_TOOLS else edits_since_check + 1
-        if (
-            edits_since_check >= ctx.runtime_settings.agent_tool_churn_limit
-            and session.kind in ("edit", "codegen")
+        if edits_since_check >= ctx.runtime_settings.agent_tool_churn_limit and session.kind in (
+            "edit",
+            "codegen",
         ):
             if not nudged:
                 nudged = True

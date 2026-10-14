@@ -32,6 +32,7 @@ class Benchmark:
     tolerance_mm: float = 1.0
     llm_script: list[Any] | None = None  # FakeLLM responses; None -> real LLM
     llm_tools: str = "off"  # FakeLLM tools_mode: "auto" -> steps use tool sessions
+    real_only: bool = False  # skipped by `cadx eval`; runs only with --real
     settings: dict[str, Any] = field(default_factory=dict)
     gen_mode: str = "auto"  # auto | cad | mesh | hybrid
     fake_mesh: bool = False  # use FakeMeshClient instead of a real mesh server

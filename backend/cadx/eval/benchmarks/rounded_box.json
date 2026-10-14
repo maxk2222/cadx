@@ -30,6 +30,20 @@
       "open_questions": []
     },
     {
+      "name": "rounded box",
+      "summary": "rectangular block with rounded edges",
+      "features": [
+        {
+          "name": "edge fillets",
+          "type": "fillet",
+          "description": "1.5mm radius on all edges",
+          "dims": {
+            "radius": 1.5
+          }
+        }
+      ]
+    },
+    {
       "steps": [
         "build"
       ],

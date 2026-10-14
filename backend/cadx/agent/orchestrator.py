@@ -1055,8 +1055,10 @@ async def _candidate_seed(
         if sc is not None:
             scores[(seed_i, model_i)] = sc
     # weak screening round: one extra roll on a fresh seed before giving up —
-    # a single bad candidate must not doom the whole generation
-    if scores and max(scores.values()) < 0.5 and len(scores) < 4:
+    # a single bad candidate must not doom the whole generation. Only when the
+    # best roll is within reach of viable: at ~0 all candidates are garbage and
+    # another roll on the same inputs just burns budget (hopeless gate below).
+    if scores and _CANDIDATE_VIABLE_SCORE * 0.6 <= max(scores.values()) < 0.5 and len(scores) < 4:
         if await ctx.check_cancel():
             return None
         seed_i = base + 2000
@@ -1321,9 +1323,7 @@ async def _arrange_gen_images(
         # feeding a perspective shot into a view slot makes the generator
         # treat it as an orthographic view. Drop unlabelled extras.
         keep = {"front", "back", "left", "right", "scribble"}
-        labelled = [
-            (a, r) for a, r in zip(images, roles, strict=True) if r in keep
-        ]
+        labelled = [(a, r) for a, r in zip(images, roles, strict=True) if r in keep]
         if len(labelled) < len(images):
             dropped = len(images) - len(labelled)
             if not labelled:
@@ -3332,7 +3332,7 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
     prompt_hints_loads = bool(
         re.search(
             r"optimi|topolog|leicht|light|gewicht|weight|"
-            r"\d+\s*(?:N|kg)\b|kraft|force|belast|last\b|screw|schraub",
+            r"\d+\s*(?:N|kg)\b|kraft|force|belast|last\b",
             prompt,
             re.I,
         )

@@ -42,9 +42,7 @@ def _ctx() -> AgentCtx:
 def _wb(tmp_path: Path) -> MeshWorkbench:
     # 130x30x30 grip-like cylinder ≈ 92k mm³
     raw = tmp_path / "raw.glb"
-    trimesh.creation.cylinder(radius=15, height=130, sections=32).export(
-        str(raw), file_type="glb"
-    )
+    trimesh.creation.cylinder(radius=15, height=130, sections=32).export(str(raw), file_type="glb")
     return MeshWorkbench(_ctx(), raw_path=raw, post=MeshPostParams(), spec=None, iteration=1)
 
 
@@ -60,9 +58,7 @@ async def test_boolean_add_giant_primitive_refused(tmp_path):
     wb = _wb(tmp_path)
     await wb.handle("mesh_inspect", {})
     # a r=16 h=130 cylinder is ~50% larger than the body → refused
-    res = await wb.handle(
-        "mesh_boolean_add", {"shape": "cylinder", "radius": 16, "height": 130}
-    )
+    res = await wb.handle("mesh_boolean_add", {"shape": "cylinder", "radius": 16, "height": 130})
     assert res["ok"] is False
     assert "refused" in res["error"]
     assert not wb.ops  # nothing recorded
