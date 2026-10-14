@@ -597,7 +597,10 @@ export default function SettingsPage() {
           label: "Mesh server URL",
           hint: "e.g. http://localhost:8765 (native) or http://mesh-server:8765 (compose gpu profile); empty = disabled",
         })}
-        <Field label="Default mesh model">
+        <Field
+          label="Default mesh model"
+          hint="auto picks by device. On Apple-silicon MPS the hunyuan3d-2mv variant can stall under memory pressure — prefer hunyuan3d-2.1-mlx or the mini/turbo variants there."
+        >
           <select
             className={inputCls}
             value={form.mesh_model}

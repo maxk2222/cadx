@@ -95,8 +95,10 @@ def _user_parts(
             {
                 "type": "text",
                 "text": (
-                    "YOUR PREVIOUS PATCH DID NOT APPLY — fix these errors and "
-                    "return corrected edits (or full_code):\n- " + "\n- ".join(patch_errors)
+                    "YOUR PREVIOUS PATCH DID NOT APPLY — localised edits have "
+                    "already failed on this code, so return the COMPLETE corrected "
+                    "source in `full_code` (not `edits`). Errors to fix:\n- "
+                    + "\n- ".join(patch_errors)
                 ),
             }
         )

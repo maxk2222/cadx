@@ -471,6 +471,7 @@ export interface Settings {
   llm_stream: boolean;
   llm_idle_timeout_s: number;
   llm_total_timeout_s: number;
+  llm_degenerate_stall_s: number;
   llm_extra_body: string;
   llm_tools: "auto" | "on" | "off";
   agent_max_iterations: number;
@@ -518,6 +519,7 @@ export interface Settings {
   image_tool_budget: number;
   image_timeout_s: number;
   mesh_timeout_s: number;
+  mesh_stall_timeout_s: number;
   mesh_decimate_faces: number;
   mesh_max_faces_for_cad: number;
   exec_timeout_s: number;

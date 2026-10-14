@@ -39,6 +39,20 @@ def test_occ_fillet():
     assert "line5" in d.code_excerpt
 
 
+def test_occ_fillet_empty_selection():
+    """build123d raises 'Failed creating a fillet...' on an empty/stale edge
+    selection — that is NOT the OCC radius error and needs its own hint."""
+    d = diagnose(
+        "ValueError: Failed creating a fillet with radius of 1, "
+        "try a smaller value or use max_fillet()",
+        'File "model.py", line 5, in <module>\n    fillet(edges, radius=3)\nValueError',
+        CODE,
+    )
+    assert d.category == "occ-fillet-empty"
+    assert "EMPTY" in d.hint
+    assert "safe_fillet" in d.hint
+
+
 def test_attribute_error_api_misuse():
     d = diagnose(
         "AttributeError: 'Edge' object has no attribute 'pos'",

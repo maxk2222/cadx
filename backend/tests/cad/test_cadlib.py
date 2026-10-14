@@ -148,6 +148,26 @@ def test_through_hole_blind_depth():
     assert p.part.is_inside((0.0, 0.0, 5.0))
 
 
+def test_safe_fillet_empty_selection_returns_zero():
+    """An empty/stale edge selection must not crash — safe_fillet retries
+    down to min_radius then reports 0.0 so the part stays valid."""
+    with BuildPart() as p:
+        Box(30, 20, 8, align=_ALIGN_MIN)
+        empty = p.edges().filter_by(lambda e: False)
+        applied = cadlib.safe_fillet(empty, radius=3.0)
+    assert applied == 0.0
+    assert p.part is not None
+
+
+def test_safe_fillet_shrinks_oversized_radius():
+    """Radius that does not fit gets halved until OCC accepts it."""
+    with BuildPart() as p:
+        Box(30, 20, 8, align=_ALIGN_MIN)
+        verts = p.edges().filter_by(Axis.Z)
+        applied = cadlib.safe_fillet(verts, radius=14.0)
+    assert 0.0 < applied < 14.0
+
+
 def test_through_hole_requires_buildpart():
     with pytest.raises(RuntimeError, match="BuildPart"):
         cadlib.through_hole(5.0)

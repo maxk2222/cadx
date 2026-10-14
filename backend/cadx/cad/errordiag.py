@@ -68,6 +68,18 @@ _RULES: list[tuple[re.Pattern[str], str, str]] = [
         "`result`. Add whatever is missing.",
     ),
     (
+        re.compile(
+            r"Failed creating a (fillet|chamfer)|no suitable edges|edge.*(empty|selected)",
+            re.I,
+        ),
+        "occ-fillet-empty",
+        "The fillet/chamfer ran on an EMPTY edge selection — the selector found "
+        "no edges (stale list after translate/locate, wrong filter, or the edges "
+        "were consumed by a prior operation). Fix: re-run edges()/filter_by() "
+        "AFTER all positioning, widen the selector, or wrap with "
+        "cadlib.safe_fillet(edges, r) which shrinks the radius until it fits.",
+    ),
+    (
         re.compile(r"BRep_API: command not done|StdFail_NotDone|BRepFilletAPI", re.I),
         "occ-fillet",
         "fillet/chamfer failed: radius/length too large for the selected edges, or "

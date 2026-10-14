@@ -59,7 +59,10 @@ Model + license are surfaced in Settings → "Mesh generator" and in
 
 `model="auto"` chooses: `trellis2` on CUDA, `hunyuan3d-2.1-mlx` on arm64 Macs
 with MLX, the `mv` variant when ≥2 view-tagged images exist, otherwise
-`hunyuan3d-2mini`/`triposg`. When `DATA_DIR/mesh_bench.json` exists (written
+`hunyuan3d-2mini`/`triposg`. Note: `hunyuan3d-2mv` on torch-MPS has been
+observed to stall mid-generation under memory pressure (job pinned at ~10 %
+progress, worker polling until the stall watchdog fires) — on MPS hosts
+prefer `hunyuan3d-2.1-mlx` or a `mini`/`turbo` variant as `mesh_model`. When `DATA_DIR/mesh_bench.json` exists (written
 by `mesh_server/scripts/bench_adapters.py`), `auto` additionally ranks
 available adapters by their measured per-class results (`agent/model_pick.py`).
 Rows include `roughness_deg` (mean dihedral on non-horizontal faces —

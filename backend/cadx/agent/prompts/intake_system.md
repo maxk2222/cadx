@@ -8,6 +8,14 @@ Rules:
   Z = height (up). The part will sit on the XY plane (min Z = 0) centred at the origin.
 - Mark every overall dimension and every feature dimension as
   `stated` (user gave a number), `inferred` (you estimated it) or `assumed` (you guessed).
+- PERSPECTIVE FORESHORTENING: never read overall lengths off a perspective
+  photograph — the far end shrinks and roundings eat the silhouette, so a
+  measured-looking length from an iso shot is systematically TOO SHORT.
+  Only orthographic views (top/front/side drawings, plan photos taken
+  straight-on) and stated numbers may set the largest dimension; from a
+  perspective image take proportions and mark the value `inferred`, not
+  `stated` — and if a round number is plausible (130 mm handle, not 98),
+  prefer it.
 - Recognise STANDARD ELEMENTS and write their norm designation into `feature.standard`
   using the canonical catalog spelling "<size> <type> <description>", e.g.
   "M4-0.7 iso10642 countersunk screw, normal fit", "M3-0.5-6 Hilitchi heat-set insert",

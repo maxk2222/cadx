@@ -115,6 +115,17 @@ No BuildPart context needed. Parts rest on XY (min Z = 0), centred — place wit
 
 ### closed_polyline
 
+### safe_fillet
+
+- `safe_fillet(edges, radius, min_radius=0.2)` — fillet with fallback: halves
+  the radius until OCC accepts it, returns the applied radius or `0.0`.
+  USE THIS instead of raw `fillet()` whenever the edge selector could be
+  empty (stale `part.edges()` saved before a `locate`/`translate`, strict
+  filters, edges consumed by a previous feature) — an empty selection crashes
+  the whole run otherwise.
+
+### closed_polyline
+
 - `closed_polyline(pts, tol=1e-3)` — planar Face from a dense sampled outline
   `[(x, y), ...]`; tolerates consecutive duplicates, a repeated closing point
   and stray spikes that would crash raw `Polyline`. USE THIS whenever you

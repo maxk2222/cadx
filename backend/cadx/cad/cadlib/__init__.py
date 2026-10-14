@@ -20,6 +20,7 @@ from .cutouts import (
     t_slot,
     through_hole,
 )
+from .ops import safe_fillet
 from .profile import closed_polyline, profile_body
 from .shapes import (
     boss,
@@ -48,6 +49,7 @@ __all__ = [
     "mounting_ear",
     "profile_body",
     "rib",
+    "safe_fillet",
     "snap_fit_cantilever",
     "t_slot",
     "text_label",
