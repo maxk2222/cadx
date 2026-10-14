@@ -81,7 +81,7 @@ the database.
 | `mesh_model` | `auto` | adapter id or `auto`; seeded once from `MESH_MODEL` |
 | `mesh_timeout_s` | `900` | client-side generation timeout |
 | `mesh_decimate_faces` | `30000` | decimation target in the baseline pipeline |
-| `mesh_max_faces_for_cad` | `60000` | cap for mesh→solid conversion (hybrid) |
+| `mesh_max_faces_for_cad` | `30000` | face cap for the hybrid work-solid — keep ≤60k, OCCT booleans scale with facet count |
 | `mesh_smooth_after_flatten_iters` | `10` | smoothing after `flatten_bottom` |
 | `mesh_candidates_per_iter` | `2` | best-of-N screening candidates per iteration |
 | `mesh_candidate_steps` | `15` | diffusion steps for screening candidates |

@@ -93,7 +93,10 @@ class RuntimeSettings(BaseModel):
     image_timeout_s: int = Field(default=300, ge=1, le=86_400)
     mesh_timeout_s: int = Field(default=900, ge=1, le=86_400)
     mesh_decimate_faces: int = Field(default=30_000, ge=1)
-    mesh_max_faces_for_cad: int = Field(default=60_000, ge=1)
+    # face cap for the hybrid work-solid (sew+boolean in OCCT) — dominates
+    # hybrid iteration latency; the export GLB keeps full detail. Keep at or
+    # below mesh_decimate_faces; >60k makes every executor call minutes-slow.
+    mesh_max_faces_for_cad: int = Field(default=30_000, ge=1)
     mesh_smooth_after_flatten_iters: int = Field(default=10, ge=0, le=30)
     mesh_candidates_per_iter: int = Field(default=2, ge=1, le=4)
     mesh_candidate_steps: int = Field(default=15, ge=5, le=100)
