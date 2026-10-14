@@ -19,9 +19,10 @@ same `mesh_server` sidecar as the image→3D generators. Three use cases:
 
 | tier  | adapter            | model                        | install script               |
 |-------|--------------------|------------------------------|------------------------------|
-| mlx   | `flux-schnell-mlx` | FLUX.1-schnell via `mflux`, 4-bit | `install_image_mlx.sh`    |
-| cuda  | `flux-schnell`     | FLUX.1-schnell via diffusers | `install_image_torch.sh`     |
-| cuda  | `sdxl` / `sd15`    | fallbacks for small VRAM     | (same)                       |
+| mlx   | `flux-schnell-mlx` | FLUX.1-schnell via `mflux`, 4-bit (t2i + img2img) | `install_image_mlx.sh`    |
+| cuda  | `flux-schnell`     | FLUX.1-schnell via diffusers (t2i + img2img) | `install_image_torch.sh`     |
+| cuda  | `sdxl` / `sd15`    | fallbacks for small VRAM (t2i + img2img) | (same)                       |
+| mlx   | `qwen-image-edit`  | Qwen-Image-Edit-2509 — instruction image **editing** (mflux, 4-bit) — **edit default** | `install_image_mlx.sh` |
 | mlx   | `flux-kontext-mlx` | FLUX.1-Kontext-dev — instruction image **editing** (mflux, 4-bit) | `MESH_FLUX_KONTEXT=1` opt-in |
 | fake  | `fake-image`       | deterministic test adapter   | `MESH_FAKE=1`                |
 
@@ -29,19 +30,42 @@ FLUX.1-schnell is **Apache-2.0** and ungated on HuggingFace. Weights download
 on first use (~12 GB 4-bit MLX, ~24 GB fp16 diffusers). SDXL (~7 GB) and SD1.5
 (~4 GB) are the fallbacks for tight memory.
 
-### Image editing (img2img)
+### Image editing (img2img / instruction edit)
 
-Edit jobs carry an init image + `strength` (`POST /v1/image-edit-jobs`,
-multipart). `sdxl`/`sd15` run img2img via `AutoPipelineForImage2Image`
-(shared weights, `supports_edit`); `flux-kontext-mlx` does instruction
-editing and is edit-only (`requires_image`, gated on `MESH_FLUX_KONTEXT=1`
-so a bare availability probe never triggers the ~12 GB download). The mesh
-pipeline uses this for `mesh_regen_edit` — see `mesh-generation.md`.
+Edit jobs carry an init image + optional `strength` (`POST
+/v1/image-edit-jobs`, multipart). Edit-capable adapters report
+`supports_edit`; edit-only ones additionally `requires_image` so they never
+win a plain text-to-image `auto` pick. The edit preference ladder on
+MLX/CUDA is `qwen-image-edit` → `flux-kontext-mlx` → img2img fallbacks
+(`flux-schnell-mlx`, `sdxl`, `sd15`):
+
+- `qwen-image-edit` (Apache-2.0, ungated) — instruction edits like "make it
+  matte black"; the **default edit adapter**.
+- `flux-kontext-mlx` (non-commercial, gated on `MESH_FLUX_KONTEXT=1` so a
+  bare availability probe never triggers the ~12 GB download).
+- `flux-schnell-mlx`, `flux-schnell`, `sdxl`, `sd15` — plain img2img with
+  `strength` denoise control (diffusers `AutoPipelineForImage2Image` /
+  `FluxImg2ImgPipeline` share the loaded txt2img weights; mflux takes
+  `image_path`/`image_strength` natively).
+
+From the API/GUI side an edit request is just `POST /projects/{id}/images`
+with `reference_asset_id` (+ optional `strength` 0..1, `mark_sketch`) — the
+router resolves the asset inside the project, reads it via `storage.py` and
+uploads the bytes; the asset manager's **Variation** button on every image
+opens the same dialog with the reference pre-selected. Results carry
+`derived_from`, `edit`, `strength`, `reference_asset_id` provenance.
+
+`mark_sketch` tags the result `role_hint="sketch"` (also settable via
+`PATCH /api/assets/{id}` or the pen icon in the asset manager) — the next
+mesh/hybrid run routes it to a `*-scribble` adapter (e.g. `triposg-scribble`)
+as the conditioning drawing, ahead of photo inputs. The mesh pipeline uses
+the same edit path for `mesh_regen_edit` — see `mesh-generation.md`.
 
 Manual check:
 
 ```bash
 backend/.venv/bin/cadx image-gen "studio photo of a red gear" --model auto
+backend/.venv/bin/cadx image-gen "make it matte black" --reference ref.png --strength 0.6
 # or straight on the sidecar
 mesh_server/.venv/bin/meshserver image --prompt "a red gear" --model flux-schnell-mlx
 ```
@@ -51,6 +75,8 @@ mesh_server/.venv/bin/meshserver image --prompt "a red gear" --model flux-schnel
 | setting              | default | meaning                                              |
 |----------------------|---------|------------------------------------------------------|
 | `image_model`        | `auto`  | adapter id; `auto` = device preference + OOM fallback |
+| `image_edit_model`   | `auto`  | adapter for reference-image jobs; `auto` = edit ladder (qwen-image-edit first) |
+| `image_default_strength` | 0.6 | img2img denoise when the request has no `strength`   |
 | `image_steps`        | empty   | diffusion steps (FLUX 4, SDXL ~30)                   |
 | `image_guidance`     | empty   | cfg scale                                            |
 | `image_max_side`     | 1024    | clamp on width/height — OOM prevention               |

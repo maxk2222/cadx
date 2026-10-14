@@ -114,12 +114,19 @@ def _fill_grid(
             m = m.copy()
             m.merge_vertices(merge_norm=True)  # split STL vertices -> watertight
         if m.is_watertight:
-            return np.asarray(m.contains(centers)).reshape(dims)
+            # contains() allocates per-ray intermediate buffers — unchunked on
+            # dense organic meshes it peaks >14 GB; small batches stay flat
+            out = np.zeros(len(centers), dtype=bool)
+            for s in range(0, len(centers), 512):
+                out[s : s + 512] = np.asarray(m.contains(centers[s : s + 512]))
+            return out.reshape(dims)
     except Exception:
         pass
     # fallback for non-watertight meshes: surface-near cells + hole fill
     try:
-        dist = mesh.nearest.on_surface(centers)[1]
+        dist = np.zeros(len(centers), dtype=float)
+        for s in range(0, len(centers), 512):
+            dist[s : s + 512] = mesh.nearest.on_surface(centers[s : s + 512])[1]
         m = (dist <= pitch * 0.75).reshape(dims)
         m = ndimage.binary_fill_holes(m)
         m = ndimage.binary_closing(m, iterations=1)

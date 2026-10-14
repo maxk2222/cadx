@@ -211,6 +211,27 @@ def test_pressure_force_total_matches_area() -> None:
     assert any("800" in x or "MPa" in x for x in w)
 
 
+def test_pressure_on_all_is_hydrostatic_squeeze() -> None:
+    """region kind=all + pressure: every exposed face pushed inward —
+    symmetric box nets ~0 resultant but carries real compressive load."""
+    mesh = _box_mesh(40.0, 20.0, 4.0)
+    dom = voxelize(mesh, 2.0, 150_000)
+    case = LoadCase(
+        name="squeeze",
+        fixed=[RegionSpec(kind="surface", axis="-z")],
+        loads=[LoadSpec(region=RegionSpec(kind="all"), pressure_mpa=1.0)],
+    )
+    fixed, F, w = resolve_case(dom, case)
+    assert fixed.any()
+    assert F.any()  # real nodal loads — not the old zero-force rejection
+    total = F.reshape(-1, 3).sum(axis=0)
+    # hydrostatic on a centred box: resultant cancels out
+    assert np.linalg.norm(total) < 0.15 * np.abs(F).sum()
+    # ~2080 mm² box surface → ~2080 N total compressive
+    assert any("MPa over" in x for x in w)
+    assert not any("pressure loads need" in x for x in w)
+
+
 def test_region_points_selects_surface_patch() -> None:
     """GUI brush: solid cells within radius of painted surface points."""
     dom = voxelize(_box_mesh(), 2.0, 150_000)  # 60x24x12, z top at 12

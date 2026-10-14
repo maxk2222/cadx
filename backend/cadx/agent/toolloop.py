@@ -18,6 +18,7 @@ Protocol notes:
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -124,6 +125,9 @@ async def run_session(
     msgs = list(messages)
     calls = 0
     error_streak = 0
+    last_sig = ""
+    last_text = ""
+    repeat_streak = 0
     native = True  # per-response: all calls in one response share the mode
 
     while True:
@@ -192,8 +196,26 @@ async def run_session(
                     tool_calls_made=calls,
                     tool_log=session.tool_log,
                 )
-        if calls >= max_calls or error_streak >= 4:
-            reason = "budget" if calls >= max_calls else "error_streak"
+        # identical-call loop detector: weak models re-emit the same turn
+        # forever (e.g. search_catalog({}) on every reply) — after 3 identical
+        # turns treat it like budget exhaustion and force the final answer.
+        # Args can vary slightly while the prose repeats verbatim ("I'm stuck
+        # in a loop"), so also fingerprint the response text.
+        sig = json.dumps(
+            [[tc.name, tc.arguments] for tc in tool_calls], sort_keys=True, default=str
+        )
+        # only fingerprint substantive prose — empty/trivial text repeats
+        # legitimately across different tool calls and must not count
+        text_sig = re.sub(r"\s+", " ", (resp.text or "")[:200]).strip()
+        text_hit = len(text_sig) >= 16 and text_sig == last_text
+        repeat_streak = repeat_streak + 1 if (sig == last_sig or text_hit) else 0
+        last_sig, last_text = sig, text_sig
+        if calls >= max_calls or error_streak >= 4 or repeat_streak >= 2:
+            reason = (
+                "budget"
+                if calls >= max_calls
+                else ("error_streak" if error_streak >= 4 else "repeat_loop")
+            )
             log.info("tool_session.end", step=step, calls=calls, reason=reason)
             # rescue turn: schema-final sessions (intake/plan/critique/codegen)
             # still owe an answer — one last call WITHOUT tools lets the model

@@ -59,15 +59,26 @@ class RuntimeSettings(BaseModel):
     agent_fem_max_runs: int = Field(default=4, ge=0, le=20)
     fem_voxel_mm: float = Field(default=1.5, gt=0, le=100)
     fem_max_elements: int = Field(default=150_000, ge=1, le=5_000_000)
+    fem_spsolve_dofs: int = Field(default=120_000, ge=1_000, le=5_000_000)
+    fem_max_effective_cases: int = Field(
+        default=8, ge=1, le=64
+    )  # cap on load-case expansion (direction cones)
     fem_timeout_s: int = Field(default=600, ge=1, le=86_400)
     topopt_timeout_s: int = Field(default=2700, ge=1, le=86_400)
     topopt_max_iterations: int = Field(default=80, ge=1, le=1000)
     topopt_default_volfrac: float = Field(default=0.4, gt=0, le=1)
     topopt_default_rmin_mm: float = Field(default=3, gt=0, le=1000)
     topopt_smooth_iterations: int = Field(default=6, ge=0, le=30)
+    topopt_min_member_mm: float = Field(
+        default=0.0, ge=0, le=50
+    )  # 0 = off; >0 thickens members below this size
+    topopt_auto_keep: bool = True  # auto keep-mode default: hold detected fastener anchors
+    topopt_auto_keep_margin_mm: float = Field(default=3.0, gt=0, le=50)
     mesh_base_url: str = ""
     mesh_model: str = "auto"
     image_model: str = "auto"
+    image_edit_model: str = "auto"  # default adapter for edit/i2i requests
+    image_default_strength: float = Field(default=0.6, gt=0, le=1)  # img2img denoise
     image_steps: int | None = None  # None = adapter default (FLUX:4, SDXL:30)
     image_guidance: float | None = None  # None = adapter default
     image_max_side: int = Field(default=1024, ge=64, le=4096)  # w/h clamp — OOM prevention
@@ -125,10 +136,15 @@ _EXECUTOR_FIELDS = {
     "exec_mem_limit_mb",
     "fem_voxel_mm",
     "fem_max_elements",
+    "fem_spsolve_dofs",
+    "fem_max_effective_cases",
     "topopt_default_volfrac",
     "topopt_default_rmin_mm",
     "topopt_max_iterations",
     "topopt_smooth_iterations",
+    "topopt_min_member_mm",
+    "topopt_auto_keep",
+    "topopt_auto_keep_margin_mm",
     "mesh_max_faces_for_cad",
     "mesh_decimate_faces",
     "mesh_smooth_after_flatten_iters",

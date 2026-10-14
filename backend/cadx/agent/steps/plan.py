@@ -36,7 +36,15 @@ async def run(ctx: AgentCtx, spec: PartSpec) -> ModelingPlan:
     if not ctx.mesh_available:
         mode_ctx += '\nNOTE: no mesh server available — `approach` must be "cad".'
     if images_n == 0:
-        mode_ctx += '\nNOTE: no reference images — `approach` must be "cad".'
+        if getattr(ctx, "image_available", False):
+            mode_ctx += (
+                "\nNOTE: no reference images attached — for organic/sculptural parts "
+                "you may still choose mesh/hybrid: a concept reference image is "
+                "generated automatically, or call `generate_concept_image` first to "
+                "control it yourself (its asset_id goes into `mesh_source_images`)."
+            )
+        else:
+            mode_ctx += '\nNOTE: no reference images — `approach` must be "cad".'
 
     user = spec_block(spec) + ("\n\n" + ref if ref else "") + "\n\n" + mode_ctx
     mm = measurements_block(ctx.measurements)

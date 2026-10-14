@@ -30,6 +30,9 @@
    the generated organic mesh as a faceted B-Rep solid, and `MESH_BBOX` holds its
    `[L, W, H]` in mm. The solid is already oriented and scaled: it rests on XY and is
    centred at the origin. Rules for mesh solids:
+   - NEVER rotate, mirror or translate the mesh solid — it is already in the part
+     frame: `MESH_BBOX[0]` is the length along X (the part's main axis),
+     `MESH_BBOX[1]` the width along Y, `MESH_BBOX[2]` the height along Z.
    - add exact features ONLY via boolean ops on primitives: `mesh - Cylinder(...)` for
      holes/bores, `mesh - Box(...)` or `split` for flat mounting faces, `mesh + Box(...)`/
      `mesh + extrude(...)` for flanges and bosses.

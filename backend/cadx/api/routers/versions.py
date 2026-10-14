@@ -18,6 +18,7 @@ from cadx.api.schemas import (
     GenerateRequest,
     OptimizeRequest,
     ParamsRequest,
+    TopoptResampleRequest,
     VersionDetail,
     VersionSummary,
 )
@@ -263,8 +264,13 @@ async def optimize(
         raise HTTPException(404, "version not found")
     if parent.status not in (VersionStatus.succeeded, VersionStatus.needs_review):
         raise HTTPException(409, f"cannot optimize version in status {parent.status}")
-    if parent.resolved_mode == "topopt":
-        raise HTTPException(409, "version is already topology-optimized")
+    if parent.resolved_mode == "topopt" and not body.allow_reopt:
+        raise HTTPException(
+            409,
+            "version is already topology-optimized — use allow_reopt to "
+            "optimize it again (its mesh becomes the design domain), or "
+            "POST /topopt-resample to re-extract the stored density field",
+        )
     v = Version(
         project_id=parent.project_id,
         parent_id=parent.id,
@@ -296,6 +302,61 @@ async def optimize(
             "load_cases": body.load_cases,
             "optimize": body.optimize,
             "material": body.material,
+        },
+    )
+    return EnqueueResponse(version_id=v.id, job_id=job.id)
+
+
+@router.post("/versions/{version_id}/topopt-resample", response_model=EnqueueResponse)
+async def topopt_resample(
+    version_id: uuid.UUID, body: TopoptResampleRequest, db: AsyncSession = Depends(get_session)
+):
+    """Re-extract the stored SIMP density field at a new density threshold /
+    min-member size — no new SIMP run. Creates an 'optimize' child version."""
+    parent = await db.get(Version, version_id)
+    if not parent:
+        raise HTTPException(404, "version not found")
+    if parent.status not in (VersionStatus.succeeded, VersionStatus.needs_review):
+        raise HTTPException(409, f"cannot resample version in status {parent.status}")
+    if not ((parent.mesh or {}).get("topopt") or {}).get("density_relpath"):
+        raise HTTPException(409, "version has no stored density field — run optimize first")
+    v = Version(
+        project_id=parent.project_id,
+        parent_id=parent.id,
+        number=await _next_number(db, parent.project_id),
+        kind=VersionKind.optimize,
+        prompt=f"resample {parent.prompt}"[:500],
+        gen_mode="topopt",
+        asset_ids=parent.asset_ids or [],
+        options={
+            **(parent.options or {}),
+            "topopt": True,
+            "optimize_request": {
+                "optimize": {
+                    "density_threshold": body.density_threshold,
+                    "min_member_mm": body.min_member_mm or None,
+                },
+                "material": body.material,
+            },
+        },
+    )
+    db.add(v)
+    await db.flush()
+    job = Job(version_id=v.id, type=JobType.resample)
+    db.add(job)
+    await db.commit()
+    await enqueue(
+        "run_topopt_resample_job",
+        {
+            "job_id": str(job.id),
+            "version_id": str(v.id),
+            "load_cases": body.load_cases,
+            "keep_regions": body.keep_regions,
+            "material": body.material,
+            "optimize": {
+                "density_threshold": body.density_threshold,
+                "min_member_mm": body.min_member_mm or None,
+            },
         },
     )
     return EnqueueResponse(version_id=v.id, job_id=job.id)

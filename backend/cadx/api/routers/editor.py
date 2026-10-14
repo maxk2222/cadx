@@ -21,6 +21,7 @@ from cadx import storage
 from cadx.api.deps import enqueue, get_session
 from cadx.api.routers.versions import _next_number
 from cadx.api.schemas import (
+    AnchorsOut,
     EditorStateRequest,
     EnqueueResponse,
     FemPreviewOut,
@@ -239,9 +240,54 @@ async def fem_preview(
         solid_elements=prev.get("solid_elements") or 0,
         cases=prev.get("cases") or [],
         cells=prev.get("cells") or [],
+        anchors=prev.get("anchors") or [],
         pngs=pngs,
         error=result.get("error"),
     )
+
+
+@router.get("/versions/{version_id}/anchors", response_model=AnchorsOut)
+async def list_anchors(
+    version_id: uuid.UUID, db: AsyncSession = Depends(get_session)
+) -> AnchorsOut:
+    """Feature anchors for the structural editor / anchor regions.
+
+    Merges the stored measured anchors (image-derived top-view holes) with a
+    fresh mesh scan on all axes — typed centres, axes, diameters and depths.
+    The merged table is persisted into version.analysis so hole_index
+    references stay stable for later FEM/TopOpt runs."""
+    v = await db.get(Version, version_id)
+    if not v:
+        raise HTTPException(404, "version not found")
+    mesh_rel = storage.best_mesh_relpath(v.project_id, v.id, v.iterations or 1)
+    if mesh_rel is None:
+        raise HTTPException(409, "version has no mesh artifact to scan")
+    result = await _run_preview(
+        "fem",
+        {
+            "job_id": f"anchors-{uuid.uuid4()}",
+            "project_id": str(v.project_id),
+            "version_id": str(v.id),
+            "iteration": v.iterations or 1,
+            "mesh_rel": mesh_rel,
+            "load_cases": [],
+            "anchors": (v.analysis or {}).get("anchors", {}).get("holes"),
+            "scan_only": True,
+            "scratch": True,
+        },
+    )
+    if not result.get("ok"):
+        return AnchorsOut(ok=False, error=result.get("error") or "anchor scan failed")
+    anchors = result.get("anchors") or []
+    # persist so hole_index stays stable for later runs (only when changed)
+    if anchors:
+        analysis = dict(v.analysis or {})
+        existing = analysis.get("anchors") or {}
+        if existing.get("holes") != anchors:
+            analysis["anchors"] = {**existing, "holes": anchors}
+            v.analysis = analysis
+            await db.commit()
+    return AnchorsOut(ok=True, anchors=anchors)
 
 
 @router.post("/versions/{version_id}/fem", response_model=EnqueueResponse)

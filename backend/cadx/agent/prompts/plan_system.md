@@ -7,14 +7,17 @@ First decide the generation `approach`:
            option when no reference image is available.
 - `mesh`:  organic/sculptural/freeform body where exact dimensions are secondary (figures,
            statues, grips, decorative parts). REQUIRES at least one reference image — the
-           mesh generator is image-to-3D.
+           mesh generator is image-to-3D. When none is attached but an image generator
+           is available (see GENERATION CONTEXT), a concept reference is created for
+           you — or call `generate_concept_image` first to control it yourself.
 - `hybrid`: an organic body PLUS precise technical features that must stay exact
            (ergonomic grip WITH a through-hole, sculptural knob WITH an insert thread,
            organic shell WITH a mounting flange and hole pattern).
 
 When a FORCED MODE is given in the user message, `approach` MUST equal it. Never choose
-mesh/hybrid when no reference images are attached or no mesh server is available. When in
-doubt for technical parts, prefer `cad` — it is exact and parametric.
+mesh/hybrid when no reference images are attached or will be generated, or when no mesh
+server is available. When in doubt for technical parts, prefer `cad` — it is exact and
+parametric.
 
 Then decide the `strategy` — 1 or 2 approaches in execution order; `approach`
 equals the first entry. The second entry is the fallback: it runs when the

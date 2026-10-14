@@ -560,7 +560,11 @@ export default function VersionPage() {
         {tab === "quality" && (
           <div className="flex flex-col gap-4">
             {!!v.mesh?.topopt && (
-              <TopOptPanel topopt={v.mesh.topopt as never} />
+              <TopOptPanel
+                topopt={v.mesh.topopt as never}
+                versionId={v.id}
+                onJobStarted={structuralStarted}
+              />
             )}
             {!!v.fem?.cases?.length && <FemPanel fem={v.fem} artifacts={v.artifacts} />}
             <Card className="p-4">

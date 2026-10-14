@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+import re
+from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Short/Medium/Long string bounds — guided decoding honours `maxLength`, which
 # stops a weak model looping inside an unbounded string field (observed: an
@@ -132,15 +133,29 @@ class RegionSpec(BaseModel):
                 add `axis` to restrict it to the surface facing that way
     - cylinder: material within radius around an axis line (e.g. a bore)
     - box:      cube centred at `center` with edge `diameter_mm` (or 4*margin)
-    - hole:     measured hole/feature region — `hole_index` (1-based) refers
-                to the anchors listed in the context
+    - hole:     measured hole/feature anchor — `hole_index` (1-based) refers
+                to the anchors listed in the context; the anchor's own axis
+                (any of ±x/y/z) and 3D centre are used when present
+    - anchor:   alias of hole — an indexed feature anchor (bore, insert,
+                thread, bearing seat) on ANY axis
+    - bore:     the bore WALL of a hole anchor — solid cells facing the void
+                cylinder (for bearing loads, not a material ring around it)
     - points:   surface patch painted in the GUI — solid cells within
                 `radius_mm` of any of `points` ([x,y,z] mm); `normal` is the
                 averaged surface normal at the pick (drives pressure loads)
     - all:      the whole solid
+
+    `fix_mode` applies when the region is used in `LoadCase.fixed`:
+    - "all"    pins all 3 translational DOFs (encastre / glued, the default)
+    - "normal" pins only the DOF along `axis` — a roller/sliding support or a
+               symmetry plane (the part rests on a face but can still slide)
+    `material` on a keep-region overrides the base material inside the region
+    (e.g. "aluminum"/"brass" for a threaded insert) for FEM and TopOpt.
     """
 
-    kind: Literal["face", "surface", "area", "cylinder", "box", "hole", "points", "all"] = "face"
+    kind: Literal[
+        "face", "surface", "area", "cylinder", "box", "hole", "anchor", "bore", "points", "all"
+    ] = "face"
     axis: Annotated[str, Field(max_length=8)] = (
         ""  # +x|-x|+y|-y|+z|-z (face normal or cylinder axis)
     )
@@ -158,21 +173,98 @@ class RegionSpec(BaseModel):
     )  # painted surface points [x,y,z] mm (points)
     radius_mm: float | None = None  # brush radius (points); default max(2*margin_mm, 3)
     normal: list[float] = Field(default_factory=list, max_length=3)  # avg surface normal (points)
+    fix_mode: Literal["all", "normal"] = "all"  # encastre vs roller/symmetry (fixed regions)
+    material: Annotated[str, Field(max_length=40)] = ""  # material override (keep zones)
     description: M = ""  # human label, e.g. "mounting holes"
+
+    @model_validator(mode="after")
+    def _axis_from_description(self) -> Self:
+        """Recover an intended axis that the model only wrote into the description.
+
+        Directional kinds (face/surface/area/cylinder) silently fall back to +z when
+        `axis` is empty — "underside (-Z)" describing a -z keep would otherwise pin
+        the TOP skin. Word map is deliberately conservative: ambiguous terms like
+        "back"/"rear" are not mapped.
+        """
+        if self.axis or self.kind in ("box", "points", "all"):
+            return self
+        desc = (self.description or "").lower()
+        m = _AXIS_TOKEN.search(desc)
+        if m:
+            self.axis = m.group(0).strip("() ").lower()
+            return self
+        for ax, words in _AXIS_WORDS.items():
+            if any(w in desc for w in words):
+                self.axis = ax
+                break
+        return self
+
+
+_AXIS_TOKEN = re.compile(r"(?<![A-Za-z0-9_+/-])([+-][xyz])(?![A-Za-z0-9_])", re.IGNORECASE)
+_AXIS_WORDS: dict[str, tuple[str, ...]] = {
+    "-z": ("underside", "bottom", "unterseite", "boden", "tang-contact"),
+    "+z": ("top", "oberseite", "deckel"),
+    "+y": ("front", "vorderseite"),
+    "-x": ("left", "links"),
+    "+x": ("right", "rechts"),
+}
 
 
 class LoadSpec(BaseModel):
-    """One applied load on a region. Give either force_n OR pressure_mpa."""
+    """One applied load on a region.
+
+    Load kinds (pick ONE primary mechanism; combos are summed):
+    - force_n [fx,fy,fz] — total force distributed over the region's nodes
+    - pressure_mpa — uniform pressure acting against the region normal
+    - bearing_n — bolt/bearing load: cosine-distributed radial force on a
+      bore wall (hole/anchor/bore region), pointing along `bearing_dir`
+      (or `force_n` when bearing_dir is empty)
+    - moment_nm [mx,my,mz] — pure torque/couple distributed on the region
+    - preload_n — bolt pretension: compressive axial pair on the two bore
+      mouths of a hole/anchor region
+    - remote_point [x,y,z] — force_n applied at that point instead of on the
+      region: adds the moment (p-centroid)xF to the region
+    - g_load [ax,ay,az] — body force in units of g on the region
+      ([0,0,-1] = gravity; needs the region's material for mass)
+    `direction_cone_deg` > 0 makes the optimizer evaluate the load over a cone
+    of directions around force_n (robustness envelope for TopOpt).
+    """
 
     region: RegionSpec = Field(default_factory=RegionSpec)
     force_n: list[float] = Field(default_factory=list, max_length=6)  # [fx, fy, fz]
     pressure_mpa: float | None = None  # uniform pressure on a face region
+    bearing_n: float | None = None  # total bearing force on a bore wall (N)
+    bearing_dir: list[float] = Field(
+        default_factory=list, max_length=3
+    )  # bearing dir (else force_n)
+    moment_nm: list[float] = Field(default_factory=list, max_length=3)  # pure couple [N*m]
+    preload_n: float | None = None  # bolt pretension along the bore axis (N)
+    remote_point: list[float] = Field(default_factory=list, max_length=3)  # force lever point mm
+    g_load: list[float] = Field(default_factory=list, max_length=3)  # body accel in units of g
+    direction_cone_deg: float | None = Field(
+        default=None, ge=0.0, le=180.0
+    )  # robust TopOpt: sample load directions within this cone
 
 
 class LoadCase(BaseModel):
     name: S = "case1"
     fixed: list[RegionSpec] = Field(default_factory=list, max_length=10)  # constrained
     loads: list[LoadSpec] = Field(default_factory=list, max_length=10)
+    weight: float = 1.0  # relative importance for the TopOpt compliance sum
+
+    @model_validator(mode="before")
+    @classmethod
+    def _aliases(cls, data: object) -> object:
+        # API callers / LLM variants may use more natural names for `fixed`;
+        # extra=ignore would otherwise silently drop them -> unsolvable case
+        if isinstance(data, dict):
+            for alias in ("fixed_regions", "supports", "constraints", "fixtures"):
+                if alias in data:
+                    if "fixed" not in data:
+                        data = dict(data)
+                        data["fixed"] = data[alias]
+                    break
+        return data
 
 
 class OptimizeSpec(BaseModel):
@@ -183,6 +275,16 @@ class OptimizeSpec(BaseModel):
     max_iterations: int | None = None  # SIMP iterations (default: runtime setting)
     safety_factor_min: float = 1.5
     keep_regions: list[RegionSpec] = Field(default_factory=list, max_length=10)
+    void_regions: list[RegionSpec] = Field(
+        default_factory=list, max_length=10
+    )  # forbidden material zones — pinned empty (cable runs, swing space)
+    keep_mode: Literal["manual", "auto"] = "manual"  # auto: hold every detected fastener anchor
+    auto_keep_margin_mm: float | None = None  # ring around anchors when keep_mode=auto
+    min_member_mm: float | None = None  # enforce: thicken members thinner than this
+    density_threshold: float | None = None  # iso threshold 0.2..0.9 (default 0.5)
+    warm_density_relpath: Annotated[str, Field(max_length=300)] = (
+        ""  # density.npz to warm-start SIMP from
+    )
     note: M = ""
 
 

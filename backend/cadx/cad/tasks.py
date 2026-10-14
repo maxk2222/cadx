@@ -358,6 +358,8 @@ def run_fem_payload(payload: dict[str, Any]) -> dict[str, Any]:
         anchors=payload.get("anchors"),
         preview_only=bool(payload.get("preview_only")),
         render_pngs=bool(payload.get("render_pngs", True)),
+        scan_anchors=bool(payload.get("scan_anchors", True)),
+        scan_only=bool(payload.get("scan_only")),
         runtime=_runtime(payload),
     )
     preview = d.get("preview") or {}
@@ -431,6 +433,7 @@ def run_optimize_payload(
         name=payload.get("name", "model"),
         runtime=_runtime(payload),
         cancelled=cancelled,
+        scan_anchors=bool(payload.get("scan_anchors", True)),
     )
     d = result.to_dict()
     d = _relpath_exports(d, result, out_dir)
@@ -468,3 +471,43 @@ async def optimize(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, An
         d["ok"] = False
         d["error"] = "cancelled"
     return d
+
+
+def run_topopt_resample_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Synchronous part of topopt_resample — re-extract a stored density
+    field at a new threshold without re-running SIMP."""
+    from cadx.cad.engine import run_topopt_resample
+
+    out_dir = storage.iteration_dir(
+        uuid.UUID(payload["project_id"]),
+        uuid.UUID(payload["version_id"]),
+        int(payload.get("iteration", 1)),
+    )
+    result = run_topopt_resample(
+        density_relpath=payload["density_relpath"],
+        out_dir=out_dir,
+        load_cases=payload.get("load_cases") or [],
+        optimize=payload.get("optimize"),
+        material=payload.get("material") or "",
+        max_elements=payload.get("max_elements"),
+        anchors=payload.get("anchors"),
+        name=payload.get("name", "model"),
+        runtime=_runtime(payload),
+    )
+    d = result.to_dict()
+    d = _relpath_exports(d, result, out_dir)
+    d.setdefault("mesh", {})["stl_relpath"] = f"{storage.relpath(out_dir)}/_run/model.stl"
+    log.info(
+        "topopt_resample",
+        version=payload.get("version_id"),
+        ok=d["ok"],
+        threshold=(payload.get("optimize") or {}).get("density_threshold"),
+    )
+    return d
+
+
+async def topopt_resample(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    """arq task (queue "cad"): threshold resample of a stored density field."""
+    if await _cancelled(ctx, f"cancel:{payload.get('job_id')}" if payload.get("job_id") else None):
+        return {"ok": False, "error": "cancelled"}
+    return await asyncio.to_thread(run_topopt_resample_payload, payload)

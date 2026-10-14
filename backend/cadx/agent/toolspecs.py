@@ -20,13 +20,10 @@ Tool sets per step:
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import inspect
 import json
-import shutil
 import uuid
 from collections.abc import Awaitable, Callable
-from pathlib import Path
 from typing import Any, Literal
 
 from cadx import storage
@@ -187,15 +184,26 @@ IMAGE_TOOLS = [
 CONCEPT_IMAGE_TOOLS = [
     _fn(
         "generate_concept_image",
-        "Generate a design-concept image with the LOCAL text-to-image model "
-        "(FLUX/SDXL on the mesh server) and view it. Use to ideate shapes, "
-        "proportions or style before committing to a modeling plan. The image "
-        "is stored as a project asset (kind=generated_image) and may serve as "
-        "a reference for image-to-3D generation. Limited calls per session.",
+        "Generate a design-concept image with the LOCAL image model "
+        "(FLUX/SDXL/Qwen on the mesh server) and view it. Plain call = "
+        "text-to-image for ideating shapes, proportions or style. Pass "
+        "reference_asset_id (an existing image/generated_image asset id) for "
+        "img2img variations or instruction edits ('make it matte black', "
+        "'add cooling fins') — 'strength' controls how much of the reference "
+        "is kept (low = close, high = strong change). With mark_sketch the "
+        "result is tagged as a sketch so *-scribble mesh adapters use it as "
+        "the conditioning drawing. The image is stored as a project asset "
+        "(kind=generated_image) and may serve as a reference for "
+        "image-to-3D generation. Limited calls per session.",
         {
-            "prompt": _s("what to render — subject, view, style"),
+            "prompt": _s("what to render — subject, view, style; or the edit instruction"),
             "count": _i("number of variants, 1 or 2 (default 1)"),
             "seed": _i("optional seed for reproducibility"),
+            "reference_asset_id": _s("optional id of an existing image asset to vary or edit"),
+            "strength": _s("img2img denoise strength 0..1 (only with reference_asset_id)"),
+            "mark_sketch": _s(
+                "tag result as a sketch/scribble for sketch-conditioned mesh adapters"
+            ),
         },
         ["prompt"],
     ),
@@ -318,13 +326,25 @@ _REGION_SCHEMA = {
     "type": "object",
     "description": "geometric region: surface (part skin facing axis, follows "
     "curves), area (XY sub-area via polygon/x_range/y_range/center+diameter_mm, "
-    "optionally restricted to the surface facing axis), hole (measured anchor "
-    "via hole_index), face (legacy surface alias), cylinder (around an axis — "
-    "needs axis+diameter_mm), box (center+diameter_mm edge) or all",
+    "optionally restricted to the surface facing axis), hole/anchor (measured "
+    "feature anchor via hole_index — any axis; use list_anchors first), bore "
+    "(the bore WALL of an anchor — for bearing/preload loads), face (legacy "
+    "surface alias), cylinder (around an axis — needs axis+diameter_mm), box "
+    "(center+diameter_mm edge) or all",
     "properties": {
         "kind": {
             "type": "string",
-            "enum": ["face", "surface", "area", "cylinder", "box", "hole", "all"],
+            "enum": [
+                "face",
+                "surface",
+                "area",
+                "cylinder",
+                "box",
+                "hole",
+                "anchor",
+                "bore",
+                "all",
+            ],
         },
         "axis": _s("signed axis, e.g. -z (face normal or cylinder axis)"),
         "center": {**_VEC3, "description": "optional mm hint, e.g. hole position"},
@@ -347,7 +367,62 @@ _REGION_SCHEMA = {
         },
         "hole_index": {
             "type": "integer",
-            "description": "hole: 1-based index into the measured anchors",
+            "description": "hole/anchor/bore: 1-based index into the anchor table "
+            "(call list_anchors to see it)",
+        },
+        "fix_mode": {
+            "type": "string",
+            "enum": ["all", "normal"],
+            "description": "fixed regions only: 'all' = encastre (default); "
+            "'normal' = pin only the axis DOF — roller/sliding/symmetry",
+        },
+        "material": _s(
+            "keep regions only: override material inside the region "
+            "(e.g. 'aluminum' for a threaded insert)"
+        ),
+        "description": _s("label, e.g. 'M4 bore'"),
+    },
+}
+
+_LOAD_SCHEMA = {
+    "type": "object",
+    "description": "one load on a region — combine freely: force_n (total force, "
+    "split over region nodes), pressure_mpa (on face/surface/area), bearing_n "
+    "(cosine-distributed bolt/bearing force on a bore wall — needs a "
+    "hole/anchor/bore region), moment_nm (pure couple [mx,my,mz] in N·m), "
+    "preload_n (bolt pretension — axial squeeze on the two bore mouths), "
+    "remote_point [x,y,z] (apply force_n at that point — adds the induced "
+    "moment to the region), g_load [ax,ay,az] (body force in units of g — "
+    "gravity on the region's mass), direction_cone_deg (robust TopOpt: sample "
+    "the force over a cone of directions)",
+    "properties": {
+        "region": _REGION_SCHEMA,
+        "force_n": {
+            **_VEC3,
+            "description": "[fx, fy, fz] in Newton — also the bearing direction",
+        },
+        "pressure_mpa": {
+            "type": "number",
+            "description": "uniform pressure on a face region",
+        },
+        "bearing_n": {
+            "type": "number",
+            "description": "total bearing force on a bore wall (N) — hole/anchor/bore region",
+        },
+        "bearing_dir": {**_VEC3, "description": "bearing direction (default: force_n)"},
+        "moment_nm": {**_VEC3, "description": "pure couple [mx,my,mz] in N·m"},
+        "preload_n": {
+            "type": "number",
+            "description": "bolt pretension along the bore axis (N)",
+        },
+        "remote_point": {
+            **_VEC3,
+            "description": "apply force_n at this point — adds lever moment",
+        },
+        "g_load": {**_VEC3, "description": "body accel in g units, e.g. [0,0,-1]"},
+        "direction_cone_deg": {
+            "type": "number",
+            "description": "robust TopOpt: sample force directions within this cone (deg)",
         },
     },
 }
@@ -359,28 +434,17 @@ _LOAD_CASES_SCHEMA = {
         "type": "object",
         "properties": {
             "name": _s("case name"),
+            "weight": {
+                "type": "number",
+                "description": "relative objective weight for TopOpt (default 1)",
+            },
             "fixed": {
                 "type": "array",
                 "items": _REGION_SCHEMA,
-                "description": "fully constrained regions",
+                "description": "constrained regions — fix_mode 'all' (encastre) "
+                "or 'normal' (roller/symmetry on the axis DOF)",
             },
-            "loads": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "region": _REGION_SCHEMA,
-                        "force_n": {
-                            **_VEC3,
-                            "description": "[fx, fy, fz] in Newton",
-                        },
-                        "pressure_mpa": {
-                            "type": "number",
-                            "description": "uniform pressure on a face region",
-                        },
-                    },
-                },
-            },
+            "loads": {"type": "array", "items": _LOAD_SCHEMA},
         },
         "required": ["fixed", "loads"],
     },
@@ -388,9 +452,30 @@ _LOAD_CASES_SCHEMA = {
 
 STRUCT_TOOLS = [
     _fn(
+        "list_anchors",
+        "List the part's measured feature anchors: holes, bores, inserts, "
+        "bearing seats on ANY axis — each with index, 3D centre, axis, "
+        "diameter, depth, kind and bolt size. hole_index in hole/anchor/bore "
+        "regions refers to this table. Call FIRST — never guess coordinates "
+        "when a measured anchor exists. Free (no FEM budget).",
+        {},
+        [],
+    ),
+    _fn(
+        "check_load",
+        "Sanity-check a load case WITHOUT solving: resolved node counts, "
+        "resultant force and applied moment about the support centroid, "
+        "warnings for empty regions or unstable supports. Call after writing "
+        "each case — cheaper than a full preview/fem run.",
+        {
+            "load_cases": _LOAD_CASES_SCHEMA,
+        },
+        ["load_cases"],
+    ),
+    _fn(
         "preview_regions",
         "Render which cells your regions select — fixed=blue, load=red, "
-        "keep=green — plus node counts and the resolved total force. "
+        "keep=green — plus node counts and the resolved total force/moment. "
         "Call BEFORE the first topopt_run to verify load placement; does "
         "not consume FEM/TopOpt budget.",
         {
@@ -432,7 +517,27 @@ STRUCT_TOOLS = [
             "keep_regions": {
                 "type": "array",
                 "items": _REGION_SCHEMA,
-                "description": "regions forced to stay solid (e.g. mounting bores)",
+                "description": "regions forced to stay solid (e.g. mounting bores; "
+                "set material for insert zones)",
+            },
+            "void_regions": {
+                "type": "array",
+                "items": _REGION_SCHEMA,
+                "description": "regions forced EMPTY (forbidden material: cable "
+                "runs, swing space, clearance zones)",
+            },
+            "keep_mode": {
+                "type": "string",
+                "enum": ["manual", "auto"],
+                "description": "'auto' adds a keep ring around EVERY detected anchor",
+            },
+            "min_member_mm": {
+                "type": "number",
+                "description": "enforce minimum member thickness (e.g. 1.6 for FDM)",
+            },
+            "density_threshold": {
+                "type": "number",
+                "description": "iso threshold 0.2-0.9 for mesh extraction (default 0.5)",
             },
             "load_cases": _LOAD_CASES_SCHEMA,
             "material": _s("material name — empty = spec default"),
@@ -800,6 +905,7 @@ class ToolSession:
         fem_fn: StructFn | None = None,
         topopt_fn: StructFn | None = None,
         preview_fn: StructFn | None = None,
+        anchors_fn: StructFn | None = None,
     ) -> None:
         self.ctx = ctx
         self.kind = kind
@@ -809,6 +915,7 @@ class ToolSession:
         self.fem_fn = fem_fn
         self.topopt_fn = topopt_fn
         self.preview_fn = preview_fn
+        self.anchors_fn = anchors_fn
         settings = ctx.runtime_settings
         self.verify_left = (
             settings.agent_tool_verify_max if (verify_fn and settings.agent_tool_verify) else 0
@@ -877,6 +984,8 @@ class ToolSession:
                 if (t["function"]["name"] == "analyze_fem" and self.fem_left > 0)
                 or (t["function"]["name"] == "topopt_run" and self.topopt_left > 0)
                 or (t["function"]["name"] == "preview_regions" and self.preview_fn)
+                or (t["function"]["name"] == "check_load" and self.preview_fn)
+                or (t["function"]["name"] == "list_anchors" and self.anchors_fn)
             ]
             return out + OPTIMIZE_DONE_TOOLS + IMAGE_TOOLS
         # info sessions (intake/plan): catalog/library lookups + image gen
@@ -1012,7 +1121,10 @@ class ToolSession:
     # -- info tools ------------------------------------------------------------ #
 
     def _tool_search_catalog(self, a: dict[str, Any]) -> dict[str, Any]:
-        hits = catalog.search(str(a.get("query", "")))
+        query = str(a.get("query", "")).strip()
+        if not query:
+            return {"ok": False, "error": "query is required"}
+        hits = catalog.search(query)
         return {"ok": True, "results": hits, "count": len(hits)}
 
     def _tool_lookup_part(self, a: dict[str, Any]) -> dict[str, Any]:
@@ -1085,80 +1197,51 @@ class ToolSession:
         if not prompt:
             return {"ok": False, "error": "prompt is required"}
         count = max(1, min(2, int(a.get("count", 1) or 1)))
+
+        # optional reference image — must be one of this project's image assets
+        # the agent already knows (ctx.assets); the id travels in the trace
+        # either way, but the bytes never leave the machine
+        ref_id = str(a.get("reference_asset_id") or "").strip()
+        ref_asset: InputAsset | None = None
+        if ref_id:
+            ref_asset = next(
+                (
+                    x
+                    for x in self.ctx.assets
+                    if x.asset_id == ref_id and x.kind in IMAGE_INPUT_KINDS
+                ),
+                None,
+            )
+            if ref_asset is None:
+                return {
+                    "ok": False,
+                    "error": f"reference_asset_id '{ref_id}' is not an image asset of this job",
+                    "calls_left": self.image_left,
+                }
+        strength = a.get("strength")
+        mark_sketch = bool(a.get("mark_sketch"))
         self.image_left -= 1
 
-        import tempfile
-
-        from cadx.agent.image_client import ImageGenRequest
-
-        s = self.ctx.runtime_settings
-        tmp = Path(tempfile.mkdtemp(prefix="cadx-concept-"))
         try:
-            side = min(768, s.image_max_side)
-            seed = a.get("seed")
-            if seed is None:
-                # deterministic per job+prompt so retries stay reproducible
-                h = hashlib.sha256(f"{self.ctx.job_id}:{prompt}".encode()).digest()
-                seed = int.from_bytes(h[:4]) % 100_000
-            req = ImageGenRequest(
-                prompt=prompt,
-                model=s.image_model,
-                seed=int(seed),
-                count=count,
-                width=side,
-                height=side,
-                steps=s.image_steps,
-                guidance=s.image_guidance,
-                out_dir=tmp,
-            )
-            result = await self.ctx.image.generate(req, None, self.ctx.check_cancel)
-            from cadx.agent.image_assets import persist_generated_images
-            from cadx.db.session import session_scope
+            from cadx.agent.concept_image import generate_concept_images
 
-            async with session_scope() as db:
-                assets = persist_generated_images(
-                    db,
-                    self.ctx.project_id,
-                    result.image_paths,
-                    prompt=prompt,
-                    caption=f"concept — {prompt[:120]}",
-                    gen_params={
-                        "prompt": prompt,
-                        "model": result.model,
-                        "backend": result.backend,
-                        "seed": result.seed,
-                        "steps": result.steps,
-                        "guidance": result.guidance,
-                        "width": side,
-                        "height": side,
-                        "duration_s": result.duration_s,
-                        "source": "concept_tool",
-                        "job_id": self.ctx.job_id,
-                    },
-                )
-                await db.commit()
-            out_assets: list[dict[str, Any]] = []
-            for asset in assets:
-                self.ctx.assets.append(
-                    InputAsset(
-                        asset_id=str(asset.id),
-                        kind="generated_image",
-                        path=storage.resolve(asset.path),
-                        caption=asset.caption,
-                        filename=asset.filename,
-                    )
-                )
-                self.ctx.generated_asset_ids.append(str(asset.id))
-                out_assets.append({"asset_id": str(asset.id), "filename": asset.filename})
+            out = await generate_concept_images(
+                self.ctx,
+                prompt,
+                count=count,
+                seed=int(a["seed"]) if a.get("seed") is not None else None,
+                ref_asset=ref_asset,
+                strength=float(strength) if strength is not None else None,
+                mark_sketch=mark_sketch,
+                source="concept_tool",
+            )
             return {
                 "ok": True,
-                "model": result.model,
-                "seed": result.seed,
                 "calls_left": self.image_left,
-                "assets": out_assets,
+                "assets": [{"asset_id": x.asset_id, "filename": x.filename} for x in out],
                 "note": "image(s) shown below and stored as generated_image assets — "
                 "usable as image inputs for mesh generation",
-                "_images": [str(storage.resolve(asset.path)) for asset in assets],
+                "_images": [str(x.path) for x in out],
             }
         except Exception as e:
             log.warning("tool_session.concept_image_failed", error=str(e))
@@ -1167,8 +1250,6 @@ class ToolSession:
                 "error": f"image generation failed: {e}",
                 "calls_left": self.image_left,
             }
-        finally:
-            shutil.rmtree(tmp, ignore_errors=True)
 
     # -- library tools ---------------------------------------------------------- #
 
@@ -1397,6 +1478,7 @@ class ToolSession:
                     "max_vm_mpa": c.get("max_vm_mpa"),
                     "max_disp_mm": c.get("max_disp_mm"),
                     "converged": c.get("converged"),
+                    "reactions_n": c.get("reactions"),
                     "warnings": c.get("warnings") or [],
                 }
                 for c in fem.get("cases") or []
@@ -1431,6 +1513,58 @@ class ToolSession:
                 "check the load lands where you intended"
             )
         return out
+
+    async def _tool_list_anchors(self, a: dict[str, Any]) -> dict[str, Any]:
+        if self.anchors_fn is None:
+            return {"ok": False, "error": "list_anchors not available"}
+        res = await self.anchors_fn(a)
+        if not res.get("ok"):
+            return {"ok": False, "error": res.get("error") or "anchor scan failed"}
+        anchors = res.get("anchors") or []
+        return {
+            "ok": True,
+            "n_anchors": len(anchors),
+            "anchors": [
+                {
+                    k: a2.get(k)
+                    for k in (
+                        "index",
+                        "kind",
+                        "axis",
+                        "x",
+                        "y",
+                        "z",
+                        "dia",
+                        "depth_mm",
+                        "bolt_size",
+                        "name",
+                        "source",
+                    )
+                    if a2.get(k) is not None
+                }
+                for a2 in anchors
+            ],
+            "note": "hole_index in hole/anchor/bore regions refers to these indices",
+        }
+
+    async def _tool_check_load(self, a: dict[str, Any]) -> dict[str, Any]:
+        """Region resolution + resultant force/moment WITHOUT a render or a
+        solve — the cheap equilibrium sanity check."""
+        if self.preview_fn is None:
+            return {"ok": False, "error": "check_load not available"}
+        cases = self._coerce_obj_list(a.get("load_cases"))
+        if not isinstance(cases, list) or not cases:
+            return {"ok": False, "error": "load_cases must be a non-empty list"}
+        res = await self.preview_fn({**a, "load_cases": cases, "render_pngs": False})
+        if not res.get("ok"):
+            return {"ok": False, "error": res.get("error") or "check failed"}
+        prev = res.get("preview") or {}
+        return {
+            "ok": True,
+            "pitch_mm": prev.get("pitch_mm"),
+            "solid_elements": prev.get("solid_elements"),
+            "cases": prev.get("cases") or [],
+        }
 
     async def _tool_analyze_fem(self, a: dict[str, Any]) -> dict[str, Any]:
         if self.fem_fn is None or self.fem_left <= 0:

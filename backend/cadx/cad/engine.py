@@ -617,6 +617,24 @@ def run_mesh_preview(
 # --------------------------------------------------------------------------- #
 
 
+def _scan_anchors(mesh: Any, anchors: list[dict] | None, *, enabled: bool = True) -> list[dict]:
+    """Merge mesh-scanned feature anchors (+x/+y/+z) into the declared list.
+
+    `anchors` is the measured/declared list (may be None); the scan adds
+    side holes the top view never saw and enriches known ones with real
+    depth — both keyed into a re-indexed anchor table."""
+    from cadx.cad.fem.anchors3d import merge_anchor_lists, scan_mesh_anchors
+
+    if not enabled:
+        return [dict(a) for a in anchors or []]
+    try:
+        scanned = scan_mesh_anchors(mesh)
+    except Exception as e:
+        log.warning("fem.anchor_scan_failed", error=str(e)[:200])
+        scanned = []
+    return merge_anchor_lists(list(anchors or []), scanned)
+
+
 def run_fem_pipeline(
     *,
     mesh_path: Path,
@@ -629,6 +647,8 @@ def run_fem_pipeline(
     anchors: list[dict] | None = None,
     preview_only: bool = False,
     render_pngs: bool = True,
+    scan_anchors: bool = True,
+    scan_only: bool = False,
     runtime: RuntimeSettings | None = None,
 ) -> dict[str, Any]:
     """FEM verification on an existing mesh artifact. Writes fem/report.json +
@@ -636,7 +656,9 @@ def run_fem_pipeline(
 
     preview_only=True skips the solve and only renders which cells the
     declared regions select (fixed=blue load=red keep=green) — lets the
-    agent sanity-check region definitions before running TopOpt."""
+    agent sanity-check region definitions before running TopOpt.
+    scan_only=True only scans/merges feature anchors (the `list_anchors`
+    agent tool) — no voxelization, no solve."""
     from cadx.cad.fem.analyze import report_to_json, run_fem
     from cadx.llm.schemas import LoadCase, RegionSpec
 
@@ -647,6 +669,10 @@ def run_fem_pipeline(
         mesh = load_triangle_mesh(mesh_path)
     except Exception as e:
         return {"ok": False, "error": f"failed to load mesh for FEM: {e}"}
+
+    anchors = _scan_anchors(mesh, anchors, enabled=scan_anchors)
+    if scan_only:
+        return {"ok": True, "anchors": anchors}
 
     if preview_only:
         from cadx.cad.fem.preview import (
@@ -670,6 +696,7 @@ def run_fem_pipeline(
                 "cases": [resolve_case_summary(domain, c, anchors) for c in cases],
                 "cells": cells_preview(domain, cases, keep, anchors),
                 "regions_png": pngs,
+                "anchors": anchors,
             },
         }
 
@@ -681,12 +708,14 @@ def run_fem_pipeline(
         max_elements=max_elements or s.fem_max_elements,
         out_dir=out_dir,
         anchors=anchors,
+        keep_regions=keep,
+        spsolve_dofs=s.fem_spsolve_dofs,
     )
     report_to_json(report, out_dir / "fem" / "report.json")
     return {"ok": True, "fem": report.model_dump()}
 
 
-def run_topopt_pipeline(
+def run_topopt_pipeline(  # noqa: C901
     *,
     mesh_path: Path,
     out_dir: Path,
@@ -698,14 +727,15 @@ def run_topopt_pipeline(
     anchors: list[dict] | None = None,
     name: str = "model",
     cancelled: Any = None,
+    scan_anchors: bool = True,
     runtime: RuntimeSettings | None = None,
 ) -> ExecResult:
     """SIMP topology optimization on the part's voxelized design domain.
 
     Input mesh defines the design space (its solid voxels). keep/load/fix
-    regions are pinned solid; everything else is optimized down to
-    `volfrac`. Writes optimized mesh exports + density field + history +
-    FEM verification into out_dir.
+    regions are pinned solid, void_regions pinned empty; everything else is
+    optimized down to `volfrac`. Writes optimized mesh exports + density
+    field + history + FEM verification into out_dir.
 
     Two verifications per pass: `sf_mask` on the exact voxel structure and
     `sf_export` on the re-voxelized smoothed export mesh — the latter is the
@@ -716,12 +746,15 @@ def run_topopt_pipeline(
 
     from cadx.cad.fem.analyze import report_to_json, run_fem_domain
     from cadx.cad.fem.extract import density_to_mesh
+    from cadx.cad.fem.loads import expand_cone
     from cadx.cad.fem.preview import render_regions
     from cadx.cad.fem.regions import (
+        auto_keep_regions,
         empty_region_warnings,
         keep_element_mask,
+        material_cell_factors,
         region_node_mask,
-        resolve_case,
+        resolve_case_dofs,
     )
     from cadx.cad.fem.topopt import TopOptParams, passive_solid_mask, simp
     from cadx.cad.fem.voxelize import voxelize
@@ -743,6 +776,11 @@ def run_topopt_pipeline(
         res.error = "topology optimization requires at least one load case"
         return res
 
+    from cadx.cad.fem.materials import resolve_material
+
+    mat_name = material or ""
+    mat = resolve_material(mat_name)
+
     # --- design domain -------------------------------------------------------
     try:
         domain = voxelize(mesh, voxel_mm or s.fem_voxel_mm, max_elements or s.fem_max_elements)
@@ -750,46 +788,118 @@ def run_topopt_pipeline(
         res.error = f"voxelization failed: {e}"
         return res
 
+    anchors = _scan_anchors(mesh, anchors, enabled=scan_anchors)
+    res.topopt["anchors"] = anchors
+
+    # --- resolve load cases (with direction-cone expansion for robustness) ---
     fixed_node_masks: list[Any] = []
     load_node_masks: list[Any] = []
     resolved: list[tuple[Any, Any]] = []
-    for c in cases:
-        fixed, F, w = resolve_case(domain, c, anchors)
+    case_weights: list[float] = []
+    max_cases = s.fem_max_effective_cases
+
+    def _add_case(case: LoadCase, weight: float) -> None:
+        fixed3, F, w = resolve_case_dofs(domain, case, anchors, density_g_cm3=mat.density_g_cm3)
         res.topopt.setdefault("warnings", []).extend(w)
-        if not fixed.any() or not np.any(F):
+        if not fixed3.any() or not np.any(F):
             res.topopt["warnings"].append(
-                f"case '{c.name}' skipped — no fixed region or no effective load"
+                f"case '{case.name}' skipped — no fixed region or no effective load"
             )
-            continue
-        resolved.append((fixed, F))
-        fixed_node_masks.append(fixed)
+            return
+        resolved.append((fixed3, F))
+        case_weights.append(weight)
+
+    for c in cases:
+        cone_idx = [
+            li
+            for li, ld in enumerate(c.loads)
+            if (ld.direction_cone_deg or 0) > 0 and ld.force_n and len(ld.force_n) == 3
+        ]
+        _add_case(c, float(c.weight))
+        for li in cone_idx:
+            ld = c.loads[li]
+            variants = expand_cone(
+                np.asarray(ld.force_n, dtype=float), float(ld.direction_cone_deg or 0.0)
+            )
+            for vi, fvar in enumerate(variants):
+                if len(resolved) >= max_cases:
+                    res.topopt["warnings"].append(
+                        f"direction-cone expansion capped at {max_cases} cases"
+                    )
+                    break
+                vc = c.model_copy(deep=True)
+                vc.name = f"{c.name}_cone{vi + 1}"
+                vc.loads[li].force_n = [float(v) for v in fvar]
+                if vc.loads[li].bearing_dir:
+                    vc.loads[li].bearing_dir = [float(v) for v in fvar]
+                vc.loads[li].direction_cone_deg = None
+                _add_case(vc, float(c.weight))
         for load in c.loads:
+            # don't pin body-load or whole-part regions — gravity acts on
+            # whatever material survives and `all` re-matches the extracted
+            # mesh; pinning them would freeze the entire design domain.
+            concentrated = bool(
+                load.force_n
+                or load.pressure_mpa
+                or load.moment_nm
+                or load.preload_n
+                or load.remote_point
+            )
+            if load.g_load and not concentrated:
+                continue
+            if getattr(load.region, "kind", "") == "all":
+                continue
             load_node_masks.append(region_node_mask(domain, load.region, anchors))
+    for f3, _ in resolved:
+        fixed_node_masks.append(np.asarray(f3).any(axis=1) if np.ndim(f3) == 2 else f3)
     if not resolved:
         res.error = "no solvable load case — check fixed/load regions"
         return res
 
+    # --- non-design zones ----------------------------------------------------
+    keep_list = list(opt.keep_regions)
+    if opt.keep_mode == "auto" and anchors:
+        margin = opt.auto_keep_margin_mm or s.topopt_auto_keep_margin_mm
+        keep_list += auto_keep_regions(anchors, margin)
+    res.topopt.setdefault("warnings", []).extend(empty_region_warnings(domain, keep_list, anchors))
     res.topopt.setdefault("warnings", []).extend(
-        empty_region_warnings(domain, list(opt.keep_regions), anchors)
+        empty_region_warnings(domain, list(opt.void_regions), anchors)
     )
-    keep_cells = keep_element_mask(domain, list(opt.keep_regions), anchors)
+    keep_cells = keep_element_mask(domain, keep_list, anchors)
+    void_cells = keep_element_mask(domain, list(opt.void_regions), anchors)
     passive = passive_solid_mask(domain, [keep_cells], fixed_node_masks, load_node_masks)
 
     # region-selection previews so the agent/user can see where forces land
-    res.topopt["regions_png"] = render_regions(
-        domain, cases, list(opt.keep_regions), out_dir / "fem", anchors
-    )
+    res.topopt["regions_png"] = render_regions(domain, cases, keep_list, out_dir / "fem", anchors)
 
+    min_member = float(opt.min_member_mm or s.topopt_min_member_mm or 0.0)
     params = TopOptParams(
         volfrac=opt.target_volume_fraction or s.topopt_default_volfrac,
-        rmin_mm=s.topopt_default_rmin_mm,
+        # the filter radius also acts as the printable-feature floor
+        rmin_mm=max(s.topopt_default_rmin_mm, min_member / 2),
         max_iter=opt.max_iterations or s.topopt_max_iterations,
+        threshold=float(opt.density_threshold or 0.5),
     )
-    mat_name = material or ""
 
-    from cadx.cad.fem.materials import resolve_material
+    # insert/material zones: keep-regions with `material` change E per cell
+    E0_arr = mat.elastic_modulus_mpa * material_cell_factors(
+        domain, keep_list, anchors, mat.elastic_modulus_mpa
+    )
 
-    mat = resolve_material(mat_name)
+    # optional warm start from a previous run's density field
+    x0 = None
+    if opt.warm_density_relpath:
+        try:
+            from cadx import storage
+
+            warm = np.load(storage.resolve(opt.warm_density_relpath))
+            x0 = np.asarray(warm["density"], dtype=float)
+            if x0.size != domain.cell_count:
+                res.topopt["warnings"].append("warm-start density has a different grid — ignored")
+                x0 = None
+        except Exception as e:
+            res.topopt["warnings"].append(f"warm-start density unreadable: {e}")
+
     opt_dir = out_dir / "topopt"
     opt_dir.mkdir(parents=True, exist_ok=True)
     base_flat = is_flat_bottom(mesh)
@@ -798,15 +908,24 @@ def run_topopt_pipeline(
         """One SIMP run at `volfrac` + extraction, smoothing and both FEM
         verifications. Returns the pieces needed for artifacts/retry."""
         out: dict[str, Any] = {"volfrac": volfrac}
-        p = TopOptParams(volfrac=volfrac, rmin_mm=params.rmin_mm, max_iter=params.max_iter)
+        p = TopOptParams(
+            volfrac=volfrac,
+            rmin_mm=params.rmin_mm,
+            max_iter=params.max_iter,
+            threshold=params.threshold,
+        )
         t = time.monotonic()
         result = simp(
             domain,
-            mat.elastic_modulus_mpa,
+            E0_arr,
             mat.poisson,
             resolved,
             passive,
             p,
+            passive_void=void_cells,
+            case_weights=case_weights,
+            x0=x0,
+            spsolve_dofs=s.fem_spsolve_dofs,
             cancelled=cancelled,
             progress_file=opt_dir / f"history_{volfrac:.2f}.json",
         )
@@ -819,6 +938,7 @@ def run_topopt_pipeline(
             result.density,
             threshold=p.threshold,
             passive_solid=passive,
+            min_member_mm=min_member,
             smooth_iterations=s.topopt_smooth_iterations,
         )
         out["extract_warnings"] = extract_warnings
@@ -838,7 +958,14 @@ def run_topopt_pipeline(
 
         t = time.monotonic()
         verify = run_fem_domain(
-            domain, final_mask, cases, mat_name, out_dir=out_dir, anchors=anchors
+            domain,
+            final_mask,
+            cases,
+            mat_name,
+            out_dir=out_dir,
+            anchors=anchors,
+            keep_regions=keep_list,
+            spsolve_dofs=s.fem_spsolve_dofs,
         )
         out["verify"] = verify
         out["verify_s"] = round(time.monotonic() - t, 2)
@@ -853,6 +980,8 @@ def run_topopt_pipeline(
                 mat_name,
                 out_dir=out_dir,
                 anchors=anchors,
+                keep_regions=keep_list,
+                spsolve_dofs=s.fem_spsolve_dofs,
                 suffix="_export",
             )
         except Exception as e:
@@ -902,6 +1031,7 @@ def run_topopt_pipeline(
                 4,
             ),
             "history": result.history[-50:],
+            "passive_frac": round(result.passive_frac, 4),
             "warnings": res.topopt.get("warnings", []) + result.warnings,
             "material": mat.name,
             "sf_mask": verify.worst_safety_factor,
@@ -916,9 +1046,12 @@ def run_topopt_pipeline(
         opt_dir / "density.npz",
         density=result.density.astype(np.float32),
         mask=final_mask,
+        solid=domain.solid,
+        passive=passive.reshape(domain.dims),
         origin=domain.origin,
         pitch=np.float64(domain.pitch),
         dims=np.asarray(domain.dims),
+        flat_bottom=np.bool_(base_flat),
     )
     report_to_json(verify, out_dir / "fem" / "report.json")
     report_to_json(verify_export, out_dir / "fem" / "report_export.json")
@@ -972,6 +1105,175 @@ def run_topopt_pipeline(
         res.topopt["warnings"].append(
             "optimized mesh is not watertight — inspect before manufacturing"
         )
+    res.ok = True
+    res.timings["total_s"] = round(time.monotonic() - t0, 2)
+    return res
+
+
+def run_topopt_resample(
+    *,
+    density_relpath: str,
+    out_dir: Path,
+    load_cases: list[dict[str, Any]],
+    optimize: dict[str, Any] | None = None,
+    material: str = "",
+    max_elements: int | None = None,
+    anchors: list[dict] | None = None,
+    name: str = "model",
+    runtime: RuntimeSettings | None = None,
+) -> ExecResult:
+    """Re-extract a stored SIMP density field at a different threshold /
+    min-member without re-running SIMP — the threshold-sweep endpoint.
+
+    Loads density.npz from a previous optimize run, rebuilds the voxel
+    domain from the stored grid meta, extracts + verifies both the exact
+    mask and the smoothed export mesh, writes exports + reports.
+    """
+    from cadx import storage
+    from cadx.cad.fem.analyze import report_to_json, run_fem_domain
+    from cadx.cad.fem.extract import density_to_mesh
+    from cadx.cad.fem.materials import resolve_material
+    from cadx.cad.fem.regions import (
+        auto_keep_regions,
+        keep_element_mask,
+        region_node_mask,
+        resolve_case_dofs,
+    )
+    from cadx.cad.fem.topopt import passive_solid_mask
+    from cadx.cad.fem.voxelize import VoxelDomain, voxelize
+    from cadx.llm.schemas import LoadCase, OptimizeSpec
+
+    res = ExecResult()
+    s = runtime or RuntimeSettings()
+    opt = OptimizeSpec(**(optimize or {}))
+    t0 = time.monotonic()
+
+    try:
+        npz = np.load(storage.resolve(density_relpath))
+        density = np.asarray(npz["density"], dtype=float)
+        origin = np.asarray(npz["origin"], dtype=float)
+        pitch = float(npz["pitch"])
+        _d = [int(v) for v in npz["dims"]]
+        dims = (_d[0], _d[1], _d[2])
+        if "solid" in npz:
+            solid = np.asarray(npz["solid"], dtype=bool).reshape(dims)
+        else:  # legacy npz without the stored design space
+            solid = (density >= 1e-2).reshape(dims) | np.asarray(npz["mask"], dtype=bool).reshape(
+                dims
+            )
+    except Exception as e:
+        res.error = f"density field unreadable: {e}"
+        return res
+
+    domain = VoxelDomain(origin=origin, pitch=pitch, dims=dims, solid=solid)
+    mat = resolve_material(material or "")
+    cases = [LoadCase(**c) for c in load_cases]
+    threshold = float(opt.density_threshold or 0.5)
+    min_member = float(opt.min_member_mm or s.topopt_min_member_mm or 0.0)
+
+    # rebuild the pinned-solid mask from the declared regions
+    fixed_node_masks: list[Any] = []
+    load_node_masks: list[Any] = []
+    for c in cases:
+        fixed3, _F, _w = resolve_case_dofs(domain, c, anchors, density_g_cm3=mat.density_g_cm3)
+        res.topopt.setdefault("warnings", []).extend(_w)
+        fixed_node_masks.append(np.asarray(fixed3).any(axis=1))
+        for ld in c.loads:
+            load_node_masks.append(region_node_mask(domain, ld.region, anchors))
+    keep_list = list(opt.keep_regions)
+    if opt.keep_mode == "auto" and anchors:
+        margin = opt.auto_keep_margin_mm or s.topopt_auto_keep_margin_mm
+        keep_list += auto_keep_regions(anchors, margin)
+    keep_cells = keep_element_mask(domain, keep_list, anchors)
+    passive = passive_solid_mask(domain, [keep_cells], fixed_node_masks, load_node_masks)
+
+    try:
+        opt_mesh, final_mask, extract_warnings, n_components = density_to_mesh(
+            domain,
+            density,
+            threshold=threshold,
+            passive_solid=passive,
+            min_member_mm=min_member,
+            smooth_iterations=s.topopt_smooth_iterations,
+        )
+    except Exception as e:
+        res.error = f"re-extraction failed: {e}"
+        return res
+    res.topopt["warnings"] = res.topopt.get("warnings", []) + extract_warnings
+    res.topopt.update(
+        {
+            "threshold": threshold,
+            "min_member_mm": min_member,
+            "n_components": n_components,
+            "resampled_from": density_relpath,
+        }
+    )
+
+    # same smoothing stage as the original run — floor pinning follows the
+    # flag stored in the density field
+    from cadx.cad.mesh_ops import smooth_preserve
+
+    opt_mesh = smooth_preserve(
+        opt_mesh, iterations=4, pin_floor=bool(npz.get("flat_bottom", False))
+    )
+
+    run_dir = out_dir / "_run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    stl_path = run_dir / "model.stl"
+    try:
+        opt_mesh.export(str(stl_path), file_type="stl")
+    except Exception as e:
+        res.error = f"failed to write resampled STL: {e}"
+        return res
+
+    if cases:
+        verify = run_fem_domain(
+            domain,
+            final_mask,
+            cases,
+            material or "",
+            out_dir=out_dir,
+            anchors=anchors,
+            keep_regions=keep_list,
+        )
+        report_to_json(verify, out_dir / "fem" / "report.json")
+        res.fem = verify.model_dump()
+        try:
+            domain_exp = voxelize(opt_mesh, pitch, max_elements or s.fem_max_elements)
+            verify_exp = run_fem_domain(
+                domain_exp,
+                domain_exp.solid,
+                cases,
+                material or "",
+                out_dir=out_dir,
+                anchors=anchors,
+                keep_regions=keep_list,
+                suffix="_export",
+            )
+            report_to_json(verify_exp, out_dir / "fem" / "report_export.json")
+            res.fem_export = verify_exp.model_dump()
+            res.topopt["sf_mask"] = verify.worst_safety_factor
+            res.topopt["sf_export"] = verify_exp.worst_safety_factor
+        except Exception as e:
+            log.warning("topopt.resample_verify_failed", error=str(e)[:200])
+            res.topopt["sf_mask"] = verify.worst_safety_factor
+
+    res.exports = export_mesh_all(opt_mesh, out_dir / "exports", name=name, try_step=False)
+    res.exports["dxf"] = None
+    res.exports["svg"] = None
+    res.analysis = mesh_analysis(opt_mesh)
+    res.mesh = {
+        "pipeline": "topopt_resample",
+        "triangles": len(opt_mesh.faces),
+        "volume_mm3": round(float(opt_mesh.volume), 1),
+        "solid_elements": int(final_mask.sum()),
+        "pitch_mm": pitch,
+    }
+    render_dir = out_dir / "renders"
+    render_paths = render_views(stl_path, render_dir, res.analysis.bbox_size)
+    res.renders = {v: p.name for v, p in render_paths.items()}
+    thumb = render_thumbnail(stl_path, out_dir / "thumbnail.png")
+    res.thumbnail = thumb.name if thumb else None
     res.ok = True
     res.timings["total_s"] = round(time.monotonic() - t0, 2)
     return res

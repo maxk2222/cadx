@@ -1005,7 +1005,7 @@ async def test_generate_mesh_uses_heightfield_for_flat_part():
     assert ctx.mesh_info["generation"]["heightfield"] is True
 
 
-async def test_generate_mesh_hopeless_gate_skips_full_generation():
+async def test_generate_mesh_hopeless_gate_skips_full_generation(monkeypatch):
     """All cheap candidates below the viability threshold → no full-res roll.
 
     Regression: _generate_mesh must return None (callers route to the CAD
@@ -1013,6 +1013,7 @@ async def test_generate_mesh_hopeless_gate_skips_full_generation():
     """
     import time
 
+    import cadx.agent.orchestrator as orch
     from cadx.agent.orchestrator import _generate_mesh
 
     spec = PartSpec(
@@ -1028,6 +1029,10 @@ async def test_generate_mesh_hopeless_gate_skips_full_generation():
         mesh_available=True,
         runtime_settings=RuntimeSettings(mesh_candidates_per_iter=2, mesh_prep_images=False),
     )
+    # the fake blob legitimately scores above the viability bar in its best
+    # orientation — force hopeless scores so the test exercises the gate
+    # itself instead of depending on fragile geometry scoring
+    monkeypatch.setattr(orch, "_score_candidate_mesh", lambda *a, **k: 0.1)
     # no measurements → no outline → no heightfield candidate
     rel = await _generate_mesh(ctx, 1, spec, None, t0=time.monotonic())
     assert rel is None

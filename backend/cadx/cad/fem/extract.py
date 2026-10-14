@@ -128,18 +128,48 @@ def _surface_mesh(domain: VoxelDomain, mask: np.ndarray) -> trimesh.Trimesh:
     return trimesh.Trimesh(vertices=coords, faces=remap[tris], process=False)
 
 
+def _enforce_min_member(
+    mask: np.ndarray, pitch: float, min_mm: float, max_passes: int = 0
+) -> tuple[np.ndarray, int]:
+    """Thicken members thinner than `min_mm` (local thickness via EDT).
+
+    Cells whose local thickness 2*edt falls below min_mm are dilated by one
+    voxel per pass until the deficit is covered. Dilation can only add
+    material, so connectivity is preserved; callers should re-regularize.
+    Returns (mask, cells_added)."""
+    if min_mm <= 0:
+        return mask, 0
+    passes = max_passes or max(1, int(np.ceil(min_mm / (2 * pitch))))
+    m = mask.copy()
+    added_total = 0
+    for _ in range(passes):
+        edt = ndimage.distance_transform_edt(m) * pitch  # mm to the void
+        thin = m & (2 * edt < min_mm - 1e-9)
+        if not thin.any():
+            break
+        grown = ndimage.binary_dilation(thin)
+        added = grown & ~m
+        if not added.any():
+            break
+        m |= grown
+        added_total += int(added.sum())
+    return m, added_total
+
+
 def density_to_mask(
     domain: VoxelDomain,
     density: np.ndarray,
     *,
     threshold: float = 0.5,
     passive_solid: np.ndarray | None = None,
+    min_member_mm: float = 0.0,
 ) -> tuple[np.ndarray, list[str], int]:
     """Threshold + clean the density field into a final solid mask (nx,ny,nz).
 
-    Applies passive-region union, connectivity pruning and non-manifold-edge
-    regularization. This mask — not the smoothed export mesh — is the exact
-    structure FEM verification should run on.
+    Applies passive-region union, optional min-member thickening,
+    connectivity pruning and non-manifold-edge regularization. This mask —
+    not the smoothed export mesh — is the exact structure FEM verification
+    should run on.
     """
     warnings: list[str] = []
     rho = density.reshape(domain.dims)
@@ -148,6 +178,11 @@ def density_to_mask(
         mask |= passive_solid.reshape(domain.dims)
     if not mask.any():
         raise ValueError("density threshold produced an empty part")
+
+    if min_member_mm > 0:
+        mask, grown = _enforce_min_member(mask, domain.pitch, min_member_mm)
+        if grown:
+            warnings.append(f"thickened {grown} voxels to reach min member {min_member_mm:g} mm")
 
     required = (
         passive_solid.reshape(domain.dims)
@@ -180,6 +215,7 @@ def density_to_mesh(
     *,
     threshold: float = 0.5,
     passive_solid: np.ndarray | None = None,
+    min_member_mm: float = 0.0,
     smooth_iterations: int = 3,
 ) -> tuple[trimesh.Trimesh, np.ndarray, list[str], int]:
     """Convert the optimized density field into a trimesh.
@@ -191,7 +227,11 @@ def density_to_mesh(
     smoothed mesh, which would erode thin members.
     """
     mask, warnings, n_components = density_to_mask(
-        domain, density, threshold=threshold, passive_solid=passive_solid
+        domain,
+        density,
+        threshold=threshold,
+        passive_solid=passive_solid,
+        min_member_mm=min_member_mm,
     )
     mesh = _surface_mesh(domain, mask)
     if smooth_iterations > 0:

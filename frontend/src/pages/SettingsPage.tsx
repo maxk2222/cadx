@@ -70,6 +70,7 @@ const NUM_FIELDS = new Set<string>([
   "mesh_max_faces_for_cad",
   "image_steps",
   "image_guidance",
+  "image_default_strength",
   "image_max_side",
   "image_max_count",
   "image_tool_budget",
@@ -127,6 +128,7 @@ const FIELD_BOUNDS: Record<
   mesh_max_faces_for_cad: { min: 1, int: true },
   image_steps: { min: 1, max: 200, int: true },
   image_guidance: { min: 0, max: 50 },
+  image_default_strength: { min: 0, max: 1, exclusiveMin: true },
   image_max_side: { min: 64, max: 4096, int: true },
   image_max_count: { min: 1, max: 16, int: true },
   image_tool_budget: { min: 0, max: 50, int: true },
@@ -645,8 +647,9 @@ export default function SettingsPage() {
           )}
         </div>
         <div className="mb-3 text-xs text-zinc-500">
-          text-to-image on the same mesh-server sidecar — for concept images,
-          design ideation and auto-generated hero images for mesh mode.
+          text-to-image and image editing on the same mesh-server sidecar — for concept
+          images, design ideation, img2img variations and auto-generated hero images
+          for mesh mode.
         </div>
         <Field label="Default image model">
           <select
@@ -666,6 +669,34 @@ export default function SettingsPage() {
               ) && <option value={form.image_model}>{form.image_model}</option>}
           </select>
         </Field>
+        <Field
+          label="Default edit model"
+          hint="used when a reference image is given (img2img / instruction edit)"
+        >
+          <select
+            className={inputCls}
+            value={form.image_edit_model}
+            onChange={(e) => set("image_edit_model", e.target.value)}
+          >
+            <option value="auto">auto (edit-capable adapter)</option>
+            {(imageModels.data ?? [])
+              .filter((m) => m.supports_edit)
+              .map((m) => (
+                <option key={m.id} value={m.id} disabled={!m.available}>
+                  {m.name || m.id} ({m.device}){m.available ? "" : " — not installed"}
+                </option>
+              ))}
+            {form.image_edit_model &&
+              !["auto", ...(imageModels.data ?? []).map((m) => m.id)].includes(
+                form.image_edit_model
+              ) && <option value={form.image_edit_model}>{form.image_edit_model}</option>}
+          </select>
+        </Field>
+        {field({
+          key: "image_default_strength",
+          label: "Default edit strength (0–1)",
+          kind: "number",
+        })}
         {field({ key: "image_steps", label: "Steps (empty = adapter default)", kind: "number" })}
         {field({ key: "image_guidance", label: "Guidance (empty = adapter default)", kind: "number" })}
         {field({ key: "image_max_side", label: "Max image side (px)", kind: "number" })}
@@ -688,6 +719,7 @@ export default function SettingsPage() {
               <div key={m.id}>
                 <b className="text-zinc-300">{m.id}</b> · {m.device}
                 {m.loaded ? " · loaded" : ""}
+                {m.supports_edit ? (m.requires_image ? " · edit-only" : " · edit-capable") : ""}
                 {m.available ? "" : " · not installed"}
                 {m.last_error ? (
                   <div className="text-amber-500">last error: {m.last_error}</div>

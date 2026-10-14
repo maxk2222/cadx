@@ -143,7 +143,14 @@ def parse_content_tool_call(text: str) -> ToolCall | None:
             args = data[key]
             break
     if args is None:
-        args = {}
+        # compact {"name": "tool", "query": "x"} shapes: remaining fields ARE
+        # the arguments. A large object that merely HAS a "name"/"action"
+        # field (a spec or answer payload the model dumped as JSON) is NOT a
+        # tool call — e.g. a PartSpec with name="search_catalog" would loop
+        # the session forever.
+        if len(data) > 4:
+            return None
+        args = {k: v for k, v in data.items() if k not in ("name", "action", "tool")}
     tc = _mk_call("call_0", name, args)
     tc.via_content = True
     return tc

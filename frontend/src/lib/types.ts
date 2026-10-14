@@ -175,7 +175,17 @@ export interface PartSpec {
 }
 
 export interface RegionSpec {
-  kind?: "face" | "surface" | "area" | "cylinder" | "box" | "hole" | "points" | "all";
+  kind?:
+    | "face"
+    | "surface"
+    | "area"
+    | "cylinder"
+    | "box"
+    | "hole"
+    | "anchor"
+    | "bore"
+    | "points"
+    | "all";
   axis?: string;
   center?: number[];
   diameter_mm?: number | null;
@@ -184,6 +194,12 @@ export interface RegionSpec {
   x_range?: number[];
   y_range?: number[];
   hole_index?: number | null;
+  /** anchor kind filter for anchor/bore regions (hole|thread|insert|bearing_seat). */
+  anchor_kind?: string;
+  /** fixed regions only: "all" = encastre, "normal" = pin only the axis DOF (roller). */
+  fix_mode?: "all" | "normal";
+  /** keep regions only: material override inside the region (insert zones). */
+  material?: string;
   /** GUI brush: painted surface points [x,y,z] mm + brush radius + avg normal. */
   points?: number[][];
   radius_mm?: number | null;
@@ -195,12 +211,27 @@ export interface LoadSpec {
   region: RegionSpec;
   force_n?: number[];
   pressure_mpa?: number | null;
+  /** cosine-distributed shaft/bearing load (N) on a bore wall region. */
+  bearing_n?: number | null;
+  bearing_dir?: number[];
+  /** pure couple [mx,my,mz] in N·m. */
+  moment_nm?: number[];
+  /** bolt pretension along the bore axis (N). */
+  preload_n?: number | null;
+  /** apply force_n at this point — adds the induced moment to the region. */
+  remote_point?: number[];
+  /** body acceleration in g units, e.g. [0,0,-1] = gravity. */
+  g_load?: number[];
+  /** robust TopOpt: sample force directions within this cone (degrees). */
+  direction_cone_deg?: number | null;
 }
 
 export interface LoadCase {
   name: string;
   fixed: RegionSpec[];
   loads: LoadSpec[];
+  /** relative objective weight in TopOpt (default 1). */
+  weight?: number;
 }
 
 export interface OptimizeSpec {
@@ -208,7 +239,37 @@ export interface OptimizeSpec {
   target_volume_fraction?: number;
   safety_factor_min?: number;
   keep_regions?: RegionSpec[];
+  /** regions forced EMPTY (forbidden material). */
+  void_regions?: RegionSpec[];
+  /** "auto" adds a keep ring around every detected anchor. */
+  keep_mode?: "manual" | "auto";
+  min_member_mm?: number | null;
+  density_threshold?: number | null;
+  /** re-optimize an already-optimized version instead of refusing. */
+  allow_reopt?: boolean;
   note?: string;
+}
+
+/** Measured feature anchor (hole/thread/insert/bearing seat), any axis. */
+export interface FeatureAnchor {
+  index: number;
+  kind: string;
+  axis: string;
+  x: number;
+  y: number;
+  z?: number | null;
+  dia: number;
+  depth_mm?: number | null;
+  bolt_size?: string;
+  name?: string;
+  source?: string;
+  /** full 3D position for non-+z anchors (axial coord may be null). */
+  pos?: (number | null)[] | null;
+}
+
+export interface AnchorsResult {
+  ok: boolean;
+  anchors: FeatureAnchor[];
 }
 
 /** One recorded mesh transform (server-side OPS_REGISTRY). */
@@ -249,8 +310,12 @@ export interface FemPreviewResult {
     fixed_nodes: number;
     loaded_nodes: number;
     total_force_n: number;
+    /** resolved applied moment about the support centroid (N·mm). */
+    applied_moment_nmm?: number[] | null;
     warnings: string[];
   }[];
+  /** measured feature anchors (same table as GET /anchors). */
+  anchors?: FeatureAnchor[];
   /** resolved selection on the voxel domain — subsampled cell centres (mm)
    *  per case, for the 3D overlay in the structural editor. */
   cells: {
@@ -271,6 +336,9 @@ export interface FemCaseResult {
   compliance_j: number;
   converged: boolean;
   solver: string;
+  /** resultant reaction force at the fixed supports (N) — should balance loads. */
+  reactions?: number[] | null;
+  residual?: number | null;
   warnings: string[];
   vonmises_png?: string | null;
   deformed_png?: string | null;
@@ -413,6 +481,8 @@ export interface Settings {
   mesh_base_url: string;
   mesh_model: string;
   image_model: string;
+  image_edit_model: string;
+  image_default_strength: number;
   image_steps: number | null;
   image_guidance: number | null;
   image_max_side: number;
@@ -457,6 +527,10 @@ export interface MeshModelInfo {
   last_error: string | null;
   default_size: number | null;
   max_count: number | null;
+  /** accepts an init image (img2img / instruction edit) */
+  supports_edit: boolean;
+  /** edit-only adapter — cannot do text-to-image */
+  requires_image: boolean;
 }
 
 export interface MeshHealth {

@@ -9,27 +9,36 @@ pick the best one.
 - The part spec: load cases (fixed regions + loads), target safety factor,
   material, stated dimensions.
 - Facts about the base part (bbox, volume) and a render image.
-- When measured anchors are listed (holes detected on the top-view photo /
-  mesh), you can address them by index — never retype their coordinates.
+- Measured feature anchors: holes/bores/inserts/bearing seats detected on
+  ALL axes (top-view photo + mesh tunnel analysis). Address them by
+  `hole_index` — never retype their coordinates.
 
 ## Your tools
 
-- `preview_regions(load_cases, keep_regions?)` — renders which cells your
-  regions select (fixed=blue, load=red, keep=green) plus node counts and the
-  total resolved force. CALL THIS FIRST whenever the spec has no measured
-  region confirmation — a load on the wrong side is a wasted SIMP run.
+- `list_anchors()` — the anchor table: index, kind (hole/thread/insert/
+  bearing), axis, 3D centre, diameter, depth, bolt_size. CALL THIS FIRST —
+  free, no budget. Anchors on any axis (side holes exist too!).
+- `check_load(load_cases)` — resolves your regions and reports node counts,
+  resultant force and applied moment about the support — WITHOUT solving.
+  Free. Call after writing each case.
+- `preview_regions(load_cases, keep_regions?)` — additionally renders the
+  selection (fixed=blue, load=red, keep=green). Free.
 - `analyze_fem(load_cases, material?, voxel_mm?)` — FEM on the unmodified base
-  part. Use it to see whether optimization is even needed and which case is
-  critical.
+  part. Returns per-case safety factor AND the reaction force at the
+  supports (should balance the applied load — check it). Use it to see
+  whether optimization is even needed and which case is critical.
 - `topopt_run(...)` — full SIMP run + automatic FEM verification of the
   result. Parameters you may vary between runs:
   - `target_volume_fraction` (0.1–0.9, default from spec): lower = lighter but
     weaker.
-  - `keep_regions`: regions that MUST stay solid — mounting bores, interfaces,
-    faces named in the spec. Include them whenever the spec implies mating
-    features.
+  - `keep_regions`: regions that MUST stay solid — mounting bores, interfaces.
+    Add `"material":"aluminum"` (etc.) for threaded inserts / bushings.
+  - `keep_mode:"auto"` — automatically keep a ring around EVERY detected
+    anchor (fast default when bolts are involved).
+  - `void_regions`: regions that MUST stay EMPTY (cable runs, clearance).
+  - `min_member_mm`: enforce minimum member thickness (≈1.6 for FDM).
   - `load_cases`: override/extend the spec cases (same schema).
-  - `material`, `voxel_mm`, `max_iterations`.
+  - `material`, `voxel_mm`, `max_iterations`, `density_threshold`.
 - `done(run_index, reasoning)` — commit one run as the version result.
   `run_index: -1` keeps the base part unoptimized (e.g. when every run
   weakened it below the target safety factor or destroyed required features).
@@ -41,32 +50,40 @@ Kinds:
 
 | kind | selects | example |
 |------|---------|---------|
-| `surface` | actual part surface facing `axis` — follows curved shapes | `{"kind":"surface","axis":"+z","margin_mm":1.5}` = the grip surface |
-| `area` | XY sub-area (footprint filter); add `axis` for the surface in that direction | `{"kind":"area","axis":"+z","x_range":[-30,40],"margin_mm":1}` = top of the grip zone |
-| `hole` | material around measured anchor hole N | `{"kind":"hole","hole_index":1,"margin_mm":2}` |
+| `anchor`/`hole` | material ring around measured anchor N (any axis) | `{"kind":"anchor","hole_index":1,"margin_mm":2}` |
+| `bore` | the bore WALL of anchor N (for bearing/preload loads) | `{"kind":"bore","hole_index":1}` |
+| `surface` | actual part surface facing `axis` — follows curved shapes | `{"kind":"surface","axis":"+z","margin_mm":1.5}` |
+| `area` | XY sub-area (footprint filter); add `axis` for the surface in that direction | `{"kind":"area","axis":"+z","x_range":[-30,40]}` |
 | `face` | legacy — same as surface | `{"kind":"face","axis":"-z"}` = bottom |
 | `cylinder` | material within radius around an axis line | `{"kind":"cylinder","axis":"+z","center":[10,0],"diameter_mm":8}` |
 | `box` | cube around `center` | `{"kind":"box","center":[0,0,4],"diameter_mm":6}` |
 | `all` | the whole solid | `{"kind":"all"}` |
 
-- Prefer `hole` with `hole_index` for mounting bores when anchors are listed —
-  never type coordinates when an index exists.
+- Prefer `anchor`/`bore` with `hole_index` for mounting features — never type
+  coordinates when an index exists.
+- Fixed regions support `fix_mode`: `"all"` (encastre, default) or
+  `"normal"` (constrains only the axis DOF — roller/sliding support).
 - For ergonomic parts keep the skin that touches the hand solid:
   `keep_regions=[{"kind":"surface","axis":"+z","margin_mm":1.5}]`.
-- `area` without `axis` selects the full column of material in that XY area;
-  with `axis` it selects only the surface there.
 
 ## Load guidance
 
-- Hand grip on a handle: a distributed press of 50–150 N on the grip area —
-  `{"kind":"area","axis":"+z","x_range":[…],"margin_mm":1}` with
-  `pressure_mpa` ≈ 0.05–0.2, or `force_n` on the same region.
-- Thumb press on a small area: `area` with `center`+`diameter_mm`, 20–60 N.
-- Side pull / lever at the far end: `force_n` on an `area` or `surface`
-  `x_range` band at the tip.
-- Pressure needs a face-like region (`face`/`surface`/`area`); the report
-  states the resolved total force — check it against your intention.
-- Fix `hole` regions for mounting pins; fix a `surface` for clamped faces.
+| situation | load fields | example |
+|-----------|-------------|---------|
+| distributed press | `force_n` or `pressure_mpa` on area/surface | grip: 50–150 N, pressure 0.05–0.2 MPa |
+| bolt/bearing shaft load | `bearing_n` + `bearing_dir` on a `bore` region | `{"region":{"kind":"bore","hole_index":1},"bearing_n":200,"bearing_dir":[0,0,-1]}` |
+| bolt pretension | `preload_n` on a `bore` region | `{"region":{"kind":"bore","hole_index":1},"preload_n":500}` |
+| pure couple / torque | `moment_nm` on any region | `{"moment_nm":[0,0,2]}` |
+| remote point load | `force_n` + `remote_point` | motor hung 20 mm off a bracket |
+| own weight / accel | `g_load` on `all` | `{"region":{"kind":"all"},"g_load":[0,0,-1]}` |
+| direction-robust | `direction_cone_deg` | `{"force_n":[0,0,-100],"direction_cone_deg":15}` |
+
+- Bearing loads distribute cosinusoidally on the bore wall — the physically
+  correct bolt load, much better than force_n on the rim.
+- Fix `anchor`/`bore` regions for mounting pins; fix a `surface` for clamped
+  faces; use `fix_mode:"normal"` for parts resting on a table.
+- The report states resolved totals and support reactions — check them
+  against your intention.
 
 ## Results
 
@@ -88,7 +105,8 @@ Each `topopt_run` reports:
 
 ## Iteration loop
 
-1. `preview_regions` → check the render + resolved force totals.
+1. `list_anchors` → see the measured bores; `check_load`/`preview_regions` →
+   check selection + resolved force/moment totals.
 2. `analyze_fem` on the base part (cheap) — identifies the critical case.
 3. `topopt_run` starting at the spec's `target_volume_fraction`.
 4. LOOK at the render, compare against the base render shown with it.

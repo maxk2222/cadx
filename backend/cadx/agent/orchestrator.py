@@ -59,16 +59,18 @@ class Candidate:
     dim_issues: list[str]
     mesh_post: dict[str, Any] | None = None  # MeshPostParams used (mesh/hybrid modes)
     feature_findings: list[dict[str, Any]] = field(default_factory=list)
+    hybrid_missing: bool = False  # code dropped load_mesh_solid()
 
     @property
-    def rank(self) -> tuple[int, int, int]:
+    def rank(self) -> tuple[int, int, int, int]:
         major = (
             sum(1 for d in self.critique.discrepancies if d.severity == "major")
             if self.critique
             else 99
         )
         score = self.critique.score if self.critique else 0
-        return (0 if self.dim_issues else 1, -major, score)
+        # hybrid-missing first: a parametric stand-in is never the organic body
+        return (0 if self.hybrid_missing else 1, 0 if self.dim_issues else 1, -major, score)
 
 
 @dataclass
@@ -459,6 +461,8 @@ async def _run_topopt_phase(ctx: AgentCtx, outcome: RunOutcome, spec: PartSpec) 
     if outcome.status not in ("succeeded", "needs_review"):
         return outcome
     if not spec.load_cases:
+        # the caller already ran the focused extraction fallback; arriving
+        # here still empty means the prompt had no usable load intent
         outcome.mode_note += " | topopt skipped — no load cases in the spec"
         await ctx.emit("optimize", 0, "skipped: intake declared no load cases")
         return outcome
@@ -654,6 +658,43 @@ def _dedupe_near_identical(ctx: AgentCtx, ordered: list[Any]) -> list[Any]:
     return out
 
 
+async def _bootstrap_concept_images(
+    ctx: AgentCtx, iteration: int, spec: PartSpec, plan: Any
+) -> list[Any]:
+    """Synthesise a concept image when a mesh/hybrid run has zero input images.
+
+    The image->3D adapters need at least one reference; with text-only prompts
+    the planner can still choose mesh/hybrid and we generate one
+    product-photo-style image from the subject description. Runs once per job —
+    a failed attempt is flagged so later candidate/iteration calls don't retry.
+    """
+    if ctx.mesh_info.get("_concept_bootstrap"):
+        return []
+    ctx.mesh_info["_concept_bootstrap"] = True
+    if ctx.image is None or not ctx.image_available:
+        return []
+    subject = (plan.mesh_subject if plan else "") or (spec.name if spec else "") or ctx.prompt[:200]
+    prompt = (
+        f"{subject}, single manufactured part, isolated product photo, centered, "
+        "neutral light-grey studio background, soft even lighting, slight 3/4 view, "
+        "photorealistic, no text"
+    )
+    try:
+        from cadx.agent.concept_image import generate_concept_images
+
+        out = await generate_concept_images(ctx, prompt, count=1, source="concept_bootstrap")
+    except Exception as e:
+        log.warning("meshgen.concept_bootstrap_failed", error=str(e))
+        await ctx.emit("meshgen", iteration, f"concept image generation failed: {e}")
+        return []
+    await ctx.emit(
+        "meshgen",
+        iteration,
+        "no input images — generated concept reference for the mesh generator",
+    )
+    return list(out)
+
+
 def _mesh_source_images(
     ctx: AgentCtx, iteration: int, spec: PartSpec | None = None
 ) -> tuple[list[Any], list[str]]:
@@ -714,6 +755,9 @@ def _map_gen_roles(
     """Translate intake image_roles into generator view roles."""
 
     def _gen_role(a: Any) -> str:
+        # explicit user/agent marking wins over intake labels
+        if getattr(a, "role_hint", "") == "sketch":
+            return "scribble"
         role = intake_roles.get(a.asset_id, "other")
         if role == "top":
             return "front" if flat else "other"
@@ -721,6 +765,8 @@ def _map_gen_roles(
             return "back" if flat else "other"
         if role in ("front", "back", "left", "right"):
             return role
+        if role == "sketch":
+            return "scribble"
         return "other"
 
     seen: set[str] = set()
@@ -731,12 +777,14 @@ def _map_gen_roles(
             r = "other"
         seen.add(r)
         roles.append(r)
-    # hero must be the generator's front view
+    # hero must be the generator's front view — unless the lead image is a
+    # marked scribble, which stays the conditioning slot for *-scribble
+    # adapters (ordering is enforced again in _arrange_gen_images)
     front_i = next((i for i, r in enumerate(roles) if r == "front"), None)
     if front_i is not None and front_i != 0:
         ordered.insert(0, ordered.pop(front_i))
         roles.insert(0, roles.pop(front_i))
-    if "front" not in roles:
+    if "front" not in roles and (not roles or roles[0] != "scribble"):
         roles[0] = "front"
     return ordered, roles
 
@@ -768,6 +816,12 @@ async def _resolve_mesh_adapter(
         return configured, (m.max_images if m else n_images)
     if not models:
         return "auto", n_images
+    # a marked sketch (role_hint="sketch") only works on scribble adapters —
+    # route there explicitly when auto-selecting
+    if any(getattr(a, "role_hint", "") == "sketch" for a in ctx.assets):
+        m = next((m for m in models if m.id.endswith("-scribble")), None)
+        if m is not None:
+            return m.id, m.max_images
     from cadx.agent.model_pick import load_bench, part_class, pick_adapter
 
     bench = load_bench()
@@ -1071,6 +1125,7 @@ def _score_candidate_mesh(
 
         from cadx.agent.mesh_score import score_raw_mesh
         from cadx.cad.mesh_ops import (
+            candidate_meshes,
             orient,
             orient_by_plan_view,
             rest_on_xy_center,
@@ -1084,9 +1139,19 @@ def _score_candidate_mesh(
             hit = orient_by_plan_view(m, outline)
             if hit is not None:
                 m = orient(m, hit[0], hit[1], mirror_x=hit[2])
-        m, _, _ = scale_to_spec(m, spec)
-        m = rest_on_xy_center(m)
-        return score_raw_mesh(m, spec, outline)
+            m, _, _ = scale_to_spec(m, spec)
+            m = rest_on_xy_center(m)
+            return score_raw_mesh(m, spec, outline)
+        # no plan view: the raw generator orientation is arbitrary — a part
+        # lying on its side would fail the aspect check spuriously. Score all
+        # 6 stable orientations and keep the best.
+        best = 0.0
+        for cand in candidate_meshes(m).values():
+            c, _, _ = scale_to_spec(cand, spec)
+            sc = score_raw_mesh(c, spec, None)
+            if sc is not None and sc > best:
+                best = sc
+        return best
     except Exception as e:
         log.warning("mesh.candidate_score_failed", rel=rel, error=str(e)[:160])
         return None
@@ -1216,9 +1281,19 @@ async def _arrange_gen_images(
     adapter's image budget (roles stay aligned). Returns (model, images, roles)."""
     model, img_cap = await _resolve_mesh_adapter(ctx, len(images), prefer=prefer, spec=spec)
     if model.endswith("-scribble"):
-        # sketch-conditioned adapters read image[0] as the scribble — put the
-        # measured-outline silhouette first, photos stay as context
-        si = next((i for i, a in enumerate(images) if a.asset_id == "_synth_back"), None)
+        # sketch-conditioned adapters read image[0] as the scribble — prefer a
+        # user/agent-marked sketch (role_hint or intake 'scribble' role), fall
+        # back to the measured-outline silhouette; photos stay as context
+        si = next(
+            (
+                i
+                for i, a in enumerate(images)
+                if getattr(a, "role_hint", "") == "sketch" or roles[i] == "scribble"
+            ),
+            None,
+        )
+        if si is None:
+            si = next((i for i, a in enumerate(images) if a.asset_id == "_synth_back"), None)
         if si:
             images.insert(0, images.pop(si))
             roles.insert(0, roles.pop(si))
@@ -1233,7 +1308,7 @@ async def _arrange_gen_images(
     return model, images, roles
 
 
-async def _generate_mesh(
+async def _generate_mesh(  # noqa: C901
     ctx: AgentCtx,
     iteration: int,
     spec: PartSpec,
@@ -1273,6 +1348,12 @@ async def _generate_mesh(
         return rel
 
     images, roles = _mesh_source_images(ctx, iteration, spec)
+    if not images:
+        # text-only job: image->3D still needs a reference — synthesise a
+        # product-photo concept image once per job when an image adapter is up
+        boot = await _bootstrap_concept_images(ctx, iteration, spec, plan)
+        if boot:
+            images, roles = boot, ["front"] + ["other"] * (len(boot) - 1)
     if not images:
         ctx.mesh_info["gen_error"] = "no image input for mesh generation"
         return None
@@ -1405,9 +1486,88 @@ async def _orient_mesh(ctx: AgentCtx, iteration: int, mesh_rel: str) -> dict[str
             return ctx.mesh_orientation
 
     choice = await mesh_orient_step.run(ctx, iteration, mesh_rel)
+    # deterministic sanity: the LLM can orient a flat part standing on its
+    # edge (up=+y on a handle scale → z-extent 40x the stated thickness) —
+    # that fails the dimension gate downstream. Rank all up/front pairs by
+    # stated-dim violations (then candidate score) and override the pick only
+    # when a strictly better orientation exists. With <2 stated dims the
+    # violation term degenerates to 0 for every candidate and ranking falls
+    # back to the raw-mesh score alone — the same metric the pre-gate uses,
+    # so a catastrophic LLM pick still gets corrected before downstream work.
+    if ctx.spec:
+        s = ctx.runtime_settings
+        det, llm_bad, det_bad = _rank_orientations(
+            mesh_rel, ctx.spec, choice, s.agent_dim_tolerance_pct, s.agent_dim_tolerance_mm
+        )
+        if det is not None and det_bad < llm_bad:
+            if det_bad[0] < llm_bad[0]:
+                reason = (
+                    f"violates {llm_bad[0]} stated dim(s) "
+                    f"({det['up']}/{det['front']} has {det_bad[0]})"
+                )
+            else:
+                reason = f"scores low ({-llm_bad[1]:.2f} vs {-det_bad[1]:.2f})"
+            await ctx.emit(
+                "orient",
+                iteration,
+                f"orientation {choice.get('up')}/{choice.get('front')} {reason} "
+                f"— using {det['up']}/{det['front']}",
+            )
+            choice = {**det, **({"mirror_x": True} if choice.get("mirror_x") else {})}
     ctx.mesh_orientation = choice
     ctx.mesh_info["orientation_source"] = ctx.mesh_info.get("orientation_source") or "llm"
     return ctx.mesh_orientation
+
+
+def _rank_orientations(
+    mesh_rel: str,
+    spec: PartSpec,
+    llm_choice: dict[str, Any],
+    tol_pct: float,
+    tol_mm: float,
+) -> tuple[dict[str, str] | None, tuple[int, float], tuple[int, float]]:
+    """Score every (up, front) orientation: (#stated-dim violations, -score).
+
+    The LLM pick is scored with the same ruler; the best deterministic
+    orientation is returned so the caller can override a physically
+    impossible choice (e.g. a flat scale standing on its edge)."""
+    try:
+        import trimesh
+
+        from cadx.agent.mesh_score import score_raw_mesh
+        from cadx.cad.mesh_ops import orient, rest_on_xy_center, scale_to_spec
+
+        m = trimesh.load(storage.resolve(mesh_rel), force="mesh")
+        if not isinstance(m, trimesh.Trimesh):
+            return None, (0, 0.0), (0, 0.0)
+
+        def _key(up: str, front: str, mirror: bool = False) -> tuple[int, float]:
+            c = rest_on_xy_center(orient(m, up, front, mirror_x=mirror))
+            c, _, _ = scale_to_spec(c, spec)
+            n = len(
+                compare_dims(spec, {"bbox_size": [float(v) for v in c.extents]}, tol_pct, tol_mm)
+            )
+            return n, -(score_raw_mesh(c, spec, None) or 0.0)
+
+        axes = ("+x", "-x", "+y", "-y", "+z", "-z")
+        best_choice: dict[str, str] | None = None
+        best_key: tuple[int, float] | None = None
+        for up in axes:
+            for front in axes:
+                if up[-1] == front[-1]:
+                    continue
+                k = _key(up, front)
+                if best_key is None or k < best_key:
+                    best_key, best_choice = k, {"up": up, "front": front}
+        llm_key = _key(
+            str(llm_choice.get("up") or "+z"),
+            str(llm_choice.get("front") or "+y"),
+            bool(llm_choice.get("mirror_x")),
+        )
+        return best_choice, llm_key, best_key or (0, 0.0)
+    except Exception as e:
+        log.warning("orient.sanity_failed", error=str(e)[:200])
+        return None, (0, 0.0), (0, 0.0)
 
 
 def _measured_plan_outline(ctx: AgentCtx) -> list[list[float]] | None:
@@ -1770,7 +1930,10 @@ async def _run_cad(  # noqa: C901
                         "mesh_rel": f"{it_rel}/renders/mesh.stl",
                         "load_cases": [c.model_dump() for c in spec.load_cases],
                         "material": ctx.settings.fem_material or spec.material,
-                        "voxel_mm": ctx.settings.fem_voxel_mm,
+                        # iteration verify is a smoke check (solvable? sane SF?) —
+                        # a coarser pitch keeps it inside the task timeout on
+                        # long parts; the optimize phase re-verifies at full res
+                        "voxel_mm": max(2.5, ctx.settings.fem_voxel_mm),
                         "runtime_settings": ctx.runtime_settings.executor_values(),
                     }
                 )
@@ -1823,9 +1986,30 @@ async def _run_cad(  # noqa: C901
 
         cand = Candidate(it, code_resp, exec_result, critique, dim_issues)
         cand.feature_findings = feature_findings
+        # hybrid guard: an improve pass that silently drops load_mesh_solid()
+        # regresses to a parametric part and no longer IS the organic body —
+        # flag it deterministically instead of relying on the critique to
+        # notice the missing mesh
+        hybrid_missing = ctx.hybrid_solid is not None and "load_mesh_solid" not in code_resp.code
+        cand.hybrid_missing = hybrid_missing
+        hybrid_issues = (
+            [
+                {
+                    "source": "hybrid",
+                    "severity": "major",
+                    "what": "hybrid part no longer calls load_mesh_solid() — the organic "
+                    "base body is missing",
+                    "fix_hint": "rebuild on `mesh = load_mesh_solid()` and only add/cut "
+                    "the exact features; never replace the mesh with primitives",
+                }
+            ]
+            if hybrid_missing
+            else []
+        )
         cur_issues = (
             pre_issues
             + fem_issues
+            + hybrid_issues
             + build_issues(critique, dim_issues, feature_findings, exec_result.get("dfm"))
         )
         if best is None or cand.rank > best.rank:
@@ -1853,6 +2037,7 @@ async def _run_cad(  # noqa: C901
             and not dim_issues
             and not major
             and not fem_issues
+            and not hybrid_missing
         ):
             await ctx.emit("done", it, "all checks passed")
             break
@@ -3006,6 +3191,42 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
             return outcome
     outcome.spec = spec.model_dump()
 
+    # ---- structural-load second chance ----
+    # weak models routinely drop the forces/optimization half of the prompt:
+    # `load_cases` empty or degenerate (`{"fixed":[],"loads":[]}`). Recover it
+    # right after intake so the planner, per-iteration FEM checks and the
+    # topopt phase all see real cases instead of unsolvable placeholders.
+    prompt = ctx.prompt or ""
+    prompt_hints_loads = bool(
+        re.search(
+            r"optimi|topolog|leicht|light|gewicht|weight|"
+            r"\d+\s*(?:N|kg)\b|kraft|force|belast|last\b|screw|schraub",
+            prompt,
+            re.I,
+        )
+    )
+    tried_load_extraction = False
+    intake_step.sanitize_load_cases(spec)
+    dim_notes = intake_step.sanitize_dims(spec, prompt)
+    if dim_notes:
+        outcome.spec = spec.model_dump()
+        ctx.spec = spec
+        for note in dim_notes:
+            await ctx.emit("intake", 0, note)
+    if prompt_hints_loads and not spec.load_cases:
+        tried_load_extraction = True
+        cases, opt = await intake_step.extract_load_cases(ctx, spec)
+        if cases:
+            spec.load_cases = cases
+            if (
+                opt is not None
+                and opt.enabled
+                and (spec.optimize is None or not spec.optimize.enabled)
+            ):
+                spec.optimize = opt
+            outcome.spec = spec.model_dump()
+            await ctx.emit("intake", 0, f"recovered {len(cases)} load case(s) missed by intake")
+
     # ---------- MEASURE ----------
     try:
         ctx.measurements = await measure_step.run(ctx, spec)
@@ -3098,29 +3319,52 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
     )
 
     # ---------- OPTIMIZE (topopt mode: SIMP + FEM verify on the base part) --
+    # the prompt itself asking for optimization is a valid trigger too —
+    # weak models regularly leave plan.optimize / spec.optimize unset
+    prompt_hints_opt = bool(re.search(r"optimi|topolog|leicht|light|gewicht|weight", prompt, re.I))
     wants_opt = (
         ctx.topopt_requested
         or (plan is not None and plan.optimize)
         or (spec.optimize is not None and spec.optimize.enabled)
+        or prompt_hints_opt
     )
+    if (
+        wants_opt
+        and not spec.load_cases
+        and not tried_load_extraction
+        and outcome.status in ("succeeded", "needs_review")
+    ):
+        # last-ditch extraction when intake-time recovery was skipped (e.g.
+        # planner decided to optimize a prompt without load keywords)
+        cases, opt = await intake_step.extract_load_cases(ctx, spec)
+        if cases:
+            spec.load_cases = cases
+            if (
+                opt is not None
+                and opt.enabled
+                and (spec.optimize is None or not spec.optimize.enabled)
+            ):
+                spec.optimize = opt
+            await ctx.emit(
+                "optimize", 0, f"intake missed loads — retry extracted {len(cases)} case(s)"
+            )
     if wants_opt:
         if ctx.topopt_requested:
             why = "requested by user"
         elif plan is not None and plan.optimize:
             why = plan.optimize_reason or "planner decision"
-        else:
+        elif spec.optimize is not None and spec.optimize.enabled:
             why = "enabled in spec"
+        else:
+            why = "prompt asks for loads/optimization"
         await ctx.emit("optimize", 0, f"topology optimization: {why}")
         outcome = await _run_topopt_phase(ctx, outcome, spec)
-    elif plan is not None and not plan.optimize:
-        import re
-
-        if re.search(r"optimi|leicht|light|gewicht|weight|\d+\s*N\b", ctx.prompt or "", re.I):
-            await ctx.emit(
-                "optimize",
-                0,
-                "note: prompt mentions loads/lightweight but planner set optimize=false",
-            )
+    elif plan is not None and not plan.optimize and prompt_hints_loads:
+        await ctx.emit(
+            "optimize",
+            0,
+            "note: prompt mentions loads/lightweight but planner set optimize=false",
+        )
 
     if ctx.measurements:
         outcome.analysis = {**(outcome.analysis or {}), "measurements": ctx.measurements}

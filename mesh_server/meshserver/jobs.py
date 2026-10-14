@@ -12,7 +12,9 @@ import io
 import shutil
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from meshserver.adapters.base import GenOpts
 from meshserver.adapters.image_base import ImageGenOpts
@@ -187,13 +189,20 @@ class JobManager:
         # running jobs finish their model call but discard the result
         return True
 
+    @staticmethod
+    def _cleanup_job_files(job: MeshJob | ImageJob, job_dir: Path) -> None:
+        shutil.rmtree(job_dir / job.id, ignore_errors=True)
+        # staged edit-job init image lives in job_dir/incoming/, outside the
+        # per-job dir — remove it explicitly
+        init = getattr(job, "init_image_path", None)
+        if init is not None:
+            init.unlink(missing_ok=True)
+
     async def delete(self, job_id: str) -> bool:
         job = self.jobs.pop(job_id, None)
         if job is None:
             return False
-        d = self.cfg.job_dir / job_id
-        if d.exists():
-            shutil.rmtree(d, ignore_errors=True)
+        self._cleanup_job_files(job, self.cfg.job_dir)
         return True
 
     def _gc(self) -> None:
@@ -203,7 +212,7 @@ class JobManager:
                 now - (job.finished or job.created) > self.cfg.job_ttl_s
             ):
                 self.jobs.pop(jid, None)
-                shutil.rmtree(self.cfg.job_dir / jid, ignore_errors=True)
+                self._cleanup_job_files(job, self.cfg.job_dir)
 
     # -- worker ------------------------------------------------------------ #
 
@@ -238,6 +247,42 @@ class JobManager:
             finally:
                 self.registry.maybe_unload_idle()
 
+    def _load_adapter(
+        self,
+        job: Any,
+        *,
+        explicit: bool,
+        select: Callable[[], type | None],
+        kind_label: str,
+    ) -> tuple[Any | None, type | None]:
+        """Select + load an adapter; on 'auto' fall through to the next adapter
+        when loading fails (missing entry point, gated weights, OOM at load).
+
+        Load failures badlist the adapter so later jobs skip it too; an
+        explicitly requested model still fails immediately (client asked for
+        that model, a silent swap would be wrong)."""
+        attempted: set[str] = set()
+        while True:
+            cls = select()
+            if cls is None or cls.id in attempted:
+                job.status = "failed"
+                job.error = (
+                    f"no {'image ' if kind_label == 'image' else ''}adapter available "
+                    f"for model '{job.params.model}' "
+                    f"on device '{self.registry.device}' — see /v1/models"
+                )
+                job.finished = time.monotonic()
+                return None, None
+            attempted.add(cls.id)
+            try:
+                return self.registry.get(cls), cls
+            except Exception as e:
+                self.registry.mark_failed(cls.id, str(e))
+                log.warning("job.adapter_load_failed", model=cls.id, error=str(e)[:300])
+                if explicit:
+                    raise
+                job.message = f"{cls.name} failed to load — trying next adapter"
+
     def _run_job(self, job: MeshJob) -> None:  # runs in a thread
         job.status = "running"
         job.started = time.monotonic()
@@ -246,14 +291,13 @@ class JobManager:
         images = prep_images(job.image_paths, self.cfg.bg_removal)
         n = len(images)
 
-        cls = self.registry.select(job.params.model, n)
+        adapter, cls = self._load_adapter(
+            job,
+            explicit=job.params.model not in ("", "auto"),
+            select=lambda: self.registry.select(job.params.model, n),
+            kind_label="mesh",
+        )
         if cls is None:
-            job.status = "failed"
-            job.error = (
-                f"no adapter available for model '{job.params.model}' "
-                f"on device '{self.registry.device}' — see /v1/models"
-            )
-            job.finished = time.monotonic()
             return
         job.model = cls.id
         job.backend = cls.backend
@@ -268,7 +312,6 @@ class JobManager:
         def cancelled() -> bool:
             return job.cancelled
 
-        adapter = self.registry.get(cls)
         job.message = f"generating with {cls.name}"
         result = adapter.generate(
             images,
@@ -309,18 +352,17 @@ class JobManager:
         job.started = time.monotonic()
         job.message = "selecting image adapter"
 
-        cls = self.registry.select_image(
-            job.params.model, need_edit=job.init_image_path is not None
+        adapter, cls = self._load_adapter(
+            job,
+            explicit=job.params.model not in ("", "auto"),
+            select=lambda: self.registry.select_image(
+                job.params.model, need_edit=job.init_image_path is not None
+            ),
+            kind_label="image",
         )
         if cls is None:
-            job.status = "failed"
-            job.error = (
-                f"no image adapter available for model '{job.params.model}' "
-                f"on device '{self.registry.device}' — see /v1/models"
-            )
             if job.init_image_path is not None:
-                job.error += " (edit job needs a supports_edit adapter)"
-            job.finished = time.monotonic()
+                job.error = (job.error or "") + " (edit job needs a supports_edit adapter)"
             return
         job.model = cls.id
         job.backend = cls.backend

@@ -1,5 +1,15 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Check, FileBox, ImageIcon, Pencil, Sparkles, Trash2, Upload } from "lucide-react";
+import {
+  Check,
+  FileBox,
+  ImageIcon,
+  Pencil,
+  PenLine,
+  Sparkles,
+  Trash2,
+  Upload,
+  Wand2,
+} from "lucide-react";
 import { useRef, useState } from "react";
 import { api } from "../lib/api";
 import type { Asset } from "../lib/types";
@@ -36,6 +46,7 @@ export default function AssetManager({
   const [caption, setCaption] = useState("");
   const [uploading, setUploading] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [varying, setVarying] = useState<Asset | null>(null);
   const [err, setErr] = useState("");
 
   const refresh = () => qc.invalidateQueries({ queryKey: ["assets", projectId] });
@@ -66,11 +77,16 @@ export default function AssetManager({
   });
   const saveCaption = useMutation({
     mutationFn: ({ id, caption }: { id: string; caption: string }) =>
-      api.updateAsset(id, caption),
+      api.updateAsset(id, { caption }),
     onSuccess: () => {
       setEditingCaption(null);
       refresh();
     },
+  });
+  const toggleSketch = useMutation({
+    mutationFn: ({ id, sketch }: { id: string; sketch: boolean }) =>
+      api.updateAsset(id, { role_hint: sketch ? "sketch" : "" }),
+    onSuccess: refresh,
   });
 
   return (
@@ -168,6 +184,14 @@ export default function AssetManager({
                 >
                   {a.kind === "generated_image" ? "ai" : a.kind.replace("reference_", "")}
                 </span>
+                {a.gen_params?.role_hint === "sketch" && (
+                  <span
+                    className="absolute left-1 top-9 rounded bg-emerald-800/80 px-1 text-[9px] text-emerald-200"
+                    title="marked as sketch — feeds the sketch-conditioned mesh adapter"
+                  >
+                    sketch
+                  </span>
+                )}
                 {a.derived_from && (
                   <span
                     className="absolute left-1 top-5 rounded bg-purple-800/80 px-1 text-[9px] text-purple-200"
@@ -194,6 +218,31 @@ export default function AssetManager({
                   </button>
                   {isImage(a.kind) && (
                     <>
+                      <IconBtn
+                        title="AI variation / edit with this image as reference"
+                        className="h-5 w-5"
+                        onClick={() => setVarying(a)}
+                      >
+                        <Wand2 className="h-3 w-3" />
+                      </IconBtn>
+                      <IconBtn
+                        title={
+                          a.gen_params?.role_hint === "sketch"
+                            ? "unmark as sketch"
+                            : "mark as sketch (sketch-conditioned mesh adapter)"
+                        }
+                        className={`h-5 w-5 ${
+                          a.gen_params?.role_hint === "sketch" ? "text-emerald-400" : ""
+                        }`}
+                        onClick={() =>
+                          toggleSketch.mutate({
+                            id: a.id,
+                            sketch: a.gen_params?.role_hint !== "sketch",
+                          })
+                        }
+                      >
+                        <PenLine className="h-3 w-3" />
+                      </IconBtn>
                       <IconBtn
                         title="edit image (crop / mask / remove bg)"
                         className="h-5 w-5"
@@ -248,6 +297,13 @@ export default function AssetManager({
       <Lightbox src={lightbox} onClose={() => setLightbox(null)} />
       {generating && (
         <GenerateImageModal projectId={projectId} onClose={() => setGenerating(false)} />
+      )}
+      {varying && (
+        <GenerateImageModal
+          projectId={projectId}
+          referenceAsset={varying}
+          onClose={() => setVarying(null)}
+        />
       )}
       {editing && (
         <ImageEditorModal

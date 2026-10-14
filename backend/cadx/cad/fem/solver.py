@@ -147,6 +147,37 @@ def assemble(
     return K, edof, active
 
 
+def _fixed_dofs(fixed: np.ndarray, nnodes: int) -> np.ndarray:
+    """Flat dof indices of the constraint mask — accepts (nnodes,) node masks
+    (legacy: all 3 DOFs pinned) or (nnodes, 3) per-DOF masks (fix_mode)."""
+    fixed = np.asarray(fixed, dtype=bool)
+    if fixed.ndim == 1:
+        return np.unique(np.concatenate([3 * np.flatnonzero(fixed) + c for c in range(3)]))
+    # (nnodes, 3) C-order ravel -> flat index IS the dof index (3*node + comp)
+    _ = nnodes
+    return np.flatnonzero(fixed.ravel())
+
+
+def _ssor_preconditioner(Kf: sparse.csr_matrix) -> spla.LinearOperator | None:
+    """SSOR preconditioner M ~ (D+L) D^-1 (D+L)^T via two triangular solves —
+    much better conditioned than Jacobi for voxel elasticity, still O(nnz).
+    Returns None on any problem (caller falls back to diagonal scaling)."""
+    try:
+        L = sparse.tril(Kf, format="csr")  # includes the diagonal
+        diag = L.diagonal()
+        if np.any(diag <= 0):
+            return None
+        D = sparse.diags(diag)
+
+        def _mv(r: np.ndarray) -> np.ndarray:
+            y = spla.spsolve_triangular(L, r, lower=True)
+            return np.asarray(spla.spsolve_triangular(L.T.tocsr(), D @ y, lower=False))
+
+        return spla.LinearOperator(Kf.shape, matvec=_mv, dtype=np.float64)
+    except Exception:
+        return None
+
+
 def solve(
     domain: VoxelDomain,
     elem_E: np.ndarray,
@@ -161,6 +192,8 @@ def solve(
 ) -> FemSolution:
     """Solve K u = F with Dirichlet BCs on `fixed_nodes`.
 
+    `fixed_nodes` accepts a (nnodes,) node mask (all 3 DOFs pinned — legacy)
+    or a (nnodes, 3) per-DOF mask for roller/symmetry supports.
     elem_E is per-cell Young's modulus; only `cell_mask` cells (default:
     domain.solid) carry stiffness and are solved for stress.
     """
@@ -170,7 +203,15 @@ def solve(
 
     used_nodes = np.unique(domain.element_nodes()[active])
     used_dofs = np.unique(edof.ravel())
-    fixed_dofs = np.unique(np.concatenate([3 * np.flatnonzero(fixed_nodes) + c for c in range(3)]))
+    fixed_dofs = np.unique(_fixed_dofs(fixed_nodes, domain.node_count))
+    if np.asarray(fixed_nodes).ndim == 2:
+        fixed3 = np.asarray(fixed_nodes, dtype=bool)
+        constrained_dirs = int(np.count_nonzero(fixed3.any(axis=0)))
+        if constrained_dirs < 3:
+            warnings.append(
+                f"only {constrained_dirs}/3 translation directions are constrained — "
+                "check for unconstrained rigid-body modes"
+            )
     fixed_set = set(fixed_dofs.tolist())
     free = np.array([d for d in used_dofs if d not in fixed_set], dtype=np.int64)
     if free.size == 0:
@@ -203,15 +244,20 @@ def solve(
         solver_name = "cg"
         converged = False
     if solver_name == "cg":
-        diag = Kf.diagonal()
-        diag[diag == 0] = 1.0
-        M = spla.diags(1.0 / diag)
+        M = _ssor_preconditioner(Kf.tocsr())
+        if M is None:
+            diag = Kf.diagonal()
+            diag[diag == 0] = 1.0
+            M = spla.diags(1.0 / diag)
         x0 = u0[free] if u0 is not None else None
         x, info = spla.cg(Kf, Ff, x0=x0, rtol=1e-6, atol=0.0, maxiter=5000, M=M)
         u[free] = x
         converged = info == 0
         if info > 0:
             warnings.append(f"CG did not converge in {info} iterations")
+
+    if not np.all(np.isfinite(u)):
+        warnings.append("solution contains NaN/inf — likely unconstrained rigid-body modes")
 
     # element von Mises at cell centres (only for cells carrying real stiffness)
     D = _D(nu) * (E_ref if E_ref is not None else float(elem_E[active].max(initial=1.0)))

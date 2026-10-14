@@ -9,7 +9,7 @@ from sqlmodel import select
 from cadx.agent.image_client import FakeImageClient
 from cadx.agent.orchestrator import _autogen_hero_image
 from cadx.agent.toolspecs import ToolSession
-from cadx.agent.types import AgentCtx
+from cadx.agent.types import AgentCtx, InputAsset
 from cadx.db.models import Asset, AssetKind, Project, ProjectSettings
 from cadx.db.session import create_all, session_scope
 from cadx.llm.fake import FakeLLM
@@ -192,3 +192,63 @@ async def test_concept_image_tool_hidden_without_client():
     session = ToolSession(ctx, kind="info")
     names = {t["function"]["name"] for t in session.tools()}
     assert "generate_concept_image" not in names
+
+
+def _ref_asset(tmp_path) -> InputAsset:
+    p = tmp_path / "ref.png"
+    from PIL import Image
+
+    Image.new("RGB", (32, 32), (200, 10, 10)).save(p)
+    return InputAsset(asset_id=str(uuid.uuid4()), kind="image", path=p)
+
+
+async def test_concept_image_tool_with_reference(tmp_path):
+    ctx = _ctx(
+        image=FakeImageClient(),
+        image_available=True,
+        runtime_settings=RuntimeSettings(image_tool_budget=2),
+    )
+    await _mk_project(ctx.project_id)
+    ref = _ref_asset(tmp_path)
+    ctx.assets.append(ref)
+    session = ToolSession(ctx, kind="info")
+
+    res = await session.execute(
+        "generate_concept_image",
+        {
+            "prompt": "make it matte black",
+            "reference_asset_id": ref.asset_id,
+            "strength": 0.4,
+            "mark_sketch": True,
+        },
+    )
+    assert res["ok"], res
+    call = ctx.image.calls[0]
+    assert call["init_image"] == str(ref.path)
+    # new asset derives from the reference and carries the sketch hint
+    gen = [a for a in ctx.assets if a.kind == "generated_image"]
+    assert len(gen) == 1 and gen[0].role_hint == "sketch"
+    async with session_scope() as db:
+        row = await db.get(Asset, uuid.UUID(gen[0].asset_id))
+    assert row is not None
+    assert row.derived_from == uuid.UUID(ref.asset_id)
+    assert row.gen_params["edit"] is True
+    assert row.gen_params["role_hint"] == "sketch"
+    assert row.gen_params["strength"] == 0.4
+
+
+async def test_concept_image_tool_bad_reference_keeps_budget(tmp_path):
+    ctx = _ctx(
+        image=FakeImageClient(),
+        image_available=True,
+        runtime_settings=RuntimeSettings(image_tool_budget=1),
+    )
+    await _mk_project(ctx.project_id)
+    session = ToolSession(ctx, kind="info")
+    res = await session.execute(
+        "generate_concept_image",
+        {"prompt": "x", "reference_asset_id": str(uuid.uuid4())},
+    )
+    assert not res["ok"]
+    assert res["calls_left"] == 1  # invalid ref must not burn the budget
+    assert not ctx.image.calls

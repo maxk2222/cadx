@@ -54,6 +54,7 @@ class AssetUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     caption: str | None = None
+    role_hint: str | None = Field(default=None, max_length=40)  # e.g. "sketch"; "" clears
 
 
 class AssetOut(BaseModel):
@@ -162,6 +163,23 @@ class OptimizeRequest(BaseModel):
     load_cases: list[dict[str, Any]] = Field(default_factory=list)
     optimize: dict[str, Any] = Field(default_factory=dict)
     material: str = ""
+    # allow optimizing an already-optimized version again (e.g. warm-start
+    # from the stored density, different void/keep regions, or a second pass
+    # over the resampled mesh)
+    allow_reopt: bool = False
+
+
+class TopoptResampleRequest(BaseModel):
+    """Re-extract a stored SIMP density field at a different threshold /
+    min-member — no new SIMP run. Creates an optimize child version."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    density_threshold: float = Field(default=0.5, ge=0.2, le=0.9)
+    min_member_mm: float = Field(default=0.0, ge=0.0, le=50.0)
+    load_cases: list[dict[str, Any]] = Field(default_factory=list)
+    keep_regions: list[dict[str, Any]] = Field(default_factory=list)
+    material: str = ""
 
 
 # --------------------------------------------------------------------------- #
@@ -220,7 +238,16 @@ class FemPreviewOut(BaseModel):
     solid_elements: int = 0
     cases: list[dict[str, Any]] = Field(default_factory=list)
     cells: list[dict[str, Any]] = Field(default_factory=list)  # 3D overlay point clouds
+    anchors: list[dict[str, Any]] = Field(default_factory=list)  # resolved anchor table
     pngs: list[str] = Field(default_factory=list)  # /versions/<vid>/scratch/... URLs
+    error: str | None = None
+
+
+class AnchorsOut(BaseModel):
+    """Detected/declared feature anchors — the table `hole_index` refers to."""
+
+    ok: bool
+    anchors: list[dict[str, Any]] = Field(default_factory=list)
     error: str | None = None
 
 
@@ -385,6 +412,16 @@ class SettingsOut(BaseModel):
     topopt_default_rmin_mm: float
     mesh_base_url: str
     mesh_model: str
+    image_model: str
+    image_edit_model: str
+    image_steps: int | None
+    image_guidance: float | None
+    image_max_side: int
+    image_max_count: int
+    image_autogen_mesh: bool
+    image_tool_budget: int
+    image_timeout_s: int
+    image_default_strength: float
     mesh_timeout_s: int
     mesh_decimate_faces: int
     mesh_max_faces_for_cad: int
@@ -446,6 +483,8 @@ class SettingsUpdate(BaseModel):
     mesh_base_url: str | None = None
     mesh_model: str | None = Field(default=None, max_length=200)
     image_model: str | None = Field(default=None, max_length=200)
+    image_edit_model: str | None = Field(default=None, max_length=200)
+    image_default_strength: float | None = Field(default=None, gt=0, le=1)
     image_steps: int | None = Field(default=None, ge=1, le=200)
     image_guidance: float | None = Field(default=None, ge=0, le=50)
     image_max_side: int | None = Field(default=None, ge=64, le=4096)
@@ -474,6 +513,8 @@ class MeshModelOut(BaseModel):
     last_error: str | None = None
     default_size: int | None = None
     max_count: int | None = None
+    supports_edit: bool = False  # accepts an init image (img2img/instruction edit)
+    requires_image: bool = False  # edit-only adapter, no txt2img
 
 
 class ImageGenerateIn(BaseModel):
@@ -489,6 +530,9 @@ class ImageGenerateIn(BaseModel):
     steps: int | None = Field(default=None, ge=1, le=200)
     guidance: float | None = Field(default=None, ge=0, le=50)
     caption: str = ""
+    reference_asset_id: uuid.UUID | None = None  # init image for i2i/edit adapters
+    strength: float | None = Field(default=None, gt=0, le=1)  # img2img denoise
+    mark_sketch: bool = False  # tag results role_hint="sketch" for scribble adapters
 
 
 class MeshHealthOut(BaseModel):

@@ -7,8 +7,17 @@ Region kinds (see llm.schemas.RegionSpec):
             restricted to the surface facing `axis`
 - cylinder: material within radius around an axis line (e.g. a bore/mount)
 - box:      cube centred at `center` with edge `diameter_mm` (or 4*margin)
-- hole:     measured anchor hole (`hole_index`, 1-based) + margin
+- hole:     measured feature anchor (`hole_index`, 1-based) + margin; honours
+            the anchor's `axis` (any of ±x/y/z) and 3D centre
+- anchor:   alias of hole (typed feature anchors: thread/insert/bearing)
+- bore:     bore WALL of a hole anchor — solid cells bordering the void
+            cylinder; the natural target for bearing loads
+- points:   painted surface patch (GUI brush)
 - all:      the whole solid
+
+`resolve_case` keeps the legacy node-mask signature; `resolve_case_dofs`
+additionally returns the per-DOF constraint mask that `fix_mode` regions
+need ("all" = encastre, "normal" = pin only the axis DOF: roller/symmetry).
 
 An empty selection is reported as a warning (caller decides to retry via the
 LLM loads step or to continue without that region).
@@ -24,6 +33,7 @@ from cadx.cad.fem.voxelize import VoxelDomain, shift_mask
 from cadx.llm.schemas import LoadCase, RegionSpec
 
 _AXIS_IDX = {"x": 0, "y": 1, "z": 2}
+_AXIS3 = {"+x": 0, "+y": 1, "+z": 2, "-x": 0, "-y": 1, "-z": 2, "x": 0, "y": 1, "z": 2}
 
 
 def _axis_parts(axis: str) -> tuple[int, int]:
@@ -105,33 +115,109 @@ def _area_cells(domain: VoxelDomain, region: RegionSpec) -> np.ndarray:
         inside &= (cx - region.center[0]) ** 2 + (cy - region.center[1]) ** 2 <= r * r
         restricted = True
     if not restricted:
-        return np.zeros(domain.dims, dtype=bool)
+        # `area` with an axis but no XY bounds means "the whole face" —
+        # degrade gracefully to the axis-facing surface instead of nothing
+        return np.asarray(sel if region.axis else np.zeros(domain.dims, dtype=bool))
     return np.asarray(sel & inside)
 
 
+def _anchor_geometry(
+    domain: VoxelDomain, region: RegionSpec, anchors: list[dict] | None
+) -> tuple[np.ndarray, np.ndarray, float, float | None] | None:
+    """(center3d mm, unit axis, bore dia, axial half-extent) for an anchor region.
+
+    Legacy top-view anchors carry only x/y (+z implied); scanned anchors add
+    `axis` and `z`. The centre coordinate along the axis defaults to the part
+    mid-plane. `half` (mm) limits the axial extent of the selection when the
+    anchor knows its depth; None = whole part span along the axis.
+    """
+    if not anchors or not region.hole_index or region.hole_index < 1:
+        return None
+    if region.hole_index > len(anchors):
+        return None
+    a = anchors[region.hole_index - 1]
+    axis = str(a.get("axis") or region.axis or "+z")
+    idx = _AXIS3.get(axis.lower(), 2)
+    sign = -1.0 if axis.startswith("-") else 1.0
+    avec = np.zeros(3)
+    avec[idx] = sign
+    lo, hi = domain.origin, domain.origin + domain.pitch * np.asarray(domain.dims)
+    mid = (lo + hi) / 2
+    center = np.array(
+        [float(a.get("x") or mid[0]), float(a.get("y") or mid[1]), float(a.get("z") or mid[2])]
+    )
+    pos = a.get("pos")
+    if isinstance(pos, (list, tuple)) and len(pos) == 3:
+        for i in range(3):
+            if pos[i] is not None:
+                center[i] = float(pos[i])
+    az = a.get("z")
+    if az is not None:
+        center[idx] = float(az)
+    elif isinstance(pos, (list, tuple)) and len(pos) == 3 and pos[idx] is not None:
+        center[idx] = float(pos[idx])
+    else:
+        center[idx] = mid[idx]
+    depth = a.get("depth_mm")
+    half = float(depth) / 2 + max(region.margin_mm, domain.pitch) if depth else None
+    return center, avec, float(a.get("dia") or 0.0), half
+
+
+def _axial_slab(domain: VoxelDomain, axis_idx: int, center: float, half: float) -> np.ndarray:
+    centers = domain.element_centers().reshape((*domain.dims, 3))
+    return np.asarray(np.abs(centers[..., axis_idx] - center) <= half)
+
+
 def _hole_cells(domain: VoxelDomain, region: RegionSpec, anchors: list[dict] | None) -> np.ndarray:
-    """Material around a measured hole anchor: cylinder along z at the
-    anchor's (x, y). The bore itself is void, so the disc degenerates to the
-    material ring clamped by the pin.
+    """Material ring around a hole anchor (any axis). The bore itself is
+    void, so the cylinder degenerates to the ring clamped by the pin.
 
     The measured dia can undersize the real bore (countersinks, tolerances)
     which would leave the disc fully inside the void — grow until it hits
     solid material."""
-    if not anchors or not region.hole_index or region.hole_index < 1:
+    g = _anchor_geometry(domain, region, anchors)
+    if g is None:
         return np.zeros(domain.dims, dtype=bool)
-    if region.hole_index > len(anchors):
-        return np.zeros(domain.dims, dtype=bool)
-    a = anchors[region.hole_index - 1]
+    center, avec, dia, half = g
+    idx = int(np.argmax(np.abs(avec)))
     margin = max(region.margin_mm, domain.pitch)
-    radius = float(a.get("dia") or 0.0) / 2 + margin
-    center = [float(a["x"]), float(a["y"])]
-    cells = _cylinder_cells(domain, "+z", center, radius)
+    radius = dia / 2 + margin
+    axis = f"+{'xyz'[idx]}"
+    ctr = [float(v) for v in center]
+    cells = _cylinder_cells(domain, axis, ctr, radius)
     for _ in range(4):
         if cells.any():
             break
         radius += margin
-        cells = _cylinder_cells(domain, "+z", center, radius)
+        cells = _cylinder_cells(domain, axis, ctr, radius)
+    if half is not None:
+        cells &= _axial_slab(domain, idx, center[idx], half)
     return cells
+
+
+def _bore_cells(domain: VoxelDomain, region: RegionSpec, anchors: list[dict] | None) -> np.ndarray:
+    """The bore WALL: solid cells directly facing the anchor's void cylinder.
+
+    Unlike `hole` (the material ring around the bore, for clamping), `bore`
+    selects the inner wall layer — where a pin/bearing actually presses.
+    Falls back to the tight `hole` ring when the bore can't be located."""
+    g = _anchor_geometry(domain, region, anchors)
+    if g is None:
+        return np.zeros(domain.dims, dtype=bool)
+    center, avec, dia, half = g
+    idx = int(np.argmax(np.abs(avec)))
+    axis = f"+{'xyz'[idx]}"
+    # solid cells whose radial distance is within [0.5*dia, 0.5*dia + band]
+    band = max(domain.pitch * 1.6, 0.35 * dia, 1.0)
+    ctr = [float(v) for v in center]
+    in_cyl = _cylinder_cells(domain, axis, ctr, dia / 2 + band) & ~_cylinder_cells(
+        domain, axis, ctr, max(dia / 2 - domain.pitch, 0.0)
+    )
+    if half is not None:
+        in_cyl &= _axial_slab(domain, idx, center[idx], half)
+    if in_cyl.any():
+        return np.asarray(in_cyl, dtype=bool)
+    return np.asarray(_hole_cells(domain, region, anchors), dtype=bool)
 
 
 def _cylinder_cells(
@@ -188,7 +274,9 @@ def _points_cells(domain: VoxelDomain, region: RegionSpec) -> np.ndarray:
             continue
         pt = np.asarray(p[:3], dtype=float)
         # dedupe stroke points closer than half a pitch — same ~cell patch
-        key = tuple(math.floor(float(v) / half) for v in (pt - domain.origin))
+        key: tuple[int, int, int] = tuple(  # type: ignore[assignment]
+            math.floor(float(v) / half) for v in (pt - domain.origin)
+        )
         if key in seen:
             continue
         seen.add(key)
@@ -226,8 +314,10 @@ def region_cell_mask(
         return _surface_cells(domain, region.axis or "+z", region.margin_mm)
     if kind == "area":
         return _area_cells(domain, region)
-    if kind == "hole":
-        return _hole_cells(domain, region, anchors)
+    if kind in ("hole", "anchor"):
+        return np.asarray(_hole_cells(domain, region, anchors), dtype=bool)
+    if kind == "bore":
+        return _bore_cells(domain, region, anchors)
     if kind == "cylinder":
         radius = (region.diameter_mm or 4 * region.margin_mm) / 2 + region.margin_mm
         return _cylinder_cells(domain, region.axis or "+z", region.center, radius)
@@ -292,82 +382,263 @@ def surface_area_per_node(domain: VoxelDomain, cell_mask: np.ndarray, axis: str)
     return areas
 
 
-def resolve_case(
+def _fixed_dof_mask(domain: VoxelDomain, region: RegionSpec, node_mask: np.ndarray) -> np.ndarray:
+    """(nnodes, 3) bool — which DOFs of the region's nodes are constrained.
+
+    fix_mode "all"    -> encastre (all three translational DOFs)
+    fix_mode "normal" -> pin only the axis DOF: roller on a face, sliding
+                         support, or a symmetry plane. Axis source: the
+                         region's `axis`, else the anchor's axis, else the
+                         dominant component of `normal`.
+    """
+    out = np.zeros((domain.node_count, 3), dtype=bool)
+    if region.fix_mode == "normal":
+        axis = region.axis or (region.normal[:3] if len(region.normal) >= 3 else "") or "+z"
+        idx = _AXIS3.get(str(axis).lower(), 2)
+        if len(region.normal) >= 3 and not region.axis:
+            idx = int(np.argmax(np.abs(np.asarray(region.normal[:3], dtype=float))))
+        out[node_mask, idx] = True
+    else:
+        out[node_mask, :] = True
+    return out
+
+
+def resolve_case_dofs(  # noqa: C901
     domain: VoxelDomain,
     case: LoadCase,
     anchors: list[dict] | None = None,
+    density_g_cm3: float = 1.24,
 ) -> tuple[np.ndarray, np.ndarray, list[str]]:
-    """Resolve a load case into (fixed_node_mask, F vector, warnings).
+    """Resolve a load case into (fixed_dof_mask (nnodes,3), F vector, warnings).
 
     F is a dense (3*nnodes,) force vector in Newton. Loads with zero matching
-    nodes are skipped with a warning.
+    nodes are skipped with a warning. Beyond force_n/pressure_mpa this handles
+    bearing_n (cosine wall distribution), moment_nm (pure couple), preload_n
+    (axial bore-mouth pair), remote_point (force + induced moment) and g_load
+    (body force over the region's mass).
     """
+    from cadx.cad.fem import loads as ld
+
     warnings: list[str] = []
     nn = domain.node_count
-    fixed = np.zeros(nn, dtype=bool)
+    fixed3 = np.zeros((nn, 3), dtype=bool)
     F = np.zeros(3 * nn)
 
     for r in case.fixed:
         m = region_node_mask(domain, r, anchors)
         if not m.any():
-            warnings.append(
-                f"case '{case.name}': fixed region {r.kind} {r.axis or ''} matched no nodes"
-            )
+            tag = f"#{r.hole_index}" if r.hole_index else (r.axis or "")
+            warnings.append(f"case '{case.name}': fixed region {r.kind} {tag} matched no nodes")
             continue
-        fixed |= m
+        fixed3 |= _fixed_dof_mask(domain, r, m)
+        if r.fix_mode == "normal":
+            warnings.append(
+                f"case '{case.name}': '{r.description or r.kind}' is a roller/symmetry "
+                "support — the part can still slide; make sure the case is stable"
+            )
 
     for load in case.loads:
-        m = region_node_mask(domain, load.region, anchors)
+        r = load.region
+        m = region_node_mask(domain, r, anchors)
+        cells = region_cell_mask(domain, r, anchors)
         if not m.any():
-            warnings.append(
-                f"case '{case.name}': load region {load.region.kind} "
-                f"{load.region.axis or ''} matched no nodes"
-            )
+            tag = f"#{r.hole_index}" if r.hole_index else (r.axis or "")
+            warnings.append(f"case '{case.name}': load region {r.kind} {tag} matched no nodes")
             continue
-        nsel = int(m.sum())
+        idx = np.flatnonzero(m)
+
+        applied = False
         if load.force_n and len(load.force_n) == 3:
             f = np.asarray(load.force_n, dtype=float)
-            idx = np.flatnonzero(m)
-            for c in range(3):
-                F[3 * idx + c] += f[c] / nsel
-        elif load.pressure_mpa is not None:
-            n = region_face_normal(load.region)
-            if n is None:
+            if load.remote_point and len(load.remote_point) >= 3:
+                # force applied at a remote point: same resultant + the
+                # moment (p - centroid) x F the lever arm induces
+                c = domain.node_coords()[idx].mean(axis=0)
+                lever = np.asarray(load.remote_point[:3], dtype=float) - c
+                moment = np.cross(lever, f) / 1e3  # N·mm -> N·m
+                ld.spread_force(F, idx, f)
+                got = ld.spread_moment(domain, F, idx, moment)
+                warnings.append(
+                    f"case '{case.name}': remote force at {load.remote_point[:3]} adds "
+                    f"{got:.2f} N·m on the region"
+                )
+            else:
+                ld.spread_force(F, idx, f)
+            applied = True
+        if load.bearing_n is not None and load.bearing_n > 0:
+            g = _anchor_geometry(domain, r, anchors)
+            if g is None:
+                warnings.append(f"case '{case.name}': bearing_n needs a hole/anchor/bore region")
+            else:
+                center, avec, _dia, _half = g
+                dvec = (
+                    np.asarray(load.bearing_dir[:3], dtype=float)
+                    if len(load.bearing_dir) >= 3
+                    else np.asarray(load.force_n[:3] if len(load.force_n) >= 3 else [0, -1, 0])
+                )
+                got = ld.bearing_load(domain, F, idx, avec, center, dvec, float(load.bearing_n))
+                if got <= 0:
+                    warnings.append(
+                        f"case '{case.name}': bearing load on anchor "
+                        f"#{r.hole_index} produced no force — check bore/direction"
+                    )
+                applied = applied or got > 0
+        if load.moment_nm and len(load.moment_nm) == 3:
+            got = ld.spread_moment(domain, F, idx, np.asarray(load.moment_nm, dtype=float))
+            if got <= 0:
+                warnings.append(
+                    f"case '{case.name}': moment on {r.kind} produced no torque "
+                    "(region too small or degenerate)"
+                )
+            applied = applied or got > 0
+        if load.preload_n is not None and load.preload_n > 0:
+            g = _anchor_geometry(domain, r, anchors)
+            if g is None:
+                warnings.append(f"case '{case.name}': preload_n needs a hole/anchor/bore region")
+            else:
+                _center, avec, _dia, _h = g
+                got = ld.bolt_preload(domain, F, cells.ravel(), avec, float(load.preload_n))
+                if got <= 0:
+                    warnings.append(
+                        f"case '{case.name}': preload on anchor #{r.hole_index} found no "
+                        "open bore mouths (blind hole or solid region?)"
+                    )
+                applied = applied or got > 0
+        if load.g_load and len(load.g_load) == 3:
+            rho = density_g_cm3
+            if r.material:
+                from cadx.cad.fem.materials import resolve_material
+
+                rho = resolve_material(r.material).density_g_cm3
+            got = ld.body_force(domain, F, cells.ravel(), np.asarray(load.g_load, dtype=float), rho)
+            if got <= 0:
+                warnings.append(f"case '{case.name}': g_load on {r.kind} produced no force")
+            else:
+                warnings.append(f"case '{case.name}': gravity on {r.kind} = {got:.1f} N")
+            applied = applied or got > 0
+        if load.pressure_mpa is not None:
+            n = region_face_normal(r)
+            dirs: list[tuple[str, np.ndarray]] = []
+            if n is not None:
+                # real selected surface area shared onto the face nodes;
+                # pressure acts AGAINST the outward normal (into the part)
+                axis = r.axis or (_dominant_axis(r.normal) if len(r.normal) >= 3 else "+z")
+                dirs = [(axis, n)]
+            elif r.kind == "all":
+                # pressure on the whole part = hydrostatic squeeze: every
+                # exposed face gets -p along its own outward normal
+                for ax in ("+x", "-x", "+y", "-y", "+z", "-z"):
+                    ai, sgn = _axis_parts(ax)
+                    v = np.zeros(3)
+                    v[ai] = float(sgn)
+                    dirs.append((ax, v))
+            elif r.kind == "cylinder":
+                # grip squeeze around a shaft-like body: pressure on the
+                # lateral skin only — the four directions normal to the
+                # cylinder axis, never the end caps
+                cax = (r.axis or "+z").lower()
+                perp = tuple(ax for ax in ("+x", "-x", "+y", "-y", "+z", "-z") if ax[-1] != cax[-1])
+                for ax in perp:
+                    ai, sgn = _axis_parts(ax)
+                    v = np.zeros(3)
+                    v[ai] = float(sgn)
+                    dirs.append((ax, v))
+            if not dirs:
                 warnings.append(
                     f"case '{case.name}': pressure loads need a face/surface/area region "
-                    f"(got {load.region.kind})"
+                    f"(got {r.kind})"
                 )
-                continue
-            # real selected surface area shared onto the face nodes;
-            # pressure acts AGAINST the outward normal (into the part)
-            cells = region_cell_mask(domain, load.region, anchors)
-            axis = load.region.axis or (
-                _dominant_axis(load.region.normal) if len(load.region.normal) >= 3 else "+z"
-            )
-            areas = surface_area_per_node(domain, cells, axis)
-            idx = np.flatnonzero(areas > 0)
-            if not len(idx):
-                warnings.append(
-                    f"case '{case.name}': pressure region has no surface facing "
-                    f"{axis} — check axis/area"
-                )
-                continue
-            f = -n * float(load.pressure_mpa)
-            for c in range(3):
-                F[3 * idx + c] += f[c] * areas[idx]
-            warnings.append(
-                f"case '{case.name}': pressure {load.pressure_mpa:g} MPa over "
-                f"{areas.sum():.0f} mm² = {float(load.pressure_mpa) * areas.sum():.0f} N"
-            )
-        else:
-            warnings.append(f"case '{case.name}': load has neither force_n nor pressure_mpa")
+            else:
+                total_area = 0.0
+                for axis, nv in dirs:
+                    areas = surface_area_per_node(domain, cells, axis)
+                    pidx = np.flatnonzero(areas > 0)
+                    if not len(pidx):
+                        continue
+                    fv = -nv * float(load.pressure_mpa)
+                    for cc in range(3):
+                        F[3 * pidx + cc] += fv[cc] * areas[pidx]
+                    total_area += float(areas.sum())
+                if total_area <= 0:
+                    warnings.append(
+                        f"case '{case.name}': pressure region has no exposed surface "
+                        "— check axis/area"
+                    )
+                else:
+                    warnings.append(
+                        f"case '{case.name}': pressure {load.pressure_mpa:g} MPa over "
+                        f"{total_area:.0f} mm² = "
+                        f"{float(load.pressure_mpa) * total_area:.0f} N"
+                    )
+                    applied = True
+        if not applied:
+            warnings.append(f"case '{case.name}': load on {r.kind} resolved to zero force")
 
-    if not fixed.any():
+    if not fixed3.any():
         warnings.append(f"case '{case.name}': no fixed region — case is unsolvable")
     if not np.any(F):
         warnings.append(f"case '{case.name}': all loads resolved to zero force")
 
-    return fixed, F, warnings
+    return fixed3, F, warnings
+
+
+def resolve_case(
+    domain: VoxelDomain,
+    case: LoadCase,
+    anchors: list[dict] | None = None,
+) -> tuple[np.ndarray, np.ndarray, list[str]]:
+    """Legacy wrapper — collapses the per-DOF mask to a node-any mask."""
+    fixed3, F, warnings = resolve_case_dofs(domain, case, anchors)
+    return fixed3.any(axis=1), F, warnings
+
+
+def case_reactions(
+    domain: VoxelDomain, fixed3: np.ndarray, F: np.ndarray
+) -> dict[str, list[float] | float]:
+    """Load-case sanity report: applied resultant + moment about the centroid
+    of the constrained nodes, plus constrained-DOF counts. Equilibrium needs
+    reactions to balance the resultants."""
+    res = F.reshape(-1, 3).sum(axis=0)
+    out: dict[str, list[float] | float] = {
+        "resultant_n": [round(float(v), 2) for v in res],
+        "resultant_mag_n": round(float(np.linalg.norm(res)), 2),
+        "fixed_nodes": int(fixed3.any(axis=1).sum()),
+        "fixed_dofs": [int(fixed3[:, c].sum()) for c in range(3)],
+        "moment_nm": [0.0, 0.0, 0.0],
+        "moment_mag_nm": 0.0,
+    }
+    nodes = np.flatnonzero(fixed3.any(axis=1))
+    if len(nodes):
+        c = domain.node_coords()[nodes].mean(axis=0)
+        sel = np.flatnonzero(np.abs(F.reshape(-1, 3)).sum(axis=1) > 0)
+        if len(sel):
+            r = domain.node_coords()[sel] - c
+            M = np.cross(r, F.reshape(-1, 3)[sel]).sum(axis=0) / 1e3  # N·mm -> N·m
+            out["moment_nm"] = [round(float(v), 3) for v in M]
+            out["moment_mag_nm"] = round(float(np.linalg.norm(M)), 3)
+    return out
+
+
+def material_cell_factors(
+    domain: VoxelDomain,
+    keep_regions: list[RegionSpec],
+    anchors: list[dict] | None,
+    base_E: float,
+) -> np.ndarray:
+    """(nelem,) Young's-modulus multiplier for insert/material zones.
+
+    A keep-region with `material` set overrides the base stiffness inside the
+    region (e.g. a brass heat-set insert in a PLA part). Unset materials leave
+    the factor at 1."""
+    from cadx.cad.fem.materials import resolve_material
+
+    factors = np.ones(domain.cell_count)
+    for r in keep_regions:
+        if not r.material:
+            continue
+        cells = region_cell_mask(domain, r, anchors).ravel()
+        factors[cells] = float(resolve_material(r.material).elastic_modulus_mpa) / base_E
+    return factors
 
 
 def keep_element_mask(
@@ -378,6 +649,27 @@ def keep_element_mask(
     for r in regions:
         mask |= region_cell_mask(domain, r, anchors).ravel()
     return mask
+
+
+def auto_keep_regions(anchors: list[dict] | None, margin_mm: float = 3.0) -> list[RegionSpec]:
+    """Keep regions around every detected fastener anchor — for
+    OptimizeSpec.keep_mode="auto" so mounts/bores/inserts survive TopOpt."""
+    out: list[RegionSpec] = []
+    for a in anchors or []:
+        idx = int(a.get("index") or 0)
+        if idx < 1:
+            continue
+        kind = str(a.get("kind") or "hole")
+        label = a.get("bolt_size") or a.get("name") or kind
+        out.append(
+            RegionSpec(
+                kind="hole",
+                hole_index=idx,
+                margin_mm=margin_mm,
+                description=f"auto-keep {label} #{idx}",
+            )
+        )
+    return out
 
 
 def empty_region_warnings(

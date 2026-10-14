@@ -13,8 +13,16 @@ from cadx.agent.worker_jobs import (
     run_optimize_job,
     run_params_job,
     run_reexport_job,
+    run_topopt_resample_job,
 )
-from cadx.cad.tasks import execute_version, export_all, fem_analyze, optimize, process_mesh
+from cadx.cad.tasks import (
+    execute_version,
+    export_all,
+    fem_analyze,
+    optimize,
+    process_mesh,
+    topopt_resample,
+)
 from cadx.config import get_settings
 
 
@@ -93,6 +101,7 @@ class AgentWorkerSettings:
         run_params_job,
         run_reexport_job,
         run_optimize_job,
+        run_topopt_resample_job,
         run_mesh_edit_job,
         run_fem_job,
     ]
@@ -108,7 +117,14 @@ class AgentWorkerSettings:
 class CadWorkerSettings:
     """Run with: uv run arq cadx.queue.CadWorkerSettings"""
 
-    functions = [execute_version, export_all, process_mesh, fem_analyze, optimize]  # noqa: RUF012
+    functions = [  # noqa: RUF012
+        execute_version,
+        export_all,
+        process_mesh,
+        fem_analyze,
+        optimize,
+        topopt_resample,
+    ]
     on_startup = cad_startup
     on_shutdown = worker_shutdown
     redis_settings = _redis()

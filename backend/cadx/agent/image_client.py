@@ -217,6 +217,7 @@ class FakeImageClient(ImagePort):
                     device="fake",
                     backend="fake",
                     kind="image",
+                    supports_edit=True,  # echoes the init image back
                     license_note="MIT (test fixture)",
                 )
             ],

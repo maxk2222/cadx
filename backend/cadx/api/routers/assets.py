@@ -254,6 +254,15 @@ async def update_asset(
         raise HTTPException(404, "asset not found")
     if body.caption is not None:
         a.caption = body.caption
+    if body.role_hint is not None:
+        # stored inside gen_params (JSON) — works for uploads too, no migration.
+        # reassign the dict so SQLAlchemy notices the change
+        params = dict(a.gen_params or {})
+        if body.role_hint:
+            params["role_hint"] = body.role_hint
+        else:
+            params.pop("role_hint", None)
+        a.gen_params = params or None
     await db.commit()
     await db.refresh(a)
     return _out(a)

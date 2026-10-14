@@ -58,6 +58,7 @@ class TopOptResult:
     converged: bool
     history: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    passive_frac: float = 0.0  # fraction of solid pinned by keep/load/fixed cells
 
 
 def _filter_matrix(domain: VoxelDomain, rmin_cells: float) -> sparse.csr_matrix:
@@ -81,26 +82,43 @@ def _filter_matrix(domain: VoxelDomain, rmin_cells: float) -> sparse.csr_matrix:
     return sparse.coo_matrix((vals, (rows, cols)), shape=(ns, ns)).tocsr()
 
 
+def _prepare_solve(Kf: sparse.csr_matrix, spsolve_dofs: int) -> tuple[Any, Any]:
+    """Per-iteration solver setup shared across load cases.
+
+    Returns (factor, M): `factor` is a `spla.factorized` callable when the
+    system is small enough for a direct solve, else None; `M` is the SSOR
+    (fallback diagonal) preconditioner for CG."""
+    from cadx.cad.fem.solver import _ssor_preconditioner
+
+    if Kf.shape[0] <= spsolve_dofs:
+        try:
+            return spla.factorized(Kf.tocsc()), None
+        except Exception:
+            pass
+    M = _ssor_preconditioner(Kf)
+    if M is None:
+        diag = Kf.diagonal()
+        diag[diag == 0] = 1.0
+        M = spla.diags(1.0 / diag)
+    return None, M
+
+
 def _solve_u(
     domain: VoxelDomain,
-    K: sparse.csr_matrix,
+    Kf: sparse.csr_matrix,
     F: np.ndarray,
     free: np.ndarray,
     u0: np.ndarray | None,
-    spsolve_dofs: int = 120_000,
+    factor: Any = None,
+    M: Any = None,
 ) -> tuple[np.ndarray, str]:
     """Light solve: return full u vector."""
     u = np.zeros(3 * domain.node_count)
-    Kf = K[free][:, free]
-    if free.size <= spsolve_dofs:
-        try:
-            u[free] = spla.spsolve(Kf, F[free])
-            return u, "spsolve"
-        except Exception:
-            pass
-    diag = Kf.diagonal()
-    diag[diag == 0] = 1.0
-    M = spla.diags(1.0 / diag)
+    if factor is not None:
+        u[free] = factor(F[free])
+        return u, "spsolve"
+    if M is None:
+        _, M = _prepare_solve(Kf, spsolve_dofs=0)
     x, info = spla.cg(
         Kf,
         F[free],
@@ -116,22 +134,39 @@ def _solve_u(
     return u, "cg"
 
 
-def simp(
+def simp(  # noqa: C901
     domain: VoxelDomain,
-    elem_E0: float,
+    elem_E0: float | np.ndarray,
     nu: float,
-    cases: list[tuple[np.ndarray, np.ndarray]],  # (fixed_mask, F) per case
+    cases: list[tuple[np.ndarray, np.ndarray]],  # (fixed_mask (nn,) or (nn,3), F) per case
     passive_solid: np.ndarray,  # (ncells,) bool — pinned rho=1
     params: TopOptParams,
     *,
+    passive_void: np.ndarray | None = None,  # (ncells,) bool — pinned rho=rho_min
+    case_weights: np.ndarray | list[float] | None = None,  # objective weight per case
+    x0: np.ndarray | None = None,  # (ncells,) warm-start density field
+    spsolve_dofs: int = 120_000,  # direct-solver cutoff; larger systems use SSOR-CG
     progress_cb: ProgressCb | None = None,
     cancelled: CancelCb | None = None,
     progress_file: Path | None = None,
 ) -> TopOptResult:
-    """Run the SIMP loop. Returns the density field (flat cell order)."""
+    """Run the SIMP loop. Returns the density field (flat cell order).
+
+    `elem_E0` may be a scalar or a (ncells,) array for material zones (e.g.
+    metal inserts inside a polymer part). `passive_void` pins cells to the
+    void floor inside the part — forbidden material regions. `case_weights`
+    scales each load case's compliance contribution (weighted multi-case).
+    `x0` warm-starts the density field (e.g. a previous run's density)."""
+    from cadx.cad.fem.solver import _fixed_dofs
+
     warnings: list[str] = []
     solid = domain.solid.ravel()
-    design = solid & ~passive_solid
+    pvoid = (
+        np.zeros(domain.cell_count, dtype=bool)
+        if passive_void is None
+        else np.asarray(passive_void, dtype=bool).ravel() & solid
+    )
+    design = solid & ~passive_solid & ~pvoid
     nsolid = int(solid.sum())
     ndesign = int(design.sum())
     if ndesign == 0:
@@ -142,11 +177,21 @@ def simp(
             warnings=["no free design cells — everything is kept/pinned"],
         )
 
-    E0 = float(elem_E0)
+    E0 = np.broadcast_to(np.asarray(elem_E0, dtype=float), domain.cell_count).copy()
     Emin = E0 * E_MIN_FRAC
-    x = np.where(solid, params.volfrac, RHO_MIN)
+    if x0 is not None and len(x0) == domain.cell_count:
+        x = np.clip(np.asarray(x0, dtype=float), RHO_MIN, 1.0)
+        x[~solid] = RHO_MIN
+    else:
+        x = np.where(solid, params.volfrac, RHO_MIN)
     x[passive_solid] = 1.0
+    x[pvoid] = RHO_MIN
     x = x.astype(float)
+    weights = (
+        np.ones(len(cases))
+        if case_weights is None
+        else np.asarray(case_weights, dtype=float)[: len(cases)]
+    )
 
     ke = _ke_unit(nu, domain.pitch)
     en = domain.element_nodes()
@@ -161,12 +206,9 @@ def simp(
 
     # free DOFs: union over cases (all cells assembled — void gets Emin)
     used_dofs = np.unique(edof.ravel())
-    fixed_nodes = np.zeros(domain.node_count, dtype=bool)
+    fixed_dofs: set[int] = set()
     for f, _ in cases:
-        fixed_nodes |= f
-    fixed_dofs = set(
-        np.concatenate([3 * np.flatnonzero(fixed_nodes) + c for c in range(3)]).tolist()
-    )
+        fixed_dofs |= set(_fixed_dofs(f, domain.node_count).tolist())
     free = np.array([d for d in used_dofs if d not in fixed_dofs], dtype=np.int64)
     if free.size == 0:
         return TopOptResult(
@@ -194,16 +236,21 @@ def simp(
         E_e = Emin + np.power(x, params.penal) * (E0 - Emin)
         K, _, _ = assemble(domain, E_e, nu, np.ones(domain.cell_count, dtype=bool))
 
-        # solve + element compliances per case
+        # factorization/preconditioner is identical for all cases — build once
+        Kf = K[free][:, free].tocsr()
+        factor, M = _prepare_solve(Kf, spsolve_dofs)
+
+        # solve + element compliances per case (case weights scale both)
         ce = np.zeros(domain.cell_count)
         objective = 0.0
         for ci, (_, F) in enumerate(cases):
-            u, _solver = _solve_u(domain, K, F, free, u_prev[ci])
+            w = float(weights[ci]) if ci < len(weights) else 1.0
+            u, _solver = _solve_u(domain, Kf, F, free, u_prev[ci], factor=factor, M=M)
             u_prev[ci] = u
             ue = u[edof]
             ce_i = np.einsum("ni,ij,nj->n", ue, ke, ue)
-            ce += ce_i
-            objective += float(F[free] @ u[free])
+            ce += w * ce_i
+            objective += w * float(F[free] @ u[free])
 
         # sensitivity (summed over cases), cone-filtered on solid cells
         dc = -params.penal * np.power(np.clip(x, 1e-3, None), params.penal - 1) * (E0 - Emin) * ce
@@ -221,6 +268,7 @@ def simp(
             cand = np.clip(cand, 0.0, 1.0)
             cand[~solid] = RHO_MIN
             cand[passive_solid] = 1.0
+            cand[pvoid] = RHO_MIN
             if cand[solid_idx].sum() > v_target:
                 l1 = lmid
             else:
@@ -263,7 +311,13 @@ def simp(
 
     warnings_out = warnings
     converged = change <= params.tol or stall >= params.converge_patience
-    if ndesign < 0.05 * nsolid:
+    passive_frac = float(passive_solid.sum()) / nsolid
+    if passive_frac > params.volfrac * 1.02:
+        warnings_out.append(
+            f"passive (keep/load/fixed) cells cover {passive_frac:.0%} of the part — "
+            f"target volfrac {params.volfrac:.0%} unreachable; floor ≈ {passive_frac:.0%}"
+        )
+    elif ndesign < 0.05 * nsolid:
         warnings_out.append(
             "very few free design cells (<5%) — keep regions cover most of the part"
         )
@@ -273,6 +327,7 @@ def simp(
         converged=converged,
         history=history,
         warnings=warnings_out,
+        passive_frac=passive_frac,
     )
 
 

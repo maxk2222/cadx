@@ -339,6 +339,7 @@ def _input_assets(assets: list[Asset]) -> list[InputAsset]:
             path=storage.resolve(a.path),
             caption=a.caption,
             filename=a.filename,
+            role_hint=str((a.gen_params or {}).get("role_hint") or ""),
         )
         for a in assets
     ]
@@ -1025,6 +1026,162 @@ async def run_optimize_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict
             1,
             f"done: volfrac {topopt.get('volfrac_achieved')}, SF {worst_sf}, "
             f"{topopt.get('iterations')} iterations",
+        )
+        job.status = JobStatus.succeeded
+        job.finished_at = datetime.now(UTC)
+        job.progress = 1.0
+        await _append_job_log(db, job, "done\n")
+        await db.commit()
+        await _publish(str(job_id), {"type": "done", "status": "succeeded"})
+        return {"ok": True}
+
+
+@_guarded
+async def run_topopt_resample_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    """Re-extract a stored TopOpt density field at a new density_threshold /
+    min_member without re-running SIMP. Produces a child version of kind
+    'optimize' carrying the re-verified mesh + FEM reports."""
+    job_id = _u(payload["job_id"])
+    async with session_scope() as db:
+        job = await db.get(Job, job_id)
+        version = await db.get(Version, _u(payload["version_id"]))
+        parent = await db.get(Version, version.parent_id) if version and version.parent_id else None
+        if job is None or version is None or parent is None:
+            if job:
+                job.status = JobStatus.failed
+                await _append_job_log(db, job, "resample job: missing parent\n")
+                await db.commit()
+            return {"ok": False, "error": "missing parent version"}
+        if job.status in (JobStatus.succeeded, JobStatus.failed, JobStatus.cancelled):
+            return {"ok": False, "error": f"job already {job.status}"}
+        job.status = JobStatus.running
+        job.started_at = datetime.now(UTC)
+        version.status = VersionStatus.running
+        await db.commit()
+
+        emit = make_emit(job_id)
+
+        density_rel = ((parent.mesh or {}).get("topopt") or {}).get("density_relpath")
+        if not density_rel or not storage.resolve(density_rel).exists():
+            version.status = VersionStatus.failed
+            version.error = "parent has no stored density field (re-run the optimization)"
+            job.status = JobStatus.failed
+            job.finished_at = datetime.now(UTC)
+            await db.commit()
+            return {"ok": False, "error": version.error}
+
+        # load cases: request payload -> parent optimize params -> parent spec
+        spec = PartSpec(**parent.spec) if parent.spec else None
+        parent_params = parent.params or {}
+        load_cases = (
+            payload.get("load_cases")
+            or parent_params.get("load_cases")
+            or [c.model_dump() for c in (spec.load_cases if spec else [])]
+        )
+        optimize = {
+            **(parent_params.get("optimize") or {}),
+            **(payload.get("optimize") or {}),
+        }
+        material = (
+            payload.get("material")
+            or parent_params.get("material")
+            or (spec.material if spec else "")
+        )
+        keep_regions = payload.get("keep_regions") or (
+            spec.optimize.keep_regions if spec and spec.optimize else []
+        )
+        keep_regions = [r.model_dump() if hasattr(r, "model_dump") else r for r in keep_regions]
+        optimize.setdefault("keep_regions", keep_regions)
+
+        runtime_settings = await load_runtime_settings(db)
+        executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=runtime_settings)
+        await emit(
+            "optimize",
+            1,
+            f"re-extracting density at threshold "
+            f"{optimize.get('density_threshold', 0.5):g} (no new SIMP run)",
+        )
+        result = await executor.topopt_resample(
+            {
+                "job_id": str(job_id),
+                "project_id": str(version.project_id),
+                "version_id": str(version.id),
+                "iteration": 1,
+                "density_relpath": density_rel,
+                "load_cases": load_cases,
+                "optimize": optimize,
+                "material": material,
+                "runtime_settings": runtime_settings.executor_values(),
+                "name": "model",
+                # reuse the anchors the parent optimize run actually resolved
+                # (mesh-scanned + merged); fall back to declared anchors
+                "anchors": ((parent.mesh or {}).get("topopt") or {}).get("anchors")
+                or (parent.analysis or {}).get("anchors", {}).get("holes"),
+            }
+        )
+
+        if not result.get("ok"):
+            version.status = VersionStatus.failed
+            version.error = result.get("error") or "resample failed"
+            job.status = JobStatus.failed
+            job.finished_at = datetime.now(UTC)
+            await _append_job_log(db, job, f"failed: {version.error}\n")
+            await db.commit()
+            return {"ok": False, "error": version.error}
+
+        artifacts = _copy_best_artifacts_ctxless(version.project_id, version.id, 1, result)
+        for fmt, rel in (result.get("exports") or {}).items():
+            if rel:
+                artifacts[f"export:{fmt}"] = rel
+        it_dir = storage.iteration_dir(version.project_id, version.id, 1)
+        v_dir = storage.ensure(storage.version_dir(version.project_id, version.id))
+        fem_dir = storage.ensure(v_dir / "fem")
+        import shutil
+
+        for png in (it_dir / "fem").glob("*.png") if (it_dir / "fem").exists() else []:
+            shutil.copy2(png, fem_dir / png.name)
+            artifacts[f"fem:{png.stem}"] = storage.relpath(fem_dir / png.name)
+        for extra in ("fem/report.json", "fem/report_export.json"):
+            src = it_dir / extra
+            if src.exists():
+                shutil.copy2(src, fem_dir / src.name)
+                artifacts[f"fem:{src.stem}"] = storage.relpath(fem_dir / src.name)
+
+        topopt = result.get("topopt") or {}
+        fem = result.get("fem") or {}
+        version.gen_mode = "topopt"
+        version.resolved_mode = "topopt"
+        version.spec = parent.spec
+        version.fem = fem or None
+        version.mesh = {
+            **(result.get("mesh") or {}),
+            "topopt": topopt,
+            "resampled_from": str(parent.id),
+            # the density field is shared with the parent run
+            "density_relpath": density_rel,
+        }
+        version.mesh["topopt"]["density_relpath"] = density_rel
+        version.analysis = result.get("analysis")
+        version.params = {
+            "optimize": optimize,
+            "load_cases": load_cases,
+            "material": material,
+            "resample": True,
+        }
+        version.iterations = 1
+        sfs = [c.get("safety_factor") for c in fem.get("cases", []) if c.get("safety_factor")]
+        worst_sf = min(sfs) if sfs else None
+        n_bodies = topopt.get("n_components") or 1
+        version.status = (
+            VersionStatus.needs_review
+            if worst_sf is None or worst_sf < 1.0 or n_bodies > 1
+            else VersionStatus.succeeded
+        )
+        register_artifacts(db, version.id, artifacts, tessellated_step=False)
+        await emit(
+            "optimize",
+            1,
+            f"resample done: threshold {topopt.get('threshold')}, SF {worst_sf}",
         )
         job.status = JobStatus.succeeded
         job.finished_at = datetime.now(UTC)

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import platform
 from collections.abc import Callable
-from typing import Any
+from typing import Any, ClassVar
 
 from PIL import Image
 
@@ -36,6 +36,7 @@ class FluxSchnellMlxAdapter(ImageAdapter):
     default_size = 768
     max_count = 4
     max_side = 1024
+    supports_edit: ClassVar[bool] = True  # mflux generate_image takes image_path/strength
 
     @classmethod
     def available(cls, cfg: Any) -> bool:  # noqa: ARG003
@@ -43,14 +44,36 @@ class FluxSchnellMlxAdapter(ImageAdapter):
             return False
         try:
             import mflux  # noqa: F401
+
+            # probe one of the known Flux1 entry points — mflux moved the class
+            # across releases; a bare `import mflux` succeeding while every
+            # entry point is missing previously reported 'available' and then
+            # failed inside load().
+            found = False
+            for path in (
+                "mflux.models.flux.variants.txt2img.flux",
+                "mflux.models.flux",
+                "mflux.flux.flux",
+            ):
+                try:
+                    mod = __import__(path, fromlist=["Flux1"])
+                    if getattr(mod, "Flux1", None) is not None:
+                        found = True
+                        break
+                except Exception:
+                    continue
+            return found
         except Exception:
             return False
-        return True
 
     # -- loading ---------------------------------------------------------- #
 
     def _model_config(self) -> Any:
-        for modname in ("mflux.config.model_config", "mflux.config"):
+        for modname in (
+            "mflux.models.common.config.model_config",
+            "mflux.config.model_config",
+            "mflux.config",
+        ):
             try:
                 mod = __import__(modname, fromlist=["ModelConfig"])
                 mc_cls = getattr(mod, "ModelConfig", None)
@@ -81,12 +104,22 @@ class FluxSchnellMlxAdapter(ImageAdapter):
         mc = self._model_config()
         candidates: list[tuple[Any, list[dict[str, Any]]]] = []
         try:
-            from mflux.flux.flux import Flux1
+            # current layout (mflux >= 0.10): variants package
+            from mflux.models.flux.variants.txt2img.flux import Flux1 as Flux1V2
 
-            kwargs = [{"model_config": mc, "quantize": quant}, {"model_config": mc}, {}]
-            candidates.append((Flux1, kwargs))
+            candidates.append(
+                (
+                    Flux1V2,
+                    [
+                        {"quantize": quant, "model_config": mc},
+                        {"quantize": quant},
+                        {"model_config": mc},
+                        {},
+                    ],
+                )
+            )
         except ImportError as e:
-            errors.append(f"mflux.flux.flux: {e}")
+            errors.append(f"mflux.models.flux.variants.txt2img: {e}")
         try:
             from mflux.models.flux import Flux1 as Flux1New
 
@@ -99,6 +132,14 @@ class FluxSchnellMlxAdapter(ImageAdapter):
             candidates.append((Flux1New, [{"quantize": quant}, {}]))
         except ImportError as e:
             errors.append(f"mflux.models.flux: {e}")
+        try:
+            # legacy layout (mflux <= 0.4-ish)
+            from mflux.flux.flux import Flux1
+
+            kwargs = [{"model_config": mc, "quantize": quant}, {"model_config": mc}, {}]
+            candidates.append((Flux1, kwargs))
+        except ImportError as e:
+            errors.append(f"mflux.flux.flux: {e}")
         for cls, kw_list in candidates:
             for kw in kw_list:
                 if kw.get("model_config") is None and "model_config" in kw:
@@ -138,8 +179,14 @@ class FluxSchnellMlxAdapter(ImageAdapter):
 
     def _call_generate(self, opts: ImageGenOpts, seed: int) -> Image.Image:
         pipe = self._pipe
-        steps = opts.steps or 4
+        # img2img: effective denoised steps ≈ steps * strength — bump the
+        # default so a low-strength edit still gets a real denoise pass
+        steps = opts.steps or (8 if opts.image_path is not None else 4)
         kwargs: dict[str, Any] = {"prompt": opts.prompt, "seed": seed}
+        if opts.image_path is not None:
+            kwargs["image_path"] = str(opts.image_path)
+            if opts.image_strength is not None:
+                kwargs["image_strength"] = min(max(opts.image_strength, 0.05), 1.0)
         attempts = [
             lambda: pipe.generate_image(
                 num_inference_steps=steps, width=opts.width, height=opts.height, **kwargs
@@ -177,6 +224,6 @@ class FluxSchnellMlxAdapter(ImageAdapter):
             model=self.id,
             backend=self.backend,
             seed=opts.seed,
-            steps=opts.steps or 4,
+            steps=opts.steps or (8 if opts.image_path is not None else 4),
             guidance=opts.guidance,
         )

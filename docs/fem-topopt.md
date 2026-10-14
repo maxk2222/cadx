@@ -27,10 +27,33 @@ space: SIMP removes material inside that domain and does not grow the part
 outside it. Fixed, loaded, and explicit `keep_regions` are held solid.
 
 The optimization minimizes compliance across the supplied load cases under a
-target volume fraction. The extracted boundary mesh is regularized for
+target volume fraction; per-case `weight` scales each case's objective
+contribution, and `LoadSpec.direction_cone_deg` expands a force into sampled
+cone directions for direction-robust layouts (capped by
+`fem_max_effective_cases`). The extracted boundary mesh is regularized for
 watertight export. FEM verification uses the corresponding voxel mask rather
 than the smoothed export mesh, so export smoothing does not change the
 reported structural result.
+
+`optimize.void_regions` pin cells to the void floor (forbidden material —
+cable runs, clearance), `optimize.keep_regions` pin cells solid; a keep region
+with `material` overrides the per-cell stiffness (insert zones, e.g. a brass
+heat-set insert inside a polymer part). `optimize.keep_mode: "auto"` adds a
+keep ring around every detected anchor (`topopt_auto_keep_margin_mm`),
+`min_member_mm` post-thickens members below the printable floor, and
+`density_threshold` sets the extraction iso. The stored `topopt/density.npz`
+field can be re-extracted at a different threshold/min-member without a new
+SIMP run via `POST /versions/{id}/topopt-resample` (`JobType.resample`).
+
+### Feature anchors
+
+Measured anchors drive `hole`/`anchor`/`bore` regions on ANY axis. Sources:
+top-view image holes, mesh tunnels, spec features — merged with an on-demand
+axis-agnostic mesh scan (`fem/anchors3d.py`, +x/+y/+z heightfields) that also
+enriches measured anchors with real depth. Anchor fields: `index` (1-based),
+`kind` (hole/thread/insert/bearing_seat/dimple), `axis`, `x`/`y`/`pos`
+(3D in-plane position), `z` (axial centre), `dia`, `depth_mm`,
+`bolt_size`. `GET /versions/{id}/anchors` returns the merged table.
 
 ### Manual optimization and FEM check (structural editor)
 
@@ -38,22 +61,36 @@ On a completed version, **Structural editor** opens a full-screen 3D editor
 where support, load and keep regions are painted directly on the part surface
 with an adjustable brush (per-region radius, with eraser + per-stroke undo),
 or declared as geometric regions: `face`/`surface` (+axis), `area`, `cylinder`,
-`box`, `hole` (measured anchors), or `all`. Painted picks are stored as
+`box`, `anchor`/`bore`/`hole` (measured anchors — `bore` selects the bore WALL
+for bolt-type loads), or `all`. Anchor markers are rendered as numbered
+sprites on the model; clicking near one while placing an anchor region snaps
+`hole_index` to it. Load gizmos (force arrows, moment rings, preload pairs)
+render at the resolved region centres. Painted picks are stored as
 `RegionSpec kind="points"` — up to 4000 `[x,y,z]` mm surface points, a brush
 radius (`radius_mm`), and the averaged surface normal (drives pressure loads).
 Resolution rasterizes each point in index space (deduplicating stroke points
 closer than half a pitch) and selects solid cells within `radius_mm + pitch`,
-i.e. a near-surface patch of material. Loads accept a force vector
-`force_n = [fx,fy,fz]` or `pressure_mpa`.
+i.e. a near-surface patch of material.
+
+Load kinds (`LoadSpec` fields): `force_n` (distributed resultant),
+`pressure_mpa` (against the region normal), `bearing_n` + `bearing_dir`
+(cosine-distributed shaft load on a `bore`/`anchor` region — the physically
+correct bolt load), `moment_nm` (pure couple via rigidity tensor),
+`preload_n` (bolt pretension squeezing the two bore mouths),
+`force_n` + `remote_point` (same resultant plus the induced lever moment),
+`g_load` (body acceleration in g units over the region's mass). Support
+regions take `fix_mode`: `"all"` (encastre) or `"normal"` (pins only the
+axis DOF — roller/resting/symmetry; reported as `(nnodes,3)` DOF masks).
 
 Three actions share the declared load cases:
 
 - **Check regions** — server-side voxel resolution only (`preview_only`):
-  returns grid pitch/dims, per-case fixed/loaded node counts, total force,
-  warnings, and the *resolved* selection as subsampled cell-centre point
-  clouds (`cells` — fixed/load/keep per case) for a 3D overlay. Legacy 2D
-  overlay renders (fixed blue, load red, keep green PNGs) are only produced
-  when `render_pngs` is set; the agent-side optimize session still uses them.
+  returns grid pitch/dims, per-case fixed/loaded node counts, total force and
+  applied moment, warnings, and the *resolved* selection as subsampled
+  cell-centre point clouds (`cells` — fixed/load/keep per case) for a 3D
+  overlay. Legacy 2D overlay renders (fixed blue, load red, keep green PNGs)
+  are only produced when `render_pngs` is set; the agent-side optimize
+  session still uses them.
 - **FEM check** — a standalone FEM run on the *same* version (`JobType.fem`,
   no child): writes `version.fem` plus stress/deformation artifacts and flags
   the version `needs_review` when the worst safety factor drops below 1.
@@ -94,12 +131,13 @@ Example request fragment:
 ```
 
 A force load distributes its vector over its selected region. A pressure load
-uses `pressure_mpa` instead of `force_n` and acts against the region normal —
-for `points` regions the GUI records the averaged surface normal for this.
-For generated parts, make the physical attachment/load locations explicit
-(for example, clamp the mounting holes rather than an unrelated outer face).
-Painted `points` regions, face regions, force magnitude/direction and keep
-regions are all editable in the structural editor UI.
+acts against the region normal — for `points` regions the GUI records the
+averaged surface normal for this. For generated parts, make the physical
+attachment/load locations explicit (for example, clamp the mounting holes
+rather than an unrelated outer face) — prefer `bore`/`anchor` regions with
+`bearing_n` for bolts and pins. The FEM report adds per-case `reactions`
+(resultant at the supports) — compare it against the applied resultant for
+equilibrium sanity.
 
 ## Numerical method and outputs
 
@@ -107,18 +145,26 @@ regions are all editable in the structural editor UI.
   linear elasticity, and 2×2×2 Gauss integration.
 - SIMP stiffness interpolation, compliance objective, optimality-criteria
   update, and cone sensitivity filter; multiple load cases contribute to the
-  objective.
+  objective (weighted via `LoadCase.weight`). Per-cell Young's modulus
+  supports material zones; `x0` warm-starts from a prior density field.
+- The solver accepts per-DOF `(nnodes,3)` fixed masks; systems beyond
+  `fem_spsolve_dofs` use SSOR-preconditioned conjugate gradients.
 - Grid pitch starts at `fem_voxel_mm` and is adaptively coarsened to stay
   under `fem_max_elements`.
 - Material properties come from the built-in table (`pla`, `petg`, `abs`,
   `asa`, `pa`, `pc`, `resin`, `aluminum`, `steel`); unknown names fall back to
   PLA. The table uses typical bulk properties and is not a manufacturing
   process/material certificate.
-- `topopt_default_volfrac`, `topopt_max_iterations`, and
-  `topopt_default_rmin_mm` set optimizer defaults. `fem_timeout_s` and
-  `topopt_timeout_s` bound executor task time. All of these are runtime
-  settings edited in the Settings page; per-run overrides live in the
-  options panel / version options.
+- `topopt_default_volfrac`, `topopt_max_iterations`, `topopt_default_rmin_mm`,
+  `topopt_min_member_mm`, `topopt_smooth_iterations`, `topopt_auto_keep`,
+  `topopt_auto_keep_margin_mm`, `fem_spsolve_dofs` and
+  `fem_max_effective_cases` are runtime settings edited in the Settings page;
+  `fem_timeout_s` and `topopt_timeout_s` bound executor task time. Per-run
+  overrides live in the options panel / version options.
+
+The agent optimize session offers `list_anchors` (the measured anchor table),
+`check_load` (region resolution + resultant/moment without a solve),
+`preview_regions`, `analyze_fem`, `topopt_run` and `done`.
 
 The FEM report includes per-case max von Mises stress, max displacement,
 compliance, safety factor, solver/convergence status, and warnings. Safety

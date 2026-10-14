@@ -13,14 +13,14 @@ from typing import Any
 
 import numpy as np
 
-from cadx.cad.fem.regions import region_cell_mask, resolve_case
+from cadx.cad.fem.regions import case_reactions, region_cell_mask, resolve_case_dofs
 from cadx.cad.fem.voxelize import VoxelDomain
 from cadx.llm.schemas import LoadCase, RegionSpec
 from cadx.logging import get_logger
 
 log = get_logger(__name__)
 
-_FIXED, _LOAD, _KEEP = 1, 2, 3
+_FIXED, _LOAD, _KEEP, _VOID = 1, 2, 3, 4
 
 
 def case_region_masks(
@@ -134,14 +134,16 @@ def render_regions(
 def resolve_case_summary(
     domain: VoxelDomain, case: LoadCase, anchors: list[dict] | None = None
 ) -> dict[str, Any]:
-    """Compact numbers for one case — region hit counts + total force."""
-    fixed, F, warnings = resolve_case(domain, case, anchors)
+    """Compact numbers for one case — region hit counts, resultant force and
+    moment about the constraint centroid (sanity check for the caller)."""
+    fixed3, F, warnings = resolve_case_dofs(domain, case, anchors)
     forces = F.reshape(-1, 3)
     loaded = np.linalg.norm(forces, axis=1) > 0
     return {
         "case": case.name,
-        "fixed_nodes": int(fixed.sum()),
+        "fixed_nodes": int(fixed3.any(axis=1).sum()),
         "loaded_nodes": int(loaded.sum()),
         "total_force_n": round(float(np.linalg.norm(forces[loaded].sum(axis=0))), 2),
+        "reactions": case_reactions(domain, fixed3, F),
         "warnings": warnings,
     }

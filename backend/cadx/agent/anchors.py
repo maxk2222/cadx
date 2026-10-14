@@ -17,12 +17,28 @@ from cadx.llm.schemas import PartSpec
 
 
 class Anchor(BaseModel):
+    """Measured hole/feature anchor in mm (part frame, origin = bbox center).
+
+    `axis` is the bore/feature axis — "+z" for the classic top-view holes; the
+    FEM mesh scan (`cad.fem.anchors3d`) also reports +x/+y side anchors. `z`
+    is the centre coordinate along the bore axis (unset = part mid-depth).
+    `kind`/`bolt_size` type the feature when spec.features match (thread,
+    heatset insert, bearing seat...); FEM keep/bearing logic uses them.
+    """
+
     index: int
     x: float
     y: float
     dia: float
-    source: Literal["image", "mesh", "image+mesh"]
+    source: Literal["image", "mesh", "image+mesh", "scan"]
     name: str = ""
+    axis: str = "+z"  # +x | +y | +z — bore/feature axis
+    z: float | None = None  # centre coord along the bore axis (None = part mid)
+    depth_mm: float | None = None  # bore length along `axis`
+    kind: str = "hole"  # hole | thread | insert | bearing_seat | dimple
+    bolt_size: str = ""  # matched spec feature standard, e.g. "M5"
+    # full 3D in-plane position for non-+z anchors (axial coord may be None)
+    pos: list[float | None] | None = None
 
 
 class FeatureAnchors(BaseModel):
@@ -65,15 +81,70 @@ def _spec_hole_dias(spec: PartSpec) -> list[tuple[float, str]]:
 
     out = []
     for f in spec.features:
-        looks_hole = f.type in ("hole", "insert", "bearing_seat") or bool(
+        looks_hole = f.type in ("hole", "insert", "bearing_seat", "thread") or bool(
             re.search(r"hole|bore|loch", f.name or "", re.IGNORECASE)
         )
         if not looks_hole:
             continue
-        dia = (f.dims or {}).get("diameter") or (f.dims or {}).get("dia")
+        dia = (
+            (f.dims or {}).get("diameter")
+            or (f.dims or {}).get("dia")
+            or (f.dims or {}).get("bore_diameter")
+        )
         if dia:
             out.append((float(dia), f.name or ""))
     return out
+
+
+def _bolt_size(text: str) -> str:
+    """Extract a metric fastener designation ("M5", "M4x0.7") from a string."""
+    import re
+
+    m = re.search(r"\bM\d+(?:[.x]\d+)?\b", text or "")
+    return m.group(0) if m else ""
+
+
+def _type_anchors(spec: PartSpec, anchors: list[Anchor]) -> None:
+    """Assign kind/bolt_size to anchors from spec.features (diameter-matched).
+
+    Only upgrades "hole" anchors: a spec feature of type thread/insert/
+    bearing_seat whose diameter (or bolt clearance) is within 15% of the
+    anchor bore sets the anchor's kind and bolt size — the FEM side then
+    knows this anchor takes a bearing/preload load, not just a pin.
+    """
+    feats = [
+        f
+        for f in spec.features
+        if f.type in ("hole", "thread", "insert", "bearing_seat")
+        or _bolt_size(f.standard or f.name or "")
+    ]
+    for a in anchors:
+        if a.kind != "hole" or not feats:
+            continue
+        best = None
+        best_rel = 0.15
+        for f in feats:
+            dia = (
+                (f.dims or {}).get("diameter")
+                or (f.dims or {}).get("dia")
+                or (f.dims or {}).get("bore_diameter")
+                or (f.dims or {}).get("counterbore_diameter")
+            )
+            if not dia or a.dia <= 0:
+                continue
+            rel = abs(float(dia) - a.dia) / max(a.dia, float(dia))
+            if rel <= best_rel:
+                best_rel, best = rel, f
+        if best is None:
+            continue
+        a.kind = {
+            "thread": "thread",
+            "insert": "insert",
+            "bearing_seat": "bearing_seat",
+        }.get(best.type, "hole")
+        a.bolt_size = _bolt_size(best.standard or "") or _bolt_size(best.name or "")
+        if not a.name:
+            a.name = best.name or ""
 
 
 def build_anchors(  # noqa: C901
@@ -164,6 +235,8 @@ def build_anchors(  # noqa: C901
         for a in anchors:
             if a.source != "mesh":
                 a.dia = round(round(a.dia * 2) / 2, 2)
+
+    _type_anchors(spec, anchors)
 
     note = (
         f"{len(img_holes)} image holes, {n_conf} confirmed by mesh, "

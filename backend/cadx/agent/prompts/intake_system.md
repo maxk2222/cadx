@@ -17,8 +17,10 @@ Rules:
 - If an essential dimension is missing: add an open question with a sensible
   `default_assumption`; set `blocking=true` ONLY when a wrong guess would make the part
   useless (otherwise we proceed with the assumption).
-- Assign each input image a role (front/back/left/right/top/bottom/iso/detail/drawing/other)
+- Assign each input image a role (front/back/left/right/top/bottom/iso/detail/drawing/sketch/other)
   in `image_roles` — one entry per provided asset, never leave it empty.
+  Use `sketch` for hand-drawn or AI-edited silhouette/line drawings — they feed
+  sketch-conditioned mesh adapters, not photorealistic view slots.
   For FLAT parts (plates, scales, gaskets — height ≪ length×width) photographed
   face-up or face-down, label the broad-face view `top` or `bottom`: that face
   is the plan view our measurement pipeline extracts the outline from. Do NOT
@@ -45,16 +47,30 @@ Rules:
   part must have after the change — and list in `must_keep` the properties that must not
   change. Keep dimensions identical unless the user asked to change them.
 - STRUCTURAL REQUIREMENTS: when the description mentions loads, forces, weight,
-  stiffness, mounting or "holds X kg", fill `load_cases` — one per scenario with
-  `fixed` regions (where the part is constrained) and `loads` (force_n vector in
-  Newton or pressure_mpa on a face region). Regions: `face` = outer layer on a
-  bbox side (axis +x|-x|+y|-y|+z|-z), `cylinder` = around an axis line (bores,
-  mounts — use `diameter_mm` + `center` hint), `box` = cube at `center`,
-  `all` = whole part.
+  stiffness, mounting, screws/bolts under load, "holds X kg", or asks for
+  topology optimization / material saving / lightweight design, `load_cases`
+  MUST be non-empty — derive one case per scenario, never leave it blank.
+  Example: {"name":"use","fixed":[{"kind":"hole","hole_index":1}],
+  "loads":[{"region":{"kind":"area","axis":"+z"},"force_n":[0,0,-100]}]}
+  — one per scenario with
+  `fixed` regions (where the part is constrained) and `loads`. Region kinds:
+  `face`/`surface` = outer layer on a bbox side (axis +x|-x|+y|-y|+z|-z),
+  `anchor`/`hole`/`bore` = measured feature anchor via `hole_index` (bore =
+  the bore WALL — for bolt loads), `cylinder` = around an axis line
+  (`diameter_mm` + `center` hint), `box` = cube at `center`, `all` = whole part.
+  Load fields: `force_n` [N], `pressure_mpa` (face regions), `bearing_n` +
+  `bearing_dir` (shaft load on a bore wall), `preload_n` (bolt pretension),
+  `moment_nm` (pure couple, N·m), `force_n` + `remote_point` (levered load),
+  `g_load` (body accel in g — `[0,0,-1]` = own weight). Fixed regions accept
+  `fix_mode`: `"all"` (default encastre) or `"normal"` (resting/roller).
+  Use `bearing_n` on `bore` regions for ANY bolt/screw/pin attachment — a
+  rim point-load badly overstates the stress.
 - When the user asks for a lightweight, material-saving or topology-optimised
   design, set `optimize.enabled=true` with `target_volume_fraction` (how much
   material to keep, default 0.4) and `safety_factor_min`. List functional
   surfaces (mounts, bores, interfaces) in `optimize.keep_regions` so the
-  optimizer preserves them.
+  optimizer preserves them — `keep_mode:"auto"` keeps a ring around every
+  detected anchor; `void_regions` declares no-material zones (cable runs,
+  clearance); `min_member_mm` sets the printable member floor (≈1.6 for FDM).
 
 Respond with JSON matching the PartSpec schema.

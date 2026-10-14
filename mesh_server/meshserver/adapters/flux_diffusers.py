@@ -13,7 +13,9 @@ Memory ladder (config cuda_offload): full GPU residency is fastest but needs
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, ClassVar
+
+from PIL import Image
 
 from meshserver.adapters.base import hard_unload, missing
 from meshserver.adapters.image_base import ImageAdapter, ImageGenOpts, ImageGenResult
@@ -37,6 +39,7 @@ class FluxSchnellAdapter(ImageAdapter):
     default_size = 768
     max_count = 4
     max_side = 1024
+    supports_edit: ClassVar[bool] = True  # img2img via FluxImg2ImgPipeline.from_pipe
 
     @classmethod
     def available(cls, cfg: Any) -> bool:  # noqa: ARG003
@@ -74,8 +77,17 @@ class FluxSchnellAdapter(ImageAdapter):
         self._pipe = pipe
         self._loaded = True
 
+    def _edit_pipe(self) -> Any:
+        """img2img pipeline sharing the txt2img weights (no extra VRAM)."""
+        if getattr(self, "_pipe_edit", None) is None:
+            from diffusers import FluxImg2ImgPipeline
+
+            self._pipe_edit = FluxImg2ImgPipeline.from_pipe(self._pipe)
+        return self._pipe_edit
+
     def unload(self) -> None:
         self._pipe = None
+        self._pipe_edit = None
         self._loaded = False
         hard_unload()
 
@@ -96,15 +108,26 @@ class FluxSchnellAdapter(ImageAdapter):
             gen = torch.Generator(device="cuda").manual_seed(seed)
             if progress:
                 progress(0.1 + 0.8 * i / max(1, opts.count), f"FLUX.1-schnell image {i + 1}")
-            out = self._pipe(
-                prompt=opts.prompt,
-                negative_prompt=opts.negative or None,
-                num_inference_steps=opts.steps or 4,
-                guidance_scale=opts.guidance if opts.guidance is not None else 0.0,
-                width=opts.width,
-                height=opts.height,
-                generator=gen,
-            )
+            if opts.image_path is not None:
+                out = self._edit_pipe()(
+                    prompt=opts.prompt,
+                    negative_prompt=opts.negative or None,
+                    image=Image.open(opts.image_path).convert("RGB"),
+                    strength=min(max(opts.image_strength or 0.6, 0.05), 0.99),
+                    num_inference_steps=opts.steps or 8,
+                    guidance_scale=opts.guidance if opts.guidance is not None else 0.0,
+                    generator=gen,
+                )
+            else:
+                out = self._pipe(
+                    prompt=opts.prompt,
+                    negative_prompt=opts.negative or None,
+                    num_inference_steps=opts.steps or 4,
+                    guidance_scale=opts.guidance if opts.guidance is not None else 0.0,
+                    width=opts.width,
+                    height=opts.height,
+                    generator=gen,
+                )
             images.append(out.images[0])
         return ImageGenResult(
             images=images,

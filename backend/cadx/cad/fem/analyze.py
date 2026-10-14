@@ -13,10 +13,10 @@ from typing import Any
 
 import numpy as np
 import trimesh
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 from cadx.cad.fem.materials import MaterialProps, resolve_material
-from cadx.cad.fem.regions import resolve_case
+from cadx.cad.fem.regions import case_reactions, material_cell_factors, resolve_case_dofs
 from cadx.cad.fem.solver import FemSolution, solve
 from cadx.cad.fem.voxelize import VoxelDomain, volume_of_solid, voxelize
 from cadx.llm.schemas import LoadCase
@@ -34,6 +34,9 @@ class FemCaseResult(BaseModel):
     converged: bool = True
     solver: str = ""
     warnings: list[str] = Field(default_factory=list)
+    # applied resultant force / moment about the constraint centroid —
+    # sanity check the resolved loads did what was requested
+    reactions: dict = Field(default_factory=dict)
     vonmises_png: str | None = None
     deformed_png: str | None = None
 
@@ -48,6 +51,7 @@ class FemReport(BaseModel):
         "design feedback, not certification"
     )
 
+    @computed_field  # serialized into report.json / API payloads
     @property
     def worst_safety_factor(self) -> float | None:
         sfs = [c.safety_factor for c in self.cases if c.safety_factor is not None]
@@ -155,6 +159,8 @@ def run_fem(
     max_elements: int = 150_000,
     out_dir: Path | None = None,
     anchors: list[dict] | None = None,
+    keep_regions: list | None = None,
+    spsolve_dofs: int = 120_000,
     suffix: str = "",
 ) -> FemReport:
     """Solve each load case on the voxelized mesh. Always returns a report —
@@ -166,7 +172,9 @@ def run_fem(
     except Exception as e:
         report.warnings.append(f"voxelization failed: {e}")
         return report
-    _solve_cases(domain, mat, load_cases, report, out_dir, anchors, suffix)
+    _solve_cases(
+        domain, mat, load_cases, report, out_dir, anchors, suffix, keep_regions, spsolve_dofs
+    )
     return report
 
 
@@ -179,6 +187,8 @@ def run_fem_domain(
     material: MaterialProps | None = None,
     out_dir: Path | None = None,
     anchors: list[dict] | None = None,
+    keep_regions: list | None = None,
+    spsolve_dofs: int = 120_000,
     suffix: str = "",
 ) -> FemReport:
     """Verify a structure defined directly on an existing grid — used for
@@ -193,7 +203,7 @@ def run_fem_domain(
         solid=np.asarray(solid_mask, dtype=bool).reshape(domain.dims),
         pitch_requested=domain.pitch,
     )
-    _solve_cases(sub, mat, load_cases, report, out_dir, anchors, suffix)
+    _solve_cases(sub, mat, load_cases, report, out_dir, anchors, suffix, keep_regions, spsolve_dofs)
     return report
 
 
@@ -205,6 +215,8 @@ def _solve_cases(
     out_dir: Path | None,
     anchors: list[dict] | None = None,
     suffix: str = "",
+    keep_regions: list | None = None,
+    spsolve_dofs: int = 120_000,
 ) -> None:
     report.grid = {
         "pitch_mm": round(domain.pitch, 4),
@@ -218,6 +230,10 @@ def _solve_cases(
         return
 
     elem_E = np.where(domain.solid.ravel(), mat.elastic_modulus_mpa, 0.0)
+    if keep_regions:
+        # insert/material zones: keep-regions with `material` override E
+        factors = material_cell_factors(domain, keep_regions, anchors, mat.elastic_modulus_mpa)
+        elem_E = elem_E * factors
 
     fem_dir = (out_dir / "fem") if out_dir else None
     if fem_dir:
@@ -225,18 +241,22 @@ def _solve_cases(
 
     for i, case in enumerate(load_cases):
         res = FemCaseResult(name=case.name or f"case{i + 1}")
-        fixed, F, warnings = resolve_case(domain, case, anchors)
+        fixed3, F, warnings = resolve_case_dofs(
+            domain, case, anchors, density_g_cm3=mat.density_g_cm3
+        )
         res.warnings += warnings
-        if not fixed.any() or not np.any(F):
+        res.reactions = case_reactions(domain, fixed3, F)
+        if not fixed3.any() or not np.any(F):
             report.cases.append(res)
             continue
         sol = solve(
             domain,
             elem_E,
             mat.poisson,
-            fixed,
+            fixed3,
             F,
             E_ref=mat.elastic_modulus_mpa,
+            spsolve_dofs=spsolve_dofs,
         )
         res.warnings += sol.warnings
         res.max_vm_mpa = round(sol.max_vm_mpa, 3)

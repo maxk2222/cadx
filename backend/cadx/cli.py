@@ -345,9 +345,16 @@ def image_gen(
     width: int = typer.Option(768, "--width"),
     height: int = typer.Option(768, "--height"),
     steps: int | None = typer.Option(None, "--steps"),
+    reference: Path | None = typer.Option(
+        None, "--reference", help="init image for img2img/instruction-edit adapters"
+    ),
+    strength: float | None = typer.Option(None, "--strength", min=0.0, max=1.0),
     base_url: str | None = typer.Option(None, "--url", help="mesh-server base URL"),
 ) -> None:
-    """Generate images locally via the mesh-server image adapters (no DB)."""
+    """Generate images locally via the mesh-server image adapters (no DB).
+
+    With --reference the request goes to the edit-capable adapters
+    (img2img with --strength, instruction edit on kontext/qwen)."""
 
     async def _run() -> None:
         from cadx.agent.image_client import ImageGenRequest, make_image_client
@@ -371,6 +378,8 @@ def image_gen(
             width=width,
             height=height,
             steps=steps,
+            init_image=reference,
+            strength=strength,
             out_dir=out_dir,
         )
         result = await client.generate(req, prog)

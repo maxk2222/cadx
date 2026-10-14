@@ -12,8 +12,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { api } from "../lib/api";
 import type {
+  FeatureAnchor,
   FemPreviewResult,
   LoadCase,
+  LoadSpec,
   RegionSpec,
   VersionDetail,
 } from "../lib/types";
@@ -26,18 +28,22 @@ import { Btn, Chip, Field, IconBtn, inputCls, useToast } from "./ui";
 /* model                                                               */
 /* ------------------------------------------------------------------ */
 
-type RegionColor = "fixed" | "load" | "keep";
+type RegionColor = "fixed" | "load" | "keep" | "void" | "anchor";
 const COLORS: Record<RegionColor, string> = {
   fixed: "#3b82f6",
   load: "#ef4444",
   keep: "#22c55e",
+  void: "#a855f7",
+  anchor: "#22d3ee",
 };
+const GIZMO_COLORS = { force: "#f59e0b", moment: "#f472b6", preload: "#facc15" };
 
 /** Where the next brush stroke (or center-pick) appends. */
 type PaintTarget =
   | { kind: "fixed"; ci: number; ri: number }
   | { kind: "load"; ci: number; li: number }
   | { kind: "keep"; ri: number }
+  | { kind: "void"; ri: number }
   | null;
 
 type Mode = "paint" | "erase";
@@ -57,15 +63,35 @@ const FACE_LABELS: Record<string, string> = {
   "+z": "top (+Z)",
 };
 const CYL_AXES = ["x", "y", "z"] as const;
+const ANCHOR_KINDS = new Set(["hole", "anchor", "bore"]);
 const REGION_KINDS: { id: NonNullable<RegionSpec["kind"]>; label: string }[] = [
   { id: "face", label: "face" },
   { id: "surface", label: "surface" },
   { id: "area", label: "area" },
   { id: "cylinder", label: "cylinder" },
   { id: "box", label: "box" },
+  { id: "anchor", label: "anchor" },
+  { id: "bore", label: "bore" },
   { id: "hole", label: "hole" },
   { id: "all", label: "all" },
 ];
+
+/** feature-anchor → 3D point (model space); null when nothing is known. */
+function anchorPos(a: FeatureAnchor, box?: THREE.Box3 | null): [number, number, number] | null {
+  const axisIdx = { x: 0, y: 1, z: 2 }[(a.axis || "+z").replace(/^[+-]/, "")] ?? 2;
+  const mid = box
+    ? box.getCenter(new THREE.Vector3()).toArray()
+    : [0, 0, 0];
+  const p: (number | null)[] = a.pos?.length === 3 ? a.pos : [a.x, a.y, a.z ?? null];
+  const out = p.map((c, i) => (c == null ? mid[i]! : c));
+  // pos-less legacy anchors: x,y are the in-plane coords of a +z hole
+  if (!a.pos && axisIdx === 2) out[2] = a.z ?? mid[2]!;
+  if (!a.pos && axisIdx !== 2) {
+    // legacy anchors are +z only — trust mid on the unknown axis
+    out[axisIdx] = a.z ?? mid[axisIdx]!;
+  }
+  return out as [number, number, number];
+}
 
 function emptyPointsRegion(radius: number): RegionSpec {
   return { kind: "points", points: [], radius_mm: radius };
@@ -85,6 +111,10 @@ function newRegion(kind: NonNullable<RegionSpec["kind"]>): RegionSpec {
       return { kind: "box", center: [0, 0, 5], diameter_mm: 10 };
     case "hole":
       return { kind: "hole", hole_index: 1 };
+    case "anchor":
+      return { kind: "anchor", hole_index: 1, margin_mm: 2 };
+    case "bore":
+      return { kind: "bore", hole_index: 1 };
     case "all":
       return { kind: "all" };
     default:
@@ -92,7 +122,7 @@ function newRegion(kind: NonNullable<RegionSpec["kind"]>): RegionSpec {
   }
 }
 
-function regionLabel(r: RegionSpec): string {
+function regionLabel(r: RegionSpec, anchors?: FeatureAnchor[]): string {
   switch (r.kind) {
     case "points":
       return `painted · ${r.points?.length ?? 0} pts`;
@@ -108,11 +138,92 @@ function regionLabel(r: RegionSpec): string {
       return `box Ø${r.diameter_mm ?? "?"}mm`;
     case "hole":
       return `hole #${r.hole_index ?? "?"}`;
+    case "anchor":
+    case "bore": {
+      const a = anchors?.find((x) => x.index === r.hole_index);
+      const det = a ? ` ${a.kind} ${a.axis} Ø${a.dia.toFixed(1)}` : "";
+      return `${r.kind} #${r.hole_index ?? "?"}${det}`;
+    }
     case "all":
       return "whole part";
     default:
       return `${r.kind ?? "region"}${r.description ? ` · ${r.description}` : ""}`;
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* load kinds — which fields of a LoadSpec are active                  */
+/* ------------------------------------------------------------------ */
+
+type LoadKind =
+  | "force"
+  | "pressure"
+  | "bearing"
+  | "moment"
+  | "preload"
+  | "remote"
+  | "gravity";
+
+const LOAD_KINDS: { id: LoadKind; label: string; hint: string }[] = [
+  { id: "force", label: "force", hint: "distributed [N] over the region" },
+  { id: "pressure", label: "pressure", hint: "MPa, follows the region normal" },
+  { id: "bearing", label: "bearing", hint: "cosine bolt/bearing load on a bore wall" },
+  { id: "moment", label: "moment", hint: "pure couple [N·m]" },
+  { id: "preload", label: "preload", hint: "bolt pretension along the bore axis" },
+  { id: "remote", label: "remote", hint: "force applied at a remote point (adds moment)" },
+  { id: "gravity", label: "g-load", hint: "body acceleration in g units" },
+];
+
+function loadKind(l: LoadSpec): LoadKind {
+  if ((l.bearing_n ?? 0) > 0) return "bearing";
+  if (l.moment_nm?.some((v) => Math.abs(v) > 1e-9)) return "moment";
+  if ((l.preload_n ?? 0) > 0) return "preload";
+  if (l.remote_point?.length === 3) return "remote";
+  if (l.g_load?.some((v) => Math.abs(v) > 1e-9)) return "gravity";
+  if ((l.pressure_mpa ?? 0) > 0 && !(l.force_n?.some((f) => Math.abs(f) > 1e-9))) return "pressure";
+  return "force";
+}
+
+function blankLoad(kind: LoadKind): Partial<LoadSpec> {
+  const base: Partial<LoadSpec> = {
+    force_n: undefined,
+    pressure_mpa: null,
+    bearing_n: null,
+    bearing_dir: undefined,
+    moment_nm: undefined,
+    preload_n: null,
+    remote_point: undefined,
+    g_load: undefined,
+    direction_cone_deg: null,
+  };
+  switch (kind) {
+    case "force":
+      return { ...base, force_n: [0, 0, -50] };
+    case "pressure":
+      return { ...base, pressure_mpa: 2 };
+    case "bearing":
+      return { ...base, bearing_n: 200, bearing_dir: [0, 0, -1] };
+    case "moment":
+      return { ...base, moment_nm: [0, 0, 1] };
+    case "preload":
+      return { ...base, preload_n: 500 };
+    case "remote":
+      return { ...base, force_n: [0, 0, -50], remote_point: [0, 0, 0] };
+    case "gravity":
+      return { ...base, g_load: [0, 0, -1] };
+  }
+}
+
+/** does this load actually apply something? (for the run-button guard) */
+function loadActive(l: LoadSpec): boolean {
+  return (
+    (l.force_n?.some((f) => Math.abs(f) > 1e-9) ?? false) ||
+    (l.pressure_mpa ?? 0) > 0 ||
+    (l.bearing_n ?? 0) > 0 ||
+    (l.moment_nm?.some((v) => Math.abs(v) > 1e-9) ?? false) ||
+    (l.preload_n ?? 0) > 0 ||
+    (l.g_load?.some((v) => Math.abs(v) > 1e-9) ?? false)
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -168,6 +279,8 @@ function RegionRow({
   painting,
   hasCenterPick,
   anchors,
+  showFixMode,
+  showMaterial,
   onPaint,
   onPickCenter,
   onChange,
@@ -178,7 +291,11 @@ function RegionRow({
   painting: boolean;
   /** whether this region kind supports click-to-place center */
   hasCenterPick?: boolean;
-  anchors?: { x: number; y: number; dia?: number }[];
+  anchors?: FeatureAnchor[];
+  /** fixed/support regions: offer the encastre-vs-roller switch */
+  showFixMode?: boolean;
+  /** keep regions: offer a material override (insert zones) */
+  showMaterial?: boolean;
   onPaint?: () => void;
   onPickCenter?: () => void;
   onChange: (r: RegionSpec) => void;
@@ -220,25 +337,27 @@ function RegionRow({
               </option>
             ))}
           </select>
-        ) : kind === "hole" && anchors?.length ? (
+        ) : ANCHOR_KINDS.has(kind) && anchors?.length ? (
           <select
             className={`${inputCls} flex-1 px-1 py-0.5 text-[11px]`}
             value={r.hole_index ?? 1}
             onChange={(e) => setA({ hole_index: Number(e.target.value) })}
           >
-            {anchors.map((a, i) => (
-              <option key={i} value={i + 1}>
-                hole #{i + 1} Ø{a.dia ? a.dia.toFixed(1) : "?"} @ ({a.x.toFixed(1)}, {a.y.toFixed(1)})
+            {anchors.map((a) => (
+              <option key={a.index} value={a.index}>
+                #{a.index} {a.kind} {a.axis} Ø{a.dia ? a.dia.toFixed(1) : "?"}
+                {a.bolt_size ? ` ${a.bolt_size}` : ""} @ ({a.x.toFixed(1)}, {a.y.toFixed(1)}
+                {a.z != null ? `, ${a.z.toFixed(1)}` : ""})
               </option>
             ))}
           </select>
         ) : (
           <button
             className="min-w-0 flex-1 truncate text-left text-zinc-300 hover:text-zinc-100"
-            title={`${regionLabel(r)} — click for details`}
+            title={`${regionLabel(r, anchors)} — click for details`}
             onClick={() => setOpen((o) => !o)}
           >
-            {r.description || regionLabel(r)}
+            {r.description || regionLabel(r, anchors)}
           </button>
         )}
         {hasCenterPick && onPickCenter && (
@@ -292,6 +411,37 @@ function RegionRow({
       {/* expanded details */}
       {open && (
         <div className="mt-1 flex flex-col gap-1 border-t border-zinc-800 pl-4 pt-1">
+          {showFixMode && (
+            <div className="flex items-center gap-1">
+              <span className="w-14 text-[10px] text-zinc-500">support</span>
+              <select
+                className={`${inputCls} flex-1 px-1 py-0.5 text-[11px]`}
+                value={r.fix_mode ?? "all"}
+                onChange={(e) => setA({ fix_mode: e.target.value as "all" | "normal" })}
+              >
+                <option value="all">encastre (all DOFs)</option>
+                <option value="normal">roller / resting (normal DOF only)</option>
+              </select>
+            </div>
+          )}
+          {showMaterial && (
+            <div className="flex items-center gap-1">
+              <span className="w-14 text-[10px] text-zinc-500">material</span>
+              <select
+                className={`${inputCls} flex-1 px-1 py-0.5 text-[11px]`}
+                value={r.material ?? ""}
+                onChange={(e) => setA({ material: e.target.value || undefined })}
+              >
+                <option value="">part material</option>
+                {MATERIAL_OPTIONS.filter((m) => m).map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+              <span className="text-[10px] text-zinc-600">insert</span>
+            </div>
+          )}
           {(kind === "cylinder" || kind === "box" || kind === "area") && (
             <div className="flex items-center gap-1">
               <span className="w-14 text-[10px] text-zinc-500">center</span>
@@ -370,7 +520,7 @@ function AddRegionButtons({
       >
         <Brush className="h-3 w-3" /> {paintLabel}
       </button>
-      {REGION_KINDS.filter((k) => k.id !== "hole" || hasAnchors).map((k) => (
+      {REGION_KINDS.filter((k) => !ANCHOR_KINDS.has(k.id ?? "") || hasAnchors).map((k) => (
         <button
           key={k.id}
           className="flex items-center gap-1 rounded border border-dashed border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-400 hover:border-zinc-500 hover:text-zinc-200"
@@ -420,6 +570,225 @@ function PointCloud({
 }
 
 /* ------------------------------------------------------------------ */
+/* anchor markers + load gizmos                                        */
+/* ------------------------------------------------------------------ */
+
+/** axis word → unit vector */
+function axisVec(axis: string | undefined): [number, number, number] {
+  const a = (axis || "+z").toLowerCase();
+  const i = { x: 0, y: 1, z: 2 }[a.replace(/^[+-]/, "")] ?? 2;
+  const v: [number, number, number] = [0, 0, 0];
+  v[i] = a.startsWith("-") ? -1 : 1;
+  return v;
+}
+
+/** quaternion aligning +Y onto `dir` (arrows are modelled along +Y) */
+function dirQuat(dir: [number, number, number]): THREE.Quaternion {
+  const d = new THREE.Vector3(...dir);
+  if (d.lengthSq() < 1e-12) d.set(0, 1, 0);
+  d.normalize();
+  return new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), d);
+}
+
+/** one arrow: shaft + head, centred so `pos` is the tail */
+function Arrow({
+  pos,
+  dir,
+  len,
+  color,
+  r = 0.6,
+}: {
+  pos: [number, number, number];
+  dir: [number, number, number];
+  len: number;
+  color: string;
+  r?: number;
+}) {
+  const q = dirQuat(dir);
+  const head = Math.min(len * 0.35, 4);
+  return (
+    <group position={pos} quaternion={q}>
+      <mesh position={[0, (len - head) / 2, 0]}>
+        <cylinderGeometry args={[r, r, Math.max(len - head, 0.1), 10]} />
+        <meshBasicMaterial color={color} depthTest={false} transparent opacity={0.9} />
+      </mesh>
+      <mesh position={[0, len - head / 2, 0]}>
+        <coneGeometry args={[r * 2.4, head, 12]} />
+        <meshBasicMaterial color={color} depthTest={false} transparent opacity={0.9} />
+      </mesh>
+    </group>
+  );
+}
+
+/** feature anchor marker: sphere + short axis pin + index sprite */
+function AnchorMarker({
+  a,
+  pos,
+  selected,
+}: {
+  a: FeatureAnchor;
+  pos: [number, number, number];
+  selected: boolean;
+}) {
+  const avec = axisVec(a.axis);
+  const tex = useMemo(() => {
+    const cv = document.createElement("canvas");
+    cv.width = cv.height = 64;
+    const g = cv.getContext("2d")!;
+    g.beginPath();
+    g.arc(32, 32, 28, 0, Math.PI * 2);
+    g.fillStyle = selected ? "#f59e0b" : "#164e63";
+    g.fill();
+    g.strokeStyle = "#22d3ee";
+    g.lineWidth = 4;
+    g.stroke();
+    g.fillStyle = "#fff";
+    g.font = "bold 34px sans-serif";
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.fillText(String(a.index), 32, 34);
+    const t = new THREE.CanvasTexture(cv);
+    t.needsUpdate = true;
+    return t;
+  }, [a.index, selected]);
+  const s = Math.max((a.dia || 4) * 0.25, 2);
+  return (
+    <group position={pos}>
+      <mesh>
+        <sphereGeometry args={[s * 0.45, 14, 10]} />
+        <meshBasicMaterial
+          color={selected ? "#f59e0b" : COLORS.anchor}
+          depthTest={false}
+          transparent
+          opacity={0.95}
+        />
+      </mesh>
+      <mesh quaternion={dirQuat(avec)} position={[avec[0] * s, avec[1] * s, avec[2] * s]}>
+        <cylinderGeometry args={[0.35, 0.35, s * 2, 8]} />
+        <meshBasicMaterial color={COLORS.anchor} depthTest={false} transparent opacity={0.8} />
+      </mesh>
+      <sprite scale={[s * 1.6, s * 1.6, 1]} position={[0, s * 1.6, 0]}>
+        <spriteMaterial map={tex} depthTest={false} transparent />
+      </sprite>
+    </group>
+  );
+}
+
+/** where does a load's gizmo sit? — region centre estimate in model space */
+function regionCenter3(
+  r: RegionSpec,
+  anchors: FeatureAnchor[] | undefined,
+  box: THREE.Box3 | null
+): [number, number, number] | null {
+  const mid = box ? box.getCenter(new THREE.Vector3()).toArray() : [0, 0, 0];
+  const k = r.kind ?? "face";
+  if (ANCHOR_KINDS.has(k)) {
+    const a = anchors?.find((x) => x.index === (r.hole_index ?? 1));
+    return a ? anchorPos(a, box) : null;
+  }
+  if (k === "area") return [r.center?.[0] ?? mid[0]!, r.center?.[1] ?? mid[1]!, mid[2]!];
+  if (k === "cylinder" || k === "box")
+    return [
+      r.center?.[0] ?? mid[0]!,
+      r.center?.[1] ?? mid[1]!,
+      r.center?.[2] ?? mid[2]!,
+    ];
+  if (k === "points" && r.points?.length) {
+    const n = r.points.length;
+    return [
+      r.points.reduce((s, p) => s + p[0], 0) / n,
+      r.points.reduce((s, p) => s + p[1], 0) / n,
+      r.points.reduce((s, p) => s + p[2], 0) / n,
+    ];
+  }
+  if ((k === "face" || k === "surface" || k === "all") && box) {
+    const c = mid.slice() as [number, number, number];
+    if (k !== "all" && r.axis) {
+      const i = { x: 0, y: 1, z: 2 }[r.axis.replace(/^[+-]/, "")] ?? 2;
+      c[i] = r.axis.startsWith("-") ? box.min.toArray()[i]! : box.max.toArray()[i]!;
+    }
+    return c;
+  }
+  return null;
+}
+
+/** gizmos for one load: force arrow / moment ring / preload double-arrow */
+function LoadGizmo({
+  l,
+  anchors,
+  box,
+  gsize,
+}: {
+  l: LoadSpec;
+  anchors: FeatureAnchor[] | undefined;
+  box: THREE.Box3 | null;
+  gsize: number;
+}) {
+  const kind = loadKind(l);
+  const pos = regionCenter3(
+    kind === "remote" ? { ...l.region } : l.region,
+    anchors,
+    box
+  );
+  if (!pos) return null;
+  const len = gsize;
+  if (kind === "moment" && l.moment_nm) {
+    const q = dirQuat(axisVecFromVec(l.moment_nm));
+    const rad = len * 0.45;
+    return (
+      <group position={pos} quaternion={q}>
+        <mesh rotation={[Math.PI / 2, 0, 0]}>
+          <torusGeometry args={[rad, 0.5, 8, 40, Math.PI * 1.6]} />
+          <meshBasicMaterial color={GIZMO_COLORS.moment} depthTest={false} transparent opacity={0.9} />
+        </mesh>
+        <mesh position={[rad * Math.cos(Math.PI * 1.6), 0, rad * Math.sin(Math.PI * 1.6)]}>
+          <coneGeometry args={[1.6, 4, 10]} />
+          <meshBasicMaterial color={GIZMO_COLORS.moment} depthTest={false} transparent opacity={0.9} />
+        </mesh>
+      </group>
+    );
+  }
+  if (kind === "preload") {
+    const avec = axisVec(
+      l.region.kind && ANCHOR_KINDS.has(l.region.kind)
+        ? anchors?.find((x) => x.index === (l.region.hole_index ?? 1))?.axis
+        : l.region.axis
+    );
+    return (
+      <group>
+        <Arrow
+          pos={[pos[0] - avec[0] * len, pos[1] - avec[1] * len, pos[2] - avec[2] * len]}
+          dir={avec}
+          len={len * 0.8}
+          color={GIZMO_COLORS.preload}
+        />
+        <Arrow
+          pos={[pos[0] + avec[0] * len, pos[1] + avec[1] * len, pos[2] + avec[2] * len]}
+          dir={[-avec[0], -avec[1], -avec[2]]}
+          len={len * 0.8}
+          color={GIZMO_COLORS.preload}
+        />
+      </group>
+    );
+  }
+  if (kind === "gravity" && l.g_load) {
+    return <Arrow pos={pos} dir={l.g_load as [number, number, number]} len={len} color={GIZMO_COLORS.force} />;
+  }
+  const dir =
+    kind === "bearing"
+      ? (l.bearing_dir as [number, number, number]) || (l.force_n as [number, number, number])
+      : (l.force_n as [number, number, number]);
+  const at = kind === "remote" && l.remote_point ? (l.remote_point as [number, number, number]) : pos;
+  if (!dir?.length) return null;
+  return <Arrow pos={at} dir={dir} len={len} color={GIZMO_COLORS.force} />;
+}
+
+/** moment vector → its rotation axis as a dir (for the torus orientation) */
+function axisVecFromVec(v: number[]): [number, number, number] {
+  return [v[0] ?? 0, v[1] ?? 0, v[2] ?? 1];
+}
+
+/* ------------------------------------------------------------------ */
 /* main component                                                      */
 /* ------------------------------------------------------------------ */
 
@@ -439,8 +808,13 @@ export default function StructuralEditor({
   const toast = useToast();
   const [cases, setCases] = useState<LoadCase[]>([]);
   const [keep, setKeep] = useState<RegionSpec[]>([]);
+  const [voids, setVoids] = useState<RegionSpec[]>([]);
   const [volfrac, setVolfrac] = useState(0.4);
+  const [keepMode, setKeepMode] = useState<"manual" | "auto">("manual");
+  const [minMember, setMinMember] = useState(0);
+  const [densityThreshold, setDensityThreshold] = useState(0.5);
   const [material, setMaterial] = useState("");
+  const [anchors, setAnchors] = useState<FeatureAnchor[]>([]);
   const [brushR, setBrushR] = useState(4);
   const [mode, setMode] = useState<Mode>("paint");
   const [target, setTarget] = useState<PaintTarget>(null);
@@ -461,23 +835,48 @@ export default function StructuralEditor({
       | {
           load_cases?: LoadCase[];
           keep_regions?: RegionSpec[];
+          void_regions?: RegionSpec[];
           material?: string;
           volfrac?: number;
+          keep_mode?: "manual" | "auto";
+          min_member_mm?: number;
+          density_threshold?: number;
         }
       | undefined;
+    const specOpt = version.spec?.optimize;
     if (saved?.load_cases?.length) {
       setCases(saved.load_cases);
       setKeep(saved.keep_regions ?? []);
+      setVoids(saved.void_regions ?? []);
       setMaterial(saved.material ?? "");
       setVolfrac(saved.volfrac ?? 0.4);
+      setKeepMode(saved.keep_mode ?? "manual");
+      setMinMember(saved.min_member_mm ?? specOpt?.min_member_mm ?? 0);
+      setDensityThreshold(saved.density_threshold ?? specOpt?.density_threshold ?? 0.5);
     } else if (version.spec?.load_cases?.length) {
       setCases(version.spec.load_cases);
-      setKeep(version.spec.optimize?.keep_regions ?? []);
+      setKeep(specOpt?.keep_regions ?? []);
+      setVoids(specOpt?.void_regions ?? []);
       setMaterial(version.options?.material ?? "");
+      setKeepMode(specOpt?.keep_mode ?? "manual");
+      setMinMember(specOpt?.min_member_mm ?? 0);
+      setDensityThreshold(specOpt?.density_threshold ?? 0.5);
     } else {
       setCases([{ name: "case1", fixed: [], loads: [] }]);
       setKeep([]);
+      setVoids([]);
     }
+    // typed anchors: stored analysis anchors + on-demand mesh scan merge
+    const stored = (
+      version.analysis as { anchors?: { holes?: FeatureAnchor[] } } | null
+    )?.anchors?.holes;
+    if (stored?.length) setAnchors(stored);
+    api
+      .anchors(version.id)
+      .then((r) => {
+        if (r.ok && r.anchors.length) setAnchors(r.anchors);
+      })
+      .catch(() => {});
     setPreview(null);
     setTarget(null);
     setCenterPick(null);
@@ -494,6 +893,7 @@ export default function StructuralEditor({
   const getRegion = (t: Exclude<PaintTarget, null>): RegionSpec | null => {
     if (t.kind === "fixed") return cases[t.ci]?.fixed[t.ri] ?? null;
     if (t.kind === "load") return cases[t.ci]?.loads[t.li]?.region ?? null;
+    if (t.kind === "void") return voids[t.ri] ?? null;
     return keep[t.ri] ?? null;
   };
 
@@ -504,6 +904,8 @@ export default function StructuralEditor({
     } else if (t.kind === "load") {
       const c = cases[t.ci];
       if (c) setCase(t.ci, { loads: c.loads.map((x, i) => (i === t.li ? { ...x, region: r } : x)) });
+    } else if (t.kind === "void") {
+      setVoids((k) => k.map((x, i) => (i === t.ri ? r : x)));
     } else {
       setKeep((k) => k.map((x, i) => (i === t.ri ? r : x)));
     }
@@ -516,6 +918,8 @@ export default function StructuralEditor({
     } else if (t.kind === "load") {
       const c = cases[t.ci];
       if (c) setCase(t.ci, { loads: c.loads.filter((_, i) => i !== t.li) });
+    } else if (t.kind === "void") {
+      setVoids((k) => k.filter((_, i) => i !== t.ri));
     } else {
       setKeep((k) => k.filter((_, i) => i !== t.ri));
     }
@@ -546,14 +950,32 @@ export default function StructuralEditor({
   /* --- painting / erasing / center-pick --- */
 
   const onPick = (info: PickInfo) => {
-    // center placement for geometric regions
+    // center placement for geometric regions — for anchor kinds it snaps to
+    // the nearest measured anchor (feature picking)
     if (centerPick) {
       const r = getRegion(centerPick);
       const p = info.point;
       if (r) {
         const k = r.kind;
-        const center =
-          k === "area" ? [p[0], p[1]] : [p[0], p[1], p[2]];
+        if (k && ANCHOR_KINDS.has(k) && anchors.length && modelBox) {
+          let best: FeatureAnchor | null = null;
+          let bd = Infinity;
+          for (const a of anchors) {
+            const ap = anchorPos(a, modelBox);
+            if (!ap) continue;
+            const d = Math.hypot(ap[0] - p[0], ap[1] - p[1], ap[2] - p[2]);
+            if (d < bd) {
+              bd = d;
+              best = a;
+            }
+          }
+          if (best) {
+            setRegion(centerPick, { ...r, hole_index: best.index });
+            setCenterPick(null);
+            return;
+          }
+        }
+        const center = k === "area" ? [p[0], p[1]] : [p[0], p[1], p[2]];
         setRegion(centerPick, { ...r, center });
       }
       setCenterPick(null);
@@ -604,23 +1026,30 @@ export default function StructuralEditor({
 
   /* --- payload --- */
 
+  const modelBox = useMemo(() => {
+    if (!model) return null;
+    try {
+      const b = new THREE.Box3().setFromObject(model);
+      return b.isEmpty() ? null : b;
+    } catch {
+      return null;
+    }
+  }, [model]);
+
   const valid = cases.length > 0 && cases.every(
-    (c) =>
-      c.fixed.length > 0 &&
-      c.loads.length > 0 &&
-      c.loads.every(
-        (l) =>
-          (l.force_n?.some((f) => Math.abs(f) > 1e-9) ?? false) ||
-          (l.pressure_mpa ?? 0) > 0
-      )
+    (c) => c.fixed.length > 0 && c.loads.length > 0 && c.loads.every(loadActive)
   );
 
   const persist = () =>
     api.saveEditorState(version.id, {
       load_cases: cases,
       keep_regions: keep,
+      void_regions: voids,
       material,
       volfrac,
+      keep_mode: keepMode,
+      min_member_mm: minMember || undefined,
+      density_threshold: densityThreshold,
     });
 
   // autosave draft state (merged into ui_editor server-side)
@@ -635,7 +1064,7 @@ export default function StructuralEditor({
       if (saveTimer.current) clearTimeout(saveTimer.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cases, keep, material, volfrac, open]);
+  }, [cases, keep, voids, material, volfrac, keepMode, minMember, densityThreshold, open]);
 
   const checkRegions = async () => {
     setBusy("preview");
@@ -649,6 +1078,7 @@ export default function StructuralEditor({
       });
       setPreview(r);
       setShowCells(true);
+      if (r.ok && r.anchors?.length) setAnchors(r.anchors);
       if (!r.ok) toast(r.error ?? "region check failed", "error");
     } catch (e) {
       toast(String(e), "error");
@@ -683,6 +1113,11 @@ export default function StructuralEditor({
           enabled: true,
           target_volume_fraction: volfrac,
           keep_regions: keep,
+          void_regions: voids.length ? voids : undefined,
+          keep_mode: keepMode,
+          min_member_mm: minMember || undefined,
+          density_threshold: densityThreshold,
+          allow_reopt: version.kind === "optimize" || undefined,
         },
         material: material || undefined,
       });
@@ -707,8 +1142,9 @@ export default function StructuralEditor({
       c.loads.forEach((l) => add(l.region, COLORS.load));
     });
     keep.forEach((r) => add(r, COLORS.keep));
+    voids.forEach((r) => add(r, COLORS.void));
     return out;
-  }, [cases, keep]);
+  }, [cases, keep, voids]);
 
   /** non-painted geometric regions → center markers */
   const markers = useMemo(() => {
@@ -726,12 +1162,34 @@ export default function StructuralEditor({
       c.loads.forEach((l) => add(l.region, COLORS.load));
     });
     keep.forEach((r) => add(r, COLORS.keep));
+    voids.forEach((r) => add(r, COLORS.void));
     return out;
-  }, [cases, keep]);
+  }, [cases, keep, voids]);
 
-  const anchors = (
-    version.analysis as { anchors?: { holes?: { x: number; y: number; dia?: number }[] } } | null
-  )?.anchors?.holes;
+  /** anchor positions in model space (for markers) */
+  const anchorMarkers = useMemo(
+    () =>
+      anchors
+        .map((a) => ({ a, p: anchorPos(a, modelBox) }))
+        .filter((x): x is { a: FeatureAnchor; p: [number, number, number] } => !!x.p),
+    [anchors, modelBox]
+  );
+
+  /** which anchor indices are referenced by anchor-kind regions? */
+  const usedAnchors = useMemo(() => {
+    const s = new Set<number>();
+    const scan = (r: RegionSpec) => {
+      if (r.kind && ANCHOR_KINDS.has(r.kind) && r.hole_index) s.add(r.hole_index);
+    };
+    cases.forEach((c) => {
+      c.fixed.forEach(scan);
+      c.loads.forEach((l) => scan(l.region));
+    });
+    keep.forEach(scan);
+    voids.forEach(scan);
+    return s;
+  }, [cases, keep, voids]);
+
   const glb = version.artifacts.find((a) => a.kind === "glb");
 
   useEffect(() => {
@@ -826,6 +1284,24 @@ export default function StructuralEditor({
                   <meshBasicMaterial color={m.color} depthTest={false} transparent opacity={0.9} />
                 </mesh>
               ))}
+              {/* measured feature anchors — click near one while placing an
+                  anchor region to select it */}
+              {anchorMarkers.map(({ a, p }) => (
+                <AnchorMarker key={a.index} a={a} pos={p} selected={usedAnchors.has(a.index)} />
+              ))}
+              {/* load gizmos: arrows / moment rings at the region centres */}
+              {modelBox &&
+                cases.map((c, ci) =>
+                  c.loads.map((l, li) => (
+                    <LoadGizmo
+                      key={`${ci}-${li}`}
+                      l={l}
+                      anchors={anchors}
+                      box={modelBox}
+                      gsize={modelBox.getSize(new THREE.Vector3()).length() * 0.14}
+                    />
+                  ))
+                )}
               {/* resolved cells from the last region check (voxel-domain truth) */}
               {showCells &&
                 preview?.ok &&
@@ -872,6 +1348,14 @@ export default function StructuralEditor({
             <span className="flex items-center gap-1">
               <span className="h-2 w-2 rounded-full" style={{ background: COLORS.keep }} />
               keep
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="h-2 w-2 rounded-full" style={{ background: COLORS.void }} />
+              void
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="h-2 w-2 rounded-full" style={{ background: COLORS.anchor }} />
+              anchors {anchors.length ? `(${anchors.length})` : ""}
             </span>
             {preview?.ok && !!preview.cells?.length && (
               <label className="ml-2 flex items-center gap-1 text-zinc-500">
@@ -920,7 +1404,13 @@ export default function StructuralEditor({
                     r={r}
                     color={COLORS.fixed}
                     painting={sameTarget({ kind: "fixed", ci, ri })}
-                    hasCenterPick={r.kind === "area" || r.kind === "cylinder" || r.kind === "box"}
+                    hasCenterPick={
+                      r.kind === "area" ||
+                      r.kind === "cylinder" ||
+                      r.kind === "box" ||
+                      ANCHOR_KINDS.has(r.kind ?? "")
+                    }
+                    showFixMode
                     anchors={anchors}
                     onPaint={() =>
                       setTarget(sameTarget({ kind: "fixed", ci, ri }) ? null : { kind: "fixed", ci, ri })
@@ -943,7 +1433,12 @@ export default function StructuralEditor({
                   onAdd={(r) => {
                     setCase(ci, { fixed: [...c.fixed, r] });
                     const t = { kind: "fixed" as const, ci, ri: c.fixed.length };
-                    if (r.kind === "area" || r.kind === "cylinder" || r.kind === "box")
+                    if (
+                      r.kind === "area" ||
+                      r.kind === "cylinder" ||
+                      r.kind === "box" ||
+                      ANCHOR_KINDS.has(r.kind ?? "")
+                    )
                       setCenterPick(t);
                   }}
                 />
@@ -954,11 +1449,35 @@ export default function StructuralEditor({
                 </div>
                 {c.loads.map((l, li) => {
                   const force = l.force_n ?? [0, 0, 0];
-                  const isPressure = (l.pressure_mpa ?? 0) > 0 && !force.some((f) => Math.abs(f) > 1e-9);
+                  const lk = loadKind(l);
                   const setLoad = (patch: Partial<typeof l>) =>
                     setCase(ci, {
                       loads: c.loads.map((x, i) => (i === li ? { ...x, ...patch } : x)),
                     });
+                  const vecRow = (
+                    vec: number[] | undefined,
+                    labels: string[],
+                    unit: string,
+                    step: number,
+                    set: (v: number[]) => void
+                  ) => (
+                    <div className="flex items-center gap-1">
+                      {labels.map((ax, i) => (
+                        <label key={ax} className="flex flex-1 items-center gap-0.5">
+                          <span className="text-[9px] uppercase text-zinc-600">{ax}</span>
+                          <NumInput
+                            value={vec?.[i] ?? 0}
+                            step={step}
+                            className="w-full"
+                            onChange={(n) =>
+                              set((vec ?? [0, 0, 0]).map((f, j) => (j === i ? n : f)))
+                            }
+                          />
+                        </label>
+                      ))}
+                      <span className="text-[10px] text-zinc-500">{unit}</span>
+                    </div>
+                  );
                   return (
                     <div key={li} className="mb-1.5">
                       <RegionRow
@@ -968,7 +1487,8 @@ export default function StructuralEditor({
                         hasCenterPick={
                           l.region.kind === "area" ||
                           l.region.kind === "cylinder" ||
-                          l.region.kind === "box"
+                          l.region.kind === "box" ||
+                          ANCHOR_KINDS.has(l.region.kind ?? "")
                         }
                         anchors={anchors}
                         onPaint={() =>
@@ -983,29 +1503,24 @@ export default function StructuralEditor({
                         onDelete={() => delRegion({ kind: "load", ci, li })}
                       />
                       <div className="mt-1 flex flex-col gap-1 pl-4">
-                        {/* force vs pressure toggle */}
-                        <div className="flex gap-1">
-                          {(["force", "pressure"] as const).map((m) => (
-                            <button
-                              key={m}
-                              onClick={() =>
-                                setLoad(
-                                  m === "force"
-                                    ? { force_n: [0, 0, -50], pressure_mpa: null }
-                                    : { force_n: [], pressure_mpa: 2 }
-                                )
-                              }
-                              className={`flex-1 rounded border px-2 py-0.5 text-[10px] ${
-                                (m === "pressure") === isPressure
-                                  ? "border-brand-600 bg-brand-950/60 text-brand-300"
-                                  : "border-zinc-700 text-zinc-500"
-                              }`}
-                            >
-                              {m === "force" ? "force vector" : "pressure"}
-                            </button>
+                        {/* load type selector */}
+                        <select
+                          className={`${inputCls} w-full px-1 py-0.5 text-[11px]`}
+                          value={lk}
+                          title={LOAD_KINDS.find((k) => k.id === lk)?.hint}
+                          onChange={(e) =>
+                            setLoad(blankLoad(e.target.value as LoadKind))
+                          }
+                        >
+                          {LOAD_KINDS.map((k) => (
+                            <option key={k.id} value={k.id} title={k.hint}>
+                              {k.label} — {k.hint}
+                            </option>
                           ))}
-                        </div>
-                        {isPressure ? (
+                        </select>
+                        {(lk === "force" || lk === "remote") &&
+                          vecRow(force, ["fx", "fy", "fz"], "N", 5, (v) => setLoad({ force_n: v }))}
+                        {lk === "pressure" && (
                           <div className="flex items-center gap-1.5">
                             <NumInput
                               value={l.pressure_mpa ?? 0}
@@ -1017,22 +1532,80 @@ export default function StructuralEditor({
                               MPa — direction follows the region's surface normal
                             </span>
                           </div>
-                        ) : (
-                          <div className="flex items-center gap-1">
-                            {(["fx", "fy", "fz"] as const).map((ax, i) => (
-                              <label key={ax} className="flex flex-1 items-center gap-0.5">
-                                <span className="text-[9px] uppercase text-zinc-600">{ax}</span>
-                                <NumInput
-                                  value={force[i] ?? 0}
-                                  step={5}
-                                  className="w-full"
-                                  onChange={(n) =>
-                                    setLoad({ force_n: force.map((f, j) => (j === i ? n : f)) })
-                                  }
-                                />
-                              </label>
-                            ))}
-                            <span className="text-[10px] text-zinc-500">N</span>
+                        )}
+                        {lk === "bearing" && (
+                          <>
+                            <div className="flex items-center gap-1.5">
+                              <NumInput
+                                value={l.bearing_n ?? 0}
+                                step={25}
+                                className="w-24"
+                                onChange={(n) => setLoad({ bearing_n: n })}
+                              />
+                              <span className="text-[10px] text-zinc-500">
+                                N — cosine-distributed on the bore wall (needs a bore/anchor region)
+                              </span>
+                            </div>
+                            {vecRow(
+                              l.bearing_dir ?? [0, 0, -1],
+                              ["dx", "dy", "dz"],
+                              "dir",
+                              0.1,
+                              (v) => setLoad({ bearing_dir: v })
+                            )}
+                          </>
+                        )}
+                        {lk === "moment" &&
+                          vecRow(
+                            l.moment_nm ?? [0, 0, 0],
+                            ["mx", "my", "mz"],
+                            "N·m",
+                            0.5,
+                            (v) => setLoad({ moment_nm: v })
+                          )}
+                        {lk === "preload" && (
+                          <div className="flex items-center gap-1.5">
+                            <NumInput
+                              value={l.preload_n ?? 0}
+                              step={50}
+                              className="w-24"
+                              onChange={(n) => setLoad({ preload_n: n })}
+                            />
+                            <span className="text-[10px] text-zinc-500">
+                              N pretension along the bore axis (needs a bore/anchor region)
+                            </span>
+                          </div>
+                        )}
+                        {lk === "remote" &&
+                          vecRow(
+                            l.remote_point ?? [0, 0, 0],
+                            ["px", "py", "pz"],
+                            "mm",
+                            5,
+                            (v) => setLoad({ remote_point: v })
+                          )}
+                        {lk === "gravity" &&
+                          vecRow(
+                            l.g_load ?? [0, 0, -1],
+                            ["gx", "gy", "gz"],
+                            "g",
+                            0.5,
+                            (v) => setLoad({ g_load: v })
+                          )}
+                        {(lk === "force" || lk === "bearing") && (
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[10px] text-zinc-500">dir. cone</span>
+                            <NumInput
+                              value={l.direction_cone_deg ?? 0}
+                              step={5}
+                              className="w-16"
+                              onChange={(n) =>
+                                setLoad({ direction_cone_deg: n > 0 ? Math.min(n, 90) : null })
+                              }
+                            />
+                            <span className="text-[10px] text-zinc-600">
+                              ° robustness (TopOpt samples directions)
+                            </span>
                           </div>
                         )}
                       </div>
@@ -1054,7 +1627,12 @@ export default function StructuralEditor({
                       loads: [...c.loads, { region: r, force_n: [0, 0, -50] }],
                     });
                     const t = { kind: "load" as const, ci, li: c.loads.length };
-                    if (r.kind === "area" || r.kind === "cylinder" || r.kind === "box")
+                    if (
+                      r.kind === "area" ||
+                      r.kind === "cylinder" ||
+                      r.kind === "box" ||
+                      ANCHOR_KINDS.has(r.kind ?? "")
+                    )
                       setCenterPick(t);
                   }}
                 />
@@ -1082,7 +1660,13 @@ export default function StructuralEditor({
                     r={r}
                     color={COLORS.keep}
                     painting={sameTarget({ kind: "keep", ri })}
-                    hasCenterPick={r.kind === "area" || r.kind === "cylinder" || r.kind === "box"}
+                    hasCenterPick={
+                      r.kind === "area" ||
+                      r.kind === "cylinder" ||
+                      r.kind === "box" ||
+                      ANCHOR_KINDS.has(r.kind ?? "")
+                    }
+                    showMaterial
                     anchors={anchors}
                     onPaint={() =>
                       setTarget(sameTarget({ kind: "keep", ri }) ? null : { kind: "keep", ri })
@@ -1102,8 +1686,62 @@ export default function StructuralEditor({
                   }
                   onAdd={(r) => {
                     setKeep((k) => [...k, r]);
-                    if (r.kind === "area" || r.kind === "cylinder" || r.kind === "box")
+                    if (
+                      r.kind === "area" ||
+                      r.kind === "cylinder" ||
+                      r.kind === "box" ||
+                      ANCHOR_KINDS.has(r.kind ?? "")
+                    )
                       setCenterPick({ kind: "keep", ri: keep.length });
+                  }}
+                />
+              </div>
+            )}
+
+            {/* void regions — material forbidden zones */}
+            {canTopopt && (
+              <div className="rounded-lg border border-zinc-800 p-2.5">
+                <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                  void regions (TopOpt must keep empty)
+                </div>
+                {voids.map((r, ri) => (
+                  <RegionRow
+                    key={ri}
+                    r={r}
+                    color={COLORS.void}
+                    painting={sameTarget({ kind: "void", ri })}
+                    hasCenterPick={
+                      r.kind === "area" ||
+                      r.kind === "cylinder" ||
+                      r.kind === "box" ||
+                      ANCHOR_KINDS.has(r.kind ?? "")
+                    }
+                    anchors={anchors}
+                    onPaint={() =>
+                      setTarget(sameTarget({ kind: "void", ri }) ? null : { kind: "void", ri })
+                    }
+                    onPickCenter={() =>
+                      setCenterPick(sameCenterPick({ kind: "void", ri }) ? null : { kind: "void", ri })
+                    }
+                    onChange={(nr) => setRegion({ kind: "void", ri }, nr)}
+                    onDelete={() => delRegion({ kind: "void", ri })}
+                  />
+                ))}
+                <AddRegionButtons
+                  paintLabel="paint void region"
+                  hasAnchors={!!anchors?.length}
+                  onPaint={() =>
+                    startPaint({ kind: "void", ri: voids.length }, (r) => setVoids((k) => [...k, r]))
+                  }
+                  onAdd={(r) => {
+                    setVoids((k) => [...k, r]);
+                    if (
+                      r.kind === "area" ||
+                      r.kind === "cylinder" ||
+                      r.kind === "box" ||
+                      ANCHOR_KINDS.has(r.kind ?? "")
+                    )
+                      setCenterPick({ kind: "void", ri: voids.length });
                   }}
                 />
               </div>
@@ -1139,6 +1777,38 @@ export default function StructuralEditor({
                 </Field>
               )}
             </div>
+
+            {canTopopt && (
+              <div className="grid grid-cols-3 gap-2">
+                <Field label="Anchors" hint="auto-keep ring">
+                  <label className="flex h-7 items-center gap-1.5 text-[11px] text-zinc-400">
+                    <input
+                      type="checkbox"
+                      className="accent-brand-500"
+                      checked={keepMode === "auto"}
+                      onChange={(e) => setKeepMode(e.target.checked ? "auto" : "manual")}
+                    />
+                    keep all
+                  </label>
+                </Field>
+                <Field label="Min member" hint="mm — printable floor">
+                  <NumInput
+                    value={minMember}
+                    step={0.2}
+                    className="w-full"
+                    onChange={(n) => setMinMember(Math.max(0, n))}
+                  />
+                </Field>
+                <Field label="Threshold" hint="density iso (resample)">
+                  <NumInput
+                    value={densityThreshold}
+                    step={0.05}
+                    className="w-full"
+                    onChange={(n) => setDensityThreshold(Math.min(0.9, Math.max(0.2, n)))}
+                  />
+                </Field>
+              </div>
+            )}
 
             {/* region check result */}
             {preview && (
@@ -1208,7 +1878,7 @@ export default function StructuralEditor({
           </div>
           {!valid && (
             <div className="border-t border-zinc-800 bg-amber-950/30 px-3 py-1.5 text-[11px] text-amber-300">
-              every case needs at least one support region and one load with force &gt; 0
+              every case needs at least one support region and one active load
             </div>
           )}
         </div>

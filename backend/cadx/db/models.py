@@ -54,6 +54,7 @@ class JobType(enum.StrEnum):
     reexport = "reexport"
     resume = "resume"
     optimize = "optimize"
+    resample = "resample"  # density threshold re-extract — no new SIMP run
     mesh_edit = "mesh_edit"  # GUI ops stack -> tessellated child version
     fem = "fem"  # standalone FEM check on the same version
 

@@ -153,7 +153,7 @@ def _make_fem_fn(ops: _SessionOps) -> Any:
     return fem_fn
 
 
-def _make_topopt_fn(ops: _SessionOps) -> Any:
+def _make_topopt_fn(ops: _SessionOps) -> Any:  # noqa: C901
     ctx = ops.ctx
 
     async def topopt_fn(a: dict[str, Any]) -> dict[str, Any]:
@@ -166,11 +166,22 @@ def _make_topopt_fn(ops: _SessionOps) -> Any:
             opt["target_volume_fraction"] = float(a["target_volume_fraction"])
         if a.get("max_iterations") is not None:
             opt["max_iterations"] = int(a["max_iterations"])
+        if a.get("density_threshold") is not None:
+            opt["density_threshold"] = float(a["density_threshold"])
+        if a.get("min_member_mm") is not None:
+            opt["min_member_mm"] = float(a["min_member_mm"])
+        if a.get("keep_mode"):
+            opt["keep_mode"] = str(a["keep_mode"])
         keep, kerr = _valid_regions(a.get("keep_regions"))
         if kerr:
             return {"ok": False, "error": kerr}
         if keep:
             opt["keep_regions"] = keep
+        void, verr = _valid_regions(a.get("void_regions"))
+        if verr:
+            return {"ok": False, "error": verr.replace("keep_regions", "void_regions")}
+        if void:
+            opt["void_regions"] = void
         await ctx.emit(
             "optimize",
             it,
@@ -227,6 +238,7 @@ def _make_preview_fn(ops: _SessionOps) -> Any:
                 "material": ops.default_material,
                 "voxel_mm": a.get("voxel_mm") or ctx.settings.fem_voxel_mm or None,
                 "preview_only": True,
+                "render_pngs": bool(a.get("render_pngs", True)),
             }
         )
         images = []
@@ -239,6 +251,21 @@ def _make_preview_fn(ops: _SessionOps) -> Any:
         return res
 
     return preview_fn
+
+
+def _make_anchors_fn(ops: _SessionOps) -> Any:
+    ctx = ops.ctx
+
+    async def anchors_fn(a: dict[str, Any]) -> dict[str, Any]:
+        """Scan the base mesh for feature anchors (all axes) and return the
+        merged table — also refreshed `anchors` in subsequent payload calls
+        via ops.base so hole_index stays consistent."""
+        res = await ctx.executor.fem_analyze({**ops.base, "scan_only": True})
+        if res.get("ok") and res.get("anchors"):
+            ops.base["anchors"] = res["anchors"]
+        return res
+
+    return anchors_fn
 
 
 def _setup_session(
@@ -275,6 +302,7 @@ def _setup_session(
         fem_fn=_make_fem_fn(ops),
         topopt_fn=_make_topopt_fn(ops),
         preview_fn=_make_preview_fn(ops),
+        anchors_fn=_make_anchors_fn(ops),
     )
 
 

@@ -20,6 +20,10 @@ class InputAsset:
     path: Path  # absolute path inside this process
     caption: str = ""
     filename: str = ""
+    # user/agent hint about intended input role — currently only "sketch"
+    # (routes the image to *-scribble mesh adapters). Stored in the DB asset's
+    # gen_params JSON so no schema migration is needed.
+    role_hint: str = ""
 
 
 # Asset kinds usable as image inputs (LLM context, mesh source images).

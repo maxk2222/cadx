@@ -119,7 +119,9 @@ def create_app(cfg: ServerConfig | None = None) -> FastAPI:
         params = ImageGenParams(**json_loads(await params_file.read()))
         job_dir = cfg.job_dir / "incoming"
         job_dir.mkdir(parents=True, exist_ok=True)
-        init_path = job_dir / f"edit_{image.filename or 'init.png'}.{uuid.uuid4().hex[:8]}"
+        # filename is client-controlled — strip any directory components
+        safe_name = Path(image.filename or "init.png").name or "init.png"
+        init_path = job_dir / f"edit_{uuid.uuid4().hex[:8]}_{safe_name}"
         init_path.write_bytes(await image.read())
         job = await manager.submit_image(params, init_image_path=init_path)
         if job is None:

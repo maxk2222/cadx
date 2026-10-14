@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any
+
+from pydantic import BaseModel, Field
 
 from cadx.agent.context import (
     images_block,
@@ -14,9 +18,118 @@ from cadx.agent.context import (
 from cadx.agent.toolloop import run_session, tools_enabled
 from cadx.agent.toolspecs import ToolSession
 from cadx.agent.types import IMAGE_INPUT_KINDS, AgentCtx
-from cadx.llm.schemas import PartSpec
+from cadx.llm.schemas import LoadCase, OptimizeSpec, PartSpec
+from cadx.logging import get_logger
+
+log = get_logger(__name__)
 
 STEP = "intake"
+
+
+class _LoadCasesOut(BaseModel):
+    load_cases: list[LoadCase] = Field(default_factory=list)
+    optimize: OptimizeSpec | None = None
+
+
+def sanitize_load_cases(spec: PartSpec) -> None:
+    """Drop degenerate cases (no supports and no loads) a weak model emits as
+    `{"name":"","fixed":[],"loads":[]}` — truthy lists of those would skip the
+    extraction fallback and produce unsolvable FEM runs. Also clamps bogus
+    negative case weights back to neutral."""
+    kept: list[LoadCase] = []
+    for c in spec.load_cases:
+        if not c.fixed and not c.loads:
+            continue
+        if c.weight <= 0:
+            c.weight = 1.0
+        kept.append(c)
+    spec.load_cases = kept
+
+
+_MM_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*mm\b", re.IGNORECASE)
+_DIMSET_RE = re.compile(
+    r"(\d+(?:[.,]\d+)?)\s*[x\u00d7]\s*(\d+(?:[.,]\d+)?)\s*[x\u00d7]\s*(\d+(?:[.,]\d+)?)\s*mm",
+    re.IGNORECASE,
+)
+
+
+def _prompt_mm_values(prompt: str) -> list[float]:
+    """Explicit millimetre values mentioned in the user prompt, largest first."""
+    vals: set[float] = set()
+    for m in _MM_RE.finditer(prompt):
+        vals.add(float(m.group(1).replace(",", ".")))
+    for m in _DIMSET_RE.finditer(prompt):
+        vals.update(float(g.replace(",", ".")) for g in m.groups())
+    return sorted(vals, reverse=True)
+
+
+def sanitize_dims(spec: PartSpec, prompt: str) -> list[str]:
+    """Recover an overall dimension the model dropped or misread.
+
+    Weak models routinely lose an explicitly stated size ("approx 130 mm
+    long") or substitute a feature size — downstream, scale_to_spec then fits
+    the generated mesh to the wrong magnitude (a 130 mm grip becomes a 40 mm
+    nugget). When the largest explicit mm value in the prompt exceeds every
+    stated dim by a wide margin and length_x is not itself stated, re-inject
+    it as the stated length."""
+    notes: list[str] = []
+    vals = _prompt_mm_values(prompt)
+    if not vals:
+        return notes
+    lx = spec.length_x
+    if lx.source == "stated" and lx.value > 0:
+        return notes  # the model stated an overall length — trust it
+    stated_max = max(
+        (
+            float(d.value)
+            for d in (spec.length_x, spec.width_y, spec.height_z)
+            if d is not None and d.source == "stated" and d.value > 0
+        ),
+        default=0.0,
+    )
+    if stated_max >= vals[0] * 0.5:
+        return notes  # stated dims already cover the part's overall size
+    notes.append(
+        f"prompt states ~{vals[0]:g} mm but intake had length_x="
+        f"{lx.value:g} {lx.source} — re-stated"
+    )
+    spec.length_x = lx.model_copy(update={"value": vals[0], "source": "stated"})
+    return notes
+
+
+async def extract_load_cases(
+    ctx: AgentCtx, spec: PartSpec
+) -> tuple[list[LoadCase], OptimizeSpec | None]:
+    """Focused second-chance extraction: the main intake emitted no usable
+    `load_cases` although the user described forces/optimization. Small
+    one-shot call on prompt+spec — cheaper than re-running full intake.
+    Also recovers the `optimize` block when intake left it empty."""
+    user_text = json.dumps(
+        {"prompt": ctx.prompt, "spec": spec.model_dump(exclude={"load_cases", "optimize"})},
+        ensure_ascii=False,
+    )
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": system_prompt("intake_loads.md")},
+        {"role": "user", "content": [{"type": "text", "text": user_text}]},
+    ]
+    try:
+        resp = await ctx.llm.chat("vision", messages, json_schema=_LoadCasesOut, temperature=0.0)
+        parsed = resp.parsed if isinstance(resp.parsed, _LoadCasesOut) else _LoadCasesOut()
+        await ctx.trace.record(
+            step=STEP,
+            iteration=0,
+            model=resp.model,
+            messages=messages,
+            response_text=resp.text,
+            parsed=parsed.model_dump(),
+            prompt_tokens=resp.prompt_tokens,
+            completion_tokens=resp.completion_tokens,
+            latency_ms=resp.latency_ms,
+        )
+        return parsed.load_cases, parsed.optimize
+    except Exception:
+        log.warning("intake.load_cases_retry_failed", exc_info=True)
+        return [], None
 
 
 def _repair_image_roles(spec: PartSpec, ctx: AgentCtx) -> None:
@@ -72,6 +185,8 @@ async def run(ctx: AgentCtx) -> PartSpec:
             raise LLMFormatError("intake session produced no spec")
         spec = res.response.parsed
         _repair_image_roles(spec, ctx)
+        sanitize_load_cases(spec)
+        sanitize_dims(spec, ctx.prompt or "")
         if not spec.process:
             spec.process = ctx.settings.process
         ctx.spec = spec
@@ -91,6 +206,8 @@ async def run(ctx: AgentCtx) -> PartSpec:
     )
     spec = resp.parsed
     _repair_image_roles(spec, ctx)
+    sanitize_load_cases(spec)
+    sanitize_dims(spec, ctx.prompt or "")
     if not spec.process:
         spec.process = ctx.settings.process
     ctx.spec = spec

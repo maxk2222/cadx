@@ -1,4 +1,5 @@
 import type {
+  AnchorsResult,
   Asset,
   CatalogEntry,
   CatalogSearchHit,
@@ -99,11 +100,11 @@ export const api = {
     if (!r.ok) throw new Error(await errText(r));
     return r.blob();
   },
-  updateAsset: (id: string, caption: string) =>
+  updateAsset: (id: string, patch: { caption?: string; role_hint?: string }) =>
     req<Asset>(`/assets/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ caption }),
+      body: JSON.stringify(patch),
     }),
 
   // local text-to-image generation (mesh-server image adapters)
@@ -121,6 +122,9 @@ export const api = {
       steps?: number;
       guidance?: number;
       caption?: string;
+      reference_asset_id?: string;
+      strength?: number;
+      mark_sketch?: boolean;
     },
   ) => req<Asset[]>(`/projects/${pid}/images`, json(body)),
 
@@ -147,6 +151,9 @@ export const api = {
     req<{ version_id: string; job_id: string }>(`/versions/${vid}/reexport`, { method: "POST" }),
   optimize: (vid: string, body: { load_cases: LoadCase[]; optimize: Partial<OptimizeSpec>; material?: string }) =>
     req<{ version_id: string; job_id: string }>(`/versions/${vid}/optimize`, json(body)),
+  topoptResample: (vid: string, body: { density_threshold?: number; min_member_mm?: number }) =>
+    req<{ version_id: string; job_id: string }>(`/versions/${vid}/topopt-resample`, json(body)),
+  anchors: (vid: string) => req<AnchorsResult>(`/versions/${vid}/anchors`),
 
   // visual mesh editor + structural editor
   meshPreview: (vid: string, body: { ops: MeshOp[]; post?: Record<string, unknown> }) =>

@@ -95,10 +95,12 @@ class Registry:
         from meshserver.adapters.flux_diffusers import FluxSchnellAdapter
         from meshserver.adapters.flux_kontext_mlx import FluxKontextMlxAdapter
         from meshserver.adapters.flux_mlx import FluxSchnellMlxAdapter
+        from meshserver.adapters.qwen_edit_mlx import QwenImageEditAdapter
         from meshserver.adapters.sd_torch import Sd15Adapter, SdxlAdapter
 
         classes += [
             FluxKontextMlxAdapter,
+            QwenImageEditAdapter,
             FluxSchnellMlxAdapter,
             FluxSchnellAdapter,
             SdxlAdapter,
@@ -211,8 +213,11 @@ class Registry:
             # fixture runs must never touch a real model, even when installed
             pref = ["fake-image"]
         elif need_edit:
+            # qwen-image-edit first: Apache-2.0 + ungated weights; kontext is
+            # the better FLUX edit model but non-commercial and MESH_FLUX_KONTEXT
+            # opt-in, sdxl/sd15 are plain img2img fallbacks
             pref = (
-                ["flux-kontext-mlx", "sdxl", "sd15"]
+                ["qwen-image-edit", "flux-kontext-mlx", "flux-schnell-mlx", "sdxl", "sd15"]
                 if device in ("cuda", "mlx")
                 else (["sdxl", "sd15"] if device == "mps" else ["sd15"])
             )

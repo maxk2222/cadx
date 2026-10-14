@@ -168,19 +168,32 @@ def test_is_oom_detection():
 
 
 def test_load_failure_badlists_and_auto_falls_back(registry, manager):
-    """auto picks boom-load → OOM on load → badlisted; next auto job skips it,
-    hits boom-gen → OOM on generate → badlisted; third job succeeds."""
+    """auto picks boom-load → OOM on load → badlisted → SAME job walks the
+    ladder to boom-gen → OOM on generate → badlisted; the next job goes
+    straight to ok-fallback."""
     j1 = _run_once(manager)
     assert j1.status == "failed"
     assert registry._failed.get("boom-load")
+    assert registry._failed.get("boom-gen")  # generate-OOM also badlists
 
     j2 = _run_once(manager)
-    assert j2.status == "failed"
-    assert registry._failed.get("boom-gen")
+    assert j2.status == "succeeded"
+    assert j2.model == "ok-fallback"
 
-    j3 = _run_once(manager)
-    assert j3.status == "succeeded"
-    assert j3.model == "ok-fallback"
+
+def test_auto_load_failure_retries_next_adapter_in_same_job(tmp_path, monkeypatch):
+    """A load failure under 'auto' must not fail the job when another adapter
+    can take over — the job itself walks the preference ladder."""
+    cfg = ServerConfig(fake=False, job_dir=tmp_path / "jobs")
+    reg = Registry(cfg)
+    reg._classes = [BoomLoadAdapter, OkFallbackAdapter]
+    mgr = JobManager(cfg, reg)
+    monkeypatch.setattr(Registry, "select_image", _select_pref)
+
+    j = _run_once(mgr)
+    assert j.status == "succeeded"
+    assert j.model == "ok-fallback"
+    assert reg._failed.get("boom-load")
 
 
 def test_explicit_request_surfaces_error(registry, manager):
