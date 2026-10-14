@@ -433,10 +433,17 @@ class SettingsOut(BaseModel):
     fem_voxel_mm: float
     fem_max_elements: int
     fem_timeout_s: int
+    fem_spsolve_dofs: int
+    fem_max_effective_cases: int
     topopt_timeout_s: int
     topopt_max_iterations: int
     topopt_default_volfrac: float
     topopt_default_rmin_mm: float
+    topopt_smooth_iterations: int
+    topopt_min_member_mm: float
+    topopt_auto_keep: bool
+    topopt_auto_keep_margin_mm: float
+    topopt_multires_min_cells: int
     mesh_base_url: str
     mesh_model: str
     image_model: str
@@ -503,10 +510,17 @@ class SettingsUpdate(BaseModel):
     fem_voxel_mm: float | None = Field(default=None, gt=0, le=100)
     fem_max_elements: int | None = Field(default=None, ge=1, le=5_000_000)
     fem_timeout_s: int | None = Field(default=None, ge=1, le=86_400)
+    fem_spsolve_dofs: int | None = Field(default=None, ge=1_000, le=5_000_000)
+    fem_max_effective_cases: int | None = Field(default=None, ge=1, le=64)
     topopt_timeout_s: int | None = Field(default=None, ge=1, le=86_400)
     topopt_max_iterations: int | None = Field(default=None, ge=1, le=1000)
     topopt_default_volfrac: float | None = Field(default=None, gt=0, le=1)
     topopt_default_rmin_mm: float | None = Field(default=None, gt=0, le=1000)
+    topopt_smooth_iterations: int | None = Field(default=None, ge=0, le=30)
+    topopt_min_member_mm: float | None = Field(default=None, ge=0, le=50)
+    topopt_auto_keep: bool | None = None
+    topopt_auto_keep_margin_mm: float | None = Field(default=None, gt=0, le=50)
+    topopt_multires_min_cells: int | None = Field(default=None, ge=0, le=10_000_000)
     mesh_base_url: str | None = None
     mesh_model: str | None = Field(default=None, max_length=200)
     image_model: str | None = Field(default=None, max_length=200)
