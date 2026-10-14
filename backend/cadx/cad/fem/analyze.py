@@ -161,6 +161,7 @@ def run_fem(
     anchors: list[dict] | None = None,
     keep_regions: list | None = None,
     spsolve_dofs: int = 120_000,
+    mem_budget_mb: float | None = None,
     suffix: str = "",
 ) -> FemReport:
     """Solve each load case on the voxelized mesh. Always returns a report —
@@ -172,6 +173,18 @@ def run_fem(
     except Exception as e:
         report.warnings.append(f"voxelization failed: {e}")
         return report
+    if mem_budget_mb:
+        from cadx.cad.fem.voxelize import estimate_fem_memory_mb
+
+        direct = 3 * domain.node_count <= spsolve_dofs
+        est = estimate_fem_memory_mb(domain, len(load_cases), direct)
+        if est > mem_budget_mb * 0.75:
+            report.warnings.append(
+                f"predicted FEM memory ~{est:.0f} MB exceeds the executor budget "
+                f"({mem_budget_mb:.0f} MB) — solve skipped; raise fem_voxel_mm "
+                "or exec_mem_limit_mb"
+            )
+            return report
     _solve_cases(
         domain, mat, load_cases, report, out_dir, anchors, suffix, keep_regions, spsolve_dofs
     )

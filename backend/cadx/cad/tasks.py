@@ -535,6 +535,8 @@ def run_refine_payload(payload: dict[str, Any]) -> dict[str, Any]:
             storage.resolve(payload["base_mesh_rel"]) if payload.get("base_mesh_rel") else None
         ),
         restore_planes=bool(payload.get("restore_planes", True)),
+        helical_threads=bool(payload.get("helical_threads", False)),
+        auto_plane_restore=bool(payload.get("auto_plane_restore", False)),
         material=payload.get("material") or "",
         voxel_mm=payload.get("voxel_mm"),
         max_elements=payload.get("max_elements"),

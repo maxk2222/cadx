@@ -815,7 +815,14 @@ export default function StructuralEditor({
   const [densityThreshold, setDensityThreshold] = useState(0.5);
   const [autoRefine, setAutoRefine] = useState(false);
   const [selfSupport, setSelfSupport] = useState(false);
+  const [printDir, setPrintDir] = useState<"+x" | "-x" | "+y" | "-y" | "+z" | "-z">("+z");
   const [multires, setMultires] = useState(false);
+  const [solver, setSolver] = useState<"oc" | "mma">("oc");
+  const [minmax, setMinmax] = useState(false);
+  const [dispMax, setDispMax] = useState(0);
+  const [stressMax, setStressMax] = useState(0);
+  const [minGap, setMinGap] = useState(0);
+  const [penalCont, setPenalCont] = useState(false);
   const [material, setMaterial] = useState("");
   const [anchors, setAnchors] = useState<FeatureAnchor[]>([]);
   const [brushR, setBrushR] = useState(4);
@@ -846,7 +853,14 @@ export default function StructuralEditor({
           density_threshold?: number;
           auto_refine?: boolean;
           self_supporting?: boolean;
+          print_direction?: "+x" | "-x" | "+y" | "-y" | "+z" | "-z";
           multires?: boolean;
+          solver?: "oc" | "mma";
+          case_objective?: "weighted" | "minmax";
+          max_displacement_mm?: number;
+          max_stress_mpa?: number;
+          min_gap_mm?: number;
+          penal_init?: number;
         }
       | undefined;
     const specOpt = version.spec?.optimize;
@@ -861,7 +875,19 @@ export default function StructuralEditor({
       setDensityThreshold(saved.density_threshold ?? specOpt?.density_threshold ?? 0.5);
       setAutoRefine(saved.auto_refine ?? specOpt?.auto_refine_features ?? false);
       setSelfSupport(saved.self_supporting ?? specOpt?.self_supporting ?? false);
+      setPrintDir(saved.print_direction ?? specOpt?.print_direction ?? "+z");
       setMultires(saved.multires ?? specOpt?.multires ?? false);
+      setSolver(saved.solver ?? specOpt?.solver ?? "oc");
+      setMinmax(
+        (saved.case_objective ?? specOpt?.case_objective ?? "weighted") === "minmax"
+      );
+      setDispMax(saved.max_displacement_mm ?? specOpt?.max_displacement_mm ?? 0);
+      setStressMax(saved.max_stress_mpa ?? specOpt?.max_stress_mpa ?? 0);
+      setMinGap(saved.min_gap_mm ?? specOpt?.min_gap_mm ?? 0);
+      setPenalCont(
+        (saved.penal_init ?? specOpt?.penal_init) != null &&
+          (saved.penal_init ?? specOpt?.penal_init ?? 0) > 0
+      );
     } else if (version.spec?.load_cases?.length) {
       setCases(version.spec.load_cases);
       setKeep(specOpt?.keep_regions ?? []);
@@ -872,7 +898,14 @@ export default function StructuralEditor({
       setDensityThreshold(specOpt?.density_threshold ?? 0.5);
       setAutoRefine(specOpt?.auto_refine_features ?? false);
       setSelfSupport(specOpt?.self_supporting ?? false);
+      setPrintDir(specOpt?.print_direction ?? "+z");
       setMultires(specOpt?.multires ?? false);
+      setSolver(specOpt?.solver ?? "oc");
+      setMinmax(specOpt?.case_objective === "minmax");
+      setDispMax(specOpt?.max_displacement_mm ?? 0);
+      setStressMax(specOpt?.max_stress_mpa ?? 0);
+      setMinGap(specOpt?.min_gap_mm ?? 0);
+      setPenalCont(specOpt?.penal_init != null && specOpt.penal_init > 0);
     } else {
       setCases([{ name: "case1", fixed: [], loads: [] }]);
       setKeep([]);
@@ -1064,7 +1097,14 @@ export default function StructuralEditor({
       density_threshold: densityThreshold,
       auto_refine: autoRefine,
       self_supporting: selfSupport,
+      print_direction: printDir,
       multires,
+      solver,
+      case_objective: solver === "mma" && minmax ? "minmax" : "weighted",
+      max_displacement_mm: dispMax || undefined,
+      max_stress_mpa: stressMax || undefined,
+      min_gap_mm: minGap || undefined,
+      penal_init: penalCont ? 1.5 : undefined,
     });
 
   // autosave draft state (merged into ui_editor server-side)
@@ -1079,7 +1119,7 @@ export default function StructuralEditor({
       if (saveTimer.current) clearTimeout(saveTimer.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cases, keep, voids, material, volfrac, keepMode, minMember, densityThreshold, autoRefine, selfSupport, multires, open]);
+  }, [cases, keep, voids, material, volfrac, keepMode, minMember, densityThreshold, autoRefine, selfSupport, printDir, multires, solver, minmax, dispMax, stressMax, minGap, penalCont, open]);
 
   const checkRegions = async () => {
     setBusy("preview");
@@ -1134,7 +1174,15 @@ export default function StructuralEditor({
           density_threshold: densityThreshold,
           auto_refine_features: autoRefine || undefined,
           self_supporting: selfSupport || undefined,
+          print_direction: selfSupport ? printDir : undefined,
           multires: multires || undefined,
+          solver,
+          case_objective:
+            solver === "mma" && minmax ? "minmax" : undefined,
+          max_displacement_mm: solver === "mma" && dispMax ? dispMax : undefined,
+          max_stress_mpa: solver === "mma" && stressMax ? stressMax : undefined,
+          min_gap_mm: minGap || undefined,
+          penal_init: penalCont ? 1.5 : undefined,
           allow_reopt: version.kind === "optimize" || undefined,
         },
         material: material || undefined,
@@ -1847,6 +1895,20 @@ export default function StructuralEditor({
                     self-supporting
                   </label>
                 </Field>
+                <Field label="Print dir" hint="build direction">
+                  <select
+                    className={`${inputCls} px-2 py-1 text-xs`}
+                    value={printDir}
+                    disabled={!selfSupport}
+                    onChange={(e) => setPrintDir(e.target.value as typeof printDir)}
+                  >
+                    {["+z", "-z", "+x", "-x", "+y", "-y"].map((d) => (
+                      <option key={d} value={d}>
+                        {d}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
                 <Field label="Multires" hint="coarse warm-start">
                   <label className="flex h-7 items-center gap-1.5 text-[11px] text-zinc-400">
                     <input
@@ -1856,6 +1918,75 @@ export default function StructuralEditor({
                       onChange={(e) => setMultires(e.target.checked)}
                     />
                     fast start
+                  </label>
+                </Field>
+                <Field label="Solver" hint="oc = fast, mma = constraints">
+                  <select
+                    className={`${inputCls} px-2 py-1 text-xs`}
+                    value={solver}
+                    onChange={(e) => setSolver(e.target.value as typeof solver)}
+                  >
+                    <option value="oc">oc</option>
+                    <option value="mma">mma</option>
+                  </select>
+                </Field>
+                {solver === "mma" && (
+                  <>
+                    <Field label="MinMax" hint="worst-case over load cases">
+                      <label className="flex h-7 items-center gap-1.5 text-[11px] text-zinc-400">
+                        <input
+                          type="checkbox"
+                          className="accent-brand-500"
+                          checked={minmax}
+                          onChange={(e) => setMinmax(e.target.checked)}
+                        />
+                        robust
+                      </label>
+                    </Field>
+                    <Field label="Disp cap" hint="max displacement mm (0=off)">
+                      <input
+                        type="number"
+                        min={0}
+                        step={0.1}
+                        className={`${inputCls} w-16 px-2 py-1 text-xs`}
+                        value={dispMax || ""}
+                        placeholder="off"
+                        onChange={(e) => setDispMax(parseFloat(e.target.value) || 0)}
+                      />
+                    </Field>
+                    <Field label="σ cap" hint="max von Mises MPa (0=off)">
+                      <input
+                        type="number"
+                        min={0}
+                        step={1}
+                        className={`${inputCls} w-16 px-2 py-1 text-xs`}
+                        value={stressMax || ""}
+                        placeholder="off"
+                        onChange={(e) => setStressMax(parseFloat(e.target.value) || 0)}
+                      />
+                    </Field>
+                  </>
+                )}
+                <Field label="Min gap" hint="warn on thin gaps mm (0=off)">
+                  <input
+                    type="number"
+                    min={0}
+                    step={0.5}
+                    className={`${inputCls} w-16 px-2 py-1 text-xs`}
+                    value={minGap || ""}
+                    placeholder="off"
+                    onChange={(e) => setMinGap(parseFloat(e.target.value) || 0)}
+                  />
+                </Field>
+                <Field label="Penal ramp" hint="1.0→target, less stalling">
+                  <label className="flex h-7 items-center gap-1.5 text-[11px] text-zinc-400">
+                    <input
+                      type="checkbox"
+                      className="accent-brand-500"
+                      checked={penalCont}
+                      onChange={(e) => setPenalCont(e.target.checked)}
+                    />
+                    continue
                   </label>
                 </Field>
               </div>

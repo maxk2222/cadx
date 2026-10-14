@@ -285,6 +285,7 @@ class OptimizeSpec(BaseModel):
     keep_mode: Literal["manual", "auto"] = "manual"  # auto: hold every detected fastener anchor
     auto_keep_margin_mm: float | None = None  # ring around anchors when keep_mode=auto
     min_member_mm: float | None = None  # enforce: thicken members thinner than this
+    min_gap_mm: float | None = None  # warn on enclosed gaps narrower than this (fusing)
     density_threshold: float | None = None  # iso threshold 0.2..0.9 (default 0.5)
     warm_density_relpath: Annotated[str, Field(max_length=300)] = (
         ""  # density.npz to warm-start SIMP from
@@ -299,6 +300,15 @@ class OptimizeSpec(BaseModel):
         "cone"  # cone | heaviside (crisp 0/1, threshold-robust extraction)
     )
     penal: float | None = None  # SIMP penalization exponent (default 3.0)
+    penal_init: float | None = None  # penal continuation: start exponent (None = off)
+    solver: Annotated[str, Field(max_length=8)] = (
+        "oc"  # oc (fast, volume-only) | mma (constraints: minmax/disp/stress)
+    )
+    case_objective: Annotated[str, Field(max_length=10)] = (
+        "weighted"  # weighted | minmax — robust worst-case over load cases (mma)
+    )
+    max_displacement_mm: float | None = None  # mma: cap on nodal displacement
+    max_stress_mpa: float | None = None  # mma: P-norm von-Mises limit
     # post-optimization feature finishing (POST /versions/{id}/refine)
     auto_refine_features: bool = (
         False  # auto-enqueue feature re-cut (bores/threads/inserts) after optimize
@@ -306,6 +316,10 @@ class OptimizeSpec(BaseModel):
     restore_planes: bool = (
         True  # union original keep-region surfaces back (Taubin shrinks them ~1 pitch)
     )
+    auto_plane_restore: bool = (
+        False  # auto-detect dominant planar base faces and restore them after TopOpt
+    )
+    helical_threads: bool = False  # refine: cut real helical thread grooves (experimental, FDM)
     note: M = ""
 
 

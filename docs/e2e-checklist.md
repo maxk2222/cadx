@@ -101,6 +101,40 @@ not certification.
       worst safety factor.
 - [ ] Omit load cases for TopOpt and confirm the job reports a clear skip/error
       rather than presenting an unverified optimized result.
+- [ ] Structural editor → Optimize: switch **Solver** to `mma`, set
+      *MinMax* with 2+ load cases, a displacement cap, and/or a σ cap →
+      confirm the optimized child's `topopt/history.json` records
+      `solver: "mma"` and the constraint diagnostics.
+- [ ] Enable *self-supporting* + a **Print dir** and confirm the optimized
+      mesh has no unsupported overhangs in that direction.
+- [ ] **Feature finishing**: optimize a part with holes/anchors, then
+      "Finish features" (or `auto_refine_features`) → `refine` child version
+      re-cuts exact bores/threads; the report lists
+      `requested_dia_mm`/`measured_dia_mm`/`dia_deviation_mm` per feature.
+      Toggle *auto planar restore* / *helical threads* to exercise the flags.
+
+## Executor-image tests (D3)
+
+`tests/cad` must also pass inside the executor image. The `executor-test`
+Dockerfile target adds dev deps on top of `cad-executor`:
+
+```bash
+docker build --target executor-test -t cadx-executor-test backend
+docker run --rm -v "$PWD/backend/tests:/app/tests:ro" -v "$PWD/data:/data" \
+  cadx-executor-test python -m pytest /app/tests/cad -x -q
+```
+
+The sandboxed CAD contract tests (build123d, manifold3d, trimesh, nlopt,
+scikit-image) must all pass there — the executor image is what generated
+code and FEM/TopOpt actually run in.
+
+## Eval benchmarks
+
+`cadx eval` runs scripted FakeLLM benchmarks through the real agent loop.
+TopOpt coverage: `topopt_mma_minmax_scripted` (solver=mma, case_objective=
+minmax, displacement cap, penal_init, min_gap_mm) and
+`topopt_filters_scripted` (heaviside, self_supporting, multires,
+auto_plane_restore). `--repeat N` for variance control.
 
 ## Robustness
 

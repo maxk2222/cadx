@@ -258,6 +258,22 @@ export interface OptimizeSpec {
   multires?: boolean;
   /** union original keep-region surfaces back during refine (default on). */
   restore_planes?: boolean;
+  /** auto-detect dominant planar base faces and restore them after TopOpt. */
+  auto_plane_restore?: boolean;
+  /** refine: cut real helical thread grooves (experimental, FDM). */
+  helical_threads?: boolean;
+  /** optimizer: "oc" (default) or "mma" — enables constraint support. */
+  solver?: "oc" | "mma";
+  /** "minmax" optimizes the worst load case (smooth P-norm, mma only). */
+  case_objective?: "weighted" | "minmax";
+  /** displacement cap per load case, mm (mma only). */
+  max_displacement_mm?: number | null;
+  /** von-Mises cap, MPa — P-norm + qp-relaxation (mma only). */
+  max_stress_mpa?: number | null;
+  /** penal continuation start exponent (< penal ⇒ enabled, e.g. 1.5). */
+  penal_init?: number | null;
+  /** warn when void gaps below this size survive extraction, mm. */
+  min_gap_mm?: number | null;
   note?: string;
 }
 

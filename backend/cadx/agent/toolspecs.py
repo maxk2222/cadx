@@ -560,6 +560,37 @@ STRUCT_TOOLS = [
                 "description": "coarse SIMP at 2x pitch warm-starts the fine "
                 "grid — ~3x faster on big parts",
             },
+            "solver": {
+                "type": "string",
+                "enum": ["oc", "mma"],
+                "description": "optimizer — 'oc' (fast, volume-only) or 'mma' "
+                "(enables real constraints below; slower but required for "
+                "minmax/stress/displacement)",
+            },
+            "case_objective": {
+                "type": "string",
+                "enum": ["weighted", "minmax"],
+                "description": "'minmax' optimizes the WORST load case instead "
+                "of the weighted average — use for uncertain loads (needs mma)",
+            },
+            "max_displacement_mm": {
+                "type": "number",
+                "description": "mma: hard cap on max nodal displacement",
+            },
+            "max_stress_mpa": {
+                "type": "number",
+                "description": "mma: P-norm von-Mises stress limit (e.g. yield/2)",
+            },
+            "min_gap_mm": {
+                "type": "number",
+                "description": "warn when enclosed gaps are narrower than this "
+                "(would fuse in printing) — defaults to min_member_mm",
+            },
+            "penal_init": {
+                "type": "number",
+                "description": "penal continuation: start exponent < penal "
+                "(softer start escapes grayscale local minima)",
+            },
             "load_cases": _LOAD_CASES_SCHEMA,
             "material": _s("material name — empty = spec default"),
             "voxel_mm": {"type": "number", "description": "voxel pitch in mm"},

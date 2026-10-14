@@ -177,6 +177,43 @@ def _enforce_min_member(
     return m, added_total
 
 
+def _min_gap_warning(mask: np.ndarray, pitch: float, min_gap_mm: float) -> str | None:
+    """Detect enclosed void channels narrower than `min_gap_mm` — they fuse
+    shut in FDM/SLS and trap powder. Closing fills gaps < ~2r; a filled void
+    cell that is NOT connected to the bounding-box border is a real enclosed
+    thin gap. Returns a warning string or None."""
+    if min_gap_mm <= 0:
+        return None
+    r = max(1, round(min_gap_mm / (2.0 * pitch)))
+    structure = ndimage.iterate_structure(ndimage.generate_binary_structure(3, 1), r)
+    closed = ndimage.binary_closing(mask, structure=structure)
+    bridged = closed & ~mask
+    if not bridged.any():
+        return None
+    # void components touching the bbox border are open air — they don't fuse
+    void = ~mask
+    labels, _ = ndimage.label(void, structure=ndimage.generate_binary_structure(3, 1))
+    border = np.concatenate(
+        [
+            labels[0, :, :].ravel(),
+            labels[-1, :, :].ravel(),
+            labels[:, 0, :].ravel(),
+            labels[:, -1, :].ravel(),
+            labels[:, :, 0].ravel(),
+            labels[:, :, -1].ravel(),
+        ]
+    )
+    outside_ids = set(np.unique(border).tolist()) - {0}
+    enclosed = bridged & ~np.isin(labels, list(outside_ids))
+    n = int(enclosed.sum())
+    if not n:
+        return None
+    return (
+        f"{n} enclosed voxels sit in gaps below ~{min_gap_mm:g} mm — "
+        "they will fuse when printed (raise min_member_mm or clear the gap)"
+    )
+
+
 def density_to_mask(
     domain: VoxelDomain,
     density: np.ndarray,
@@ -184,6 +221,7 @@ def density_to_mask(
     threshold: float = 0.5,
     passive_solid: np.ndarray | None = None,
     min_member_mm: float = 0.0,
+    min_gap_mm: float = 0.0,
 ) -> tuple[np.ndarray, list[str], int]:
     """Threshold + clean the density field into a final solid mask (nx,ny,nz).
 
@@ -204,6 +242,9 @@ def density_to_mask(
         mask, grown = _enforce_min_member(mask, domain.pitch, min_member_mm)
         if grown:
             warnings.append(f"thickened {grown} voxels to reach min member {min_member_mm:g} mm")
+    gap_warn = _min_gap_warning(mask, domain.pitch, min_gap_mm)
+    if gap_warn:
+        warnings.append(gap_warn)
 
     required = (
         passive_solid.reshape(domain.dims)
@@ -237,6 +278,7 @@ def density_to_mesh(
     threshold: float = 0.5,
     passive_solid: np.ndarray | None = None,
     min_member_mm: float = 0.0,
+    min_gap_mm: float = 0.0,
     smooth_iterations: int = 3,
 ) -> tuple[trimesh.Trimesh, np.ndarray, list[str], int]:
     """Convert the optimized density field into a trimesh.
@@ -253,6 +295,7 @@ def density_to_mesh(
         threshold=threshold,
         passive_solid=passive_solid,
         min_member_mm=min_member_mm,
+        min_gap_mm=min_gap_mm,
     )
     try:
         mesh = _surface_mesh_mc(domain, mask)

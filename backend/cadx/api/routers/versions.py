@@ -395,6 +395,8 @@ async def refine_version(
                 "material": body.material,
                 "voxel_mm": body.voxel_mm,
                 "restore_planes": body.restore_planes,
+                "helical_threads": body.helical_threads,
+                "auto_plane_restore": body.auto_plane_restore,
             },
         },
     )
@@ -414,6 +416,8 @@ async def refine_version(
             "material": body.material,
             "voxel_mm": body.voxel_mm,
             "restore_planes": body.restore_planes,
+            "helical_threads": body.helical_threads,
+            "auto_plane_restore": body.auto_plane_restore,
         },
     )
     return EnqueueResponse(version_id=v.id, job_id=job.id)

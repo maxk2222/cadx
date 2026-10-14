@@ -79,6 +79,9 @@ class RuntimeSettings(BaseModel):
     )  # 0 = off; >0 thickens members below this size
     topopt_auto_keep: bool = True  # auto keep-mode default: hold detected fastener anchors
     topopt_auto_keep_margin_mm: float = Field(default=3.0, gt=0, le=50)
+    topopt_multires_min_cells: int = Field(
+        default=4000, ge=0, le=10_000_000
+    )  # multires coarse pass only pays off above this solid-cell count
     mesh_base_url: str = ""
     mesh_model: str = "auto"
     image_model: str = "auto"
@@ -153,6 +156,7 @@ _EXECUTOR_FIELDS = {
     "topopt_min_member_mm",
     "topopt_auto_keep",
     "topopt_auto_keep_margin_mm",
+    "topopt_multires_min_cells",
     "mesh_max_faces_for_cad",
     "mesh_decimate_faces",
     "mesh_smooth_after_flatten_iters",

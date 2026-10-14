@@ -6,6 +6,7 @@ All inputs are file paths + plain settings dicts; output is an ExecResult.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import shutil
 import time
@@ -749,6 +750,7 @@ def run_fem_pipeline(
         anchors=anchors,
         keep_regions=keep,
         spsolve_dofs=s.fem_spsolve_dofs,
+        mem_budget_mb=float(s.exec_mem_limit_mb),
     )
     report_to_json(report, out_dir / "fem" / "report.json")
     return {"ok": True, "fem": report.model_dump()}
@@ -826,6 +828,24 @@ def run_topopt_pipeline(  # noqa: C901
     except Exception as e:
         res.error = f"voxelization failed: {e}"
         return res
+
+    # predictive memory budget — an OOM kill mid-SIMP loses the whole job;
+    # better to refuse early with a pointer to the knobs that fix it
+    from cadx.cad.fem.voxelize import estimate_fem_memory_mb
+
+    mem_budget = float(getattr(s, "exec_mem_limit_mb", 0) or 0)
+    if mem_budget:
+        n_eff = min(len(cases) * 2, s.fem_max_effective_cases)
+        est_mb = estimate_fem_memory_mb(
+            domain, n_eff, direct=3 * domain.node_count <= s.fem_spsolve_dofs
+        )
+        if est_mb > mem_budget * 0.75:
+            res.error = (
+                f"predicted FEM memory ~{est_mb:.0f} MB exceeds the executor "
+                f"budget ({mem_budget:.0f} MB) — raise fem_voxel_mm or "
+                "exec_mem_limit_mb"
+            )
+            return res
 
     anchors = _scan_anchors(mesh, anchors, enabled=scan_anchors)
     res.topopt["anchors"] = anchors
@@ -923,6 +943,7 @@ def run_topopt_pipeline(  # noqa: C901
     res.topopt["regions_png"] = render_regions(domain, cases, keep_list, out_dir / "fem", anchors)
 
     min_member = float(opt.min_member_mm or s.topopt_min_member_mm or 0.0)
+    min_gap = float(opt.min_gap_mm or min_member or 0.0)
     params = TopOptParams(
         volfrac=opt.target_volume_fraction or s.topopt_default_volfrac,
         # the filter radius also acts as the printable-feature floor
@@ -933,6 +954,11 @@ def run_topopt_pipeline(  # noqa: C901
         self_supporting=bool(getattr(opt, "self_supporting", False)),
         print_direction=str(getattr(opt, "print_direction", "+z") or "+z"),
         penal=float(opt.penal or 3.0),
+        penal_init=opt.penal_init,
+        solver=str(getattr(opt, "solver", "oc") or "oc"),
+        case_objective=str(getattr(opt, "case_objective", "weighted") or "weighted"),
+        max_displacement_mm=opt.max_displacement_mm,
+        max_stress_mpa=opt.max_stress_mpa,
     )
 
     # insert/material zones: keep-regions with `material` change E per cell
@@ -956,11 +982,12 @@ def run_topopt_pipeline(  # noqa: C901
 
     # multiresolution: run a coarse SIMP at 2x pitch first, upsample the
     # density and warm-start the fine grid — converges ~3x faster on big parts
-    if getattr(opt, "multires", False) and x0 is None and domain.solid_count > 4000:
+    multires_min = int(getattr(s, "topopt_multires_min_cells", 4000) or 0)
+    if getattr(opt, "multires", False) and x0 is None and domain.solid_count > multires_min:
         t_mr = time.monotonic()
         try:
             coarse = voxelize(mesh, domain.pitch * 2.0, max_elements or s.fem_max_elements)
-            if coarse.cell_count >= domain.cell_count // 8:
+            if coarse.cell_count >= domain.cell_count // 2:
                 res.topopt["warnings"].append("multires: coarse grid not much coarser — skipped")
             else:
                 res_c, w_c, fix_c, load_nm_c = _resolve_cases_on(coarse, warn=False)
@@ -1015,15 +1042,7 @@ def run_topopt_pipeline(  # noqa: C901
         """One SIMP run at `volfrac` + extraction, smoothing and both FEM
         verifications. Returns the pieces needed for artifacts/retry."""
         out: dict[str, Any] = {"volfrac": volfrac}
-        p = TopOptParams(
-            volfrac=volfrac,
-            rmin_mm=params.rmin_mm,
-            max_iter=params.max_iter,
-            threshold=params.threshold,
-            filter=params.filter,
-            self_supporting=params.self_supporting,
-            print_direction=params.print_direction,
-        )
+        p = dataclasses.replace(params, volfrac=volfrac)
         t = time.monotonic()
         result = simp(
             domain,
@@ -1049,6 +1068,7 @@ def run_topopt_pipeline(  # noqa: C901
             threshold=p.threshold,
             passive_solid=passive,
             min_member_mm=min_member,
+            min_gap_mm=min_gap,
             smooth_iterations=s.topopt_smooth_iterations,
         )
         out["extract_warnings"] = extract_warnings
@@ -1283,6 +1303,7 @@ def run_topopt_resample(
     cases = [LoadCase(**c) for c in load_cases]
     threshold = float(opt.density_threshold or 0.5)
     min_member = float(opt.min_member_mm or s.topopt_min_member_mm or 0.0)
+    min_gap = float(opt.min_gap_mm or min_member or 0.0)
 
     # rebuild the pinned-solid mask from the declared regions
     fixed_node_masks: list[Any] = []
@@ -1307,6 +1328,7 @@ def run_topopt_resample(
             threshold=threshold,
             passive_solid=passive,
             min_member_mm=min_member,
+            min_gap_mm=min_gap,
             smooth_iterations=s.topopt_smooth_iterations,
         )
     except Exception as e:
@@ -1403,6 +1425,8 @@ def run_refine(
     load_cases: list[dict[str, Any]] | None = None,
     base_mesh_path: Path | None = None,
     restore_planes: bool = True,
+    helical_threads: bool = False,
+    auto_plane_restore: bool = False,
     material: str = "",
     voxel_mm: float | None = None,
     max_elements: int | None = None,
@@ -1445,11 +1469,22 @@ def run_refine(
             )
 
     feats, res_warnings = resolve_refine_features(anchors, spec_features, features)
+    if helical_threads:
+        for f in feats:
+            if f.kind in ("thread", "tap"):
+                f.helical = True
+    keep_regions = list(keep_regions or [])
+    if auto_plane_restore and base_mesh is not None:
+        from cadx.cad.fem.refine import detect_plane_regions
+
+        plane_boxes, plane_warn = detect_plane_regions(base_mesh)
+        res_warnings += plane_warn
+        keep_regions += [{"kind": "_plane_box", "box": b.tolist()} for b in plane_boxes]
     out, rep = apply_refine(
         mesh,
         feats,
         base_mesh=base_mesh,
-        keep_regions=keep_regions or [],
+        keep_regions=keep_regions,
         anchors=anchors or [],
         restore_keeps=restore_planes and base_mesh is not None,
     )

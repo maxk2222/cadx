@@ -65,6 +65,8 @@ export default function TopOptPanel({
   const [minMember, setMinMember] = useState(0);
   const [busy, setBusy] = useState(false);
   const [restorePlanes, setRestorePlanes] = useState(true);
+  const [helicalThreads, setHelicalThreads] = useState(false);
+  const [autoPlane, setAutoPlane] = useState(false);
   const resamplable = !!versionId && !!(topopt.density_relpath as string | undefined);
   const refinable = !!versionId && !!onJobStarted;
 
@@ -87,7 +89,11 @@ export default function TopOptPanel({
     if (!versionId || !onJobStarted) return;
     setBusy(true);
     try {
-      const r = await api.refine(versionId, { restore_planes: restorePlanes });
+      const r = await api.refine(versionId, {
+        restore_planes: restorePlanes,
+        helical_threads: helicalThreads,
+        auto_plane_restore: autoPlane,
+      });
       onJobStarted(r);
     } catch (e) {
       toast(String(e), "error");
@@ -219,6 +225,18 @@ export default function TopOptPanel({
                       {f.dia ? ` ⌀${f.dia}mm` : ""}
                       {f.axis ? ` ${f.axis}` : ""}
                       {f.depth ? ` ×${f.depth}mm` : ""}
+                      {typeof f.dia_deviation_mm === "number" ? (
+                        <span
+                          className={
+                            Math.abs(f.dia_deviation_mm as number) > 0.15
+                              ? "text-amber-400/90"
+                              : "text-zinc-500"
+                          }
+                        >
+                          {" "}→ ⌀{String(f.measured_dia_mm)}mm (Δ
+                          {f.dia_deviation_mm as number}mm)
+                        </span>
+                      ) : null}
                     </div>
                   ))
                 : "no features re-cut"}
@@ -242,7 +260,7 @@ export default function TopOptPanel({
             </div>
           )}
           {refinable && (
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-3">
               <label className="flex items-center gap-1.5 text-[11px] text-zinc-400">
                 <input
                   type="checkbox"
@@ -251,6 +269,27 @@ export default function TopOptPanel({
                   onChange={(e) => setRestorePlanes(e.target.checked)}
                 />
                 restore keep surfaces
+              </label>
+              <label className="flex items-center gap-1.5 text-[11px] text-zinc-400">
+                <input
+                  type="checkbox"
+                  className="accent-brand-500"
+                  checked={autoPlane}
+                  onChange={(e) => setAutoPlane(e.target.checked)}
+                />
+                auto planar restore
+              </label>
+              <label
+                className="flex items-center gap-1.5 text-[11px] text-zinc-400"
+                title="cut real helical thread grooves instead of smooth bores (experimental)"
+              >
+                <input
+                  type="checkbox"
+                  className="accent-brand-500"
+                  checked={helicalThreads}
+                  onChange={(e) => setHelicalThreads(e.target.checked)}
+                />
+                helical threads
               </label>
               <span className="flex-1" />
               <Btn

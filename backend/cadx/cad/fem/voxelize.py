@@ -205,3 +205,20 @@ def grid_bounds_mm(domain: VoxelDomain) -> tuple[np.ndarray, np.ndarray]:
 
 def volume_of_solid(domain: VoxelDomain) -> float:
     return float(domain.solid_count) * math.pow(domain.pitch, 3)
+
+
+def estimate_fem_memory_mb(domain: VoxelDomain, n_cases: int = 1, direct: bool = True) -> float:
+    """Predictive peak-memory estimate for a FEM solve on this domain (MB).
+
+    Model: transient COO assembly (576 triplets per cell, 24 B each),
+    the CSR stiffness matrix (~60 nnz per cell, 16 B each), u/F vectors
+    (~3+ncases), and — for a direct solve — LU fill-in (~12x the CSR data).
+    Conservative on purpose: better to refuse than to be OOM-killed
+    mid-iteration (rc=137 loses the whole job)."""
+    cells = domain.cell_count
+    nodes = domain.node_count
+    coo_mb = cells * 576 * 24 / 1e6
+    csr_mb = cells * 60 * 16 / 1e6
+    vec_mb = nodes * 3 * 8 * (3 + max(1, n_cases)) / 1e6
+    lu_mb = (cells * 60 * 8 * 12 / 1e6) if direct else 0.0
+    return coo_mb + csr_mb + vec_mb + lu_mb

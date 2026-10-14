@@ -121,13 +121,16 @@ the database.
 | `topopt_min_member_mm` | `0` | post-thicken members below this size (0 = off) |
 | `topopt_auto_keep` | `true` | hold detected fastener anchors solid |
 | `topopt_auto_keep_margin_mm` | `3` | margin around auto-kept anchors |
+| `topopt_multires_min_cells` | `4000` | below this many cells the `multires` coarse pass is skipped |
 
 ## Executor
 
 | Setting | Default | Notes |
 |---------|---------|-------|
 | `exec_timeout_s` | `180` | sandbox run timeout |
-| `exec_mem_limit_mb` | `4096` | sandbox memory cap (enforced via rlimits on Linux) |
+| `exec_mem_limit_mb` | `4096` | sandbox memory cap (enforced via rlimits on Linux); FEM/TopOpt
+fail fast with a memory estimate when the voxelized domain would exceed
+this budget instead of being OOM-killed mid-iteration |
 
 ## Project settings and per-run options
 

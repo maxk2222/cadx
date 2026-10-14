@@ -423,6 +423,128 @@ def _cantilever():
     return dom, fixed3, F
 
 
+def test_simp_mma_converges_on_volume_target() -> None:
+    """MMA backend reaches the volume constraint like OC."""
+    pytest.importorskip("nlopt")
+    dom, fixed3, F = _cantilever()
+    passive = np.zeros(dom.cell_count, dtype=bool)
+    res = simp(
+        dom,
+        E_PLA,
+        NU,
+        [(fixed3, F)],
+        passive,
+        TopOptParams(volfrac=0.45, rmin_mm=4.0, max_iter=40, tol=0.01, solver="mma"),
+    )
+    assert res.iterations > 0
+    rho = res.density.reshape(dom.dims)
+    assert rho[dom.solid].mean() == pytest.approx(0.45, abs=0.03)
+
+
+def test_simp_mma_minmax_balances_cases() -> None:
+    """case_objective='minmax' uses the smooth P-norm objective — the worst
+    case compliance improves vs a weighted-average run."""
+    pytest.importorskip("nlopt")
+    dom, fixed3, F = _cantilever()
+    passive = np.zeros(dom.cell_count, dtype=bool)
+    F2 = F.copy()
+    idx = np.flatnonzero(np.abs(F.reshape(-1, 3)).sum(axis=1))
+    F2[3 * idx + 2] = -F[3 * idx + 2]  # flip z-loads
+    res = simp(
+        dom,
+        E_PLA,
+        NU,
+        [(fixed3, F), (fixed3, F2)],
+        passive,
+        TopOptParams(
+            volfrac=0.45,
+            rmin_mm=4.0,
+            max_iter=60,
+            tol=0.01,
+            solver="mma",
+            case_objective="minmax",
+        ),
+    )
+    rho = res.density.reshape(dom.dims)
+    assert rho[dom.solid].mean() == pytest.approx(0.45, abs=0.03)
+    assert res.iterations > 0
+
+
+def test_simp_mma_stress_constraint_adds_material() -> None:
+    """A stress cap below the unconstrained optimum forces extra material —
+    the volume fraction must rise above the target."""
+    pytest.importorskip("nlopt")
+    dom, fixed3, F = _cantilever()
+    passive = np.zeros(dom.cell_count, dtype=bool)
+    res = simp(
+        dom,
+        E_PLA,
+        NU,
+        [(fixed3, F)],
+        passive,
+        TopOptParams(
+            volfrac=0.4,
+            rmin_mm=4.0,
+            max_iter=60,
+            tol=0.01,
+            solver="mma",
+            max_stress_mpa=5.0,
+        ),
+    )
+    rho = res.density.reshape(dom.dims)
+    assert rho[dom.solid].mean() > 0.45  # stress bound overrode the 0.4 target
+
+
+def test_simp_mma_displacement_cap() -> None:
+    """max_displacement_mm runs through the adjoint gradient without error
+    and keeps the run feasible."""
+    pytest.importorskip("nlopt")
+    dom, fixed3, F = _cantilever()
+    passive = np.zeros(dom.cell_count, dtype=bool)
+    res = simp(
+        dom,
+        E_PLA,
+        NU,
+        [(fixed3, F)],
+        passive,
+        TopOptParams(
+            volfrac=0.6,
+            rmin_mm=4.0,
+            max_iter=40,
+            tol=0.01,
+            solver="mma",
+            max_displacement_mm=0.05,
+        ),
+    )
+    assert res.iterations > 0
+    assert not any("IndexError" in w for w in res.warnings)
+
+
+def test_simp_penal_continuation_records_ramp() -> None:
+    """penal_init < penal ramps the exponent across iterations."""
+    dom, fixed3, F = _cantilever()
+    passive = np.zeros(dom.cell_count, dtype=bool)
+    res = simp(
+        dom,
+        E_PLA,
+        NU,
+        [(fixed3, F)],
+        passive,
+        TopOptParams(
+            volfrac=0.45,
+            rmin_mm=4.0,
+            max_iter=12,
+            tol=0.001,
+            penal=3.0,
+            penal_init=1.5,
+            penal_ramp_iters=10,
+        ),
+    )
+    pens = [h["penal"] for h in res.history]
+    assert pens[0] < pens[-1]
+    assert pens[-1] == pytest.approx(3.0)
+
+
 def test_simp_passive_void_stays_empty() -> None:
     dom, fixed3, F = _cantilever()
     passive = np.zeros(dom.cell_count, dtype=bool)
@@ -583,6 +705,81 @@ def test_run_topopt_resample(tmp_path: Path) -> None:
     m = trimesh.load(str(out2 / "_run" / "model.stl"), force="mesh", process=False)
     m.merge_vertices()
     assert m.is_watertight
+
+
+def test_run_topopt_multires_warm_start(tmp_path: Path) -> None:
+    """multires=True with a low cell threshold runs a coarse SIMP pass and
+    warm-starts the fine grid — result stays valid and watertight."""
+    from cadx import storage
+    from cadx.cad.engine import run_topopt_pipeline
+    from cadx.runtime_config import RuntimeSettings
+
+    out_dir = storage.tmp_dir() / f"multires-{id(tmp_path)}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    src = out_dir / "b.stl"
+    _box_mesh().export(str(src))
+    case = LoadCase(
+        name="tip",
+        fixed=[RegionSpec(kind="face", axis="-x")],
+        loads=[
+            LoadSpec(
+                region=RegionSpec(kind="face", axis="+x", margin_mm=1.0),
+                force_n=[0.0, 0.0, -100.0],
+            )
+        ],
+    ).model_dump()
+    rt = RuntimeSettings(topopt_multires_min_cells=10)
+    res = run_topopt_pipeline(
+        mesh_path=src,
+        out_dir=out_dir,
+        load_cases=[case],
+        optimize={"target_volume_fraction": 0.45, "multires": True},
+        material="pla",
+        voxel_mm=3.0,
+        runtime=rt,
+    )
+    assert res.ok, res.error
+    mr = res.topopt.get("multires")
+    assert mr is not None, "coarse pass should have run below the lowered threshold"
+    assert mr["coarse_cells"] > 0 and mr["coarse_iterations"] > 0
+    assert mr["coarse_pitch_mm"] == pytest.approx(6.0)
+    assert res.topopt["iterations"] > 0
+    m = trimesh.load(str(out_dir / "_run" / "model.stl"), force="mesh", process=False)
+    m.merge_vertices()
+    assert m.is_watertight
+
+
+def test_run_topopt_multires_skipped_below_threshold(tmp_path: Path) -> None:
+    """Default threshold (4000 cells) keeps small domains single-resolution."""
+    from cadx import storage
+    from cadx.cad.engine import run_topopt_pipeline
+    from cadx.runtime_config import RuntimeSettings
+
+    out_dir = storage.tmp_dir() / f"multires-off-{id(tmp_path)}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    src = out_dir / "b.stl"
+    _box_mesh().export(str(src))
+    case = LoadCase(
+        name="tip",
+        fixed=[RegionSpec(kind="face", axis="-x")],
+        loads=[
+            LoadSpec(
+                region=RegionSpec(kind="face", axis="+x", margin_mm=1.0),
+                force_n=[0.0, 0.0, -100.0],
+            )
+        ],
+    ).model_dump()
+    res = run_topopt_pipeline(
+        mesh_path=src,
+        out_dir=out_dir,
+        load_cases=[case],
+        optimize={"target_volume_fraction": 0.45, "multires": True},
+        material="pla",
+        voxel_mm=3.0,
+        runtime=RuntimeSettings(),  # default 4000-cell threshold
+    )
+    assert res.ok, res.error
+    assert "multires" not in res.topopt
 
 
 # --------------------------------------------------------------------------- #

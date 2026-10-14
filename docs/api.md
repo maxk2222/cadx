@@ -35,6 +35,7 @@ POST          /api/versions/{id}/edit                    {prompt, asset_ids, lib
 POST          /api/versions/{id}/params                  {params} — re-run code/ops without an LLM call
 POST          /api/versions/{id}/optimize                manual FEM/SIMP TopOpt child version
 POST          /api/versions/{id}/topopt-resample         re-extract the stored density field at a new threshold
+POST          /api/versions/{id}/refine                  post-TopOpt feature finishing (bores/threads/inserts, keep-surface restore)
 POST          /api/versions/{id}/reexport                re-run export pipeline
 GET           /api/versions/{id}/jobs                    jobs for this version
 GET           /api/versions/{id}/code                    generated model.py (text/plain)

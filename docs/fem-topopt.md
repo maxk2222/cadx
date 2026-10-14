@@ -75,7 +75,17 @@ interfaces — `POST /versions/{id}/refine` (`JobType.refine`, `VersionKind
   smoothing shrinks pinned regions by ~one pitch). Gated by
   `optimize.restore_planes` / the request's `restore_planes` (default on);
   needs the pre-optimization base mesh (resolved from the grandparent for
-  topopt children).
+  topopt children). Patches are validated before unioning — a non-volume or
+  empty intersection is skipped with a warning instead of aborting the run.
+- **Auto planar restore** — `optimize.auto_plane_restore` /
+  `auto_plane_restore` detects dominant planar face clusters on the base
+  mesh (normal clustering) and restores them like keep boxes.
+- **Helical threads** — `optimize.helical_threads` / request flag cuts a
+  real helical groove (swept triangular profile) on `thread` features
+  instead of a smooth tap-drill bore (experimental, FDM).
+- **Measured dimensions** — every applied feature reports
+  `requested_dia_mm`, `measured_dia_mm` and `dia_deviation_mm` (ray-probed
+  on the cut mesh) so a large deviation is visible instead of silent.
 - **FEM re-verification** — the declared load cases re-run on the finished
   mesh; the version is flagged `needs_review` when the worst safety factor
   drops below 1 or every feature was skipped.
@@ -193,12 +203,32 @@ equilibrium sanity.
   supports material zones; `x0` warm-starts from a prior density field.
   Element-assembly index arrays (`iK`/`jK`) are cached across iterations
   since the sparsity pattern is constant for a fixed domain.
+- `optimize.solver`: `oc` (default, volume-only bisection) or `mma`
+  (nlopt LD_MMA) which enables real constraints — `case_objective: "minmax"`
+  minimizes a smooth P-norm worst-case over all load cases instead of the
+  weighted sum, `max_displacement_mm` caps nodal displacement per case
+  (adjoint gradients), `max_stress_mpa` adds a per-case P-norm von-Mises
+  constraint with qp-relaxation (Le et al. 2010). `optimize.penal_init`
+  < `penal` enables penal continuation (ramp `penal_init`→`penal` over 30
+  iterations, escapes grayscale local minima). All run through
+  `topopt_run`/`optimize` and land in `history.json` with solver diagnostics.
+- Filters: `optimize.filter` `cone`|`heaviside` (β-continuation, crisp 0/1),
+  `optimize.self_supporting` + `print_direction` (45° AM overhang filter),
+  `optimize.multires` (coarse 2×-pitch SIMP warm-starts the fine grid when
+  the domain exceeds `topopt_multires_min_cells`, ~3× faster on big parts).
+  `optimize.min_gap_mm` warns when enclosed void gaps below that width
+  survive extraction (EDT closing check — thin gaps fuse in printing).
 - Mesh extraction uses marching cubes (scikit-image) when available and falls
   back to the voxel-boundary surface, so `skimage` is optional at runtime.
 - The solver accepts per-DOF `(nnodes,3)` fixed masks; systems beyond
-  `fem_spsolve_dofs` use SSOR-preconditioned conjugate gradients.
+  `fem_spsolve_dofs` use SSOR-preconditioned conjugate gradients with
+  adaptive relative tolerance (loose while the design is changing, tight
+  near convergence).
 - Grid pitch starts at `fem_voxel_mm` and is adaptively coarsened to stay
-  under `fem_max_elements`.
+  under `fem_max_elements`. After voxelization the peak memory for assembly,
+  the CSR matrix and (for direct solves) LU fill-in is estimated and
+  compared against `exec_mem_limit_mb` — oversized jobs fail early with a
+  memory warning instead of being OOM-killed (rc=137) mid-iteration.
 - Material properties come from the built-in table (`pla`, `petg`, `abs`,
   `asa`, `pa`, `pc`, `resin`, `aluminum`, `steel`); unknown names fall back to
   PLA. The table uses typical bulk properties and is not a manufacturing

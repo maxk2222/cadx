@@ -915,6 +915,9 @@ async def _maybe_spawn_refine(
             "load_cases": load_cases,
             "keep_regions": optimize.get("keep_regions") or [],
             "material": material,
+            "helical_threads": bool(optimize.get("helical_threads")),
+            "auto_plane_restore": bool(optimize.get("auto_plane_restore")),
+            "restore_planes": optimize.get("restore_planes", True),
         },
     )
     return True
@@ -1388,6 +1391,14 @@ async def run_refine_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[s
                     payload.get("restore_planes")
                     if payload.get("restore_planes") is not None
                     else (spec.optimize.restore_planes if spec and spec.optimize else True)
+                ),
+                "helical_threads": bool(
+                    payload.get("helical_threads")
+                    or (spec.optimize.helical_threads if spec and spec.optimize else False)
+                ),
+                "auto_plane_restore": bool(
+                    payload.get("auto_plane_restore")
+                    or (spec.optimize.auto_plane_restore if spec and spec.optimize else False)
                 ),
                 "runtime_settings": runtime_settings.executor_values(),
                 "name": "model",

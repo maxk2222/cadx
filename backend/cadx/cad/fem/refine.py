@@ -13,6 +13,7 @@ job.
 
 from __future__ import annotations
 
+import contextlib
 import math
 from dataclasses import dataclass, field
 from typing import Any
@@ -89,6 +90,7 @@ class RefineFeature:
     cbore_dia: float | None = None
     cbore_depth_mm: float | None = None
     thread_spec: str = ""  # "M4-0.7" — overrides dia for tap/thread cutters
+    helical: bool = False  # cut a real helical thread groove (experimental, FDM)
     source: str = "anchor"  # anchor|spec|request
 
 
@@ -280,6 +282,7 @@ def resolve_refine_features(  # noqa: C901
                     cbore_dia=merged.get("cbore_dia") or merged.get("counterbore_diameter"),
                     cbore_depth_mm=merged.get("cbore_depth_mm") or merged.get("counterbore_depth"),
                     thread_spec=str(merged.get("thread_spec") or merged.get("standard") or ""),
+                    helical=bool(merged.get("helical") or merged.get("helical_thread")),
                     source="request",
                 )
             )
@@ -353,20 +356,74 @@ def _entry_point(mesh: trimesh.Trimesh, axis: str, u: float, v: float) -> float 
     return float(locs[:, ax].max() if axis[0] == "+" else locs[:, ax].min())
 
 
+def _effective_dia(feat: RefineFeature) -> float:
+    """Diameter actually cut — tap-drill (D - pitch) for threads."""
+    if feat.kind in ("thread", "tap"):
+        parsed = _parse_spec(feat.thread_spec)
+        return (parsed[0] - parsed[1]) if parsed else max(feat.dia * 0.85, feat.dia - 1.0)
+    return feat.dia
+
+
+def _thread_groove_solid(r_in: float, r_out: float, pitch: float, depth: float) -> trimesh.Trimesh:
+    """Helical V-groove solid for a metric internal thread.
+
+    Meridian cross-section (r-z plane at each helix station): triangle with
+    apex at the major radius and base spanning ~0.55·pitch at the minor
+    radius. Stations step ~15°; caps close the tube. Built along +Z starting
+    at local z=0, going -Z (same convention as _cutter_mesh)."""
+    turns = depth / pitch + 1.5  # overshoot both ends
+    n_stat = max(24, int(turns * 24))
+    thetas = np.linspace(0, -2 * np.pi * turns, n_stat)
+    half_w = pitch * 0.28  # 30° flank half-width
+    r_in = max(r_in, 0.05)
+    r_out = max(r_out, r_in + 0.1)
+    verts: list[list[float]] = []
+    faces: list[list[int]] = []
+    for th in thetas:
+        c, s = math.cos(th), math.sin(th)
+        z_c = th / (2 * np.pi) * pitch
+        verts += [
+            [r_in * c, r_in * s, z_c - half_w],
+            [r_in * c, r_in * s, z_c + half_w],
+            [r_out * c, r_out * s, z_c],
+        ]
+    for i in range(n_stat - 1):
+        a, b = 3 * i, 3 * (i + 1)
+        faces += [[a, b, b + 1], [a, b + 1, a + 1]]  # inner wall
+        faces += [[a + 1, b + 1, b + 2], [a + 1, b + 2, a + 2]]  # flank up
+        faces += [[a + 2, b + 2, b], [a + 2, b, a]]  # flank down
+    faces.append([0, 1, 2])  # caps
+    li = 3 * (n_stat - 1)
+    faces.append([li + 2, li + 1, li])
+    m = trimesh.Trimesh(vertices=np.asarray(verts), faces=np.asarray(faces), process=False)
+    if m.volume < 0:
+        m.invert()
+    return m
+
+
 def _cutter_mesh(feat: RefineFeature, entry: float, span: float) -> trimesh.Trimesh:
     """Cutting solid for one feature, built with bore axis along +Z, entry at
     local z=0, bore going -Z. Caller rotates/translates into place."""
     over_out = 2.0  # overshoot above the entry face
     depth = feat.depth_mm if feat.depth_mm is not None else span + 2.0
-    dia = feat.dia
-    if feat.kind in ("thread", "tap"):
-        # printed threads need the TAP DRILL hole (D - pitch), not nominal D
-        parsed = _parse_spec(feat.thread_spec)
-        dia = (parsed[0] - parsed[1]) if parsed else max(feat.dia * 0.85, feat.dia - 1.0)
+    dia = _effective_dia(feat)
     tools: list[trimesh.Trimesh] = []
     cyl = trimesh.creation.cylinder(radius=dia / 2.0, height=depth + over_out, sections=48)
     cyl.apply_translation([0, 0, -depth / 2.0 + over_out / 2.0])
     tools.append(cyl)
+    if feat.kind in ("thread", "tap") and feat.helical:
+        # real helical thread: pilot bore (tap drill) + helical V-groove out
+        # to the major diameter — printable FDM thread, no tapping needed
+        parsed = _parse_spec(feat.thread_spec)
+        d_maj, pitch = parsed if parsed else (feat.dia, _metric_pitch(feat.dia))
+        groove = _thread_groove_solid(
+            r_in=dia / 2.0 - 0.05,
+            r_out=d_maj / 2.0 + 0.15,  # small FDM clearance on the major dia
+            pitch=pitch,
+            depth=depth,
+        )
+        groove.apply_translation([0, 0, over_out * 0.5])
+        tools.append(groove)
     if feat.kind == "insert":
         # heat-set pocket: slight taper, a bit larger than the pilot bore —
         # anchor dia for inserts is the INSERT's outer pocket dia
@@ -388,6 +445,38 @@ def _cutter_mesh(feat: RefineFeature, entry: float, span: float) -> trimesh.Trim
     return trimesh.util.concatenate(tools)
 
 
+def _measure_feature_dia(
+    mesh: trimesh.Trimesh, feat: RefineFeature, entry: float, span: float
+) -> float | None:
+    """Measured bore diameter after the cut — cross-section rays through the
+    axis point at ~half the cut depth. Returns None when the rays escape
+    (e.g. the cut merged into a larger void or channel)."""
+    ax, au, av = _AXES[feat.axis]
+    inward = -1.0 if feat.axis[0] == "+" else 1.0
+    depth = min(feat.depth_mm or span, span)
+    origin = np.zeros(3)
+    origin[au], origin[av] = feat.u, feat.v
+    origin[ax] = entry + inward * depth * 0.5
+    diams: list[float] = []
+    for d_ax in (au, av):
+        total = 0.0
+        for sgn in (1.0, -1.0):
+            d = np.zeros(3)
+            d[d_ax] = sgn
+            locs, _, _ = mesh.ray.intersects_location(
+                ray_origins=np.array([origin]),
+                ray_directions=np.array([d]),
+                multiple_hits=False,
+            )
+            if not len(locs):
+                total = np.inf
+                break
+            total += float(np.linalg.norm(locs[0] - origin))
+        diams.append(total)
+    out = min(diams)
+    return out if np.isfinite(out) else None
+
+
 def _orient_cutter(cutter: trimesh.Trimesh, axis: str, u: float, v: float, entry: float) -> None:
     """Map local +Z onto the outward axis direction and seat entry at z=0."""
     ax, au, av = _AXES[axis]
@@ -404,6 +493,55 @@ def _orient_cutter(cutter: trimesh.Trimesh, axis: str, u: float, v: float, entry
 # --------------------------------------------------------------------------- #
 # keep-region restore                                                           #
 # --------------------------------------------------------------------------- #
+
+
+def detect_plane_regions(
+    base_mesh: trimesh.Trimesh,
+    *,
+    min_area_frac: float = 0.08,
+    margin_mm: float = 1.6,
+    bin_mm: float = 1.0,
+) -> tuple[list[np.ndarray], list[str]]:
+    """Auto-detect planar faces worth restoring (C5).
+
+    Axis-aligned faces dominate printed parts (walls, decks, flanges). For
+    each of the 6 axis directions, cluster face centroids along that axis in
+    `bin_mm` bins; bins holding ≥ `min_area_frac` of the total surface area
+    become thin keep-slabs restored from the base mesh. Returns
+    (boxes, warnings)."""
+    warnings: list[str] = []
+    boxes: list[np.ndarray] = []
+    if not len(base_mesh.faces):
+        return boxes, warnings
+    normals = base_mesh.face_normals
+    centers = base_mesh.triangles_center
+    areas = np.asarray(base_mesh.area_faces, dtype=float)
+    total = float(areas.sum())
+    if total <= 0:
+        return boxes, warnings
+    lo, hi = np.asarray(base_mesh.bounds, dtype=float)
+    for ax in range(3):
+        for sgn in (1.0, -1.0):
+            sel = normals[:, ax] * sgn > 0.95
+            if not sel.any() or areas[sel].sum() / total < min_area_frac:
+                continue
+            pos = centers[sel, ax]
+            w = areas[sel]
+            edges = np.arange(math.floor(pos.min()), pos.max() + 2 * bin_mm, bin_mm)
+            hist, eb = np.histogram(pos, bins=edges, weights=w)
+            for i, h in enumerate(hist):
+                if h / total < min_area_frac:
+                    continue
+                in_bin = sel.copy()
+                in_bin[sel] = (pos >= eb[i]) & (pos < eb[i + 1])
+                plane_at = float(np.average(centers[in_bin, ax], weights=areas[in_bin]))
+                b = np.stack([lo - 0.5, hi + 0.5])
+                b[0][ax] = plane_at - margin_mm
+                b[1][ax] = plane_at + margin_mm
+                boxes.append(b)
+    if boxes:
+        warnings.append(f"auto plane-restore: {len(boxes)} dominant planar face(s) restored")
+    return boxes, warnings
 
 
 def _region_box(region: dict[str, Any], bounds: np.ndarray) -> np.ndarray | None:
@@ -491,36 +629,79 @@ def restore_keep_surface(
 
     `opt_mesh union (base_mesh ∩ grown_keep_box)` — Taubin smoothing shrinks kept
     material; this restores exact bore walls and planar faces. Returns
-    (mesh, warnings, restored_count)."""
+    (mesh, warnings, restored_count).
+
+    Robustness: both operands must be manifold volumes for the booleans. A
+    non-volume base or a sliver patch is repaired once via _ensure_watertight;
+    if it still is not a volume the region is skipped with a warning instead
+    of aborting the whole restore."""
+    from cadx.cad.mesh_ops import _ensure_watertight
+
     warnings: list[str] = []
     out = opt_mesh
     restored = 0
+    base = base_mesh
+    if not base.is_volume:
+        with contextlib.suppress(Exception):
+            base = _ensure_watertight(base)
+    if not base.is_volume:
+        warnings.append("keep-region restore skipped — base mesh is not a volume")
+        return out, warnings, 0
+    span = (float(base.bounds[0].min()) - 1, float(base.bounds[1].max()) + 1)
+    for b in _keep_boxes(keep_regions or [], anchors, base.bounds, span, margin_mm):
+        try:
+            patch = base.intersection(_box_mesh(b), engine="manifold")
+            if patch is None or not len(getattr(patch, "faces", [])):
+                continue
+            if not patch.is_volume:
+                # thin sliver / open shell — try one repair, else skip
+                with contextlib.suppress(Exception):
+                    patch = _ensure_watertight(patch)
+            if not patch.is_volume:
+                warnings.append("keep-region patch is not a volume — region left smoothed")
+                continue
+            if not out.is_volume:
+                warnings.append("optimized mesh lost volume-ness — restore aborted")
+                break
+            merged = out.union(patch, engine="manifold")
+            if merged is None or not len(getattr(merged, "faces", [])):
+                warnings.append("keep-region union produced empty mesh — region left smoothed")
+                continue
+            out = merged
+            restored += 1
+        except Exception as e:
+            warnings.append(f"keep-region restore failed ({e}) — region left smoothed")
+    return out, warnings, restored
+
+
+def _keep_boxes(
+    keep_regions: list[dict[str, Any]],
+    anchors: list[dict[str, Any]],
+    bounds: np.ndarray,
+    span: tuple[float, float],
+    margin_mm: float,
+) -> list[np.ndarray]:
+    """Resolve keep regions (incl. `_plane_box` auto-restore) to grown AABBs."""
     boxes: list[np.ndarray] = []
-    for r in keep_regions or []:
+    for r in keep_regions:
+        if r.get("kind") == "_plane_box" and r.get("box") is not None:
+            boxes.append(np.asarray(r["box"], dtype=float))
+            continue
         hi_idx = r.get("hole_index")
         if str(r.get("kind")) in ("hole", "anchor", "bore") and hi_idx is not None:
             idx = int(hi_idx)
             if 1 <= idx <= len(anchors):
-                span = (float(base_mesh.bounds[0].min()) - 1, float(base_mesh.bounds[1].max()) + 1)
                 b = _anchor_keep_box(anchors[idx - 1], float(r.get("margin_mm") or margin_mm), span)
                 if b is not None:
                     boxes.append(b)
             continue
-        b = _region_box(r, base_mesh.bounds)
+        b = _region_box(r, bounds)
         if b is not None:
             boxes.append(b)
     for b in boxes:
         b[0] -= margin_mm * 0.5
         b[1] += margin_mm * 0.5
-        try:
-            patch = base_mesh.intersection(_box_mesh(b), engine="manifold")
-            if patch is None or not len(getattr(patch, "faces", [])):
-                continue
-            out = out.union(patch, engine="manifold")
-            restored += 1
-        except Exception as e:
-            warnings.append(f"keep-region restore failed ({e}) — region left smoothed")
-    return out, warnings, restored
+    return boxes
 
 
 # --------------------------------------------------------------------------- #
@@ -604,16 +785,30 @@ def apply_refine(
                 )
                 continue
             out = res
-            report.applied.append(
-                {
-                    "name": feat.name,
-                    "kind": feat.kind,
-                    "axis": feat.axis,
-                    "dia": round(feat.dia, 2),
-                    "depth_mm": feat.depth_mm,
-                    "source": feat.source,
-                }
-            )
+            entry_rec: dict[str, Any] = {
+                "name": feat.name,
+                "kind": feat.kind,
+                "axis": feat.axis,
+                "dia": round(feat.dia, 2),
+                "depth_mm": feat.depth_mm,
+                "source": feat.source,
+            }
+            try:
+                requested = _effective_dia(feat)
+                measured = _measure_feature_dia(out, feat, entry, span)
+                entry_rec["requested_dia_mm"] = round(requested, 3)
+                if measured is not None:
+                    entry_rec["measured_dia_mm"] = round(measured, 3)
+                    dev = abs(measured - requested)
+                    entry_rec["dia_deviation_mm"] = round(dev, 3)
+                    if dev > max(0.25, requested * 0.05):
+                        report.warnings.append(
+                            f"feature '{feat.name}': measured dia {measured:.2f} mm "
+                            f"deviates {dev:.2f} mm from requested {requested:.2f} mm"
+                        )
+            except Exception:
+                pass  # measurement is informational — never fail a cut on it
+            report.applied.append(entry_rec)
         except Exception as e:
             report.skipped.append(
                 {"name": feat.name, "kind": feat.kind, "reason": f"cut failed: {e}"}
