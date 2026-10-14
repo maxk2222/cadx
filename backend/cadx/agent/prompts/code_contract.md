@@ -19,6 +19,17 @@
    At the end assign: `result = p.part` — a build123d Part/Solid/Compound with exactly
    ONE solid unless the task is an assembly.
    Optional for flat 2D-CNC/laser parts: `flat_profile = <Sketch or Face>`.
+   Positioning rules (violating them silently breaks geometry):
+   - `shape.translate(...)`, `shape.rotate(...)`, `shape.moved(...)` RETURN a NEW
+     object — they do NOT move the original. A bare `Box(...).translate(...)`
+     statement leaves the box at the origin. Position primitives with
+     `Pos(x, y, z) * Box(...)` (algebra) or `Locations`/`locate()` (in-place).
+   - Rotating a `Cylinder`/`Cone` about `Axis.Z` is a no-op (its own axis). To
+     lay a cylinder over, rotate about X or Y — or build it directly on a
+     rotated `Plane`.
+   - Booleans only work on 3D solids: `part - Ellipse(...)` or
+     `mesh.cut(Pos * Ellipse(...))` are invalid — `Ellipse`/`Circle`/`Rectangle`
+     are 2D curves. Use `Cylinder`/`Box`/`extrude` tools instead.
 4. Coordinate frame: X = length (left->right), Y = width (+Y is the "front" face),
    Z = height (up). The part must rest on the XY plane (min Z = 0) and be centred on
    the origin in X and Y. Use `align=(Align.CENTER, Align.CENTER, Align.MIN)` on

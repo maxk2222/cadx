@@ -1922,6 +1922,11 @@ async def _run_cad(  # noqa: C901
         code_resp = code_resp.model_copy(update={"code": code})
 
         pre_issues = _params_vs_spec(spec, chk.params)
+        # static lint warnings (discarded transforms, no-op rotations, 2D
+        # shapes in booleans) are probable bugs — surface them to the
+        # improve/repair steps as minor issues
+        for w in chk.warnings:
+            pre_issues.append({"source": "lint", "severity": "minor", "what": w})
         if (
             code_resp.expected_bbox
             and len(code_resp.expected_bbox) >= 3

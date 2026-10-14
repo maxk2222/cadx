@@ -74,3 +74,55 @@ def test_surrogate_code_is_check_failure_not_crash():
     r = check_code("x = 1\ud800\nresult = Box(1,1,1)\n")
     assert not r.ok
     assert any("parseable" in e for e in r.errors)
+
+
+def test_lint_discarded_transform_warns():
+    code = (
+        GOOD
+        + "with BuildPart() as p:\n"
+        + "    Box(60, 40, 6)\n"
+        + "    Box(10, 40, 48).translate((25, 0, 6))\n"
+    )
+    r = check_code(code)
+    assert r.ok  # warnings do not fail the check
+    assert any("discarded" in w for w in r.warnings)
+
+
+def test_lint_locate_inplace_no_warning():
+    code = GOOD + "part = Box(1,1,1)\npart.locate(Pos(5,0,0))\nresult = part\n"
+    r = check_code(code)
+    assert not any("discarded" in w for w in r.warnings)
+
+
+def test_lint_self_axis_rotation_warns():
+    code = (
+        GOOD
+        + "cap = Cylinder(radius=2, height=10)\n"
+        + "cap2 = cap.rotate(Axis.Z, 90)  # no-op: own axis\n"
+        + "flat = cap.rotate(Axis.X, 90)  # fine\n"
+    )
+    r = check_code(code)
+    assert any("no-op" in w and "Axis.Z" in w for w in r.warnings)
+    # only ONE self-axis warning (Axis.X on a cylinder is legitimate)
+    assert sum("no-op" in w for w in r.warnings) == 1
+
+
+def test_lint_2d_shape_in_boolean_warns():
+    code = GOOD + "mesh = Box(10, 10, 5)\nresult = mesh - Pos(0, 0, 0) * Ellipse(4, 2)\n"
+    r = check_code(code)
+    assert any("2D" in w for w in r.warnings)
+    code2 = GOOD + "mesh = Box(10,10,5)\nresult = mesh.cut(Pos(1,1,0) * Ellipse(3, 2))\n"
+    r2 = check_code(code2)
+    assert any("2D" in w for w in r2.warnings)
+
+
+def test_lint_clean_code_no_warnings():
+    code = (
+        GOOD
+        + "with BuildPart() as p:\n"
+        + "    Box(60, 40, 6)\n"
+        + "    Pos(25, 0, 6) * Box(10, 40, 48)\n"
+        + "result = p.part\n"
+    )
+    r = check_code(code)
+    assert r.ok and not r.warnings, r.warnings
