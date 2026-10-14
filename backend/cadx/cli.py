@@ -422,6 +422,9 @@ def eval(
     real_llm: bool = typer.Option(
         False, "--real", help="Use real LLM instead of embedded FakeLLM script"
     ),
+    repeat: int = typer.Option(
+        1, "--repeat", "-n", min=1, help="repeat each benchmark N times (variance control)"
+    ),
 ) -> None:
     """Run evaluation benchmarks through the agent loop."""
 
@@ -444,24 +447,44 @@ def eval(
             bms = [b for b in bms if not b.real_only and b.llm_script is not None]
             for name in skipped:
                 print(f"{name}: skipped (real-only benchmark — use `cadx eval --real`)")
-        for bm in bms:
-            if real_llm:
-                bm.llm_script = None
-            # llm=None: run_benchmark builds a client from the DB runtime
-            # settings — the same endpoint/key/models a real job would use.
-            # Per-benchmark isolation: one crashed benchmark must not kill
-            # the whole eval run.
-            try:
-                r = await run_benchmark(bm, llm=None)
-            except Exception as e:
-                print(f"{bm.name}: crashed ({type(e).__name__}: {e})")
-                continue
-            dims = f"bbox={r.bbox} dim_ok={r.dim_ok}" if r.bbox else ""
-            extra = f"features_ok={r.features_ok} watertight={r.watertight} calls={r.calls} ptok={r.prompt_tokens}"
-            print(
-                f"{r.name}: {r.status} score={r.score} passed={r.passed} {dims} {extra} "
-                f"({r.wall_s}s) {r.error or ''} dir={r.version_dir}"
-            )
+        # name -> list of per-run results, for the aggregate table on --repeat
+        all_results: dict[str, list] = {}
+        for rep in range(repeat):
+            if repeat > 1:
+                print(f"--- repetition {rep + 1}/{repeat} ---")
+            for bm in bms:
+                if real_llm:
+                    bm.llm_script = None
+                # llm=None: run_benchmark builds a client from the DB runtime
+                # settings — the same endpoint/key/models a real job would use.
+                # Per-benchmark isolation: one crashed benchmark must not kill
+                # the whole eval run.
+                try:
+                    r = await run_benchmark(bm, llm=None)
+                except Exception as e:
+                    print(f"{bm.name}: crashed ({type(e).__name__}: {e})")
+                    continue
+                all_results.setdefault(bm.name, []).append(r)
+                dims = f"bbox={r.bbox} dim_ok={r.dim_ok}" if r.bbox else ""
+                extra = (
+                    f"features_ok={r.features_ok} watertight={r.watertight} "
+                    f"calls={r.calls} ptok={r.prompt_tokens}"
+                )
+                print(
+                    f"{r.name}: {r.status} score={r.score} passed={r.passed} {dims} {extra} "
+                    f"({r.wall_s}s) {r.error or ''} dir={r.version_dir}"
+                )
+        if repeat > 1 and all_results:
+            print("--- aggregate ---")
+            for name, rs in all_results.items():
+                scores = [r.score for r in rs if r.score is not None]
+                ok = sum(1 for r in rs if r.passed)
+                mean = sum(scores) / len(scores) if scores else 0.0
+                print(
+                    f"{name}: n={len(rs)} passed={ok} "
+                    f"score min={min(scores, default=0)} mean={mean:.0f} "
+                    f"max={max(scores, default=0)}"
+                )
 
     asyncio.run(_run())
 

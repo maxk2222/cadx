@@ -1994,6 +1994,17 @@ async def _run_cad(  # noqa: C901
                             "fix_hint": f"make the {name} dimension {dim.value:g}mm",
                         }
                     )
+        elif code_resp.expected_bbox and len(code_resp.expected_bbox) < 3:
+            # malformed declaration — silently skipping it hides sloppy output
+            pre_issues.append(
+                {
+                    "source": "contract",
+                    "severity": "minor",
+                    "what": f"expected_bbox has {len(code_resp.expected_bbox)} "
+                    "values — must be [x, y, z] in mm",
+                    "fix_hint": "declare expected_bbox as [length, width, height]",
+                }
+            )
 
         # ---------- numeric checks + deterministic param autofix ----------
         analysis = exec_result.get("analysis") or {}
@@ -2680,6 +2691,15 @@ async def _run_mesh(  # noqa: C901
         "features"
     )
     outcome.critique = best.critique.model_dump() if best.critique else None
+    outcome.issues = build_issues(
+        best.critique,
+        best.dim_issues,
+        [],
+        best.exec_result.get("dfm"),
+        best.exec_result.get("analysis"),
+    )
+    if outcome.critique is not None:
+        outcome.critique["issues"] = outcome.issues
     outcome.dfm = best.exec_result.get("dfm")
     outcome.bom = best.exec_result.get("bom")
     outcome.score = best.critique.score if best.critique else None
