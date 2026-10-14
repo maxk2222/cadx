@@ -406,10 +406,18 @@ def measured_features_block(features: dict[str, Any] | None) -> str:
         "code, keep every hole/fillet/chamfer:"
     ]
     for g in features.get("hole_groups") or []:
-        lines.append(
-            f"- {g['count']}x hole Ø{g['diameter']}mm, axis {g['axis']}, {g['depth_class']}"
-        )
+        if g.get("elongated"):
+            lines.append(
+                f"- slot (elongated void) ~Ø{g['diameter']}mm equiv, "
+                f"axis {g['axis']}, {g['depth_class']}"
+            )
+        else:
+            lines.append(
+                f"- {g['count']}x hole Ø{g['diameter']}mm, axis {g['axis']}, {g['depth_class']}"
+            )
     lines.append(f"- total holes: {features.get('total_holes', 0)}")
+    if features.get("slots"):
+        lines.append(f"- elongated slots: {features['slots']}")
     if features.get("countersinks"):
         lines.append(f"- countersink cones: {features['countersinks']}")
     if features.get("counterbores"):

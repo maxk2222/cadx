@@ -26,11 +26,13 @@ class MeasuredHoleGroup(BaseModel):
     depth_class: str = "through"  # through | blind | unknown
     centers: list[list[float]] = Field(default_factory=list)  # per-hole [x, y]
     blocked: int = 0  # bores in this group sealed by a membrane (tunnel-verified)
+    elongated: bool = False  # slot-like void (aspect ratio > threshold), not a round hole
 
 
 class MeasuredFeatures(BaseModel):
     hole_groups: list[MeasuredHoleGroup] = Field(default_factory=list)
     total_holes: int = 0
+    slots: int = 0  # elongated through-voids (aspect > ~1.8) — not round holes
     countersinks: int = 0  # cones coaxial to a hole
     counterbores: int = 0  # stepped coaxial hole cylinders
     rounds: list[float] = Field(default_factory=list)  # fillet radii (edge cylinders)
@@ -239,7 +241,7 @@ def _ray_tunnel(mesh, center: list[float], axis: int, r: float) -> bool:
     return int((~np.asarray(hits)).sum()) >= 3
 
 
-def _mesh_through_holes(stl_path: Path, mesh=None) -> tuple[list[MeasuredHoleGroup], int]:
+def _mesh_through_holes(stl_path: Path, mesh=None) -> tuple[list[MeasuredHoleGroup], int, int]:
     """Detect through-holes on a faceted solid via ray casting.
 
     A ray that crosses the whole part without a single hit passes through a
@@ -254,11 +256,12 @@ def _mesh_through_holes(stl_path: Path, mesh=None) -> tuple[list[MeasuredHoleGro
     if mesh is None:
         mesh = _load_watertight_mesh(stl_path)
     if mesh is None:
-        return [], 0
+        return [], 0, 0
     mn, mx = mesh.bounds
     step = 0.7  # mm grid pitch — resolves Ø~1.6mm tunnels and larger
     groups: list[MeasuredHoleGroup] = []
     csk_hits = 0
+    slot_count = 0
 
     for axis in range(3):
         a1, a2 = (i for i in range(3) if i != axis)
@@ -292,12 +295,21 @@ def _mesh_through_holes(stl_path: Path, mesh=None) -> tuple[list[MeasuredHoleGro
             dia = 2.0 * math.sqrt(area / math.pi)
             if dia < 1.6:  # tessellation gaps can fake tiny tunnels
                 continue
+            # elongated voids are slots, not round holes — report them
+            # separately so spec checks don't match a 20x6 slot against a
+            # Ø16 hole expectation (aspect of the component's bounding box)
+            span_u = (cells[:, 0].max() - cells[:, 0].min() + 1) * step
+            span_v = (cells[:, 1].max() - cells[:, 1].min() + 1) * step
+            aspect = max(span_u, span_v) / max(min(span_u, span_v), step)
+            is_slot = aspect > 1.8
             cu = float(cells[:, 0].mean())
             cv = float(cells[:, 1].mean())
             center = np.zeros(3)
             center[a1] = mn[a1] + step / 2 + cu * step
             center[a2] = mn[a2] + step / 2 + cv * step
             center[axis] = (mn[axis] + mx[axis]) / 2
+            if is_slot:
+                slot_count += 1
             groups.append(
                 MeasuredHoleGroup(
                     diameter=round(dia, 3),
@@ -305,6 +317,7 @@ def _mesh_through_holes(stl_path: Path, mesh=None) -> tuple[list[MeasuredHoleGro
                     axis=f"+{'xyz'[axis]}",
                     depth_class="through",
                     centers=[[round(float(center[0]), 2), round(float(center[1]), 2)]],
+                    elongated=is_slot,
                 )
             )
 
@@ -325,7 +338,7 @@ def _mesh_through_holes(stl_path: Path, mesh=None) -> tuple[list[MeasuredHoleGro
             first_hit = np.array([locs[ray_ids == r][:, axis].max() for r in np.unique(ray_ids)])
             if len(first_hit) >= 6 and int((first_hit < top_z - 0.3).sum()) >= 5:
                 csk_hits += 1
-    return groups, csk_hits
+    return groups, csk_hits, slot_count
 
 
 def extract_features(  # noqa: C901 — sequential measurement passes
@@ -452,12 +465,13 @@ def extract_features(  # noqa: C901 — sequential measurement passes
 
 def _mesh_fallback(out: MeasuredFeatures, stl_path: Path, mesh=None) -> None:
     try:
-        m_groups, m_csk = _mesh_through_holes(stl_path, mesh)
+        m_groups, m_csk, m_slots = _mesh_through_holes(stl_path, mesh)
     except Exception:
         return
     if m_groups:
         out.hole_groups = m_groups
         out.total_holes = len(m_groups)
+        out.slots = m_slots
         out.countersinks = m_csk
         out.approximate = True
 
@@ -544,14 +558,18 @@ def _check_hole_feature(
     csk_needed = want_n if wants_csk else 0
     cbore_needed = want_n if wants_cbore else 0
 
+    # elongated voids are slots, not round bores — they must not satisfy a
+    # circular-hole expectation (a 20x6 slot would otherwise count as Ø12)
+    round_groups = [g for g in measured.hole_groups if not g.elongated]
+
     # definitive check before matching: spec wants a bore along a specific
     # axis and measured holes exist only on other axes → report the axis
     # mismatch explicitly (e.g. boss bore +z instead of spec +y), not a
     # generic "no holes" that hides orientation errors
-    if want_axis and measured.hole_groups:
+    if want_axis and round_groups:
         want_ax = _axis_letter(want_axis)
-        if not any(_axis_letter(g.axis) == want_ax for g in measured.hole_groups):
-            actual_axes = ", ".join(sorted({_axis_letter(g.axis) for g in measured.hole_groups}))
+        if not any(_axis_letter(g.axis) == want_ax for g in round_groups):
+            actual_axes = ", ".join(sorted({_axis_letter(g.axis) for g in round_groups}))
             findings.append(
                 FeatureFinding(
                     feature=name,
@@ -566,7 +584,7 @@ def _check_hole_feature(
             )
             return findings, csk_needed, cbore_needed
 
-    group = _match_hole_group(measured.hole_groups, want_dia, want_axis)
+    group = _match_hole_group(round_groups, want_dia, want_axis)
     if group is None:
         findings.append(
             FeatureFinding(
@@ -679,6 +697,30 @@ def _check_edge_features(
     return findings
 
 
+def _check_slot_features(
+    spec_features: list[Any], measured: MeasuredFeatures
+) -> list[FeatureFinding]:
+    """Elongated through-voids are measured separately from round holes —
+    a spec 'slot' feature checks the slot count, not hole groups."""
+    findings: list[FeatureFinding] = []
+    slot_feats = [f for f in spec_features if "slot" in (f.type or "").lower()]
+    wanted = sum(max(1, int(f.count or 1)) for f in slot_feats)
+    if wanted and measured.slots < wanted:
+        findings.append(
+            FeatureFinding(
+                feature=slot_feats[0].name or "slot",
+                expected=f"{wanted} slot(s)",
+                actual=f"{measured.slots} elongated through-void(s) detected",
+                severity="major",
+                fix_hint=(
+                    "cut the slots as elongated voids (rounded rectangle sketch "
+                    "extruded through the part), not as round holes"
+                ),
+            )
+        )
+    return findings
+
+
 def compare_features(spec_features: list[Any], measured: MeasuredFeatures) -> list[FeatureFinding]:
     """Compare spec features against measured geometry. Feedback-only findings."""
     findings: list[FeatureFinding] = []
@@ -697,6 +739,7 @@ def compare_features(spec_features: list[Any], measured: MeasuredFeatures) -> li
         csk_needed += csk_n
         cbore_needed += cbore_n
 
+    findings += _check_slot_features(spec_features, measured)
     findings += _check_edge_features(spec_features, measured)
 
     csk_total = measured.countersinks

@@ -287,6 +287,65 @@ def test_normalize_score_consistent_untouched():
 
 
 # --------------------------------------------------------------------------- #
+# measured-vs-claimed 'missing' verdicts
+
+
+def test_verify_missing_verdict_refuted_by_measurement():
+    """Firesteel E2E: the critic claimed 'tube missing' while the bore was
+    measured — a refuted 'missing' must downgrade to 'wrong', and the
+    discrepancy repeating the claim loses its major severity."""
+    from cadx.agent.steps.critique import _verify_missing_verdicts
+
+    spec = PartSpec(
+        **{
+            **SPEC,
+            "features": [
+                {"name": "boss bore", "type": "hole", "count": 1, "dims": {"diameter": 8}},
+                {"name": "grip ribs", "type": "rib", "count": 4},
+            ],
+        }
+    )
+    c = Critique(
+        score=20,
+        passed=False,
+        feature_verdicts=[
+            FeatureVerdict(name="boss bore", status="missing", note="no bore visible"),
+            FeatureVerdict(name="grip ribs", status="missing", note="ribs absent"),
+        ],
+        discrepancies=[
+            Discrepancy(what="boss bore is missing", severity="major"),
+            Discrepancy(what="grip ribs are missing", severity="major"),
+        ],
+        confidence=0.5,
+    )
+    features = {"total_holes": 1, "slots": 0}  # bore measured present
+    _verify_missing_verdicts(c, spec, features)
+    by_name = {v.name: v for v in c.feature_verdicts}
+    assert by_name["boss bore"].status == "wrong"  # refuted by measurement
+    assert by_name["grip ribs"].status == "missing"  # not a measurable kind
+    bore_d = next(d for d in c.discrepancies if "boss bore" in d.what)
+    rib_d = next(d for d in c.discrepancies if "grip ribs" in d.what)
+    assert bore_d.severity == "minor"
+    assert rib_d.severity == "major"
+
+
+def test_verify_missing_verdict_untouched_when_absent():
+    from cadx.agent.steps.critique import _verify_missing_verdicts
+
+    spec = PartSpec(**{**SPEC, "features": [{"name": "mount", "type": "hole", "count": 2}]})
+    c = Critique(
+        score=30,
+        passed=False,
+        feature_verdicts=[FeatureVerdict(name="mount", status="missing", note="")],
+        discrepancies=[Discrepancy(what="mount is missing", severity="major")],
+        confidence=0.5,
+    )
+    _verify_missing_verdicts(c, spec, {"total_holes": 0})
+    assert c.feature_verdicts[0].status == "missing"
+    assert c.discrepancies[0].severity == "major"
+
+
+# --------------------------------------------------------------------------- #
 # mesh fit-to-stated rescue
 
 

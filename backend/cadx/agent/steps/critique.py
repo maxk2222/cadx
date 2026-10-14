@@ -241,6 +241,13 @@ def _finalize_critique(
     # when the model itself listed them; a bare failed verdict (discrepancies
     # synthesized here) is the model's own call and must stay low
     had_llm_discrepancies = bool(critique.discrepancies)
+    # measured-fact verification: 'missing' verdicts on feature kinds the
+    # measurement CAN see (holes, slots, fillets, chamfers, csk/cbore) are
+    # downgraded when the geometry shows the feature present — vision
+    # misjudgement must not hard-fail a part the numbers say is there.
+    # Runs before synthesis so a refuted verdict synthesizes as 'wrong'
+    # (minor), not 'missing' (major).
+    _verify_missing_verdicts(critique, spec, features or {})
     # synthesize discrepancies from measured findings if still empty
     if not critique.passed and not critique.discrepancies:
         for i in dim_issues:
@@ -290,6 +297,7 @@ def _finalize_critique(
 
     measured_n = (
         int((features or {}).get("total_holes") or 0)
+        + int((features or {}).get("slots") or 0)
         + len((features or {}).get("rounds") or [])
         + int((features or {}).get("chamfer_faces") or 0)
         + int((features or {}).get("countersinks") or 0)
@@ -324,6 +332,66 @@ def _finalize_critique(
                 d.severity = "minor"
         critique.score = max(critique.score, floor)
     return critique
+
+
+# verdict 'missing' claims on these spec-feature kinds can be checked against
+# the measured geometry — presence refutes 'absent' (position/fit may still
+# be wrong, which is a different verdict)
+_MEASURABLE_KINDS: tuple[tuple[str, str], ...] = (
+    # (keyword in feature type/name, measured-features key)
+    ("hole", "total_holes"),
+    ("bore", "total_holes"),
+    ("slot", "slots"),
+    ("fillet", "rounds"),
+    ("round", "rounds"),
+    ("chamfer", "chamfer_faces"),
+    ("countersink", "countersinks"),
+    ("counterbore", "counterbores"),
+)
+
+
+def _measured_presence(kind_key: str, features: dict[str, Any]) -> bool:
+    v = features.get(kind_key)
+    if isinstance(v, list):
+        return bool(v)
+    return bool(v)
+
+
+def _verify_missing_verdicts(critique: Critique, spec: PartSpec, features: dict[str, Any]) -> None:
+    """Downgrade 'missing' verdicts contradicted by measured geometry.
+
+    The vision model occasionally reports a feature absent that renders and
+    measurements show present (observed: firesteel 'tube missing' while the
+    tube spanned the plate). Only applies to measurable kinds — 'rib',
+    'texture' etc. stay LLM-judged. A refuted 'missing' becomes 'wrong':
+    the feature exists but position/shape may still mismatch.
+    """
+    spec_types = {f.name.lower(): (f.type or "") for f in spec.features}
+    refuted: list[str] = []
+    for fv in critique.feature_verdicts:
+        if fv.status != "missing":
+            continue
+        name = (fv.name or "").lower()
+        ftype = spec_types.get(name, "")
+        haystack = f"{ftype} {name}"
+        for kw, key in _MEASURABLE_KINDS:
+            if kw in haystack and _measured_presence(key, features):
+                fv.status = "wrong"
+                fv.note = (fv.note or "") + (
+                    f" [measured: {key} present — 'missing' refuted, position/quality unverified]"
+                )
+                refuted.append(name)
+                break
+    if not refuted:
+        return
+    # discrepancies that repeat a refuted 'missing' claim lose their major
+    # severity — they may still describe a real placement problem (minor)
+    for d in critique.discrepancies:
+        if d.severity != "major" or "missing" not in d.what.lower():
+            continue
+        if any(n in d.what.lower() for n in refuted):
+            d.severity = "minor"
+            d.what += " (feature measured present — likely a placement/shape issue)"
 
 
 def fact_ceiling(dim_issues: list[str], feature_findings: list[dict[str, Any]]) -> int:

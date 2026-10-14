@@ -152,6 +152,30 @@ def test_compare_axis_mismatch_flagged():
     )
 
 
+def test_compare_slot_feature_uses_slot_count():
+    m = MeasuredFeatures(
+        hole_groups=[MeasuredHoleGroup(diameter=12.4, count=1, axis="+z", elongated=True)],
+        total_holes=1,
+        slots=1,
+    )
+    ok = compare_features([Feature(name="slot_a", type="slot", count=1)], m)
+    assert not ok
+    missing = compare_features([Feature(name="slot_a", type="slot", count=2)], m)
+    assert any(f.severity == "major" and "slot" in f.expected for f in missing)
+
+
+def test_elongated_group_does_not_satisfy_round_hole():
+    m = MeasuredFeatures(
+        hole_groups=[MeasuredHoleGroup(diameter=12.4, count=1, axis="+z", elongated=True)],
+        total_holes=1,
+        slots=1,
+    )
+    findings = compare_features(
+        [Feature(name="mount", type="hole", count=1, dims={"diameter": 12.0})], m
+    )
+    assert any(f.severity == "major" for f in findings)
+
+
 def test_compare_axis_sign_insensitive():
     """A through-bore on -z satisfies a spec asking for the z axis."""
     m = MeasuredFeatures(

@@ -19,7 +19,8 @@ def bored_stl(tmp_path: Path) -> Path:
 
 
 def test_mesh_through_holes_detects_bores(bored_stl: Path) -> None:
-    groups, csk = _mesh_through_holes(bored_stl)
+    groups, csk, slots = _mesh_through_holes(bored_stl)
+    assert slots == 0
     z_groups = [g for g in groups if g.axis == "+z"]
     assert len(z_groups) == 3
     for g in z_groups:
@@ -34,7 +35,7 @@ def test_mesh_through_holes_detects_countersink(tmp_path: Path) -> None:
     part -= Pos(0, 0, 7) * Cone(bottom_radius=2, top_radius=4.25, height=2)
     path = tmp_path / "csk.stl"
     export_stl(part, str(path))
-    groups, csk = _mesh_through_holes(path)
+    groups, csk, _ = _mesh_through_holes(path)
     assert len([g for g in groups if g.axis == "+z"]) == 1
     assert csk == 1
 
@@ -42,7 +43,7 @@ def test_mesh_through_holes_detects_countersink(tmp_path: Path) -> None:
 def test_mesh_through_holes_ignores_solid(tmp_path: Path) -> None:
     path = tmp_path / "solid.stl"
     export_stl(Box(40, 20, 8), str(path))
-    groups, csk = _mesh_through_holes(path)
+    groups, csk, _ = _mesh_through_holes(path)
     assert groups == []
     assert csk == 0
 
@@ -54,8 +55,23 @@ def test_mesh_through_holes_ignores_open_slot(tmp_path: Path) -> None:
     part -= Pos(0, 14, -1) * Box(10, 12, 10)
     path = tmp_path / "slot.stl"
     export_stl(part, str(path))
-    groups, _ = _mesh_through_holes(path)
+    groups, _, _ = _mesh_through_holes(path)
     assert [g for g in groups if g.axis == "+z"] == []
+
+
+def test_mesh_through_holes_detects_enclosed_slot(tmp_path: Path) -> None:
+    # 20x6 mm enclosed through-void: elongated → reported as a slot and
+    # flagged on its group, not counted as a round bore
+    part = Box(70, 30, 5, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    cutter = Box(14, 6, 10, align=(Align.CENTER,) * 3)
+    cutter += Pos(-7, 0, 0) * Cylinder(3, 10) + Pos(7, 0, 0) * Cylinder(3, 10)
+    part -= Pos(0, 0, 2.5) * cutter  # cutter protrudes both faces — no membrane
+    path = tmp_path / "slot.stl"
+    export_stl(part, str(path))
+    groups, _, slots = _mesh_through_holes(path)
+    assert slots >= 1
+    z_groups = [g for g in groups if g.axis == "+z"]
+    assert z_groups and all(g.elongated for g in z_groups)
 
 
 def test_extract_features_mesh_fallback(bored_stl: Path) -> None:

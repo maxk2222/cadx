@@ -82,34 +82,38 @@ def _features_ok(expected: list[dict[str, Any]], features: dict[str, Any] | None
         return None
     feats = features or {}
     groups = feats.get("hole_groups") or []
+    return all(_feature_entry_ok(ef, feats, groups) for ef in expected)
+
+
+def _feature_entry_ok(ef: dict[str, Any], feats: dict[str, Any], groups: list[Any]) -> bool:
+    # elongated voids are slots — they must not satisfy a round-hole
+    # expectation (a 20x6 slot would otherwise read as a big bore)
+    round_groups = [g for g in groups if not g.get("elongated")]
 
     def holes_near(dia: float | None) -> int:
         if dia is None:
-            return int(feats.get("total_holes") or 0)
+            return sum(int(g.get("count") or 0) for g in round_groups)
         tol = max(0.5, dia * 0.1)
         return sum(
             int(g.get("count") or 0)
-            for g in groups
+            for g in round_groups
             if abs(float(g.get("diameter") or 0) - dia) <= tol
         )
 
-    for ef in expected:
-        ftype = str(ef.get("type", "")).lower()
-        want = int(ef.get("count") or 1)
-        if ftype in ("hole", "bore", "through-hole"):
-            if holes_near(ef.get("dia")) < want:
-                return False
-        elif ftype == "countersink":
-            if int(feats.get("countersinks") or 0) < want:
-                return False
-        elif ftype == "counterbore":
-            if int(feats.get("counterbores") or 0) < want:
-                return False
-        elif ftype in ("fillet", "round"):
-            if not (feats.get("rounds") or []):
-                return False
-        elif ftype == "chamfer" and int(feats.get("chamfer_faces") or 0) < 1:
-            return False
+    ftype = str(ef.get("type", "")).lower()
+    want = int(ef.get("count") or 1)
+    if ftype == "slot":
+        return int(feats.get("slots") or 0) >= want
+    if ftype in ("hole", "bore", "through-hole"):
+        return holes_near(ef.get("dia")) >= want
+    if ftype == "countersink":
+        return int(feats.get("countersinks") or 0) >= want
+    if ftype == "counterbore":
+        return int(feats.get("counterbores") or 0) >= want
+    if ftype in ("fillet", "round"):
+        return bool(feats.get("rounds") or [])
+    if ftype == "chamfer":
+        return int(feats.get("chamfer_faces") or 0) >= 1
     return True
 
 
