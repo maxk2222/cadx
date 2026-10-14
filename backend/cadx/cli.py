@@ -413,6 +413,46 @@ def mesh_health(
     asyncio.run(_run())
 
 
+def _eval_filter(bms: list, *, real_llm: bool, real_all: bool) -> list:
+    if not real_llm:
+        skipped = [b.name for b in bms if b.real_only or b.llm_script is None]
+        bms = [b for b in bms if not b.real_only and b.llm_script is not None]
+        for name in skipped:
+            print(f"{name}: skipped (real-only benchmark — use `cadx eval --real`)")
+    elif not real_all:
+        # scripted benchmarks assert pipeline behaviour against a fixed
+        # FakeLLM script — re-running them with a real LLM conflates
+        # model variance with pipeline regressions (and their
+        # expectations are tuned to the scripted outputs)
+        scripted = [b.name for b in bms if b.llm_script is not None]
+        bms = [b for b in bms if b.llm_script is None]
+        for name in scripted:
+            print(f"{name}: skipped (scripted — use --real-all to run with real LLM)")
+    return bms
+
+
+async def _eval_mesh_preflight(bms: list) -> None:
+    # mesh/hybrid benchmarks silently degrade to the CAD fallback when
+    # the sidecar is down — flag it up front
+    needs_mesh = [
+        b.name for b in bms if not b.fake_mesh and b.gen_mode in ("mesh", "hybrid", "auto")
+    ]
+    if not needs_mesh:
+        return
+    from cadx.agent.mesh_client import make_mesh_client
+    from cadx.runtime_config import runtime_from_db_or_default
+
+    runtime = await runtime_from_db_or_default()
+    mesh = make_mesh_client(runtime_settings=runtime)
+    health = await mesh.health() if mesh else None
+    if not (health and health.ok):
+        print(
+            "WARNING: mesh server unreachable"
+            + (f" ({health.error})" if health and health.error else "")
+            + f" — {', '.join(needs_mesh)} will fall back to CAD mode"
+        )
+
+
 @app.command()
 def eval(
     benchmark: str | None = typer.Option(None, "--benchmark", "-b"),
@@ -421,6 +461,11 @@ def eval(
     ),
     real_llm: bool = typer.Option(
         False, "--real", help="Use real LLM instead of embedded FakeLLM script"
+    ),
+    real_all: bool = typer.Option(
+        False,
+        "--real-all",
+        help="with --real: also run scripted (FakeLLM) benchmarks with the real LLM",
     ),
     repeat: int = typer.Option(
         1, "--repeat", "-n", min=1, help="repeat each benchmark N times (variance control)"
@@ -442,11 +487,9 @@ def eval(
             if not bms:
                 print(f"no benchmarks with mode '{mode}'")
                 raise typer.Exit(1)
-        if not real_llm:
-            skipped = [b.name for b in bms if b.real_only or b.llm_script is None]
-            bms = [b for b in bms if not b.real_only and b.llm_script is not None]
-            for name in skipped:
-                print(f"{name}: skipped (real-only benchmark — use `cadx eval --real`)")
+        bms = _eval_filter(bms, real_llm=real_llm, real_all=real_all)
+        if real_llm:
+            await _eval_mesh_preflight(bms)
         # name -> list of per-run results, for the aggregate table on --repeat
         all_results: dict[str, list] = {}
         for rep in range(repeat):
