@@ -154,6 +154,10 @@ def check_code(code: str) -> CheckResult:
         tree = ast.parse(code)
     except SyntaxError as e:
         return CheckResult(ok=False, errors=[f"syntax error line {e.lineno}: {e.msg}"])
+    except Exception as e:
+        # e.g. UnicodeEncodeError from lone surrogates in model output —
+        # must surface as a repairable contract failure, not a crash
+        return CheckResult(ok=False, errors=[f"code is not parseable: {type(e).__name__}: {e}"])
 
     checker = _Checker()
     checker.visit(tree)

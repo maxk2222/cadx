@@ -18,6 +18,33 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+def sanitize_text(s: str) -> str:
+    """Strip characters that cannot be encoded as UTF-8 (lone surrogates etc.).
+
+    Weak local models occasionally emit raw UTF-16 surrogate code points
+    (``\\ud800``-``\\udfff``); if they reach ``ast.parse``/``json.dumps`` they
+    raise ``UnicodeEncodeError`` and kill the whole benchmark run.
+    """
+    if not s:
+        return s
+    try:
+        s.encode("utf-8")
+        return s
+    except UnicodeEncodeError:
+        return s.encode("utf-8", "ignore").decode("utf-8")
+
+
+def sanitize_args(v: Any) -> Any:
+    """Recursively sanitize strings inside a parsed arguments object."""
+    if isinstance(v, str):
+        return sanitize_text(v)
+    if isinstance(v, dict):
+        return {sanitize_text(k) if isinstance(k, str) else k: sanitize_args(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [sanitize_args(x) for x in v]
+    return v
+
+
 @dataclass
 class ToolCall:
     id: str
@@ -41,13 +68,14 @@ def _mk_call(call_id: str, name: str, raw: Any) -> ToolCall:
     args: dict[str, Any] = {}
     err = ""
     if isinstance(raw, dict):
-        args = raw
-        raw = json.dumps(raw)
+        args = sanitize_args(raw)
+        raw = json.dumps(raw, ensure_ascii=True)
     elif isinstance(raw, str) and raw.strip():
+        raw = sanitize_text(raw)
         try:
             parsed = json.loads(raw)
             if isinstance(parsed, dict):
-                args = parsed
+                args = sanitize_args(parsed)
             else:
                 err = "arguments is not a JSON object"
         except json.JSONDecodeError as e:

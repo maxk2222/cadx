@@ -68,3 +68,9 @@ def test_validate_overrides():
     assert validate_overrides({"length": 5.0}, declared) == []
     errs = validate_overrides({"nope": 1, "flag": 3, "name": 5}, declared)
     assert len(errs) == 3
+
+
+def test_surrogate_code_is_check_failure_not_crash():
+    r = check_code("x = 1\ud800\nresult = Box(1,1,1)\n")
+    assert not r.ok
+    assert any("parseable" in e for e in r.errors)

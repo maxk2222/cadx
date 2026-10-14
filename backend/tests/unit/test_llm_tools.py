@@ -10,6 +10,7 @@ from cadx.llm.tools import (
     _StreamToolAcc,
     parse_content_tool_call,
     parse_tool_calls,
+    sanitize_text,
 )
 
 
@@ -176,3 +177,42 @@ async def test_reask_strips_tools():
     assert resp.parsed is not None and resp.parsed.ok
     assert "tools" in posted[0]
     assert "tools" not in posted[1] and "tool_choice" not in posted[1]
+
+
+def test_sanitize_text_strips_surrogates():
+    assert sanitize_text("clean") == "clean"
+    assert sanitize_text("a\ud800b\udfff") == "ab"
+    assert sanitize_text("") == ""
+
+
+def test_parse_tool_calls_sanitizes_surrogates():
+    msg = {
+        "tool_calls": [
+            {
+                "id": "c1",
+                "function": {
+                    "name": "replace_code",
+                    "arguments": '{"code": "x = 1\\ud800\\n"}',
+                },
+            }
+        ]
+    }
+    calls = parse_tool_calls(msg)
+    assert calls[0].arguments["code"] == "x = 1\n"
+    calls[0].arguments["code"].encode("utf-8")  # must not raise
+
+
+def test_parse_tool_calls_dict_args_sanitized():
+    msg = {
+        "tool_calls": [
+            {
+                "id": "c1",
+                "function": {
+                    "name": "set_param",
+                    "arguments": {"note": "bad\ud901str", "n": 1},
+                },
+            }
+        ]
+    }
+    calls = parse_tool_calls(msg)
+    assert calls[0].arguments["note"] == "badstr"

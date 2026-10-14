@@ -22,7 +22,13 @@ import httpx
 from pydantic import BaseModel
 
 from cadx.llm.structured import LLMFormatError, parse_model
-from cadx.llm.tools import ToolCall, _StreamToolAcc, parse_content_tool_call, parse_tool_calls
+from cadx.llm.tools import (
+    ToolCall,
+    _StreamToolAcc,
+    parse_content_tool_call,
+    parse_tool_calls,
+    sanitize_text,
+)
 from cadx.logging import get_logger
 from cadx.runtime_config import RuntimeSettings
 
@@ -454,7 +460,7 @@ class LLMClient:
 
         try:
             msg = data["choices"][0]["message"]
-            text = msg.get("content") or ""
+            text = sanitize_text(msg.get("content") or "")
             tool_calls = parse_tool_calls(msg)
             finish = data["choices"][0].get("finish_reason") or ""
         except (KeyError, IndexError, TypeError) as e:
@@ -506,7 +512,7 @@ class LLMClient:
                 payload2["messages"] = retry_messages
                 data2 = await self._post(payload2, role)
                 try:
-                    text2 = data2["choices"][0]["message"]["content"] or ""
+                    text2 = sanitize_text(data2["choices"][0]["message"]["content"] or "")
                 except (KeyError, IndexError, TypeError) as e:
                     raise LLMFormatError("re-ask produced unusable response") from e
                 u2 = data2.get("usage") or {}
