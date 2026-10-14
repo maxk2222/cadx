@@ -27,6 +27,7 @@ from cadx.cad.mesh_ops import (
     apply_op,
     apply_ops,
     baseline_mesh,
+    decimate,
     flat_base_ratio,
     load_mesh,
     mesh_analysis,
@@ -123,7 +124,16 @@ class MeshWorkbench:
         self.new_mesh_rel: str | None = None  # set by mesh_regen_edit
         try:
             raw = load_mesh(raw_path)
+            # workbench is preview-only and runs in the worker process — cap
+            # faces so voxel/boolean ops can't OOM the worker (the executor
+            # replays ops on its own baseline for the authoritative result)
+            cap = getattr(
+                getattr(self.ctx, "runtime_settings", None), "mesh_decimate_faces", None
+            ) or 30_000
             self.baseline = baseline_mesh(raw, post, spec)[0]
+            if len(self.baseline.faces) > cap:
+                self.baseline = decimate(self.baseline, cap)
+                log.info("mesh.workbench_decimated", faces=len(self.baseline.faces), cap=cap)
             self.work, _ = apply_ops(self.baseline, self.ops, anchors=self.anchors)
             if not self.ops:
                 self.work = rest_on_xy_center(self.baseline.copy())
@@ -486,10 +496,15 @@ class MeshWorkbench:
 
         # 4. re-baseline on the new raw mesh; previous ops no longer apply
         try:
+            cap = getattr(
+                getattr(self.ctx, "runtime_settings", None), "mesh_decimate_faces", None
+            ) or 30_000
             raw = await asyncio.to_thread(load_mesh, out)
             self.baseline = await asyncio.to_thread(
                 lambda: baseline_mesh(raw, self._post, self.spec)[0]
             )
+            if len(self.baseline.faces) > cap:
+                self.baseline = await asyncio.to_thread(decimate, self.baseline, cap)
             dropped = len(self.ops)
             self.ops.clear()
             self.work = rest_on_xy_center(self.baseline.copy())

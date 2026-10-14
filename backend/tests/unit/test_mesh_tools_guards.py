@@ -15,9 +15,10 @@ from cadx.agent.types import AgentCtx
 from cadx.cad.mesh_ops import MeshPostParams
 from cadx.db.models import ProjectSettings
 from cadx.llm.fake import FakeLLM
+from cadx.runtime_config import RuntimeSettings
 
 
-def _ctx() -> AgentCtx:
+def _ctx(**kw) -> AgentCtx:
     async def emit(step: str, it: int, msg: str, **_f) -> None:
         pass
 
@@ -36,6 +37,7 @@ def _ctx() -> AgentCtx:
         prompt="test",
         mode="generate",
         settings=ProjectSettings(clarification_mode="assume"),
+        **kw,
     )
 
 
@@ -62,6 +64,23 @@ async def test_boolean_add_giant_primitive_refused(tmp_path):
     assert res["ok"] is False
     assert "refused" in res["error"]
     assert not wb.ops  # nothing recorded
+
+
+def test_workbench_decimates_dense_baseline(tmp_path):
+    """T0.2: the in-worker workbench caps baseline faces so voxel/boolean ops
+    can't exhaust worker memory (the executor replay keeps full detail)."""
+    raw = tmp_path / "dense.glb"
+    trimesh.creation.icosphere(subdivisions=4, radius=20).export(str(raw), file_type="glb")
+    wb = MeshWorkbench(
+        _ctx(runtime_settings=RuntimeSettings(mesh_decimate_faces=2_000)),
+        raw_path=raw,
+        post=MeshPostParams(),
+        spec=None,
+        iteration=1,
+    )
+    assert wb.error is None
+    assert len(wb.baseline.faces) <= 2_000
+    assert len(wb.work.faces) <= 2_000
 
 
 async def test_boolean_add_small_boss_allowed(tmp_path):
