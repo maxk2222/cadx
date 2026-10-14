@@ -119,7 +119,11 @@ def _fill_grid(
             out = np.zeros(len(centers), dtype=bool)
             for s in range(0, len(centers), 512):
                 out[s : s + 512] = np.asarray(m.contains(centers[s : s + 512]))
-            return out.reshape(dims)
+            # degenerate/flipped watertight meshes can report every center as
+            # outside — don't accept an empty grid, fall through to the
+            # surface-distance path instead
+            if out.any():
+                return out.reshape(dims)
     except Exception:
         pass
     # fallback for non-watertight meshes: surface-near cells + hole fill
