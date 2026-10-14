@@ -448,13 +448,19 @@ def eval(
             if real_llm:
                 bm.llm_script = None
             # llm=None: run_benchmark builds a client from the DB runtime
-            # settings — the same endpoint/key/models a real job would use
-            r = await run_benchmark(bm, llm=None)
+            # settings — the same endpoint/key/models a real job would use.
+            # Per-benchmark isolation: one crashed benchmark must not kill
+            # the whole eval run.
+            try:
+                r = await run_benchmark(bm, llm=None)
+            except Exception as e:
+                print(f"{bm.name}: crashed ({type(e).__name__}: {e})")
+                continue
             dims = f"bbox={r.bbox} dim_ok={r.dim_ok}" if r.bbox else ""
             extra = f"features_ok={r.features_ok} watertight={r.watertight} calls={r.calls} ptok={r.prompt_tokens}"
             print(
                 f"{r.name}: {r.status} score={r.score} passed={r.passed} {dims} {extra} "
-                f"({r.wall_s}s) {r.error or ''}"
+                f"({r.wall_s}s) {r.error or ''} dir={r.version_dir}"
             )
 
     asyncio.run(_run())

@@ -43,3 +43,41 @@ def test_load_benchmarks_parses_new_fields() -> None:
     assert len(fs.images) == 3
     assert bms["knife_scale_hybrid"].gen_mode == "hybrid"
     assert bms["grip_mesh"].expect_watertight is True
+
+
+async def test_run_benchmark_dumps_trace_on_crash(monkeypatch, tmp_path) -> None:
+    """A crashing benchmark must still leave its trace on disk (postmortem)."""
+    import cadx.eval.runner as runner
+    from cadx import storage
+
+
+
+    async def boom(ctx):
+        await ctx.trace.record(
+            step="intake",
+            iteration=0,
+            model="m",
+            messages=[{"role": "user", "content": "hi"}],
+            response_text="",
+            parsed=None,
+            prompt_tokens=1,
+            completion_tokens=0,
+            latency_ms=1,
+        )
+        raise RuntimeError("simulated benchmark crash")
+
+    monkeypatch.setattr(runner, "run_generation", boom)
+    bm = runner.Benchmark(name="crash_test", prompt="box", fake_mesh=True)
+    try:
+        await runner.run_benchmark(bm)
+        raise AssertionError("should have raised")
+    except RuntimeError:
+        pass
+    # trace.json landed in the version dir created by _dump_trace
+    hits = list(storage.data_root().glob("projects/*/versions/*/trace.json"))
+    assert hits, "no trace.json dumped"
+
+    import json
+
+    recs = json.loads(hits[0].read_text())
+    assert recs and recs[0]["step"] == "intake"

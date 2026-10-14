@@ -20,6 +20,9 @@ from cadx.agent.trace import MemoryTrace
 from cadx.agent.types import AgentCtx
 from cadx.db.models import ProjectSettings
 from cadx.llm.fake import FakeLLM
+from cadx.logging import get_logger
+
+log = get_logger(__name__)
 
 BENCH_DIR = Path(__file__).parent / "benchmarks"
 
@@ -174,10 +177,26 @@ async def run_benchmark(bm: Benchmark, llm: Any | None = None) -> EvalResult:
         mesh=mesh,
         mesh_available=(await mesh.health()).ok if mesh else False,
     )
+    vdir = storage.version_dir(project_id, version_id)
     t0 = time.monotonic()
-    outcome: RunOutcome = await run_generation(ctx)
+    try:
+        outcome: RunOutcome = await run_generation(ctx)
+    finally:
+        # durable postmortem: the in-memory trace survives neither crashes
+        # nor container exits — always dump what was captured
+        _dump_trace(ctx.trace, vdir)
     wall = time.monotonic() - t0
-    return _judge(bm, outcome, wall, storage.version_dir(project_id, version_id))
+    return _judge(bm, outcome, wall, vdir)
+
+
+def _dump_trace(trace: MemoryTrace, vdir: Path) -> None:
+    try:
+        vdir.mkdir(parents=True, exist_ok=True)
+        (vdir / "trace.json").write_text(
+            json.dumps(trace.records, default=str, indent=1), encoding="utf-8"
+        )
+    except OSError as e:
+        log.warning("eval.trace_dump_failed", error=str(e))
 
 
 def _judge(bm: Benchmark, outcome: RunOutcome, wall: float, version_dir: Path) -> EvalResult:
