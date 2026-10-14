@@ -1537,9 +1537,7 @@ def _upsample_density(
     gi, gj, gk = np.meshgrid(*coords, indexing="ij")
     # "nearest" so boundary cells past the last coarse centre inherit the
     # edge cell's value instead of attenuating towards 0
-    vals = ndimage.map_coordinates(
-        rho_c.astype(float), [gi, gj, gk], order=1, mode="nearest"
-    )
+    vals = ndimage.map_coordinates(rho_c.astype(float), [gi, gj, gk], order=1, mode="nearest")
     return np.clip(vals.ravel(), 0.0, 1.0)
 
 

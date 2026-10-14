@@ -1919,9 +1919,7 @@ async def _run_cad(  # noqa: C901
                 if new_code is None:
                     # hunks missed AND no usable full_code — retry once asking
                     # for the complete file before giving up on this repair
-                    await ctx.emit(
-                        "repair", it, "patch hunks missed — retrying with full_code"
-                    )
+                    await ctx.emit("repair", it, "patch hunks missed — retrying with full_code")
                     try:
                         presp = await codegen_step.repair(
                             ctx,

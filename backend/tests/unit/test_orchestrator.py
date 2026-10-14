@@ -1,5 +1,3 @@
-
-
 def test_build_issues_solids_gate():
     """Disconnected solids are a major deterministic issue regardless of
     what the critique model scored."""

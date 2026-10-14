@@ -257,11 +257,11 @@ async def test_schema_reask_uses_stream(monkeypatch):
             return httpx.Response(200, json={"choices": [{"message": {"content": ""}}]})
         n = len(calls)
         if n == 1:
-            chunk = {"choices": [{"delta": {"content": "not json at all"}, "finish_reason": "stop"}]}
-        else:
             chunk = {
-                "choices": [{"delta": {"content": '{"value": 3}'}, "finish_reason": "stop"}]
+                "choices": [{"delta": {"content": "not json at all"}, "finish_reason": "stop"}]
             }
+        else:
+            chunk = {"choices": [{"delta": {"content": '{"value": 3}'}, "finish_reason": "stop"}]}
         return httpx.Response(
             200,
             content=_sse(chunk),

@@ -130,10 +130,7 @@ def test_lint_clean_code_no_warnings():
 
 def test_absurd_literal_warns():
     """Corrupted sampling emits literals like -8e+67 — flag them."""
-    code = (
-        "PARAMS = {}\n"
-        "result = Box(-8e+67, 10, 10)\n"
-    )
+    code = "PARAMS = {}\nresult = Box(-8e+67, 10, 10)\n"
     res = check_code(code)
     assert res.ok
     assert any("suspicious literal" in w for w in res.warnings)
