@@ -34,6 +34,14 @@ def _ctx(llm: FakeLLM | None = None, **kw) -> AgentCtx:
     # ids, which made mesh outcome assertions depend on hash luck (flaky)
     if kw["settings"].mesh_seed is None:
         kw["settings"].mesh_seed = 4242
+    # wall-clock guards must never fire in tests — a loaded CI machine made
+    # run_generation bail before the re-critique (agent_max_wall_s=900s)
+    rs = kw.get("runtime_settings")
+    kw["runtime_settings"] = (
+        rs.model_copy(update={"agent_max_wall_s": 86_400})
+        if rs is not None
+        else RuntimeSettings(agent_max_wall_s=86_400)
+    )
     return AgentCtx(
         llm=llm or FakeLLM([]),
         executor=InProcessExecutor(),
