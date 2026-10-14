@@ -427,7 +427,6 @@ def eval(
 
     async def _run() -> None:
         from cadx.eval.runner import load_benchmarks, run_benchmark
-        from cadx.llm.client import LLMClient
 
         bms = load_benchmarks()
         if benchmark:
@@ -445,11 +444,12 @@ def eval(
             bms = [b for b in bms if not b.real_only and b.llm_script is not None]
             for name in skipped:
                 print(f"{name}: skipped (real-only benchmark — use `cadx eval --real`)")
-        llm = LLMClient() if real_llm else None
         for bm in bms:
             if real_llm:
                 bm.llm_script = None
-            r = await run_benchmark(bm, llm=llm)
+            # llm=None: run_benchmark builds a client from the DB runtime
+            # settings — the same endpoint/key/models a real job would use
+            r = await run_benchmark(bm, llm=None)
             dims = f"bbox={r.bbox} dim_ok={r.dim_ok}" if r.bbox else ""
             extra = f"features_ok={r.features_ok} watertight={r.watertight} calls={r.calls} ptok={r.prompt_tokens}"
             print(
