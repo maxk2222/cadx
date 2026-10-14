@@ -1,0 +1,13 @@
+{
+  "prompt": "fire steel mount. die gesamtlänge beträgt 7cm. durchmesser des lochs für den feuerstahl ca 7-8mm.",
+  "gen_mode": "auto",
+  "images": [
+    "backend/tests/fixtures/images/firesteel_1.jpg",
+    "backend/tests/fixtures/images/firesteel_2.jpg",
+    "backend/tests/fixtures/images/firesteel_3.jpg"
+  ],
+  "expected_features": [{ "type": "hole", "count": 1 }],
+  "expect_watertight": true,
+  "max_prompt_tokens": 4000000,
+  "settings": { "max_iterations": 12 }
+}

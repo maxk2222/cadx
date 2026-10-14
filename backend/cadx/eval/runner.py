@@ -37,6 +37,10 @@ class Benchmark:
     fake_mesh: bool = False  # use FakeMeshClient instead of a real mesh server
     images: list[str] = field(default_factory=list)  # fixture image paths (repo-relative)
     runtime: dict[str, Any] = field(default_factory=dict)  # RuntimeSettings overrides
+    expected_features: list[dict[str, Any]] = field(default_factory=list)
+    expect_watertight: bool = False
+    max_wall_s: float | None = None
+    max_prompt_tokens: int | None = None
 
 
 @dataclass
@@ -49,6 +53,54 @@ class EvalResult:
     wall_s: float
     error: str | None
     version_dir: str = ""
+    features_ok: bool | None = None
+    watertight: bool | None = None
+    prompt_tokens: int = 0
+    calls: int = 0
+    passed: bool | None = None
+
+
+def _features_ok(expected: list[dict[str, Any]], features: dict[str, Any] | None) -> bool | None:
+    """Compare expected feature entries against measured geometry.
+
+    Supported entries:
+      {"type": "hole", "count": N, "dia": D}  — ≥N holes in groups near D (±10%/0.5mm)
+      {"type": "hole", "count": N}            — total_holes ≥ N
+      {"type": "countersink"/"counterbore", "count": N}
+      {"type": "fillet"} / {"type": "chamfer"} — presence check
+    Returns None when nothing was expected.
+    """
+    if not expected:
+        return None
+    feats = features or {}
+    groups = feats.get("hole_groups") or []
+
+    def holes_near(dia: float | None) -> int:
+        if dia is None:
+            return int(feats.get("total_holes") or 0)
+        tol = max(0.5, dia * 0.1)
+        return sum(int(g.get("count") or 0) for g in groups
+                   if abs(float(g.get("diameter") or 0) - dia) <= tol)
+
+    for ef in expected:
+        ftype = str(ef.get("type", "")).lower()
+        want = int(ef.get("count") or 1)
+        if ftype in ("hole", "bore", "through-hole"):
+            if holes_near(ef.get("dia")) < want:
+                return False
+        elif ftype == "countersink":
+            if int(feats.get("countersinks") or 0) < want:
+                return False
+        elif ftype == "counterbore":
+            if int(feats.get("counterbores") or 0) < want:
+                return False
+        elif ftype in ("fillet", "round"):
+            if not (feats.get("rounds") or []):
+                return False
+        elif ftype == "chamfer":
+            if int(feats.get("chamfer_faces") or 0) < 1:
+                return False
+    return True
 
 
 def load_benchmarks() -> list[Benchmark]:
@@ -134,6 +186,26 @@ async def run_benchmark(bm: Benchmark, llm: Any | None = None) -> EvalResult:
             abs(a - e) <= max(bm.tolerance_mm, e * 0.02) for a, e in zip(act, exp, strict=True)
         )
 
+    analysis = outcome.analysis or {}
+    watertight = analysis.get("watertight_after_repair")
+    if watertight is None:
+        watertight = analysis.get("watertight")
+    usage = outcome.usage or {}
+    prompt_tokens = int(usage.get("prompt_tokens") or 0)
+    calls = int(usage.get("calls") or 0)
+    features_ok = _features_ok(bm.expected_features, outcome.features)
+
+    passed: bool | None = outcome.status in ("succeeded", "needs_review")
+    if passed:
+        if dim_ok is False or features_ok is False:
+            passed = False
+        if bm.expect_watertight and watertight is not True:
+            passed = False
+        if bm.max_wall_s is not None and wall > bm.max_wall_s:
+            passed = False
+        if bm.max_prompt_tokens is not None and prompt_tokens > bm.max_prompt_tokens:
+            passed = False
+
     return EvalResult(
         name=bm.name,
         status=outcome.status,
@@ -143,6 +215,11 @@ async def run_benchmark(bm: Benchmark, llm: Any | None = None) -> EvalResult:
         wall_s=round(wall, 1),
         error=outcome.error,
         version_dir=str(storage.version_dir(project_id, version_id)),
+        features_ok=features_ok,
+        watertight=bool(watertight) if watertight is not None else None,
+        prompt_tokens=prompt_tokens,
+        calls=calls,
+        passed=passed,
     )
 
 

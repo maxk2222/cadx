@@ -7,7 +7,7 @@ BACKEND := backend
 FRONTEND := frontend
 
 .PHONY: setup lock sync dev dev-api dev-worker dev-executor dev-web infra \
-        up down logs test lint fmt eval migrate build clean \
+        up down logs test lint fmt eval eval-real migrate build clean \
         mesh-sync mesh-server mesh-models mesh-test dev-mesh
 
 setup: $(VENV)/bin/uv
@@ -64,6 +64,9 @@ migrate:
 
 eval:
 	cd $(BACKEND) && ../$(VENV)/bin/uv run cadx eval
+
+eval-real:
+	cd $(BACKEND) && ../$(VENV)/bin/uv run cadx eval --real
 
 build:
 	docker compose build

@@ -446,7 +446,11 @@ def eval(
                 bm.llm_script = None
             r = await run_benchmark(bm, llm=llm)
             dims = f"bbox={r.bbox} dim_ok={r.dim_ok}" if r.bbox else ""
-            print(f"{r.name}: {r.status} score={r.score} {dims} ({r.wall_s}s) {r.error or ''}")
+            extra = f"features_ok={r.features_ok} watertight={r.watertight} calls={r.calls} ptok={r.prompt_tokens}"
+            print(
+                f"{r.name}: {r.status} score={r.score} passed={r.passed} {dims} {extra} "
+                f"({r.wall_s}s) {r.error or ''}"
+            )
 
     asyncio.run(_run())
 

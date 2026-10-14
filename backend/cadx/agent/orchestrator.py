@@ -97,6 +97,7 @@ class RunOutcome:
     questions: list[dict[str, Any]] | None = None
     resume_state: dict[str, Any] | None = None
     issues: list[dict[str, Any]] = field(default_factory=list)
+    features: dict[str, Any] | None = None  # measured geometry (holes, rounds, chamfers)
     error: str | None = None
     fallback_to_cad: bool = False  # mesh loop hard-failed on a dimensioned spec
     switch_requested: bool = False  # plateaued — try the next strategy approach
@@ -2109,6 +2110,7 @@ async def _run_cad(  # noqa: C901
         [p.model_dump() for p in best.code_response.params] if best.code_response else None
     )
     outcome.analysis = best.exec_result.get("analysis")
+    outcome.features = best.exec_result.get("features")
     outcome.critique = best.critique.model_dump() if best.critique else None
     if outcome.critique is not None:
         outcome.critique["feature_findings"] = best.feature_findings
@@ -2496,6 +2498,9 @@ async def _run_mesh(  # noqa: C901
     outcome.params = post_used or dict(best.exec_result.get("params_used") or {})
     outcome.params_schema = [p.model_dump() for p in mesh_params_schema()]
     outcome.analysis = best.exec_result.get("analysis")
+    outcome.features = best.exec_result.get("features") or (best.exec_result.get("mesh") or {}).get(
+        "features"
+    )
     outcome.critique = best.critique.model_dump() if best.critique else None
     outcome.dfm = best.exec_result.get("dfm")
     outcome.bom = best.exec_result.get("bom")

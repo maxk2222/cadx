@@ -1,0 +1,12 @@
+{
+  "prompt": "L-Winkel (L-bracket) aus PETG: Fuss 60 mm lang (X) x 40 mm breit (Y) x 4 mm dick, senkrechter Schenkel 50 mm hoch (Z) x 40 mm breit x 4 mm dick am -X Ende. Im Fuss zwei Durchgangsloecher Ø5.5 mm, Abstand 30 mm in X, mittig in Y. Im Schenkel ein Langloch 6.5 mm breit, 15 mm lang (entlang Z), mittig. Innenkante zwischen Fuss und Schenkel mit Radius 3 mm verrunden, zwei Dreiecks-Verstaerkungsrippen 3 mm dick an den Aussenseiten.",
+  "gen_mode": "cad",
+  "expected_bbox": [60, 40, 54],
+  "tolerance_mm": 4.0,
+  "expected_features": [
+    { "type": "hole", "count": 2, "dia": 5.5 },
+    { "type": "fillet" }
+  ],
+  "expect_watertight": true,
+  "settings": { "max_iterations": 8 }
+}
