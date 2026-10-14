@@ -238,3 +238,38 @@ async def test_stream_aborts_on_whitespace_flood(monkeypatch):
     c = _mk(degenerate_stall_s=0.0)
     r = await c.chat("code", [{"role": "user", "content": "hi"}], temperature=0.0)
     assert r.finish_reason == "degenerate"
+
+
+async def test_schema_reask_uses_stream(monkeypatch):
+    """After a schema parse failure the re-ask must keep streaming —
+    non-stream posts cap at timeout_s and kill slow vision replies."""
+    from pydantic import BaseModel
+
+    class Out(BaseModel):
+        value: int
+
+    calls: list[bool] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = __import__("json").loads(request.content)
+        calls.append(bool(body.get("stream")))
+        if not body.get("stream"):
+            return httpx.Response(200, json={"choices": [{"message": {"content": ""}}]})
+        n = len(calls)
+        if n == 1:
+            chunk = {"choices": [{"delta": {"content": "not json at all"}, "finish_reason": "stop"}]}
+        else:
+            chunk = {
+                "choices": [{"delta": {"content": '{"value": 3}'}, "finish_reason": "stop"}]
+            }
+        return httpx.Response(
+            200,
+            content=_sse(chunk),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    _patch_transport(monkeypatch, handler)
+    c = _mk()
+    r = await c.chat("code", [{"role": "user", "content": "hi"}], json_schema=Out)
+    assert r.parsed and r.parsed.value == 3
+    assert calls == [True, True]

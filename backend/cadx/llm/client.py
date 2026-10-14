@@ -533,10 +533,18 @@ class LLMClient:
                     },
                 ]
                 # re-ask must not offer tools — a tool call here would fail
-                # the schema parse again
+                # the schema parse again. Route through the same transport as
+                # the first call: non-stream `_post` caps at timeout_s (180s),
+                # which kills heavy vision re-asks that a stream survives.
                 payload2 = {k: v for k, v in payload.items() if k not in ("tools", "tool_choice")}
                 payload2["messages"] = retry_messages
-                data2 = await self._post(payload2, role)
+                if self.stream:
+                    try:
+                        data2 = await self._post_stream(payload2, role)
+                    except _RetryNoStream:
+                        data2 = await self._post(payload2, role)
+                else:
+                    data2 = await self._post(payload2, role)
                 try:
                     text2 = sanitize_text(data2["choices"][0]["message"]["content"] or "")
                 except (KeyError, IndexError, TypeError) as e:
