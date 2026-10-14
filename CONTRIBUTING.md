@@ -1,0 +1,64 @@
+# Contributing
+
+CADX is a local, single-user project. Contributions happen in three areas:
+the Python backend/agent, the React frontend and the `mesh_server` sidecar.
+
+## Setup
+
+```bash
+python3 -m venv .venv && .venv/bin/python -m pip install uv
+make sync                      # backend venv + locked deps
+cd frontend && npm install
+```
+
+Run the stack or individual services as described in
+[docs/getting-started.md](docs/getting-started.md). For backend work the
+minimal setup is `make infra` (postgres + redis) plus the native dev targets.
+
+## Test, lint, types
+
+```bash
+make test        # backend suite (uv run pytest backend/tests -x -q)
+make lint        # ruff check + format check + frontend tsc --noEmit
+make fmt         # autofix ruff issues
+make eval        # scripted FakeLLM benchmarks through the agent loop
+cd mesh_server && uv run pytest     # sidecar suite
+```
+
+`backend/tests/cad` must also run inside the executor image
+(`docker compose run cad-executor pytest tests/cad` — with the tests mounted).
+
+## Conventions
+
+The authoritative rules live in [`AGENTS.md`](AGENTS.md) — they apply to
+humans and agents alike. The short version:
+
+- Python: type hints everywhere, `ruff` line-length 100, async FastAPI
+  handlers, pydantic v2 for all JSON, `structlog` instead of `print`, no
+  business logic in routers.
+- TypeScript strict; functional components; TanStack Query for server state;
+  Tailwind only.
+- Never put the LLM API key in DB/logs/traces.
+- Every LLM prompt lives in `backend/cadx/agent/prompts/*.md` — never inline
+  prompt text in Python.
+- All file paths go through `cadx/storage.py`; DB writes use short
+  transactions.
+- LLM-generated code only ever runs through `cad/sandbox.py` inside the
+  executor — never `exec()` in-process. Allowed imports: `build123d`,
+  `bd_warehouse.*`, `cadlib`, `math`, `numpy`, `typing`, `dataclasses`.
+- Commits: one per milestone step, descriptive message.
+
+## Testing rules
+
+- Agent-loop tests use `FakeLLM` — never call a real LLM in tests.
+- Mesh work uses `FakeMeshClient` / `MESH_FAKE=1` for GPU-free runs.
+- Renders use pyvista offscreen; tests must skip gracefully when rendering is
+  unavailable.
+- Extend `cadlib` deliberately — its internals are guarded by the same import
+  rules as generated code.
+
+## Documentation
+
+Docs live in [`docs/`](docs/README.md). Keep them in sync with the code:
+verify commands, settings keys and endpoints before merging, and prefer links
+over duplicating facts between files.

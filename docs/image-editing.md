@@ -47,3 +47,9 @@ meaningful downstream:
   model survives container recreates; native installs use `~/.u2net`.
 - The endpoint returns `503` when rembg is not installed (e.g. a slim custom
   install without the `[cpu]` extra).
+
+## See also
+
+- [Web GUI](webgui-ux.md) — the asset manager around this editor
+- [Image generation](image-generation.md) — generating references locally
+- [HTTP API](api.md) — `derivative` / `remove-bg` endpoints

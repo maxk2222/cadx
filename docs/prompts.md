@@ -9,9 +9,15 @@ growing conversation, only the slices relevant to the current call.
 | File | Used by | Content |
 |------|---------|---------|
 | `intake_system.md`   | INTAKE   | Multimodal spec extraction: dimension table with value+source (`stated`/`estimated`/`missing`), open questions, units discipline. |
+| `intake_features.md` | INTAKE (re-ask) | Re-ask when the first spec came back incomplete: enumerate every named geometric feature with type/dims/position/count. |
+| `intake_loads.md`    | INTAKE (loads) | Derive `spec.load_cases` (fixed regions + loads) when the user described forces/mounting/optimization but no load cases were produced. |
 | `plan_system.md`     | PLAN     | Ordered construction steps, PARAMS table schema, standard-parts selection, manufacturing notes — plus `approach` (`build123d|mesh|hybrid`) used by `auto` mode. |
 | `mesh_orient_system.md` | ORIENT | Vision call on the 6-candidate contact sheet: pick `up`/`front` axes for the generated mesh (`MeshOrientation`). |
 | `codegen_system.md`  | CODEGEN  | build123d coding rules for generated `model.py`. |
+| `codegen_tools.md`   | CODEGEN (tools) | Interactive variant: look up parts/helpers, draft, `check_snippet`, finish with `submit_code`. |
+| `mesh_refine_system.md` | MESH_REFINE | Tool-session system prompt for mesh transforms: frame contract, re-grounding discipline, op vocabulary. |
+| `optimize_system.md` | OPTIMIZE | Tool-session system prompt for the structural-optimization session (`analyze_fem`/`topopt_run` parameter search). |
+| `image_hero.md`      | hero autogen | Text-to-image template producing a clean studio reference photo for mesh runs without input images. |
 | `code_examples.md`   | CODEGEN  | Few-shot model.py example (PARAMS, counterbored plate, chamfer) — appended to the codegen system prompt. |
 | `code_contract.md`   | CODEGEN/REPAIR/IMPROVE | Hard contract (rules only, no output format): `PARAMS` dict at top, part assigned to `result` (or `part`/`model`), mm units, coordinate frame (X=length, Y=width, Z=height, part on XY plane, centered). Hybrid addendum: `load_mesh_solid()`/`MESH_BBOX` are injected and only boolean ops may touch the mesh solid (no fillet/edge-select on mesh faces). |
 | `code_contract_responses.md` | +CODEGEN/REPAIR/IMPROVE (legacy) | Output-channel contract for non-tool calls: `CodeResponse` / `PatchResponse` JSON shapes. |
@@ -45,7 +51,12 @@ growing conversation, only the slices relevant to the current call.
 
 ## Tuning
 
-If generation quality drops (see `docs/eval.md`), prefer editing the
+If generation quality drops (see [eval.md](eval.md)), prefer editing the
 reference files first — they are the cheapest lever. Keep `code_contract.md`
 consistent with `cad/allowlist.py`: anything not allowed there must not be
 suggested by the prompts.
+
+## See also
+
+- [Agent loop](agent-loop.md) — which step loads which file
+- [Parts library](parts-library.md) — catalog/cadlib/library prompt content

@@ -5,6 +5,7 @@ LLM-driven CAD agent ("CADX"): images + text prompt → parametric build123d cod
 verified 3D model (STEP/STL/3MF/GLB/DXF/SVG) for 3D printing & CNC.
 Stack: FastAPI + SQLModel/Postgres + arq/Redis + build123d/bd_warehouse + React/Vite/Three.js.
 The authoritative design document is `docs/architecture.md` (derived from the master plan).
+Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`.
 
 ## Commands (run from repo root)
 - One-command start:     `make start` / `./scripts/start.sh` — auto-detects GPU

@@ -1,4 +1,6 @@
-# Mesh generation (v2: cad | mesh | hybrid | auto)
+# Mesh generation
+
+Generation modes: `cad | mesh | hybrid | topopt | auto`.
 
 CADX can generate geometry in three ways and lets a planner pick:
 
@@ -87,16 +89,9 @@ pick score weights edge sharpness slightly.
 
 ## Install
 
-The fastest path is the auto-setup — it detects the GPU tier and installs
-the matching adapter:
-
-```bash
-./scripts/setup.sh        # detects: mlx (arm64 mac) | cuda (local nvidia) | none
-./scripts/start.sh        # starts the whole stack incl. native mesh-server
-./scripts/setup.sh --doctor   # diagnostics (tier, adapter availability, .env overrides)
-```
-
-Manual alternative:
+`scripts/setup.sh` auto-detects the GPU tier and installs the matching
+adapter — see [Getting started](getting-started.md) for the full flow. Manual
+alternatives:
 
 ```bash
 # macOS (native — docker has no GPU access)
@@ -188,12 +183,9 @@ STEP export for mesh/hybrid results is **tessellated** (faceted), marked
 
 ## Troubleshooting
 
-- **`mesh server not configured`** — set `mesh_base_url` on the Settings
-  page; on compose it is seeded once with `http://host.docker.internal:8765`
-  (native sidecar) or use `http://mesh-server:8765` (`gpu` profile).
-- **`no adapter available … on device 'cpu'`** — no GPU detected and the fake
-  adapter is off; install an adapter (see `mesh_server/README.md`) or run
-  `scripts/start.sh --fake`.
+Common mesh-server and pipeline failures are indexed in
+[troubleshooting.md](troubleshooting.md). Mesh-specific quick hits:
+
 - **wrong up/front axis** — change the `up`/`front` post-params and re-run
   params (no LLM); the orientation source is recorded
   (`mesh.orientation_source`: `llm | heuristic | parent`).
@@ -204,4 +196,11 @@ STEP export for mesh/hybrid results is **tessellated** (faceted), marked
   retries with stronger decimation, then falls back to mesh-only
   (`needs_review`).
 - **rembg download** — `MESH_BG_REMOVAL=auto` only uses an already-cached
-  model; set `always` to allow the one-time ~1 GB download.
+  model; set `always` to allow the one-time download.
+
+## See also
+
+- [mesh-server API](mesh-server-api.md) — sidecar contract
+- [Image generation](image-generation.md) — text-to-image adapters + `mesh_regen_edit`
+- [Agent loop](agent-loop.md) — MESH_GENERATE / ORIENT / MESH_REFINE steps
+- [`mesh_server/README.md`](../mesh_server/README.md) — adapter install details

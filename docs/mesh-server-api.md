@@ -175,3 +175,8 @@ Same semantics as mesh job deletion.
   back to CAD.
 - `status == "failed"` → `MeshGenError` → iteration retry with a new seed.
 - Poll timeout (`MESH_TIMEOUT_S`) → `MeshGenError`; client issues `DELETE`.
+
+## See also
+
+- [Mesh generation](mesh-generation.md) — how the backend drives this API
+- [`mesh_server/README.md`](../mesh_server/README.md) — adapters and setup

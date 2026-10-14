@@ -48,9 +48,15 @@ alternatives.
 MLX, `hunyuan3d-2mv` when ≥2 view-tagged images are given on MPS, otherwise
 `hunyuan3d-2mini`/`triposg`.
 
+A second adapter family serves local **text-to-image and image editing**
+(`kind: "image"` in `/v1/models`): `flux-schnell-mlx`, `flux-schnell`,
+`sdxl`, `sd15`, `qwen-image-edit`, `flux-kontext-mlx` (opt-in via
+`MESH_FLUX_KONTEXT=1`) and `fake-image`. See
+[`docs/image-generation.md`](../docs/image-generation.md).
+
 ## HTTP API
 
-See `docs/mesh-server-api.md`. In short:
+See [`docs/mesh-server-api.md`](../docs/mesh-server-api.md). In short:
 
 ```
 GET  /v1/health
@@ -68,13 +74,21 @@ DELETE /v1/jobs/{id}
 | `MESH_HOST` / `MESH_PORT` | `127.0.0.1` / `8765` | bind address |
 | `MESH_DEVICE` | `auto` | `auto \| cuda \| mps \| mlx \| cpu` |
 | `MESH_MODEL_DIR` | `~/.cache/meshserver/models` | weight cache |
+| `MESH_JOB_DIR` | `/tmp/meshserver-jobs` | job scratch space |
 | `MESH_JOB_TTL_S` | `3600` | result retention |
 | `MESH_MAX_QUEUE` | `8` | queued jobs cap (one GPU job at a time) |
 | `MESH_UNLOAD_IDLE_S` | `0` (never) | unload weights after idle seconds |
-| `MESH_FAKE` | `0` | enable the fake adapter |
+| `MESH_FAKE` | `0` | enable the fake adapters |
 | `MESH_ALLOW_CPU` | `0` | allow real adapters on CPU (slow) |
+| `MESH_DEFAULT_MODEL` | `auto` | mesh adapter for `model=auto` requests |
+| `MESH_IMAGE_MODEL` | `auto` | image adapter for `model=auto` requests |
 | `MESH_BG_REMOVAL` | `auto` | `auto \| always \| never` (rembg/u2net) |
 | `MESH_TRIPOSG_MPS` | `0` | experimental MPS path for TripoSG |
+| `MESH_FLUX_KONTEXT` | `0` | enable the gated FLUX.1-Kontext edit adapter |
+| `MESH_FLUX_MLX_QUANT` | `4` | mflux weight quantization (4/8/16 bit) |
+| `MESH_CUDA_OFFLOAD` | `auto` | `auto \| model \| sequential \| none` diffusers CPU offload |
+| `MESH_CUDA_OFFLOAD_VRAM_GB` | `24` | free-VRAM threshold for `auto` offload |
+| `MESH_MLX_MEM_LIMIT_GB` | `0` | unified-memory cap (0 = unlimited) |
 
 ## CUDA deployment
 
@@ -98,5 +112,12 @@ First run downloads weights into `MESH_MODEL_DIR`/`HF_HOME` — mount a volume.
 meshserver models                      # adapter availability on this device
 meshserver generate photo.png -o out.glb --model auto --seed 42
 meshserver download hunyuan3d-2.1-mlx  # prefetch weights
+meshserver image --prompt "a red gear" --model flux-schnell-mlx
 meshserver health
 ```
+
+## See also
+
+- [`docs/mesh-server-api.md`](../docs/mesh-server-api.md) — the HTTP contract
+- [`docs/mesh-generation.md`](../docs/mesh-generation.md) — how CADX uses it
+- [`docs/configuration.md`](../docs/configuration.md) — all env vars

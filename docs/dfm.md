@@ -2,7 +2,8 @@
 
 `cad/dfm/` runs after every successful execution and produces `dfm.json`
 plus `DfmWarning` entries (code, severity `info|medium|high`, message,
-value, threshold). Process is selected per project (`fdm` or `cnc`).
+value, threshold). The project `process` setting selects the rule family:
+`fdm`/`sla` run the additive checks, `cnc3`/`cnc2d` the machining checks.
 
 ## Common (`common.py`)
 
@@ -41,7 +42,7 @@ because `common_checks` works on the tessellated mesh either way.
 
 | Check | Rule |
 |-------|------|
-| `inside_radius` | Concave vertical LINE edges → internal corners need tool radius (`cnc_tool_radius_mm`). Verified empirically: for adjacent-face normals n1,n2 and edge tangent t, `cross(n1,n2)·t > 0` means concave. |
+| `inside_radius` | Concave vertical LINE edges → internal corners need tool radius (`tool_radius_mm`). Verified empirically: for adjacent-face normals n1,n2 and edge tangent t, `cross(n1,n2)·t > 0` means concave. |
 | `deep_pocket`   | +Z planar faces enclosed below top by near-vertical walls; pocket depth vs tool reach heuristic. |
 | `undercut`      | Faces with normal z < −0.1 not reachable from 3-axis top. |
 | `thin_wall`     | Same ray-cast check, CNC min-wall default. |
@@ -59,4 +60,10 @@ because `common_checks` works on the tessellated mesh either way.
 These are heuristics, not simulation: pocket depth uses a face-enclosure
 approximation, thin-wall sampling is statistical, and thread checking relies
 on catalog metadata rather than geometry inspection. Tune thresholds via
-project settings (`min_wall_mm`, `cnc_tool_radius_mm`, `build_volume`).
+project settings (`min_wall_mm`, `tool_radius_mm`, `build_volume`) — see
+[configuration.md](configuration.md).
+
+## See also
+
+- [Web GUI](webgui-ux.md) — where DfM warnings appear
+- [FEM & TopOpt](fem-topopt.md) — structural checks beyond geometry

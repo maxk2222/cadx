@@ -113,3 +113,8 @@ not certification.
 ## Teardown
 
 - [ ] `docker compose down` clean; `data/` retains projects on next `up`
+
+## See also
+
+- [Getting started](getting-started.md) — stack setup for this checklist
+- [Troubleshooting](troubleshooting.md) — when a step fails

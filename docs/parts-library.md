@@ -87,3 +87,9 @@ groups them by `(class, type, size)` — using the semantic `*_size` attributes
 OCP-internal number on most classes. Counts reflect `hole_locations` where
 the part drove hole operations. The BOM lands in `Version.bom` + `bom.json`
 and renders in the quality tab.
+
+## See also
+
+- [Prompts](prompts.md) — how catalog/cadlib content reaches the model
+- [Agent loop](agent-loop.md) — the `search_library`/`attach_library_part` tools
+- [HTTP API](api.md) — `/catalog` and `/library` endpoints

@@ -51,15 +51,20 @@ Tools (`agent/toolspecs.py`, primitives in `cad/codeedits.py`):
 | codegen | + `check_snippet`, `submit_code` (catalog + library tools too) |
 | repair / improve | `read_lines`, `search_code`, `replace_lines`, `insert_after`/`insert_before`, `find_replace`, `set_param`, `check_code`, `verify`*, `render_model`* + catalog/library lookups + `done` |
 | critique | `read_lines`, `search_code`, `lookup_part`, `search_library`, `library_part` (read-only — no attach) |
-| mesh_refine | `mesh_inspect`, `mesh_preview`* + `mesh_*` transforms (`set_up`, `rotate`, `mirror`, `scale`, `flatten_bottom`, `slice`, `crop`, `decimate`, `smooth`, `keep_largest`, `drop_small`, `repair`, `boolean_add`, `boolean_cut`) + `mesh_undo`/`mesh_reset` + `done` + `regenerate` |
-| optimize | `analyze_fem(load_cases, material?, voxel_mm?)`, `topopt_run(target_volume_fraction?, max_iterations?, keep_regions?, load_cases?, material?, voxel_mm?)` + `done(run_index)` — agent-driven FEM/SIMP parameter search |
-| all sessions | `view_image` — re-view an uploaded reference image by `asset_id` (ids are in the "Image N (asset <id>)" context labels; useful when `agent_max_input_images` capped the initial set or a detail needs a second look). The image returns via the `_images` tool-result channel. |
+| mesh_refine | `mesh_inspect`, `mesh_preview`* + inspection (`mesh_measure`, `mesh_section`, `mesh_overlay`) + transforms (`mesh_set_up`, `mesh_rotate`, `mesh_mirror`, `mesh_scale`, `mesh_flatten_bottom`, `mesh_slice`, `mesh_crop`, `mesh_clip_height`, `mesh_decimate`, `mesh_smooth`, `mesh_smooth_preserve`, `mesh_remesh`, `mesh_symmetrize`, `mesh_shell`, `mesh_drill_holes`, `mesh_keep_largest`, `mesh_drop_small`, `mesh_repair`, `mesh_boolean_add`, `mesh_boolean_cut`) + `mesh_undo`/`mesh_reset` + `mesh_regen_edit`** + `done` + `regenerate` |
+| optimize | `list_anchors`, `check_load`, `preview_regions`, `analyze_fem(load_cases, material?, voxel_mm?)`, `topopt_run(target_volume_fraction?, max_iterations?, keep_regions?, load_cases?, material?, voxel_mm?)` + `done(run_index)` — agent-driven FEM/SIMP parameter search |
+| all sessions | `view_image` — re-view an uploaded reference image by `asset_id` (ids are in the "Image N (asset <id>)" context labels; useful when `agent_max_input_images` capped the initial set or a detail needs a second look). The image returns via the `_images` tool-result channel. Info-type sessions additionally get `generate_concept_image` (budget `image_tool_budget`). |
 
 *`mesh_preview` renders the workbench state via the executor
 (`process_mesh mode="preview"`) and returns the images as `_images` tool
 results — serialised as user messages with image parts, since OpenAI tool
 messages can't carry images. Capped at `agent_mesh_preview_max` per session;
 a spent budget drops the tool from the schema.
+
+**`mesh_regen_edit` regenerates the mesh from a locally edited reference
+image (text→image-edit→mesh) — see
+[mesh-generation.md](mesh-generation.md) and
+[image-generation.md](image-generation.md).
 
 **Part library tools** (`search_library`, `library_part`,
 `attach_library_part`): the user's reusable library (uploaded STEP/STL bodies
@@ -115,7 +120,7 @@ via `llm_tools: "auto"`.
 | Step | LLM? | Purpose |
 |------|------|---------|
 | INTAKE  | yes (vision) | Extract `Spec`: name, summary, units, dimensions (x/y/z, each with value+source), open questions. Sees all input images. May look up catalog parts via tools. |
-| CLARIFY | — | If spec has open questions and project mode is `ask`, the job ends `waiting_for_input` with questions. `assume` mode skips this and lets the LLM state assumptions. Resume continues at PLAN via `/jobs/{id}/resume`. |
+| CLARIFY | — | If spec has open questions and project mode is `ask`, the job ends `waiting_for_input` with questions. `assume` mode skips this and lets the LLM state assumptions. `POST /jobs/{id}/answer` resumes the job at PLAN. |
 | PLAN    | yes | Construction plan: ordered steps, PARAMS table (name/value/unit/min/max), standard-parts list (bd_warehouse), notes. May query the catalog via tools. |
 | CODEGEN | yes | Produce `model.py` honoring the code contract + `expected_bbox` — via `submit_code` in tool sessions (may `check_snippet` first). |
 | EXECUTE | no (cad queue) | Sandbox-run the code: shape, analysis, renders, DfM, BOM and exports. |
@@ -128,7 +133,7 @@ via `llm_tools: "auto"`.
 | ORIENT | yes (vision) | Once per version: 6 up-axis candidates are rendered in the executor and the vision model picks `MeshOrientation{up,front}`; heuristic/parent fallback otherwise. |
 | PROCESS_MESH | no (cad queue) | `run_mesh_pipeline`: `baseline_mesh` (clean → decimate → orient → scale-to-spec → flatten → rest) → recorded `ops` → analysis → renders → DfM(mesh) → exports; `make_solid` additionally writes `_run/model.brep` (faceted solid) for hybrid. `mode="preview"` runs the same baseline + ops and renders 3 views without exports. |
 | MESH_REFINE | yes (vision) | Interactive mesh-transformation session (`agent/mesh_tools.py`): the workbench holds the baseline-processed mesh, each `mesh_*` tool applies a validated `MeshOp` and re-grounds the part; `done` submits the op list, `regenerate` asks for a new seed. Runs twice — a shape pass after PROCESS_MESH and issues-seeded repair passes after a failed critique (`agent_mesh_refine_rounds`). Disabled/unavailable → the previous seed-rotation loop. |
-| OPTIMIZE | yes (vision) | In TopOpt mode or when requested by plan/options/spec the agent runs an interactive structural session on the best base geometry: `analyze_fem` probes load cases, `topopt_run` executes SIMP+FEM-verify with varied parameters (volfrac, keep regions, material, voxel pitch). Each call occupies its own iteration dir; `done(run_index)` commits the chosen run's artifacts exactly like the deterministic path, `run_index:-1` keeps the base part. Unavailable (tools off/session failed) → single-shot SIMP fallback. Budgets: `agent_struct_tools` (master switch), `agent_topopt_max_runs` (4), `agent_fem_max_runs` (3). |
+| OPTIMIZE | yes (vision) | In TopOpt mode or when requested by plan/options/spec the agent runs an interactive structural session on the best base geometry: `analyze_fem` probes load cases, `topopt_run` executes SIMP+FEM-verify with varied parameters (volfrac, keep regions, material, voxel pitch). Each call occupies its own iteration dir; `done(run_index)` commits the chosen run's artifacts exactly like the deterministic path, `run_index:-1` keeps the base part. Unavailable (tools off/session failed) → single-shot SIMP fallback. Budgets: `agent_struct_tools` (master switch), `agent_topopt_max_runs` (6), `agent_fem_max_runs` (4). |
 | FINALIZE| no | Pick best candidate `(no dim errors, −major issues, score)`, copy artifacts, write exports + `model.py`/`params.json`, set status. |
 
 ## Edit flow
@@ -242,3 +247,10 @@ in the UI quality tab.
 - `FakeLLM` replays a JSON script for deterministic end-to-end runs —
   dev/test only via `cadx run --fake` and eval benchmarks
   (`llm_script`/`llm_tools` fields), not a production runtime option.
+
+## See also
+
+- [Configuration](configuration.md) — every `agent_*` / `llm_*` setting
+- [Prompts](prompts.md) — the prompt files behind each step
+- [Mesh generation](mesh-generation.md) — the mesh/hybrid pipeline
+- [FEM & TopOpt](fem-topopt.md) — the optimize session in detail

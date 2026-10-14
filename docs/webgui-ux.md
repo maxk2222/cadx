@@ -1,9 +1,13 @@
 # Web GUI
 
 The React/Vite application exposes the generation, editing, analysis, and
-library workflows through four pages: Projects, Project, Version, and Settings.
-The UI is served by nginx at `:8080` in Docker mode or Vite at `:5173` in
-native development mode.
+library workflows through five pages: Projects, Project, Version, Jobs, and
+Settings. The UI is served by nginx at `:8080` in Docker mode or Vite at
+`:5173` in native development mode.
+
+The **Jobs** page (`/jobs`) lists active and recently finished jobs across
+projects with live progress, iteration/step labels, runtime and
+cancel/finish/restart actions; a nav badge shows the active count.
 
 ## User workflows
 
@@ -109,7 +113,7 @@ Settings includes LLM/provider configuration, health status, the standard-part
 catalog, and the user library. The library supports STEP/STL upload, download,
 rename/caption editing, deletion, and saving a version as either a STEP body or
 parametric code template. Parts may be pinned on generation/edit or discovered
-and attached by the agent's library tools. See `docs/parts-library.md`.
+and attached by the agent's library tools. See [parts-library.md](parts-library.md).
 
 ## Agent visibility
 
@@ -150,7 +154,14 @@ The GUI is for a local, single-user deployment; it does not provide
 authentication or multi-user library isolation. FEM/TopOpt values are
 engineering estimates, not certification. The mesh editor operates on
 tessellated geometry — it records replayable `MeshOp` transforms, it does not
-patch parametric code; booleans are capped at 200k faces (decimate first).
+patch parametric code; booleans are capped at 500k faces (decimate first).
 Region painting selects near-surface voxel cells within the brush radius —
 thin features below ~2 voxel pitches may not resolve reliably. See
-`docs/fem-topopt.md`.
+[fem-topopt.md](fem-topopt.md).
+
+## See also
+
+- [Image editing](image-editing.md) — the asset editor
+- [Image generation](image-generation.md) — generated-image assets and sketches
+- [Parts library](parts-library.md) — catalog, cadlib and user library
+- [HTTP API](api.md) — the endpoints behind these pages

@@ -9,13 +9,13 @@ diffable, re-runnable.
 
 | Service      | Role                                                          |
 |--------------|---------------------------------------------------------------|
-| `frontend`   | nginx + React/Vite SPA on :8080, proxies `/api/*` and `/events/*` to `api` |
+| `frontend`   | nginx + React/Vite SPA on :8080, proxies `/api/*` (REST + SSE) to `api` |
 | `api`        | FastAPI app: projects/assets/versions/jobs, SSE, file serving  |
 | `worker`     | arq worker on queue `agent`: runs the LLM agent loop + bounded tool sessions |
 | `cad-executor` | arq worker on queue `cad`: sandboxed CAD execution, render, DfM, voxel FEM and SIMP TopOpt |
 | `postgres`   | SQLModel/SQLAlchemy database (async)                          |
 | `redis`      | arq queues + pub/sub for SSE events                            |
-| `mesh-server` | (optional, external) image→3D sidecar: local models (TRELLIS.2, Hunyuan3D, TripoSG). Runs **natively** on the host (macOS has no docker GPU) or on a CUDA box (`--profile gpu`). Contract: `docs/mesh-server-api.md`. |
+| `mesh-server` | (optional, external) image→3D sidecar: local models (TRELLIS.2, Hunyuan3D, TripoSG). Runs **natively** on the host (macOS has no docker GPU) or on a CUDA box (`--profile gpu`). Contract: [mesh-server-api.md](mesh-server-api.md). |
 
 The split between `worker` and `cad-executor` is deliberate: the agent loop
 is cheap I/O, while CAD execution is CPU-bound and sandboxed. They scale and
@@ -50,21 +50,32 @@ Browser ──> nginx (:8080) ──> api:8000
 ## Code layout (backend/cadx)
 
 - `agent/` — orchestrator state machine, per-step modules (`steps/`),
-  context/trace/types, `worker_jobs.py` (arq job runners)
+  tool sessions (`toolloop.py`, `toolspecs.py`, `mesh_tools.py`), mesh/image
+  clients (`mesh_client.py`, `image_client.py`, `concept_image.py`,
+  `image_assets.py`), candidate scoring (`mesh_score.py`, `model_pick.py`,
+  `anchors.py`), `autofix.py`, context/trace/types, `worker_jobs.py`
+  (arq job runners)
 - `cad/` — sandbox + allowlist, runner_entry, engine pipeline, analysis,
-  exporters, render, contact_sheet, `dfm/` (common/fdm/cnc/report), `fem/`
-  (voxel Hex8 analysis, SIMP TopOpt, mesh extraction), `catalog.py` (full
-  bd_warehouse registry + lookup/search), `partspec.py` (AST validation of
-  standard-part calls), `cadlib/` (reviewed helpers allowed in the sandbox),
-  tasks (queue payloads)
+  exporters, render, contact_sheet, `errordiag.py` (exec-failure
+  classification), `patch.py` (find/replace hunks), `codeedits.py`
+  (line-edit primitives for tools), `features.py`/`mesh_features.py`
+  (measured geometry), `heightfield.py` (deterministic flat-part solids),
+  `mesh_ops.py` (`MeshOp` registry + replay), `dfm/` (common/fdm/cnc/report),
+  `fem/` (voxel Hex8 analysis, SIMP TopOpt, mesh extraction), `catalog.py`
+  (full bd_warehouse registry + lookup/search), `partspec.py` (AST
+  validation of standard-part calls), `cadlib/` (reviewed helpers allowed in
+  the sandbox), tasks (queue payloads)
 - `llm/` — `client.py` (httpx, OpenAI-compatible), `structured.py`
-  (parse/validate/re-ask), `images.py` (EXIF→resize→JPEG→data-URL),
-  `schemas.py` (Pydantic contracts), `fake.py` (deterministic test LLM)
+  (parse/validate/re-ask), `tools.py` (tool-call parsing/fallbacks),
+  `images.py` (EXIF→resize→JPEG→data-URL), `schemas.py` (Pydantic
+  contracts), `fake.py` (deterministic test LLM)
+- `vision/` — image measurement and outline/anchor extraction
 - `api/` — FastAPI routers, schemas, deps
 - `db/` — SQLModel tables, async session, Alembic migrations
 - `eval/` — benchmark harness (`cadx eval`)
 - `queue.py` — arq `WorkerSettings` for both queues
-- `storage.py`, `config.py`, `events.py`, `logging.py`, `cli.py`, `main.py`
+- `storage.py`, `config.py`, `runtime_config.py`, `events.py`, `logging.py`,
+  `cli.py`, `main.py`
 
 ## Data layout
 
@@ -99,7 +110,7 @@ data/library/<part_id>/<file>    reusable user library (uploaded STEP/STL bodies
 
 - **Code, not meshes**: LLMs produce build123d source. Parametric `PARAMS`
   dict at top; deterministic rebuilds; cheap edits. Exception: `mesh`/`hybrid`
-  modes — see `docs/mesh-generation.md`. Hybrid is *CAD-hosted*: the generated
+  modes — see [mesh-generation.md](mesh-generation.md). Hybrid is *CAD-hosted*: the generated
   mesh becomes a faceted B-Rep solid (`load_mesh_solid()`) that build123d
   code modifies via booleans.
 - **Bounded LLM sessions**: every step starts with fresh system+user context;
@@ -125,21 +136,28 @@ data/library/<part_id>/<file>    reusable user library (uploaded STEP/STL bodies
 - **Structural verification and optimization**: optional voxel Hex8 FEM feeds
   stress/safety-factor feedback into the agent; SIMP TopOpt runs as a post-phase
   or an LLM-free child job. Assumptions, API contract, artifacts and limits:
-  `docs/fem-topopt.md`.
+  [fem-topopt.md](fem-topopt.md).
 - **Visual editing**: the web GUI ships a mesh editor and a structural editor.
   Both reuse the deterministic executor paths — `MeshOp`/`OPS_REGISTRY`
   replays (`mesh_edit` child versions, `ops_preview` scratch GLBs) and the
   voxel FEM region/preview pipeline (`fem` jobs, `points` regions painted on
   the surface). Preview artifacts live in `versions/<vid>/_scratch/` and are
   served through a whitelisted route; GUI state persists under
-  `version.options["ui_editor"]`. See `docs/webgui-ux.md`.
+  `version.options["ui_editor"]`. See [webgui-ux.md](webgui-ux.md).
 - **No auth**: single-user local. Do not expose the stack on a network.
 
 ## Security notes
 
 - `cad-executor` runs generated code: `no-new-privileges`, read-only FS where
   possible, capped CPU/memory/time, allowlisted imports only.
-- The LLM API key lives in env/`AppSetting` and is never logged or returned
-  by the API (settings responses mask it).
+- The LLM API key lives in the `AppSetting` DB row and is never logged or
+  returned by the API (settings responses mask it).
 - Uploaded files go through `storage.safe_filename`; file serving resolves
   paths under `DATA_DIR` only.
+
+## See also
+
+- [Agent loop](agent-loop.md) — step state machine and tool sessions
+- [Configuration](configuration.md) — all runtime settings
+- [HTTP API](api.md) — REST endpoint reference
+- [mesh-server API](mesh-server-api.md) — sidecar contract

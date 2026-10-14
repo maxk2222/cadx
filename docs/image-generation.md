@@ -113,5 +113,11 @@ for generation runs.
 
 `POST /api/projects/{id}/images` → generates synchronously and returns the
 created `Asset[]` (`201`). `GET /api/images/models` lists image adapters.
-Sidecar endpoints are documented in `docs/mesh-server-api.md` ("Text-to-image
-jobs").
+Sidecar endpoints are documented in [mesh-server-api.md](mesh-server-api.md)
+("Text-to-image jobs").
+
+## See also
+
+- [Mesh generation](mesh-generation.md) — hero autogen and `mesh_regen_edit`
+- [Configuration](configuration.md) — all `image_*` settings
+- [Troubleshooting](troubleshooting.md) — adapter OOM / badlisting behaviour

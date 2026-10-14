@@ -160,7 +160,8 @@ equilibrium sanity.
   `topopt_auto_keep_margin_mm`, `fem_spsolve_dofs` and
   `fem_max_effective_cases` are runtime settings edited in the Settings page;
   `fem_timeout_s` and `topopt_timeout_s` bound executor task time. Per-run
-  overrides live in the options panel / version options.
+  overrides live in the options panel / version options. The full
+  settings reference is in [configuration.md](configuration.md).
 
 The agent optimize session offers `list_anchors` (the measured anchor table),
 `check_load` (region resolution + resultant/moment without a solve),
@@ -208,3 +209,9 @@ Run from `backend/`:
 .venv/bin/ruff check cadx tests
 .venv/bin/python -m mypy cadx
 ```
+
+## See also
+
+- [Configuration](configuration.md) — all `fem_*` / `topopt_*` settings
+- [Web GUI](webgui-ux.md) — the structural editor
+- [HTTP API](api.md) — `/fem`, `/fem-preview`, `/optimize`, `/topopt-resample`, `/anchors`
