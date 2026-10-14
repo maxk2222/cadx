@@ -212,3 +212,29 @@ async def test_stream_aborts_on_tool_arg_salad(monkeypatch):
     c = _mk()
     r = await c.chat("code", [{"role": "user", "content": "hi"}], temperature=0.0)
     assert r.finish_reason == "degenerate"
+
+
+def test_looks_degenerate_whitespace_tail():
+    from cadx.llm.client import _looks_degenerate
+
+    # the real-eval failure mode: \t\n spam — must NOT be shielded by \n
+    # being a structural char
+    assert _looks_degenerate("\t \n   \t\t\n" * 30)
+    assert not _looks_degenerate("def f():\n    return 1\n" * 10)
+
+
+async def test_stream_aborts_on_whitespace_flood(monkeypatch):
+    chunks = [{"choices": [{"delta": {"content": "result = {"}}]}]
+    chunks += [{"choices": [{"delta": {"content": " \n\t  "}}]} for _ in range(80)]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=_sse(*chunks),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    _patch_transport(monkeypatch, handler)
+    c = _mk(degenerate_stall_s=0.0)
+    r = await c.chat("code", [{"role": "user", "content": "hi"}], temperature=0.0)
+    assert r.finish_reason == "degenerate"

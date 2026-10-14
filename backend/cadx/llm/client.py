@@ -117,7 +117,14 @@ def _looks_degenerate(tail: str) -> bool:
     burn the entire max_tokens budget. Real code/JSON/prose tails always
     carry structural characters, repeated stop-words, or normal
     punctuation/capitalisation."""
-    if len(tail) < 128 or any(c in tail for c in _STRUCT_CHARS):
+    if len(tail) < 128:
+        return False
+    # whitespace-only run: tab/newline spam that carries zero content —
+    # must be checked before the _STRUCT_CHARS bail-out (\n is structural)
+    non_ws = sum(1 for c in tail if not c.isspace())
+    if non_ws <= len(tail) * 0.05:
+        return True
+    if any(c in tail for c in _STRUCT_CHARS):
         return False
     # classic style: long runs of tokens joined by `_`/`.` with few spaces
     if tail.count(" ") <= len(tail) / 30:
@@ -161,15 +168,20 @@ def _chunk_has_reasoning(chunk: dict[str, Any]) -> bool:
 
 
 def _absorb_chunk(
-    chunk: dict[str, Any], text_parts: list[str], tool_acc: _StreamToolAcc
+    chunk: dict[str, Any], text_parts: list[str], tool_acc: _StreamToolAcc, prod: list[int]
 ) -> str | None:
+    """Merge one SSE chunk. ``prod[0]`` accumulates meaningful progress:
+    non-whitespace content/tool-arg chars, +1 per reasoning fragment."""
     for ch in chunk.get("choices") or []:
         delta = ch.get("delta") or {}
         piece = delta.get("content")
         if piece:
             text_parts.append(piece)
+            prod[0] += sum(1 for c in piece if not c.isspace())
         if delta.get("tool_calls"):
-            tool_acc.feed(delta["tool_calls"])
+            prod[0] += tool_acc.feed(delta["tool_calls"])
+        if delta.get("reasoning_content") or delta.get("reasoning"):
+            prod[0] += 1
         if ch.get("finish_reason"):
             return ch["finish_reason"]
     return None
@@ -200,6 +212,7 @@ class LLMClient:
         self.stream = settings.llm_stream
         self.idle_timeout_s = settings.llm_idle_timeout_s
         self.total_timeout_s = settings.llm_total_timeout_s
+        self.degenerate_stall_s = settings.llm_degenerate_stall_s
         self.tools_mode = settings.llm_tools  # auto|on|off
         # per-role probe state: absent = unprobed; False = role's model rejects
         # `tools` payloads (e.g. the vision model can lack tool support while
@@ -303,6 +316,12 @@ class LLMClient:
         # content arrived for idle_timeout_s
         last_progress = t0
         last_content_size = -1
+        # meaningful-progress watchdog: non-whitespace content/tool-arg chars
+        # and reasoning activity — a stream of pure whitespace/indentation is
+        # degeneration even though bytes keep flowing
+        prod = [0]
+        last_prod = 0
+        last_meaningful = t0
         async for line in resp.aiter_lines():
             chunks += 1
             content_size = sum(map(len, text_parts)) + reasoning_parts + tool_acc.size
@@ -311,6 +330,13 @@ class LLMClient:
                 last_progress = time.monotonic()
             elif time.monotonic() - last_progress > self.idle_timeout_s:
                 raise LLMError(f"stream stalled: no content for {self.idle_timeout_s:.0f}s")
+            if prod[0] != last_prod:
+                last_prod = prod[0]
+                last_meaningful = time.monotonic()
+            elif time.monotonic() - last_meaningful > self.degenerate_stall_s:
+                log.warning("llm.stream.degenerate_stall", chunks=chunks)
+                finish = "degenerate"
+                break
             if chunks == 1 or chunks % 200 == 0:
                 tail_src = "".join(text_parts) or tool_acc.debug_tail()
                 log.debug(
@@ -335,7 +361,7 @@ class LLMClient:
                 chunk = json.loads(data)
             except json.JSONDecodeError:
                 continue
-            finish = _absorb_chunk(chunk, text_parts, tool_acc) or finish
+            finish = _absorb_chunk(chunk, text_parts, tool_acc, prod) or finish
             reasoning_parts += 1 if _chunk_has_reasoning(chunk) else 0
             if chunk.get("usage"):
                 usage = chunk["usage"]

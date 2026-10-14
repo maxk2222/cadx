@@ -23,6 +23,9 @@ class RuntimeSettings(BaseModel):
     llm_stream: bool = True
     llm_idle_timeout_s: float = Field(default=180, gt=0)
     llm_total_timeout_s: float = Field(default=1800, gt=0)
+    # abort a stream that only emits whitespace/indentation for this long —
+    # a degeneration mode the byte-progress watchdog cannot see
+    llm_degenerate_stall_s: float = Field(default=60, gt=0)
     llm_extra_body: str = ""
     llm_tools: Literal["auto", "on", "off"] = "auto"
     agent_max_iterations: int = Field(default=3, ge=1, le=200)

@@ -96,7 +96,11 @@ class _StreamToolAcc:
     def __init__(self) -> None:
         self._by_index: dict[int, dict[str, Any]] = {}
 
-    def feed(self, fragments: list[dict[str, Any]]) -> None:
+    def feed(self, fragments: list[dict[str, Any]]) -> int:
+        """Absorb fragments; returns count of non-whitespace chars added —
+        feeds the meaningful-progress watchdog (whitespace churn is not
+        real progress)."""
+        non_ws = 0
         for frag in fragments:
             idx = int(frag.get("index", 0))
             slot = self._by_index.setdefault(idx, {"id": "", "name": "", "args": ""})
@@ -106,7 +110,10 @@ class _StreamToolAcc:
             if fn.get("name"):
                 slot["name"] += str(fn["name"])
             if fn.get("arguments"):
-                slot["args"] += str(fn["arguments"])
+                frag_args = str(fn["arguments"])
+                slot["args"] += frag_args
+                non_ws += sum(1 for c in frag_args if not c.isspace())
+        return non_ws
 
     def result(self) -> list[ToolCall]:
         return [
