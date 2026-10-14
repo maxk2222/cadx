@@ -116,6 +116,16 @@ def test_lint_2d_shape_in_boolean_warns():
     assert any("2D" in w for w in r2.warnings)
 
 
+def test_lint_rot_bad_kwargs_warns():
+    """T1.1: Rot(a=, about=) — the observed grip failure — warns pre-exec."""
+    code = GOOD + "bore = Cylinder(2, 10).moved(Rot(a=90, about=Axis.Y))\nresult = bore\n"
+    r = check_code(code)
+    assert any("keyword" in w and "Rot" in w for w in r.warnings)
+    ok = GOOD + "bore = Cylinder(2, 10).moved(Rot(axis=Axis.Y, angle=90))\nresult = bore\n"
+    r2 = check_code(ok)
+    assert not any("keyword" in w for w in r2.warnings)
+
+
 def test_lint_clean_code_no_warnings():
     code = (
         GOOD

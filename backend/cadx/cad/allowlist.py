@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass, field
+from typing import ClassVar
 
 ALLOWED_MODULES = {
     "build123d",
@@ -227,7 +228,33 @@ class _Checker(ast.NodeVisitor):
                 )
         self._check_rotate_self_axis(node)
         self._check_2d_boolean_method(node)
+        self._check_ctor_kwargs(node)
         self.generic_visit(node)
+
+    # kwargs a constructor call is allowed to use — anything else is certain
+    # to fail with "Unexpected keyword arguments" at exec time (observed:
+    # Rot(a=90, about=Axis.Y))
+    _CTOR_KWARGS: ClassVar[dict[str, frozenset[str]]] = {
+        "Rot": frozenset({"axis", "angle", "ordering", "X", "Y", "Z"}),
+        "Rotation": frozenset({"axis", "angle", "ordering", "X", "Y", "Z"}),
+        "Pos": frozenset({"x", "y", "z", "X", "Y", "Z"}),
+        "Cylinder": frozenset(
+            {"radius", "height", "arc_size", "align", "mode", "plane", "rotation"}
+        ),
+        "Box": frozenset({"length", "width", "height", "align", "mode", "plane", "rotation"}),
+    }
+
+    def _check_ctor_kwargs(self, node: ast.Call) -> None:
+        if not (isinstance(node.func, ast.Name) and node.func.id in self._CTOR_KWARGS):
+            return
+        bad = [k.arg for k in node.keywords if k.arg and k.arg not in self._CTOR_KWARGS[node.func.id]]
+        if bad:
+            self._warn(
+                node,
+                f"{node.func.id}() has no keyword(s) {bad} — this raises TypeError "
+                "'Unexpected keyword arguments' at runtime; use positional args "
+                "or the documented signature (e.g. Rot(axis=Axis.Y, angle=90))",
+            )
 
     def visit_Constant(self, node: ast.Constant) -> None:
         # absurd magnitude — models emit e.g. -8e+67 when sampling degenerates;

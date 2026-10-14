@@ -130,6 +130,15 @@ _RULES: list[tuple[re.Pattern[str], str, str]] = [
         "for pockets, or extrude(...) a sketch first.",
     ),
     (
+        re.compile(r"Unexpected keyword arguments", re.I),
+        "api-kwargs",
+        "A constructor got keyword arguments it does not accept. build123d "
+        "signatures: Rot(0, 90, 0) Euler angles, or Rot(axis=Axis.Y, angle=90), "
+        "or Rot(Axis.Y, 90) — never a=/about=; Pos(x, y, z) positional only; "
+        "Cylinder(radius=, height=, align=); Box(length=, width=, height=). "
+        "Compare the call with the reference idioms.",
+    ),
+    (
         re.compile(r"AttributeError", re.I),
         "api-misuse",
         "Wrong attribute/method name — check the build123d reference in context. "

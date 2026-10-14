@@ -59,6 +59,18 @@ def test_bd_warehouse_bad_size():
     assert d.category == "bd-warehouse"
 
 
+def test_unexpected_kwargs_api_kwargs():
+    """T1.1: Rot(a=90, about=Axis.Y) gets a signature hint, not a generic
+    TypeError diagnosis."""
+    d = diagnose(
+        "TypeError: Unexpected keyword arguments: a, about",
+        'File "model.py", line 4\nTypeError',
+        CODE,
+    )
+    assert d.category == "api-kwargs"
+    assert "Rot" in d.hint and "axis=" in d.hint
+
+
 def test_timeout():
     d = diagnose("TimeoutError: execution timed out", None, CODE)
     assert d.category == "timeout"
