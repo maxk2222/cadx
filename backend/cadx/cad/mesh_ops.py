@@ -1125,7 +1125,33 @@ OPS_REGISTRY: dict[str, tuple[type[BaseModel], _OpFn]] = {
 
 # bump when an op's semantics change so old version.params replays are
 # recognised as pre-change (stored alongside params, warn-not-fail)
-MESH_OPS_VERSION = 3  # remesh/shell now finish with a light Taubin pass
+MESH_OPS_VERSION = 4  # apply_ops reverts ops that shatter a single solid
+
+
+def _is_single_solid(mesh: trimesh.Trimesh) -> bool:
+    """Watertight and exactly one connected component — the part contract."""
+    try:
+        return bool(mesh.is_watertight) and len(mesh.split(only_watertight=False)) <= 1
+    except Exception:
+        return False
+
+
+def _salvage_solid(mesh: trimesh.Trimesh) -> trimesh.Trimesh | None:
+    """Rescue an op result that broke the single-solid contract.
+
+    Keeps the largest component and runs the watertight repair ladder.
+    Returns a valid single solid, or None when the damage is not fixable —
+    the caller then reverts the op entirely (a missed flatten/slice is far
+    better than a shattered part shipping to export).
+    """
+    try:
+        bodies = mesh.split(only_watertight=False)
+        if len(bodies) > 1:
+            mesh = bodies[int(np.argmax(_body_sizes(bodies)))]
+        out = _ensure_watertight(mesh)
+        return out if _is_single_solid(out) else None
+    except Exception:
+        return None
 
 
 def apply_op(
@@ -1169,9 +1195,21 @@ def apply_ops(
             raise MeshOpError(i, str(name), e, report) from e
         faces_in = len(mesh.faces)
         try:
-            mesh = rest_on_xy_center(apply_op(mesh, mo, anchors=anchors))
+            out = apply_op(mesh, mo, anchors=anchors)
         except Exception as e:
             raise MeshOpError(i, mo.op, e, report) from e
+        reverted = False
+        salvaged = False
+        # ops that shatter a single watertight solid (bad slice/cut/boolean)
+        # are worse than a missed op — salvage or revert before they reach
+        # export, where they'd surface as solids>1 / non-watertight majors
+        if _is_single_solid(mesh) and not _is_single_solid(out):
+            rescued = _salvage_solid(out)
+            if rescued is not None:
+                out, salvaged = rescued, True
+            else:
+                out, reverted = mesh, True
+        mesh = rest_on_xy_center(out)
         report.append(
             {
                 "op": mo.op,
@@ -1179,6 +1217,8 @@ def apply_ops(
                 "faces_in": faces_in,
                 "faces_out": len(mesh.faces),
                 "watertight": bool(mesh.is_watertight),
+                "salvaged": salvaged,
+                "reverted": reverted,
             }
         )
     return mesh, report
@@ -1212,7 +1252,10 @@ def baseline_mesh(
         factor *= post.scale
 
     if post.flatten_bottom_mm > 0:
-        mesh = flatten_bottom(mesh, post.flatten_bottom_mm)
+        flat = flatten_bottom(mesh, post.flatten_bottom_mm)
+        if _is_single_solid(mesh) and not _is_single_solid(flat):
+            flat = _salvage_solid(flat) or mesh
+        mesh = flat
     mesh = rest_on_xy_center(mesh)
 
     info = {

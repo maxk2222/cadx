@@ -30,6 +30,10 @@ def _ctx(llm: FakeLLM | None = None, **kw) -> AgentCtx:
     kw.setdefault("settings", ProjectSettings(clarification_mode="assume", max_iterations=1))
     kw.setdefault("mode", "generate")
     kw.setdefault("prompt", "x")
+    # deterministic mesh seed — the default derives from uuid4 project/asset
+    # ids, which made mesh outcome assertions depend on hash luck (flaky)
+    if kw["settings"].mesh_seed is None:
+        kw["settings"].mesh_seed = 4242
     return AgentCtx(
         llm=llm or FakeLLM([]),
         executor=InProcessExecutor(),
