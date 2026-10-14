@@ -121,4 +121,5 @@ No BuildPart context needed. Parts rest on XY (min Z = 0), centred — place wit
   generate an outline from sampled math (S-curves, parametric sweeps) instead
   of calling `Polyline` yourself — duplicate-sample crashes are the most
   common exec error. Then `extrude(face, amount=h)` or feed it to
-  `profile_body`.
+  `profile_body` — or `revolve(face-or-section, axis=Axis.X)` for turned
+  parts (profile in a plane containing the axis, closed onto it).

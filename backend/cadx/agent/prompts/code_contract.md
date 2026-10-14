@@ -30,6 +30,16 @@
    - Booleans only work on 3D solids: `part - Ellipse(...)` or
      `mesh.cut(Pos * Ellipse(...))` are invalid — `Ellipse`/`Circle`/`Rectangle`
      are 2D curves. Use `Cylinder`/`Box`/`extrude` tools instead.
+   - `Rot` takes `(x, y, z)` Euler angles, `(axis=Axis.Y, angle=90)` or
+     `(Axis.Y, 90)` — `Rot(a=90, about=Axis.Y)` raises "Unexpected keyword
+     arguments". Same discipline for every constructor: check the signature,
+     don't invent kwargs.
+   - Turned/revolved parts (grips, nozzles, bodies of revolution): build the
+     profile as `(x, radius)` points in `BuildSketch(Plane.XZ)` — u maps to
+     X, v is the radial distance — and close the profile DOWN TO THE AXIS
+     (endpoints at z=0 plus a closing line, or `closed_polyline`). Then
+     `revolve(axis=Axis.X)` inside `BuildPart()`. An open profile or tips
+     that don't reach the axis leave the solid open/gapped.
 4. Coordinate frame: X = length (left->right), Y = width (+Y is the "front" face),
    Z = height (up). The part must rest on the XY plane (min Z = 0) and be centred on
    the origin in X and Y. Use `align=(Align.CENTER, Align.CENTER, Align.MIN)` on
