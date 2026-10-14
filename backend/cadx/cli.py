@@ -467,6 +467,7 @@ def eval(
                 all_results.setdefault(bm.name, []).append(r)
                 dims = f"bbox={r.bbox} dim_ok={r.dim_ok}" if r.bbox else ""
                 extra = (
+                    f"mode={r.resolved_mode} "
                     f"features_ok={r.features_ok} watertight={r.watertight} "
                     f"calls={r.calls} ptok={r.prompt_tokens}"
                 )

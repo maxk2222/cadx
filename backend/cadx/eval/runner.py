@@ -64,6 +64,8 @@ class EvalResult:
     calls: int = 0
     passed: bool | None = None
     issues: list[str] = field(default_factory=list)
+    resolved_mode: str | None = None  # cad | mesh | hybrid actually used
+    mode_reason: str = ""  # plan approach_reason + runtime mode_note
 
 
 def _features_ok(expected: list[dict[str, Any]], features: dict[str, Any] | None) -> bool | None:
@@ -258,6 +260,15 @@ def _judge(bm: Benchmark, outcome: RunOutcome, wall: float, version_dir: Path) -
         calls=calls,
         passed=passed,
         issues=issue_texts,
+        resolved_mode=outcome.resolved_mode or bm.gen_mode,
+        mode_reason=" | ".join(
+            p
+            for p in (
+                str((outcome.plan or {}).get("approach_reason") or ""),
+                outcome.mode_note,
+            )
+            if p
+        ),
     )
 
 

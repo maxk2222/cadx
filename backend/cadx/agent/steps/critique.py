@@ -192,7 +192,39 @@ async def run(
         if resp2.parsed.discrepancies or resp2.parsed.score < critique.score:
             critique = resp2.parsed
 
-    return _finalize_critique(critique, ctx, spec, dim_issues, feature_findings or [], features)
+    # calibration transparency: the LLM's raw verdict vs. the deterministic
+    # post-processing (synthesized discrepancies, hard rule, ceiling/floor) —
+    # score jumps are otherwise unexplainable in trace.json
+    raw_score, raw_passed = critique.score, critique.passed
+    # the floor only applies to the LLM's own discrepancy list — capture it
+    # before _finalize_critique mutates the object in place
+    raw_had_discrepancies = bool(critique.discrepancies)
+    final = _finalize_critique(critique, ctx, spec, dim_issues, feature_findings or [], features)
+    await ctx.trace.record(
+        step=f"{STEP}_calibrated",
+        iteration=iteration,
+        model="deterministic",
+        messages=[],
+        response_text="",
+        parsed={
+            "llm_score": raw_score,
+            "llm_passed": raw_passed,
+            "final_score": final.score,
+            "final_passed": final.passed,
+            "fact_ceiling": fact_ceiling(dim_issues, feature_findings or []),
+            "fact_floor": (
+                fact_floor(final, dim_issues, feature_findings or [])
+                if raw_had_discrepancies
+                else 0
+            ),
+            "discrepancies": len(final.discrepancies),
+            "majors": sum(1 for d in final.discrepancies if d.severity == "major"),
+        },
+        prompt_tokens=0,
+        completion_tokens=0,
+        latency_ms=0,
+    )
+    return final
 
 
 def _finalize_critique(
