@@ -105,3 +105,44 @@ def test_ws_tolerant_find_matches():
     out, errs = apply_edits(code, [_e(find, "with BuildPart() as p:\n    pass")])
     assert errs == [], errs
     assert out is not None and "pass" in out
+
+
+def test_nows_match_reformatted_block():
+    """Model wrote the find block as one line; code has it multi-line —
+    the observed firesteel patch failure."""
+    find = 'PARAMS = {"length": 40.0, "height": 10.0}'
+    out, errs = apply_edits(CODE, [_e(find, 'PARAMS = {"length": 50.0, "height": 10.0}')])
+    assert errs == [], errs
+    assert '"length": 50.0' in out
+
+
+def test_fuzzy_match_paraphrased_block():
+    """Small edits inside the find block (changed value) still match."""
+    code = (
+        CODE
+        + 'leg = Pos(25, 0, 6) * Box(10, 40, 48,\n'
+        + '    align=(Align.CENTER, Align.CENTER, Align.MIN))\n'
+    )
+    find = "leg = Pos(25, 0, 6) * Box(10, 40, 54,\n    align=(Align.CENTER, Align.CENTER, Align.MIN))"
+    out, errs = apply_edits(code, [_e(find, "leg = Pos(25, 0, 6) * Box(10, 40, 54) # ok")])
+    assert errs == [], errs
+    assert "# ok" in out
+
+
+def test_fuzzy_ambiguous_rejected():
+    """Two similar regions must NOT be fuzzy-guessed."""
+    code = (
+        CODE
+        + "a = Pos(-20, 0, 6) * Box(10, 40, 48)\n"
+        + "b = Pos(+20, 0, 6) * Box(10, 40, 48)\n"
+    )
+    find = "c = Pos(0, 0, 6) * Box(10, 40, 48)"
+    _out, errs = apply_edits(code, [_e(find, "X = 1")])
+    assert any("not found" in e for e in errs)
+
+
+def test_fuzzy_no_match_rejected():
+    _out, errs = apply_edits(
+        CODE, [_e("totally different code with enough characters here", "x")]
+    )
+    assert any("not found" in e for e in errs)
