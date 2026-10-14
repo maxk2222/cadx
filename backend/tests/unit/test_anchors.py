@@ -30,6 +30,7 @@ def _meas(holes, outline) -> dict:
             "outline_mm": outline,
             "holes": holes,
             "confidence": 0.9,
+            "authoritative": True,
         }
     }
 

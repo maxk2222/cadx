@@ -22,6 +22,9 @@ log = get_logger(__name__)
 
 STEP = "measure"
 PLAN_ROLES = {"top", "bottom", "drawing"}
+# confidence floor for a measurement to count as authoritative — below this,
+# the outline informs proportions but must not drive silhouette reconstruction
+MEASURE_AUTHORITATIVE_CONF = 0.8
 _DIA_RE = re.compile(
     r"(?:Ø|\bdia(?:meter)?\b|\bdurchmesser\b)\s*(\d+(?:[.,]\d+)?)\s*mm", re.IGNORECASE
 )
@@ -97,6 +100,17 @@ async def run(ctx: AgentCtx, spec: PartSpec) -> dict[str, dict[str, Any]]:
                 reference_mm=ref_mm,
             )
             m.asset_id = asset.asset_id
+            # authoritative only when the INTAKE step explicitly labelled this
+            # image a plan view — an aspect-ratio fallback hit on a perspective
+            # shot must not become silhouette ground truth (observed: a
+            # perspective product photo measured as 'top' forced blob outlines)
+            intake_role = roles.get(asset.asset_id)
+            width_warn = any(w.startswith("width mismatch") for w in m.warnings)
+            m.authoritative = bool(
+                intake_role in PLAN_ROLES
+                and not width_warn
+                and m.confidence >= MEASURE_AUTHORITATIVE_CONF
+            )
             (out_dir / f"{asset.asset_id}.json").write_text(m.model_dump_json(indent=2))
             try:
                 render_overlay(Path(asset.path), m, out_dir / f"{asset.asset_id}_overlay.png")
@@ -107,7 +121,8 @@ async def run(ctx: AgentCtx, spec: PartSpec) -> dict[str, dict[str, Any]]:
                 STEP,
                 0,
                 f"measured {role} view: {m.bbox_mm[0]:.1f} x {m.bbox_mm[1]:.1f} mm, "
-                f"{len(m.holes)} holes",
+                f"{len(m.holes)} holes"
+                + ("" if m.authoritative else " (low confidence — advisory only)"),
             )
         except Exception as e:
             await ctx.emit(STEP, 0, f"measurement skipped for {asset.filename}: {e}")

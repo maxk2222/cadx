@@ -18,7 +18,7 @@ from cadx.agent.context import (
 from cadx.agent.toolloop import run_session, tools_enabled
 from cadx.agent.toolspecs import ToolSession
 from cadx.agent.types import IMAGE_INPUT_KINDS, AgentCtx
-from cadx.llm.schemas import LoadCase, OptimizeSpec, PartSpec
+from cadx.llm.schemas import Feature, LoadCase, OptimizeSpec, PartSpec
 from cadx.logging import get_logger
 
 log = get_logger(__name__)
@@ -95,6 +95,89 @@ def sanitize_dims(spec: PartSpec, prompt: str) -> list[str]:
     )
     spec.length_x = lx.model_copy(update={"value": vals[0], "source": "stated"})
     return notes
+
+
+# --------------------------------------------------------------------------- #
+# degenerate-spec gate                                                          #
+# --------------------------------------------------------------------------- #
+
+_TOOL_NAMES = {
+    "search_catalog",
+    "lookup_part",
+    "cadlib_lookup",
+    "search_library",
+    "library_part",
+    "attach_library_part",
+    "view_image",
+    "generate_concept_image",
+}
+_FEATURE_WORDS = re.compile(
+    r"\b(loch|löcher|loecher|bohrung|bohrungen|hole|holes|bore|bores|langloch|"
+    r"slot|slots|nut|groove|tasche|pocket|rippe|rippen|rib|ribs|steg|web|"
+    r"radius|radien|fillet|verrund|verrundung|fase|chamfer|senk|senkung|"
+    r"countersunk|countersink|counter|gewinde|thread|insert|boss|zapfen|"
+    r"ausschnitt|cutout|aussparung|recess)\w*",
+    re.I,
+)
+
+
+def spec_gaps(spec: PartSpec, prompt: str) -> list[str]:
+    """Deterministic plausibility check. Returns reasons (empty = ok)."""
+    gaps: list[str] = []
+    if spec.name.strip().lower() in _TOOL_NAMES or "catalog search" in spec.summary.lower():
+        gaps.append("spec name/summary is a tool echo")
+    words = sorted({m.group(0).lower() for m in _FEATURE_WORDS.finditer(prompt or "")})
+    if words and not spec.features:
+        gaps.append(f"prompt names features ({', '.join(words[:8])}) but spec.features is empty")
+    return gaps
+
+
+class _FeaturesOut(BaseModel):
+    """Focused re-ask payload: every feature the prompt names, plus identity."""
+
+    name: str = ""
+    summary: str = ""
+    features: list[Feature] = Field(default_factory=list)
+
+
+async def extract_features(ctx: AgentCtx, spec: PartSpec) -> _FeaturesOut:
+    """Second-chance extraction when the intake spec dropped named features.
+
+    Small one-shot call (prompt + current spec as JSON + images) — cheaper
+    than re-running the full intake, same pattern as extract_load_cases."""
+    user_text = json.dumps(
+        {
+            "prompt": ctx.prompt,
+            "current_spec": spec.model_dump(
+                include={"name", "summary", "length_x", "width_y", "height_z", "features"}
+            ),
+        },
+        ensure_ascii=False,
+    )
+    user_content: list[dict[str, Any]] = [{"type": "text", "text": user_text}]
+    user_content += images_block(ctx.assets, ctx.runtime_settings.agent_max_input_images)
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": system_prompt("intake_features.md")},
+        {"role": "user", "content": user_content},
+    ]
+    try:
+        resp = await ctx.llm.chat("vision", messages, json_schema=_FeaturesOut, temperature=0.0)
+        parsed = resp.parsed if isinstance(resp.parsed, _FeaturesOut) else _FeaturesOut()
+        await ctx.trace.record(
+            step="intake_features",
+            iteration=0,
+            model=resp.model,
+            messages=messages,
+            response_text=resp.text,
+            parsed=parsed.model_dump(),
+            prompt_tokens=resp.prompt_tokens,
+            completion_tokens=resp.completion_tokens,
+            latency_ms=resp.latency_ms,
+        )
+        return parsed
+    except Exception:
+        log.warning("intake.features_retry_failed", exc_info=True)
+        return _FeaturesOut()
 
 
 async def extract_load_cases(

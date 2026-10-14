@@ -312,6 +312,9 @@ class PartSpec(BaseModel):
     height_z: Dim
     orientation_note: M = ""
     features: list[Feature] = Field(default_factory=list, max_length=40)
+    # multi-image parts: how the body is built up (layers, gaps, joined parts)
+    # — survives the spec->codegen handoff that otherwise flattens structure
+    construction_notes: Annotated[str, Field(max_length=600)] = ""
     symmetry: S = ""
     image_roles: list[ImageRole] = Field(default_factory=list, max_length=20)
     process: Annotated[str, Field(max_length=40)] = "fdm"
@@ -427,6 +430,9 @@ class Discrepancy(BaseModel):
     where: M = ""
     severity: Literal["major", "minor"] = "minor"
     fix_hint: M = ""
+    # where the requirement comes from — keeps the critic from inventing
+    # features that appear in neither the prompt, the spec nor the images
+    source: Literal["spec", "prompt", "image", "dfm", "other"] = "other"
 
 
 class FeatureVerdict(BaseModel):

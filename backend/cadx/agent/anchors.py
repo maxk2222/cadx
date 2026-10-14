@@ -30,7 +30,10 @@ class Anchor(BaseModel):
     x: float
     y: float
     dia: float
-    source: Literal["image", "mesh", "image+mesh", "scan"]
+    # "image-approx" marks anchors from a NON-authoritative measurement
+    # (aspect-fallback perspective shot) — downstream gates treat them like
+    # mesh hints, not exact positions
+    source: Literal["image", "mesh", "image+mesh", "image-approx", "image-approx+mesh", "scan"]
     name: str = ""
     axis: str = "+z"  # +x | +y | +z — bore/feature axis
     z: float | None = None  # centre coord along the bore axis (None = part mid)
@@ -165,6 +168,9 @@ def build_anchors(  # noqa: C901
             best = m
     img_holes = (best or {}).get("holes") or []
     img_outline = (best or {}).get("outline_mm") or []
+    # a non-authoritative measurement (aspect-fallback on a perspective shot)
+    # must not produce 'image' anchors that downstream gates treat as exact
+    img_src = "image" if (best or {}).get("authoritative", False) else "image-approx"
 
     mesh_holes = [
         h
@@ -205,7 +211,7 @@ def build_anchors(  # noqa: C901
                 x=round(float(ih["x"]), 2),
                 y=round(float(ih["y"]), 2),
                 dia=round(float(ih["dia"]), 2),
-                source="image+mesh" if match >= 0 else "image",
+                source=f"{img_src}+mesh" if match >= 0 else img_src,
             )
         )
     for j, mh in enumerate(mesh_holes):

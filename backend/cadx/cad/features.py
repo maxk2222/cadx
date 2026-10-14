@@ -716,6 +716,11 @@ def compare_anchor_positions(
         centres += [(c[0], c[1]) for g in measured.hole_groups for c in g.centers]
     for a in holes:
         ax, ay = float(a["x"]), float(a["y"])
+        # position exactness only makes sense for anchors backed by an
+        # authoritative plan-view image; mesh-only / approximate anchors are
+        # self-referential (the mesh IS the part) so a deviation is minor
+        src = str(a.get("source", "image"))
+        exact = src in ("image", "image+mesh")
         d = min((math.hypot(ax - cx, ay - cy) for cx, cy in centres), default=None)
         if d is None:
             findings.append(
@@ -730,16 +735,18 @@ def compare_anchor_positions(
                     ),
                 )
             )
-        elif d > 2.0:
+        elif d > (2.0 if exact else 3.0):
             findings.append(
                 FeatureFinding(
                     feature=f"hole {a.get('index', '?')}",
                     expected=f"at ({ax:.1f}, {ay:.1f})",
                     actual=f"off by {d:.1f} mm",
-                    severity="major",
+                    severity="major" if exact else "minor",
                     fix_hint=(
                         f"move the hole to ({ax:.1f}, {ay:.1f}) — "
                         "use anchor_holes() coordinates verbatim"
+                        if exact
+                        else "nudge the hole toward the anchored position"
                     ),
                 )
             )

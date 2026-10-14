@@ -33,6 +33,10 @@ class ImageMeasurement(BaseModel):
     holes: list[MeasuredHole] = []
     confidence: float = 1.0
     warnings: list[str] = []
+    # set by the agent's measure step: True only when the image was explicitly
+    # labelled a plan view AND the measurement is clean — otherwise the outline
+    # is advisory (never enforced as silhouette/IoU ground truth)
+    authoritative: bool = False
 
 
 def _mask(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:

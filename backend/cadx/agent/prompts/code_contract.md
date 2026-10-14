@@ -63,7 +63,9 @@
      verbatim (combine with `spine_y(x)` only when the anchor list is empty) and
      MUST keep `dia` from your spec, not from the image (image diameters are
      perspective estimates). A missing anchor hole or one off by >2 mm is a
-     rejected part.
+     rejected part. This applies only when the context marks the measurement
+     authoritative or the anchor source is `image`/`image+mesh` — anchors
+     sourced `mesh` or `image-approx` are hints.
    - `load_image_profile() -> Face` returns the measured plan-view outline as a
      planar Face on the XY plane, centred on the origin, in real mm. For
      footprint-driven parts ("same footprint/outline as the top view") build the

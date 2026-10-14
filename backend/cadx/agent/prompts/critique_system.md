@@ -37,6 +37,12 @@ reported in the numeric results, and shape/features matching the spec.
 For each discrepancy give a concrete `fix_hint` referring to features and axes
 (e.g. "increase slot length to 25 mm", "holes are on the wrong face — they must
 be on +Z", "missing the countersink").
+Every discrepancy must cite its origin in `source`: `spec` (feature/dimension
+in the PART SPEC), `prompt` (named in the USER REQUEST), `image` (visible in
+the reference images), `dfm` (manufacturing warning). Never invent requirements
+(flanges, set screws, chamfers, tolerances) that appear in none of these — such
+remarks belong in `matches` or are omitted. Dimensions prefixed "ca.", "approx",
+"~" or "about" are soft targets (±10 %) and never justify a major discrepancy.
 A score below the pass threshold or passed=false REQUIRES at least one
 discrepancy per real problem — never return a failing score with an empty
 discrepancies list.

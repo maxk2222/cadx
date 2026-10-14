@@ -13,6 +13,7 @@ from cadx.agent.context import (
     measurements_block,
     parent_block,
     renders_block,
+    request_block,
     spec_block,
     system_prompt,
 )
@@ -60,6 +61,9 @@ def _parts(
                 ),
             }
         )
+    rb = request_block(ctx.prompt)
+    if rb:
+        parts.append({"type": "text", "text": rb})
     parts.append({"type": "text", "text": spec_block(spec)})
     parts += renders_block(contact_sheet, analysis)
     parts.append({"type": "text", "text": numeric})
@@ -188,19 +192,37 @@ async def run(
         if resp2.parsed.discrepancies or resp2.parsed.score < critique.score:
             critique = resp2.parsed
 
+    return _finalize_critique(critique, ctx, spec, dim_issues, feature_findings or [], features)
+
+
+def _finalize_critique(
+    critique: Critique,
+    ctx: AgentCtx,
+    spec: PartSpec,
+    dim_issues: list[str],
+    feature_findings: list[dict[str, Any]],
+    features: dict[str, Any] | None,
+) -> Critique:
+    """Post-LLM calibration: synthesize missing discrepancies, enforce the
+    feature hard rule, then bound the score by measured facts."""
+    # the floor below protects against UNSOURCED complaints — it only applies
+    # when the model itself listed them; a bare failed verdict (discrepancies
+    # synthesized here) is the model's own call and must stay low
+    had_llm_discrepancies = bool(critique.discrepancies)
     # synthesize discrepancies from measured findings if still empty
     if not critique.passed and not critique.discrepancies:
         for i in dim_issues:
             critique.discrepancies.append(
-                Discrepancy(what=f"dimension mismatch — {i}", severity="major")
+                Discrepancy(what=f"dimension mismatch — {i}", severity="major", source="spec")
             )
-        for f in feature_findings or []:
+        for f in feature_findings:
             critique.discrepancies.append(
                 Discrepancy(
                     what=f"{f.get('feature')}: expected {f.get('expected')}, "
                     f"actual {f.get('actual')}",
                     severity=f.get("severity", "minor"),
                     fix_hint=f.get("fix_hint", ""),
+                    source="spec",
                 )
             )
         # the model's own feature verdicts are actionable too — a 'missing' or
@@ -214,6 +236,7 @@ async def run(
                         severity="major" if fv.status == "missing" else "minor",
                         fix_hint=f"make the '{fv.name}' feature match the spec"
                         + (f" ({fv.note})" if fv.note else ""),
+                        source="spec",
                     )
                 )
         # last resort: a failing verdict with literally nothing actionable —
@@ -228,7 +251,71 @@ async def run(
                 )
             )
 
-    return normalize_score(critique)
+    # hard rule: the request names features (holes/slots/ribs/fillets/...) but
+    # the measured geometry has none and the spec lists none → the model must
+    # not pass (observed: bracket prompt -> plain box scored 95)
+    from cadx.agent.steps.intake import _FEATURE_WORDS
+
+    measured_n = (
+        int((features or {}).get("total_holes") or 0)
+        + len((features or {}).get("rounds") or [])
+        + int((features or {}).get("chamfer_faces") or 0)
+        + int((features or {}).get("countersinks") or 0)
+        + int((features or {}).get("counterbores") or 0)
+    )
+    if _FEATURE_WORDS.search(ctx.prompt or "") and measured_n == 0 and not spec.features:
+        critique.discrepancies.append(
+            Discrepancy(
+                what="the request names features (holes/slots/ribs/fillets) but "
+                "the geometry has none",
+                where="whole part",
+                severity="major",
+                source="prompt",
+                fix_hint="implement every feature named in the USER REQUEST",
+            )
+        )
+        critique.passed = False
+        critique.score = min(critique.score, 40)
+
+    # fact-based calibration: measured facts bound the LLM's score so a
+    # confident 95 on a broken part — or a paranoid 40 on a clean one — both
+    # get pulled toward reality (T3.1). Runs AFTER normalize_score so its
+    # empty-discrepancy floor cannot undo the measured ceiling.
+    critique = normalize_score(critique)
+    ceiling = fact_ceiling(dim_issues, feature_findings)
+    if critique.score > ceiling:
+        critique.score = ceiling
+    floor = (
+        fact_floor(critique, dim_issues, feature_findings) if had_llm_discrepancies else 0
+    )
+    if floor:
+        for d in critique.discrepancies:
+            if d.source in ("other", "dfm") and d.severity == "major":
+                d.severity = "minor"
+        critique.score = max(critique.score, floor)
+    return critique
+
+
+def fact_ceiling(dim_issues: list[str], feature_findings: list[dict[str, Any]]) -> int:
+    """Upper bound from measured facts only — dims + major feature findings."""
+    majors = sum(1 for f in feature_findings if f.get("severity") == "major")
+    if dim_issues or majors:
+        return max(0, 70 - 15 * (len(dim_issues) + majors))
+    return 100
+
+
+def fact_floor(
+    critique: Critique,
+    dim_issues: list[str],
+    feature_findings: list[dict[str, Any]],
+) -> int:
+    """Lower bound when every measured fact passes and only unsourced
+    remarks remain — invented flaws must not tank a clean part."""
+    if dim_issues or any(f.get("severity") == "major" for f in feature_findings):
+        return 0
+    if critique.discrepancies and all(d.source in ("other", "dfm") for d in critique.discrepancies):
+        return 60
+    return 0
 
 
 def normalize_score(critique: Critique) -> Critique:
