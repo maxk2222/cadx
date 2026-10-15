@@ -15,6 +15,7 @@ import type {
   MeshOp,
   MeshPreviewResult,
   OptimizeSpec,
+  OrganicParams,
   Project,
   ProviderTestResult,
   RegionSpec,
@@ -156,6 +157,8 @@ export const api = {
     req<{ version_id: string; job_id: string }>(`/versions/${vid}/topopt-resample`, json(body)),
   refine: (vid: string, body: { features?: Record<string, unknown>[]; load_cases?: LoadCase[]; keep_regions?: RegionSpec[]; material?: string; voxel_mm?: number; restore_planes?: boolean; helical_threads?: boolean; auto_plane_restore?: boolean }) =>
     req<{ version_id: string; job_id: string }>(`/versions/${vid}/refine`, json(body)),
+  organic: (vid: string, body: OrganicParams) =>
+    req<{ version_id: string; job_id: string }>(`/versions/${vid}/organic`, json(body)),
   anchors: (vid: string) => req<AnchorsResult>(`/versions/${vid}/anchors`),
 
   // visual mesh editor + structural editor

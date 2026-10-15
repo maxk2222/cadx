@@ -19,6 +19,7 @@ export const STEP_LABEL: Record<string, string> = {
   finalize: "export",
   budget: "budget",
   optimize: "topopt",
+  organic: "organic",
   params: "params",
   reexport: "re-export",
   done: "done",

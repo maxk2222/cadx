@@ -18,6 +18,7 @@ from cadx.db.models import (
     VersionKind,
     VersionStatus,
 )
+from cadx.llm.schemas import OrganicParams
 
 
 class ProjectCreate(BaseModel):
@@ -207,6 +208,18 @@ class RefineRequest(BaseModel):
     auto_plane_restore: bool = (
         False  # auto-detect dominant planar faces on the base mesh and restore them
     )
+
+
+class OrganicRequest(OrganicParams):
+    """Pseudo-topology-optimization restyle request.
+
+    The parameter set is identical to the `organic` mesh-op args (live
+    preview) and the executor payload, so the previewed structure is the
+    committed child version's structure. Purely aesthetic — the result is
+    NOT structurally optimized or verified (no FEM, no load cases).
+    """
+
+    model_config = ConfigDict(extra="forbid")
 
 
 # --------------------------------------------------------------------------- #

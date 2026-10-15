@@ -11,6 +11,7 @@ from cadx.agent.worker_jobs import (
     run_fem_job,
     run_mesh_edit_job,
     run_optimize_job,
+    run_organic_job,
     run_params_job,
     run_reexport_job,
     run_refine_job,
@@ -21,6 +22,7 @@ from cadx.cad.tasks import (
     export_all,
     fem_analyze,
     optimize,
+    organic,
     process_mesh,
     refine,
     topopt_resample,
@@ -107,6 +109,7 @@ class AgentWorkerSettings:
         run_mesh_edit_job,
         run_fem_job,
         run_refine_job,
+        run_organic_job,
     ]
     on_startup = agent_startup
     on_shutdown = worker_shutdown
@@ -128,6 +131,7 @@ class CadWorkerSettings:
         optimize,
         topopt_resample,
         refine,
+        organic,
     ]
     on_startup = cad_startup
     on_shutdown = worker_shutdown

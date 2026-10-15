@@ -60,7 +60,7 @@ export interface VersionSummary {
   project_id: string;
   parent_id: string | null;
   number: number;
-  kind: "generate" | "edit" | "params" | "optimize" | "mesh_edit";
+  kind: "generate" | "edit" | "params" | "optimize" | "refine" | "mesh_edit" | "organic";
   prompt: string;
   status: VersionStatus;
   score: number | null;
@@ -104,6 +104,7 @@ export interface MeshInfo {
   orientation?: { up?: string; front?: string };
   orientation_source?: string;
   post?: Record<string, unknown>;
+  organic?: OrganicReport;
   triangles?: number;
   scale_factor?: number;
   solid_ok?: boolean;
@@ -275,6 +276,54 @@ export interface OptimizeSpec {
   /** warn when void gaps below this size survive extraction, mm. */
   min_gap_mm?: number | null;
   note?: string;
+}
+
+/* ---------- pseudo-topology "organic" restyle ---------- */
+
+export type OrganicStyle = "gyroid" | "trabecular" | "voronoi" | "branches";
+
+/** OrganicParams — identical to the `organic` mesh-op args and the
+ *  POST /versions/{id}/organic request body, so live preview == commit. */
+export interface OrganicParams {
+  style?: OrganicStyle;
+  volfrac?: number;
+  seed?: number;
+  period_mm?: number;
+  shell_mm?: number;
+  floor_mm?: number;
+  min_member_mm?: number | null;
+  min_gap_mm?: number | null;
+  density_threshold?: number | null;
+  auto_keep?: boolean;
+  auto_keep_margin_mm?: number;
+  keep_regions?: RegionSpec[];
+  void_regions?: RegionSpec[];
+  voxel_mm?: number | null;
+  max_elements?: number | null;
+  smooth_iterations?: number | null;
+}
+
+/** MeshInfo.organic — the report stored on an organic child version. */
+export interface OrganicReport {
+  style?: string;
+  seed?: number;
+  period_mm?: number;
+  volfrac_target?: number;
+  volfrac_achieved?: number;
+  threshold?: number;
+  pitch_mm?: number;
+  solid_elements?: number;
+  n_components?: number;
+  floor_mm?: number;
+  shell_mm?: number;
+  min_member_mm?: number;
+  keep_regions?: number;
+  triangles?: number;
+  watertight?: boolean;
+  warnings?: string[];
+  disclaimer?: string;
+  density_relpath?: string;
+  [key: string]: unknown;
 }
 
 /** Measured feature anchor (hole/thread/insert/bearing seat), any axis. */

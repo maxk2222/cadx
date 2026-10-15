@@ -105,7 +105,7 @@ export default function ProjectPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["projects"] });
       toast("project deleted", "success");
-      nav("/");
+      nav("/projects");
     },
     onError: (e) => toast(String(e), "error"),
   });
@@ -150,7 +150,7 @@ export default function ProjectPage() {
           <div className="min-w-0">
             <Crumbs
               items={[
-                <Link key="p" to="/" className="hover:text-zinc-300">
+                <Link key="p" to="/projects" className="hover:text-zinc-300">
                   projects
                 </Link>,
                 <span key="n" className="font-medium text-zinc-200">

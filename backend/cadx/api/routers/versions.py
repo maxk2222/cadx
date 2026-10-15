@@ -17,6 +17,7 @@ from cadx.api.schemas import (
     EnqueueResponse,
     GenerateRequest,
     OptimizeRequest,
+    OrganicRequest,
     ParamsRequest,
     RefineRequest,
     TopoptResampleRequest,
@@ -319,15 +320,19 @@ async def topopt_resample(
         raise HTTPException(404, "version not found")
     if parent.status not in (VersionStatus.succeeded, VersionStatus.needs_review):
         raise HTTPException(409, f"cannot resample version in status {parent.status}")
-    if not ((parent.mesh or {}).get("topopt") or {}).get("density_relpath"):
+    organic_parent = parent.kind == VersionKind.organic
+    if not (
+        ((parent.mesh or {}).get("topopt") or {}).get("density_relpath")
+        or ((parent.mesh or {}).get("organic") or {}).get("density_relpath")
+    ):
         raise HTTPException(409, "version has no stored density field — run optimize first")
     v = Version(
         project_id=parent.project_id,
         parent_id=parent.id,
         number=await _next_number(db, parent.project_id),
-        kind=VersionKind.optimize,
+        kind=VersionKind.organic if organic_parent else VersionKind.optimize,
         prompt=f"resample {parent.prompt}"[:500],
-        gen_mode="topopt",
+        gen_mode="mesh" if organic_parent else "topopt",
         asset_ids=parent.asset_ids or [],
         options={
             **(parent.options or {}),
@@ -418,6 +423,49 @@ async def refine_version(
             "restore_planes": body.restore_planes,
             "helical_threads": body.helical_threads,
             "auto_plane_restore": body.auto_plane_restore,
+        },
+    )
+    return EnqueueResponse(version_id=v.id, job_id=job.id)
+
+
+@router.post("/versions/{version_id}/organic", response_model=EnqueueResponse)
+async def organic_version(
+    version_id: uuid.UUID, body: OrganicRequest, db: AsyncSession = Depends(get_session)
+):
+    """Procedural pseudo-topology restyle — converts the part into a
+    deterministic organic structure (gyroid/trabecular/voronoi/branches)
+    inside its own design domain. Creates an 'organic' child version
+    (LLM-free). Aesthetic only — NOT structurally verified."""
+    parent = await db.get(Version, version_id)
+    if not parent:
+        raise HTTPException(404, "version not found")
+    if parent.status not in (VersionStatus.succeeded, VersionStatus.needs_review):
+        raise HTTPException(409, f"cannot restyle version in status {parent.status}")
+    organic = body.model_dump(mode="json", exclude={"anchors"})
+    v = Version(
+        project_id=parent.project_id,
+        parent_id=parent.id,
+        number=await _next_number(db, parent.project_id),
+        kind=VersionKind.organic,
+        prompt=f"organic {parent.prompt}"[:500],
+        gen_mode="mesh",
+        asset_ids=parent.asset_ids or [],
+        options={
+            **(parent.options or {}),
+            "organic_request": organic,
+        },
+    )
+    db.add(v)
+    await db.flush()
+    job = Job(version_id=v.id, type=JobType.organic)
+    db.add(job)
+    await db.commit()
+    await enqueue(
+        "run_organic_job",
+        {
+            "job_id": str(job.id),
+            "version_id": str(v.id),
+            "organic": organic,
         },
     )
     return EnqueueResponse(version_id=v.id, job_id=job.id)

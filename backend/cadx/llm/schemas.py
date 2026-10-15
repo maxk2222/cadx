@@ -323,6 +323,46 @@ class OptimizeSpec(BaseModel):
     note: M = ""
 
 
+class OrganicParams(BaseModel):
+    """Pseudo-topology-optimization request — a purely procedural organic
+    restyling. NOT a structural optimization: no FEM, no load cases, no
+    safety factor. Shared by the API request body, the `organic` MeshOp
+    args (live preview) and the executor payload, so preview and committed
+    child version run the identical parameter set.
+
+    style:          procedural density field — gyroid (TPMS sheet),
+                    trabecular (bone-like smoothed noise), voronoi (cell
+                    walls), branches (floor-rooted struts/canopy)
+    volfrac:        fraction of the design space kept solid (0.05..0.9)
+    seed:           deterministic seed — same params + same mesh = same part
+    period_mm:      characteristic feature size (cell size / blob size)
+    shell_mm:       solid skin thickness preserved at the part surface (0=off)
+    floor_mm:       always-solid stand band above the part's min Z
+    anchors:        resolved anchor table — auto-injected by apply_op when
+                    auto_keep is on; excluded from serialized op args
+    """
+
+    style: Literal["gyroid", "trabecular", "voronoi", "branches"] = "gyroid"
+    volfrac: float = Field(default=0.35, ge=0.05, le=0.9)
+    seed: int = Field(default=0, ge=0, le=2**31 - 1)
+    period_mm: float = Field(default=12.0, gt=0, le=1000)
+    shell_mm: float = Field(default=0.0, ge=0, le=50)
+    floor_mm: float = Field(default=2.0, ge=0, le=100)
+    min_member_mm: float | None = Field(default=None, ge=0, le=50)
+    min_gap_mm: float | None = Field(default=None, ge=0, le=50)
+    density_threshold: float | None = Field(default=None, ge=0.2, le=0.9)
+    auto_keep: bool = True  # pin every detected fastener anchor solid
+    auto_keep_margin_mm: float = Field(default=3.0, gt=0, le=50)
+    keep_regions: list[RegionSpec] = Field(default_factory=list, max_length=10)
+    void_regions: list[RegionSpec] = Field(default_factory=list, max_length=10)
+    voxel_mm: float | None = Field(default=None, gt=0, le=100)  # domain pitch override
+    max_elements: int | None = Field(
+        default=None, ge=1000, le=5_000_000
+    )  # domain cell cap (smaller = coarser/faster)
+    smooth_iterations: int | None = Field(default=None, ge=0, le=30)
+    anchors: list[dict[str, Any]] = Field(default_factory=list, exclude=True)
+
+
 class PartSpec(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={

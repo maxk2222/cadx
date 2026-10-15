@@ -131,6 +131,8 @@ function opLabel(o: MeshOp): string {
       return `shell ${a.thickness_mm}mm (${a.opening ?? "bottom"})`;
     case "boolean":
       return `${a.op === "union" ? "add" : "cut"} ${a.shape}`;
+    case "organic":
+      return `organic ${a.style ?? "gyroid"} (seed ${a.seed ?? 0})`;
     default:
       return o.op;
   }

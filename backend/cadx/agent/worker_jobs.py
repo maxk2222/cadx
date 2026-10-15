@@ -1165,7 +1165,10 @@ async def run_topopt_resample_job(ctx: dict[str, Any], payload: dict[str, Any]) 
 
         emit = make_emit(job_id)
 
-        density_rel = ((parent.mesh or {}).get("topopt") or {}).get("density_relpath")
+        organic_parent = parent.kind == VersionKind.organic
+        density_rel = ((parent.mesh or {}).get("topopt") or {}).get("density_relpath") or (
+            (parent.mesh or {}).get("organic") or {}
+        ).get("density_relpath")
         if not density_rel or not storage.resolve(density_rel).exists():
             version.status = VersionStatus.failed
             version.error = "parent has no stored density field (re-run the optimization)"
@@ -1253,8 +1256,14 @@ async def run_topopt_resample_job(ctx: dict[str, Any], payload: dict[str, Any]) 
 
         topopt = result.get("topopt") or {}
         fem = result.get("fem") or {}
-        version.gen_mode = "topopt"
-        version.resolved_mode = "topopt"
+        if organic_parent:
+            # organic resample — aesthetic restyle, no FEM verdict
+            version.gen_mode = "mesh"
+            version.resolved_mode = "mesh"
+            topopt = {**topopt, "organic": True}
+        else:
+            version.gen_mode = "topopt"
+            version.resolved_mode = "topopt"
         version.spec = parent.spec
         version.fem = fem or None
         version.mesh = {
@@ -1278,10 +1287,10 @@ async def run_topopt_resample_job(ctx: dict[str, Any], payload: dict[str, Any]) 
         n_bodies = topopt.get("n_components") or 1
         version.status = (
             VersionStatus.needs_review
-            if worst_sf is None or worst_sf < 1.0 or n_bodies > 1
+            if n_bodies > 1 or (not organic_parent and (worst_sf is None or worst_sf < 1.0))
             else VersionStatus.succeeded
         )
-        register_artifacts(db, version.id, artifacts, tessellated_step=False)
+        register_artifacts(db, version.id, artifacts, tessellated_step=organic_parent)
         await emit(
             "optimize",
             1,
@@ -1468,6 +1477,134 @@ async def run_refine_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[s
             f"done: {len(refine_report.get('applied') or [])} feature(s) re-cut, "
             f"{refine_report.get('restored_regions') or 0} keep surface(s) restored"
             + (f", SF {worst_sf}" if worst_sf else ""),
+        )
+        job.status = JobStatus.succeeded
+        job.finished_at = datetime.now(UTC)
+        job.progress = 1.0
+        await _append_job_log(db, job, "done\n")
+        await db.commit()
+        await _publish(str(job_id), {"type": "done", "status": "succeeded"})
+        return {"ok": True}
+
+
+@_guarded
+async def run_organic_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    """Procedural organic restyle (LLM-free): child version gets the restyled
+    mesh + exports + stored density field (resample-compatible npz layout).
+
+    Pseudo-topology-optimization — no FEM, no SIMP: the result is aesthetic
+    styling and explicitly NOT structurally verified.
+    """
+    job_id = _u(payload["job_id"])
+    async with session_scope() as db:
+        job = await db.get(Job, job_id)
+        version = await db.get(Version, _u(payload["version_id"]))
+        parent = await db.get(Version, version.parent_id) if version and version.parent_id else None
+        if job is None or version is None or parent is None:
+            if job:
+                job.status = JobStatus.failed
+                await _append_job_log(db, job, "organic job: missing parent\n")
+                await db.commit()
+            return {"ok": False, "error": "missing parent version"}
+        if job.status in (JobStatus.succeeded, JobStatus.failed, JobStatus.cancelled):
+            # e.g. an arq retry after the guard already finalised the job
+            return {"ok": False, "error": f"job already {job.status}"}
+        job.status = JobStatus.running
+        job.started_at = datetime.now(UTC)
+        version.status = VersionStatus.running
+        await db.commit()
+
+        emit = make_emit(job_id)
+
+        mesh_rel = _parent_stl(parent)
+        if mesh_rel is None:
+            version.status = VersionStatus.failed
+            version.error = "parent has no mesh artifact to restyle"
+            job.status = JobStatus.failed
+            job.finished_at = datetime.now(UTC)
+            await db.commit()
+            return {"ok": False, "error": version.error}
+
+        organic = payload.get("organic") or {}
+        runtime_settings = await load_runtime_settings(db)
+        project = await db.get(Project, version.project_id)
+        settings = _fill_settings(
+            ProjectSettings(**(project.settings or {})) if project else ProjectSettings(),
+            runtime_settings,
+        )
+        executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=runtime_settings)
+
+        await emit(
+            "organic",
+            1,
+            f"organic restyle ({organic.get('style', 'gyroid')}, seed "
+            f"{organic.get('seed', 0)}) on {mesh_rel}",
+        )
+        result = await executor.organic(
+            {
+                "job_id": str(job_id),
+                "project_id": str(version.project_id),
+                "version_id": str(version.id),
+                "iteration": 1,
+                "mesh_rel": mesh_rel,
+                "organic": organic,
+                "voxel_mm": settings.fem_voxel_mm,
+                "runtime_settings": runtime_settings.executor_values(),
+                "name": "model",
+                "anchors": (parent.analysis or {}).get("anchors", {}).get("holes"),
+            }
+        )
+
+        if not result.get("ok"):
+            was_cancelled = (result.get("error") or "") == "cancelled"
+            version.status = VersionStatus.cancelled if was_cancelled else VersionStatus.failed
+            version.error = result.get("error") or "organic restyle failed"
+            job.status = JobStatus.cancelled if was_cancelled else JobStatus.failed
+            job.finished_at = datetime.now(UTC)
+            await _append_job_log(
+                db, job, f"{'cancelled' if was_cancelled else 'failed'}: {version.error}\n"
+            )
+            await db.commit()
+            return {"ok": False, "error": version.error}
+
+        artifacts = _copy_best_artifacts_ctxless(version.project_id, version.id, 1, result)
+        for fmt, rel in (result.get("exports") or {}).items():
+            if rel:
+                artifacts[f"export:{fmt}"] = rel
+        it_dir = storage.iteration_dir(version.project_id, version.id, 1)
+        v_dir = storage.ensure(storage.version_dir(version.project_id, version.id))
+        import shutil
+
+        for extra in ("organic/density.npz",):
+            src = it_dir / extra
+            if src.exists():
+                dst_dir = storage.ensure(v_dir / "organic")
+                shutil.copy2(src, dst_dir / src.name)
+                artifacts[f"organic:{src.stem}"] = storage.relpath(dst_dir / src.name)
+
+        org = (result.get("mesh") or {}).get("organic") or {}
+        version.gen_mode = "mesh"  # tessellated output — ops-only edits apply
+        version.resolved_mode = "mesh"
+        version.spec = parent.spec
+        version.mesh = {
+            **(result.get("mesh") or {}),
+            "organic": org,
+            "from_organic_of": str(parent.id),
+        }
+        version.analysis = result.get("analysis")
+        version.params = {"organic": organic}
+        version.iterations = 1
+        # unprintable multi-body results are flagged; the result is
+        # intentionally NOT structural — "needs_review" is only about
+        # manufacturability here, never about strength
+        n_bodies = org.get("n_components") or 1
+        version.status = VersionStatus.needs_review if n_bodies > 1 else VersionStatus.succeeded
+        register_artifacts(db, version.id, artifacts, tessellated_step=True)
+        await emit(
+            "organic",
+            1,
+            f"done: {org.get('style')}, volfrac {org.get('volfrac_achieved')}, "
+            f"{org.get('triangles')} tris",
         )
         job.status = JobStatus.succeeded
         job.finished_at = datetime.now(UTC)

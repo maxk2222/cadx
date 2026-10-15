@@ -21,7 +21,7 @@ import trimesh
 from pydantic import BaseModel, Field
 
 from cadx.cad.analysis import Analysis
-from cadx.llm.schemas import ParamDef, PartSpec
+from cadx.llm.schemas import OrganicParams, ParamDef, PartSpec
 from cadx.logging import get_logger
 from cadx.runtime_config import RuntimeSettings
 
@@ -1085,6 +1085,18 @@ def _op_boolean(mesh: trimesh.Trimesh, p: OpBoolean) -> trimesh.Trimesh:
     return cast(trimesh.Trimesh, out)
 
 
+def _op_organic(mesh: trimesh.Trimesh, p: OrganicParams) -> trimesh.Trimesh:
+    """Pseudo-topology organic restyle — procedural density field extracted
+    through the TopOpt pipeline. Aesthetic only, not structurally verified."""
+    from cadx.cad.fem.organic import organic_transform
+
+    res = organic_transform(mesh, p)
+    out = smooth_preserve(res.mesh, 4, pin_floor=is_flat_bottom(mesh))
+    if len(out.faces) > BOOLEAN_MAX_FACES:
+        out = decimate(out, BOOLEAN_MAX_FACES)
+    return out
+
+
 class MeshOpError(ValueError):
     """An op in an apply_ops stack failed — carries the 0-based index of the
     failing op plus the per-op report accumulated so far (GUI highlights the
@@ -1121,11 +1133,12 @@ OPS_REGISTRY: dict[str, tuple[type[BaseModel], _OpFn]] = {
     "drill_holes": (OpDrillHoles, _op_drill_holes),
     "shell": (OpShell, _op_shell),
     "boolean": (OpBoolean, _op_boolean),
+    "organic": (OrganicParams, _op_organic),
 }
 
 # bump when an op's semantics change so old version.params replays are
 # recognised as pre-change (stored alongside params, warn-not-fail)
-MESH_OPS_VERSION = 4  # apply_ops reverts ops that shatter a single solid
+MESH_OPS_VERSION = 5  # organic pseudo-topology restyle op
 
 
 def _is_single_solid(mesh: trimesh.Trimesh) -> bool:
@@ -1171,6 +1184,8 @@ def apply_op(
         if not holes:
             raise ValueError("drill_holes: from_anchors set but no anchors available")
         params = params.model_copy(update={"holes": holes})
+    if isinstance(params, OrganicParams) and params.auto_keep and not params.anchors:
+        params = params.model_copy(update={"anchors": list((anchors or {}).get("holes") or [])})
     return fn(mesh, params)
 
 

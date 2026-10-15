@@ -1,6 +1,14 @@
 import { useQuery } from "@tanstack/react-query";
 import { Suspense, lazy } from "react";
-import { Activity, BarChart3, FolderOpen, Library, Settings, type LucideIcon } from "lucide-react";
+import {
+  Activity,
+  BarChart3,
+  FolderOpen,
+  Library,
+  Settings,
+  Sparkles,
+  type LucideIcon,
+} from "lucide-react";
 import {
   BrowserRouter,
   Link,
@@ -18,6 +26,7 @@ import LibraryPage from "./pages/LibraryPage";
 import ProjectPage from "./pages/ProjectPage";
 import ProjectsPage from "./pages/ProjectsPage";
 import SettingsPage from "./pages/SettingsPage";
+import StartPage from "./pages/StartPage";
 import VersionPage from "./pages/VersionPage";
 
 // lazy: keeps recharts (~200KB) out of the initial bundle
@@ -85,9 +94,15 @@ function SideNav() {
       <nav className="flex flex-col gap-1">
         <NavItem
           to="/"
+          icon={Sparkles}
+          label="New part"
+          active={loc.pathname === "/"}
+        />
+        <NavItem
+          to="/projects"
           icon={FolderOpen}
           label="Projects"
-          active={loc.pathname === "/"}
+          active={loc.pathname === "/projects"}
         />
         <NavItem
           to="/jobs"
@@ -130,7 +145,8 @@ export default function App() {
           <SideNav />
           <main className="min-w-0 flex-1">
             <Routes>
-              <Route path="/" element={<ProjectsPage />} />
+              <Route path="/" element={<StartPage />} />
+              <Route path="/projects" element={<ProjectsPage />} />
               <Route path="/projects/:id" element={<ProjectPage />} />
               <Route path="/versions/:id" element={<VersionPage />} />
               <Route path="/versions/:id/edit" element={<EditPage />} />

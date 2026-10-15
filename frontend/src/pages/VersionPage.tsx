@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, Clock, Cpu, Gauge, Layers, PencilRuler, Plus, Shrink, Trash2, TriangleAlert } from "lucide-react";
+import { Activity, Clock, Cpu, Gauge, Layers, PencilRuler, Plus, Shrink, Sprout, Trash2, TriangleAlert } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import ArtifactsTable from "../components/ArtifactsTable";
@@ -9,8 +9,10 @@ import ExportPanel from "../components/ExportPanel";
 import FemPanel from "../components/FemPanel";
 import TopOptPanel from "../components/TopOptPanel";
 import JobLog from "../components/JobLog";
+import LivePreview from "../components/LivePreview";
 import ModeSelector from "../components/ModeSelector";
 import StructuralEditor from "../components/StructuralEditor";
+import OrganicEditor from "../components/OrganicEditor";
 import OptionsPanel, { OptionChips } from "../components/OptionsPanel";
 import ParamsPanel from "../components/ParamsPanel";
 import PlanPanel from "../components/PlanPanel";
@@ -106,64 +108,6 @@ function SaveToLibrary({
   );
 }
 
-/** Provisional render overlay while the job runs — polls the live-renders
- *  manifest (available views + newest iteration) and shows the selected view
- *  with an iteration label. `?t=<mtime>` cache-busts when a render is
- *  rewritten; the browser keeps the last frame while the next image loads. */
-function LivePreview({ versionId }: { versionId: string }) {
-  const { data } = useQuery({
-    queryKey: ["live-renders", versionId],
-    queryFn: () => api.liveRenders(versionId),
-    refetchInterval: 2500,
-  });
-  const [view, setView] = useState<string | null>(null);
-  const [ok, setOk] = useState(false);
-  const views = data?.views ?? [];
-  const cur =
-    view && views.includes(view) ? view : views.includes("iso") ? "iso" : views[0];
-  const src = `${api.previewUrl(versionId, cur)}${cur ? "&" : "?"}t=${
-    data ? Math.floor(data.mtime) : 0
-  }`;
-  return (
-    <>
-      <img
-        src={src}
-        alt="live render preview"
-        className={`absolute inset-0 h-full w-full bg-zinc-950 object-contain transition-opacity duration-300 ${
-          ok ? "opacity-100" : "opacity-0"
-        }`}
-        onLoad={() => setOk(true)}
-        onError={() => setOk(false)}
-      />
-      {ok && (
-        <span className="absolute left-2 top-2 flex items-center gap-1.5 rounded bg-black/70 px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-brand-300">
-          <Spinner className="h-3 w-3" /> live preview
-        </span>
-      )}
-      {ok && data?.iteration != null && (
-        <span className="absolute right-2 top-2 rounded bg-black/70 px-2 py-1 font-mono text-[10px] font-medium text-zinc-300">
-          {data.final ? "final" : `it ${data.iteration}`}
-        </span>
-      )}
-      {ok && views.length > 1 && (
-        <div className="absolute bottom-2 left-2 flex flex-wrap gap-1">
-          {views.map((w) => (
-            <button
-              key={w}
-              onClick={() => setView(w)}
-              className={`rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
-                w === cur ? "text-brand-300" : "text-zinc-400 hover:text-zinc-200"
-              }`}
-            >
-              {w.replace("contact_sheet", "sheet").replace(/^fem:/, "fem ")}
-            </button>
-          ))}
-        </div>
-      )}
-    </>
-  );
-}
-
 export default function VersionPage() {
   const { id = "" } = useParams<{ id: string }>();
   const [sp] = useSearchParams();
@@ -181,6 +125,7 @@ export default function VersionPage() {
   const [regenMesh, setRegenMesh] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [optimizeOpen, setOptimizeOpen] = useState(false);
+  const [organicOpen, setOrganicOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const version = useQuery({
@@ -334,7 +279,7 @@ export default function VersionPage() {
         <div className="mb-2">
           <Crumbs
             items={[
-              <Link key="p" to="/" className="hover:text-zinc-300">
+              <Link key="p" to="/projects" className="hover:text-zinc-300">
                 projects
               </Link>,
               <Link
@@ -716,6 +661,18 @@ export default function VersionPage() {
           </Btn>
         )}
 
+        {(v.status === "succeeded" || v.status === "needs_review") &&
+          v.artifacts.some((a) => a.kind === "glb" || a.kind === "stl") && (
+            <Btn
+              variant="ghost"
+              className="w-full border border-emerald-800/60 text-emerald-300 hover:bg-emerald-950/40"
+              onClick={() => setOrganicOpen(true)}
+              title="procedural organic restyle — gyroid / trabecular / voronoi / branches (aesthetic, not structural)"
+            >
+              <Sprout className="h-4 w-4" /> Organische Struktur
+            </Btn>
+          )}
+
         {(v.status === "succeeded" || v.status === "needs_review") && (
           <Card className="p-3">
             <SectionTitle>Edit this model</SectionTitle>
@@ -866,6 +823,14 @@ export default function VersionPage() {
         onClose={() => setOptimizeOpen(false)}
         version={v}
         canTopopt={v.resolved_mode !== "topopt"}
+        onJobStarted={structuralStarted}
+      />
+
+      <OrganicEditor
+        key={`org-${v.id}`}
+        open={organicOpen}
+        onClose={() => setOrganicOpen(false)}
+        version={v}
         onJobStarted={structuralStarted}
       />
     </div>

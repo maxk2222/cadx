@@ -1320,6 +1320,11 @@ def run_topopt_resample(
         keep_list += auto_keep_regions(anchors, margin)
     keep_cells = keep_element_mask(domain, keep_list, anchors)
     passive = passive_solid_mask(domain, [keep_cells], fixed_node_masks, load_node_masks)
+    if "passive" in npz:
+        # stored pin mask — carries organic floor/shell/auto-keep cells that
+        # region-based rebuild cannot express; harmless union for topopt
+        # fields where it coincides with the rebuilt mask
+        passive |= np.asarray(npz["passive"], dtype=bool).ravel()
 
     try:
         opt_mesh, final_mask, extract_warnings, n_components = density_to_mesh(
@@ -1409,6 +1414,130 @@ def run_topopt_resample(
     res.renders = {v: p.name for v, p in render_paths.items()}
     thumb = render_thumbnail(stl_path, out_dir / "thumbnail.png")
     res.thumbnail = thumb.name if thumb else None
+    res.ok = True
+    res.timings["total_s"] = round(time.monotonic() - t0, 2)
+    return res
+
+
+def run_organic_pipeline(
+    *,
+    mesh_path: Path,
+    out_dir: Path,
+    organic: dict[str, Any] | None = None,
+    voxel_mm: float | None = None,
+    max_elements: int | None = None,
+    anchors: list[dict] | None = None,
+    name: str = "model",
+    runtime: RuntimeSettings | None = None,
+) -> ExecResult:
+    """Pseudo-topology-optimization: procedural organic restyling.
+
+    No FEM/SIMP — a deterministic density field (OrganicParams.style/seed)
+    is generated inside the part's voxel design domain and extracted through
+    the shared TopOpt machinery (density_to_mesh: watertight, connectivity-
+    pruned, min-member safe). Purely aesthetic — NOT structurally verified.
+
+    Writes the density field in the same npz layout as the topopt pipeline
+    so the threshold-resample endpoint can re-extract it.
+    """
+    from cadx.cad.fem.organic import organic_transform
+    from cadx.llm.schemas import OrganicParams
+
+    res = ExecResult()
+    s = runtime or RuntimeSettings()
+    t0 = time.monotonic()
+
+    try:
+        params = OrganicParams(**(organic or {}))
+    except Exception as e:
+        res.error = f"invalid organic params: {e}"
+        return res
+    try:
+        mesh = load_triangle_mesh(mesh_path)
+    except Exception as e:
+        res.error = f"failed to load mesh for organic restyle: {e}"
+        return res
+
+    anchors = _scan_anchors(mesh, anchors)
+    try:
+        out = organic_transform(
+            mesh,
+            params,
+            anchors=anchors,
+            voxel_mm=voxel_mm,
+            max_elements=max_elements,
+            runtime=s,
+        )
+    except Exception as e:
+        res.error = str(e)
+        return res
+
+    opt_mesh = smooth_preserve(out.mesh, iterations=4, pin_floor=is_flat_bottom(mesh))
+
+    opt_dir = out_dir / "organic"
+    opt_dir.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        opt_dir / "density.npz",
+        density=out.density.astype(np.float32),
+        mask=out.mask,
+        solid=out.domain.solid,
+        passive=out.passive.reshape(out.domain.dims),
+        origin=out.domain.origin,
+        pitch=np.float64(out.domain.pitch),
+        dims=np.asarray(out.domain.dims),
+        flat_bottom=np.bool_(is_flat_bottom(mesh)),
+    )
+
+    # --- artifacts: STL/GLB/3MF + STL copy used for renders/analysis -------
+    run_dir = out_dir / "_run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    stl_path = run_dir / "model.stl"
+    try:
+        opt_mesh.export(str(stl_path), file_type="stl")
+    except Exception as e:
+        res.error = f"failed to write organic STL: {e}"
+        return res
+    res.exports = export_mesh_all(opt_mesh, out_dir / "exports", name=name, try_step=False)
+    res.exports["dxf"] = None
+    res.exports["svg"] = None
+    res.analysis = mesh_analysis(opt_mesh)
+    _repair_analysis_mesh(res.analysis, stl_path)
+    if res.analysis.watertight is False:
+        _repair_export_meshes(res.exports, out_dir / "exports")
+    res.mesh = {
+        "pipeline": "organic",
+        "triangles": len(opt_mesh.faces),
+        "volume_mm3": round(abs(float(opt_mesh.volume)), 1),
+        "solid_elements": int(out.mask.sum()),
+        "pitch_mm": round(float(out.domain.pitch), 4),
+        "organic": out.report,
+    }
+
+    # renders
+    t = time.monotonic()
+    render_dir = out_dir / "renders"
+    render_paths = render_views(stl_path, render_dir, res.analysis.bbox_size)
+    res.renders = {v: p.name for v, p in render_paths.items()}
+    thumb = render_thumbnail(stl_path, out_dir / "thumbnail.png")
+    res.thumbnail = thumb.name if thumb else None
+    stats = [
+        f"bbox: {res.analysis.bbox_size[0]:.1f} x {res.analysis.bbox_size[1]:.1f} "
+        f"x {res.analysis.bbox_size[2]:.1f} mm",
+        f"volume: {res.analysis.volume:.0f} mm^3 (target {params.volfrac:.0%})",
+        f"style: {params.style}  seed: {params.seed}  period: {params.period_mm:g} mm",
+        f"triangles: {res.analysis.triangle_count}",
+        f"watertight: {res.analysis.watertight_after_repair}",
+        "aesthetic restyle — not structurally verified",
+    ]
+    sheet = make_contact_sheet(render_paths, out_dir / "contact_sheet.png", stats)
+    res.contact_sheet = sheet.name if sheet else None
+    res.timings["render_s"] = round(time.monotonic() - t, 2)
+
+    if not opt_mesh.is_watertight:
+        res.mesh["organic"]["warnings"] = [
+            *res.mesh["organic"].get("warnings", []),
+            "organic mesh is not watertight — inspect before manufacturing",
+        ]
     res.ok = True
     res.timings["total_s"] = round(time.monotonic() - t0, 2)
     return res

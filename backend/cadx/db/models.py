@@ -36,6 +36,7 @@ class VersionKind(enum.StrEnum):
     optimize = "optimize"
     refine = "refine"  # post-TopOpt feature finishing child version
     mesh_edit = "mesh_edit"  # visual mesh-level edit (GUI ops stack)
+    organic = "organic"  # procedural pseudo-topology organic restyle
 
 
 class VersionStatus(enum.StrEnum):
@@ -59,6 +60,7 @@ class JobType(enum.StrEnum):
     refine = "refine"  # post-TopOpt feature finishing (exact bores/threads)
     mesh_edit = "mesh_edit"  # GUI ops stack -> tessellated child version
     fem = "fem"  # standalone FEM check on the same version
+    organic = "organic"  # procedural pseudo-topology organic restyle (no FEM)
 
 
 class JobStatus(enum.StrEnum):

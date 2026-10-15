@@ -1,9 +1,23 @@
 # Web GUI
 
 The React/Vite application exposes the generation, editing, analysis, and
-library workflows through seven pages: Projects, Project, Version, Jobs,
-Stats, Library, and Settings. The UI is served by nginx at `:8080` in Docker
-mode or Vite at `:5173` in native development mode.
+library workflows through eight pages: Start (the new-part wizard), Projects,
+Project, Version, Jobs, Stats, Library, and Settings. The UI is served by
+nginx at `:8080` in Docker mode or Vite at `:5173` in native development mode.
+
+The **Start page** (`/`) is a guided four-step wizard for creating a brand-new
+part: **Describe** the part (with clickable example prompts) → **Images**
+(upload references or generate a concept image — both optional) → **Mode**
+(explained mode cards with a heuristic suggestion) → **Review & generate**
+(auto-named project, run options, one-click start). The project is created
+eagerly on entering the Images step — uploads and AI image generation need a
+project id — with a name auto-derived from the prompt (editable in Review;
+abandoned drafts can be discarded via *start over* or deleted on Projects).
+After starting, the wizard shows the job's live progress, provisional renders and
+clarifying questions inline (same stream as the version page); on success it
+hands off to the version page, on failure it offers *Back & adjust* (draft
+preserved). Wizard state is kept in localStorage, so reloading resumes —
+including a running job.
 
 The **Jobs** page (`/jobs`) lists active and recently finished jobs across
 projects with live progress, iteration/step labels, runtime and
@@ -15,7 +29,9 @@ cancel/finish/restart actions; a nav badge shows the active count.
 
 ### Projects and generation
 
-- Create, rename, search, and delete projects.
+- The Start-page wizard is the fastest way in; the **Projects** page
+  (`/projects`) lists, searches, renames and deletes projects and also offers a
+  classic "New project" dialog for empty/import-style projects.
 - Upload and manage image/reference assets.
 - Start a generation with a text prompt, selected assets, mode, per-run options,
 and optional reusable library parts.

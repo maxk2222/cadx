@@ -560,3 +560,45 @@ async def refine(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]
     if await _cancelled(ctx, f"cancel:{payload.get('job_id')}" if payload.get("job_id") else None):
         return {"ok": False, "error": "cancelled"}
     return await asyncio.to_thread(run_refine_payload, payload)
+
+
+def run_organic_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Synchronous part of organic — procedural pseudo-topology restyle."""
+    from cadx.cad.engine import run_organic_pipeline
+
+    out_dir = storage.iteration_dir(
+        uuid.UUID(payload["project_id"]),
+        uuid.UUID(payload["version_id"]),
+        int(payload.get("iteration", 1)),
+    )
+    result = run_organic_pipeline(
+        mesh_path=storage.resolve(payload["mesh_rel"]),
+        out_dir=out_dir,
+        organic=payload.get("organic"),
+        voxel_mm=payload.get("voxel_mm"),
+        max_elements=payload.get("max_elements"),
+        anchors=payload.get("anchors"),
+        name=payload.get("name", "model"),
+        runtime=_runtime(payload),
+    )
+    d = result.to_dict()
+    d = _relpath_exports(d, result, out_dir)
+    it_rel = storage.relpath(out_dir)
+    d.setdefault("mesh", {})["stl_relpath"] = f"{it_rel}/_run/model.stl"
+    if (out_dir / "organic" / "density.npz").exists():
+        d["mesh"].setdefault("organic", {})["density_relpath"] = f"{it_rel}/organic/density.npz"
+    log.info(
+        "organic",
+        version=payload.get("version_id"),
+        ok=d["ok"],
+        style=(payload.get("organic") or {}).get("style"),
+        timings=d["timings"],
+    )
+    return d
+
+
+async def organic(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    """arq task (queue "cad"): procedural organic restyle — no FEM/SIMP."""
+    if await _cancelled(ctx, f"cancel:{payload.get('job_id')}" if payload.get("job_id") else None):
+        return {"ok": False, "error": "cancelled"}
+    return await asyncio.to_thread(run_organic_payload, payload)

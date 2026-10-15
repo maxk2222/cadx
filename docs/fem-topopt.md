@@ -5,6 +5,12 @@ optimization to the CAD/mesh generation pipeline. Numerical work runs in
 `cad-executor` on the `cad` queue; the LLM worker sends mesh paths and
 structured load cases, not generated solver code.
 
+> **Not what you're looking for?** The *Organische Struktur* action
+> (`POST /versions/{id}/organic`) is a **procedural pseudo-optimization** —
+> it restyles a part into a gyroid/trabecular/voronoi/branches structure with
+> no FEM, no load cases and no structural verdict. See
+> [Organic structures](organic.md).
+
 ## Workflows
 
 ### FEM feedback during generation
