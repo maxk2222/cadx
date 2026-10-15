@@ -28,7 +28,8 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFilter
 
 ROOT = Path(__file__).resolve().parent.parent
-SRC_LOGO = Path.home() / "Downloads" / "CADX-Logo.png"
+SRC_LOGO = Path.home() / "Downloads" / "CADX_Logo.png"  # transparent RGBA source
+DARK_BG = (10, 15, 30, 255)  # base for the opaque banner card
 SRC_ICON = Path.home() / "Downloads" / "CADX_favicon_transparent.png"
 OUT = ROOT / "frontend" / "public"
 
@@ -36,7 +37,10 @@ BG_THRESH = 48  # flood-fill color tolerance
 
 
 def content_bbox(im: Image.Image, lum: int = 36) -> tuple[int, int, int, int]:
-    """Bounding box of pixels brighter than `lum` (content vs dark bg)."""
+    """Bounding box of visible content — alpha bbox for RGBA, luminance
+    threshold against the dark background otherwise."""
+    if im.mode == "RGBA":
+        return im.getchannel("A").getbbox() or (0, 0, im.width, im.height)
     mask = im.convert("L").point(lambda p: 255 if p > lum else 0)
     return mask.getbbox() or (0, 0, im.width, im.height)
 
@@ -66,25 +70,29 @@ def border_transparent(im: Image.Image, thresh: int = BG_THRESH) -> Image.Image:
 def main() -> None:
     (OUT / "brand").mkdir(parents=True, exist_ok=True)
 
-    logo = Image.open(SRC_LOGO).convert("RGB")
+    logo = Image.open(SRC_LOGO).convert("RGBA")
     icon = Image.open(SRC_ICON).convert("RGBA")
     # opaque variant on app-dark background for touch/PWA icons
     icon_op = Image.new("RGBA", icon.size, (9, 9, 11, 255))
     icon_op.alpha_composite(icon)
     icon_op = icon_op.convert("RGB")
 
-    # --- banner logo: crop to content + resize ---
+    # --- banner logo: crop to content, composite on dark card, resize ---
+    # (the silver "CAD" glyphs need a dark backdrop to stay readable on
+    # light themes — e.g. GitHub README)
     bb = content_bbox(logo)
-    pad = 24
+    pad = 40
     bb = (max(0, bb[0] - pad), max(0, bb[1] - pad), min(logo.width, bb[2] + pad), min(logo.height, bb[3] + pad))
-    banner = logo.crop(bb)
+    logo_c = logo.crop(bb)
+    card = Image.new("RGBA", logo_c.size, DARK_BG)
+    card.alpha_composite(logo_c)
+    banner = card.convert("RGB")
     if banner.width > 1200:
         banner = banner.resize((1200, int(banner.height * 1200 / banner.width)), Image.LANCZOS)
     banner.save(OUT / "brand" / "logo.png", optimize=True)
 
     # --- transparent wordmark (sidebar-sized) ---
-    wm = border_transparent(logo.crop(bb))
-    wm_small = wm.resize((int(wm.width * 192 / wm.height), 192), Image.LANCZOS)
+    wm_small = logo_c.resize((int(logo_c.width * 192 / logo_c.height), 192), Image.LANCZOS)
     wm_small.save(OUT / "brand" / "wordmark.png", optimize=True)
 
     # --- transparent X mark + favicon set ---

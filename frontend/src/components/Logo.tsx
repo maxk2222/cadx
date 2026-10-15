@@ -11,15 +11,14 @@ export default function Logo({
   className?: string;
 }) {
   if (wordmark) {
-    // the wordmark PNG carries glow margins — render a bit taller than the
-    // nominal size so it matches the old text+mark lockup visually.
-    // inline style: Tailwind preflight (img{height:auto}) would otherwise
-    // override the height attribute
+    // width-driven: the wordmark (aspect ~1.5:1) should fill the sidebar —
+    // inline style because Tailwind preflight's img{height:auto} overrides
+    // attributes
     return (
       <img
         src="/brand/wordmark.png"
         alt="CADX"
-        style={{ height: Math.round(size * 1.5), width: "auto" }}
+        style={{ width: Math.round(size * 3), height: "auto" }}
         className={className}
       />
     );
