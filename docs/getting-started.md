@@ -51,6 +51,8 @@ A text-to-image adapter is installed alongside the mesh adapter unless you pass
 3. Create a project, upload reference images, write a prompt with dimensions
    and press **Generate**.
 
+![Settings page — LLM provider configuration](screenshots/settings.png)
+
 Provider examples — any OpenAI-compatible endpoint works:
 
 | Provider   | Base URL                            | Models                                   |

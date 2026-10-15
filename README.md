@@ -23,6 +23,17 @@ description into parametric, verified 3D models you can 3D print or CNC mill.
 > ⚠️ DfM checks are heuristics, not a manufacturing guarantee. Always verify
 > dimensions and process limits yourself before cutting or printing.
 
+## Web GUI
+
+![CADX web GUI — 3D viewer on a generated hybrid part](docs/screenshots/viewer-orbit.gif)
+
+|  |  |
+|---|---|
+| ![Projects overview](docs/screenshots/projects.png) | ![Version detail — CAD result with agent activity](docs/screenshots/version-cad.png) |
+| ![Visual mesh editor](docs/screenshots/editor.png) | ![Jobs overview with live progress](docs/screenshots/jobs.png) |
+
+Walkthrough: [docs/webgui-ux.md](docs/webgui-ux.md).
+
 ## Quickstart
 
 ```bash

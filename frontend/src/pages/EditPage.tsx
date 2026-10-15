@@ -628,6 +628,11 @@ export default function EditPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ops, initFor, v?.id]);
 
+  const modelBox = useMemo(
+    () => (aabbEval ? aabbEval(new THREE.Matrix4()) : null),
+    [aabbEval]
+  );
+
   const doApply = async () => {
     if (!v) return;
     setBusy("apply");
@@ -666,10 +671,6 @@ export default function EditPage() {
   const failedOp = preview?.stats.failed_op;
   const opReport = preview?.stats.report;
 
-  const modelBox = useMemo(
-    () => (aabbEval ? aabbEval(new THREE.Matrix4()) : null),
-    [aabbEval]
-  );
   const cropValid = cropMax.every((mx, i) => mx > cropMin[i]);
   const pickCursor =
     pickMode && hover ? (

@@ -9,6 +9,8 @@ The **Jobs** page (`/jobs`) lists active and recently finished jobs across
 projects with live progress, iteration/step labels, runtime and
 cancel/finish/restart actions; a nav badge shows the active count.
 
+![Jobs page — live progress, scores and job actions](screenshots/jobs.png)
+
 ## User workflows
 
 ### Projects and generation
@@ -22,6 +24,10 @@ and optional reusable library parts.
   design then optimizes it.
 - Per-run options include manufacturing process, material, FEM analysis,
   topology optimization/target volume, and standard fasteners.
+
+![Projects overview — project cards with thumbnails and status](screenshots/projects.png)
+
+![Project page — prompt, mode selection and reference assets](screenshots/project.png)
 
 ### Version detail
 
@@ -41,6 +47,12 @@ The Version page provides:
 Edits create child versions. Library selections are carried forward by default
 and can be changed in the edit form. The API distinguishes an omitted selection
 (inherit) from an explicit empty list (clear).
+
+![Version detail — 3D viewer, spec prompt, agent activity timeline](screenshots/version-cad.png)
+
+![Orbiting the 3D viewer](screenshots/viewer-orbit.gif)
+
+![Version page tabs — Model, Spec & Plan, Code, Quality, Files](screenshots/version-tabs.gif)
 
 ### Mesh editor (`/versions/<id>/edit`)
 
@@ -78,6 +90,8 @@ finished STL (`ops_only` — no re-orient/re-scale). Drafts are autosaved on
 the version (`options.ui_editor.ops`, merged server-side) so reopening the
 editor restores the stack.
 
+![Mesh editor — tool stack, gizmos and instant preview](screenshots/editor.png)
+
 ### Structural editor (FEM / TopOpt regions)
 
 The structural editor paints boundary regions directly on the model surface
@@ -110,7 +124,9 @@ other).
 ### Settings and reusable part library
 
 Settings includes LLM/provider configuration, health status, the standard-part
-catalog, and the user library. The library supports STEP/STL upload, download,
+catalog, and the user library.
+
+![Settings — LLM provider, models and runtime options](screenshots/settings.png) The library supports STEP/STL upload, download,
 rename/caption editing, deletion, and saving a version as either a STEP body or
 parametric code template. Parts may be pinned on generation/edit or discovered
 and attached by the agent's library tools. See [parts-library.md](parts-library.md).
