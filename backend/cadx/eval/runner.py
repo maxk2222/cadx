@@ -130,7 +130,9 @@ def load_benchmarks() -> list[Benchmark]:
     return out
 
 
-async def run_benchmark(bm: Benchmark, llm: Any | None = None) -> EvalResult:
+async def run_benchmark(
+    bm: Benchmark, llm: Any | None = None, *, queue_exec: bool = False
+) -> EvalResult:
     from cadx.agent.mesh_client import make_mesh_client
     from cadx.llm.client import LLMClient
     from cadx.runtime_config import runtime_from_db_or_default
@@ -183,9 +185,19 @@ async def run_benchmark(bm: Benchmark, llm: Any | None = None) -> EvalResult:
     async def no_cancel() -> bool:
         return False
 
+    # --real in the stack should dispatch heavy OCC/mesh work to the
+    # cad-executor service like production — the in-process executor keeps
+    # accumulating native allocations until the container OOM-kills the eval
+    if queue_exec:
+        from cadx.agent.executor_client import QueueExecutor
+
+        executor: Any = QueueExecutor(runtime_settings=runtime)
+    else:
+        executor = InProcessExecutor()
+
     ctx = AgentCtx(
         llm=llm,
-        executor=InProcessExecutor(),
+        executor=executor,
         trace=MemoryTrace(),
         emit=emit,
         check_cancel=no_cancel,

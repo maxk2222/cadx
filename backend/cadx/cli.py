@@ -472,6 +472,12 @@ def eval(
     repeat: int = typer.Option(
         1, "--repeat", "-n", min=1, help="repeat each benchmark N times (variance control)"
     ),
+    queue_exec: bool = typer.Option(
+        False,
+        "--queue-exec",
+        help="dispatch execute/process_mesh via the cad queue (production-true, "
+        "keeps heavy OCC work out of the eval process — recommended for --real)",
+    ),
 ) -> None:
     """Run evaluation benchmarks through the agent loop."""
 
@@ -506,7 +512,7 @@ def eval(
                 # Per-benchmark isolation: one crashed benchmark must not kill
                 # the whole eval run.
                 try:
-                    r = await run_benchmark(bm, llm=None)
+                    r = await run_benchmark(bm, llm=None, queue_exec=queue_exec)
                 except Exception as e:
                     print(f"{bm.name}: crashed ({type(e).__name__}: {e})")
                     continue
