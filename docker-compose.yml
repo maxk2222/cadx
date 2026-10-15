@@ -142,9 +142,8 @@ services:
     devices:
       - /dev/kfd
       - /dev/dri
-    group_add:
-      - video
-      - render
+    # no group_add: the container runs as root, and 'video'/'render' group
+    # names aren't guaranteed to exist inside the image
     ipc: host  # ROCm shared-memory transport
     security_opt:
       - seccomp=unconfined

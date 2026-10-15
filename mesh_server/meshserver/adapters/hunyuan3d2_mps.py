@@ -14,6 +14,7 @@ missing). On ROCm the pipeline runs on the torch "cuda" device namespace
 
 from __future__ import annotations
 
+import contextlib
 import os
 from typing import Any
 
@@ -28,7 +29,7 @@ from meshserver.adapters.base import (
     missing,
 )
 from meshserver.adapters.hunyuan3d21_mlx import _to_trimesh
-from meshserver.torch_util import is_rocm, mps_ok
+from meshserver.torch_util import is_rocm, mps_ok, torch_backend
 
 _LICENSE = (
     "Tencent Hunyuan Community License — restricted in EU/UK/KR; "
@@ -62,14 +63,11 @@ def _hy3d_device() -> str:
 
 
 class _Hy3DDevice:
-    """Class-level device reporting: mps on Apple Silicon, rocm on HIP."""
+    """Class-level device reporting: mps on Apple Silicon, rocm on HIP,
+    cpu/empty elsewhere (the adapter isn't available there anyway)."""
 
     def __get__(self, obj: Any, owner: type | None = None) -> str:
-        if _mps_ok():
-            return "mps"
-        if is_rocm():
-            return "rocm"
-        return "mps"
+        return torch_backend() or "mps"
 
 
 # transformers>=5 renamed DINOv2 params — the bundled Tencent checkpoints
@@ -161,13 +159,17 @@ class _Hy3DTorchBase(MeshAdapter):
             # memory so the job errors out instead of taking the host down.
             # setdefault keeps operator overrides intact; must be set before
             # the first MPS tensor allocation (i.e. before pipe.to("mps")).
-            # 0.65 × recommendedMaxWorkingSetSize (~48GB @64GB) ≈ 31GB budget
+            # 0.65 x recommendedMaxWorkingSetSize (~48GB @64GB) ~ 31GB budget
             os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.65")
             os.environ.setdefault("PYTORCH_MPS_LOW_WATERMARK_RATIO", "0.55")
         try:
             import torch
-            from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
-            from hy3dgen.shapegen import FaceReducer, FloaterRemover, DegenerateFaceRemover
+            from hy3dgen.shapegen import (
+                DegenerateFaceRemover,
+                FaceReducer,
+                FloaterRemover,
+                Hunyuan3DDiTFlowMatchingPipeline,
+            )
         except Exception as e:  # pragma: no cover
             missing(type(self), str(e))
         _patch_tf5_dino_keys()
@@ -177,10 +179,8 @@ class _Hy3DTorchBase(MeshAdapter):
             repo, subfolder=subfolder, variant=variant, device=device
         )
         # MPS/ROCm: keep float16 where supported, fall back otherwise
-        try:
+        with contextlib.suppress(Exception):
             self._pipe.to(device)
-        except Exception:
-            pass
         self._device_name = device
         self._cleaner = [FloaterRemover(), DegenerateFaceRemover(), FaceReducer()]
         self._torch = torch

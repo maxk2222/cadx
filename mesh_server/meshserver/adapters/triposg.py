@@ -50,7 +50,7 @@ def _triposg_src() -> Path | None:
 
 
 def _install_diso_shim() -> None:
-    """`diso.DiffDMC` is a CUDA-only extension. On MPS/CPU register a
+    """`diso.DiffDMC` is a CUDA-only extension. On ROCm/MPS/CPU register a
     scikit-image marching-cubes shim BEFORE triposg imports `diso`."""
     try:
         import diso  # noqa: F401
@@ -100,10 +100,22 @@ def _import_pipeline() -> Any:
         return TripoSGPipeline
     except ImportError:
         pass
+    # the failed import may have been the CUDA-only `diso` — install the
+    # skimage shim and retry the *same* import before falling back to .src
+    # (covers triposg installed outside mesh_server/.src/TripoSG)
+    try:
+        _install_diso_shim()
+    except Exception:
+        return None
+    try:
+        from triposg.pipelines.pipeline_triposg import TripoSGPipeline
+
+        return TripoSGPipeline
+    except Exception:
+        pass
     src = _triposg_src()
     if src is None:
         return None
-    _install_diso_shim()
     sys.path.insert(0, str(src))
     try:
         from triposg.pipelines.pipeline_triposg import TripoSGPipeline
@@ -141,7 +153,6 @@ def _load_triposg_pipe(pipeline_cls: Any, dtype: Any, model_id: str = "VAST-AI/T
     from diffusers import FlowMatchEulerDiscreteScheduler
     from huggingface_hub import snapshot_download
     from transformers import BitImageProcessor, Dinov2Model
-
     from triposg.models.autoencoders import TripoSGVAEModel
     from triposg.models.transformers import TripoSGDiTModel
 
@@ -242,7 +253,7 @@ class TripoSGAdapter(MeshAdapter):
         if opts.resolution:
             import math
 
-            depth = int(math.ceil(math.log2(max(opts.resolution, 64))))
+            depth = math.ceil(math.log2(max(opts.resolution, 64)))
             depth = min(max(depth, 7), 10)
             kwargs["hierarchical_octree_depth"] = depth
             kwargs["dense_octree_depth"] = max(depth - 1, 5)

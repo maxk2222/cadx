@@ -46,6 +46,9 @@ done
 [ -n "$TIER_OVERRIDE" ] && export GPU_TIER="$TIER_OVERRIDE"
 TIER=$(gpu_detect_tier)
 [ "$FAKE" = 1 ] && [ "$TIER" = "none" ] && TIER=fake
+if [ "$EXTRA_HUNYUAN" = 1 ] && [ "$TIER" != "rocm" ]; then
+  echo "note: --extra hunyuan only applies to the rocm tier (on mlx use --extra mps)" >&2
+fi
 MODEL=$(gpu_default_model "$TIER")
 IMG_MODEL=$(gpu_default_image_model "$TIER")
 

@@ -43,7 +43,7 @@ class FluxSchnellAdapter(ImageAdapter):
     supports_edit: ClassVar[bool] = True  # img2img via FluxImg2ImgPipeline.from_pipe
 
     @classmethod
-    def available(cls, cfg: Any) -> bool:  # noqa: ARG003
+    def available(cls, cfg: Any) -> bool:
         try:
             from diffusers import FluxPipeline  # noqa: F401
         except Exception:

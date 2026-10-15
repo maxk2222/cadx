@@ -90,7 +90,8 @@ scripts/setup.sh --doctor    # diagnostics: tier, adapters, env overrides
 ```
 
 `setup.sh` is idempotent and supports `--tier`, `--dev`, `--fake`,
-`--extra mps`, `--skip-mesh`, `--skip-image` and `--doctor`.
+`--extra mps` (hunyuan torch adapters on Apple Silicon), `--extra hunyuan`
+(them on the rocm tier), `--skip-mesh`, `--skip-image` and `--doctor`.
 
 Models, renders and exports persist under `./data/`.
 

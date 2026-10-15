@@ -9,7 +9,9 @@
 # namespace (torch.version.hip). Override the base tag via --build-arg if your
 # ROCm host install is newer. Unsupported gfx archs may need
 # HSA_OVERRIDE_GFX_VERSION at runtime.
-ARG ROCM_BASE=rocm/pytorch:rocm6.4.3_ubuntu22.04_py3.12_pytorch_release_2.6.0
+# NOTE: rocm/pytorch ubuntu22.04 images ship py3.10 only (below our
+# requires-python>=3.11) — the py3.12 builds live on ubuntu24.04
+ARG ROCM_BASE=rocm/pytorch:rocm6.4.3_ubuntu24.04_py3.12_pytorch_release_2.6.0
 FROM ${ROCM_BASE}
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -32,19 +34,16 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY meshserver ./meshserver
 
-# core deps — the base image's ROCm torch already satisfies 'torch>=2.4', so
-# uv keeps the HIP build instead of pulling a CUDA wheel from PyPI
-RUN uv venv /opt/venv --python python3 && \
-    . /opt/venv/bin/activate && \
-    uv pip install -e ".[rocm]"
-
-ENV PATH=/opt/venv/bin:$PATH
+# core deps — install into the base image's system python: its ROCm torch
+# already satisfies 'torch>=2.4', so uv keeps the HIP build instead of pulling
+# a CUDA wheel from PyPI (a fresh venv would NOT see the base image's torch!)
+RUN uv pip install --system -e ".[rocm]" 'scikit-image>=0.24'
 
 # Optional adapter sources — uncomment to bake TripoSG into the image, or run
-# scripts/install_triposg.sh inside the container.
-# ARG TRIPOSG_COMMIT=main
+# scripts/install_triposg.sh inside the container (it filters the CUDA-only
+# `diso` extension and the numpy pin automatically on non-CUDA torch).
 # RUN git clone --depth 1 https://github.com/VAST-AI-Research/TripoSG.git /opt/triposg && \
-#     . /opt/venv/bin/activate && uv pip install -e /opt/triposg
+#     uv pip install --system -e /opt/triposg
 
 VOLUME /models
 EXPOSE 8765

@@ -31,10 +31,13 @@ PY="$VENV/bin/python"
 
 if "$PY" -m pip --version >/dev/null 2>&1; then
   INSTALL() { "$PY" -m pip install "$@"; }
+  REINSTALL=(--force-reinstall)
 elif command -v uv >/dev/null 2>&1; then
   INSTALL() { uv pip install --python "$PY" "$@"; }
+  REINSTALL=(--reinstall-package torch)
 elif [ -x ".venv/bin/uv" ]; then
   INSTALL() { .venv/bin/uv pip install --python "$PY" "$@"; }
+  REINSTALL=(--reinstall-package torch)
 else
   echo "neither pip nor uv available — install uv or add pip to $VENV" >&2
   exit 1
@@ -42,7 +45,14 @@ fi
 
 echo "== ROCm torch =="
 echo "   index: $TORCH_ROCM_INDEX  (override via TORCH_ROCM_INDEX)"
-INSTALL "torch>=2.6" --index-url "$TORCH_ROCM_INDEX"
+# a satisfied 'torch>=x' spec alone is NOT enough: a CPU/CUDA build would be
+# kept silently — verify the HIP flavour and force-replace anything else
+if "$PY" -c "import sys, torch; sys.exit(0 if getattr(torch.version, 'hip', None) else 1)" \
+    2>/dev/null; then
+  echo "   ROCm torch already installed — skipping"
+else
+  INSTALL "${REINSTALL[@]}" "torch>=2.6" --index-url "$TORCH_ROCM_INDEX"
+fi
 
 echo "== sanity check =="
 "$PY" - <<'EOF' || true

@@ -160,7 +160,16 @@ def _is_oom(exc: BaseException) -> bool:
         pass
     msg = str(exc).lower()
     return any(
-        m in msg for m in ("out of memory", "cublas", "cudnn", "metal", "allocation failed", "mps")
+        m in msg
+        for m in (
+            "out of memory",
+            "outofmemory",  # hipErrorOutOfMemory — ROCm reports without spaces
+            "cublas",
+            "cudnn",
+            "metal",
+            "allocation failed",
+            "mps",
+        )
     )
 
 
@@ -180,10 +189,8 @@ class JobManager:
     async def stop(self) -> None:
         if self._worker_task:
             self._worker_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._worker_task
-            except asyncio.CancelledError:
-                pass
 
     def _host_free_mb(self) -> float | None:
         try:

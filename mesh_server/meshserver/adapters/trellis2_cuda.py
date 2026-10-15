@@ -12,9 +12,9 @@ unavailable and the registry falls back to TripoSG.
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
-import trimesh
 from PIL import Image
 
 from meshserver.adapters.base import (
@@ -69,10 +69,8 @@ class Trellis2Adapter(MeshAdapter):
 
     def unload(self) -> None:
         self._pipe = None
-        try:
+        with contextlib.suppress(Exception):
             self._torch.cuda.empty_cache()
-        except Exception:
-            pass
         hard_unload()
         self._loaded = False
 

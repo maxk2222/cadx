@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import platform
 import threading
 import time
@@ -121,11 +122,8 @@ class Registry:
     def models(self) -> list[ModelInfo]:
         out: list[ModelInfo] = []
         for cls in self._classes:
-            if _is_fake(cls) and not self.cfg.fake:
-                # the fake adapters are only listed when explicitly enabled
-                avail = False
-            else:
-                avail = self._probe(cls)
+            # the fake adapters are only listed when explicitly enabled
+            avail = self._probe(cls) if (not _is_fake(cls) or self.cfg.fake) else False
             inst = self._instances.get(cls.id)
             out.append(
                 ModelInfo(
@@ -163,8 +161,7 @@ class Registry:
                 # in this process — retrying it just burns a full stall
                 # window; surface the recorded failure instead
                 return None
-            cls = all_mesh.get(requested)
-            return cls  # explicit but unavailable -> None (error to client)
+            return all_mesh.get(requested)  # explicit but unavailable -> None (error to client)
         avail = {k: v for k, v in all_mesh.items() if k not in self._failed}
         # auto
         device = self.device
@@ -272,20 +269,16 @@ class Registry:
                 # free other models first — one heavy model at a time
                 for other_id, other in self._instances.items():
                     if other_id != cls.id and other.loaded:
-                        try:
+                        with contextlib.suppress(Exception):
                             other.unload()
-                        except Exception:
-                            pass
                 try:
                     inst.load()
                 except Exception as e:
                     # remember the failure so 'auto' skips this adapter next
                     # time; purge whatever half-loaded state remains
                     self._failed[cls.id] = str(e)[:300]
-                    try:
+                    with contextlib.suppress(Exception):
                         inst.unload()
-                    except Exception:
-                        pass
                     hard_unload()
                     raise
             self._last_used[cls.id] = time.monotonic()
@@ -300,10 +293,8 @@ class Registry:
         with self._lock:
             for inst in self._instances.values():
                 if inst.loaded:
-                    try:
+                    with contextlib.suppress(Exception):
                         inst.unload()
-                    except Exception:
-                        pass
         hard_unload()
 
     def maybe_unload_idle(self) -> None:
@@ -313,7 +304,5 @@ class Registry:
         with self._lock:
             for aid, inst in self._instances.items():
                 if inst.loaded and now - self._last_used.get(aid, 0.0) > self.cfg.unload_idle_s:
-                    try:
+                    with contextlib.suppress(Exception):
                         inst.unload()
-                    except Exception:
-                        pass

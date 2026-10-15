@@ -172,15 +172,10 @@ def test_rocm_image_edit_ladder(rocm_torch, tmp_path):
     assert cls is not None and cls.id == "flux-schnell"
 
 
-def test_trellis2_unavailable_on_rocm(rocm_torch, monkeypatch):
+def test_trellis2_unavailable_on_rocm(rocm_torch):
     """_cuda_ok must reject HIP builds — TRELLIS.2 extensions are CUDA-only."""
     from meshserver.adapters import trellis2_cuda
 
-    monkeypatch.setattr(
-        trellis2_cuda.Trellis2Adapter,
-        "available",
-        classmethod(lambda cls, cfg: trellis2_cuda._cuda_ok()),
-    )
     assert trellis2_cuda._cuda_ok() is False
 
 

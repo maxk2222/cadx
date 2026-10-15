@@ -66,10 +66,12 @@ image-mlx = [
     "mlx>=0.20",
     "safetensors>=0.4",
 ]
-# text-to-image: CUDA/MPS/CPU — FLUX.1-schnell / SDXL / SD1.5 via diffusers
+# text-to-image: CUDA/ROCm/MPS/CPU — FLUX.1-schnell / SDXL / SD1.5 via diffusers
+# (matches scripts/install_image_torch.sh — the tf4 stack; diffusers>=0.41 would
+# pull huggingface_hub>=1.32 which contradicts the transformers<5 pin)
 image-torch = [
     "torch>=2.3",
-    "diffusers>=0.41",  # >=0.41 required for transformers 5 compat (mflux pulls tf5)
+    "diffusers>=0.30,<0.36",
     "transformers>=4.45,<5",
     "huggingface_hub<1",
     "accelerate>=0.33",

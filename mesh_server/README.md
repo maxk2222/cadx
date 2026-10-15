@@ -118,6 +118,8 @@ docker run --device=/dev/kfd --device=/dev/dri --group-add video \
     --group-add render --ipc=host -p 8765:8765 -v mesh_models:/models \
     meshserver:rocm
 # or: docker compose --profile gpu-rocm up -d mesh-server-rocm
+#     (the compose service is named mesh-server-rocm → seed
+#      MESH_BASE_URL=http://mesh-server-rocm:8765 in .env for the worker)
 ```
 
 Notes: ROCm torch reuses the `cuda` device namespace — adapters report

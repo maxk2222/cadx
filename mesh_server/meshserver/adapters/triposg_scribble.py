@@ -117,7 +117,7 @@ class TripoSGScribbleAdapter(MeshAdapter):
         if opts.resolution:
             import math
 
-            depth = int(math.ceil(math.log2(max(opts.resolution, 64))))
+            depth = math.ceil(math.log2(max(opts.resolution, 64)))
             depth = min(max(depth, 7), 10)
             kwargs["hierarchical_octree_depth"] = depth
             kwargs["dense_octree_depth"] = max(depth - 1, 5)

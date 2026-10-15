@@ -55,12 +55,14 @@ gpu_vram_mb() {
   # AMD: sysfs works without ROCm userspace tools
   for f in /sys/class/drm/card*/device/mem_info_vram_total; do
     [ -r "$f" ] || continue
-    echo $(( $(cat "$f") / 1048576 ))
+    local bytes; bytes=$(cat "$f" 2>/dev/null)
+    [ -n "$bytes" ] && [ "$bytes" -eq "$bytes" ] 2>/dev/null || continue
+    echo $(( bytes / 1048576 ))
     return
   done
   if command -v rocm-smi >/dev/null 2>&1; then
-    rocm-smi --showmeminfo vram --csv 2>/dev/null | awk -F, 'NR>1 {print $2/1048576; exit}' \
-      && return
+    rocm-smi --showmeminfo vram --csv 2>/dev/null \
+      | awk -F, 'NR>1 {gsub(/[^0-9.]/,"",$2); print int($2/1048576); exit}' && return
   fi
   echo 0
 }

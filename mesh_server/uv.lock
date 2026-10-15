@@ -972,6 +972,15 @@ mps = [
     { name = "torch" },
     { name = "transformers" },
 ]
+rocm = [
+    { name = "accelerate" },
+    { name = "diffusers" },
+    { name = "huggingface-hub" },
+    { name = "rembg" },
+    { name = "scikit-image" },
+    { name = "torch" },
+    { name = "transformers" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -985,14 +994,17 @@ requires-dist = [
     { name = "accelerate", marker = "extra == 'cuda'", specifier = ">=0.33" },
     { name = "accelerate", marker = "extra == 'image-torch'", specifier = ">=0.33" },
     { name = "accelerate", marker = "extra == 'mps'", specifier = ">=0.33" },
+    { name = "accelerate", marker = "extra == 'rocm'", specifier = ">=0.33" },
     { name = "diffusers", marker = "extra == 'cuda'", specifier = ">=0.30,<0.32" },
     { name = "diffusers", marker = "extra == 'image-torch'", specifier = ">=0.30,<0.36" },
     { name = "diffusers", marker = "extra == 'mps'", specifier = ">=0.30,<0.32" },
+    { name = "diffusers", marker = "extra == 'rocm'", specifier = ">=0.30,<0.32" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "huggingface-hub", specifier = ">=0.24" },
     { name = "huggingface-hub", marker = "extra == 'cuda'", specifier = "<1" },
     { name = "huggingface-hub", marker = "extra == 'image-torch'", specifier = "<1" },
     { name = "huggingface-hub", marker = "extra == 'mps'", specifier = "<1" },
+    { name = "huggingface-hub", marker = "extra == 'rocm'", specifier = "<1" },
     { name = "mflux", marker = "extra == 'image-mlx'", specifier = ">=0.9" },
     { name = "mlx", marker = "extra == 'image-mlx'", specifier = ">=0.20" },
     { name = "mlx", marker = "extra == 'mlx'", specifier = ">=0.20" },
@@ -1007,24 +1019,28 @@ requires-dist = [
     { name = "rembg", marker = "extra == 'bg'", specifier = ">=2.0.57" },
     { name = "rembg", marker = "extra == 'cuda'", specifier = ">=2.0.57" },
     { name = "rembg", marker = "extra == 'mps'", specifier = ">=2.0.57" },
+    { name = "rembg", marker = "extra == 'rocm'", specifier = ">=2.0.57" },
     { name = "safetensors", marker = "extra == 'image-mlx'", specifier = ">=0.4" },
     { name = "safetensors", marker = "extra == 'image-torch'", specifier = ">=0.4" },
     { name = "safetensors", marker = "extra == 'mlx'", specifier = ">=0.4" },
     { name = "scikit-image", marker = "extra == 'mlx'", specifier = ">=0.24" },
+    { name = "scikit-image", marker = "extra == 'rocm'", specifier = ">=0.24" },
     { name = "scipy", marker = "extra == 'mlx'", specifier = ">=1.12" },
     { name = "sentencepiece", marker = "extra == 'image-torch'", specifier = ">=0.2" },
     { name = "structlog", specifier = ">=24.1" },
     { name = "torch", marker = "extra == 'cuda'", specifier = ">=2.4" },
     { name = "torch", marker = "extra == 'image-torch'", specifier = ">=2.3" },
     { name = "torch", marker = "extra == 'mps'", specifier = ">=2.3" },
+    { name = "torch", marker = "extra == 'rocm'", specifier = ">=2.4" },
     { name = "transformers", marker = "extra == 'cuda'", specifier = ">=4.45,<5" },
     { name = "transformers", marker = "extra == 'image-torch'", specifier = ">=4.45,<5" },
     { name = "transformers", marker = "extra == 'mps'", specifier = ">=4.45,<5" },
+    { name = "transformers", marker = "extra == 'rocm'", specifier = ">=4.45,<5" },
     { name = "trimesh", specifier = ">=4.0" },
     { name = "typer", specifier = ">=0.12" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
 ]
-provides-extras = ["mlx", "mps", "cuda", "bg", "image-mlx", "image-torch"]
+provides-extras = ["mlx", "mps", "cuda", "rocm", "bg", "image-mlx", "image-torch"]
 
 [package.metadata.requires-dev]
 dev = [
