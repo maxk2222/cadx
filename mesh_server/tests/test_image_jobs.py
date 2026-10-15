@@ -26,7 +26,7 @@ def _run_image_job(c, body: dict) -> dict:
     assert r.status_code == 200, r.text
     job_id = r.json()["job_id"]
     status = {}
-    for _ in range(50):
+    for _ in range(200):
         r = c.get(f"/v1/image-jobs/{job_id}")
         status = r.json()
         if status["status"] in ("succeeded", "failed", "cancelled"):
@@ -155,7 +155,7 @@ def test_mesh_and_image_jobs_share_queue(app):
         mesh_job = r.json()["job_id"]
 
         results = {}
-        for _ in range(100):
+        for _ in range(300):
             m = c.get(f"/v1/jobs/{mesh_job}").json()
             i = c.get(f"/v1/image-jobs/{img_job}").json()
             results["mesh"] = m["status"]
@@ -197,7 +197,7 @@ def test_image_edit_job_roundtrip(app, tmp_path):
         assert r.status_code == 200, r.text
         job_id = r.json()["job_id"]
         st = {}
-        for _ in range(50):
+        for _ in range(200):
             st = c.get(f"/v1/image-jobs/{job_id}").json()
             if st["status"] in ("succeeded", "failed", "cancelled"):
                 break

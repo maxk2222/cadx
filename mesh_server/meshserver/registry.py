@@ -154,8 +154,13 @@ class Registry:
             cls.id: cls for cls in self.available() if getattr(cls, "kind", "mesh") == "mesh"
         }
         if requested and requested != "auto":
+            if requested in self._failed:
+                # explicit request for an adapter that already stalled/OOM'd
+                # in this process — retrying it just burns a full stall
+                # window; surface the recorded failure instead
+                return None
             cls = all_mesh.get(requested)
-            return cls  # explicit but unavailable/failed -> None (error to client)
+            return cls  # explicit but unavailable -> None (error to client)
         avail = {k: v for k, v in all_mesh.items() if k not in self._failed}
         # auto
         device = self.device

@@ -1021,6 +1021,12 @@ async def _candidate_adapters(ctx: AgentCtx, n: int) -> list[str]:
     ]
     if configured:
         return configured[:n]
+    # an explicitly pinned mesh_model wins over adapter spreading — the user
+    # chose that model (e.g. to avoid a host-unstable adapter); candidates
+    # then differ only by seed
+    pinned = (ctx.settings.mesh_model or ctx.runtime_settings.mesh_model).strip()
+    if pinned and pinned != "auto":
+        return [pinned]
     try:
         health = await ctx.mesh.health() if ctx.mesh else None
     except Exception:

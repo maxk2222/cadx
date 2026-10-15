@@ -29,31 +29,34 @@ class ServerConfig:
         )
     )
     job_dir: Path = field(
-        default_factory=lambda: Path(
-            os.environ.get("MESH_JOB_DIR", "/tmp/meshserver-jobs")
-        )
+        default_factory=lambda: Path(os.environ.get("MESH_JOB_DIR", "/tmp/meshserver-jobs"))
     )
-    job_ttl_s: int = field(
-        default_factory=lambda: int(os.environ.get("MESH_JOB_TTL_S", "3600"))
-    )
+    job_ttl_s: int = field(default_factory=lambda: int(os.environ.get("MESH_JOB_TTL_S", "3600")))
     # a running job whose (progress, message) pair hasn't changed for this
     # long is marked failed — MPS/MLX stalls freeze at 0% CPU forever and
     # would otherwise hold the single-flight queue indefinitely
-    job_stall_s: int = field(
-        default_factory=lambda: int(os.environ.get("MESH_JOB_STALL_S", "600"))
+    job_stall_s: int = field(default_factory=lambda: int(os.environ.get("MESH_JOB_STALL_S", "600")))
+    # run each generation in its own subprocess (python -m meshserver.gen_worker)
+    # so stall/cancel/RSS-cap can SIGKILL it and the OS reclaims all model
+    # memory — a frozen adapter thread inside this process can't be killed
+    jobs_subprocess: bool = field(default_factory=lambda: _env_bool("MESH_JOBS_SUBPROCESS", True))
+    # hard RSS cap for the generation subprocess (MB, 0 = off) — a runaway
+    # model is killed before it can swap the host into a watchdog panic
+    job_max_rss_mb: int = field(
+        default_factory=lambda: int(os.environ.get("MESH_JOB_MAX_RSS_MB", "24576"))
     )
-    max_queue: int = field(
-        default_factory=lambda: int(os.environ.get("MESH_MAX_QUEUE", "8"))
+    # refuse new jobs when the host reports less free RAM (MB, 0 = off)
+    job_min_free_mb: int = field(
+        default_factory=lambda: int(os.environ.get("MESH_JOB_MIN_FREE_MB", "0"))
     )
+    max_queue: int = field(default_factory=lambda: int(os.environ.get("MESH_MAX_QUEUE", "8")))
     unload_idle_s: int = field(
         default_factory=lambda: int(os.environ.get("MESH_UNLOAD_IDLE_S", "0"))
     )
     fake: bool = field(default_factory=lambda: _env_bool("MESH_FAKE"))
     # enable adapters even when no GPU device was detected (e.g. slow CPU run)
     allow_cpu: bool = field(default_factory=lambda: _env_bool("MESH_ALLOW_CPU"))
-    default_model: str = field(
-        default_factory=lambda: os.environ.get("MESH_DEFAULT_MODEL", "auto")
-    )
+    default_model: str = field(default_factory=lambda: os.environ.get("MESH_DEFAULT_MODEL", "auto"))
     bg_removal: str = field(
         default_factory=lambda: os.environ.get("MESH_BG_REMOVAL", "auto")
     )  # auto | always | never
@@ -66,9 +69,7 @@ class ServerConfig:
     )  # bit depth for the mflux weight file (4|8|16)
     # diffusers CPU-offload ladder: auto|model|sequential|none —
     # 'auto' enables model-level offload below cuda_offload_vram_gb free VRAM
-    cuda_offload: str = field(
-        default_factory=lambda: os.environ.get("MESH_CUDA_OFFLOAD", "auto")
-    )
+    cuda_offload: str = field(default_factory=lambda: os.environ.get("MESH_CUDA_OFFLOAD", "auto"))
     cuda_offload_vram_gb: float = field(
         default_factory=lambda: float(os.environ.get("MESH_CUDA_OFFLOAD_VRAM_GB", "24"))
     )

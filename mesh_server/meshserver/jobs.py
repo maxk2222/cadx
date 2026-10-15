@@ -8,8 +8,13 @@ resident at the same time and single-flight GPU usage holds automatically.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
+import json
+import os
 import shutil
+import signal
+import sys
 import time
 import uuid
 from collections.abc import Callable
@@ -19,13 +24,19 @@ from typing import Any
 from meshserver.adapters.base import GenOpts
 from meshserver.adapters.image_base import ImageGenOpts
 from meshserver.config import ServerConfig
+from meshserver.logging import get_logger
 from meshserver.postprocess import clean_mesh, export_glb
 from meshserver.preprocess import prep_images
 from meshserver.registry import Registry
 from meshserver.schemas import GenParams, ImageGenParams, JobStatus
-from meshserver.logging import get_logger
 
 log = get_logger(__name__)
+
+
+def _open_log(path: Path) -> io.BufferedWriter:
+    """stderr sink for a generation subprocess — the handle must outlive the
+    call, so no context manager here by design."""
+    return path.open("wb")
 
 
 def _peak_rss_mb() -> float:
@@ -140,8 +151,7 @@ def _is_oom(exc: BaseException) -> bool:
         pass
     msg = str(exc).lower()
     return any(
-        m in msg
-        for m in ("out of memory", "cublas", "cudnn", "metal", "allocation failed", "mps")
+        m in msg for m in ("out of memory", "cublas", "cudnn", "metal", "allocation failed", "mps")
     )
 
 
@@ -166,9 +176,26 @@ class JobManager:
             except asyncio.CancelledError:
                 pass
 
+    def _host_free_mb(self) -> float | None:
+        try:
+            import psutil
+
+            return psutil.virtual_memory().available / 1e6
+        except Exception:
+            return None
+
+    def _free_mem_ok(self) -> bool:
+        """Refuse new jobs under host memory pressure — a job started with no
+        headroom stalls at 0% CPU and can swap the host into a panic."""
+        limit = self.cfg.job_min_free_mb
+        if limit <= 0:
+            return True
+        free = self._host_free_mb()
+        return free is None or free >= limit
+
     async def submit(self, params: GenParams, image_paths: list[Path]) -> MeshJob | None:
         self._gc()
-        if self._queued() >= self.cfg.max_queue:
+        if self._queued() >= self.cfg.max_queue or not self._free_mem_ok():
             return None
         job = MeshJob(str(uuid.uuid4()), params, image_paths)
         self.jobs[job.id] = job
@@ -179,7 +206,7 @@ class JobManager:
         self, params: ImageGenParams, init_image_path: Path | None = None
     ) -> ImageJob | None:
         self._gc()
-        if self._queued() >= self.cfg.max_queue:
+        if self._queued() >= self.cfg.max_queue or not self._free_mem_ok():
             return None
         job = ImageJob(str(uuid.uuid4()), params, init_image_path)
         self.jobs[job.id] = job
@@ -208,9 +235,13 @@ class JobManager:
             )
             job.finished = time.monotonic()
             job.cancelled = True  # adapter checks this and aborts early
-            log.warning(
-                "job.stalled", job=job_id, model=job.model, peak_rss_mb=_peak_rss_mb()
-            )
+            # a stalled adapter thread cannot be killed — badlist the model so
+            # 'auto' and candidate screening stop picking it, and release
+            # whatever model memory the registry still owns
+            if job.model and job.model != "auto":
+                self.registry.mark_failed(job.model, job.error)
+            self.registry.unload_all()
+            log.warning("job.stalled", job=job_id, model=job.model, peak_rss_mb=_peak_rss_mb())
         return job
 
     async def cancel(self, job_id: str) -> bool:
@@ -258,7 +289,9 @@ class JobManager:
             if job is None or job.status != "queued":
                 continue
             try:
-                if isinstance(job, ImageJob):
+                if self.cfg.jobs_subprocess:
+                    await self._run_job_proc(job)
+                elif isinstance(job, ImageJob):
                     await asyncio.to_thread(self._run_image_job, job)
                 else:
                     await asyncio.to_thread(self._run_job, job)
@@ -288,6 +321,210 @@ class JobManager:
                     model=getattr(job, "model", ""),
                     peak_rss_mb=_peak_rss_mb(),
                 )
+
+    async def _run_job_proc(self, job: MeshJob | ImageJob) -> None:
+        """Run one generation in a child process (`meshserver.gen_worker`).
+
+        The child owns the model weights and device buffers; on stall, cancel
+        or the RSS cap it gets SIGKILLed and the OS reclaims all its memory —
+        the main crash vector this single-process queue cannot fix otherwise.
+        Progress is reported via progress.json in the job dir; result.json +
+        binary payloads land there on success."""
+        work = self.cfg.job_dir / job.id
+        work.mkdir(parents=True, exist_ok=True)
+        (work / "request.json").write_text(json.dumps(self._gen_request(job)))
+        # stderr to a file, not a pipe — an orphaned PIPE transport raises
+        # "Event loop is closed" in __del__ when the loop ends first
+        stderr_file = _open_log(work / "stderr.log")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-m",
+                "meshserver.gen_worker",
+                str(work / "request.json"),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=stderr_file,
+                # own process group — killpg also reaps torch/MLX helper children
+                start_new_session=True,
+            )
+            job.status = "running"
+            job.started = time.monotonic()
+            job.message = "generating (subprocess)"
+            job.last_progress_at = time.monotonic()
+            kill_reason, peak_rss_mb = await self._watch_gen_proc(proc, job, work)
+        finally:
+            stderr_file.close()
+
+        if proc.returncode == 0:
+            self._finish_proc_ok(job, work, peak_rss_mb)
+            return
+        if job.cancelled or proc.returncode == 2:
+            job.status = "cancelled"
+            job.finished = time.monotonic()
+            return
+        self._finish_proc_failed(job, work, proc.returncode, kill_reason, peak_rss_mb)
+
+    def _gen_request(self, job: MeshJob | ImageJob) -> dict[str, Any]:
+        return {
+            "kind": "image" if isinstance(job, ImageJob) else "mesh",
+            "model": job.params.model,
+            "params": job.params.model_dump(mode="json"),
+            "image_paths": [str(p) for p in getattr(job, "image_paths", [])],
+            "init_image_path": str(getattr(job, "init_image_path", None) or "") or None,
+            # resolved config knobs the child can't see via env (test fakes,
+            # programmatic overrides)
+            "cfg": {
+                k: getattr(self.cfg, k)
+                for k in (
+                    "fake",
+                    "allow_cpu",
+                    "device",
+                    "bg_removal",
+                    "default_model",
+                    "image_default_model",
+                    "cuda_offload",
+                    "cuda_offload_vram_gb",
+                    "flux_mlx_quant",
+                    "mlx_mem_limit_gb",
+                )
+            }
+            | {"model_dir": str(self.cfg.model_dir)},
+            # parent's badlist carries over — adapters that stalled/OOM'd in a
+            # previous child must not be retried by this one
+            "badlist": dict(getattr(self.registry, "_failed", {})),
+        }
+
+    async def _watch_gen_proc(
+        self, proc: asyncio.subprocess.Process, job: MeshJob | ImageJob, work: Path
+    ) -> tuple[str | None, float]:
+        """Poll progress.json + child RSS; returns (kill_reason, peak_rss_mb).
+
+        Kills the process group on stall (no progress.json update within
+        job_stall_s), on job.cancelled (after a short cancel.flag grace) and
+        when the child's RSS crosses job_max_rss_mb."""
+        progress_file = work / "progress.json"
+        last_raw = ""
+        peak_rss_mb = 0.0
+        kill_reason: str | None = None
+
+        def _kill() -> None:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+
+        while proc.returncode is None:
+            await asyncio.sleep(0.5)
+            try:
+                if progress_file.exists():
+                    raw = progress_file.read_text()
+                    if raw != last_raw:
+                        last_raw = raw
+                        p = json.loads(raw)
+                        job.progress = 0.05 + min(p.get("progress", 0.0), 1.0) * 0.9
+                        job.message = p.get("message", job.message)
+                        job.last_progress_at = time.monotonic()
+            except (json.JSONDecodeError, OSError):
+                pass
+            if self.cfg.job_max_rss_mb > 0:
+                rss = self._child_rss_mb(proc.pid)
+                peak_rss_mb = max(peak_rss_mb, rss or 0.0)
+                if rss is not None and rss > self.cfg.job_max_rss_mb:
+                    kill_reason = f"job exceeded {self.cfg.job_max_rss_mb}MB RSS — killed"
+                    _kill()
+            if job.cancelled:
+                (work / "cancel.flag").touch()
+                # brief grace for a clean abort, then the hard kill
+                await asyncio.sleep(2)
+                _kill()
+            if time.monotonic() - job.last_progress_at > self.cfg.job_stall_s:
+                kill_reason = (
+                    f"stalled — no progress for {self.cfg.job_stall_s}s (subprocess killed)"
+                )
+                _kill()
+        return kill_reason, peak_rss_mb
+
+    def _finish_proc_ok(self, job: MeshJob | ImageJob, work: Path, peak_rss_mb: float) -> None:
+        try:
+            meta = json.loads((work / "result.json").read_text())
+        except (json.JSONDecodeError, OSError) as e:
+            job.status = "failed"
+            job.error = f"missing result.json ({e})"
+            job.finished = time.monotonic()
+            return
+        if isinstance(job, MeshJob):
+            glb_path = work / "out.glb"
+            if not glb_path.exists():
+                job.status = "failed"
+                job.error = "subprocess exited 0 without out.glb"
+                job.finished = time.monotonic()
+                return
+            job.glb = glb_path.read_bytes()
+            job.triangles = meta.get("triangles")
+            job.resolution = meta.get("resolution") or job.resolution
+        else:
+            job.images = [p.read_bytes() for p in sorted(work.glob("img_*.png"))]
+        job.model = meta.get("model") or job.model
+        job.backend = meta.get("backend") or ""
+        job.seed = meta.get("seed") or 0
+        job.steps = meta.get("steps")
+        job.guidance = meta.get("guidance")
+        job.status = "succeeded"
+        job.progress = 1.0
+        job.message = "done"
+        job.finished = time.monotonic()
+        log.info(
+            "job.proc_done",
+            job=job.id,
+            model=job.model,
+            child_peak_rss_mb=round(peak_rss_mb, 1),
+        )
+
+    def _finish_proc_failed(
+        self,
+        job: MeshJob | ImageJob,
+        work: Path,
+        rc: int | None,
+        kill_reason: str | None,
+        peak_rss_mb: float,
+    ) -> None:
+        stderr_tail = ""
+        with contextlib.suppress(OSError):
+            stderr_tail = (work / "stderr.log").read_text(errors="replace")[-600:]
+        child_error = ""
+        child_model = ""
+        with contextlib.suppress(json.JSONDecodeError, OSError):
+            err = json.loads((work / "error.json").read_text())
+            child_error = err.get("error", "")
+            child_model = err.get("model", "")
+        job.status = "failed"
+        job.error = (
+            kill_reason or child_error or f"gen worker exited rc={rc}: {stderr_tail.strip()[:400]}"
+        )
+        job.finished = time.monotonic()
+        # stall/RSS kill or a child-reported adapter error both mean this
+        # model is unsafe to retry in this process — badlist it
+        bad_model = child_model or (job.model if job.model != "auto" else "")
+        if bad_model and (kill_reason or child_error):
+            self.registry.mark_failed(bad_model, job.error)
+        log.warning(
+            "job.proc_failed",
+            job=job.id,
+            rc=rc,
+            model=job.model,
+            reason=kill_reason,
+            child_peak_rss_mb=round(peak_rss_mb, 1),
+        )
+
+    @staticmethod
+    def _child_rss_mb(pid: int) -> float | None:
+        try:
+            import psutil
+
+            return psutil.Process(pid).memory_info().rss / 1e6
+        except Exception:
+            return None
 
     def _load_adapter(
         self,

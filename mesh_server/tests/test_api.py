@@ -47,11 +47,12 @@ def test_full_job_flow(app):
         assert r.status_code == 200, r.text
         job_id = r.json()["job_id"]
 
-        # poll until done
+        # poll until done — the generation subprocess needs a few seconds of
+        # interpreter+import startup before the fake adapter can finish
         import time
 
         status = ""
-        for _ in range(50):
+        for _ in range(200):
             r = c.get(f"/v1/jobs/{job_id}")
             status = r.json()["status"]
             if status in ("succeeded", "failed", "cancelled"):
@@ -134,7 +135,7 @@ def test_unavailable_model_fails_job(app):
         import time
 
         status = ""
-        for _ in range(50):
+        for _ in range(200):
             r = c.get(f"/v1/jobs/{job_id}")
             status = r.json()["status"]
             if status in ("succeeded", "failed", "cancelled"):
