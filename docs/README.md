@@ -1,4 +1,6 @@
-# CAD<img src="../frontend/public/logo.svg" height="56" alt="X" valign="middle"> documentation
+<img src="../frontend/public/brand/logo.png" width="240" alt="CADX">
+
+# Documentation
 
 CADX turns reference images and a text prompt into parametric, verified 3D
 models for 3D printing and CNC. This index groups the documentation by
