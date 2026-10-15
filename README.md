@@ -26,6 +26,11 @@
   <a href="#license">License</a>
 </p>
 
+> [!WARNING]
+> **Early development** — CADX is under active development. Expect breaking
+> changes, rough edges and an evolving API/data model between versions.
+> Feedback and bug reports are very welcome.
+
 ---
 
 ## Highlights
