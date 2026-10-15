@@ -429,6 +429,7 @@ class JobManager:
         # idle CPU: track the last time the child either progressed or
         # actually computed something
         last_active_at = time.monotonic()
+        last_rss: float | None = None
         cancel_seen = False
         child_proc = None
         with contextlib.suppress(Exception):
@@ -467,13 +468,22 @@ class JobManager:
                 kill_reason = f"job exceeded {self.cfg.job_max_rss_mb}MB RSS — killed"
                 _kill()
             if child_proc is not None:
+                # liveness = CPU activity OR allocation churn. A deadlocked
+                # child sits at exactly 0% CPU with a frozen RSS; GPU-bound
+                # MLX stages only burn ~1.5-3.5% CPU — 0.5% separates them.
+                active = False
                 with contextlib.suppress(Exception):
-                    if child_proc.cpu_percent() > 2.0:
-                        last_active_at = time.monotonic()
-                        # a computing child is alive even between progress
-                        # callbacks — feed both watchdogs
-                        job.last_progress_at = last_active_at
-                        job.last_active_at = last_active_at
+                    active = child_proc.cpu_percent() > 0.5
+                if rss is not None and last_rss is not None and abs(rss - last_rss) > 32:
+                    active = True
+                if rss is not None:
+                    last_rss = rss
+                if active:
+                    last_active_at = time.monotonic()
+                    # a computing child is alive even between progress
+                    # callbacks — feed both watchdogs
+                    job.last_progress_at = last_active_at
+                    job.last_active_at = last_active_at
             if job.cancelled and not cancel_seen:
                 cancel_seen = True
                 # the job dir may already be gone — a client DELETE cleans
