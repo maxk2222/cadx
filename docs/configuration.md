@@ -171,7 +171,7 @@ Infrastructure-only bootstrap settings; everything else lives in the DB.
 | Variable | Default | Notes |
 |----------|---------|-------|
 | `MESH_HOST` / `MESH_PORT` | `127.0.0.1` / `8765` | bind address |
-| `MESH_DEVICE` | `auto` | `auto` / `cuda` / `mps` / `mlx` / `cpu` |
+| `MESH_DEVICE` | `auto` | `auto` / `cuda` / `rocm` / `mps` / `mlx` / `cpu` |
 | `MESH_MODEL_DIR` | `~/.cache/meshserver/models` | weight cache |
 | `MESH_JOB_DIR` | `/tmp/meshserver-jobs` | job scratch space |
 | `MESH_JOB_TTL_S` | `3600` | result retention |
@@ -183,6 +183,7 @@ Infrastructure-only bootstrap settings; everything else lives in the DB.
 | `MESH_IMAGE_MODEL` | `auto` | image adapter for `model=auto` requests |
 | `MESH_BG_REMOVAL` | `auto` | `auto` / `always` / `never` (rembg/u2net on inputs) |
 | `MESH_TRIPOSG_MPS` | `0` | experimental MPS path for TripoSG |
+| `TORCH_ROCM_INDEX` | `…/whl/rocm6.4` | wheel index used by `install_rocm.sh` |
 | `MESH_FLUX_KONTEXT` | `0` | enable the gated FLUX.1-Kontext edit adapter |
 | `MESH_FLUX_MLX_QUANT` | `4` | mflux weight quantization bits (4/8/16) |
 | `MESH_CUDA_OFFLOAD` | `auto` | `auto` / `model` / `sequential` / `none` diffusers CPU offload |

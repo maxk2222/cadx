@@ -24,7 +24,7 @@ whole stack.
 native `mesh-server` sidecar. Flags:
 
 ```
-scripts/start.sh [--dev] [--tier mlx|cuda|none|fake] [--fake] [--no-mesh]
+scripts/start.sh [--dev] [--tier mlx|cuda|rocm|none|fake] [--fake] [--no-mesh]
                  [--no-setup] [--bind-local]
 ```
 
@@ -34,7 +34,13 @@ The detected GPU tier decides which mesh adapter gets installed:
 |--------|-----------------------------|-------------------------------------------------|
 | `mlx`  | Apple Silicon (arm64 macOS) | Hunyuan3D-2.1 via MLX port                      |
 | `cuda` | local NVIDIA GPU            | TRELLIS.2 (≥20 GB VRAM, override via `MESH_TRELLIS_MIN_VRAM_GB`), else TripoSG |
+| `rocm` | local AMD GPU (Linux)       | TripoSG — TRELLIS.2 is CUDA-only. Optional: `--extra hunyuan` adds the Hunyuan3D-2 torch adapters (multiview) |
 | `none` | no GPU                      | none — CAD fallback (or `--fake` for tests)     |
+
+ROCm requirements: Linux with the `amdgpu` driver (the setup probes `amd-smi`/
+`rocm-smi`/`rocminfo` and `/dev/kfd`). Supported gfx archs out of the box:
+gfx1030, gfx110x (RX 7000), gfx120x (RX 9000), gfx942 (MI300). Other archs may
+need `HSA_OVERRIDE_GFX_VERSION` — see [Troubleshooting](troubleshooting.md).
 
 A text-to-image adapter is installed alongside the mesh adapter unless you pass
 `--skip-image` to `setup.sh` (see [Image generation](image-generation.md)).

@@ -35,6 +35,7 @@ from meshserver.adapters.triposg import (
     _triposg_src,
     _triposg_to_trimesh,
 )
+from meshserver.torch_util import is_rocm
 
 _MODEL_ID = "VAST-AI/TripoSG-scribble"
 
@@ -125,6 +126,9 @@ class TripoSGScribbleAdapter(MeshAdapter):
             kwargs["generator"] = self._torch.Generator(device="cuda").manual_seed(
                 opts.seed & 0xFFFFFFFF
             )
+            if is_rocm():
+                # DiffDMC is CUDA-only — hierarchical skimage path on ROCm
+                kwargs["use_flash_decoder"] = False
         else:
             # same MPS constraints as the base triposg adapter: seed globally,
             # flash decoder (DiffDMC) is CUDA-only → hierarchical skimage path

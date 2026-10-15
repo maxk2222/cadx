@@ -125,6 +125,33 @@ services:
       - mesh_models:/models
     networks: [internal, public]  # internal: reachable by worker; public: HF model downloads
 
+  # AMD variant (Linux + ROCm): docker compose --profile gpu-rocm up -d
+  # Requires the amdgpu driver on the host; KFD + DRM render nodes are passed
+  # through. Set HSA_OVERRIDE_GFX_VERSION in .env for gfx archs not covered by
+  # the torch wheel.
+  mesh-server-rocm:
+    profiles: ["gpu-rocm"]
+    build:
+      context: mesh_server
+      dockerfile: Dockerfile.rocm
+    environment:
+      MESH_DEVICE: rocm
+      MESH_FAKE: ${MESH_FAKE:-}
+      HF_HOME: /models/hf
+      HSA_OVERRIDE_GFX_VERSION: ${HSA_OVERRIDE_GFX_VERSION:-}
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - video
+      - render
+    ipc: host  # ROCm shared-memory transport
+    security_opt:
+      - seccomp=unconfined
+    volumes:
+      - mesh_models:/models
+    networks: [internal, public]
+
   frontend:
     build:
       context: frontend

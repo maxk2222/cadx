@@ -6,10 +6,12 @@
 #   scripts/setup.sh [flags]
 #
 # Flags:
-#   --tier mlx|cuda|none|fake   override GPU detection (testing)
+#   --tier mlx|cuda|rocm|none|fake   override GPU detection (testing)
 #   --dev                       also install frontend deps for native dev mode
 #   --fake                      enable the deterministic test adapter (tier none)
 #   --extra mps                 additionally install torch/MPS adapters (Apple Silicon)
+#   --extra hunyuan             additionally install Hunyuan3D-2 torch adapters (ROCm tier;
+#                               adds multiview — note the Tencent license restrictions)
 #   --skip-mesh                 do not install any mesh adapter
 #   --skip-image                do not install a text-to-image adapter
 #   --dry-run                   print the plan, change nothing
@@ -22,13 +24,17 @@ source scripts/lib/gpu_detect.sh
 
 # ---------- flags ----------
 TIER_OVERRIDE=""
-DEV=0; FAKE=0; SKIP_MESH=0; SKIP_IMAGE=0; DRY=0; DOCTOR=0; EXTRA_MPS=0
+DEV=0; FAKE=0; SKIP_MESH=0; SKIP_IMAGE=0; DRY=0; DOCTOR=0; EXTRA_MPS=0; EXTRA_HUNYUAN=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --tier)   TIER_OVERRIDE="$2"; shift 2 ;;
     --dev)    DEV=1; shift ;;
     --fake)   FAKE=1; shift ;;
-    --extra)  [ "$2" = "mps" ] && EXTRA_MPS=1; shift 2 ;;
+    --extra)  case "$2" in
+                mps)     EXTRA_MPS=1 ;;
+                hunyuan) EXTRA_HUNYUAN=1 ;;
+                *) echo "unknown --extra: $2" >&2; exit 2 ;;
+              esac; shift 2 ;;
     --skip-mesh) SKIP_MESH=1; shift ;;
     --skip-image) SKIP_IMAGE=1; shift ;;
     --dry-run) DRY=1; shift ;;
@@ -64,6 +70,13 @@ if [ "$DOCTOR" = 1 ]; then
   say "doctor"
   info "tier:              $TIER  (override: ${GPU_TIER:-none})"
   info "vram:              $(gpu_vram_mb) MiB"
+  if [ "$TIER" = "rocm" ]; then
+    # gfx arch matters for ROCm wheel compatibility — best-effort, no tools
+    # may be installed on a bare amdgpu host
+    GFX=$(rocminfo 2>/dev/null | grep -o 'gfx[0-9a-f]*' | head -1 || true)
+    [ -z "$GFX" ] && GFX=$(amd-smi list 2>/dev/null | grep -io 'gfx[0-9a-f]*' | head -1 || true)
+    info "gfx arch:          ${GFX:-unknown (install rocminfo for details)}"
+  fi
   info "default model:     ${MODEL:-<none>}"
   info "install script:    $(gpu_install_script "$TIER")"
   info "image model:       ${IMG_MODEL:-<none>}"
@@ -113,7 +126,7 @@ info "ok"
 # app runtime settings live in the DB (Settings page) — the launcher seeds
 # mesh_base_url/mesh_model on first boot from these detected values.
 case "$TIER" in
-  mlx|cuda|fake)
+  mlx|cuda|rocm|fake)
     info "mesh default: $MODEL — start.sh will seed it into the app settings"
     [ -n "$IMG_MODEL" ] && info "image default: $IMG_MODEL"
     ;;
@@ -131,15 +144,29 @@ if [ "$SKIP_MESH" = 0 ] && [ "$TIER" != "none" ]; then
   run "cd mesh_server && ../.venv/bin/uv pip install -e '.' --python .venv/bin/python -q"
   if [ "$TIER" != "fake" ]; then
     SCRIPT=$(gpu_install_script "$TIER")
+    MODEL_THERE=0
     if mesh_model_available "$MODEL"; then
       info "adapter '$MODEL' already available — skipping install"
+      MODEL_THERE=1
     else
       say "installing adapter: $MODEL"
-      run "VENV=mesh_server/.venv bash mesh_server/scripts/$SCRIPT"
+      # rocm: install_rocm.sh delegates to install_hunyuan_torch.sh when
+      # HUNYUAN=1 — the hunyuan torch build needs the ROCm wheel first
+      run "VENV=mesh_server/.venv HUNYUAN=$EXTRA_HUNYUAN bash mesh_server/scripts/$SCRIPT"
     fi
     if [ "$EXTRA_MPS" = 1 ]; then
       say "extra: torch/MPS adapters (hunyuan3d-2mini/-mv)"
       run "VENV=mesh_server/.venv bash mesh_server/scripts/install_hunyuan_torch.sh"
+    fi
+    # rocm + --extra hunyuan on a re-run (triposg already present ⇒ rocm torch
+    # is already in place): install the hunyuan adapters directly
+    if [ "$EXTRA_HUNYUAN" = 1 ] && [ "$TIER" = "rocm" ] && [ "$MODEL_THERE" = 1 ]; then
+      if mesh_model_available "hunyuan3d-2mini"; then
+        info "hunyuan adapters already available — skipping"
+      else
+        say "extra: Hunyuan3D-2 torch adapters on ROCm (hunyuan3d-2mini/-mv)"
+        run "VENV=mesh_server/.venv bash mesh_server/scripts/install_hunyuan_torch.sh"
+      fi
     fi
     # text-to-image adapter (same sidecar, second adapter family)
     IMG_SCRIPT=$(gpu_image_install_script "$TIER")

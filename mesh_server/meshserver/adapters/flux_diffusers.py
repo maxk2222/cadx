@@ -1,4 +1,4 @@
-"""FLUX.1-schnell text-to-image via diffusers (CUDA).
+"""FLUX.1-schnell text-to-image via diffusers (CUDA, ROCm).
 
 Install:
     pip install 'meshserver[image-torch]'
@@ -19,6 +19,7 @@ from PIL import Image
 
 from meshserver.adapters.base import hard_unload, missing
 from meshserver.adapters.image_base import ImageAdapter, ImageGenOpts, ImageGenResult
+from meshserver.torch_util import TorchDevice
 
 
 def _cuda_ok() -> bool:
@@ -32,8 +33,8 @@ def _cuda_ok() -> bool:
 
 class FluxSchnellAdapter(ImageAdapter):
     id = "flux-schnell"
-    name = "FLUX.1-schnell (diffusers, CUDA)"
-    device = "cuda"
+    name = "FLUX.1-schnell (diffusers)"
+    device = TorchDevice("cuda")  # reports rocm on HIP builds
     backend = "diffusers"
     license_note = "Apache-2.0 (FLUX.1-schnell)"
     default_size = 768

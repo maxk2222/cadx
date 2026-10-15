@@ -115,6 +115,17 @@ docker run --gpus all -p 8765:8765 -v mesh_models:/models meshserver:cuda
 # override via MESH_TRELLIS_MIN_VRAM_GB) or triposg automatically
 mesh_server/scripts/install_trellis2.sh   # TRELLIS.2-4B on the CUDA box
 mesh_server/scripts/install_triposg.sh    # TripoSG (+ -scribble via same pkg)
+
+# AMD box (Linux + ROCm) — TripoSG is the default; TRELLIS.2 is CUDA-only
+mesh_server/scripts/install_rocm.sh       # ROCm torch wheel + TripoSG
+HUNYUAN=1 mesh_server/scripts/install_rocm.sh   # + Hunyuan3D-2 torch (multiview)
+docker build -f mesh_server/Dockerfile.rocm -t meshserver:rocm .
+docker run --device=/dev/kfd --device=/dev/dri --group-add video \
+    --group-add render --ipc=host -p 8765:8765 -v mesh_models:/models \
+    meshserver:rocm
+# or: docker compose --profile gpu-rocm up -d mesh-server-rocm
+# gfx arch not covered by the torch wheel? → HSA_OVERRIDE_GFX_VERSION, see
+# troubleshooting.md
 ```
 
 ## Adapter benchmark

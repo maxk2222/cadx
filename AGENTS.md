@@ -9,7 +9,7 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
 
 ## Commands (run from repo root)
 - One-command start:     `make start` / `./scripts/start.sh` — auto-detects GPU
-  tier (mlx|cuda|none), installs the mesh adapter, starts docker stack +
+  tier (mlx|cuda|rocm|none), installs the mesh adapter, starts docker stack +
   native mesh-server. `make stop`, `make status`, `make autosetup`,
   `scripts/setup.sh --doctor`
 - Setup env once:        `python3 -m venv .venv && .venv/bin/python -m pip install uv`

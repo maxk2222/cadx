@@ -1,4 +1,4 @@
-"""SDXL / SD1.5 text-to-image fallbacks via diffusers (CUDA | MPS | CPU).
+"""SDXL / SD1.5 text-to-image fallbacks via diffusers (CUDA | ROCm | MPS | CPU).
 
 Used when FLUX does not fit or is not installed. Both models are smaller and
 work with diffusers' generic AutoPipelineForText2Image.
@@ -18,6 +18,7 @@ from PIL import Image
 
 from meshserver.adapters.base import hard_unload, missing
 from meshserver.adapters.image_base import ImageAdapter, ImageGenOpts, ImageGenResult
+from meshserver.torch_util import TorchDevice
 
 
 def _device_ok(device: str, cfg: Any) -> bool:
@@ -141,7 +142,7 @@ class _SdBase(ImageAdapter):
 class SdxlAdapter(_SdBase):
     id = "sdxl"
     name = "Stable Diffusion XL (diffusers)"
-    device = "cuda"  # advertised device; mps/cpu handled via device_candidates
+    device = TorchDevice("cuda")  # reports rocm/mps; runtime via device_candidates
     backend = "diffusers"
     repo = "stabilityai/stable-diffusion-xl-base-1.0"
     license_note = "OpenRAIL++-M (Stability AI)"
@@ -154,7 +155,7 @@ class SdxlAdapter(_SdBase):
 class Sd15Adapter(_SdBase):
     id = "sd15"
     name = "Stable Diffusion 1.5 (diffusers)"
-    device = "cuda"
+    device = TorchDevice("cuda")  # reports rocm/mps/cpu; runtime via device_candidates
     backend = "diffusers"
     repo = "runwayml/stable-diffusion-v1-5"
     license_note = "CreativeML OpenRAIL-M (Runway/CompVis)"

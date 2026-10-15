@@ -33,20 +33,21 @@ cadx mesh-gen photo.png -o out.glb
 
 | id | model | device | license | install |
 |----|-------|--------|---------|---------|
-| `trellis2` | TRELLIS.2-4B (shape only) | CUDA | **MIT** | `scripts/install_trellis2.sh` / `Dockerfile.cuda` |
-| `triposg` | TripoSG 1.5B | CUDA, MPS (exp.) | **MIT** | `scripts/install_triposg.sh` |
+| `trellis2` | TRELLIS.2-4B (shape only) | CUDA only | **MIT** | `scripts/install_trellis2.sh` / `Dockerfile.cuda` |
+| `triposg` | TripoSG 1.5B | CUDA, ROCm, MPS (exp.) | **MIT** | `scripts/install_triposg.sh` (`install_rocm.sh` on AMD) |
 | `hunyuan3d-2.1-mlx` | Hunyuan3D-2.1 Shape | MLX (arm64 Mac) | Tencent Community* | `scripts/install_hunyuan_mlx.sh` |
-| `hunyuan3d-2mini` / `-turbo` | Hunyuan3D-2 mini Shape | torch MPS | Tencent Community* | `scripts/install_hunyuan_torch.sh` |
-| `hunyuan3d-2mv` / `-mv-turbo` | Hunyuan3D-2 multi-view | torch MPS | Tencent Community* | same |
+| `hunyuan3d-2mini` / `-turbo` | Hunyuan3D-2 mini Shape | torch MPS, ROCm | Tencent Community* | `scripts/install_hunyuan_torch.sh` |
+| `hunyuan3d-2mv` / `-mv-turbo` | Hunyuan3D-2 multi-view | torch MPS, ROCm | Tencent Community* | same |
 | `fake` | deterministic test fixture | — | MIT | always available with `MESH_FAKE=1` |
 
 \* **The Tencent Hunyuan Community License excludes the EU/UK/South Korea.**
 Check whether it applies to you; TRELLIS.2 and TripoSG are MIT-licensed
 alternatives.
 
-`model=auto` picks: `trellis2` on CUDA, `hunyuan3d-2.1-mlx` on arm64 Macs with
-MLX, `hunyuan3d-2mv` when ≥2 view-tagged images are given on MPS, otherwise
-`hunyuan3d-2mini`/`triposg`.
+`model=auto` picks: `trellis2` on NVIDIA CUDA, `triposg` on AMD ROCm (single
+image) or `hunyuan3d-2mv` (multi-view, if installed), `hunyuan3d-2.1-mlx` on
+arm64 Macs with MLX, `hunyuan3d-2mv` when ≥2 view-tagged images are given on
+MPS, otherwise `hunyuan3d-2mini`/`triposg`.
 
 A second adapter family serves local **text-to-image and image editing**
 (`kind: "image"` in `/v1/models`): `flux-schnell-mlx`, `flux-schnell`,
@@ -72,7 +73,7 @@ DELETE /v1/jobs/{id}
 | var | default | meaning |
 |-----|---------|---------|
 | `MESH_HOST` / `MESH_PORT` | `127.0.0.1` / `8765` | bind address |
-| `MESH_DEVICE` | `auto` | `auto \| cuda \| mps \| mlx \| cpu` |
+| `MESH_DEVICE` | `auto` | `auto \| cuda \| rocm \| mps \| mlx \| cpu` |
 | `MESH_MODEL_DIR` | `~/.cache/meshserver/models` | weight cache |
 | `MESH_JOB_DIR` | `/tmp/meshserver-jobs` | job scratch space |
 | `MESH_JOB_TTL_S` | `3600` | result retention |
@@ -103,6 +104,26 @@ Or via the repo's `gpu` compose profile:
 docker compose --profile gpu up -d mesh-server
 # then MESH_BASE_URL=http://mesh-server:8765 for the worker
 ```
+
+## AMD (ROCm) deployment
+
+Linux host with the `amdgpu` driver (`/dev/kfd` + `/dev/dri/renderD*`).
+Native install goes through `scripts/install_rocm.sh` (ROCm torch wheel →
+TripoSG; `HUNYUAN=1` adds the Hunyuan3D-2 torch adapters). Wheel index
+override: `TORCH_ROCM_INDEX`.
+
+```bash
+docker build -f mesh_server/Dockerfile.rocm -t meshserver:rocm .
+docker run --device=/dev/kfd --device=/dev/dri --group-add video \
+    --group-add render --ipc=host -p 8765:8765 -v mesh_models:/models \
+    meshserver:rocm
+# or: docker compose --profile gpu-rocm up -d mesh-server-rocm
+```
+
+Notes: ROCm torch reuses the `cuda` device namespace — adapters report
+`device: rocm` via `torch.version.hip`. The CUDA-only `diso` flash decoder is
+replaced by the skimage marching-cubes path automatically. gfx archs not
+covered by the installed wheel (e.g. gfx1031) need `HSA_OVERRIDE_GFX_VERSION`.
 
 First run downloads weights into `MESH_MODEL_DIR`/`HF_HOME` — mount a volume.
 

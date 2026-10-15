@@ -18,7 +18,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 class ServerConfig:
     host: str = field(default_factory=lambda: os.environ.get("MESH_HOST", "127.0.0.1"))
     port: int = field(default_factory=lambda: int(os.environ.get("MESH_PORT", "8765")))
-    # device override: auto | cuda | mps | mlx | cpu
+    # device override: auto | cuda | rocm | mps | mlx | cpu
     device: str = field(default_factory=lambda: os.environ.get("MESH_DEVICE", "auto"))
     model_dir: Path = field(
         default_factory=lambda: Path(

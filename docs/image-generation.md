@@ -22,6 +22,8 @@ same `mesh_server` sidecar as the image→3D generators. Three use cases:
 | mlx   | `flux-schnell-mlx` | FLUX.1-schnell via `mflux`, 4-bit (t2i + img2img) | `install_image_mlx.sh`    |
 | cuda  | `flux-schnell`     | FLUX.1-schnell via diffusers (t2i + img2img) | `install_image_torch.sh`     |
 | cuda  | `sdxl` / `sd15`    | fallbacks for small VRAM (t2i + img2img) | (same)                       |
+| rocm  | `flux-schnell`     | diffusers on ROCm torch (t2i + img2img) — the edit adapters below are MLX-only, so `flux-schnell` is also the edit default on AMD | `install_image_torch.sh`     |
+| rocm  | `sdxl` / `sd15`    | fallbacks (t2i + img2img)  | (same)                       |
 | mlx   | `qwen-image-edit`  | Qwen-Image-Edit-2509 — instruction image **editing** (mflux, 4-bit) — **edit default** | `install_image_mlx.sh` |
 | mlx   | `flux-kontext-mlx` | FLUX.1-Kontext-dev — instruction image **editing** (mflux, 4-bit) | `MESH_FLUX_KONTEXT=1` opt-in |
 | fake  | `fake-image`       | deterministic test adapter   | `MESH_FAKE=1`                |
@@ -37,7 +39,8 @@ Edit jobs carry an init image + optional `strength` (`POST
 `supports_edit`; edit-only ones additionally `requires_image` so they never
 win a plain text-to-image `auto` pick. The edit preference ladder on
 MLX/CUDA is `qwen-image-edit` → `flux-kontext-mlx` → img2img fallbacks
-(`flux-schnell-mlx`, `sdxl`, `sd15`):
+(`flux-schnell-mlx`, `sdxl`, `sd15`); on ROCm it is `flux-schnell` → `sdxl` →
+`sd15` (the MLX edit adapters don't exist on Linux):
 
 - `qwen-image-edit` (Apache-2.0, ungated) — instruction edits like "make it
   matte black"; the **default edit adapter**.

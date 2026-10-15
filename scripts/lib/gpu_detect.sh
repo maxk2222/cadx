@@ -8,10 +8,21 @@
 # Tiers:
 #   mlx   - Apple Silicon (Darwin arm64) -> Hunyuan3D-2.1 via community MLX port
 #   cuda  - local NVIDIA GPU             -> TRELLIS.2 (>=20 GB VRAM) else TripoSG
+#   rocm  - local AMD GPU (Linux, ROCm)  -> TripoSG (TRELLIS.2 is CUDA-only)
 #   none  - no usable GPU                -> no real model (optional MESH_FAKE=1)
 #
-# Override for testing: GPU_TIER=mlx|cuda|none|fake
+# Override for testing: GPU_TIER=mlx|cuda|rocm|none|fake
 # TRELLIS.2 VRAM threshold: MESH_TRELLIS_MIN_VRAM_GB (default 20)
+
+_rocm_present() {
+  [ "$(uname -s 2>/dev/null)" = "Linux" ] || return 1
+  if command -v amd-smi >/dev/null 2>&1 || command -v rocm-smi >/dev/null 2>&1 \
+      || command -v rocminfo >/dev/null 2>&1; then
+    return 0
+  fi
+  # amdgpu KFD device + a DRM render node is enough even without ROCm tools
+  [ -c /dev/kfd ] && ls /dev/dri/renderD* >/dev/null 2>&1
+}
 
 gpu_detect_tier() {
   if [ -n "${GPU_TIER:-}" ]; then
@@ -26,14 +37,32 @@ gpu_detect_tier() {
     echo "cuda"
     return
   fi
+  if _rocm_present; then
+    echo "rocm"
+    return
+  fi
   echo "none"
 }
 
 gpu_vram_mb() {
   # total VRAM of the first GPU in MiB, 0 when unavailable
-  command -v nvidia-smi >/dev/null 2>&1 || { echo 0; return; }
-  nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null \
-    | head -1 | tr -d ' ' || echo 0
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    local v
+    v=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null \
+      | head -1 | tr -d ' ')
+    [ -n "$v" ] && { echo "$v"; return; }
+  fi
+  # AMD: sysfs works without ROCm userspace tools
+  for f in /sys/class/drm/card*/device/mem_info_vram_total; do
+    [ -r "$f" ] || continue
+    echo $(( $(cat "$f") / 1048576 ))
+    return
+  done
+  if command -v rocm-smi >/dev/null 2>&1; then
+    rocm-smi --showmeminfo vram --csv 2>/dev/null | awk -F, 'NR>1 {print $2/1048576; exit}' \
+      && return
+  fi
+  echo 0
 }
 
 gpu_default_model() {
@@ -42,6 +71,10 @@ gpu_default_model() {
   case "$tier" in
     mlx)
       echo "hunyuan3d-2.1-mlx" ;;
+    rocm)
+      # TRELLIS.2 is CUDA-only (flash-attn/CuMesh/spconv/o-voxel) — TripoSG
+      # is the MIT-licensed default on AMD regardless of VRAM size
+      echo "triposg" ;;
     cuda)
       local vram_g=$(( $(gpu_vram_mb) / 1024 ))
       local min_g=${MESH_TRELLIS_MIN_VRAM_GB:-20}
@@ -62,6 +95,7 @@ gpu_install_script() {
   local tier="${1:-$(gpu_detect_tier)}"
   case "$tier" in
     mlx)  echo "install_hunyuan_mlx.sh" ;;
+    rocm) echo "install_rocm.sh" ;;   # ROCm torch first, then delegates to install_triposg.sh
     cuda)
       local model; model="$(gpu_default_model "$tier")"
       if [ "$model" = "trellis2" ]; then
@@ -78,10 +112,11 @@ gpu_default_image_model() {
   local tier="${1:-$(gpu_detect_tier)}"
   case "$tier" in
     mlx)  echo "flux-schnell-mlx" ;;
-    cuda)
+    cuda|rocm)
       # FLUX.1-schnell via diffusers — the adapter itself applies CPU offload
       # on smaller cards (MESH_CUDA_OFFLOAD), so schnell works everywhere;
-      # sdxl remains selectable as the light fallback.
+      # sdxl remains selectable as the light fallback. Runs on ROCm unchanged
+      # (ROCm torch exposes the cuda device namespace).
       echo "flux-schnell" ;;
     fake) echo "fake-image" ;;
     *)    echo "" ;;
@@ -92,7 +127,7 @@ gpu_image_install_script() {
   local tier="${1:-$(gpu_detect_tier)}"
   case "$tier" in
     mlx)  echo "install_image_mlx.sh" ;;
-    cuda) echo "install_image_torch.sh" ;;
+    cuda|rocm) echo "install_image_torch.sh" ;;
     *)    echo "" ;;
   esac
 }

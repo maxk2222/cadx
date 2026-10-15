@@ -57,6 +57,25 @@ its duration.
   quantization.
 - **rembg download** — `MESH_BG_REMOVAL=auto` only uses an already-cached
   model; set `always` to allow the one-time download.
+- **AMD GPU not detected (tier `none`)** — ROCm support is Linux-only. The
+  probe needs the `amdgpu` driver: `/dev/kfd` plus a `/dev/dri/renderD*` node,
+  or `amd-smi`/`rocm-smi`/`rocminfo` on PATH. In containers pass
+  `--device=/dev/kfd --device=/dev/dri` (see the `gpu-rocm` compose profile)
+  and make sure the user is in the `render`/`video` groups.
+- **torch doesn't see the AMD GPU** — verify `python -c "import torch; print(torch.version.hip, torch.cuda.is_available())"`.
+  ROCm torch reuses the `cuda` namespace (`hip` must be set). A plain PyPI
+  torch is CUDA/CPU-only — install the ROCm wheel via
+  `mesh_server/scripts/install_rocm.sh` or `TORCH_ROCM_INDEX=<rocm index>`.
+- **`HSA_OVERRIDE_GFX_VERSION`** — gfx archs not covered by the installed
+  wheel (e.g. gfx1031 on an RX 6700) can masquerade as a supported sibling:
+  `HSA_OVERRIDE_GFX_VERSION=10.3.0` (RDNA2) / `11.0.0` (other RDNA3) /
+  `12.0.1` (other RDNA4). `setup.sh --doctor` prints the detected gfx arch.
+- **TRELLIS.2 never appears on ROCm** — intended: its extensions
+  (flash-attn, CuMesh, spconv, o-voxel) are CUDA-only. Use `triposg` (or the
+  Hunyuan3D-2 torch adapters via `setup.sh --extra hunyuan`).
+- **ROCm OOM / fragmentation** — set `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`
+  (already the default in `Dockerfile.rocm`); `MESH_CUDA_OFFLOAD` applies to
+  ROCm too since diffusers offload rides on the cuda namespace.
 
 ## Jobs
 

@@ -5,7 +5,9 @@ Install (on a CUDA box, >=24 GB VRAM recommended):
     . TRELLIS.2/setup.sh --new-env --basic --flash-attn --cumesh --o-voxel --flexgemm
     huggingface-cli download microsoft/TRELLIS.2-4B
 
-License: MIT.
+License: MIT. NVIDIA CUDA only — flash-attn/CuMesh/spconv/o-voxel have no
+viable ROCm build; on HIP torch (`torch.version.hip` set) this adapter stays
+unavailable and the registry falls back to TripoSG.
 """
 
 from __future__ import annotations
@@ -23,13 +25,16 @@ from meshserver.adapters.base import (
     missing,
 )
 from meshserver.adapters.hunyuan3d21_mlx import _to_trimesh
+from meshserver.torch_util import is_rocm
 
 
 def _cuda_ok() -> bool:
     try:
         import torch
 
-        return bool(torch.cuda.is_available())
+        # torch.cuda.is_available() is also True on ROCm — require a real
+        # NVIDIA build (no HIP) since all TRELLIS.2 extensions are CUDA-only
+        return bool(torch.cuda.is_available()) and not is_rocm()
     except Exception:
         return False
 

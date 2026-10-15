@@ -12,17 +12,21 @@ from meshserver.adapters.fake_image import FakeImageAdapter
 from meshserver.adapters.image_base import ImageAdapter
 from meshserver.config import ServerConfig
 from meshserver.schemas import ModelInfo
+from meshserver.torch_util import is_rocm
 
 
 def detect_device(cfg: ServerConfig) -> str:
-    """auto -> cuda | mlx | mps | cpu."""
+    """auto -> cuda | rocm | mlx | mps | cpu."""
     if cfg.device != "auto":
         return cfg.device
     try:
         import torch
 
         if torch.cuda.is_available():
-            return "cuda"
+            # ROCm builds expose the cuda device namespace — tell them apart
+            # via torch.version.hip so adapter selection can skip CUDA-only
+            # extensions (diso flash decoder, TRELLIS.2)
+            return "rocm" if is_rocm() else "cuda"
     except Exception:
         pass
     if platform.system() == "Darwin" and platform.machine() == "arm64":
@@ -167,6 +171,14 @@ class Registry:
         pref: list[str]
         if device == "cuda":
             pref = ["trellis2", "triposg"]
+        elif device == "rocm":
+            # no TRELLIS.2 on AMD (CUDA-only extensions); the hunyuan torch
+            # variants are the only multiview-capable adapters here
+            pref = (
+                ["hunyuan3d-2mv", "hunyuan3d-2mv-turbo", "triposg"]
+                if n_images > 1
+                else ["triposg", "hunyuan3d-2mini", "hunyuan3d-2mini-turbo"]
+            )
         elif device == "mlx":
             pref = ["hunyuan3d-2.1-mlx", "hunyuan3d-2mv", "hunyuan3d-2mini", "triposg"]
         elif device == "mps":
@@ -220,13 +232,22 @@ class Registry:
         elif need_edit:
             # qwen-image-edit first: Apache-2.0 + ungated weights; kontext is
             # the better FLUX edit model but non-commercial and MESH_FLUX_KONTEXT
-            # opt-in, sdxl/sd15 are plain img2img fallbacks
-            pref = (
-                ["qwen-image-edit", "flux-kontext-mlx", "flux-schnell-mlx", "sdxl", "sd15"]
-                if device in ("cuda", "mlx")
-                else (["sdxl", "sd15"] if device == "mps" else ["sd15"])
-            )
-        elif device == "cuda":
+            # opt-in, sdxl/sd15 are plain img2img fallbacks. flux-schnell (the
+            # diffusers build) supports img2img too and is the only FLUX edit
+            # path on ROCm — the *-mlx edit adapters don't exist on Linux.
+            if device in ("cuda", "mlx"):
+                pref = [
+                    "qwen-image-edit",
+                    "flux-kontext-mlx",
+                    "flux-schnell-mlx",
+                    "sdxl",
+                    "sd15",
+                ]
+            elif device == "rocm":
+                pref = ["flux-schnell", "sdxl", "sd15"]
+            else:
+                pref = ["sdxl", "sd15"] if device == "mps" else ["sd15"]
+        elif device in ("cuda", "rocm"):
             pref = ["flux-schnell", "sdxl", "sd15"]
         elif device == "mlx":
             pref = ["flux-schnell-mlx", "sdxl", "sd15"]

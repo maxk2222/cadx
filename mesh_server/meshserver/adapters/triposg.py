@@ -1,6 +1,9 @@
 """VAST-AI TripoSG 1.5B (image->mesh rectified-flow model).
 
-Primary path: CUDA. MPS is supported experimentally (MESH_TRIPOSG_MPS=1).
+Primary path: CUDA. ROCm works via the same torch device namespace
+(torch.version.hip set; fp16 + cuda generator fine, but the CUDA-only `diso`
+flash decoder is disabled in favour of the hierarchical skimage path).
+MPS is supported experimentally (MESH_TRIPOSG_MPS=1).
 
 The upstream repo ships no packaging metadata — the adapter resolves it from
 `MESH_TRIPOSG_SRC` or `.src/TripoSG` inside the mesh_server repo and adds it to
@@ -33,6 +36,7 @@ from meshserver.adapters.base import (
     missing,
 )
 from meshserver.adapters.hunyuan3d21_mlx import _to_trimesh
+from meshserver.torch_util import is_rocm
 
 
 def _triposg_src() -> Path | None:
@@ -169,10 +173,14 @@ def _load_triposg_pipe(pipeline_cls: Any, dtype: Any, model_id: str = "VAST-AI/T
 
 
 class _RunDevice:
-    """Reports the device the adapter would actually run on."""
+    """Reports the device the adapter would actually run on — "rocm" rather
+    than "cuda" on HIP builds so /v1/models stays honest."""
 
     def __get__(self, obj: Any, owner: type | None = None) -> str:
-        return _device_ok() or "cuda"
+        d = _device_ok()
+        if d == "cuda" and is_rocm():
+            return "rocm"
+        return d or "cuda"
 
 
 class TripoSGAdapter(MeshAdapter):
@@ -202,7 +210,7 @@ class TripoSGAdapter(MeshAdapter):
             )
         self._device = _device_ok() or "cpu"
         # fp16 is unstable on MPS (rectified-flow DiT + Metal) — run fp32 there;
-        # CUDA keeps the fast fp16 path
+        # CUDA and ROCm keep the fast fp16 path
         dtype = torch.float16 if self._device == "cuda" else torch.float32
         self._pipe = _load_triposg_pipe(TripoSGPipeline, dtype).to(self._device)
         self._torch = torch
@@ -243,6 +251,10 @@ class TripoSGAdapter(MeshAdapter):
             kwargs["generator"] = self._torch.Generator(device="cuda").manual_seed(
                 opts.seed & 0xFFFFFFFF
             )
+            if is_rocm():
+                # DiffDMC is a CUDA-only extension — on ROCm the hierarchical
+                # decoder uses plain skimage.marching_cubes (as on MPS)
+                kwargs["use_flash_decoder"] = False
         else:
             # torch.Generator(mps/cpu) is flaky across versions — seed globally;
             # and the flash decoder's DiffDMC is CUDA-only — the hierarchical

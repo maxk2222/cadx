@@ -119,8 +119,12 @@ if [ "${MESH_HOST:-}" != "" ]; then
   if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
     info "already running (pid $(cat "$PIDFILE"))"
   else
+    # ROCm: forward gfx override / allocator tuning when the user set them —
+    # required for gfx archs not covered by the installed torch wheel
     MESH_HOST="$MESH_HOST" MESH_PORT="$MESH_PORT" MESH_DEVICE="$TIER" \
       MESH_FAKE="${MESH_FAKE:-}" \
+      HSA_OVERRIDE_GFX_VERSION="${HSA_OVERRIDE_GFX_VERSION:-}" \
+      PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-}" \
       nohup mesh_server/.venv/bin/meshserver serve > logs/mesh-server.log 2>&1 &
     echo $! > "$PIDFILE"
   fi
