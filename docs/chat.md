@@ -1,5 +1,7 @@
 # Chat agent
 
+![Chat page — conversation list and project binding](screenshots/chat.png)
+
 A persistent conversation with the CADX agent: `/chat` in the web GUI (or
 the **chat** button on a project page). You describe parts, attach reference
 images (picker, paste, drag&drop), answer clarification questions — the agent

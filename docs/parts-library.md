@@ -1,5 +1,7 @@
 # Parts library
 
+![Library page — reusable STEP/STL bodies, code templates and the bd_warehouse catalog](screenshots/library.png)
+
 Three complementary layers make standard and reusable geometry available to
 the agent — the goal is that generated code calls verified building blocks
 instead of re-inventing threads, holes and fasteners on every run.

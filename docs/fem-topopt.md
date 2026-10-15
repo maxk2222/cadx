@@ -41,7 +41,7 @@ watertight export. FEM verification uses the corresponding voxel mask rather
 than the smoothed export mesh, so export smoothing does not change the
 reported structural result.
 
-![TopOpt result in the version page — optimized grip with safety factor](screenshots/version-topopt.png)
+![Structural editor — paint support/load/keep regions on the part, FEM and TopOpt options](screenshots/structural-editor.png)
 
 `optimize.void_regions` pin cells to the void floor (forbidden material —
 cable runs, clearance), `optimize.keep_regions` pin cells solid; a keep region
@@ -97,8 +97,6 @@ interfaces — `POST /versions/{id}/refine` (`JobType.refine`, `VersionKind
 - **FEM re-verification** — the declared load cases re-run on the finished
   mesh; the version is flagged `needs_review` when the worst safety factor
   drops below 1 or every feature was skipped.
-
-![Refine child version — re-cut features on the optimized mesh](screenshots/version-refine.png)
 
 `optimize.auto_refine_features: true` (spec or request) auto-enqueues the
 refine child right after a successful optimize. `Feature.thread_spec`

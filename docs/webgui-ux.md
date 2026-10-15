@@ -1,9 +1,10 @@
 # Web GUI
 
 The React/Vite application exposes the generation, editing, analysis, and
-library workflows through eight pages: Start (the new-part wizard), Projects,
-Project, Version, Jobs, Stats, Library, and Settings. The UI is served by
-nginx at `:8080` in Docker mode or Vite at `:5173` in native development mode.
+library workflows through nine pages: Start (the new-part wizard), Chat,
+Projects, Project, Version, Jobs, Stats, Library, and Settings. The UI is
+served by nginx at `:8080` in Docker mode or Vite at `:5173` in native
+development mode.
 
 The **Start page** (`/`) is a guided four-step wizard for creating a brand-new
 part: **Describe** the part (with clickable example prompts) → **Images**
@@ -19,11 +20,22 @@ hands off to the version page, on failure it offers *Back & adjust* (draft
 preserved). Wizard state is kept in localStorage, so reloading resumes —
 including a running job.
 
+![New-part wizard — mode selection with heuristic suggestion](screenshots/start-wizard.png)
+
+![Wizard flow — describe, images, mode, review](screenshots/wizard.gif)
+
 The **Jobs** page (`/jobs`) lists active and recently finished jobs across
 projects with live progress, iteration/step labels, runtime and
 cancel/finish/restart actions; a nav badge shows the active count.
 
 ![Jobs page — live progress, scores and job actions](screenshots/jobs.png)
+
+The **Chat page** (`/chat`) is a persistent conversation with the agent —
+it can create projects, generate, edit, analyse and optimise parts as tools,
+with spawned jobs rendered as live cards and the latest version in a 3D
+panel. See [chat.md](chat.md).
+
+![Chat — project picker and conversation list](screenshots/chat.png)
 
 ## User workflows
 
@@ -137,6 +149,18 @@ material and volume fraction autosave under `options.ui_editor` (merged —
 the mesh-editor ops draft and structural state no longer clobber each
 other).
 
+![Structural editor — paint support/load/keep regions, FEM & TopOpt options](screenshots/structural-editor.png)
+
+### Organic editor (pseudo-TopOpt restyle)
+
+The **Organische Struktur** action on a finished version opens a dialog that
+restyles the part into a deterministic organic structure — `gyroid`,
+`trabecular`, `voronoi` or `branches` — with a live preview running the same
+mesh op the commit replays, plus anchor protection and a keep-region brush.
+Aesthetic only, no FEM. See [organic.md](organic.md).
+
+![Organic editor — style select, live preview, keep-region brush](screenshots/organic-editor.png)
+
 ### Settings
 
 Settings (`/settings`) is organized into tabs — **LLM Provider**, **Agent**,
@@ -159,6 +183,8 @@ deletion — plus the collapsible standard-parts catalog (bd_warehouse). Parts m
 be pinned on generation/edit or discovered and attached by the agent's library
 tools. See [parts-library.md](parts-library.md).
 
+![Library — reusable STEP bodies, code templates and the parts catalog](screenshots/library.png)
+
 ### Statistics (`/stats`)
 
 The Stats page aggregates generation history across all projects, with a
@@ -179,6 +205,8 @@ The Stats page aggregates generation history across all projects, with a
 
 Charts use Recharts; the page is lazy-loaded so the chart bundle does not
 inflate the initial page load.
+
+![Statistics — KPIs, activity and token charts, status distributions](screenshots/stats.png)
 
 ## Agent visibility
 

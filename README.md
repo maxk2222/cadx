@@ -31,10 +31,10 @@
 > changes, rough edges and an evolving API/data model between versions.
 > Feedback and bug reports are very welcome.
 >
-> **Hardware coverage:** only the Apple Silicon path (MLX/MPS) has been
-> exercised on real hardware so far. The NVIDIA **CUDA** and AMD **ROCm**
-> tiers are implemented and mock-tested, but not yet validated on an actual
-> GPU — expect a report/fix round on first contact with real hardware.
+> **Hardware coverage:** developed and tested on Apple Silicon (64 GB,
+> MLX/MPS) only so far — CPU-only works in CAD mode. The NVIDIA **CUDA** and
+> AMD **ROCm** tiers are implemented and mock-tested, but not yet validated
+> on actual GPU hardware — expect a report/fix round on first contact.
 
 ---
 
@@ -111,19 +111,27 @@
 
 <table>
   <tr>
+    <td width="50%"><img src="docs/screenshots/start-wizard.png" alt="Guided new-part wizard — mode selection"></td>
     <td width="50%"><img src="docs/screenshots/version-cad.png" alt="Version detail — CAD result with agent activity"></td>
-    <td width="50%"><img src="docs/screenshots/version-topopt.png" alt="Version detail — FEM-verified TopOpt result"></td>
   </tr>
   <tr>
+    <td align="center"><sub>Guided new-part wizard — describe, images, mode, review</sub></td>
     <td align="center"><sub>Version detail — CAD result, agent activity, measured geometry</sub></td>
-    <td align="center"><sub>Topology optimization — FEM-verified with safety factor</sub></td>
   </tr>
   <tr>
+    <td width="50%"><img src="docs/screenshots/organic-editor.png" alt="Organic structure editor with live preview"></td>
     <td width="50%"><img src="docs/screenshots/editor.png" alt="Visual mesh editor"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Organic restyling — gyroid / voronoi / branches, live preview</sub></td>
+    <td align="center"><sub>Visual mesh editor — live-previewed operations</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/stats.png" alt="Statistics dashboard"></td>
     <td width="50%"><img src="docs/screenshots/jobs.png" alt="Jobs dashboard with live progress"></td>
   </tr>
   <tr>
-    <td align="center"><sub>Visual mesh editor — live-previewed operations</sub></td>
+    <td align="center"><sub>Statistics — tokens, scores and job performance</sub></td>
     <td align="center"><sub>Jobs — live progress, scores and control across projects</sub></td>
   </tr>
 </table>
@@ -250,6 +258,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow and
 
 ## Limitations
 
+- Developed and tested on Apple Silicon (64 GB, MLX/MPS) only; the CUDA and
+  ROCm paths are implemented but not yet validated on real GPU hardware.
 - Single-user, local operation (no auth) — don't expose it to a network.
 - FEM/TopOpt is a simplified linear-elastic voxel analysis, not a certified
   structural solver; organic restyling is aesthetic only —

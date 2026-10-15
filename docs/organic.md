@@ -49,6 +49,8 @@ the identical part.
 
 ## GUI
 
+![Organic editor — style select, parameter live preview, keep-region brush](screenshots/organic-editor.png)
+
 The editor (`frontend/src/components/OrganicEditor.tsx`) shows a live preview:
 parameter changes fire a debounced `POST /versions/{id}/mesh-preview` carrying
 the `organic` mesh op — the **same** `OPS_REGISTRY` code path the commit runs,

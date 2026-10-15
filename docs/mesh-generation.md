@@ -16,8 +16,6 @@ CADX can generate geometry in three ways and lets a planner pick:
 **at least one image** and a **reachable mesh server** — otherwise the run
 falls back to CAD with a note in the job log and `resolved_mode="cad"`.
 
-![Hybrid result — photo-derived mesh body with exact countersunk holes](screenshots/version-hybrid.png)
-
 ## Architecture
 
 ```
