@@ -138,6 +138,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow and
 
 ## License
 
-[MIT](LICENSE) — note that downloadable generation models carry their own
-licenses (Hunyuan Community License excludes the EU/UK/South Korea);
+[PolyForm Noncommercial 1.0.0](LICENSE) — free for personal, research,
+educational and other noncommercial use; commercial use requires a separate
+license (contact the author). Note that downloadable generation models carry
+their own licenses (Hunyuan Community License excludes the EU/UK/South Korea);
 TRELLIS.2, TripoSG and FLUX.1-schnell are MIT/Apache-2.0.
