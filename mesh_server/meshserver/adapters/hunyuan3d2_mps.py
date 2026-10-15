@@ -1,4 +1,5 @@
-"""Hunyuan3D-2 (torch) on Apple Silicon via MPS — single-view and multi-view.
+"""Hunyuan3D-2 (torch) on Apple Silicon via MPS and on AMD via ROCm —
+single-view and multi-view.
 
 Install:
     mesh_server/scripts/install_hunyuan_torch.sh   # clones Tencent-Hunyuan/Hunyuan3D-2
@@ -6,7 +7,9 @@ Install:
     huggingface-cli download tencent/Hunyuan3D-2mini
     huggingface-cli download tencent/Hunyuan3D-2mv  # for multi-view
 
-Requires PYTORCH_ENABLE_MPS_FALLBACK=1 (set by the adapter when missing).
+Requires PYTORCH_ENABLE_MPS_FALLBACK=1 on MPS (set by the adapter when
+missing). On ROCm the pipeline runs on the torch "cuda" device namespace
+(`torch.version.hip` set) — fp16 checkpoint variants work on RDNA3+/MI300.
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ from meshserver.adapters.base import (
     missing,
 )
 from meshserver.adapters.hunyuan3d21_mlx import _to_trimesh
+from meshserver.torch_util import is_rocm, mps_ok
 
 _LICENSE = (
     "Tencent Hunyuan Community License — restricted in EU/UK/KR; "
@@ -45,12 +49,27 @@ _VARIANTS = {
 
 
 def _mps_ok() -> bool:
-    try:
-        import torch
+    return mps_ok()
 
-        return bool(torch.backends.mps.is_available())
-    except Exception:
-        return False
+
+def _hy3d_device() -> str:
+    """Torch device string this adapter runs on: mps | cuda (ROCm) | ""."""
+    if _mps_ok():
+        return "mps"
+    if is_rocm():
+        return "cuda"  # ROCm torch uses the cuda device namespace
+    return ""
+
+
+class _Hy3DDevice:
+    """Class-level device reporting: mps on Apple Silicon, rocm on HIP."""
+
+    def __get__(self, obj: Any, owner: type | None = None) -> str:
+        if _mps_ok():
+            return "mps"
+        if is_rocm():
+            return "rocm"
+        return "mps"
 
 
 # transformers>=5 renamed DINOv2 params — the bundled Tencent checkpoints
@@ -116,8 +135,8 @@ def _patch_tf5_dino_keys() -> None:
 
 
 class _Hy3DTorchBase(MeshAdapter):
-    device = "mps"
-    backend = "torch-mps"
+    device = _Hy3DDevice()
+    backend = "torch"
     license_note = _LICENSE
     _variant_key: str = ""
 
@@ -127,13 +146,24 @@ class _Hy3DTorchBase(MeshAdapter):
             from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline  # noqa: F401
         except Exception:
             return False
-        return _mps_ok()
+        return bool(_hy3d_device())
 
     def _variant(self) -> tuple[str, str, str]:
         return _VARIANTS[self._variant_key]
 
     def load(self) -> None:
-        os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+        if _mps_ok():
+            os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+            # unified memory: an unbounded MPS allocator can out-allocate the
+            # machine's real RAM — the Metal queue then stalls mid-copy
+            # (observed: frozen mps_copy_ at 0% CPU → full macOS freeze, not a
+            # clean OOM). The watermarks cap MPS at a fraction of physical
+            # memory so the job errors out instead of taking the host down.
+            # setdefault keeps operator overrides intact; must be set before
+            # the first MPS tensor allocation (i.e. before pipe.to("mps")).
+            # 0.65 × recommendedMaxWorkingSetSize (~48GB @64GB) ≈ 31GB budget
+            os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.65")
+            os.environ.setdefault("PYTORCH_MPS_LOW_WATERMARK_RATIO", "0.55")
         try:
             import torch
             from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
@@ -142,15 +172,16 @@ class _Hy3DTorchBase(MeshAdapter):
             missing(type(self), str(e))
         _patch_tf5_dino_keys()
         repo, subfolder, variant = self._variant()
-        device = "mps" if _mps_ok() else "cpu"
+        device = _hy3d_device() or "cpu"
         self._pipe = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
             repo, subfolder=subfolder, variant=variant, device=device
         )
-        # MPS: keep float16 where supported, fall back otherwise
+        # MPS/ROCm: keep float16 where supported, fall back otherwise
         try:
             self._pipe.to(device)
         except Exception:
             pass
+        self._device_name = device
         self._cleaner = [FloaterRemover(), DegenerateFaceRemover(), FaceReducer()]
         self._torch = torch
         self._loaded = True
@@ -173,14 +204,16 @@ class _Hy3DTorchBase(MeshAdapter):
         if not self._loaded:
             self.load()
         if progress:
-            progress(0.05, f"running {self.id} (MPS)")
+            progress(0.05, f"running {self.id} ({getattr(self, '_device_name', '?')})")
         gen = self._torch.Generator(device="cpu").manual_seed(opts.seed & 0xFFFFFFFF)
+        # upstream demo default is 384 — on MPS the volume-decode grid at that
+        # size was the memory peak that froze the host (unified memory); 256
+        # is the safety default there, CUDA/ROCm keeps 384
+        default_res = 256 if self._device_name == "mps" else 384
         kwargs: dict[str, Any] = {
             "image": self._images_arg(images, opts),
             "num_inference_steps": opts.steps or 30,
-            # upstream demo default is 384 — 256 leaves ~0.5mm MC cells on
-            # palm-sized parts (visible stair steps, lost sub-mm features)
-            "octree_resolution": opts.resolution or 384,
+            "octree_resolution": opts.resolution or default_res,
             "generator": gen,
             "output_type": "trimesh",
         }
@@ -210,19 +243,19 @@ class _Hy3DTorchBase(MeshAdapter):
 
 class Hunyuan3D2MiniAdapter(_Hy3DTorchBase):
     id = "hunyuan3d-2mini"
-    name = "Hunyuan3D-2 mini Shape (torch/MPS)"
+    name = "Hunyuan3D-2 mini Shape (torch)"
     _variant_key = "hunyuan3d-2mini"
 
 
 class Hunyuan3D2MiniTurboAdapter(_Hy3DTorchBase):
     id = "hunyuan3d-2mini-turbo"
-    name = "Hunyuan3D-2 mini turbo Shape (torch/MPS)"
+    name = "Hunyuan3D-2 mini turbo Shape (torch)"
     _variant_key = "hunyuan3d-2mini-turbo"
 
 
 class Hunyuan3D2MvAdapter(_Hy3DTorchBase):
     id = "hunyuan3d-2mv"
-    name = "Hunyuan3D-2mv multi-view Shape (torch/MPS)"
+    name = "Hunyuan3D-2mv multi-view Shape (torch)"
     supports_multiview = True
     max_images = 4
     _variant_key = "hunyuan3d-2mv"
@@ -249,5 +282,5 @@ class Hunyuan3D2MvAdapter(_Hy3DTorchBase):
 
 class Hunyuan3D2MvTurboAdapter(Hunyuan3D2MvAdapter):
     id = "hunyuan3d-2mv-turbo"
-    name = "Hunyuan3D-2mv turbo multi-view Shape (torch/MPS)"
+    name = "Hunyuan3D-2mv turbo multi-view Shape (torch)"
     _variant_key = "hunyuan3d-2mv-turbo"

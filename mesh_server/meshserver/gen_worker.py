@@ -18,6 +18,7 @@ Exit codes: 0 ok, 2 generation/cancel abort, 1 crash (stderr has the error).
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -174,6 +175,16 @@ def main() -> int:
     req = json.loads(req_path.read_text())
     work = req_path.parent
     cfg = ServerConfig()
+    # MPS shares unified memory with the host OS — an unbounded torch MPS
+    # allocator can over-commit the machine and stall the Metal queue,
+    # freezing macOS instead of raising OOM (observed: mv-turbo job hung in
+    # mps_copy_ at 0% CPU → full system crash). Cap it BEFORE any torch/mps
+    # use so a runaway job dies cleanly. setdefault: operator env wins.
+    # ratio × Metal's recommendedMaxWorkingSetSize (~75% RAM ≈ 48GB @64GB):
+    # 0.65 ≈ 31GB MPS budget — above mv-turbo's ~25GB peak, well below the
+    # point where Metal page starvation froze the whole UI (observed crash)
+    os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.65")
+    os.environ.setdefault("PYTORCH_MPS_LOW_WATERMARK_RATIO", "0.55")
     # config knobs the parent resolved explicitly (e.g. fake=True in tests
     # never reaches the child via env) — whitelist, no env passthrough needed
     for key in (
