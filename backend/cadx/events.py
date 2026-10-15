@@ -26,3 +26,26 @@ def subscribe(job_id: str) -> tuple[aioredis.Redis, aioredis.client.PubSub]:
     """Caller owns the client and must close it."""
     r = aioredis.from_url(get_settings().redis_url)
     return r, r.pubsub()
+
+
+# --------------------------------------------------------------------------- #
+# chat channel — separate non-terminating stream for the conversational agent #
+# --------------------------------------------------------------------------- #
+
+
+def chat_channel(chat_id: str) -> str:
+    return f"chat:{chat_id}"
+
+
+async def publish_chat(chat_id: str, event: dict[str, Any]) -> None:
+    r = aioredis.from_url(get_settings().redis_url)
+    try:
+        await r.publish(chat_channel(chat_id), json.dumps(event, default=str))
+    finally:
+        await r.aclose()
+
+
+def subscribe_chat(chat_id: str) -> tuple[aioredis.Redis, aioredis.client.PubSub]:
+    """Caller owns the client and must close it."""
+    r = aioredis.from_url(get_settings().redis_url)
+    return r, r.pubsub()

@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import col, func, select
+from sqlmodel import col, select
 
 from cadx.api.deps import enqueue, get_session
 from cadx.api.schemas import (
@@ -32,8 +32,18 @@ from cadx.db.models import (
     JobType,
     Project,
     Version,
-    VersionKind,
-    VersionStatus,
+)
+from cadx.spawn import (
+    SpawnError,
+    next_version_number,
+    spawn_edit,
+    spawn_generate,
+    spawn_optimize,
+    spawn_organic,
+    spawn_params,
+    spawn_refine,
+    spawn_resample,
+    spawn_version_job,
 )
 
 router = APIRouter(tags=["versions"])
@@ -115,43 +125,10 @@ async def _detail(v: Version, db: AsyncSession) -> VersionDetail:
     )
 
 
-async def _next_number(db: AsyncSession, project_id: uuid.UUID) -> int:
-    c = await db.execute(
-        select(func.coalesce(func.max(Version.number), 0)).where(Version.project_id == project_id)
-    )
-    return int(c.scalar_one()) + 1
-
-
-async def _spawn(
-    db: AsyncSession,
-    project: Project,
-    kind: VersionKind,
-    job_type: JobType,
-    func: str,
-    prompt: str,
-    parent: Version | None = None,
-    asset_ids: list[uuid.UUID] | None = None,
-    library_part_ids: list[uuid.UUID] | None = None,
-    extra_version: dict | None = None,
-    extra_job: dict | None = None,
-) -> EnqueueResponse:
-    v = Version(
-        project_id=project.id,
-        parent_id=parent.id if parent else None,
-        number=await _next_number(db, project.id),
-        kind=kind,
-        prompt=prompt,
-        asset_ids=[str(a) for a in (asset_ids or [])],
-        library_part_ids=[str(p) for p in (library_part_ids or [])],
-        **(extra_version or {}),
-    )
-    db.add(v)
-    await db.flush()
-    job = Job(version_id=v.id, type=job_type, **(extra_job or {}))
-    db.add(job)
-    await db.commit()
-    await enqueue(func, {"job_id": str(job.id), "version_id": str(v.id)})
-    return EnqueueResponse(version_id=v.id, job_id=job.id)
+# version/job spawning lives in cadx.spawn — shared with the chat agent's
+# action tools so both entry points take the identical code path.
+_next_number = next_version_number
+_spawn = spawn_version_job
 
 
 @router.post("/projects/{project_id}/generate", response_model=EnqueueResponse)
@@ -164,22 +141,19 @@ async def generate(
     if not body.prompt.strip():
         raise HTTPException(422, "prompt required")
     opts = body.options.model_dump(exclude_none=True) if body.options else {}
-    gen_mode = (
-        "topopt"
-        if opts.get("topopt")
-        else (body.mode or (project.settings or {}).get("gen_mode") or "auto")
-    )
-    return await _spawn(
-        db,
-        project,
-        VersionKind.generate,
-        JobType.generate,
-        "run_agent_job",
-        body.prompt,
-        asset_ids=body.asset_ids,
-        library_part_ids=body.library_part_ids,
-        extra_version={"gen_mode": gen_mode, "options": opts},
-    )
+    try:
+        v, job = await spawn_generate(
+            db,
+            project,
+            body.prompt,
+            gen_mode=body.mode or "",
+            asset_ids=list(body.asset_ids or []),
+            library_part_ids=list(body.library_part_ids or []),
+            options=opts,
+        )
+    except SpawnError as e:
+        raise HTTPException(e.status, str(e)) from e
+    return EnqueueResponse(version_id=v.id, job_id=job.id)
 
 
 @router.post("/versions/{version_id}/edit", response_model=EnqueueResponse)
@@ -187,10 +161,6 @@ async def edit(version_id: uuid.UUID, body: EditRequest, db: AsyncSession = Depe
     parent = await db.get(Version, version_id)
     if not parent:
         raise HTTPException(404, "version not found")
-    if parent.status not in (VersionStatus.succeeded, VersionStatus.needs_review):
-        raise HTTPException(409, f"cannot edit version in status {parent.status}")
-    if not parent.code and parent.resolved_mode != "mesh":
-        raise HTTPException(409, "version has no code to edit")
     project = await db.get(Project, parent.project_id)
     if project is None:
         raise HTTPException(404, "project not found")
@@ -199,29 +169,23 @@ async def edit(version_id: uuid.UUID, body: EditRequest, db: AsyncSession = Depe
         if body.options is not None
         else (parent.options or {})
     )
-    gen_mode = (
-        "topopt"
-        if opts.get("topopt")
-        else body.mode or parent.resolved_mode or (project.settings or {}).get("gen_mode") or "auto"
-    )
-    extra_job = {"resume_state": {"regenerate_mesh": True}} if body.regenerate_mesh else None
-    return await _spawn(
-        db,
-        project,
-        VersionKind.edit,
-        JobType.edit,
-        "run_agent_job",
-        body.prompt,
-        parent=parent,
-        asset_ids=body.asset_ids,
-        library_part_ids=(
-            body.library_part_ids
-            if "library_part_ids" in body.model_fields_set
-            else [uuid.UUID(p) for p in parent.library_part_ids]
-        ),
-        extra_version={"gen_mode": gen_mode, "options": opts},
-        extra_job=extra_job,
-    )
+    try:
+        v, job = await spawn_edit(
+            db,
+            project,
+            parent,
+            body.prompt,
+            gen_mode=body.mode or "",
+            regenerate_mesh=body.regenerate_mesh,
+            asset_ids=list(body.asset_ids or []),
+            library_part_ids=(
+                list(body.library_part_ids) if "library_part_ids" in body.model_fields_set else None
+            ),
+            options=opts,
+        )
+    except SpawnError as e:
+        raise HTTPException(e.status, str(e)) from e
+    return EnqueueResponse(version_id=v.id, job_id=job.id)
 
 
 @router.post("/versions/{version_id}/params", response_model=EnqueueResponse)
@@ -231,28 +195,10 @@ async def params(
     parent = await db.get(Version, version_id)
     if not parent:
         raise HTTPException(404, "version not found")
-    if not parent.code and parent.resolved_mode != "mesh":
-        raise HTTPException(409, "version has no code")
-    v = Version(
-        project_id=parent.project_id,
-        parent_id=parent.id,
-        number=await _next_number(db, parent.project_id),
-        kind=VersionKind.params,
-        prompt="params change",
-        params={**(parent.params or {}), **body.params},
-        params_schema=parent.params_schema,
-        code=parent.code,
-        options=parent.options or {},
-    )
-    db.add(v)
-    await db.flush()
-    job = Job(version_id=v.id, type=JobType.params)
-    db.add(job)
-    await db.commit()
-    await enqueue(
-        "run_params_job",
-        {"job_id": str(job.id), "version_id": str(v.id), "params": body.params},
-    )
+    try:
+        v, job = await spawn_params(db, parent, body.params)
+    except SpawnError as e:
+        raise HTTPException(e.status, str(e)) from e
     return EnqueueResponse(version_id=v.id, job_id=job.id)
 
 
@@ -264,48 +210,17 @@ async def optimize(
     parent = await db.get(Version, version_id)
     if not parent:
         raise HTTPException(404, "version not found")
-    if parent.status not in (VersionStatus.succeeded, VersionStatus.needs_review):
-        raise HTTPException(409, f"cannot optimize version in status {parent.status}")
-    if parent.resolved_mode == "topopt" and not body.allow_reopt:
-        raise HTTPException(
-            409,
-            "version is already topology-optimized — use allow_reopt to "
-            "optimize it again (its mesh becomes the design domain), or "
-            "POST /topopt-resample to re-extract the stored density field",
+    try:
+        v, job = await spawn_optimize(
+            db,
+            parent,
+            load_cases=body.load_cases,
+            optimize=body.optimize,
+            material=body.material,
+            allow_reopt=body.allow_reopt,
         )
-    v = Version(
-        project_id=parent.project_id,
-        parent_id=parent.id,
-        number=await _next_number(db, parent.project_id),
-        kind=VersionKind.optimize,
-        prompt=f"optimize {parent.prompt}"[:500],
-        gen_mode="topopt",
-        asset_ids=parent.asset_ids or [],
-        options={
-            **(parent.options or {}),
-            "topopt": True,
-            "optimize_request": {
-                "load_cases": body.load_cases,
-                "optimize": body.optimize,
-                "material": body.material,
-            },
-        },
-    )
-    db.add(v)
-    await db.flush()
-    job = Job(version_id=v.id, type=JobType.optimize)
-    db.add(job)
-    await db.commit()
-    await enqueue(
-        "run_optimize_job",
-        {
-            "job_id": str(job.id),
-            "version_id": str(v.id),
-            "load_cases": body.load_cases,
-            "optimize": body.optimize,
-            "material": body.material,
-        },
-    )
+    except SpawnError as e:
+        raise HTTPException(e.status, str(e)) from e
     return EnqueueResponse(version_id=v.id, job_id=job.id)
 
 
@@ -318,53 +233,18 @@ async def topopt_resample(
     parent = await db.get(Version, version_id)
     if not parent:
         raise HTTPException(404, "version not found")
-    if parent.status not in (VersionStatus.succeeded, VersionStatus.needs_review):
-        raise HTTPException(409, f"cannot resample version in status {parent.status}")
-    organic_parent = parent.kind == VersionKind.organic
-    if not (
-        ((parent.mesh or {}).get("topopt") or {}).get("density_relpath")
-        or ((parent.mesh or {}).get("organic") or {}).get("density_relpath")
-    ):
-        raise HTTPException(409, "version has no stored density field — run optimize first")
-    v = Version(
-        project_id=parent.project_id,
-        parent_id=parent.id,
-        number=await _next_number(db, parent.project_id),
-        kind=VersionKind.organic if organic_parent else VersionKind.optimize,
-        prompt=f"resample {parent.prompt}"[:500],
-        gen_mode="mesh" if organic_parent else "topopt",
-        asset_ids=parent.asset_ids or [],
-        options={
-            **(parent.options or {}),
-            "topopt": True,
-            "optimize_request": {
-                "optimize": {
-                    "density_threshold": body.density_threshold,
-                    "min_member_mm": body.min_member_mm or None,
-                },
-                "material": body.material,
-            },
-        },
-    )
-    db.add(v)
-    await db.flush()
-    job = Job(version_id=v.id, type=JobType.resample)
-    db.add(job)
-    await db.commit()
-    await enqueue(
-        "run_topopt_resample_job",
-        {
-            "job_id": str(job.id),
-            "version_id": str(v.id),
-            "load_cases": body.load_cases,
-            "keep_regions": body.keep_regions,
-            "material": body.material,
-            "optimize": {
-                "density_threshold": body.density_threshold,
-                "min_member_mm": body.min_member_mm or None,
-            },
-        },
-    )
+    try:
+        v, job = await spawn_resample(
+            db,
+            parent,
+            density_threshold=body.density_threshold,
+            min_member_mm=body.min_member_mm,
+            material=body.material,
+            load_cases=body.load_cases,
+            keep_regions=body.keep_regions,
+        )
+    except SpawnError as e:
+        raise HTTPException(e.status, str(e)) from e
     return EnqueueResponse(version_id=v.id, job_id=job.id)
 
 
@@ -378,53 +258,21 @@ async def refine_version(
     parent = await db.get(Version, version_id)
     if not parent:
         raise HTTPException(404, "version not found")
-    if parent.status not in (VersionStatus.succeeded, VersionStatus.needs_review):
-        raise HTTPException(409, f"cannot refine version in status {parent.status}")
-    if parent.kind == VersionKind.refine:
-        raise HTTPException(409, "version is already refined — refine a sibling instead")
-    v = Version(
-        project_id=parent.project_id,
-        parent_id=parent.id,
-        number=await _next_number(db, parent.project_id),
-        kind=VersionKind.refine,
-        prompt=f"refine {parent.prompt}"[:500],
-        gen_mode=parent.gen_mode,
-        asset_ids=parent.asset_ids or [],
-        options={
-            **(parent.options or {}),
-            "topopt": (parent.options or {}).get("topopt", False),
-            "refine_request": {
-                "features": body.features,
-                "load_cases": body.load_cases,
-                "keep_regions": body.keep_regions,
-                "material": body.material,
-                "voxel_mm": body.voxel_mm,
-                "restore_planes": body.restore_planes,
-                "helical_threads": body.helical_threads,
-                "auto_plane_restore": body.auto_plane_restore,
-            },
-        },
-    )
-    db.add(v)
-    await db.flush()
-    job = Job(version_id=v.id, type=JobType.refine)
-    db.add(job)
-    await db.commit()
-    await enqueue(
-        "run_refine_job",
-        {
-            "job_id": str(job.id),
-            "version_id": str(v.id),
-            "features": body.features,
-            "load_cases": body.load_cases,
-            "keep_regions": body.keep_regions,
-            "material": body.material,
-            "voxel_mm": body.voxel_mm,
-            "restore_planes": body.restore_planes,
-            "helical_threads": body.helical_threads,
-            "auto_plane_restore": body.auto_plane_restore,
-        },
-    )
+    try:
+        v, job = await spawn_refine(
+            db,
+            parent,
+            features=body.features,
+            load_cases=body.load_cases,
+            keep_regions=body.keep_regions,
+            material=body.material,
+            voxel_mm=body.voxel_mm,
+            restore_planes=body.restore_planes,
+            helical_threads=body.helical_threads,
+            auto_plane_restore=body.auto_plane_restore,
+        )
+    except SpawnError as e:
+        raise HTTPException(e.status, str(e)) from e
     return EnqueueResponse(version_id=v.id, job_id=job.id)
 
 
@@ -439,35 +287,11 @@ async def organic_version(
     parent = await db.get(Version, version_id)
     if not parent:
         raise HTTPException(404, "version not found")
-    if parent.status not in (VersionStatus.succeeded, VersionStatus.needs_review):
-        raise HTTPException(409, f"cannot restyle version in status {parent.status}")
     organic = body.model_dump(mode="json", exclude={"anchors"})
-    v = Version(
-        project_id=parent.project_id,
-        parent_id=parent.id,
-        number=await _next_number(db, parent.project_id),
-        kind=VersionKind.organic,
-        prompt=f"organic {parent.prompt}"[:500],
-        gen_mode="mesh",
-        asset_ids=parent.asset_ids or [],
-        options={
-            **(parent.options or {}),
-            "organic_request": organic,
-        },
-    )
-    db.add(v)
-    await db.flush()
-    job = Job(version_id=v.id, type=JobType.organic)
-    db.add(job)
-    await db.commit()
-    await enqueue(
-        "run_organic_job",
-        {
-            "job_id": str(job.id),
-            "version_id": str(v.id),
-            "organic": organic,
-        },
-    )
+    try:
+        v, job = await spawn_organic(db, parent, organic)
+    except SpawnError as e:
+        raise HTTPException(e.status, str(e)) from e
     return EnqueueResponse(version_id=v.id, job_id=job.id)
 
 

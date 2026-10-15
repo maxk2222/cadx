@@ -104,9 +104,10 @@ async def test_organic_enqueue_payload(client, monkeypatch):
         enqueued.append({"func": func, "payload": payload})
         return "fake"
 
-    import cadx.api.routers.versions as vr
+    # spawn.py resolves deps.enqueue lazily at call time — patch the source
+    import cadx.api.deps as deps
 
-    monkeypatch.setattr(vr, "enqueue", fake_enqueue)
+    monkeypatch.setattr(deps, "enqueue", fake_enqueue)
     parent = await _mk_parent()
     r = await client.post(
         f"/api/versions/{parent.id}/organic",

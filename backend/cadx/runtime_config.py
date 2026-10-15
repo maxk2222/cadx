@@ -62,6 +62,14 @@ class RuntimeSettings(BaseModel):
     agent_struct_tools: bool = True
     agent_topopt_max_runs: int = Field(default=6, ge=0, le=20)
     agent_fem_max_runs: int = Field(default=4, ge=0, le=20)
+    # chat agent: which model role drives the conversation. "vision" receives
+    # tool-result images (renders, concept images); "code" is text-only.
+    chat_model_role: Literal["vision", "code"] = "vision"
+    chat_tool_max_calls: int = Field(default=30, ge=1, le=200)
+    chat_max_turns: int = Field(default=40, ge=1, le=200)
+    chat_spawn_timeout_s: int = Field(default=2700, ge=60, le=86_400)
+    chat_history_messages: int = Field(default=60, ge=4, le=500)
+    chat_image_max: int = Field(default=8, ge=0, le=50)  # images per user message
     fem_voxel_mm: float = Field(default=1.5, gt=0, le=100)
     fem_max_elements: int = Field(default=150_000, ge=1, le=5_000_000)
     fem_spsolve_dofs: int = Field(default=120_000, ge=1_000, le=5_000_000)

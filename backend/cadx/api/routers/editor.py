@@ -18,8 +18,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cadx import storage
-from cadx.api.deps import enqueue, get_session
-from cadx.api.routers.versions import _next_number
+from cadx.api.deps import get_session
 from cadx.api.schemas import (
     AnchorsOut,
     EditorStateRequest,
@@ -32,7 +31,8 @@ from cadx.api.schemas import (
     MeshPreviewRequest,
 )
 from cadx.cad.mesh_ops import OPS_REGISTRY, MeshPostParams, merge_post_params
-from cadx.db.models import Job, JobType, Version, VersionKind, VersionStatus
+from cadx.db.models import Version
+from cadx.spawn import SpawnError, spawn_fem, spawn_mesh_edit
 
 router = APIRouter(tags=["editor"])
 
@@ -169,34 +169,11 @@ async def mesh_edit(
     parent = await db.get(Version, version_id)
     if not parent:
         raise HTTPException(404, "version not found")
-    if parent.status not in (VersionStatus.succeeded, VersionStatus.needs_review):
-        raise HTTPException(409, f"cannot edit version in status {parent.status}")
     ops = _validate_ops(body.ops)
-    _edit_source(parent)  # 409 when no mesh artifact exists
-
-    v = Version(
-        project_id=parent.project_id,
-        parent_id=parent.id,
-        number=await _next_number(db, parent.project_id),
-        kind=VersionKind.mesh_edit,
-        prompt=(body.note or f"visual edit of v{parent.number}")[:500],
-        gen_mode=parent.gen_mode,
-        options=parent.options or {},
-    )
-    db.add(v)
-    await db.flush()
-    job = Job(version_id=v.id, type=JobType.mesh_edit)
-    db.add(job)
-    await db.commit()
-    await enqueue(
-        "run_mesh_edit_job",
-        {
-            "job_id": str(job.id),
-            "version_id": str(v.id),
-            "ops": ops,
-            "post": body.post or {},
-        },
-    )
+    try:
+        v, job = await spawn_mesh_edit(db, parent, ops=ops, post=body.post or {}, note=body.note)
+    except SpawnError as e:
+        raise HTTPException(e.status, str(e)) from e
     return EnqueueResponse(version_id=v.id, job_id=job.id)
 
 
@@ -299,26 +276,16 @@ async def fem_check(
     v = await db.get(Version, version_id)
     if not v:
         raise HTTPException(404, "version not found")
-    if v.status not in (VersionStatus.succeeded, VersionStatus.needs_review):
-        raise HTTPException(409, f"cannot analyse version in status {v.status}")
-    if storage.best_mesh_relpath(v.project_id, v.id, v.iterations or 1) is None:
-        raise HTTPException(409, "version has no mesh artifact to analyse")
-    if not body.load_cases:
-        raise HTTPException(422, "at least one load case is required")
-
-    job = Job(version_id=v.id, type=JobType.fem)
-    db.add(job)
-    await db.commit()
-    await enqueue(
-        "run_fem_job",
-        {
-            "job_id": str(job.id),
-            "version_id": str(v.id),
-            "load_cases": body.load_cases,
-            "keep_regions": body.keep_regions,
-            "material": body.material,
-        },
-    )
+    try:
+        job = await spawn_fem(
+            db,
+            v,
+            load_cases=body.load_cases,
+            keep_regions=body.keep_regions,
+            material=body.material,
+        )
+    except SpawnError as e:
+        raise HTTPException(e.status, str(e)) from e
     return EnqueueResponse(version_id=v.id, job_id=job.id)
 
 

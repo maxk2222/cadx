@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +57,7 @@ class FakeLLM:
         max_tokens: int | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str = "auto",
+        on_delta: Callable[[str], None] | None = None,
     ) -> LLMResponse:
         self.calls.append(
             {
@@ -67,7 +69,13 @@ class FakeLLM:
         )
         self.total_usage["calls"] += 1
         item = self._script.pop(0) if len(self._script) > 1 else self._script[0]
-        return self._respond(role, item, json_schema, tools)
+        resp = self._respond(role, item, json_schema, tools)
+        if on_delta is not None and resp.text:
+            # deterministic "stream": emit cumulative snapshots in ~16-char
+            # slices so tests can observe partial persistence
+            for i in range(0, len(resp.text), 16):
+                on_delta(resp.text[: i + 16])
+        return resp
 
     def _respond(
         self,

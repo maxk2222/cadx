@@ -1,0 +1,631 @@
+"""Shared version+job spawn helpers — single code path for the REST routers
+and the chat agent's action tools.
+
+Every function creates the Version+Job rows and enqueues the worker task, so
+chat-spawned runs appear in the version tree, jobs dashboard and SSE channels
+exactly like GUI-triggered ones. Guard failures raise `SpawnError` (carries an
+HTTP status so routers can map it 1:1, chat tools map it to an error result).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import time
+import uuid
+from collections.abc import Awaitable, Callable
+from typing import Any
+
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import func, select
+
+from cadx import storage
+from cadx.cad.mesh_ops import OPS_REGISTRY
+from cadx.db.models import (
+    Job,
+    JobStatus,
+    JobType,
+    Project,
+    Version,
+    VersionKind,
+    VersionStatus,
+)
+from cadx.db.session import session_scope
+from cadx.logging import get_logger
+
+log = get_logger(__name__)
+
+
+class SpawnError(Exception):
+    """Spawn guard failure — `status` lets the router map it to HTTPException."""
+
+    def __init__(self, message: str, status: int = 409) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+def _u(s: str | uuid.UUID) -> uuid.UUID:
+    return s if isinstance(s, uuid.UUID) else uuid.UUID(str(s))
+
+
+async def _enqueue(func: str, payload: dict[str, Any]) -> None:
+    from cadx.api.deps import enqueue
+
+    await enqueue(func, payload)
+
+
+async def next_version_number(db: AsyncSession, project_id: uuid.UUID) -> int:
+    c = await db.execute(
+        select(func.coalesce(func.max(Version.number), 0)).where(Version.project_id == project_id)
+    )
+    return int(c.scalar_one()) + 1
+
+
+async def spawn_version_job(
+    db: AsyncSession,
+    project: Project,
+    *,
+    kind: VersionKind,
+    job_type: JobType,
+    func: str,
+    prompt: str,
+    parent: Version | None = None,
+    asset_ids: list[uuid.UUID | str] | None = None,
+    library_part_ids: list[uuid.UUID | str] | None = None,
+    extra_version: dict | None = None,
+    extra_job: dict | None = None,
+    enqueue_fn: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None,
+) -> tuple[Version, Job]:
+    """Generic Version+Job+enqueue — the old `_spawn` moved here verbatim."""
+    v = Version(
+        project_id=project.id,
+        parent_id=parent.id if parent else None,
+        number=await next_version_number(db, project.id),
+        kind=kind,
+        prompt=prompt,
+        asset_ids=[str(a) for a in (asset_ids or [])],
+        library_part_ids=[str(p) for p in (library_part_ids or [])],
+        **(extra_version or {}),
+    )
+    db.add(v)
+    await db.flush()
+    job = Job(version_id=v.id, type=job_type, **(extra_job or {}))
+    db.add(job)
+    await db.commit()
+    await (enqueue_fn or _enqueue)(func, {"job_id": str(job.id), "version_id": str(v.id)})
+    return v, job
+
+
+def _check_editable(v: Version, what: str) -> None:
+    if v.status not in (VersionStatus.succeeded, VersionStatus.needs_review):
+        raise SpawnError(f"cannot {what} version in status {v.status}")
+
+
+async def spawn_generate(
+    db: AsyncSession,
+    project: Project,
+    prompt: str,
+    *,
+    gen_mode: str = "auto",
+    asset_ids: list[uuid.UUID | str] | None = None,
+    library_part_ids: list[uuid.UUID | str] | None = None,
+    options: dict | None = None,
+    enqueue_fn: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None,
+) -> tuple[Version, Job]:
+    if not prompt.strip():
+        raise SpawnError("prompt required", status=422)
+    opts = options or {}
+    mode = (
+        "topopt"
+        if opts.get("topopt")
+        else gen_mode or (project.settings or {}).get("gen_mode") or "auto"
+    )
+    return await spawn_version_job(
+        db,
+        project,
+        kind=VersionKind.generate,
+        job_type=JobType.generate,
+        func="run_agent_job",
+        prompt=prompt,
+        asset_ids=asset_ids,
+        library_part_ids=library_part_ids,
+        extra_version={"gen_mode": mode, "options": opts},
+        enqueue_fn=enqueue_fn,
+    )
+
+
+async def spawn_edit(
+    db: AsyncSession,
+    project: Project,
+    parent: Version,
+    prompt: str,
+    *,
+    gen_mode: str | None = None,
+    regenerate_mesh: bool = False,
+    asset_ids: list[uuid.UUID | str] | None = None,
+    library_part_ids: list[uuid.UUID | str] | None = None,
+    options: dict | None = None,
+    enqueue_fn: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None,
+) -> tuple[Version, Job]:
+    _check_editable(parent, "edit")
+    if not parent.code and parent.resolved_mode != "mesh":
+        raise SpawnError("version has no code to edit")
+    opts = options if options is not None else (parent.options or {})
+    mode = (
+        "topopt"
+        if opts.get("topopt")
+        else gen_mode or parent.resolved_mode or (project.settings or {}).get("gen_mode") or "auto"
+    )
+    return await spawn_version_job(
+        db,
+        project,
+        kind=VersionKind.edit,
+        job_type=JobType.edit,
+        func="run_agent_job",
+        prompt=prompt,
+        parent=parent,
+        asset_ids=asset_ids,
+        library_part_ids=(
+            library_part_ids
+            if library_part_ids is not None
+            else [uuid.UUID(p) for p in parent.library_part_ids]
+        ),
+        extra_version={"gen_mode": mode, "options": opts},
+        extra_job={"resume_state": {"regenerate_mesh": True}} if regenerate_mesh else None,
+        enqueue_fn=enqueue_fn,
+    )
+
+
+async def spawn_params(
+    db: AsyncSession,
+    parent: Version,
+    params: dict[str, Any],
+    *,
+    enqueue_fn: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None,
+) -> tuple[Version, Job]:
+    if not parent.code and parent.resolved_mode != "mesh":
+        raise SpawnError("version has no code")
+    v = Version(
+        project_id=parent.project_id,
+        parent_id=parent.id,
+        number=await next_version_number(db, parent.project_id),
+        kind=VersionKind.params,
+        prompt="params change",
+        params={**(parent.params or {}), **params},
+        params_schema=parent.params_schema,
+        code=parent.code,
+        options=parent.options or {},
+    )
+    db.add(v)
+    await db.flush()
+    job = Job(version_id=v.id, type=JobType.params)
+    db.add(job)
+    await db.commit()
+    await (enqueue_fn or _enqueue)(
+        "run_params_job",
+        {"job_id": str(job.id), "version_id": str(v.id), "params": params},
+    )
+    return v, job
+
+
+async def spawn_optimize(
+    db: AsyncSession,
+    parent: Version,
+    *,
+    load_cases: list | None,
+    optimize: dict | None,
+    material: str | None,
+    allow_reopt: bool = False,
+    enqueue_fn: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None,
+) -> tuple[Version, Job]:
+    _check_editable(parent, "optimize")
+    if parent.resolved_mode == "topopt" and not allow_reopt:
+        raise SpawnError(
+            "version is already topology-optimized — pass allow_reopt to "
+            "optimize it again, or topopt_resample to re-extract the stored "
+            "density field"
+        )
+    v = Version(
+        project_id=parent.project_id,
+        parent_id=parent.id,
+        number=await next_version_number(db, parent.project_id),
+        kind=VersionKind.optimize,
+        prompt=f"optimize {parent.prompt}"[:500],
+        gen_mode="topopt",
+        asset_ids=parent.asset_ids or [],
+        options={
+            **(parent.options or {}),
+            "topopt": True,
+            "optimize_request": {
+                "load_cases": load_cases,
+                "optimize": optimize,
+                "material": material,
+            },
+        },
+    )
+    db.add(v)
+    await db.flush()
+    job = Job(version_id=v.id, type=JobType.optimize)
+    db.add(job)
+    await db.commit()
+    await (enqueue_fn or _enqueue)(
+        "run_optimize_job",
+        {
+            "job_id": str(job.id),
+            "version_id": str(v.id),
+            "load_cases": load_cases,
+            "optimize": optimize,
+            "material": material,
+        },
+    )
+    return v, job
+
+
+async def spawn_resample(
+    db: AsyncSession,
+    parent: Version,
+    *,
+    density_threshold: float | None,
+    min_member_mm: float | None,
+    material: str | None,
+    load_cases: list | None = None,
+    keep_regions: list | None = None,
+    enqueue_fn: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None,
+) -> tuple[Version, Job]:
+    """Re-extract the stored density field — works on optimize AND organic
+    parents (organic versions carry a density_relpath too)."""
+    _check_editable(parent, "resample")
+    organic_parent = parent.kind == VersionKind.organic
+    if not (
+        ((parent.mesh or {}).get("topopt") or {}).get("density_relpath")
+        or ((parent.mesh or {}).get("organic") or {}).get("density_relpath")
+    ):
+        raise SpawnError("version has no stored density field — run optimize first")
+    v = Version(
+        project_id=parent.project_id,
+        parent_id=parent.id,
+        number=await next_version_number(db, parent.project_id),
+        kind=VersionKind.organic if organic_parent else VersionKind.optimize,
+        prompt=f"resample {parent.prompt}"[:500],
+        gen_mode="mesh" if organic_parent else "topopt",
+        asset_ids=parent.asset_ids or [],
+        options={
+            **(parent.options or {}),
+            "topopt": True,
+            "optimize_request": {
+                "optimize": {
+                    "density_threshold": density_threshold,
+                    "min_member_mm": min_member_mm or None,
+                },
+                "material": material,
+            },
+        },
+    )
+    db.add(v)
+    await db.flush()
+    job = Job(version_id=v.id, type=JobType.resample)
+    db.add(job)
+    await db.commit()
+    await (enqueue_fn or _enqueue)(
+        "run_topopt_resample_job",
+        {
+            "job_id": str(job.id),
+            "version_id": str(v.id),
+            "load_cases": load_cases,
+            "keep_regions": keep_regions,
+            "material": material,
+            "optimize": {
+                "density_threshold": density_threshold,
+                "min_member_mm": min_member_mm or None,
+            },
+        },
+    )
+    return v, job
+
+
+async def spawn_refine(
+    db: AsyncSession,
+    parent: Version,
+    *,
+    features: list | None = None,
+    load_cases: list | None = None,
+    keep_regions: list | None = None,
+    material: str | None = None,
+    voxel_mm: float | None = None,
+    restore_planes: bool | None = None,
+    helical_threads: bool | None = None,
+    auto_plane_restore: bool | None = None,
+    enqueue_fn: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None,
+) -> tuple[Version, Job]:
+    _check_editable(parent, "refine")
+    if parent.kind == VersionKind.refine:
+        raise SpawnError("version is already refined — refine a sibling instead")
+    v = Version(
+        project_id=parent.project_id,
+        parent_id=parent.id,
+        number=await next_version_number(db, parent.project_id),
+        kind=VersionKind.refine,
+        prompt=f"refine {parent.prompt}"[:500],
+        gen_mode=parent.gen_mode,
+        asset_ids=parent.asset_ids or [],
+        options={
+            **(parent.options or {}),
+            "topopt": (parent.options or {}).get("topopt", False),
+            "refine_request": {
+                "features": features,
+                "load_cases": load_cases,
+                "keep_regions": keep_regions,
+                "material": material,
+                "voxel_mm": voxel_mm,
+                "restore_planes": restore_planes,
+                "helical_threads": helical_threads,
+                "auto_plane_restore": auto_plane_restore,
+            },
+        },
+    )
+    db.add(v)
+    await db.flush()
+    job = Job(version_id=v.id, type=JobType.refine)
+    db.add(job)
+    await db.commit()
+    await (enqueue_fn or _enqueue)(
+        "run_refine_job",
+        {
+            "job_id": str(job.id),
+            "version_id": str(v.id),
+            "features": features,
+            "load_cases": load_cases,
+            "keep_regions": keep_regions,
+            "material": material,
+            "voxel_mm": voxel_mm,
+            "restore_planes": restore_planes,
+            "helical_threads": helical_threads,
+            "auto_plane_restore": auto_plane_restore,
+        },
+    )
+    return v, job
+
+
+async def spawn_organic(
+    db: AsyncSession,
+    parent: Version,
+    organic: dict[str, Any],
+    *,
+    enqueue_fn: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None,
+) -> tuple[Version, Job]:
+    _check_editable(parent, "restyle")
+    v = Version(
+        project_id=parent.project_id,
+        parent_id=parent.id,
+        number=await next_version_number(db, parent.project_id),
+        kind=VersionKind.organic,
+        prompt=f"organic {parent.prompt}"[:500],
+        gen_mode="mesh",
+        asset_ids=parent.asset_ids or [],
+        options={**(parent.options or {}), "organic_request": organic},
+    )
+    db.add(v)
+    await db.flush()
+    job = Job(version_id=v.id, type=JobType.organic)
+    db.add(job)
+    await db.commit()
+    await (enqueue_fn or _enqueue)(
+        "run_organic_job",
+        {"job_id": str(job.id), "version_id": str(v.id), "organic": organic},
+    )
+    return v, job
+
+
+def validate_ops(ops: list[dict[str, Any]]) -> None:
+    unknown = [o.get("op") for o in ops if o.get("op") not in OPS_REGISTRY]
+    if unknown:
+        raise SpawnError(
+            f"unknown mesh op(s): {', '.join(sorted(set(unknown)))} — "
+            f"available: {', '.join(sorted(OPS_REGISTRY))}",
+            status=422,
+        )
+
+
+def mesh_edit_source(v: Version) -> None:
+    """Guard: raises SpawnError when the version has no editable mesh."""
+    if (v.resolved_mode or "") == "mesh":
+        raw = storage.version_dir(v.project_id, v.id) / "mesh" / "mesh_raw.glb"
+        if raw.exists():
+            return
+    if storage.best_mesh_relpath(v.project_id, v.id, v.iterations or 1) is None:
+        raise SpawnError("version has no mesh artifact to edit")
+
+
+async def spawn_mesh_edit(
+    db: AsyncSession,
+    parent: Version,
+    *,
+    ops: list[dict[str, Any]],
+    post: dict | None = None,
+    note: str = "",
+    enqueue_fn: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None,
+) -> tuple[Version, Job]:
+    _check_editable(parent, "edit")
+    validate_ops(ops)
+    mesh_edit_source(parent)
+    v = Version(
+        project_id=parent.project_id,
+        parent_id=parent.id,
+        number=await next_version_number(db, parent.project_id),
+        kind=VersionKind.mesh_edit,
+        prompt=(note or f"visual edit of v{parent.number}")[:500],
+        gen_mode=parent.gen_mode,
+        options=parent.options or {},
+    )
+    db.add(v)
+    await db.flush()
+    job = Job(version_id=v.id, type=JobType.mesh_edit)
+    db.add(job)
+    await db.commit()
+    await (enqueue_fn or _enqueue)(
+        "run_mesh_edit_job",
+        {"job_id": str(job.id), "version_id": str(v.id), "ops": ops, "post": post or {}},
+    )
+    return v, job
+
+
+async def spawn_fem(
+    db: AsyncSession,
+    version: Version,
+    *,
+    load_cases: list | None,
+    keep_regions: list | None = None,
+    material: str | None = None,
+    enqueue_fn: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None,
+) -> Job:
+    """Standalone FEM run on the SAME version (no child version)."""
+    _check_editable(version, "analyse")
+    if storage.best_mesh_relpath(version.project_id, version.id, version.iterations or 1) is None:
+        raise SpawnError("version has no mesh artifact to analyse")
+    if not load_cases:
+        raise SpawnError("at least one load case is required", status=422)
+    job = Job(version_id=version.id, type=JobType.fem)
+    db.add(job)
+    await db.commit()
+    await (enqueue_fn or _enqueue)(
+        "run_fem_job",
+        {
+            "job_id": str(job.id),
+            "version_id": str(version.id),
+            "load_cases": load_cases,
+            "keep_regions": keep_regions,
+            "material": material,
+        },
+    )
+    return job
+
+
+async def enqueue_resume(
+    db: AsyncSession,
+    job: Job,
+    answers_text: str,
+    *,
+    enqueue_fn: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None,
+) -> tuple[Version, Job]:
+    """Submit clarification answers to a waiting_for_input job — spawns a
+    `resume` job on the same version (extracted from jobs.py::answer)."""
+    if job.status != JobStatus.waiting_for_input:
+        raise SpawnError(f"job is {job.status}, not waiting_for_input")
+    v = await db.get(Version, job.version_id)
+    if not v:
+        raise SpawnError("version not found", status=404)
+    v.prompt = (v.prompt or "") + f"\n\nClarification answers:\n{answers_text}"
+    v.status = VersionStatus.queued
+    new_job = Job(version_id=v.id, type=JobType.resume, resume_state=job.resume_state)
+    db.add(new_job)
+    await db.commit()
+    await (enqueue_fn or _enqueue)(
+        "run_agent_job", {"job_id": str(new_job.id), "version_id": str(v.id)}
+    )
+    return v, new_job
+
+
+# --------------------------------------------------------------------------- #
+# waiting on spawned jobs (chat tools block here while the UI live-cards)      #
+# --------------------------------------------------------------------------- #
+
+TERMINAL_JOB_STATES = {
+    JobStatus.succeeded,
+    JobStatus.failed,
+    JobStatus.cancelled,
+    JobStatus.waiting_for_input,
+}
+
+
+def _job_summary(job: Job, v: Version | None) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "ok": job.status in (JobStatus.succeeded, JobStatus.waiting_for_input),
+        "status": job.status.value,
+        "job_id": str(job.id),
+        "version_id": str(job.version_id),
+    }
+    if v is not None:
+        out.update(
+            version_number=v.number,
+            version_status=v.status.value,
+            kind=v.kind.value,
+            score=v.score,
+            iterations=v.iterations,
+            resolved_mode=v.resolved_mode,
+            error=v.error,
+        )
+        a = v.analysis or {}
+        if a.get("bbox_size"):
+            out["bbox_mm"] = a["bbox_size"]
+        if a.get("volume") is not None:
+            out["volume_mm3"] = a["volume"]
+        if v.issues:
+            out["issues"] = [i.get("what", "") for i in v.issues[:8]]
+    if job.status == JobStatus.waiting_for_input:
+        out["questions"] = job.questions or []
+        out["note"] = (
+            "job needs clarification — relay these questions to the user, then "
+            "call answer_questions(job_id, answers) with their replies"
+        )
+    elif job.status == JobStatus.failed:
+        out["note"] = "job failed — explain the error and suggest a fix or retry"
+    return out
+
+
+async def wait_job_terminal(
+    job_id: str | uuid.UUID,
+    *,
+    cancel_check: Callable[[], Awaitable[bool]] | None = None,
+    interrupt_check: Callable[[], Awaitable[bool]] | None = None,
+    timeout_s: float = 3600.0,
+    poll_s: float = 2.0,
+) -> dict[str, Any]:
+    """Poll a spawned job until terminal (or cancelled/interrupted).
+
+    The caller (a chat turn) stays blocked while the UI renders the job's own
+    live card. `interrupt_check` (a new pending user message) returns early
+    with status "running" — the job continues in the background and can be
+    re-awaited via the `wait_job` tool.
+    """
+    jid = _u(job_id)
+    t0 = time.monotonic()
+    while True:
+        async with session_scope() as db:
+            job = await db.get(Job, jid)
+            v = await db.get(Version, job.version_id) if job else None
+            if job is None:
+                return {"ok": False, "status": "missing", "error": "job not found"}
+            if job.status in TERMINAL_JOB_STATES:
+                return _job_summary(job, v)
+        if cancel_check is not None and await cancel_check():
+            async with session_scope() as db:
+                j = await db.get(Job, jid)
+                if j is not None and j.status in (JobStatus.queued, JobStatus.running):
+                    j.cancel_requested = True
+                    await db.commit()
+            return {
+                "ok": False,
+                "status": "cancelled",
+                "job_id": str(jid),
+                "version_id": str(job.version_id),
+                "note": "cancelled by user",
+            }
+        if interrupt_check is not None and await interrupt_check():
+            return {
+                "ok": True,
+                "status": "running",
+                "job_id": str(jid),
+                "version_id": str(job.version_id),
+                "note": (
+                    "user sent a new message — the job keeps running in the "
+                    "background; check it later with job_status or wait_job"
+                ),
+            }
+        if time.monotonic() - t0 > timeout_s:
+            return {
+                "ok": False,
+                "status": "timeout",
+                "job_id": str(jid),
+                "version_id": str(job.version_id),
+                "note": f"still running after {timeout_s:.0f}s — use wait_job to re-check",
+            }
+        await asyncio.sleep(poll_s)

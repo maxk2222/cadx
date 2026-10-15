@@ -116,6 +116,58 @@ class EditRequest(BaseModel):
     options: RunOptions | None = None  # None inherits the parent's options
 
 
+# --------------------------------------------------------------------------- #
+# chat                                                                        #
+# --------------------------------------------------------------------------- #
+
+
+class ChatCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: uuid.UUID
+    title: str = Field(default="", max_length=200)
+
+
+class ChatUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=200)
+
+
+class ChatOut(BaseModel):
+    id: uuid.UUID
+    project_id: uuid.UUID
+    title: str
+    turn_running: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class ChatMessageIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    content: str = Field(default="", max_length=20_000)
+    asset_ids: list[uuid.UUID] = Field(default_factory=list, max_length=8)
+
+
+class ChatMessageOut(BaseModel):
+    id: uuid.UUID
+    chat_id: uuid.UUID
+    role: str
+    content: str
+    asset_ids: list[str] = Field(default_factory=list)
+    meta: dict[str, Any] = Field(default_factory=dict)
+    pending: bool = False
+    created_at: datetime
+
+
+class ChatStateOut(BaseModel):
+    """Snapshot for page load / SSE reconnect: chat + full message list."""
+
+    chat: ChatOut
+    messages: list[ChatMessageOut]
+
+
 class LibraryPartOut(BaseModel):
     id: uuid.UUID
     name: str
@@ -444,6 +496,12 @@ class SettingsOut(BaseModel):
     agent_mesh_hard_fail_score: int
     agent_mesh_hard_fail_limit: int
     agent_stall_patience: int
+    chat_model_role: Literal["vision", "code"]
+    chat_tool_max_calls: int
+    chat_max_turns: int
+    chat_spawn_timeout_s: int
+    chat_history_messages: int
+    chat_image_max: int
     fem_voxel_mm: float
     fem_max_elements: int
     fem_timeout_s: int
@@ -524,6 +582,12 @@ class SettingsUpdate(BaseModel):
     agent_mesh_hard_fail_score: int | None = Field(default=None, ge=0, le=100)
     agent_mesh_hard_fail_limit: int | None = Field(default=None, ge=1, le=20)
     agent_stall_patience: int | None = Field(default=None, ge=0, le=50)
+    chat_model_role: Literal["vision", "code"] | None = None
+    chat_tool_max_calls: int | None = Field(default=None, ge=1, le=200)
+    chat_max_turns: int | None = Field(default=None, ge=1, le=200)
+    chat_spawn_timeout_s: int | None = Field(default=None, ge=60, le=86_400)
+    chat_history_messages: int | None = Field(default=None, ge=4, le=500)
+    chat_image_max: int | None = Field(default=None, ge=0, le=50)
     fem_voxel_mm: float | None = Field(default=None, gt=0, le=100)
     fem_max_elements: int | None = Field(default=None, ge=1, le=5_000_000)
     fem_timeout_s: int | None = Field(default=None, ge=1, le=86_400)

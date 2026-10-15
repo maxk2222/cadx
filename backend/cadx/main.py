@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from cadx.api.routers import (
     assets,
     catalog,
+    chat,
     editor,
     files,
     health,
@@ -84,6 +85,7 @@ for r in (
     images.router,
     sse.router,
     stats.router,
+    chat.router,
 ):
     app.include_router(r, prefix="/api")
 

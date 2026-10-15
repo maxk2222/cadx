@@ -240,6 +240,35 @@ async def test_stream_aborts_on_whitespace_flood(monkeypatch):
     assert r.finish_reason == "degenerate"
 
 
+async def test_on_delta_cumulative_snapshots(monkeypatch):
+    """on_delta receives cumulative text snapshots — throttled mid-stream and
+    always once with the final text (chat UI renders deltas as replacements)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=_sse(
+                {"choices": [{"delta": {"content": "Hel"}}]},
+                {"choices": [{"delta": {"content": "lo"}, "finish_reason": "stop"}]},
+            ),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    _patch_transport(monkeypatch, handler)
+    deltas: list[str] = []
+    c = _mk()
+    r = await c.chat(
+        "code",
+        [{"role": "user", "content": "hi"}],
+        temperature=0.0,
+        on_delta=deltas.append,
+    )
+    assert r.text == "Hello"
+    assert deltas and deltas[-1] == "Hello"
+    # every snapshot is a prefix-consistent cumulative value
+    assert all("Hello".startswith(d) for d in deltas)
+
+
 async def test_schema_reask_uses_stream(monkeypatch):
     """After a schema parse failure the re-ask must keep streaming —
     non-stream posts cap at timeout_s and kill slow vision replies."""

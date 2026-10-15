@@ -235,6 +235,46 @@ class AppSetting(SQLModel, table=True):
     value: dict[str, Any] = SField(default_factory=dict, sa_column=Column(JSON))
 
 
+class ChatRole(enum.StrEnum):
+    user = "user"
+    assistant = "assistant"
+    system = "system"
+
+
+class Chat(SQLModel, table=True):
+    """A chat thread bound to a project — the conversational agent front-end.
+
+    `llm_messages` is the persisted, sanitised OpenAI-format conversation
+    (no system prompt — rebuilt per turn; image parts stored as
+    {"type": "asset_ref", "asset_id": ...} markers, rehydrated on load).
+    """
+
+    id: uuid.UUID = SField(default_factory=uuid.uuid4, primary_key=True)
+    project_id: uuid.UUID = SField(foreign_key="project.id", index=True)
+    title: str = ""
+    llm_messages: list[dict[str, Any]] = SField(default_factory=list, sa_column=Column(JSON))
+    turn_running: bool = False  # atomic turn claim (UPDATE ... WHERE NOT turn_running)
+    cancel_requested: bool = False
+    usage: dict[str, Any] = SField(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = SField(default_factory=utcnow)
+    updated_at: datetime = SField(default_factory=utcnow)
+
+
+class ChatMessage(SQLModel, table=True):
+    """Rendered chat view: user/assistant/system rows. `meta` carries the
+    tool-call log, spawned version/job ids and the streaming flag; `pending`
+    marks user messages not yet consumed by a turn."""
+
+    id: uuid.UUID = SField(default_factory=uuid.uuid4, primary_key=True)
+    chat_id: uuid.UUID = SField(foreign_key="chat.id", index=True)
+    role: ChatRole
+    content: str = ""
+    asset_ids: list[str] = SField(default_factory=list, sa_column=Column(JSON))
+    meta: dict[str, Any] = SField(default_factory=dict, sa_column=Column(JSON))
+    pending: bool = False
+    created_at: datetime = SField(default_factory=utcnow)
+
+
 class LibraryPart(SQLModel, table=True):
     """Project-independent reusable part: an uploaded STEP/STL body or a
     saved parametric code template from a successful version."""

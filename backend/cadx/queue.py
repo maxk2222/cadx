@@ -6,6 +6,7 @@ from typing import Any
 
 from arq.connections import RedisSettings
 
+from cadx.agent.chat_worker import reap_orphaned_chats, run_chat_turn
 from cadx.agent.worker_jobs import (
     run_agent_job,
     run_fem_job,
@@ -85,6 +86,8 @@ async def agent_startup(ctx: dict[str, Any]) -> None:
                 await db.commit()
     except Exception:
         pass
+    # chat reaper: orphaned turn_running flags + unanswered pending messages
+    await reap_orphaned_chats(ctx)
 
 
 async def cad_startup(ctx: dict[str, Any]) -> None:
@@ -102,6 +105,7 @@ class AgentWorkerSettings:
 
     functions = [  # noqa: RUF012
         run_agent_job,
+        run_chat_turn,
         run_params_job,
         run_reexport_job,
         run_optimize_job,

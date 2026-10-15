@@ -15,6 +15,7 @@ import asyncio
 import json
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -302,9 +303,16 @@ class LLMClient:
             )
         return resp, payload
 
-    async def _consume_stream(self, resp: httpx.Response) -> dict[str, Any]:
-        """Read SSE lines and assemble them into a normal response dict."""
+    async def _consume_stream(  # noqa: C901
+        self, resp: httpx.Response, on_delta: Callable[[str], None] | None = None
+    ) -> dict[str, Any]:
+        """Read SSE lines and assemble them into a normal response dict.
+
+        ``on_delta`` (when given) is called with the *cumulative* text so far,
+        throttled to ~10 Hz inside the loop and once with the final text —
+        snapshot semantics keep it correct across mid-stream retries."""
         t0 = time.monotonic()
+        last_emit = 0.0
         text_parts: list[str] = []
         reasoning_parts = 0
         usage: dict[str, Any] = {}
@@ -365,10 +373,15 @@ class LLMClient:
             reasoning_parts += 1 if _chunk_has_reasoning(chunk) else 0
             if chunk.get("usage"):
                 usage = chunk["usage"]
+            if on_delta is not None and time.monotonic() - last_emit >= 0.1:
+                last_emit = time.monotonic()
+                on_delta("".join(text_parts))
         calls = tool_acc.result()
         text = "".join(text_parts)
         if finish == "degenerate":
             text = _trim_degenerate(text)
+        if on_delta is not None:
+            on_delta(text)
         return {
             "choices": [
                 {
@@ -392,7 +405,9 @@ class LLMClient:
             "usage": usage,
         }
 
-    async def _post_stream(self, payload: dict[str, Any], role: Role) -> dict[str, Any]:
+    async def _post_stream(
+        self, payload: dict[str, Any], role: Role, on_delta: Callable[[str], None] | None = None
+    ) -> dict[str, Any]:
         """POST with stream=true; idle timeout applies between chunks so a
         slow-but-progressing call keeps going while a stalled one aborts."""
         payload = dict(payload, stream=True, stream_options={"include_usage": True})
@@ -429,7 +444,7 @@ class LLMClient:
                     if resp.status_code != 200:
                         body = (await resp.aread())[:400]
                         raise LLMError(f"HTTP {resp.status_code}: {body!r}")
-                    return await self._consume_stream(resp)
+                    return await self._consume_stream(resp, on_delta=on_delta)
             except _RetryNoStream:
                 raise
             except (httpx.TimeoutException, httpx.TransportError) as e:
@@ -454,6 +469,7 @@ class LLMClient:
         max_tokens: int | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str = "auto",
+        on_delta: Callable[[str], None] | None = None,
     ) -> LLMResponse:
         model = self.models[role]
         payload: dict[str, Any] = {
@@ -476,7 +492,7 @@ class LLMClient:
         t0 = time.monotonic()
         if self.stream:
             try:
-                data = await self._post_stream(payload, role)
+                data = await self._post_stream(payload, role, on_delta=on_delta)
             except _RetryNoStream:
                 log.warning("llm.stream.unsupported")
                 data = await self._post(payload, role)
@@ -540,7 +556,7 @@ class LLMClient:
                 payload2["messages"] = retry_messages
                 if self.stream:
                     try:
-                        data2 = await self._post_stream(payload2, role)
+                        data2 = await self._post_stream(payload2, role, on_delta=on_delta)
                     except _RetryNoStream:
                         data2 = await self._post(payload2, role)
                 else:
@@ -555,6 +571,11 @@ class LLMClient:
                 self.total_usage["calls"] += 1
                 parsed = parse_model(text2, json_schema)  # raises if still bad
                 text = text2
+
+        # authoritative final snapshot — covers the non-stream path and any
+        # degenerate trim / re-ask replacement
+        if on_delta is not None:
+            on_delta(text)
 
         return LLMResponse(
             text=text,

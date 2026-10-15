@@ -19,6 +19,7 @@ from cadx.db.models import (
     VersionKind,
     VersionStatus,
 )
+from cadx.spawn import SpawnError, enqueue_resume, next_version_number
 
 router = APIRouter(tags=["jobs"])
 
@@ -106,11 +107,6 @@ async def answer(job_id: uuid.UUID, body: AnswerRequest, db: AsyncSession = Depe
     j = await db.get(Job, job_id)
     if not j:
         raise HTTPException(404, "job not found")
-    if j.status != JobStatus.waiting_for_input:
-        raise HTTPException(409, f"job is {j.status}, not waiting_for_input")
-    v = await db.get(Version, j.version_id)
-    if not v:
-        raise HTTPException(404, "version not found")
 
     qa_lines = []
     questions = j.questions or []
@@ -119,16 +115,10 @@ async def answer(job_id: uuid.UUID, body: AnswerRequest, db: AsyncSession = Depe
         qa_lines.append(f"Q: {q}\nA: {a.answer}")
     answers_text = "\n".join(qa_lines)
 
-    v.prompt = (v.prompt or "") + f"\n\nClarification answers:\n{answers_text}"
-    v.status = VersionStatus.queued
-    new_job = Job(
-        version_id=v.id,
-        type=JobType.resume,
-        resume_state=j.resume_state,
-    )
-    db.add(new_job)
-    await db.commit()
-    await enqueue("run_agent_job", {"job_id": str(new_job.id), "version_id": str(v.id)})
+    try:
+        v, new_job = await enqueue_resume(db, j, answers_text)
+    except SpawnError as e:
+        raise HTTPException(e.status, str(e)) from e
     return EnqueueResponse(version_id=v.id, job_id=new_job.id)
 
 
@@ -179,8 +169,6 @@ async def restart(job_id: uuid.UUID, db: AsyncSession = Depends(get_session)):
                     when the original run saved one, spec fallback otherwise).
     reexport      → another reexport job on the SAME version.
     """
-    from cadx.api.routers.versions import _next_number
-
     j = await db.get(Job, job_id)
     if not j:
         raise HTTPException(404, "job not found")
@@ -194,7 +182,7 @@ async def restart(job_id: uuid.UUID, db: AsyncSession = Depends(get_session)):
         new_v = Version(
             project_id=v.project_id,
             parent_id=v.parent_id,
-            number=await _next_number(db, v.project_id),
+            number=await next_version_number(db, v.project_id),
             kind=v.kind,
             prompt=v.prompt,
             asset_ids=v.asset_ids or [],
@@ -221,7 +209,7 @@ async def restart(job_id: uuid.UUID, db: AsyncSession = Depends(get_session)):
         new_v = Version(
             project_id=v.project_id,
             parent_id=v.parent_id,
-            number=await _next_number(db, v.project_id),
+            number=await next_version_number(db, v.project_id),
             kind=VersionKind.params,
             prompt="params change",
             params=v.params or {},
@@ -248,7 +236,7 @@ async def restart(job_id: uuid.UUID, db: AsyncSession = Depends(get_session)):
         new_v = Version(
             project_id=v.project_id,
             parent_id=parent.id,
-            number=await _next_number(db, v.project_id),
+            number=await next_version_number(db, v.project_id),
             kind=VersionKind.optimize,
             prompt=f"optimize {parent.prompt}"[:500],
             gen_mode="topopt",
