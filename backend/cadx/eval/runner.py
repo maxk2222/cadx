@@ -6,6 +6,7 @@ dimensions and (for deterministic runs) an embedded FakeLLM script.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import time
 import uuid
@@ -30,6 +31,42 @@ log = get_logger(__name__)
 _BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
 BENCH_DIR = Path(__file__).parent / "benchmarks"
+
+
+@contextlib.contextmanager
+def _rss_sampler(benchmark: str, interval_s: float = 5.0) -> Any:
+    """Background thread logging live RSS every `interval_s` seconds.
+
+    Per-emit peak_rss only samples at step transitions — a >10GB spike can
+    live and die between emits (observed: anon-rss 13.6GB at the OOM kill
+    while the last step emit showed 3.2GB). The sampler catches inter-step
+    growth and survives up to the kill itself.
+    """
+    import resource
+    import threading
+
+    stop = threading.Event()
+
+    def _loop() -> None:
+        while not stop.wait(interval_s):
+            cur = peak = 0
+            try:
+                # VmRSS = live footprint; getrusage only yields the peak mark
+                for line in Path("/proc/self/status").read_text().splitlines():
+                    if line.startswith("VmRSS:"):
+                        cur = int(line.split()[1])
+                    elif line.startswith("VmHWM:"):
+                        peak = int(line.split()[1])
+            except OSError:
+                peak = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)  # KB on linux
+            log.info("eval.rss", benchmark=benchmark, rss_mb=cur // 1024, peak_mb=peak // 1024)
+
+    t = threading.Thread(target=_loop, daemon=True)
+    t.start()
+    try:
+        yield
+    finally:
+        stop.set()
 
 
 @dataclass
@@ -229,7 +266,8 @@ async def run_benchmark(
     )
     t0 = time.monotonic()
     try:
-        outcome: RunOutcome = await run_generation(ctx)
+        with _rss_sampler(bm.name):
+            outcome: RunOutcome = await run_generation(ctx)
     finally:
         # durable postmortem: the in-memory trace survives neither crashes
         # nor container exits — always dump what was captured

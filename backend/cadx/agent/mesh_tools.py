@@ -172,6 +172,12 @@ class MeshWorkbench:
             )
             if not self.ops:
                 self.work = rest_on_xy_center(self.baseline.copy())
+            cap = (
+                getattr(getattr(self.ctx, "runtime_settings", None), "mesh_decimate_faces", None)
+                or 30_000
+            )
+            if self.work is not None and len(self.work.faces) > cap:
+                self.work = await asyncio.to_thread(decimate, self.work, cap)
         except Exception as e:
             return {"ok": False, "error": f"rebuild after undo failed: {e}"}
         self._features = None
@@ -586,6 +592,15 @@ class MeshWorkbench:
             )
         except Exception as e:
             return {"ok": False, "error": str(e)}
+        # ops that densify (remesh/voxel rebuilds) must not push the session
+        # mesh past the workbench cap — the worker eval was OOM-killed twice
+        # by runaway face counts between init-time decimations
+        cap = (
+            getattr(getattr(self.ctx, "runtime_settings", None), "mesh_decimate_faces", None)
+            or 30_000
+        )
+        if len(applied.faces) > cap:
+            applied = await asyncio.to_thread(decimate, applied, cap)
         self.work = applied
         self.ops.append(mo)
         self._features = None

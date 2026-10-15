@@ -56,6 +56,16 @@ class MemoryTrace:
             }
         )
 
+    async def event(self, name: str, **fields: Any) -> None:
+        """Lightweight event record (no message payload).
+
+        Written for every tool call BEFORE it executes — a SIGKILL during
+        the call still leaves the record naming the culprit tool+args.
+        DbTrace inherits this; events stay in memory there (per-call DB
+        rows would be spam — the JSONL eval trace is the postmortem sink).
+        """
+        self.records.append({"event": name, **fields})
+
 
 class JsonlTrace(MemoryTrace):
     """MemoryTrace that also appends every record to a JSONL file right away.
@@ -71,6 +81,15 @@ class JsonlTrace(MemoryTrace):
 
     async def record(self, **kwargs: Any) -> None:
         await super().record(**kwargs)
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            with self._path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(self.records[-1], default=str) + "\n")
+        except OSError:
+            pass
+
+    async def event(self, name: str, **fields: Any) -> None:
+        await super().event(name, **fields)
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             with self._path.open("a", encoding="utf-8") as fh:

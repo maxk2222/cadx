@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -52,6 +53,9 @@ class SessionResult:
     cancelled: bool = False
     tool_calls_made: int = 0
     tool_log: list[dict[str, Any]] = field(default_factory=list)
+    # the full mutated message list — chat sessions persist the tail so the
+    # conversation (assistant echoes + tool results) survives across turns
+    messages_out: list[dict[str, Any]] = field(default_factory=list)
 
 
 def tools_enabled(ctx: AgentCtx, role: str) -> bool:
@@ -151,8 +155,14 @@ async def run_session(
     step: str,
     iteration: int = 0,
     temperature: float | None = None,
+    drain_fn: Callable[[], Awaitable[list[dict[str, Any]]]] | None = None,
+    on_delta: Callable[[str], None] | None = None,
 ) -> SessionResult:
-    """Run the tool-call turn loop. Returns when the model stops calling tools."""
+    """Run the tool-call turn loop. Returns when the model stops calling tools.
+
+    ``drain_fn`` (chat sessions) is awaited once per turn and its returned
+    messages appended — newly submitted user text joins mid-turn.
+    ``on_delta`` is forwarded to ``llm.chat`` for incremental streaming."""
     msgs = list(messages)
     calls = 0
     turns = 0
@@ -176,7 +186,10 @@ async def run_session(
                 exhausted=True,
                 tool_calls_made=calls,
                 tool_log=session.tool_log,
+                messages_out=msgs,
             )
+        if drain_fn is not None:
+            msgs.extend(await drain_fn())
         _trim_tool_results(msgs)
         # fresh each turn: e.g. `verify` drops out once its budget is spent
         tools = session.tools()
@@ -186,6 +199,7 @@ async def run_session(
             json_schema=json_schema,
             tools=tools,
             temperature=temperature,
+            on_delta=on_delta,
         )
         tool_calls = resp.tool_calls or []
         await ctx.trace.record(
@@ -210,6 +224,7 @@ async def run_session(
                 code=session.buffer or None,
                 tool_calls_made=calls,
                 tool_log=session.tool_log,
+                messages_out=msgs,
             )
 
         native = not all(tc.via_content for tc in tool_calls)
@@ -222,6 +237,16 @@ async def run_session(
                     {"name": tc.name, "args": {"_raw": tc.raw_arguments[:300]}, "result": result}
                 )
             else:
+                # durable pre-execution record — if the tool kills the
+                # process (mesh ops OOMed the eval twice), the JSONL still
+                # names the exact call that ran last
+                await ctx.trace.event(
+                    "tool_call",
+                    step=step,
+                    iteration=iteration,
+                    tool=tc.name,
+                    args=_short(tc.raw_arguments, 400),
+                )
                 result = await session.execute(tc.name, tc.arguments)
             msgs.extend(_result_messages(tc, result, native))
             error_streak = error_streak + 1 if not result.get("ok", True) else 0
@@ -232,6 +257,7 @@ async def run_session(
                     code=session.buffer or None,
                     tool_calls_made=calls,
                     tool_log=session.tool_log,
+                    messages_out=msgs,
                 )
         # identical-call loop detector: weak models re-emit the same turn
         # forever (e.g. search_catalog({}) on every reply) — after 3 identical
@@ -301,6 +327,7 @@ async def run_session(
                         exhausted=True,
                         tool_calls_made=calls,
                         tool_log=session.tool_log,
+                        messages_out=msgs,
                     )
             return SessionResult(
                 response=None,
@@ -309,6 +336,7 @@ async def run_session(
                 exhausted=True,
                 tool_calls_made=calls,
                 tool_log=session.tool_log,
+                messages_out=msgs,
             )
 
 
