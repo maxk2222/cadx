@@ -45,8 +45,14 @@ def create_app(cfg: ServerConfig | None = None) -> FastAPI:
 
     @app.get("/v1/health", response_model=Health)
     async def health() -> Health:
+        import psutil
+
         return Health(
-            ok=True, device=registry.device, backend="local", models=registry.models()
+            ok=True,
+            device=registry.device,
+            backend="local",
+            models=registry.models(),
+            mem_free_mb=int(psutil.virtual_memory().available / 1e6),
         )
 
     @app.get("/v1/models", response_model=dict)

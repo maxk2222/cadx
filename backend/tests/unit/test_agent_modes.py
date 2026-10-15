@@ -1000,6 +1000,48 @@ def test_pick_adapter_skips_image_adapters():
     assert pick is not None and pick.id == "triposg"
 
 
+def test_pick_adapter_prefers_mlx_over_torch_mps_multiview():
+    """B.1: on an MLX host the only multiview adapters are torch-mps builds
+    (stall-prone under memory pressure) — auto-pick must choose a native
+    single-image adapter instead, capping the images it can use."""
+    from cadx.agent.mesh_client import MeshModelInfo
+    from cadx.agent.model_pick import pick_adapter
+
+    models = [
+        MeshModelInfo(
+            id="hunyuan3d-2mv",
+            device="mps",
+            backend="torch-mps",
+            supports_multiview=True,
+            max_images=4,
+            available=True,
+        ),
+        MeshModelInfo(
+            id="hunyuan3d-2.1-mlx",
+            device="mlx",
+            backend="mlx",
+            supports_multiview=False,
+            max_images=1,
+            available=True,
+        ),
+    ]
+    pick = pick_adapter(models, "organic", need_multiview=True, device="mlx")
+    assert pick is not None and pick.id == "hunyuan3d-2.1-mlx"
+    # but a genuinely multiview-capable native adapter still wins
+    models.append(
+        MeshModelInfo(
+            id="triposg-mv",
+            device="mlx",
+            backend="mlx",
+            supports_multiview=True,
+            max_images=4,
+            available=True,
+        )
+    )
+    pick = pick_adapter(models, "organic", need_multiview=True, device="mlx")
+    assert pick is not None and pick.id == "triposg-mv"
+
+
 async def test_generate_mesh_uses_heightfield_for_flat_part():
     """With a measured outline + flat spec the deterministic heightfield
     candidate wins even without candidate screening — no generator call."""

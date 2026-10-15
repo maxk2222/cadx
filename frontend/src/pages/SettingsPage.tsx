@@ -68,6 +68,7 @@ const NUM_FIELDS = new Set<string>([
   "topopt_default_rmin_mm",
   "mesh_timeout_s",
   "mesh_stall_timeout_s",
+  "mesh_min_free_mb",
   "mesh_decimate_faces",
   "mesh_max_faces_for_cad",
   "image_steps",
@@ -128,6 +129,7 @@ const FIELD_BOUNDS: Record<
   topopt_default_rmin_mm: { min: 0, max: 1000, exclusiveMin: true },
   mesh_timeout_s: { min: 1, max: 86_400, int: true },
   mesh_stall_timeout_s: { min: 1, max: 86_400, int: true },
+  mesh_min_free_mb: { min: 0, int: true },
   mesh_decimate_faces: { min: 1, int: true },
   mesh_max_faces_for_cad: { min: 1, int: true },
   image_steps: { min: 1, max: 200, int: true },
@@ -620,6 +622,12 @@ export default function SettingsPage() {
         </Field>
         {field({ key: "mesh_timeout_s", label: "Generation timeout (s)", kind: "number" })}
         {field({ key: "mesh_stall_timeout_s", label: "Stall abort — no progress (s)", kind: "number" })}
+        {field({
+          key: "mesh_min_free_mb",
+          label: "Min free host RAM (MB)",
+          kind: "number",
+          hint: "refuse new generation jobs when the sidecar host has less free RAM — 0 disables. Prevents MPS stalls under memory pressure.",
+        })}
         {field({ key: "mesh_decimate_faces", label: "Decimate target (faces)", kind: "number" })}
         {field({ key: "mesh_max_faces_for_cad", label: "Max faces for CAD conversion", kind: "number" })}
         {models.length > 0 && (

@@ -28,6 +28,17 @@ from meshserver.logging import get_logger
 log = get_logger(__name__)
 
 
+def _peak_rss_mb() -> float:
+    """Process peak RSS in MB — ru_maxrss is bytes on macOS, KiB on Linux.
+    Process-wide highwater (adapters share this process), logged per job so a
+    growing baseline across jobs shows a leak, a spike shows model weight."""
+    import resource
+    import sys
+
+    v = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return round(v / (1e6 if sys.platform == "darwin" else 1e3), 1)
+
+
 class MeshJob:
     def __init__(self, job_id: str, params: GenParams, image_paths: list[Path]) -> None:
         self.id = job_id
@@ -197,7 +208,9 @@ class JobManager:
             )
             job.finished = time.monotonic()
             job.cancelled = True  # adapter checks this and aborts early
-            log.warning("job.stalled", job=job_id, model=job.model)
+            log.warning(
+                "job.stalled", job=job_id, model=job.model, peak_rss_mb=_peak_rss_mb()
+            )
         return job
 
     async def cancel(self, job_id: str) -> bool:
@@ -268,6 +281,13 @@ class JobManager:
                     job.error = str(e)[:500]
             finally:
                 self.registry.maybe_unload_idle()
+                log.info(
+                    "job.finished",
+                    job=job_id,
+                    status=job.status,
+                    model=getattr(job, "model", ""),
+                    peak_rss_mb=_peak_rss_mb(),
+                )
 
     def _load_adapter(
         self,

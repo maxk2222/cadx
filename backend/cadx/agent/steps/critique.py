@@ -248,6 +248,7 @@ def _finalize_critique(
     # Runs before synthesis so a refuted verdict synthesizes as 'wrong'
     # (minor), not 'missing' (major).
     _verify_missing_verdicts(critique, spec, features or {})
+    _verify_wrong_verdicts(critique, spec, features or {})
     # synthesize discrepancies from measured findings if still empty
     if not critique.passed and not critique.discrepancies:
         for i in dim_issues:
@@ -392,6 +393,62 @@ def _verify_missing_verdicts(critique: Critique, spec: PartSpec, features: dict[
         if any(n in d.what.lower() for n in refuted):
             d.severity = "minor"
             d.what += " (feature measured present — likely a placement/shape issue)"
+
+
+def _verify_wrong_verdicts(critique: Critique, spec: PartSpec, features: dict[str, Any]) -> None:
+    """Downgrade 'wrong' verdicts contradicted on every checkable dimension.
+
+    Conservative — refuted only when the spec's own numbers match the
+    measurement: a hole verdict 'wrong' stands unless a group matches the
+    spec'd diameter AND axis; a slot verdict stands unless the slot count is
+    met. Position/surface quality remain unverifiable, so the verdict falls
+    back to 'unsure' (never 'present') and major discrepancies to minor.
+    """
+    spec_by_name = {f.name.lower(): f for f in spec.features}
+    groups = [g for g in (features.get("hole_groups") or []) if not g.get("elongated")]
+    refuted: list[str] = []
+    for fv in critique.feature_verdicts:
+        if fv.status != "wrong":
+            continue
+        name = (fv.name or "").lower()
+        f = spec_by_name.get(name)
+        if f is None:
+            continue
+        hay = f"{(f.type or '').lower()} {name}"
+        ok = False
+        if "slot" in hay:
+            ok = int(features.get("slots") or 0) >= max(1, int(f.count or 1))
+        elif "hole" in hay or "bore" in hay:
+            want_n = max(1, int(f.count or 1))
+            want_dia = None
+            if f.dims:
+                v = f.dims.get("diameter") or f.dims.get("dia") or f.dims.get("d")
+                if isinstance(v, int | float) and v > 0:
+                    want_dia = float(v)
+            want_ax = str(getattr(f, "axis", "") or "").lstrip("+-").lower()
+            matched = 0
+            for g in groups:
+                g_dia = float(g.get("diameter") or 0)
+                if want_dia is not None and abs(g_dia - want_dia) > max(0.5, want_dia * 0.15):
+                    continue
+                g_ax = str(g.get("axis") or "").lstrip("+-").lower()
+                if want_ax in ("x", "y", "z") and g_ax and g_ax != want_ax:
+                    continue
+                matched += int(g.get("count") or 1)
+            ok = matched >= want_n
+        if ok:
+            fv.status = "unsure"
+            fv.note = (fv.note or "") + (
+                " [measured: spec dims match — 'wrong' refuted on the "
+                "checkable axes, position unverified]"
+            )
+            refuted.append(name)
+    if not refuted:
+        return
+    for d in critique.discrepancies:
+        if d.severity == "major" and any(n in d.what.lower() for n in refuted):
+            d.severity = "minor"
+            d.what += " (spec dims measured correct — likely a position nuance)"
 
 
 def fact_ceiling(dim_issues: list[str], feature_findings: list[dict[str, Any]]) -> int:

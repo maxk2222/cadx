@@ -99,6 +99,10 @@ class RuntimeSettings(BaseModel):
     # for this long — MPS/MLX adapters can freeze at 0% CPU and would
     # otherwise be polled until the full timeout (observed: 9.5% for >10min)
     mesh_stall_timeout_s: int = Field(default=300, ge=1, le=86_400)
+    # refuse to submit a generation job when the sidecar host reports less
+    # free RAM — a job launched under memory pressure stalls at 0% CPU and
+    # swaps the host into a watchdog panic. 0 disables the gate.
+    mesh_min_free_mb: int = Field(default=0, ge=0)
     mesh_decimate_faces: int = Field(default=30_000, ge=1)
     # face cap for the hybrid work-solid (sew+boolean in OCCT) — dominates
     # hybrid iteration latency; the export GLB keeps full detail. Keep at or

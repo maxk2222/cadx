@@ -345,6 +345,78 @@ def test_verify_missing_verdict_untouched_when_absent():
     assert c.discrepancies[0].severity == "major"
 
 
+def test_verify_wrong_verdict_refuted_when_dims_match():
+    """D.1: 'wrong' is refuted only when spec dims match the measurement —
+    Ø AND axis. A wrong-diameter or wrong-axis verdict stands."""
+    from cadx.agent.steps.critique import _verify_wrong_verdicts
+
+    spec = PartSpec(
+        **{
+            **SPEC,
+            "features": [
+                {
+                    "name": "boss bore",
+                    "type": "hole",
+                    "count": 1,
+                    "axis": "y",
+                    "dims": {"diameter": 8},
+                }
+            ],
+        }
+    )
+    features = {
+        "total_holes": 1,
+        "hole_groups": [{"diameter": 8.2, "count": 1, "axis": "+y", "elongated": False}],
+    }
+    c = Critique(
+        score=40,
+        passed=False,
+        feature_verdicts=[FeatureVerdict(name="boss bore", status="wrong", note="misplaced")],
+        discrepancies=[Discrepancy(what="boss bore is wrong", severity="major")],
+        confidence=0.5,
+    )
+    _verify_wrong_verdicts(c, spec, features)
+    assert c.feature_verdicts[0].status == "unsure"
+    assert c.discrepancies[0].severity == "minor"
+
+    # different diameter → verdict stands
+    c2 = Critique(
+        score=40,
+        passed=False,
+        feature_verdicts=[FeatureVerdict(name="boss bore", status="wrong", note="")],
+        discrepancies=[Discrepancy(what="boss bore is wrong", severity="major")],
+        confidence=0.5,
+    )
+    _verify_wrong_verdicts(
+        c2,
+        spec,
+        {
+            "total_holes": 1,
+            "hole_groups": [{"diameter": 12.0, "count": 1, "axis": "+y", "elongated": False}],
+        },
+    )
+    assert c2.feature_verdicts[0].status == "wrong"
+    assert c2.discrepancies[0].severity == "major"
+
+    # different axis → verdict stands
+    c3 = Critique(
+        score=40,
+        passed=False,
+        feature_verdicts=[FeatureVerdict(name="boss bore", status="wrong", note="")],
+        discrepancies=[Discrepancy(what="boss bore is wrong", severity="major")],
+        confidence=0.5,
+    )
+    _verify_wrong_verdicts(
+        c3,
+        spec,
+        {
+            "total_holes": 1,
+            "hole_groups": [{"diameter": 8.2, "count": 1, "axis": "+z", "elongated": False}],
+        },
+    )
+    assert c3.feature_verdicts[0].status == "wrong"
+
+
 # --------------------------------------------------------------------------- #
 # mesh fit-to-stated rescue
 

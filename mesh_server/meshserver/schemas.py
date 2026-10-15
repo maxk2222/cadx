@@ -80,3 +80,4 @@ class Health(BaseModel):
     device: str = ""
     backend: str = ""
     models: list[ModelInfo] = Field(default_factory=list)
+    mem_free_mb: int | None = None  # host RAM available to new jobs

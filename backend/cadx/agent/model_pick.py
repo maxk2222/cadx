@@ -90,7 +90,14 @@ def pick_adapter(
     if need_multiview:
         multi = [m for m in avail if getattr(m, "supports_multiview", False)]
         if multi:
-            avail = multi
+            # on an MLX host the only multiview adapters are torch-mps builds —
+            # they stall mid-generation under memory pressure (observed: job
+            # pinned at ~10%, host swapping into a watchdog panic). Prefer a
+            # native single-image adapter; the caller caps the image list to
+            # max_images.
+            native = [m for m in avail if str(getattr(m, "backend", "") or "").startswith("mlx")]
+            all_torch = all("torch" in str(getattr(m, "backend", "") or "") for m in multi)
+            avail = native if (device == "mlx" and native and all_torch) else multi
     if not avail:
         return None
     model_stats = (bench or {}).get("models") or {}

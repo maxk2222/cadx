@@ -89,6 +89,7 @@ class MeshHealth(BaseModel):
     backend: str = ""
     error: str | None = None
     models: list[MeshModelInfo] = Field(default_factory=list)
+    mem_free_mb: int | None = None  # host RAM available to new jobs
 
 
 ProgressFn = Callable[[str, float], Awaitable[None]]  # (message, progress 0..1)
@@ -115,11 +116,17 @@ class MeshPort:
 
 class HttpMeshClient(MeshPort):
     def __init__(
-        self, base_url: str, *, timeout_s: float = 900, stall_timeout_s: float = 300
+        self,
+        base_url: str,
+        *,
+        timeout_s: float = 900,
+        stall_timeout_s: float = 300,
+        min_free_mb: float = 0,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_s = timeout_s
         self.stall_timeout_s = stall_timeout_s
+        self.min_free_mb = min_free_mb
 
     async def health(self) -> MeshHealth:
         try:
@@ -139,12 +146,29 @@ class HttpMeshClient(MeshPort):
         except Exception:
             return []
 
+    async def _check_memory_gate(self) -> None:
+        """Refuse to submit when the sidecar host reports too little free RAM.
+
+        A generation launched under memory pressure stalls at 0% CPU and
+        swaps the host into a watchdog panic. 0 disables the gate; servers
+        without mem_free_mb (older version) never gate.
+        """
+        if self.min_free_mb <= 0:
+            return
+        h = await self.health()
+        if h.ok and h.mem_free_mb is not None and h.mem_free_mb < self.min_free_mb:
+            raise MeshGenError(
+                f"mesh-server host has only {h.mem_free_mb}MB free "
+                f"(min {self.min_free_mb:.0f}MB) — refusing to start a job"
+            )
+
     async def generate(
         self,
         req: MeshGenRequest,
         on_progress: ProgressFn | None,
         should_abort: Callable[[], Awaitable[bool]] | None = None,
     ) -> MeshGenResult:
+        await self._check_memory_gate()
         params: dict[str, Any] = {
             "model": req.model,
             "seed": req.seed,
@@ -341,4 +365,5 @@ def make_mesh_client(
         url,
         timeout_s=timeout_s or settings.mesh_timeout_s,
         stall_timeout_s=settings.mesh_stall_timeout_s,
+        min_free_mb=float(getattr(settings, "mesh_min_free_mb", 0) or 0),
     )

@@ -520,6 +520,7 @@ export interface Settings {
   image_timeout_s: number;
   mesh_timeout_s: number;
   mesh_stall_timeout_s: number;
+  mesh_min_free_mb: number;
   mesh_decimate_faces: number;
   mesh_max_faces_for_cad: number;
   exec_timeout_s: number;

@@ -459,6 +459,7 @@ class SettingsOut(BaseModel):
     image_default_strength: float
     mesh_timeout_s: int
     mesh_stall_timeout_s: int
+    mesh_min_free_mb: int
     mesh_decimate_faces: int
     mesh_max_faces_for_cad: int
     exec_timeout_s: int
@@ -538,6 +539,7 @@ class SettingsUpdate(BaseModel):
     image_timeout_s: int | None = Field(default=None, ge=1, le=86_400)
     mesh_timeout_s: int | None = Field(default=None, ge=1, le=86_400)
     mesh_stall_timeout_s: int | None = Field(default=None, ge=1, le=86_400)
+    mesh_min_free_mb: int | None = Field(default=None, ge=0)
     mesh_decimate_faces: int | None = Field(default=None, ge=1)
     mesh_max_faces_for_cad: int | None = Field(default=None, ge=1)
     exec_timeout_s: int | None = Field(default=None, ge=1, le=86_400)

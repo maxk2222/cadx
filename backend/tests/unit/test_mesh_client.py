@@ -225,6 +225,40 @@ async def test_http_client_stalled_job_aborts(fake_server, tmp_path):
         await c.generate(_req(tmp_path), None)
 
 
+async def test_http_client_memory_gate_refuses_low_host_ram(fake_server, tmp_path):
+    """B.2: when the sidecar reports less free RAM than configured, submit is
+    refused before a job is even created — a job started under memory
+    pressure stalls at 0% CPU and swaps the host."""
+    srv = fake_server
+
+    def low_mem(request: httpx.Request) -> httpx.Response | None:
+        if request.url.path == "/v1/health":
+            return httpx.Response(
+                200,
+                json={
+                    "ok": True,
+                    "device": "mps",
+                    "backend": "torch-mps",
+                    "models": [],
+                    "mem_free_mb": 800,
+                },
+            )
+        return None
+
+    srv.override = low_mem
+    c = HttpMeshClient("http://mesh.test", min_free_mb=4096)
+    with pytest.raises(Exception, match="only 800MB free"):
+        await c.generate(_req(tmp_path), None)
+    assert srv.jobs == {}  # nothing was submitted
+
+    # gate off / enough memory → normal flow
+    srv.override = lambda r: None
+    c2 = HttpMeshClient("http://mesh.test", min_free_mb=4096)
+    # still below threshold? no — override cleared, health has no mem_free_mb
+    res = await c2.generate(_req(tmp_path), None)
+    assert res.model == "fake"
+
+
 async def test_http_client_progress_resets_stall_clock(fake_server, tmp_path):
     """Progress that keeps advancing must not trip the stall watchdog."""
     srv = fake_server
