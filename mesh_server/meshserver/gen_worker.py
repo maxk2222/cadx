@@ -77,7 +77,10 @@ def _run_mesh(req: dict, cfg: ServerConfig, registry: Registry, work: Path) -> d
                     f"adapter '{model}' failed earlier in this process: "
                     f"{registry._failed[model]}"
                 )
-            raise RuntimeError(f"no adapter available for model '{model}'")
+            why = registry._probe_errors.get(model)
+            raise RuntimeError(
+                f"no adapter available for model '{model}'" + (f": {why}" if why else "")
+            )
         attempted.add(cls.id)
         try:
             adapter = registry.get(cls)

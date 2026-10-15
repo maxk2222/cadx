@@ -66,6 +66,7 @@ class Registry:
         self._instances: dict[str, object] = {}
         self._last_used: dict[str, float] = {}
         self._failed: dict[str, str] = {}  # adapter id -> last load/OOM error
+        self._probe_errors: dict[str, str] = {}  # adapter id -> availability-check error
         self._classes: list[type] = self._adapter_classes() + self._image_adapter_classes()
 
     @staticmethod
@@ -115,9 +116,15 @@ class Registry:
 
     def _probe(self, cls: type) -> bool:
         try:
-            return cls.available(self.cfg)
-        except Exception:
+            ok = cls.available(self.cfg)
+        except Exception as e:
+            self._probe_errors[cls.id] = str(e)[:300]
             return False
+        if not ok:
+            err = getattr(cls, "available_error", None)
+            if err:
+                self._probe_errors[cls.id] = err
+        return ok
 
     def models(self) -> list[ModelInfo]:
         out: list[ModelInfo] = []
@@ -137,7 +144,7 @@ class Registry:
                     license_note=cls.license_note,
                     loaded=bool(inst and inst.loaded),
                     available=avail,
-                    last_error=self._failed.get(cls.id),
+                    last_error=self._failed.get(cls.id) or self._probe_errors.get(cls.id),
                     default_size=getattr(cls, "default_size", None),
                     supports_edit=getattr(cls, "supports_edit", False),
                     requires_image=getattr(cls, "requires_image", False),

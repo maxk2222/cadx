@@ -142,8 +142,14 @@ class _Hy3DTorchBase(MeshAdapter):
     def available(cls, cfg: Any) -> bool:
         try:
             from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline  # noqa: F401
-        except Exception:
+        except Exception as e:
+            # dependency drift (e.g. transformers/diffusers/huggingface_hub
+            # version bump breaking the pinned hy3dgen stack) silently made
+            # this adapter vanish once — surface the real import error via
+            # registry._probe -> ModelInfo.last_error in /v1/health
+            cls.available_error = str(e)[:300]
             return False
+        cls.available_error = None
         return bool(_hy3d_device())
 
     def _variant(self) -> tuple[str, str, str]:
