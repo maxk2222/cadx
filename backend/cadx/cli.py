@@ -455,7 +455,9 @@ async def _eval_mesh_preflight(bms: list) -> None:
 
 @app.command()
 def eval(
-    benchmark: str | None = typer.Option(None, "--benchmark", "-b"),
+    benchmark: list[str] | None = typer.Option(
+        None, "--benchmark", "-b", help="benchmark name(s), repeatable"
+    ),
     mode: str | None = typer.Option(
         None, "--mode", "-m", help="only run benchmarks with this gen_mode"
     ),
@@ -478,9 +480,10 @@ def eval(
 
         bms = load_benchmarks()
         if benchmark:
-            bms = [b for b in bms if b.name == benchmark]
+            wanted = set(benchmark)
+            bms = [b for b in bms if b.name in wanted]
             if not bms:
-                print(f"benchmark '{benchmark}' not found")
+                print(f"benchmark(s) {sorted(wanted)} not found")
                 raise typer.Exit(1)
         if mode:
             bms = [b for b in bms if b.gen_mode == mode]
