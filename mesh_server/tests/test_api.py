@@ -143,3 +143,104 @@ def test_unavailable_model_fails_job(app):
             time.sleep(0.1)
         assert status == "failed"
         assert "no adapter" in r.json()["error"]
+
+
+def _mgr(tmp_path, **kw):
+    from meshserver.jobs import JobManager
+    from meshserver.registry import Registry
+
+    cfg = ServerConfig(fake=True, job_dir=tmp_path / "jobs", **kw)
+    return JobManager(cfg, Registry(cfg))
+
+
+def _job(mgr, jid="j1"):
+    import time
+
+    from meshserver.jobs import MeshJob
+    from meshserver.schemas import GenParams
+
+    job = MeshJob(jid, GenParams(model="fake"), [])
+    job.status = "running"
+    job.started = time.monotonic()
+    job.last_progress_at = time.monotonic()
+    job.last_active_at = job.last_progress_at
+    mgr.jobs[job.id] = job
+    return job
+
+
+async def _spawn_child(code: str):
+    import asyncio
+    import sys
+
+    return await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        code,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def test_watch_kills_idle_child_on_client_abort(tmp_path):
+    """A cancelled job whose child was already idle past job_cancel_idle_s is
+    recorded as *stalled* (kill_reason set → adapter gets badlisted), not a
+    clean cancel — the abort is the symptom of a frozen generation."""
+    import asyncio
+    import time
+
+    mgr = _mgr(tmp_path, job_stall_s=3600, job_cancel_idle_s=2)
+    job = _job(mgr)
+    work = tmp_path / "jobs" / job.id
+    work.mkdir(parents=True)
+
+    async def run():
+        proc = await _spawn_child("import time; time.sleep(60)")
+
+        async def abort():
+            await asyncio.sleep(3)  # > job_cancel_idle_s of idle CPU
+            job.cancelled = True
+
+        task = asyncio.create_task(abort())
+        try:
+            return await mgr._watch_gen_proc(proc, job, work)
+        finally:
+            await task
+
+    t0 = time.monotonic()
+    kill_reason, _ = asyncio.run(run())
+    assert kill_reason is not None and "stalled" in kill_reason
+    assert time.monotonic() - t0 < 15
+
+
+def test_watch_cancel_on_active_child_is_clean_cancel(tmp_path):
+    """Cancelling a *computing* child must not be mistaken for a stall —
+    kill_reason stays None so the adapter keeps its reputation."""
+    import asyncio
+    import time
+
+    mgr = _mgr(tmp_path, job_stall_s=3600, job_cancel_idle_s=2)
+    job = _job(mgr)
+    work = tmp_path / "jobs" / job.id
+    work.mkdir(parents=True)
+
+    async def run():
+        proc = await _spawn_child(
+            "import time\nt=time.monotonic()\nx=0\n"
+            "while time.monotonic()-t < 60:\n    x += 1"
+        )
+
+        async def abort():
+            await asyncio.sleep(1.5)
+            job.cancelled = True
+
+        task = asyncio.create_task(abort())
+        try:
+            return await mgr._watch_gen_proc(proc, job, work)
+        finally:
+            await task
+
+    t0 = time.monotonic()
+    kill_reason, _ = asyncio.run(run())
+    assert kill_reason is None  # busy child → plain cancel, no stall verdict
+    assert time.monotonic() - t0 < 15

@@ -45,6 +45,10 @@ class JobStatus(BaseModel):
     progress: float = 0.0
     eta_s: float | None = None
     message: str = ""
+    # subprocess-mode liveness: True while the child process is actually
+    # computing (>2% CPU recently) — lets client watchdogs distinguish a
+    # silent-but-working generation from a frozen one
+    busy: bool = False
     model: str = ""
     backend: str = ""
     seed: int = 0

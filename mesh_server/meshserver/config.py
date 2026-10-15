@@ -36,6 +36,13 @@ class ServerConfig:
     # long is marked failed — MPS/MLX stalls freeze at 0% CPU forever and
     # would otherwise hold the single-flight queue indefinitely
     job_stall_s: int = field(default_factory=lambda: int(os.environ.get("MESH_JOB_STALL_S", "600")))
+    # a client-aborted job whose child had already been idle this long is
+    # recorded as *stalled* (adapter badlisted) rather than cancelled — the
+    # abort is then the symptom of a frozen generation, not a user choice.
+    # Kept below job_stall_s because the client watchdog fires first.
+    job_cancel_idle_s: int = field(
+        default_factory=lambda: int(os.environ.get("MESH_JOB_CANCEL_IDLE_S", "60"))
+    )
     # run each generation in its own subprocess (python -m meshserver.gen_worker)
     # so stall/cancel/RSS-cap can SIGKILL it and the OS reclaims all model
     # memory — a frozen adapter thread inside this process can't be killed

@@ -74,6 +74,10 @@ class MeshJob:
         # monotonic timestamp of the last *observable* progress change —
         # the stall watchdog reads this via JobManager.get()
         self.last_progress_at = time.monotonic()
+        # subprocess-mode liveness: set by the watch loop when the child is
+        # computing — surfaced as `busy` so clients don't mistake a silent
+        # stage for a stall
+        self.last_active_at = self.last_progress_at
 
     def to_status(self) -> JobStatus:
         dur = (self.finished or time.monotonic()) - (self.started or self.created)
@@ -82,6 +86,8 @@ class MeshJob:
             progress=round(self.progress, 3),
             eta_s=None,
             message=self.message,
+            busy=self.status == "running"
+            and time.monotonic() - self.last_active_at < 30,
             model=self.model,
             backend=self.backend,
             seed=self.seed,
@@ -116,6 +122,7 @@ class ImageJob:
         self.steps = params.steps
         self.guidance = params.guidance
         self.last_progress_at = time.monotonic()
+        self.last_active_at = self.last_progress_at
 
     def to_status(self) -> JobStatus:
         dur = (self.finished or time.monotonic()) - (self.started or self.created)
@@ -124,6 +131,8 @@ class ImageJob:
             progress=round(self.progress, 3),
             eta_s=None,
             message=self.message,
+            busy=self.status == "running"
+            and time.monotonic() - self.last_active_at < 30,
             model=self.model,
             backend=self.backend,
             seed=self.seed,
@@ -336,6 +345,7 @@ class JobManager:
         # stderr to a file, not a pipe — an orphaned PIPE transport raises
         # "Event loop is closed" in __del__ when the loop ends first
         stderr_file = _open_log(work / "stderr.log")
+        proc: asyncio.subprocess.Process | None = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 sys.executable,
@@ -351,14 +361,22 @@ class JobManager:
             job.started = time.monotonic()
             job.message = "generating (subprocess)"
             job.last_progress_at = time.monotonic()
+            job.last_active_at = job.last_progress_at
             kill_reason, peak_rss_mb = await self._watch_gen_proc(proc, job, work)
         finally:
+            # whatever happens above — exception in the watcher, task cancel —
+            # a live child must never leak past this point
+            if proc is not None and proc.returncode is None:
+                with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                    os.killpg(proc.pid, signal.SIGKILL)
+                with contextlib.suppress(Exception):
+                    await proc.wait()
             stderr_file.close()
 
         if proc.returncode == 0:
             self._finish_proc_ok(job, work, peak_rss_mb)
             return
-        if job.cancelled or proc.returncode == 2:
+        if (job.cancelled or proc.returncode == 2) and kill_reason is None:
             job.status = "cancelled"
             job.finished = time.monotonic()
             return
@@ -406,6 +424,18 @@ class JobManager:
         last_raw = ""
         peak_rss_mb = 0.0
         kill_reason: str | None = None
+        # a generation may legitimately stay silent between stage callbacks
+        # (hunyuan only reports 5% then 90%) — the real stall signal is an
+        # idle CPU: track the last time the child either progressed or
+        # actually computed something
+        last_active_at = time.monotonic()
+        cancel_seen = False
+        child_proc = None
+        with contextlib.suppress(Exception):
+            import psutil
+
+            child_proc = psutil.Process(proc.pid)
+            child_proc.cpu_percent()  # prime the sampler
 
         def _kill() -> None:
             try:
@@ -427,20 +457,50 @@ class JobManager:
                         job.last_progress_at = time.monotonic()
             except (json.JSONDecodeError, OSError):
                 pass
-            if self.cfg.job_max_rss_mb > 0:
-                rss = self._child_rss_mb(proc.pid)
-                peak_rss_mb = max(peak_rss_mb, rss or 0.0)
-                if rss is not None and rss > self.cfg.job_max_rss_mb:
-                    kill_reason = f"job exceeded {self.cfg.job_max_rss_mb}MB RSS — killed"
-                    _kill()
-            if job.cancelled:
-                (work / "cancel.flag").touch()
+            rss = self._child_rss_mb(proc.pid)
+            peak_rss_mb = max(peak_rss_mb, rss or 0.0)
+            if (
+                self.cfg.job_max_rss_mb > 0
+                and rss is not None
+                and rss > self.cfg.job_max_rss_mb
+            ):
+                kill_reason = f"job exceeded {self.cfg.job_max_rss_mb}MB RSS — killed"
+                _kill()
+            if child_proc is not None:
+                with contextlib.suppress(Exception):
+                    if child_proc.cpu_percent() > 2.0:
+                        last_active_at = time.monotonic()
+                        # a computing child is alive even between progress
+                        # callbacks — feed both watchdogs
+                        job.last_progress_at = last_active_at
+                        job.last_active_at = last_active_at
+            if job.cancelled and not cancel_seen:
+                cancel_seen = True
+                # the job dir may already be gone — a client DELETE cleans
+                # files concurrently with this loop
+                with contextlib.suppress(OSError):
+                    (work / "cancel.flag").touch()
+                # a client abort *on an idle child* is the stall signature —
+                # record it so the adapter gets badlisted in _finish_proc_*;
+                # threshold stays well below job_stall_s because the client's
+                # own watchdog aborts first. Must run only on the *first*
+                # cancelled tick — after the grace kill the child is dead and
+                # "idle" would always exceed the threshold.
+                if kill_reason is None and (
+                    time.monotonic() - last_active_at > self.cfg.job_cancel_idle_s
+                ):
+                    kill_reason = (
+                        f"stalled — idle >{self.cfg.job_cancel_idle_s}s when "
+                        "client aborted (subprocess killed)"
+                    )
                 # brief grace for a clean abort, then the hard kill
                 await asyncio.sleep(2)
                 _kill()
-            if time.monotonic() - job.last_progress_at > self.cfg.job_stall_s:
+            elif job.cancelled:
+                _kill()
+            if time.monotonic() - last_active_at > self.cfg.job_stall_s:
                 kill_reason = (
-                    f"stalled — no progress for {self.cfg.job_stall_s}s (subprocess killed)"
+                    f"stalled — idle for {self.cfg.job_stall_s}s (subprocess killed)"
                 )
                 _kill()
         return kill_reason, peak_rss_mb

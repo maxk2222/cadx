@@ -222,7 +222,9 @@ class HttpMeshClient(MeshPort):
                 if s in ("failed", "cancelled"):
                     raise MeshGenError(status.get("error") or f"mesh job {s}")
                 sig = (float(status.get("progress") or 0.0), str(status.get("message") or ""))
-                if sig != last_sig:
+                # busy = the child is provably computing — silent stages
+                # (hunyuan only reports 5% then 90%) are not stalls
+                if status.get("busy") or sig != last_sig:
                     last_sig = sig
                     last_change_at = waited
                 elif waited - last_change_at >= self.stall_timeout_s:
