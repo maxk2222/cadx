@@ -564,6 +564,106 @@ class MeshModelOut(BaseModel):
     requires_image: bool = False  # edit-only adapter, no txt2img
 
 
+# --------------------------------------------------------------------------- #
+# /stats — aggregated generation statistics for the Stats page                  #
+# --------------------------------------------------------------------------- #
+
+
+class NamedCount(BaseModel):
+    name: str
+    count: int
+
+
+class StatsDayBucket(BaseModel):
+    date: str  # YYYY-MM-DD
+    versions: int = 0
+    jobs: int = 0
+    tokens: int = 0  # prompt + completion tokens (from AgentTrace rows)
+
+
+class ModelStat(BaseModel):
+    model: str
+    calls: int
+    prompt_tokens: int
+    completion_tokens: int
+    avg_latency_ms: float
+
+
+class StepStat(BaseModel):
+    step: str
+    calls: int
+    tokens: int
+    avg_latency_ms: float | None = None
+    wall_seconds: float = 0.0  # from Job.live step_history durations
+
+
+class JobTypeStat(BaseModel):
+    type: str
+    count: int
+    failed: int
+    avg_duration_s: float | None = None
+
+
+class ProjectStat(BaseModel):
+    id: uuid.UUID
+    name: str
+    versions: int
+    succeeded: int
+    avg_score: float | None = None
+    tokens: int
+    last_activity: datetime | None = None
+
+
+class ScoreStats(BaseModel):
+    avg: float | None = None
+    best: int | None = None
+    pass_rate: float | None = None  # succeeded / terminal versions
+    buckets: list[NamedCount] = Field(default_factory=list)  # <40, 40-59, 60-79, 80-100
+
+
+class MeshStats(BaseModel):
+    generations: int
+    cached: int
+    avg_duration_s: float | None = None
+    models: list[NamedCount] = Field(default_factory=list)
+
+
+class StatsTotals(BaseModel):
+    projects: int = 0
+    versions: int = 0
+    jobs: int = 0
+    assets: int = 0
+    artifacts: int = 0
+    library_parts: int = 0
+    artifact_bytes: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    llm_calls: int = 0
+    compute_seconds: float = 0.0  # sum of job wall times
+
+
+class StatsOut(BaseModel):
+    days: int
+    generated_at: datetime
+    totals: StatsTotals
+    versions_by_status: list[NamedCount] = Field(default_factory=list)
+    versions_by_kind: list[NamedCount] = Field(default_factory=list)
+    versions_by_mode_requested: list[NamedCount] = Field(default_factory=list)
+    versions_by_mode_resolved: list[NamedCount] = Field(default_factory=list)
+    jobs_by_status: list[NamedCount] = Field(default_factory=list)
+    job_types: list[JobTypeStat] = Field(default_factory=list)
+    score: ScoreStats = Field(default_factory=ScoreStats)
+    iterations_avg: float | None = None
+    activity: list[StatsDayBucket] = Field(default_factory=list)
+    models: list[ModelStat] = Field(default_factory=list)
+    steps: list[StepStat] = Field(default_factory=list)
+    top_errors: list[NamedCount] = Field(default_factory=list)
+    failed_steps: list[NamedCount] = Field(default_factory=list)
+    mesh: MeshStats = Field(default_factory=lambda: MeshStats(generations=0, cached=0))
+    artifacts_by_kind: list[NamedCount] = Field(default_factory=list)
+    projects: list[ProjectStat] = Field(default_factory=list)
+
+
 class ImageGenerateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

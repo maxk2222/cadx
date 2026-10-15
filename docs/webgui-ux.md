@@ -131,6 +131,27 @@ rename/caption editing, deletion, and saving a version as either a STEP body or
 parametric code template. Parts may be pinned on generation/edit or discovered
 and attached by the agent's library tools. See [parts-library.md](parts-library.md).
 
+### Statistics (`/stats`)
+
+The Stats page aggregates generation history across all projects, with a
+7d / 30d / 90d / all-time range selector. Backed by `GET /api/stats?days=N`
+(read-only, no migration needed). Sections:
+
+- KPI cards: versions/projects/jobs, success rate, average score and
+  iterations, LLM tokens and calls, total compute time, artifact storage.
+- Activity: versions + jobs per day (stacked bars) and LLM tokens per day.
+- Distributions: version status, resolved generation mode, job status donuts.
+- Quality: score histogram (`<40`, `40-59`, `60-79`, `80-100`).
+- LLM usage: tokens / calls / average latency per model and per pipeline step;
+  per-step wall time comes from `Job.live.step_history`.
+- Performance: job count / failure count / average wall duration per job type.
+- Failures: most common error lines and the pipeline step jobs died in.
+- Projects: per-project versions, success count, average score, tokens and
+  last activity with deep links into the project.
+
+Charts use Recharts; the page is lazy-loaded so the chart bundle does not
+inflate the initial page load.
+
 ## Agent visibility
 
 The UI consumes `VersionDetail` and artifact endpoints; fields are displayed in

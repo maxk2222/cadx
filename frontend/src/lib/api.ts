@@ -21,6 +21,7 @@ import type {
   RunOptions,
   Settings,
   SettingsUpdate,
+  Stats,
   VersionDetail,
   VersionSummary,
 } from "./types";
@@ -239,6 +240,8 @@ export const api = {
 
   meshHealth: () => req<MeshHealth>("/mesh/health"),
   meshModels: () => req<MeshModelInfo[]>("/mesh/models"),
+
+  getStats: (days = 0) => req<Stats>(`/stats${days ? `?days=${days}` : ""}`),
 };
 
 export function jobEventsUrl(jobId: string): string {

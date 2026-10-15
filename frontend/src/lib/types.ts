@@ -606,3 +606,94 @@ export interface LibraryPart {
   created_at: string;
   url: string;
 }
+
+/* ---------- /stats ---------- */
+
+export type NamedCount = {
+  name: string;
+  count: number;
+};
+
+export interface StatsDayBucket {
+  date: string; // YYYY-MM-DD
+  versions: number;
+  jobs: number;
+  tokens: number;
+}
+
+export interface ModelStat {
+  model: string;
+  calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  avg_latency_ms: number;
+}
+
+export interface StepStat {
+  step: string;
+  calls: number;
+  tokens: number;
+  avg_latency_ms: number | null;
+  wall_seconds: number;
+}
+
+export interface JobTypeStat {
+  type: string;
+  count: number;
+  failed: number;
+  avg_duration_s: number | null;
+}
+
+export interface ProjectStat {
+  id: string;
+  name: string;
+  versions: number;
+  succeeded: number;
+  avg_score: number | null;
+  tokens: number;
+  last_activity: string | null;
+}
+
+export interface Stats {
+  days: number;
+  generated_at: string;
+  totals: {
+    projects: number;
+    versions: number;
+    jobs: number;
+    assets: number;
+    artifacts: number;
+    library_parts: number;
+    artifact_bytes: number;
+    prompt_tokens: number;
+    completion_tokens: number;
+    llm_calls: number;
+    compute_seconds: number;
+  };
+  versions_by_status: NamedCount[];
+  versions_by_kind: NamedCount[];
+  versions_by_mode_requested: NamedCount[];
+  versions_by_mode_resolved: NamedCount[];
+  jobs_by_status: NamedCount[];
+  job_types: JobTypeStat[];
+  score: {
+    avg: number | null;
+    best: number | null;
+    pass_rate: number | null;
+    buckets: NamedCount[];
+  };
+  iterations_avg: number | null;
+  activity: StatsDayBucket[];
+  models: ModelStat[];
+  steps: StepStat[];
+  top_errors: NamedCount[];
+  failed_steps: NamedCount[];
+  mesh: {
+    generations: number;
+    cached: number;
+    avg_duration_s: number | null;
+    models: NamedCount[];
+  };
+  artifacts_by_kind: NamedCount[];
+  projects: ProjectStat[];
+}

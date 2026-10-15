@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
-import { Activity, FolderOpen, Library, Settings, type LucideIcon } from "lucide-react";
+import { Suspense, lazy } from "react";
+import { Activity, BarChart3, FolderOpen, Library, Settings, type LucideIcon } from "lucide-react";
 import {
   BrowserRouter,
   Link,
@@ -17,6 +18,9 @@ import ProjectPage from "./pages/ProjectPage";
 import ProjectsPage from "./pages/ProjectsPage";
 import SettingsPage from "./pages/SettingsPage";
 import VersionPage from "./pages/VersionPage";
+
+// lazy: keeps recharts (~200KB) out of the initial bundle
+const StatsPage = lazy(() => import("./pages/StatsPage"));
 
 function NavItem({
   to,
@@ -94,6 +98,12 @@ function SideNav() {
           badge={activeJobs.data?.length}
         />
         <NavItem
+          to="/stats"
+          icon={BarChart3}
+          label="Stats"
+          active={loc.pathname === "/stats"}
+        />
+        <NavItem
           to="/settings?tab=library"
           icon={Library}
           label="Library"
@@ -126,6 +136,14 @@ export default function App() {
               <Route path="/versions/:id" element={<VersionPage />} />
               <Route path="/versions/:id/edit" element={<EditPage />} />
               <Route path="/jobs" element={<JobsPage />} />
+              <Route
+                path="/stats"
+                element={
+                  <Suspense fallback={null}>
+                    <StatsPage />
+                  </Suspense>
+                }
+              />
               <Route path="/settings" element={<SettingsPage />} />
             </Routes>
           </main>

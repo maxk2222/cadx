@@ -70,6 +70,19 @@ POST          /api/jobs/{id}/finish                      stop early, keep the be
 POST          /api/jobs/{id}/restart                     replay a terminal job
 ```
 
+## Stats
+
+```
+GET           /api/stats?days=N                          aggregated generation stats (N=7/30/90, 0 = all time)
+```
+
+Read-only aggregate for the Stats page: totals, status/mode/kind
+distributions, score buckets + pass rate, per-day activity, token usage by
+model and pipeline step (from `AgentTrace`), job durations by type, mesh
+generation stats, top errors/failed steps, artifact kinds, per-project
+leaderboard. Aggregation happens over column selects — the heavy JSON columns
+(`messages`, `log`, `code`, …) are never loaded.
+
 ## Library
 
 ```
