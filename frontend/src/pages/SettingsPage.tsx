@@ -1,23 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  Check,
-  ChevronDown,
-  ChevronRight,
-  Download,
-  Package,
-  Pencil,
-  Search,
-  Trash2,
-  Upload,
-  X,
-} from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Btn,
   Card,
   Chip,
-  EmptyState,
   Field,
   SectionTitle,
   Spinner,
@@ -143,14 +130,13 @@ const FIELD_BOUNDS: Record<
   exec_mem_limit_mb: { min: 256, max: 1_048_576, int: true },
 };
 
-type TabId = "provider" | "agent" | "mesh" | "fem" | "system" | "library";
+type TabId = "provider" | "agent" | "mesh" | "fem" | "system";
 const TABS: { id: TabId; label: string }[] = [
   { id: "provider", label: "LLM Provider" },
   { id: "agent", label: "Agent" },
-  { id: "mesh", label: "Mesh" },
+  { id: "mesh", label: "Mesh & Image" },
   { id: "fem", label: "FEM / TopOpt" },
   { id: "system", label: "System" },
-  { id: "library", label: "Library" },
 ];
 
 const TAB_IDS = new Set<string>(TABS.map((t) => t.id));
@@ -159,16 +145,22 @@ export default function SettingsPage() {
   useTitle("Settings");
   const qc = useQueryClient();
   const [sp, setSp] = useSearchParams();
+  const navigate = useNavigate();
   const [tab, setTab] = useState<TabId>(() => {
     const q = sp.get("tab") ?? "";
-    return TAB_IDS.has(q)
-      ? (q as TabId)
-      : (localStorage.getItem("settings.tab") as TabId) || "provider";
+    if (TAB_IDS.has(q)) return q as TabId;
+    const saved = localStorage.getItem("settings.tab") ?? "";
+    return TAB_IDS.has(saved) ? (saved as TabId) : "provider";
   });
 
-  // deep links like /settings?tab=library while already on the page
+  // deep links like /settings?tab=fem while already on the page;
+  // the library moved to its own route — keep old links working
   useEffect(() => {
     const q = sp.get("tab") ?? "";
+    if (q === "library") {
+      navigate("/library", { replace: true });
+      return;
+    }
     if (TAB_IDS.has(q) && q !== tab) setTab(q as TabId);
   }, [sp]);
   const [form, setForm] = useState<Record<string, string> | null>(null);
@@ -197,8 +189,16 @@ export default function SettingsPage() {
     refetchInterval: 30_000,
     retry: false,
   });
+  const llmHealth = useQuery({
+    queryKey: ["llmHealth"],
+    queryFn: api.llmHealth,
+    refetchInterval: 60_000,
+    retry: false,
+  });
   const testProvider = useMutation({
     mutationFn: api.testProvider,
+    // a manual test doubles as the shared health probe — keep card + sidebar in sync
+    onSuccess: (d) => qc.setQueryData(["llmHealth"], d),
   });
 
   // seed the form once settings arrive (the api key itself is never sent back)
@@ -271,6 +271,7 @@ export default function SettingsPage() {
       qc.invalidateQueries({ queryKey: ["settings"] });
       qc.invalidateQueries({ queryKey: ["meshHealth"] });
       qc.invalidateQueries({ queryKey: ["health"] });
+      qc.invalidateQueries({ queryKey: ["llmHealth"] });
       setApiKey("");
       setClearKey(false);
       setSaveError("");
@@ -340,46 +341,77 @@ export default function SettingsPage() {
     );
   };
 
+  // the sidecar hosts both adapter families — split them for display
   const models = meshHealth.data?.models ?? [];
+  const meshModels = models.filter((m) => m.kind !== "image");
+  const imageAdapters = (imageModels.data ?? []).filter((m) => m.available);
+  const lp = llmHealth.data;
   const t = testProvider.data;
+
+  const statusCard = (
+    label: string,
+    text: string,
+    tone: "ok" | "warn" | "bad" | "idle",
+    title?: string,
+  ) => (
+    <Card className="p-3">
+      <div className="text-[11px] uppercase tracking-wider text-zinc-500">{label}</div>
+      <div
+        className={`mt-1 truncate text-sm font-medium ${
+          tone === "ok"
+            ? "text-emerald-400"
+            : tone === "warn"
+              ? "text-amber-400"
+              : tone === "bad"
+                ? "text-red-400"
+                : "text-zinc-500"
+        }`}
+        title={title}
+      >
+        {text}
+      </div>
+    </Card>
+  );
 
   return (
     <div className="mx-auto max-w-xl p-6 pb-28">
       <h1 className="mb-4 text-2xl font-bold">Settings</h1>
 
       {/* service health */}
-      <div className="mb-4 grid grid-cols-3 gap-2">
-        <Card className="p-3">
-          <div className="text-[11px] uppercase tracking-wider text-zinc-500">API</div>
-          <div
-            className={`mt-1 text-sm font-medium ${
-              health.data?.ok ? "text-emerald-400" : "text-red-400"
-            }`}
-          >
-            {health.data?.ok ? "online" : "offline"}
-          </div>
-        </Card>
-        <Card className="p-3">
-          <div className="text-[11px] uppercase tracking-wider text-zinc-500">LLM</div>
-          <div
-            className={`mt-1 text-sm font-medium ${
-              s.llm_api_key_set ? "text-emerald-400" : "text-amber-400"
-            }`}
-          >
-            {s.llm_api_key_set ? "key set" : "no key"}
-          </div>
-        </Card>
-        <Card className="p-3">
-          <div className="text-[11px] uppercase tracking-wider text-zinc-500">Mesh server</div>
-          <div
-            className={`mt-1 text-sm font-medium ${
-              meshHealth.data?.ok ? "text-emerald-400" : "text-zinc-500"
-            }`}
-            title={meshHealth.data?.error ?? ""}
-          >
-            {meshHealth.data?.ok ? `online · ${meshHealth.data.device}` : "offline"}
-          </div>
-        </Card>
+      <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {statusCard(
+          "API",
+          health.data?.ok ? "online" : "offline",
+          health.data?.ok ? "ok" : "bad",
+        )}
+        {statusCard(
+          "LLM",
+          lp?.ok
+            ? `online · ${lp.latency_ms}ms${lp.vision_ok ? " · vision" : ""}`
+            : llmHealth.isPending
+              ? "checking…"
+              : "offline",
+          lp?.ok ? "ok" : llmHealth.isPending ? "idle" : "bad",
+          lp?.error ?? (s.llm_api_key_set ? undefined : "no API key configured"),
+        )}
+        {statusCard(
+          "Mesh server",
+          meshHealth.data?.ok
+            ? `online · ${meshHealth.data.device} · ${meshModels.filter((m) => m.available).length} models`
+            : "offline",
+          meshHealth.data?.ok ? "ok" : "idle",
+          meshHealth.data?.error ?? undefined,
+        )}
+        {statusCard(
+          "Image gen",
+          !meshHealth.data?.ok
+            ? "offline"
+            : imageAdapters.length
+              ? `online · ${imageAdapters.length} adapter${imageAdapters.length > 1 ? "s" : ""}`
+              : "no adapters",
+          !meshHealth.data?.ok ? "idle" : imageAdapters.length ? "ok" : "warn",
+          meshHealth.data?.error ?? undefined,
+        )}
       </div>
 
       {/* category tabs */}
@@ -609,13 +641,13 @@ export default function SettingsPage() {
             onChange={(e) => set("mesh_model", e.target.value)}
           >
             <option value="auto">auto (device default)</option>
-            {models.map((m) => (
+            {meshModels.map((m) => (
               <option key={m.id} value={m.id} disabled={!m.available}>
                 {m.name || m.id} ({m.device}){m.available ? "" : " — not installed"}
               </option>
             ))}
             {form.mesh_model &&
-              !["auto", ...models.map((m) => m.id)].includes(form.mesh_model) && (
+              !["auto", ...meshModels.map((m) => m.id)].includes(form.mesh_model) && (
                 <option value={form.mesh_model}>{form.mesh_model}</option>
               )}
           </select>
@@ -630,9 +662,9 @@ export default function SettingsPage() {
         })}
         {field({ key: "mesh_decimate_faces", label: "Decimate target (faces)", kind: "number" })}
         {field({ key: "mesh_max_faces_for_cad", label: "Max faces for CAD conversion", kind: "number" })}
-        {models.length > 0 && (
+        {meshModels.length > 0 && (
           <div className="mb-2 flex flex-col gap-1 text-xs text-zinc-500">
-            {models
+            {meshModels
               .filter((m) => m.available)
               .map((m) => (
                 <div key={m.id}>
@@ -659,8 +691,23 @@ export default function SettingsPage() {
       <Card className="p-4">
         <div className="mb-3 flex items-center justify-between">
           <SectionTitle>Image generation (local models)</SectionTitle>
-          {imageModels.data && imageModels.data.length > 0 && (
-            <Chip tone="green">online · {imageModels.data.filter((m) => m.available).length} adapter(s)</Chip>
+          {meshHealth.data && (
+            <Chip
+              tone={
+                !meshHealth.data.ok
+                  ? "red"
+                  : imageAdapters.length
+                    ? "green"
+                    : "amber"
+              }
+              title={meshHealth.data.error ?? ""}
+            >
+              {!meshHealth.data.ok
+                ? "offline"
+                : imageAdapters.length
+                  ? `online · ${imageAdapters.length} adapter${imageAdapters.length > 1 ? "s" : ""}`
+                  : "no adapters"}
+            </Chip>
           )}
         </div>
         <div className="mb-3 text-xs text-zinc-500">
@@ -747,6 +794,11 @@ export default function SettingsPage() {
               </div>
             ))}
           </div>
+        ) : meshHealth.data && !meshHealth.data.ok ? (
+          <div className="mb-2 text-xs text-zinc-500">
+            mesh-server sidecar unreachable — image generation shares it; start
+            it with <code>make mesh-server</code>.
+          </div>
         ) : (
           <div className="mb-2 text-xs text-zinc-500">
             no image adapter installed — see <code>docs/image-generation.md</code> for
@@ -799,13 +851,6 @@ export default function SettingsPage() {
         </>
       )}
 
-      {tab === "library" && (
-        <>
-          <CatalogBrowser />
-          <LibraryBrowser />
-        </>
-      )}
-
       {/* floating save bar — appears while there are unsaved changes */}
       {(dirty || save.isPending || saved || saveError) && (
         <div className="fixed inset-x-0 bottom-5 z-40 flex justify-center px-4">
@@ -836,346 +881,3 @@ export default function SettingsPage() {
   );
 }
 
-function CatalogBrowser() {
-  const [open, setOpen] = useState(true);
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [detail, setDetail] = useState<string | null>(null);
-  const [q, setQ] = useState("");
-  const catalog = useQuery({
-    queryKey: ["catalog"],
-    queryFn: api.getCatalog,
-    enabled: open,
-    staleTime: Infinity,
-  });
-
-  const toggle = (k: string) =>
-    setExpanded((s) => {
-      const n = new Set(s);
-      n.has(k) ? n.delete(k) : n.add(k);
-      return n;
-    });
-
-  const needle = q.trim().toLowerCase();
-  const filtered = useMemo(() => {
-    const data = catalog.data ?? {};
-    if (!needle) return data;
-    const out: typeof data = {};
-    for (const [cat, classes] of Object.entries(data)) {
-      const hits = Object.fromEntries(
-        Object.entries(classes).filter(([cls, e]) => {
-          const hay = [
-            cls,
-            cat,
-            e.doc,
-            ...Object.keys(e.types ?? {}),
-            ...Object.values(e.types ?? {}).flat(),
-            ...(e.params ?? []),
-          ]
-            .join(" ")
-            .toLowerCase();
-          return hay.includes(needle);
-        }),
-      );
-      if (Object.keys(hits).length) out[cat] = hits;
-    }
-    return out;
-  }, [catalog.data, needle]);
-
-  return (
-    <Card className="mt-4 p-4">
-      <button
-        className="flex w-full items-center gap-2 text-left"
-        onClick={() => setOpen((o) => !o)}
-      >
-        {open ? (
-          <ChevronDown className="h-4 w-4 text-zinc-500" />
-        ) : (
-          <ChevronRight className="h-4 w-4 text-zinc-500" />
-        )}
-        <Package className="h-4 w-4 text-zinc-500" />
-        <span className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
-          Standard parts catalog (bd_warehouse)
-        </span>
-      </button>
-      {open && (
-        <div className="mt-3">
-          <div className="relative mb-2">
-            <Search className="pointer-events-none absolute left-2 top-2 h-3.5 w-3.5 text-zinc-600" />
-            <input
-              className={inputCls + " pl-7 text-xs"}
-              placeholder="filter classes, types or sizes (e.g. iso10642, M4, 608…)"
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-            />
-          </div>
-          {catalog.isLoading ? (
-            <div className="flex justify-center py-4 text-zinc-500">
-              <Spinner />
-            </div>
-          ) : catalog.isError ? (
-            <EmptyState title="Catalog unavailable" hint="requires the executor environment" />
-          ) : (
-            Object.entries(filtered).map(([cat, classes]) => (
-              <div key={cat} className="mb-1">
-                <button
-                  className="flex w-full items-center gap-1.5 rounded px-1 py-1 text-sm text-zinc-300 hover:bg-zinc-800"
-                  onClick={() => toggle(cat)}
-                >
-                  {expanded.has(cat) || needle ? (
-                    <ChevronDown className="h-3.5 w-3.5 text-zinc-500" />
-                  ) : (
-                    <ChevronRight className="h-3.5 w-3.5 text-zinc-500" />
-                  )}
-                  {cat}
-                  <span className="text-xs text-zinc-600">
-                    ({Object.keys(classes).length})
-                  </span>
-                </button>
-                {(expanded.has(cat) || needle) && (
-                  <div className="ml-6 flex flex-col gap-0.5 border-l border-zinc-800 pl-2">
-                    {Object.entries(classes).map(([cls, entry]) => {
-                      const sizes = entry.types
-                        ? Object.values(entry.types).flat()
-                        : [];
-                      const preview =
-                        entry.kind === "parametric"
-                          ? (entry.params ?? []).slice(0, 6).join(", ")
-                          : sizes.slice(0, 8).join(", ") +
-                            (sizes.length > 8 ? `, +${sizes.length - 8}` : "");
-                      const openDetail = detail === cls;
-                      return (
-                        <div key={cls} className="py-0.5 text-xs">
-                          <button
-                            className="text-left font-mono text-zinc-300 hover:text-zinc-100"
-                            onClick={() => setDetail(openDetail ? null : cls)}
-                          >
-                            {cls}
-                          </button>
-                          <span className="ml-2 text-zinc-600">
-                            {entry.kind === "parametric" ? "params: " : ""}
-                            {preview}
-                          </span>
-                          {openDetail && (
-                            <div className="my-1 rounded border border-zinc-800 bg-zinc-900/60 p-2 font-mono text-[11px] text-zinc-400">
-                              <div className="mb-1 text-zinc-500">{entry.doc}</div>
-                              {entry.types &&
-                                Object.entries(entry.types).map(([t, ss]) => (
-                                  <div key={t}>
-                                    <span className="text-zinc-300">{t}</span>:{" "}
-                                    {ss.join(", ")}
-                                  </div>
-                                ))}
-                              {entry.params && (
-                                <div>params: {entry.params.join(", ")}</div>
-                              )}
-                              {entry.holes && (
-                                <div>holes: {entry.holes.join(", ")}</div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            ))
-          )}
-        </div>
-      )}
-    </Card>
-  );
-}
-
-function LibraryBrowser() {
-  const qc = useQueryClient();
-  const [open, setOpen] = useState(true);
-  const fileRef = useRef<HTMLInputElement>(null);
-  const [name, setName] = useState("");
-  const [caption, setCaption] = useState("");
-  const [error, setError] = useState("");
-  const [editing, setEditing] = useState<string | null>(null);
-  const [editName, setEditName] = useState("");
-  const [editCaption, setEditCaption] = useState("");
-
-  const parts = useQuery({
-    queryKey: ["library"],
-    queryFn: api.listLibrary,
-    enabled: open,
-    staleTime: 10_000,
-  });
-
-  const upload = useMutation({
-    mutationFn: (files: File[]) => api.uploadLibrary(files, name, caption),
-    onSuccess: () => {
-      setName("");
-      setCaption("");
-      qc.invalidateQueries({ queryKey: ["library"] });
-    },
-    onError: (e) => setError(String(e)),
-  });
-  const update = useMutation({
-    mutationFn: (id: string) =>
-      api.updateLibraryPart(id, { name: editName.trim(), caption: editCaption.trim() }),
-    onSuccess: () => {
-      setEditing(null);
-      qc.invalidateQueries({ queryKey: ["library"] });
-    },
-  });
-  const del = useMutation({
-    mutationFn: (id: string) => api.deleteLibraryPart(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["library"] }),
-  });
-
-  return (
-    <Card className="mt-4 p-4">
-      <button
-        className="flex w-full items-center gap-2 text-left"
-        onClick={() => setOpen((o) => !o)}
-      >
-        {open ? (
-          <ChevronDown className="h-4 w-4 text-zinc-500" />
-        ) : (
-          <ChevronRight className="h-4 w-4 text-zinc-500" />
-        )}
-        <Package className="h-4 w-4 text-zinc-500" />
-        <span className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
-          Reusable part library
-        </span>
-      </button>
-      {open && (
-        <div className="mt-3">
-          <div className="mb-3 flex flex-wrap items-center gap-2">
-            <input
-              ref={fileRef}
-              type="file"
-              accept=".step,.stp,.stl"
-              multiple
-              className="hidden"
-              onChange={(e) => {
-                const fs = [...(e.target.files ?? [])];
-                if (fs.length) upload.mutate(fs);
-                e.target.value = "";
-              }}
-            />
-            <input
-              className={inputCls + " w-40 text-xs"}
-              placeholder="name (optional)"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-            />
-            <input
-              className={inputCls + " w-56 text-xs"}
-              placeholder="caption (optional)"
-              value={caption}
-              onChange={(e) => setCaption(e.target.value)}
-            />
-            <Btn
-              variant="ghost"
-              onClick={() => fileRef.current?.click()}
-              busy={upload.isPending}
-            >
-              <Upload className="h-3.5 w-3.5" /> upload STEP/STL
-            </Btn>
-          </div>
-          {error && <div className="mb-2 text-xs text-red-400">{error}</div>}
-          {parts.isLoading ? (
-            <div className="flex justify-center py-4 text-zinc-500">
-              <Spinner />
-            </div>
-          ) : (parts.data ?? []).length === 0 ? (
-            <EmptyState
-              title="Library is empty"
-              hint="upload STEP/STL bodies here or save a version from its page"
-            />
-          ) : (
-            <div className="flex flex-col gap-1">
-              {(parts.data ?? []).map((p) => (
-                <div
-                  key={p.id}
-                  className="flex flex-wrap items-center gap-2 rounded border border-zinc-800 px-2 py-1.5 text-xs"
-                >
-                  <Chip tone={p.kind === "template" ? "purple" : "blue"}>{p.kind}</Chip>
-                  {editing === p.id ? (
-                    <>
-                      <input
-                        className={inputCls + " w-36 py-1 text-xs"}
-                        value={editName}
-                        onChange={(e) => setEditName(e.target.value)}
-                        aria-label="Library part name"
-                      />
-                      <input
-                        className={inputCls + " min-w-40 flex-1 py-1 text-xs"}
-                        value={editCaption}
-                        onChange={(e) => setEditCaption(e.target.value)}
-                        aria-label="Library part caption"
-                      />
-                    </>
-                  ) : (
-                    <>
-                      <span className="font-medium text-zinc-200">{p.name}</span>
-                      <span className="truncate text-zinc-600">
-                        {p.filename || "code"} {p.caption ? `— ${p.caption}` : ""}
-                      </span>
-                    </>
-                  )}
-                  <span className="ml-auto flex items-center gap-1">
-                    {editing === p.id ? (
-                      <>
-                        <button
-                          className="rounded p-1 text-emerald-500 hover:bg-emerald-950/50"
-                          title="save changes"
-                          disabled={!editName.trim() || update.isPending}
-                          onClick={() => update.mutate(p.id)}
-                        >
-                          <Check className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          className="rounded p-1 text-zinc-500 hover:bg-zinc-800"
-                          title="cancel"
-                          onClick={() => setEditing(null)}
-                        >
-                          <X className="h-3.5 w-3.5" />
-                        </button>
-                      </>
-                    ) : (
-                      <button
-                        className="rounded p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
-                        title="edit name/caption"
-                        onClick={() => {
-                          setEditing(p.id);
-                          setEditName(p.name);
-                          setEditCaption(p.caption);
-                          update.reset();
-                        }}
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                      </button>
-                    )}
-                    {p.url && (
-                      <a
-                        href={p.url}
-                        className="rounded p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
-                        title="download"
-                      >
-                        <Download className="h-3.5 w-3.5" />
-                      </a>
-                    )}
-                    <button
-                      className="rounded p-1 text-zinc-500 hover:bg-red-950/50 hover:text-red-400"
-                      title="delete"
-                      onClick={() => del.mutate(p.id)}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </span>
-                </div>
-              ))}
-              {update.isError && <div className="text-xs text-red-400">{String(update.error)}</div>}
-            </div>
-          )}
-        </div>
-      )}
-    </Card>
-  );
-}

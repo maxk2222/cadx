@@ -45,7 +45,7 @@ Run against `make up` (full compose stack) at http://localhost:8080.
 Prereq: mesh server running — easiest via `./scripts/start.sh` (auto-detects
 the GPU tier and installs+starts the native mesh-server); alternatives:
 `make mesh-server`, compose `--profile gpu`, or `start.sh --fake` for the
-deterministic fake. Settings → "Mesh generator" shows device + available
+deterministic fake. Settings → "Mesh & Image" tab shows device + available
 models.
 
 - [ ] Generate with mode **mesh** + a reference photo → version shows a mesh
@@ -66,8 +66,8 @@ models.
 
 ## User library, BOM & agent tools
 
-- [ ] In Settings → Reusable part library, upload STEP/STL, rename/caption,
-      download, and delete a test entry.
+- [ ] On the Library page, upload STEP/STL, rename/caption, download, preview,
+      and delete a test entry.
 - [ ] Generate with a library body/template selected; inspect Version detail
       and confirm the selected library IDs are preserved. Save a finished
       version to the library as both a STEP body and (when code exists) template.

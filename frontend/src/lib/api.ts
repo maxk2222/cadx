@@ -201,6 +201,7 @@ export const api = {
   updateSettings: (body: SettingsUpdate) =>
     req<Settings>("/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
   testProvider: () => req<ProviderTestResult>("/settings/test", { method: "POST" }),
+  llmHealth: () => req<ProviderTestResult>("/settings/health"),
 
   getCatalog: () => req<Record<string, Record<string, CatalogEntry>>>("/catalog"),
   searchCatalog: (q: string) =>

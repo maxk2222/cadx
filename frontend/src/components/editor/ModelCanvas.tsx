@@ -1,5 +1,5 @@
 import { Bounds, Center, Environment, Gltf, Html, OrbitControls } from "@react-three/drei";
-import { Canvas, useThree, type ThreeEvent } from "@react-three/fiber";
+import { Canvas, useLoader, useThree, type ThreeEvent } from "@react-three/fiber";
 import { Loader2 } from "lucide-react";
 import {
   Component,
@@ -12,6 +12,7 @@ import {
 } from "react";
 import * as THREE from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
+import { STLLoader } from "three-stdlib";
 
 export type ViewPreset = "iso" | "front" | "top" | "side";
 
@@ -100,6 +101,18 @@ class GlBoundary extends Component<{ children: ReactNode }, { err: boolean }> {
 const IDENTITY = new THREE.Matrix4();
 const NO_RAYCAST = () => null;
 
+/** STL loader for non-GLB previews (library parts). STLs are Z-up — rotate
+ * into the Y-up display frame used by the GLB exports. */
+function StlModel({ url }: { url: string }) {
+  const geom = useLoader(STLLoader, url);
+  useMemo(() => geom.computeVertexNormals(), [geom]);
+  return (
+    <mesh geometry={geom} rotation={[-Math.PI / 2, 0, 0]}>
+      <meshStandardMaterial color="#8b93a1" metalness={0.1} roughness={0.7} />
+    </mesh>
+  );
+}
+
 /**
  * Converts an r3f intersection into displayed-model mm coordinates: the pick
  * frame wraps the GLB (and carries the instant-preview matrix), so picked
@@ -122,6 +135,7 @@ function pickFrom(e: ThreeEvent<PointerEvent>, frame: THREE.Object3D): PickInfo 
 
 export default function ModelCanvas({
   url,
+  format = "glb",
   autoRotate = false,
   wireframe = false,
   grid = true,
@@ -136,6 +150,8 @@ export default function ModelCanvas({
   children,
 }: {
   url: string;
+  /** model file format — GLB/GLTF by default; "stl" for library part previews */
+  format?: "glb" | "stl";
   autoRotate?: boolean;
   wireframe?: boolean;
   grid?: boolean;
@@ -240,7 +256,7 @@ export default function ModelCanvas({
                     the AABB evaluator share this displayed-model space */}
                 <group ref={frameRef} matrixAutoUpdate={false} matrix={matrix}>
                   <group ref={(g) => g && onModel?.(g)}>
-                    <Gltf src={url} />
+                    {format === "stl" ? <StlModel url={url} /> : <Gltf src={url} />}
                   </group>
                 </group>
                 {/* overlays render in displayed-model space but must not

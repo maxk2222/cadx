@@ -29,11 +29,24 @@ export default function HealthDots() {
     refetchInterval: 30_000,
     retry: false,
   });
+  // shares its cache with the settings-page card / "test provider" button —
+  // a slow poll here keeps the dot fresh between settings visits
+  const llm = useQuery({
+    queryKey: ["llmHealth"],
+    queryFn: api.llmHealth,
+    refetchInterval: 300_000,
+    staleTime: 120_000,
+    retry: false,
+  });
 
   const apiOk = health.data?.ok ?? false;
-  const llmOk = health.data?.llm_configured ?? false;
+  const llmConfigured = health.data?.llm_configured ?? false;
+  const lp = llm.data;
   const meshOk = mesh.data?.ok ?? false;
   const meshErr = mesh.data?.error ?? mesh.error?.message;
+  const models = mesh.data?.models ?? [];
+  const nMesh = models.filter((m) => m.kind !== "image" && m.available).length;
+  const nImg = models.filter((m) => m.kind === "image" && m.available).length;
 
   return (
     <Link
@@ -43,16 +56,36 @@ export default function HealthDots() {
     >
       <Dot ok={apiOk} label="api" title={apiOk ? "API online" : "API unreachable"} />
       <Dot
-        ok={llmOk}
-        warn={apiOk && !llmOk}
+        ok={!!lp?.ok}
+        warn={llmConfigured ? !lp : true}
         label="llm"
-        title={llmOk ? "LLM configured" : "no LLM API key set"}
+        title={
+          lp?.ok
+            ? `LLM online · ${lp.latency_ms}ms${lp.vision_ok ? " · vision" : ""}`
+            : !llmConfigured
+              ? "no LLM API key set"
+              : lp
+                ? `LLM unreachable${lp.error ? ` — ${lp.error}` : ""}`
+                : "LLM status unknown (untested)"
+        }
       />
       <Dot
         ok={meshOk}
-        warn={!meshOk && (health.data?.ok ?? false)}
+        warn={!meshOk && apiOk}
         label="mesh"
-        title={meshOk ? `mesh server: ${mesh.data?.device}` : `mesh server offline${meshErr ? ` — ${meshErr}` : ""}`}
+        title={meshOk ? `mesh server: ${mesh.data?.device} · ${nMesh} model(s)` : `mesh server offline${meshErr ? ` — ${meshErr}` : ""}`}
+      />
+      <Dot
+        ok={meshOk && nImg > 0}
+        warn={meshOk && nImg === 0}
+        label="img"
+        title={
+          !meshOk
+            ? `image gen offline (mesh server unreachable${meshErr ? ` — ${meshErr}` : ""})`
+            : nImg > 0
+              ? `image gen: ${nImg} adapter(s)`
+              : "image gen: no adapters installed"
+        }
       />
     </Link>
   );

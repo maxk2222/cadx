@@ -3,6 +3,10 @@
 All application configuration lives in the app database and is edited on the
 **Settings** page (`/settings`) or via `GET|PUT /api/settings`. Changes apply
 to *new* jobs — a running job keeps the runtime snapshot it was started with.
+The settings status cards and the sidebar health dots poll
+`GET /api/settings/health` (a real code+vision probe of the configured
+provider), `/api/mesh/health` and `/api/images/models` — the sidecar serves
+both the mesh and image adapter families.
 
 Run options are merged in this order, later layers winning:
 

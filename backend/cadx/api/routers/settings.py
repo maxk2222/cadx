@@ -55,3 +55,11 @@ async def test_provider(db: AsyncSession = Depends(get_session)) -> dict[str, ob
     """Test the saved provider config without returning or logging credentials."""
     settings = await load_runtime_settings(db)
     return await LLMClient(runtime_settings=settings).test()
+
+
+@router.get("/health")
+async def llm_health(db: AsyncSession = Depends(get_session)) -> dict[str, object]:
+    """Polled LLM reachability probe for the status cards / sidebar dot —
+    same probe as POST /test, GET so it can sit in a cached query."""
+    settings = await load_runtime_settings(db)
+    return await LLMClient(runtime_settings=settings).test()

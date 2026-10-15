@@ -14,6 +14,7 @@ import { ToastProvider } from "./components/ui";
 import { api } from "./lib/api";
 import EditPage from "./pages/EditPage";
 import JobsPage from "./pages/JobsPage";
+import LibraryPage from "./pages/LibraryPage";
 import ProjectPage from "./pages/ProjectPage";
 import ProjectsPage from "./pages/ProjectsPage";
 import SettingsPage from "./pages/SettingsPage";
@@ -62,8 +63,6 @@ function NavItem({
 
 function SideNav() {
   const loc = useLocation();
-  const tab = new URLSearchParams(loc.search).get("tab");
-  const onSettings = loc.pathname === "/settings";
   const activeJobs = useQuery({
     queryKey: ["jobs-active-count"],
     queryFn: () => api.listJobsAll({ active: true, limit: 50 }),
@@ -104,16 +103,16 @@ function SideNav() {
           active={loc.pathname === "/stats"}
         />
         <NavItem
-          to="/settings?tab=library"
+          to="/library"
           icon={Library}
           label="Library"
-          active={onSettings && tab === "library"}
+          active={loc.pathname === "/library"}
         />
         <NavItem
-          to="/settings?tab=provider"
+          to="/settings"
           icon={Settings}
           label="Settings"
-          active={onSettings && tab !== "library"}
+          active={loc.pathname === "/settings"}
         />
       </nav>
       <div className="mt-auto flex justify-center border-t border-zinc-800/80 py-3 md:justify-start md:px-3">
@@ -144,6 +143,7 @@ export default function App() {
                   </Suspense>
                 }
               />
+              <Route path="/library" element={<LibraryPage />} />
               <Route path="/settings" element={<SettingsPage />} />
             </Routes>
           </main>

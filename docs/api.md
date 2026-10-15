@@ -106,6 +106,7 @@ GET           /api/catalog/{category}/{class_name}       class detail
 ```
 GET|PUT       /api/settings                              runtime settings (see configuration.md)
 POST          /api/settings/test                         probe code + vision models without exposing the key
+GET           /api/settings/health                       same probe, GET — polled by the status cards/sidebar
 GET           /api/mesh/health                           mesh-server reachability + device
 GET           /api/mesh/models                           installed adapter/model info + licenses
 GET           /api/images/models                         installed image adapters

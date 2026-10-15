@@ -1,9 +1,9 @@
 # Web GUI
 
 The React/Vite application exposes the generation, editing, analysis, and
-library workflows through five pages: Projects, Project, Version, Jobs, and
-Settings. The UI is served by nginx at `:8080` in Docker mode or Vite at
-`:5173` in native development mode.
+library workflows through seven pages: Projects, Project, Version, Jobs,
+Stats, Library, and Settings. The UI is served by nginx at `:8080` in Docker
+mode or Vite at `:5173` in native development mode.
 
 The **Jobs** page (`/jobs`) lists active and recently finished jobs across
 projects with live progress, iteration/step labels, runtime and
@@ -121,15 +121,27 @@ material and volume fraction autosave under `options.ui_editor` (merged —
 the mesh-editor ops draft and structural state no longer clobber each
 other).
 
-### Settings and reusable part library
+### Settings
 
-Settings includes LLM/provider configuration, health status, the standard-part
-catalog, and the user library.
+Settings (`/settings`) is organized into tabs — **LLM Provider**, **Agent**,
+**Mesh & Image** (local mesh generator + image generation on the same sidecar),
+**FEM / TopOpt**, and **System** — with a floating save bar that applies to new
+jobs only. Four status cards on top show live service health: API, LLM (a real
+probe via `GET /api/settings/health` — "online · latency", not just "key set"),
+Mesh server (device + available mesh models), and Image gen (adapter count on
+the same sidecar). The same four signals appear as dots in the sidebar footer.
 
-![Settings — LLM provider, models and runtime options](screenshots/settings.png) The library supports STEP/STL upload, download,
-rename/caption editing, deletion, and saving a version as either a STEP body or
-parametric code template. Parts may be pinned on generation/edit or discovered
-and attached by the agent's library tools. See [parts-library.md](parts-library.md).
+![Settings — LLM provider, models and runtime options](screenshots/settings.png)
+
+### Part library (`/library`)
+
+The **Library page** holds the user part library — a searchable/filterable card
+grid of reusable STEP/STL bodies and saved code templates with upload,
+rename/caption editing, a detail modal with a 3D preview (STL renders directly,
+STEP/templates show their source version's GLB when available), download, and
+deletion — plus the collapsible standard-parts catalog (bd_warehouse). Parts may
+be pinned on generation/edit or discovered and attached by the agent's library
+tools. See [parts-library.md](parts-library.md).
 
 ### Statistics (`/stats`)
 
@@ -172,11 +184,11 @@ cd ../backend && ../.venv/bin/uv run pytest tests/unit/test_api.py tests/unit/te
 
 Manual smoke test:
 
-1. Open Settings, upload a STEP/STL body, edit its name/caption, download it,
-   and remove it.
+1. Open the Library page, upload a STEP/STL body, edit its name/caption,
+   download it, and remove it.
 2. Generate a CAD model with a library part selected; confirm its id is stored
    in version details. Save the resulting version as a template and confirm it
-   appears in Settings and the project picker.
+   appears in the Library page and the project picker.
 3. Edit a version, confirm its selected library parts are preselected, change
    the selection, and verify the child version reflects the new selection.
 4. Enable FEM or TopOpt options, complete a run with explicit load cases, and

@@ -163,6 +163,28 @@ async def test_settings_roundtrip(client):
     assert r.json()["llm_model_code"] == "my-model"
 
 
+async def test_settings_health_endpoint(client, monkeypatch):
+    from cadx.llm.client import LLMClient
+
+    async def fake_ok(self):
+        return {"ok": True, "vision_ok": True, "latency_ms": 12, "error": None}
+
+    monkeypatch.setattr(LLMClient, "test", fake_ok)
+    r = await client.get("/api/settings/health")
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    assert r.json()["vision_ok"] is True
+
+    async def fake_fail(self):
+        return {"ok": False, "vision_ok": False, "latency_ms": 0, "error": "boom"}
+
+    monkeypatch.setattr(LLMClient, "test", fake_fail)
+    r = await client.get("/api/settings/health")
+    assert r.status_code == 200
+    assert r.json()["ok"] is False
+    assert r.json()["error"] == "boom"
+
+
 async def test_generate_mode_persisted(client):
     r = await client.post("/api/projects", json={"name": "modes"})
     pid = r.json()["id"]
