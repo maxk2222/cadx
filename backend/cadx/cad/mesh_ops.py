@@ -527,6 +527,10 @@ _CARTESIAN: dict[str, np.ndarray] = {
 BOOLEAN_MAX_FACES = 500_000
 _REBUILD_MAX_FACES = BOOLEAN_MAX_FACES - 50_000
 _MAX_PRIMITIVE_MM = 2000.0
+# dense bool grid hard cap for the _ensure_watertight voxel fallback —
+# 350^3 cells ≈ 43 MB bool + marching-cubes float scan; beyond that the
+# repair costs more memory than it saves
+_VOXEL_REPAIR_MAX_CELLS = 350.0
 
 
 class OpSetUp(BaseModel):
@@ -1339,9 +1343,22 @@ def _ensure_watertight(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
         pass
     try:
         pitch = max(float(max(m.extents)) / 220.0, 0.15)
+        # bound the grid BEFORE allocating: voxelized().fill() builds a dense
+        # bool matrix (cells^3) — an OOM-kill here took the eval worker down
+        # twice. Refuse absurd grids instead of letting the kernel decide.
+        cells = float((np.asarray(m.extents, dtype=float) / pitch).max())
+        if cells > _VOXEL_REPAIR_MAX_CELLS:
+            raise ValueError(
+                f"voxel repair grid too large ({cells:.0f} cells/axis at "
+                f"{pitch:g} mm pitch) — decimate the mesh first"
+            )
         vg = m.voxelized(pitch).fill()
         rem = vg.marching_cubes
         rem.apply_transform(vg.transform)
+        # marching cubes can out-faces the input by an order of magnitude —
+        # cap the rebuild so the next boolean/op doesn't hit BOOLEAN_MAX_FACES
+        if len(rem.faces) > _REBUILD_MAX_FACES:
+            rem = decimate(rem, _REBUILD_MAX_FACES)
         if len(rem.faces) and rem.is_watertight:
             log.warning(
                 "mesh.repair_voxel_fallback",

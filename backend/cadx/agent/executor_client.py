@@ -67,7 +67,12 @@ class InProcessExecutor:
         def _run() -> dict[str, Any]:
             pid = _uuid.UUID(payload["project_id"])
             vid = _uuid.UUID(payload["version_id"])
-            it_dir = storage.iteration_dir(pid, vid, int(payload["iteration"]))
+            art_dir = str(payload.get("art_dir") or "")
+            it_dir = (
+                storage.resolve(art_dir)
+                if art_dir
+                else storage.iteration_dir(pid, vid, int(payload["iteration"]))
+            )
             brep = it_dir / "_run" / "model.brep"
             flat = it_dir / "_run" / "flat_profile.brep"
             stl = it_dir / "_run" / "model.stl"

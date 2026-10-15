@@ -124,6 +124,7 @@ class RunOutcome:
     error: str | None = None
     fallback_to_cad: bool = False  # mesh loop hard-failed on a dimensioned spec
     switch_requested: bool = False  # plateaued — try the next strategy approach
+    art_dir: str | None = None  # winning attempt dir (T8.7) — topopt/export read artifacts here
 
 
 # --------------------------------------------------------------------------- #
@@ -183,6 +184,14 @@ def compare_dims(
                     "check axis assignment (X/Y possibly swapped)"
                 )
                 break
+    # a rib/gusset protruding past the outer face inflates the bbox — name the
+    # usual suspect so the repair prompt doesn't chase the base body
+    has_ribs = any("rib" in str(getattr(f, "type", "")).lower() for f in spec.features or [])
+    if issues and has_ribs:
+        issues.append(
+            "note: the spec includes ribs — check they sit INSIDE the envelope "
+            "(proud ribs widen the part past the stated width/length)"
+        )
     return issues
 
 
@@ -288,11 +297,17 @@ def _resolve_patch(
     return None, errors
 
 
-def _session_verify_fn(ctx: AgentCtx, iteration: int):
-    """verify-tool callback: execute session buffer code in the sandbox."""
+def _session_verify_fn(ctx: AgentCtx, iteration: int, attempt: Any):
+    """verify-tool callback: execute session buffer code in the sandbox.
+
+    `attempt` is a shared counter — every sandbox exec writes artifacts and
+    must get its own subdir so a verify can't clobber the candidate files.
+    """
 
     def run(code: str):
-        return ctx.executor.execute(_exec_payload(ctx, code, iteration, full_exports=False))
+        return ctx.executor.execute(
+            _exec_payload(ctx, code, iteration, full_exports=False, subdir=f"a{next(attempt)}")
+        )
 
     return run
 
@@ -369,13 +384,14 @@ def resolve_mode(ctx: AgentCtx) -> tuple[str, str]:
 
 
 def _exec_payload(
-    ctx: AgentCtx, code: str, iteration: int, *, full_exports: bool
+    ctx: AgentCtx, code: str, iteration: int, *, full_exports: bool, subdir: str = ""
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "job_id": ctx.job_id,
         "project_id": str(ctx.project_id),
         "version_id": str(ctx.version_id),
         "iteration": iteration,
+        "subdir": subdir,
         "code": code,
         "params_override": None,
         "references": [
@@ -406,12 +422,14 @@ def _mesh_payload(
     spec: PartSpec | None = None,
     make_solid: bool = False,
     full_exports: bool = False,
+    subdir: str = "",
 ) -> dict[str, Any]:
     return {
         "job_id": ctx.job_id,
         "project_id": str(ctx.project_id),
         "version_id": str(ctx.version_id),
         "iteration": iteration,
+        "subdir": subdir,
         "mode": mode,
         "mesh_rel": mesh_rel,
         "post": (post or MeshPostParams()).model_dump(),
@@ -428,8 +446,12 @@ def _mesh_payload(
 def _copy_best_artifacts(
     ctx: AgentCtx, iteration: int, exec_result: dict[str, Any]
 ) -> dict[str, str]:
-    """Copy renders/contact sheet/thumbnail from the winning iteration to version root."""
-    it_dir = storage.iteration_dir(ctx.project_id, ctx.version_id, iteration)
+    """Copy renders/contact sheet/thumbnail from the winning attempt to version root."""
+    it_dir = (
+        storage.resolve(exec_result["art_dir"])
+        if exec_result.get("art_dir")
+        else (storage.iteration_dir(ctx.project_id, ctx.version_id, iteration))
+    )
     v_dir = storage.version_dir(ctx.project_id, ctx.version_id)
     out: dict[str, str] = {}
 
@@ -457,19 +479,23 @@ def _copy_best_artifacts(
     return out
 
 
-def _copy_mesh_artifacts(project_id: Any, version_id: Any, iteration: int) -> dict[str, str]:
+def _copy_mesh_artifacts(
+    project_id: Any, version_id: Any, iteration: int, art_dir: str | None = None
+) -> dict[str, str]:
     """Copy the version-level mesh intermediates (raw GLB, cleaned STL, solid BREP).
 
     Files already present in versions/<vid>/mesh/ (e.g. inherited from a parent
-    on hybrid reuse) are registered as artifacts too.
+    on hybrid reuse) are registered as artifacts too. `art_dir` points at the
+    attempt subdir holding `_run/` for the winning candidate.
     """
     it_dir = storage.iteration_dir(project_id, version_id, iteration)
+    run_dir = storage.resolve(art_dir) if art_dir else it_dir
     mesh_dir = storage.ensure(storage.version_dir(project_id, version_id) / "mesh")
     out: dict[str, str] = {}
     for src, dst_name, key in (
         (it_dir / "mesh_raw.glb", "mesh_raw.glb", "mesh_raw"),
-        (it_dir / "_run" / "model.stl", "mesh_clean.stl", "mesh_clean"),
-        (it_dir / "_run" / "model.brep", "solid.brep", "mesh_solid"),
+        (run_dir / "_run" / "model.stl", "mesh_clean.stl", "mesh_clean"),
+        (run_dir / "_run" / "model.brep", "solid.brep", "mesh_solid"),
     ):
         dst = mesh_dir / dst_name
         if src.exists():
@@ -513,7 +539,11 @@ async def _run_topopt_phase(ctx: AgentCtx, outcome: RunOutcome, spec: PartSpec) 
 
     base_it = outcome.best_iteration or outcome.iterations or 1
     base_mode = outcome.resolved_mode or "cad"
-    it_dir = storage.iteration_dir(ctx.project_id, ctx.version_id, base_it)
+    it_dir = (
+        storage.resolve(outcome.art_dir)
+        if outcome.art_dir
+        else storage.iteration_dir(ctx.project_id, ctx.version_id, base_it)
+    )
     stl = it_dir / ("_run/model.stl" if base_mode == "mesh" else "renders/mesh.stl")
     if not stl.exists():
         stl = it_dir / "renders/mesh.stl"
@@ -1760,6 +1790,7 @@ async def _process_mesh(
     *,
     make_solid: bool = False,
     solid_max_faces: int | None = None,
+    subdir: str = "",
 ) -> dict[str, Any]:
     payload = _mesh_payload(
         ctx,
@@ -1769,10 +1800,28 @@ async def _process_mesh(
         post=post,
         spec=spec,
         make_solid=make_solid,
+        subdir=subdir,
     )
     if solid_max_faces is not None:
         payload["solid_max_faces"] = solid_max_faces
-    return await ctx.executor.process_mesh(payload)
+    res = await ctx.executor.process_mesh(payload)
+    # worker/executor image drift gate: the executor echoes the ops-semantics
+    # version it replays with — a mismatch means ops written by this worker
+    # may replay with different semantics (observed: worker v5 vs executor v4)
+    remote_ver = (res.get("mesh") or {}).get("mesh_ops_version")
+    if remote_ver is not None and int(remote_ver) != MESH_OPS_VERSION:
+        log.warning(
+            "mesh.ops_version_drift",
+            worker=MESH_OPS_VERSION,
+            executor=remote_ver,
+        )
+        await ctx.emit(
+            "meshprocess",
+            iteration,
+            f"WARNING: executor mesh_ops v{remote_ver} != worker v{MESH_OPS_VERSION}"
+            " — rebuild both images",
+        )
+    return res
 
 
 # --------------------------------------------------------------------------- #
@@ -1828,6 +1877,11 @@ async def _run_cad(  # noqa: C901
             await ctx.emit("budget", it, "budget exceeded — finalising best candidate")
             break
 
+        # attempt counter: every exec/process within this iteration gets its
+        # own artifact subdir so a stale candidate's files are never
+        # overwritten by a later repair/verify/autofix pass (stale-score bug)
+        art_attempt = itertools.count(1)
+
         # ---------- obtain code: fresh codegen vs targeted improve ----------
         base_code = best.code_response.code if best and best.code_response else ""
         use_improve = (
@@ -1850,7 +1904,7 @@ async def _run_cad(  # noqa: C901
                         patch_errors=patch_errors,
                         iteration=it,
                         attempt=attempt,
-                        verify_fn=_session_verify_fn(ctx, it),
+                        verify_fn=_session_verify_fn(ctx, it, art_attempt),
                     )
                 except Exception as e:
                     log.warning("agent.improve_failed", iteration=it, error=str(e))
@@ -1915,7 +1969,7 @@ async def _run_cad(  # noqa: C901
                     else f"repair attempt {repair_n}/{max_repairs}",
                 )
                 exec_result = await ctx.executor.execute(
-                    _exec_payload(ctx, code, it, full_exports=False)
+                    _exec_payload(ctx, code, it, full_exports=False, subdir=f"a{next(art_attempt)}")
                 )
             else:
                 exec_result = {
@@ -1946,7 +2000,7 @@ async def _run_cad(  # noqa: C901
                         exec_result.get("stdout"),
                         iteration=it,
                         repair_n=repair_n + 1,
-                        verify_fn=_session_verify_fn(ctx, it),
+                        verify_fn=_session_verify_fn(ctx, it, art_attempt),
                     )
                 except Exception as e:
                     log.warning("agent.repair_failed", iteration=it, error=str(e))
@@ -1967,7 +2021,7 @@ async def _run_cad(  # noqa: C901
                             exec_result.get("stdout"),
                             iteration=it,
                             repair_n=repair_n + 1,
-                            verify_fn=_session_verify_fn(ctx, it),
+                            verify_fn=_session_verify_fn(ctx, it, art_attempt),
                             prefer_full_code=True,
                         )
                         new_code, perrs = _resolve_patch(code, presp, "never")
@@ -2053,7 +2107,9 @@ async def _run_cad(  # noqa: C901
                     it,
                     "trying param override: " + ", ".join(f"{k}={v:g}" for k, v in fixes.items()),
                 )
-                payload = _exec_payload(ctx, code, it, full_exports=False)
+                payload = _exec_payload(
+                    ctx, code, it, full_exports=False, subdir=f"a{next(art_attempt)}"
+                )
                 payload["params_override"] = fixes
                 auto_res = await ctx.executor.execute(payload)
                 if auto_res.get("ok"):
@@ -2119,7 +2175,12 @@ async def _run_cad(  # noqa: C901
         # ---------- FEM check (only when the spec declares loads) ----------
         fem_issues: list[dict[str, Any]] = []
         if spec.load_cases:
-            it_rel = storage.relpath(storage.iteration_dir(ctx.project_id, ctx.version_id, it))
+            # FEM reads the exec's STL — must come from the attempt dir the
+            # current exec_result was written to, not the shared iteration dir
+            it_rel = str(
+                exec_result.get("art_dir")
+                or storage.relpath(storage.iteration_dir(ctx.project_id, ctx.version_id, it))
+            )
             await ctx.emit("fem", it, f"verifying {len(spec.load_cases)} load case(s)")
             try:
                 fem_res = await ctx.executor.fem_analyze(
@@ -2294,6 +2355,7 @@ async def _run_cad(  # noqa: C901
             "project_id": str(ctx.project_id),
             "version_id": str(ctx.version_id),
             "iteration": best.iteration,
+            "art_dir": best.exec_result.get("art_dir"),
             "name": "model",
         }
     )
@@ -2303,6 +2365,7 @@ async def _run_cad(  # noqa: C901
             artifacts[f"export:{fmt}"] = rel
     artifacts.update(_copy_fem_artifacts(ctx, best.iteration))
 
+    outcome.art_dir = best.exec_result.get("art_dir")
     outcome.status = (
         "succeeded"
         if (
@@ -2332,7 +2395,11 @@ async def _run_cad(  # noqa: C901
     outcome.issues = issues
     if ctx.resolved_mode == "hybrid" and ctx.mesh_info:
         prep_it = int(ctx.mesh_info.get("_prep_it", 1))
-        artifacts.update(_copy_mesh_artifacts(ctx.project_id, ctx.version_id, prep_it))
+        artifacts.update(
+            _copy_mesh_artifacts(
+                ctx.project_id, ctx.version_id, prep_it, ctx.mesh_info.get("_prep_art_dir")
+            )
+        )
         outcome.mesh = {k: v for k, v in ctx.mesh_info.items() if not k.startswith("_")}
         _write_mesh_json(ctx.project_id, ctx.version_id, ctx.mesh_info)
     outcome.artifacts = artifacts
@@ -2433,13 +2500,24 @@ async def _run_mesh(  # noqa: C901
         )
 
     async def _apply_ops(
-        it: int, mesh_rel: str, post: MeshPostParams, rr: mesh_refine_step.RefineResult
+        it: int,
+        mesh_rel: str,
+        post: MeshPostParams,
+        rr: mesh_refine_step.RefineResult,
+        art_attempt: Any,
     ) -> dict[str, Any]:
         post.ops = rr.ops
         if rr.ops:
             post.ops_version = MESH_OPS_VERSION
         await ctx.emit("meshprocess", it, f"re-processing mesh with {len(rr.ops)} op(s)")
-        res = await _process_mesh(ctx, it, mesh_rel, spec, post)
+        res = await _process_mesh(ctx, it, mesh_rel, spec, post, subdir=f"a{next(art_attempt)}")
+        ops_warn = (res.get("mesh") or {}).get("ops_version_warning")
+        if ops_warn:
+            # worker recorded ops with a different mesh_ops version than the
+            # executor replays — surfaces a worker/executor image skew that
+            # otherwise only shows up in executor logs
+            await ctx.emit("meshprocess", it, f"WARNING: {ops_warn}")
+            log.warning("mesh.ops_version_drift", warning=ops_warn)
         ctx.mesh_info["post"] = post.model_dump()
         ctx.mesh_info["ops"] = [o.model_dump() for o in rr.ops]
         return res
@@ -2455,6 +2533,11 @@ async def _run_mesh(  # noqa: C901
         if ctx.tokens_used() > ctx.budget_tokens or time.monotonic() - t0 > s.agent_max_wall_s:
             await ctx.emit("budget", it, "budget exceeded — finalising best candidate")
             break
+
+        # per-iteration artifact slots: every process call writes renders/stl
+        # — without a subdir a later (worse) refine round would overwrite the
+        # files the best candidate's score refers to
+        art_attempt = itertools.count(1)
 
         # reuse a precomputed result (hybrid->mesh fallback)
         exec_result: dict[str, Any] | None = None
@@ -2505,7 +2588,9 @@ async def _run_mesh(  # noqa: C901
 
             # PROCESS_MESH baseline
             await ctx.emit("meshprocess", it, "cleaning, orienting and scaling mesh")
-            exec_result = await _process_mesh(ctx, it, mesh_rel, spec, post)
+            exec_result = await _process_mesh(
+                ctx, it, mesh_rel, spec, post, subdir=f"a{next(art_attempt)}"
+            )
             ctx.mesh_info["post"] = post.model_dump()
             ctx.mesh_info["orientation"] = {"up": post.up, "front": post.front}
 
@@ -2538,7 +2623,7 @@ async def _run_mesh(  # noqa: C901
                         # mesh_regen_edit swapped the baseline mid-session —
                         # reprocess the regenerated raw, not the original
                         mesh_rel = rr.new_mesh_rel
-                    exec_result = await _apply_ops(it, mesh_rel, post, rr)
+                    exec_result = await _apply_ops(it, mesh_rel, post, rr, art_attempt)
 
         if not exec_result or not exec_result.get("ok"):
             log.warning("mesh.process_failed", iteration=it, error=(exec_result or {}).get("error"))
@@ -2618,7 +2703,7 @@ async def _run_mesh(  # noqa: C901
                 break
             if rr.new_mesh_rel:
                 mesh_rel = rr.new_mesh_rel
-            new_exec = await _apply_ops(it, mesh_rel, post, rr)
+            new_exec = await _apply_ops(it, mesh_rel, post, rr, art_attempt)
             if not new_exec.get("ok"):
                 log.warning("mesh.refine_reprocess_failed", error=new_exec.get("error"))
                 break
@@ -2697,6 +2782,7 @@ async def _run_mesh(  # noqa: C901
             "project_id": str(ctx.project_id),
             "version_id": str(ctx.version_id),
             "iteration": best.iteration,
+            "art_dir": best.exec_result.get("art_dir"),
             "name": "model",
         }
     )
@@ -2704,7 +2790,11 @@ async def _run_mesh(  # noqa: C901
     for fmt, rel in (exports.get("exports") or {}).items():
         if rel:
             artifacts[f"export:{fmt}"] = rel
-    artifacts.update(_copy_mesh_artifacts(ctx.project_id, ctx.version_id, best.iteration))
+    artifacts.update(
+        _copy_mesh_artifacts(
+            ctx.project_id, ctx.version_id, best.iteration, best.exec_result.get("art_dir")
+        )
+    )
 
     outcome.status = (
         "succeeded"
@@ -2716,6 +2806,7 @@ async def _run_mesh(  # noqa: C901
         )
         else "needs_review"
     )
+    outcome.art_dir = best.exec_result.get("art_dir")
     outcome.code = None
     post_used = best.mesh_post or {}
     outcome.params = post_used or dict(best.exec_result.get("params_used") or {})
@@ -2848,6 +2939,7 @@ async def _apply_flat_back(
     spec: PartSpec,
     post: MeshPostParams,
     exec_result: dict[str, Any],
+    art_attempt: Any,
 ) -> tuple[dict[str, Any], MeshPostParams]:
     """Deterministic flat-back pass: when the spec demands a planar -z face
     and the mesh bows its bottom, flatten (voxel fill-down) + floor-pinned
@@ -2876,7 +2968,9 @@ async def _apply_flat_back(
     if smooth_iters > 0:
         note += f" + smoothing ({smooth_iters} it)"
     await ctx.emit("meshprocess", it, note)
-    flat_result = await _process_mesh(ctx, it, mesh_rel, spec, flat_post, make_solid=True)
+    flat_result = await _process_mesh(
+        ctx, it, mesh_rel, spec, flat_post, make_solid=True, subdir=f"a{next(art_attempt)}"
+    )
     if flat_result.get("ok"):
         rough = (flat_result.get("analysis") or {}).get("roughness_deg")
         rough_before = (exec_result.get("analysis") or {}).get("roughness_deg")
@@ -2909,6 +3003,7 @@ async def _fit_mesh_to_stated(
     exec_result: dict[str, Any],
     tol_pct: float,
     tol_mm: float,
+    art_attempt: Any,
 ) -> tuple[dict[str, Any], MeshPostParams] | None:
     """Iteratively fit a processed mesh to stated dims via appended ops.
 
@@ -2927,7 +3022,9 @@ async def _fit_mesh_to_stated(
         total_ops += [o.model_dump() for o in fit_ops]
         post_fit = merge_post_params(cur_post, {"ops": total_ops})
         await ctx.emit("meshprocess", it, f"fitting base mesh to stated dims ({fit_note})")
-        fit_result = await _process_mesh(ctx, it, mesh_rel, spec, post_fit, make_solid=True)
+        fit_result = await _process_mesh(
+            ctx, it, mesh_rel, spec, post_fit, make_solid=True, subdir=f"a{next(art_attempt)}"
+        )
         if not fit_result.get("ok"):
             return None
         cur_result, cur_post = fit_result, post_fit
@@ -2950,6 +3047,7 @@ async def _clip_mesh_to_measured(
     spec: PartSpec,
     post: MeshPostParams,
     exec_result: dict,
+    art_attempt: Any,
 ) -> tuple[dict, MeshPostParams]:
     """Clip the processed mesh to the measured plan-view outline prism when the
     footprint IoU is below 0.9; keep the result only if IoU does not regress."""
@@ -2969,7 +3067,9 @@ async def _clip_mesh_to_measured(
             ]
         },
     )
-    res_c = await _process_mesh(ctx, it, mesh_rel, spec, post_c, make_solid=True)
+    res_c = await _process_mesh(
+        ctx, it, mesh_rel, spec, post_c, make_solid=True, subdir=f"a{next(art_attempt)}"
+    )
     if not res_c.get("ok"):
         return exec_result, post
     feats2 = (res_c.get("mesh") or {}).get("features") or {}
@@ -3029,6 +3129,9 @@ async def _prepare_hybrid_mesh(
     """
     it = 0
     ctx.mesh_info["_prep_it"] = it
+    # artifact slots for the prep sub-passes — several process_mesh calls write
+    # into iteration 0 and must not clobber each other's _run/ outputs
+    art_attempt = itertools.count(1)
     # hybrid edit without regeneration: reuse the parent's solid directly
     if (
         ctx.parent.mesh_solid is not None
@@ -3053,7 +3156,9 @@ async def _prepare_hybrid_mesh(
     )
 
     await ctx.emit("meshprocess", it, "processing mesh and building solid")
-    exec_result = await _process_mesh(ctx, it, mesh_rel, spec, post, make_solid=True)
+    exec_result = await _process_mesh(
+        ctx, it, mesh_rel, spec, post, make_solid=True, subdir=f"a{next(art_attempt)}"
+    )
 
     if not exec_result.get("ok"):
         return False, exec_result.get("error") or "mesh processing failed"
@@ -3061,7 +3166,9 @@ async def _prepare_hybrid_mesh(
     # deterministic flat-back: when the spec demands a planar -z face and the
     # generative mesh bows its bottom, shave it flat BEFORE the dim gate — the
     # fit loop then re-scales z back to the stated thickness.
-    exec_result, post = await _apply_flat_back(ctx, it, mesh_rel, spec, post, exec_result)
+    exec_result, post = await _apply_flat_back(
+        ctx, it, mesh_rel, spec, post, exec_result, art_attempt
+    )
 
     # dimensional gate: a base mesh far outside stated dims is the wrong
     # object — CAD features can't repair a 40%-off organic body. Before
@@ -3072,7 +3179,7 @@ async def _prepare_hybrid_mesh(
         dim_issues += list((exec_result.get("mesh") or {}).get("dim_issues") or [])
         if dim_issues:
             fitted = await _fit_mesh_to_stated(
-                ctx, it, mesh_rel, spec, post, exec_result, tol_pct, tol_mm
+                ctx, it, mesh_rel, spec, post, exec_result, tol_pct, tol_mm, art_attempt
             )
             if fitted is not None:
                 exec_result, post = fitted
@@ -3095,7 +3202,9 @@ async def _prepare_hybrid_mesh(
     if anchors.mirror_x:
         post_m = merge_post_params(post, {"mirror_x": True})
         await ctx.emit("meshprocess", it, "mirroring mesh to match the top view (IoU)")
-        res_m = await _process_mesh(ctx, it, mesh_rel, spec, post_m, make_solid=True)
+        res_m = await _process_mesh(
+            ctx, it, mesh_rel, spec, post_m, make_solid=True, subdir=f"a{next(art_attempt)}"
+        )
         if res_m.get("ok"):
             exec_result, post = res_m, post_m
             anchors = build_anchors(
@@ -3105,7 +3214,9 @@ async def _prepare_hybrid_mesh(
 
     # footprint clip: when the XY silhouette still drifts from the measured
     # plan view, clip the mesh to the measured outline prism
-    exec_result, post = await _clip_mesh_to_measured(ctx, it, mesh_rel, spec, post, exec_result)
+    exec_result, post = await _clip_mesh_to_measured(
+        ctx, it, mesh_rel, spec, post, exec_result, art_attempt
+    )
     anchors = build_anchors(spec, ctx.measurements, (exec_result.get("mesh") or {}).get("features"))
     anchors.mirror_x = post.mirror_x
 
@@ -3117,6 +3228,7 @@ async def _prepare_hybrid_mesh(
     ctx.mesh_info["orientation"] = {"up": post.up, "front": post.front}
     ctx.mesh_info["bbox_size"] = (exec_result.get("analysis") or {}).get("bbox_size")
     ctx.mesh_info["triangles"] = (exec_result.get("mesh") or {}).get("triangles")
+    ctx.mesh_info["_prep_art_dir"] = exec_result.get("art_dir")
     ctx.hybrid_mesh_info = {
         "bbox_size": (exec_result.get("analysis") or {}).get("bbox_size"),
         "volume": (exec_result.get("analysis") or {}).get("volume"),
@@ -3133,12 +3245,20 @@ async def _prepare_hybrid_mesh(
     cap = min(15_000, s.mesh_decimate_faces)
     await ctx.emit("meshprocess", it, "solid conversion failed — retrying with fewer faces")
     exec_result = await _process_mesh(
-        ctx, it, mesh_rel, spec, post, make_solid=True, solid_max_faces=cap
+        ctx,
+        it,
+        mesh_rel,
+        spec,
+        post,
+        make_solid=True,
+        solid_max_faces=cap,
+        subdir=f"a{next(art_attempt)}",
     )
     if exec_result.get("ok") and (exec_result.get("mesh") or {}).get("solid_ok"):
         ctx.hybrid_solid = storage.resolve(exec_result["mesh"]["solid_relpath"])
         ctx.mesh_info["post"] = post.model_dump()
         ctx.mesh_info["bbox_size"] = (exec_result.get("analysis") or {}).get("bbox_size")
+        ctx.mesh_info["_prep_art_dir"] = exec_result.get("art_dir")
         ctx.hybrid_mesh_info = {
             "bbox_size": (exec_result.get("analysis") or {}).get("bbox_size"),
             "volume": (exec_result.get("analysis") or {}).get("volume"),

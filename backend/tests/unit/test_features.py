@@ -83,6 +83,49 @@ def test_extract_features_mesh_fallback(bored_stl: Path) -> None:
     assert with_stl.approximate is True
 
 
+def test_boss_axis_detected_and_compared() -> None:
+    """T8.4: a protruding cylinder (boss/tube) is measured with its axis, and
+    a spec asking for a different axis produces a major finding."""
+    from types import SimpleNamespace
+
+    from build123d import Rot
+
+    from cadx.cad.features import compare_features
+
+    base = Pos(0, 0, 4) * Box(60, 20, 8)
+    tube_x = Pos(0, 0, 8) * Rot(0, 90, 0) * Cylinder(radius=6, height=60)
+    mf = extract_features(base + tube_x)
+    assert any(b.axis in ("+x", "-x") for b in mf.bosses), mf.bosses
+
+    # same tube standing vertical: boss axis is +z — spec wanting +x must flag
+    tube_z = Pos(0, 0, 15) * Cylinder(radius=6, height=20)
+    mf_z = extract_features(base + tube_z)
+    feat = SimpleNamespace(
+        name="firesteel tube",
+        type="boss",
+        description="tube",
+        dims={},
+        position="",
+        axis="x",
+        count=1,
+        standard="",
+    )
+    findings = compare_features([feat], mf_z)
+    assert any(f.severity == "major" and "z axis" in f.actual for f in findings), findings
+    assert compare_features([feat], mf) == []
+
+
+def test_fillet_does_not_register_as_boss() -> None:
+    """Edge fillets wrap ~90° — they must stay in `rounds`, not become bosses."""
+    from build123d import Axis, fillet
+
+    part = Box(40, 20, 8, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    part = fillet(part.edges().filter_by(Axis.Z), 2)
+    mf = extract_features(part)
+    assert mf.bosses == []
+    assert mf.rounds
+
+
 def test_mesh_profile_reports_spine(tmp_path: Path) -> None:
     # stepped body: a tab shifts the y-extent at one end — the profile must
     # show the drift that a bbox alone would hide

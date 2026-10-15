@@ -47,3 +47,33 @@ def test_detect_mesh_features_solid_block():
     feats = detect_mesh_features(mesh)
     assert feats.holes == []
     assert len(feats.outline_mm) >= 4
+
+
+def _bored_body(axis: str) -> trimesh.Trimesh:
+    """Cylinder grip with a longitudinal Ø10 through-bore along `axis`."""
+    import numpy as np
+
+    body = trimesh.creation.cylinder(radius=12, height=80, sections=48)
+    bore = trimesh.creation.cylinder(radius=5, height=120, sections=32)
+    if axis == "x":
+        rot = trimesh.transformations.rotation_matrix(np.pi / 2, [0, 1, 0])
+        body.apply_transform(rot)
+        bore.apply_transform(rot)
+    elif axis == "y":
+        rot = trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0])
+        body.apply_transform(rot)
+        bore.apply_transform(rot)
+    mesh = body.difference(bore, engine="manifold")
+    assert mesh.is_watertight
+    return mesh
+
+
+@pytest.mark.parametrize("axis", ["x", "y", "z"])
+def test_detect_tunnel_each_axis(axis):
+    """T8.1: through-bores must be found on every principal axis — a Z-only
+    pass made the refine agent undo a correct X-axis bore (no evidence)."""
+    feats = detect_mesh_features(_bored_body(axis))
+    tunnels = [h for h in feats.holes if h.kind == "tunnel"]
+    matching = [h for h in tunnels if h.axis == axis]
+    assert len(matching) >= 1, f"no tunnel detected along {axis}"
+    assert matching[0].dia == pytest.approx(10.0, abs=2.0)

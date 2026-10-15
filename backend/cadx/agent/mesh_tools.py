@@ -14,6 +14,7 @@ working mesh — the model can self-correct.
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -122,6 +123,14 @@ class MeshWorkbench:
         self._features: Any = None  # cached detect_mesh_features result
         self._post = post  # kept for re-baselining after mesh_regen_edit
         self.new_mesh_rel: str | None = None  # set by mesh_regen_edit
+        # undo/redo cycle guard: models with weak visual evidence loop on
+        # "apply cut -> doubt it -> undo -> re-apply" — the third identical
+        # application is refused so the session budget isn't burned
+        self._op_apply_count: dict[str, int] = {}
+        # fingerprints of ops-states that deterministic evidence confirmed —
+        # undoing a verified state is warned once, then refused
+        self._verified_fps: set[str] = set()
+        self._verified_undo_warned = False
         try:
             raw = load_mesh(raw_path)
             # workbench is preview-only and runs in the worker process — cap
@@ -143,6 +152,11 @@ class MeshWorkbench:
             self.error = f"failed to load/baseline mesh: {e}"
 
     # -- helpers --------------------------------------------------------- #
+
+    @staticmethod
+    def _ops_fp(ops: list[MeshOp]) -> str:
+        """Fingerprint of an ops list — identifies identical mesh states."""
+        return json.dumps([o.model_dump() for o in ops], sort_keys=True, default=str)
 
     def _session_dir(self) -> Path:
         it_dir = storage.iteration_dir(self.ctx.project_id, self.ctx.version_id, self.iteration)
@@ -207,11 +221,38 @@ class MeshWorkbench:
         if name == "mesh_undo":
             if not self.ops:
                 return {"ok": False, "error": "nothing to undo — op list is empty"}
+            verified = self._ops_fp(self.ops) in self._verified_fps
+            if verified and self._verified_undo_warned:
+                return {
+                    "ok": False,
+                    "error": (
+                        "refused: this state was verified by deterministic "
+                        "measurement (tunnels/anchors matched) — undoing reverts "
+                        "a confirmed feature. Call mesh_measure to see the "
+                        "evidence, or done to keep it."
+                    ),
+                }
             popped = self.ops.pop()
             res = await self._rebuild()
             res["undone"] = popped.model_dump()
+            if verified:
+                self._verified_undo_warned = True
+                res["warning"] = (
+                    "the state you just reverted was verified correct by "
+                    "deterministic measurement — undoing it removes a confirmed "
+                    "feature"
+                )
             return res
         if name == "mesh_reset":
+            if self._ops_fp(self.ops) in self._verified_fps:
+                return {
+                    "ok": False,
+                    "error": (
+                        "refused: the current state was verified by deterministic "
+                        "measurement — resetting would discard confirmed features. "
+                        "Undo a single op instead, or call done."
+                    ),
+                }
             n = len(self.ops)
             self.ops.clear()
             res = await self._rebuild()
@@ -239,7 +280,7 @@ class MeshWorkbench:
             n_bodies = -1
         feats = self._detect_features()
         holes = [
-            {"x": h.x, "y": h.y, "dia": h.dia, "depth": h.depth, "kind": h.kind}
+            {"x": h.x, "y": h.y, "dia": h.dia, "depth": h.depth, "kind": h.kind, "axis": h.axis}
             for h in (feats.holes if feats else [])
         ][:24]
         anchor_holes = self.anchors.get("holes") or []
@@ -278,7 +319,10 @@ class MeshWorkbench:
                     deltas[name] = round(size[idx] - float(dim.value), 2)
             out["spec_delta_mm"] = deltas
         feats = self._detect_features()
-        tunnels = [(h.x, h.y, h.dia) for h in (feats.holes if feats else []) if h.kind == "tunnel"]
+        all_tunnels = [h for h in (feats.holes if feats else []) if h.kind == "tunnel"]
+        # anchor positions are plan-view (XY) — only z-axis tunnels can match
+        tunnels = [(h.x, h.y, h.dia) for h in all_tunnels if h.axis == "z"]
+        off_axis = [{"dia": h.dia, "axis": h.axis} for h in all_tunnels if h.axis != "z"]
         anchor_holes = self.anchors.get("holes") or []
         if anchor_holes:
             matches = []
@@ -311,6 +355,8 @@ class MeshWorkbench:
                 if m["nearest_tunnel"] is None or m["nearest_tunnel"]["dist_mm"] > 3.0
             ]
             out["missing_holes"] = len(missing)
+            if not missing and matches:
+                self._verified_fps.add(self._ops_fp(self.ops))
             if missing:
                 out["hint"] = (
                     f"{len(missing)} measured hole(s) have no tunnel in the mesh — "
@@ -318,7 +364,12 @@ class MeshWorkbench:
                     "measured positions"
                 )
         else:
-            out["tunnels_detected"] = len(tunnels)
+            out["tunnels_detected"] = len(all_tunnels)
+        if off_axis:
+            # lateral/longitudinal bores are invisible to the Z-only views —
+            # surface them explicitly so the agent doesn't think a successful
+            # axis bore "didn't take" and undo it
+            out["tunnels_off_axis"] = off_axis
         out["flat_base_ratio"] = round(flat_base_ratio(self.work), 4)
         return out
 
@@ -342,7 +393,9 @@ class MeshWorkbench:
         origin[idx] = at_mm
         try:
             sec = self.work.section(plane_normal=normal, plane_origin=origin)
-            if sec is None or not sec.entities:
+            # entities is a numpy array — `not arr` raises ambiguity for
+            # multi-entity sections (e.g. section through a bored hole)
+            if sec is None or len(sec.entities) == 0:
                 return {"ok": False, "error": f"no intersection at {axis}={at_mm:g} mm"}
             path2d, _matrix = sec.to_2D()
             ext = self.work.extents
@@ -583,6 +636,20 @@ class MeshWorkbench:
             mo = MeshOp(op=op_name, args=op_args)
         except Exception as e:
             return {"ok": False, "error": f"invalid args: {e}"}
+        # identical op applied a 3rd time means the model undid it twice —
+        # a burn-the-budget cycle (observed: bore cut->undo->cut->undo x4).
+        # Refuse so the session ends or the model changes strategy.
+        op_fp = self._ops_fp([mo])
+        if self._op_apply_count.get(op_fp, 0) >= 2:
+            return {
+                "ok": False,
+                "error": (
+                    f"refused: '{tool}' with identical arguments was already "
+                    "applied twice — re-applying and undoing the same op is a "
+                    "cycle. Call mesh_measure to verify the feature, adjust "
+                    "the arguments, or call done."
+                ),
+            }
         assert self.work is not None
         try:
             applied = await asyncio.to_thread(
@@ -603,6 +670,7 @@ class MeshWorkbench:
             applied = await asyncio.to_thread(decimate, applied, cap)
         self.work = applied
         self.ops.append(mo)
+        self._op_apply_count[op_fp] = self._op_apply_count.get(op_fp, 0) + 1
         self._features = None
         return {"ok": True, "applied": mo.model_dump(), **self._stats()}
 
@@ -617,6 +685,12 @@ class MeshWorkbench:
             await asyncio.to_thread(self.work.export, str(out))
         except Exception as e:
             return {"ok": False, "error": f"failed to write preview mesh: {e}"}
+        ext = [float(v) for v in self.work.extents]
+        # end views along the longest axis: a longitudinal bore/slot is
+        # invisible in iso/front/top — without end views the agent couldn't
+        # see a successful bore and kept undoing it
+        end_views = (("left", "right"), ("front", "back"), ("top", "bottom"))[int(np.argmax(ext))]
+        views = tuple(dict.fromkeys(("iso", "front", "top", *end_views)))
         res = await self.ctx.executor.process_mesh(
             {
                 "job_id": self.ctx.job_id,
@@ -624,6 +698,7 @@ class MeshWorkbench:
                 "version_id": str(self.ctx.version_id),
                 "iteration": self.iteration,
                 "mode": "preview",
+                "views": list(views),
                 "mesh_rel": storage.relpath(out),
                 "settings": self.ctx.settings.model_dump(),
                 "runtime_settings": self.ctx.runtime_settings.executor_values(),
@@ -637,10 +712,24 @@ class MeshWorkbench:
             }
         images = res.get("images") or {}
         paths = [str(storage.resolve(rel)) for rel in images.values()]
-        return {
+        out_res: dict[str, Any] = {
             "ok": True,
             "images": images,
             "_images": paths,
             "stats": res.get("stats"),
             "preview_left": self.preview_left,
         }
+        # deterministic through-hole confirmation alongside the render —
+        # the vision model once undid a correct longitudinal bore 4x because
+        # no view and no metric confirmed it
+        feats = self._detect_features()
+        tunnels = [
+            {"dia": h.dia, "axis": h.axis, "at": [h.x, h.y]}
+            for h in (feats.holes if feats else [])
+            if h.kind == "tunnel"
+        ]
+        if tunnels:
+            out_res["tunnels_measured"] = tunnels
+            # deterministic confirmation — protect this state from undo churn
+            self._verified_fps.add(self._ops_fp(self.ops))
+        return out_res

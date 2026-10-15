@@ -92,3 +92,51 @@ async def test_boolean_add_small_boss_allowed(tmp_path):
     )
     assert res["ok"], res.get("error")
     assert len(wb.ops) == 1
+
+
+async def test_op_cycle_detector_refuses_third_identical_op(tmp_path):
+    """T8.5: apply → undo → apply → undo → apply must refuse the third
+    application — the observed bore-cut undo loop burned the whole session."""
+    wb = _wb(tmp_path)
+    args = {"axis": "z", "deg": 15.0}
+    assert (await wb.handle("mesh_rotate", args))["ok"]
+    assert (await wb.handle("mesh_undo", {}))["ok"]
+    assert (await wb.handle("mesh_rotate", args))["ok"]
+    assert (await wb.handle("mesh_undo", {}))["ok"]
+    res = await wb.handle("mesh_rotate", args)
+    assert res["ok"] is False
+    assert "cycle" in res["error"]
+    assert len(wb.ops) == 0  # nothing was appended
+
+
+async def test_undo_of_verified_state_warns_then_refuses(tmp_path):
+    """T8.5: deterministic confirmation (preview/measure marked the state
+    verified) protects it — first undo warns, second is refused."""
+    wb = _wb(tmp_path)
+    assert (await wb.handle("mesh_rotate", {"axis": "z", "deg": 10.0}))["ok"]
+    # deterministic evidence marked this exact ops state as verified
+    wb._verified_fps.add(wb._ops_fp(wb.ops))
+    res = await wb.handle("mesh_undo", {})
+    assert res["ok"]
+    assert "verified" in res.get("warning", "")
+    # re-apply the same op → ops fingerprint matches the verified state again
+    assert (await wb.handle("mesh_rotate", {"axis": "z", "deg": 10.0}))["ok"]
+    res = await wb.handle("mesh_undo", {})
+    assert res["ok"] is False
+    assert "verified" in res["error"]
+    assert len(wb.ops) == 1  # op list untouched
+
+
+async def test_section_through_bore_multi_entity(tmp_path):
+    """T8.3: a section through a through-bore produces multiple entities —
+    numpy truth-value testing used to crash on exactly this."""
+    raw = tmp_path / "bored.glb"
+    body = trimesh.creation.cylinder(radius=12, height=60, sections=32)
+    bore = trimesh.creation.cylinder(radius=5, height=80, sections=24)
+    mesh = body.difference(bore, engine="manifold")
+    mesh.export(str(raw), file_type="glb")
+    wb = MeshWorkbench(_ctx(), raw_path=raw, post=MeshPostParams(), spec=None, iteration=1)
+    assert wb.error is None
+    res = await wb.handle("mesh_section", {"axis": "y", "at_mm": 0.0})
+    assert res["ok"], res.get("error")
+    assert "section" in res["images"]

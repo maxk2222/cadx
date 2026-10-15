@@ -48,13 +48,25 @@ async def _cancelled(ctx: dict[str, Any], key: str | None) -> bool:
         return False
 
 
+def _artifact_dir(payload: dict[str, Any]) -> Path:
+    """Iteration dir, namespaced by attempt — several pipeline runs share one
+    iteration number (repair verifies, autofix, mesh refine rounds) and would
+    silently overwrite each other's artifacts. The winning candidate's score
+    must match the files on disk, so every write gets its own subdir."""
+    it_dir = storage.iteration_dir(
+        uuid.UUID(payload["project_id"]),
+        uuid.UUID(payload["version_id"]),
+        int(payload.get("iteration", 1)),
+    )
+    sub = str(payload.get("subdir") or "")
+    return it_dir / sub if sub else it_dir
+
+
 def run_execute_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Synchronous part of execute_version — shared with InProcessExecutor."""
-    project_id = uuid.UUID(payload["project_id"])
     version_id = uuid.UUID(payload["version_id"])
-    iteration = int(payload.get("iteration", 1))
 
-    out_dir = storage.iteration_dir(project_id, version_id, iteration)
+    out_dir = _artifact_dir(payload)
     settings = ProjectSettings(**(payload.get("settings") or {}))
     references = [
         Reference(asset_id=r["asset_id"], path=r["path"]) for r in payload.get("references", [])
@@ -76,6 +88,7 @@ def run_execute_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
     d = result.to_dict()
     it_rel = storage.relpath(out_dir)
+    d["art_dir"] = it_rel
     d["renders"] = {v: f"{it_rel}/renders/{p}" for v, p in result.renders.items()}
     if result.contact_sheet:
         d["contact_sheet"] = f"{it_rel}/contact_sheet.png"
@@ -111,7 +124,15 @@ async def export_all(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, 
     iteration = int(payload["iteration"])
     name = payload.get("name", "model")
 
-    it_dir = storage.iteration_dir(project_id, version_id, iteration)
+    # explicit artifact dir wins — a candidate's exports must come from the
+    # same attempt dir its score was computed on (refine rounds overwrite
+    # the shared iteration dir otherwise)
+    art_dir = str(payload.get("art_dir") or "")
+    it_dir = (
+        storage.resolve(art_dir)
+        if art_dir
+        else storage.iteration_dir(project_id, version_id, iteration)
+    )
     brep = it_dir / "_run" / "model.brep"
     flat = it_dir / "_run" / "flat_profile.brep"
     out_dir = storage.export_dir(project_id, version_id)
@@ -144,10 +165,9 @@ def run_mesh_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """
     project_id = uuid.UUID(payload["project_id"])
     version_id = uuid.UUID(payload["version_id"])
-    iteration = int(payload.get("iteration", 1))
     mode = payload.get("mode", "final")
 
-    out_dir = storage.iteration_dir(project_id, version_id, iteration)
+    out_dir = _artifact_dir(payload)
     mesh_rel = payload["mesh_rel"]
     mesh_path = storage.resolve(mesh_rel)
 
@@ -160,7 +180,12 @@ def run_mesh_payload(payload: dict[str, Any]) -> dict[str, Any]:
         return d
 
     if mode == "preview":
-        d = run_mesh_preview(mesh_path=mesh_path, out_dir=out_dir)
+        views = payload.get("views")
+        d = run_mesh_preview(
+            mesh_path=mesh_path,
+            out_dir=out_dir,
+            views=tuple(views) if views else ("iso", "front", "top"),
+        )
         it_rel = storage.relpath(out_dir)
         d["images"] = {k: f"{it_rel}/preview/{v}" for k, v in d.get("images", {}).items()}
         return d
@@ -189,6 +214,7 @@ def run_mesh_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
     d = result.to_dict()
     it_rel = storage.relpath(out_dir)
+    d["art_dir"] = it_rel
     d["renders"] = {v: f"{it_rel}/renders/{p}" for v, p in result.renders.items()}
     if result.contact_sheet:
         d["contact_sheet"] = f"{it_rel}/contact_sheet.png"
@@ -198,6 +224,11 @@ def run_mesh_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if (out_dir / "_run" / "model.brep").exists():
         d["mesh"]["solid_relpath"] = f"{it_rel}/_run/model.brep"
     d["mesh"]["stl_relpath"] = f"{it_rel}/_run/model.stl"
+    # echo the executor's op-semantics version so the worker can detect a
+    # worker/executor image drift even when no ops were replayed
+    from cadx.cad.mesh_ops import MESH_OPS_VERSION
+
+    d["mesh"]["mesh_ops_version"] = MESH_OPS_VERSION
     log.info("process_mesh", version=str(version_id), ok=d["ok"], timings=d["timings"])
     return d
 

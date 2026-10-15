@@ -29,6 +29,14 @@ class MeasuredHoleGroup(BaseModel):
     elongated: bool = False  # slot-like void (aspect ratio > threshold), not a round hole
 
 
+class MeasuredBoss(BaseModel):
+    """Exterior (protruding) full-wrap cylinder — a boss/tube, not a fillet."""
+
+    axis: str = ""  # dominant axis direction: +x|-x|+y|-y|+z|-z
+    diameter: float = 0.0
+    height: float = 0.0
+
+
 class MeasuredFeatures(BaseModel):
     hole_groups: list[MeasuredHoleGroup] = Field(default_factory=list)
     total_holes: int = 0
@@ -37,6 +45,7 @@ class MeasuredFeatures(BaseModel):
     counterbores: int = 0  # stepped coaxial hole cylinders
     rounds: list[float] = Field(default_factory=list)  # fillet radii (edge cylinders)
     chamfer_faces: int = 0  # 45° planes + non-coaxial cones
+    bosses: list[MeasuredBoss] = Field(default_factory=list)  # protruding cylinders
     approximate: bool = False  # faceted/mesh source — treat findings loosely
 
 
@@ -51,6 +60,10 @@ class FeatureFinding(BaseModel):
 _AXIS_NAMES = ("+x", "-x", "+y", "-y", "+z", "-z")
 _SAMPLE_DIRS = 8
 _INSIDE_FRACTION_HOLE = 0.7  # radial samples inside material -> hole, else round
+# u-span (radians): edge fillets wrap ~90° (π/2); a protruding cylinder wraps
+# at least a half-circle — even when a union clips it (embedded tube ≈ π,
+# free-standing boss ≈ 2π)
+_BOSS_WRAP_MIN = 2.4
 _THROUGH_FRACTION = 0.75  # cylinder axial extent vs part extent -> "through"
 _GROUP_DIA_TOL = 0.3
 _COAX_TOL = 0.5  # mm between axes to count as coaxial
@@ -86,6 +99,10 @@ _HOLE_TYPES = {
 }
 _CSK_RE = re.compile(r"countersunk|csk|senk(?!.*zylinder)|flat.?head", re.I)
 _CBORE_RE = re.compile(r"counterbore|cbore|zylindersenk|socket.?head", re.I)
+# protruding cylinders (tube, boss, standoff …) — the feature's own axis is
+# meaningful, unlike a fillet radius
+_BOSS_TYPES = {"boss", "tube", "pin", "post", "stud", "standoff", "dome"}
+_BOSS_RE = re.compile(r"\b(tube|pipe|boss|rohr|stutzen|buchse|nabe)\b", re.I)
 _TAP_RE = re.compile(r"\btap(ped)?\b|gewinde|thread", re.I)
 _M_RE = re.compile(r"\bM\s*(\d+)", re.I)
 _AXIS_HINT_RE = re.compile(
@@ -166,12 +183,12 @@ def _coaxial(
 def _scan_faces(
     shape: Shape,
 ) -> tuple[
-    list[tuple[float, list[float], list[float], float]],
+    list[tuple[float, list[float], list[float], float, float]],
     list[tuple[list[float], list[float], float]],
     int,
 ]:
     """Walk all faces once; collect cylinders, cones and chamfer-like planes."""
-    cyl_faces: list[tuple[float, list[float], list[float], float]] = []
+    cyl_faces: list[tuple[float, list[float], list[float], float, float]] = []
     cones: list[tuple[list[float], list[float], float]] = []
     chamfer_planes = 0
     for f in shape.faces():
@@ -190,8 +207,8 @@ def _scan_faces(
                 d = _sub(fc, loc)
                 par = sum(d[i] * axis[i] for i in range(3))
                 on_axis = [loc[i] + par * axis[i] for i in range(3)]
-                _, _, v1, v2 = BRepTools.UVBounds_s(f.wrapped)
-                cyl_faces.append((float(cyl.Radius()), axis, on_axis, abs(v2 - v1)))
+                u1, u2, v1, v2 = BRepTools.UVBounds_s(f.wrapped)
+                cyl_faces.append((float(cyl.Radius()), axis, on_axis, abs(v2 - v1), abs(u2 - u1)))
             elif gt == GeomType.CONE:
                 cone = ad.Cone()
                 ax = _vec3(cone.Axis().Direction())
@@ -364,15 +381,23 @@ def extract_features(  # noqa: C901 — sequential measurement passes
 
     cyl_faces, cones, chamfer_planes = _scan_faces(shape)
 
-    # classify cylinders: hole (axis void surrounded by material) vs round (edge fillet)
+    # classify cylinders: hole (axis void surrounded by material) vs round
+    # (edge fillet) vs boss (protruding full-wrap cylinder — a tube/handle).
+    # Fillets only wrap ~90° of the circle; a boss wraps the full 2π.
     holes: list[tuple[float, list[float], list[float], float]] = []
-    for r, axis, center, vspan in cyl_faces:
+    for r, axis, center, vspan, uspan in cyl_faces:
         try:
             frac = _inside_fraction(shape, center, axis, r)
         except Exception:
             frac = 0.0
         if frac >= _INSIDE_FRACTION_HOLE:
             holes.append((r, axis, center, vspan))
+        elif uspan >= _BOSS_WRAP_MIN:
+            out.bosses.append(
+                MeasuredBoss(
+                    axis=_dominant_axis(axis), diameter=round(2.0 * r, 3), height=round(vspan, 3)
+                )
+            )
         else:
             out.rounds.append(round(r, 3))
 
@@ -697,6 +722,49 @@ def _check_edge_features(
     return findings
 
 
+def _check_boss_features(
+    spec_features: list[Any], measured: MeasuredFeatures
+) -> list[FeatureFinding]:
+    """Boss/tube axis check — mirrors the hole-axis check for protrusions.
+
+    A tube lying along +x when the spec wants +z is the same class of defect
+    as a bore on the wrong axis, but it never produced a finding because
+    exterior cylinders were all lumped into `rounds` (fillets).
+    """
+    findings: list[FeatureFinding] = []
+    for f in spec_features:
+        ftype = (f.type or "").lower()
+        text = f"{f.name or ''} {f.description or ''}".lower()
+        if ftype not in _BOSS_TYPES and not _BOSS_RE.search(text):
+            continue
+        want_axis = _feature_axis_hint(f)
+        if not want_axis:
+            continue
+        want_ax = _axis_letter(want_axis)
+        if any(_axis_letter(b.axis) == want_ax for b in measured.bosses):
+            continue
+        actual_axes = ", ".join(sorted({_axis_letter(b.axis) for b in measured.bosses}))
+        findings.append(
+            FeatureFinding(
+                feature=f.name or ftype or "boss",
+                expected=f"boss/tube along the {want_ax} axis",
+                actual=(
+                    f"bosses detected only on the {actual_axes} axis"
+                    if measured.bosses
+                    else "no protruding cylinder detected"
+                ),
+                severity="major",
+                fix_hint=(
+                    f"the boss/tube axis is wrong — orient the cylinder along "
+                    f"{want_ax} (spec axis '{want_axis}')"
+                    if measured.bosses
+                    else "the boss/tube protrusion is missing entirely"
+                ),
+            )
+        )
+    return findings
+
+
 def _check_slot_features(
     spec_features: list[Any], measured: MeasuredFeatures
 ) -> list[FeatureFinding]:
@@ -740,6 +808,7 @@ def compare_features(spec_features: list[Any], measured: MeasuredFeatures) -> li
         cbore_needed += cbore_n
 
     findings += _check_slot_features(spec_features, measured)
+    findings += _check_boss_features(spec_features, measured)
     findings += _check_edge_features(spec_features, measured)
 
     csk_total = measured.countersinks

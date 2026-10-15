@@ -37,6 +37,12 @@
    - `removeSplitter`/`unify`/`makeSolid` do NOT exist (CadQuery/OpenSCAD
      idioms). To merge coplanar faces left over by boolean ops use
      `part = part.clean()` — or simply omit it.
+   - Ribs/gussets must live INSIDE the part envelope: place them flush with or
+     recessed from the outer faces, never proud of the bounding box in the spec.
+     A rib that extends past the side wall silently inflates the overall
+     width/length and fails the dimensional check. When the spec says "rib
+     between wall A and wall B", the rib's outer face goes ON the inner edge of
+     the wall, not past it.
    - Turned/revolved parts (grips, nozzles, bodies of revolution): build the
      profile as `(x, radius)` points in `BuildSketch(Plane.XZ)` — u maps to
      X, v is the radial distance — and close the profile DOWN TO THE AXIS

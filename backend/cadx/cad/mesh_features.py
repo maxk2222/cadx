@@ -1,8 +1,9 @@
 """Deterministic mesh feature detection: through-holes, dimples, outline.
 
-Casts a Z-ray grid over the mesh: cells with no hit but surrounded by hits are
-through-holes ("tunnels"); local dips in the height map are dimples
-(countersinks, pockets). Runs in the executor (trimesh only).
+Casts a ray grid along each principal axis: cells with no hit but surrounded
+by hits are through-holes ("tunnels") along that axis; local dips in the
+top-down (Z) height map are dimples (countersinks, pockets). Runs in the
+executor (trimesh only).
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ class MeshHole(BaseModel):
     dia: float
     depth: float
     kind: Literal["tunnel", "dimple"]
+    axis: Literal["x", "y", "z"] = "z"  # ray/projection axis the void pierces
 
 
 class MeshFeatures(BaseModel):
@@ -28,38 +30,46 @@ class MeshFeatures(BaseModel):
 
 
 def _heightfield(
-    mesh: trimesh.Trimesh, step_mm: float
+    mesh: trimesh.Trimesh, step_mm: float, axis: int = 2
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """(H, xs, ys): max hit z per (x, y) cell, NaN where no hit."""
-    xs = np.arange(mesh.bounds[0][0], mesh.bounds[1][0] + step_mm, step_mm)
-    ys = np.arange(mesh.bounds[0][1], mesh.bounds[1][1] + step_mm, step_mm)
+    """(H, xs, ys): max hit coordinate along `axis` per cell of the plane
+    spanned by the other two axes, NaN where no hit."""
+    i, j = (a for a in range(3) if a != axis)
+    xs = np.arange(mesh.bounds[0][i], mesh.bounds[1][i] + step_mm, step_mm)
+    ys = np.arange(mesh.bounds[0][j], mesh.bounds[1][j] + step_mm, step_mm)
     xx, yy = np.meshgrid(xs, ys, indexing="ij")
-    origins = np.column_stack([xx.ravel(), yy.ravel(), np.full(xx.size, mesh.bounds[1][2] + 10.0)])
-    directions = np.tile([0.0, 0.0, -1.0], (len(origins), 1))
+    origins = np.zeros((xx.size, 3))
+    origins[:, i] = xx.ravel()
+    origins[:, j] = yy.ravel()
+    origins[:, axis] = mesh.bounds[1][axis] + 10.0
+    directions = np.zeros((xx.size, 3))
+    directions[:, axis] = -1.0
     locs, ray_ids, _ = mesh.ray.intersects_location(
         ray_origins=origins, ray_directions=directions, multiple_hits=True
     )
     H = np.full(xx.shape, np.nan)
-    for r, z in zip(ray_ids, locs[:, 2], strict=True):
-        i, j = np.unravel_index(r, xx.shape)
-        if np.isnan(H[i, j]) or z > H[i, j]:
-            H[i, j] = z
+    for r, loc in zip(ray_ids, locs, strict=True):
+        z = loc[axis]
+        i_, j_ = np.unravel_index(r, xx.shape)
+        if np.isnan(H[i_, j_]) or z > H[i_, j_]:
+            H[i_, j_] = z
     return H, xs, ys
 
 
-def detect_mesh_features(mesh: trimesh.Trimesh, step_mm: float = 0.5) -> MeshFeatures:
-    """Detect through-holes, dimples and the XY outline of a mesh."""
+def _tunnels_for_axis(
+    mesh: trimesh.Trimesh, step_mm: float, axis: int
+) -> tuple[list[MeshHole], np.ndarray]:
+    """Void cells enclosed by material on the projection plane — a ray
+    passing through the void hits nothing, so it marks "outside"; enclosed
+    no-hit cells are through-voids along `axis`."""
     import scipy.ndimage as ndi
-    from skimage.measure import regionprops
 
-    H, xs, ys = _heightfield(mesh, step_mm)
+    H, xs, ys = _heightfield(mesh, step_mm, axis)
     inside = ~np.isnan(H)
     footprint = ndi.binary_fill_holes(inside)
-    holes: list[MeshHole] = []
-    zspan = float(mesh.bounds[1][2] - mesh.bounds[0][2])
-
-    # tunnels: void cells enclosed by material
     tunnel = footprint & ~inside
+    span = float(mesh.bounds[1][axis] - mesh.bounds[0][axis])
+    holes: list[MeshHole] = []
     lab, n = ndi.label(tunnel)
     for i in range(1, n + 1):
         cells = lab == i
@@ -72,17 +82,41 @@ def detect_mesh_features(mesh: trimesh.Trimesh, step_mm: float = 0.5) -> MeshFea
                 x=round(float(xs[ii].mean()), 2),
                 y=round(float(ys[jj].mean()), 2),
                 dia=round(2.0 * np.sqrt(area / np.pi), 2),
-                depth=round(zspan, 2),
+                depth=round(span, 2),
                 kind="tunnel",
+                axis="xyz"[axis],  # type: ignore[typeddict-item]
             )
         )
+    return holes, footprint
 
-    # dimples: local dips >= 1.5 mm below the surrounding max
+
+def detect_mesh_features(mesh: trimesh.Trimesh, step_mm: float = 0.5) -> MeshFeatures:
+    """Detect through-holes (all 3 axes), dimples and the XY outline of a mesh.
+
+    A bore along X (e.g. handlebar through-bore) only shows on the X-axis ray
+    grid — a Z-only pass reports it as nothing, which made the refine agent
+    undo correct cuts.
+    """
+    import scipy.ndimage as ndi
+    from skimage.measure import regionprops
+
+    holes: list[MeshHole] = []
+    footprint = np.zeros((0, 0), dtype=bool)
+    for axis in range(3):
+        axis_holes, fp = _tunnels_for_axis(mesh, step_mm, axis)
+        holes += axis_holes
+        if axis == 2:
+            footprint = fp
+
+    H, xs, ys = _heightfield(mesh, step_mm, axis=2)
+    inside = ~np.isnan(H)
+
+    # dimples: local dips >= 1.5 mm below the surrounding max (top view only)
     Hf = np.nan_to_num(H, nan=0.0)
     win = max(round(7.0 / step_mm), 3)
     local_max = ndi.maximum_filter(Hf, size=win)
     dimple = ((local_max - Hf) > 1.5) & inside
-    lab, n = ndi.label(dimple)
+    lab, _n = ndi.label(dimple)
     for prop in regionprops(lab):
         area = float(prop.area) * step_mm * step_mm
         if not (8.0 <= area <= 200.0):
@@ -102,7 +136,7 @@ def detect_mesh_features(mesh: trimesh.Trimesh, step_mm: float = 0.5) -> MeshFea
             )
         )
 
-    holes.sort(key=lambda h: h.x)
+    holes.sort(key=lambda h: (h.axis, h.x))
 
     outline_mm: list[list[float]] = []
     try:

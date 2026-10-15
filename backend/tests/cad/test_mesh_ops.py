@@ -692,3 +692,48 @@ def test_mesh_analysis_counts_disconnected_components():
     ana = mesh_analysis(mesh)
     assert ana.solid_count == 2
     assert any("2 disconnected solids" in w for w in ana.warnings)
+
+
+def _force_voxel_fallback(monkeypatch):
+    """Break cheap repair + manifold so _ensure_watertight must voxel-rebuild."""
+    import trimesh.repair
+
+    monkeypatch.setattr(trimesh.repair, "fill_holes", lambda *a, **k: 0)
+    try:
+        import manifold3d
+
+        class _Boom:
+            def __init__(self, *a, **k):
+                raise RuntimeError("forced")
+
+        monkeypatch.setattr(manifold3d, "Manifold", _Boom)
+    except ImportError:
+        pass  # manifold3d absent → voxel path reached anyway
+
+
+def test_ensure_watertight_voxel_cap(monkeypatch):
+    """T8.9: the voxel fallback may not explode face count — marching cubes on
+    a fine grid can out-face the input by an order of magnitude (OOM-killed
+    the eval worker)."""
+    import cadx.cad.mesh_ops as mo
+
+    _force_voxel_fallback(monkeypatch)
+    m = _box(30, 30, 30)
+    m.update_faces(np.arange(len(m.faces)) > 5)
+    monkeypatch.setattr(mo, "_REBUILD_MAX_FACES", 2_000)
+    out = mo._ensure_watertight(m)
+    assert len(out.faces) <= 2_000
+    assert out.is_watertight
+
+
+def test_ensure_watertight_refuses_absurd_grid(monkeypatch):
+    """T8.9: an absurd voxel grid must raise instead of allocating a cells^3
+    bool matrix."""
+    import cadx.cad.mesh_ops as mo
+
+    _force_voxel_fallback(monkeypatch)
+    m = _box(30, 30, 30)
+    m.update_faces(np.arange(len(m.faces)) > 5)
+    monkeypatch.setattr(mo, "_VOXEL_REPAIR_MAX_CELLS", 5.0)
+    with pytest.raises(ValueError, match="watertight"):
+        mo._ensure_watertight(m)
