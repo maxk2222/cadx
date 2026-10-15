@@ -24,6 +24,11 @@ from cadx.logging import get_logger
 
 log = get_logger(__name__)
 
+# backend package root — in the container image REPO_ROOT resolves to "/"
+# while fixtures get injected under <backend>/tests, so benchmark image paths
+# fall back here when the repo-relative lookup misses
+_BACKEND_ROOT = Path(__file__).resolve().parents[2]
+
 BENCH_DIR = Path(__file__).parent / "benchmarks"
 
 
@@ -151,6 +156,10 @@ async def run_benchmark(bm: Benchmark, llm: Any | None = None) -> EvalResult:
 
         for rel in bm.images:
             p = (REPO_ROOT / rel).resolve()
+            if not p.exists():
+                alt = _BACKEND_ROOT / rel.removeprefix("backend/")
+                if alt.exists():
+                    p = alt
             if p.exists():
                 assets.append(
                     InputAsset(
@@ -160,6 +169,11 @@ async def run_benchmark(bm: Benchmark, llm: Any | None = None) -> EvalResult:
                         filename=p.name,
                     )
                 )
+            else:
+                # a silently dropped fixture makes mesh/hybrid benchmarks
+                # degrade to CAD with "no images attached" — invisible in
+                # scores, so make it loud
+                log.warning("eval.fixture_missing", benchmark=bm.name, path=str(p))
 
     async def emit(step: str, it: int, msg: str, **_f) -> None:
         pass
