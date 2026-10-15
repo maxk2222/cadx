@@ -29,7 +29,7 @@ from PIL import Image, ImageDraw, ImageFilter
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC_LOGO = Path.home() / "Downloads" / "CADX-Logo.png"
-SRC_ICON = Path.home() / "Downloads" / "CADX_Favicon.png"
+SRC_ICON = Path.home() / "Downloads" / "CADX_Favicon_X.png"
 OUT = ROOT / "frontend" / "public"
 
 BG_THRESH = 48  # flood-fill color tolerance
@@ -86,12 +86,15 @@ def main() -> None:
     # --- icon tile (opaque) + favicon set ---
     icon_sq = icon.resize((256, 256), Image.LANCZOS)
     icon_sq.save(OUT / "brand" / "icon.png", optimize=True)
+    # favicons get transparent corners (the tile's rounded mask shows through);
+    # PWA/touch icons stay opaque full-bleed
+    icon_rgba = border_transparent(icon)
     for size in (16, 32, 48):
-        icon.resize((size, size), Image.LANCZOS).save(OUT / f"favicon-{size}.png", optimize=True)
+        icon_rgba.resize((size, size), Image.LANCZOS).save(OUT / f"favicon-{size}.png", optimize=True)
     icon.resize((180, 180), Image.LANCZOS).save(OUT / "apple-touch-icon.png", optimize=True)
     for size in (192, 512):
         icon.resize((size, size), Image.LANCZOS).save(OUT / f"icon-{size}.png", optimize=True)
-    icon.save(
+    icon_rgba.save(
         OUT / "favicon.ico",
         sizes=[(16, 16), (32, 32), (48, 48)],
     )

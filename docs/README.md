@@ -1,4 +1,4 @@
-<img src="../frontend/public/brand/logo.png" width="240" alt="CADX">
+<p align="center"><img src="../frontend/public/brand/logo.png" width="300" alt="CADX"></p>
 
 # Documentation
 
