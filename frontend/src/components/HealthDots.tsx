@@ -11,7 +11,9 @@ function Dot({ ok, warn, label, title }: { ok: boolean; warn?: boolean; label: s
   return (
     <span className="flex items-center gap-1.5" title={title ?? label}>
       <span className={`h-2 w-2 rounded-full ${cls}`} />
-      <span className="hidden text-[11px] text-zinc-500 sm:inline">{label}</span>
+      <span className="hidden text-[10px] font-medium uppercase tracking-wider text-zinc-500 sm:inline">
+        {label}
+      </span>
     </span>
   );
 }
@@ -51,14 +53,14 @@ export default function HealthDots() {
   return (
     <Link
       to="/settings?tab=provider"
-      className="flex items-center gap-3 rounded-md px-2 py-1 hover:bg-zinc-900"
+      className="grid grid-cols-2 gap-x-3 gap-y-1.5 rounded-md px-2 py-1 hover:bg-zinc-900"
       title="service status — open settings"
     >
-      <Dot ok={apiOk} label="api" title={apiOk ? "API online" : "API unreachable"} />
+      <Dot ok={apiOk} label="API" title={apiOk ? "API online" : "API unreachable"} />
       <Dot
         ok={!!lp?.ok}
         warn={llmConfigured ? !lp : true}
-        label="llm"
+        label="LLM"
         title={
           lp?.ok
             ? `LLM online · ${lp.latency_ms}ms${lp.vision_ok ? " · vision" : ""}`
@@ -72,13 +74,13 @@ export default function HealthDots() {
       <Dot
         ok={meshOk}
         warn={!meshOk && apiOk}
-        label="mesh"
+        label="Mesh"
         title={meshOk ? `mesh server: ${mesh.data?.device} · ${nMesh} model(s)` : `mesh server offline${meshErr ? ` — ${meshErr}` : ""}`}
       />
       <Dot
         ok={meshOk && nImg > 0}
         warn={meshOk && nImg === 0}
-        label="img"
+        label="Image"
         title={
           !meshOk
             ? `image gen offline (mesh server unreachable${meshErr ? ` — ${meshErr}` : ""})`
