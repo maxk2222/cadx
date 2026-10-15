@@ -1,10 +1,14 @@
 <p align="center"><img src="../frontend/public/brand/hero.png" width="100%" alt="CADX"></p>
 
-# Documentation
+<h2 align="center">Documentation</h2>
 
-CADX turns reference images and a text prompt into parametric, verified 3D
-models for 3D printing and CNC. This index groups the documentation by
-audience; start with [Getting started](getting-started.md) if you are new.
+<p align="center">
+  <i>Text &amp; photos in — verified, parametric, manufacturing-ready CAD out.</i><br>
+  CADX turns reference images and a text prompt into parametric, verified 3D
+  models for 3D printing and CNC. This index groups the documentation by
+  audience — start with <a href="getting-started.md">Getting started</a> if you
+  are new.
+</p>
 
 ## Getting started
 
@@ -30,6 +34,7 @@ audience; start with [Getting started](getting-started.md) if you are new.
 |-----|----------|
 | [Mesh generation](mesh-generation.md) | `cad`/`mesh`/`hybrid`/`auto` modes, adapters, candidate screening, post-processing |
 | [FEM & TopOpt](fem-topopt.md) | Voxel FEM, SIMP topology optimization, load-case contract, limitations |
+| [Organic structures](organic.md) | Pseudo-topology organic restyling — gyroid/trabecular/voronoi/branches (aesthetic, not structural) |
 | [DfM checks](dfm.md) | FDM/CNC manufacturability heuristics |
 
 ## Internals & reference
