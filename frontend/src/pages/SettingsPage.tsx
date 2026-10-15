@@ -354,10 +354,25 @@ export default function SettingsPage() {
     tone: "ok" | "warn" | "bad" | "idle",
     title?: string,
   ) => (
-    <Card className="p-3">
-      <div className="text-[11px] uppercase tracking-wider text-zinc-500">{label}</div>
+    <Card className="p-4">
+      <div className="flex items-center gap-1.5">
+        <span
+          className={`h-2 w-2 shrink-0 rounded-full ${
+            tone === "ok"
+              ? "bg-emerald-500"
+              : tone === "warn"
+                ? "bg-amber-500"
+                : tone === "bad"
+                  ? "bg-red-500"
+                  : "bg-zinc-600"
+          }`}
+        />
+        <div className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
+          {label}
+        </div>
+      </div>
       <div
-        className={`mt-1 truncate text-sm font-medium ${
+        className={`mt-1.5 truncate text-base font-medium ${
           tone === "ok"
             ? "text-emerald-400"
             : tone === "warn"
@@ -377,8 +392,8 @@ export default function SettingsPage() {
     <div className="mx-auto max-w-xl p-6 pb-28">
       <h1 className="mb-4 text-2xl font-bold">Settings</h1>
 
-      {/* service health */}
-      <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+      {/* service health — 2×2 */}
+      <div className="mb-4 grid grid-cols-2 gap-3">
         {statusCard(
           "API",
           health.data?.ok ? "online" : "offline",
