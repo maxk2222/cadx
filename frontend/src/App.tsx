@@ -66,14 +66,14 @@ function SideNav() {
     refetchInterval: 8000,
   });
   return (
-    <aside className="sticky top-0 z-40 flex h-screen w-14 shrink-0 flex-col border-r border-zinc-800/80 bg-zinc-950 md:w-56">
+    <aside className="sticky top-0 z-40 flex h-screen w-14 shrink-0 flex-col border-r border-zinc-800/80 bg-zinc-950 md:w-44">
       <Link
         to="/"
         title="CADX — home"
         className="mx-2 mb-2 mt-3 flex h-16 items-center justify-center rounded-lg transition-colors hover:bg-zinc-900 md:justify-start md:px-2"
       >
         <span className="hidden md:inline">
-          <Logo size={40} wordmark />
+          <Logo size={48} wordmark />
         </span>
         <span className="md:hidden">
           <Logo size={40} />
