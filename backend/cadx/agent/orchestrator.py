@@ -1213,6 +1213,7 @@ def _score_candidate_mesh(
         from cadx.agent.mesh_score import score_raw_mesh
         from cadx.cad.mesh_ops import (
             candidate_meshes,
+            decimate,
             orient,
             orient_by_plan_view,
             rest_on_xy_center,
@@ -1222,6 +1223,9 @@ def _score_candidate_mesh(
         m = trimesh.load(storage.resolve(rel), force="mesh")
         if not isinstance(m, trimesh.Trimesh):
             return None
+        # candidates are scored on 6 orientations each — decimate the raw
+        # generator mesh once so ray-casting stays cheap
+        m = decimate(m, 30_000)
         if outline:
             hit = orient_by_plan_view(m, outline)
             if hit is not None:
@@ -1667,11 +1671,14 @@ def _orientation_ranking(
         import trimesh
 
         from cadx.agent.mesh_score import score_raw_mesh
-        from cadx.cad.mesh_ops import orient, rest_on_xy_center, scale_to_spec
+        from cadx.cad.mesh_ops import decimate, orient, rest_on_xy_center, scale_to_spec
 
         m = trimesh.load(storage.resolve(mesh_rel), force="mesh")
         if not isinstance(m, trimesh.Trimesh):
             return None, None
+        # raw generator meshes can be >500k faces — the loop orients+scores
+        # ~30 candidates below, each copying the mesh; decimate once upfront
+        m = decimate(m, 30_000)
 
         def _key(up: str, front: str, mirror: bool = False) -> tuple[int, float]:
             c = rest_on_xy_center(orient(m, up, front, mirror_x=mirror))

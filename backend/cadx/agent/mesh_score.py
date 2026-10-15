@@ -79,6 +79,12 @@ def score_mesh_candidate(
     return round(0.6 * aspect + 0.4 * height, 3)
 
 
+# scoring only needs macroscopic geometry (aspect, outline, tunnels) — a
+# raw generator mesh can be >500k faces and this fn is called ~30x inside
+# _orientation_ranking and per candidate, so cap faces before ray-casting
+_SCORE_MAX_FACES = 25_000
+
+
 def score_raw_mesh(mesh: Any, spec: Any, plan_outline: list[list[float]] | None = None) -> float:
     """Score an oriented+scaled trimesh directly (candidate pre-selection).
 
@@ -88,6 +94,9 @@ def score_raw_mesh(mesh: Any, spec: Any, plan_outline: list[list[float]] | None 
 
     assert isinstance(mesh, trimesh.Trimesh)
     from cadx.cad.mesh_features import detect_mesh_features
+    from cadx.cad.mesh_ops import decimate
+
+    mesh = decimate(mesh, _SCORE_MAX_FACES)
 
     ext = [float(v) for v in mesh.extents]
     aspect = 0.5
