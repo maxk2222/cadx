@@ -20,6 +20,7 @@ import contextlib
 import inspect
 import uuid
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlmodel import col, select
@@ -35,10 +36,12 @@ from cadx.agent.toolspecs import (
     _truncate,
     _truncate_args,
 )
-from cadx.agent.types import IMAGE_INPUT_KINDS, AgentCtx
+from cadx.agent.types import IMAGE_INPUT_KINDS, AgentCtx, InputAsset
 from cadx.db.models import (
     Artifact,
     ArtifactKind,
+    Asset,
+    Chat,
     Job,
     JobStatus,
     LibraryPart,
@@ -378,6 +381,37 @@ CHAT_ACTION_TOOLS = [
     ),
 ]
 
+# always available — even before a project is bound. Chats may start
+# project-less; these three are how the agent (re)binds the conversation.
+PROJECT_TOOLS = [
+    _fn(
+        "create_project",
+        "Create a NEW project and bind this chat to it. Call when the user "
+        "wants to build, edit or upload something and no project is bound "
+        "yet — derive a concise name from the request, don't ask for "
+        "permission. Existing project? Use attach_project instead.",
+        {
+            "name": _s("short project name derived from the request"),
+            "description": _s("optional one-line description"),
+        },
+        ["name"],
+    ),
+    _fn(
+        "attach_project",
+        "Bind this chat to an EXISTING project (pick the id from "
+        "list_projects). Use when the user refers to a project that already "
+        "exists — e.g. 'switch to project X'.",
+        {"project_id": _s("project id from list_projects")},
+        ["project_id"],
+    ),
+    _fn(
+        "list_projects",
+        "List the user's projects: id, name, updated_at — newest first.",
+        {"limit": _i("max results, default 20")},
+        [],
+    ),
+]
+
 
 # --------------------------------------------------------------------------- #
 # session                                                                     #
@@ -406,6 +440,10 @@ class ChatToolSession(ToolSession):
         self._interrupt_fn = interrupt_fn
         self._enqueue_fn = enqueue_fn
         self._publish_fn = publish_fn
+        # live project binding — None while the chat is project-less; updated
+        # by the bind tools / _project() so a mid-turn (re)bind takes effect
+        # immediately (ctx.project_id + ctx.assets get refreshed alongside)
+        self._pid: uuid.UUID | None = ctx.project_id
         # every spawned job — persisted into the chat message meta so the UI
         # renders progress cards and deep links
         self.spawned: list[dict[str, Any]] = []
@@ -413,7 +451,12 @@ class ChatToolSession(ToolSession):
     # -- schema selection --------------------------------------------------- #
 
     def tools(self) -> list[dict[str, Any]]:
+        # unbound chat: only project management + project-independent
+        # lookups — everything else needs a bound project
+        if self._pid is None:
+            return [*PROJECT_TOOLS, *INFO_TOOLS, *LIBRARY_INFO_TOOLS]
         out = [
+            *PROJECT_TOOLS,
             *CHAT_INFO_TOOLS,
             *CHAT_ACTION_TOOLS,
             *INFO_TOOLS,
@@ -436,6 +479,13 @@ class ChatToolSession(ToolSession):
                 await self._publish_fn(event, data)
 
     async def execute(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        # a project may have been bound via the API while this turn runs —
+        # pick it up so the next tool call sees the full toolset
+        if self._pid is None:
+            async with session_scope() as db:
+                chat = await db.get(Chat, self.chat_id)
+                if chat is not None and chat.project_id is not None:
+                    await self._apply_bind(db, chat.project_id)
         if name not in self.allowed_names():
             result = {"ok": False, "error": f"tool '{name}' is not available in this session"}
             self.tool_log.append({"name": name, "args": _truncate_args(args), "result": result})
@@ -525,8 +575,14 @@ class ChatToolSession(ToolSession):
         if not vid:
             return
         try:
+            async with session_scope() as db:
+                v = await db.get(Version, uuid.UUID(str(vid)))
+            if v is None:
+                return
             images: list[str] = []
-            sheet = storage.version_dir(self.ctx.project_id, vid) / "contact_sheet.png"
+            # v.project_id — not ctx.project_id: the chat may have been
+            # rebound to another project mid-turn
+            sheet = storage.version_dir(v.project_id, v.id) / "contact_sheet.png"
             if sheet.exists():
                 images.append(str(sheet))
             if images:
@@ -535,19 +591,49 @@ class ChatToolSession(ToolSession):
         except Exception:
             pass
 
+    async def _apply_bind(self, db: Any, project_id: uuid.UUID) -> None:
+        """Point the session at a (new) project — refreshes ctx.project_id
+        and reloads ctx.assets so image tools see the right files."""
+        self._pid = project_id
+        self.ctx.project_id = project_id
+        rows = await db.execute(select(Asset).where(col(Asset.project_id) == project_id))
+        self.ctx.assets = [
+            InputAsset(
+                asset_id=str(a.id),
+                kind=a.kind.value,
+                path=storage.resolve(a.path),
+                caption=a.caption,
+                filename=a.filename,
+                role_hint=str((a.gen_params or {}).get("role_hint") or ""),
+            )
+            for a in rows.scalars().all()
+        ]
+
     async def _project(self, db: Any) -> Project:
-        p = await db.get(Project, self.ctx.project_id)
+        # read the binding live from the chat row — it may have changed via
+        # the API or a bind tool since the session was constructed
+        chat = await db.get(Chat, self.chat_id)
+        pid = chat.project_id if chat is not None else None
+        if pid is None:
+            raise SpawnError(
+                "no project bound — call create_project or attach_project first",
+                status=409,
+            )
+        if pid != self._pid:
+            await self._apply_bind(db, pid)
+        p = await db.get(Project, pid)
         if p is None:
             raise SpawnError("project not found", status=404)
         return p
 
     async def _version(self, db: Any, version_id: str) -> Version:
+        await self._project(db)  # resolves the live binding into self._pid
         try:
             vid = uuid.UUID(str(version_id))
         except ValueError:
             raise SpawnError("invalid version id", status=422) from None
         v = await db.get(Version, vid)
-        if v is None or v.project_id != self.ctx.project_id:
+        if v is None or v.project_id != self._pid:
             raise SpawnError("version not found in this project", status=404)
         return v
 
@@ -556,9 +642,10 @@ class ChatToolSession(ToolSession):
     async def _tool_list_versions(self, a: dict[str, Any]) -> dict[str, Any]:
         limit = max(1, min(50, int(a.get("limit", 20) or 20)))
         async with session_scope() as db:
+            await self._project(db)  # refreshes self._pid from the live binding
             rows = await db.execute(
                 select(Version)
-                .where(Version.project_id == self.ctx.project_id)
+                .where(Version.project_id == self._pid)
                 .order_by(col(Version.number).desc())
                 .limit(limit)
             )
@@ -714,6 +801,80 @@ class ChatToolSession(ToolSession):
             await db.commit()
             return {"ok": True, "settings": p.settings}
 
+    # -- project binding tools ------------------------------------------------ #
+
+    def _chat_out_dict(self, chat: Chat) -> dict[str, Any]:
+        return {
+            "id": str(chat.id),
+            "project_id": str(chat.project_id) if chat.project_id else None,
+            "title": chat.title,
+            "turn_running": chat.turn_running,
+            "created_at": chat.created_at.isoformat(),
+            "updated_at": chat.updated_at.isoformat(),
+        }
+
+    async def _bind_chat(self, db: Any, chat: Chat, project: Project) -> dict[str, Any]:
+        chat.project_id = project.id
+        chat.updated_at = datetime.now(UTC)
+        await self._apply_bind(db, project.id)
+        await db.commit()
+        await self._publish("chat_update", {"chat": self._chat_out_dict(chat)})
+        return {
+            "ok": True,
+            "project_id": str(project.id),
+            "project_name": project.name,
+            "bound": True,
+        }
+
+    async def _tool_create_project(self, a: dict[str, Any]) -> dict[str, Any]:
+        name = str(a.get("name", "")).strip()
+        if not name:
+            return {"ok": False, "error": "name required"}
+        async with session_scope() as db:
+            chat = await db.get(Chat, self.chat_id)
+            if chat is None:
+                return {"ok": False, "error": "chat not found"}
+            project = Project(
+                name=name[:120],
+                description=str(a.get("description") or "")[:2000],
+                settings={},
+            )
+            db.add(project)
+            await db.flush()
+            return await self._bind_chat(db, chat, project)
+
+    async def _tool_attach_project(self, a: dict[str, Any]) -> dict[str, Any]:
+        try:
+            pid = uuid.UUID(str(a.get("project_id", "")))
+        except ValueError:
+            return {"ok": False, "error": "invalid project id"}
+        async with session_scope() as db:
+            chat = await db.get(Chat, self.chat_id)
+            if chat is None:
+                return {"ok": False, "error": "chat not found"}
+            project = await db.get(Project, pid)
+            if project is None:
+                return {"ok": False, "error": "project not found"}
+            return await self._bind_chat(db, chat, project)
+
+    async def _tool_list_projects(self, a: dict[str, Any]) -> dict[str, Any]:
+        limit = max(1, min(50, int(a.get("limit", 20) or 20)))
+        async with session_scope() as db:
+            rows = await db.execute(
+                select(Project).order_by(col(Project.updated_at).desc()).limit(limit)
+            )
+            return {
+                "ok": True,
+                "projects": [
+                    {
+                        "id": str(p.id),
+                        "name": p.name,
+                        "updated_at": p.updated_at.isoformat(),
+                    }
+                    for p in rows.scalars().all()
+                ],
+            }
+
     # -- action tools --------------------------------------------------------- #
 
     async def _tool_generate_part(self, a: dict[str, Any]) -> dict[str, Any]:
@@ -855,6 +1016,10 @@ class ChatToolSession(ToolSession):
         if not prompt:
             return {"ok": False, "error": "prompt is required"}
         count = max(1, min(2, int(a.get("count", 1) or 1)))
+        # assets are stored under ctx.project_id — refresh the binding first
+        # in case the chat was rebound mid-turn (updates ctx.assets too)
+        async with session_scope() as db:
+            await self._project(db)
         ref_id = str(a.get("reference_asset_id") or "").strip()
         ref = None
         if ref_id:

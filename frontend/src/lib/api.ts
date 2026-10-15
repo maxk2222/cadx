@@ -4,6 +4,7 @@ import type {
   CatalogEntry,
   CatalogSearchHit,
   Chat,
+  ChatListItem,
   ChatMessage,
   ChatState,
   FemPreviewResult,
@@ -252,8 +253,13 @@ export const api = {
 
   // chat agent
   listChats: (pid: string) => req<Chat[]>(`/projects/${pid}/chats`),
-  createChat: (pid: string, title?: string) =>
+  listAllChats: () => req<ChatListItem[]>("/chats"),
+  createChat: (pid: string | null, title?: string) =>
     req<Chat>("/chats", json({ project_id: pid, title })),
+  attachChatProject: (
+    id: string,
+    body: { project_id?: string; name?: string; description?: string },
+  ) => req<Chat>(`/chats/${id}/project`, json(body)),
   getChat: (id: string) => req<ChatState>(`/chats/${id}`),
   renameChat: (id: string, title: string) =>
     req<Chat>(`/chats/${id}`, {

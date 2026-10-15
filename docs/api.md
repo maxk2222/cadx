@@ -73,8 +73,10 @@ POST          /api/jobs/{id}/restart                     replay a terminal job
 ## Chat
 
 ```
-POST          /api/chats                                 create a chat {project_id, title?}
+POST          /api/chats                                 create a chat {project_id?, title?} — project_id optional
+GET           /api/chats                                 all chats, newest first (project_name included)
 GET           /api/projects/{id}/chats                   chats of a project
+POST          /api/chats/{id}/project                    bind chat {project_id} | {name, description?} → creates+binds
 GET           /api/chats/{id}                            chat + full message history
 PATCH|DELETE  /api/chats/{id}                            rename / delete
 POST          /api/chats/{id}/messages                   user message {content, asset_ids} → 201

@@ -290,16 +290,38 @@ def _make_on_delta(
 async def _run_turns(  # noqa: C901
     ctx: dict[str, Any], chat_id: uuid.UUID
 ) -> dict[str, Any]:
+    async def _load_project_ctx(
+        chat: Chat,
+    ) -> tuple[Project | None, list[InputAsset], dict[str, InputAsset]]:
+        """Project + hydrated assets for the chat's CURRENT binding — the
+        binding can change between iterations via create_project/attach."""
+        async with session_scope() as db:
+            project = await db.get(Project, chat.project_id) if chat.project_id else None
+            if project is None:
+                return None, [], {}
+            rows = await db.execute(select(Asset).where(Asset.project_id == project.id))
+            project_assets = list(rows.scalars().all())
+        assets = [
+            InputAsset(
+                asset_id=str(a.id),
+                kind=a.kind.value,
+                path=storage.resolve(a.path),
+                caption=a.caption,
+                filename=a.filename,
+                role_hint=str((a.gen_params or {}).get("role_hint") or ""),
+            )
+            for a in project_assets
+        ]
+        return project, assets, {a.asset_id: a for a in assets}
+
     async with session_scope() as db:
         chat = await db.get(Chat, chat_id)
         if chat is None:
             return {"ok": False, "error": "chat not found"}
-        project = await db.get(Project, chat.project_id)
-        if project is None:
-            return {"ok": False, "error": "project not found"}
         runtime = await load_runtime_settings(db)
-        rows = await db.execute(select(Asset).where(Asset.project_id == project.id))
-        project_assets = list(rows.scalars().all())
+
+    project, assets, assets_by_id = await _load_project_ctx(chat)
+    bound_pid = chat.project_id
 
     role = runtime.chat_model_role
     vision = role == "vision"
@@ -309,19 +331,6 @@ async def _run_turns(  # noqa: C901
     llm = _make_llm(runtime)
     image = _make_image(runtime)
     image_ok = await _image_available(image)
-
-    assets: list[InputAsset] = [
-        InputAsset(
-            asset_id=str(a.id),
-            kind=a.kind.value,
-            path=storage.resolve(a.path),
-            caption=a.caption,
-            filename=a.filename,
-            role_hint=str((a.gen_params or {}).get("role_hint") or ""),
-        )
-        for a in project_assets
-    ]
-    assets_by_id = {a.asset_id: a for a in assets}
 
     async def check_cancel() -> bool:
         async with session_scope() as db:
@@ -346,6 +355,12 @@ async def _run_turns(  # noqa: C901
             if chat is None:
                 return {"ok": False, "error": "chat deleted"}
             history = list(chat.llm_messages or [])
+        # the binding may have changed between iterations (agent called
+        # create_project/attach_project, or the user bound via the API) —
+        # reload project context so hydration/tools see the right assets
+        if chat.project_id != bound_pid:
+            project, assets, assets_by_id = await _load_project_ctx(chat)
+            bound_pid = chat.project_id
         if not fresh and not history:
             break  # nothing to answer — defensive; the API always enqueues on a msg
         history = _trim_history(history, runtime.chat_history_messages)
@@ -359,7 +374,12 @@ async def _run_turns(  # noqa: C901
         async def drain_fn() -> list[dict[str, Any]]:
             got = await _drain_pending(chat_id)
             drained_this_turn.extend(got)
-            return [_hydrate(m, vision, assets_by_id, runtime.chat_image_max) for m in got]
+            # reads the function-level name at call time — deliberately sees
+            # the assets of the current binding (see the reload above)
+            return [
+                _hydrate(m, vision, assets_by_id, runtime.chat_image_max)  # noqa: B023
+                for m in got
+            ]
 
         async def publish_fn(event: str, data: dict[str, Any]) -> None:
             await _chat_emit(chat_id, event, data)
@@ -371,11 +391,11 @@ async def _run_turns(  # noqa: C901
             emit=_noop_emit,
             check_cancel=check_cancel,
             job_id=f"chat:{chat_id}",
-            project_id=project.id,
+            project_id=chat.project_id,  # may be None — unbound chat
             version_id=chat_id,  # unused by chat tools; keeps the dataclass happy
             mode="chat",
             prompt="",
-            settings=project_settings(project.settings or {}, runtime),
+            settings=project_settings(project.settings if project else {}, runtime),
             check_finish=None,
             runtime_settings=turn_runtime,
             assets=assets,

@@ -124,7 +124,7 @@ class EditRequest(BaseModel):
 class ChatCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    project_id: uuid.UUID
+    project_id: uuid.UUID | None = None
     title: str = Field(default="", max_length=200)
 
 
@@ -134,13 +134,28 @@ class ChatUpdate(BaseModel):
     title: str = Field(min_length=1, max_length=200)
 
 
+class ChatAttachIn(BaseModel):
+    """Bind a chat to a project — either an existing one (`project_id`) or a
+    freshly created one (`name`/`description`; empty body → 'New project')."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: uuid.UUID | None = None
+    name: str = Field(default="", max_length=200)
+    description: str = Field(default="", max_length=2000)
+
+
 class ChatOut(BaseModel):
     id: uuid.UUID
-    project_id: uuid.UUID
+    project_id: uuid.UUID | None
     title: str
     turn_running: bool
     created_at: datetime
     updated_at: datetime
+
+
+class ChatListItem(ChatOut):
+    project_name: str | None = None
 
 
 class ChatMessageIn(BaseModel):

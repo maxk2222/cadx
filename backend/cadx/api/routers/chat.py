@@ -22,7 +22,9 @@ from sqlmodel import col, select
 from cadx import events
 from cadx.api.deps import enqueue, get_session
 from cadx.api.schemas import (
+    ChatAttachIn,
     ChatCreate,
+    ChatListItem,
     ChatMessageIn,
     ChatMessageOut,
     ChatOut,
@@ -72,13 +74,56 @@ async def _ensure_turn(chat_id: uuid.UUID) -> None:
 
 @router.post("/chats", response_model=ChatOut, status_code=201)
 async def create_chat(body: ChatCreate, db: AsyncSession = Depends(get_session)):
-    project = await db.get(Project, body.project_id)
-    if project is None:
-        raise HTTPException(404, "project not found")
-    chat = Chat(project_id=project.id, title=body.title or "Chat")
+    if body.project_id is not None:
+        project = await db.get(Project, body.project_id)
+        if project is None:
+            raise HTTPException(404, "project not found")
+    chat = Chat(project_id=body.project_id, title=body.title or "Chat")
     db.add(chat)
     await db.commit()
     await db.refresh(chat)
+    return _chat_out(chat)
+
+
+@router.get("/chats", response_model=list[ChatListItem])
+async def list_all_chats(db: AsyncSession = Depends(get_session)):
+    rows = await db.execute(
+        select(Chat, Project.name)
+        .join(Project, col(Chat.project_id) == Project.id, isouter=True)
+        .order_by(col(Chat.updated_at).desc())
+        .limit(200)
+    )
+    return [
+        ChatListItem(**_chat_out(c).model_dump(), project_name=pname) for c, pname in rows.all()
+    ]
+
+
+@router.post("/chats/{chat_id}/project", response_model=ChatOut)
+async def attach_chat_project(
+    chat_id: uuid.UUID, body: ChatAttachIn, db: AsyncSession = Depends(get_session)
+):
+    """Bind a chat to a project: an existing one (`project_id`) or a new one
+    created on the fly (`name`; empty body → 'New project')."""
+    chat = await _chat_or_404(db, chat_id)
+    if body.project_id is not None:
+        project = await db.get(Project, body.project_id)
+        if project is None:
+            raise HTTPException(404, "project not found")
+    else:
+        project = Project(
+            name=body.name.strip() or "New project",
+            description=body.description.strip(),
+            settings={},
+        )
+        db.add(project)
+        await db.flush()
+    chat.project_id = project.id
+    chat.updated_at = datetime.now(UTC)
+    await db.commit()
+    with contextlib.suppress(Exception):
+        await events.publish_chat(
+            str(chat.id), {"type": "chat_update", "chat": _chat_out(chat).model_dump()}
+        )
     return _chat_out(chat)
 
 
@@ -133,7 +178,9 @@ async def post_message(
     chat = await _chat_or_404(db, chat_id)
     if not body.content.strip() and not body.asset_ids:
         raise HTTPException(422, "message needs text or attachments")
-    # attachments must belong to this project
+    # attachments must belong to this project — and require one to exist
+    if body.asset_ids and chat.project_id is None:
+        raise HTTPException(409, "attach a project before sending images")
     if body.asset_ids:
         rows = await db.execute(
             select(Asset).where(

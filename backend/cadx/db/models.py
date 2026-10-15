@@ -242,7 +242,9 @@ class ChatRole(enum.StrEnum):
 
 
 class Chat(SQLModel, table=True):
-    """A chat thread bound to a project — the conversational agent front-end.
+    """A chat thread optionally bound to a project — the conversational
+    agent front-end. Unbound chats can only talk and use catalog/library
+    tools until the agent (or the UI) binds them to a project.
 
     `llm_messages` is the persisted, sanitised OpenAI-format conversation
     (no system prompt — rebuilt per turn; image parts stored as
@@ -250,7 +252,7 @@ class Chat(SQLModel, table=True):
     """
 
     id: uuid.UUID = SField(default_factory=uuid.uuid4, primary_key=True)
-    project_id: uuid.UUID = SField(foreign_key="project.id", index=True)
+    project_id: uuid.UUID | None = SField(default=None, foreign_key="project.id", index=True)
     title: str = ""
     llm_messages: list[dict[str, Any]] = SField(default_factory=list, sa_column=Column(JSON))
     turn_running: bool = False  # atomic turn claim (UPDATE ... WHERE NOT turn_running)

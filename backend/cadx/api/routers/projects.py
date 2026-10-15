@@ -17,6 +17,8 @@ from cadx.db.models import (
     AgentTrace,
     Artifact,
     Asset,
+    Chat,
+    ChatMessage,
     Job,
     Project,
     Version,
@@ -143,6 +145,10 @@ async def delete_project(project_id: uuid.UUID, db: AsyncSession = Depends(get_s
     await db.execute(sa_delete(Artifact).where(col(Artifact.version_id).in_(vids)))
     await db.execute(sa_delete(Version).where(col(Version.project_id) == project_id))
     await db.execute(sa_delete(Asset).where(col(Asset.project_id) == project_id))
+    # chats bound to the project go too — the FK would otherwise fire
+    cids = select(Chat.id).where(col(Chat.project_id) == project_id)
+    await db.execute(sa_delete(ChatMessage).where(col(ChatMessage.chat_id).in_(cids)))
+    await db.execute(sa_delete(Chat).where(col(Chat.project_id) == project_id))
     await db.delete(p)
     await db.commit()
     storage.delete_project_dir(project_id)

@@ -116,3 +116,66 @@ async def test_chat_validation_and_404s(client):
     assert (
         await client.post("/api/chats", json={"project_id": str(uuid.uuid4())})
     ).status_code == 404
+
+
+async def test_unbound_chat_and_attach(client):
+    """Chats can live without a project; the attach endpoint binds an
+    existing project or creates one on the fly."""
+    # project-less chat
+    r = await client.post("/api/chats", json={})
+    assert r.status_code == 201, r.text
+    chat = r.json()
+    cid = chat["id"]
+    assert chat["project_id"] is None
+
+    # assets rejected while unbound
+    r = await client.post(f"/api/chats/{cid}/messages", json={"asset_ids": [str(uuid.uuid4())]})
+    assert r.status_code == 409
+
+    # attach by name → creates + binds
+    r = await client.post(f"/api/chats/{cid}/project", json={"name": "knob"})
+    assert r.status_code == 200, r.text
+    pid = r.json()["project_id"]
+    assert pid is not None
+    proj = (await client.get(f"/api/projects/{pid}")).json()
+    assert proj["name"] == "knob"
+
+    # rebind to an existing project
+    pid2 = await _mk_project(client, "other")
+    r = await client.post(f"/api/chats/{cid}/project", json={"project_id": pid2})
+    assert r.status_code == 200 and r.json()["project_id"] == pid2
+
+    # invalid project id → 404
+    r = await client.post(f"/api/chats/{cid}/project", json={"project_id": str(uuid.uuid4())})
+    assert r.status_code == 404
+
+    # global list shows the project name
+    chats = (await client.get("/api/chats")).json()
+    row = next(c for c in chats if c["id"] == cid)
+    assert row["project_name"] == "other"
+
+    # unbound chat shows null project_name
+    cid2 = (await client.post("/api/chats", json={"title": "loose"})).json()["id"]
+    chats = (await client.get("/api/chats")).json()
+    row2 = next(c for c in chats if c["id"] == cid2)
+    assert row2["project_name"] is None
+
+
+async def test_attach_creates_default_project(client):
+    """Empty attach body → 'New project' created and bound."""
+    cid = (await client.post("/api/chats", json={})).json()["id"]
+    r = await client.post(f"/api/chats/{cid}/project", json={})
+    assert r.status_code == 200
+    pid = r.json()["project_id"]
+    proj = (await client.get(f"/api/projects/{pid}")).json()
+    assert proj["name"] == "New project"
+
+
+async def test_delete_project_cascades_chats(client):
+    """Deleting a project removes its bound chats (FK would fire otherwise)."""
+    pid = await _mk_project(client, "del-proj")
+    cid = (await client.post("/api/chats", json={"project_id": pid})).json()["id"]
+    r = await client.post(f"/api/chats/{cid}/messages", json={"content": "hi"})
+    assert r.status_code == 201
+    assert (await client.delete(f"/api/projects/{pid}")).status_code == 200
+    assert (await client.get(f"/api/chats/{cid}")).status_code == 404

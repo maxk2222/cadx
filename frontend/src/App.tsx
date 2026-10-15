@@ -101,16 +101,16 @@ function SideNav() {
           active={loc.pathname === "/"}
         />
         <NavItem
-          to="/projects"
-          icon={FolderOpen}
-          label="Projects"
-          active={loc.pathname === "/projects"}
-        />
-        <NavItem
           to="/chat"
           icon={MessagesSquare}
           label="Chat"
           active={loc.pathname.startsWith("/chat")}
+        />
+        <NavItem
+          to="/projects"
+          icon={FolderOpen}
+          label="Projects"
+          active={loc.pathname === "/projects"}
         />
         <NavItem
           to="/jobs"

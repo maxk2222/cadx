@@ -197,3 +197,155 @@ def test_trim_history_cuts_at_user_boundary():
     assert out[0]["role"] == "user"
     # tool messages must never be orphaned at the cut boundary
     assert out[0].get("role") != "tool"
+
+
+async def test_unbound_turn_agent_creates_project(monkeypatch):
+    """A project-less chat works: the agent calls create_project, a Project
+    row appears, the chat gets bound, and the turn completes."""
+    async with session_scope() as db:
+        c = Chat(project_id=None, title="t")
+        db.add(c)
+        await db.commit()
+        await db.refresh(c)
+        cid = c.id
+        db.add(
+            ChatMessage(chat_id=cid, role=ChatRole.user, content="build me a knob", pending=True)
+        )
+        await db.commit()
+
+    fake = FakeLLM(
+        [
+            {"tool_calls": [{"name": "create_project", "arguments": {"name": "knob"}}]},
+            "created a project for you — ready to build",
+        ]
+    )
+    _patch_llm(monkeypatch, fake)
+    res = await chat_worker.run_chat_turn({}, {"chat_id": str(cid)})
+    assert res["ok"]
+
+    async with session_scope() as db:
+        chat = await db.get(Chat, cid)
+        assert chat.project_id is not None
+        p = await db.get(Project, chat.project_id)
+        assert p.name == "knob"
+
+    msgs = await _messages(cid)
+    asst = next(m for m in msgs if m.role == ChatRole.assistant)
+    tool = asst.meta["tool_log"][0]
+    assert tool["name"] == "create_project"
+    assert tool["result"]["project_name"] == "knob"
+
+
+async def test_tool_gating_unbound(monkeypatch):
+    """Unbound session: project/attach/list + catalog/library tools only —
+    project-bound tools appear after create_project."""
+    from cadx.agent.chat_tools import ChatToolSession
+    from cadx.agent.trace import MemoryTrace
+    from cadx.agent.types import AgentCtx
+    from cadx.db.models import ProjectSettings
+    from cadx.runtime_config import RuntimeSettings
+
+    async with session_scope() as db:
+        c = Chat(project_id=None, title="t")
+        db.add(c)
+        await db.commit()
+        await db.refresh(c)
+        cid = c.id
+
+    async def emit(*_a, **_k) -> None:
+        pass
+
+    async def no_cancel() -> bool:
+        return False
+
+    ctx = AgentCtx(
+        llm=FakeLLM([]),
+        executor=None,
+        trace=MemoryTrace(),
+        emit=emit,
+        check_cancel=no_cancel,
+        job_id=f"chat:{cid}",
+        project_id=None,
+        version_id=cid,
+        mode="chat",
+        prompt="",
+        settings=ProjectSettings(),
+        runtime_settings=RuntimeSettings(),
+    )
+    s = ChatToolSession(ctx, chat_id=cid, attach_images=False)
+    names = {t["function"]["name"] for t in s.tools()}
+    assert {"create_project", "attach_project", "list_projects"} <= names
+    assert "search_catalog" in names  # project-independent lookups stay
+    # project-bound tools gated out
+    assert "generate_part" not in names
+    assert "list_versions" not in names
+    assert "view_image" not in names
+    assert "generate_image" not in names
+
+    # bind via the tool → full set unlocks
+    res = await s.execute("create_project", {"name": "gated-proj"})
+    assert res["ok"] and res["bound"], res
+    names2 = {t["function"]["name"] for t in s.tools()}
+    assert "generate_part" in names2
+    assert "list_versions" in names2
+
+    # attach to a different existing project rebinds mid-session
+    async with session_scope() as db:
+        p2 = Project(name="target")
+        db.add(p2)
+        await db.commit()
+        await db.refresh(p2)
+        pid2 = p2.id
+    res2 = await s.execute("attach_project", {"project_id": str(pid2)})
+    assert res2["ok"]
+    async with session_scope() as db:
+        chat = await db.get(Chat, cid)
+        assert chat.project_id == pid2
+
+
+async def test_create_project_tool_publishes_chat_update(monkeypatch):
+    """Bind tools publish a chat_update event so the UI refreshes live."""
+    events: list[tuple[str, dict]] = []
+
+    async with session_scope() as db:
+        c = Chat(project_id=None, title="t")
+        db.add(c)
+        await db.commit()
+        await db.refresh(c)
+        cid = c.id
+
+    from cadx.agent.chat_tools import ChatToolSession
+    from cadx.agent.trace import MemoryTrace
+    from cadx.agent.types import AgentCtx
+    from cadx.db.models import ProjectSettings
+    from cadx.runtime_config import RuntimeSettings
+
+    async def emit(*_a, **_k) -> None:
+        pass
+
+    async def no_cancel() -> bool:
+        return False
+
+    ctx = AgentCtx(
+        llm=FakeLLM([]),
+        executor=None,
+        trace=MemoryTrace(),
+        emit=emit,
+        check_cancel=no_cancel,
+        job_id=f"chat:{cid}",
+        project_id=None,
+        version_id=cid,
+        mode="chat",
+        prompt="",
+        settings=ProjectSettings(),
+        runtime_settings=RuntimeSettings(),
+    )
+
+    async def pub(event: str, data: dict) -> None:
+        events.append((event, data))
+
+    s = ChatToolSession(ctx, chat_id=cid, attach_images=False, publish_fn=pub)
+    res = await s.execute("create_project", {"name": "pub-proj"})
+    assert res["ok"]
+    upd = [d for e, d in events if e == "chat_update"]
+    assert upd and upd[0]["chat"]["project_id"] == res["project_id"]

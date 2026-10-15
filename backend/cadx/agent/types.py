@@ -91,7 +91,7 @@ class AgentCtx:
     check_cancel: CancelFn
 
     job_id: str
-    project_id: uuid.UUID
+    project_id: uuid.UUID | None  # None for unbound chats
     version_id: uuid.UUID
     mode: str  # "generate" | "edit" | "resume"
     prompt: str

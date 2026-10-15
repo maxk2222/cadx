@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Boxes,
+  FolderOpen,
   MessageSquarePlus,
   Square,
   Trash2,
@@ -18,7 +19,6 @@ import {
   Crumbs,
   EmptyState,
   IconBtn,
-  SectionTitle,
   Spinner,
 } from "../components/ui";
 import { api } from "../lib/api";
@@ -33,94 +33,59 @@ import { useTitle } from "../lib/useTitle";
 function ChatIndex() {
   const nav = useNavigate();
   const qc = useQueryClient();
-  const [projectId, setProjectId] = useState<string | null>(null);
-  const projects = useQuery({ queryKey: ["projects"], queryFn: api.listProjects });
-  const chats = useQuery({
-    queryKey: ["chats", projectId],
-    queryFn: () => api.listChats(projectId!),
-    enabled: !!projectId,
-  });
+  const chats = useQuery({ queryKey: ["chats", "all"], queryFn: api.listAllChats });
   const create = useMutation({
-    mutationFn: (pid: string) => api.createChat(pid),
+    // project-less chat — the agent binds/creates a project when needed
+    mutationFn: () => api.createChat(null),
     onSuccess: (c) => nav(`/chat/${c.id}`),
   });
   const del = useMutation({
     mutationFn: (id: string) => api.deleteChat(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["chats", projectId] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["chats", "all"] }),
   });
-
-  // auto-select the single / first project
-  useEffect(() => {
-    if (!projectId && projects.data?.length) setProjectId(projects.data[0].id);
-  }, [projects.data, projectId]);
 
   return (
     <div className="mx-auto max-w-4xl p-6">
-      <Crumbs
-        items={[<span key="c" className="font-medium text-zinc-200">agent chat</span>]}
-      />
-      <div className="mb-4 mt-4 flex items-center justify-between">
+      <div className="mb-5 mt-0 flex items-center justify-between">
         <div>
-          <SectionTitle>Chats</SectionTitle>
-          <div className="text-xs text-zinc-500">
-            Talk to the agent — it can generate, edit, analyse and optimise parts.
+          <h1 className="text-2xl font-bold">Chat</h1>
+          <div className="mt-0.5 text-xs text-zinc-500">
+            Talk to the agent — it can create projects, generate, edit, analyse
+            and optimise parts.
           </div>
         </div>
-        <Btn
-          onClick={() => projectId && create.mutate(projectId)}
-          disabled={!projectId}
-          busy={create.isPending}
-        >
+        <Btn onClick={() => create.mutate()} busy={create.isPending}>
           <MessageSquarePlus className="h-4 w-4" /> new chat
         </Btn>
       </div>
-      <div className="mb-4 flex flex-wrap gap-2">
-        {(projects.data ?? []).map((p) => (
-          <button
-            key={p.id}
-            onClick={() => setProjectId(p.id)}
-            className={`rounded-full border px-3 py-1 text-sm transition-colors ${
-              p.id === projectId
-                ? "border-sky-600 bg-sky-950 text-sky-200"
-                : "border-zinc-800 text-zinc-400 hover:border-zinc-600"
-            }`}
+      <div className="flex flex-col gap-2">
+        {(chats.data ?? []).map((c) => (
+          <Card
+            key={c.id}
+            className="flex items-center gap-3 !p-3 transition-colors hover:border-zinc-700"
           >
-            {p.name}
-          </button>
+            <Link to={`/chat/${c.id}`} className="min-w-0 flex-1">
+              <div className="truncate text-sm font-medium text-zinc-200">
+                {c.title}
+              </div>
+              <div className="text-xs text-zinc-500">
+                {c.project_name ?? "no project"} ·{" "}
+                {new Date(c.updated_at).toLocaleString()}
+                {c.turn_running && " · running…"}
+              </div>
+            </Link>
+            <IconBtn title="delete chat" danger onClick={() => del.mutate(c.id)}>
+              <Trash2 className="h-4 w-4" />
+            </IconBtn>
+          </Card>
         ))}
+        {chats.data?.length === 0 && (
+          <EmptyState
+            title="No chats yet"
+            hint="Start a new chat — the agent creates a project for you when needed."
+          />
+        )}
       </div>
-      {projects.data?.length === 0 && (
-        <EmptyState
-          title="No projects yet"
-          hint="Create a project first — chats live inside projects."
-        />
-      )}
-      {projectId && (
-        <div className="flex flex-col gap-2">
-          {(chats.data ?? []).map((c) => (
-            <Card
-              key={c.id}
-              className="flex items-center gap-3 !p-3 transition-colors hover:border-zinc-700"
-            >
-              <Link to={`/chat/${c.id}`} className="min-w-0 flex-1">
-                <div className="truncate text-sm font-medium text-zinc-200">
-                  {c.title}
-                </div>
-                <div className="text-xs text-zinc-500">
-                  {new Date(c.updated_at).toLocaleString()}
-                  {c.turn_running && " · running…"}
-                </div>
-              </Link>
-              <IconBtn title="delete chat" danger onClick={() => del.mutate(c.id)}>
-                <Trash2 className="h-4 w-4" />
-              </IconBtn>
-            </Card>
-          ))}
-          {chats.data?.length === 0 && (
-            <EmptyState title="No chats yet" hint="Start a new chat with the agent." />
-          )}
-        </div>
-      )}
     </div>
   );
 }
@@ -142,13 +107,48 @@ function ChatView({ chatId }: { chatId: string }) {
       if (state.chat?.project_id)
         qc.invalidateQueries({ queryKey: ["assets", state.chat.project_id] });
     }
+    if (type === "chat_update") {
+      // project (re)bound — via agent tool or the attach endpoint
+      qc.invalidateQueries({ queryKey: ["projects"] });
+      qc.invalidateQueries({ queryKey: ["chats"] });
+      qc.invalidateQueries({ queryKey: ["project"] });
+    }
   });
   const { chat, messages, toolEvents, turnRunning, connected } = state;
   useTitle(chat?.title ?? "Chat");
 
+  const project = useQuery({
+    queryKey: ["project", chat?.project_id],
+    queryFn: () => api.getProject(chat!.project_id!),
+    enabled: !!chat?.project_id,
+  });
+  const projects = useQuery({
+    queryKey: ["projects"],
+    queryFn: api.listProjects,
+    enabled: !chat?.project_id,
+  });
+  const attach = useMutation({
+    mutationFn: (pid: string) => api.attachChatProject(chatId, { project_id: pid }),
+  });
+  // lazy project creation for the first image upload in an unbound chat
+  const creatingRef = useRef<Promise<string | null> | null>(null);
+  const ensureProject = useRef(async (): Promise<string | null> => {
+    if (chat?.project_id) return chat.project_id;
+    creatingRef.current ??= api
+      .attachChatProject(chatId, {
+        name: chat && chat.title !== "Chat" ? chat.title : "New project",
+      })
+      .then((c) => c.project_id)
+      .catch(() => null)
+      .finally(() => {
+        creatingRef.current = null;
+      });
+    return creatingRef.current;
+  }).current;
+
   const assets = useQuery({
     queryKey: ["assets", chat?.project_id],
-    queryFn: () => api.listAssets(chat!.project_id),
+    queryFn: () => api.listAssets(chat!.project_id!),
     enabled: !!chat?.project_id,
   });
   const assetsById = useMemo(
@@ -205,13 +205,50 @@ function ChatView({ chatId }: { chatId: string }) {
           <Crumbs
             items={[
               <Link key="c" to="/chat" className="hover:text-zinc-300">
-                agent chat
+                chat
               </Link>,
               <span key="t" className="font-medium text-zinc-200">
                 {chat?.title ?? "…"}
               </span>,
             ]}
           />
+          {chat?.project_id ? (
+            <Link
+              to={`/projects/${chat.project_id}`}
+              className="flex items-center gap-1 rounded-full border border-zinc-800 px-2.5 py-0.5 text-xs text-zinc-400 transition-colors hover:border-zinc-600 hover:text-zinc-200"
+              title="bound project"
+            >
+              <FolderOpen className="h-3 w-3" />
+              {project.data?.name ?? "project"}
+            </Link>
+          ) : chat ? (
+            <div className="flex items-center gap-1.5">
+              <span className="rounded-full border border-dashed border-zinc-700 px-2.5 py-0.5 text-xs text-zinc-500">
+                no project
+              </span>
+              {(projects.data?.length ?? 0) > 0 && (
+                <select
+                  className="rounded-md border border-zinc-800 bg-zinc-900 px-1.5 py-0.5 text-xs text-zinc-400"
+                  defaultValue=""
+                  disabled={attach.isPending}
+                  onChange={(e) => {
+                    if (e.target.value) attach.mutate(e.target.value);
+                    e.target.value = "";
+                  }}
+                  title="bind chat to an existing project"
+                >
+                  <option value="" disabled>
+                    bind to…
+                  </option>
+                  {(projects.data ?? []).map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+          ) : null}
           <div className="ml-auto flex items-center gap-1.5">
             {!connected && (
               <span className="text-xs text-amber-500">reconnecting…</span>
@@ -264,7 +301,8 @@ function ChatView({ chatId }: { chatId: string }) {
               <div className="mb-2 text-xs text-red-400">{sendErr}</div>
             )}
             <Composer
-              projectId={chat?.project_id ?? ""}
+              projectId={chat?.project_id ?? null}
+              ensureProject={ensureProject}
               disabled={!chat}
               onSend={(content, asset_ids) =>
                 send.mutate({ content, asset_ids })

@@ -1,9 +1,17 @@
 # Chat agent
 
-A persistent, project-bound conversation with the CADX agent: `/chat` in the
-web GUI (or the **chat** button on a project page). You describe parts, attach
-reference images (picker, paste, drag&drop), answer clarification questions —
-the agent uses every CADX capability as a tool and shows results inline.
+A persistent conversation with the CADX agent: `/chat` in the web GUI (or
+the **chat** button on a project page). You describe parts, attach reference
+images (picker, paste, drag&drop), answer clarification questions — the agent
+uses every CADX capability as a tool and shows results inline.
+
+Chats may start **unbound** (no project): you can talk, browse the catalog
+and library right away; when you ask for something to be built, the agent
+creates a project itself (`create_project`) or binds an existing one
+(`attach_project`, `list_projects`). Uploading an image into an unbound chat
+lazily creates a project first; the header badge shows the binding and lets
+you rebind manually. Project-bound tools are only exposed to the model while
+a project is bound.
 
 ## What the agent can do in chat
 
@@ -19,6 +27,7 @@ the agent uses every CADX capability as a tool and shows results inline.
 | `job_status` / `wait_job` | poll or block on a spawned job |
 | `update_project_settings` | whitelisted project settings (material, process, …) |
 | `save_library_part` | save a finished version as STEP/template library part |
+| `create_project` / `attach_project` / `list_projects` | project binding — available even while unbound |
 | info tools | `list_versions`, `version_details`, `view_render`, catalog, library, model lists, `view_image` |
 
 Spawned jobs are real `Job`/`Version` rows (shared helpers in `cadx/spawn.py`),
@@ -62,6 +71,7 @@ GET  /chats/{id}/events (SSE)      → snapshot + message_delta/tool_*/turn_*
 | `turn_start` | `{message_id}` — the streaming assistant row |
 | `message_delta` | `{message_id, text}` — cumulative snapshot |
 | `tool_start` / `tool_result` | `{name, args}` / `{name, ok, result}` |
+| `chat_update` | `{chat}` — the binding/title changed (create_project, attach) |
 | `message_update` | `{message_id, content}` — final text |
 | `turn_end` | `{message_id, cancelled, exhausted}` |
 | `error` | `{message}` |

@@ -153,6 +153,12 @@ export function useChatEvents(
           };
         });
       },
+      chat_update: (d) => {
+        // the chat's binding changed (agent create_project/attach or the
+        // UI attach endpoint) — refresh chat so header + composer react
+        const { chat } = d as { chat: Chat };
+        if (chat) setState((s) => ({ ...s, chat }));
+      },
       turn_end: (d) => {
         const { message_id } = d as { message_id: string };
         patch(message_id, (m) => ({

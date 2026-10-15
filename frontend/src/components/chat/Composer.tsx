@@ -9,10 +9,14 @@ import { Spinner } from "../ui";
  *  attached to the message on send. */
 export default function Composer({
   projectId,
+  ensureProject,
   disabled,
   onSend,
 }: {
-  projectId: string;
+  projectId: string | null;
+  /** called on first upload when the chat has no project yet — lazy-creates
+   *  one and binds the chat to it (like the New-part wizard does) */
+  ensureProject?: () => Promise<string | null>;
   disabled?: boolean;
   onSend: (content: string, assetIds: string[]) => void;
 }) {
@@ -41,7 +45,12 @@ export default function Composer({
     setError("");
     setUploading((n) => n + imgs.length);
     try {
-      const assets = await api.uploadAssets(projectId, imgs);
+      const pid = projectId ?? (await ensureProject?.()) ?? null;
+      if (!pid) {
+        setError("couldn't create a project for the upload");
+        return;
+      }
+      const assets = await api.uploadAssets(pid, imgs);
       setStaged((s) => [...s, ...assets]);
     } catch (e) {
       setError(String(e));

@@ -756,11 +756,16 @@ export interface Stats {
 /** Chat thread — GET /projects/{pid}/chats. */
 export interface Chat {
   id: string;
-  project_id: string;
+  project_id: string | null;
   title: string;
   turn_running: boolean;
   created_at: string;
   updated_at: string;
+}
+
+/** Chat row with the bound project's name — GET /chats. */
+export interface ChatListItem extends Chat {
+  project_name: string | null;
 }
 
 /** Tool-call record stored in assistant message meta.tool_log. */
