@@ -53,6 +53,18 @@ def test_occ_fillet_empty_selection():
     assert "safe_fillet" in d.hint
 
 
+def test_removesplitter_api_missing_method():
+    """Observed: `body.removeSplitter()` (CadQuery idiom) looped 3x in repair —
+    must get a dedicated category + the .clean() hint, not generic api-misuse."""
+    d = diagnose(
+        "AttributeError: 'Solid' object has no attribute 'removeSplitter'",
+        'File "model.py", line 22\nAttributeError',
+        CODE,
+    )
+    assert d.category == "api-missing-method"
+    assert "clean()" in d.hint
+
+
 def test_attribute_error_api_misuse():
     d = diagnose(
         "AttributeError: 'Edge' object has no attribute 'pos'",

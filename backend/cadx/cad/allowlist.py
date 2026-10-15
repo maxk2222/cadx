@@ -86,6 +86,15 @@ _2D_CTORS = {
 _AXIS_SELF = {"Cylinder": "Z", "Cone": "Z"}
 _BOOLEAN_CUTTERS = {"cut", "fuse", "intersect"}
 
+# Method names models borrow from CadQuery/OpenSCAD that don't exist in
+# build123d — observed: `body.removeSplitter()` (AttributeError, repair loop
+# repeated it 3x). Warn so codegen feedback names the real API.
+_HALLUCINATED_METHODS = {
+    "removeSplitter": ".clean() merges coplanar faces/edges left over by booleans",
+    "unify": ".clean() merges coplanar faces/edges left over by booleans",
+    "makeSolid": "Solid(...)/Solid.make_solid(...) turns a shell into a solid",
+}
+
 
 class _Checker(ast.NodeVisitor):
     def __init__(self) -> None:
@@ -226,6 +235,13 @@ class _Checker(ast.NodeVisitor):
                     f"float({node.args[0].value!r}) raises ValueError at runtime — "
                     "the literal is not numeric (corrupted output?)",
                 )
+        if isinstance(node.func, ast.Attribute) and node.func.attr in _HALLUCINATED_METHODS:
+            self._warn(
+                node,
+                f"`.{node.func.attr}()` does not exist in build123d (CadQuery/"
+                f"OpenSCAD idiom) — {_HALLUCINATED_METHODS[node.func.attr]}; "
+                "or remove the call.",
+            )
         self._check_rotate_self_axis(node)
         self._check_2d_boolean_method(node)
         self._check_ctor_kwargs(node)

@@ -151,6 +151,14 @@ _RULES: list[tuple[re.Pattern[str], str, str]] = [
         "Compare the call with the reference idioms.",
     ),
     (
+        re.compile(r"has no attribute '(removeSplitter|unify|makeSolid)'", re.I),
+        "api-missing-method",
+        "That method name is an OpenSCAD/CadQuery idiom — it does not exist in "
+        "build123d. To merge coplanar faces/edges left over from boolean ops use "
+        "`part = part.clean()`; to convert a shell/mesh to a solid use "
+        "`Solid(...)`/`Solid.make_solid(...)` — or drop the call entirely.",
+    ),
+    (
         re.compile(r"AttributeError", re.I),
         "api-misuse",
         "Wrong attribute/method name — check the build123d reference in context. "

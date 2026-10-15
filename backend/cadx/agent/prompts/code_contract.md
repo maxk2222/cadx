@@ -34,6 +34,9 @@
      `(Axis.Y, 90)` — `Rot(a=90, about=Axis.Y)` raises "Unexpected keyword
      arguments". Same discipline for every constructor: check the signature,
      don't invent kwargs.
+   - `removeSplitter`/`unify`/`makeSolid` do NOT exist (CadQuery/OpenSCAD
+     idioms). To merge coplanar faces left over by boolean ops use
+     `part = part.clean()` — or simply omit it.
    - Turned/revolved parts (grips, nozzles, bodies of revolution): build the
      profile as `(x, radius)` points in `BuildSketch(Plane.XZ)` — u maps to
      X, v is the radial distance — and close the profile DOWN TO THE AXIS

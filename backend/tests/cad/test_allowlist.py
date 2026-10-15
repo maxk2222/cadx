@@ -126,6 +126,17 @@ def test_lint_rot_bad_kwargs_warns():
     assert not any("keyword" in w for w in r2.warnings)
 
 
+def test_lint_hallucinated_method_warns():
+    """Observed: `body.removeSplitter()` — CadQuery idiom absent in build123d —
+    caused a non-converging repair loop; warn with the real API name."""
+    code = GOOD + "body = Box(10, 10, 5)\nbody = body.removeSplitter()\nresult = body\n"
+    r = check_code(code)
+    assert any("removeSplitter" in w and "clean()" in w for w in r.warnings)
+    ok = GOOD + "body = Box(10, 10, 5)\nbody = body.clean()\nresult = body\n"
+    r2 = check_code(ok)
+    assert not any("removeSplitter" in w for w in r2.warnings)
+
+
 def test_lint_clean_code_no_warnings():
     code = (
         GOOD
