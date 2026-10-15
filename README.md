@@ -30,6 +30,11 @@
 > **Early development** — CADX is under active development. Expect breaking
 > changes, rough edges and an evolving API/data model between versions.
 > Feedback and bug reports are very welcome.
+>
+> **Hardware coverage:** only the Apple Silicon path (MLX/MPS) has been
+> exercised on real hardware so far. The NVIDIA **CUDA** and AMD **ROCm**
+> tiers are implemented and mock-tested, but not yet validated on an actual
+> GPU — expect a report/fix round on first contact with real hardware.
 
 ---
 
@@ -131,7 +136,7 @@ Full GUI walkthrough: **[docs/webgui-ux.md](docs/webgui-ux.md)**.
 ./scripts/start.sh    # or: make start
 ```
 
-The first run auto-detects your GPU tier (MLX / CUDA / none), installs the
+The first run auto-detects your GPU tier (MLX / CUDA / ROCm / none), installs the
 matching mesh adapter and brings up the whole stack — docker services plus the
 native mesh-server sidecar. Open **http://localhost:8080** → **Settings** and
 point it at your LLM provider (Ollama, LM Studio, vLLM, OpenAI, OpenRouter —
