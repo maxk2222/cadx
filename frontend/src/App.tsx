@@ -70,13 +70,13 @@ function SideNav() {
       <Link
         to="/"
         title="CADX — home"
-        className="mx-2 mb-2 mt-3 flex h-14 items-center justify-center rounded-lg transition-colors hover:bg-zinc-900 md:justify-start md:px-2"
+        className="mx-2 mb-2 mt-3 flex h-16 items-center justify-center rounded-lg transition-colors hover:bg-zinc-900 md:justify-start md:px-2"
       >
         <span className="hidden md:inline">
-          <Logo size={32} wordmark />
+          <Logo size={40} wordmark />
         </span>
         <span className="md:hidden">
-          <Logo size={30} />
+          <Logo size={40} />
         </span>
       </Link>
       <nav className="flex flex-col gap-1">

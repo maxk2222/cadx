@@ -132,7 +132,7 @@ export default function ProjectsPage() {
         <EmptyState title="Could not load projects" hint="Is the API running?" />
       ) : !filtered.length ? (
         <EmptyState
-          icon={<Logo size={56} />}
+          icon={<Logo size={80} />}
           title={q ? "No projects match your search" : "No projects yet"}
           hint={q ? undefined : "Create a project to start generating 3D models."}
         />

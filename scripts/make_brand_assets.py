@@ -29,7 +29,7 @@ from PIL import Image, ImageDraw, ImageFilter
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC_LOGO = Path.home() / "Downloads" / "CADX-Logo.png"
-SRC_ICON = Path.home() / "Downloads" / "CADX_Favicon_X.png"
+SRC_ICON = Path.home() / "Downloads" / "CADX_favicon_transparent.png"
 OUT = ROOT / "frontend" / "public"
 
 BG_THRESH = 48  # flood-fill color tolerance
@@ -67,7 +67,11 @@ def main() -> None:
     (OUT / "brand").mkdir(parents=True, exist_ok=True)
 
     logo = Image.open(SRC_LOGO).convert("RGB")
-    icon = Image.open(SRC_ICON).convert("RGB")
+    icon = Image.open(SRC_ICON).convert("RGBA")
+    # opaque variant on app-dark background for touch/PWA icons
+    icon_op = Image.new("RGBA", icon.size, (9, 9, 11, 255))
+    icon_op.alpha_composite(icon)
+    icon_op = icon_op.convert("RGB")
 
     # --- banner logo: crop to content + resize ---
     bb = content_bbox(logo)
@@ -83,18 +87,15 @@ def main() -> None:
     wm_small = wm.resize((int(wm.width * 192 / wm.height), 192), Image.LANCZOS)
     wm_small.save(OUT / "brand" / "wordmark.png", optimize=True)
 
-    # --- icon tile (opaque) + favicon set ---
-    icon_sq = icon.resize((256, 256), Image.LANCZOS)
-    icon_sq.save(OUT / "brand" / "icon.png", optimize=True)
-    # favicons get transparent corners (the tile's rounded mask shows through);
-    # PWA/touch icons stay opaque full-bleed
-    icon_rgba = border_transparent(icon)
+    # --- transparent X mark + favicon set ---
+    icon.resize((256, 256), Image.LANCZOS).save(OUT / "brand" / "icon.png", optimize=True)
+    # favicons keep the transparent X; PWA/touch icons get an opaque dark base
     for size in (16, 32, 48):
-        icon_rgba.resize((size, size), Image.LANCZOS).save(OUT / f"favicon-{size}.png", optimize=True)
-    icon.resize((180, 180), Image.LANCZOS).save(OUT / "apple-touch-icon.png", optimize=True)
+        icon.resize((size, size), Image.LANCZOS).save(OUT / f"favicon-{size}.png", optimize=True)
+    icon_op.resize((180, 180), Image.LANCZOS).save(OUT / "apple-touch-icon.png", optimize=True)
     for size in (192, 512):
-        icon.resize((size, size), Image.LANCZOS).save(OUT / f"icon-{size}.png", optimize=True)
-    icon_rgba.save(
+        icon_op.resize((size, size), Image.LANCZOS).save(OUT / f"icon-{size}.png", optimize=True)
+    icon.save(
         OUT / "favicon.ico",
         sizes=[(16, 16), (32, 32), (48, 48)],
     )
