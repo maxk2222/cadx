@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 
@@ -53,3 +55,25 @@ class MemoryTrace:
                 "latency_ms": latency_ms,
             }
         )
+
+
+class JsonlTrace(MemoryTrace):
+    """MemoryTrace that also appends every record to a JSONL file right away.
+
+    The consolidated trace.json is written at run end — an OOM kill (SIGKILL)
+    skips that dump entirely. Appending per record keeps a durable postmortem
+    even when the process is killed mid-step.
+    """
+
+    def __init__(self, path: Path) -> None:
+        super().__init__()
+        self._path = path
+
+    async def record(self, **kwargs: Any) -> None:
+        await super().record(**kwargs)
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            with self._path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(self.records[-1], default=str) + "\n")
+        except OSError:
+            pass

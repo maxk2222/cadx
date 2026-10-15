@@ -16,7 +16,7 @@ from typing import Any
 from cadx import storage
 from cadx.agent.executor_client import InProcessExecutor
 from cadx.agent.orchestrator import RunOutcome, run_generation
-from cadx.agent.trace import MemoryTrace
+from cadx.agent.trace import JsonlTrace, MemoryTrace
 from cadx.agent.types import AgentCtx
 from cadx.db.models import ProjectSettings
 from cadx.llm.fake import FakeLLM
@@ -195,10 +195,13 @@ async def run_benchmark(
     else:
         executor = InProcessExecutor()
 
+    vdir = storage.version_dir(project_id, version_id)
     ctx = AgentCtx(
         llm=llm,
         executor=executor,
-        trace=MemoryTrace(),
+        # JSONL per record — an OOM/SIGKILL skips the end-of-run dump,
+        # and the crash postmortem above showed the cost of losing it
+        trace=JsonlTrace(vdir / "trace.jsonl"),
         emit=emit,
         check_cancel=no_cancel,
         job_id="eval",
@@ -213,7 +216,6 @@ async def run_benchmark(
         mesh=mesh,
         mesh_available=(await mesh.health()).ok if mesh else False,
     )
-    vdir = storage.version_dir(project_id, version_id)
     t0 = time.monotonic()
     try:
         outcome: RunOutcome = await run_generation(ctx)
