@@ -91,6 +91,18 @@ def main() -> None:
         banner = banner.resize((1200, int(banner.height * 1200 / banner.width)), Image.LANCZOS)
     banner.save(OUT / "brand" / "logo.png", optimize=True)
 
+    # --- hero bar: full-width dark banner with centered logo (README/docs) ---
+    # rounded transparent corners so it reads as a card on light themes
+    HW, HH = 1600, 400
+    hero = Image.new("RGBA", (HW, HH), DARK_BG)
+    lh = HH - 120
+    logo_h = logo_c.resize((int(logo_c.width * lh / logo_c.height), lh), Image.LANCZOS)
+    hero.alpha_composite(logo_h, ((HW - logo_h.width) // 2, (HH - logo_h.height) // 2))
+    mask = Image.new("L", (HW, HH), 0)
+    ImageDraw.Draw(mask).rounded_rectangle([0, 0, HW, HH], radius=32, fill=255)
+    hero.putalpha(mask)
+    hero.save(OUT / "brand" / "hero.png", optimize=True)
+
     # --- transparent wordmark (sidebar-sized) ---
     wm_small = logo_c.resize((int(logo_c.width * 192 / logo_c.height), 192), Image.LANCZOS)
     wm_small.save(OUT / "brand" / "wordmark.png", optimize=True)
