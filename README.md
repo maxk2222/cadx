@@ -1,4 +1,4 @@
-# CAD<img src="frontend/public/logo.svg" height="36" alt="X" valign="middle">
+# CAD<img src="frontend/public/logo.svg" height="64" alt="X" valign="middle">
 
 **Images + text in — manufacturing-ready CAD out.** CADX uses a multimodal
 LLM (any OpenAI-compatible API) to turn reference photos, drawings and a text
