@@ -180,7 +180,18 @@ async def run_benchmark(
     async def emit(step: str, it: int, msg: str, **_f) -> None:
         # step transitions are the only mid-flight signal in the log — the
         # OOM kill during hybrid prep was only localizable via these emits
-        log.info("eval.step", benchmark=bm.name, step=step, iteration=it, msg=str(msg)[:160])
+        import resource
+
+        log.info(
+            "eval.step",
+            benchmark=bm.name,
+            step=step,
+            iteration=it,
+            msg=str(msg)[:160],
+            # pinpoint which step grows the eval process — two worker-side
+            # oom_kills happened mid-run with no allocation visibility
+            peak_rss_mb=round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024),
+        )
 
     async def no_cancel() -> bool:
         return False

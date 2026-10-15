@@ -507,6 +507,12 @@ def eval(
             for bm in bms:
                 if real_llm:
                     bm.llm_script = None
+                # release Python-heap garbage from the previous benchmark —
+                # meshes/pil images/messages accumulate and the eval process
+                # has already been oom-killed twice inside the worker cgroup
+                import gc
+
+                gc.collect()
                 # llm=None: run_benchmark builds a client from the DB runtime
                 # settings — the same endpoint/key/models a real job would use.
                 # Per-benchmark isolation: one crashed benchmark must not kill
