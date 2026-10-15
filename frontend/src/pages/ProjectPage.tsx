@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Pencil, Search, Sparkles, Trash2 } from "lucide-react";
+import { MessagesSquare, Pencil, Search, Sparkles, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import AssetManager from "../components/AssetManager";
@@ -100,6 +100,15 @@ export default function ProjectPage() {
     },
   });
 
+  const openChat = useMutation({
+    mutationFn: async () => {
+      const list = await api.listChats(id);
+      return list.length ? list[0] : api.createChat(id);
+    },
+    onSuccess: (c) => nav(`/chat/${c.id}`),
+    onError: (e) => toast(String(e), "error"),
+  });
+
   const del = useMutation({
     mutationFn: () => api.deleteProject(id),
     onSuccess: () => {
@@ -164,6 +173,13 @@ export default function ProjectPage() {
             )}
           </div>
           <div className="flex shrink-0 gap-1">
+            <button
+              className="flex items-center gap-1 rounded-md px-2 py-1 text-sm text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+              onClick={() => openChat.mutate()}
+              disabled={openChat.isPending}
+            >
+              <MessagesSquare className="h-3.5 w-3.5" /> chat
+            </button>
             <button
               className="flex items-center gap-1 rounded-md px-2 py-1 text-sm text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
               onClick={() => setEditOpen(true)}

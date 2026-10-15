@@ -5,6 +5,7 @@ import {
   BarChart3,
   FolderOpen,
   Library,
+  MessagesSquare,
   Settings,
   Sparkles,
   type LucideIcon,
@@ -20,6 +21,7 @@ import HealthDots from "./components/HealthDots";
 import Logo from "./components/Logo";
 import { ToastProvider } from "./components/ui";
 import { api } from "./lib/api";
+import ChatPage from "./pages/ChatPage";
 import EditPage from "./pages/EditPage";
 import JobsPage from "./pages/JobsPage";
 import LibraryPage from "./pages/LibraryPage";
@@ -105,6 +107,12 @@ function SideNav() {
           active={loc.pathname === "/projects"}
         />
         <NavItem
+          to="/chat"
+          icon={MessagesSquare}
+          label="Chat"
+          active={loc.pathname.startsWith("/chat")}
+        />
+        <NavItem
           to="/jobs"
           icon={Activity}
           label="Jobs"
@@ -148,6 +156,8 @@ export default function App() {
               <Route path="/" element={<StartPage />} />
               <Route path="/projects" element={<ProjectsPage />} />
               <Route path="/projects/:id" element={<ProjectPage />} />
+              <Route path="/chat" element={<ChatPage />} />
+              <Route path="/chat/:chatId" element={<ChatPage />} />
               <Route path="/versions/:id" element={<VersionPage />} />
               <Route path="/versions/:id/edit" element={<EditPage />} />
               <Route path="/jobs" element={<JobsPage />} />

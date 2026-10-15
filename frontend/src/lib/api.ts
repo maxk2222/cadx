@@ -3,6 +3,9 @@ import type {
   Asset,
   CatalogEntry,
   CatalogSearchHit,
+  Chat,
+  ChatMessage,
+  ChatState,
   FemPreviewResult,
   GenMode,
   Job,
@@ -246,8 +249,29 @@ export const api = {
   meshModels: () => req<MeshModelInfo[]>("/mesh/models"),
 
   getStats: (days = 0) => req<Stats>(`/stats${days ? `?days=${days}` : ""}`),
+
+  // chat agent
+  listChats: (pid: string) => req<Chat[]>(`/projects/${pid}/chats`),
+  createChat: (pid: string, title?: string) =>
+    req<Chat>("/chats", json({ project_id: pid, title })),
+  getChat: (id: string) => req<ChatState>(`/chats/${id}`),
+  renameChat: (id: string, title: string) =>
+    req<Chat>(`/chats/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    }),
+  deleteChat: (id: string) => req<{ ok: boolean }>(`/chats/${id}`, { method: "DELETE" }),
+  postChatMessage: (id: string, body: { content: string; asset_ids?: string[] }) =>
+    req<ChatMessage>(`/chats/${id}/messages`, json(body)),
+  runChat: (id: string) => req<{ ok: boolean }>(`/chats/${id}/run`, { method: "POST" }),
+  cancelChat: (id: string) => req<{ ok: boolean }>(`/chats/${id}/cancel`, { method: "POST" }),
 };
 
 export function jobEventsUrl(jobId: string): string {
   return `${BASE}/jobs/${jobId}/events`;
+}
+
+export function chatEventsUrl(chatId: string): string {
+  return `${BASE}/chats/${chatId}/events`;
 }

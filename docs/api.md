@@ -70,6 +70,22 @@ POST          /api/jobs/{id}/finish                      stop early, keep the be
 POST          /api/jobs/{id}/restart                     replay a terminal job
 ```
 
+## Chat
+
+```
+POST          /api/chats                                 create a chat {project_id, title?}
+GET           /api/projects/{id}/chats                   chats of a project
+GET           /api/chats/{id}                            chat + full message history
+PATCH|DELETE  /api/chats/{id}                            rename / delete
+POST          /api/chats/{id}/messages                   user message {content, asset_ids} → 201
+POST          /api/chats/{id}/run                        ensure a turn is running (retry/continue)
+POST          /api/chats/{id}/cancel                     cancel the running turn (409 if idle)
+GET           /api/chats/{id}/events                     SSE: snapshot + delta/tool/turn events
+```
+
+See [chat.md](chat.md) for the turn lifecycle, tool surface and SSE event
+payloads.
+
 ## Stats
 
 ```

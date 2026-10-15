@@ -23,6 +23,7 @@
 | Doc | Contents |
 |-----|----------|
 | [Web GUI](webgui-ux.md) | Pages and workflows: projects, versions, mesh editor, structural editor, settings |
+| [Chat agent](chat.md) | Conversational agent: chat UI, tool set, SSE events, crash-safe turn lifecycle |
 | [Image editing](image-editing.md) | Crop/mask/background-removal of reference images before generation |
 | [Image generation](image-generation.md) | Local text-to-image adapters, concept/hero images, image edits, sketches |
 | [Parts library](parts-library.md) | Standard-part catalog, `cadlib` helpers, user library, BOM |

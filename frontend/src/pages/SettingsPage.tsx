@@ -46,6 +46,11 @@ const NUM_FIELDS = new Set<string>([
   "agent_mesh_refine_rounds",
   "agent_mesh_hard_fail_score",
   "agent_mesh_hard_fail_limit",
+  "chat_tool_max_calls",
+  "chat_max_turns",
+  "chat_spawn_timeout_s",
+  "chat_history_messages",
+  "chat_image_max",
   "fem_voxel_mm",
   "fem_max_elements",
   "fem_timeout_s",
@@ -107,6 +112,11 @@ const FIELD_BOUNDS: Record<
   agent_mesh_refine_rounds: { min: 0, max: 10, int: true },
   agent_mesh_hard_fail_score: { min: 0, max: 100, int: true },
   agent_mesh_hard_fail_limit: { min: 1, max: 20, int: true },
+  chat_tool_max_calls: { min: 1, max: 200, int: true },
+  chat_max_turns: { min: 1, max: 200, int: true },
+  chat_spawn_timeout_s: { min: 60, max: 86_400, int: true },
+  chat_history_messages: { min: 4, max: 500, int: true },
+  chat_image_max: { min: 0, max: 50, int: true },
   fem_voxel_mm: { min: 0, max: 100, exclusiveMin: true },
   fem_max_elements: { min: 1, max: 5_000_000, int: true },
   fem_timeout_s: { min: 1, max: 86_400, int: true },
@@ -623,6 +633,32 @@ export default function SettingsPage() {
           key: "agent_mesh_hard_fail_limit",
           label: "Mesh hard-fail limit",
           hint: "after this many consecutive hard fails the mesh loop stops (CAD fallback for dimensioned parts)",
+          kind: "number",
+        })}
+        <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-600">
+          chat agent
+        </div>
+        {field({
+          key: "chat_model_role",
+          label: "Chat model role",
+          hint: "vision: the agent can see uploaded + generated images; code: text-only (image tools limited to captions)",
+          options: [
+            ["vision", "vision (multimodal)"],
+            ["code", "code (text-only)"],
+          ],
+        })}
+        {field({ key: "chat_tool_max_calls", label: "Max tool calls per turn", kind: "number" })}
+        {field({ key: "chat_max_turns", label: "Max tool rounds per turn", kind: "number" })}
+        {field({
+          key: "chat_spawn_timeout_s",
+          label: "Spawned-job wait timeout (s)",
+          hint: "how long a chat turn blocks on a spawned job before returning control",
+          kind: "number",
+        })}
+        {field({ key: "chat_history_messages", label: "History size (messages)", kind: "number" })}
+        {field({
+          key: "chat_image_max",
+          label: "Max images per message",
           kind: "number",
         })}
       </Card>

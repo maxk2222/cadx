@@ -548,6 +548,12 @@ export interface Settings {
   agent_mesh_refine_rounds: number;
   agent_mesh_hard_fail_score: number;
   agent_mesh_hard_fail_limit: number;
+  chat_model_role: "vision" | "code";
+  chat_tool_max_calls: number;
+  chat_max_turns: number;
+  chat_spawn_timeout_s: number;
+  chat_history_messages: number;
+  chat_image_max: number;
   fem_voxel_mm: number;
   fem_max_elements: number;
   fem_timeout_s: number;
@@ -745,4 +751,57 @@ export interface Stats {
   };
   artifacts_by_kind: NamedCount[];
   projects: ProjectStat[];
+}
+
+/** Chat thread — GET /projects/{pid}/chats. */
+export interface Chat {
+  id: string;
+  project_id: string;
+  title: string;
+  turn_running: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Tool-call record stored in assistant message meta.tool_log. */
+export interface ToolLogEntry {
+  name: string;
+  args?: Record<string, unknown>;
+  result?: Record<string, unknown>;
+}
+
+export interface SpawnedRef {
+  /** tool that spawned the job */
+  tool?: string;
+  kind?: string;
+  job_id?: string;
+  version_id?: string;
+  version_number?: number;
+  status?: string;
+  questions?: { question: string }[];
+}
+
+export interface ChatMessage {
+  id: string;
+  chat_id: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+  asset_ids: string[];
+  meta: {
+    streaming?: boolean;
+    tool_log?: ToolLogEntry[];
+    spawned?: SpawnedRef[];
+    assets?: { id: string; url?: string; caption?: string; kind?: string }[];
+    error?: string;
+    cancelled?: boolean;
+    exhausted?: boolean;
+  };
+  pending: boolean;
+  created_at: string;
+}
+
+/** GET /chats/{id} — thread + full message history. */
+export interface ChatState {
+  chat: Chat;
+  messages: ChatMessage[];
 }
