@@ -136,16 +136,9 @@ cd backend
 ## Upgrading from `cadagent`
 
 The system was renamed to **CADX** (package `cadx`, CLI `cadx`, compose project
-`cadx`). Existing installs keep their data by running the one-shot migration —
-it clones the old `cadagent_*` docker volumes and renames the Postgres
-role/database inside:
-
-```bash
-scripts/migrate-cadx.sh
-```
-
-Or keep the old credentials without migrating: `POSTGRES_USER=cadagent
-POSTGRES_PASSWORD=cadagent POSTGRES_DB=cadagent` in `.env`.
+`cadx`). Existing installs that still use `cadagent_*` docker volumes can keep
+the old credentials via `POSTGRES_USER=cadagent POSTGRES_PASSWORD=cadagent
+POSTGRES_DB=cadagent` in `.env` (docker-compose overrides only).
 
 ## See also
 
