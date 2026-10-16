@@ -59,6 +59,10 @@ from cadx.runtime_config import RuntimeSettings
 
 log = get_logger(__name__)
 
+# STEP roundtrip gate: skip when the pipeline has already burned most of the
+# per-execution budget — the gate adds a full export+import roundtrip
+_STEP_GATE_BUDGET_FRACTION = 0.8
+
 
 class ExecResult:
     def __init__(self) -> None:
@@ -164,7 +168,7 @@ def _repair_export_meshes(exports: dict[str, str | None], exp_dir: Path) -> None
                 log.warning("export.repair_failed", fmt=fmt, error=str(e)[:200])
 
 
-def run_pipeline(
+def run_pipeline(  # noqa: C901
     *,
     code: str,
     out_dir: Path,
@@ -244,6 +248,19 @@ def run_pipeline(
         res.features = extract_features(shape, stl_path).model_dump()
     except Exception as e:
         log.warning("features.extract_failed", error=str(e)[:200])
+
+    # 4b2. invalid B-Rep → locate defects so repair feedback gets coordinates
+    # (WHERE geometry is broken), not just "is_valid: false"
+    if not res.analysis.is_valid:
+        try:
+            from cadx.cad.defects import locate_defects, summarize_defects
+
+            defects = locate_defects(shape)
+            if defects and not all("error" in d for d in defects):
+                res.features["defects"] = defects[:5]
+                res.warnings.append(f"invalid B-Rep: {summarize_defects(defects)}")
+        except Exception as e:
+            log.warning("defects.locate_failed", error=str(e)[:200])
 
     # 4c. footprint agreement with the measured plan view (image outline)
     if anchors and anchors.get("image_outline"):
@@ -326,6 +343,30 @@ def run_pipeline(
         # iterations only need the STL (already exported for renders)
         res.exports = {"stl": None}
     res.timings["export_s"] = round(time.monotonic() - t, 2)
+
+    # 8. STEP roundtrip gate — a shape can be valid in memory yet break on
+    # serialisation; bounded by face count (inside the check) and by the
+    # remaining exec budget here. Success-path only, never fatal.
+    t = time.monotonic()
+    if t - t0 <= rt.exec_timeout_s * _STEP_GATE_BUDGET_FRACTION:
+        try:
+            from cadx.cad.defects import step_roundtrip_check
+
+            shipped = res.exports.get("step")
+            if shipped:
+                gate = step_roundtrip_check(shape, exp_dir / shipped, write=False)
+            else:
+                gate = step_roundtrip_check(shape, workdir / "step_gate.step")
+            if gate.get("warning"):
+                res.warnings.append(str(gate["warning"]))
+                res.features["step_roundtrip"] = gate
+            elif gate.get("skipped"):
+                log.info("step_gate.skipped", reason=gate["skipped"])
+            elif gate.get("error"):
+                log.warning("step_gate.error", error=str(gate["error"])[:200])
+        except Exception as e:
+            log.warning("step_gate.failed", error=str(e)[:200])
+        res.timings["step_gate_s"] = round(time.monotonic() - t, 2)
 
     res.ok = True
     res.timings["total_s"] = round(time.monotonic() - t0, 2)
