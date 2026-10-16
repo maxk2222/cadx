@@ -22,6 +22,33 @@ Without `--real`, benchmarks that are `real_only` or lack an `llm_script` are
 skipped with a note. `--real` builds the client from the DB runtime settings —
 the same endpoint/key/models a real job would use.
 
+## Variants & comparison
+
+`--variant NAME=<json>` (repeatable) overlays a partial `RuntimeSettings`
+object onto every selected benchmark — the benchmark's own `runtime` keys
+win on conflict (variants set defaults, benchmarks may pin). Each variant
+runs the whole selection and writes per-run summaries to
+`$DATA_DIR/eval_out/<bench>/<NAME>/<run_id>/result.json`; un-named runs keep
+the flat `…/<bench>/<run_id>/` layout and record `"variant": "default"`.
+
+```bash
+# reasoning on/off/adaptive matrix
+cadx eval --real -b plate_holes \
+  --variant thinking_off='{"llm_thinking":"off"}' \
+  --variant auto='{}' \
+  --variant always='{"llm_thinking":"always"}'
+
+# run under the backend env (cadx package + structlog)
+cd backend && ../.venv/bin/uv run python ../scripts/eval_compare.py
+../.venv/bin/uv run python ../scripts/eval_compare.py --json cmp.json
+```
+
+`scripts/eval_compare.py` groups the summaries by variant x benchmark and
+reports pass rate, exec-ok rate (runs reaching >=1 sandbox execution), mean
+score, mean iterations, prompt + completion tokens (with a reasoning split
+for steps whose trace record carries the `thinking` flag), and wall time.
+Set `CADX_EVAL_OUT` or pass `--root` to point it at a different tree.
+
 ## Benchmark format
 
 `backend/cadx/eval/benchmarks/*.json` — filename becomes the benchmark name:

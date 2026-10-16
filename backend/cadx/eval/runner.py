@@ -7,12 +7,15 @@ dimensions and (for deterministic runs) an embedded FakeLLM script.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import json
 import math
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +36,60 @@ log = get_logger(__name__)
 _BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
 BENCH_DIR = Path(__file__).parent / "benchmarks"
+
+# un-named eval runs are grouped under this variant name in summaries
+DEFAULT_VARIANT = "default"
+
+_VARIANT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def parse_variant(spec: str) -> tuple[str, dict[str, Any]]:
+    """Parse a `--variant NAME=<json>` CLI value.
+
+    `<json>` is a partial RuntimeSettings object merged UNDER each benchmark's
+    own `runtime` overrides (benchmark-local keys win — variants set defaults,
+    benchmarks may pin). Returns (name, overrides).
+    """
+    from cadx.runtime_config import RuntimeSettings
+
+    name, sep, raw = spec.partition("=")
+    name = name.strip()
+    if not sep or not raw.strip():
+        raise ValueError(f"--variant expects NAME=<json-object>, got {spec!r}")
+    if not _VARIANT_NAME.fullmatch(name):
+        raise ValueError(f"--variant name {name!r} must match [A-Za-z0-9][A-Za-z0-9._-]*")
+    if name == DEFAULT_VARIANT:
+        raise ValueError(f"--variant name {name!r} is reserved for un-named runs")
+    try:
+        overrides = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"--variant {name}: malformed JSON: {e}") from e
+    if not isinstance(overrides, dict):
+        raise ValueError(f"--variant {name}: overrides must be a JSON object")
+    unknown = sorted(set(overrides) - set(RuntimeSettings.model_fields))
+    if unknown:
+        raise ValueError(f"--variant {name}: unknown RuntimeSettings keys: {', '.join(unknown)}")
+    try:
+        RuntimeSettings.model_validate(overrides)
+    except ValueError as e:
+        raise ValueError(f"--variant {name}: invalid values: {e}") from e
+    return name, overrides
+
+
+def eval_out_root() -> Path:
+    """Root for per-run eval summaries. CADX_EVAL_OUT overrides (tests/tools);
+    otherwise lives under DATA_DIR like every other run artifact."""
+    env = os.environ.get("CADX_EVAL_OUT")
+    return Path(env) if env else storage.data_root() / "eval_out"
+
+
+def run_out_dir(root: Path, benchmark: str, variant: str | None, run_id: str) -> Path:
+    """Per-run output dir: `<root>/<bench>/<variant>/<run_id>/` for named
+    variants; the un-named default keeps the flat `<root>/<bench>/<run_id>/`
+    layout."""
+    if variant:
+        return root / benchmark / variant / run_id
+    return root / benchmark / run_id
 
 
 @contextlib.contextmanager
@@ -124,7 +181,10 @@ class EvalResult:
     features_ok: bool | None = None
     watertight: bool | None = None
     prompt_tokens: int = 0
+    completion_tokens: int = 0
     calls: int = 0
+    iterations: int = 0  # deepest improvement-loop iteration seen in the trace
+    variant: str = DEFAULT_VARIANT  # eval variant this run was executed under
     passed: bool | None = None
     issues: list[str] = field(default_factory=list)
     resolved_mode: str | None = None  # cad | mesh | hybrid actually used
@@ -253,7 +313,13 @@ def load_benchmarks() -> list[Benchmark]:
 
 
 async def run_benchmark(
-    bm: Benchmark, llm: Any | None = None, *, queue_exec: bool = False
+    bm: Benchmark,
+    llm: Any | None = None,
+    *,
+    queue_exec: bool = False,
+    variant: str | None = None,
+    variant_overrides: dict[str, Any] | None = None,
+    eval_root: Path | None = None,
 ) -> EvalResult:
     from cadx.agent.mesh_client import make_mesh_client
     from cadx.llm.client import LLMClient
@@ -262,8 +328,10 @@ async def run_benchmark(
     project_id = uuid.uuid4()
     version_id = uuid.uuid4()
     runtime = await runtime_from_db_or_default()
-    if bm.runtime:
-        runtime = runtime.model_copy(update=bm.runtime)
+    # variant sets defaults; benchmark-local `runtime` keys pin on conflict
+    runtime_overrides = {**(variant_overrides or {}), **bm.runtime}
+    if runtime_overrides:
+        runtime = runtime.model_copy(update=runtime_overrides)
     if bm.llm_script is not None:
         llm = FakeLLM(bm.llm_script)
         llm.tools_mode = bm.llm_tools
@@ -373,17 +441,36 @@ async def run_benchmark(
         budget_tokens=runtime.agent_max_tokens_per_job,
         explicit_max_iterations=bool(bm.settings.get("max_iterations")),
     )
+    root = eval_root or eval_out_root()
     t0 = time.monotonic()
     try:
         _apply_mem_limit()
         with _rss_sampler(bm.name):
             outcome: RunOutcome = await run_generation(ctx)
+    except Exception as e:
+        # a crashed run still gets a summary — otherwise a whole variant cell
+        # silently disappears from the compare report
+        _write_run_summary(
+            bm,
+            None,
+            project_id=project_id,
+            version_id=version_id,
+            vdir=vdir,
+            variant=variant,
+            variant_overrides=variant_overrides or {},
+            runtime_overrides=runtime_overrides,
+            wall_s=time.monotonic() - t0,
+            error=f"{type(e).__name__}: {e}",
+            root=root,
+        )
+        raise
     finally:
         # durable postmortem: the in-memory trace survives neither crashes
         # nor container exits — always dump what was captured
         _dump_trace(ctx.trace, vdir)
     wall = time.monotonic() - t0
-    return _judge(
+    records = getattr(ctx.trace, "records", [])
+    result = _judge(
         bm,
         outcome,
         wall,
@@ -391,24 +478,112 @@ async def run_benchmark(
         usage=dict(getattr(ctx.llm, "total_usage", {}) or {}),
         execs=exec_stats["n"],
         exec_s=exec_stats["s"],
-        step_stats=_step_stats(getattr(ctx.trace, "records", [])),
+        step_stats=_step_stats(records),
+        iterations=_iterations(records),
+        variant=variant or DEFAULT_VARIANT,
     )
+    _write_run_summary(
+        bm,
+        result,
+        project_id=project_id,
+        version_id=version_id,
+        vdir=vdir,
+        variant=variant,
+        variant_overrides=variant_overrides or {},
+        runtime_overrides=runtime_overrides,
+        wall_s=wall,
+        root=root,
+    )
+    return result
+
+
+def _write_run_summary(
+    bm: Benchmark,
+    result: EvalResult | None,
+    *,
+    project_id: uuid.UUID,
+    version_id: uuid.UUID,
+    vdir: Path,
+    variant: str | None,
+    variant_overrides: dict[str, Any],
+    runtime_overrides: dict[str, Any],
+    wall_s: float,
+    root: Path,
+    error: str | None = None,
+) -> Path | None:
+    """Persist the per-run summary `eval_compare` groups on.
+
+    `<root>/<bench>/<variant>/<run_id>/result.json` — records the variant name
+    and the effective runtime overrides so runs are self-describing.
+    """
+    out = run_out_dir(root, bm.name, variant, str(version_id))
+    payload = {
+        "schema_version": 1,
+        "benchmark": bm.name,
+        "variant": variant or DEFAULT_VARIANT,
+        "variant_overrides": variant_overrides,
+        "runtime_overrides": runtime_overrides,
+        "run_id": str(version_id),
+        "project_id": str(project_id),
+        "version_dir": str(vdir),
+        "finished_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "wall_s": round(wall_s, 1),
+        "error": error,
+        "result": dataclasses.asdict(result) if result else None,
+    }
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+        path = out / "result.json"
+        path.write_text(json.dumps(payload, default=str, indent=1), encoding="utf-8")
+    except OSError as e:
+        log.warning("eval.summary_failed", benchmark=bm.name, error=str(e))
+        return None
+    return path
+
+
+def _iterations(records: list[dict[str, Any]]) -> int:
+    """Deepest iteration index seen in the trace (0 = nothing recorded)."""
+    it = 0
+    for r in records:
+        i = r.get("iteration")
+        if isinstance(i, int):
+            it = max(it, i)
+    return it
 
 
 def _step_stats(records: list[dict[str, Any]]) -> dict[str, Any]:
-    """Aggregate per-step LLM stats out of the trace records."""
+    """Aggregate per-step LLM stats out of the trace records.
+
+    `thinking_*` is the reasoning split: tokens spent on calls where the
+    adaptive-thinking policy resolved to ON. Only tool-session records carry
+    the flag today (toolloop stamps `parsed.thinking`), so the split is a
+    lower bound for non-session steps.
+    """
     agg: dict[str, dict[str, int]] = {}
     for r in records:
         step = r.get("step")
         if not step or "latency_ms" not in r:
             continue  # pure event records (tool_call emits) carry no latency
         a = agg.setdefault(
-            step, {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0}
+            step,
+            {
+                "calls": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "latency_ms": 0,
+                "thinking_calls": 0,
+                "thinking_prompt_tokens": 0,
+                "thinking_completion_tokens": 0,
+            },
         )
         a["calls"] += 1
         a["prompt_tokens"] += int(r.get("prompt_tokens") or 0)
         a["completion_tokens"] += int(r.get("completion_tokens") or 0)
         a["latency_ms"] += int(r.get("latency_ms") or 0)
+        if (r.get("parsed") or {}).get("thinking"):
+            a["thinking_calls"] += 1
+            a["thinking_prompt_tokens"] += int(r.get("prompt_tokens") or 0)
+            a["thinking_completion_tokens"] += int(r.get("completion_tokens") or 0)
     return agg
 
 
@@ -432,6 +607,8 @@ def _judge(
     execs: int = 0,
     exec_s: float = 0.0,
     step_stats: dict[str, Any] | None = None,
+    iterations: int = 0,
+    variant: str = DEFAULT_VARIANT,
 ) -> EvalResult:
     """Score a finished run against the benchmark's expectations."""
     bbox = None
@@ -453,6 +630,7 @@ def _judge(
     # success path, so failures would silently report calls=0
     usage = outcome.usage or usage or {}
     prompt_tokens = int(usage.get("prompt_tokens") or 0)
+    completion_tokens = int(usage.get("completion_tokens") or 0)
     calls = int(usage.get("calls") or 0)
     features_ok = _features_ok(bm.expected_features, outcome.features)
     issue_texts = [
@@ -488,7 +666,10 @@ def _judge(
         features_ok=features_ok,
         watertight=bool(watertight) if watertight is not None else None,
         prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
         calls=calls,
+        iterations=iterations,
+        variant=variant,
         passed=passed,
         issues=issue_texts,
         resolved_mode=outcome.resolved_mode or bm.gen_mode,

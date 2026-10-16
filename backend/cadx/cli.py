@@ -453,6 +453,75 @@ async def _eval_mesh_preflight(bms: list) -> None:
         )
 
 
+def _eval_variants(specs: list[str] | None) -> list[tuple[str | None, dict[str, Any] | None]]:
+    """Parse `--variant NAME=<json>` options; empty list -> one un-named run."""
+    from cadx.eval.runner import parse_variant
+
+    out: list[tuple[str | None, dict[str, Any] | None]] = []
+    try:
+        for spec in specs or []:
+            out.append(parse_variant(spec))
+    except ValueError as e:
+        print(f"error: {e}")
+        raise typer.Exit(2) from None
+    return out or [(None, None)]
+
+
+async def _eval_pass(
+    bms: list,
+    *,
+    repeat: int,
+    real_llm: bool,
+    queue_exec: bool,
+    vname: str | None,
+    voverrides: dict[str, Any] | None,
+    all_results: dict[str, list],
+) -> None:
+    """Run every selected benchmark `repeat` times under one variant."""
+    import gc
+
+    from cadx.eval.runner import run_benchmark
+
+    for rep in range(repeat):
+        if repeat > 1:
+            print(f"--- repetition {rep + 1}/{repeat} ---")
+        for bm in bms:
+            if real_llm:
+                bm.llm_script = None
+            # release Python-heap garbage from the previous benchmark —
+            # meshes/pil images/messages accumulate and the eval process
+            # has already been oom-killed twice inside the worker cgroup
+            gc.collect()
+            # llm=None: run_benchmark builds a client from the DB runtime
+            # settings — the same endpoint/key/models a real job would use.
+            # Per-benchmark isolation: one crashed benchmark must not kill
+            # the whole eval run.
+            try:
+                r = await run_benchmark(
+                    bm,
+                    llm=None,
+                    queue_exec=queue_exec,
+                    variant=vname,
+                    variant_overrides=voverrides,
+                )
+            except Exception as e:
+                print(f"{bm.name}: crashed ({type(e).__name__}: {e})")
+                continue
+            key = f"{vname}/{bm.name}" if vname else bm.name
+            all_results.setdefault(key, []).append(r)
+            dims = f"bbox={r.bbox} dim_ok={r.dim_ok}" if r.bbox else ""
+            extra = (
+                f"mode={r.resolved_mode} "
+                f"features_ok={r.features_ok} watertight={r.watertight} "
+                f"calls={r.calls} ptok={r.prompt_tokens} ctok={r.completion_tokens}"
+            )
+            print(
+                f"{r.name}: {r.status} score={r.score} passed={r.passed} {dims} {extra} "
+                f"execs={r.execs} exec_s={r.exec_s} "
+                f"({r.wall_s}s) {r.error or ''} dir={r.version_dir}"
+            )
+
+
 @app.command()
 def eval(
     benchmark: list[str] | None = typer.Option(
@@ -478,6 +547,15 @@ def eval(
         help="dispatch execute/process_mesh via the cad queue (production-true, "
         "keeps heavy OCC work out of the eval process — recommended for --real)",
     ),
+    variant: list[str] | None = typer.Option(
+        None,
+        "--variant",
+        help="NAME=<json> RuntimeSettings overrides, repeatable — each variant "
+        "runs the selected benchmarks and writes eval_out/<bench>/<NAME>/. "
+        "Benchmark-local 'runtime' keys win on conflict. Reasoning matrix: "
+        "--variant off='{\"llm_thinking\":\"off\"}' --variant auto='{}' "
+        '--variant always=\'{"llm_thinking":"always"}\'',
+    ),
     json_out: str | None = typer.Option(
         None,
         "--json",
@@ -487,7 +565,9 @@ def eval(
     """Run evaluation benchmarks through the agent loop."""
 
     async def _run() -> None:
-        from cadx.eval.runner import load_benchmarks, run_benchmark
+        from cadx.eval.runner import load_benchmarks
+
+        variants = _eval_variants(variant)
 
         bms = load_benchmarks()
         if benchmark:
@@ -504,41 +584,20 @@ def eval(
         bms = _eval_filter(bms, real_llm=real_llm, real_all=real_all)
         if real_llm:
             await _eval_mesh_preflight(bms)
-        # name -> list of per-run results, for the aggregate table on --repeat
+        # "variant/bench" -> list of per-run results, for the aggregate table
         all_results: dict[str, list] = {}
-        for rep in range(repeat):
-            if repeat > 1:
-                print(f"--- repetition {rep + 1}/{repeat} ---")
-            for bm in bms:
-                if real_llm:
-                    bm.llm_script = None
-                # release Python-heap garbage from the previous benchmark —
-                # meshes/pil images/messages accumulate and the eval process
-                # has already been oom-killed twice inside the worker cgroup
-                import gc
-
-                gc.collect()
-                # llm=None: run_benchmark builds a client from the DB runtime
-                # settings — the same endpoint/key/models a real job would use.
-                # Per-benchmark isolation: one crashed benchmark must not kill
-                # the whole eval run.
-                try:
-                    r = await run_benchmark(bm, llm=None, queue_exec=queue_exec)
-                except Exception as e:
-                    print(f"{bm.name}: crashed ({type(e).__name__}: {e})")
-                    continue
-                all_results.setdefault(bm.name, []).append(r)
-                dims = f"bbox={r.bbox} dim_ok={r.dim_ok}" if r.bbox else ""
-                extra = (
-                    f"mode={r.resolved_mode} "
-                    f"features_ok={r.features_ok} watertight={r.watertight} "
-                    f"calls={r.calls} ptok={r.prompt_tokens}"
-                )
-                print(
-                    f"{r.name}: {r.status} score={r.score} passed={r.passed} {dims} {extra} "
-                    f"execs={r.execs} exec_s={r.exec_s} "
-                    f"({r.wall_s}s) {r.error or ''} dir={r.version_dir}"
-                )
+        for vname, voverrides in variants:
+            if vname:
+                print(f"=== variant {vname}: {json.dumps(voverrides)} ===")
+            await _eval_pass(
+                bms,
+                repeat=repeat,
+                real_llm=real_llm,
+                queue_exec=queue_exec,
+                vname=vname,
+                voverrides=voverrides,
+                all_results=all_results,
+            )
         if repeat > 1 and all_results:
             import statistics
 
