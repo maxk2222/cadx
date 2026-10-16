@@ -79,6 +79,8 @@ class ExecResult:
         self.dfm: DfmReport | None = None
         self.mesh: dict[str, Any] = {}
         self.features: dict[str, Any] = {}
+        # canonical M6 conformance report (PASS/FAIL/UNVERIFIED per tier)
+        self.verify_spec: dict[str, Any] | None = None
         self.fem: dict[str, Any] = {}
         self.fem_export: dict[str, Any] = {}
         self.topopt: dict[str, Any] = {}
@@ -104,6 +106,7 @@ class ExecResult:
             "dfm": self.dfm.model_dump() if self.dfm else None,
             "mesh": self.mesh,
             "features": self.features,
+            "verify_spec": self.verify_spec,
             "fem": self.fem,
             "fem_export": self.fem_export,
             "topopt": self.topopt,
@@ -135,6 +138,7 @@ class ExecResult:
             r.dfm = DfmReport(**d["dfm"])
         r.mesh = d.get("mesh") or {}
         r.features = d.get("features") or {}
+        r.verify_spec = d.get("verify_spec")
         r.fem = d.get("fem") or {}
         r.fem_export = d.get("fem_export") or {}
         r.topopt = d.get("topopt") or {}
@@ -168,6 +172,62 @@ def _repair_export_meshes(exports: dict[str, str | None], exp_dir: Path) -> None
                 log.warning("export.repair_failed", fmt=fmt, error=str(e)[:200])
 
 
+def _attach_verify_spec(
+    res: ExecResult,
+    spec_dict: dict[str, Any] | None,
+    settings: ProjectSettings,
+    rt: RuntimeSettings,
+    *,
+    measured_features: dict[str, Any] | None = None,
+    feature_findings: list[dict[str, Any]] | None = None,
+) -> ExecResult:
+    """Compute the canonical M6 conformance report over the measured evidence
+    already in ``res`` and store it at ``res.verify_spec`` (shipped as
+    ``res["verify_spec"]`` in the exec result dict). Never raises — a report
+    failure must not fail the pipeline; the worker simply gets no verdict."""
+    try:
+        from cadx.cad.features import MeasuredFeatures, compare_features
+        from cadx.cad.verifyspec import verify_spec
+        from cadx.llm.schemas import Feature
+
+        tol_pct = (
+            settings.dim_tolerance_pct
+            if settings.dim_tolerance_pct is not None
+            else rt.agent_dim_tolerance_pct
+        )
+        tol_mm = (
+            settings.dim_tolerance_mm
+            if settings.dim_tolerance_mm is not None
+            else rt.agent_dim_tolerance_mm
+        )
+        measured = measured_features if measured_features is not None else res.features
+        if (
+            feature_findings is None
+            and spec_dict
+            and spec_dict.get("features")
+            and measured
+            and rt.agent_feature_feedback
+        ):
+            try:
+                feats = [Feature.model_validate(f) for f in spec_dict["features"]]
+                feature_findings = [
+                    f.model_dump() for f in compare_features(feats, MeasuredFeatures(**measured))
+                ]
+            except Exception as e:
+                log.warning("verify_spec.compare_failed", error=str(e)[:200])
+        res.verify_spec = verify_spec(
+            spec_dict,
+            res.to_dict(),
+            feature_findings=feature_findings,
+            measured_features=measured,
+            dim_tolerance_pct=tol_pct,
+            dim_tolerance_mm=tol_mm,
+        )
+    except Exception as e:
+        log.warning("verify_spec.failed", error=str(e)[:200])
+    return res
+
+
 def run_pipeline(  # noqa: C901
     *,
     code: str,
@@ -182,6 +242,7 @@ def run_pipeline(  # noqa: C901
     mesh_bbox: list[float] | None = None,
     anchors: dict[str, Any] | None = None,
     light: bool = False,
+    spec: dict[str, Any] | None = None,
 ) -> ExecResult:
     """Full executor pipeline for one candidate. out_dir receives all artifacts.
 
@@ -193,6 +254,13 @@ def run_pipeline(  # noqa: C901
     settings = settings or ProjectSettings()
     rt = runtime or RuntimeSettings()
     t0 = time.monotonic()
+    # design-intent spec for the verify_spec report — the execute payload
+    # carries it inside the free-form anchors dict (cad/tasks.py only forwards
+    # known keys); the explicit kwarg covers direct callers
+    spec_dict: dict[str, Any] | None = spec
+    if spec_dict is None and isinstance(anchors, dict):
+        embedded = anchors.get("spec")
+        spec_dict = embedded if isinstance(embedded, dict) else None
 
     # 1. sandboxed execution
     workdir = out_dir / "_run"
@@ -218,14 +286,14 @@ def run_pipeline(  # noqa: C901
     if not ro.ok or ro.brep_path is None:
         res.error = ro.error or "execution failed"
         res.traceback = ro.traceback
-        return res
+        return _attach_verify_spec(res, spec_dict, settings, rt)
 
     # 2. load shape
     try:
         shape = import_brep(str(ro.brep_path))
     except Exception as e:
         res.error = f"failed to load generated shape: {e}"
-        return res
+        return _attach_verify_spec(res, spec_dict, settings, rt)
 
     # 3. quick STL for mesh analysis + renders
     t = time.monotonic()
@@ -234,7 +302,7 @@ def run_pipeline(  # noqa: C901
         stl_path = quick_stl(shape, mesh_dir, name="mesh")
     except Exception as e:
         res.error = f"tessellation failed: {e}"
-        return res
+        return _attach_verify_spec(res, spec_dict, settings, rt)
     res.timings["tessellate_s"] = round(time.monotonic() - t, 2)
 
     # 4. analysis
@@ -357,9 +425,11 @@ def run_pipeline(  # noqa: C901
                 gate = step_roundtrip_check(shape, exp_dir / shipped, write=False)
             else:
                 gate = step_roundtrip_check(shape, workdir / "step_gate.step")
+            # store the gate result unconditionally — verify_spec reads it as
+            # structural evidence (ok→PASS, warning→FAIL, skipped→UNVERIFIED)
+            res.features["step_roundtrip"] = gate
             if gate.get("warning"):
                 res.warnings.append(str(gate["warning"]))
-                res.features["step_roundtrip"] = gate
             elif gate.get("skipped"):
                 log.info("step_gate.skipped", reason=gate["skipped"])
             elif gate.get("error"):
@@ -370,7 +440,8 @@ def run_pipeline(  # noqa: C901
 
     res.ok = True
     res.timings["total_s"] = round(time.monotonic() - t0, 2)
-    return res
+    # 9. canonical conformance report — reads only evidence already in res
+    return _attach_verify_spec(res, spec_dict, settings, rt)
 
 
 def export_from_brep(
@@ -431,12 +502,47 @@ def run_mesh_pipeline(  # noqa: C901
     workdir = out_dir / "_run"
     workdir.mkdir(parents=True, exist_ok=True)
 
+    def _done() -> ExecResult:
+        """Attach the canonical verify_spec report, then return ``res``.
+
+        Mesh path: the measured-features evidence lives under
+        ``res.mesh["features"]`` (ray-grid tunnel/dimple detection) and must be
+        adapted into MeasuredFeatures before compare_features can run on it.
+        """
+        measured = findings = None
+        if spec is not None:
+            try:
+                from cadx.cad.features import (
+                    compare_features,
+                    mesh_features_to_measured,
+                )
+
+                mf = res.mesh.get("features") or {}
+                m = mesh_features_to_measured(mf) if mf else None
+                if m is not None:
+                    measured = m.model_dump()
+                    if spec.features and rt.agent_feature_feedback:
+                        findings = [f.model_dump() for f in compare_features(spec.features, m)]
+            except Exception as e:
+                log.warning("verify_spec.mesh_features_failed", error=str(e)[:200])
+        spec_dict = spec.model_dump() if spec is not None else None
+        if spec_dict is not None:
+            spec_dict.setdefault("min_wall_mm", settings.min_wall_mm)
+        return _attach_verify_spec(
+            res,
+            spec_dict,
+            settings,
+            rt,
+            measured_features=measured,
+            feature_findings=findings,
+        )
+
     # 1-5. baseline: clean -> decimate -> orient -> scale -> flatten -> rest
     try:
         raw = load_triangle_mesh(mesh_path)
     except Exception as e:
         res.error = f"failed to load generated mesh: {e}"
-        return res
+        return _done()
     if skip_baseline:
         mesh = clean(raw)
         res.mesh["ops_only"] = True
@@ -465,7 +571,7 @@ def run_mesh_pipeline(  # noqa: C901
             mesh, op_report = apply_ops(mesh, post.ops, anchors=anchors, runtime=rt)
         except Exception as e:
             res.error = f"mesh op failed: {e}"
-            return res
+            return _done()
         res.mesh["ops_report"] = op_report
         res.timings["mesh_ops_s"] = round(time.monotonic() - t, 2)
         mesh = rest_on_xy_center(mesh)
@@ -510,7 +616,7 @@ def run_mesh_pipeline(  # noqa: C901
         mesh.export(str(stl_path), file_type="stl")
     except Exception as e:
         res.error = f"failed to write STL: {e}"
-        return res
+        return _done()
 
     # 7. analysis
     res.analysis = mesh_analysis(mesh)
@@ -652,7 +758,8 @@ def run_mesh_pipeline(  # noqa: C901
 
     res.ok = True
     res.timings["total_s"] = round(time.monotonic() - t0, 2)
-    return res
+    # canonical conformance report — reads only evidence already in res
+    return _done()
 
 
 def run_mesh_candidates(*, mesh_path: Path, out_dir: Path, size: int = 512) -> dict[str, Any]:

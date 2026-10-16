@@ -275,6 +275,22 @@ def build_issues(
     return issues[:12]
 
 
+def _verify_spec_issue(exec_result: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Canonical M6 conformance verdict — folded into ``Version.issues`` as ONE
+    summary entry (same shape as the ``design_audit`` report entry). The
+    per-source issues still carry the detail; this is the consolidated
+    PASS/FAIL/UNVERIFIED verdict over the executor's measured evidence."""
+    report = (exec_result or {}).get("verify_spec")
+    if not isinstance(report, dict) or report.get("status") not in ("PASS", "FAIL", "UNVERIFIED"):
+        return None
+    return {
+        "source": "verify_spec",
+        "severity": "major" if report.get("status") == "FAIL" else "minor",
+        "what": str(report.get("summary") or "verify_spec conformance report"),
+        "report": report,
+    }
+
+
 def _multi_solid(exec_result: dict[str, Any] | None) -> bool:
     """Deterministic hard gate: specs describe one joined part."""
     return int(((exec_result or {}).get("analysis") or {}).get("solid_count") or 1) > 1
@@ -439,8 +455,22 @@ def _exec_payload(
     if ctx.hybrid_solid is not None:
         payload["mesh_solid"] = str(ctx.hybrid_solid)
         payload["mesh_bbox"] = ctx.hybrid_mesh_info.get("bbox_size")
-    if ctx.anchors:
-        payload["anchors"] = ctx.anchors
+    # the executor task forwards `anchors` verbatim — it is the only free-form
+    # dict channel into run_pipeline, so the minimal spec sub-dict for the
+    # executor-side verify_spec report rides inside it (the runner ignores
+    # unknown anchor keys; ctx.anchors itself is never mutated)
+    anchors = dict(ctx.anchors or {})
+    if ctx.spec is not None:
+        anchors["spec"] = {
+            "name": ctx.spec.name,
+            "length_x": ctx.spec.length_x.model_dump(),
+            "width_y": ctx.spec.width_y.model_dump(),
+            "height_z": ctx.spec.height_z.model_dump(),
+            "features": [f.model_dump() for f in ctx.spec.features],
+            "min_wall_mm": ctx.settings.min_wall_mm,
+        }
+    if anchors:
+        payload["anchors"] = anchors
     return payload
 
 
@@ -2842,7 +2872,10 @@ async def _run_cad(  # noqa: C901
     outcome.bom = best.exec_result.get("bom")
     outcome.score = best.critique.score if best.critique else None
     outcome.best_iteration = best.iteration
-    outcome.issues = issues
+    # canonical verify_spec verdict heads the persisted issue list; the
+    # per-source issues after it carry the per-finding detail
+    vs_entry = _verify_spec_issue(best.exec_result)
+    outcome.issues = [vs_entry, *issues] if vs_entry else issues
     if ctx.resolved_mode == "hybrid" and ctx.mesh_info:
         prep_it = int(ctx.mesh_info.get("_prep_it", 1))
         artifacts.update(
@@ -3418,6 +3451,9 @@ async def _run_mesh(  # noqa: C901
         best.exec_result.get("dfm"),
         best.exec_result.get("analysis"),
     )
+    vs_entry = _verify_spec_issue(best.exec_result)
+    if vs_entry:
+        outcome.issues = [vs_entry, *list(outcome.issues or [])]
     if outcome.critique is not None:
         outcome.critique["issues"] = outcome.issues
     outcome.dfm = best.exec_result.get("dfm")
