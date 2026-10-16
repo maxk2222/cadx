@@ -103,6 +103,13 @@ M8 measured real runs (all `dim_ok=True`, `watertight=True`):
 | `plate_holes_lite` | 3 | 3/3 | 100/100/100 | 90 s | 21,928 | plan prompt 3,935 → 1,221 tok; one rep needed a repair exec (79,913 tok) |
 | `flange_pcd_cad` | 3 | 0/3 → 1/1 after feature fix | 90/90/92 | 194 s | 177,918 | all three were geometrically correct; `features_ok=False` was a measurement gap (torus fillet + coaxial rim chamfer), fixed in `features.py` |
 | `l_bracket_cad` | 3 | 0/3 | 15/50/55 | 1,147 s | 454,152 | watertight + dims OK; missing slot and detached/protruding ribs persist — repair now converges (bounded sessions, no budget-death) but the model still fails these features |
+| `l_bracket_cad` (post code-contract + oblong_slot) | 2 | 0/2 | 25/10/– | ~1,050 s | ~473k | model now calls `oblong_slot("+z","+x")` but misuses BuildPart semantics (cutter fused then re-added → ghost pillar) and misplaces ribs — new failure classes, now lintable |
+
+Second l_bracket series surfaced three concrete gaps, all fixed the same
+day: builder-fused solids re-`add()`ed (ghost pillar → `dim_ok`/`slots`
+miss), vertical-slot helper missing a `normal` axis, and tunnel/slot
+detection silently disabled on non-watertight STL (now repaired via
+`fill_holes`, marked `approximate`).
 
 Takeaways: plan-lite cuts the plan prompt ~3.2× but barely moves total cost
 on a trivial part (LLM latency dominates; a single repair doubles tokens).
