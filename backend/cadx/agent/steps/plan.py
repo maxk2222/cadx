@@ -20,9 +20,62 @@ from cadx.llm.schemas import ModelingPlan, PartSpec
 STEP = "plan"
 
 
+def _resolve_plan_mode(ctx: AgentCtx) -> str:
+    """`agent_plan_mode`: "full" (catalog-aware tool session, default),
+    "lite" (one short no-tools call — steps+params only, approach=cad),
+    "auto" (lite for text-only cad jobs where the planner has no real
+    choice to make anyway)."""
+    mode = ctx.runtime_settings.agent_plan_mode
+    if mode != "auto":
+        return mode
+    if any(a.kind in IMAGE_INPUT_KINDS for a in ctx.assets):
+        return "full"  # image-driven jobs need the full planner's routing
+    if ctx.gen_mode == "cad":
+        return "lite"
+    if ctx.gen_mode == "auto" and not ctx.mesh_available and not ctx.image_available:
+        return "lite"  # nothing but cad is reachable anyway
+    return "full"
+
+
+async def _run_lite(ctx: AgentCtx, spec: PartSpec, forced: str) -> ModelingPlan:
+    """Cheap plan for a simple, image-free CAD job: no tools, no catalog
+    listing — the planner's only real output for these parts is the ordered
+    step list and the PARAMS table."""
+    user = (
+        (request_block(ctx.prompt) + "\n\n" if request_block(ctx.prompt) else "")
+        + spec_block(spec)
+        + f"\n\nGENERATION CONTEXT: requested mode = {forced}"
+    )
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": system_prompt("plan_lite_system.md")},
+        {"role": "user", "content": [{"type": "text", "text": user}]},
+    ]
+    resp = await ctx.llm.chat("code", messages, json_schema=ModelingPlan, temperature=0.0)
+    assert isinstance(resp.parsed, ModelingPlan)
+    await ctx.trace.record(
+        step=f"{STEP}_lite",
+        iteration=0,
+        model=resp.model,
+        messages=messages,
+        response_text=resp.text,
+        parsed=resp.parsed.model_dump(),
+        prompt_tokens=resp.prompt_tokens,
+        completion_tokens=resp.completion_tokens,
+        latency_ms=resp.latency_ms,
+    )
+    plan = resp.parsed
+    plan.approach = "cad"
+    plan.strategy = ["cad"]
+    plan.approach_reason = (plan.approach_reason or "").rstrip(".") + " (plan-lite)"
+    ctx.plan = plan
+    return plan
+
+
 async def run(ctx: AgentCtx, spec: PartSpec) -> ModelingPlan:
     ref = references_block(ctx.assets)
     forced = ctx.gen_mode if ctx.gen_mode in ("cad", "mesh", "hybrid") else "auto"
+    if _resolve_plan_mode(ctx) == "lite":
+        return await _run_lite(ctx, spec, forced)
     images_n = sum(1 for a in ctx.assets if a.kind in IMAGE_INPUT_KINDS)
     mode_ctx = (
         f"GENERATION CONTEXT: requested mode = {forced}"
