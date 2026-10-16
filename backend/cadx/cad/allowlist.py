@@ -149,6 +149,10 @@ class _Checker(ast.NodeVisitor):
         # `L = PARAMS["foot_length"]` -> numeric value (filled post-PARAMS parse)
         self._param_aliases: dict[str, float] = {}
         self._param_values: dict[str, object] = {}
+        # vars whose last assignment was a copy-transform — a second
+        # transform on top double-applies the placement (observed: wedge
+        # moved() then translate()d again → ribs floated outside the part)
+        self._transformed: set[str] = set()
         # `with BuildPart() as p` -> "p"; >0 while inside that block
         self._builder_vars: set[str] = set()
         self._builder_depth = 0
@@ -549,6 +553,28 @@ class _Checker(ast.NodeVisitor):
         )
         for t in node.targets:
             if isinstance(t, ast.Name):
+                v = node.value
+                is_transform = (
+                    isinstance(v, ast.Call)
+                    and isinstance(v.func, ast.Attribute)
+                    and v.func.attr in _COPY_TRANSFORMS
+                )
+                if is_transform:
+                    if (
+                        isinstance(v.func.value, ast.Name)
+                        and v.func.value.id == t.id
+                        and t.id in self._transformed
+                    ):
+                        self._warn(
+                            node,
+                            f"`{t.id}` is transformed twice — translate/rotate/moved "
+                            "each return an already-positioned copy, so the second "
+                            "transform applies ON TOP of the first (double offset). "
+                            "Compose the placement once with Pos/Rot instead.",
+                        )
+                    self._transformed.add(t.id)
+                else:
+                    self._transformed.discard(t.id)
                 if t.id == "PARAMS" and isinstance(node.value, ast.Dict):
                     self.params_node = node
                 if t.id == "result":

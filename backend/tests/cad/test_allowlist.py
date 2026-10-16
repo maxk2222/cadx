@@ -94,6 +94,26 @@ def test_lint_locate_inplace_no_warning():
     assert not any("discarded" in w for w in r.warnings)
 
 
+def test_lint_double_transform_warns():
+    """Observed on l_bracket ribs: `wedge = wp.part.moved(Pos(0,y0,0))` then
+    `wedge = wedge.translate(0, y0, 0)` — the second transform applied on top
+    of the first and the rib floated outside the part."""
+    code = (
+        GOOD
+        + "w = Box(10, 3, 10)\n"
+        + "w = w.moved(Pos(0, 17, 0))\n"
+        + "w = w.translate(0, 17, 0)\n"
+        + "result = w\n"
+    )
+    r = check_code(code)
+    assert r.ok
+    assert any("twice" in w and "w" in w for w in r.warnings)
+    # a single transform chain is fine — placement via Pos, one translate
+    ok = GOOD + "w = Box(10, 3, 10)\nw = w.moved(Pos(0, 17, 0))\nresult = w\n"
+    r2 = check_code(ok)
+    assert not any("twice" in w for w in r2.warnings)
+
+
 def test_lint_self_axis_rotation_warns():
     code = (
         GOOD
