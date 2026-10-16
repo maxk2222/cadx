@@ -253,8 +253,10 @@ class JobManager:
             job.cancelled = True  # adapter checks this and aborts early
             # a stalled adapter thread cannot be killed — badlist the model so
             # 'auto' and candidate screening stop picking it, and release
-            # whatever model memory the registry still owns
-            if job.model and job.model != "auto":
+            # whatever model memory the registry still owns. Subprocess jobs
+            # are killed by the watcher instead and share no adapter state —
+            # a transient stall must not poison the model for later jobs.
+            if job.model and job.model != "auto" and not self.cfg.jobs_subprocess:
                 self.registry.mark_failed(job.model, job.error)
             self.registry.unload_all()
             log.warning("job.stalled", job=job_id, model=job.model, peak_rss_mb=_peak_rss_mb())
@@ -580,10 +582,16 @@ class JobManager:
             kill_reason or child_error or f"gen worker exited rc={rc}: {stderr_tail.strip()[:400]}"
         )
         job.finished = time.monotonic()
-        # stall/RSS kill or a child-reported adapter error both mean this
-        # model is unsafe to retry in this process — badlist it
+        # a child-reported adapter error (import crash, missing weights) is
+        # deterministic — every retry fails the same way, so badlist it.
+        # A kill_reason (stall/RSS/cancel) in subprocess mode leaves NO shared
+        # state: the dead child owned the model, so a transient MPS hang must
+        # not poison the pinned model for the rest of this server process
+        # (observed: one stalled candidate badlisted mv-turbo → the winner
+        # regen refused instantly → hybrid fell back to CAD). In in-process
+        # mode a stalled adapter *thread* stays frozen — badlist still applies.
         bad_model = child_model or (job.model if job.model != "auto" else "")
-        if bad_model and (kill_reason or child_error):
+        if bad_model and (child_error or (kill_reason and not self.cfg.jobs_subprocess)):
             self.registry.mark_failed(bad_model, job.error)
         log.warning(
             "job.proc_failed",
