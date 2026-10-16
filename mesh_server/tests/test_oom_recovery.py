@@ -219,3 +219,129 @@ def test_model_info_reports_last_error(registry):
     assert info["boom-gen"].last_error == "CUDA out of memory during attention"
     assert info["ok-fallback"].kind == "image"
     assert info["ok-fallback"].last_error is None
+
+
+# -- subprocess auto-retry ------------------------------------------------- #
+
+
+class _StubProc:
+    pid = 424242
+
+    def __init__(self) -> None:
+        self.returncode: int | None = None
+
+    async def wait(self) -> int | None:
+        return self.returncode
+
+    def kill(self) -> None:
+        self.returncode = -9
+
+
+def _run_proc_job(manager, watch, monkeypatch, model="auto"):
+    """Submit one image job and drive it through _run_job_proc with a stubbed
+    child — `watch` plays the gen_worker by writing error/result files."""
+    import asyncio
+
+    async def _spawn(*a, **k):  # noqa: ARG001
+        return _StubProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _spawn)
+    manager._watch_gen_proc = watch  # noqa: SLF001
+
+    async def go():
+        job = await manager.submit_image(ImageGenParams(model=model, prompt="x"))
+        await manager._run_job_proc(job)  # noqa: SLF001
+        return manager.jobs[job.id]
+
+    return asyncio.run(go())
+
+
+def test_proc_auto_retries_next_adapter_on_child_error(tmp_path, monkeypatch):
+    """A deterministic adapter error inside the child (error.json names the
+    adapter) must retry under 'auto' — _finish_proc_failed badlists it first,
+    so the second dispatch lands on the next preference-ladder entry."""
+    import json
+
+    cfg = ServerConfig(fake=False, job_dir=tmp_path / "jobs", jobs_subprocess=True)
+    reg = Registry(cfg)
+    reg._classes = [BoomLoadAdapter, OkFallbackAdapter]
+    mgr = JobManager(cfg, reg)
+    monkeypatch.setattr(Registry, "select_image", _select_pref)
+
+    spawn_reqs: list[dict] = []
+
+    async def _watch(proc, job, work):
+        spawn_reqs.append(json.loads((work / "request.json").read_text()))
+        if len(spawn_reqs) == 1:
+            (work / "error.json").write_text(
+                json.dumps({"error": "tokenizer files broken", "model": "boom-load"})
+            )
+            proc.returncode = 1
+        else:
+            (work / "img_0.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+            (work / "result.json").write_text(
+                json.dumps({"model": "ok-fallback", "backend": "test", "seed": 1})
+            )
+            proc.returncode = 0
+        return None, 10.0
+
+    job = _run_proc_job(mgr, _watch, monkeypatch)
+
+    assert job.status == "succeeded"
+    assert job.model == "ok-fallback"
+    assert len(spawn_reqs) == 2
+    # the badlist from attempt 1 steered the retry's adapter pick
+    assert "boom-load" in spawn_reqs[1]["badlist"]
+    assert job.images
+
+
+def test_proc_auto_no_retry_without_child_model(tmp_path, monkeypatch):
+    """A generic child crash (error.json without a model) is not retryable —
+    re-dispatching 'auto' would land on the same adapter and fail identically."""
+    import json
+
+    cfg = ServerConfig(fake=False, job_dir=tmp_path / "jobs", jobs_subprocess=True)
+    reg = Registry(cfg)
+    reg._classes = [BoomLoadAdapter, OkFallbackAdapter]
+    mgr = JobManager(cfg, reg)
+    monkeypatch.setattr(Registry, "select_image", _select_pref)
+
+    spawns = []
+
+    async def _watch(proc, job, work):
+        spawns.append(1)
+        (work / "error.json").write_text(json.dumps({"error": "segfault", "model": ""}))
+        proc.returncode = 1
+        return None, 10.0
+
+    job = _run_proc_job(mgr, _watch, monkeypatch)
+
+    assert job.status == "failed"
+    assert len(spawns) == 1
+
+
+def test_proc_explicit_model_no_retry(tmp_path, monkeypatch):
+    """An explicitly requested adapter gets a single attempt — a silent swap
+    would be wrong even when the child reports a model-named error."""
+    import json
+
+    cfg = ServerConfig(fake=False, job_dir=tmp_path / "jobs", jobs_subprocess=True)
+    reg = Registry(cfg)
+    reg._classes = [BoomLoadAdapter, OkFallbackAdapter]
+    mgr = JobManager(cfg, reg)
+    monkeypatch.setattr(Registry, "select_image", _select_pref)
+
+    spawns = []
+
+    async def _watch(proc, job, work):
+        spawns.append(1)
+        (work / "error.json").write_text(
+            json.dumps({"error": "weights corrupt", "model": "boom-load"})
+        )
+        proc.returncode = 1
+        return None, 10.0
+
+    job = _run_proc_job(mgr, _watch, monkeypatch, model="boom-load")
+
+    assert job.status == "failed"
+    assert len(spawns) == 1

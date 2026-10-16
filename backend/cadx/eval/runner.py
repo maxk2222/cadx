@@ -326,6 +326,16 @@ def load_benchmarks() -> list[Benchmark]:
     return out
 
 
+async def _eval_image_port(bm: Benchmark, runtime: Any) -> tuple[Any, bool]:
+    """Production parity: worker_jobs wires the image port off the same sidecar
+    — without it synth-view/concept paths silently no-op under eval."""
+    from cadx.agent.image_client import make_image_client
+    from cadx.agent.worker_jobs import _image_available
+
+    image = make_image_client(fake=bm.fake_mesh, runtime_settings=runtime)
+    return image, await _image_available(image)
+
+
 async def run_benchmark(
     bm: Benchmark,
     llm: Any | None = None,
@@ -355,6 +365,7 @@ async def run_benchmark(
     mesh = (
         make_mesh_client(fake=True) if bm.fake_mesh else make_mesh_client(runtime_settings=runtime)
     )
+    image, image_ok = await _eval_image_port(bm, runtime)
     assets = []
     if bm.images:
         from cadx.agent.types import InputAsset
@@ -449,6 +460,8 @@ async def run_benchmark(
         gen_mode=bm.gen_mode,
         mesh=mesh,
         mesh_available=(await mesh.health()).ok if mesh else False,
+        image=image,
+        image_available=image_ok,
         # production parity: the worker seeds the token budget and the
         # explicit-iterations flag — without them eval runs die at the 400k
         # default budget and ignore the benchmark's max_iterations cap intent

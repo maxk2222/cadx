@@ -355,46 +355,73 @@ class JobManager:
         binary payloads land there on success."""
         work = self.cfg.job_dir / job.id
         work.mkdir(parents=True, exist_ok=True)
-        (work / "request.json").write_text(json.dumps(self._gen_request(job)))
-        # stderr to a file, not a pipe — an orphaned PIPE transport raises
-        # "Event loop is closed" in __del__ when the loop ends first
-        stderr_file = _open_log(work / "stderr.log")
-        proc: asyncio.subprocess.Process | None = None
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                sys.executable,
-                "-m",
-                "meshserver.gen_worker",
-                str(work / "request.json"),
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=stderr_file,
-                # own process group — killpg also reaps torch/MLX helper children
-                start_new_session=True,
-            )
-            job.status = "running"
-            job.started = time.monotonic()
-            job.message = "generating (subprocess)"
-            job.last_progress_at = time.monotonic()
-            job.last_active_at = job.last_progress_at
-            kill_reason, peak_rss_mb = await self._watch_gen_proc(proc, job, work)
-        finally:
-            # whatever happens above — exception in the watcher, task cancel —
-            # a live child must never leak past this point
-            if proc is not None and proc.returncode is None:
-                with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-                    os.killpg(proc.pid, signal.SIGKILL)
-                with contextlib.suppress(Exception):
-                    await proc.wait()
-            stderr_file.close()
+        # 'auto' jobs retry on the next preference-ladder adapter when the child
+        # reports a deterministic error naming a specific adapter —
+        # _finish_proc_failed badlists it, so the next dispatch can't land on
+        # the same broken model (observed: corrupt qwen-image-edit snapshot →
+        # every synth-view job failed instead of falling back to flux/sdxl).
+        # Explicit requests keep their single attempt.
+        max_attempts = 3 if job.params.model in ("", "auto") else 1
+        for attempt in range(1, max_attempts + 1):
+            (work / "request.json").write_text(json.dumps(self._gen_request(job)))
+            # stderr to a file, not a pipe — an orphaned PIPE transport raises
+            # "Event loop is closed" in __del__ when the loop ends first
+            stderr_file = _open_log(work / "stderr.log")
+            proc: asyncio.subprocess.Process | None = None
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    sys.executable,
+                    "-m",
+                    "meshserver.gen_worker",
+                    str(work / "request.json"),
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=stderr_file,
+                    # own process group — killpg also reaps torch/MLX helper children
+                    start_new_session=True,
+                )
+                job.status = "running"
+                job.started = time.monotonic()
+                job.message = "generating (subprocess)"
+                job.last_progress_at = time.monotonic()
+                job.last_active_at = job.last_progress_at
+                kill_reason, peak_rss_mb = await self._watch_gen_proc(proc, job, work)
+            finally:
+                # whatever happens above — exception in the watcher, task cancel —
+                # a live child must never leak past this point
+                if proc is not None and proc.returncode is None:
+                    with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    with contextlib.suppress(Exception):
+                        await proc.wait()
+                stderr_file.close()
 
-        if proc.returncode == 0:
-            self._finish_proc_ok(job, work, peak_rss_mb)
+            if proc.returncode == 0:
+                self._finish_proc_ok(job, work, peak_rss_mb)
+                return
+            if (job.cancelled or proc.returncode == 2) and kill_reason is None:
+                job.status = "cancelled"
+                job.finished = time.monotonic()
+                return
+            self._finish_proc_failed(job, work, proc.returncode, kill_reason, peak_rss_mb)
+            if attempt < max_attempts and not job.cancelled and self._proc_retryable(work):
+                log.info(
+                    "job.auto_retry",
+                    job=job.id,
+                    attempt=attempt,
+                    error=(job.error or "")[:200],
+                )
+                job.status = "running"
+                job.error = None
+                job.finished = None
+                job.message = (
+                    f"adapter failed — trying next model (attempt {attempt + 1}/{max_attempts})"
+                )
+                job.last_progress_at = time.monotonic()
+                # stale attempt artifacts would corrupt the next finish check
+                for f in ("error.json", "result.json", "progress.json"):
+                    (work / f).unlink(missing_ok=True)
+                continue
             return
-        if (job.cancelled or proc.returncode == 2) and kill_reason is None:
-            job.status = "cancelled"
-            job.finished = time.monotonic()
-            return
-        self._finish_proc_failed(job, work, proc.returncode, kill_reason, peak_rss_mb)
 
     def _gen_request(self, job: MeshJob | ImageJob) -> dict[str, Any]:
         return {
@@ -573,6 +600,18 @@ class JobManager:
             model=job.model,
             child_peak_rss_mb=round(peak_rss_mb, 1),
         )
+
+    @staticmethod
+    def _proc_retryable(work: Path) -> bool:
+        """A child error.json naming a specific adapter is deterministic —
+        that adapter is now badlisted, so a retry lands on the next ladder
+        entry. Generic crashes (no model, e.g. preprocessing) would re-fail;
+        stall/RSS kills (kill_reason, no child error) stay non-retryable."""
+        try:
+            err = json.loads((work / "error.json").read_text())
+        except (json.JSONDecodeError, OSError):
+            return False
+        return bool(err.get("error") and err.get("model"))
 
     def _finish_proc_failed(
         self,
