@@ -426,14 +426,16 @@ def run_mesh_pipeline(  # noqa: C901
     _repair_analysis_mesh(res.analysis, stl_path)
 
     # 7b. deterministic feature detection (holes, dimples, XY outline) —
-    # feeds worker-side anchor reconciliation with the measured top view
-    if make_solid:
-        try:
-            from cadx.cad.mesh_features import detect_mesh_features
+    # feeds worker-side anchor reconciliation with the measured top view.
+    # Runs for every mesh result, not just hybrid solids: pure mesh mode
+    # needs the same deterministic evidence (a 22 mm X-axis bore must be
+    # verifiable in eval instead of relying on LLM render judgement)
+    try:
+        from cadx.cad.mesh_features import detect_mesh_features
 
-            res.mesh["features"] = detect_mesh_features(mesh).model_dump()
-        except Exception as e:
-            log.warning("mesh_features.failed", error=str(e)[:200])
+        res.mesh["features"] = detect_mesh_features(mesh).model_dump()
+    except Exception as e:
+        log.warning("mesh_features.failed", error=str(e)[:200])
 
     # 8. optional solid conversion (hybrid bridge + tessellated STEP)
     if make_solid:

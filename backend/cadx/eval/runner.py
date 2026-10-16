@@ -144,6 +144,20 @@ def _feature_entry_ok(ef: dict[str, Any], feats: dict[str, Any], groups: list[An
 
     ftype = str(ef.get("type", "")).lower()
     want = int(ef.get("count") or 1)
+    if ftype == "tunnel":
+        # mesh-mode through-bores from detect_mesh_features (MeshHole list) —
+        # longitudinal bores never appear in BRep hole_groups
+        axis = str(ef.get("axis") or "").lower() or None
+        dia = ef.get("dia")
+        dia_tol = max(0.5, float(dia) * 0.15) if dia is not None else None
+        got = sum(
+            1
+            for h in feats.get("holes") or []
+            if h.get("kind") == "tunnel"
+            and (axis is None or h.get("axis") == axis)
+            and (dia_tol is None or abs(float(h.get("dia") or 0) - float(dia)) <= dia_tol)
+        )
+        return got >= want
     if ftype == "slot":
         return int(feats.get("slots") or 0) >= want
     if ftype in ("hole", "bore", "through-hole"):

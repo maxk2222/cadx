@@ -32,6 +32,23 @@ def test_features_ok_missing_features_dict() -> None:
     assert _features_ok([{"type": "hole", "count": 1}], None) is False
 
 
+def test_features_ok_tunnel_axis_and_dia() -> None:
+    """Mesh-mode through-bores come from detect_mesh_features as MeshHole
+    entries, not BRep hole_groups — a longitudinal grip bore must match."""
+    feats = {
+        "holes": [
+            {"kind": "tunnel", "axis": "x", "x": 0.0, "y": 16.0, "dia": 21.98, "depth": 130.0},
+            {"kind": "dimple", "axis": "z", "x": 3.0, "y": 2.0, "dia": 4.0, "depth": 1.1},
+        ]
+    }
+    assert _features_ok([{"type": "tunnel", "axis": "x", "dia": 22.2}], feats) is True
+    assert _features_ok([{"type": "tunnel", "axis": "z", "dia": 22.2}], feats) is False
+    assert _features_ok([{"type": "tunnel", "axis": "x", "dia": 8.0}], feats) is False
+    assert _features_ok([{"type": "tunnel", "axis": "x", "dia": 22.2, "count": 2}], feats) is False
+    # a dimple must never satisfy a tunnel expectation
+    assert _features_ok([{"type": "tunnel", "axis": "z", "dia": 4.0}], feats) is False
+
+
 def test_load_benchmarks_parses_new_fields() -> None:
     bms = {b.name: b for b in load_benchmarks()}
     lb = bms["l_bracket_cad"]

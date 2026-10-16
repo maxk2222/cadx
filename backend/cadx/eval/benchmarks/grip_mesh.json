@@ -11,6 +11,9 @@
   ],
   "tolerance_mm": 6.0,
   "expect_watertight": true,
+  "expected_features": [
+    { "type": "tunnel", "axis": "x", "dia": 22.2, "count": 1 }
+  ],
   "settings": {
     "max_iterations": 6
   },
