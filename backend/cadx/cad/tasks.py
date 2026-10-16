@@ -114,8 +114,18 @@ async def execute_version(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[
         return r.to_dict()
 
     # CPU-blocking pipeline — must run in a thread so the arq event loop
-    # keeps dequeuing other jobs, health checks and cancel flags
-    d = await asyncio.to_thread(run_execute_payload, payload)
+    # keeps dequeuing other jobs, health checks and cancel flags. The thread
+    # cannot be killed on timeout, but failing the task releases the arq job
+    # slot — an unbounded hang otherwise wedges the worker permanently
+    # (observed: a stuck job starved the loop so jobs queued 480 s unclaimed).
+    deadline = _runtime(payload).exec_timeout_s * 2 + 120
+    try:
+        d = await asyncio.wait_for(asyncio.to_thread(run_execute_payload, payload), deadline)
+    except TimeoutError:
+        log.error("execute_version.pipeline_hang", version=payload["version_id"])
+        r = ExecResult()
+        r.error = f"executor pipeline exceeded {deadline}s — worker thread may be stuck"
+        return r.to_dict()
 
     if await _cancelled(ctx, cancel_key):
         d["ok"] = False
