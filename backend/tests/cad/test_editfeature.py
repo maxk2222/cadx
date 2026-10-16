@@ -55,11 +55,7 @@ def test_shrink_through_hole_defeatures_and_passes_gate():
 
 
 def test_other_holes_left_untouched():
-    part = (
-        Box(40, 40, 20)
-        - Pos(5, 5, 0) * Cylinder(3, 22)
-        - Pos(-10, -8, 0) * Cylinder(2, 22)
-    )
+    part = Box(40, 40, 20) - Pos(5, 5, 0) * Cylinder(3, 22) - Pos(-10, -8, 0) * Cylinder(2, 22)
     feats = find_editable_features(part)
     assert len(feats) == 2
     target = next(f for f in feats if f["diameter"] == pytest.approx(6.0))
@@ -81,9 +77,7 @@ def test_unknown_feature_id_refuses():
 
 def test_countersunk_hole_refused_as_dependent():
     part = _block_with_hole(4.0)
-    part -= Pos(0, 0, 10) * Cone(
-        4.5, 2, 2.25, align=(Align.CENTER, Align.CENTER, Align.MAX)
-    )
+    part -= Pos(0, 0, 10) * Cone(4.5, 2, 2.25, align=(Align.CENTER, Align.CENTER, Align.MAX))
     feats = find_editable_features(part)
     assert len(feats) == 1
     assert feats[0]["has_dependents"] is True

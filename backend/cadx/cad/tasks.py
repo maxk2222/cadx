@@ -942,9 +942,7 @@ def run_edit_feature_payload(payload: dict[str, Any]) -> dict[str, Any]:  # noqa
             stats_path.write_text("\n".join(stats))
             writes[stats_path] = time.time()
     except Exception as exc:
-        log.warning(
-            "edit_feature: render failed", error=str(exc), job_id=job_id_or_none(payload)
-        )
+        log.warning("edit_feature: render failed", error=str(exc), job_id=job_id_or_none(payload))
 
     # standard 3D+2D export set, from the committed brep
     exports: dict[str, str | None] = {}
@@ -953,9 +951,7 @@ def run_edit_feature_payload(payload: dict[str, Any]) -> dict[str, Any]:  # noqa
         exp_dir.mkdir(parents=True, exist_ok=True)
         exports = export_from_brep(model_brep, exp_dir, name="model")
     except Exception as exc:
-        log.warning(
-            "edit_feature: exports failed", error=str(exc), job_id=job_id_or_none(payload)
-        )
+        log.warning("edit_feature: exports failed", error=str(exc), job_id=job_id_or_none(payload))
 
     log.info(
         "edit_feature committed",
@@ -975,9 +971,7 @@ def run_edit_feature_payload(payload: dict[str, Any]) -> dict[str, Any]:  # noqa
         "model_step": f"{art_rel}/_run/model.step",
         "model_stl": f"{art_rel}/_run/model.stl",
         "renders": renders_rel,
-        "exports": {
-            k: (f"{art_rel}/exports/{v}" if v else None) for k, v in exports.items()
-        },
+        "exports": {k: (f"{art_rel}/exports/{v}" if v else None) for k, v in exports.items()},
         "analysis": analysis,
         "dfm": dfm,
         "elapsed_s": round(time.time() - started, 3),

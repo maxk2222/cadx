@@ -223,9 +223,7 @@ def test_explicit_threshold_reaches_extraction():
     an empty first attempt)."""
     base = dict(style="trabecular", seed=3, surface_open=1.0, floor_mm=0.0, auto_keep=False)
     auto = organic_transform(_box(), _p(**base, volfrac=0.4))
-    hi = organic_transform(
-        _box(), _p(**base, volfrac=0.4, density_threshold=0.9)
-    )
+    hi = organic_transform(_box(), _p(**base, volfrac=0.4, density_threshold=0.9))
     assert hi.report["threshold"] == 0.9
     assert hi.report["solid_elements"] < auto.report["solid_elements"]
 

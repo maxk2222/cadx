@@ -2213,9 +2213,7 @@ def _parent_source_model(artifacts: list[Artifact], parent: Version) -> str | No
                 continue
             if (it / "_run" / "model.brep").exists():
                 run_dirs.append(it)
-            run_dirs.extend(
-                sub for sub in it.iterdir() if (sub / "_run" / "model.brep").exists()
-            )
+            run_dirs.extend(sub for sub in it.iterdir() if (sub / "_run" / "model.brep").exists())
         if run_dirs:
             newest = max(run_dirs, key=lambda d: (d / "_run" / "model.brep").stat().st_mtime)
             return storage.relpath(newest / "_run" / "model.brep")
@@ -2271,8 +2269,10 @@ async def run_edit_feature_job(ctx: dict[str, Any], payload: dict[str, Any]) -> 
         )
 
         art_rows = (
-            await db.execute(select(Artifact).where(Artifact.version_id == parent.id))
-        ).scalars().all()
+            (await db.execute(select(Artifact).where(Artifact.version_id == parent.id)))
+            .scalars()
+            .all()
+        )
         source_rel = _parent_source_model(list(art_rows), parent)
         if source_rel is None:
             version.status = VersionStatus.failed
@@ -2309,9 +2309,7 @@ async def run_edit_feature_job(ctx: dict[str, Any], payload: dict[str, Any]) -> 
         if not exec_result.get("ok"):
             refusal = exec_result.get("error") or "edit refused"
             was_cancelled = refusal == "cancelled"
-            version.status = (
-                VersionStatus.cancelled if was_cancelled else VersionStatus.failed
-            )
+            version.status = VersionStatus.cancelled if was_cancelled else VersionStatus.failed
             version.error = refusal
             version.issues = (version.issues or []) + [
                 {
@@ -2342,15 +2340,11 @@ async def run_edit_feature_job(ctx: dict[str, Any], payload: dict[str, Any]) -> 
             }
 
         report = exec_result.get("report") or {}
-        artifacts = _copy_best_artifacts_ctxless(
-            version.project_id, version.id, 1, exec_result
-        )
+        artifacts = _copy_best_artifacts_ctxless(version.project_id, version.id, 1, exec_result)
         for fmt, rel in (exec_result.get("exports") or {}).items():
             if rel:
                 artifacts[f"export:{fmt}"] = rel
-        artifacts.update(
-            _copy_mesh_artifacts_ctxless(version.project_id, version.id, 1, parent)
-        )
+        artifacts.update(_copy_mesh_artifacts_ctxless(version.project_id, version.id, 1, parent))
         register_artifacts(db, version.id, artifacts)
 
         version.gen_mode = parent.gen_mode
@@ -2394,8 +2388,7 @@ async def run_edit_feature_job(ctx: dict[str, Any], payload: dict[str, Any]) -> 
         await _append_job_log(
             db,
             job,
-            f"done: {parameter} {report.get('old_diameter')} -> "
-            f"{report.get('new_diameter')} mm\n",
+            f"done: {parameter} {report.get('old_diameter')} -> {report.get('new_diameter')} mm\n",
         )
         await db.commit()
         await _publish(str(job_id), {"type": "done", "status": "succeeded"})

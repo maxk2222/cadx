@@ -231,8 +231,13 @@ def _same_holes(expected: list[dict[str, Any]], actual: list[dict[str, Any]]) ->
                 if old.get("bottom") == new.get("bottom")
                 and abs(float(old["diameter"]) - float(new["diameter"])) <= _POS_TOL_MM
                 and abs(float(old["depth"]) - float(new["depth"])) <= _POS_TOL_MM
-                and all(abs(a - b) <= _POS_TOL_MM for a, b in zip(old["location"], new["location"], strict=False))
-                and all(abs(a - b) <= _AXIS_TOL for a, b in zip(old["axis"], new["axis"], strict=False))
+                and all(
+                    abs(a - b) <= _POS_TOL_MM
+                    for a, b in zip(old["location"], new["location"], strict=False)
+                )
+                and all(
+                    abs(a - b) <= _AXIS_TOL for a, b in zip(old["axis"], new["axis"], strict=False)
+                )
                 and old.get("cbore") == new.get("cbore")
                 and old.get("spotface") == new.get("spotface")
                 and old.get("csink") == new.get("csink")
@@ -386,8 +391,7 @@ def edit_feature(  # noqa: C901 — the gate is deliberately one transaction
         report["measured"] = {"volume_delta": round(actual_delta, 6)}
         if abs(actual_delta - expected_delta) > vol_tol:
             return refuse(
-                f"volume mismatch: predicted {expected_delta:.6f}, "
-                f"measured {actual_delta:.6f} mm³"
+                f"volume mismatch: predicted {expected_delta:.6f}, measured {actual_delta:.6f} mm³"
             )
 
         expected_added = max(expected_delta, 0.0)
@@ -407,7 +411,10 @@ def edit_feature(  # noqa: C901 — the gate is deliberately one transaction
         measured_bounds = _bounds(added_shape if expected_added else removed_shape)
         report["predicted_region_bbox"] = [round(v, 6) for v in predicted_bounds]
         report["measured_region_bbox"] = [round(v, 6) for v in measured_bounds]
-        if any(abs(a - b) > _REGION_TOL_MM for a, b in zip(predicted_bounds, measured_bounds, strict=False)):
+        if any(
+            abs(a - b) > _REGION_TOL_MM
+            for a, b in zip(predicted_bounds, measured_bounds, strict=False)
+        ):
             return refuse("changed region differs from the predicted hole annulus")
         if any(
             abs(a - b) > _BBOX_TOL_MM
@@ -427,7 +434,9 @@ def edit_feature(  # noqa: C901 — the gate is deliberately one transaction
             (
                 h
                 for h in changed
-                if all(abs(a - b) <= _POS_TOL_MM for a, b in zip(h["location"], opening, strict=False))
+                if all(
+                    abs(a - b) <= _POS_TOL_MM for a, b in zip(h["location"], opening, strict=False)
+                )
                 and abs(float(h["depth"]) - depth) <= _POS_TOL_MM
                 and h.get("bottom") == "through"
                 and all(abs(a - b) <= _AXIS_TOL for a, b in zip(h["axis"], axis, strict=False))
