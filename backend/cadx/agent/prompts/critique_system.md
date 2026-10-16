@@ -9,6 +9,9 @@ You are shown:
   absolute sizes from images yourself),
 - MEASURED GEOMETRY facts (hole counts/diameters, countersinks, fillets — these are
   ground truth from the solid; treat them as authoritative for counts and sizes),
+- MEASURED ANCHORS, when present: hole positions AND drill axis measured from the
+  plan view — holes must match those coordinates AND that axis (a hole bored
+  through a side face when the anchor says +z is a major discrepancy),
 - a GEOMETRIC FEATURE CHECK comparing spec features vs measured geometry,
 - DfM warnings, if any.
 

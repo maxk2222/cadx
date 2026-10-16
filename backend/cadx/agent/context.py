@@ -471,8 +471,9 @@ def anchors_block(anchors: dict[str, Any] | None) -> str:
     ]
     for h in holes:
         name = f" '{h['name']}'" if h.get("name") else ""
+        axis = f" axis {h['axis']}" if h.get("axis") else ""
         lines.append(
-            f"#{h['index']}{name} ({h['x']:.1f}, {h['y']:.1f}) Ø{h['dia']:.1f} [{h['source']}]"
+            f"#{h['index']}{name} ({h['x']:.1f}, {h['y']:.1f}) Ø{h['dia']:.1f}{axis} [{h['source']}]"
         )
     if anchors.get("mirror_x"):
         lines.append("note: the mesh was mirrored to match the top view")
