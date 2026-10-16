@@ -20,7 +20,7 @@ from .cutouts import (
     t_slot,
     through_hole,
 )
-from .ops import safe_fillet
+from .ops import mesh_intersect, safe_fillet, trim_below
 from .profile import closed_polyline, profile_body
 from .shapes import (
     boss,
@@ -46,6 +46,7 @@ __all__ = [
     "knurl_ring",
     "l_bracket",
     "living_hinge",
+    "mesh_intersect",
     "mounting_ear",
     "profile_body",
     "rib",
@@ -54,4 +55,5 @@ __all__ = [
     "t_slot",
     "text_label",
     "through_hole",
+    "trim_below",
 ]

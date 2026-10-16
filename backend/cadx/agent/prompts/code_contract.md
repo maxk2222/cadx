@@ -66,6 +66,13 @@
    - add exact features ONLY via boolean ops on primitives: `mesh - Cylinder(...)` for
      holes/bores, `mesh - Box(...)` or `split` for flat mounting faces, `mesh + Box(...)`/
      `mesh + extrude(...)` for flanges and bosses.
+   - NEVER assign the result of an intersection back to the body:
+     `body = body & tool`, `body = body.common(tool)` and `body = body.intersect(tool)`
+     can return `None` on faceted mesh solids (OCC fails silently — the part then
+     becomes None and the run reports "no result assigned"). To intersect, use
+     `body = cadlib.mesh_intersect(body, tool)` (raises a real error). To flatten
+     the underside use `body = cadlib.trim_below(body, z=0)` — a cut, not an
+     intersection. Cuts (`body -= tool`) and fuses (`body += tool`) are mesh-safe.
    - NEVER call fillet/chamfer on mesh edges and never select mesh faces via
      `faces().filter_by(...)` — the solid has thousands of triangular facets; address
      positions numerically (bbox from `MESH_BBOX`, e.g. centred hole:

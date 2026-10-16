@@ -134,3 +134,16 @@ No BuildPart context needed. Parts rest on XY (min Z = 0), centred — place wit
   common exec error. Then `extrude(face, amount=h)` or feed it to
   `profile_body` — or `revolve(face-or-section, axis=Axis.X)` for turned
   parts (profile in a plane containing the axis, closed onto it).
+### mesh_intersect (hybrid mode)
+
+- `mesh_intersect(body, tool)` — `body & tool` that raises a real error when
+  OCC returns `None` (faceted mesh solids fail silently, the part becomes
+  `None` and the run reports "no result assigned"). USE THIS instead of
+  `body = body & tool`, `.common()` or `.intersect()` on a mesh solid.
+
+### trim_below (hybrid mode)
+
+- `trim_below(body, z=0, margin=400)` — cuts everything below the plane `z`.
+  USE THIS to flatten the underside of a mesh solid instead of
+  `body & Box(..., Align.MIN)` — an intersection that silently returns
+  `None` on faceted meshes.

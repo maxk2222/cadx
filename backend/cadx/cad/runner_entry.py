@@ -310,13 +310,37 @@ def main() -> int:  # noqa: C901
 
     result["stdout"] = stdout_buf.getvalue()[-4000:]
 
-    if result.get("traceback"):
+    # `error` holds the real failure even when every traceback frame was in
+    # runner_entry.py itself (helper raised) — never mask it as "no result"
+    if result.get("traceback") or result.get("error"):
         result_path.write_text(json.dumps(result), encoding="utf-8")
         return 0
 
     shape = namespace.get("result")
     if shape is None:
-        result["error"] = "no `result` assigned"
+        if "result" not in namespace:
+            result["error"] = "no `result` assigned"
+        else:
+            # `result = <something>` executed but evaluated to None — in hybrid
+            # mode the classic cause is `body = body & tool` (or .common() /
+            # .intersect()): OCC boolean ops on a faceted mesh return None
+            # instead of raising when they produce nothing.
+            suspects = [
+                f"line {i}: {ln.strip()}"
+                for i, ln in enumerate(code.splitlines(), 1)
+                if "&" in ln or ".common(" in ln or ".intersect(" in ln
+            ]
+            hint = (
+                " `result` is None — a boolean op likely returned an empty/None result. "
+                "On faceted mesh solids `a & b`, `a.common(b)` and `a.intersect(b)` "
+                "return None instead of raising; use `body -= tool` / `body += tool` "
+                "(cut/fuse are mesh-safe) or check for None explicitly."
+            )
+            result["error"] = (
+                "`result` evaluated to None"
+                + hint
+                + (" suspects: " + "; ".join(suspects[:4]) if suspects else "")
+            )
         result_path.write_text(json.dumps(result), encoding="utf-8")
         return 0
 

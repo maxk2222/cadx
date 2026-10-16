@@ -230,3 +230,52 @@ def test_sandbox_closed_polyline(tmp_path):
     )
     out = run_user_code(code, tmp_path / "work")
     assert out.ok, out.error
+
+
+def test_trim_below_flattens_underside():
+    body = Pos(0, 0, -0.5) * Box(10, 10, 5, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    out = cadlib.trim_below(body, z=0.0)
+    assert out.bounding_box().min.Z >= -1e-6
+
+
+def test_mesh_intersect_raises_on_empty():
+    """Faceted-mesh booleans can return None (no exception) — the helper must
+    raise a real error so the failure lands at the boolean line."""
+
+    class _NoneBool:
+        def __and__(self, other):
+            return None
+
+    with pytest.raises(ValueError, match="intersection"):
+        cadlib.mesh_intersect(_NoneBool(), object())
+
+
+def test_mesh_intersect_returns_solid():
+    body = Pos(0, 0, 0) * Box(10, 10, 10)
+    tool = Pos(0, 0, 5) * Box(20, 20, 10)
+    out = cadlib.mesh_intersect(body, tool)
+    assert out.volume > 0
+
+
+def test_runner_result_none_gets_boolean_hint(tmp_path):
+    """`result = None` (e.g. a mesh `&` that failed) must not read as
+    'no result assigned' — the error names the boolean-None cause."""
+    code = (
+        "from build123d import *\n"
+        "PARAMS = {}\n"
+        "body = Box(10, 10, 10)\n"
+        "r = body & Pos(100, 0, 0) * Box(5, 5, 5)  # mesh booleans can return None\n"
+        "result = None  # simulates `result = body` after body became None\n"
+    )
+    out = run_user_code(code, tmp_path / "work")
+    assert not out.ok
+    assert "None" in (out.error or "")
+    assert "no `result` assigned" not in (out.error or "")
+    assert "intersect" in (out.error or "").lower() or "&" in (out.error or "")
+
+
+def test_runner_missing_result_keeps_old_error(tmp_path):
+    code = "from build123d import *\nPARAMS = {}\nbody = Box(10, 10, 10)\n"
+    out = run_user_code(code, tmp_path / "work")
+    assert not out.ok
+    assert "result" in (out.error or "")
