@@ -1,0 +1,34 @@
+{
+  "prompt": "100x60x8 plate, 4x M4 countersunk clearance holes, 1mm chamfer on top edges",
+  "gen_mode": "cad",
+  "expected_bbox": [
+    100,
+    60,
+    8
+  ],
+  "tolerance_mm": 1.5,
+  "expected_features": [
+    {
+      "type": "hole",
+      "count": 4,
+      "dia": 4.5,
+      "axis": "z"
+    },
+    {
+      "type": "countersink",
+      "count": 4
+    },
+    {
+      "type": "chamfer",
+      "count": 1
+    }
+  ],
+  "expect_watertight": true,
+  "runtime": {
+    "agent_plan_mode": "lite"
+  },
+  "settings": {
+    "max_iterations": 2
+  },
+  "real_only": true
+}

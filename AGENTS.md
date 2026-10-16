@@ -36,6 +36,9 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
 - All file paths go through `cadx/storage.py`. All DB writes in short transactions.
 - LLM-generated code must ONLY ever run through `cad/sandbox.py` (AST allow-list + subprocess
   rlimits + import hook) inside the executor environment. Never `exec()` user code in-process.
+  With `exec_warm_runner` (default on) the sandbox forks a pre-warmed `cad/zygote.py`
+  child instead of a cold subprocess — identical isolation; falls back to cold on any
+  zygote failure. Keep both paths' limits/guards in sync when touching either.
 - Allowed imports for generated code: build123d, bd_warehouse.*, cadlib, math, numpy,
   typing, dataclasses. `cadlib` (`cadx/cad/cadlib/`) is the reviewed helper library —
   extend it deliberately, never import unlisted modules from it (the runtime guard

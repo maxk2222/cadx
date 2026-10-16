@@ -55,7 +55,9 @@ Browser ──> nginx (:8080) ──> api:8000
   `image_assets.py`), candidate scoring (`mesh_score.py`, `model_pick.py`,
   `anchors.py`), `autofix.py`, context/trace/types, `worker_jobs.py`
   (arq job runners)
-- `cad/` — sandbox + allowlist, runner_entry, engine pipeline, analysis,
+- `cad/` — sandbox + allowlist, runner_entry, `zygote.py` (warm fork-server:
+  pre-imports build123d once, forks an rlimited child per run), engine
+  pipeline, analysis,
   exporters, render, contact_sheet, `errordiag.py` (exec-failure
   classification), `patch.py` (find/replace hunks), `codeedits.py`
   (line-edit primitives for tools), `features.py`/`mesh_features.py`
@@ -119,11 +121,25 @@ data/library/<part_id>/<file>    reusable user library (uploaded STEP/STL bodies
   back independently for vision and code models (`llm_tools=auto`).
 - **Structured output via JSON mode** with automatic fallback to prompt-only
   JSON (`none`) for providers without `response_format`.
-- **Sandboxed execution**: AST allowlist + restricted import guard + resource
-  limits (best-effort on macOS, enforced in Linux containers).
+- **Sandboxed execution**: AST allowlist (also rejects known build123d
+  pitfalls — discarded `Pos*Primitive` in builders, fillet radius ≥ half the
+  box dims, vector-API typos) + restricted import guard + resource limits
+  (best-effort on macOS, enforced in Linux containers). When
+  `exec_warm_runner` is on, `zygote.py` forks a pre-warmed child per run —
+  identical limits, ~3.5 s → ~0.02 s per repeated exec; any zygote failure
+  falls back to the cold subprocess. Failed runs report a
+  `geometry_at_failure` inventory (where shapes ended up) that feeds the
+  repair prompt.
 - **Verification loop**: numeric bbox check vs declared spec, 7-view render +
-  contact sheet, DfM rules, vision critique. Best candidate across iterations
-  wins, not the last one.
+  contact sheet, DfM rules, vision critique. In-session `verify` uses the
+  engine's `light` path (no renders/DfM) — geometry numbers only. Repair
+  sessions converge via per-kind turn caps (`agent_tool_max_turns_edit`) and
+  a detector that ends a session re-verifying the identical error signature.
+  Best candidate across iterations wins, not the last one.
+- **Plan-lite**: `agent_plan_mode` (`full`|`lite`|`auto`) — for simple
+  image-free CAD jobs a single short no-tools call replaces the catalog-aware
+  planner session (`plan_lite_system.md`); `auto` selects it only when the
+  planner has no real choice (forced cad, or no mesh/image backends).
 - **Parts library, three layers**: (1) the full bd_warehouse catalog is
   introspected once and served to planner/codegen as exact type/size tables
   (`catalog.py`, `partspec.py` validates calls statically pre-execution);

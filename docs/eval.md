@@ -9,7 +9,14 @@ cadx eval                          # all scripted (FakeLLM) benchmarks
 cadx eval --benchmark l_bracket_cad_scripted
 cadx eval --mode mesh              # only benchmarks with this gen_mode
 cadx eval --real                   # real configured LLM (real-only benchmarks)
+cadx eval --real --real-all        # also run scripted benchmarks with the real LLM
+cadx eval --real -b plate_holes --repeat 3 --queue-exec --json out.json
 ```
+
+`--queue-exec` dispatches execution through the cad queue (production-true —
+runs inside the executor container incl. the warm fork-server). `--repeat N`
+prints a median aggregate per benchmark; `--json` writes every EvalResult
+including `step_stats` (per-step calls/tokens/latency) for A/B reports.
 
 Without `--real`, benchmarks that are `real_only` or lack an `llm_script` are
 skipped with a note. `--real` builds the client from the DB runtime settings —
@@ -51,7 +58,7 @@ the same endpoint/key/models a real job would use.
 | `llm_script` | scripted FakeLLM responses — fully deterministic, no provider |
 | `llm_tools` | `auto` enables scripted tool sessions; default `off` |
 | `real_only` | skip in `cadx eval`; only runs under `--real` |
-| `expected_features` | deterministic feature gate (hole counts/diameters, …) |
+| `expected_features` | deterministic feature gate — `{type: "hole", count, dia, axis, positions, pcd}` checks measured hole centers (±1.5 mm) and bolt-circle diameter; `slot`, `countersink`, `counterbore`, `fillet`, `chamfer` count measured features |
 | `expect_watertight` | require a watertight result mesh |
 | `max_wall_s` / `max_prompt_tokens` | per-benchmark cost gates |
 
@@ -61,7 +68,9 @@ the same endpoint/key/models a real job would use.
 |-----------|----------|----------|-------|
 | `rounded_box` | auto | yes | baseline parametric part |
 | `plate_holes` | auto | yes | hole features + positions |
-| `l_bracket_cad` / `l_bracket_cad_scripted` | cad | real / yes | dims, slots, ribs, fillet |
+| `l_bracket_cad` / `l_bracket_cad_scripted` | cad | real / yes | dims, slot, ribs, fillet, hole positions |
+| `flange_pcd_cad` | cad | real only | hub flange: 6-hole bolt circle (`pcd`), central bore, chamfer, fillet |
+| `plate_holes_lite` | cad | real only | same part as `plate_holes` under `agent_plan_mode=lite` (A/B) |
 | `organic_knob_mesh` | mesh | yes (fake mesh) | generate → orient → process → critique → export |
 | `flat_scale_mesh` | mesh | yes (fake mesh) | hopeless-candidate pre-gate → CAD fallback |
 | `grip_mesh` | mesh | real only | organic grip, real mesh server |
