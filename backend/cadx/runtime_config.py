@@ -28,6 +28,20 @@ class RuntimeSettings(BaseModel):
     llm_degenerate_stall_s: float = Field(default=60, gt=0)
     llm_extra_body: str = ""
     llm_tools: Literal["auto", "on", "off"] = "auto"
+    # adaptive reasoning escalation: "auto" merges llm_thinking_body_on into
+    # the request payload for hard steps and after stall triggers, "always"
+    # for every call, "off" merges llm_thinking_body_off instead. The body
+    # strings are provider-specific payload dicts (Qwen3-style
+    # {"chat_template_kwargs": {"enable_thinking": false}}, OpenAI-compat
+    # {"reasoning_effort": "low"}) — empty means 'model default'.
+    llm_thinking: Literal["off", "auto", "always"] = "auto"
+    llm_thinking_body_on: str = ""
+    llm_thinking_body_off: str = ""
+    llm_thinking_hard_steps: str = "repair,improve"  # csv step names for "auto"
+    # iterations without a new best score (or a failed repair patch / repeated
+    # same-category exec error) before "auto" escalates to thinking-on — the
+    # latch stays for the rest of the job
+    llm_thinking_escalate_after: int = Field(default=2, ge=1, le=50)
     agent_max_iterations: int = Field(default=3, ge=1, le=200)
     agent_max_repairs: int = Field(default=3, ge=0, le=200)
     agent_pass_score: int = Field(default=80, ge=0, le=100)
@@ -61,6 +75,20 @@ class RuntimeSettings(BaseModel):
     agent_tool_churn_limit: int = Field(default=6, ge=2, le=50)
     agent_tool_verify: bool = True
     agent_tool_verify_max: int = Field(default=2, ge=0, le=20)
+    # staged codegen: build the part feature-by-feature inside a tool session
+    # (add_block/checkpoint/verify) instead of one-shot whole-file submit.
+    # "auto" = on whenever tool sessions are enabled.
+    agent_staged_build: Literal["auto", "on", "off"] = "auto"
+    # verify calls a staged build may make — higher than edit/repair because
+    # every feature block should land on green geometry before the next one
+    agent_build_verify_max: int = Field(default=8, ge=0, le=20)
+    # include a compact runtime-introspected signature reference for the
+    # relevant topics in codegen/repair context (the on-demand quickref tool
+    # is always available regardless of this flag)
+    agent_quickref_context: bool = False
+    # run a parameter-robustness audit (perturb each PARAMS value, re-execute,
+    # report brittle params) as a quality signal before finishing
+    agent_design_audit: bool = False
     agent_mesh_tools: bool = True
     agent_mesh_max_ops: int = Field(default=24, ge=1, le=200)
     agent_mesh_preview_max: int = Field(default=4, ge=0, le=20)
@@ -146,7 +174,7 @@ class RuntimeSettings(BaseModel):
     # repair). Falls back to the cold subprocess path on any zygote failure.
     exec_warm_runner: bool = True
 
-    @field_validator("llm_extra_body")
+    @field_validator("llm_extra_body", "llm_thinking_body_on", "llm_thinking_body_off")
     @classmethod
     def validate_extra_body(cls, value: str) -> str:
         if not value:

@@ -136,6 +136,11 @@ class AgentCtx:
     # edit/codegen tool sessions that ended via budget/turns/churn — after the
     # first exhaustion callers fall back to the one-shot PatchResponse path
     edit_sessions_exhausted: int = 0
+    # adaptive-reasoning latch: set by the orchestrator on stall signals
+    # (no new best for `llm_thinking_escalate_after` iters, failed repair
+    # patch, repeated same-category exec error); once True every subsequent
+    # "auto"-policy call for this job runs with thinking enabled
+    thinking_escalated: bool = False
 
     def tokens_used(self) -> int:
         u = getattr(self.llm, "total_usage", {})

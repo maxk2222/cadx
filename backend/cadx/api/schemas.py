@@ -485,6 +485,11 @@ class SettingsOut(BaseModel):
     llm_total_timeout_s: float
     llm_extra_body: str
     llm_tools: Literal["auto", "on", "off"]
+    llm_thinking: Literal["off", "auto", "always"]
+    llm_thinking_body_on: str
+    llm_thinking_body_off: str
+    llm_thinking_hard_steps: str
+    llm_thinking_escalate_after: int
     agent_max_iterations: int
     agent_max_repairs: int
     agent_pass_score: int
@@ -506,6 +511,10 @@ class SettingsOut(BaseModel):
     agent_tool_max_turns_edit: int
     agent_tool_verify: bool
     agent_tool_verify_max: int
+    agent_staged_build: Literal["auto", "on", "off"]
+    agent_build_verify_max: int
+    agent_quickref_context: bool
+    agent_design_audit: bool
     agent_plan_mode: Literal["full", "lite", "auto"]
     agent_mesh_tools: bool
     agent_mesh_max_ops: int
@@ -575,6 +584,11 @@ class SettingsUpdate(BaseModel):
     llm_total_timeout_s: float | None = Field(default=None, gt=0)
     llm_extra_body: str | None = Field(default=None, max_length=20_000)
     llm_tools: Literal["auto", "on", "off"] | None = None
+    llm_thinking: Literal["off", "auto", "always"] | None = None
+    llm_thinking_body_on: str | None = Field(default=None, max_length=20_000)
+    llm_thinking_body_off: str | None = Field(default=None, max_length=20_000)
+    llm_thinking_hard_steps: str | None = Field(default=None, max_length=200)
+    llm_thinking_escalate_after: int | None = Field(default=None, ge=1, le=50)
     agent_max_iterations: int | None = Field(default=None, ge=1, le=200)
     agent_max_repairs: int | None = Field(default=None, ge=0, le=200)
     agent_pass_score: int | None = Field(default=None, ge=0, le=100)
@@ -596,6 +610,10 @@ class SettingsUpdate(BaseModel):
     agent_tool_max_turns_edit: int | None = Field(default=None, ge=1, le=200)
     agent_tool_verify: bool | None = None
     agent_tool_verify_max: int | None = Field(default=None, ge=0, le=20)
+    agent_staged_build: Literal["auto", "on", "off"] | None = None
+    agent_build_verify_max: int | None = Field(default=None, ge=0, le=20)
+    agent_quickref_context: bool | None = None
+    agent_design_audit: bool | None = None
     agent_plan_mode: Literal["full", "lite", "auto"] | None = None
     agent_mesh_tools: bool | None = None
     agent_mesh_max_ops: int | None = Field(default=None, ge=1, le=200)
