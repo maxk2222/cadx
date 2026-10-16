@@ -141,9 +141,11 @@ def test_bbox_api_misuse_gets_bbox_hint():
     failures (boundingBox/xlen/xmax/xsize/size.x) in one session."""
     from cadx.cad.errordiag import diagnose
 
-    for bad in ("'Vector' object has no attribute 'x'",
-                "'BoundBox' object has no attribute 'xlen'",
-                "'Part' object has no attribute 'boundingBox'"):
+    for bad in (
+        "'Vector' object has no attribute 'x'",
+        "'BoundBox' object has no attribute 'xlen'",
+        "'Part' object has no attribute 'boundingBox'",
+    ):
         d = diagnose(error=f"AttributeError: {bad}", traceback="", code="")
         assert d.category == "api-bbox", bad
         assert "bbox_dims" in d.hint
