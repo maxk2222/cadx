@@ -11,6 +11,7 @@ from build123d import (
     Cone,
     CounterBoreHole,
     Cylinder,
+    GeomType,
     GridLocations,
     Hole,
     Locations,
@@ -271,6 +272,33 @@ def test_extract_countersunk_bore_is_one_hole():
     m = extract_features(p.part)
     assert m.total_holes == 1
     assert m.countersinks == 1
+
+
+def test_extract_rim_chamfer_and_torus_fillet():
+    """Rotational part: a rim chamfer is a cone coaxial to the bore but sits
+    at the outer diameter — a chamfer, not a countersink. The boss/base
+    fillet is a torus face, not a cylinder."""
+    with BuildPart() as p:
+        Cylinder(40.0, 10.0, align=(Align.CENTER, Align.CENTER, Align.MIN))
+        Pos(0, 0, 10.0) * Cylinder(22.5, 15.0, align=(Align.CENTER, Align.CENTER, Align.MIN))
+        top_outer = [
+            e for e in p.edges() if e.geom_type == GeomType.CIRCLE and abs(e.radius - 40.0) < 0.01
+        ]
+        chamfer(top_outer, length=1.0)
+        hub_base = [
+            e
+            for e in p.edges()
+            if e.geom_type == GeomType.CIRCLE
+            and abs(e.radius - 22.5) < 0.01
+            and abs(e.center().Z - 10.0) < 0.01
+        ]
+        fillet(hub_base, radius=2.0)
+        p.part -= Pos(0, 0, -0.5) * Cylinder(15.0, 27.0)
+    m = extract_features(p.part)
+    assert m.countersinks == 0
+    assert m.chamfer_faces >= 1
+    assert any(r == pytest.approx(2.0, abs=0.05) for r in m.rounds)
+    assert m.total_holes == 1
 
 
 def test_compare_anchor_positions_flags_wrong_axis():

@@ -44,7 +44,7 @@ class MeasuredFeatures(BaseModel):
     countersinks: int = 0  # cones coaxial to a hole
     counterbores: int = 0  # stepped coaxial hole cylinders
     rounds: list[float] = Field(default_factory=list)  # fillet radii (edge cylinders)
-    chamfer_faces: int = 0  # 45° planes + non-coaxial cones
+    chamfer_faces: int = 0  # 45° planes + cones too wide to be a countersink
     bosses: list[MeasuredBoss] = Field(default_factory=list)  # protruding cylinders
     approximate: bool = False  # faceted/mesh source — treat findings loosely
 
@@ -184,12 +184,17 @@ def _scan_faces(
     shape: Shape,
 ) -> tuple[
     list[tuple[float, list[float], list[float], float, float]],
-    list[tuple[list[float], list[float], float]],
+    list[tuple[list[float], list[float], float, float]],
+    list[float],
     int,
 ]:
-    """Walk all faces once; collect cylinders, cones and chamfer-like planes."""
+    """Walk all faces once; collect cylinders, cones, fillet tori and
+    chamfer-like planes. Cone tuples carry the face-centre distance to the
+    cone axis so a rim chamfer coaxial to a bore is not mistaken for a
+    countersink; torus entries are the minor radius of partial wraps."""
     cyl_faces: list[tuple[float, list[float], list[float], float, float]] = []
-    cones: list[tuple[list[float], list[float], float]] = []
+    cones: list[tuple[list[float], list[float], float, float]] = []
+    tori: list[float] = []
     chamfer_planes = 0
     for f in shape.faces():
         try:
@@ -214,9 +219,25 @@ def _scan_faces(
                 ax = _vec3(cone.Axis().Direction())
                 an = _norm(ax) or 1.0
                 ax = [c / an for c in ax]
+                loc = _vec3(cone.Axis().Location())
+                fc = _vec3(f.center())
+                d = _sub(fc, loc)
+                par = sum(d[i] * ax[i] for i in range(3))
+                on_axis = [loc[i] + par * ax[i] for i in range(3)]
                 cones.append(
-                    (ax, _vec3(cone.Axis().Location()), abs(math.degrees(cone.SemiAngle())))
+                    (
+                        ax,
+                        loc,
+                        abs(math.degrees(cone.SemiAngle())),
+                        _norm(_sub(fc, on_axis)),
+                    )
                 )
+            elif gt == GeomType.TORUS:
+                # edge fillet on a curved edge: minor circle wraps ~90-120°.
+                # A full torus solid wraps 2π and is a shape, not a round.
+                u1, u2, v1, v2 = BRepTools.UVBounds_s(f.wrapped)
+                if abs(v2 - v1) < 2.8:
+                    tori.append(float(ad.Torus().MinorRadius()))
             elif gt == GeomType.PLANE:
                 n = _vec3(f.normal_at())
                 comps = sorted(abs(c) for c in n)
@@ -225,7 +246,7 @@ def _scan_faces(
                     chamfer_planes += 1
         except Exception:
             continue
-    return cyl_faces, cones, chamfer_planes
+    return cyl_faces, cones, tori, chamfer_planes
 
 
 def _load_watertight_mesh(stl_path: Path):
@@ -379,7 +400,7 @@ def extract_features(  # noqa: C901 — sequential measurement passes
         except Exception:
             mesh = None
 
-    cyl_faces, cones, chamfer_planes = _scan_faces(shape)
+    cyl_faces, cones, tori, chamfer_planes = _scan_faces(shape)
 
     # classify cylinders: hole (axis void surrounded by material) vs round
     # (edge fillet) vs boss (protruding full-wrap cylinder — a tube/handle).
@@ -400,6 +421,8 @@ def extract_features(  # noqa: C901 — sequential measurement passes
             )
         else:
             out.rounds.append(round(r, 3))
+    for r in tori:
+        out.rounds.append(round(r, 3))
 
     # merge coaxial same-diameter segments: a countersink/counterbore step
     # splits one physical bore into several cylinder faces (bore below the
@@ -414,12 +437,17 @@ def extract_features(  # noqa: C901 — sequential measurement passes
             merged.append([r, axis, center, vspan])
     holes = [(m[0], m[1], m[2], m[3]) for m in merged]
 
-    # cones coaxial to a hole -> countersink; others count as chamfer faces
+    # cones coaxial to a hole and sized like a bore flare -> countersink;
+    # a 45° cone far outside the bore is a rim chamfer (same axis, big radius)
     csk = 0
     cbore = 0
     chamfer_cones = 0
-    for ax, ccenter, semi in cones:
-        if any(_coaxial(h_center, h_axis, ccenter, ax) for _, h_axis, h_center, _ in holes):
+    for ax, ccenter, semi, face_r in cones:
+        hole_r = next(
+            (r for r, h_axis, h_center, _ in holes if _coaxial(h_center, h_axis, ccenter, ax)),
+            None,
+        )
+        if hole_r is not None and face_r <= hole_r * 2.2 + 2.0:
             csk += 1
         elif abs(semi - 45.0) < 10.0:
             chamfer_cones += 1
