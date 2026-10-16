@@ -3087,6 +3087,32 @@ async def _clip_mesh_to_measured(
     feats2 = (res_c.get("mesh") or {}).get("features") or {}
     iou2 = _outline_iou_mm(feats2.get("outline_mm") or [], outline)
     if iou2 >= iou:
+        # dimension guard: an intersection can only shrink the part. When the
+        # generated footprint is locally undersized vs the measured outline
+        # (tips not reaching it), clipping pulls the bbox below stated dims —
+        # observed: a fitted 119x34x8 scale clipped to 115x28.5. Prefer the
+        # loose-footprint mesh over an undersized part.
+        rt = ctx.runtime_settings
+        tol_pct = (
+            ctx.settings.dim_tolerance_pct
+            if ctx.settings.dim_tolerance_pct is not None
+            else rt.agent_dim_tolerance_pct
+        )
+        tol_mm = (
+            ctx.settings.dim_tolerance_mm
+            if ctx.settings.dim_tolerance_mm is not None
+            else rt.agent_dim_tolerance_mm
+        )
+        dims_before = compare_dims(spec, exec_result.get("analysis") or {}, tol_pct, tol_mm)
+        dims_after = compare_dims(spec, res_c.get("analysis") or {}, tol_pct, tol_mm)
+        if len(dims_after) > len(dims_before):
+            await ctx.emit(
+                "meshprocess",
+                it,
+                f"footprint clip rejected — shrank dims ({len(dims_before)} → "
+                f"{len(dims_after)} issues: {'; '.join(dims_after[:2])})",
+            )
+            return exec_result, post
         await ctx.emit(
             "meshprocess",
             it,

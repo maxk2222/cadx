@@ -111,3 +111,77 @@ async def test_process_mesh_warns_on_ops_version_drift():
     res = await _process_mesh(ctx, 1, "x.glb", spec=None, post=MeshPostParams())
     assert res["ok"]
     assert any("ops" in m and "v" in m for m in emitted), emitted
+
+
+async def test_clip_rejected_when_it_shrinks_below_stated_dims():
+    """A footprint clip can only shrink the part — when the generated mesh is
+    locally undersized vs the measured outline, clipping pulled a spec-fitted
+    119x34x8 scale down to 115x28.5 (observed in knife_scale_hybrid). The IoU
+    improved, so the clip used to be kept; now a dim regression rejects it."""
+    import uuid
+
+    from cadx.agent.orchestrator import _clip_mesh_to_measured
+    from cadx.agent.trace import MemoryTrace
+    from cadx.agent.types import AgentCtx
+    from cadx.cad.mesh_ops import MeshPostParams
+    from cadx.db.models import ProjectSettings
+    from cadx.llm.fake import FakeLLM
+    from cadx.llm.schemas import Dim, PartSpec
+
+    async def emit(*a, **kw):
+        pass
+
+    async def no_cancel():
+        return False
+
+    class ShrinkingExecutor:
+        async def process_mesh(self, payload):
+            # clip applied: IoU improved but the bbox shrank below spec
+            return {
+                "ok": True,
+                "analysis": {"bbox_size": [115.0, 28.5, 8.0]},
+                "mesh": {"features": {"outline_mm": [[-10, -8], [10, -8], [10, 8], [-10, 8]]}},
+            }
+
+    ctx = AgentCtx(
+        llm=FakeLLM([]),
+        executor=ShrinkingExecutor(),
+        trace=MemoryTrace(),
+        emit=emit,
+        check_cancel=no_cancel,
+        job_id="t",
+        project_id=uuid.uuid4(),
+        version_id=uuid.uuid4(),
+        prompt="t",
+        mode="generate",
+        settings=ProjectSettings(),
+    )
+    ctx.measurements = {
+        "m1": {
+            "authoritative": True,
+            "confidence": 1.0,
+            # measured outline spanning the full stated 119x34
+            "outline_mm": [[-59.5, -17.0], [59.5, -17.0], [59.5, 17.0], [-59.5, 17.0]],
+        }
+    }
+    spec = PartSpec(
+        name="scale",
+        summary="knife handle scale",
+        length_x=Dim(value=119.0, source="stated"),
+        width_y=Dim(value=34.0, source="stated"),
+        height_z=Dim(value=8.0, source="stated"),
+    )
+    # pre-clip result: spec-fitted, footprint differs from the measured outline
+    exec_result = {
+        "ok": True,
+        "analysis": {"bbox_size": [119.0, 34.0, 8.0]},
+        "mesh": {"features": {"outline_mm": [[-40, -10], [40, -10], [40, 10], [-40, 10]]}},
+    }
+    post = MeshPostParams()
+    out_res, out_post = await _clip_mesh_to_measured(
+        ctx, 1, "x.glb", spec, post, exec_result, iter([1])
+    )
+    # rejected: returned the pre-clip result, not the shrunken one
+    assert out_res is exec_result
+    assert out_res["analysis"]["bbox_size"] == [119.0, 34.0, 8.0]
+    assert not out_post.ops  # clip op was not adopted
