@@ -53,6 +53,19 @@ class MeshGenRequest(BaseModel):
     job_id: str | None = None  # lets the server cancel the right job
 
 
+class MeshGenVariant(BaseModel):
+    """One output of a batch generation — same model+images, own seed/params.
+
+    The server generates all variants inside one worker process so the model
+    loads once instead of per candidate (~30-60s saved per extra variant)."""
+
+    seed: int = 0
+    steps: int | None = None
+    resolution: int | None = None
+    guidance: float | None = None
+    out_path: Path
+
+
 class MeshGenResult(BaseModel):
     model: str
     backend: str = ""
@@ -81,6 +94,8 @@ class MeshModelInfo(BaseModel):
     max_count: int | None = None  # image adapters: max images per job
     supports_edit: bool = False  # image adapters: accepts an init image
     requires_image: bool = False  # image adapters: edit-only, no txt2img
+    default_steps: int | None = None  # adapter-native steps when request omits them
+    canonical_up: str | None = None  # up-axis of the raw output frame
 
 
 class MeshHealth(BaseModel):
@@ -112,6 +127,31 @@ class MeshPort:
     async def models(self) -> list[MeshModelInfo]:
         h = await self.health()
         return h.models
+
+    async def generate_batch(
+        self,
+        req: MeshGenRequest,
+        variants: list[MeshGenVariant],
+        on_progress: ProgressFn | None = None,
+        should_abort: Callable[[], Awaitable[bool]] | None = None,
+    ) -> list[MeshGenResult | None]:
+        """Generate N variants; default falls back to sequential generate()."""
+        out: list[MeshGenResult | None] = []
+        for v in variants:
+            vreq = req.model_copy(
+                update={
+                    "seed": v.seed,
+                    "steps": v.steps,
+                    "resolution": v.resolution,
+                    "guidance": v.guidance,
+                    "out_path": v.out_path,
+                }
+            )
+            try:
+                out.append(await self.generate(vreq, on_progress, should_abort))
+            except Exception:
+                out.append(None)
+        return out
 
 
 class HttpMeshClient(MeshPort):
@@ -189,67 +229,13 @@ class HttpMeshClient(MeshPort):
             data = p.read_bytes()
             files.append(("images", (p.name or f"image{i}.png", data, "application/octet-stream")))
 
-        submit_timeout = min(60.0, self.timeout_s)
-        async with httpx.AsyncClient(timeout=submit_timeout) as client:
-            r = await client.post(f"{self.base_url}/v1/jobs", files=files)
-            if r.status_code != 200:
-                raise MeshGenError(f"mesh-server submit failed: {r.status_code} {r.text[:300]}")
-            server_job = r.json()["job_id"]
+        server_job = await self._submit(files)
 
-        deadline = self.timeout_s
-        poll = 2.0
-        waited = 0.0
-        status: dict[str, Any] = {}
-        # stall watchdog: the server can freeze mid-generation (MPS/MLX memory
-        # waits run at 0% CPU) while still reporting "running" — abort when
-        # the (progress, message) pair stops moving
-        last_sig: tuple[float, str] | None = None
-        last_change_at = 0.0
         try:
-            while waited < deadline:
-                await asyncio.sleep(poll)
-                waited += poll
-                if should_abort is not None and await should_abort():
-                    raise MeshGenError("job cancelled by user")
-                async with httpx.AsyncClient(timeout=15.0) as client:
-                    st = await client.get(f"{self.base_url}/v1/jobs/{server_job}")
-                if st.status_code != 200:
-                    raise MeshGenError(f"mesh-server job poll failed: {st.status_code}")
-                status = st.json()
-                s = status.get("status")
-                if s == "succeeded":
-                    break
-                if s in ("failed", "cancelled"):
-                    raise MeshGenError(status.get("error") or f"mesh job {s}")
-                sig = (float(status.get("progress") or 0.0), str(status.get("message") or ""))
-                # busy = the child is provably computing — silent stages
-                # (hunyuan only reports 5% then 90%) are not stalls
-                if status.get("busy") or sig != last_sig:
-                    last_sig = sig
-                    last_change_at = waited
-                elif waited - last_change_at >= self.stall_timeout_s:
-                    raise MeshGenError(
-                        f"mesh job stalled at {sig[0]:.0%} for "
-                        f"{self.stall_timeout_s:.0f}s ({sig[1] or 'no message'})"
-                    )
-                if on_progress:
-                    msg = status.get("message") or "mesh generation running"
-                    await on_progress(msg, sig[0])
-            else:
-                raise MeshGenError(f"mesh generation timed out after {deadline}s")
-
-            async with httpx.AsyncClient(timeout=300.0) as client:
-                dl = await client.get(f"{self.base_url}/v1/jobs/{server_job}/mesh")
-            if dl.status_code != 200:
-                raise MeshGenError(f"mesh download failed: {dl.status_code}")
-            req.out_path.parent.mkdir(parents=True, exist_ok=True)
-            req.out_path.write_bytes(dl.content)
+            status, waited = await self._poll(server_job, on_progress, should_abort)
+            await self._download(server_job, req.out_path)
         finally:
-            with (
-                httpx.Client(timeout=10.0) as client,
-                contextlib.suppress(Exception),
-            ):
-                client.delete(f"{self.base_url}/v1/jobs/{server_job}")
+            await self._delete_job(server_job)
 
         return MeshGenResult(
             model=status.get("model") or req.model,
@@ -262,6 +248,151 @@ class HttpMeshClient(MeshPort):
             mesh_path=req.out_path,
             triangles=status.get("triangles"),
         )
+
+    async def _submit(self, files: list[tuple[str, tuple[str, bytes, str]]]) -> str:
+        submit_timeout = min(60.0, self.timeout_s)
+        async with httpx.AsyncClient(timeout=submit_timeout) as client:
+            r = await client.post(f"{self.base_url}/v1/jobs", files=files)
+            if r.status_code != 200:
+                raise MeshGenError(f"mesh-server submit failed: {r.status_code} {r.text[:300]}")
+            return str(r.json()["job_id"])
+
+    async def _poll(
+        self,
+        server_job: str,
+        on_progress: ProgressFn | None,
+        should_abort: Callable[[], Awaitable[bool]] | None,
+    ) -> tuple[dict[str, Any], float]:
+        """Poll until succeeded; returns (status, waited_s). Raises on
+        failed/cancelled/stall/timeout."""
+        deadline = self.timeout_s
+        poll = 2.0
+        waited = 0.0
+        status: dict[str, Any] = {}
+        # stall watchdog: the server can freeze mid-generation (MPS/MLX memory
+        # waits run at 0% CPU) while still reporting "running" — abort when
+        # the (progress, message) pair stops moving
+        last_sig: tuple[float, str] | None = None
+        last_change_at = 0.0
+        while waited < deadline:
+            await asyncio.sleep(poll)
+            waited += poll
+            if should_abort is not None and await should_abort():
+                raise MeshGenError("job cancelled by user")
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                st = await client.get(f"{self.base_url}/v1/jobs/{server_job}")
+            if st.status_code != 200:
+                raise MeshGenError(f"mesh-server job poll failed: {st.status_code}")
+            status = st.json()
+            s = status.get("status")
+            if s == "succeeded":
+                return status, waited
+            if s in ("failed", "cancelled"):
+                raise MeshGenError(status.get("error") or f"mesh job {s}")
+            sig = (float(status.get("progress") or 0.0), str(status.get("message") or ""))
+            # busy = the child is provably computing — silent stages
+            # (hunyuan only reports 5% then 90%) are not stalls
+            if status.get("busy") or sig != last_sig:
+                last_sig = sig
+                last_change_at = waited
+            elif waited - last_change_at >= self.stall_timeout_s:
+                raise MeshGenError(
+                    f"mesh job stalled at {sig[0]:.0%} for "
+                    f"{self.stall_timeout_s:.0f}s ({sig[1] or 'no message'})"
+                )
+            if on_progress:
+                msg = status.get("message") or "mesh generation running"
+                await on_progress(msg, sig[0])
+        raise MeshGenError(f"mesh generation timed out after {deadline}s")
+
+    async def _download(self, server_job: str, out_path: Path, i: int = 0) -> None:
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            dl = await client.get(f"{self.base_url}/v1/jobs/{server_job}/mesh", params={"i": i})
+        if dl.status_code != 200:
+            raise MeshGenError(f"mesh download failed: {dl.status_code}")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(out_path.write_bytes, dl.content)
+
+    async def _delete_job(self, server_job: str) -> None:
+        def _del() -> None:
+            with httpx.Client(timeout=10.0) as client:
+                client.delete(f"{self.base_url}/v1/jobs/{server_job}")
+
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(_del)
+
+    async def generate_batch(
+        self,
+        req: MeshGenRequest,
+        variants: list[MeshGenVariant],
+        on_progress: ProgressFn | None = None,
+        should_abort: Callable[[], Awaitable[bool]] | None = None,
+    ) -> list[MeshGenResult | None]:
+        """One server job generating all variants in a single worker process —
+        the model loads once instead of once per candidate."""
+        if not variants:
+            return []
+        await self._check_memory_gate()
+        params: dict[str, Any] = {
+            "model": req.model,
+            "subject": req.subject,
+            "image_roles": req.image_roles,
+            "batch": [
+                {
+                    k: v2
+                    for k, v2 in {
+                        "seed": v.seed,
+                        "steps": v.steps,
+                        "resolution": v.resolution,
+                        "guidance": v.guidance,
+                    }.items()
+                    if v2 is not None
+                }
+                for v in variants
+            ],
+        }
+        files: list[tuple[str, tuple[str, bytes, str]]] = [
+            ("json", ("params.json", _dumps(params), "application/json"))
+        ]
+        for i, p in enumerate(req.images):
+            data = p.read_bytes()
+            files.append(("images", (p.name or f"image{i}.png", data, "application/octet-stream")))
+
+        server_job = await self._submit(files)
+        results: list[MeshGenResult | None] = [None] * len(variants)
+        try:
+            status, waited = await self._poll(server_job, on_progress, should_abort)
+            ok_idx = set(status.get("outputs") or [])
+            # servers without batch support reply as single jobs — treat index 0
+            if not ok_idx:
+                ok_idx = {0}
+            for i, v in enumerate(variants):
+                if i not in ok_idx:
+                    continue
+                try:
+                    await self._download(server_job, v.out_path, i=i)
+                except MeshGenError:
+                    continue
+                results[i] = MeshGenResult(
+                    model=status.get("model") or req.model,
+                    backend=status.get("backend") or "",
+                    seed=v.seed,
+                    steps=v.steps if v.steps is not None else status.get("steps"),
+                    guidance=(
+                        v.guidance
+                        if v.guidance is not None
+                        else (status.get("guidance") or req.guidance)
+                    ),
+                    resolution=(
+                        v.resolution if v.resolution is not None else status.get("resolution")
+                    ),
+                    duration_s=float(status.get("duration_s") or waited),
+                    mesh_path=v.out_path,
+                    triangles=status.get("triangles"),
+                )
+        finally:
+            await self._delete_job(server_job)
+        return results
 
 
 def _dumps(d: dict[str, Any]) -> bytes:

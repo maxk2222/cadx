@@ -311,7 +311,9 @@ def _ops_preview(
                     mesh.export(str(cache))
         ops = payload.get("ops") or post.ops
         if ops:
-            mesh, report = apply_ops(mesh, ops, anchors=payload.get("anchors"))
+            mesh, report = apply_ops(
+                mesh, ops, anchors=payload.get("anchors"), runtime=_runtime(payload)
+            )
         else:
             report = []
         mesh = rest_on_xy_center(mesh)

@@ -120,6 +120,24 @@ def test_mesh_pipeline_ops_applied(knob_glb, tmp_path):
     assert flat_base_ratio(m) > 0.05
 
 
+def test_mesh_pipeline_recaps_faces_after_ops(knob_glb, tmp_path):
+    """Ops (voxel remesh) can re-inflate the mesh far past the decimate cap —
+    the pipeline must re-cap so downstream renders/exports stay cheap."""
+    from cadx.runtime_config import RuntimeSettings
+
+    res = run_mesh_pipeline(
+        mesh_path=knob_glb,
+        out_dir=tmp_path / "it1",
+        post=MeshPostParams(ops=[{"op": "remesh", "args": {"voxel_mm": 0.4, "smooth_iters": 0}}]),
+        spec=_spec(),
+        settings=ProjectSettings(process="fdm"),
+        runtime=RuntimeSettings(mesh_decimate_faces=8_000),
+    )
+    assert res.ok, res.error
+    assert res.mesh["triangles"] <= 8_000
+    assert res.analysis.watertight is True
+
+
 def test_mesh_pipeline_bad_op_fails(knob_glb, tmp_path):
     res = run_mesh_pipeline(
         mesh_path=knob_glb,

@@ -88,17 +88,26 @@ def create_app(cfg: ServerConfig | None = None) -> FastAPI:
         return job.to_status()
 
     @app.get("/v1/jobs/{job_id}/mesh")
-    async def job_mesh(job_id: str) -> Response:
+    async def job_mesh(job_id: str, i: int = 0) -> Response:
         job = manager.get(job_id)
         if job is None:
             raise HTTPException(404, "job not found")
         if job.status != "succeeded" or job.glb is None:
             raise HTTPException(409, f"job is {job.status}, mesh unavailable")
-        return Response(
-            content=job.glb,
-            media_type="model/gltf-binary",
-            headers={"Content-Disposition": "attachment; filename=mesh.glb"},
-        )
+        glbs = getattr(job, "glbs", None) or {}
+        if i in glbs:
+            return Response(
+                content=glbs[i],
+                media_type="model/gltf-binary",
+                headers={"Content-Disposition": f"attachment; filename=mesh_{i}.glb"},
+            )
+        if i == 0:
+            return Response(
+                content=job.glb,
+                media_type="model/gltf-binary",
+                headers={"Content-Disposition": "attachment; filename=mesh.glb"},
+            )
+        raise HTTPException(404, f"no variant {i} (outputs: {sorted(glbs)})")
 
     @app.delete("/v1/jobs/{job_id}")
     async def job_delete(job_id: str) -> dict:

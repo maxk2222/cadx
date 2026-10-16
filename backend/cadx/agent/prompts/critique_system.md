@@ -22,7 +22,10 @@ Evaluate:
 - in EDIT MODE: only the requested changes differ from the previous version.
 - for MESH/HYBRID versions: the shape comes from a generative mesh model —
   ignore faceting/shading artifacts of triangle meshes; judge silhouette,
-  proportions and the requested features.
+  proportions and the requested features. A feature explicitly named in the
+  PART SPEC or USER REQUEST (a skirt step, a waist, a texture, a rib) is NOT
+  a defect — report at most a minor when its execution is visibly poor, never
+  a major, and cite `source: spec` or `source: prompt`.
 
 ## feature_verdicts (REQUIRED)
 

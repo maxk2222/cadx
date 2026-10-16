@@ -840,6 +840,41 @@ def compare_features(spec_features: list[Any], measured: MeasuredFeatures) -> li
     return findings
 
 
+def mesh_features_to_measured(mesh_feats: dict[str, Any]) -> MeasuredFeatures:
+    """Adapt detect_mesh_features output (trimesh ray-grid tunnels/dimples)
+    into MeasuredFeatures so the spec/anchor comparators can run on the pure
+    mesh path too. Tunnel centres keep their projection-plane coords — only
+    z-axis tunnels carry true XY (plan view), so position findings for
+    off-axis bores are inherently approximate; `approximate=True` marks that.
+    """
+    groups: list[MeasuredHoleGroup] = []
+    n_dimples = 0
+    for h in mesh_feats.get("holes") or []:
+        kind = str(h.get("kind") or "")
+        if kind == "dimple":
+            n_dimples += 1
+            continue
+        if kind != "tunnel":
+            continue
+        ax = str(h.get("axis") or "z")
+        x, y = float(h.get("x") or 0), float(h.get("y") or 0)
+        groups.append(
+            MeasuredHoleGroup(
+                diameter=float(h.get("dia") or 0),
+                count=1,
+                axis=f"+{ax}",
+                depth_class="through",
+                centers=[[x, y]],
+            )
+        )
+    return MeasuredFeatures(
+        hole_groups=groups,
+        total_holes=len(groups),
+        countersinks=n_dimples,  # top-down dips — the only mesh csk signal
+        approximate=True,
+    )
+
+
 def compare_anchor_positions(
     anchors: dict[str, Any] | None, measured: MeasuredFeatures
 ) -> list[FeatureFinding]:
@@ -883,9 +918,9 @@ def compare_anchor_positions(
                 default=None,
             )
             if dw is not None and dw <= 3.0:
-                bad_axis = min(
-                    wrong_axis_centres, key=lambda t: math.hypot(ax - t[0], ay - t[1])
-                )[2]
+                bad_axis = min(wrong_axis_centres, key=lambda t: math.hypot(ax - t[0], ay - t[1]))[
+                    2
+                ]
                 findings.append(
                     FeatureFinding(
                         feature=f"hole {a.get('index', '?')}",

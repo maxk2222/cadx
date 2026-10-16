@@ -176,3 +176,87 @@ async def test_sourced_major_discrepancy_stays_major():
     )
     assert any(d.severity == "major" for d in c.discrepancies)
     assert c.passed is False
+
+
+async def test_high_silhouette_downgrades_image_only_majors():
+    """Mesh mode + measured silhouette IoU >= 0.8: majors sourced purely from
+    image judgement are texture noise (observed: knob skirt->dome step scored
+    as a flaw) — downgrade to minor. Spec-sourced majors stand."""
+    llm = FakeLLM(
+        [
+            _llm_critique(
+                45,
+                False,
+                [
+                    {
+                        "what": "step between skirt and dome looks wrong",
+                        "severity": "major",
+                        "source": "image",
+                    },
+                    {
+                        "what": "through-bore missing",
+                        "severity": "major",
+                        "source": "spec",
+                        "fix_hint": "drill the bore",
+                    },
+                ],
+            )
+        ]
+    )
+    ctx = _ctx(
+        llm,
+        prompt="knob",
+        resolved_mode="mesh",
+        mesh_info={"_silhouette_iou": 0.86},
+    )
+    c = await critique_step.run(
+        ctx,
+        _spec(),
+        None,
+        {"bbox_size": [60, 40, 4]},
+        [],
+        None,
+        iteration=1,
+        features={"total_holes": 1},
+    )
+    by_what = {d.what.split(" (")[0]: d for d in c.discrepancies}
+    img = by_what["step between skirt and dome looks wrong"]
+    assert img.severity == "minor"
+    assert "silhouette" in img.what
+    assert by_what["through-bore missing"].severity == "major"
+
+
+async def test_low_silhouette_keeps_image_majors():
+    """Below the IoU threshold the visual complaint is probably real."""
+    llm = FakeLLM(
+        [
+            _llm_critique(
+                45,
+                False,
+                [
+                    {
+                        "what": "outline is the wrong shape",
+                        "severity": "major",
+                        "source": "image",
+                    },
+                ],
+            )
+        ]
+    )
+    ctx = _ctx(
+        llm,
+        prompt="knob",
+        resolved_mode="mesh",
+        mesh_info={"_silhouette_iou": 0.42},
+    )
+    c = await critique_step.run(
+        ctx,
+        _spec(),
+        None,
+        {"bbox_size": [60, 40, 4]},
+        [],
+        None,
+        iteration=1,
+        features={"total_holes": 1},
+    )
+    assert any(d.severity == "major" for d in c.discrepancies)

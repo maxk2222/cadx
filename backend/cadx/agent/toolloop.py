@@ -115,9 +115,7 @@ def _trim_tool_results(msgs: list[dict[str, Any]], keep_last: int = 6) -> None:
         for i, m in enumerate(msgs)
         if m.get("role") == "user"
         and isinstance(m.get("content"), list)
-        and any(
-            isinstance(p, dict) and p.get("type") == "image_url" for p in m["content"]
-        )
+        and any(isinstance(p, dict) and p.get("type") == "image_url" for p in m["content"])
     ]
     for i in img_idx[:-2]:
         msgs[i] = {

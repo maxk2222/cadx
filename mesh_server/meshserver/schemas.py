@@ -11,6 +11,19 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+class GenVariant(BaseModel):
+    """One variant inside a batch mesh job — shares the job's model+images.
+
+    Candidate screening submits N seeds in a single job so the subprocess
+    loads the model once instead of N times (~30-60s each on torch/MPS)."""
+
+    seed: int = 0
+    steps: int | None = None
+    guidance: float | None = None
+    resolution: int | None = None
+    subject: str = ""
+
+
 class GenParams(BaseModel):
     model: str = "auto"
     seed: int = 0
@@ -19,6 +32,7 @@ class GenParams(BaseModel):
     steps: int | None = None
     guidance: float | None = None
     resolution: int | None = None  # octree/voxel resolution hint
+    batch: list[GenVariant] | None = None  # >0 entries: one job, N outputs (out_i.glb)
 
 
 class ImageGenParams(BaseModel):
@@ -58,6 +72,7 @@ class JobStatus(BaseModel):
     duration_s: float = 0.0
     triangles: int | None = None
     images: int = 0  # image jobs: number of result PNGs available for download
+    outputs: list[int] = Field(default_factory=list)  # batch: succeeded variant indices
     error: str | None = None
 
 
@@ -77,6 +92,8 @@ class ModelInfo(BaseModel):
     max_count: int | None = None  # image adapters: max images per job
     supports_edit: bool = False  # image adapters: accepts an init image
     requires_image: bool = False  # image adapters: edit-only, no txt2img
+    default_steps: int | None = None  # adapter-native steps when request omits them
+    canonical_up: str | None = None  # up-axis of the raw output frame ("y" = hunyuan)
 
 
 class Health(BaseModel):

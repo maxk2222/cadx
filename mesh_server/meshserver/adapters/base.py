@@ -49,6 +49,13 @@ class MeshAdapter(ABC):
     supports_multiview: bool = False
     max_images: int = 1
     license_note: str = ""
+    # adapter-native inference steps when the request leaves steps=None —
+    # distilled ("turbo") models are built for ~5 steps; running them at 30
+    # just burns wall-clock without improving geometry
+    default_steps: int | None = None
+    # canonical up-axis of the raw output frame ("y" for image-space
+    # generators like Hunyuan3D) — clients use it as an orientation prior
+    canonical_up: str | None = None
 
     @classmethod
     def available(cls, cfg: Any) -> bool:

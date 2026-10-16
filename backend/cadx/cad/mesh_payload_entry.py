@@ -29,7 +29,11 @@ def main() -> None:
 
         d = run_mesh_payload(payload)
     except Exception:
-        d = {"ok": False, "error": "mesh payload crashed", "traceback": traceback.format_exc()[-4000:]}
+        d = {
+            "ok": False,
+            "error": "mesh payload crashed",
+            "traceback": traceback.format_exc()[-4000:],
+        }
     try:
         (workdir / "result.pkl").write_bytes(pickle.dumps(d))
     except Exception:

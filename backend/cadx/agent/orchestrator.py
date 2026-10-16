@@ -278,6 +278,15 @@ def _multi_solid(exec_result: dict[str, Any] | None) -> bool:
     return int(((exec_result or {}).get("analysis") or {}).get("solid_count") or 1) > 1
 
 
+def _only_dim_issues(dim_issues: list[str], issues: list[dict[str, Any]]) -> bool:
+    """True when dimension mismatches are the ONLY major problem — the
+    deterministic fit already ran, so an LLM refine session on pure dims just
+    wrecks the shape (observed: knob squashed to a capsule for a 4% dim fix)."""
+    return bool(dim_issues) and not any(
+        i.get("severity") == "major" and i.get("source") != "dims" for i in issues
+    )
+
+
 def _resolve_patch(
     base_code: str, resp: PatchResponse, patch_mode: str
 ) -> tuple[str | None, list[str]]:
@@ -2107,9 +2116,7 @@ def _measured_plan_outline(ctx: AgentCtx) -> list[list[float]] | None:
     return best[1] if best else None
 
 
-def _ref_side_mask(
-    ctx: AgentCtx, iteration: int, spec: PartSpec | None
-) -> tuple[Any, str | None]:
+def _ref_side_mask(ctx: AgentCtx, iteration: int, spec: PartSpec | None) -> tuple[Any, str | None]:
     """Subject mask of the best *side* reference image (+ its stored PNG rel).
 
     Only side-ish views qualify — a plan/top silhouette lives in a different
@@ -2182,7 +2189,9 @@ async def _process_mesh(
         spec=spec,
         make_solid=make_solid,
         subdir=subdir,
-        ref_mask_rel=ref_mask_rel,
+        # the worker extracts the subject mask once per job — every
+        # process_mesh call reuses it for executor-side silhouette IoU
+        ref_mask_rel=ref_mask_rel or ctx.mesh_info.get("_ref_mask_rel"),
     )
     if solid_max_faces is not None:
         payload["solid_max_faces"] = solid_max_faces
@@ -2853,11 +2862,61 @@ async def _run_mesh(  # noqa: C901
         rel = exec_result.get("contact_sheet")
         return storage.resolve(rel) if rel else None
 
-    async def _evaluate(it: int, exec_result: dict[str, Any]) -> tuple[Critique, list[str]]:
-        """Dim check + vision critique + emit. Returns (critique, dim_issues)."""
+    async def _evaluate(
+        it: int, exec_result: dict[str, Any]
+    ) -> tuple[Critique, list[str], list[dict[str, Any]]]:
+        """Dim check + vision critique + emit. Returns (critique, dim_issues,
+        feature_findings)."""
         analysis = exec_result.get("analysis") or {}
         dim_issues = compare_dims(spec, analysis, tol_pct, tol_mm)
         dim_issues += list((exec_result.get("mesh") or {}).get("dim_issues") or [])
+        # deterministic feature evidence on the processed mesh — the same
+        # authority the CAD path feeds the critic, converted from the
+        # ray-grid tunnel/dimple detection every mesh result carries
+        feature_findings: list[dict[str, Any]] = []
+        mesh_feats = (exec_result.get("mesh") or {}).get("features") or {}
+        if s.agent_feature_feedback and mesh_feats:
+            try:
+                from cadx.cad.features import (
+                    compare_anchor_positions,
+                    compare_features,
+                    mesh_features_to_measured,
+                )
+
+                measured = mesh_features_to_measured(mesh_feats)
+                if spec.features:
+                    feature_findings += [
+                        f.model_dump() for f in compare_features(spec.features, measured)
+                    ]
+                if ctx.anchors:
+                    feature_findings += [
+                        f.model_dump() for f in compare_anchor_positions(ctx.anchors, measured)
+                    ]
+            except Exception as e:
+                log.warning("mesh.features_compare_failed", error=str(e)[:200])
+        sil = (exec_result.get("mesh") or {}).get("silhouette_iou")
+        if sil is not None:
+            sil = float(sil)
+            ctx.mesh_info["_silhouette_iou"] = sil
+            if sil < 0.8:
+                # deterministic shape verdict vs the reference image — the
+                # only objective form check when no plan-view measurement exists
+                feature_findings.append(
+                    {
+                        "feature": "silhouette",
+                        "expected": "matches the reference image outline",
+                        "actual": f"side-view silhouette IoU {sil:.2f}",
+                        "severity": "major" if sil < 0.6 else "minor",
+                        "fix_hint": (
+                            "the side silhouette clearly misses the reference — "
+                            "regenerate or reshape the gross outline"
+                            if sil < 0.6
+                            else "silhouette follows the reference with visible "
+                            "deviations — refine locally (radial profile, scale), "
+                            "do NOT rebuild"
+                        ),
+                    }
+                )
         try:
             c = await critique_step.run(
                 ctx,
@@ -2867,6 +2926,7 @@ async def _run_mesh(  # noqa: C901
                 dim_issues,
                 exec_result.get("dfm"),
                 iteration=it,
+                feature_findings=feature_findings,
             )
         except Exception as e:
             log.warning("agent.critique_failed", iteration=it, error=str(e))
@@ -2879,7 +2939,7 @@ async def _run_mesh(  # noqa: C901
             f"{len(c.discrepancies) - len(major)} minor issues",
             score=c.score,
         )
-        return c, dim_issues
+        return c, dim_issues, feature_findings
 
     async def _refine(
         it: int,
@@ -2977,6 +3037,11 @@ async def _run_mesh(  # noqa: C901
                 mirror_x=bool(orientation.get("mirror_x")),
             )
             post = merge_post_params(post, {})
+
+            # extract the side-reference subject mask once per job — feeds
+            # silhouette IoU in the executor (critique calibration) and the
+            # raw-candidate scorer
+            _ref_side_mask(ctx, it, spec)
 
             # measured plan-view outline is the authoritative footprint for
             # flat parts — clip first so a drifted generator shape (banana)
@@ -3084,7 +3149,7 @@ async def _run_mesh(  # noqa: C901
 
         # ANALYZE + CRITIQUE
         await ctx.emit("critique", it, "comparing renders with your images")
-        critique, dim_issues = await _evaluate(it, exec_result)
+        critique, dim_issues, feature_findings = await _evaluate(it, exec_result)
 
         cand = Candidate(
             it,
@@ -3094,6 +3159,7 @@ async def _run_mesh(  # noqa: C901
             dim_issues,
             mesh_post=(exec_result.get("mesh") or {}).get("post"),
         )
+        cand.feature_findings = feature_findings
         if best is None or cand.rank > best.rank:
             best = cand
 
@@ -3111,17 +3177,27 @@ async def _run_mesh(  # noqa: C901
             await ctx.emit("done", it, "all checks passed")
             break
 
-        # MESH_REFINE repair session(s) — fix this mesh instead of a new seed
-        for _round in range(refine_rounds):
+        # MESH_REFINE repair session(s) — fix this mesh instead of a new seed.
+        # Repair gate: when stated dims are the ONLY major problem the
+        # deterministic fit above already had its shot — an LLM session on
+        # pure dim issues just wrecks the shape (knob squashed to a capsule)
+        issues0 = build_issues(
+            critique, dim_issues, [], exec_result.get("dfm"), exec_result.get("analysis")
+        )
+        only_dims = _only_dim_issues(dim_issues, issues0)
+        if only_dims:
+            await ctx.emit(
+                "meshrefine",
+                it,
+                "repair skipped — only dimension issues remain (deterministic fit already applied)",
+            )
+        for _round in range(0 if only_dims else refine_rounds):
             if await cancelled():
                 outcome.status = "cancelled"
                 return outcome
             if await finish_early():
                 break
-            issues = build_issues(
-                critique, dim_issues, [], exec_result.get("dfm"), exec_result.get("analysis")
-            )
-            rr = await _refine(it, mesh_rel, post, exec_result, issues=issues)
+            rr = await _refine(it, mesh_rel, post, exec_result, issues=issues0)
             if rr is None:
                 break  # sessions unavailable
             if rr.regenerate:
@@ -3138,7 +3214,7 @@ async def _run_mesh(  # noqa: C901
                 log.warning("mesh.refine_reprocess_failed", error=new_exec.get("error"))
                 break
             exec_result = new_exec
-            critique2, dim_issues2 = await _evaluate(it, exec_result)
+            critique2, dim_issues2, findings2 = await _evaluate(it, exec_result)
             cand = Candidate(
                 it,
                 None,
@@ -3147,6 +3223,7 @@ async def _run_mesh(  # noqa: C901
                 dim_issues2,
                 mesh_post=(exec_result.get("mesh") or {}).get("post"),
             )
+            cand.feature_findings = findings2
             if best is None or cand.rank > best.rank:
                 best = cand
             critique, dim_issues = critique2, dim_issues2

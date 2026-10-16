@@ -61,6 +61,10 @@ class RuntimeSettings(BaseModel):
     agent_mesh_max_ops: int = Field(default=24, ge=1, le=200)
     agent_mesh_preview_max: int = Field(default=4, ge=0, le=20)
     agent_mesh_refine_rounds: int = Field(default=1, ge=0, le=10)
+    # refine shape guard: an op whose result drifts below this silhouette IoU
+    # vs the baseline (or loses >15% volume on a non-cut op) is refused —
+    # guards the workbench against flatten/squash wreckage; 0 disables
+    agent_mesh_shape_guard_iou: float = Field(default=0.8, ge=0.0, le=1.0)
     agent_mesh_hard_fail_score: int = Field(default=30, ge=0, le=100)
     agent_mesh_hard_fail_limit: int = Field(default=3, ge=1, le=20)
     agent_max_approaches: int = Field(default=2, ge=1, le=3)

@@ -71,6 +71,55 @@ def test_full_job_flow(app):
         assert r.status_code == 404
 
 
+def test_batch_job_serves_variants(app):
+    """params.batch shares one loaded adapter across N variants — the job
+    reports per-variant outputs and /v1/jobs/{id}/mesh?i=N serves each GLB."""
+    from fastapi.testclient import TestClient
+
+    with TestClient(app) as c:
+        files = [
+            (
+                "json",
+                (
+                    "params.json",
+                    json.dumps(
+                        {
+                            "model": "fake",
+                            "batch": [{"seed": 11}, {"seed": 22, "steps": 3}],
+                        }
+                    ),
+                    "application/json",
+                ),
+            ),
+            ("images", ("a.png", _png(), "image/png")),
+        ]
+        r = c.post("/v1/jobs", files=files)
+        assert r.status_code == 200, r.text
+        job_id = r.json()["job_id"]
+
+        import time
+
+        status = ""
+        for _ in range(200):
+            r = c.get(f"/v1/jobs/{job_id}")
+            status = r.json()["status"]
+            if status in ("succeeded", "failed", "cancelled"):
+                break
+            time.sleep(0.1)
+        assert status == "succeeded", r.json()
+        assert sorted(r.json()["outputs"]) == [0, 1]
+
+        glbs = []
+        for i in (0, 1):
+            r = c.get(f"/v1/jobs/{job_id}/mesh", params={"i": i})
+            assert r.status_code == 200
+            assert r.content[:4] == b"glTF"
+            glbs.append(r.content)
+
+        r = c.get(f"/v1/jobs/{job_id}/mesh", params={"i": 2})
+        assert r.status_code == 404
+
+
 def test_stalled_running_job_marked_failed(tmp_path):
     """A 'running' job whose progress hasn't moved past job_stall_s is
     reported as failed (frozen MPS/MLX adapter) instead of polling forever."""

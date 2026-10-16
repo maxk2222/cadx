@@ -17,6 +17,7 @@ Exit codes: 0 ok, 2 generation/cancel abort, 1 crash (stderr has the error).
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 import sys
@@ -95,32 +96,78 @@ def _run_mesh(req: dict, cfg: ServerConfig, registry: Registry, work: Path) -> d
     if len(images) > cls.max_images:
         images = images[: cls.max_images]
     progress = _Progress(work / "progress.json", work / "cancel.flag")
-    result = adapter.generate(
-        images,
-        GenOpts(
-            seed=req["params"].get("seed") or 0,
-            steps=req["params"].get("steps"),
-            guidance=req["params"].get("guidance"),
-            resolution=req["params"].get("resolution"),
-            subject=req["params"].get("subject", ""),
-            image_roles=req["params"].get("image_roles") or [],
-            work_dir=work,
-        ),
-        progress=progress,
-        cancelled=lambda: (work / "cancel.flag").exists(),
-    )
-    _atomic_json(work / "progress.json", {"progress": 0.95, "message": "cleaning + exporting"})
-    mesh = clean_mesh(result.mesh)
-    glb = export_glb(mesh)
-    (work / "out.glb").write_bytes(glb)
+    params = req["params"]
+    variants = params.get("batch") or []
+    todo: list[dict] = variants if variants else [params]
+    n_v = len(todo)
+    outputs: list[dict] = []
+    for i, vp in enumerate(todo):
+        if (work / "cancel.flag").exists():
+            raise _Cancelled()
+
+        def vprog(frac: float, msg: str, _i: int = i) -> None:
+            progress((_i + min(frac, 1.0)) / n_v, f"[{_i + 1}/{n_v}] {msg}")
+
+        try:
+            result = adapter.generate(
+                images,
+                GenOpts(
+                    seed=vp.get("seed") or 0,
+                    steps=vp.get("steps") or params.get("steps"),
+                    guidance=(
+                        vp.get("guidance")
+                        if vp.get("guidance") is not None
+                        else params.get("guidance")
+                    ),
+                    resolution=vp.get("resolution") or params.get("resolution"),
+                    subject=vp.get("subject") or params.get("subject", ""),
+                    image_roles=params.get("image_roles") or [],
+                    work_dir=work,
+                ),
+                progress=vprog,
+                cancelled=lambda: (work / "cancel.flag").exists(),
+            )
+        except _Cancelled:
+            raise
+        except Exception as e:
+            if not variants:
+                raise
+            # a bad seed/params must not sink the whole batch — record and
+            # continue; the parent marks the job failed only when ALL miss
+            outputs.append({"index": i, "ok": False, "error": str(e)[:300]})
+            continue
+        mesh = clean_mesh(result.mesh)
+        fname = f"out_{i}.glb" if variants else "out.glb"
+        (work / fname).write_bytes(export_glb(mesh))
+        outputs.append(
+            {
+                "index": i,
+                "ok": True,
+                "seed": result.seed,
+                "steps": result.steps,
+                "resolution": result.resolution,
+                "triangles": len(mesh.faces),
+            }
+        )
+        gc.collect()
+    ok_outputs = [o for o in outputs if o.get("ok")]
+    if variants:
+        if not ok_outputs:
+            first_err = next((o["error"] for o in outputs if o.get("error")), "?")
+            raise RuntimeError(f"all {n_v} batch variants failed ({first_err})")
+        # single-mesh compat: out.glb mirrors the first succeeded variant
+        (work / "out.glb").write_bytes(
+            (work / f"out_{ok_outputs[0]['index']}.glb").read_bytes()
+        )
     return {
         "model": cls.id,
         "backend": cls.backend,
-        "seed": result.seed,
-        "steps": result.steps,
-        "guidance": result.guidance,
-        "resolution": result.resolution,
-        "triangles": len(mesh.faces),
+        "seed": outputs[0].get("seed") if outputs else params.get("seed") or 0,
+        "steps": outputs[0].get("steps") if outputs else params.get("steps"),
+        "guidance": params.get("guidance"),
+        "resolution": outputs[0].get("resolution") if outputs else params.get("resolution"),
+        "triangles": outputs[0].get("triangles") if outputs else None,
+        "outputs": outputs,
     }
 
 

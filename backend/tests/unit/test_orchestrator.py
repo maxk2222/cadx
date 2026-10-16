@@ -185,3 +185,43 @@ async def test_clip_rejected_when_it_shrinks_below_stated_dims():
     assert out_res is exec_result
     assert out_res["analysis"]["bbox_size"] == [119.0, 34.0, 8.0]
     assert not out_post.ops  # clip op was not adopted
+
+
+def test_orientation_ranking_support_picks_standing():
+    """Lying knob (Hunyuan Y-up convention): aspect/dims cannot separate
+    'standing on skirt' from 'lying on side' (40x40 vs ~46x46 footprint) —
+    the support term must rank a y-axis up orientation first."""
+    import numpy as np
+    import trimesh
+
+    from cadx import storage
+    from cadx.agent.orchestrator import _orientation_ranking
+    from cadx.llm.schemas import Dim, PartSpec
+
+    skirt = trimesh.creation.cylinder(radius=18.0, height=8.0, sections=48)
+    skirt.apply_translation([0, 0, 4.0])
+    dome = trimesh.creation.icosphere(subdivisions=2, radius=20.0)
+    dome.apply_scale([1, 1, 0.6])
+    dome.apply_translation([0, 0, 12.0])
+    m = trimesh.util.concatenate([skirt, dome])
+    # author it Y-up (dome axis along +Y) like raw Hunyuan output
+    m.apply_transform(trimesh.transformations.rotation_matrix(-np.pi / 2, [1, 0, 0]))
+    p = storage.resolve("t_orient_rank.glb")
+    m.export(str(p), file_type="glb")
+
+    spec = PartSpec(
+        name="knob",
+        summary="knob",
+        length_x=Dim(value=40.0, source="stated"),
+        width_y=Dim(value=40.0, source="stated"),
+        # height not stated -> no dim violation separates standing from lying;
+        # only the support term can pick the skirt-side-down orientation
+        height_z=Dim(value=24.0, source="assumed"),
+    )
+    table, rank_fn = _orientation_ranking("t_orient_rank.glb", spec, 0.05, 1.0, canonical_up="y")
+    assert table and rank_fn
+    assert table[0][1]["up"].lstrip("+-") == "y"
+    # a lying pick must not be ranked first
+    lying = rank_fn({"up": "+x", "front": "+y"})
+    standing = rank_fn({"up": "+y", "front": "+x"})
+    assert lying[0] >= standing[0] and standing <= lying

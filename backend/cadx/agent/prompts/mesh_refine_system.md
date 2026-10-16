@@ -73,6 +73,15 @@ Rules:
 
 - Every transform is recorded and replayed deterministically — do not stack
   redundant ops; use mesh_undo if an op did the wrong thing.
+- FIRST check whether the part lies on its side/back: compare the flat_base
+  and bbox proportions against the spec before ANY scaling — scaling a
+  wrongly-oriented part locks the error in.
+- Non-uniform (per-axis) scaling is limited to ±5 % per axis beyond what
+  the spec demands — larger deviations mean the mesh is fundamentally off,
+  not that it needs squashing.
+- mesh_flatten_bottom only when the lowest Z layer is already a near-planar
+  contact face (flat_base_ratio high); on a part lying on its side it cuts
+  a whole side off. Never flatten to manufacture dims — use mesh_scale.
 - Do not flatten or crop away required features.
 - Uniform scaling preserves proportion; only scale per-axis when the spec
   explicitly disagrees with the generated proportions.

@@ -149,6 +149,8 @@ class Registry:
                     supports_edit=getattr(cls, "supports_edit", False),
                     requires_image=getattr(cls, "requires_image", False),
                     max_count=getattr(cls, "max_count", None),
+                    default_steps=getattr(cls, "default_steps", None),
+                    canonical_up=getattr(cls, "canonical_up", None),
                 )
             )
         return out

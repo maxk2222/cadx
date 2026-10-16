@@ -227,6 +227,23 @@ async def run(
     return final
 
 
+def _downgrade_image_majors_on_silhouette(critique: Critique, ctx: AgentCtx) -> None:
+    """Mesh-mode shape calibration: when the measured silhouette IoU says the
+    outline matches the reference (>=0.8), majors sourced purely from image
+    judgement are usually generative-texture noise or a spec-named feature
+    misread as a defect (observed: knob skirt->dome step scored as a flaw) —
+    downgrade to minor. Spec/prompt/dfm-sourced majors stand."""
+    if getattr(ctx, "resolved_mode", "") not in ("mesh", "hybrid"):
+        return
+    sil = (getattr(ctx, "mesh_info", None) or {}).get("_silhouette_iou")
+    if not (isinstance(sil, int | float) and sil >= 0.8):
+        return
+    for d in critique.discrepancies:
+        if d.severity == "major" and d.source in ("image", "other"):
+            d.severity = "minor"
+            d.what += " (measured silhouette matches the reference)"
+
+
 def _finalize_critique(
     critique: Critique,
     ctx: AgentCtx,
@@ -249,6 +266,7 @@ def _finalize_critique(
     # (minor), not 'missing' (major).
     _verify_missing_verdicts(critique, spec, features or {})
     _verify_wrong_verdicts(critique, spec, features or {})
+    _downgrade_image_majors_on_silhouette(critique, ctx)
     # synthesize discrepancies from measured findings if still empty
     if not critique.passed and not critique.discrepancies:
         for i in dim_issues:

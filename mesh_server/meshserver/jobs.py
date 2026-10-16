@@ -65,6 +65,10 @@ class MeshJob:
         self.finished: float | None = None
         self.glb: bytes | None = None
         self.triangles: int | None = None
+        # batch jobs (params.batch): per-variant GLBs keyed by variant index —
+        # /v1/jobs/{id}/mesh?i=N serves them; job.glb mirrors index 0
+        self.glbs: dict[int, bytes] = {}
+        self.outputs: list[dict[str, Any]] = []
         self.model = params.model
         self.backend = ""
         self.seed = params.seed
@@ -96,6 +100,7 @@ class MeshJob:
             resolution=self.resolution,
             duration_s=round(max(dur, 0.0), 2),
             triangles=self.triangles,
+            outputs=[o["index"] for o in self.outputs if o.get("ok")],
             error=self.error,
         )
 
@@ -542,6 +547,15 @@ class JobManager:
             job.glb = glb_path.read_bytes()
             job.triangles = meta.get("triangles")
             job.resolution = meta.get("resolution") or job.resolution
+            outs = meta.get("outputs") or []
+            if len(outs) > 1 or job.params.batch:
+                job.outputs = outs
+                for o in outs:
+                    if not o.get("ok"):
+                        continue
+                    p = work / f"out_{o['index']}.glb"
+                    if p.exists():
+                        job.glbs[o["index"]] = p.read_bytes()
         else:
             job.images = [p.read_bytes() for p in sorted(work.glob("img_*.png"))]
         job.model = meta.get("model") or job.model
@@ -680,36 +694,77 @@ class JobManager:
             return job.cancelled
 
         job.message = f"generating with {cls.name}"
-        result = adapter.generate(
-            images,
-            GenOpts(
-                seed=job.params.seed,
-                steps=job.params.steps,
-                guidance=job.params.guidance,
-                resolution=job.params.resolution,
-                subject=job.params.subject,
-                image_roles=job.params.image_roles,
-                work_dir=self.cfg.job_dir / job.id,
-            ),
-            progress=progress,
-            cancelled=cancelled,
-        )
+        # batch variants share the loaded adapter — same model, different
+        # seed/params, one generate() call per variant (subprocess mode does
+        # the same inside gen_worker so the model loads once per job)
+        variants = job.params.batch or []
+        todo = variants if variants else [job.params]
+        n_v = len(todo)
+        for i, vp in enumerate(todo):
+            if job.cancelled:
+                break
 
-        if job.cancelled:
-            job.status = "cancelled"
+            def vprog(frac: float, msg: str, _i: int = i) -> None:
+                progress((_i + min(frac, 1.0)) / n_v, f"[{_i + 1}/{n_v}] {msg}")
+
+            def getv(k: str, _vp: Any = vp) -> Any:
+                return _vp.get(k) if isinstance(_vp, dict) else getattr(_vp, k, None)
+
+            try:
+                result = adapter.generate(
+                    images,
+                    GenOpts(
+                        seed=getv("seed") or 0,
+                        steps=getv("steps") or job.params.steps,
+                        guidance=(
+                            getv("guidance")
+                            if getv("guidance") is not None
+                            else job.params.guidance
+                        ),
+                        resolution=getv("resolution") or job.params.resolution,
+                        subject=getv("subject") or job.params.subject,
+                        image_roles=job.params.image_roles,
+                        work_dir=self.cfg.job_dir / job.id,
+                    ),
+                    progress=vprog,
+                    cancelled=cancelled,
+                )
+            except Exception as e:
+                if not variants:
+                    raise
+                job.outputs.append({"index": i, "ok": False, "error": str(e)[:300]})
+                continue
+            mesh = clean_mesh(result.mesh)
+            job.glbs[i] = export_glb(mesh)
+            job.outputs.append(
+                {
+                    "index": i,
+                    "ok": True,
+                    "seed": result.seed,
+                    "steps": result.steps,
+                    "resolution": result.resolution,
+                    "triangles": len(mesh.faces),
+                }
+            )
+            if i == 0 or job.glb is None:
+                job.glb = job.glbs[i]
+                job.triangles = len(mesh.faces)
+                job.seed = result.seed
+                job.steps = result.steps
+                job.guidance = result.guidance
+                job.resolution = result.resolution
+
+        if job.cancelled or not job.glbs:
+            job.status = "cancelled" if job.cancelled else job.status
+            if not job.glbs and not job.cancelled:
+                job.status = "failed"
+                first_err = next(
+                    (o["error"] for o in job.outputs if o.get("error")), "no output"
+                )
+                job.error = f"all {n_v} batch variants failed ({first_err})"
             job.finished = time.monotonic()
             return
 
-        job.message = "cleaning + exporting"
-        job.progress = 0.95
-        job.last_progress_at = time.monotonic()
-        mesh = clean_mesh(result.mesh)
-        job.glb = export_glb(mesh)
-        job.triangles = len(mesh.faces)
-        job.seed = result.seed
-        job.steps = result.steps
-        job.guidance = result.guidance
-        job.resolution = result.resolution
         job.status = "succeeded"
         job.progress = 1.0
         job.message = "done"

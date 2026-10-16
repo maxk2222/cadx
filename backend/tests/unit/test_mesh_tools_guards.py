@@ -160,3 +160,69 @@ async def test_section_through_bore_multi_entity(tmp_path):
     res = await wb.handle("mesh_section", {"axis": "y", "at_mm": 0.0})
     assert res["ok"], res.get("error")
     assert "section" in res["images"]
+
+
+async def test_shape_guard_refuses_volume_collapse(tmp_path):
+    """Q3A: heavy volume loss is refused — non-exempt ops at the 0.85 floor,
+    cut-class ops at the 0.5 floor (the observed knob wreck died this way)."""
+    wb = _wb(tmp_path)
+    await wb.handle("mesh_inspect", {})
+    # non-exempt: scale 0.8 keeps ~51% of the volume < 0.85 floor
+    res = await wb.handle("mesh_scale", {"factor": 0.8})
+    assert res["ok"] is False
+    assert "volume" in res["error"]
+    # cut-class exempt op still hits the 0.25 annihilation floor:
+    # clip to ~15% of the height
+    res = await wb.handle("mesh_clip_height", {"z_max": 20.0})
+    assert res["ok"] is False
+    assert "volume" in res["error"]
+    assert not wb.ops
+
+
+async def test_shape_guard_refuses_silhouette_wreck(tmp_path):
+    """Anisotropic squash that keeps the volume (x1.4 / y0.7 ≈ 0.98x) still
+    deforms the outline — the silhouette guard catches what the volume floor
+    cannot (observed: knob squashed to a capsule at constant dims)."""
+    wb = _wb(tmp_path)
+    await wb.handle("mesh_inspect", {})
+    res = await wb.handle("mesh_scale", {"x": 1.4, "y": 0.7, "z": 1.0})
+    assert res["ok"] is False
+    assert "silhouette" in res["error"]
+    assert not wb.ops
+
+
+async def test_shape_guard_allows_spec_bore(tmp_path):
+    """drill_holes is a spec cut — exempt from the silhouette guard even though
+    it removes material."""
+    wb = _wb(tmp_path)
+    await wb.handle("mesh_inspect", {})
+    res = await wb.handle("mesh_drill_holes", {"holes": [{"x": 0, "y": 0, "dia": 6}]})
+    assert res["ok"], res.get("error")
+
+
+async def test_seq_loop_guard_refuses_third_cycle(tmp_path):
+    """reset -> rebuild the same op-name sequence (the observed
+    reset->scale->flatten->smooth loop on the knob): a sequence prefix is
+    visited a second time with a warning, the third visit is refused — even
+    when the args differ, because the seq fingerprint tracks the *strategy*."""
+    wb = _wb(tmp_path)
+    seq_args = [
+        {"axis": "z", "deg": 5.0},
+        {"axis": "x", "deg": 3.0},
+        {"axis": "y", "deg": 7.0},
+    ]
+    for a in seq_args:  # first pass counts "rotate", "rotate|rotate", ...
+        assert (await wb.handle("mesh_rotate", a))["ok"]
+    assert (await wb.handle("mesh_reset", {}))["ok"]
+    res = await wb.handle("mesh_rotate", seq_args[0])  # "rotate" revisited → warn
+    assert res["ok"], res.get("error")
+    assert "sequence" in res.get("warning", "")
+    for a in seq_args[1:]:
+        assert (await wb.handle("mesh_rotate", a))["ok"]
+    assert (await wb.handle("mesh_reset", {}))["ok"]
+    # third pass with DIFFERENT args — the per-op guard does not fire, the
+    # name-sequence guard does
+    res = await wb.handle("mesh_rotate", {"axis": "z", "deg": 9.0})
+    assert res["ok"] is False
+    assert "cycling" in res["error"] or "sequence" in res["error"]
+    assert not wb.ops  # nothing was appended

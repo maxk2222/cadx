@@ -1135,15 +1135,30 @@ def _op_radial_profile(mesh: trimesh.Trimesh, p: OpRadialProfile) -> trimesh.Tri
     return out
 
 
-def _op_organic(mesh: trimesh.Trimesh, p: OrganicParams) -> trimesh.Trimesh:
+def _op_organic(
+    mesh: trimesh.Trimesh,
+    p: OrganicParams,
+    runtime: RuntimeSettings | None = None,
+) -> trimesh.Trimesh:
     """Pseudo-topology organic restyle — procedural density field extracted
     through the TopOpt pipeline. Aesthetic only, not structurally verified."""
     from cadx.cad.fem.organic import organic_transform
 
-    res = organic_transform(mesh, p)
+    res = organic_transform(mesh, p, runtime=runtime)
     out = smooth_preserve(res.mesh, 4, pin_floor=is_flat_bottom(mesh))
     if len(out.faces) > BOOLEAN_MAX_FACES:
         out = decimate(out, BOOLEAN_MAX_FACES)
+    # surface recognizability + friends for the GUI status bar — apply_ops
+    # merges this into the per-op report (mesh-preview surfaces it live)
+    out.metadata["op_metrics"] = {
+        "organic": {
+            "surface_coverage": res.report.get("surface_coverage"),
+            "volfrac_achieved": res.report.get("volfrac_achieved"),
+            "n_components": res.report.get("n_components"),
+            "shell_mm": res.report.get("shell_mm"),
+            "warnings": (res.report.get("warnings") or [])[:4],
+        }
+    }
     return out
 
 
@@ -1189,7 +1204,7 @@ OPS_REGISTRY: dict[str, tuple[type[BaseModel], _OpFn]] = {
 
 # bump when an op's semantics change so old version.params replays are
 # recognised as pre-change (stored alongside params, warn-not-fail)
-MESH_OPS_VERSION = 5  # organic pseudo-topology restyle op
+MESH_OPS_VERSION = 6  # organic: carved-skin surface_open replaces pinned shell
 
 
 def _is_single_solid(mesh: trimesh.Trimesh) -> bool:
@@ -1219,7 +1234,11 @@ def _salvage_solid(mesh: trimesh.Trimesh) -> trimesh.Trimesh | None:
 
 
 def apply_op(
-    mesh: trimesh.Trimesh, op: MeshOp | dict[str, Any], *, anchors: dict[str, Any] | None = None
+    mesh: trimesh.Trimesh,
+    op: MeshOp | dict[str, Any],
+    *,
+    anchors: dict[str, Any] | None = None,
+    runtime: RuntimeSettings | None = None,
 ) -> trimesh.Trimesh:
     """Validate + apply one op. Raises ValueError on bad args or op failure."""
     mo = op if isinstance(op, MeshOp) else MeshOp.model_validate(op)
@@ -1235,8 +1254,10 @@ def apply_op(
         if not holes:
             raise ValueError("drill_holes: from_anchors set but no anchors available")
         params = params.model_copy(update={"holes": holes})
-    if isinstance(params, OrganicParams) and params.auto_keep and not params.anchors:
-        params = params.model_copy(update={"anchors": list((anchors or {}).get("holes") or [])})
+    if isinstance(params, OrganicParams):
+        if params.auto_keep and not params.anchors:
+            params = params.model_copy(update={"anchors": list((anchors or {}).get("holes") or [])})
+        return _op_organic(mesh, params, runtime=runtime)
     return fn(mesh, params)
 
 
@@ -1245,6 +1266,7 @@ def apply_ops(
     ops: Sequence[MeshOp | dict[str, Any]],
     *,
     anchors: dict[str, Any] | None = None,
+    runtime: RuntimeSettings | None = None,
 ) -> tuple[trimesh.Trimesh, list[dict[str, Any]]]:
     """Apply an op list in order; returns (mesh, per-op report).
 
@@ -1261,7 +1283,7 @@ def apply_ops(
             raise MeshOpError(i, str(name), e, report) from e
         faces_in = len(mesh.faces)
         try:
-            out = apply_op(mesh, mo, anchors=anchors)
+            out = apply_op(mesh, mo, anchors=anchors, runtime=runtime)
         except Exception as e:
             raise MeshOpError(i, mo.op, e, report) from e
         reverted = False
@@ -1276,17 +1298,23 @@ def apply_ops(
             else:
                 out, reverted = mesh, True
         mesh = rest_on_xy_center(out)
-        report.append(
-            {
-                "op": mo.op,
-                "args": mo.args,
-                "faces_in": faces_in,
-                "faces_out": len(mesh.faces),
-                "watertight": bool(mesh.is_watertight),
-                "salvaged": salvaged,
-                "reverted": reverted,
-            }
-        )
+        entry = {
+            "op": mo.op,
+            "args": mo.args,
+            "faces_in": faces_in,
+            "faces_out": len(mesh.faces),
+            "watertight": bool(mesh.is_watertight),
+            "salvaged": salvaged,
+            "reverted": reverted,
+        }
+        # ops may stash UI-facing metrics on the result mesh (e.g. organic's
+        # surface-coverage) — lift them into the report so mesh-preview and
+        # the executor pipeline both surface them
+        md = getattr(mesh, "metadata", None)
+        extra = md.pop("op_metrics", None) if isinstance(md, dict) else None
+        if isinstance(extra, dict):
+            entry.update(extra)
+        report.append(entry)
     return mesh, report
 
 

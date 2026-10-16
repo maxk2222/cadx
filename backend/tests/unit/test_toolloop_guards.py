@@ -193,6 +193,47 @@ def test_trim_tool_results_elides_old_reads():
     assert msgs[0]["content"] == "sys" and msgs[1]["content"] == "go"
 
 
+def test_trim_tool_results_drops_old_images():
+    """Preview/section/overlay images are the heaviest history items — only
+    the last 2 image-bearing messages survive; older ones become text stubs."""
+    img = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}}
+    msgs = [{"role": "system", "content": "sys"}]
+    for _ in range(5):
+        msgs.append({"role": "user", "content": [img, {"type": "text", "text": "preview"}]})
+    _trim_tool_results(msgs)
+    imgs = [
+        m
+        for m in msgs
+        if isinstance(m.get("content"), list)
+        and any(p.get("type") == "image_url" for p in m["content"])
+    ]
+    stubs = [
+        m
+        for m in msgs
+        if isinstance(m.get("content"), list)
+        and all(p.get("type") == "text" for p in m["content"])
+        and "preview image removed" in str(m["content"])
+    ]
+    assert len(imgs) == 2
+    assert len(stubs) == 3
+
+
+def test_only_dim_issues_gate():
+    """Repair gate: pure dim failures skip the LLM refine session; any other
+    major issue (critique/feature/solids) keeps it."""
+    from cadx.agent.orchestrator import _only_dim_issues
+
+    dims = ["width_y: expected 34.0, measured 29.8"]
+    only = [{"source": "dims", "severity": "major", "what": "dimension mismatch"}]
+    assert _only_dim_issues(dims, only)
+    with_critique = [*only, {"source": "critique", "severity": "major", "what": "x"}]
+    assert not _only_dim_issues(dims, with_critique)
+    minor_critique = [*only, {"source": "critique", "severity": "minor", "what": "x"}]
+    assert _only_dim_issues(dims, minor_critique)
+    # no dim issues at all → gate does not apply (0 refine would skip repair)
+    assert not _only_dim_issues([], only)
+
+
 async def test_trim_runs_during_session():
     """After many read_lines turns the older results are stubbed before the
     next LLM call — the model never sees the full history grow unbounded."""

@@ -100,6 +100,31 @@ _OP_TOOLS: dict[str, str] = {
     "mesh_radial_profile": "radial_profile",
 }
 
+# ops exempt from the silhouette-drift guard (still get the coarse volume
+# floor): rigid reorientation keeps the shape — blocking set_up on a lying
+# part would prevent exactly the fix the guard protects; cut-class ops
+# (slice/flatten/clip/crop), spec/measure-driven reshapes and structural
+# cleanups (shell hollows by design, keep/drop fix fractured bodies, remesh
+# is lossy on sharp geometry by construction) legitimately move the outline
+_SHAPE_GUARD_EXEMPT = {
+    "set_up",
+    "rotate",
+    "mirror",
+    "drill_holes",
+    "boolean",
+    "clip_to_outline",
+    "radial_profile",
+    "slice",
+    "flatten_bottom",
+    "clip_height",
+    "crop",
+    "symmetrize",
+    "shell",
+    "keep_largest",
+    "drop_small",
+    "remesh",
+}
+
 
 class MeshWorkbench:
     """Session state for kind="mesh" tool sessions."""
@@ -141,6 +166,12 @@ class MeshWorkbench:
         # "apply cut -> doubt it -> undo -> re-apply" — the third identical
         # application is refused so the session budget isn't burned
         self._op_apply_count: dict[str, int] = {}
+        # sequence-level loop guard: fingerprints (op *names* — args differ on
+        # purpose when the model retries a strategy) of complete ops lists.
+        # Undo/reset cycles that rebuild the same strategy (observed:
+        # reset -> scale -> flatten -> smooth x4) are warned then refused —
+        # the per-op guard alone only catches literally identical args
+        self._seq_count: dict[str, int] = {}
         # fingerprints of ops-states that deterministic evidence confirmed —
         # undoing a verified state is warned once, then refused
         self._verified_fps: set[str] = set()
@@ -171,6 +202,11 @@ class MeshWorkbench:
     def _ops_fp(ops: list[MeshOp]) -> str:
         """Fingerprint of an ops list — identifies identical mesh states."""
         return json.dumps([o.model_dump() for o in ops], sort_keys=True, default=str)
+
+    @staticmethod
+    def _names_fp(ops: list[MeshOp]) -> str:
+        """Op-name sequence fingerprint — same strategy regardless of args."""
+        return "|".join(o.op for o in ops)
 
     def _session_dir(self) -> Path:
         it_dir = storage.iteration_dir(self.ctx.project_id, self.ctx.version_id, self.iteration)
@@ -210,6 +246,8 @@ class MeshWorkbench:
             return {"ok": False, "error": f"rebuild after undo failed: {e}"}
         self._features = None
         self._added_vol = _union_volume(self.ops)
+        fp = self._names_fp(self.ops)
+        self._seq_count[fp] = self._seq_count.get(fp, 0) + 1
         return {"ok": True, **self._stats()}
 
     def _detect_features(self) -> Any:
@@ -630,39 +668,12 @@ class MeshWorkbench:
                 "error": f"op budget reached ({self.max_ops}) — call done or mesh_undo first",
             }
         op_args = dict(args)
-        if tool == "mesh_boolean_add" and self.work is not None:
-            prim_vol = _primitive_volume(op_args)
-            # compare against the baseline volume, not the current body: every
-            # accepted add inflates the body and would progressively weaken the
-            # cumulative cap below
-            base = self.baseline if self.baseline is not None else self.work
-            body_vol = float(abs(base.volume)) if base.is_volume else 0.0
-            if body_vol and prim_vol is not None:
-                # single-add cap: one primitive must not replace the body
-                if prim_vol > 0.5 * body_vol:
-                    return {
-                        "ok": False,
-                        "error": (
-                            "refused: the added primitive is larger than half the body — "
-                            "it would replace the organic shape. Use mesh_scale / "
-                            "mesh_clip_height to adjust size; boolean_add is for small "
-                            "flanges, bases and bosses only."
-                        ),
-                    }
-                # cumulative cap: several sub-50% adds sculpt the part out of
-                # primitives (observed: 4 cylinder blobs ≈ body volume turning
-                # a grip into a tube) — unioning to reach target dims is the
-                # documented anti-pattern
-                if self._added_vol + prim_vol > 0.5 * body_vol:
-                    return {
-                        "ok": False,
-                        "error": (
-                            "refused: cumulative boolean_add volume would exceed half "
-                            "the body — unioning primitives to force proportions is "
-                            "not allowed. Use mesh_scale / per-axis scale to reach "
-                            "target dimensions instead."
-                        ),
-                    }
+        if (
+            tool == "mesh_boolean_add"
+            and self.work is not None
+            and (refusal := self._boolean_add_guard(op_args))
+        ):
+            return refusal
         if tool == "mesh_boolean_add":
             op_args["op"] = "union"
         elif tool == "mesh_boolean_cut":
@@ -685,6 +696,19 @@ class MeshWorkbench:
                     "the arguments, or call done."
                 ),
             }
+        # sequence-level loop guard: an op-name sequence reached a third time
+        # via undo/reset cycles means the session is going in circles
+        seq_fp = self._names_fp([*self.ops, mo])
+        n_seq = self._seq_count.get(seq_fp, 0)
+        if n_seq >= 2:
+            return {
+                "ok": False,
+                "error": (
+                    "refused: this exact op sequence was already reached "
+                    "twice — the session is cycling. Call done with the "
+                    "current state, or change strategy entirely."
+                ),
+            }
         assert self.work is not None
         try:
             applied = await asyncio.to_thread(
@@ -703,13 +727,117 @@ class MeshWorkbench:
         )
         if len(applied.faces) > cap:
             applied = await asyncio.to_thread(decimate, applied, cap)
+        # deterministic shape guard — see _shape_guard
+        if refusal := await self._shape_guard(op_name, applied):
+            return refusal
         self.work = applied
         self.ops.append(mo)
+        self._seq_count[seq_fp] = n_seq + 1
+        res = {"ok": True, "applied": mo.model_dump(), **self._stats()}
+        if n_seq == 1:
+            res["warning"] = (
+                "this op sequence was already reached once — a second "
+                "undo/redo cycle on it will be refused"
+            )
         if op_args.get("op") == "union":
             self._added_vol += _primitive_volume(op_args) or 0.0
         self._op_apply_count[op_fp] = self._op_apply_count.get(op_fp, 0) + 1
         self._features = None
-        return {"ok": True, "applied": mo.model_dump(), **self._stats()}
+        return res
+
+    def _boolean_add_guard(self, op_args: dict[str, Any]) -> dict[str, Any] | None:
+        """Refuse boolean-add primitives that would sculpt the part out of
+        blobs instead of refining the generated shape."""
+        assert self.work is not None
+        prim_vol = _primitive_volume(op_args)
+        # compare against the baseline volume, not the current body: every
+        # accepted add inflates the body and would progressively weaken the
+        # cumulative cap below
+        base = self.baseline if self.baseline is not None else self.work
+        body_vol = float(abs(base.volume)) if base.is_volume else 0.0
+        if not (body_vol and prim_vol is not None):
+            return None
+        # single-add cap: one primitive must not replace the body
+        if prim_vol > 0.5 * body_vol:
+            return {
+                "ok": False,
+                "error": (
+                    "refused: the added primitive is larger than half the body — "
+                    "it would replace the organic shape. Use mesh_scale / "
+                    "mesh_clip_height to adjust size; boolean_add is for small "
+                    "flanges, bases and bosses only."
+                ),
+            }
+        # cumulative cap: several sub-50% adds sculpt the part out of
+        # primitives (observed: 4 cylinder blobs ≈ body volume turning
+        # a grip into a tube) — unioning to reach target dims is the
+        # documented anti-pattern
+        if self._added_vol + prim_vol > 0.5 * body_vol:
+            return {
+                "ok": False,
+                "error": (
+                    "refused: cumulative boolean_add volume would exceed half "
+                    "the body — unioning primitives to force proportions is "
+                    "not allowed. Use mesh_scale / per-axis scale to reach "
+                    "target dimensions instead."
+                ),
+            }
+        return None
+
+    async def _shape_guard(self, op_name: str, applied: trimesh.Trimesh) -> dict[str, Any] | None:
+        """Refuse ops that destroy the part rather than refine it.
+
+        Per-op drift is measured against the working state, not the baseline —
+        legitimate prior ops (clip, shell) already changed the volume, so a
+        baseline comparison misattributes cumulative drift to this op. An op
+        that collapses the volume or drags the silhouette in one step is
+        deterministic destruction evidence (observed: flatten_bottom on a
+        lying knob, non-uniform squash to a capsule). Spec cuts and rigid
+        reorientation are exempt from the silhouette check but still get a
+        coarse volume floor. Returns the refusal result or None.
+        """
+        guard_iou = float(
+            getattr(self.ctx.runtime_settings, "agent_mesh_shape_guard_iou", 0.8) or 0.0
+        )
+        if guard_iou <= 0 or self.work is None:
+            return None
+        try:
+            bv = abs(float(self.work.volume)) if self.work.is_volume else 0.0
+            av = abs(float(applied.volume)) if applied.is_volume else 0.0
+        except Exception:
+            bv = av = 0.0
+        exempt = op_name in _SHAPE_GUARD_EXEMPT
+        # exempt ops legitimately remove lots of material (shell on a thin
+        # part drops >50%) — the floor only catches near-annihilation
+        vol_floor = 0.25 if exempt else 0.85
+        if bv > 0 and av > 0 and av < vol_floor * bv:
+            return {
+                "ok": False,
+                "error": (
+                    f"refused: the op removes {(1 - av / bv) * 100:.0f}% of "
+                    "the part's volume — that reshapes the part, not "
+                    "refines it. Undo to revert further if the shape is "
+                    "wrong; use spec-driven cuts for material removal."
+                ),
+            }
+        if exempt:
+            return None
+        from cadx.cad.silhouette import mesh_silhouette_iou
+
+        drift = await asyncio.to_thread(mesh_silhouette_iou, self.work, applied)
+        if drift < guard_iou:
+            return {
+                "ok": False,
+                "error": (
+                    f"refused: silhouette drifts to IoU {drift:.2f} vs "
+                    f"the baseline (guard {guard_iou:.2f}) — the op "
+                    "deforms the overall shape. If the part is lying "
+                    "on its side fix orientation with mesh_set_up "
+                    "FIRST, and prefer small local transforms over "
+                    "flatten/squash."
+                ),
+            }
+        return None
 
     async def _preview(self) -> dict[str, Any]:
         if self.preview_left <= 0:

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import contextlib
 import os
-from typing import Any
+from typing import Any, ClassVar
 
 import trimesh
 from PIL import Image
@@ -29,7 +29,10 @@ from meshserver.adapters.base import (
     missing,
 )
 from meshserver.adapters.hunyuan3d21_mlx import _to_trimesh
+from meshserver.logging import get_logger
 from meshserver.torch_util import is_rocm, mps_ok, torch_backend
+
+log = get_logger(__name__)
 
 _LICENSE = (
     "Tencent Hunyuan Community License — restricted in EU/UK/KR; "
@@ -136,6 +139,9 @@ class _Hy3DTorchBase(MeshAdapter):
     device = _Hy3DDevice()
     backend = "torch"
     license_note = _LICENSE
+    canonical_up = "y"  # image-space convention: raw output is Y-up
+    default_steps = 30
+    use_flashvdm: ClassVar[bool] = False
     _variant_key: str = ""
 
     @classmethod
@@ -187,6 +193,18 @@ class _Hy3DTorchBase(MeshAdapter):
         # MPS/ROCm: keep float16 where supported, fall back otherwise
         with contextlib.suppress(Exception):
             self._pipe.to(device)
+        # FlashVDM accelerates the volume-decode stage (the dominant cost
+        # after diffusion on turbo runs — 2000+ chunks at ~1-3k chunks/s);
+        # upstream example pairs it with 5 steps + num_chunks=20000. Some
+        # kernels may be CUDA-only — failure leaves the stock decoder in
+        # place, so it is strictly best-effort.
+        self._flashvdm = False
+        if self.use_flashvdm:
+            try:
+                self._pipe.enable_flashvdm(mc_algo="mc")
+                self._flashvdm = True
+            except Exception as e:
+                log.warning("hunyuan.flashvdm_unavailable", error=str(e)[:200])
         self._device_name = device
         self._cleaner = [FloaterRemover(), DegenerateFaceRemover(), FaceReducer()]
         self._torch = torch
@@ -218,11 +236,13 @@ class _Hy3DTorchBase(MeshAdapter):
         default_res = 256 if self._device_name == "mps" else 384
         kwargs: dict[str, Any] = {
             "image": self._images_arg(images, opts),
-            "num_inference_steps": opts.steps or 30,
+            "num_inference_steps": opts.steps or self.default_steps or 30,
             "octree_resolution": opts.resolution or default_res,
             "generator": gen,
             "output_type": "trimesh",
         }
+        if getattr(self, "_flashvdm", False):
+            kwargs["num_chunks"] = 20000
         if opts.guidance is not None:
             kwargs["guidance_scale"] = opts.guidance
         out = self._pipe(**kwargs)
@@ -257,6 +277,9 @@ class Hunyuan3D2MiniTurboAdapter(_Hy3DTorchBase):
     id = "hunyuan3d-2mini-turbo"
     name = "Hunyuan3D-2 mini turbo Shape (torch)"
     _variant_key = "hunyuan3d-2mini-turbo"
+    # step-distilled: upstream runs it at 5 steps + FlashVDM
+    default_steps = 5
+    use_flashvdm = True
 
 
 class Hunyuan3D2MvAdapter(_Hy3DTorchBase):
@@ -290,3 +313,6 @@ class Hunyuan3D2MvTurboAdapter(Hunyuan3D2MvAdapter):
     id = "hunyuan3d-2mv-turbo"
     name = "Hunyuan3D-2mv turbo multi-view Shape (torch)"
     _variant_key = "hunyuan3d-2mv-turbo"
+    # step-distilled: upstream runs it at 5 steps + FlashVDM
+    default_steps = 5
+    use_flashvdm = True

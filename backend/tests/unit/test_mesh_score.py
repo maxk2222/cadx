@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from cadx.agent.mesh_score import score_mesh_candidate
+from cadx.agent.mesh_score import score_mesh_candidate, support_score
 
 
 class _Dim:
@@ -59,3 +59,38 @@ def test_banana_candidate_killed_by_height():
     assert score_mesh_candidate(res, _Spec(), RECT) < 0.3
     res = _res([119.0, 113.0, 111.0])
     assert score_mesh_candidate(res, _Spec(), None) < 0.25
+
+
+def _knob(lying: bool):
+    """Skirt + dome knob (~40 dia, 45 tall); `lying` tips it onto its side."""
+    import numpy as np
+    import trimesh
+
+    skirt = trimesh.creation.cylinder(radius=18.0, height=8.0, sections=48)
+    skirt.apply_translation([0, 0, 4.0])
+    dome = trimesh.creation.icosphere(subdivisions=3, radius=20.0)
+    dome.apply_scale([1, 1, 0.6])
+    dome.apply_translation([0, 0, 12.0])  # spans z 0..24, base flush with skirt
+    m = trimesh.util.concatenate([skirt, dome])
+    if lying:
+        m.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0]))
+    m.apply_translation([0, 0, -float(m.bounds[0][2])])
+    return m
+
+
+def test_support_score_standing_beats_lying():
+    """The orientation signal dims cannot give: resting on the skirt base
+    covers most of the footprint; lying on the side contacts on a strip."""
+    assert support_score(_knob(lying=False)) > 0.6
+    assert support_score(_knob(lying=True)) < 0.4
+
+
+def test_orientation_decisive_margin():
+    from cadx.agent.orchestrator import _orientation_decisive
+
+    # the knob regression: equal dim violations, Δscore 0.01 — NOT decisive
+    assert _orientation_decisive((0, -0.98), (0, -0.99)) is False
+    # clear margin is decisive
+    assert _orientation_decisive((0, -0.80), (0, -0.99)) is True
+    # fewer dim violations is decisive regardless of score
+    assert _orientation_decisive((1, -0.50), (0, -0.40)) is True

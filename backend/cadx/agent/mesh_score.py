@@ -25,6 +25,16 @@ def _height_score(z: float, spec: Any) -> float:
     return max(0.0, 1.0 - min(dev, 1.0))
 
 
+def _blend_silhouette(base: float, sil_iou: float | None) -> float:
+    """Blend the reference-image silhouette IoU into a base score.
+
+    25% weight — strong enough to separate two candidates with identical
+    bounding boxes, weak enough not to override dims/footprint evidence."""
+    if sil_iou is None or sil_iou <= 0:
+        return base
+    return round(0.75 * base + 0.25 * sil_iou, 3)
+
+
 def score_mesh_candidate(
     exec_result: dict[str, Any],
     spec: Any,
@@ -33,10 +43,12 @@ def score_mesh_candidate(
     """Score a processed-mesh exec_result in [0, 1].
 
     aspect ratio + footprint IoU (when a measured outline exists) + height
-    agreement + detected tunnel count vs declared hole features.
+    agreement + detected tunnel count vs declared hole features +
+    silhouette IoU vs the reference image (when the executor measured it).
     """
     analysis = exec_result.get("analysis") or {}
     bbox = analysis.get("bbox_size") or []
+    sil_iou = (exec_result.get("mesh") or {}).get("silhouette_iou")
 
     aspect = 0.5
     L, W = float(spec.length_x.value or 0), float(spec.width_y.value or 0)
@@ -70,13 +82,14 @@ def score_mesh_candidate(
     if has_outline:
         if spec_holes:
             holes = min(len(tunnels) / spec_holes, 1.0)
-            return round(0.3 * aspect + 0.3 * iou + 0.2 * height + 0.2 * holes, 3)
+            base = round(0.3 * aspect + 0.3 * iou + 0.2 * height + 0.2 * holes, 3)
+            return _blend_silhouette(base, sil_iou)
         # no declared holes — tunnels would be artefacts; weight the rest
-        return round(0.35 * aspect + 0.4 * iou + 0.25 * height, 3)
+        return _blend_silhouette(round(0.35 * aspect + 0.4 * iou + 0.25 * height, 3), sil_iou)
     if spec_holes:
         holes = min(len(tunnels) / spec_holes, 1.0)
-        return round(0.5 * aspect + 0.3 * height + 0.2 * holes, 3)
-    return round(0.6 * aspect + 0.4 * height, 3)
+        return _blend_silhouette(round(0.5 * aspect + 0.3 * height + 0.2 * holes, 3), sil_iou)
+    return _blend_silhouette(round(0.6 * aspect + 0.4 * height, 3), sil_iou)
 
 
 # scoring only needs macroscopic geometry (aspect, outline, tunnels) — a
@@ -85,11 +98,46 @@ def score_mesh_candidate(
 _SCORE_MAX_FACES = 25_000
 
 
-def score_raw_mesh(mesh: Any, spec: Any, plan_outline: list[list[float]] | None = None) -> float:
+def support_score(mesh: Any) -> float:
+    """How stably the part rests on the build plate, in [0, 1].
+
+    Fraction of the XY bbox footprint covered by the convex hull of the
+    lowest slab of vertices (~5 % of the Z extent). A part standing on a
+    proper base (knob on its skirt, scale lying flat) covers most of its
+    footprint; a part lying on its side contacts on a thin strip.
+
+    Used as an orientation-ranking term: stated dims and aspect cannot
+    distinguish a near-cubic part standing up from the same part lying down.
+    """
+    ext = [float(v) for v in mesh.extents]
+    if min(ext) <= 0:
+        return 0.0
+    z0 = float(mesh.bounds[0][2])
+    slab_h = max(0.05 * ext[2], 0.5)
+    verts = mesh.vertices[mesh.vertices[:, 2] <= z0 + slab_h]
+    if len(verts) < 3:
+        return 0.0
+    try:
+        from shapely.geometry import MultiPoint
+
+        hull_area = float(MultiPoint(verts[:, :2]).convex_hull.area)
+    except Exception:
+        return 0.0
+    return min(1.0, hull_area / (ext[0] * ext[1]))
+
+
+def score_raw_mesh(
+    mesh: Any,
+    spec: Any,
+    plan_outline: list[list[float]] | None = None,
+    ref_mask: Any = None,
+) -> float:
     """Score an oriented+scaled trimesh directly (candidate pre-selection).
 
     Same terms as score_mesh_candidate but computed from the mesh object —
-    footprint via detect_mesh_features, holes as detected tunnels."""
+    footprint via detect_mesh_features, holes as detected tunnels. When a
+    reference-image mask is given the side-silhouette IoU blends in — this is
+    the only shape signal available when no plan-view measurement exists."""
     import trimesh
 
     assert isinstance(mesh, trimesh.Trimesh)
@@ -137,13 +185,23 @@ def score_raw_mesh(mesh: Any, spec: Any, plan_outline: list[list[float]] | None 
     )
     tunnels = [h for h in feats.holes if h.kind == "tunnel"]
 
+    sil_iou: float | None = None
+    if ref_mask is not None:
+        try:
+            from cadx.cad.silhouette import silhouette_iou
+
+            sil_iou = silhouette_iou(mesh, ref_mask)[0] or None
+        except Exception:
+            sil_iou = None
+
     height = _height_score(ext[2], spec)
     if has_outline:
         if spec_holes:
             holes = min(len(tunnels) / spec_holes, 1.0)
-            return round(0.3 * aspect + 0.3 * iou + 0.2 * height + 0.2 * holes, 3)
-        return round(0.35 * aspect + 0.4 * iou + 0.25 * height, 3)
+            base = round(0.3 * aspect + 0.3 * iou + 0.2 * height + 0.2 * holes, 3)
+            return _blend_silhouette(base, sil_iou)
+        return _blend_silhouette(round(0.35 * aspect + 0.4 * iou + 0.25 * height, 3), sil_iou)
     if spec_holes:
         holes = min(len(tunnels) / spec_holes, 1.0)
-        return round(0.5 * aspect + 0.3 * height + 0.2 * holes, 3)
-    return round(0.6 * aspect + 0.4 * height, 3)
+        return _blend_silhouette(round(0.5 * aspect + 0.3 * height + 0.2 * holes, 3), sil_iou)
+    return _blend_silhouette(round(0.6 * aspect + 0.4 * height, 3), sil_iou)
