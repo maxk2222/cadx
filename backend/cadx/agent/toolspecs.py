@@ -848,7 +848,9 @@ MESH_TRANSFORM_TOOLS = [
     _fn(
         "mesh_shell",
         "Hollow the part: erode an inner solid by `thickness_mm` and subtract "
-        "it — print-optimised hollow shell. `opening` slices one face open.",
+        "it. ONLY when the spec explicitly asks for a hollow part or wall "
+        "thickness — NEVER as a substitute for drilling a bore (hollowing a "
+        "solid part destroys it). `opening` slices one face open.",
         {
             "thickness_mm": {"type": "number", "description": "wall thickness mm"},
             "opening": {"type": "string", "enum": ["none", "bottom", "top"]},

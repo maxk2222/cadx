@@ -66,7 +66,9 @@ Common problems and their fixes:
 - Needs a through-hole / pocket / slot → mesh_boolean_cut with a cylinder
   or box; prefer mesh_drill_holes when a measured anchor exists.
 - Print-optimised hollow part → mesh_shell(thickness, opening) erodes an
-  inner solid — much lighter than scaling tricks.
+  inner solid — ONLY when the spec explicitly asks for a hollow body or a
+  wall thickness. Never use it to fake a bore or lighten a solid part —
+  on a dense part it removes most of the volume and fails the critique.
 - Rough/faceted surface → mesh_smooth (taubin preserves volume better).
 - Shape needs text-describable detail changes (different grip texture,
   added/removed features, styling) → mesh_regen_edit edits the conditioning
