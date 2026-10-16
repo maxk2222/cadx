@@ -305,7 +305,12 @@ def _ops_preview(
             if payload.get("ops_only"):
                 mesh = clean(mesh)
             else:
-                mesh, _ = baseline_mesh(mesh, post, spec)
+                mesh, _ = baseline_mesh(
+                    mesh,
+                    post,
+                    spec,
+                    cad_cap_faces=_runtime(payload).mesh_decimate_faces,
+                )
             if cache is not None:
                 with contextlib.suppress(Exception):
                     mesh.export(str(cache))

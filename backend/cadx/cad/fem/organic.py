@@ -46,6 +46,7 @@ class OrganicResult:
     density: np.ndarray  # flat float32 field (cell order)
     mask: np.ndarray  # final solid mask (nx,ny,nz)
     passive: np.ndarray  # flat bool — pinned-solid cells
+    void: np.ndarray  # flat bool — carved cells (persisted for resample)
     domain: VoxelDomain
 
 
@@ -179,9 +180,10 @@ def organic_passive_mask(
 ) -> tuple[np.ndarray, list[str], list[Any]]:
     """Flat bool mask of cells forced solid + warnings + resolved keep list.
 
-    Unions manual keep regions, auto-keep rings around detected anchors,
-    the floor band (cell centers below min Z + floor_mm) and the outer
-    shell skin (EDT <= shell_mm)."""
+    Unions manual keep regions, auto-keep rings around detected anchors and
+    the floor band (cell centers below min Z + floor_mm). The outer skin is
+    NOT pinned here — `organic_density` carves it according to
+    `p.surface_open`."""
     warnings: list[str] = []
     keep_list = list(p.keep_regions)
     if p.auto_keep and anchors:
@@ -197,12 +199,33 @@ def organic_passive_mask(
     if p.floor_mm > 0:
         floor = (centers[:, 2] < float(domain.origin[2]) + p.floor_mm).reshape(domain.dims)
         passive |= floor.ravel()
-    if p.shell_mm > 0:
-        skin = ndimage.distance_transform_edt(domain.solid) * domain.pitch <= p.shell_mm
-        passive |= skin.ravel()
 
     passive &= domain.solid.ravel()
     return passive, warnings, keep_list
+
+
+def _resolved_shell_mm(domain: VoxelDomain, p: OrganicParams) -> float:
+    """Skin depth — explicit `shell_mm` or ~20% of the feature size, clamped
+    to [1.6 pitch, 10 mm] so at least one skin layer always exists."""
+    if p.shell_mm > 0:
+        return float(p.shell_mm)
+    return float(min(max(0.2 * p.period_mm, 1.6 * domain.pitch), 10.0))
+
+
+def _skin_mask(domain: VoxelDomain, p: OrganicParams) -> np.ndarray:
+    """(nx,ny,nz) bool — solid cells whose centre sits within the resolved
+    skin depth of the part surface.
+
+    The voxel grid is exact-bounds, so a box filling the whole domain has no
+    background cells and a plain EDT degenerates — pad one void layer so the
+    grid boundary counts as surface. depth = (EDT - 0.5) * pitch measures
+    from the cell centre to the nearest void/exterior face."""
+    shell_mm = _resolved_shell_mm(domain, p)
+    if shell_mm <= 0:
+        return np.zeros(domain.dims, dtype=bool)
+    padded = np.pad(domain.solid, 1, constant_values=False)
+    depth = (ndimage.distance_transform_edt(padded)[1:-1, 1:-1, 1:-1] - 0.5) * domain.pitch
+    return np.asarray(domain.solid & (depth <= shell_mm))
 
 
 def organic_density(
@@ -212,7 +235,8 @@ def organic_density(
 
     Returns (rho flat float32, passive flat bool, warnings, meta). rho is
     normalized to [0,1] on solid cells and 0 elsewhere; void regions are
-    pinned empty."""
+    pinned empty AND removed from the passive set (a painted carve beats
+    skin/floor/auto pins). meta carries `threshold` + `shell_mm`."""
     rng = np.random.default_rng(int(p.seed) & 0x7FFFFFFF)
     if p.style == "gyroid":
         rho = _field_gyroid(domain, p)
@@ -231,14 +255,35 @@ def organic_density(
     rho = _normalize(rho, domain.solid)
 
     passive, warnings, _ = organic_passive_mask(domain, p, anchors)
+    rho_flat = rho.ravel()
+
+    # --- carved skin -----------------------------------------------------
+    # Pin the top (1 - surface_open) fraction of the skin: windows open where
+    # the field is weakest while the silhouette stays readable. surface_open
+    # =0 keeps the whole skin (solid shell), =1 no protection (legacy look).
+    skin3 = _skin_mask(domain, p) if p.surface_open < 1.0 else None
+    if skin3 is not None and skin3.any():
+        skin_free = np.flatnonzero(skin3.ravel() & ~passive)
+        if len(skin_free):
+            t_skin = float(np.quantile(rho_flat[skin_free], p.surface_open))
+            passive[skin_free[rho_flat[skin_free] >= t_skin]] = True
+        else:
+            warnings.append("skin is fully occupied by keep regions — surface_open has no effect")
+
+    # --- void regions ----------------------------------------------------
+    # A painted carve is a deliberate "erase here" — it punches through
+    # pinned skin, floor band and auto-keep rings alike. Void cells are
+    # excluded from the free pool too: they can never be selected and would
+    # otherwise inflate n_free, skewing the threshold low.
+    void = np.zeros(domain.cell_count, dtype=bool)
     if p.void_regions:
-        void = keep_element_mask(domain, list(p.void_regions), anchors).reshape(domain.dims)
-        rho[void] = 0.0
-        rho = np.asarray(rho, dtype=np.float32)
+        void = keep_element_mask(domain, list(p.void_regions), anchors)
+        passive &= ~void
+        rho.flat[void] = 0.0
 
     # threshold: explicit iso, else the quantile that realizes volfrac over
-    # the free (non-passive) design space
-    free = domain.solid.ravel() & ~passive
+    # the free (non-passive, non-void) design space
+    free = domain.solid.ravel() & ~passive & ~void
     if p.density_threshold is not None:
         threshold = float(p.density_threshold)
     else:
@@ -251,7 +296,12 @@ def organic_density(
             q = float(np.clip(1.0 - need / n_free, 0.02, 0.98))
             threshold = float(np.quantile(rho.ravel()[free], q)) if n_free else 0.5
             threshold = float(np.clip(threshold, 1e-3, 0.999))
-    meta = {"threshold": threshold}
+    meta = {
+        "threshold": threshold,
+        "shell_mm": _resolved_shell_mm(domain, p),
+        # extraction must re-carve after min-member dilation / regularization
+        "void_cells": void,
+    }
     return rho.ravel(), passive, warnings, meta
 
 
@@ -280,6 +330,19 @@ def organic_transform(
         p.voxel_mm or voxel_mm or s.fem_voxel_mm,
         p.max_elements or max_elements or s.fem_max_elements,
     )
+    # thin walls/fins under ~1 pitch never contain a cell centre and would
+    # vanish from the design domain entirely — union near-surface cells back
+    # in (organic scope only; the shared voxelizer stays conservative)
+    try:
+        centers = domain.element_centers()
+        dist = np.zeros(len(centers), dtype=float)
+        for c0 in range(0, len(centers), 512):
+            dist[c0 : c0 + 512] = np.asarray(mesh.nearest.on_surface(centers[c0 : c0 + 512])[1])
+        near = (dist <= domain.pitch * 0.55).reshape(domain.dims)
+        if near.any():
+            domain.solid |= near
+    except Exception:
+        log.warning("organic.thin_rescue_failed", exc_info=True)
     all_anchors = anchors if anchors is not None else p.anchors
 
     warnings: list[str] = ["pseudo-organic restyling — visual structure, NOT structurally verified"]
@@ -294,16 +357,30 @@ def organic_transform(
     attempts = [(p.style, p.volfrac), (p.style, min(p.volfrac + 0.15, 0.9)), ("trabecular", 0.5)]
     for i, (style, vf) in enumerate(attempts):
         try:
-            pa = p.model_copy(update={"style": style, "volfrac": vf, "density_threshold": None})
+            # fallback retries must drop an explicit user iso — an over-high
+            # threshold is a plausible reason the first attempt emptied out
+            pa = p.model_copy(
+                update={
+                    "style": style,
+                    "volfrac": vf,
+                    **({"density_threshold": None} if i else {}),
+                }
+            )
             rho, passive, w, meta = organic_density(domain, pa, all_anchors)
             if i == 0:
                 warnings += w
             threshold = meta["threshold"]
+            # user voids + everything outside the part — min-member dilation
+            # and regularization must not grow material past the original
+            # surface (shared _enforce_min_member has no solid clip; organic
+            # cannot afford silhouette protrusions)
+            stay_empty = meta["void_cells"].reshape(domain.dims) | ~domain.solid
             out_mesh, final_mask, ext_w, n_components = density_to_mesh(
                 domain,
                 rho,
                 threshold=threshold,
                 passive_solid=passive,
+                void_cells=stay_empty,
                 min_member_mm=p.min_member_mm or s.topopt_min_member_mm or 0.0,
                 min_gap_mm=p.min_gap_mm or 0.0,
                 smooth_iterations=(
@@ -330,6 +407,21 @@ def organic_transform(
         warnings.append(
             f"fallback used ({attempts[fallback][0]} @ volfrac {attempts[fallback][1]:g})"
         )
+
+    # how much of the original skin survived the carve — the recognizability
+    # metric; warns early when the silhouette is about to disintegrate.
+    # Always measured, even at surface_open=1.0 (open skeleton): that regime
+    # is exactly where the number matters most.
+    skin = _skin_mask(domain, p)
+    coverage: float | None = None
+    if int(skin.sum()):
+        coverage = float((final_mask & skin).sum() / skin.sum())
+        if coverage < 0.4:
+            warnings.append(
+                f"only {coverage:.0%} of the original surface survived — "
+                'raise "preserve surface" or density for a more readable shape'
+            )
+
     solid_cells = int(final_mask.sum())
     report = {
         "style": p.style,
@@ -343,10 +435,14 @@ def organic_transform(
         "solid_elements": solid_cells,
         "n_components": n_components,
         "floor_mm": p.floor_mm,
-        "shell_mm": p.shell_mm,
+        "surface_open": p.surface_open,
+        "shell_mm": round(_resolved_shell_mm(domain, p), 3),
+        "skin_cells": int(skin.sum()),
+        "surface_coverage": round(coverage, 3) if coverage is not None else None,
         "min_member_mm": p.min_member_mm or s.topopt_min_member_mm or 0.0,
         "auto_keep": p.auto_keep,
         "keep_regions": len(p.keep_regions),
+        "void_regions": len(p.void_regions),
         "triangles": len(out_mesh.faces),
         "watertight": bool(out_mesh.is_watertight),
         "warnings": warnings,
@@ -358,5 +454,6 @@ def organic_transform(
         density=rho.astype(np.float32),
         mask=final_mask,
         passive=passive,
+        void=meta["void_cells"],
         domain=domain,
     )

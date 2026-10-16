@@ -32,6 +32,7 @@ from cadx.api.schemas import (
 )
 from cadx.cad.mesh_ops import OPS_REGISTRY, MeshPostParams, merge_post_params
 from cadx.db.models import Version
+from cadx.runtime_config import load_runtime_settings
 from cadx.spawn import SpawnError, spawn_fem, spawn_mesh_edit
 
 router = APIRouter(tags=["editor"])
@@ -125,6 +126,9 @@ async def mesh_preview(
             "ops_only": ops_only,
             "spec": v.spec,
             "anchors": (v.analysis or {}).get("anchors"),
+            # same runtime snapshot the worker would see — min_member /
+            # smoothing defaults must not drift between preview and commit
+            "runtime_settings": (await load_runtime_settings(db)).executor_values(),
         },
     )
     glb = result.get("glb")

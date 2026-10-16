@@ -442,9 +442,7 @@ def run_mesh_pipeline(  # noqa: C901
             # a repair that shatters the part into more shells than it
             # started with is worse than the coherent open input — the
             # critique reads shell count as a 'not a single solid' major
-            if len(repaired.split(only_watertight=False)) <= len(
-                mesh.split(only_watertight=False)
-            ):
+            if len(repaired.split(only_watertight=False)) <= len(mesh.split(only_watertight=False)):
                 mesh = repaired
     if cap and len(mesh.faces) > cap:
         # _ensure_watertight's voxel fallback can itself out-face the cap

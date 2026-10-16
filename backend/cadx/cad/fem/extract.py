@@ -220,6 +220,7 @@ def density_to_mask(
     *,
     threshold: float = 0.5,
     passive_solid: np.ndarray | None = None,
+    void_cells: np.ndarray | None = None,
     min_member_mm: float = 0.0,
     min_gap_mm: float = 0.0,
 ) -> tuple[np.ndarray, list[str], int]:
@@ -228,18 +229,28 @@ def density_to_mask(
     Applies passive-region union, optional min-member thickening,
     connectivity pruning and non-manifold-edge regularization. This mask —
     not the smoothed export mesh — is the exact structure FEM verification
-    should run on.
+    should run on. `void_cells` ((nx,ny,nz) bool) marks cells that must stay
+    empty — a carved region wins over thickening/regularization, which would
+    otherwise grow material back into it.
     """
     warnings: list[str] = []
+    void3 = void_cells if void_cells is not None else None
     rho = density.reshape(domain.dims)
     mask = rho >= threshold
     if passive_solid is not None:
         mask |= passive_solid.reshape(domain.dims)
+    if void3 is not None:
+        mask &= ~void3
     if not mask.any():
         raise ValueError("density threshold produced an empty part")
 
     if min_member_mm > 0:
         mask, grown = _enforce_min_member(mask, domain.pitch, min_member_mm)
+        if void3 is not None:
+            healed = int((mask & void3).sum())
+            if healed:
+                mask &= ~void3
+                warnings.append(f"carve regions suppressed {healed} min-member regrowth voxels")
         if grown:
             warnings.append(f"thickened {grown} voxels to reach min member {min_member_mm:g} mm")
     gap_warn = _min_gap_warning(mask, domain.pitch, min_gap_mm)
@@ -258,6 +269,11 @@ def density_to_mask(
             f"({100 * dropped / max(int(mask.sum()) + dropped, 1):.0f}% of material)"
         )
     mask = _regularize_mask(mask)
+    if void3 is not None:
+        # diagonal-edge regularization can fill cells inside a carved void —
+        # removing cells cannot create new non-manifold edges, so re-carving
+        # afterwards is safe
+        mask &= ~void3
     # kept components can still be disjoint: a keep/load region forming its
     # own island touches `required` trivially, so pruning cannot see it —
     # report it so the caller/agent can adjust regions or volfrac
@@ -277,6 +293,7 @@ def density_to_mesh(
     *,
     threshold: float = 0.5,
     passive_solid: np.ndarray | None = None,
+    void_cells: np.ndarray | None = None,
     min_member_mm: float = 0.0,
     min_gap_mm: float = 0.0,
     smooth_iterations: int = 3,
@@ -294,6 +311,7 @@ def density_to_mesh(
         density,
         threshold=threshold,
         passive_solid=passive_solid,
+        void_cells=void_cells,
         min_member_mm=min_member_mm,
         min_gap_mm=min_gap_mm,
     )

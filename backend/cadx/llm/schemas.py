@@ -336,7 +336,12 @@ class OrganicParams(BaseModel):
     volfrac:        fraction of the design space kept solid (0.05..0.9)
     seed:           deterministic seed — same params + same mesh = same part
     period_mm:      characteristic feature size (cell size / blob size)
-    shell_mm:       solid skin thickness preserved at the part surface (0=off)
+    surface_open:   fraction of the outer skin the field may carve (0..1):
+                    0 = solid shell (structure hidden inside), 1 = open
+                    skeleton (no skin protection). Default 0.35 keeps ~65%
+                    of the skin — silhouette stays readable.
+    shell_mm:       skin depth affected by surface_open (0 = auto:
+                    ~0.2*period_mm, clamped to [1.6*pitch, 10] mm)
     floor_mm:       always-solid stand band above the part's min Z
     anchors:        resolved anchor table — auto-injected by apply_op when
                     auto_keep is on; excluded from serialized op args
@@ -346,7 +351,8 @@ class OrganicParams(BaseModel):
     volfrac: float = Field(default=0.35, ge=0.05, le=0.9)
     seed: int = Field(default=0, ge=0, le=2**31 - 1)
     period_mm: float = Field(default=12.0, gt=0, le=1000)
-    shell_mm: float = Field(default=0.0, ge=0, le=50)
+    surface_open: float = Field(default=0.35, ge=0.0, le=1.0)
+    shell_mm: float = Field(default=0.0, ge=0, le=50)  # 0 = auto skin depth
     floor_mm: float = Field(default=2.0, ge=0, le=100)
     min_member_mm: float | None = Field(default=None, ge=0, le=50)
     min_gap_mm: float | None = Field(default=None, ge=0, le=50)

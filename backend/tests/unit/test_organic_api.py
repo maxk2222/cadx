@@ -127,6 +127,25 @@ async def test_organic_enqueue_payload(client, monkeypatch):
     assert [r["kind"] for r in org["keep_regions"]] == ["all"]
 
 
+async def test_organic_surface_open_roundtrip(client):
+    """surface_open is stored verbatim and bounds-checked."""
+    parent = await _mk_parent()
+    r = await client.post(
+        f"/api/versions/{parent.id}/organic",
+        json={"surface_open": 0.5},
+    )
+    assert r.status_code == 200, r.text
+    async with async_session() as db:
+        child = await db.get(Version, uuid.UUID(r.json()["version_id"]))
+        req = (child.options or {}).get("organic_request") or {}
+        assert req.get("surface_open") == 0.5
+    r_bad = await client.post(
+        f"/api/versions/{parent.id}/organic",
+        json={"surface_open": 1.5},
+    )
+    assert r_bad.status_code == 422
+
+
 async def test_organic_resample_guard_accepts_organic_density(client):
     """topopt-resample accepts organic versions carrying a density field."""
     parent = await _mk_parent()
