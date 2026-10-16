@@ -18,6 +18,7 @@ from cadx.agent.context import (
     request_block,
     spec_block,
 )
+from cadx.agent.thinking import thinking_body
 from cadx.agent.toolloop import run_session, tools_enabled
 from cadx.agent.toolspecs import ToolSession, VerifyFn
 from cadx.agent.types import AgentCtx
@@ -32,6 +33,20 @@ from cadx.llm.schemas import (
 STEP = "codegen"
 
 _CODE_FENCE = re.compile(r"```(?:python|py)?\s*\n(.*?)```", re.DOTALL)
+
+# seed buffer for staged-build sessions: the minimal valid frame the model
+# grows via add_block — the contract (PARAMS + `result`) is enforced on done
+_BUILD_SEED = '''"""build123d part — assembled feature-by-feature via add_block."""
+
+from build123d import *
+
+PARAMS = {
+    # "name": default_value,  # one entry per tunable dimension
+}
+
+# Feature blocks land below this comment. The final buffer must be a complete
+# runnable script that assigns the finished solid to `result`.
+'''
 
 
 def _extract_code_block(text: str) -> str | None:
@@ -137,9 +152,19 @@ async def run(
     *,
     iteration: int,
     feedback: str | None = None,
+    verify_fn: VerifyFn | None = None,
+    render_fn: VerifyFn | None = None,
 ) -> CodeResponse:
     if tools_enabled(ctx, "code"):
-        return await _codegen_session(ctx, spec, plan, iteration=iteration, feedback=feedback)
+        return await _codegen_session(
+            ctx,
+            spec,
+            plan,
+            iteration=iteration,
+            feedback=feedback,
+            verify_fn=verify_fn,
+            render_fn=render_fn,
+        )
     messages: list[dict[str, Any]] = [
         {
             "role": "system",
@@ -147,7 +172,9 @@ async def run(
         },
         {"role": "user", "content": _user_parts(ctx, spec, plan, feedback)},
     ]
-    resp = await ctx.llm.chat("code", messages, json_schema=CodeResponse)
+    resp = await ctx.llm.chat(
+        "code", messages, json_schema=CodeResponse, extra_body=thinking_body(ctx, STEP)
+    )
     assert isinstance(resp.parsed, CodeResponse)
     await ctx.trace.record(
         step=STEP,
@@ -249,7 +276,13 @@ async def repair(
         },
         {"role": "user", "content": parts},
     ]
-    resp = await ctx.llm.chat("code", messages, json_schema=PatchResponse, temperature=0.1)
+    resp = await ctx.llm.chat(
+        "code",
+        messages,
+        json_schema=PatchResponse,
+        temperature=0.1,
+        extra_body=thinking_body(ctx, f"repair_{repair_n}"),
+    )
     assert isinstance(resp.parsed, PatchResponse)
     await ctx.trace.record(
         step=f"repair_{repair_n}",
@@ -359,21 +392,39 @@ async def _codegen_session(
     *,
     iteration: int,
     feedback: str | None,
+    verify_fn: VerifyFn | None = None,
+    render_fn: VerifyFn | None = None,
 ) -> CodeResponse:
-    """Fresh generation via tool session: the model may look up catalog parts,
-    check its draft with check_snippet, then submit_code. A plain content
-    answer is still accepted (CodeResponse schema)."""
-    from cadx.agent.context import codegen_tools_system
+    """Fresh generation via tool session.
+
+    Default: the model may look up catalog parts, check its draft with
+    check_snippet, then submit_code. With ``agent_staged_build`` on (or
+    "auto" — the default — while tools are enabled) it runs a *build*
+    session instead: a seeded buffer grown feature-by-feature via
+    add_block, sandbox-verified per stage, checkpointed, finished by done.
+    A plain content answer is still accepted (CodeResponse schema)."""
+    from cadx.agent.context import codegen_build_system, codegen_tools_system
     from cadx.cad.allowlist import check_code
     from cadx.llm.schemas import ParamDef
     from cadx.llm.structured import LLMFormatError
 
-    session = ToolSession(ctx, kind="codegen")
+    staged = ctx.runtime_settings.agent_staged_build == "on" or (
+        ctx.runtime_settings.agent_staged_build == "auto" and tools_enabled(ctx, "code")
+    )
+    if staged:
+        session = ToolSession(
+            ctx,
+            kind="build",
+            code=_BUILD_SEED,
+            verify_fn=verify_fn,
+            render_fn=render_fn,
+        )
+        system = codegen_build_system(plan=plan, spec=spec, fresh=True)
+    else:
+        session = ToolSession(ctx, kind="codegen")
+        system = codegen_tools_system(plan=plan, spec=spec, fresh=True)
     messages: list[dict[str, Any]] = [
-        {
-            "role": "system",
-            "content": codegen_tools_system(plan=plan, spec=spec, fresh=True),
-        },
+        {"role": "system", "content": system},
         {"role": "user", "content": _user_parts(ctx, spec, plan, feedback)},
     ]
     res = await run_session(
@@ -382,7 +433,13 @@ async def _codegen_session(
         messages,
         session=session,
         json_schema=CodeResponse,
-        max_calls=ctx.runtime_settings.agent_tool_max_calls,
+        # staged builds spend ~2 calls per feature (add_block + verify) plus
+        # checkpoints — a one-shot budget would strand a 5-feature part
+        max_calls=(
+            ctx.runtime_settings.agent_tool_max_calls_build
+            if staged
+            else ctx.runtime_settings.agent_tool_max_calls
+        ),
         step=STEP,
         iteration=iteration,
     )

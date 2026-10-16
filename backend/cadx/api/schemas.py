@@ -513,6 +513,7 @@ class SettingsOut(BaseModel):
     agent_tool_verify_max: int
     agent_staged_build: Literal["auto", "on", "off"]
     agent_build_verify_max: int
+    agent_tool_max_calls_build: int
     agent_quickref_context: bool
     agent_design_audit: bool
     agent_plan_mode: Literal["full", "lite", "auto"]
@@ -612,6 +613,7 @@ class SettingsUpdate(BaseModel):
     agent_tool_verify_max: int | None = Field(default=None, ge=0, le=20)
     agent_staged_build: Literal["auto", "on", "off"] | None = None
     agent_build_verify_max: int | None = Field(default=None, ge=0, le=20)
+    agent_tool_max_calls_build: int | None = Field(default=None, ge=1, le=100)
     agent_quickref_context: bool | None = None
     agent_design_audit: bool | None = None
     agent_plan_mode: Literal["full", "lite", "auto"] | None = None

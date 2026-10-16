@@ -82,6 +82,9 @@ class RuntimeSettings(BaseModel):
     # verify calls a staged build may make — higher than edit/repair because
     # every feature block should land on green geometry before the next one
     agent_build_verify_max: int = Field(default=8, ge=0, le=20)
+    # tool-call budget for staged build sessions — ~2 calls per feature
+    # (add_block + verify) plus checkpoints/done, so above the one-shot cap
+    agent_tool_max_calls_build: int = Field(default=16, ge=1, le=100)
     # include a compact runtime-introspected signature reference for the
     # relevant topics in codegen/repair context (the on-demand quickref tool
     # is always available regardless of this flag)

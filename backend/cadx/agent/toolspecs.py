@@ -10,6 +10,7 @@ can self-correct.
 Tool sets per step:
   edit    repair/improve — read/search/replace/insert/set_param + info + library + check + verify/render + done
   codegen fresh code — info + library + check_snippet + submit_code
+  build   staged codegen — read/edit buffer + add_block/checkpoint/rollback + verify/render + done
   info    intake/plan — catalog/cadlib lookups + library search/attach (final answer = content JSON)
   inspect critique — read-only code view + catalog/library lookups (no attach)
   mesh    mesh_refine — mesh inspect/preview + transform ops + undo/reset + done/regenerate
@@ -22,6 +23,7 @@ from __future__ import annotations
 import contextlib
 import inspect
 import json
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
@@ -315,6 +317,43 @@ DONE_TOOLS = [
         [],
     ),
 ]
+
+# staged-build session tools (build kind): the buffer grows feature-by-feature
+BUILD_TOOLS = [
+    _fn(
+        "add_block",
+        "Append ONE feature's code as a named block at the end of the file "
+        "(base body, holes, fillets, …). The block is marked `## block: "
+        "<name>` so verify errors map back to it. Names must be unique — "
+        "to change an existing block use the edit tools, do not re-add it.",
+        {
+            "name": _s("short unique block name, e.g. 'base', 'mounting_holes'"),
+            "code": _s(
+                "python code for this one feature — may use variables defined by earlier blocks"
+            ),
+        },
+        ["name", "code"],
+    ),
+    _fn(
+        "checkpoint",
+        "Save the current buffer under a name so `rollback(name)` can restore "
+        "it later. Call after a stage verifies clean — limited checkpoints "
+        "per session.",
+        {"name": _s("unique checkpoint name, e.g. 'base_ok'")},
+        ["name"],
+    ),
+    _fn(
+        "rollback",
+        "Restore the buffer to a named checkpoint — the cheap way out of a "
+        "failed stage instead of undoing many edits by hand. Counts as an "
+        "edit (the buffer changes).",
+        {"name": _s("checkpoint name from an earlier checkpoint() call")},
+        ["name"],
+    ),
+]
+
+_BLOCK_RE = re.compile(r"^## block:\s*(\S+)", re.M)
+_MAX_CHECKPOINTS = 8
 
 # --------------------------------------------------------------------------- #
 # structural session tools (optimize step)                                    #
@@ -1026,7 +1065,7 @@ class ToolSession:
         self,
         ctx: AgentCtx,
         *,
-        kind: Literal["edit", "codegen", "info", "inspect", "mesh", "optimize"],
+        kind: Literal["edit", "codegen", "build", "info", "inspect", "mesh", "optimize"],
         code: str = "",
         verify_fn: VerifyFn | None = None,
         # full-pipeline variant of verify_fn (renders+dfm) — used by
@@ -1052,9 +1091,12 @@ class ToolSession:
         self.refine_fn = refine_fn
         self._refined_runs: set[int] = set()
         settings = ctx.runtime_settings
-        self.verify_left = (
-            settings.agent_tool_verify_max if (verify_fn and settings.agent_tool_verify) else 0
+        # build sessions verify once per feature block — they get the larger
+        # staged-build budget instead of the edit/repair one
+        verify_max = (
+            settings.agent_build_verify_max if kind == "build" else settings.agent_tool_verify_max
         )
+        self.verify_left = verify_max if (verify_fn and settings.agent_tool_verify) else 0
         self.fem_left = (
             settings.agent_fem_max_runs if (fem_fn and settings.agent_struct_tools) else 0
         )
@@ -1072,6 +1114,8 @@ class ToolSession:
         self.tool_log: list[dict[str, Any]] = []
         self._done_reasks = 0
         self._unchanged_warned = False
+        # build sessions: named buffer snapshots for rollback()
+        self._checkpoints: dict[str, str] = {}
 
     # -- schema selection --------------------------------------------------- #
 
@@ -1095,6 +1139,17 @@ class ToolSession:
                 *SUBMIT_CODE_TOOLS,
                 *IMAGE_TOOLS,
             ]
+        if self.kind == "build":
+            out = [
+                *CODE_READ_TOOLS,
+                *CODE_EDIT_TOOLS,
+                *INFO_TOOLS,
+                *LIBRARY_TOOLS,
+                *CHECK_SNIPPET_TOOLS,
+            ]
+            if self.verify_left > 0:
+                out += VERIFY_TOOLS + RENDER_TOOLS
+            return out + DONE_TOOLS + BUILD_TOOLS + IMAGE_TOOLS
         if self.kind == "inspect":
             return [*CODE_READ_TOOLS, *INFO_TOOLS, *LIBRARY_INFO_TOOLS, *IMAGE_TOOLS]
         if self.kind == "mesh":
@@ -1202,7 +1257,7 @@ class ToolSession:
         return res
 
     def _edit_kind(self) -> dict[str, Any] | None:
-        if self.kind != "edit":
+        if self.kind not in ("edit", "build"):
             return {"ok": False, "error": "editing is not available in this session"}
         return self._require_buffer()
 
@@ -1259,6 +1314,89 @@ class ToolSession:
         if not isinstance(val, str | int | float | bool):
             return {"ok": False, "error": "value must be string, number or boolean"}
         return self._apply(codeedits.set_param(self.buffer, str(a.get("name", "")), val))
+
+    # -- staged build (build kind only) ----------------------------------------- #
+
+    def _block_names(self) -> list[str]:
+        """`## block: <name>` markers currently in the buffer, in order."""
+        return _BLOCK_RE.findall(self.buffer)
+
+    def _block_at_line(self, line: int) -> str | None:
+        """Name of the block section containing 1-based `line` (the last
+        `## block:` marker at or above it), or None for scaffold code."""
+        name: str | None = None
+        for i, ln in enumerate(self.buffer.splitlines(), 1):
+            if i > line:
+                break
+            m = re.match(r"## block:\s*(\S+)", ln)
+            if m:
+                name = m.group(1)
+        return name
+
+    def _tool_add_block(self, a: dict[str, Any]) -> dict[str, Any]:
+        if self.kind != "build":
+            return {"ok": False, "error": "add_block is only available in build sessions"}
+        name = re.sub(r"[^\w-]+", "_", str(a.get("name", "")).split("\n", 1)[0].strip())
+        if not name:
+            return {"ok": False, "error": "name is required"}
+        blocks = self._block_names()
+        if name in blocks:
+            return {
+                "ok": False,
+                "error": f"block '{name}' already exists — edit it in place "
+                "(search_code/read_lines + replace_lines) or pick a new name",
+                "blocks": blocks,
+            }
+        code = str(a.get("code", "")).rstrip()
+        if not code.strip():
+            return {"ok": False, "error": "code is required"}
+        text = f"\n## block: {name}\n{code}"
+        res = self._apply(
+            codeedits.insert_after_line(self.buffer, len(self.buffer.splitlines()), text)
+        )
+        if res.get("ok"):
+            res["block"] = name
+            res["blocks"] = self._block_names()
+        return res
+
+    def _tool_checkpoint(self, a: dict[str, Any]) -> dict[str, Any]:
+        if self.kind != "build":
+            return {"ok": False, "error": "checkpoint is only available in build sessions"}
+        name = str(a.get("name", "")).strip()
+        if not name:
+            return {"ok": False, "error": "name is required"}
+        if name in self._checkpoints:
+            return {"ok": False, "error": f"checkpoint '{name}' already exists"}
+        if len(self._checkpoints) >= _MAX_CHECKPOINTS:
+            return {
+                "ok": False,
+                "error": f"checkpoint limit reached ({_MAX_CHECKPOINTS})",
+                "checkpoints": sorted(self._checkpoints),
+            }
+        self._checkpoints[name] = self.buffer
+        return {
+            "ok": True,
+            "checkpoint": name,
+            "checkpoints": sorted(self._checkpoints),
+            "lines_total": len(self.buffer.splitlines()),
+        }
+
+    def _tool_rollback(self, a: dict[str, Any]) -> dict[str, Any]:
+        if self.kind != "build":
+            return {"ok": False, "error": "rollback is only available in build sessions"}
+        name = str(a.get("name", "")).strip()
+        saved = self._checkpoints.get(name)
+        if saved is None:
+            return {
+                "ok": False,
+                "error": f"unknown checkpoint '{name}'",
+                "checkpoints": sorted(self._checkpoints),
+            }
+        res = self._apply({"ok": True, "code": saved})
+        res["restored"] = name
+        res["lines_total"] = len(self.buffer.splitlines())
+        res["blocks"] = self._block_names()
+        return res
 
     # -- info tools ------------------------------------------------------------ #
 
@@ -1544,6 +1682,14 @@ class ToolSession:
             "excerpt": diag.code_excerpt,
             "hint": diag.hint,
         }
+        # staged build: attribute the failing line to its `## block:` section
+        # so the model knows WHICH feature to fix/rollback, not just the line
+        if (
+            self.kind == "build"
+            and diag.failing_line is not None
+            and (blk := self._block_at_line(diag.failing_line))
+        ):
+            out["block"] = blk
         geo = res.get("geometry_at_failure")
         if geo:
             out["geometry_at_failure"] = geo
