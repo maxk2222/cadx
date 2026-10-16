@@ -49,6 +49,32 @@ def test_features_ok_tunnel_axis_and_dia() -> None:
     assert _features_ok([{"type": "tunnel", "axis": "z", "dia": 4.0}], feats) is False
 
 
+def test_features_ok_tunnel_via_cad_hole_groups() -> None:
+    """CAD-mode through-bores surface as depth_class='through' hole_groups —
+    they must satisfy a tunnel expectation too (observed: CAD-fallback grip
+    with a real Ø22.2 X-bore scored features_ok=False)."""
+    feats = {
+        "hole_groups": [
+            {
+                "diameter": 22.2,
+                "count": 1,
+                "axis": "+x",
+                "depth_class": "through",
+                "blocked": 0,
+                "centers": [[0.0, 0.0]],
+            },
+            {"diameter": 4.0, "count": 1, "axis": "+z", "depth_class": "blind"},
+        ]
+    }
+    assert _features_ok([{"type": "tunnel", "axis": "x", "dia": 22.2}], feats) is True
+    assert _features_ok([{"type": "tunnel", "axis": "z", "dia": 22.2}], feats) is False
+    assert _features_ok([{"type": "tunnel", "axis": "x", "dia": 10.0}], feats) is False
+    # a blind group never tunnels; a membrane-blocked bore neither
+    assert _features_ok([{"type": "tunnel", "axis": "z", "dia": 4.0}], feats) is False
+    feats["hole_groups"][0]["blocked"] = 1
+    assert _features_ok([{"type": "tunnel", "axis": "x", "dia": 22.2}], feats) is False
+
+
 def test_features_ok_hole_axis_filter() -> None:
     """A hole group on the wrong axis must not satisfy an axis-pinned entry."""
     feats = {

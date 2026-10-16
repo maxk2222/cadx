@@ -70,7 +70,9 @@ class _SdBase(ImageAdapter):
             kw["variant"] = "fp16"
         pipe = AutoPipelineForText2Image.from_pretrained(self.repo, **kw)
         if dev == "mps":
-            pipe.enable_model_cpu_offload()  # MPS: keep peak under unified RAM
+            # device= is required — the diffusers default is 'cuda', which
+            # raises "Torch not compiled with CUDA enabled" on MPS hosts
+            pipe.enable_model_cpu_offload(device=dev)
         else:
             pipe = pipe.to(dev)
         self._pipe = pipe

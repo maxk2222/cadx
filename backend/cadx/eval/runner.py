@@ -274,19 +274,28 @@ def _feature_entry_ok(  # noqa: C901
         return abs(2 * sum(radii) / len(radii) - pcd) <= tol
 
     if ftype == "tunnel":
-        # mesh-mode through-bores from detect_mesh_features (MeshHole list) —
-        # longitudinal bores never appear in BRep hole_groups
+        # mesh-mode through-bores come from detect_mesh_features (feats["holes"]);
+        # CAD-mode through-bores surface as depth_class="through" hole_groups —
+        # a longitudinal BRep bore never gets kind="tunnel", so both sources
+        # must satisfy the expectation
         axis = str(ef.get("axis") or "").lower() or None
         dia = ef.get("dia")
         dia_tol = max(0.5, float(dia) * 0.15) if dia is not None else None
-        got = sum(
+        mesh_got = sum(
             1
             for h in feats.get("holes") or []
             if h.get("kind") == "tunnel"
             and (axis is None or h.get("axis") == axis)
             and (dia_tol is None or abs(float(h.get("dia") or 0) - float(dia)) <= dia_tol)
         )
-        return got >= want
+        cad_got = sum(
+            max(0, int(g.get("count") or 0) - int(g.get("blocked") or 0))
+            for g in round_groups
+            if g.get("depth_class") == "through"
+            and _axis_ok(g, axis)
+            and (dia_tol is None or abs(float(g.get("diameter") or 0) - float(dia)) <= dia_tol)
+        )
+        return mesh_got + cad_got >= want
     if ftype == "slot":
         return int(feats.get("slots") or 0) >= want
     if ftype in ("hole", "bore", "through-hole"):

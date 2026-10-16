@@ -8,6 +8,7 @@ INTAKE -> (CLARIFY?) -> PLAN -> mode resolution -> one of:
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 import json
 import re
@@ -2023,17 +2024,39 @@ async def _generate_mesh(  # noqa: C901
             sub_label=msg,
         )
 
-    try:
-        result = await ctx.mesh.generate(req, on_progress, should_abort=ctx.check_cancel)
-    except MeshGenError as e:
-        await ctx.emit("meshgen", iteration, f"generation failed: {e}")
-        log.warning("mesh.generate_failed", iteration=iteration, error=str(e))
-        ctx.mesh_info["gen_error"] = str(e)
-        return None
-    except Exception as e:
-        log.warning("mesh.generate_crashed", iteration=iteration, error=str(e))
-        ctx.mesh_info["gen_error"] = str(e)
-        return None
+    result = None
+    # transport-level failures (server restarting, port not yet up) are
+    # transient — retry briefly instead of burning the iteration slot;
+    # MeshGenError (server-side job failure) stays single-shot
+    for gen_attempt in range(3):
+        try:
+            result = await ctx.mesh.generate(req, on_progress, should_abort=ctx.check_cancel)
+            break
+        except MeshGenError as e:
+            await ctx.emit("meshgen", iteration, f"generation failed: {e}")
+            log.warning("mesh.generate_failed", iteration=iteration, error=str(e))
+            ctx.mesh_info["gen_error"] = str(e)
+            return None
+        except Exception as e:
+            import httpx
+
+            if isinstance(e, httpx.TransportError) and gen_attempt < 2:
+                await ctx.emit(
+                    "meshgen",
+                    iteration,
+                    f"mesh server unreachable — retrying ({gen_attempt + 1}/2)",
+                )
+                log.warning(
+                    "mesh.generate_transport_retry",
+                    iteration=iteration,
+                    attempt=gen_attempt + 1,
+                    error=str(e)[:160],
+                )
+                await asyncio.sleep(5 * (gen_attempt + 1))
+                continue
+            log.warning("mesh.generate_crashed", iteration=iteration, error=str(e))
+            ctx.mesh_info["gen_error"] = str(e)
+            return None
 
     if key:
         try:
@@ -3271,7 +3294,7 @@ async def _run_mesh(  # noqa: C901
             # cannot poison scoring and downstream CAD conversion
             outline = _measured_plan_outline(ctx)
             dims = (spec.length_x.value, spec.width_y.value, spec.height_z.value)
-            flat = dims[2] > 0 and dims[2] < 0.3 * max(dims[0], dims[1], 1e-9)
+            flat = _is_flat_spec_dims(dims)
             if flat and outline:
                 post.ops = [
                     MeshOp(
