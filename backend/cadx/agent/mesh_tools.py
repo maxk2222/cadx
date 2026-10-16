@@ -97,6 +97,7 @@ _OP_TOOLS: dict[str, str] = {
     "mesh_remesh": "remesh",
     "mesh_shell": "shell",
     "mesh_drill_holes": "drill_holes",
+    "mesh_radial_profile": "radial_profile",
 }
 
 

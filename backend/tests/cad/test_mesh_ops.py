@@ -764,3 +764,72 @@ def test_ensure_watertight_refuses_absurd_grid(monkeypatch):
     monkeypatch.setattr(mo, "_VOXEL_REPAIR_MAX_CELLS", 5.0)
     with pytest.raises(ValueError, match="watertight"):
         mo._ensure_watertight(m)
+
+
+def _tube_along_z(radius: float = 10.0, half_len: float = 30.0) -> trimesh.Trimesh:
+    """Watertight tube along Z with vertex rings across the length — capsule/
+    cylinder primitives only place vertices at the caps."""
+    z = np.linspace(-half_len, half_len, 13)
+    pts = np.vstack(
+        [[[0.0, -half_len]], np.column_stack([np.full(len(z), radius), z]), [[0.0, half_len]]]
+    )
+    return trimesh.creation.revolve(pts, sections=48)
+
+
+def test_radial_profile_waist():
+    """radial_profile must pinch the cross-section at the given station —
+    the grip critique's 'waist too shallow' fix."""
+    out = apply_op(
+        _tube_along_z(),
+        {
+            "op": "radial_profile",
+            "args": {
+                "axis": "z",
+                "stations": [
+                    {"at": 0.0, "r1": 1.0, "r2": 1.0},
+                    {"at": 0.5, "r1": 0.6, "r2": 0.6},
+                    {"at": 1.0, "r1": 1.0, "r2": 1.0},
+                ],
+            },
+        },
+    )
+    mid = out.vertices[np.abs(out.vertices[:, 2]) < 5.0]
+    end = out.vertices[np.abs(np.abs(out.vertices[:, 2]) - 30.0) < 0.5]
+    assert np.ptp(mid[:, 0]) == pytest.approx(20.0 * 0.6, rel=0.1)
+    assert np.ptp(end[:, 0]) == pytest.approx(20.0, rel=0.1)
+
+
+def test_radial_profile_oval_correction():
+    """Unequal r1/r2 round out an oval section — Y wider than Z gets
+    rebalanced to a circle."""
+    m = _tube_along_z()
+    m.apply_transform(np.diag([1.0, 0.7, 1.0, 1.0]))  # oval: X 20, Y 14
+    out = apply_op(
+        m,
+        {
+            "op": "radial_profile",
+            "args": {
+                "axis": "z",
+                "stations": [
+                    {"at": 0.0, "r1": 1.0, "r2": 1.0 / 0.7},
+                    {"at": 1.0, "r1": 1.0, "r2": 1.0 / 0.7},
+                ],
+            },
+        },
+    )
+    ext = out.extents
+    assert ext[0] == pytest.approx(20.0, rel=0.02)
+    assert ext[1] == pytest.approx(20.0, rel=0.02)  # oval → round again
+
+
+def test_radial_profile_keeps_axis_length():
+    """Scaling is radial only — the profile-axis extent stays untouched."""
+    m = _box(100, 20, 20)
+    out = apply_op(
+        m,
+        {
+            "op": "radial_profile",
+            "args": {"axis": "x", "stations": [{"at": 0.0}, {"at": 1.0, "r1": 0.5}]},
+        },
+    )
+    assert out.extents[0] == pytest.approx(100.0, rel=1e-6)

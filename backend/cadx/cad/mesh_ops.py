@@ -668,6 +668,31 @@ class OpShell(BaseModel):
     opening: Literal["none", "bottom", "top"] = "bottom"
 
 
+class RadialStation(BaseModel):
+    """Radial scale factors at a normalized position `at` (0..1) along `axis`.
+
+    r1/r2 scale the two radial axes independently (axis="x" → r1 on Y, r2 on
+    Z). Equal factors give a concentric waist/taper; unequal factors round an
+    oval cross-section out."""
+
+    at: float = Field(ge=0.0, le=1.0)
+    r1: float = Field(default=1.0, gt=0.2, le=5.0)
+    r2: float = Field(default=1.0, gt=0.2, le=5.0)
+
+
+class OpRadialProfile(BaseModel):
+    """Scale the cross-section along a primary axis — ergonomic waists,
+    tapered ends, or rounding an oval tube (e.g. a grip along X).
+
+    Every vertex is displaced radially about the part's radial centroid, so a
+    centred bore keeps its axis — but a bore already cut scales too, so apply
+    BEFORE boolean cuts that must stay exact. Factors interpolate linearly
+    between stations."""
+
+    axis: CartesianAxis = "x"
+    stations: list[RadialStation] = Field(min_length=2, max_length=32)
+
+
 class OpBoolean(BaseModel):
     """Union/difference with a primitive placed in mm frame coordinates."""
 
@@ -1089,6 +1114,27 @@ def _op_boolean(mesh: trimesh.Trimesh, p: OpBoolean) -> trimesh.Trimesh:
     return cast(trimesh.Trimesh, out)
 
 
+def _op_radial_profile(mesh: trimesh.Trimesh, p: OpRadialProfile) -> trimesh.Trimesh:
+    ax = "xyz".index(p.axis)
+    radial = [i for i in range(3) if i != ax]
+    verts = np.asarray(mesh.vertices, dtype=float).copy()
+    b = np.asarray(mesh.bounds, dtype=float)
+    lo, hi = float(b[0][ax]), float(b[1][ax])
+    span = hi - lo
+    if span <= 1e-9:
+        raise ValueError("radial_profile: zero-length span on the profile axis")
+    t = np.clip((verts[:, ax] - lo) / span, 0.0, 1.0)
+    st = sorted(p.stations, key=lambda s: s.at)
+    at = np.asarray([s.at for s in st], dtype=float)
+    centre = verts[:, radial].mean(axis=0)
+    for k, ri in enumerate(radial):
+        fac = np.interp(t, at, [s.r1 if k == 0 else s.r2 for s in st])
+        verts[:, ri] = centre[k] + (verts[:, ri] - centre[k]) * fac
+    out = mesh.copy()
+    out.vertices = verts
+    return out
+
+
 def _op_organic(mesh: trimesh.Trimesh, p: OrganicParams) -> trimesh.Trimesh:
     """Pseudo-topology organic restyle — procedural density field extracted
     through the TopOpt pipeline. Aesthetic only, not structurally verified."""
@@ -1136,6 +1182,7 @@ OPS_REGISTRY: dict[str, tuple[type[BaseModel], _OpFn]] = {
     "remesh": (OpRemesh, _op_remesh),
     "drill_holes": (OpDrillHoles, _op_drill_holes),
     "shell": (OpShell, _op_shell),
+    "radial_profile": (OpRadialProfile, _op_radial_profile),
     "boolean": (OpBoolean, _op_boolean),
     "organic": (OrganicParams, _op_organic),
 }

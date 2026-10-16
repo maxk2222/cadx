@@ -50,6 +50,11 @@ Common problems and their fixes:
   voxel rebuild leaves stair-step striations on the surface.
 - Uneven topology / failing booleans on an organic mesh → mesh_remesh
   (voxel pitch ~1/100 of the extent) rebuilds a uniform watertight surface.
+- Ergonomic waist, tapered end, or oval cross-section on an organic body
+  (grip, handle, housing) → mesh_radial_profile: scale the cross-section at
+  stations along the axis (e.g. at=0.5 r1=r2=0.88 deepens a waist; unequal
+  r1/r2 round an oval). Apply it BEFORE bore/hole cuts — it scales every
+  vertex including existing bore walls.
 - Needs a through-hole / pocket / slot → mesh_boolean_cut with a cylinder
   or box; prefer mesh_drill_holes when a measured anchor exists.
 - Print-optimised hollow part → mesh_shell(thickness, opening) erodes an

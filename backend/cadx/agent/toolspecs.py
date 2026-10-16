@@ -886,6 +886,32 @@ MESH_TRANSFORM_TOOLS = [
         [],
     ),
     _fn(
+        "mesh_radial_profile",
+        "Sculpt the OUTER shape along an axis without primitives: scales the "
+        "cross-section radially at stations (0..1 along `axis`). r1/r2 are "
+        "factors on the two cross-section axes (axis=x → r1=Y, r2=Z). Use for "
+        "ergonomic waists, tapered ends, or rounding an oval tube. Apply "
+        "BEFORE bore/hole cuts — the factors scale every vertex, including "
+        "existing bore walls.",
+        {
+            "axis": {**_AXIS, "description": "profile axis, default x"},
+            "stations": {
+                "type": "array",
+                "description": "2-32 stations, factors interpolate linearly",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "at": {"type": "number", "description": "0..1 along axis"},
+                        "r1": {"type": "number", "description": "factor on 1st radial axis"},
+                        "r2": {"type": "number", "description": "factor on 2nd radial axis"},
+                    },
+                    "required": ["at"],
+                },
+            },
+        },
+        ["axis", "stations"],
+    ),
+    _fn(
         "mesh_boolean_add",
         "Union a primitive with the part — e.g. add a base plate "
         "(box [x,y,z] centred at [0,0,h/2]) or a boss (cylinder).",
