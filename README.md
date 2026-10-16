@@ -112,7 +112,7 @@
 ## Showcase
 
 <p align="center">
-  <img src="docs/screenshots/viewer-orbit.gif" width="720" alt="CADX web GUI — 3D viewer orbiting a generated hybrid part">
+  <img src="docs/screenshots/wizard.gif" width="720" alt="CADX web GUI — guided new-part wizard">
 </p>
 
 <table>

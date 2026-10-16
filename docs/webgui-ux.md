@@ -78,7 +78,7 @@ and can be changed in the edit form. The API distinguishes an omitted selection
 
 ![Version detail — 3D viewer, spec prompt, agent activity timeline](screenshots/version-cad.png)
 
-![Orbiting the 3D viewer](screenshots/viewer-orbit.gif)
+![Guided new-part wizard](screenshots/wizard.gif)
 
 ![Version page tabs — Model, Spec & Plan, Code, Quality, Files](screenshots/version-tabs.gif)
 
