@@ -2875,7 +2875,12 @@ async def _run_mesh(  # noqa: C901
         feature_findings)."""
         analysis = exec_result.get("analysis") or {}
         dim_issues = compare_dims(spec, analysis, tol_pct, tol_mm)
-        dim_issues += list((exec_result.get("mesh") or {}).get("dim_issues") or [])
+        # baseline scale_to_spec reports aspect mismatches vs the uniform
+        # pre-ops scale — after ops ran (dim-fit scales, clips) those numbers
+        # are stale and the measured bbox above is the truth (observed:
+        # critique repeated 'measured 45.3x45.7' on a fitted 39.9 part)
+        if not ((exec_result.get("mesh") or {}).get("post") or {}).get("ops"):
+            dim_issues += list((exec_result.get("mesh") or {}).get("dim_issues") or [])
         # deterministic feature evidence on the processed mesh — the same
         # authority the CAD path feeds the critic, converted from the
         # ray-grid tunnel/dimple detection every mesh result carries
@@ -3161,7 +3166,11 @@ async def _run_mesh(  # noqa: C901
         # deterministic fit above already had its shot — an LLM session on
         # pure dim issues just wrecks the shape (knob squashed to a capsule)
         issues0 = build_issues(
-            critique, dim_issues, [], exec_result.get("dfm"), exec_result.get("analysis")
+            critique,
+            dim_issues,
+            feature_findings,
+            exec_result.get("dfm"),
+            exec_result.get("analysis"),
         )
         only_dims = _only_dim_issues(dim_issues, issues0)
         if only_dims:
@@ -3213,6 +3222,15 @@ async def _run_mesh(  # noqa: C901
                 # cannot be rank-compared against the old mesh
                 exec_result = new_exec
                 critique, dim_issues = critique2, dim_issues2
+                # refresh the issue list — the next repair round must chase
+                # what is still broken, not the baseline's stale complaints
+                issues0 = build_issues(
+                    critique,
+                    dim_issues,
+                    findings2 or [],
+                    exec_result.get("dfm"),
+                    exec_result.get("analysis"),
+                )
             else:
                 # deterministic regression — restore the better op list so the
                 # wreck never becomes the session state a later round builds on

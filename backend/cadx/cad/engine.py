@@ -438,7 +438,14 @@ def run_mesh_pipeline(  # noqa: C901
         mesh = decimate(mesh, cap)
     if not mesh.is_watertight:
         with contextlib.suppress(Exception):
-            mesh = _ensure_watertight(mesh)
+            repaired = _ensure_watertight(mesh)
+            # a repair that shatters the part into more shells than it
+            # started with is worse than the coherent open input — the
+            # critique reads shell count as a 'not a single solid' major
+            if len(repaired.split(only_watertight=False)) <= len(
+                mesh.split(only_watertight=False)
+            ):
+                mesh = repaired
     if cap and len(mesh.faces) > cap:
         # _ensure_watertight's voxel fallback can itself out-face the cap
         mesh = decimate(mesh, cap)
@@ -1401,6 +1408,13 @@ def run_topopt_resample(
             density,
             threshold=threshold,
             passive_solid=passive,
+            # organic npz persists carved cells — resample must re-carve them
+            # after min-member dilation, same as the original extraction.
+            # plus ~solid: cells outside the stored design domain must stay
+            # empty too, or dilation grows material past the part surface
+            void_cells=(
+                (np.asarray(npz["voids"], dtype=bool) | ~domain.solid) if "voids" in npz else None
+            ),
             min_member_mm=min_member,
             min_gap_mm=min_gap,
             smooth_iterations=s.topopt_smooth_iterations,
@@ -1551,6 +1565,7 @@ def run_organic_pipeline(
         mask=out.mask,
         solid=out.domain.solid,
         passive=out.passive.reshape(out.domain.dims),
+        voids=out.void.reshape(out.domain.dims),
         origin=out.domain.origin,
         pitch=np.float64(out.domain.pitch),
         dims=np.asarray(out.domain.dims),

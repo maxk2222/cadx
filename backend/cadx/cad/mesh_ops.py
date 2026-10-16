@@ -1434,6 +1434,15 @@ def _ensure_watertight(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
         # cap the rebuild so the next boolean/op doesn't hit BOOLEAN_MAX_FACES
         if len(rem.faces) > _REBUILD_MAX_FACES:
             rem = decimate(rem, _REBUILD_MAX_FACES)
+        # sparse occupancy voxelises into dust — marching_cubes then returns
+        # hundreds of disconnected shells (observed: 40k-face knob -> 1801
+        # bodies). Keep the dominant body; dust is never the subject.
+        try:
+            bodies = rem.split(only_watertight=False)
+            if len(bodies) > 1:
+                rem = bodies[int(np.argmax(_body_sizes(bodies)))]
+        except Exception:
+            pass
         if len(rem.faces) and rem.is_watertight:
             log.warning(
                 "mesh.repair_voxel_fallback",
