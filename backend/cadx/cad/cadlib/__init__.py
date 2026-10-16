@@ -17,6 +17,7 @@ from .cutouts import (
     hole_grid,
     insert_pocket,
     keyhole_slot,
+    oblong_slot,
     t_slot,
     through_hole,
 )
@@ -41,6 +42,7 @@ from .shapes import (
     rib,
     snap_fit_cantilever,
     text_label,
+    tube,
 )
 
 __all__ = [
@@ -62,6 +64,7 @@ __all__ = [
     "mesh_fuse",
     "mesh_intersect",
     "mounting_ear",
+    "oblong_slot",
     "profile_body",
     "rib",
     "safe_fillet",
@@ -70,4 +73,5 @@ __all__ = [
     "text_label",
     "through_hole",
     "trim_below",
+    "tube",
 ]

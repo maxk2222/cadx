@@ -329,3 +329,35 @@ def test_bbox_dims():
     assert cadlib.bbox_dims(box) == pytest.approx([10.0, 20.0, 30.0])
     cyl = Pos(0, 0, 5) * Cylinder(radius=4, height=12)
     assert cadlib.bbox_dims(cyl) == pytest.approx([8.0, 8.0, 12.0], rel=1e-3)
+
+
+def test_oblong_slot_through_and_shape():
+    """Stadium slot: clean through-cut, elongated void along the given axis —
+    the hand-rolled slot builders kept producing membranes or missing the
+    feature entirely (observed on l_bracket and firesteel)."""
+    with BuildPart() as p:
+        Box(60, 40, 6, align=_ALIGN_MIN)
+        cadlib.oblong_slot(6.0, 20.0, on=Pos(0, 0, 6))
+    # open at top and bottom along the whole slot length
+    for x in (-7, 0, 7):
+        for z in (0.5, 3.0, 5.5):
+            assert not p.part.is_inside((float(x), 0.0, z)), (x, z)
+    # but material remains outside the slot width
+    assert p.part.is_inside((0.0, 10.0, 3.0))
+
+
+def test_oblong_slot_along_y():
+    with BuildPart() as p:
+        Box(60, 40, 6, align=_ALIGN_MIN)
+        cadlib.oblong_slot(6.0, 20.0, direction="+y", on=Pos(0, 0, 6))
+    for y in (-7, 0, 7):
+        assert not p.part.is_inside((0.0, float(y), 3.0)), y
+
+
+def test_tube_open_bore_both_ends():
+    t = cadlib.tube(12.0, 8.0, 30.0)
+    # bore through: centre point is empty at both end faces
+    assert not t.is_inside((0.0, 0.0, 0.2))
+    assert not t.is_inside((0.0, 0.0, 29.8))
+    # wall material present between inner and outer radius
+    assert t.is_inside((5.0, 0.0, 15.0))

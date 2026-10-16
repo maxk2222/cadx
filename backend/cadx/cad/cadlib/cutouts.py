@@ -281,6 +281,58 @@ def keyhole_slot(
     _in_scope(on, make)
 
 
+def oblong_slot(
+    width: float,
+    length: float,
+    *,
+    depth: float | None = None,
+    direction: str = "+x",
+    on=None,
+) -> None:
+    """Oblong (stadium) through-slot: ``length`` tip-to-tip along ``direction``
+    (+x|-x|+y|-y), ``width`` across. Through by default — the cutter is taller
+    than the part diagonal so no membrane can seal the slot; ``depth`` makes a
+    blind pocket instead. USE THIS for elongated mounting slots (belt clips,
+    adjustment slots) — the most commonly missed feature.
+
+        with Locations(Pos(10, 0, 0)):
+            oblong_slot(6.0, 20.0)             # 6x20 stadium through, along X
+        oblong_slot(5.0, 12.0, direction="+y") # along Y
+    """
+    ctx = _require_context("oblong_slot")
+    dx, dy = {
+        "+x": (1.0, 0.0),
+        "-x": (-1.0, 0.0),
+        "+y": (0.0, 1.0),
+        "-y": (0.0, -1.0),
+    }.get(direction, (1.0, 0.0))
+    r = width / 2
+    half = max(0.0, length / 2 - r)  # end-centre offset along the slot axis
+    if depth is None:
+        bb = ctx.part.bounding_box()
+        s = bb.size
+        height = math.sqrt(s.X * s.X + s.Y * s.Y + s.Z * s.Z) + 10.0
+        z_mid = 0.0
+    else:
+        height = depth + 1.0
+        z_mid = (1.0 - depth) / 2
+
+    def make() -> None:
+        with Locations(Pos(0, 0, z_mid)):
+            for sgn in (-1.0, 1.0):
+                with Locations(Pos(sgn * half * dx, sgn * half * dy, 0)):
+                    Cylinder(radius=r, height=height, mode=Mode.SUBTRACT)
+            if half > 0:
+                Box(
+                    (2 * half) * abs(dx) + width * abs(dy),
+                    (2 * half) * abs(dy) + width * abs(dx),
+                    height,
+                    mode=Mode.SUBTRACT,
+                )
+
+    _in_scope(on, make)
+
+
 def t_slot(
     bolt_d: float,
     head_w: float,

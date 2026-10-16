@@ -42,6 +42,13 @@ to apply at that workplane (usually a face, e.g. `p.faces().sort_by(Axis.Z)[-1]`
   Safest way to place holes at measured anchor positions:
   `with Locations(Pos(x, y, 0)): through_hole(5.0)`.
 
+### oblong_slot
+
+- `oblong_slot(width, length, depth=None, direction="+x", on=None)` — stadium
+  through-slot `length` tip-to-tip along `direction` (+x|-x|+y|-y), `width`
+  across; `depth` makes a blind pocket. USE THIS for elongated mounting
+  slots — hand-built slots from two boxes get skipped or leak membranes.
+
 ### keyhole_slot
 
 - `keyhole_slot(big_d, small_d, spacing, thickness, direction="+x", on=None)` —
@@ -66,6 +73,13 @@ No BuildPart context needed. Parts rest on XY (min Z = 0), centred — place wit
 
 - `boss(diameter, height, hole_d=None, hole_depth=None, draft_deg=0)` —
   vertical screw dome, optional bore and moulding draft.
+
+### tube
+
+- `tube(outer_d, inner_d, length)` — open hollow cylinder along Z resting on
+  XY (bore through both ends). Lay flat with `Rot(0, 90, 0)` (axis → X) or
+  `Rot(90, 0, 0)` (→ Y): raised tube holders, bushings, spacers. A closed
+  cylinder is NOT a tube — always use this for open bores.
 
 ### rib
 

@@ -52,6 +52,15 @@ def boss(
     return body
 
 
+def tube(outer_d: float, inner_d: float, length: float) -> Part:
+    """Open hollow cylinder along Z, resting on XY, centred — bore clean
+    through both ends (bushings, spacers, ferrule/tube holders). Lay it flat
+    with `Rot(0, 90, 0) * tube(...)` (axis → X) or `Rot(90, 0, 0)` (→ Y)."""
+    return Cylinder(outer_d / 2, length, align=_CZ) - Pos(0, 0, -0.5) * Cylinder(
+        inner_d / 2, length + 1.0, align=_CZ
+    )
+
+
 def rib(length: float, height: float, thickness: float) -> Part:
     """Triangular gusset rib: base along +X on XY, apex at X=0 rising to
     ``height``, ``thickness`` centred on Y=0. Fuse to a wall: ``p.part += Pos(...) * rib(...)``."""
