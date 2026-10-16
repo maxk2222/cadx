@@ -77,6 +77,11 @@ services:
       redis:
         condition: service_healthy
     networks: [public, internal]
+    # uncapped worker grew to ~12GB during mesh evals and took the whole
+    # Docker VM down — cap below VM total so an OOM kills one container,
+    # not the stack (eval runs additionally carry an RLIMIT_DATA guard)
+    mem_limit: 12g
+    cpus: 4
 
   cad-executor:
     build:

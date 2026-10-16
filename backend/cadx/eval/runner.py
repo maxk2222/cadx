@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import json
 import math
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -68,6 +69,25 @@ def _rss_sampler(benchmark: str, interval_s: float = 5.0) -> Any:
         yield
     finally:
         stop.set()
+
+
+def _apply_mem_limit() -> None:
+    """Cap the eval process' heap so a runaway benchmark dies with MemoryError
+    instead of taking the whole Docker VM down (observed: eval process ~12GB
+    RSS in a 15.6GB VM -> container restart mid-run).
+
+    RLIMIT_DATA over AS: file-backed mmaps (ONNX weights, venv) don't count —
+    only the malloc heap that the workbench/trace growth actually lives in.
+    """
+    import resource
+
+    limit_gb = float(os.environ.get("CADX_EVAL_RLIMIT_GB", "11"))
+    lim = int(limit_gb * 1024**3)
+    try:
+        resource.setrlimit(resource.RLIMIT_DATA, (lim, -1))
+        log.info("eval.rlimit", rlimit_gb=limit_gb)
+    except (ValueError, OSError) as e:
+        log.warning("eval.rlimit_failed", err=str(e))
 
 
 @dataclass
@@ -355,6 +375,7 @@ async def run_benchmark(
     )
     t0 = time.monotonic()
     try:
+        _apply_mem_limit()
         with _rss_sampler(bm.name):
             outcome: RunOutcome = await run_generation(ctx)
     finally:

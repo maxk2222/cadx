@@ -54,14 +54,12 @@ def _rembg() -> Any:
         try:
             from rembg import new_session  # type: ignore[import-not-found]
 
-            _rembg_session = new_session("birefnet-general")
+            # u2net only: birefnet-general's onnxruntime arena allocates
+            # ~9 GB during inference — OOM-kills the container (rc=137), and
+            # the arena stays resident even when the run errors out.
+            _rembg_session = new_session("u2net")
         except Exception:
-            try:
-                from rembg import new_session  # type: ignore[import-not-found]
-
-                _rembg_session = new_session("u2net")
-            except Exception:
-                _rembg_session = None
+            _rembg_session = None
     return _rembg_session
 
 
@@ -93,6 +91,10 @@ def reference_mask(path: Path | str) -> NDArray[np.bool_] | None:
         if alpha.min() < 128 <= alpha.max():
             return alpha > 128
     except Exception as e:
+        global _rembg_session
+        # a failed inference keeps the onnxruntime arena resident (observed:
+        # ~9 GB after a birefnet failure) — drop the session so it frees
+        _rembg_session = None
         log.debug("silhouette.mask_failed", path=str(path), error=str(e)[:160])
         return None
     return None
