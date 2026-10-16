@@ -167,6 +167,18 @@ INFO_TOOLS = [
         {"name": _s("cadlib function name")},
         ["name"],
     ),
+    _fn(
+        "quickref",
+        "Runtime-introspected API signature digest of the INSTALLED CAD "
+        "packages — the ground truth for method names, parameter order and "
+        "valid enum/size strings (beats memory and the prose reference docs "
+        "when they disagree). Topics: 'build123d' (core ops + enums), "
+        "'cadlib' (all reviewed helpers), 'bd_warehouse' (standard parts with "
+        "type/size tables), or a dotted path like 'build123d.extrude', "
+        "'bd_warehouse.fastener.CounterSunkScrew', 'cadlib.hole_grid'.",
+        {"topic": _s("topic name or dotted path to an object")},
+        ["topic"],
+    ),
 ]
 
 IMAGE_TOOLS = [
@@ -1289,6 +1301,19 @@ class ToolSession:
             sig = "(...)"
         doc = inspect.getdoc(fn) or "no docstring"
         return {"ok": True, "name": name, "signature": f"{name}{sig}", "doc": doc[:1500]}
+
+    def _tool_quickref(self, a: dict[str, Any]) -> dict[str, Any]:
+        """Signature digest — synchronous host-side introspection, cached
+        per installed package versions in cadx.agent.quickref."""
+        from cadx.agent.quickref import quickref
+
+        topic = str(a.get("topic", "")).strip()
+        if not topic:
+            return {"ok": False, "error": "topic is required"}
+        text = quickref(topic)
+        if text.startswith(("unknown quickref topic", "cannot resolve")):
+            return {"ok": False, "error": text}
+        return {"ok": True, "topic": topic, "reference": text}
 
     # -- image tools ------------------------------------------------------------ #
 

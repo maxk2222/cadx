@@ -42,6 +42,18 @@ def _extract_code_block(text: str) -> str | None:
     return m.group(1).strip() if m else None
 
 
+def _quickref_part(ctx: AgentCtx) -> dict[str, Any] | None:
+    """Runtime-introspected signature digest for the user message — gated by
+    the agent_quickref_context runtime setting (the quickref TOOL is always
+    available; this pins the most relevant digests into context)."""
+    if not ctx.runtime_settings.agent_quickref_context:
+        return None
+    from cadx.agent.quickref import context_block
+
+    text = context_block()
+    return {"type": "text", "text": text} if text else None
+
+
 def _user_parts(
     ctx: AgentCtx,
     spec: PartSpec,
@@ -58,6 +70,8 @@ def _user_parts(
     bb = bindings_block(spec)
     if bb:
         parts.append({"type": "text", "text": bb})
+    if qr := _quickref_part(ctx):
+        parts.append(qr)
     cat = catalog_block(plan, spec)
     if cat:
         parts.append({"type": "text", "text": cat})
@@ -221,6 +235,8 @@ async def repair(
     bb = bindings_block(spec)
     if bb:
         parts.append({"type": "text", "text": bb})
+    if qr := _quickref_part(ctx):
+        parts.append(qr)
     cat = catalog_block(plan, spec)
     if cat:
         parts.append({"type": "text", "text": cat})
@@ -291,6 +307,8 @@ async def _repair_session(
     bb = bindings_block(spec)
     if bb:
         parts.append({"type": "text", "text": bb})
+    if qr := _quickref_part(ctx):
+        parts.append(qr)
     cat = catalog_block(plan, spec)
     if cat:
         parts.append({"type": "text", "text": cat})
