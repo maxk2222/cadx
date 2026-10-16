@@ -53,15 +53,23 @@ Browser ──> nginx (:8080) ──> api:8000
   tool sessions (`toolloop.py`, `toolspecs.py`, `mesh_tools.py`), mesh/image
   clients (`mesh_client.py`, `image_client.py`, `concept_image.py`,
   `image_assets.py`), candidate scoring (`mesh_score.py`, `model_pick.py`,
-  `anchors.py`), `autofix.py`, context/trace/types, `worker_jobs.py`
-  (arq job runners)
+  `anchors.py`), `autofix.py`, `thinking.py` (adaptive reasoning escalation
+  policy), `quickref.py` (runtime API signature digests), `featurebind.py`
+  (deterministic spec→cadlib snippet binding), context/trace/types,
+  `worker_jobs.py` (arq job runners)
 - `cad/` — sandbox + allowlist, runner_entry, `zygote.py` (warm fork-server:
   pre-imports build123d once, forks an rlimited child per run), engine
   pipeline, analysis,
   exporters, render, contact_sheet, `errordiag.py` (exec-failure
   classification), `patch.py` (find/replace hunks), `codeedits.py`
   (line-edit primitives for tools), `features.py`/`mesh_features.py`
-  (measured geometry), `heightfield.py` (deterministic flat-part solids),
+  (measured geometry) + `recognition.py` (quiddity patterns/bosses/fillets),
+  `inspect_tools.py` (in-sandbox measure/find_holes/cross_sections helpers
+  injected by runner_entry), `verifyspec.py` (canonical conformance report),
+  `defects.py` (BRepCheck defect locations + STEP roundtrip gate),
+  `design_audit.py` (PARAMS robustness), `editfeature.py` (gated parametric
+  hole edits), `compare.py` (shape diff/interference),
+  `heightfield.py` (deterministic flat-part solids),
   `mesh_ops.py` (`MeshOp` registry + replay), `dfm/` (common/fdm/cnc/report),
   `fem/` (voxel Hex8 analysis, SIMP TopOpt, mesh extraction), `catalog.py`
   (full bd_warehouse registry + lookup/search), `partspec.py` (AST
@@ -136,6 +144,23 @@ data/library/<part_id>/<file>    reusable user library (uploaded STEP/STL bodies
   sessions converge via per-kind turn caps (`agent_tool_max_turns_edit`) and
   a detector that ends a session re-verifying the identical error signature.
   Best candidate across iterations wins, not the last one.
+- **Staged build sessions** (`agent_staged_build`): fresh codegen runs a
+  `kind="build"` tool session — the model grows a seeded buffer
+  feature-by-feature (`add_block`, sandbox `verify` per stage on the light
+  pipeline, `checkpoint`/`rollback`, `done` submits the assembled script).
+  Failing lines map back to the block that produced them. The final
+  contract is unchanged: one runnable file assigning `result`.
+- **Canonical conformance**: `verifyspec.py` condenses the executor's
+  measured evidence (validity, envelope, feature findings incl. quiddity
+  patterns, defects, STEP roundtrip, DfM) into one PASS/FAIL/UNVERIFIED
+  report — the canonical `Version.issues` entry — while
+  `agent/thinking.py` escalates reasoning depth only on hard steps and
+  stall signals instead of paying thinking tokens everywhere.
+- **Verified feature edits**: `POST /versions/{id}/edit-feature` resizes a
+  recognised plain through-hole on the stored B-Rep (no LLM); the edit
+  commits only if a hard gate passes (volume delta, envelope, other-hole
+  invariance, re-recognition, single valid solid) — dependents and faceted
+  solids get controlled refusals.
 - **Plan-lite**: `agent_plan_mode` (`full`|`lite`|`auto`) — for simple
   image-free CAD jobs a single short no-tools call replaces the catalog-aware
   planner session (`plan_lite_system.md`); `auto` selects it only when the

@@ -46,10 +46,30 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
 - Agent robustness pipeline (local-model friendly): `cad/errordiag.py` classifies
   exec failures, `cad/patch.py` applies `PatchResponse` find/replace hunks
   (contract-validated), `cad/features.py` measures geometry (holes, countersinks,
-  rounds, chamfers) for feedback, `agent/autofix.py` retries dim errors via
+  rounds, chamfers — plus quiddity patterns/bosses/fillets via
+  `cad/recognition.py`) for feedback, `agent/autofix.py` retries dim errors via
   `params_override` without an LLM call, `agent/steps/improve.py` patches the
   best-so-far code instead of regenerating. Structured iteration issues persist
-  on `Version.issues`.
+  on `Version.issues`; `cad/verifyspec.py` adds the canonical
+  PASS/FAIL/UNVERIFIED conformance report on top.
+- build123d-mcp ports (the sandbox boundary still rules): `cad/inspect_tools.py`
+  injects `measure`/`find_holes`/`cross_sections`/`clearance`/`bbox_dims` into
+  generated code via runner_entry — never import them from generated code or
+  cadlib (the ImportGuard blocks it). Staged `kind="build"` codegen sessions
+  construct parts feature-by-feature (`add_block`/`checkpoint`/`rollback` +
+  sandbox `verify`) when `agent_staged_build` != off. `cad/design_audit.py`
+  perturbs PARAMS ±ε for robustness (audit_params task + run_params
+  pre-flight), `cad/editfeature.py` resizes plain through-holes on existing
+  B-Reps behind a hard gate (`POST /versions/{id}/edit-feature`),
+  `cad/defects.py` locates BRepCheck faults with coordinates and the STEP
+  roundtrip gate catches "valid in memory, broken on export",
+  `cad/compare.py` diffs/interference-checks solids.
+- Adaptive reasoning: `agent/thinking.py` resolves per-call `extra_body`
+  (provider-dialect JSON in `llm_thinking_body_on/_off`) — `llm_thinking=auto`
+  enables thinking for `llm_thinking_hard_steps` and once the orchestrator
+  latches `ctx.thinking_escalated` (repeated error, patch miss, stalled score).
+  `agent/quickref.py` serves runtime-introspected signatures to the `quickref`
+  tool.
 - Coordinate frame contract: X=length, Y=width (+Y front), Z=height; part rests on XY plane,
   centered at origin; mm units. Result must be assigned to `result`; flat parts may also
   assign `flat_profile`. The same contract applies to post-processed meshes
