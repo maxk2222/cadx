@@ -17,6 +17,7 @@ from cadx.agent.context import (
     spec_block,
     system_prompt,
 )
+from cadx.agent.thinking import thinking_body
 from cadx.agent.toolloop import run_session, tools_enabled
 from cadx.agent.toolspecs import ToolSession
 from cadx.agent.types import AgentCtx
@@ -142,7 +143,13 @@ async def run(
         critique = res.response.parsed
         resp = res.response
     else:
-        resp = await ctx.llm.chat("vision", messages, json_schema=Critique, temperature=0.0)
+        resp = await ctx.llm.chat(
+            "vision",
+            messages,
+            json_schema=Critique,
+            temperature=0.0,
+            extra_body=thinking_body(ctx, STEP),
+        )
         assert isinstance(resp.parsed, Critique)
         critique = resp.parsed
     await ctx.trace.record(
@@ -176,7 +183,13 @@ async def run(
                 ),
             }
         )
-        resp2 = await ctx.llm.chat("vision", messages, json_schema=Critique, temperature=0.0)
+        resp2 = await ctx.llm.chat(
+            "vision",
+            messages,
+            json_schema=Critique,
+            temperature=0.0,
+            extra_body=thinking_body(ctx, STEP),
+        )
         assert isinstance(resp2.parsed, Critique)
         await ctx.trace.record(
             step=f"{STEP}_reask",

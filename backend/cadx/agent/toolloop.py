@@ -26,6 +26,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from cadx.agent.thinking import thinking_body, thinking_on
 from cadx.agent.toolspecs import ToolSession
 from cadx.agent.types import AgentCtx
 from cadx.llm.client import LLMResponse
@@ -257,6 +258,8 @@ async def run_session(  # noqa: C901
         _trim_tool_results(msgs)
         # fresh each turn: e.g. `verify` drops out once its budget is spent
         tools = session.tools()
+        # resolved per turn — the escalation latch may flip mid-session
+        thinking = thinking_body(ctx, step)
         resp = await ctx.llm.chat(
             role,
             msgs,
@@ -264,6 +267,7 @@ async def run_session(  # noqa: C901
             tools=tools,
             temperature=temperature,
             on_delta=on_delta,
+            extra_body=thinking,
         )
         tool_calls = resp.tool_calls or []
         await ctx.trace.record(
@@ -275,6 +279,7 @@ async def run_session(  # noqa: C901
             parsed={
                 "tool_calls": [f"{tc.name}({_short(tc.raw_arguments)})" for tc in tool_calls],
                 "has_final": not tool_calls,
+                "thinking": thinking_on(ctx, step),
             },
             prompt_tokens=resp.prompt_tokens,
             completion_tokens=resp.completion_tokens,
@@ -464,6 +469,7 @@ async def _grace_turn(
                 },
             ],
             json_schema=json_schema,
+            extra_body=thinking_body(ctx, step),
         )
     except Exception as e:
         log.warning("tool_session.grace_failed", step=step, error=str(e))
@@ -474,7 +480,7 @@ async def _grace_turn(
         model=resp.model,
         messages=msgs,
         response_text=resp.text,
-        parsed={"grace_turn": True},
+        parsed={"grace_turn": True, "thinking": thinking_on(ctx, step)},
         prompt_tokens=resp.prompt_tokens,
         completion_tokens=resp.completion_tokens,
         latency_ms=resp.latency_ms,

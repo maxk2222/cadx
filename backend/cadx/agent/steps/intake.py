@@ -15,6 +15,7 @@ from cadx.agent.context import (
     system_prompt,
     user_block,
 )
+from cadx.agent.thinking import thinking_body
 from cadx.agent.toolloop import run_session, tools_enabled
 from cadx.agent.toolspecs import ToolSession
 from cadx.agent.types import IMAGE_INPUT_KINDS, AgentCtx
@@ -161,7 +162,13 @@ async def extract_features(ctx: AgentCtx, spec: PartSpec) -> _FeaturesOut:
         {"role": "user", "content": user_content},
     ]
     try:
-        resp = await ctx.llm.chat("vision", messages, json_schema=_FeaturesOut, temperature=0.0)
+        resp = await ctx.llm.chat(
+            "vision",
+            messages,
+            json_schema=_FeaturesOut,
+            temperature=0.0,
+            extra_body=thinking_body(ctx, STEP),
+        )
         parsed = resp.parsed if isinstance(resp.parsed, _FeaturesOut) else _FeaturesOut()
         await ctx.trace.record(
             step="intake_features",
@@ -196,7 +203,13 @@ async def extract_load_cases(
         {"role": "user", "content": [{"type": "text", "text": user_text}]},
     ]
     try:
-        resp = await ctx.llm.chat("vision", messages, json_schema=_LoadCasesOut, temperature=0.0)
+        resp = await ctx.llm.chat(
+            "vision",
+            messages,
+            json_schema=_LoadCasesOut,
+            temperature=0.0,
+            extra_body=thinking_body(ctx, STEP),
+        )
         parsed = resp.parsed if isinstance(resp.parsed, _LoadCasesOut) else _LoadCasesOut()
         await ctx.trace.record(
             step=STEP,
@@ -274,7 +287,13 @@ async def run(ctx: AgentCtx) -> PartSpec:
             spec.process = ctx.settings.process
         ctx.spec = spec
         return spec
-    resp = await ctx.llm.chat("vision", messages, json_schema=PartSpec, temperature=0.0)
+    resp = await ctx.llm.chat(
+        "vision",
+        messages,
+        json_schema=PartSpec,
+        temperature=0.0,
+        extra_body=thinking_body(ctx, STEP),
+    )
     assert isinstance(resp.parsed, PartSpec)
     await ctx.trace.record(
         step=STEP,

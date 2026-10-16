@@ -58,6 +58,24 @@ class _RetryNoStream(Exception):
     """Streaming request was rejected (e.g. 400) -> caller falls back to _post."""
 
 
+# payload keys this client sets itself — anything beyond these came from
+# llm_extra_body / per-call extra_body (e.g. thinking dialects like
+# `chat_template_kwargs` or `reasoning_effort`) and is droppable on a 400
+_CORE_PAYLOAD_KEYS = frozenset(
+    {
+        "model",
+        "messages",
+        "temperature",
+        "max_tokens",
+        "tools",
+        "tool_choice",
+        "response_format",
+        "stream",
+        "stream_options",
+    }
+)
+
+
 _STRUCT_CHARS = '\n"{}[]()<>0123456789'
 
 _STOPWORDS = frozenset(
@@ -287,6 +305,8 @@ class LLMClient:
         tools), then `tools`+`tool_choice`. Stripping tools marks
         tools_ok[role]=False so later calls for THIS role skip them entirely.
         With tools_mode="on" tools are never stripped — the 400 propagates.
+        Last resort: provider-dialect extras (llm_extra_body / per-call
+        extra_body / thinking bodies) — one retry without any non-core key.
         """
         for key in ("response_format", "tools"):
             if resp.status_code != 400 or key not in payload:
@@ -301,6 +321,18 @@ class LLMClient:
             resp = await client.post(
                 f"{self.base_url}/chat/completions", json=payload, headers=headers
             )
+        if resp.status_code == 400:
+            extras = sorted(k for k in payload if k not in _CORE_PAYLOAD_KEYS)
+            if extras:
+                log.warning(
+                    "llm.payload_key.unsupported",
+                    key=",".join(extras),
+                    status=resp.status_code,
+                )
+                payload = {k: v for k, v in payload.items() if k in _CORE_PAYLOAD_KEYS}
+                resp = await client.post(
+                    f"{self.base_url}/chat/completions", json=payload, headers=headers
+                )
         return resp, payload
 
     async def _consume_stream(  # noqa: C901
@@ -470,6 +502,7 @@ class LLMClient:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str = "auto",
         on_delta: Callable[[str], None] | None = None,
+        extra_body: dict[str, Any] | None = None,
     ) -> LLMResponse:
         model = self.models[role]
         payload: dict[str, Any] = {
@@ -481,6 +514,9 @@ class LLMClient:
             "max_tokens": max_tokens or self.runtime_settings.llm_max_tokens,
         }
         payload.update(self.extra_body)
+        # per-call body (e.g. the adaptive thinking dialect) is merged LAST —
+        # on key conflicts it wins over the client-wide llm_extra_body
+        payload.update(extra_body or {})
         send_tools = self._send_tools(tools, role)
         if send_tools:
             payload["tools"] = tools

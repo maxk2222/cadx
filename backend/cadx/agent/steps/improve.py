@@ -24,6 +24,7 @@ from cadx.agent.context import (
     spec_block,
     system_prompt,
 )
+from cadx.agent.thinking import thinking_body
 from cadx.agent.toolloop import run_session, tools_enabled
 from cadx.agent.toolspecs import ToolSession, VerifyFn
 from cadx.agent.types import AgentCtx
@@ -174,7 +175,13 @@ async def run(
             "content": _user_parts(ctx, spec, plan, base_code, issues, features, patch_errors),
         },
     ]
-    resp = await ctx.llm.chat("code", messages, json_schema=PatchResponse, temperature=0.1)
+    resp = await ctx.llm.chat(
+        "code",
+        messages,
+        json_schema=PatchResponse,
+        temperature=0.1,
+        extra_body=thinking_body(ctx, STEP if attempt == 1 else f"{STEP}_{attempt}"),
+    )
     assert isinstance(resp.parsed, PatchResponse)
     await ctx.trace.record(
         step=STEP if attempt == 1 else f"{STEP}_{attempt}",

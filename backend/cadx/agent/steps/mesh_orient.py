@@ -13,6 +13,7 @@ from typing import Any
 
 from cadx import storage
 from cadx.agent.context import images_block, system_prompt
+from cadx.agent.thinking import thinking_body
 from cadx.agent.types import AgentCtx
 from cadx.llm.images import image_part
 from cadx.llm.schemas import MeshOrientation
@@ -100,6 +101,7 @@ async def run(ctx: AgentCtx, iteration: int, mesh_rel: str) -> dict[str, str]:
             ],
             json_schema=MeshOrientation,
             temperature=0.0,
+            extra_body=thinking_body(ctx, "mesh_orient"),
         )
         await ctx.trace.record(
             step="orient",

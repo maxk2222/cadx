@@ -2258,6 +2258,17 @@ async def _run_cad(  # noqa: C901
     # session so it knows the previous patch attempt missed the code text
     pending_patch_errors: list[str] | None = None
 
+    def _escalate_thinking(reason: str) -> bool:
+        """Latch adaptive-reasoning escalation for the rest of the job —
+        `llm_thinking="auto"` then merges the thinking-on payload into
+        every subsequent call (run_session re-reads it each turn).
+        Returns True only on the flip so callers emit once."""
+        if ctx.thinking_escalated:
+            return False
+        ctx.thinking_escalated = True
+        log.info("agent.thinking_escalated", iteration=it, reason=reason)
+        return True
+
     def issues_text(items: list[dict[str, Any]]) -> str:
         from cadx.agent.context import issues_block
 
@@ -2321,6 +2332,8 @@ async def _run_cad(  # noqa: C901
                     break
             if code_resp is None:
                 improve_failures += 1
+                if _escalate_thinking("improve patch failed"):
+                    await ctx.emit("improve", it, "patch failed — escalating reasoning")
                 await ctx.emit("improve", it, "patch failed — falling back to fresh codegen next")
                 continue
         else:
@@ -2332,6 +2345,8 @@ async def _run_cad(  # noqa: C901
                     plan,
                     iteration=it,
                     feedback=issues_text(issues) if issues else None,
+                    verify_fn=_session_verify_fn(ctx, it, art_attempt),
+                    render_fn=_session_render_fn(ctx, it, art_attempt),
                 )
             except Exception as e:
                 issues = [
@@ -2386,6 +2401,8 @@ async def _run_cad(  # noqa: C901
                 # a fresh codegen pass has better odds than more repairs
                 err_sig = (exec_result.get("error") or "")[:200]
                 if err_sig and err_sig == prev_err_sig:
+                    if _escalate_thinking("same execution error twice"):
+                        await ctx.emit("repair", it, "same error twice — escalating reasoning")
                     await ctx.emit("repair", it, "same error twice — repair not converging")
                     break
                 prev_err_sig = err_sig
@@ -2438,6 +2455,8 @@ async def _run_cad(  # noqa: C901
                     # the next improve session patches best.code — tell it the
                     # repair's patch attempt already missed the text
                     pending_patch_errors = perrs
+                    if _escalate_thinking("repair patch did not apply"):
+                        await ctx.emit("repair", it, "patch missed — escalating reasoning")
                     break
                 code = new_code
 
@@ -2716,6 +2735,10 @@ async def _run_cad(  # noqa: C901
         if cur_score > best_score:
             best_score = cur_score
             best_score_it = it
+        elif it - best_score_it >= s.llm_thinking_escalate_after and _escalate_thinking(
+            f"no new best score for {it - best_score_it} iterations"
+        ):
+            await ctx.emit("improve", it, "score stalled — escalating reasoning")
 
         major = [d for d in critique.discrepancies if d.severity == "major"]
         await ctx.emit(

@@ -12,6 +12,7 @@ from cadx.agent.context import (
     spec_block,
     system_prompt,
 )
+from cadx.agent.thinking import thinking_body
 from cadx.agent.toolloop import run_session, tools_enabled
 from cadx.agent.toolspecs import ToolSession
 from cadx.agent.types import IMAGE_INPUT_KINDS, AgentCtx
@@ -50,7 +51,13 @@ async def _run_lite(ctx: AgentCtx, spec: PartSpec, forced: str) -> ModelingPlan:
         {"role": "system", "content": system_prompt("plan_lite_system.md")},
         {"role": "user", "content": [{"type": "text", "text": user}]},
     ]
-    resp = await ctx.llm.chat("code", messages, json_schema=ModelingPlan, temperature=0.0)
+    resp = await ctx.llm.chat(
+        "code",
+        messages,
+        json_schema=ModelingPlan,
+        temperature=0.0,
+        extra_body=thinking_body(ctx, STEP),
+    )
     assert isinstance(resp.parsed, ModelingPlan)
     await ctx.trace.record(
         step=f"{STEP}_lite",
@@ -141,7 +148,13 @@ async def run(ctx: AgentCtx, spec: PartSpec) -> ModelingPlan:
         _finalize(plan, forced)
         ctx.plan = plan
         return plan
-    resp = await ctx.llm.chat("code", messages, json_schema=ModelingPlan, temperature=0.0)
+    resp = await ctx.llm.chat(
+        "code",
+        messages,
+        json_schema=ModelingPlan,
+        temperature=0.0,
+        extra_body=thinking_body(ctx, STEP),
+    )
     assert isinstance(resp.parsed, ModelingPlan)
     await ctx.trace.record(
         step=STEP,

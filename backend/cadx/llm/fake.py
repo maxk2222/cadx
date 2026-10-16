@@ -58,6 +58,7 @@ class FakeLLM:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str = "auto",
         on_delta: Callable[[str], None] | None = None,
+        extra_body: dict[str, Any] | None = None,
     ) -> LLMResponse:
         self.calls.append(
             {
@@ -65,6 +66,7 @@ class FakeLLM:
                 "messages": messages,
                 "tools": bool(tools),
                 "tool_names": [t.get("function", {}).get("name") for t in (tools or [])],
+                "extra_body": extra_body,
             }
         )
         self.total_usage["calls"] += 1
