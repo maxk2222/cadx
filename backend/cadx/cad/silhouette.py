@@ -152,47 +152,29 @@ def _norm_mask(mask: NDArray[np.bool_]) -> NDArray[np.bool_] | None:
     return out
 
 
-def _projected_polygon(mesh: Any, normal: tuple[float, float, float]) -> Any:
-    """Shapely polygon of the mesh's orthographic silhouette along `normal`."""
-    try:
-        path = mesh.projected(normal=list(normal))
-        polys = [p for p in path.polygons_full if p.area > 0]
-        if not polys:
-            return None
-        from shapely.ops import unary_union
+def _projected_faces(mesh: Any, normal: tuple[float, float, float]) -> NDArray[Any] | None:
+    """2D vertex coords of every face projected orthographically along `normal`.
 
-        return unary_union(polys).buffer(0)
-    except Exception:
+    trimesh.projected() silently returns degenerate paths for some meshes and
+    normals (observed: a watertight 40k-face knob produced 11 zero-area
+    polygons along ±y while ±x worked). Rasterising the projected triangles
+    directly is exact and cheap — the union of filled triangles IS the
+    silhouette, concavity included.
+    """
+    n = np.asarray(normal, dtype=float)
+    n /= np.linalg.norm(n)
+    # image-up = world +Z for side views, +Y for top/bottom so the normalised
+    # grid stays comparable to reference photos
+    up_hint = np.array([0.0, 0.0, 1.0]) if abs(n[2]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    u = np.cross(up_hint, n)
+    u /= np.linalg.norm(u)
+    v = np.cross(n, u)
+    verts = np.asarray(mesh.vertices, dtype=float)
+    pts = np.stack([verts @ u, verts @ v], axis=1)
+    faces = np.asarray(mesh.faces)
+    if not len(pts) or not len(faces):
         return None
-
-
-def _rasterize_polygon(poly: Any) -> NDArray[np.bool_] | None:
-    """Polygon rasterised onto the normalised grid (uniform scale, centred)."""
-    if poly is None or poly.is_empty:
-        return None
-    from PIL import Image, ImageDraw
-
-    minx, miny, maxx, maxy = poly.bounds
-    w, h = maxx - minx, maxy - miny
-    if w <= 0 or h <= 0:
-        return None
-    scale = (_GRID - 8) / max(w, h)
-    nw, nh = w * scale, h * scale
-    x0, y0 = (_GRID - nw) / 2, (_GRID - nh) / 2
-
-    def tx(coords: Any) -> list[tuple[float, float]]:
-        return [(x0 + (float(x) - minx) * scale, y0 + (float(y) - miny) * scale) for x, y in coords]
-
-    img = Image.new("L", (_GRID, _GRID), 0)
-    draw = ImageDraw.Draw(img)
-    geoms = getattr(poly, "geoms", None) or [poly]
-    for g in geoms:
-        if g.is_empty or g.area <= 0:
-            continue
-        draw.polygon(tx(g.exterior.coords), fill=255)
-        for interior in g.interiors:
-            draw.polygon(tx(interior.coords), fill=0)
-    return np.asarray(img) > 128
+    return pts[faces]  # (F, 3, 2) — each face's projected triangle
 
 
 def mesh_view_mask(mesh: Any, view: str = "+y") -> NDArray[np.bool_] | None:
@@ -203,9 +185,29 @@ def mesh_view_mask(mesh: Any, view: str = "+y") -> NDArray[np.bool_] | None:
     normal = _VIEWS.get(view)
     if normal is None:
         return None
-    poly = _projected_polygon(mesh, normal)
-    mask = _rasterize_polygon(poly)
-    return None if mask is None else np.flipud(mask)
+    tris = _projected_faces(mesh, normal)
+    if tris is None:
+        return None
+    minx = float(tris[..., 0].min())
+    maxx = float(tris[..., 0].max())
+    miny = float(tris[..., 1].min())
+    maxy = float(tris[..., 1].max())
+    w, h = maxx - minx, maxy - miny
+    if w <= 0 or h <= 0:
+        return None
+    from PIL import Image, ImageDraw
+
+    scale = (_GRID - 8) / max(w, h)
+    x0 = (_GRID - w * scale) / 2
+    y0 = (_GRID - h * scale) / 2
+    px = (tris[..., 0] - minx) * scale + x0
+    py = (tris[..., 1] - miny) * scale + y0
+
+    img = Image.new("L", (_GRID, _GRID), 0)
+    draw = ImageDraw.Draw(img)
+    for tri in np.stack([px, py], axis=-1):
+        draw.polygon([tuple(p) for p in tri], fill=255)
+    return np.flipud(np.asarray(img) > 128)
 
 
 def _iou(a: NDArray[np.bool_], b: NDArray[np.bool_]) -> float:
