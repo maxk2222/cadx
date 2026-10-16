@@ -128,6 +128,9 @@ def _rss_sampler(benchmark: str, interval_s: float = 5.0) -> Any:
         stop.set()
 
 
+_rlimit_known_unsupported = False
+
+
 def _apply_mem_limit() -> None:
     """Cap the eval process' heap so a runaway benchmark dies with MemoryError
     instead of taking the whole Docker VM down (observed: eval process ~12GB
@@ -136,14 +139,25 @@ def _apply_mem_limit() -> None:
     RLIMIT_DATA over AS: file-backed mmaps (ONNX weights, venv) don't count —
     only the malloc heap that the workbench/trace growth actually lives in.
     """
+    global _rlimit_known_unsupported
+    if _rlimit_known_unsupported:
+        return
+
     import resource
 
     limit_gb = float(os.environ.get("CADX_EVAL_RLIMIT_GB", "11"))
     lim = int(limit_gb * 1024**3)
     try:
-        resource.setrlimit(resource.RLIMIT_DATA, (lim, -1))
+        _soft, hard = resource.getrlimit(resource.RLIMIT_DATA)
+        # keep the current hard limit — raising it to RLIM_INFINITY needs
+        # privileges unprivileged host runs don't have
+        soft = lim if hard == resource.RLIM_INFINITY else min(lim, hard)
+        resource.setrlimit(resource.RLIMIT_DATA, (soft, hard))
         log.info("eval.rlimit", rlimit_gb=limit_gb)
     except (ValueError, OSError) as e:
+        # e.g. macOS caps RLIMIT_DATA below the reported RLIM_INFINITY — the
+        # cap is best-effort anyway, so warn once and stop retrying
+        _rlimit_known_unsupported = True
         log.warning("eval.rlimit_failed", err=str(e))
 
 
