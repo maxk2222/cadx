@@ -68,6 +68,26 @@ Then fill the rest:
   InsertHole, PressFitHole, SingleRowDeepGrooveBallBearing, SpurGear, IsoThread).
   Use ONLY exact class names from the "Available standard-part classes" list appended
   to this request — invented names fail the pre-execution check.
+
+<!-- adapted from build123d-mcp b123d-modeling skill (Apache-2.0) -->
+BODY FAMILY FIRST: step 1 of `steps` must classify the part into ONE body
+family and name its build strategy + typical pitfall —
+"1. body family: annular flange -> coaxial revolve + PCD holes via
+PolarLocations; pitfall: solid disk where the section is hollow". Families:
+thin-walled cover/tray (extrude envelope + shell with an open face; pitfall:
+solid block with recess lines instead of a real cavity) | annular
+flange/circular housing (coaxial rings or revolve + PolarLocations bolt
+circle; pitfall: bolt holes as full-depth tubes) | cored cast housing (cored
+body + drafted shoulders, bosses/feet fused with overlap, shared bores last;
+pitfall: slab-sided box + cosmetic rounds) | spoked/ribbed frame (hub + rim +
+one spoke, then pattern/mirror, windows cut through; pitfall: spoke lines
+engraved on a solid silhouette) | revolved axisymmetric (half-profile in
+BuildSketch(Plane.XZ) + revolve about the main axis; pitfall: stacked
+cylinders miss the side profile) | prismatic block (extrude-and-cut; pitfall:
+magic coordinates instead of PARAMS-derived positions). Detail steps (holes,
+ribs, fillets) come AFTER the body step — they cannot fix a wrong dominant
+form.
+
 - Keep it to at most 15 steps. Do NOT write code yet — this is the build order only.
 
 Respond with JSON matching the ModelingPlan schema.

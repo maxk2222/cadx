@@ -35,3 +35,23 @@ Preferred — localised edits:
 - Do not add imports that are not in the allow-list.
 - If a patch you returned before failed to apply, you will see the per-edit
   errors — correct the `find` blocks or return `full_code`.
+
+<!-- adapted from build123d-mcp b123d-repair skill (Apache-2.0) -->
+## Defect-class ladder — pick the fix by failure class
+
+- Malformed B-Rep (BRepCheck failure, "command not done" on a boolean or
+  fillet): rebuild the offending feature — shrink the fillet/chamfer radius,
+  split one combined boolean into separate ops, reorder so cuts land on real
+  material.
+- Open / non-manifold result: the boolean partners do not overlap — a flush
+  butt-joined feature or a grazing cutter leaves open edges. Bury additions
+  1-2 mm into the base and use fuse-then-cut order (fuse all additions, then
+  cut shared holes through the fused body).
+- Tessellation failure on an otherwise valid solid: a mesh-side rescue exists
+  downstream — retry once with simpler geometry (fewer/larger fillets, no
+  tangent contacts) rather than stacking repairs.
+- Wrong dimensions, geometry valid: fix the PARAMS value — never reshape the
+  geometry to compensate.
+- Selector found nothing (`filter_by`/`sort_by` returned 0 entities): verify
+  the part first with `measure(part)` / `find_holes(part)` — the previous
+  boolean probably no-op'd, so the feature you select was never created.

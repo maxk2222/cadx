@@ -68,6 +68,11 @@
      (endpoints at z=0 plus a closing line, or `closed_polyline`). Then
      `revolve(axis=Axis.X)` inside `BuildPart()`. An open profile or tips
      that don't reach the axis leave the solid open/gapped.
+   <!-- adapted from build123d-mcp b123d-modeling skill (Apache-2.0) -->
+   - After EVERY boolean (`+`, `-`, `&`, `mode=Mode.SUBTRACT`) verify it
+     actually changed the part: `measure(part)` and compare face/solid counts
+     — unchanged counts mean the boolean silently no-op'd (misaligned or
+     grazing cutter). Fix the cutter before adding the next feature.
 4. Coordinate frame: X = length (left->right), Y = width (+Y is the "front" face),
    Z = height (up). The part must rest on the XY plane (min Z = 0) and be centred on
    the origin in X and Y. Use `align=(Align.CENTER, Align.CENTER, Align.MIN)` on
@@ -75,6 +80,10 @@
 5. Units are millimetres.
 6. A helper `load_reference(asset_id: str) -> Shape` is predefined for user-provided
    STEP/STL reference bodies (their asset ids are listed in the context).
+   Injected inspect helpers (bare names, no import needed):
+   - `measure(shape)` -> dict with volume, bbox and face/solid counts.
+   - `find_holes(shape)` -> list of holes, each with position, diameter, depth, axis.
+   - `bbox_dims(shape)` -> `[dx, dy, dz]` overall extents in mm.
 7. HYBRID MODE (only when the context mentions it): `load_mesh_solid() -> Shape` returns
    the generated organic mesh as a faceted B-Rep solid, and `MESH_BBOX` holds its
    `[L, W, H]` in mm. The solid is already oriented and scaled: it rests on XY and is
