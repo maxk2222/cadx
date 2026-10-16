@@ -28,6 +28,19 @@ ALLOWED_MODULES = {
     "dataclasses",
 }
 
+# In-namespace measurement primitives (measure/find_holes/cross_sections/...)
+# for generated code — a trusted module with no cadx imports, same pattern as
+# mesh_boolean: imported here (module top runs from a runner frame, or before
+# the guard exists at all) and injected into the exec namespace below. The
+# cold-script path (`python -I runner_entry.py`) may lack `cadx` on sys.path
+# until main() re-adds the cad/ dir — resolved there as fallback.
+try:
+    from cadx.cad import inspect_tools as _inspect
+except Exception:
+    # any failure here must not take the runner down — resolved/retried in
+    # main(); generated code then gets self-explaining stubs instead
+    _inspect = None
+
 
 class _ImportGuard(importlib.abc.MetaPathFinder):
     """Second line of defence: block imports issued *by generated code* outside
@@ -165,6 +178,24 @@ def main(workdir: Path | None = None) -> int:  # noqa: C901
     # python -I strips the script dir; add it back so `import cadlib` resolves.
     # Other modules on this path are still blocked by _ImportGuard.
     sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+    # module-top import may have failed when `cadx` isn't installed (bare
+    # sandbox path) — resolve the sibling module now that cad/ is on sys.path.
+    # The import runs from this runner frame, so the guard permits its
+    # build123d/OCP imports.
+    global _inspect
+    if _inspect is None:
+        try:
+            from cadx.cad import inspect_tools as _inspect_pkg
+
+            _inspect = _inspect_pkg
+        except Exception:
+            try:
+                import inspect_tools as _inspect_local  # type: ignore[no-redef]
+
+                _inspect = _inspect_local
+            except Exception:
+                _inspect = None
 
     # mesh-native boolean backend (manifold3d) — trusted module, imported from
     # this runner frame so the import guard permits trimesh/OCP. Injected into
@@ -373,6 +404,37 @@ def main(workdir: Path | None = None) -> int:  # noqa: C901
         "load_image_profile": load_image_profile,
     }
 
+    # measurement/inspection primitives — bare names in generated code, e.g.
+    # `print(measure(part))`. A failed import degrades to stubs that explain
+    # themselves instead of a bare NameError.
+    if _inspect is not None:
+        namespace.update(
+            {
+                "measure": _inspect.measure,
+                "find_holes": _inspect.find_holes,
+                "find_bosses": _inspect.find_bosses,
+                "find_countersinks": _inspect.find_countersinks,
+                "cross_sections": _inspect.cross_sections,
+                "clearance": _inspect.clearance,
+                "bbox_dims": _inspect.bbox_dims,
+            }
+        )
+    else:
+
+        def _unavailable_inspect(*_args, **_kwargs):
+            raise RuntimeError("inspection helpers failed to load in the runner")
+
+        for _name in (
+            "measure",
+            "find_holes",
+            "find_bosses",
+            "find_countersinks",
+            "cross_sections",
+            "clearance",
+            "bbox_dims",
+        ):
+            namespace[_name] = _unavailable_inspect
+
     code = (workdir / "model.py").read_text(encoding="utf-8")
     stdout_buf = io.StringIO()
     result: dict[str, object] = {"ok": False}
@@ -389,7 +451,7 @@ def main(workdir: Path | None = None) -> int:  # noqa: C901
     finally:
         sys.stdout = sys.__stdout__
 
-    result["stdout"] = stdout_buf.getvalue()[-4000:]
+    result["stdout"] = stdout_buf.getvalue()[-8000:]
 
     # `error` holds the real failure even when every traceback frame was in
     # runner_entry.py itself (helper raised) — never mask it as "no result"
