@@ -296,6 +296,7 @@ dependencies = [
     { name = "python-multipart" },
     { name = "pyvista" },
     { name = "pyyaml" },
+    { name = "quiddity" },
     { name = "redis" },
     { name = "rembg", extra = ["cpu"] },
     { name = "rtree" },
@@ -342,6 +343,7 @@ requires-dist = [
     { name = "python-multipart", specifier = ">=0.0.9" },
     { name = "pyvista", specifier = ">=0.44" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "quiddity", specifier = ">=0.3.11,<0.4" },
     { name = "redis", specifier = ">=5.0" },
     { name = "rembg", extras = ["cpu"], specifier = ">=2.0.57" },
     { name = "rtree", specifier = ">=1.0" },
@@ -2911,6 +2913,22 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/da/92/1446574745d74df0c92e6aa4a7b0b3130706a4142b2d1a5869f2eaa423c6/pyyaml-6.0.3-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:16249ee61e95f858e83976573de0f5b2893b3677ba71c9dd36b9cf8be9ac6d65", size = 829923, upload-time = "2025-09-25T21:32:54.537Z" },
     { url = "https://files.pythonhosted.org/packages/f0/7a/1c7270340330e575b92f397352af856a8c06f230aa3e76f86b39d01b416a/pyyaml-6.0.3-cp314-cp314t-win_amd64.whl", hash = "sha256:4ad1906908f2f5ae4e5a8ddfce73c320c2a1429ec52eafd27138b7f1cbe341c9", size = 174062, upload-time = "2025-09-25T21:32:55.767Z" },
     { url = "https://files.pythonhosted.org/packages/f1/12/de94a39c2ef588c7e6455cfbe7343d3b2dc9d6b6b2f40c4c6565744c873d/pyyaml-6.0.3-cp314-cp314t-win_arm64.whl", hash = "sha256:ebc55a14a21cb14062aa4162f906cd962b28e2e9ea38f9b4391244cd8de4ae0b", size = 149341, upload-time = "2025-09-25T21:32:56.828Z" },
+]
+
+[[package]]
+name = "quiddity"
+version = "0.3.11"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "build123d" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/db/8f/89b60de4344b55f5cf81e10d4f47c5c2636c5d07934afd6f37e37789deb3/quiddity-0.3.11.tar.gz", hash = "sha256:20dc95e7b91537bb8db88f50ffbb965241f12e8a7528759f817eddef2e3ca7c8", size = 26686037, upload-time = "2026-10-15T17:42:35.304Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/db/bf/98098a3eec4b34f331a7fc09116bddf15b41b01a74f369600f7e226e9f1a/quiddity-0.3.11-py3-none-any.whl", hash = "sha256:950828b5f23b38ac1deb17bf9d478c15ba5c79b9c799b8bf5ebb6197dd332cdf", size = 586172, upload-time = "2026-10-15T17:42:33.479Z" },
 ]
 
 [[package]]

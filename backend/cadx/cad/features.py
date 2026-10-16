@@ -37,6 +37,56 @@ class MeasuredBoss(BaseModel):
     height: float = 0.0
 
 
+class MeasuredPattern(BaseModel):
+    """A recognised repetition of features — bolt circle, linear array, rect
+    grid, slot array/grid (quiddity). Plain records only; members carry the
+    per-member centres when the recogniser reports them."""
+
+    kind: str = ""  # bolt_circle|linear_array|rect_grid|rect_set|slot_array|slot_grid|…
+    count: int = 0
+    axis: str = ""  # member bore axis (holes) or array direction (slots)
+    center: list[float] = Field(default_factory=list)  # pattern centre [x, y, z]
+    diameter: float = 0.0  # pitch-circle diameter (bolt circles only)
+    width: float = 0.0
+    height: float = 0.0
+    pitch: float = 0.0  # member pitch (linear arrays / grids)
+    rows: int = 0
+    cols: int = 0
+    angle: float = 0.0
+    member_diameter: float = 0.0  # mean member bore Ø (or slot width)
+    members: list[list[float]] = Field(default_factory=list)  # member centres
+
+
+class MeasuredBoredBoss(BaseModel):
+    """A protruding boss with a coaxial bore (standoff with a screw hole)."""
+
+    axis: str = ""
+    location: list[float] = Field(default_factory=list)
+    boss_diameter: float = 0.0
+    bore_diameter: float = 0.0
+    boss_height: float = 0.0
+    bore_depth: float = 0.0
+
+
+class MeasuredChamfer(BaseModel):
+    """A recognised chamfer edge (quiddity) — richer than a 45°-plane count."""
+
+    axis: str = ""  # edge direction letter: x|y|z
+    leg1: float = 0.0
+    leg2: float = 0.0
+    angle: float = 0.0
+    at: list[float] = Field(default_factory=list)
+
+
+class MeasuredFillet(BaseModel):
+    """A recognised fillet edge (quiddity): radius + convex/concave side."""
+
+    axis: str = ""  # edge direction letter: x|y|z
+    radius: float = 0.0
+    at: list[float] = Field(default_factory=list)
+    side: str = ""  # convex | concave
+
+
 class MeasuredFeatures(BaseModel):
     hole_groups: list[MeasuredHoleGroup] = Field(default_factory=list)
     total_holes: int = 0
@@ -47,6 +97,14 @@ class MeasuredFeatures(BaseModel):
     chamfer_faces: int = 0  # 45° planes + cones too wide to be a countersink
     bosses: list[MeasuredBoss] = Field(default_factory=list)  # protruding cylinders
     approximate: bool = False  # faceted/mesh source — treat findings loosely
+    # quiddity recognition enrichment (optional dep): additive pattern /
+    # relationship evidence — never double-counts the analytic measurements
+    recognition_ran: bool = False  # quiddity produced evidence for this shape
+    hole_patterns: list[MeasuredPattern] = Field(default_factory=list)
+    slot_patterns: list[MeasuredPattern] = Field(default_factory=list)
+    bored_bosses: list[MeasuredBoredBoss] = Field(default_factory=list)
+    chamfers: list[MeasuredChamfer] = Field(default_factory=list)
+    fillets: list[MeasuredFillet] = Field(default_factory=list)
 
 
 class FeatureFinding(BaseModel):
@@ -99,6 +157,12 @@ _HOLE_TYPES = {
 }
 _CSK_RE = re.compile(r"countersunk|csk|senk(?!.*zylinder)|flat.?head", re.I)
 _CBORE_RE = re.compile(r"counterbore|cbore|zylindersenk|socket.?head", re.I)
+# spec vocabulary for repeated-hole arrangements — a "hole" feature described
+# as a bolt circle is also a pattern expectation, not just a count
+_PATTERN_RE = re.compile(
+    r"bolt.?circle|pitch.?circle|\bpcd\b|pattern|array|grid|loch(?:bild|kreis|reihe)",
+    re.I,
+)
 # protruding cylinders (tube, boss, standoff …) — the feature's own axis is
 # meaningful, unlike a fillet radius. 'dome' is deliberately absent: a dome
 # is a curved cap, never measurable as a protruding cylinder.
@@ -531,7 +595,54 @@ def extract_features(  # noqa: C901 — sequential measurement passes
     # l_bracket leg slot measured as 0 elongated voids on a correct part).
     if stl_path is not None and (not holes or not out.slots):
         _mesh_fallback(out, stl_path, mesh)
+
+    # quiddity feature recognition (optional dep): enriches with pattern and
+    # relationship evidence the face scan cannot express. Additive only —
+    # plain bores/bosses stay owned by the analytic scan above.
+    try:
+        from cadx.cad.recognition import build_recognition_evidence
+
+        _merge_recognition(out, build_recognition_evidence(shape))
+    except Exception:
+        pass
     return out
+
+
+def _merge_recognition(out: MeasuredFeatures, rec: dict[str, Any]) -> None:
+    """Union quiddity recognition evidence into measured features.
+
+    The additive pattern/boss records are quiddity-only evidence. For the
+    shared counters (countersinks, counterbores, chamfer_faces, rounds) the
+    analytic `_scan_faces` measurement stays authoritative — the recogniser's
+    count only rescues features the face heuristics under-detected (max() of
+    two detectors over the SAME geometry is a union, not a double count).
+    """
+    if not rec:
+        return
+    out.recognition_ran = True
+    field_models = (
+        ("hole_patterns", MeasuredPattern),
+        ("slot_patterns", MeasuredPattern),
+        ("bored_bosses", MeasuredBoredBoss),
+        ("chamfers", MeasuredChamfer),
+        ("fillets", MeasuredFillet),
+    )
+    for key, model in field_models:
+        parsed = []
+        for row in rec.get(key) or []:
+            try:
+                parsed.append(model.model_validate(row))
+            except Exception:
+                continue
+        setattr(out, key, parsed)
+    out.countersinks = max(out.countersinks, int(rec.get("countersink_count") or 0))
+    out.counterbores = max(out.counterbores, int(rec.get("counterbore_count") or 0))
+    out.chamfer_faces = max(out.chamfer_faces, int(rec.get("chamfer_face_count") or 0))
+    # rounds is a multiset of radii measured per-face; merging partial lists
+    # would double-count same-radius fillets, so the recogniser only rescues
+    # when the face scan found none at all
+    if not out.rounds:
+        out.rounds = sorted(r for r in (rec.get("fillet_radii") or []) if r > 0)
 
 
 def _mesh_fallback(out: MeasuredFeatures, stl_path: Path, mesh=None) -> None:
@@ -881,6 +992,53 @@ def _check_slot_features(
     return findings
 
 
+def _check_pattern_features(
+    spec_features: list[Any], measured: MeasuredFeatures
+) -> list[FeatureFinding]:
+    """Hole-pattern expectations (bolt circle, array, grid) checked against
+    quiddity pattern evidence. Only runs when the recogniser actually ran —
+    without it, "no pattern detected" would be an unfounded guess."""
+    if not measured.recognition_ran:
+        return []
+    findings: list[FeatureFinding] = []
+    for f in spec_features:
+        text = f"{f.type or ''} {f.name or ''} {f.description or ''}"
+        if (f.type or "").lower() != "pattern" and not _PATTERN_RE.search(text):
+            continue
+        want_n = max(1, int(f.count or 1))
+        if measured.hole_patterns:
+            best = max(measured.hole_patterns, key=lambda p: p.count)
+            if want_n > 1 and best.count < want_n:
+                findings.append(
+                    FeatureFinding(
+                        feature=f.name or "pattern",
+                        expected=f"{want_n} holes in the pattern",
+                        actual=(f"largest detected pattern has {best.count} members ({best.kind})"),
+                        severity="major",
+                        fix_hint=(
+                            f"the pattern needs {want_n} members — check the "
+                            "repetition count (e.g. PolarLocations count)"
+                        ),
+                    )
+                )
+        elif measured.total_holes >= want_n:
+            # holes exist but form no recognisable arrangement
+            findings.append(
+                FeatureFinding(
+                    feature=f.name or "pattern",
+                    expected=f"hole pattern ({want_n}x)",
+                    actual="holes detected but no repeating pattern recognised",
+                    severity="minor",
+                    fix_hint=(
+                        "arrange the holes as the specified pattern — "
+                        "PolarLocations for a bolt circle, GridLocations for a "
+                        "rectangular array"
+                    ),
+                )
+            )
+    return findings
+
+
 def compare_features(spec_features: list[Any], measured: MeasuredFeatures) -> list[FeatureFinding]:
     """Compare spec features against measured geometry. Feedback-only findings."""
     findings: list[FeatureFinding] = []
@@ -902,6 +1060,7 @@ def compare_features(spec_features: list[Any], measured: MeasuredFeatures) -> li
     findings += _check_slot_features(spec_features, measured)
     findings += _check_boss_features(spec_features, measured)
     findings += _check_edge_features(spec_features, measured)
+    findings += _check_pattern_features(spec_features, measured)
 
     csk_total = measured.countersinks
     cbore_total = measured.counterbores

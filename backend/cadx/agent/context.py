@@ -208,6 +208,22 @@ def codegen_tools_system(
     )
 
 
+def codegen_build_system(
+    *, plan: Any | None = None, spec: PartSpec | None = None, fresh: bool = True
+) -> str:
+    """Codegen system prompt for staged build sessions — the model grows the
+    buffer feature-by-feature (add_block/verify/checkpoint/rollback) and
+    finishes with `done`; the buffer itself is the submission."""
+    return "\n\n".join(
+        [
+            read_prompt("codegen_build_system.md"),
+            read_prompt("tools_protocol.md"),
+            read_prompt("code_contract.md"),
+            _reference_docs(plan=plan, spec=spec, fresh=fresh),
+        ]
+    )
+
+
 _PROCESS_LABELS = {
     "fdm": "FDM 3D printing",
     "sla": "SLA resin printing",
@@ -482,6 +498,21 @@ def measured_features_block(features: dict[str, Any] | None) -> str:
                 f"- {g['count']}x hole Ø{g['diameter']}mm, axis {g['axis']}, {g['depth_class']}"
             )
     lines.append(f"- total holes: {features.get('total_holes', 0)}")
+    for p in features.get("hole_patterns") or []:
+        kind = p.get("kind", "pattern").replace("_", " ")
+        extra = f" PCD Ø{p['diameter']:g}mm" if p.get("diameter") else ""
+        lines.append(
+            f"- hole pattern: {kind}, {p.get('count', 0)}x Ø"
+            f"{p.get('member_diameter', 0):g}mm{extra}"
+        )
+    for p in features.get("slot_patterns") or []:
+        kind = p.get("kind", "pattern").replace("_", " ")
+        lines.append(f"- slot pattern: {kind}, {p.get('count', 0)} members")
+    for b in features.get("bored_bosses") or []:
+        lines.append(
+            f"- bored boss Ø{b.get('boss_diameter', 0):g}mm h{b.get('boss_height', 0):g}mm "
+            f"with bore Ø{b.get('bore_diameter', 0):g}mm, axis {b.get('axis', '')}"
+        )
     if features.get("slots"):
         lines.append(f"- elongated slots: {features['slots']}")
     if features.get("countersinks"):
