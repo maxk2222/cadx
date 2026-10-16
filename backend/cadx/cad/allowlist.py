@@ -86,6 +86,46 @@ _2D_CTORS = {
 _AXIS_SELF = {"Cylinder": "Z", "Cone": "Z"}
 _BOOLEAN_CUTTERS = {"cut", "fuse", "intersect"}
 
+# context managers that add statements to a builder — a bare
+# `Pos(...) * Box(...)` inside them adds the primitive UNPOSITIONED and
+# discards the moved copy (observed: L-bracket leg landed centred instead of
+# at the -X end; the repair loop then spent 24 turns chasing the edge that
+# "should" have been there)
+_BUILDER_CTX = {"BuildPart", "BuildSketch", "BuildLine"}
+# location-ish transforms that produce a new object when multiplied
+_LOC_CTORS = {"Pos", "Rot", "Location", "Locations", "Plane"}
+# 3D solid constructors — the right operand of `Pos * X` that gets discarded
+_3D_CTORS = {
+    "Box",
+    "Cylinder",
+    "Cone",
+    "Sphere",
+    "Torus",
+    "Wedge",
+    "Prism",
+    "Hole",
+    "CounterBoreHole",
+    "CounterSinkHole",
+    "CounterSunkHole",
+    "extrude",
+    "revolve",
+    "loft",
+    "sweep",
+}
+# ShapeList-returning selections — `.filter(...)` exists on plain lists, not
+# on ShapeList (observed: `p.edges().filter_by(...).filter(lambda...)`)
+_SHAPELIST_METHODS = {
+    "edges",
+    "faces",
+    "vertices",
+    "solids",
+    "wires",
+    "compounds",
+    "filter_by",
+    "sort_by",
+    "group_by",
+}
+
 # Method names models borrow from CadQuery/OpenSCAD that don't exist in
 # build123d — observed: `body.removeSplitter()` (AttributeError, repair loop
 # repeated it 3x). Warn so codegen feedback names the real API.
@@ -104,6 +144,53 @@ class _Checker(ast.NodeVisitor):
         self.has_result = False
         # simple ctor tracking: `leg = Cylinder(...)` -> {"leg": "Cylinder"}
         self._ctors: dict[str, str] = {}
+        # `name = Box(L, W, T)` / `name = Pos(...) * Box(L, W, T)` -> resolved dims
+        self._ctor_dims: dict[str, list[float]] = {}
+        # `L = PARAMS["foot_length"]` -> numeric value (filled post-PARAMS parse)
+        self._param_aliases: dict[str, float] = {}
+        self._param_values: dict[str, object] = {}
+        # `with BuildPart() as p` -> "p"; >0 while inside that block
+        self._builder_vars: set[str] = set()
+        self._builder_depth = 0
+
+    # ---- constant evaluation over literals, PARAMS subs and simple arith ----
+    def _const(self, node: ast.AST) -> float | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, int | float):
+            if isinstance(node.value, bool):
+                return None
+            return float(node.value)
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub | ast.UAdd):
+            v = self._const(node.operand)
+            return -v if (v is not None and isinstance(node.op, ast.USub)) else v
+        if isinstance(node, ast.BinOp) and isinstance(
+            node.op, ast.Add | ast.Sub | ast.Mult | ast.Div
+        ):
+            a, b = self._const(node.left), self._const(node.right)
+            if a is None or b is None:
+                return None
+            try:
+                return {"Add": a + b, "Sub": a - b, "Mult": a * b, "Div": a / b}[
+                    type(node.op).__name__
+                ]
+            except ZeroDivisionError:
+                return None
+        if isinstance(node, ast.Subscript):
+            # PARAMS["x"]
+            src = node.value
+            key = node.slice
+            if (
+                isinstance(src, ast.Name)
+                and src.id == "PARAMS"
+                and isinstance(key, ast.Constant)
+                and isinstance(key.value, str)
+            ):
+                v = self._param_values.get(key.value)
+                if isinstance(v, int | float) and not isinstance(v, bool):
+                    return float(v)
+            return None
+        if isinstance(node, ast.Name):
+            return self._param_aliases.get(node.id)
+        return None
 
     def _err(self, node: ast.AST, msg: str) -> None:
         line = getattr(node, "lineno", "?")
@@ -131,6 +218,54 @@ class _Checker(ast.NodeVisitor):
                 return sub.func.id
         return None
 
+    def _has_loc_ctor(self, node: ast.AST) -> bool:
+        for sub in ast.walk(node):
+            if (
+                isinstance(sub, ast.Call)
+                and isinstance(sub.func, ast.Name)
+                and sub.func.id in _LOC_CTORS
+            ):
+                return True
+        return False
+
+    def _has_3d_ctor(self, node: ast.AST) -> str | None:
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name):
+                if sub.func.id in _3D_CTORS:
+                    return sub.func.id
+            elif isinstance(sub, ast.Name) and self._ctors.get(sub.id) in _3D_CTORS:
+                return self._ctors[sub.id]
+        return None
+
+    def _receiver_is_shapelist(self, node: ast.AST) -> str | None:
+        """`x.edges().filter(...)`: is `x.edges()` built on a ShapeList chain?"""
+        for sub in ast.walk(node):
+            if (
+                isinstance(sub, ast.Call)
+                and isinstance(sub.func, ast.Attribute)
+                and sub.func.attr in _SHAPELIST_METHODS
+            ):
+                return sub.func.attr
+        return None
+
+    def visit_With(self, node: ast.With) -> None:
+        entered: list[str] = []
+        for item in node.items:
+            ctx = item.context_expr
+            if (
+                isinstance(ctx, ast.Call)
+                and isinstance(ctx.func, ast.Name)
+                and ctx.func.id in _BUILDER_CTX
+            ):
+                self._builder_depth += 1
+                if isinstance(item.optional_vars, ast.Name):
+                    self._builder_vars.add(item.optional_vars.id)
+                    entered.append(item.optional_vars.id)
+        self.generic_visit(node)
+        self._builder_depth -= 1
+        for v in entered:
+            self._builder_vars.discard(v)
+
     def visit_Expr(self, node: ast.Expr) -> None:
         # `Box(...).translate(5,0,0)` as a statement: translate/rotate RETURN a
         # moved copy — discarded here, the original stays unpositioned
@@ -146,6 +281,29 @@ class _Checker(ast.NodeVisitor):
                 "discarded. Assign it (`p = p.translate(...)`) or use `Pos *` on "
                 "the primitive instead.",
             )
+        # `Pos(...) * Box(...)` as a statement: the moved copy is discarded.
+        # Inside a builder it is worse — the primitive registers at the
+        # CURRENT location the moment it is constructed, so the part silently
+        # keeps an unpositioned body (observed: L-bracket leg at centre).
+        if isinstance(v, ast.BinOp) and isinstance(v.op, ast.Mult):
+            prim = self._has_3d_ctor(v)
+            if prim and self._has_loc_ctor(v):
+                msg = (
+                    f"`Pos/Rot * {prim}(...)` as a bare statement returns a moved "
+                    "copy that is DISCARDED. "
+                    + (
+                        "Inside the builder the primitive is already added "
+                        "unpositioned — use `with Locations(Pos(...)): "
+                        f"{prim}(...)` or `add(Pos(...) * {prim}(...))`."
+                        if self._builder_depth > 0
+                        else "Assign the result (`part = Pos(...) * X(...)`) or "
+                        "use it inside a boolean/add call."
+                    )
+                )
+                if self._builder_depth > 0:
+                    self._err(node, msg)
+                else:
+                    self._warn(node, msg)
         self.generic_visit(node)
 
     def visit_BinOp(self, node: ast.BinOp) -> None:
@@ -242,10 +400,66 @@ class _Checker(ast.NodeVisitor):
                 f"OpenSCAD idiom) — {_HALLUCINATED_METHODS[node.func.attr]}; "
                 "or remove the call.",
             )
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "filter":
+            src = self._receiver_is_shapelist(node.func.value)
+            if src:
+                self._err(
+                    node,
+                    f"`.{src}()` returns a ShapeList — it has no `.filter()` "
+                    "(that's the Python list API). Use `.filter_by(lambda x: ...)` "
+                    "or a list comprehension `[e for e in ... if ...]`.",
+                )
         self._check_rotate_self_axis(node)
         self._check_2d_boolean_method(node)
         self._check_ctor_kwargs(node)
+        self._check_oversized_fillet(node)
         self.generic_visit(node)
+
+    def _check_oversized_fillet(self, node: ast.Call) -> None:
+        """fillet(slot.edges()...) on a known Box with r >= min(dims)/2 is
+        geometrically impossible — the tell-tale hand-rolled oblong slot
+        (observed: 'Failed creating a fillet with radius 3.25' on a 6.5-wide
+        box). Warn + point at cadlib.oblong_slot."""
+        if not (
+            isinstance(node.func, ast.Name) and node.func.id in ("fillet", "chamfer") and node.args
+        ):
+            return
+        r = self._const(node.args[1]) if len(node.args) >= 2 else None
+        if r is None:
+            r = next(
+                (
+                    v
+                    for k in node.keywords
+                    if k.arg in ("radius", "length")
+                    for v in [self._const(k.value)]
+                ),
+                None,
+            )
+        if r is None:
+            return
+        sel = node.args[0]
+        src: str | None = None
+        for sub in ast.walk(sel):
+            if (
+                isinstance(sub, ast.Attribute)
+                and sub.attr == "edges"
+                and isinstance(sub.value, ast.Name)
+                and sub.value.id in self._ctor_dims
+            ):
+                src = sub.value.id
+                break
+        if src is None:
+            return
+        dims = [d for d in self._ctor_dims[src] if d > 0]
+        if dims and r >= min(dims) / 2:
+            self._warn(
+                node,
+                f"`{node.func.id}(radius={r:g})` on `{src}` (smallest side "
+                f"{min(dims):g} mm) exceeds the half-width — this raises "
+                "'Failed creating a fillet'/'no suitable edges'. For rounded "
+                "slot ends use cadlib.oblong_slot() or build the slot as a "
+                "SlotOverall sketch instead of filleting a box.",
+            )
 
     # kwargs a constructor call is allowed to use — anything else is certain
     # to fail with "Unexpected keyword arguments" at exec time (observed:
@@ -297,6 +511,34 @@ class _Checker(ast.NodeVisitor):
     def visit_Attribute(self, node: ast.Attribute) -> None:
         if node.attr in FORBIDDEN_ATTRS:
             self._err(node, f"attribute '{node.attr}' is not allowed")
+        # `e.center.X`: .center is a METHOD, not a property — the result is a
+        # bound method and raises "function object has no attribute 'X'"
+        if (
+            node.attr in ("X", "Y", "Z")
+            and isinstance(node.value, ast.Attribute)
+            and node.value.attr == "center"
+        ):
+            self._err(node, "`.center.X` — `.center()` is a method: use `.center().X`")
+        self.generic_visit(node)
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        # `p.part += x` inside `with BuildPart() as p` bypasses the builder —
+        # works, but skips BuildPart bookkeeping; the idiomatic call is add()
+        if (
+            isinstance(node.target, ast.Attribute)
+            and node.target.attr == "part"
+            and isinstance(node.target.value, ast.Name)
+            and node.target.value.id in self._builder_vars
+        ):
+            mode = "Mode.SUBTRACT" if isinstance(node.op, ast.Sub) else None
+            self._warn(
+                node,
+                f"`{node.target.value.id}.part "
+                f"{'-=' if isinstance(node.op, ast.Sub) else '+='} ...` mutates "
+                f"the builder result directly — prefer `add(x"
+                f"{', mode=' + mode if mode else ''})` inside the `with` block "
+                "or run the boolean in algebra mode after `p.part`.",
+            )
         self.generic_visit(node)
 
     def visit_Assign(self, node: ast.Assign) -> None:
@@ -313,7 +555,47 @@ class _Checker(ast.NodeVisitor):
                     self.has_result = True
                 if ctor:
                     self._ctors[t.id] = ctor
+                else:
+                    # `rib = Pos(...) * Cylinder(...)` — track the wrapped
+                    # primitive so `Pos * rib` can be flagged too
+                    for sub in ast.walk(node.value):
+                        if (
+                            isinstance(sub, ast.Call)
+                            and isinstance(sub.func, ast.Name)
+                            and sub.func.id in _3D_CTORS
+                        ):
+                            self._ctors[t.id] = sub.func.id
+                            break
+                # `L = PARAMS["x"]` / `L = a*b` — track resolvable constants
+                c = self._const(node.value)
+                if c is not None:
+                    self._param_aliases[t.id] = c
+                # `s = Box(L,W,T)` / `s = Pos(...)*Box(L,W,T)` — remember dims
+                # for the oversized-fillet heuristic
+                box = self._find_call(node.value, "Box")
+                if box is not None:
+                    dims = self._box_dims(box)
+                    if dims:
+                        self._ctor_dims[t.id] = dims
+                        self._ctors[t.id] = "Box"
         self.generic_visit(node)
+
+    def _find_call(self, node: ast.AST, name: str) -> ast.Call | None:
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == name:
+            return node
+        if isinstance(node, ast.BinOp):
+            return self._find_call(node.left, name) or self._find_call(node.right, name)
+        return None
+
+    def _box_dims(self, node: ast.Call) -> list[float] | None:
+        vals = [self._const(a) for a in node.args[:3]]
+        if all(v is not None for v in vals) and len(vals) == 3:
+            return [float(v) for v in vals]  # type: ignore[misc]
+        kw = {k.arg: self._const(k.value) for k in node.keywords}
+        dims = [kw.get("length"), kw.get("width"), kw.get("height")]
+        if all(d is not None for d in dims):
+            return [float(d) for d in dims]  # type: ignore[misc]
+        return None
 
 
 def _parse_params(tree: ast.Module) -> tuple[dict[str, object], list[str]]:
@@ -357,8 +639,11 @@ def check_code(code: str) -> CheckResult:
         return CheckResult(ok=False, errors=[f"code is not parseable: {type(e).__name__}: {e}"])
 
     checker = _Checker()
-    checker.visit(tree)
     params, param_errors = _parse_params(tree)
+    # PARAMS values must be known before the walk — constant resolution
+    # (ctor dims for the fillet heuristic, param aliases) depends on them
+    checker._param_values = params
+    checker.visit(tree)
     errors = checker.errors + param_errors
     if not checker.has_result:
         errors.append("missing assignment to `result` (a build123d Part/Solid/Compound)")

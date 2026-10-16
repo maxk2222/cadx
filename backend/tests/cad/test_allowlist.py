@@ -142,7 +142,8 @@ def test_lint_clean_code_no_warnings():
         GOOD
         + "with BuildPart() as p:\n"
         + "    Box(60, 40, 6)\n"
-        + "    Pos(25, 0, 6) * Box(10, 40, 48)\n"
+        + "    with Locations(Pos(25, 0, 6)):\n"
+        + "        Box(10, 40, 48)\n"
         + "result = p.part\n"
     )
     r = check_code(code)
@@ -162,3 +163,167 @@ def test_float_nonnumeric_string_warns():
     res = check_code(code)
     assert res.ok
     assert any("float('.'" in w for w in res.warnings)
+
+
+def test_bare_pos_times_primitive_inside_builder_is_error():
+    code = (
+        GOOD
+        + """with BuildPart() as p:
+    Pos(-28, 0, 4) * Box(4, 40, 50, align=(Align.CENTER, Align.CENTER, Align.MIN))
+result = p.part
+"""
+    )
+    r = check_code(code)
+    assert not r.ok
+    assert any("DISCARDED" in e for e in r.errors)
+
+
+def test_bare_pos_times_primitive_outside_builder_is_warning():
+    r = check_code(GOOD + "Pos(1, 2, 3) * Cylinder(2, 10)\n")
+    assert r.ok
+    assert any("DISCARDED" in w for w in r.warnings)
+
+
+def test_pos_times_tracked_var_inside_builder_is_error():
+    code = (
+        GOOD
+        + """with BuildPart() as p:
+    Box(60, 40, 4, align=(Align.CENTER, Align.CENTER, Align.MIN))
+rib = Pos(0, 10, 0) * Cylinder(1, 5)
+with BuildPart() as q:
+    Pos(1, 0, 0) * rib
+result = p.part
+"""
+    )
+    r = check_code(code)
+    assert not r.ok
+
+
+def test_locations_scoped_primitive_is_fine():
+    code = (
+        GOOD
+        + """with BuildPart() as p:
+    Box(60, 40, 4, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    with Locations(Pos(-28, 0, 4)):
+        Box(4, 40, 50, align=(Align.CENTER, Align.CENTER, Align.MIN))
+result = p.part
+"""
+    )
+    r = check_code(code)
+    assert r.ok, r.errors
+
+
+def test_assigned_pos_times_primitive_is_fine():
+    r = check_code(GOOD + "leg = Pos(-28, 0, 4) * Box(4, 40, 50)\nresult = leg\n")
+    assert r.ok, r.errors
+
+
+def test_add_pos_times_primitive_is_fine():
+    code = (
+        GOOD
+        + """with BuildPart() as p:
+    Box(60, 40, 4, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    add(Pos(-28, 0, 4) * Box(4, 40, 50))
+result = p.part
+"""
+    )
+    r = check_code(code)
+    assert r.ok, r.errors
+
+
+def test_shapelist_filter_is_error():
+    code = (
+        GOOD
+        + """with BuildPart() as p:
+    Box(10, 10, 10)
+    edges = p.edges().filter_by(GeomType.LINE).filter(lambda e: e.center().X > 0)
+    fillet(edges, radius=1)
+result = p.part
+"""
+    )
+    r = check_code(code)
+    assert not r.ok
+    assert any("filter" in e for e in r.errors)
+
+
+def test_list_comprehension_edges_is_fine():
+    code = (
+        GOOD
+        + """with BuildPart() as p:
+    Box(10, 10, 10)
+    edges = [e for e in p.edges().filter_by(GeomType.LINE) if e.center().X > 0]
+    fillet(edges, radius=1)
+result = p.part
+"""
+    )
+    r = check_code(code)
+    assert r.ok, r.errors
+
+
+def test_center_attr_without_call_is_error():
+    code = (
+        GOOD
+        + """with BuildPart() as p:
+    Box(10, 10, 10)
+    e = [x for x in p.edges() if x.center.X > 0]
+result = p.part
+"""
+    )
+    r = check_code(code)
+    assert not r.ok
+    assert any(".center().X" in e for e in r.errors)
+
+
+def test_center_call_is_fine():
+    code = (
+        GOOD
+        + """with BuildPart() as p:
+    Box(10, 10, 10)
+    e = [x for x in p.edges() if x.center().X > 0]
+result = p.part
+"""
+    )
+    r = check_code(code)
+    assert r.ok, r.errors
+
+
+def test_builder_part_augassign_is_warning():
+    code = (
+        GOOD
+        + """with BuildPart() as p:
+    Box(10, 10, 10)
+    p.part += Pos(20, 0, 0) * Box(2, 2, 2)
+result = p.part
+"""
+    )
+    r = check_code(code)
+    assert r.ok, r.errors
+    assert any("add(" in w for w in r.warnings)
+
+
+def test_oversized_fillet_on_box_warns():
+    code = """from build123d import *
+PARAMS = {"slot_w": 6.5}
+L, T = 60.0, 4.0
+with BuildPart() as p:
+    Box(L, 40, T)
+slot = Pos(-28, 0, 27) * Box(6, PARAMS["slot_w"], 15)
+slot = fillet(slot.edges().filter_by(Axis.X), radius=PARAMS["slot_w"] / 2)
+result = p.part
+"""
+    r = check_code(code)
+    assert r.ok, r.errors
+    assert any("oblong_slot" in w for w in r.warnings)
+
+
+def test_sane_fillet_on_box_no_warning():
+    code = """from build123d import *
+PARAMS = {"r": 1.5}
+with BuildPart() as p:
+    Box(40, 20, 10)
+b = fillet(Box(40, 20, 10).edges().filter_by(Axis.Z), radius=PARAMS["r"])
+result = b
+"""
+    r = check_code(code)
+    assert r.ok, r.errors
+    assert not any("oblong_slot" in w for w in r.warnings)
