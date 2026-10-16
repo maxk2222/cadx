@@ -7,6 +7,7 @@ import type {
   ChatListItem,
   ChatMessage,
   ChatState,
+  EditableFeature,
   FemPreviewResult,
   GenMode,
   Job,
@@ -164,6 +165,12 @@ export const api = {
   organic: (vid: string, body: OrganicParams) =>
     req<{ version_id: string; job_id: string }>(`/versions/${vid}/organic`, json(body)),
   anchors: (vid: string) => req<AnchorsResult>(`/versions/${vid}/anchors`),
+  editableFeatures: (vid: string) =>
+    req<{ features: EditableFeature[]; reason?: string }>(
+      `/versions/${vid}/editable-features`
+    ),
+  editFeature: (vid: string, body: { feature_id: string | number; parameter: string; value: number }) =>
+    req<{ version_id: string; job_id: string }>(`/versions/${vid}/edit-feature`, json(body)),
 
   // visual mesh editor + structural editor
   meshPreview: (vid: string, body: { ops: MeshOp[]; post?: Record<string, unknown> }) =>

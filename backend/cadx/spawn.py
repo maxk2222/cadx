@@ -13,6 +13,7 @@ import asyncio
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -468,28 +469,40 @@ async def spawn_mesh_edit(
     return v, job
 
 
-def feature_edit_source(v: Version) -> None:
-    """Guard: raises SpawnError when the version has no analytic B-Rep to
-    feature-edit (mesh-only versions can't be edited parametrically)."""
+def feature_edit_brep_path(v: Version) -> Path | None:
+    """Best B-Rep/STEP source on disk for feature editing, or None.
+
+    Search order mirrors run_edit_feature_job's _parent_source_model:
+    canonical mesh/solid.brep (written by prior edits/mesh versions),
+    the newest iterations/*/_run/model.brep, then exports/model.step."""
     v_dir = storage.version_dir(v.project_id, v.id)
     if (v_dir / "mesh" / "solid.brep").exists():
-        return
-    if (v_dir / "exports" / "model.step").exists():
-        return
+        return v_dir / "mesh" / "solid.brep"
     it_root = v_dir / "iterations"
+    candidates: list[Path] = []
     if it_root.is_dir():
         for it in it_root.iterdir():
             if not it.is_dir():
                 continue
             if (it / "_run" / "model.brep").exists():
-                return
-            if any(
-                (sub / "_run" / "model.brep").exists()
+                candidates.append(it / "_run" / "model.brep")
+            candidates.extend(
+                sub / "_run" / "model.brep"
                 for sub in it.iterdir()
-                if sub.is_dir()
-            ):
-                return
-    raise SpawnError("version has no B-Rep solid to feature-edit")
+                if sub.is_dir() and (sub / "_run" / "model.brep").exists()
+            )
+    if candidates:
+        return max(candidates, key=lambda p: p.stat().st_mtime)
+    if (v_dir / "exports" / "model.step").exists():
+        return v_dir / "exports" / "model.step"
+    return None
+
+
+def feature_edit_source(v: Version) -> None:
+    """Guard: raises SpawnError when the version has no analytic B-Rep to
+    feature-edit (mesh-only versions can't be edited parametrically)."""
+    if feature_edit_brep_path(v) is None:
+        raise SpawnError("version has no B-Rep solid to feature-edit")
 
 
 async def spawn_edit_feature(
@@ -516,10 +529,9 @@ async def spawn_edit_feature(
         parent_id=parent.id,
         number=await next_version_number(db, parent.project_id),
         kind=VersionKind.edit,
-        prompt=(
-            f"feature edit: {parameter}={value} on feature {feature_id} "
-            f"(of v{parent.number})"
-        )[:500],
+        prompt=(f"feature edit: {parameter}={value} on feature {feature_id} (of v{parent.number})")[
+            :500
+        ],
         gen_mode=parent.gen_mode,
         asset_ids=parent.asset_ids or [],
         spec=parent.spec,

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
+from typing import Any
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import update as sa_update
@@ -49,6 +52,7 @@ from cadx.spawn import (
 )
 
 router = APIRouter(tags=["versions"])
+log = structlog.get_logger()
 
 
 def _artifact_out(a: Artifact) -> ArtifactOut:
@@ -202,6 +206,41 @@ async def params(
     except SpawnError as e:
         raise HTTPException(e.status, str(e)) from e
     return EnqueueResponse(version_id=v.id, job_id=job.id)
+
+
+@router.get("/versions/{version_id}/editable-features")
+async def list_editable_features(version_id: uuid.UUID, db: AsyncSession = Depends(get_session)):
+    """Recognised features the parametric editor can resize (M9: plain
+    through-holes). Runs quiddity recognition on the version's best B-Rep
+    in-process — bounded by the module's face cap, ~seconds on big parts."""
+    from cadx.spawn import feature_edit_brep_path
+
+    v = await db.get(Version, version_id)
+    if not v:
+        raise HTTPException(404, "version not found")
+    src = feature_edit_brep_path(v)
+    if src is None:
+        return {"features": [], "reason": "version has no B-Rep solid to feature-edit"}
+
+    def _scan() -> list[dict[str, Any]]:
+        if src.suffix == ".step":
+            from build123d import import_step
+
+            shape = import_step(str(src))
+        else:
+            from build123d import import_brep
+
+            shape = import_brep(str(src))
+        from cadx.cad import editfeature
+
+        return editfeature.find_editable_features(shape)
+
+    try:
+        features = await asyncio.to_thread(_scan)
+    except Exception as e:
+        log.warning("versions.editable_features_failed", version_id=str(version_id), error=str(e))
+        return {"features": [], "reason": f"feature scan failed: {e}"}
+    return {"features": features}
 
 
 @router.post("/versions/{version_id}/edit-feature", response_model=EnqueueResponse)

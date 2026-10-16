@@ -829,3 +829,17 @@ export interface ChatState {
   chat: Chat;
   messages: ChatMessage[];
 }
+
+/** GET /versions/{id}/editable-features — a recognised feature the
+ *  parametric editor can resize (M9: plain through-holes). */
+export interface EditableFeature {
+  feature_id: string | number;
+  kind: string;
+  diameter: number;
+  axis?: string;
+  direction?: string;
+  opening?: number[];
+  depth?: number;
+  editable?: boolean;
+  refusal?: string;
+}

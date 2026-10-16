@@ -14,6 +14,7 @@ import ModeSelector from "../components/ModeSelector";
 import StructuralEditor from "../components/StructuralEditor";
 import OrganicEditor from "../components/OrganicEditor";
 import OptionsPanel, { OptionChips } from "../components/OptionsPanel";
+import FeatureEditPanel from "../components/FeatureEditPanel";
 import ParamsPanel from "../components/ParamsPanel";
 import PlanPanel from "../components/PlanPanel";
 import RenderGallery from "../components/RenderGallery";
@@ -794,6 +795,13 @@ export default function VersionPage() {
         {!!v.params_schema?.length && (
           <Card className="p-3">
             <ParamsPanel versionId={v.id} schema={v.params_schema} params={v.params} />
+          </Card>
+        )}
+
+        {v.resolved_mode !== "mesh" && (
+          <Card className="p-3">
+            <SectionTitle>Edit feature</SectionTitle>
+            <FeatureEditPanel versionId={v.id} />
           </Card>
         )}
 
