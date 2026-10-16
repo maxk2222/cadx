@@ -218,6 +218,20 @@ class ParamsRequest(BaseModel):
     params: dict[str, Any]
 
 
+class EditFeatureRequest(BaseModel):
+    """Verified parametric edit of a recognised feature (M9: through-holes).
+
+    ``feature_id`` is the stable index returned by feature discovery on the
+    parent solid; ``value`` is the new diameter in mm.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    feature_id: int | str
+    parameter: Literal["diameter"] = "diameter"
+    value: float = Field(gt=0)
+
+
 class OptimizeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

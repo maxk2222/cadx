@@ -63,6 +63,13 @@ class InProcessExecutor:
 
         return await asyncio.to_thread(run_organic_payload, payload)
 
+    async def edit_feature(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Verified parametric feature edit (M9). ``feature_id=None`` lists
+        editable through-holes; ``dry_run`` runs the gate without writing."""
+        from cadx.cad.tasks import run_edit_feature_payload
+
+        return await asyncio.to_thread(run_edit_feature_payload, payload)
+
     async def export_all(self, payload: dict[str, Any]) -> dict[str, Any]:
         import uuid as _uuid
 
@@ -175,6 +182,12 @@ class QueueExecutor:
         # voxelize + field gen + extraction — no FEM/SIMP, same envelope
         timeout = self.runtime_settings.fem_timeout_s + 120
         return await self._run_task("organic", payload, timeout)
+
+    async def edit_feature(self, payload: dict[str, Any]) -> dict[str, Any]:
+        # recognition + one boolean (+defeature for shrinks) + renders/exports —
+        # comfortably inside the normal exec envelope
+        timeout = self.runtime_settings.exec_timeout_s + 120
+        return await self._run_task("edit_feature", payload, timeout)
 
     async def export_all(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await self._run_task("export_all", payload, 300)

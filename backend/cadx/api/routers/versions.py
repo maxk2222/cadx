@@ -13,6 +13,7 @@ from sqlmodel import col, select
 from cadx.api.deps import enqueue, get_session
 from cadx.api.schemas import (
     ArtifactOut,
+    EditFeatureRequest,
     EditRequest,
     EnqueueResponse,
     GenerateRequest,
@@ -37,6 +38,7 @@ from cadx.spawn import (
     SpawnError,
     next_version_number,
     spawn_edit,
+    spawn_edit_feature,
     spawn_generate,
     spawn_optimize,
     spawn_organic,
@@ -197,6 +199,32 @@ async def params(
         raise HTTPException(404, "version not found")
     try:
         v, job = await spawn_params(db, parent, body.params)
+    except SpawnError as e:
+        raise HTTPException(e.status, str(e)) from e
+    return EnqueueResponse(version_id=v.id, job_id=job.id)
+
+
+@router.post("/versions/{version_id}/edit-feature", response_model=EnqueueResponse)
+async def edit_feature_version(
+    version_id: uuid.UUID,
+    body: EditFeatureRequest,
+    db: AsyncSession = Depends(get_session),
+):
+    """Verified parametric edit of a recognised feature on the version's
+    B-Rep (M9: plain through-holes, `parameter` is "diameter" only). Spawns a
+    child version; the executor gate decides success — a refusal fails the
+    child with the reason, never a mutated solid."""
+    parent = await db.get(Version, version_id)
+    if not parent:
+        raise HTTPException(404, "version not found")
+    try:
+        v, job = await spawn_edit_feature(
+            db,
+            parent,
+            feature_id=body.feature_id,
+            parameter=body.parameter,
+            value=body.value,
+        )
     except SpawnError as e:
         raise HTTPException(e.status, str(e)) from e
     return EnqueueResponse(version_id=v.id, job_id=job.id)

@@ -301,6 +301,38 @@ RENDER_TOOLS = [
     ),
 ]
 
+# verified parametric feature edits (M9): offered in "edit" sessions only
+# when the executor exposes edit_feature — dry-run only, the session's code
+# submit remains the way geometry actually changes
+FEATURE_EDIT_TOOLS = [
+    _fn(
+        "list_editable_features",
+        "List recognised hole features on the LAST VERIFIED solid of this "
+        "session: feature_id, kind, diameter, axis/opening/depth, and whether "
+        "the hole is editable (plain through-holes only — countersunk, "
+        "counterbored or spotfaced bores are reported but flagged "
+        "non-editable). Requires a successful verify() first.",
+        {},
+        [],
+    ),
+    _fn(
+        "edit_feature",
+        "Resize a recognised through-hole to a new diameter on the last "
+        "verified solid — runs the executor's transactional gate (volume "
+        "annulus, envelope, sibling holes, re-recognition) and returns the "
+        "gate report. This is a CHECK: it does not commit geometry — bake "
+        "the accepted resize into the code buffer afterwards.",
+        {
+            "feature_id": _i("feature_id from list_editable_features"),
+            "diameter": {
+                "type": "number",
+                "description": "new bore diameter in mm, e.g. 8.0",
+            },
+        },
+        ["feature_id", "diameter"],
+    ),
+]
+
 DONE_TOOLS = [
     _fn(
         "done",
@@ -969,6 +1001,65 @@ MESH_TRANSFORM_TOOLS = [
         ["axis", "stations"],
     ),
     _fn(
+        "mesh_silhouette_carve",
+        "Visual-hull carve: removes material OUTSIDE the reference silhouette "
+        "only — it never fills. `view` is the projection direction (+x/-x/+y/-y, "
+        "same convention as the mesh_view_mask silhouette check); `outline` is "
+        "the reference silhouette polygon in view-plane mm (u horizontal, v "
+        "vertical/up). Use for generator overhang vs the reference; a too-deep "
+        "waist needs mesh_radial_profile_auto instead.",
+        {
+            "view": {"type": "string", "enum": ["+x", "-x", "+y", "-y"]},
+            "outline": {
+                "type": "array",
+                "description": "3-500 polygon points [[u, v], ...] in view-plane mm",
+                "items": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "minItems": 2,
+                    "maxItems": 2,
+                },
+            },
+            "tolerance_mm": {
+                "type": "number",
+                "description": "grow the carve prism by this (default 0.5)",
+            },
+        },
+        ["view", "outline"],
+    ),
+    _fn(
+        "mesh_radial_profile_auto",
+        "Rebuild a revolve cross-section from a smooth station profile — the "
+        "complement of silhouette_carve: sets the OUTER radius at each station "
+        "to radius_mm, so a too-deep waist/neck is filled, not just pinched. "
+        "stations come from the side silhouette (t = 0..1 along `axis`). "
+        "blend_mm gaussian-smooths transitions (0 = linear between stations; a "
+        "few mm keeps the waist soft). Apply BEFORE bore/hole cuts.",
+        {
+            "axis": {**_AXIS, "description": "profile axis, default x"},
+            "stations": {
+                "type": "array",
+                "description": "2-32 stations {t, radius_mm}",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "t": {"type": "number", "description": "0..1 along axis"},
+                        "radius_mm": {
+                            "type": "number",
+                            "description": "target outer radius in mm",
+                        },
+                    },
+                    "required": ["t", "radius_mm"],
+                },
+            },
+            "blend_mm": {
+                "type": "number",
+                "description": "smoothing length along the axis in mm (default 0)",
+            },
+        },
+        ["axis", "stations"],
+    ),
+    _fn(
         "mesh_boolean_add",
         "Union a primitive with the part — e.g. add a base plate "
         "(box [x,y,z] centred at [0,0,h/2]) or a boss (cylinder).",
@@ -1130,6 +1221,8 @@ class ToolSession:
             ]
             if self.verify_left > 0:
                 out += VERIFY_TOOLS + RENDER_TOOLS
+            if getattr(self.ctx.executor, "edit_feature", None) is not None:
+                out += FEATURE_EDIT_TOOLS
             return out + DONE_TOOLS + IMAGE_TOOLS
         if self.kind == "codegen":
             return [
@@ -1760,6 +1853,71 @@ class ToolSession:
         else:
             out["render"] = "executed ok, but the executor produced no render"
         return out
+
+    # -- verified feature edits (M9) -------------------------------------------- #
+
+    def _session_brep_rel(self) -> str | None:
+        """Newest verified B-Rep this session produced — ``_run/model.brep``
+        under any iteration/attempt dir of the working version."""
+        v_dir = storage.version_dir(self.ctx.project_id, self.ctx.version_id)
+        it_root = v_dir / "iterations"
+        candidates: list[Any] = []
+        if it_root.is_dir():
+            candidates.extend(it_root.glob("*/_run/model.brep"))
+            candidates.extend(it_root.glob("*/*/_run/model.brep"))
+        if not candidates:
+            return None
+        newest = max(candidates, key=lambda p: p.stat().st_mtime)
+        return storage.relpath(newest)
+
+    async def _feature_edit_exec(self, extra: dict[str, Any]) -> dict[str, Any]:
+        fn = getattr(self.ctx.executor, "edit_feature", None)
+        if fn is None:
+            return {"ok": False, "error": "edit_feature not available in this session kind"}
+        source = self._session_brep_rel()
+        if source is None:
+            return {
+                "ok": False,
+                "error": "no verified B-Rep in this session yet — run verify() first",
+            }
+        payload = {
+            "job_id": str(self.ctx.job_id),
+            "project_id": str(self.ctx.project_id),
+            "version_id": str(self.ctx.version_id),
+            "iteration": 0,
+            "source_brep": source,
+            "dry_run": True,  # gate check only — nothing is committed
+            "settings": self.ctx.settings.model_dump(),
+            "runtime_settings": self.ctx.runtime_settings.executor_values(),
+            **extra,
+        }
+        res = await fn(payload)
+        return res if isinstance(res, dict) else {"ok": False, "error": "bad executor result"}
+
+    async def _tool_list_editable_features(self, a: dict[str, Any]) -> dict[str, Any]:
+        res = await self._feature_edit_exec({"feature_id": None})
+        if not res.get("ok"):
+            return res
+        return {"ok": True, "features": res.get("features") or []}
+
+    async def _tool_edit_feature(self, a: dict[str, Any]) -> dict[str, Any]:
+        try:
+            feature_id: int | str = int(str(a.get("feature_id")))
+        except (TypeError, ValueError):
+            feature_id = str(a.get("feature_id") or "")
+        try:
+            diameter = float(a.get("diameter"))
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "diameter must be a number (mm)"}
+        res = await self._feature_edit_exec(
+            {"feature_id": feature_id, "parameter": "diameter", "value": diameter}
+        )
+        if res.get("ok"):
+            res["note"] = (
+                "gate passed — this diameter is geometrically safe; express the "
+                "same resize in the code buffer before submit_code/done"
+            )
+        return res
 
     # -- structural tools (optimize kind) --------------------------------------- #
 

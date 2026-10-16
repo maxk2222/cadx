@@ -468,6 +468,91 @@ async def spawn_mesh_edit(
     return v, job
 
 
+def feature_edit_source(v: Version) -> None:
+    """Guard: raises SpawnError when the version has no analytic B-Rep to
+    feature-edit (mesh-only versions can't be edited parametrically)."""
+    v_dir = storage.version_dir(v.project_id, v.id)
+    if (v_dir / "mesh" / "solid.brep").exists():
+        return
+    if (v_dir / "exports" / "model.step").exists():
+        return
+    it_root = v_dir / "iterations"
+    if it_root.is_dir():
+        for it in it_root.iterdir():
+            if not it.is_dir():
+                continue
+            if (it / "_run" / "model.brep").exists():
+                return
+            if any(
+                (sub / "_run" / "model.brep").exists()
+                for sub in it.iterdir()
+                if sub.is_dir()
+            ):
+                return
+    raise SpawnError("version has no B-Rep solid to feature-edit")
+
+
+async def spawn_edit_feature(
+    db: AsyncSession,
+    parent: Version,
+    *,
+    feature_id: int | str,
+    parameter: str,
+    value: float,
+    enqueue_fn: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None,
+) -> tuple[Version, Job]:
+    """Verified parametric edit of a recognised feature (M9). Creates a
+    ``kind=edit`` child; the executor's gate decides whether it succeeds —
+    the child version fails with the refusal otherwise."""
+    _check_editable(parent, "edit")
+    if str(parameter).strip().lower() != "diameter":
+        raise SpawnError(
+            f"unsupported parameter {parameter!r} — only 'diameter' is editable",
+            status=422,
+        )
+    feature_edit_source(parent)
+    v = Version(
+        project_id=parent.project_id,
+        parent_id=parent.id,
+        number=await next_version_number(db, parent.project_id),
+        kind=VersionKind.edit,
+        prompt=(
+            f"feature edit: {parameter}={value} on feature {feature_id} "
+            f"(of v{parent.number})"
+        )[:500],
+        gen_mode=parent.gen_mode,
+        asset_ids=parent.asset_ids or [],
+        spec=parent.spec,
+        code=parent.code,
+        params=parent.params,
+        params_schema=parent.params_schema,
+        options={
+            **(parent.options or {}),
+            "edit_feature_request": {
+                "feature_id": feature_id,
+                "parameter": parameter,
+                "value": value,
+            },
+        },
+    )
+    db.add(v)
+    await db.flush()
+    job = Job(version_id=v.id, type=JobType.edit)
+    db.add(job)
+    await db.commit()
+    await (enqueue_fn or _enqueue)(
+        "run_edit_feature_job",
+        {
+            "job_id": str(job.id),
+            "version_id": str(v.id),
+            "feature_id": feature_id,
+            "parameter": parameter,
+            "value": value,
+        },
+    )
+    return v, job
+
+
 async def spawn_fem(
     db: AsyncSession,
     version: Version,

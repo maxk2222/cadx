@@ -13,6 +13,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -786,3 +787,214 @@ async def organic(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any
     if await _cancelled(ctx, f"cancel:{payload.get('job_id')}" if payload.get("job_id") else None):
         return {"ok": False, "error": "cancelled"}
     return await asyncio.to_thread(run_organic_payload, payload)
+
+
+def run_edit_feature_payload(payload: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
+    """Verified parametric feature edit (M9) — synchronous executor body.
+
+    Loads the PARENT's canonical B-Rep (``source_brep`` relpath), runs
+    quiddity recognition + the transactional gate in ``cad/editfeature.py``
+    and — only when the gate passes — writes the edited solid plus the
+    standard artifact set (brep/step/stl, renders, contact sheet, exports)
+    under the CHILD version's artifact dir. A refusal returns the gate report
+    without writing a byte.
+    """
+    source_rel = str(payload.get("source_brep") or "")
+    if not source_rel:
+        return {"ok": False, "error": "no source model supplied"}
+    src = storage.resolve(source_rel)
+    if not src.exists():
+        return {"ok": False, "error": f"source model missing: {source_rel}"}
+
+    from cadx.cad.editfeature import edit_feature, find_editable_features
+
+    settings = ProjectSettings.model_validate(payload.get("settings") or {})
+
+    try:
+        if src.suffix.lower() in {".step", ".stp"}:
+            from build123d import import_step
+
+            shape = import_step(str(src))
+        else:
+            from build123d import import_brep
+
+            shape = import_brep(str(src))
+        solids = shape.solids()
+        base = solids[0] if len(solids) == 1 else shape
+    except Exception as exc:
+        return {"ok": False, "error": f"import: {type(exc).__name__}: {exc}"}
+    if base is None:
+        return {"ok": False, "error": "source model contains no solid"}
+
+    features = find_editable_features(base)
+    feature_id = payload.get("feature_id")
+    if feature_id is None:
+        # discovery mode — the agent/UI lists candidates, nothing is edited
+        return {"ok": True, "features": features}
+
+    started = time.time()
+    res = edit_feature(
+        base,
+        feature_id,
+        str(payload.get("parameter") or "diameter"),
+        payload.get("value"),
+    )
+    report = res.get("report") or {}
+    if not res.get("ok"):
+        return {
+            "ok": False,
+            "error": res.get("refusal") or "edit refused",
+            "report": report,
+            "features": features,
+        }
+    edited = res["shape"]
+    if payload.get("dry_run"):
+        return {
+            "ok": True,
+            "dry_run": True,
+            "report": report,
+            "features": features,
+            "elapsed_s": round(time.time() - started, 3),
+        }
+
+    art_dir = _artifact_dir(payload)
+    run_dir = art_dir / "_run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    writes: dict[Path, float] = {}
+
+    try:
+        from build123d import export_brep, export_step, export_stl
+
+        model_brep = run_dir / "model.brep"
+        model_step = run_dir / "model.step"
+        model_stl = run_dir / "model.stl"
+        export_brep(edited, str(model_brep))
+        export_step(edited, str(model_step))
+        export_stl(edited, str(model_stl))
+        writes[model_brep] = writes[model_step] = writes[model_stl] = time.time()
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": f"write model: {type(exc).__name__}: {exc}",
+            "report": report,
+            "features": features,
+        }
+
+    # analysis first — stats/renders and DfM feed off it (same checks as the
+    # param pipeline's post-verify steps)
+    analysis: dict[str, Any] = {}
+    dfm: dict[str, Any] = {}
+    try:
+        from cadx.cad.analysis import analyze
+        from cadx.cad.dfm import DfmReport
+        from cadx.cad.dfm.cnc import cnc_checks
+        from cadx.cad.dfm.common import common_checks, load_mesh
+        from cadx.cad.dfm.fdm import fdm_checks
+
+        ana = analyze(edited, model_stl)
+        analysis = ana.model_dump()
+        mesh = load_mesh(model_stl)
+        warnings = common_checks(ana, mesh, settings.build_volume)
+        if settings.process in ("fdm", "sla"):
+            warnings += fdm_checks(
+                edited,
+                mesh,
+                ana,
+                min_wall_mm=settings.min_wall_mm,
+                nozzle_mm=settings.nozzle_mm,
+                thread_compensation_mm=settings.thread_compensation_mm,
+            )
+        if settings.process in ("cnc3", "cnc2d"):
+            warnings += cnc_checks(edited, mesh, ana, tool_radius_mm=settings.tool_radius_mm)
+        dfm = DfmReport(process=settings.process, warnings=warnings).sort().model_dump()
+    except Exception as exc:
+        log.warning(
+            "edit_feature: analysis/dfm failed",
+            error=str(exc),
+            job_id=job_id_or_none(payload),
+        )
+
+    # renders + contact sheet + thumbnail (best-effort, as in run_pipeline)
+    renders_rel: dict[str, str] = {}
+    try:
+        from cadx.cad.contact_sheet import make_contact_sheet
+        from cadx.cad.render import render_available, render_thumbnail, render_views
+
+        if render_available():
+            renders_dir = art_dir / "renders"
+            bbox = (analysis or {}).get("bbox_size") or [0.0, 0.0, 0.0]
+            renders = render_views(model_stl, renders_dir, [float(v) for v in bbox])
+            stats = [
+                f"bbox: {bbox[0]:.1f} x {bbox[1]:.1f} x {bbox[2]:.1f} mm",
+                f"volume: {analysis.get('volume', 0):.0f} mm^3",
+                f"solids: {analysis.get('solid_count', 0)}",
+                f"valid: {analysis.get('is_valid')}",
+                f"feature edit: {report.get('old_diameter')} -> {report.get('new_diameter')} mm",
+            ]
+            sheet = make_contact_sheet(renders, art_dir / "contact_sheet.png", stats)
+            thumb = render_thumbnail(model_stl, art_dir / "thumbnail.png")
+            renders_rel = {view: str(p.relative_to(art_dir)) for view, p in renders.items()}
+            if sheet:
+                renders_rel["contact_sheet"] = str(sheet.relative_to(art_dir))
+            if thumb:
+                renders_rel["thumbnail"] = str(thumb.relative_to(art_dir))
+            stats_path = renders_dir / "stats.txt"
+            stats_path.write_text("\n".join(stats))
+            writes[stats_path] = time.time()
+    except Exception as exc:
+        log.warning(
+            "edit_feature: render failed", error=str(exc), job_id=job_id_or_none(payload)
+        )
+
+    # standard 3D+2D export set, from the committed brep
+    exports: dict[str, str | None] = {}
+    try:
+        exp_dir = art_dir / "exports"
+        exp_dir.mkdir(parents=True, exist_ok=True)
+        exports = export_from_brep(model_brep, exp_dir, name="model")
+    except Exception as exc:
+        log.warning(
+            "edit_feature: exports failed", error=str(exc), job_id=job_id_or_none(payload)
+        )
+
+    log.info(
+        "edit_feature committed",
+        job_id=job_id_or_none(payload),
+        feature_id=feature_id,
+        old_diameter=report.get("old_diameter"),
+        new_diameter=report.get("new_diameter"),
+        elapsed_s=round(time.time() - started, 3),
+    )
+    art_rel = storage.relpath(art_dir)
+    return {
+        "ok": True,
+        "report": report,
+        "features": features,
+        # all paths are storage relpaths, matching execute_payload's contract
+        "model_brep": f"{art_rel}/_run/model.brep",
+        "model_step": f"{art_rel}/_run/model.step",
+        "model_stl": f"{art_rel}/_run/model.stl",
+        "renders": renders_rel,
+        "exports": {
+            k: (f"{art_rel}/exports/{v}" if v else None) for k, v in exports.items()
+        },
+        "analysis": analysis,
+        "dfm": dfm,
+        "elapsed_s": round(time.time() - started, 3),
+    }
+
+
+def job_id_or_none(payload: dict[str, Any]) -> str | None:
+    job_id = payload.get("job_id")
+    return str(job_id) if job_id else None
+
+
+async def edit_feature(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    """arq task (queue "cad"): transactional feature edit on a parent B-Rep.
+
+    Discovery when ``feature_id`` is absent, dry-run gate check when
+    ``dry_run`` is set — only a full run writes artifacts.
+    """
+    if await _cancelled(ctx, f"cancel:{payload.get('job_id')}" if payload.get("job_id") else None):
+        return {"ok": False, "error": "cancelled"}
+    return await asyncio.to_thread(run_edit_feature_payload, payload)

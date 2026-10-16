@@ -9,6 +9,7 @@ from arq.connections import RedisSettings
 from cadx.agent.chat_worker import reap_orphaned_chats, run_chat_turn
 from cadx.agent.worker_jobs import (
     run_agent_job,
+    run_edit_feature_job,
     run_fem_job,
     run_mesh_edit_job,
     run_optimize_job,
@@ -20,6 +21,7 @@ from cadx.agent.worker_jobs import (
 )
 from cadx.cad.tasks import (
     audit_params,
+    edit_feature,
     execute_version,
     export_all,
     fem_analyze,
@@ -107,6 +109,7 @@ class AgentWorkerSettings:
     functions = [  # noqa: RUF012
         run_agent_job,
         run_chat_turn,
+        run_edit_feature_job,
         run_params_job,
         run_reexport_job,
         run_optimize_job,
@@ -131,6 +134,7 @@ class CadWorkerSettings:
     functions = [  # noqa: RUF012
         execute_version,
         audit_params,
+        edit_feature,
         export_all,
         process_mesh,
         fem_analyze,

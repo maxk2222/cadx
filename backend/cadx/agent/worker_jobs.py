@@ -2175,3 +2175,228 @@ async def _persist_outcome(
     await _append_job_log(db, job, f"final: {outcome.status}\n")
     await db.commit()
     await _publish(str(job.id), {"type": "done", "status": outcome.status, "score": outcome.score})
+
+
+def _parent_source_model(artifacts: list[Artifact], parent: Version) -> str | None:
+    """Best analytic B-Rep of ``parent`` for a verified feature edit, as a
+    storage relpath. Preference order:
+
+    1. ``mesh/solid.brep`` — canonical sewn solid for mesh/hybrid versions
+    2. the winning run's ``_run/model.brep``, found via the registered STEP
+       artifact (its path embeds the attempt dir, incl. ``aN`` subdirs)
+    3. the newest ``iterations/<n>[/<aN>]/_run/model.brep`` on disk
+    4. ``exports/model.step`` — always written by ``export_all``; STEP is a
+       faithful analytic exchange for the plain cylindrical faces we edit
+    """
+    from pathlib import Path
+
+    pid, vid = parent.project_id, parent.id
+    v_dir = storage.version_dir(pid, vid)
+
+    mesh_solid = v_dir / "mesh" / "solid.brep"
+    if mesh_solid.exists():
+        return storage.relpath(mesh_solid)
+
+    for art in artifacts:
+        if art.kind != ArtifactKind.step:
+            continue
+        step_path = storage.resolve(art.path)
+        brep = step_path.parent.parent / "_run" / "model.brep"  # <run>/exports/model.step
+        if brep.exists():
+            return storage.relpath(brep)
+
+    it_root = v_dir / "iterations"
+    if it_root.is_dir():
+        run_dirs: list[Path] = []
+        for it in it_root.iterdir():
+            if not it.is_dir():
+                continue
+            if (it / "_run" / "model.brep").exists():
+                run_dirs.append(it)
+            run_dirs.extend(
+                sub for sub in it.iterdir() if (sub / "_run" / "model.brep").exists()
+            )
+        if run_dirs:
+            newest = max(run_dirs, key=lambda d: (d / "_run" / "model.brep").stat().st_mtime)
+            return storage.relpath(newest / "_run" / "model.brep")
+
+    step = v_dir / "exports" / "model.step"
+    if step.exists():
+        return storage.relpath(step)
+    return None
+
+
+@_guarded
+async def run_edit_feature_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    """Verified parametric edit of a recognised feature on the parent's B-Rep
+    (M9: plain through-holes only). The child version already exists.
+
+    Transactional: the executor gate must pass or the job/version fails with
+    the refusal — a mutated shape is never persisted as a result.
+    """
+    job_id = _u(payload["job_id"])
+    async with session_scope() as db:
+        job = await db.get(Job, job_id)
+        version = await db.get(Version, _u(payload["version_id"]))
+        parent = (
+            await db.get(Version, version.parent_id)
+            if version is not None and version.parent_id
+            else None
+        )
+        if job is None or version is None or parent is None:
+            if job:
+                job.status = JobStatus.failed
+                job.finished_at = datetime.now(UTC)
+                await _append_job_log(db, job, "edit_feature job: missing version/parent\n")
+                await db.commit()
+            return {"ok": False, "error": "missing version or parent"}
+
+        if job.status in (JobStatus.succeeded, JobStatus.failed, JobStatus.cancelled):
+            return {"ok": False, "error": f"job already {job.status}"}
+        job.status = JobStatus.running
+        job.started_at = datetime.now(UTC)
+        version.status = VersionStatus.running
+        await db.commit()
+
+        emit = make_emit(job_id)
+        runtime_settings = await load_runtime_settings(db)
+        executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=runtime_settings)
+        project = await db.get(Project, version.project_id)
+        settings = _fill_settings(
+            _merge_settings(
+                (project.settings or {}) if project else {},
+                version.options or (parent.options or {}),
+            ),
+            runtime_settings,
+        )
+
+        art_rows = (
+            await db.execute(select(Artifact).where(Artifact.version_id == parent.id))
+        ).scalars().all()
+        source_rel = _parent_source_model(list(art_rows), parent)
+        if source_rel is None:
+            version.status = VersionStatus.failed
+            version.error = "parent has no B-Rep solid to edit"
+            job.status = JobStatus.failed
+            job.finished_at = datetime.now(UTC)
+            await _append_job_log(db, job, f"failed: {version.error}\n")
+            await db.commit()
+            return {"ok": False, "error": version.error}
+
+        parameter = str(payload.get("parameter") or "diameter")
+        await emit(
+            "edit",
+            1,
+            f"feature edit: {parameter} -> {payload.get('value')} on feature "
+            f"{payload.get('feature_id')}",
+        )
+        exec_result = await executor.edit_feature(
+            {
+                "job_id": str(job_id),
+                "project_id": str(version.project_id),
+                "version_id": str(version.id),
+                "iteration": 1,
+                "source_brep": source_rel,
+                "feature_id": payload.get("feature_id"),
+                "parameter": parameter,
+                "value": payload.get("value"),
+                "spec": parent.spec or {},
+                "settings": settings.model_dump(),
+                "runtime_settings": runtime_settings.executor_values(),
+            }
+        )
+
+        if not exec_result.get("ok"):
+            refusal = exec_result.get("error") or "edit refused"
+            was_cancelled = refusal == "cancelled"
+            version.status = (
+                VersionStatus.cancelled if was_cancelled else VersionStatus.failed
+            )
+            version.error = refusal
+            version.issues = (version.issues or []) + [
+                {
+                    "source": "edit_feature",
+                    "severity": "major",
+                    "what": refusal,
+                    "report": _json_safe(exec_result.get("report") or {}),
+                }
+            ]
+            job.status = JobStatus.cancelled if was_cancelled else JobStatus.failed
+            job.finished_at = datetime.now(UTC)
+            await _append_job_log(
+                db, job, f"{'cancelled' if was_cancelled else 'refused'}: {refusal}\n"
+            )
+            await db.commit()
+            await _publish(
+                str(job_id),
+                {
+                    "type": "done",
+                    "status": "cancelled" if was_cancelled else "failed",
+                },
+            )
+            return {
+                "ok": False,
+                "error": refusal,
+                "report": exec_result.get("report"),
+                "features": exec_result.get("features"),
+            }
+
+        report = exec_result.get("report") or {}
+        artifacts = _copy_best_artifacts_ctxless(
+            version.project_id, version.id, 1, exec_result
+        )
+        for fmt, rel in (exec_result.get("exports") or {}).items():
+            if rel:
+                artifacts[f"export:{fmt}"] = rel
+        artifacts.update(
+            _copy_mesh_artifacts_ctxless(version.project_id, version.id, 1, parent)
+        )
+        register_artifacts(db, version.id, artifacts)
+
+        version.gen_mode = parent.gen_mode
+        version.resolved_mode = parent.resolved_mode or parent.gen_mode
+        version.spec = parent.spec
+        version.code = parent.code
+        version.params = parent.params
+        version.params_schema = parent.params_schema
+        version.analysis = exec_result.get("analysis")
+        version.dfm = exec_result.get("dfm")
+        version.iterations = 1
+        version.issues = (version.issues or []) + [
+            {
+                "source": "edit_feature",
+                "severity": "info",
+                "what": (
+                    f"resized feature {payload.get('feature_id')} "
+                    f"{parameter}: {report.get('old_diameter')} -> "
+                    f"{report.get('new_diameter')} mm (gate passed)"
+                ),
+                "report": _json_safe(report),
+            }
+        ]
+        version.status = VersionStatus.succeeded
+
+        import json
+
+        v_dir = storage.ensure(storage.version_dir(version.project_id, version.id))
+        if version.code:
+            (v_dir / "model.py").write_text(version.code, encoding="utf-8")
+        (v_dir / "params.json").write_text(
+            json.dumps(version.params or {}, indent=2), encoding="utf-8"
+        )
+        (v_dir / "edit_feature_report.json").write_text(
+            json.dumps(_json_safe(report), indent=2), encoding="utf-8"
+        )
+
+        job.status = JobStatus.succeeded
+        job.finished_at = datetime.now(UTC)
+        job.progress = 1.0
+        await _append_job_log(
+            db,
+            job,
+            f"done: {parameter} {report.get('old_diameter')} -> "
+            f"{report.get('new_diameter')} mm\n",
+        )
+        await db.commit()
+        await _publish(str(job_id), {"type": "done", "status": "succeeded"})
+        return {"ok": True, "report": _json_safe(report)}
