@@ -100,6 +100,9 @@ tool panel builds a stack of validated `MeshOp` operations — the same
 - **Keep largest / Drop small bodies / Repair**
 - **Measure** — two-click surface distance (not recorded)
 
+While a pick tool is armed the left button belongs to the tool — orbit the
+camera with the right mouse button (or two-finger drag on touch).
+
 The op stack supports per-op removal, reorder, duplication, inline arg
 editing, undo and reset; a failing op is highlighted in red using the
 `failed_op` index + per-op report returned by the preview.
@@ -131,13 +134,32 @@ vocabulary:
   load (pressure follows the region's stored surface normal)
 - **Keep regions** (green) — TopOpt design-preserve volumes
 
-Region kinds: `points` (painted — points + radius + averaged surface
-normal), `face`/`surface` (+axis), `area` (XY footprint), `cylinder`, `box`,
-`hole` (measured anchor holes, 1-based index) and `all`. Geometric regions
-offer click-to-place centers and an expandable detail row (center, diameter/
-edge, margin, label). Painted regions render as vertex-coloured fills on the
-model — the live approximation of the voxel-domain selection — and support
-an **eraser** and per-stroke **undo**.
+Region kinds: `points` (painted or surface-picked — points + radius +
+averaged surface normal), `face`/`surface` (+axis), `area` (XY footprint),
+`cylinder`, `box`, `hole`/`anchor`/`bore` (measured feature anchors, 1-based
+index) and `all`. Geometric regions offer click-to-place centers and an
+expandable detail row (center, diameter/edge, margin, label).
+
+Besides freehand painting, each region list offers three direct-viewer pick
+tools with hover highlighting:
+
+- **face** — click surface patches; triangles are clustered into facets by a
+  crease angle (adjustable in the header), the hovered facet lights up and
+  each click appends its surface points to the region
+- **edge** — hover shows the facet boundary loop nearest the cursor; a click
+  stores the ordered loop vertices as the region's points
+- **hole** — click inside or near a measured hole/thread/bore; a translucent
+  sleeve marks the hovered feature and the click appends a `hole`/`bore`
+  region bound to that anchor index (the anchor markers themselves are
+  clickable, too)
+
+While any paint/pick tool is armed, the left button belongs to the tool and
+**right-drag orbits** the camera (wheel zooms, middle pans; touch: one
+finger paints, two orbit). `Esc` or the ✓ button disarms the tool; an empty
+just-armed region is dropped automatically. Painted and picked regions both
+render as a dot trail sized by the region radius plus a vertex-coloured fill
+— the live approximation of the voxel-domain selection — and support an
+**eraser** and per-stroke **undo**.
 
 Three actions share the declared cases: **Check regions** (server-side voxel
 resolution → hit counts, warnings, and a 3D overlay of the *resolved* cell
@@ -153,11 +175,15 @@ other).
 
 ### Organic editor (pseudo-TopOpt restyle)
 
-The **Organische Struktur** action on a finished version opens a dialog that
+The **Organic structure** action on a finished version opens a dialog that
 restyles the part into a deterministic organic structure — `gyroid`,
 `trabecular`, `voronoi` or `branches` — with a live preview running the same
-mesh op the commit replays, plus anchor protection and a keep-region brush.
-Aesthetic only, no FEM. See [organic.md](organic.md).
+mesh op the commit replays. Simplified controls (style, preserve-surface,
+density, cell size, seed) sit up front; skin/base/threshold/quality move to
+an Advanced expander. Keep + carve brushes paint protected and erased zones,
+cyan markers show the detected feature anchors auto-keep protects, a compare
+toggle flips to the original part, and the status bar reports the live
+surface-coverage metric. Aesthetic only, no FEM. See [organic.md](organic.md).
 
 ![Organic editor — style select, live preview, keep-region brush](screenshots/organic-editor.png)
 
@@ -248,9 +274,9 @@ authentication or multi-user library isolation. FEM/TopOpt values are
 engineering estimates, not certification. The mesh editor operates on
 tessellated geometry — it records replayable `MeshOp` transforms, it does not
 patch parametric code; booleans are capped at 500k faces (decimate first).
-Region painting selects near-surface voxel cells within the brush radius —
-thin features below ~2 voxel pitches may not resolve reliably. See
-[fem-topopt.md](fem-topopt.md).
+Region painting and surface picks (face/edge facets) select near-surface
+voxel cells within the region radius — thin features below ~2 voxel pitches
+may not resolve reliably. See [fem-topopt.md](fem-topopt.md).
 
 ## See also
 

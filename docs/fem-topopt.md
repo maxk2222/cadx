@@ -122,12 +122,19 @@ enriches measured anchors with real depth. Anchor fields: `index` (1-based),
 On a completed version, **Structural editor** opens a full-screen 3D editor
 where support, load and keep regions are painted directly on the part surface
 with an adjustable brush (per-region radius, with eraser + per-stroke undo),
-or declared as geometric regions: `face`/`surface` (+axis), `area`, `cylinder`,
-`box`, `anchor`/`bore`/`hole` (measured anchors — `bore` selects the bore WALL
-for bolt-type loads), or `all`. Anchor markers are rendered as numbered
-sprites on the model; clicking near one while placing an anchor region snaps
-`hole_index` to it. Load gizmos (force arrows, moment rings, preload pairs)
-render at the resolved region centres. Painted picks are stored as
+picked as whole **faces** (crease-angle facet clusters — a header slider tunes
+the angle), **edge loops** (facet boundary traced nearest the click), or
+measured **features** (click inside/near a hole, thread or bore → `hole`/`bore`
+region with `hole_index`), or declared as geometric regions: `face`/`surface`
+(+axis), `area`, `cylinder`, `box`, `anchor`/`bore`/`hole` (measured anchors —
+`bore` selects the bore WALL for bolt-type loads), or `all`. Anchor markers
+render as numbered sprites at the feature mouth; hovering a feature shows a
+translucent bore sleeve, and clicking near an anchor while placing an anchor
+region snaps `hole_index` to it. While any tool is armed the left button picks
+and **right-drag orbits** the camera (`Esc` disarms). Load gizmos (force
+arrows, moment rings, preload pairs)
+render at the resolved region centres. Painted and picked selections are
+stored as
 `RegionSpec kind="points"` — up to 4000 `[x,y,z]` mm surface points, a brush
 radius (`radius_mm`), and the averaged surface normal (drives pressure loads).
 Resolution rasterizes each point in index space (deduplicating stroke points

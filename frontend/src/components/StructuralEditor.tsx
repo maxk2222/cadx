@@ -1,16 +1,32 @@
 import {
   Brush,
+  Check,
+  CircleDot,
   Crosshair,
   Eraser,
+  Layers,
   Loader2,
   Plus,
+  Spline,
   Trash2,
   Undo2,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
+import { Line } from "@react-three/drei";
 import { api } from "../lib/api";
+import {
+  buildFacets,
+  facetAtHit,
+  facetGeometry,
+  facetLoop,
+  facetPickPoints,
+  facetRadius,
+  resampleLoop,
+  type Facet,
+  type FacetSet,
+} from "../lib/facets";
 import type {
   FeatureAnchor,
   FemPreviewResult,
@@ -19,6 +35,13 @@ import type {
   RegionSpec,
   VersionDetail,
 } from "../lib/types";
+import {
+  AnchorMarker,
+  anchorMouth,
+  anchorPos,
+  axisVec,
+  dirQuat,
+} from "./editor/anchors";
 import ModelCanvas, { type PickInfo } from "./editor/ModelCanvas";
 import RegionFill, { type RegionFillEntry } from "./editor/RegionFill";
 import { MATERIAL_OPTIONS } from "./OptionsPanel";
@@ -46,7 +69,15 @@ type PaintTarget =
   | { kind: "void"; ri: number }
   | null;
 
-type Mode = "paint" | "erase";
+type Mode = "paint" | "erase" | "face" | "edge";
+
+/** Which region list a feature pick (hole/thread/bore) appends to. */
+type FeatureTarget =
+  | { kind: "fixed"; ci: number }
+  | { kind: "load"; ci: number }
+  | { kind: "keep" }
+  | { kind: "void" }
+  | null;
 
 const num = (s: string, fb = 0) => {
   const n = Number(s);
@@ -76,21 +107,44 @@ const REGION_KINDS: { id: NonNullable<RegionSpec["kind"]>; label: string }[] = [
   { id: "all", label: "all" },
 ];
 
-/** feature-anchor → 3D point (model space); null when nothing is known. */
-function anchorPos(a: FeatureAnchor, box?: THREE.Box3 | null): [number, number, number] | null {
-  const axisIdx = { x: 0, y: 1, z: 2 }[(a.axis || "+z").replace(/^[+-]/, "")] ?? 2;
-  const mid = box
-    ? box.getCenter(new THREE.Vector3()).toArray()
-    : [0, 0, 0];
-  const p: (number | null)[] = a.pos?.length === 3 ? a.pos : [a.x, a.y, a.z ?? null];
-  const out = p.map((c, i) => (c == null ? mid[i]! : c));
-  // pos-less legacy anchors: x,y are the in-plane coords of a +z hole
-  if (!a.pos && axisIdx === 2) out[2] = a.z ?? mid[2]!;
-  if (!a.pos && axisIdx !== 2) {
-    // legacy anchors are +z only — trust mid on the unknown axis
-    out[axisIdx] = a.z ?? mid[axisIdx]!;
+/** nearest feature anchor to a surface pick: the point must lie inside the
+ *  anchor's bore corridor (perpendicular distance < dia/2 + snap) and within
+ *  the part span along the axis. Returns null when nothing is close — a
+ *  plain surface click should never silently snap to a far-away hole. */
+function nearestAnchorAt(
+  p: [number, number, number],
+  anchors: FeatureAnchor[],
+  box: THREE.Box3 | null,
+  snapMm = 2.5
+): FeatureAnchor | null {
+  let best: FeatureAnchor | null = null;
+  let bd = Infinity;
+  for (const a of anchors) {
+    const ap = anchorPos(a, box);
+    if (!ap) continue;
+    const av = axisVec(a.axis);
+    const d = [p[0] - ap[0], p[1] - ap[1], p[2] - ap[2]];
+    const t = d[0] * av[0] + d[1] * av[1] + d[2] * av[2];
+    const perp = Math.hypot(d[0] - t * av[0], d[1] - t * av[1], d[2] - t * av[2]);
+    const tol = (a.dia || 0) / 2 + snapMm;
+    if (perp > tol) continue;
+    // axial bound: the pick must lie within the part span along the axis
+    if (box) {
+      const i = av.findIndex((v) => v !== 0);
+      if (i >= 0) {
+        const lo = box.min.getComponent(i) - snapMm;
+        const hi = box.max.getComponent(i) + snapMm;
+        if (ap[i] + t < lo || ap[i] + t > hi) continue;
+      }
+    }
+    // prefer corridor hits — penalize picks far along the axis
+    const score = perp + Math.abs(t) * 0.05;
+    if (score < bd) {
+      bd = score;
+      best = a;
+    }
   }
-  return out as [number, number, number];
+  return best;
 }
 
 function emptyPointsRegion(radius: number): RegionSpec {
@@ -125,7 +179,7 @@ function newRegion(kind: NonNullable<RegionSpec["kind"]>): RegionSpec {
 function regionLabel(r: RegionSpec, anchors?: FeatureAnchor[]): string {
   switch (r.kind) {
     case "points":
-      return `painted · ${r.points?.length ?? 0} pts`;
+      return r.description || `painted · ${r.points?.length ?? 0} pts`;
     case "face":
       return `face ${r.axis ?? "?"}`;
     case "surface":
@@ -338,19 +392,31 @@ function RegionRow({
             ))}
           </select>
         ) : ANCHOR_KINDS.has(kind) && anchors?.length ? (
-          <select
-            className={`${inputCls} flex-1 px-1 py-0.5 text-[11px]`}
-            value={r.hole_index ?? 1}
-            onChange={(e) => setA({ hole_index: Number(e.target.value) })}
-          >
-            {anchors.map((a) => (
-              <option key={a.index} value={a.index}>
-                #{a.index} {a.kind} {a.axis} Ø{a.dia ? a.dia.toFixed(1) : "?"}
-                {a.bolt_size ? ` ${a.bolt_size}` : ""} @ ({a.x.toFixed(1)}, {a.y.toFixed(1)}
-                {a.z != null ? `, ${a.z.toFixed(1)}` : ""})
-              </option>
-            ))}
-          </select>
+          <>
+            <select
+              className="rounded bg-zinc-800 px-1 py-0.5 text-[10px] text-zinc-400"
+              value={kind}
+              title="ring = material around the mouth, wall = bore wall cells"
+              onChange={(e) => setA({ kind: e.target.value as RegionSpec["kind"] })}
+            >
+              <option value="hole">ring</option>
+              <option value="anchor">ring+</option>
+              <option value="bore">wall</option>
+            </select>
+            <select
+              className={`${inputCls} min-w-0 flex-1 px-1 py-0.5 text-[11px]`}
+              value={r.hole_index ?? 1}
+              onChange={(e) => setA({ hole_index: Number(e.target.value) })}
+            >
+              {anchors.map((a) => (
+                <option key={a.index} value={a.index}>
+                  #{a.index} {a.kind} {a.axis} Ø{a.dia ? a.dia.toFixed(1) : "?"}
+                  {a.bolt_size ? ` ${a.bolt_size}` : ""} @ ({a.x.toFixed(1)}, {a.y.toFixed(1)}
+                  {a.z != null ? `, ${a.z.toFixed(1)}` : ""})
+                </option>
+              ))}
+            </select>
+          </>
         ) : (
           <button
             className="min-w-0 flex-1 truncate text-left text-zinc-300 hover:text-zinc-100"
@@ -503,11 +569,17 @@ function RegionRow({
 
 function AddRegionButtons({
   onPaint,
+  onPickFace,
+  onPickEdge,
+  onPickFeature,
   onAdd,
   hasAnchors,
   paintLabel,
 }: {
   onPaint: () => void;
+  onPickFace: () => void;
+  onPickEdge: () => void;
+  onPickFeature: () => void;
   onAdd: (r: RegionSpec) => void;
   hasAnchors: boolean;
   paintLabel: string;
@@ -519,6 +591,28 @@ function AddRegionButtons({
         onClick={onPaint}
       >
         <Brush className="h-3 w-3" /> {paintLabel}
+      </button>
+      <button
+        className="flex items-center gap-1 rounded border border-dashed border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-400 hover:border-zinc-500 hover:text-zinc-200"
+        title="arm face pick — click surface patches on the model"
+        onClick={onPickFace}
+      >
+        <Layers className="h-3 w-3" /> face
+      </button>
+      <button
+        className="flex items-center gap-1 rounded border border-dashed border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-400 hover:border-zinc-500 hover:text-zinc-200"
+        title="arm edge pick — click a face to take its boundary loop"
+        onClick={onPickEdge}
+      >
+        <Spline className="h-3 w-3" /> edge
+      </button>
+      <button
+        className="flex items-center gap-1 rounded border border-dashed border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-400 disabled:opacity-40 hover:border-zinc-500 hover:text-zinc-200"
+        title="arm feature pick — click a hole / thread / bore on the model"
+        onClick={onPickFeature}
+        disabled={!hasAnchors}
+      >
+        <CircleDot className="h-3 w-3" /> hole
       </button>
       {REGION_KINDS.filter((k) => !ANCHOR_KINDS.has(k.id ?? "") || hasAnchors).map((k) => (
         <button
@@ -573,23 +667,6 @@ function PointCloud({
 /* anchor markers + load gizmos                                        */
 /* ------------------------------------------------------------------ */
 
-/** axis word → unit vector */
-function axisVec(axis: string | undefined): [number, number, number] {
-  const a = (axis || "+z").toLowerCase();
-  const i = { x: 0, y: 1, z: 2 }[a.replace(/^[+-]/, "")] ?? 2;
-  const v: [number, number, number] = [0, 0, 0];
-  v[i] = a.startsWith("-") ? -1 : 1;
-  return v;
-}
-
-/** quaternion aligning +Y onto `dir` (arrows are modelled along +Y) */
-function dirQuat(dir: [number, number, number]): THREE.Quaternion {
-  const d = new THREE.Vector3(...dir);
-  if (d.lengthSq() < 1e-12) d.set(0, 1, 0);
-  d.normalize();
-  return new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), d);
-}
-
 /** one arrow: shaft + head, centred so `pos` is the tail */
 function Arrow({
   pos,
@@ -620,56 +697,40 @@ function Arrow({
   );
 }
 
-/** feature anchor marker: sphere + short axis pin + index sprite */
-function AnchorMarker({
+/** translucent bore sleeve + mouth ring shown when a feature pick hovers
+ *  an anchor — the cylinder follows the anchor axis into the part. */
+function AnchorSleeve({
   a,
-  pos,
-  selected,
+  box,
+  color,
 }: {
   a: FeatureAnchor;
-  pos: [number, number, number];
-  selected: boolean;
+  box: THREE.Box3;
+  color: string;
 }) {
-  const avec = axisVec(a.axis);
-  const tex = useMemo(() => {
-    const cv = document.createElement("canvas");
-    cv.width = cv.height = 64;
-    const g = cv.getContext("2d")!;
-    g.beginPath();
-    g.arc(32, 32, 28, 0, Math.PI * 2);
-    g.fillStyle = selected ? "#f59e0b" : "#164e63";
-    g.fill();
-    g.strokeStyle = "#22d3ee";
-    g.lineWidth = 4;
-    g.stroke();
-    g.fillStyle = "#fff";
-    g.font = "bold 34px sans-serif";
-    g.textAlign = "center";
-    g.textBaseline = "middle";
-    g.fillText(String(a.index), 32, 34);
-    const t = new THREE.CanvasTexture(cv);
-    t.needsUpdate = true;
-    return t;
-  }, [a.index, selected]);
-  const s = Math.max((a.dia || 4) * 0.25, 2);
+  const pos = anchorMouth(a, box);
+  if (!pos) return null;
+  const av = axisVec(a.axis);
+  const idx = av.findIndex((v) => v !== 0);
+  const span = idx >= 0 ? box.max.getComponent(idx) - box.min.getComponent(idx) : 10;
+  const len = Math.min(Math.max((a.depth_mm ?? 0) * 2, span * 0.3), span);
+  const r = Math.max((a.dia || 4) / 2, 1);
   return (
-    <group position={pos}>
-      <mesh>
-        <sphereGeometry args={[s * 0.45, 14, 10]} />
+    <group position={pos} quaternion={dirQuat(av)}>
+      <mesh position={[0, -len / 2, 0]}>
+        <cylinderGeometry args={[r, r, len, 24, 1, true]} />
         <meshBasicMaterial
-          color={selected ? "#f59e0b" : COLORS.anchor}
-          depthTest={false}
+          color={color}
           transparent
-          opacity={0.95}
+          opacity={0.28}
+          side={THREE.DoubleSide}
+          depthTest={false}
         />
       </mesh>
-      <mesh quaternion={dirQuat(avec)} position={[avec[0] * s, avec[1] * s, avec[2] * s]}>
-        <cylinderGeometry args={[0.35, 0.35, s * 2, 8]} />
-        <meshBasicMaterial color={COLORS.anchor} depthTest={false} transparent opacity={0.8} />
+      <mesh rotation={[Math.PI / 2, 0, 0]}>
+        <torusGeometry args={[r + 0.5, Math.max(r * 0.08, 0.3), 8, 40]} />
+        <meshBasicMaterial color={color} depthTest={false} transparent opacity={0.9} />
       </mesh>
-      <sprite scale={[s * 1.6, s * 1.6, 1]} position={[0, s * 1.6, 0]}>
-        <spriteMaterial map={tex} depthTest={false} transparent />
-      </sprite>
     </group>
   );
 }
@@ -838,6 +899,24 @@ export default function StructuralEditor({
   const lastPickT = useRef(0);
   const undoStack = useRef<{ t: Exclude<PaintTarget, null>; prev: number[][] }[]>([]);
 
+  // surface/feature picking state
+  const [featureTarget, setFeatureTarget] = useState<FeatureTarget>(null);
+  const [creaseDeg, setCreaseDeg] = useState(30);
+  const [facetSets, setFacetSets] = useState<Map<THREE.BufferGeometry, FacetSet> | null>(null);
+  const [facetBusy, setFacetBusy] = useState(false);
+  const [hoverFacet, setHoverFacet] = useState<{
+    fs: FacetSet;
+    facet: Facet;
+    key: string;
+  } | null>(null);
+  const [hoverAnchor, setHoverAnchor] = useState<FeatureAnchor | null>(null);
+  const [hoverLoop, setHoverLoop] = useState<{
+    pts: [number, number, number][];
+    closed: boolean;
+  } | null>(null);
+  const facetGeoms = useRef(new Map<string, THREE.BufferGeometry>());
+  const pickedFacets = useRef(new Set<string>());
+
   // init once per open/version — persisted GUI state wins over spec defaults
   useEffect(() => {
     if (!open) return;
@@ -925,6 +1004,11 @@ export default function StructuralEditor({
     setPreview(null);
     setTarget(null);
     setCenterPick(null);
+    setFeatureTarget(null);
+    setHoverFacet(null);
+    setHoverAnchor(null);
+    setHoverLoop(null);
+    pickedFacets.current.clear();
     undoStack.current = [];
     lastPt.current = null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -981,41 +1065,192 @@ export default function StructuralEditor({
     if (!e) return;
     const r = getRegion(e.t);
     if (r?.kind === "points") setRegion(e.t, { ...r, points: e.prev });
+    // re-picking must be possible after undo — the key set only prevents
+    // double-adds within the current selection
+    pickedFacets.current.clear();
+  };
+
+  /** clear hover-highlight state (tool switches happen without a pointer move) */
+  const clearHoverFx = () => {
+    setHoverFacet(null);
+    setHoverAnchor(null);
+    setHoverLoop(null);
+  };
+
+  /** remove the armed region when it is a still-empty points region */
+  const dropEmptyTarget = () => {
+    if (!target) return;
+    const r = getRegion(target);
+    if (r?.kind === "points" && !r.points?.length) delRegion(target);
+  };
+
+  /** drop any armed tool; an empty just-armed paint region goes with it */
+  const disarm = () => {
+    dropEmptyTarget();
+    setTarget(null);
+    setCenterPick(null);
+    setFeatureTarget(null);
+    clearHoverFx();
+    pickedFacets.current.clear();
+  };
+
+  const armPaint = (t: Exclude<PaintTarget, null>) => {
+    if (sameTarget(t) && (mode === "paint" || mode === "erase")) {
+      disarm();
+      return;
+    }
+    dropEmptyTarget();
+    setTarget(t);
+    setMode("paint");
+    setCenterPick(null);
+    setFeatureTarget(null);
+    clearHoverFx();
+    pickedFacets.current.clear();
+  };
+
+  const armCenter = (t: Exclude<PaintTarget, null>) => {
+    if (sameCenterPick(t)) {
+      setCenterPick(null);
+      return;
+    }
+    dropEmptyTarget();
+    setCenterPick(t);
+    setTarget(null);
+    setFeatureTarget(null);
+    clearHoverFx();
   };
 
   /** Append a fresh painted region and arm the brush on it. */
   const startPaint = (t: Exclude<PaintTarget, null>, append: (r: RegionSpec) => void) => {
+    dropEmptyTarget();
     append(emptyPointsRegion(brushR));
     setTarget(t);
     setMode("paint");
     setCenterPick(null);
+    setFeatureTarget(null);
+    clearHoverFx();
     lastPt.current = null;
+    pickedFacets.current.clear();
   };
 
-  /* --- painting / erasing / center-pick --- */
+  /** Append a fresh points region and arm a surface-pick tool on it. */
+  const startToolPick = (
+    t: Exclude<PaintTarget, null>,
+    m: "face" | "edge",
+    append: (r: RegionSpec) => void
+  ) => {
+    dropEmptyTarget();
+    append(emptyPointsRegion(m === "edge" ? 2 : brushR));
+    setTarget(t);
+    setMode(m);
+    setCenterPick(null);
+    setFeatureTarget(null);
+    clearHoverFx();
+    lastPt.current = null;
+    pickedFacets.current.clear();
+  };
 
-  const onPick = (info: PickInfo) => {
+  const armTool = (
+    t: Exclude<PaintTarget, null>,
+    m: "face" | "edge",
+    append: (r: RegionSpec) => void
+  ) => {
+    if (sameTarget(t) && mode === m) disarm();
+    else startToolPick(t, m, append);
+  };
+
+  const toggleFeaturePick = (ft: Exclude<FeatureTarget, null>) => {
+    dropEmptyTarget();
+    setFeatureTarget((cur) =>
+      cur && JSON.stringify(cur) === JSON.stringify(ft) ? null : ft
+    );
+    setTarget(null);
+    setCenterPick(null);
+    clearHoverFx();
+  };
+
+  /* --- painting / erasing / picking --- */
+
+  /** facet containing the picked triangle (needs facetSets + faceIndex). */
+  const facetAt = (info: PickInfo) => {
+    const g = (info.object as THREE.Mesh | undefined)?.geometry as
+      | THREE.BufferGeometry
+      | undefined;
+    const fs = g ? facetSets?.get(g) : null;
+    const facet = fs ? facetAtHit(fs, info.faceIndex) : null;
+    return fs && facet ? { fs, facet, key: `${g!.uuid}:${facet.id}` } : null;
+  };
+
+  /** append a hole/bore/anchor region bound to a scanned feature */
+  const addAnchorRegion = (t: Exclude<FeatureTarget, null>, a: FeatureAnchor) => {
+    const r: RegionSpec = {
+      kind: t.kind === "load" ? "bore" : "hole",
+      hole_index: a.index,
+      margin_mm: 2,
+      description: `${a.kind} #${a.index} Ø${a.dia.toFixed(1)}`,
+    };
+    if (t.kind === "fixed") {
+      const c = cases[t.ci];
+      if (c) setCase(t.ci, { fixed: [...c.fixed, r] });
+    } else if (t.kind === "load") {
+      const c = cases[t.ci];
+      if (c) setCase(t.ci, { loads: [...c.loads, { region: r, force_n: [0, 0, -50] }] });
+    } else if (t.kind === "void") {
+      setVoids((k) => [...k, r]);
+    } else {
+      setKeep((k) => [...k, r]);
+    }
+  };
+
+  /** hover routing — drives facet/edge/anchor highlight state */
+  const handleHover = (info: PickInfo | null) => {
+    setHover(info);
+    if (!info) {
+      setHoverFacet(null);
+      setHoverAnchor(null);
+      setHoverLoop(null);
+      return;
+    }
+    if (featureTarget) {
+      setHoverAnchor(nearestAnchorAt(info.point, anchors, modelBox));
+      setHoverFacet(null);
+      setHoverLoop(null);
+      return;
+    }
+    if (target && (mode === "face" || mode === "edge")) {
+      const hit = facetAt(info);
+      setHoverFacet(hit);
+      setHoverLoop(
+        hit && mode === "edge" ? facetLoop(hit.fs, hit.facet, info.point) : null
+      );
+      setHoverAnchor(null);
+      return;
+    }
+    setHoverFacet(null);
+    setHoverAnchor(null);
+    setHoverLoop(null);
+  };
+
+  const onPick = (info: PickInfo, viaDrag = false) => {
+    // feature pick: click inside/near a bore corridor → hole/bore/anchor region
+    if (featureTarget) {
+      if (viaDrag) return;
+      const a = nearestAnchorAt(info.point, anchors, modelBox);
+      if (a) addAnchorRegion(featureTarget, a);
+      return;
+    }
     // center placement for geometric regions — for anchor kinds it snaps to
     // the nearest measured anchor (feature picking)
     if (centerPick) {
+      if (viaDrag) return;
       const r = getRegion(centerPick);
       const p = info.point;
       if (r) {
         const k = r.kind;
-        if (k && ANCHOR_KINDS.has(k) && anchors.length && modelBox) {
-          let best: FeatureAnchor | null = null;
-          let bd = Infinity;
-          for (const a of anchors) {
-            const ap = anchorPos(a, modelBox);
-            if (!ap) continue;
-            const d = Math.hypot(ap[0] - p[0], ap[1] - p[1], ap[2] - p[2]);
-            if (d < bd) {
-              bd = d;
-              best = a;
-            }
-          }
-          if (best) {
-            setRegion(centerPick, { ...r, hole_index: best.index });
+        if (k && ANCHOR_KINDS.has(k) && anchors.length) {
+          const a = nearestAnchorAt(info.point, anchors, modelBox);
+          if (a) {
+            setRegion(centerPick, { ...r, hole_index: a.index });
             setCenterPick(null);
             return;
           }
@@ -1034,6 +1269,48 @@ export default function StructuralEditor({
     const now = Date.now();
     const strokeStart = now - lastPickT.current > 350;
     lastPickT.current = now;
+
+    // face pick: each click adds the whole facet's triangles as pick points
+    if (mode === "face") {
+      if (viaDrag) return;
+      const hit = facetAt(info);
+      if (!hit || pickedFacets.current.has(hit.key)) return;
+      pickedFacets.current.add(hit.key);
+      pushUndo(target, r.points ?? []);
+      // stride-sample into the remaining 4000-point budget so later facet
+      // clicks don't evict earlier ones
+      const budget = Math.max(300, 4000 - (r.points?.length ?? 0));
+      const merged = [...(r.points ?? []), ...facetPickPoints(hit.fs, hit.facet, budget)].slice(
+        -4000
+      );
+      setRegion(target, {
+        ...r,
+        points: merged,
+        radius_mm: r.points?.length ? r.radius_mm : facetRadius(hit.facet),
+        normal: hit.facet.normal,
+        description: r.description || `face · ${Math.round(hit.facet.area)} mm²`,
+      });
+      return;
+    }
+    // edge pick: click a face → its boundary loop nearest the click becomes
+    // the region (resampled — raw vertices would gap along long edges)
+    if (mode === "edge") {
+      if (viaDrag) return;
+      const hit = facetAt(info);
+      if (!hit) return;
+      const loop = facetLoop(hit.fs, hit.facet, info.point);
+      if (!loop) return;
+      pushUndo(target, r.points ?? []);
+      const pts = resampleLoop(loop.pts, Math.min(rad, 2), 3000, loop.closed);
+      const merged = [...(r.points ?? []), ...pts].slice(-4000);
+      setRegion(target, {
+        ...r,
+        points: merged,
+        normal: r.normal ?? hit.facet.normal,
+        description: r.description || `edge loop · ${loop.pts.length} verts`,
+      });
+      return;
+    }
 
     // a pause >350ms counts as a new stroke — snapshot for undo
     if (strokeStart) {
@@ -1080,6 +1357,58 @@ export default function StructuralEditor({
       return null;
     }
   }, [model]);
+
+  // facet segmentation — deferred so arming a tool doesn't block the frame
+  const surfacePickArmed = !!target && (mode === "face" || mode === "edge");
+  useEffect(() => {
+    if (!model || !surfacePickArmed) {
+      setFacetSets(null);
+      setFacetBusy(false);
+      return;
+    }
+    setFacetBusy(true);
+    const t = setTimeout(() => {
+      const m = new Map<THREE.BufferGeometry, FacetSet>();
+      model.traverse((o) => {
+        const mesh = o as THREE.Mesh;
+        if (mesh.isMesh && mesh.geometry) {
+          const fs = buildFacets(mesh, model, creaseDeg);
+          if (fs) m.set(mesh.geometry as THREE.BufferGeometry, fs);
+        }
+      });
+      setFacetSets(m);
+      setFacetBusy(false);
+    }, 120);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [model, surfacePickArmed, creaseDeg]);
+
+  // drop cached facet overlays + pick bookkeeping when facets change, and
+  // dispose the superseded welded geometry (highlight geoms share its
+  // position attribute — they're dropped at the same time)
+  useEffect(() => {
+    facetGeoms.current.forEach((g) => g.dispose());
+    facetGeoms.current.clear();
+    pickedFacets.current.clear();
+    setHoverFacet(null);
+    setHoverLoop(null);
+    return () => facetSets?.forEach((fs) => fs.welded.dispose());
+  }, [facetSets]);
+
+  /** highlight geometry for the hovered facet (built once, cached) */
+  const facetGeom = useMemo(() => {
+    if (!hoverFacet) return null;
+    let g = facetGeoms.current.get(hoverFacet.key);
+    if (!g) {
+      if (facetGeoms.current.size > 96) {
+        facetGeoms.current.forEach((x) => x.dispose());
+        facetGeoms.current.clear();
+      }
+      g = facetGeometry(hoverFacet.fs, hoverFacet.facet);
+      facetGeoms.current.set(hoverFacet.key, g);
+    }
+    return g;
+  }, [hoverFacet]);
 
   const valid = cases.length > 0 && cases.every(
     (c) => c.fixed.length > 0 && c.loads.length > 0 && c.loads.every(loadActive)
@@ -1232,11 +1561,28 @@ export default function StructuralEditor({
     return out;
   }, [cases, keep, voids]);
 
-  /** anchor positions in model space (for markers) */
+  /** paint trail — world-sized dots at every pick point so coverage reads on
+   *  any tessellation (RegionFill can look sparse on coarse meshes) */
+  const trails = useMemo(() => {
+    const out: { pts: number[][]; color: string; size: number }[] = [];
+    const add = (r: RegionSpec, color: string) => {
+      if (r.kind === "points" && r.points?.length)
+        out.push({ pts: r.points, color, size: (r.radius_mm ?? 3) * 1.4 });
+    };
+    cases.forEach((c) => {
+      c.fixed.forEach((r) => add(r, COLORS.fixed));
+      c.loads.forEach((l) => add(l.region, COLORS.load));
+    });
+    keep.forEach((r) => add(r, COLORS.keep));
+    voids.forEach((r) => add(r, COLORS.void));
+    return out;
+  }, [cases, keep, voids]);
+
+  /** anchor mouth positions in model space (for markers) */
   const anchorMarkers = useMemo(
     () =>
       anchors
-        .map((a) => ({ a, p: anchorPos(a, modelBox) }))
+        .map((a) => ({ a, p: anchorMouth(a, modelBox) }))
         .filter((x): x is { a: FeatureAnchor; p: [number, number, number] } => !!x.p),
     [anchors, modelBox]
   );
@@ -1260,10 +1606,17 @@ export default function StructuralEditor({
 
   useEffect(() => {
     if (!open) return;
-    const h = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const h = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      // don't yank the tool while typing in a field
+      if ((e.target as HTMLElement)?.matches?.("input,select,textarea")) return;
+      if (target || centerPick || featureTarget) disarm();
+      else onClose();
+    };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
-  }, [open, onClose]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, onClose, target, centerPick, featureTarget]);
   if (!open) return null;
 
   const sameTarget = (t: Exclude<PaintTarget, null>) =>
@@ -1273,6 +1626,9 @@ export default function StructuralEditor({
 
   const activeRegion = target ? getRegion(target) : null;
   const cursorR = mode === "erase" ? brushR : (activeRegion?.radius_mm ?? brushR);
+  const dotR = modelBox
+    ? Math.max(0.5, modelBox.getSize(new THREE.Vector3()).length() * 0.004)
+    : 1;
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-zinc-950">
@@ -1280,39 +1636,73 @@ export default function StructuralEditor({
       <div className="flex items-center gap-3 border-b border-zinc-800 px-4 py-2.5">
         <h2 className="text-sm font-semibold">Structural editor — v{version.number}</h2>
         <span className="text-xs text-zinc-500">
-          paint support / load / keep regions directly on the surface
+          paint or click faces / edges / holes — right-drag orbits while a tool is armed
         </span>
         <span className="flex-1" />
-        {(target || centerPick) && (
+        {(target || centerPick || featureTarget) && (
           <Chip tone="amber">
             <Brush className="h-3 w-3" />{" "}
-            {centerPick
-              ? "click to place region center"
-              : `${mode === "erase" ? "erasing" : "painting"} ${
-                  target!.kind === "fixed" ? "support" : target!.kind === "load" ? "load" : "keep"
-                } — drag on the model`}
+            {featureTarget
+              ? "feature pick — click a hole / thread / bore on the model"
+              : centerPick
+                ? "click to place region center"
+                : mode === "face"
+                  ? "face pick — click faces to add them to the region"
+                  : mode === "edge"
+                    ? "edge pick — click near a face edge to take its loop"
+                    : `${mode === "erase" ? "erasing" : "painting"} ${
+                        target!.kind === "fixed"
+                          ? "support"
+                          : target!.kind === "load"
+                            ? "load"
+                            : target!.kind
+                      } — drag on the model`}
           </Chip>
         )}
+        {target && (mode === "paint" || mode === "erase") && (
+          <div className="flex overflow-hidden rounded border border-zinc-700 text-[11px]">
+            {(["paint", "erase"] as const).map((m) => (
+              <button
+                key={m}
+                onClick={() => setMode(m)}
+                className={`flex items-center gap-1 px-2 py-1 ${
+                  mode === m ? "bg-zinc-700 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"
+                }`}
+              >
+                {m === "paint" ? <Brush className="h-3 w-3" /> : <Eraser className="h-3 w-3" />}
+                {m}
+              </button>
+            ))}
+          </div>
+        )}
+        {target && (mode === "face" || mode === "edge") && (
+          <label className="flex items-center gap-1.5 text-xs text-zinc-400">
+            crease
+            <input
+              type="range"
+              min={10}
+              max={60}
+              step={5}
+              className="w-20 accent-brand-500"
+              value={creaseDeg}
+              onChange={(e) => setCreaseDeg(num(e.target.value, 30))}
+            />
+            <span className="w-8 tabular-nums">{creaseDeg}°</span>
+            {facetBusy && <Loader2 className="h-3 w-3 animate-spin text-zinc-500" />}
+            {!facetBusy && facetSets && facetSets.size === 0 && (
+              <span className="text-amber-400">mesh too large for picking</span>
+            )}
+          </label>
+        )}
         {target && (
-          <>
-            <div className="flex overflow-hidden rounded border border-zinc-700 text-[11px]">
-              {(["paint", "erase"] as const).map((m) => (
-                <button
-                  key={m}
-                  onClick={() => setMode(m)}
-                  className={`flex items-center gap-1 px-2 py-1 ${
-                    mode === m ? "bg-zinc-700 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"
-                  }`}
-                >
-                  {m === "paint" ? <Brush className="h-3 w-3" /> : <Eraser className="h-3 w-3" />}
-                  {m}
-                </button>
-              ))}
-            </div>
-            <IconBtn title="undo last stroke" onClick={undo} disabled={!undoStack.current.length}>
-              <Undo2 className="h-3.5 w-3.5" />
-            </IconBtn>
-          </>
+          <IconBtn title="undo last stroke" onClick={undo} disabled={!undoStack.current.length}>
+            <Undo2 className="h-3.5 w-3.5" />
+          </IconBtn>
+        )}
+        {(target || centerPick || featureTarget) && (
+          <IconBtn title="done (Esc)" onClick={disarm}>
+            <Check className="h-3.5 w-3.5" />
+          </IconBtn>
         )}
         <label className="flex items-center gap-2 text-xs text-zinc-400">
           brush
@@ -1338,22 +1728,64 @@ export default function StructuralEditor({
           {glb ? (
             <ModelCanvas
               url={glb.url}
-              pickEnabled={!!target || !!centerPick}
+              pickEnabled={!!target || !!centerPick || !!featureTarget}
               onPick={onPick}
-              onHover={setHover}
+              onHover={handleHover}
               onModel={setModel}
             >
               <RegionFill model={model} entries={fills} />
+              {/* paint trails — visible coverage regardless of tessellation */}
+              {trails.map((t, i) => (
+                <PointCloud key={i} pts={t.pts} color={t.color} size={t.size} opacity={0.8} />
+              ))}
               {markers.map((m, i) => (
                 <mesh key={i} position={m.p}>
                   <sphereGeometry args={[1, 16, 12]} />
                   <meshBasicMaterial color={m.color} depthTest={false} transparent opacity={0.9} />
                 </mesh>
               ))}
-              {/* measured feature anchors — click near one while placing an
-                  anchor region to select it */}
+              {/* hovered facet */}
+              {facetGeom && (
+                <mesh geometry={facetGeom} renderOrder={2}>
+                  <meshBasicMaterial
+                    color={target ? COLORS[target.kind] : "#f59e0b"}
+                    transparent
+                    opacity={mode === "edge" ? 0.15 : 0.32}
+                    side={THREE.DoubleSide}
+                    polygonOffset
+                    polygonOffsetFactor={-2}
+                    depthWrite={false}
+                  />
+                </mesh>
+              )}
+              {/* hovered boundary loop */}
+              {hoverLoop && hoverLoop.pts.length >= 2 && (
+                <Line
+                  points={
+                    hoverLoop.closed ? [...hoverLoop.pts, hoverLoop.pts[0]] : hoverLoop.pts
+                  }
+                  color={target ? COLORS[target.kind] : "#f59e0b"}
+                  lineWidth={3}
+                  depthTest={false}
+                  renderOrder={3}
+                />
+              )}
+              {/* hovered feature anchor (bore sleeve + mouth ring) */}
+              {featureTarget && hoverAnchor && modelBox && (
+                <AnchorSleeve a={hoverAnchor} box={modelBox} color={COLORS.anchor} />
+              )}
+              {/* measured feature anchors — markers sit at the hole mouth and
+                  are clickable while the feature pick tool is armed */}
               {anchorMarkers.map(({ a, p }) => (
-                <AnchorMarker key={a.index} a={a} pos={p} selected={usedAnchors.has(a.index)} />
+                <AnchorMarker
+                  key={a.index}
+                  a={a}
+                  pos={p}
+                  selected={usedAnchors.has(a.index)}
+                  onSelect={
+                    featureTarget ? () => addAnchorRegion(featureTarget, a) : undefined
+                  }
+                />
               ))}
               {/* load gizmos: arrows / moment rings at the region centres */}
               {modelBox &&
@@ -1378,7 +1810,7 @@ export default function StructuralEditor({
                     <PointCloud pts={c.keep} color={COLORS.keep} size={1.2} opacity={0.7} />
                   </group>
                 ))}
-              {(target || centerPick) && hover && (
+              {(target || centerPick) && hover && (mode === "paint" || mode === "erase") && (
                 <mesh position={hover.point}>
                   <sphereGeometry args={[cursorR, 24, 16]} />
                   <meshBasicMaterial
@@ -1395,6 +1827,14 @@ export default function StructuralEditor({
                   />
                 </mesh>
               )}
+              {/* small dot cursor for pick modes */}
+              {(centerPick || featureTarget || (target && (mode === "face" || mode === "edge"))) &&
+                hover && (
+                  <mesh position={hover.point}>
+                    <sphereGeometry args={[dotR, 12, 8]} />
+                    <meshBasicMaterial color="#f59e0b" depthTest={false} transparent opacity={0.9} />
+                  </mesh>
+                )}
             </ModelCanvas>
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-zinc-600">
@@ -1478,12 +1918,8 @@ export default function StructuralEditor({
                     }
                     showFixMode
                     anchors={anchors}
-                    onPaint={() =>
-                      setTarget(sameTarget({ kind: "fixed", ci, ri }) ? null : { kind: "fixed", ci, ri })
-                    }
-                    onPickCenter={() =>
-                      setCenterPick(sameCenterPick({ kind: "fixed", ci, ri }) ? null : { kind: "fixed", ci, ri })
-                    }
+                    onPaint={() => armPaint({ kind: "fixed", ci, ri })}
+                    onPickCenter={() => armCenter({ kind: "fixed", ci, ri })}
                     onChange={(nr) => setRegion({ kind: "fixed", ci, ri }, nr)}
                     onDelete={() => delRegion({ kind: "fixed", ci, ri })}
                   />
@@ -1496,6 +1932,17 @@ export default function StructuralEditor({
                       setCase(ci, { fixed: [...c.fixed, r] })
                     )
                   }
+                  onPickFace={() =>
+                    armTool({ kind: "fixed", ci, ri: c.fixed.length }, "face", (r) =>
+                      setCase(ci, { fixed: [...c.fixed, r] })
+                    )
+                  }
+                  onPickEdge={() =>
+                    armTool({ kind: "fixed", ci, ri: c.fixed.length }, "edge", (r) =>
+                      setCase(ci, { fixed: [...c.fixed, r] })
+                    )
+                  }
+                  onPickFeature={() => toggleFeaturePick({ kind: "fixed", ci })}
                   onAdd={(r) => {
                     setCase(ci, { fixed: [...c.fixed, r] });
                     const t = { kind: "fixed" as const, ci, ri: c.fixed.length };
@@ -1505,7 +1952,7 @@ export default function StructuralEditor({
                       r.kind === "box" ||
                       ANCHOR_KINDS.has(r.kind ?? "")
                     )
-                      setCenterPick(t);
+                      armCenter(t);
                   }}
                 />
 
@@ -1557,14 +2004,8 @@ export default function StructuralEditor({
                           ANCHOR_KINDS.has(l.region.kind ?? "")
                         }
                         anchors={anchors}
-                        onPaint={() =>
-                          setTarget(sameTarget({ kind: "load", ci, li }) ? null : { kind: "load", ci, li })
-                        }
-                        onPickCenter={() =>
-                          setCenterPick(
-                            sameCenterPick({ kind: "load", ci, li }) ? null : { kind: "load", ci, li }
-                          )
-                        }
+                        onPaint={() => armPaint({ kind: "load", ci, li })}
+                        onPickCenter={() => armCenter({ kind: "load", ci, li })}
                         onChange={(nr) => setRegion({ kind: "load", ci, li }, nr)}
                         onDelete={() => delRegion({ kind: "load", ci, li })}
                       />
@@ -1688,6 +2129,21 @@ export default function StructuralEditor({
                       })
                     )
                   }
+                  onPickFace={() =>
+                    armTool({ kind: "load", ci, li: c.loads.length }, "face", (r) =>
+                      setCase(ci, {
+                        loads: [...c.loads, { region: r, force_n: [0, 0, -50] }],
+                      })
+                    )
+                  }
+                  onPickEdge={() =>
+                    armTool({ kind: "load", ci, li: c.loads.length }, "edge", (r) =>
+                      setCase(ci, {
+                        loads: [...c.loads, { region: r, force_n: [0, 0, -50] }],
+                      })
+                    )
+                  }
+                  onPickFeature={() => toggleFeaturePick({ kind: "load", ci })}
                   onAdd={(r) => {
                     setCase(ci, {
                       loads: [...c.loads, { region: r, force_n: [0, 0, -50] }],
@@ -1699,7 +2155,7 @@ export default function StructuralEditor({
                       r.kind === "box" ||
                       ANCHOR_KINDS.has(r.kind ?? "")
                     )
-                      setCenterPick(t);
+                      armCenter(t);
                   }}
                 />
               </div>
@@ -1734,12 +2190,8 @@ export default function StructuralEditor({
                     }
                     showMaterial
                     anchors={anchors}
-                    onPaint={() =>
-                      setTarget(sameTarget({ kind: "keep", ri }) ? null : { kind: "keep", ri })
-                    }
-                    onPickCenter={() =>
-                      setCenterPick(sameCenterPick({ kind: "keep", ri }) ? null : { kind: "keep", ri })
-                    }
+                    onPaint={() => armPaint({ kind: "keep", ri })}
+                    onPickCenter={() => armCenter({ kind: "keep", ri })}
                     onChange={(nr) => setRegion({ kind: "keep", ri }, nr)}
                     onDelete={() => delRegion({ kind: "keep", ri })}
                   />
@@ -1750,6 +2202,17 @@ export default function StructuralEditor({
                   onPaint={() =>
                     startPaint({ kind: "keep", ri: keep.length }, (r) => setKeep((k) => [...k, r]))
                   }
+                  onPickFace={() =>
+                    armTool({ kind: "keep", ri: keep.length }, "face", (r) =>
+                      setKeep((k) => [...k, r])
+                    )
+                  }
+                  onPickEdge={() =>
+                    armTool({ kind: "keep", ri: keep.length }, "edge", (r) =>
+                      setKeep((k) => [...k, r])
+                    )
+                  }
+                  onPickFeature={() => toggleFeaturePick({ kind: "keep" })}
                   onAdd={(r) => {
                     setKeep((k) => [...k, r]);
                     if (
@@ -1758,7 +2221,7 @@ export default function StructuralEditor({
                       r.kind === "box" ||
                       ANCHOR_KINDS.has(r.kind ?? "")
                     )
-                      setCenterPick({ kind: "keep", ri: keep.length });
+                      armCenter({ kind: "keep", ri: keep.length });
                   }}
                 />
               </div>
@@ -1783,12 +2246,8 @@ export default function StructuralEditor({
                       ANCHOR_KINDS.has(r.kind ?? "")
                     }
                     anchors={anchors}
-                    onPaint={() =>
-                      setTarget(sameTarget({ kind: "void", ri }) ? null : { kind: "void", ri })
-                    }
-                    onPickCenter={() =>
-                      setCenterPick(sameCenterPick({ kind: "void", ri }) ? null : { kind: "void", ri })
-                    }
+                    onPaint={() => armPaint({ kind: "void", ri })}
+                    onPickCenter={() => armCenter({ kind: "void", ri })}
                     onChange={(nr) => setRegion({ kind: "void", ri }, nr)}
                     onDelete={() => delRegion({ kind: "void", ri })}
                   />
@@ -1799,6 +2258,17 @@ export default function StructuralEditor({
                   onPaint={() =>
                     startPaint({ kind: "void", ri: voids.length }, (r) => setVoids((k) => [...k, r]))
                   }
+                  onPickFace={() =>
+                    armTool({ kind: "void", ri: voids.length }, "face", (r) =>
+                      setVoids((k) => [...k, r])
+                    )
+                  }
+                  onPickEdge={() =>
+                    armTool({ kind: "void", ri: voids.length }, "edge", (r) =>
+                      setVoids((k) => [...k, r])
+                    )
+                  }
+                  onPickFeature={() => toggleFeaturePick({ kind: "void" })}
                   onAdd={(r) => {
                     setVoids((k) => [...k, r]);
                     if (
@@ -1807,7 +2277,7 @@ export default function StructuralEditor({
                       r.kind === "box" ||
                       ANCHOR_KINDS.has(r.kind ?? "")
                     )
-                      setCenterPick({ kind: "void", ri: voids.length });
+                      armCenter({ kind: "void", ri: voids.length });
                   }}
                 />
               </div>

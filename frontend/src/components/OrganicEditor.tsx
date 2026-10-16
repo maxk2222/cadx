@@ -1,22 +1,27 @@
 import {
   Brush,
   Dices,
+  Eye,
   Loader2,
   Paintbrush,
+  ShieldCheck,
   Sprout,
   Trash2,
   TriangleAlert,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import * as THREE from "three";
 import { api } from "../lib/api";
 import type {
+  FeatureAnchor,
   MeshPreviewResult,
   OrganicParams,
   OrganicStyle,
   RegionSpec,
   VersionDetail,
 } from "../lib/types";
+import { AnchorMarker, anchorMouth } from "./editor/anchors";
 import ModelCanvas, { type PickInfo } from "./editor/ModelCanvas";
 import RegionFill, { type RegionFillEntry } from "./editor/RegionFill";
 import { Btn, Chip, Field, IconBtn, inputCls, useToast } from "./ui";
@@ -27,6 +32,7 @@ import { Btn, Chip, Field, IconBtn, inputCls, useToast } from "./ui";
 /* ------------------------------------------------------------------ */
 
 const KEEP_COLOR = "#22c55e";
+const CARVE_COLOR = "#a855f7";
 
 const STYLES: { id: OrganicStyle; label: string; hint: string }[] = [
   { id: "gyroid", label: "gyroid", hint: "smooth TPMS sheet — flowing minimal surface" },
@@ -86,6 +92,8 @@ function Slider({
   );
 }
 
+type BrushMode = "keep" | "carve";
+
 export default function OrganicEditor({
   open,
   onClose,
@@ -99,29 +107,38 @@ export default function OrganicEditor({
 }) {
   const toast = useToast();
 
-  /* --- parameters ------------------------------------------------- */
+  /* --- core parameters --------------------------------------------- */
   const [style, setStyle] = useState<OrganicStyle>("gyroid");
+  const [preservePct, setPreservePct] = useState(65); // 100 - surface_open
   const [volfrac, setVolfrac] = useState(0.35);
-  const [seed, setSeed] = useState(() => Math.floor(Math.random() * 9999));
   const [period, setPeriod] = useState(12.0);
-  const [shellMm, setShellMm] = useState(0.0);
+  const [seed, setSeed] = useState(() => Math.floor(Math.random() * 9999));
+  const [autoKeep, setAutoKeep] = useState(true);
+
+  /* --- advanced ----------------------------------------------------- */
+  const [shellMm, setShellMm] = useState(0.0); // 0 = auto
   const [floorMm, setFloorMm] = useState(2.0);
   const [minMember, setMinMember] = useState(0.0);
-  const [autoKeep, setAutoKeep] = useState(true);
+  const [threshold, setThreshold] = useState(0.0); // 0 = derive from density
   const [quality, setQuality] = useState("normal");
-  const [keeps, setKeeps] = useState<RegionSpec[]>([]);
 
-  /* --- painting --------------------------------------------------- */
-  const [painting, setPainting] = useState(false);
+  /* --- regions ------------------------------------------------------ */
+  const [keeps, setKeeps] = useState<RegionSpec[]>([]);
+  const [voids, setVoids] = useState<RegionSpec[]>([]);
+  const [anchors, setAnchors] = useState<FeatureAnchor[]>([]);
+
+  /* --- painting ----------------------------------------------------- */
+  const [brushMode, setBrushMode] = useState<BrushMode | null>(null);
   const [brushR, setBrushR] = useState(4.0);
   const [model, setModel] = useState<import("three").Group | null>(null);
   const [hover, setHover] = useState<PickInfo | null>(null);
   const lastPt = useRef<[number, number, number] | null>(null);
 
-  /* --- preview ---------------------------------------------------- */
+  /* --- preview ------------------------------------------------------ */
   const [preview, setPreview] = useState<MeshPreviewResult | null>(null);
   const [busy, setBusy] = useState<"preview" | "apply" | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [showOriginal, setShowOriginal] = useState(false);
   const previewSeq = useRef(0);
 
   const q = QUALITY.find((x) => x.id === quality) ?? QUALITY[1];
@@ -134,22 +151,59 @@ export default function OrganicEditor({
       volfrac,
       seed,
       period_mm: period,
-      shell_mm: shellMm,
+      surface_open: 1 - preservePct / 100,
+      shell_mm: shellMm || undefined,
       floor_mm: floorMm,
       min_member_mm: minMember || undefined,
+      density_threshold: threshold || undefined,
       auto_keep: autoKeep,
       keep_regions: keeps.length ? keeps : undefined,
+      void_regions: voids.length ? voids : undefined,
       voxel_mm: q.voxel_mm,
       max_elements: q.max_elements,
     }),
-    [style, volfrac, seed, period, shellMm, floorMm, minMember, autoKeep, keeps, q]
+    [
+      style,
+      volfrac,
+      seed,
+      period,
+      preservePct,
+      shellMm,
+      floorMm,
+      minMember,
+      threshold,
+      autoKeep,
+      keeps,
+      voids,
+      q,
+    ]
   );
 
   const glb = version.artifacts.find((a) => a.kind === "glb");
   const baseUrl = glb?.url ?? null;
   // while painting keeps the ORIGINAL surface is the pick target — show it,
   // not the organic preview (painted points must land on the real surface)
-  const displayUrl = painting ? baseUrl : (preview?.glb_url ?? baseUrl);
+  const displayUrl = brushMode || showOriginal ? baseUrl : (preview?.glb_url ?? baseUrl);
+
+  /* --- anchor fetch on open: scans + persists the merged table, so the
+   *  preview's auto-keep set equals what the commit will protect. */
+  useEffect(() => {
+    if (!open) return;
+    const stored = (
+      version.analysis as { anchors?: { holes?: FeatureAnchor[] } } | null
+    )?.anchors?.holes;
+    if (stored?.length) setAnchors(stored);
+    api
+      .anchors(version.id)
+      .then((r) => {
+        if (r.ok && r.anchors.length) setAnchors(r.anchors);
+      })
+      .catch(() => {});
+    setPreview(null);
+    setErr(null);
+    lastPt.current = null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, version.id]);
 
   const doPreview = async () => {
     const seq = ++previewSeq.current;
@@ -168,13 +222,15 @@ export default function OrganicEditor({
     }
   };
 
-  // debounced live preview — 700 ms after the last parameter change
+  // debounced live preview — 700 ms after the last parameter change; skipped
+  // while a brush is armed (the preview is hidden then anyway — saves the
+  // server a voxelization per painted point)
   useEffect(() => {
-    if (!open || !displayUrl) return;
+    if (!open || !displayUrl || brushMode) return;
     const t = setTimeout(doPreview, 700);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [args, open]);
+  }, [args, open, brushMode]);
 
   useEffect(() => {
     if (!open) return;
@@ -183,65 +239,121 @@ export default function OrganicEditor({
     return () => window.removeEventListener("keydown", h);
   }, [open, onClose]);
 
-  /* --- keep painting ----------------------------------------------- */
+  /* --- region painting ---------------------------------------------- */
+
+  const setActiveList = brushMode === "carve" ? setVoids : setKeeps;
 
   const onPick = (info: PickInfo) => {
-    if (!painting) return;
+    if (!brushMode) return;
     const p = info.point;
-    setKeeps((ks) => {
-      // append to the active (last) keep region — start one on first pick
-      const idx = ks.length ? ks.length - 1 : -1;
-      if (idx >= 0 && lastPt.current) {
-        const d = Math.hypot(
-          p[0] - lastPt.current[0],
-          p[1] - lastPt.current[1],
-          p[2] - lastPt.current[2]
-        );
-        if (d < brushR * 0.4) return ks;
+    // dedupe outside the updater — mutating lastPt inside would break under
+    // StrictMode's double-invoked updaters (first point of each stroke lost)
+    if (lastPt.current) {
+      const d = Math.hypot(
+        p[0] - lastPt.current[0],
+        p[1] - lastPt.current[1],
+        p[2] - lastPt.current[2]
+      );
+      if (d < brushR * 0.4) return;
+    }
+    lastPt.current = p;
+    const pt = [p[0], p[1], p[2]];
+    setActiveList((rs) => {
+      // append to the active (last) region — start one on first pick
+      const idx = rs.length ? rs.length - 1 : -1;
+      if (idx < 0 || rs[idx].kind !== "points") {
+        return [...rs, { kind: "points", points: [pt], radius_mm: brushR }];
       }
-      lastPt.current = p;
-      const pt = [p[0], p[1], p[2]];
-      if (idx < 0 || ks[idx].kind !== "points") {
-        return [...ks, { kind: "points", points: [pt], radius_mm: brushR }];
-      }
-      const pts = [...(ks[idx].points ?? []), pt].slice(-4000);
-      return ks.map((r, i) => (i === idx ? { ...r, points: pts } : r));
+      const pts = [...(rs[idx].points ?? []), pt].slice(-4000);
+      return rs.map((r, i) => (i === idx ? { ...r, points: pts } : r));
     });
   };
 
-  const startPainting = () => {
-    setKeeps((ks) => [...ks, { kind: "points", points: [], radius_mm: brushR }]);
+  const startPainting = (mode: BrushMode) => {
+    // pick the list by the requested mode — brushMode is still null here, so
+    // the render-derived setActiveList would arm the region in keeps
+    const list = mode === "carve" ? voids : keeps;
+    const set = mode === "carve" ? setVoids : setKeeps;
+    if (list.length >= 10) {
+      toast("region limit reached (10 per type)", "error");
+      return;
+    }
+    set((rs) => [...rs, { kind: "points", points: [], radius_mm: brushR }]);
     lastPt.current = null;
-    setPainting(true);
+    setBrushMode(mode);
   };
 
   const stopPainting = () => {
-    setPainting(false);
+    setBrushMode(null);
     lastPt.current = null;
     // drop the armed-but-empty region so it doesn't produce a warning
-    setKeeps((ks) =>
-      ks.filter((r) => r.kind !== "points" || (r.points?.length ?? 0) > 0)
-    );
+    const dropEmpty = (rs: RegionSpec[]) =>
+      rs.filter((r) => r.kind !== "points" || (r.points?.length ?? 0) > 0);
+    setKeeps(dropEmpty);
+    setVoids(dropEmpty);
   };
 
-  /* --- overlays ---------------------------------------------------- */
+  // brush-radius changes must reach the armed region — its radius_mm is what
+  // the backend resolves, so a stale value would lie about the cursor size
+  useEffect(() => {
+    if (!brushMode) return;
+    const set = brushMode === "carve" ? setVoids : setKeeps;
+    set((rs) =>
+      rs.map((r, i) =>
+        i === rs.length - 1 && r.kind === "points" ? { ...r, radius_mm: brushR } : r
+      )
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [brushR]);
+
+  /* --- overlays ------------------------------------------------------ */
 
   const fills = useMemo<RegionFillEntry[]>(
-    () =>
-      keeps
+    () => [
+      ...keeps
         .filter((r) => r.kind === "points" && r.points?.length)
         .map((r) => ({
           points: r.points!,
           radius: r.radius_mm ?? brushR,
           color: KEEP_COLOR,
         })),
-    [keeps, brushR]
+      ...voids
+        .filter((r) => r.kind === "points" && r.points?.length)
+        .map((r) => ({
+          points: r.points!,
+          radius: r.radius_mm ?? brushR,
+          color: CARVE_COLOR,
+        })),
+    ],
+    [keeps, voids, brushR]
+  );
+
+  const modelBox = useMemo(
+    () => (model ? new THREE.Box3().setFromObject(model) : null),
+    [model]
+  );
+  const anchorMarkers = useMemo(
+    () =>
+      anchors
+        .map((a) => ({ a, p: anchorMouth(a, modelBox) }))
+        .filter((x): x is { a: FeatureAnchor; p: [number, number, number] } => !!x.p),
+    [anchors, modelBox]
   );
 
   const apply = async () => {
     setBusy("apply");
     try {
-      const r = await api.organic(version.id, args);
+      // drop armed-but-empty painted regions — a zero-point brush only
+      // produces a "matched no cells" warning on the backend
+      const nonEmpty = (rs: RegionSpec[]) =>
+        rs.filter((r) => r.kind !== "points" || (r.points?.length ?? 0) > 0);
+      const cleanKeeps = nonEmpty(keeps);
+      const cleanVoids = nonEmpty(voids);
+      const r = await api.organic(version.id, {
+        ...args,
+        keep_regions: cleanKeeps.length ? cleanKeeps : undefined,
+        void_regions: cleanVoids.length ? cleanVoids : undefined,
+      });
       onJobStarted(r);
     } catch (e) {
       toast(String(e), "error");
@@ -252,7 +364,23 @@ export default function OrganicEditor({
   if (!open) return null;
 
   const stats = preview?.stats;
-  const nPts = keeps.reduce((n, r) => n + (r.points?.length ?? 0), 0);
+  const orgMetrics = stats?.report?.find((r) => r.op === "organic")?.organic;
+  const coverage = orgMetrics?.surface_coverage;
+  const nKeepPts = keeps.reduce((n, r) => n + (r.points?.length ?? 0), 0);
+  const nCarvePts = voids.reduce((n, r) => n + (r.points?.length ?? 0), 0);
+  const regions: { type: BrushMode; r: RegionSpec; i: number }[] = [
+    ...keeps.map((r, i) => ({ type: "keep" as const, r, i })),
+    ...voids.map((r, i) => ({ type: "carve" as const, r, i })),
+  ];
+
+  const preserveHint =
+    preservePct >= 95
+      ? "solid shell — structure hidden inside"
+      : preservePct >= 50
+        ? "carved windows — silhouette stays readable"
+        : preservePct > 0
+          ? "mostly open — approaching skeleton"
+          : "open skeleton — surface fully carved";
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-zinc-950">
@@ -266,9 +394,10 @@ export default function OrganicEditor({
           pseudo-topology restyle — pick a style, tune, then apply
         </span>
         <span className="flex-1" />
-        {painting && (
-          <Chip tone="green">
-            <Brush className="h-3 w-3" /> painting keep regions — drag on the model
+        {brushMode && (
+          <Chip tone={brushMode === "keep" ? "green" : "purple"}>
+            <Brush className="h-3 w-3" /> painting {brushMode} regions — drag on the model,
+            right-drag orbits
           </Chip>
         )}
         {busy === "preview" && (
@@ -287,17 +416,20 @@ export default function OrganicEditor({
           {displayUrl ? (
             <ModelCanvas
               url={displayUrl}
-              pickEnabled={painting}
+              pickEnabled={!!brushMode}
               onPick={onPick}
               onHover={setHover}
               onModel={setModel}
             >
               <RegionFill model={model} entries={fills} />
-              {painting && hover && (
+              {anchorMarkers.map(({ a, p }) => (
+                <AnchorMarker key={a.index} a={a} pos={p} selected={autoKeep} />
+              ))}
+              {brushMode && hover && (
                 <mesh position={hover.point}>
                   <sphereGeometry args={[brushR, 24, 16]} />
                   <meshBasicMaterial
-                    color={KEEP_COLOR}
+                    color={brushMode === "keep" ? KEEP_COLOR : CARVE_COLOR}
                     transparent
                     opacity={0.25}
                     depthTest={false}
@@ -315,27 +447,67 @@ export default function OrganicEditor({
           <div className="absolute bottom-3 left-3 flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-950/90 px-3 py-1.5 text-[11px] backdrop-blur">
             <span className="flex items-center gap-1">
               <span className="h-2 w-2 rounded-full" style={{ background: KEEP_COLOR }} />
-              keep{nPts ? ` (${nPts} pts)` : ""}
+              keep{nKeepPts ? ` (${nKeepPts} pts)` : ""}
             </span>
+            <span className="flex items-center gap-1">
+              <span className="h-2 w-2 rounded-full" style={{ background: CARVE_COLOR }} />
+              carve{nCarvePts ? ` (${nCarvePts} pts)` : ""}
+            </span>
+            {!!anchorMarkers.length && (
+              <span className="flex items-center gap-1 text-cyan-300">
+                <ShieldCheck className="h-3 w-3" /> {anchorMarkers.length} anchor
+                {anchorMarkers.length > 1 ? "s" : ""}
+              </span>
+            )}
             <span className="text-zinc-600">·</span>
-            {painting ? (
-              <span className="text-emerald-300">painting on the source mesh</span>
+            {brushMode ? (
+              <span
+                className={brushMode === "keep" ? "text-emerald-300" : "text-purple-300"}
+              >
+                painting on the source mesh
+              </span>
+            ) : showOriginal ? (
+              <span className="text-zinc-400">original part</span>
             ) : preview?.ok ? (
               <span className="text-zinc-400">live preview of the organic structure</span>
             ) : (
               <span className="text-zinc-500">source mesh</span>
             )}
-            {stats?.faces != null && preview?.ok && (
+            {stats?.faces != null && preview?.ok && !showOriginal && (
               <span className="tabular-nums text-zinc-500">
                 · {stats.faces.toLocaleString()} tris
               </span>
             )}
-            {stats?.watertight != null && preview?.ok && (
+            {stats?.watertight != null && preview?.ok && !showOriginal && (
               <span className={stats.watertight ? "text-emerald-400" : "text-amber-400"}>
                 · {stats.watertight ? "watertight" : "not watertight"}
               </span>
             )}
+            {coverage != null && preview?.ok && !showOriginal && (
+              <span
+                className={coverage >= 0.4 ? "text-zinc-400" : "text-amber-400"}
+                title="share of the original surface that survived the carve — low values mean the shape is barely recognizable"
+              >
+                · surface {Math.round(coverage * 100)}%
+              </span>
+            )}
           </div>
+
+          {/* compare-original toggle */}
+          {preview?.ok && preview.glb_url && !brushMode && (
+            <button
+              onClick={() => setShowOriginal((s) => !s)}
+              className={`absolute right-3 top-3 flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs backdrop-blur transition-colors ${
+                showOriginal
+                  ? "border-emerald-700 bg-emerald-950/70 text-emerald-200"
+                  : "border-zinc-700 bg-zinc-950/80 text-zinc-400 hover:text-zinc-200"
+              }`}
+              title="flip between the organic preview and the original part"
+            >
+              <Eye className="h-3.5 w-3.5" />
+              {showOriginal ? "original" : "compare original"}
+            </button>
+          )}
         </div>
 
         {/* parameter panel */}
@@ -363,7 +535,18 @@ export default function OrganicEditor({
           </Field>
 
           <Slider
-            label="Density"
+            label="Preserve surface"
+            value={preservePct}
+            min={0}
+            max={100}
+            step={5}
+            format={(v) => `${v} %`}
+            onChange={setPreservePct}
+          />
+          <p className="-mt-2 mb-3 text-[11px] text-zinc-600">{preserveHint}</p>
+
+          <Slider
+            label="Material density"
             value={volfrac}
             min={0.1}
             max={0.8}
@@ -372,7 +555,7 @@ export default function OrganicEditor({
             onChange={setVolfrac}
           />
           <Slider
-            label="Feature size"
+            label="Cell size"
             value={period}
             min={4}
             max={40}
@@ -398,34 +581,6 @@ export default function OrganicEditor({
             </div>
           </Field>
 
-          <Slider
-            label="Shell"
-            value={shellMm}
-            min={0}
-            max={8}
-            step={0.5}
-            format={(v) => (v ? `${v.toFixed(1)} mm` : "off")}
-            onChange={setShellMm}
-          />
-          <Slider
-            label="Floor (solid stand band)"
-            value={floorMm}
-            min={0}
-            max={15}
-            step={0.5}
-            format={(v) => (v ? `${v.toFixed(1)} mm` : "off")}
-            onChange={setFloorMm}
-          />
-          <Slider
-            label="Min member"
-            value={minMember}
-            min={0}
-            max={8}
-            step={0.25}
-            format={(v) => (v ? `${v.toFixed(2)} mm` : "auto")}
-            onChange={setMinMember}
-          />
-
           <label className="mb-3 flex items-center gap-2 text-sm text-zinc-400">
             <input
               type="checkbox"
@@ -433,55 +588,56 @@ export default function OrganicEditor({
               onChange={(e) => setAutoKeep(e.target.checked)}
               className="accent-brand-500"
             />
-            protect detected anchors (holes / inserts)
+            protect detected features
+            {anchors.length > 0 && (
+              <span className="text-xs text-cyan-400">({anchors.length} found)</span>
+            )}
           </label>
 
-          <Field label="Quality">
-            <div className="flex overflow-hidden rounded border border-zinc-700 text-[11px]">
-              {QUALITY.map((x) => (
-                <button
-                  key={x.id}
-                  onClick={() => setQuality(x.id)}
-                  title={`voxel ${x.voxel_mm} mm · ≤${x.max_elements.toLocaleString()} cells`}
-                  className={`flex-1 px-2 py-1 ${
-                    quality === x.id
-                      ? "bg-zinc-700 text-zinc-100"
-                      : "text-zinc-500 hover:text-zinc-300"
-                  }`}
-                >
-                  {x.label}
-                </button>
-              ))}
-            </div>
-          </Field>
-
-          {/* keep regions */}
+          {/* keep + carve regions */}
           <div className="mb-3">
             <div className="mb-1 flex items-center justify-between">
-              <span className="text-sm text-zinc-400">Keep regions</span>
+              <span className="text-sm text-zinc-400">Regions</span>
               <div className="flex gap-1">
-                {painting ? (
+                {brushMode ? (
                   <Btn variant="ghost" className="!px-2 !py-1 text-xs" onClick={stopPainting}>
                     done
                   </Btn>
                 ) : (
-                  <button
-                    onClick={startPainting}
-                    disabled={!baseUrl}
-                    className="flex items-center gap-1 rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-400 hover:border-emerald-700 hover:text-emerald-300 disabled:opacity-40"
-                    title="paint zones that must stay solid (mounts, mating faces…)"
-                  >
-                    <Paintbrush className="h-3 w-3" /> paint
-                  </button>
+                  <>
+                    <button
+                      onClick={() => startPainting("keep")}
+                      disabled={!baseUrl}
+                      className="flex items-center gap-1 rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-400 hover:border-emerald-700 hover:text-emerald-300 disabled:opacity-40"
+                      title="paint zones that must stay solid (mounts, mating faces…)"
+                    >
+                      <Paintbrush className="h-3 w-3" /> keep
+                    </button>
+                    <button
+                      onClick={() => startPainting("carve")}
+                      disabled={!baseUrl}
+                      className="flex items-center gap-1 rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-400 hover:border-purple-700 hover:text-purple-300 disabled:opacity-40"
+                      title="paint zones forced empty — punches through skin and protected areas"
+                    >
+                      <Paintbrush className="h-3 w-3" /> carve
+                    </button>
+                  </>
                 )}
-                {keeps.length > 0 && (
-                  <IconBtn title="clear all keep regions" danger onClick={() => setKeeps([])}>
+                {regions.length > 0 && (
+                  <IconBtn
+                    title="clear all regions"
+                    danger
+                    onClick={() => {
+                      setKeeps([]);
+                      setVoids([]);
+                    }}
+                  >
                     <Trash2 className="h-3.5 w-3.5" />
                   </IconBtn>
                 )}
               </div>
             </div>
-            {painting && (
+            {brushMode && (
               <label className="mb-2 flex items-center gap-2 text-xs text-zinc-500">
                 brush
                 <input
@@ -491,34 +647,106 @@ export default function OrganicEditor({
                   step={0.5}
                   value={brushR}
                   onChange={(e) => setBrushR(num(e.target.value, 4))}
-                  className="w-24 accent-emerald-500"
+                  className={`w-24 ${brushMode === "keep" ? "accent-emerald-500" : "accent-purple-500"}`}
                 />
                 <span className="w-10 tabular-nums">{brushR} mm</span>
               </label>
             )}
-            {keeps.length === 0 && !painting && (
+            {regions.length === 0 && !brushMode && (
               <p className="text-xs text-zinc-600">
-                none — painted zones stay solid (mounts, mating faces)
+                none — painted zones stay solid (green) or are carved empty (purple)
               </p>
             )}
-            {keeps.map((r, i) => (
+            {regions.map(({ type, r, i }) => (
               <div
-                key={i}
+                key={`${type}-${i}`}
                 className="mb-1 flex items-center justify-between rounded border border-zinc-800 bg-zinc-900/60 px-2 py-1 text-xs text-zinc-400"
               >
-                <span>
-                  keep #{i + 1} — {r.points?.length ?? 0} pts · r={r.radius_mm ?? brushR} mm
+                <span className="flex items-center gap-1.5">
+                  <span
+                    className="h-2 w-2 rounded-full"
+                    style={{ background: type === "keep" ? KEEP_COLOR : CARVE_COLOR }}
+                  />
+                  {type} #{i + 1} — {r.points?.length ?? 0} pts · r=
+                  {r.radius_mm ?? brushR} mm
                 </span>
                 <IconBtn
                   title="delete region"
                   danger
-                  onClick={() => setKeeps((k) => k.filter((_, j) => j !== i))}
+                  onClick={() =>
+                    (type === "keep" ? setKeeps : setVoids)((k) =>
+                      k.filter((_, j) => j !== i)
+                    )
+                  }
                 >
                   <Trash2 className="h-3 w-3" />
                 </IconBtn>
               </div>
             ))}
           </div>
+
+          {/* advanced */}
+          <details className="mb-3 rounded border border-zinc-800 bg-zinc-900/40 px-3 py-2">
+            <summary className="cursor-pointer text-xs font-medium text-zinc-400 select-none hover:text-zinc-200">
+              Advanced
+            </summary>
+            <div className="mt-3">
+              <Slider
+                label="Skin thickness"
+                value={shellMm}
+                min={0}
+                max={8}
+                step={0.5}
+                format={(v) => (v ? `${v.toFixed(1)} mm` : "auto")}
+                onChange={setShellMm}
+              />
+              <Slider
+                label="Solid base band"
+                value={floorMm}
+                min={0}
+                max={15}
+                step={0.5}
+                format={(v) => (v ? `${v.toFixed(1)} mm` : "off")}
+                onChange={setFloorMm}
+              />
+              <Slider
+                label="Min member"
+                value={minMember}
+                min={0}
+                max={8}
+                step={0.25}
+                format={(v) => (v ? `${v.toFixed(2)} mm` : "auto")}
+                onChange={setMinMember}
+              />
+              <Slider
+                label="Iso threshold"
+                value={threshold}
+                min={0}
+                max={0.9}
+                step={0.05}
+                format={(v) => (v ? v.toFixed(2) : "auto")}
+                onChange={(v) => setThreshold(v < 0.2 ? 0 : v)}
+              />
+              <Field label="Quality">
+                <div className="flex overflow-hidden rounded border border-zinc-700 text-[11px]">
+                  {QUALITY.map((x) => (
+                    <button
+                      key={x.id}
+                      onClick={() => setQuality(x.id)}
+                      title={`voxel ${x.voxel_mm} mm · ≤${x.max_elements.toLocaleString()} cells`}
+                      className={`flex-1 px-2 py-1 ${
+                        quality === x.id
+                          ? "bg-zinc-700 text-zinc-100"
+                          : "text-zinc-500 hover:text-zinc-300"
+                      }`}
+                    >
+                      {x.label}
+                    </button>
+                  ))}
+                </div>
+              </Field>
+            </div>
+          </details>
 
           {/* disclaimer */}
           <div className="mb-3 flex gap-2 rounded-md border border-amber-900/60 bg-amber-950/30 p-2 text-xs text-amber-200/90">

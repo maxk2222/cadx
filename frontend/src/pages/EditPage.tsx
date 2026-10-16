@@ -721,7 +721,7 @@ export default function EditPage() {
         <span className="flex-1" />
         {pickMode && (
           <Chip tone="amber">
-            <MousePointer2 className="h-3 w-3" /> click on the model —{" "}
+            <MousePointer2 className="h-3 w-3" /> click on the model (right-drag orbits) —{" "}
             {pickMode === "measure"
               ? "measure"
               : pickMode === "bool_center"
@@ -780,7 +780,10 @@ export default function EditPage() {
               fitKey={fitKey}
               pickEnabled={!!pickMode}
               modelMatrix={needsServerPreview ? null : instantMatrix}
-              onPick={handlePick}
+              // click-only tools — ignore drag-move repeats
+              onPick={(i, viaDrag) => {
+                if (!viaDrag) handlePick(i);
+              }}
               onHover={setHover}
               onModel={setModelObj}
             >

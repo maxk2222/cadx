@@ -289,6 +289,9 @@ export interface OrganicParams {
   volfrac?: number;
   seed?: number;
   period_mm?: number;
+  /** fraction of the skin the field may carve: 0=solid shell, 1=open skeleton. */
+  surface_open?: number;
+  /** skin depth carved by surface_open; 0/omitted = auto. */
   shell_mm?: number;
   floor_mm?: number;
   min_member_mm?: number | null;
@@ -315,9 +318,15 @@ export interface OrganicReport {
   solid_elements?: number;
   n_components?: number;
   floor_mm?: number;
+  /** fraction of the skin carved away (0=solid shell, 1=open skeleton). */
+  surface_open?: number;
   shell_mm?: number;
+  skin_cells?: number;
+  /** share of the original skin that survived — recognizability metric. */
+  surface_coverage?: number | null;
   min_member_mm?: number;
   keep_regions?: number;
+  void_regions?: number;
   triangles?: number;
   watertight?: boolean;
   warnings?: string[];
@@ -371,6 +380,16 @@ export interface MeshPreviewResult {
       faces_in?: number;
       faces_out?: number;
       watertight?: boolean;
+      salvaged?: boolean;
+      reverted?: boolean;
+      /** op-stashed metrics (organic restyle: recognizability + warnings). */
+      organic?: {
+        surface_coverage?: number | null;
+        volfrac_achieved?: number;
+        n_components?: number;
+        shell_mm?: number;
+        warnings?: string[];
+      };
     }[];
   };
   error: string | null;

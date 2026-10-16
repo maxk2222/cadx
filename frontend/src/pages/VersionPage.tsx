@@ -669,7 +669,7 @@ export default function VersionPage() {
               onClick={() => setOrganicOpen(true)}
               title="procedural organic restyle — gyroid / trabecular / voronoi / branches (aesthetic, not structural)"
             >
-              <Sprout className="h-4 w-4" /> Organische Struktur
+              <Sprout className="h-4 w-4" /> Organic structure
             </Btn>
           )}
 
