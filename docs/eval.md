@@ -144,6 +144,7 @@ carry the required `from cadlib import …` line.
 | Benchmark | n | Passed | Score | Wall | Prompt tokens | Notes |
 |-----------|---|--------|-------|------|---------------|-------|
 | `l_bracket_cad` (binder, pre slot-merge fix) | 1 | 0/1 | 55 | **449 s** | 647,061 | dim_ok=True exact 60×40×54, watertight — the first rep produced correct geometry in one shot; `features_ok=False` was a NEW measurement gap: the mesh tunnel scan only ran when the B-Rep found zero analytic holes, so a real slot next to real holes was invisible |
+| `l_bracket_cad` (binder + slot-merge fix) | 2 | **2/2** | 30/92 | 578 s | 316,194 | first passing reps ever: `dim_ok`, `watertight`, `features_ok` all true on both — bound snippets produce the vertical slot deterministically. Residual: rep-1 score 30 from a mis-oriented slot in an early iteration (recovered to features_ok by finalize); rep-2 score 92 in **276 s** with only minor issues (4 mm rib overhang on X, foot pattern emitted 1/2 holes) |
 
 Rep-1 and rep-2 of the binder era each surfaced a failure class that was
 fixed the same day:
@@ -165,8 +166,11 @@ fixed the same day:
 Infra finding (not a code bug): the cad-executor runs every task via
 `asyncio.to_thread` — one hung CPU-bound job (`export_all` from a parallel
 eval) starved the GIL so the arq loop never dequeued `execute_version`;
-jobs timed out at 480 s while the queue looked empty. A worker-side
-watchdog or process-pool would isolate this.
+jobs timed out at 480 s while the queue looked empty. Mitigated:
+`cad/tasks.py` now wraps the pipeline thread in an `asyncio.wait_for`
+deadline (`exec_timeout_s`) so a wedged run returns a timeout failure
+instead of occupying the worker forever. Full isolation would still need
+a process pool — the watchdog cannot kill the underlying thread.
 
 Add benchmarks for each new part class (brackets, enclosures, gears,
 heat-set inserts, thin walls) — the suite should grow with user feedback.
