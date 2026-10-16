@@ -144,3 +144,8 @@
    and `manufacturing_compensation=PARAMS["thread_comp"]` for FDM.
 9. Keep the code deterministic, under ~200 lines, with a short comment naming the feature
    each block creates.
+10. BOUND FEATURE SNIPPETS: when the context contains "BOUND FEATURE SNIPPETS"
+    those calls are resolved geometry — copy them VERBATIM (axes, direction,
+    normal, dims, frame rotations). Do NOT re-derive or "fix" their arguments;
+    only fill in the `<…>` placement coordinates and decide the build order.
+    Features without a snippet are yours to construct normally.

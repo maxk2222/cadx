@@ -7,6 +7,7 @@ from typing import Any
 
 from cadx.agent.context import (
     anchors_block,
+    bindings_block,
     catalog_block,
     codegen_system,
     library_block,
@@ -54,6 +55,9 @@ def _user_parts(
     parts.append({"type": "text", "text": spec_block(spec)})
     if plan is not None:
         parts.append({"type": "text", "text": plan_block(plan)})
+    bb = bindings_block(spec)
+    if bb:
+        parts.append({"type": "text", "text": bb})
     cat = catalog_block(plan, spec)
     if cat:
         parts.append({"type": "text", "text": cat})
@@ -214,6 +218,9 @@ async def repair(
         parts.append({"type": "text", "text": spec_block(spec)})
     if plan is not None:
         parts.append({"type": "text", "text": plan_block(plan)})
+    bb = bindings_block(spec)
+    if bb:
+        parts.append({"type": "text", "text": bb})
     cat = catalog_block(plan, spec)
     if cat:
         parts.append({"type": "text", "text": cat})
@@ -281,6 +288,9 @@ async def _repair_session(
         parts.append({"type": "text", "text": spec_block(spec)})
     if plan is not None:
         parts.append({"type": "text", "text": plan_block(plan)})
+    bb = bindings_block(spec)
+    if bb:
+        parts.append({"type": "text", "text": bb})
     cat = catalog_block(plan, spec)
     if cat:
         parts.append({"type": "text", "text": cat})

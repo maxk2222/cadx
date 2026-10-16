@@ -524,6 +524,29 @@ def measurements_block(measurements: dict[str, Any] | None) -> str:
     return "\n".join(lines)
 
 
+def bindings_block(spec: PartSpec | None) -> str:
+    """BOUND FEATURE SNIPPETS — deterministic feature→cadlib resolutions.
+
+    The binder removes the prose→geometry translation the model keeps
+    failing (slot direction/normal axes, rib envelope offsets): every
+    snippet carries resolved dims and axes verbatim; only ``<…>``
+    placement coordinates remain for the model."""
+    from cadx.agent.featurebind import bind_features
+
+    bindings = bind_features(spec)
+    if not bindings:
+        return ""
+    lines = [
+        "BOUND FEATURE SNIPPETS — resolved by the feature binder (deterministic).",
+        "Use these calls VERBATIM — do NOT re-derive axes, directions, normals",
+        "or sizes. You still own: <…> placement coordinates, the overall build",
+        "order, and features that have no snippet here.",
+        "",
+    ]
+    lines.extend(b.snippet for b in bindings)
+    return "\n".join(lines)
+
+
 def anchors_block(anchors: dict[str, Any] | None) -> str:
     """Reconciled hole anchors (image+mesh) — index table for region kinds."""
     if not anchors:
