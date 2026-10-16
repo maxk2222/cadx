@@ -345,6 +345,23 @@ async def _eval_image_port(bm: Benchmark, runtime: Any) -> tuple[Any, bool]:
     return image, await _image_available(image)
 
 
+async def _ensure_eval_project(project_id: uuid.UUID, name: str) -> None:
+    """Production parity: DB-backed paths (generated-image persistence, asset
+    bookkeeping) require a real project row — ephemeral eval ids violate
+    asset_project_id_fkey (observed: synth-view persist crashed with FK).
+    Bare-sqlite unit-test DBs have no schema — tolerate that, the warning
+    still surfaces a real production failure."""
+    from cadx.db.models import Project
+    from cadx.db.session import session_scope
+
+    try:
+        async with session_scope() as db:
+            db.add(Project(id=project_id, name=f"eval:{name}"))
+            await db.commit()
+    except Exception as e:
+        log.warning("eval.project_insert_failed", error=str(e)[:200])
+
+
 async def run_benchmark(
     bm: Benchmark,
     llm: Any | None = None,
@@ -360,6 +377,7 @@ async def run_benchmark(
 
     project_id = uuid.uuid4()
     version_id = uuid.uuid4()
+    await _ensure_eval_project(project_id, bm.name)
     runtime = await runtime_from_db_or_default()
     # variant sets defaults; benchmark-local `runtime` keys pin on conflict
     runtime_overrides = {**(variant_overrides or {}), **bm.runtime}
