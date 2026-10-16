@@ -104,6 +104,7 @@ M8 measured real runs (all `dim_ok=True`, `watertight=True`):
 | `flange_pcd_cad` | 3 | 0/3 → 1/1 after feature fix | 90/90/92 | 194 s | 177,918 | all three were geometrically correct; `features_ok=False` was a measurement gap (torus fillet + coaxial rim chamfer), fixed in `features.py` |
 | `l_bracket_cad` | 3 | 0/3 | 15/50/55 | 1,147 s | 454,152 | watertight + dims OK; missing slot and detached/protruding ribs persist — repair now converges (bounded sessions, no budget-death) but the model still fails these features |
 | `l_bracket_cad` (post code-contract + oblong_slot) | 3 | 0/3 | 10/25/50 | 1,163 s | 535,093 | model now calls `oblong_slot("+z","+x")` but misuses BuildPart semantics (cutter fused then re-added → ghost pillar) and misplaces ribs — new failure classes, now lintable |
+| `l_bracket_cad` (full fix chain: lint + slot_cutter + hints) | 1 | 0/1 | 15 | 1,047 s | 327,908 | lint clean, helpers used, issue text carries the exact call — model still picks wrong axes (`direction="+y", normal="+z"` instead of `"+z"/"+x"`) and leaves ribs proud (width 60 vs 40) |
 
 Second l_bracket series surfaced four concrete gaps, all fixed the same
 day: builder-fused solids re-`add()`ed (ghost pillar → `dim_ok`/`slots`
@@ -111,14 +112,26 @@ miss), double transforms on the same variable (`moved()` then
 `translate()` → misplaced cutters), vertical-slot helper missing a
 `normal` axis, and tunnel/slot detection silently disabled on
 non-watertight STL (now repaired via `fill_holes`, marked `approximate`).
-All three reps' failing code paths are caught by the new lint warnings —
-a confirmation run on the final image validates the chain end-to-end.
+All three reps' failing code paths are caught by the new lint warnings.
+
+The confirmation run on the complete fix chain is the decisive data
+point: infrastructure, hints and helpers all work as designed (lint
+clean, `oblong_slot` actually called, issue text contains the exact
+`direction="+z", normal="+x"` invocation) — yet the model still derives
+the wrong axes and proud ribs. Honest read: prompt/lint fixes are
+necessary but not sufficient on this benchmark. The remaining lever is
+structured generation — let the plan emit a feature→cadlib mapping
+(e.g. `{"type":"slot","direction":"+z","normal":"+x",...}`) that is
+instantiated deterministically, so the model never re-derives axes from
+prose; or a `cadlib.l_bracket()` template selected at plan level.
 
 Takeaways: plan-lite cuts the plan prompt ~3.2× but barely moves total cost
 on a trivial part (LLM latency dominates; a single repair doubles tokens).
-Complex parts remain expensive — L-bracket repair churn is bounded now but
-slot/rib generation is the next leverage point (new code-contract rules
-shipped; effect not yet re-measured).
+Complex parts remain expensive — L-bracket repair churn is bounded now
+(stall-patience stops after ~5 flat iterations instead of burning all 8)
+but slot/rib generation does not improve from prompt hints alone;
+the evidence points at structured feature→cadlib instantiation as the
+next step.
 
 Add benchmarks for each new part class (brackets, enclosures, gears,
 heat-set inserts, thin walls) — the suite should grow with user feedback.
