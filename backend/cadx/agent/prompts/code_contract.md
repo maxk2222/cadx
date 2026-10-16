@@ -46,7 +46,17 @@
      A rib that extends past the side wall silently inflates the overall
      width/length and fails the dimensional check. When the spec says "rib
      between wall A and wall B", the rib's outer face goes ON the inner edge of
-     the wall, not past it.
+     the wall, not past it. A rib must also OVERLAP the parent body so the fuse
+     joins it — a rib merely touching a face (or separated by a gap) leaves a
+     second disconnected solid and fails the one-solid check.
+   - Cutters must pierce along the face NORMAL of the surface they cut. A hole
+     or slot through a vertical wall (thin in X or Y): sketch the profile in a
+     plane PARALLEL to that wall (e.g. `Plane.YZ`/`Plane.XZ` or via
+     `BuildSketch(plane)`) and extrude THROUGH the wall thickness — never
+     extrude the top-view profile along Z and reposition it; that produces a
+     stubby pocket, not a through slot. `cadlib.oblong_slot`/`through_hole`
+     inside a `Locations`/`Plane` scope handle this — use them rather than
+     hand-rolled sketches when they exist.
    - Turned/revolved parts (grips, nozzles, bodies of revolution): build the
      profile as `(x, radius)` points in `BuildSketch(Plane.XZ)` — u maps to
      X, v is the radial distance — and close the profile DOWN TO THE AXIS
