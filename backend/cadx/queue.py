@@ -145,5 +145,10 @@ class CadWorkerSettings:
     # generous outer cap — per-job limits come from RuntimeSettings payload
     # (topopt_timeout_s up to 2700s+); QueueExecutor enforces the real timeout
     job_timeout = 7200
-    # idempotent recompute tasks — a container restart mid-task may retry once
-    max_tries = 2
+    # like the agent queue: never auto-retry. An in-flight job whose worker was
+    # killed (cgroup OOM, restart) stays "in-progress" until job_timeout (2h),
+    # then arq would requeue it as a zombie that re-runs the same heavy task on
+    # a fresh worker — often killing it again and confusing callers that already
+    # timed out. Callers (QueueExecutor) own the real timeout and resubmit
+    # deliberately.
+    max_tries = 1

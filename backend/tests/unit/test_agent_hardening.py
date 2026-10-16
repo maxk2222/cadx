@@ -566,7 +566,7 @@ async def test_executor_startup_does_not_reap_agent_jobs(monkeypatch):
         assert (await db.get(Job, job.id)).status == JobStatus.failed
 
 
-async def test_cad_tasks_offload_blocking_payloads(monkeypatch):
+async def test_cad_tasks_offload_blocking_payloads(monkeypatch, tmp_path):
     """arq tasks must run their heavy sync payloads in a worker thread —
     a blocking call on the event loop starves dequeue/health/cancel for the
     whole worker. Regression: a ~50min SIMP run froze the cad queue, so
@@ -576,12 +576,13 @@ async def test_cad_tasks_offload_blocking_payloads(monkeypatch):
 
     import cadx.cad.tasks as tasks
 
-    def slow(payload: dict, **kw) -> dict:
+    def slow(*args: object, **kw: object) -> dict:
         time.sleep(0.15)
         return {"ok": True}
 
     monkeypatch.setattr(tasks, "run_execute_payload", slow)
-    monkeypatch.setattr(tasks, "run_mesh_payload", slow)
+    monkeypatch.setattr(tasks, "_run_mesh_payload_subprocess", slow)
+    monkeypatch.setattr(tasks, "_artifact_dir", lambda p: tmp_path)
     monkeypatch.setattr(tasks, "run_fem_payload", slow)
     monkeypatch.setattr(tasks, "run_optimize_payload", slow)
 
@@ -604,3 +605,15 @@ async def test_cad_tasks_offload_blocking_payloads(monkeypatch):
         tasks.optimize,
     ):
         await run_one(coro)
+
+
+def test_mesh_payload_subprocess_surfaces_child_failure(tmp_path):
+    """A dying mesh-payload child must return ok=False — never take the arq
+    worker down with it (regression: accumulated in-process RSS tripped the
+    container cgroup, SIGKILLing worker + orphaning the job; zombie arq retries
+    then killed the next worker too)."""
+    import cadx.cad.tasks as tasks
+
+    d = tasks._run_mesh_payload_subprocess({"project_id": "x", "mode": "final"}, tmp_path)
+    assert d["ok"] is False
+    assert d["error"]

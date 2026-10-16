@@ -2164,22 +2164,29 @@ async def _run_cad(  # noqa: C901
         if f_iou is not None and f_iou < 0.85:
             # only an authoritative plan-view measurement (or an explicit
             # use_image_profile plan) may demand an outline rebuild — an
-            # advisory measurement downgrades the finding to a hint
+            # advisory measurement downgrades the finding to a hint.
+            # Severity scales with the gap: a generative contour around
+            # 0.6-0.85 follows the silhouette but differs in detail — flooring
+            # the score to 0 for that is wrong (observed: knife scale with
+            # IoU 0.81, all hard gates green, score 0). Only a grossly wrong
+            # silhouette (<0.6) is major.
             authoritative = _measurement_authoritative(ctx) or bool(
                 getattr(plan, "use_image_profile", False)
             )
+            major = authoritative and f_iou < 0.6
             feature_findings.append(
                 {
                     "feature": "footprint",
                     "expected": "matches the measured plan-view outline",
                     "actual": f"footprint IoU {f_iou:.2f}",
-                    "severity": "major" if authoritative else "minor",
+                    "severity": "major" if major else "minor",
                     "fix_hint": (
-                        "rebuild the body from the measured outline — "
-                        "use load_image_profile() / profile_body()"
-                        if authoritative
-                        else "footprint deviates from the reference outline — "
-                        "adjust proportions, do not rebuild from the outline"
+                        "footprint diverges from the measured outline — rebuild "
+                        "the body from the measured outline via "
+                        "load_image_profile() / profile_body()"
+                        if major
+                        else "footprint follows the outline with detail drift — "
+                        "refine proportions locally, do NOT rebuild from the outline"
                     ),
                 }
             )

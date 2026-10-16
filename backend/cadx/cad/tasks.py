@@ -7,6 +7,11 @@ import contextlib
 import hashlib
 import json
 import os
+import pickle
+import resource
+import signal
+import subprocess
+import sys
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -337,6 +342,59 @@ def _ops_preview(
     }
 
 
+def _mesh_child_limits(mem_mb: int) -> None:
+    """preexec_fn for the mesh payload child: address-space cap first so an OOM
+    raises MemoryError in the child instead of tripping the container cgroup
+    (which SIGKILLs the worker too). VTK/trimesh imports need real NOFILE room."""
+    for res, lim in (
+        (resource.RLIMIT_AS, (mem_mb * 1024 * 1024, mem_mb * 1024 * 1024)),
+        (resource.RLIMIT_NOFILE, (1024, 1024)),
+    ):
+        with contextlib.suppress(ValueError, OSError):
+            resource.setrlimit(res, lim)
+    os.setsid()
+
+
+def _run_mesh_payload_subprocess(payload: dict[str, Any], workdir: Path) -> dict[str, Any]:
+    """Run run_mesh_payload in a child process (see mesh_payload_entry.py for the
+    why). Timeout mirrors the client budget; a missing result.pkl means the child
+    died (OOM/segfault) which we surface as a normal error result."""
+    rt = _runtime(payload)
+    timeout_s = rt.exec_timeout_s + rt.mesh_timeout_s
+    workdir.mkdir(parents=True, exist_ok=True)
+    (workdir / "input.pkl").write_bytes(pickle.dumps(payload))
+
+    env = dict(os.environ)
+    env.setdefault("OMP_NUM_THREADS", "2")
+    # inherit stdout/stderr so the child's structlog lines keep landing in the
+    # executor's docker logs
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "cadx.cad.mesh_payload_entry", str(workdir)],
+        cwd=str(workdir),
+        env=env,
+        preexec_fn=lambda: _mesh_child_limits(rt.exec_mem_limit_mb),
+    )
+    try:
+        proc.wait(timeout=timeout_s + 15)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+        return {"ok": False, "error": f"mesh processing timed out after {timeout_s + 15}s (killed)"}
+
+    result_path = workdir / "result.pkl"
+    if result_path.exists():
+        try:
+            d = pickle.loads(result_path.read_bytes())
+            if isinstance(d, dict):
+                return d
+        except Exception:
+            pass
+    rc = proc.returncode
+    detail = "memory limit" if rc in (-signal.SIGKILL, -signal.SIGSEGV) else f"exit {rc}"
+    return {"ok": False, "error": f"mesh processing subprocess died ({detail})"}
+
+
 async def process_mesh(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     """arq task (queue "cad"): mesh post-processing + optional solid conversion."""
     cancel_key = f"cancel:{payload['job_id']}" if payload.get("job_id") else None
@@ -345,7 +403,8 @@ async def process_mesh(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str
         r.error = "cancelled"
         return r.to_dict()
 
-    d = await asyncio.to_thread(run_mesh_payload, payload)
+    workdir = _artifact_dir(payload) / "_meshjob"
+    d = await asyncio.to_thread(_run_mesh_payload_subprocess, payload, workdir)
 
     if await _cancelled(ctx, cancel_key):
         d["ok"] = False
