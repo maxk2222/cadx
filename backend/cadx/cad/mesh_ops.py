@@ -544,20 +544,26 @@ _VOXEL_SUBDIVIDE_MAX_FACES = 4_000_000
 def _voxelize(mesh: trimesh.Trimesh, pitch: float) -> trimesh.voxel.VoxelGrid:
     """Occupancy grid with a bound on trimesh's subdivide path.
 
-    method="subdivide" halves every edge > pitch per round, so worst-case
-    growth is ~4^ceil(log2(max_edge/pitch)) — a coarse mesh at fine pitch
-    turns into tens of millions of faces before the grid is even allocated
-    (observed: 33M faces → 1.5 GB edge array → MemoryError). When the bound
-    exceeds the cap, ray voxelize instead (same grid, no subdivision).
+    `voxelized(method="subdivide")` halves every edge > pitch per round —
+    worst-case growth ~faces * 4^ceil(log2(max_edge/pitch)): a coarse mesh
+    at fine pitch turns into tens of millions of faces before the grid is
+    even allocated (observed: 33M faces → 1.5 GB edge array → MemoryError).
+    Coarsen the pitch until the subdivision estimate fits the cap (pitch >=
+    max_edge makes subdivide a no-op, so the loop always terminates). Ray
+    voxelization is NOT a substitute — VoxelGrid.fill() needs the subdivided
+    surface to label the interior correctly.
+
+    Callers must read the effective pitch back via `vg.pitch` when they
+    compute voxel-space counts (e.g. shell erosion depth).
     """
-    method: Literal["subdivide", "ray"] = "subdivide"
     if len(mesh.faces):
         max_edge = float(mesh.edges_unique_length.max())
-        if max_edge > pitch:
+        while max_edge > pitch:
             rounds = math.ceil(math.log2(max_edge / pitch))
-            if len(mesh.faces) * (4**rounds) > _VOXEL_SUBDIVIDE_MAX_FACES:
-                method = "ray"
-    return mesh.voxelized(pitch, method=method)
+            if len(mesh.faces) * (4**rounds) <= _VOXEL_SUBDIVIDE_MAX_FACES:
+                break
+            pitch *= 2.0
+    return mesh.voxelized(pitch)
 
 
 class OpSetUp(BaseModel):
@@ -1085,6 +1091,7 @@ def _op_shell(mesh: trimesh.Trimesh, p: OpShell) -> trimesh.Trimesh:
     pitch = float(np.clip(min(p.thickness_mm / 2.0, float(ext.min()) / 80.0), 0.15, 1.0))
     pitch = max(pitch, float(ext.max()) / _VOXEL_REPAIR_MAX_CELLS)
     vg = _voxelize(mesh, pitch)
+    pitch = float(np.max(vg.pitch))  # _voxelize may coarsen an open-mesh pitch
     with contextlib.suppress(Exception):
         vg = vg.fill()
     mat = np.asarray(vg.matrix)

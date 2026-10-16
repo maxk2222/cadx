@@ -241,27 +241,27 @@ def test_voxel_remesh_refuses_unbounded_grid():
         _voxel_remesh(_box(200, 30, 30), pitch_mm=0.2)
 
 
-def test_voxelize_falls_back_to_ray_on_dense_subdivide(monkeypatch):
+def test_voxelize_coarsens_pitch_on_dense_subdivide(monkeypatch):
     """trimesh's "subdivide" voxelization refines every edge below pitch —
     a coarse mesh at fine pitch explodes (observed: 33M faces → MemoryError).
-    _voxelize must estimate the growth and switch to "ray"."""
+    _voxelize must coarsen the pitch until the growth bound fits the cap."""
     import cadx.cad.mesh_ops as mo
 
-    seen: list[str] = []
+    seen: list[float] = []
     orig = trimesh.Trimesh.voxelized
 
     def spy(self, pitch, method="subdivide", **kw):
-        seen.append(method)
+        seen.append(float(pitch))
         return orig(self, pitch, method=method, **kw)
 
     monkeypatch.setattr(trimesh.Trimesh, "voxelized", spy)
-    # ~12 faces spanning 130 mm at 0.25 mm pitch → est >> the 4M cap
+    # ~12 faces spanning 130 mm at 0.25 mm → est >> the 4M cap → coarsened
     mo._voxelize(_box(130, 32, 32), 0.25)
-    assert seen == ["ray"]
+    assert seen[0] > 0.25
     seen.clear()
-    # a fine mesh at the same pitch stays on the subdivide path
+    # a fine mesh at a compatible pitch is not touched
     mo._voxelize(trimesh.creation.icosphere(subdivisions=2, radius=10), 1.0)
-    assert seen == ["subdivide"]
+    assert seen == [1.0]
 
 
 # --------------------------------------------------------------------------- #

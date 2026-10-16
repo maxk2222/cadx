@@ -2863,6 +2863,10 @@ async def _run_mesh(  # noqa: C901
     iterations_done = 0
     refine_rounds = max(0, getattr(s, "agent_mesh_refine_rounds", 1))
     hard_fails = 0
+    # consecutive repair-round regressions — when ops-level repair keeps
+    # wrecking the shape (e.g. a generator V-notch no transform can undo),
+    # further sessions only burn tokens; new seeds are the better spend
+    repair_regressions = 0
     hard_fail_score = getattr(s, "agent_mesh_hard_fail_score", 30)
     # a multi-approach strategy keeps a fallback — burn fewer seeds here
     hard_fail_limit = (
@@ -3214,7 +3218,14 @@ async def _run_mesh(  # noqa: C901
                 it,
                 "repair skipped — only dimension issues remain (deterministic fit already applied)",
             )
-        for _round in range(0 if only_dims else refine_rounds):
+        skip_repair = only_dims or repair_regressions >= 2
+        if repair_regressions >= 2:
+            await ctx.emit(
+                "meshrefine",
+                it,
+                "repair skipped — last repair sessions all regressed; trying a fresh seed instead",
+            )
+        for _round in range(0 if skip_repair else refine_rounds):
             if await cancelled():
                 outcome.status = "cancelled"
                 return outcome
@@ -3255,6 +3266,7 @@ async def _run_mesh(  # noqa: C901
             if rr.new_mesh_rel or cand.rank >= prev_rank:
                 # accept: progress, or a swapped-in regenerated baseline that
                 # cannot be rank-compared against the old mesh
+                repair_regressions = 0
                 exec_result = new_exec
                 critique, dim_issues = critique2, dim_issues2
                 # refresh the issue list — the next repair round must chase
@@ -3269,6 +3281,7 @@ async def _run_mesh(  # noqa: C901
             else:
                 # deterministic regression — restore the better op list so the
                 # wreck never becomes the session state a later round builds on
+                repair_regressions += 1
                 post.ops = prev_ops
                 ctx.mesh_info["post"] = post.model_dump()
                 ctx.mesh_info["ops"] = [o.model_dump() for o in prev_ops]

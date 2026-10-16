@@ -637,6 +637,84 @@ async def test_mesh_refine_regression_reverts_ops(tmp_path):
     assert not (outcome.params.get("ops") or [])
 
 
+async def test_mesh_repair_skipped_after_two_regressions(tmp_path):
+    """Two consecutive repair regressions mean ops can't fix this shape —
+    later iterations must not burn a session; a fresh seed is cheaper."""
+    fail_critique = {
+        "score": 40,
+        "passed": False,
+        "discrepancies": [
+            {
+                "feature": "base",
+                "issue": "rough underside",
+                "severity": "major",
+                "source": "spec",
+            }
+        ],
+        "matches": [],
+        "confidence": 0.8,
+    }
+    worse_critique = {
+        "score": 10,
+        "passed": False,
+        "discrepancies": [
+            {
+                "feature": "shape",
+                "issue": "flattened into a sliver",
+                "severity": "major",
+                "source": "spec",
+            },
+            {
+                "feature": "dims",
+                "issue": "height destroyed",
+                "severity": "major",
+                "source": "spec",
+            },
+        ],
+        "matches": [],
+        "confidence": 0.9,
+    }
+    wreck = [
+        _tc("mesh_flatten_bottom", {"height_mm": 20.0}),
+        _tc("done", {"reasoning": "flattened"}),
+    ]
+    llm = FakeLLM(
+        [
+            MESH_SPEC,
+            MESH_PLAN,
+            MESH_ORIENT,
+            fail_critique,
+            *wreck,
+            worse_critique,  # it1 repair regresses
+            fail_critique,
+            *wreck,
+            worse_critique,  # it2 repair regresses → it3 skips the session
+            fail_critique,  # it3 baseline critique; no session scripted
+        ]
+    )
+    mesh = FakeMeshClient()
+    ctx = _ctx(
+        llm=llm,
+        gen_mode="mesh",
+        assets=[_img(seed=1)],
+        mesh=mesh,
+        mesh_available=True,
+        prompt="organic knob 40mm",
+        runtime_settings=RuntimeSettings(mesh_candidates_per_iter=1),
+        settings=ProjectSettings(clarification_mode="assume", max_iterations=3),
+    )
+    msgs: list[str] = []
+    orig_emit = ctx.emit
+
+    async def rec(step: str, it: int, msg: str, **f) -> None:
+        msgs.append(msg)
+        await orig_emit(step, it, msg, **f)
+
+    ctx.emit = rec
+    await run_generation(ctx)
+    assert any("last repair sessions all regressed" in m for m in msgs)
+
+
 async def test_mesh_tools_disabled_keeps_seed_loop(tmp_path):
     """agent_mesh_tools=False → no sessions, previous behaviour unchanged."""
     from cadx.runtime_config import RuntimeSettings
