@@ -354,6 +354,27 @@ def test_oblong_slot_along_y():
         assert not p.part.is_inside((0.0, float(y), 3.0)), y
 
 
+def test_oblong_slot_vertical_through_wall():
+    """Vertical slot along Z through a wall thin in X — the l_bracket leg
+    slot the model kept hand-rolling wrong."""
+    with BuildPart() as p:
+        Box(4, 40, 50, align=_ALIGN_MIN)  # wall 4 mm thin in X
+        cadlib.oblong_slot(6.5, 15.0, direction="+z", normal="+x", on=Pos(0, 0, 25))
+    for z in (-4, 0, 4):
+        for x in (0.5, 2.0, 3.5):
+            assert not p.part.is_inside((float(x), 0.0, 25.0 + z)), (x, z)
+    # material remains above/below the slot along Z
+    assert p.part.is_inside((2.0, 0.0, 45.0))
+    assert p.part.is_inside((2.0, 0.0, 5.0))
+
+
+def test_oblong_slot_rejects_parallel_axes():
+    with BuildPart():
+        Box(60, 40, 6, align=_ALIGN_MIN)
+        with pytest.raises(ValueError, match="perpendicular"):
+            cadlib.oblong_slot(6.0, 20.0, direction="+x", normal="-x")
+
+
 def test_tube_open_bore_both_ends():
     t = cadlib.tube(12.0, 8.0, 30.0)
     # bore through: centre point is empty at both end faces

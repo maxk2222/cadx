@@ -44,10 +44,13 @@ to apply at that workplane (usually a face, e.g. `p.faces().sort_by(Axis.Z)[-1]`
 
 ### oblong_slot
 
-- `oblong_slot(width, length, depth=None, direction="+x", on=None)` — stadium
-  through-slot `length` tip-to-tip along `direction` (+x|-x|+y|-y), `width`
-  across; `depth` makes a blind pocket. USE THIS for elongated mounting
-  slots — hand-built slots from two boxes get skipped or leak membranes.
+- `oblong_slot(width, length, depth=None, direction="+x", normal="+z", on=None)`
+  — stadium through-slot `length` tip-to-tip along `direction` (+x|-x|+y|-y|+z|-z),
+  `width` across, cut through along `normal` (perpendicular to `direction`);
+  `depth` makes a blind pocket. USE THIS for elongated mounting slots —
+  hand-built slots from two boxes get skipped or leak membranes. A vertical
+  slot through a wall thin in X:
+  `oblong_slot(6.5, 15, direction="+z", normal="+x")`.
 
 ### keyhole_slot
 

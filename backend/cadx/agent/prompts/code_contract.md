@@ -54,9 +54,10 @@
      plane PARALLEL to that wall (e.g. `Plane.YZ`/`Plane.XZ` or via
      `BuildSketch(plane)`) and extrude THROUGH the wall thickness — never
      extrude the top-view profile along Z and reposition it; that produces a
-     stubby pocket, not a through slot. `cadlib.oblong_slot`/`through_hole`
-     inside a `Locations`/`Plane` scope handle this — use them rather than
-     hand-rolled sketches when they exist.
+     stubby pocket, not a through slot. `cadlib.oblong_slot` handles the
+     vertical case directly: `oblong_slot(6.5, 15, direction="+z", normal="+x")`
+     cuts a slot running along Z through a wall thin in X — prefer it over
+     hand-rolled sketches whenever the axes fit.
    - Turned/revolved parts (grips, nozzles, bodies of revolution): build the
      profile as `(x, radius)` points in `BuildSketch(Plane.XZ)` — u maps to
      X, v is the radial distance — and close the profile DOWN TO THE AXIS

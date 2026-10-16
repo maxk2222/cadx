@@ -22,6 +22,7 @@ from build123d import (
     GridLocations,
     Locations,
     Mode,
+    Plane,
     Polygon,
     Pos,
     Rot,
@@ -281,31 +282,50 @@ def keyhole_slot(
     _in_scope(on, make)
 
 
+_AXIS_VECS: dict[str, tuple[float, float, float]] = {
+    "+x": (1.0, 0.0, 0.0),
+    "-x": (-1.0, 0.0, 0.0),
+    "+y": (0.0, 1.0, 0.0),
+    "-y": (0.0, -1.0, 0.0),
+    "+z": (0.0, 0.0, 1.0),
+    "-z": (0.0, 0.0, -1.0),
+}
+
+
 def oblong_slot(
     width: float,
     length: float,
     *,
     depth: float | None = None,
     direction: str = "+x",
+    normal: str = "+z",
     on=None,
 ) -> None:
-    """Oblong (stadium) through-slot: ``length`` tip-to-tip along ``direction``
-    (+x|-x|+y|-y), ``width`` across. Through by default — the cutter is taller
-    than the part diagonal so no membrane can seal the slot; ``depth`` makes a
-    blind pocket instead. USE THIS for elongated mounting slots (belt clips,
-    adjustment slots) — the most commonly missed feature.
+    """Oblong (stadium) slot: ``length`` tip-to-tip along ``direction``
+    (+x|-x|+y|-y|+z|-z), ``width`` across, cut through along ``normal``
+    (must be perpendicular to ``direction``). Through by default — the cutter
+    is taller than the part diagonal so no membrane can seal the slot;
+    ``depth`` makes a blind pocket instead. USE THIS for elongated mounting
+    slots (belt clips, adjustment slots) — the most commonly missed feature.
 
         with Locations(Pos(10, 0, 0)):
-            oblong_slot(6.0, 20.0)             # 6x20 stadium through, along X
-        oblong_slot(5.0, 12.0, direction="+y") # along Y
+            oblong_slot(6.0, 20.0)                       # 6x20, along X through Z
+        oblong_slot(5.0, 12.0, direction="+y")           # along Y through Z
+        # vertical slot through a wall thin in X (e.g. bracket leg):
+        oblong_slot(6.5, 15.0, direction="+z", normal="+x")
     """
     ctx = _require_context("oblong_slot")
-    dx, dy = {
-        "+x": (1.0, 0.0),
-        "-x": (-1.0, 0.0),
-        "+y": (0.0, 1.0),
-        "-y": (0.0, -1.0),
-    }.get(direction, (1.0, 0.0))
+    try:
+        d = _AXIS_VECS[direction]
+        n = _AXIS_VECS[normal]
+    except KeyError:
+        raise ValueError(
+            f"oblong_slot: direction/normal must be one of {sorted(_AXIS_VECS)}"
+        ) from None
+    if any(d[i] != 0 and n[i] != 0 for i in range(3)):
+        raise ValueError(
+            f"oblong_slot: direction={direction!r} and normal={normal!r} must be perpendicular"
+        )
     r = width / 2
     half = max(0.0, length / 2 - r)  # end-centre offset along the slot axis
     if depth is None:
@@ -317,18 +337,17 @@ def oblong_slot(
         height = depth + 1.0
         z_mid = (1.0 - depth) / 2
 
+    # build the stadium cutter in a canonical frame: long axis +x, width +y,
+    # cut +z — the plane location then maps it onto (direction, normal).
+    frame = Plane(origin=(0, 0, 0), x_dir=d, z_dir=n)
+
     def make() -> None:
-        with Locations(Pos(0, 0, z_mid)):
+        with Locations(frame.location), Locations(Pos(0, 0, z_mid)):
             for sgn in (-1.0, 1.0):
-                with Locations(Pos(sgn * half * dx, sgn * half * dy, 0)):
+                with Locations(Pos(sgn * half, 0, 0)):
                     Cylinder(radius=r, height=height, mode=Mode.SUBTRACT)
             if half > 0:
-                Box(
-                    (2 * half) * abs(dx) + width * abs(dy),
-                    (2 * half) * abs(dy) + width * abs(dx),
-                    height,
-                    mode=Mode.SUBTRACT,
-                )
+                Box(2 * half, width, height, mode=Mode.SUBTRACT)
 
     _in_scope(on, make)
 
