@@ -49,6 +49,10 @@ class RuntimeSettings(BaseModel):
     agent_critique_reask: bool = True
     agent_tool_max_calls: int = Field(default=10, ge=1, le=100)
     agent_tool_max_calls_info: int = Field(default=6, ge=1, le=100)
+    # improve sessions whose issues are only feature findings + lint minors
+    # just apply bound snippets — no exploration budget needed (observed:
+    # 12-call feature-improve sessions at ~16k ptok each)
+    agent_tool_max_calls_improve: int = Field(default=6, ge=1, le=100)
     agent_tool_max_turns: int = Field(default=24, ge=1, le=200)
     # edit/repair sessions pay the FULL pipeline per verify — give them fewer
     # turns than info/critique sessions (observed: a 24-turn repair loop ate

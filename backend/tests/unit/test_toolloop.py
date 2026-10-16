@@ -15,7 +15,7 @@ from cadx.agent.trace import MemoryTrace
 from cadx.agent.types import AgentCtx, InputAsset
 from cadx.db.models import ProjectSettings
 from cadx.llm.fake import FakeLLM
-from cadx.llm.schemas import PatchResponse
+from cadx.llm.schemas import PartSpec, PatchResponse
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 BOX_CODE = (FIXTURES / "simple_box.py").read_text()
@@ -1005,3 +1005,49 @@ async def test_optimize_refine_features_gated_without_fn():
     assert "refine_features" not in session.allowed_names()
     res = await session.execute("refine_features", {"run_index": 0})
     assert res["ok"] is False
+
+
+async def test_improve_feature_only_uses_light_call_budget(monkeypatch):
+    """Issues that are only feature findings / lint minors get the reduced
+    improve call budget — they mostly apply bound snippets, not explore."""
+    from cadx.agent.steps import improve
+
+    llm = FakeLLM([])
+    llm.tools_mode = "auto"
+    ctx = _ctx(llm)
+    seen: dict[str, int] = {}
+
+    async def fake_session(*a, max_calls, **kw):
+        seen["mc"] = max_calls
+        return PatchResponse(reasoning="", full_code="result = None")
+
+    monkeypatch.setattr(improve, "_run_session", fake_session)
+    spec = PartSpec(
+        name="p",
+        summary="s",
+        length_x={"value": 10, "source": "stated"},
+        width_y={"value": 10, "source": "stated"},
+        height_z={"value": 10, "source": "stated"},
+        image_roles=[],
+    )
+    kw = dict(
+        spec=spec,
+        plan=None,
+        base_code="result = None",
+        features=None,
+        patch_errors=None,
+        iteration=2,
+    )
+    await improve.run(
+        ctx,
+        issues=[{"source": "features", "severity": "major", "what": "slot missing"}],
+        **kw,
+    )
+    s = ctx.runtime_settings
+    assert seen["mc"] == min(s.agent_tool_max_calls, s.agent_tool_max_calls_improve)
+    await improve.run(
+        ctx,
+        issues=[{"source": "dims", "severity": "major", "what": "width off"}],
+        **kw,
+    )
+    assert seen["mc"] == s.agent_tool_max_calls

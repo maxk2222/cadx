@@ -12,6 +12,7 @@ from typing import Any
 
 from cadx.agent.context import (
     anchors_block,
+    bindings_block,
     codegen_system,
     issues_block,
     measured_features_block,
@@ -52,6 +53,9 @@ def _user_parts(
     parts.append({"type": "text", "text": spec_block(spec)})
     if plan is not None:
         parts.append({"type": "text", "text": plan_block(plan)})
+    bb = bindings_block(spec)
+    if bb:
+        parts.append({"type": "text", "text": bb})
     if ctx.hybrid_solid is not None:
         parts.append(
             {
@@ -130,6 +134,20 @@ async def run(
     render_fn: VerifyFn | None = None,
 ) -> PatchResponse:
     if tools_enabled(ctx, "code") and ctx.edit_sessions_exhausted < 1:
+        # feature-only improve (missing hole/slot/rib findings + lint minors)
+        # is mostly "apply the bound snippet" — a full exploration budget
+        # just buys churn (observed: 12-call sessions at ~16k ptok each)
+        hard = any(
+            i.get("severity") == "major"
+            and i.get("source") in ("dims", "critique", "dfm", "solids", "exec")
+            for i in issues
+        )
+        s = ctx.runtime_settings
+        mc = (
+            s.agent_tool_max_calls
+            if hard
+            else min(s.agent_tool_max_calls, s.agent_tool_max_calls_improve)
+        )
         return await _run_session(
             ctx,
             spec,
@@ -141,7 +159,7 @@ async def run(
             attempt=attempt,
             verify_fn=verify_fn,
             render_fn=render_fn,
-            max_calls=ctx.runtime_settings.agent_tool_max_calls,
+            max_calls=mc,
         )
 
     messages: list[dict[str, Any]] = [

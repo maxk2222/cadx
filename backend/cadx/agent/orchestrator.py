@@ -2254,6 +2254,9 @@ async def _run_cad(  # noqa: C901
     issues: list[dict[str, Any]] = []
     iterations_done = 0
     improve_failures = 0
+    # patch errors from a failed REPAIR round — forwarded to the next improve
+    # session so it knows the previous patch attempt missed the code text
+    pending_patch_errors: list[str] | None = None
 
     def issues_text(items: list[dict[str, Any]]) -> str:
         from cadx.agent.context import issues_block
@@ -2287,7 +2290,8 @@ async def _run_cad(  # noqa: C901
         if use_improve:
             await ctx.emit("improve", it, f"fixing {len(issues)} issue(s) on the best candidate")
             features = (best.exec_result.get("features") or None) if best else None
-            patch_errors: list[str] | None = None
+            patch_errors: list[str] | None = pending_patch_errors
+            pending_patch_errors = None
             for attempt in range(1, s.agent_patch_retries + 1):
                 try:
                     presp = await improve_step.run(
@@ -2431,6 +2435,9 @@ async def _run_cad(  # noqa: C901
                 if new_code is None:
                     await ctx.emit("repair", it, f"patch did not apply ({len(perrs)} hunk errors)")
                     log.warning("agent.repair_patch_failed", iteration=it, errors=perrs[:3])
+                    # the next improve session patches best.code — tell it the
+                    # repair's patch attempt already missed the text
+                    pending_patch_errors = perrs
                     break
                 code = new_code
 

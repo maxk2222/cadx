@@ -502,6 +502,7 @@ class SettingsOut(BaseModel):
     agent_critique_reask: bool
     agent_tool_max_calls: int
     agent_tool_max_calls_info: int
+    agent_tool_max_calls_improve: int
     agent_tool_max_turns_edit: int
     agent_tool_verify: bool
     agent_tool_verify_max: int
@@ -591,6 +592,7 @@ class SettingsUpdate(BaseModel):
     agent_critique_reask: bool | None = None
     agent_tool_max_calls: int | None = Field(default=None, ge=1, le=100)
     agent_tool_max_calls_info: int | None = Field(default=None, ge=1, le=100)
+    agent_tool_max_calls_improve: int | None = Field(default=None, ge=1, le=100)
     agent_tool_max_turns_edit: int | None = Field(default=None, ge=1, le=200)
     agent_tool_verify: bool | None = None
     agent_tool_verify_max: int | None = Field(default=None, ge=0, le=20)
