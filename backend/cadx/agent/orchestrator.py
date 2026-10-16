@@ -719,6 +719,13 @@ def _write_mesh_json(project_id: Any, version_id: Any, info: dict[str, Any]) -> 
 # --------------------------------------------------------------------------- #
 
 
+def _is_flat_spec_dims(dims: tuple[float, float, float]) -> bool:
+    """Flat = Z dramatically thinner than BOTH horizontal dims (plate-like).
+    Comparing against max() misclassifies any elongated part — a 130x32x32
+    grip is not flat just because it is long."""
+    return dims[2] > 0 and dims[2] < 0.3 * min(dims[0], dims[1])
+
+
 def _synth_back_view(ctx: AgentCtx, iteration: int, outline_mm: list[list[float]]) -> Any | None:
     """Filled-silhouette render of the measured plan-view outline as a
     synthetic 'back' view — anchors a flat part's underside for the generator
@@ -861,8 +868,7 @@ async def _ensure_synth_views(ctx: AgentCtx, iteration: int, spec: PartSpec | No
     if len(images) != 1:
         return
     dims = (spec.length_x.value, spec.width_y.value, spec.height_z.value)
-    flat = dims[2] > 0 and dims[2] < 0.3 * max(dims[0], dims[1], 1e-9)
-    if flat:
+    if _is_flat_spec_dims(dims):
         return  # flat parts get the measured-outline 'back' synth instead
     try:
         from cadx.agent.concept_image import generate_concept_images
@@ -950,7 +956,7 @@ def _mesh_source_images(
     if spec is not None:
         intake_roles = {r.asset_id: r.role for r in spec.image_roles if r.asset_id}
         dims = (spec.length_x.value, spec.width_y.value, spec.height_z.value)
-        flat = dims[2] > 0 and dims[2] < 0.3 * max(dims[0], dims[1], 1e-9)
+        flat = _is_flat_spec_dims(dims)
     if flat:
         # The measure step classifies plan views deterministically (silhouette
         # aspect vs. stated dims). It beats intake labels — models keep calling

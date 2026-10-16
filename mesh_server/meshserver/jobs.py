@@ -360,8 +360,10 @@ class JobManager:
         # _finish_proc_failed badlists it, so the next dispatch can't land on
         # the same broken model (observed: corrupt qwen-image-edit snapshot →
         # every synth-view job failed instead of falling back to flux/sdxl).
-        # Explicit requests keep their single attempt.
-        max_attempts = 3 if job.params.model in ("", "auto") else 1
+        # Explicit requests keep their single attempt. 4 attempts cover the
+        # full edit ladder (qwen → kontext → schnell-mlx → sdxl) — observed:
+        # three broken/gated adapters in a row before sdxl could serve.
+        max_attempts = 4 if job.params.model in ("", "auto") else 1
         for attempt in range(1, max_attempts + 1):
             (work / "request.json").write_text(json.dumps(self._gen_request(job)))
             # stderr to a file, not a pipe — an orphaned PIPE transport raises

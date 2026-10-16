@@ -470,3 +470,16 @@ def test_stall_patience_default_is_two():
     """Workstream-E: mesh loop gives up after 2 improvement-free iterations
     (v7 observation: nothing improved after iteration 3 anyway)."""
     assert RuntimeSettings().agent_stall_patience == 2
+
+
+def test_flat_spec_dims_does_not_flag_elongated_parts():
+    """A 130x32x32 grip is not 'flat' — comparing z to max() misclassifies
+    any elongated part and silently skips side-view synthesis + back-view
+    handling. Flat must be thin-in-Z relative to BOTH horizontal dims."""
+    from cadx.agent.orchestrator import _is_flat_spec_dims
+
+    assert _is_flat_spec_dims((100.0, 80.0, 5.0)) is True  # plate
+    assert _is_flat_spec_dims((50.0, 50.0, 3.0)) is True  # square plate
+    assert _is_flat_spec_dims((130.0, 32.0, 32.0)) is False  # grip — elongated
+    assert _is_flat_spec_dims((40.0, 40.0, 45.0)) is False  # knob
+    assert _is_flat_spec_dims((0.0, 0.0, 0.0)) is False  # undimensioned
