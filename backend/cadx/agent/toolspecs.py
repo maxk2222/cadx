@@ -1011,6 +1011,9 @@ class ToolSession:
         kind: Literal["edit", "codegen", "info", "inspect", "mesh", "optimize"],
         code: str = "",
         verify_fn: VerifyFn | None = None,
+        # full-pipeline variant of verify_fn (renders+dfm) — used by
+        # render_model only; verify itself runs the light pipeline
+        render_fn: VerifyFn | None = None,
         workbench: Any = None,
         fem_fn: StructFn | None = None,
         topopt_fn: StructFn | None = None,
@@ -1022,6 +1025,7 @@ class ToolSession:
         self.kind = kind
         self.buffer = code
         self.verify_fn = verify_fn
+        self.render_fn = render_fn
         self.workbench = workbench
         self.fem_fn = fem_fn
         self.topopt_fn = topopt_fn
@@ -1498,7 +1502,7 @@ class ToolSession:
         from cadx.cad.errordiag import diagnose
 
         diag = diagnose(res.get("error"), res.get("traceback"), self.buffer)
-        return {
+        out: dict[str, Any] = {
             "ok": False,
             label: "execution failed",
             "category": diag.category,
@@ -1507,6 +1511,15 @@ class ToolSession:
             "excerpt": diag.code_excerpt,
             "hint": diag.hint,
         }
+        geo = res.get("geometry_at_failure")
+        if geo:
+            out["geometry_at_failure"] = geo
+            out["note"] = (
+                "geometry_at_failure shows where the built bodies ACTUALLY are "
+                "— a body at the origin that should be elsewhere means the "
+                "placement was discarded; fix positioning before selectors"
+            )
+        return out
 
     async def _tool_verify(self, a: dict[str, Any]) -> dict[str, Any]:
         if self.verify_fn is None or self.verify_left <= 0:
@@ -1536,14 +1549,16 @@ class ToolSession:
 
     async def _tool_render_model(self, a: dict[str, Any]) -> dict[str, Any]:
         """verify + vision: same sandbox run, but the contact-sheet render is
-        attached via `_images` so the model can see the geometry."""
-        if self.verify_fn is None or self.verify_left <= 0:
+        attached via `_images` so the model can see the geometry. Uses the
+        full (non-light) pipeline — renders are the point."""
+        fn = self.render_fn or self.verify_fn
+        if fn is None or self.verify_left <= 0:
             return {"ok": False, "error": "render not available (budget exhausted or disabled)"}
         if err := self._require_buffer():
             return err
         self.verify_left -= 1
         try:
-            res = await self.verify_fn(self.buffer)
+            res = await fn(self.buffer)
         except Exception as e:
             return {"ok": False, "error": f"render execution failed: {e}"}
         if not res.get("ok"):

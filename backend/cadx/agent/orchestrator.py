@@ -21,7 +21,7 @@ from typing import Any
 from cadx import storage
 from cadx.agent.anchors import build_anchors
 from cadx.agent.autofix import propose_fixes
-from cadx.agent.mesh_client import MeshGenError, MeshGenRequest
+from cadx.agent.mesh_client import MeshGenError, MeshGenRequest, MeshGenVariant
 from cadx.agent.steps import codegen as codegen_step
 from cadx.agent.steps import critique as critique_step
 from cadx.agent.steps import improve as improve_step
@@ -306,6 +306,20 @@ def _session_verify_fn(ctx: AgentCtx, iteration: int, attempt: Any):
 
     def run(code: str):
         return ctx.executor.execute(
+            _exec_payload(
+                ctx, code, iteration, full_exports=False, subdir=f"a{next(attempt)}", light=True
+            )
+        )
+
+    return run
+
+
+def _session_render_fn(ctx: AgentCtx, iteration: int, attempt: Any):
+    """render_model callback: same sandbox run as verify but through the FULL
+    pipeline — the point is the contact-sheet image (verify runs light)."""
+
+    def run(code: str):
+        return ctx.executor.execute(
             _exec_payload(ctx, code, iteration, full_exports=False, subdir=f"a{next(attempt)}")
         )
 
@@ -384,7 +398,13 @@ def resolve_mode(ctx: AgentCtx) -> tuple[str, str]:
 
 
 def _exec_payload(
-    ctx: AgentCtx, code: str, iteration: int, *, full_exports: bool, subdir: str = ""
+    ctx: AgentCtx,
+    code: str,
+    iteration: int,
+    *,
+    full_exports: bool,
+    subdir: str = "",
+    light: bool = False,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "job_id": ctx.job_id,
@@ -402,6 +422,7 @@ def _exec_payload(
         "settings": ctx.settings.model_dump(),
         "runtime_settings": ctx.runtime_settings.executor_values(),
         "full_exports": full_exports,
+        "light": light,
         "name": "model",
     }
     if ctx.hybrid_solid is not None:
@@ -423,6 +444,7 @@ def _mesh_payload(
     make_solid: bool = False,
     full_exports: bool = False,
     subdir: str = "",
+    ref_mask_rel: str | None = None,
 ) -> dict[str, Any]:
     return {
         "job_id": ctx.job_id,
@@ -432,6 +454,7 @@ def _mesh_payload(
         "subdir": subdir,
         "mode": mode,
         "mesh_rel": mesh_rel,
+        "ref_mask_rel": ref_mask_rel,
         "post": (post or MeshPostParams()).model_dump(),
         "anchors": ctx.anchors,
         "spec": spec.model_dump() if spec else None,
@@ -1073,7 +1096,182 @@ async def _candidate_adapters(ctx: AgentCtx, n: int) -> list[str]:
     return [m.id for m in models[:n]]
 
 
-async def _candidate_seed(
+async def _adapter_default_steps(ctx: AgentCtx, model: str | None) -> int | None:
+    """Adapter-native inference step count for `model` (None when unknown or
+    not reported — distilled turbo models report ~5). Cached per job."""
+    if ctx.mesh is None or not model or model == "auto":
+        return None
+    defaults = ctx.mesh_info.get("_model_steps")
+    if defaults is None:
+        defaults = {}
+        try:
+            for m in (await ctx.mesh.health()).models:
+                if m.default_steps:
+                    defaults[m.id] = int(m.default_steps)
+        except Exception:
+            pass
+        ctx.mesh_info["_model_steps"] = defaults
+    return defaults.get(model)
+
+
+def _cand_key(seed: int, model: str | None) -> str:
+    return f"{seed}|{model or ''}"
+
+
+async def _generate_mesh_batch(  # noqa: C901
+    ctx: AgentCtx,
+    iteration: int,
+    spec: PartSpec,
+    plan: Any,
+    *,
+    seeds: list[int],
+    steps: int | None,
+    resolution: int | None,
+    model: str | None,
+    tag_prefix: str,
+) -> list[str | None]:
+    """Screening variants in ONE server job — the model loads a single time.
+
+    Mirrors _generate_mesh's setup (image arrange/prep, subject, mesh cache)
+    but submits all seeds as batch variants. Returns relpaths aligned with
+    `seeds` (None for failed variants)."""
+    n = len(seeds)
+    it_dir = storage.iteration_dir(ctx.project_id, ctx.version_id, iteration)
+    it_dir.mkdir(parents=True, exist_ok=True)
+    images, roles = _mesh_source_images(ctx, iteration, spec)
+    if not images:
+        boot = await _bootstrap_concept_images(ctx, iteration, spec, plan)
+        if boot:
+            images, roles = boot, ["front"] + ["other"] * (len(boot) - 1)
+    if not images:
+        ctx.mesh_info["gen_error"] = "no image input for mesh generation"
+        return [None] * n
+    model_r, images, roles = await _arrange_gen_images(
+        ctx, iteration, images, roles, spec, prefer=model
+    )
+    # screening at the adapter's native step count — distilled turbo models
+    # are built for ~5 steps; running them at 15 just burns wall-clock
+    if steps is not None:
+        dflt = await _adapter_default_steps(ctx, model_r)
+        if dflt:
+            steps = min(steps, dflt)
+    images = _prepped_gen_images(ctx, it_dir, images)
+    subject = (
+        ctx.mesh_info.get("_regen_hint")
+        or (plan.mesh_subject if plan else "")
+        or spec.name
+        or ctx.prompt[:80]
+    )
+    await ctx.emit("meshgen", iteration, f"views: {', '.join(roles[: len(images)])}")
+
+    from cadx.agent import mesh_cache
+
+    rels: list[str | None] = [None] * n
+    pend: list[int] = []
+    variants: list[MeshGenVariant] = []
+    keys: dict[int, str] = {}
+    meta = ctx.mesh_info.setdefault("_cand_meta", {})
+    for i, seed in enumerate(seeds):
+        out_path = it_dir / f"mesh_raw{tag_prefix}{i}.glb"
+        rel = storage.relpath(out_path)
+        key = ""
+        if ctx.runtime_settings.mesh_cache_enabled:
+            key = mesh_cache.cache_key(
+                [a.path for a in images],
+                roles,
+                model=model_r,
+                seed=seed,
+                steps=steps,
+                guidance=ctx.settings.mesh_guidance,
+                resolution=resolution,
+                subject=subject,
+            )
+            hit = mesh_cache.lookup(key)
+            if hit:
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(hit, out_path)
+                rels[i] = rel
+                meta[_cand_key(seed, model)] = {
+                    "rel": rel,
+                    "seed": seed,
+                    "model": model_r,
+                    "steps": None,
+                    "resolution": None,
+                    "cached": True,
+                }
+                continue
+        keys[i] = key
+        pend.append(i)
+        variants.append(
+            MeshGenVariant(
+                seed=seed,
+                steps=steps,
+                resolution=resolution,
+                guidance=ctx.settings.mesh_guidance,
+                out_path=out_path,
+            )
+        )
+
+    if pend:
+        req = MeshGenRequest(
+            images=[a.path for a in images],
+            image_roles=roles[: len(images)],
+            subject=subject,
+            model=model_r,
+            seed=seeds[pend[0]],
+            guidance=ctx.settings.mesh_guidance,
+            out_path=variants[0].out_path,
+            job_id=ctx.job_id,
+        )
+
+        async def on_progress(msg: str, p: float) -> None:
+            await ctx.emit(
+                "meshgen",
+                iteration,
+                f"{msg} ({int(p * 100)}%)",
+                sub_progress=p,
+                sub_label=msg,
+            )
+
+        try:
+            results = await ctx.mesh.generate_batch(
+                req, variants, on_progress, should_abort=ctx.check_cancel
+            )
+        except MeshGenError as e:
+            await ctx.emit("meshgen", iteration, f"batch generation failed: {e}")
+            log.warning("mesh.batch_failed", iteration=iteration, error=str(e))
+            ctx.mesh_info["gen_error"] = str(e)
+            results = []
+        except Exception as e:
+            log.warning("mesh.batch_crashed", iteration=iteration, error=str(e))
+            ctx.mesh_info["gen_error"] = str(e)
+            results = []
+        for j, res in zip(pend, results, strict=False):
+            if res is None:
+                continue
+            rels[j] = storage.relpath(res.mesh_path)
+            meta[_cand_key(seeds[j], model)] = {
+                "rel": rels[j],
+                "seed": seeds[j],
+                "model": res.model,
+                "steps": res.steps,
+                "resolution": res.resolution,
+            }
+            if keys.get(j):
+                try:
+                    mesh_cache.store(keys[j], res.mesh_path)
+                except Exception as e:
+                    log.warning("mesh.cache_store_failed", error=str(e)[:160])
+    ctx.mesh_info["generation"] = {
+        "model": model_r,
+        "seeds": seeds,
+        "batch": True,
+        "images": [a.asset_id for a in images],
+    }
+    return rels
+
+
+async def _candidate_seed(  # noqa: C901
     ctx: AgentCtx, iteration: int, spec: PartSpec, plan: Any, t0: float
 ) -> int | None:
     """Best-of-N cheap generation: N low-step candidates with different seeds,
@@ -1109,30 +1307,73 @@ async def _candidate_seed(
     if get_settings().agent_job_timeout_s - (time.monotonic() - t0) < 1800:
         return None
     outline = _measured_plan_outline(ctx)
+    ref_mask, _ = _ref_side_mask(ctx, iteration, spec)
     base = _base_seed(ctx)
     adapters = await _candidate_adapters(ctx, n)
     scores: dict[tuple[int, str | None], float] = {}
-    for i in range(n):
-        if await ctx.check_cancel():
-            return None
-        seed_i = base + i * 1000
-        model_i = adapters[i % len(adapters)] if adapters else None
-        rel = await _generate_mesh(
+    model_list = [adapters[i % len(adapters)] if adapters else None for i in range(n)]
+    if len(set(model_list)) == 1:
+        # same adapter for all candidates — submit one batch job so the model
+        # loads once instead of per seed (~30-60s saved per extra candidate)
+        model0 = model_list[0]
+        cand_steps = min(
+            s.mesh_candidate_steps,
+            await _adapter_default_steps(ctx, model0) or s.mesh_candidate_steps,
+        )
+        seeds = [base + i * 1000 for i in range(n)]
+        rels = await _generate_mesh_batch(
             ctx,
             iteration,
             spec,
             plan,
-            seed=seed_i,
-            steps=s.mesh_candidate_steps,
+            seeds=seeds,
+            steps=cand_steps,
             resolution=256,  # screening only — full gen runs at settings res
-            tag=f"_cand{i}",
-            model=model_i,
+            model=model0,
+            tag_prefix="_cand",
         )
-        if rel is None:
-            continue
-        sc = _score_candidate_mesh(rel, spec, outline)
-        if sc is not None:
-            scores[(seed_i, model_i)] = sc
+        for i, rel in enumerate(rels):
+            if await ctx.check_cancel():
+                return None
+            if rel is None:
+                continue
+            sc = _score_candidate_mesh(rel, spec, outline, ref_mask)
+            if sc is not None:
+                scores[(seeds[i], model0)] = sc
+    else:
+        for i in range(n):
+            if await ctx.check_cancel():
+                return None
+            seed_i = base + i * 1000
+            model_i = model_list[i]
+            cand_steps = min(
+                s.mesh_candidate_steps,
+                await _adapter_default_steps(ctx, model_i) or s.mesh_candidate_steps,
+            )
+            rel = await _generate_mesh(
+                ctx,
+                iteration,
+                spec,
+                plan,
+                seed=seed_i,
+                steps=cand_steps,
+                resolution=256,  # screening only — full gen runs at settings res
+                tag=f"_cand{i}",
+                model=model_i,
+            )
+            if rel is None:
+                continue
+            gen = ctx.mesh_info.get("generation") or {}
+            ctx.mesh_info.setdefault("_cand_meta", {})[_cand_key(seed_i, model_i)] = {
+                "rel": rel,
+                "seed": seed_i,
+                "model": gen.get("model") or model_i,
+                "steps": gen.get("steps"),
+                "resolution": gen.get("resolution"),
+            }
+            sc = _score_candidate_mesh(rel, spec, outline, ref_mask)
+            if sc is not None:
+                scores[(seed_i, model_i)] = sc
     # weak screening round: one extra roll on a fresh seed before giving up —
     # a single bad candidate must not doom the whole generation. Only when the
     # best roll is within reach of viable: at ~0 all candidates are garbage and
@@ -1155,7 +1396,15 @@ async def _candidate_seed(
             model=model_i,
         )
         if rel is not None:
-            sc = _score_candidate_mesh(rel, spec, outline)
+            gen = ctx.mesh_info.get("generation") or {}
+            ctx.mesh_info.setdefault("_cand_meta", {})[_cand_key(seed_i, model_i)] = {
+                "rel": rel,
+                "seed": seed_i,
+                "model": gen.get("model") or model_i,
+                "steps": gen.get("steps"),
+                "resolution": gen.get("resolution"),
+            }
+            sc = _score_candidate_mesh(rel, spec, outline, ref_mask)
             if sc is not None:
                 scores[(seed_i, model_i)] = sc
     return await _select_candidate(ctx, iteration, scores, hf)
@@ -1196,6 +1445,9 @@ async def _select_candidate(
             best_gen = scores[best_key]
             seed_i, model_i = best_key
             ctx.mesh_info["_candidate_model"] = model_i
+            meta = (ctx.mesh_info.get("_cand_meta") or {}).get(_cand_key(seed_i, model_i))
+            if meta:
+                ctx.mesh_info["_candidate_winner"] = dict(meta)
             await ctx.emit(
                 "meshgen",
                 iteration,
@@ -1234,7 +1486,10 @@ async def _select_candidate(
 
 
 def _score_candidate_mesh(
-    rel: str, spec: PartSpec, outline: list[list[float]] | None
+    rel: str,
+    spec: PartSpec,
+    outline: list[list[float]] | None,
+    ref_mask: Any = None,
 ) -> float | None:
     """Load + orient + spec-scale a raw candidate GLB and score it."""
     try:
@@ -1262,14 +1517,14 @@ def _score_candidate_mesh(
                 m = orient(m, hit[0], hit[1], mirror_x=hit[2])
             m, _, _ = scale_to_spec(m, spec)
             m = rest_on_xy_center(m)
-            return score_raw_mesh(m, spec, outline)
+            return score_raw_mesh(m, spec, outline, ref_mask=ref_mask)
         # no plan view: the raw generator orientation is arbitrary — a part
         # lying on its side would fail the aspect check spuriously. Score all
         # 6 stable orientations and keep the best.
         best = 0.0
         for cand in candidate_meshes(m).values():
             c, _, _ = scale_to_spec(cand, spec)
-            sc = score_raw_mesh(c, spec, None)
+            sc = score_raw_mesh(c, spec, None, ref_mask=ref_mask)
             if sc is not None and sc > best:
                 best = sc
         return best
@@ -1515,6 +1770,45 @@ async def _generate_mesh(  # noqa: C901
     # image preprocessing: isolated-object square crops generate cleaner meshes
     images = _prepped_gen_images(ctx, it_dir, images)
 
+    # best-of-N winner reuse: when the winning candidate was already generated
+    # at >= the winner's params (same adapter, seed, images), its GLB IS the
+    # winner output — regenerating it costs a full model load + diffusion
+    # (~4min on MPS) for an identical result. Consumed once: a later regen
+    # with the same seed must actually generate, not replay the reject.
+    cand = ctx.mesh_info.get("_candidate_winner")
+    if cand and not cand.get("_used") and cand.get("rel"):
+        eff_steps = steps if steps is not None else ctx.settings.mesh_steps
+        eff_res = resolution if resolution is not None else ctx.settings.mesh_resolution
+        c_steps, c_res = cand.get("steps"), cand.get("resolution")
+        steps_ok = eff_steps is None or (c_steps is not None and eff_steps <= c_steps)
+        res_ok = eff_res is None or (c_res is not None and eff_res <= c_res)
+        if (
+            cand.get("seed") == seed
+            and cand.get("model") == model
+            and steps_ok
+            and res_ok
+            and storage.resolve(cand["rel"]).exists()
+        ):
+            src = storage.resolve(cand["rel"])
+            if src.resolve() != out_path.resolve():
+                it_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, out_path)
+            cand["_used"] = True
+            ctx.mesh_info["generation"] = {
+                "model": model,
+                "seed": seed,
+                "cached": True,
+                "candidate_reuse": True,
+                "mesh_rel": rel,
+                "images": [a.asset_id for a in images],
+            }
+            await ctx.emit(
+                "meshgen",
+                iteration,
+                "reusing winning candidate mesh (same seed+adapter+params)",
+            )
+            return rel
+
     # disk cache: identical inputs+params never hit the generator twice.
     # `subject` is planner-generated prose that varies run to run — keying
     # on the user prompt keeps restarts hitting the cache.
@@ -1629,8 +1923,14 @@ async def _orient_mesh(ctx: AgentCtx, iteration: int, mesh_rel: str) -> dict[str
     rank_fn = None
     if ctx.spec:
         s = ctx.runtime_settings
+        ref_mask, _ = _ref_side_mask(ctx, iteration, ctx.spec)
         table, rank_fn = _orientation_ranking(
-            mesh_rel, ctx.spec, s.agent_dim_tolerance_pct, s.agent_dim_tolerance_mm
+            mesh_rel,
+            ctx.spec,
+            s.agent_dim_tolerance_pct,
+            s.agent_dim_tolerance_mm,
+            canonical_up=_canonical_up_axis(ctx),
+            ref_mask=ref_mask,
         )
         if table and len(table) >= 2:
             # decisive deterministic ranking: no stated-dim violation and a
@@ -1654,14 +1954,15 @@ async def _orient_mesh(ctx: AgentCtx, iteration: int, mesh_rel: str) -> dict[str
     # edge (up=+y on a handle scale → z-extent 40x the stated thickness) —
     # that fails the dimension gate downstream. Rank all up/front pairs by
     # stated-dim violations (then candidate score) and override the pick only
-    # when a strictly better orientation exists. With <2 stated dims the
-    # violation term degenerates to 0 for every candidate and ranking falls
-    # back to the raw-mesh score alone — the same metric the pre-gate uses,
-    # so a catastrophic LLM pick still gets corrected before downstream work.
+    # on a DECISIVE advantage: fewer dim violations, or equal violations with
+    # a clear score margin (the same 0.15 bar as the skip-decision above).
+    # Raw-mesh scores differ by <0.02 between plausible orientations of
+    # near-cubic parts — flipping the LLM pick on that noise level put a knob
+    # on its side (observed: +x/+y over a correct +y/+x at Δscore 0.01).
     if table and rank_fn is not None:
         llm_bad = rank_fn(choice)
         det_bad, det = table[0]
-        if det_bad < llm_bad:
+        if _orientation_decisive(llm_bad, det_bad):
             if det_bad[0] < llm_bad[0]:
                 reason = (
                     f"violates {llm_bad[0]} stated dim(s) "
@@ -1681,26 +1982,63 @@ async def _orient_mesh(ctx: AgentCtx, iteration: int, mesh_rel: str) -> dict[str
     return ctx.mesh_orientation
 
 
+# adapter id -> canonical up axis of its raw output. Image-to-3D models that
+# emit the part in image space (Hunyuan3D family) produce Y-up geometry, so a
+# Y-up orientation wins ties in the deterministic ranking. Adapters with a
+# different (or unknown) convention simply get no prior.
+_ADAPTER_CANONICAL_UP = {"hunyuan": "y"}
+
+
+def _canonical_up_axis(ctx: AgentCtx) -> str | None:
+    model = str(
+        (ctx.mesh_info.get("generation") or {}).get("model")
+        or ctx.settings.mesh_model
+        or ctx.runtime_settings.mesh_model
+        or ""
+    ).lower()
+    for needle, axis in _ADAPTER_CANONICAL_UP.items():
+        if needle in model:
+            return axis
+    return None
+
+
+def _orientation_decisive(llm_bad: tuple[int, float], det_bad: tuple[int, float]) -> bool:
+    """Whether the deterministic top pick may override the LLM orientation.
+
+    Keys are (stated-dim violations, -score). Decisive = strictly fewer
+    violations, or equal violations with a score margin >= 0.15 — the same
+    bar the early-skip uses. Anything below that is scoring noise and the
+    LLM's semantic judgement (or the canonical-up prior) stands.
+    """
+    return det_bad[0] < llm_bad[0] or (det_bad[0] == llm_bad[0] and llm_bad[1] - det_bad[1] >= 0.15)
+
+
 def _orientation_ranking(
     mesh_rel: str,
     spec: PartSpec,
     tol_pct: float,
     tol_mm: float,
+    *,
+    canonical_up: str | None = None,
+    ref_mask: Any = None,
 ) -> tuple[
     list[tuple[tuple[int, float], dict[str, str]]] | None,
     Any,
 ]:
     """Score every (up, front) orientation: (#stated-dim violations, -score).
 
-    Returns (table, key_fn): `table` is the (up, front) candidates sorted best
-    first; `key_fn(choice)` scores an arbitrary LLM pick with the same ruler
-    so the caller can override a physically impossible choice (e.g. a flat
-    scale standing on its edge). Both are None when the mesh cannot be
+    The score folds in a support term (how stably the part rests — a knob on
+    its skirt scores higher than the same knob lying on its side) and a small
+    canonical-up prior (adapters like Hunyuan emit Y-up parts, so a Y-up pick
+    wins ties). Returns (table, key_fn): `table` is the (up, front) candidates
+    sorted best first; `key_fn(choice)` scores an arbitrary LLM pick with the
+    same ruler so the caller can override a physically impossible choice (e.g.
+    a flat scale standing on its edge). Both are None when the mesh cannot be
     loaded."""
     try:
         import trimesh
 
-        from cadx.agent.mesh_score import score_raw_mesh
+        from cadx.agent.mesh_score import score_raw_mesh, support_score
         from cadx.cad.mesh_ops import decimate, orient, rest_on_xy_center, scale_to_spec
 
         m = trimesh.load(storage.resolve(mesh_rel), force="mesh")
@@ -1716,7 +2054,11 @@ def _orientation_ranking(
             n = len(
                 compare_dims(spec, {"bbox_size": [float(v) for v in c.extents]}, tol_pct, tol_mm)
             )
-            return n, -(score_raw_mesh(c, spec, None) or 0.0)
+            score = score_raw_mesh(c, spec, None, ref_mask=ref_mask) or 0.0
+            score += 0.15 * support_score(c)
+            if canonical_up and up.lstrip("+-") == canonical_up:
+                score += 0.03
+            return n, -score
 
         def _key_choice(choice: dict[str, Any]) -> tuple[int, float]:
             return _key(
@@ -1765,6 +2107,44 @@ def _measured_plan_outline(ctx: AgentCtx) -> list[list[float]] | None:
     return best[1] if best else None
 
 
+def _ref_side_mask(
+    ctx: AgentCtx, iteration: int, spec: PartSpec | None
+) -> tuple[Any, str | None]:
+    """Subject mask of the best *side* reference image (+ its stored PNG rel).
+
+    Only side-ish views qualify — a plan/top silhouette lives in a different
+    plane (footprint IoU covers that). The mask PNG is stored once so the
+    executor can reuse it for silhouette IoU on the processed mesh instead of
+    re-running rembg per process_mesh call."""
+    cached = ctx.mesh_info.get("_ref_mask_done")
+    if cached:
+        return ctx.mesh_info.get("_ref_mask"), ctx.mesh_info.get("_ref_mask_rel")
+    ctx.mesh_info["_ref_mask_done"] = True
+    mask, rel = None, None
+    try:
+        from cadx.cad.silhouette import reference_mask, save_mask
+
+        images, roles = _mesh_source_images(ctx, max(1, iteration), spec)
+        for a, role in zip(images, roles, strict=False):
+            if role in ("top", "bottom", "scribble"):
+                continue
+            p = getattr(a, "path", None)
+            if not p or not Path(p).exists():
+                continue
+            mask = reference_mask(p)
+            if mask is not None:
+                break
+        if mask is not None:
+            out = storage.version_dir(ctx.project_id, ctx.version_id) / "_ref_mask.png"
+            save_mask(mask, out)
+            rel = storage.relpath(out)
+            ctx.mesh_info["_ref_mask_rel"] = rel
+        ctx.mesh_info["_ref_mask"] = mask
+    except Exception as e:
+        log.debug("orient.ref_mask_failed", error=str(e)[:160])
+    return mask, rel
+
+
 def _outline_iou_mm(mesh_outline: list[list[float]], image_outline: list[list[float]]) -> float:
     """IoU of a processed-mesh footprint and the measured image outline — both
     in centred Frame mm, so directly comparable."""
@@ -1791,6 +2171,7 @@ async def _process_mesh(
     make_solid: bool = False,
     solid_max_faces: int | None = None,
     subdir: str = "",
+    ref_mask_rel: str | None = None,
 ) -> dict[str, Any]:
     payload = _mesh_payload(
         ctx,
@@ -1801,6 +2182,7 @@ async def _process_mesh(
         spec=spec,
         make_solid=make_solid,
         subdir=subdir,
+        ref_mask_rel=ref_mask_rel,
     )
     if solid_max_faces is not None:
         payload["solid_max_faces"] = solid_max_faces
@@ -1905,6 +2287,7 @@ async def _run_cad(  # noqa: C901
                         iteration=it,
                         attempt=attempt,
                         verify_fn=_session_verify_fn(ctx, it, art_attempt),
+                        render_fn=_session_render_fn(ctx, it, art_attempt),
                     )
                 except Exception as e:
                     log.warning("agent.improve_failed", iteration=it, error=str(e))
@@ -2001,6 +2384,8 @@ async def _run_cad(  # noqa: C901
                         iteration=it,
                         repair_n=repair_n + 1,
                         verify_fn=_session_verify_fn(ctx, it, art_attempt),
+                        geometry=exec_result.get("geometry_at_failure"),
+                        render_fn=_session_render_fn(ctx, it, art_attempt),
                     )
                 except Exception as e:
                     log.warning("agent.repair_failed", iteration=it, error=str(e))
@@ -2023,6 +2408,8 @@ async def _run_cad(  # noqa: C901
                             repair_n=repair_n + 1,
                             verify_fn=_session_verify_fn(ctx, it, art_attempt),
                             prefer_full_code=True,
+                            geometry=exec_result.get("geometry_at_failure"),
+                            render_fn=_session_render_fn(ctx, it, art_attempt),
                         )
                         new_code, perrs = _resolve_patch(code, presp, "never")
                     except Exception as e:
@@ -2613,6 +3000,30 @@ async def _run_mesh(  # noqa: C901
             ctx.mesh_info["post"] = post.model_dump()
             ctx.mesh_info["orientation"] = {"up": post.up, "front": post.front}
 
+            # deterministic fit to stated dims BEFORE the refine session —
+            # generative meshes often get proportions wrong while capturing
+            # the shape; fitting here means the session doesn't spend its
+            # whole budget (and ctx tokens) on manual per-axis scaling
+            if stated_dim_count(spec) >= 2 and exec_result.get("ok"):
+                dim_issues0 = compare_dims(spec, exec_result.get("analysis") or {}, tol_pct, tol_mm)
+                dim_issues0 += list((exec_result.get("mesh") or {}).get("dim_issues") or [])
+                if dim_issues0:
+                    fitted = await _fit_mesh_to_stated(
+                        ctx,
+                        it,
+                        mesh_rel,
+                        spec,
+                        post,
+                        exec_result,
+                        tol_pct,
+                        tol_mm,
+                        art_attempt,
+                        make_solid=False,
+                    )
+                    if fitted is not None:
+                        exec_result, post = fitted
+                        ctx.mesh_info["post"] = post.model_dump()
+
             # MESH_REFINE shape session — transform before judging
             if exec_result.get("ok"):
                 rr = await _refine(it, mesh_rel, post, exec_result)
@@ -3023,6 +3434,8 @@ async def _fit_mesh_to_stated(
     tol_pct: float,
     tol_mm: float,
     art_attempt: Any,
+    *,
+    make_solid: bool = True,
 ) -> tuple[dict[str, Any], MeshPostParams] | None:
     """Iteratively fit a processed mesh to stated dims via appended ops.
 
@@ -3042,7 +3455,13 @@ async def _fit_mesh_to_stated(
         post_fit = merge_post_params(cur_post, {"ops": total_ops})
         await ctx.emit("meshprocess", it, f"fitting base mesh to stated dims ({fit_note})")
         fit_result = await _process_mesh(
-            ctx, it, mesh_rel, spec, post_fit, make_solid=True, subdir=f"a{next(art_attempt)}"
+            ctx,
+            it,
+            mesh_rel,
+            spec,
+            post_fit,
+            make_solid=make_solid,
+            subdir=f"a{next(art_attempt)}",
         )
         if not fit_result.get("ok"):
             return None

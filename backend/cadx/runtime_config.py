@@ -38,6 +38,10 @@ class RuntimeSettings(BaseModel):
     agent_max_tokens_per_job: int = Field(default=400_000, ge=1)
     agent_max_wall_s: float = Field(default=900, gt=0)
     agent_default_gen_mode: Literal["auto", "cad", "mesh", "hybrid", "topopt"] = "auto"
+    # plan step depth: "full" = catalog-aware tool session (default),
+    # "lite" = one short non-tool call (steps+params only), "auto" = lite for
+    # text-only cad jobs, full otherwise
+    agent_plan_mode: Literal["full", "lite", "auto"] = "full"
     agent_param_autofix: bool = True
     agent_patch_mode: Literal["auto", "always", "never"] = "auto"
     agent_patch_retries: int = Field(default=2, ge=0, le=20)
@@ -46,6 +50,10 @@ class RuntimeSettings(BaseModel):
     agent_tool_max_calls: int = Field(default=10, ge=1, le=100)
     agent_tool_max_calls_info: int = Field(default=6, ge=1, le=100)
     agent_tool_max_turns: int = Field(default=24, ge=1, le=200)
+    # edit/repair sessions pay the FULL pipeline per verify — give them fewer
+    # turns than info/critique sessions (observed: a 24-turn repair loop ate
+    # 386k prompt tokens and the whole job budget)
+    agent_tool_max_turns_edit: int = Field(default=12, ge=1, le=200)
     agent_tool_churn_limit: int = Field(default=6, ge=2, le=50)
     agent_tool_verify: bool = True
     agent_tool_verify_max: int = Field(default=2, ge=0, le=20)
@@ -125,6 +133,10 @@ class RuntimeSettings(BaseModel):
     mesh_cache_enabled: bool = True
     exec_timeout_s: int = Field(default=180, ge=1, le=86_400)
     exec_mem_limit_mb: int = Field(default=4096, ge=256, le=1_048_576)
+    # warm sandbox: one pre-imported zygote forks per job instead of paying
+    # the ~4s build123d cold-import on every execution (incl. every failed
+    # repair). Falls back to the cold subprocess path on any zygote failure.
+    exec_warm_runner: bool = True
 
     @field_validator("llm_extra_body")
     @classmethod
@@ -161,6 +173,7 @@ class RuntimeSettings(BaseModel):
 _EXECUTOR_FIELDS = {
     "exec_timeout_s",
     "exec_mem_limit_mb",
+    "exec_warm_runner",
     "fem_voxel_mm",
     "fem_max_elements",
     "fem_spsolve_dofs",

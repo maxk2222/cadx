@@ -6,6 +6,7 @@ All inputs are file paths + plain settings dicts; output is an ExecResult.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import json
 import shutil
@@ -33,6 +34,7 @@ from cadx.cad.exporters import (
 from cadx.cad.mesh_ops import (
     MESH_OPS_VERSION,
     MeshPostParams,
+    _ensure_watertight,
     apply_ops,
     baseline_mesh,
     candidate_meshes,
@@ -80,6 +82,8 @@ class ExecResult:
         self.bom: list[dict[str, Any]] = []
         self.timings: dict[str, float] = {}
         self.warnings: list[str] = []
+        # geometry inventory of the failed sandbox namespace (failed runs only)
+        self.geometry_at_failure: list[dict[str, Any]] = []
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -103,6 +107,7 @@ class ExecResult:
             "bom": self.bom,
             "timings": self.timings,
             "warnings": self.warnings,
+            "geometry_at_failure": self.geometry_at_failure,
         }
 
     @staticmethod
@@ -130,6 +135,7 @@ class ExecResult:
         r.fem_export = d.get("fem_export") or {}
         r.topopt = d.get("topopt") or {}
         r.warnings = list(d.get("warnings") or [])
+        r.geometry_at_failure = list(d.get("geometry_at_failure") or [])
         return r
 
 
@@ -171,8 +177,14 @@ def run_pipeline(
     mesh_solid: Path | None = None,
     mesh_bbox: list[float] | None = None,
     anchors: dict[str, Any] | None = None,
+    light: bool = False,
 ) -> ExecResult:
-    """Full executor pipeline for one candidate. out_dir receives all artifacts."""
+    """Full executor pipeline for one candidate. out_dir receives all artifacts.
+
+    `light=True` skips renders/thumbnail/contact-sheet and DfM — used for
+    tool-session verifies where only geometry numbers matter (~2 s cheaper
+    per sandbox verify).
+    """
     res = ExecResult()
     settings = settings or ProjectSettings()
     rt = runtime or RuntimeSettings()
@@ -190,12 +202,14 @@ def run_pipeline(
         anchors=anchors,
         timeout_s=rt.exec_timeout_s,
         mem_mb=rt.exec_mem_limit_mb,
+        warm=rt.exec_warm_runner,
     )
     res.stdout = ro.stdout
     res.params_used = ro.params_used
     res.thread_count = ro.thread_count
     res.bom = ro.bom
     res.warnings = list(ro.warnings)
+    res.geometry_at_failure = list(ro.geometry_at_failure)
     res.timings["execute_s"] = round(ro.duration_s, 2)
     if not ro.ok or ro.brep_path is None:
         res.error = ro.error or "execution failed"
@@ -252,47 +266,51 @@ def run_pipeline(
         except Exception as e:
             log.warning("features.footprint_iou_failed", error=str(e)[:200])
 
-    # 5. renders + contact sheet + thumbnail
-    t = time.monotonic()
-    render_paths = render_views(stl_path, mesh_dir, res.analysis.bbox_size)
-    res.renders = {v: p.name for v, p in render_paths.items()}
-    thumb = render_thumbnail(stl_path, out_dir / "thumbnail.png")
-    res.thumbnail = thumb.name if thumb else None
-    stats = [
-        f"bbox: {res.analysis.bbox_size[0]:.1f} x {res.analysis.bbox_size[1]:.1f} x {res.analysis.bbox_size[2]:.1f} mm",
-        f"volume: {res.analysis.volume:.0f} mm^3",
-        f"solids: {res.analysis.solid_count}",
-        f"valid: {res.analysis.is_valid}",
-        f"watertight: {res.analysis.watertight_after_repair}",
-    ]
-    sheet = make_contact_sheet(render_paths, out_dir / "contact_sheet.png", stats)
-    res.contact_sheet = sheet.name if sheet else None
-    res.timings["render_s"] = round(time.monotonic() - t, 2)
+    if not light:
+        # 5. renders + contact sheet + thumbnail
+        t = time.monotonic()
+        render_paths = render_views(stl_path, mesh_dir, res.analysis.bbox_size)
+        res.renders = {v: p.name for v, p in render_paths.items()}
+        thumb = render_thumbnail(stl_path, out_dir / "thumbnail.png")
+        res.thumbnail = thumb.name if thumb else None
+        stats = [
+            f"bbox: {res.analysis.bbox_size[0]:.1f} x {res.analysis.bbox_size[1]:.1f} x {res.analysis.bbox_size[2]:.1f} mm",
+            f"volume: {res.analysis.volume:.0f} mm^3",
+            f"solids: {res.analysis.solid_count}",
+            f"valid: {res.analysis.is_valid}",
+            f"watertight: {res.analysis.watertight_after_repair}",
+        ]
+        sheet = make_contact_sheet(render_paths, out_dir / "contact_sheet.png", stats)
+        res.contact_sheet = sheet.name if sheet else None
+        res.timings["render_s"] = round(time.monotonic() - t, 2)
 
-    # 6. DfM
-    t = time.monotonic()
-    mesh = load_mesh(stl_path)
-    warnings = common_checks(res.analysis, mesh, settings.build_volume)
-    if settings.process in ("fdm", "sla"):
-        warnings += fdm_checks(
-            shape,
-            mesh,
-            res.analysis,
-            min_wall_mm=settings.min_wall_mm,
-            nozzle_mm=settings.nozzle_mm,
-            thread_count=res.thread_count,
-            thread_compensation_mm=settings.thread_compensation_mm,
-        )
-    if settings.process in ("cnc3", "cnc2d"):
-        warnings += cnc_checks(
-            shape,
-            mesh,
-            res.analysis,
-            tool_radius_mm=settings.tool_radius_mm,
-            thread_count=res.thread_count,
-        )
-    res.dfm = DfmReport(process=settings.process, warnings=warnings).sort()
-    res.timings["dfm_s"] = round(time.monotonic() - t, 2)
+        # 6. DfM
+        t = time.monotonic()
+        mesh = load_mesh(stl_path)
+        warnings = common_checks(res.analysis, mesh, settings.build_volume)
+        if settings.process in ("fdm", "sla"):
+            warnings += fdm_checks(
+                shape,
+                mesh,
+                res.analysis,
+                min_wall_mm=settings.min_wall_mm,
+                nozzle_mm=settings.nozzle_mm,
+                thread_count=res.thread_count,
+                thread_compensation_mm=settings.thread_compensation_mm,
+            )
+        if settings.process in ("cnc3", "cnc2d"):
+            warnings += cnc_checks(
+                shape,
+                mesh,
+                res.analysis,
+                tool_radius_mm=settings.tool_radius_mm,
+                thread_count=res.thread_count,
+            )
+        res.dfm = DfmReport(process=settings.process, warnings=warnings).sort()
+        res.timings["dfm_s"] = round(time.monotonic() - t, 2)
+    else:
+        res.timings["render_s"] = 0.0
+        res.timings["dfm_s"] = 0.0
 
     # 7. exports
     t = time.monotonic()
@@ -354,6 +372,7 @@ def run_mesh_pipeline(  # noqa: C901
     skip_baseline: bool = False,
     anchors: dict[str, Any] | None = None,
     solid_max_faces: int | None = None,
+    ref_mask_rel: str | None = None,
 ) -> ExecResult:
     """Mesh-mode pipeline: clean -> orient -> scale -> analyse -> render -> DfM -> export.
 
@@ -410,6 +429,32 @@ def run_mesh_pipeline(  # noqa: C901
         res.timings["mesh_ops_s"] = round(time.monotonic() - t, 2)
         mesh = rest_on_xy_center(mesh)
 
+    # ops re-inflate the mesh (remesh caps, voxel rebuilds — observed 318k
+    # faces after a flatten on a 60k-capped baseline) and can break
+    # watertightness. Repair + re-cap + a light top-up fix so exports stay
+    # slicer-usable; failures are non-fatal — downstream analysis reports it.
+    cap = rt.mesh_decimate_faces
+    if cap and len(mesh.faces) > cap:
+        mesh = decimate(mesh, cap)
+    if not mesh.is_watertight:
+        with contextlib.suppress(Exception):
+            mesh = _ensure_watertight(mesh)
+    if cap and len(mesh.faces) > cap:
+        # _ensure_watertight's voxel fallback can itself out-face the cap
+        mesh = decimate(mesh, cap)
+        if not mesh.is_watertight:
+            # decimation can nick watertightness — cheap top-up only (no
+            # voxel rebuild, which would blow the cap a second time)
+            try:
+                import trimesh
+
+                mesh.merge_vertices()
+                mesh.fix_normals()
+                trimesh.repair.fill_holes(mesh)
+            except Exception:
+                pass
+    mesh = rest_on_xy_center(mesh)
+
     res.mesh["post"] = post.model_dump()
     res.mesh["triangles"] = len(mesh.faces)
 
@@ -436,6 +481,23 @@ def run_mesh_pipeline(  # noqa: C901
         res.mesh["features"] = detect_mesh_features(mesh).model_dump()
     except Exception as e:
         log.warning("mesh_features.failed", error=str(e)[:200])
+
+    # 7c. silhouette IoU vs the reference image — the deterministic shape
+    # signal for critique calibration when no plan-view measurement exists.
+    # The worker extracts the subject mask once (ref_mask_rel is a PNG in
+    # DATA_DIR); the comparison runs on this authoritative processed mesh.
+    if ref_mask_rel:
+        try:
+            from cadx import storage as _storage
+            from cadx.cad.silhouette import load_mask, silhouette_iou
+
+            ref_mask = load_mask(_storage.resolve(ref_mask_rel))
+            if ref_mask is not None:
+                sil, view = silhouette_iou(mesh, ref_mask)
+                res.mesh["silhouette_iou"] = sil
+                res.mesh["silhouette_view"] = view
+        except Exception as e:
+            log.warning("mesh.silhouette_iou_failed", error=str(e)[:200])
 
     # 8. optional solid conversion (hybrid bridge + tessellated STEP)
     if make_solid:

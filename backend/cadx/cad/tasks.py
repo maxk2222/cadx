@@ -89,6 +89,7 @@ def run_execute_payload(payload: dict[str, Any]) -> dict[str, Any]:
         mesh_solid=Path(payload["mesh_solid"]) if payload.get("mesh_solid") else None,
         mesh_bbox=payload.get("mesh_bbox"),
         anchors=payload.get("anchors"),
+        light=bool(payload.get("light")),
     )
 
     d = result.to_dict()
@@ -215,6 +216,7 @@ def run_mesh_payload(payload: dict[str, Any]) -> dict[str, Any]:
         skip_baseline=bool(payload.get("ops_only")),
         anchors=payload.get("anchors"),
         solid_max_faces=payload.get("solid_max_faces"),
+        ref_mask_rel=payload.get("ref_mask_rel"),
     )
 
     d = result.to_dict()

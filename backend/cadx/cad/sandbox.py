@@ -11,9 +11,11 @@ import contextlib
 import json
 import os
 import resource
+import select
 import signal
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,6 +24,7 @@ from cadx.cad.allowlist import apply_params_override, check_code, validate_overr
 from cadx.runtime_config import RuntimeSettings
 
 RUNNER = Path(__file__).parent / "runner_entry.py"
+ZYGOTE = Path(__file__).parent / "zygote.py"
 
 
 @dataclass
@@ -44,6 +47,8 @@ class RunnerOutput:
     duration_s: float = 0.0
     static_errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    # geometry inventory of the failed namespace — where solids actually are
+    geometry_at_failure: list[dict[str, object]] = field(default_factory=list)
 
 
 def _limits(mem_mb: int, cpu_s: int) -> None:
@@ -64,6 +69,126 @@ def _limits(mem_mb: int, cpu_s: int) -> None:
     os.setsid()
 
 
+class _Zygote:
+    """One warm fork-server (`python -I zygote.py`) per executor process.
+
+    The zygote imports build123d once at spawn; each request forks a child
+    that applies the same rlimits/setsid as the cold path, then runs
+    runner_entry.main(workdir). Requests are serialized — one child at a
+    time keeps the stdin/stdout protocol trivially in sync.
+    """
+
+    def __init__(self) -> None:
+        self.proc: subprocess.Popen | None = None
+        self.buf = b""
+
+    def spawn(self) -> None:
+        self.kill()
+        env = {
+            "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+            "PYTHONHASHSEED": "0",
+            "PYTHONNOUSERSITE": "1",
+            "OMP_NUM_THREADS": "2",
+            "LANG": "C.UTF-8",
+        }
+        self.proc = subprocess.Popen(
+            [sys.executable, "-I", str(ZYGOTE)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env=env,
+        )
+        line = self._read_line(30.0)
+        if not line or not line.startswith("{"):
+            raise RuntimeError("zygote failed to signal ready")
+        if json.loads(line).get("ready") is not True:
+            raise RuntimeError(f"zygote warmup failed: {line[:200]}")
+
+    def kill(self) -> None:
+        if self.proc is not None:
+            with contextlib.suppress(Exception):
+                self.proc.kill()
+            self.proc = None
+        self.buf = b""
+
+    def _read_line(self, timeout_s: float) -> str:
+        """Read one \n-terminated line from zygote stdout; "" on timeout/EOF."""
+        assert self.proc is not None and self.proc.stdout is not None
+        fd = self.proc.stdout.fileno()
+        deadline = time.monotonic() + timeout_s
+        while True:
+            if b"\n" in self.buf:
+                line, self.buf = self.buf.split(b"\n", 1)
+                return line.decode("utf-8", errors="replace")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return ""
+            r, _, _ = select.select([fd], [], [], min(remaining, 0.5))
+            if not r:
+                if self.proc.poll() is not None:
+                    return ""
+                continue
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                return ""
+            self.buf += chunk
+
+    def run(self, workdir: Path, timeout_s: int, mem_mb: int) -> RunnerOutput:
+        """Serve one run. Raises RuntimeError when the zygote is unusable so
+        the caller falls back to the cold subprocess path."""
+        if self.proc is None or self.proc.poll() is not None:
+            self.spawn()
+        assert self.proc is not None and self.proc.stdin is not None
+        started = time.monotonic()
+        self.proc.stdin.write(
+            (
+                json.dumps({"workdir": str(workdir), "mem_mb": mem_mb, "cpu_s": timeout_s}) + "\n"
+            ).encode()
+        )
+        self.proc.stdin.flush()
+        first = self._read_line(15.0)
+        if not first:
+            self.kill()
+            raise RuntimeError("zygote did not answer")
+        msg = json.loads(first)
+        if msg.get("error"):
+            raise RuntimeError(f"zygote request rejected: {msg['error']}")
+        child_pid = int(msg["pid"])
+        budget = timeout_s + 15
+        second = self._read_line(budget)
+        if not second:
+            # child (or zygote) wedged — kill the run; killpg works because
+            # the child setsid()s first thing, kill(pid) is the race fallback
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(child_pid, signal.SIGKILL)
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.kill(child_pid, signal.SIGKILL)
+            self._read_line(5.0)  # resync: drain the done line the zygote will send
+            return RunnerOutput(
+                ok=False,
+                error=f"execution timed out after {budget}s (killed)",
+                duration_s=time.monotonic() - started,
+            )
+        done = json.loads(second)
+        stderr = str(done.get("stderr") or "")
+        duration = time.monotonic() - started
+        rc = int(done.get("rc", 0))
+        if not (workdir / "result.json").exists():
+            detail = stderr[-2000:]
+            if rc == -signal.SIGXCPU:
+                msg = f"CPU limit exceeded ({timeout_s}s)"
+            elif rc == -signal.SIGKILL:
+                msg = "process killed (memory or runtime limit)"
+            else:
+                msg = f"runner crashed without result (exit {rc})"
+            return RunnerOutput(ok=False, error=f"{msg}.\n{detail}".strip(), duration_s=duration)
+        return _result_from_workdir(workdir, duration, stderr)
+
+
+_ZYGOTE = _Zygote()
+_ZYGOTE_LOCK = threading.Lock()
+
+
 def run_user_code(
     code: str,
     workdir: Path,
@@ -75,10 +200,12 @@ def run_user_code(
     anchors: dict[str, object] | None = None,
     timeout_s: int | None = None,
     mem_mb: int | None = None,
+    warm: bool | None = None,
 ) -> RunnerOutput:
     settings = RuntimeSettings()
     timeout_s = timeout_s or settings.exec_timeout_s
     mem_mb = mem_mb or settings.exec_mem_limit_mb
+    warm = settings.exec_warm_runner if warm is None else warm
     workdir.mkdir(parents=True, exist_ok=True)
 
     # 1. static checks (no execution on failure)
@@ -116,7 +243,15 @@ def run_user_code(
         encoding="utf-8",
     )
 
-    # 3. spawn sandboxed subprocess
+    # 3. spawn sandboxed runner — warm fork-server when enabled, with the
+    # cold subprocess as automatic fallback on any zygote failure
+    if warm:
+        try:
+            with _ZYGOTE_LOCK:
+                return _ZYGOTE.run(workdir, timeout_s, mem_mb)
+        except Exception:
+            _ZYGOTE.kill()  # a half-broken zygote must not poison later runs
+
     env = {
         "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
         "HOME": str(workdir),
@@ -160,6 +295,21 @@ def run_user_code(
             msg = f"runner crashed without result (exit {rc})"
         return RunnerOutput(ok=False, error=f"{msg}.\n{detail}".strip(), duration_s=duration)
 
+    return _result_from_workdir(workdir, duration)
+
+
+def _result_from_workdir(workdir: Path, duration: float, stderr: str = "") -> RunnerOutput:
+    """Parse <workdir>/result.json into a RunnerOutput — shared by the cold
+    subprocess path and the warm zygote path (the zygote child writes the
+    identical file)."""
+    result_path = workdir / "result.json"
+    if not result_path.exists():
+        detail = stderr[-2000:]
+        return RunnerOutput(
+            ok=False,
+            error=f"runner crashed without result.\n{detail}".strip(),
+            duration_s=duration,
+        )
     data = json.loads(result_path.read_text(encoding="utf-8"))
     out = RunnerOutput(
         ok=bool(data.get("ok")),
@@ -174,6 +324,7 @@ def run_user_code(
             (workdir / "flat_profile.brep") if (workdir / "flat_profile.brep").exists() else None
         ),
         warnings=list(data.get("warnings") or []),
+        geometry_at_failure=list(data.get("geometry_at_failure") or []),
         duration_s=duration,
     )
     if not out.ok and not out.error:

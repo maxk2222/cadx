@@ -50,6 +50,10 @@ class SessionResult:
     submitted: dict[str, Any] | None = None
     code: str | None = None
     exhausted: bool = False
+    # why the session exhausted: budget | turns | error_streak | churn |
+    # repeat_loop | verify_loop — callers use "verify_loop" to switch to the
+    # full-code one-shot path (a session stuck on one error won't converge)
+    end_reason: str = ""
     cancelled: bool = False
     tool_calls_made: int = 0
     tool_log: list[dict[str, Any]] = field(default_factory=list)
@@ -96,12 +100,61 @@ def _trim_tool_results(msgs: list[dict[str, Any]], keep_last: int = 6) -> None:
     for i in idx[:-keep_last]:
         m = msgs[i]
         body = m.get("content")
-        if (
-            isinstance(body, str)
-            and len(body) > 200
-            and ('"lines"' in body or "read_lines" in body or "search_code" in body)
-        ):
+        if not isinstance(body, str) or len(body) <= 200:
+            continue
+        if '"lines"' in body or "read_lines" in body or "search_code" in body:
             m["content"] = body[:120] + " …[elided — call read_lines again if needed]"
+        elif len(body) > 2000 and '"category"' not in body:
+            # large one-shot JSON payloads (mesh_measure, feature dumps) are
+            # stale once a newer measurement exists — a stub keeps the shape
+            m["content"] = body[:120] + " …[elided — superseded tool result]"
+    # preview/section/overlay images are the heaviest history items — the
+    # latest render makes older ones worthless, keep only the last 2
+    img_idx = [
+        i
+        for i, m in enumerate(msgs)
+        if m.get("role") == "user"
+        and isinstance(m.get("content"), list)
+        and any(
+            isinstance(p, dict) and p.get("type") == "image_url" for p in m["content"]
+        )
+    ]
+    for i in img_idx[:-2]:
+        msgs[i] = {
+            **msgs[i],
+            "content": [{"type": "text", "text": "[earlier preview image removed — superseded]"}],
+        }
+    # failed-verify results carry the full excerpt+traceback and repeat the
+    # same blob turn after turn — keep the last 2 intact, compact older ones
+    v_idx = [
+        i
+        for i, m in enumerate(msgs)
+        if m.get("role") in ("tool", "user")
+        and isinstance(m.get("content"), str)
+        and '"category"' in m["content"]
+        and '"excerpt"' in m["content"]
+    ]
+    for i in v_idx[:-2]:
+        try:
+            body = msgs[i]["content"]
+            raw = body.split(":\n", 1)[-1] if body.startswith("TOOL RESULT") else body
+            d = json.loads(raw)
+            stub = json.dumps(
+                {
+                    "ok": False,
+                    "category": d.get("category"),
+                    "line": d.get("line"),
+                    "error": str(d.get("error", ""))[:150],
+                    "elided": True,
+                }
+            )
+            msgs[i]["content"] = (
+                "TOOL RESULT for verify (elided):\n" + stub
+                if body.startswith("TOOL RESULT")
+                else stub
+            )
+        except Exception:
+            continue
 
 
 def _assistant_echo(resp: LLMResponse, native: bool) -> dict[str, Any]:
@@ -144,7 +197,7 @@ def _result_messages(tc: ToolCall, result: dict[str, Any], native: bool) -> list
     return out
 
 
-async def run_session(
+async def run_session(  # noqa: C901
     ctx: AgentCtx,
     role: str,
     messages: list[dict[str, Any]],
@@ -173,6 +226,19 @@ async def run_session(
     edits_since_check = 0
     nudged = False
     churn_exceeded = False
+    verify_loop = False
+    # per-error-class tally of FAILED verify results — survives interleaved
+    # successful edits (the observed non-converging repair did
+    # find_replace/verify ping-pong 24 turns on one fillet error)
+    verify_fails: dict[str, int] = {}
+    verify_nudged = False
+    # edit/codegen sessions pay the full sandbox pipeline per verify — they
+    # get a tighter turn cap than read-only info/inspect sessions
+    max_turns = (
+        ctx.runtime_settings.agent_tool_max_turns_edit
+        if session.kind in ("edit", "codegen")
+        else ctx.runtime_settings.agent_tool_max_turns
+    )
     native = True  # per-response: all calls in one response share the mode
 
     while True:
@@ -250,6 +316,37 @@ async def run_session(
                 result = await session.execute(tc.name, tc.arguments)
             msgs.extend(_result_messages(tc, result, native))
             error_streak = error_streak + 1 if not result.get("ok", True) else 0
+            # same failure signature again? A verify loop patching around
+            # ONE error won't converge — nudge once, kill the session at 3
+            if (
+                tc.name in ("verify", "render_model")
+                and result.get("ok") is False
+                and result.get("category")
+            ):
+                vsig = f"{result.get('category')}:{result.get('line')}"
+                verify_fails[vsig] = verify_fails.get(vsig, 0) + 1
+                if verify_fails[vsig] == 2 and not verify_nudged:
+                    verify_nudged = True
+                    msgs.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"verify failed again with the SAME error "
+                                f"({result.get('category')} at line "
+                                f"{result.get('line')}) — tuning that line won't "
+                                "fix it, the cause is EARLIER. Check "
+                                "geometry_at_failure for where the bodies "
+                                "actually are (a part at the origin whose code "
+                                "says otherwise had its placement discarded by "
+                                "a bare `Pos * X(...)` — use "
+                                "`with Locations(Pos(...)):` or `add(...)`). "
+                                "Fix the construction, not the selector; if the "
+                                "shape is structurally wrong, call done."
+                            ),
+                        }
+                    )
+                elif verify_fails[vsig] >= 3:
+                    verify_loop = True
             if session.is_done and tc.name in ("done", "submit_code", "regenerate"):
                 return SessionResult(
                     response=resp,
@@ -297,20 +394,23 @@ async def run_session(
                 churn_exceeded = True
         if (
             calls >= max_calls
-            or turns >= ctx.runtime_settings.agent_tool_max_turns
+            or turns >= max_turns
             or error_streak >= 4
             or repeat_streak >= 2
             or churn_exceeded
+            or verify_loop
         ):
             reason = (
                 "budget"
                 if calls >= max_calls
                 else "turns"
-                if turns >= ctx.runtime_settings.agent_tool_max_turns
+                if turns >= max_turns
                 else "error_streak"
                 if error_streak >= 4
                 else "churn"
                 if churn_exceeded
+                else "verify_loop"
+                if verify_loop
                 else "repeat_loop"
             )
             log.info("tool_session.end", step=step, calls=calls, reason=reason)
@@ -325,6 +425,7 @@ async def run_session(
                         submitted=session.submitted,
                         code=session.buffer or None,
                         exhausted=True,
+                        end_reason=reason,
                         tool_calls_made=calls,
                         tool_log=session.tool_log,
                         messages_out=msgs,
@@ -334,6 +435,7 @@ async def run_session(
                 submitted=session.submitted,
                 code=session.buffer or None,
                 exhausted=True,
+                end_reason=reason,
                 tool_calls_made=calls,
                 tool_log=session.tool_log,
                 messages_out=msgs,

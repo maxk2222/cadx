@@ -502,8 +502,10 @@ class SettingsOut(BaseModel):
     agent_critique_reask: bool
     agent_tool_max_calls: int
     agent_tool_max_calls_info: int
+    agent_tool_max_turns_edit: int
     agent_tool_verify: bool
     agent_tool_verify_max: int
+    agent_plan_mode: Literal["full", "lite", "auto"]
     agent_mesh_tools: bool
     agent_mesh_max_ops: int
     agent_mesh_preview_max: int
@@ -550,6 +552,7 @@ class SettingsOut(BaseModel):
     mesh_max_faces_for_cad: int
     exec_timeout_s: int
     exec_mem_limit_mb: int
+    exec_warm_runner: bool
     data_dir: str
 
 
@@ -588,8 +591,10 @@ class SettingsUpdate(BaseModel):
     agent_critique_reask: bool | None = None
     agent_tool_max_calls: int | None = Field(default=None, ge=1, le=100)
     agent_tool_max_calls_info: int | None = Field(default=None, ge=1, le=100)
+    agent_tool_max_turns_edit: int | None = Field(default=None, ge=1, le=200)
     agent_tool_verify: bool | None = None
     agent_tool_verify_max: int | None = Field(default=None, ge=0, le=20)
+    agent_plan_mode: Literal["full", "lite", "auto"] | None = None
     agent_mesh_tools: bool | None = None
     agent_mesh_max_ops: int | None = Field(default=None, ge=1, le=200)
     agent_mesh_preview_max: int | None = Field(default=None, ge=0, le=20)
@@ -636,6 +641,7 @@ class SettingsUpdate(BaseModel):
     mesh_max_faces_for_cad: int | None = Field(default=None, ge=1)
     exec_timeout_s: int | None = Field(default=None, ge=1, le=86_400)
     exec_mem_limit_mb: int | None = Field(default=None, ge=256, le=1_048_576)
+    exec_warm_runner: bool | None = None
 
 
 class MeshModelOut(BaseModel):

@@ -220,12 +220,37 @@ def diagnose(error: str | None, traceback: str | None, code: str | None = None) 
 
 
 def diag_block(
-    diag: ErrorDiag, error: str | None, traceback: str | None, stdout: str | None
+    diag: ErrorDiag,
+    error: str | None,
+    traceback: str | None,
+    stdout: str | None,
+    geometry: list[dict] | None = None,
 ) -> str:
     """Render the diagnosis for the repair prompt."""
     lines = ["EXECUTION FAILED.", f"diagnosis: {diag.summary}", f"hint: {diag.hint}"]
     if diag.code_excerpt:
         lines.append("failing code:\n" + diag.code_excerpt)
+    if geometry:
+        rows = [
+            "  {name}: bbox X[{bmin[0]:.1f},{bmax[0]:.1f}] "
+            "Y[{bmin[1]:.1f},{bmax[1]:.1f}] Z[{bmin[2]:.1f},{bmax[2]:.1f}] "
+            "solids={solids} vol={volume_mm3}mm^3".format(
+                name=g["name"],
+                bmin=g["bbox_min"],
+                bmax=g["bbox_max"],
+                solids=g["solids"],
+                volume_mm3=g["volume_mm3"],
+            )
+            for g in geometry
+            if isinstance(g, dict) and "bbox_min" in g
+        ]
+        if rows:
+            lines.append(
+                "GEOMETRY AT FAILURE (actual bboxes of the built shapes — "
+                "compare against the intended positions before touching "
+                "selectors; a body at the origin that should be elsewhere "
+                "means the placement was discarded):\n" + "\n".join(rows)
+            )
     if error:
         lines.append("error:\n" + error[-2000:])
     if traceback:

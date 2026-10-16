@@ -127,6 +127,7 @@ async def run(
     iteration: int,
     attempt: int = 1,
     verify_fn: VerifyFn | None = None,
+    render_fn: VerifyFn | None = None,
 ) -> PatchResponse:
     if tools_enabled(ctx, "code") and ctx.edit_sessions_exhausted < 1:
         return await _run_session(
@@ -139,6 +140,7 @@ async def run(
             iteration=iteration,
             attempt=attempt,
             verify_fn=verify_fn,
+            render_fn=render_fn,
             max_calls=ctx.runtime_settings.agent_tool_max_calls,
         )
 
@@ -185,9 +187,12 @@ async def _run_session(
     iteration: int,
     attempt: int,
     verify_fn: VerifyFn | None,
+    render_fn: VerifyFn | None = None,
     max_calls: int,
 ) -> PatchResponse:
-    session = ToolSession(ctx, kind="edit", code=base_code, verify_fn=verify_fn)
+    session = ToolSession(
+        ctx, kind="edit", code=base_code, verify_fn=verify_fn, render_fn=render_fn
+    )
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": _session_system(spec, plan)},
         {

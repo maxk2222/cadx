@@ -149,3 +149,25 @@ def test_bbox_api_misuse_gets_bbox_hint():
         d = diagnose(error=f"AttributeError: {bad}", traceback="", code="")
         assert d.category == "api-bbox", bad
         assert "bbox_dims" in d.hint
+
+
+def test_diag_block_renders_geometry_at_failure():
+    d = diagnose("AttributeError", 'File "model.py", line 2\nx.center.X', CODE)
+    geo = [
+        {
+            "name": "p",
+            "bbox_min": [-30.0, -20.0, 0.0],
+            "bbox_max": [30.0, 20.0, 4.0],
+            "solids": 1,
+            "volume_mm3": 4800.0,
+        }
+    ]
+    txt = diag_block(d, "err", "tb", "", geometry=geo)
+    assert "GEOMETRY AT FAILURE" in txt
+    assert "p:" in txt and "-30.0" in txt
+
+
+def test_diag_block_without_geometry_unchanged():
+    d = diagnose("AttributeError", 'File "model.py", line 2\nx.pos()', CODE)
+    txt = diag_block(d, "err", "tb", "")
+    assert "GEOMETRY AT FAILURE" not in txt

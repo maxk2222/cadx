@@ -58,6 +58,42 @@ def _unavailable_mesh_solid():
     raise RuntimeError("load_mesh_solid() is only available in hybrid mode")
 
 
+def _geometry_snapshot(namespace: dict) -> list[dict]:
+    """Best-effort geometry inventory of the failed namespace — where the
+    built solids actually ENDED UP. This is the single most valuable signal
+    for a repair loop that can't see the render: `Pos * Box` builder traps
+    leave a primitive at the origin while the model believes it moved."""
+    try:
+        from build123d import BuildPart, Compound, Part, Shape
+    except Exception:
+        return []
+    out: list[dict] = []
+    for name, v in namespace.items():
+        if len(out) >= 6 or name.startswith("_"):
+            continue
+        try:
+            shape = None
+            if isinstance(v, BuildPart):
+                shape = v.part
+            elif isinstance(v, Part | Compound | Shape):
+                shape = v
+            if shape is None:
+                continue
+            bb = shape.bounding_box()
+            out.append(
+                {
+                    "name": name,
+                    "bbox_min": [round(bb.min.X, 1), round(bb.min.Y, 1), round(bb.min.Z, 1)],
+                    "bbox_max": [round(bb.max.X, 1), round(bb.max.Y, 1), round(bb.max.Z, 1)],
+                    "solids": len(shape.solids()),
+                    "volume_mm3": round(float(shape.volume), 1),
+                }
+            )
+        except Exception:
+            continue  # a degenerate shape must never mask the real error
+    return out
+
+
 def _mesh_profile(path: Path, bins: int = 13) -> dict[str, list[list[float]]]:
     """Sample the mesh solid's silhouette per axis: for each bin along x/y
     return [axis_pos, min_a, max_a, min_b, max_b] of the two remaining axes —
@@ -101,8 +137,10 @@ def _mesh_profile(path: Path, bins: int = 13) -> dict[str, list[list[float]]]:
     return out
 
 
-def main() -> int:  # noqa: C901
-    workdir = Path(sys.argv[1])
+def main(workdir: Path | None = None) -> int:  # noqa: C901
+    """Run <workdir>/model.py. `workdir` may be passed directly (warm fork-server)
+    or via sys.argv[1] (cold `python -I runner_entry.py <workdir>`)."""
+    workdir = workdir or Path(sys.argv[1])
     input_path = workdir / "input.json"
     result_path = workdir / "result.json"
 
@@ -305,6 +343,7 @@ def main() -> int:  # noqa: C901
         # Trim to frames inside model.py + the exception line
         tb_lines = [ln for ln in str(result["error"]).splitlines() if "runner_entry" not in ln]
         result["traceback"] = "\n".join(tb_lines[-30:])
+        result["geometry_at_failure"] = _geometry_snapshot(namespace)
     finally:
         sys.stdout = sys.__stdout__
 
@@ -341,6 +380,7 @@ def main() -> int:  # noqa: C901
                 + hint
                 + (" suspects: " + "; ".join(suspects[:4]) if suspects else "")
             )
+        result["geometry_at_failure"] = _geometry_snapshot(namespace)
         result_path.write_text(json.dumps(result), encoding="utf-8")
         return 0
 
@@ -460,10 +500,11 @@ def main() -> int:  # noqa: C901
         result["traceback"] = "\n".join(
             ln for ln in str(result["error"]).splitlines() if "runner_entry" not in ln
         )[-4000:]
+        result["geometry_at_failure"] = _geometry_snapshot(namespace)
 
     result_path.write_text(json.dumps(result), encoding="utf-8")
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(Path(sys.argv[1])))

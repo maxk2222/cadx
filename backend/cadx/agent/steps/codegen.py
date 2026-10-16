@@ -163,6 +163,8 @@ async def repair(
     repair_n: int,
     verify_fn: VerifyFn | None = None,
     prefer_full_code: bool = False,
+    geometry: list[dict[str, Any]] | None = None,
+    render_fn: VerifyFn | None = None,
 ) -> PatchResponse:
     """Ask the model to fix broken code — tool session when the provider
     supports it, else one-shot PatchResponse (edits preferred, full_code
@@ -184,6 +186,8 @@ async def repair(
             repair_n=repair_n,
             verify_fn=verify_fn,
             max_calls=ctx.runtime_settings.agent_tool_max_calls,
+            geometry=geometry,
+            render_fn=render_fn,
         )
     if prefer_full_code:
         user = (
@@ -200,7 +204,7 @@ async def repair(
         "PREVIOUS CODE:\n```python\n"
         + prev_code
         + "\n```\n\n"
-        + diag_block(diag, error, traceback, stdout)
+        + diag_block(diag, error, traceback, stdout, geometry=geometry)
     )
     parts: list[dict[str, Any]] = [{"type": "text", "text": user}]
     rb = request_block(ctx.prompt)
@@ -257,14 +261,18 @@ async def _repair_session(
     repair_n: int,
     verify_fn: VerifyFn | None,
     max_calls: int,
+    geometry: list[dict[str, Any]] | None = None,
+    render_fn: VerifyFn | None = None,
 ) -> PatchResponse:
     from cadx.agent.context import system_prompt
 
-    session = ToolSession(ctx, kind="edit", code=prev_code, verify_fn=verify_fn)
+    session = ToolSession(
+        ctx, kind="edit", code=prev_code, verify_fn=verify_fn, render_fn=render_fn
+    )
     parts: list[dict[str, Any]] = [
         {"type": "text", "text": "Fix this code using the tools — minimal edit only."},
         {"type": "text", "text": numbered_code_block(prev_code, "PREVIOUS CODE")},
-        {"type": "text", "text": diag_block(diag, error, traceback, stdout)},
+        {"type": "text", "text": diag_block(diag, error, traceback, stdout, geometry=geometry)},
     ]
     rb = request_block(ctx.prompt)
     if rb:
