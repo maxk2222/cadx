@@ -1,7 +1,7 @@
 {
   "prompt": "Round organic furniture knob like in the reference image: smooth spherical dome sitting on a short cylindrical skirt base, 40 mm diameter, 45 mm total height. One single solid body, printable standing on the flat skirt bottom.",
   "gen_mode": "mesh",
-  "images": ["backend/tests/fixtures/images/knob.png"],
+  "images": ["backend/cadx/eval/fixtures/knob.png"],
   "expected_bbox": [40, 40, 45],
   "tolerance_mm": 3.0,
   "expect_watertight": true,

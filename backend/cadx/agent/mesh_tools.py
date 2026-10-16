@@ -100,6 +100,10 @@ _OP_TOOLS: dict[str, str] = {
     "mesh_radial_profile": "radial_profile",
 }
 
+# rigid-orientation ops — refused outright when `orientation_locked` is set
+# (the orient step already placed the part on measurement evidence)
+_ORIENTATION_OPS = {"set_up", "rotate", "mirror"}
+
 # ops exempt from the silhouette-drift guard (still get the coarse volume
 # floor): rigid reorientation keeps the shape — blocking set_up on a lying
 # part would prevent exactly the fix the guard protects; cut-class ops
@@ -142,6 +146,7 @@ class MeshWorkbench:
         max_ops: int = 24,
         anchors: dict[str, Any] | None = None,
         measured_outline: list[list[float]] | None = None,
+        orientation_locked: bool = False,
     ) -> None:
         self.ctx = ctx
         self.spec = spec
@@ -150,6 +155,12 @@ class MeshWorkbench:
         self.iteration = iteration
         self.preview_left = preview_budget
         self.max_ops = max_ops
+        # rigid-orientation ops are refused while True — set when the orient
+        # step already placed the part on measurement evidence (silhouette /
+        # plan-view / inherited). The knob run showed the refine LLM freely
+        # re-trying set_up until it had rotated a correct ±X-up orientation
+        # back onto its side.
+        self.orientation_locked = orientation_locked
         self.error: str | None = None
         self.ops: list[MeshOp] = list(initial_ops or [])
         # cumulative volume added by union booleans — guards against the model
@@ -189,7 +200,12 @@ class MeshWorkbench:
             if len(self.baseline.faces) > cap:
                 self.baseline = decimate(self.baseline, cap)
                 log.info("mesh.workbench_decimated", faces=len(self.baseline.faces), cap=cap)
-            self.work, _ = apply_ops(self.baseline, self.ops, anchors=self.anchors)
+            self.work, _ = apply_ops(
+                self.baseline,
+                self.ops,
+                anchors=self.anchors,
+                runtime=getattr(self.ctx, "runtime_settings", None),
+            )
             if not self.ops:
                 self.work = rest_on_xy_center(self.baseline.copy())
         except Exception as e:
@@ -232,7 +248,11 @@ class MeshWorkbench:
         assert self.baseline is not None
         try:
             self.work, _ = await asyncio.to_thread(
-                apply_ops, self.baseline, self.ops, anchors=self.anchors
+                apply_ops,
+                self.baseline,
+                self.ops,
+                anchors=self.anchors,
+                runtime=getattr(self.ctx, "runtime_settings", None),
             )
             if not self.ops:
                 self.work = rest_on_xy_center(self.baseline.copy())
@@ -623,6 +643,9 @@ class MeshWorkbench:
             self.ops.clear()
             self.work = rest_on_xy_center(self.baseline.copy())
             self._features = None
+            # the new raw mesh is in generator space — the orientation lock
+            # belongs to the old baseline and would block re-orienting this one
+            self.orientation_locked = False
         except Exception as e:
             return {"ok": False, "error": f"new mesh failed baseline processing: {e}"}
         self.new_mesh_rel = storage.relpath(out)
@@ -662,6 +685,16 @@ class MeshWorkbench:
         return None
 
     async def _transform(self, op_name: str, tool: str, args: dict[str, Any]) -> dict[str, Any]:
+        if self.orientation_locked and op_name in _ORIENTATION_OPS:
+            return {
+                "ok": False,
+                "error": (
+                    "refused: orientation was fixed by the deterministic orient "
+                    "step (measurement-backed) — it is not a refine parameter. "
+                    "Fix local shape issues with scale/clip/boolean ops, call "
+                    "mesh_regen_edit for a fundamentally wrong mesh, or done."
+                ),
+            }
         if len(self.ops) >= self.max_ops:
             return {
                 "ok": False,

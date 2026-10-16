@@ -1086,14 +1086,16 @@ class ToolSession:
             if self.ctx.image is None:
                 # no image sidecar → the edit round-trip cannot work
                 out = [t for t in out if t["function"]["name"] != "mesh_regen_edit"]
-            return (
-                out
-                + MESH_TRANSFORM_TOOLS
-                + MESH_UNDO_TOOLS
-                + DONE_TOOLS
-                + REGENERATE_TOOLS
-                + IMAGE_TOOLS
-            )
+            transforms = MESH_TRANSFORM_TOOLS
+            if self.workbench is not None and self.workbench.orientation_locked:
+                # measurement-backed orientation is fixed — don't offer tools
+                # that would let the model overturn it again
+                transforms = [
+                    t
+                    for t in transforms
+                    if t["function"]["name"] not in {"mesh_set_up", "mesh_rotate", "mesh_mirror"}
+                ]
+            return out + transforms + MESH_UNDO_TOOLS + DONE_TOOLS + REGENERATE_TOOLS + IMAGE_TOOLS
         if self.kind == "optimize":
             out = [
                 t

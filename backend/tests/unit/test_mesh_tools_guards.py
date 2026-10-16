@@ -226,3 +226,29 @@ async def test_seq_loop_guard_refuses_third_cycle(tmp_path):
     assert res["ok"] is False
     assert "cycling" in res["error"] or "sequence" in res["error"]
     assert not wb.ops  # nothing was appended
+
+
+async def test_orientation_lock_refuses_rigid_ops(tmp_path):
+    """When the orient step decided on measurement evidence, refine sessions
+    must not re-orient (knob run: LLM undid a silhouette-correct -x up)."""
+    raw = tmp_path / "raw.glb"
+    trimesh.creation.cylinder(radius=15, height=130, sections=32).export(str(raw), file_type="glb")
+    wb = MeshWorkbench(
+        _ctx(),
+        raw_path=raw,
+        post=MeshPostParams(),
+        spec=None,
+        iteration=1,
+        orientation_locked=True,
+    )
+    assert wb.work is not None
+    for tool in ("mesh_set_up", "mesh_rotate", "mesh_mirror"):
+        res = await wb.handle(
+            tool, {"up": "+x"} if tool == "mesh_set_up" else {"axis": "z", "deg": 90}
+        )
+        assert res["ok"] is False
+        assert "orientation" in res["error"]
+        assert not wb.ops
+    # non-orientation ops still work
+    res = await wb.handle("mesh_flatten_bottom", {"height_mm": 2.0})
+    assert res["ok"], res.get("error")

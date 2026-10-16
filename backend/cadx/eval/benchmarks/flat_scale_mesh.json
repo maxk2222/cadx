@@ -9,7 +9,7 @@
   "gen_mode": "mesh",
   "fake_mesh": true,
   "images": [
-    "backend/tests/fixtures/images/knob.png"
+    "backend/cadx/eval/fixtures/knob.png"
   ],
   "settings": {
     "max_iterations": 1

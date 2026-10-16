@@ -2,7 +2,7 @@
   "prompt": "round organic furniture knob, about 40 mm across, domed top with a small skirt",
   "gen_mode": "mesh",
   "fake_mesh": true,
-  "images": ["backend/tests/fixtures/images/knob.png"],
+  "images": ["backend/cadx/eval/fixtures/knob.png"],
   "settings": { "max_iterations": 1 },
   "llm_script": [
     {

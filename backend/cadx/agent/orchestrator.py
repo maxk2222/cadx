@@ -1986,6 +1986,9 @@ async def _orient_mesh(ctx: AgentCtx, iteration: int, mesh_rel: str) -> dict[str
                 f"— using {det['up']}/{det['front']}",
             )
             choice = {**det, **({"mirror_x": True} if choice.get("mirror_x") else {})}
+            # the deterministic ranking chose this orientation — lock it in
+            # refine sessions the same way the skip-LLM path does
+            ctx.mesh_info["orientation_source"] = "deterministic"
     ctx.mesh_orientation = choice
     ctx.mesh_info["orientation_source"] = ctx.mesh_info.get("orientation_source") or "llm"
     return ctx.mesh_orientation
@@ -2837,13 +2840,14 @@ async def _run_mesh(  # noqa: C901
     tol_mm: float,
     start_iteration: int = 1,
 ) -> RunOutcome:
-    """Mesh-mode loop: generate -> baseline process -> refine session ->
-    analyse -> critique -> refine-repair rounds -> best candidate.
+    """Mesh-mode loop: generate -> baseline process -> critique ->
+    refine-repair rounds -> best candidate.
 
-    The refine session gives the agent mesh-transformation tools instead of
-    blind re-generation; it can also decide the raw mesh is unfixable and ask
-    for a new seed (`regenerate`). Sessions unavailable (tools off, vision
-    model stripped) → previous seed-rotation behaviour.
+    The baseline is always critiqued and registered as a candidate BEFORE any
+    LLM session touches it — a wrecked refine round can no longer hide the
+    pristine result. Repair sessions get real critique issues; when the
+    baseline already passes, no session runs at all. Sessions unavailable
+    (tools off, vision model stripped) → previous seed-rotation behaviour.
     """
     s = ctx.runtime_settings
     best: Candidate | None = None
@@ -3089,37 +3093,6 @@ async def _run_mesh(  # noqa: C901
                         exec_result, post = fitted
                         ctx.mesh_info["post"] = post.model_dump()
 
-            # MESH_REFINE shape session — transform before judging
-            if exec_result.get("ok"):
-                rr = await _refine(it, mesh_rel, post, exec_result)
-                if rr is not None and rr.regenerate:
-                    if rr.subject_hint:
-                        ctx.mesh_info["_regen_hint"] = rr.subject_hint
-                    await ctx.emit("meshrefine", it, f"regenerating — {rr.reasoning[:100]}")
-                    # a rejected mesh that badly misses stated dims counts as a
-                    # hard fail too — otherwise the loop re-rolls seeds on an
-                    # input that cannot produce the spec'd part
-                    if compare_dims(spec, exec_result.get("analysis") or {}, tol_pct, tol_mm):
-                        hard_fails += 1
-                        if hard_fails >= hard_fail_limit:
-                            outcome.fallback_to_cad = stated_dim_count(spec) >= 2
-                            await ctx.emit(
-                                "meshgen",
-                                it,
-                                f"{hard_fails} rejected generations missing stated dims — "
-                                + ("CAD fallback" if outcome.fallback_to_cad else "stopping"),
-                            )
-                            break
-                    else:
-                        hard_fails = 0
-                    continue
-                if rr is not None and (rr.changed or rr.new_mesh_rel):
-                    if rr.new_mesh_rel:
-                        # mesh_regen_edit swapped the baseline mid-session —
-                        # reprocess the regenerated raw, not the original
-                        mesh_rel = rr.new_mesh_rel
-                    exec_result = await _apply_ops(it, mesh_rel, post, rr, art_attempt)
-
         if not exec_result or not exec_result.get("ok"):
             log.warning("mesh.process_failed", iteration=it, error=(exec_result or {}).get("error"))
             continue
@@ -3147,7 +3120,11 @@ async def _run_mesh(  # noqa: C901
                 break
             continue
 
-        # ANALYZE + CRITIQUE
+        # ANALYZE + CRITIQUE the baseline BEFORE any refine session — the
+        # deterministic baseline is always a scored candidate, so an
+        # unproductive refine round can no longer replace it with a wreck
+        # (observed: 0.95-screened knob re-oriented + flattened into a sliver
+        # before the first critique ever saw it)
         await ctx.emit("critique", it, "comparing renders with your images")
         critique, dim_issues, feature_findings = await _evaluate(it, exec_result)
 
@@ -3207,26 +3184,46 @@ async def _run_mesh(  # noqa: C901
                 break
             if not (rr.changed or rr.new_mesh_rel):
                 break
+            prev_ops = list(post.ops)
+            prev_rank = cand.rank
             if rr.new_mesh_rel:
                 mesh_rel = rr.new_mesh_rel
             new_exec = await _apply_ops(it, mesh_rel, post, rr, art_attempt)
             if not new_exec.get("ok"):
                 log.warning("mesh.refine_reprocess_failed", error=new_exec.get("error"))
+                post.ops = prev_ops
+                ctx.mesh_info["post"] = post.model_dump()
                 break
-            exec_result = new_exec
-            critique2, dim_issues2, findings2 = await _evaluate(it, exec_result)
+            critique2, dim_issues2, findings2 = await _evaluate(it, new_exec)
             cand = Candidate(
                 it,
                 None,
-                exec_result,
+                new_exec,
                 critique2,
                 dim_issues2,
-                mesh_post=(exec_result.get("mesh") or {}).get("post"),
+                mesh_post=(new_exec.get("mesh") or {}).get("post"),
             )
             cand.feature_findings = findings2
             if best is None or cand.rank > best.rank:
                 best = cand
-            critique, dim_issues = critique2, dim_issues2
+            if rr.new_mesh_rel or cand.rank >= prev_rank:
+                # accept: progress, or a swapped-in regenerated baseline that
+                # cannot be rank-compared against the old mesh
+                exec_result = new_exec
+                critique, dim_issues = critique2, dim_issues2
+            else:
+                # deterministic regression — restore the better op list so the
+                # wreck never becomes the session state a later round builds on
+                post.ops = prev_ops
+                ctx.mesh_info["post"] = post.model_dump()
+                ctx.mesh_info["ops"] = [o.model_dump() for o in prev_ops]
+                await ctx.emit(
+                    "meshrefine",
+                    it,
+                    f"refine round regressed (score {cand.critique.score if cand.critique else 0}"
+                    f" vs {prev_rank[4]}) — keeping previous ops",
+                )
+                break
             if _passed(critique, dim_issues, exec_result):
                 break
 

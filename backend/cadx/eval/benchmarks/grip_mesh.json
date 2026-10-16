@@ -2,7 +2,7 @@
   "prompt": "Ergonomic bicycle handlebar grip, one single organic grip body like in the reference image, approx 130 mm long, outer diameter about 32 mm at the thickest point, soft waist in the middle, rounded ends. Through-bore 22.2 mm for the handlebar along the full length. Material TPU.",
   "gen_mode": "mesh",
   "images": [
-    "backend/tests/fixtures/images/grip.png"
+    "backend/cadx/eval/fixtures/grip.png"
   ],
   "expected_bbox": [
     130,

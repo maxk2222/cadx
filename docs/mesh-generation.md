@@ -145,11 +145,15 @@ uses the report for `auto` adapter selection; stale reports are harmless
 **mesh**: `MESH_GENERATE` (seed = `mesh_seed` or per-version base + iteration)
 → `ORIENT` (6 candidates rendered in the executor, vision LLM picks
 `MeshOrientation{up,front}`; heuristic fallback; parent orientation is reused
-on edits) → `PROCESS_MESH` → `MESH_REFINE` shape session → dim-check →
-`CRITIQUE` → issues-seeded `MESH_REFINE` repair round(s) → best candidate →
-exports. Remaining iterations vary the seed (a refine session can also force
-a re-roll via `regenerate`); `edit` = regenerate, `params` =
-post-params+ops rerun.
+on edits) → `PROCESS_MESH` → deterministic dim-fit → `CRITIQUE` on the
+baseline → issues-seeded `MESH_REFINE` repair round(s) only on failure →
+best candidate → exports. The pristine baseline is always a scored candidate:
+a regressed refine round is reverted to its previous op list, and passing
+baselines skip the session entirely. When the orient step decided on
+measurement evidence (`orientation_source` deterministic/plan-view/parent),
+rigid-orientation tools are locked out of the session. Remaining iterations
+vary the seed (a repair session can also force a re-roll via `regenerate`);
+`edit` = regenerate, `params` = post-params+ops rerun.
 
 **MESH_REFINE** (`agent/steps/mesh_refine.py`, workbench in
 `agent/mesh_tools.py`) is a tool session on the vision role: the agent

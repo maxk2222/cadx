@@ -2,7 +2,7 @@
   "prompt": "organic furniture knob ~40 mm with a centered M4 through-hole for a screw insert",
   "gen_mode": "hybrid",
   "fake_mesh": true,
-  "images": ["backend/tests/fixtures/images/knob.png"],
+  "images": ["backend/cadx/eval/fixtures/knob.png"],
   "settings": { "max_iterations": 1 },
   "llm_script": [
     {

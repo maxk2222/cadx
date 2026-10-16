@@ -58,9 +58,11 @@ def _ctx(llm: FakeLLM | None = None, **kw) -> AgentCtx:
 _IMG_TMP = Path(__file__).resolve().parent / "_img_tmp"
 
 
-def _img() -> InputAsset:
+def _img(seed: int | None = None) -> InputAsset:
     """Distinct pixels per asset — the multiview aHash dedup would merge
-    identical fixture copies into one."""
+    identical fixture copies into one. `seed` fixes the pixels for tests
+    whose image-derived measurements (rembg mask → silhouette IoU) must be
+    deterministic."""
     import tempfile
 
     from PIL import Image, ImageDraw
@@ -71,7 +73,7 @@ def _img() -> InputAsset:
     # aHash-safe (64 cells each ~50% chance to flip)
     import random
 
-    rng = random.Random(int(aid[:8], 16))
+    rng = random.Random(seed if seed is not None else int(aid[:8], 16))
     img = Image.new("RGB", (64, 64))
     dr = ImageDraw.Draw(img)
     for gy in range(0, 64, 8):
@@ -434,15 +436,32 @@ def _tc(name: str, args: dict | None = None) -> dict:
 
 
 async def test_mesh_refine_session_applies_ops(tmp_path):
-    """The shape session's recorded ops replay into the final post params."""
+    """The repair session's recorded ops replay into the final post params."""
+    fail_critique = {
+        "score": 40,
+        "passed": False,
+        "discrepancies": [
+            {
+                "feature": "base",
+                "issue": "rough underside",
+                "severity": "major",
+                "source": "spec",
+            }
+        ],
+        "matches": [],
+        "confidence": 0.8,
+    }
     llm = FakeLLM(
         [
             MESH_SPEC,
             MESH_PLAN,
             MESH_ORIENT,
+            fail_critique,  # baseline is critiqued BEFORE any refine session
             _tc("mesh_inspect"),
-            _tc("mesh_rotate", {"axis": "z", "deg": 90}),
-            _tc("done", {"reasoning": "aligned"}),
+            # identity-scale: a repair op that cannot drop dims/features —
+            # the regression gate would legitimately revert a real wreck
+            _tc("mesh_scale", {"factor": 1.0}),
+            _tc("done", {"reasoning": "touched up"}),
             MESH_CRITIQUE,
         ]
     )
@@ -450,7 +469,7 @@ async def test_mesh_refine_session_applies_ops(tmp_path):
     ctx = _ctx(
         llm=llm,
         gen_mode="mesh",
-        assets=[_img()],
+        assets=[_img(seed=1)],
         mesh=mesh,
         mesh_available=True,
         prompt="organic knob 40mm",
@@ -458,20 +477,34 @@ async def test_mesh_refine_session_applies_ops(tmp_path):
     outcome = await run_generation(ctx)
     assert outcome.status in ("succeeded", "needs_review")
     ops = outcome.params.get("ops") or []
-    assert [o["op"] for o in ops] == ["rotate"]
-    assert outcome.mesh["ops"][0]["args"]["deg"] == 90
+    assert [o["op"] for o in ops] == ["scale"]
+    assert outcome.mesh["ops"][0]["args"]["factor"] == 1.0
 
 
 async def test_mesh_refine_regenerate_triggers_new_seed(tmp_path):
-    """`regenerate` in the shape session re-rolls the mesh with a new seed."""
+    """`regenerate` in the repair session re-rolls the mesh with a new seed."""
+    fail_critique = {
+        "score": 20,
+        "passed": False,
+        "discrepancies": [
+            {
+                "feature": "overall",
+                "issue": "wrong object entirely",
+                "severity": "major",
+                "source": "spec",
+            }
+        ],
+        "matches": [],
+        "confidence": 0.9,
+    }
     llm = FakeLLM(
         [
             MESH_SPEC,
             MESH_PLAN,
             MESH_ORIENT,
+            fail_critique,  # baseline critique fails → repair session
             _tc("regenerate", {"subject_hint": "flatter knob", "note": "wrong shape"}),
-            # iteration 2: orientation is cached, refine session accepts as-is
-            _tc("done", {"reasoning": "baseline is fine"}),
+            # iteration 2: orientation is cached, baseline critique passes
             MESH_CRITIQUE,
         ]
     )
@@ -502,7 +535,14 @@ async def test_mesh_refine_repair_round_after_failed_critique(tmp_path):
     fail_critique = {
         "score": 40,
         "passed": False,
-        "discrepancies": [{"feature": "base", "issue": "wobbly underside", "severity": "major"}],
+        "discrepancies": [
+            {
+                "feature": "base",
+                "issue": "wobbly underside",
+                "severity": "major",
+                "source": "spec",
+            }
+        ],
         "matches": [],
         "confidence": 0.8,
     }
@@ -511,10 +551,9 @@ async def test_mesh_refine_repair_round_after_failed_critique(tmp_path):
             MESH_SPEC,
             MESH_PLAN,
             MESH_ORIENT,
-            _tc("done", {"reasoning": "shape ok"}),  # shape session: accept
-            fail_critique,
-            _tc("mesh_flatten_bottom", {"height_mm": 2.0}),  # repair session
-            _tc("done", {"reasoning": "flattened the base"}),
+            fail_critique,  # baseline critique fails
+            _tc("mesh_scale", {"factor": 1.0}),  # repair session: inert op
+            _tc("done", {"reasoning": "fixed in place"}),
             MESH_CRITIQUE,  # re-evaluation passes
         ]
     )
@@ -531,7 +570,71 @@ async def test_mesh_refine_repair_round_after_failed_critique(tmp_path):
     outcome = await run_generation(ctx)
     assert outcome.status == "succeeded"
     assert len(mesh.calls) == 1  # fixed in place — no re-generation
-    assert [o["op"] for o in outcome.params.get("ops", [])] == ["flatten_bottom"]
+    assert [o["op"] for o in outcome.params.get("ops", [])] == ["scale"]
+
+
+async def test_mesh_refine_regression_reverts_ops(tmp_path):
+    """A repair round that deterministically regresses (worse rank) is rolled
+    back — the wrecked op list must not become the session state."""
+    fail_critique = {
+        "score": 40,
+        "passed": False,
+        "discrepancies": [
+            {
+                "feature": "base",
+                "issue": "rough underside",
+                "severity": "major",
+                "source": "spec",
+            }
+        ],
+        "matches": [],
+        "confidence": 0.8,
+    }
+    worse_critique = {
+        "score": 10,
+        "passed": False,
+        "discrepancies": [
+            {
+                "feature": "shape",
+                "issue": "flattened into a sliver",
+                "severity": "major",
+                "source": "spec",
+            },
+            {
+                "feature": "dims",
+                "issue": "height destroyed",
+                "severity": "major",
+                "source": "spec",
+            },
+        ],
+        "matches": [],
+        "confidence": 0.9,
+    }
+    llm = FakeLLM(
+        [
+            MESH_SPEC,
+            MESH_PLAN,
+            MESH_ORIENT,
+            fail_critique,
+            _tc("mesh_flatten_bottom", {"height_mm": 20.0}),  # wrecks the part
+            _tc("done", {"reasoning": "flattened"}),
+            worse_critique,  # re-eval: clearly worse → ops revert
+        ]
+    )
+    mesh = FakeMeshClient()
+    ctx = _ctx(
+        llm=llm,
+        gen_mode="mesh",
+        assets=[_img(seed=1)],
+        mesh=mesh,
+        mesh_available=True,
+        prompt="organic knob 40mm",
+        runtime_settings=RuntimeSettings(mesh_candidates_per_iter=1),
+        settings=ProjectSettings(clarification_mode="assume", max_iterations=1),
+    )
+    outcome = await run_generation(ctx)
+    # the regressed ops were reverted — params carry the pre-session state
+    assert not (outcome.params.get("ops") or [])
 
 
 async def test_mesh_tools_disabled_keeps_seed_loop(tmp_path):
@@ -593,12 +696,22 @@ async def test_mesh_regen_exhaustion_falls_back_to_cad(monkeypatch, tmp_path):
     spec = dict(MESH_SPEC)
     spec["width_y"] = {"value": 40.0, "unit": "mm", "source": "stated"}
     spec["height_z"] = {"value": 30.0, "unit": "mm", "source": "stated"}
+    fail_crit = {
+        "score": 20,
+        "passed": False,
+        "discrepancies": [{"feature": "overall", "issue": "wrong shape", "severity": "major"}],
+        "matches": [],
+        "confidence": 0.9,
+    }
     box_code = (FIXTURES / "simple_box.py").read_text()
     llm = FakeLLM(
         [
             spec,
             MESH_PLAN,
             MESH_ORIENT,
+            fail_crit,  # iter1 baseline critique → repair session → regenerate
+            fail_crit,  # iter2 baseline critique → repair session → regenerate
+            fail_crit,  # iter3 baseline critique → repair session → regenerate
             # CAD fallback: codegen + critique
             {
                 "reasoning": "box",
@@ -612,11 +725,11 @@ async def test_mesh_regen_exhaustion_falls_back_to_cad(monkeypatch, tmp_path):
     ctx = _ctx(
         llm=llm,
         gen_mode="mesh",
-        assets=[_img()],
+        assets=[_img(seed=1)],
         mesh=FakeMeshClient(),
         mesh_available=True,
         prompt="40x40x30 block",
-        settings=ProjectSettings(clarification_mode="assume", max_iterations=2),
+        settings=ProjectSettings(clarification_mode="assume", max_iterations=3),
     )
     outcome = await run_generation(ctx)
     assert outcome.resolved_mode == "cad"

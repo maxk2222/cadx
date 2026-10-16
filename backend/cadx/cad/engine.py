@@ -421,7 +421,7 @@ def run_mesh_pipeline(  # noqa: C901
             )
         t = time.monotonic()
         try:
-            mesh, op_report = apply_ops(mesh, post.ops, anchors=anchors)
+            mesh, op_report = apply_ops(mesh, post.ops, anchors=anchors, runtime=rt)
         except Exception as e:
             res.error = f"mesh op failed: {e}"
             return res

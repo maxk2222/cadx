@@ -138,6 +138,8 @@ async def run(
         max_ops=getattr(s, "agent_mesh_max_ops", 24),
         anchors=ctx.anchors,
         measured_outline=_measured_outline(ctx),
+        orientation_locked=ctx.mesh_info.get("orientation_source")
+        in ("deterministic", "plan_view_iou", "parent"),
     )
     if wb.work is None:
         log.warning("mesh.refine_no_workbench", error=wb.error)

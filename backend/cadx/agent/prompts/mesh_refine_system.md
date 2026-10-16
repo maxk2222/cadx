@@ -30,7 +30,8 @@ Working discipline:
 
 Common problems and their fixes:
 
-- Part lies on its side/back → mesh_set_up or mesh_rotate.
+- Part lies on its side/back → mesh_set_up or mesh_rotate (only when
+  offered — see the orientation lock rule below).
 - Aspect ratio wrong on one axis (spec 100×50×30, got 100×65×30)
   → mesh_scale with per-axis factors (y = 50/65 ≈ 0.77). Never guess —
   compute factors from the measured bbox and the spec dims.
@@ -76,6 +77,10 @@ Rules:
 - FIRST check whether the part lies on its side/back: compare the flat_base
   and bbox proportions against the spec before ANY scaling — scaling a
   wrongly-oriented part locks the error in.
+- Orientation lock: when mesh_set_up/mesh_rotate/mesh_mirror are missing or
+  refused, the orientation was fixed by measurement — treat it as ground
+  truth and correct shape with scale/clip/boolean ops instead. A mesh that
+  is truly unusable goes to mesh_regen_edit or regenerate, not re-orientation.
 - Non-uniform (per-axis) scaling is limited to ±5 % per axis beyond what
   the spec demands — larger deviations mean the mesh is fundamentally off,
   not that it needs squashing.
