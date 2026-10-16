@@ -133,3 +133,17 @@ def test_diagnose_2d_shape_in_boolean():
     )
     assert d.category == "hybrid-2d"
     assert "2D" in d.hint or "Cylinder" in d.hint
+
+
+def test_bbox_api_misuse_gets_bbox_hint():
+    """OCP-style BoundBox attribute guesses must classify as api-bbox with
+    the correct build123d API in the hint — observed 5 consecutive repair
+    failures (boundingBox/xlen/xmax/xsize/size.x) in one session."""
+    from cadx.cad.errordiag import diagnose
+
+    for bad in ("'Vector' object has no attribute 'x'",
+                "'BoundBox' object has no attribute 'xlen'",
+                "'Part' object has no attribute 'boundingBox'"):
+        d = diagnose(error=f"AttributeError: {bad}", traceback="", code="")
+        assert d.category == "api-bbox", bad
+        assert "bbox_dims" in d.hint

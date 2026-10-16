@@ -21,6 +21,7 @@ from .cutouts import (
     through_hole,
 )
 from .ops import (
+    bbox_dims,
     collapse_solids,
     largest_solid,
     mesh_cut,
@@ -43,6 +44,7 @@ from .shapes import (
 )
 
 __all__ = [
+    "bbox_dims",
     "bearing_seat",
     "boss",
     "closed_polyline",

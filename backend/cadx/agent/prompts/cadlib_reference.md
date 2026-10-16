@@ -162,3 +162,10 @@ No BuildPart context needed. Parts rest on XY (min Z = 0), centred — place wit
   flatten the underside of a mesh solid instead of
   `body & Box(..., Align.MIN)` — an intersection that silently returns
   `None` on faceted meshes.
+
+### bbox_dims
+
+- `bbox_dims(shape)` — returns `[dx, dy, dz]` extents of a shape's bounding
+  box in mm. USE THIS instead of touching `bounding_box()` yourself —
+  `bb.size` is a Vector with uppercase `.X`/`.Y`/`.Z`, and OCP names like
+  `xlen`, `xmax` or `.size.x` do NOT exist in build123d.

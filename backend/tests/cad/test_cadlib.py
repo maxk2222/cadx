@@ -320,3 +320,12 @@ def test_mesh_cut_drops_slivers():
     out = cadlib.mesh_cut(body, tool)
     assert len(out.solids()) == 1
     assert out.volume == pytest.approx(1000.0 - 3.14159 * 4 * 12, rel=0.05)
+
+
+def test_bbox_dims():
+    """bbox_dims removes the BoundBox API surface generated code kept
+    hallucinating (xlen/xmax/size.x all invalid in build123d)."""
+    box = Pos(1, 2, 3) * Box(10, 20, 30)
+    assert cadlib.bbox_dims(box) == pytest.approx([10.0, 20.0, 30.0])
+    cyl = Pos(0, 0, 5) * Cylinder(radius=4, height=12)
+    assert cadlib.bbox_dims(cyl) == pytest.approx([8.0, 8.0, 12.0], rel=1e-3)

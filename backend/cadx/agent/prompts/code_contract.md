@@ -37,6 +37,10 @@
    - `removeSplitter`/`unify`/`makeSolid` do NOT exist (CadQuery/OpenSCAD
      idioms). To merge coplanar faces left over by boolean ops use
      `part = part.clean()` — or simply omit it.
+   - Bounding-box extents: `bb = part.bounding_box()` returns a BoundBox;
+     `bb.min`/`bb.max`/`bb.size` are Vectors with UPPERCASE `.X`/`.Y`/`.Z`
+     (or `[0]`/`[1]`/`[2]` indexing). `boundingBox()`, `bb.xlen`, `bb.xmax`,
+     `bb.size.x` do NOT exist — prefer `cadlib.bbox_dims(part) -> [dx, dy, dz]`.
    - Ribs/gussets must live INSIDE the part envelope: place them flush with or
      recessed from the outer faces, never proud of the bounding box in the spec.
      A rib that extends past the side wall silently inflates the overall

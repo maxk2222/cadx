@@ -159,6 +159,18 @@ _RULES: list[tuple[re.Pattern[str], str, str]] = [
         "`Solid(...)`/`Solid.make_solid(...)` — or drop the call entirely.",
     ),
     (
+        re.compile(
+            r"(BoundBox|Vector)' object has no attribute|has no attribute "
+            r"'(boundingBox|xlen|xmax|xsize|xmin|ylen|ymax|ysize|ymin|zlen|zmax|zsize|zmin)'",
+            re.I,
+        ),
+        "api-bbox",
+        "build123d bounding-box API: `bb = part.bounding_box()`; `bb.min`/`bb.max` "
+        "and `bb.size` are Vectors — uppercase `.X`/`.Y`/`.Z` or index `[0]`/`[1]`/"
+        "`[2]` (OCP names like xlen/xmax/size.x do NOT exist). Simplest: "
+        "`cadlib.bbox_dims(part)` returns [dx, dy, dz] in mm.",
+    ),
+    (
         re.compile(r"AttributeError", re.I),
         "api-misuse",
         "Wrong attribute/method name — check the build123d reference in context. "

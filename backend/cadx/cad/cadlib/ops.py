@@ -8,6 +8,17 @@ crashing the whole run on an empty/stale edge selection.
 from build123d import Align, Box, Pos, fillet
 
 
+def bbox_dims(shape) -> list[float]:
+    """[dx, dy, dz] extents of a shape's bounding box in mm.
+
+    Generated code kept guessing OCP-style BoundBox attributes
+    (``xlen``, ``xmax``, ``bb.size.x`` — all invalid in build123d);
+    this helper removes the need to touch the BoundBox API at all.
+    """
+    s = shape.bounding_box().size
+    return [float(s.X), float(s.Y), float(s.Z)]
+
+
 def largest_solid(shape):
     """Highest-volume solid of ``shape`` — itself when already single."""
     solids = shape.solids()
