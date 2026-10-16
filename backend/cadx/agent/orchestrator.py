@@ -3470,8 +3470,12 @@ def _spec_drill_ops(spec: PartSpec, exec_result: dict[str, Any]) -> list[MeshOp]
             continue
         pos = f"{f.position or ''} {f.description or ''}".lower()
         # only clearly-centred bores — "through" alone also describes
-        # positioned holes, which belong to the repair session / anchors
-        if not any(k in pos for k in ("center", "mittig", "zentriert", "koaxial", "coaxial")):
+        # positioned holes, which belong to the repair session / anchors.
+        # "cente"/"centr" cover centered (US) and centred (UK) spellings.
+        if not any(
+            k in pos
+            for k in ("cente", "centr", "mittig", "zentriert", "koaxial", "coaxial", "middle")
+        ):
             continue
         letter = ax.lstrip("+-")
         covered = any(

@@ -515,6 +515,17 @@ def test_spec_drill_ops_drills_missing_centered_bore():
     assert (h["x"], h["y"]) == (0.0, 16.0)
 
 
+def test_spec_drill_ops_recognizes_british_centred():
+    """Intake often emits "centred" — same deterministic drill must fire."""
+    from cadx.agent.orchestrator import _spec_drill_ops
+
+    spec = _grip_spec()
+    spec.features[0].position = "centred on X axis, full length"
+    ops = _spec_drill_ops(spec, _exec_res())
+    assert [o.op for o in ops] == ["drill_holes"]
+    assert ops[0].args["holes"][0]["axis"] == "x"
+
+
 def test_spec_drill_ops_skips_covered_and_positioned():
     from cadx.agent.orchestrator import _spec_drill_ops
 
