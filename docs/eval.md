@@ -93,6 +93,22 @@ Record results here after each prompt/model change:
 | Date | Model | Suite | Pass | Notes |
 |------|-------|-------|------|-------|
 | _initial_ | — | scripted | pipeline check | FakeLLM regression runs |
+| M8 post-change (cad focus) | local endpoint | real, `--queue-exec` | see below | warm runner, convergent repair, plan-lite, feature gates |
+
+M8 measured real runs (all `dim_ok=True`, `watertight=True`):
+
+| Benchmark | n | Passed | Score (min/med/max) | Wall median | Prompt tokens median | Notes |
+|-----------|---|--------|--------------------|-------------|---------------------|-------|
+| `plate_holes` (full plan) | 3 | 3/3 | 100/100/100 | 75 s | 24,702 | 1 exec each, 4 calls |
+| `plate_holes_lite` | 3 | 3/3 | 100/100/100 | 90 s | 21,928 | plan prompt 3,935 → 1,221 tok; one rep needed a repair exec (79,913 tok) |
+| `flange_pcd_cad` | 3 | 0/3 → 1/1 after feature fix | 90/90/92 | 194 s | 177,918 | all three were geometrically correct; `features_ok=False` was a measurement gap (torus fillet + coaxial rim chamfer), fixed in `features.py` |
+| `l_bracket_cad` | 3 | 0/3 | 15/50/55 | 1,147 s | 454,152 | watertight + dims OK; missing slot and detached/protruding ribs persist — repair now converges (bounded sessions, no budget-death) but the model still fails these features |
+
+Takeaways: plan-lite cuts the plan prompt ~3.2× but barely moves total cost
+on a trivial part (LLM latency dominates; a single repair doubles tokens).
+Complex parts remain expensive — L-bracket repair churn is bounded now but
+slot/rib generation is the next leverage point (new code-contract rules
+shipped; effect not yet re-measured).
 
 Add benchmarks for each new part class (brackets, enclosures, gears,
 heat-set inserts, thin walls) — the suite should grow with user feedback.
