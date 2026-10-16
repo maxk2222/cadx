@@ -79,6 +79,7 @@ class ExecResult:
         self.thread_count: int = 0
         self.bom: list[dict[str, Any]] = []
         self.timings: dict[str, float] = {}
+        self.warnings: list[str] = []
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -101,6 +102,7 @@ class ExecResult:
             "thread_count": self.thread_count,
             "bom": self.bom,
             "timings": self.timings,
+            "warnings": self.warnings,
         }
 
     @staticmethod
@@ -127,6 +129,7 @@ class ExecResult:
         r.fem = d.get("fem") or {}
         r.fem_export = d.get("fem_export") or {}
         r.topopt = d.get("topopt") or {}
+        r.warnings = list(d.get("warnings") or [])
         return r
 
 
@@ -192,6 +195,7 @@ def run_pipeline(
     res.params_used = ro.params_used
     res.thread_count = ro.thread_count
     res.bom = ro.bom
+    res.warnings = list(ro.warnings)
     res.timings["execute_s"] = round(ro.duration_s, 2)
     if not ro.ok or ro.brep_path is None:
         res.error = ro.error or "execution failed"

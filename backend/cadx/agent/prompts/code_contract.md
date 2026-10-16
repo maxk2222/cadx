@@ -72,7 +72,13 @@
      becomes None and the run reports "no result assigned"). To intersect, use
      `body = cadlib.mesh_intersect(body, tool)` (raises a real error). To flatten
      the underside use `body = cadlib.trim_below(body, z=0)` — a cut, not an
-     intersection. Cuts (`body -= tool`) and fuses (`body += tool`) are mesh-safe.
+     intersection.
+   - Booleans on mesh solids can shed sub-mm SLIVER solids — the result then
+     holds several disconnected fragments and fails the single-part check.
+     Wrap cuts and fuses in `cadlib.mesh_cut(body, tool)` /
+     `cadlib.mesh_fuse(body, tool)` so debris is dropped at the op; plain
+     `body -= tool` / `body += tool` are accepted but less safe. Finish with
+     `result = cadlib.collapse_solids(body)` as a last-line guard.
    - NEVER call fillet/chamfer on mesh edges and never select mesh faces via
      `faces().filter_by(...)` — the solid has thousands of triangular facets; address
      positions numerically (bbox from `MESH_BBOX`, e.g. centred hole:

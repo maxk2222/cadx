@@ -43,6 +43,7 @@ class RunnerOutput:
     flat_brep_path: Path | None = None
     duration_s: float = 0.0
     static_errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
 
 def _limits(mem_mb: int, cpu_s: int) -> None:
@@ -172,6 +173,7 @@ def run_user_code(
         flat_brep_path=(
             (workdir / "flat_profile.brep") if (workdir / "flat_profile.brep").exists() else None
         ),
+        warnings=list(data.get("warnings") or []),
         duration_s=duration,
     )
     if not out.ok and not out.error:

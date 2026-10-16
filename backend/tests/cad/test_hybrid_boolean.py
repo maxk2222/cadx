@@ -97,3 +97,51 @@ def test_load_mesh_solid_unavailable_outside_hybrid(tmp_path):
     )
     assert not res.ok
     assert "hybrid" in (res.error or "").lower()
+
+
+def test_hybrid_runner_collapses_sliver_result(mesh_brep, tmp_path):
+    """Boolean ops on faceted mesh solids shed sliver solids (observed:
+    28-fragment result, largest ~94%). The runner collapses a multi-solid
+    hybrid result to the dominant solid and flags a warning for improve."""
+    code = """\
+from build123d import *
+
+PARAMS = {}
+body = load_mesh_solid()
+sliver = Pos(500, 500, 500) * Box(0.05, 0.05, 0.05)
+result = Compound(children=[body, sliver])
+"""
+    res = run_pipeline(
+        code=code,
+        out_dir=tmp_path / "it1",
+        settings=ProjectSettings(process="fdm"),
+        mesh_solid=mesh_brep,
+        mesh_bbox=[40.0, 40.0, 40.0],
+    )
+    assert res.ok, res.error
+    assert res.warnings and "collapsed" in res.warnings[0]
+    assert res.analysis.solid_count == 1
+
+
+def test_hybrid_runner_rejects_shattered_result(mesh_brep, tmp_path):
+    """When booleans destroyed the mesh body (dominant fragment < 30% of the
+    base volume), the runner must fail with a mesh_cut hint — a 100mm^3
+    fragment is not the part."""
+    code = """\
+from build123d import *
+
+PARAMS = {}
+body = load_mesh_solid()
+sliver = Pos(500, 500, 500) * Box(0.05, 0.05, 0.05)
+result = Compound(children=[sliver, Pos(0, 0, 200) * Box(1, 1, 1)])
+"""
+    res = run_pipeline(
+        code=code,
+        out_dir=tmp_path / "it1",
+        settings=ProjectSettings(process="fdm"),
+        mesh_solid=mesh_brep,
+        mesh_bbox=[40.0, 40.0, 40.0],
+    )
+    assert not res.ok
+    assert "shattered" in (res.error or "")
+    assert "mesh_cut" in (res.error or "")

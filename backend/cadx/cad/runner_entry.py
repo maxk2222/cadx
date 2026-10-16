@@ -353,6 +353,34 @@ def main() -> int:  # noqa: C901
         if len(solids) == 0:
             raise ValueError("result contains no solids")
 
+        # hybrid mode: boolean ops on a faceted mesh solid shed sub-mm sliver
+        # solids (observed: 28-solid compound, largest fragment ~94% of the
+        # volume). The debris isn't a feature — collapse to the dominant
+        # solid so the exported part is the intended single body, and flag
+        # it so the improve loop learns to use mesh_cut(). But when even the
+        # largest fragment lost most of the mesh body's volume the boolean
+        # shattered the part — that is a failure, not debris.
+        if mesh_solid_path and len(solids) > 1:
+            from cadx.cad.cadlib.ops import largest_solid
+
+            n = len(solids)
+            dominant = largest_solid(shape)
+            base_vol = getattr(_top_z_body, "volume", 0) or 0
+            if base_vol > 0 and dominant.volume < base_vol * 0.3:
+                raise ValueError(
+                    f"boolean ops shattered the mesh solid: {n} fragments, "
+                    f"largest keeps only {dominant.volume:.1f} mm^3 of the "
+                    f"{base_vol:.1f} mm^3 body — wrap cuts/fuses in "
+                    "cadlib.mesh_cut()/mesh_fuse() so the op falls back to "
+                    "the un-cut body instead of fragmenting it"
+                )
+            shape = dominant
+            solids = shape.solids()
+            result.setdefault("warnings", []).append(
+                f"result had {n} disconnected solids — collapsed to the largest; "
+                "wrap mesh booleans in cadlib.mesh_cut()/mesh_fuse() to drop slivers"
+            )
+
         export_brep(shape, str(workdir / "model.brep"))
 
         flat = namespace.get("flat_profile")

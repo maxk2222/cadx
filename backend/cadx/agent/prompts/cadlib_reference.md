@@ -141,9 +141,24 @@ No BuildPart context needed. Parts rest on XY (min Z = 0), centred — place wit
   `None` and the run reports "no result assigned"). USE THIS instead of
   `body = body & tool`, `.common()` or `.intersect()` on a mesh solid.
 
+### mesh_cut / mesh_fuse (hybrid mode)
+
+- `mesh_cut(body, tool)` / `mesh_fuse(body, tool)` — `body -/+ tool` that
+  raises on `None` AND drops sliver fragments: booleans on faceted mesh
+  solids can produce a multi-solid compound (debris, not features). USE
+  THESE for every boolean on a mesh solid.
+
+### collapse_solids / largest_solid (hybrid mode)
+
+- `collapse_solids(shape)` — returns the dominant solid when a boolean
+  result fragmented into slivers; passes single-solid shapes through.
+  `largest_solid(shape)` always returns the biggest solid. Last-line guard:
+  `result = cadlib.collapse_solids(body)`.
+
 ### trim_below (hybrid mode)
 
-- `trim_below(body, z=0, margin=400)` — cuts everything below the plane `z`.
-  USE THIS to flatten the underside of a mesh solid instead of
+- `trim_below(body, z=0, margin=400)` — cuts everything below the plane `z`,
+  sliver-safe and falls back to the input when the cut fails. USE THIS to
+  flatten the underside of a mesh solid instead of
   `body & Box(..., Align.MIN)` — an intersection that silently returns
   `None` on faceted meshes.

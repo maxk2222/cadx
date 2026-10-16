@@ -2058,6 +2058,18 @@ async def _run_cad(  # noqa: C901
         # improve/repair steps as minor issues
         for w in chk.warnings:
             pre_issues.append({"source": "lint", "severity": "minor", "what": w})
+        # runner warnings (e.g. hybrid sliver-collapse) tell improve the code
+        # worked but used a fragile pattern worth fixing in the next pass
+        for w in exec_result.get("warnings") or []:
+            pre_issues.append(
+                {
+                    "source": "exec",
+                    "severity": "major",
+                    "what": str(w),
+                    "fix_hint": "wrap mesh booleans in cadlib.mesh_cut()/mesh_fuse() "
+                    "so sliver fragments are dropped at the op, not the result",
+                }
+            )
         if (
             code_resp.expected_bbox
             and len(code_resp.expected_bbox) >= 3

@@ -7,6 +7,8 @@ from build123d import (
     Axis,
     Box,
     BuildPart,
+    Compound,
+    Cylinder,
     Pos,
 )
 
@@ -279,3 +281,42 @@ def test_runner_missing_result_keeps_old_error(tmp_path):
     out = run_user_code(code, tmp_path / "work")
     assert not out.ok
     assert "result" in (out.error or "")
+
+
+def test_collapse_solids_keeps_dominant():
+    """A fragmented boolean result (big part + slivers) collapses to the
+    dominant solid — the slivers are debris, not features."""
+    big = Pos(0, 0, 0) * Box(10, 10, 10)
+    sliver = Pos(50, 0, 0) * Box(0.05, 0.05, 0.05)
+    frag = Compound(children=[big, sliver])
+    out = cadlib.collapse_solids(frag)
+    assert out.volume == pytest.approx(1000.0, rel=0.01)
+
+
+def test_collapse_solids_single_passthrough():
+    body = Pos(0, 0, 0) * Box(10, 10, 10)
+    assert cadlib.collapse_solids(body).volume == pytest.approx(1000.0, rel=0.01)
+
+
+def test_largest_solid_picks_biggest():
+    big = Pos(0, 0, 0) * Box(10, 10, 10)
+    small = Pos(50, 0, 0) * Box(2, 2, 2)
+    out = cadlib.largest_solid(Compound(children=[small, big]))
+    assert out.volume == pytest.approx(1000.0, rel=0.01)
+
+
+def test_mesh_cut_raises_on_disjoint_tool():
+    body = Pos(0, 0, 0) * Box(10, 10, 10)
+    disjoint = Pos(500, 0, 0) * Box(2, 2, 2)
+    r = cadlib.mesh_cut(body, disjoint)
+    # a disjoint cut returns the body unchanged — still a valid result
+    assert r.volume == pytest.approx(1000.0, rel=0.01)
+
+
+def test_mesh_cut_drops_slivers():
+    """When the boolean sheds slivers, mesh_cut returns the dominant solid."""
+    body = Pos(0, 0, 0) * Box(10, 10, 10)
+    tool = Pos(0, 0, -1) * Cylinder(radius=2, height=12)
+    out = cadlib.mesh_cut(body, tool)
+    assert len(out.solids()) == 1
+    assert out.volume == pytest.approx(1000.0 - 3.14159 * 4 * 12, rel=0.05)

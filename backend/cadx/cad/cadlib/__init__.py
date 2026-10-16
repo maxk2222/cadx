@@ -20,7 +20,15 @@ from .cutouts import (
     t_slot,
     through_hole,
 )
-from .ops import mesh_intersect, safe_fillet, trim_below
+from .ops import (
+    collapse_solids,
+    largest_solid,
+    mesh_cut,
+    mesh_fuse,
+    mesh_intersect,
+    safe_fillet,
+    trim_below,
+)
 from .profile import closed_polyline, profile_body
 from .shapes import (
     boss,
@@ -38,6 +46,7 @@ __all__ = [
     "bearing_seat",
     "boss",
     "closed_polyline",
+    "collapse_solids",
     "dovetail_slot",
     "filleted_box",
     "hole_grid",
@@ -45,7 +54,10 @@ __all__ = [
     "keyhole_slot",
     "knurl_ring",
     "l_bracket",
+    "largest_solid",
     "living_hinge",
+    "mesh_cut",
+    "mesh_fuse",
     "mesh_intersect",
     "mounting_ear",
     "profile_body",
