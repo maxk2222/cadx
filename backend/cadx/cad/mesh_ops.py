@@ -1384,8 +1384,14 @@ def mesh_to_solid(mesh: trimesh.Trimesh, *, max_faces: int | None = None) -> Any
     """
     from build123d import Solid
 
-    mesh = _ensure_watertight(mesh)
     max_faces = max_faces or RuntimeSettings().mesh_max_faces_for_cad
+    # decimate BEFORE the watertight ladder — repair/voxel remesh memory
+    # scales with input faces and an uncapped input OOMs the executor
+    # (observed: 283k-face mesh -> >6GB -> cgroup kill)
+    if len(mesh.faces) > max_faces:
+        mesh = decimate(mesh, max_faces)
+    mesh = _ensure_watertight(mesh)
+    # repair itself can inflate faces (voxel rebuild) — cap again before sewing
     if len(mesh.faces) > max_faces:
         mesh = decimate(mesh, max_faces)
     if len(mesh.faces) > max_faces * 4:

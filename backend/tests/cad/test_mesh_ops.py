@@ -238,6 +238,25 @@ def test_mesh_to_solid_decimates_dense():
     assert solid.volume > 0
 
 
+def test_mesh_to_solid_decimates_before_watertight(monkeypatch):
+    """Regression: watertight repair must see the capped mesh, not the raw
+    input — uncapped input OOM'd the executor on a 283k-face mesh."""
+    seen: list[int] = []
+
+    def spy(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+        seen.append(len(mesh.faces))
+        return mesh
+
+    monkeypatch.setattr("cadx.cad.mesh_ops._ensure_watertight", spy)
+    m = trimesh.creation.icosphere(subdivisions=5)
+    import contextlib
+
+    # conversion itself may fail — only the watertight input size is under test
+    with contextlib.suppress(Exception):
+        mesh_to_solid(m, max_faces=2000)
+    assert seen and seen[0] <= 2000
+
+
 def test_mesh_to_solid_rejects_open_mesh():
     open_mesh = trimesh.creation.box(extents=[10, 10, 10]).section(
         plane_normal=[0, 0, 1], plane_origin=[0, 0, 0]
@@ -485,6 +504,14 @@ def test_baseline_mesh_matches_pipeline_sequence():
     # stated dim (x=60) then drives factor=30 -> [60,30,90]
     assert sorted(m.extents) == pytest.approx([30, 60, 90], rel=0.02)
     assert m.bounds[0][2] == pytest.approx(0, abs=1e-6)
+
+
+def test_baseline_mesh_cad_cap_faces():
+    """Pipeline must cap generator output even without a decimate op —
+    uncapped input OOM'd the executor watertight/boolean path."""
+    raw = trimesh.creation.icosphere(subdivisions=4)
+    m, _info = baseline_mesh(raw, MeshPostParams(), _spec(x=60, y=30, z=10), cad_cap_faces=2000)
+    assert len(m.faces) <= 2000
 
 
 def test_orient_by_plan_view_flat_box():

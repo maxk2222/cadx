@@ -107,7 +107,9 @@ services:
     security_opt:
       - no-new-privileges:true
     pids_limit: 256
-    mem_limit: 6g
+    # headroom for STL->B-rep sewing + pyvista renders on capped meshes —
+    # 6g was hit by the uncapped watertight ladder (283k-face input, rc=137)
+    mem_limit: 8g
     cpus: 4
 
   # GPU mesh generator — only on CUDA hosts; on macOS run it natively instead

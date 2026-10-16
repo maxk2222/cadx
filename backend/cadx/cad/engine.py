@@ -378,9 +378,10 @@ def run_mesh_pipeline(  # noqa: C901
         res.mesh["ops_only"] = True
         res.mesh["input_triangles"] = len(raw.faces)
     else:
-        # full resolution through the mesh pipeline — mesh_to_solid decimates
-        # its own copy (mesh_max_faces_for_cad), STL/GLB/analysis keep detail
-        mesh, base_info = baseline_mesh(raw, post, spec)
+        # cap at mesh_decimate_faces like the workbench/candidates paths do —
+        # uncapped generator output (observed 283k faces) OOMs downstream
+        # watertight repair and boolean ops inside the executor cgroup
+        mesh, base_info = baseline_mesh(raw, post, spec, cad_cap_faces=rt.mesh_decimate_faces)
         res.mesh.update(base_info)
 
     # 5b. agent transform ops (validated MeshOp list inside post.params)
