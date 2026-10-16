@@ -104,8 +104,11 @@
      it with a parametric approximation.
 7b. MEASURED PLAN VIEW (only when the context shows "measured image features"):
    - `anchor_holes()` returns the hole positions measured from the top-view image
-     as a list of `{"index", "x", "y", "dia"}` dicts (XY in the part frame, the
-     origin at the bbox centre — same frame as `MESH_BBOX`). When `anchor_holes()`
+     as a list of `{"index", "x", "y", "dia", "axis"}` dicts (XY in the part frame, the
+     origin at the bbox centre — same frame as `MESH_BBOX`). `axis` is the
+     measured drill direction (plan-view holes: `"+z"`) — drill along THAT axis;
+     a hole at the right XY position but bored through a side face is a
+     rejected part. When `anchor_holes()`
      returns entries, positioned through-holes MUST use those `x`/`y` coordinates
      verbatim (combine with `spine_y(x)` only when the anchor list is empty) and
      MUST keep `dia` from your spec, not from the image (image diameters are

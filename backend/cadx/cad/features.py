@@ -854,11 +854,13 @@ def compare_anchor_positions(
     if not holes:
         return findings
     centres: list[tuple[float, float]] = []
+    wrong_axis_centres: list[tuple[float, float, str]] = []
     for g in measured.hole_groups:
         if g.axis in ("+z", "-z", ""):
             centres += [(c[0], c[1]) for c in g.centers]
-    if not centres:  # any axis is better than nothing
-        centres += [(c[0], c[1]) for g in measured.hole_groups for c in g.centers]
+        else:
+            wrong_axis_centres += [(c[0], c[1], g.axis) for c in g.centers]
+    any_axis = centres + [(c0, c1) for c0, c1, _ in wrong_axis_centres]
     for a in holes:
         ax, ay = float(a["x"]), float(a["y"])
         # position exactness only makes sense for anchors backed by an
@@ -866,7 +868,39 @@ def compare_anchor_positions(
         # self-referential (the mesh IS the part) so a deviation is minor
         src = str(a.get("source", "image"))
         exact = src in ("image", "image+mesh")
-        d = min((math.hypot(ax - cx, ay - cy) for cx, cy in centres), default=None)
+        # when the anchor carries a measured drill axis (plan-view holes are
+        # "+z"), a hole bored along a different axis never matches it — a
+        # sideways pin through the width is not a mounting hole.
+        want = str(a.get("axis") or "")
+        want_z = want.lstrip("+-") in ("z", "")
+        use_centres = centres if want_z else any_axis
+        if not use_centres and not want_z:
+            use_centres = any_axis
+        d = min((math.hypot(ax - cx, ay - cy) for cx, cy in use_centres), default=None)
+        if want_z and (d is None or d > (2.0 if exact else 3.0)) and wrong_axis_centres:
+            dw = min(
+                (math.hypot(ax - cx, ay - cy) for cx, cy, _ in wrong_axis_centres),
+                default=None,
+            )
+            if dw is not None and dw <= 3.0:
+                bad_axis = min(
+                    wrong_axis_centres, key=lambda t: math.hypot(ax - t[0], ay - t[1])
+                )[2]
+                findings.append(
+                    FeatureFinding(
+                        feature=f"hole {a.get('index', '?')}",
+                        expected=f"at ({ax:.1f}, {ay:.1f}) drilled along {want or '+z'}",
+                        actual=f"hole near that position drilled along {bad_axis}",
+                        severity="major" if exact else "minor",
+                        fix_hint=(
+                            "the hole is bored through the wrong face — cut it "
+                            f"along {want or '+z'} (through the flat top face), "
+                            "not through a side edge"
+                        ),
+                    )
+                )
+                continue
+
         if d is None:
             findings.append(
                 FeatureFinding(

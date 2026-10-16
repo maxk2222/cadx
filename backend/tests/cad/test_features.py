@@ -22,6 +22,7 @@ from build123d import (
 from cadx.cad.features import (
     MeasuredFeatures,
     MeasuredHoleGroup,
+    compare_anchor_positions,
     compare_features,
     extract_features,
 )
@@ -270,3 +271,52 @@ def test_extract_countersunk_bore_is_one_hole():
     m = extract_features(p.part)
     assert m.total_holes == 1
     assert m.countersinks == 1
+
+
+def test_compare_anchor_positions_flags_wrong_axis():
+    """A hole bored along Y must not satisfy a +z plan-view anchor — a
+    sideways pin through the width is not a mounting hole."""
+    anchors = {
+        "holes": [
+            {
+                "index": 1,
+                "x": 10.0,
+                "y": 0.0,
+                "dia": 5.0,
+                "axis": "+z",
+                "source": "image",
+            }
+        ]
+    }
+    measured = MeasuredFeatures(
+        hole_groups=[
+            MeasuredHoleGroup(diameter=5.0, count=1, axis="+y", centers=[(10.0, 0.0, 4.0)])
+        ],
+        total_holes=1,
+    )
+    findings = compare_anchor_positions(anchors, measured)
+    assert findings, "wrong-axis hole must produce a finding"
+    assert any("+y" in f.actual for f in findings)
+    assert all(f.actual != "missing" for f in findings)
+
+
+def test_compare_anchor_positions_z_anchor_matches_z_hole():
+    anchors = {
+        "holes": [
+            {
+                "index": 1,
+                "x": 10.0,
+                "y": 0.0,
+                "dia": 5.0,
+                "axis": "+z",
+                "source": "image",
+            }
+        ]
+    }
+    measured = MeasuredFeatures(
+        hole_groups=[
+            MeasuredHoleGroup(diameter=5.0, count=1, axis="+z", centers=[(10.0, 0.0, 4.0)])
+        ],
+        total_holes=1,
+    )
+    assert compare_anchor_positions(anchors, measured) == []
