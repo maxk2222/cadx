@@ -56,9 +56,9 @@ _CADLIB_ALIASES: dict[str, set[str]] = {
     "lasche": {"mounting_ear"},
     # "slot"/"langloch" MUST reach oblong_slot — the observed L-bracket
     # failure hand-rolled a slot by filleting a box (r > width/2 → crash)
-    "slot": {"oblong_slot", "keyhole_slot", "t_slot", "dovetail_slot"},
-    "langloch": {"oblong_slot"},
-    "oblong": {"oblong_slot"},
+    "slot": {"oblong_slot", "slot_cutter", "keyhole_slot", "t_slot", "dovetail_slot"},
+    "langloch": {"oblong_slot", "slot_cutter"},
+    "oblong": {"oblong_slot", "slot_cutter"},
     "keyhole": {"keyhole_slot"},
     "bearing": {"bearing_seat"},
     "lager": {"bearing_seat"},

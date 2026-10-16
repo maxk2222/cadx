@@ -292,6 +292,55 @@ _AXIS_VECS: dict[str, tuple[float, float, float]] = {
 }
 
 
+def slot_cutter(
+    width: float,
+    length: float,
+    *,
+    direction: str = "+x",
+    normal: str = "+z",
+    part=None,
+    depth: float | None = None,
+):
+    """Stadium-slot cutter as a solid — subtract it from your part:
+
+        body = body - Pos(x, y, z) * slot_cutter(6.5, 15,
+                    direction="+z", normal="+x", part=body)
+
+    Same geometry as `oblong_slot` but for algebra-style code that builds
+    `body` via `+`/`-` instead of a `BuildPart` context. ``part`` is the
+    target solid — the through-cut is sized over its bounding box so no
+    membrane can seal the slot; ``depth`` makes a blind pocket instead.
+    """
+    try:
+        d = _AXIS_VECS[direction]
+        n = _AXIS_VECS[normal]
+    except KeyError:
+        raise ValueError(
+            f"slot_cutter: direction/normal must be one of {sorted(_AXIS_VECS)}"
+        ) from None
+    if any(d[i] != 0 and n[i] != 0 for i in range(3)):
+        raise ValueError(
+            f"slot_cutter: direction={direction!r} and normal={normal!r} must be perpendicular"
+        )
+    r = width / 2
+    half = max(0.0, length / 2 - r)
+    if depth is None:
+        if part is None:
+            raise ValueError("slot_cutter: pass `part` to size the through-cut")
+        s = part.bounding_box().size
+        height = math.sqrt(s.X * s.X + s.Y * s.Y + s.Z * s.Z) + 10.0
+        mid = 0.0
+    else:
+        height = depth + 1.0
+        mid = (1.0 - depth) / 2
+    frame = Plane(origin=(0, 0, 0), x_dir=d, z_dir=n)
+    cutter = Pos(half, 0, 0) * Cylinder(radius=r, height=height)
+    cutter += Pos(-half, 0, 0) * Cylinder(radius=r, height=height)
+    if half > 0:
+        cutter += Box(2 * half, width, height)
+    return frame.location * Pos(0, 0, mid) * cutter
+
+
 def oblong_slot(
     width: float,
     length: float,
@@ -307,6 +356,9 @@ def oblong_slot(
     is taller than the part diagonal so no membrane can seal the slot;
     ``depth`` makes a blind pocket instead. USE THIS for elongated mounting
     slots (belt clips, adjustment slots) — the most commonly missed feature.
+    The cut happens on THE ACTIVE part — the BuildPart must contain your
+    actual body. If the body is algebra-style (`body = Box(...) + ...`), use
+    `slot_cutter` instead and subtract it: `body -= Pos(...) * slot_cutter(...)`.
 
         with Locations(Pos(10, 0, 0)):
             oblong_slot(6.0, 20.0)                       # 6x20, along X through Z

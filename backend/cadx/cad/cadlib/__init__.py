@@ -18,6 +18,7 @@ from .cutouts import (
     insert_pocket,
     keyhole_slot,
     oblong_slot,
+    slot_cutter,
     t_slot,
     through_hole,
 )
@@ -68,6 +69,7 @@ __all__ = [
     "profile_body",
     "rib",
     "safe_fillet",
+    "slot_cutter",
     "snap_fit_cantilever",
     "t_slot",
     "text_label",

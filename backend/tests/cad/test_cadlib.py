@@ -368,6 +368,20 @@ def test_oblong_slot_vertical_through_wall():
     assert p.part.is_inside((2.0, 0.0, 5.0))
 
 
+def test_slot_cutter_algebra_style():
+    """Algebra-mode bodies subtract the returned cutter — the observed
+    l_bracket model wrapped the slot in a throwaway BuildPart instead."""
+    body = Box(4, 40, 50, align=_ALIGN_MIN)
+    body = body - Pos(0, 0, 25) * cadlib.slot_cutter(
+        6.5, 15.0, direction="+z", normal="+x", part=body
+    )
+    for z in (-4, 0, 4):
+        for x in (0.5, 2.0, 3.5):
+            assert not body.is_inside((float(x), 0.0, 25.0 + z)), (x, z)
+    assert body.is_inside((2.0, 0.0, 45.0))
+    assert body.is_inside((2.0, 0.0, 5.0))
+
+
 def test_oblong_slot_rejects_parallel_axes():
     with BuildPart():
         Box(60, 40, 6, align=_ALIGN_MIN)

@@ -50,7 +50,16 @@ to apply at that workplane (usually a face, e.g. `p.faces().sort_by(Axis.Z)[-1]`
   `depth` makes a blind pocket. USE THIS for elongated mounting slots —
   hand-built slots from two boxes get skipped or leak membranes. A vertical
   slot through a wall thin in X:
-  `oblong_slot(6.5, 15, direction="+z", normal="+x")`.
+  `oblong_slot(6.5, 15, direction="+z", normal="+x")`. The cut applies to the
+  ACTIVE BuildPart — never into a throwaway box. For algebra-style bodies:
+  `body = body - Pos(x, y, z) * slot_cutter(w, l, direction=..., normal=..., part=body)`.
+
+### slot_cutter
+
+- `slot_cutter(width, length, direction="+x", normal="+z", part=None, depth=None)`
+  — stadium-slot cutter as a solid for algebra-style bodies: subtract it,
+  `body = body - Pos(x, y, z) * slot_cutter(6.5, 15, direction="+z", normal="+x", part=body)`.
+  `part` sizes the through-cut over the target's bounding box.
 
 ### keyhole_slot
 
