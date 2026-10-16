@@ -251,13 +251,20 @@ def _scan_faces(
 
 
 def _load_watertight_mesh(stl_path: Path):
+    """Best-effort tessellation for tunnel probes. Watertight gives the
+    cleanest signal; cracked exports still carry usable hit maps — the
+    caller flags the result `approximate` instead of losing slot/depth
+    detection entirely (observed: a degenerate 7 mm sliver under an
+    l_bracket made the STL leak and hid a real slot)."""
     import trimesh
 
     mesh = trimesh.load(str(stl_path), force="mesh", process=False)
     if not isinstance(mesh, trimesh.Trimesh):
         return None
     mesh.merge_vertices()
-    return mesh if mesh.is_watertight else None
+    if not mesh.is_watertight:
+        mesh.fill_holes()
+    return mesh if len(mesh.faces) else None
 
 
 def _ray_tunnel(mesh, center: list[float], axis: int, r: float) -> bool:
@@ -400,6 +407,8 @@ def extract_features(  # noqa: C901 — sequential measurement passes
             mesh = _load_watertight_mesh(stl_path)
         except Exception:
             mesh = None
+        if mesh is not None and not mesh.is_watertight:
+            out.approximate = True
 
     cyl_faces, cones, tori, chamfer_planes = _scan_faces(shape)
 
@@ -818,7 +827,7 @@ def _check_slot_features(
                     "cut the slot as an elongated through-void, not a round "
                     "hole — cadlib.oblong_slot(width, length, direction=<slot "
                     "axis>, normal=<wall normal>) inside a Locations scope; "
-                    'a slot along Z through an X-thin wall: '
+                    "a slot along Z through an X-thin wall: "
                     'oblong_slot(6.5, 15, direction="+z", normal="+x")'
                 ),
             )

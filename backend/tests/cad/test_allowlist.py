@@ -157,6 +157,27 @@ def test_lint_hallucinated_method_warns():
     assert not any("removeSplitter" in w for w in r2.warnings)
 
 
+def test_lint_builder_fused_readd_warns():
+    """Observed on l_bracket rep: `slot_cutter = extrude(..., mode=Mode.ADD)`
+    inside BuildPart fused the cutter at the origin; `add(slot_cutter,
+    mode=Mode.SUBTRACT)` on the translated copy left a ghost pillar in the
+    body and blocked slot detection."""
+    code = (
+        GOOD
+        + "with BuildPart() as p:\n"
+        + "    Box(60, 40, 6)\n"
+        + "    with BuildSketch(Plane.YZ):\n"
+        + "        RectangleRounded(6.5, 15, radius=2)\n"
+        + "    cut = extrude(amount=6, mode=Mode.ADD)\n"
+        + "    cut = cut.translate((-28, 0, 29))\n"
+        + "    add(cut, mode=Mode.SUBTRACT)\n"
+        + "result = p.part\n"
+    )
+    r = check_code(code)
+    assert r.ok
+    assert any("already fused" in w and "cut" in w for w in r.warnings)
+
+
 def test_lint_clean_code_no_warnings():
     code = (
         GOOD

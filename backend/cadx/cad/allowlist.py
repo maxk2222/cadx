@@ -153,6 +153,11 @@ class _Checker(ast.NodeVisitor):
         # transform on top double-applies the placement (observed: wedge
         # moved() then translate()d again → ribs floated outside the part)
         self._transformed: set[str] = set()
+        # vars assigned from a builder-additive call inside BuildPart —
+        # extrude()/Box()/add() already fuse the solid; passing the var to
+        # add() or subtracting a moved copy leaves the un-positioned
+        # original in the body (observed: ghost pillar at the part centre)
+        self._builder_fused: set[str] = set()
         # `with BuildPart() as p` -> "p"; >0 while inside that block
         self._builder_vars: set[str] = set()
         self._builder_depth = 0
@@ -380,6 +385,21 @@ class _Checker(ast.NodeVisitor):
     def visit_Call(self, node: ast.Call) -> None:
         if isinstance(node.func, ast.Name) and node.func.id in FORBIDDEN_NAMES:
             self._err(node, f"call to '{node.func.id}' is not allowed")
+        if (
+            isinstance(node.func, ast.Name)
+            and node.func.id == "add"
+            and node.args
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id in self._builder_fused
+        ):
+            self._warn(
+                node,
+                f"`{node.args[0].id}` was already fused into the BuildPart by "
+                "the call that created it — add()ing it again leaves an "
+                "un-positioned copy in the body. Build the cutter OUTSIDE "
+                "the part, or subtract it in the original call with "
+                "mode=Mode.SUBTRACT.",
+            )
         # float('…') with a non-numeric string — observed model corruption
         # (`float('.')`) that parses fine but raises at exec time
         if (
@@ -545,7 +565,7 @@ class _Checker(ast.NodeVisitor):
             )
         self.generic_visit(node)
 
-    def visit_Assign(self, node: ast.Assign) -> None:
+    def visit_Assign(self, node: ast.Assign) -> None:  # noqa: C901 — per-name bookkeeping
         ctor = (
             node.value.func.id
             if isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name)
@@ -575,6 +595,15 @@ class _Checker(ast.NodeVisitor):
                     self._transformed.add(t.id)
                 else:
                     self._transformed.discard(t.id)
+                if self._builder_depth > 0:
+                    if (
+                        isinstance(v, ast.Call)
+                        and isinstance(v.func, ast.Name)
+                        and (v.func.id in _3D_CTORS or v.func.id == "add")
+                    ):
+                        self._builder_fused.add(t.id)
+                    elif not is_transform:
+                        self._builder_fused.discard(t.id)
                 if t.id == "PARAMS" and isinstance(node.value, ast.Dict):
                     self.params_node = node
                 if t.id == "result":
