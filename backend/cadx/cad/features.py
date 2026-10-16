@@ -809,8 +809,11 @@ def _check_slot_features(
                 actual=f"{measured.slots} elongated through-void(s) detected",
                 severity="major",
                 fix_hint=(
-                    "cut the slots as elongated voids (rounded rectangle sketch "
-                    "extruded through the part), not as round holes"
+                    "cut the slot as an elongated through-void, not a round "
+                    "hole — cadlib.oblong_slot(width, length, direction=<slot "
+                    "axis>, normal=<wall normal>) inside a Locations scope; "
+                    'a slot along Z through an X-thin wall: '
+                    'oblong_slot(6.5, 15, direction="+z", normal="+x")'
                 ),
             )
         )

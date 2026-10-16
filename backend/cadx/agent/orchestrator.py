@@ -231,7 +231,9 @@ def build_issues(
                 "what": f"part consists of {solid_count} disconnected solids — "
                 "the spec describes a single joined part",
                 "fix_hint": "rebuild so all features are fused into one body "
-                "(boolean additions must overlap the base body)",
+                "(boolean additions must overlap the base body — a rib/gusset "
+                "that only touches a face stays a separate solid; use "
+                "cadlib.rib() and sink it partly into the wall)",
             }
         )
     for i in dim_issues:
