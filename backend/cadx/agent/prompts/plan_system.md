@@ -57,6 +57,10 @@ Then fill the rest:
   "1. base plate Box(100,60,8) aligned CENTER,CENTER,MIN",
   "2. GridLocations 80x40 (2x2) on top face -> ClearanceHole M4 countersunk",
   "3. fillet vertical outer edges r=2". For hybrid: steps for the CAD features only.
+  Be GEOMETRICALLY EXPLICIT — "fillet the inner edge" is ambiguous; say which
+  edge runs where, e.g. "fillet the inside corner edge between foot and leg
+  (runs along Y)". For holes name the FACE they open on and their axis
+  ("foot top face, through Z"), not just the diameter.
 - `params`: the PARAMS table for the code (name, value, unit, min, max, description).
   Numeric values only where the user or spec gives them; include fastener size strings
   (e.g. "screw": "M4-0.7") as string params so they stay user-adjustable.

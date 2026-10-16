@@ -31,46 +31,107 @@ def system_prompt(name: str) -> str:
 _CADLIB_ALWAYS = {"through_hole", "profile_body"}
 
 
+# shared vocabulary: feature wording -> cadlib helper names. Anything not
+# listed here still shows up in the compact index prepended to the filtered
+# reference — the section body is what costs tokens.
+_CADLIB_ALIASES: dict[str, set[str]] = {
+    "hole": {"through_hole", "hole_grid"},
+    "bore": {"through_hole"},
+    "loch": {"through_hole", "hole_grid"},
+    "bohrung": {"through_hole"},
+    "insert": {"insert_pocket", "hole_grid"},
+    "einsatz": {"insert_pocket"},
+    "screw": {"hole_grid", "boss"},
+    "schraube": {"hole_grid", "boss"},
+    "bolt": {"through_hole", "hole_grid"},
+    "flange": {"through_hole", "hole_grid"},
+    "flansch": {"through_hole", "hole_grid"},
+    "lochkreis": {"through_hole", "hole_grid"},
+    "pcd": {"through_hole", "hole_grid"},
+    "boss": {"boss"},
+    "rib": {"rib"},
+    "gusset": {"rib"},
+    "rippe": {"rib"},
+    "ear": {"mounting_ear"},
+    "lasche": {"mounting_ear"},
+    # "slot"/"langloch" MUST reach oblong_slot — the observed L-bracket
+    # failure hand-rolled a slot by filleting a box (r > width/2 → crash)
+    "slot": {"oblong_slot", "keyhole_slot", "t_slot", "dovetail_slot"},
+    "langloch": {"oblong_slot"},
+    "oblong": {"oblong_slot"},
+    "keyhole": {"keyhole_slot"},
+    "bearing": {"bearing_seat"},
+    "lager": {"bearing_seat"},
+    "hinge": {"living_hinge"},
+    "snap": {"snap_fit_cantilever"},
+    "knurl": {"knurl_ring"},
+    "rändel": {"knurl_ring"},
+    "text": {"text_label"},
+    "label": {"text_label"},
+    "bracket": {"l_bracket", "rib"},
+    "winkel": {"l_bracket", "rib"},
+    "tube": {"tube"},
+    "pipe": {"tube"},
+    "rohr": {"tube"},
+    "hub": {"tube"},
+    "nabe": {"tube"},
+    "buchse": {"tube"},
+    # whenever fillets appear anywhere, safe_fillet earns its tokens
+    "fillet": {"safe_fillet"},
+    "round": {"safe_fillet"},
+    "radius": {"safe_fillet"},
+    "verrund": {"safe_fillet"},
+    "fase": {"safe_fillet"},
+    "chamfer": {"safe_fillet"},
+    "outline": {"profile_body", "closed_polyline"},
+    "profile": {"profile_body", "closed_polyline"},
+    "sweep": {"closed_polyline"},
+    "mesh": {"mesh_cut", "mesh_fuse", "mesh_intersect", "collapse_solids", "trim_below"},
+    "hybrid": {"mesh_cut", "mesh_fuse", "mesh_intersect", "collapse_solids", "trim_below"},
+}
+
+
+def _cadlib_index(text: str) -> str:
+    """One-line signature index of EVERY helper — filtering keeps the model
+    from seeing helpers it needs but that the word-matcher missed."""
+    rows: list[str] = []
+    cur_name = ""
+    for line in text.split("\n"):
+        if line.startswith("### "):
+            cur_name = line[4:].strip().split("(")[0].strip()
+        elif cur_name and line.startswith("- `"):
+            sig = line[3:].lstrip("`").split("`")[0].strip()
+            rows.append(sig if sig.startswith(cur_name) else f"{cur_name}: {sig}")
+            cur_name = ""
+    if not rows:
+        return ""
+    return "ALL helpers (cadlib_lookup / this doc has details): " + ", ".join(rows)
+
+
 def _cadlib_sections(spec: PartSpec | None) -> str:
     """cadlib_reference.md filtered to the helpers the spec actually needs.
 
     Sections are delimited by `### <helper_name>`; a section is kept when its
-    helper name shares a word with a spec feature type/name. With no spec (or
-    no features) the full reference is returned — codegen from scratch gets
-    the complete toolbox."""
+    helper name shares a word with a spec feature type/name — or the spec's
+    own name/summary. A compact index of every helper is always prepended so
+    unlisted helpers stay discoverable. With no spec (or no features) the
+    full reference is returned — codegen from scratch gets the toolbox."""
     text = read_prompt("cadlib_reference.md")
     if spec is None or not spec.features:
         return text
     words: set[str] = set()
-    for f in spec.features:
-        for w in re.split(r"[^a-z]+", f"{f.type} {f.name}".lower()):
-            if w:
-                words.add(w)
-    # shared vocabulary: feature wording -> helper names
-    for alias, helpers in {
-        "hole": {"through_hole", "hole_grid"},
-        "bore": {"through_hole"},
-        "insert": {"insert_pocket", "hole_grid"},
-        "screw": {"hole_grid", "boss"},
-        "boss": {"boss"},
-        "rib": {"rib"},
-        "gusset": {"rib"},
-        "ear": {"mounting_ear"},
-        "slot": {"keyhole_slot", "t_slot", "dovetail_slot"},
-        "keyhole": {"keyhole_slot"},
-        "bearing": {"bearing_seat"},
-        "hinge": {"living_hinge"},
-        "snap": {"snap_fit_cantilever"},
-        "knurl": {"knurl_ring"},
-        "text": {"text_label"},
-        "label": {"text_label"},
-        "bracket": {"l_bracket"},
-        "box": {"filleted_box"},
-        "outline": {"profile_body", "closed_polyline"},
-        "profile": {"profile_body", "closed_polyline"},
-    }.items():
+    haystack = " ".join(
+        [str(spec.name or ""), str(spec.summary or "")]
+        + [f"{f.type} {f.name}" for f in spec.features]
+    )
+    for w in re.split(r"[^a-z]+", haystack.lower()):
+        if w:
+            words.add(w)
+    for alias, helpers in _CADLIB_ALIASES.items():
         if alias in words:
             words.update(helpers)
+    if ("fillet" in words or "verrund" in words or "radius" in words) and "box" in words:
+        words.add("filleted_box")
     keep = words | _CADLIB_ALWAYS
 
     lines = text.split("\n")
@@ -91,7 +152,8 @@ def _cadlib_sections(spec: PartSpec | None) -> str:
         else:
             section.append(line)
     _flush()
-    return "\n".join(out)
+    idx = _cadlib_index(text)
+    return (idx + "\n\n" if idx else "") + "\n".join(out)
 
 
 def _reference_docs(
@@ -99,17 +161,21 @@ def _reference_docs(
 ) -> str:
     """Staged reference docs: build123d always; bd_warehouse only when the
     plan/spec references standard parts; cadlib filtered to needed helpers;
-    full examples only for fresh codegen (repairs get the terse contract)."""
+    full examples only for fresh codegen (repairs get the terse contract).
+
+    Order matters: STATIC docs first, spec-dependent excerpts last — vLLM
+    prefix caching then shares the long head across repair/improve/codegen
+    sessions on the same job."""
     parts = [read_prompt("build123d_reference.md")]
+    if fresh:
+        parts.append(read_prompt("code_examples.md"))
+    parts.append(read_prompt("dfm_rules.md"))
+    parts.append(_cadlib_sections(spec))
     needs_bd = bool(getattr(plan, "standard_parts", None)) or any(
         getattr(f, "standard", "") for f in (spec.features if spec else [])
     )
     if needs_bd:
         parts.append(read_prompt("bd_warehouse_reference.md"))
-    parts.append(_cadlib_sections(spec))
-    if fresh:
-        parts.append(read_prompt("code_examples.md"))
-    parts.append(read_prompt("dfm_rules.md"))
     return "\n\n".join(p for p in parts if p)
 
 

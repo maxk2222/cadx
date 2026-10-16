@@ -127,8 +127,6 @@ No BuildPart context needed. Parts rest on XY (min Z = 0), centred — place wit
   rests on XY centred exactly like the outline — the fastest correct way to
   turn a measured top view into a solid.
 
-### closed_polyline
-
 ### safe_fillet
 
 - `safe_fillet(edges, radius, min_radius=0.2)` — fillet with fallback: halves

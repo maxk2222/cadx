@@ -76,6 +76,31 @@ result = extrude(s.sketch, amount=3)
 - locations: `Locations(face)`, `GridLocations(x, y, nx, ny)`, `PolarLocations(r, n, start_angle=0, rotate=True)`, `HexLocations`, `Pos(x,y,z)`, `Rot(angle=a, about=Axis.Z)`, `Plane.XZ`, `Plane.YZ`.
 
 ### PITFALLS (fix these first when a run fails)
+- `Pos(x, y, z) * Box(...)` as a BARE STATEMENT inside `with BuildPart():` adds
+  the primitive at the ORIGIN and discards the moved copy — the part silently
+  keeps a body where you never wanted it. Scoped instead:
+  `with Locations(Pos(x, y, z)): Box(...)` — or `add(Pos(...) * Box(...))`.
+  Same trap outside builders: the expression's result is discarded unless you
+  assign it or pass it to a boolean.
+- `p.faces().sort_by(Axis.Z)[-1]` is the HIGHEST face — on an L-shape that's
+  the leg's top, NOT the base's top. Pick by position:
+  `p.faces().filter_by(Axis.Z).group_by(Axis.Z)` and choose the group at the
+  height you need (or place cuts absolutely with `Pos` + a cutter).
+- Inner corner edges (e.g. where two plates meet) run along the joint's
+  direction — an L-bracket's inside edge runs along Y. Select by direction
+  AND position: `p.edges().filter_by(Axis.Y)` then pick by `e.center()`.
+  NOTE `e.center()` is a METHOD — `e.center.X` raises AttributeError.
+- `ShapeList` has `filter_by()` / `sort_by()` / `group_by()` — NOT the Python
+  `filter()`. `p.edges().filter(lambda e: ...)` raises AttributeError; use a
+  list comprehension `[e for e in p.edges() if ...]` instead.
+- Oblong slots: never fillet a box to round its ends (r == half-width always
+  crashes "Failed creating a fillet"). Use `cadlib.oblong_slot(width, length)`
+  or a `SlotOverall(w, l)` sketch + `extrude(amount=-depth, mode=SUBTRACT)`.
+- Bolt circle / Lochkreis (PCD): `with PolarLocations(radius, count): Hole(r)`
+  inside BuildPart, or place cutters at `(r*cos(2πi/n), r*sin(2πi/n), z)`.
+- `p.part += x` inside `with BuildPart() as p:` works but bypasses the
+  builder — prefer `add(x)` (or `add(x, mode=Mode.SUBTRACT)` for cuts); it
+  keeps pending edges/sketches consistent.
 - Primitives are centred in ALL axes by default -> ALWAYS pass `align=(Align.CENTER, Align.CENTER, Align.MIN)` for base bodies (contract requires bottom on XY).
 - `Pos(x, y, z) * Cylinder(r, h)` puts the cylinder's CENTRE at (x, y, z), not its
   base — `Pos(x, y, -1) * Cylinder(r, h)` therefore stops short and leaves a thin
