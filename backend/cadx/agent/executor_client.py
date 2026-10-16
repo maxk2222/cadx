@@ -34,6 +34,11 @@ class InProcessExecutor:
     async def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await asyncio.to_thread(run_execute_payload, payload)
 
+    async def audit_params(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from cadx.cad.tasks import run_audit_payload
+
+        return await asyncio.to_thread(run_audit_payload, payload)
+
     async def process_mesh(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await asyncio.to_thread(run_mesh_payload, payload)
 
@@ -137,6 +142,12 @@ class QueueExecutor:
     async def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
         timeout = self.runtime_settings.exec_timeout_s * 2 + 120
         return await self._run_task("execute_version", payload, timeout)
+
+    async def audit_params(self, payload: dict[str, Any]) -> dict[str, Any]:
+        # baseline + 2 light pipeline runs per audited param
+        runs = 2 * int(payload.get("max_params") or 8) + 1
+        timeout = self.runtime_settings.exec_timeout_s * runs + 120
+        return await self._run_task("audit_params", payload, timeout)
 
     async def process_mesh(self, payload: dict[str, Any]) -> dict[str, Any]:
         timeout = self.runtime_settings.exec_timeout_s + self.runtime_settings.mesh_timeout_s + 120

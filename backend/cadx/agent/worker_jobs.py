@@ -28,6 +28,7 @@ from cadx.agent.mesh_client import MeshPort, make_mesh_client
 from cadx.agent.orchestrator import RunOutcome, run_generation
 from cadx.agent.trace import MemoryTrace, sanitize_messages
 from cadx.agent.types import AgentCtx, InputAsset, ParentContext
+from cadx.cad.allowlist import check_code
 from cadx.cad.mesh_ops import MESH_OPS_VERSION, MeshOp, MeshPostParams, merge_post_params
 from cadx.db.models import (
     AgentTrace,
@@ -611,6 +612,66 @@ async def run_params_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[s
             runtime_settings,
         )
 
+        # design-robustness pre-flight (M7): perturb each numeric PARAMS value
+        # of the parent's code ±ε and re-run — a quality signal only, it never
+        # blocks the sweep. Mesh parents carry no PARAMS dict to audit.
+        audit_report: dict[str, Any] | None = None
+        parent_v_dir = storage.version_dir(parent.project_id, parent.id)
+        solid = parent_v_dir / "mesh" / "solid.brep"
+        if parent_mode != "mesh" and parent.code:
+            # baseline = declared PARAMS overridden by the parent's stored
+            # params and this job's sweep values — the audit probes around
+            # the configuration actually being produced
+            declared = check_code(parent.code).params
+            base_params = {
+                **declared,
+                **(parent.params or {}),
+                **(payload.get("params") or {}),
+            }
+            if any(
+                isinstance(v, int | float) and not isinstance(v, bool) for v in base_params.values()
+            ):
+                await emit("audit", 1, "design audit: perturbing parameters")
+                audit_report = await executor.audit_params(
+                    {
+                        "job_id": str(job_id),
+                        "project_id": str(version.project_id),
+                        "version_id": str(version.id),
+                        "iteration": 1,
+                        "code": parent.code,
+                        "params": base_params,
+                        "references": [],
+                        "settings": settings.model_dump(),
+                        "runtime_settings": runtime_settings.executor_values(),
+                        "mesh_solid": str(solid)
+                        if solid.exists() and parent_mode == "hybrid"
+                        else None,
+                        "mesh_bbox": (parent.mesh or {}).get("bbox_size"),
+                    }
+                )
+                a_status = str(audit_report.get("status") or "fails")
+                flagged = [
+                    n
+                    for n, e in (audit_report.get("params") or {}).items()
+                    if isinstance(e, dict) and e.get("verdict") in ("brittle", "fails")
+                ]
+                what = (
+                    f"param audit {a_status} — brittle/failing: {', '.join(flagged)}"
+                    if flagged
+                    else f"param audit {a_status} ({audit_report.get('audited', 0)} audited)"
+                )
+                version.issues = (version.issues or []) + [
+                    {
+                        "source": "design_audit",
+                        "severity": "minor" if a_status == "robust" else "major",
+                        "what": what,
+                        "report": _json_safe(audit_report),
+                    }
+                ]
+                await _append_job_log(db, job, f"design audit: {what}\n")
+                if a_status != "robust":
+                    await emit("audit", 1, f"design audit: {what}")
+
         if parent_mode == "mesh":
             exec_result = await _run_mesh_params(
                 executor,
@@ -624,8 +685,6 @@ async def run_params_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[s
             )
         else:
             await emit("execute", 1, "re-executing with new parameters")
-            parent_v_dir = storage.version_dir(parent.project_id, parent.id)
-            solid = parent_v_dir / "mesh" / "solid.brep"
             exec_result = await executor.execute(
                 {
                     "job_id": str(job_id),
@@ -656,7 +715,7 @@ async def run_params_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[s
                 db, job, f"{'cancelled' if was_cancelled else 'failed'}: {version.error}\n"
             )
             await db.commit()
-            return {"ok": False, "error": version.error}
+            return {"ok": False, "error": version.error, "design_audit": audit_report}
 
         # copy artifacts to version root
 
@@ -708,7 +767,7 @@ async def run_params_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[s
         await _append_job_log(db, job, "done\n")
         await db.commit()
         await _publish(str(job_id), {"type": "done", "status": "succeeded"})
-        return {"ok": True}
+        return {"ok": True, "design_audit": audit_report}
 
 
 async def _run_mesh_params(

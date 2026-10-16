@@ -9,6 +9,7 @@ import json
 import os
 import pickle
 import resource
+import shutil
 import signal
 import subprocess
 import sys
@@ -126,6 +127,80 @@ async def execute_version(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[
         r = ExecResult()
         r.error = f"executor pipeline exceeded {deadline}s — worker thread may be stuck"
         return r.to_dict()
+
+    if await _cancelled(ctx, cancel_key):
+        d["ok"] = False
+        d["error"] = "cancelled"
+    return d
+
+
+def run_audit_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Synchronous part of audit_params — shared with InProcessExecutor.
+
+    Perturbs each numeric PARAMS value ±epsilon and re-runs the SAME code in
+    light pipeline mode (sandbox + analysis only). Runs land in the version's
+    scratch dir and are removed when the audit finishes — the report is the
+    only artifact."""
+    from cadx.cad.design_audit import audit_params, make_pipeline_runner
+
+    project_id = uuid.UUID(payload["project_id"])
+    version_id = uuid.UUID(payload["version_id"])
+    settings = ProjectSettings(**(payload.get("settings") or {}))
+    references = [
+        Reference(asset_id=r["asset_id"], path=r["path"]) for r in payload.get("references", [])
+    ]
+
+    scratch = storage.ensure(storage.scratch_dir(project_id, version_id) / "audit")
+    runner = make_pipeline_runner(
+        payload["code"],
+        scratch,
+        references=references,
+        settings=settings,
+        runtime=_runtime(payload),
+        mesh_solid=Path(payload["mesh_solid"]) if payload.get("mesh_solid") else None,
+        mesh_bbox=payload.get("mesh_bbox"),
+        anchors=payload.get("anchors"),
+    )
+    try:
+        report = audit_params(
+            payload["code"],
+            payload.get("params") or {},
+            epsilon=float(payload.get("epsilon") or 0.05),
+            max_params=int(payload.get("max_params") or 8),
+            runner=runner,
+        )
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    report["ok"] = True
+    log.info(
+        "audit_params",
+        version=str(version_id),
+        status=report.get("status"),
+        audited=report.get("audited"),
+    )
+    return report
+
+
+async def audit_params(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    """arq task (queue "cad"): design-robustness audit of a version's PARAMS."""
+    cancel_key = f"cancel:{payload['job_id']}" if payload.get("job_id") else None
+    if await _cancelled(ctx, cancel_key):
+        return {"ok": False, "status": "fails", "error": "cancelled"}
+
+    # one baseline + up to 2 runs per audited param, each bounded by the
+    # sandbox timeout inside the thread — the wait_for deadline releases the
+    # arq job slot if a run wedges anyway (same pattern as execute_version)
+    runs = 2 * int(payload.get("max_params") or 8) + 1
+    deadline = _runtime(payload).exec_timeout_s * runs + 120
+    try:
+        d = await asyncio.wait_for(asyncio.to_thread(run_audit_payload, payload), deadline)
+    except TimeoutError:
+        log.error("audit_params.pipeline_hang", version=payload.get("version_id"))
+        return {
+            "ok": False,
+            "status": "fails",
+            "error": f"audit pipeline exceeded {deadline}s — worker thread may be stuck",
+        }
 
     if await _cancelled(ctx, cancel_key):
         d["ok"] = False

@@ -19,6 +19,7 @@ from cadx.agent.worker_jobs import (
     run_topopt_resample_job,
 )
 from cadx.cad.tasks import (
+    audit_params,
     execute_version,
     export_all,
     fem_analyze,
@@ -129,6 +130,7 @@ class CadWorkerSettings:
 
     functions = [  # noqa: RUF012
         execute_version,
+        audit_params,
         export_all,
         process_mesh,
         fem_analyze,
