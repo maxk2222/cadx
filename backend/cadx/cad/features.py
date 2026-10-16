@@ -100,8 +100,9 @@ _HOLE_TYPES = {
 _CSK_RE = re.compile(r"countersunk|csk|senk(?!.*zylinder)|flat.?head", re.I)
 _CBORE_RE = re.compile(r"counterbore|cbore|zylindersenk|socket.?head", re.I)
 # protruding cylinders (tube, boss, standoff …) — the feature's own axis is
-# meaningful, unlike a fillet radius
-_BOSS_TYPES = {"boss", "tube", "pin", "post", "stud", "standoff", "dome"}
+# meaningful, unlike a fillet radius. 'dome' is deliberately absent: a dome
+# is a curved cap, never measurable as a protruding cylinder.
+_BOSS_TYPES = {"boss", "tube", "pin", "post", "stud", "standoff"}
 _BOSS_RE = re.compile(r"\b(tube|pipe|boss|rohr|stutzen|buchse|nabe)\b", re.I)
 _TAP_RE = re.compile(r"\btap(ped)?\b|gewinde|thread", re.I)
 _M_RE = re.compile(r"\bM\s*(\d+)", re.I)
@@ -760,6 +761,11 @@ def _check_boss_features(
     exterior cylinders were all lumped into `rounds` (fillets).
     """
     findings: list[FeatureFinding] = []
+    # mesh-derived measurements never populate `bosses` — every check would
+    # be a guaranteed false-major ("no protruding cylinder detected" on a
+    # dome-topped knob, refuted by the critique but still capped the score)
+    if measured.approximate:
+        return findings
     for f in spec_features:
         ftype = (f.type or "").lower()
         text = f"{f.name or ''} {f.description or ''}".lower()
