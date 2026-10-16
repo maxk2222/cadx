@@ -87,7 +87,11 @@ No BuildPart context needed. Parts rest on XY (min Z = 0), centred — place wit
 ### rib
 
 - `rib(length, height, thickness)` — triangular gusset, base along +X on XY,
-  apex at X=0.
+  apex at X=0, `thickness` centred on Y=0. Returns a Part — fuse it with
+  OVERLAP into the parent so the union joins (a rib merely touching a face
+  stays a separate solid):
+  `p.part += Pos(x, y, z) * Rot(0, -90, 0) * rib(10, 10, 3)` places it on a
+  vertical wall with the base running up Z.
 
 ### mounting_ear
 
@@ -119,8 +123,11 @@ No BuildPart context needed. Parts rest on XY (min Z = 0), centred — place wit
 
 ### l_bracket
 
-- `l_bracket(leg_x, leg_z, width, thickness, fillet_r=0)` — L-bracket, legs on
-  +X and +Z.
+- `l_bracket(leg_x, leg_z, width, thickness, fillet_r=0)` — L-bracket: foot
+  `leg_x` along +X, leg `leg_z` up Z at the X=0 end, `width` centred on Y,
+  optional inner-corner fillet. Whole body in one reviewed call — orient it
+  once (`Rot(0, 0, 180)` puts the leg at −X) instead of building foot+leg
+  from two boxes.
 
 ### profile_body
 
