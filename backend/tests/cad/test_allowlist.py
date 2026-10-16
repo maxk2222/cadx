@@ -368,3 +368,53 @@ result = b
     r = check_code(code)
     assert r.ok, r.errors
     assert not any("oblong_slot" in w for w in r.warnings)
+
+
+def test_locate_inside_builder_warns():
+    """`Box(...).locate(Pos(...))` inside BuildPart moves only the returned
+    object — the builder fused a copy at the origin (observed: L-bracket leg
+    at z=0..50 in the fused part while the returned object sat at z=4..54)."""
+    code = (
+        GOOD
+        + """
+with BuildPart() as p:
+    Box(60, 40, 4, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    Box(4, 40, 50, align=(Align.MIN, Align.CENTER, Align.MIN)).locate(Pos(-30, 0, 4))
+    part = p.part
+result = part
+"""
+    )
+    r = check_code(code)
+    assert any("locate()" in w and "Pos(...)" in w for w in r.warnings)
+
+
+def test_locate_on_builder_var_warns():
+    code = (
+        GOOD
+        + """
+with BuildPart() as p:
+    Box(60, 40, 4, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    leg = Box(4, 40, 50, align=(Align.MIN, Align.CENTER, Align.MIN))
+    leg.locate(Pos(-30, 0, 4))
+    part = p.part
+result = part
+"""
+    )
+    r = check_code(code)
+    assert any("locate()" in w for w in r.warnings)
+
+
+def test_located_copy_assign_no_warning():
+    """`part = obj.located(...)` outside the builder is the correct idiom."""
+    code = (
+        GOOD
+        + """
+with BuildPart() as p:
+    Box(60, 40, 4, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    Pos(-30, 0, 4) * Box(4, 40, 50, align=(Align.MIN, Align.CENTER, Align.MIN))
+    part = p.part
+result = part
+"""
+    )
+    r = check_code(code)
+    assert not any("locate()" in w for w in r.warnings)

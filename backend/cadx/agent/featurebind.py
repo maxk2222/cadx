@@ -346,10 +346,17 @@ def _bind_hole(spec: PartSpec, f: Feature) -> BoundFeature | None:
     pts, note = _hole_positions(spec, f, count, axis)
     call = f"through_hole({', '.join(args)})"
     if pts:
-        body = f"with {_pos_calls(pts, axis, rot)}:\n    {call}"
+        scope = _pos_calls(pts, axis, rot)
     else:
         pos = (f.position or "").strip() or "stated location"
-        body = f"with Locations(Pos(<{pos}>){rot}):\n    {call}"
+        scope = f"Locations(Pos(<{pos}>){rot})"
+    body = (
+        "with BuildPart() as _hb:\n"
+        "    add(part)\n"
+        f"    with {scope}:\n"
+        f"        {call}\n"
+        "    part = _hb.part"
+    )
     rot_note = f" — local z rotated onto {axis}, the hole pierces along {axis}" if rot else ""
     std = f" ({f.standard})" if f.standard else ""
     snip = f"## {f.name} — {count}x hole Ø{dia:g}{std}, axis {axis}{rot_note}\n{body}"
@@ -395,8 +402,11 @@ def _bind_slot(spec: PartSpec, f: Feature) -> BoundFeature | None:
             f.name,
             "slot",
             f"## {f.name} — slot {w:g}x{length:g}\n"
-            f"with Locations(Pos(<wall centre>)):\n    "
+            f"with BuildPart() as _sb:\n"
+            f"    add(part)\n"
+            f"    with Locations(Pos(<wall centre>)):\n        "
             f'{helper}({w:g}, {length:g}, direction="{direction or "+z"}", normal="<wall normal>")\n'
+            f"    part = _sb.part\n"
             "# normal = the axis the slot pierces THROUGH (the thin axis of the wall it sits in)",
             False,
         )
@@ -412,8 +422,11 @@ def _bind_slot(spec: PartSpec, f: Feature) -> BoundFeature | None:
     perp = [a for a in "xyz" if a != _axis_letter(normal)]
     snip = (
         f"## {f.name} — slot {w:g}x{length:g}, through-axis {normal}, runs {direction}\n"
-        f"with Locations({place}):\n"
-        f"    {call}\n"
+        f"with BuildPart() as _sb:\n"
+        f"    add(part)\n"
+        f"    with Locations({place}):\n"
+        f"        {call}\n"
+        f"    part = _sb.part\n"
         f"# place on the {normal}-normal wall; the {perp[0]}/{perp[1]} coords centre it"
     )
     return BoundFeature(f.name, "slot", snip)
@@ -453,7 +466,7 @@ def _bind_rib(spec: PartSpec, f: Feature) -> BoundFeature | None:
         coords = {"x": "<junction x>", "y": "<junction y>", "z": "<base z>"}
         coords[axis_letter] = f"{c:g}"
         lines.append(
-            f"body += Pos({coords['x']}, {coords['y']}, {coords['z']}) "
+            f"part += Pos({coords['x']}, {coords['y']}, {coords['z']}) "
             f"* rib(<base>, <height>, {t:g})"
         )
     if (f.count or 1) > len(signs):
@@ -463,6 +476,11 @@ def _bind_rib(spec: PartSpec, f: Feature) -> BoundFeature | None:
     snip = (
         f"## {f.name} — rib(s) {t:g} mm thick on the {face_desc} face(s)\n"
         + "\n".join(lines)
+        + "\n# identical orientation on BOTH sides — rib() centres its thickness\n"
+        "# on the Pos axis, so -Y gets NO extra rotation (Rot would flip it\n"
+        "# under the part). Sink the placement ~0.5 mm into BOTH contact faces\n"
+        "# (junction edge into the leg face, base into the foot top) — a rib\n"
+        "# that only touches fuses non-manifold or stays detached."
         + f"\n# envelope rule: outer rib face ends at {axis_letter}=±{env:g} — "
         f"the centre offset {center:g} = {env:g} - {t:g}/2 - {sink} sinks the rib "
         f"0.5 mm into the side face so it fuses; base/height {size}"
@@ -476,15 +494,23 @@ def _bind_fillet(spec: PartSpec, f: Feature) -> BoundFeature | None:
         return BoundFeature(f.name, "fillet", f"# {f.name}: fillet — radius missing in spec", False)
     text = f"{f.position or ''} {f.description or ''}".lower()
     if "inner" in text or "innen" in text or "junction" in text:
-        sel = "part.edges().filter_by(Axis.Y).sort_by(Axis.X)[0]"
+        sel = "_fb.edges().filter_by(Axis.Y).sort_by(Axis.X)[0]"
         hint = "# the inner corner edge runs along Y at the leg/foot junction — pick the SHORTEST Y-edge"
     elif "rim" in text or "rand" in text or "outer" in text:
-        sel = "part.edges() >> Axis.Z"
+        sel = "_fb.edges() >> Axis.Z"
         hint = "# rim/top perimeter edges"
     else:
         sel = "<edges>"
         hint = f"# select the edge(s) described as: {f.position or 'see spec'}"
-    snip = f"## {f.name} — fillet R{r:g}\nsafe_fillet({sel}, {r:g})\n{hint}"
+    snip = (
+        f"## {f.name} — fillet R{r:g} (self-contained: works wherever you paste it;\n"
+        f"## replace `part` if your body variable has a different name)\n"
+        f"with BuildPart() as _fb:\n"
+        f"    add(part)\n"
+        f"    safe_fillet({sel}, {r:g})\n"
+        f"    part = _fb.part\n"
+        f"{hint}"
+    )
     return BoundFeature(f.name, "fillet", snip)
 
 
@@ -496,12 +522,16 @@ def _bind_chamfer(spec: PartSpec, f: Feature) -> BoundFeature | None:
         )
     text = f"{f.position or ''} {f.description or ''}".lower()
     if "rim" in text or "outer" in text or "rand" in text:
-        sel = "part.edges() >> Axis.Z"
+        sel = "_cb.edges() >> Axis.Z"
     else:
         sel = "<edges>"
     snip = (
-        f"## {f.name} — chamfer {d:g} mm (45°)\n"
-        f"chamfer({sel}, length={d:g})\n"
+        f"## {f.name} — chamfer {d:g} mm (45°) (self-contained: works wherever you paste it;\n"
+        f"## replace `part` if your body variable has a different name)\n"
+        f"with BuildPart() as _cb:\n"
+        f"    add(part)\n"
+        f"    chamfer({sel}, length={d:g})\n"
+        f"    part = _cb.part\n"
         f"# select the edge(s) described as: {f.position or 'see spec'}"
     )
     return BoundFeature(f.name, "chamfer", snip)
@@ -519,7 +549,7 @@ def _bind_boss(spec: PartSpec, f: Feature) -> BoundFeature | None:
     return BoundFeature(
         f.name,
         "boss",
-        f"## {f.name} — boss Ø{d:g}x{h:g}\nbody += Pos(<{pos}>) * boss({args})",
+        f"## {f.name} — boss Ø{d:g}x{h:g}\npart += Pos(<{pos}>) * boss({args})",
     )
 
 
@@ -539,7 +569,7 @@ def _bind_tube(spec: PartSpec, f: Feature) -> BoundFeature | None:
         f.name,
         "tube",
         f"## {f.name} — tube Ø{od:g}/Ø{idn:g}x{length:g}, axis {axis}\n"
-        f"body += Pos(<{pos}>){rot} * tube({od:g}, {idn:g}, {length:g})",
+        f"part += Pos(<{pos}>){rot} * tube({od:g}, {idn:g}, {length:g})",
     )
 
 
@@ -556,8 +586,11 @@ def _bind_insert(spec: PartSpec, f: Feature) -> BoundFeature | None:
         f.name,
         "insert",
         f"## {f.name} — heat-set insert {std}\n"
-        f"with Locations(Pos(<{pos}>)):\n"
-        f'    insert_pocket(HeatSetNut("{std}"){dep})\n'
+        f"with BuildPart() as _ib:\n"
+        f"    add(part)\n"
+        f"    with Locations(Pos(<{pos}>)):\n"
+        f'        insert_pocket(HeatSetNut("{std}"){dep})\n'
+        f"    part = _ib.part\n"
         "# verify the size designation against the bd_warehouse catalog",
     )
 
@@ -578,7 +611,11 @@ def _bind_bearing(spec: PartSpec, f: Feature) -> BoundFeature | None:
     return BoundFeature(
         f.name,
         "bearing_seat",
-        f"## {f.name} — bearing seat {std or dia}\nwith Locations(Pos(<{pos}>)):\n    {call}",
+        f"## {f.name} — bearing seat {std or dia}\n"
+        f"with BuildPart() as _bb:\n"
+        f"    add(part)\n"
+        f"    with Locations(Pos(<{pos}>)):\n        {call}\n"
+        f"    part = _bb.part",
     )
 
 
@@ -601,7 +638,10 @@ def _bind_thread(spec: PartSpec, f: Feature) -> BoundFeature | None:
         f.name,
         "thread",
         f"## {f.name} — tapped M{m.group(1)} hole\n"
-        f"with Locations(Pos(<{pos}>)):\n    {call}\n"
+        f"with BuildPart() as _tb:\n"
+        f"    add(part)\n"
+        f"    with Locations(Pos(<{pos}>)):\n        {call}\n"
+        f"    part = _tb.part\n"
         f"# tap drill for M{m.group(1)}; mark thread_spec M{m.group(1)} for post-cut",
     )
 
@@ -620,7 +660,7 @@ def _bind_pocket(spec: PartSpec, f: Feature) -> BoundFeature | None:
         f.name,
         "pocket",
         f"## {f.name} — pocket {w:g}x{length:g}, {depth:g} deep\n"
-        f"body -= Pos(<{pos}>) * Box({w:g}, {length:g}, {depth + 0.5:g}, "
+        f"part -= Pos(<{pos}>) * Box({w:g}, {length:g}, {depth + 0.5:g}, "
         "align=(Align.CENTER, Align.CENTER, Align.MAX))",
     )
 
@@ -633,7 +673,7 @@ def _bind_text(spec: PartSpec, f: Feature) -> BoundFeature | None:
     return BoundFeature(
         f.name,
         "text",
-        f'## {f.name} — embossed text\nbody += Pos(<{pos}>) * text_label("{txt}", size={size:g}, depth={depth:g})',
+        f'## {f.name} — embossed text\npart += Pos(<{pos}>) * text_label("{txt}", size={size:g}, depth={depth:g})',
     )
 
 

@@ -541,6 +541,9 @@ def bindings_block(spec: PartSpec | None) -> str:
         "Use these calls VERBATIM — do NOT re-derive axes, directions, normals",
         "or sizes. You still own: <…> placement coordinates, the overall build",
         "order, and features that have no snippet here.",
+        "Snippets are self-contained BuildPart blocks: they assume your current",
+        "solid is named `part` (rename the add()/assignment lines if yours",
+        "differs) and leave the updated solid in `part`.",
         "",
     ]
     lines.extend(b.snippet for b in bindings)

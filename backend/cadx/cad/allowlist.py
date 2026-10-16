@@ -437,7 +437,38 @@ class _Checker(ast.NodeVisitor):
         self._check_2d_boolean_method(node)
         self._check_ctor_kwargs(node)
         self._check_oversized_fillet(node)
+        self._check_builder_inplace_transform(node)
         self.generic_visit(node)
+
+    def _check_builder_inplace_transform(self, node: ast.Call) -> None:
+        """`Box(...).locate(Pos(...))` inside BuildPart silently keeps the
+        builder's copy at the origin: `locate`/`move` are in-place on the
+        returned object, but the builder fused its own copy at registration
+        time. Observed: leg located to z=4..54 while the fused part kept it
+        at z=0..50 — dimension gate fails with no exec error."""
+        if not (
+            self._builder_depth > 0
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in ("locate", "move")
+        ):
+            return
+        recv = node.func.value
+        # warn only when the receiver belongs to the builder: a fresh
+        # primitive call (`Box(...)`) or a var that was assigned a
+        # builder-registered result — not an outside object being staged
+        tracked = isinstance(recv, ast.Call) or (
+            isinstance(recv, ast.Name) and recv.id in self._builder_fused
+        )
+        if not tracked:
+            return
+        self._warn(
+            node,
+            f"`.{node.func.attr}()` inside `with BuildPart()` moves only the "
+            "returned object — the builder already registered a copy at the "
+            "original location, so the fused part keeps the un-moved shape. "
+            "Use `Pos(...) * Box(...)` / `Locations(...)` instead, or assign "
+            "the moved copy back with `part = obj.located(...)`.",
+        )
 
     def _check_oversized_fillet(self, node: ast.Call) -> None:
         """fillet(slot.edges()...) on a known Box with r >= min(dims)/2 is

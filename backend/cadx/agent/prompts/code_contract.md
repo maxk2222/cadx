@@ -24,6 +24,10 @@
      object — they do NOT move the original. A bare `Box(...).translate(...)`
      statement leaves the box at the origin. Position primitives with
      `Pos(x, y, z) * Box(...)` (algebra) or `Locations`/`locate()` (in-place).
+   - Inside `with BuildPart()`, NEVER call `.locate()`/`.move()` on a builder
+     primitive — the builder registered its own copy at the origin, so the
+     fused part keeps the un-moved shape. Use `with Locations(Pos(...)):`
+     or `Pos(...) * Box(...)` inside the builder instead.
    - Rotating a `Cylinder`/`Cone` about `Axis.Z` is a no-op (its own axis). To
      lay a cylinder over, rotate about X or Y — or build it directly on a
      rotated `Plane`.
