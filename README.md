@@ -26,6 +26,12 @@
   <a href="#license">License</a>
 </p>
 
+<p align="center">
+  <img src="docs/screenshots/hero-demo.gif" width="860" alt="CADX — guided wizard to a verified parametric part">
+  <br>
+  <sub><i>Describe → images → mode → review — and out comes a verified, parametric part.</i></sub>
+</p>
+
 > [!WARNING]
 > **Early development** — CADX is under active development. Expect breaking
 > changes, rough edges and an evolving API/data model between versions.
