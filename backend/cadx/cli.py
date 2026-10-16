@@ -478,6 +478,11 @@ def eval(
         help="dispatch execute/process_mesh via the cad queue (production-true, "
         "keeps heavy OCC work out of the eval process — recommended for --real)",
     ),
+    json_out: str | None = typer.Option(
+        None,
+        "--json",
+        help="write every EvalResult (incl. step_stats) to this JSON file",
+    ),
 ) -> None:
     """Run evaluation benchmarks through the agent loop."""
 
@@ -531,21 +536,45 @@ def eval(
                 )
                 print(
                     f"{r.name}: {r.status} score={r.score} passed={r.passed} {dims} {extra} "
+                    f"execs={r.execs} exec_s={r.exec_s} "
                     f"({r.wall_s}s) {r.error or ''} dir={r.version_dir}"
                 )
         if repeat > 1 and all_results:
+            import statistics
+
             print("--- aggregate ---")
             for name, rs in all_results.items():
                 scores = [r.score for r in rs if r.score is not None]
                 ok = sum(1 for r in rs if r.passed)
                 mean = sum(scores) / len(scores) if scores else 0.0
+                walls = [r.wall_s for r in rs]
+                ptoks = [r.prompt_tokens for r in rs]
                 print(
                     f"{name}: n={len(rs)} passed={ok} "
                     f"score min={min(scores, default=0)} mean={mean:.0f} "
-                    f"max={max(scores, default=0)}"
+                    f"max={max(scores, default=0)} "
+                    f"median_wall={statistics.median(walls):.0f}s "
+                    f"median_ptok={statistics.median(ptoks):.0f}"
                 )
+        if json_out:
+            _write_json_report(json_out, all_results)
+            print(f"results written to {json_out}")
 
     asyncio.run(_run())
+
+
+def _write_json_report(json_out: str, all_results: dict[str, list]) -> None:
+    import dataclasses
+    import pathlib
+
+    pathlib.Path(json_out).write_text(
+        json.dumps(
+            [dataclasses.asdict(r) for rs in all_results.values() for r in rs],
+            default=str,
+            indent=1,
+        ),
+        encoding="utf-8",
+    )
 
 
 if __name__ == "__main__":

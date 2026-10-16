@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -108,6 +109,11 @@ class EvalResult:
     issues: list[str] = field(default_factory=list)
     resolved_mode: str | None = None  # cad | mesh | hybrid actually used
     mode_reason: str = ""  # plan approach_reason + runtime mode_note
+    # per-step LLM stats aggregated from the trace:
+    # {step: {calls, prompt_tokens, completion_tokens, latency_ms}}
+    step_stats: dict[str, Any] = field(default_factory=dict)
+    execs: int = 0  # executor.execute calls (incl. session verifies, autofix)
+    exec_s: float = 0.0  # total wall time inside executor.execute
 
 
 def _features_ok(expected: list[dict[str, Any]], features: dict[str, Any] | None) -> bool | None:
@@ -127,23 +133,52 @@ def _features_ok(expected: list[dict[str, Any]], features: dict[str, Any] | None
     return all(_feature_entry_ok(ef, feats, groups) for ef in expected)
 
 
-def _feature_entry_ok(ef: dict[str, Any], feats: dict[str, Any], groups: list[Any]) -> bool:
+def _feature_entry_ok(  # noqa: C901
+    ef: dict[str, Any], feats: dict[str, Any], groups: list[Any]
+) -> bool:
     # elongated voids are slots — they must not satisfy a round-hole
     # expectation (a 20x6 slot would otherwise read as a big bore)
     round_groups = [g for g in groups if not g.get("elongated")]
 
-    def holes_near(dia: float | None) -> int:
-        if dia is None:
-            return sum(int(g.get("count") or 0) for g in round_groups)
-        tol = max(0.5, dia * 0.1)
-        return sum(
-            int(g.get("count") or 0)
-            for g in round_groups
-            if abs(float(g.get("diameter") or 0) - dia) <= tol
-        )
-
     ftype = str(ef.get("type", "")).lower()
     want = int(ef.get("count") or 1)
+
+    def _axis_ok(g: dict[str, Any], want_axis: str | None) -> bool:
+        if want_axis is None:
+            return True
+        got = str(g.get("axis") or "").lstrip("+-").lower()
+        return got == want_axis
+
+    def _positions_ok(centers: list[list[float]], positions: list[Any]) -> bool:
+        # every expected [x, y] must land within tol of a measured center
+        tol = 1.5
+        for ex in positions:
+            if not isinstance(ex, list | tuple) or len(ex) < 2:
+                continue
+            if not any(
+                len(c) >= 2
+                and abs(float(c[0]) - float(ex[0])) <= tol
+                and abs(float(c[1]) - float(ex[1])) <= tol
+                for c in centers
+            ):
+                return False
+        return True
+
+    def _pcd_ok(centers: list[list[float]], pcd: float) -> bool:
+        # bolt-circle diameter = 2 * mean distance of the hole centers to
+        # their common centroid
+        if len(centers) < 3:
+            return False
+        cx = sum(float(c[0]) for c in centers) / len(centers)
+        cy = sum(float(c[1]) for c in centers) / len(centers)
+        radii = [math.hypot(float(c[0]) - cx, float(c[1]) - cy) for c in centers if len(c) >= 2]
+        if len(radii) < 3:
+            return False
+        tol = max(1.5, pcd * 0.03)
+        if any(abs(r - radii[0]) > tol for r in radii):
+            return False
+        return abs(2 * sum(radii) / len(radii) - pcd) <= tol
+
     if ftype == "tunnel":
         # mesh-mode through-bores from detect_mesh_features (MeshHole list) —
         # longitudinal bores never appear in BRep hole_groups
@@ -161,7 +196,23 @@ def _feature_entry_ok(ef: dict[str, Any], feats: dict[str, Any], groups: list[An
     if ftype == "slot":
         return int(feats.get("slots") or 0) >= want
     if ftype in ("hole", "bore", "through-hole"):
-        return holes_near(ef.get("dia")) >= want
+        want_axis = str(ef.get("axis") or "").lstrip("+-").lower() or None
+        matching = [g for g in round_groups if _axis_ok(g, want_axis)]
+        dia = ef.get("dia")
+        if dia is not None:
+            tol = max(0.5, float(dia) * 0.1)
+            matching = [
+                g for g in matching if abs(float(g.get("diameter") or 0) - float(dia)) <= tol
+            ]
+        centers = [c for g in matching for c in (g.get("centers") or [])]
+        n_matching = sum(int(g.get("count") or 0) for g in matching)
+        if n_matching < want:
+            return False
+        positions = ef.get("positions")
+        if positions and not _positions_ok(centers, positions):
+            return False
+        pcd = ef.get("pcd")
+        return pcd is None or _pcd_ok(centers, float(pcd))
     if ftype == "countersink":
         return int(feats.get("countersinks") or 0) >= want
     if ftype == "counterbore":
@@ -257,6 +308,25 @@ async def run_benchmark(
     else:
         executor = InProcessExecutor()
 
+    # count + time every sandbox call (incl. tool-session verifies and the
+    # autofix re-execute) — per-iteration cost only shows up here
+    exec_stats = {"n": 0, "s": 0.0}
+    _inner_exec = executor
+
+    class _CountingExecutor:
+        async def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
+            exec_stats["n"] += 1
+            t = time.monotonic()
+            try:
+                return await _inner_exec.execute(payload)
+            finally:
+                exec_stats["s"] += time.monotonic() - t
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(_inner_exec, name)
+
+    executor = _CountingExecutor()
+
     vdir = storage.version_dir(project_id, version_id)
     ctx = AgentCtx(
         llm=llm,
@@ -277,6 +347,11 @@ async def run_benchmark(
         gen_mode=bm.gen_mode,
         mesh=mesh,
         mesh_available=(await mesh.health()).ok if mesh else False,
+        # production parity: the worker seeds the token budget and the
+        # explicit-iterations flag — without them eval runs die at the 400k
+        # default budget and ignore the benchmark's max_iterations cap intent
+        budget_tokens=runtime.agent_max_tokens_per_job,
+        explicit_max_iterations=bool(bm.settings.get("max_iterations")),
     )
     t0 = time.monotonic()
     try:
@@ -287,7 +362,33 @@ async def run_benchmark(
         # nor container exits — always dump what was captured
         _dump_trace(ctx.trace, vdir)
     wall = time.monotonic() - t0
-    return _judge(bm, outcome, wall, vdir)
+    return _judge(
+        bm,
+        outcome,
+        wall,
+        vdir,
+        usage=dict(getattr(ctx.llm, "total_usage", {}) or {}),
+        execs=exec_stats["n"],
+        exec_s=exec_stats["s"],
+        step_stats=_step_stats(getattr(ctx.trace, "records", [])),
+    )
+
+
+def _step_stats(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate per-step LLM stats out of the trace records."""
+    agg: dict[str, dict[str, int]] = {}
+    for r in records:
+        step = r.get("step")
+        if not step or "latency_ms" not in r:
+            continue  # pure event records (tool_call emits) carry no latency
+        a = agg.setdefault(
+            step, {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0}
+        )
+        a["calls"] += 1
+        a["prompt_tokens"] += int(r.get("prompt_tokens") or 0)
+        a["completion_tokens"] += int(r.get("completion_tokens") or 0)
+        a["latency_ms"] += int(r.get("latency_ms") or 0)
+    return agg
 
 
 def _dump_trace(trace: MemoryTrace, vdir: Path) -> None:
@@ -300,7 +401,17 @@ def _dump_trace(trace: MemoryTrace, vdir: Path) -> None:
         log.warning("eval.trace_dump_failed", error=str(e))
 
 
-def _judge(bm: Benchmark, outcome: RunOutcome, wall: float, version_dir: Path) -> EvalResult:
+def _judge(
+    bm: Benchmark,
+    outcome: RunOutcome,
+    wall: float,
+    version_dir: Path,
+    *,
+    usage: dict[str, Any] | None = None,
+    execs: int = 0,
+    exec_s: float = 0.0,
+    step_stats: dict[str, Any] | None = None,
+) -> EvalResult:
     """Score a finished run against the benchmark's expectations."""
     bbox = None
     dim_ok = None
@@ -317,7 +428,9 @@ def _judge(bm: Benchmark, outcome: RunOutcome, wall: float, version_dir: Path) -
     watertight = analysis.get("watertight_after_repair")
     if watertight is None:
         watertight = analysis.get("watertight")
-    usage = outcome.usage or {}
+    # usage lives on the llm client; outcome.usage is only populated on the
+    # success path, so failures would silently report calls=0
+    usage = outcome.usage or usage or {}
     prompt_tokens = int(usage.get("prompt_tokens") or 0)
     calls = int(usage.get("calls") or 0)
     features_ok = _features_ok(bm.expected_features, outcome.features)
@@ -358,6 +471,9 @@ def _judge(bm: Benchmark, outcome: RunOutcome, wall: float, version_dir: Path) -
         passed=passed,
         issues=issue_texts,
         resolved_mode=outcome.resolved_mode or bm.gen_mode,
+        execs=execs,
+        exec_s=round(exec_s, 1),
+        step_stats=step_stats or {},
         mode_reason=" | ".join(
             p
             for p in (

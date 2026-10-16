@@ -11,7 +11,22 @@
     {
       "type": "hole",
       "count": 2,
-      "dia": 5.5
+      "dia": 5.5,
+      "axis": "z",
+      "positions": [
+        [
+          -15,
+          0
+        ],
+        [
+          15,
+          0
+        ]
+      ]
+    },
+    {
+      "type": "slot",
+      "count": 1
     },
     {
       "type": "fillet"
