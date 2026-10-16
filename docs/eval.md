@@ -133,6 +133,41 @@ but slot/rib generation does not improve from prompt hints alone;
 the evidence points at structured feature→cadlib instantiation as the
 next step.
 
+## Binder era (deterministic feature→cadlib snippets)
+
+The structured-generation step is implemented: `featurebind.py` resolves
+each spec feature into an exact cadlib snippet (`BOUND FEATURE SNIPPETS`
+block in the codegen/improve/repair context); the model fills only `<…>`
+placement coordinates. Snippets are self-contained `BuildPart` blocks and
+carry the required `from cadlib import …` line.
+
+| Benchmark | n | Passed | Score | Wall | Prompt tokens | Notes |
+|-----------|---|--------|-------|------|---------------|-------|
+| `l_bracket_cad` (binder, pre slot-merge fix) | 1 | 0/1 | 55 | **449 s** | 647,061 | dim_ok=True exact 60×40×54, watertight — the first rep produced correct geometry in one shot; `features_ok=False` was a NEW measurement gap: the mesh tunnel scan only ran when the B-Rep found zero analytic holes, so a real slot next to real holes was invisible |
+
+Rep-1 and rep-2 of the binder era each surfaced a failure class that was
+fixed the same day:
+
+- bound snippets emitted bare helper calls but every cadlib cutout REQUIRES
+  `BuildPart` context (and `safe_fillet` returns the applied radius, not a
+  part — the model wrote `part = safe_fillet(...)`, float → TypeError).
+  Snippets are now self-contained `with BuildPart() as _xb:` blocks.
+- `Box(...).locate(Pos(...))` inside `BuildPart` silently keeps the fused
+  copy at the origin (locate is in-place on the returned object only) —
+  observed leg at z=0..50 in the fused part while the returned object sat
+  at z=4..54. New static lint warning + contract rule.
+- bare helper names in snippets hit `NameError` under `import cadlib` —
+  the block now emits the `from cadlib import …` line deterministically.
+- mirrored `-Y` rib improvised as `Rot(0,180,0)` flipped the rib under the
+  part — rib snippets now forbid rotation and document the ~0.5 mm sink
+  into both contact faces.
+
+Infra finding (not a code bug): the cad-executor runs every task via
+`asyncio.to_thread` — one hung CPU-bound job (`export_all` from a parallel
+eval) starved the GIL so the arq loop never dequeued `execute_version`;
+jobs timed out at 480 s while the queue looked empty. A worker-side
+watchdog or process-pool would isolate this.
+
 Add benchmarks for each new part class (brackets, enclosures, gears,
 heat-set inserts, thin walls) — the suite should grow with user feedback.
 
