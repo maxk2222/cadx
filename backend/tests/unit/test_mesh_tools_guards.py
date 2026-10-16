@@ -94,6 +94,26 @@ async def test_boolean_add_small_boss_allowed(tmp_path):
     assert len(wb.ops) == 1
 
 
+async def test_boolean_add_cumulative_volume_refused(tmp_path):
+    """T8.8: each add alone is <50% of the body, but the cumulative union
+    volume must not exceed half the baseline — observed iter2 degeneration
+    where ~4 cylinder blobs re-sculpted a bored grip into a tube."""
+    wb = _wb(tmp_path)
+    await wb.handle("mesh_inspect", {})
+    # body ≈ 92k mm³; each r=10 h=35 cylinder ≈ 11k mm³ — four pass the
+    # single-add cap but ~five exceed 50% cumulative
+    args = {"shape": "cylinder", "radius": 10, "height": 35, "at": [60, 0, 0]}
+    for i in range(4):
+        a = dict(args)
+        a["at"] = [60 - i * 2, 0, 0]  # vary args to dodge the cycle detector
+        res = await wb.handle("mesh_boolean_add", a)
+        assert res["ok"], f"add {i + 1} refused early: {res.get('error')}"
+    res = await wb.handle("mesh_boolean_add", args)
+    assert res["ok"] is False
+    assert "cumulative" in res["error"]
+    assert len(wb.ops) == 4
+
+
 async def test_op_cycle_detector_refuses_third_identical_op(tmp_path):
     """T8.5: apply → undo → apply → undo → apply must refuse the third
     application — the observed bore-cut undo loop burned the whole session."""

@@ -66,6 +66,15 @@ def _primitive_volume(args: dict[str, Any]) -> float | None:
     return None
 
 
+def _union_volume(ops: list[MeshOp]) -> float:
+    """Cumulative volume of union-boolean primitives in an op list."""
+    total = 0.0
+    for op in ops:
+        if op.op == "boolean" and op.args.get("op") == "union":
+            total += _primitive_volume(op.args) or 0.0
+    return total
+
+
 # tool name -> op name; boolean direction is injected into args
 _OP_TOOLS: dict[str, str] = {
     "mesh_set_up": "set_up",
@@ -117,6 +126,10 @@ class MeshWorkbench:
         self.max_ops = max_ops
         self.error: str | None = None
         self.ops: list[MeshOp] = list(initial_ops or [])
+        # cumulative volume added by union booleans — guards against the model
+        # sculpting the part out of primitive blobs (grip iter2 added ~4
+        # cylinders ≈ body volume after a clean bore cut, turning it into a tube)
+        self._added_vol = _union_volume(self.ops)
         self.baseline: trimesh.Trimesh | None = None
         self.work: trimesh.Trimesh | None = None
         self._work_counter = 0
@@ -195,6 +208,7 @@ class MeshWorkbench:
         except Exception as e:
             return {"ok": False, "error": f"rebuild after undo failed: {e}"}
         self._features = None
+        self._added_vol = _union_volume(self.ops)
         return {"ok": True, **self._stats()}
 
     def _detect_features(self) -> Any:
@@ -617,17 +631,37 @@ class MeshWorkbench:
         op_args = dict(args)
         if tool == "mesh_boolean_add" and self.work is not None:
             prim_vol = _primitive_volume(op_args)
-            body_vol = float(abs(self.work.volume)) if self.work.is_volume else 0.0
-            if body_vol and prim_vol is not None and prim_vol > 0.5 * body_vol:
-                return {
-                    "ok": False,
-                    "error": (
-                        "refused: the added primitive is larger than half the body — "
-                        "it would replace the organic shape. Use mesh_scale / "
-                        "mesh_clip_height to adjust size; boolean_add is for small "
-                        "flanges, bases and bosses only."
-                    ),
-                }
+            # compare against the baseline volume, not the current body: every
+            # accepted add inflates the body and would progressively weaken the
+            # cumulative cap below
+            base = self.baseline if self.baseline is not None else self.work
+            body_vol = float(abs(base.volume)) if base.is_volume else 0.0
+            if body_vol and prim_vol is not None:
+                # single-add cap: one primitive must not replace the body
+                if prim_vol > 0.5 * body_vol:
+                    return {
+                        "ok": False,
+                        "error": (
+                            "refused: the added primitive is larger than half the body — "
+                            "it would replace the organic shape. Use mesh_scale / "
+                            "mesh_clip_height to adjust size; boolean_add is for small "
+                            "flanges, bases and bosses only."
+                        ),
+                    }
+                # cumulative cap: several sub-50% adds sculpt the part out of
+                # primitives (observed: 4 cylinder blobs ≈ body volume turning
+                # a grip into a tube) — unioning to reach target dims is the
+                # documented anti-pattern
+                if self._added_vol + prim_vol > 0.5 * body_vol:
+                    return {
+                        "ok": False,
+                        "error": (
+                            "refused: cumulative boolean_add volume would exceed half "
+                            "the body — unioning primitives to force proportions is "
+                            "not allowed. Use mesh_scale / per-axis scale to reach "
+                            "target dimensions instead."
+                        ),
+                    }
         if tool == "mesh_boolean_add":
             op_args["op"] = "union"
         elif tool == "mesh_boolean_cut":
@@ -670,6 +704,8 @@ class MeshWorkbench:
             applied = await asyncio.to_thread(decimate, applied, cap)
         self.work = applied
         self.ops.append(mo)
+        if op_args.get("op") == "union":
+            self._added_vol += _primitive_volume(op_args) or 0.0
         self._op_apply_count[op_fp] = self._op_apply_count.get(op_fp, 0) + 1
         self._features = None
         return {"ok": True, "applied": mo.model_dump(), **self._stats()}
