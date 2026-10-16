@@ -98,6 +98,8 @@ _OP_TOOLS: dict[str, str] = {
     "mesh_shell": "shell",
     "mesh_drill_holes": "drill_holes",
     "mesh_radial_profile": "radial_profile",
+    "mesh_radial_profile_auto": "radial_profile_auto",
+    "mesh_silhouette_carve": "silhouette_carve",
 }
 
 # rigid-orientation ops — refused outright when `orientation_locked` is set
@@ -117,7 +119,9 @@ _SHAPE_GUARD_EXEMPT = {
     "drill_holes",
     "boolean",
     "clip_to_outline",
+    "silhouette_carve",
     "radial_profile",
+    "radial_profile_auto",
     "slice",
     "flatten_bottom",
     "clip_height",

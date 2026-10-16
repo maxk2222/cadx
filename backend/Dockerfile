@@ -17,7 +17,10 @@ COPY pyproject.toml uv.lock ./
 COPY alembic.ini ./
 COPY alembic ./alembic
 COPY cadx ./cadx
-RUN uv sync --frozen --no-dev
+# --extra repair pulls optional pymeshlab (GPL) — the mesh repair/remesh
+# engine in cad/mesh_repair_pml.py; keeps preview (worker) and executor
+# ops on the same code path
+RUN uv sync --frozen --no-dev --extra repair
 
 ENV PATH="/app/.venv/bin:$PATH"
 
@@ -40,5 +43,5 @@ CMD ["sh", "-c", "trap 'echo \"[diag] got SIGTERM, forwarding\" >&2; kill -TERM 
 # `docker build --target executor-test` then run pytest tests/cad inside it.
 FROM executor AS executor-test
 USER root
-RUN uv sync --frozen
+RUN uv sync --frozen --extra repair
 USER cad

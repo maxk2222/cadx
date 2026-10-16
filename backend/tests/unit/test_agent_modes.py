@@ -69,17 +69,29 @@ def _img(seed: int | None = None) -> InputAsset:
 
     aid = str(uuid.uuid4())
     p = Path(tempfile.mkdtemp(prefix="cadx-img-")) / f"{aid[:8]}.png"
-    # deterministic distinct pattern per asset: seed-derived block mosaic —
-    # aHash-safe (64 cells each ~50% chance to flip)
+    # deterministic subject-on-transparent: the alpha channel doubles as the
+    # reference mask — rembg never runs in unit tests and the mask is noise-
+    # free. The subject is deliberately TINY (~4-5 px): the _ref_side_mask
+    # coverage gate (<3 % is speckle/junk) discards it, so the deterministic
+    # spec ops (silhouette carve/profile) stay out of these tests entirely —
+    # whatever aspect the fake blob happens to have.
     import random
 
     rng = random.Random(seed if seed is not None else int(aid[:8], 16))
-    img = Image.new("RGB", (64, 64))
+    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
     dr = ImageDraw.Draw(img)
-    for gy in range(0, 64, 8):
-        for gx in range(0, 64, 8):
-            v = rng.choice((30, 225))
-            dr.rectangle([gx, gy, gx + 8, gy + 8], fill=(v, v, v))
+    # low-alpha pixel noise: unique bytes per asset (the disk mesh cache keys
+    # on image CONTENT — a real cross-test cache hit was observed), invisible
+    # to the reference mask which thresholds alpha at >128
+    for _ in range(300):
+        v = rng.randrange(256)
+        dr.point(
+            (rng.randrange(64), rng.randrange(64)),
+            fill=(v, v, v, 40 + rng.randrange(60)),
+        )
+    r = 2 + rng.randrange(2)  # tiny subject, position varies per asset
+    x, y = 20 + rng.randrange(25), 20 + rng.randrange(25)
+    dr.ellipse([x - r, y - r, x + r, y + r], fill=(120, 120, 120, 255))
     img.save(p)
     return InputAsset(asset_id=aid, kind="image", path=p, filename=p.name)
 
@@ -477,8 +489,11 @@ async def test_mesh_refine_session_applies_ops(tmp_path):
     outcome = await run_generation(ctx)
     assert outcome.status in ("succeeded", "needs_review")
     ops = outcome.params.get("ops") or []
-    assert [o["op"] for o in ops] == ["scale"]
-    assert outcome.mesh["ops"][0]["args"]["factor"] == 1.0
+    # the repair session's ops land at the tail — deterministic spec ops
+    # (spec_drill/spec_silhouette) may legitimately precede them
+    assert ops and ops[-1]["op"] == "scale"
+    scale = [o for o in outcome.mesh["ops"] if o["op"] == "scale"]
+    assert scale and scale[0]["args"]["factor"] == 1.0
 
 
 async def test_mesh_refine_regenerate_triggers_new_seed(tmp_path):
@@ -525,8 +540,9 @@ async def test_mesh_refine_regenerate_triggers_new_seed(tmp_path):
     assert outcome.status in ("succeeded", "needs_review")
     assert len(mesh.calls) == 2
     assert mesh.calls[1]["seed"] != mesh.calls[0]["seed"]
-    # accepted as-is → no ops on the final params
-    assert not (outcome.params.get("ops") or [])
+    # accepted as-is → the repair session recorded no geometry ops
+    # (deterministic spec ops in params are a separate, legit source)
+    assert not (outcome.mesh.get("ops") or [])
 
 
 async def test_mesh_refine_repair_round_after_failed_critique(tmp_path):
@@ -634,7 +650,9 @@ async def test_mesh_refine_regression_reverts_ops(tmp_path):
     )
     outcome = await run_generation(ctx)
     # the regressed ops were reverted — params carry the pre-session state
-    assert not (outcome.params.get("ops") or [])
+    # (deterministic spec ops like silhouette_carve may legitimately remain)
+    ops = outcome.params.get("ops") or []
+    assert "flatten_bottom" not in [o["op"] for o in ops]
 
 
 async def test_mesh_repair_skipped_after_two_regressions(tmp_path):
@@ -732,7 +750,9 @@ async def test_mesh_tools_disabled_keeps_seed_loop(tmp_path):
     )
     outcome = await run_generation(ctx)
     assert outcome.status in ("succeeded", "needs_review")
-    assert not (outcome.params.get("ops") or [])
+    # no tool sessions → no recorded session ops; deterministic spec ops
+    # (silhouette carve/drill) may still appear in params
+    assert not (outcome.mesh.get("ops") or [])
     # no refine-session LLM calls: spec, plan, orient, critique = 4 calls
     assert llm.total_usage["calls"] == 4
 
@@ -777,7 +797,17 @@ async def test_mesh_regen_exhaustion_falls_back_to_cad(monkeypatch, tmp_path):
     fail_crit = {
         "score": 20,
         "passed": False,
-        "discrepancies": [{"feature": "overall", "issue": "wrong shape", "severity": "major"}],
+        # spec-sourced so fact calibration keeps the major — "image"/"other"
+        # majors downgrade to minor when every measured fact passes
+        "discrepancies": [
+            {
+                "what": "wrong shape vs the stated part",
+                "where": "overall",
+                "severity": "major",
+                "source": "spec",
+                "fix_hint": "reshape the body",
+            }
+        ],
         "matches": [],
         "confidence": 0.9,
     }

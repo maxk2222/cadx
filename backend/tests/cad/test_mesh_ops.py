@@ -1,5 +1,7 @@
 """Unit tests for cad/mesh_ops — post-processing, orientation, scaling, solid."""
 
+import json
+
 import numpy as np
 import pytest
 import trimesh
@@ -898,3 +900,177 @@ def test_radial_profile_keeps_axis_length():
         },
     )
     assert out.extents[0] == pytest.approx(100.0, rel=1e-6)
+
+
+# --------------------------------------------------------------------------- #
+# new ops: silhouette_carve / radial_profile_auto
+# --------------------------------------------------------------------------- #
+
+
+def _hourglass_along_z(r_big: float = 10.0, r_waist: float = 6.0, half_len: float = 30.0):
+    """Two cones tip-to-tip along Z — the sharp V-notch waist the generators
+    produce instead of a soft ergonomic waist."""
+    pts = np.array(
+        [[0.0, -half_len], [r_big, -half_len], [r_waist, 0.0], [r_big, half_len], [0.0, half_len]]
+    )
+    return trimesh.creation.revolve(pts, sections=48)
+
+
+def test_op_silhouette_carve_trims_overhang():
+    """Cylinder carved to a narrower square side silhouette: the visual hull
+    removes only material outside the reference — volume drops, the mesh
+    stays watertight, and the +y silhouette IoU jumps."""
+    from cadx.cad.silhouette import _iou, mesh_view_mask
+
+    cyl = trimesh.creation.cylinder(radius=10.0, height=30.0, sections=64)
+    cyl.apply_translation([0, 0, 15.0])  # rests on XY, z in [0, 30]
+    # reference slab 12 mm wide — in the +y view plane u = -X spans [-6, 6],
+    # v = +Z spans [0, 30]
+    outline = [[-6.0, 0.0], [6.0, 0.0], [6.0, 30.0], [-6.0, 30.0]]
+    ref = trimesh.creation.box(extents=[12.0, 60.0, 30.0])
+    ref.apply_translation([0, 0, 15.0])
+    ref_mask = mesh_view_mask(ref, "+y")
+    iou_before = _iou(ref_mask, mesh_view_mask(cyl, "+y"))
+
+    out = apply_op(
+        cyl,
+        MeshOp(op="silhouette_carve", args={"view": "+y", "outline": outline}),
+    )
+    assert out.is_watertight
+    assert abs(out.volume) < abs(cyl.volume) * 0.8
+    iou_after = _iou(ref_mask, mesh_view_mask(out, "+y"))
+    assert iou_after > iou_before + 0.3
+    assert iou_after > 0.9
+
+
+def test_op_silhouette_carve_from_mask_pipeline():
+    """The orchestration path: reference mask -> mask_to_outline_mm -> op —
+    the mm convention (u centred, v bottom-aligned) must land the polygon on
+    the mesh's view-plane bbox."""
+    from cadx.cad.silhouette import mask_to_outline_mm
+
+    cyl = trimesh.creation.cylinder(radius=10.0, height=30.0, sections=64)
+    cyl.apply_translation([0, 0, 15.0])
+    mask = np.zeros((80, 80), dtype=bool)
+    mask[10:70, 28:52] = True  # subject 24 px wide x 60 px tall
+    mask[30:50, 28:36] = False  # waist: left half carved out mid-height
+    outline = mask_to_outline_mm(mask, mesh_extent_u=20.0, mesh_extent_v=30.0)
+    us = [p[0] for p in outline]
+    vs = [p[1] for p in outline]
+    # anisotropic fill: the outline spans the FULL view-plane bbox — the
+    # carve can trim the profile but must never shrink the stated dims
+    assert max(us) - min(us) == pytest.approx(20.0, rel=0.05)
+    assert max(vs) - min(vs) == pytest.approx(30.0, rel=0.05)
+    assert abs((max(us) + min(us)) / 2.0) < 0.5  # centred in u
+    assert min(vs) == pytest.approx(0.0, abs=1.0)  # bottom-aligned on the floor
+    out = apply_op(cyl, MeshOp(op="silhouette_carve", args={"view": "+y", "outline": outline}))
+    assert out.is_watertight
+    assert abs(out.volume) < abs(cyl.volume)
+
+
+def test_op_silhouette_carve_validation_and_empty():
+    cyl = trimesh.creation.cylinder(radius=5.0, height=20.0, sections=24)
+    with pytest.raises(ValidationError):
+        apply_op(
+            cyl,
+            MeshOp(
+                op="silhouette_carve",
+                args={"view": "+z", "outline": [[0, 0], [1, 0], [1, 1]]},
+            ),
+        )
+    with pytest.raises(ValueError, match="whole mesh"):
+        apply_op(
+            cyl,
+            MeshOp(
+                op="silhouette_carve",
+                args={"view": "+y", "outline": [[100, 100], [110, 100], [110, 110]]},
+            ),
+        )
+
+
+def test_silhouette_carve_op_args_roundtrip():
+    """Ops replay from version.params JSON — args must survive a dump/load
+    round-trip byte-identical."""
+    mo = MeshOp(
+        op="silhouette_carve",
+        args={
+            "view": "-x",
+            "outline": [[-5.0, 0.0], [5.0, 0.0], [5.0, 12.0], [-5.0, 12.0]],
+            "tolerance_mm": 0.4,
+        },
+    )
+    d = json.loads(json.dumps(mo.model_dump()))
+    assert MeshOp.model_validate(d) == mo
+
+
+def test_op_radial_profile_auto_fills_waist():
+    """An hourglass V-notch is constructive-filled back to the target radius —
+    volume grows substantially and the mesh stays watertight."""
+    m = _hourglass_along_z()  # r=10 at the ends, r=6 waist at z=0
+    v0 = abs(m.volume)
+    out = apply_op(
+        m,
+        MeshOp(
+            op="radial_profile_auto",
+            args={
+                "axis": "z",
+                "blend_mm": 4.0,
+                "stations": [{"t": float(t), "radius_mm": 10.0} for t in np.linspace(0, 1, 9)],
+            },
+        ),
+    )
+    assert out.is_watertight
+    assert abs(out.volume) > v0 * 1.3
+    mid = out.vertices[np.abs(out.vertices[:, 2]) < 3.0]
+    r_mid = float(np.hypot(mid[:, 0], mid[:, 1]).max())
+    assert r_mid == pytest.approx(10.0, abs=1.0)
+    # the ends already matched the target radius — untouched
+    end = out.vertices[np.abs(np.abs(out.vertices[:, 2]) - 30.0) < 0.5]
+    assert float(np.hypot(end[:, 0], end[:, 1]).max()) == pytest.approx(10.0, abs=0.5)
+
+
+def test_op_radial_profile_auto_from_outline_stations():
+    """Stations measured off a silhouette polygon feed the op directly."""
+    from cadx.cad.silhouette import profile_stations_from_outline
+
+    # waist silhouette: 20 wide at the ends, 12 in the middle, u in [-30, 30]
+    outline = [[-30, -10], [0, -6], [30, -10], [30, 10], [0, 6], [-30, 10]]
+    stations = profile_stations_from_outline(outline, axis="x", n_stations=7)
+    assert stations[0]["t"] == 0.0 and stations[-1]["t"] == 1.0
+    radii = [s["radius_mm"] for s in stations]
+    assert min(radii) == pytest.approx(6.0, abs=0.5)
+    # end bins are sampled at their midpoint (u≈±26), slightly inboard of the
+    # ±30 tips — the measured radius is a bit under the 10 mm tip value
+    assert max(radii) == pytest.approx(9.43, abs=0.5)
+
+    # fill the waist of a tube lying along X up to the silhouette's max radius
+    m = _hourglass_along_z()
+    m.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [0, 1, 0]))
+    v0 = abs(m.volume)
+    flat = [{"t": s["t"], "radius_mm": 10.0} for s in stations]
+    out = apply_op(
+        m,
+        MeshOp(op="radial_profile_auto", args={"axis": "x", "stations": flat, "blend_mm": 3.0}),
+    )
+    assert out.is_watertight
+    assert abs(out.volume) > v0 * 1.2
+
+
+def test_op_radial_profile_auto_validation():
+    m = _box(20, 20, 20)
+    with pytest.raises(ValidationError):
+        apply_op(
+            m,
+            MeshOp(op="radial_profile_auto", args={"axis": "z", "stations": []}),
+        )
+    with pytest.raises(ValidationError):
+        apply_op(
+            m,
+            MeshOp(
+                op="radial_profile_auto",
+                args={
+                    "axis": "z",
+                    "stations": [{"t": 0.5, "radius_mm": -1.0}, {"t": 0.9, "radius_mm": 5.0}],
+                },
+            ),
+        )

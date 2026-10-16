@@ -9,7 +9,65 @@ vision call on it.
 
 from __future__ import annotations
 
+import math
+import re
 from typing import Any
+
+# spec wording that implies a revolve/round body — shared with the
+# orchestrator's deterministic silhouette ops (radial_profile_auto)
+_ROUND_RE = re.compile(
+    r"round|rund|zylindrisch|cylindrical|rotation|revolve|drehteil|drehkörper|kreisförmig",
+    re.IGNORECASE,
+)
+
+
+def spec_suggests_revolve(spec: Any) -> bool:
+    """Spec text heuristic: the part is described as round/rotational."""
+    texts = [
+        str(getattr(spec, "name", "") or ""),
+        str(getattr(spec, "summary", "") or ""),
+        str(getattr(spec, "symmetry", "") or ""),
+        str(getattr(spec, "orientation_note", "") or ""),
+    ]
+    for f in getattr(spec, "features", None) or []:
+        texts.append(f"{getattr(f, 'name', '')} {getattr(f, 'description', '')}")
+    return any(_ROUND_RE.search(t) for t in texts)
+
+
+def _outline_circularity(outline_mm: list[list[float]] | None) -> float | None:
+    """4πA/P² of a measured footprint outline — 1.0 is a perfect circle.
+    Computed on the outline the executor already measured, so no extra
+    mesh probing is needed."""
+    if not outline_mm or len(outline_mm) < 3:
+        return None
+    try:
+        from shapely.geometry import Polygon
+
+        poly = Polygon(outline_mm)
+        if not poly.is_valid:
+            poly = poly.buffer(0)
+        if poly.geom_type == "MultiPolygon":
+            poly = max(poly.geoms, key=lambda g: g.area)
+        if poly.is_empty or poly.length <= 0 or poly.area <= 0:
+            return None
+        return float(4.0 * math.pi * poly.area / poly.length**2)
+    except Exception:
+        return None
+
+
+def _roundness_bonus(
+    spec: Any,
+    outline_mm: list[list[float]] | None = None,
+    circularity: float | None = None,
+) -> float:
+    """+0.05 when the spec implies a round part and the footprint measures
+    near-circular — separates a true revolve from a squarish blob at equal
+    aspect/height. Prefers the executor's circularity when it reports one;
+    otherwise reuses the already-measured XY outline (no new pipeline)."""
+    if not spec_suggests_revolve(spec):
+        return 0.0
+    circ = circularity if circularity is not None else _outline_circularity(outline_mm)
+    return 0.05 if circ is not None and float(circ) >= 0.85 else 0.0
 
 
 def _height_score(z: float, spec: Any) -> float:
@@ -28,11 +86,14 @@ def _height_score(z: float, spec: Any) -> float:
 def _blend_silhouette(base: float, sil_iou: float | None) -> float:
     """Blend the reference-image silhouette IoU into a base score.
 
-    25% weight — strong enough to separate two candidates with identical
+    `sil_iou` is the best of the four side-view IoUs (``silhouette_iou``
+    returns ``(iou, view)``). None means 'no usable reference mask' and leaves
+    the score untouched; a measured 0.0 is a real miss and drags the score
+    down. 25% weight — strong enough to separate two candidates with identical
     bounding boxes, weak enough not to override dims/footprint evidence."""
-    if sil_iou is None or sil_iou <= 0:
+    if sil_iou is None:
         return base
-    return round(0.75 * base + 0.25 * sil_iou, 3)
+    return round(0.75 * base + 0.25 * max(sil_iou, 0.0), 3)
 
 
 def score_mesh_candidate(
@@ -44,11 +105,20 @@ def score_mesh_candidate(
 
     aspect ratio + footprint IoU (when a measured outline exists) + height
     agreement + detected tunnel count vs declared hole features +
-    silhouette IoU vs the reference image (when the executor measured it).
+    silhouette IoU vs the reference image (when the executor measured it) +
+    a small footprint-circularity bonus for spec'd round parts.
     """
     analysis = exec_result.get("analysis") or {}
     bbox = analysis.get("bbox_size") or []
-    sil_iou = (exec_result.get("mesh") or {}).get("silhouette_iou")
+    mesh_meta = exec_result.get("mesh") or {}
+    sil_iou = mesh_meta.get("silhouette_iou")
+    # the executor reports the per-view winner as (silhouette_iou,
+    # silhouette_view): an IoU of ~0 WITHOUT a matched view means the
+    # reference mask was unusable — not a measured shape miss
+    if sil_iou is not None and float(sil_iou) <= 0 and not mesh_meta.get("silhouette_view"):
+        sil_iou = None
+    elif sil_iou is not None:
+        sil_iou = float(sil_iou)
 
     aspect = 0.5
     L, W = float(spec.length_x.value or 0), float(spec.width_y.value or 0)
@@ -78,18 +148,22 @@ def score_mesh_candidate(
         if "hole" in str(getattr(f, "type", "")).lower()
     )
     tunnels = [h for h in feats.get("holes") or [] if h.get("kind") == "tunnel"]
+    bonus = _roundness_bonus(spec, mesh_outline, circularity=analysis.get("circularity"))
+
+    def _final(base: float) -> float:
+        return round(min(1.0, _blend_silhouette(base, sil_iou) + bonus), 3)
 
     if has_outline:
         if spec_holes:
             holes = min(len(tunnels) / spec_holes, 1.0)
             base = round(0.3 * aspect + 0.3 * iou + 0.2 * height + 0.2 * holes, 3)
-            return _blend_silhouette(base, sil_iou)
+            return _final(base)
         # no declared holes — tunnels would be artefacts; weight the rest
-        return _blend_silhouette(round(0.35 * aspect + 0.4 * iou + 0.25 * height, 3), sil_iou)
+        return _final(round(0.35 * aspect + 0.4 * iou + 0.25 * height, 3))
     if spec_holes:
         holes = min(len(tunnels) / spec_holes, 1.0)
-        return _blend_silhouette(round(0.5 * aspect + 0.3 * height + 0.2 * holes, 3), sil_iou)
-    return _blend_silhouette(round(0.6 * aspect + 0.4 * height, 3), sil_iou)
+        return _final(round(0.5 * aspect + 0.3 * height + 0.2 * holes, 3))
+    return _final(round(0.6 * aspect + 0.4 * height, 3))
 
 
 # scoring only needs macroscopic geometry (aspect, outline, tunnels) — a
@@ -190,18 +264,39 @@ def score_raw_mesh(
         try:
             from cadx.cad.silhouette import silhouette_iou
 
-            sil_iou = silhouette_iou(mesh, ref_mask)[0] or None
+            # (iou, view): a matched view means the 0 is a measured miss;
+            # view=None means the mask never rasterised — treat as unmeasured
+            sil_val, sil_view = silhouette_iou(mesh, ref_mask)
+            if sil_view is not None:
+                sil_iou = float(sil_val)
         except Exception:
             sil_iou = None
 
     height = _height_score(ext[2], spec)
+    bonus = _roundness_bonus(spec, feats.outline_mm)
+
+    def _final(base: float) -> float:
+        return round(min(1.0, _blend_silhouette(base, sil_iou) + bonus), 3)
+
     if has_outline:
         if spec_holes:
             holes = min(len(tunnels) / spec_holes, 1.0)
             base = round(0.3 * aspect + 0.3 * iou + 0.2 * height + 0.2 * holes, 3)
-            return _blend_silhouette(base, sil_iou)
-        return _blend_silhouette(round(0.35 * aspect + 0.4 * iou + 0.25 * height, 3), sil_iou)
+            return _final(base)
+        return _final(round(0.35 * aspect + 0.4 * iou + 0.25 * height, 3))
     if spec_holes:
         holes = min(len(tunnels) / spec_holes, 1.0)
-        return _blend_silhouette(round(0.5 * aspect + 0.3 * height + 0.2 * holes, 3), sil_iou)
-    return _blend_silhouette(round(0.6 * aspect + 0.4 * height, 3), sil_iou)
+        return _final(round(0.5 * aspect + 0.3 * height + 0.2 * holes, 3))
+    return _final(round(0.6 * aspect + 0.4 * height, 3))
+
+
+def vlm_tiebreak(*_args: Any, **_kwargs: Any) -> None:
+    """TODO(workstream-E): pairwise VLM tie-break for the top-2 candidates.
+
+    `_select_candidate` currently resolves near-equal scores purely
+    deterministically. A pairwise vision-model pick (two contact sheets ->
+    'which is closer to the reference?') would break ties on real shape
+    evidence, but this module is sync and has no LLM/vision client — wiring
+    one through `_candidate_seed` is a separate change. Kept as a documented
+    stub so the call site can land behind a runtime flag without feature
+    creep here."""

@@ -51,6 +51,12 @@ class MeshGenRequest(BaseModel):
     resolution: int | None = None
     out_path: Path  # where the GLB is written
     job_id: str | None = None  # lets the server cancel the right job
+    # controllable-generation conditioning (Hunyuan3D-Omni): "bbox" |
+    # "voxel" | "point" | "pose"; control_input semantics follow the type
+    # (e.g. bbox = [L, W, H] in mm — the adapter normalises). Adapters
+    # without control support ignore both.
+    control_type: str | None = None
+    control_input: Any = None
 
 
 class MeshGenVariant(BaseModel):
@@ -221,6 +227,9 @@ class HttpMeshClient(MeshPort):
             params["guidance"] = req.guidance
         if req.resolution is not None:
             params["resolution"] = req.resolution
+        if req.control_type is not None:
+            params["control_type"] = req.control_type
+            params["control_input"] = req.control_input
 
         files: list[tuple[str, tuple[str, bytes, str]]] = [
             ("json", ("params.json", _dumps(params), "application/json"))
@@ -351,6 +360,9 @@ class HttpMeshClient(MeshPort):
                 for v in variants
             ],
         }
+        if req.control_type is not None:
+            params["control_type"] = req.control_type
+            params["control_input"] = req.control_input
         files: list[tuple[str, tuple[str, bytes, str]]] = [
             ("json", ("params.json", _dumps(params), "application/json"))
         ]
@@ -435,7 +447,14 @@ class FakeMeshClient(MeshPort):
     ) -> MeshGenResult:
         import trimesh
 
-        self.calls.append({"model": req.model, "seed": req.seed})
+        self.calls.append(
+            {
+                "model": req.model,
+                "seed": req.seed,
+                "control_type": req.control_type,
+                "control_input": req.control_input,
+            }
+        )
         if on_progress:
             await on_progress("fake mesh generation", 0.5)
         # deterministic blob: sphere squashed into a knob-ish shape; size varies with seed

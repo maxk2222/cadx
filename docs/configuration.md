@@ -55,7 +55,7 @@ the database.
 | `agent_feature_feedback` | `true` | feed measured features (holes, rounds, …) into improve steps |
 | `agent_critique_reask` | `true` | re-ask once when a failing critique lists no discrepancies |
 | `agent_max_approaches` | `2` | strategy-chain budget (e.g. `hybrid → cad` fallback) |
-| `agent_stall_patience` | `4` | stop after this many iterations without improvement (0 = never) |
+| `agent_stall_patience` | `2` | stop after this many iterations without improvement (0 = never) |
 | `agent_switch_score` / `agent_switch_after_iters` | `60` / `4` | strategy-switch trigger thresholds |
 
 ## Tool sessions

@@ -35,6 +35,8 @@ cadx mesh-gen photo.png -o out.glb
 |----|-------|--------|---------|---------|
 | `trellis2` | TRELLIS.2-4B (shape only) | CUDA only | **MIT** | `scripts/install_trellis2.sh` / `Dockerfile.cuda` |
 | `triposg` | TripoSG 1.5B | CUDA, ROCm, MPS (exp.) | **MIT** | `scripts/install_triposg.sh` (`install_rocm.sh` on AMD) |
+| `step1x-3d` | Step1X-3D Geometry 1.3B | CUDA only | **Apache-2.0** | `scripts/install_step1x.sh` |
+| `hunyuan3d-omni` | Hunyuan3D-Omni 3.3B (controllable: bbox/voxel/point/pose) | torch MPS, CUDA | Tencent Community* | `scripts/install_omni.sh` |
 | `hunyuan3d-2.1-mlx` | Hunyuan3D-2.1 Shape | MLX (arm64 Mac) | Tencent Community* | `scripts/install_hunyuan_mlx.sh` |
 | `hunyuan3d-2mini` / `-turbo` | Hunyuan3D-2 mini Shape | torch MPS, ROCm | Tencent Community* | `scripts/install_hunyuan_torch.sh` |
 | `hunyuan3d-2mv` / `-mv-turbo` | Hunyuan3D-2 multi-view | torch MPS, ROCm | Tencent Community* | same |

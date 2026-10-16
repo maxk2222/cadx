@@ -9,8 +9,15 @@ per corpus entry and measure:
     success      generation returned a usable mesh
     latency_s    wall time per generation
     iou          footprint IoU (mesh plan projection vs corpus outline)
+    side_iou     elevation IoU vs corpus `side_outline` (only when the
+                 corpus entry defines one; catches waist/notch defects
+                 the plan footprint cannot see)
     aspect_err   |L/W - expected| / expected on the two largest extents
     height_err   |H/L - expected| / expected on smallest/largest extent
+    circularity  mean 4*pi*A/P^2 of cross-sections along the main axis
+                 (1.0 = round, ~0.785 = square) — revolver-part probe
+    wall_min     coarse minimum wall thickness from surface sampling;
+                 absent when it cannot be measured
     watertight   share of results that are watertight single bodies
     faces        mean face count
 
@@ -66,15 +73,18 @@ def _render(entry: dict, size: int = 512):
     return img
 
 
-def _footprint_iou(mesh, outline: list[list[float]], size: int = 256) -> float:
-    """IoU of the mesh's plan footprint (two largest extents) against the
-    corpus outline — both rasterized into a unit square."""
+def _silhouette_iou(
+    mesh, outline: list[list[float]], axes: list[int], size: int = 256
+) -> float:
+    """IoU of the mesh's projection onto the plane spanned by `axes`
+    against a normalised corpus outline — both rasterised into a unit
+    square. Outline space is image-like (v grows downwards): the mesh's
+    higher axis-1 coordinates land at v=0, so author outlines with v=0
+    at the top of the profile."""
     import numpy as np
     from PIL import Image, ImageDraw
 
     tris = mesh.triangles  # (f,3,3)
-    ext = mesh.extents
-    axes = np.argsort(ext)[::-1][:2]  # footprint on the two longest axes
     pts2 = tris[:, :, axes].reshape(-1, 2)
     lo, hi = pts2.min(axis=0), pts2.max(axis=0)
     span = np.maximum(hi - lo, 1e-9)
@@ -99,6 +109,117 @@ def _footprint_iou(mesh, outline: list[list[float]], size: int = 256) -> float:
     b = np.asarray(img2, dtype=bool)
     union = (a | b).sum()
     return float((a & b).sum() / union) if union else 0.0
+
+
+def _footprint_iou(mesh, outline: list[list[float]], size: int = 256) -> float:
+    """Plan footprint IoU: projection on the two longest extent axes."""
+    import numpy as np
+
+    axes = list(np.argsort(mesh.extents)[::-1][:2])
+    return _silhouette_iou(mesh, outline, axes, size)
+
+
+def _side_iou(mesh, outline: list[list[float]], size: int = 256) -> float:
+    """Side-elevation IoU: projection onto the plane spanned by the
+    longest and the shortest extent axis — i.e. viewed along the median
+    axis, the elevation complementary to the plan footprint. This is the
+    silhouette that shows waist/profile defects (sharp V-notch vs soft
+    waist) which plan-view IoU cannot distinguish."""
+    import numpy as np
+
+    order = np.argsort(mesh.extents)  # ascending: [shortest, median, longest]
+    axes = [int(order[2]), int(order[0])]  # longest -> u, shortest -> v
+    return _silhouette_iou(mesh, outline, axes, size)
+
+
+def _loop_area_perimeter(pts) -> tuple[float, float]:
+    """Shoelace area + perimeter of a closed 2D loop; the first vertex
+    may or may not be repeated as the last."""
+    import numpy as np
+
+    v = np.asarray(pts, dtype=float)
+    if len(v) < 3:
+        return 0.0, 0.0
+    if not np.allclose(v[0], v[-1]):
+        v = np.vstack([v, v[:1]])
+    seg = np.diff(v, axis=0)
+    per = float(np.linalg.norm(seg, axis=1).sum())
+    area = 0.5 * abs(
+        float(np.dot(v[:-1, 0], v[1:, 1]) - np.dot(v[:-1, 1], v[1:, 0]))
+    )
+    return area, per
+
+
+def _cross_circularity(mesh, stations: int = 9) -> float:
+    """Mean circularity 4*pi*A/P^2 of cross-sections cut perpendicular
+    to the main (longest-extent) axis — the revolver-part probe. Each
+    section contributes its largest closed loop (outer boundary), so
+    bores do not corrupt the shape measure; 1.0 = perfectly round,
+    pi/4 ~ 0.785 = square. Returns 0.0 when no usable section exists.
+    Loops are chained from closed section entities — no shapely needed."""
+    import numpy as np
+
+    ext = np.asarray(mesh.extents, dtype=float)
+    main = int(np.argmax(ext))
+    if ext[main] <= 0:
+        return 0.0
+    lo, hi = float(mesh.bounds[0][main]), float(mesh.bounds[1][main])
+    origin = np.asarray(mesh.bounds).mean(axis=0)
+    normal = np.zeros(3)
+    normal[main] = 1.0
+    vals = []
+    for t in np.linspace(0.15, 0.85, stations):
+        org = origin.copy()
+        org[main] = lo + float(t) * (hi - lo)
+        try:
+            sec = mesh.section(plane_origin=org, plane_normal=normal)
+            if sec is None:
+                continue
+            path2d, _ = sec.to_2D()
+            verts = np.asarray(path2d.vertices)
+            loops = []
+            for ent in path2d.entities:
+                if not getattr(ent, "closed", False):
+                    continue
+                area, per = _loop_area_perimeter(verts[np.asarray(ent.points)])
+                if area > 0 and per > 0:
+                    loops.append((area, per))
+            if loops:
+                a, p = max(loops)  # outer boundary = largest enclosed area
+                vals.append(4.0 * np.pi * a / (p * p))
+        except Exception:
+            continue
+    return float(np.mean(vals)) if vals else 0.0
+
+
+def _wall_min(mesh, max_samples: int = 400) -> float | None:
+    """Coarse minimum wall thickness: sample up to `max_samples` (hard
+    bound 500, keeps the pairwise matrix small) surface points and take
+    the minimum distance to a sample whose normal opposes ours — i.e.
+    the nearest point on an inward-facing surface, which approximates
+    the wall/thickness chord. Semantics: NOT a medial-axis measure; on
+    solid bodies it reports the chord to the nearest oppositely-facing
+    surface (roughly local thickness), on thin shells the true wall.
+    Returns None when sampling fails or no opposing surface is found."""
+    import numpy as np
+
+    n = int(min(max_samples, 500))
+    try:
+        pts, face_idx = mesh.sample(n, return_index=True)
+    except Exception:
+        return None
+    if len(pts) < 8:
+        return None
+    pts = np.asarray(pts, dtype=float)
+    normals = np.asarray(mesh.face_normals, dtype=float)[face_idx]
+    scale = float(np.max(mesh.extents)) or 1.0
+    dist = np.linalg.norm(pts[:, None, :] - pts[None, :, :], axis=-1)
+    np.fill_diagonal(dist, np.inf)
+    oppose = (normals @ normals.T) < -0.5
+    dist = np.where(oppose, dist, np.inf)
+    best = dist.min(axis=1)
+    best = best[np.isfinite(best) & (best > 1e-4 * scale)]
+    return float(best.min()) if len(best) else None
 
 
 def _edge_roughness_deg(mesh) -> float:
@@ -150,7 +271,15 @@ def _metrics(mesh, entry: dict, latency: float) -> dict:
             holes_found = max(len(path2d.polygons_full) - 1, 0)
     except Exception:
         pass
-    return {
+    try:
+        circularity = _cross_circularity(mesh)
+    except Exception:
+        circularity = 0.0
+    try:
+        wall_min = _wall_min(mesh)
+    except Exception:
+        wall_min = None
+    row = {
         "success": 1.0,
         "latency_s": round(latency, 2),
         "iou": round(iou, 3),
@@ -160,9 +289,18 @@ def _metrics(mesh, entry: dict, latency: float) -> dict:
         "bodies": bodies,
         "faces": len(mesh.faces),
         "roughness_deg": round(_edge_roughness_deg(mesh), 2),
+        "circularity": round(circularity, 3),
         "holes_expected": len(entry.get("holes") or []),
         "holes_found": holes_found,
     }
+    if entry.get("side_outline"):
+        try:
+            row["side_iou"] = round(_side_iou(mesh, entry["side_outline"]), 3)
+        except Exception:
+            row["side_iou"] = 0.0
+    if wall_min is not None:
+        row["wall_min"] = round(wall_min, 4)
+    return row
 
 
 def _agg(rows: list[dict]) -> dict:
@@ -183,6 +321,9 @@ def _agg(rows: list[dict]) -> dict:
         "faces": mean("faces"),
         "roughness_deg": mean("roughness_deg"),
         "hole_recall": mean("hole_recall"),
+        "side_iou": mean("side_iou"),
+        "circularity": mean("circularity"),
+        "wall_min": mean("wall_min"),
     }
 
 
@@ -265,6 +406,10 @@ def main() -> int:
                     row.setdefault("faces", 0)
                     row.setdefault("roughness_deg", 0.0)
                     row.setdefault("hole_recall", 0.0)
+                    row.setdefault("circularity", 0.0)
+                    if entry.get("side_outline"):
+                        row.setdefault("side_iou", 0.0)
+                    # wall_min intentionally absent — not measurable on a failed row
                     reg.mark_failed(cls.id, str(e))
                 rows_by_class.setdefault(entry["class"], []).append(row)
                 rows_by_class.setdefault("_all", []).append(row)

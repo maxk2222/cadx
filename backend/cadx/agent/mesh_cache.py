@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import shutil
 from pathlib import Path
+from typing import Any
 
 from cadx.logging import get_logger
 
@@ -62,14 +63,36 @@ def lookup(key: str) -> Path | None:
     return p if p.exists() else None
 
 
-def store(key: str, mesh_path: Path) -> None:
-    """Copy a generated GLB into the cache and prune old entries."""
+def lookup_meta(key: str) -> dict[str, Any]:
+    """Sidecar metadata of a cached entry (e.g. the adapter that produced
+    it) — empty dict for entries predating the sidecar."""
     try:
+        import json
+
+        p = _cache_dir() / f"{key}.meta.json"
+        return json.loads(p.read_text()) if p.exists() else {}
+    except Exception:
+        return {}
+
+
+def store(key: str, mesh_path: Path, meta: dict[str, Any] | None = None) -> None:
+    """Copy a generated GLB into the cache and prune old entries.
+
+    `meta` is an optional sidecar (`<key>.meta.json`) for provenance that the
+    key cannot encode — e.g. the adapter that actually produced the mesh when
+    the request model was "auto".
+    """
+    try:
+        import json
+
         d = _cache_dir()
         d.mkdir(parents=True, exist_ok=True)
         shutil.copy2(mesh_path, d / f"{key}.glb")
+        if meta:
+            (d / f"{key}.meta.json").write_text(json.dumps(meta))
         files = sorted(d.glob("*.glb"), key=lambda p: p.stat().st_mtime)
         for old in files[: max(0, len(files) - _MAX_ENTRIES)]:
             old.unlink(missing_ok=True)
+            (d / f"{old.stem}.meta.json").unlink(missing_ok=True)
     except Exception as e:
         log.warning("mesh_cache.store_failed", error=str(e)[:200])

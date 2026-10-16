@@ -122,6 +122,14 @@ def _run_mesh(req: dict, cfg: ServerConfig, registry: Registry, work: Path) -> d
                     resolution=vp.get("resolution") or params.get("resolution"),
                     subject=vp.get("subject") or params.get("subject", ""),
                     image_roles=params.get("image_roles") or [],
+                    # conditioning is job-level (Omni bbox/voxel control) —
+                    # a variant may override it explicitly
+                    control_type=vp.get("control_type") or params.get("control_type"),
+                    control_input=(
+                        vp.get("control_input")
+                        if vp.get("control_input") is not None
+                        else params.get("control_input")
+                    ),
                     work_dir=work,
                 ),
                 progress=vprog,

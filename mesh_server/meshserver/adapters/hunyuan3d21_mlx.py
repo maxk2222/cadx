@@ -85,6 +85,18 @@ def _import_pipeline() -> Any:
             f"MLX fork not found at {root} — run "
             "mesh_server/scripts/install_hunyuan_mlx.sh"
         )
+    # the Hunyuan3D-Omni adapter binds its own `hy3dshape` namespace package
+    # (upstream ships no __init__.py there) into sys.modules — a foreign
+    # binding must be evicted so this regular package can resolve again.
+    pkg_dir = str(root / "hy3dshape")
+    mod = sys.modules.get("hy3dshape")
+    if mod is not None:
+        paths = [str(p) for p in (getattr(mod, "__path__", None) or [])]
+        if pkg_dir not in paths:
+            for name in [
+                k for k in sys.modules if k == "hy3dshape" or k.startswith("hy3dshape.")
+            ]:
+                sys.modules.pop(name, None)
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
     _patch_terminal_sigma()

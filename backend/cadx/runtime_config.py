@@ -103,7 +103,7 @@ class RuntimeSettings(BaseModel):
     agent_mesh_hard_fail_score: int = Field(default=30, ge=0, le=100)
     agent_mesh_hard_fail_limit: int = Field(default=3, ge=1, le=20)
     agent_max_approaches: int = Field(default=2, ge=1, le=3)
-    agent_stall_patience: int = Field(default=4, ge=0, le=50)  # 0 = never stall-stop
+    agent_stall_patience: int = Field(default=2, ge=0, le=50)  # 0 = never stall-stop
     agent_switch_score: int = Field(default=60, ge=0, le=100)
     agent_switch_after_iters: int = Field(default=4, ge=1, le=20)
     agent_struct_tools: bool = True

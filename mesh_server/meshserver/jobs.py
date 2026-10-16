@@ -724,6 +724,10 @@ class JobManager:
                         resolution=getv("resolution") or job.params.resolution,
                         subject=getv("subject") or job.params.subject,
                         image_roles=job.params.image_roles,
+                        # job-level conditioning (bbox/voxel/point/pose) —
+                        # GenVariant has no per-seed override
+                        control_type=job.params.control_type,
+                        control_input=job.params.control_input,
                         work_dir=self.cfg.job_dir / job.id,
                     ),
                     progress=vprog,

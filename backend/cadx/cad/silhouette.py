@@ -255,3 +255,139 @@ def mesh_silhouette_iou(a: Any, b: Any, *, views: tuple[str, ...] = ("+y", "+x",
         if ma is not None and mb is not None:
             vals.append(_iou(ma, mb))
     return round(sum(vals) / len(vals), 4) if vals else 1.0
+
+
+# --------------------------------------------------------------------------- #
+# mask -> world-mm polygon (feeds the silhouette_carve / radial_profile_auto   #
+# mesh ops — the ops stay image-free, conversion happens orchestration-side)   #
+# --------------------------------------------------------------------------- #
+
+
+def mask_to_outline_mm(
+    mask: NDArray[np.bool_],
+    mesh_extent_u: float,
+    mesh_extent_v: float,
+    *,
+    fill: float = 1.0,
+) -> list[list[float]]:
+    """Reference subject mask -> silhouette polygon in view-plane mm.
+
+    Companion for the `silhouette_carve` mesh op: the largest subject contour
+    becomes a [[u, v], ...] polygon in the (u, v) basis `mesh_view_mask`
+    projects into — u horizontal, v = world +Z for the four side views.
+    The subject crop is scaled per axis to `fill` x the mesh's view-plane
+    extent (NOT uniformly): the outline bbox spans the full u and v of the
+    mesh box, centred horizontally on u = 0 and bottom-aligned to v = 0
+    (the part rests on XY in the frame contract). Spec dims are
+    authoritative — the carve prism then only trims profile overhang
+    inside the fitted box, it can never shrink the stated bounding box
+    (uniform min-fit scaling did exactly that: mask aspect != mesh aspect
+    silently shaved off stated dims after the dim-fit). `fill` < 1 shrinks
+    the outline inside the envelope — a deliberate carve margin.
+    Returns [] for empty/degenerate input.
+    """
+    crop = _mask_crop(mask)
+    if crop is None or mesh_extent_u <= 0 or mesh_extent_v <= 0:
+        return []
+    from skimage import measure
+
+    padded = np.pad(crop.astype(np.float64), 1)
+    contours = measure.find_contours(padded, 0.5)
+    if not contours:
+        return []
+    pts = np.asarray(max(contours, key=len), dtype=float)  # (row, col), padded space
+    if len(pts) > 400:
+        # the op schema caps outlines at 500 points — marching-squares
+        # contours of a 128² mask stay far below that, dense source masks
+        # need a simplifying pass
+        from shapely.geometry import Polygon
+
+        poly = Polygon(pts[:, ::-1])  # shapely wants (x=col, y=row)
+        tol = 0.75
+        while len(poly.exterior.coords) > 400 and tol <= 8.0:
+            poly = poly.simplify(tol, preserve_topology=True)
+            tol *= 2.0
+        if poly.geom_type == "Polygon" and poly.area > 0:
+            pts = np.asarray(poly.exterior.coords, dtype=float)[:, ::-1]
+    h_px, w_px = crop.shape
+    scale_u = fill * mesh_extent_u / w_px
+    scale_v = fill * mesh_extent_v / h_px
+    return [
+        [
+            round(float((c - 1.0) - (w_px - 1.0) / 2.0) * scale_u, 4),
+            round(float(h_px - r) * scale_v, 4),
+        ]
+        for r, c in pts
+    ]
+
+
+def _flat_coords(geom: Any) -> list[tuple[float, float]]:
+    """All (x, y) coordinate pairs inside a shapely intersection result."""
+    if geom.is_empty:
+        return []
+    if geom.geom_type in ("LineString", "LinearRing", "Point"):
+        return [tuple(c[:2]) for c in geom.coords]
+    out: list[tuple[float, float]] = []
+    for g in getattr(geom, "geoms", []):
+        out.extend(_flat_coords(g))
+    return out
+
+
+def profile_stations_from_outline(
+    outline_mm: list[list[float]],
+    axis: str = "x",
+    n_stations: int = 16,
+) -> list[dict[str, float]]:
+    """Side-silhouette polygon -> `stations` arg for `radial_profile_auto`.
+
+    `outline_mm` follows the (u, v) view-plane convention of
+    `mask_to_outline_mm`/`mesh_view_mask` (u horizontal, v = world +Z). The
+    profile axis selects the axial polygon coordinate: "x"/"y" -> u (a
+    revolve lying along that horizontal axis), "z" -> v (an upright
+    revolve). At `n_stations` positions across the axial extent the station
+    `radius_mm` is half the polygon's perpendicular span; `t` is the
+    normalised axial position. Returns [] for degenerate input.
+    """
+    from shapely.geometry import LineString, Polygon
+
+    if len(outline_mm) < 3 or n_stations < 2 or axis not in ("x", "y", "z"):
+        return []
+    poly = Polygon(outline_mm)
+    if not poly.is_valid:
+        poly = poly.buffer(0)
+    if poly.geom_type == "MultiPolygon":
+        poly = max(poly.geoms, key=lambda g: g.area)
+    if poly.is_empty or poly.area <= 0:
+        return []
+    a_idx = 1 if axis == "z" else 0  # axial coord: v upright, u otherwise
+    r_idx = 1 - a_idx
+    a_lo, a_hi = float(poly.bounds[a_idx]), float(poly.bounds[a_idx + 2])
+    a_span = a_hi - a_lo
+    if a_span <= 1e-9:
+        return []
+    r_lo, r_hi = float(poly.bounds[r_idx]), float(poly.bounds[r_idx + 2])
+    r_pad = max(r_hi - r_lo, 1.0) * 2.0
+    ts = np.linspace(0.5 / n_stations, 1.0 - 0.5 / n_stations, n_stations)
+    radii = np.full(n_stations, np.nan)
+    for i, t in enumerate(ts):
+        a = a_lo + float(t) * a_span
+        if a_idx == 0:
+            line = LineString([(a, r_lo - r_pad), (a, r_hi + r_pad)])
+        else:
+            line = LineString([(r_lo - r_pad, a), (r_hi + r_pad, a)])
+        vals = [c[r_idx] for c in _flat_coords(poly.intersection(line))]
+        if vals:
+            radii[i] = (max(vals) - min(vals)) / 2.0
+    ok = np.isfinite(radii)
+    if not ok.any():
+        return []
+    # concave outlines can miss a slice line entirely — fill gaps by
+    # interpolation rather than dropping the station
+    radii[~ok] = np.interp(np.flatnonzero(~ok), np.flatnonzero(ok), radii[ok])
+    stations = [{"t": 0.0, "radius_mm": round(float(radii[0]), 4)}]
+    stations += [
+        {"t": round(float(t), 4), "radius_mm": round(float(r), 4)}
+        for t, r in zip(ts, radii, strict=True)
+    ]
+    stations.append({"t": 1.0, "radius_mm": round(float(radii[-1]), 4)})
+    return stations

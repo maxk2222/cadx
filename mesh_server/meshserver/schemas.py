@@ -6,7 +6,7 @@ its own copy of these types (no cross-import between the two projects).
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -33,6 +33,12 @@ class GenParams(BaseModel):
     guidance: float | None = None
     resolution: int | None = None  # octree/voxel resolution hint
     batch: list[GenVariant] | None = None  # >0 entries: one job, N outputs (out_i.glb)
+    # controllable-generation conditioning (Hunyuan3D-Omni): "bbox" | "voxel"
+    # | "point" | "pose" — control_input semantics follow the type (bbox =
+    # [dx, dy, dz] dims in mm, normalised adapter-side). Ignored by adapters
+    # without control support.
+    control_type: str | None = None
+    control_input: Any = None
 
 
 class ImageGenParams(BaseModel):

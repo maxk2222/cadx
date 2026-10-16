@@ -784,6 +784,11 @@ def _dedupe_near_identical(ctx: AgentCtx, ordered: list[Any]) -> list[Any]:
     out: list[Any] = []
     dropped: list[str] = []
     for a in ordered:
+        if getattr(a, "role_hint", "") == "synth_view":
+            # synthesised side views fill labelled slots — a similar-looking
+            # hero must never dedupe them away
+            out.append(a)
+            continue
         h = _ahash(a.path)
         if h is not None and any(bin(h ^ h2).count("1") < 6 for h2 in seen):
             dropped.append(a.asset_id)
@@ -833,6 +838,86 @@ async def _bootstrap_concept_images(
     return list(out)
 
 
+async def _ensure_synth_views(ctx: AgentCtx, iteration: int, spec: PartSpec | None) -> None:
+    """Single-image non-flat part: synthesise up to two orthographic side
+    views from the hero image so multiview adapters get left/right
+    conditioning instead of guessing depth from one perspective shot.
+
+    Runs once per run (`_synth_views_done`); the generated assets are marked
+    (`role_hint="synth_view"`, `synth:` caption, `_synth_view_roles` map) so
+    reference-mask/carving/scoring paths never treat them as ground truth —
+    they are generator conditioning only. Any failure degrades to the
+    unchanged single-image path."""
+    if ctx.mesh_info.get("_synth_views_done"):
+        return
+    ctx.mesh_info["_synth_views_done"] = True
+    if ctx.image is None or not ctx.image_available or spec is None:
+        return
+    images = [
+        a
+        for a in ctx.assets
+        if a.kind in IMAGE_INPUT_KINDS and getattr(a, "role_hint", "") != "synth_view"
+    ]
+    if len(images) != 1:
+        return
+    dims = (spec.length_x.value, spec.width_y.value, spec.height_z.value)
+    flat = dims[2] > 0 and dims[2] < 0.3 * max(dims[0], dims[1], 1e-9)
+    if flat:
+        return  # flat parts get the measured-outline 'back' synth instead
+    try:
+        from cadx.agent.concept_image import generate_concept_images
+
+        out = await generate_concept_images(
+            ctx,
+            "same object, orthographic side view, neutral grey background, no text",
+            ref_asset=images[0],
+            count=2,
+            source="synth_side_view",
+        )
+    except Exception as e:
+        log.warning("meshgen.synth_views_failed", error=str(e)[:200])
+        await ctx.emit(
+            "meshgen",
+            iteration,
+            f"side-view synthesis failed: {e} — continuing with the single view",
+        )
+        return
+    roles: dict[str, str] = {}
+    for a, slot in zip(out, ("left", "right"), strict=False):
+        a.role_hint = "synth_view"
+        a.caption = f"synth:{slot} — {a.caption}"
+        roles[a.asset_id] = slot
+    if roles:
+        ctx.mesh_info["_synth_view_roles"] = roles
+        await ctx.emit(
+            "meshgen",
+            iteration,
+            f"generated {len(roles)} synthetic side view(s) for multiview conditioning",
+        )
+
+
+def _rotate_hero(ordered: list[Any], synth_roles: dict[str, str]) -> list[Any]:
+    """Iteration>1 hero rotation among REAL images only — a synthesised side
+    view must never slide into the generator's front slot."""
+    real = [a for a in ordered if a.asset_id not in synth_roles]
+    if len(real) <= 1:
+        return ordered
+    synth = [a for a in ordered if a.asset_id in synth_roles]
+    return real[1:] + real[:1] + synth
+
+
+def _assign_synth_roles(
+    ordered: list[Any], roles: list[str], synth_roles: dict[str, str]
+) -> list[str]:
+    """Synthesised side views occupy free left/right multiview slots; real
+    labelled views keep theirs (first-free assignment)."""
+    free = [r for r in ("left", "right") if r not in roles]
+    for i, a in enumerate(ordered):
+        if a.asset_id in synth_roles and roles[i] == "other" and free:
+            roles[i] = free.pop(0)
+    return roles
+
+
 def _mesh_source_images(
     ctx: AgentCtx, iteration: int, spec: PartSpec | None = None
 ) -> tuple[list[Any], list[str]]:
@@ -856,8 +941,9 @@ def _mesh_source_images(
                 ordered.append(by_id[aid])
     ordered += [a for a in images if a not in ordered]
     ordered = _dedupe_near_identical(ctx, ordered)
+    synth_roles: dict[str, str] = ctx.mesh_info.get("_synth_view_roles") or {}
     if iteration > 1 and len(ordered) > 1:
-        ordered = ordered[1:] + ordered[:1]  # rotate hero
+        ordered = _rotate_hero(ordered, synth_roles)
 
     intake_roles: dict[str, str] = {}
     flat = False
@@ -884,6 +970,8 @@ def _mesh_source_images(
             if synth is not None:
                 ordered = [*ordered, synth]
                 roles = [*roles, "back"]
+    if synth_roles:
+        roles = _assign_synth_roles(ordered, roles, synth_roles)
     return ordered, roles
 
 
@@ -1179,6 +1267,7 @@ async def _generate_mesh_batch(  # noqa: C901
     n = len(seeds)
     it_dir = storage.iteration_dir(ctx.project_id, ctx.version_id, iteration)
     it_dir.mkdir(parents=True, exist_ok=True)
+    await _ensure_synth_views(ctx, iteration, spec)
     images, roles = _mesh_source_images(ctx, iteration, spec)
     if not images:
         boot = await _bootstrap_concept_images(ctx, iteration, spec, plan)
@@ -1190,6 +1279,7 @@ async def _generate_mesh_batch(  # noqa: C901
     model_r, images, roles = await _arrange_gen_images(
         ctx, iteration, images, roles, spec, prefer=model
     )
+    control_type, control_input = _omni_control(model_r, spec)
     # screening at the adapter's native step count — distilled turbo models
     # are built for ~5 steps; running them at 15 just burns wall-clock
     if steps is not None:
@@ -1212,6 +1302,7 @@ async def _generate_mesh_batch(  # noqa: C901
     variants: list[MeshGenVariant] = []
     keys: dict[int, str] = {}
     meta = ctx.mesh_info.setdefault("_cand_meta", {})
+    produced_model: str | None = None
     for i, seed in enumerate(seeds):
         out_path = it_dir / f"mesh_raw{tag_prefix}{i}.glb"
         rel = storage.relpath(out_path)
@@ -1225,17 +1316,23 @@ async def _generate_mesh_batch(  # noqa: C901
                 steps=steps,
                 guidance=ctx.settings.mesh_guidance,
                 resolution=resolution,
-                subject=subject,
+                subject=(
+                    f"{subject}|ctl:{control_type}:{control_input}" if control_type else subject
+                ),
             )
             hit = mesh_cache.lookup(key)
             if hit:
                 out_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(hit, out_path)
                 rels[i] = rel
+                cached_model = mesh_cache.lookup_meta(key).get("model")
+                produced_model = produced_model or cached_model or None
                 meta[_cand_key(seed, model)] = {
                     "rel": rel,
                     "seed": seed,
-                    "model": model_r,
+                    # the adapter that produced the cached GLB when known —
+                    # model_r may still be "auto"
+                    "model": cached_model or model_r,
                     "steps": None,
                     "resolution": None,
                     "cached": True,
@@ -1263,6 +1360,8 @@ async def _generate_mesh_batch(  # noqa: C901
             guidance=ctx.settings.mesh_guidance,
             out_path=variants[0].out_path,
             job_id=ctx.job_id,
+            control_type=control_type,
+            control_input=control_input,
         )
 
         async def on_progress(msg: str, p: float) -> None:
@@ -1291,6 +1390,7 @@ async def _generate_mesh_batch(  # noqa: C901
             if res is None:
                 continue
             rels[j] = storage.relpath(res.mesh_path)
+            produced_model = res.model
             meta[_cand_key(seeds[j], model)] = {
                 "rel": rels[j],
                 "seed": seeds[j],
@@ -1300,11 +1400,13 @@ async def _generate_mesh_batch(  # noqa: C901
             }
             if keys.get(j):
                 try:
-                    mesh_cache.store(keys[j], res.mesh_path)
+                    mesh_cache.store(keys[j], res.mesh_path, meta={"model": res.model})
                 except Exception as e:
                     log.warning("mesh.cache_store_failed", error=str(e)[:160])
     ctx.mesh_info["generation"] = {
-        "model": model_r,
+        # adapter that actually produced the batch — `model_r` may be the
+        # unresolved "auto" preference while res.model is server-reported
+        "model": produced_model or model_r,
         "seeds": seeds,
         "batch": True,
         "images": [a.asset_id for a in images],
@@ -1641,6 +1743,18 @@ def _prepped_gen_images(ctx: AgentCtx, it_dir: Path, images: list[Any]) -> list[
     return prepped
 
 
+def _omni_control(model: str | None, spec: PartSpec | None) -> tuple[str | None, Any]:
+    """Hunyuan3D-Omni bbox conditioning: stated dims as `control_input` —
+    the adapter normalises proportions internally so plain mm values work.
+    Returns (None, None) for other adapters or underspecified dims."""
+    if not model or "omni" not in model.lower() or spec is None:
+        return None, None
+    dims = [spec.length_x.value, spec.width_y.value, spec.height_z.value]
+    if not all(d and float(d) > 0 for d in dims):
+        return None, None
+    return "bbox", [round(float(d), 3) for d in dims]
+
+
 async def _mesh_cache_lookup(
     ctx: AgentCtx,
     iteration: int,
@@ -1653,6 +1767,7 @@ async def _mesh_cache_lookup(
     out_path: Path,
     rel: str,
     resolution: int | None = None,
+    key_extra: str = "",
 ) -> tuple[str, bool]:
     """Return (cache_key, hit); on a hit copy the cached GLB to out_path
     and fill ctx.mesh_info['generation'] so the caller can return early."""
@@ -1668,7 +1783,9 @@ async def _mesh_cache_lookup(
         steps=steps if steps is not None else ctx.settings.mesh_steps,
         guidance=ctx.settings.mesh_guidance,
         resolution=resolution if resolution is not None else ctx.settings.mesh_resolution,
-        subject=subject,
+        # key_extra folds conditioning (Omni bbox) into the cache identity —
+        # same images+params under a different control must not hit
+        subject=f"{subject}|{key_extra}" if key_extra else subject,
     )
     cached = mesh_cache.lookup(key)
     if cached is None:
@@ -1677,7 +1794,9 @@ async def _mesh_cache_lookup(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(cached, out_path)
     ctx.mesh_info["generation"] = {
-        "model": model,
+        # the adapter that produced the cached GLB when the sidecar knows —
+        # `model` may still be the unresolved "auto" preference
+        "model": mesh_cache.lookup_meta(key).get("model") or model,
         "seed": seed,
         "cached": True,
         "mesh_rel": rel,
@@ -1783,6 +1902,7 @@ async def _generate_mesh(  # noqa: C901
             shutil.copy2(ctx.mesh_raw_reuse, out_path)
         return rel
 
+    await _ensure_synth_views(ctx, iteration, spec)
     images, roles = _mesh_source_images(ctx, iteration, spec)
     if not images:
         # text-only job: image->3D still needs a reference — synthesise a
@@ -1801,6 +1921,7 @@ async def _generate_mesh(  # noqa: C901
     model, images, roles = await _arrange_gen_images(
         ctx, iteration, images, roles, spec, prefer=model or ctx.mesh_info.get("_candidate_model")
     )
+    control_type, control_input = _omni_control(model, spec)
     subject = (
         ctx.mesh_info.get("_regen_hint")
         or (plan.mesh_subject if plan else "")
@@ -1836,7 +1957,9 @@ async def _generate_mesh(  # noqa: C901
                 shutil.copy2(src, out_path)
             cand["_used"] = True
             ctx.mesh_info["generation"] = {
-                "model": model,
+                # the adapter the candidate was ACTUALLY generated with —
+                # `model` may still be the unresolved "auto" preference
+                "model": cand.get("model") or model,
                 "seed": seed,
                 "cached": True,
                 "candidate_reuse": True,
@@ -1865,6 +1988,7 @@ async def _generate_mesh(  # noqa: C901
         out_path,
         rel,
         resolution=resolution,
+        key_extra=f"ctl:{control_type}:{control_input}" if control_type else "",
     )
     if hit:
         return rel
@@ -1880,6 +2004,8 @@ async def _generate_mesh(  # noqa: C901
         resolution=resolution if resolution is not None else ctx.settings.mesh_resolution,
         out_path=out_path,
         job_id=ctx.job_id,
+        control_type=control_type,
+        control_input=control_input,
     )
 
     async def on_progress(msg: str, p: float) -> None:
@@ -1907,7 +2033,7 @@ async def _generate_mesh(  # noqa: C901
         try:
             from cadx.agent import mesh_cache
 
-            mesh_cache.store(key, result.mesh_path)
+            mesh_cache.store(key, result.mesh_path, meta={"model": result.model})
         except Exception as e:
             log.warning("mesh.cache_store_failed", error=str(e)[:160])
 
@@ -2170,12 +2296,25 @@ def _ref_side_mask(ctx: AgentCtx, iteration: int, spec: PartSpec | None) -> tupl
         for a, role in zip(images, roles, strict=False):
             if role in ("top", "bottom", "scribble"):
                 continue
+            # synthesised conditioning views are not ground truth — neither
+            # the generated side views nor the measured-outline back render
+            if getattr(a, "role_hint", "") == "synth_view" or a.asset_id == "_synth_back":
+                continue
             p = getattr(a, "path", None)
             if not p or not Path(p).exists():
                 continue
-            mask = reference_mask(p)
-            if mask is not None:
-                break
+            cand = reference_mask(p)
+            if cand is None:
+                continue
+            # sanity gate: near-empty extractions (rembg speckle on noise can
+            # produce <1% coverage) and full-frame failures carry no shape
+            # evidence — they'd drag silhouette IoU to ~0 for any mesh
+            frac = float(cand.sum()) / max(1, cand.size)
+            if not 0.03 <= frac <= 0.97:
+                log.debug("orient.ref_mask_rejected", path=str(p), coverage=round(frac, 3))
+                continue
+            mask = cand
+            break
         if mask is not None:
             out = storage.version_dir(ctx.project_id, ctx.version_id) / "_ref_mask.png"
             save_mask(mask, out)
@@ -3167,6 +3306,35 @@ async def _run_mesh(  # noqa: C901
                         exec_result, post = fitted
                         ctx.mesh_info["post"] = post.model_dump()
 
+            # deterministic silhouette refit BEFORE the baseline critique —
+            # the reference mask's outline is objective shape evidence: a
+            # spec'd revolve gets radial profile stations, other parts a
+            # visual-hull carve. Runs before drill ops so bore coverage is
+            # judged on the reshaped mesh.
+            sil_ops = _spec_silhouette_ops(spec, ctx, exec_result or {})
+            if sil_ops:
+                post_s = merge_post_params(
+                    post, {"ops": [*post.ops, *[o.model_dump() for o in sil_ops]]}
+                )
+                res_s = await _process_mesh(
+                    ctx,
+                    it,
+                    mesh_rel,
+                    spec,
+                    post_s,
+                    make_solid=False,
+                    subdir=f"a{next(art_attempt)}",
+                )
+                if res_s.get("ok"):
+                    exec_result, post = res_s, post_s
+                    ctx.mesh_info["post"] = post.model_dump()
+                    await ctx.emit(
+                        "meshprocess",
+                        it,
+                        "applied deterministic silhouette ops "
+                        f"({', '.join(o.op for o in sil_ops)})",
+                    )
+
             # deterministic spec features BEFORE the baseline critique —
             # a declared centred through-bore is cut right away so the
             # critique never carries an unfixable "missing bore" major and
@@ -3204,12 +3372,27 @@ async def _run_mesh(  # noqa: C901
         from cadx.agent.mesh_score import score_mesh_candidate
 
         sc = score_mesh_candidate(exec_result, spec, _measured_plan_outline(ctx))
+        mesh_meta = exec_result.get("mesh") or {}
+        reject_reason: str | None = None
         if sc < 0.35:
+            reject_reason = f"score {sc:.2f}"
+        else:
+            # clearly-bad gate: the silhouette measurably misses the reference
+            # (a matched view means the 0.xx is real, not an unusable mask)
+            # AND dims are off — either alone is fixable, both is a wrong part
+            sil = mesh_meta.get("silhouette_iou")
+            if sil is not None and mesh_meta.get("silhouette_view") and float(sil) < 0.3:
+                dim_gate = compare_dims(spec, exec_result.get("analysis") or {}, tol_pct, tol_mm)
+                if dim_gate:
+                    reject_reason = (
+                        f"silhouette IoU {float(sil):.2f} + dim mismatch ({dim_gate[0]})"
+                    )
+        if reject_reason is not None:
             hard_fails += 1
             await ctx.emit(
                 "meshprocess",
                 it,
-                f"mesh rejected by pre-gate (score {sc:.2f}) — new seed",
+                f"mesh rejected by pre-gate ({reject_reason}) — new seed",
             )
             if hard_fails >= hard_fail_limit:
                 outcome.fallback_to_cad = stated_dim_count(spec) >= 2
@@ -3516,6 +3699,132 @@ def _fit_ops_to_stated(spec: PartSpec, bbox: list[float] | None) -> tuple[list[M
     if not ops:
         return [], ""
     return ops, "; ".join(notes)
+
+
+def _revolve_axis(spec: PartSpec, analysis: dict[str, Any]) -> str | None:
+    """Rotation axis of a revolve-like part, or None when not provable.
+
+    Evidence gate: the executor's circularity (when it reports one) or spec
+    wording (round/cylindrical/rotational — shared regex in mesh_score) AND
+    a measured bbox whose two radial extents agree within 20%. All-equal
+    extents (cubic) resolve to "z" — profile stations then read off any
+    side view."""
+    from cadx.agent.mesh_score import spec_suggests_revolve
+
+    circ = analysis.get("circularity")
+    measured_round = circ is not None and float(circ) >= 0.85
+    if not (spec_suggests_revolve(spec) or measured_round):
+        return None
+    bb = analysis.get("bbox_size") or []
+    if len(bb) != 3:
+        return None
+    L, W, H = (float(v) for v in bb)
+    pairs = {"z": (L, W), "x": (W, H), "y": (L, H)}
+    best_axis, best_dev = None, 1e9
+    for axis, (a, b) in pairs.items():
+        hi = max(a, b)
+        if hi <= 0:
+            continue
+        dev = abs(a - b) / hi
+        if dev < best_dev:
+            best_axis, best_dev = axis, dev
+    return best_axis if best_dev <= 0.2 else None
+
+
+def _spec_silhouette_ops(
+    spec: PartSpec, ctx: AgentCtx, exec_result: dict[str, Any]
+) -> list[MeshOp]:
+    """Deterministic shape ops from the reference-image side silhouette.
+
+    The worker extracted the subject mask once (`_ref_side_mask` — real
+    front/side images only, synthetic conditioning is excluded there) and
+    the executor reported which view it matches (`silhouette_view`). A
+    declared/measured revolve gets `radial_profile_auto` stations read off
+    the outline; other parts get a `silhouette_carve` visual-hull trim —
+    but only when the measured IoU leaves meaningful room. Conservative:
+    emits [] without a mask, a matched view, or a usable outline.
+    """
+    mesh_meta = exec_result.get("mesh") or {}
+    analysis = exec_result.get("analysis") or {}
+    bb = analysis.get("bbox_size") or []
+    view = mesh_meta.get("silhouette_view")
+    mask = ctx.mesh_info.get("_ref_mask")
+    if (
+        len(bb) != 3
+        or view not in ("+x", "-x", "+y", "-y")
+        or mask is None
+        or not getattr(mask, "any", lambda: bool(mask))()
+    ):
+        return []
+    try:
+        from cadx.cad.silhouette import mask_to_outline_mm, profile_stations_from_outline
+    except Exception:
+        return []
+    # view-plane extents (mask_to_outline_mm basis): v is always world +Z,
+    # u is the horizontal in-plane axis — y for ±x views, x for ±y views
+    extent_u = float(bb[1] if view.lstrip("+-") == "x" else bb[0])
+    extent_v = float(bb[2])
+    # aspect-consistency gate: the mask's subject-crop aspect must roughly
+    # match the mesh's aspect in the matched view. These ops REFINE a
+    # roughly-right shape — a wildly different aspect means the extraction is
+    # junk or the part is wrong entirely (regeneration territory, not a trim)
+    try:
+        import numpy as np
+
+        m = np.asarray(mask)
+        # subject-crop aspect: occupied columns / occupied rows
+        mask_aspect = float(m.any(axis=0).sum()) / max(float(m.any(axis=1).sum()), 1.0)
+        mesh_aspect = extent_u / max(extent_v, 1e-9)
+        if abs(mask_aspect - mesh_aspect) / max(mask_aspect, mesh_aspect) > 0.4:
+            log.debug(
+                "mesh.silhouette_aspect_mismatch",
+                mask_aspect=round(mask_aspect, 2),
+                mesh_aspect=round(mesh_aspect, 2),
+            )
+            return []
+    except Exception:
+        return []
+    try:
+        outline = mask_to_outline_mm(mask, extent_u, extent_v)
+    except Exception as e:
+        log.debug("mesh.silhouette_outline_failed", error=str(e)[:160])
+        return []
+    if len(outline) < 3:
+        return []
+    sil_iou = mesh_meta.get("silhouette_iou")
+    axis = _revolve_axis(spec, analysis)
+    if axis is not None:
+        # looking down the rotation axis the silhouette is a disc — a flat
+        # radius profile carries no shape; only side-on views qualify
+        if axis == view.lstrip("+-"):
+            return []
+        axial = float(bb["xyz".index(axis)])
+        stations = profile_stations_from_outline(outline, axis=axis, n_stations=16)
+        if not 2 <= len(stations) <= 32:
+            return []
+        return [
+            MeshOp(
+                op="radial_profile_auto",
+                args={
+                    "axis": axis,
+                    "stations": stations,
+                    # small gaussian blend keeps the profile a soft waist
+                    "blend_mm": round(max(axial * 0.04, 0.2), 3),
+                },
+            )
+        ]
+    # carve only a plausible-but-imperfect match: below ~0.25 the
+    # mask/mesh pair is more likely mismatched than trimmable (the
+    # pre-gate rejects those candidates anyway); above 0.85 carving adds
+    # nothing. `None` means no measurement — don't trim blind.
+    if sil_iou is None or not 0.25 <= float(sil_iou) < 0.85:
+        return []
+    return [
+        MeshOp(
+            op="silhouette_carve",
+            args={"view": view, "outline": outline, "tolerance_mm": 0.5},
+        )
+    ]
 
 
 def _spec_drill_ops(spec: PartSpec, exec_result: dict[str, Any]) -> list[MeshOp]:

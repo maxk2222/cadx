@@ -33,6 +33,12 @@ hybrid only:  runner_entry injects load_mesh_solid() + MESH_BBOX
 
 - The **worker** calls the mesh server (`public` network); the **executor**
   only sees files under `DATA_DIR` (internal, sealed).
+- The watertight repair ladder is `clean → manifold3d → PyMeshLab alpha
+  wrap → bounded voxel fallback` (`cad/mesh_repair_pml.py`). PyMeshLab is
+  **GPL and optional** — installed as the `repair` extra
+  (`backend/pyproject.toml`, installed in the worker/executor images);
+  when absent every rung degrades to the previous stock implementation.
+  Remesh/decimate/Taubin-smooth also prefer PyMeshLab when available.
 - Mesh post-params (scale, up, front, rotate_z, decimate, flatten, mirror)
   plus the recorded transform **ops** are stored as `version.params` — the
   params job re-runs the pipeline **without any LLM call**
@@ -47,6 +53,8 @@ hybrid only:  runner_entry injects load_mesh_solid() + MESH_BBOX
 | `trellis2` | TRELLIS.2-4B (shape only) | CUDA ≥ ~24 GB | **MIT** |
 | `triposg` | TripoSG 1.5B | CUDA, MPS exp. | **MIT** |
 | `triposg-scribble` | TripoSG-scribble (sketch+text) | CUDA, MPS exp. | **MIT** (experimental) |
+| `step1x-3d` | Step1X-3D geometry 1.3B | CUDA only | **Apache-2.0** |
+| `hunyuan3d-omni` | Hunyuan3D-Omni (controllable) | torch MPS, CUDA | Tencent* |
 | `hunyuan3d-2.1-mlx` | Hunyuan3D-2.1 shape | arm64 Mac (MLX) | Tencent* |
 | `hunyuan3d-2mini` / `-turbo` | Hunyuan3D-2 mini | torch MPS | Tencent* |
 | `hunyuan3d-2mv` / `-mv-turbo` | Hunyuan3D-2 multi-view | torch MPS | Tencent* |
@@ -70,6 +78,14 @@ stair-stepping proxy) and the corpus carries `detailed_gear.json`
 (14-tooth silhouette + bore) to catch fine-detail loss; the flat-class
 pick score weights edge sharpness slightly.
 
+`hunyuan3d-omni` additionally accepts a conditioning signal
+(`control_type`/`control_input` on `MESH_GENERATE`): the worker sends the
+stated spec dims as a `bbox` control (`[L, W, H]` mm — the adapter
+normalises proportions internally), so dimensions are enforced at
+generation time rather than retro-fitted afterwards. `voxel`/`point`/`pose`
+controls exist adapter-side; the worker currently only emits `bbox`.
+Adapters without control support ignore both fields.
+
 ## Generation inputs & candidates
 
 - **View roles** come from intake `image_roles`, overridden by the measure
@@ -77,6 +93,14 @@ pick score weights edge sharpness slightly.
 - **Synthetic back view**: a flat part without a real bottom view gets a
   filled-silhouette PNG rendered from the measured outline (`back` role) —
   anchors the underside without inventing features.
+- **Synthetic side views**: a non-flat part with exactly ONE real image
+  gets up to two orthographic side views synthesised from the hero image
+  (`role_hint="synth_view"`, assigned `left`/`right` multiview slots) so
+  multiview adapters get real conditioning instead of guessing depth from
+  one perspective shot. They are generator conditioning only — excluded
+  from the reference-mask/silhouette/scoring paths (not ground truth) and
+  never take the hero slot during per-iteration view rotation. Failures
+  degrade to the unchanged single-image path.
 - **Best-of-N screening** (`mesh_candidates_per_iter`, default 2): cheap
   low-step candidates are scored deterministically (aspect + footprint IoU +
   height agreement + hole count) before the full run; all-hopeless
@@ -136,7 +160,12 @@ uv run python scripts/bench_adapters.py --adapters triposg,hunyuan3d-2.1-mlx \
 ```
 
 Measures per model × part class (`flat` | `organic`): success, latency,
-footprint IoU, aspect/height error, watertightness, hole recall. The backend
+footprint IoU, aspect/height error, watertightness, hole recall — plus
+`side_iou` (side-silhouette IoU vs the corpus `side_outline`, the
+grip/waist failure metric), `circularity` (median cross-section
+circularity — revolve fidelity) and `wall_min` (minimum wall thickness
+probe). The corpus includes `grip_waist.json`, `dome_knob.json` and
+`thin_wall.json` for exactly these failure modes. The backend
 uses the report for `auto` adapter selection; stale reports are harmless
 (absent → static heuristic).
 
@@ -145,12 +174,36 @@ uses the report for `auto` adapter selection; stale reports are harmless
 **mesh**: `MESH_GENERATE` (seed = `mesh_seed` or per-version base + iteration)
 → `ORIENT` (6 candidates rendered in the executor, vision LLM picks
 `MeshOrientation{up,front}`; heuristic fallback; parent orientation is reused
-on edits) → `PROCESS_MESH` → deterministic dim-fit → `CRITIQUE` on the
-baseline → issues-seeded `MESH_REFINE` repair round(s) only on failure →
-best candidate → exports. The pristine baseline is always a scored candidate:
-a regressed refine round is reverted to its previous op list, and passing
-baselines skip the session entirely. When the orient step decided on
-measurement evidence (`orientation_source` deterministic/plan-view/parent),
+on edits) → `PROCESS_MESH` → deterministic dim-fit → **deterministic spec
+ops** → `CRITIQUE` on the baseline → issues-seeded `MESH_REFINE` repair
+round(s) only on failure → best candidate → exports.
+
+Deterministic spec ops run without an LLM between dim-fit and the baseline
+critique — measured evidence beats generative retry loops:
+
+- `spec_drill`: a *centred* spec'd through-bore (position text or
+  `Feature.axis` says so; image→3D structurally cannot produce tunnels) is
+  drilled immediately on the measured axis — skipped when the mesh already
+  has a matching tunnel.
+- `spec_silhouette`: the reference-image side silhouette (worker-extracted
+  mask → mm outline) reshapes the part when the executor's measured
+  silhouette IoU leaves room. A spec'd/measured revolve gets
+  `radial_profile_auto` stations read off the outline (constructive — a
+  too-deep waist is filled back up); other parts get `silhouette_carve`,
+  a visual-hull trim that only removes material outside the reference
+  silhouette. An aspect-consistency gate rejects junk masks.
+
+A **pre-gate** rejects hopeless candidates *before* spending a critique
+call: deterministic score < 0.35, or measured silhouette IoU < 0.3 AND a
+dim mismatch (either alone is fixable; both means wrong part). Repeated
+rejections count as hard fails and can trigger the CAD fallback. The
+pristine baseline is always a scored candidate: a regressed refine round
+is reverted to its previous op list, and passing baselines skip the
+session entirely. After two repair regressions in a session the repair
+round is skipped for the rest of the run (a fresh seed is cheaper than
+another wreck). The loop also exits early after `agent_stall_patience`
+(default 2) iterations without a new best. When the orient step decided
+on measurement evidence (`orientation_source` deterministic/plan-view/parent),
 rigid-orientation tools are locked out of the session. Remaining iterations
 vary the seed (a repair session can also force a re-roll via `regenerate`);
 `edit` = regenerate, `params` = post-params+ops rerun.
@@ -165,7 +218,10 @@ per-axis), `flatten_bottom`, `slice`, `crop`, `decimate`, `smooth`,
 `symmetrize` (mirror best half), `remesh` (voxel rebuild), `drill_holes`
 (explicit positions or `from_anchors` using the measured hole anchors),
 `shell` (hollow + opening), `boolean_add`/`boolean_cut` with
-box/cylinder/sphere primitives — plus inspection tools `mesh_measure`
+box/cylinder/sphere primitives, `silhouette_carve` (visual-hull trim to a
+reference outline — removes only, never fills) and `radial_profile_auto`
+(revolve cross-section from absolute station radii — fills a too-deep
+waist) — plus inspection tools `mesh_measure`
 (bbox/volume/watertight), `mesh_section` (cross-section image),
 `mesh_overlay` (mesh footprint vs measured outline) — and commits with
 `done`. Every call is

@@ -630,6 +630,23 @@ class OpClipToOutline(BaseModel):
     margin_mm: float = Field(default=0.3, ge=0.0, le=5.0)
 
 
+class OpSilhouetteCarve(BaseModel):
+    """Visual-hull carve to a reference side silhouette.
+
+    `view` selects the orthographic direction ("+x"…"-y", the
+    `silhouette.mesh_view_mask` convention); `outline` is the silhouette
+    polygon in view-plane mm using that projection's (u, v) basis
+    (u = +Z x view, v = view x u — v is world +Z for all four side views).
+    The mesh is intersected with the polygon prism extruded along the view
+    axis, so the op only removes material OUTSIDE the reference silhouette —
+    the visual hull is the MAXIMAL silhouette-consistent body and never
+    fills a notch (use `radial_profile_auto` for the complementary fill)."""
+
+    view: Literal["+x", "-x", "+y", "-y"] = "+y"
+    outline: list[list[float]] = Field(min_length=3, max_length=500)
+    tolerance_mm: float = Field(default=0.5, ge=0.0, le=5.0)
+
+
 class OpKeepLargest(BaseModel):
     pass
 
@@ -736,6 +753,31 @@ class OpRadialProfile(BaseModel):
     stations: list[RadialStation] = Field(min_length=2, max_length=32)
 
 
+class ProfileStation(BaseModel):
+    """Absolute target outer radius (mm) at a normalised position `t` (0..1)
+    along the profile axis — e.g. derived from a side silhouette via
+    `silhouette.profile_stations_from_outline`."""
+
+    t: float = Field(ge=0.0, le=1.0)
+    radius_mm: float = Field(gt=0.0, le=1000.0)
+
+
+class OpRadialProfileAuto(BaseModel):
+    """Set a revolve-style cross-section to an absolute station profile (mm).
+
+    Complements `radial_profile` (which takes relative factors): the current
+    outer radius is measured around each station and displaced to
+    `radius_mm` — constructive, so a too-deep waist/V-notch is filled back
+    up, not just pinched. `blend_mm` gaussian-smooths the factor curve over
+    that axis length so the profile stays a soft waist (0 = raw station
+    factors, linearly interpolated). Apply BEFORE bore/hole cuts — every
+    vertex moves, including existing bore walls."""
+
+    axis: CartesianAxis = "x"
+    stations: list[ProfileStation] = Field(min_length=2, max_length=32)
+    blend_mm: float = Field(default=0.0, ge=0.0, le=200.0)
+
+
 class OpBoolean(BaseModel):
     """Union/difference with a primitive placed in mm frame coordinates."""
 
@@ -834,6 +876,16 @@ def _op_crop(mesh: trimesh.Trimesh, p: OpCrop) -> trimesh.Trimesh:
 
 
 def _op_decimate(mesh: trimesh.Trimesh, p: OpDecimate) -> trimesh.Trimesh:
+    # pymeshlab quadric collapse (optional dep) evaluates quadrics on the
+    # full mesh with topology preservation — better than fast_simplification
+    # on delicate features; falls back to the stock path on any failure
+    try:
+        from cadx.cad.mesh_repair_pml import pm_available, quadric_decimate
+
+        if pm_available():
+            return quadric_decimate(mesh, p.faces)
+    except Exception:
+        log.warning("mesh.decimate.pml.failed", exc_info=True)
     return decimate(mesh, p.faces)
 
 
@@ -842,6 +894,15 @@ def _op_smooth(mesh: trimesh.Trimesh, p: OpSmooth) -> trimesh.Trimesh:
 
     out = mesh.copy()
     if p.scheme == "taubin":
+        # pymeshlab's taubin (optional dep) is the better volume-preserving
+        # implementation; stock trimesh taubin on any failure
+        try:
+            from cadx.cad.mesh_repair_pml import pm_available, taubin_smooth
+
+            if pm_available():
+                return taubin_smooth(out, p.iterations)
+        except Exception:
+            log.warning("mesh.smooth.taubin.pml.failed", exc_info=True)
         filter_taubin(out, iterations=p.iterations)
     else:
         filter_laplacian(out, iterations=p.iterations)
@@ -854,6 +915,62 @@ def _op_smooth_preserve(mesh: trimesh.Trimesh, p: OpSmoothPreserve) -> trimesh.T
 
 def _op_clip_to_outline(mesh: trimesh.Trimesh, p: OpClipToOutline) -> trimesh.Trimesh:
     return clip_to_outline(mesh, p.outline, margin_mm=p.margin_mm)
+
+
+def _op_silhouette_carve(mesh: trimesh.Trimesh, p: OpSilhouetteCarve) -> trimesh.Trimesh:
+    """Intersect the mesh with the `outline` polygon extruded along `view`.
+
+    Deterministic and image-free: the caller already mapped the reference
+    mask into world mm (`silhouette.mask_to_outline_mm`). Only material
+    outside the reference silhouette is removed — the visual hull is the
+    maximal silhouette-consistent body, so notches are never filled."""
+    if len(mesh.faces) > BOOLEAN_MAX_FACES:
+        raise ValueError(
+            f"mesh too dense for silhouette_carve "
+            f"({len(mesh.faces)} faces > {BOOLEAN_MAX_FACES}) — run mesh_decimate first"
+        )
+    from shapely.geometry import Polygon
+
+    poly = Polygon(p.outline)
+    if not poly.is_valid:
+        poly = poly.buffer(0)
+    if poly.geom_type == "MultiPolygon":
+        poly = max(poly.geoms, key=lambda g: g.area)
+    if poly.is_empty or poly.area <= 0:
+        raise ValueError("silhouette_carve: outline is empty or degenerate")
+    if p.tolerance_mm:
+        # grow the prism so anti-aliased reference edges don't over-carve the rim
+        poly = poly.buffer(p.tolerance_mm)
+        if poly.is_empty:
+            raise ValueError("silhouette_carve: tolerance emptied the outline")
+    n = np.asarray(_AXIS_VECTORS[p.view], dtype=float)
+    u = np.cross([0.0, 0.0, 1.0], n)
+    u /= np.linalg.norm(u)
+    v = np.cross(n, u)  # == +Z for the four side views
+    ai = "xyz".index(p.view[-1])
+    lo, hi = float(mesh.bounds[0][ai]), float(mesh.bounds[1][ai])
+    pad = 1.0 + p.tolerance_mm
+    prism = trimesh.creation.extrude_polygon(poly, height=(hi - lo) + 2.0 * pad)
+    # extrude_polygon builds along local +Z — rotate local (x,y,z) onto the
+    # view's (u, v, n) basis, then slide the prism over the mesh extent
+    rot = np.eye(4)
+    rot[:3, :3] = np.column_stack([u, v, n])
+    prism.apply_transform(rot)
+    prism.apply_translation(n * (lo - pad))
+    try:
+        if not (mesh.is_watertight and mesh.is_winding_consistent):
+            mesh = _ensure_watertight(mesh)  # manifold needs closed input
+        out = mesh.intersection(prism, engine="manifold")
+    except Exception as e:
+        raise ValueError(
+            f"silhouette_carve boolean failed: {e} — try mesh_repair/mesh_remesh first"
+        ) from e
+    if out is None or not len(getattr(out, "faces", [])):
+        raise ValueError(
+            "silhouette_carve removed the whole mesh — the outline does not "
+            "overlap the mesh projection on that view"
+        )
+    return cast(trimesh.Trimesh, out)
 
 
 def _body_sizes(bodies: list[trimesh.Trimesh]) -> np.ndarray:
@@ -986,10 +1103,32 @@ def _voxel_remesh(mesh: trimesh.Trimesh, pitch_mm: float) -> trimesh.Trimesh:
 
 
 def _op_remesh(mesh: trimesh.Trimesh, p: OpRemesh) -> trimesh.Trimesh:
+    # resolution guard applies to BOTH engines: pitch too fine for the extent
+    # explodes the output face count even when the engine itself has no dense
+    # grid (voxel path re-checks inside _voxel_remesh)
+    cells = float(np.max(np.asarray(mesh.extents, dtype=float) / p.voxel_mm))
+    if cells > _VOXEL_REPAIR_MAX_CELLS:
+        raise ValueError(
+            f"voxel_mm {p.voxel_mm:g} too fine for {mesh.extents.max():.0f} mm extent "
+            f"({cells:.0f} cells/axis, cap {_VOXEL_REPAIR_MAX_CELLS:.0f}) — "
+            "use a coarser pitch"
+        )
+    # pymeshlab isotropic remesh (optional dep): uniform edges without the
+    # marching-cubes stair steps — `voxel_mm` becomes the target edge length.
     # grid bound lives in _voxel_remesh (_VOXEL_REPAIR_MAX_CELLS) — a sparse
     # shell can make nearly every occupied cell a boundary cell, so marching
     # cubes can out-vertex the cell count several-fold
-    out = _voxel_remesh(mesh, p.voxel_mm)
+    out: trimesh.Trimesh | None = None
+    try:
+        from cadx.cad.mesh_repair_pml import isotropic_remesh, pm_available
+
+        if pm_available():
+            out = isotropic_remesh(mesh, p.voxel_mm)
+    except Exception:
+        log.warning("mesh.remesh.pml.failed", exc_info=True)
+        out = None
+    if out is None:
+        out = _voxel_remesh(mesh, p.voxel_mm)
     if p.smooth_iters:
         out = smooth_preserve(out, p.smooth_iters)
     if len(out.faces) > BOOLEAN_MAX_FACES:
@@ -1205,6 +1344,62 @@ def _op_radial_profile(mesh: trimesh.Trimesh, p: OpRadialProfile) -> trimesh.Tri
     return out
 
 
+def _op_radial_profile_auto(mesh: trimesh.Trimesh, p: OpRadialProfileAuto) -> trimesh.Trimesh:
+    """Thin measurement layer over `_op_radial_profile`: absolute target
+    radii → per-station scale factors, optionally gaussian-smoothed."""
+    ax = "xyz".index(p.axis)
+    radial = [i for i in range(3) if i != ax]
+    verts = np.asarray(mesh.vertices, dtype=float)
+    b = np.asarray(mesh.bounds, dtype=float)
+    lo, hi = float(b[0][ax]), float(b[1][ax])
+    span = hi - lo
+    if span <= 1e-9:
+        raise ValueError("radial_profile_auto: zero-length span on the profile axis")
+    t_v = np.clip((verts[:, ax] - lo) / span, 0.0, 1.0)
+    centre = verts[:, radial].mean(axis=0)
+    r_v = np.linalg.norm(verts[:, radial] - centre, axis=1)
+
+    st = sorted(p.stations, key=lambda s: s.t)
+    at = np.asarray([s.t for s in st], dtype=float)
+    target = np.asarray([s.radius_mm for s in st], dtype=float)
+    # current outer radius near each station — the 98th percentile is robust
+    # to a stray spike vertex; the band widens until populated (coarse meshes
+    # may place no vertex inside a narrow window)
+    spacing = float(np.median(np.diff(at))) if len(at) > 1 else 0.25
+    fac = np.empty(len(st), dtype=float)
+    for i, ts in enumerate(at):
+        band = max(spacing * 0.25, 0.01)
+        sel = np.abs(t_v - ts) <= band
+        while not sel.any() and band < 0.5:
+            band *= 2.0
+            sel = np.abs(t_v - ts) <= band
+        if not sel.any():
+            raise ValueError(f"radial_profile_auto: no vertices near station t={ts:g}")
+        cur = float(np.quantile(r_v[sel], 0.98))
+        fac[i] = float(np.clip(target[i] / max(cur, 1e-3), 0.2, 5.0))
+
+    if p.blend_mm > 0.0:
+        # smooth the factor curve on a fine t-grid — the waist stays soft
+        # instead of stair-stepping between stations
+        grid = np.linspace(0.0, 1.0, 129)
+        f = np.interp(grid, at, fac)
+        sigma = (p.blend_mm / span) * (len(grid) - 1)
+        if sigma > 0.25:
+            rad = math.ceil(3.0 * sigma)
+            x = np.arange(-rad, rad + 1, dtype=float)
+            k = np.exp(-0.5 * (x / sigma) ** 2)
+            k /= k.sum()
+            f = np.convolve(np.pad(f, rad, mode="edge"), k, mode="valid")
+        idx = np.unique(np.linspace(0, len(grid) - 1, 32).round().astype(int))
+        at, fac = grid[idx], f[idx]
+
+    stations = [
+        RadialStation(at=float(a), r1=float(f_), r2=float(f_))
+        for a, f_ in zip(at, fac, strict=True)
+    ]
+    return _op_radial_profile(mesh, OpRadialProfile(axis=p.axis, stations=stations))
+
+
 def _op_organic(
     mesh: trimesh.Trimesh,
     p: OrganicParams,
@@ -1259,6 +1454,7 @@ OPS_REGISTRY: dict[str, tuple[type[BaseModel], _OpFn]] = {
     "smooth": (OpSmooth, _op_smooth),
     "smooth_preserve": (OpSmoothPreserve, _op_smooth_preserve),
     "clip_to_outline": (OpClipToOutline, _op_clip_to_outline),
+    "silhouette_carve": (OpSilhouetteCarve, _op_silhouette_carve),
     "keep_largest": (OpKeepLargest, _op_keep_largest),
     "drop_small": (OpDropSmall, _op_drop_small),
     "repair": (OpRepair, _op_repair),
@@ -1268,13 +1464,14 @@ OPS_REGISTRY: dict[str, tuple[type[BaseModel], _OpFn]] = {
     "drill_holes": (OpDrillHoles, _op_drill_holes),
     "shell": (OpShell, _op_shell),
     "radial_profile": (OpRadialProfile, _op_radial_profile),
+    "radial_profile_auto": (OpRadialProfileAuto, _op_radial_profile_auto),
     "boolean": (OpBoolean, _op_boolean),
     "organic": (OrganicParams, _op_organic),
 }
 
 # bump when an op's semantics change so old version.params replays are
 # recognised as pre-change (stored alongside params, warn-not-fail)
-MESH_OPS_VERSION = 6  # organic: carved-skin surface_open replaces pinned shell
+MESH_OPS_VERSION = 8  # + silhouette_carve / radial_profile_auto (visual-hull refit)
 
 
 def _is_single_solid(mesh: trimesh.Trimesh) -> bool:
@@ -1445,12 +1642,59 @@ def baseline_mesh(
 # --------------------------------------------------------------------------- #
 
 
+def _alpha_wrap_repair(m: trimesh.Trimesh, faces_in: int) -> trimesh.Trimesh | None:
+    """pymeshlab alpha-wrap rung of the watertight ladder — or None.
+
+    The reskin is watertight/2-manifold by construction, far better than the
+    voxel fallback's marching-cubes dust on thin/sparse geometry. Returns
+    None (caller falls through to the voxel rung) when pymeshlab is not
+    installed, the wrap granularity would exceed the shared rebuild budget
+    (_VOXEL_REPAIR_MAX_CELLS), or the wrap fails/produces a non-watertight
+    result. Wrap granularity is bounded by the bbox diagonal, not by the
+    input face count.
+    """
+    try:
+        from cadx.cad.mesh_repair_pml import (
+            ALPHA_WRAP_DEFAULT_DIV,
+            alpha_wrap,
+            pm_available,
+        )
+
+        if not pm_available():
+            return None
+        if ALPHA_WRAP_DEFAULT_DIV > _VOXEL_REPAIR_MAX_CELLS:
+            return None
+        wrapped = alpha_wrap(m)
+        # sparse/complex input wraps per component — keep the dominant
+        # body, same policy as the voxel fallback
+        try:
+            bodies = wrapped.split(only_watertight=False)
+            if len(bodies) > 1:
+                wrapped = bodies[int(np.argmax(_body_sizes(bodies)))]
+        except Exception:
+            pass
+        if len(wrapped.faces) > _REBUILD_MAX_FACES:
+            wrapped = decimate(wrapped, _REBUILD_MAX_FACES)
+        if not (len(wrapped.faces) and wrapped.is_watertight):
+            return None
+        log.warning(
+            "mesh.repair_alpha_wrap",
+            faces_in=faces_in,
+            faces_out=len(wrapped.faces),
+        )
+        return wrapped
+    except Exception:
+        return None
+
+
 def _ensure_watertight(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
     """Best-effort repair ladder before boolean/B-Rep conversion.
 
     1) process + merge + fill_holes + normals (cheap, preserves detail)
     2) manifold3d roundtrip (enforces 2-manifold where possible)
-    3) voxel remesh (always closed; lossy — last resort)
+    3) pymeshlab alpha-wrap reskin (watertight/2-manifold by construction;
+       optional dep — skipped entirely when pymeshlab is not installed)
+    4) voxel remesh (always closed; lossy — last resort)
     Returns the repaired mesh or raises ValueError when nothing works.
     """
     if mesh.is_watertight and mesh.is_winding_consistent:
@@ -1489,6 +1733,11 @@ def _ensure_watertight(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
                 return out
     except Exception:
         pass
+    # pymeshlab alpha-wrap — see _alpha_wrap_repair; skipped entirely when
+    # pymeshlab is not installed so the voxel path below stays bit-identical
+    wrapped = _alpha_wrap_repair(m, len(mesh.faces))
+    if wrapped is not None:
+        return wrapped
     try:
         pitch = max(float(max(m.extents)) / 220.0, 0.15)
         # bound the grid BEFORE allocating: voxelized().fill() builds a dense

@@ -24,6 +24,13 @@ class GenOpts:
     subject: str = ""
     image_roles: list[str] = field(default_factory=list)
     work_dir: Path | None = None
+    # controllable-generation hints (Hunyuan3D-Omni): "bbox" | "voxel" |
+    # "point" | "pose". Adapters that don't support conditioning ignore both
+    # fields, so old callers stay backwards-compatible.
+    control_type: str | None = None
+    # semantics depend on control_type — e.g. bbox dims [x, y, z] in mm, a
+    # path to a point-cloud/mesh/pose file, or an (N, 3) array of points
+    control_input: Any = None
 
 
 @dataclass

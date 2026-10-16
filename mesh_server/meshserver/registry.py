@@ -79,6 +79,8 @@ class Registry:
             Hunyuan3D2MvTurboAdapter,
         )
         from meshserver.adapters.hunyuan3d21_mlx import Hunyuan3D21MlxAdapter
+        from meshserver.adapters.hunyuan_omni import Hunyuan3DOmniAdapter
+        from meshserver.adapters.step1x_3d import Step1X3DAdapter
         from meshserver.adapters.trellis2_cuda import Trellis2Adapter
         from meshserver.adapters.triposg import TripoSGAdapter
         from meshserver.adapters.triposg_scribble import TripoSGScribbleAdapter
@@ -92,6 +94,8 @@ class Registry:
             Trellis2Adapter,
             TripoSGAdapter,
             TripoSGScribbleAdapter,
+            Hunyuan3DOmniAdapter,
+            Step1X3DAdapter,
         ]
         return classes
 
@@ -176,22 +180,37 @@ class Registry:
         device = self.device
         pref: list[str]
         if device == "cuda":
-            pref = ["trellis2", "triposg"]
+            pref = ["trellis2", "triposg", "step1x-3d", "hunyuan3d-omni"]
         elif device == "rocm":
-            # no TRELLIS.2 on AMD (CUDA-only extensions); the hunyuan torch
-            # variants are the only multiview-capable adapters here
+            # no TRELLIS.2/Step1X-3D on AMD (CUDA-only); the hunyuan torch
+            # variants are the only multiview-capable adapters here. Omni sits
+            # last — its required control signal is only a neutral-bbox
+            # fallback in 'auto' mode.
             pref = (
                 ["hunyuan3d-2mv", "hunyuan3d-2mv-turbo", "triposg"]
                 if n_images > 1
-                else ["triposg", "hunyuan3d-2mini", "hunyuan3d-2mini-turbo"]
+                else ["triposg", "hunyuan3d-2mini", "hunyuan3d-2mini-turbo", "hunyuan3d-omni"]
             )
         elif device == "mlx":
-            pref = ["hunyuan3d-2.1-mlx", "hunyuan3d-2mv", "hunyuan3d-2mini", "triposg"]
+            # triposg joins when MESH_TRIPOSG_MPS=1 + a working MPS torch —
+            # its available() checks the env flag itself
+            pref = [
+                "hunyuan3d-2.1-mlx",
+                "hunyuan3d-2mv",
+                "hunyuan3d-2mini",
+                "triposg",
+                "hunyuan3d-omni",
+            ]
         elif device == "mps":
             pref = (
                 ["hunyuan3d-2mv", "hunyuan3d-2mv-turbo"]
                 if n_images > 1
-                else ["hunyuan3d-2mini", "hunyuan3d-2mini-turbo", "triposg"]
+                else [
+                    "hunyuan3d-2mini",
+                    "hunyuan3d-2mini-turbo",
+                    "triposg",  # MESH_TRIPOSG_MPS=1 opt-in — see triposg.py
+                    "hunyuan3d-omni",
+                ]
             )
         elif self.cfg.fake:
             pref = ["fake"]

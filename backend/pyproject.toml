@@ -38,6 +38,13 @@ dependencies = [
     "nlopt>=2.7",
 ]
 
+[project.optional-dependencies]
+# GPL — optional repair engine for cad/mesh_ops.py (alpha_wrap, isotropic
+# remesh, quadric decimate, taubin); lazy-imported via cad/mesh_repair_pml.py
+repair = [
+    "pymeshlab>=2023.12",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8.0",
