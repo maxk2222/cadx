@@ -469,6 +469,64 @@ def test_fit_ops_thin_mesh_scales_up():
     assert ops[0].args["z"] == 1.6
 
 
+# --------------------------------------------------------------------------- #
+# deterministic spec-bore drilling
+
+
+def _grip_spec():
+    from cadx.llm.schemas import Feature, PartSpec
+
+    return PartSpec(
+        **{
+            **SPEC,
+            "length_x": {"value": 130.0, "source": "stated"},
+            "width_y": {"value": 32.0, "source": "stated"},
+            "height_z": {"value": 32.0, "source": "stated"},
+        },
+        features=[
+            Feature(
+                name="through_bore",
+                type="hole",
+                description="Cylindrical through-bore for the handlebar, full length",
+                dims={"diameter": 22.2},
+                position="centered on grip axis, along X, through both ends",
+                count=1,
+                source="stated",
+            )
+        ],
+    )
+
+
+def _exec_res(tunnels=()):
+    return {
+        "analysis": {"bbox_size": [130.0, 32.0, 32.0]},
+        "mesh": {"features": {"holes": list(tunnels)}},
+    }
+
+
+def test_spec_drill_ops_drills_missing_centered_bore():
+    from cadx.agent.orchestrator import _spec_drill_ops
+
+    ops = _spec_drill_ops(_grip_spec(), _exec_res())
+    assert [o.op for o in ops] == ["drill_holes"]
+    h = ops[0].args["holes"][0]
+    assert h["axis"] == "x" and h["dia"] == 22.2
+    # centreline = cross-section centre: y=0 (centred), z = 32/2
+    assert (h["x"], h["y"]) == (0.0, 16.0)
+
+
+def test_spec_drill_ops_skips_covered_and_positioned():
+    from cadx.agent.orchestrator import _spec_drill_ops
+
+    covered = _exec_res([{"kind": "tunnel", "axis": "x", "dia": 22.0}])
+    assert _spec_drill_ops(_grip_spec(), covered) == []
+    # a positioned hole pattern is the repair session's job, not auto-drilled
+    spec = _grip_spec()
+    spec.features[0].position = "20 mm from the left end"
+    spec.features[0].description = "through-bore"
+    assert _spec_drill_ops(spec, _exec_res()) == []
+
+
 def test_fit_ops_blocky_part_scales_z():
     """Non-plate parts (height not smallest stated) get Z scaled, not sliced."""
     from cadx.agent.orchestrator import _fit_ops_to_stated

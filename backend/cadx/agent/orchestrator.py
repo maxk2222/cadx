@@ -3100,6 +3100,34 @@ async def _run_mesh(  # noqa: C901
                         exec_result, post = fitted
                         ctx.mesh_info["post"] = post.model_dump()
 
+            # deterministic spec features BEFORE the baseline critique —
+            # a declared centred through-bore is cut right away so the
+            # critique never carries an unfixable "missing bore" major and
+            # the repair session doesn't spend a round on it (grip_mesh:
+            # every iteration regressed exactly this way)
+            drill_ops = _spec_drill_ops(spec, exec_result or {})
+            if drill_ops:
+                post_d = merge_post_params(
+                    post, {"ops": [*post.ops, *[o.model_dump() for o in drill_ops]]}
+                )
+                res_d = await _process_mesh(
+                    ctx,
+                    it,
+                    mesh_rel,
+                    spec,
+                    post_d,
+                    make_solid=False,
+                    subdir=f"a{next(art_attempt)}",
+                )
+                if res_d.get("ok"):
+                    exec_result, post = res_d, post_d
+                    ctx.mesh_info["post"] = post.model_dump()
+                    await ctx.emit(
+                        "meshprocess",
+                        it,
+                        f"drilled {len(drill_ops[0].args['holes'])} declared bore(s)",
+                    )
+
         if not exec_result or not exec_result.get("ok"):
             log.warning("mesh.process_failed", iteration=it, error=(exec_result or {}).get("error"))
             continue
@@ -3409,6 +3437,51 @@ def _fit_ops_to_stated(spec: PartSpec, bbox: list[float] | None) -> tuple[list[M
     if not ops:
         return [], ""
     return ops, "; ".join(notes)
+
+
+def _spec_drill_ops(spec: PartSpec, exec_result: dict[str, Any]) -> list[MeshOp]:
+    """Deterministic `drill_holes` ops for spec'd through-bores the generator
+    structurally cannot produce (image→3D never makes a through-tunnel).
+
+    Only *centred* bores are drilled here — positioned hole patterns go to
+    the repair session / anchors. A spec hole counts as covered when the
+    measured tunnels already contain one on the same axis within 15% dia.
+    """
+    from cadx.cad.features import _feature_axis_hint
+
+    feats = (exec_result.get("mesh") or {}).get("features") or {}
+    bb = (exec_result.get("analysis") or {}).get("bbox_size") or []
+    if len(bb) != 3:
+        return []
+    holes: list[dict[str, Any]] = []
+    for f in spec.features or []:
+        if str(getattr(f, "type", "") or "").lower() not in ("hole", "bore", "through-hole"):
+            continue
+        dia = (f.dims or {}).get("diameter") or (f.dims or {}).get("bore_diameter")
+        ax = _feature_axis_hint(f)
+        if not dia or not ax:
+            continue
+        pos = f"{f.position or ''} {f.description or ''}".lower()
+        # only clearly-centred bores — "through" alone also describes
+        # positioned holes, which belong to the repair session / anchors
+        if not any(k in pos for k in ("center", "mittig", "zentriert", "koaxial", "coaxial")):
+            continue
+        letter = ax.lstrip("+-")
+        covered = any(
+            h.get("kind") == "tunnel"
+            and str(h.get("axis")) == letter
+            and abs(float(h.get("dia") or 0) - float(dia)) <= max(0.5, 0.15 * float(dia))
+            for h in feats.get("holes") or []
+        )
+        if covered:
+            continue
+        # bore centreline = cross-section centre on the plane ⟂ to the axis;
+        # parts are XY-centred and sit on z=0 (x,y args = perp-plane coords)
+        c2 = bb[2] / 2.0
+        xy = {"x": (0.0, c2), "y": (0.0, c2), "z": (0.0, 0.0)}[letter]
+        for _ in range(max(1, int(f.count or 1))):
+            holes.append({"x": xy[0], "y": xy[1], "dia": float(dia), "axis": letter})
+    return [MeshOp(op="drill_holes", args={"holes": holes})] if holes else []
 
 
 _FLAT_BOTTOM_CUE = re.compile(
