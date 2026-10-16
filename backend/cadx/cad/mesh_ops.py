@@ -382,7 +382,7 @@ def flatten_bottom(mesh: trimesh.Trimesh, height_mm: float) -> trimesh.Trimesh:
         # a long part (observed: 130 mm grip at 0.2 mm → >40 M verts in the
         # marching-cubes output → MemoryError inside the worker)
         pitch = max(pitch, float(ext.max()) / _VOXEL_REPAIR_MAX_CELLS)
-        vg = mesh.voxelized(pitch)
+        vg = _voxelize(mesh, pitch)
         mat = np.asarray(vg.matrix)
         if mat.any():
             # fill-down: a voxel is solid if any voxel above it in its column is
@@ -534,6 +534,30 @@ _MAX_PRIMITIVE_MM = 2000.0
 # 350^3 cells ≈ 43 MB bool + marching-cubes float scan; beyond that the
 # repair costs more memory than it saves
 _VOXEL_REPAIR_MAX_CELLS = 350.0
+# trimesh's default "subdivide" voxelization refines the input until every
+# edge < pitch — long/thin faces (boolean seams, generative slivers) explode
+# the count (observed: 33M faces → 1.5 GB edge array → MemoryError). Above
+# this estimate we drop to ray voxelization, which needs no subdivision.
+_VOXEL_SUBDIVIDE_MAX_FACES = 4_000_000
+
+
+def _voxelize(mesh: trimesh.Trimesh, pitch: float) -> trimesh.voxel.VoxelGrid:
+    """Occupancy grid with a bound on trimesh's subdivide path.
+
+    method="subdivide" halves every edge > pitch per round, so worst-case
+    growth is ~4^ceil(log2(max_edge/pitch)) — a coarse mesh at fine pitch
+    turns into tens of millions of faces before the grid is even allocated
+    (observed: 33M faces → 1.5 GB edge array → MemoryError). When the bound
+    exceeds the cap, ray voxelize instead (same grid, no subdivision).
+    """
+    method: Literal["subdivide", "ray"] = "subdivide"
+    if len(mesh.faces):
+        max_edge = float(mesh.edges_unique_length.max())
+        if max_edge > pitch:
+            rounds = math.ceil(math.log2(max_edge / pitch))
+            if len(mesh.faces) * (4**rounds) > _VOXEL_SUBDIVIDE_MAX_FACES:
+                method = "ray"
+    return mesh.voxelized(pitch, method=method)
 
 
 class OpSetUp(BaseModel):
@@ -932,7 +956,7 @@ def _voxel_remesh(mesh: trimesh.Trimesh, pitch_mm: float) -> trimesh.Trimesh:
             f"({cells:.0f} cells/axis, cap {_VOXEL_REPAIR_MAX_CELLS:.0f}) — "
             "use a coarser pitch"
         )
-    vg = mesh.voxelized(pitch_mm)
+    vg = _voxelize(mesh, pitch_mm)
     with contextlib.suppress(Exception):
         vg = vg.fill()  # fails on open meshes — remesh surface voxels as-is
     mat = np.asarray(vg.matrix)
@@ -978,7 +1002,11 @@ def _resolve_drill_holes(p: OpDrillHoles, anchors: dict[str, Any] | None) -> lis
     return holes
 
 
-_AXES: dict[str, tuple[float, float, float]] = {"x": (1.0, 0, 0), "y": (0, 1.0, 0), "z": (0, 0, 1.0)}
+_AXES: dict[str, tuple[float, float, float]] = {
+    "x": (1.0, 0, 0),
+    "y": (0, 1.0, 0),
+    "z": (0, 0, 1.0),
+}
 
 
 def _drill_tool(mesh: trimesh.Trimesh, h: DrillHole) -> trimesh.Trimesh:
@@ -1056,7 +1084,7 @@ def _op_shell(mesh: trimesh.Trimesh, p: OpShell) -> trimesh.Trimesh:
         raise ValueError(f"part is too thin ({ext.min():.1f} mm) for a {p.thickness_mm:g} mm shell")
     pitch = float(np.clip(min(p.thickness_mm / 2.0, float(ext.min()) / 80.0), 0.15, 1.0))
     pitch = max(pitch, float(ext.max()) / _VOXEL_REPAIR_MAX_CELLS)
-    vg = mesh.voxelized(pitch)
+    vg = _voxelize(mesh, pitch)
     with contextlib.suppress(Exception):
         vg = vg.fill()
     mat = np.asarray(vg.matrix)
@@ -1465,7 +1493,7 @@ def _ensure_watertight(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
                 f"voxel repair grid too large ({cells:.0f} cells/axis at "
                 f"{pitch:g} mm pitch) — decimate the mesh first"
             )
-        vg = m.voxelized(pitch).fill()
+        vg = _voxelize(m, pitch).fill()
         rem = vg.marching_cubes
         rem.apply_transform(vg.transform)
         # marching cubes can out-faces the input by an order of magnitude —

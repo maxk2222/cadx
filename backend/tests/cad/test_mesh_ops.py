@@ -241,6 +241,29 @@ def test_voxel_remesh_refuses_unbounded_grid():
         _voxel_remesh(_box(200, 30, 30), pitch_mm=0.2)
 
 
+def test_voxelize_falls_back_to_ray_on_dense_subdivide(monkeypatch):
+    """trimesh's "subdivide" voxelization refines every edge below pitch —
+    a coarse mesh at fine pitch explodes (observed: 33M faces → MemoryError).
+    _voxelize must estimate the growth and switch to "ray"."""
+    import cadx.cad.mesh_ops as mo
+
+    seen: list[str] = []
+    orig = trimesh.Trimesh.voxelized
+
+    def spy(self, pitch, method="subdivide", **kw):
+        seen.append(method)
+        return orig(self, pitch, method=method, **kw)
+
+    monkeypatch.setattr(trimesh.Trimesh, "voxelized", spy)
+    # ~12 faces spanning 130 mm at 0.25 mm pitch → est >> the 4M cap
+    mo._voxelize(_box(130, 32, 32), 0.25)
+    assert seen == ["ray"]
+    seen.clear()
+    # a fine mesh at the same pitch stays on the subdivide path
+    mo._voxelize(trimesh.creation.icosphere(subdivisions=2, radius=10), 1.0)
+    assert seen == ["subdivide"]
+
+
 # --------------------------------------------------------------------------- #
 # mesh_to_solid / analysis
 
@@ -689,9 +712,7 @@ def test_op_drill_holes_cross_axis():
         ),
     )
     assert out.is_watertight
-    assert abs(m.volume) - abs(out.volume) == pytest.approx(
-        np.pi * 5.0**2 * 130.0, rel=0.05
-    )
+    assert abs(m.volume) - abs(out.volume) == pytest.approx(np.pi * 5.0**2 * 130.0, rel=0.05)
     # a ray along the bore centreline passes clean through; an off-axis ray
     # still hits the body
     ray = trimesh.ray.ray_triangle.RayMeshIntersector(out)
