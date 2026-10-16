@@ -536,6 +536,15 @@ def bindings_block(spec: PartSpec | None) -> str:
     bindings = bind_features(spec)
     if not bindings:
         return ""
+    # helpers the snippets call as bare names — the model otherwise emits
+    # `import cadlib` and hits NameError on `safe_fillet(...)` etc.
+    import re as _re
+
+    from cadx.agent.featurebind import CADLIB_HELPERS
+
+    used = sorted(
+        h for h in CADLIB_HELPERS if any(_re.search(rf"\b{h}\b", b.snippet) for b in bindings)
+    )
     lines = [
         "BOUND FEATURE SNIPPETS — resolved by the feature binder (deterministic).",
         "Use these calls VERBATIM — do NOT re-derive axes, directions, normals",
@@ -544,8 +553,10 @@ def bindings_block(spec: PartSpec | None) -> str:
         "Snippets are self-contained BuildPart blocks: they assume your current",
         "solid is named `part` (rename the add()/assignment lines if yours",
         "differs) and leave the updated solid in `part`.",
-        "",
     ]
+    if used:
+        lines.append(f"required import: from cadlib import {', '.join(used)}")
+    lines.append("")
     lines.extend(b.snippet for b in bindings)
     return "\n".join(lines)
 

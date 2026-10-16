@@ -525,8 +525,11 @@ def extract_features(  # noqa: C901 — sequential measurement passes
 
     # mesh-derived solids triangulate every cut — no analytic cylinders exist
     # even when holes were really subtracted. Fall back to ray-tunnel detection
-    # on the tessellation when the B-Rep scan found nothing.
-    if not holes and stl_path is not None:
+    # on the tessellation when the B-Rep scan found nothing — and ALWAYS when
+    # slots are still unproven: an oblong slot is not an analytic cylinder, so
+    # `holes` being non-empty used to skip the scan that could see it (observed:
+    # l_bracket leg slot measured as 0 elongated voids on a correct part).
+    if stl_path is not None and (not holes or not out.slots):
         _mesh_fallback(out, stl_path, mesh)
     return out
 
@@ -536,12 +539,43 @@ def _mesh_fallback(out: MeasuredFeatures, stl_path: Path, mesh=None) -> None:
         m_groups, m_csk, m_slots = _mesh_through_holes(stl_path, mesh)
     except Exception:
         return
-    if m_groups:
-        out.hole_groups = m_groups
-        out.total_holes = len(m_groups)
+    if not m_groups:
+        return
+    if out.hole_groups:
+        # the B-Rep scan already measured the round bores analytically —
+        # merge only what it cannot see: elongated tunnels (slots) plus any
+        # round tunnels it missed entirely. Round bores re-detected by the
+        # mesh scan (same axis, a center within ~2 mm) would double-count.
+        new = []
+        for g in m_groups:
+            if g.elongated:
+                new.append(g)
+                continue
+            dupe = any(
+                g.axis == h.axis
+                and any(
+                    len(gc) >= 2
+                    and len(hc) >= 2
+                    and abs(float(gc[0]) - float(hc[0])) <= 2.0
+                    and abs(float(gc[1]) - float(hc[1])) <= 2.0
+                    for hc in (h.centers or [])
+                    for gc in (g.centers or [])
+                )
+                for h in out.hole_groups
+            )
+            if not dupe:
+                new.append(g)
+        if new:
+            out.hole_groups = out.hole_groups + new
+            out.total_holes += len([g for g in new if not g.elongated])
         out.slots = m_slots
-        out.countersinks = m_csk
         out.approximate = True
+        return
+    out.hole_groups = m_groups
+    out.total_holes = len(m_groups)
+    out.slots = m_slots
+    out.countersinks = m_csk
+    out.approximate = True
 
 
 def _expected_dia(feature: Any) -> float | None:

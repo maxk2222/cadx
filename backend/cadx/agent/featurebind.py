@@ -306,6 +306,26 @@ class BoundFeature:
     resolved: bool = True
 
 
+# cadlib helper names the binder can emit as bare calls — bindings_block
+# scans snippets for these and emits the matching `from cadlib import …`.
+CADLIB_HELPERS = frozenset(
+    {
+        "through_hole",
+        "hole_grid",
+        "oblong_slot",
+        "slot_cutter",
+        "keyhole_slot",
+        "insert_pocket",
+        "bearing_seat",
+        "safe_fillet",
+        "rib",
+        "boss",
+        "tube",
+        "text_label",
+    }
+)
+
+
 def _bind_hole(spec: PartSpec, f: Feature) -> BoundFeature | None:
     dims = f.dims or {}
     dia = _dim(dims, "diameter", "bore_diameter")
