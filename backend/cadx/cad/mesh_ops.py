@@ -378,6 +378,10 @@ def flatten_bottom(mesh: trimesh.Trimesh, height_mm: float) -> trimesh.Trimesh:
         lo, hi = np.asarray(mesh.bounds[0], dtype=float), np.asarray(mesh.bounds[1], dtype=float)
         ext = hi - lo
         pitch = float(np.clip(min(ext[0], ext[1]) / 200.0, 0.2, 0.6))
+        # bound the dense bool grid BEFORE allocating — an unbounded pitch on
+        # a long part (observed: 130 mm grip at 0.2 mm → >40 M verts in the
+        # marching-cubes output → MemoryError inside the worker)
+        pitch = max(pitch, float(ext.max()) / _VOXEL_REPAIR_MAX_CELLS)
         vg = mesh.voxelized(pitch)
         mat = np.asarray(vg.matrix)
         if mat.any():
@@ -639,19 +643,29 @@ class OpRemesh(BaseModel):
 
 
 class DrillHole(BaseModel):
-    """One vertical hole at a measured XY position (mm, frame coords)."""
+    """One straight hole along an axis (mm, frame coords).
+
+    `axis` selects the drill direction; `x`/`y` are the hole-axis position on
+    the plane perpendicular to it:
+    - "z" (default): axis along Z, position (x, y)
+    - "x": axis along X, position (y=x, z=y) — i.e. x→Y-coord, y→Z-coord
+    - "y": axis along Y, position (x=x, z=y)
+
+    `depth_mm`/`csk_*` measure from the +axis end (for "x"/"y" the countersink
+    opens on the positive end face)."""
 
     x: float
     y: float
     dia: float = Field(gt=0.05, le=500.0)
     depth_mm: float | None = Field(default=None, gt=0.0)  # None = through
-    csk_dia: float | None = Field(default=None, gt=0.05, le=500.0)  # countersink at +Z
+    axis: Literal["x", "y", "z"] = "z"
+    csk_dia: float | None = Field(default=None, gt=0.05, le=500.0)  # countersink at +axis
     csk_angle_deg: float = Field(default=90.0, gt=30.0, lt=180.0)
 
 
 class OpDrillHoles(BaseModel):
-    """Drill vertical holes — explicit `holes` list or `from_anchors` resolves
-    `version.analysis.anchors.holes` (x, y, dia) at replay time."""
+    """Drill straight holes — explicit `holes` list or `from_anchors` resolves
+    `version.analysis.anchors.holes` (x, y, dia, vertical) at replay time."""
 
     holes: list[DrillHole] = Field(default_factory=list, max_length=64)
     from_anchors: bool = False
@@ -911,6 +925,13 @@ def _op_symmetrize(mesh: trimesh.Trimesh, p: OpSymmetrize) -> trimesh.Trimesh:
 def _voxel_remesh(mesh: trimesh.Trimesh, pitch_mm: float) -> trimesh.Trimesh:
     """Voxelize + fill + marching-cubes, cropped back to the original bounds
     (voxel padding grows the envelope ~1 pitch on every side)."""
+    cells = float((np.asarray(mesh.extents, dtype=float) / pitch_mm).max())
+    if cells > _VOXEL_REPAIR_MAX_CELLS:
+        raise ValueError(
+            f"voxel_mm {pitch_mm:g} too fine for {mesh.extents.max():.0f} mm extent "
+            f"({cells:.0f} cells/axis, cap {_VOXEL_REPAIR_MAX_CELLS:.0f}) — "
+            "use a coarser pitch"
+        )
     vg = mesh.voxelized(pitch_mm)
     with contextlib.suppress(Exception):
         vg = vg.fill()  # fails on open meshes — remesh surface voxels as-is
@@ -935,12 +956,9 @@ def _voxel_remesh(mesh: trimesh.Trimesh, pitch_mm: float) -> trimesh.Trimesh:
 
 
 def _op_remesh(mesh: trimesh.Trimesh, p: OpRemesh) -> trimesh.Trimesh:
-    ext = np.asarray(mesh.extents, dtype=float)
-    if float((ext / p.voxel_mm).max()) > 900:
-        raise ValueError(
-            f"voxel_mm {p.voxel_mm:g} too fine for {ext.max():.0f} mm extent "
-            f"(>900 cells/axis) — use a coarser pitch"
-        )
+    # grid bound lives in _voxel_remesh (_VOXEL_REPAIR_MAX_CELLS) — a sparse
+    # shell can make nearly every occupied cell a boundary cell, so marching
+    # cubes can out-vertex the cell count several-fold
     out = _voxel_remesh(mesh, p.voxel_mm)
     if p.smooth_iters:
         out = smooth_preserve(out, p.smooth_iters)
@@ -960,15 +978,19 @@ def _resolve_drill_holes(p: OpDrillHoles, anchors: dict[str, Any] | None) -> lis
     return holes
 
 
+_AXES: dict[str, tuple[float, float, float]] = {"x": (1.0, 0, 0), "y": (0, 1.0, 0), "z": (0, 0, 1.0)}
+
+
 def _drill_tool(mesh: trimesh.Trimesh, h: DrillHole) -> trimesh.Trimesh:
     """Cylindrical (+ optional countersink) cutting solid for one hole."""
-    z0, z1 = float(mesh.bounds[0][2]), float(mesh.bounds[1][2])
+    ax = _AXES[h.axis]
+    ai = "xyz".index(h.axis)
+    lo, hi = float(mesh.bounds[0][ai]), float(mesh.bounds[1][ai])
     if h.depth_mm is not None:
-        bot, top = z1 - h.depth_mm, z1 + 1.0
+        bot, top = hi - h.depth_mm, hi + 1.0
     else:
-        bot, top = z0 - 1.0, z1 + 1.0
+        bot, top = lo - 1.0, hi + 1.0
     cyl = trimesh.creation.cylinder(radius=h.dia / 2.0, height=top - bot, sections=48)
-    cyl.apply_translation([h.x, h.y, (top + bot) / 2.0])
     tools = [cyl]
     if h.csk_dia and h.csk_dia > h.dia:
         # cone widening from the bore dia to csk_dia over h_csk of depth;
@@ -982,9 +1004,22 @@ def _drill_tool(mesh: trimesh.Trimesh, h: DrillHole) -> trimesh.Trimesh:
             # trimesh cone: base at z=-h/2, apex at +h/2 — flip so the apex
             # points down, then seat the apex at depth h_csk below the top
             cone.apply_transform(trimesh.transformations.rotation_matrix(math.pi, [1, 0, 0]))
-            cone.apply_translation([h.x, h.y, z1 - h_csk + h_cone / 2.0])
+            cone.apply_translation([0, 0, hi - h_csk + h_cone / 2.0])
             tools.append(cone)
-    return cast(trimesh.Trimesh, trimesh.util.concatenate(tools))
+    tool = cast(trimesh.Trimesh, trimesh.util.concatenate(tools))
+    if ai != 2:  # cylinder is built along +z — rotate onto the drill axis
+        tool.apply_transform(trimesh.geometry.align_vectors([0, 0, 1], list(ax)))
+    off = [0.0, 0.0, 0.0]
+    if h.axis == "z":
+        off = [h.x, h.y, (top + bot) / 2.0]
+    elif h.axis == "x":
+        off = [(top + bot) / 2.0, h.x, h.y]
+    else:
+        off = [h.x, (top + bot) / 2.0, h.y]
+    if h.depth_mm is not None:
+        off[ai] = (bot + top) / 2.0
+    tool.apply_translation(off)
+    return tool
 
 
 def _op_drill_holes(mesh: trimesh.Trimesh, p: OpDrillHoles) -> trimesh.Trimesh:
@@ -1020,6 +1055,7 @@ def _op_shell(mesh: trimesh.Trimesh, p: OpShell) -> trimesh.Trimesh:
     if float(ext.min()) < p.thickness_mm * 3.0:
         raise ValueError(f"part is too thin ({ext.min():.1f} mm) for a {p.thickness_mm:g} mm shell")
     pitch = float(np.clip(min(p.thickness_mm / 2.0, float(ext.min()) / 80.0), 0.15, 1.0))
+    pitch = max(pitch, float(ext.max()) / _VOXEL_REPAIR_MAX_CELLS)
     vg = mesh.voxelized(pitch)
     with contextlib.suppress(Exception):
         vg = vg.fill()
@@ -1289,8 +1325,11 @@ def apply_ops(
         salvaged = False
         # ops that shatter a single watertight solid (bad slice/cut/boolean)
         # are worse than a missed op — salvage or revert before they reach
-        # export, where they'd surface as solids>1 / non-watertight majors
-        if _is_single_solid(mesh) and not _is_single_solid(out):
+        # export, where they'd surface as solids>1 / non-watertight majors.
+        # "organic" is exempt: disjoint lattices/islands are legitimate output
+        # (reported via n_components + needs_review), and reverting them would
+        # silently show the unchanged part while commit produces the real one.
+        if mo.op != "organic" and _is_single_solid(mesh) and not _is_single_solid(out):
             rescued = _salvage_solid(out)
             if rescued is not None:
                 out, salvaged = rescued, True

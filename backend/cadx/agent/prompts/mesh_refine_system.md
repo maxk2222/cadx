@@ -42,6 +42,13 @@ Common problems and their fixes:
   explicit holes (blind depth_mm, countersink csk_dia/csk_angle_deg) can be
   appended in the same call. If it errors with "too dense", run
   mesh_decimate(~20000) first.
+- A spec'd bore through a lengthwise part (grip, handle, axle) that the
+  generator missed → mesh_drill_holes with an explicit hole: `axis` is the
+  drill direction from the spec/critique (a bore along the 130 mm length of
+  a grip is axis="x"), `x`,`y` are the two coordinates of the hole centre on
+  the plane perpendicular to it (axis="x" → x=y-coord, y=z-coord of the
+  centreline). Bores are exactly what image→3D cannot generate — drill them
+  instead of regenerating.
 - Part must be left/right symmetric (spec says so or the shape obviously is)
   → mesh_symmetrize mirrors the better half — removes asymmetric generator
   noise. Verify with mesh_measure/mesh_overlay afterwards.

@@ -857,11 +857,14 @@ MESH_TRANSFORM_TOOLS = [
     ),
     _fn(
         "mesh_drill_holes",
-        "Drill vertical holes at MEASURED positions — with "
+        "Drill straight holes along x/y/z — with "
         "from_anchors=true the measured anchor positions/diameters are used "
         "directly (never retype coordinates). An explicit holes list may add "
         "extra holes; depth_mm for blind holes, csk_dia/csk_angle_deg for "
-        "countersinks.",
+        "countersinks. `axis` sets the drill direction: 'z' (default, "
+        "position = x,y), 'x' (position = y,z coords via x,y fields), 'y' "
+        "(position = x,z). Use the critique's hole axis — e.g. a bore through "
+        "a lengthwise grip is axis='x' centered at the section centre.",
         {
             "from_anchors": {
                 "type": "boolean",
@@ -876,6 +879,7 @@ MESH_TRANSFORM_TOOLS = [
                         "y": {"type": "number"},
                         "dia": {"type": "number"},
                         "depth_mm": {"type": "number"},
+                        "axis": {"type": "string", "enum": ["x", "y", "z"]},
                         "csk_dia": {"type": "number"},
                         "csk_angle_deg": {"type": "number"},
                     },

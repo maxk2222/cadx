@@ -222,6 +222,25 @@ def test_flatten_bottom_fills_overhang_voids():
     assert hits.size and hits[:, 2].min() <= out.bounds[0][2] + 0.3
 
 
+def test_flatten_bottom_voxel_grid_bounded():
+    # a long thin part: pitch formula would give ~650 cells on the long axis —
+    # a sparse shell makes nearly every occupied cell a boundary cell, so
+    # marching cubes can out-vertex the cell count (observed: 41 M verts →
+    # MemoryError). The pitch must be raised to respect the cell cap.
+    m = _box(200, 30, 30)
+    m.apply_translation([0, 0, 15])
+    out = flatten_bottom(m, 1.0)
+    assert len(out.faces) < 3_000_000
+    assert out.is_watertight
+
+
+def test_voxel_remesh_refuses_unbounded_grid():
+    from cadx.cad.mesh_ops import _voxel_remesh
+
+    with pytest.raises(ValueError, match="cells/axis"):
+        _voxel_remesh(_box(200, 30, 30), pitch_mm=0.2)
+
+
 # --------------------------------------------------------------------------- #
 # mesh_to_solid / analysis
 
@@ -655,6 +674,31 @@ def test_op_drill_holes_countersink_and_anchors():
         apply_op(m, MeshOp(op="drill_holes", args={"from_anchors": True}))
     with pytest.raises(ValueError, match="no holes"):
         apply_op(m, MeshOp(op="drill_holes", args={}))
+
+
+def test_op_drill_holes_cross_axis():
+    # grip-like part: 130 mm long along X — a bore along the part axis
+    # (axis="x" → x/y args are the centreline's y/z coords)
+    m = trimesh.creation.cylinder(radius=16.0, height=130.0, sections=64)
+    m.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [0, 1, 0]))
+    out = apply_op(
+        m,
+        MeshOp(
+            op="drill_holes",
+            args={"holes": [{"x": 0.0, "y": 0.0, "dia": 10.0, "axis": "x"}]},
+        ),
+    )
+    assert out.is_watertight
+    assert abs(m.volume) - abs(out.volume) == pytest.approx(
+        np.pi * 5.0**2 * 130.0, rel=0.05
+    )
+    # a ray along the bore centreline passes clean through; an off-axis ray
+    # still hits the body
+    ray = trimesh.ray.ray_triangle.RayMeshIntersector(out)
+    hits, _, _ = ray.intersects_location([[-70, 0, 0]], [[1, 0, 0]], multiple_hits=True)
+    assert len(hits) == 0
+    hits, _, _ = ray.intersects_location([[-70, 10, 0]], [[1, 0, 0]], multiple_hits=True)
+    assert len(hits) == 2
 
 
 def test_op_shell_open_bottom():

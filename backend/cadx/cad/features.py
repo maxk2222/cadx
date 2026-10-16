@@ -106,6 +106,11 @@ _BOSS_TYPES = {"boss", "tube", "pin", "post", "stud", "standoff"}
 _BOSS_RE = re.compile(r"\b(tube|pipe|boss|rohr|stutzen|buchse|nabe)\b", re.I)
 _TAP_RE = re.compile(r"\btap(ped)?\b|gewinde|thread", re.I)
 _M_RE = re.compile(r"\bM\s*(\d+)", re.I)
+_AXIS_LETTER_RE = re.compile(
+    r"(?:along|entlang(?:\s+(?:der|die|den))?|längs|um)\s+([xyz])(?:[\s-]*(?:axis|achse))?"
+    r"|\b([xyz])[\s-]*(?:axis|achse)\b",
+    re.I,
+)
 _AXIS_HINT_RE = re.compile(
     r"(top|upper|deck|\bz\b|\+z|oben)|bottom|unter|front|back|left|right|side"
     r"|\bx\b|\by\b",
@@ -570,6 +575,13 @@ def _feature_axis_hint(feature: Any) -> str | None:
     pos = f"{feature.position or ''} {feature.description or ''}".lower()
     if not _AXIS_HINT_RE.search(pos):
         return None
+    # explicit axis-letter phrases beat direction words — a bore described as
+    # "along X, through both ends" runs on X; the word "through" alone says
+    # nothing about direction (a through-bore can run along any axis)
+    m = _AXIS_LETTER_RE.search(pos)
+    if m:
+        letter = next(g for g in m.groups() if g)
+        return f"+{letter.lower()}"
     if any(k in pos for k in ("top", "upper", "deck", "+z", "oben", " through", "durch")):
         return "+z"
     if "bottom" in pos or "unter" in pos or "-z" in pos:
