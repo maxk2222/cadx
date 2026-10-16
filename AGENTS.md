@@ -65,6 +65,15 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
   `apply_ops`). The worker-side workbench (`agent/mesh_tools.py`) previews
   the same code path — never treat the workbench mesh as the authoritative
   output.
+- Hybrid mesh booleans: `cad/mesh_boolean.py` is the trusted manifold3d
+  backend (no `cadx` imports — it loads inside the sandbox). `runner_entry`
+  injects it via `cadlib.ops.set_boolean_backend()` so `mesh_cut`/`mesh_fuse`/
+  `mesh_intersect`/`trim_below` keep OCC first and only rescue on
+  None/exception/wreckage. The runner also attaches the source trimesh to the
+  imported solid (`_cadx_mesh` attr) — re-tessellating a sewn solid costs
+  minutes, never drop that attachment. `mesh_to_solid` returns a
+  `UnifySameDomain`-unified solid; anchor bores measured on the image are
+  deterministically re-cut by the runner when generated code missed them.
 - Commits: one per milestone step, descriptive message.
 
 ## Testing

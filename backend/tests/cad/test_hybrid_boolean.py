@@ -2,8 +2,9 @@
 
 import pytest
 import trimesh
-from build123d import export_brep
+from build123d import export_brep, import_brep
 
+from cadx.cad import mesh_boolean as mb
 from cadx.cad.engine import run_pipeline
 from cadx.cad.mesh_ops import mesh_to_solid
 from cadx.db.models import ProjectSettings
@@ -145,3 +146,134 @@ result = Compound(children=[sliver, Pos(0, 0, 200) * Box(1, 1, 1)])
     assert not res.ok
     assert "shattered" in (res.error or "")
     assert "mesh_cut" in (res.error or "")
+
+
+def test_hybrid_mesh_cut_via_backend(mesh_brep, tmp_path):
+    """cadlib.mesh_cut on a hybrid run must deliver the cut — with the
+    manifold backend injected it can never shatter or return None."""
+    code = """\
+from build123d import *
+import cadlib
+
+PARAMS = {"hole_d": 6.0}
+
+body = load_mesh_solid()
+body = cadlib.mesh_cut(body, Pos(0, 0, -10) * Cylinder(radius=PARAMS["hole_d"] / 2, height=80))
+result = cadlib.collapse_solids(body)
+"""
+    res = run_pipeline(
+        code=code,
+        out_dir=tmp_path / "it1",
+        settings=ProjectSettings(process="fdm"),
+        mesh_solid=mesh_brep,
+        mesh_bbox=[40.0, 40.0, 40.0],
+    )
+    assert res.ok, res.error
+    sphere_vol = 4 / 3 * 3.14159 * 20**3
+    assert sphere_vol * 0.7 < res.analysis.volume < sphere_vol * 0.99
+    # the cut must actually be through — the manifold path guarantees it
+    shape = import_brep(str(tmp_path / "it1" / "_run" / "model.brep"))
+    assert mb.tunnel_open(shape, 0, 0, "+z")
+
+
+def test_hybrid_anchor_recut_rescues_missing_hole(mesh_brep, tmp_path):
+    """The generated code 'forgot' the measured bore — the runner must cut it
+    deterministically before export instead of shipping a hole-less part."""
+    code = """\
+from build123d import *
+
+PARAMS = {}
+
+result = load_mesh_solid()
+"""
+    res = run_pipeline(
+        code=code,
+        out_dir=tmp_path / "it1",
+        settings=ProjectSettings(process="fdm"),
+        mesh_solid=mesh_brep,
+        mesh_bbox=[40.0, 40.0, 40.0],
+        anchors={
+            "holes": [
+                {
+                    "index": 1,
+                    "x": 0.0,
+                    "y": 0.0,
+                    "dia": 6.0,
+                    "axis": "+z",
+                    "kind": "hole",
+                    "source": "image+mesh",
+                }
+            ]
+        },
+    )
+    assert res.ok, res.error
+    assert any("anchor re-cut" in w for w in res.warnings)
+    shape = import_brep(str(tmp_path / "it1" / "_run" / "model.brep"))
+    assert mb.tunnel_open(shape, 0, 0, "+z")
+
+
+def test_hybrid_anchor_recut_keeps_existing_hole(mesh_brep, tmp_path):
+    """A bore the code already produced must not be re-cut (identity path)."""
+    code = """\
+from build123d import *
+
+PARAMS = {}
+body = load_mesh_solid()
+result = body - Pos(0, 0, -10) * Cylinder(radius=3, height=80)
+"""
+    res = run_pipeline(
+        code=code,
+        out_dir=tmp_path / "it1",
+        settings=ProjectSettings(process="fdm"),
+        mesh_solid=mesh_brep,
+        mesh_bbox=[40.0, 40.0, 40.0],
+        anchors={
+            "holes": [
+                {
+                    "index": 1,
+                    "x": 0.0,
+                    "y": 0.0,
+                    "dia": 6.0,
+                    "axis": "+z",
+                    "kind": "hole",
+                    "source": "image+mesh",
+                }
+            ]
+        },
+    )
+    assert res.ok, res.error
+    assert not any("anchor re-cut" in w for w in res.warnings)
+
+
+def test_anchor_recut_pure_cad(tmp_path):
+    """Anchors without a mesh solid still get the deterministic rescue —
+    on an analytic body the OCC pass keeps the bore walls analytic."""
+    code = """\
+from build123d import *
+
+PARAMS = {}
+result = Box(30, 20, 10, align=(Align.CENTER, Align.CENTER, Align.MIN))
+"""
+    res = run_pipeline(
+        code=code,
+        out_dir=tmp_path / "it1",
+        settings=ProjectSettings(process="fdm"),
+        anchors={
+            "holes": [
+                {
+                    "index": 1,
+                    "x": 0.0,
+                    "y": 0.0,
+                    "dia": 5.0,
+                    "axis": "+z",
+                    "kind": "hole",
+                    "source": "image",
+                }
+            ]
+        },
+    )
+    assert res.ok, res.error
+    assert any("anchor re-cut" in w for w in res.warnings)
+    shape = import_brep(str(tmp_path / "it1" / "_run" / "model.brep"))
+    assert mb.tunnel_open(shape, 0, 0, "+z")
+    assert shape.volume == pytest.approx(30 * 20 * 10 - 3.14159 * 2.5**2 * 10, rel=0.01)

@@ -8,6 +8,7 @@ Always exits 0 — the parent detects failures via result.json / missing files.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.abc
 import importlib.machinery
 import io
@@ -165,6 +166,43 @@ def main(workdir: Path | None = None) -> int:  # noqa: C901
     # Other modules on this path are still blocked by _ImportGuard.
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+    # mesh-native boolean backend (manifold3d) — trusted module, imported from
+    # this runner frame so the import guard permits trimesh/OCP. Injected into
+    # cadlib.ops (the top-level `cadlib` model.py resolves) as the rescue lane
+    # for mesh_cut/mesh_fuse/mesh_intersect/trim_below; also powers the
+    # deterministic anchor re-cut below. Any failure leaves OCC-only behavior.
+    mesh_boolean = None
+    if mesh_solid_path or anchor_holes_list:
+        try:
+            import cadlib.ops as _cops
+
+            try:
+                from cadx.cad import mesh_boolean as _mb  # installed package
+            except ImportError:
+                import mesh_boolean as _mb  # type: ignore[no-redef]  sandbox path
+
+            _mb._warmup()  # resolves lazy imports before model.py frames exist
+            _cops.set_boolean_backend(_mb.boolean)
+            mesh_boolean = _mb
+        except Exception:
+            mesh_boolean = None
+
+    # source trimesh for the hybrid base solid — attached to the BREP import so
+    # every backend boolean reuses it instead of re-tessellating the sewn
+    # solid (OCC tessellation at the face cap costs minutes, the mesh is free)
+    _base_mesh = None
+    if mesh_boolean is not None and mesh_solid_path:
+        try:
+            stl_sib = Path(mesh_solid_path).resolve().with_name("model.stl")
+            if stl_sib.exists():
+                import trimesh
+
+                _base_mesh = trimesh.load(str(stl_sib), force="mesh", process=False)
+                _base_mesh.merge_vertices()
+                _base_mesh.remove_unreferenced_vertices()
+        except Exception:
+            _base_mesh = None
+
     from build123d import (
         Compound,
         Face,
@@ -207,7 +245,11 @@ def main(workdir: Path | None = None) -> int:  # noqa: C901
         ref = Path(mesh_solid_path).resolve()
         if not ref.exists():
             raise FileNotFoundError("mesh solid not found")
-        return import_brep(ref)
+        shp = import_brep(ref)
+        if _base_mesh is not None:
+            with contextlib.suppress(Exception):
+                mesh_boolean.attach_mesh(shp, _base_mesh)
+        return shp
 
     mesh_profile: dict[str, list[list[float]]] = {}
     if mesh_solid_path:
@@ -420,6 +462,27 @@ def main(workdir: Path | None = None) -> int:  # noqa: C901
                 f"result had {n} disconnected solids — collapsed to the largest; "
                 "wrap mesh booleans in cadlib.mesh_cut()/mesh_fuse() to drop slivers"
             )
+
+        # deterministic anchor re-cut: bores measured on the reference image
+        # are authoritative — when generated code missed or blocked one, cut
+        # it here instead of burning improve iterations on it
+        if mesh_boolean is not None and anchor_holes_list:
+            try:
+                shape2, applied = mesh_boolean.recut_missing_holes(shape, anchor_holes_list)
+                if applied:
+                    shape = shape2
+                    solids = shape.solids()
+                    result.setdefault("warnings", []).append(
+                        "anchor re-cut: measured holes missing/blocked in the "
+                        f"generated code were cut deterministically ({', '.join(applied)})"
+                    )
+            except Exception as e:
+                result.setdefault("warnings", []).append(f"anchor re-cut failed: {e}")
+
+        # hybrid result cleanup: merge coplanar facets into planar faces —
+        # cheaper downstream ops, cleaner STEP; validated, keeps input on drift
+        if mesh_boolean is not None and mesh_solid_path:
+            shape = mesh_boolean.unify_checked(shape)
 
         export_brep(shape, str(workdir / "model.brep"))
 

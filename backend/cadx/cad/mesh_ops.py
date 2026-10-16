@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import contextlib
 import math
-import tempfile
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -1466,8 +1465,6 @@ def mesh_to_solid(mesh: trimesh.Trimesh, *, max_faces: int | None = None) -> Any
     ladder) and decimates first when the mesh exceeds `max_faces` (default
     from runtime settings).
     """
-    from build123d import Solid
-
     max_faces = max_faces or RuntimeSettings().mesh_max_faces_for_cad
     # decimate BEFORE the watertight ladder — repair/voxel remesh memory
     # scales with input faces and an uncapped input OOMs the executor
@@ -1481,37 +1478,13 @@ def mesh_to_solid(mesh: trimesh.Trimesh, *, max_faces: int | None = None) -> Any
     if len(mesh.faces) > max_faces * 4:
         raise ValueError(f"mesh too dense for B-rep conversion ({len(mesh.faces)} faces)")
 
-    with tempfile.TemporaryDirectory() as td:
-        stl = Path(td) / "mesh.stl"
-        mesh.export(str(stl), file_type="stl")
+    from cadx.cad.mesh_boolean import sew_mesh, unify_checked
 
-        from build123d import Shape, Shell
-        from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
-        from OCP.ShapeFix import ShapeFix_Shape
-        from OCP.StlAPI import StlAPI_Reader
-        from OCP.TopoDS import TopoDS_Shape
-
-        reader = StlAPI_Reader()
-        shape = TopoDS_Shape()
-        if not reader.Read(shape, str(stl)):
-            raise ValueError("StlAPI_Reader failed")
-
-        sewing = BRepBuilderAPI_Sewing(1e-4)
-        sewing.Add(shape)
-        sewing.Perform()
-        sewed = sewing.SewedShape()
-        fixed = ShapeFix_Shape(sewed).Shape()
-
-        wrapped = Shape.cast(fixed)
-        shells = wrapped.shells()
-        if not shells:
-            raise ValueError("no closed shell found in mesh")
-        shell = max(shells, key=lambda sh: sh.area)
-        if not isinstance(shell, Shell):
-            shell = Shell(shell.wrapped)
-        shell = shell.fix()
-
-    return Solid(Solid._make_solid(shell))
+    solid = sew_mesh(mesh)
+    # coplanar facets merge into real planar faces — downstream OCC booleans
+    # get cheaper and STEP exports carry analytic patches instead of facet
+    # noise; guarded: any drift keeps the sewn solid
+    return unify_checked(solid)
 
 
 # --------------------------------------------------------------------------- #

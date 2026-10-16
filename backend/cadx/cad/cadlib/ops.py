@@ -7,6 +7,34 @@ crashing the whole run on an empty/stale edge selection.
 
 from build123d import Align, Box, Pos, fillet
 
+# runner_entry injects the manifold3d backend (`cadx.cad.mesh_boolean`) for
+# hybrid runs — kept as an injected callable so cadlib itself never imports
+# trimesh/manifold3d/OCP (the sandbox guard forbids it).
+_BOOLEAN_BACKEND = None
+
+
+def set_boolean_backend(fn) -> None:
+    """Install a ``fn(body, tool, kind) -> Shape`` mesh-native boolean used as
+    the rescue lane when an OCC boolean on a faceted solid fails, returns
+    ``None`` or sheds wreckage. ``kind`` is ``"cut"``, ``"fuse"`` or
+    ``"intersect"``."""
+    global _BOOLEAN_BACKEND
+    _BOOLEAN_BACKEND = fn
+
+
+def _backend_boolean(body, tool, kind: str):
+    """Backend boolean or None — unavailable/injected-off/failed all fold to
+    the OCC fallback path in the caller."""
+    if _BOOLEAN_BACKEND is None:
+        return None
+    try:
+        r = _BOOLEAN_BACKEND(body, tool, kind)
+    except Exception:
+        return None
+    if r is None or not r.solids():
+        return None
+    return r
+
 
 def bbox_dims(shape) -> list[float]:
     """[dx, dy, dz] extents of a shape's bounding box in mm.
@@ -74,7 +102,12 @@ def mesh_intersect(body, tool):
     ``None`` that later shows up as "no result assigned". Raising here keeps
     the failure at the boolean line where it belongs.
     """
-    r = body & tool
+    try:
+        r = body & tool
+    except Exception:
+        r = None
+    if r is None:
+        r = _backend_boolean(body, tool, "intersect")
     if r is None:
         raise ValueError(
             "boolean intersection produced no solid — on faceted mesh bodies "
@@ -96,16 +129,25 @@ def mesh_cut(body, tool):
 
         body = mesh_cut(body, Pos(x, y, -1) * Cylinder(radius=2.5, height=10))
     """
-    r = body - tool
+    try:
+        r = body - tool
+    except Exception:
+        r = None
+    floor = max(0.0, body.volume - abs(tool.volume)) * 0.3
+    if r is not None and r.volume >= floor:
+        return collapse_solids(r)
+    # OCC failed (None/exception) or produced wreckage — the mesh-native
+    # backend cannot shatter and never returns None, so give it the op
+    # before degrading to the un-cut body
+    rb = _backend_boolean(body, tool, "cut")
+    if rb is not None and rb.volume >= floor:
+        return collapse_solids(rb)
     if r is None:
         raise ValueError(
             "boolean cut produced no solid — the tool may be disjoint from "
             "the body or the faceted mesh solid rejected the boolean"
         )
-    floor = max(0.0, body.volume - abs(tool.volume)) * 0.3
-    if r.volume < floor:
-        return body
-    return collapse_solids(r)
+    return body
 
 
 def mesh_fuse(body, tool):
@@ -114,12 +156,18 @@ def mesh_fuse(body, tool):
     A fuse cannot shrink the body — a result far below the input volume is
     boolean wreckage, so the un-fused body is returned instead.
     """
-    r = body + tool
+    try:
+        r = body + tool
+    except Exception:
+        r = None
+    if r is not None and r.volume >= body.volume * 0.3:
+        return collapse_solids(r)
+    rb = _backend_boolean(body, tool, "fuse")
+    if rb is not None and rb.volume >= body.volume * 0.3:
+        return collapse_solids(rb)
     if r is None:
         raise ValueError("boolean fuse produced no solid — the tool must overlap the body")
-    if r.volume < body.volume * 0.3:
-        return body
-    return collapse_solids(r)
+    return body
 
 
 def trim_below(body, z: float = 0.0, margin: float = 400.0):
@@ -137,7 +185,13 @@ def trim_below(body, z: float = 0.0, margin: float = 400.0):
     cutter = Pos(0, 0, z - margin) * Box(
         margin, margin, margin, align=(Align.CENTER, Align.CENTER, Align.MIN)
     )
-    r = body - cutter
-    if r is None or len(r.solids()) > len(body.solids()):
-        return body
-    return r
+    try:
+        r = body - cutter
+    except Exception:
+        r = None
+    if r is not None and len(r.solids()) <= len(body.solids()):
+        return r
+    rb = _backend_boolean(body, cutter, "cut")
+    if rb is not None:
+        return rb
+    return body
