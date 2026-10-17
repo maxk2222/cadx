@@ -1901,6 +1901,22 @@ def run_organic_pipeline(
     return res
 
 
+def _auto_keep_dicts(
+    anchors: list[dict[str, Any]] | None, margin_mm: float
+) -> list[dict[str, Any]]:
+    """keep-region dicts (the apply_refine shape) around every fastener
+    anchor — the refine analogue of OptimizeSpec.keep_mode="auto" /
+    fem.regions.auto_keep_regions. ``hole_index`` is the 1-based list
+    position: apply_refine resolves it via ``anchors[hole_index - 1]``."""
+    from cadx.cad.fem.anchors3d import is_fastener_anchor
+
+    return [
+        {"kind": "hole", "hole_index": i + 1, "margin_mm": margin_mm}
+        for i, a in enumerate(anchors or [])
+        if is_fastener_anchor(a)
+    ]
+
+
 def run_refine(
     *,
     mesh_path: Path,
@@ -1914,6 +1930,7 @@ def run_refine(
     restore_planes: bool = True,
     helical_threads: bool = False,
     auto_plane_restore: bool = False,
+    auto_keep_anchors: bool = False,
     material: str = "",
     voxel_mm: float | None = None,
     max_elements: int | None = None,
@@ -1931,6 +1948,8 @@ def run_refine(
     `features`   explicit selection (UI/agent) — overrides auto-resolution
     `spec_features` + `anchors` drive the deterministic auto pass
     `base_mesh_path` the pre-optimization part (keep restore source)
+    `auto_keep_anchors` when keep_regions is empty, synthesize one anchor
+        keep-region per fastener anchor (topopt auto-keep parity)
     """
     from cadx.cad.fem.analyze import report_to_json, run_fem
     from cadx.cad.fem.refine import apply_refine, resolve_refine_features
@@ -1959,6 +1978,11 @@ def run_refine(
         anchors, spec_features, features, base_mesh=base_mesh
     )
     keep_regions = list(keep_regions or [])
+    if auto_keep_anchors and not keep_regions and anchors:
+        # worker-declared gap: TopOpt ran without explicit keep regions so
+        # fastener islands may have been eaten — restore each anchor's
+        # material ring from the base mesh
+        keep_regions += _auto_keep_dicts(anchors, s.topopt_auto_keep_margin_mm)
     if auto_plane_restore and base_mesh is not None:
         from cadx.cad.fem.refine import detect_plane_regions
 

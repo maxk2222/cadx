@@ -15,6 +15,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -954,8 +955,8 @@ async def _maybe_spawn_refine(
     ):
         return False
     has_features = bool(spec and spec.features)
-    has_anchors = bool(((parent.mesh or {}).get("topopt") or {}).get("anchors"))
-    if not (has_features or has_anchors):
+    topopt_anchors = ((parent.mesh or {}).get("topopt") or {}).get("anchors") or []
+    if not (has_features or topopt_anchors):
         log.info(
             "refine.spawn_skipped",
             version=str(parent.id),
@@ -984,13 +985,17 @@ async def _maybe_spawn_refine(
     rjob = Job(version_id=child.id, type=JobType.refine)
     db.add(rjob)
     await db.commit()
+    keep_regions = optimize.get("keep_regions") or []
     await enqueue_agent(
         "run_refine_job",
         {
             "job_id": str(rjob.id),
             "version_id": str(child.id),
             "load_cases": load_cases,
-            "keep_regions": optimize.get("keep_regions") or [],
+            "keep_regions": keep_regions,
+            # no explicit keep regions but measured anchors exist — the
+            # executor may auto-derive anchor keep-boxes from them
+            "auto_keep_anchors": bool(not keep_regions and topopt_anchors),
             "material": material,
             "helical_threads": bool(optimize.get("helical_threads")),
             "auto_plane_restore": bool(optimize.get("auto_plane_restore")),
@@ -1527,6 +1532,9 @@ async def run_refine_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[s
                     payload.get("auto_plane_restore")
                     or (spec.optimize.auto_plane_restore if spec and spec.optimize else False)
                 ),
+                # the executor may auto-derive anchor keep-boxes when no
+                # explicit keep_regions were resolved (topopt auto-keep gap)
+                "auto_keep_anchors": bool(payload.get("auto_keep_anchors")),
                 "runtime_settings": runtime_settings.executor_values(),
                 "name": "model",
             }
@@ -1542,9 +1550,12 @@ async def run_refine_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[s
             return {"ok": False, "error": version.error}
 
         artifacts = _copy_best_artifacts_ctxless(version.project_id, version.id, 1, result)
-        for fmt, rel in (result.get("exports") or {}).items():
-            if rel:
-                artifacts[f"export:{fmt}"] = rel
+        # promote the refined exports to versions/<vid>/exports/ — API/UI
+        # consumers (and best_mesh_relpath) resolve the version-level dir
+        # first; iteration-only paths serve the parent's UN-refined files
+        artifacts.update(
+            _copy_export_artifacts_ctxless(version.project_id, version.id, 1, result.get("exports"))
+        )
         it_dir = storage.iteration_dir(version.project_id, version.id, 1)
         v_dir = storage.ensure(storage.version_dir(version.project_id, version.id))
         fem_dir = storage.ensure(v_dir / "fem")
@@ -1582,10 +1593,41 @@ async def run_refine_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[s
         sfs = [c.get("safety_factor") for c in fem.get("cases", []) if c.get("safety_factor")]
         worst_sf = min(sfs) if sfs else None
         n_skipped = len(refine_report.get("skipped") or [])
+
+        # deterministic post-refine verification: the report's `applied` list
+        # is self-reported — rescan the refined mesh and require every applied
+        # cuttable +z feature to have left a real tunnel (a cut landing in a
+        # SIMP void reports huge dia_deviation_mm yet still "applied")
+        misses = _refine_tunnel_misses(
+            it_dir / "_run" / "model.stl",
+            refine_report,
+            anchors=anchors,
+            request_features=payload.get("features"),
+        )
+        issues: list[dict[str, Any]] = [
+            {"source": "refine", "severity": "minor", "what": str(w)}
+            for w in (refine_report.get("warnings") or [])
+        ]
+        issues += [
+            {
+                "source": "refine_verify",
+                "severity": "major",
+                "what": (
+                    f"re-cut feature '{m['entry'].get('name')}' left no tunnel at "
+                    f"({m['x']:.1f}, {m['y']:.1f}) — expected Ø{m['dia']:g} mm"
+                ),
+                "report": _json_safe(m["entry"]),
+            }
+            for m in misses
+        ]
+        if issues:
+            version.issues = (version.issues or []) + issues
+
         version.status = (
             VersionStatus.needs_review
             if (worst_sf is not None and worst_sf < 1.0)
             or (n_skipped and not refine_report.get("applied"))
+            or bool(misses)
             else VersionStatus.succeeded
         )
         register_artifacts(db, version.id, artifacts, tessellated_step=False)
@@ -1594,7 +1636,8 @@ async def run_refine_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[s
             1,
             f"done: {len(refine_report.get('applied') or [])} feature(s) re-cut, "
             f"{refine_report.get('restored_regions') or 0} keep surface(s) restored"
-            + (f", SF {worst_sf}" if worst_sf else ""),
+            + (f", SF {worst_sf}" if worst_sf else "")
+            + (f", {len(misses)} feature(s) failed verification" if misses else ""),
         )
         job.status = JobStatus.succeeded
         job.finished_at = datetime.now(UTC)
@@ -2133,6 +2176,143 @@ def _copy_best_artifacts_ctxless(
     return out
 
 
+def _copy_export_artifacts_ctxless(
+    project_id: uuid.UUID,
+    version_id: uuid.UUID,
+    iteration: int,
+    exports: dict[str, Any] | None,
+) -> dict[str, str]:
+    """Promote iteration-level exports to the version-level ``exports/`` dir.
+
+    LLM-free child jobs (refine) write exports under ``iterations/<n>/exports``
+    only — but API consumers and ``storage.best_mesh_relpath`` resolve
+    ``versions/<vid>/exports/model.<fmt>`` first, so without this copy the
+    child version keeps serving the PARENT's files. Keys stay ``export:<fmt>``
+    and point at the promoted path (iteration path as fallback)."""
+    it_dir = storage.iteration_dir(project_id, version_id, iteration)
+    out: dict[str, str] = {}
+    dst_dir: Path | None = None
+    for fmt, rel in (exports or {}).items():
+        if not rel:
+            continue
+        src = it_dir / "exports" / Path(str(rel)).name
+        if src.exists():
+            if dst_dir is None:
+                dst_dir = storage.ensure(storage.export_dir(project_id, version_id))
+            dst = dst_dir / src.name
+            if src.resolve() != dst.resolve():
+                shutil.copy2(src, dst)
+            out[f"export:{fmt}"] = storage.relpath(dst)
+        else:
+            out[f"export:{fmt}"] = str(rel)
+    return out
+
+
+# applied refine kinds that must leave a real through-feature in the mesh
+_CUT_VERIFY_KINDS = {"hole", "tunnel", "thread", "tap"}
+
+
+def _anchor_xy(a: dict[str, Any]) -> tuple[float, float] | None:
+    """+z in-plane coords of an anchor/request-feature dict."""
+    pos = a.get("pos") or []
+    try:
+        if len(pos) >= 2 and pos[0] is not None and pos[1] is not None:
+            return float(pos[0]), float(pos[1])
+    except (TypeError, ValueError):
+        pass
+    if a.get("x") is not None and a.get("y") is not None:
+        try:
+            return float(a["x"]), float(a["y"])
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _refine_expected_uv(
+    entry: dict[str, Any],
+    anchors: list[dict[str, Any]] | None,
+    request_features: list[dict[str, Any]] | None,
+) -> tuple[float, float] | None:
+    """Expected +z in-plane (x, y) of an applied refine feature.
+
+    ``applied`` records carry no position — resolve it from the request
+    feature / anchor the cut was derived from. Anchor-derived names are
+    ``<name>`` or ``anchor <index>``; spec-renamed features fall back to the
+    same-axis anchor closest in diameter."""
+    direct = _anchor_xy(entry)
+    if direct is not None:
+        return direct
+    name = str(entry.get("name") or "")
+    for r in request_features or []:
+        if str(r.get("name") or "") == name:
+            uv = _anchor_xy(r)
+            if uv is not None:
+                return uv
+    dia = float(entry.get("requested_dia_mm") or entry.get("dia") or 0.0)
+    best: tuple[float, float] | None = None
+    best_dev: float | None = None
+    for a in anchors or []:
+        if str(a.get("axis") or "+z") != "+z":
+            continue
+        uv = _anchor_xy(a)
+        if uv is None:
+            continue
+        if str(a.get("name") or f"anchor {a.get('index', '?')}") == name:
+            return uv
+        if dia > 0:
+            dev = abs(float(a.get("dia") or 0.0) - dia)
+            if best_dev is None or dev < best_dev:
+                best, best_dev = uv, dev
+    return best
+
+
+def _refine_tunnel_misses(
+    stl_path: Path,
+    refine_report: dict[str, Any],
+    *,
+    anchors: list[dict[str, Any]] | None,
+    request_features: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Applied +z cuttable features that left NO matching through-feature.
+
+    The report's ``applied`` list is self-reported — a cut landing in a SIMP
+    void (``dia_deviation_mm`` in the tens of mm) still counts as applied.
+    Rescan the raw refined mesh (``_run/model.stl`` — the exported copies may
+    have had holes filled by the repair pass) and require a tunnel within
+    3 mm xy / 25 % dia of the expected position. Blind cuts (``depth_mm``
+    set) accept a dimple instead of a through-tunnel."""
+    if not stl_path.exists():
+        return []
+    try:
+        from cadx.cad.fem.anchors3d import scan_mesh_anchors
+
+        scanned = scan_mesh_anchors(stl_path)
+    except Exception:
+        log.warning("refine.verify_scan_failed", path=str(stl_path), exc_info=True)
+        return []
+    misses: list[dict[str, Any]] = []
+    for entry in refine_report.get("applied") or []:
+        if str(entry.get("kind") or "hole") not in _CUT_VERIFY_KINDS:
+            continue
+        if str(entry.get("axis") or "+z") != "+z":
+            continue
+        uv = _refine_expected_uv(entry, anchors, request_features)
+        if uv is None:
+            continue  # no position to check against — cannot verify
+        dia = float(entry.get("requested_dia_mm") or entry.get("dia") or 0.0)
+        want = {"dimple"} if entry.get("depth_mm") else {"hole"}
+        for t in scanned:
+            if str(t.get("axis") or "+z") != "+z" or str(t.get("kind") or "") not in want:
+                continue
+            if math.hypot(float(t.get("x") or 0.0) - uv[0], float(t.get("y") or 0.0) - uv[1]) > 3.0:
+                continue
+            if dia <= 0 or abs(float(t.get("dia") or 0.0) - dia) <= 0.25 * dia:
+                break
+        else:
+            misses.append({"entry": entry, "x": uv[0], "y": uv[1], "dia": dia})
+    return misses
+
+
 def _copy_mesh_artifacts_ctxless(
     project_id: uuid.UUID, version_id: uuid.UUID, iteration: int, parent: Version | None = None
 ) -> dict[str, str]:
@@ -2247,8 +2427,6 @@ def _parent_source_model(artifacts: list[Artifact], parent: Version) -> str | No
     4. ``exports/model.step`` — always written by ``export_all``; STEP is a
        faithful analytic exchange for the plain cylindrical faces we edit
     """
-    from pathlib import Path
-
     pid, vid = parent.project_id, parent.id
     v_dir = storage.version_dir(pid, vid)
 

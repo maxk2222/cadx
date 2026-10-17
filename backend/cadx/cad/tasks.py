@@ -874,6 +874,7 @@ def run_refine_payload(payload: dict[str, Any]) -> dict[str, Any]:
         restore_planes=bool(payload.get("restore_planes", True)),
         helical_threads=bool(payload.get("helical_threads", False)),
         auto_plane_restore=bool(payload.get("auto_plane_restore", False)),
+        auto_keep_anchors=bool(payload.get("auto_keep_anchors", False)),
         material=payload.get("material") or "",
         voxel_mm=payload.get("voxel_mm"),
         max_elements=payload.get("max_elements"),
