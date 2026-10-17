@@ -260,6 +260,56 @@ async def test_codegen_run_uses_build_session_when_staged():
     assert "submit_code" not in tool_names
 
 
+async def test_codegen_run_build_rescues_undone_buffer():
+    """Build session hits the call budget without `done` (long thinking
+    calls ate the turns): the grown buffer is still submitted instead of
+    raising 'no code'."""
+    from cadx.agent.steps import codegen as codegen_step
+    from cadx.llm.schemas import Dim, PartSpec
+
+    llm = FakeLLM(
+        [
+            _call("add_block", name="base", code="result = Box(10, 10, 5)"),
+            _call("add_block", name="boss", code="result = result + Pos(0, 0, 5) * Box(4, 4, 3)"),
+            _call("add_block", name="holes", code="pass  # never finished"),
+            {"content": "still thinking"},  # grace turn — not valid JSON
+        ]
+    )
+    llm.tools_mode = "auto"
+    ctx = _ctx(llm, agent_staged_build="on", agent_tool_max_calls_build=3)
+    spec = PartSpec(
+        name="box",
+        length_x=Dim(value=10),
+        width_y=Dim(value=10),
+        height_z=Dim(value=5),
+    )
+    resp = await codegen_step.run(ctx, spec, None, iteration=1)
+    assert "## block: base" in resp.code
+    assert "result = result + Pos(0, 0, 5) * Box(4, 4, 3)" in resp.code
+
+
+async def test_codegen_run_build_seed_only_still_fails():
+    """A buffer that never grew beyond the seed has no real code — the
+    'produced no code' error is still correct then."""
+    import pytest
+
+    from cadx.agent.steps import codegen as codegen_step
+    from cadx.llm.schemas import Dim, PartSpec
+    from cadx.llm.structured import LLMFormatError
+
+    llm = FakeLLM([_call("quickref", topic="build123d"), {"content": "stuck"}])
+    llm.tools_mode = "auto"
+    ctx = _ctx(llm, agent_staged_build="on", agent_tool_max_calls_build=1)
+    spec = PartSpec(
+        name="box",
+        length_x=Dim(value=10),
+        width_y=Dim(value=10),
+        height_z=Dim(value=5),
+    )
+    with pytest.raises(LLMFormatError):
+        await codegen_step.run(ctx, spec, None, iteration=1)
+
+
 async def test_codegen_run_staged_off_keeps_submit_code():
     """agent_staged_build='off' keeps the classic one-shot codegen session."""
     from cadx.agent.steps import codegen as codegen_step

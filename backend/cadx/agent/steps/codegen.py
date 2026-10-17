@@ -477,4 +477,15 @@ async def _codegen_session(
         )
     if res.response is not None and isinstance(res.response.parsed, CodeResponse):
         return res.response.parsed
+    # build-session rescue: the model ran out of budget without `done` but
+    # leaves a grown buffer — submit it (it goes through the same contract
+    # gate as any codegen; a broken buffer gets a repair session, which is
+    # strictly better than throwing the work away)
+    if staged and res.code and res.code != _BUILD_SEED:
+        return CodeResponse(
+            reasoning="staged build session ended without done — buffer submitted as-is",
+            params=[],
+            expected_bbox=[],
+            code=str(res.code),
+        )
     raise LLMFormatError("codegen session produced no code")
