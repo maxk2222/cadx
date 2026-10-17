@@ -49,12 +49,8 @@ def border_transparent(im: Image.Image, thresh: int = BG_THRESH) -> Image.Image:
     work = im.convert("RGB").copy()
     w, h = work.size
     step = 3
-    seeds = [(x, 0) for x in range(0, w, step)] + [
-        (x, h - 1) for x in range(0, w, step)
-    ]
-    seeds += [(0, y) for y in range(0, h, step)] + [
-        (w - 1, y) for y in range(0, h, step)
-    ]
+    seeds = [(x, 0) for x in range(0, w, step)] + [(x, h - 1) for x in range(0, w, step)]
+    seeds += [(0, y) for y in range(0, h, step)] + [(w - 1, y) for y in range(0, h, step)]
     for seed in seeds:
         if work.getpixel(seed) != (255, 0, 255):
             ImageDraw.floodfill(work, seed, (255, 0, 255), thresh=thresh)
@@ -96,9 +92,7 @@ def main() -> None:
     card.alpha_composite(logo_c)
     banner = card.convert("RGB")
     if banner.width > 1200:
-        banner = banner.resize(
-            (1200, int(banner.height * 1200 / banner.width)), Image.LANCZOS
-        )
+        banner = banner.resize((1200, int(banner.height * 1200 / banner.width)), Image.LANCZOS)
     banner.save(OUT / "brand" / "logo.png", optimize=True)
 
     # --- hero bar: full-width dark banner with centered logo (README/docs) ---
@@ -114,27 +108,17 @@ def main() -> None:
     hero.save(OUT / "brand" / "hero.png", optimize=True)
 
     # --- transparent wordmark (sidebar-sized) ---
-    wm_small = logo_c.resize(
-        (int(logo_c.width * 192 / logo_c.height), 192), Image.LANCZOS
-    )
+    wm_small = logo_c.resize((int(logo_c.width * 192 / logo_c.height), 192), Image.LANCZOS)
     wm_small.save(OUT / "brand" / "wordmark.png", optimize=True)
 
     # --- transparent X mark + favicon set ---
-    icon.resize((256, 256), Image.LANCZOS).save(
-        OUT / "brand" / "icon.png", optimize=True
-    )
+    icon.resize((256, 256), Image.LANCZOS).save(OUT / "brand" / "icon.png", optimize=True)
     # favicons keep the transparent X; PWA/touch icons get an opaque dark base
     for size in (16, 32, 48):
-        icon.resize((size, size), Image.LANCZOS).save(
-            OUT / f"favicon-{size}.png", optimize=True
-        )
-    icon_op.resize((180, 180), Image.LANCZOS).save(
-        OUT / "apple-touch-icon.png", optimize=True
-    )
+        icon.resize((size, size), Image.LANCZOS).save(OUT / f"favicon-{size}.png", optimize=True)
+    icon_op.resize((180, 180), Image.LANCZOS).save(OUT / "apple-touch-icon.png", optimize=True)
     for size in (192, 512):
-        icon_op.resize((size, size), Image.LANCZOS).save(
-            OUT / f"icon-{size}.png", optimize=True
-        )
+        icon_op.resize((size, size), Image.LANCZOS).save(OUT / f"icon-{size}.png", optimize=True)
     icon.save(
         OUT / "favicon.ico",
         sizes=[(16, 16), (32, 32), (48, 48)],

@@ -279,9 +279,7 @@ def _user_text(rec: dict) -> str:
     )
 
 
-def _codegen_pairs(
-    ctx: VersionCtx, min_score: float
-) -> Iterator[tuple[list[dict], dict]]:
+def _codegen_pairs(ctx: VersionCtx, min_score: float) -> Iterator[tuple[list[dict], dict]]:
     """Yield (messages_prefix, meta) for each verified code-producing step."""
     if not ctx.passed:
         return
@@ -325,9 +323,7 @@ def _codegen_pairs(
         yield messages, meta
 
 
-def _find_repair_record(
-    ctx: VersionCtx, broken: Attempt, fixed: Attempt
-) -> dict | None:
+def _find_repair_record(ctx: VersionCtx, broken: Attempt, fixed: Attempt) -> dict | None:
     """Repair record whose PREVIOUS CODE block matches the broken snapshot."""
     target = _norm_code(broken.code)
     for rec in ctx.records:
@@ -407,9 +403,7 @@ def _row_is_clean(messages: list[dict], meta: dict) -> bool:
     for m in messages:
         if _contains_secret(str(m.get("content") or "")):
             return False
-    return not any(
-        _contains_secret(str(v)) for v in meta.values() if isinstance(v, str)
-    )
+    return not any(_contains_secret(str(v)) for v in meta.values() if isinstance(v, str))
 
 
 def _default_root() -> Path:
@@ -438,9 +432,7 @@ def _load_run_ctx(result_path: Path, projects_root: Path) -> VersionCtx | None:
         version_dir=vdir,
         project_id=str(data.get("project_id") or vdir.parent.parent.name),
         version_id=vdir.name,
-        benchmark=str(
-            res.get("name") or data.get("benchmark") or result_path.parent.name
-        ),
+        benchmark=str(res.get("name") or data.get("benchmark") or result_path.parent.name),
         variant=str(res.get("variant") or data.get("variant") or "default"),
         run_id=str(data.get("run_id") or result_path.parent.name),
         score=float(score) if isinstance(score, int | float) else None,
@@ -516,6 +508,60 @@ def _project_version_ctx(
     )
 
 
+def _collect_contexts(
+    root: Path, projects_root: Path, args: argparse.Namespace
+) -> tuple[list[VersionCtx], list[Path]]:
+    result_paths = sorted(root.rglob("result.json")) if root.is_dir() else []
+    ctxs: list[VersionCtx] = []
+    seen_vdirs: set[Path] = set()
+    for rp in result_paths:
+        ctx = _load_run_ctx(rp, projects_root)
+        if ctx is None:
+            print(f"warn: skipping {rp} (unresolvable version_dir)", file=sys.stderr)
+            continue
+        seen_vdirs.add(ctx.version_dir)
+        ctx.records = _iter_trace_records(ctx.version_dir)
+        ctx.attempts = _iter_attempts(ctx.version_dir)
+        ctxs.append(ctx)
+
+    if args.include_project_versions and projects_root.is_dir():
+        for vdir in sorted(projects_root.glob("*/versions/*")):
+            if vdir in seen_vdirs or not vdir.is_dir():
+                continue
+            ctx = _project_version_ctx(vdir, projects_root, args.min_score)
+            if ctx is None:
+                continue
+            ctx.records = _iter_trace_records(vdir)
+            ctx.attempts = _iter_attempts(vdir)
+            ctxs.append(ctx)
+    return ctxs, result_paths
+
+
+def _emit_rows(ctxs: list[VersionCtx], kinds: set[str], min_score: float) -> tuple[list[dict], int]:
+    rows: list[dict] = []
+    seen_pairs: set[str] = set()
+    dropped_secret = 0
+    for ctx in ctxs:
+        emitters: list[Iterable[tuple[list[dict], dict]]] = []
+        if "codegen" in kinds:
+            emitters.append(_codegen_pairs(ctx, min_score))
+        if "repair" in kinds:
+            emitters.append(_repair_pairs(ctx))
+        for emitter in emitters:
+            for messages, meta in emitter:
+                if not _row_is_clean(messages, meta):
+                    dropped_secret += 1
+                    continue
+                user = next((m["content"] for m in messages if m["role"] == "user"), "")
+                code = messages[-1]["content"]
+                key = hashlib.sha256(f"{user}\x00{code}".encode()).hexdigest()
+                if key in seen_pairs:
+                    continue
+                seen_pairs.add(key)
+                rows.append({"messages": messages, "meta": meta})
+    return rows, dropped_secret
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -554,59 +600,14 @@ def main() -> int:
 
     root = (args.root or _default_root()).resolve()
     projects_root = (
-        args.projects_root.resolve()
-        if args.projects_root
-        else (root.parent / "projects").resolve()
+        args.projects_root.resolve() if args.projects_root else (root.parent / "projects").resolve()
     )
     kinds = {k.strip() for k in args.kinds.split(",") if k.strip()}
     if not kinds <= {"codegen", "repair"}:
         ap.error(f"--kinds must be subset of codegen,repair (got {sorted(kinds)})")
 
-    result_paths = sorted(root.rglob("result.json")) if root.is_dir() else []
-    ctxs: list[VersionCtx] = []
-    seen_vdirs: set[Path] = set()
-    for rp in result_paths:
-        ctx = _load_run_ctx(rp, projects_root)
-        if ctx is None:
-            print(f"warn: skipping {rp} (unresolvable version_dir)", file=sys.stderr)
-            continue
-        seen_vdirs.add(ctx.version_dir)
-        ctx.records = _iter_trace_records(ctx.version_dir)
-        ctx.attempts = _iter_attempts(ctx.version_dir)
-        ctxs.append(ctx)
-
-    if args.include_project_versions and projects_root.is_dir():
-        for vdir in sorted(projects_root.glob("*/versions/*")):
-            if vdir in seen_vdirs or not vdir.is_dir():
-                continue
-            ctx = _project_version_ctx(vdir, projects_root, args.min_score)
-            if ctx is None:
-                continue
-            ctx.records = _iter_trace_records(vdir)
-            ctx.attempts = _iter_attempts(vdir)
-            ctxs.append(ctx)
-
-    rows: list[dict] = []
-    seen_pairs: set[str] = set()
-    dropped_secret = 0
-    for ctx in ctxs:
-        emitters: list[Iterable[tuple[list[dict], dict]]] = []
-        if "codegen" in kinds:
-            emitters.append(_codegen_pairs(ctx, args.min_score))
-        if "repair" in kinds:
-            emitters.append(_repair_pairs(ctx))
-        for emitter in emitters:
-            for messages, meta in emitter:
-                if not _row_is_clean(messages, meta):
-                    dropped_secret += 1
-                    continue
-                user = next((m["content"] for m in messages if m["role"] == "user"), "")
-                code = messages[-1]["content"]
-                key = hashlib.sha256(f"{user}\x00{code}".encode()).hexdigest()
-                if key in seen_pairs:
-                    continue
-                seen_pairs.add(key)
-                rows.append({"messages": messages, "meta": meta})
+    ctxs, result_paths = _collect_contexts(root, projects_root, args)
+    rows, dropped_secret = _emit_rows(ctxs, kinds, args.min_score)
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with args.out.open("w", encoding="utf-8") as fh:

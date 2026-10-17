@@ -31,9 +31,7 @@ try:
         render_markdown,
         rows_to_dicts,
     )
-except (
-    ModuleNotFoundError
-):  # running outside the backend env — fall back to source tree
+except ModuleNotFoundError:  # running outside the backend env — fall back to source tree
     sys.path.insert(0, str(REPO_ROOT / "backend"))
     from cadx.eval.compare import (
         aggregate,
@@ -93,9 +91,7 @@ def main() -> int:
         return 1
     print(render_markdown(rows))
     if args.json_out:
-        args.json_out.write_text(
-            json.dumps(rows_to_dicts(rows), indent=1) + "\n", encoding="utf-8"
-        )
+        args.json_out.write_text(json.dumps(rows_to_dicts(rows), indent=1) + "\n", encoding="utf-8")
         print(f"wrote {args.json_out}", file=sys.stderr)
     return 0
 

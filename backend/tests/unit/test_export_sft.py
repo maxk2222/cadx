@@ -146,7 +146,9 @@ def _make_run(
 
 
 def _rows(out: Path) -> list[dict]:
-    return [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return [
+        json.loads(line) for line in out.read_text(encoding="utf-8").splitlines() if line.strip()
+    ]
 
 
 def _run_export(export_sft, root: Path, projects: Path, out: Path, *extra: str) -> None:
