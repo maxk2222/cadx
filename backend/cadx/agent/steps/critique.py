@@ -66,6 +66,16 @@ def _parts(
     if rb:
         parts.append({"type": "text", "text": rb})
     parts.append({"type": "text", "text": spec_block(spec)})
+    # spec-derived yes/no checks (M6, CADCodeVerify): job-stable like the
+    # spec itself, so they stay inside the shared APC prefix — a "no" maps
+    # to a deterministic issue the overall score cannot paper over
+    if spec.verification_questions:
+        q_lines = [
+            "SPEC VERIFICATION QUESTIONS (answer EVERY one in "
+            "verification_answers — judge the renders only):",
+            *(f"{i + 1}. {q}" for i, q in enumerate(spec.verification_questions)),
+        ]
+        parts.append({"type": "text", "text": "\n".join(q_lines)})
     # APC ordering: input measurements/anchors are job-stable — they precede
     # the per-iteration tail (renders, analysis, findings) so critique calls
     # share one prefix across iterations
@@ -283,6 +293,9 @@ def _finalize_critique(
     _verify_missing_verdicts(critique, spec, features or {})
     _verify_wrong_verdicts(critique, spec, features or {})
     _downgrade_image_majors_on_silhouette(critique, ctx)
+    # runs before the empty-discrepancy synthesis: a failed spec check on an
+    # otherwise clean pass inserts its own discrepancy, skipping synthesis
+    _apply_verification_answers(critique, spec)
     # synthesize discrepancies from measured findings if still empty
     if not critique.passed and not critique.discrepancies:
         for i in dim_issues:
@@ -483,6 +496,43 @@ def _verify_wrong_verdicts(critique: Critique, spec: PartSpec, features: dict[st
         if d.severity == "major" and any(n in d.what.lower() for n in refuted):
             d.severity = "minor"
             d.what += " (spec dims measured correct — likely a position nuance)"
+
+
+def _apply_verification_answers(critique: Critique, spec: PartSpec) -> None:
+    """Map spec verification answers to deterministic issues (M6).
+
+    The overall render can look plausible while a spec assertion is
+    violated (slot on the wrong axis, rib outside the envelope) — the
+    vision score stays high while verify_spec fails. A "no" answer, or an
+    "unclear" backed by observed evidence, therefore becomes a major
+    ``verify_question`` discrepancy regardless of the model's confidence
+    and fails the verdict. A bare "unclear" (nothing suspicious in sight)
+    adds nothing — renders that cannot decide a check must not stall the
+    loop on their own.
+    """
+    if not spec.verification_questions or not critique.verification_answers:
+        return
+    added = False
+    for a in critique.verification_answers:
+        q = (a.question or "").strip()
+        ev = (a.evidence or "").strip()
+        if not q or (a.answer != "no" and not (a.answer == "unclear" and ev)):
+            continue
+        if any(q in d.what for d in critique.discrepancies):
+            continue  # the critic already listed this exact problem
+        critique.discrepancies.append(
+            Discrepancy(
+                what=q,
+                severity="major",
+                fix_hint=ev or "fix the part so this check answers yes",
+                source="verify_question",
+            )
+        )
+        added = True
+    if added:
+        # a failed spec check contradicts a passing verdict even when the
+        # render looked plausible enough for a high score
+        critique.passed = False
 
 
 def fact_ceiling(dim_issues: list[str], feature_findings: list[dict[str, Any]]) -> int:

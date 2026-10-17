@@ -1,0 +1,33 @@
+{
+  "prompt": "Create an L-bracket plate.\n\nRequirements:\n- Plate thickness: 6.0 mm along +Z.\n- Bottom face lies on z=0; entire part in z>=0.\n- XY footprint is the union of:\n  - rectangle [0,40]x[0,20]\n  - rectangle [0,20]x[0,40]\n- Through-holes (diameter 6.0 mm) along +Z at centers:\n  - (10, 10)\n  - (30, 10)\n\nContract: the generated build123d code must leave the completed model in a top-level variable named `result`.",
+  "gen_mode": "cad",
+  "expected_bbox": [
+    40,
+    40,
+    6
+  ],
+  "tolerance_mm": 1.0,
+  "expected_features": [
+    {
+      "type": "hole",
+      "count": 2,
+      "dia": 6,
+      "axis": "z",
+      "positions": [
+        [
+          10,
+          10
+        ],
+        [
+          30,
+          10
+        ]
+      ]
+    }
+  ],
+  "expect_watertight": true,
+  "settings": {
+    "max_iterations": 6
+  },
+  "real_only": true
+}

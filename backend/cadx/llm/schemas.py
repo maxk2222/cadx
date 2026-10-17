@@ -400,6 +400,7 @@ class PartSpec(BaseModel):
                 "height_z",
                 "features",
                 "image_roles",
+                "verification_questions",
             ]
         }
     )
@@ -423,9 +424,35 @@ class PartSpec(BaseModel):
     assumptions: list[M] = Field(default_factory=list, max_length=20)
     open_questions: list[OpenQuestion] = Field(default_factory=list, max_length=12)
     must_keep: list[M] = Field(default_factory=list, max_length=20)
+    # yes/no checks for the vision critic — one per placement-critical
+    # feature (axis, envelope, orientation) so a plausible-looking render
+    # cannot hide a spec violation (CADCodeVerify, M6)
+    verification_questions: list[M] = Field(default_factory=list, max_length=6)
     # structural requirements (filled when the prompt mentions loads/strength)
     load_cases: list[LoadCase] = Field(default_factory=list, max_length=8)
     optimize: OptimizeSpec | None = None
+
+    @field_validator("verification_questions", mode="before")
+    @classmethod
+    def _cap_verification_questions(cls, v: Any) -> Any:
+        """Tolerant bound: drop blanks/dupes and truncate instead of failing
+        the whole spec parse when a chatty model over-emits (the 3-6 guidance
+        is a soft bound — grammar `maxItems` may not apply on every provider)."""
+        if not isinstance(v, list):
+            return v
+        seen: set[str] = set()
+        out: list[str] = []
+        for q in v:
+            if not isinstance(q, str) or not q.strip():
+                continue
+            key = q.strip().casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(q.strip())
+            if len(out) >= 6:
+                break
+        return out
 
 
 class ParamDef(BaseModel):
@@ -532,7 +559,7 @@ class Discrepancy(BaseModel):
     fix_hint: M = ""
     # where the requirement comes from — keeps the critic from inventing
     # features that appear in neither the prompt, the spec nor the images
-    source: Literal["spec", "prompt", "image", "dfm", "other"] = "other"
+    source: Literal["spec", "prompt", "image", "dfm", "verify_question", "other"] = "other"
 
 
 class FeatureVerdict(BaseModel):
@@ -543,6 +570,23 @@ class FeatureVerdict(BaseModel):
     name: S = ""
     status: Literal["present", "missing", "wrong", "unsure"] = "unsure"
     note: M = ""
+
+
+class VerificationAnswer(BaseModel):
+    """Critic's answer to one spec ``verification_questions`` entry.
+
+    CADCodeVerify-style check: intake writes one yes/no question per
+    placement-critical feature; the critic answers each against the
+    renders. A ``no`` — or an ``unclear`` backed by evidence — becomes a
+    deterministic ``verify_question`` discrepancy downstream, so a
+    plausible-looking render cannot hide a spec violation.
+    """
+
+    model_config = ConfigDict(json_schema_extra={"required": ["question", "answer"]})
+
+    question: M = ""
+    answer: Literal["yes", "no", "unclear"] = "unclear"
+    evidence: M = ""
 
 
 class Critique(BaseModel):
@@ -557,4 +601,15 @@ class Critique(BaseModel):
     discrepancies: list[Discrepancy] = Field(default_factory=list, max_length=20)
     feature_verdicts: list[FeatureVerdict] = Field(default_factory=list, max_length=50)
     matches: list[M] = Field(default_factory=list, max_length=20)
+    # deliberately NOT schema-required: zero-cost when the spec carries no
+    # verification_questions — weak models then never see the field pinned
+    verification_answers: list[VerificationAnswer] = Field(default_factory=list, max_length=12)
     confidence: float = 0.0
+
+    @field_validator("verification_answers", mode="before")
+    @classmethod
+    def _cap_verification_answers(cls, v: Any) -> Any:
+        """Truncate instead of failing the whole verdict parse on overflow."""
+        if isinstance(v, list):
+            return v[:12]
+        return v

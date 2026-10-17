@@ -156,6 +156,68 @@ Findings:
 | `knife_scale_hybrid` | hybrid | real only | mesh → solid → CAD features |
 | `knob_with_m4_insert_hybrid` | hybrid | yes (fake mesh) | `load_mesh_solid()` + boolean cut → export |
 | `firesteel_auto` / `firesteel_auto_scripted` | auto / cad | real / yes | multi-feature part under auto mode |
+| `cadbench_*` (8) | cad | real only | external CAD-bench ports — see below |
+
+## External benchmarks
+
+The `cadbench_*` benchmarks adopt tasks from the public
+[CAD-bench](https://github.com/CAD-bench/cad-bench) suite (MIT license) —
+a Harbor benchmark of 17 build123d tasks whose graders score topology and
+dimensions deterministically (mesh ray-probes plus weighted `near_score`
+composites, continuous 0-1 `overall_score`). They exist to counter
+overfitting to our own hand-written benchmark prompts.
+
+**What was ported:** each task's `instruction.md` requirements (verbatim)
+and the expected geometry from its `contract.toml`. Their verifier code,
+Harbor task harness, gold solutions, and fixtures were **not** vendored —
+CADX runs the prompts through its own agent loop and judges with its own
+checks. The CAD-bench submission contract ("leave the model in a
+top-level variable named `part`") was rewritten to the CADX contract
+(`result`) as a contract line appended to the prompt.
+
+**Grading mapping** (their check → CADX gate):
+
+| CAD-bench verifier | CADX gate |
+|---|---|
+| bbox size `near_score` (0.05-0.45 mm zero band) | `expected_bbox` + `tolerance_mm` (sorted axes, max(tol, 2%) per dim) |
+| z-pose / XY centering probes | prompt requirements + CADX frame contract (not separately gated) |
+| hole openness ray-probes | `expected_features` `hole` entries (`count`, `dia`, `axis`, `positions` ±1.5 mm, `pcd`) |
+| slot openness probes | `expected_features` `slot` count |
+| single-solid mesh build | `expect_watertight` |
+| `volume_mm3` in contract.toml | not checked — approximated by dims + feature gates |
+| level heights, ring/harmonic profiles | not checkable — part of tolerance/scope notes below |
+
+`tolerance_mm` values (0.5-1.0 mm) are tighter than most native CADX
+benchmarks because the CAD-bench graders use sub-millimetre zero bands;
+ours remain looser pass/fail gates, so a CADX pass is necessary but not
+sufficient for a CAD-bench-perfect score.
+
+**Ported tasks** (source `dataset/<task_id>` → benchmark name → difficulty):
+
+| CAD-bench task | Benchmark | Difficulty | Encoded gates |
+|---|---|---|---|
+| `cube_20mm_z_minus` | `cadbench_cube_20mm` | easy | 20³ bbox, z≤0 pose via prompt |
+| `box_30x20x10_z_plus` | `cadbench_box_30x20x10` | easy | 30×20×10 bbox, z≥0 pose |
+| `ring_30_20_h10_z_plus` | `cadbench_ring_30_20_h10` | easy | 30×30×10 bbox, Ø20 through-bore |
+| `l_bracket_40x40x6_2_hole` | `cadbench_l_bracket_40x40x6` | medium | 40×40×6 bbox, 2×Ø6 holes at (10,10)/(30,10); L footprint only via prompt |
+| `aluminum_extrusion_20x20x60_5_bore` | `cadbench_extrusion_20x20x60` | medium | 20×20×60 bbox, 1×Ø5 + 4×Ø3 bores at fixed XY |
+| `plate_80x40x8_slot_4_hole` | `cadbench_plate_80x40x8_slot` | medium | 80×40×8 bbox, slot + 4×Ø6 holes at (±30,±15); slot size only via prompt |
+| `flange_40_24_h20_bolt4` | `cadbench_flange_40x24_h20` | hard | 40×40×20 bbox, Ø12 centre bore, 4×Ø5 on PCD30; boss Ø24/step via prompt |
+| `ring_50_30_h12_6_bolt4_pcd40` | `cadbench_ring_50x30_pcd40` | hard | 50×50×12 bbox, Ø30 bore, 6×Ø4 on PCD40 |
+
+**Not ported:** the three `insane` gearbox tasks and
+`custom_threaded_pair_nonstandard` (Blender rigid-body simulation
+graders), `m3x6_socket_head_zminus` (needs a fixture STEP oracle),
+`spur_gear_m1_z16_t6_bore5` and `hex_nut_af17_h8_bore10` (tooth/hexagon
+harmonic profile checks have no CADX equivalent; hex bbox is also
+rotation-dependent), `plate_100x60x12_slot_8_hole` and
+`step_block_60_40_30_4_hole` (redundant with the ported plate/L-bracket
+class; the step-block's per-level heights aren't expressible as
+`expected_features`).
+
+All eight are `real_only` (no `llm_script` — external anti-overfitting
+benchmarks make no sense against a canned FakeLLM). Run them with
+`cadx eval --real -b cadbench_<name>`.
 
 ## Results
 

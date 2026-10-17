@@ -143,7 +143,8 @@ async def run(
         # just buys churn (observed: 12-call sessions at ~16k ptok each)
         hard = any(
             i.get("severity") == "major"
-            and i.get("source") in ("dims", "critique", "dfm", "solids", "exec")
+            and i.get("source")
+            in ("dims", "critique", "verify_question", "dfm", "solids", "exec")
             for i in issues
         )
         s = ctx.runtime_settings

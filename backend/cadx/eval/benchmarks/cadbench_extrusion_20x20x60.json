@@ -1,0 +1,53 @@
+{
+  "prompt": "Create a simple aluminum-extrusion-like bar segment.\n\nRequirements:\n- Outer body is a 20.0 x 20.0 mm square prism, length 60.0 mm.\n- Axis is global Z.\n- Bottom face lies on z=0 and the part is entirely in z>=0.\n- Through-bores run parallel to +Z over full length:\n  - one center bore: diameter 5.0 mm at (x, y) = (0, 0)\n  - four bores: diameter 3.0 mm at (+/-7.0, 0) and (0, +/-7.0)\n\nContract: the generated build123d code must leave the completed model in a top-level variable named `result`.",
+  "gen_mode": "cad",
+  "expected_bbox": [
+    20,
+    20,
+    60
+  ],
+  "tolerance_mm": 1.0,
+  "expected_features": [
+    {
+      "type": "hole",
+      "count": 1,
+      "dia": 5,
+      "axis": "z",
+      "positions": [
+        [
+          0,
+          0
+        ]
+      ]
+    },
+    {
+      "type": "hole",
+      "count": 4,
+      "dia": 3,
+      "axis": "z",
+      "positions": [
+        [
+          7,
+          0
+        ],
+        [
+          -7,
+          0
+        ],
+        [
+          0,
+          7
+        ],
+        [
+          0,
+          -7
+        ]
+      ]
+    }
+  ],
+  "expect_watertight": true,
+  "settings": {
+    "max_iterations": 6
+  },
+  "real_only": true
+}

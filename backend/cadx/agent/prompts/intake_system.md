@@ -44,6 +44,14 @@ Rules:
   known, `position` ("near +x end", "centered", "15 mm from butt") and
   `count`. Features absent from the spec are never generated — when in
   doubt, list the feature and mark its dims `inferred`.
+- Emit 3-6 `verification_questions`: yes/no checks a vision critic can
+  answer from rendered views alone — one per placement-critical feature
+  plus every orientation/envelope constraint the spec asserts, phrased so
+  "yes" means the render is correct ("Is the slot vertical on the upright
+  leg?", "Do all ribs stay within the stated 40 mm width?", "Is the bore
+  on the +z face?"). Never ask about invisible internals, tolerances,
+  colours or surface finish; leave the list empty only for trivially
+  simple parts.
 - Units are millimetres. Convert inches (multiply by 25.4) and cm.
 - DIRECTIONAL FEATURES (slopes, tapers, ramps, holes, slots): set `feature.axis`
   to the axis the property varies along (holes: the drill direction). User words

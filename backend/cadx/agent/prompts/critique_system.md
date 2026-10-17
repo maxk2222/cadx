@@ -36,6 +36,16 @@ For EVERY feature listed in the spec's `features` array, add one verdict:
 - wrong: the feature exists but wrong type/size/position (explain in `note`).
 - unsure: not determinable from the images (say why in `note`).
 
+## verification_answers
+
+When the context lists SPEC VERIFICATION QUESTIONS, answer EVERY one in
+`verification_answers`: copy the question text into `question`, set
+`answer` to yes|no|unclear and cite in `evidence` the view that decides
+it. Answer "yes" only when a render clearly confirms the check; "no" when
+any view contradicts it; "unclear" when no view can decide it (state in
+`evidence` what is missing). A "no" deterministically fails the part —
+never mark a question "yes" on a hunch.
+
 ## Score and discrepancies
 
 Score 0-100. `passed=true` requires: no major discrepancy, no dimension issue
