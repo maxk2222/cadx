@@ -1687,6 +1687,34 @@ def _alpha_wrap_repair(m: trimesh.Trimesh, faces_in: int) -> trimesh.Trimesh | N
         return None
 
 
+def _rebuild_drift(
+    mesh: trimesh.Trimesh,
+    rebuilt: trimesh.Trimesh,
+    *,
+    max_vol_ratio: float = 1.5,
+    max_bbox_growth_mm: float = 1.0,
+) -> str | None:
+    """Reason string when a repair/rebuild diverged materially from the input,
+    else None. The reskin/voxel repair rungs fill every enclosed void — sound
+    for a leaky solid, catastrophic on topology-optimised lattices or hollow
+    parts whose interior cavities are the design. ``mesh.volume`` on a leaky
+    mesh reads ~40% low (missing faces), so the volume gate stays generous."""
+    growth = float(
+        np.max((rebuilt.bounds[1] - rebuilt.bounds[0]) - (mesh.bounds[1] - mesh.bounds[0]))
+    )
+    if growth > max_bbox_growth_mm:
+        return f"bbox grew {growth:.2f} mm"
+    try:
+        base_vol = abs(float(mesh.volume))
+    except Exception:
+        base_vol = 0.0
+    # mesh.volume on a leaky mesh is approximate but still catches the
+    # catastrophic case — enclosed-void fill that leaves the bbox untouched
+    if base_vol > 0 and float(rebuilt.volume) > base_vol * max_vol_ratio:
+        return f"volume grew {float(rebuilt.volume) / base_vol:.2f}x"
+    return None
+
+
 def _ensure_watertight(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
     """Best-effort repair ladder before boolean/B-Rep conversion.
 
@@ -1794,7 +1822,16 @@ def mesh_to_solid(mesh: trimesh.Trimesh, *, max_faces: int | None = None) -> Any
     # (observed: 283k-face mesh -> >6GB -> cgroup kill)
     if len(mesh.faces) > max_faces:
         mesh = decimate(mesh, max_faces)
-    mesh = _ensure_watertight(mesh)
+    repaired = _ensure_watertight(mesh)
+    # a reskin/voxel rebuild that fills enclosed voids would ship a filled blob
+    # as STEP — refuse the drift and let the caller skip STEP instead
+    drift = _rebuild_drift(mesh, repaired)
+    if drift:
+        raise ValueError(
+            f"watertight rebuild diverged from input ({drift}) — "
+            "refusing to convert a materially changed mesh to B-rep"
+        )
+    mesh = repaired
     # repair itself can inflate faces (voxel rebuild) — cap again before sewing
     if len(mesh.faces) > max_faces:
         mesh = decimate(mesh, max_faces)

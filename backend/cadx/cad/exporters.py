@@ -6,6 +6,7 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
+import structlog
 import trimesh
 from build123d import (
     Axis,
@@ -22,6 +23,8 @@ from build123d import (
 
 FORMATS_3D = ["step", "stl", "3mf", "glb"]
 FORMATS_2D = ["dxf", "svg"]
+
+log = structlog.get_logger()
 
 
 def export_step_file(shape: Shape, path: Path) -> None:
@@ -169,10 +172,21 @@ def quick_stl(shape: Shape, out_dir: Path, name: str = "mesh") -> Path:
     return path
 
 
-def repair_mesh_file(path: Path) -> bool:
+def repair_mesh_file(
+    path: Path,
+    *,
+    max_vol_ratio: float = 1.5,
+    max_bbox_growth_mm: float = 1.0,
+) -> bool:
     """In-place repair of an STL/3MF/GLB export; returns watertight state
     afterwards. Best-effort: vertex merge, degenerate-face drop, hole fill,
-    normal fix, then the voxel rebuild as a last resort."""
+    normal fix, then the voxel rebuild as a last resort.
+
+    The voxel rebuild fills every enclosed void — catastrophic on topology
+    optimised lattices or thin-walled parts whose interior cavities are the
+    point of the design. It is only accepted when the rebuilt mesh stays
+    geometrically faithful (bbox/volume drift below the limits); otherwise the
+    lightly repaired mesh is written back instead and False is returned."""
     m = trimesh.load(str(path), force="mesh")
     m.merge_vertices()
     m.update_faces(m.nondegenerate_faces())
@@ -181,9 +195,16 @@ def repair_mesh_file(path: Path) -> bool:
         m.fill_holes()
     m.fix_normals()
     if not m.is_watertight:
-        from cadx.cad.mesh_ops import _ensure_watertight
+        from cadx.cad.mesh_ops import _ensure_watertight, _rebuild_drift
 
-        m = _ensure_watertight(m)
+        rebuilt = _ensure_watertight(m)
+        drift = _rebuild_drift(
+            m, rebuilt, max_vol_ratio=max_vol_ratio, max_bbox_growth_mm=max_bbox_growth_mm
+        )
+        if drift is None:
+            m = rebuilt
+        else:
+            log.warning("export.repair_drift", reason=drift, path=path.name)
     m.export(str(path))
     return bool(m.is_watertight and m.is_winding_consistent)
 
