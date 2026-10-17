@@ -33,7 +33,24 @@ _AXES: dict[str, tuple[int, int, int]] = {
 }
 
 # spec feature types that are (or carry) a bore
-_HOLE_TYPES = ("hole", "thread", "insert", "bearing_seat")
+# mirrors features._HOLE_TYPES — intake emits fine-grained hole types
+_HOLE_TYPES = (
+    "hole",
+    "thread",
+    "insert",
+    "bearing_seat",
+    "through_hole",
+    "blind_hole",
+    "countersink_hole",
+    "counterbore_hole",
+    "through_hole_with_countersink",
+    "clearance_hole",
+    "tapped_hole",
+    "threaded_hole",
+    "threaded_bore",
+    "tap_hole",
+    "bore",
+)
 # declared bore axis in free text ("x-axis", "along z") — same narrow shape
 # as verifyspec's so "x = 12" offsets never read as an axis declaration
 _AXIS_TEXT_RE = re.compile(
@@ -130,10 +147,12 @@ def _bolt_size(text: str) -> str:
 
 def _hole_like(f: Feature) -> bool:
     """Spec feature that is (or carries) a bore: hole-ish type, a hole-ish
-    name ('hole'/'bore'/'loch'), or a metric bolt designation."""
+    name ('hole'/'bore'/'loch'/'bohrung' — intake writes EN and DE names), or
+    a metric bolt designation."""
+    blob = f"{f.type or ''} {f.name or ''} {f.description or ''}".lower()
     return (
         f.type in _HOLE_TYPES
-        or bool(re.search(r"hole|bore|loch", f.name or "", re.IGNORECASE))
+        or bool(re.search(r"hole|bore|loch|bohr|thread|gewinde|tap|durchgang|senk", blob))
         or bool(_bolt_size(f.standard or f.name or ""))
     )
 
@@ -344,14 +363,19 @@ def _spec_anchors(spec: PartSpec) -> list[Anchor]:
         dia = _hole_dia(f)
         if dia is None or dia <= 0:
             continue
+        ftype = str(f.type or "").lower()
+        fblob = f"{ftype} {f.name or ''} {f.standard or ''} {f.thread_spec or ''}".lower()
         kind = {
             "thread": "thread",
             "threaded_hole": "thread",
+            "threaded_bore": "thread",
             "tapped_hole": "tap",
             "tap_hole": "tap",
             "insert": "insert",
             "bearing_seat": "bearing_seat",
-        }.get(str(f.type).lower(), "hole")
+        }.get(ftype, "hole")
+        if kind == "hole" and re.search(r"thread|gewinde|tap", fblob):
+            kind = "tap" if "tap" in ftype else "thread"
         bolt = (
             _bolt_size(f.standard or "")
             or _bolt_size(f.thread_spec or "")

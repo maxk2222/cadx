@@ -138,6 +138,43 @@ def test_spec_anchors_without_image_or_mesh():
     assert [h.index for h in a.holes] == [1, 2]
 
 
+def test_spec_anchors_fine_grained_hole_types():
+    """Intake emits fine-grained/DE types — through_hole, threaded_bore etc.
+    must still produce anchors (regression: 'Bohrung 1' type through_hole
+    yielded no anchor, so no keep-ring and no re-cut)."""
+    spec = _plate_spec(
+        [
+            Feature(
+                name="Bohrung 1",
+                type="through_hole",
+                dims={"diameter": 10.0},
+                position="20 mm from the -x end, centered in y (x=-25, y=0)",
+            ),
+            Feature(
+                name="Bohrung 2",
+                type="through_hole",
+                dims={"diameter": 10.0},
+                position="75 mm from the -x end, centered in y (x=30, y=0)",
+            ),
+            Feature(
+                name="M8 Gewindebohrung",
+                type="threaded_bore",
+                dims={"diameter": 8.0, "depth": 16.0},
+                position="8 mm from the +x end, centered in y (x=37, y=0, z=7)",
+                axis="x",
+                standard="M8-1.25 ISO thread, tap hole Ø6.8",
+            ),
+        ]
+    )
+    a = build_anchors(spec, {}, None)
+    assert [(h.axis, h.x, h.dia, h.kind) for h in a.holes] == [
+        ("+z", -25.0, 10.0, "hole"),
+        ("+z", 30.0, 10.0, "hole"),
+        ("+x", 37.0, 8.0, "thread"),
+    ]
+    assert a.holes[2].bolt_size == "M8"
+
+
 def test_spec_anchor_multi_offset_feature():
     """One count-2 feature declaring two end offsets yields both positions."""
     spec = _plate_spec(

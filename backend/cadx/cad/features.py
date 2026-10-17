@@ -280,6 +280,10 @@ _HOLE_TYPES = {
     "through_hole_with_countersink",
     "clearance_hole",
     "tapped_hole",
+    "threaded_hole",
+    "threaded_bore",
+    "tap_hole",
+    "bore",
 }
 _CSK_RE = re.compile(r"countersunk|csk|senk(?!.*zylinder)|flat.?head", re.I)
 _CBORE_RE = re.compile(r"counterbore|cbore|zylindersenk|socket.?head", re.I)
