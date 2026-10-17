@@ -107,6 +107,13 @@ class RuntimeSettings(BaseModel):
     # tool-call budget for staged build sessions — ~2 calls per feature
     # (add_block + verify) plus checkpoints/done, so above the one-shot cap
     agent_tool_max_calls_build: int = Field(default=16, ge=1, le=100)
+    # best-of-N first codegen attempt (AlphaCode-lite generate-then-filter):
+    # N independent tool sessions sampled in parallel — they share the prompt
+    # prefix under vLLM APC so cost is ~linear in completion tokens only —
+    # each candidate is light-verified and the best wins. 1 = single attempt
+    # (unchanged behaviour). Only the first iteration samples; repairs,
+    # improves and later iterations stay single.
+    agent_codegen_samples: int = Field(default=1, ge=1, le=8)
     # include a compact runtime-introspected signature reference for the
     # relevant topics in codegen/repair context (the on-demand quickref tool
     # is always available regardless of this flag)

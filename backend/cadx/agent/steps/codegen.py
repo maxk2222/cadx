@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
+from dataclasses import dataclass, field
 from typing import Any
 
 from cadx.agent.context import (
@@ -23,13 +25,18 @@ from cadx.agent.thinking import thinking_body
 from cadx.agent.toolloop import run_session, tools_enabled
 from cadx.agent.toolspecs import ToolSession, VerifyFn, elision_marker
 from cadx.agent.types import AgentCtx
+from cadx.cad.allowlist import check_code
 from cadx.cad.errordiag import diag_block, diagnose
+from cadx.cad.partspec import check_standard_part_calls
 from cadx.llm.schemas import (
     CodeResponse,
     ModelingPlan,
     PartSpec,
     PatchResponse,
 )
+from cadx.logging import get_logger
+
+log = get_logger(__name__)
 
 STEP = "codegen"
 
@@ -179,6 +186,21 @@ async def run(
     render_fn: VerifyFn | None = None,
 ) -> CodeResponse:
     if tools_enabled(ctx, "code"):
+        n = int(ctx.runtime_settings.agent_codegen_samples)
+        # best-of-N on the FIRST codegen attempt only — repairs, improves and
+        # later iterations are conditioned on a specific failure/best code and
+        # stay single-shot
+        if n > 1 and iteration == 1:
+            return await _codegen_tournament(
+                ctx,
+                spec,
+                plan,
+                n=n,
+                iteration=iteration,
+                feedback=feedback,
+                verify_fn=verify_fn,
+                render_fn=render_fn,
+            )
         return await _codegen_session(
             ctx,
             spec,
@@ -437,6 +459,7 @@ async def _codegen_session(
     feedback: str | None,
     verify_fn: VerifyFn | None = None,
     render_fn: VerifyFn | None = None,
+    out: dict[str, Any] | None = None,
 ) -> CodeResponse:
     """Fresh generation via tool session.
 
@@ -445,9 +468,12 @@ async def _codegen_session(
     "auto" — the default — while tools are enabled) it runs a *build*
     session instead: a seeded buffer grown feature-by-feature via
     add_block, sandbox-verified per stage, checkpointed, finished by done.
-    A plain content answer is still accepted (CodeResponse schema)."""
+    A plain content answer is still accepted (CodeResponse schema).
+
+    ``out`` (best-of-N tournament): when given, the session object is stored
+    under ``out["session"]`` so the caller can mine its tool_log for verify
+    evidence without changing the return contract."""
     from cadx.agent.context import codegen_build_system, codegen_tools_system
-    from cadx.cad.allowlist import check_code
     from cadx.llm.schemas import ParamDef
     from cadx.llm.structured import LLMFormatError
 
@@ -466,6 +492,8 @@ async def _codegen_session(
     else:
         session = ToolSession(ctx, kind="codegen")
         system = codegen_tools_system(plan=plan, spec=spec, fresh=True)
+    if out is not None:
+        out["session"] = session
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system},
         {"role": "user", "content": _user_parts(ctx, spec, plan, feedback)},
@@ -536,3 +564,219 @@ async def _codegen_session(
             code=str(res.code),
         )
     raise LLMFormatError("codegen session produced no code")
+
+
+# --------------------------------------------------------------------------- #
+# best-of-N first-attempt codegen (agent_codegen_samples > 1)
+# --------------------------------------------------------------------------- #
+
+# tools that executed the session buffer in the sandbox — a PASS on the LAST
+# one is free verification evidence for the candidate
+_EXEC_CHECK_TOOLS = frozenset({"verify", "render_model"})
+# tools that mutate the buffer — an exec check is stale once one lands after it
+_BUFFER_EDIT_TOOLS = frozenset(
+    {
+        "add_block",
+        "replace_lines",
+        "insert_after",
+        "insert_before",
+        "find_replace",
+        "set_param",
+        "rollback",
+        "submit_code",
+    }
+)
+
+
+@dataclass
+class _Candidate:
+    """One tournament entry: the produced response plus its own evidence."""
+
+    index: int
+    resp: CodeResponse
+    session: ToolSession | None
+    # None = never verified; True/False = sandbox outcome of the final code
+    verified: bool | None = None
+    # "session" = the session's own verify/render tool (free); "exec" = one
+    # post-hoc light verify_fn run on the submitted code
+    verify_source: str = ""
+    contract_errors: list[str] = field(default_factory=list)
+
+
+def _in_session_verify(session: ToolSession | None, code: str) -> bool | None:
+    """Sandbox outcome the candidate already earned inside its own session.
+
+    True/False when the LAST verify/render tool call ran against the final
+    buffer (no buffer-mutating tool call after it — a build session's verify
+    on the submitted code is conclusive, pass or fail). None when no exec
+    tool ran, its logged result was truncated, edits landed after the last
+    exec, or the verified buffer isn't the code being scored (stale evidence
+    — the caller re-verifies the submitted code)."""
+    if session is None or session.buffer.strip() != code:
+        return None
+    last_exec: dict[str, Any] | None = None
+    last_exec_i = -1
+    last_edit_i = -1
+    for i, entry in enumerate(session.tool_log):
+        name = entry.get("name")
+        if name in _EXEC_CHECK_TOOLS:
+            last_exec, last_exec_i = entry, i
+        elif name in _BUFFER_EDIT_TOOLS:
+            last_edit_i = i
+    if last_exec is None or last_edit_i > last_exec_i:
+        return None
+    res = last_exec.get("result")
+    if not isinstance(res, dict):  # _truncate() may have stringified it
+        return None
+    return bool(res.get("ok"))
+
+
+def _candidate_contract_errors(ctx: AgentCtx, code: str) -> list[str]:
+    """Contract errors for scoring — mirrors ToolSession._contract_errors
+    (static check + standard-part call validity, agent_sigcheck honoured)."""
+    chk = check_code(code, sigcheck=bool(ctx.runtime_settings.agent_sigcheck))
+    errs = list(chk.errors) + list(chk.sig_errors)
+    if not chk.errors:
+        errs += check_standard_part_calls(code)
+    return errs
+
+
+def _candidate_score(c: _Candidate) -> tuple[int, int, int, int, int]:
+    """Score tuple for _pick_candidate — higher is better, lexicographic."""
+    code = (c.resp.code or "").strip()
+    verified_rank = 1 if c.verified else (-1 if c.verified is False else 0)
+    return (
+        verified_rank,  # sandbox PASS beats everything; proven FAIL sinks below unknown
+        int(bool(code) and not c.contract_errors),  # parseable + contract-clean
+        int(bool(code)),  # produced code at all
+        -len(c.contract_errors),  # tiebreak: fewer contract errors
+        -len(code),  # tiebreak: shorter code
+    )
+
+
+def _pick_candidate(candidates: list[_Candidate]) -> tuple[_Candidate, str]:
+    """Pick the winning candidate and a short human reason for the emit line.
+
+    Order: sandbox-verified PASS > parseable + contract-clean > has code >
+    nothing; ties break on fewer contract errors then shorter code (max keeps
+    the earlier index on a full tie — deterministic). A verified FAIL ranks
+    BELOW 'never verified': provably broken code is worse than unproven."""
+    winner = max(candidates, key=_candidate_score)
+    code = (winner.resp.code or "").strip()
+    if winner.verified:
+        why = "verified in-session" if winner.verify_source == "session" else "verified"
+    elif code and not winner.contract_errors:
+        why = "contract-clean, unverified"
+    elif code:
+        why = f"{len(winner.contract_errors)} contract error(s)"
+    else:
+        why = "no code"
+    return winner, why
+
+
+async def _codegen_tournament(
+    ctx: AgentCtx,
+    spec: PartSpec,
+    plan: ModelingPlan | None,
+    *,
+    n: int,
+    iteration: int,
+    feedback: str | None,
+    verify_fn: VerifyFn | None,
+    render_fn: VerifyFn | None,
+) -> CodeResponse:
+    """Best-of-N codegen (AlphaCode-lite generate-then-filter).
+
+    Runs N independent ``_codegen_session`` calls via asyncio.gather — each
+    builds its OWN ToolSession and message list (never shared). This is NOT
+    the vLLM ``n`` param: chat() parses only choices[0], and the parallel
+    requests share the APC prompt prefix anyway, so extra cost is ~linear in
+    completion tokens only.
+
+    Budget: each candidate keeps the FULL per-session max_calls — halving it
+    would strand staged builds mid-part; the worst case (n x max_calls) is
+    bounded and every LLM call is already accounted inside chat().
+
+    Scoring costs nothing extra where possible: a build session's own verify
+    tool already ran the code through the sandbox, so its tool_log verdict is
+    reused; only candidates whose final code was never executed pay one
+    light ``verify_fn`` call. A candidate that raises is skipped — the
+    tournament only fails when ALL candidates fail."""
+    slots: list[dict[str, Any]] = [{} for _ in range(n)]
+
+    async def _one(i: int) -> CodeResponse:
+        return await _codegen_session(
+            ctx,
+            spec,
+            plan,
+            iteration=iteration,
+            feedback=feedback,
+            verify_fn=verify_fn,
+            render_fn=render_fn,
+            out=slots[i],
+        )
+
+    results = await asyncio.gather(*(_one(i) for i in range(n)), return_exceptions=True)
+
+    candidates: list[_Candidate] = []
+    first_error: BaseException | None = None
+    for i, r in enumerate(results):
+        if isinstance(r, BaseException):
+            first_error = first_error or r
+            log.warning("codegen.candidate_failed", candidate=i, error=str(r))
+            continue
+        session = slots[i].get("session")
+        candidates.append(
+            _Candidate(
+                index=i,
+                resp=r,
+                session=session if isinstance(session, ToolSession) else None,
+            )
+        )
+    if not candidates:
+        # every candidate failed — surface the first failure exactly like a
+        # single-attempt call would
+        assert first_error is not None
+        raise first_error
+
+    for c in candidates:
+        code = (c.resp.code or "").strip()
+        c.verified = _in_session_verify(c.session, code)
+        if c.verified is not None:
+            c.verify_source = "session"
+        elif verify_fn is not None and code:
+            try:
+                c.verified = bool((await verify_fn(code)).get("ok"))
+                c.verify_source = "exec"
+            except Exception as e:
+                log.warning("codegen.candidate_verify_failed", candidate=c.index, error=str(e))
+        c.contract_errors = _candidate_contract_errors(ctx, code)
+
+    winner, why = _pick_candidate(candidates)
+    summary = [
+        {
+            "i": c.index,
+            "verified": c.verified,
+            "verify_source": c.verify_source or None,
+            "contract_errors": len(c.contract_errors),
+            "code_len": len(c.resp.code or ""),
+            "score": list(_candidate_score(c)),
+        }
+        for c in candidates
+    ]
+    log.info(
+        "codegen.best_of_n", n=n, iteration=iteration, winner=winner.index, candidates=summary
+    )
+    await ctx.emit(
+        "codegen", iteration, f"best of {n} candidates (winner: #{winner.index + 1} {why})"
+    )
+    await ctx.trace.event(
+        "codegen.best_of_n",
+        step=STEP,
+        iteration=iteration,
+        n=n,
+        winner=winner.index,
+        reason=why,
+        candidates=summary,
+    )
+    return winner.resp
