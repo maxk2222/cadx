@@ -20,7 +20,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 from scipy import sparse
@@ -74,6 +74,17 @@ class TopOptParams:
     # over `penal_ramp_iters` — softer start escapes grayscale local minima
     penal_init: float | None = None  # None = no continuation
     penal_ramp_iters: int = 30
+    # robust formulation (Sigmund 2009 / Wang et al. 2011): the blueprint is
+    # evaluated under three Heaviside thresholds — eroded (eta=0.5+delta),
+    # intermediate (0.5) and dilated (0.5-delta) — and the optimizer works on
+    # the WORST compliance (subgradient of the argmax design) while the volume
+    # constraint acts on the dilated realization. Threshold-insensitive,
+    # print-tolerant designs with a minimum length scale in BOTH phases.
+    # Requires the Heaviside projection — filter is forced to "heaviside"
+    # when robust is on. Cost: ~3x the FEM solves per iteration.
+    robust: bool = False
+    robust_delta_eta: float = 0.25  # eta half-width of the eroded/dilated interval
+    robust_designs: Literal["edi", "e"] = "edi"  # "e" = eroded only (Fernández)
 
 
 @dataclass
@@ -84,21 +95,26 @@ class TopOptResult:
     history: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     passive_frac: float = 0.0  # fraction of solid pinned by keep/load/fixed cells
+    blueprint: np.ndarray | None = (
+        None  # (ncells,) pre-projection design field — needed to re-evaluate
+        # the design under shifted Heaviside thresholds (robust formulation
+        # analysis); None for early-exit paths with no optimized field
+    )
 
 
 _AXES = {"+x": 0, "-x": 0, "+y": 1, "-y": 1, "+z": 2, "-z": 2}
 _ETA = 0.5  # Heaviside projection threshold
 
 
-def _heaviside(x: np.ndarray, beta: float) -> np.ndarray:
+def _heaviside(x: np.ndarray, beta: float, eta: float = _ETA) -> np.ndarray:
     """Smoothed Heaviside projection (Wang et al.): 1 at x>eta, ~x at beta->0."""
-    den = math.tanh(beta * _ETA) + math.tanh(beta * (1.0 - _ETA))
-    return (math.tanh(beta * _ETA) + np.tanh(beta * (x - _ETA))) / den
+    den = math.tanh(beta * eta) + math.tanh(beta * (1.0 - eta))
+    return (math.tanh(beta * eta) + np.tanh(beta * (x - eta))) / den
 
 
-def _heaviside_d(x: np.ndarray, beta: float) -> np.ndarray:
-    den = math.tanh(beta * _ETA) + math.tanh(beta * (1.0 - _ETA))
-    return beta * (1.0 - np.tanh(beta * (x - _ETA)) ** 2) / den
+def _heaviside_d(x: np.ndarray, beta: float, eta: float = _ETA) -> np.ndarray:
+    den = math.tanh(beta * eta) + math.tanh(beta * (1.0 - eta))
+    return beta * (1.0 - np.tanh(beta * (x - eta)) ** 2) / den
 
 
 def _am_setup(domain: VoxelDomain, direction: str) -> list[tuple[np.ndarray, np.ndarray | None]]:
@@ -346,23 +362,47 @@ def simp(  # noqa: C901
 
     # M3.1 Heaviside projection + M2 AM support filter
     heaviside = params.filter == "heaviside"
+    robust = bool(params.robust)
+    if robust and not heaviside:
+        warnings.append(
+            "robust formulation needs the Heaviside projection — filter forced to 'heaviside'"
+        )
+        heaviside = True
+    eta_d = float(np.clip(params.robust_delta_eta, 0.0, 0.45)) if robust else 0.0
+    # evaluation thresholds, eroded (hardest) first — the argmax/subgradient
+    # picks the worst design; the dilated eta (0.5-d) drives the volume
+    # constraint. "e" evaluates the eroded design only (Fernández variant).
+    etas: tuple[float, ...] = (_ETA,)
+    if robust:
+        etas = (
+            (_ETA + eta_d,) if params.robust_designs == "e" else (_ETA + eta_d, _ETA, _ETA - eta_d)
+        )
+    eta_vol = _ETA - eta_d  # volume constraint always on the dilated design
     beta = params.beta0
     am_layers = _am_setup(domain, params.print_direction) if params.self_supporting else None
     if am_layers is not None and not am_layers:
         warnings.append("self_supporting: no solid cells found — AM filter inactive")
         am_layers = None
 
-    def _physical(xb: np.ndarray) -> np.ndarray:
-        """blueprint density -> physical printed density (flat cell order)."""
-        xp = xb
+    def _project(xb: np.ndarray, eta: float = _ETA):
+        """Blueprint -> (xp, p, xt) at threshold `eta` — the filter chain
+        without the FEM solve. xp is the post-Heaviside density, p the
+        post-AM physical density, xt the cone-filtered field (None without
+        Heaviside). Used by the MMA volume constraint on the dilated
+        realization, which needs no FEM pass."""
+        xp = xb.copy()
+        xt: np.ndarray | None = None
         if heaviside:
-            xp = np.full(domain.cell_count, RHO_MIN)
-            xp[solid_idx] = _heaviside(np.asarray(H @ xb[solid_idx]).ravel() / Hs, beta)
+            xt = np.asarray(H @ xb[solid_idx]).ravel() / Hs
+            xp[solid_idx] = _heaviside(xt, beta, eta)
             xp[passive_solid] = 1.0
             xp[pvoid] = RHO_MIN
-        if am_layers is not None:
-            return _am_forward(xp, solid, am_layers)
-        return xp
+        p = _am_forward(xp, solid, am_layers) if am_layers is not None else xp
+        return xp, p, xt
+
+    def _physical(xb: np.ndarray, eta: float = _ETA) -> np.ndarray:
+        """blueprint density -> physical printed density (flat cell order)."""
+        return _project(xb, eta)[1]
 
     # free DOFs: union over cases (all cells assembled — void gets Emin)
     used_dofs = np.unique(edof.ravel())
@@ -402,22 +442,16 @@ def simp(  # noqa: C901
         nonlocal beta
         beta = b
 
-    def _eval(xb: np.ndarray):
-        """One FEM evaluation at blueprint density `xb`.
+    def _eval(xb: np.ndarray, eta: float = _ETA):
+        """One FEM evaluation at blueprint density `xb` projected at `eta`.
 
         Returns (xp, p, xt, ce_cases, obj_cases, us, Kf, factor, M):
-        physical density, post-AM physical density, cone-filtered density,
-        per-case element strain energies, per-case compliances, per-case
-        displacement vectors, reduced stiffness and its solver handles."""
+        pre-AM physical density, post-AM physical density, cone-filtered
+        density, per-case element strain energies, per-case compliances,
+        per-case displacement vectors, reduced stiffness and its solver
+        handles."""
         pen = _penal_now()
-        xp = xb.copy()
-        xt: np.ndarray | None = None
-        if heaviside:
-            xt = np.asarray(H @ xb[solid_idx]).ravel() / Hs  # cone-filtered
-            xp[solid_idx] = _heaviside(xt, beta)
-            xp[passive_solid] = 1.0
-            xp[pvoid] = RHO_MIN
-        p = _am_forward(xp, solid, am_layers) if am_layers is not None else xp
+        xp, p, xt = _project(xb, eta)
         E_e = Emin + np.power(p, pen) * (E0 - Emin)
         K, _, _ = assemble(domain, E_e, nu, np.ones(ncells, dtype=bool), ij=ij_cache)
         Kf = K[free][:, free].tocsr()
@@ -440,19 +474,26 @@ def simp(  # noqa: C901
         return xp, p, xt, ce_cases, obj_cases, us, Kf, factor, M
 
     def _chain(
-        d_phys: np.ndarray, xp: np.ndarray, p: np.ndarray, xt, xb: np.ndarray, oc_filter: bool
+        d_phys: np.ndarray,
+        xp: np.ndarray,
+        p: np.ndarray,
+        xt,
+        xb: np.ndarray,
+        oc_filter: bool,
+        eta: float = _ETA,
     ):
         """sensitivity wrt physical density → wrt blueprint x, back through
         the AM and Heaviside filters. `oc_filter` selects the classic OC
         sensitivity normalization on the plain cone path (heuristic
         length-scale regularization — NOT the true gradient; constraints
-        pass oc_filter=False)."""
+        pass oc_filter=False). `eta` must match the projection the
+        (xp, p, xt) triple was computed with."""
         if am_layers is not None:
             d_phys = _am_backward(d_phys, xp, p, solid, am_layers)
         if heaviside:
             # p = heaviside(H x / Hs): dx = H^T (dc * dh/dx̃ / Hs), H symmetric
             out = np.zeros(ncells)
-            dxt = d_phys[solid_idx] * _heaviside_d(xt, beta)
+            dxt = d_phys[solid_idx] * _heaviside_d(xt, beta, eta)
             out[solid_idx] = np.asarray(H @ (dxt / Hs)).ravel()
             return out
         out = d_phys.copy()
@@ -461,12 +502,13 @@ def simp(  # noqa: C901
             out[solid_idx] = xdc / np.clip(xb[solid_idx] * Hs, 1e-3, None)
         return out
 
-    def _sens_per_case(xb: np.ndarray, ev, oc_filter: bool) -> list[np.ndarray]:
-        """Per-case objective sensitivity wrt blueprint x."""
+    def _sens_per_case(xb: np.ndarray, ev, oc_filter: bool, eta: float = _ETA) -> list[np.ndarray]:
+        """Per-case objective sensitivity wrt blueprint x for the design
+        evaluated at `eta` (ev must come from _eval(xb, eta))."""
         xp, p, xt, ce_cases, _, _, _, _, _ = ev
         pen = _penal_now()
         dE = -pen * np.power(np.clip(p, 1e-3, None), pen - 1) * (E0 - Emin)
-        return [_chain(dE * ce_i, xp, p, xt, xb, oc_filter) for ce_i in ce_cases]
+        return [_chain(dE * ce_i, xp, p, xt, xb, oc_filter, eta) for ce_i in ce_cases]
 
     mma_x: np.ndarray | None = None
     if params.solver == "oc" and (
@@ -482,8 +524,11 @@ def simp(  # noqa: C901
                 x,
                 des=np.flatnonzero(design),
                 eval_fn=_eval,
+                project_fn=_project,
                 chain_fn=_chain,
                 sens_fn=_sens_per_case,
+                etas=etas,
+                eta_vol=eta_vol,
                 solid_idx=solid_idx,
                 weights=weights,
                 params=params,
@@ -533,6 +578,7 @@ def simp(  # noqa: C901
             history=history,
             warnings=warnings_out,
             passive_frac=passive_frac,
+            blueprint=mma_x.copy(),
         )
 
     while it < params.max_iter and change > params.tol:
@@ -542,8 +588,18 @@ def simp(  # noqa: C901
             warnings.append(f"cancelled after iteration {it - 1}")
             break
 
-        xp, p, _xt, ce_cases, obj_cases, _us, _Kf, _factor, _M = _eval(x)
-        objective = float(np.dot(weights[: len(cases)], obj_cases)) if len(cases) else 0.0
+        # robust formulation: evaluate the blueprint under every eta
+        # realization and let the WORST compliance drive the update
+        # (subgradient of the argmax design); a single eta is the classic
+        # deterministic formulation.
+        evs = [_eval(x, eta=e) for e in etas]
+        obj_designs = [
+            float(np.dot(weights[: len(cases)], ev[4])) if len(cases) else 0.0 for ev in evs
+        ]
+        wi = int(np.argmax(obj_designs))
+        eta_w = etas[wi]
+        xp, p, _xt, ce_cases, _oc, _us, _Kf, _factor, _M = evs[wi]
+        objective = obj_designs[wi]
 
         # sensitivity w.r.t. physical density, then chain-rule back through
         # the filters to the blueprint variable x
@@ -553,7 +609,7 @@ def simp(  # noqa: C901
             dcw += w * ce_i
         pen = _penal_now()
         dc = -pen * np.power(np.clip(p, 1e-3, None), pen - 1) * (E0 - Emin) * dcw
-        dcf = _chain(dc, xp, p, _xt, x, oc_filter=True)
+        dcf = _chain(dc, xp, p, _xt, x, oc_filter=True, eta=eta_w)
 
         # OC update with bisection on the PHYSICAL volume constraint
         xnew = x.copy()
@@ -567,7 +623,9 @@ def simp(  # noqa: C901
             cand[passive_solid] = 1.0
             cand[pvoid] = RHO_MIN
             if heaviside or am_layers is not None:
-                vol_c = _physical(cand)[solid_idx].sum()
+                # volume on the DILATED realization (Wang et al. 2011) —
+                # eta_vol == _ETA in the non-robust case
+                vol_c = _physical(cand, eta=eta_vol)[solid_idx].sum()
             else:
                 vol_c = cand[solid_idx].sum()
             if vol_c > v_target:
@@ -581,7 +639,7 @@ def simp(  # noqa: C901
         change = float(np.abs(xnew - x).max())
         change_box[0] = change
         x = xnew
-        vol_now = float(_physical(x)[solid_idx].sum()) / nsolid
+        vol_now = float(_physical(x, eta=eta_vol)[solid_idx].sum()) / nsolid
         rec = {
             "iteration": it,
             "compliance_mj": round(objective, 3),
@@ -590,6 +648,8 @@ def simp(  # noqa: C901
             "penal": round(pen, 3),
             "elapsed_s": round(time.monotonic() - t0, 1),
         }
+        if robust:
+            rec["obj_per_design"] = [round(o, 3) for o in obj_designs]
         if heaviside:
             rec["beta"] = round(beta, 2)
         history.append(rec)
@@ -642,6 +702,7 @@ def simp(  # noqa: C901
         history=history,
         warnings=warnings_out,
         passive_frac=passive_frac,
+        blueprint=x.copy(),
     )
 
 
@@ -711,8 +772,11 @@ def _run_mma(  # noqa: C901
     *,
     des: np.ndarray,
     eval_fn,
+    project_fn,
     chain_fn,
     sens_fn,
+    etas: tuple[float, ...],
+    eta_vol: float,
     solid_idx: np.ndarray,
     weights: np.ndarray,
     params: TopOptParams,
@@ -755,6 +819,11 @@ def _run_mma(  # noqa: C901
     minmax = params.case_objective == "minmax" and len(cases) > 1
     if params.case_objective == "minmax" and not minmax:
         warnings.append("case_objective=minmax needs >1 load case — ignored")
+    # robust formulation: `etas` lists the realizations (eroded first);
+    # the objective works on the worst one (subgradient), the volume
+    # constraint on the dilated eta_vol projection and the remaining
+    # constraints on the eroded (worst) design
+    robust = len(etas) > 1 or float(etas[0]) != _ETA
     ndv = int(des.size)
     # smooth minmax: P-norm of the per-case compliances as the objective —
     # much better conditioned for nlopt-MMA than the bound (t-variable)
@@ -781,7 +850,7 @@ def _run_mma(  # noqa: C901
             w = np.concatenate([w, np.ones(len(obj_cases) - len(w))])
         return float(np.dot(w, obj_cases))
 
-    cache: dict[str, Any] = {"v": None, "ev": None, "xb": None}
+    cache: dict[str, Any] = {"v": None, "evs": None, "xb": None}
     last_change = [0.0]
     if change_box is None:
         change_box = last_change
@@ -795,24 +864,33 @@ def _run_mma(  # noqa: C901
         return xb
 
     def _ev(v: np.ndarray):
+        """Evaluate the blueprint under every eta realization.
+
+        Returns (evs, xb) — one _eval tuple per entry of `etas` (a single
+        one in the non-robust case)."""
         if cache["v"] is not None and np.array_equal(cache["v"], v):
-            return cache["ev"], cache["xb"]
+            return cache["evs"], cache["xb"]
         xb = _unpack(np.asarray(v, dtype=float))
-        ev = eval_fn(xb)
+        evs = [eval_fn(xb, eta=e) for e in etas]
         it_box[0] += 1
         if prev_xb[0] is not None:
             last_change[0] = float(np.abs(xb - prev_xb[0]).max())
             change_box[0] = last_change[0]  # eval_fn's cg_rtol reads this live
         prev_xb[0] = xb
-        obj = _wsum(ev[4])
+        obj_ds = [_wsum(ev[4]) for ev in evs]
+        # the enforced volume is the dilated realization's — computed via the
+        # projection chain (no extra FEM solve needed)
+        p_vol = project_fn(xb, eta_vol)[1]
         rec = {
             "iteration": it_box[0],
-            "compliance_mj": round(obj, 3),
-            "volfrac": round(float(ev[1][solid_idx].sum()) / nsolid, 4),
+            "compliance_mj": round(max(obj_ds), 3),
+            "volfrac": round(float(p_vol[solid_idx].sum()) / nsolid, 4),
             "penal": round(penal_now(), 3),
             "elapsed_s": round(time.monotonic() - t0, 1),
             "solver": "mma",
         }
+        if robust:
+            rec["obj_per_design"] = [round(o, 3) for o in obj_ds]
         history.append(rec)
         if progress_cb:
             progress_cb(it_box[0], rec)
@@ -821,46 +899,57 @@ def _run_mma(  # noqa: C901
                 progress_file.write_text(
                     json.dumps({"history": history}, indent=1), encoding="utf-8"
                 )
-        cache.update(v=np.asarray(v, dtype=float).copy(), ev=ev, xb=xb)
+        cache.update(v=np.asarray(v, dtype=float).copy(), evs=evs, xb=xb)
         if cancelled and cancelled():
             raise nlopt.ForcedStop()
-        return ev, xb
+        return evs, xb
 
     # ---- objective ------------------------------------------------------
     def _f_obj(v: np.ndarray, grad: np.ndarray) -> float:
-        ev, xb = _ev(v)
-        obj_cases = np.asarray(ev[4], dtype=float)
-        if minmax:
-            safe = np.clip(obj_cases, 1e-12, None)
-            obj = float(np.power(np.sum(np.power(safe, minmax_p)), 1.0 / minmax_p))
-            if grad.size:
-                dcfs = sens_fn(xb, ev, oc_filter=False)
+        evs, xb = _ev(v)
+        # worst case over the eta realizations (robust) — the subgradient is
+        # the argmax design's sensitivity
+        objs: list[float] = []
+        for ev in evs:
+            obj_cases = np.asarray(ev[4], dtype=float)
+            if minmax:
+                safe = np.clip(obj_cases, 1e-12, None)
+                objs.append(float(np.power(np.sum(np.power(safe, minmax_p)), 1.0 / minmax_p)))
+            else:
+                objs.append(_wsum(ev[4]))
+        di = int(np.argmax(objs))
+        ev, eta_w = evs[di], etas[di]
+        obj = objs[di]
+        if grad.size:
+            if minmax:
+                obj_cases = np.asarray(ev[4], dtype=float)
+                safe = np.clip(obj_cases, 1e-12, None)
+                dcfs = sens_fn(xb, ev, oc_filter=False, eta=eta_w)
                 wi = np.power(safe, minmax_p - 1.0) * obj ** (1.0 - minmax_p)
                 g = np.zeros(ncells)
                 for ci, d_i in enumerate(dcfs):
                     g += wi[ci] * d_i
                 grad[:] = g[des]
-            return obj
-        obj = _wsum(ev[4])
-        if grad.size:
-            dcfs = sens_fn(xb, ev, oc_filter=True)
-            g = np.zeros(ncells)
-            for ci, d_i in enumerate(dcfs):
-                w = float(weights[ci]) if ci < len(weights) else 1.0
-                g += w * d_i
-            grad[:ndv] = g[des]
+            else:
+                dcfs = sens_fn(xb, ev, oc_filter=True, eta=eta_w)
+                g = np.zeros(ncells)
+                for ci, d_i in enumerate(dcfs):
+                    w = float(weights[ci]) if ci < len(weights) else 1.0
+                    g += w * d_i
+                grad[:ndv] = g[des]
         return obj
 
     opt.set_min_objective(_f_obj)
 
     # ---- volume fraction --------------------------------------------------
     def _g_vol(v: np.ndarray, grad: np.ndarray) -> float:
-        ev, xb = _ev(v)
-        xp, p, xt = ev[0], ev[1], ev[2]
+        _evs, xb = _ev(v)
+        # volume on the DILATED realization (eta_vol = _ETA when not robust)
+        xp, p, xt = project_fn(xb, eta_vol)
         if grad.size:
             dvol = np.zeros(ncells)
             dvol[solid_idx] = 1.0
-            dv = chain_fn(dvol, xp, p, xt, xb, oc_filter=False)
+            dv = chain_fn(dvol, xp, p, xt, xb, oc_filter=False, eta=eta_vol)
             grad[:ndv] = dv[des] / nsolid
         return float(p[solid_idx].sum()) / nsolid - vol_frac_target
 
@@ -870,7 +959,8 @@ def _run_mma(  # noqa: C901
     if params.max_displacement_mm:
 
         def _g_disp(v: np.ndarray, grad: np.ndarray) -> float:
-            ev, xb = _ev(v)
+            evs, xb = _ev(v)
+            ev = evs[0]  # eroded = worst design for the constraint
             us = ev[5]
             disp = max(float(np.abs(u).max()) for u in us)
             if grad.size:
@@ -884,7 +974,7 @@ def _run_mma(  # noqa: C901
                 pen = penal_now()
                 dE = pen * np.power(np.clip(p, 1e-3, None), pen - 1) * (E0 - Emin)
                 per_el = -dE * np.einsum("ni,ij,nj->n", lam[edof], ke, u[edof])
-                d = chain_fn(per_el, xp, p, xt, xb, oc_filter=False)
+                d = chain_fn(per_el, xp, p, xt, xb, oc_filter=False, eta=etas[0])
                 grad[:ndv] = d[des]
             return disp - float(params.max_displacement_mm)
 
@@ -897,7 +987,8 @@ def _run_mma(  # noqa: C901
 
         def _mk_stress_con(ci: int):
             def g(v: np.ndarray, grad: np.ndarray) -> float:
-                ev, xb = _ev(v)
+                evs, xb = _ev(v)
+                ev = evs[0]  # eroded = worst design for the constraint
                 xp, p, xt, _, _, us, Kf, factor, M = ev
                 u = us[ci]
                 vm, _sig, dvm_due = _element_vm(domain, u, edof, E0, nu)
@@ -931,7 +1022,7 @@ def _run_mma(  # noqa: C901
                         * solid_mask
                         / n_sol
                     )
-                    d = chain_fn(dgdp, xp, p, xt, xb, oc_filter=False)
+                    d = chain_fn(dgdp, xp, p, xt, xb, oc_filter=False, eta=etas[0])
                     grad[:ndv] = d[des] / float(params.max_stress_mpa)
                 return spn / float(params.max_stress_mpa) - 1.0
 
@@ -969,9 +1060,10 @@ def _run_mma(  # noqa: C901
             continue
         break
     x = _unpack(v)
-    # honest feasibility check — MMA can xtol-stop slightly over the volume bound
-    final_ev = eval_fn(x)
-    final_vol = float(final_ev[1][solid_idx].sum()) / nsolid
+    # honest feasibility check — MMA can xtol-stop slightly over the volume
+    # bound; the constrained realization is the dilated one (eta_vol)
+    final_p = project_fn(x, eta_vol)[1]
+    final_vol = float(final_p[solid_idx].sum()) / nsolid
     if final_vol > vol_frac_target * 1.03:
         warnings.append(
             f"mma converged with volfrac {final_vol:.0%} above target "

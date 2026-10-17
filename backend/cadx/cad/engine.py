@@ -1173,6 +1173,9 @@ def run_topopt_pipeline(  # noqa: C901
         max_iter=opt.max_iterations or s.topopt_max_iterations,
         threshold=float(opt.density_threshold or 0.5),
         filter=str(getattr(opt, "filter", "cone") or "cone"),
+        robust=bool(getattr(opt, "robust", False)),
+        robust_delta_eta=float(getattr(opt, "robust_delta_eta", 0.25) or 0.25),
+        robust_designs=str(getattr(opt, "robust_designs", "edi") or "edi"),
         self_supporting=bool(getattr(opt, "self_supporting", False)),
         print_direction=str(getattr(opt, "print_direction", "+z") or "+z"),
         penal=float(opt.penal or 3.0),
@@ -1182,6 +1185,20 @@ def run_topopt_pipeline(  # noqa: C901
         max_displacement_mm=opt.max_displacement_mm,
         max_stress_mpa=opt.max_stress_mpa,
     )
+
+    # robust formulation multiplies the FEM solves per iteration (one per
+    # eta realization per load case) — warn when the effective per-iteration
+    # solve count blows past the case budget rather than refusing outright
+    if params.robust:
+        n_designs = 1 if params.robust_designs == "e" else 3
+        n_solves = len(resolved) * n_designs
+        if n_solves > s.fem_max_effective_cases:
+            res.topopt["warnings"].append(
+                f"robust formulation runs {n_solves} FEM solves per iteration "
+                f"({len(resolved)} cases x {n_designs} designs > "
+                f"fem_max_effective_cases={s.fem_max_effective_cases}) — "
+                "expect ~3x runtime; consider robust_designs='e' or fewer cases"
+            )
 
     # insert/material zones: keep-regions with `material` change E per cell
     E0_arr = mat.elastic_modulus_mpa * material_cell_factors(

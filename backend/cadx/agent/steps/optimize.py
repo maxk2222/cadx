@@ -170,14 +170,22 @@ def _opt_overrides(a: dict[str, Any]) -> dict[str, Any]:
         "max_stress_mpa": float,
         "penal_init": float,
         "penal": float,
+        "robust_delta_eta": float,
     }
     for k, conv in num.items():
         if a.get(k) is not None:
             opt[k] = conv(a[k])
-    for k in ("keep_mode", "print_direction", "filter", "solver", "case_objective"):
+    for k in (
+        "keep_mode",
+        "print_direction",
+        "filter",
+        "solver",
+        "case_objective",
+        "robust_designs",
+    ):
         if a.get(k):
             opt[k] = str(a[k])
-    for k in ("self_supporting", "multires"):
+    for k in ("self_supporting", "multires", "robust"):
         if a.get(k) is not None:
             opt[k] = bool(a[k])
     return opt

@@ -308,6 +308,14 @@ class OptimizeSpec(BaseModel):
     filter: Annotated[str, Field(max_length=16)] = (
         "cone"  # cone | heaviside (crisp 0/1, threshold-robust extraction)
     )
+    robust: bool = (
+        False  # robust formulation: worst-case over eroded/intermediate/dilated
+        # Heaviside projections — print-tolerant, threshold-insensitive (~3x FEM)
+    )
+    robust_delta_eta: float = Field(
+        default=0.25, ge=0.0, le=0.45
+    )  # eta half-width of the eroded/dilated interval
+    robust_designs: Literal["edi", "e"] = "edi"  # e = eroded only (~half the extra cost)
     penal: float | None = Field(default=None, ge=1.0, le=8.0)  # SIMP exponent (default 3.0)
     penal_init: float | None = Field(default=None, ge=1.0, le=8.0)  # continuation start
     solver: Annotated[str, Field(max_length=8)] = (
