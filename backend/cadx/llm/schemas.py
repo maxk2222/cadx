@@ -6,7 +6,14 @@ import math
 import re
 from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 # Short/Medium/Long string bounds — guided decoding honours `maxLength`, which
 # stops a weak model looping inside an unbounded string field (observed: an
@@ -305,9 +312,8 @@ class OptimizeSpec(BaseModel):
     print_direction: Annotated[str, Field(max_length=3)] = (
         "+z"  # build direction for the self-supporting filter (+x/-x/...)
     )
-    filter: Annotated[str, Field(max_length=24)] = (
-        "cone"  # cone | heaviside | helmholtz | helmholtz+heaviside —
-        # heaviside variants give crisp 0/1 fields (threshold-robust
+    filter: Literal["cone", "heaviside", "helmholtz", "helmholtz+heaviside"] = (
+        "cone"  # heaviside variants give crisp 0/1 fields (threshold-robust
         # extraction); helmholtz is the PDE density filter (Lazarov &
         # Sigmund) with consistent feature size at the domain boundary
     )
@@ -319,18 +325,16 @@ class OptimizeSpec(BaseModel):
         default=0.25, ge=0.0, le=0.45
     )  # eta half-width of the eroded/dilated interval
     robust_designs: Literal["edi", "e"] = "edi"  # e = eroded only (~half the extra cost)
-    symmetry: Annotated[str, Field(max_length=4)] | None = (
-        None  # mirror the design about a domain mid-plane: "xy" | "xz" | "yz" —
-        # density averaged with its reflection each SIMP iteration so the
+    symmetry: Literal["xy", "xz", "yz"] | None = (
+        None  # mirror the design about a domain mid-plane — density
+        # averaged with its reflection each SIMP iteration so the
         # printed part comes out symmetric
     )
     penal: float | None = Field(default=None, ge=1.0, le=8.0)  # SIMP exponent (default 3.0)
     penal_init: float | None = Field(default=None, ge=1.0, le=8.0)  # continuation start
-    solver: Annotated[str, Field(max_length=8)] = (
-        "oc"  # oc (fast, volume-only) | mma (constraints: minmax/disp/stress)
-    )
-    case_objective: Annotated[str, Field(max_length=10)] = (
-        "weighted"  # weighted | minmax — robust worst-case over load cases (mma)
+    solver: Literal["oc", "mma"] = "oc"  # oc (fast, volume-only) | mma (constraints below)
+    case_objective: Literal["weighted", "minmax"] = (
+        "weighted"  # minmax = robust worst-case over load cases (needs mma)
     )
     max_displacement_mm: float | None = Field(default=None, gt=0.0, le=1e4)
     max_stress_mpa: float | None = Field(default=None, gt=0.0, le=1e5)
@@ -346,6 +350,30 @@ class OptimizeSpec(BaseModel):
     )
     helical_threads: bool = False  # refine: cut real helical thread grooves (experimental, FDM)
     note: M = ""
+
+    @field_validator("solver", "case_objective", "filter", "symmetry", mode="before")
+    @classmethod
+    def _enum_or_default(cls, v: Any, info: ValidationInfo) -> Any:
+        """Silent tolerance for hallucinated enum values: anything outside
+        the Literal vocab (unknown strings, "", None on required fields)
+        falls back to the documented default instead of failing the whole
+        OptimizeSpec parse."""
+        allowed: dict[str, tuple[str, ...]] = {
+            "solver": ("oc", "mma"),
+            "case_objective": ("weighted", "minmax"),
+            "filter": ("cone", "heaviside", "helmholtz", "helmholtz+heaviside"),
+            "symmetry": ("xy", "xz", "yz"),
+        }
+        defaults: dict[str, Any] = {
+            "solver": "oc",
+            "case_objective": "weighted",
+            "filter": "cone",
+            "symmetry": None,
+        }
+        s = v.strip().lower() if isinstance(v, str) else v
+        if s in allowed[info.field_name]:
+            return s
+        return defaults[info.field_name]
 
 
 class OrganicParams(BaseModel):

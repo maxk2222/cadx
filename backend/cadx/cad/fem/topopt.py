@@ -160,6 +160,29 @@ def _symmetrize_density(
     return xs
 
 
+def _mirror_index_map(dims: tuple[int, int, int], axis: int, solid: np.ndarray) -> np.ndarray:
+    """flat cell index -> flat index of its mirror across the domain
+    mid-plane perpendicular to `axis` (same reflection as np.flip —
+    odd/even safe, mid-plane cells map to themselves); -1 where the
+    mirrored cell lies outside `solid`."""
+    grid = [g.ravel() for g in np.indices(dims)]
+    grid[axis] = dims[axis] - 1 - grid[axis]
+    mflat = np.ravel_multi_index(tuple(grid), dims)
+    return np.where(np.asarray(solid, dtype=bool).ravel()[mflat], mflat, -1)
+
+
+def _sym_grad(d: np.ndarray, mirror_idx: np.ndarray, mirror_free: np.ndarray) -> np.ndarray:
+    """Adjoint of the mirror average S = 0.5*(I + F) that _symmetrize_density
+    applies to the blueprint (with its re-pinning):
+        d obj/d v_c = 0.5*(d[c] + 1[mirror(c) free] * d[mirror(c)])
+    A cell whose mirror is itself a free design cell picks up half the
+    mirror's sensitivity; a pinned or non-solid mirror is clamped by the
+    re-pin (its raw value is constant) so it contributes nothing and the
+    own term stays 0.5*d[c]. `mirror_free` marks cells with a free mirror."""
+    mc = np.clip(mirror_idx, 0, None)
+    return 0.5 * (d + np.where(mirror_free, d[mc], 0.0))
+
+
 def _am_setup(domain: VoxelDomain, direction: str) -> list[tuple[np.ndarray, np.ndarray | None]]:
     """Bottom-up layers for the additive-manufacturing support filter.
 
@@ -1113,6 +1136,28 @@ def _run_mma(  # noqa: C901
     solid_mask = np.zeros(ncells, dtype=bool)
     solid_mask[solid_idx] = True
 
+    # mirror Jacobian: _unpack evaluates the SYMMETRIZED blueprint
+    # xb = S(v) with S = 0.5*(I + F_mirror) plus re-pinning, so every
+    # gradient wrt the raw MMA variables must pass through S's adjoint —
+    # 0.5*(d[c] + d[m(c)]) for cells whose mirror m(c) is a free design
+    # variable, 0.5*d[c] when the mirror is pinned or outside the solid
+    # (the re-pin clamps it). Built once here; identity when off.
+    sym_axis = _SYM_AXES.get(params.symmetry or "") if symmetrize_fn is not None else None
+    mirror_idx: np.ndarray | None = None
+    mirror_free: np.ndarray | None = None
+    if sym_axis is not None:
+        mirror_idx = _mirror_index_map(domain.dims, sym_axis, solid_mask)
+        design_mask = np.zeros(ncells, dtype=bool)
+        design_mask[des] = True
+        mirror_free = (mirror_idx >= 0) & design_mask[np.clip(mirror_idx, 0, None)]
+
+    def _grad_adj(d: np.ndarray) -> np.ndarray:
+        """blueprint sensitivity -> raw-variable sensitivity through the
+        mirror average (identity when symmetry is off)."""
+        if mirror_idx is None or mirror_free is None:
+            return d
+        return _sym_grad(d, mirror_idx, mirror_free)
+
     opt = nlopt.opt(nlopt.LD_MMA, nvar)
     lb = np.full(nvar, RHO_MIN)
     ub = np.ones(nvar)
@@ -1211,14 +1256,14 @@ def _run_mma(  # noqa: C901
                 g = np.zeros(ncells)
                 for ci, d_i in enumerate(dcfs):
                     g += wi[ci] * d_i
-                grad[:] = g[des]
+                grad[:] = _grad_adj(g)[des]
             else:
                 dcfs = sens_fn(xb, ev, oc_filter=True, eta=eta_w)
                 g = np.zeros(ncells)
                 for ci, d_i in enumerate(dcfs):
                     w = float(weights[ci]) if ci < len(weights) else 1.0
                     g += w * d_i
-                grad[:ndv] = g[des]
+                grad[:ndv] = _grad_adj(g)[des]
         return obj
 
     opt.set_min_objective(_f_obj)
@@ -1232,7 +1277,7 @@ def _run_mma(  # noqa: C901
             dvol = np.zeros(ncells)
             dvol[solid_idx] = 1.0
             dv = chain_fn(dvol, xp, p, xt, xb, oc_filter=False, eta=eta_vol)
-            grad[:ndv] = dv[des] / nsolid
+            grad[:ndv] = _grad_adj(dv)[des] / nsolid
         return float(p[solid_idx].sum()) / nsolid - vol_frac_target
 
     opt.add_inequality_constraint(_g_vol, 1e-8)
@@ -1257,7 +1302,7 @@ def _run_mma(  # noqa: C901
                 dE = pen * np.power(np.clip(p, 1e-3, None), pen - 1) * (E0 - Emin)
                 per_el = -dE * np.einsum("ni,ij,nj->n", lam[edof], ke, u[edof])
                 d = chain_fn(per_el, xp, p, xt, xb, oc_filter=False, eta=etas[0])
-                grad[:ndv] = d[des]
+                grad[:ndv] = _grad_adj(d)[des]
             return disp - float(params.max_displacement_mm)
 
         opt.add_inequality_constraint(_g_disp, 1e-8)
@@ -1305,7 +1350,7 @@ def _run_mma(  # noqa: C901
                         / n_sol
                     )
                     d = chain_fn(dgdp, xp, p, xt, xb, oc_filter=False, eta=etas[0])
-                    grad[:ndv] = d[des] / float(params.max_stress_mpa)
+                    grad[:ndv] = _grad_adj(d)[des] / float(params.max_stress_mpa)
                 return spn / float(params.max_stress_mpa) - 1.0
 
             return g
