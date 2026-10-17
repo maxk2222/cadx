@@ -252,7 +252,11 @@ def build_issues(
         for d in critique.discrepancies:
             issues.append(
                 {
-                    "source": "critique",
+                    # M6: spec-derived yes/no check failures keep their own
+                    # source instead of collapsing into generic "critique"
+                    "source": (
+                        "verify_question" if d.source == "verify_question" else "critique"
+                    ),
                     "severity": d.severity,
                     "what": d.what,
                     "where": d.where,
@@ -2994,7 +2998,7 @@ async def _run_cad(  # noqa: C901
                         # iteration verify is a smoke check (solvable? sane SF?) —
                         # a coarser pitch keeps it inside the task timeout on
                         # long parts; the optimize phase re-verifies at full res
-                        "voxel_mm": max(2.5, ctx.settings.fem_voxel_mm),
+                        "voxel_mm": max(2.5, ctx.settings.fem_voxel_mm or 1.5),
                         "runtime_settings": ctx.runtime_settings.executor_values(),
                     }
                 )
