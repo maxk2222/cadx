@@ -151,6 +151,86 @@ def test_resolve_request_missing_position_warns():
 
 
 # --------------------------------------------------------------------------- #
+# base-mesh tunnel gate on leftover anchors                                     #
+# --------------------------------------------------------------------------- #
+
+
+def _drilled_base() -> trimesh.Trimesh:
+    """60x30x12 base with a real Ø5 through-bore at (+z, u=10, v=0)."""
+    bore = trimesh.creation.cylinder(radius=2.5, height=20.0, sections=32)
+    bore.apply_translation([10.0, 0.0, 6.0])
+    return _box().difference(bore, engine="manifold")
+
+
+def _dimpled_base() -> trimesh.Trimesh:
+    """Base with a shallow 4 mm pocket at (+z, u=10, v=0) — a dimple, not a
+    through-feature (scanners report organic micro-voids as 'hole')."""
+    pocket = trimesh.creation.cylinder(radius=2.0, height=4.0, sections=32)
+    pocket.apply_translation([10.0, 0.0, 10.0])
+    return _box().difference(pocket, engine="manifold")
+
+
+def test_spec_matched_anchor_cuts_without_base_tunnel():
+    """Spec-declared features are authoritative — a spec feature claiming a
+    scanned anchor re-cuts even when the base mesh has no tunnel there."""
+    feats, warns = resolve_refine_features(
+        [_anchors()[0]],
+        [{"name": "mount", "type": "hole", "dims": {"diameter": 5.0}, "axis": "z"}],
+        None,
+        base_mesh=_box(),
+    )
+    assert len(feats) == 1
+    assert feats[0].source == "spec"
+    assert not any("without a base-mesh tunnel" in w for w in warns)
+
+
+def test_leftover_anchor_with_base_tunnel_kept():
+    """Scan-only anchor over a REAL base-mesh bore stays in the cutter list."""
+    feats, warns = resolve_refine_features([_anchors()[0]], None, None, base_mesh=_drilled_base())
+    assert len(feats) == 1
+    assert feats[0].u == 10.0 and feats[0].source == "anchor"
+    assert not any("without a base-mesh tunnel" in w for w in warns)
+
+
+def test_leftover_anchor_over_solid_base_skipped():
+    """Junk scanned anchor over solid material must not be auto-cut."""
+    feats, warns = resolve_refine_features([_anchors()[0]], None, None, base_mesh=_box())
+    assert not feats
+    assert any("without a base-mesh tunnel" in w for w in warns)
+
+
+def test_leftover_anchor_over_dimple_skipped():
+    """A pocket/dimple blocks nearly the whole ray span — not a tunnel."""
+    feats, warns = resolve_refine_features([_anchors()[0]], None, None, base_mesh=_dimpled_base())
+    assert not feats
+    assert any("without a base-mesh tunnel" in w for w in warns)
+
+
+def test_leftover_anchors_no_base_mesh_keeps_legacy():
+    """No base mesh → every scanned anchor is re-cut (standalone refine)."""
+    feats, _ = resolve_refine_features(_anchors(), None, None, base_mesh=None)
+    assert len(feats) == 2
+
+
+def test_refine_end_to_end_drops_junk_void():
+    """Opt mesh without any feature: the tunnel-backed anchor is cut, the
+    junk void anchor is dropped before a cutter is ever built."""
+    junk = dict(_anchors()[0])
+    junk.update({"index": 3, "pos": [-15.0, 0.0, 6.0], "x": -15.0, "dia": 4.0})
+    feats, warns = resolve_refine_features(
+        [_anchors()[0], junk], None, None, base_mesh=_drilled_base()
+    )
+    assert len(feats) == 1
+    assert any("without a base-mesh tunnel" in w for w in warns)
+    mesh = _box()
+    out, rep = apply_refine(mesh, feats, restore_keeps=False)
+    assert len(rep.applied) == 1
+    assert rep.applied[0]["name"] == feats[0].name
+    # only the real Ø5 bore was cut
+    assert (mesh.volume - out.volume) == pytest.approx(math.pi * 2.5**2 * 12.0, rel=0.08)
+
+
+# --------------------------------------------------------------------------- #
 # apply_refine end-to-end                                                       #
 # --------------------------------------------------------------------------- #
 

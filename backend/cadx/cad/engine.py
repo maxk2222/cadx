@@ -1955,7 +1955,9 @@ def run_refine(
                 f"base mesh unreadable — keep restore disabled: {e}"
             )
 
-    feats, res_warnings = resolve_refine_features(anchors, spec_features, features)
+    feats, res_warnings = resolve_refine_features(
+        anchors, spec_features, features, base_mesh=base_mesh
+    )
     if helical_threads:
         for f in feats:
             if f.kind in ("thread", "tap"):

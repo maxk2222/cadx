@@ -177,19 +177,59 @@ def _upgrade_kind(anchor_kind: str, spec_type: str | None, spec_dims: dict[str, 
     return anchor_kind if anchor_kind in _CUTABLE else "hole"
 
 
+def _tunnel_open_mesh(
+    mesh: trimesh.Trimesh, u: float, v: float, axis: str, *, open_frac: float = 0.2
+) -> bool:
+    """trimesh analogue of `mesh_boolean.tunnel_open` — True when a ray
+    through (u, v) along `axis` travels mostly through open space, i.e. the
+    part already has a through-feature there.
+
+    Hits are paired into inside-material segments; the tunnel counts as open
+    when the blocked length is ≤ max(1 mm, `open_frac`·span) — enough slack
+    for tessellation wobble on bore walls, far below the ~full span a
+    dimple/pocket or solid junk position blocks."""
+    ax, au, av = _AXES[axis]
+    lo, hi = float(mesh.bounds[0][ax]), float(mesh.bounds[1][ax])
+    span = hi - lo
+    if span <= 0:
+        return False
+    origin = np.zeros(3)
+    origin[au], origin[av] = u, v
+    origin[ax] = hi + 5.0 if axis[0] == "+" else lo - 5.0
+    locs, _, _ = mesh.ray.intersects_location(
+        ray_origins=np.array([origin]),
+        ray_directions=np.array([-_AXIS_VEC[axis]]),
+        multiple_hits=True,
+    )
+    if not len(locs):
+        return True
+    zc = np.sort(locs[:, ax])
+    if len(zc) % 2:
+        # odd count (non-watertight or tangent graze) — count the dangling
+        # stretch to the far bound as blocked, erring on "not a tunnel"
+        zc = np.append(zc, lo if axis[0] == "+" else hi)
+    blocked = float(zc[1::2].sum() - zc[0::2].sum())
+    return blocked <= max(1.0, open_frac * span)
+
+
 def resolve_refine_features(  # noqa: C901
     anchors: list[dict[str, Any]] | None,
     spec_features: list[dict[str, Any]] | None,
     request_features: list[dict[str, Any]] | None,
     *,
     match_tol_mm: float = 3.0,
+    base_mesh: trimesh.Trimesh | None = None,
 ) -> tuple[list[RefineFeature], list[str]]:
     """Merge request > spec > scanned anchors into a cutter list.
 
     Request entries may carry `anchor_index` (1-based into `anchors`) or a
     full geometric description. Spec features upgrade a nearby anchor's kind
     and contribute depth/counter/thread dims. Unmatched fastener anchors are
-    re-cut as plain holes at their measured diameter.
+    re-cut as plain holes at their measured diameter — but ONLY when the
+    pre-optimization `base_mesh` shows a real through-tunnel at the anchor
+    position (scanners report organic surface dimples as "hole" anchors;
+    drilling those cuts junk bores). Without `base_mesh` every leftover
+    anchor is kept (legacy behaviour).
     """
     feats: list[RefineFeature] = []
     warnings: list[str] = []
@@ -321,12 +361,25 @@ def resolve_refine_features(  # noqa: C901
             f.source = "spec"
             feats.append(f)
 
+    no_tunnel: list[str] = []
     for a in anchors:
         if id(a) in used_anchors:
             continue
         f = _from_anchor(a)
-        if f:
-            feats.append(f)
+        if f is None:
+            continue
+        if base_mesh is not None and not _tunnel_open_mesh(base_mesh, f.u, f.v, f.axis):
+            # scanned anchor with no real through-feature in the
+            # pre-optimization part — a surface dimple / noise void, not a
+            # bore worth drilling
+            no_tunnel.append(f.name)
+            continue
+        feats.append(f)
+    if no_tunnel:
+        warnings.append(
+            f"skipped {len(no_tunnel)} anchor(s) without a base-mesh tunnel "
+            f"({', '.join(no_tunnel[:4])}{'…' if len(no_tunnel) > 4 else ''})"
+        )
 
     return feats, warnings
 
