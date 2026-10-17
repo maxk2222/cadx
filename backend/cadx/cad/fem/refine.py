@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
@@ -90,8 +90,12 @@ class RefineFeature:
     cbore_dia: float | None = None
     cbore_depth_mm: float | None = None
     thread_spec: str = ""  # "M4-0.7" — overrides dia for tap/thread cutters
-    helical: bool = False  # cut a real helical thread groove (experimental, FDM)
+    # tri-state: None = auto — apply_refine grooves thread/tap features whose
+    # pitch is derivable (helical_threads flag permitting); True/False is an
+    # explicit per-feature choice that always wins
+    helical: bool | None = None
     source: str = "anchor"  # anchor|spec|request
+    dia_extra: float = 0.0  # internal: ream bump after snapping onto an existing tunnel
 
 
 # --------------------------------------------------------------------------- #
@@ -103,6 +107,25 @@ def _metric_pitch(dia: float) -> float:
     """Nearest standard metric coarse pitch for a nominal diameter."""
     best = min(_COARSE_PITCH, key=lambda d: abs(d - dia))
     return _COARSE_PITCH[best]
+
+
+def _opt_bool(v: Any) -> bool | None:
+    """Tri-state flag from a merged feature dict — None means 'unset'."""
+    return None if v is None else bool(v)
+
+
+def _thread_pitch(feat: RefineFeature) -> float | None:
+    """Thread pitch in mm when a metric spec is derivable — thread_spec
+    ('M8-1.25' / 'M8x1.25') first, else the nominal diameter snapped to the
+    nearest ISO coarse size. None means 'cannot groove this thread'."""
+    parsed = _parse_spec(feat.thread_spec)
+    if parsed:
+        return parsed[1]
+    if feat.dia > 0:
+        nearest = min(_COARSE_PITCH, key=lambda d: abs(d - feat.dia))
+        if abs(nearest - feat.dia) <= 0.6:
+            return _COARSE_PITCH[nearest]
+    return None
 
 
 def _parse_spec(spec: str) -> tuple[float, float] | None:
@@ -271,7 +294,8 @@ def resolve_refine_features(  # noqa: C901
             csk_angle_deg=float(dims.get("countersink_angle") or 90.0),
             cbore_dia=dims.get("counterbore_diameter"),
             cbore_depth_mm=dims.get("counterbore_depth"),
-            thread_spec=str(dims.get("thread_spec") or ""),
+            thread_spec=str(dims.get("thread_spec") or a.get("thread_spec") or ""),
+            helical=_opt_bool(dims.get("helical", a.get("helical"))),
         )
 
     # --- explicit request selection -----------------------------------------
@@ -322,7 +346,11 @@ def resolve_refine_features(  # noqa: C901
                     cbore_dia=merged.get("cbore_dia") or merged.get("counterbore_diameter"),
                     cbore_depth_mm=merged.get("cbore_depth_mm") or merged.get("counterbore_depth"),
                     thread_spec=str(merged.get("thread_spec") or merged.get("standard") or ""),
-                    helical=bool(merged.get("helical") or merged.get("helical_thread")),
+                    helical=_opt_bool(
+                        merged["helical"]
+                        if merged.get("helical") is not None
+                        else merged.get("helical_thread")
+                    ),
                     source="request",
                 )
             )
@@ -459,24 +487,33 @@ def _cutter_mesh(feat: RefineFeature, entry: float, span: float) -> trimesh.Trim
     local z=0, bore going -Z. Caller rotates/translates into place."""
     over_out = 2.0  # overshoot above the entry face
     depth = feat.depth_mm if feat.depth_mm is not None else span + 2.0
-    dia = _effective_dia(feat)
+    dia = _effective_dia(feat) + feat.dia_extra
     tools: list[trimesh.Trimesh] = []
     cyl = trimesh.creation.cylinder(radius=dia / 2.0, height=depth + over_out, sections=48)
     cyl.apply_translation([0, 0, -depth / 2.0 + over_out / 2.0])
     tools.append(cyl)
     if feat.kind in ("thread", "tap") and feat.helical:
         # real helical thread: pilot bore (tap drill) + helical V-groove out
-        # to the major diameter — printable FDM thread, no tapping needed
+        # to the major diameter — printable FDM thread, no tapping needed.
+        # A groove-build failure must never cost the bore: warn, keep the
+        # plain tap-drill cylinder.
         parsed = _parse_spec(feat.thread_spec)
         d_maj, pitch = parsed if parsed else (feat.dia, _metric_pitch(feat.dia))
-        groove = _thread_groove_solid(
-            r_in=dia / 2.0 - 0.05,
-            r_out=d_maj / 2.0 + 0.15,  # small FDM clearance on the major dia
-            pitch=pitch,
-            depth=depth,
-        )
-        groove.apply_translation([0, 0, over_out * 0.5])
-        tools.append(groove)
+        try:
+            groove = _thread_groove_solid(
+                r_in=dia / 2.0 - 0.05,
+                r_out=d_maj / 2.0 + 0.15 + feat.dia_extra / 2.0,  # FDM clearance
+                pitch=pitch,
+                depth=depth,
+            )
+            groove.apply_translation([0, 0, over_out * 0.5])
+            tools.append(groove)
+        except Exception as e:
+            log.warning(
+                "refine: helical groove build failed — tap-drill bore only",
+                feature=feat.name,
+                error=str(e),
+            )
     if feat.kind == "insert":
         # heat-set pocket: slight taper, a bit larger than the pilot bore —
         # anchor dia for inserts is the INSERT's outer pocket dia
@@ -541,6 +578,177 @@ def _orient_cutter(cutter: trimesh.Trimesh, axis: str, u: float, v: float, entry
     target[au], target[av] = u, v
     target[ax] = entry
     cutter.apply_translation(target - np.zeros(3))
+
+
+# --------------------------------------------------------------------------- #
+# re-cut snapping / dedup — subsuming existing tunnels                          #
+# --------------------------------------------------------------------------- #
+
+
+def _merge_radius(dia: float) -> float:
+    """Re-cuts this far apart on the same axis are the same bore."""
+    return max(2.0, 0.3 * dia)
+
+
+def _tunnel_center(
+    mesh: trimesh.Trimesh, axis: str, u: float, v: float, r_max: float, dia: float
+) -> tuple[float, float] | None:
+    """Measured centre of an open through-tunnel near (u, v), else None.
+
+    Anchors are measured on the smoothed optimized mesh — the real bore can
+    sit a few hundredths of a mm off, and re-cutting at the raw position
+    leaves a near-concentric figure-8 void (the 'double hole' defect). A ray
+    grid in the feature plane finds the open cells (same blocked-length rule
+    as `_tunnel_open_mesh`); the cluster nearest (u, v) seeds the centre,
+    then in-plane rays to the bore walls at mid-depth refine it. Returns
+    None when the measured centre lands outside `r_max` — the opening found
+    is a different feature, not this bore."""
+    ax, au, av = _AXES[axis]
+    lo, hi = float(mesh.bounds[0][ax]), float(mesh.bounds[1][ax])
+    span = hi - lo
+    if span <= 0 or r_max <= 0:
+        return None
+    # window wide enough to see the bore rim, not just its interior — a
+    # window fully inside the tunnel would centroid back onto the anchor
+    w = r_max + 0.6 * dia
+    step = min(0.5, max(w / 8.0, 0.2))
+    n_side = max(5, int(2 * w / step) + 1)
+    us = np.linspace(u - w, u + w, n_side)
+    vs = np.linspace(v - w, v + w, n_side)
+    uu, vv = np.meshgrid(us, vs, indexing="ij")
+    n = uu.size
+    origins = np.zeros((n, 3))
+    origins[:, au] = uu.ravel()
+    origins[:, av] = vv.ravel()
+    sgn = 1.0 if axis[0] == "+" else -1.0
+    origins[:, ax] = hi + 5.0 if sgn > 0 else lo - 5.0
+    directions = np.zeros((n, 3))
+    directions[:, ax] = -sgn
+    locs, ray_ids, _ = mesh.ray.intersects_location(
+        ray_origins=origins, ray_directions=directions, multiple_hits=True
+    )
+    hits: list[list[float]] = [[] for _ in range(n)]
+    for r_id, loc in zip(ray_ids, locs, strict=True):
+        hits[int(r_id)].append(float(loc[ax]))
+    blocked_max = max(1.0, 0.2 * span)
+    far = lo if sgn > 0 else hi
+    open_mask = np.zeros(uu.shape, dtype=bool)
+    for flat in range(n):
+        z = np.sort(np.asarray(hits[flat], dtype=float))
+        if not len(z):
+            open_mask.flat[flat] = True
+            continue
+        if len(z) % 2:
+            z = np.append(z, far)
+        open_mask.flat[flat] = float(z[1::2].sum() - z[0::2].sum()) <= blocked_max
+    if not open_mask.any():
+        return None
+    import scipy.ndimage as ndi
+
+    lab, _ = ndi.label(open_mask)
+    dist = np.hypot(uu - u, vv - v)
+    nearest = int(np.argmin(np.where(open_mask, dist, np.inf)))
+    cells = lab == lab.flat[nearest]
+    cu, cv = float(uu[cells].mean()), float(vv[cells].mean())
+
+    # refine: from the open point at mid-depth, wall distances on both
+    # in-plane directions give the true bore centre (and confirm an
+    # enclosed bore rather than an open channel)
+    origin = np.zeros(3)
+    origin[au], origin[av] = cu, cv
+    origin[ax] = (lo + hi) / 2.0
+    center = [cu, cv]
+    for k, d_ax in enumerate((au, av)):
+        dists: list[float] = []
+        for sgn2 in (1.0, -1.0):
+            d = np.zeros(3)
+            d[d_ax] = sgn2
+            locs2, _, _ = mesh.ray.intersects_location(
+                ray_origins=np.array([origin]),
+                ray_directions=np.array([d]),
+                multiple_hits=False,
+            )
+            dists.append(float(np.linalg.norm(locs2[0] - origin)) if len(locs2) else float("inf"))
+        if math.isfinite(dists[0]) and math.isfinite(dists[1]):
+            center[k] = (cu, cv)[k] + (dists[0] - dists[1]) / 2.0
+    if math.hypot(center[0] - u, center[1] - v) > r_max:
+        return None
+    return float(center[0]), float(center[1])
+
+
+def _snap_dedup_features(
+    mesh: trimesh.Trimesh,
+    features: list[RefineFeature],
+    *,
+    base_mesh: trimesh.Trimesh | None,
+    report: RefineReport,
+) -> list[RefineFeature]:
+    """Snap re-cuts onto measured tunnel centres and merge near-concentric
+    duplicates into a single cut.
+
+    Runs AFTER keep-region restore so `mesh` already holds the original bore
+    walls. A feature over an existing tunnel is centred on the MEASURED
+    tunnel and its cutter reamed +0.4 mm — the old bore is fully swallowed
+    instead of becoming a sliver void next to the new cut. Same-axis
+    features within the merge radius are one bore: cut once at the merged
+    centre with the larger spec diameter."""
+    snapped: dict[int, tuple[float, float]] = {}
+    resolved: list[RefineFeature] = []
+    for feat in features:
+        if feat.kind not in _CUTABLE:
+            resolved.append(feat)
+            continue
+        r = _merge_radius(feat.dia)
+        c = _tunnel_center(mesh, feat.axis, feat.u, feat.v, r, feat.dia)
+        if c is None and base_mesh is not None and base_mesh is not mesh:
+            c = _tunnel_center(base_mesh, feat.axis, feat.u, feat.v, r, feat.dia)
+        if c is not None:
+            if math.hypot(c[0] - feat.u, c[1] - feat.v) > 0.02:
+                report.warnings.append(
+                    f"feature '{feat.name}': re-cut snapped to measured tunnel "
+                    f"centre ({c[0]:.2f}, {c[1]:.2f}), reamed +0.4 mm"
+                )
+            feat.u, feat.v = c
+            snapped[id(feat)] = c
+            feat.dia_extra = max(feat.dia_extra, 0.4)
+        resolved.append(feat)
+
+    merged: list[RefineFeature] = []
+    for feat in resolved:
+        if feat.kind not in _CUTABLE:
+            merged.append(feat)
+            continue
+        target_i = -1
+        for i, m in enumerate(merged):
+            if m.kind not in _CUTABLE or m.axis != feat.axis:
+                continue
+            if math.hypot(m.u - feat.u, m.v - feat.v) <= max(
+                _merge_radius(m.dia), _merge_radius(feat.dia)
+            ):
+                target_i = i
+                break
+        if target_i < 0:
+            merged.append(feat)
+            continue
+        target = merged[target_i]
+        keep, drop = target, feat
+        if _effective_dia(feat) > _effective_dia(target):
+            keep, drop = feat, target
+        keep.u, keep.v = (
+            snapped.get(id(keep))
+            or snapped.get(id(drop))
+            or (
+                (keep.u + drop.u) / 2.0,
+                (keep.v + drop.v) / 2.0,
+            )
+        )
+        keep.dia_extra = max(keep.dia_extra, drop.dia_extra)
+        merged[target_i] = keep
+        report.warnings.append(
+            f"features '{target.name}' and '{feat.name}' resolve to the same "
+            f"bore — merged into one cut ('{keep.name}')"
+        )
+    return merged
 
 
 # --------------------------------------------------------------------------- #
@@ -770,6 +978,101 @@ class RefineReport:
     warnings: list[str] = field(default_factory=list)
 
 
+def _try_difference(
+    mesh: trimesh.Trimesh, cutter: trimesh.Trimesh
+) -> tuple[trimesh.Trimesh | None, str]:
+    """manifold difference → (result, error); (None, err) on empty/failure."""
+    try:
+        res = mesh.difference(cutter, engine="manifold")
+    except Exception as e:
+        return None, str(e)
+    if res is None or not len(getattr(res, "faces", [])):
+        return None, ""
+    return res, ""
+
+
+def _record_applied(
+    report: RefineReport, feat: RefineFeature, mesh: trimesh.Trimesh, entry: float, span: float
+) -> None:
+    """Applied-feature report entry + post-cut diameter sanity measurement."""
+    entry_rec: dict[str, Any] = {
+        "name": feat.name,
+        "kind": feat.kind,
+        "axis": feat.axis,
+        "dia": round(feat.dia, 2),
+        "depth_mm": feat.depth_mm,
+        "source": feat.source,
+    }
+    if feat.dia_extra:
+        entry_rec["ream_extra_mm"] = round(feat.dia_extra, 2)
+    try:
+        requested = _effective_dia(feat) + feat.dia_extra
+        measured = _measure_feature_dia(mesh, feat, entry, span)
+        entry_rec["requested_dia_mm"] = round(requested, 3)
+        if measured is not None:
+            entry_rec["measured_dia_mm"] = round(measured, 3)
+            dev = abs(measured - requested)
+            entry_rec["dia_deviation_mm"] = round(dev, 3)
+            if dev > max(0.25, requested * 0.05):
+                report.warnings.append(
+                    f"feature '{feat.name}': measured dia {measured:.2f} mm "
+                    f"deviates {dev:.2f} mm from requested {requested:.2f} mm"
+                )
+    except Exception:
+        pass  # measurement is informational — never fail a cut on it
+    report.applied.append(entry_rec)
+
+
+def _apply_cut(out: trimesh.Trimesh, feat: RefineFeature, report: RefineReport) -> trimesh.Trimesh:
+    """One re-cut: build the cutter, difference it, retry a failed helical
+    groove as a plain tap-drill bore (the bore is never lost), and record the
+    outcome. Returns the (possibly unchanged) mesh."""
+    ax, _, _ = _AXES[feat.axis]
+    entry = _entry_point(out, feat.axis, feat.u, feat.v)
+    if entry is None:
+        # ray at the bore centre hits nothing — the channel is already
+        # open (tunnel through the part) OR the region was fully
+        # optimized away. Re-cutting the wavy channel walls is still
+        # the point of refine, so seat the cutter at the bbox face and
+        # let the boolean decide; warn so the report stays honest.
+        entry = float(out.bounds[1][ax] if feat.axis[0] == "+" else out.bounds[0][ax])
+        report.warnings.append(
+            f"feature '{feat.name}': no entry surface — channel already "
+            "open or optimized away; cutting anyway"
+        )
+    span = float(out.bounds[1][ax] - out.bounds[0][ax])
+    cutter = _cutter_mesh(feat, entry, span)
+    _orient_cutter(cutter, feat.axis, feat.u, feat.v, entry)
+    # overlap sanity: AABBs must intersect (cheap) — a fully disjoint
+    # cutter would boolean fine but remove nothing
+    cb = cutter.bounds
+    if cb is None or np.any(cb[0] >= out.bounds[1]) or np.any(cb[1] <= out.bounds[0]):
+        report.skipped.append(
+            {"name": feat.name, "kind": feat.kind, "reason": "cutter misses the part"}
+        )
+        return out
+    res, bool_err = _try_difference(out, cutter)
+    if res is None and feat.helical:
+        # the helical groove wrecked the boolean — never lose the bore:
+        # retry with the plain tap-drill cutter
+        report.warnings.append(
+            f"feature '{feat.name}': helical groove boolean failed "
+            f"({bool_err or 'empty result'}) — retried as a plain tap-drill bore"
+        )
+        cutter = _cutter_mesh(replace(feat, helical=False), entry, span)
+        _orient_cutter(cutter, feat.axis, feat.u, feat.v, entry)
+        res, bool_err = _try_difference(out, cutter)
+    if res is None:
+        reason = "boolean produced empty mesh"
+        if bool_err:
+            reason += f": {bool_err}"
+        report.skipped.append({"name": feat.name, "kind": feat.kind, "reason": reason})
+        return out
+    out = res
+    _record_applied(report, feat, out, entry, span)
+    return out
+
+
 def apply_refine(
     opt_mesh: trimesh.Trimesh,
     features: list[RefineFeature],
@@ -778,9 +1081,15 @@ def apply_refine(
     keep_regions: list[dict[str, Any]] | None = None,
     anchors: list[dict[str, Any]] | None = None,
     restore_keeps: bool = True,
+    helical_threads: bool = True,
 ) -> tuple[trimesh.Trimesh, RefineReport]:
     """Re-cut `features` on `opt_mesh` via manifold difference; restore keep
-    surfaces from `base_mesh`. Never raises on a single bad feature."""
+    surfaces from `base_mesh`. Never raises on a single bad feature.
+
+    `helical_threads` is the auto-default for thread/tap features whose
+    `helical` field is unset: when a pitch is derivable the re-cut adds the
+    real helical V-groove (tap-drill bore is always kept as fallback).
+    Explicit per-feature `helical=True/False` always wins."""
     report = RefineReport()
     from cadx.cad.mesh_ops import _ensure_watertight
 
@@ -802,66 +1111,25 @@ def apply_refine(
         except Exception as e:
             report.warnings.append(f"keep-region restore failed: {e}")
 
+    # snap re-cuts onto the measured tunnel centre and merge near-concentric
+    # duplicates — restore ran first, so `out` already holds the original
+    # bore walls; cutting beside them leaves a figure-8 sliver void
+    if features:
+        features = _snap_dedup_features(out, features, base_mesh=base_mesh, report=report)
+
+    # helical default: groove every thread/tap whose pitch is derivable —
+    # an M8 spec that degrades to a plain Ø6.8 cylinder is the missing-thread
+    # defect; explicit helical=False on the feature always wins
+    for feat in features:
+        if feat.kind in ("thread", "tap") and feat.helical is None:
+            feat.helical = bool(helical_threads) and _thread_pitch(feat) is not None
+
     for feat in features:
         if feat.kind not in _CUTABLE:
             report.skipped.append({"name": feat.name, "kind": feat.kind, "reason": "not cuttable"})
             continue
         try:
-            ax, _, _ = _AXES[feat.axis]
-            entry = _entry_point(out, feat.axis, feat.u, feat.v)
-            if entry is None:
-                # ray at the bore centre hits nothing — the channel is already
-                # open (tunnel through the part) OR the region was fully
-                # optimized away. Re-cutting the wavy channel walls is still
-                # the point of refine, so seat the cutter at the bbox face and
-                # let the boolean decide; warn so the report stays honest.
-                entry = float(out.bounds[1][ax] if feat.axis[0] == "+" else out.bounds[0][ax])
-                report.warnings.append(
-                    f"feature '{feat.name}': no entry surface — channel already "
-                    "open or optimized away; cutting anyway"
-                )
-            span = float(out.bounds[1][ax] - out.bounds[0][ax])
-            cutter = _cutter_mesh(feat, entry, span)
-            _orient_cutter(cutter, feat.axis, feat.u, feat.v, entry)
-            # overlap sanity: AABBs must intersect (cheap) — a fully disjoint
-            # cutter would boolean fine but remove nothing
-            cb = cutter.bounds
-            if cb is None or np.any(cb[0] >= out.bounds[1]) or np.any(cb[1] <= out.bounds[0]):
-                report.skipped.append(
-                    {"name": feat.name, "kind": feat.kind, "reason": "cutter misses the part"}
-                )
-                continue
-            res = out.difference(cutter, engine="manifold")
-            if res is None or not len(getattr(res, "faces", [])):
-                report.skipped.append(
-                    {"name": feat.name, "kind": feat.kind, "reason": "boolean produced empty mesh"}
-                )
-                continue
-            out = res
-            entry_rec: dict[str, Any] = {
-                "name": feat.name,
-                "kind": feat.kind,
-                "axis": feat.axis,
-                "dia": round(feat.dia, 2),
-                "depth_mm": feat.depth_mm,
-                "source": feat.source,
-            }
-            try:
-                requested = _effective_dia(feat)
-                measured = _measure_feature_dia(out, feat, entry, span)
-                entry_rec["requested_dia_mm"] = round(requested, 3)
-                if measured is not None:
-                    entry_rec["measured_dia_mm"] = round(measured, 3)
-                    dev = abs(measured - requested)
-                    entry_rec["dia_deviation_mm"] = round(dev, 3)
-                    if dev > max(0.25, requested * 0.05):
-                        report.warnings.append(
-                            f"feature '{feat.name}': measured dia {measured:.2f} mm "
-                            f"deviates {dev:.2f} mm from requested {requested:.2f} mm"
-                        )
-            except Exception:
-                pass  # measurement is informational — never fail a cut on it
-            report.applied.append(entry_rec)
+            out = _apply_cut(out, feat, report)
         except Exception as e:
             report.skipped.append(
                 {"name": feat.name, "kind": feat.kind, "reason": f"cut failed: {e}"}

@@ -558,6 +558,7 @@ class SettingsOut(BaseModel):
     topopt_auto_keep: bool
     topopt_auto_keep_margin_mm: float
     topopt_multires_min_cells: int
+    refine_helical_threads: bool
     mesh_base_url: str
     mesh_model: str
     image_model: str
@@ -658,6 +659,7 @@ class SettingsUpdate(BaseModel):
     topopt_auto_keep: bool | None = None
     topopt_auto_keep_margin_mm: float | None = Field(default=None, gt=0, le=50)
     topopt_multires_min_cells: int | None = Field(default=None, ge=0, le=10_000_000)
+    refine_helical_threads: bool | None = None
     mesh_base_url: str | None = None
     mesh_model: str | None = Field(default=None, max_length=200)
     image_model: str | None = Field(default=None, max_length=200)

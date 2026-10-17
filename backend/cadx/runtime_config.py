@@ -172,6 +172,12 @@ class RuntimeSettings(BaseModel):
     # threads otherwise ship as-is). Worker-side only: run_refine_job loads
     # runtime settings itself, so this stays out of executor_values().
     topopt_auto_refine: bool = True
+    # post-topopt refine: a thread/tap feature whose pitch is derivable
+    # (thread_spec 'M8-1.25' or a standard metric dia) is re-cut with the
+    # real helical V-groove, not just the tap-drill cylinder — the tap-drill
+    # bore is always kept as fallback. Executor-side flag: ships via
+    # executor_values() into the refine payload.
+    refine_helical_threads: bool = True
     mesh_base_url: str = ""
     mesh_model: str = "auto"
     image_model: str = "auto"
@@ -260,6 +266,7 @@ _EXECUTOR_FIELDS = {
     "topopt_auto_keep",
     "topopt_auto_keep_margin_mm",
     "topopt_multires_min_cells",
+    "refine_helical_threads",
     "mesh_max_faces_for_cad",
     "mesh_decimate_faces",
     "mesh_smooth_after_flatten_iters",

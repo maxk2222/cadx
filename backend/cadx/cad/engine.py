@@ -1958,10 +1958,6 @@ def run_refine(
     feats, res_warnings = resolve_refine_features(
         anchors, spec_features, features, base_mesh=base_mesh
     )
-    if helical_threads:
-        for f in feats:
-            if f.kind in ("thread", "tap"):
-                f.helical = True
     keep_regions = list(keep_regions or [])
     if auto_plane_restore and base_mesh is not None:
         from cadx.cad.fem.refine import detect_plane_regions
@@ -1976,6 +1972,9 @@ def run_refine(
         keep_regions=keep_regions,
         anchors=anchors or [],
         restore_keeps=restore_planes and base_mesh is not None,
+        # job/spec-level request OR the runtime default — an explicit
+        # per-feature helical=False still wins inside apply_refine
+        helical_threads=bool(helical_threads) or s.refine_helical_threads,
     )
     warnings = res_warnings + rep.warnings
 

@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 import trimesh
 
+from cadx.cad.fem.anchors3d import scan_mesh_anchors
 from cadx.cad.fem.refine import (
     RefineFeature,
     _cutter_mesh,
@@ -329,3 +330,169 @@ def test_restore_anchor_keep_box():
     out, _, n = restore_keep_surface(opt, base, keeps, anchors)
     assert n == 1
     assert out.volume > opt.volume
+
+
+# --------------------------------------------------------------------------- #
+# re-cut snap / dedup — the "double hole" defect                                #
+# --------------------------------------------------------------------------- #
+
+
+def _wide_box(x: float = 100.0, y: float = 30.0, z: float = 12.0) -> trimesh.Trimesh:
+    m = trimesh.creation.box(extents=[x, y, z])
+    m.apply_translation([0.0, 0.0, z / 2])
+    return m
+
+
+def _bored_wide(x_center: float, dia: float) -> trimesh.Trimesh:
+    """100x30x12 block with a vertical through-bore at (x_center, 0)."""
+    bore = trimesh.creation.cylinder(radius=dia / 2.0, height=40.0, sections=48)
+    bore.apply_translation([x_center, 0.0, 6.0])
+    return _wide_box().difference(bore, engine="manifold")
+
+
+def _z_tunnels_near(mesh: trimesh.Trimesh, x: float, radius: float = 4.0) -> list[dict]:
+    return [
+        a
+        for a in scan_mesh_anchors(mesh, step_mm=0.5)
+        if a["axis"] == "+z" and abs(a["x"] - x) <= radius
+    ]
+
+
+def test_recut_snaps_to_existing_tunnel():
+    """DOUBLE-HOLE regression: the bore sits at x=-35.13 but the anchor
+    measured on the smoothed mesh reports x=-35.16 — the re-cut must snap
+    onto the measured tunnel centre and ream it, leaving ONE hole."""
+    mesh = _bored_wide(-35.13, 6.8)
+    feat = RefineFeature(name="b", kind="hole", axis="+z", u=-35.16, v=0.0, dia=6.75)
+    out, rep = apply_refine(mesh, [feat], restore_keeps=False)
+    assert len(rep.applied) == 1
+
+    tunnels = _z_tunnels_near(out, -35.15)
+    assert len(tunnels) == 1  # no figure-8 / sliver second void
+    assert tunnels[0]["x"] == pytest.approx(-35.15, abs=0.5)
+    # requested 6.75 reamed ~+0.4 -> ~7.15 (scan dia reads within ~0.5·step)
+    assert tunnels[0]["dia"] == pytest.approx(7.15, abs=0.7)
+
+
+def test_recut_snaps_via_base_mesh():
+    """Same snap when the tunnel only exists on the base mesh (keep-restore
+    disabled): the cut lands on the BASE tunnel centre, not the anchor."""
+    base = _bored_wide(-35.13, 6.8)
+    mesh = _wide_box()  # optimized part came back solid there
+    feat = RefineFeature(name="b", kind="hole", axis="+z", u=-35.16, v=0.0, dia=6.75)
+    out, rep = apply_refine(mesh, [feat], base_mesh=base, restore_keeps=False)
+    assert len(rep.applied) == 1
+    tunnels = _z_tunnels_near(out, -35.15)
+    assert len(tunnels) == 1
+    assert tunnels[0]["x"] == pytest.approx(-35.15, abs=0.5)
+
+
+def test_dedup_merges_near_concentric_anchors():
+    """Two anchors 0.5 mm apart at the same dia resolve to ONE cut."""
+    mesh = _wide_box()
+    feats = [
+        RefineFeature(name="a", kind="hole", axis="+z", u=-35.0, v=0.0, dia=6.75),
+        RefineFeature(name="b", kind="hole", axis="+z", u=-34.5, v=0.0, dia=6.75),
+    ]
+    out, rep = apply_refine(mesh, feats, restore_keeps=False)
+    assert len(rep.applied) == 1
+    assert any("merged into one cut" in w for w in rep.warnings)
+    removed = mesh.volume - out.volume
+    assert removed == pytest.approx(math.pi * (6.75 / 2) ** 2 * 12.0, rel=0.1)
+
+
+def test_dedup_keeps_distant_features():
+    """Bores beyond the merge radius are separate features — no over-merge."""
+    mesh = _wide_box()
+    feats = [
+        RefineFeature(name="a", kind="hole", axis="+z", u=-35.0, v=0.0, dia=6.75),
+        RefineFeature(name="b", kind="hole", axis="+z", u=-30.0, v=0.0, dia=6.75),
+    ]
+    _out, rep = apply_refine(mesh, feats, restore_keeps=False)
+    assert len(rep.applied) == 2
+
+
+# --------------------------------------------------------------------------- #
+# helical threads — the "missing thread" defect                                 #
+# --------------------------------------------------------------------------- #
+
+
+def _groove_spy(monkeypatch: pytest.MonkeyPatch) -> list[tuple]:
+    import cadx.cad.fem.refine as refine_mod
+
+    calls: list[tuple] = []
+    real = refine_mod._thread_groove_solid
+
+    def spy(*args: object, **kwargs: object) -> trimesh.Trimesh:
+        calls.append((args, kwargs))
+        return real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(refine_mod, "_thread_groove_solid", spy)
+    return calls
+
+
+def test_helical_thread_grooves_by_default(monkeypatch: pytest.MonkeyPatch):
+    """MISSING-THREAD regression: an M8-1.25 thread anchor re-cuts the
+    tap-drill bore AND the helical V-groove — not a plain cylinder."""
+    calls = _groove_spy(monkeypatch)
+    mesh = _box()
+    feat = RefineFeature(
+        name="m8", kind="thread", axis="+z", u=10.0, v=0.0, dia=8.0, thread_spec="M8-1.25"
+    )
+    out, rep = apply_refine(mesh, [feat], restore_keeps=False)
+    assert calls, "helical groove solid was never built"
+    assert len(rep.applied) == 1
+    # groove removes more than the plain tap-drill cylinder (D - pitch = 6.75)
+    tap_vol = math.pi * ((8.0 - 1.25) / 2) ** 2 * 12.0
+    assert (mesh.volume - out.volume) > tap_vol * 1.02
+
+
+def test_helical_false_explicit_keeps_plain_bore(monkeypatch: pytest.MonkeyPatch):
+    """helical=False in the merged feature dict always wins — tap drill only."""
+    calls = _groove_spy(monkeypatch)
+    mesh = _box()
+    feat = RefineFeature(
+        name="m8",
+        kind="thread",
+        axis="+z",
+        u=10.0,
+        v=0.0,
+        dia=8.0,
+        thread_spec="M8-1.25",
+        helical=False,
+    )
+    out, rep = apply_refine(mesh, [feat], restore_keeps=False)
+    assert not calls
+    assert len(rep.applied) == 1
+    tap_vol = math.pi * ((8.0 - 1.25) / 2) ** 2 * 12.0
+    assert (mesh.volume - out.volume) == pytest.approx(tap_vol, rel=0.05)
+
+
+def test_helical_default_gated_by_flag(monkeypatch: pytest.MonkeyPatch):
+    """helical_threads=False (runtime refine_helical_threads off) → tap drill."""
+    calls = _groove_spy(monkeypatch)
+    mesh = _box()
+    feat = RefineFeature(
+        name="m8", kind="thread", axis="+z", u=10.0, v=0.0, dia=8.0, thread_spec="M8-1.25"
+    )
+    _out, rep = apply_refine(mesh, [feat], restore_keeps=False, helical_threads=False)
+    assert not calls
+    assert len(rep.applied) == 1
+
+
+def test_groove_failure_keeps_tap_drill(monkeypatch: pytest.MonkeyPatch):
+    """A groove-build failure must never lose the bore — warn and fall back."""
+    import cadx.cad.fem.refine as refine_mod
+
+    def boom(*args: object, **kwargs: object) -> trimesh.Trimesh:
+        raise RuntimeError("groove wreckage")
+
+    monkeypatch.setattr(refine_mod, "_thread_groove_solid", boom)
+    mesh = _box()
+    feat = RefineFeature(
+        name="m8", kind="thread", axis="+z", u=10.0, v=0.0, dia=8.0, thread_spec="M8-1.25"
+    )
+    out, rep = apply_refine(mesh, [feat], restore_keeps=False)
+    assert len(rep.applied) == 1
+    tap_vol = math.pi * ((8.0 - 1.25) / 2) ** 2 * 12.0
+    assert (mesh.volume - out.volume) == pytest.approx(tap_vol, rel=0.05)
