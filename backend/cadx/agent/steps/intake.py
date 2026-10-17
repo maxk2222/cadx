@@ -98,6 +98,60 @@ def sanitize_dims(spec: PartSpec, prompt: str) -> list[str]:
     return notes
 
 
+_AXIS_COORD_RE = re.compile(r"\b([xyz])\s*=\s*(-?\d+(?:\.\d+)?)", re.IGNORECASE)
+
+
+def normalize_feature_positions(spec: PartSpec) -> list[str]:
+    """Rewrite model-computed coords in ``feature.position`` when they
+    contradict the stated end offset — intake likes to append its own
+    arithmetic ("75 mm from -x end (x=20, y=0)") and gets it wrong
+    (75-45=30, not 20). The end hint carries the user's stated semantics,
+    so the coord token is rewritten to the end-resolved value, leaving one
+    consistent position for codegen/verify/anchors to read. Multi-offset
+    hints ("20 and 75mm from -x end") are left untouched — a single coord
+    cannot alias two positions. Returns change notes."""
+    from cadx.cad.poshint import parse_position_hints, resolve_end_hint
+
+    notes: list[str] = []
+    try:
+        bounds = {
+            "x": (-float(spec.length_x.value) / 2, float(spec.length_x.value) / 2),
+            "y": (-float(spec.width_y.value) / 2, float(spec.width_y.value) / 2),
+        }
+    except (AttributeError, TypeError, ValueError):
+        return notes  # no stated envelope — end hints unresolvable
+    for f in spec.features:
+        pos = str(f.position or "").strip()
+        if not pos:
+            continue
+        coords, _faces, ends, _nears = parse_position_hints(pos)
+        if not coords or not ends:
+            continue
+        new = pos
+        for m in _AXIS_COORD_RE.finditer(pos):
+            ax = m.group(1).lower()
+            if ax not in bounds:
+                continue
+            end_vals = {
+                resolve_end_hint(ax, str(e["end"]), float(e["offset_mm"]), *bounds[ax])
+                for e in ends
+                if str(e["axis"]) == ax
+            }
+            if len(end_vals) != 1:
+                continue  # multi-offset or none — no single truth to rewrite to
+            v = next(iter(end_vals))
+            if abs(float(m.group(2)) - v) <= 1.0:
+                continue  # coord agrees with the end offset — consistent already
+            new = new.replace(m.group(0), f"{ax}={v:g}", 1)
+            notes.append(
+                f"position of '{f.name or f.type}' rewritten — {m.group(0)} "
+                f"contradicted the stated end offset (now {ax}={v:g})"
+            )
+        if new != pos:
+            f.position = new
+    return notes
+
+
 # --------------------------------------------------------------------------- #
 # degenerate-spec gate                                                          #
 # --------------------------------------------------------------------------- #

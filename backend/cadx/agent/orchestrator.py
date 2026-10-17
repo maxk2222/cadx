@@ -4850,10 +4850,11 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
     tried_load_extraction = False
     intake_step.sanitize_load_cases(spec)
     dim_notes = intake_step.sanitize_dims(spec, prompt)
-    if dim_notes:
+    pos_notes = intake_step.normalize_feature_positions(spec)
+    if dim_notes or pos_notes:
         outcome.spec = spec.model_dump()
         ctx.spec = spec
-        for note in dim_notes:
+        for note in (*dim_notes, *pos_notes):
             await ctx.emit("intake", 0, note)
 
     # ---- degenerate-spec second chance ----

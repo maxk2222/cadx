@@ -162,3 +162,72 @@ async def test_degenerate_intake_triggers_feature_reask():
     assert spec.get("features", [{}])[0]["type"] == "hole"
     assert spec.get("name") == "bracket plate"
     assert any("recovered" in m for _s, m in emits)
+
+
+def _plate90(features) -> PartSpec:
+    return PartSpec(
+        name="lever",
+        summary="",
+        length_x={"value": 90.0, "source": "stated"},
+        width_y={"value": 40.0, "source": "stated"},
+        height_z={"value": 14.0, "source": "stated"},
+        features=features,
+        image_roles=[],
+    )
+
+
+def test_normalize_positions_rewrites_contradicting_coord() -> None:
+    from cadx.agent.steps.intake import normalize_feature_positions
+    from cadx.llm.schemas import Feature
+
+    s = _plate90(
+        [
+            Feature(
+                name="bore 2",
+                type="bore",
+                dims={"diameter": 10.0},
+                position="75 mm from -x end, centered in y (x=20, y=0)",
+            )
+        ]
+    )
+    notes = normalize_feature_positions(s)
+    assert notes
+    assert "x=30" in s.features[0].position
+
+
+def test_normalize_positions_keeps_consistent() -> None:
+    from cadx.agent.steps.intake import normalize_feature_positions
+    from cadx.llm.schemas import Feature
+
+    s = _plate90(
+        [
+            Feature(
+                name="bore 1",
+                type="bore",
+                dims={"diameter": 10.0},
+                position="20 mm from -x end, centered in y (x=-25, y=0)",
+            )
+        ]
+    )
+    notes = normalize_feature_positions(s)
+    assert not notes
+    assert s.features[0].position == "20 mm from -x end, centered in y (x=-25, y=0)"
+
+
+def test_normalize_positions_multi_offset_untouched() -> None:
+    from cadx.agent.steps.intake import normalize_feature_positions
+    from cadx.llm.schemas import Feature
+
+    s = _plate90(
+        [
+            Feature(
+                name="bores",
+                type="bore",
+                dims={"diameter": 10.0},
+                count=2,
+                position="20 and 75 mm from -x end, centered in y (x=5, y=0)",
+            )
+        ]
+    )
+    notes = normalize_feature_positions(s)
+    assert not notes
