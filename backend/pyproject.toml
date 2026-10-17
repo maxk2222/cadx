@@ -19,6 +19,7 @@ dependencies = [
     "build123d>=0.13,<0.14",
     "bd_warehouse>=0.4,<0.5",
     "quiddity>=0.3.11,<0.4",  # optional at runtime — feature recognition enrichment
+    "pyransac3d>=0.7,<0.8",  # optional at runtime — primitive segmentation for cad/reconstruct composite parts; lazy-imported so a missing/broken install degrades to "organic"
     "trimesh>=4.0",
     "networkx>=3.0",
     "lxml>=5.0",

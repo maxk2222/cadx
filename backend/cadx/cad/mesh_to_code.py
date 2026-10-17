@@ -10,7 +10,7 @@ at the origin, units mm.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 AxisName = Literal["x", "y", "z"]
@@ -193,4 +193,116 @@ with BuildLine(Plane(origin={origin}, x_dir=(0.0, 0.0, 1.0), z_dir={normal})) as
     Polyline(*_outline, close=True)
 _face = make_face(edges=_bl.line)
 result = extrude(_face, amount=PARAMS["thickness"])
+'''
+
+
+# --------------------------------------------------------------------------- #
+# composite (primitive-union reconstruction)                                   #
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class CompositePrim:
+    """One fitted primitive of a composite part.
+
+    ``op="add"`` unions the solid into the result, ``op="cut"`` subtracts
+    it (a fitted void — e.g. an interior cylinder = bore — or a bounding
+    half-space emitted as an oversized box on the far side of a plane).
+
+    ``shape``: ``"box"`` | ``"cylinder"`` | ``"sphere"`` | ``"trim"``
+    (trim is a literal-dimension box, always a cut). ``center``/``rot``
+    place the canonical solid (centred at origin, main axis +Z); ``rot``
+    is an (axis, angle_deg) pair or None for identity.
+
+    ``dim_params`` maps ctor kwargs to PARAMS keys (parametric dims);
+    ``dim_literals`` bakes derived dims straight into the call (cutters,
+    trim boxes, clip boxes — they are measured, not user-facing).
+
+    ``clip_*`` optionally intersects the primitive with a second placed
+    box (a sphere cap clipped to the fitted surface extent, so a dome
+    does not poke a full ball out through the part).
+    """
+
+    op: Literal["add", "cut"]
+    shape: Literal["box", "cylinder", "sphere", "trim"]
+    center: tuple[float, float, float]
+    rot: tuple[tuple[float, float, float], float] | None = None
+    dim_params: dict[str, str] = field(default_factory=dict)
+    dim_literals: dict[str, float] = field(default_factory=dict)
+    clip_center: tuple[float, float, float] | None = None
+    clip_rot: tuple[tuple[float, float, float], float] | None = None
+    clip_dims: tuple[float, float, float] | None = None
+
+    @property
+    def clipped(self) -> bool:
+        return self.clip_center is not None and self.clip_dims is not None
+
+
+def _v3(v: tuple[float, float, float]) -> str:
+    return f"({_f(v[0])}, {_f(v[1])}, {_f(v[2])})"
+
+
+def _place(center: tuple[float, float, float], rot: tuple[tuple[float, float, float], float] | None) -> str:
+    """``Pos(...) *`` or ``Location(...) *`` prefix for a placed solid."""
+    if rot is None:
+        return f"Pos{_v3(center)} * "
+    (ax, deg) = rot
+    return f"Location({_v3(center)}, {_v3(ax)}, {_f(deg)}) * "
+
+
+def _prim_ctor(p: CompositePrim) -> str:
+    def arg(kw: str) -> str:
+        if kw in p.dim_params:
+            return f'{kw}=PARAMS["{p.dim_params[kw]}"]'
+        return f"{kw}={_f(p.dim_literals[kw])}"
+
+    if p.shape == "cylinder":
+        return f"Cylinder({arg('radius')}, {arg('height')})"
+    if p.shape == "sphere":
+        return f"Sphere({arg('radius')})"
+    # box / trim: positional (length, width, height)
+    out = []
+    for kw in ("length", "width", "height"):
+        if kw in p.dim_params:
+            out.append(f'PARAMS["{p.dim_params[kw]}"]')
+        else:
+            out.append(_f(p.dim_literals[kw]))
+    return f"Box({', '.join(out)})"
+
+
+def emit_composite_code(prims: list[CompositePrim], params: dict[str, float]) -> str:
+    """Emit a union/cut of placed primitives for a composite part.
+
+    ``prims`` arrive in fit order; the emitted code unions the ``add``
+    primitives first, then applies ``cut`` primitives and ``trim``
+    half-space boxes. At least one ``add`` primitive is required.
+    """
+    lines: list[str] = []
+    add_terms: list[str] = []
+    cut_terms: list[str] = []
+    for i, p in enumerate(prims):
+        expr = f"{_place(p.center, p.rot)}{_prim_ctor(p)}"
+        if p.clipped:
+            assert p.clip_center is not None and p.clip_dims is not None
+            lines.append(
+                f"_c{i} = {_place(p.clip_center, p.clip_rot)}"
+                f"Box({_f(p.clip_dims[0])}, {_f(p.clip_dims[1])}, {_f(p.clip_dims[2])})"
+            )
+            expr = f"({expr}) & _c{i}"
+        lines.append(f"_p{i} = {expr}")
+        (add_terms if p.op == "add" else cut_terms).append(f"_p{i}")
+    if not add_terms:
+        raise ValueError("composite emission needs at least one 'add' primitive")
+    result = " + ".join(add_terms)
+    if cut_terms:
+        result = f"({result}) - {' - '.join(cut_terms)}"
+    body = "\n".join(lines)
+    return f'''"""Reconstructed composite part — emitted deterministically by cadx.cad.reconstruct."""
+
+from build123d import *
+
+{_params_block(params)}
+
+{body}
+result = {result}
 '''
