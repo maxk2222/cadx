@@ -41,9 +41,14 @@ Rules:
   (diameter, depth, counterbore/countersink dims, position along the part),
   slots, pockets, grooves, bosses, ribs, edge fillets/chamfers, steps, cutouts,
   engraved text, patterned repeats. Give `type`, numeric `dims` in mm where
-  known, `position` ("near +x end", "centered", "15 mm from butt") and
-  `count`. Features absent from the spec are never generated — when in
-  doubt, list the feature and mark its dims `inferred`.
+  known, `position` and `count`. Position hints drive downstream FEM anchors
+  and deterministic hole re-cutting, so prefer machine-readable forms:
+  numeric end-relative offsets ("20 mm from the -x end", "75 mm from -x end,
+  centered in y") or explicit coordinates ("x=-25, y=0") — reserve vague words
+  ("near the +x end") for features whose position genuinely does not matter,
+  and give your best distance estimate otherwise. Features absent from the
+  spec are never generated — when in doubt, list the feature and mark its
+  dims `inferred`.
 - Emit 3-6 `verification_questions`: yes/no checks a vision critic can
   answer from rendered views alone — one per placement-critical feature
   plus every orientation/envelope constraint the spec asserts, phrased so
