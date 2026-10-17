@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import json
+import re
 import shutil
 import time
 from pathlib import Path
@@ -1083,11 +1084,18 @@ def run_topopt_pipeline(  # noqa: C901
         r_weights: list[float] = []
         r_fixed_nm: list[np.ndarray] = []
         r_load_nm: list[np.ndarray] = []
+        r_unresolved: list[str] = []
 
         def _add(c: LoadCase, weight: float) -> None:
             fixed3, F, w = resolve_case_dofs(dom, c, anchors, density_g_cm3=mat.density_g_cm3)
             if warn:
                 res.topopt.setdefault("warnings", []).extend(w)
+                # a fixed/load region that matched nothing means the constraint
+                # the spec declared is absent from the geometry — optimizing
+                # anyway produces a structurally meaningless result
+                r_unresolved.extend(
+                    m for m in w if re.search(r"(fixed|load) region .*matched no nodes", m)
+                )
             if not fixed3.any() or not np.any(F):
                 if warn:
                     res.topopt["warnings"].append(
@@ -1141,9 +1149,20 @@ def run_topopt_pipeline(  # noqa: C901
                 r_load_nm.append(region_node_mask(dom, load.region, anchors))
         for f3, _ in r_resolved:
             r_fixed_nm.append(np.asarray(f3).any(axis=1) if np.ndim(f3) == 2 else f3)
-        return r_resolved, r_weights, r_fixed_nm, r_load_nm
+        return r_resolved, r_weights, r_fixed_nm, r_load_nm, r_unresolved
 
-    resolved, case_weights, fixed_node_masks, load_node_masks = _resolve_cases_on(domain)
+    resolved, case_weights, fixed_node_masks, load_node_masks, unresolved = _resolve_cases_on(
+        domain
+    )
+    if unresolved:
+        res.error = (
+            "load-case regions did not resolve on the geometry — "
+            + "; ".join(unresolved[:4])
+            + ". The declared fix/load feature is missing from the solid or its "
+            "anchor is unresolvable; fix the geometry (feature placement) before "
+            "optimizing — a result optimized under wrong constraints is unusable."
+        )
+        return res
     if not resolved:
         res.error = "no solvable load case — check fixed/load regions"
         return res
@@ -1237,7 +1256,7 @@ def run_topopt_pipeline(  # noqa: C901
             if coarse.cell_count >= domain.cell_count // 2:
                 res.topopt["warnings"].append("multires: coarse grid not much coarser — skipped")
             else:
-                res_c, w_c, fix_c, load_nm_c = _resolve_cases_on(coarse, warn=False)
+                res_c, w_c, fix_c, load_nm_c, _unres_c = _resolve_cases_on(coarse, warn=False)
                 if not res_c:
                     res.topopt["warnings"].append(
                         "multires: no solvable case on the coarse grid — skipped"

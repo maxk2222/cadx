@@ -8,6 +8,10 @@ T4 — topopt-family exports attempt a faceted STEP via mesh_to_solid sew.
 T6 — FEM verification renders are pass-indexed so a volfrac retry no longer
      overwrites pass-1 evidence in out_dir/fem.
 T7 — res.topopt["verification"] carries the extra telemetry fields.
+T8 — a fixed/load region that resolves to zero nodes is a hard error:
+     optimizing under constraints that are absent from the geometry produces
+     a meaningless result (previously it was a buried warning while the run
+     shipped a blob).
 """
 
 from __future__ import annotations
@@ -208,3 +212,40 @@ def test_fem_renders_are_pass_indexed(monkeypatch, tmp_path: Path) -> None:
     if p2:
         assert any(n.startswith("vonmises_p2_") for n in p2)
         assert any(n.startswith("deformed_p2_export_") for n in p2)
+
+
+def test_unresolved_fixed_region_is_a_hard_error(tmp_path: Path) -> None:
+    """T8: the spec's 'bore #2' fixed region cannot resolve when the geometry
+    only contains one scanned bore — the run must refuse instead of
+    optimizing a part clamped at the wrong place."""
+    from cadx.cad.engine import run_topopt_pipeline
+
+    case = LoadCase(
+        name="op",
+        fixed=[
+            RegionSpec(kind="hole", hole_index=1),
+            RegionSpec(kind="hole", hole_index=2),
+        ],
+        loads=[
+            LoadSpec(
+                region=RegionSpec(kind="face", axis="+x", margin_mm=1.0),
+                force_n=[0.0, 0.0, -50.0],
+            )
+        ],
+    ).model_dump()
+    src = tmp_path / "b.stl"
+    _box_mesh().export(str(src))
+    res = run_topopt_pipeline(
+        mesh_path=src,
+        out_dir=tmp_path / "o",
+        load_cases=[case],
+        optimize={"target_volume_fraction": 0.5, "max_iterations": 4},
+        material="pla",
+        voxel_mm=VOXEL_MM,
+        anchors=[dict(_ANCHOR)],  # one anchor only — hole_index=2 misses
+        scan_anchors=False,
+        runtime=RuntimeSettings(),
+    )
+    assert not res.ok
+    assert "did not resolve" in (res.error or "")
+    assert "hole" in res.error
