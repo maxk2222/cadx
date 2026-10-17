@@ -17,8 +17,10 @@ Tiers:
   findings are passed in via ``feature_findings`` (never recomputed here);
   hole-pattern evidence is reported when recognition actually ran.
   ``_feature_placement`` adds per-feature checks — void axis/kind, rib/boss
-  inside the stated envelope, parseable position hints — the l_bracket trap
-  class a legal-ish overall envelope hides.
+  inside the stated envelope, parseable position hints (``x=12`` offsets,
+  ``75mm from -x end`` end-relative offsets resolved against the measured
+  bbox, ``centred in y`` mid-plane hints, ``+y``/``front`` face hints) — the
+  l_bracket trap class a legal-ish overall envelope hides.
 - robustness: DfM warnings + declared min-wall — hints tier. UNVERIFIED when
   the evidence is absent; never FAIL just because a detector was skipped
   (a faceted-solid mesh fallback already owns its own tier).
@@ -71,8 +73,28 @@ _PROTRUSION_TYPES = {"rib", "gusset", "boss", "tube", "pin", "post", "stud", "st
 _AXIS_TEXT_RE = re.compile(
     r"\b([xyz])[\s-]*axis\b|\balong\s+(?:the\s+)?([xyz])(?:[\s-]*axis)?\b", re.I
 )
-# machine-readable position hints: "x=12" offsets and "+y"/"front" face words
+# machine-readable position hints: "x=12" offsets, "75mm from -x end"
+# end-relative offsets, "centred in y" mid-plane hints, "+y"/"front" face words
 _POS_COORD_RE = re.compile(r"\b([xyz])\s*=\s*(-?\d+(?:\.\d+)?)", re.I)
+_POS_END_NUM_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(mm|cm)?", re.I)
+# "75mm from -x end", "20 and 75mm from the +y edge" — the sign is mandatory
+# ("from x end" is ambiguous which end) and binds the bbox lo/hi side
+_POS_END_RE = re.compile(
+    r"(?<![=\w.\-])((?:\d+(?:\.\d+)?\s*(?:mm|cm)?\s*(?:(?:,|\band\b|&|/)\s*)?)+?)"
+    r"\s*(?:(?:in|back|over)\s+)?from\s+(?:the\s+)?([+-])([xyz])"
+    r"(?:[\s-]*(?:ends?|edges?|sides?|faces?))?\b",
+    re.I,
+)
+# "between 20 and 30mm"/"20 to 30mm" are ranges, not point offsets — the
+# whole hint stays unverifiable rather than checking a wrong single value
+_POS_END_RANGE_RE = re.compile(r"(?:\bbetween|\bto)\s*$", re.I)
+# "centred in y", "centered about the x axis", "mid y", "middle of z" -> 0.0
+_POS_MID_RE = re.compile(
+    r"\bcent(?:er|re)e?d?\s+(?:in|on|about|across|along)\s+(?:the\s+)?"
+    r"([xyz])(?:[\s-]*axis)?\b"
+    r"|\bmid(?:dle)?[\s-]*(?:of\s+(?:the\s+)?)?([xyz])(?:[\s-]*axis)?\b",
+    re.I,
+)
 _POS_FACE_TOKEN_RE = re.compile(r"(?<![\w])([+-][xyz])(?![\w])")
 _POS_FACE_WORDS = {
     "top": "+z",
@@ -167,21 +189,68 @@ def _stated_envelope(spec: dict[str, Any] | None) -> dict[str, float]:
     return out
 
 
-def _position_expectations(text: str) -> tuple[dict[str, float], list[str]]:
+def _position_expectations(
+    text: str,
+) -> tuple[dict[str, float], list[str], list[tuple[str, str, float]]]:
     """Parse machine-readable position hints out of free text:
-    ``x=12``-style coordinate offsets and ``+y``/``front``-style face hints.
-    Both signs of one axis ('front and back') cancel — not a side constraint."""
+    ``x=12``-style coordinate offsets, ``75mm from -x end``-style end/edge
+    offsets (returned as ``(axis, end_sign, dist_mm)`` triples — the consumer
+    resolves them against the measured bbox: ``-x`` -> ``xmin + d``,
+    ``+x`` -> ``xmax - d``), ``centred in y`` mid-plane hints (-> ``y=0``),
+    and ``+y``/``front``-style face hints.
+    Both signs of one axis ('front and back') cancel — not a side constraint.
+    Parsed spans are masked so a token is never read as two hint kinds."""
     low = text.lower()
-    coords = {m.group(1).lower(): float(m.group(2)) for m in _POS_COORD_RE.finditer(low)}
-    faces = {m.group(1) for m in _POS_FACE_TOKEN_RE.finditer(low)}
+    masked = list(low)
+
+    def _mask(span: tuple[int, int]) -> None:
+        for p in range(*span):
+            masked[p] = " "
+
+    coords: dict[str, float] = {}
+    for m in _POS_COORD_RE.finditer(low):
+        coords[m.group(1).lower()] = float(m.group(2))
+        _mask(m.span())
+    ends: list[tuple[str, str, float]] = []
+    work = "".join(masked)
+    for m in _POS_END_RE.finditer(work):
+        if _POS_END_RANGE_RE.search(work[: m.start(1)]):
+            continue  # unmasked on purpose — the ±axis still reads as a face hint
+        gtext = m.group(1)
+        nums = list(_POS_END_NUM_RE.finditer(gtext))
+        for n in nums:
+            # bare number in a list: trust it only when conjoined by
+            # "and"/"&"/"/" — "count 2, 30mm from -x" drops the 2
+            if (
+                not n.group(2)
+                and len(nums) > 1
+                and not re.search(r"(?:\band\b|&|/)\s*$", gtext[: n.start()])
+                and not re.match(r"\s*(?:\band\b|&|/)", gtext[n.end() :])
+            ):
+                continue
+            unit = (n.group(2) or "mm").lower()
+            ends.append(
+                (
+                    m.group(3).lower(),
+                    m.group(2),
+                    float(n.group(1)) * (10.0 if unit == "cm" else 1.0),
+                )
+            )
+        _mask(m.span())
+    for m in _POS_MID_RE.finditer("".join(masked)):
+        ax = next(g for g in m.groups() if g).lower()
+        coords.setdefault(ax, 0.0)
+        _mask(m.span())
+    work = "".join(masked)
+    faces = {m.group(1) for m in _POS_FACE_TOKEN_RE.finditer(work)}
     for word, ax in _POS_FACE_WORDS.items():
-        if re.search(rf"\b{re.escape(word)}\b", low):
+        if re.search(rf"\b{re.escape(word)}\b", work):
             faces.add(ax)
     for letter in "xyz":
         if f"+{letter}" in faces and f"-{letter}" in faces:
             faces.discard(f"+{letter}")
             faces.discard(f"-{letter}")
-    return coords, sorted(faces)
+    return coords, sorted(faces), ends
 
 
 def _feature_hint_axes(f: dict[str, Any]) -> set[str]:
@@ -193,7 +262,7 @@ def _feature_hint_axes(f: dict[str, Any]) -> set[str]:
         out.add(ax)
     text = f"{f.get('position') or ''} {f.get('description') or ''}"
     out |= {m.group(1) for m in _HINT_AXIS_RE.finditer(text.lower())}
-    _c, faces = _position_expectations(text)
+    _c, faces, _ends = _position_expectations(text)
     out |= {fa[1] for fa in faces}
     return out
 
@@ -280,24 +349,74 @@ def _void_kind_axis_check(
         checks.append(_check(check_name, TIER_FEATURES, "FAIL", ev))
 
 
+def _bbox_bounds(bbox_min: Any, bbox_max: Any) -> dict[str, tuple[float, float]]:
+    """Measured part bbox as ``{axis: (lo, hi)}`` — the reference end/edge
+    that "75mm from -x end"-style hints resolve against."""
+    if not (
+        isinstance(bbox_min, list | tuple)
+        and isinstance(bbox_max, list | tuple)
+        and len(bbox_min) == 3
+        and len(bbox_max) == 3
+    ):
+        return {}
+    try:
+        return {a: (float(bbox_min[j]), float(bbox_max[j])) for j, a in enumerate("xyz")}
+    except (TypeError, ValueError):
+        return {}
+
+
+def _centre_coord_check(
+    centers: list[Any], wants: dict[str, list[float]]
+) -> tuple[list[dict[str, Any]], int]:
+    """Per-axis absolute-coord check against measured [x, y] centres: each
+    expected value passes when the nearest centre is within _POS_TOL_MM.
+    z stays unverifiable — centres carry no z."""
+    violations: list[dict[str, Any]] = []
+    verified = 0
+    for ax, ax_wants in sorted(wants.items()):
+        if ax == "z":
+            continue
+        idx = 0 if ax == "x" else 1
+        for want in ax_wants:
+            nearest = min(centers, key=lambda c: abs(float(c[idx]) - want))
+            delta = abs(float(nearest[idx]) - want)
+            if delta <= _POS_TOL_MM:
+                verified += 1
+            else:
+                violations.append(
+                    {
+                        "axis": ax,
+                        "expected_mm": want,
+                        "measured_mm": round(float(nearest[idx]), 3),
+                        "delta_mm": round(delta, 3),
+                    }
+                )
+    return violations, verified
+
+
 def _void_position_check(
     i: int,
     name: str,
     f: dict[str, Any],
     cands: list[dict[str, Any]],
+    bbox_min: Any,
+    bbox_max: Any,
     checks: list[dict[str, Any]],
 ) -> None:
     """Verify the measured centre honours machine-readable position hints
-    ('x=12', '+y', 'front') — conservative: only unambiguously parseable
-    hints are checked, everything else is UNVERIFIED. Measured void centres
+    ('x=12', '75mm from -x end', 'centred in y', '+y', 'front') —
+    conservative: only unambiguously parseable hints are checked, everything
+    else is UNVERIFIED. End-relative offsets resolve to absolute centred
+    coords via the measured bbox ('-x end +75mm' -> x=xmin+75); without bbox
+    bounds they stay unverifiable, never a guess. Measured void centres
     carry plan-view [x, y] only, so z constraints stay unverifiable."""
     pos = str(f.get("position") or "").strip()
     if not pos:
         return
     check_name = f"feat_{i}_position"
-    coords, faces = _position_expectations(pos)
+    coords, faces, ends = _position_expectations(pos)
     base: dict[str, Any] = {"feature": name, "position": pos[:160]}
-    if not coords and not faces:
+    if not coords and not faces and not ends:
         checks.append(
             _check(
                 check_name,
@@ -307,7 +426,11 @@ def _void_position_check(
             )
         )
         return
-    expected = {"coords": coords, "faces": faces}
+    expected: dict[str, Any] = {"coords": coords, "faces": faces}
+    if ends:
+        expected["ends"] = [
+            {"axis": ax, "end": f"{sign}{ax}", "offset_mm": d} for ax, sign, d in ends
+        ]
     centers = [
         c
         for g in cands
@@ -324,25 +447,16 @@ def _void_position_check(
             )
         )
         return
-    violations: list[dict[str, Any]] = []
-    verified = 0
-    for ax, want in sorted(coords.items()):
-        if ax == "z":
-            continue  # centres carry no z — left UNVERIFIED below
-        idx = 0 if ax == "x" else 1
-        nearest = min(centers, key=lambda c: abs(float(c[idx]) - want))
-        delta = abs(float(nearest[idx]) - want)
-        if delta <= _POS_TOL_MM:
-            verified += 1
-        else:
-            violations.append(
-                {
-                    "axis": ax,
-                    "expected_mm": want,
-                    "measured_mm": round(float(nearest[idx]), 3),
-                    "delta_mm": round(delta, 3),
-                }
-            )
+    bounds = _bbox_bounds(bbox_min, bbox_max)
+    wants: dict[str, list[float]] = {}
+    for ax, want in coords.items():
+        wants.setdefault(ax, []).append(want)
+    for ax, sign, dist in ends:
+        bnd = bounds.get(ax)
+        if bnd is not None:
+            lo, hi = bnd
+            wants.setdefault(ax, []).append(lo + dist if sign == "-" else hi - dist)
+    violations, verified = _centre_coord_check(centers, wants)
     for face in faces:
         if face[1] == "z":
             continue  # not verifiable from [x, y] centres
@@ -364,7 +478,7 @@ def _void_position_check(
     if violations:
         ev["violations"] = violations[:_MAX_EVIDENCE]
         checks.append(_check(check_name, TIER_FEATURES, "FAIL", ev))
-    elif verified and len(coords) + len(faces) == verified:
+    elif verified and len(coords) + len(faces) + len(ends) == verified:
         checks.append(_check(check_name, TIER_FEATURES, "PASS", ev))
     else:
         ev["reason"] = (
@@ -468,6 +582,8 @@ def _feature_placement(
     spec: dict[str, Any],
     measured: dict[str, Any],
     bbox: Any,
+    bbox_min: Any,
+    bbox_max: Any,
     tol_pct: float,
     tol_mm: float,
     checks: list[dict[str, Any]],
@@ -526,7 +642,7 @@ def _feature_placement(
         else:
             continue
         _void_kind_axis_check(i, name, ftype, f, cands, other, checks)
-        _void_position_check(i, name, f, cands, checks)
+        _void_position_check(i, name, f, cands, bbox_min, bbox_max, checks)
 
 
 def _structural(res: dict[str, Any], checks: list[dict[str, Any]]) -> None:
@@ -907,10 +1023,13 @@ def verify_spec(
     _envelope(spec, res, dim_tolerance_pct, dim_tolerance_mm, checks)
     _features(spec, measured, feature_findings, checks)
     if (spec or {}).get("features"):
+        analysis = res.get("analysis") or {}
         _feature_placement(
             spec,
             measured,
-            (res.get("analysis") or {}).get("bbox_size"),
+            analysis.get("bbox_size"),
+            analysis.get("bbox_min"),
+            analysis.get("bbox_max"),
             dim_tolerance_pct,
             dim_tolerance_mm,
             checks,

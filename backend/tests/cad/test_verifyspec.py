@@ -476,6 +476,112 @@ def test_position_prose_is_unverified():
     assert "not machine-parseable" in c["evidence"]["reason"]
 
 
+def _res_bbox90(**over):
+    """90 mm long part spanning x in [-45, +45] — the end-offset fixture."""
+    res = _res(
+        analysis={
+            "bbox_size": [90.0, 30.0, 20.0],
+            "bbox_min": [-45.0, -15.0, 0.0],
+            "bbox_max": [45.0, 15.0, 20.0],
+            "solid_count": 1,
+            "is_valid": True,
+        }
+    )
+    res.update(over)
+    return res
+
+
+def test_position_end_offset_verified():
+    """'75mm from -X end' resolves against the measured bbox to x=xmin+75=+30
+    — not the absolute x=75 the codegen bug produced."""
+    spec = _spec(
+        features=[_feat(name="mount", type="hole", position="75mm from -X end, centered in Y")]
+    )
+    res = _res_bbox90(features={"hole_groups": [_hole_group(id="h1", centers=[[30.2, 0.0]])]})
+    report = verify_spec(spec, res, feature_findings=[])
+    c = _by_name(report)["feat_0_position"]
+    assert c["status"] == "PASS"
+    assert c["evidence"]["expected"]["ends"] == [{"axis": "x", "end": "-x", "offset_mm": 75.0}]
+    assert c["evidence"]["expected"]["coords"]["y"] == 0.0
+
+
+def test_position_end_offset_violated_fails():
+    """Bore placed at absolute x=75 instead of xmin+75=+30 -> FAIL with delta."""
+    spec = _spec(features=[_feat(name="mount", type="hole", position="75mm from -X end")])
+    res = _res_bbox90(features={"hole_groups": [_hole_group(id="h1", centers=[[75.0, 0.0]])]})
+    report = verify_spec(spec, res, feature_findings=[])
+    c = _by_name(report)["feat_0_position"]
+    assert c["status"] == "FAIL"
+    v = c["evidence"]["violations"][0]
+    assert v["axis"] == "x"
+    assert v["expected_mm"] == 30.0
+    assert v["measured_mm"] == 75.0
+    assert v["delta_mm"] == 45.0
+
+
+def test_position_end_offset_max_end():
+    """'10mm from the +x edge' -> x=xmax-10=+35."""
+    spec = _spec(features=[_feat(name="mount", type="hole", position="10 mm from the +x edge")])
+    res = _res_bbox90(features={"hole_groups": [_hole_group(id="h1", centers=[[35.0, 0.0]])]})
+    report = verify_spec(spec, res, feature_findings=[])
+    assert _by_name(report)["feat_0_position"]["status"] == "PASS"
+
+
+def test_position_end_offset_without_bbox_is_unverified():
+    """End-relative hints need bbox_min/bbox_max — sizes alone can't resolve
+    them, so the hint stays UNVERIFIED rather than guessing."""
+    spec = _spec(features=[_feat(name="mount", type="hole", position="75mm from -X end")])
+    res = _res(features={"hole_groups": [_hole_group(id="h1", centers=[[30.0, 0.0]])]})
+    report = verify_spec(spec, res, feature_findings=[])
+    c = _by_name(report)["feat_0_position"]
+    assert c["status"] == "UNVERIFIED"
+    assert c["evidence"]["expected"]["ends"][0]["end"] == "-x"
+
+
+def test_position_end_offset_and_centered_in_y():
+    """'30 mm from -x end, centred in Y' -> x=xmin+30=-15 and y=0 both checked."""
+    spec = _spec(
+        features=[_feat(name="mount", type="hole", position="30 mm from -x end, centred in Y")]
+    )
+    res = _res_bbox90(features={"hole_groups": [_hole_group(id="h1", centers=[[-15.0, 0.4]])]})
+    report = verify_spec(spec, res, feature_findings=[])
+    c = _by_name(report)["feat_0_position"]
+    assert c["status"] == "PASS"
+    assert c["evidence"]["expected"]["coords"]["y"] == 0.0
+    # an off-centre y must FAIL the same check
+    res_bad = _res_bbox90(features={"hole_groups": [_hole_group(id="h1", centers=[[-15.0, 9.0]])]})
+    c = _by_name(verify_spec(spec, res_bad, feature_findings=[]))["feat_0_position"]
+    assert c["status"] == "FAIL"
+    assert c["evidence"]["violations"][0]["axis"] == "y"
+
+
+def test_position_two_end_offsets_both_checked():
+    """'20mm and 75mm from -X end' -> two expected centres at xmin+20/xmin+75."""
+    spec = _spec(
+        features=[_feat(name="mounts", type="hole", count=2, position="20mm and 75mm from -X end")]
+    )
+    res = _res_bbox90(
+        features={
+            "hole_groups": [_hole_group(id="h1", count=2, centers=[[-24.8, 0.0], [29.9, 0.0]])]
+        }
+    )
+    report = verify_spec(spec, res, feature_findings=[])
+    assert _by_name(report)["feat_0_position"]["status"] == "PASS"
+
+
+def test_position_end_range_stays_unverified():
+    """'between 20 and 30mm from -x end' is a range — never a point check.
+    The bare '-x' still degrades gracefully to a side-face hint."""
+    spec = _spec(
+        features=[_feat(name="mount", type="hole", position="between 20 and 30mm from -x end")]
+    )
+    res = _res_bbox90(features={"hole_groups": [_hole_group(id="h1", centers=[[-25.0, 0.0]])]})
+    report = verify_spec(spec, res, feature_findings=[])
+    c = _by_name(report)["feat_0_position"]
+    assert "ends" not in c["evidence"]["expected"]
+    assert c["status"] == "PASS"  # face hint only: centre is on the -x side
+
+
 def test_placement_checks_stay_json_serializable():
     spec = _spec(
         features=[
