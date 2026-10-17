@@ -616,6 +616,28 @@ def _copy_mesh_artifacts(
     return out
 
 
+def _promote_topopt_exports(
+    ctx: AgentCtx, iteration: int, res: dict[str, Any]
+) -> dict[str, str]:
+    """Copy the winning optimize iteration's ``exports/model.*`` up to the
+    version-level ``exports/`` dir so API/UI serve the optimized part, not the
+    pre-topopt base. Returns artifact records for the promoted paths."""
+    it_dir = storage.iteration_dir(ctx.project_id, ctx.version_id, iteration)
+    out: dict[str, str] = {}
+    exp_dir = storage.ensure(storage.version_dir(ctx.project_id, ctx.version_id) / "exports")
+    for fmt, rel in (res.get("exports") or {}).items():
+        if not rel:
+            continue
+        src = it_dir / "exports" / Path(str(rel)).name
+        if not src.exists():
+            continue
+        dst = exp_dir / src.name
+        if src.resolve() != dst.resolve():
+            shutil.copy2(src, dst)
+        out[f"export:{fmt}"] = storage.relpath(dst)
+    return out
+
+
 def _copy_fem_artifacts(ctx: AgentCtx, iteration: int) -> dict[str, str]:
     """Copy fem/ + topopt/ iteration outputs to the version root."""
     it_dir = storage.iteration_dir(ctx.project_id, ctx.version_id, iteration)
@@ -723,9 +745,7 @@ async def _run_topopt_phase(ctx: AgentCtx, outcome: RunOutcome, spec: PartSpec) 
         return outcome
 
     arts = _copy_best_artifacts(ctx, it, res)
-    for fmt, rel in (res.get("exports") or {}).items():
-        if rel:
-            arts[f"export:{fmt}"] = rel
+    arts.update(_promote_topopt_exports(ctx, it, res))
     arts.update(_copy_fem_artifacts(ctx, it))
     outcome.artifacts.update(arts)
     outcome.fem = res.get("fem")
@@ -744,6 +764,9 @@ async def _run_topopt_phase(ctx: AgentCtx, outcome: RunOutcome, spec: PartSpec) 
     if worst is not None and worst < 1.0:
         outcome.status = "needs_review"
         outcome.mode_note += f" | optimized part fails: SF {worst:.2f} < 1"
+    if (top.get("verification") or {}).get("valid") is False:
+        outcome.status = "needs_review"
+        outcome.mode_note += " | export FEM solve degenerate — optimization unverified"
     await ctx.emit(
         "optimize",
         it,

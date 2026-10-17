@@ -1449,6 +1449,20 @@ def run_topopt_pipeline(  # noqa: C901
     }
     if result.history and result.history[-1].get("beta") is not None:
         verification["beta_final"] = result.history[-1]["beta"]
+    # degenerate export solve — load regions missed the extracted mesh, the
+    # part flies away (disp >> part size) or compliance goes non-physical.
+    # The SF number is then meaningless, flag instead of storing as valid.
+    span = float(np.linalg.norm(domain.pitch * np.asarray(domain.dims)))
+    disp = verification["max_disp_export_mm"]
+    comps = [c for c in verification["compliance_export_j"] if c is not None]
+    if (comps and any(c <= 0 for c in comps)) or (disp is not None and disp > 10 * span):
+        verification["valid"] = False
+        res.topopt["warnings"].append(
+            "export FEM solve degenerate (unconstrained part or unresolved "
+            "load regions) — sf_export not trustworthy"
+        )
+    else:
+        verification["valid"] = True
     if verify.worst_safety_factor is not None and verify_export.worst_safety_factor is not None:
         # >0 means the smoothed export mesh is stiffer than the mask suggests
         verification["sf_gap"] = round(
