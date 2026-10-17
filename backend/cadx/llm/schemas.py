@@ -305,8 +305,11 @@ class OptimizeSpec(BaseModel):
     print_direction: Annotated[str, Field(max_length=3)] = (
         "+z"  # build direction for the self-supporting filter (+x/-x/...)
     )
-    filter: Annotated[str, Field(max_length=16)] = (
-        "cone"  # cone | heaviside (crisp 0/1, threshold-robust extraction)
+    filter: Annotated[str, Field(max_length=24)] = (
+        "cone"  # cone | heaviside | helmholtz | helmholtz+heaviside —
+        # heaviside variants give crisp 0/1 fields (threshold-robust
+        # extraction); helmholtz is the PDE density filter (Lazarov &
+        # Sigmund) with consistent feature size at the domain boundary
     )
     robust: bool = (
         False  # robust formulation: worst-case over eroded/intermediate/dilated

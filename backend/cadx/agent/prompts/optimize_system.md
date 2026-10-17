@@ -43,6 +43,9 @@ pick the best one.
     on large parts, use when a run would be slow.
   - `filter:"heaviside"`: crisp near-0/1 density — better surfaces and
     threshold-robust resampling, at more iterations.
+    `"helmholtz+heaviside"` is the PDE-filter variant — crisper edges AND
+    consistent member size right at the part boundary (no thinned edge
+    members); plain `"helmholtz"` filters without the 0/1 projection.
   - `load_cases`: override/extend the spec cases (same schema).
   - `material`, `voxel_mm`, `max_iterations`, `density_threshold`.
 - `refine_features(run_index, features?, restore_planes?, load_cases?)` —

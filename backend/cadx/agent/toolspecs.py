@@ -636,15 +636,18 @@ STRUCT_TOOLS = [
             },
             "filter": {
                 "type": "string",
-                "enum": ["cone", "heaviside"],
+                "enum": ["cone", "heaviside", "helmholtz", "helmholtz+heaviside"],
                 "description": "density filter — 'heaviside' gives crisp 0/1 "
-                "fields (threshold-robust extraction, slower)",
+                "fields (threshold-robust extraction, slower); 'helmholtz' is "
+                "the PDE filter (consistent feature size at domain boundaries, "
+                "no thinned edge members); 'helmholtz+heaviside' combines both",
             },
             "robust": {
                 "type": "boolean",
                 "description": "robust formulation (Sigmund/Wang): optimize the "
                 "WORST of eroded/intermediate/dilated designs — print-tolerant "
-                "and threshold-insensitive; forces the heaviside filter, ~3x cost",
+                "and threshold-insensitive; forces a heaviside-bearing filter "
+                "('heaviside' or 'helmholtz+heaviside'), ~3x cost",
             },
             "robust_delta_eta": {
                 "type": "number",

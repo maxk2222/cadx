@@ -50,10 +50,21 @@ class TopOptParams:
     converge_patience: int = 5  # also stop after N iters of stalled compliance
     move: float = 0.2  # OC move limit
     threshold: float = 0.5  # iso threshold for extraction
-    # M3.1: density filter variant — "cone" (classic sensitivity filter) or
-    # "heaviside" (cone filter + smoothed Heaviside projection; beta doubles
-    # on every compliance stall up to beta_max → crisp 0/1 designs whose
-    # extraction is threshold-robust)
+    # M3.1: density filter variant —
+    #   "cone"                classic normalized sensitivity filter (H x / Hs)
+    #   "heaviside"           cone filter + smoothed Heaviside projection
+    #                         (beta doubles on every compliance stall up to
+    #                         beta_max → crisp 0/1 designs whose extraction
+    #                         is threshold-robust)
+    #   "helmholtz"           Helmholtz PDE filter (Lazarov & Sigmund 2011):
+    #                         x̃ = L⁻¹x with L = I - r²Δ on the solid cells,
+    #                         homogeneous Neumann BC — consistent filter
+    #                         length right up to the domain boundary (no
+    #                         cone-region clipping → no thinned edge
+    #                         members) and a sparse SPD solve instead of the
+    #                         dense-distance cone matrix
+    #   "helmholtz+heaviside" PDE filter + Heaviside projection (the crisp
+    #                         variant without the cone boundary artefacts)
     filter: str = "cone"
     beta0: float = 1.0  # initial Heaviside sharpness
     beta_max: float = 8.0  # cap — beyond this the projection is ~binary
@@ -234,6 +245,245 @@ def _filter_matrix(domain: VoxelDomain, rmin_cells: float) -> sparse.csr_matrix:
     return sparse.coo_matrix((vals, (rows, cols)), shape=(ns, ns)).tocsr()
 
 
+def _helmholtz_operator(domain: VoxelDomain, r_cells: float) -> sparse.csr_matrix:
+    """Helmholtz PDE-filter operator  L = I - r²·Δ  on the solid cells
+    (Lazarov & Sigmund 2011, doi:10.1002/nme.3072).
+
+    Δ is the graph Laplacian of the solid mask on the regular voxel grid in
+    CELL units (the pitch is already folded into `r_cells`):
+        Δx_e = Σ_{n ∈ N(e)} (x_n - x_e)     with N(e) the face neighbours
+    Restricted to existing SOLID neighbours — the homogeneous Neumann
+    boundary condition (∂x̃/∂n = 0, natural BC of the weak form) drops every
+    term whose neighbour lies outside the part or outside the grid entirely.
+    Equivalently, a ghost-cell reflection x_ghost = x_e would make
+    (x_ghost - x_e) ≡ 0. Consequence: the diagonal counts the number of
+    EXISTING solid neighbours (1…6), never the full 6, and L·1 = 1 is exact
+    everywhere including the boundary — the filter preserves constant fields
+    and keeps a consistent effective length scale right up to the domain
+    edge, which is exactly where the clipped cone filter misbehaves.
+
+    L is symmetric (-r² on both sides of every solid-solid edge) and
+    strictly diagonally dominant (diag - |off-row sum| = 1) → SPD, a single
+    direct factorization serves every solve.
+    """
+    solid_idx = np.flatnonzero(domain.solid.ravel())
+    ns = solid_idx.size
+    dims = domain.dims
+    pos = np.full(domain.cell_count, -1, dtype=np.int64)
+    pos[solid_idx] = np.arange(ns, dtype=np.int64)
+    gi, gj, gk = np.unravel_index(solid_idx, dims)
+    grid = (gi, gj, gk)
+    r2 = float(r_cells) ** 2
+    rows: list[np.ndarray] = []
+    cols: list[np.ndarray] = []
+    n_nb = np.zeros(ns, dtype=np.int64)
+    for ax in range(3):
+        for step in (-1, 1):
+            nb = [grid[0], grid[1], grid[2]]
+            nb[ax] = nb[ax] + step  # rebinds a NEW array — grid stays intact
+            inside = np.ones(ns, dtype=bool)
+            for a in range(3):
+                inside &= (nb[a] >= 0) & (nb[a] < dims[a])
+            # clipped flat index is only read where `inside` — the clip keeps
+            # raveling in-range instead of branching
+            nflat = np.ravel_multi_index(
+                tuple(np.clip(nb[a], 0, dims[a] - 1) for a in range(3)), dims
+            )
+            tgt = pos[nflat]  # -1 for void / non-solid neighbours
+            ok = inside & (tgt >= 0)
+            rows.append(np.nonzero(ok)[0])
+            cols.append(tgt[ok])
+            n_nb += ok
+    diag = 1.0 + r2 * n_nb.astype(float)
+    row_idx = np.arange(ns, dtype=np.int64)
+    vals = np.concatenate([-np.full(sum(r.size for r in rows), r2), diag])
+    return sparse.coo_matrix(
+        (vals, (np.concatenate([*rows, row_idx]), np.concatenate([*cols, row_idx]))),
+        shape=(ns, ns),
+    ).tocsr()
+
+
+@dataclass
+class _FilterOps:
+    """The linear density-filter operator on the solid cells.
+
+    kind "cone"      — normalized cone filter:  apply x → (H x) / Hs
+    kind "helmholtz" — PDE filter:              apply x → L⁻¹ x
+                       (L = I - r²Δ, SPD, one factorization per simp run)
+
+    Both operators are symmetric → the adjoint (sensitivity chain rule) is a
+    second application of the same filter. `stats["solve_s"]` accumulates
+    helmholtz solve time for the perf log on large domains.
+    """
+
+    kind: str  # "cone" | "helmholtz"
+    solid_idx: np.ndarray
+    H: sparse.csr_matrix | None = None
+    Hs: np.ndarray | None = None
+    solve: Callable[[np.ndarray], np.ndarray] | None = None
+    stats: dict[str, float] = field(default_factory=dict)
+
+    def apply(self, xs: np.ndarray) -> np.ndarray:
+        """Filtered field x̃ of blueprint values xs (solid_idx order)."""
+        if self.kind == "helmholtz":
+            assert self.solve is not None
+            return np.asarray(self.solve(np.asarray(xs, dtype=float)))
+        assert self.H is not None and self.Hs is not None
+        return np.asarray(self.H @ xs).ravel() / self.Hs
+
+    def adjoint(self, d: np.ndarray) -> np.ndarray:
+        """dC/dx̃ → dC/dx — both operators are symmetric (self-adjoint)."""
+        if self.kind == "helmholtz":
+            assert self.solve is not None
+            return np.asarray(self.solve(np.asarray(d, dtype=float)))
+        assert self.H is not None and self.Hs is not None
+        return np.asarray(self.H @ (d / self.Hs)).ravel()
+
+    def oc(self, xb: np.ndarray, d: np.ndarray) -> np.ndarray:
+        """Classic OC sensitivity heuristic (top88-style length-scale
+        regularization — a heuristic, NOT the true gradient):
+            cone:      H(x·d) / (x·Hs)      — Hs re-normalizes the product
+            helmholtz: L⁻¹(x·d) / x         — L⁻¹ is already normalized
+                                             (L·1 = 1 → L⁻¹·1 = 1), so the
+                                             Hs division has no analog.
+        `xb`/`d` are (nsolid,) blueprint values / raw sensitivities."""
+        xb = np.asarray(xb, dtype=float)
+        xd = xb * np.asarray(d, dtype=float)
+        if self.kind == "helmholtz":
+            assert self.solve is not None
+            return np.asarray(self.solve(xd)) / np.clip(xb, 1e-3, None)
+        assert self.H is not None and self.Hs is not None
+        return np.asarray(self.H @ xd).ravel() / np.clip(xb * self.Hs, 1e-3, None)
+
+
+def _build_filter_ops(
+    domain: VoxelDomain,
+    solid_idx: np.ndarray,
+    rmin_cells: float,
+    kind: str,  # "cone" | "helmholtz"
+) -> _FilterOps:
+    """Construct the density-filter operator — cone matrix or a factored
+    Helmholtz system (the factorization happens ONCE here per simp() call).
+
+    `rmin_cells` is the CONE-equivalent radius; Lazarov & Sigmund's PDE
+    parameter r relates to the classic filter length by  rmin ≈ 2√3·r
+    (matching the kernels' second moments), so the same rmin_mm spec gives
+    comparable member sizes under both filters.
+    """
+    if kind == "cone":
+        H = _filter_matrix(domain, rmin_cells)
+        Hs = np.asarray(H.sum(axis=1)).ravel()
+        Hs[Hs <= 0] = 1.0
+        return _FilterOps(kind="cone", solid_idx=solid_idx, H=H, Hs=Hs)
+    r_cells = rmin_cells / (2.0 * math.sqrt(3.0))
+    L = _helmholtz_operator(domain, r_cells)
+    stats: dict[str, float] = {"solve_s": 0.0}
+    big = domain.cell_count > 200_000
+    t_fac = time.monotonic()
+    factor = None
+    with contextlib.suppress(Exception):  # spsolve fallback below
+        factor = spla.factorized(L.tocsc())
+    log.debug(
+        "topopt.helmholtz_operator",
+        nsolid=int(solid_idx.size),
+        r_cells=round(r_cells, 4),
+        nnz=int(L.nnz),
+        factorized=factor is not None,
+        factor_s=round(time.monotonic() - t_fac, 3),
+    )
+    Lc = L.tocsc()
+
+    def solve(b: np.ndarray) -> np.ndarray:
+        t = time.monotonic()
+        out = factor(b) if factor is not None else spla.spsolve(Lc, b)
+        dt = time.monotonic() - t
+        stats["solve_s"] += dt
+        if big:
+            log.debug("topopt.helmholtz_solve", nsolid=int(solid_idx.size), ms=round(dt * 1e3, 1))
+        return np.asarray(out, dtype=float)
+
+    return _FilterOps(kind="helmholtz", solid_idx=solid_idx, solve=solve, stats=stats)
+
+
+class _Projector:
+    """blueprint density → physical printed density chain.
+
+    Bundles the state simp()'s former _project/_chain closures captured so
+    the very same code path can be unit-tested (finite-difference gradient
+    checks run against this class). `beta` is mutable — the Heaviside
+    continuation writes it mid-loop via set_beta.
+    """
+
+    def __init__(
+        self,
+        *,
+        fops: _FilterOps,
+        solid: np.ndarray,  # (ncells,) bool flat solid mask
+        solid_idx: np.ndarray,
+        passive_solid: np.ndarray,  # (ncells,) bool — pinned rho=1
+        pvoid: np.ndarray,  # (ncells,) bool — pinned rho=RHO_MIN
+        am_layers: list[tuple[np.ndarray, np.ndarray | None]] | None,
+        heaviside: bool,
+        beta: float,
+    ) -> None:
+        self.fops = fops
+        self.solid = solid
+        self.solid_idx = solid_idx
+        self.passive_solid = passive_solid
+        self.pvoid = pvoid
+        self.am_layers = am_layers
+        self.heaviside = heaviside
+        self.beta = beta
+
+    def project(
+        self, xb: np.ndarray, eta: float = _ETA
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+        """Blueprint -> (xp, p, xt) at threshold `eta` — the filter chain
+        without the FEM solve. xp is the post-Heaviside density, p the
+        post-AM physical density, xt the filtered field (None without
+        Heaviside). Used by the MMA volume constraint on the dilated
+        realization, which needs no FEM pass."""
+        xp = xb.copy()
+        xt: np.ndarray | None = None
+        if self.heaviside:
+            xt = self.fops.apply(xb[self.solid_idx])
+            xp[self.solid_idx] = _heaviside(xt, self.beta, eta)
+            xp[self.passive_solid] = 1.0
+            xp[self.pvoid] = RHO_MIN
+        p = _am_forward(xp, self.solid, self.am_layers) if self.am_layers is not None else xp
+        return xp, p, xt
+
+    def chain(
+        self,
+        d_phys: np.ndarray,
+        xp: np.ndarray,
+        p: np.ndarray,
+        xt: np.ndarray | None,
+        xb: np.ndarray,
+        oc_filter: bool,
+        eta: float = _ETA,
+    ) -> np.ndarray:
+        """sensitivity wrt physical density → wrt blueprint x, back through
+        the AM and Heaviside/density filters. `oc_filter` selects the
+        classic OC sensitivity normalization on the unprojected path
+        (heuristic length-scale regularization — NOT the true gradient;
+        constraints pass oc_filter=False). `eta` must match the projection
+        the (xp, p, xt) triple was computed with."""
+        if self.am_layers is not None:
+            d_phys = _am_backward(d_phys, xp, p, self.solid, self.am_layers)
+        if self.heaviside:
+            # p = heaviside(fops(x)): dx = fopsᵀ(dc · dh/dx̃), fops symmetric
+            assert xt is not None
+            out = np.zeros(xb.size)
+            dxt = d_phys[self.solid_idx] * _heaviside_d(xt, self.beta, eta)
+            out[self.solid_idx] = self.fops.adjoint(dxt)
+            return out
+        out = d_phys.copy()
+        if oc_filter:
+            out[self.solid_idx] = self.fops.oc(xb[self.solid_idx], out[self.solid_idx])
+        return out
+
+
 def _prepare_solve(Kf: sparse.csr_matrix, spsolve_dofs: int) -> tuple[Any, Any]:
     """Per-iteration solver setup shared across load cases.
 
@@ -353,19 +603,26 @@ def simp(  # noqa: C901
     # constant, so build the COO index arrays once and reuse them
     ij_cache = (np.repeat(edof, 24, axis=1).ravel(), np.tile(edof, (1, 24)).ravel())
 
-    # sensitivity filter over solid cells
+    # density filter over the solid cells — "cone" (normalized distance
+    # matrix H x / Hs) or "helmholtz"/"helmholtz+heaviside" (PDE filter
+    # x̃ = L⁻¹x, L = I - r²Δ with Neumann BC — consistent filter length at
+    # the domain boundary, sparse SPD solve instead of the cone matrix)
     rmin_cells = max(1.2, params.rmin_mm / domain.pitch)
-    H = _filter_matrix(domain, rmin_cells)
-    Hs = np.asarray(H.sum(axis=1)).ravel()
-    Hs[Hs <= 0] = 1.0
     solid_idx = np.flatnonzero(solid)
+    pde_filter = params.filter in ("helmholtz", "helmholtz+heaviside")
+    fops = _build_filter_ops(domain, solid_idx, rmin_cells, "helmholtz" if pde_filter else "cone")
 
-    # M3.1 Heaviside projection + M2 AM support filter
-    heaviside = params.filter == "heaviside"
+    # M3.1 Heaviside projection + M2 AM support filter — the "+heaviside"
+    # variants run the smoothed projection on the FILTERED field; the plain
+    # filters keep the unprojected sensitivity-filter interpretation
+    heaviside = params.filter in ("heaviside", "helmholtz+heaviside")
     robust = bool(params.robust)
     if robust and not heaviside:
+        # robust evaluates shifted projection thresholds — it needs a
+        # Heaviside-bearing filter stage; keep the PDE stage if one was set
+        target = "helmholtz+heaviside" if pde_filter else "heaviside"
         warnings.append(
-            "robust formulation needs the Heaviside projection — filter forced to 'heaviside'"
+            f"robust formulation needs the Heaviside projection — filter forced to '{target}'"
         )
         heaviside = True
     eta_d = float(np.clip(params.robust_delta_eta, 0.0, 0.45)) if robust else 0.0
@@ -378,27 +635,23 @@ def simp(  # noqa: C901
             (_ETA + eta_d,) if params.robust_designs == "e" else (_ETA + eta_d, _ETA, _ETA - eta_d)
         )
     eta_vol = _ETA - eta_d  # volume constraint always on the dilated design
-    beta = params.beta0
     am_layers = _am_setup(domain, params.print_direction) if params.self_supporting else None
     if am_layers is not None and not am_layers:
         warnings.append("self_supporting: no solid cells found — AM filter inactive")
         am_layers = None
 
-    def _project(xb: np.ndarray, eta: float = _ETA):
-        """Blueprint -> (xp, p, xt) at threshold `eta` — the filter chain
-        without the FEM solve. xp is the post-Heaviside density, p the
-        post-AM physical density, xt the cone-filtered field (None without
-        Heaviside). Used by the MMA volume constraint on the dilated
-        realization, which needs no FEM pass."""
-        xp = xb.copy()
-        xt: np.ndarray | None = None
-        if heaviside:
-            xt = np.asarray(H @ xb[solid_idx]).ravel() / Hs
-            xp[solid_idx] = _heaviside(xt, beta, eta)
-            xp[passive_solid] = 1.0
-            xp[pvoid] = RHO_MIN
-        p = _am_forward(xp, solid, am_layers) if am_layers is not None else xp
-        return xp, p, xt
+    proj = _Projector(
+        fops=fops,
+        solid=solid,
+        solid_idx=solid_idx,
+        passive_solid=passive_solid,
+        pvoid=pvoid,
+        am_layers=am_layers,
+        heaviside=heaviside,
+        beta=params.beta0,
+    )
+    _project = proj.project
+    _chain = proj.chain
 
     def _physical(xb: np.ndarray, eta: float = _ETA) -> np.ndarray:
         """blueprint density -> physical printed density (flat cell order)."""
@@ -439,17 +692,16 @@ def simp(  # noqa: C901
         return params.penal_init + (params.penal - params.penal_init) * f
 
     def _set_beta(b: float) -> None:
-        nonlocal beta
-        beta = b
+        proj.beta = b
 
     def _eval(xb: np.ndarray, eta: float = _ETA):
         """One FEM evaluation at blueprint density `xb` projected at `eta`.
 
         Returns (xp, p, xt, ce_cases, obj_cases, us, Kf, factor, M):
-        pre-AM physical density, post-AM physical density, cone-filtered
-        density, per-case element strain energies, per-case compliances,
-        per-case displacement vectors, reduced stiffness and its solver
-        handles."""
+        pre-AM physical density, post-AM physical density, filtered
+        density (cone or PDE-filtered field), per-case element strain
+        energies, per-case compliances, per-case displacement vectors,
+        reduced stiffness and its solver handles."""
         pen = _penal_now()
         xp, p, xt = _project(xb, eta)
         E_e = Emin + np.power(p, pen) * (E0 - Emin)
@@ -472,35 +724,6 @@ def simp(  # noqa: C901
             ce_cases.append(np.einsum("ni,ij,nj->n", ue, ke, ue))
             obj_cases.append(float(F[free] @ u[free]))
         return xp, p, xt, ce_cases, obj_cases, us, Kf, factor, M
-
-    def _chain(
-        d_phys: np.ndarray,
-        xp: np.ndarray,
-        p: np.ndarray,
-        xt,
-        xb: np.ndarray,
-        oc_filter: bool,
-        eta: float = _ETA,
-    ):
-        """sensitivity wrt physical density → wrt blueprint x, back through
-        the AM and Heaviside filters. `oc_filter` selects the classic OC
-        sensitivity normalization on the plain cone path (heuristic
-        length-scale regularization — NOT the true gradient; constraints
-        pass oc_filter=False). `eta` must match the projection the
-        (xp, p, xt) triple was computed with."""
-        if am_layers is not None:
-            d_phys = _am_backward(d_phys, xp, p, solid, am_layers)
-        if heaviside:
-            # p = heaviside(H x / Hs): dx = H^T (dc * dh/dx̃ / Hs), H symmetric
-            out = np.zeros(ncells)
-            dxt = d_phys[solid_idx] * _heaviside_d(xt, beta, eta)
-            out[solid_idx] = np.asarray(H @ (dxt / Hs)).ravel()
-            return out
-        out = d_phys.copy()
-        if oc_filter:
-            xdc = H @ (xb[solid_idx] * out[solid_idx])
-            out[solid_idx] = xdc / np.clip(xb[solid_idx] * Hs, 1e-3, None)
-        return out
 
     def _sens_per_case(xb: np.ndarray, ev, oc_filter: bool, eta: float = _ETA) -> list[np.ndarray]:
         """Per-case objective sensitivity wrt blueprint x for the design
@@ -545,7 +768,7 @@ def simp(  # noqa: C901
                 warnings=warnings,
                 history=history,
                 heaviside=heaviside,
-                beta0=beta,
+                beta0=proj.beta,
                 cancelled=cancelled,
                 progress_cb=progress_cb,
                 progress_file=progress_file,
@@ -651,7 +874,9 @@ def simp(  # noqa: C901
         if robust:
             rec["obj_per_design"] = [round(o, 3) for o in obj_designs]
         if heaviside:
-            rec["beta"] = round(beta, 2)
+            rec["beta"] = round(proj.beta, 2)
+        if pde_filter and ncells > 200_000:
+            rec["helmholtz_solve_s"] = round(fops.stats.get("solve_s", 0.0), 2)
         history.append(rec)
         if progress_cb:
             progress_cb(it, rec)
@@ -669,10 +894,10 @@ def simp(  # noqa: C901
             rel = abs(objective - prev_objective) / prev_objective
             stall = stall + 1 if rel < params.tol else 0
             if stall >= params.converge_patience:
-                if heaviside and beta < params.beta_max:
-                    beta = min(beta * 2.0, params.beta_max)
+                if heaviside and proj.beta < params.beta_max:
+                    proj.beta = min(proj.beta * 2.0, params.beta_max)
                     stall = 0
-                    warnings.append(f"beta continuation -> {beta:g} at iteration {it}")
+                    warnings.append(f"beta continuation -> {proj.beta:g} at iteration {it}")
                     continue
                 warnings.append(
                     f"converged: compliance stalled (<{params.tol:g} rel. change "
