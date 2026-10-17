@@ -331,3 +331,52 @@ def test_spec_est_minus_end_insets_from_lo():
     h = a.holes[0]
     assert h.source == "spec-est"
     assert (h.x, h.y) == (-39.0, 0.0)  # lo -45 + max(1.5*4, 6)
+
+
+def test_spec_anchor_contradicting_coord_dropped():
+    """'75mm from -x end (x=20)' — the model-computed parenthetical
+    contradicts the end offset; the stated end hint wins, no phantom
+    second anchor appears."""
+    spec = _plate_spec(
+        [
+            Feature(
+                name="bore B",
+                type="bore",
+                dims={"diameter": 10.0},
+                position="75 mm from -x end, centered in y (x=20, y=0)",
+            ),
+        ]
+    )
+    a = build_anchors(spec, {}, None)
+    assert [(h.x, h.y) for h in a.holes] == [(30.0, 0.0)]
+
+
+def test_spec_anchor_agreeing_coord_dedupes():
+    """'20mm from -x end (x=-25)' — consistent hints collapse to one."""
+    spec = _plate_spec(
+        [
+            Feature(
+                name="bore A",
+                type="bore",
+                dims={"diameter": 10.0},
+                position="20 mm from -x end, centered in y (x=-25, y=0)",
+            ),
+        ]
+    )
+    a = build_anchors(spec, {}, None)
+    assert [(h.x, h.y) for h in a.holes] == [(-25.0, 0.0)]
+
+
+def test_spec_anchor_tap_hole_maps_to_tap_kind():
+    spec = _plate_spec(
+        [
+            Feature(
+                name="M8 tap hole",
+                type="tap_hole",
+                dims={"diameter": 8.0},
+                position="82 mm from -x end, centered in y",
+            ),
+        ]
+    )
+    a = build_anchors(spec, {}, None)
+    assert [(h.x, h.kind, h.bolt_size) for h in a.holes] == [(37.0, "tap", "M8")]

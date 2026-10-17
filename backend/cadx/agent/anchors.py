@@ -185,12 +185,20 @@ def _spec_xy(
     coords, _faces, ends, nears = parse_position_hints(text)
     vals: dict[str, list[tuple[float, bool]]] = {"x": [], "y": []}
     for ax in ("x", "y"):
-        if ax in coords:  # explicit "x=12" + "centred in y" (-> 0.0) hints
-            vals[ax].append((coords[ax], False))
-    for e in ends:
-        ax = str(e["axis"])
-        if ax in vals:
-            v = resolve_end_hint(ax, str(e["end"]), float(e["offset_mm"]), *bounds[ax])
+        # end offsets carry the user's stated semantics; a contradicting
+        # model-computed coord ("75mm from -x end (x=20)") would spawn a
+        # phantom position — the end hint wins, agreeing values dedupe
+        end_vals = [
+            resolve_end_hint(ax, str(e["end"]), float(e["offset_mm"]), *bounds[ax])
+            for e in ends
+            if str(e["axis"]) == ax
+        ]
+        coord_v = coords.get(ax)  # "x=12" + "centred in y" (-> 0.0) hints
+        if coord_v is not None and end_vals and all(abs(coord_v - v) > 1.0 for v in end_vals):
+            coord_v = None
+        if coord_v is not None:
+            vals[ax].append((coord_v, False))
+        for v in end_vals:
             if all(v != ex for ex, _ in vals[ax]):
                 vals[ax].append((v, False))
     inset = max(1.5 * dia, 6.0)
@@ -241,9 +249,14 @@ def _spec_anchors(spec: PartSpec) -> list[Anchor]:
         dia = _hole_dia(f)
         if dia is None or dia <= 0:
             continue
-        kind = {"thread": "thread", "insert": "insert", "bearing_seat": "bearing_seat"}.get(
-            str(f.type).lower(), "hole"
-        )
+        kind = {
+            "thread": "thread",
+            "threaded_hole": "thread",
+            "tapped_hole": "tap",
+            "tap_hole": "tap",
+            "insert": "insert",
+            "bearing_seat": "bearing_seat",
+        }.get(str(f.type).lower(), "hole")
         bolt = (
             _bolt_size(f.standard or "")
             or _bolt_size(f.thread_spec or "")

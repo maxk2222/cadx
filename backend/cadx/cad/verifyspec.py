@@ -357,13 +357,21 @@ def _void_pos_wants(
     coords, _faces, ends, nears = parse_position_hints(text)
     wants: dict[str, list[float]] = {"x": [], "y": []}
     for ax in ("x", "y"):
-        if ax in coords:
-            wants[ax].append(coords[ax])
-    for e in ends:
-        ax = str(e["axis"])
+        # an end offset carries the user's stated semantics; a contradicting
+        # model-computed coord ("75mm from -x end (x=20)") is dropped so it
+        # cannot spawn a second, wrong want
         bnd = bounds.get(ax)
-        if ax in wants and bnd is not None:
-            v = resolve_end_hint(ax, str(e["end"]), float(e["offset_mm"]), *bnd)
+        end_vals = [
+            resolve_end_hint(ax, str(e["end"]), float(e["offset_mm"]), *bnd)
+            for e in ends
+            if str(e["axis"]) == ax and bnd is not None
+        ]
+        coord_v = coords.get(ax)
+        if coord_v is not None and end_vals and all(abs(coord_v - v) > 1.0 for v in end_vals):
+            coord_v = None
+        if coord_v is not None:
+            wants[ax].append(coord_v)
+        for v in end_vals:
             if v not in wants[ax]:
                 wants[ax].append(v)
     dia = _spec_void_dia(f)
