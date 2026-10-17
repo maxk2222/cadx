@@ -192,6 +192,11 @@ critique — measured evidence beats generative retry loops:
   too-deep waist is filled back up); other parts get `silhouette_carve`,
   a visual-hull trim that only removes material outside the reference
   silhouette. An aspect-consistency gate rejects junk masks.
+  Before contouring, the mask crop is **deskewed** (PCA principal axis →
+  axis-aligned): photos routinely show the subject tilted, and the
+  vertical-slice profile of a diagonal band reads ~half the true diameter.
+  Profile stations are then anchored to the fitted outer radius, so the
+  photo's proportions taper the waist without shrinking spec dims.
 
 A **pre-gate** rejects hopeless candidates *before* spending a critique
 call: deterministic score < 0.35, or measured silhouette IoU < 0.3 AND a
