@@ -57,9 +57,12 @@ def _run_summary(r: dict[str, Any], chosen: bool, reasoning: Any) -> dict[str, A
     res = r.get("res") or {}
     top = res.get("topopt") or {}
     fem = res.get("fem") or {}
+    # sf_export is the safety factor on the printed geometry — prefer it over
+    # the voxel-mask fem report when the optimize pipeline produced both
     sfs = [
         c.get("safety_factor") for c in fem.get("cases") or [] if c.get("safety_factor") is not None
     ]
+    worst_sf = top.get("sf_export") or (min(sfs) if sfs else None)
     return {
         "index": r["index"],
         "it": r.get("iteration"),
@@ -67,7 +70,7 @@ def _run_summary(r: dict[str, Any], chosen: bool, reasoning: Any) -> dict[str, A
         "volfrac": top.get("volfrac_target"),
         "achieved": top.get("volfrac_achieved"),
         "iterations": top.get("iterations"),
-        "worst_sf": min(sfs) if sfs else None,
+        "worst_sf": worst_sf,
         "min_member_mm": top.get("min_member_mm"),
         "thin_fraction": top.get("thin_fraction"),
         "n_components": top.get("n_components"),

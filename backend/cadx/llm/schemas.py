@@ -275,18 +275,27 @@ class OptimizeSpec(BaseModel):
     """Structural optimization request extracted by intake."""
 
     enabled: bool = False
-    target_volume_fraction: float = 0.4  # 0.1..0.9 of the design space
-    max_iterations: int | None = None  # SIMP iterations (default: runtime setting)
-    safety_factor_min: float = 1.5
+    target_volume_fraction: float = Field(default=0.4, ge=0.05, le=0.95)  # of design space
+    max_iterations: int | None = Field(default=None, ge=1, le=2000)  # SIMP iterations
+    safety_factor_min: float = Field(default=1.5, ge=0.5, le=1e6)  # huge = always retry
     keep_regions: list[RegionSpec] = Field(default_factory=list, max_length=10)
     void_regions: list[RegionSpec] = Field(
         default_factory=list, max_length=10
     )  # forbidden material zones — pinned empty (cable runs, swing space)
     keep_mode: Literal["manual", "auto"] = "manual"  # auto: hold every detected fastener anchor
-    auto_keep_margin_mm: float | None = None  # ring around anchors when keep_mode=auto
-    min_member_mm: float | None = None  # enforce: thicken members thinner than this
-    min_gap_mm: float | None = None  # warn on enclosed gaps narrower than this (fusing)
-    density_threshold: float | None = None  # iso threshold 0.2..0.9 (default 0.5)
+    auto_keep_margin_mm: float | None = Field(default=None, ge=0.0, le=50.0)
+    min_member_mm: float | None = Field(default=None, ge=0.0, le=100.0)
+    min_gap_mm: float | None = Field(default=None, ge=0.0, le=100.0)
+    density_threshold: float | None = Field(default=None, ge=0.2, le=0.9)
+    extract_smooth: bool = (
+        True  # sub-voxel extraction: marching cubes on the smoothed density field
+    )
+    extract_sigma_px: float = Field(
+        default=0.8, ge=0.0, le=5.0
+    )  # Gaussian sigma in voxels for the iso field
+    volume_preserve: bool = (
+        True  # bisect the iso level so mesh volume matches the FEM-verified mask
+    )
     warm_density_relpath: Annotated[str, Field(max_length=300)] = (
         ""  # density.npz to warm-start SIMP from
     )
@@ -299,16 +308,16 @@ class OptimizeSpec(BaseModel):
     filter: Annotated[str, Field(max_length=16)] = (
         "cone"  # cone | heaviside (crisp 0/1, threshold-robust extraction)
     )
-    penal: float | None = None  # SIMP penalization exponent (default 3.0)
-    penal_init: float | None = None  # penal continuation: start exponent (None = off)
+    penal: float | None = Field(default=None, ge=1.0, le=8.0)  # SIMP exponent (default 3.0)
+    penal_init: float | None = Field(default=None, ge=1.0, le=8.0)  # continuation start
     solver: Annotated[str, Field(max_length=8)] = (
         "oc"  # oc (fast, volume-only) | mma (constraints: minmax/disp/stress)
     )
     case_objective: Annotated[str, Field(max_length=10)] = (
         "weighted"  # weighted | minmax — robust worst-case over load cases (mma)
     )
-    max_displacement_mm: float | None = None  # mma: cap on nodal displacement
-    max_stress_mpa: float | None = None  # mma: P-norm von-Mises limit
+    max_displacement_mm: float | None = Field(default=None, gt=0.0, le=1e4)
+    max_stress_mpa: float | None = Field(default=None, gt=0.0, le=1e5)
     # post-optimization feature finishing (POST /versions/{id}/refine)
     auto_refine_features: bool = (
         False  # auto-enqueue feature re-cut (bores/threads/inserts) after optimize

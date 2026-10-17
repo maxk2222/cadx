@@ -382,6 +382,7 @@ def simp(  # noqa: C901
     history: list[dict[str, Any]] = []
     u_prev: list[np.ndarray | None] = [None] * len(cases)
     change = 1.0
+    change_box = [change]  # shared with _run_mma: cg_rtol reads the live value
     it = 0
     stall = 0
     prev_objective: float | None = None
@@ -421,7 +422,9 @@ def simp(  # noqa: C901
         K, _, _ = assemble(domain, E_e, nu, np.ones(ncells, dtype=bool), ij=ij_cache)
         Kf = K[free][:, free].tocsr()
         factor, M = _prepare_solve(Kf, spsolve_dofs)
-        cg_rtol = 1e-3 if change > 0.1 else (1e-4 if change > 10 * params.tol else 1e-6)
+        cg_rtol = (
+            1e-3 if change_box[0] > 0.1 else (1e-4 if change_box[0] > 10 * params.tol else 1e-6)
+        )
         ce_cases: list[np.ndarray] = []
         obj_cases: list[float] = []
         us: list[np.ndarray] = []
@@ -466,6 +469,13 @@ def simp(  # noqa: C901
         return [_chain(dE * ce_i, xp, p, xt, xb, oc_filter) for ce_i in ce_cases]
 
     mma_x: np.ndarray | None = None
+    if params.solver == "oc" and (
+        params.max_displacement_mm or params.max_stress_mpa or params.case_objective == "minmax"
+    ):
+        warnings.append(
+            "solver=oc ignores max_displacement_mm/max_stress_mpa/minmax "
+            "objective — set solver=mma to enforce them"
+        )
     if params.solver == "mma":
         try:
             mma_x, it, converged, change = _run_mma(
@@ -500,6 +510,7 @@ def simp(  # noqa: C901
                 it_box=it_box,
                 passive_solid=passive_solid,
                 pvoid=pvoid,
+                change_box=change_box,
             )
         except ImportError:
             warnings.append("mma solver unavailable (nlopt missing) — fell back to oc")
@@ -568,6 +579,7 @@ def simp(  # noqa: C901
                 break
 
         change = float(np.abs(xnew - x).max())
+        change_box[0] = change
         x = xnew
         vol_now = float(_physical(x)[solid_idx].sum()) / nsolid
         rec = {
@@ -727,6 +739,7 @@ def _run_mma(  # noqa: C901
     it_box: list[int],
     passive_solid: np.ndarray,
     pvoid: np.ndarray,
+    change_box: list[float] | None = None,
 ) -> tuple[np.ndarray, int, bool, float]:
     """MMA driver (Svanberg, via nlopt LD_MMA).
 
@@ -750,6 +763,8 @@ def _run_mma(  # noqa: C901
     nvar = ndv
     ncells = domain.cell_count
     vol_frac_target = v_target / nsolid
+    solid_mask = np.zeros(ncells, dtype=bool)
+    solid_mask[solid_idx] = True
 
     opt = nlopt.opt(nlopt.LD_MMA, nvar)
     lb = np.full(nvar, RHO_MIN)
@@ -768,6 +783,8 @@ def _run_mma(  # noqa: C901
 
     cache: dict[str, Any] = {"v": None, "ev": None, "xb": None}
     last_change = [0.0]
+    if change_box is None:
+        change_box = last_change
     prev_xb = [None]
 
     def _unpack(v: np.ndarray) -> np.ndarray:
@@ -785,6 +802,7 @@ def _run_mma(  # noqa: C901
         it_box[0] += 1
         if prev_xb[0] is not None:
             last_change[0] = float(np.abs(xb - prev_xb[0]).max())
+            change_box[0] = last_change[0]  # eval_fn's cg_rtol reads this live
         prev_xb[0] = xb
         obj = _wsum(ev[4])
         rec = {
@@ -886,11 +904,17 @@ def _run_mma(  # noqa: C901
                 sm = np.clip(vm, 1e-9, None)
                 relax = np.power(np.clip(p, 1e-6, None), q)
                 srel = relax * vm  # relaxed stress
-                spn = float(np.power(np.sum(np.power(srel[solid_idx], P)), 1.0 / P))
+                # volume-normalized P-norm — the unnormalized sum makes the
+                # same stress limit mesh-dependent (2x resolution → ~30%
+                # tighter at P=8); mean keeps the limit resolution-free
+                n_sol = float(solid_idx.size)
+                spn = float(np.power(np.sum(np.power(srel[solid_idx], P)) / n_sol, 1.0 / P))
                 if grad.size:
-                    # adjoint: K^T lam = d(spn)/du  (assembled element-wise)
+                    # adjoint: K^T lam = d(spn)/du  (assembled element-wise).
+                    # the sum runs over solid cells only — non-solid cells
+                    # contribute zero, so their sensitivity coefficient is 0
                     a = np.power(srel, P - 1.0)
-                    coef = spn ** (1.0 - P) * a * relax  # per cell
+                    coef = spn ** (1.0 - P) * a * relax * solid_mask / n_sol  # per cell
                     rhs_e = coef[:, None] * dvm_due  # (ncells, 24)
                     rhs = np.zeros(3 * domain.node_count)
                     np.add.at(rhs, edof.ravel(), rhs_e.ravel())
@@ -899,7 +923,13 @@ def _run_mma(  # noqa: C901
                     dE = pen * np.power(np.clip(p, 1e-3, None), pen - 1) * (E0 - Emin)
                     dgdp = (
                         -dE * np.einsum("ni,ij,nj->n", lam[edof], ke, u[edof])
-                        + spn ** (1.0 - P) * a * q * np.power(np.clip(p, 1e-6, None), q - 1.0) * sm
+                        + spn ** (1.0 - P)
+                        * a
+                        * q
+                        * np.power(np.clip(p, 1e-6, None), q - 1.0)
+                        * sm
+                        * solid_mask
+                        / n_sol
                     )
                     d = chain_fn(dgdp, xp, p, xt, xb, oc_filter=False)
                     grad[:ndv] = d[des] / float(params.max_stress_mpa)

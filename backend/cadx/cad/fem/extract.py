@@ -2,12 +2,18 @@
 
 Threshold the SIMP density, keep only components connected to the passive
 (mount/load) regions, regularize diagonal-touching cells so the surface is
-manifold, then emit the exact voxel boundary as quads (watertight by
-construction). Optional Taubin smoothing removes the staircase look; FEM
-verification should use the returned mask, not the smoothed mesh.
+manifold, then extract the surface. The default path runs marching cubes
+on the Gaussian-smoothed density clipped to the mask with a
+volume-preserving iso level (sub-voxel surface, mesh volume matches the
+FEM mask); the legacy path thresholds first and runs marching cubes on
+the binary mask. Optional Taubin smoothing removes any residual
+staircase look; FEM verification should use the returned mask, not the
+smoothed mesh.
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 import numpy as np
 import trimesh
@@ -128,19 +134,30 @@ def _surface_mesh(domain: VoxelDomain, mask: np.ndarray) -> trimesh.Trimesh:
     return trimesh.Trimesh(vertices=coords, faces=remap[tris], process=False)
 
 
-def _surface_mesh_mc(domain: VoxelDomain, mask: np.ndarray) -> trimesh.Trimesh:
-    """Marching-cubes iso-surface at 0.5 — sub-voxel smooth contours (no
+def _surface_mesh_mc(domain: VoxelDomain, field: np.ndarray, iso: float = 0.5) -> trimesh.Trimesh:
+    """Marching-cubes iso-surface at `iso` — sub-voxel smooth contours (no
     staircase aliasing on diagonal faces) compared to the boundary-quad
-    fallback. Vertices land in index space; map to mm via origin+pitch."""
+    fallback. `field` is a (nx,ny,nz) scalar array — a binary mask for the
+    legacy path, a smoothed density for sub-voxel extraction. Vertices land
+    in index space; map to mm via origin+pitch."""
     from skimage.measure import marching_cubes
 
-    padded = np.pad(mask.astype(np.float32), 1, mode="constant")
-    verts, faces, _, _ = marching_cubes(padded, level=0.5)
+    padded = np.pad(field.astype(np.float32), 1, mode="constant")
+    verts, faces, _, _ = marching_cubes(padded, level=iso)
     if not len(verts) or not len(faces):
         raise ValueError("iso-surface is empty")
     # samples are cell-centers: padded index v ↔ original v-1 ↔ center at
     # origin + (v-1+0.5)*pitch — the iso then lands exactly on cell faces
     coords = domain.origin[None, :] + (verts - 0.5) * domain.pitch
+    # a smooth iso field can push the surface a fraction of a voxel past the
+    # design-space bbox (blur interpolates toward the zero padding) — the
+    # domain bounds are the part's hard physical limit, clamp to them
+    np.clip(
+        coords,
+        domain.origin[None, :],
+        (domain.origin + domain.pitch * np.asarray(domain.dims))[None, :],
+        out=coords,
+    )
     # marching_cubes emits inward-facing windings — flip for +volume/normals
     mesh = trimesh.Trimesh(vertices=coords, faces=faces[:, ::-1], process=False)
     mesh.remove_unreferenced_vertices()
@@ -287,6 +304,43 @@ def density_to_mask(
     return mask, warnings, n_components
 
 
+def _volume_preserved_iso(
+    field: np.ndarray, target: int, max_iter: int = 40
+) -> tuple[float, str | None]:
+    """Bisect the iso level `t` in (0, max(field)] so that the number of
+    cells with field >= t equals `target` — i.e. the extracted iso-surface
+    encloses the same volume as the FEM-verified binary mask.
+
+    count(field >= t) is monotone non-increasing in t, so bisection on
+    (0, fmax] is exact up to ties. Returns (iso, warning): warning is set
+    when no `t` hits `target` within `max_iter` halvings — e.g. cells with
+    field == 0 inside the mask (min-member/passive cells the smoother
+    cannot reach) — and the caller falls back to t = 0.5*max.
+    """
+    fmax = float(field.max())
+    if target <= 0 or fmax <= 0.0:
+        return 0.5 * fmax, (
+            f"volume-preserving iso impossible (max field {fmax:g}, "
+            f"target {target} voxels) — using t=0.5*max"
+        )
+    lo, hi = 0.0, fmax
+    for _ in range(max_iter):
+        mid = 0.5 * (lo + hi)
+        if mid <= lo or mid >= hi:  # float resolution exhausted
+            break
+        n = int((field >= mid).sum())
+        if n == target:
+            return mid, None
+        if n > target:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * fmax, (
+        f"volume-preserving iso did not converge in {max_iter} bisections "
+        f"(mask {target} voxels) — using t=0.5*max"
+    )
+
+
 def density_to_mesh(
     domain: VoxelDomain,
     density: np.ndarray,
@@ -297,14 +351,30 @@ def density_to_mesh(
     min_member_mm: float = 0.0,
     min_gap_mm: float = 0.0,
     smooth_iterations: int = 3,
-) -> tuple[trimesh.Trimesh, np.ndarray, list[str], int]:
+    extract_smooth: bool = True,
+    sigma_px: float = 0.8,
+    volume_preserve: bool = True,
+) -> tuple[trimesh.Trimesh, np.ndarray, list[str], int, dict[str, Any]]:
     """Convert the optimized density field into a trimesh.
 
-    Returns (mesh, final_mask, warnings, n_components). The mesh is in mm in
-    the domain
-    frame; `final_mask` (nx,ny,nz) is the exact voxel structure — use it
-    (via run_fem_domain) for verification instead of re-voxelizing the
-    smoothed mesh, which would erode thin members.
+    Returns (mesh, final_mask, warnings, n_components, extract_info). The
+    mesh is in mm in the domain frame; `final_mask` (nx,ny,nz) is the exact
+    voxel structure — use it (via run_fem_domain) for verification instead
+    of re-voxelizing the smoothed mesh, which would erode thin members.
+
+    With `extract_smooth` (default) marching cubes runs on the
+    Gaussian-smoothed density (`sigma_px` voxels) clipped to the
+    one-cell-dilated mask —
+    a sub-voxel iso-surface instead of the staircase boundary of the
+    binary field. `volume_preserve` bisects the iso level so the enclosed
+    voxel count matches `final_mask.sum()` (rho2sdf-style); without it the
+    fixed `threshold` level is used. `extract_smooth=False` reproduces the
+    legacy path bit-identically (binary mask -> MC at 0.5 -> Taubin).
+
+    `extract_info` carries extraction telemetry: `iso` (level used),
+    `vol_error_pct` (mesh volume vs mask volume), `gray_fraction`
+    (share of solid cells with 0.1 < rho < 0.9 — design sharpness),
+    `smooth` and `sigma_px`.
     """
     mask, warnings, n_components = density_to_mask(
         domain,
@@ -315,8 +385,40 @@ def density_to_mesh(
         min_member_mm=min_member_mm,
         min_gap_mm=min_gap_mm,
     )
+    rho3 = density.reshape(domain.dims)
+    solid_rho = rho3[mask]
+    gray_fraction = float(((solid_rho > 0.1) & (solid_rho < 0.9)).mean())
+    iso = float(threshold)
     try:
-        mesh = _surface_mesh_mc(domain, mask)
+        if extract_smooth:
+            rho_s = ndimage.gaussian_filter(rho3.astype(np.float64), float(sigma_px))
+            # clip the iso field to the mask, dilated by one cell: a hard
+            # clip at the mask boundary would put a 0-cliff exactly where
+            # the iso must interpolate, biasing the volume low by ~half a
+            # boundary layer; the 1-cell shell keeps the interpolation
+            # smooth while still zeroing stray material further out
+            shell = ndimage.binary_dilation(mask)
+            field = np.where(shell, rho_s, 0.0)
+            fmax = float(rho_s.max())
+            if volume_preserve:
+                iso, iso_warn = _volume_preserved_iso(field, int(mask.sum()))
+                if iso_warn:
+                    warnings.append(iso_warn)
+                    log.warning(
+                        "topopt.iso_bisect_fallback",
+                        target=int(mask.sum()),
+                        field_max=fmax,
+                    )
+            elif not (0.0 < iso < fmax):
+                iso = 0.5 * fmax
+                warnings.append(
+                    f"iso threshold {threshold:g} outside the smoothed field "
+                    f"range — using t={iso:g}"
+                )
+            mesh = _surface_mesh_mc(domain, field, iso)
+        else:
+            iso = 0.5  # binary mask -> fixed level
+            mesh = _surface_mesh_mc(domain, mask)
     except Exception:
         log.warning("topopt.marching_cubes_fallback", exc_info=True)
         mesh = _surface_mesh(domain, mask)
@@ -328,4 +430,12 @@ def density_to_mesh(
             trimesh.smoothing.filter_taubin(mesh, lamb=0.5, nu=-0.53, iterations=smooth_iterations)
         except Exception:
             log.warning("topopt.smooth_failed", exc_info=True)
-    return mesh, mask, warnings, n_components
+    mask_vol = float(mask.sum()) * domain.pitch**3
+    extract_info: dict[str, Any] = {
+        "iso": float(iso),
+        "smooth": bool(extract_smooth),
+        "sigma_px": float(sigma_px),
+        "vol_error_pct": round(100.0 * (float(mesh.volume) - mask_vol) / mask_vol, 3),
+        "gray_fraction": round(gray_fraction, 4),
+    }
+    return mesh, mask, warnings, n_components, extract_info

@@ -375,7 +375,7 @@ def organic_transform(
             # surface (shared _enforce_min_member has no solid clip; organic
             # cannot afford silhouette protrusions)
             stay_empty = meta["void_cells"].reshape(domain.dims) | ~domain.solid
-            out_mesh, final_mask, ext_w, n_components = density_to_mesh(
+            out_mesh, final_mask, ext_w, n_components, _extract_info = density_to_mesh(
                 domain,
                 rho,
                 threshold=threshold,

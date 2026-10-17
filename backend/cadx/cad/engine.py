@@ -1284,17 +1284,24 @@ def run_topopt_pipeline(  # noqa: C901
         out["result"] = result
         out["params"] = p
 
-        opt_mesh, final_mask, extract_warnings, n_components = density_to_mesh(
+        opt_mesh, final_mask, extract_warnings, n_components, extract_info = density_to_mesh(
             domain,
             result.density,
             threshold=p.threshold,
             passive_solid=passive,
+            # declared void regions + outside-domain cells must stay empty —
+            # min-member dilation / regularization would regrow them otherwise
+            void_cells=void_cells.reshape(domain.dims) | ~domain.solid,
             min_member_mm=min_member,
             min_gap_mm=min_gap,
             smooth_iterations=s.topopt_smooth_iterations,
+            extract_smooth=opt.extract_smooth,
+            sigma_px=opt.extract_sigma_px,
+            volume_preserve=opt.volume_preserve,
         )
         out["extract_warnings"] = extract_warnings
         out["n_components"] = n_components
+        out["extract"] = extract_info
         # floor-pinned smoothing: keeps a flat manufacturing base flat
         opt_mesh = smooth_preserve(opt_mesh, iterations=4, pin_floor=base_flat)
         out["opt_mesh"] = opt_mesh
@@ -1391,6 +1398,24 @@ def run_topopt_pipeline(  # noqa: C901
             "min_member_mm": best["min_member_mm"],
             "thin_fraction": round(best["thin_fraction"], 4),
             "n_components": best["n_components"],
+            "extract": best["extract"],
+            # how well does the printed geometry realize the SIMP optimum —
+            # the numbers the agent should actually judge a run by
+            "verification": {
+                "compliance_pred_mj": (
+                    result.history[-1].get("compliance_mj") if result.history else None
+                ),
+                "compliance_mask_j": [c.compliance_j for c in verify.cases],
+                "compliance_export_j": [c.compliance_j for c in verify_export.cases],
+                "sf_mask": verify.worst_safety_factor,
+                "sf_export": verify_export.worst_safety_factor,
+                "max_disp_export_mm": max(
+                    (c.max_disp_mm for c in verify_export.cases), default=None
+                ),
+                "max_vm_export_mpa": max((c.max_vm_mpa for c in verify_export.cases), default=None),
+                "gray_fraction": best["extract"].get("gray_fraction"),
+                "vol_error_pct": best["extract"].get("vol_error_pct"),
+            },
         }
     )
 
@@ -1400,6 +1425,9 @@ def run_topopt_pipeline(  # noqa: C901
         mask=final_mask,
         solid=domain.solid,
         passive=passive.reshape(domain.dims),
+        # persisted so topopt_resample can re-carve declared void regions
+        # (kept cells alone cannot express them)
+        voids=void_cells.reshape(domain.dims),
         origin=domain.origin,
         pitch=np.float64(domain.pitch),
         dims=np.asarray(domain.dims),
@@ -1548,8 +1576,17 @@ def run_topopt_resample(
         # fields where it coincides with the rebuilt mask
         passive |= np.asarray(npz["passive"], dtype=bool).ravel()
 
+    # void mask for the extraction: prefer the persisted `voids` key (organic
+    # npz and topopt npz written since the void-persistence fix); otherwise
+    # re-resolve declared void_regions — older npz files simply lack the key
+    void_flat: np.ndarray | None = None
+    if "voids" in npz:
+        void_flat = np.asarray(npz["voids"], dtype=bool).ravel()
+    elif opt.void_regions:
+        void_flat = keep_element_mask(domain, list(opt.void_regions), anchors)
+
     try:
-        opt_mesh, final_mask, extract_warnings, n_components = density_to_mesh(
+        opt_mesh, final_mask, extract_warnings, n_components, extract_info = density_to_mesh(
             domain,
             density,
             threshold=threshold,
@@ -1559,11 +1596,16 @@ def run_topopt_resample(
             # plus ~solid: cells outside the stored design domain must stay
             # empty too, or dilation grows material past the part surface
             void_cells=(
-                (np.asarray(npz["voids"], dtype=bool) | ~domain.solid) if "voids" in npz else None
+                (void_flat.reshape(domain.dims) | ~domain.solid)
+                if void_flat is not None
+                else ~domain.solid
             ),
             min_member_mm=min_member,
             min_gap_mm=min_gap,
             smooth_iterations=s.topopt_smooth_iterations,
+            extract_smooth=opt.extract_smooth,
+            sigma_px=opt.extract_sigma_px,
+            volume_preserve=opt.volume_preserve,
         )
     except Exception as e:
         res.error = f"re-extraction failed: {e}"
@@ -1575,6 +1617,7 @@ def run_topopt_resample(
             "min_member_mm": min_member,
             "n_components": n_components,
             "resampled_from": density_relpath,
+            "extract": extract_info,
         }
     )
 
