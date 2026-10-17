@@ -1150,9 +1150,16 @@ def run_topopt_pipeline(  # noqa: C901
 
     # --- non-design zones ----------------------------------------------------
     keep_list = list(opt.keep_regions)
-    if opt.keep_mode == "auto" and anchors:
+    # the runtime `topopt_auto_keep` flag (default on) is the opt-out:
+    # keep_mode="manual" still gets anchor keeps on top of declared regions
+    # unless the flag disables them; "auto" requests them explicitly
+    n_auto_keeps = 0
+    if anchors and (opt.keep_mode == "auto" or (opt.keep_mode == "manual" and s.topopt_auto_keep)):
         margin = opt.auto_keep_margin_mm or s.topopt_auto_keep_margin_mm
-        keep_list += auto_keep_regions(anchors, margin)
+        auto_keeps = auto_keep_regions(anchors, margin)
+        keep_list += auto_keeps
+        n_auto_keeps = len(auto_keeps)
+    res.topopt["auto_keep_applied"] = bool(n_auto_keeps)
     res.topopt.setdefault("warnings", []).extend(empty_region_warnings(domain, keep_list, anchors))
     res.topopt.setdefault("warnings", []).extend(
         empty_region_warnings(domain, list(opt.void_regions), anchors)
@@ -1279,10 +1286,13 @@ def run_topopt_pipeline(  # noqa: C901
     opt_dir.mkdir(parents=True, exist_ok=True)
     base_flat = is_flat_bottom(mesh)
 
-    def _one_pass(volfrac: float) -> dict[str, Any]:
+    def _one_pass(volfrac: float, pass_idx: int = 1) -> dict[str, Any]:
         """One SIMP run at `volfrac` + extraction, smoothing and both FEM
         verifications. Returns the pieces needed for artifacts/retry."""
         out: dict[str, Any] = {"volfrac": volfrac}
+        # pass-indexed render names: pass 1 keeps the historical names,
+        # retries must not overwrite its evidence in out_dir/fem
+        fem_suffix = "" if pass_idx <= 1 else f"_p{pass_idx}"
         p = dataclasses.replace(params, volfrac=volfrac)
         t = time.monotonic()
         result = simp(
@@ -1344,6 +1354,7 @@ def run_topopt_pipeline(  # noqa: C901
             anchors=anchors,
             keep_regions=keep_list,
             spsolve_dofs=s.fem_spsolve_dofs,
+            suffix=fem_suffix,
         )
         out["verify"] = verify
         out["verify_s"] = round(time.monotonic() - t, 2)
@@ -1360,7 +1371,7 @@ def run_topopt_pipeline(  # noqa: C901
                 anchors=anchors,
                 keep_regions=keep_list,
                 spsolve_dofs=s.fem_spsolve_dofs,
-                suffix="_export",
+                suffix=f"{fem_suffix}_export",
             )
         except Exception as e:
             log.warning("topopt.verify_export.failed", error=str(e)[:200])
@@ -1368,7 +1379,7 @@ def run_topopt_pipeline(  # noqa: C901
         out["verify_export"] = verify_exp
         return out
 
-    p1 = _one_pass(params.volfrac)
+    p1 = _one_pass(params.volfrac, pass_idx=1)
     res.timings["simp_s"] = p1["simp_s"]
     res.timings["verify_s"] = p1["verify_s"]
     best = p1
@@ -1380,7 +1391,7 @@ def run_topopt_pipeline(  # noqa: C901
         and params.volfrac + 0.1 <= 0.9
         and (cancelled is None or not cancelled())
     ):
-        p2 = _one_pass(params.volfrac + 0.1)
+        p2 = _one_pass(params.volfrac + 0.1, pass_idx=2)
         sf_exp2 = p2["verify_export"].worst_safety_factor
         res.topopt["retry"] = {
             "volfrac_first": params.volfrac,
@@ -1399,6 +1410,38 @@ def run_topopt_pipeline(  # noqa: C901
     verify = best["verify"]
     verify_export = best["verify_export"]
     res.topopt["warnings"] += best["extract_warnings"]
+
+    # how well does the printed geometry realize the SIMP optimum — the
+    # numbers the agent should actually judge a run by. Flat dict; extra
+    # telemetry keys are only emitted when their source was computed.
+    verification: dict[str, Any] = {
+        "compliance_pred_mj": (result.history[-1].get("compliance_mj") if result.history else None),
+        "compliance_mask_j": [c.compliance_j for c in verify.cases],
+        "compliance_export_j": [c.compliance_j for c in verify_export.cases],
+        "sf_mask": verify.worst_safety_factor,
+        "sf_export": verify_export.worst_safety_factor,
+        "max_disp_export_mm": max((c.max_disp_mm for c in verify_export.cases), default=None),
+        "max_vm_export_mpa": max((c.max_vm_mpa for c in verify_export.cases), default=None),
+        "gray_fraction": best["extract"].get("gray_fraction"),
+        "vol_error_pct": best["extract"].get("vol_error_pct"),
+        # solid fraction of the design space the extracted mask actually keeps
+        "volfrac_mask": round(float(final_mask.sum()) / max(int(domain.solid.sum()), 1), 4),
+        "solver_used": params.solver,
+    }
+    if result.history and result.history[-1].get("beta") is not None:
+        verification["beta_final"] = result.history[-1]["beta"]
+    if verify.worst_safety_factor is not None and verify_export.worst_safety_factor is not None:
+        # >0 means the smoothed export mesh is stiffer than the mask suggests
+        verification["sf_gap"] = round(
+            verify.worst_safety_factor - verify_export.worst_safety_factor, 4
+        )
+    if verify.grid.get("dofs"):
+        verification["dofs"] = verify.grid["dofs"]
+    if verify.cases:
+        verification["case_sfs_mask"] = [c.safety_factor for c in verify.cases]
+    if verify_export.cases:
+        verification["case_sfs_export"] = [c.safety_factor for c in verify_export.cases]
+
     res.topopt.update(
         {
             "iterations": result.iterations,
@@ -1418,23 +1461,7 @@ def run_topopt_pipeline(  # noqa: C901
             "thin_fraction": round(best["thin_fraction"], 4),
             "n_components": best["n_components"],
             "extract": best["extract"],
-            # how well does the printed geometry realize the SIMP optimum —
-            # the numbers the agent should actually judge a run by
-            "verification": {
-                "compliance_pred_mj": (
-                    result.history[-1].get("compliance_mj") if result.history else None
-                ),
-                "compliance_mask_j": [c.compliance_j for c in verify.cases],
-                "compliance_export_j": [c.compliance_j for c in verify_export.cases],
-                "sf_mask": verify.worst_safety_factor,
-                "sf_export": verify_export.worst_safety_factor,
-                "max_disp_export_mm": max(
-                    (c.max_disp_mm for c in verify_export.cases), default=None
-                ),
-                "max_vm_export_mpa": max((c.max_vm_mpa for c in verify_export.cases), default=None),
-                "gray_fraction": best["extract"].get("gray_fraction"),
-                "vol_error_pct": best["extract"].get("vol_error_pct"),
-            },
+            "verification": verification,
         }
     )
 
@@ -1466,7 +1493,15 @@ def run_topopt_pipeline(  # noqa: C901
     except Exception as e:
         res.error = f"failed to write optimized STL: {e}"
         return res
-    res.exports = export_mesh_all(opt_mesh, out_dir / "exports", name=name, try_step=False)
+    # faceted STEP alongside the mesh formats — mesh_to_solid decimates
+    # beyond the cad face cap and export_mesh_all falls back to step=None
+    res.exports = export_mesh_all(
+        opt_mesh,
+        out_dir / "exports",
+        name=name,
+        try_step=True,
+        max_faces=s.mesh_max_faces_for_cad,
+    )
     res.exports["dxf"] = None
     res.exports["svg"] = None
     res.analysis = mesh_analysis(opt_mesh)
@@ -1584,9 +1619,15 @@ def run_topopt_resample(
         for ld in c.loads:
             load_node_masks.append(region_node_mask(domain, ld.region, anchors))
     keep_list = list(opt.keep_regions)
-    if opt.keep_mode == "auto" and anchors:
+    # same auto-keep rule as run_topopt_pipeline: keep_mode="manual" only
+    # opts out via the runtime `topopt_auto_keep` flag
+    n_auto_keeps = 0
+    if anchors and (opt.keep_mode == "auto" or (opt.keep_mode == "manual" and s.topopt_auto_keep)):
         margin = opt.auto_keep_margin_mm or s.topopt_auto_keep_margin_mm
-        keep_list += auto_keep_regions(anchors, margin)
+        auto_keeps = auto_keep_regions(anchors, margin)
+        keep_list += auto_keeps
+        n_auto_keeps = len(auto_keeps)
+    res.topopt["auto_keep_applied"] = bool(n_auto_keeps)
     keep_cells = keep_element_mask(domain, keep_list, anchors)
     passive = passive_solid_mask(domain, [keep_cells], fixed_node_masks, load_node_masks)
     if "passive" in npz:
@@ -1689,7 +1730,13 @@ def run_topopt_resample(
             log.warning("topopt.resample_verify_failed", error=str(e)[:200])
             res.topopt["sf_mask"] = verify.worst_safety_factor
 
-    res.exports = export_mesh_all(opt_mesh, out_dir / "exports", name=name, try_step=False)
+    res.exports = export_mesh_all(
+        opt_mesh,
+        out_dir / "exports",
+        name=name,
+        try_step=True,
+        max_faces=s.mesh_max_faces_for_cad,
+    )
     res.exports["dxf"] = None
     res.exports["svg"] = None
     res.analysis = mesh_analysis(opt_mesh)
@@ -1952,7 +1999,13 @@ def run_refine(
         report_to_json(verify, out_dir / "fem" / "report.json")
         res.fem = verify.model_dump()
 
-    res.exports = export_mesh_all(out, out_dir / "exports", name=name, try_step=False)
+    res.exports = export_mesh_all(
+        out,
+        out_dir / "exports",
+        name=name,
+        try_step=True,
+        max_faces=s.mesh_max_faces_for_cad,
+    )
     res.exports["dxf"] = None
     res.exports["svg"] = None
     res.analysis = mesh_analysis(out)
