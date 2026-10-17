@@ -13,13 +13,14 @@ import trimesh
 from build123d import import_brep
 
 from cadx.cad.reconstruct import (
+    _bore_axis_consistent,
     chamfer_mm,
     classify_part,
     reconstruct_mesh,
     snap_grid,
 )
 from cadx.cad.sandbox import run_user_code
-from cadx.llm.schemas import Dim, PartSpec
+from cadx.llm.schemas import Dim, Feature, PartSpec
 
 
 def _spec(summary: str = "", L: float = 20.0, W: float = 20.0, H: float = 40.0) -> PartSpec:
@@ -154,12 +155,18 @@ def test_reconstruct_revolve_end_to_end(tmp_path):
         assert got == pytest.approx(want, abs=1.5)
 
 
+def _annular_revolve() -> trimesh.Trimesh:
+    """TUBE around +Z: outer r=11, bore r=5, length 40 — watertight
+    trimesh annulus centred on the origin axis."""
+    m = trimesh.creation.annulus(r_min=5.0, r_max=11.0, height=40.0, sections=128)
+    assert m.is_watertight
+    return m
+
+
 def test_reconstruct_revolve_axis_x(tmp_path):
     """Same lathe part lying down along X — axis detection + placement."""
     mesh = _waisted_revolve()
-    mesh.apply_transform(
-        trimesh.transformations.rotation_matrix(np.pi / 2, [0.0, 1.0, 0.0])
-    )
+    mesh.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [0.0, 1.0, 0.0]))
     # rest on XY plane: rotate z-axis profile to +X, then lift by max radius
     mesh.apply_translation([0.0, 0.0, 12.0])
     spec = _spec("round handle, revolved", L=40.0, W=24.0, H=24.0)
@@ -185,6 +192,77 @@ def test_revolve_with_arc_segment(tmp_path):
     assert rec is not None and rec.kind == "revolve"
     assert "RadiusArc" in rec.code
     recon = _run_sandbox(rec.code, tmp_path / "sphere")
+    assert chamfer_mm(mesh, recon) < 0.5
+
+
+def test_bore_axis_consistent():
+    """A consistent interior ring marks the through-bore axis; a solid or
+    unbored part has none."""
+    assert _bore_axis_consistent(_annular_revolve(), "z")
+    assert not _bore_axis_consistent(_annular_revolve(), "x")
+    assert not _bore_axis_consistent(_waisted_revolve(), "z")
+    # a square plate with a z-bore has a consistent ring but must NOT be
+    # treated as a revolve — the circularity gate still protects it
+    plate = trimesh.creation.box([40.0, 40.0, 8.0])
+    bore = trimesh.creation.cylinder(radius=4.0, height=10.0, sections=48)
+    bore.apply_translation([0.0, 0.0, -1.0])
+    m = plate.difference(bore)
+    assert _bore_axis_consistent(m, "z")
+    spec = _spec("flat mounting plate", L=40.0, W=40.0, H=8.0)
+    assert reconstruct_mesh(m, spec, {}).kind != "revolve"
+
+
+def test_reconstruct_revolve_with_bore(tmp_path):
+    """Annular profile → the emitted section must close through the bore
+    radius, not down to the axis (a solid revolve misses the tunnel and
+    fails chamfer — the grip measured 3.02mm against a 0.65mm limit)."""
+    mesh = _annular_revolve()
+    spec = _spec("cylindrical sleeve with through bore", L=20.0, W=20.0, H=40.0)
+    spec.features = [
+        Feature(
+            name="through_bore",
+            type="hole",
+            description="Ø10 through bore along z",
+            dims={"diameter": 10.0, "depth": 40.0},
+            position="centered",
+            axis="z",
+            count=1,
+            source="stated",
+        )
+    ]
+    rec = reconstruct_mesh(mesh, spec, {})
+    assert rec is not None and rec.kind == "revolve"
+    # stated Ø10 wins over the measured ring radius
+    assert rec.params.get("r_bore") == pytest.approx(5.0, abs=0.3)
+    assert "r_bore" in rec.code
+
+    recon = _run_sandbox(rec.code, tmp_path / "annulus")
+    assert recon.is_watertight
+    assert chamfer_mm(mesh, recon) < 0.4
+    for got, want in zip(recon.extents, mesh.extents, strict=True):
+        assert got == pytest.approx(want, abs=1.5)
+
+
+def test_reconstruct_revolve_bore_measured_without_spec(tmp_path):
+    """No stated feature — the measured inner ring still produces r_bore."""
+    mesh = _annular_revolve()
+    spec = _spec("cylindrical tube, turned", L=20.0, W=20.0, H=40.0)
+    rec = reconstruct_mesh(mesh, spec, {})
+    assert rec is not None and rec.kind == "revolve"
+    assert rec.params.get("r_bore") == pytest.approx(5.0, abs=0.6)
+    recon = _run_sandbox(rec.code, tmp_path / "annulus_ns")
+    assert recon.is_watertight
+    assert chamfer_mm(mesh, recon) < 0.4
+
+
+def test_reconstruct_solid_revolve_has_no_bore(tmp_path):
+    """Regression: a solid lathe part must NOT gain an r_bore param."""
+    mesh = _waisted_revolve()
+    spec = _spec("turned round knob — cylindrical grip", L=20.0, W=20.0, H=40.0)
+    rec = reconstruct_mesh(mesh, spec, {})
+    assert rec is not None and rec.kind == "revolve"
+    assert "r_bore" not in rec.params
+    recon = _run_sandbox(rec.code, tmp_path / "solid")
     assert chamfer_mm(mesh, recon) < 0.5
 
 

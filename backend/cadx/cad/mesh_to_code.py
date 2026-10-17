@@ -72,6 +72,8 @@ def emit_revolve_code(
     segs: list[ProfileSeg],
     offset: tuple[float, float, float],
     params: dict[str, float],
+    *,
+    bore_param: str | None = None,
 ) -> str:
     """Emit a lathe part: half-profile in (axial, radial) coords → revolve.
 
@@ -102,16 +104,28 @@ def emit_revolve_code(
             )
         else:
             seg_lines.append(f"    Line({a}, {b})")
-    # close the half-profile down to the rotation axis and back to the start
+    # close the half-profile: a through-bore along the axis closes through
+    # the inner radius (annular section -> hollow revolve); otherwise down
+    # to the rotation axis and back to the start
     r_start = float(params.get(verts[0].param, 0.0))
     r_end = float(params.get(verts[-1].param, 0.0))
     last = pt(len(verts) - 1)
-    if r_end > 0.0:
+    if bore_param:
+        a0, a1 = _axial_expr(0.0), _axial_expr(1.0)
+        bp = f'PARAMS["{bore_param}"]'
+        if axis == "z":
+            end_pt, start_pt, first = f"({bp}, {a1})", f"({bp}, {a0})", pt(0)
+        else:
+            end_pt, start_pt, first = f"({a1}, {bp})", f"({a0}, {bp})", pt(0)
+        seg_lines.append(f"    Line({last}, {end_pt})")
+        seg_lines.append(f"    Line({end_pt}, {start_pt})")
+        seg_lines.append(f"    Line({start_pt}, {first})")
+    elif r_end > 0.0:
         seg_lines.append(f"    Line({last}, {axis_pt(1.0)})")
         seg_lines.append(f"    Line({axis_pt(1.0)}, {axis_pt(0.0)})")
     else:
         seg_lines.append(f"    Line({last}, {axis_pt(0.0)})")
-    if r_start > 0.0:
+    if r_start > 0.0 and not bore_param:
         seg_lines.append(f"    Line({axis_pt(0.0)}, {pt(0)})")
     # when r_start == 0 the chain already ends at the start point -> closed
 

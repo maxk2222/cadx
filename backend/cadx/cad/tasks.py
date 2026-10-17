@@ -619,6 +619,7 @@ def run_parametrize_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "params_schema": list(recon.params_schema),
         "chamfer_mm": dist,
         "confidence": float(recon.confidence),
+        "meta": dict(recon.meta),
         "exec_result": exec_result,
         "art_dir": storage.relpath(out_dir),
     }

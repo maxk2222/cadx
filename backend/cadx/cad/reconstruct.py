@@ -67,6 +67,7 @@ class Reconstruction(BaseModel):
     params: dict[str, float]
     params_schema: list[dict[str, Any]]  # ParamDef.model_dump() form
     confidence: float  # 0..1
+    meta: dict[str, Any] = {}  # measured section stats for acceptance gating
 
 
 # --------------------------------------------------------------------------- #
@@ -120,6 +121,7 @@ class _Section:
     centroid: tuple[float, float] | None  # polygon centroid, radial world coords
     uv: np.ndarray  # (N,2) radial world coords of all slice vertices
     to_3d: np.ndarray | None = None  # trimesh transform: plane-local 2D → 3D
+    inner_uv: tuple[float, float] | None = None  # inner-ring centroid, radial world
 
 
 def _section_at(mesh: trimesh.Trimesh, axis: str, t: float) -> _Section | None:
@@ -145,14 +147,25 @@ def _section_at(mesh: trimesh.Trimesh, axis: str, t: float) -> _Section | None:
         pass
     poly = max(polys, key=lambda g: g.area) if polys else None
     centroid: tuple[float, float] | None = None
+    inner_uv: tuple[float, float] | None = None
     if poly is not None and to_3d is not None:
         # trimesh's to_2D centres the slice on its own origin — map the 2D
         # centroid back to 3D to get the station's axis point in world coords
         c = poly.centroid
         c3 = (np.asarray(to_3d) @ np.array([c.x, c.y, 0.0, 1.0]))[:3]
         centroid = (float(c3[j]), float(c3[k]))
+        try:
+            if poly.interiors:
+                from shapely.geometry import Polygon
+
+                inner = max(poly.interiors, key=lambda r: abs(Polygon(r).area))
+                ic = Polygon(inner).centroid
+                c3i = (np.asarray(to_3d) @ np.array([ic.x, ic.y, 0.0, 1.0]))[:3]
+                inner_uv = (float(c3i[j]), float(c3i[k]))
+        except Exception:
+            pass
     uv = np.asarray(path.vertices, dtype=float)[:, (j, k)]
-    return _Section(poly, len(polys), centroid, uv, to_3d)
+    return _Section(poly, len(polys), centroid, uv, to_3d, inner_uv)
 
 
 def _circularity(poly: Any) -> float:
@@ -258,6 +271,29 @@ def _revolve_candidates(mesh: trimesh.Trimesh) -> list[str]:
     return [ax for _, ax in cands]
 
 
+def _bore_axis_consistent(mesh: trimesh.Trimesh, axis: str, n: int = _N_CHECK) -> bool:
+    """Through-bore along ``axis``: most check sections show an interior
+    ring whose centres are collinear within 15 % of the radial extent.
+    A drilled grip is axi-symmetric in INTENT even when its outer form is
+    asymmetric — the bore axis is the natural parametric revolve axis."""
+    i = _AXIS_IDX[axis]
+    j, k = _RADIAL_IDX[axis]
+    lo, hi = float(mesh.bounds[0][i]), float(mesh.bounds[1][i])
+    span = hi - lo
+    if span <= 0:
+        return False
+    centres: list[tuple[float, float]] = []
+    for t in np.linspace(lo + 0.12 * span, hi - 0.12 * span, n):
+        s = _section_at(mesh, axis, float(t))
+        if s is not None and s.inner_uv is not None:
+            centres.append(s.inner_uv)
+    if len(centres) < max(4, n // 2):
+        return False
+    spread = float(np.ptp(np.asarray(centres), axis=0).max())
+    ext = max(float(mesh.extents[j]), float(mesh.extents[k]), 1e-9)
+    return spread <= 0.15 * ext
+
+
 def _pick_revolve_axis(
     mesh: trimesh.Trimesh, spec: Any, analysis: dict[str, Any] | None
 ) -> str | None:
@@ -265,13 +301,17 @@ def _pick_revolve_axis(
 
     Gate: spec wording / measured circularity (hint) lowers the required
     station fraction to 70 %; without a hint pure geometry must carry it
-    (>85 % of stations circular AND mean circularity > 0.93).
+    (>85 % of stations circular AND mean circularity > 0.93). A consistent
+    through-bore along a candidate axis is a revolve signal of its own —
+    the outer form may be asymmetric while the part is clearly lathe-like.
     """
     hint = _spec_suggests_revolve(spec) or _measured_round(analysis)
     need = 0.7 if hint else 0.85
     for ax in _revolve_candidates(mesh):
         frac, mean = _station_circularity(mesh, ax)
         if frac >= need and (hint or mean >= 0.93):
+            return ax
+        if _bore_axis_consistent(mesh, ax) and frac >= 0.5:
             return ax
     return None
 
@@ -562,10 +602,71 @@ def _recon_profile(
                 (lo + (s.p1[0] - lo) / extent * length, params[names[si + 1]]),
             ]
         prof.extend(seg_pts[:-1] if si < len(segs) - 1 else seg_pts)
-    # close the half-profile down to the axis and back to the start
-    prof.append((prof[-1][0], 0.0))
-    prof.append((prof[0][0], 0.0))
+    # close the half-profile: through the inner radius for a bored part
+    # (annular section) or down to the rotation axis and back
+    bore_r = float(params.get("r_bore") or 0.0)
+    inner = bore_r if bore_r > 0.0 else 0.0
+    prof.append((prof[-1][0], inner))
+    prof.append((prof[0][0], inner))
     return prof
+
+
+def _bore_radius_mm(stations: list[tuple[float, Any]]) -> float | None:
+    """Median equivalent radius of the interior ring across stations.
+
+    A through-bore along the revolve axis appears as an interior loop in
+    the section polygon at (nearly) every station. Equivalent radius from
+    ring area — robust to polygon vertex density. Returns None when fewer
+    than half the stations show a consistent inner loop."""
+    rs: list[float] = []
+    for _, s in stations:
+        p = s.polygon
+        if p is None or not getattr(p, "interiors", None):
+            continue
+        try:
+            from shapely.geometry import Polygon
+
+            inner = max(p.interiors, key=lambda r: abs(Polygon(r).area))
+            a = float(abs(Polygon(inner).area))
+            if a > 1e-6:
+                rs.append(math.sqrt(a / math.pi))
+        except Exception:
+            continue
+    if len(rs) < max(3, len(stations) // 2):
+        return None
+    return float(np.median(rs))
+
+
+def _axis_centre(stations: list[tuple[float, Any]], rb: float | None) -> tuple[float, float]:
+    """Rotation-axis position: bore-ring centres when a through-bore
+    exists, median section centroids otherwise."""
+    inner = [s.inner_uv for _, s in stations if s.inner_uv is not None]
+    if rb is not None and len(inner) >= max(3, len(stations) // 2):
+        return (
+            float(np.median([c[0] for c in inner])),
+            float(np.median([c[1] for c in inner])),
+        )
+    return (
+        float(np.median([s.centroid[0] for _, s in stations])),
+        float(np.median([s.centroid[1] for _, s in stations])),
+    )
+
+
+def _spec_bore_dia(spec: Any, axis: str) -> float | None:
+    """Stated bore diameter along ``axis`` — spec dims stay authoritative
+    over the mesh measurement (Ø22.2 stated, Ø22.0 measured+snapped)."""
+    for f in getattr(spec, "features", None) or []:
+        t = str(getattr(f, "type", "") or "").lower()
+        ax = str(getattr(f, "axis", "") or "").lower().lstrip("+-")
+        if ax and ax != axis:
+            continue
+        if not any(k in t for k in ("hole", "tunnel", "bore", "through")):
+            continue
+        dims = getattr(f, "dims", None) or {}
+        d = dims.get("diameter") or dims.get("bore_diameter")
+        if d and float(d) > 0:
+            return float(d)
+    return None
 
 
 def _param_schema(params: dict[str, float]) -> list[dict[str, Any]]:
@@ -599,10 +700,12 @@ def _reconstruct_revolve(mesh: trimesh.Trimesh, axis: str, spec: Any) -> Reconst
     if len(stations) < 8:
         return None
 
-    # rotation-axis position in the radial plane: median of the station
-    # centroids (robust to a bent tip / noisy end slices)
-    u0 = float(np.median([s.centroid[0] for _, s in stations]))
-    v0 = float(np.median([s.centroid[1] for _, s in stations]))
+    # rotation-axis position in the radial plane: a consistent interior
+    # ring means a through-bore whose centre IS the part axis (the annulus
+    # centroid is shifted by asymmetric wall mass — the grip measured
+    # z≈19 vs the true axis at z≈16 -> Ø38 reconstruction of a Ø32 part)
+    rb = _bore_radius_mm(stations)
+    u0, v0 = _axis_centre(stations, rb)
 
     raw: list[tuple[float, float]] = []
     for t, s in stations:
@@ -649,12 +752,26 @@ def _reconstruct_revolve(mesh: trimesh.Trimesh, axis: str, spec: Any) -> Reconst
         for vi, (t, _) in enumerate(verts_raw)
     ]
 
+    # through-bore along the axis: prefer the stated spec diameter over
+    # the measured inner ring — a solid-to-axis profile filled the bore
+    # and blew the chamfer (grip: 3.02mm > 0.65mm limit)
+    bore_r: float | None = None
+    if rb is not None and rb < 0.8 * r_max:
+        spec_d = _spec_bore_dia(spec, axis)
+        bore_r = round(spec_d / 2.0, 4) if spec_d else snap_grid(rb)
+        params["r_bore"] = bore_r
+
     offset = [0.0, 0.0, 0.0]
     offset[i] = lo
     offset[j] = u0
     offset[k] = v0
     code = mesh_to_code.emit_revolve_code(
-        axis, verts, emit_segs, (offset[0], offset[1], offset[2]), params
+        axis,
+        verts,
+        emit_segs,
+        (offset[0], offset[1], offset[2]),
+        params,
+        bore_param="r_bore" if bore_r else None,
     )
 
     # --- confidence: rebuild the emitted profile (snapped values, fitted
@@ -683,12 +800,18 @@ def _reconstruct_revolve(mesh: trimesh.Trimesh, axis: str, spec: Any) -> Reconst
     coverage = len(stations) / _N_STATIONS
     confidence = float(min(0.98, max(0.05, 1.0 - (4.0 * rel + 0.5 * (1.0 - coverage)))))
 
+    # organic-vs-technical signal for the acceptance gate: an asymmetric
+    # grip (scallops, mean circ ~0.85) cannot be chamfer-tight as a revolve
+    circs = [_circularity(s.polygon) for _, s in stations if s.polygon is not None]
+    meta = {"section_circularity_mean": round(float(np.mean(circs)), 4)} if circs else {}
+
     return Reconstruction(
         kind="revolve",
         code=code,
         params=params,
         params_schema=_param_schema(params),
         confidence=round(confidence, 3),
+        meta=meta,
     )
 
 

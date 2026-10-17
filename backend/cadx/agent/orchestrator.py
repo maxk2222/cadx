@@ -2466,7 +2466,12 @@ async def _parametrize_best(
         max_dim = max((float(v) for v in bbox), default=0.0)
         if max_dim <= 0:
             max_dim = max(spec.length_x.value, spec.width_y.value, spec.height_z.value)
-        limit = max(0.5, 0.005 * max_dim)
+        # organic sections (scallops/asymmetry, mean circularity < 0.9) can't
+        # be chamfer-tight as a revolve — the reconstructed parametric body is
+        # a form-faithful handle, not a surface copy. Still rejects garbage
+        # (a bore-less solid revolve measured 3.0mm on the grip).
+        circ = ((res.get("meta") or {}).get("section_circularity_mean")) or 1.0
+        limit = max(0.5, (0.005 if float(circ) >= 0.9 else 0.012) * max_dim)
         recon_analysis = (res.get("exec_result") or {}).get("analysis") or {}
         if recon_analysis.get("bbox_size"):
             dim_issues = compare_dims(spec, recon_analysis, tol_pct, tol_mm)
