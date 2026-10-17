@@ -164,7 +164,7 @@ def _feature_hint_axes(f: dict[str, Any]) -> set[str]:
         out.add(ax)
     text = f"{f.get('position') or ''} {f.get('description') or ''}"
     out |= {m.group(1) for m in _HINT_AXIS_RE.finditer(text.lower())}
-    _c, faces, _ends = parse_position_hints(text)
+    _c, faces, _ends, _nears = parse_position_hints(text)
     out |= {fa[1] for fa in faces}
     return out
 
@@ -296,6 +296,128 @@ def _centre_coord_check(
     return violations, verified
 
 
+def _spec_void_dia(f: dict[str, Any]) -> float | None:
+    """Declared void diameter of a spec feature (diameter|dia|bore_diameter)."""
+    dims = f.get("dims")
+    if not isinstance(dims, dict):
+        return None
+    for key in ("diameter", "dia", "bore_diameter"):
+        v = dims.get(key)
+        if isinstance(v, int | float) and not isinstance(v, bool) and v > 0:
+            return float(v)
+    return None
+
+
+def _void_dia(e: dict[str, Any]) -> float | None:
+    """Bore diameter of a measured void entry — hole_groups carry
+    ``diameter``; patterns carry ``member_diameter`` (``diameter`` there is
+    the pitch circle)."""
+    for key in ("dia", "member_diameter", "diameter", "bore_diameter"):
+        v = e.get(key)
+        if isinstance(v, int | float) and not isinstance(v, bool) and v > 0:
+            return float(v)
+    return None
+
+
+def _dia_matched(f: dict[str, Any], cands: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Narrow void candidates to the diameter-matched subset (within 30% of
+    the spec feature's declared dia) so a differently-sized void cannot
+    satisfy this feature's position/axis checks by pooling. Falls back to
+    all candidates when nothing matches — checking something beats nothing."""
+    decl = _spec_void_dia(f)
+    if decl is None:
+        return cands
+    matched = [e for e in cands if (d := _void_dia(e)) is not None and abs(d - decl) <= 0.3 * decl]
+    return matched or cands
+
+
+def _void_centers(e: dict[str, Any]) -> list[tuple[float, float]]:
+    """Plan-view [x, y] centres of a measured void entry — hole_groups carry
+    ``centers``, patterns ``members`` plus a pattern ``center``."""
+    pts: list[tuple[float, float]] = []
+    for key in ("centers", "members", "center"):
+        raw = e.get(key)
+        if key == "center":
+            raw = [raw] if isinstance(raw, list | tuple) else []
+        if not isinstance(raw, list | tuple):
+            continue
+        for c in raw:
+            if isinstance(c, list | tuple) and len(c) >= 2:
+                pts.append((float(c[0]), float(c[1])))
+    return pts
+
+
+def _void_pos_wants(
+    f: dict[str, Any], bounds: dict[str, tuple[float, float]]
+) -> dict[str, list[float]]:
+    """Resolved in-plane position wants of one spec void feature — explicit
+    coords, resolved end offsets and near-end inset estimates per axis
+    (partial resolution allowed: an ``x=12``-only feature constrains x)."""
+    text = str(f.get("position") or "").strip() or str(f.get("description") or "")
+    coords, _faces, ends, nears = parse_position_hints(text)
+    wants: dict[str, list[float]] = {"x": [], "y": []}
+    for ax in ("x", "y"):
+        if ax in coords:
+            wants[ax].append(coords[ax])
+    for e in ends:
+        ax = str(e["axis"])
+        bnd = bounds.get(ax)
+        if ax in wants and bnd is not None:
+            v = resolve_end_hint(ax, str(e["end"]), float(e["offset_mm"]), *bnd)
+            if v not in wants[ax]:
+                wants[ax].append(v)
+    dia = _spec_void_dia(f)
+    inset = max(1.5 * dia, 6.0) if dia else 6.0
+    for n in nears:
+        ax = str(n.get("axis") or "")
+        if ax in wants and not wants[ax]:
+            bnd = bounds.get(ax)
+            if bnd is not None:
+                lo, hi = bnd
+                wants[ax].append(
+                    hi - inset if str(n.get("end") or "").startswith("+") else lo + inset
+                )
+    return {ax: vals for ax, vals in wants.items() if vals}
+
+
+def _near_band_check(
+    nears: list[dict[str, Any]],
+    bounds: dict[str, tuple[float, float]],
+    centers: list[Any],
+) -> tuple[list[dict[str, Any]], int]:
+    """'near the +x end' proximity hints resolve to an end-band region: the
+    outermost 30% of the measured bbox span on that axis. The centre nearest
+    the declared end must sit inside the band; without bbox bounds the hint
+    stays unverifiable. z hints are skipped — centres carry no z."""
+    violations: list[dict[str, Any]] = []
+    verified = 0
+    for n in nears:
+        nax = str(n.get("axis") or "")
+        if nax == "z":
+            continue
+        bnd = bounds.get(nax)
+        if bnd is None or bnd[1] - bnd[0] <= 0:
+            continue
+        lo, hi = bnd
+        plus = str(n.get("end") or "").startswith("+")
+        edge = lo + (0.7 if plus else 0.3) * (hi - lo)
+        idx = 0 if nax == "x" else 1
+        vals = [float(c[idx]) for c in centers]
+        best = max(vals) if plus else min(vals)
+        if (plus and best >= edge) or (not plus and best <= edge):
+            verified += 1
+        else:
+            violations.append(
+                {
+                    "near": str(n.get("end")),
+                    "axis": nax,
+                    "measured_mm": round(best, 3),
+                    "band_edge_mm": round(edge, 3),
+                }
+            )
+    return violations, verified
+
+
 def _void_position_check(
     i: int,
     name: str,
@@ -310,15 +432,17 @@ def _void_position_check(
     conservative: only unambiguously parseable hints are checked, everything
     else is UNVERIFIED. End-relative offsets resolve to absolute centred
     coords via the measured bbox ('-x end +75mm' -> x=xmin+75); without bbox
-    bounds they stay unverifiable, never a guess. Measured void centres
-    carry plan-view [x, y] only, so z constraints stay unverifiable."""
+    bounds they stay unverifiable, never a guess. 'near the +x end'
+    proximity hints resolve to an end-band region check (the outermost 30%
+    of the measured bbox span). Measured void centres carry plan-view
+    [x, y] only, so z constraints stay unverifiable."""
     pos = str(f.get("position") or "").strip()
     if not pos:
         return
     check_name = f"feat_{i}_position"
-    coords, faces, ends = parse_position_hints(pos)
+    coords, faces, ends, nears = parse_position_hints(pos)
     base: dict[str, Any] = {"feature": name, "position": pos[:160]}
-    if not coords and not faces and not ends:
+    if not coords and not faces and not ends and not nears:
         checks.append(
             _check(
                 check_name,
@@ -331,6 +455,8 @@ def _void_position_check(
     expected: dict[str, Any] = {"coords": coords, "faces": faces}
     if ends:
         expected["ends"] = ends
+    if nears:
+        expected["nears"] = nears
     centers = [
         c
         for g in cands
@@ -370,6 +496,9 @@ def _void_position_check(
             continue  # mid-plane centre — ambiguous, not wrong
         else:
             violations.append({"face": face, "measured_mm": round(best, 3)})
+    near_violations, near_verified = _near_band_check(nears, bounds, centers)
+    violations += near_violations
+    verified += near_verified
     ev = {
         **base,
         "expected": expected,
@@ -379,7 +508,7 @@ def _void_position_check(
     if violations:
         ev["violations"] = violations[:_MAX_EVIDENCE]
         checks.append(_check(check_name, TIER_FEATURES, "FAIL", ev))
-    elif verified and len(coords) + len(faces) + len(ends) == verified:
+    elif verified and len(coords) + len(faces) + len(ends) + len(nears) == verified:
         checks.append(_check(check_name, TIER_FEATURES, "PASS", ev))
     else:
         ev["reason"] = (
@@ -542,8 +671,112 @@ def _feature_placement(
             cands, other = groups + hole_pats + slot_pats + pockets + grooves + notches, []
         else:
             continue
-        _void_kind_axis_check(i, name, ftype, f, cands, other, checks)
-        _void_position_check(i, name, f, cands, bbox_min, bbox_max, checks)
+        # narrow to the diameter-matched subset so a differently-sized void
+        # cannot satisfy this feature's position/axis checks by pooling;
+        # `other`/kind-mismatch reporting stays on the full void set
+        pos_cands = _dia_matched(f, cands)
+        _void_kind_axis_check(i, name, ftype, f, pos_cands, other, checks)
+        _void_position_check(i, name, f, pos_cands, bbox_min, bbox_max, checks)
+
+    _unrequested_voids_check(
+        spec_feats,
+        round_groups + slot_groups + hole_pats,
+        _bbox_bounds(bbox_min, bbox_max),
+        checks,
+    )
+
+
+def _unrequested_voids_check(
+    spec_feats: list[Any],
+    voids: list[dict[str, Any]],
+    bounds: dict[str, tuple[float, float]],
+    checks: list[dict[str, Any]],
+) -> None:
+    """Extra-void check: a measured void no spec feature asked for (a
+    duplicate bore codegen forgot to suppress) is a placement failure even
+    when every declared feature verifies. A void counts as matched when its
+    dia is within 30% of some hole-like spec feature's declared dia, when a
+    centre sits within 4 mm of a resolved spec position, or when a spec
+    void feature declares neither dia nor position (in doubt = matched).
+    Dia-matched groups may still carry excess centres beyond the declared
+    count — the duplicate-in-one-group case. Conservative throughout: only
+    voids with dia >= 3 mm are counted (chamfer/countersink pseudo-voids are
+    never unrequested) and anything ambiguous counts as matched."""
+    void_types = _HOLE_KIND_TYPES | {"pocket", "cutout"}
+    feats = [
+        f
+        for f in spec_feats
+        if isinstance(f, dict)
+        and (
+            (ft := str(f.get("type") or "").lower()) in void_types
+            or "hole" in ft
+            or "slot" in ft
+            or "notch" in ft
+            or _wants_pattern(f)
+        )
+    ]
+    if not feats:
+        return
+    info: list[dict[str, Any]] = []
+    for f in feats:
+        try:
+            count = int(f.get("count") or 0)
+        except (TypeError, ValueError):
+            count = 0
+        info.append(
+            {
+                "dia": _spec_void_dia(f),
+                "wants": _void_pos_wants(f, bounds),
+                "count": count,
+            }
+        )
+    # an unconstrained spec void (no dia, no resolvable position) could be
+    # any measured void — it can never prove one unrequested
+    wildcard = any(i["dia"] is None and not i["wants"] for i in info)
+    unmatched: list[dict[str, Any]] = []
+    n_voids = 0
+    for e in voids:
+        dia = _void_dia(e)
+        if dia is None or dia < 3.0:
+            continue  # pseudo-void — never unrequested
+        n_voids += 1
+        if wildcard:
+            continue
+        dia_feats = [
+            i for i in info if i["dia"] is not None and abs(dia - i["dia"]) <= 0.3 * i["dia"]
+        ]
+        centers = _void_centers(e)
+        pos_hit = any(
+            all(
+                any(abs(c[0 if ax == "x" else 1] - v) <= 4.0 for v in vals)
+                for ax, vals in i["wants"].items()
+            )
+            for i in info
+            if i["wants"]
+            for c in centers
+        )
+        entry: dict[str, Any] = {
+            "id": str(e.get("id") or ""),
+            "dia": round(dia, 3),
+        }
+        if centers:
+            entry["centers"] = [[round(v, 3) for v in c] for c in centers[:6]]
+        if not dia_feats and not pos_hit:
+            entry["reason"] = "no spec feature declares this void"
+            unmatched.append(entry)
+        elif dia_feats and centers:
+            counts = [i["count"] for i in dia_feats]
+            if counts and all(c > 0 for c in counts) and len(centers) > sum(counts):
+                entry["reason"] = f"{len(centers)} voids exceed the declared count of {sum(counts)}"
+                unmatched.append(entry)
+    ev: dict[str, Any] = {"measured_voids": n_voids, "spec_void_features": len(feats)}
+    if unmatched:
+        ev["unmatched_ids"] = [u["id"] for u in unmatched]
+        ev["unmatched"] = unmatched[:_MAX_EVIDENCE]
+        checks.append(_check("unrequested_voids", TIER_FEATURES, "FAIL", ev))
+    else:
+        ev["reason"] = "every measured void corresponds to a spec feature"
+        checks.append(_check("unrequested_voids", TIER_FEATURES, "PASS", ev))
 
 
 def _structural(res: dict[str, Any], checks: list[dict[str, Any]]) -> None:

@@ -30,6 +30,19 @@ _POS_END_RE = re.compile(
 # "between 20 and 30mm"/"20 to 30mm" are ranges, not point offsets — the
 # whole hint stays unverifiable rather than checking a wrong single value
 _POS_END_RANGE_RE = re.compile(r"(?:\bbetween|\bto)\s*$", re.I)
+# "near the +x end", "close to -y end", "toward the +x end", "am +x Ende",
+# "at the -x end" — end-proximity hints with NO numeric offset (a number
+# makes it a _POS_END_RE offset instead). The sign is mandatory: "near the
+# x end" is ambiguous which end.
+_POS_NEAR_END_RE = re.compile(
+    r"\b(?:near|close\s+to|towards?|at|am|an|nahe)\s+"
+    r"(?:the|a|dem|der|das|den|des)?\s*"
+    r"([+-])([xyz])[\s-]*(?:ends?|edges?|sides?|ende)\b",
+    re.I,
+)
+# a number immediately before a near-end phrase ("5mm near the +x end") is
+# an offset, not a proximity hint — leave it to _POS_END_RE / unverifiable
+_POS_NEAR_NUM_RE = re.compile(r"\d\s*(?:mm|cm)?\s*$", re.I)
 # "centred in y", "centered about the x axis", "mid y", "middle of z" -> 0.0
 _POS_MID_RE = re.compile(
     r"\bcent(?:er|re)e?d?\s+(?:in|on|about|across|along)\s+(?:the\s+)?"
@@ -55,10 +68,10 @@ _POS_FACE_WORDS = {
 
 def parse_position_hints(
     text: str,
-) -> tuple[dict[str, float], list[str], list[dict[str, Any]]]:
+) -> tuple[dict[str, float], list[str], list[dict[str, Any]], list[dict[str, Any]]]:
     """Parse machine-readable position hints out of free text.
 
-    Returns ``(coords, faces, ends)``:
+    Returns ``(coords, faces, ends, nears)``:
     - ``coords``: ``x=12``-style absolute offsets plus ``centred in y``
       mid-plane hints folded in as ``0.0`` — ``{"x": 12.0, "y": 0.0}``.
     - ``faces``: sorted signed-axis face hints (``"+y"`` from ``+y``/``front``).
@@ -66,6 +79,9 @@ def parse_position_hints(
     - ``ends``: ``75mm from -x end``-style end/edge offsets as dicts
       ``{"axis": "x", "end": "-x", "offset_mm": 75.0}`` — the consumer
       resolves them against a bbox/envelope via :func:`resolve_end_hint`.
+    - ``nears``: ``near the +x end``-style proximity hints as dicts
+      ``{"axis": "x", "end": "+x"}`` — no offset; the consumer maps them
+      to an end-band region check or an estimated inset position.
     Parsed spans are masked so a token is never read as two hint kinds.
     """
     low = text.lower()
@@ -106,6 +122,14 @@ def parse_position_hints(
                 }
             )
         _mask(m.span())
+    nears: list[dict[str, Any]] = []
+    work = "".join(masked)
+    for m in _POS_NEAR_END_RE.finditer(work):
+        if _POS_NEAR_NUM_RE.search(work[: m.start()]):
+            continue  # unmasked on purpose — the ±axis still reads as a face hint
+        ax = m.group(2).lower()
+        nears.append({"axis": ax, "end": f"{m.group(1)}{ax}"})
+        _mask(m.span())
     for m in _POS_MID_RE.finditer("".join(masked)):
         ax = next(g for g in m.groups() if g).lower()
         coords.setdefault(ax, 0.0)
@@ -119,7 +143,7 @@ def parse_position_hints(
         if f"+{letter}" in faces and f"-{letter}" in faces:
             faces.discard(f"+{letter}")
             faces.discard(f"-{letter}")
-    return coords, sorted(faces), ends
+    return coords, sorted(faces), ends, nears
 
 
 def resolve_end_hint(axis: str, end: str, dist_mm: float, lo: float, hi: float) -> float:

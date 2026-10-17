@@ -247,3 +247,87 @@ def test_spec_anchor_unresolvable_or_unusable_skipped():
     )
     a = build_anchors(spec, {}, mesh_features=None)
     assert a.holes == []
+
+
+def test_spec_est_anchor_from_near_end_hint():
+    """'near the +X end, centered in Y' carries no numeric offset — the x
+    axis resolves to an ESTIMATED inset of max(1.5*dia, 6mm) from the +x
+    end and the anchor is marked spec-est, not spec."""
+    spec = _plate_spec(
+        [
+            Feature(
+                name="M8 bore",
+                type="hole",
+                dims={"diameter": 6.8},
+                position="near the +X end, centered in Y",
+                standard="M8",
+            ),
+        ]
+    )
+    a = build_anchors(spec, {}, None)
+    assert len(a.holes) == 1
+    h = a.holes[0]
+    assert h.source == "spec-est"
+    assert (h.x, h.y) == (34.8, 0.0)  # hi 45 - max(1.5*6.8, 6)
+    assert h.dia == 6.8 and h.bolt_size == "M8" and h.name == "M8 bore"
+
+
+def test_spec_est_anchor_merges_like_spec():
+    """A spec-est anchor merges onto a measured anchor within 3 mm exactly
+    like a spec anchor — measured x/y wins, spec name/kind/dia inherit."""
+    spec = _plate_spec(
+        [
+            Feature(
+                name="M8 bore",
+                type="hole",
+                dims={"diameter": 6.8},
+                position="near the +X end, centered in Y",
+            ),
+        ]
+    )
+    mesh = {
+        "holes": [{"x": 33.5, "y": 0.2, "dia": 6.9, "kind": "tunnel"}],
+        "outline_mm": [],
+    }
+    a = build_anchors(spec, {}, mesh)
+    assert len(a.holes) == 1
+    h = a.holes[0]
+    assert h.source == "mesh+spec"
+    assert (h.x, h.y) == (33.5, 0.2)  # measured position wins
+    assert h.dia == 6.8 and h.name == "M8 bore"  # spec dims/name win
+
+
+def test_spec_est_near_hint_needs_both_axes():
+    """'near the +X end' alone resolves x but not y — still skipped (a
+    guessed coordinate is worse than none)."""
+    spec = _plate_spec(
+        [
+            Feature(
+                name="bore",
+                type="hole",
+                dims={"diameter": 6.8},
+                position="near the +X end",
+            ),
+        ]
+    )
+    a = build_anchors(spec, {}, None)
+    assert a.holes == []
+
+
+def test_spec_est_minus_end_insets_from_lo():
+    """'near the -x end' estimates lo + max(1.5*dia, 6mm)."""
+    spec = _plate_spec(
+        [
+            Feature(
+                name="bore",
+                type="hole",
+                dims={"diameter": 4.0},
+                position="near the -x end, centred in y",
+            ),
+        ]
+    )
+    a = build_anchors(spec, {}, None)
+    assert len(a.holes) == 1
+    h = a.holes[0]
+    assert h.source == "spec-est"
+    assert (h.x, h.y) == (-39.0, 0.0)  # lo -45 + max(1.5*4, 6)

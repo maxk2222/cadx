@@ -601,3 +601,148 @@ def test_placement_checks_stay_json_serializable():
     )
     report = verify_spec(spec, res, feature_findings=[])
     assert json.loads(json.dumps(report)) == report
+
+
+def test_position_near_end_band_fails():
+    """'near the +X end' resolves to the outermost 30% of the measured
+    x-span — a bore at the wrong end FAILs instead of pooling a bare '+x'
+    face hint. Bbox x spans [-45, +45] -> the band starts at x=+18."""
+    spec = _spec(
+        features=[
+            _feat(
+                name="mount",
+                type="hole",
+                dims={"diameter": 6.8},
+                position="near the +X end, centered in Y",
+            )
+        ]
+    )
+    res = _res_bbox90(
+        features={"hole_groups": [_hole_group(id="h1", diameter=6.8, centers=[[-35.0, 0.0]])]}
+    )
+    report = verify_spec(spec, res, feature_findings=[])
+    c = _by_name(report)["feat_0_position"]
+    assert c["status"] == "FAIL"
+    assert c["evidence"]["expected"]["nears"] == [{"axis": "x", "end": "+x"}]
+    v = c["evidence"]["violations"][0]
+    assert v["near"] == "+x" and v["measured_mm"] == -35.0
+
+
+def test_position_near_end_band_passes():
+    spec = _spec(
+        features=[
+            _feat(
+                name="mount",
+                type="hole",
+                dims={"diameter": 6.8},
+                position="near the +X end, centered in Y",
+            )
+        ]
+    )
+    res = _res_bbox90(
+        features={"hole_groups": [_hole_group(id="h1", diameter=6.8, centers=[[30.0, 0.1]])]}
+    )
+    report = verify_spec(spec, res, feature_findings=[])
+    assert _by_name(report)["feat_0_position"]["status"] == "PASS"
+
+
+def test_position_dia_matched_no_pool_pass():
+    """Ø8 spec at x=+30 must NOT be satisfied by a Ø12 void at +30 — only
+    the dia-matched Ø8 group pools into the position check (the pass-by-
+    pool defect: a different hole's centre used to satisfy the hint)."""
+    spec = _spec(features=[_feat(name="m8", type="hole", dims={"diameter": 8.0}, position="x=30")])
+    res = _res_bbox90(
+        features={
+            "hole_groups": [
+                _hole_group(id="big", diameter=12.0, centers=[[30.0, 0.0]]),
+                _hole_group(id="small", diameter=8.0, centers=[[-35.0, 0.0]]),
+            ]
+        }
+    )
+    report = verify_spec(spec, res, feature_findings=[])
+    c = _by_name(report)["feat_0_position"]
+    assert c["status"] == "FAIL"
+    assert c["evidence"]["measured_ids"] == ["small"]
+
+
+def test_position_dia_matched_pools_right_hole():
+    """Same layout, but the dia-matched Ø8 hole sits at the declared x."""
+    spec = _spec(features=[_feat(name="m8", type="hole", dims={"diameter": 8.0}, position="x=30")])
+    res = _res_bbox90(
+        features={
+            "hole_groups": [
+                _hole_group(id="big", diameter=12.0, centers=[[-35.0, 0.0]]),
+                _hole_group(id="small", diameter=8.0, centers=[[30.2, 0.0]]),
+            ]
+        }
+    )
+    report = verify_spec(spec, res, feature_findings=[])
+    assert _by_name(report)["feat_0_position"]["status"] == "PASS"
+
+
+def test_unrequested_void_fails():
+    """An extra measured hole no spec feature declares is a FAIL even when
+    the declared feature itself verifies."""
+    spec = _spec(
+        features=[_feat(name="mount", type="hole", dims={"diameter": 8.0}, position="x=30")]
+    )
+    res = _res_bbox90(
+        features={
+            "hole_groups": [
+                _hole_group(id="h1", diameter=8.0, centers=[[30.0, 0.0]]),
+                _hole_group(id="h2", diameter=5.0, centers=[[-20.0, 10.0]]),
+            ]
+        }
+    )
+    report = verify_spec(spec, res, feature_findings=[])
+    c = _by_name(report)["unrequested_voids"]
+    assert c["status"] == "FAIL"
+    assert c["evidence"]["unmatched_ids"] == ["h2"]
+    assert report["status"] == "FAIL"
+
+
+def test_unrequested_void_excess_in_group_fails():
+    """A dia-matched group carrying MORE centres than the declared count is
+    the duplicate-bore case — the extra centre is unrequested."""
+    spec = _spec(features=[_feat(name="mount", type="hole", dims={"diameter": 6.8}, count=1)])
+    res = _res_bbox90(
+        features={
+            "hole_groups": [
+                _hole_group(id="h1", diameter=6.8, count=2, centers=[[30.0, 0.0], [-35.0, 0.0]])
+            ]
+        }
+    )
+    report = verify_spec(spec, res, feature_findings=[])
+    c = _by_name(report)["unrequested_voids"]
+    assert c["status"] == "FAIL"
+    assert c["evidence"]["unmatched_ids"] == ["h1"]
+
+
+def test_unrequested_voids_pass_when_all_matched():
+    """All measured voids accounted for — by dia or by declared position —
+    plus a <3 mm pseudo-void that must never be counted."""
+    spec = _spec(
+        features=[_feat(name="mount", type="hole", dims={"diameter": 8.0}, position="x=30")]
+    )
+    res = _res_bbox90(
+        features={
+            "hole_groups": [
+                _hole_group(id="h1", diameter=8.0, centers=[[30.0, 0.0]]),
+                _hole_group(id="h2", diameter=8.2, centers=[[-40.0, 0.0]]),
+                _hole_group(id="h3", diameter=2.0, centers=[[0.0, 0.0]]),
+            ]
+        }
+    )
+    report = verify_spec(spec, res, feature_findings=[])
+    c = _by_name(report)["unrequested_voids"]
+    assert c["status"] == "PASS"
+    assert c["evidence"]["measured_voids"] == 2
+
+
+def test_unrequested_voids_wildcard_feature_matches():
+    """A spec void feature declaring neither dia nor position could be any
+    measured void — in doubt the void counts as matched."""
+    spec = _spec(features=[_feat(name="mount", type="hole", axis="z")])
+    res = _res(features={"hole_groups": [_hole_group(id="h1", axis="+z", centers=[[9.0, 3.0]])]})
+    report = verify_spec(spec, res, feature_findings=[])
+    assert _by_name(report)["unrequested_voids"]["status"] == "PASS"

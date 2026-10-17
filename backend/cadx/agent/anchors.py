@@ -62,6 +62,7 @@ class Anchor(BaseModel):
         "image-approx+mesh",
         "scan",
         "spec",
+        "spec-est",
         "image+spec",
         "mesh+spec",
         "image+mesh+spec",
@@ -165,29 +166,43 @@ def _declared_bore_axis(f: Feature, text: str) -> str:
     return axis
 
 
-def _spec_xy(f: Feature, bounds: dict[str, tuple[float, float]]) -> list[tuple[float, float]]:
+def _spec_xy(
+    f: Feature, bounds: dict[str, tuple[float, float]], dia: float
+) -> list[tuple[float, float, bool]]:
     """Resolved [x, y] positions of one spec feature on the centred envelope.
 
-    Explicit coords, end-relative hints and mid-plane hints combine per
-    axis; the cross product covers multi-offset declarations ("20 and 75mm
-    from -X end" yields both x positions). Empty when either in-plane axis
-    fails to resolve — a guessed coordinate is worse than none.
+    Returns ``(x, y, est)`` triples — ``est`` flags positions that came from
+    a ``near the +x end`` proximity hint instead of an exact offset, so the
+    caller can mark the anchor ``spec-est``. Explicit coords, end-relative
+    hints and mid-plane hints combine per axis; the cross product covers
+    multi-offset declarations ("20 and 75mm from -X end" yields both x
+    positions). A near-end hint on an otherwise-unresolved in-plane axis
+    resolves to an estimate inset ``max(1.5*dia, 6mm)`` from the declared
+    end. Empty when either in-plane axis fails to resolve — a guessed
+    coordinate is worse than none.
     """
     text = str(f.position or "").strip() or str(f.description or "")
-    coords, _faces, ends = parse_position_hints(text)
-    vals: dict[str, list[float]] = {"x": [], "y": []}
+    coords, _faces, ends, nears = parse_position_hints(text)
+    vals: dict[str, list[tuple[float, bool]]] = {"x": [], "y": []}
     for ax in ("x", "y"):
         if ax in coords:  # explicit "x=12" + "centred in y" (-> 0.0) hints
-            vals[ax].append(coords[ax])
+            vals[ax].append((coords[ax], False))
     for e in ends:
         ax = str(e["axis"])
         if ax in vals:
             v = resolve_end_hint(ax, str(e["end"]), float(e["offset_mm"]), *bounds[ax])
-            if v not in vals[ax]:
-                vals[ax].append(v)
+            if all(v != ex for ex, _ in vals[ax]):
+                vals[ax].append((v, False))
+    inset = max(1.5 * dia, 6.0)
+    for n in nears:
+        ax = str(n["axis"])
+        if ax in vals and not vals[ax]:
+            lo, hi = bounds[ax]
+            v = hi - inset if str(n["end"]).startswith("+") else lo + inset
+            vals[ax].append((v, True))
     if not vals["x"] or not vals["y"]:
         return []
-    return [(x, y) for x in vals["x"] for y in vals["y"]]
+    return [(x, y, ex or ey) for x, ex in vals["x"] for y, ey in vals["y"]]
 
 
 def _spec_anchors(spec: PartSpec) -> list[Anchor]:
@@ -201,8 +216,10 @@ def _spec_anchors(spec: PartSpec) -> list[Anchor]:
     (x ∈ [-length/2, +length/2]); only +z bores are synthesized — a feature
     declaring another bore axis stays for the mesh scan. Both in-plane axes
     must resolve or the feature is skipped (a guessed coordinate is worse
-    than none). One feature may emit several anchors: "20 and 75mm from
-    -X end" resolves to both x positions.
+    than none) — a ``near the +x end`` proximity hint resolves an axis to an
+    estimated inset position, emitted with ``source="spec-est"`` so it is
+    distinguishable from exact spec anchors. One feature may emit several
+    anchors: "20 and 75mm from -X end" resolves to both x positions.
     """
     lx = getattr(spec, "length_x", None)
     wy = getattr(spec, "width_y", None)
@@ -232,14 +249,14 @@ def _spec_anchors(spec: PartSpec) -> list[Anchor]:
             or _bolt_size(f.thread_spec or "")
             or _bolt_size(f.name or "")
         )
-        for x, y in _spec_xy(f, bounds):
+        for x, y, est in _spec_xy(f, bounds, dia):
             out.append(
                 Anchor(
                     index=0,  # re-indexed by build_anchors
                     x=round(x, 2),
                     y=round(y, 2),
                     dia=round(dia, 2),
-                    source="spec",
+                    source="spec-est" if est else "spec",
                     name=f.name or "",
                     kind=kind,
                     bolt_size=bolt,
