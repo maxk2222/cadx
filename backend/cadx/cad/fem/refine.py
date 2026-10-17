@@ -94,8 +94,13 @@ class RefineFeature:
     # pitch is derivable (helical_threads flag permitting); True/False is an
     # explicit per-feature choice that always wins
     helical: bool | None = None
-    source: str = "anchor"  # anchor|spec|request
+    source: str = "anchor"  # anchor|spec|request (+ scanned source tags like "spec+scan")
     dia_extra: float = 0.0  # internal: ream bump after snapping onto an existing tunnel
+    # internal: spec-sourced anchor admitted WITHOUT a base-mesh tunnel —
+    # apply_refine re-verifies real material at the anchor AFTER keep-restore
+    # before cutting (a scoop whose ring was eaten and never restored leaves
+    # nothing to bore into)
+    admit_on_material: bool = False
 
 
 # --------------------------------------------------------------------------- #
@@ -235,6 +240,14 @@ def _tunnel_open_mesh(
     return blocked <= max(1.0, open_frac * span)
 
 
+def _anchor_material(mesh: trimesh.Trimesh, u: float, v: float, axis: str) -> bool:
+    """True when `mesh` holds real solid material along the anchor's
+    through-ray — the inverse of `_tunnel_open_mesh`. Used for spec anchors
+    admitted without a base tunnel: after keep-restore a pasted ring (or
+    surviving opt material) must exist or the cut would remove nothing."""
+    return not _tunnel_open_mesh(mesh, u, v, axis)
+
+
 def resolve_refine_features(  # noqa: C901
     anchors: list[dict[str, Any]] | None,
     spec_features: list[dict[str, Any]] | None,
@@ -251,8 +264,11 @@ def resolve_refine_features(  # noqa: C901
     re-cut as plain holes at their measured diameter — but ONLY when the
     pre-optimization `base_mesh` shows a real through-tunnel at the anchor
     position (scanners report organic surface dimples as "hole" anchors;
-    drilling those cuts junk bores). Without `base_mesh` every leftover
-    anchor is kept (legacy behaviour).
+    drilling those cuts junk bores). Spec-DECLARED anchors (anchor source
+    contains "spec") are authoritative: without a base tunnel they are
+    admitted anyway with `admit_on_material` — apply_refine then requires
+    real material at the anchor on the post-restore mesh before cutting.
+    Without `base_mesh` every leftover anchor is kept (legacy behaviour).
     """
     feats: list[RefineFeature] = []
     warnings: list[str] = []
@@ -296,6 +312,7 @@ def resolve_refine_features(  # noqa: C901
             cbore_depth_mm=dims.get("counterbore_depth"),
             thread_spec=str(dims.get("thread_spec") or a.get("thread_spec") or ""),
             helical=_opt_bool(dims.get("helical", a.get("helical"))),
+            source=str(a.get("source") or "anchor"),
         )
 
     # --- explicit request selection -----------------------------------------
@@ -390,6 +407,7 @@ def resolve_refine_features(  # noqa: C901
             feats.append(f)
 
     no_tunnel: list[str] = []
+    deferred: list[str] = []
     for a in anchors:
         if id(a) in used_anchors:
             continue
@@ -397,6 +415,16 @@ def resolve_refine_features(  # noqa: C901
         if f is None:
             continue
         if base_mesh is not None and not _tunnel_open_mesh(base_mesh, f.u, f.v, f.axis):
+            if "spec" in str(f.source):
+                # spec-declared anchor over non-tunnel base — the spec is
+                # authoritative (FEM regions resolve onto it). Keep-restore
+                # pastes the base ring back first, so admit it and let
+                # apply_refine verify real material at the anchor on the
+                # post-restore mesh before cutting.
+                f.admit_on_material = True
+                deferred.append(f.name)
+                feats.append(f)
+                continue
             # scanned anchor with no real through-feature in the
             # pre-optimization part — a surface dimple / noise void, not a
             # bore worth drilling
@@ -407,6 +435,12 @@ def resolve_refine_features(  # noqa: C901
         warnings.append(
             f"skipped {len(no_tunnel)} anchor(s) without a base-mesh tunnel "
             f"({', '.join(no_tunnel[:4])}{'…' if len(no_tunnel) > 4 else ''})"
+        )
+    if deferred:
+        warnings.append(
+            f"{len(deferred)} spec anchor(s) without a base-mesh tunnel deferred "
+            f"to keep-restore ({', '.join(deferred[:4])}"
+            f"{'…' if len(deferred) > 4 else ''})"
         )
 
     return feats, warnings
@@ -878,6 +912,33 @@ def _box_mesh(box: np.ndarray) -> trimesh.Trimesh:
     return m
 
 
+def _auto_keep_margin_mm() -> float:
+    """Auto keep-ring margin — mirrors
+    RuntimeSettings.topopt_auto_keep_margin_mm (default 3.0 mm). Read lazily
+    so the executor path stays free of the runtime-config import; falls back
+    to the hard default when unavailable."""
+    try:
+        from cadx.runtime_config import RuntimeSettings
+
+        return float(RuntimeSettings.model_fields["topopt_auto_keep_margin_mm"].default or 3.0)
+    except Exception:
+        return 3.0
+
+
+def _auto_anchor_keep_regions(anchors: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """One keep ring per anchor with a resolvable position — mirrors the
+    TopOpt auto-keep (`regions.auto_keep_regions`) so keep-restore still
+    finds the bore rings when the caller forwarded no explicit keep_regions
+    (the in-job refine payload only carries user-declared regions)."""
+    out: list[dict[str, Any]] = []
+    margin = _auto_keep_margin_mm()
+    for i, a in enumerate(anchors or []):
+        if _anchor_uv(a) is None:
+            continue
+        out.append({"kind": "hole", "hole_index": i + 1, "margin_mm": margin})
+    return out
+
+
 def restore_keep_surface(
     opt_mesh: trimesh.Trimesh,
     base_mesh: trimesh.Trimesh,
@@ -892,6 +953,12 @@ def restore_keep_surface(
     material; this restores exact bore walls and planar faces. Returns
     (mesh, warnings, restored_count).
 
+    When `keep_regions` is empty, one AUTO keep ring per anchor (mirroring
+    the TopOpt auto-keep, `_auto_anchor_keep_regions`) is synthesized —
+    the in-job refine payload only forwards user-declared regions, and
+    without the rings a SIMP-eaten bore leaves nothing to re-cut. Auto
+    restores are labelled "auto keep-restore" in the warnings.
+
     Robustness: both operands must be manifold volumes for the booleans. A
     non-volume base or a sliver patch is repaired once via _ensure_watertight;
     if it still is not a volume the region is skipped with a warning instead
@@ -901,6 +968,7 @@ def restore_keep_surface(
     warnings: list[str] = []
     out = opt_mesh
     restored = 0
+    auto_restored = 0
     base = base_mesh
     if not base.is_volume:
         with contextlib.suppress(Exception):
@@ -909,7 +977,18 @@ def restore_keep_surface(
         warnings.append("keep-region restore skipped — base mesh is not a volume")
         return out, warnings, 0
     span = (float(base.bounds[0].min()) - 1, float(base.bounds[1].max()) + 1)
-    for b in _keep_boxes(keep_regions or [], anchors, base.bounds, span, margin_mm):
+    tagged: list[tuple[np.ndarray, bool]] = [
+        (b, False) for b in _keep_boxes(keep_regions or [], anchors, base.bounds, span, margin_mm)
+    ]
+    if not keep_regions:
+        tagged += [
+            (b, True)
+            for b in _keep_boxes(
+                _auto_anchor_keep_regions(anchors), anchors, base.bounds, span, margin_mm
+            )
+        ]
+    for b, is_auto in tagged:
+        tag = "auto keep-restore" if is_auto else "keep-region"
         try:
             patch = base.intersection(_box_mesh(b), engine="manifold")
             if patch is None or not len(getattr(patch, "faces", [])):
@@ -919,19 +998,22 @@ def restore_keep_surface(
                 with contextlib.suppress(Exception):
                     patch = _ensure_watertight(patch)
             if not patch.is_volume:
-                warnings.append("keep-region patch is not a volume — region left smoothed")
+                warnings.append(f"{tag} patch is not a volume — region left smoothed")
                 continue
             if not out.is_volume:
                 warnings.append("optimized mesh lost volume-ness — restore aborted")
                 break
             merged = out.union(patch, engine="manifold")
             if merged is None or not len(getattr(merged, "faces", [])):
-                warnings.append("keep-region union produced empty mesh — region left smoothed")
+                warnings.append(f"{tag} union produced empty mesh — region left smoothed")
                 continue
             out = merged
             restored += 1
+            auto_restored += int(is_auto)
         except Exception as e:
-            warnings.append(f"keep-region restore failed ({e}) — region left smoothed")
+            warnings.append(f"{tag} failed ({e}) — region left smoothed")
+    if auto_restored:
+        warnings.append(f"auto keep-restore: {auto_restored} anchor ring(s) restored")
     return out, warnings, restored
 
 
@@ -1086,6 +1168,13 @@ def apply_refine(
     """Re-cut `features` on `opt_mesh` via manifold difference; restore keep
     surfaces from `base_mesh`. Never raises on a single bad feature.
 
+    Order is fixed and load-bearing: keep-surface RESTORE runs FIRST (unions
+    `base_mesh ∩ keep_box` back; with no explicit `keep_regions` one auto
+    ring per anchor is synthesized), then re-cuts are SNAPPED onto measured
+    post-restore tunnel centres, then each feature is CUT. Snapping before
+    restore would miss bore walls SIMP ate; cutting before restore would be
+    buried by the restored patch.
+
     `helical_threads` is the auto-default for thread/tap features whose
     `helical` field is unset: when a pitch is derivable the re-cut adds the
     real helical V-groove (tap-drill bore is always kept as fallback).
@@ -1110,6 +1199,29 @@ def apply_refine(
             report.restored_regions = n
         except Exception as e:
             report.warnings.append(f"keep-region restore failed: {e}")
+
+    # deferred spec anchors: resolve admitted them without a base-mesh
+    # tunnel on the condition that keep-restore (or surviving opt material)
+    # leaves real material at the anchor — verify on the POST-restore mesh.
+    # No material → the bore would cut into a void; skip honestly.
+    if features:
+        gated: list[RefineFeature] = []
+        for feat in features:
+            if feat.admit_on_material and not _anchor_material(out, feat.u, feat.v, feat.axis):
+                report.skipped.append(
+                    {
+                        "name": feat.name,
+                        "kind": feat.kind,
+                        "reason": "no material at anchor after keep-restore",
+                    }
+                )
+                report.warnings.append(
+                    f"feature '{feat.name}': spec anchor admitted pending "
+                    "keep-restore found no material — cut skipped"
+                )
+                continue
+            gated.append(feat)
+        features = gated
 
     # snap re-cuts onto the measured tunnel centre and merge near-concentric
     # duplicates — restore ran first, so `out` already holds the original

@@ -17,6 +17,7 @@ from cadx.cad.fem.refine import (
     _metric_pitch,
     _parse_spec,
     _thread_spec_from,
+    _tunnel_open_mesh,
     apply_refine,
     resolve_refine_features,
     restore_keep_surface,
@@ -496,3 +497,124 @@ def test_groove_failure_keeps_tap_drill(monkeypatch: pytest.MonkeyPatch):
     assert len(rep.applied) == 1
     tap_vol = math.pi * ((8.0 - 1.25) / 2) ** 2 * 12.0
     assert (mesh.volume - out.volume) == pytest.approx(tap_vol, rel=0.05)
+
+
+# --------------------------------------------------------------------------- #
+# auto keep-restore + spec-anchor deferred cuts — the SIMP-eaten-ring defect  #
+# --------------------------------------------------------------------------- #
+
+
+def _slab(x: float = 60.0, y: float = 40.0, z: float = 14.0) -> trimesh.Trimesh:
+    m = trimesh.creation.box(extents=[x, y, z])
+    m.apply_translation([0.0, 0.0, z / 2])
+    return m
+
+
+def _slab_bored(x0: float = 10.0, dia: float = 10.0) -> trimesh.Trimesh:
+    """60x40x14 slab with a clean Ø`dia` through-bore at (x0, 0)."""
+    bore = trimesh.creation.cylinder(radius=dia / 2.0, height=40.0, sections=48)
+    bore.apply_translation([x0, 0.0, 7.0])
+    return _slab().difference(bore, engine="manifold")
+
+
+def _scooped_opt(base: trimesh.Trimesh, x0: float = 10.0, r: float = 15.0) -> trimesh.Trimesh:
+    """'Optimized' variant of `base`: SIMP ate a huge void around (x0, 0) —
+    bore walls and their keep rings included."""
+    void = trimesh.creation.cylinder(radius=r, height=60.0, sections=48)
+    void.apply_translation([x0, 0.0, 7.0])
+    return base.difference(void, engine="manifold")
+
+
+def _bore_anchor(idx: int = 1, *, source: str = "spec+scan", dia: float = 10.0) -> dict:
+    return {
+        "index": idx,
+        "kind": "hole",
+        "axis": "+z",
+        "pos": [10.0, 0.0, 7.0],
+        "x": 10.0,
+        "y": 0.0,
+        "dia": dia,
+        "depth_mm": None,
+        "source": source,
+    }
+
+
+def test_auto_keep_restores_eaten_bore_ring():
+    """SIMP ate the material ring around a Ø10 bore and the refine job
+    forwarded keep_regions=[] — an auto keep ring per anchor must restore
+    the base surface first so the re-cut leaves ONE clean Ø10 tunnel."""
+    base = _slab_bored(10.0, 10.0)
+    opt = _scooped_opt(base, 10.0, 15.0)
+    anchors = [_bore_anchor()]
+    feats, _ = resolve_refine_features(anchors, None, None, base_mesh=base)
+    assert len(feats) == 1
+
+    out, rep = apply_refine(opt, feats, base_mesh=base, keep_regions=[], anchors=anchors)
+    assert rep.restored_regions >= 1
+    assert any("auto keep-restore" in w for w in rep.warnings)
+    assert len(rep.applied) == 1 and not rep.skipped
+    assert _tunnel_open_mesh(out, 10.0, 0.0, "+z")
+    # the scan may also see the scooped opening itself as a tunnel — the
+    # requirement is exactly one ~Ø10 bore at the anchor position
+    bores = [t for t in _z_tunnels_near(out, 10.0, radius=4.0) if t["dia"] <= 15.0]
+    assert len(bores) == 1
+    # requested Ø10, possibly reamed +0.4 after snapping onto the restored bore
+    assert bores[0]["dia"] == pytest.approx(10.0, abs=1.5)
+
+
+def test_spec_anchor_recut_after_auto_restore():
+    """Spec-declared anchor over SOLID base (no base tunnel): resolve defers
+    the verdict, auto keep-restore pastes the ring back, and the bore is cut
+    — not dropped by the d1d1836 tunnel allowlist."""
+    base = _slab()  # solid — the spec bore was never in the scan
+    opt = _scooped_opt(base, 10.0, 15.0)
+    anchors = [_bore_anchor(source="spec")]
+    feats, _ = resolve_refine_features(anchors, None, None, base_mesh=base)
+    assert len(feats) == 1
+    assert feats[0].admit_on_material
+
+    out, rep = apply_refine(opt, feats, base_mesh=base, keep_regions=[], anchors=anchors)
+    assert rep.restored_regions >= 1
+    assert len(rep.applied) == 1 and not rep.skipped
+    assert _tunnel_open_mesh(out, 10.0, 0.0, "+z")
+    bores = [t for t in _z_tunnels_near(out, 10.0, radius=4.0) if t["dia"] <= 15.0]
+    assert len(bores) == 1
+    assert bores[0]["dia"] == pytest.approx(10.0, abs=1.5)
+
+
+def test_spec_anchor_deferred_but_no_material_skipped():
+    """Deferred spec anchor where NOTHING restored the material (restore
+    disabled, opt mesh is a void there): the cut must be skipped — boring
+    into air would be a fake 'applied'."""
+    base = _slab()
+    opt = _scooped_opt(base, 10.0, 15.0)
+    anchors = [_bore_anchor(source="spec")]
+    feats, _ = resolve_refine_features(anchors, None, None, base_mesh=base)
+    assert len(feats) == 1 and feats[0].admit_on_material
+
+    _out, rep = apply_refine(
+        opt, feats, base_mesh=base, keep_regions=[], anchors=anchors, restore_keeps=False
+    )
+    assert not rep.applied
+    assert any("no material" in s["reason"] for s in rep.skipped)
+    assert any("no material" in w for w in rep.warnings)
+
+
+def test_scan_anchor_without_base_tunnel_still_skipped():
+    """d1d1836 regression: a mesh-scan-only anchor (no spec) over a base
+    without a tunnel is still dropped at resolve time — never deferred."""
+    base = _slab()
+    anchors = [_bore_anchor(source="scan")]
+    feats, warns = resolve_refine_features(anchors, None, None, base_mesh=base)
+    assert not feats
+    assert any("without a base-mesh tunnel" in w for w in warns)
+    assert not any("deferred" in w for w in warns)
+
+
+def test_scan_anchor_mesh_source_still_skipped():
+    """Same protection with the 'mesh' source tag: excluded at resolve —
+    never even admitted, no deferral."""
+    anchors = [_bore_anchor(source="mesh")]
+    feats, warns = resolve_refine_features(anchors, None, None, base_mesh=_slab())
+    assert not feats
+    assert any("without a base-mesh tunnel" in w for w in warns)
