@@ -139,23 +139,64 @@ data/library/<part_id>/<file>    reusable user library (uploaded STEP/STL bodies
   `geometry_at_failure` inventory (where shapes ended up) that feeds the
   repair prompt.
 - **Verification loop**: numeric bbox check vs declared spec, 7-view render +
-  contact sheet, DfM rules, vision critique. In-session `verify` uses the
-  engine's `light` path (no renders/DfM) — geometry numbers only. Repair
-  sessions converge via per-kind turn caps (`agent_tool_max_turns_edit`) and
-  a detector that ends a session re-verifying the identical error signature.
-  Best candidate across iterations wins, not the last one.
+  contact sheet, DfM rules, vision critique. Per-feature checks in
+  `verify_spec` compare each stated feature's axis/kind/position against
+  measured geometry (slot ≠ round hole; a hole drilled on the wrong axis is
+  a deterministic fail; absent evidence → `UNVERIFIED`, never auto-fail).
+  Features carry deterministic IDs (`h1`, `s2`, `pk1`, `nt1`, …) stable
+  across measurement ordering and re-runs, so issues and edits can name a
+  specific hole/slot/pocket. Intake may also declare
+  `verification_questions` (≤6, deduplicated, placement-critical) that the
+  critique must answer against renders — a `no`, or `unclear` with evidence,
+  becomes a major `verify_question` issue and caps the score. In-session
+  `verify` uses the engine's `light` path (no renders/DfM) — geometry
+  numbers only. Repair sessions converge via per-kind turn caps
+  (`agent_tool_max_turns_edit`), a detector that ends a session re-verifying
+  the identical error signature, and stall guards that stop or switch
+  strategy on repeated signatures, patch misses, or thinking/token budget
+  exhaustion. Best candidate across iterations wins, not the last one.
 - **Staged build sessions** (`agent_staged_build`): fresh codegen runs a
   `kind="build"` tool session — the model grows a seeded buffer
   feature-by-feature (`add_block`, sandbox `verify` per stage on the light
   pipeline, `checkpoint`/`rollback`, `done` submits the assembled script).
   Failing lines map back to the block that produced them. The final
-  contract is unchanged: one runnable file assigning `result`.
+  contract is unchanged: one runnable file assigning `result`. If the
+  session exhausts its turn budget without `done`, a grown buffer is
+  submitted anyway (same contract gate); a seed-only buffer still fails.
+  `agent_codegen_samples` > 1 runs a first-iteration tournament: N
+  independent sessions in parallel, ranked by in-session verification,
+  contract status and errors (each candidate gets the full call budget).
+- **Static gate + on-demand docs**: generated/edited code passes a
+  pre-execution signature gate (`cad/sigcheck.py`) — called names are
+  checked against introspected build123d/cadlib signatures; unknown names,
+  wrong arity or banned calls fail fast with repair hints instead of
+  burning a sandbox exec. Unknown-attribute/name/signature exec errors
+  trigger targeted doc injection (`agent/docfetch.py` pulls the relevant
+  quickref/introspection entries into the next prompt) instead of always-on
+  reference blobs.
+- **Prompt layout for prefix caching**: stable job/spec/reference content
+  precedes per-iteration code, renders, diagnoses and feedback in every
+  step prompt; `LLMResponse.cached_tokens` (provider-reported prefix-cache
+  hits) is recorded in traces when nonzero. Long tool sessions run through
+  an exchange-level condenser (in `agent/toolloop.py`) that summarizes
+  older tool history while never splitting assistant tool calls from their
+  results; it is disabled where chat persistence uses positional slices.
 - **Canonical conformance**: `verifyspec.py` condenses the executor's
   measured evidence (validity, envelope, feature findings incl. quiddity
   patterns, defects, STEP roundtrip, DfM) into one PASS/FAIL/UNVERIFIED
   report — the canonical `Version.issues` entry — while
   `agent/thinking.py` escalates reasoning depth only on hard steps and
-  stall signals instead of paying thinking tokens everywhere.
+  stall signals instead of paying thinking tokens everywhere. Feature
+  evidence also feeds from a bounded face-adjacency graph (in
+  `cad/features.py`, lazy networkx, ~600-face cap) that recognises pockets,
+  grooves and notches from B-Rep concavity/adjacency — best-effort,
+  degrades safely on faceted solids.
+- **Mesh → parametric reconstruction**: `parametrize_mesh` /
+  `cad/reconstruct.py`+`cad/mesh_to_code.py` turn an input mesh into
+  editable build123d code: revolve profiles with bore-aware axis and
+  through-bores, extruded prisms, then conservative composite fitting via
+  `pyransac3d` (≤6 primitives, deterministic seed, boolean code emission,
+  chamfer/self-check rejection) before falling back to the organic path.
 - **Verified feature edits**: `POST /versions/{id}/edit-feature` resizes a
   recognised plain through-hole on the stored B-Rep (no LLM); the edit
   commits only if a hard gate passes (volume delta, envelope, other-hole

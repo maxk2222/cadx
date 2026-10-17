@@ -59,6 +59,31 @@ intake with DNS errors); the worker has both but gets recreated on
 `docker network connect cadx_internal <name>`) plus `nohup cadx eval ... >
 /data/eval_matrix.log` so the run survives the exec session.
 
+## External CAD-bench tasks
+
+Eight tasks ported from the MIT-licensed CAD-bench prompt set live as
+`cadbench_*.json` (cube, boxes, ring, L-bracket, extrusion, slotted plate,
+flange, PCD ring). They are `real_only` CAD-mode benchmarks that run through
+CADX's own `result` contract and bbox/feature/watertight gates — an
+anti-overfit check against prompts the benchmark suite was not tuned on.
+None of the source benchmark's verifier or gold code was vendored.
+
+## SFT / repair-pair export
+
+`scripts/export_sft.py` harvests verified training pairs from run traces:
+codegen examples (prompt → code that executed successfully and passed the
+quality gates) and repair pairs (failed attempt → later successful attempt
+from the same version). Output is Axolotl/messages-style JSONL,
+deterministically ordered and deduplicated; secret-shaped strings are
+filtered and only verified code is ever emitted.
+
+```bash
+../.venv/bin/uv run python ../scripts/export_sft.py --out sft.jsonl
+../.venv/bin/uv run python ../scripts/export_sft.py --kinds repair --out repair.jsonl
+# also harvest real project runs (not just eval_out):
+../.venv/bin/uv run python ../scripts/export_sft.py --include-project-versions --out all.jsonl
+```
+
 ## Real-model matrix (2026-10, qwen3.8-27b @ remote vLLM)
 
 3 variants x 3 CAD benchmarks x 1 rep, `--queue-exec`. `staged_auto` =
