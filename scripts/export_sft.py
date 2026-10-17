@@ -164,7 +164,7 @@ def _iter_trace_records(version_dir: Path) -> list[dict]:
     jl = version_dir / "trace.jsonl"
     if jl.is_file():
         records = []
-        for line in jl.read_text().splitlines():
+        for line in jl.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if not line:
                 continue
@@ -176,7 +176,7 @@ def _iter_trace_records(version_dir: Path) -> list[dict]:
     tj = version_dir / "trace.json"
     if tj.is_file():
         try:
-            data = json.loads(tj.read_text())
+            data = json.loads(tj.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             return []
         return data if isinstance(data, list) else [data]
@@ -194,14 +194,14 @@ def _iter_attempts(version_dir: Path) -> list[Attempt]:
         error: str | None = None
         if res_path.is_file():
             try:
-                res = json.loads(res_path.read_text())
+                res = json.loads(res_path.read_text(encoding="utf-8"))
             except json.JSONDecodeError:
                 res = {}
             ok = res.get("ok")
             err = res.get("error")
             error = str(err) if err else None
         try:
-            code = model_py.read_text().strip()
+            code = model_py.read_text(encoding="utf-8").strip()
         except OSError:
             continue
         if not code:
@@ -240,7 +240,7 @@ def _spec_from_attempt(attempt: Attempt) -> str | None:
     if not inp.is_file():
         return None
     try:
-        data = json.loads(inp.read_text())
+        data = json.loads(inp.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return None
     spec = (data.get("anchors") or {}).get("spec")
@@ -325,7 +325,9 @@ def _codegen_pairs(
         yield messages, meta
 
 
-def _find_repair_record(ctx: VersionCtx, broken: Attempt, fixed: Attempt) -> dict | None:
+def _find_repair_record(
+    ctx: VersionCtx, broken: Attempt, fixed: Attempt
+) -> dict | None:
     """Repair record whose PREVIOUS CODE block matches the broken snapshot."""
     target = _norm_code(broken.code)
     for rec in ctx.records:
@@ -405,7 +407,9 @@ def _row_is_clean(messages: list[dict], meta: dict) -> bool:
     for m in messages:
         if _contains_secret(str(m.get("content") or "")):
             return False
-    return not any(_contains_secret(str(v)) for v in meta.values() if isinstance(v, str))
+    return not any(
+        _contains_secret(str(v)) for v in meta.values() if isinstance(v, str)
+    )
 
 
 def _default_root() -> Path:
@@ -421,7 +425,7 @@ def _default_root() -> Path:
 
 def _load_run_ctx(result_path: Path, projects_root: Path) -> VersionCtx | None:
     try:
-        data = json.loads(result_path.read_text())
+        data = json.loads(result_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
     res = data.get("result") or {}
@@ -434,7 +438,9 @@ def _load_run_ctx(result_path: Path, projects_root: Path) -> VersionCtx | None:
         version_dir=vdir,
         project_id=str(data.get("project_id") or vdir.parent.parent.name),
         version_id=vdir.name,
-        benchmark=str(res.get("name") or data.get("benchmark") or result_path.parent.name),
+        benchmark=str(
+            res.get("name") or data.get("benchmark") or result_path.parent.name
+        ),
         variant=str(res.get("variant") or data.get("variant") or "default"),
         run_id=str(data.get("run_id") or result_path.parent.name),
         score=float(score) if isinstance(score, int | float) else None,
@@ -603,7 +609,7 @@ def main() -> int:
                 rows.append({"messages": messages, "meta": meta})
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    with args.out.open("w") as fh:
+    with args.out.open("w", encoding="utf-8") as fh:
         for row in rows:
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 

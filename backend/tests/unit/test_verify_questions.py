@@ -106,11 +106,14 @@ def test_partspec_verification_questions_roundtrip() -> None:
     spec = _spec(QUESTIONS)
     assert spec.verification_questions == QUESTIONS
     assert spec.model_dump()["verification_questions"] == QUESTIONS
-    assert PartSpec(
-        length_x={"value": 1.0},
-        width_y={"value": 1.0},
-        height_z={"value": 1.0},
-    ).verification_questions == []
+    assert (
+        PartSpec(
+            length_x={"value": 1.0},
+            width_y={"value": 1.0},
+            height_z={"value": 1.0},
+        ).verification_questions
+        == []
+    )
 
 
 def test_partspec_schema_pins_questions() -> None:
@@ -142,11 +145,7 @@ def test_partspec_questions_deduped_and_capped() -> None:
 
 
 def test_critique_answers_capped() -> None:
-    c = Critique(
-        verification_answers=[
-            {"question": f"Q{i}?", "answer": "yes"} for i in range(20)
-        ]
-    )
+    c = Critique(verification_answers=[{"question": f"Q{i}?", "answer": "yes"} for i in range(20)])
     assert len(c.verification_answers) == 12
 
 
@@ -331,6 +330,7 @@ async def test_pipeline_verify_no_lands_in_outcome_issues() -> None:
             ),
         ]
     )
+
     async def emit(step: str, it: int, msg: str, **_f) -> None:
         pass
 

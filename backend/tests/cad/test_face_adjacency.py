@@ -53,8 +53,10 @@ def _step_part():
 def _radial_hole_part():
     with BuildPart() as p:
         Cylinder(15, 20, align=(Align.CENTER, Align.CENTER, Align.MIN))
-        p.part -= Pos(-20, 0, 10) * Rot(0, 90, 0) * Cylinder(
-            3, 40, align=(Align.CENTER, Align.CENTER, Align.MIN)
+        p.part -= (
+            Pos(-20, 0, 10)
+            * Rot(0, 90, 0)
+            * Cylinder(3, 40, align=(Align.CENTER, Align.CENTER, Align.MIN))
         )
     return p.part
 
@@ -182,9 +184,7 @@ def test_assign_feature_ids_deterministic_for_new_kinds():
         {"axis": "+z", "depth": 4.0, "center": [10.0, 0.0, 6.0]},
         {"axis": "+z", "depth": 2.0, "center": [-10.0, 0.0, 6.0]},
     ]
-    m1 = assign_feature_ids(
-        MeasuredFeatures(pockets=[MeasuredPocket(**k) for k in kwargs_p])
-    )
+    m1 = assign_feature_ids(MeasuredFeatures(pockets=[MeasuredPocket(**k) for k in kwargs_p]))
     m2 = assign_feature_ids(
         MeasuredFeatures(pockets=[MeasuredPocket(**k) for k in reversed(kwargs_p)])
     )

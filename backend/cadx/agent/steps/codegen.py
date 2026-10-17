@@ -764,9 +764,7 @@ async def _codegen_tournament(
         }
         for c in candidates
     ]
-    log.info(
-        "codegen.best_of_n", n=n, iteration=iteration, winner=winner.index, candidates=summary
-    )
+    log.info("codegen.best_of_n", n=n, iteration=iteration, winner=winner.index, candidates=summary)
     await ctx.emit(
         "codegen", iteration, f"best of {n} candidates (winner: #{winner.index + 1} {why})"
     )

@@ -1073,17 +1073,11 @@ def _fit_candidates(
             sdf = _box_sdf(pts, c, rot, ext)
             mask = np.abs(sdf) < thresh
             score = int(mask.sum() - 0.5 * (sdf < -2 * thresh).sum())
-            cands.append(
-                (score, mask, _Prim("box", "add", c, rot, tuple(float(v) for v in ext)))
-            )
+            cands.append((score, mask, _Prim("box", "add", c, rot, tuple(float(v) for v in ext))))
         try:
             r = pyrsc.Sphere().fit(pts, thresh=thresh, maxIteration=800)
             c = np.asarray(r.center, dtype=float)
-            if (
-                len(r.inliers)
-                and np.isfinite(c).all()
-                and thresh < float(r.radius) < 2 * max_dim
-            ):
+            if len(r.inliers) and np.isfinite(c).all() and thresh < float(r.radius) < 2 * max_dim:
                 dist = np.linalg.norm(pts - c, axis=1)
                 mask = np.abs(dist - float(r.radius)) < thresh
                 inl = np.asarray(r.inliers)
@@ -1148,9 +1142,7 @@ def _fit_candidates(
                 & (tt >= t0 - 2 * thresh)
                 & (tt <= t1 + 2 * thresh)
             )
-            inside = (
-                (rho < float(r.radius) - 2 * thresh) & (tt >= t0) & (tt <= t1)
-            )
+            inside = (rho < float(r.radius) - 2 * thresh) & (tt >= t0) & (tt <= t1)
             cands.append(
                 (
                     int(mask.sum() - 0.5 * inside.sum()),
@@ -1199,9 +1191,7 @@ def _segment_primitives(mesh: trimesh.Trimesh, pyrsc: Any) -> _Seg | None:
             sub = pts[remain]
             cands = [
                 (score, mask, prim)
-                for score, mask, prim in _fit_candidates(
-                    pyrsc, sub, nrm[remain], thresh, max_dim
-                )
+                for score, mask, prim in _fit_candidates(pyrsc, sub, nrm[remain], thresh, max_dim)
                 if score >= min_inliers
             ]
             if not cands:
@@ -1246,9 +1236,7 @@ def _extend_inside(
     return t
 
 
-def _refine_cylinder(
-    mesh: trimesh.Trimesh, seg: _Seg, prim: _Prim
-) -> None:
+def _refine_cylinder(mesh: trimesh.Trimesh, seg: _Seg, prim: _Prim) -> None:
     """Resolve a fitted cylinder's span: bosses extend into their support,
     voids extend through the part (through-bore) or to a detected blind
     bottom (surface disc on the axis past the inlier span)."""
@@ -1356,9 +1344,7 @@ def _prim_trimesh(prim: _Prim) -> trimesh.Trimesh:
     m = trimesh.creation.icosphere(subdivisions=4, radius=prim.dims[0])
     if prim.clip is not None:
         z0, z1 = prim.clip
-        box: trimesh.Trimesh = trimesh.creation.box(
-            [4 * prim.dims[0], 4 * prim.dims[0], z1 - z0]
-        )
+        box: trimesh.Trimesh = trimesh.creation.box([4 * prim.dims[0], 4 * prim.dims[0], z1 - z0])
         tb = np.eye(4)
         tb[:3, 3] = [0.0, 0.0, (z0 + z1) / 2.0]
         m.apply_transform(m4)
@@ -1372,9 +1358,7 @@ def _prim_trimesh(prim: _Prim) -> trimesh.Trimesh:
     return m
 
 
-def _void_fits(
-    mesh: trimesh.Trimesh, seg: _Seg, recon: trimesh.Trimesh, pyrsc: Any
-) -> list[_Prim]:
+def _void_fits(mesh: trimesh.Trimesh, seg: _Seg, recon: trimesh.Trimesh, pyrsc: Any) -> list[_Prim]:
     """Find voids: residual surface samples buried INSIDE the unioned
     solids can only be interior walls — bores and pockets. RANSAC on the
     outer residual is dominated by big-radius wraps of flat faces; on the
@@ -1483,7 +1467,9 @@ def _composite_trimesh(prims: list[_Prim]) -> trimesh.Trimesh | None:
         return None
 
 
-def _plane_trims(mesh: trimesh.Trimesh, seg: _Seg, recon: trimesh.Trimesh, pyrsc: Any) -> list[_Prim]:
+def _plane_trims(
+    mesh: trimesh.Trimesh, seg: _Seg, recon: trimesh.Trimesh, pyrsc: Any
+) -> list[_Prim]:
     """Fit planes on the residual; keep only true bounding planes that
     actually trim overshoot (all surface on one side AND the unioned
     solids poke past the plane). Conservative: a bad cut is worse than
@@ -1641,9 +1627,7 @@ def _composite_hint(mesh: trimesh.Trimesh) -> bool:
         return False
     try:
         n_probe = 1500
-        pts, fidx, _ = trimesh.sample.sample_surface(
-            mesh, n_probe, seed=0, return_barycentric=True
-        )
+        pts, fidx, _ = trimesh.sample.sample_surface(mesh, n_probe, seed=0, return_barycentric=True)
         nrm = np.asarray(mesh.face_normals[np.asarray(fidx)], dtype=float)
         max_dim = max(float(np.max(mesh.extents)), 1e-9)
         thresh = max(0.2, 0.01 * max_dim)

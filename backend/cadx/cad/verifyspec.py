@@ -484,6 +484,7 @@ def _feature_placement(
     hole_pats = [p for p in (measured or {}).get("hole_patterns") or [] if isinstance(p, dict)]
     slot_pats = [p for p in (measured or {}).get("slot_patterns") or [] if isinstance(p, dict)]
     bosses = [b for b in (measured or {}).get("bosses") or [] if isinstance(b, dict)]
+
     # structural (AAG) void features — tagged so kind mismatch reporting
     # can cite "pocket"/"groove"/"notch" instead of a generic label
     def _tagged(key: str, kind: str) -> list[dict[str, Any]]:

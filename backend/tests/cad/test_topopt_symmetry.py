@@ -131,9 +131,7 @@ def test_symmetry_xz_mma_path():
         NU,
         [(fixed, F)],
         passive,
-        TopOptParams(
-            volfrac=0.4, rmin_mm=2.0, max_iter=8, solver="mma", symmetry="xz"
-        ),
+        TopOptParams(volfrac=0.4, rmin_mm=2.0, max_iter=8, solver="mma", symmetry="xz"),
     )
     assert res.iterations > 0
     assert res.blueprint is not None

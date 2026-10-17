@@ -226,9 +226,7 @@ def assign_feature_ids(measured: MeasuredFeatures) -> MeasuredFeatures:
     fils = sorted(measured.fillets, key=lambda f: (f.axis, _pt(f.at), f.radius))
     for n, f_ in enumerate(fils, 1):
         f_.id = f"f{n}"
-    pockets = sorted(
-        measured.pockets, key=lambda p: (p.axis, _pt(p.center), p.depth, p.size)
-    )
+    pockets = sorted(measured.pockets, key=lambda p: (p.axis, _pt(p.center), p.depth, p.size))
     for n, p in enumerate(pockets, 1):
         p.id = f"pk{n}"
     grooves = sorted(
@@ -237,9 +235,7 @@ def assign_feature_ids(measured: MeasuredFeatures) -> MeasuredFeatures:
     )
     for n, g in enumerate(grooves, 1):
         g.id = f"gr{n}"
-    notches = sorted(
-        measured.notches, key=lambda nt: (nt.axis, _pt(nt.center), nt.width, nt.depth)
-    )
+    notches = sorted(measured.notches, key=lambda nt: (nt.axis, _pt(nt.center), nt.width, nt.depth))
     for n, nt in enumerate(notches, 1):
         nt.id = f"nt{n}"
     return measured
@@ -675,9 +671,7 @@ def _face_interior_dir(face: Any, pe: list[float], tang: list[float]) -> list[fl
     return None
 
 
-def _edge_convexity(
-    shape: Shape, edge: Any, f1: Any, f2: Any
-) -> tuple[str, dict[str, Any]]:
+def _edge_convexity(shape: Shape, edge: Any, f1: Any, f2: Any) -> tuple[str, dict[str, Any]]:
     """Convexity of the adjacency edge between two faces.
 
     Method (documented, simplest reliable): compute each face's interior
@@ -706,9 +700,7 @@ def _edge_convexity(
     if sn < _AAG_TANGENT_BISECTOR:
         return "tangent", {"a1": a1, "a2": a2}
     bdir = [c / sn for c in s]
-    delta = max(
-        0.15, min(1.0, 0.15 * math.sqrt(min(float(f1.area), float(f2.area))))
-    )
+    delta = max(0.15, min(1.0, 0.15 * math.sqrt(min(float(f1.area), float(f2.area)))))
     q = [pe[i] + delta * bdir[i] for i in range(3)]
     try:
         inside = shape.is_inside(q)
@@ -913,9 +905,7 @@ def _detect_structural_features(  # noqa: C901 — graph pattern matching
         lo, hi = _subgraph_bbox(graph, sub)
         ax = _dominant_axis(nb)
         axi = "xyz".index(ax[-1])
-        dims = sorted(
-            (round(hi[a] - lo[a], 3) for a in range(3) if a != axi), reverse=True
-        )
+        dims = sorted((round(hi[a] - lo[a], 3) for a in range(3) if a != axi), reverse=True)
         center = [round(c, 3) for c in nodes[seed]["center"]]
         pockets.append(
             MeasuredPocket(
@@ -955,7 +945,10 @@ def _detect_structural_features(  # noqa: C901 — graph pattern matching
         kind: str | None = None
         if len(walls) == 1:
             kind = "notch"
-        elif len(walls) == 2 and d(nodes[walls[0]]["normal"], nodes[walls[1]]["normal"]) < _AAG_ANTI_DOT:
+        elif (
+            len(walls) == 2
+            and d(nodes[walls[0]]["normal"], nodes[walls[1]]["normal"]) < _AAG_ANTI_DOT
+        ):
             kind = "groove"
             pair = (walls[0], walls[1])
         elif len(walls) == 3:
@@ -963,8 +956,7 @@ def _detect_structural_features(  # noqa: C901 — graph pattern matching
                 (k, m)
                 for k in range(3)
                 for m in range(k + 1, 3)
-                if d(nodes[walls[k]]["normal"], nodes[walls[m]]["normal"])
-                < _AAG_ANTI_DOT
+                if d(nodes[walls[k]]["normal"], nodes[walls[m]]["normal"]) < _AAG_ANTI_DOT
             ]
             if len(antip) == 1:
                 k, m = antip[0]
@@ -1026,9 +1018,7 @@ def _detect_structural_features(  # noqa: C901 — graph pattern matching
         lo, hi = _subgraph_bbox(graph, c["key"])
         cax = max(range(3), key=lambda i: abs(c["channel"][i]))
         openings = [
-            v
-            for w in c["walls"]
-            if (v := _opening_coord(graph, c["key"], w, nb)) is not None
+            v for w in c["walls"] if (v := _opening_coord(graph, c["key"], w, nb)) is not None
         ]
         if not openings:
             continue  # walls reach no outer face ∥ the bottom — not an open channel

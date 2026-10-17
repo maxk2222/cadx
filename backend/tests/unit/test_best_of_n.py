@@ -29,9 +29,7 @@ GOOD_LONG = GOOD + "\n\n# deliberate padding to lose the shorter-code tiebreak\n
 BAD = "from build123d import *\nPARAMS = {}\nx = Box(10, 10, 5)"
 
 
-def _ctx(
-    llm: FakeLLM, emitted: list[str] | None = None, **settings_kw
-) -> AgentCtx:
+def _ctx(llm: FakeLLM, emitted: list[str] | None = None, **settings_kw) -> AgentCtx:
     async def emit(step: str, it: int, msg: str, **_f) -> None:
         if emitted is not None:
             emitted.append(msg)
@@ -95,9 +93,7 @@ async def test_best_of_n_picks_good_candidate():
     async def verify_fn(code: str):
         return {"ok": "result = Box(10, 10, 5)" in code}
 
-    resp = await codegen_step.run(
-        ctx, _spec(), None, iteration=1, verify_fn=verify_fn
-    )
+    resp = await codegen_step.run(ctx, _spec(), None, iteration=1, verify_fn=verify_fn)
     assert resp.code == GOOD
 
     events = _best_of_n_events(ctx)
@@ -197,9 +193,7 @@ async def test_in_session_verify_is_reused_and_preferred():
         # only B's box executes cleanly
         return {"ok": "Box(8, 8, 4)" in code}
 
-    resp = await codegen_step.run(
-        ctx, _spec(), None, iteration=1, verify_fn=verify_fn
-    )
+    resp = await codegen_step.run(ctx, _spec(), None, iteration=1, verify_fn=verify_fn)
     assert "Box(8, 8, 4)" in resp.code
     assert "## block: base" in resp.code
 

@@ -254,9 +254,7 @@ def build_issues(
                 {
                     # M6: spec-derived yes/no check failures keep their own
                     # source instead of collapsing into generic "critique"
-                    "source": (
-                        "verify_question" if d.source == "verify_question" else "critique"
-                    ),
+                    "source": ("verify_question" if d.source == "verify_question" else "critique"),
                     "severity": d.severity,
                     "what": d.what,
                     "where": d.where,

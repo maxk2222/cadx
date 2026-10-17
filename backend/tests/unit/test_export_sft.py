@@ -80,8 +80,7 @@ def _write_trace(
                             {
                                 "type": "text",
                                 "text": (
-                                    "PREVIOUS CODE (line-numbered):\n"
-                                    f"```python\n{numbered}\n```"
+                                    f"PREVIOUS CODE (line-numbered):\n```python\n{numbered}\n```"
                                 ),
                             },
                             {"type": "text", "text": "EXECUTION FAILED.\nerror: boom"},
@@ -147,7 +146,7 @@ def _make_run(
 
 
 def _rows(out: Path) -> list[dict]:
-    return [json.loads(line) for line in out.read_text().splitlines() if line.strip()]
+    return [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 def _run_export(export_sft, root: Path, projects: Path, out: Path, *extra: str) -> None:
@@ -271,7 +270,7 @@ def test_output_is_valid_jsonl_and_deterministic(export_sft, tmp_path: Path) -> 
     out1, out2 = tmp_path / "a.jsonl", tmp_path / "b.jsonl"
     _run_export(export_sft, root, projects, out1)
     _run_export(export_sft, root, projects, out2)
-    assert out1.read_text() == out2.read_text()
+    assert out1.read_text(encoding="utf-8") == out2.read_text(encoding="utf-8")
     for row in _rows(out1):
         assert set(row) == {"messages", "meta"}
         for m in row["messages"]:

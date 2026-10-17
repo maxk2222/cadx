@@ -242,7 +242,9 @@ def _v3(v: tuple[float, float, float]) -> str:
     return f"({_f(v[0])}, {_f(v[1])}, {_f(v[2])})"
 
 
-def _place(center: tuple[float, float, float], rot: tuple[tuple[float, float, float], float] | None) -> str:
+def _place(
+    center: tuple[float, float, float], rot: tuple[tuple[float, float, float], float] | None
+) -> str:
     """``Pos(...) *`` or ``Location(...) *`` prefix for a placed solid."""
     if rot is None:
         return f"Pos{_v3(center)} * "
