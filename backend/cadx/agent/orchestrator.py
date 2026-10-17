@@ -325,6 +325,48 @@ def _resolve_patch(
     return None, errors
 
 
+def _exec_error_signature(exec_result: dict[str, Any]) -> str:
+    """Job-wide exec-failure signature: errordiag category + the last error
+    line with numbers normalised — the same root cause counts as one
+    signature even when line numbers or values churn between repair
+    attempts. Returns "" when there is no error text."""
+    err = str(exec_result.get("error") or "").strip()
+    if not err:
+        return ""
+    from cadx.cad.errordiag import diagnose
+
+    cat = diagnose(err, exec_result.get("traceback")).category
+    last = next((ln.strip() for ln in reversed(err.splitlines()) if ln.strip()), "")
+    norm = re.sub(r"0x[0-9a-fA-F]+|\d+(?:\.\d+)?", "#", last)
+    norm = re.sub(r"\s+", " ", norm)
+    return f"{cat}:{norm[:160]}"
+
+
+def _note_exec_error(sig_counts: dict[str, int], sig: str) -> bool:
+    """Increment the job-wide signature tally; True once `sig` has been seen
+    twice or more — the caller's cue to switch the repair to full_code."""
+    if not sig:
+        return False
+    sig_counts[sig] = sig_counts.get(sig, 0) + 1
+    return sig_counts[sig] >= 2
+
+
+def _repair_error_history(sig_counts: dict[str, int], attempts: int) -> str:
+    """Deterministic 'error memory' for the repair context — the distinct
+    exec-error signatures seen this job and how often each repeated
+    (Reflexion-style recall without an extra LLM call)."""
+    if not sig_counts:
+        return ""
+    lines = ["ERROR HISTORY this job — approaches that produced these already failed:"]
+    for sig, n in sorted(sig_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:4]:
+        lines.append(f"  {n}x {sig}")
+    lines.append(
+        f"repair attempts so far: {attempts} — repeating a failed approach "
+        "reproduces the same signature; change strategy"
+    )
+    return "\n".join(lines)
+
+
 def _session_verify_fn(ctx: AgentCtx, iteration: int, attempt: Any):
     """verify-tool callback: execute session buffer code in the sandbox.
 
@@ -2537,6 +2579,14 @@ async def _run_cad(  # noqa: C901
     # patch errors from a failed REPAIR round — forwarded to the next improve
     # session so it knows the previous patch attempt missed the code text
     pending_patch_errors: list[str] | None = None
+    # job-wide exec-error signature tally: the SAME root cause reappearing
+    # across repair attempts (incl. across iterations, unlike the local
+    # prev_err_sig check) means patching isn't converging — the next repair
+    # regenerates full_code instead and the history digest below goes into
+    # the repair context as deterministic failure memory
+    repair_sig_counts: dict[str, int] = {}
+    stall_sigs_announced: set[str] = set()
+    repair_calls = 0
 
     def _escalate_thinking(reason: str) -> bool:
         """Latch adaptive-reasoning escalation for the rest of the job —
@@ -2680,14 +2730,33 @@ async def _run_cad(  # noqa: C901
                 # identical failure twice in a row — patching isn't converging,
                 # a fresh codegen pass has better odds than more repairs
                 err_sig = (exec_result.get("error") or "")[:200]
+                # job-wide signature tally: the same root cause seen twice
+                # across repair attempts switches the next repair to full_code
+                sig = _exec_error_signature(exec_result)
+                stalled = _note_exec_error(repair_sig_counts, sig)
                 if err_sig and err_sig == prev_err_sig:
                     if _escalate_thinking("same execution error twice"):
                         await ctx.emit("repair", it, "same error twice — escalating reasoning")
                     await ctx.emit("repair", it, "same error twice — repair not converging")
                     break
                 prev_err_sig = err_sig
+                if stalled and sig not in stall_sigs_announced:
+                    stall_sigs_announced.add(sig)
+                    log.info(
+                        "agent.repair_stall",
+                        iteration=it,
+                        signature=sig,
+                        seen=repair_sig_counts[sig],
+                    )
+                    await ctx.emit(
+                        "repair",
+                        it,
+                        "same exec error across repairs — switching to full_code",
+                    )
                 await ctx.emit("repair", it, "fixing execution error")
+                history = _repair_error_history(repair_sig_counts, repair_calls)
                 try:
+                    repair_calls += 1
                     presp = await codegen_step.repair(
                         ctx,
                         code,
@@ -2699,8 +2768,10 @@ async def _run_cad(  # noqa: C901
                         iteration=it,
                         repair_n=repair_n + 1,
                         verify_fn=_session_verify_fn(ctx, it, art_attempt),
+                        prefer_full_code=stalled,
                         geometry=exec_result.get("geometry_at_failure"),
                         render_fn=_session_render_fn(ctx, it, art_attempt),
+                        error_history=history or None,
                     )
                 except Exception as e:
                     log.warning("agent.repair_failed", iteration=it, error=str(e))
@@ -2711,6 +2782,7 @@ async def _run_cad(  # noqa: C901
                     # for the complete file before giving up on this repair
                     await ctx.emit("repair", it, "patch hunks missed — retrying with full_code")
                     try:
+                        repair_calls += 1
                         presp = await codegen_step.repair(
                             ctx,
                             code,
@@ -2725,6 +2797,7 @@ async def _run_cad(  # noqa: C901
                             prefer_full_code=True,
                             geometry=exec_result.get("geometry_at_failure"),
                             render_fn=_session_render_fn(ctx, it, art_attempt),
+                            error_history=history or None,
                         )
                         new_code, perrs = _resolve_patch(code, presp, "never")
                     except Exception as e:
@@ -3720,7 +3793,11 @@ async def _run_mesh(  # noqa: C901
 
     # best-effort parametric reconstruction — code+schema for downstream
     # editing; failure leaves the mesh outcome untouched
-    param_res = await _parametrize_best(ctx, best, spec, tol_pct=tol_pct, tol_mm=tol_mm)
+    param_res = (
+        await _parametrize_best(ctx, best, spec, tol_pct=tol_pct, tol_mm=tol_mm)
+        if ctx.runtime_settings.agent_parametrize
+        else None
+    )
     if param_res is not None:
         ctx.mesh_info["parametric"] = param_res
 

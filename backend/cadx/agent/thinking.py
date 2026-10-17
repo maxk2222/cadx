@@ -56,8 +56,7 @@ def _body(raw: str, which: str) -> dict[str, Any] | None:
     return parsed
 
 
-def thinking_on(ctx: AgentCtx, step: str) -> bool:
-    """Whether reasoning is enabled for this call under the configured policy."""
+def _policy_on(ctx: AgentCtx, step: str) -> bool:
     s = ctx.runtime_settings
     if s.llm_thinking == "always":
         return True
@@ -67,13 +66,41 @@ def thinking_on(ctx: AgentCtx, step: str) -> bool:
     return ctx.thinking_escalated or step_is_hard(step, s.llm_thinking_hard_steps)
 
 
+def thinking_on(ctx: AgentCtx, step: str) -> bool:
+    """Whether reasoning is enabled for this call under the configured policy.
+
+    The per-job cost cap ``llm_thinking_max_calls`` wins over every mode —
+    once the counted thinking calls are spent this resolves False regardless
+    of escalation, and the first suppressed call latches
+    ``ctx.thinking_budget_exhausted`` + logs one ``thinking_budget_exhausted``
+    event."""
+    if not _policy_on(ctx, step):
+        return False
+    used = getattr(ctx, "thinking_calls_used", 0)
+    if used >= ctx.runtime_settings.llm_thinking_max_calls:
+        if not getattr(ctx, "thinking_budget_exhausted", False):
+            ctx.thinking_budget_exhausted = True
+            log.warning(
+                "thinking_budget_exhausted",
+                step=step,
+                calls_used=used,
+                max_calls=ctx.runtime_settings.llm_thinking_max_calls,
+            )
+        return False
+    return True
+
+
 def thinking_body(ctx: AgentCtx, step: str) -> dict[str, Any] | None:
     """Resolve the per-call request-body override for `step`.
 
     Returns the parsed ``llm_thinking_body_on`` dict when the policy resolves
     to thinking-ON, ``llm_thinking_body_off`` when OFF, or None when the
     selected body is empty/unparseable (provider default — nothing merged).
-    """
+
+    Call sites invoke this exactly once per chat call, so the ON count is
+    also the per-job thinking budget ledger (``ctx.thinking_calls_used``)."""
     s = ctx.runtime_settings
     on = thinking_on(ctx, step)
+    if on:
+        ctx.thinking_calls_used = getattr(ctx, "thinking_calls_used", 0) + 1
     return _body(s.llm_thinking_body_on if on else s.llm_thinking_body_off, "on" if on else "off")

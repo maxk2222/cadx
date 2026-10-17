@@ -521,3 +521,135 @@ def context_block(topics: tuple[str, ...] = ("cadlib", "build123d"), max_chars: 
     return _truncate_lines(
         text, max_chars, "… (truncated — call quickref(<topic>) for the full digest)"
     )
+
+
+# --------------------------------------------------------------------------- #
+# error-triggered symbol lookup (used by agent/docfetch.py)                    #
+# --------------------------------------------------------------------------- #
+
+
+def _clip(text: str, limit: int) -> str:
+    """Hard char cap for single injections — unlike _truncate_lines this also
+    handles one long line (member listings have no newline to cut at)."""
+    return text if len(text) <= limit else text[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _resolve_bare(name: str) -> tuple[str, Any] | None:
+    """Resolve a bare or dotted name inside build123d, then cadlib.
+
+    Root names resolve to the package itself ("build123d" → the module) and a
+    leading root segment is skipped ("build123d.Edge" works as a name)."""
+    parts = name.split(".")
+    roots: list[tuple[str, Any]] = []
+    try:
+        import build123d  # deferred: cold import costs seconds
+
+        roots.append(("build123d", build123d))
+    except ImportError:
+        pass
+    with contextlib.suppress(Exception):
+        roots.append(("cadlib", _import_cadlib()))
+    for label, root in roots:
+        rest = parts[1:] if parts[0] == label else parts
+        if not rest:
+            return label, root
+        obj = getattr(root, rest[0], None)
+        if obj is None:
+            continue
+        qual = f"{label}.{rest[0]}"
+        for attr in rest[1:]:
+            obj = getattr(obj, attr, None)
+            if obj is None:
+                break
+            qual += f".{attr}"
+        if obj is not None:
+            return qual, obj
+    return None
+
+
+def _member_kind(obj: Any, name: str) -> str:
+    """property | callable | attribute | missing — getattr_static so a
+    property is classified without being evaluated."""
+    try:
+        static = inspect.getattr_static(obj, name)
+    except AttributeError:
+        return "missing"
+    if isinstance(static, property):
+        return "property"
+    return "callable" if callable(getattr(obj, name, None)) else "attribute"
+
+
+def _member_label(obj: Any, name: str) -> str:
+    kind = _member_kind(obj, name)
+    if kind == "property":
+        return f"{name} [prop]"
+    if kind == "callable":
+        return name + "()"
+    return name
+
+
+def _members_digest(qual: str, obj: Any, *, highlight: str | None, max_chars: int) -> str:
+    """``<qual> members: a(), b [prop], c, …`` — the failing member is pulled
+    to the front with its kind spelled out, so truncation can't hide it
+    (the observed failure: ``Edge.radius()`` — radius is a PROPERTY)."""
+    names = [n for n in dir(obj) if not n.startswith("_")]
+    labels = [_member_label(obj, n) for n in names]
+    head = ""
+    if highlight:
+        if highlight in names:
+            kind = _member_kind(obj, highlight)
+            if kind == "missing":  # dir() lists it but getattr_static misses
+                kind = "attribute"
+            note = " — read it WITHOUT ()" if kind == "property" else ""
+            head = f"{qual}.{highlight} is a {kind}{note}\n"
+            labels = [_member_label(obj, highlight)] + [
+                lbl for n, lbl in zip(names, labels, strict=True) if n != highlight
+            ]
+        else:
+            low = highlight.lower()
+            close = [n for n in names if n.lower() == low or (len(low) >= 4 and low in n.lower())][
+                :8
+            ]
+            head = f"{qual} has no member '{highlight}'"
+            if close:
+                head += f" — did you mean: {', '.join(close)}?"
+            head += "\n"
+            labels = [_member_label(obj, n) for n in close] + [
+                lbl for n, lbl in zip(names, labels, strict=True) if n not in close
+            ]
+    return _clip(head + f"{qual} members: " + ", ".join(labels), max_chars)
+
+
+def symbol_digest(name: str, owner: str | None = None, *, max_chars: int = 400) -> str:
+    """Compact (≤ ``max_chars``) digest for a failing symbol — the doc payload
+    attached to exec-error results by docfetch.
+
+    ``owner`` + ``name``: owner resolves in build123d then cadlib and the
+    digest lists its members with ``name``'s kind marked (property/method/
+    attribute/missing). Bare ``name``: resolves in build123d then cadlib —
+    callables get a signature entry, classes additionally a member listing.
+    Returns "" when nothing resolves — doc injection is best-effort only."""
+    name = name.strip()
+    ident = r"[A-Za-z_]\w*(\.[A-Za-z_]\w*)*"
+    if not re.fullmatch(ident, name):
+        return ""
+    if owner:
+        owner = owner.strip()
+        if not re.fullmatch(ident, owner):
+            return ""
+        resolved = _resolve_bare(owner)
+        if resolved is None:
+            return ""
+        qual, obj = resolved
+        return _members_digest(qual, obj, highlight=name.rsplit(".", 1)[-1], max_chars=max_chars)
+    resolved = _resolve_bare(name)
+    if resolved is None:
+        return ""
+    qual, obj = resolved
+    if inspect.ismodule(obj):
+        return _members_digest(qual, obj, highlight=None, max_chars=max_chars)
+    if inspect.isclass(obj):
+        head = _entry(name.rsplit(".", 1)[-1], obj)
+        members = _members_digest(qual, obj, highlight=None, max_chars=max_chars)
+        return _clip(head + "\n" + members, max_chars)
+    return _clip(_entry(name, obj), max_chars)

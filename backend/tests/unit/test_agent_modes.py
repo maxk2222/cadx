@@ -197,6 +197,8 @@ async def test_mesh_mode_generation(tmp_path):
         mesh=mesh,
         mesh_available=True,
         prompt="organic knob 40mm",
+        # pin the pure-mesh outcome: parametrize would legitimately set code
+        runtime_settings=RuntimeSettings(agent_parametrize=False),
     )
     outcome = await run_generation(ctx)
     assert outcome.status in ("succeeded", "needs_review")
@@ -485,6 +487,7 @@ async def test_mesh_refine_session_applies_ops(tmp_path):
         mesh=mesh,
         mesh_available=True,
         prompt="organic knob 40mm",
+        runtime_settings=RuntimeSettings(agent_parametrize=False),
     )
     outcome = await run_generation(ctx)
     assert outcome.status in ("succeeded", "needs_review")
@@ -581,7 +584,7 @@ async def test_mesh_refine_repair_round_after_failed_critique(tmp_path):
         mesh=mesh,
         mesh_available=True,
         prompt="organic knob 40mm",
-        runtime_settings=RuntimeSettings(mesh_candidates_per_iter=1),  # no best-of-N
+        runtime_settings=RuntimeSettings(mesh_candidates_per_iter=1, agent_parametrize=False),
     )
     outcome = await run_generation(ctx)
     assert outcome.status == "succeeded"

@@ -63,6 +63,10 @@ class CheckResult:
     errors: list[str] = field(default_factory=list)
     params: dict[str, object] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    # signature-gate findings (cadx.cad.sigcheck) — populated only when
+    # check_code(sigcheck=True); sig_errors count towards `ok`
+    sig_errors: list[str] = field(default_factory=list)
+    sig_warnings: list[str] = field(default_factory=list)
 
 
 # transforms that RETURN a new object — a bare expression statement discards
@@ -713,8 +717,15 @@ def _parse_params(tree: ast.Module) -> tuple[dict[str, object], list[str]]:
     return params, ["missing top-level PARAMS = {...} dict literal"]
 
 
-def check_code(code: str) -> CheckResult:
-    """Static check of user code. Returns CheckResult(ok, errors, params)."""
+def check_code(code: str, *, sigcheck: bool = False) -> CheckResult:
+    """Static check of user code. Returns CheckResult(ok, errors, params).
+
+    ``sigcheck`` additionally runs the introspected API-signature gate
+    (``cadx.cad.sigcheck``): unknown attributes / property-called-as-method
+    on inferred types land in ``sig_errors``, arity mismatches in
+    ``sig_warnings``. Off by default so the executor-side contract check
+    keeps its existing behaviour — the agent worker opts in via
+    ``runtime_settings.agent_sigcheck``."""
     try:
         tree = ast.parse(code)
     except SyntaxError as e:
@@ -733,7 +744,26 @@ def check_code(code: str) -> CheckResult:
     errors = checker.errors + param_errors
     if not checker.has_result:
         errors.append("missing assignment to `result` (a build123d Part/Solid/Compound)")
-    return CheckResult(ok=not errors, errors=errors, params=params, warnings=checker.warnings)
+    sig_errors: list[str] = []
+    sig_warnings: list[str] = []
+    if sigcheck:
+        try:
+            from cadx.cad.sigcheck import check_tree
+
+            rep = check_tree(tree)
+            sig_errors, sig_warnings = rep.errors, rep.warnings
+        except Exception:
+            # the signature gate must never break the contract check —
+            # sigcheck.check_tree already logs + swallows internal failures
+            sig_errors, sig_warnings = [], []
+    return CheckResult(
+        ok=not errors and not sig_errors,
+        errors=errors,
+        params=params,
+        warnings=checker.warnings,
+        sig_errors=sig_errors,
+        sig_warnings=sig_warnings,
+    )
 
 
 def apply_params_override(code: str, overrides: dict[str, object]) -> str:

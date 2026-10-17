@@ -141,6 +141,11 @@ class AgentCtx:
     # patch, repeated same-category exec error); once True every subsequent
     # "auto"-policy call for this job runs with thinking enabled
     thinking_escalated: bool = False
+    # thinking cost cap: incremented by thinking_body() each time a call is
+    # made WITH reasoning on; at llm_thinking_max_calls the policy resolves
+    # OFF for the rest of the job (thinking_budget_exhausted logs once)
+    thinking_calls_used: int = 0
+    thinking_budget_exhausted: bool = False
 
     def tokens_used(self) -> int:
         u = getattr(self.llm, "total_usage", {})

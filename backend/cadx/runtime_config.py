@@ -42,6 +42,12 @@ class RuntimeSettings(BaseModel):
     # same-category exec error) before "auto" escalates to thinking-on — the
     # latch stays for the rest of the job
     llm_thinking_escalate_after: int = Field(default=2, ge=1, le=50)
+    # hard per-job cap on calls made WITH thinking on — reasoning tokens are
+    # the dominant completion cost and escalation can amplify a non-converging
+    # job (observed: 260k completion tokens without convergence). Once spent,
+    # thinking_on() resolves OFF for the rest of the job regardless of policy
+    # or the escalation latch. 0 disables thinking entirely.
+    llm_thinking_max_calls: int = Field(default=8, ge=0, le=10_000)
     agent_max_iterations: int = Field(default=3, ge=1, le=200)
     agent_max_repairs: int = Field(default=3, ge=0, le=200)
     agent_pass_score: int = Field(default=80, ge=0, le=100)
@@ -75,10 +81,19 @@ class RuntimeSettings(BaseModel):
     agent_tool_churn_limit: int = Field(default=6, ge=2, le=50)
     agent_tool_verify: bool = True
     agent_tool_verify_max: int = Field(default=2, ge=0, le=20)
+    # static signature gate on generated code (AST only, pre-execution):
+    # an introspected build123d/cadlib/bd_warehouse member index catches
+    # hallucinated attributes / property-called-as-method before the
+    # sandbox — edit tools surface findings, done/submit gate on sig errors
+    agent_sigcheck: bool = True
     # staged codegen: build the part feature-by-feature inside a tool session
     # (add_block/checkpoint/verify) instead of one-shot whole-file submit.
     # "auto" = on whenever tool sessions are enabled.
     agent_staged_build: Literal["auto", "on", "off"] = "auto"
+    # best-effort parametric reconstruction of the winning mesh candidate
+    # (mesh -> build123d code via cad/reconstruct) — one extra executor task
+    # per mesh job; off = pure mesh outcome
+    agent_parametrize: bool = True
     # verify calls a staged build may make — higher than edit/repair because
     # every feature block should land on green geometry before the next one
     agent_build_verify_max: int = Field(default=8, ge=0, le=20)

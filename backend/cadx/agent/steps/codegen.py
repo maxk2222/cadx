@@ -18,9 +18,10 @@ from cadx.agent.context import (
     request_block,
     spec_block,
 )
+from cadx.agent.docfetch import docs_for_error
 from cadx.agent.thinking import thinking_body
 from cadx.agent.toolloop import run_session, tools_enabled
-from cadx.agent.toolspecs import ToolSession, VerifyFn
+from cadx.agent.toolspecs import ToolSession, VerifyFn, elision_marker
 from cadx.agent.types import AgentCtx
 from cadx.cad.errordiag import diag_block, diagnose
 from cadx.llm.schemas import (
@@ -55,6 +56,28 @@ def _extract_code_block(text: str) -> str | None:
         return None
     m = _CODE_FENCE.search(text)
     return m.group(1).strip() if m else None
+
+
+def _drop_elided(presp: PatchResponse, *, step: str) -> PatchResponse:
+    """Drop lazy-elided code from a PatchResponse BEFORE it can be applied:
+    ``full_code``/edit-``replace`` text carrying placeholder comments
+    ("# ... rest unchanged") is not real code — removing it degrades the
+    answer to "patch didn't apply", which the caller already retries with a
+    prefer_full_code pass."""
+    from cadx.logging import get_logger
+
+    log = get_logger(__name__)
+    if presp.full_code and (marker := elision_marker(presp.full_code)):
+        log.info("codegen.elided_full_code", step=step, marker=marker[:80])
+        presp.full_code = None
+        presp.reasoning = (
+            presp.reasoning + " [dropped: full_code contained an elision placeholder]"
+        ).strip()
+    kept = [e for e in presp.edits if elision_marker(e.replace) is None]
+    if len(kept) != len(presp.edits):
+        log.info("codegen.elided_edits", step=step, dropped=len(presp.edits) - len(kept))
+        presp.edits = kept
+    return presp
 
 
 def _quickref_part(ctx: AgentCtx) -> dict[str, Any] | None:
@@ -192,6 +215,12 @@ async def run(
         completion_tokens=resp.completion_tokens,
         latency_ms=resp.latency_ms,
     )
+    if marker := elision_marker(resp.parsed.code):
+        from cadx.llm.structured import LLMFormatError
+
+        raise LLMFormatError(
+            f"codegen returned elided code ('{marker[:80]}') — complete file required"
+        )
     return resp.parsed
 
 
@@ -210,28 +239,40 @@ async def repair(
     prefer_full_code: bool = False,
     geometry: list[dict[str, Any]] | None = None,
     render_fn: VerifyFn | None = None,
+    error_history: str | None = None,
 ) -> PatchResponse:
     """Ask the model to fix broken code — tool session when the provider
     supports it, else one-shot PatchResponse (edits preferred, full_code
-    fallback)."""
+    fallback).
+
+    ``error_history`` is the orchestrator's deterministic digest of distinct
+    exec-error signatures seen job-wide — appended to the repair context so a
+    repeated failure carries memory of what already failed (no extra LLM
+    call). The failing symbol's introspected quickref digest rides along too
+    when the error names one."""
     from cadx.agent.context import system_prompt
 
     diag = diagnose(error, traceback, prev_code)
+    docs = docs_for_error(error, traceback, prev_code, diag.failing_line)
+    diag_text = diag_block(diag, error, traceback, stdout, geometry=geometry)
+    if docs:
+        diag_text += (
+            "\n\nCORRECT API (introspected from the installed packages — "
+            "trust this over memory):\n" + docs
+        )
+    if error_history:
+        diag_text += "\n\n" + error_history
     if tools_enabled(ctx, "code") and ctx.edit_sessions_exhausted < 1:
         return await _repair_session(
             ctx,
             prev_code,
             spec,
             plan,
-            error,
-            traceback,
-            stdout,
-            diag=diag,
+            diag_text,
             iteration=iteration,
             repair_n=repair_n,
             verify_fn=verify_fn,
             max_calls=ctx.runtime_settings.agent_tool_max_calls,
-            geometry=geometry,
             render_fn=render_fn,
         )
     if prefer_full_code:
@@ -245,12 +286,7 @@ async def repair(
             "Fix this code. Return a PatchResponse JSON object — prefer `edits` for "
             "localised fixes, `full_code` only when the fix is structural.\n\n"
         )
-    user += (
-        "PREVIOUS CODE:\n```python\n"
-        + prev_code
-        + "\n```\n\n"
-        + diag_block(diag, error, traceback, stdout, geometry=geometry)
-    )
+    user += "PREVIOUS CODE:\n```python\n" + prev_code + "\n```\n\n" + diag_text
     parts: list[dict[str, Any]] = [{"type": "text", "text": user}]
     rb = request_block(ctx.prompt)
     if rb:
@@ -300,7 +336,7 @@ async def repair(
         completion_tokens=resp.completion_tokens,
         latency_ms=resp.latency_ms,
     )
-    return resp.parsed
+    return _drop_elided(resp.parsed, step=f"repair_{repair_n}")
 
 
 async def _repair_session(
@@ -308,16 +344,12 @@ async def _repair_session(
     prev_code: str,
     spec: PartSpec | None,
     plan: ModelingPlan | None,
-    error: str | None,
-    traceback: str | None,
-    stdout: str | None,
+    diag_text: str,
     *,
-    diag: Any,
     iteration: int,
     repair_n: int,
     verify_fn: VerifyFn | None,
     max_calls: int,
-    geometry: list[dict[str, Any]] | None = None,
     render_fn: VerifyFn | None = None,
 ) -> PatchResponse:
     from cadx.agent.context import system_prompt
@@ -328,7 +360,7 @@ async def _repair_session(
     parts: list[dict[str, Any]] = [
         {"type": "text", "text": "Fix this code using the tools — minimal edit only."},
         {"type": "text", "text": numbered_code_block(prev_code, "PREVIOUS CODE")},
-        {"type": "text", "text": diag_block(diag, error, traceback, stdout, geometry=geometry)},
+        {"type": "text", "text": diag_text},
     ]
     rb = request_block(ctx.prompt)
     if rb:
@@ -367,7 +399,7 @@ async def _repair_session(
     )
     if res.exhausted:
         ctx.edit_sessions_exhausted += 1
-    if res.code and res.code != prev_code:
+    if res.code and res.code != prev_code and elision_marker(res.code) is None:
         sub = res.submitted or {}
         return PatchResponse(
             reasoning=str(sub.get("reasoning", "")),
@@ -377,7 +409,7 @@ async def _repair_session(
     # last resort: the model ignored the tools but answered with a fenced
     # code block — still usable, better than failing the whole iteration
     fenced = _extract_code_block(res.response.text if res.response else "")
-    if fenced and fenced != prev_code:
+    if fenced and fenced != prev_code and elision_marker(fenced) is None:
         return PatchResponse(
             reasoning="model answered with a fenced code block instead of tool edits",
             full_code=fenced,
@@ -443,7 +475,11 @@ async def _codegen_session(
         step=STEP,
         iteration=iteration,
     )
-    if res.submitted and res.submitted.get("code"):
+    if (
+        res.submitted
+        and res.submitted.get("code")
+        and elision_marker(str(res.submitted["code"])) is None
+    ):
         code = str(res.submitted["code"])
         chk = check_code(code)
         # PARAMS literals in the code are authoritative; the model's `params`
@@ -481,7 +517,7 @@ async def _codegen_session(
     # leaves a grown buffer — submit it (it goes through the same contract
     # gate as any codegen; a broken buffer gets a repair session, which is
     # strictly better than throwing the work away)
-    if staged and res.code and res.code != _BUILD_SEED:
+    if staged and res.code and res.code != _BUILD_SEED and elision_marker(res.code) is None:
         return CodeResponse(
             reasoning="staged build session ended without done — buffer submitted as-is",
             params=[],

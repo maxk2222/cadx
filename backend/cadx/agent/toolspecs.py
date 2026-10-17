@@ -22,8 +22,10 @@ from __future__ import annotations
 
 import contextlib
 import inspect
+import io
 import json
 import re
+import tokenize
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
@@ -638,6 +640,22 @@ STRUCT_TOOLS = [
                 "description": "density filter — 'heaviside' gives crisp 0/1 "
                 "fields (threshold-robust extraction, slower)",
             },
+            "robust": {
+                "type": "boolean",
+                "description": "robust formulation (Sigmund/Wang): optimize the "
+                "WORST of eroded/intermediate/dilated designs — print-tolerant "
+                "and threshold-insensitive; forces the heaviside filter, ~3x cost",
+            },
+            "robust_delta_eta": {
+                "type": "number",
+                "description": "robust eta half-width 0-0.45 (default 0.25)",
+            },
+            "robust_designs": {
+                "type": "string",
+                "enum": ["edi", "e"],
+                "description": "'edi' = eroded+intermediate+dilated; 'e' = eroded "
+                "only (~half the extra FEM cost)",
+            },
             "multires": {
                 "type": "boolean",
                 "description": "coarse SIMP at 2x pitch warm-starts the fine "
@@ -1145,6 +1163,65 @@ SUBMIT_CODE_TOOLS = [
 
 
 # --------------------------------------------------------------------------- #
+# lazy-elision guard: refuse "# … rest unchanged" placeholder submissions      #
+# --------------------------------------------------------------------------- #
+
+_COMMENT_LINE_RE = re.compile(r"^\s*(#.*)$")
+
+# matches on the comment BODY (after '#', stripped, case-insensitive) —
+# anchored phrase shapes so a legit note like "# keep wall thickness" survives
+_ELISION_RE = re.compile(
+    r"(?:"
+    r"^\s*(?:\.\.\.|…)|"  # '# …' / '# ... rest unchanged'
+    r"\brest\s+of\s+(?:the\s+)?(?:code|file|implementation|class|function|script)\b|"
+    r"\b(?:previous|existing|original|earlier)\s+"
+    r"(?:code|implementation|logic|parts?|sections?|lines?)\b|"
+    r"\b(?:rest|code|implementation|remainder|sections?)\s+"
+    r"(?:is\s+|remains?\s+|stays?\s+)?un(?:changed|modified)\b|"
+    r"^(?:unchanged|unmodified|as before|same as before|ditto)\W*$|"
+    r"\b(?:omitted|elided|skipped|removed|truncated)\s+for\s+brevity\b|"
+    r"\btodo\b[^\n]{0,15}\b(?:rest|remaining|unchanged)\b|"
+    r"\b(?:same|identical)\s+as\s+(?:before|above|earlier|previous)\b|"
+    r"\bkeep\s+the\s+rest\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def elision_marker(code: str) -> str | None:
+    """First lazy-elision comment found in `code` ("# ... rest", "# unchanged",
+    "# previous code", "# TODO rest" …) or None.
+
+    Comments come from ``tokenize`` so '#' inside string literals is never
+    mistaken for one; code that fails to tokenize falls back to comment-only
+    lines (the contract check will flag that code on other grounds anyway).
+    """
+    comments: list[str] = []
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(code).readline):
+            if tok.type == tokenize.COMMENT:
+                comments.append(tok.string)
+    except (tokenize.TokenError, IndentationError, SyntaxError, ValueError):
+        comments = [m.group(1) for ln in code.splitlines() if (m := _COMMENT_LINE_RE.match(ln))]
+    for c in comments:
+        if _ELISION_RE.search(c.lstrip("#").strip()):
+            return c.strip()
+    return None
+
+
+def _elision_error(marker: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "error": (
+            f"refused: comment '{marker[:80]}' looks like a placeholder for "
+            "omitted code — the executor runs the file VERBATIM. Submit the "
+            "COMPLETE code with every section written out (no '# ... rest' "
+            "shortcuts)."
+        ),
+    }
+
+
+# --------------------------------------------------------------------------- #
 # session
 # --------------------------------------------------------------------------- #
 
@@ -1343,10 +1420,34 @@ class ToolSession:
 
     # -- code editing (edit kind only) ---------------------------------------- #
 
+    def _sigcheck_enabled(self) -> bool:
+        return bool(getattr(self.ctx.runtime_settings, "agent_sigcheck", False))
+
+    def _sig_findings(self, code: str) -> tuple[list[str], list[str]]:
+        """Signature-gate findings for a code buffer — never raises, never
+        blocks (a mid-build buffer may legitimately be incomplete)."""
+        if not self._sigcheck_enabled() or not code.strip():
+            return [], []
+        from cadx.cad.sigcheck import check_code_signatures
+
+        rep = check_code_signatures(code)
+        return rep.errors, rep.warnings
+
     def _apply(self, res: dict[str, Any]) -> dict[str, Any]:
         if res.get("ok") and "code" in res:
             self.buffer = res.pop("code")
             self.edits_applied += 1
+            # signature gate on the NEW buffer — findings are surfaced so the
+            # model fixes them before verify/done, but the edit still lands
+            sig_errors, sig_warnings = self._sig_findings(self.buffer)
+            if sig_errors:
+                res["sig_errors"] = sig_errors[:10]
+                res["note"] = (
+                    "signature gate flagged API errors in the buffer — fix them "
+                    "before verify/done (the edit was still applied)"
+                )
+            if sig_warnings:
+                res["sig_warnings"] = sig_warnings[:10]
         return res
 
     def _edit_kind(self) -> dict[str, Any] | None:
@@ -1743,9 +1844,9 @@ class ToolSession:
     # -- checks ---------------------------------------------------------------- #
 
     def _contract_errors(self, code: str) -> list[str]:
-        chk = check_code(code)
-        errs = list(chk.errors)
-        if chk.ok:
+        chk = check_code(code, sigcheck=self._sigcheck_enabled())
+        errs = list(chk.errors) + list(chk.sig_errors)
+        if not chk.errors:
             errs += check_standard_part_calls(code)
         return errs
 
@@ -1753,11 +1854,20 @@ class ToolSession:
         if err := self._require_buffer():
             return err
         errs = self._contract_errors(self.buffer)
-        return {"ok": not errs, "errors": errs[:10]}
+        out: dict[str, Any] = {"ok": not errs, "errors": errs[:10]}
+        _, sig_warnings = self._sig_findings(self.buffer)
+        if sig_warnings:
+            out["sig_warnings"] = sig_warnings[:10]
+        return out
 
     def _tool_check_snippet(self, a: dict[str, Any]) -> dict[str, Any]:
-        errs = self._contract_errors(str(a.get("code", "")))
-        return {"ok": not errs, "errors": errs[:10]}
+        code = str(a.get("code", ""))
+        errs = self._contract_errors(code)
+        out: dict[str, Any] = {"ok": not errs, "errors": errs[:10]}
+        _, sig_warnings = self._sig_findings(code)
+        if sig_warnings:
+            out["sig_warnings"] = sig_warnings[:10]
+        return out
 
     # -- verify ---------------------------------------------------------------- #
 
@@ -1783,6 +1893,19 @@ class ToolSession:
             and (blk := self._block_at_line(diag.failing_line))
         ):
             out["block"] = blk
+        # error-triggered doc injection: when the error names a real symbol
+        # (AttributeError/NameError/TypeError), attach its introspected
+        # signature so the repair doesn't guess the API again
+        try:
+            from cadx.agent.docfetch import docs_for_error
+
+            docs = docs_for_error(
+                res.get("error"), res.get("traceback"), self.buffer, diag.failing_line
+            )
+            if docs:
+                out["docs"] = docs
+        except Exception as e:  # doc injection is best-effort, never breaks the result
+            log.warning("docfetch.failed", error=str(e))
         geo = res.get("geometry_at_failure")
         if geo:
             out["geometry_at_failure"] = geo
@@ -2190,6 +2313,8 @@ class ToolSession:
             return {"ok": True, "done": True}
         if err := self._require_buffer():
             return err
+        if marker := elision_marker(self.buffer):
+            return _elision_error(marker)
         if self.edits_applied == 0 and not self._unchanged_warned:
             self._unchanged_warned = True
             return {
@@ -2216,6 +2341,8 @@ class ToolSession:
 
     def _tool_submit_code(self, a: dict[str, Any]) -> dict[str, Any]:
         code = str(a.get("code", ""))
+        if marker := elision_marker(code):
+            return _elision_error(marker)
         errs = self._contract_errors(code)
         if errs and self._done_reasks < 2:
             self._done_reasks += 1
