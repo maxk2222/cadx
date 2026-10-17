@@ -15,6 +15,7 @@ from cadx.cad.tasks import (
     run_fem_payload,
     run_mesh_payload,
     run_optimize_payload,
+    run_parametrize_payload,
 )
 from cadx.config import get_settings
 from cadx.logging import get_logger
@@ -41,6 +42,9 @@ class InProcessExecutor:
 
     async def process_mesh(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await asyncio.to_thread(run_mesh_payload, payload)
+
+    async def parametrize_mesh(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await asyncio.to_thread(run_parametrize_payload, payload)
 
     async def fem_analyze(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await asyncio.to_thread(run_fem_payload, payload)
@@ -159,6 +163,11 @@ class QueueExecutor:
     async def process_mesh(self, payload: dict[str, Any]) -> dict[str, Any]:
         timeout = self.runtime_settings.exec_timeout_s + self.runtime_settings.mesh_timeout_s + 120
         return await self._run_task("process_mesh", payload, timeout)
+
+    async def parametrize_mesh(self, payload: dict[str, Any]) -> dict[str, Any]:
+        # reconstruction + one full exec pipeline — same envelope as execute
+        timeout = self.runtime_settings.exec_timeout_s * 2 + 120
+        return await self._run_task("parametrize_mesh", payload, timeout)
 
     async def fem_analyze(self, payload: dict[str, Any]) -> dict[str, Any]:
         timeout = self.runtime_settings.fem_timeout_s + 120

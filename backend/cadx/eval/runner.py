@@ -177,6 +177,7 @@ class Benchmark:
     runtime: dict[str, Any] = field(default_factory=dict)  # RuntimeSettings overrides
     expected_features: list[dict[str, Any]] = field(default_factory=list)
     expect_watertight: bool = False
+    expect_code: bool = False  # outcome must carry parametric code (parametrize)
     expect_issue_contains: str | None = None  # substring expected in final issues
     max_wall_s: float | None = None
     max_prompt_tokens: int | None = None
@@ -194,6 +195,7 @@ class EvalResult:
     version_dir: str = ""
     features_ok: bool | None = None
     watertight: bool | None = None
+    code_ok: bool | None = None
     prompt_tokens: int = 0
     completion_tokens: int = 0
     calls: int = 0
@@ -687,6 +689,7 @@ def _judge(
     completion_tokens = int(usage.get("completion_tokens") or 0)
     calls = int(usage.get("calls") or 0)
     features_ok = _features_ok(bm.expected_features, outcome.features)
+    code_ok = (outcome.code is not None) if bm.expect_code else None
     issue_texts = [
         f"{i.get('what', '')} {i.get('fix_hint', '')}".strip() for i in outcome.issues or []
     ]
@@ -700,6 +703,8 @@ def _judge(
         if dim_ok is False or features_ok is False:
             passed = False
         if bm.expect_watertight and watertight is not True:
+            passed = False
+        if bm.expect_code and code_ok is not True:
             passed = False
         if issue_ok is False:
             passed = False
@@ -719,6 +724,7 @@ def _judge(
         version_dir=str(version_dir),
         features_ok=features_ok,
         watertight=bool(watertight) if watertight is not None else None,
+        code_ok=code_ok,
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         calls=calls,

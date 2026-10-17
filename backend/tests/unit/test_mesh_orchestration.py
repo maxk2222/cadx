@@ -483,3 +483,157 @@ def test_flat_spec_dims_does_not_flag_elongated_parts():
     assert _is_flat_spec_dims((130.0, 32.0, 32.0)) is False  # grip — elongated
     assert _is_flat_spec_dims((40.0, 40.0, 45.0)) is False  # knob
     assert _is_flat_spec_dims((0.0, 0.0, 0.0)) is False  # undimensioned
+
+
+# --------------------------------------------------------------------------- #
+# parametric reconstruction (parametrize_mesh)
+
+
+def _mesh_ok_result() -> dict:
+    """Passing process_mesh result for a 40x30x20 spec."""
+    return {
+        "ok": True,
+        "analysis": {"bbox_size": [40.0, 30.0, 20.0], "solid_count": 1},
+        "mesh": {
+            "features": {},
+            "post": {},
+            "dim_issues": [],
+            "stl_relpath": "x/y/_run/model.stl",
+        },
+    }
+
+
+class _ParamExec(InProcessExecutor):
+    """process_mesh always returns a passing result; parametrize_mesh is
+    scripted (result dict, or an exception to raise)."""
+
+    def __init__(
+        self, param_result: dict | None = None, param_exc: Exception | None = None
+    ) -> None:
+        self.param_result = param_result
+        self.param_exc = param_exc
+        self.param_calls: list[dict] = []
+
+    async def process_mesh(self, payload: dict) -> dict:
+        return _mesh_ok_result()
+
+    async def parametrize_mesh(self, payload: dict) -> dict:
+        self.param_calls.append(payload)
+        if self.param_exc is not None:
+            raise self.param_exc
+        return dict(self.param_result or {"ok": False, "reason": "not reconstructible"})
+
+
+def _param_ctx(executor: _ParamExec) -> tuple[AgentCtx, PartSpec]:
+    spec = _spec((40.0, 30.0, 20.0))
+    llm = FakeLLM(
+        [{"score": 95, "passed": True, "discrepancies": [], "feature_verdicts": [], "matches": []}]
+    )
+    ctx = _ctx(
+        llm=llm,
+        executor=executor,
+        assets=[_img()],
+        mesh=FakeMeshClient(),
+        mesh_available=True,
+        runtime_settings=RuntimeSettings(
+            mesh_cache_enabled=False,
+            mesh_prep_images=False,
+            mesh_candidates_per_iter=1,
+            mesh_heightfield_flat=False,
+            agent_max_wall_s=86_400,
+        ),
+    )
+    ctx.spec = spec
+    ctx.plan = _plan()
+    # preset orientation so the loop never spends an LLM call on ORIENT
+    ctx.mesh_orientation = {"up": "+z", "front": "+y"}
+    return ctx, spec
+
+
+async def _run_mesh_finalize(ctx: AgentCtx, spec: PartSpec) -> RunOutcome:
+    from cadx.agent.orchestrator import _run_mesh
+
+    async def no() -> bool:
+        return False
+
+    return await _run_mesh(
+        ctx,
+        RunOutcome(),
+        spec,
+        ctx.plan,
+        time.monotonic(),
+        no,
+        no,
+        max_iterations=1,
+        pass_score=70,
+        tol_pct=5.0,
+        tol_mm=0.5,
+    )
+
+
+async def test_parametrize_accepted_sets_code_and_schema():
+    executor = _ParamExec(
+        param_result={
+            "ok": True,
+            "kind": "revolve",
+            "code": "PARAMS = {'radius': 16.0}\nresult = None\n",
+            "params": {"radius": 16.0},
+            "params_schema": [{"name": "radius", "value": 16.0, "unit": "mm"}],
+            "chamfer_mm": 0.2,
+            "confidence": 0.8,
+            "exec_result": {"ok": True, "analysis": {"bbox_size": [40.0, 30.0, 20.0]}},
+        }
+    )
+    ctx, spec = _param_ctx(executor)
+    outcome = await _run_mesh_finalize(ctx, spec)
+
+    assert outcome.status == "succeeded"
+    assert executor.param_calls, "parametrize_mesh was never dispatched"
+    assert executor.param_calls[0]["stl_rel"] == "x/y/_run/model.stl"
+    assert outcome.code == "PARAMS = {'radius': 16.0}\nresult = None\n"
+    assert outcome.params == {"radius": 16.0}
+    assert outcome.params_schema == [{"name": "radius", "value": 16.0, "unit": "mm"}]
+    parametric = (outcome.mesh or {}).get("parametric") or {}
+    assert parametric["kind"] == "revolve"
+    assert parametric["chamfer_mm"] == 0.2
+    assert parametric["confidence"] == 0.8
+    assert any(s == "parametrize" for s, _ in ctx._test_msgs)  # type: ignore[attr-defined]
+
+
+async def test_parametrize_rejected_on_large_chamfer():
+    executor = _ParamExec(
+        param_result={
+            "ok": True,
+            "kind": "revolve",
+            "code": "PARAMS = {}\nresult = None\n",
+            "params": {},
+            "params_schema": [],
+            "chamfer_mm": 5.0,
+            "confidence": 0.4,
+            "exec_result": {"ok": True, "analysis": {"bbox_size": [40.0, 30.0, 20.0]}},
+        }
+    )
+    ctx, spec = _param_ctx(executor)
+    outcome = await _run_mesh_finalize(ctx, spec)
+
+    from cadx.cad.mesh_ops import mesh_params_schema
+
+    # rejected — the outcome keeps the pure-mesh fields
+    assert outcome.code is None
+    assert outcome.params_schema == [p.model_dump() for p in mesh_params_schema()]
+    assert "parametric" not in (outcome.mesh or {})
+    msgs = ctx._test_msgs  # type: ignore[attr-defined]
+    assert any("parametric reconstruction skipped" in m for s, m in msgs if s == "parametrize")
+
+
+async def test_parametrize_executor_exception_is_best_effort():
+    executor = _ParamExec(param_exc=RuntimeError("executor down"))
+    ctx, spec = _param_ctx(executor)
+    outcome = await _run_mesh_finalize(ctx, spec)
+
+    from cadx.cad.mesh_ops import mesh_params_schema
+
+    assert outcome.status == "succeeded"  # mesh path itself is unaffected
+    assert outcome.code is None
+    assert outcome.params_schema == [p.model_dump() for p in mesh_params_schema()]
+    assert "parametric" not in (outcome.mesh or {})

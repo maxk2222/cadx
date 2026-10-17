@@ -507,6 +507,157 @@ async def process_mesh(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str
     return d
 
 
+def run_parametrize_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Synchronous part of parametrize_mesh — shared with InProcessExecutor.
+
+    Reproduces the final mesh (the stored STL the winning process_mesh run
+    wrote when ``stl_rel`` is passed, otherwise the same baseline_mesh +
+    apply_ops replay run_mesh_pipeline performs), asks cad/reconstruct for a
+    parametric rebuild, executes the emitted code through the standard
+    sandbox pipeline and measures the chamfer distance between source mesh
+    and reconstruction.
+    """
+    version_id = uuid.UUID(payload["version_id"])
+    rt = _runtime(payload)
+    settings = ProjectSettings(**(payload.get("settings") or {}))
+    spec = PartSpec(**payload["spec"]) if payload.get("spec") else None
+
+    from cadx.cad.mesh_ops import (
+        apply_ops,
+        baseline_mesh,
+        clean,
+        rest_on_xy_center,
+    )
+    from cadx.cad.mesh_ops import (
+        load_mesh as load_triangle_mesh,
+    )
+
+    # 1. final mesh — prefer the STL the winning process_mesh run already
+    # wrote (the exact artifact the candidate was scored on); fall back to
+    # replaying baseline + recorded ops on the raw generator output
+    try:
+        stl_rel = str(payload.get("stl_rel") or "")
+        if stl_rel and storage.resolve(stl_rel).exists():
+            mesh = load_triangle_mesh(storage.resolve(stl_rel))
+        else:
+            raw = load_triangle_mesh(storage.resolve(payload["mesh_rel"]))
+            post = MeshPostParams(**(payload.get("post") or {}))
+            if payload.get("ops_only"):
+                mesh = clean(raw)
+            else:
+                mesh, _base = baseline_mesh(raw, post, spec, cad_cap_faces=rt.mesh_decimate_faces)
+            ops = payload.get("ops") or post.ops
+            if ops:
+                mesh, _report = apply_ops(mesh, ops, anchors=payload.get("anchors"), runtime=rt)
+            mesh = rest_on_xy_center(mesh)
+    except Exception as e:
+        return {"ok": False, "error": f"failed to load final mesh: {e}"}
+
+    # 2. mesh -> parametric build123d code (None = shape is not
+    # reconstructible — organic blobs land here, a normal outcome)
+    try:
+        from cadx.cad.reconstruct import chamfer_mm, reconstruct_mesh
+
+        recon = reconstruct_mesh(mesh, spec, dict(payload.get("analysis") or {}))
+    except Exception as e:
+        log.warning("parametrize.reconstruct_failed", error=str(e)[:200])
+        return {"ok": False, "reason": "not reconstructible", "error": str(e)[:300]}
+    if recon is None:
+        return {"ok": False, "reason": "not reconstructible"}
+
+    # 3. execute + analyse the reconstruction through the standard pipeline —
+    # the exact sandbox/analysis environment run_execute_payload uses
+    out_dir = _artifact_dir(payload)
+    result = run_pipeline(
+        code=recon.code,
+        out_dir=out_dir,
+        settings=settings,
+        runtime=rt,
+        full_exports=False,
+        name=payload.get("name", "model"),
+        anchors=payload.get("anchors"),
+        spec=payload.get("spec"),
+        light=bool(payload.get("light")),
+    )
+    exec_result = {
+        "ok": result.ok,
+        "error": result.error,
+        "analysis": result.analysis.model_dump() if result.analysis else None,
+        "features": result.features,
+        "dfm": result.dfm.model_dump() if result.dfm else None,
+        "params_used": result.params_used,
+    }
+    if not result.ok:
+        return {
+            "ok": False,
+            "reason": "reconstruction did not execute",
+            "error": result.error,
+            "kind": recon.kind,
+            "code": recon.code,
+            "exec_result": exec_result,
+        }
+
+    # 4. shape agreement: chamfer distance source mesh <-> reconstruction
+    try:
+        recon_mesh = load_triangle_mesh(out_dir / "renders" / "mesh.stl")
+        dist = float(chamfer_mm(mesh, recon_mesh))
+    except Exception as e:
+        return {
+            "ok": False,
+            "reason": "chamfer measurement failed",
+            "error": str(e)[:300],
+            "kind": recon.kind,
+            "code": recon.code,
+            "exec_result": exec_result,
+        }
+
+    d = {
+        "ok": True,
+        "kind": recon.kind,
+        "code": recon.code,
+        "params": dict(recon.params),
+        "params_schema": list(recon.params_schema),
+        "chamfer_mm": dist,
+        "confidence": float(recon.confidence),
+        "exec_result": exec_result,
+        "art_dir": storage.relpath(out_dir),
+    }
+    log.info(
+        "parametrize_mesh",
+        version=str(version_id),
+        kind=recon.kind,
+        chamfer_mm=round(dist, 3),
+        confidence=round(float(recon.confidence), 3),
+    )
+    return d
+
+
+async def parametrize_mesh(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    """arq task (queue "cad"): best-effort parametric reconstruction of a
+    finished mesh — dispatched once per job when the mesh loop finalises."""
+    cancel_key = f"cancel:{payload['job_id']}" if payload.get("job_id") else None
+    if await _cancelled(ctx, cancel_key):
+        return {"ok": False, "error": "cancelled"}
+
+    # mesh replay + reconstruction + one full sandbox pipeline — same
+    # envelope as execute_version; the wait_for deadline releases the arq
+    # job slot when the thread wedges (same pattern as execute_version)
+    deadline = _runtime(payload).exec_timeout_s * 2 + 120
+    try:
+        d = await asyncio.wait_for(asyncio.to_thread(run_parametrize_payload, payload), deadline)
+    except TimeoutError:
+        log.error("parametrize_mesh.pipeline_hang", version=payload.get("version_id"))
+        return {
+            "ok": False,
+            "error": f"parametrize pipeline exceeded {deadline}s — worker thread may be stuck",
+        }
+
+    if await _cancelled(ctx, cancel_key):
+        d["ok"] = False
+        d["error"] = "cancelled"
+    return d
+
+
 def _relpath_exports(d: dict[str, Any], result: ExecResult, out_dir: Path) -> dict[str, Any]:
     it_rel = storage.relpath(out_dir)
     d["renders"] = {v: f"{it_rel}/renders/{p}" for v, p in result.renders.items()}

@@ -2418,6 +2418,83 @@ async def _process_mesh(
     return res
 
 
+async def _parametrize_best(
+    ctx: AgentCtx,
+    best: Candidate,
+    spec: PartSpec,
+    *,
+    tol_pct: float,
+    tol_mm: float,
+) -> dict[str, Any] | None:
+    """Best-effort parametric reconstruction of the winning mesh candidate.
+
+    Dispatches the ``parametrize_mesh`` executor task (replay final mesh ->
+    reconstruct -> sandbox execute -> chamfer check) and returns the accepted
+    result dict. Returns None on any failure — the reconstruction only
+    enriches the outcome with editable code + schema, it never changes it."""
+    mesh_meta = best.exec_result.get("mesh") or {}
+    payload = _mesh_payload(
+        ctx,
+        best.iteration,
+        mode="final",
+        post=MeshPostParams(**(mesh_meta.get("post") or best.mesh_post or {})),
+        spec=spec,
+        subdir="parametrize",
+    )
+    # the executor prefers the stored final STL — the exact artifact the
+    # candidate was scored on; raw GLB + post stay as the replay fallback
+    payload["stl_rel"] = mesh_meta.get("stl_relpath")
+    payload["analysis"] = best.exec_result.get("analysis")
+    if ctx.project_id is not None:
+        raw = storage.iteration_dir(ctx.project_id, ctx.version_id, best.iteration) / "mesh_raw.glb"
+        if raw.exists():
+            payload["mesh_rel"] = storage.relpath(raw)
+    try:
+        res = await ctx.executor.parametrize_mesh(payload)
+    except Exception as e:
+        log.warning("mesh.parametrize_failed", error=str(e)[:200])
+        await ctx.emit("parametrize", best.iteration, "parametric reconstruction skipped")
+        return None
+
+    reason = ""
+    if not res.get("ok"):
+        reason = str(res.get("reason") or res.get("error") or "executor failed")
+    else:
+        chamfer_raw = res.get("chamfer_mm")
+        chamfer = float(chamfer_raw) if chamfer_raw is not None else float("inf")
+        bbox = (best.exec_result.get("analysis") or {}).get("bbox_size") or []
+        max_dim = max((float(v) for v in bbox), default=0.0)
+        if max_dim <= 0:
+            max_dim = max(spec.length_x.value, spec.width_y.value, spec.height_z.value)
+        limit = max(0.5, 0.005 * max_dim)
+        recon_analysis = (res.get("exec_result") or {}).get("analysis") or {}
+        if recon_analysis.get("bbox_size"):
+            dim_issues = compare_dims(spec, recon_analysis, tol_pct, tol_mm)
+        else:
+            dim_issues = ["no reconstruction analysis"] if stated_dim_count(spec) else []
+        if chamfer > limit:
+            reason = f"chamfer {chamfer:.2f}mm > {limit:.2f}mm"
+        elif dim_issues:
+            reason = f"dim mismatch ({dim_issues[0]})"
+        else:
+            await ctx.emit(
+                "parametrize",
+                best.iteration,
+                f"parametric reconstruction ({res.get('kind')}, chamfer {chamfer:.2f}mm)",
+            )
+            return {
+                "kind": res.get("kind"),
+                "code": res.get("code"),
+                "params": res.get("params") or {},
+                "params_schema": res.get("params_schema") or [],
+                "chamfer_mm": chamfer,
+                "confidence": res.get("confidence"),
+                "exec_result": res.get("exec_result") or {},
+            }
+    await ctx.emit("parametrize", best.iteration, f"parametric reconstruction skipped ({reason})")
+    return None
+
+
 # --------------------------------------------------------------------------- #
 # loops                                                                        #
 # --------------------------------------------------------------------------- #
@@ -3636,6 +3713,12 @@ async def _run_mesh(  # noqa: C901
         )
     )
 
+    # best-effort parametric reconstruction — code+schema for downstream
+    # editing; failure leaves the mesh outcome untouched
+    param_res = await _parametrize_best(ctx, best, spec, tol_pct=tol_pct, tol_mm=tol_mm)
+    if param_res is not None:
+        ctx.mesh_info["parametric"] = param_res
+
     outcome.status = (
         "succeeded"
         if (
@@ -3647,10 +3730,18 @@ async def _run_mesh(  # noqa: C901
         else "needs_review"
     )
     outcome.art_dir = best.exec_result.get("art_dir")
-    outcome.code = None
-    post_used = best.mesh_post or {}
-    outcome.params = post_used or dict(best.exec_result.get("params_used") or {})
-    outcome.params_schema = [p.model_dump() for p in mesh_params_schema()]
+    rec = ctx.mesh_info.get("parametric")
+    if rec:
+        # accepted parametric reconstruction replaces the mesh-op params —
+        # downstream editing now works on real code + schema
+        outcome.code = rec.get("code")
+        outcome.params = rec.get("params")
+        outcome.params_schema = rec.get("params_schema")
+    else:
+        outcome.code = None
+        post_used = best.mesh_post or {}
+        outcome.params = post_used or dict(best.exec_result.get("params_used") or {})
+        outcome.params_schema = [p.model_dump() for p in mesh_params_schema()]
     outcome.analysis = best.exec_result.get("analysis")
     outcome.features = best.exec_result.get("features") or (best.exec_result.get("mesh") or {}).get(
         "features"
@@ -3675,6 +3766,14 @@ async def _run_mesh(  # noqa: C901
     outcome.artifacts = artifacts
     outcome.usage = dict(getattr(ctx.llm, "total_usage", {}))
     outcome.mesh = {k: v for k, v in ctx.mesh_info.items() if not k.startswith("_")}
+    if rec:
+        # compact summary only — the full code/schema already lives on the
+        # outcome's own code/params/params_schema fields
+        outcome.mesh["parametric"] = {
+            "kind": rec.get("kind"),
+            "chamfer_mm": rec.get("chamfer_mm"),
+            "confidence": rec.get("confidence"),
+        }
     outcome.mesh["best_iteration"] = best.iteration
     _write_mesh_json(ctx.project_id, ctx.version_id, outcome.mesh)
     return outcome
