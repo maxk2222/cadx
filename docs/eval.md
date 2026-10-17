@@ -83,10 +83,15 @@ Findings:
 - **High run-to-run variance**: staged_auto on flange passed twice (92, 95)
   and failed once (all 8 iterations exec-fail). n=1 is not enough to rank
   variants — treat single cells as indicative, not conclusive.
-- **Observed defect — "codegen session produced no code"**: under thinking,
+- **Fixed defect — "codegen session produced no code"**: under thinking,
   build sessions repeatedly ended without a `done` submission (huge
-  reasoning calls eat the turn budget). The session should auto-submit a
-  non-trivial buffer at end-of-turns instead of discarding it.
+  reasoning calls eat the turn budget). The codegen step now submits a
+  grown buffer when the session ends without `done` (f4da8ff); a
+  seed-only buffer still fails correctly. Post-fix validation:
+  `l_bracket_cad` `staged_bufrescue` **PASS 92** in 464 s (25 calls,
+  3 iterations, all checks true) — best `staged` result on this
+  benchmark, though the fix itself was not exercised (all sessions
+  submitted `done` normally; run-to-run variance is high).
 - **The recurring l_bracket trap**: spec'd ribs must sit *inside* the 40 mm
   envelope; all variants initially place them proud (42.5-43.5 mm) and the
   leg slot on the wrong axis. Only staged_off converged through the
