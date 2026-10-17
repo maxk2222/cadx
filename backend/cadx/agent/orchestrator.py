@@ -3800,9 +3800,18 @@ def _spec_silhouette_ops(
     try:
         import numpy as np
 
+        from cadx.cad.silhouette import _deskew_mask, _mask_crop
+
         m = np.asarray(mask)
+        crop = _mask_crop(m)
+        # deskew before the aspect check — a diagonal photo subject reads
+        # squarer than the part (grip: 2.8:1 photo, 4:1 part) and would
+        # wrongly reject or wrongly pass depending on the tilt
+        if crop is not None:
+            crop = _deskew_mask(crop)
         # subject-crop aspect: occupied columns / occupied rows
-        mask_aspect = float(m.any(axis=0).sum()) / max(float(m.any(axis=1).sum()), 1.0)
+        mc = m if crop is None else crop
+        mask_aspect = float(mc.any(axis=0).sum()) / max(float(mc.any(axis=1).sum()), 1.0)
         mesh_aspect = extent_u / max(extent_v, 1e-9)
         if abs(mask_aspect - mesh_aspect) / max(mask_aspect, mesh_aspect) > 0.4:
             log.debug(
@@ -3831,6 +3840,16 @@ def _spec_silhouette_ops(
         stations = profile_stations_from_outline(outline, axis=axis, n_stations=16)
         if not 2 <= len(stations) <= 32:
             return []
+        # dims are authoritative: anchor the measured profile to the fitted
+        # outer radius (max station -> extent_v/2) so the photo's proportions
+        # taper the waist without shrinking the spec diameter. A rescale
+        # beyond 2x means the mask and the part disagree grossly — skip.
+        peak = max(s["radius_mm"] for s in stations)
+        fitted_r = extent_v / 2.0
+        if peak <= 1e-6 or not 0.5 <= fitted_r / peak <= 2.0:
+            return []
+        for s in stations:
+            s["radius_mm"] = round(s["radius_mm"] * (fitted_r / peak), 4)
         return [
             MeshOp(
                 op="radial_profile_auto",

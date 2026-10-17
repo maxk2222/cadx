@@ -117,3 +117,48 @@ def test_mesh_silhouette_iou_detects_wreck():
     # side views halve (≈0.67 each), top view unchanged → mean ≈ 0.78,
     # clearly below the 0.8 guard the shape guard applies
     assert 0.0 <= val < 0.9
+
+
+def _diagonal_band_mask(deg: float = 30.0, L: int = 700, W: int = 200) -> np.ndarray:
+    """Axis-aligned bar rotated in the image plane — the grip-photo failure
+    mode: rembg returns a diagonal subject mask and the naive vertical-slice
+    profile reads ~half the true diameter."""
+    from scipy.ndimage import rotate
+
+    band = np.ones((W, L), dtype=np.uint8)
+    return rotate(band, deg, reshape=True, order=0) > 0
+
+
+def test_mask_to_outline_mm_deskews_diagonal_subject():
+    """A diagonally-photographed band must yield the same outline aspect as
+    the upright band — the deskew normalises photo orientation."""
+    from cadx.cad.silhouette import mask_to_outline_mm
+
+    up = mask_to_outline_mm(_diagonal_band_mask(0), 130.0, 32.0)
+    dg = mask_to_outline_mm(_diagonal_band_mask(30), 130.0, 32.0)
+    w_up = max(c[0] for c in up) - min(c[0] for c in up)
+    w_dg = max(c[0] for c in dg) - min(c[0] for c in dg)
+    assert abs(w_up - w_dg) / w_up < 0.1
+
+
+def test_profile_stations_deskewed_read_true_radius():
+    """Regression: diagonal mask previously produced radius_mm ~half the
+    true band half-height (Ø32 read as ~Ø16) — deskew restores it."""
+    from cadx.cad.silhouette import mask_to_outline_mm, profile_stations_from_outline
+
+    # band W=200 scaled to extent_v=32 -> true radius = 16 mm
+    out = mask_to_outline_mm(_diagonal_band_mask(25), 130.0, 32.0)
+    st = profile_stations_from_outline(out, axis="x", n_stations=16)
+    radii = [s["radius_mm"] for s in st]
+    assert min(radii) > 12.0  # was ~8 without deskew
+    assert max(radii) <= 17.5
+
+
+def test_profile_stations_square_mask_not_deskewed():
+    """A disc/square mask has no dominant axis — deskew must leave it alone
+    (PCA axis is meaningless there)."""
+    from cadx.cad.silhouette import _deskew_mask, _mask_crop
+
+    m = _mask_crop(_circle_mask())
+    assert m is not None
+    assert np.array_equal(_deskew_mask(m), m)

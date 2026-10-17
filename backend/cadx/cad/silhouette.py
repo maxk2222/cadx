@@ -13,6 +13,7 @@ shape signal.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
 
@@ -132,6 +133,38 @@ def _mask_crop(mask: NDArray[np.bool_]) -> NDArray[np.bool_] | None:
     return mask[np.argmax(rows) : len(rows) - np.argmax(rows[::-1]) + 1][
         :, np.argmax(cols) : len(cols) - np.argmax(cols[::-1]) + 1
     ]
+
+
+def _deskew_mask(crop: NDArray[np.bool_]) -> NDArray[np.bool_]:
+    """Rotate a subject crop so its principal axis is horizontal.
+
+    Reference photos routinely show the subject at an angle in the image
+    plane — slice-based profile measurement then reads the diagonal band's
+    projected thickness (~half the true diameter at 45°, observed on the
+    real grip photo: Ø32 read as ~Ø16). PCA the foreground pixels and
+    rotate axis-aligned when the mask has a clear long axis; near-square
+    or disc masks (eccentricity low) have no meaningful axis — and a
+    near-horizontal mask needs no resampling — so those pass through."""
+    ys, xs = np.nonzero(crop)
+    if len(xs) < 20:
+        return crop
+    cov = np.cov(np.stack([xs.astype(float), ys.astype(float)]))
+    evals, evecs = np.linalg.eigh(cov)
+    i = int(np.argmax(evals))
+    if evals[i] < 4.0 * float(evals[1 - i]):  # no dominant axis
+        return crop
+    ang = math.degrees(math.atan2(float(evecs[1, i]), float(evecs[0, i])))
+    # the eigenvector has a 180-degree ambiguity — take the line
+    # orientation in (-90, 90]; rotating BY that angle aligns the band
+    # horizontally (scipy's positive rotation is CW in image coords)
+    ang = ((ang + 90.0) % 180.0) - 90.0
+    if abs(ang) < 4.0:
+        return crop
+    from scipy.ndimage import rotate
+
+    rot = np.asarray(rotate(crop.astype(np.uint8), ang, reshape=True, order=0)) > 0
+    recrop = _mask_crop(rot)
+    return recrop if recrop is not None else crop
 
 
 def _norm_mask(mask: NDArray[np.bool_]) -> NDArray[np.bool_] | None:
@@ -289,6 +322,7 @@ def mask_to_outline_mm(
     crop = _mask_crop(mask)
     if crop is None or mesh_extent_u <= 0 or mesh_extent_v <= 0:
         return []
+    crop = _deskew_mask(crop)
     from skimage import measure
 
     padded = np.pad(crop.astype(np.float64), 1)
