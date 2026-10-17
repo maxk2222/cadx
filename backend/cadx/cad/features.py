@@ -4,6 +4,10 @@ generated shape and compare them against the spec's feature list.
 Feedback-only: findings flow into the repair/critique feedback but never block
 `succeeded` on their own — geometric heuristics are approximate by nature,
 especially on faceted mesh solids.
+
+Two measurement layers: the analytic face scan (holes/countersinks/rounds/
+chamfers/bosses) plus a rule-based face-adjacency-graph pass (pockets,
+grooves, notches — see the AAG section below).
 """
 
 from __future__ import annotations
@@ -14,8 +18,13 @@ from pathlib import Path
 from typing import Any, Literal
 
 from build123d import GeomType, Shape
+from OCP.BRep import BRep_Tool
 from OCP.BRepAdaptor import BRepAdaptor_Surface
+from OCP.BRepClass import BRepClass_FaceClassifier
 from OCP.BRepTools import BRepTools
+from OCP.GeomAPI import GeomAPI_ProjectPointOnSurf
+from OCP.gp import gp_Pnt, gp_Pnt2d, gp_Vec
+from OCP.TopAbs import TopAbs_Orientation, TopAbs_State
 from pydantic import BaseModel, Field
 
 
@@ -93,6 +102,48 @@ class MeasuredFillet(BaseModel):
     side: str = ""  # convex | concave
 
 
+class MeasuredPocket(BaseModel):
+    """A recess whose floor face is ringed by concave adjacency edges and
+    opens through a single outer face (structural/AAG-derived — the class a
+    hole/boss scan cannot see: a pocket is neither a hole_group nor a boss)."""
+
+    id: str = ""  # stable selector id (pk1…) — assign_feature_ids
+    axis: str = ""  # dominant axis of the opening (floor-normal) direction
+    depth: float = 0.0  # floor to opening-plane distance (mm)
+    size: list[float] = Field(default_factory=list)  # plan dims ⊥ axis, desc
+    center: list[float] = Field(default_factory=list)  # floor centre [x, y, z]
+    centers: list[list[float]] = Field(default_factory=list)  # [[x, y]] plan-view
+
+
+class MeasuredGroove(BaseModel):
+    """An open channel: a bottom face bridged by a pair of parallel opposing
+    walls joined by concave edges. ``open_ends`` is 2 for a through slot cut
+    edge-to-edge, 1 for a blind channel (closed by an end cap face)."""
+
+    id: str = ""  # stable selector id (gr1…) — assign_feature_ids
+    axis: str = ""  # dominant axis of the channel (through-) direction
+    opening: str = ""  # dominant axis of the opening (bottom-normal) direction
+    width: float = 0.0  # distance between the two wall planes (mm)
+    length: float = 0.0  # channel extent along `axis` (mm)
+    depth: float = 0.0  # bottom to opening plane (mm)
+    open_ends: int = 0
+    center: list[float] = Field(default_factory=list)  # bottom centre [x, y, z]
+    centers: list[list[float]] = Field(default_factory=list)  # [[x, y]] plan-view
+
+
+class MeasuredNotch(BaseModel):
+    """A step cut: one ledge face meeting a single riser face along a concave
+    edge, open on every other side (a notch, not a channel)."""
+
+    id: str = ""  # stable selector id (nt1…) — assign_feature_ids
+    axis: str = ""  # dominant axis of the ledge (opening) normal
+    width: float = 0.0  # ledge extent along the riser normal (mm)
+    depth: float = 0.0  # riser height along the ledge normal (mm)
+    length: float = 0.0  # ledge extent along the shared edge (mm)
+    center: list[float] = Field(default_factory=list)  # ledge centre [x, y, z]
+    centers: list[list[float]] = Field(default_factory=list)  # [[x, y]] plan-view
+
+
 class MeasuredFeatures(BaseModel):
     hole_groups: list[MeasuredHoleGroup] = Field(default_factory=list)
     total_holes: int = 0
@@ -111,6 +162,11 @@ class MeasuredFeatures(BaseModel):
     bored_bosses: list[MeasuredBoredBoss] = Field(default_factory=list)
     chamfers: list[MeasuredChamfer] = Field(default_factory=list)
     fillets: list[MeasuredFillet] = Field(default_factory=list)
+    # structural features from the face-adjacency graph (occwl/AAG pattern —
+    # rule-based on convexity-labelled face adjacency, no learned weights)
+    pockets: list[MeasuredPocket] = Field(default_factory=list)
+    grooves: list[MeasuredGroove] = Field(default_factory=list)
+    notches: list[MeasuredNotch] = Field(default_factory=list)
 
 
 class FeatureFinding(BaseModel):
@@ -170,6 +226,22 @@ def assign_feature_ids(measured: MeasuredFeatures) -> MeasuredFeatures:
     fils = sorted(measured.fillets, key=lambda f: (f.axis, _pt(f.at), f.radius))
     for n, f_ in enumerate(fils, 1):
         f_.id = f"f{n}"
+    pockets = sorted(
+        measured.pockets, key=lambda p: (p.axis, _pt(p.center), p.depth, p.size)
+    )
+    for n, p in enumerate(pockets, 1):
+        p.id = f"pk{n}"
+    grooves = sorted(
+        measured.grooves,
+        key=lambda g: (g.axis, g.opening, _pt(g.center), g.width, g.length),
+    )
+    for n, g in enumerate(grooves, 1):
+        g.id = f"gr{n}"
+    notches = sorted(
+        measured.notches, key=lambda nt: (nt.axis, _pt(nt.center), nt.width, nt.depth)
+    )
+    for n, nt in enumerate(notches, 1):
+        nt.id = f"nt{n}"
     return measured
 
 
@@ -260,6 +332,11 @@ def _norm(v: list[float]) -> float:
 
 def _sub(a: list[float], b: list[float]) -> list[float]:
     return [a[i] - b[i] for i in range(3)]
+
+
+def _unit(v: list[float]) -> list[float]:
+    n = _norm(v) or 1.0
+    return [c / n for c in v]
 
 
 def _inside_fraction(shape: Shape, center: list[float], axis: list[float], r: float) -> float:
@@ -514,6 +591,512 @@ def _mesh_through_holes(stl_path: Path, mesh=None) -> tuple[list[MeasuredHoleGro
     return groups, csk_hits, slot_count
 
 
+# ---------------------------------------------------------------------------
+# Face-adjacency-graph (AAG) structural features — occwl pattern implemented
+# against OCP/build123d directly (license-clean, rule-based, no learned
+# weights). Faces are graph nodes; every interior edge shared by exactly two
+# faces is a graph edge labelled convex/concave/tangent. Pockets, grooves and
+# notches are then recognised by simple structural rules on that graph.
+# ---------------------------------------------------------------------------
+
+_AAG_MAX_FACES = 600  # faceted/mesh solids triangulate every face — skip
+_AAG_PERP_DOT = 0.35  # |n1·n2| below this counts the faces as perpendicular
+_AAG_ANTI_DOT = -0.9  # n1·n2 below this counts the faces as opposing walls
+_AAG_PARALLEL_DOT = 0.95  # opening-face normal ≈ floor normal
+_AAG_TANGENT_BISECTOR = 0.45  # |a1+a2| below this is a tangent/smooth join
+_AAG_OPEN_END_DOT = 0.6  # bottom-face interior direction along ±channel dir
+_AAG_MIN_DEPTH = 0.2  # mm — shallower recesses are texture, not pockets
+
+
+def _project_uv(face: Any, p: list[float]) -> tuple[float, float] | None:
+    """Parameters of the closest surface point to ``p`` on ``face``."""
+    try:
+        proj = GeomAPI_ProjectPointOnSurf(gp_Pnt(*p), BRep_Tool.Surface_s(face.wrapped))
+        if proj.NbPoints() < 1:
+            return None
+        return proj.LowerDistanceParameters()
+    except Exception:
+        return None
+
+
+def _normal_at_uv(face: Any, u: float, v: float) -> list[float] | None:
+    """Outward surface normal of ``face`` at (u, v), orientation-aware."""
+    try:
+        surf = BRepAdaptor_Surface(face.wrapped)
+        pnt, d1u, d1v = gp_Pnt(), gp_Vec(), gp_Vec()
+        surf.D1(u, v, pnt, d1u, d1v)
+        n = _vec3(d1u.Crossed(d1v))
+        if face.wrapped.Orientation() == TopAbs_Orientation.TopAbs_REVERSED:
+            n = [-c for c in n]
+        nn = _norm(n)
+        return [c / nn for c in n] if nn > 1e-9 else None
+    except Exception:
+        return None
+
+
+def _point_on_face(face: Any, u: float, v: float) -> bool:
+    try:
+        cls = BRepClass_FaceClassifier(face.wrapped, gp_Pnt2d(u, v), 1e-6)
+        return cls.State() in (TopAbs_State.TopAbs_IN, TopAbs_State.TopAbs_ON)
+    except Exception:
+        return False
+
+
+def _face_interior_dir(face: Any, pe: list[float], tang: list[float]) -> list[float] | None:
+    """Direction perpendicular to the edge tangent ``tang`` at point ``pe``,
+    lying in the face's tangent plane and pointing INTO the face interior.
+
+    Found without edge-orientation bookkeeping: the two candidates ±(tang x n)
+    are offset a small step, projected back onto the surface and classified
+    against the face's 2D domain — the one that lands inside wins. Using the
+    face centroid instead fails on annular/U-shaped faces (its projection can
+    point across a void)."""
+    uv = _project_uv(face, pe)
+    if uv is None:
+        return None
+    n = _normal_at_uv(face, *uv)
+    if n is None:
+        return None
+    e = [
+        tang[1] * n[2] - tang[2] * n[1],
+        tang[2] * n[0] - tang[0] * n[2],
+        tang[0] * n[1] - tang[1] * n[0],
+    ]
+    en = _norm(e)
+    if en < 1e-9:
+        return None
+    e = [c / en for c in e]
+    eps = max(0.05, min(0.3, 0.05 * math.sqrt(max(float(face.area), 1e-3))))
+    for d in (e, [-c for c in e]):
+        q = [pe[i] + eps * d[i] for i in range(3)]
+        uv2 = _project_uv(face, q)
+        if uv2 is not None and _point_on_face(face, *uv2):
+            return d
+    return None
+
+
+def _edge_convexity(
+    shape: Shape, edge: Any, f1: Any, f2: Any
+) -> tuple[str, dict[str, Any]]:
+    """Convexity of the adjacency edge between two faces.
+
+    Method (documented, simplest reliable): compute each face's interior
+    direction a1/a2 at the edge midpoint (perpendicular to the edge, into the
+    face). If a1 and a2 are antiparallel the join is tangent-continuous —
+    "tangent". Otherwise probe the point halfway along the interior bisector:
+    ``shape.is_inside(edge_mid + δ·(a1+a2)/|a1+a2|)`` — inside material means
+    the solid occupies the wedge between the faces (convex, e.g. a box
+    corner); outside means the wedge is air (concave, e.g. a pocket corner).
+    ``δ`` scales with the smaller face area so the probe stays local."""
+    try:
+        pe = _vec3(edge.position_at(0.5))
+        t = _vec3(edge.tangent_at(0.5))
+        tn = _norm(t)
+        if tn < 1e-9:
+            return "unknown", {}
+        tang = [c / tn for c in t]
+    except Exception:
+        return "unknown", {}
+    a1 = _face_interior_dir(f1, pe, tang)
+    a2 = _face_interior_dir(f2, pe, tang)
+    if a1 is None or a2 is None:
+        return "unknown", {}
+    s = [a1[i] + a2[i] for i in range(3)]
+    sn = _norm(s)
+    if sn < _AAG_TANGENT_BISECTOR:
+        return "tangent", {"a1": a1, "a2": a2}
+    bdir = [c / sn for c in s]
+    delta = max(
+        0.15, min(1.0, 0.15 * math.sqrt(min(float(f1.area), float(f2.area))))
+    )
+    q = [pe[i] + delta * bdir[i] for i in range(3)]
+    try:
+        inside = shape.is_inside(q)
+    except Exception:
+        return "unknown", {}
+    return ("convex" if inside else "concave"), {"a1": a1, "a2": a2}
+
+
+def _build_face_adjacency(shape: Shape):
+    """Face-adjacency graph: nodes = faces (surface type, area, normal,
+    centre); edges = interior brep edges shared by exactly 2 faces, labelled
+    by convexity. OCP's TopExp_MapShapesAndAncestors map type is not bound in
+    this OCP version, so edge→faces adjacency is rebuilt by bucketing the
+    per-face edges on their shared TShape hash."""
+    import networkx as nx  # lazy — the executor image may lag pyproject
+
+    faces = shape.faces()
+    graph = nx.Graph()
+    edge_faces: dict[int, list[Any]] = {}
+    for fi, f in enumerate(faces):
+        try:
+            fedges = f.edges()
+        except Exception:
+            fedges = []
+        for e in fedges:
+            bucket = edge_faces.setdefault(hash(e.wrapped), [e, []])
+            if fi not in bucket[1]:
+                bucket[1].append(fi)
+        try:
+            geom = str(f.geom_type)
+        except Exception:
+            geom = "OTHER"
+        normal = None
+        try:
+            if f.geom_type == GeomType.PLANE:
+                normal = _vec3(f.normal_at())
+                nn = _norm(normal)
+                normal = [c / nn for c in normal] if nn > 1e-9 else None
+        except Exception:
+            normal = None
+        try:
+            center = _vec3(f.center())
+        except Exception:
+            center = [0.0, 0.0, 0.0]
+        graph.add_node(
+            fi,
+            geom=geom,
+            area=float(getattr(f, "area", 0.0) or 0.0),
+            normal=normal,
+            center=center,
+            face=f,
+        )
+    for edge, fidx in (b for b in edge_faces.values() if len(b[1]) == 2):
+        i, j = fidx
+        conv, adir = _edge_convexity(shape, edge, faces[i], faces[j])
+        adir["lo"] = i  # a1 always belongs to the lower of the two indices
+        graph.add_edge(i, j, conv=conv, adir=adir)
+    return graph
+
+
+def _concave_neighbors(graph: Any, i: int) -> list[int]:
+    return [j for j in graph.neighbors(i) if graph.edges[i, j]["conv"] == "concave"]
+
+
+def _subgraph_bbox(graph: Any, nodes: set[int] | frozenset[int]) -> tuple[list, list]:
+    lo = [float("inf")] * 3
+    hi = [float("-inf")] * 3
+    for k in nodes:
+        try:
+            bb = graph.nodes[k]["face"].bounding_box()
+        except Exception:
+            continue
+        for a, (mn, mx) in enumerate(
+            ((bb.min.X, bb.max.X), (bb.min.Y, bb.max.Y), (bb.min.Z, bb.max.Z))
+        ):
+            lo[a] = min(lo[a], float(mn))
+            hi[a] = max(hi[a], float(mx))
+    return lo, hi
+
+
+def _opening_coord(
+    graph: Any, faces: set[int] | frozenset[int], wall: int, normal: list[float]
+) -> float | None:
+    """Coordinate along ``normal`` of the outer face a wall opens through —
+    the convex neighbour outside the subgraph with normal ≈ ``normal``."""
+    best = None
+    for o in graph.neighbors(wall):
+        if o in faces or graph.edges[wall, o]["conv"] != "convex":
+            continue
+        on = graph.nodes[o]["normal"]
+        if on is None or abs(sum(on[i] * normal[i] for i in range(3))) <= _AAG_PARALLEL_DOT:
+            continue
+        coord = sum(graph.nodes[o]["center"][i] * normal[i] for i in range(3))
+        best = coord if best is None else max(best, coord)
+    return best
+
+
+def _detect_structural_features(  # noqa: C901 — graph pattern matching
+    shape: Shape,
+) -> tuple[list[MeasuredPocket], list[MeasuredGroove], list[MeasuredNotch]]:
+    """Recognise pockets, grooves and notches on the face-adjacency graph.
+
+    Rules (deliberately conservative — nothing emitted when the structure is
+    ambiguous):
+    - POCKET: a planar floor whose EVERY adjacency edge is concave; flood-fill
+      through concave edges gives the recess subgraph (floor + walls), which
+      must be bounded by convex edges reaching an outer face parallel to the
+      floor (the opening plane). Requires ≥1 planar wall — a pure cylindrical
+      wall is a blind hole, already covered by the hole scan.
+    - GROOVE: a planar bottom joined by concave edges to exactly one pair of
+      antiparallel planar walls (⊥ the bottom); any further concave neighbour
+      must be an end cap (⊥ both). Every remaining edge of the bottom must be
+      an open end (convex/tangent, interior direction along the channel).
+    - NOTCH (step cut): exactly one concave planar wall ⊥ a ledge face, all
+      other edges open.
+    """
+    pockets: list[MeasuredPocket] = []
+    grooves: list[MeasuredGroove] = []
+    notches: list[MeasuredNotch] = []
+    faces = shape.faces()
+    if not faces or len(faces) > _AAG_MAX_FACES:
+        return pockets, grooves, notches
+    graph = _build_face_adjacency(shape)
+    nodes = graph.nodes
+
+    def is_planar(i: int) -> bool:
+        return nodes[i]["geom"] == "GeomType.PLANE" and nodes[i]["normal"] is not None
+
+    def d(a: list[float], b: list[float]) -> float:
+        return sum(a[i] * b[i] for i in range(3))
+
+    claimed: set[int] = set()
+    seeds = [
+        i
+        for i in graph.nodes
+        if is_planar(i)
+        and graph.degree[i] > 0
+        and all(graph.edges[i, j]["conv"] == "concave" for j in graph.neighbors(i))
+    ]
+    for seed in seeds:
+        if seed in claimed:
+            continue
+        sub: set[int] = set()
+        frontier = [seed]
+        while frontier:
+            k = frontier.pop()
+            if k in sub:
+                continue
+            sub.add(k)
+            frontier += [j for j in _concave_neighbors(graph, k) if j not in sub]
+        nb = nodes[seed]["normal"]
+        # opening plane: an outer face parallel to the floor that walls reach
+        # through a convex edge. A STEPPED recess finds an intermediate ledge
+        # first — keep climbing: extend the subgraph through each such ledge
+        # face (and the walls it feeds via concave edges) until the opening
+        # stops rising, so a two-level pocket reports its full depth and its
+        # shallow tier cannot double-report as a groove.
+        opening: float | None = None
+        while True:
+            merged = False
+            candidates: set[int] = set()
+            for w in sub - {seed}:
+                for o in graph.neighbors(w):
+                    if o in sub or graph.edges[w, o]["conv"] != "convex":
+                        continue
+                    on = nodes[o]["normal"]
+                    if on is not None and abs(d(on, nb)) > _AAG_PARALLEL_DOT:
+                        candidates.add(o)
+            for o in candidates:
+                coord_o = d(nodes[o]["center"], nb)
+                if opening is None or coord_o > opening:
+                    opening = coord_o
+                # try growing through this opening face into a higher tier
+                ext = {o}
+                ext_frontier = [o]
+                while ext_frontier:
+                    k = ext_frontier.pop()
+                    for j in _concave_neighbors(graph, k):
+                        if j not in sub and j not in ext:
+                            ext.add(j)
+                            ext_frontier.append(j)
+                higher = [
+                    c
+                    for w in ext
+                    for c in [_opening_coord(graph, sub | ext, w, nb)]
+                    if c is not None
+                ]
+                if higher and max(higher) > coord_o + 1e-6:
+                    sub |= ext
+                    opening = max(higher)
+                    merged = True
+                    break
+            if not merged:
+                break
+        walls = sub - {seed}
+        depth = (opening if opening is not None else 0.0) - d(nodes[seed]["center"], nb)
+        if depth < _AAG_MIN_DEPTH:
+            continue
+        if not any(is_planar(w) for w in walls):
+            continue  # pure cylindrical/conical wall → blind hole, not a pocket
+        claimed |= sub
+        lo, hi = _subgraph_bbox(graph, sub)
+        ax = _dominant_axis(nb)
+        axi = "xyz".index(ax[-1])
+        dims = sorted(
+            (round(hi[a] - lo[a], 3) for a in range(3) if a != axi), reverse=True
+        )
+        center = [round(c, 3) for c in nodes[seed]["center"]]
+        pockets.append(
+            MeasuredPocket(
+                axis=ax,
+                depth=round(depth, 3),
+                size=dims,
+                center=center,
+                centers=[[center[0], center[1]]],
+            )
+        )
+
+    # groove/notch bottoms: a planar face whose concave neighbours are planar
+    # walls perpendicular to it; all other edges must be open (convex/tangent)
+    cand_g: list[dict[str, Any]] = []
+    cand_n: list[dict[str, Any]] = []
+    seen: dict[frozenset[int], int] = {}
+    for b in sorted(graph.nodes):
+        if b in claimed or not is_planar(b):
+            continue
+        nb = nodes[b]["normal"]
+        bedges = list(graph.edges(b, data=True))
+        if not bedges:
+            continue
+        walls: list[int] = []
+        ambiguous = False
+        for _, j, data in bedges:
+            if data["conv"] != "concave":
+                continue
+            if is_planar(j) and abs(d(nodes[j]["normal"], nb)) < _AAG_PERP_DOT:
+                walls.append(j)
+            else:
+                ambiguous = True  # concave join to non-planar/non-⊥ face
+        if ambiguous or not walls:
+            continue
+        channel: list[float] | None = None
+        pair: tuple[int, int] | None = None
+        kind: str | None = None
+        if len(walls) == 1:
+            kind = "notch"
+        elif len(walls) == 2 and d(nodes[walls[0]]["normal"], nodes[walls[1]]["normal"]) < _AAG_ANTI_DOT:
+            kind = "groove"
+            pair = (walls[0], walls[1])
+        elif len(walls) == 3:
+            antip = [
+                (k, m)
+                for k in range(3)
+                for m in range(k + 1, 3)
+                if d(nodes[walls[k]]["normal"], nodes[walls[m]]["normal"])
+                < _AAG_ANTI_DOT
+            ]
+            if len(antip) == 1:
+                k, m = antip[0]
+                other = ({0, 1, 2} - {k, m}).pop()
+                channel = _unit(_cross_v(nodes[walls[k]]["normal"], nb))
+                if abs(d(nodes[walls[other]]["normal"], channel)) >= 0.5:
+                    kind = "groove"
+                    pair = (walls[k], walls[m])
+        if kind is None:
+            continue
+        if kind == "groove" and channel is None:
+            channel = _unit(_cross_v(nodes[pair[0]]["normal"], nb))
+        wallset = set(walls)
+        end_signs: set[int] = set()
+        ok = True
+        for _, j, data in bedges:
+            if j in wallset:
+                continue
+            if data["conv"] not in ("convex", "tangent"):
+                ok = False  # recess edge that is not a wall — not a clean cut
+                break
+            if kind == "groove":
+                slot = "a1" if data["adir"].get("lo") == b else "a2"
+                a_dir = data["adir"].get(slot)
+                if a_dir is None or abs(d(a_dir, channel)) < _AAG_OPEN_END_DOT:
+                    ok = False  # boundary edge is not along the channel
+                    break
+                end_signs.add(1 if d(a_dir, channel) > 0 else -1)
+        if not ok:
+            continue
+        key = frozenset({b, *wallset})
+        cand = {
+            "bottom": b,
+            "key": key,
+            "walls": walls,
+            "pair": pair,
+            "channel": channel,
+            "end_signs": end_signs,
+        }
+        pool = cand_g if kind == "groove" else cand_n
+        if key in seen:
+            # the same recess recognised from a different face (a U-channel
+            # reads as a groove from its floor AND from its end wall) — keep
+            # the reading whose "bottom" is the largest face (the floor)
+            prev = pool[seen[key]]
+            if nodes[b]["area"] > nodes[prev["bottom"]]["area"]:
+                pool[seen[key]] = cand
+            continue
+        seen[key] = len(pool)
+        pool.append(cand)
+
+    groove_faces: set[int] = set()
+    for c in cand_g:
+        b = c["bottom"]
+        nb = nodes[b]["normal"]
+        w1, w2 = c["pair"]
+        n1 = nodes[w1]["normal"]
+        width = abs(d(_sub(nodes[w1]["center"], nodes[w2]["center"]), n1))
+        lo, hi = _subgraph_bbox(graph, c["key"])
+        cax = max(range(3), key=lambda i: abs(c["channel"][i]))
+        openings = [
+            v
+            for w in c["walls"]
+            if (v := _opening_coord(graph, c["key"], w, nb)) is not None
+        ]
+        if not openings:
+            continue  # walls reach no outer face ∥ the bottom — not an open channel
+        depth = max(openings) - d(nodes[b]["center"], nb)
+        center = [round(v, 3) for v in nodes[b]["center"]]
+        grooves.append(
+            MeasuredGroove(
+                axis=_dominant_axis(c["channel"]),
+                opening=_dominant_axis(nb),
+                width=round(width, 3),
+                length=round(hi[cax] - lo[cax], 3),
+                depth=round(depth, 3),
+                open_ends=len(c["end_signs"]),
+                center=center,
+                centers=[[center[0], center[1]]],
+            )
+        )
+        groove_faces |= set(c["key"])
+
+    covered = claimed | groove_faces
+    for c in cand_n:
+        # a groove wall on its own reads as a single-wall notch — drop
+        # notches overlapping an already-claimed recess
+        if set(c["key"]) & covered:
+            continue
+        b, w = c["bottom"], c["walls"][0]
+        nb, nw = nodes[b]["normal"], nodes[w]["normal"]
+        lo, hi = _subgraph_bbox(graph, c["key"])
+        wax = max(range(3), key=lambda i: abs(nw[i]))
+        eax = max(range(3), key=lambda i: abs(_cross_v(nb, nw)[i]))
+        opening = _opening_coord(graph, c["key"], w, nb)
+        if opening is None:
+            continue  # riser reaches no higher face ∥ the ledge — not a step
+        depth = opening - d(nodes[b]["center"], nb)
+        center = [round(v, 3) for v in nodes[b]["center"]]
+        notches.append(
+            MeasuredNotch(
+                axis=_dominant_axis(nb),
+                width=round(hi[wax] - lo[wax], 3),
+                depth=round(depth, 3),
+                length=round(hi[eax] - lo[eax], 3),
+                center=center,
+                centers=[[center[0], center[1]]],
+            )
+        )
+    return pockets, grooves, notches
+
+
+def _cross_v(a: list[float], b: list[float]) -> list[float]:
+    return [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+
+
+def _extract_structural(shape: Shape, out: MeasuredFeatures) -> None:
+    """Run the AAG pass best-effort: any OCP/networkx failure simply leaves
+    the structural fields empty (the analytic measurements already stand)."""
+    try:
+        pockets, grooves, notches = _detect_structural_features(shape)
+    except Exception:
+        return
+    out.pockets = pockets
+    out.grooves = grooves
+    out.notches = notches
+
+
 def extract_features(  # noqa: C901 — sequential measurement passes
     shape: Shape, stl_path: Path | None = None
 ) -> MeasuredFeatures:
@@ -653,6 +1236,11 @@ def extract_features(  # noqa: C901 — sequential measurement passes
     # l_bracket leg slot measured as 0 elongated voids on a correct part).
     if stl_path is not None and (not holes or not out.slots):
         _mesh_fallback(out, stl_path, mesh)
+
+    # structural features on the face-adjacency graph (pockets/grooves/
+    # notches — the classes a hole/boss scan cannot see). B-Rep only;
+    # skipped entirely on heavily faceted solids
+    _extract_structural(shape, out)
 
     # quiddity feature recognition (optional dep): enriches with pattern and
     # relationship evidence the face scan cannot express. Additive only —
@@ -1029,16 +1617,21 @@ def _check_slot_features(
     spec_features: list[Any], measured: MeasuredFeatures
 ) -> list[FeatureFinding]:
     """Elongated through-voids are measured separately from round holes —
-    a spec 'slot' feature checks the slot count, not hole groups."""
+    a spec 'slot' feature checks the slot count, not hole groups. Open
+    channels measured structurally (grooves) are slot evidence too."""
     findings: list[FeatureFinding] = []
     slot_feats = [f for f in spec_features if "slot" in (f.type or "").lower()]
     wanted = sum(max(1, int(f.count or 1)) for f in slot_feats)
-    if wanted and measured.slots < wanted:
+    measured_slots = measured.slots + len(measured.grooves)
+    if wanted and measured_slots < wanted:
         findings.append(
             FeatureFinding(
                 feature=slot_feats[0].name or "slot",
                 expected=f"{wanted} slot(s)",
-                actual=f"{measured.slots} elongated through-void(s) detected",
+                actual=(
+                    f"{measured_slots} elongated void(s)/channel(s) detected"
+                    f" ({measured.slots} through-void, {len(measured.grooves)} groove)"
+                ),
                 severity="major",
                 fix_hint=(
                     "cut the slot as an elongated through-void, not a round "

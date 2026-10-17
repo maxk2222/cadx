@@ -144,6 +144,8 @@ def _axes_of(entries: list[dict[str, Any]]) -> list[str]:
 
 
 def _kind_label(e: dict[str, Any]) -> str:
+    if e.get("_void_kind"):
+        return str(e["_void_kind"])
     if "elongated" in e:
         return "slot" if e.get("elongated") else "hole"
     if e.get("kind"):
@@ -482,6 +484,18 @@ def _feature_placement(
     hole_pats = [p for p in (measured or {}).get("hole_patterns") or [] if isinstance(p, dict)]
     slot_pats = [p for p in (measured or {}).get("slot_patterns") or [] if isinstance(p, dict)]
     bosses = [b for b in (measured or {}).get("bosses") or [] if isinstance(b, dict)]
+    # structural (AAG) void features — tagged so kind mismatch reporting
+    # can cite "pocket"/"groove"/"notch" instead of a generic label
+    def _tagged(key: str, kind: str) -> list[dict[str, Any]]:
+        return [
+            {**e, "_void_kind": kind}
+            for e in (measured or {}).get(key) or []
+            if isinstance(e, dict)
+        ]
+
+    pockets = _tagged("pockets", "pocket")
+    grooves = _tagged("grooves", "groove")
+    notches = _tagged("notches", "notch")
     stated_env = _stated_envelope(spec)
 
     for i, f in enumerate(spec_feats):
@@ -493,11 +507,21 @@ def _feature_placement(
             _protrusion_check(i, name, ftype, f, stated_env, bosses, bbox, tol_pct, tol_mm, checks)
             continue
         if ftype in _HOLE_KIND_TYPES or "hole" in ftype:
-            cands, other = round_groups + hole_pats, slot_groups + slot_pats
+            cands, other = (
+                round_groups + hole_pats,
+                slot_groups + slot_pats + pockets + grooves + notches,
+            )
         elif "slot" in ftype:
-            cands, other = slot_groups + slot_pats, round_groups + hole_pats
-        elif ftype in ("cutout", "pocket"):
-            cands, other = groups + hole_pats + slot_pats, []
+            cands, other = slot_groups + slot_pats + grooves, round_groups + hole_pats
+        elif "notch" in ftype:
+            cands, other = notches + grooves, groups + hole_pats + slot_pats
+        elif ftype == "pocket":
+            cands, other = (
+                pockets,
+                groups + hole_pats + slot_pats + grooves + notches,
+            )
+        elif ftype == "cutout":
+            cands, other = groups + hole_pats + slot_pats + pockets + grooves + notches, []
         else:
             continue
         _void_kind_axis_check(i, name, ftype, f, cands, other, checks)
