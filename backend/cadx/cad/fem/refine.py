@@ -1155,6 +1155,35 @@ def _apply_cut(out: trimesh.Trimesh, feat: RefineFeature, report: RefineReport) 
     return out
 
 
+def _repaired_input_mesh(
+    opt_mesh: trimesh.Trimesh, report: RefineReport
+) -> trimesh.Trimesh | None:
+    """Watertight/winding repair of the refine input — returns None when the
+    input can't be repaired into a volume (refine skipped).
+
+    Voxel-fill repairs can silently inflate an open mesh (a leaking part is
+    closed by padding the voxel hull) — a materially different "refined"
+    part is worse than a warning, so volume/bbox drift is reported."""
+    out = opt_mesh
+    if out.is_watertight and out.is_winding_consistent:
+        return out
+    from cadx.cad.mesh_ops import _ensure_watertight
+
+    try:
+        repaired = _ensure_watertight(out)
+    except Exception as e:
+        report.warnings.append(f"mesh not watertight — refine skipped: {e}")
+        return None
+    if abs(repaired.volume - out.volume) > 0.05 * abs(out.volume) or np.any(
+        repaired.bounds[1] - repaired.bounds[0] > (out.bounds[1] - out.bounds[0]) + 1.0
+    ):
+        report.warnings.append(
+            "watertight repair changed geometry "
+            f"(vol {out.volume:.0f}->{repaired.volume:.0f} mm3) — verify result"
+        )
+    return repaired
+
+
 def apply_refine(
     opt_mesh: trimesh.Trimesh,
     features: list[RefineFeature],
@@ -1180,15 +1209,9 @@ def apply_refine(
     real helical V-groove (tap-drill bore is always kept as fallback).
     Explicit per-feature `helical=True/False` always wins."""
     report = RefineReport()
-    from cadx.cad.mesh_ops import _ensure_watertight
-
-    out = opt_mesh
-    if not (out.is_watertight and out.is_winding_consistent):
-        try:
-            out = _ensure_watertight(out)
-        except Exception as e:
-            report.warnings.append(f"mesh not watertight — refine skipped: {e}")
-            return out, report
+    out = _repaired_input_mesh(opt_mesh, report)
+    if out is None:
+        return opt_mesh, report
 
     # restore FIRST so re-cuts stay crisp — a restored keep patch may overlap
     # a feature footprint; the cutter must win (exact bore > base surface)
