@@ -5,12 +5,18 @@ call graceful. ``safe_fillet`` retries with a shrinking radius instead of
 crashing the whole run on an empty/stale edge selection.
 """
 
-from build123d import Align, Box, Pos, fillet
+from build123d import Align, Box, Pos, Shape, fillet
 
 # runner_entry injects the manifold3d backend (`cadx.cad.mesh_boolean`) for
 # hybrid runs — kept as an injected callable so cadlib itself never imports
 # trimesh/manifold3d/OCP (the sandbox guard forbids it).
 _BOOLEAN_BACKEND = None
+
+# A boolean that moved less than this fraction of min(body, tool) volume is a
+# silent no-op, not a feature. 1e-4 keeps real small cuts (chamfers, shallow
+# pockets — typically ≥1% of the tool) passing while a grazing touch that
+# shaves ~0.01 mm^3 still raises.
+_NOOP_DELTA_FRACTION = 1e-4
 
 
 def set_boolean_backend(fn) -> None:
@@ -34,6 +40,53 @@ def _backend_boolean(body, tool, kind: str):
     if r is None or not r.solids():
         return None
     return r
+
+
+def _bboxes_disjoint(body: Shape, tool: Shape) -> bool:
+    """True when the bounding boxes share no volume — a cheap reject that runs
+    before any boolean so a tool placed outside the part (the classic
+    "offsets from an end face mistaken for absolute coordinates" bug) fails
+    immediately instead of passing every downstream volume check."""
+    bb = body.bounding_box()
+    tb = tool.bounding_box()
+    return (
+        tb.max.X <= bb.min.X
+        or tb.min.X >= bb.max.X
+        or tb.max.Y <= bb.min.Y
+        or tb.min.Y >= bb.max.Y
+        or tb.max.Z <= bb.min.Z
+        or tb.min.Z >= bb.max.Z
+    )
+
+
+def _noop_delta_eps(body: Shape, tool: Shape) -> float:
+    """Volume change below which a "successful" boolean is a silent no-op.
+
+    ``min`` of the two volumes because a legitimate tool can be mostly
+    outside the body (a long bore cutter through a thin wall) or mostly
+    inside it — the smaller volume bounds the most a real feature can move.
+    """
+    return max(1e-6, min(abs(tool.volume), body.volume) * _NOOP_DELTA_FRACTION)
+
+
+def _require_delta(body: Shape, tool: Shape, result: Shape, kind: str) -> None:
+    """Guard a boolean's success path: a result that passes the floor check
+    but moved less material than :func:`_noop_delta_eps` is a silent no-op
+    (grazing cut, engulfed fuse) — raise so the codegen repair loop gets an
+    actionable error instead of shipping a part missing the feature."""
+    if kind == "cut":
+        delta = body.volume - result.volume
+        why = "removed"
+        hint = "the tool only grazes the body — check the feature's position and depth"
+    else:
+        delta = result.volume - body.volume
+        why = "added"
+        hint = "the tool is engulfed by the body or only grazes it — check its position/size"
+    if delta <= _noop_delta_eps(body, tool):
+        raise ValueError(
+            f"mesh_{kind} {why} no material — {hint}; the part is centred at "
+            "origin, so 'N mm from an end' is not an absolute coordinate"
+        )
 
 
 def bbox_dims(shape) -> list[float]:
@@ -116,58 +169,101 @@ def mesh_intersect(body, tool):
     return collapse_solids(r)
 
 
-def mesh_cut(body, tool):
+def mesh_cut(body: Shape, tool: Shape) -> Shape:
     """``body - tool`` guarded against the mesh-solid failure modes.
 
     OCC booleans on faceted mesh solids can (a) return ``None``, (b) shed
     sub-mm sliver solids, and (c) SHATTER the whole body — a cut observed
     to turn a 19 cm^3 solid into 0.1 cm^3 of debris. Case (a) raises here;
-    (b) is dropped via ``collapse_solids``; for (c) the un-cut body is
-    returned so the missing feature can be retried instead of shipping a
-    fragment: a cut cannot remove more than the tool's volume, so a result
-    far below ``body - tool`` volume is wreckage, not a part.
+    (b) is dropped via ``collapse_solids``; for (c) a result far below
+    ``body - tool`` volume is wreckage, not a part, and the backend rescue
+    lane gets the op before it counts as failed.
+
+    A cut that removes nothing is an error, not a no-op: raises
+    ``ValueError`` when the tool's bounding box does not overlap the body's
+    (misplaced feature — observed: bore cutters at x=75/85 on a part
+    spanning x ∈ [-42.6, +39.4] passed every check and the holes were never
+    cut), when the result's removed volume is negligible, or when OCC
+    shattered and no backend could rescue the op.
 
         body = mesh_cut(body, Pos(x, y, -1) * Cylinder(radius=2.5, height=10))
     """
+    if _bboxes_disjoint(body, tool):
+        raise ValueError(
+            "mesh_cut removed no material — the tool does not overlap the body "
+            "(check feature coordinates vs the part's bounding box; the part is "
+            "centred at origin, so 'N mm from the -X end' is NOT an absolute X)"
+        )
     try:
         r = body - tool
     except Exception:
         r = None
     floor = max(0.0, body.volume - abs(tool.volume)) * 0.3
     if r is not None and r.volume >= floor:
-        return collapse_solids(r)
-    # OCC failed (None/exception) or produced wreckage — the mesh-native
-    # backend cannot shatter and never returns None, so give it the op
-    # before degrading to the un-cut body
+        out = collapse_solids(r)
+        if body.volume - out.volume > _noop_delta_eps(body, tool):
+            return out
+        # OCC "succeeded" but removed nothing — the faceted-solid silent
+        # no-op; the backend lane can still deliver the feature
+    # OCC failed (None/exception), produced wreckage, or no-oped — the
+    # mesh-native backend cannot shatter and never returns None, so give it
+    # the op before declaring the cut undeliverable
     rb = _backend_boolean(body, tool, "cut")
     if rb is not None and rb.volume >= floor:
-        return collapse_solids(rb)
+        out = collapse_solids(rb)
+        _require_delta(body, tool, out, "cut")
+        return out
     if r is None:
         raise ValueError(
             "boolean cut produced no solid — the tool may be disjoint from "
             "the body or the faceted mesh solid rejected the boolean"
         )
-    return body
+    raise ValueError(
+        "mesh_cut removed no material — the tool overlaps the body but no "
+        "boolean could deliver the cut (OCC produced a no-op or wreckage, "
+        "no backend rescued it); refusing to silently keep the un-cut body "
+        "(check the tool's size and position)"
+    )
 
 
-def mesh_fuse(body, tool):
+def mesh_fuse(body: Shape, tool: Shape) -> Shape:
     """``body + tool`` with the same guards as :func:`mesh_cut`.
 
     A fuse cannot shrink the body — a result far below the input volume is
-    boolean wreckage, so the un-fused body is returned instead.
+    boolean wreckage and goes to the backend rescue lane. A fuse that adds
+    nothing is an error, not a no-op: raises ``ValueError`` when the tool
+    is disjoint from the body, fully engulfed by it, or when the boolean
+    shattered and no backend could rescue the op.
     """
+    if _bboxes_disjoint(body, tool):
+        raise ValueError(
+            "mesh_fuse added no material — the tool does not overlap the body "
+            "(check feature coordinates vs the part's bounding box; the part is "
+            "centred at origin, so 'N mm from an end' is NOT an absolute X)"
+        )
     try:
         r = body + tool
     except Exception:
         r = None
     if r is not None and r.volume >= body.volume * 0.3:
-        return collapse_solids(r)
+        out = collapse_solids(r)
+        if out.volume - body.volume > _noop_delta_eps(body, tool):
+            return out
+        # as with cut: an OCC result that added nothing is a silent no-op —
+        # let the backend lane try before raising
     rb = _backend_boolean(body, tool, "fuse")
     if rb is not None and rb.volume >= body.volume * 0.3:
-        return collapse_solids(rb)
+        out = collapse_solids(rb)
+        _require_delta(body, tool, out, "fuse")
+        return out
     if r is None:
         raise ValueError("boolean fuse produced no solid — the tool must overlap the body")
-    return body
+    raise ValueError(
+        "mesh_fuse added no material — the tool overlaps the body but no "
+        "boolean could deliver the fuse (engulfed tool, or OCC produced a "
+        "no-op or wreckage with no backend rescue); refusing to silently "
+        "keep the un-fused body (check the tool's size and position)"
+    )
 
 
 def trim_below(body, z: float = 0.0, margin: float = 400.0):

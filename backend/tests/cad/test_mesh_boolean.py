@@ -140,9 +140,12 @@ def test_cadlib_backend_injection(sphere_solid):
     try:
         out = cadlib.mesh_cut(sphere_solid, Pos(0, 0, -10) * Cylinder(radius=4, height=80))
         assert len(out.solids()) == 1
-        # OCC succeeded — backend may or may not have been consulted
-        out2 = cadlib.mesh_fuse(out, Pos(0, 0, -2) * Box(10, 10, 4))
+        # OCC succeeded — backend may or may not have been consulted. The
+        # fuse box straddles the sphere base so it adds real material (a
+        # tangent tool is a no-op and raises under the new guard).
+        out2 = cadlib.mesh_fuse(out, Pos(0, 0, 0) * Box(10, 10, 4))
         assert len(out2.solids()) == 1
+        assert out2.volume > out.volume
     finally:
         cadlib.ops.set_boolean_backend(None)
 

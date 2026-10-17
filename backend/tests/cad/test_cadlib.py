@@ -306,11 +306,71 @@ def test_largest_solid_picks_biggest():
 
 
 def test_mesh_cut_raises_on_disjoint_tool():
+    """A cutter placed outside the part must fail loudly — the old silent
+    no-op let misplaced bores pass every check (observed: cutters at x=75/85
+    on a part spanning x ∈ [-42.6, +39.4], holes never cut)."""
     body = Pos(0, 0, 0) * Box(10, 10, 10)
     disjoint = Pos(500, 0, 0) * Box(2, 2, 2)
-    r = cadlib.mesh_cut(body, disjoint)
-    # a disjoint cut returns the body unchanged — still a valid result
-    assert r.volume == pytest.approx(1000.0, rel=0.01)
+    with pytest.raises(ValueError, match="does not overlap"):
+        cadlib.mesh_cut(body, disjoint)
+
+
+def test_mesh_cut_raises_on_noop_result():
+    """OCC 'succeeding' but returning the un-cut body is still a no-op —
+    the removed-volume guard must catch what the floor check cannot."""
+
+    class _SelfCut:
+        """Body whose boolean returns the un-cut body — the silent no-op
+        this guard exists to catch."""
+
+        def __init__(self):
+            self._shape = Box(10, 10, 10)
+
+        def __sub__(self, other):
+            return self._shape
+
+        def bounding_box(self):
+            return self._shape.bounding_box()
+
+        @property
+        def volume(self):
+            return self._shape.volume
+
+    with pytest.raises(ValueError, match="no material"):
+        cadlib.mesh_cut(_SelfCut(), Pos(0, 0, 0) * Box(2, 2, 2))
+
+
+def test_mesh_cut_small_real_cut_passes():
+    """The no-op guard must not eat legitimate small features — a shallow
+    pocket removes far more than the delta epsilon."""
+    body = Pos(0, 0, 0) * Box(10, 10, 10)
+    pocket = Pos(0, 0, 4) * Box(2, 2, 2)  # removes 2x2x1 = 4 mm^3
+    out = cadlib.mesh_cut(body, pocket)
+    assert out.volume == pytest.approx(1000.0 - 4.0, rel=0.01)
+
+
+def test_mesh_fuse_raises_on_disjoint_tool():
+    body = Pos(0, 0, 0) * Box(10, 10, 10)
+    disjoint = Pos(500, 0, 0) * Box(2, 2, 2)
+    with pytest.raises(ValueError, match="does not overlap"):
+        cadlib.mesh_fuse(body, disjoint)
+
+
+def test_mesh_fuse_raises_on_engulfed_tool():
+    """A tool fully inside the body adds nothing — collapse_solids used to
+    quietly return the un-fused body."""
+    body = Pos(0, 0, 0) * Box(10, 10, 10)
+    engulfed = Pos(0, 0, 0) * Box(2, 2, 2)
+    with pytest.raises(ValueError, match="no material"):
+        cadlib.mesh_fuse(body, engulfed)
+
+
+def test_mesh_fuse_adds_material():
+    body = Pos(0, 0, 0) * Box(10, 10, 10)
+    boss = Pos(6, 0, 0) * Box(6, 6, 6)  # overlaps the +X face by 2 mm
+    out = cadlib.mesh_fuse(body, boss)
+    assert len(out.solids()) == 1
+    assert out.volume == pytest.approx(1000.0 + 6 * 6 * 4, rel=0.02)
 
 
 def test_mesh_cut_drops_slivers():
