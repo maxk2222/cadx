@@ -95,6 +95,21 @@ def test_find_holes_none():
     assert inspect_tools.find_holes(Pos(0, 0, 5) * Box(10, 10, 10)) == []
 
 
+def test_find_holes_stable_ids():
+    """M5: hole entries carry deterministic h1… ids so issue texts can cite
+    'hole h1 on +x'. Two bores sort by (axis, center)."""
+    part = Pos(0, 0, 5) * Box(40, 30, 10)
+    part -= Pos(10, 0, -1) * Cylinder(
+        radius=2.0, height=14, align=(Align.CENTER, Align.CENTER, Align.MIN)
+    )
+    part -= Pos(-10, 0, -1) * Cylinder(
+        radius=3.0, height=14, align=(Align.CENTER, Align.CENTER, Align.MIN)
+    )
+    holes = inspect_tools.find_holes(part)
+    assert [h["id"] for h in holes] == ["h1", "h2"]
+    assert holes[0]["center"][0] == pytest.approx(-10.0, abs=0.2)
+
+
 def test_find_bosses():
     part = Pos(0, 0, 5) * Box(40, 30, 10)
     part += Pos(10, 0, 10) * Cylinder(

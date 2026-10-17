@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 
 class MeasuredHoleGroup(BaseModel):
+    id: str = ""  # stable selector id (h1… round bore, s1… slot) — assign_feature_ids
     diameter: float  # mm
     count: int
     axis: str = ""  # dominant axis direction: +x|-x|+y|-y|+z|-z
@@ -32,6 +33,7 @@ class MeasuredHoleGroup(BaseModel):
 class MeasuredBoss(BaseModel):
     """Exterior (protruding) full-wrap cylinder — a boss/tube, not a fillet."""
 
+    id: str = ""  # stable selector id (b1…) — assign_feature_ids
     axis: str = ""  # dominant axis direction: +x|-x|+y|-y|+z|-z
     diameter: float = 0.0
     height: float = 0.0
@@ -42,6 +44,7 @@ class MeasuredPattern(BaseModel):
     grid, slot array/grid (quiddity). Plain records only; members carry the
     per-member centres when the recogniser reports them."""
 
+    id: str = ""  # stable selector id (p1…) — assign_feature_ids
     kind: str = ""  # bolt_circle|linear_array|rect_grid|rect_set|slot_array|slot_grid|…
     count: int = 0
     axis: str = ""  # member bore axis (holes) or array direction (slots)
@@ -60,6 +63,7 @@ class MeasuredPattern(BaseModel):
 class MeasuredBoredBoss(BaseModel):
     """A protruding boss with a coaxial bore (standoff with a screw hole)."""
 
+    id: str = ""  # stable selector id (bb1…) — assign_feature_ids
     axis: str = ""
     location: list[float] = Field(default_factory=list)
     boss_diameter: float = 0.0
@@ -71,6 +75,7 @@ class MeasuredBoredBoss(BaseModel):
 class MeasuredChamfer(BaseModel):
     """A recognised chamfer edge (quiddity) — richer than a 45°-plane count."""
 
+    id: str = ""  # stable selector id (c1…) — assign_feature_ids
     axis: str = ""  # edge direction letter: x|y|z
     leg1: float = 0.0
     leg2: float = 0.0
@@ -81,6 +86,7 @@ class MeasuredChamfer(BaseModel):
 class MeasuredFillet(BaseModel):
     """A recognised fillet edge (quiddity): radius + convex/concave side."""
 
+    id: str = ""  # stable selector id (f1…) — assign_feature_ids
     axis: str = ""  # edge direction letter: x|y|z
     radius: float = 0.0
     at: list[float] = Field(default_factory=list)
@@ -113,6 +119,58 @@ class FeatureFinding(BaseModel):
     actual: str = ""
     severity: Literal["major", "minor"] = "minor"
     fix_hint: str = ""
+
+
+def _pt(v: Any) -> tuple[float, ...]:
+    """JSON point/list -> a comparable tuple for deterministic id sorting."""
+    return tuple(round(float(c), 3) for c in (v or []))
+
+
+def assign_feature_ids(measured: MeasuredFeatures) -> MeasuredFeatures:
+    """Stamp deterministic selector ids on every measured feature entry.
+
+    Ids are assigned per kind bucket — ``h`` round hole groups, ``s``
+    elongated slot voids, ``p`` recognised patterns, ``b`` bosses,
+    ``bb`` bored bosses, ``c`` chamfers, ``f`` fillets — after sorting on
+    (kind, axis, center, size), so the same geometry always yields the same
+    ids across runs. verify_spec evidence, inspect-tool output and issue
+    texts can cite them ("hole h1 on +x") instead of vague prose. Additive
+    only: entries simply gain an ``id`` field.
+    """
+    holes = sorted(
+        (g for g in measured.hole_groups if not g.elongated),
+        key=lambda g: (g.axis, sorted(_pt(c) for c in g.centers), g.diameter),
+    )
+    for n, g in enumerate(holes, 1):
+        g.id = f"h{n}"
+    slots = sorted(
+        (g for g in measured.hole_groups if g.elongated),
+        key=lambda g: (g.axis, sorted(_pt(c) for c in g.centers), g.diameter),
+    )
+    for n, g in enumerate(slots, 1):
+        g.id = f"s{n}"
+    pats = sorted(
+        [*measured.hole_patterns, *measured.slot_patterns],
+        key=lambda p: (p.kind, p.axis, _pt(p.center), p.member_diameter, p.count),
+    )
+    for n, p in enumerate(pats, 1):
+        p.id = f"p{n}"
+    bosses = sorted(measured.bosses, key=lambda b: (b.axis, b.diameter, b.height))
+    for n, b in enumerate(bosses, 1):
+        b.id = f"b{n}"
+    bored = sorted(
+        measured.bored_bosses,
+        key=lambda b: (b.axis, _pt(b.location), b.boss_diameter, b.bore_diameter),
+    )
+    for n, b in enumerate(bored, 1):
+        b.id = f"bb{n}"
+    chams = sorted(measured.chamfers, key=lambda c: (c.axis, _pt(c.at), c.leg1, c.leg2, c.angle))
+    for n, c in enumerate(chams, 1):
+        c.id = f"c{n}"
+    fils = sorted(measured.fillets, key=lambda f: (f.axis, _pt(f.at), f.radius))
+    for n, f_ in enumerate(fils, 1):
+        f_.id = f"f{n}"
+    return measured
 
 
 _AXIS_NAMES = ("+x", "-x", "+y", "-y", "+z", "-z")
@@ -605,6 +663,8 @@ def extract_features(  # noqa: C901 — sequential measurement passes
         _merge_recognition(out, build_recognition_evidence(shape))
     except Exception:
         pass
+    # stable selector ids — must run last so every detector's entries get one
+    assign_feature_ids(out)
     return out
 
 
@@ -1118,11 +1178,13 @@ def mesh_features_to_measured(mesh_feats: dict[str, Any]) -> MeasuredFeatures:
                 centers=[[x, y]],
             )
         )
-    return MeasuredFeatures(
-        hole_groups=groups,
-        total_holes=len(groups),
-        countersinks=n_dimples,  # top-down dips — the only mesh csk signal
-        approximate=True,
+    return assign_feature_ids(
+        MeasuredFeatures(
+            hole_groups=groups,
+            total_holes=len(groups),
+            countersinks=n_dimples,  # top-down dips — the only mesh csk signal
+            approximate=True,
+        )
     )
 
 

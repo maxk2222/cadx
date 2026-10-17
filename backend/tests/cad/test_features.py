@@ -23,6 +23,7 @@ from build123d import (
 from cadx.cad.features import (
     MeasuredFeatures,
     MeasuredHoleGroup,
+    assign_feature_ids,
     compare_anchor_positions,
     compare_features,
     extract_features,
@@ -299,6 +300,36 @@ def test_extract_rim_chamfer_and_torus_fillet():
     assert m.chamfer_faces >= 1
     assert any(r == pytest.approx(2.0, abs=0.05) for r in m.rounds)
     assert m.total_holes == 1
+
+
+def test_assign_feature_ids_deterministic_and_stable():
+    """M5: identical geometry yields identical ids regardless of input order —
+    sorting is on (kind, axis, center)."""
+    kwargs = [
+        {"diameter": 5.0, "count": 1, "axis": "+z", "centers": [[10.0, 0.0]]},
+        {"diameter": 5.0, "count": 1, "axis": "+z", "centers": [[-10.0, 0.0]]},
+        {"diameter": 8.0, "count": 1, "axis": "+x", "centers": [[0.0, 4.0]], "elongated": True},
+    ]
+    m1 = assign_feature_ids(MeasuredFeatures(hole_groups=[MeasuredHoleGroup(**k) for k in kwargs]))
+    m2 = assign_feature_ids(
+        MeasuredFeatures(hole_groups=[MeasuredHoleGroup(**k) for k in reversed(kwargs)])
+    )
+    ids1 = {tuple(g.centers[0]) if g.centers else (): g.id for g in m1.hole_groups}
+    ids2 = {tuple(g.centers[0]) if g.centers else (): g.id for g in m2.hole_groups}
+    assert ids1 == ids2
+    assert {g.id for g in m1.hole_groups} == {"h1", "h2", "s1"}
+    # h1 sorts before h2 by centre
+    assert m1.hole_groups[[g.id for g in m1.hole_groups].index("h1")].centers == [[-10.0, 0.0]]
+    slot = next(g for g in m1.hole_groups if g.elongated)
+    assert slot.id == "s1"
+
+
+def test_extracted_features_carry_ids():
+    m = extract_features(_plate())
+    assert m.hole_groups and all(g.id.startswith("h") for g in m.hole_groups)
+    assert [g.id for g in m.hole_groups] == [f"h{i}" for i in range(1, len(m.hole_groups) + 1)]
+    # ids survive the ExecResult dict round-trip
+    assert m.model_dump()["hole_groups"][0]["id"] == "h1"
 
 
 def test_compare_anchor_positions_flags_wrong_axis():

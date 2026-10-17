@@ -16,6 +16,9 @@ Tiers:
 - features:   spec features vs measured geometry. The ``compare_features``
   findings are passed in via ``feature_findings`` (never recomputed here);
   hole-pattern evidence is reported when recognition actually ran.
+  ``_feature_placement`` adds per-feature checks — void axis/kind, rib/boss
+  inside the stated envelope, parseable position hints — the l_bracket trap
+  class a legal-ish overall envelope hides.
 - robustness: DfM warnings + declared min-wall — hints tier. UNVERIFIED when
   the evidence is absent; never FAIL just because a detector was skipped
   (a faceted-solid mesh fallback already owns its own tier).
@@ -44,6 +47,51 @@ _PATTERN_RE = re.compile(
 
 _MAX_EVIDENCE = 8
 
+# spec feature types whose `axis` is the through-direction of a void —
+# mirrors features._HOLE_TYPES (kept local, dependency-light)
+_HOLE_KIND_TYPES = {
+    "hole",
+    "insert",
+    "thread",
+    "bearing_seat",
+    "through_hole",
+    "blind_hole",
+    "countersink_hole",
+    "counterbore_hole",
+    "through_hole_with_countersink",
+    "clearance_hole",
+    "tapped_hole",
+}
+# additive protrusion features that must stay inside the stated envelope —
+# ribs standing proud of the spec width is the l_bracket trap
+_PROTRUSION_TYPES = {"rib", "gusset", "boss", "tube", "pin", "post", "stud", "standoff"}
+
+# axis declarations in free text: "x-axis", "along z" — deliberately narrow so
+# "x = 12" style offsets never read as an axis declaration
+_AXIS_TEXT_RE = re.compile(
+    r"\b([xyz])[\s-]*axis\b|\balong\s+(?:the\s+)?([xyz])(?:[\s-]*axis)?\b", re.I
+)
+# machine-readable position hints: "x=12" offsets and "+y"/"front" face words
+_POS_COORD_RE = re.compile(r"\b([xyz])\s*=\s*(-?\d+(?:\.\d+)?)", re.I)
+_POS_FACE_TOKEN_RE = re.compile(r"(?<![\w])([+-][xyz])(?![\w])")
+_POS_FACE_WORDS = {
+    "top": "+z",
+    "upper": "+z",
+    "deck": "+z",
+    "bottom": "-z",
+    "lower": "-z",
+    "underside": "-z",
+    "front": "+y",
+    "back": "-y",
+    "rear": "-y",
+    "left": "-x",
+    "right": "+x",
+}
+# "y faces"/"+x side" — the envelope face a protrusion feature sits on
+_HINT_AXIS_RE = re.compile(r"(?<![\w])[+-]?([xyz])[\s-]*(?:faces?|sides?|seite)\b", re.I)
+_POS_TOL_MM = 2.0  # "x=12" offsets verified within ±2 mm
+_POS_SIDE_EPS = 0.5  # a centre this close to the mid-plane is ambiguous
+
 
 def _check(name: str, tier: str, status: Status, evidence: dict[str, Any]) -> dict[str, Any]:
     return {"name": name, "tier": tier, "status": status, "evidence": evidence}
@@ -66,6 +114,394 @@ def _wants_pattern(f: Any) -> bool:
     get = f.get if isinstance(f, dict) else lambda k, d="": getattr(f, k, d)
     text = f"{get('type', '')} {get('name', '')} {get('description', '')}"
     return str(get("type", "")).lower() == "pattern" or bool(_PATTERN_RE.search(text))
+
+
+def _axis_letter(axis: Any) -> str:
+    """'x'|'y'|'z' for an axis value ('+z', '-X', 'z' all -> letters)."""
+    a = str(axis or "").strip().lower().lstrip("+-")
+    return a if a in ("x", "y", "z") else ""
+
+
+def _spec_axis(f: dict[str, Any]) -> str:
+    """Declared through-axis letter of a spec feature — structured ``axis``
+    field first, then a narrow axis-phrase regex on position/description."""
+    ax = _axis_letter(f.get("axis"))
+    if ax:
+        return ax
+    text = f"{f.get('position') or ''} {f.get('description') or ''}"
+    m = _AXIS_TEXT_RE.search(text)
+    if m:
+        return next(g for g in m.groups() if g).lower()
+    return ""
+
+
+def _measured_ids(entries: list[dict[str, Any]]) -> list[str]:
+    return [str(e["id"]) for e in entries if e.get("id")]
+
+
+def _axes_of(entries: list[dict[str, Any]]) -> list[str]:
+    return sorted(a for a in {_axis_letter(e.get("axis")) for e in entries} if a)
+
+
+def _kind_label(e: dict[str, Any]) -> str:
+    if "elongated" in e:
+        return "slot" if e.get("elongated") else "hole"
+    if e.get("kind"):
+        return f"pattern:{e['kind']}"
+    return "feature"
+
+
+def _stated_envelope(spec: dict[str, Any] | None) -> dict[str, float]:
+    """Stated spec dims only — inferred/assumed dims are declared intent, not
+    a hard envelope a protruding feature can violate."""
+    out: dict[str, float] = {}
+    for ax, key in (("x", "length_x"), ("y", "width_y"), ("z", "height_z")):
+        dim = (spec or {}).get(key)
+        if dim is None or _dim_source(dim) != "stated":
+            continue
+        v = _dim_value(dim)
+        if v is not None:
+            out[ax] = v
+    return out
+
+
+def _position_expectations(text: str) -> tuple[dict[str, float], list[str]]:
+    """Parse machine-readable position hints out of free text:
+    ``x=12``-style coordinate offsets and ``+y``/``front``-style face hints.
+    Both signs of one axis ('front and back') cancel — not a side constraint."""
+    low = text.lower()
+    coords = {m.group(1).lower(): float(m.group(2)) for m in _POS_COORD_RE.finditer(low)}
+    faces = {m.group(1) for m in _POS_FACE_TOKEN_RE.finditer(low)}
+    for word, ax in _POS_FACE_WORDS.items():
+        if re.search(rf"\b{re.escape(word)}\b", low):
+            faces.add(ax)
+    for letter in "xyz":
+        if f"+{letter}" in faces and f"-{letter}" in faces:
+            faces.discard(f"+{letter}")
+            faces.discard(f"-{letter}")
+    return coords, sorted(faces)
+
+
+def _feature_hint_axes(f: dict[str, Any]) -> set[str]:
+    """Axis letters the feature can protrude along — its ``axis`` field plus
+    face hints ('outer y sides', '+x face') in position/description."""
+    out: set[str] = set()
+    ax = _axis_letter(f.get("axis"))
+    if ax:
+        out.add(ax)
+    text = f"{f.get('position') or ''} {f.get('description') or ''}"
+    out |= {m.group(1) for m in _HINT_AXIS_RE.finditer(text.lower())}
+    _c, faces = _position_expectations(text)
+    out |= {fa[1] for fa in faces}
+    return out
+
+
+def _void_kind_axis_check(
+    i: int,
+    name: str,
+    ftype: str,
+    f: dict[str, Any],
+    cands: list[dict[str, Any]],
+    other: list[dict[str, Any]],
+    checks: list[dict[str, Any]],
+) -> None:
+    """Axis + kind check for one void spec feature (hole/slot/cutout/pocket).
+
+    FAIL when same-kind voids exist but none runs along the stated axis, and
+    when only the WRONG kind was measured (a round hole never satisfies a
+    slot spec). UNVERIFIED when no void evidence exists at all."""
+    want_ax = _spec_axis(f)
+    check_name = f"feat_{i}_axis" if want_ax else f"feat_{i}_kind"
+    base: dict[str, Any] = {"feature": name, "feature_type": ftype}
+    if want_ax:
+        base["expected_axis"] = want_ax
+    all_voids = cands + other
+    if not all_voids:
+        checks.append(
+            _check(
+                check_name,
+                TIER_FEATURES,
+                "UNVERIFIED",
+                {
+                    **base,
+                    "reason": "no measured void features — the feature is absent or unmeasurable",
+                },
+            )
+        )
+        return
+    if not cands:
+        kinds = sorted({_kind_label(e) for e in all_voids})
+        checks.append(
+            _check(
+                check_name,
+                TIER_FEATURES,
+                "FAIL",
+                {
+                    **base,
+                    "reason": (
+                        f"kind mismatch — spec '{ftype}' cannot be satisfied by "
+                        f"the measured {', '.join(kinds)} void(s)"
+                    ),
+                    "measured_kinds": kinds,
+                    "measured_axes": _axes_of(all_voids),
+                    "measured_ids": _measured_ids(all_voids),
+                },
+            )
+        )
+        return
+    if not want_ax:
+        checks.append(
+            _check(
+                check_name,
+                TIER_FEATURES,
+                "PASS",
+                {
+                    **base,
+                    "measured_axes": _axes_of(cands),
+                    "measured_ids": _measured_ids(cands),
+                },
+            )
+        )
+        return
+    matching = [g for g in cands if _axis_letter(g.get("axis")) == want_ax]
+    ev = {
+        **base,
+        "measured_axes": _axes_of(cands),
+        "measured_ids": _measured_ids(matching or cands),
+    }
+    if other:
+        ev["other_kind_axes"] = _axes_of(other)
+    if matching:
+        checks.append(_check(check_name, TIER_FEATURES, "PASS", ev))
+    else:
+        ev["reason"] = f"no measured {ftype} runs along the {want_ax} axis"
+        checks.append(_check(check_name, TIER_FEATURES, "FAIL", ev))
+
+
+def _void_position_check(
+    i: int,
+    name: str,
+    f: dict[str, Any],
+    cands: list[dict[str, Any]],
+    checks: list[dict[str, Any]],
+) -> None:
+    """Verify the measured centre honours machine-readable position hints
+    ('x=12', '+y', 'front') — conservative: only unambiguously parseable
+    hints are checked, everything else is UNVERIFIED. Measured void centres
+    carry plan-view [x, y] only, so z constraints stay unverifiable."""
+    pos = str(f.get("position") or "").strip()
+    if not pos:
+        return
+    check_name = f"feat_{i}_position"
+    coords, faces = _position_expectations(pos)
+    base: dict[str, Any] = {"feature": name, "position": pos[:160]}
+    if not coords and not faces:
+        checks.append(
+            _check(
+                check_name,
+                TIER_FEATURES,
+                "UNVERIFIED",
+                {**base, "reason": "position is not machine-parseable"},
+            )
+        )
+        return
+    expected = {"coords": coords, "faces": faces}
+    centers = [
+        c
+        for g in cands
+        for c in (g.get("centers") or [])
+        if isinstance(c, list | tuple) and len(c) >= 2
+    ]
+    if not centers:
+        checks.append(
+            _check(
+                check_name,
+                TIER_FEATURES,
+                "UNVERIFIED",
+                {**base, "expected": expected, "reason": "no measured centres for the feature"},
+            )
+        )
+        return
+    violations: list[dict[str, Any]] = []
+    verified = 0
+    for ax, want in sorted(coords.items()):
+        if ax == "z":
+            continue  # centres carry no z — left UNVERIFIED below
+        idx = 0 if ax == "x" else 1
+        nearest = min(centers, key=lambda c: abs(float(c[idx]) - want))
+        delta = abs(float(nearest[idx]) - want)
+        if delta <= _POS_TOL_MM:
+            verified += 1
+        else:
+            violations.append(
+                {
+                    "axis": ax,
+                    "expected_mm": want,
+                    "measured_mm": round(float(nearest[idx]), 3),
+                    "delta_mm": round(delta, 3),
+                }
+            )
+    for face in faces:
+        if face[1] == "z":
+            continue  # not verifiable from [x, y] centres
+        idx = 0 if face[1] == "x" else 1
+        vals = [float(c[idx]) for c in centers]
+        best = max(vals) if face[0] == "+" else min(vals)
+        if (face[0] == "+" and best > _POS_SIDE_EPS) or (face[0] == "-" and best < -_POS_SIDE_EPS):
+            verified += 1
+        elif abs(best) <= _POS_SIDE_EPS:
+            continue  # mid-plane centre — ambiguous, not wrong
+        else:
+            violations.append({"face": face, "measured_mm": round(best, 3)})
+    ev = {
+        **base,
+        "expected": expected,
+        "measured_centers": [[round(float(v), 3) for v in c] for c in centers[:6]],
+        "measured_ids": _measured_ids(cands),
+    }
+    if violations:
+        ev["violations"] = violations[:_MAX_EVIDENCE]
+        checks.append(_check(check_name, TIER_FEATURES, "FAIL", ev))
+    elif verified and len(coords) + len(faces) == verified:
+        checks.append(_check(check_name, TIER_FEATURES, "PASS", ev))
+    else:
+        ev["reason"] = (
+            "some position hints are not verifiable from measured centres"
+            if verified
+            else "position hints could not be verified from measured centres"
+        )
+        checks.append(_check(check_name, TIER_FEATURES, "UNVERIFIED", ev))
+
+
+def _protrusion_check(
+    i: int,
+    name: str,
+    ftype: str,
+    f: dict[str, Any],
+    stated_env: dict[str, float],
+    bosses: list[dict[str, Any]],
+    bbox: Any,
+    tol_pct: float,
+    tol_mm: float,
+    checks: list[dict[str, Any]],
+) -> None:
+    """Rib/boss envelope check: an additive feature's outer extent must lie
+    inside the *stated* spec dims — ribs proud of the 40 mm width are the
+    l_bracket trap. UNVERIFIED when no measured extent can locate it."""
+    check_name = f"feat_{i}_envelope"
+    base: dict[str, Any] = {"feature": name, "feature_type": ftype}
+    if not stated_env:
+        checks.append(
+            _check(
+                check_name,
+                TIER_FEATURES,
+                "UNVERIFIED",
+                {**base, "reason": "spec carries no stated envelope dims to check against"},
+            )
+        )
+        return
+    hint_axes = _feature_hint_axes(f)
+    env_axes = [a for a in "xyz" if a in stated_env]
+    check_axes = [a for a in env_axes if a in hint_axes] or env_axes
+    bbox3 = bbox if isinstance(bbox, list | tuple) and len(bbox) == 3 else None
+    measured_extent: dict[str, float] = {}
+    protrusions: list[dict[str, Any]] = []
+    if bbox3 is not None:
+        for a in check_axes:
+            got = float(bbox3["xyz".index(a)])
+            measured_extent[a] = round(got, 3)
+            tol = max(stated_env[a] * tol_pct / 100.0, tol_mm)
+            if got - stated_env[a] > tol:
+                protrusions.append(
+                    {
+                        "axis": a,
+                        "envelope_mm": stated_env[a],
+                        "measured_mm": round(got, 3),
+                        "over_mm": round(got - stated_env[a], 3),
+                    }
+                )
+    # boss-type features carry per-entry extents — a boss larger than the
+    # stated dim it must fit inside is direct protrusion evidence
+    boss_ids: list[str] = []
+    if ftype in _PROTRUSION_TYPES - {"rib", "gusset"}:
+        for b in bosses:
+            bid = str(b.get("id") or "")
+            if bid:
+                boss_ids.append(bid)
+            b_ax = _axis_letter(b.get("axis"))
+            dia = b.get("diameter")
+            hgt = b.get("height")
+            for pax, want in stated_env.items():
+                tol = max(want * tol_pct / 100.0, tol_mm)
+                extent, val = ("boss_height", hgt) if pax == b_ax else ("boss_diameter", dia)
+                if isinstance(val, int | float) and not isinstance(val, bool) and val - want > tol:
+                    protrusions.append(
+                        {
+                            "axis": pax,
+                            "envelope_mm": want,
+                            "measured_mm": round(float(val), 3),
+                            "extent": extent,
+                            "boss_id": bid or None,
+                        }
+                    )
+    ev: dict[str, Any] = {
+        **base,
+        "envelope_mm": {a: stated_env[a] for a in check_axes},
+        "measured_extent_mm": measured_extent,
+    }
+    if boss_ids:
+        ev["measured_ids"] = boss_ids
+    located = bbox3 is not None or bool(boss_ids)
+    if protrusions:
+        ev["protrusions"] = protrusions[:_MAX_EVIDENCE]
+        checks.append(_check(check_name, TIER_FEATURES, "FAIL", ev))
+    elif located:
+        checks.append(_check(check_name, TIER_FEATURES, "PASS", ev))
+    else:
+        ev["reason"] = "no measured extent locates the feature"
+        checks.append(_check(check_name, TIER_FEATURES, "UNVERIFIED", ev))
+
+
+def _feature_placement(
+    spec: dict[str, Any],
+    measured: dict[str, Any],
+    bbox: Any,
+    tol_pct: float,
+    tol_mm: float,
+    checks: list[dict[str, Any]],
+) -> None:
+    """Per-feature placement checks — the l_bracket trap class: a part can
+    satisfy the overall envelope while a slot is bored through the wrong
+    axis or a rib stands proud of the stated width. Each spec feature gets
+    its own check(s); evidence always carries expected AND measured values
+    (measured entries cited by their stable ``id``) for the improve step."""
+    spec_feats = (spec or {}).get("features") or []
+    groups = [g for g in (measured or {}).get("hole_groups") or [] if isinstance(g, dict)]
+    round_groups = [g for g in groups if not g.get("elongated")]
+    slot_groups = [g for g in groups if g.get("elongated")]
+    hole_pats = [p for p in (measured or {}).get("hole_patterns") or [] if isinstance(p, dict)]
+    slot_pats = [p for p in (measured or {}).get("slot_patterns") or [] if isinstance(p, dict)]
+    bosses = [b for b in (measured or {}).get("bosses") or [] if isinstance(b, dict)]
+    stated_env = _stated_envelope(spec)
+
+    for i, f in enumerate(spec_feats):
+        if not isinstance(f, dict):
+            continue
+        ftype = str(f.get("type") or "").lower()
+        name = str(f.get("name") or f.get("type") or f"feature_{i}")
+        if ftype in _PROTRUSION_TYPES:
+            _protrusion_check(i, name, ftype, f, stated_env, bosses, bbox, tol_pct, tol_mm, checks)
+            continue
+        if ftype in _HOLE_KIND_TYPES or "hole" in ftype:
+            cands, other = round_groups + hole_pats, slot_groups + slot_pats
+        elif "slot" in ftype:
+            cands, other = slot_groups + slot_pats, round_groups + hole_pats
+        elif ftype in ("cutout", "pocket"):
+            cands, other = groups + hole_pats + slot_pats, []
+        else:
+            continue
+        _void_kind_axis_check(i, name, ftype, f, cands, other, checks)
+        _void_position_check(i, name, f, cands, checks)
 
 
 def _structural(res: dict[str, Any], checks: list[dict[str, Any]]) -> None:
@@ -338,7 +774,7 @@ def _features(
                     "patterns": [
                         {
                             k: p.get(k)
-                            for k in ("kind", "count", "diameter", "pitch")
+                            for k in ("id", "kind", "count", "diameter", "pitch")
                             if p.get(k) not in (None, "", 0, 0.0)
                         }
                         for p in patterns[:6]
@@ -445,6 +881,15 @@ def verify_spec(
     _structural(res, checks)
     _envelope(spec, res, dim_tolerance_pct, dim_tolerance_mm, checks)
     _features(spec, measured, feature_findings, checks)
+    if (spec or {}).get("features"):
+        _feature_placement(
+            spec,
+            measured,
+            (res.get("analysis") or {}).get("bbox_size"),
+            dim_tolerance_pct,
+            dim_tolerance_mm,
+            checks,
+        )
     _robustness(spec, res, checks)
 
     n_fail = sum(1 for c in checks if c["status"] == "FAIL")

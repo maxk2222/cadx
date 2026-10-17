@@ -72,6 +72,24 @@ def _err(e: Exception) -> dict[str, Any]:
     return {"error": f"{type(e).__name__}: {e}"}
 
 
+def _stamp_ids(
+    items: list[dict[str, Any]], prefix: str, key: str = "center"
+) -> list[dict[str, Any]]:
+    """Sort ``items`` deterministically on (axis, centre) and stamp stable
+    selector ids (``h1``, ``b1``, ``cs1``…) — the same geometry always yields
+    the same ids across runs so verify_spec evidence and repair feedback can
+    cite "hole h1 on +x" instead of vague prose. Additive ``id`` key only."""
+    items.sort(
+        key=lambda d: (
+            str(d.get("axis") or ""),
+            tuple(round(float(v), 3) for v in (d.get(key) or [])),
+        )
+    )
+    for n, d in enumerate(items, 1):
+        d["id"] = f"{prefix}{n}"
+    return items
+
+
 def _as_shape(obj: Any) -> Shape | None:
     """Best-effort unwrap: generated code may pass a Part/Compound/Solid, a
     BuildPart/BuildSketch builder (``.part``/``.sketch``/``.obj``) or a bare
@@ -354,7 +372,7 @@ def find_holes(shape: Any) -> list[dict[str, Any]] | dict[str, Any]:
                     "depth": _r3(vspan),
                 }
             )
-        return out
+        return _stamp_ids(out, "h")
     except Exception as e:
         return _err(e)
 
@@ -392,7 +410,7 @@ def find_bosses(shape: Any) -> list[dict[str, Any]] | dict[str, Any]:
                     "height": _r3(vspan),
                 }
             )
-        return out
+        return _stamp_ids(out, "b")
     except Exception as e:
         return _err(e)
 
@@ -440,7 +458,7 @@ def find_countersinks(shape: Any) -> list[dict[str, Any]] | dict[str, Any]:
                     "angle_deg": _r3(abs(math.degrees(semi))),
                 }
             )
-        return out
+        return _stamp_ids(out, "cs", key="location")
     except Exception as e:
         return _err(e)
 

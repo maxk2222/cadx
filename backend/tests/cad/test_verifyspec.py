@@ -264,3 +264,234 @@ def test_mesh_source_checks_are_unverified():
     assert checks["step_roundtrip"]["status"] == "UNVERIFIED"
     assert checks["single_valid_solid"]["status"] == "PASS"
     assert report["status"] == "PASS"
+
+
+# ---------------------------------------------------------------------------
+# M4 — per-feature placement checks (the l_bracket trap class)
+# ---------------------------------------------------------------------------
+
+
+def _feat(**over):
+    f = {
+        "name": "feat",
+        "type": "hole",
+        "description": "",
+        "dims": {},
+        "position": "",
+        "axis": "",
+        "count": 1,
+        "source": "stated",
+    }
+    f.update(over)
+    return f
+
+
+def _hole_group(**over):
+    g = {
+        "id": "",
+        "diameter": 5.0,
+        "count": 1,
+        "axis": "+z",
+        "depth_class": "through",
+        "centers": [],
+        "blocked": 0,
+        "elongated": False,
+    }
+    g.update(over)
+    return g
+
+
+def test_slot_on_wrong_axis_fails():
+    """l_bracket trap: spec wants the leg slot through z, the part has the
+    slot bored through x — envelope stays legal, placement must FAIL."""
+    spec = _spec(features=[_feat(name="leg slot", type="slot", axis="z")])
+    res = _res(
+        features={
+            "hole_groups": [_hole_group(id="s1", diameter=12.4, axis="+x", elongated=True)],
+            "slots": 1,
+        }
+    )
+    report = verify_spec(spec, res, feature_findings=[])
+    c = _by_name(report)["feat_0_axis"]
+    assert c["status"] == "FAIL"
+    assert c["evidence"]["expected_axis"] == "z"
+    assert c["evidence"]["measured_axes"] == ["x"]
+    assert c["evidence"]["measured_ids"] == ["s1"]
+    assert report["status"] == "FAIL"
+
+
+def test_round_hole_on_wrong_axis_fails():
+    spec = _spec(features=[_feat(name="mount", type="hole", axis="z")])
+    res = _res(features={"hole_groups": [_hole_group(id="h1", axis="+y")]})
+    report = verify_spec(spec, res, feature_findings=[])
+    c = _by_name(report)["feat_0_axis"]
+    assert c["status"] == "FAIL"
+    assert c["evidence"]["expected_axis"] == "z"
+    assert c["evidence"]["measured_axes"] == ["y"]
+    assert "h1" in c["evidence"]["measured_ids"]
+
+
+def test_slot_satisfied_by_round_hole_is_kind_mismatch():
+    """A round bore never satisfies a slot spec — kind mismatch FAIL even
+    without a stated axis."""
+    spec = _spec(features=[_feat(name="slot", type="slot")])
+    res = _res(features={"hole_groups": [_hole_group(id="h1", axis="+z")]})
+    report = verify_spec(spec, res, feature_findings=[])
+    c = _by_name(report)["feat_0_kind"]
+    assert c["status"] == "FAIL"
+    assert "kind mismatch" in c["evidence"]["reason"]
+    assert c["evidence"]["measured_kinds"] == ["hole"]
+
+
+def test_hole_satisfied_by_measured_slot_is_kind_mismatch():
+    spec = _spec(features=[_feat(name="mount", type="hole")])
+    res = _res(
+        features={
+            "hole_groups": [_hole_group(id="s1", axis="+z", elongated=True)],
+            "slots": 1,
+        }
+    )
+    report = verify_spec(spec, res, feature_findings=[])
+    assert _by_name(report)["feat_0_kind"]["status"] == "FAIL"
+
+
+def test_correct_placement_passes():
+    spec = _spec(features=[_feat(name="mount", type="hole", axis="z", count=2)])
+    res = _res(
+        features={
+            "hole_groups": [_hole_group(id="h1", axis="-z", count=2)],
+            "total_holes": 2,
+        }
+    )
+    report = verify_spec(spec, res, feature_findings=[])
+    c = _by_name(report)["feat_0_axis"]
+    assert c["status"] == "PASS"
+    assert c["evidence"]["measured_ids"] == ["h1"]
+    assert report["status"] == "PASS"
+
+
+def test_placement_unverified_without_measured_data():
+    """No measured void evidence at all -> UNVERIFIED, never FAIL."""
+    spec = _spec(features=[_feat(name="mount", type="hole", axis="z")])
+    res = _res(features={"step_roundtrip": {"checked": True, "ok": True}})
+    report = verify_spec(spec, res, feature_findings=[])
+    assert _by_name(report)["feat_0_axis"]["status"] == "UNVERIFIED"
+    assert report["status"] == "PASS"
+
+
+def test_rib_proud_of_envelope_fails():
+    """l_bracket trap: ribs on the ±y side faces push the measured width past
+    the stated 40 mm envelope."""
+    spec = _spec(
+        length_x={"value": 60.0, "source": "stated"},
+        width_y={"value": 40.0, "source": "stated"},
+        height_z={"value": 30.0, "source": "stated"},
+        features=[_feat(name="ribs", type="rib", position="outer y sides")],
+    )
+    res = _res(analysis={"bbox_size": [60.0, 44.0, 30.0], "solid_count": 1, "is_valid": True})
+    report = verify_spec(spec, res, feature_findings=[])
+    c = _by_name(report)["feat_0_envelope"]
+    assert c["status"] == "FAIL"
+    assert c["evidence"]["envelope_mm"] == {"y": 40.0}
+    assert c["evidence"]["measured_extent_mm"]["y"] == 44.0
+    assert c["evidence"]["protrusions"][0]["axis"] == "y"
+    assert report["status"] == "FAIL"
+
+
+def test_rib_inside_envelope_passes():
+    spec = _spec(features=[_feat(name="ribs", type="rib", position="outer y sides")])
+    report = verify_spec(spec, _res(), feature_findings=[])
+    c = _by_name(report)["feat_0_envelope"]
+    assert c["status"] == "PASS"
+    assert c["evidence"]["measured_extent_mm"]["y"] == 50.0
+
+
+def test_protrusion_unverified_without_stated_dims():
+    spec = _spec(
+        length_x={"value": 60.0, "source": "inferred"},
+        width_y={"value": 40.0, "source": "inferred"},
+        height_z={"value": 30.0, "source": "inferred"},
+        features=[_feat(name="ribs", type="rib")],
+    )
+    report = verify_spec(spec, _res(), feature_findings=[])
+    assert _by_name(report)["feat_0_envelope"]["status"] == "UNVERIFIED"
+
+
+def test_boss_wider_than_envelope_fails():
+    """A measured boss Ø60 on a stated-50-wide part cannot fit inside."""
+    spec = _spec(features=[_feat(name="post", type="boss")])
+    res = _res(features={"bosses": [{"id": "b1", "axis": "+z", "diameter": 60.0, "height": 8.0}]})
+    report = verify_spec(spec, res, feature_findings=[])
+    c = _by_name(report)["feat_0_envelope"]
+    assert c["status"] == "FAIL"
+    assert any(p.get("boss_id") == "b1" for p in c["evidence"]["protrusions"])
+    assert c["evidence"]["measured_ids"] == ["b1"]
+
+
+def test_position_offset_verified():
+    spec = _spec(features=[_feat(name="mount", type="hole", position="x=12")])
+    res = _res(
+        features={
+            "hole_groups": [_hole_group(id="h1", centers=[[12.3, 0.0]])],
+        }
+    )
+    report = verify_spec(spec, res, feature_findings=[])
+    c = _by_name(report)["feat_0_position"]
+    assert c["status"] == "PASS"
+
+
+def test_position_offset_violated_fails():
+    spec = _spec(features=[_feat(name="mount", type="hole", position="x=12")])
+    res = _res(features={"hole_groups": [_hole_group(id="h1", centers=[[20.0, 0.0]])]})
+    report = verify_spec(spec, res, feature_findings=[])
+    c = _by_name(report)["feat_0_position"]
+    assert c["status"] == "FAIL"
+    assert c["evidence"]["violations"][0]["axis"] == "x"
+    assert c["evidence"]["measured_ids"] == ["h1"]
+
+
+def test_position_face_hint_checked():
+    spec = _spec(features=[_feat(name="mount", type="hole", position="+y face")])
+    res = _res(features={"hole_groups": [_hole_group(id="h1", centers=[[0.0, 8.0]])]})
+    report = verify_spec(spec, res, feature_findings=[])
+    assert _by_name(report)["feat_0_position"]["status"] == "PASS"
+    res_bad = _res(features={"hole_groups": [_hole_group(id="h1", centers=[[0.0, -8.0]])]})
+    report = verify_spec(spec, res_bad, feature_findings=[])
+    assert _by_name(report)["feat_0_position"]["status"] == "FAIL"
+
+
+def test_position_midplane_is_unverified_not_failed():
+    spec = _spec(features=[_feat(name="mount", type="hole", position="front face")])
+    res = _res(features={"hole_groups": [_hole_group(id="h1", centers=[[0.0, 0.0]])]})
+    report = verify_spec(spec, res, feature_findings=[])
+    assert _by_name(report)["feat_0_position"]["status"] == "UNVERIFIED"
+
+
+def test_position_prose_is_unverified():
+    spec = _spec(features=[_feat(name="mount", type="hole", position="somewhere sensible")])
+    res = _res(features={"hole_groups": [_hole_group(id="h1", centers=[[0.0, 8.0]])]})
+    report = verify_spec(spec, res, feature_findings=[])
+    c = _by_name(report)["feat_0_position"]
+    assert c["status"] == "UNVERIFIED"
+    assert "not machine-parseable" in c["evidence"]["reason"]
+
+
+def test_placement_checks_stay_json_serializable():
+    spec = _spec(
+        features=[
+            _feat(name="slot", type="slot", axis="z"),
+            _feat(name="ribs", type="rib", position="outer y sides"),
+            _feat(name="mount", type="hole", position="x=12"),
+        ]
+    )
+    res = _res(
+        features={
+            "hole_groups": [
+                _hole_group(id="s1", axis="+x", elongated=True),
+                _hole_group(id="h1", centers=[[20.0, 0.0]]),
+            ],
+            "slots": 1,
+        }
+    )
+    report = verify_spec(spec, res, feature_findings=[])
+    assert json.loads(json.dumps(report)) == report
