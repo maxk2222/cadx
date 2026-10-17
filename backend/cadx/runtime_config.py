@@ -166,6 +166,12 @@ class RuntimeSettings(BaseModel):
     topopt_multires_min_cells: int = Field(
         default=4000, ge=0, le=10_000_000
     )  # multires coarse pass only pays off above this solid-cell count
+    # auto-enqueue a feature-finishing 'refine' child after a succeeded topopt
+    # run — the standalone optimize job AND the in-job topopt phase — whenever
+    # the part has features/anchors to re-cut (voxel-rough bores, destroyed
+    # threads otherwise ship as-is). Worker-side only: run_refine_job loads
+    # runtime settings itself, so this stays out of executor_values().
+    topopt_auto_refine: bool = True
     mesh_base_url: str = ""
     mesh_model: str = "auto"
     image_model: str = "auto"

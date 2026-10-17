@@ -563,6 +563,9 @@ async def run_agent_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[st
             version.asset_ids = sorted(set(version.asset_ids or []) | set(actx.generated_asset_ids))
 
         await _persist_outcome(db, job, version, outcome, emit)
+        await _spawn_refine_after_topopt(
+            db, job, version, outcome, settings, runtime_settings, emit
+        )
         return {"ok": outcome.status in ("succeeded", "needs_review"), "status": outcome.status}
 
 
@@ -931,18 +934,33 @@ async def _maybe_spawn_refine(
     optimize: dict[str, Any],
     load_cases: list[dict[str, Any]],
     material: str,
+    runtime: RuntimeSettings | None = None,
 ) -> bool:
-    """Create + enqueue a 'refine' child version on a finished optimize run
-    (OptimizeSpec.auto_refine_features or request flag). Returns True when
-    enqueued."""
+    """Create + enqueue a 'refine' child version on a finished optimize run.
+
+    Triggers: OptimizeSpec.auto_refine_features, the request-level flag, or
+    the runtime-wide `topopt_auto_refine` default. Never spawns a child with
+    nothing to re-cut — requires declared spec features or measured topopt
+    anchors. Returns True when enqueued."""
+    runtime = runtime or await load_runtime_settings(db)
     auto_refine = bool(
         optimize.get("auto_refine_features")
         or (spec.optimize.auto_refine_features if spec and spec.optimize else False)
+        or runtime.topopt_auto_refine
     )
     if not auto_refine or parent.status not in (
         VersionStatus.succeeded,
         VersionStatus.needs_review,
     ):
+        return False
+    has_features = bool(spec and spec.features)
+    has_anchors = bool(((parent.mesh or {}).get("topopt") or {}).get("anchors"))
+    if not (has_features or has_anchors):
+        log.info(
+            "refine.spawn_skipped",
+            version=str(parent.id),
+            reason="no spec features or topopt anchors to re-cut",
+        )
         return False
     from cadx.api.deps import enqueue as enqueue_agent
 
@@ -980,6 +998,46 @@ async def _maybe_spawn_refine(
         },
     )
     return True
+
+
+async def _spawn_refine_after_topopt(
+    db: AsyncSession,
+    job: Job,
+    version: Version,
+    outcome: RunOutcome,
+    settings: ProjectSettings,
+    runtime: RuntimeSettings,
+    emit: Any,
+) -> None:
+    """In-job topopt leaves bores voxel-rough and threads destroyed —
+    enqueue the same feature-finishing refine child the standalone optimize
+    job spawns via `_maybe_spawn_refine` (which holds the trigger +
+    nothing-to-refine guards). Best-effort: a failure here must never fail
+    the already-persisted job."""
+    if outcome.resolved_mode != "topopt" or outcome.status not in (
+        "succeeded",
+        "needs_review",
+    ):
+        return
+    try:
+        spec = PartSpec(**version.spec) if version.spec else None
+        optimize = spec.optimize.model_dump() if spec and spec.optimize else {}
+        load_cases = [c.model_dump() for c in (spec.load_cases if spec else [])]
+        material = settings.fem_material or (spec.material if spec else "")
+        refine_enqueued = await _maybe_spawn_refine(
+            db,
+            version,
+            spec=spec,
+            optimize=optimize,
+            load_cases=load_cases,
+            material=material,
+            runtime=runtime,
+        )
+        if refine_enqueued:
+            await _append_job_log(db, job, "auto-refine enqueued\n")
+            await emit("refine", 1, "feature refine enqueued")
+    except Exception:
+        log.warning("agent.auto_refine_failed", job=str(job.id), exc_info=True)
 
 
 @_guarded
@@ -1183,6 +1241,7 @@ async def run_optimize_job(  # noqa: C901
             optimize=optimize,
             load_cases=load_cases,
             material=material,
+            runtime=runtime_settings,
         )
         if refine_enqueued:
             await _append_job_log(db, job, "auto-refine enqueued\n")

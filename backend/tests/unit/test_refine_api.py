@@ -15,7 +15,7 @@ from httpx import ASGITransport, AsyncClient
 
 from cadx.db.models import Job, JobType, Project, Version, VersionKind, VersionStatus
 from cadx.db.session import async_session, create_all
-from cadx.llm.schemas import OptimizeSpec
+from cadx.llm.schemas import OptimizeSpec, PartSpec
 
 
 @pytest.fixture(scope="module")
@@ -102,12 +102,30 @@ async def test_maybe_spawn_refine_hook(monkeypatch):
     monkeypatch.setattr(deps, "enqueue", fake_enqueue)
 
     parent = await _mk_parent()
+    # the guard needs something to re-cut: a declared spec feature
+    spec = PartSpec(
+        name="block",
+        length_x={"value": 40.0},
+        width_y={"value": 20.0},
+        height_z={"value": 10.0},
+        features=[
+            {
+                "name": "m4 hole",
+                "type": "hole",
+                "description": "M4 through-hole",
+                "dims": {"diameter": 4.0},
+                "position": "center",
+                "count": 1,
+                "source": "stated",
+            }
+        ],
+    )
     async with async_session() as db:
         parent = await db.get(Version, parent.id)
         ok = await wj._maybe_spawn_refine(
             db,
             parent,
-            spec=None,
+            spec=spec,
             optimize={"auto_refine_features": True, "keep_regions": []},
             load_cases=[],
             material="pla",
