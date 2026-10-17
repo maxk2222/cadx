@@ -49,6 +49,53 @@ score, mean iterations, prompt + completion tokens (with a reasoning split
 for steps whose trace record carries the `thinking` flag), and wall time.
 Set `CADX_EVAL_OUT` or pass `--root` to point it at a different tree.
 
+Running `--real` from the host needs the DB for runtime settings — postgres
+is not published to the host, so run it inside a container that reaches both
+`cadx_internal` (postgres/redis) and `cadx_public` (LLM egress). The
+`cad-cad-executor` sits on the internal net only (no egress — runs die at
+intake with DNS errors); the worker has both but gets recreated on
+`docker compose` deploys mid-run. Robust pattern: a dedicated container
+(`docker run -d --network cadx_public ... cadx-worker`, then
+`docker network connect cadx_internal <name>`) plus `nohup cadx eval ... >
+/data/eval_matrix.log` so the run survives the exec session.
+
+## Real-model matrix (2026-10, qwen3.8-27b @ remote vLLM)
+
+3 variants x 3 CAD benchmarks x 1 rep, `--queue-exec`. `staged_auto` =
+staged build + thinking auto, `whole_auto` = classic codegen + thinking
+auto, `staged_off` = staged build + thinking off.
+
+| benchmark | staged_auto | whole_auto | staged_off |
+|---|---|---|---|
+| plate_holes | PASS 95 (76 s, 1.6k ctok) | PASS 92 (78 s) | PASS 95 (72 s) |
+| flange_pcd_cad | PASS 95/92, 1x FAIL | PASS 95 (629 s, 14.8k ctok) | PASS 92 (156 s, 3.3k ctok) |
+| l_bracket_cad | needs_review 0 (10.5k s, 260k ctok) | needs_review 40 (9.1k s, 233k ctok) | **PASS 100** (709 s, 15.9k ctok) |
+
+Findings:
+
+- **Thinking off won everywhere on this model.** Qwen3-27B thinking mode
+  produced 5k+ reasoning chunks per call (2-10 min/call); sessions burned
+  230-260k completion tokens over 2.5-3 h *without converging*. The same
+  l_bracket that scored 0-40 under thinking passed with 100 when thinking
+  was off — in ~1/14 of the wall time and ~1/15 of the completion tokens.
+  `llm_thinking=auto` escalated correctly (stall/patch-miss latch fired and
+  was traced), but escalation amplified cost instead of rescuing runs.
+- **High run-to-run variance**: staged_auto on flange passed twice (92, 95)
+  and failed once (all 8 iterations exec-fail). n=1 is not enough to rank
+  variants — treat single cells as indicative, not conclusive.
+- **Observed defect — "codegen session produced no code"**: under thinking,
+  build sessions repeatedly ended without a `done` submission (huge
+  reasoning calls eat the turn budget). The session should auto-submit a
+  non-trivial buffer at end-of-turns instead of discarding it.
+- **The recurring l_bracket trap**: spec'd ribs must sit *inside* the 40 mm
+  envelope; all variants initially place them proud (42.5-43.5 mm) and the
+  leg slot on the wrong axis. Only staged_off converged through the
+  improve/repair loop.
+- `verify_spec` (M6) reports appeared in production issues
+  (`verify_spec PASS/FAIL — N pass, M fail`), confirming the canonical
+  conformance path is live; quiddity pattern evidence and the STEP
+  roundtrip gate ran without blocking runs.
+
 ## Benchmark format
 
 `backend/cadx/eval/benchmarks/*.json` — filename becomes the benchmark name:
