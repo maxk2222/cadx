@@ -1171,7 +1171,16 @@ async def _autogen_hero_image(ctx: AgentCtx, spec: PartSpec | None, plan: Any) -
     from cadx.agent.context import read_prompt
 
     s = ctx.runtime_settings
-    prompt = read_prompt("image_hero.md").format(subject=subject, prompt=ctx.prompt.strip())
+    feats = ""
+    if spec is not None and spec.features:
+        names = [f.name or f.type for f in spec.features if (f.name or f.type)]
+        if names:
+            feats = ". The part must clearly show these features in the photo: " + ", ".join(
+                names[:8]
+            )
+    prompt = read_prompt("image_hero.md").format(
+        subject=subject, prompt=ctx.prompt.strip(), features=feats
+    )
     await ctx.emit("imagegen", 0, "no reference image — generating a hero image")
 
     async def _prog(msg: str, _p: float) -> None:
