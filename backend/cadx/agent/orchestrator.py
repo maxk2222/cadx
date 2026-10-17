@@ -4892,13 +4892,13 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
     except Exception as e:
         log.warning("agent.measure_failed", error=str(e))
         ctx.measurements = {}
-    if ctx.measurements:
-        # image-only anchors for the CAD path; hybrid prep reconciles with
-        # detected mesh features and may mirror the mesh
-        a = build_anchors(spec, ctx.measurements, None)
-        if a.holes or a.image_outline:
-            ctx.anchors = a.model_dump()
-            await ctx.emit("anchors", 0, a.note)
+    # spec-declared + image anchors for the CAD path; spec anchors resolve
+    # without any image measurement, hybrid prep later reconciles with
+    # detected mesh features and may mirror the mesh
+    a = build_anchors(spec, ctx.measurements or {}, None)
+    if a.holes or a.image_outline:
+        ctx.anchors = a.model_dump()
+        await ctx.emit("anchors", 0, a.note)
 
     # adaptive budget: simple dimensioned parts don't need the global max
     # (an explicit per-version/per-project max_iterations always wins)
