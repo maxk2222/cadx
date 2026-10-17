@@ -169,6 +169,31 @@ def test_spec_anchor_multi_offset_feature():
     assert [h.index for h in a.holes] == [1, 2, 3]
 
 
+def test_spec_anchor_side_face_threaded_hole():
+    """An axis=x declared bore anchors on the y/z plane — the end offset on
+    the bore's own axis becomes the axial centre (x=+37) plus a depth hint;
+    the unresolved in-plane z defaults to mid-height flagged spec-est."""
+    spec = _plate_spec(
+        [
+            Feature(
+                name="M8 threaded hole",
+                type="threaded_hole",
+                axis="x",
+                dims={"diameter": 6.8},
+                position="8 mm from +X end face, centered in y",
+                thread_spec="M8",
+            ),
+        ]
+    )
+    a = build_anchors(spec, {}, None)
+    assert len(a.holes) == 1
+    h = a.holes[0]
+    assert h.axis == "+x" and h.kind == "thread" and h.bolt_size == "M8"
+    assert h.pos == [37.0, 0.0, 7.0]  # axial x, in-plane y=0, z=mid 14/2
+    assert h.z == 37.0 and h.depth_mm == 16.0
+    assert h.source == "spec-est"  # in-plane z was mid-defaulted
+
+
 def test_spec_anchor_enriches_measured_within_3mm():
     """A measured anchor near the declared position keeps its real x/y and
     gains the spec name/kind/dia — source gains the '+spec' marker."""
@@ -222,7 +247,8 @@ def test_spec_anchors_order_first_then_measured_tail():
 
 
 def test_spec_anchor_unresolvable_or_unusable_skipped():
-    """Vague text, missing dia and non-+z bore axes never become anchors."""
+    """Vague text and missing dia never become anchors; a side-face bore with
+    both in-plane axes declared resolves on its own plane."""
     spec = _plate_spec(
         [
             Feature(
@@ -246,7 +272,9 @@ def test_spec_anchor_unresolvable_or_unusable_skipped():
         ]
     )
     a = build_anchors(spec, {}, mesh_features=None)
-    assert a.holes == []
+    assert [(h.name, h.axis, h.pos) for h in a.holes] == [
+        ("side", "+x", [None, 0.0, 7.0])  # "centred in z" = mid height 14/2
+    ]
 
 
 def test_spec_est_anchor_from_near_end_hint():

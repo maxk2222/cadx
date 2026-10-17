@@ -24,6 +24,14 @@ from pydantic import BaseModel
 from cadx.cad.poshint import parse_position_hints, resolve_end_hint
 from cadx.llm.schemas import Feature, PartSpec
 
+# axis -> (axial index, in-plane u index, in-plane v index) — same layout as
+# cad.fem.anchors3d._AXES (kept local: agent/ never imports executor modules)
+_AXES: dict[str, tuple[int, int, int]] = {
+    "+x": (0, 1, 2),
+    "+y": (1, 0, 2),
+    "+z": (2, 0, 1),
+}
+
 # spec feature types that are (or carry) a bore
 _HOLE_TYPES = ("hole", "thread", "insert", "bearing_seat")
 # declared bore axis in free text ("x-axis", "along z") — same narrow shape
@@ -166,6 +174,48 @@ def _declared_bore_axis(f: Feature, text: str) -> str:
     return axis
 
 
+def _axis_vals(
+    text: str,
+    bounds: dict[str, tuple[float, float]],
+    dia: float,
+    in_plane: tuple[str, str],
+) -> dict[str, list[tuple[float, bool]]]:
+    """Per-axis resolved positions for the given in-plane axes.
+
+    Each entry is ``(value, est)`` — ``est`` marks near-end estimates. End
+    offsets carry the user's stated semantics; a contradicting model-computed
+    coord ("75mm from -x end (x=20)") would spawn a phantom position — the
+    end hint wins, agreeing values dedupe."""
+    coords, _faces, ends, nears = parse_position_hints(text)
+    vals: dict[str, list[tuple[float, bool]]] = {ax: [] for ax in in_plane}
+    for ax in in_plane:
+        end_vals = [
+            resolve_end_hint(ax, str(e["end"]), float(e["offset_mm"]), *bounds[ax])
+            for e in ends
+            if str(e["axis"]) == ax
+        ]
+        coord_v = coords.get(ax)  # "x=12" + "centred in y" (-> 0.0) hints
+        # "centred in z"/"mid z" folds to 0.0 in poshint, but the part frame
+        # rests on XY — the true mid is h/2. Only remap when a mid-word is
+        # present so an explicit "z=0" (bottom face) is still honoured.
+        if ax == "z" and coord_v == 0.0 and re.search(r"\bcent|mid", text):
+            coord_v = (bounds[ax][0] + bounds[ax][1]) / 2
+        if coord_v is not None and end_vals and all(abs(coord_v - v) > 1.0 for v in end_vals):
+            coord_v = None
+        if coord_v is not None:
+            vals[ax].append((coord_v, False))
+        for v in end_vals:
+            if all(v != ex for ex, _ in vals[ax]):
+                vals[ax].append((v, False))
+    inset = max(1.5 * dia, 6.0)
+    for n in nears:
+        ax = str(n["axis"])
+        if ax in vals and not vals[ax]:
+            lo, hi = bounds[ax]
+            vals[ax].append((hi - inset if str(n["end"]).startswith("+") else lo + inset, True))
+    return vals
+
+
 def _spec_xy(
     f: Feature, bounds: dict[str, tuple[float, float]], dia: float
 ) -> list[tuple[float, float, bool]]:
@@ -182,35 +232,73 @@ def _spec_xy(
     coordinate is worse than none.
     """
     text = str(f.position or "").strip() or str(f.description or "")
-    coords, _faces, ends, nears = parse_position_hints(text)
-    vals: dict[str, list[tuple[float, bool]]] = {"x": [], "y": []}
-    for ax in ("x", "y"):
-        # end offsets carry the user's stated semantics; a contradicting
-        # model-computed coord ("75mm from -x end (x=20)") would spawn a
-        # phantom position — the end hint wins, agreeing values dedupe
-        end_vals = [
-            resolve_end_hint(ax, str(e["end"]), float(e["offset_mm"]), *bounds[ax])
-            for e in ends
-            if str(e["axis"]) == ax
-        ]
-        coord_v = coords.get(ax)  # "x=12" + "centred in y" (-> 0.0) hints
-        if coord_v is not None and end_vals and all(abs(coord_v - v) > 1.0 for v in end_vals):
-            coord_v = None
-        if coord_v is not None:
-            vals[ax].append((coord_v, False))
-        for v in end_vals:
-            if all(v != ex for ex, _ in vals[ax]):
-                vals[ax].append((v, False))
-    inset = max(1.5 * dia, 6.0)
-    for n in nears:
-        ax = str(n["axis"])
-        if ax in vals and not vals[ax]:
-            lo, hi = bounds[ax]
-            v = hi - inset if str(n["end"]).startswith("+") else lo + inset
-            vals[ax].append((v, True))
+    vals = _axis_vals(text, bounds, dia, ("x", "y"))
     if not vals["x"] or not vals["y"]:
         return []
     return [(x, y, ex or ey) for x, ex in vals["x"] for y, ey in vals["y"]]
+
+
+def _spec_plane(
+    f: Feature,
+    bounds: dict[str, tuple[float, float]],
+    dia: float,
+    in_plane: tuple[str, str],
+) -> tuple[list[tuple[float, float, bool]], float | None, float | None]:
+    """In-plane (u, v) positions of a non-z bore + axial centre hint.
+
+    Same hint rules as :func:`_spec_xy` but on the two axes perpendicular to
+    the bore axis (an x-axis bore positions in the y/z plane). An unresolved
+    in-plane axis defaults to the plane's mid (0.0 for centred x/y, h/2 for
+    the rest-on-XY z) marked ``est`` — end-face bores sit at mid height unless
+    declared otherwise. An end/near hint on the bore's OWN axis is not
+    in-plane — it resolves to the axial centre coordinate (a "8mm from +x end
+    face" tap sits at x=+37), returned as second value (None when absent);
+    the third value is a bore-depth hint (2x the axial end offset) for
+    keep-region slab sizing — end-face bores only keep the entry region.
+    """
+    text = str(f.position or "").strip() or str(f.description or "")
+    coords, _faces, ends, nears = parse_position_hints(text)
+    vals = _axis_vals(text, bounds, dia, in_plane)
+    inset = max(1.5 * dia, 6.0)
+    u_ax, v_ax = in_plane
+    # unresolved in-plane defaults to the plane mid (est); z rests on XY so
+    # its mid is h/2, not 0.0
+    for ax in in_plane:
+        if not vals[ax]:
+            lo, hi = bounds[ax]
+            vals[ax].append(((lo + hi) / 2 if ax == "z" else 0.0, True))
+    bore_ax = next(a for a in "xyz" if a not in in_plane)
+    axial: float | None = None
+    axial_est = False
+    for e in ends:
+        if str(e["axis"]) == bore_ax:
+            axial = resolve_end_hint(
+                bore_ax, str(e["end"]), float(e["offset_mm"]), *bounds[bore_ax]
+            )
+            break
+    if axial is None:
+        for n in nears:
+            if str(n["axis"]) == bore_ax:
+                lo, hi = bounds[bore_ax]
+                axial = hi - inset if str(n["end"]).startswith("+") else lo + inset
+                axial_est = True
+                break
+    if axial is None and coords.get(bore_ax) is not None:
+        axial = coords[bore_ax]
+    axial_depth: float | None = None
+    for e in ends:
+        if str(e["axis"]) == bore_ax:
+            axial_depth = min(2.0 * float(e["offset_mm"]), bounds[bore_ax][1] - bounds[bore_ax][0])
+            break
+    return (
+        [
+            (u, v, eu or ev or (axial is not None and axial_est))
+            for u, eu in vals[u_ax]
+            for v, ev in vals[v_ax]
+        ],
+        axial,
+        axial_depth,
+    )
 
 
 def _spec_anchors(spec: PartSpec) -> list[Anchor]:
@@ -221,8 +309,11 @@ def _spec_anchors(spec: PartSpec) -> list[Anchor]:
     anchor even when the image/mesh evidence is empty, so FEM `hole_index`
     regions, topopt auto-keeps and the deterministic re-cut all see it.
     Hints resolve against the spec envelope centred at origin
-    (x ∈ [-length/2, +length/2]); only +z bores are synthesized — a feature
-    declaring another bore axis stays for the mesh scan. Both in-plane axes
+    (x ∈ [-length/2, +length/2]); +z bores resolve on the x/y plane,
+    side-face bores (``axis="x"``/``"y"``) on their perpendicular plane with
+    an unresolved in-plane axis defaulting to the plane mid (``spec-est``) —
+    an end offset on the bore's own axis becomes the axial centre and a
+    2x-offset depth hint for the keep slab. For +z bores both in-plane axes
     must resolve or the feature is skipped (a guessed coordinate is worse
     than none) — a ``near the +x end`` proximity hint resolves an axis to an
     estimated inset position, emitted with ``source="spec-est"`` so it is
@@ -231,21 +322,25 @@ def _spec_anchors(spec: PartSpec) -> list[Anchor]:
     """
     lx = getattr(spec, "length_x", None)
     wy = getattr(spec, "width_y", None)
+    hz = getattr(spec, "height_z", None)
     try:
         lx_v, wy_v = float(lx.value), float(wy.value)  # type: ignore[union-attr]
+        hz_v = float(hz.value)  # type: ignore[union-attr]
     except (AttributeError, TypeError, ValueError):
         return []  # no declared envelope — end-relative hints unresolvable
     if lx_v <= 0 or wy_v <= 0:
         return []
-    bounds = {"x": (-lx_v / 2, lx_v / 2), "y": (-wy_v / 2, wy_v / 2)}
+    bounds = {
+        "x": (-lx_v / 2, lx_v / 2),
+        "y": (-wy_v / 2, wy_v / 2),
+        "z": (0.0, max(hz_v, 0.0)),
+    }
     out: list[Anchor] = []
     for f in spec.features:
         if not _hole_like(f):
             continue
         text = str(f.position or "").strip() or str(f.description or "")
         axis = _declared_bore_axis(f, text)
-        if axis and axis != "z":
-            continue  # conservative: only plan-view (+z) bores get spec anchors
         dia = _hole_dia(f)
         if dia is None or dia <= 0:
             continue
@@ -262,6 +357,34 @@ def _spec_anchors(spec: PartSpec) -> list[Anchor]:
             or _bolt_size(f.thread_spec or "")
             or _bolt_size(f.name or "")
         )
+        if axis in ("x", "y"):
+            # side-face bore — resolve on the perpendicular plane; scan-format
+            # pos[] carries in-plane u/v at their coordinate slots
+            in_plane = ("y", "z") if axis == "x" else ("x", "z")
+            pts, axial, axial_depth = _spec_plane(f, bounds, dia, in_plane)
+            _ax, au, av = _AXES[f"+{axis}"]
+            for u, v, est in pts:
+                pos: list[float | None] = [None, None, None]
+                pos[au], pos[av] = round(u, 2), round(v, 2)
+                if axial is not None:
+                    pos[_ax] = round(axial, 2)
+                out.append(
+                    Anchor(
+                        index=0,  # re-indexed by build_anchors
+                        x=round(pos[0] or 0.0, 2),
+                        y=round(pos[1] or 0.0, 2),
+                        dia=round(dia, 2),
+                        axis=f"+{axis}",
+                        z=round(axial, 2) if axial is not None else None,
+                        depth_mm=round(axial_depth, 2) if axial_depth else None,
+                        pos=pos,
+                        source="spec-est" if est else "spec",
+                        name=f.name or "",
+                        kind=kind,
+                        bolt_size=bolt,
+                    )
+                )
+            continue
         for x, y, est in _spec_xy(f, bounds, dia):
             out.append(
                 Anchor(
