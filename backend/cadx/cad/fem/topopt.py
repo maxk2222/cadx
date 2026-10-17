@@ -96,6 +96,13 @@ class TopOptParams:
     robust: bool = False
     robust_delta_eta: float = 0.25  # eta half-width of the eroded/dilated interval
     robust_designs: Literal["edi", "e"] = "edi"  # "e" = eroded only (Fernández)
+    # mirror symmetry: after every design update (OC and MMA) the blueprint
+    # density is averaged with its reflection in the named domain mid-plane
+    # ("xy" | "xz" | "yz") — the extracted part comes out symmetric. Only
+    # the density is symmetrised, never the sensitivities; passive cells
+    # are re-pinned after averaging, so asymmetric BCs still produce an
+    # (acceptably) asymmetric physics response.
+    symmetry: str | None = None
 
 
 @dataclass
@@ -115,6 +122,8 @@ class TopOptResult:
 
 _AXES = {"+x": 0, "-x": 0, "+y": 1, "-y": 1, "+z": 2, "-z": 2}
 _ETA = 0.5  # Heaviside projection threshold
+# symmetry mid-plane -> the grid axis the mirror operation flips
+_SYM_AXES = {"yz": 0, "xz": 1, "xy": 2}
 
 
 def _heaviside(x: np.ndarray, beta: float, eta: float = _ETA) -> np.ndarray:
@@ -126,6 +135,29 @@ def _heaviside(x: np.ndarray, beta: float, eta: float = _ETA) -> np.ndarray:
 def _heaviside_d(x: np.ndarray, beta: float, eta: float = _ETA) -> np.ndarray:
     den = math.tanh(beta * eta) + math.tanh(beta * (1.0 - eta))
     return beta * (1.0 - np.tanh(beta * (x - eta)) ** 2) / den
+
+
+def _symmetrize_density(
+    x: np.ndarray,
+    dims: tuple[int, int, int],
+    axis: int,
+    solid: np.ndarray,
+    passive_solid: np.ndarray,
+    pvoid: np.ndarray,
+) -> np.ndarray:
+    """Mirror-average the flat blueprint density across the domain mid-plane
+    perpendicular to `axis`: x <- 0.5*(x + flip(x)).
+
+    np.flip mirrors through the voxel centre of the grid and is odd/even
+    safe. The average runs over ALL cells, then passive cells are re-pinned
+    to their fixed values — the symmetrisation must never unpin
+    keep/load/fixed material or forbidden void regions."""
+    g = x.reshape(dims)
+    xs = (0.5 * (g + np.flip(g, axis=axis))).ravel()
+    xs[~solid] = RHO_MIN
+    xs[passive_solid] = 1.0
+    xs[pvoid] = RHO_MIN
+    return xs
 
 
 def _am_setup(domain: VoxelDomain, direction: str) -> list[tuple[np.ndarray, np.ndarray | None]]:
@@ -590,6 +622,21 @@ def simp(  # noqa: C901
     x[passive_solid] = 1.0
     x[pvoid] = RHO_MIN
     x = x.astype(float)
+    # mirror symmetry ("xy"/"xz"/"yz"): symmetrise the blueprint right
+    # after every design update — the OC assignment below and _unpack
+    # inside _run_mma — so the density filter only ever sees an already
+    # mirrored-average field and the filtered/projected design stays
+    # symmetric too. Sensitivities are deliberately NOT symmetrised.
+    sym_axis: int | None = _SYM_AXES.get(params.symmetry) if params.symmetry else None
+    if params.symmetry and sym_axis is None:
+        warnings.append(f"unknown symmetry plane '{params.symmetry}' — ignored")
+
+    def _symmetrize(xb: np.ndarray) -> np.ndarray:
+        assert sym_axis is not None
+        return _symmetrize_density(xb, domain.dims, sym_axis, solid, passive_solid, pvoid)
+
+    if sym_axis is not None:
+        x = _symmetrize(x)  # warm-started fields may arrive asymmetric
     weights = (
         np.ones(len(cases))
         if case_weights is None
@@ -779,6 +826,7 @@ def simp(  # noqa: C901
                 passive_solid=passive_solid,
                 pvoid=pvoid,
                 change_box=change_box,
+                symmetrize_fn=_symmetrize if sym_axis is not None else None,
             )
         except ImportError:
             warnings.append("mma solver unavailable (nlopt missing) — fell back to oc")
@@ -859,6 +907,10 @@ def simp(  # noqa: C901
             if l2 - l1 < 1e-4 * (l1 + l2 + 1e-12):
                 break
 
+        if sym_axis is not None:
+            # project the update onto the symmetric subspace before the
+            # next iteration's filter sees it
+            xnew = _symmetrize(xnew)
         change = float(np.abs(xnew - x).max())
         change_box[0] = change
         x = xnew
@@ -1029,6 +1081,7 @@ def _run_mma(  # noqa: C901
     passive_solid: np.ndarray,
     pvoid: np.ndarray,
     change_box: list[float] | None = None,
+    symmetrize_fn: Callable[[np.ndarray], np.ndarray] | None = None,
 ) -> tuple[np.ndarray, int, bool, float]:
     """MMA driver (Svanberg, via nlopt LD_MMA).
 
@@ -1086,6 +1139,10 @@ def _run_mma(  # noqa: C901
         xb[des] = np.clip(v[:ndv], RHO_MIN, 1.0)
         xb[passive_solid] = 1.0
         xb[pvoid] = RHO_MIN
+        if symmetrize_fn is not None:
+            # nlopt steps the raw v — mirror-average the blueprint so every
+            # evaluated design is symmetric before the filter sees it
+            xb = symmetrize_fn(xb)
         return xb
 
     def _ev(v: np.ndarray):

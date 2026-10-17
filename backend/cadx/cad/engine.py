@@ -1176,6 +1176,7 @@ def run_topopt_pipeline(  # noqa: C901
         robust=bool(getattr(opt, "robust", False)),
         robust_delta_eta=float(getattr(opt, "robust_delta_eta", 0.25) or 0.25),
         robust_designs=str(getattr(opt, "robust_designs", "edi") or "edi"),
+        symmetry=getattr(opt, "symmetry", None) or None,
         self_supporting=bool(getattr(opt, "self_supporting", False)),
         print_direction=str(getattr(opt, "print_direction", "+z") or "+z"),
         penal=float(opt.penal or 3.0),
@@ -1250,6 +1251,7 @@ def run_topopt_pipeline(  # noqa: C901
                         penal=params.penal,
                         self_supporting=params.self_supporting,
                         print_direction=params.print_direction,
+                        symmetry=params.symmetry,  # keep the warm-start symmetric too
                     )
                     warm_r = simp(
                         coarse,

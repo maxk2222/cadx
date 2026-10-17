@@ -659,6 +659,13 @@ STRUCT_TOOLS = [
                 "description": "'edi' = eroded+intermediate+dilated; 'e' = eroded "
                 "only (~half the extra FEM cost)",
             },
+            "symmetry": {
+                "type": "string",
+                "enum": ["xy", "xz", "yz"],
+                "description": "mirror the design about that domain mid-plane — "
+                "each iteration the density is averaged with its reflection so "
+                "the printed part comes out symmetric",
+            },
             "multires": {
                 "type": "boolean",
                 "description": "coarse SIMP at 2x pitch warm-starts the fine "

@@ -183,6 +183,7 @@ def _opt_overrides(a: dict[str, Any]) -> dict[str, Any]:
         "keep_mode",
         "print_direction",
         "filter",
+        "symmetry",
         "solver",
         "case_objective",
         "robust_designs",

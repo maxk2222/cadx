@@ -52,6 +52,10 @@ pick the best one.
     comes out slightly thinner or thicker; ~3× solver cost. `robust_designs`
     `"e"` (eroded only) halves the surcharge. Implies a heaviside-bearing
     filter — combine with `filter:"helmholtz+heaviside"` for best surfaces.
+  - `symmetry:"xy"|"xz"|"yz"` — mirror-average the density across that
+    domain mid-plane every iteration so the printed part comes out
+    symmetric. Use when the part should look/behave identically mirrored;
+    pick the plane your loads and keep/fix regions are symmetric about.
   - `load_cases`: override/extend the spec cases (same schema).
   - `material`, `voxel_mm`, `max_iterations`, `density_threshold`.
 - `refine_features(run_index, features?, restore_planes?, load_cases?)` —

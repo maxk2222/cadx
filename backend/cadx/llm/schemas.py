@@ -319,6 +319,11 @@ class OptimizeSpec(BaseModel):
         default=0.25, ge=0.0, le=0.45
     )  # eta half-width of the eroded/dilated interval
     robust_designs: Literal["edi", "e"] = "edi"  # e = eroded only (~half the extra cost)
+    symmetry: Annotated[str, Field(max_length=4)] | None = (
+        None  # mirror the design about a domain mid-plane: "xy" | "xz" | "yz" —
+        # density averaged with its reflection each SIMP iteration so the
+        # printed part comes out symmetric
+    )
     penal: float | None = Field(default=None, ge=1.0, le=8.0)  # SIMP exponent (default 3.0)
     penal_init: float | None = Field(default=None, ge=1.0, le=8.0)  # continuation start
     solver: Annotated[str, Field(max_length=8)] = (
