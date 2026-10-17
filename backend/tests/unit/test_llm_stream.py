@@ -57,6 +57,48 @@ async def test_stream_assembles_chunks(monkeypatch):
     assert r.completion_tokens == 2
 
 
+async def test_cached_tokens_extracted_from_usage(monkeypatch):
+    """vLLM's APC report (usage.prompt_tokens_details.cached_tokens) lands on
+    LLMResponse.cached_tokens and accumulates into total_usage."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "x"}, "finish_reason": "stop"}],
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 5,
+                    "prompt_tokens_details": {"cached_tokens": 80},
+                },
+            },
+        )
+
+    _patch_transport(monkeypatch, handler)
+    c = _mk(stream=False)
+    r = await c.chat("code", [{"role": "user", "content": "hi"}])
+    assert r.cached_tokens == 80
+    assert c.total_usage["cached_tokens"] == 80
+
+
+async def test_cached_tokens_zero_when_absent(monkeypatch):
+    """Endpoints without prompt_tokens_details read as a cache miss."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "x"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+            },
+        )
+
+    _patch_transport(monkeypatch, handler)
+    c = _mk(stream=False)
+    r = await c.chat("code", [{"role": "user", "content": "hi"}])
+    assert r.cached_tokens == 0
+
+
 async def test_stream_400_falls_back_to_post(monkeypatch):
     calls = []
 

@@ -79,6 +79,13 @@ class RuntimeSettings(BaseModel):
     # 386k prompt tokens and the whole job budget)
     agent_tool_max_turns_edit: int = Field(default=12, ge=1, le=200)
     agent_tool_churn_limit: int = Field(default=6, ge=2, le=50)
+    # history condensation (OpenHands-condenser): once a tool session's
+    # history exceeds this many exchanges, the middle is replaced by a
+    # deterministic one-line-per-call digest — system+seed and the last ~half
+    # of exchanges stay verbatim. Bounds the per-turn resend on long staged
+    # build/repair sessions where APC cannot help the growing tail.
+    # 0 disables.
+    agent_session_condense_turns: int = Field(default=12, ge=0, le=500)
     agent_tool_verify: bool = True
     agent_tool_verify_max: int = Field(default=2, ge=0, le=20)
     # static signature gate on generated code (AST only, pre-execution):

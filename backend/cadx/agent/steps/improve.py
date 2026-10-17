@@ -76,6 +76,15 @@ def _user_parts(
     ref = references_block(ctx.assets)
     if ref:
         parts.append({"type": "text", "text": ref})
+    # APC ordering: measurements/anchors are job-stable — they precede the
+    # per-iteration tail (current code, measured geometry, issues) so the
+    # shared prefix reaches as far as possible across improve calls
+    mm = measurements_block(ctx.measurements)
+    if mm:
+        parts.append({"type": "text", "text": mm})
+    ab = anchors_block(ctx.anchors)
+    if ab:
+        parts.append({"type": "text", "text": ab})
     if numbered:
         parts.append({"type": "text", "text": numbered_code_block(base_code)})
     else:
@@ -88,12 +97,6 @@ def _user_parts(
     mf = measured_features_block(features)
     if mf:
         parts.append({"type": "text", "text": mf})
-    mm = measurements_block(ctx.measurements)
-    if mm:
-        parts.append({"type": "text", "text": mm})
-    ab = anchors_block(ctx.anchors)
-    if ab:
-        parts.append({"type": "text", "text": ab})
     parts.append({"type": "text", "text": issues_block(issues)})
     if patch_errors:
         parts.append(

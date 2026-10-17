@@ -279,14 +279,13 @@ async def repair(
         user = (
             "Fix this code. Return a PatchResponse JSON object with `full_code` "
             "containing the COMPLETE corrected file — earlier `edits` hunks did "
-            "not match the code text, do NOT return `edits`.\n\n"
+            "not match the code text, do NOT return `edits`."
         )
     else:
         user = (
             "Fix this code. Return a PatchResponse JSON object — prefer `edits` for "
-            "localised fixes, `full_code` only when the fix is structural.\n\n"
+            "localised fixes, `full_code` only when the fix is structural."
         )
-    user += "PREVIOUS CODE:\n```python\n" + prev_code + "\n```\n\n" + diag_text
     parts: list[dict[str, Any]] = [{"type": "text", "text": user}]
     rb = request_block(ctx.prompt)
     if rb:
@@ -303,6 +302,15 @@ async def repair(
     cat = catalog_block(plan, spec)
     if cat:
         parts.append({"type": "text", "text": cat})
+    # APC ordering: the per-attempt code + diagnosis is the dynamic tail of
+    # the prompt — every block above is byte-stable across repair attempts
+    # on the same job, so the prefix cache survives repair_1 -> repair_2+
+    parts.append(
+        {
+            "type": "text",
+            "text": "PREVIOUS CODE:\n```python\n" + prev_code + "\n```\n\n" + diag_text,
+        }
+    )
     messages: list[dict[str, Any]] = [
         {
             "role": "system",
@@ -359,8 +367,6 @@ async def _repair_session(
     )
     parts: list[dict[str, Any]] = [
         {"type": "text", "text": "Fix this code using the tools — minimal edit only."},
-        {"type": "text", "text": numbered_code_block(prev_code, "PREVIOUS CODE")},
-        {"type": "text", "text": diag_text},
     ]
     rb = request_block(ctx.prompt)
     if rb:
@@ -377,6 +383,11 @@ async def _repair_session(
     cat = catalog_block(plan, spec)
     if cat:
         parts.append({"type": "text", "text": cat})
+    # APC ordering: numbered code + diagnosis change every attempt — they go
+    # LAST so the stable head (system + request/spec/plan/context) stays a
+    # shared prefix across repair sessions
+    parts.append({"type": "text", "text": numbered_code_block(prev_code, "PREVIOUS CODE")})
+    parts.append({"type": "text", "text": diag_text})
     system = "\n\n".join(
         [
             system_prompt("repair_tools.md"),

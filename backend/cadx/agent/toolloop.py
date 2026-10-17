@@ -156,6 +156,152 @@ def _trim_tool_results(msgs: list[dict[str, Any]], keep_last: int = 6) -> None:
             continue
 
 
+# --------------------------------------------------------------------------- #
+# deterministic history condensation (OpenHands-condenser pattern)             #
+#                                                                             #
+# Long tool sessions resend the whole history every turn; the resend grows     #
+# unboundedly and APC can only reuse the stable head. Once the exchange count  #
+# passes `agent_session_condense_turns` the middle of the message list is      #
+# replaced by ONE digest message: [system + first user seed] + [digest] +      #
+# [last ~half of the exchanges verbatim]. The digest is rebuilt from           #
+# session.tool_log every time, so repeated condenses stay consistent.          #
+
+# seed head that always survives verbatim: msgs[0] system prompt + msgs[1]
+# first user message (spec/request) — every caller seeds exactly this pair
+_CONDENSE_HEAD = 2
+_DIGEST_MARKER = "[SESSION DIGEST — earlier exchanges condensed]"
+
+
+def _exchange_units(msgs: list[dict[str, Any]], start: int) -> list[list[int]]:
+    """Segment msgs[start:] into turn units (index lists). Each unit is one
+    assistant message plus everything up to the next assistant message — all
+    its tool results and any image/nudge follow-ups — or a run of
+    non-assistant messages (drained user text, a previous digest). Units are
+    the atomic condense granule: a tool_call/tool_result pair can never be
+    split across them."""
+    units: list[list[int]] = []
+    cur: list[int] = []
+    for i in range(start, len(msgs)):
+        if msgs[i].get("role") == "assistant":
+            if cur:
+                units.append(cur)
+            cur = [i]
+        else:
+            cur.append(i)
+    if cur:
+        units.append(cur)
+    return units
+
+
+def _unit_tool_calls(msgs: list[dict[str, Any]], unit: list[int]) -> int:
+    """Tool-result messages inside one unit — one per executed call, matching
+    session.tool_log entries 1:1 (native `role:"tool"` messages and
+    content-fallback `TOOL RESULT for ...` user messages)."""
+    n = 0
+    for i in unit:
+        m = msgs[i]
+        if m.get("role") == "tool" or (
+            m.get("role") == "user"
+            and isinstance(m.get("content"), str)
+            and m["content"].startswith("TOOL RESULT for")
+        ):
+            n += 1
+    return n
+
+
+def _one_line(s: str, limit: int) -> str:
+    s = re.sub(r"\s+", " ", s).strip()
+    return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
+def _digest_call(name: str, args: dict[str, Any]) -> str:
+    """`add_block(base)`-style short rendering of one logged call."""
+    for key in ("name", "query", "pattern"):
+        v = args.get(key)
+        if isinstance(v, str | int | float) and str(v):
+            return f"{name}({_one_line(str(v), 24)})"
+    for k, v in args.items():
+        if k in ("code", "_raw") or not isinstance(v, str | int | float | bool):
+            continue
+        return f"{name}({k}={_one_line(str(v), 24)})"
+    return name
+
+
+def _digest_line(entry: dict[str, Any]) -> str:
+    """One `call(args) -> ok` / `-> fail: <category> <one-line error>` line."""
+    call = _digest_call(str(entry.get("name") or "?"), entry.get("args") or {})
+    res = entry.get("result")
+    if isinstance(res, str):
+        # _truncate() degraded a huge result to a string — classify by its head
+        if '"ok": false' not in res[:60]:
+            return f"{call} -> ok"
+        return f"{call} -> fail: {_one_line(res, 140)}"
+    if not isinstance(res, dict) or res.get("ok", True):
+        return f"{call} -> ok"
+    tail = " ".join(
+        p
+        for p in (
+            _one_line(str(res.get("category") or ""), 40),
+            _one_line(str(res.get("error") or ""), 140),
+        )
+        if p
+    )
+    return f"{call} -> fail: {tail}".rstrip()
+
+
+async def _condense_history(
+    ctx: AgentCtx, session: ToolSession, msgs: list[dict[str, Any]], step: str
+) -> None:
+    """Replace the middle of `msgs` with a one-message digest, in place.
+
+    Fires once the middle holds more than `agent_session_condense_turns`
+    exchange units; keeps the system+seed head and the last ~half of the
+    exchanges verbatim. The digest covers every tool call NOT in the kept
+    tail (from session.tool_log — append-only, so re-condenses rebuild a
+    complete digest) plus the build session's current block list, so the
+    model never loses track of what exists."""
+    threshold = int(ctx.runtime_settings.agent_session_condense_turns or 0)
+    if threshold <= 0 or len(msgs) <= _CONDENSE_HEAD:
+        return
+    units = _exchange_units(msgs, _CONDENSE_HEAD)
+    keep = max(4, threshold // 2)
+    # only fire when something would actually be dropped — tiny thresholds
+    # (<8) keep more than they trigger at
+    if len(units) <= threshold or len(units) <= keep:
+        return
+    tail = units[-keep:]
+    tail_calls = sum(_unit_tool_calls(msgs, u) for u in tail)
+    # tool_log is append-only and matches result messages 1:1 — everything
+    # not still verbatim in the tail belongs in the digest
+    entries = session.tool_log[: max(0, len(session.tool_log) - tail_calls)]
+    lines = [
+        _DIGEST_MARKER,
+        "The middle of this session was condensed to keep context small — the "
+        "full tool results below are gone, only the outcome per call remains:",
+        *(_digest_line(e) for e in entries),
+    ]
+    if session.kind == "build":
+        # the model must never lose track of which feature blocks exist
+        blocks = session._block_names()
+        lines.append("BLOCKS IN BUFFER NOW: " + (", ".join(blocks) if blocks else "(none)"))
+    lines.append(
+        "Live session state (code buffer, checkpoints) is unchanged — use "
+        "read_lines/search_code to inspect it rather than dropped results."
+    )
+    tail_msgs = [msgs[i] for u in tail for i in u]
+    before_len = len(msgs)
+    msgs[_CONDENSE_HEAD:] = [{"role": "user", "content": "\n".join(lines)}, *tail_msgs]
+    log.info(
+        "tool_session.condensed",
+        step=step,
+        before_len=before_len,
+        after_len=len(msgs),
+    )
+    await ctx.trace.event(
+        "tool_session.condensed", step=step, before_len=before_len, after_len=len(msgs)
+    )
+
+
 def _assistant_echo(resp: LLMResponse, native: bool) -> dict[str, Any]:
     if native:
         return {
@@ -256,6 +402,12 @@ async def run_session(  # noqa: C901
         if drain_fn is not None:
             msgs.extend(await drain_fn())
         _trim_tool_results(msgs)
+        if drain_fn is None:
+            # OpenHands-style condensation bounds the resend on long sessions.
+            # Chat sessions (drain_fn set) skip it: they persist
+            # messages_out[n0:] positionally, so rewriting the middle here
+            # would corrupt that slice — _trim_history bounds them instead.
+            await _condense_history(ctx, session, msgs, step)
         # fresh each turn: e.g. `verify` drops out once its budget is spent
         tools = session.tools()
         # resolved per turn — the escalation latch may flip mid-session
@@ -280,6 +432,9 @@ async def run_session(  # noqa: C901
                 "tool_calls": [f"{tc.name}({_short(tc.raw_arguments)})" for tc in tool_calls],
                 "has_final": not tool_calls,
                 "thinking": thinking_on(ctx, step),
+                # vLLM APC: how much of the prompt prefix was already cached —
+                # only recorded on a hit so trace rows stay clean
+                **({"cached_tokens": resp.cached_tokens} if resp.cached_tokens else {}),
             },
             prompt_tokens=resp.prompt_tokens,
             completion_tokens=resp.completion_tokens,

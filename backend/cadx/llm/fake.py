@@ -24,12 +24,19 @@ class FakeLLM:
       {"tool_calls": [{"name": ..., "arguments": {...}}]} — a tool call
       {"content_tool_call": {"name": ..., "arguments": {...}}} — tool call
         smuggled into content JSON (legacy provider simulation)
+      any dict may also carry "cached_tokens": <int> — surfaced on the
+        LLMResponse like a vLLM prefix-cache hit (default 0)
     """
 
     def __init__(self, responses: list[Any]) -> None:
         self._script = list(responses)
         self.calls: list[dict[str, Any]] = []
-        self.total_usage = {"prompt_tokens": 0, "completion_tokens": 0, "calls": 0}
+        self.total_usage = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cached_tokens": 0,
+            "calls": 0,
+        }
         self.models: dict[Role, str] = {"vision": "fake-vision", "code": "fake-code"}
         # scripts containing tool_calls entries drive sessions automatically;
         # plain-content scripts keep the legacy JSON-schema path.
@@ -86,6 +93,7 @@ class FakeLLM:
         json_schema: type[BaseModel] | None,
         tools: list[dict[str, Any]] | None,
     ) -> LLMResponse:
+        cached = int(item.get("cached_tokens") or 0) if isinstance(item, dict) else 0
         if tools and isinstance(item, dict) and item.get("tool_calls"):
             calls = [
                 _mk_call(tc.get("id") or f"call_{i}", tc.get("name", ""), tc.get("arguments"))
@@ -96,6 +104,7 @@ class FakeLLM:
                 model=f"fake-{role}",
                 tool_calls=calls,
                 finish_reason="tool_calls",
+                cached_tokens=cached,
             )
         if isinstance(item, dict):
             if item.get("content_tool_call"):
@@ -116,9 +125,10 @@ class FakeLLM:
                     model=f"fake-{role}",
                     tool_calls=[syn],
                     finish_reason="tool_calls",
+                    cached_tokens=cached,
                 )
         parsed = parse_model(text, json_schema) if json_schema else None
-        return LLMResponse(text=text, parsed=parsed, model=f"fake-{role}")
+        return LLMResponse(text=text, parsed=parsed, model=f"fake-{role}", cached_tokens=cached)
 
     async def test(self) -> dict[str, Any]:
         return {"ok": True, "vision_ok": True, "latency_ms": 0}

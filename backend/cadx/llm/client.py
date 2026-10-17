@@ -48,10 +48,28 @@ class LLMResponse:
     model: str = ""
     tool_calls: list[ToolCall] | None = None
     finish_reason: str = ""
+    # vLLM automatic prefix caching reports reused KV tokens via
+    # usage.prompt_tokens_details.cached_tokens (OpenAI-compatible); 0 = miss
+    cached_tokens: int = 0
 
 
 class LLMError(Exception):
     pass
+
+
+def _cached_tokens(usage: dict[str, Any]) -> int:
+    """Prompt tokens served from the provider's prefix cache.
+
+    OpenAI-compatible shape: ``usage.prompt_tokens_details.cached_tokens``
+    (vLLM fills it when automatic prefix caching hits). Missing or malformed
+    details read as a miss — the counter stays informational, never fatal."""
+    details = usage.get("prompt_tokens_details")
+    if not isinstance(details, dict):
+        return 0
+    try:
+        return int(details.get("cached_tokens") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 class _RetryNoStream(Exception):
@@ -247,7 +265,12 @@ class LLMClient:
                     log.warning("llm.extra_body.not_object")
             except json.JSONDecodeError:
                 log.warning("llm.extra_body.invalid_json")
-        self.total_usage = {"prompt_tokens": 0, "completion_tokens": 0, "calls": 0}
+        self.total_usage = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cached_tokens": 0,
+            "calls": 0,
+        }
 
     def _response_format(self, schema: type[BaseModel] | None) -> dict[str, Any] | None:
         if schema is None or self.json_mode == "none":
@@ -563,8 +586,10 @@ class LLMClient:
         usage = data.get("usage") or {}
         prompt_tokens = int(usage.get("prompt_tokens", 0))
         completion_tokens = int(usage.get("completion_tokens", 0))
+        cached_tokens = _cached_tokens(usage)
         self.total_usage["prompt_tokens"] += prompt_tokens
         self.total_usage["completion_tokens"] += completion_tokens
+        self.total_usage["cached_tokens"] += cached_tokens
         self.total_usage["calls"] += 1
 
         parsed: BaseModel | None = None
@@ -604,6 +629,7 @@ class LLMClient:
                 u2 = data2.get("usage") or {}
                 self.total_usage["prompt_tokens"] += int(u2.get("prompt_tokens", 0))
                 self.total_usage["completion_tokens"] += int(u2.get("completion_tokens", 0))
+                self.total_usage["cached_tokens"] += _cached_tokens(u2)
                 self.total_usage["calls"] += 1
                 parsed = parse_model(text2, json_schema)  # raises if still bad
                 text = text2
@@ -622,6 +648,7 @@ class LLMClient:
             model=model,
             tool_calls=tool_calls or None,
             finish_reason=finish,
+            cached_tokens=cached_tokens,
         )
 
     async def test(self) -> dict[str, Any]:

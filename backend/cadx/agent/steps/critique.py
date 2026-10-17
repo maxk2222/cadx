@@ -66,17 +66,20 @@ def _parts(
     if rb:
         parts.append({"type": "text", "text": rb})
     parts.append({"type": "text", "text": spec_block(spec)})
-    parts += renders_block(contact_sheet, analysis)
-    parts.append({"type": "text", "text": numeric})
-    mf = measured_features_block(features)
-    if mf:
-        parts.append({"type": "text", "text": mf})
+    # APC ordering: input measurements/anchors are job-stable — they precede
+    # the per-iteration tail (renders, analysis, findings) so critique calls
+    # share one prefix across iterations
     mm = measurements_block(ctx.measurements)
     if mm:
         parts.append({"type": "text", "text": mm})
     ab = anchors_block(ctx.anchors)
     if ab:
         parts.append({"type": "text", "text": ab})
+    parts += renders_block(contact_sheet, analysis)
+    parts.append({"type": "text", "text": numeric})
+    mf = measured_features_block(features)
+    if mf:
+        parts.append({"type": "text", "text": mf})
     if feature_findings:
         lines = ["GEOMETRIC FEATURE CHECK (measured, may be approximate):"]
         for f in feature_findings:
