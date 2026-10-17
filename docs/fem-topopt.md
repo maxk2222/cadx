@@ -227,12 +227,31 @@ equilibrium sanity.
   < `penal` enables penal continuation (ramp `penal_init`→`penal` over 30
   iterations, escapes grayscale local minima). All run through
   `topopt_run`/`optimize` and land in `history.json` with solver diagnostics.
-- Filters: `optimize.filter` `cone`|`heaviside` (β-continuation, crisp 0/1),
-  `optimize.self_supporting` + `print_direction` (45° AM overhang filter),
-  `optimize.multires` (coarse 2×-pitch SIMP warm-starts the fine grid when
-  the domain exceeds `topopt_multires_min_cells`, ~3× faster on big parts).
-  `optimize.min_gap_mm` warns when enclosed void gaps below that width
-  survive extraction (EDT closing check — thin gaps fuse in printing).
+- Filters: `optimize.filter` `cone`|`heaviside`|`helmholtz`|
+  `helmholtz+heaviside` — `heaviside` adds β-continuation for crisp 0/1
+  fields; `helmholtz` is the Lazarov–Sigmund PDE filter (`−r²∇²x̃+x̃=x`,
+  homogeneous Neumann BC) which keeps member sizes consistent right at the
+  domain boundary where the cone filter thins them; `helmholtz+heaviside`
+  combines both. `optimize.self_supporting` + `print_direction` (45° AM
+  overhang filter), `optimize.multires` (coarse 2×-pitch SIMP warm-starts
+  the fine grid when the domain exceeds `topopt_multires_min_cells`, ~3×
+  faster on big parts). `optimize.min_gap_mm` warns when enclosed void gaps
+  below that width survive extraction (EDT closing check — thin gaps fuse
+  in printing).
+- Robust formulation: `optimize.robust` (Sigmund/Wang) optimizes the worst
+  of eroded/intermediate/dilated threshold realisations — the result is
+  insensitive to extraction threshold and print over/under-extrusion.
+  `robust_delta_eta` (default 0.25) sets the erosion/dilation half-width,
+  `robust_designs: "e"` evaluates eroded only (~half the surcharge vs.
+  `"edi"` ≈3× FEM). Robust requires a heaviside-bearing filter and upgrades
+  `cone`→`heaviside`/`helmholtz`→`helmholtz+heaviside` with a warning.
+- Extraction: `extract_smooth` (default on) marches a Gaussian-smoothed
+  density field (`extract_sigma_px`) instead of the binary mask — sub-voxel
+  isosurfaces without staircase artefacts; `volume_preserve` bisects the
+  iso level so the surface encloses the optimized volume (reported as
+  `topopt.extract.iso`/`vol_error_pct`/`gray_fraction`). The FEM
+  verification still uses the exact binary mask; `topopt.verification`
+  compares predicted vs measured compliance and `sf_mask` vs `sf_export`.
 - Mesh extraction uses marching cubes (scikit-image) when available and falls
   back to the voxel-boundary surface, so `skimage` is optional at runtime.
 - The solver accepts per-DOF `(nnodes,3)` fixed masks; systems beyond

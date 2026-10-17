@@ -46,6 +46,12 @@ pick the best one.
     `"helmholtz+heaviside"` is the PDE-filter variant — crisper edges AND
     consistent member size right at the part boundary (no thinned edge
     members); plain `"helmholtz"` filters without the 0/1 projection.
+  - `robust:true` — worst-case formulation over eroded/intermediate/dilated
+    designs: the part survives slicing-threshold and print-tolerance
+    variations. Use for functional parts that must not fail when the print
+    comes out slightly thinner or thicker; ~3× solver cost. `robust_designs`
+    `"e"` (eroded only) halves the surcharge. Implies a heaviside-bearing
+    filter — combine with `filter:"helmholtz+heaviside"` for best surfaces.
   - `load_cases`: override/extend the spec cases (same schema).
   - `material`, `voxel_mm`, `max_iterations`, `density_threshold`.
 - `refine_features(run_index, features?, restore_planes?, load_cases?)` —
@@ -117,6 +123,15 @@ Each `topopt_run` reports:
 - `n_components` — number of disconnected bodies. >1 means a keep/load
   region became a floating island: reject or enlarge keep regions / raise
   volfrac so it reconnects.
+- `extract.vol_error_pct` — how much the extracted surface deviates from
+  the optimized volume; large |error| means a bad `density_threshold` —
+  adjust it or let volume-preserving extraction handle it.
+- `extract.gray_fraction` — share of intermediate densities in the design;
+  high values mean a diffuse, threshold-sensitive layout → prefer
+  `heaviside`-bearing filter or `robust` next run.
+- `verification` — SIMP-predicted vs measured compliance/SF on mask and
+  export mesh; a large `sf_mask` ≫ `sf_export` gap means the smoothed
+  surface eats strength — raise volfrac or min_member.
 - A render of the optimized shape — LOOK at it: disconnected struts, lost
   mounting features or a dissolved surface are a reject regardless of SF.
 
