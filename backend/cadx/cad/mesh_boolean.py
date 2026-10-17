@@ -338,9 +338,11 @@ def recut_missing_holes(
                 continue
             # only authoritative measurements may force a cut — mesh-derived
             # and non-authoritative ("image-approx") anchors are hints the
-            # critique handles, not features worth drilling blindly
+            # critique handles, not features worth drilling blindly. Anchors
+            # sourced from the spec ("spec", "mesh+spec", ...) carry declared
+            # intent: a spec bore missing from geometry MUST be cut.
             src = str(h.get("source") or "")
-            if src and src not in ("image", "image+mesh"):
+            if src and "spec" not in src and src not in ("image", "image+mesh"):
                 continue
             if float(h.get("dia") or 0.0) <= 0:
                 continue

@@ -113,6 +113,23 @@ def test_recut_skips_open_and_nonauthoritative():
     assert applied3 == [] and out3 is b
 
 
+def test_recut_spec_anchor():
+    """Spec-sourced anchors carry declared intent: a spec bore missing from
+    the geometry must be cut even though no image/mesh evidence exists."""
+    b = Box(20, 20, 10)
+    out, applied = mb.recut_missing_holes(
+        b, [{"x": 3, "y": -4, "dia": 5.0, "axis": "+z", "kind": "hole", "source": "spec"}]
+    )
+    assert applied
+    assert mb.tunnel_open(out, 3, -4, "+z")
+    # spec-enriched measured anchors ("mesh+spec" etc.) are authoritative too
+    out2, applied2 = mb.recut_missing_holes(
+        b, [{"x": 3, "y": -4, "dia": 5.0, "axis": "+z", "source": "image-approx+mesh+spec"}]
+    )
+    assert applied2
+    assert mb.tunnel_open(out2, 3, -4, "+z")
+
+
 def test_recut_blind_depth():
     b = Box(20, 20, 10)
     out, applied = mb.recut_missing_holes(

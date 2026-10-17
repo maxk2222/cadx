@@ -1798,7 +1798,9 @@ def compare_anchor_positions(
         # authoritative plan-view image; mesh-only / approximate anchors are
         # self-referential (the mesh IS the part) so a deviation is minor
         src = str(a.get("source", "image"))
-        exact = src in ("image", "image+mesh")
+        # spec-anchored positions are declared intent — just as exact as a
+        # measured plan-view position for deviation reporting
+        exact = "spec" in src or src in ("image", "image+mesh")
         # when the anchor carries a measured drill axis (plan-view holes are
         # "+z"), a hole bored along a different axis never matches it — a
         # sideways pin through the width is not a mounting hole.

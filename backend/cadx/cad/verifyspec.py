@@ -34,6 +34,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from cadx.cad.poshint import parse_position_hints, resolve_end_hint
+
 Status = str  # "PASS" | "FAIL" | "UNVERIFIED"
 TIER_STRUCTURAL = "structural"
 TIER_ENVELOPE = "envelope"
@@ -73,42 +75,6 @@ _PROTRUSION_TYPES = {"rib", "gusset", "boss", "tube", "pin", "post", "stud", "st
 _AXIS_TEXT_RE = re.compile(
     r"\b([xyz])[\s-]*axis\b|\balong\s+(?:the\s+)?([xyz])(?:[\s-]*axis)?\b", re.I
 )
-# machine-readable position hints: "x=12" offsets, "75mm from -x end"
-# end-relative offsets, "centred in y" mid-plane hints, "+y"/"front" face words
-_POS_COORD_RE = re.compile(r"\b([xyz])\s*=\s*(-?\d+(?:\.\d+)?)", re.I)
-_POS_END_NUM_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(mm|cm)?", re.I)
-# "75mm from -x end", "20 and 75mm from the +y edge" — the sign is mandatory
-# ("from x end" is ambiguous which end) and binds the bbox lo/hi side
-_POS_END_RE = re.compile(
-    r"(?<![=\w.\-])((?:\d+(?:\.\d+)?\s*(?:mm|cm)?\s*(?:(?:,|\band\b|&|/)\s*)?)+?)"
-    r"\s*(?:(?:in|back|over)\s+)?from\s+(?:the\s+)?([+-])([xyz])"
-    r"(?:[\s-]*(?:ends?|edges?|sides?|faces?))?\b",
-    re.I,
-)
-# "between 20 and 30mm"/"20 to 30mm" are ranges, not point offsets — the
-# whole hint stays unverifiable rather than checking a wrong single value
-_POS_END_RANGE_RE = re.compile(r"(?:\bbetween|\bto)\s*$", re.I)
-# "centred in y", "centered about the x axis", "mid y", "middle of z" -> 0.0
-_POS_MID_RE = re.compile(
-    r"\bcent(?:er|re)e?d?\s+(?:in|on|about|across|along)\s+(?:the\s+)?"
-    r"([xyz])(?:[\s-]*axis)?\b"
-    r"|\bmid(?:dle)?[\s-]*(?:of\s+(?:the\s+)?)?([xyz])(?:[\s-]*axis)?\b",
-    re.I,
-)
-_POS_FACE_TOKEN_RE = re.compile(r"(?<![\w])([+-][xyz])(?![\w])")
-_POS_FACE_WORDS = {
-    "top": "+z",
-    "upper": "+z",
-    "deck": "+z",
-    "bottom": "-z",
-    "lower": "-z",
-    "underside": "-z",
-    "front": "+y",
-    "back": "-y",
-    "rear": "-y",
-    "left": "-x",
-    "right": "+x",
-}
 # "y faces"/"+x side" — the envelope face a protrusion feature sits on
 _HINT_AXIS_RE = re.compile(r"(?<![\w])[+-]?([xyz])[\s-]*(?:faces?|sides?|seite)\b", re.I)
 _POS_TOL_MM = 2.0  # "x=12" offsets verified within ±2 mm
@@ -189,70 +155,6 @@ def _stated_envelope(spec: dict[str, Any] | None) -> dict[str, float]:
     return out
 
 
-def _position_expectations(
-    text: str,
-) -> tuple[dict[str, float], list[str], list[tuple[str, str, float]]]:
-    """Parse machine-readable position hints out of free text:
-    ``x=12``-style coordinate offsets, ``75mm from -x end``-style end/edge
-    offsets (returned as ``(axis, end_sign, dist_mm)`` triples — the consumer
-    resolves them against the measured bbox: ``-x`` -> ``xmin + d``,
-    ``+x`` -> ``xmax - d``), ``centred in y`` mid-plane hints (-> ``y=0``),
-    and ``+y``/``front``-style face hints.
-    Both signs of one axis ('front and back') cancel — not a side constraint.
-    Parsed spans are masked so a token is never read as two hint kinds."""
-    low = text.lower()
-    masked = list(low)
-
-    def _mask(span: tuple[int, int]) -> None:
-        for p in range(*span):
-            masked[p] = " "
-
-    coords: dict[str, float] = {}
-    for m in _POS_COORD_RE.finditer(low):
-        coords[m.group(1).lower()] = float(m.group(2))
-        _mask(m.span())
-    ends: list[tuple[str, str, float]] = []
-    work = "".join(masked)
-    for m in _POS_END_RE.finditer(work):
-        if _POS_END_RANGE_RE.search(work[: m.start(1)]):
-            continue  # unmasked on purpose — the ±axis still reads as a face hint
-        gtext = m.group(1)
-        nums = list(_POS_END_NUM_RE.finditer(gtext))
-        for n in nums:
-            # bare number in a list: trust it only when conjoined by
-            # "and"/"&"/"/" — "count 2, 30mm from -x" drops the 2
-            if (
-                not n.group(2)
-                and len(nums) > 1
-                and not re.search(r"(?:\band\b|&|/)\s*$", gtext[: n.start()])
-                and not re.match(r"\s*(?:\band\b|&|/)", gtext[n.end() :])
-            ):
-                continue
-            unit = (n.group(2) or "mm").lower()
-            ends.append(
-                (
-                    m.group(3).lower(),
-                    m.group(2),
-                    float(n.group(1)) * (10.0 if unit == "cm" else 1.0),
-                )
-            )
-        _mask(m.span())
-    for m in _POS_MID_RE.finditer("".join(masked)):
-        ax = next(g for g in m.groups() if g).lower()
-        coords.setdefault(ax, 0.0)
-        _mask(m.span())
-    work = "".join(masked)
-    faces = {m.group(1) for m in _POS_FACE_TOKEN_RE.finditer(work)}
-    for word, ax in _POS_FACE_WORDS.items():
-        if re.search(rf"\b{re.escape(word)}\b", work):
-            faces.add(ax)
-    for letter in "xyz":
-        if f"+{letter}" in faces and f"-{letter}" in faces:
-            faces.discard(f"+{letter}")
-            faces.discard(f"-{letter}")
-    return coords, sorted(faces), ends
-
-
 def _feature_hint_axes(f: dict[str, Any]) -> set[str]:
     """Axis letters the feature can protrude along — its ``axis`` field plus
     face hints ('outer y sides', '+x face') in position/description."""
@@ -262,7 +164,7 @@ def _feature_hint_axes(f: dict[str, Any]) -> set[str]:
         out.add(ax)
     text = f"{f.get('position') or ''} {f.get('description') or ''}"
     out |= {m.group(1) for m in _HINT_AXIS_RE.finditer(text.lower())}
-    _c, faces, _ends = _position_expectations(text)
+    _c, faces, _ends = parse_position_hints(text)
     out |= {fa[1] for fa in faces}
     return out
 
@@ -414,7 +316,7 @@ def _void_position_check(
     if not pos:
         return
     check_name = f"feat_{i}_position"
-    coords, faces, ends = _position_expectations(pos)
+    coords, faces, ends = parse_position_hints(pos)
     base: dict[str, Any] = {"feature": name, "position": pos[:160]}
     if not coords and not faces and not ends:
         checks.append(
@@ -428,9 +330,7 @@ def _void_position_check(
         return
     expected: dict[str, Any] = {"coords": coords, "faces": faces}
     if ends:
-        expected["ends"] = [
-            {"axis": ax, "end": f"{sign}{ax}", "offset_mm": d} for ax, sign, d in ends
-        ]
+        expected["ends"] = ends
     centers = [
         c
         for g in cands
@@ -451,11 +351,12 @@ def _void_position_check(
     wants: dict[str, list[float]] = {}
     for ax, want in coords.items():
         wants.setdefault(ax, []).append(want)
-    for ax, sign, dist in ends:
-        bnd = bounds.get(ax)
+    for e in ends:
+        bnd = bounds.get(e["axis"])
         if bnd is not None:
-            lo, hi = bnd
-            wants.setdefault(ax, []).append(lo + dist if sign == "-" else hi - dist)
+            wants.setdefault(e["axis"], []).append(
+                resolve_end_hint(e["axis"], e["end"], e["offset_mm"], *bnd)
+            )
     violations, verified = _centre_coord_check(centers, wants)
     for face in faces:
         if face[1] == "z":

@@ -210,8 +210,9 @@ def merge_anchor_lists(
             match["depth_mm"] = s["depth_mm"]
         if match.get("kind") == "hole" and s.get("kind") != "hole":
             match["kind"] = s["kind"]
-        if match.get("source") in ("image", "mesh") and s.get("source") == "scan":
-            match["source"] = f"{match['source']}+scan"
+        msrc = str(match.get("source") or "")
+        if s.get("source") == "scan" and msrc and "scan" not in msrc:
+            match["source"] = f"{msrc}+scan"
     # fastener anchors first so `index` == hole_index for mounts/bores; dimples
     # and pockets stay reachable via `anchor` regions but can't shadow a bore
     merged.sort(key=lambda a: not is_fastener_anchor(a))

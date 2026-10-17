@@ -86,3 +86,164 @@ def test_build_anchors_image_only():
     assert a.holes[0].source == "image"
     assert a.holes[0].dia == 5.0  # rounded to 0.5
     assert a.image_outline == _TRAP
+
+
+# --------------------------------------------------------------------------- #
+# spec-position anchors (declared intent, no image/mesh evidence needed)      #
+# --------------------------------------------------------------------------- #
+
+
+def _plate_spec(features) -> PartSpec:
+    """90x40x14 plate centred at origin: x in [-45, 45], y in [-20, 20]."""
+    d = lambda v: Dim(value=v, unit="mm", source="stated")  # noqa: E731
+    return PartSpec(
+        name="plate",
+        summary="",
+        units="mm",
+        length_x=d(90),
+        width_y=d(40),
+        height_z=d(14),
+        features=features,
+        image_roles=[],
+    )
+
+
+def test_spec_anchors_without_image_or_mesh():
+    """The hero-image-showed-no-holes case: declared end-relative positions
+    must still become anchors at the correct centred coordinates."""
+    spec = _plate_spec(
+        [
+            Feature(
+                name="bore A",
+                type="hole",
+                dims={"diameter": 10.0},
+                position="20mm from -X end, centered in Y",
+            ),
+            Feature(
+                name="bore B",
+                type="hole",
+                dims={"diameter": 10.0},
+                position="75mm from -X end, centered in Y",
+            ),
+        ]
+    )
+    a = build_anchors(spec, {}, None)
+    assert len(a.holes) == 2
+    # -45+20 = -25, -45+75 = +30 — index == spec declaration order
+    assert [(h.x, h.y, h.name) for h in a.holes] == [
+        (-25.0, 0.0, "bore A"),
+        (30.0, 0.0, "bore B"),
+    ]
+    assert all(h.source == "spec" and h.axis == "+z" for h in a.holes)
+    assert [h.index for h in a.holes] == [1, 2]
+
+
+def test_spec_anchor_multi_offset_feature():
+    """One count-2 feature declaring two end offsets yields both positions."""
+    spec = _plate_spec(
+        [
+            Feature(
+                name="bores",
+                type="hole",
+                dims={"diameter": 10.0},
+                count=2,
+                position="20 and 75mm from -X end, centred in Y",
+            ),
+            Feature(
+                name="thread",
+                type="thread",
+                dims={"diameter": 8.0},
+                position="8mm from +X end, centered in y",
+                standard="M8",
+            ),
+        ]
+    )
+    a = build_anchors(spec, {}, None)
+    assert [(h.x, h.y, h.name) for h in a.holes] == [
+        (-25.0, 0.0, "bores"),
+        (30.0, 0.0, "bores"),
+        (37.0, 0.0, "thread"),  # +45-8 — hi-side end hint
+    ]
+    assert a.holes[2].kind == "thread"
+    assert a.holes[2].bolt_size == "M8"
+    assert [h.index for h in a.holes] == [1, 2, 3]
+
+
+def test_spec_anchor_enriches_measured_within_3mm():
+    """A measured anchor near the declared position keeps its real x/y and
+    gains the spec name/kind/dia — source gains the '+spec' marker."""
+    spec = _plate_spec(
+        [
+            Feature(
+                name="bore B",
+                type="hole",
+                dims={"diameter": 10.0},
+                position="75mm from -X end, centered in Y",
+            ),
+        ]
+    )
+    mesh = {
+        "holes": [
+            {"x": 29.0, "y": 0.4, "dia": 9.6, "kind": "tunnel"},  # within 3mm of (30,0)
+            {"x": -10.0, "y": 5.0, "dia": 3.0, "kind": "tunnel"},
+        ],
+        "outline_mm": [],
+    }
+    a = build_anchors(spec, {}, mesh)
+    assert len(a.holes) == 2
+    first = a.holes[0]  # spec-anchored entries go first regardless of x order
+    assert first.source == "mesh+spec"
+    assert (first.x, first.y) == (29.0, 0.4)  # measured position wins
+    assert first.dia == 10.0 and first.name == "bore B"  # spec dims/name win
+    assert a.holes[1].source == "mesh" and a.holes[1].x == -10.0
+    assert [h.index for h in a.holes] == [1, 2]
+
+
+def test_spec_anchors_order_first_then_measured_tail():
+    """Measured-only anchors append after all spec-anchored entries, x-sorted."""
+    spec = _plate_spec(
+        [
+            Feature(
+                name="bore",
+                type="hole",
+                dims={"diameter": 10.0},
+                position="75mm from -X end, centered in Y",
+            ),
+        ]
+    )
+    mesh = {
+        "holes": [{"x": -40.0, "y": 0.0, "dia": 4.0, "kind": "tunnel"}],
+        "outline_mm": [],
+    }
+    a = build_anchors(spec, {}, mesh)
+    assert a.holes[0].source == "spec" and a.holes[0].x == 30.0
+    assert a.holes[1].source == "mesh" and a.holes[1].x == -40.0
+    assert [h.index for h in a.holes] == [1, 2]
+
+
+def test_spec_anchor_unresolvable_or_unusable_skipped():
+    """Vague text, missing dia and non-+z bore axes never become anchors."""
+    spec = _plate_spec(
+        [
+            Feature(
+                name="vague",
+                type="hole",
+                dims={"diameter": 6.0},
+                position="near the +X end",
+            ),
+            Feature(
+                name="nodia",
+                type="hole",
+                position="20mm from -X end, centered in Y",
+            ),
+            Feature(
+                name="side",
+                type="hole",
+                dims={"diameter": 4.0},
+                axis="x",
+                position="centred in y, centred in z",
+            ),
+        ]
+    )
+    a = build_anchors(spec, {}, mesh_features=None)
+    assert a.holes == []
