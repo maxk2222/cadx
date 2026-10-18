@@ -927,6 +927,22 @@ def _parent_stl(parent: Version) -> str | None:
     return storage.best_mesh_relpath(parent.project_id, parent.id, parent.iterations or 1)
 
 
+def _injob_refine_committed(version: Version) -> bool:
+    """True when the version's chosen topopt agent run is a REFINE output —
+    the in-job optimize session already finished features (`refine_features`
+    runs land in `mesh.topopt.agent_runs` with `params.refine_of` set; the
+    entry marked `chosen` is the committed result). Spawning a standalone
+    refine child on top would redo the same re-cuts."""
+    top = (version.mesh or {}).get("topopt") or {}
+    runs = top.get("agent_runs") or []
+    return any(
+        isinstance(r, dict)
+        and r.get("chosen")
+        and (r.get("params") or {}).get("refine_of") is not None
+        for r in runs
+    )
+
+
 async def _maybe_spawn_refine(
     db: AsyncSession,
     parent: Version,
@@ -953,6 +969,13 @@ async def _maybe_spawn_refine(
         VersionStatus.succeeded,
         VersionStatus.needs_review,
     ):
+        return False
+    if _injob_refine_committed(parent):
+        log.info(
+            "refine.spawn_skipped",
+            version=str(parent.id),
+            reason="refine already applied in generation job",
+        )
         return False
     has_features = bool(spec and spec.features)
     topopt_anchors = ((parent.mesh or {}).get("topopt") or {}).get("anchors") or []
@@ -1025,6 +1048,12 @@ async def _spawn_refine_after_topopt(
     ):
         return
     try:
+        if _injob_refine_committed(version):
+            # the agent session already committed a refine run — a child
+            # job would re-cut the same features a second time
+            await _append_job_log(db, job, "refine already applied in generation job — skipped\n")
+            await emit("refine", 1, "refine already applied in generation job — skipped")
+            return
         spec = PartSpec(**version.spec) if version.spec else None
         optimize = spec.optimize.model_dump() if spec and spec.optimize else {}
         load_cases = [c.model_dump() for c in (spec.load_cases if spec else [])]
@@ -1111,6 +1140,18 @@ async def run_optimize_job(  # noqa: C901
             "max_iterations": settings.topopt_iterations,
             **(payload.get("optimize") or {}),
         }
+        # multires is default-on executor-side — a serialized OptimizeSpec
+        # carries schema-False which would read as an opt-out
+        if not optimize.get("multires"):
+            optimize.pop("multires", None)
+        # stated spec envelope → executor clips the base mesh to the design
+        # domain before voxelizing (raw hero meshes can overshoot it)
+        from cadx.cad.verifyspec import _stated_envelope
+
+        spec_env = _stated_envelope(parent.spec if parent else None)
+        spec_dims = [spec_env.get(a) for a in ("x", "y", "z")]
+        if any(d is not None for d in spec_dims):
+            optimize["spec_dims_mm"] = spec_dims
         material = (
             payload.get("material") or settings.fem_material or (spec.material if spec else "")
         )
@@ -1598,7 +1639,9 @@ async def run_refine_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[s
         # is self-reported — rescan the refined mesh and require every applied
         # cuttable +z feature to have left a real tunnel (a cut landing in a
         # SIMP void reports huge dia_deviation_mm yet still "applied")
-        misses = _refine_tunnel_misses(
+        from cadx.cad.fem.refine import refine_verify
+
+        misses = refine_verify(
             it_dir / "_run" / "model.stl",
             refine_report,
             anchors=anchors,
@@ -2209,110 +2252,6 @@ def _copy_export_artifacts_ctxless(
 
 
 # applied refine kinds that must leave a real through-feature in the mesh
-_CUT_VERIFY_KINDS = {"hole", "tunnel", "thread", "tap"}
-
-
-def _anchor_xy(a: dict[str, Any]) -> tuple[float, float] | None:
-    """+z in-plane coords of an anchor/request-feature dict."""
-    pos = a.get("pos") or []
-    try:
-        if len(pos) >= 2 and pos[0] is not None and pos[1] is not None:
-            return float(pos[0]), float(pos[1])
-    except (TypeError, ValueError):
-        pass
-    if a.get("x") is not None and a.get("y") is not None:
-        try:
-            return float(a["x"]), float(a["y"])
-        except (TypeError, ValueError):
-            return None
-    return None
-
-
-def _refine_expected_uv(
-    entry: dict[str, Any],
-    anchors: list[dict[str, Any]] | None,
-    request_features: list[dict[str, Any]] | None,
-) -> tuple[float, float] | None:
-    """Expected +z in-plane (x, y) of an applied refine feature.
-
-    ``applied`` records carry no position — resolve it from the request
-    feature / anchor the cut was derived from. Anchor-derived names are
-    ``<name>`` or ``anchor <index>``; spec-renamed features fall back to the
-    same-axis anchor closest in diameter."""
-    direct = _anchor_xy(entry)
-    if direct is not None:
-        return direct
-    name = str(entry.get("name") or "")
-    for r in request_features or []:
-        if str(r.get("name") or "") == name:
-            uv = _anchor_xy(r)
-            if uv is not None:
-                return uv
-    dia = float(entry.get("requested_dia_mm") or entry.get("dia") or 0.0)
-    best: tuple[float, float] | None = None
-    best_dev: float | None = None
-    for a in anchors or []:
-        if str(a.get("axis") or "+z") != "+z":
-            continue
-        uv = _anchor_xy(a)
-        if uv is None:
-            continue
-        if str(a.get("name") or f"anchor {a.get('index', '?')}") == name:
-            return uv
-        if dia > 0:
-            dev = abs(float(a.get("dia") or 0.0) - dia)
-            if best_dev is None or dev < best_dev:
-                best, best_dev = uv, dev
-    return best
-
-
-def _refine_tunnel_misses(
-    stl_path: Path,
-    refine_report: dict[str, Any],
-    *,
-    anchors: list[dict[str, Any]] | None,
-    request_features: list[dict[str, Any]] | None,
-) -> list[dict[str, Any]]:
-    """Applied +z cuttable features that left NO matching through-feature.
-
-    The report's ``applied`` list is self-reported — a cut landing in a SIMP
-    void (``dia_deviation_mm`` in the tens of mm) still counts as applied.
-    Rescan the raw refined mesh (``_run/model.stl`` — the exported copies may
-    have had holes filled by the repair pass) and require a tunnel within
-    3 mm xy / 25 % dia of the expected position. Blind cuts (``depth_mm``
-    set) accept a dimple instead of a through-tunnel."""
-    if not stl_path.exists():
-        return []
-    try:
-        from cadx.cad.fem.anchors3d import scan_mesh_anchors
-
-        scanned = scan_mesh_anchors(stl_path)
-    except Exception:
-        log.warning("refine.verify_scan_failed", path=str(stl_path), exc_info=True)
-        return []
-    misses: list[dict[str, Any]] = []
-    for entry in refine_report.get("applied") or []:
-        if str(entry.get("kind") or "hole") not in _CUT_VERIFY_KINDS:
-            continue
-        if str(entry.get("axis") or "+z") != "+z":
-            continue
-        uv = _refine_expected_uv(entry, anchors, request_features)
-        if uv is None:
-            continue  # no position to check against — cannot verify
-        dia = float(entry.get("requested_dia_mm") or entry.get("dia") or 0.0)
-        want = {"dimple"} if entry.get("depth_mm") else {"hole"}
-        for t in scanned:
-            if str(t.get("axis") or "+z") != "+z" or str(t.get("kind") or "") not in want:
-                continue
-            if math.hypot(float(t.get("x") or 0.0) - uv[0], float(t.get("y") or 0.0) - uv[1]) > 3.0:
-                continue
-            if dia <= 0 or abs(float(t.get("dia") or 0.0) - dia) <= 0.25 * dia:
-                break
-        else:
-            misses.append({"entry": entry, "x": uv[0], "y": uv[1], "dia": dia})
-    return misses
-
-
 def _copy_mesh_artifacts_ctxless(
     project_id: uuid.UUID, version_id: uuid.UUID, iteration: int, parent: Version | None = None
 ) -> dict[str, str]:

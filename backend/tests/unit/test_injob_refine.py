@@ -206,6 +206,97 @@ async def test_non_topopt_outcome_enqueues_nothing(monkeypatch):
     assert not enqueued
 
 
+async def test_topopt_outcome_with_committed_injob_refine_skips_spawn(monkeypatch):
+    """Dedup: the agent optimize session already committed a `refine_features`
+    run (agent_runs entry with params.refine_of marked chosen) — the
+    standalone refine child must NOT be spawned on top of it."""
+    from cadx.agent import worker_jobs as wj
+
+    outcome = _topopt_outcome(with_hole=True)
+    outcome.mesh["topopt"]["agent_runs"] = [
+        {"index": 0, "chosen": False, "params": {"target_volume_fraction": 0.4}},
+        {"index": 1, "chosen": True, "params": {"refine_of": 0, "features": "auto"}},
+    ]
+    enqueued = _patch(monkeypatch, outcome)
+    job_id, version_id = await _mk_agent_version()
+
+    result = await wj.run_agent_job({}, {"job_id": str(job_id), "version_id": str(version_id)})
+    assert result == {"ok": True, "status": "succeeded"}
+    assert not [e for e in enqueued if e["func"] == "run_refine_job"]
+    assert await _refine_children(version_id) == []
+    async with async_session() as db:
+        job = await db.get(Job, job_id)
+        assert "refine already applied in generation job" in (job.log or "")
+
+
+async def test_topopt_outcome_with_unchosen_refine_run_still_spawns(monkeypatch):
+    """A refine run the agent did NOT choose leaves the committed result
+    unrefined — the standalone child still spawns."""
+    from cadx.agent import worker_jobs as wj
+
+    outcome = _topopt_outcome(with_hole=True)
+    outcome.mesh["topopt"]["agent_runs"] = [
+        {"index": 0, "chosen": True, "params": {"target_volume_fraction": 0.4}},
+        {"index": 1, "chosen": False, "params": {"refine_of": 0, "features": "auto"}},
+    ]
+    enqueued = _patch(monkeypatch, outcome)
+    job_id, version_id = await _mk_agent_version()
+
+    result = await wj.run_agent_job({}, {"job_id": str(job_id), "version_id": str(version_id)})
+    assert result == {"ok": True, "status": "succeeded"}
+    assert [e for e in enqueued if e["func"] == "run_refine_job"]
+
+
+async def test_maybe_spawn_refine_skips_committed_injob_refine(monkeypatch):
+    """Same dedup on the standalone-optimize path via _maybe_spawn_refine:
+    persisted agent_runs on the parent version block the child."""
+    import cadx.api.deps as deps
+    from cadx.agent import worker_jobs as wj
+
+    enqueued: list[dict] = []
+
+    async def fake_enqueue(func, payload):
+        enqueued.append({"func": func, "payload": payload})
+        return "x"
+
+    monkeypatch.setattr(deps, "enqueue", fake_enqueue)
+
+    async with async_session() as db:
+        p = Project(name="injob-refine-dedup")
+        db.add(p)
+        await db.flush()
+        parent = Version(
+            project_id=p.id,
+            number=1,
+            kind=VersionKind.generate,
+            prompt="block",
+            status=VersionStatus.succeeded,
+            mesh={
+                "topopt": {
+                    "anchors": list(_REFINE_ANCHORS),
+                    "agent_runs": [
+                        {"index": 0, "chosen": False, "params": {}},
+                        {"index": 1, "chosen": True, "params": {"refine_of": 0}},
+                    ],
+                }
+            },
+        )
+        db.add(parent)
+        await db.commit()
+
+        ok = await wj._maybe_spawn_refine(
+            db,
+            parent,
+            spec=None,
+            optimize={"auto_refine_features": True},
+            load_cases=[],
+            material="",
+            runtime=RuntimeSettings(),
+        )
+        assert ok is False
+    assert not enqueued
+
+
 async def test_runtime_flag_alone_triggers_spawn(monkeypatch):
     """`_maybe_spawn_refine` fires on runtime topopt_auto_refine without the
     OptimizeSpec/request flag — anchors alone satisfy the guard."""
