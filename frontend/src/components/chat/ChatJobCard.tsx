@@ -1,24 +1,29 @@
 import { useQuery } from "@tanstack/react-query";
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, XCircle } from "lucide-react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
-import { api } from "../../lib/api";
+import { api, errMsg } from "../../lib/api";
+import { stepLabel } from "../../lib/steps";
 import type { SpawnedRef } from "../../lib/types";
 import LivePreview from "../LivePreview";
 import StatusBadge from "../StatusBadge";
-import { ProgressBar } from "../ui";
+import { ProgressBar, useToast } from "../ui";
 
 const TERMINAL = ["succeeded", "failed", "cancelled", "needs_review"];
 
-/** Inline card for a job/version the chat agent spawned — polls job status,
- *  shows the live render while running and a static preview + deep link
- *  once finished. */
+/** Inline card for a job/version the chat agent spawned — polls job status
+ *  slowly (chat already has an SSE stream; this is only a fallback), shows
+ *  the live render while running and a static preview + deep link once
+ *  finished. */
 export default function ChatJobCard({ spawned }: { spawned: SpawnedRef }) {
+  const toast = useToast();
+  const [cancelling, setCancelling] = useState(false);
   const job = useQuery({
     queryKey: ["job", spawned.job_id],
     queryFn: () => api.getJob(spawned.job_id!),
     enabled: !!spawned.job_id,
     refetchInterval: (q) =>
-      q.state.data && !TERMINAL.includes(q.state.data.status) ? 2000 : false,
+      q.state.data && !TERMINAL.includes(q.state.data.status) ? 15000 : false,
   });
   const version = useQuery({
     queryKey: ["version", spawned.version_id],
@@ -37,12 +42,32 @@ export default function ChatJobCard({ spawned }: { spawned: SpawnedRef }) {
         </span>
         {j && <StatusBadge status={j.status} />}
         {j?.step && active && (
-          <span className="truncate text-xs text-zinc-500">{j.step}</span>
+          <span className="truncate text-xs text-zinc-500">
+            {stepLabel(j.step)}
+          </span>
+        )}
+        {j && ["queued", "running"].includes(j.status) && (
+          <button
+            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-red-400 hover:bg-red-950/50 disabled:opacity-40"
+            title="abort this job"
+            aria-label="cancel job"
+            disabled={cancelling}
+            onClick={() => {
+              setCancelling(true);
+              api
+                .cancelJob(j.id)
+                .then(() => job.refetch())
+                .catch((e) => toast(errMsg(e), "error"))
+                .finally(() => setCancelling(false));
+            }}
+          >
+            <XCircle className="h-3 w-3" /> cancel
+          </button>
         )}
         {vid && (
           <Link
             to={`/versions/${vid}`}
-            className="ml-auto flex items-center gap-1 text-xs text-sky-400 hover:text-sky-300"
+            className="ml-auto flex items-center gap-1 text-xs text-brand-400 hover:text-brand-300"
           >
             version
             <ExternalLink className="h-3 w-3" />

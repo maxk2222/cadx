@@ -6,7 +6,7 @@ import {
   Square,
   Trash2,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import Composer from "../components/chat/Composer";
 import MessageBubble from "../components/chat/MessageBubble";
@@ -19,9 +19,10 @@ import {
   Crumbs,
   EmptyState,
   IconBtn,
-  Spinner,
+  useStickyBottom,
+  useToast,
 } from "../components/ui";
-import { api } from "../lib/api";
+import { api, errMsg } from "../lib/api";
 import type { Asset } from "../lib/types";
 import { useChatEvents } from "../lib/useChatEvents";
 import { useTitle } from "../lib/useTitle";
@@ -96,14 +97,16 @@ function ChatIndex() {
 
 function ChatView({ chatId }: { chatId: string }) {
   const qc = useQueryClient();
+  const toast = useToast();
   const [show3d, setShow3d] = useState(true);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const nav = useNavigate();
-  const bottomRef = useRef<HTMLDivElement>(null);
 
   const state = useChatEvents(chatId, (type) => {
-    if (type === "turn_end" || type === "tool_result" || type === "message") {
-      qc.invalidateQueries({ queryKey: ["chat", chatId] });
+    // messages/tool state lives in the hook — only refetch server state
+    // the agent may have changed (generated assets, project binding)
+    if (type === "turn_end") {
+      qc.invalidateQueries({ queryKey: ["chats"] });
       if (state.chat?.project_id)
         qc.invalidateQueries({ queryKey: ["assets", state.chat.project_id] });
     }
@@ -112,6 +115,8 @@ function ChatView({ chatId }: { chatId: string }) {
       qc.invalidateQueries({ queryKey: ["projects"] });
       qc.invalidateQueries({ queryKey: ["chats"] });
       qc.invalidateQueries({ queryKey: ["project"] });
+      if (state.chat?.project_id)
+        qc.invalidateQueries({ queryKey: ["assets", state.chat.project_id] });
     }
   });
   const { chat, messages, toolEvents, turnRunning, connected } = state;
@@ -129,6 +134,7 @@ function ChatView({ chatId }: { chatId: string }) {
   });
   const attach = useMutation({
     mutationFn: (pid: string) => api.attachChatProject(chatId, { project_id: pid }),
+    onError: (e) => toast(errMsg(e), "error"),
   });
   // lazy project creation for the first image upload in an unbound chat
   const creatingRef = useRef<Promise<string | null> | null>(null);
@@ -171,29 +177,42 @@ function ChatView({ chatId }: { chatId: string }) {
     enabled: !!panelVid && show3d,
     refetchInterval: (q) => {
       const v = q.state.data;
-      return v && !v.artifacts.some((a) => a.kind === "glb") ? 4000 : false;
+      if (!v) return 4000;
+      // only poll while the version can still produce a glb
+      if (["succeeded", "needs_review", "failed", "cancelled"].includes(v.status))
+        return false;
+      return v.artifacts.some((a) => a.kind === "glb") ? false : 4000;
     },
   });
   const glb = panelVersion.data?.artifacts.find((a) => a.kind === "glb");
+  const panelActive = panelVersion.data
+    ? !["succeeded", "needs_review", "failed", "cancelled"].includes(
+        panelVersion.data.status,
+      )
+    : true;
 
   const send = useMutation({
     mutationFn: (body: { content: string; asset_ids: string[] }) =>
       api.postChatMessage(chatId, body),
-    onError: (e) => toastErr(e),
+    // errors surface inline in the composer — the draft is preserved there
   });
-  const [sendErr, setSendErr] = useState("");
-  const toastErr = (e: unknown) => setSendErr(String(e));
 
-  const cancel = useMutation({ mutationFn: () => api.cancelChat(chatId) });
+  const cancel = useMutation({
+    mutationFn: () => api.cancelChat(chatId),
+    onError: (e) => toast(errMsg(e), "error"),
+  });
   const del = useMutation({
     mutationFn: () => api.deleteChat(chatId),
     onSuccess: () => nav("/chat"),
+    onError: (e) => toast(errMsg(e), "error"),
   });
 
-  // autoscroll on new content
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages, toolEvents]);
+  // autoscroll on new content while pinned to the bottom
+  const scrollDep = useMemo(
+    () => [messages, toolEvents] as const,
+    [messages, toolEvents],
+  );
+  const { boxRef, onScroll } = useStickyBottom(scrollDep);
 
   const streamingId = messages.find((m) => m.meta?.streaming)?.id;
 
@@ -275,7 +294,11 @@ function ChatView({ chatId }: { chatId: string }) {
           </div>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        <div
+          ref={boxRef}
+          onScroll={onScroll}
+          className="min-h-0 flex-1 overflow-y-auto px-4 py-4"
+        >
           <div className="mx-auto flex max-w-3xl flex-col gap-3">
             {messages.length === 0 && !turnRunning && (
               <EmptyState
@@ -291,21 +314,17 @@ function ChatView({ chatId }: { chatId: string }) {
                 liveTools={m.id === streamingId ? toolEvents : undefined}
               />
             ))}
-            <div ref={bottomRef} />
           </div>
         </div>
 
         <div className="border-t border-zinc-800 p-3">
           <div className="mx-auto max-w-3xl">
-            {sendErr && (
-              <div className="mb-2 text-xs text-red-400">{sendErr}</div>
-            )}
             <Composer
               projectId={chat?.project_id ?? null}
               ensureProject={ensureProject}
               disabled={!chat}
               onSend={(content, asset_ids) =>
-                send.mutate({ content, asset_ids })
+                send.mutateAsync({ content, asset_ids })
               }
             />
           </div>
@@ -322,7 +341,7 @@ function ChatView({ chatId }: { chatId: string }) {
             {glb ? (
               <Viewer3D url={glb.url} />
             ) : (
-              <LivePreview versionId={panelVid} />
+              <LivePreview versionId={panelVid} active={panelActive} />
             )}
           </div>
         </div>

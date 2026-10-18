@@ -52,7 +52,9 @@ export function useChatEvents(
     connected: false,
   });
   const cbRef = useRef(onEvent);
-  cbRef.current = onEvent;
+  useEffect(() => {
+    cbRef.current = onEvent;
+  }, [onEvent]);
   const seqRef = useRef(0);
 
   useEffect(() => {
@@ -69,7 +71,10 @@ export function useChatEvents(
 
     const upsert = (m: ChatMessage) =>
       setState((s) => {
-        const i = s.messages.findIndex((x) => x.id === m.id);
+        let i = s.messages.findIndex((x) => x.id === m.id);
+        if (i < 0 && m.meta?.streaming)
+          // adopt the synthetic placeholder instead of a second bubble
+          i = s.messages.findIndex((x) => x.id === `tmp:${chatId}`);
         if (i < 0) return { ...s, messages: [...s.messages, m] };
         const msgs = [...s.messages];
         msgs[i] = m;
@@ -78,8 +83,16 @@ export function useChatEvents(
 
     const patch = (id: string, f: (m: ChatMessage) => ChatMessage) =>
       setState((s) => {
-        const i = s.messages.findIndex((x) => x.id === id);
-        if (i < 0) return s;
+        let i = s.messages.findIndex((x) => x.id === id);
+        if (i < 0) {
+          // a snapshot missed turn_start (row not yet committed at read
+          // time) — the tmp placeholder takes the real id on first patch
+          i = s.messages.findIndex((x) => x.id === `tmp:${chatId}`);
+          if (i < 0) return s;
+          const msgs = [...s.messages];
+          msgs[i] = f({ ...msgs[i], id });
+          return { ...s, messages: msgs };
+        }
         const msgs = [...s.messages];
         msgs[i] = f(msgs[i]);
         return { ...s, messages: msgs };
@@ -88,13 +101,36 @@ export function useChatEvents(
     const handlers: Record<string, (d: unknown) => void> = {
       snapshot: (d) => {
         const snap = d as { chat: Chat; messages: ChatMessage[] };
-        setState((s) => ({
-          ...s,
-          chat: snap.chat,
-          messages: snap.messages,
-          turnRunning: snap.chat.turn_running,
-          connected: true,
-        }));
+        setState((s) => {
+          const ids = new Set(snap.messages.map((m) => m.id));
+          // keep streaming placeholders that raced ahead of the snapshot
+          // read (amsg row committed after turn_running but before its row);
+          // a turn that's already over can't still own a placeholder
+          const extras = snap.chat.turn_running
+            ? s.messages.filter((m) => !ids.has(m.id) && m.meta?.streaming)
+            : [];
+          let messages = [...snap.messages, ...extras];
+          if (
+            snap.chat.turn_running &&
+            !messages.some((m) => m.meta?.streaming)
+          ) {
+            // turn claimed but the assistant row isn't in this snapshot —
+            // deltas will adopt the real id via patch()
+            messages = [
+              ...messages,
+              mkMsg(`tmp:${chatId}`, chatId, "assistant", "", {
+                streaming: true,
+              }),
+            ];
+          }
+          return {
+            ...s,
+            chat: snap.chat,
+            messages,
+            turnRunning: snap.chat.turn_running,
+            connected: true,
+          };
+        });
       },
       message: (d) => {
         const m = (d as { message: ChatMessage }).message;
@@ -160,10 +196,23 @@ export function useChatEvents(
         if (chat) setState((s) => ({ ...s, chat }));
       },
       turn_end: (d) => {
-        const { message_id } = d as { message_id: string };
+        const { message_id, meta, cancelled, exhausted } = d as {
+          message_id: string;
+          meta?: ChatMessage["meta"];
+          cancelled?: boolean;
+          exhausted?: boolean;
+        };
+        // meta carries the persisted tool_log/spawned/cancelled/exhausted —
+        // merging it keeps chips, job cards and the 3D panel after the turn
         patch(message_id, (m) => ({
           ...m,
-          meta: { ...m.meta, streaming: false },
+          meta: {
+            ...m.meta,
+            ...(meta ?? {}),
+            streaming: false,
+            ...(cancelled !== undefined ? { cancelled } : {}),
+            ...(exhausted !== undefined ? { exhausted } : {}),
+          },
         }));
         setState((s) => ({
           ...s,
@@ -189,8 +238,8 @@ export function useChatEvents(
       es.addEventListener(type, (e) => {
         try {
           fn(JSON.parse((e as MessageEvent).data));
-        } catch {
-          /* malformed event */
+        } catch (err) {
+          console.warn(`chatEvents: malformed "${type}" event`, err);
         }
         cbRef.current?.(type);
       });

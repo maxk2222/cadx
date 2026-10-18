@@ -469,6 +469,13 @@ async def _run_turns(  # noqa: C901
         if final_text:
             new_llm.append({"role": "assistant", "content": final_text})
 
+        meta = {
+            "streaming": False,
+            "tool_log": session.tool_log,
+            "spawned": session.spawned,
+            "cancelled": res.cancelled,
+            "exhausted": res.exhausted,
+        }
         async with session_scope() as db:
             chat = await db.get(Chat, chat_id)
             if chat is not None:
@@ -479,13 +486,7 @@ async def _run_turns(  # noqa: C901
             amsg = await db.get(ChatMessage, amsg_id)
             if amsg is not None:
                 amsg.content = final_text
-                amsg.meta = {
-                    "streaming": False,
-                    "tool_log": session.tool_log,
-                    "spawned": session.spawned,
-                    "cancelled": res.cancelled,
-                    "exhausted": res.exhausted,
-                }
+                amsg.meta = meta
             await db.commit()
         await _chat_emit(
             chat_id,
@@ -494,6 +495,7 @@ async def _run_turns(  # noqa: C901
                 "message_id": str(amsg_id),
                 "cancelled": res.cancelled,
                 "exhausted": res.exhausted,
+                "meta": meta,
             },
         )
         await _chat_emit(

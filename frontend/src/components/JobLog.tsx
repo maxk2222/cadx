@@ -1,14 +1,77 @@
 import { Check, CircleDot, Cpu, Flag, Gauge, RotateCcw, XCircle } from "lucide-react";
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api } from "../lib/api";
+import { api, errMsg } from "../lib/api";
 import { fmtDuration, fmtSecs, fmtTokens } from "../lib/format";
 import { stepLabel } from "../lib/steps";
 import type { Job, JobLive } from "../lib/types";
-import type { JobStream } from "../lib/useJobEvents";
-import { Btn, ProgressBar, useStickyBottom } from "./ui";
+import type { JobEvent, JobStream } from "../lib/useJobEvents";
+import { Btn, ProgressBar, useStickyBottom, useToast } from "./ui";
 
 const TERMINAL = ["succeeded", "failed", "cancelled"];
+
+/** 1s self-ticking elapsed readout — extracted so the tick re-renders this
+ *  span instead of the whole log. */
+const Elapsed = memo(function Elapsed({ job }: { job: Job }) {
+  const [, setTick] = useState(0);
+  const running = job.status === "running" || job.status === "queued";
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => setTick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [running]);
+  if (!job.started_at) return null;
+  const s = Math.max(
+    0,
+    ((job.finished_at ? new Date(job.finished_at).getTime() : Date.now()) -
+      new Date(job.started_at).getTime()) /
+      1000,
+  );
+  return (
+    <span className="font-mono" title="elapsed">
+      {fmtSecs(s)}
+    </span>
+  );
+});
+
+/** one log line — memoized so stream updates don't re-render the backlog */
+const LogRow = memo(function LogRow({
+  e,
+  t0,
+}: {
+  e: JobEvent;
+  t0: number | undefined;
+}) {
+  const cls =
+    e.type === "done"
+      ? e.status === "failed"
+        ? "text-red-400"
+        : "text-emerald-400"
+      : e.type === "question"
+        ? "text-amber-400"
+        : /error|fail/i.test(e.message ?? "")
+          ? "text-red-300"
+          : "text-zinc-400";
+  return (
+    <div className={cls}>
+      {e.t_ms != null && t0 != null && (
+        <span className="text-zinc-700">+{fmtSecs((e.t_ms - t0) / 1000)} </span>
+      )}
+      {e.step ? (
+        <span className="text-zinc-600">
+          [{e.step}
+          {e.iteration ? `:${e.iteration}` : ""}]{" "}
+        </span>
+      ) : (
+        ""
+      )}
+      {e.message ?? e.type}
+      {e.type === "done"
+        ? ` (${e.status}${e.score != null ? `, score ${e.score}` : ""})`
+        : ""}
+    </div>
+  );
+});
 
 function scoreTone(s: number) {
   return s >= 80 ? "text-emerald-400" : s >= 50 ? "text-amber-400" : "text-red-400";
@@ -132,18 +195,23 @@ export default function JobLog({
   onSelectJob?: (id: string) => void;
   onDone?: () => void;
 }) {
-  const { events, job, setJob, live, progress, answers, setAnswers } = stream;
+  const {
+    events,
+    job,
+    setJob,
+    live,
+    progress,
+    answers,
+    setAnswers,
+    connected,
+    jobError,
+  } = stream;
   const [restarting, setRestarting] = useState(false);
-  const [, setTick] = useState(0);
   const nav = useNavigate();
+  const toast = useToast();
   const { boxRef: logBoxRef, onScroll } = useStickyBottom(events);
 
   const running = job?.status === "running" || job?.status === "queued";
-  useEffect(() => {
-    if (!running) return;
-    const t = setInterval(() => setTick((n) => n + 1), 1000);
-    return () => clearInterval(t);
-  }, [running]);
 
   const waiting = job?.status === "waiting_for_input" && job.questions?.length;
   const isDone = TERMINAL.includes(job?.status ?? "");
@@ -166,6 +234,26 @@ export default function JobLog({
   const tokens = live.tokens
     ? (live.tokens.prompt_tokens ?? 0) + (live.tokens.completion_tokens ?? 0)
     : 0;
+
+  const submitAnswers = (useDefaults = false) => {
+    if (!job?.questions) return;
+    api
+      .answerJob(
+        jobId!,
+        job.questions.map((q, i) => ({
+          answer:
+            (useDefaults ? "" : answers[i]) ||
+            q.default_assumption ||
+            "use the default",
+        })),
+      )
+      .then((r) => {
+        setJob(null);
+        onSelectJob?.(r.job_id); // answering spawns a resume job
+        onDone?.();
+      })
+      .catch((e) => toast(errMsg(e), "error"));
+  };
 
   return (
     <div className="flex flex-col gap-2">
@@ -213,11 +301,7 @@ export default function JobLog({
               best {bestScore}
             </span>
           )}
-          {elapsed_s != null && (
-            <span className="font-mono" title="elapsed">
-              {fmtSecs(elapsed_s)}
-            </span>
-          )}
+          <Elapsed job={job} />
           {eta_s != null && (
             <span className="font-mono text-zinc-500" title="rough estimate from progress">
               ~{fmtSecs(eta_s)} left
@@ -229,6 +313,38 @@ export default function JobLog({
               {fmtTokens(tokens)}
             </span>
           )}
+          {isDone && (
+            <Btn
+              variant="ghost"
+              className="!px-2 !py-0.5 text-[11px]"
+              title="re-run this job with the same inputs (new version)"
+              disabled={restarting}
+              onClick={() => {
+                setRestarting(true);
+                api
+                  .restartJob(job.id)
+                  .then((r) => nav(`/versions/${r.version_id}?job=${r.job_id}`))
+                  .catch((e) => {
+                    setRestarting(false);
+                    toast(errMsg(e), "error");
+                  });
+              }}
+            >
+              <RotateCcw className="h-3 w-3" />
+              {restarting ? "restarting…" : "restart job"}
+            </Btn>
+          )}
+        </div>
+      )}
+
+      {jobError && (
+        <div className="rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-300">
+          {jobError}
+        </div>
+      )}
+      {job && running && !connected && (
+        <div className="text-[10px] text-amber-500">
+          stream disconnected — retrying…
         </div>
       )}
 
@@ -269,36 +385,7 @@ export default function JobLog({
         className="h-56 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-950 p-2 font-mono text-[11px] leading-5"
       >
         {events.map((e, i) => (
-          <div
-            key={i}
-            className={
-              e.type === "done"
-                ? e.status === "failed"
-                  ? "text-red-400"
-                  : "text-emerald-400"
-                : e.type === "question"
-                  ? "text-amber-400"
-                  : /error|fail/i.test(e.message ?? "")
-                    ? "text-red-300"
-                    : "text-zinc-400"
-            }
-          >
-            {e.t_ms != null && t0 != null && (
-              <span className="text-zinc-700">+{fmtSecs((e.t_ms - t0) / 1000)} </span>
-            )}
-            {e.step ? (
-              <span className="text-zinc-600">
-                [{e.step}
-                {e.iteration ? `:${e.iteration}` : ""}]{" "}
-              </span>
-            ) : (
-              ""
-            )}
-            {e.message ?? e.type}
-            {e.type === "done"
-              ? ` (${e.status}${e.score != null ? `, score ${e.score}` : ""})`
-              : ""}
-          </div>
+          <LogRow key={i} e={e} t0={t0} />
         ))}
         {!events.length && (
           <div className="py-4 text-center text-zinc-600">
@@ -325,7 +412,13 @@ export default function JobLog({
               <button
                 className="flex items-center gap-1 rounded px-1.5 py-0.5 text-amber-400 hover:bg-amber-950/50"
                 title="stop after this iteration and keep the best result so far"
-                onClick={() => api.finishJob(job.id).then(() => api.getJob(job.id)).then(setJob)}
+                onClick={() =>
+                  api
+                    .finishJob(job.id)
+                    .then(() => api.getJob(job.id))
+                    .then(setJob)
+                    .catch((e) => toast(errMsg(e), "error"))
+                }
               >
                 <Flag className="h-3 w-3" /> finish &amp; keep best
               </button>
@@ -333,32 +426,28 @@ export default function JobLog({
             <button
               className="flex items-center gap-1 rounded px-1.5 py-0.5 text-red-400 hover:bg-red-950/50"
               title="abort the job — discards the result"
-              onClick={() => api.cancelJob(job.id).then(() => api.getJob(job.id)).then(setJob)}
+              onClick={() =>
+                api
+                  .cancelJob(job.id)
+                  .then(() => api.getJob(job.id))
+                  .then(setJob)
+                  .catch((e) => toast(errMsg(e), "error"))
+              }
             >
               <XCircle className="h-3 w-3" /> cancel job
             </button>
           </span>
         )}
-        {isDone && job && (
-          <button
-            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-brand-400 hover:bg-brand-950/50 disabled:opacity-40"
-            title="re-run this job with the same inputs (new version)"
-            disabled={restarting}
-            onClick={() => {
-              setRestarting(true);
-              api
-                .restartJob(job.id)
-                .then((r) => nav(`/versions/${r.version_id}?job=${r.job_id}`))
-                .catch(() => setRestarting(false));
-            }}
-          >
-            <RotateCcw className="h-3 w-3" /> {restarting ? "restarting…" : "restart"}
-          </button>
-        )}
       </div>
 
       {waiting ? (
-        <div className="rounded-lg border border-amber-700 bg-amber-950/40 p-3">
+        <form
+          className="rounded-lg border border-amber-700 bg-amber-950/40 p-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            submitAnswers();
+          }}
+        >
           <div className="mb-2 text-sm font-semibold text-amber-300">
             The agent needs answers:
           </div>
@@ -378,27 +467,19 @@ export default function JobLog({
               />
             </div>
           ))}
-          <Btn
-            variant="primary"
-            className="mt-1 bg-amber-600 hover:bg-amber-500"
-            onClick={() =>
-              api
-                .answerJob(
-                  jobId!,
-                  answers.map((a, i) => ({
-                    answer: a || job!.questions![i].default_assumption || "use the default",
-                  }))
-                )
-                .then((r) => {
-                  setJob(null);
-                  onSelectJob?.(r.job_id); // answering spawns a resume job
-                  onDone?.();
-                })
-            }
-          >
-            Submit answers
-          </Btn>
-        </div>
+          <div className="mt-1 flex items-center gap-2">
+            <Btn
+              type="submit"
+              variant="primary"
+              className="bg-amber-600 hover:bg-amber-500"
+            >
+              Submit answers
+            </Btn>
+            <Btn type="button" variant="ghost" onClick={() => submitAnswers(true)}>
+              use defaults
+            </Btn>
+          </div>
+        </form>
       ) : null}
     </div>
   );

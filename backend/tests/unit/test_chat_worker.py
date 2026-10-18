@@ -349,3 +349,37 @@ async def test_create_project_tool_publishes_chat_update(monkeypatch):
     assert res["ok"]
     upd = [d for e, d in events if e == "chat_update"]
     assert upd and upd[0]["chat"]["project_id"] == res["project_id"]
+
+
+async def test_turn_end_event_carries_assistant_meta(monkeypatch):
+    """turn_end must publish the same meta dict persisted on the assistant
+    row — the UI renders tool chips / spawned cards from it without reload."""
+    _pid, cid = await _mk_chat()
+    fake = FakeLLM(
+        [
+            {"tool_calls": [{"name": "list_versions", "arguments": {}}]},
+            "all done",
+        ]
+    )
+    _patch_llm(monkeypatch, fake)
+
+    published: list[dict] = []
+
+    async def capture(_cid: str, event: dict) -> None:
+        published.append(event)
+
+    monkeypatch.setattr(chat_worker.events, "publish_chat", capture)
+
+    res = await chat_worker.run_chat_turn({}, {"chat_id": str(cid)})
+    assert res["ok"]
+
+    ends = [e for e in published if e.get("type") == "turn_end"]
+    assert len(ends) == 1
+    msgs = await _messages(cid)
+    asst = next(m for m in msgs if m.role == ChatRole.assistant)
+    meta = ends[0]["meta"]
+    assert meta == asst.meta
+    assert meta["streaming"] is False
+    assert meta["cancelled"] is False
+    assert meta["tool_log"] and meta["tool_log"][0]["name"] == "list_versions"
+    assert meta["spawned"] == []

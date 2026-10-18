@@ -1,5 +1,6 @@
 import { AlertTriangle, Check, Loader2, Wrench, X } from "lucide-react";
-import { useState } from "react";
+import { memo, useState } from "react";
+import { splitMd } from "../../lib/mdText";
 import type { ToolEvent } from "../../lib/useChatEvents";
 import type { Asset, ChatMessage, SpawnedRef, ToolLogEntry } from "../../lib/types";
 import ChatJobCard from "./ChatJobCard";
@@ -7,22 +8,22 @@ import ChatJobCard from "./ChatJobCard";
 /** Minimal markdown-ish renderer — fenced code blocks, inline code, bold,
  *  lists. Keeps assistant output readable without a markdown dependency. */
 function MdText({ text }: { text: string }) {
-  const parts = text.split(/```(\w*)\n?/);
-  const out: React.ReactNode[] = [];
-  for (let i = 0; i < parts.length; i += 3) {
-    if (parts[i]) out.push(<InlineMd key={`t${i}`} text={parts[i]} />);
-    if (i + 2 < parts.length) {
-      out.push(
-        <pre
-          key={`c${i}`}
-          className="my-2 overflow-x-auto rounded bg-zinc-950 p-2.5 text-xs text-zinc-200"
-        >
-          <code>{parts[i + 2].replace(/```$/, "")}</code>
-        </pre>,
-      );
-    }
-  }
-  return <div className="text-sm leading-relaxed">{out}</div>;
+  return (
+    <div className="text-sm leading-relaxed">
+      {splitMd(text).map((s, i) =>
+        s.type === "code" ? (
+          <pre
+            key={i}
+            className="my-2 overflow-x-auto rounded bg-zinc-950 p-2.5 text-xs text-zinc-200"
+          >
+            <code>{s.content}</code>
+          </pre>
+        ) : (
+          <InlineMd key={i} text={s.content} />
+        ),
+      )}
+    </div>
+  );
 }
 
 function InlineMd({ text }: { text: string }) {
@@ -55,7 +56,7 @@ function inlineNodes(s: string): React.ReactNode[] {
       );
     if (part.startsWith("`") && part.endsWith("`"))
       return (
-        <code key={i} className="rounded bg-zinc-800 px-1 text-xs text-sky-300">
+        <code key={i} className="rounded bg-zinc-800 px-1 text-xs text-brand-300">
           {part.slice(1, -1)}
         </code>
       );
@@ -172,7 +173,7 @@ function toToolEvent(t: ToolLogEntry, i: number): ToolEvent {
   };
 }
 
-export default function MessageBubble({
+const MessageBubble = memo(function MessageBubble({
   msg,
   assetsById,
   liveTools,
@@ -194,7 +195,7 @@ export default function MessageBubble({
   if (msg.role === "user") {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[75%] rounded-2xl rounded-br-sm bg-sky-900/60 px-3.5 py-2.5">
+        <div className="max-w-[75%] rounded-2xl rounded-br-sm bg-brand-900/60 px-3.5 py-2.5">
           {att.length > 0 && (
             <div className="mb-2 flex flex-wrap gap-2">
               {att.map((a) => (
@@ -202,7 +203,7 @@ export default function MessageBubble({
                   <img
                     src={a.url}
                     alt={a.filename}
-                    className="h-20 rounded border border-sky-800 object-cover"
+                    className="h-20 rounded border border-brand-800 object-cover"
                   />
                 </a>
               ))}
@@ -241,7 +242,7 @@ export default function MessageBubble({
         )}
         {msg.content && <MdText text={msg.content} />}
         {streaming && msg.content && (
-          <span className="ml-1 inline-block h-3.5 w-1.5 animate-pulse bg-sky-400/70" />
+          <span className="ml-1 inline-block h-3.5 w-1.5 animate-pulse bg-brand-400/70" />
         )}
         {spawned.length > 0 && (
           <div className="mt-2 flex flex-col gap-2">
@@ -261,4 +262,6 @@ export default function MessageBubble({
       </div>
     </div>
   );
-}
+});
+
+export default MessageBubble;

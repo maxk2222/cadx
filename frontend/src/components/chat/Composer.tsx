@@ -1,6 +1,6 @@
 import { ImagePlus, SendHorizonal, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { api } from "../../lib/api";
+import { api, errMsg } from "../../lib/api";
 import type { Asset } from "../../lib/types";
 import { Spinner } from "../ui";
 
@@ -18,7 +18,9 @@ export default function Composer({
    *  one and binds the chat to it (like the New-part wizard does) */
   ensureProject?: () => Promise<string | null>;
   disabled?: boolean;
-  onSend: (content: string, assetIds: string[]) => void;
+  /** resolves on success — the composer only clears the draft then, so a
+   *  failed send never loses the user's text/attachments */
+  onSend: (content: string, assetIds: string[]) => Promise<unknown> | unknown;
 }) {
   const [text, setText] = useState("");
   const [staged, setStaged] = useState<Asset[]>([]);
@@ -59,22 +61,26 @@ export default function Composer({
     }
   };
 
-  const send = () => {
+  const send = async () => {
     const content = text.trim();
     if ((!content && !staged.length) || disabled || uploading) return;
-    onSend(
-      content,
-      staged.map((a) => a.id),
-    );
-    setText("");
-    setStaged([]);
-    setError("");
+    try {
+      await onSend(
+        content,
+        staged.map((a) => a.id),
+      );
+      setText("");
+      setStaged([]);
+      setError("");
+    } catch (e) {
+      setError(errMsg(e));
+    }
   };
 
   return (
     <div
       className={`rounded-lg border bg-zinc-900 transition-colors ${
-        drag ? "border-sky-500" : "border-zinc-800"
+        drag ? "border-brand-500" : "border-zinc-800"
       }`}
       onDragOver={(e) => {
         e.preventDefault();
@@ -99,7 +105,8 @@ export default function Composer({
               <button
                 className="absolute -right-1.5 -top-1.5 hidden h-4 w-4 items-center justify-center rounded-full bg-zinc-700 text-zinc-200 group-hover:flex"
                 onClick={() => setStaged((s) => s.filter((x) => x.id !== a.id))}
-                title="remove"
+                title="remove attachment"
+                aria-label="remove attachment"
               >
                 <X className="h-3 w-3" />
               </button>
@@ -111,6 +118,7 @@ export default function Composer({
         <button
           className="flex h-8 w-8 items-center justify-center rounded-md text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
           title="attach images"
+          aria-label="attach images"
           onClick={() => fileRef.current?.click()}
           disabled={disabled}
         >
@@ -141,7 +149,7 @@ export default function Composer({
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
-              send();
+              void send();
             }
           }}
           placeholder={
@@ -152,9 +160,10 @@ export default function Composer({
         />
         {uploading > 0 && <Spinner className="h-4 w-4 self-center" />}
         <button
-          className="flex h-8 w-8 items-center justify-center rounded-md bg-sky-600 text-white transition-colors hover:bg-sky-500 disabled:opacity-40"
+          className="flex h-8 w-8 items-center justify-center rounded-md bg-brand-600 text-white transition-colors hover:bg-brand-500 disabled:opacity-40"
           title="send"
-          onClick={send}
+          aria-label="send message"
+          onClick={() => void send()}
           disabled={disabled || uploading > 0 || (!text.trim() && !staged.length)}
         >
           <SendHorizonal className="h-4 w-4" />

@@ -1,7 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { Spinner } from "./ui";
+
+const HINT_AFTER_MS = 9000;
 
 /** Provisional render overlay while the job runs — polls the live-renders
  *  manifest (available views + newest iteration) and shows the selected view
@@ -22,6 +24,16 @@ export default function LivePreview({
   });
   const [view, setView] = useState<string | null>(null);
   const [ok, setOk] = useState(false);
+  const [waited, setWaited] = useState(false);
+  useEffect(() => {
+    setOk(false);
+    setWaited(false);
+  }, [versionId]);
+  useEffect(() => {
+    if (ok) return;
+    const t = setTimeout(() => setWaited(true), HINT_AFTER_MS);
+    return () => clearTimeout(t);
+  }, [ok]);
   const views = data?.views ?? [];
   const cur =
     view && views.includes(view) ? view : views.includes("iso") ? "iso" : views[0];
@@ -39,6 +51,11 @@ export default function LivePreview({
         onLoad={() => setOk(true)}
         onError={() => setOk(false)}
       />
+      {!ok && waited && (
+        <div className="absolute inset-0 flex items-center justify-center px-4 text-center text-xs text-zinc-500">
+          {active ? "waiting for first render…" : "no preview produced"}
+        </div>
+      )}
       {ok && (
         <span className="absolute left-2 top-2 flex items-center gap-1.5 rounded bg-black/70 px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-brand-300">
           <Spinner className="h-3 w-3" /> live preview
