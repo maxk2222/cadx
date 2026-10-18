@@ -17,7 +17,7 @@ from typing import Any
 
 # machine-readable position hints: "x=12" offsets, "75mm from -x end"
 # end-relative offsets, "centred in y" mid-plane hints, "+y"/"front" face words
-_POS_COORD_RE = re.compile(r"\b([xyz])\s*=\s*(-?\d+(?:\.\d+)?)", re.I)
+_POS_COORD_RE = re.compile(r"\b([xyz])\s*=\s*([+-]?\d+(?:\.\d+)?)", re.I)
 _POS_END_NUM_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(mm|cm)?", re.I)
 # "75mm from -x end", "20 and 75mm from the +y edge" — the sign is mandatory
 # ("from x end" is ambiguous which end) and binds the bbox lo/hi side

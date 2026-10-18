@@ -88,3 +88,12 @@ def test_resolve_end_hint():
     # 90mm span centred at origin: lo=-45, hi=+45
     assert resolve_end_hint("x", "-x", 20.0, -45.0, 45.0) == -25.0
     assert resolve_end_hint("x", "+x", 8.0, -45.0, 45.0) == 37.0
+
+
+def test_plus_signed_coord_parses():
+    """'x=+30 mm' is a legit coordinate — the regex must accept the plus
+    sign (German specs write signed offsets)."""
+    coords, _f, _e, _n = parse_position_hints("x=+30 mm, y=0 (zentriert in y)")
+    assert coords["x"] == 30.0
+    coords2, _f2, _e2, _n2 = parse_position_hints("x=+45 mm")
+    assert coords2["x"] == 45.0

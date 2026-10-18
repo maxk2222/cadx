@@ -98,7 +98,7 @@ def sanitize_dims(spec: PartSpec, prompt: str) -> list[str]:
     return notes
 
 
-_AXIS_COORD_RE = re.compile(r"\b([xyz])\s*=\s*(-?\d+(?:\.\d+)?)", re.IGNORECASE)
+_AXIS_COORD_RE = re.compile(r"\b([xyz])\s*=\s*([+-]?\d+(?:\.\d+)?)", re.IGNORECASE)
 
 
 def normalize_feature_positions(spec: PartSpec) -> list[str]:

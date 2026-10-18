@@ -73,7 +73,11 @@ _PROTRUSION_TYPES = {"rib", "gusset", "boss", "tube", "pin", "post", "stud", "st
 # axis declarations in free text: "x-axis", "along z" — deliberately narrow so
 # "x = 12" style offsets never read as an axis declaration
 _AXIS_TEXT_RE = re.compile(
-    r"\b([xyz])[\s-]*axis\b|\balong\s+(?:the\s+)?([xyz])(?:[\s-]*axis)?\b", re.I
+    r"\b([xyz])[\s-]*(?:axis|achse)\b"
+    r"|\balong\s+(?:the\s+)?([xyz])(?:[\s-]*axis)?\b"
+    r"|\bin\s+(?:der\s+)?([xyz])[\s-]*richtung\b"
+    r"|\bdurch\s+([xyz])\b",
+    re.I,
 )
 # "y faces"/"+x side" — the envelope face a protrusion feature sits on
 _HINT_AXIS_RE = re.compile(r"(?<![\w])[+-]?([xyz])[\s-]*(?:faces?|sides?|seite)\b", re.I)

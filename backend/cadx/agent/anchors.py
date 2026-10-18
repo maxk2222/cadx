@@ -51,10 +51,15 @@ _HOLE_TYPES = (
     "tap_hole",
     "bore",
 )
-# declared bore axis in free text ("x-axis", "along z") — same narrow shape
-# as verifyspec's so "x = 12" offsets never read as an axis declaration
+# declared bore axis in free text ("x-axis", "along z", "in X-Richtung",
+# "durch Z") — narrow shapes only so "x = 12" offsets never read as an
+# axis declaration
 _AXIS_TEXT_RE = re.compile(
-    r"\b([xyz])[\s-]*axis\b|\balong\s+(?:the\s+)?([xyz])(?:[\s-]*axis)?\b", re.I
+    r"\b([xyz])[\s-]*(?:axis|achse)\b"
+    r"|\balong\s+(?:the\s+)?([xyz])(?:[\s-]*axis)?\b"
+    r"|\bin\s+(?:der\s+)?([xyz])[\s-]*richtung\b"
+    r"|\bdurch\s+([xyz])\b",
+    re.I,
 )
 # spec-vs-measured same-position merge radius (mm, in-plane)
 _SPEC_MERGE_MM = 3.0
@@ -184,12 +189,20 @@ def _spec_hole_dias(spec: PartSpec) -> list[tuple[float, str]]:
 
 def _declared_bore_axis(f: Feature, text: str) -> str:
     """'x'|'y'|'z' bore axis declared by the feature — the ``axis`` field
-    first, then a narrow axis phrase in the position/description text."""
+    first, then a narrow axis phrase in the position/description text, then
+    a single face token ("an der +X-Seite") — a bore enters a face along its
+    normal."""
     axis = str(f.axis or "").strip().lower().lstrip("+-")
     if not axis:
         m = _AXIS_TEXT_RE.search(text)
         if m:
             axis = next(g for g in m.groups() if g).lower()
+    if not axis:
+        from cadx.cad.poshint import parse_position_hints
+
+        _c, faces, _e, _n = parse_position_hints(text)
+        if len(faces) == 1:
+            axis = faces[0].lstrip("+-")
     return axis
 
 
@@ -305,10 +318,20 @@ def _spec_plane(
     if axial is None and coords.get(bore_ax) is not None:
         axial = coords[bore_ax]
     axial_depth: float | None = None
-    for e in ends:
-        if str(e["axis"]) == bore_ax:
-            axial_depth = min(2.0 * float(e["offset_mm"]), bounds[bore_ax][1] - bounds[bore_ax][0])
-            break
+    # declared depth wins over the 2x-offset heuristic
+    declared = (f.dims or {}).get("depth") or (f.dims or {}).get("bore_depth")
+    try:
+        if declared:
+            axial_depth = float(declared)
+    except (TypeError, ValueError):
+        axial_depth = None
+    if axial_depth is None:
+        for e in ends:
+            if str(e["axis"]) == bore_ax:
+                axial_depth = min(
+                    2.0 * float(e["offset_mm"]), bounds[bore_ax][1] - bounds[bore_ax][0]
+                )
+                break
     return (
         [
             (u, v, eu or ev or (axial is not None and axial_est))

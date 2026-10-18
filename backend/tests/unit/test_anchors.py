@@ -231,6 +231,46 @@ def test_spec_anchor_side_face_threaded_hole():
     assert h.source == "spec-est"  # in-plane z was mid-defaulted
 
 
+def test_spec_anchor_german_axis_phrase():
+    """'in X-Richtung' declares the bore axis like 'x-axis' — German spec
+    text must resolve identically (a face token '+X-Seite' works too)."""
+    spec = _plate_spec(
+        [
+            Feature(
+                name="M8 Gewindebohrung",
+                type="threaded_hole",
+                dims={"diameter": 6.8, "depth": 16},
+                position="an der +X-Seite (x=+45 mm), zentriert in y und z, in X-Richtung",
+                thread_spec="M8",
+            ),
+        ]
+    )
+    a = build_anchors(spec, {}, None)
+    assert len(a.holes) == 1
+    h = a.holes[0]
+    assert h.axis == "+x" and h.kind == "thread"
+    assert h.pos == [45.0, 0.0, 7.0]
+    assert h.depth_mm == 16.0
+
+
+def test_spec_anchor_durch_z_axis_phrase():
+    """'durch Z' declares a z bore in German text."""
+    spec = _plate_spec(
+        [
+            Feature(
+                name="Durchgangsbohrung",
+                type="through_hole",
+                dims={"diameter": 10},
+                position="x=+30 mm, y=0 mm, durch Z",
+            ),
+        ]
+    )
+    a = build_anchors(spec, {}, None)
+    assert len(a.holes) == 1
+    h = a.holes[0]
+    assert h.axis == "+z" and (h.x, h.y) == (30.0, 0.0)
+
+
 def test_spec_anchor_enriches_measured_within_3mm():
     """A measured anchor near the declared position keeps its real x/y and
     gains the spec name/kind/dia — source gains the '+spec' marker."""
