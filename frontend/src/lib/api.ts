@@ -7,6 +7,7 @@ import type {
   ChatListItem,
   ChatMessage,
   ChatState,
+  CompareResult,
   EditableFeature,
   FemPreviewResult,
   GenMode,
@@ -197,6 +198,8 @@ export const api = {
 
   listVersions: (pid: string) => req<VersionSummary[]>(`/projects/${pid}/versions`),
   getVersion: (id: string) => req<VersionDetail>(`/versions/${id}`),
+  compareVersions: (vid: string, otherId: string) =>
+    req<CompareResult>(`/versions/${vid}/compare/${otherId}`),
   previewUrl: (id: string, view?: string) =>
     `${BASE}/versions/${id}/preview${view ? `?view=${encodeURIComponent(view)}` : ""}`,
   liveRenders: (id: string) => req<LiveRenders>(`/versions/${id}/live-renders`),

@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CircleDot, Flag, Inbox, RotateCcw, Square } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
@@ -195,12 +195,19 @@ const JobRow = memo(function JobRow({
   );
 });
 
+const RECENT_PAGE = 40;
+const FETCH_PAGE = 200; // matches the server's default limit
+
 export default function JobsPage() {
   useTitle("Jobs");
   const qc = useQueryClient();
+  const [fetchLimit, setFetchLimit] = useState(FETCH_PAGE);
+  const [shown, setShown] = useState(RECENT_PAGE);
   const jobs = useQuery({
-    queryKey: ["jobs", "all"],
-    queryFn: () => api.listJobsAll(),
+    queryKey: ["jobs", "all", fetchLimit],
+    queryFn: () => api.listJobsAll({ limit: fetchLimit }),
+    // keep the last page visible while a bigger limit refetches
+    placeholderData: keepPreviousData,
     refetchInterval: (q) =>
       (q.state.data ?? []).some((j) => ACTIVE.has(j.status)) ? 3000 : 15000,
   });
@@ -211,7 +218,7 @@ export default function JobsPage() {
     () => qc.invalidateQueries({ queryKey: ["jobs", "all"] }),
     [qc]
   );
-  const items = jobs.data ?? [];
+  const items = useMemo(() => jobs.data ?? [], [jobs.data]);
   const types = useMemo(
     () => [...new Set(items.map((j) => j.type))].sort(),
     [items]
@@ -226,7 +233,9 @@ export default function JobsPage() {
   const filtered = items.filter(matches);
   const active = filtered.filter((j) => ACTIVE.has(j.status));
   const recentAll = filtered.filter((j) => !ACTIVE.has(j.status));
-  const recent = recentAll.slice(0, 40);
+  const recent = recentAll.slice(0, shown);
+  // a full page means the server may still hold older jobs we can't see yet
+  const serverMayHaveMore = items.length >= fetchLimit;
 
   return (
     <div className="mx-auto max-w-4xl p-6">
@@ -298,9 +307,25 @@ export default function JobsPage() {
           {recent.map((j) => (
             <JobRow key={j.id} job={j} onChanged={refresh} />
           ))}
-          {recentAll.length > recent.length && (
-            <div className="text-center text-[11px] text-zinc-500">
-              showing {recent.length} of {recentAll.length} completed jobs
+          {(recentAll.length > recent.length || serverMayHaveMore) && (
+            <div className="flex items-center justify-center gap-2 text-[11px] text-zinc-500">
+              <span>
+                showing {recent.length} of {recentAll.length}
+                {serverMayHaveMore ? "+" : ""} completed jobs
+              </span>
+              <button
+                type="button"
+                aria-label={`show ${RECENT_PAGE} more completed jobs`}
+                className="rounded-md border border-zinc-700 px-2 py-0.5 text-brand-400 transition-colors hover:border-zinc-500 hover:text-brand-300"
+                onClick={() => {
+                  setShown((s) => s + RECENT_PAGE);
+                  // everything fetched is already visible — pull the next
+                  // page of history from the server too
+                  if (serverMayHaveMore) setFetchLimit((l) => l + FETCH_PAGE);
+                }}
+              >
+                show {RECENT_PAGE} more
+              </button>
             </div>
           )}
         </div>

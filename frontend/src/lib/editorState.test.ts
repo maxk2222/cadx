@@ -51,6 +51,23 @@ describe("savedOps", () => {
   });
 });
 
+describe("recordedMeshOps", () => {
+  it("returns params.ops for mesh-mode parents", () => {
+    const ops = [{ op: "rotate", args: { axis: "z", deg: 90 } }];
+    expect(
+      recordedMeshOps({ resolved_mode: "mesh", kind: "generate", params: { ops } }),
+    ).toEqual(ops);
+  });
+
+  it("returns [] for cad versions, mesh_edit, and missing ops", () => {
+    expect(recordedMeshOps({ resolved_mode: "cad", params: { ops: [{}] } })).toEqual([]);
+    expect(recordedMeshOps({ resolved_mode: "mesh", kind: "mesh_edit", params: { ops: [{}] } }))
+      .toEqual([]);
+    expect(recordedMeshOps({ resolved_mode: "mesh", params: {} })).toEqual([]);
+    expect(recordedMeshOps(null)).toEqual([]);
+  });
+});
+
 describe("readStoredAnchors", () => {
   it("reads analysis.anchors.holes", () => {
     const holes = [{ index: 1, kind: "hole", axis: "+z", x: 1, y: 2, dia: 4 }];

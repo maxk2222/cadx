@@ -87,9 +87,9 @@ function Wireframe({ on, model }: { on: boolean; model: RefObject<THREE.Group | 
 }
 
 /** demand-mode catch-all: re-render whenever inputs that drive imperative
- *  scene changes mutate (url, overlay children, preview matrix). Declarative
- *  JSX commits already invalidate in demand mode — this covers the paths
- *  React cannot observe. */
+ *  scene changes mutate (url, overlay children, preview matrix, camera
+ *  preset commands). Declarative JSX commits already invalidate in demand
+ *  mode — this covers the paths React cannot observe. */
 function InvalidateOn({ deps }: { deps: readonly unknown[] }) {
   const invalidate = useThree((s) => s.invalidate);
   useEffect(() => {
@@ -341,7 +341,7 @@ export default function ModelCanvas({
       style={{ cursor: pickEnabled ? "crosshair" : undefined }}
     >
       <color attach="background" args={["#18181b"]} />
-      <InvalidateOn deps={[url, format, wireframe, grid, matrix, children]} />
+      <InvalidateOn deps={[url, format, wireframe, grid, matrix, children, viewCmd, autoRotate]} />
       <Suspense
         fallback={
           <Html center>

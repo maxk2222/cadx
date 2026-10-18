@@ -1,10 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, Clock, Cpu, FileBox, Gauge, Layers, PencilRuler, Plus, RotateCcw, Shrink, Sprout, Trash2, TriangleAlert } from "lucide-react";
+import { Activity, Clock, Cpu, FileBox, Gauge, GitCompareArrows, Layers, PencilRuler, Plus, RotateCcw, Shrink, Sprout, Trash2, TriangleAlert } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import AnchorsPanel from "../components/AnchorsPanel";
 import ArtifactsTable from "../components/ArtifactsTable";
 import CodeView from "../components/CodeView";
+import ComparePanel, {
+  defaultCompareTarget,
+  versionLabel,
+} from "../components/ComparePanel";
 import DfmPanel from "../components/DfmPanel";
 import ExportPanel from "../components/ExportPanel";
 import FemPanel from "../components/FemPanel";
@@ -128,6 +132,8 @@ export default function VersionPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [optimizeOpen, setOptimizeOpen] = useState(false);
   const [organicOpen, setOrganicOpen] = useState(false);
+  const [compareOpen, setCompareOpen] = useState(false);
+  const [otherId, setOtherId] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const version = useQuery({
@@ -166,6 +172,13 @@ export default function VersionPage() {
     queryKey: ["jobs", id],
     queryFn: () => api.listJobs(id),
   });
+  // detail of the version being compared against — gives us its glb artifact
+  // for the side-by-side viewer (shares the ["version", id] cache shape)
+  const otherVersion = useQuery({
+    queryKey: ["version", otherId],
+    queryFn: () => api.getVersion(otherId!),
+    enabled: compareOpen && !!otherId,
+  });
   useTitle(
     version.data ? `v${version.data.number} · ${project.data?.name ?? ""}` : "Version"
   );
@@ -195,6 +208,23 @@ export default function VersionPage() {
       setOptFor(v.id);
     }
   }, [v, optFor]);
+
+  // compare state is per-version — don't carry a stale otherId across pages
+  useEffect(() => {
+    setCompareOpen(false);
+    setOtherId(null);
+  }, [id]);
+
+  // default compare target: the parent version, else the latest other
+  useEffect(() => {
+    if (!compareOpen || otherId || !v) return;
+    setOtherId(
+      defaultCompareTarget(
+        (versions.data ?? []).filter((x) => x.id !== v.id),
+        v.parent_id
+      )
+    );
+  }, [compareOpen, otherId, v, versions.data]);
 
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ["version", id] });
@@ -286,6 +316,11 @@ export default function VersionPage() {
   const usageEntries = Object.entries(v.usage ?? {}).filter(
     ([, n]) => typeof n === "number" && n > 0
   );
+  // compare: candidate versions (never self), the selected one, its glb url
+  const others = (versions.data ?? []).filter((x) => x.id !== v.id);
+  const otherSel = others.find((x) => x.id === otherId) ?? null;
+  const otherGlb =
+    otherVersion.data?.artifacts.find((a) => a.kind === "glb")?.url ?? null;
 
   return (
     <div className="mx-auto grid max-w-7xl grid-cols-1 gap-5 p-6 xl:grid-cols-4">
@@ -339,6 +374,22 @@ export default function VersionPage() {
             </Chip>
           )}
           <span className="flex-1" />
+          <Btn
+            variant="subtle"
+            size="sm"
+            aria-pressed={compareOpen}
+            title={
+              others.length
+                ? "compare this version against another"
+                : "no other versions to compare"
+            }
+            onClick={() => {
+              setCompareOpen((o) => !o);
+              setTab("overview");
+            }}
+          >
+            <GitCompareArrows className="h-3.5 w-3.5" /> compare
+          </Btn>
           <button
             className="flex items-center gap-1 rounded-md px-2 py-1 text-sm text-red-400 hover:bg-red-950/50"
             onClick={() => setDeleteOpen(true)}
@@ -498,21 +549,82 @@ export default function VersionPage() {
 
         {tab === "overview" && (
           <>
-            <div className="relative mb-4 h-[460px] overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950">
-              {glb || !active ? (
-                <Viewer3D url={glb ? glb.url : null} />
-              ) : (
-                <span className="absolute inset-0 flex flex-col items-center justify-center gap-1 text-xs text-zinc-400">
-                  waiting for first render…
-                  {liveJob && !stream.connected && (
-                    <span className="text-[10px] text-zinc-500">
-                      stream reconnecting…
-                    </span>
-                  )}
+            {compareOpen && (
+              <div className="mb-2 flex flex-wrap items-center gap-2">
+                <span className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+                  compare v{v.number} with
                 </span>
+                <select
+                  className="max-w-md rounded-md border border-zinc-700 bg-zinc-800/80 px-2 py-1 text-xs text-zinc-100 outline-none focus:border-brand-600"
+                  value={otherId ?? ""}
+                  aria-label="version to compare against"
+                  onChange={(e) => setOtherId(e.target.value || null)}
+                >
+                  {!otherId && <option value="">pick a version…</option>}
+                  {others.map((o) => (
+                    <option key={o.id} value={o.id}>
+                      {versionLabel(o)}
+                    </option>
+                  ))}
+                </select>
+                {otherSel && (
+                  <Chip tone="zinc" className="uppercase">
+                    {otherSel.kind}
+                  </Chip>
+                )}
+              </div>
+            )}
+
+            <div
+              className={
+                compareOpen
+                  ? "mb-4 grid grid-cols-1 gap-3 lg:grid-cols-2"
+                  : "mb-4"
+              }
+            >
+              <div className="relative h-[460px] overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950">
+                {glb || !active ? (
+                  <Viewer3D url={glb ? glb.url : null} />
+                ) : (
+                  <span className="absolute inset-0 flex flex-col items-center justify-center gap-1 text-xs text-zinc-400">
+                    waiting for first render…
+                    {liveJob && !stream.connected && (
+                      <span className="text-[10px] text-zinc-500">
+                        stream reconnecting…
+                      </span>
+                    )}
+                  </span>
+                )}
+                {active && !glb && <LivePreview versionId={v.id} />}
+                {compareOpen && (
+                  <span className="absolute bottom-2 left-2 rounded border border-zinc-700 bg-zinc-900/80 px-1.5 py-0.5 text-[10px] font-medium text-zinc-300 backdrop-blur">
+                    a · v{v.number}
+                  </span>
+                )}
+              </div>
+              {compareOpen && (
+                <div className="relative h-[460px] overflow-hidden rounded-lg border border-brand-900/70 bg-zinc-950">
+                  {otherVersion.isLoading ? (
+                    <span className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-xs text-zinc-400">
+                      <Spinner /> loading preview…
+                    </span>
+                  ) : (
+                    <Viewer3D url={otherGlb} />
+                  )}
+                  <span className="absolute bottom-2 left-2 rounded border border-brand-800 bg-zinc-900/80 px-1.5 py-0.5 text-[10px] font-medium text-brand-300 backdrop-blur">
+                    b · {otherSel ? `v${otherSel.number}` : "…"}
+                  </span>
+                </div>
               )}
-              {active && !glb && <LivePreview versionId={v.id} />}
             </div>
+
+            {compareOpen && (
+              <ComparePanel
+                base={v}
+                otherId={otherId}
+                versions={versions.data ?? []}
+              />
+            )}
 
             {v.mesh && (
               <Card className="mb-4 flex flex-wrap gap-x-4 gap-y-1 p-3 text-sm">
@@ -796,7 +908,8 @@ export default function VersionPage() {
                     onClick={() =>
                       setEditAssets((s) => {
                         const n = new Set(s);
-                        n.has(as.id) ? n.delete(as.id) : n.add(as.id);
+                        if (n.has(as.id)) n.delete(as.id);
+                        else n.add(as.id);
                         return n;
                       })
                     }
@@ -853,7 +966,8 @@ export default function VersionPage() {
                         onClick={() =>
                           setEditLibraryParts((s) => {
                             const n = new Set(s);
-                            n.has(p.id) ? n.delete(p.id) : n.add(p.id);
+                            if (n.has(p.id)) n.delete(p.id);
+                            else n.add(p.id);
                             return n;
                           })
                         }

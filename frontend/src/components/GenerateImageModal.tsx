@@ -78,7 +78,6 @@ export default function GenerateImageModal({
     if ((prevEdit.current && !edit) || (model !== "auto" && !pickable.some((m) => m.id === model)))
       setModel("auto");
     prevEdit.current = edit;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [edit, model, pickable]);
 
   return (

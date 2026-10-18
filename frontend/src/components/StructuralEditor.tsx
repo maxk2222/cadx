@@ -1357,7 +1357,6 @@ export default function StructuralEditor({
       setFacetBusy(false);
     }, 120);
     return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [model, surfacePickArmed, creaseDeg]);
 
   // drop cached facet overlays + pick bookkeeping when facets change, and

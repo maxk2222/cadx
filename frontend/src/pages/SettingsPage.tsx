@@ -172,7 +172,7 @@ export default function SettingsPage() {
       return;
     }
     if (TAB_IDS.has(q) && q !== tab) setTab(q as TabId);
-  }, [sp]);
+  }, [sp, navigate, tab]);
   const [form, setForm] = useState<Record<string, string> | null>(null);
   const [initial, setInitial] = useState<Record<string, string> | null>(null);
   const [apiKey, setApiKey] = useState("");

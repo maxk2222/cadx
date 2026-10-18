@@ -1028,3 +1028,54 @@ export interface EditableFeature {
   editable?: boolean;
   refusal?: string;
 }
+
+/* ---------- version compare ---------- */
+
+export interface CompareBBox {
+  min: number[];
+  max: number[];
+  size: number[];
+}
+
+/** `CompareResult.shape` — geometric diff metrics; null when neither side
+ *  has geometry to compare. `volume_delta`/`bbox_delta` are b − a. */
+export interface CompareShape {
+  volume_a: number | null;
+  volume_b: number | null;
+  volume_delta: number | null;
+  bbox_a: CompareBBox;
+  bbox_b: CompareBBox;
+  bbox_delta: CompareBBox;
+  solids_a: number;
+  solids_b: number;
+  faces_a: number;
+  faces_b: number;
+  /** mm³ of material only in b / only in a (boolean diff). */
+  added_volume: number | null;
+  removed_volume: number | null;
+  added_bbox: CompareBBox | null;
+  removed_bbox: CompareBBox | null;
+  added_solids: number;
+  removed_solids: number;
+  boolean: "ok" | "failed" | "skipped";
+  note?: string;
+  error?: string;
+}
+
+/** One differing param — `a`/`b` null means absent on that side. */
+export interface ParamDiff {
+  key: string;
+  a: unknown;
+  b: unknown;
+}
+
+/** GET /versions/{vid}/compare/{other_id}. */
+export interface CompareResult {
+  a: string;
+  b: string;
+  ok: boolean;
+  diff_summary: string;
+  shape: CompareShape | null;
+  params_diff: ParamDiff[];
+  error?: string;
+}

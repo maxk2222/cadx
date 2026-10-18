@@ -403,7 +403,7 @@ export default function EditPage() {
 
   // preview + apply
   const [busy, setBusy] = useState<"preview" | "apply" | null>(null);
-  const [viewCmd, setViewCmd] = useState<{ view: ViewPreset; n: number }>({ view: "iso", n: 0 });
+  const [viewCmd] = useState<{ view: ViewPreset; n: number }>({ view: "iso", n: 0 });
   const [fitKey, setFitKey] = useState(0);
   const [grid, setGrid] = useState(true);
   const [autoPreview, setAutoPreview] = useState(true);

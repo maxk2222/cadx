@@ -122,7 +122,8 @@ export default function ProjectPage() {
   const toggle = (aid: string) =>
     setSelected((s) => {
       const n = new Set(s);
-      n.has(aid) ? n.delete(aid) : n.add(aid);
+      if (n.has(aid)) n.delete(aid);
+      else n.add(aid);
       return n;
     });
 
@@ -248,7 +249,8 @@ export default function ProjectPage() {
                       onClick={() =>
                         setSelectedLib((s) => {
                           const n = new Set(s);
-                          n.has(p.id) ? n.delete(p.id) : n.add(p.id);
+                          if (n.has(p.id)) n.delete(p.id);
+                          else n.add(p.id);
                           return n;
                         })
                       }

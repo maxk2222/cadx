@@ -446,7 +446,8 @@ function CatalogBrowser() {
   const toggle = (k: string) =>
     setExpanded((s) => {
       const n = new Set(s);
-      n.has(k) ? n.delete(k) : n.add(k);
+      if (n.has(k)) n.delete(k);
+      else n.add(k);
       return n;
     });
 
