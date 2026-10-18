@@ -29,7 +29,7 @@ from cadx.cad.dfm.report import DfmWarning
 from cadx.cad.exporters import (
     export_2d,
     export_all_3d,
-    export_analytic_step,
+    export_analytic_step_isolated,
     export_mesh_all,
     quick_stl,
     repair_mesh_file,
@@ -2201,7 +2201,6 @@ def run_refine(
     """
     from cadx.cad.fem.analyze import report_to_json, run_fem
     from cadx.cad.fem.refine import (
-        applied_refine_features,
         apply_refine,
         resolve_refine_features,
     )
@@ -2302,37 +2301,14 @@ def run_refine(
         try_step=True,
         max_faces=s.mesh_max_faces_for_cad,
     )
-    # analytic STEP: cut real Cylinder/Helix faces into the sewn solid for
-    # the applied features — keeps the faceted STEP as fallback. rep.applied
-    # records are self-describing (u/v/dia/depth/thread) so the export does
-    # not depend on re-joining feature objects by name.
-    applied_feats = applied_refine_features(feats, rep)
-    if rep.applied and not applied_feats:
-        log.warning(
-            "export.analytic_step_name_join_empty",
-            applied=len(rep.applied),
-            feats=len(feats),
-        )
-    analytic_src: list[Any] = applied_feats or list(rep.applied)
-    if analytic_src:
-        step_res = export_analytic_step(
-            out,
-            analytic_src,
-            out_dir / "exports" / f"{name}.step",
-            max_faces=s.mesh_max_faces_for_cad,
-            log=log,
-        )
-        if step_res.get("step"):
-            res.exports["step"] = step_res["step"]
-        res.features["refine"]["step_features"] = step_res.get("step_features") or []
-        warnings += step_res.get("warnings") or []
-        res.features["refine"]["warnings"] = warnings
     res.exports["dxf"] = None
     res.exports["svg"] = None
     res.analysis = mesh_analysis(out)
     _repair_analysis_mesh(res.analysis, stl_path)
     if res.analysis.watertight is False:
         _repair_export_meshes(res.exports, out_dir / "exports")
+    _refine_analytic_step(res, out, feats, rep, out_dir, name, warnings, s)
+    warnings = res.features["refine"]["warnings"]
     res.mesh = {
         "pipeline": "refine",
         "triangles": len(out.faces),
@@ -2348,6 +2324,63 @@ def run_refine(
     res.ok = True
     res.timings["total_s"] = round(time.monotonic() - t0, 2)
     return res
+
+
+def _refine_analytic_step(
+    res: ExecResult,
+    out: trimesh.Trimesh,
+    feats: list[Any],
+    rep: Any,
+    out_dir: Path,
+    name: str,
+    warnings: list[str],
+    s: RuntimeSettings,
+) -> None:
+    """Analytic STEP for refine — cut real Cylinder/Helix faces into the sewn
+    solid for each applied feature; keeps the faceted STEP as fallback.
+
+    rep.applied records are self-describing (u/v/dia/depth/thread) so the
+    export does not depend on re-joining feature objects by name. Source
+    mesh: the repaired on-disk STL — the exact artefact shipped to the user;
+    the STL roundtrip + repair normalise duplicated vertices into a boolean-
+    safe topology the leaky in-memory mesh lacks. The export runs isolated
+    in a subprocess (``export_analytic_step_isolated``) because OCC booleans
+    on sewn solids are unbounded — on timeout the faceted STEP stays."""
+    from cadx.cad.fem.refine import applied_refine_features
+
+    applied_feats = applied_refine_features(feats, rep)
+    if rep.applied and not applied_feats:
+        log.warning(
+            "export.analytic_step_name_join_empty",
+            applied=len(rep.applied),
+            feats=len(feats),
+        )
+    analytic_src: list[Any] = applied_feats or list(rep.applied)
+    if not analytic_src:
+        return
+    stl_name = res.exports.get("stl")
+    if not stl_name:
+        warnings.append("analytic STEP skipped — no STL export to sew")
+        res.features["refine"]["warnings"] = warnings
+        return
+    # self-describing dicts for the subprocess boundary — feature objects
+    # may not survive pickling; rep.applied records already carry u/v/dia
+    feat_dicts = [
+        f if isinstance(f, dict) else dataclasses.asdict(f) for f in analytic_src
+    ]
+    step_res = export_analytic_step_isolated(
+        out_dir / "exports" / stl_name,
+        feat_dicts,
+        out_dir / "exports" / f"{name}.step",
+        timeout_s=float(s.analytic_step_timeout_s),
+        max_faces=s.mesh_max_faces_for_cad,
+        log=log,
+    )
+    if step_res.get("step"):
+        res.exports["step"] = step_res["step"]
+    res.features["refine"]["step_features"] = step_res.get("step_features") or []
+    warnings += step_res.get("warnings") or []
+    res.features["refine"]["warnings"] = warnings
 
 
 def _upsample_density(

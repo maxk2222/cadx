@@ -1841,6 +1841,19 @@ def mesh_to_solid(mesh: trimesh.Trimesh, *, max_faces: int | None = None) -> Any
     from cadx.cad.mesh_boolean import sew_mesh, unify_checked
 
     solid = sew_mesh(mesh)
+    # OCC sewing can produce an inside-out solid (negative volume) on
+    # meshes whose face winding trimesh counts as consistent — booleans on
+    # such a B-Rep silently return empty/no-op results. Normalise the
+    # orientation before anything consumes it.
+    try:
+        if float(solid.volume) < 0:
+            wrapped = solid.wrapped
+            wrapped.Reverse()
+            from build123d import Solid
+
+            solid = Solid(wrapped)
+    except Exception:
+        pass
     # coplanar facets merge into real planar faces — downstream OCC booleans
     # get cheaper and STEP exports carry analytic patches instead of facet
     # noise; guarded: any drift keeps the sewn solid

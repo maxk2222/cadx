@@ -350,3 +350,111 @@ def test_end_to_end_applied_features_feed_analytic_step(tmp_path):
     assert res["step_features"][0]["analytic"] is True
     solid = b3d.import_step(str(tmp_path / "e.step"))
     assert any(f.geom_type == b3d.GeomType.CYLINDER for f in solid.faces())
+
+
+# --------------------------------------------------------------------------- #
+# export_analytic_step_isolated                                                #
+# --------------------------------------------------------------------------- #
+
+
+def test_isolated_export_applies_feature(tmp_path):
+    pytest.importorskip("build123d")
+    from cadx.cad.exporters import export_analytic_step_isolated
+
+    stl = tmp_path / "base.stl"
+    _bored().export(stl)
+    out_step = tmp_path / "out.step"
+    res = export_analytic_step_isolated(
+        stl,
+        [{"name": "b1", "kind": "hole", "axis": "+z", "u": 10.0, "v": 0.0, "dia": 6.0}],
+        out_step,
+        timeout_s=120.0,
+    )
+    assert res["step"] == "out.step"
+    assert [f["name"] for f in res["step_features"]] == ["b1"]
+    assert out_step.exists()
+
+
+def test_isolated_export_timeout_keeps_prior_checkpoint(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    """A hanging child is killed; earlier applied features still ship."""
+    pytest.importorskip("build123d")
+    import multiprocessing.context as mpctx
+
+    import cadx.cad.exporters as ex
+
+    class _FakeHangProcess:
+        """Never actually starts — always reports alive so the parent
+        exercises the terminate/skip path deterministically."""
+
+        def __init__(self, *a: object, **kw: object) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def join(self, timeout: float | None = None) -> None:
+            pass
+
+        def is_alive(self) -> bool:
+            return True
+
+        def terminate(self) -> None:
+            pass
+
+        @property
+        def exitcode(self) -> int | None:
+            return None
+
+    def make_process(_ctx_self, *a, **kw):  # type: ignore[no-untyped-def]
+        args = kw.get("args") or ()
+        feature = args[2] if len(args) > 2 else None
+        name = (
+            feature.get("name")
+            if isinstance(feature, dict)
+            else getattr(feature, "name", "")
+        )
+        if name == "b2":
+            return _FakeHangProcess()
+        return mpctx.SpawnProcess(*a, **kw)
+
+    monkeypatch.setattr(mpctx.SpawnContext, "Process", make_process)
+
+    stl = tmp_path / "base.stl"
+    _bored().export(stl)
+    out_step = tmp_path / "out.step"
+    res = ex.export_analytic_step_isolated(
+        stl,
+        [
+            {"name": "b1", "kind": "hole", "axis": "+z", "u": 10.0, "v": 0.0, "dia": 6.0},
+            {"name": "b2", "kind": "hole", "axis": "+z", "u": -10.0, "v": 0.0, "dia": 6.0},
+        ],
+        out_step,
+        timeout_s=120.0,
+        per_feature_s=15.0,
+    )
+    assert res["step"] == "out.step"
+    assert [f["name"] for f in res["step_features"]] == ["b1"]
+    assert any("b2" in w and "exceeded" in w for w in res["warnings"])
+    assert out_step.exists()
+
+
+def test_isolated_export_no_valid_cut_keeps_faceted(tmp_path):
+    """Without a resolvable pose no checkpoint exists → no STEP promotion."""
+    pytest.importorskip("build123d")
+    from cadx.cad.exporters import export_analytic_step_isolated
+
+    stl = tmp_path / "base.stl"
+    _box().export(stl)
+    out_step = tmp_path / "out.step"
+    res = export_analytic_step_isolated(
+        stl,
+        [{"name": "bad", "kind": "mystery"}],
+        out_step,
+        timeout_s=60.0,
+    )
+    assert res["step"] is None
+    assert res["step_features"] == []
+    assert any("bad" in w for w in res["warnings"])
+    assert not out_step.exists()

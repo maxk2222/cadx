@@ -207,6 +207,10 @@ class RuntimeSettings(BaseModel):
     # hybrid iteration latency; the export GLB keeps full detail. Keep at or
     # below mesh_decimate_faces; >60k makes every executor call minutes-slow.
     mesh_max_faces_for_cad: int = Field(default=30_000, ge=1)
+    # hard wall-clock budget for the isolated analytic-STEP subprocess —
+    # OCC booleans on sewn mesh solids are unbounded, so a pathological
+    # solid degrades to the faceted STEP instead of stalling the job
+    analytic_step_timeout_s: int = Field(default=240, ge=10, le=3600)
     mesh_smooth_after_flatten_iters: int = Field(default=10, ge=0, le=30)
     mesh_candidates_per_iter: int = Field(default=2, ge=1, le=4)
     mesh_candidate_steps: int = Field(default=15, ge=5, le=100)
@@ -272,6 +276,7 @@ _EXECUTOR_FIELDS = {
     "topopt_multires",
     "refine_helical_threads",
     "mesh_max_faces_for_cad",
+    "analytic_step_timeout_s",
     "mesh_decimate_faces",
     "mesh_smooth_after_flatten_iters",
 }

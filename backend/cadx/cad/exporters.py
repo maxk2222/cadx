@@ -29,6 +29,24 @@ FORMATS_2D = ["dxf", "svg"]
 log = structlog.get_logger()
 
 
+def export_step_checked(solid: Any, out_path: Path) -> None:
+    """Write STEP and verify the stored shell orientation via reimport.
+
+    OCC's STEP writer flips the shell orientation of solids sewn from
+    triangle soup — a positive in-memory solid can land inside-out in the
+    file (negative volume on reimport, wrong normals in some viewers).
+    Reimport once; if the file reads inside-out, reverse and rewrite."""
+    export_step(solid, str(out_path))
+    try:
+        from build123d import import_step
+
+        if float(import_step(str(out_path)).volume) < 0:
+            solid.wrapped.Reverse()
+            export_step(solid, str(out_path))
+    except Exception:
+        pass
+
+
 def export_step_file(shape: Shape, path: Path) -> None:
     export_step(shape, str(path))
 
@@ -555,15 +573,20 @@ def _cut_analytic_features(
     solid: Any,
     mesh: trimesh.Trimesh,
     normed: list[tuple[str, Any]],
+    *,
+    deadline: float | None = None,
 ) -> tuple[Any, list[dict[str, Any]], list[str], dict[str, str]]:
     """Cut every normed feature's analytic tools out of `solid` in sequence.
 
     Cutters are applied one at a time (pilot bore first, then thread
     groove/counters) — a single Compound tool makes the boolean far more
     fragile on sewn meshes, and a failed groove must not cost the pilot
-    bore's analytic cylinder. Returns ``(solid, applied, failed_names,
-    degraded)`` — degraded maps feature name → which sub-cutter failed;
-    those features keep their analytic pilot but get an honest note."""
+    bore's analytic cylinder. ``deadline`` is a monotonic timestamp: once
+    passed, remaining cutters are skipped and the feature is marked
+    degraded — one pathological OCC boolean must not stall the export.
+    Returns ``(solid, applied, failed_names, degraded)`` — degraded maps
+    feature name → which sub-cutter failed; those features keep their
+    analytic pilot but get an honest note."""
     applied: list[dict[str, Any]] = []
     failed: list[str] = []
     degraded: dict[str, str] = {}
@@ -577,6 +600,11 @@ def _cut_analytic_features(
         base = solid
         ok = True
         for i, tool in enumerate(cutters):
+            if deadline is not None and time.monotonic() > deadline:
+                degraded[name] = "time budget exceeded — cut skipped"
+                if i == 0:
+                    ok = False
+                break
             # secondary cutters (thread groove, counters) get one fuzzy shot —
             # they are pathologically slow on large sewn solids
             levels = (0.05, 0.2) if i == 0 else (0.05,)
@@ -618,6 +646,280 @@ def _cut_analytic_features(
     return solid, applied, failed, degraded
 
 
+def _analytic_step_worker(
+    stl_path: str,
+    brep_in: str,
+    feature: Any,
+    out_brep: str,
+    result_path: str,
+    max_faces: int | None,
+) -> None:
+    """Subprocess body for ONE feature of the analytic STEP export.
+
+    Loads the input B-Rep (empty brep_in → sew the shipped STL fresh), cuts
+    the feature's analytic tools and writes the result B-Rep plus a JSON
+    status the parent collects. B-Rep round-tripping keeps earlier features'
+    analytic faces intact — an STL round-trip would re-facet them."""
+    import json as _json
+
+    out: dict[str, Any] = {"applied": False, "warnings": []}
+    mesh = trimesh.load(stl_path, force="mesh")
+    solid = _load_solid_for_worker(brep_in, mesh, max_faces, out)
+    if solid is None:
+        Path(result_path).write_text(_json.dumps(out))
+        return
+
+    feat = _norm_refine_feature(feature)
+    name = str(_feat_field(feature, "name", "") or _feat_field(feature, "kind", "feature"))
+    try:
+        cutters = _analytic_cutters(feat, mesh) or [] if feat is not None else []
+    except Exception:
+        cutters = []
+    if not cutters:
+        out["warnings"].append(f"feature '{name}': no usable refine pose — skipped")
+        Path(result_path).write_text(_json.dumps(out))
+        return
+
+    ok = False
+    degraded_note = None
+    for i, tool in enumerate(cutters):
+        try:
+            res = _occ_cut(solid, tool, fuzzy_levels=(0.05,))
+        except Exception:
+            res = None
+        if res is not None and res.solids() and res.volume >= solid.volume * 0.3:
+            solid = res
+            ok = True
+        else:
+            if i > 0 and ok:
+                degraded_note = f"secondary cutter {i} failed — pilot bore applied"
+            else:
+                ok = False
+            break
+    if ok:
+        out["applied"] = True
+        _write_worker_brep(solid, out_brep, name, out)
+    else:
+        out["warnings"].append(
+            f"feature '{name}': analytic cut produced no valid solid — faceted STEP kept"
+        )
+    if degraded_note:
+        out["degraded"] = degraded_note
+        out["warnings"].append(f"feature '{name}': {degraded_note}")
+    Path(result_path).write_text(_json.dumps(out))
+
+
+def _load_solid_for_worker(
+    brep_in: str, mesh: trimesh.Trimesh, max_faces: int | None, out: dict[str, Any]
+) -> Any:
+    """Input solid for a worker child: prior BREP checkpoint, else fresh sew."""
+    if brep_in:
+        try:
+            from build123d import Shape
+            from OCP.BRep import BRep_Builder
+            from OCP.BRepTools import BRepTools
+            from OCP.TopoDS import TopoDS_Shape
+
+            sh = TopoDS_Shape()
+            BRepTools.Read_s(sh, brep_in, BRep_Builder())
+            return Shape.cast(sh)
+        except Exception as e:
+            # falling back to the raw STL would silently drop earlier analytic
+            # cuts while the parent still reports them — fail instead
+            out["warnings"].append(f"BREP checkpoint unreadable: {e}")
+            return None
+    try:
+        import io
+
+        mesh = trimesh.load(io.BytesIO(mesh.export(file_type="stl")), file_type="stl")
+    except Exception:
+        pass
+    mesh = _decimate_for_analytic(mesh, globals()["log"])
+    try:
+        from cadx.cad.mesh_ops import mesh_to_solid
+
+        return mesh_to_solid(mesh, max_faces=max_faces)
+    except Exception as e:
+        out["warnings"].append(f"analytic STEP skipped — mesh-to-solid failed: {e}")
+        return None
+
+
+def _write_worker_brep(solid: Any, out_brep: str, name: str, out: dict[str, Any]) -> None:
+    """Checkpoint the post-cut solid as BREP for the next feature child."""
+    try:
+        from OCP.BRepTools import BRepTools
+
+        try:
+            if float(solid.volume) < 0:
+                solid.wrapped.Reverse()
+        except Exception:
+            pass
+        BRepTools.Write_s(solid.wrapped, out_brep)
+        out["brep"] = out_brep
+    except Exception as e:
+        out["applied"] = False
+        out["warnings"].append(f"feature '{name}': BREP write failed: {e}")
+
+
+def export_analytic_step_isolated(
+    mesh_path: Path,
+    features: list[Any],
+    out_path: Path,
+    *,
+    timeout_s: float = 300.0,
+    per_feature_s: float | None = None,
+    max_faces: int | None = None,
+    log: Any = None,
+) -> dict[str, Any]:
+    """Run the analytic STEP export feature-by-feature in child processes.
+
+    OCC booleans on sewn mesh solids are unbounded — a single pathological
+    cut has been observed to spin >25 minutes, and a Python deadline check
+    cannot interrupt a call inside OCC. Each feature therefore gets its own
+    forked child with a per-feature timeout; the evolving solid round-trips
+    between children as a BREP file so analytic faces survive. A feature
+    that times out or collapses is skipped and the pipeline continues —
+    the faceted STEP stays as the honest fallback.
+    """
+    import json as _json
+    import multiprocessing as _mp
+    import tempfile
+
+    logger = log if log is not None else globals()["log"]
+    out_path = Path(out_path)
+    warnings: list[str] = []
+    out: dict[str, Any] = {"step": None, "step_features": [], "warnings": warnings}
+    per_feature = per_feature_s or max(30.0, timeout_s / max(len(features or []), 1))
+
+    normed: list[tuple[str, Any]] = []
+    for raw in features or []:
+        feat = _norm_refine_feature(raw)
+        name = str(_feat_field(raw, "name", "") or _feat_field(raw, "kind", "feature"))
+        if feat is None:
+            warnings.append(f"feature '{name}': no usable refine pose — skipped")
+            continue
+        normed.append((name, feat))
+
+    # spawn, not fork: the parent has already exercised OCC (sandbox runs),
+    # and a forked child can inherit locked OCC mutexes and deadlock before
+    # doing any work. Spawn costs a few seconds of interpreter startup per
+    # feature but is immune to fork-safety issues.
+    ctx = _mp.get_context("spawn")
+    brep_in = ""
+    applied: list[dict[str, Any]] = []
+    t_all = time.monotonic()
+    with tempfile.TemporaryDirectory(dir=out_path.parent) as td:
+        tdir = Path(td)
+        for idx, (name, feat) in enumerate(normed):
+            if time.monotonic() - t_all > timeout_s:
+                warnings.append(
+                    f"analytic STEP exceeded {timeout_s:.0f}s total budget — "
+                    "remaining features skipped"
+                )
+                break
+            child_brep = tdir / f"feat{idx}.brep"
+            child_res = tdir / f"feat{idx}.json"
+            proc = ctx.Process(
+                target=_analytic_step_worker,
+                args=(
+                    str(mesh_path),
+                    brep_in,
+                    feat,
+                    str(child_brep),
+                    str(child_res),
+                    max_faces,
+                ),
+                daemon=True,
+            )
+            proc.start()
+            proc.join(per_feature)
+            if proc.is_alive():
+                proc.terminate()
+                proc.join(5)
+                warnings.append(
+                    f"feature '{name}': cut exceeded {per_feature:.0f}s — skipped"
+                )
+                logger.warning("export.analytic_step_feature_timeout", feature=name)
+                continue
+            try:
+                cres = _json.loads(child_res.read_text())
+            except Exception:
+                warnings.append(f"feature '{name}': cut failed — skipped")
+                continue
+            warnings += [str(w) for w in cres.get("warnings", [])]
+            if cres.get("applied") and cres.get("brep") and Path(cres["brep"]).exists():
+                brep_in = str(cres["brep"])
+                rec = {
+                    "name": name,
+                    "kind": str(_feat_field(feat, "kind", "hole")),
+                    "axis": str(_feat_field(feat, "axis", "+z")),
+                    "analytic": True,
+                }
+                if cres.get("degraded"):
+                    rec["degraded"] = str(cres["degraded"])
+                applied.append(rec)
+
+        if brep_in:
+            # final solid → STEP; child wrote BREPs into tdir, so the last one
+            # is the accumulated body
+            try:
+                from OCP.BRep import BRep_Builder
+                from OCP.BRepTools import BRepTools
+                from OCP.TopoDS import TopoDS_Shape
+
+                sh = TopoDS_Shape()
+                BRepTools.Read_s(sh, brep_in, BRep_Builder())
+                export_step_checked(Shape.cast(sh), out_path)
+                out["step"] = out_path.name
+                out["step_features"] = applied
+            except Exception as e:
+                warnings.append(f"analytic STEP write failed: {e}")
+                logger.warning("export.analytic_step_write_failed", error=str(e))
+    logger.info(
+        "export.analytic_step",
+        features=len(features or []),
+        applied=len(applied),
+        step=out["step"],
+        warnings=len(warnings),
+    )
+    return out
+
+
+def _decimate_for_analytic(mesh: trimesh.Trimesh, logger: Any) -> trimesh.Trimesh:
+    """Budget the mesh for OCC sewing/booleans.
+
+    OCC boolean cost scales with face count; quadric decimation also
+    collapses the sub-tolerance coincident vertices left by keep-restore
+    unions. 12k facets keep sub-0.1mm fidelity on typical lattice skins
+    while cutting sew/boolean time by ~4x. Quadric collapses can reopen the
+    boundary — small holes are resealed cheaply (merge/fill); the voxel
+    rebuild mesh_to_solid would run instead drifts past the guard on fine
+    lattice skins. Falls back to the input mesh when the decimated result
+    cannot be resealed."""
+    try:
+        from cadx.cad.mesh_ops import decimate
+
+        if len(mesh.faces) <= 12000:
+            return mesh
+        dec = decimate(mesh, 12000)
+        if not dec.is_watertight:
+            dec.merge_vertices()
+            dec.update_faces(dec.nondegenerate_faces())
+            dec.remove_unreferenced_vertices()
+            dec.fill_holes()
+            dec.fix_normals()
+        if dec.is_watertight or not mesh.is_watertight:
+            return dec
+        logger.warning(
+            "export.analytic_step_decimate_dropped",
+            faces_in=len(mesh.faces),
+            faces_out=len(dec.faces),
+        )
+        return mesh
+    except Exception:
+        return mesh
+
+
 def export_analytic_step(
     mesh: trimesh.Trimesh,
     features: list[Any],
@@ -625,6 +927,7 @@ def export_analytic_step(
     *,
     max_faces: int | None = None,
     log: Any = None,
+    budget_s: float | None = None,
 ) -> dict[str, Any]:
     """STEP of the optimized body with analytic (exact) feature surfaces.
 
@@ -660,17 +963,7 @@ def export_analytic_step(
         mesh = trimesh.load(io.BytesIO(mesh.export(file_type="stl")), file_type="stl")
     except Exception:
         pass
-    try:
-        # OCC boolean cost scales with face count; quadric decimation also
-        # collapses the sub-tolerance coincident vertices left by keep-restore
-        # unions. 12k facets keep sub-0.1mm fidelity on typical lattice skins
-        # while cutting sew/boolean time by ~4x.
-        from cadx.cad.mesh_ops import decimate
-
-        if len(mesh.faces) > 12000:
-            mesh = decimate(mesh, 12000)
-    except Exception:
-        pass
+    mesh = _decimate_for_analytic(mesh, logger)
     try:
         from cadx.cad.mesh_ops import mesh_to_solid
 
@@ -697,8 +990,13 @@ def export_analytic_step(
             continue
         normed.append((name, feat))
 
-    solid, applied, failed, degraded = _cut_analytic_features(solid, mesh, normed)
-    if failed and not applied:
+    # one OCC boolean on a degenerate sewn solid can spin for tens of
+    # minutes — bound the whole feature loop and degrade gracefully
+    deadline = time.monotonic() + budget_s if budget_s else None
+    solid, applied, failed, degraded = _cut_analytic_features(
+        solid, mesh, normed, deadline=deadline
+    )
+    if failed and not applied and (deadline is None or time.monotonic() < deadline):
         # escalation: refine keep-restore unions leave float32-coincident
         # vertices at patch seams — watertight per trimesh but the sewn
         # B-Rep is boolean-dead near them. ``process(validate=True)`` splits
@@ -707,7 +1005,9 @@ def export_analytic_step(
         # escalated solid so every analytic surface ends up in one body.
         esc = _validate_split_solid(mesh)
         if esc is not None:
-            solid2, applied2, failed2, degraded2 = _cut_analytic_features(esc, mesh, normed)
+            solid2, applied2, failed2, degraded2 = _cut_analytic_features(
+                esc, mesh, normed, deadline=deadline
+            )
             if len(applied2) > len(applied):
                 logger.info(
                     "export.analytic_step_escalated",
@@ -726,7 +1026,7 @@ def export_analytic_step(
 
     try:
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        export_step(solid, str(out_path))
+        export_step_checked(solid, out_path)
         out["step"] = out_path.name
         out["step_features"] = applied
     except Exception as e:
