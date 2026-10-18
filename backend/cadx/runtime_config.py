@@ -166,6 +166,9 @@ class RuntimeSettings(BaseModel):
     topopt_multires_min_cells: int = Field(
         default=4000, ge=0, le=10_000_000
     )  # multires coarse pass only pays off above this solid-cell count
+    # multires coarse→fine SIMP warm start — default ON (~3x faster on big
+    # parts); a request/tool-level `multires: false` still opts out per run
+    topopt_multires: bool = True
     # auto-enqueue a feature-finishing 'refine' child after a succeeded topopt
     # run — the standalone optimize job AND the in-job topopt phase — whenever
     # the part has features/anchors to re-cut (voxel-rough bores, destroyed
@@ -266,6 +269,7 @@ _EXECUTOR_FIELDS = {
     "topopt_auto_keep",
     "topopt_auto_keep_margin_mm",
     "topopt_multires_min_cells",
+    "topopt_multires",
     "refine_helical_threads",
     "mesh_max_faces_for_cad",
     "mesh_decimate_faces",

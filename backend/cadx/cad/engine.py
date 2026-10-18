@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import trimesh
 from build123d import import_brep
 
 from cadx.cad.analysis import Analysis, analyze
@@ -28,6 +29,7 @@ from cadx.cad.dfm.report import DfmWarning
 from cadx.cad.exporters import (
     export_2d,
     export_all_3d,
+    export_analytic_step,
     export_mesh_all,
     quick_stl,
     repair_mesh_file,
@@ -898,6 +900,163 @@ def _scan_anchors(mesh: Any, anchors: list[dict] | None, *, enabled: bool = True
     return merge_anchor_lists(list(anchors or []), scanned)
 
 
+# --- spec-envelope input normalization (topopt) ------------------------------
+#
+# The declared spec dims are the hard part envelope, but the FEM/TopOpt design
+# domain is simply the input mesh's bbox — an oversize base (a proud rib, a
+# scale drift, 94.9 mm input for a 90 mm spec) silently shifts the whole FEM
+# problem out of envelope. Clip the input back to the envelope before
+# voxelizing. Normalization fires only past this slack — sub-tolerance
+# overshoot is voxel-resolution noise, not a geometry fault.
+_ENVELOPE_CLIP_SLACK_MM = 2.0
+_ENVELOPE_CLIP_SLACK_FRAC = 0.05
+
+
+def _spec_envelope_bounds(
+    spec_dims_mm: list[float | None], mesh_bounds: np.ndarray
+) -> np.ndarray | None:
+    """(2,3) axis-aligned bounds of the spec envelope in model space — X/Y
+    centred on the origin, Z resting on the XY plane (the
+    ``rest_on_xy_center`` contract). Axes with ``None``/non-positive dims are
+    unconstrained: the box spans the mesh's own bounds there so the boolean
+    clip only trims declared axes. None when nothing is constrained."""
+    if len(spec_dims_mm) < 3:
+        return None
+    lo = np.asarray(mesh_bounds[0], dtype=float).copy()
+    hi = np.asarray(mesh_bounds[1], dtype=float).copy()
+    constrained = False
+    for ax in range(3):
+        d = spec_dims_mm[ax]
+        if d is None or float(d) <= 0:
+            continue
+        constrained = True
+        if ax == 2:
+            lo[ax], hi[ax] = 0.0, float(d)
+        else:
+            lo[ax], hi[ax] = -float(d) / 2.0, float(d) / 2.0
+    return np.stack([lo, hi]) if constrained else None
+
+
+def normalize_mesh_to_spec_envelope(
+    mesh: trimesh.Trimesh, spec_dims_mm: list[float | None]
+) -> tuple[trimesh.Trimesh, dict[str, Any]]:
+    """Clip an out-of-envelope topopt input back to the declared spec dims.
+
+    The clip is a manifold boolean intersection with the spec-envelope box
+    (same engine as the rest of the codebase). A failed/empty boolean falls
+    back to uniform scale-to-fit — only on a watertight input, which scaling
+    keeps watertight-plausible; leaky geometry passes through unchanged with
+    a warning. Never raises, never blocks the run.
+
+    Returns ``(mesh, report)``; report keys: ``input_bbox``/``spec_bbox``
+    (flat [x, y, z] mm extents — the frontend's TopOptPanel contract),
+    ``input_normalized``, ``method`` ("clip" | "scale") and ``warning``.
+    """
+    report: dict[str, Any] = {
+        "input_bbox": [round(float(v), 3) for v in (mesh.bounds[1] - mesh.bounds[0])],
+        "spec_bbox": None,
+        "input_normalized": False,
+    }
+    bounds = np.asarray(mesh.bounds, dtype=float)
+    ext = bounds[1] - bounds[0]
+    env = _spec_envelope_bounds(spec_dims_mm, bounds)
+    if env is None:
+        return mesh, report
+    if all(d and d > 0 for d in spec_dims_mm):
+        report["spec_bbox"] = [round(float(d), 3) for d in spec_dims_mm]
+    over = any(
+        ext[ax] > d + _ENVELOPE_CLIP_SLACK_MM or ext[ax] > d * (1.0 + _ENVELOPE_CLIP_SLACK_FRAC)
+        for ax, d in enumerate(spec_dims_mm)
+        if d and d > 0
+    )
+    if not over:
+        return mesh, report
+
+    box = trimesh.creation.box(extents=env[1] - env[0])
+    box.apply_translation((env[0] + env[1]) / 2.0)
+    clipped: trimesh.Trimesh | None = None
+    try:
+        cand = mesh if mesh.is_watertight else _ensure_watertight(mesh)
+        clipped = cand.intersection(box, engine="manifold")
+    except Exception as e:
+        report["warning"] = f"spec-envelope clip failed: {e} — input left unnormalized"
+    if clipped is not None and not clipped.is_empty and clipped.is_volume and clipped.volume > 0:
+        report["input_normalized"] = True
+        report["method"] = "clip"
+        return clipped, report
+    if "warning" not in report:
+        report["warning"] = "spec-envelope clip produced no usable volume — input left as-is"
+
+    # bounds-based fallback: a watertight solid stays watertight under uniform
+    # scaling about the origin (XY-centred/on-plane inputs keep the contract)
+    if mesh.is_watertight:
+        factors = [
+            float(d) / float(ext[ax])
+            for ax, d in enumerate(spec_dims_mm)
+            if d and d > 0 and ext[ax] > d
+        ]
+        if factors:
+            out = mesh.copy()
+            out.apply_scale(min(factors))
+            report["input_normalized"] = True
+            report["method"] = "scale"
+            report["warning"] += " — fell back to uniform scale-to-fit"
+            return out, report
+    return mesh, report
+
+
+def _auto_warm_density(out_dir: Path, domain: Any) -> tuple[np.ndarray | None, str | None]:
+    """Opportunistic SIMP warm start: reuse a previous optimize run's
+    ``density.npz`` when its voxel grid is *identical* (same origin, pitch
+    and dims) to the current domain — a size-only match on a shifted or
+    differently-pitched domain would misalign the field.
+
+    Candidates: the previous iteration dir of this version (agent optimize
+    sessions chain SIMP runs on the same base mesh, so run N benefits from
+    run N-1's converged field), then the version-level ``topopt/density.npz``
+    copied up from an earlier optimize on the same version."""
+    cands: list[Path] = []
+    if out_dir.name.isdigit() and int(out_dir.name) > 1:
+        cands.append(out_dir.parent / str(int(out_dir.name) - 1) / "topopt" / "density.npz")
+    if len(out_dir.parents) > 1:
+        cands.append(out_dir.parents[1] / "topopt" / "density.npz")
+    for p in cands:
+        if not p.exists():
+            continue
+        try:
+            with np.load(p) as npz:
+                dims = tuple(int(v) for v in npz["dims"])
+                same_grid = (
+                    dims == tuple(domain.dims)
+                    and np.allclose(np.asarray(npz["origin"], dtype=float), domain.origin)
+                    and abs(float(npz["pitch"]) - float(domain.pitch)) < 1e-9
+                )
+                if same_grid:
+                    return np.asarray(npz["density"], dtype=float), str(p)
+        except Exception:
+            continue
+    return None, None
+
+
+def _compact_history(history: list[dict[str, Any]], cap: int = 200) -> list[dict[str, Any]]:
+    """Frontend chart series for a SIMP run: one ``{it, compliance, volfrac,
+    change, solve_s}`` dict per iteration, decimated to `cap` entries (first
+    and last always kept). JSON-serializable — the TopOptPanel contract."""
+    if len(history) > cap:
+        idx = np.unique(np.linspace(0, len(history) - 1, cap).astype(int))
+        history = [history[int(i)] for i in idx]
+    return [
+        {
+            "it": int(h.get("iteration") or 0),
+            "compliance": h.get("compliance_mj"),
+            "volfrac": h.get("volfrac"),
+            "change": h.get("change"),
+            "solve_s": h.get("solve_s"),
+        }
+        for h in history
+    ]
+
+
 def run_fem_pipeline(
     *,
     mesh_path: Path,
@@ -993,6 +1152,7 @@ def run_topopt_pipeline(  # noqa: C901
     cancelled: Any = None,
     scan_anchors: bool = True,
     runtime: RuntimeSettings | None = None,
+    spec_dims_mm: list[float | None] | None = None,
 ) -> ExecResult:
     """SIMP topology optimization on the part's voxelized design domain.
 
@@ -1008,6 +1168,7 @@ def run_topopt_pipeline(  # noqa: C901
     """
     from scipy import ndimage
 
+    from cadx import storage
     from cadx.cad.fem.analyze import report_to_json, run_fem_domain
     from cadx.cad.fem.extract import density_to_mesh
     from cadx.cad.fem.loads import expand_cone
@@ -1021,7 +1182,7 @@ def run_topopt_pipeline(  # noqa: C901
         resolve_case_dofs,
     )
     from cadx.cad.fem.topopt import TopOptParams, passive_solid_mask, simp
-    from cadx.cad.fem.voxelize import voxelize
+    from cadx.cad.fem.voxelize import grid_bounds_mm, voxelize
     from cadx.llm.schemas import LoadCase, OptimizeSpec
 
     res = ExecResult()
@@ -1045,12 +1206,50 @@ def run_topopt_pipeline(  # noqa: C901
     mat_name = material or ""
     mat = resolve_material(mat_name)
 
+    # --- input normalization -------------------------------------------------
+    # `spec_dims_mm` ([length_x, width_y, height_z], None = unconstrained
+    # axis) travels inside the `optimize` payload dict (OptimizeSpec ignores
+    # the extra key); mesh-only runs carry no spec and skip silently.
+    try:
+        res.topopt["base_mesh_relpath"] = storage.relpath(mesh_path)
+    except Exception:
+        res.topopt["base_mesh_relpath"] = str(mesh_path)
+    res.topopt["input_bbox"] = [round(float(v), 3) for v in (mesh.bounds[1] - mesh.bounds[0])]
+    res.topopt["spec_bbox"] = None
+    res.topopt["input_normalized"] = False
+    dims_spec = spec_dims_mm if spec_dims_mm is not None else (optimize or {}).get("spec_dims_mm")
+    if dims_spec:
+        mesh, norm_rep = normalize_mesh_to_spec_envelope(mesh, list(dims_spec))
+        res.topopt["spec_bbox"] = norm_rep["spec_bbox"]
+        res.topopt["input_normalized"] = norm_rep["input_normalized"]
+        if norm_rep.get("warning"):
+            res.topopt.setdefault("warnings", []).append(norm_rep["warning"])
+        if norm_rep["input_normalized"]:
+            norm_stl = out_dir / "_run" / "topopt_input.stl"
+            try:
+                norm_stl.parent.mkdir(parents=True, exist_ok=True)
+                mesh.export(str(norm_stl), file_type="stl")
+                res.topopt["normalized_input_relpath"] = storage.relpath(norm_stl)
+            except Exception as e:
+                log.warning("topopt.normalized_export_failed", error=str(e)[:200])
+            log.info(
+                "topopt.input_normalized",
+                method=norm_rep.get("method"),
+                input_bbox=norm_rep["input_bbox"],
+                spec_bbox=norm_rep["spec_bbox"],
+            )
+
     # --- design domain -------------------------------------------------------
     try:
         domain = voxelize(mesh, voxel_mm or s.fem_voxel_mm, max_elements or s.fem_max_elements)
     except Exception as e:
         res.error = f"voxelization failed: {e}"
         return res
+    d_lo, d_hi = grid_bounds_mm(domain)
+    res.topopt["domain_bbox"] = [
+        [round(float(v), 3) for v in d_lo],
+        [round(float(v), 3) for v in d_hi],
+    ]
 
     # predictive memory budget — an OOM kill mid-SIMP loses the whole job;
     # better to refuse early with a pointer to the knobs that fix it
@@ -1234,22 +1433,43 @@ def run_topopt_pipeline(  # noqa: C901
 
     # optional warm start from a previous run's density field
     x0 = None
+    warm_src: str | None = None
     if opt.warm_density_relpath:
         try:
-            from cadx import storage
-
             warm = np.load(storage.resolve(opt.warm_density_relpath))
             x0 = np.asarray(warm["density"], dtype=float)
             if x0.size != domain.cell_count:
                 res.topopt["warnings"].append("warm-start density has a different grid — ignored")
                 x0 = None
+            else:
+                warm_src = opt.warm_density_relpath
         except Exception as e:
             res.topopt["warnings"].append(f"warm-start density unreadable: {e}")
+    else:
+        # no explicit warm start — reuse a previous run's density.npz when its
+        # grid is identical (agent sessions chain SIMP runs on one base mesh)
+        x0, warm_src = _auto_warm_density(out_dir, domain)
+    if warm_src:
+        # report a storage-relative path — absolute paths leak DATA_DIR layout
+        if Path(warm_src).is_absolute():
+            with contextlib.suppress(Exception):
+                warm_src = storage.relpath(warm_src)
+        res.topopt["warm_start"] = warm_src
 
     # multiresolution: run a coarse SIMP at 2x pitch first, upsample the
-    # density and warm-start the fine grid — converges ~3x faster on big parts
+    # density and warm-start the fine grid — converges ~3x faster on big parts.
+    # Default-on (runtime `topopt_multires` flag): OptimizeSpec.multires is
+    # schema-False even when unset, so a serialized spec dump would read as
+    # an opt-out — the worker pops falsy values and only an *explicit*
+    # multires=false in the request (tool arg / API payload) disables it here.
     multires_min = int(getattr(s, "topopt_multires_min_cells", 4000) or 0)
-    if getattr(opt, "multires", False) and x0 is None and domain.solid_count > multires_min:
+    multires_on = bool(opt.multires) or (optimize or {}).get("multires") is None
+    if (
+        getattr(s, "topopt_multires", True)
+        and multires_on
+        and x0 is None
+        and domain.solid_count > multires_min
+    ):
         t_mr = time.monotonic()
         try:
             coarse = voxelize(mesh, domain.pitch * 2.0, max_elements or s.fem_max_elements)
@@ -1305,9 +1525,13 @@ def run_topopt_pipeline(  # noqa: C901
     opt_dir.mkdir(parents=True, exist_ok=True)
     base_flat = is_flat_bottom(mesh)
 
-    def _one_pass(volfrac: float, pass_idx: int = 1) -> dict[str, Any]:
+    def _one_pass(
+        volfrac: float, pass_idx: int = 1, warm: np.ndarray | None = None
+    ) -> dict[str, Any]:
         """One SIMP run at `volfrac` + extraction, smoothing and both FEM
-        verifications. Returns the pieces needed for artifacts/retry."""
+        verifications. Returns the pieces needed for artifacts/retry.
+        `warm` overrides the run-level x0 (retry passes warm-start from the
+        first pass's converged field)."""
         out: dict[str, Any] = {"volfrac": volfrac}
         # pass-indexed render names: pass 1 keeps the historical names,
         # retries must not overwrite its evidence in out_dir/fem
@@ -1323,7 +1547,7 @@ def run_topopt_pipeline(  # noqa: C901
             p,
             passive_void=void_cells,
             case_weights=case_weights,
-            x0=x0,
+            x0=x0 if warm is None else warm,
             spsolve_dofs=s.fem_spsolve_dofs,
             cancelled=cancelled,
             progress_file=opt_dir / f"history_{volfrac:.2f}.json",
@@ -1410,13 +1634,17 @@ def run_topopt_pipeline(  # noqa: C901
         and params.volfrac + 0.1 <= 0.9
         and (cancelled is None or not cancelled())
     ):
-        p2 = _one_pass(params.volfrac + 0.1, pass_idx=2)
+        # warm-start the retry from pass 1's converged field — the extra
+        # volfrac material grows into the existing design instead of
+        # re-optimizing from a uniform start
+        p2 = _one_pass(params.volfrac + 0.1, pass_idx=2, warm=p1["result"].density)
         sf_exp2 = p2["verify_export"].worst_safety_factor
         res.topopt["retry"] = {
             "volfrac_first": params.volfrac,
             "volfrac_second": params.volfrac + 0.1,
             "sf_export_first": sf_exp,
             "sf_export_second": sf_exp2,
+            "warm_start": "pass1_density",
         }
         res.timings["simp_s"] += p2["simp_s"]
         res.timings["verify_s"] += p2["verify_s"]
@@ -1484,7 +1712,7 @@ def run_topopt_pipeline(  # noqa: C901
                 float(result.density[domain.solid.ravel()].sum()) / max(int(domain.solid.sum()), 1),
                 4,
             ),
-            "history": result.history[-50:],
+            "history": _compact_history(result.history),
             "passive_frac": round(result.passive_frac, 4),
             "warnings": res.topopt.get("warnings", []) + result.warnings,
             "material": mat.name,
@@ -1512,6 +1740,12 @@ def run_topopt_pipeline(  # noqa: C901
         dims=np.asarray(domain.dims),
         flat_bottom=np.bool_(base_flat),
     )
+    # compact convergence trace alongside the per-iteration progress files —
+    # tasks.py points topopt["history_relpath"] here
+    with contextlib.suppress(Exception):
+        (opt_dir / "history.json").write_text(
+            json.dumps({"history": res.topopt["history"]}, indent=1), encoding="utf-8"
+        )
     report_to_json(verify, out_dir / "fem" / "report.json")
     report_to_json(verify_export, out_dir / "fem" / "report_export.json")
     res.fem = verify.model_dump()
@@ -1966,7 +2200,11 @@ def run_refine(
         keep-region per fastener anchor (topopt auto-keep parity)
     """
     from cadx.cad.fem.analyze import report_to_json, run_fem
-    from cadx.cad.fem.refine import apply_refine, resolve_refine_features
+    from cadx.cad.fem.refine import (
+        applied_refine_features,
+        apply_refine,
+        resolve_refine_features,
+    )
     from cadx.llm.schemas import LoadCase
 
     res = ExecResult()
@@ -2064,6 +2302,21 @@ def run_refine(
         try_step=True,
         max_faces=s.mesh_max_faces_for_cad,
     )
+    # analytic STEP: cut real Cylinder/Helix faces into the sewn solid for
+    # the applied features — keeps the faceted STEP as fallback
+    applied_feats = applied_refine_features(feats, rep)
+    if applied_feats:
+        step_res = export_analytic_step(
+            out,
+            applied_feats,
+            out_dir / "exports" / f"{name}.step",
+            max_faces=s.mesh_max_faces_for_cad,
+        )
+        if step_res.get("step"):
+            res.exports["step"] = step_res["step"]
+        res.features["refine"]["step_features"] = step_res.get("step_features") or []
+        warnings += step_res.get("warnings") or []
+        res.features["refine"]["warnings"] = warnings
     res.exports["dxf"] = None
     res.exports["svg"] = None
     res.analysis = mesh_analysis(out)

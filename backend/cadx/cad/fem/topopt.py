@@ -368,7 +368,9 @@ class _FilterOps:
 
     Both operators are symmetric → the adjoint (sensitivity chain rule) is a
     second application of the same filter. `stats["solve_s"]` accumulates
-    helmholtz solve time for the perf log on large domains.
+    helmholtz solve time for the perf log on large domains; `stats["filter_s"]`
+    accumulates all apply/adjoint/oc time — simp() snapshots it into the
+    per-iteration history as `filter_s`.
     """
 
     kind: str  # "cone" | "helmholtz"
@@ -380,19 +382,27 @@ class _FilterOps:
 
     def apply(self, xs: np.ndarray) -> np.ndarray:
         """Filtered field x̃ of blueprint values xs (solid_idx order)."""
+        t = time.monotonic()
         if self.kind == "helmholtz":
             assert self.solve is not None
-            return np.asarray(self.solve(np.asarray(xs, dtype=float)))
-        assert self.H is not None and self.Hs is not None
-        return np.asarray(self.H @ xs).ravel() / self.Hs
+            out = np.asarray(self.solve(np.asarray(xs, dtype=float)))
+        else:
+            assert self.H is not None and self.Hs is not None
+            out = np.asarray(self.H @ xs).ravel() / self.Hs
+        self.stats["filter_s"] = self.stats.get("filter_s", 0.0) + time.monotonic() - t
+        return out
 
     def adjoint(self, d: np.ndarray) -> np.ndarray:
         """dC/dx̃ → dC/dx — both operators are symmetric (self-adjoint)."""
+        t = time.monotonic()
         if self.kind == "helmholtz":
             assert self.solve is not None
-            return np.asarray(self.solve(np.asarray(d, dtype=float)))
-        assert self.H is not None and self.Hs is not None
-        return np.asarray(self.H @ (d / self.Hs)).ravel()
+            out = np.asarray(self.solve(np.asarray(d, dtype=float)))
+        else:
+            assert self.H is not None and self.Hs is not None
+            out = np.asarray(self.H @ (d / self.Hs)).ravel()
+        self.stats["filter_s"] = self.stats.get("filter_s", 0.0) + time.monotonic() - t
+        return out
 
     def oc(self, xb: np.ndarray, d: np.ndarray) -> np.ndarray:
         """Classic OC sensitivity heuristic (top88-style length-scale
@@ -402,13 +412,17 @@ class _FilterOps:
                                              (L·1 = 1 → L⁻¹·1 = 1), so the
                                              Hs division has no analog.
         `xb`/`d` are (nsolid,) blueprint values / raw sensitivities."""
+        t = time.monotonic()
         xb = np.asarray(xb, dtype=float)
         xd = xb * np.asarray(d, dtype=float)
         if self.kind == "helmholtz":
             assert self.solve is not None
-            return np.asarray(self.solve(xd)) / np.clip(xb, 1e-3, None)
-        assert self.H is not None and self.Hs is not None
-        return np.asarray(self.H @ xd).ravel() / np.clip(xb * self.Hs, 1e-3, None)
+            out = np.asarray(self.solve(xd)) / np.clip(xb, 1e-3, None)
+        else:
+            assert self.H is not None and self.Hs is not None
+            out = np.asarray(self.H @ xd).ravel() / np.clip(xb * self.Hs, 1e-3, None)
+        self.stats["filter_s"] = self.stats.get("filter_s", 0.0) + time.monotonic() - t
+        return out
 
 
 def _build_filter_ops(
@@ -753,6 +767,22 @@ def simp(  # noqa: C901
     ncells = domain.cell_count
     it_box = [0]  # shared iteration counter (nlopt drives iterations in MMA mode)
 
+    # per-phase wall-clock instrumentation — _eval accumulates assemble/
+    # factorize/solve time, the filter ops accumulate into fops.stats; each
+    # history record snapshots the deltas and resets (MMA runs share it via
+    # the `phase_timings`/`phase_t` args to _run_mma)
+    phase_t: dict[str, float] = {"assemble_s": 0.0, "factorize_s": 0.0, "solve_s": 0.0}
+    filter_mark = [fops.stats.get("filter_s", 0.0)]
+
+    def _phase_timings() -> dict[str, float]:
+        out = {k: round(v, 3) for k, v in phase_t.items()}
+        for k in phase_t:
+            phase_t[k] = 0.0
+        fnow = fops.stats.get("filter_s", 0.0)
+        out["filter_s"] = round(fnow - filter_mark[0], 3)
+        filter_mark[0] = fnow
+        return out
+
     def _penal_now() -> float:
         """A5 penal continuation: ramp the exponent linearly from penal_init
         to penal over penal_ramp_iters iterations (None → constant)."""
@@ -775,15 +805,20 @@ def simp(  # noqa: C901
         pen = _penal_now()
         xp, p, xt = _project(xb, eta)
         E_e = Emin + np.power(p, pen) * (E0 - Emin)
+        t_asm = time.monotonic()
         K, _, _ = assemble(domain, E_e, nu, np.ones(ncells, dtype=bool), ij=ij_cache)
         Kf = K[free][:, free].tocsr()
+        phase_t["assemble_s"] += time.monotonic() - t_asm
+        t_fac = time.monotonic()
         factor, M = _prepare_solve(Kf, spsolve_dofs)
+        phase_t["factorize_s"] += time.monotonic() - t_fac
         cg_rtol = (
             1e-3 if change_box[0] > 0.1 else (1e-4 if change_box[0] > 10 * params.tol else 1e-6)
         )
         ce_cases: list[np.ndarray] = []
         obj_cases: list[float] = []
         us: list[np.ndarray] = []
+        t_solve = time.monotonic()
         for ci, (_, F) in enumerate(cases):
             u, _solver = _solve_u(
                 domain, Kf, F, free, u_prev[ci], factor=factor, M=M, cg_rtol=cg_rtol
@@ -793,6 +828,7 @@ def simp(  # noqa: C901
             ue = u[edof]
             ce_cases.append(np.einsum("ni,ij,nj->n", ue, ke, ue))
             obj_cases.append(float(F[free] @ u[free]))
+        phase_t["solve_s"] += time.monotonic() - t_solve
         return xp, p, xt, ce_cases, obj_cases, us, Kf, factor, M
 
     def _sens_per_case(xb: np.ndarray, ev, oc_filter: bool, eta: float = _ETA) -> list[np.ndarray]:
@@ -850,6 +886,8 @@ def simp(  # noqa: C901
                 pvoid=pvoid,
                 change_box=change_box,
                 symmetrize_fn=_symmetrize if sym_axis is not None else None,
+                phase_t=phase_t,
+                phase_timings=_phase_timings,
             )
         except ImportError:
             warnings.append("mma solver unavailable (nlopt missing) — fell back to oc")
@@ -946,6 +984,7 @@ def simp(  # noqa: C901
             "penal": round(pen, 3),
             "elapsed_s": round(time.monotonic() - t0, 1),
         }
+        rec.update(_phase_timings())
         if robust:
             rec["obj_per_design"] = [round(o, 3) for o in obj_designs]
         if heaviside:
@@ -1105,6 +1144,8 @@ def _run_mma(  # noqa: C901
     pvoid: np.ndarray,
     change_box: list[float] | None = None,
     symmetrize_fn: Callable[[np.ndarray], np.ndarray] | None = None,
+    phase_t: dict[str, float] | None = None,
+    phase_timings: Callable[[], dict[str, float]] | None = None,
 ) -> tuple[np.ndarray, int, bool, float]:
     """MMA driver (Svanberg, via nlopt LD_MMA).
 
@@ -1216,6 +1257,8 @@ def _run_mma(  # noqa: C901
             "elapsed_s": round(time.monotonic() - t0, 1),
             "solver": "mma",
         }
+        if phase_timings is not None:
+            rec.update(phase_timings())
         if robust:
             rec["obj_per_design"] = [round(o, 3) for o in obj_ds]
         history.append(rec)
@@ -1296,7 +1339,10 @@ def _run_mma(  # noqa: C901
                 dof_star = int(np.abs(u).argmax())
                 rhs = np.zeros(3 * domain.node_count)
                 rhs[dof_star] = np.sign(u[dof_star])
+                t_adj = time.monotonic()
                 lam = _adjoint_solve(ev[6], rhs, free, ev[7], ev[8], domain.node_count)
+                if phase_t is not None:
+                    phase_t["solve_s"] += time.monotonic() - t_adj
                 xp, p, xt = ev[0], ev[1], ev[2]
                 pen = penal_now()
                 dE = pen * np.power(np.clip(p, 1e-3, None), pen - 1) * (E0 - Emin)
@@ -1336,7 +1382,10 @@ def _run_mma(  # noqa: C901
                     rhs_e = coef[:, None] * dvm_due  # (ncells, 24)
                     rhs = np.zeros(3 * domain.node_count)
                     np.add.at(rhs, edof.ravel(), rhs_e.ravel())
+                    t_adj = time.monotonic()
                     lam = _adjoint_solve(Kf, rhs, free, factor, M, domain.node_count)
+                    if phase_t is not None:
+                        phase_t["solve_s"] += time.monotonic() - t_adj
                     pen = penal_now()
                     dE = pen * np.power(np.clip(p, 1e-3, None), pen - 1) * (E0 - Emin)
                     dgdp = (

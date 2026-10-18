@@ -656,6 +656,85 @@ def _copy_fem_artifacts(ctx: AgentCtx, iteration: int) -> dict[str, str]:
     return out
 
 
+def _stated_spec_dims(spec: PartSpec) -> list[float | None]:
+    """[length_x, width_y, height_z] in mm for the axes the user actually
+    stated — assumed/inferred dims are declared intent, not a hard envelope
+    worth clipping to (same convention as verifyspec._stated_envelope)."""
+    return [
+        float(d.value) if d is not None and d.source == "stated" and (d.value or 0) > 0 else None
+        for d in (spec.length_x, spec.width_y, spec.height_z)
+    ]
+
+
+def _normalize_topopt_base(
+    stl: Path, spec_dims: list[float | None], it_dir: Path
+) -> tuple[Path, dict[str, Any]]:
+    """Clip the topopt base STL to the stated spec envelope; writes the
+    normalized mesh to ``<it_dir>/_run/topopt_input.stl``.
+
+    The voxel FEM domain IS the input mesh's bbox — a base mesh overshooting
+    the declared spec dims shifts the whole TopOpt problem out of envelope.
+    Normalizing here (worker side) covers both downstream paths: the agent
+    session gets the clipped file as `base_stl`, the deterministic fallback
+    as `mesh_rel`. Fails soft — any load/clip/export problem keeps the
+    original STL; a spec without stated dims skips silently.
+
+    Returns ``(stl_path, report)`` — report carries input_bbox/spec_bbox/
+    input_normalized/base_mesh_relpath for the topopt report merge."""
+    if not any(d is not None for d in spec_dims):
+        return stl, {}
+    report: dict[str, Any] = {"base_mesh_relpath": storage.relpath(stl)}
+    try:
+        from cadx.cad.engine import normalize_mesh_to_spec_envelope
+        from cadx.cad.mesh_ops import load_mesh as _load_tri
+
+        mesh = _load_tri(stl)
+        out, rep = normalize_mesh_to_spec_envelope(mesh, spec_dims)
+        report.update(rep)
+    except Exception as e:
+        log.warning("topopt.normalize_failed", error=str(e)[:200])
+        return stl, {}
+    if not report.get("input_normalized"):
+        return stl, report
+    dst = storage.ensure(it_dir / "_run") / "topopt_input.stl"
+    try:
+        out.export(str(dst), file_type="stl")
+    except Exception as e:
+        log.warning("topopt.normalize_export_failed", error=str(e)[:200])
+        report["input_normalized"] = False
+        report.pop("method", None)
+        return stl, report
+    report["normalized_mesh_relpath"] = storage.relpath(dst)
+    log.info(
+        "topopt.input_normalized",
+        method=report.get("method"),
+        input_bbox=report.get("input_bbox"),
+        spec_bbox=report.get("spec_bbox"),
+    )
+    return dst, report
+
+
+def _topopt_optimize_payload(
+    ctx: AgentCtx, spec: PartSpec, spec_dims: list[float | None]
+) -> dict[str, Any]:
+    """`optimize` dict for the deterministic executor call: spec OptimizeSpec
+    + project overrides + the stated spec envelope (drives executor-side
+    envelope normalization — see normalize_mesh_to_spec_envelope)."""
+    opt: dict[str, Any] = spec.optimize.model_dump() if spec.optimize else {}
+    # OptimizeSpec.multires is schema-False even when the field was never
+    # set — a serialized dump would read as an opt-out to the executor, which
+    # treats an ABSENT key as default-on. Pop the falsy value; an explicit
+    # multires=true still passes through.
+    if not opt.get("multires"):
+        opt.pop("multires", None)
+    if ctx.settings.topopt_volfrac:
+        opt["target_volume_fraction"] = ctx.settings.topopt_volfrac
+    opt["max_iterations"] = ctx.settings.topopt_iterations
+    if any(d is not None for d in spec_dims):
+        opt["spec_dims_mm"] = spec_dims
+    return opt
+
+
 async def _run_topopt_phase(ctx: AgentCtx, outcome: RunOutcome, spec: PartSpec) -> RunOutcome:
     """OPTIMIZE phase after a successful base generation (gen_mode=topopt or
     plan.optimize): run SIMP on the best candidate + FEM-verify the result."""
@@ -681,6 +760,13 @@ async def _run_topopt_phase(ctx: AgentCtx, outcome: RunOutcome, spec: PartSpec) 
     if not stl.exists():
         outcome.mode_note += " | topopt skipped — no base mesh artifact"
         return outcome
+
+    # clip an out-of-envelope base mesh to the stated spec dims once here so
+    # the agent session AND the deterministic fallback both optimize the
+    # normalized input — spec_dims also travels in the payload below so the
+    # executor re-checks (and records domain_bbox) on its side
+    spec_dims = _stated_spec_dims(spec)
+    stl, norm_rep = _normalize_topopt_base(stl, spec_dims, it_dir)
 
     it = (outcome.iterations or base_it) + 1
 
@@ -723,15 +809,7 @@ async def _run_topopt_phase(ctx: AgentCtx, outcome: RunOutcome, spec: PartSpec) 
                 "iteration": it,
                 "mesh_rel": storage.relpath(stl),
                 "load_cases": [c.model_dump() for c in spec.load_cases],
-                "optimize": {
-                    **(spec.optimize.model_dump() if spec.optimize else {}),
-                    **(
-                        {"target_volume_fraction": ctx.settings.topopt_volfrac}
-                        if ctx.settings.topopt_volfrac
-                        else {}
-                    ),
-                    "max_iterations": ctx.settings.topopt_iterations,
-                },
+                "optimize": _topopt_optimize_payload(ctx, spec, spec_dims),
                 "material": ctx.settings.fem_material or spec.material,
                 "voxel_mm": ctx.settings.fem_voxel_mm,
                 "runtime_settings": ctx.runtime_settings.executor_values(),
@@ -751,6 +829,10 @@ async def _run_topopt_phase(ctx: AgentCtx, outcome: RunOutcome, spec: PartSpec) 
     outcome.fem = res.get("fem")
     outcome.analysis = res.get("analysis")
     top = res.get("topopt") or {}
+    if norm_rep:
+        # worker-side normalization metrics are authoritative — the executor
+        # only ever saw the (already clipped) input file
+        top = {**top, **norm_rep}
     if agent is not None and agent.runs:
         top = {**top, "agent_runs": agent.runs}
     outcome.mesh = {**(outcome.mesh or {}), "pipeline": "topopt", "topopt": top}
