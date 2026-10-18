@@ -119,6 +119,125 @@ def test_merge_anchor_lists_enriches_not_duplicates() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# probe_blind_features — cavities the tunnel scan can't see                     #
+# --------------------------------------------------------------------------- #
+
+
+def _blind_pocket_mesh() -> trimesh.Trimesh:
+    """40x30x20 block with a Ø8 blind pocket 16 mm deep from +z at (5, 3)."""
+    box = _box_mesh(40.0, 30.0, 20.0)
+    cutter = trimesh.creation.cylinder(radius=4.0, height=20.0, sections=48)
+    cutter.apply_translation([5.0, 3.0, 12.0])  # spans z=2..22 -> floor at z=4
+    out = box.difference(cutter, engine="manifold")
+    assert isinstance(out, trimesh.Trimesh)
+    return out
+
+
+def _blind_side_mesh() -> trimesh.Trimesh:
+    """40x30x20 block with a Ø6 blind bore 16 mm deep from +x at (y=0, z=10)."""
+    box = _box_mesh(40.0, 30.0, 20.0)
+    cutter = trimesh.creation.cylinder(radius=3.0, height=22.0, sections=48)
+    cutter.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [0, 1, 0]))
+    cutter.apply_translation([13.0, 0.0, 10.0])  # spans x=2..24 -> floor at x=2
+    out = box.difference(cutter, engine="manifold")
+    assert isinstance(out, trimesh.Trimesh)
+    return out
+
+
+def test_probe_blind_finds_z_pocket() -> None:
+    """A blind pocket invisible to the tunnel scan reads found + open with
+    sane measured depth/diameter."""
+    from cadx.cad.fem.anchors3d import probe_blind_features
+
+    anchor = {
+        "index": 1,
+        "name": "M8 tap",
+        "kind": "thread",
+        "axis": "+z",
+        "x": 5.0,
+        "y": 3.0,
+        "dia": 8.0,
+        "depth_mm": 16.0,
+        "pos": [5.0, 3.0, None],
+    }
+    # the tunnel scan proves through-voids only — a blind pocket at best
+    # surfaces as a 'dimple', so verification needs this probe
+    recs = probe_blind_features(_blind_pocket_mesh(), [anchor])
+    assert len(recs) == 1
+    r = recs[0]
+    assert r["found"] and r["open"]
+    assert r["measured_depth_mm"] == pytest.approx(16.0, abs=2.0)
+    assert r["measured_dia_mm"] == pytest.approx(8.0, rel=0.35)
+    assert r["axis"] == "+z" and r["pos"] == [5.0, 3.0, None]
+    assert r["depth_mm"] == 16.0 and r["dia_mm"] == 8.0
+
+
+def test_probe_blind_finds_side_pocket() -> None:
+    """Same probe on a +x side face — the bore enters at x_max going -x."""
+    from cadx.cad.fem.anchors3d import probe_blind_features
+
+    anchor = {
+        "index": 1,
+        "kind": "hole",
+        "axis": "+x",
+        "x": 0.0,
+        "y": 0.0,
+        "dia": 6.0,
+        "depth_mm": 16.0,
+        "pos": [None, 0.0, 10.0],
+    }
+    r = probe_blind_features(_blind_side_mesh(), [anchor])[0]
+    assert r["found"] and r["open"]
+    assert r["measured_depth_mm"] == pytest.approx(16.0, abs=2.5)
+
+
+def test_probe_blind_solid_box_not_found() -> None:
+    from cadx.cad.fem.anchors3d import probe_blind_features
+
+    anchor = {"index": 1, "axis": "+z", "x": 5.0, "y": 3.0, "dia": 8.0, "depth_mm": 16.0}
+    r = probe_blind_features(_box_mesh(40.0, 30.0, 20.0), [anchor])[0]
+    assert r["found"] is False
+    assert r["open"] is False
+    assert r["measured_depth_mm"] is None and r["measured_dia_mm"] is None
+
+
+def test_probe_blind_through_bore_is_open() -> None:
+    """A through-hole anchor (no depth_mm) is expected to reach the axis span."""
+    from cadx.cad.fem.anchors3d import probe_blind_features
+
+    anchor = {"index": 1, "axis": "+z", "x": 10.0, "y": 0.0, "dia": 5.0}
+    r = probe_blind_features(_bored_mesh(), [anchor])[0]
+    assert r["found"] and r["open"]
+    assert r["measured_depth_mm"] == pytest.approx(12.0, abs=1.5)
+
+
+def test_probe_blind_unpositioned_anchor_safe() -> None:
+    """Anchors without a resolvable position return found=False, never raise."""
+    from cadx.cad.fem.anchors3d import probe_blind_features
+
+    recs = probe_blind_features(
+        _box_mesh(), [{"index": 1, "axis": "+x", "dia": 4.0, "pos": [None, None, None]}]
+    )
+    assert recs[0]["found"] is False
+
+    # Anchor-like (non-dict) objects work too
+    class _Obj:
+        axis = "+z"
+        x = 5.0
+        y = 3.0
+        dia = 8.0
+        depth_mm = 16.0
+        kind = "thread"
+        name = "obj anchor"
+
+        def __init__(self) -> None:
+            self.pos = [5.0, 3.0, None]
+
+    r = probe_blind_features(_blind_pocket_mesh(), [_Obj()])[0]
+    assert r["found"] and r["open"] and r["name"] == "obj anchor"
+
+
+# --------------------------------------------------------------------------- #
 # anchor / bore regions on arbitrary axes                                      #
 # --------------------------------------------------------------------------- #
 

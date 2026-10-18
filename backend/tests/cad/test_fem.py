@@ -321,12 +321,73 @@ def test_resolve_case_empty_region_warns() -> None:
     dom = voxelize(_box_mesh(), 2.0, 150_000)
     case = LoadCase(
         name="bad",
-        fixed=[RegionSpec(kind="cylinder", axis="+z", center=[999, 999], diameter_mm=2)],
+        # no axis/anchor/position hint at all — nothing the bbox fallback
+        # could derive a boundary patch from, so this stays unresolved
+        fixed=[RegionSpec(kind="hole", hole_index=5)],
         loads=[LoadSpec(region=RegionSpec(kind="face", axis="+x"), force_n=[0, 0, -1])],
     )
     fixed, _f, w = resolve_case(dom, case)
     assert not fixed.any()
     assert any("matched no nodes" in x for x in w)
+
+
+def test_resolve_case_region_fallback_rescues_declared_region() -> None:
+    """A declared region that resolves to zero cells (here: a painted patch
+    whose point sits off the regenerated mesh) falls back to a deterministic
+    bbox boundary patch — the case stays solvable and the substitution is
+    recorded as a region_fallback warning, not a silent drop."""
+    dom = voxelize(_box_mesh(), 2.0, 150_000)
+    case = LoadCase(
+        name="fb",
+        fixed=[RegionSpec(kind="face", axis="-x")],
+        loads=[
+            LoadSpec(
+                region=RegionSpec(
+                    kind="points", points=[[0.0, 0.0, 999.0]], normal=[0.0, 0.0, 1.0]
+                ),
+                force_n=[0.0, 0.0, -50.0],
+            )
+        ],
+    )
+    fixed, F, w = resolve_case(dom, case)
+    assert fixed.any()
+    assert np.isclose(F.sum(), -50.0)
+    fb = [x for x in w if "region_fallback" in x]
+    assert fb and "+z" in fb[0]
+    assert not any("matched no nodes" in x for x in w)
+
+
+def test_resolve_case_fallback_clips_to_anchor_face() -> None:
+    """hole_index region whose bore void outgrew the ring search: the
+    fallback maps it onto the anchor's own axis face near the anchor, so a
+    declared-but-missing bore still carries load at its intended side."""
+    dom = voxelize(_box_mesh(), 2.0, 150_000)
+    # giant void cylinder at the anchor -> the growing ring (max r≈12 mm)
+    # never reaches the solid rim
+    centers = dom.element_centers().reshape((*dom.dims, 3))
+    void = (centers[..., 0] - 10.0) ** 2 + (centers[..., 1] - 0.0) ** 2 <= 16.0**2
+    dom = VoxelDomain(dom.origin, dom.pitch, dom.dims, dom.solid & ~void)
+    anchors = [{"x": 10.0, "y": 0.0, "dia": 4.0, "axis": "+z"}]
+    region = RegionSpec(kind="hole", hole_index=1, margin_mm=2.0)
+    assert not region_cell_mask(dom, region, anchors).any()  # primary path fails
+    case = LoadCase(
+        name="bolt",
+        fixed=[RegionSpec(kind="face", axis="-x")],
+        loads=[LoadSpec(region=region, force_n=[0.0, 0.0, -50.0])],
+    )
+    _fixed, F, w = resolve_case(dom, case, anchors)
+    assert np.isclose(F.sum(), -50.0)
+    fb = [x for x in w if "region_fallback" in x]
+    assert fb and "+z" in fb[0]
+    # the anchor neighbourhood is void, so the patch widens to the surviving
+    # +z skin — still on the anchor's declared side, never interior cells
+    from cadx.cad.fem.regions import _region_fallback
+
+    fb_cells, ax = _region_fallback(dom, region, anchors)
+    assert ax == "+z" and fb_cells.any()
+    sel = centers[fb_cells]
+    assert sel[:, 2].min() >= 12.0 - 2 * (2.0 + dom.pitch)  # top-skin band
+    assert np.linalg.norm(sel[:, :2] - [10.0, 0.0], axis=1).min() >= 16.0 - dom.pitch
 
 
 # --------------------------------------------------------------------------- #

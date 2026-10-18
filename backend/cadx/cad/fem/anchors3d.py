@@ -12,6 +12,8 @@ Runs in the executor (trimesh + scipy + skimage only).
 
 from __future__ import annotations
 
+import contextlib
+import math
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +26,19 @@ _AXES: dict[str, tuple[int, int, int]] = {
     "+y": (1, 0, 2),
     "+z": (2, 0, 1),
 }
+
+# signed axis -> (axial index, sign of the ENTRY face: +1 = bounds high side)
+_SIGNED_AXES: dict[str, tuple[int, int]] = {
+    "+x": (0, +1),
+    "-x": (0, -1),
+    "+y": (1, +1),
+    "-y": (1, -1),
+    "+z": (2, +1),
+    "-z": (2, -1),
+}
+
+# the two in-plane indices per axial index (same order convention as _AXES)
+_IN_PLANE: dict[int, tuple[int, int]] = {0: (1, 2), 1: (0, 2), 2: (0, 1)}
 
 # anchor kinds a fastener/load can attach to (dimples/pockets are excluded —
 # RegionSpec.hole_index counts only these, in list order)
@@ -219,3 +234,161 @@ def merge_anchor_lists(
     for i, a in enumerate(merged):
         a["index"] = i + 1
     return merged
+
+
+# --------------------------------------------------------------------------- #
+# blind-feature probe                                                           #
+# --------------------------------------------------------------------------- #
+
+_PROBE_RAYS = 8  # rays on the bore ring (plus the center ray)
+_PROBE_RING_FRAC = 0.35  # ring radius = this fraction of the declared dia
+
+
+def _afield(a: Any, key: str, default: Any = None) -> Any:
+    """Anchor field lookup that accepts dicts and Anchor-like objects."""
+    if isinstance(a, dict):
+        return a.get(key, default)
+    return getattr(a, key, default)
+
+
+def _probe_axis(a: Any) -> str:
+    """Signed axis string for an anchor; 'x'/'y'/'z' normalize to '+x'/..."""
+    raw = str(_afield(a, "axis") or "+z").strip().lower()
+    if raw in ("x", "y", "z"):
+        raw = "+" + raw
+    return raw if raw in _SIGNED_AXES else "+z"
+
+
+def _probe_uv(a: Any, ax: int) -> tuple[float, float] | None:
+    """In-plane (u, v) probe point for an anchor on axial index `ax`."""
+    au, av = _IN_PLANE[ax]
+    u = v = None
+    pos = _afield(a, "pos")
+    if isinstance(pos, (list, tuple)) and len(pos) == 3:
+        u, v = pos[au], pos[av]
+    if (u is None or v is None) and ax == 2:
+        # legacy 2D anchors carry only x/y — the z-plane position
+        u = _afield(a, "x") if u is None else u
+        v = _afield(a, "y") if v is None else v
+    if u is None or v is None:
+        return None
+    return float(u), float(v)
+
+
+def probe_blind_features(
+    mesh: trimesh.Trimesh,
+    anchors: list[Any],
+    *,
+    log: Any = None,
+) -> list[dict[str, Any]]:
+    """Ray-probe each declared anchor for a real cavity — incl. BLIND bores.
+
+    `scan_mesh_anchors` only proves through-tunnels (rays that cross the
+    whole part); a blind tap/pocket never shows up there. For every anchor
+    with a resolvable in-plane position we cast a centre ray plus a ring of
+    parallel rays (radius ~0.35·dia) inward along -axis, starting just
+    outside the entry face:
+
+    - the entry face is the bounds side the axis sign points at ("+x" enters
+      from x_max — same convention as `scan_mesh_anchors`/`_heightfield_axis`);
+    - a wider reference ring estimates the local entry surface, so organic
+      dips below the bbox face do not fake bore depth;
+    - a ray that never hits counts as unobstructed (deep) — robust on
+      non-watertight meshes;
+    - the open-ray fraction over the probe disc estimates the effective bore
+      diameter (measured_dia_mm ≈ dia·sqrt(fraction)).
+
+    Returns one dict per input anchor:
+    {"name", "kind", "axis", "pos", "dia_mm", "depth_mm",
+     "found": any cavity detected at the anchor,
+     "open": measured depth >= 80% of expected (depth_mm else axis span),
+     "measured_depth_mm": float|None, "measured_dia_mm": float|None}.
+    """
+    out: list[dict[str, Any]] = []
+    for a in anchors or []:
+        axis = _probe_axis(a)
+        ax, sign = _SIGNED_AXES[axis]
+        au, av = _IN_PLANE[ax]
+        dia = float(_afield(a, "dia") or _afield(a, "dia_mm") or 0.0)
+        depth = _afield(a, "depth_mm")
+        pos = _afield(a, "pos")
+        pos_out: list[float | None] | None = None
+        if isinstance(pos, (list, tuple)) and len(pos) == 3:
+            with contextlib.suppress(TypeError, ValueError):
+                pos_out = [float(c) if c is not None else None for c in pos]
+        rec: dict[str, Any] = {
+            "name": str(_afield(a, "name") or f"anchor {_afield(a, 'index', '?')}"),
+            "kind": str(_afield(a, "kind") or "hole"),
+            "axis": axis,
+            "pos": pos_out,
+            "dia_mm": round(dia, 2) if dia > 0 else None,
+            "depth_mm": round(float(depth), 2) if depth else None,
+            "found": False,
+            "open": False,
+            "measured_depth_mm": None,
+            "measured_dia_mm": None,
+        }
+        out.append(rec)
+        uv = _probe_uv(a, ax)
+        bounds = mesh.bounds
+        if uv is None or bounds is None:
+            continue
+        span = float(bounds[1][ax] - bounds[0][ax])
+        if span <= 0:
+            continue
+        u, v = uv
+        d_probe = dia if dia > 0 else 4.0
+        standoff = max(1.0, 0.05 * span)
+
+        # probe bundle: centre ray + ring at ~0.35·dia; the wider reference
+        # ring samples the surrounding entry surface level
+        offs = [(0.0, 0.0)]
+        r_ring = _PROBE_RING_FRAC * d_probe
+        offs += [
+            (r_ring * math.cos(t), r_ring * math.sin(t))
+            for t in np.linspace(0.0, 2.0 * np.pi, _PROBE_RAYS, endpoint=False)
+        ]
+        n_probe = len(offs)
+        r_ref = max(0.8 * d_probe, r_ring + 2.0)
+        offs += [
+            (r_ref * math.cos(t), r_ref * math.sin(t))
+            for t in np.linspace(0.0, 2.0 * np.pi, _PROBE_RAYS, endpoint=False)
+        ]
+        origins = np.zeros((len(offs), 3))
+        origins[:, au] = u + np.asarray([o[0] for o in offs])
+        origins[:, av] = v + np.asarray([o[1] for o in offs])
+        origins[:, ax] = (
+            float(bounds[1][ax]) + standoff if sign > 0 else float(bounds[0][ax]) - standoff
+        )
+        directions = np.zeros((len(offs), 3))
+        directions[:, ax] = -float(sign)
+        try:
+            locs, ray_ids, _ = mesh.ray.intersects_location(
+                ray_origins=origins, ray_directions=directions, multiple_hits=True
+            )
+        except Exception as e:
+            if log is not None:
+                with contextlib.suppress(Exception):
+                    log.debug("blind_probe_ray_failed", error=str(e))
+            continue
+        # first-hit distance per ray; inf = never hit = unobstructed/deep
+        first = np.full(len(offs), np.inf)
+        for r_id, loc in zip(ray_ids, locs, strict=True):
+            d = float(np.linalg.norm(loc - origins[int(r_id)]))
+            if d < first[int(r_id)]:
+                first[int(r_id)] = d
+        ref_hits = first[n_probe:]
+        hitting = ref_hits[np.isfinite(ref_hits)]
+        surface = float(hitting.min()) if len(hitting) else standoff
+        clear = first[:n_probe] - surface  # free travel past the entry surface
+        expected = float(depth) if depth else span
+        open_min = max(1.0, 0.02 * expected)
+        open_rays = clear > open_min
+        if not open_rays.any():
+            continue
+        rec["found"] = True
+        measured_depth = float(np.median(np.minimum(clear[open_rays], span)))
+        rec["measured_depth_mm"] = round(measured_depth, 2)
+        rec["measured_dia_mm"] = round(d_probe * math.sqrt(float(open_rays.mean())), 2)
+        rec["open"] = measured_depth >= 0.8 * expected
+    return out

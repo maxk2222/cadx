@@ -339,6 +339,85 @@ def region_node_mask(
     return _nodes_of_cells(domain, cells.ravel())
 
 
+def _region_hint_point(
+    domain: VoxelDomain,
+    region: RegionSpec,
+    anchors: list[dict] | None,
+    anchor: dict | None,
+) -> np.ndarray | None:
+    """Best-effort 3D position hint for a region: anchor centre first, then
+    `center`, then the mean of painted `points`. Missing components default
+    to the domain mid-plane."""
+    if anchor is not None:
+        g = _anchor_geometry(domain, region, anchors)
+        if g is not None:
+            return g[0]
+    lo = domain.origin
+    hi = domain.origin + domain.pitch * np.asarray(domain.dims)
+    mid = (lo + hi) / 2
+    if len(region.center) >= 2:
+        c = mid.copy()
+        for i, v in enumerate(region.center[:3]):
+            c[i] = float(v)
+        return c
+    pts = [p for p in region.points if len(p) >= 3]
+    if pts:
+        return np.asarray(pts, dtype=float).mean(axis=0)
+    return None
+
+
+def _region_fallback(
+    domain: VoxelDomain, region: RegionSpec, anchors: list[dict] | None
+) -> tuple[np.ndarray, str]:
+    """Deterministic bbox-derived patch for a region that resolves to no
+    cells — the real surface layer on the region's (or its anchor's) axis
+    side, e.g. a declared "-x" fixture becomes the part's -x skin.
+
+    Axis source: `region.axis`, else the anchor's `axis`, else the dominant
+    painted `normal`, else the bbox face nearest a position hint (anchor
+    centre / `center` / painted points).
+    With a hint the patch is clipped to a disc around it (~bore dia +
+    margin); a clipped patch that stays empty widens to the whole face —
+    the declared axis is more reliable than the declared position.
+
+    Returns (cell_mask, axis_label). Empty mask + "" when no side can be
+    derived — the region counts as unresolved.
+    """
+    anchor = None
+    if region.hole_index and anchors and 1 <= region.hole_index <= len(anchors):
+        anchor = anchors[region.hole_index - 1]
+    ax_s = (region.axis or "").strip().lower()
+    if not ax_s and anchor is not None:
+        ax_s = str(anchor.get("axis") or "").strip().lower()
+    if ax_s in ("x", "y", "z"):
+        ax_s = "+" + ax_s
+    if not ax_s and len(region.normal) >= 3:
+        ax_s = _dominant_axis(region.normal)
+    hint = _region_hint_point(domain, region, anchors, anchor)
+    if ax_s not in ("+x", "-x", "+y", "-y", "+z", "-z"):
+        if hint is None:
+            return np.zeros(domain.dims, dtype=bool), ""
+        # no declared direction — pin the bbox face nearest the hint
+        lo = domain.origin
+        hi = domain.origin + domain.pitch * np.asarray(domain.dims)
+        d = np.concatenate([hint - lo, hi - hint])
+        i = int(np.argmin(d))
+        ax_s = f"{'+' if i >= 3 else '-'}{'xyz'[i % 3]}"
+    idx, _sign = _axis_parts(ax_s)
+    margin = max(float(region.margin_mm), domain.pitch)
+    face = _surface_cells(domain, ax_s, margin)
+    if hint is not None:
+        centers = domain.element_centers().reshape((*domain.dims, 3))
+        dia = float((anchor or {}).get("dia") or region.diameter_mm or 0.0)
+        r_clip = max(dia, 2.0 * margin) + domain.pitch
+        others = [i for i in range(3) if i != idx]
+        d2 = sum((centers[..., o] - float(hint[o])) ** 2 for o in others)
+        clipped = face & (d2 <= r_clip * r_clip)
+        if clipped.any():
+            return np.asarray(clipped, dtype=bool), ax_s
+    return np.asarray(face, dtype=bool), ax_s
+
+
 def region_face_normal(region: RegionSpec) -> np.ndarray | None:
     """Outward unit normal for face-like regions (used for pressure loads)."""
     if region.kind == "points":
@@ -424,12 +503,29 @@ def resolve_case_dofs(  # noqa: C901
     fixed3 = np.zeros((nn, 3), dtype=bool)
     F = np.zeros(3 * nn)
 
+    def _nodes_cells(r: RegionSpec) -> tuple[np.ndarray, np.ndarray, str]:
+        """(node_mask, cell_mask, fallback_axis): the region's own cells, or
+        a deterministic bbox boundary patch when it resolves to nothing."""
+        cells = np.asarray(region_cell_mask(domain, r, anchors), dtype=bool)
+        if cells.any():
+            return _nodes_of_cells(domain, cells.ravel()), cells, ""
+        fb, ax = _region_fallback(domain, r, anchors)
+        if fb.any():
+            return _nodes_of_cells(domain, fb.ravel()), fb, ax
+        return np.zeros(nn, dtype=bool), cells, ""
+
     for r in case.fixed:
-        m = region_node_mask(domain, r, anchors)
+        m, cells, fb_ax = _nodes_cells(r)
+        tag = f"#{r.hole_index}" if r.hole_index else (r.axis or "")
         if not m.any():
-            tag = f"#{r.hole_index}" if r.hole_index else (r.axis or "")
             warnings.append(f"case '{case.name}': fixed region {r.kind} {tag} matched no nodes")
             continue
+        if fb_ax:
+            warnings.append(
+                f"case '{case.name}': region_fallback — fixed region {r.kind} {tag} "
+                f"unresolved on the geometry; pinned {fb_ax} boundary patch "
+                f"({int(cells.sum())} cells)"
+            )
         fixed3 |= _fixed_dof_mask(domain, r, m)
         if r.fix_mode == "normal":
             warnings.append(
@@ -439,12 +535,17 @@ def resolve_case_dofs(  # noqa: C901
 
     for load in case.loads:
         r = load.region
-        m = region_node_mask(domain, r, anchors)
-        cells = region_cell_mask(domain, r, anchors)
+        m, cells, fb_ax = _nodes_cells(r)
+        tag = f"#{r.hole_index}" if r.hole_index else (r.axis or "")
         if not m.any():
-            tag = f"#{r.hole_index}" if r.hole_index else (r.axis or "")
             warnings.append(f"case '{case.name}': load region {r.kind} {tag} matched no nodes")
             continue
+        if fb_ax:
+            warnings.append(
+                f"case '{case.name}': region_fallback — load region {r.kind} {tag} "
+                f"unresolved on the geometry; applied on {fb_ax} boundary patch "
+                f"({int(cells.sum())} cells)"
+            )
         idx = np.flatnonzero(m)
 
         applied = False
