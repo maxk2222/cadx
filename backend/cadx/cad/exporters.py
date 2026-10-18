@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from typing import Any
 
 import structlog
 import trimesh
@@ -247,6 +248,315 @@ def export_mesh_all(
         except Exception:
             results["step"] = None
     return results
+
+
+# --------------------------------------------------------------------------- #
+# parametric STEP — sewn optimized body + analytic feature cuts                 #
+# --------------------------------------------------------------------------- #
+
+# refine kinds re-cut as a plain analytic Cylinder in the STEP
+_STEP_CYLINDER_KINDS = {
+    "hole",
+    "through_hole",
+    "bore",
+    "tunnel",
+    "insert",
+    "bearing_seat",
+    "bearing",
+}
+_STEP_THREAD_KINDS = {"thread", "tap", "threaded_bore", "threaded_hole", "tap_hole"}
+_STEP_COUNTER_KINDS = {"countersink", "counterbore"}
+
+# RefineFeature fields accepted from dict-shaped feature records
+_FEATURE_FIELDS = (
+    "name",
+    "kind",
+    "axis",
+    "u",
+    "v",
+    "dia",
+    "depth_mm",
+    "csk_dia",
+    "csk_angle_deg",
+    "cbore_dia",
+    "cbore_depth_mm",
+    "thread_spec",
+    "helical",
+    "dia_extra",
+)
+
+
+def _feat_field(feat: Any, key: str, default: Any = None) -> Any:
+    if isinstance(feat, dict):
+        return feat.get(key, default)
+    return getattr(feat, key, default)
+
+
+def _norm_refine_feature(feat: Any) -> Any | None:
+    """Coerce a dict record into a RefineFeature (u/v may live in pos/x/y)."""
+    from cadx.cad.fem import refine as rf
+
+    if isinstance(feat, rf.RefineFeature):
+        return feat
+    if not isinstance(feat, dict):
+        return feat
+    kw = {k: feat[k] for k in _FEATURE_FIELDS if feat.get(k) is not None}
+    axis = str(kw.get("axis") or "+z")
+    if ("u" not in kw or "v" not in kw) and axis in rf._AXES:
+        _ax, au, av = rf._AXES[axis]
+        pos = feat.get("pos") or []
+        if len(pos) > max(au, av) and pos[au] is not None and pos[av] is not None:
+            kw.setdefault("u", float(pos[au]))
+            kw.setdefault("v", float(pos[av]))
+        elif axis.endswith("z") and feat.get("x") is not None and feat.get("y") is not None:
+            kw.setdefault("u", float(feat["x"]))
+            kw.setdefault("v", float(feat["y"]))
+    try:
+        return rf.RefineFeature(**kw)
+    except Exception:
+        return None
+
+
+def _axis_placer(ax: int, au: int, av: int) -> Any:
+    """Position helper: rotate a +Z-built shape onto axis index `ax` and
+    return a placer fn(shape, lo, u, v) seating its low end at `lo`."""
+    from build123d import Axis, Pos
+
+    def place(shape: Any, lo: float, u: float, v: float) -> Any:
+        if ax == 0:
+            shape = shape.rotate(Axis.Y, 90)  # +Z -> +X
+        elif ax == 1:
+            shape = shape.rotate(Axis.X, -90)  # +Z -> +Y
+        pos = [0.0, 0.0, 0.0]
+        pos[ax] = lo
+        pos[au], pos[av] = u, v
+        return Pos(*pos) * shape
+
+    return place
+
+
+def _thread_groove_cutter(feat: Any, length: float) -> Any | None:
+    """Helical internal-thread cutter (bd_warehouse IsoThread, external=False)
+    built along +Z for `length` — None when no pitch is derivable."""
+    from bd_warehouse.thread import IsoThread
+
+    from cadx.cad.fem import refine as rf
+
+    parsed = rf._parse_spec(str(_feat_field(feat, "thread_spec", "") or ""))
+    d_maj, pitch = parsed if parsed else (_feat_field(feat, "dia", 0.0), rf._thread_pitch(feat))
+    if not pitch:
+        return None
+    # 'raw' ends keep the full V profile past both ends so the groove cuts
+    # cleanly through the part faces instead of fading inside the bore
+    return IsoThread(
+        major_diameter=float(d_maj),
+        pitch=float(pitch),
+        length=float(length),
+        external=False,
+        end_finishes=("raw", "raw"),
+    )
+
+
+def _analytic_cutters(feat: Any, mesh: trimesh.Trimesh) -> list[Any] | None:
+    """build123d cutter solid(s) for one applied refine feature.
+
+    Mirrors ``refine._cutter_mesh``'s pose convention: the feature opens on
+    the ``axis``-signed surface at in-plane (u, v); the entry coordinate is
+    the first ray hit from outside (bbox face when the channel is already
+    open). Through features span the part bbox + margin; blind features cut
+    ``depth_mm`` from the entry surface. Returns None when the feature has no
+    usable pose/kind."""
+    from build123d import Align, Cylinder
+
+    from cadx.cad.fem import refine as rf
+
+    axis = str(_feat_field(feat, "axis", "+z") or "+z")
+    if axis not in rf._AXES:
+        return None
+    kind = str(_feat_field(feat, "kind", "hole") or "hole")
+    if kind not in _STEP_CYLINDER_KINDS | _STEP_THREAD_KINDS | _STEP_COUNTER_KINDS:
+        return None
+    u, v = _feat_field(feat, "u"), _feat_field(feat, "v")
+    dia = float(_feat_field(feat, "dia", 0.0) or 0.0)
+    if u is None or v is None or dia <= 0:
+        return None
+    u, v = float(u), float(v)
+
+    ax, au, av = rf._AXES[axis]
+    neg = axis[0] == "-"
+    bounds = mesh.bounds
+    margin = 2.0
+    span_ax = float(bounds[1][ax] - bounds[0][ax])
+    depth_req = _feat_field(feat, "depth_mm")
+    try:
+        entry = rf._entry_point(mesh, axis, u, v)
+    except Exception:
+        entry = None
+    if entry is None:
+        entry = float(bounds[0][ax] if neg else bounds[1][ax])
+
+    if depth_req:
+        depth = float(depth_req)
+        height = depth + margin
+        lo = entry - margin if neg else entry - depth
+    else:
+        height = span_ax + 2 * margin
+        lo = float(bounds[0][ax]) - margin
+    place = _axis_placer(ax, au, av)
+
+    cut_dia = float(rf._effective_dia(feat)) + float(_feat_field(feat, "dia_extra", 0.0) or 0.0)
+    cutters: list[Any] = [
+        place(
+            Cylinder(
+                radius=cut_dia / 2.0, height=height, align=(Align.CENTER, Align.CENTER, Align.MIN)
+            ),
+            lo,
+            u,
+            v,
+        )
+    ]
+    if kind in _STEP_THREAD_KINDS:
+        try:
+            groove = _thread_groove_cutter(feat, height)
+        except Exception:
+            groove = None
+        if groove is not None:
+            cutters.append(place(groove, lo, u, v))
+    cutters += _counter_cutters(feat, kind, cut_dia, entry, neg, margin, place, u, v)
+    return cutters
+
+
+def _counter_cutters(
+    feat: Any,
+    kind: str,
+    cut_dia: float,
+    entry: float,
+    neg: bool,
+    margin: float,
+    place: Any,
+    u: float,
+    v: float,
+) -> list[Any]:
+    """Extra cutters for countersink (cone) / counterbore (second cylinder)
+    kinds, seated on the same entry convention as the pilot bore."""
+    from build123d import Align, Cone, Cylinder
+
+    out: list[Any] = []
+    if kind == "countersink":
+        csk_dia = float(_feat_field(feat, "csk_dia", 0.0) or 0.0)
+        angle = float(_feat_field(feat, "csk_angle_deg", 90.0) or 90.0)
+        if csk_dia > cut_dia:
+            h = (csk_dia - cut_dia) / 2.0 / math.tan(math.radians(angle) / 2.0)
+            if h > 0.01:
+                r_out = csk_dia / 2.0 + 0.3
+                ch = h + 0.5
+                if neg:
+                    cone = Cone(bottom_radius=r_out, top_radius=0.05, height=ch)
+                    out.append(place(cone, entry - 0.5, u, v))
+                else:
+                    cone = Cone(bottom_radius=0.05, top_radius=r_out, height=ch)
+                    out.append(place(cone, entry - h, u, v))
+    if kind == "counterbore":
+        cb_dia = float(_feat_field(feat, "cbore_dia", 0.0) or 0.0)
+        if cb_dia > cut_dia:
+            cb_depth = float(_feat_field(feat, "cbore_depth_mm") or (cb_dia - cut_dia) / 2.0)
+            cb_lo = entry - margin if neg else entry - cb_depth
+            out.append(
+                place(
+                    Cylinder(
+                        radius=cb_dia / 2.0,
+                        height=cb_depth + margin,
+                        align=(Align.CENTER, Align.CENTER, Align.MIN),
+                    ),
+                    cb_lo,
+                    u,
+                    v,
+                )
+            )
+    return out
+
+
+def export_analytic_step(
+    mesh: trimesh.Trimesh,
+    features: list[Any],
+    out_path: Path,
+    *,
+    max_faces: int | None = None,
+    log: Any = None,
+) -> dict[str, Any]:
+    """STEP of the optimized body with analytic (exact) feature surfaces.
+
+    The trimesh is sewn to a B-Rep via ``mesh_ops.mesh_to_solid`` (its drift
+    guard stays in force — a divergent rebuild ships no STEP at all), then
+    every applied feature is re-cut with analytic OCC solids: true
+    ``Cylinder`` faces for bores, a helical ``IsoThread`` groove for threads,
+    cones/counterbore cylinders for countersink/counterbore. Functional
+    surfaces come out exact instead of faceted.
+
+    `features` are the applied ``RefineFeature`` objects (or dicts carrying
+    the same fields — ``u``/``v`` may also come from ``pos``/``x``/``y``).
+    Never raises: a failed sew or boolean falls back to the plain faceted
+    STEP (or to no STEP when sewing itself failed) and records a warning.
+
+    Returns ``{"step": filename|None, "step_features": [...], "warnings": [...]}``
+    — ``step_features`` entries are ``{"name", "kind", "axis", "analytic": True}``
+    for features that were cut analytically.
+    """
+    logger = log if log is not None else globals()["log"]
+    warnings: list[str] = []
+    out: dict[str, Any] = {"step": None, "step_features": [], "warnings": warnings}
+    try:
+        from cadx.cad.mesh_ops import mesh_to_solid
+
+        solid = mesh_to_solid(mesh, max_faces=max_faces)
+    except Exception as e:
+        # honest skip beats a wrong STEP — the drift guard refused or the
+        # mesh simply does not sew; the caller keeps step=None
+        warnings.append(f"analytic STEP skipped — mesh-to-solid failed: {e}")
+        logger.warning("export.analytic_step_sew_failed", error=str(e))
+        return out
+
+    from build123d import Compound
+
+    applied: list[dict[str, Any]] = []
+    for raw in features or []:
+        feat = _norm_refine_feature(raw)
+        name = str(_feat_field(raw, "name", "") or _feat_field(raw, "kind", "feature"))
+        try:
+            if feat is None:
+                continue
+            cutters = _analytic_cutters(feat, mesh)
+            if not cutters:
+                continue
+            tool = cutters[0] if len(cutters) == 1 else Compound(children=list(cutters))
+            res = solid - tool
+            if res is None or not res.solids() or res.volume < solid.volume * 0.3:
+                warnings.append(
+                    f"feature '{name}': analytic cut produced no valid solid — faceted STEP kept"
+                )
+                continue
+            solid = res
+            applied.append(
+                {
+                    "name": name,
+                    "kind": str(_feat_field(feat, "kind", "hole")),
+                    "axis": str(_feat_field(feat, "axis", "+z")),
+                    "analytic": True,
+                }
+            )
+        except Exception as e:
+            warnings.append(f"feature '{name}': analytic cut failed: {e}")
+            logger.warning("export.analytic_step_cut_failed", feature=name, error=str(e))
+
+    try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        export_step(solid, str(out_path))
+        out["step"] = out_path.name
+        out["step_features"] = applied
+    except Exception as e:
+        warnings.append(f"analytic STEP write failed: {e}")
+        logger.warning("export.analytic_step_write_failed", error=str(e))
+    return out
 
 
 def face_is_cylindrical_small(face: object, max_radius: float) -> bool:

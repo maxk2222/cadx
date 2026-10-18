@@ -16,11 +16,13 @@ from __future__ import annotations
 import contextlib
 import math
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import trimesh
 
+from cadx.cad.fem import anchors3d
 from cadx.cad.fem.anchors3d import is_fastener_anchor
 from cadx.logging import get_logger
 
@@ -1155,9 +1157,7 @@ def _apply_cut(out: trimesh.Trimesh, feat: RefineFeature, report: RefineReport) 
     return out
 
 
-def _repaired_input_mesh(
-    opt_mesh: trimesh.Trimesh, report: RefineReport
-) -> trimesh.Trimesh | None:
+def _repaired_input_mesh(opt_mesh: trimesh.Trimesh, report: RefineReport) -> trimesh.Trimesh | None:
     """Watertight/winding repair of the refine input — returns None when the
     input can't be repaired into a volume (refine skipped).
 
@@ -1278,3 +1278,257 @@ def apply_refine(
     except Exception:
         pass
     return out, report
+
+
+# --------------------------------------------------------------------------- #
+# export / verification helpers                                                 #
+# --------------------------------------------------------------------------- #
+
+# applied refine kinds that must leave a real through-feature in the mesh
+_VERIFY_KINDS = {"hole", "tunnel", "thread", "tap"}
+
+
+def applied_refine_features(
+    features: list[RefineFeature], report: RefineReport
+) -> list[RefineFeature]:
+    """The ``RefineFeature`` objects that were actually applied — the
+    ``report.applied`` records carry no pose (u/v), so analytic STEP export
+    needs the feature objects filtered by the applied names."""
+    names = {str(e.get("name") or "") for e in report.applied}
+    return [f for f in features if f.name in names]
+
+
+def _verify_uv(a: dict[str, Any], axis: str) -> tuple[float, float] | None:
+    """In-plane (u, v) coords of an applied-entry/anchor/request dict for `axis`."""
+    _ax, au, av = _AXES.get(axis, _AXES["+z"])
+    pos = a.get("pos") or []
+    try:
+        if len(pos) > max(au, av) and pos[au] is not None and pos[av] is not None:
+            return float(pos[au]), float(pos[av])
+    except (TypeError, ValueError):
+        pass
+    if axis in ("+z", "-z") and a.get("x") is not None and a.get("y") is not None:
+        try:
+            return float(a["x"]), float(a["y"])
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _verify_expected_uv(
+    entry: dict[str, Any],
+    anchors: list[dict[str, Any]] | None,
+    request_features: list[dict[str, Any]] | None,
+    axis: str = "+z",
+) -> tuple[float, float] | None:
+    """Expected in-plane (u, v) of an applied refine feature on `axis`.
+
+    ``applied`` records usually carry no position — resolve it from the
+    request feature / anchor the cut was derived from. Anchor-derived names
+    are ``<name>`` or ``anchor <index>``; spec-renamed features fall back to
+    the same-axis anchor closest in diameter."""
+    direct = _verify_uv(entry, axis)
+    if direct is not None:
+        return direct
+    name = str(entry.get("name") or "")
+    for r in request_features or []:
+        if str(r.get("name") or "") == name:
+            uv = _verify_uv(r, axis)
+            if uv is not None:
+                return uv
+    dia = float(entry.get("requested_dia_mm") or entry.get("dia") or 0.0)
+    best: tuple[float, float] | None = None
+    best_dev: float | None = None
+    for a in anchors or []:
+        if str(a.get("axis") or "+z") != axis:
+            continue
+        uv = _verify_uv(a, axis)
+        if uv is None:
+            continue
+        if str(a.get("name") or f"anchor {a.get('index', '?')}") == name:
+            return uv
+        if dia > 0:
+            dev = abs(float(a.get("dia") or 0.0) - dia)
+            if best_dev is None or dev < best_dev:
+                best, best_dev = uv, dev
+    return best
+
+
+def _probe_blind_feature(
+    mesh: trimesh.Trimesh,
+    entry: dict[str, Any],
+    axis: str,
+    uv: tuple[float, float],
+    dia: float,
+    *,
+    depth_frac: float,
+    dia_tol_frac: float,
+    log: Any,
+) -> tuple[bool | None, dict[str, Any] | None]:
+    """Blind-pocket rescue verdict via ``anchors3d.probe_blind_features``.
+
+    The surface scan can't see a shallow blind bore on some axes — probe the
+    refined mesh for just this feature. Returns ``(verdict, record)``:
+    verdict True when the probe confirms the feature (found; ≥`depth_frac` of
+    requested depth — or open tunnel when no depth was requested or the bore
+    went deeper; measured diameter inside the scan tolerance), False on a
+    probe miss, None when the probe is unavailable or crashed (caller keeps
+    the scan verdict). ``record`` is the raw probe dict for reporting."""
+    try:
+        from cadx.cad.fem import anchors3d
+    except Exception:
+        return None, None
+    probe = getattr(anchors3d, "probe_blind_features", None)
+    if not callable(probe):
+        return None, None
+    _ax, au, av = _AXES[axis]
+    pos: list[Any] = [None, None, None]
+    pos[au], pos[av] = uv[0], uv[1]
+    depth_req = entry.get("depth_mm")
+    try:
+        recs = probe(
+            mesh,
+            [
+                {
+                    "name": entry.get("name"),
+                    "kind": entry.get("kind") or "hole",
+                    "axis": axis,
+                    "pos": pos,
+                    "x": uv[0],
+                    "y": uv[1],
+                    "dia_mm": dia,
+                    "dia": dia,
+                    "depth_mm": depth_req,
+                }
+            ],
+            log=log,
+        )
+    except Exception as e:
+        log.warning("refine.verify_probe_failed", feature=str(entry.get("name")), error=str(e))
+        return None, None
+    rec = recs[0] if recs else None
+    if rec is None:
+        return None, None
+    if not rec.get("found"):
+        return False, rec
+    measured_depth = rec.get("measured_depth_mm")
+    if depth_req:
+        ok_depth = bool(rec.get("open")) or (
+            measured_depth is not None and float(measured_depth) >= depth_frac * float(depth_req)
+        )
+    else:
+        ok_depth = bool(rec.get("open"))
+    measured_dia = rec.get("measured_dia_mm")
+    ok_dia = (
+        measured_dia is None or dia <= 0 or abs(float(measured_dia) - dia) <= dia_tol_frac * dia
+    )
+    return bool(ok_depth and ok_dia), rec
+
+
+def _scan_has_feature(
+    scanned: list[dict[str, Any]],
+    uv: tuple[float, float],
+    dia: float,
+    want: set[str],
+    xy_tol_mm: float,
+    dia_tol_frac: float,
+    axis: str = "+z",
+) -> bool:
+    """A scanned anchor of a wanted kind sits within tolerance of (u, v)."""
+    _ax, au, av = _AXES.get(axis, _AXES["+z"])
+    for t in scanned:
+        if str(t.get("axis") or "+z") != axis or str(t.get("kind") or "") not in want:
+            continue
+        tpos = t.get("pos") or []
+        try:
+            if len(tpos) > max(au, av) and tpos[au] is not None and tpos[av] is not None:
+                du, dv = float(tpos[au]) - uv[0], float(tpos[av]) - uv[1]
+            elif axis in ("+z", "-z"):
+                du = float(t.get("x") or 0.0) - uv[0]
+                dv = float(t.get("y") or 0.0) - uv[1]
+            else:
+                continue
+        except (TypeError, ValueError):
+            continue
+        if math.hypot(du, dv) > xy_tol_mm:
+            continue
+        if dia <= 0 or abs(float(t.get("dia") or 0.0) - dia) <= dia_tol_frac * dia:
+            return True
+    return False
+
+
+def refine_verify(
+    mesh: trimesh.Trimesh | str | Path,
+    refine_report: dict[str, Any],
+    *,
+    anchors: list[dict[str, Any]] | None = None,
+    request_features: list[dict[str, Any]] | None = None,
+    xy_tol_mm: float = 3.0,
+    dia_tol_frac: float = 0.25,
+    depth_frac: float = 0.8,
+    log: Any = None,
+) -> list[dict[str, Any]]:
+    """Applied cuttable features that left NO matching feature in the mesh.
+
+    The refine report's ``applied`` list is self-reported — a cut landing in
+    a SIMP void (``dia_deviation_mm`` in the tens of mm) still counts as
+    applied. Rescan the refined mesh and require a scanned ``hole`` (through
+    cuts) or ``dimple`` (blind cuts, ``depth_mm`` set) within `xy_tol_mm` xy
+    / ±`dia_tol_frac` dia of the expected position. Features the surface
+    scan misses get a second verdict from
+    ``anchors3d.probe_blind_features`` (blind pockets the heightfield scan
+    can't see); a missing function or a probe error degrades gracefully to
+    the scan-only verdict.
+
+    Returns miss records ``{"entry", "x", "y", "dia"}`` — empty means every
+    applied feature verified."""
+    logger = log if log is not None else get_logger(__name__)
+    if not isinstance(mesh, trimesh.Trimesh):
+        try:
+            p = Path(mesh)
+            if not p.exists():
+                return []
+            loaded = trimesh.load(str(p), force="mesh")
+        except Exception:
+            return []
+        if not isinstance(loaded, trimesh.Trimesh):
+            return []
+        mesh = loaded
+    try:
+        scanned = anchors3d.scan_mesh_anchors(mesh)
+    except Exception as e:
+        logger.warning("refine.verify_scan_failed", error=str(e))
+        return []
+    misses: list[dict[str, Any]] = []
+    probes: list[dict[str, Any]] = []
+    for entry in refine_report.get("applied") or []:
+        if str(entry.get("kind") or "hole") not in _VERIFY_KINDS:
+            continue
+        axis = str(entry.get("axis") or "+z")
+        if axis not in _AXES:
+            continue
+        uv = _verify_expected_uv(entry, anchors, request_features, axis)
+        if uv is None:
+            continue  # no position to check against — cannot verify
+        dia = float(entry.get("requested_dia_mm") or entry.get("dia") or 0.0)
+        want = {"dimple"} if entry.get("depth_mm") else {"hole"}
+        found = _scan_has_feature(scanned, uv, dia, want, xy_tol_mm, dia_tol_frac, axis)
+        if not found:
+            verdict, probe_rec = _probe_blind_feature(
+                mesh,
+                entry,
+                axis,
+                uv,
+                dia,
+                depth_frac=depth_frac,
+                dia_tol_frac=dia_tol_frac,
+                log=logger,
+            )
+            if probe_rec is not None:
+                probes.append({**probe_rec, "verified": bool(verdict)})
+            found = bool(verdict)  # None (probe unavailable/crashed) keeps the miss
+        if not found:
+            misses.append({"entry": entry, "x": uv[0], "y": uv[1], "dia": dia})
+    if probes:
+        refine_report["probes"] = probes
+    return misses
