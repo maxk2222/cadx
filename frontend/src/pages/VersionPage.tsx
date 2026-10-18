@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Activity, Clock, Cpu, Gauge, Layers, PencilRuler, Plus, Shrink, Sprout, Trash2, TriangleAlert } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import AnchorsPanel from "../components/AnchorsPanel";
 import ArtifactsTable from "../components/ArtifactsTable";
 import CodeView from "../components/CodeView";
 import DfmPanel from "../components/DfmPanel";
@@ -513,6 +514,7 @@ export default function VersionPage() {
                 onJobStarted={structuralStarted}
               />
             )}
+            <AnchorsPanel versionId={v.id} />
             {!!v.fem?.cases?.length && <FemPanel fem={v.fem} artifacts={v.artifacts} />}
             <Card className="p-4">
               <SectionTitle>Manufacturability (DfM)</SectionTitle>

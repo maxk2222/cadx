@@ -54,6 +54,12 @@ export default function FemPanel({
         {grid.elements != null && ` · ${grid.elements} elements`}
       </div>
 
+      {fem.valid === false && (
+        <div className="mb-2 rounded border border-red-900/60 bg-red-950/40 px-2 py-1.5 text-[11px] font-medium text-red-400">
+          degenerate solve — displacements/stress are not physically meaningful
+        </div>
+      )}
+
       <table className="w-full text-xs">
         <thead>
           <tr className="text-left text-[10px] uppercase tracking-wider text-zinc-500">

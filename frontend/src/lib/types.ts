@@ -444,6 +444,9 @@ export interface FemReport {
   grid: Record<string, unknown>;
   cases: FemCaseResult[];
   warnings: string[];
+  /** false = degenerate solve detected (disconnected mesh, rigid-body mode,
+   *  nonsense compliance) — numbers must not be trusted. */
+  valid?: boolean;
   note?: string;
 }
 

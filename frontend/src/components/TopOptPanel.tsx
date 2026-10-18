@@ -1,5 +1,14 @@
 import { Loader2, Shrink, Wrench } from "lucide-react";
 import { useState } from "react";
+import {
+  CartesianGrid,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { api } from "../lib/api";
 import { Btn, Card, SectionTitle, useToast } from "./ui";
 
@@ -16,11 +25,33 @@ interface TopOptRun {
   warnings?: string[];
 }
 
+interface TopOptHistoryEntry {
+  it?: number;
+  compliance?: number;
+  volfrac?: number;
+  change?: number;
+  solve_s?: number;
+}
+
 interface TopOptInfo {
   volfrac_achieved?: number;
   iterations?: number;
   converged?: boolean;
   agent_runs?: TopOptRun[];
+  /** compact SIMP convergence trace (persisted on the version). */
+  history?: TopOptHistoryEntry[];
+  /** multiresolution coarse-pass stats. */
+  multires?: {
+    coarse_pitch_mm?: number;
+    coarse_cells?: number;
+    coarse_iterations?: number;
+    seconds?: number;
+  };
+  /** base-mesh provenance / spec-envelope normalization. */
+  base_mesh_relpath?: string;
+  input_bbox?: number[];
+  spec_bbox?: number[];
+  input_normalized?: boolean;
   [key: string]: unknown;
 }
 
@@ -38,6 +69,16 @@ export interface RefineInfo {
   skipped?: { feature?: RefineFeature; reason?: string }[];
   restored_regions?: number;
   warnings?: string[];
+  /** analytic cuts applied to the exported STEP (feature name/kind/axis). */
+  step_features?: { name?: string; kind?: string; axis?: string; analytic?: boolean }[];
+  /** blind-feature probe results (non-through holes verified by raycast). */
+  probes?: {
+    name?: string;
+    open?: boolean;
+    found?: boolean;
+    measured_depth_mm?: number | null;
+    measured_dia_mm?: number | null;
+  }[];
 }
 
 function sfTone(sf: number | null | undefined): string {
@@ -120,6 +161,37 @@ export default function TopOptPanel({
           {w}
         </div>
       ))}
+      {(topopt.multires || topopt.input_normalized || topopt.base_mesh_relpath) && (
+        <div className="mb-2 text-[10px] text-zinc-600">
+          {topopt.multires &&
+            `multires coarse pass: ${topopt.multires.coarse_cells ?? "?"} cells @ ${topopt.multires.coarse_pitch_mm ?? "?"}mm, ${topopt.multires.coarse_iterations ?? "?"} it, ${topopt.multires.seconds ?? "?"}s`}
+          {topopt.input_normalized &&
+            ` · input clipped to spec envelope${
+              topopt.input_bbox ? ` (${topopt.input_bbox.map((n) => n.toFixed(1)).join("×")} → ${topopt.spec_bbox?.map((n) => n.toFixed(1)).join("×") ?? "spec"})` : ""
+            }`}
+          {topopt.base_mesh_relpath && ` · base: ${topopt.base_mesh_relpath}`}
+        </div>
+      )}
+      {(topopt.history?.length ?? 0) > 2 && (
+        <div className="mb-2 h-28">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={topopt.history} margin={{ top: 4, right: 4, bottom: 0, left: -22 }}>
+              <CartesianGrid stroke="#27272a" strokeDasharray="3 3" vertical={false} />
+              <XAxis dataKey="it" tick={{ fontSize: 10, fill: "#71717a" }} tickLine={false} axisLine={false} minTickGap={24} />
+              <YAxis tick={{ fontSize: 10, fill: "#71717a" }} tickLine={false} axisLine={false} />
+              <Tooltip
+                contentStyle={{ background: "#18181b", border: "1px solid #3f3f46", borderRadius: 8, fontSize: 12 }}
+                labelStyle={{ color: "#a1a1aa" }}
+                formatter={(v: unknown, name?: unknown) => [
+                  typeof v === "number" ? v.toPrecision(4) : String(v),
+                  name === "compliance" ? "compliance (mJ)" : String(name),
+                ]}
+              />
+              <Line type="monotone" dataKey="compliance" stroke="#7c9cf5" dot={false} strokeWidth={1.5} isAnimationActive={false} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
       {runs.length > 0 && (
         <table className="w-full text-xs">
           <thead>
@@ -242,6 +314,22 @@ export default function TopOptPanel({
                 : "no features re-cut"}
               {!!refine.restored_regions &&
                 ` · ${refine.restored_regions} keep surface(s) restored`}
+              {!!refine.step_features?.length && (
+                <div className="text-emerald-400/90">
+                  STEP: {refine.step_features.length} analytic feature cut(s) (
+                  {refine.step_features
+                    .map((f) => `${f.kind ?? "?"}${f.axis ? ` ${f.axis}` : ""}`)
+                    .join(", ")}
+                  )
+                </div>
+              )}
+              {(refine.probes ?? []).map((p, i) => (
+                <div key={`p${i}`} className={p.open ? "text-emerald-400/90" : "text-red-400/90"}>
+                  blind probe {p.name ?? i}: {p.open ? "open" : p.found ? "blocked" : "not found"}
+                  {p.measured_depth_mm != null && ` · depth ${p.measured_depth_mm.toFixed(1)}mm`}
+                  {p.measured_dia_mm != null && ` · ⌀${p.measured_dia_mm.toFixed(1)}mm`}
+                </div>
+              ))}
               {(refine.skipped ?? []).map((s, i) => (
                 <div key={`s${i}`} className="text-amber-400/90">
                   skipped: {s.reason ?? "unmatched"}
