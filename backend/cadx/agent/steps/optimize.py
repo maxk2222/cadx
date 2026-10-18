@@ -63,6 +63,11 @@ def _run_summary(r: dict[str, Any], chosen: bool, reasoning: Any) -> dict[str, A
         c.get("safety_factor") for c in fem.get("cases") or [] if c.get("safety_factor") is not None
     ]
     worst_sf = top.get("sf_export") or (min(sfs) if sfs else None)
+    # refine runs carry their finishing report — surface it so the version's
+    # agent_runs table (and the GUI) sees applied/skipped features, probes
+    # and analytic-STEP provenance instead of an empty record
+    refine = (res.get("features") or {}).get("refine") or {}
+    refine_block = {"refine": refine} if refine else {}
     return {
         "index": r["index"],
         "it": r.get("iteration"),
@@ -79,6 +84,7 @@ def _run_summary(r: dict[str, Any], chosen: bool, reasoning: Any) -> dict[str, A
         "thin_fraction": top.get("thin_fraction"),
         "n_components": top.get("n_components"),
         "warnings": (top.get("warnings") or [])[:5],
+        **refine_block,
         "chosen": chosen,
         **({"reasoning": str(reasoning)} if chosen and reasoning else {}),
     }

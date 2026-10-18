@@ -124,11 +124,31 @@ def sew_mesh(mesh: Any) -> Any:
     (self-contained) because this module must import inside the sandbox where
     ``cadx.cad.mesh_ops`` is not reachable. Raises ValueError on failure.
     """
+    import numpy as np
     from build123d import Shape, Shell, Solid
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
     from OCP.ShapeFix import ShapeFix_Shape
     from OCP.StlAPI import StlAPI_Reader
     from OCP.TopoDS import TopoDS_Shape
+
+    # Drop sliver facets: manifold boolean output keeps triangles whose
+    # vertices quantize to nearly the same float32 point — a sub-1e-5 mm
+    # edge makes OCC's STL reader abort the whole file ("command not done").
+    # Removing them only opens sub-tolerance gaps the sewing tolerance covers.
+    tri = np.asarray(mesh.triangles, dtype=np.float64)
+    if len(tri):
+        e0 = tri[:, 0] - tri[:, 1]
+        e1 = tri[:, 1] - tri[:, 2]
+        e2 = tri[:, 2] - tri[:, 0]
+        min_edge = np.minimum(
+            np.linalg.norm(e0, axis=1),
+            np.minimum(np.linalg.norm(e1, axis=1), np.linalg.norm(e2, axis=1)),
+        )
+        keep = min_edge > 1e-5
+        if not keep.all():
+            mesh = mesh.copy()
+            mesh.update_faces(keep)
+            mesh.remove_unreferenced_vertices()
 
     with tempfile.TemporaryDirectory() as td:
         stl = Path(td) / "mesh.stl"

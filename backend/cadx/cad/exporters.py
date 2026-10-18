@@ -4,6 +4,7 @@ a single failing export never fails the job; the error is recorded instead."""
 from __future__ import annotations
 
 import math
+import time
 from pathlib import Path
 from typing import Any
 
@@ -476,6 +477,147 @@ def _counter_cutters(
     return out
 
 
+def _cut_volume_ok(solid: Any, tool: Any, res: Any) -> bool:
+    """Sanity gate for a difference result. A cut can only REMOVE material —
+    never add — and never more than the tool's swept volume (plus slack for
+    fuzzy-tolerance cleanup). Degenerate sewn-solid booleans come back as
+    empty compounds or grown solids; both are refused instead of shipped."""
+    try:
+        tool_vol = abs(float(tool.volume))
+        v = float(res.volume)
+        s = float(solid.volume)
+    except Exception:
+        return False
+    return s - tool_vol * 1.2 - 1e-3 <= v <= s * 1.005 + 1e-3
+
+
+def _occ_cut(solid: Any, tool: Any, *, fuzzy_levels: tuple[float, ...] = (0.05, 0.2)) -> Any | None:
+    """Boolean difference with a fuzzy-tolerance rescue for sewn solids.
+
+    A B-Rep sewn from tessellation has facet-edge vertices at float32
+    precision — plain ``solid - tool`` regularly returns an EMPTY Part on
+    such bodies even though the solid reports ``is_valid`` and carries the
+    right volume. ``BRepAlgoAPI_Cut`` with a fuzzy value treats
+    near-coincident facet edges as shared and produces the real cut.
+    Escalate the fuzzy window only while the result stays geometrically
+    sane (``_cut_volume_ok``) — too-large fuzzies "heal" the cut into an
+    uncut or grown solid. Every OCC boolean on a large sewn solid costs
+    minutes, so secondary cutters (thread grooves, counters) pass fewer
+    levels to bound worst-case runtime."""
+    try:
+        res = solid - tool
+        if res is not None and res.solids() and _cut_volume_ok(solid, tool, res):
+            return res
+    except Exception:
+        pass
+    if not fuzzy_levels:
+        return None
+    try:
+        from build123d import Shape
+        from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    except Exception:
+        return None
+    for fuzzy in fuzzy_levels:
+        try:
+            op = BRepAlgoAPI_Cut(solid.wrapped, tool.wrapped)
+            op.SetFuzzyValue(fuzzy)
+            op.Build()
+            if not op.IsDone():
+                continue
+            res = Shape.cast(op.Shape())
+            if res is not None and res.solids() and _cut_volume_ok(solid, tool, res):
+                return res
+        except Exception:
+            continue
+    return None
+
+
+def _validate_split_solid(mesh: trimesh.Trimesh) -> Any | None:
+    """Sew a solid after splitting vertices at non-manifold junctions.
+
+    ``process(validate=True)`` separates coincident-position vertices where
+    faces only meet positionally (T-junctions from mesh unions). The sewed
+    B-Rep then carries genuinely shared edges instead of degenerate
+    coincident-face seams — OCC booleans work on it. Geometry is unchanged
+    (a split move of zero distance), so no drift check is needed."""
+    try:
+        m = mesh.copy()
+        m.process(validate=True)
+        m.merge_vertices()
+        from cadx.cad.mesh_boolean import sew_mesh, unify_checked
+
+        return unify_checked(sew_mesh(m))
+    except Exception:
+        return None
+
+
+def _cut_analytic_features(
+    solid: Any,
+    mesh: trimesh.Trimesh,
+    normed: list[tuple[str, Any]],
+) -> tuple[Any, list[dict[str, Any]], list[str], dict[str, str]]:
+    """Cut every normed feature's analytic tools out of `solid` in sequence.
+
+    Cutters are applied one at a time (pilot bore first, then thread
+    groove/counters) — a single Compound tool makes the boolean far more
+    fragile on sewn meshes, and a failed groove must not cost the pilot
+    bore's analytic cylinder. Returns ``(solid, applied, failed_names,
+    degraded)`` — degraded maps feature name → which sub-cutter failed;
+    those features keep their analytic pilot but get an honest note."""
+    applied: list[dict[str, Any]] = []
+    failed: list[str] = []
+    degraded: dict[str, str] = {}
+    for name, feat in normed:
+        cutters: list[Any] = []
+        try:
+            cutters = list(_analytic_cutters(feat, mesh))
+        except Exception:
+            failed.append(name)
+            continue
+        base = solid
+        ok = True
+        for i, tool in enumerate(cutters):
+            # secondary cutters (thread groove, counters) get one fuzzy shot —
+            # they are pathologically slow on large sewn solids
+            levels = (0.05, 0.2) if i == 0 else (0.05,)
+            t_cut = time.monotonic()
+            try:
+                res = _occ_cut(solid, tool, fuzzy_levels=levels)
+            except Exception:
+                res = None
+            _cut_seconds = round(time.monotonic() - t_cut, 1)
+            log.info(
+                "export.analytic_step_cutter",
+                feature=name,
+                cutter=i,
+                seconds=_cut_seconds,
+                ok=bool(res is not None and res.solids()),
+            )
+            if res is None or not res.solids() or res.volume < solid.volume * 0.3:
+                if i == 0:
+                    # pilot cut failed — the feature is not analytic at all
+                    solid = base
+                    ok = False
+                    break
+                degraded[name] = f"secondary cutter {i} failed — pilot bore applied"
+                break
+            solid = res
+        if ok:
+            applied.append(
+                {
+                    "name": name,
+                    "kind": str(_feat_field(feat, "kind", "hole")),
+                    "axis": str(_feat_field(feat, "axis", "+z")),
+                    "analytic": True,
+                }
+            )
+            if name in degraded:
+                applied[-1]["degraded"] = degraded[name]
+        else:
+            failed.append(name)
+    return solid, applied, failed, degraded
+
+
 def export_analytic_step(
     mesh: trimesh.Trimesh,
     features: list[Any],
@@ -503,8 +645,32 @@ def export_analytic_step(
     for features that were cut analytically.
     """
     logger = log if log is not None else globals()["log"]
+    out_path = Path(out_path)
     warnings: list[str] = []
     out: dict[str, Any] = {"step": None, "step_features": [], "warnings": warnings}
+    try:
+        import io
+
+        # Normalise topology the same way the exported STL on disk is: an
+        # STL roundtrip quantizes vertices to float32 and merges them by
+        # position. In-memory refine output can carry duplicate vertices /
+        # non-manifold junctions (keep-restore unions) that pass
+        # ``is_watertight`` but sew into boolean-dead B-Reps — the exported
+        # file of the same mesh cuts cleanly.
+        mesh = trimesh.load(io.BytesIO(mesh.export(file_type="stl")), file_type="stl")
+    except Exception:
+        pass
+    try:
+        # OCC boolean cost scales with face count; quadric decimation also
+        # collapses the sub-tolerance coincident vertices left by keep-restore
+        # unions. 12k facets keep sub-0.1mm fidelity on typical lattice skins
+        # while cutting sew/boolean time by ~4x.
+        from cadx.cad.mesh_ops import decimate
+
+        if len(mesh.faces) > 12000:
+            mesh = decimate(mesh, 12000)
+    except Exception:
+        pass
     try:
         from cadx.cad.mesh_ops import mesh_to_solid
 
@@ -516,37 +682,47 @@ def export_analytic_step(
         logger.warning("export.analytic_step_sew_failed", error=str(e))
         return out
 
-    from build123d import Compound
-
-    applied: list[dict[str, Any]] = []
+    normed: list[tuple[str, Any]] = []
     for raw in features or []:
         feat = _norm_refine_feature(raw)
         name = str(_feat_field(raw, "name", "") or _feat_field(raw, "kind", "feature"))
-        try:
-            if feat is None:
-                continue
-            cutters = _analytic_cutters(feat, mesh)
-            if not cutters:
-                continue
-            tool = cutters[0] if len(cutters) == 1 else Compound(children=list(cutters))
-            res = solid - tool
-            if res is None or not res.solids() or res.volume < solid.volume * 0.3:
-                warnings.append(
-                    f"feature '{name}': analytic cut produced no valid solid — faceted STEP kept"
+        if feat is None:
+            warnings.append(f"feature '{name}': no usable refine pose — skipped")
+            logger.warning("export.analytic_step_no_pose", feature=name)
+            continue
+        cutters = _analytic_cutters(feat, mesh)
+        if not cutters:
+            warnings.append(f"feature '{name}': no analytic cutter — skipped")
+            logger.warning("export.analytic_step_no_cutter", feature=name)
+            continue
+        normed.append((name, feat))
+
+    solid, applied, failed, degraded = _cut_analytic_features(solid, mesh, normed)
+    if failed and not applied:
+        # escalation: refine keep-restore unions leave float32-coincident
+        # vertices at patch seams — watertight per trimesh but the sewn
+        # B-Rep is boolean-dead near them. ``process(validate=True)`` splits
+        # vertices at non-manifold junctions so OCC sewing re-joins by
+        # position and the solid cuts cleanly. Re-cut ALL features on the
+        # escalated solid so every analytic surface ends up in one body.
+        esc = _validate_split_solid(mesh)
+        if esc is not None:
+            solid2, applied2, failed2, degraded2 = _cut_analytic_features(esc, mesh, normed)
+            if len(applied2) > len(applied):
+                logger.info(
+                    "export.analytic_step_escalated",
+                    applied=len(applied2),
+                    failed=len(failed2),
                 )
-                continue
-            solid = res
-            applied.append(
-                {
-                    "name": name,
-                    "kind": str(_feat_field(feat, "kind", "hole")),
-                    "axis": str(_feat_field(feat, "axis", "+z")),
-                    "analytic": True,
-                }
-            )
-        except Exception as e:
-            warnings.append(f"feature '{name}': analytic cut failed: {e}")
-            logger.warning("export.analytic_step_cut_failed", feature=name, error=str(e))
+                solid, applied, failed, degraded = solid2, applied2, failed2, degraded2
+    for name in failed:
+        warnings.append(
+            f"feature '{name}': analytic cut produced no valid solid — faceted STEP kept"
+        )
+        logger.warning("export.analytic_step_cut_empty", feature=name)
+    for name, note in degraded.items():
+        warnings.append(f"feature '{name}': {note}")
+        logger.warning("export.analytic_step_degraded", feature=name, note=note)
 
     try:
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -556,6 +732,13 @@ def export_analytic_step(
     except Exception as e:
         warnings.append(f"analytic STEP write failed: {e}")
         logger.warning("export.analytic_step_write_failed", error=str(e))
+    logger.info(
+        "export.analytic_step",
+        features=len(features or []),
+        applied=len(applied),
+        step=out["step"],
+        warnings=len(warnings),
+    )
     return out
 
 

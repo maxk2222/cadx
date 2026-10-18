@@ -23,6 +23,8 @@ interface TopOptRun {
   chosen?: boolean;
   reasoning?: string;
   warnings?: string[];
+  /** in-job feature-finishing report (applied/skipped/probes/step). */
+  refine?: RefineInfo;
 }
 
 interface TopOptHistoryEntry {
@@ -143,6 +145,10 @@ export default function TopOptPanel({
   };
 
   const runs = topopt.agent_runs ?? [];
+  // in-job refine reports live on the chosen agent run; standalone refine
+  // children carry the same shape at mesh.refine
+  const chosenRun = runs.find((r) => r.chosen);
+  const refineEff = refine ?? ((chosenRun?.refine as RefineInfo | undefined) || undefined);
   return (
     <Card className="p-4">
       <SectionTitle>
@@ -283,17 +289,18 @@ export default function TopOptPanel({
           </div>
         </div>
       )}
-      {(refinable || refine) && (
+      {(refinable || refineEff) && (
         <div className="mt-3 border-t border-zinc-800 pt-2.5">
           <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
             feature finishing
           </div>
-          {refine ? (
+          {refineEff ? (
             <div className="mb-2 text-[11px] text-zinc-400">
-              {refine.applied?.length
-                ? refine.applied.map((f, i) => (
+              {refineEff.applied?.length
+                ? refineEff.applied.map((f, i) => (
                     <div key={i}>
                       ✓ {f.kind ?? "feature"}
+                      {f.name ? ` ${String(f.name)}` : ""}
                       {f.dia ? ` ⌀${f.dia}mm` : ""}
                       {f.axis ? ` ${f.axis}` : ""}
                       {f.depth ? ` ×${f.depth}mm` : ""}
@@ -312,30 +319,30 @@ export default function TopOptPanel({
                     </div>
                   ))
                 : "no features re-cut"}
-              {!!refine.restored_regions &&
-                ` · ${refine.restored_regions} keep surface(s) restored`}
-              {!!refine.step_features?.length && (
+              {!!refineEff.restored_regions &&
+                ` · ${refineEff.restored_regions} keep surface(s) restored`}
+              {!!refineEff.step_features?.length && (
                 <div className="text-emerald-400/90">
-                  STEP: {refine.step_features.length} analytic feature cut(s) (
-                  {refine.step_features
+                  STEP: {refineEff.step_features.length} analytic feature cut(s) (
+                  {refineEff.step_features
                     .map((f) => `${f.kind ?? "?"}${f.axis ? ` ${f.axis}` : ""}`)
                     .join(", ")}
                   )
                 </div>
               )}
-              {(refine.probes ?? []).map((p, i) => (
+              {(refineEff.probes ?? []).map((p, i) => (
                 <div key={`p${i}`} className={p.open ? "text-emerald-400/90" : "text-red-400/90"}>
                   blind probe {p.name ?? i}: {p.open ? "open" : p.found ? "blocked" : "not found"}
                   {p.measured_depth_mm != null && ` · depth ${p.measured_depth_mm.toFixed(1)}mm`}
                   {p.measured_dia_mm != null && ` · ⌀${p.measured_dia_mm.toFixed(1)}mm`}
                 </div>
               ))}
-              {(refine.skipped ?? []).map((s, i) => (
+              {(refineEff.skipped ?? []).map((s, i) => (
                 <div key={`s${i}`} className="text-amber-400/90">
                   skipped: {s.reason ?? "unmatched"}
                 </div>
               ))}
-              {(refine.warnings ?? []).map((w, i) => (
+              {(refineEff.warnings ?? []).map((w, i) => (
                 <div key={`w${i}`} className="text-amber-400/90">
                   {w}
                 </div>

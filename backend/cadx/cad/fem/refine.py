@@ -979,8 +979,21 @@ def restore_keep_surface(
         warnings.append("keep-region restore skipped — base mesh is not a volume")
         return out, warnings, 0
     span = (float(base.bounds[0].min()) - 1, float(base.bounds[1].max()) + 1)
+    # `_plane_box` restores do NOT go through the boolean union: a thin slab
+    # covering the whole part footprint unions into coincident-face seams
+    # (float32-quantized manifold output) that trimesh reports as watertight
+    # but that sew into boolean-dead B-Reps — the analytic STEP cuts then
+    # return empty solids. Vertex snapping restores the flat plane without
+    # touching topology.
+    union_regions = [r for r in (keep_regions or []) if r.get("kind") != "_plane_box"]
+    plane_boxes = [r["box"] for r in (keep_regions or []) if r.get("kind") == "_plane_box"]
+    if plane_boxes and out.is_volume:
+        snapped = _snap_plane_verts(out, plane_boxes, base.bounds)
+        if snapped:
+            restored += len(plane_boxes)
+            warnings.append(f"plane-snap keep-restore: {snapped} vertices restored")
     tagged: list[tuple[np.ndarray, bool]] = [
-        (b, False) for b in _keep_boxes(keep_regions or [], anchors, base.bounds, span, margin_mm)
+        (b, False) for b in _keep_boxes(union_regions, anchors, base.bounds, span, margin_mm)
     ]
     if not keep_regions:
         tagged += [
@@ -989,6 +1002,52 @@ def restore_keep_surface(
                 _auto_anchor_keep_regions(anchors), anchors, base.bounds, span, margin_mm
             )
         ]
+    # Merge all keep boxes into a SINGLE patch before unioning: adjacent
+    # regions (e.g. a bore ring overlapping a thread ring) otherwise create
+    # one coincident-face seam per union — float32-quantized manifold output
+    # leaves T-junction slivers there that sew into boolean-dead B-Reps.
+    # One `base ∩ (union of boxes)` patch + one union = exactly one seam.
+    merged_done = False
+    if len(tagged) > 1 and out.is_volume:
+        try:
+            box_union = _box_mesh(tagged[0][0])
+            for b, _ in tagged[1:]:
+                box_union = box_union.union(_box_mesh(b), engine="manifold")
+            patch = base.intersection(box_union, engine="manifold")
+            if patch is not None and len(getattr(patch, "faces", [])):
+                if not patch.is_volume:
+                    with contextlib.suppress(Exception):
+                        patch = _ensure_watertight(patch)
+                if patch.is_volume:
+                    merged = out.union(patch, engine="manifold")
+                    if merged is not None and len(getattr(merged, "faces", [])):
+                        out = merged
+                        restored += len(tagged)
+                        auto_restored += sum(1 for _, a in tagged if a)
+                        merged_done = True
+        except Exception as e:
+            warnings.append(f"merged keep-restore failed ({e}) — trying per-region")
+    if not merged_done:
+        out, warnings2, restored2, auto2 = _union_keep_patches(out, base, tagged)
+        warnings += warnings2
+        restored += restored2
+        auto_restored += auto2
+    if auto_restored:
+        warnings.append(f"auto keep-restore: {auto_restored} anchor ring(s) restored")
+    return out, warnings, restored
+
+
+def _union_keep_patches(
+    out: trimesh.Trimesh,
+    base: trimesh.Trimesh,
+    tagged: list[tuple[np.ndarray, bool]],
+) -> tuple[trimesh.Trimesh, list[str], int, int]:
+    """Per-region fallback: `out union (base ∩ grown_keep_box)` per box."""
+    from cadx.cad.mesh_ops import _ensure_watertight
+
+    warnings: list[str] = []
+    restored = 0
+    auto_restored = 0
     for b, is_auto in tagged:
         tag = "auto keep-restore" if is_auto else "keep-region"
         try:
@@ -1014,9 +1073,37 @@ def restore_keep_surface(
             auto_restored += int(is_auto)
         except Exception as e:
             warnings.append(f"{tag} failed ({e}) — region left smoothed")
-    if auto_restored:
-        warnings.append(f"auto keep-restore: {auto_restored} anchor ring(s) restored")
-    return out, warnings, restored
+    return out, warnings, restored, auto_restored
+
+
+def _snap_plane_verts(
+    out: trimesh.Trimesh, plane_boxes: list[Any], base_bounds: np.ndarray
+) -> int:
+    """Snap outward-facing vertices inside each plane slab onto the base
+    plane. Restores flattened top/bottom skins after smoothing shrank them —
+    no boolean, so no coincident-face seams. Returns snapped vertex count."""
+    lo_b = np.asarray(base_bounds[0], dtype=float)
+    hi_b = np.asarray(base_bounds[1], dtype=float)
+    normals = out.vertex_normals
+    verts = out.vertices
+    snapped = 0
+    for raw in plane_boxes:
+        b = np.asarray(raw, dtype=float)
+        lo, hi = np.asarray(b[0], dtype=float), np.asarray(b[1], dtype=float)
+        ext = hi - lo
+        axis = int(np.argmin(ext))
+        if ext[axis] > 5.0 or ext[axis] <= 0:
+            continue  # not a thin slab — leave it to the union path
+        top = (lo[axis] + hi[axis]) * 0.5 > (lo_b[axis] + hi_b[axis]) * 0.5
+        plane = float(hi_b[axis] if top else lo_b[axis])
+        in_box = np.all((verts >= lo) & (verts <= hi), axis=1)
+        facing = normals[:, axis] > 0.6 if top else normals[:, axis] < -0.6
+        idx = np.nonzero(in_box & facing)[0]
+        if not len(idx):
+            continue
+        verts[idx, axis] = plane
+        snapped += len(idx)
+    return snapped
 
 
 def _keep_boxes(
@@ -1030,8 +1117,8 @@ def _keep_boxes(
     boxes: list[np.ndarray] = []
     for r in keep_regions:
         if r.get("kind") == "_plane_box" and r.get("box") is not None:
-            boxes.append(np.asarray(r["box"], dtype=float))
-            continue
+            continue  # handled by _snap_plane_verts — no boolean union
+
         hi_idx = r.get("hole_index")
         if str(r.get("kind")) in ("hole", "anchor", "bore") and hi_idx is not None:
             idx = int(hi_idx)
@@ -1083,10 +1170,16 @@ def _record_applied(
         "name": feat.name,
         "kind": feat.kind,
         "axis": feat.axis,
+        "u": round(feat.u, 3),
+        "v": round(feat.v, 3),
         "dia": round(feat.dia, 2),
         "depth_mm": feat.depth_mm,
         "source": feat.source,
     }
+    if feat.thread_spec:
+        entry_rec["thread_spec"] = feat.thread_spec
+    if feat.helical is not None:
+        entry_rec["helical"] = feat.helical
     if feat.dia_extra:
         entry_rec["ream_extra_mm"] = round(feat.dia_extra, 2)
     try:
@@ -1277,7 +1370,47 @@ def apply_refine(
         out.remove_unreferenced_vertices()
     except Exception:
         pass
-    return out, report
+    return _watertight_postpass(out, report), report
+
+
+def _watertight_postpass(out: trimesh.Trimesh, report: RefineReport) -> trimesh.Trimesh:
+    """In-memory watertight repair of the refined mesh.
+
+    Keep-region unions and manifold cuts can leave hairline leaks in `out`.
+    The file-level exporter repairs the STL on disk but not this in-memory
+    mesh — a leaky mesh sews into a B-Rep that reports is_valid yet returns
+    empty solids on OCC booleans, silently degrading the analytic STEP.
+    Repair in memory so every downstream consumer (analysis, sew, verify
+    probes, analytic cuts) sees the same topology. Same ladder as
+    ``repair_mesh_file``, drift-guarded so a voxel rebuild can never
+    balloon the lattice."""
+    if out.is_watertight:
+        return out
+    try:
+        out.merge_vertices()
+        out.update_faces(out.nondegenerate_faces())
+        out.remove_unreferenced_vertices()
+        out.fill_holes()
+        out.fix_normals()
+    except Exception:
+        pass
+    if not out.is_watertight:
+        try:
+            from cadx.cad.mesh_ops import _ensure_watertight, _rebuild_drift
+
+            rebuilt = _ensure_watertight(out)
+            drift = _rebuild_drift(out, rebuilt)
+            if drift is None:
+                out = rebuilt
+            else:
+                report.warnings.append(f"watertight repair skipped — {drift}")
+        except Exception as e:
+            report.warnings.append(f"watertight repair failed: {e}")
+    if not out.is_watertight:
+        report.warnings.append(
+            "refined mesh is not watertight — STEP/analytic cuts may degrade"
+        )
+    return out
 
 
 # --------------------------------------------------------------------------- #

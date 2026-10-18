@@ -2303,14 +2303,24 @@ def run_refine(
         max_faces=s.mesh_max_faces_for_cad,
     )
     # analytic STEP: cut real Cylinder/Helix faces into the sewn solid for
-    # the applied features — keeps the faceted STEP as fallback
+    # the applied features — keeps the faceted STEP as fallback. rep.applied
+    # records are self-describing (u/v/dia/depth/thread) so the export does
+    # not depend on re-joining feature objects by name.
     applied_feats = applied_refine_features(feats, rep)
-    if applied_feats:
+    if rep.applied and not applied_feats:
+        log.warning(
+            "export.analytic_step_name_join_empty",
+            applied=len(rep.applied),
+            feats=len(feats),
+        )
+    analytic_src: list[Any] = applied_feats or list(rep.applied)
+    if analytic_src:
         step_res = export_analytic_step(
             out,
-            applied_feats,
+            analytic_src,
             out_dir / "exports" / f"{name}.step",
             max_faces=s.mesh_max_faces_for_cad,
+            log=log,
         )
         if step_res.get("step"):
             res.exports["step"] = step_res["step"]
