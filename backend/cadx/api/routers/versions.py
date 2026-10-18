@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from pathlib import Path
 from typing import Any
 
 import structlog
@@ -16,12 +17,14 @@ from sqlmodel import col, select
 from cadx.api.deps import enqueue, get_session
 from cadx.api.schemas import (
     ArtifactOut,
+    CompareResult,
     EditFeatureRequest,
     EditRequest,
     EnqueueResponse,
     GenerateRequest,
     OptimizeRequest,
     OrganicRequest,
+    ParamsDiffEntry,
     ParamsRequest,
     RefineRequest,
     TopoptResampleRequest,
@@ -407,6 +410,90 @@ async def get_version(version_id: uuid.UUID, db: AsyncSession = Depends(get_sess
     if not v:
         raise HTTPException(404, "version not found")
     return await _detail(v, db)
+
+
+def _compare_geometry_path(v: Version) -> Path | None:
+    """Best loadable geometry artifact for shape diffing, or None.
+
+    Prefers the analytic STEP export; falls back to the best triangle mesh
+    (converted to a sewn solid inside the worker thread).
+    """
+    from cadx import storage
+
+    step = storage.export_dir(v.project_id, v.id) / "model.step"
+    if step.exists():
+        return step
+    rel = storage.best_mesh_relpath(v.project_id, v.id, v.iterations)
+    return storage.resolve(rel) if rel else None
+
+
+def _load_compare_shape(path: Path) -> Any:
+    """STEP via build123d; anything else via trimesh -> sewn solid."""
+    if path.suffix.lower() in (".step", ".stp"):
+        from build123d import import_step
+
+        return import_step(str(path))
+    from cadx.cad.mesh_ops import load_mesh, mesh_to_solid
+
+    return mesh_to_solid(load_mesh(path))
+
+
+def _params_diff(a: dict[str, Any] | None, b: dict[str, Any] | None) -> list[ParamsDiffEntry]:
+    """Sorted union of both versions' params keys, reduced to entries whose
+    values differ (a/b null when the key is absent on that side)."""
+    pa, pb = a or {}, b or {}
+    return [
+        ParamsDiffEntry(key=k, a=pa.get(k), b=pb.get(k))
+        for k in sorted(set(pa) | set(pb))
+        if pa.get(k) != pb.get(k)
+    ]
+
+
+@router.get("/versions/{version_id}/compare/{other_id}", response_model=CompareResult)
+async def compare_versions(
+    version_id: uuid.UUID, other_id: uuid.UUID, db: AsyncSession = Depends(get_session)
+):
+    """Version-to-version diff: geometry (volumes, bboxes, added/removed
+    material) plus params. OCC work is synchronous and can take seconds, so
+    it runs in a thread; any load/compare failure degrades to ok=False —
+    the endpoint never 500s on OCC weirdness."""
+    a = await db.get(Version, version_id)
+    if not a:
+        raise HTTPException(404, "version not found")
+    b = await db.get(Version, other_id)
+    if not b:
+        raise HTTPException(404, "version not found")
+
+    path_a, path_b = _compare_geometry_path(a), _compare_geometry_path(b)
+    if path_a is None or path_b is None:
+        missing = a.id if path_a is None else b.id
+        raise HTTPException(409, f"version {missing} has no loadable geometry artifact")
+
+    base: dict[str, Any] = {
+        "a": str(version_id),
+        "b": str(other_id),
+        "params_diff": _params_diff(a.params, b.params),
+    }
+
+    def _run() -> dict[str, Any]:
+        from cadx.cad.compare import diff_summary, shape_compare
+
+        sa, sb = _load_compare_shape(path_a), _load_compare_shape(path_b)
+        return {"shape": shape_compare(sa, sb), "diff_summary": diff_summary(sa, sb)}
+
+    try:
+        out = await asyncio.to_thread(_run)
+    except Exception as e:
+        log.warning("versions.compare_failed", a=str(version_id), b=str(other_id), error=str(e))
+        return CompareResult(
+            **base, ok=False, diff_summary="", shape=None, error=f"{type(e).__name__}: {e}"
+        )
+
+    shape = out["shape"]
+    err = shape.get("error") if isinstance(shape, dict) else None
+    return CompareResult(
+        **base, ok=err is None, diff_summary=out["diff_summary"], shape=shape, error=err
+    )
 
 
 @router.delete("/versions/{version_id}")

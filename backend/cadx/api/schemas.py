@@ -444,6 +444,34 @@ class VersionDetail(VersionSummary):
     artifacts: list[ArtifactOut] = Field(default_factory=list)
 
 
+class ParamsDiffEntry(BaseModel):
+    """One differing param between two versions — `a`/`b` are null when the
+    key is absent on that side."""
+
+    key: str
+    a: Any | None = None
+    b: Any | None = None
+
+
+class CompareResult(BaseModel):
+    """GET /versions/{vid}/compare/{other_id} response.
+
+    `shape` is the raw cadx.cad.compare.shape_compare() dict (volume_a/b/
+    delta, bbox_*, solids/faces counts, added/removed_volume+bbox,
+    boolean: "ok"|"failed"|"skipped", note?). `ok` is False on any readable
+    error (load failure or a shape_compare "error" result) — the endpoint
+    never 500s on OCC weirdness.
+    """
+
+    a: str
+    b: str
+    ok: bool
+    diff_summary: str = ""
+    shape: dict[str, Any] | None = None
+    params_diff: list[ParamsDiffEntry] = Field(default_factory=list)
+    error: str | None = None
+
+
 class JobOut(BaseModel):
     id: uuid.UUID
     version_id: uuid.UUID
