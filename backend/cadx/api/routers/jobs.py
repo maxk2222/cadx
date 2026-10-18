@@ -8,18 +8,16 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
-from cadx.api.deps import enqueue, get_pool, get_session
+from cadx.api.deps import get_pool, get_session
 from cadx.api.schemas import AnswerRequest, EnqueueResponse, JobListItem, JobOut
 from cadx.db.models import (
     Job,
     JobStatus,
-    JobType,
     Project,
     Version,
-    VersionKind,
     VersionStatus,
 )
-from cadx.spawn import SpawnError, enqueue_resume, next_version_number
+from cadx.spawn import SpawnError, enqueue_resume, spawn_restart
 
 router = APIRouter(tags=["jobs"])
 
@@ -163,109 +161,22 @@ async def finish(job_id: uuid.UUID, db: AsyncSession = Depends(get_session)):
 async def restart(job_id: uuid.UUID, db: AsyncSession = Depends(get_session)):
     """Re-run a finished/failed/cancelled job with the same inputs.
 
-    generate/edit → new sibling version cloning the version's inputs.
-    params        → new params child carrying the same effective overrides.
-    optimize      → new optimize child of the same parent (stored request
-                    when the original run saved one, spec fallback otherwise).
-    reexport      → another reexport job on the SAME version.
+    The per-kind dispatch lives in `spawn.spawn_restart` (shared with the
+    MCP server): generate/edit clone inputs into a sibling version, params
+    spawns a new params child, optimize re-uses the stored request, and
+    code/meshgen replay their stored inputs — unknown kinds 409.
     """
     j = await db.get(Job, job_id)
     if not j:
         raise HTTPException(404, "job not found")
     if j.status not in (JobStatus.succeeded, JobStatus.failed, JobStatus.cancelled):
         raise HTTPException(409, f"job is {j.status} — cancel it before restarting")
-    v = await db.get(Version, j.version_id)
-    if not v:
-        raise HTTPException(404, "version not found")
-
-    if v.kind in (VersionKind.generate, VersionKind.edit):
-        new_v = Version(
-            project_id=v.project_id,
-            parent_id=v.parent_id,
-            number=await next_version_number(db, v.project_id),
-            kind=v.kind,
-            prompt=v.prompt,
-            asset_ids=v.asset_ids or [],
-            library_part_ids=v.library_part_ids or [],
-            gen_mode=v.gen_mode,
-            options=v.options or {},
-        )
-        db.add(new_v)
-        await db.flush()
-        new_job = Job(
-            version_id=new_v.id,
-            type=JobType.edit if v.kind == VersionKind.edit else JobType.generate,
-            resume_state=j.resume_state,
-        )
-        db.add(new_job)
-        await db.commit()
-        await enqueue("run_agent_job", {"job_id": str(new_job.id), "version_id": str(new_v.id)})
-        return EnqueueResponse(version_id=new_v.id, job_id=new_job.id)
-
-    if v.kind == VersionKind.params:
-        parent = await db.get(Version, v.parent_id) if v.parent_id else None
-        if parent is None:
-            raise HTTPException(409, "parent version missing — cannot restart")
-        new_v = Version(
-            project_id=v.project_id,
-            parent_id=v.parent_id,
-            number=await next_version_number(db, v.project_id),
-            kind=VersionKind.params,
-            prompt="params change",
-            params=v.params or {},
-            params_schema=v.params_schema,
-            code=v.code,
-            options=v.options or {},
-        )
-        db.add(new_v)
-        await db.flush()
-        new_job = Job(version_id=new_v.id, type=JobType.params)
-        db.add(new_job)
-        await db.commit()
-        await enqueue(
-            "run_params_job",
-            {"job_id": str(new_job.id), "version_id": str(new_v.id), "params": v.params or {}},
-        )
-        return EnqueueResponse(version_id=new_v.id, job_id=new_job.id)
-
-    if v.kind == VersionKind.optimize:
-        parent = await db.get(Version, v.parent_id) if v.parent_id else None
-        if parent is None:
-            raise HTTPException(409, "parent version missing — cannot restart")
-        req = (v.options or {}).get("optimize_request") or {}
-        new_v = Version(
-            project_id=v.project_id,
-            parent_id=parent.id,
-            number=await next_version_number(db, v.project_id),
-            kind=VersionKind.optimize,
-            prompt=f"optimize {parent.prompt}"[:500],
-            gen_mode="topopt",
-            asset_ids=parent.asset_ids or [],
-            options={**(parent.options or {}), "topopt": True, "optimize_request": req},
-        )
-        db.add(new_v)
-        await db.flush()
-        new_job = Job(version_id=new_v.id, type=JobType.optimize)
-        db.add(new_job)
-        await db.commit()
-        await enqueue(
-            "run_optimize_job",
-            {
-                "job_id": str(new_job.id),
-                "version_id": str(new_v.id),
-                "load_cases": req.get("load_cases") or [],
-                "optimize": req.get("optimize") or {},
-                "material": req.get("material") or "",
-            },
-        )
-        return EnqueueResponse(version_id=new_v.id, job_id=new_job.id)
-
-    # reexport — runs on the same version, no new version needed
-    new_job = Job(version_id=v.id, type=JobType.reexport)
-    db.add(new_job)
-    await db.commit()
-    await enqueue(
-        "run_reexport_job",
-        {"job_id": str(new_job.id), "version_id": str(v.id), "iteration": v.iterations or 1},
-    )
-    return EnqueueResponse(version_id=v.id, job_id=new_job.id)
+    try:
+        res = await spawn_restart(db, j)
+    except SpawnError as e:
+        raise HTTPException(e.status, str(e)) from e
+    if isinstance(res, Job):
+        # same-version jobs (e.g. reexport) return the Job alone
+        return EnqueueResponse(version_id=res.version_id, job_id=res.id)
+    new_v, new_job = res
+    return EnqueueResponse(version_id=new_v.id, job_id=new_job.id)

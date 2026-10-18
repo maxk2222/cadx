@@ -37,6 +37,8 @@ class VersionKind(enum.StrEnum):
     refine = "refine"  # post-TopOpt feature finishing child version
     mesh_edit = "mesh_edit"  # visual mesh-level edit (GUI ops stack)
     organic = "organic"  # procedural pseudo-topology organic restyle
+    code = "code"  # externally-supplied build123d code, persisted+executed (MCP)
+    meshgen = "meshgen"  # direct image->mesh generation via the sidecar (MCP)
 
 
 class VersionStatus(enum.StrEnum):
@@ -61,6 +63,8 @@ class JobType(enum.StrEnum):
     mesh_edit = "mesh_edit"  # GUI ops stack -> tessellated child version
     fem = "fem"  # standalone FEM check on the same version
     organic = "organic"  # procedural pseudo-topology organic restyle (no FEM)
+    code = "code"  # execute externally-supplied build123d code — no LLM (MCP)
+    meshgen = "meshgen"  # image->mesh generation via sidecar — no LLM (MCP)
 
 
 class JobStatus(enum.StrEnum):

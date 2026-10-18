@@ -25,17 +25,25 @@ from sqlmodel import col, select
 from cadx import events, storage
 from cadx.agent.executor_client import QueueExecutor
 from cadx.agent.image_client import ImagePort, make_image_client
-from cadx.agent.mesh_client import MeshPort, make_mesh_client
+from cadx.agent.mesh_client import MeshGenRequest, MeshPort, make_mesh_client
 from cadx.agent.orchestrator import RunOutcome, run_generation
 from cadx.agent.trace import MemoryTrace, sanitize_messages
 from cadx.agent.types import AgentCtx, InputAsset, ParentContext
 from cadx.cad.allowlist import check_code
-from cadx.cad.mesh_ops import MESH_OPS_VERSION, MeshOp, MeshPostParams, merge_post_params
+from cadx.cad.mesh_ops import (
+    MESH_OPS_VERSION,
+    MeshOp,
+    MeshPostParams,
+    merge_post_params,
+    mesh_params_schema,
+)
 from cadx.db.models import (
+    IMAGE_ASSET_KINDS,
     AgentTrace,
     Artifact,
     ArtifactKind,
     Asset,
+    AssetKind,
     Job,
     JobStatus,
     JobType,
@@ -583,11 +591,14 @@ async def run_params_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[s
         version = await db.get(Version, _u(payload["version_id"]))
         parent = await db.get(Version, version.parent_id) if version and version.parent_id else None
         parent_mode = (parent.resolved_mode if parent else None) or "cad"
+        # the version's own code wins over the inherited parent code — MCP
+        # `code` children and feature edits carry their own source
+        src_code = ((version.code if version else None) or (parent.code if parent else None)) or ""
         if (
             job is None
             or version is None
             or parent is None
-            or (parent_mode != "mesh" and not parent.code)
+            or (parent_mode != "mesh" and not src_code)
         ):
             if job:
                 job.status = JobStatus.failed
@@ -617,64 +628,34 @@ async def run_params_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[s
         )
 
         # design-robustness pre-flight (M7): perturb each numeric PARAMS value
-        # of the parent's code ±ε and re-run — a quality signal only, it never
+        # of the executed code ±ε and re-run — a quality signal only, it never
         # blocks the sweep. Mesh parents carry no PARAMS dict to audit.
         audit_report: dict[str, Any] | None = None
         parent_v_dir = storage.version_dir(parent.project_id, parent.id)
         solid = parent_v_dir / "mesh" / "solid.brep"
-        if parent_mode != "mesh" and parent.code:
+        if parent_mode != "mesh" and src_code:
             # baseline = declared PARAMS overridden by the parent's stored
             # params and this job's sweep values — the audit probes around
             # the configuration actually being produced
-            declared = check_code(parent.code).params
+            declared = check_code(src_code).params
             base_params = {
                 **declared,
                 **(parent.params or {}),
                 **(payload.get("params") or {}),
             }
-            if any(
-                isinstance(v, int | float) and not isinstance(v, bool) for v in base_params.values()
-            ):
-                await emit("audit", 1, "design audit: perturbing parameters")
-                audit_report = await executor.audit_params(
-                    {
-                        "job_id": str(job_id),
-                        "project_id": str(version.project_id),
-                        "version_id": str(version.id),
-                        "iteration": 1,
-                        "code": parent.code,
-                        "params": base_params,
-                        "references": [],
-                        "settings": settings.model_dump(),
-                        "runtime_settings": runtime_settings.executor_values(),
-                        "mesh_solid": str(solid)
-                        if solid.exists() and parent_mode == "hybrid"
-                        else None,
-                        "mesh_bbox": (parent.mesh or {}).get("bbox_size"),
-                    }
-                )
-                a_status = str(audit_report.get("status") or "fails")
-                flagged = [
-                    n
-                    for n, e in (audit_report.get("params") or {}).items()
-                    if isinstance(e, dict) and e.get("verdict") in ("brittle", "fails")
-                ]
-                what = (
-                    f"param audit {a_status} — brittle/failing: {', '.join(flagged)}"
-                    if flagged
-                    else f"param audit {a_status} ({audit_report.get('audited', 0)} audited)"
-                )
-                version.issues = (version.issues or []) + [
-                    {
-                        "source": "design_audit",
-                        "severity": "minor" if a_status == "robust" else "major",
-                        "what": what,
-                        "report": _json_safe(audit_report),
-                    }
-                ]
-                await _append_job_log(db, job, f"design audit: {what}\n")
-                if a_status != "robust":
-                    await emit("audit", 1, f"design audit: {what}")
+            audit_report = await _design_audit(
+                db,
+                job,
+                version,
+                executor,
+                emit,
+                code=src_code,
+                base_params=base_params,
+                settings=settings,
+                runtime_settings=runtime_settings,
+                mesh_solid=solid if solid.exists() and parent_mode == "hybrid" else None,
+                mesh_bbox=(parent.mesh or {}).get("bbox_size"),
+            )
 
         if parent_mode == "mesh":
             exec_result = await _run_mesh_params(
@@ -695,7 +676,7 @@ async def run_params_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[s
                     "project_id": str(version.project_id),
                     "version_id": str(version.id),
                     "iteration": 1,
-                    "code": parent.code,
+                    "code": src_code,
                     "params_override": payload.get("params") or {},
                     "references": [],
                     "settings": settings.model_dump(),
@@ -721,57 +702,399 @@ async def run_params_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[s
             await db.commit()
             return {"ok": False, "error": version.error, "design_audit": audit_report}
 
-        # copy artifacts to version root
-
-        artifacts = _copy_best_artifacts_ctxless(version.project_id, version.id, 1, exec_result)
-        for fmt, rel in (exec_result.get("exports") or {}).items():
-            if rel:
-                artifacts[f"export:{fmt}"] = rel
-        tessellated = parent_mode == "mesh"
-
-        version.gen_mode = parent_mode
-        version.resolved_mode = parent_mode
-        if parent_mode == "mesh":
-            # merged post params live under mesh.post in the exec result
-            version.params = (exec_result.get("mesh") or {}).get("post") or version.params
-        else:
-            version.params = exec_result.get("params_used") or version.params
-        version.params_schema = parent.params_schema
-        version.code = parent.code
-        version.analysis = exec_result.get("analysis")
-        version.dfm = exec_result.get("dfm")
-        version.iterations = 1
-        version.status = VersionStatus.succeeded
-
-        import json
-
-        if parent_mode == "mesh":
-            # mesh params child: inherit mesh provenance + copy intermediates;
-            # overlay the fresh run's mesh info (post, triangles, ops_report)
-            version.mesh = dict(parent.mesh or {})
-            version.mesh.update(exec_result.get("mesh") or {})
-            version.mesh["post"] = version.params
-            version.mesh["from_params_of"] = str(parent.id)
-            artifacts.update(
-                _copy_mesh_artifacts_ctxless(version.project_id, version.id, 1, parent)
-            )
-            m_dir = storage.ensure(storage.version_dir(version.project_id, version.id) / "mesh")
-            (m_dir / "mesh.json").write_text(json.dumps(version.mesh, indent=2), encoding="utf-8")
-        register_artifacts(db, version.id, artifacts, tessellated_step=tessellated)
-
-        v_dir = storage.ensure(storage.version_dir(version.project_id, version.id))
-        if version.code:
-            (v_dir / "model.py").write_text(version.code, encoding="utf-8")
-        (v_dir / "params.json").write_text(
-            json.dumps(version.params or {}, indent=2), encoding="utf-8"
+        version.code = src_code or None
+        await _finalize_exec_version(
+            db, job, version, exec_result, mode=parent_mode, parent=parent
         )
-        job.status = JobStatus.succeeded
-        job.finished_at = datetime.now(UTC)
-        job.progress = 1.0
-        await _append_job_log(db, job, "done\n")
-        await db.commit()
-        await _publish(str(job_id), {"type": "done", "status": "succeeded"})
         return {"ok": True, "design_audit": audit_report}
+
+
+async def _design_audit(
+    db: AsyncSession,
+    job: Job,
+    version: Version,
+    executor: QueueExecutor,
+    emit: Any,
+    *,
+    code: str,
+    base_params: dict[str, Any],
+    settings: ProjectSettings,
+    runtime_settings: RuntimeSettings,
+    references: list[dict[str, Any]] | None = None,
+    mesh_solid: Path | None = None,
+    mesh_bbox: Any = None,
+) -> dict[str, Any] | None:
+    """Design-robustness pre-flight (M7): perturb each numeric PARAMS value
+    ±ε and re-run — a quality signal only, never blocks the job. Returns the
+    audit report, or None when no numeric params exist."""
+    if not any(
+        isinstance(v, int | float) and not isinstance(v, bool) for v in base_params.values()
+    ):
+        return None
+    await emit("audit", 1, "design audit: perturbing parameters")
+    report = await executor.audit_params(
+        {
+            "job_id": str(job.id),
+            "project_id": str(version.project_id),
+            "version_id": str(version.id),
+            "iteration": 1,
+            "code": code,
+            "params": base_params,
+            "references": references or [],
+            "settings": settings.model_dump(),
+            "runtime_settings": runtime_settings.executor_values(),
+            "mesh_solid": str(mesh_solid) if mesh_solid else None,
+            "mesh_bbox": mesh_bbox,
+        }
+    )
+    a_status = str(report.get("status") or "fails")
+    flagged = [
+        n
+        for n, e in (report.get("params") or {}).items()
+        if isinstance(e, dict) and e.get("verdict") in ("brittle", "fails")
+    ]
+    what = (
+        f"param audit {a_status} — brittle/failing: {', '.join(flagged)}"
+        if flagged
+        else f"param audit {a_status} ({report.get('audited', 0)} audited)"
+    )
+    version.issues = (version.issues or []) + [
+        {
+            "source": "design_audit",
+            "severity": "minor" if a_status == "robust" else "major",
+            "what": what,
+            "report": _json_safe(report),
+        }
+    ]
+    await _append_job_log(db, job, f"design audit: {what}\n")
+    # flush the issue+log now — emit writes the job row on its own session and
+    # an open transaction here can lock it out (sqlite tests), plus the audit
+    # finding should survive a later crash
+    await db.commit()
+    if a_status != "robust":
+        await emit("audit", 1, f"design audit: {what}")
+    return report
+
+
+async def _finalize_exec_version(
+    db: AsyncSession,
+    job: Job,
+    version: Version,
+    exec_result: dict[str, Any],
+    *,
+    mode: str,
+    parent: Version | None = None,
+    mesh_extra: dict[str, Any] | None = None,
+) -> None:
+    """Shared success tail for LLM-free execute/process_mesh jobs (params,
+    code, meshgen): artifacts -> version fields -> model.py/params.json ->
+    job done. Caller must set ``version.code`` beforehand when the executed
+    source should be persisted (params children already did)."""
+    import json
+
+    artifacts = _copy_best_artifacts_ctxless(version.project_id, version.id, 1, exec_result)
+    for fmt, rel in (exec_result.get("exports") or {}).items():
+        if rel:
+            artifacts[f"export:{fmt}"] = rel
+    tessellated = mode == "mesh"
+
+    version.gen_mode = mode
+    version.resolved_mode = mode
+    if mode == "mesh":
+        # merged post params live under mesh.post in the exec result
+        version.params = (exec_result.get("mesh") or {}).get("post") or version.params
+    else:
+        version.params = exec_result.get("params_used") or version.params
+    if parent is not None:
+        version.params_schema = parent.params_schema
+    version.analysis = exec_result.get("analysis")
+    version.dfm = exec_result.get("dfm")
+    version.iterations = 1
+    version.status = VersionStatus.succeeded
+
+    if mode == "mesh":
+        # mesh child: inherit provenance + copy intermediates (raw GLB,
+        # cleaned STL, solid BREP) into versions/<vid>/mesh/
+        version.mesh = dict(parent.mesh or {}) if parent else {}
+        version.mesh.update(mesh_extra or {})
+        version.mesh.update(exec_result.get("mesh") or {})
+        version.mesh["post"] = version.params
+        if parent is not None:
+            version.mesh["from_params_of"] = str(parent.id)
+        artifacts.update(_copy_mesh_artifacts_ctxless(version.project_id, version.id, 1, parent))
+        m_dir = storage.ensure(storage.version_dir(version.project_id, version.id) / "mesh")
+        (m_dir / "mesh.json").write_text(json.dumps(version.mesh, indent=2), encoding="utf-8")
+    register_artifacts(db, version.id, artifacts, tessellated_step=tessellated)
+
+    v_dir = storage.ensure(storage.version_dir(version.project_id, version.id))
+    if version.code:
+        (v_dir / "model.py").write_text(version.code, encoding="utf-8")
+    (v_dir / "params.json").write_text(json.dumps(version.params or {}, indent=2), encoding="utf-8")
+    job.status = JobStatus.succeeded
+    job.finished_at = datetime.now(UTC)
+    job.progress = 1.0
+    await _append_job_log(db, job, "done\n")
+    await db.commit()
+    await _publish(str(job.id), {"type": "done", "status": "succeeded"})
+
+
+@_guarded
+async def run_code_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    """Execute externally-supplied build123d code (kind=code, no LLM, MCP).
+
+    The version already carries the contract-checked source — this job runs
+    the same sandboxed execute pipeline + design audit the params job does,
+    without requiring a parent version.
+    """
+    job_id = _u(payload["job_id"])
+    async with session_scope() as db:
+        job = await db.get(Job, job_id)
+        version = await db.get(Version, _u(payload["version_id"]))
+        if job is None or version is None:
+            return {"ok": False, "error": "job or version not found"}
+        if job.status in (JobStatus.succeeded, JobStatus.failed, JobStatus.cancelled):
+            # e.g. an arq retry after the guard already finalised the job
+            return {"ok": False, "error": f"job already {job.status}"}
+        src_code = version.code or ""
+        if not src_code.strip():
+            version.status = VersionStatus.failed
+            version.error = "code version carries no code"
+            job.status = JobStatus.failed
+            job.finished_at = datetime.now(UTC)
+            await _append_job_log(db, job, "code job: version has no code\n")
+            await db.commit()
+            return {"ok": False, "error": version.error}
+        job.status = JobStatus.running
+        job.started_at = datetime.now(UTC)
+        version.status = VersionStatus.running
+        await db.commit()
+
+        emit = make_emit(job_id)
+
+        runtime_settings = await load_runtime_settings(db)
+        executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=runtime_settings)
+        project = await db.get(Project, version.project_id)
+        settings = _fill_settings(
+            _merge_settings((project.settings or {}) if project else {}, version.options or {}),
+            runtime_settings,
+        )
+
+        # reference solids loadable via load_reference() inside the sandbox —
+        # same payload shape as orchestrator._exec_payload
+        ref_rows = await db.execute(
+            select(Asset).where(
+                Asset.project_id == version.project_id,
+                col(Asset.kind).in_([AssetKind.reference_step, AssetKind.reference_stl]),
+            )
+        )
+        references = [
+            {"asset_id": str(a.id), "path": str(storage.resolve(a.path))}
+            for a in ref_rows.scalars().all()
+        ]
+
+        # design-robustness pre-flight when the code declares numeric PARAMS
+        declared = check_code(src_code).params
+        base_params = {**declared, **(version.params or {})}
+        audit_report = await _design_audit(
+            db,
+            job,
+            version,
+            executor,
+            emit,
+            code=src_code,
+            base_params=base_params,
+            settings=settings,
+            runtime_settings=runtime_settings,
+            references=references,
+        )
+
+        await emit("execute", 1, "executing submitted code")
+        exec_result = await executor.execute(
+            {
+                "job_id": str(job_id),
+                "project_id": str(version.project_id),
+                "version_id": str(version.id),
+                "iteration": 1,
+                "code": src_code,
+                "params_override": {},
+                "references": references,
+                "settings": settings.model_dump(),
+                "runtime_settings": runtime_settings.executor_values(),
+                "full_exports": True,
+                "name": "model",
+            }
+        )
+
+        if not exec_result.get("ok"):
+            was_cancelled = (exec_result.get("error") or "") == "cancelled"
+            version.status = VersionStatus.cancelled if was_cancelled else VersionStatus.failed
+            version.error = exec_result.get("error") or "execution failed"
+            job.status = JobStatus.cancelled if was_cancelled else JobStatus.failed
+            job.finished_at = datetime.now(UTC)
+            await _append_job_log(
+                db, job, f"{'cancelled' if was_cancelled else 'failed'}: {version.error}\n"
+            )
+            await db.commit()
+            return {"ok": False, "error": version.error, "design_audit": audit_report}
+
+        await _finalize_exec_version(db, job, version, exec_result, mode="cad")
+        return {"ok": True, "design_audit": audit_report}
+
+
+# generator view roles accepted from asset gen_params.role_hint — anything
+# else falls back to front-for-first/other-for-rest (mirrors the intake-free
+# default in orchestrator._mesh_source_images)
+_GEN_ROLES = {"front", "back", "left", "right", "iso", "other", "scribble"}
+
+
+@_guarded
+async def run_meshgen_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    """Direct image->mesh generation (kind=meshgen, no LLM, MCP).
+
+    The version's image assets feed the mesh sidecar verbatim; the produced
+    GLB goes through the standard executor mesh pipeline (baseline
+    orient/scale + exports) and lands in versions/<vid>/mesh/ exactly like
+    an agent-mode mesh version.
+    """
+    job_id = _u(payload["job_id"])
+    async with session_scope() as db:
+        job = await db.get(Job, job_id)
+        version = await db.get(Version, _u(payload["version_id"]))
+        if job is None or version is None:
+            return {"ok": False, "error": "job or version not found"}
+        if job.status in (JobStatus.succeeded, JobStatus.failed, JobStatus.cancelled):
+            # e.g. an arq retry after the guard already finalised the job
+            return {"ok": False, "error": f"job already {job.status}"}
+        job.status = JobStatus.running
+        job.started_at = datetime.now(UTC)
+        version.status = VersionStatus.running
+        await db.commit()
+
+        emit = make_emit(job_id)
+
+        async def _fail(msg: str, *, cancelled: bool = False) -> dict[str, Any]:
+            version.status = VersionStatus.cancelled if cancelled else VersionStatus.failed
+            version.error = msg[:500]
+            job.status = JobStatus.cancelled if cancelled else JobStatus.failed
+            job.finished_at = datetime.now(UTC)
+            await _append_job_log(db, job, f"{'cancelled' if cancelled else 'failed'}: {msg}\n")
+            await db.commit()
+            return {"ok": False, "error": msg}
+
+        # image inputs, kept in the version's declared asset_ids order
+        wanted = [_u(a) for a in (version.asset_ids or [])]
+        rows = await db.execute(select(Asset).where(col(Asset.id).in_(wanted)))
+        by_id = {a.id: a for a in rows.scalars().all()}
+        images = [by_id[a] for a in wanted if a in by_id and by_id[a].kind in IMAGE_ASSET_KINDS]
+        if not images:
+            return await _fail("no usable image assets for mesh generation")
+        roles = [
+            str((a.gen_params or {}).get("role_hint") or "")
+            if str((a.gen_params or {}).get("role_hint") or "") in _GEN_ROLES
+            else ("front" if i == 0 else "other")
+            for i, a in enumerate(images)
+        ]
+
+        runtime_settings = await load_runtime_settings(db)
+        mesh_client = _make_mesh(runtime_settings)
+        if not await _mesh_available(mesh_client):
+            return await _fail("mesh server not configured or unreachable")
+        executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=runtime_settings)
+        project = await db.get(Project, version.project_id)
+        settings = _fill_settings(
+            _merge_settings((project.settings or {}) if project else {}, version.options or {}),
+            runtime_settings,
+        )
+
+        opts = version.options or {}
+        subject = str(opts.get("subject") or version.prompt or "part")[:200]
+        model = str(opts.get("model") or settings.mesh_model or "auto")
+        seed = int(opts.get("seed") or 0)
+        try:
+            post = MeshPostParams(**(opts.get("post") or {}))
+        except Exception as e:
+            return await _fail(f"invalid mesh post params: {e}")
+        if post.ops:
+            post.ops_version = MESH_OPS_VERSION
+
+        async def check_cancel() -> bool:
+            async with session_scope() as s3:
+                j = await s3.get(Job, job_id)
+                return (
+                    j is None
+                    or bool(j.cancel_requested)
+                    or j.status in (JobStatus.failed, JobStatus.cancelled, JobStatus.succeeded)
+                )
+
+        async def on_progress(msg: str, p: float) -> None:
+            await emit("meshgen", 1, f"{msg} ({int(p * 100)}%)", sub_progress=p, sub_label=msg)
+
+        it_dir = storage.ensure(storage.iteration_dir(version.project_id, version.id, 1))
+        out_path = it_dir / "mesh_raw.glb"
+        await emit("meshgen", 1, f"generating mesh ({model}, seed {seed})")
+        req = MeshGenRequest(
+            images=[storage.resolve(a.path) for a in images],
+            image_roles=roles,
+            subject=subject,
+            model=model,
+            seed=seed,
+            steps=settings.mesh_steps,
+            guidance=settings.mesh_guidance,
+            resolution=settings.mesh_resolution,
+            out_path=out_path,
+            job_id=str(job_id),
+        )
+        try:
+            gen_result = await mesh_client.generate(req, on_progress, should_abort=check_cancel)
+        except Exception as e:
+            msg = str(e) or "mesh generation failed"
+            return await _fail(msg, cancelled="cancel" in msg.lower())
+
+        gen = gen_result.model_dump(mode="json")
+        gen.pop("mesh_path", None)
+        mesh_rel = storage.relpath(out_path)
+        gen["mesh_rel"] = mesh_rel
+        gen["images"] = [str(a.id) for a in images]
+
+        await emit("meshprocess", 1, "processing mesh")
+        exec_result = await executor.process_mesh(
+            {
+                "job_id": str(job_id),
+                "project_id": str(version.project_id),
+                "version_id": str(version.id),
+                "iteration": 1,
+                "mode": "final",
+                "mesh_rel": mesh_rel,
+                "post": post.model_dump(),
+                "anchors": None,
+                "spec": None,
+                "settings": settings.model_dump(),
+                "runtime_settings": runtime_settings.executor_values(),
+                "full_exports": True,
+                "name": "model",
+            }
+        )
+
+        if not exec_result.get("ok"):
+            was_cancelled = (exec_result.get("error") or "") == "cancelled"
+            return await _fail(
+                exec_result.get("error") or "mesh processing failed", cancelled=was_cancelled
+            )
+
+        # params carries the effective post stack so a params child can
+        # re-run the processing deterministically — same contract as
+        # agent-mode mesh versions
+        version.params = post.model_dump()
+        version.params_schema = [p.model_dump() for p in mesh_params_schema()]
+        await _finalize_exec_version(
+            db,
+            job,
+            version,
+            exec_result,
+            mode="mesh",
+            mesh_extra={"generation": gen},
+        )
+        return {"ok": True}
 
 
 async def _run_mesh_params(

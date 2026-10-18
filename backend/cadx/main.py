@@ -28,6 +28,7 @@ from cadx.api.routers import (
 )
 from cadx.config import get_settings
 from cadx.logging import configure_logging, get_logger
+from cadx.mcpserver.http import MCPDispatchMiddleware, mcp_asgi_app
 
 log = get_logger(__name__)
 
@@ -55,7 +56,12 @@ async def lifespan(app: FastAPI):
     s.data_path.mkdir(parents=True, exist_ok=True)
     log.info("cadx.start", data_dir=s.data_dir)
     await _bootstrap_runtime_config()
-    yield
+    # the MCP session manager's task group lives for the app's lifetime —
+    # /mcp requests fail until it is running
+    from cadx.mcpserver.http import mcp_lifespan
+
+    async with mcp_lifespan(app):
+        yield
     from cadx.api.deps import close_pool
 
     await close_pool()
@@ -88,6 +94,13 @@ for r in (
     chat.router,
 ):
     app.include_router(r, prefix="/api")
+
+
+# MCP server (Streamable HTTP) — ASGI dispatch instead of Mount (a Mount
+# 307-redirects bare /mcp; MCP clients need POST /mcp to answer directly).
+# Added after CORS so it wraps outermost and never falls through to the
+# SPA StaticFiles mount.
+app.add_middleware(MCPDispatchMiddleware, prefix="/mcp", subapp=mcp_asgi_app())
 
 
 # Serve the built frontend (SPA fallback) when frontend/dist exists.

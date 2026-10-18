@@ -96,6 +96,20 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
   deterministically re-cut by the runner when generated code missed them.
 - Commits: one per milestone step, descriptive message.
 
+## MCP server (`cadx/mcpserver/`)
+- Exposes the deterministic tool surface to external agents over MCP —
+  **strictly LLM-free**. `McpToolSession` runs with `ctx.llm = None`;
+  `generate_part`/`edit_version`/`answer_questions`/`enqueue_resume` and every
+  `delete_*` tool must never appear in `MCP_TOOL_SCHEMAS`/`MCP_HANDLERS`.
+- New MCP-only tools go in `mcpserver/tools.py` (schemas use the agent
+  `_fn()` format; handlers are async `(session, args) -> dict` and must
+  delegate to `session`/spawn/executor helpers — never duplicate business
+  logic). `MCP_HANDLERS` shadows same-named `_tool_*` methods on MCP
+  sessions only (`_mcp_handlers_enabled`).
+- Transports: `cadx mcp` (stdio) and `/mcp` on the API (Streamable HTTP,
+  `CADX_MCP_TOKEN` bearer when configured). Spawn tools default `wait=false`
+  on this surface. See `docs/mcp-server.md`.
+
 ## Testing
 - `tests/cad` must run both natively and inside the executor image
   (`docker compose run cad-executor pytest tests/cad` — requires tests mounted; use local run).

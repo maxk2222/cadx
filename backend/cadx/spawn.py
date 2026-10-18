@@ -20,7 +20,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import func, select
 
 from cadx import storage
-from cadx.cad.mesh_ops import OPS_REGISTRY
+from cadx.cad.allowlist import check_code
+from cadx.cad.mesh_ops import OPS_REGISTRY, MeshPostParams
 from cadx.db.models import (
     Job,
     JobStatus,
@@ -31,6 +32,7 @@ from cadx.db.models import (
     VersionStatus,
 )
 from cadx.db.session import session_scope
+from cadx.llm.schemas import ParamDef
 from cadx.logging import get_logger
 
 log = get_logger(__name__)
@@ -414,6 +416,243 @@ async def spawn_organic(
         {"job_id": str(job.id), "version_id": str(v.id), "organic": organic},
     )
     return v, job
+
+
+async def spawn_code(
+    db: AsyncSession,
+    project: Project,
+    code: str,
+    *,
+    params: dict[str, Any] | None = None,
+    parent: Version | None = None,
+    prompt: str = "",
+    enqueue_fn: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None,
+) -> tuple[Version, Job]:
+    """Persist + execute externally-written build123d code (LLM-free, MCP).
+
+    The code is contract-checked exactly like LLM output — it runs through
+    the same sandboxed execute pipeline. Declared PARAMS become the
+    version's params_schema so the GUI params panel works on code versions.
+    """
+    if not (code or "").strip():
+        raise SpawnError("code required", status=422)
+    check = check_code(code)
+    if not check.ok:
+        errs = (check.errors + check.sig_errors)[:3]
+        raise SpawnError(
+            "code check failed: " + "; ".join(errs or ["unknown"]),
+            status=422,
+        )
+    params_schema = [
+        ParamDef(name=k, value=v).model_dump()
+        for k, v in check.params.items()
+        if isinstance(v, str | int | float | bool)
+    ]
+    return await spawn_version_job(
+        db,
+        project,
+        kind=VersionKind.code,
+        job_type=JobType.code,
+        func="run_code_job",
+        prompt=prompt[:500],
+        parent=parent,
+        asset_ids=([uuid.UUID(a) for a in parent.asset_ids] if parent else None),
+        library_part_ids=([uuid.UUID(p) for p in parent.library_part_ids] if parent else None),
+        extra_version={
+            "code": code,
+            "params": params or {},
+            "params_schema": params_schema,
+        },
+        enqueue_fn=enqueue_fn,
+    )
+
+
+async def spawn_meshgen(
+    db: AsyncSession,
+    project: Project,
+    *,
+    asset_ids: list[uuid.UUID | str],
+    subject: str = "",
+    model: str = "",
+    seed: int = 0,
+    post: dict | None = None,
+    prompt: str = "",
+    enqueue_fn: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None,
+) -> tuple[Version, Job]:
+    """Image->mesh generation via the mesh sidecar (LLM-free, MCP).
+
+    Generation inputs live in version.options so the job + restart can
+    replay them verbatim; `post` is validated against MeshPostParams now so
+    a bad shape fails before the version row exists.
+    """
+    if not asset_ids:
+        raise SpawnError("asset_ids required — at least one image asset", status=422)
+    try:
+        MeshPostParams(**(post or {}))
+    except Exception as e:
+        raise SpawnError(f"invalid mesh post params: {e}", status=422) from e
+    return await spawn_version_job(
+        db,
+        project,
+        kind=VersionKind.meshgen,
+        job_type=JobType.meshgen,
+        func="run_meshgen_job",
+        prompt=(prompt or subject or "mesh generation")[:500],
+        asset_ids=asset_ids,
+        extra_version={
+            "gen_mode": "mesh",
+            "options": {
+                "subject": subject,
+                "model": model,
+                "seed": seed,
+                "post": post or {},
+            },
+        },
+        enqueue_fn=enqueue_fn,
+    )
+
+
+async def spawn_restart(
+    db: AsyncSession,
+    job: Job,
+    *,
+    enqueue_fn: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None,
+) -> tuple[Version, Job] | Job:
+    """Re-run a finished/failed/cancelled job with the same inputs — shared
+    by the REST jobs router and the MCP server.
+
+    generate/edit → new sibling version cloning the version's inputs.
+    params        → new params child carrying the same effective overrides.
+    optimize      → new optimize child of the same parent (stored request
+                    when the original run saved one, spec fallback otherwise).
+    code          → new code version re-executing the stored code+params.
+    meshgen       → new meshgen version replaying the stored gen options.
+    anything else → SpawnError(409).
+    """
+    if job.status not in (JobStatus.succeeded, JobStatus.failed, JobStatus.cancelled):
+        raise SpawnError(f"job is {job.status} — cancel it before restarting")
+    v = await db.get(Version, job.version_id)
+    if not v:
+        raise SpawnError("version not found", status=404)
+    enqueue = enqueue_fn or _enqueue
+
+    if v.kind in (VersionKind.generate, VersionKind.edit):
+        new_v = Version(
+            project_id=v.project_id,
+            parent_id=v.parent_id,
+            number=await next_version_number(db, v.project_id),
+            kind=v.kind,
+            prompt=v.prompt,
+            asset_ids=v.asset_ids or [],
+            library_part_ids=v.library_part_ids or [],
+            gen_mode=v.gen_mode,
+            options=v.options or {},
+        )
+        db.add(new_v)
+        await db.flush()
+        new_job = Job(
+            version_id=new_v.id,
+            type=JobType.edit if v.kind == VersionKind.edit else JobType.generate,
+            resume_state=job.resume_state,
+        )
+        db.add(new_job)
+        await db.commit()
+        await enqueue("run_agent_job", {"job_id": str(new_job.id), "version_id": str(new_v.id)})
+        return new_v, new_job
+
+    if v.kind == VersionKind.params:
+        parent = await db.get(Version, v.parent_id) if v.parent_id else None
+        if parent is None:
+            raise SpawnError("parent version missing — cannot restart")
+        new_v = Version(
+            project_id=v.project_id,
+            parent_id=v.parent_id,
+            number=await next_version_number(db, v.project_id),
+            kind=VersionKind.params,
+            prompt="params change",
+            params=v.params or {},
+            params_schema=v.params_schema,
+            code=v.code,
+            options=v.options or {},
+        )
+        db.add(new_v)
+        await db.flush()
+        new_job = Job(version_id=new_v.id, type=JobType.params)
+        db.add(new_job)
+        await db.commit()
+        await enqueue(
+            "run_params_job",
+            {"job_id": str(new_job.id), "version_id": str(new_v.id), "params": v.params or {}},
+        )
+        return new_v, new_job
+
+    if v.kind == VersionKind.optimize:
+        parent = await db.get(Version, v.parent_id) if v.parent_id else None
+        if parent is None:
+            raise SpawnError("parent version missing — cannot restart")
+        req = (v.options or {}).get("optimize_request") or {}
+        new_v = Version(
+            project_id=v.project_id,
+            parent_id=parent.id,
+            number=await next_version_number(db, v.project_id),
+            kind=VersionKind.optimize,
+            prompt=f"optimize {parent.prompt}"[:500],
+            gen_mode="topopt",
+            asset_ids=parent.asset_ids or [],
+            options={**(parent.options or {}), "topopt": True, "optimize_request": req},
+        )
+        db.add(new_v)
+        await db.flush()
+        new_job = Job(version_id=new_v.id, type=JobType.optimize)
+        db.add(new_job)
+        await db.commit()
+        await enqueue(
+            "run_optimize_job",
+            {
+                "job_id": str(new_job.id),
+                "version_id": str(new_v.id),
+                "load_cases": req.get("load_cases") or [],
+                "optimize": req.get("optimize") or {},
+                "material": req.get("material") or "",
+            },
+        )
+        return new_v, new_job
+
+    if v.kind == VersionKind.code:
+        if not (v.code or "").strip():
+            raise SpawnError("version has no code to re-run")
+        project = await db.get(Project, v.project_id)
+        if project is None:
+            raise SpawnError("project not found", status=404)
+        parent = await db.get(Version, v.parent_id) if v.parent_id else None
+        return await spawn_code(
+            db,
+            project,
+            v.code or "",
+            params=v.params or {},
+            parent=parent,
+            prompt=v.prompt,
+            enqueue_fn=enqueue_fn,
+        )
+
+    if v.kind == VersionKind.meshgen:
+        project = await db.get(Project, v.project_id)
+        if project is None:
+            raise SpawnError("project not found", status=404)
+        opts = v.options or {}
+        return await spawn_meshgen(
+            db,
+            project,
+            asset_ids=v.asset_ids or [],
+            subject=str(opts.get("subject") or ""),
+            model=str(opts.get("model") or ""),
+            seed=int(opts.get("seed") or 0),
+            post=opts.get("post") or {},
+            prompt=v.prompt,
+            enqueue_fn=enqueue_fn,
+        )
+
+    raise SpawnError(f"cannot restart a '{v.kind}' version")
 
 
 def validate_ops(ops: list[dict[str, Any]]) -> None:

@@ -27,6 +27,7 @@
 | [Image editing](image-editing.md) | Crop/mask/background-removal of reference images before generation |
 | [Image generation](image-generation.md) | Local text-to-image adapters, concept/hero images, image edits, sketches |
 | [Parts library](parts-library.md) | Standard-part catalog, `cadlib` helpers, user library, BOM |
+| [MCP server](mcp-server.md) | LLM-free MCP surface for external agents: transports, auth, tool groups |
 | [E2E checklist](e2e-checklist.md) | Manual browser smoke test of the whole stack |
 
 ## Generation modes

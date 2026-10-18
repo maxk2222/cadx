@@ -212,6 +212,25 @@ or regenerates until the spec checks out.
 Details: **[docs/architecture.md](docs/architecture.md)** ·
 **[docs/agent-loop.md](docs/agent-loop.md)**.
 
+## MCP server
+
+External agents can drive CADX over the
+[Model Context Protocol](https://modelcontextprotocol.io) — **strictly
+LLM-free**: the agent writes build123d code itself, CADX verifies it
+(`check_code`), runs it in the sandbox (`execute_cad`), persists it
+(`submit_code`) and exposes mesh/FEM/topopt jobs, assets and the parts
+catalog. No MCP tool can trigger the WebGUI's LLM.
+
+```bash
+uv run cadx mcp          # stdio transport
+uv run cadx mcp --http   # Streamable HTTP on :8001/mcp
+```
+
+The main API also serves `/mcp` (gated by `CADX_MCP_TOKEN` when set). Typical
+flow: `codegen_contract` → `check_code` → `execute_cad` → `submit_code` →
+`wait_job`. Full tool list and semantics:
+**[docs/mcp-server.md](docs/mcp-server.md)**.
+
 ## Documentation
 
 **[docs/README.md](docs/README.md)** — the full documentation index, grouped by
@@ -224,6 +243,7 @@ audience:
   [Image editing](docs/image-editing.md) ·
   [Image generation](docs/image-generation.md) ·
   [Parts library](docs/parts-library.md) ·
+  [MCP server](docs/mcp-server.md) ·
   [E2E checklist](docs/e2e-checklist.md)
 - **Understand it** — [Architecture](docs/architecture.md) ·
   [Agent loop](docs/agent-loop.md) ·

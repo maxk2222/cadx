@@ -50,6 +50,40 @@ def migrate() -> None:
     subprocess.run(["alembic", "upgrade", "head"], cwd=backend, check=True)
 
 
+@app.command()
+def mcp(
+    http: bool = typer.Option(False, "--http", help="Serve Streamable HTTP instead of stdio"),
+    port: int = 8001,
+) -> None:
+    """Run the CADX MCP server (stdio default; --http for Streamable HTTP)."""
+    if http:
+        from contextlib import asynccontextmanager
+
+        import uvicorn
+        from starlette.applications import Starlette
+        from starlette.middleware import Middleware
+
+        from cadx.mcpserver.http import MCPDispatchMiddleware, mcp_asgi_app
+        from cadx.mcpserver.server import session_manager
+
+        @asynccontextmanager
+        async def lifespan(app: Starlette):
+            async with session_manager().run():
+                yield
+
+        starlette = Starlette(
+            lifespan=lifespan,
+            middleware=[
+                Middleware(MCPDispatchMiddleware, prefix="/mcp", subapp=mcp_asgi_app())
+            ],
+        )
+        uvicorn.run(starlette, host="127.0.0.1", port=port)
+        return
+    from cadx.mcpserver.server import run_stdio
+
+    asyncio.run(run_stdio())
+
+
 @app.command(name="exec")
 def exec_code(
     code_file: Path = typer.Argument(..., exists=True),

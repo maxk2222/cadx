@@ -37,6 +37,7 @@ dependencies = [
     "pyyaml>=6.0",
     "rembg[cpu]>=2.0.57",  # lazy-imported; u2net model downloads on first bg-removal call
     "nlopt>=2.7",
+    "mcp>=2.2,<3",  # MCP server core — exposes deterministic cadx tools to external agents
 ]
 
 [project.optional-dependencies]

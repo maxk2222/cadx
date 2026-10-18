@@ -9,9 +9,11 @@ from arq.connections import RedisSettings
 from cadx.agent.chat_worker import reap_orphaned_chats, run_chat_turn
 from cadx.agent.worker_jobs import (
     run_agent_job,
+    run_code_job,
     run_edit_feature_job,
     run_fem_job,
     run_mesh_edit_job,
+    run_meshgen_job,
     run_optimize_job,
     run_organic_job,
     run_params_job,
@@ -119,6 +121,8 @@ class AgentWorkerSettings:
         run_fem_job,
         run_refine_job,
         run_organic_job,
+        run_code_job,
+        run_meshgen_job,
     ]
     on_startup = agent_startup
     on_shutdown = worker_shutdown
