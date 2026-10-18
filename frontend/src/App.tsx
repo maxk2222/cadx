@@ -19,20 +19,27 @@ import {
 } from "react-router-dom";
 import HealthDots from "./components/HealthDots";
 import Logo from "./components/Logo";
-import { ToastProvider } from "./components/ui";
+import { Spinner, ToastProvider } from "./components/ui";
 import { api } from "./lib/api";
-import ChatPage from "./pages/ChatPage";
-import EditPage from "./pages/EditPage";
 import JobsPage from "./pages/JobsPage";
 import LibraryPage from "./pages/LibraryPage";
 import ProjectPage from "./pages/ProjectPage";
 import ProjectsPage from "./pages/ProjectsPage";
 import SettingsPage from "./pages/SettingsPage";
 import StartPage from "./pages/StartPage";
-import VersionPage from "./pages/VersionPage";
 
-// lazy: keeps recharts (~200KB) out of the initial bundle
+// lazy: keeps the heaviest routes (three.js editors, chat, recharts) out of
+// the initial bundle
+const ChatPage = lazy(() => import("./pages/ChatPage"));
+const EditPage = lazy(() => import("./pages/EditPage"));
+const VersionPage = lazy(() => import("./pages/VersionPage"));
 const StatsPage = lazy(() => import("./pages/StatsPage"));
+
+const RouteFallback = () => (
+  <div className="flex h-screen items-center justify-center" role="status">
+    <Spinner className="h-6 w-6 text-zinc-500" />
+  </div>
+);
 
 function NavItem({
   to,
@@ -40,12 +47,15 @@ function NavItem({
   label,
   active,
   badge,
+  badgeWarn,
 }: {
   to: string;
   icon: LucideIcon;
   label: string;
   active: boolean;
   badge?: number;
+  /** some badge jobs wait for user input — recolour to draw attention */
+  badgeWarn?: boolean;
 }) {
   return (
     <Link
@@ -64,7 +74,12 @@ function NavItem({
       <Icon className="h-[18px] w-[18px] shrink-0" />
       <span className="hidden md:inline">{label}</span>
       {badge ? (
-        <span className="absolute right-1.5 top-1/2 flex h-4 min-w-4 -translate-y-1/2 items-center justify-center rounded-full bg-brand-600 px-1 text-[10px] font-semibold text-white md:static md:translate-y-0">
+        <span
+          title={badgeWarn ? "a job is waiting for input" : "active jobs"}
+          className={`absolute right-1.5 top-1/2 flex h-4 min-w-4 -translate-y-1/2 items-center justify-center rounded-full px-1 text-[10px] font-semibold text-white md:static md:translate-y-0 ${
+            badgeWarn ? "bg-amber-500 text-zinc-950" : "bg-brand-600"
+          }`}
+        >
           {badge}
         </span>
       ) : null}
@@ -74,11 +89,13 @@ function NavItem({
 
 function SideNav() {
   const loc = useLocation();
+  // poll only while jobs are actually active — an idle nav needs no requests
   const activeJobs = useQuery({
-    queryKey: ["jobs-active-count"],
+    queryKey: ["jobs", "active"],
     queryFn: () => api.listJobsAll({ active: true, limit: 50 }),
-    refetchInterval: 8000,
+    refetchInterval: (q) => (q.state.data?.length ? 8000 : false),
   });
+  const waiting = activeJobs.data?.some((j) => j.status === "waiting_for_input") ?? false;
   return (
     <aside className="sticky top-0 z-40 flex h-screen w-14 shrink-0 flex-col border-r border-zinc-800/80 bg-zinc-950 md:w-44">
       <Link
@@ -118,6 +135,7 @@ function SideNav() {
           label="Jobs"
           active={loc.pathname === "/jobs"}
           badge={activeJobs.data?.length}
+          badgeWarn={waiting}
         />
         <NavItem
           to="/stats"
@@ -152,26 +170,21 @@ export default function App() {
         <div className="flex min-h-screen">
           <SideNav />
           <main className="min-w-0 flex-1">
-            <Routes>
-              <Route path="/" element={<StartPage />} />
-              <Route path="/projects" element={<ProjectsPage />} />
-              <Route path="/projects/:id" element={<ProjectPage />} />
-              <Route path="/chat" element={<ChatPage />} />
-              <Route path="/chat/:chatId" element={<ChatPage />} />
-              <Route path="/versions/:id" element={<VersionPage />} />
-              <Route path="/versions/:id/edit" element={<EditPage />} />
-              <Route path="/jobs" element={<JobsPage />} />
-              <Route
-                path="/stats"
-                element={
-                  <Suspense fallback={null}>
-                    <StatsPage />
-                  </Suspense>
-                }
-              />
-              <Route path="/library" element={<LibraryPage />} />
-              <Route path="/settings" element={<SettingsPage />} />
-            </Routes>
+            <Suspense fallback={<RouteFallback />}>
+              <Routes>
+                <Route path="/" element={<StartPage />} />
+                <Route path="/projects" element={<ProjectsPage />} />
+                <Route path="/projects/:id" element={<ProjectPage />} />
+                <Route path="/chat" element={<ChatPage />} />
+                <Route path="/chat/:chatId" element={<ChatPage />} />
+                <Route path="/versions/:id" element={<VersionPage />} />
+                <Route path="/versions/:id/edit" element={<EditPage />} />
+                <Route path="/jobs" element={<JobsPage />} />
+                <Route path="/stats" element={<StatsPage />} />
+                <Route path="/library" element={<LibraryPage />} />
+                <Route path="/settings" element={<SettingsPage />} />
+              </Routes>
+            </Suspense>
           </main>
         </div>
       </ToastProvider>

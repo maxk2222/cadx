@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { useThree } from "@react-three/fiber";
 import * as THREE from "three";
 
 export interface RegionFillEntry {
@@ -18,17 +19,26 @@ const MAX_VERTS = 500_000;
  * resolves exactly (see `cells_preview`).
  *
  * Recomputes are debounced (strokes stream points) and guarded by a vertex
- * cap. Geometry/material state is restored on cleanup.
+ * cap. Geometry/material state is restored on cleanup. Above the cap the
+ * fills stay hidden — `onTooDense` lets the editor say why instead of
+ * silently no-oping.
  */
 export default function RegionFill({
   model,
   entries,
   debounceMs = 140,
+  onTooDense,
 }: {
   model: THREE.Object3D | null;
   entries: RegionFillEntry[];
   debounceMs?: number;
+  /** vertex cap exceeded → fills suppressed (true) / drawable again (false) */
+  onTooDense?: (tooDense: boolean) => void;
 }) {
+  // attribute writes are imperative — under frameloop="demand" nothing else
+  // knows they happened
+  const invalidate = useThree((s) => s.invalidate);
+
   useEffect(() => {
     if (!model) return;
     const timer = setTimeout(() => {
@@ -43,8 +53,13 @@ export default function RegionFill({
       walk(model, new THREE.Matrix4());
 
       const active = entries.filter((e) => e.points.length && e.radius > 0);
-      if (!active.length || meshes.reduce((n, m) => n + (m.mesh.geometry.getAttribute("position")?.count ?? 0), 0) > MAX_VERTS) {
+      const tooDense =
+        meshes.reduce((n, m) => n + (m.mesh.geometry.getAttribute("position")?.count ?? 0), 0) >
+        MAX_VERTS;
+      onTooDense?.(tooDense);
+      if (!active.length || tooDense) {
         cleanup(meshes.map((m) => m.mesh));
+        invalidate();
         return;
       }
 
@@ -105,9 +120,10 @@ export default function RegionFill({
           }
         });
       }
+      invalidate();
     }, debounceMs);
     return () => clearTimeout(timer);
-  }, [model, entries, debounceMs]);
+  }, [model, entries, debounceMs, invalidate, onTooDense]);
 
   // restore on unmount/model change
   useEffect(() => {
@@ -118,8 +134,9 @@ export default function RegionFill({
         if ((o as THREE.Mesh).isMesh) meshes.push(o as THREE.Mesh);
       });
       cleanup(meshes);
+      invalidate();
     };
-  }, [model]);
+  }, [model, invalidate]);
 
   return null;
 }

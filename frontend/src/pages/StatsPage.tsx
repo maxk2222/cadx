@@ -47,7 +47,8 @@ const TD_MONO = `${TD} font-mono`;
 
 function table(data: NamedCount[], nameLabel: string) {
   return (
-    <table className="w-full">
+    <div className="overflow-x-auto">
+      <table className="w-full">
       <thead>
         <tr className="border-b border-zinc-800">
           <th className={TH}>{nameLabel}</th>
@@ -62,7 +63,8 @@ function table(data: NamedCount[], nameLabel: string) {
           </tr>
         ))}
       </tbody>
-    </table>
+      </table>
+    </div>
   );
 }
 
@@ -210,7 +212,7 @@ export default function StatsPage() {
           {s.models.length > 0 && (
             <div className="grid gap-6 lg:grid-cols-2">
               <Section title="Tokens by model">
-                <Card>
+                <Card className="overflow-x-auto">
                   <table className="w-full">
                     <thead>
                       <tr className="border-b border-zinc-800">
@@ -242,7 +244,7 @@ export default function StatsPage() {
                 </Card>
               </Section>
               <Section title="Tokens by step">
-                <Card>
+                <Card className="overflow-x-auto">
                   <table className="w-full">
                     <thead>
                       <tr className="border-b border-zinc-800">
@@ -277,7 +279,7 @@ export default function StatsPage() {
           {/* performance + failures */}
           <div className="grid gap-6 lg:grid-cols-2">
             <Section title="Job duration by type">
-              <Card>
+              <Card className="overflow-x-auto">
                 <table className="w-full">
                   <thead>
                     <tr className="border-b border-zinc-800">
@@ -364,7 +366,7 @@ export default function StatsPage() {
           {/* projects leaderboard */}
           {s.projects.length > 0 && (
             <Section title="Projects">
-              <Card>
+              <Card className="overflow-x-auto">
                 <table className="w-full">
                   <thead>
                     <tr className="border-b border-zinc-800">

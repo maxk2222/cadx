@@ -1,4 +1,12 @@
-import { Bounds, Center, Environment, Gltf, Html, OrbitControls } from "@react-three/drei";
+import {
+  Bounds,
+  Center,
+  Environment,
+  Gltf,
+  Html,
+  Lightformer,
+  OrbitControls,
+} from "@react-three/drei";
 import { Canvas, useLoader, useThree, type ThreeEvent } from "@react-three/fiber";
 import { Loader2 } from "lucide-react";
 import {
@@ -63,6 +71,7 @@ function CameraRig({
 }
 
 function Wireframe({ on, model }: { on: boolean; model: RefObject<THREE.Group | null> }) {
+  const invalidate = useThree((s) => s.invalidate);
   useEffect(() => {
     model.current?.traverse((o) => {
       if (o instanceof THREE.Mesh) {
@@ -72,7 +81,21 @@ function Wireframe({ on, model }: { on: boolean; model: RefObject<THREE.Group | 
         });
       }
     });
-  }, [on, model]);
+    invalidate(); // material flag mutation is invisible to the reconciler
+  }, [on, model, invalidate]);
+  return null;
+}
+
+/** demand-mode catch-all: re-render whenever inputs that drive imperative
+ *  scene changes mutate (url, overlay children, preview matrix). Declarative
+ *  JSX commits already invalidate in demand mode — this covers the paths
+ *  React cannot observe. */
+function InvalidateOn({ deps }: { deps: readonly unknown[] }) {
+  const invalidate = useThree((s) => s.invalidate);
+  useEffect(() => {
+    invalidate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- deps is the API
+  }, [invalidate, ...deps]);
   return null;
 }
 
@@ -109,7 +132,13 @@ const NO_RAYCAST = () => null;
  * into the Y-up display frame used by the GLB exports. */
 function StlModel({ url }: { url: string }) {
   const geom = useLoader(STLLoader, url);
-  useMemo(() => geom.computeVertexNormals(), [geom]);
+  const invalidate = useThree((s) => s.invalidate);
+  useEffect(() => {
+    // mutates the loader-cached geometry — idempotent, but it must not run
+    // during render (same object may be shared by other canvases)
+    geom.computeVertexNormals();
+    invalidate();
+  }, [geom, invalidate]);
   return (
     <mesh geometry={geom} rotation={[-Math.PI / 2, 0, 0]}>
       <meshStandardMaterial color="#8b93a1" metalness={0.1} roughness={0.7} />
@@ -167,6 +196,7 @@ export default function ModelCanvas({
   glRef,
   pickEnabled = false,
   modelMatrix,
+  preserveDrawingBuffer = false,
   onPick,
   onHover,
   onModel,
@@ -181,6 +211,9 @@ export default function ModelCanvas({
   viewCmd?: { view: ViewPreset; n: number };
   fitKey?: number;
   glRef?: { current: THREE.WebGLRenderer | null };
+  /** keep the framebuffer readable after present — required for canvas
+   *  screenshots (Viewer3D); costs a copy everywhere else, so it's opt-in */
+  preserveDrawingBuffer?: boolean;
   /** enable pointer picking on the model surface (mm coords). */
   pickEnabled?: boolean;
   /** instant-preview transform applied to the model only (never overlays). */
@@ -296,11 +329,19 @@ export default function ModelCanvas({
 
   return (
     <Canvas
+      // demand frameloop — render only on invalidation. Declarative commits
+      // and drei OrbitControls/Bounds invalidate themselves; imperative
+      // mutations (wireframe flag, STL normals, RegionFill colours) call
+      // invalidate() explicitly, with InvalidateOn as the catch-all.
+      // NOTE: no useLoader cache cleanup on unmount — the suspense cache is
+      // shared across canvases and transient preview URLs are not re-fetchable.
+      frameloop="demand"
       camera={{ position: [60, 45, 60], fov: 40 }}
-      gl={{ preserveDrawingBuffer: true }}
+      gl={{ preserveDrawingBuffer }}
       style={{ cursor: pickEnabled ? "crosshair" : undefined }}
     >
       <color attach="background" args={["#18181b"]} />
+      <InvalidateOn deps={[url, format, wireframe, grid, matrix, children]} />
       <Suspense
         fallback={
           <Html center>
@@ -330,8 +371,33 @@ export default function ModelCanvas({
               </group>
             </Center>
           </Bounds>
+          {/* local procedural environment — preset="city" fetched an HDR
+              from a CDN at runtime (breaks offline/self-hosted); Lightformer
+              children render the env map locally instead: soft top light +
+              cool/warm side strips ≈ the city look */}
+          <Environment resolution={256}>
+            <Lightformer
+              intensity={2}
+              rotation-x={Math.PI / 2}
+              position={[0, 5, 0]}
+              scale={[10, 10, 1]}
+            />
+            <Lightformer
+              intensity={1.4}
+              rotation-y={Math.PI / 2}
+              position={[-5, 1, -1]}
+              scale={[12, 2.5, 1]}
+              color="#cfe2ff"
+            />
+            <Lightformer
+              intensity={0.7}
+              rotation-y={-Math.PI / 2}
+              position={[5, 0.5, -1]}
+              scale={[8, 3, 1]}
+              color="#ffddbb"
+            />
+          </Environment>
         </GlBoundary>
-        <Environment preset="city" />
       </Suspense>
       <OrbitControls
         ref={controlsRef}

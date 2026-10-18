@@ -10,7 +10,7 @@ import {
   Spinner,
   inputCls,
 } from "../components/ui";
-import { api } from "../lib/api";
+import { api, errMsg } from "../lib/api";
 import type { Settings, SettingsUpdate } from "../lib/types";
 import { useTitle } from "../lib/useTitle";
 
@@ -289,7 +289,7 @@ export default function SettingsPage() {
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     },
-    onError: (e) => setSaveError(String(e)),
+    onError: (e) => setSaveError(errMsg(e)),
   });
 
   if (settings.isLoading || !form)
@@ -524,7 +524,7 @@ export default function SettingsPage() {
             ["off", "off"],
           ],
         })}
-        <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-600">
+        <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
           advanced
         </div>
         {field({ key: "llm_temperature_code", label: "Temperature (code)", kind: "number" })}
@@ -551,7 +551,7 @@ export default function SettingsPage() {
             </span>
           )}
           {testProvider.isError && (
-            <span className="text-xs text-red-400">{String(testProvider.error)}</span>
+            <span className="text-xs text-red-400">{errMsg(testProvider.error)}</span>
           )}
         </div>
       </Card>
@@ -584,7 +584,7 @@ export default function SettingsPage() {
             ["ask", "ask (clarifying questions)"],
           ],
         })}
-        <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-600">
+        <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
           budgets & robustness
         </div>
         {field({ key: "agent_max_input_images", label: "Max input images", kind: "number" })}
@@ -604,14 +604,14 @@ export default function SettingsPage() {
         {field({ key: "agent_patch_retries", label: "Patch retries", kind: "number" })}
         {field({ key: "agent_feature_feedback", label: "Feature measurement feedback", kind: "bool" })}
         {field({ key: "agent_critique_reask", label: "Critique re-ask on empty verdicts", kind: "bool" })}
-        <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-600">
+        <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
           tool sessions
         </div>
         {field({ key: "agent_tool_max_calls", label: "Max tool calls (edit steps)", kind: "number" })}
         {field({ key: "agent_tool_max_calls_info", label: "Max tool calls (info steps)", kind: "number" })}
         {field({ key: "agent_tool_verify", label: "Sandbox verify tool", kind: "bool" })}
         {field({ key: "agent_tool_verify_max", label: "Verify runs per session", kind: "number" })}
-        <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-600">
+        <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
           mesh transform session
         </div>
         {field({
@@ -635,7 +635,7 @@ export default function SettingsPage() {
           hint: "after this many consecutive hard fails the mesh loop stops (CAD fallback for dimensioned parts)",
           kind: "number",
         })}
-        <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-600">
+        <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
           chat agent
         </div>
         {field({
@@ -723,7 +723,7 @@ export default function SettingsPage() {
                   {m.supports_multiview ? " · multiview" : ""}
                   {m.loaded ? " · loaded" : ""}
                   {m.license_note ? (
-                    <div className="text-zinc-600">license: {m.license_note}</div>
+                    <div className="text-zinc-500">license: {m.license_note}</div>
                   ) : null}
                 </div>
               ))}
@@ -840,7 +840,7 @@ export default function SettingsPage() {
                   <div className="text-amber-500">last error: {m.last_error}</div>
                 ) : null}
                 {m.license_note ? (
-                  <div className="text-zinc-600">license: {m.license_note}</div>
+                  <div className="text-zinc-500">license: {m.license_note}</div>
                 ) : null}
               </div>
             ))}
@@ -868,7 +868,7 @@ export default function SettingsPage() {
         {field({ key: "fem_voxel_mm", label: "Voxel size (mm)", kind: "number" })}
         {field({ key: "fem_max_elements", label: "Max FEM elements", kind: "number" })}
         {field({ key: "fem_timeout_s", label: "FEM timeout (s)", kind: "number" })}
-        <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-600">
+        <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
           topopt
         </div>
         {field({ key: "topopt_timeout_s", label: "TopOpt timeout (s)", kind: "number" })}

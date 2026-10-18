@@ -47,6 +47,12 @@ export default function ModeSelector({
           );
         })}
       </div>
+      {/* inline disable reason — a title tooltip alone is invisible until hover */}
+      {health != null && !meshOk && (
+        <div className="mt-1 text-[11px] text-zinc-500">
+          mesh server unreachable — mesh &amp; hybrid modes are unavailable.
+        </div>
+      )}
       {(value === "mesh" || value === "hybrid") && (
         <div className="mt-1 text-[11px] text-zinc-500">
           needs at least one reference image — otherwise the run falls back to CAD.

@@ -8,7 +8,7 @@ import StepPrompt from "../components/wizard/StepPrompt";
 import StepReview from "../components/wizard/StepReview";
 import WizardProgress from "../components/wizard/WizardProgress";
 import { Card } from "../components/ui";
-import { api } from "../lib/api";
+import { api, errMsg } from "../lib/api";
 import { deriveProjectName, suggestMode } from "../lib/suggest";
 import type { GenMode, MeshHealth, RunOptions } from "../lib/types";
 import { useTitle } from "../lib/useTitle";
@@ -140,7 +140,7 @@ export default function StartPage() {
       try {
         await ensureProject();
       } catch (e) {
-        setError(`could not create the project: ${e}`);
+        setError(`could not create the project: ${errMsg(e)}`);
         setCreating(false);
         return;
       }
@@ -162,7 +162,7 @@ export default function StartPage() {
   useEffect(() => {
     if (s.phase === "edit" && s.step >= 1 && !s.projectId && !creatingRef.current) {
       ensureProject().catch((e) => {
-        setError(`could not create the project: ${e}`);
+        setError(`could not create the project: ${errMsg(e)}`);
         set({ step: 0 });
       });
     }
@@ -176,7 +176,7 @@ export default function StartPage() {
   });
 
   const meshHealth = useQuery<MeshHealth>({
-    queryKey: ["mesh-health"],
+    queryKey: ["meshHealth"],
     queryFn: api.meshHealth,
     staleTime: 30_000,
     retry: false,
@@ -220,16 +220,33 @@ export default function StartPage() {
         versionId: r.version_id,
       }));
     },
-    onError: (e) => setError(String(e)),
+    onError: (e) => setError(errMsg(e)),
   });
+
+  /** "start over" would orphan the draft project the wizard created — offer
+   *  to delete it when it never produced a version. */
+  const discardEmptyDraft = async (pid: string) => {
+    try {
+      const versions = await api.listVersions(pid);
+      if (versions.length) return;
+      if (window.confirm("Delete the empty draft project? It has no versions yet.")) {
+        await api.deleteProject(pid);
+        qc.invalidateQueries({ queryKey: ["projects"] });
+      }
+    } catch {
+      /* lookup/delete failed — keep the project */
+    }
+  };
 
   const reset = () => {
     localStorage.removeItem(DRAFT_KEY);
+    const pid = projectIdRef.current;
     projectIdRef.current = null;
     creatingRef.current = null;
     seenAssets.current = new Set();
     setError("");
     setS(INITIAL);
+    if (pid) void discardEmptyDraft(pid);
   };
 
   return (
@@ -325,6 +342,9 @@ export default function StartPage() {
                   : s.selected,
               })
             }
+            onDeleted={(id) =>
+              set({ selected: s.selected.filter((x) => x !== id) })
+            }
             onNext={() => gotoModeStep()}
             onBack={() => set({ step: 0 })}
           />
@@ -365,7 +385,8 @@ export default function StartPage() {
             className="text-[11px] text-zinc-600 underline hover:text-zinc-400"
             onClick={reset}
           >
-            start over — clear draft{s.projectId ? " (project is kept)" : ""}
+            start over — clear draft
+            {s.projectId ? " (empty draft project can be deleted)" : ""}
           </button>
         </div>
       )}

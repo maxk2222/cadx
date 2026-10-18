@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
-import { api } from "../lib/api";
+import { useEffect, useRef, useState } from "react";
+import { api, errMsg } from "../lib/api";
 import type { Asset } from "../lib/types";
 import { Btn, Field, Modal, inputCls, useToast } from "./ui";
 
@@ -47,6 +47,7 @@ export default function GenerateImageModal({
         count,
         width: size,
         height: size,
+        // digits-only input — "-" would NaN through a permissive filter
         ...(seed.trim() ? { seed: Number(seed.trim()) } : {}),
         ...(edit ? { reference_asset_id: refId, strength } : {}),
         mark_sketch: markSketch,
@@ -59,14 +60,26 @@ export default function GenerateImageModal({
       );
       onClose();
     },
-    onError: (e) => toast(String(e), "error"),
+    onError: (e) => toast(errMsg(e), "error"),
   });
 
   const list = models.data ?? [];
   const imgAssets = (assets.data ?? []).filter((a) => isImage(a.kind));
-  // edit mode: only adapters that accept an init image make sense
-  const pickable = edit ? list.filter((m) => m.supports_edit) : list;
+  // edit mode: only adapters that accept an init image make sense; without a
+  // reference the edit-only adapters (requires_image) can't run at all
+  const pickable = edit
+    ? list.filter((m) => m.supports_edit)
+    : list.filter((m) => !m.requires_image);
   const noEditAdapter = edit && pickable.every((m) => !m.available);
+
+  // a refId change reshapes the adapter list — never leave a stale choice
+  const prevEdit = useRef(edit);
+  useEffect(() => {
+    if ((prevEdit.current && !edit) || (model !== "auto" && !pickable.some((m) => m.id === model)))
+      setModel("auto");
+    prevEdit.current = edit;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [edit, model, pickable]);
 
   return (
     <Modal
@@ -204,7 +217,7 @@ export default function GenerateImageModal({
             className={inputCls}
             value={seed}
             placeholder="e.g. 42"
-            onChange={(e) => setSeed(e.target.value.replace(/[^0-9-]/g, ""))}
+            onChange={(e) => setSeed(e.target.value.replace(/[^0-9]/g, ""))}
           />
         </Field>
         {models.isSuccess && list.length === 0 && (

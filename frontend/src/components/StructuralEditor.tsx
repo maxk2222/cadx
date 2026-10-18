@@ -13,9 +13,11 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import * as THREE from "three";
 import { Line } from "@react-three/drei";
-import { api } from "../lib/api";
+import { api, errMsg } from "../lib/api";
+import { num, readStoredAnchors, readUiEditor } from "../lib/editorState";
 import {
   buildFacets,
   facetAtHit,
@@ -45,7 +47,7 @@ import {
 import ModelCanvas, { type PickInfo } from "./editor/ModelCanvas";
 import RegionFill, { type RegionFillEntry } from "./editor/RegionFill";
 import { MATERIAL_OPTIONS } from "./OptionsPanel";
-import { Btn, Chip, Field, IconBtn, inputCls, useToast } from "./ui";
+import { Btn, Chip, Field, IconBtn, inputCls, NumInput, useToast } from "./ui";
 
 /* ------------------------------------------------------------------ */
 /* model                                                               */
@@ -78,11 +80,6 @@ type FeatureTarget =
   | { kind: "keep" }
   | { kind: "void" }
   | null;
-
-const num = (s: string, fb = 0) => {
-  const n = Number(s);
-  return Number.isFinite(n) ? n : fb;
-};
 
 const FACES = ["-x", "+x", "-y", "+y", "-z", "+z"] as const;
 const FACE_LABELS: Record<string, string> = {
@@ -281,49 +278,6 @@ function loadActive(l: LoadSpec): boolean {
 }
 
 /* ------------------------------------------------------------------ */
-/* number input (commits on blur/enter — no mid-typing coercion)       */
-/* ------------------------------------------------------------------ */
-
-function NumInput({
-  value,
-  onChange,
-  step = 1,
-  className = "",
-}: {
-  value: number;
-  onChange: (n: number) => void;
-  step?: number;
-  className?: string;
-}) {
-  const [txt, setTxt] = useState(String(value));
-  const [editing, setEditing] = useState(false);
-  useEffect(() => {
-    if (!editing) setTxt(String(value));
-  }, [value, editing]);
-  const commit = () => {
-    setEditing(false);
-    const n = Number(txt);
-    if (Number.isFinite(n)) onChange(n);
-    else setTxt(String(value));
-  };
-  return (
-    <input
-      type="number"
-      step={step}
-      className={`${inputCls} px-1.5 py-0.5 text-[11px] ${className}`}
-      value={editing ? txt : String(value)}
-      onFocus={() => {
-        setEditing(true);
-        setTxt(String(value));
-      }}
-      onChange={(e) => setTxt(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => e.key === "Enter" && commit()}
-    />
-  );
-}
-
-/* ------------------------------------------------------------------ */
 /* region row — label + kind-specific fields + expandable details      */
 /* ------------------------------------------------------------------ */
 
@@ -429,6 +383,7 @@ function RegionRow({
         {hasCenterPick && onPickCenter && (
           <button
             title="pick region center on the model"
+            aria-label="pick region center on the model"
             onClick={onPickCenter}
             className="rounded p-0.5 text-zinc-500 hover:text-zinc-200"
           >
@@ -438,6 +393,7 @@ function RegionRow({
         {kind === "points" && onPaint && (
           <button
             title={painting ? "stop painting" : "paint on the model"}
+            aria-label={painting ? "stop painting" : "paint on the model"}
             onClick={onPaint}
             className={`rounded p-0.5 ${
               painting ? "text-amber-300" : "text-zinc-500 hover:text-zinc-200"
@@ -446,7 +402,12 @@ function RegionRow({
             <Brush className="h-3.5 w-3.5" />
           </button>
         )}
-        <button title="remove region" onClick={onDelete} className="text-zinc-600 hover:text-red-400">
+        <button
+          title="remove region"
+          aria-label="remove region"
+          onClick={onDelete}
+          className="text-zinc-500 hover:text-red-400"
+        >
           <Trash2 className="h-3 w-3" />
         </button>
       </div>
@@ -466,7 +427,7 @@ function RegionRow({
           />
           <span className="w-10 text-[10px] text-zinc-500">{r.radius_mm ?? 3}mm</span>
           <button
-            className="ml-auto text-[10px] text-zinc-600 underline hover:text-zinc-300"
+            className="ml-auto text-[10px] text-zinc-500 underline hover:text-zinc-300"
             onClick={() => setOpen((o) => !o)}
           >
             details
@@ -505,7 +466,7 @@ function RegionRow({
                   </option>
                 ))}
               </select>
-              <span className="text-[10px] text-zinc-600">insert</span>
+              <span className="text-[10px] text-zinc-500">insert</span>
             </div>
           )}
           {(kind === "cylinder" || kind === "box" || kind === "area") && (
@@ -535,7 +496,7 @@ function RegionRow({
                 className="flex-1"
                 onChange={(n) => setA({ diameter_mm: n })}
               />
-              <span className="text-[10px] text-zinc-600">mm</span>
+              <span className="text-[10px] text-zinc-500">mm</span>
             </div>
           )}
           <div className="flex items-center gap-1">
@@ -546,7 +507,7 @@ function RegionRow({
               className="flex-1"
               onChange={(n) => setA({ margin_mm: n })}
             />
-            <span className="text-[10px] text-zinc-600">mm</span>
+            <span className="text-[10px] text-zinc-500">mm</span>
           </div>
           <div className="flex items-center gap-1">
             <span className="w-14 text-[10px] text-zinc-500">label</span>
@@ -853,6 +814,31 @@ function axisVecFromVec(v: number[]): [number, number, number] {
 /* main component                                                      */
 /* ------------------------------------------------------------------ */
 
+/** persisted ui_editor keys owned by this editor — the blob itself is
+ *  shared: EditPage writes `ops` into the same object, so key PRESENCE
+ *  (not truthiness) marks whether this editor has a saved draft. A type
+ *  alias (not interface) is required for the implicit index signature. */
+type StructuralDraft = {
+  load_cases?: LoadCase[];
+  keep_regions?: RegionSpec[];
+  void_regions?: RegionSpec[];
+  material?: string;
+  volfrac?: number;
+  keep_mode?: "manual" | "auto";
+  min_member_mm?: number;
+  density_threshold?: number;
+  auto_refine?: boolean;
+  self_supporting?: boolean;
+  print_direction?: "+x" | "-x" | "+y" | "-y" | "+z" | "-z";
+  multires?: boolean;
+  solver?: "oc" | "mma";
+  case_objective?: "weighted" | "minmax";
+  max_displacement_mm?: number;
+  max_stress_mpa?: number;
+  min_gap_mm?: number;
+  penal_init?: number;
+};
+
 export default function StructuralEditor({
   open,
   onClose,
@@ -867,6 +853,8 @@ export default function StructuralEditor({
   onJobStarted: (r: { version_id: string; job_id: string }) => void;
 }) {
   const toast = useToast();
+  const qc = useQueryClient();
+  const [saveFailed, setSaveFailed] = useState(false);
   const [cases, setCases] = useState<LoadCase[]>([]);
   const [keep, setKeep] = useState<RegionSpec[]>([]);
   const [voids, setVoids] = useState<RegionSpec[]>([]);
@@ -892,6 +880,7 @@ export default function StructuralEditor({
   const [centerPick, setCenterPick] = useState<Exclude<PaintTarget, null> | null>(null);
   const [hover, setHover] = useState<PickInfo | null>(null);
   const [model, setModel] = useState<THREE.Group | null>(null);
+  const [fillsCapped, setFillsCapped] = useState(false);
   const [preview, setPreview] = useState<FemPreviewResult | null>(null);
   const [showCells, setShowCells] = useState(true);
   const [busy, setBusy] = useState<"preview" | "fem" | "opt" | null>(null);
@@ -917,34 +906,30 @@ export default function StructuralEditor({
   const facetGeoms = useRef(new Map<string, THREE.BufferGeometry>());
   const pickedFacets = useRef(new Set<string>());
 
+  // on-demand feature scan — same query key as AnchorsPanel, so both panels
+  // share one fetch and one cache entry
+  const anchorsQ = useQuery({
+    queryKey: ["anchors", version.id],
+    queryFn: () => api.anchors(version.id),
+    enabled: open,
+    staleTime: 60_000,
+  });
+  useEffect(() => {
+    // the scan supersedes the stored analysis table once it arrives — `open`
+    // in deps so a warm cache re-applies on re-open after init restored the
+    // stored table
+    const r = anchorsQ.data;
+    if (open && r?.ok && r.anchors.length) setAnchors(r.anchors);
+  }, [anchorsQ.data, open]);
+
   // init once per open/version — persisted GUI state wins over spec defaults
   useEffect(() => {
     if (!open) return;
-    const saved = (version.options as Record<string, unknown> | undefined)?.ui_editor as
-      | {
-          load_cases?: LoadCase[];
-          keep_regions?: RegionSpec[];
-          void_regions?: RegionSpec[];
-          material?: string;
-          volfrac?: number;
-          keep_mode?: "manual" | "auto";
-          min_member_mm?: number;
-          density_threshold?: number;
-          auto_refine?: boolean;
-          self_supporting?: boolean;
-          print_direction?: "+x" | "-x" | "+y" | "-y" | "+z" | "-z";
-          multires?: boolean;
-          solver?: "oc" | "mma";
-          case_objective?: "weighted" | "minmax";
-          max_displacement_mm?: number;
-          max_stress_mpa?: number;
-          min_gap_mm?: number;
-          penal_init?: number;
-        }
-      | undefined;
+    const saved = readUiEditor<StructuralDraft>(version);
     const specOpt = version.spec?.optimize;
-    if (saved?.load_cases?.length) {
-      setCases(saved.load_cases);
+    if (saved && "load_cases" in saved) {
+      // a persisted [] is the user's "deleted every case" — honour it
+      setCases(saved.load_cases ?? []);
       setKeep(saved.keep_regions ?? []);
       setVoids(saved.void_regions ?? []);
       setMaterial(saved.material ?? "");
@@ -990,17 +975,9 @@ export default function StructuralEditor({
       setKeep([]);
       setVoids([]);
     }
-    // typed anchors: stored analysis anchors + on-demand mesh scan merge
-    const stored = (
-      version.analysis as { anchors?: { holes?: FeatureAnchor[] } } | null
-    )?.anchors?.holes;
-    if (stored?.length) setAnchors(stored);
-    api
-      .anchors(version.id)
-      .then((r) => {
-        if (r.ok && r.anchors.length) setAnchors(r.anchors);
-      })
-      .catch(() => {});
+    // typed anchors: stored analysis table first, the on-demand scan query
+    // (above) replaces it when it resolves
+    setAnchors(readStoredAnchors(version));
     setPreview(null);
     setTarget(null);
     setCenterPick(null);
@@ -1415,26 +1392,38 @@ export default function StructuralEditor({
   );
 
   const persist = () =>
-    api.saveEditorState(version.id, {
-      load_cases: cases,
-      keep_regions: keep,
-      void_regions: voids,
-      material,
-      volfrac,
-      keep_mode: keepMode,
-      min_member_mm: minMember || undefined,
-      density_threshold: densityThreshold,
-      auto_refine: autoRefine,
-      self_supporting: selfSupport,
-      print_direction: printDir,
-      multires,
-      solver,
-      case_objective: solver === "mma" && minmax ? "minmax" : "weighted",
-      max_displacement_mm: dispMax || undefined,
-      max_stress_mpa: stressMax || undefined,
-      min_gap_mm: minGap || undefined,
-      penal_init: penalCont ? 1.5 : undefined,
-    });
+    api
+      .saveEditorState(version.id, {
+        load_cases: cases,
+        keep_regions: keep,
+        void_regions: voids,
+        material,
+        volfrac,
+        keep_mode: keepMode,
+        min_member_mm: minMember || undefined,
+        density_threshold: densityThreshold,
+        auto_refine: autoRefine,
+        self_supporting: selfSupport,
+        print_direction: printDir,
+        multires,
+        solver,
+        case_objective: solver === "mma" && minmax ? "minmax" : "weighted",
+        max_displacement_mm: dispMax || undefined,
+        max_stress_mpa: stressMax || undefined,
+        min_gap_mm: minGap || undefined,
+        penal_init: penalCont ? 1.5 : undefined,
+      })
+      .then(
+        (r) => {
+          setSaveFailed(false);
+          return r;
+        },
+        (e) => {
+          // a dropped draft must be visible — silent loss is a data bug
+          setSaveFailed(true);
+          throw e;
+        }
+      );
 
   // autosave draft state (merged into ui_editor server-side)
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1462,10 +1451,15 @@ export default function StructuralEditor({
       });
       setPreview(r);
       setShowCells(true);
-      if (r.ok && r.anchors?.length) setAnchors(r.anchors);
+      if (r.ok && r.anchors?.length) {
+        setAnchors(r.anchors);
+        // the preview's scan is fresher than the query — publish it so the
+        // AnchorsPanel key sees the same table
+        qc.setQueryData(["anchors", version.id], { ok: true, anchors: r.anchors });
+      }
       if (!r.ok) toast(r.error ?? "region check failed", "error");
     } catch (e) {
-      toast(String(e), "error");
+      toast(errMsg(e), "error");
     } finally {
       setBusy(null);
     }
@@ -1482,7 +1476,7 @@ export default function StructuralEditor({
       });
       onJobStarted(r);
     } catch (e) {
-      toast(String(e), "error");
+      toast(errMsg(e), "error");
       setBusy(null);
     }
   };
@@ -1493,6 +1487,9 @@ export default function StructuralEditor({
       await persist();
       const r = await api.optimize(version.id, {
         load_cases: cases,
+        // allow_reopt is a top-level field of the optimize request — nested
+        // inside optimize:{} the backend silently drops it
+        allow_reopt: version.kind === "optimize" || undefined,
         optimize: {
           enabled: true,
           target_volume_fraction: volfrac,
@@ -1512,13 +1509,12 @@ export default function StructuralEditor({
           max_stress_mpa: solver === "mma" && stressMax ? stressMax : undefined,
           min_gap_mm: minGap || undefined,
           penal_init: penalCont ? 1.5 : undefined,
-          allow_reopt: version.kind === "optimize" || undefined,
         },
         material: material || undefined,
       });
       onJobStarted(r);
     } catch (e) {
-      toast(String(e), "error");
+      toast(errMsg(e), "error");
       setBusy(null);
     }
   };
@@ -1704,6 +1700,11 @@ export default function StructuralEditor({
             <Check className="h-3.5 w-3.5" />
           </IconBtn>
         )}
+        {saveFailed && (
+          <Chip tone="amber" title="draft changes could not be saved — saving retries automatically">
+            draft not saved
+          </Chip>
+        )}
         <label className="flex items-center gap-2 text-xs text-zinc-400">
           brush
           <input
@@ -1733,7 +1734,7 @@ export default function StructuralEditor({
               onHover={handleHover}
               onModel={setModel}
             >
-              <RegionFill model={model} entries={fills} />
+              <RegionFill model={model} entries={fills} onTooDense={setFillsCapped} />
               {/* paint trails — visible coverage regardless of tessellation */}
               {trails.map((t, i) => (
                 <PointCloud key={i} pts={t.pts} color={t.color} size={t.size} opacity={0.8} />
@@ -1837,7 +1838,7 @@ export default function StructuralEditor({
                 )}
             </ModelCanvas>
           ) : (
-            <div className="flex h-full items-center justify-center text-sm text-zinc-600">
+            <div className="flex h-full items-center justify-center text-sm text-zinc-500">
               no mesh artifact
             </div>
           )}
@@ -1863,6 +1864,11 @@ export default function StructuralEditor({
               <span className="h-2 w-2 rounded-full" style={{ background: COLORS.anchor }} />
               anchors {anchors.length ? `(${anchors.length})` : ""}
             </span>
+            {fillsCapped && (
+              <span className="text-amber-400" title="paint fills are skipped above 500k vertices">
+                fills hidden — mesh too dense
+              </span>
+            )}
             {preview?.ok && !!preview.cells?.length && (
               <label className="ml-2 flex items-center gap-1 text-zinc-500">
                 <input
@@ -1892,7 +1898,8 @@ export default function StructuralEditor({
                   {cases.length > 1 && (
                     <button
                       title="remove case"
-                      className="text-zinc-600 hover:text-red-400"
+                      aria-label="remove case"
+                      className="text-zinc-500 hover:text-red-400"
                       onClick={() => setCases((cs) => cs.filter((_, i) => i !== ci))}
                     >
                       <Trash2 className="h-3.5 w-3.5" />
@@ -1977,7 +1984,7 @@ export default function StructuralEditor({
                     <div className="flex items-center gap-1">
                       {labels.map((ax, i) => (
                         <label key={ax} className="flex flex-1 items-center gap-0.5">
-                          <span className="text-[9px] uppercase text-zinc-600">{ax}</span>
+                          <span className="text-[9px] uppercase text-zinc-500">{ax}</span>
                           <NumInput
                             value={vec?.[i] ?? 0}
                             step={step}
@@ -2110,7 +2117,7 @@ export default function StructuralEditor({
                                 setLoad({ direction_cone_deg: n > 0 ? Math.min(n, 90) : null })
                               }
                             />
-                            <span className="text-[10px] text-zinc-600">
+                            <span className="text-[10px] text-zinc-500">
                               ° robustness (TopOpt samples directions)
                             </span>
                           </div>

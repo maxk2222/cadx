@@ -26,12 +26,19 @@ import {
   Crumbs,
   Field,
   IconBtn,
+  NumInput,
   SectionTitle,
   Skeleton,
   inputCls,
   useToast,
 } from "../components/ui";
-import { api } from "../lib/api";
+import { api, errMsg } from "../lib/api";
+import {
+  readStoredAnchors,
+  readUiEditor,
+  recordedMeshOps,
+  savedOps,
+} from "../lib/editorState";
 import {
   isRigidOp,
   meshAabbEvaluator,
@@ -61,26 +68,6 @@ type PickMode =
   | null;
 
 type Tool = "boolean" | "slice" | "crop" | "drill" | "clip" | "measure" | null;
-
-/** The ops stack this version was opened with (persisted draft or recorded
- *  mesh ops — used to detect unsaved draft changes). */
-function savedOps(ver: {
-  kind?: string;
-  resolved_mode?: string | null;
-  params?: unknown;
-  options?: unknown;
-} | null): MeshOp[] {
-  if (!ver) return [];
-  const saved = (ver.options as Record<string, unknown> | undefined)?.ui_editor as
-    | { ops?: MeshOp[] }
-    | undefined;
-  if (saved?.ops?.length) return saved.ops;
-  if (ver.resolved_mode === "mesh" && ver.kind !== "mesh_edit") {
-    const recorded = (ver.params as { ops?: MeshOp[] } | null)?.ops;
-    if (Array.isArray(recorded)) return recorded as MeshOp[];
-  }
-  return [];
-}
 
 const fmt = (n: number) => (Math.abs(n) < 0.01 ? "0" : n.toFixed(2));
 
@@ -179,7 +166,7 @@ function ToolCard({
           </Btn>
         )}
       </div>
-      {hint && <div className="mb-2 text-[11px] text-zinc-600">{hint}</div>}
+      {hint && <div className="mb-2 text-[11px] text-zinc-500">{hint}</div>}
       {children}
     </Card>
   );
@@ -202,46 +189,6 @@ function AxisPicker({ value, onChange }: { value: Axis; onChange: (a: Axis) => v
         </button>
       ))}
     </div>
-  );
-}
-
-/** Number field that doesn't coerce mid-typing: commits on blur/Enter. */
-function NumInput({
-  value,
-  onChange,
-  step = 1,
-  className = "",
-}: {
-  value: number;
-  onChange: (n: number) => void;
-  step?: number;
-  className?: string;
-}) {
-  const [txt, setTxt] = useState(String(value));
-  const [editing, setEditing] = useState(false);
-  useEffect(() => {
-    if (!editing) setTxt(String(value));
-  }, [value, editing]);
-  const commit = () => {
-    setEditing(false);
-    const n = Number(txt);
-    if (Number.isFinite(n)) onChange(n);
-    else setTxt(String(value));
-  };
-  return (
-    <input
-      type="number"
-      step={step}
-      className={`${inputCls} px-2 py-1 text-xs ${className}`}
-      value={editing ? txt : String(value)}
-      onFocus={() => {
-        setEditing(true);
-        setTxt(String(value));
-      }}
-      onChange={(e) => setTxt(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => e.key === "Enter" && commit()}
-    />
   );
 }
 
@@ -293,7 +240,7 @@ function OpArgEditor({ op, onChange }: { op: MeshOp; onChange: (o: MeshOp) => vo
       );
     } else {
       rows.push(
-        <div key={i} className="truncate text-[10px] text-zinc-600" title={JSON.stringify(v)}>
+        <div key={i} className="truncate text-[10px] text-zinc-500" title={JSON.stringify(v)}>
           {k}: {JSON.stringify(v).slice(0, 80)}
         </div>
       );
@@ -380,17 +327,25 @@ export default function EditPage() {
   // generator mesh; every other version starts empty on the finished STL.
   const [ops, setOps] = useState<MeshOp[]>([]);
   const [initFor, setInitFor] = useState("");
+  const [preview, setPreview] = useState<MeshPreviewResult | null>(null);
+  const [previewOpsKey, setPreviewOpsKey] = useState("");
+  const [saveFailed, setSaveFailed] = useState(false);
+  const previewSeq = useRef(0);
   useEffect(() => {
     if (!v || initFor === v.id) return;
-    const saved = (v.options as Record<string, unknown> | undefined)?.ui_editor as
-      | { ops?: MeshOp[] }
-      | undefined;
-    if (saved?.ops?.length) {
-      setOps(saved.ops);
-    } else if (v.resolved_mode === "mesh" && v.kind !== "mesh_edit") {
-      const recorded = (v.params as { ops?: MeshOp[] } | null)?.ops;
-      if (Array.isArray(recorded)) setOps(recorded as MeshOp[]);
+    const saved = readUiEditor<{ ops?: MeshOp[] }>(v);
+    if (saved && "ops" in saved) {
+      // persisted stack wins — even an empty one (user dropped every op)
+      setOps(saved.ops ?? []);
+    } else {
+      setOps(recordedMeshOps(v));
     }
+    // never keep the previous version's scratch preview — its GLB URL would
+    // render as this version's model; also invalidates in-flight responses
+    previewSeq.current += 1;
+    setPreview(null);
+    setPreviewOpsKey("");
+    setSaveFailed(false);
     setInitFor(v.id);
   }, [v, initFor]);
 
@@ -447,28 +402,19 @@ export default function EditPage() {
   );
 
   // preview + apply
-  const [preview, setPreview] = useState<MeshPreviewResult | null>(null);
-  const [previewOpsKey, setPreviewOpsKey] = useState("");
   const [busy, setBusy] = useState<"preview" | "apply" | null>(null);
   const [viewCmd, setViewCmd] = useState<{ view: ViewPreset; n: number }>({ view: "iso", n: 0 });
   const [fitKey, setFitKey] = useState(0);
   const [grid, setGrid] = useState(true);
   const [autoPreview, setAutoPreview] = useState(true);
   const [editIdx, setEditIdx] = useState<number | null>(null);
-  const previewSeq = useRef(0);
 
   const glb = v?.artifacts.find((a) => a.kind === "glb");
   const baseUrl = glb?.url ?? null;
 
   /** ops baked into the displayed GLB (mesh parents only) — the instant
    *  rigid preview may only evaluate the suffix after this prefix. */
-  const bakedOps = useMemo<MeshOp[]>(() => {
-    if (v?.resolved_mode === "mesh" && v?.kind !== "mesh_edit") {
-      const recorded = (v.params as { ops?: MeshOp[] } | null)?.ops;
-      if (Array.isArray(recorded)) return recorded as MeshOp[];
-    }
-    return [];
-  }, [v]);
+  const bakedOps = useMemo<MeshOp[]>(() => recordedMeshOps(v), [v]);
 
   const prefixLen = useMemo(() => recordedPrefixLen(ops, bakedOps), [ops, bakedOps]);
   const needsServerPreview = useMemo(
@@ -602,7 +548,7 @@ export default function EditPage() {
       if (!r.ok) toast(r.error ?? "preview failed", "error");
       else setFitKey((k) => k + 1);
     } catch (e) {
-      if (seq === previewSeq.current) toast(String(e), "error");
+      if (seq === previewSeq.current) toast(errMsg(e), "error");
     } finally {
       if (seq === previewSeq.current) setBusy(null);
     }
@@ -622,7 +568,11 @@ export default function EditPage() {
     if (!v || initFor !== v.id) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
-      api.saveEditorState(id, { ops }).catch(() => {});
+      api.saveEditorState(id, { ops }).then(
+        () => setSaveFailed(false),
+        // a dropped draft must be visible — silent loss is a data bug
+        () => setSaveFailed(true)
+      );
     }, 1500);
     return () => {
       if (saveTimer.current) clearTimeout(saveTimer.current);
@@ -643,7 +593,7 @@ export default function EditPage() {
       const r = await api.meshEdit(id, { ops, note: `visual edit of v${v.number}` });
       nav(`/versions/${r.version_id}?job=${r.job_id}`);
     } catch (e) {
-      toast(String(e), "error");
+      toast(errMsg(e), "error");
       setBusy(null);
     }
   };
@@ -661,8 +611,7 @@ export default function EditPage() {
     );
 
   const editable = v.status === "succeeded" || v.status === "needs_review";
-  const anchors = (v.analysis as { anchors?: { holes?: { x: number; y: number; dia?: number }[] } } | null)
-    ?.anchors?.holes;
+  const anchors = readStoredAnchors(v);
   const previewFaces = preview?.stats.faces;
   const baseFaces = (v.analysis as { triangle_count?: number } | null)?.triangle_count;
   const effFaces = previewFaces ?? baseFaces;
@@ -913,7 +862,7 @@ export default function EditPage() {
                 ))}
             </ModelCanvas>
           ) : (
-            <div className="flex h-full items-center justify-center text-sm text-zinc-600">
+            <div className="flex h-full items-center justify-center text-sm text-zinc-500">
               no mesh artifact to edit
             </div>
           )}
@@ -1302,7 +1251,7 @@ export default function EditPage() {
                     <CircleDot className="h-3 w-3" /> pick holes
                   </Btn>
                 </div>
-                <div className="text-[10px] text-zinc-600">depth/csk 0 = through / none</div>
+                <div className="text-[10px] text-zinc-500">depth/csk 0 = through / none</div>
                 {!!drillHoles.length && (
                   <div className="flex flex-col gap-0.5">
                     {drillHoles.map((h, i) => (
@@ -1313,7 +1262,9 @@ export default function EditPage() {
                           {h.csk_dia ? ` · csk Ø${h.csk_dia}` : ""}
                         </span>
                         <button
-                          className="text-zinc-600 hover:text-red-400"
+                          title="remove drill hole"
+                          aria-label="remove drill hole"
+                          className="text-zinc-500 hover:text-red-400"
                           onClick={() => setDrillHoles((hs) => hs.filter((_, j) => j !== i))}
                         >
                           <Trash2 className="h-3 w-3" />
@@ -1400,7 +1351,7 @@ export default function EditPage() {
                   <div className="flex items-center gap-1.5">
                     <span className="w-14 text-[11px] text-zinc-500">radius</span>
                     <NumInput value={boolR} onChange={setBoolR} step={0.5} className="flex-1" />
-                    <span className="text-xs text-zinc-600">mm</span>
+                    <span className="text-xs text-zinc-500">mm</span>
                   </div>
                 )}
                 {boolShape === "cylinder" && (
@@ -1408,7 +1359,7 @@ export default function EditPage() {
                     <div className="flex items-center gap-1.5">
                       <span className="w-14 text-[11px] text-zinc-500">height</span>
                       <NumInput value={boolH} onChange={setBoolH} step={1} className="flex-1" />
-                      <span className="text-xs text-zinc-600">mm</span>
+                      <span className="text-xs text-zinc-500">mm</span>
                     </div>
                     <AxisPicker value={boolAxis} onChange={setBoolAxis} />
                   </>
@@ -1438,7 +1389,7 @@ export default function EditPage() {
                 <div className="flex items-center gap-1.5">
                   <span className="w-14 text-[11px] text-zinc-500">rotate z</span>
                   <NumInput value={boolRotZ} onChange={setBoolRotZ} step={15} className="flex-1" />
-                  <span className="text-xs text-zinc-600">°</span>
+                  <span className="text-xs text-zinc-500">°</span>
                   <div className="flex gap-1">
                     {(["translate", "rotate"] as const).map((m) => (
                       <button
@@ -1539,7 +1490,7 @@ export default function EditPage() {
               op stack ({ops.length})
             </SectionTitle>
             {!ops.length && (
-              <div className="text-xs text-zinc-600">
+              <div className="text-xs text-zinc-500">
                 No operations yet — build a stack with the tools, then Preview / Apply.
               </div>
             )}
@@ -1554,7 +1505,7 @@ export default function EditPage() {
                   }`}
                 >
                   <div className="flex items-center gap-1.5">
-                    <span className="w-4 text-zinc-600">{i + 1}</span>
+                    <span className="w-4 text-zinc-500">{i + 1}</span>
                     <button
                       className="min-w-0 flex-1 truncate text-left text-zinc-300 hover:text-zinc-100"
                       title={`${JSON.stringify(o.args)} — click to edit args`}
@@ -1564,7 +1515,7 @@ export default function EditPage() {
                     </button>
                     {opReport?.[i] && (
                       <span
-                        className={`shrink-0 text-[10px] ${opReport[i].watertight === false ? "text-amber-400" : "text-zinc-600"}`}
+                        className={`shrink-0 text-[10px] ${opReport[i].watertight === false ? "text-amber-400" : "text-zinc-500"}`}
                         title={`faces ${opReport[i].faces_in?.toLocaleString()} → ${opReport[i].faces_out?.toLocaleString()}${opReport[i].watertight === false ? " · not watertight" : ""}`}
                       >
                         {opReport[i].watertight === false ? "!" : "·"}
@@ -1623,16 +1574,28 @@ export default function EditPage() {
             </div>
             {dirty && (
               <div className="mt-2 flex items-center gap-1.5 text-[11px] text-zinc-500">
-                <Check className="h-3 w-3 text-emerald-500" /> draft autosaved
+                {saveFailed ? (
+                  <span className="text-amber-400" title="draft changes could not be saved — saving retries automatically">
+                    draft not saved
+                  </span>
+                ) : (
+                  <>
+                    <Check className="h-3 w-3 text-emerald-500" /> draft autosaved
+                  </>
+                )}
                 <button
                   className="underline hover:text-zinc-300"
                   onClick={() =>
                     api.saveEditorState(id, { ops }).then(
                       () => {
+                        setSaveFailed(false);
                         toast("draft saved", "success");
                         qc.invalidateQueries({ queryKey: ["version", id] });
                       },
-                      (e) => toast(String(e), "error")
+                      (e) => {
+                        setSaveFailed(true);
+                        toast(errMsg(e), "error");
+                      }
                     )
                   }
                 >

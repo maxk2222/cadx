@@ -11,7 +11,7 @@ import {
   Wand2,
 } from "lucide-react";
 import { useRef, useState } from "react";
-import { api } from "../lib/api";
+import { api, errMsg } from "../lib/api";
 import type { Asset } from "../lib/types";
 import GenerateImageModal from "./GenerateImageModal";
 import ImageEditorModal from "./ImageEditorModal";
@@ -30,12 +30,16 @@ export default function AssetManager({
   selected,
   onToggle,
   onAssetReplaced,
+  onDeleted,
 }: {
   projectId: string;
   assets: Asset[];
   selected?: Set<string>;
   onToggle?: (id: string) => void;
   onAssetReplaced?: (srcId: string, newId: string) => void;
+  /** fired after a successful delete so parents can drop the id from any
+   *  selection state (otherwise a stale id is submitted on generate/edit) */
+  onDeleted?: (id: string) => void;
 }) {
   const qc = useQueryClient();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -65,7 +69,7 @@ export default function AssetManager({
       await api.uploadAssets(projectId, Array.from(files));
       refresh();
     } catch (e) {
-      setErr(String(e));
+      setErr(errMsg(e));
     } finally {
       setUploading(false);
     }
@@ -73,7 +77,11 @@ export default function AssetManager({
 
   const del = useMutation({
     mutationFn: (id: string) => api.deleteAsset(id),
-    onSuccess: refresh,
+    onSuccess: (_d, id) => {
+      onDeleted?.(id);
+      refresh();
+    },
+    onError: (e) => setErr(errMsg(e)),
   });
   const saveCaption = useMutation({
     mutationFn: ({ id, caption }: { id: string; caption: string }) =>

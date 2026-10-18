@@ -29,7 +29,7 @@ import {
   useDebounced,
   useToast,
 } from "../components/ui";
-import { api } from "../lib/api";
+import { api, errMsg } from "../lib/api";
 import { fmtDateTime, timeAgo } from "../lib/format";
 import type { LibraryPart } from "../lib/types";
 import { useTitle } from "../lib/useTitle";
@@ -79,7 +79,7 @@ function PartsSection() {
       setCaption("");
       qc.invalidateQueries({ queryKey: ["library"] });
     },
-    onError: (e) => toast(String(e), "error"),
+    onError: (e) => toast(errMsg(e), "error"),
   });
   const del = useMutation({
     mutationFn: (id: string) => api.deleteLibraryPart(id),
@@ -88,7 +88,7 @@ function PartsSection() {
       setDetail(null);
       qc.invalidateQueries({ queryKey: ["library"] });
     },
-    onError: (e) => toast(String(e), "error"),
+    onError: (e) => toast(errMsg(e), "error"),
   });
 
   const filtered = useMemo(() => {
@@ -143,7 +143,7 @@ function PartsSection() {
           <Upload className="h-3.5 w-3.5" /> upload STEP/STL
         </Btn>
         <div className="relative ml-auto">
-          <Search className="pointer-events-none absolute left-2 top-2.5 h-3.5 w-3.5 text-zinc-600" />
+          <Search className="pointer-events-none absolute left-2 top-2.5 h-3.5 w-3.5 text-zinc-500" />
           <input
             className={inputCls + " w-52 pl-7 text-xs"}
             placeholder="search parts…"
@@ -196,7 +196,7 @@ function PartsSection() {
                 <Chip tone={p.kind === "template" ? "purple" : "blue"}>
                   {p.kind}
                 </Chip>
-                <span className="ml-auto text-[10px] text-zinc-600">
+                <span className="ml-auto text-[10px] text-zinc-500">
                   {timeAgo(p.created_at)}
                 </span>
               </div>
@@ -207,7 +207,7 @@ function PartsSection() {
                 {p.filename || "code template"}
               </div>
               {p.caption && (
-                <div className="mt-1 line-clamp-2 text-xs text-zinc-600">
+                <div className="mt-1 line-clamp-2 text-xs text-zinc-500">
                   {p.caption}
                 </div>
               )}
@@ -219,6 +219,7 @@ function PartsSection() {
                   <a
                     href={p.url}
                     title="download"
+                    aria-label="download"
                     className="inline-flex h-7 w-7 items-center justify-center rounded-md text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
                     onClick={(e) => e.stopPropagation()}
                   >
@@ -379,7 +380,7 @@ function PartDetail({
         </div>
       )}
       {update.isError && (
-        <div className="mb-3 text-xs text-red-400">{String(update.error)}</div>
+        <div className="mb-3 text-xs text-red-400">{errMsg(update.error)}</div>
       )}
 
       <div className="mb-3 flex flex-col gap-1 text-xs text-zinc-500">
@@ -494,7 +495,7 @@ function CatalogBrowser() {
       {open && (
         <div className="mt-3">
           <div className="relative mb-2">
-            <Search className="pointer-events-none absolute left-2 top-2 h-3.5 w-3.5 text-zinc-600" />
+            <Search className="pointer-events-none absolute left-2 top-2 h-3.5 w-3.5 text-zinc-500" />
             <input
               className={inputCls + " pl-7 text-xs"}
               placeholder="filter classes, types or sizes (e.g. iso10642, M4, 608…)"
@@ -521,7 +522,7 @@ function CatalogBrowser() {
                     <ChevronRight className="h-3.5 w-3.5 text-zinc-500" />
                   )}
                   {cat}
-                  <span className="text-xs text-zinc-600">
+                  <span className="text-xs text-zinc-500">
                     ({Object.keys(classes).length})
                   </span>
                 </button>
@@ -545,7 +546,7 @@ function CatalogBrowser() {
                           >
                             {cls}
                           </button>
-                          <span className="ml-2 text-zinc-600">
+                          <span className="ml-2 text-zinc-500">
                             {entry.kind === "parametric" ? "params: " : ""}
                             {preview}
                           </span>

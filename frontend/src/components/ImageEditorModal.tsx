@@ -1,6 +1,6 @@
 import { Eraser, Lasso, Paintbrush, Scissors, Undo2, Wand2, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api } from "../lib/api";
+import { api, errMsg } from "../lib/api";
 import type { Asset } from "../lib/types";
 import { Btn, IconBtn, Spinner } from "./ui";
 
@@ -355,7 +355,7 @@ export default function ImageEditorModal({
       next.getContext("2d")!.drawImage(bmp, 0, 0);
       replaceWork(next);
     } catch (e) {
-      setErr(String(e));
+      setErr(errMsg(e));
     } finally {
       setBusy("");
     }
@@ -371,7 +371,7 @@ export default function ImageEditorModal({
       if (!blob) throw new Error("canvas export failed");
       onSaved(await api.deriveAsset(asset.id, blob));
     } catch (e) {
-      setErr(String(e));
+      setErr(errMsg(e));
       setBusy("");
     }
   };
@@ -491,6 +491,8 @@ export default function ImageEditorModal({
       >
         <canvas
           ref={viewRef}
+          role="img"
+          aria-label={`editing ${asset.filename}`}
           className="max-h-full max-w-full cursor-crosshair shadow-2xl"
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}

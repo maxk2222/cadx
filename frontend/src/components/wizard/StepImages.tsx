@@ -14,6 +14,7 @@ export default function StepImages({
   selected,
   onToggle,
   onAssetReplaced,
+  onDeleted,
   onNext,
   onBack,
 }: {
@@ -23,6 +24,8 @@ export default function StepImages({
   selected: Set<string>;
   onToggle: (id: string) => void;
   onAssetReplaced: (srcId: string, newId: string) => void;
+  /** an asset was deleted server-side — drop it from the wizard selection */
+  onDeleted?: (id: string) => void;
   onNext: () => void;
   onBack: () => void;
 }) {
@@ -45,6 +48,7 @@ export default function StepImages({
             selected={selected}
             onToggle={onToggle}
             onAssetReplaced={onAssetReplaced}
+            onDeleted={onDeleted}
           />
           <div className="mt-2 flex items-center gap-1.5 text-[11px] text-zinc-600">
             <FolderOpen className="h-3 w-3" />

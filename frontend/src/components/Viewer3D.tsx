@@ -86,6 +86,7 @@ export default function Viewer3D({ url }: { url: string | null }) {
         viewCmd={viewCmd}
         fitKey={fitKey}
         glRef={glRef}
+        preserveDrawingBuffer // PNG screenshots read the framebuffer
       />
 
       {/* view presets */}

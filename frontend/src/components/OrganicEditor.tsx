@@ -10,9 +10,11 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
-import { api } from "../lib/api";
+import { api, errMsg } from "../lib/api";
+import { num, readStoredAnchors } from "../lib/editorState";
 import type {
   FeatureAnchor,
   MeshPreviewResult,
@@ -46,11 +48,6 @@ const QUALITY: { id: string; label: string; voxel_mm: number; max_elements: numb
   { id: "normal", label: "normal", voxel_mm: 1.5, max_elements: 150_000 },
   { id: "fine", label: "fine", voxel_mm: 1.0, max_elements: 400_000 },
 ];
-
-const num = (s: string, fb = 0) => {
-  const n = Number(s);
-  return Number.isFinite(n) ? n : fb;
-};
 
 function Slider({
   label,
@@ -131,6 +128,7 @@ export default function OrganicEditor({
   const [brushMode, setBrushMode] = useState<BrushMode | null>(null);
   const [brushR, setBrushR] = useState(4.0);
   const [model, setModel] = useState<import("three").Group | null>(null);
+  const [fillsCapped, setFillsCapped] = useState(false);
   const [hover, setHover] = useState<PickInfo | null>(null);
   const lastPt = useRef<[number, number, number] | null>(null);
 
@@ -186,19 +184,25 @@ export default function OrganicEditor({
   const displayUrl = brushMode || showOriginal ? baseUrl : (preview?.glb_url ?? baseUrl);
 
   /* --- anchor fetch on open: scans + persists the merged table, so the
-   *  preview's auto-keep set equals what the commit will protect. */
+   *  preview's auto-keep set equals what the commit will protect. The query
+   *  key is shared with AnchorsPanel — one fetch serves both. */
+  const anchorsQ = useQuery({
+    queryKey: ["anchors", version.id],
+    queryFn: () => api.anchors(version.id),
+    enabled: open,
+    staleTime: 60_000,
+  });
+  useEffect(() => {
+    // the scan supersedes the stored analysis table once it arrives — `open`
+    // in deps so a warm cache re-applies on re-open after init restored the
+    // stored table
+    const r = anchorsQ.data;
+    if (open && r?.ok && r.anchors.length) setAnchors(r.anchors);
+  }, [anchorsQ.data, open]);
+
   useEffect(() => {
     if (!open) return;
-    const stored = (
-      version.analysis as { anchors?: { holes?: FeatureAnchor[] } } | null
-    )?.anchors?.holes;
-    if (stored?.length) setAnchors(stored);
-    api
-      .anchors(version.id)
-      .then((r) => {
-        if (r.ok && r.anchors.length) setAnchors(r.anchors);
-      })
-      .catch(() => {});
+    setAnchors(readStoredAnchors(version));
     setPreview(null);
     setErr(null);
     lastPt.current = null;
@@ -216,7 +220,7 @@ export default function OrganicEditor({
       setPreview(r);
       setErr(r.ok ? null : (r.error ?? "preview failed"));
     } catch (e) {
-      if (seq === previewSeq.current) setErr(String(e));
+      if (seq === previewSeq.current) setErr(errMsg(e));
     } finally {
       if (seq === previewSeq.current) setBusy(null);
     }
@@ -356,7 +360,7 @@ export default function OrganicEditor({
       });
       onJobStarted(r);
     } catch (e) {
-      toast(String(e), "error");
+      toast(errMsg(e), "error");
       setBusy(null);
     }
   };
@@ -421,7 +425,7 @@ export default function OrganicEditor({
               onHover={setHover}
               onModel={setModel}
             >
-              <RegionFill model={model} entries={fills} />
+              <RegionFill model={model} entries={fills} onTooDense={setFillsCapped} />
               {anchorMarkers.map(({ a, p }) => (
                 <AnchorMarker key={a.index} a={a} pos={p} selected={autoKeep} />
               ))}
@@ -438,7 +442,7 @@ export default function OrganicEditor({
               )}
             </ModelCanvas>
           ) : (
-            <div className="flex h-full items-center justify-center text-sm text-zinc-600">
+            <div className="flex h-full items-center justify-center text-sm text-zinc-500">
               no mesh artifact
             </div>
           )}
@@ -459,7 +463,12 @@ export default function OrganicEditor({
                 {anchorMarkers.length > 1 ? "s" : ""}
               </span>
             )}
-            <span className="text-zinc-600">·</span>
+            {fillsCapped && (
+              <span className="text-amber-400" title="paint fills are skipped above 500k vertices">
+                fills hidden — mesh too dense
+              </span>
+            )}
+            <span className="text-zinc-500">·</span>
             {brushMode ? (
               <span
                 className={brushMode === "keep" ? "text-emerald-300" : "text-purple-300"}
@@ -529,7 +538,7 @@ export default function OrganicEditor({
                 </button>
               ))}
             </div>
-            <span className="mt-1 block text-xs text-zinc-600">
+            <span className="mt-1 block text-xs text-zinc-500">
               {STYLES.find((s) => s.id === style)?.hint}
             </span>
           </Field>
@@ -543,7 +552,7 @@ export default function OrganicEditor({
             format={(v) => `${v} %`}
             onChange={setPreservePct}
           />
-          <p className="-mt-2 mb-3 text-[11px] text-zinc-600">{preserveHint}</p>
+          <p className="-mt-2 mb-3 text-[11px] text-zinc-500">{preserveHint}</p>
 
           <Slider
             label="Material density"
@@ -653,7 +662,7 @@ export default function OrganicEditor({
               </label>
             )}
             {regions.length === 0 && !brushMode && (
-              <p className="text-xs text-zinc-600">
+              <p className="text-xs text-zinc-500">
                 none — painted zones stay solid (green) or are carved empty (purple)
               </p>
             )}
