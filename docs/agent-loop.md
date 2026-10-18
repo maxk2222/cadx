@@ -2,6 +2,41 @@
 
 State machine in `backend/cadx/agent/orchestrator.py`:
 
+```mermaid
+flowchart TD
+    INTAKE --> CL{"spec has open<br/>questions?"}
+    CL -->|"mode = ask"| WAIT["waiting_for_input<br/>(answer resumes at PLAN)"]
+    CL -->|"no / mode = assume"| PLAN
+    WAIT --> PLAN
+    PLAN --> RM{"resolve_mode"}
+    RM -->|cad| CG
+    RM -->|mesh| MG2
+    RM -->|hybrid| MG3["MESH_GENERATE → ORIENT<br/>→ PROCESS_MESH (+solid)"]
+    RM -->|topopt| CG4["cad generation<br/>+ validation"]
+    subgraph cadloop["cad loop × K"]
+        direction LR
+        CG["CODEGEN"] --> EX["EXECUTE"] --> RP{"exec failed?"}
+        RP -->|"yes, budget left"| REP["REPAIR"] --> EX
+        RP -->|no| AN["ANALYZE"]
+        AN --> AF{"dim mismatch?"}
+        AF -->|yes| AFX["AUTOFIX<br/>(params_override)"] --> EX
+        AF -->|no| CR["CRITIQUE"]
+        CR -->|"iter ≥ 2"| IMP["IMPROVE"] --> EX
+    end
+    subgraph meshloop["mesh loop × K"]
+        direction LR
+        MG2["MESH_GENERATE"] --> OR["ORIENT"] --> PM["PROCESS_MESH"]
+        PM --> MR["MESH_REFINE?"] --> AN2["ANALYZE"] --> CR2["CRITIQUE"] --> MR2["MESH_REFINE?<br/>(issues-seeded)"]
+    end
+    MG3 --> CG
+    CG4 -->|"valid base + load cases"| OPT["OPTIMIZE<br/>SIMP → extract → refine → FEM"]
+    cadloop --> FIN["FINALIZE"]
+    meshloop --> FIN
+    OPT --> FIN
+```
+
+Text form:
+
 ```
 INTAKE → CLARIFY? → PLAN → resolve_mode →
   cad:    [CODEGEN → EXECUTE → REPAIR? → ANALYZE → AUTOFIX? → CRITIQUE → IMPROVE?] × K → FINALIZE
@@ -167,11 +202,12 @@ parents the code re-runs against the parent's `mesh/solid.brep`.
 
 A terminal job can be replayed via `POST /jobs/{id}/restart`: generate/edit
 jobs spawn a sibling version cloned from the original inputs, params jobs a
-new params child with the same effective overrides, optimize jobs a new
-optimize child of the same parent (replaying the stored `optimize_request`,
-falling back to spec-derived load cases), and reexport jobs simply enqueue
-another export on the same version. The UI shows a "restart" button on
-finished jobs.
+new params child with the same effective overrides, `code`/`meshgen` jobs
+(MCP surface) a fresh child with the same code/mesh request, optimize jobs a
+new optimize child of the same parent (replaying the stored
+`optimize_request`, falling back to spec-derived load cases), and reexport
+jobs simply enqueue another export on the same version. The UI shows a
+"restart" button on finished jobs.
 
 Budgets: `agent_max_iterations` (outer loop), `agent_max_repairs` (per
 iteration), `agent_patch_retries` (per improve/repair call),
@@ -212,9 +248,21 @@ Robustness toggles (aimed at weak/local models): `agent_param_autofix`,
 `agent_critique_reask`.
 
 Tool sessions: `llm_tools` (`auto|on|off`), `agent_tool_max_calls`,
-`agent_tool_max_calls_info`, `agent_tool_max_turns`, `agent_tool_churn_limit`
-(edits-without-check guard), `agent_tool_verify`, `agent_tool_verify_max`,
-`agent_struct_tools`, `agent_topopt_max_runs`, `agent_fem_max_runs`.
+`agent_tool_max_calls_info`, `agent_tool_max_calls_improve`,
+`agent_tool_max_calls_build`, `agent_tool_max_turns`,
+`agent_tool_max_turns_edit`, `agent_tool_churn_limit`
+(edits-without-check guard), `agent_session_condense_turns`,
+`agent_tool_verify`, `agent_tool_verify_max`,
+`agent_struct_tools`, `agent_topopt_max_runs`, `agent_fem_max_runs`,
+`agent_sigcheck` (pre-execution signature gate), `agent_staged_build`
+(`kind="build"` feature-by-feature codegen), `agent_codegen_samples`
+(first-iteration tournament), `agent_parametrize`, `agent_design_audit`,
+`agent_quickref_context`, `agent_plan_mode` (`full|lite|auto`),
+`agent_mesh_shape_guard_iou`. Adaptive reasoning: `llm_thinking`,
+`llm_thinking_hard_steps`, `llm_thinking_escalate_after`,
+`llm_thinking_max_calls`, `llm_thinking_body_on/_off`,
+`llm_degenerate_stall_s`. The full reference is
+[configuration.md](configuration.md).
 
 ### Recommended settings for local ~27B models
 

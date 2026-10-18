@@ -1,8 +1,9 @@
 # Web GUI
 
 The React/Vite application exposes the generation, editing, analysis, and
-library workflows through nine pages: Start (the new-part wizard), Chat,
-Projects, Project, Version, Jobs, Stats, Library, and Settings. The UI is
+library workflows through ten pages: Start (the new-part wizard), Chat,
+Projects, Project, Version, Mesh editor, Jobs, Stats, Library, and
+Settings. The UI is
 served by nginx at `:8080` in Docker mode or Vite at `:5173` in native
 development mode.
 
@@ -26,7 +27,10 @@ including a running job.
 
 The **Jobs** page (`/jobs`) lists active and recently finished jobs across
 projects with live progress, iteration/step labels, runtime and
-cancel/finish/restart actions; a nav badge shows the active count.
+cancel/finish/retry actions; a nav badge shows the active count. Status
+filter chips plus a job-type dropdown narrow the list, `waiting_for_input`
+jobs show their first pending question inline, and a *show more* control
+paginates older history.
 
 ![Jobs page — live progress, scores and job actions](screenshots/jobs.png)
 
@@ -64,17 +68,28 @@ The Version page provides:
 - Overview: 3D viewer, dimensions/volume/validity, renders, exports.
 - Spec: extracted PartSpec and construction plan.
 - Code: generated source and parameter controls.
-- Quality: DfM warnings, measured issues, vision critique, BOM, and FEM report
-  including stress/deformation artifacts when available.
+- Quality: measured-anchor table (AnchorsPanel), DfM warnings, measured
+  issues, vision critique, BOM, and FEM report including stress/deformation
+  artifacts when available.
 - Files: all version artifacts, downloads, and saving successful/reviewed
   versions to the reusable part library.
 - Side panel: job progress/log and history, prompt/image edits, mode/options,
-  inherited or selected library parts, parameter-only reruns, and manual
-  topology optimization for eligible versions.
+  inherited or selected library parts, parameter-only reruns, parametric
+  through-hole resize (FeatureEditPanel), manual topology optimization for
+  eligible versions, and the version tree with per-subtree collapse.
 
 Edits create child versions. Library selections are carried forward by default
 and can be changed in the edit form. The API distinguishes an omitted selection
 (inherit) from an explicit empty list (clear).
+
+A **compare** toggle on the overview opens a version picker and splits the
+viewer into a side-by-side `a`/`b` `Viewer3D` pair plus a ComparePanel:
+volume/bbox/solid/face deltas and added/removed material from
+`GET /versions/{a}/compare/{b}`, plus a params diff table — when OCC
+booleans are skipped the panel still shows the partial result with a
+`boolean diff` warning. The viewer toolbar also carries a two-click
+surface-distance **measure** tool (the same one the mesh editor
+documents).
 
 ![Version detail — 3D viewer, spec prompt, agent activity timeline](screenshots/version-cad.png)
 

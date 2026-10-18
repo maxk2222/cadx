@@ -40,6 +40,22 @@ Run against `make up` (full compose stack) at http://localhost:8080.
 - [ ] Delete a leaf version → removed from tree and disk
 - [ ] Cancel a running job → status `cancelled`, partial iteration kept
 
+## Version page & Jobs UI
+
+- [ ] Version overview → **compare** toggle + version picker → side-by-side
+      `a`/`b` viewers and a ComparePanel: params diff table, volume/bbox and
+      added/removed material deltas; skipped OCC booleans show a
+      `boolean diff` warning with the partial result
+- [ ] Viewer toolbar → measure tool → click two surface points → distance
+      in mm; `Esc` exits
+- [ ] Side panel → **Edit feature** on a CAD version with a through-hole →
+      resize the diameter → `kind=edit` child version re-cuts the hole
+- [ ] Jobs page → status filter chips + job-type dropdown narrow the list;
+      a failed row's **retry** re-runs the job; *show more* paginates older
+      history
+- [ ] A `waiting_for_input` job shows its first pending question inline on
+      the Jobs page; answering on the version page resumes it
+
 ## Mesh & hybrid modes
 
 Prereq: mesh server running — easiest via `./scripts/start.sh` (auto-detects

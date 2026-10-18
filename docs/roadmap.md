@@ -17,12 +17,20 @@ have their own docs — this file is only for orientation and ideas.
   [parts-library.md](parts-library.md)
 - Mesh editor and structural editor in the WebGUI — [webgui-ux.md](webgui-ux.md)
 - Mesh refinement sessions replayed as deterministic `MeshOp` lists
+- manifold3d boolean fallback — mesh-hosted rescue booleans behind OCC,
+  wired via `cadlib.ops.set_boolean_backend` (`cad/mesh_boolean.py`)
+- Chat agent with the full spawn/inspect tool surface — [chat.md](chat.md)
+- MCP server exposing the deterministic tool surface (stdio + `/mcp`,
+  LLM-free) — [mcp-server.md](mcp-server.md)
+- Organic restyle (gyroid/trabecular/voronoi/branches) — [organic.md](organic.md)
+- Version compare endpoint + side-by-side UI
+  (`GET /versions/{a}/compare/{b}`) — [webgui-ux.md](webgui-ux.md)
+- Job finish/restart controls (Jobs page + `/api/jobs/{id}/finish|restart`)
+- Structural editor pick tools (face/edge/hole) — [webgui-ux.md](webgui-ux.md)
 - Benchmark/eval harness — [eval.md](eval.md)
 
 ## Backlog
 
-- **manifold3d boolean fallback** — mesh-hosted booleans when OCCT struggles
-  with dense faceted solids (alternative to the CAD-hosted hybrid path).
 - **Assemblies** — multi-body versions with named parts, joints/constraints
   and interference checks.
 - **Mesh-native edits** — in-painting / partial regeneration instead of full

@@ -13,6 +13,28 @@ structured load cases, not generated solver code.
 
 ## Workflows
 
+```mermaid
+flowchart LR
+    subgraph gen["Generation"]
+        BASE["base part<br/>(cad / mesh / hybrid)"]
+        SPEC["spec features +<br/>measured anchors"]
+    end
+    subgraph topopt["TopOpt (executor, cad queue)"]
+        VOX["voxelize domain"] --> SIMP["SIMP iterate<br/>(OC / MMA, filters,<br/>robust / self-supporting)"]
+        SIMP --> EXT["density extract<br/>(smoothed iso,<br/>volume_preserve)"]
+        EXT --> KEEP["keep-surface restore<br/>opt ∪ (base ∩ keep)"]
+    end
+    subgraph ref["Refine (JobType.refine)"]
+        CUT["feature re-cut<br/>bores / threads / inserts<br/>(manifold3d)"] --> ASTEP["analytic STEP<br/>(isolated subprocess<br/>per feature)"]
+        CUT --> FEMV["FEM re-verify<br/>(declared load cases)"]
+    end
+    BASE --> VOX
+    SPEC --> CUT
+    KEEP --> CUT
+    ASTEP --> OUT["exports:<br/>STL · 3MF · GLB · STEP"]
+    FEMV --> OUT
+```
+
 ### FEM feedback during generation
 
 Describe what is fixed and how the part is loaded in the prompt, or enable
@@ -99,7 +121,9 @@ interfaces — `POST /versions/{id}/refine` (`JobType.refine`, `VersionKind
   drops below 1 or every feature was skipped.
 
 `optimize.auto_refine_features: true` (spec or request) auto-enqueues the
-refine child right after a successful optimize. `Feature.thread_spec`
+refine child right after a successful optimize; the runtime setting
+`topopt_auto_refine` (default on) does the same for every succeeded topopt
+job. `Feature.thread_spec`
 (`"M4"`, `"M6x0.75"`, `"M8-6H"`…) overrides the nominal diameter for thread
 re-cuts; `optimize.restore_planes` controls the keep-surface union (default
 on, needs the pre-optimize base mesh on the parent/grandparent version). In
@@ -293,8 +317,14 @@ versions/<version-id>/topopt/history.json
 ```
 
 Renders are optional when offscreen VTK rendering is unavailable. The optimized
-mesh exports normally (STL, 3MF, GLB); analytic STEP, DXF, and SVG are not
-available from the voxel TopOpt result.
+mesh exports normally (STL, 3MF, GLB). STEP is exported too: the base body is
+faceted, but applied refine features (bores, threads, seats) are re-cut as
+real cylindrical/helical surfaces by `export_analytic_step_isolated` — one
+spawned subprocess per feature with a hard timeout
+(`analytic_step_timeout_s`), BREP checkpoints between features, and an
+honest degrade to the faceted STEP (with a warning) when a region is
+boolean-pathological. DXF and SVG remain unavailable from the voxel TopOpt
+result.
 
 ## Limits and interpretation
 

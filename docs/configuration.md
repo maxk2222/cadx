@@ -33,8 +33,14 @@ the database.
 | `llm_stream` | `true` | stream completions |
 | `llm_idle_timeout_s` | `180` | abort a stalled stream with no content |
 | `llm_total_timeout_s` | `1800` | hard cap for one streamed response |
+| `llm_degenerate_stall_s` | `60` | abort a stream emitting only whitespace/indentation (invisible to the byte-progress watchdog) |
 | `llm_extra_body` | `""` | extra JSON object merged into every request body (provider-specific flags) |
 | `llm_tools` | `auto` | `auto` probes native tool support per role; `on` is strict; `off` uses legacy JSON |
+| `llm_thinking` | `auto` | `off` / `auto` / `always` — adaptive reasoning (`agent/thinking.py`); `auto` enables thinking for hard steps and escalates after repeated errors |
+| `llm_thinking_body_on` / `llm_thinking_body_off` | `""` | provider-dialect extra_body JSON merged when thinking resolves on/off; `""` = model default |
+| `llm_thinking_hard_steps` | `repair,improve` | CSV step names that get thinking under `auto` |
+| `llm_thinking_escalate_after` | `2` | stalls/errors before `auto` latches thinking on for the rest of the job |
+| `llm_thinking_max_calls` | `8` | per-job cap on thinking-on calls (`0` disables thinking) |
 
 ## Agent loop
 
@@ -49,11 +55,18 @@ the database.
 | `agent_max_tokens_per_job` | `400000` | prompt-token budget per job |
 | `agent_max_wall_s` | `900` | wall-clock budget per job (s) |
 | `agent_default_gen_mode` | `auto` | `auto` / `cad` / `mesh` / `hybrid` / `topopt` |
+| `agent_plan_mode` | `full` | `full` = catalog-aware tool session, `lite` = one short non-tool call, `auto` = lite for text-only cad jobs |
 | `agent_param_autofix` | `true` | retry dim errors via `params_override` without an LLM call |
 | `agent_patch_mode` | `auto` | `auto` / `always` / `never` — patch vs full regeneration |
 | `agent_patch_retries` | `2` | patch attempts before falling back to fresh codegen |
 | `agent_feature_feedback` | `true` | feed measured features (holes, rounds, …) into improve steps |
 | `agent_critique_reask` | `true` | re-ask once when a failing critique lists no discrepancies |
+| `agent_sigcheck` | `true` | static AST signature gate on generated code (pre-execution) |
+| `agent_staged_build` | `auto` | feature-by-feature codegen sessions (`add_block`/`checkpoint`/`verify`); `auto` = on when tool sessions are |
+| `agent_parametrize` | `true` | best-effort mesh → build123d parametric reconstruction (one extra executor task per mesh job) |
+| `agent_codegen_samples` | `1` | best-of-N sampled first codegen attempt (light-verified, best wins) |
+| `agent_quickref_context` | `false` | inline the runtime-introspected signature reference into codegen/repair context |
+| `agent_design_audit` | `false` | PARAMS ±ε robustness audit before finishing |
 | `agent_max_approaches` | `2` | strategy-chain budget (e.g. `hybrid → cad` fallback) |
 | `agent_stall_patience` | `2` | stop after this many iterations without improvement (0 = never) |
 | `agent_switch_score` / `agent_switch_after_iters` | `60` / `4` | strategy-switch trigger thresholds |
@@ -64,18 +77,37 @@ the database.
 |---------|---------|-------|
 | `agent_tool_max_calls` | `10` | tool turns per edit/codegen session |
 | `agent_tool_max_calls_info` | `6` | lookup turns per intake/plan/critique session |
+| `agent_tool_max_calls_improve` | `6` | tool budget for feature/lint-only improve sessions |
 | `agent_tool_max_turns` | `24` | hard turn cap per tool session |
+| `agent_tool_max_turns_edit` | `12` | turn cap for edit/repair sessions (each verify pays the full pipeline) |
 | `agent_tool_churn_limit` | `6` | nudge → abort after this many edits without a check |
+| `agent_session_condense_turns` | `12` | condense tool-session history past this many exchanges (`0` = off) |
 | `agent_tool_verify` | `true` | allow bounded sandbox `verify`/`render_model` in edit sessions |
 | `agent_tool_verify_max` | `2` | sandbox executions per session |
+| `agent_build_verify_max` | `8` | sandbox `verify` calls per staged build |
+| `agent_tool_max_calls_build` | `16` | tool-call budget for staged build sessions |
 | `agent_mesh_tools` | `true` | master switch for the mesh-refine session |
 | `agent_mesh_max_ops` | `24` | `MeshOp`s per refine session |
 | `agent_mesh_preview_max` | `4` | `mesh_preview` renders per session |
 | `agent_mesh_refine_rounds` | `1` | issues-seeded repair rounds after a failed critique |
+| `agent_mesh_shape_guard_iou` | `0.8` | refuse refine ops below this silhouette IoU (or >15% volume loss on a non-cut op); `0` = off |
 | `agent_mesh_hard_fail_score` / `agent_mesh_hard_fail_limit` | `30` / `3` | consecutive hard fails before the mesh loop stops |
 | `agent_struct_tools` | `true` | master switch for the optimize session |
 | `agent_topopt_max_runs` | `6` | `topopt_run` calls per optimize session |
 | `agent_fem_max_runs` | `4` | `analyze_fem` calls per optimize session |
+
+## Chat
+
+Chat-agent session settings — see [chat.md](chat.md).
+
+| Setting | Default | Notes |
+|---------|---------|-------|
+| `chat_model_role` | `vision` | `vision` receives tool-result images (renders, concept images); `code` is text-only |
+| `chat_tool_max_calls` | `30` | tool calls per chat turn |
+| `chat_max_turns` | `40` | turn cap for a running chat turn |
+| `chat_spawn_timeout_s` | `2700` | wait cap on spawn tools (`wait=true`) |
+| `chat_history_messages` | `60` | message history sent to the model |
+| `chat_image_max` | `8` | images per user message |
 
 ## Mesh generation
 
@@ -84,6 +116,8 @@ the database.
 | `mesh_base_url` | `""` | mesh-server URL; seeded once from `MESH_BASE_URL` env |
 | `mesh_model` | `auto` | adapter id or `auto`; seeded once from `MESH_MODEL` |
 | `mesh_timeout_s` | `900` | client-side generation timeout |
+| `mesh_stall_timeout_s` | `300` | abort polling a server job whose (progress,message) hasn't moved |
+| `mesh_min_free_mb` | `0` | refuse to submit when the sidecar host reports less free RAM (`0` = off) |
 | `mesh_decimate_faces` | `30000` | decimation target in the baseline pipeline |
 | `mesh_max_faces_for_cad` | `30000` | face cap for the hybrid work-solid — keep ≤60k, OCCT booleans scale with facet count |
 | `mesh_smooth_after_flatten_iters` | `10` | smoothing after `flatten_bottom` |
@@ -126,6 +160,9 @@ the database.
 | `topopt_auto_keep` | `true` | hold detected fastener anchors solid |
 | `topopt_auto_keep_margin_mm` | `3` | margin around auto-kept anchors |
 | `topopt_multires_min_cells` | `4000` | below this many cells the `multires` coarse pass is skipped |
+| `topopt_multires` | `true` | coarse→fine multires SIMP warm start (~3× faster on big parts) |
+| `topopt_auto_refine` | `true` | auto-enqueue a feature-finishing refine child after a succeeded topopt with features/anchors |
+| `refine_helical_threads` | `true` | re-cut derivable-pitch threads as real helical V-grooves (tap-drill bore kept as fallback) |
 
 ## Executor
 
@@ -135,6 +172,8 @@ the database.
 | `exec_mem_limit_mb` | `4096` | sandbox memory cap (enforced via rlimits on Linux); FEM/TopOpt
 fail fast with a memory estimate when the voxelized domain would exceed
 this budget instead of being OOM-killed mid-iteration |
+| `analytic_step_timeout_s` | `240` | wall-clock budget for the isolated per-feature analytic-STEP subprocess; on timeout the faceted STEP ships |
+| `exec_warm_runner` | `true` | pre-warmed zygote fork per sandbox run — identical isolation, cold-subprocess fallback on failure |
 
 ## Project settings and per-run options
 
@@ -165,6 +204,7 @@ Infrastructure-only bootstrap settings; everything else lives in the DB.
 | `MESH_MODEL` | — | seeds `mesh_model` once |
 | `MESH_IMAGE_MODEL` | — | seeds `image_model` once |
 | `U2NET_HOME` | `~/.u2net` (`/data/rembg` on compose) | rembg model cache |
+| `CADX_MCP_TOKEN` | — | optional bearer token gating the `/mcp` HTTP endpoint |
 
 ### mesh-server (`mesh_server/meshserver/config.py`)
 

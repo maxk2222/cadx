@@ -31,16 +31,20 @@ DELETE        /api/assets/{id}
 
 ```
 GET|DELETE    /api/versions/{id}                         full detail (BOM/FEM/artifacts) / delete
-POST          /api/versions/{id}/edit                    {prompt, asset_ids, library_part_ids, mode, options}
+POST          /api/versions/{id}/edit                    {prompt, asset_ids, library_part_ids, mode, regenerate_mesh, options}
 POST          /api/versions/{id}/params                  {params} — re-run code/ops without an LLM call
+GET           /api/versions/{id}/editable-features       recognised through-holes the parametric editor can resize
+POST          /api/versions/{id}/edit-feature            {feature_id, parameter:"diameter", value} — verified hole resize → kind=edit child
 POST          /api/versions/{id}/optimize                manual FEM/SIMP TopOpt child version
 POST          /api/versions/{id}/topopt-resample         re-extract the stored density field at a new threshold
 POST          /api/versions/{id}/refine                  post-TopOpt feature finishing (bores/threads/inserts, keep-surface restore)
+POST          /api/versions/{id}/organic                 procedural organic restyle child — see organic.md
 POST          /api/versions/{id}/reexport                re-run export pipeline
 GET           /api/versions/{id}/jobs                    jobs for this version
 GET           /api/versions/{id}/code                    generated model.py (text/plain)
 GET           /api/versions/{id}/live-renders            render manifest for in-progress preview
 GET           /api/versions/{id}/preview?view=…          live render image (`iso`, `front`, `top`, `fem:*`, …)
+GET           /api/versions/{a}/compare/{b}              geometry diff (STEP load, STL fallback) + `params_diff`; `ok:false` partial when booleans are skipped
 ```
 
 ## Editors
@@ -61,7 +65,7 @@ GET           /api/versions/{id}/anchors                 merged measured-anchor 
 ## Jobs
 
 ```
-GET           /api/jobs                                  global job list (?active=true)
+GET           /api/jobs                                  global job list (?active=true, ?limit=N default 200)
 GET           /api/jobs/{id}                             job detail incl. live state + log tail
 GET           /api/jobs/{id}/events                      SSE progress stream
 POST          /api/jobs/{id}/answer                      clarification answers → resume a waiting job
@@ -141,3 +145,5 @@ GET           /api/artifacts/{id}/file                   artifact downloads (ste
   `backend/cadx/events.py` for the payload shapes.
 - The mesh-server sidecar has its own API — documented in
   [mesh-server-api.md](mesh-server-api.md).
+- The MCP Streamable-HTTP endpoint is mounted at `/mcp` on the API — see
+  [mcp-server.md](mcp-server.md).

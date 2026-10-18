@@ -46,6 +46,21 @@ uv run cadx mcp --http --port 8001   # serves 127.0.0.1:8001/mcp
 access. Sessions are pooled per `Mcp-Session-Id`, so a client keeps its bound
 project and spawned-job tracking across requests within one MCP session.
 
+```mermaid
+flowchart LR
+    C["MCP client<br/>(external agent writes<br/>build123d code itself)"]
+    C -->|"stdio"| CLI["cadx mcp"]
+    C -->|"POST /mcp<br/>Bearer token?"| HTTP["api :8000<br/>Streamable HTTP"]
+    CLI --> S["McpToolSession<br/>ctx.llm = None"]
+    HTTP --> S
+    S -->|"check / contract /<br/>catalog / assets"| DB[("postgres")]
+    S -->|"execute_cad · audit_params ·<br/>parametrize · fem · topopt"| X["cad-executor<br/>queue 'cad'"]
+    S -->|"submit_code · mesh_generate ·<br/>restart_job"| Q["arq 'agent' queue<br/>run_code_job /<br/>run_meshgen_job"]
+    Q --> W["worker"]
+    W --> X
+    X --> ART[("DATA_DIR<br/>artifacts")]
+```
+
 ## Tool groups
 
 | Group | Tools |
@@ -86,7 +101,8 @@ Then use `view_render`, `list_versions`, `fem_check`, `optimize_version`, or
 
 - **Postgres** — projects/versions/jobs persist there (all tools).
 - **Redis + agent worker** — `submit_code`, `mesh_generate`, `restart_job`
-  enqueue `run_code_job`/`run_meshgen_job`/`run_params_job` on the agent queue.
+  enqueue `run_code_job`/`run_meshgen_job`/`run_params_job`/`run_optimize_job`
+  on the agent queue.
 - **cad-executor** — `execute_cad`, `audit_params`, `parametrize_mesh`,
   `fem_check`, `optimize_version` dispatch to the `cad` queue. Without a
   running executor (`make dev-executor`) those calls time out into

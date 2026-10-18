@@ -26,25 +26,96 @@ GLBs flow to the executor purely through `DATA_DIR` files.
 
 ## Request flow
 
+```mermaid
+flowchart LR
+    subgraph clients["Clients"]
+        UI["Browser SPA<br/>(React/Vite + Three.js)"]
+        MCP["MCP client<br/>(external agent, LLM-free)"]
+    end
+
+    subgraph stack["Docker compose stack"]
+        FE["frontend<br/>nginx :8080<br/>SPA + /api proxy"]
+        API["api :8000<br/>FastAPI<br/>REST · SSE · /mcp"]
+        W["worker<br/>arq queue 'agent'<br/>max_jobs 4"]
+        CE["cad-executor<br/>arq queue 'cad'<br/>max_jobs 2"]
+        PG[("postgres<br/>versions · jobs ·<br/>artifacts · traces")]
+        RD[("redis<br/>arq queues · SSE pub/sub ·<br/>cancel keys")]
+        DD[("DATA_DIR<br/>data/projects/{pid}/…")]
+    end
+
+    MS["mesh-server<br/>(optional sidecar,<br/>native or GPU)"]
+    LLM["OpenAI-compatible<br/>LLM endpoint"]
+
+    UI -->|"REST + SSE"| FE --> API
+    MCP -->|"POST /mcp<br/>(Bearer optional)"| API
+    API -->|"enqueue Job row"| RD
+    RD -->|"run_*_job"| W
+    W -->|"httpx"| LLM
+    W -->|"image→3D jobs"| MS
+    MS -->|"GLB"| DD
+    W -->|"cad tasks<br/>(exec / mesh / FEM / TopOpt)"| RD
+    RD --> CE
+    CE -->|"artifacts, renders,<br/>exports"| DD
+    CE --> PG
+    W --> PG
+    API --> PG
+    RD -.->|"SSE events"| API -.->|"GET /api/jobs/{id}/events"| UI
 ```
-Browser ──> nginx (:8080) ──> api:8000
-                                 │ enqueue arq job
-                                 ▼
-                        worker (queue "agent")
-                                 │ run_generation(ctx)
-                                 │   ├─ LLM calls (httpx, OpenAI-compatible)
-                                 │   ├─ mesh-server (HTTP, GLB → DATA_DIR)   [mesh/hybrid modes]
-                                 │   └─ CAD/mesh work ──> QueueExecutor
-                                 ▼                    │
-                        cad-executor (queue "cad") <───┘
-                                 │  sandbox exec → analysis → renders → DfM → exports
-                                 │  process_mesh → clean/orient/scale → solid (hybrid)
-                                 │  voxel FEM / SIMP TopOpt → FEM verification
-                                 ▼
-                        data/projects/<pid>/versions/<vid>/...
-                        postgres (versions, jobs, artifacts, traces)
-                                 │
-                        SSE /events/jobs/<id> ──> browser progress
+
+Entry points enqueue onto the `agent` queue only — every Job row is owned by
+the `worker`; the `cad` queue carries ad-hoc executor tasks
+(`QueueExecutor`) with no Job row of their own.
+
+Three enqueue paths share `spawn.py`:
+
+- **Web UI / REST** — generate, edit, params-rerun, optimize, refine,
+  resample, mesh_edit, fem, organic, reexport jobs.
+- **Chat agent** — `run_chat_turn` drives a `ChatToolSession` whose tools
+  spawn the same job kinds mid-conversation.
+- **MCP** — `/mcp` (Streamable HTTP) or `cadx mcp` (stdio): external agents
+  call `submit_code`/`mesh_generate`/job tools (`code`, `meshgen` job kinds)
+  through the same session core — `ctx.llm is None`, so MCP can never reach
+  the WebUI's LLM.
+
+### Generation job lifecycle
+
+```mermaid
+sequenceDiagram
+    participant UI as Browser
+    participant API as api (FastAPI)
+    participant R as redis
+    participant W as worker (arq "agent")
+    participant L as LLM
+    participant M as mesh-server
+    participant X as cad-executor (arq "cad")
+    participant DB as postgres + DATA_DIR
+
+    UI->>API: POST /api/projects/{id}/generate
+    API->>DB: Version + Job rows (queued)
+    API->>R: enqueue run_agent_job
+    W->>R: dequeue, publish step events
+    W->>L: INTAKE (vision) → Spec
+    alt open questions + mode "ask"
+        W-->>API: job waiting_for_input (SSE question)
+        UI->>API: POST /api/jobs/{id}/answer
+        API->>R: resume at PLAN
+    end
+    W->>L: PLAN → CODEGEN (tool session)
+    opt mesh / hybrid
+        W->>M: image→3D job → GLB in DATA_DIR
+        W->>X: process_mesh (baseline + ops)
+    end
+    loop iterations (≤ agent_max_iterations)
+        W->>X: execute_version (sandbox: run, analyse,<br/>render, DfM, exports)
+        X-->>DB: artifacts + metrics
+        W->>L: CRITIQUE (renders + facts) → REPAIR/IMPROVE
+    end
+    opt TopOpt / FEM
+        W->>X: optimize / fem_analyze → report
+    end
+    W->>DB: FINALIZE: best candidate, exports, status
+    R-->>UI: SSE step/status/log events
+    UI->>API: GET /api/jobs/{id}, version detail, artifacts
 ```
 
 ## Code layout (backend/cadx)
@@ -55,8 +126,12 @@ Browser ──> nginx (:8080) ──> api:8000
   `image_assets.py`), candidate scoring (`mesh_score.py`, `model_pick.py`,
   `anchors.py`), `autofix.py`, `thinking.py` (adaptive reasoning escalation
   policy), `quickref.py` (runtime API signature digests), `featurebind.py`
-  (deterministic spec→cadlib snippet binding), context/trace/types,
-  `worker_jobs.py` (arq job runners)
+  (deterministic spec→cadlib snippet binding), `project_tools.py`
+  (`ProjectToolSession` + `SAFE_ACTION_TOOLS` — the LLM-free tool core shared
+  by chat and MCP), chat agent (`chat_tools.py`, `chat_worker.py` →
+  `run_chat_turn`), `executor_client.py` (QueueExecutor → cad-queue tasks),
+  `mesh_cache.py` (mesh-server result cache), context/trace/types,
+  `worker_jobs.py` (arq job runners for all job kinds)
 - `cad/` — sandbox + allowlist, runner_entry, `zygote.py` (warm fork-server:
   pre-imports build123d once, forks an rlimited child per run), engine
   pipeline, analysis,
@@ -70,8 +145,13 @@ Browser ──> nginx (:8080) ──> api:8000
   `design_audit.py` (PARAMS robustness), `editfeature.py` (gated parametric
   hole edits), `compare.py` (shape diff/interference),
   `heightfield.py` (deterministic flat-part solids),
-  `mesh_ops.py` (`MeshOp` registry + replay), `dfm/` (common/fdm/cnc/report),
-  `fem/` (voxel Hex8 analysis, SIMP TopOpt, mesh extraction), `catalog.py`
+  `mesh_ops.py` (`MeshOp` registry + replay), `mesh_boolean.py` (manifold3d
+  boolean backend, loaded in-sandbox), `poshint.py` + `silhouette.py` (image
+  position hints / outline extraction), `mesh_payload_entry.py` +
+  `mesh_repair_pml.py` (process-mesh task entry, PML mesh repair),
+  `dfm/` (common/fdm/cnc/report),
+  `fem/` (voxel Hex8 analysis, SIMP TopOpt, mesh extraction, `anchors3d.py`
+  mesh anchor scan), `catalog.py`
   (full bd_warehouse registry + lookup/search), `partspec.py` (AST
   validation of standard-part calls), `cadlib/` (reviewed helpers allowed in
   the sandbox), tasks (queue payloads)
@@ -81,8 +161,17 @@ Browser ──> nginx (:8080) ──> api:8000
   contracts), `fake.py` (deterministic test LLM)
 - `vision/` — image measurement and outline/anchor extraction
 - `api/` — FastAPI routers, schemas, deps
-- `db/` — SQLModel tables, async session, Alembic migrations
+- `db/` — SQLModel tables + async session (migrations live in
+  `backend/alembic/`)
+- `mcpserver/` — LLM-free MCP server: `server.py` (tool schemas/dispatch on
+  the low-level MCP `Server`), `session.py` (`McpToolSession` per transport),
+  `http.py` (Streamable-HTTP ASGI app + bearer auth), mounted at `/mcp` on
+  the api service and as `cadx mcp` stdio — see
+  [mcp-server.md](mcp-server.md)
 - `eval/` — benchmark harness (`cadx eval`)
+- `spawn.py` — job-spawn helpers shared by REST, chat and MCP
+  (`spawn_generate`…`spawn_edit_feature`, `spawn_restart`,
+  `enqueue_resume`, `validate_ops`)
 - `queue.py` — arq `WorkerSettings` for both queues
 - `storage.py`, `config.py`, `runtime_config.py`, `events.py`, `logging.py`,
   `cli.py`, `main.py`
@@ -226,7 +315,28 @@ data/library/<part_id>/<file>    reusable user library (uploaded STEP/STL bodies
   the surface). Preview artifacts live in `versions/<vid>/_scratch/` and are
   served through a whitelisted route; GUI state persists under
   `version.options["ui_editor"]`. See [webgui-ux.md](webgui-ux.md).
-- **No auth**: single-user local. Do not expose the stack on a network.
+- **MCP surface is LLM-free**: `mcpserver/` exposes the same
+  `ProjectToolSession` tools (code contract, check/execute, submit, mesh,
+  jobs, assets, settings, stats) plus `code`/`meshgen` job kinds — but with
+  `ctx.llm = None`; a session tool calling the WebUI's LLM would raise.
+  Restart is refused for LLM-generated jobs. Transports: `cadx mcp` (stdio)
+  and `/mcp` (Streamable HTTP on the api service; optional
+  `CADX_MCP_TOKEN` bearer). See [mcp-server.md](mcp-server.md).
+- **Analytic STEP for mesh paths**: refine/topopt children export STEP via
+  `export_analytic_step_isolated` — a spawned subprocess per feature with a
+  hard timeout (`analytic_step_timeout_s`), BREP checkpoints between
+  features, honest degrade to the faceted STEP when a region is
+  boolean-pathological. `export_step_checked` reimports the written STEP and
+  reverses inverted shells (sewn meshes can flip orientation through the
+  STEP writer).
+- **Version compare**: `GET /versions/{a}/compare/{b}` diffs two versions
+  (volume/bbox/added-vs-removed material via `compare.py`, plus a PARAMS
+  diff) — partial `ok:false` results when OCC booleans are skipped. Jobs can
+  be `answer`ed (clarify), `cancel`ed, `finish`ed (keep best so far) or
+  `restart`ed (sibling replay) from REST, chat and MCP.
+- **No auth**: single-user local. The only credential-gated surface is the
+  optional `CADX_MCP_TOKEN` bearer on `/mcp`. Do not expose the stack on a
+  network.
 
 ## Security notes
 

@@ -97,9 +97,12 @@ its duration.
 - **Holes look filled in the viewer** — verify the geometry itself, not the
   render: a nominally through hole closed by a thin membrane is detected as
   `blocked` in the measured hole groups.
-- **Mesh/hybrid STEP looks faceted** — expected: exports from tessellated
-  geometry are marked `tessellated`; analytic STEP is only available for pure
-  CAD versions.
+- **Mesh/hybrid STEP looks faceted** — expected for the base body: exports
+  from tessellated geometry are marked `tessellated`. TopOpt/refine children
+  additionally export an analytic STEP whose re-cut bores/threads are real
+  cylindrical/helical faces — the isolated `export_analytic_step_isolated`
+  subprocess degrades per-feature to the faceted STEP on timeout, with an
+  honest warning.
 
 ## See also
 

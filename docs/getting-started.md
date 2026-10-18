@@ -138,6 +138,9 @@ cd backend
 ../.venv/bin/uv run cadx exec ../path/to/model.py                               # executor pipeline only
 ../.venv/bin/uv run cadx eval                                                   # scripted benchmarks
 ../.venv/bin/uv run cadx mesh-gen photo.png -o out.glb                          # direct mesh-server call
+../.venv/bin/uv run cadx mesh-process model.glb --dims 80x40x30                 # mesh post-pipeline only
+../.venv/bin/uv run cadx mesh-health                                          # mesh-server reachability
+../.venv/bin/uv run cadx mcp                                                  # MCP server, stdio (--http for HTTP)
 ```
 
 ## Upgrading from `cadagent`

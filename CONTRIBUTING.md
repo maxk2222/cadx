@@ -19,9 +19,11 @@ minimal setup is `make infra` (postgres + redis) plus the native dev targets.
 
 ```bash
 make test        # backend suite (uv run pytest backend/tests -x -q)
-make lint        # ruff check + format check + frontend tsc --noEmit
+make lint        # ruff check + format check + frontend tsc --noEmit (no eslint — run it separately)
 make fmt         # autofix ruff issues
 make eval        # scripted FakeLLM benchmarks through the agent loop
+cd frontend && npm run lint   # eslint + eslint-plugin-react-hooks (eslint.config.js)
+cd frontend && npm test       # vitest unit tests (~7 *.test.ts files)
 cd mesh_server && uv run pytest     # sidecar suite
 ```
 

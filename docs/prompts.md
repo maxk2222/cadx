@@ -12,9 +12,11 @@ growing conversation, only the slices relevant to the current call.
 | `intake_features.md` | INTAKE (re-ask) | Re-ask when the first spec came back incomplete: enumerate every named geometric feature with type/dims/position/count. |
 | `intake_loads.md`    | INTAKE (loads) | Derive `spec.load_cases` (fixed regions + loads) when the user described forces/mounting/optimization but no load cases were produced. |
 | `plan_system.md`     | PLAN     | Ordered construction steps, PARAMS table schema, standard-parts selection, manufacturing notes — plus `approach` (`build123d|mesh|hybrid`) used by `auto` mode. |
+| `plan_lite_system.md` | PLAN (lite) | Plan-lite variant (`agent_plan_mode` lite/auto, loaded in `steps/plan.py`): one short non-tool call — ≤8 geometrically explicit steps + PARAMS table, `cad` approach fixed. |
 | `mesh_orient_system.md` | ORIENT | Vision call on the 6-candidate contact sheet: pick `up`/`front` axes for the generated mesh (`MeshOrientation`). |
 | `codegen_system.md`  | CODEGEN  | build123d coding rules for generated `model.py`. |
 | `codegen_tools.md`   | CODEGEN (tools) | Interactive variant: look up parts/helpers, draft, `check_snippet`, finish with `submit_code`. |
+| `codegen_build_system.md` | CODEGEN (staged build) | Feature-by-feature build session (`agent_staged_build`): one `add_block` per feature, sandbox `verify` after every block, `checkpoint`/`rollback` on failure. |
 | `mesh_refine_system.md` | MESH_REFINE | Tool-session system prompt for mesh transforms: frame contract, re-grounding discipline, op vocabulary. |
 | `optimize_system.md` | OPTIMIZE | Tool-session system prompt for the structural-optimization session (`analyze_fem`/`topopt_run` parameter search). |
 | `image_hero.md`      | hero autogen | Text-to-image template producing a clean studio reference photo for mesh runs without input images. |
@@ -34,6 +36,7 @@ growing conversation, only the slices relevant to the current call.
 | `tools_info.md`        | info sessions (intake/plan) | Optional exploratory tools before the final JSON: `search_catalog`/`lookup_part`/`cadlib_lookup`, plus `search_library`/`library_part`/`attach_library_part` to reuse saved user parts. |
 | `tools_inspect.md`     | CRITIQUE (tools) | Read-only inspection of the candidate code (`read_lines`/`search_code`) and catalog/library lookups for cross-checking dimensions. |
 | `dfm_rules.md`       | PLAN/CODEGEN | Process rules (FDM walls/overhangs, CNC pockets/inside radii) so the model is born manufacturable. |
+| `chat_system.md`     | chat turn  | Chat-agent system prompt (`chat_worker.py`): conversational CAD engineer with the full spawn/inspect tool surface — see [chat.md](chat.md). |
 
 ## Conventions baked into prompts
 

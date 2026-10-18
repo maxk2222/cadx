@@ -177,7 +177,7 @@ Full install, dev-mode and migration docs:
 | `cad` | build123d code → analytic B-Rep | exact STEP + all exports |
 | `mesh` | image→3D model → trimesh pipeline | STL/3MF/GLB (+ tessellated STEP when convertible) |
 | `hybrid` | mesh → faceted B-Rep solid → build123d booleans | organic shape with exact machined features |
-| `topopt` | base CAD → SIMP on a voxel domain → FEM verify | optimized mesh + density/history artifacts |
+| `topopt` | base CAD → SIMP on a voxel domain → FEM verify | optimized mesh + density/history artifacts; the refine pass re-cuts bores/threads as analytic STEP faces |
 | `auto` | planner picks per spec | — |
 
 A finished version can also be **restyled** into a deterministic organic
@@ -193,10 +193,11 @@ the mesh server is unreachable — see
 
 ```mermaid
 flowchart LR
-    browser(["Browser · :8080"]) --> api["api · FastAPI"]
+    browser(["Browser · :8080"]) --> api["api · FastAPI<br/>REST · SSE · /mcp"]
+    mcp["MCP client<br/>(LLM-free tools)"] --> api
     api --> db[("Postgres")]
     api --> redis[("Redis · queues + SSE")]
-    api --> worker["worker · agent loop<br/>intake → plan → codegen → critique"]
+    api --> worker["worker · agent loop<br/>intake → plan → codegen → critique<br/>chat turns · MCP job runners"]
     worker --> llm["LLM · any OpenAI-compatible endpoint"]
     worker --> mesh["mesh-server · open-weights models<br/>image→3D + text→image"]
     worker --> exec["cad-executor · sealed sandbox"]
@@ -272,9 +273,10 @@ audience:
 <summary><b>Development</b></summary>
 
 ```bash
-make sync && make test && make lint    # backend deps, tests, lint
-cd mesh_server && uv run pytest        # sidecar suite
-cd frontend && npx tsc --noEmit        # frontend typecheck
+make sync && make test && make lint          # backend deps, tests, lint
+cd mesh_server && uv run pytest              # sidecar suite
+cd frontend && npx tsc --noEmit              # frontend typecheck
+cd frontend && npm run lint && npm test      # eslint (react-hooks) + vitest
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow and
@@ -291,7 +293,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow and
   structural solver; organic restyling is aesthetic only —
   [docs/fem-topopt.md](docs/fem-topopt.md) ·
   [docs/organic.md](docs/organic.md).
-- Mesh/hybrid STEP exports are tessellated (faceted), not analytic.
+- Mesh/hybrid STEP base bodies are tessellated (faceted); the refine pass
+  re-cuts declared bores/threads/seats as analytic faces on topopt/refine
+  children — per-feature timeout degrades to the faceted STEP with a
+  warning.
 - `load_reference` supports STEP and STL; DXF assets are documentation only.
 - One CAD kernel: build123d.
 
