@@ -1,8 +1,9 @@
 import { Download, RefreshCw } from "lucide-react";
-import { api } from "../lib/api";
+import { useState } from "react";
+import { api, errMsg } from "../lib/api";
 import { fmtBytes } from "../lib/format";
 import type { Artifact } from "../lib/types";
-import { IconBtn, SectionTitle } from "./ui";
+import { Btn, SectionTitle } from "./ui";
 
 const ORDER = ["step", "stl", "3mf", "glb", "dxf", "svg"];
 
@@ -15,16 +16,39 @@ export default function ExportPanel({
   artifacts: Artifact[];
   onRefresh: () => void;
 }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
   const exports = ORDER.map((k) => artifacts.find((a) => a.kind === k)).filter(
     Boolean
   ) as Artifact[];
+  const anyTessellated = exports.some((a) => a.meta?.tessellated);
+
+  const reexport = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      await api.reexport(versionId);
+      onRefresh();
+    } catch (e) {
+      setError(errMsg(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div>
       <SectionTitle
         right={
-          <IconBtn title="re-export all formats" onClick={() => api.reexport(versionId).then(onRefresh)}>
-            <RefreshCw className="h-3.5 w-3.5" />
-          </IconBtn>
+          <Btn
+            variant="ghost"
+            size="sm"
+            busy={busy}
+            onClick={reexport}
+            title="re-generate all export formats (STEP/STL/3MF/GLB/DXF/SVG)"
+          >
+            <RefreshCw className="h-3.5 w-3.5" /> Re-export
+          </Btn>
         }
       >
         Exports
@@ -49,6 +73,13 @@ export default function ExportPanel({
         ))}
         {!exports.length && <span className="text-sm text-zinc-500">no exports yet</span>}
       </div>
+      {anyTessellated && (
+        <div className="mt-1.5 text-[10px] text-zinc-500">
+          <span className="text-amber-400">*</span> tessellated export (derived
+          from a mesh, not an analytic B-Rep)
+        </div>
+      )}
+      {error && <div className="mt-1.5 text-xs text-red-400">{error}</div>}
     </div>
   );
 }

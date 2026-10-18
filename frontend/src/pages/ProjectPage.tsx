@@ -14,12 +14,12 @@ import {
   Crumbs,
   EmptyState,
   SectionTitle,
-  Spinner,
+  Skeleton,
   inputCls,
   useDebounced,
   useToast,
 } from "../components/ui";
-import { api } from "../lib/api";
+import { api, errMsg } from "../lib/api";
 import type { GenMode, RunOptions } from "../lib/types";
 import { useTitle } from "../lib/useTitle";
 
@@ -95,8 +95,8 @@ export default function ProjectPage() {
       nav(`/versions/${r.version_id}?job=${r.job_id}`);
     },
     onError: (e) => {
-      setError(String(e));
-      toast(String(e), "error");
+      setError(errMsg(e));
+      toast(errMsg(e), "error");
     },
   });
 
@@ -106,7 +106,7 @@ export default function ProjectPage() {
       return list.length ? list[0] : api.createChat(id);
     },
     onSuccess: (c) => nav(`/chat/${c.id}`),
-    onError: (e) => toast(String(e), "error"),
+    onError: (e) => toast(errMsg(e), "error"),
   });
 
   const del = useMutation({
@@ -116,7 +116,7 @@ export default function ProjectPage() {
       toast("project deleted", "success");
       nav("/projects");
     },
-    onError: (e) => toast(String(e), "error"),
+    onError: (e) => toast(errMsg(e), "error"),
   });
 
   const toggle = (aid: string) =>
@@ -140,8 +140,14 @@ export default function ProjectPage() {
 
   if (project.isLoading)
     return (
-      <div className="flex justify-center py-24 text-zinc-500">
-        <Spinner className="h-6 w-6" />
+      <div className="mx-auto grid max-w-6xl grid-cols-1 gap-5 p-6 lg:grid-cols-3">
+        <div className="flex flex-col gap-5 lg:col-span-2">
+          <Skeleton className="h-4 w-40" />
+          <Skeleton className="h-8 w-64" />
+          <Skeleton className="h-72" />
+          <Skeleton className="h-40" />
+        </div>
+        <Skeleton className="h-72" />
       </div>
     );
   if (!project.data)
@@ -173,32 +179,27 @@ export default function ProjectPage() {
             )}
           </div>
           <div className="flex shrink-0 gap-1">
-            <button
-              className="flex items-center gap-1 rounded-md px-2 py-1 text-sm text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+            <Btn
+              variant="ghost"
+              size="sm"
               onClick={() => openChat.mutate()}
               disabled={openChat.isPending}
             >
               <MessagesSquare className="h-3.5 w-3.5" /> chat
-            </button>
-            <button
-              className="flex items-center gap-1 rounded-md px-2 py-1 text-sm text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
-              onClick={() => setEditOpen(true)}
-            >
+            </Btn>
+            <Btn variant="ghost" size="sm" onClick={() => setEditOpen(true)}>
               <Pencil className="h-3.5 w-3.5" /> edit
-            </button>
-            <button
-              className="flex items-center gap-1 rounded-md px-2 py-1 text-sm text-red-400 hover:bg-red-950/50"
-              onClick={() => setDeleteOpen(true)}
-            >
+            </Btn>
+            <Btn variant="danger" size="sm" onClick={() => setDeleteOpen(true)}>
               <Trash2 className="h-3.5 w-3.5" /> delete
-            </button>
+            </Btn>
           </div>
         </div>
 
         <Card className="p-4">
           <SectionTitle
             right={
-              <span className="text-[11px] normal-case tracking-normal text-zinc-600">
+              <span className="text-[11px] normal-case tracking-normal text-zinc-500">
                 Ctrl+Enter to generate
               </span>
             }
@@ -253,7 +254,7 @@ export default function ProjectPage() {
                       }
                     >
                       {p.name}
-                      <span className="ml-1 text-[10px] text-zinc-600">{p.kind}</span>
+                      <span className="ml-1 text-[10px] text-zinc-500">{p.kind}</span>
                     </button>
                   );
                 })}
@@ -297,6 +298,14 @@ export default function ProjectPage() {
                 const n = new Set(s);
                 n.delete(srcId);
                 n.add(newId);
+                return n;
+              })
+            }
+            onDeleted={(aid) =>
+              setSelected((s) => {
+                if (!s.has(aid)) return s;
+                const n = new Set(s);
+                n.delete(aid);
                 return n;
               })
             }

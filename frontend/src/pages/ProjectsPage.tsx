@@ -15,7 +15,7 @@ import {
   useDebounced,
   useToast,
 } from "../components/ui";
-import { api } from "../lib/api";
+import { api, errMsg } from "../lib/api";
 import { timeAgo } from "../lib/format";
 import type { Project } from "../lib/types";
 import { useTitle } from "../lib/useTitle";
@@ -82,7 +82,7 @@ export default function ProjectsPage() {
       qc.invalidateQueries({ queryKey: ["projects"] });
       toast("project deleted", "success");
     },
-    onError: (e) => toast(String(e), "error"),
+    onError: (e) => toast(errMsg(e), "error"),
   });
 
   const filtered = useMemo(() => {

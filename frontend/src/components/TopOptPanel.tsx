@@ -1,5 +1,5 @@
 import { Loader2, Shrink, Wrench } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   CartesianGrid,
   Line,
@@ -9,79 +9,11 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { api } from "../lib/api";
+import { api, errMsg } from "../lib/api";
+import type { RefineInfo, TopOptInfo } from "../lib/types";
 import { Btn, Card, SectionTitle, useToast } from "./ui";
 
-interface TopOptRun {
-  it?: number;
-  volfrac?: number | null;
-  achieved?: number | null;
-  iterations?: number;
-  worst_sf?: number | null;
-  min_member_mm?: number | null;
-  thin_fraction?: number | null;
-  chosen?: boolean;
-  reasoning?: string;
-  warnings?: string[];
-  /** in-job feature-finishing report (applied/skipped/probes/step). */
-  refine?: RefineInfo;
-}
-
-interface TopOptHistoryEntry {
-  it?: number;
-  compliance?: number;
-  volfrac?: number;
-  change?: number;
-  solve_s?: number;
-}
-
-interface TopOptInfo {
-  volfrac_achieved?: number;
-  iterations?: number;
-  converged?: boolean;
-  agent_runs?: TopOptRun[];
-  /** compact SIMP convergence trace (persisted on the version). */
-  history?: TopOptHistoryEntry[];
-  /** multiresolution coarse-pass stats. */
-  multires?: {
-    coarse_pitch_mm?: number;
-    coarse_cells?: number;
-    coarse_iterations?: number;
-    seconds?: number;
-  };
-  /** base-mesh provenance / spec-envelope normalization. */
-  base_mesh_relpath?: string;
-  input_bbox?: number[];
-  spec_bbox?: number[];
-  input_normalized?: boolean;
-  [key: string]: unknown;
-}
-
-interface RefineFeature {
-  kind?: string;
-  axis?: string;
-  dia?: number;
-  depth?: number;
-  anchor_index?: number;
-  [key: string]: unknown;
-}
-
-export interface RefineInfo {
-  applied?: RefineFeature[];
-  skipped?: { feature?: RefineFeature; reason?: string }[];
-  restored_regions?: number;
-  warnings?: string[];
-  /** analytic cuts applied to the exported STEP (feature name/kind/axis). */
-  step_features?: { name?: string; kind?: string; axis?: string; analytic?: boolean }[];
-  /** blind-feature probe results (non-through holes verified by raycast). */
-  probes?: {
-    name?: string;
-    open?: boolean;
-    found?: boolean;
-    measured_depth_mm?: number | null;
-    measured_dia_mm?: number | null;
-  }[];
-}
+export type { RefineInfo, TopOptInfo };
 
 function sfTone(sf: number | null | undefined): string {
   if (sf == null) return "text-zinc-400";
@@ -102,15 +34,22 @@ export default function TopOptPanel({
   onJobStarted?: (r: { version_id: string; job_id: string }) => void;
 }) {
   const toast = useToast();
-  const [threshold, setThreshold] = useState(
-    (topopt.density_threshold as number | undefined) ?? 0.5
-  );
+  const [threshold, setThreshold] = useState(topopt.density_threshold ?? 0.5);
   const [minMember, setMinMember] = useState(0);
   const [busy, setBusy] = useState(false);
   const [restorePlanes, setRestorePlanes] = useState(true);
   const [helicalThreads, setHelicalThreads] = useState(false);
   const [autoPlane, setAutoPlane] = useState(false);
-  const resamplable = !!versionId && !!(topopt.density_relpath as string | undefined);
+  // the panel is rendered unkeyed — reset draft state when the version changes
+  useEffect(() => {
+    setThreshold(topopt.density_threshold ?? 0.5);
+    setMinMember(0);
+    setBusy(false);
+    setRestorePlanes(true);
+    setHelicalThreads(false);
+    setAutoPlane(false);
+  }, [versionId, topopt.density_threshold]);
+  const resamplable = !!versionId && !!topopt.density_relpath;
   const refinable = !!versionId && !!onJobStarted;
 
   const resample = async () => {
@@ -123,7 +62,8 @@ export default function TopOptPanel({
       });
       onJobStarted(r);
     } catch (e) {
-      toast(String(e), "error");
+      toast(errMsg(e), "error");
+    } finally {
       setBusy(false);
     }
   };
@@ -139,7 +79,8 @@ export default function TopOptPanel({
       });
       onJobStarted(r);
     } catch (e) {
-      toast(String(e), "error");
+      toast(errMsg(e), "error");
+    } finally {
       setBusy(false);
     }
   };
@@ -148,7 +89,7 @@ export default function TopOptPanel({
   // in-job refine reports live on the chosen agent run; standalone refine
   // children carry the same shape at mesh.refine
   const chosenRun = runs.find((r) => r.chosen);
-  const refineEff = refine ?? ((chosenRun?.refine as RefineInfo | undefined) || undefined);
+  const refineEff = refine ?? chosenRun?.refine;
   return (
     <Card className="p-4">
       <SectionTitle>
@@ -162,13 +103,13 @@ export default function TopOptPanel({
         {topopt.iterations != null && ` · ${topopt.iterations} SIMP iterations`}
         {topopt.converged != null && ` · ${topopt.converged ? "converged" : "not converged"}`}
       </div>
-      {((topopt.warnings as string[] | undefined) ?? []).map((w, i) => (
+      {(topopt.warnings ?? []).map((w, i) => (
         <div key={i} className="mb-1 text-[10px] text-amber-400/90">
           {w}
         </div>
       ))}
       {(topopt.multires || topopt.input_normalized || topopt.base_mesh_relpath) && (
-        <div className="mb-2 text-[10px] text-zinc-600">
+        <div className="mb-2 text-[10px] text-zinc-500">
           {topopt.multires &&
             `multires coarse pass: ${topopt.multires.coarse_cells ?? "?"} cells @ ${topopt.multires.coarse_pitch_mm ?? "?"}mm, ${topopt.multires.coarse_iterations ?? "?"} it, ${topopt.multires.seconds ?? "?"}s`}
           {topopt.input_normalized &&
@@ -240,13 +181,16 @@ export default function TopOptPanel({
         </table>
       )}
       {runs.some((r) => r.reasoning) && (
-        <div className="mt-2 text-[10px] italic text-zinc-600">
+        <div className="mt-2 text-[10px] italic text-zinc-500">
           {runs.find((r) => r.chosen)?.reasoning ?? runs[runs.length - 1]?.reasoning}
         </div>
       )}
       {resamplable && (
         <div className="mt-3 border-t border-zinc-800 pt-2.5">
-          <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+          <div
+            className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500"
+            title="re-slice the saved density field at a new iso threshold — instant, no re-optimization"
+          >
             re-extract stored density (no new SIMP run)
           </div>
           <div className="flex items-center gap-3">
@@ -300,20 +244,20 @@ export default function TopOptPanel({
                 ? refineEff.applied.map((f, i) => (
                     <div key={i}>
                       ✓ {f.kind ?? "feature"}
-                      {f.name ? ` ${String(f.name)}` : ""}
+                      {f.name ? ` ${f.name}` : ""}
                       {f.dia ? ` ⌀${f.dia}mm` : ""}
                       {f.axis ? ` ${f.axis}` : ""}
                       {f.depth ? ` ×${f.depth}mm` : ""}
                       {typeof f.dia_deviation_mm === "number" ? (
                         <span
                           className={
-                            Math.abs(f.dia_deviation_mm as number) > 0.15
+                            Math.abs(f.dia_deviation_mm) > 0.15
                               ? "text-amber-400/90"
                               : "text-zinc-500"
                           }
                         >
-                          {" "}→ ⌀{String(f.measured_dia_mm)}mm (Δ
-                          {f.dia_deviation_mm as number}mm)
+                          {" "}→ ⌀{f.measured_dia_mm}mm (Δ
+                          {f.dia_deviation_mm}mm)
                         </span>
                       ) : null}
                     </div>
@@ -331,7 +275,11 @@ export default function TopOptPanel({
                 </div>
               )}
               {(refineEff.probes ?? []).map((p, i) => (
-                <div key={`p${i}`} className={p.open ? "text-emerald-400/90" : "text-red-400/90"}>
+                <div
+                  key={`p${i}`}
+                  className={p.open ? "text-emerald-400/90" : "text-red-400/90"}
+                  title="raycast check that a non-through feature is still open after re-cutting"
+                >
                   blind probe {p.name ?? i}: {p.open ? "open" : p.found ? "blocked" : "not found"}
                   {p.measured_depth_mm != null && ` · depth ${p.measured_depth_mm.toFixed(1)}mm`}
                   {p.measured_dia_mm != null && ` · ⌀${p.measured_dia_mm.toFixed(1)}mm`}
@@ -349,7 +297,7 @@ export default function TopOptPanel({
               ))}
             </div>
           ) : (
-            <div className="mb-2 text-[10px] text-zinc-600">
+            <div className="mb-2 text-[10px] text-zinc-500">
               re-cuts exact bores / printed threads / inserts at measured anchors and
               restores keep-region surfaces — FEM re-verified, child version
             </div>

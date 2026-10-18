@@ -40,8 +40,8 @@ export default function VersionTree({
               : `/versions/${v.id}`
           }
           className={`flex items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-zinc-800 ${
-            v.id === activeId ? "bg-zinc-800 ring-1 ring-zinc-600" : ""
-          }`}
+            depth > 0 ? "border-l-2 border-zinc-800" : ""
+          } ${v.id === activeId ? "bg-zinc-800 ring-1 ring-zinc-600" : ""}`}
           style={{ marginLeft: depth * 16 }}
         >
           {v.thumbnail_url ? (
@@ -90,7 +90,10 @@ export default function VersionTree({
               )}
             </div>
           </div>
-          <StatusBadge status={v.status} />
+          <StatusBadge
+            status={v.status}
+            title={v.status === "failed" ? (v.error ?? undefined) : undefined}
+          />
         </Link>
       ))}
       {rows.length === 0 && <div className="px-2 py-4 text-sm text-zinc-500">no versions yet</div>}

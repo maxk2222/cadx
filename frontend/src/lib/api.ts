@@ -72,6 +72,21 @@ const json = (body: unknown) => ({
   body: JSON.stringify(body),
 });
 
+const patch = (body: unknown) => ({
+  method: "PATCH",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(body),
+});
+
+/** User-facing error text: strips the `Error:` wrapper and maps common
+ *  transport failures to something actionable. Use instead of `String(e)`. */
+export function errMsg(e: unknown): string {
+  const s = e instanceof Error ? e.message : String(e);
+  if (/failed to fetch|networkerror|load failed|err_connection/i.test(s))
+    return "server unreachable — is the stack running? (make status)";
+  return s || "unknown error";
+}
+
 export const api = {
   health: () => req<{ ok: boolean; llm_configured: boolean }>("/health"),
 
@@ -80,7 +95,7 @@ export const api = {
   createProject: (name: string, description = "", settings?: unknown) =>
     req<Project>("/projects", json({ name, description, settings })),
   updateProject: (id: string, body: Partial<{ name: string; description: string; settings: unknown }>) =>
-    req<Project>(`/projects/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+    req<Project>(`/projects/${id}`, patch(body)),
   deleteProject: (id: string) => req<{ ok: boolean }>(`/projects/${id}`, { method: "DELETE" }),
 
   listAssets: (pid: string) => req<Asset[]>(`/projects/${pid}/assets`),
@@ -107,12 +122,8 @@ export const api = {
     if (!r.ok) throw new Error(await errText(r));
     return r.blob();
   },
-  updateAsset: (id: string, patch: { caption?: string; role_hint?: string }) =>
-    req<Asset>(`/assets/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(patch),
-    }),
+  updateAsset: (id: string, body: { caption?: string; role_hint?: string }) =>
+    req<Asset>(`/assets/${id}`, patch(body)),
 
   // local text-to-image generation (mesh-server image adapters)
   imageModels: () => req<MeshModelInfo[]>("/images/models"),
@@ -156,7 +167,7 @@ export const api = {
     req<{ version_id: string; job_id: string }>(`/versions/${vid}/params`, json({ params })),
   reexport: (vid: string) =>
     req<{ version_id: string; job_id: string }>(`/versions/${vid}/reexport`, { method: "POST" }),
-  optimize: (vid: string, body: { load_cases: LoadCase[]; optimize: Partial<OptimizeSpec>; material?: string }) =>
+  optimize: (vid: string, body: { load_cases: LoadCase[]; optimize: Partial<OptimizeSpec>; material?: string; allow_reopt?: boolean }) =>
     req<{ version_id: string; job_id: string }>(`/versions/${vid}/optimize`, json(body)),
   topoptResample: (vid: string, body: { density_threshold?: number; min_member_mm?: number }) =>
     req<{ version_id: string; job_id: string }>(`/versions/${vid}/topopt-resample`, json(body)),
@@ -182,11 +193,7 @@ export const api = {
   runFem: (vid: string, body: { load_cases: LoadCase[]; keep_regions?: RegionSpec[]; material?: string }) =>
     req<{ version_id: string; job_id: string }>(`/versions/${vid}/fem`, json(body)),
   saveEditorState: (vid: string, ui_editor: Record<string, unknown>) =>
-    req<{ ok: boolean }>(`/versions/${vid}/editor-state`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ui_editor }),
-    }),
+    req<{ ok: boolean }>(`/versions/${vid}/editor-state`, patch({ ui_editor })),
 
   listVersions: (pid: string) => req<VersionSummary[]>(`/projects/${pid}/versions`),
   getVersion: (id: string) => req<VersionDetail>(`/versions/${id}`),
@@ -245,11 +252,7 @@ export const api = {
       json({ name, caption, as_template: asTemplate })
     ),
   updateLibraryPart: (id: string, body: { name?: string; caption?: string }) =>
-    req<LibraryPart>(`/library/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }),
+    req<LibraryPart>(`/library/${id}`, patch(body)),
   deleteLibraryPart: (id: string) =>
     req<{ ok: boolean }>(`/library/${id}`, { method: "DELETE" }),
 
@@ -269,11 +272,7 @@ export const api = {
   ) => req<Chat>(`/chats/${id}/project`, json(body)),
   getChat: (id: string) => req<ChatState>(`/chats/${id}`),
   renameChat: (id: string, title: string) =>
-    req<Chat>(`/chats/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title }),
-    }),
+    req<Chat>(`/chats/${id}`, patch({ title })),
   deleteChat: (id: string) => req<{ ok: boolean }>(`/chats/${id}`, { method: "DELETE" }),
   postChatMessage: (id: string, body: { content: string; asset_ids?: string[] }) =>
     req<ChatMessage>(`/chats/${id}/messages`, json(body)),

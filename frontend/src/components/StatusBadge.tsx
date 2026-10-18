@@ -8,9 +8,18 @@ const COLORS: Record<string, string> = {
   cancelled: "bg-zinc-700",
 };
 
-export default function StatusBadge({ status }: { status: string }) {
+export default function StatusBadge({
+  status,
+  title,
+}: {
+  status: string;
+  title?: string;
+}) {
   return (
-    <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${COLORS[status] ?? "bg-zinc-600"}`}>
+    <span
+      title={title}
+      className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${COLORS[status] ?? "bg-zinc-600"}`}
+    >
       {status.replaceAll("_", " ")}
     </span>
   );

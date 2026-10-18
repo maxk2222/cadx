@@ -81,17 +81,24 @@ export function Chip({
 
 /* ---------- buttons ---------- */
 
-type BtnVariant = "primary" | "ghost" | "danger" | "success";
+type BtnVariant = "primary" | "ghost" | "danger" | "success" | "subtle";
 
 const BTN: Record<BtnVariant, string> = {
   primary: "bg-brand-600 text-white hover:bg-brand-500",
   success: "bg-emerald-600 text-white hover:bg-emerald-500",
   danger: "bg-red-700 text-white hover:bg-red-600",
   ghost: "bg-zinc-800 text-zinc-300 hover:bg-zinc-700 hover:text-zinc-100",
+  subtle: "bg-transparent text-brand-400 hover:bg-brand-950/40 hover:text-brand-300",
+};
+
+const BTN_SIZE: Record<"sm" | "md", string> = {
+  sm: "px-2 py-1 text-xs",
+  md: "px-3 py-1.5 text-sm",
 };
 
 export function Btn({
   variant = "primary",
+  size = "md",
   className = "",
   busy,
   disabled,
@@ -99,11 +106,12 @@ export function Btn({
   ...rest
 }: {
   variant?: BtnVariant;
+  size?: "sm" | "md";
   busy?: boolean;
 } & React.ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
     <button
-      className={`inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${BTN[variant]} ${className}`}
+      className={`inline-flex items-center justify-center gap-1.5 rounded-md font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 disabled:cursor-not-allowed disabled:opacity-50 ${BTN_SIZE[size]} ${BTN[variant]} ${className}`}
       disabled={disabled || busy}
       {...rest}
     >
@@ -127,7 +135,7 @@ export function IconBtn({
     <button
       title={title}
       aria-label={title}
-      className={`inline-flex h-7 w-7 items-center justify-center rounded-md text-zinc-400 transition-colors disabled:opacity-40 ${
+      className={`inline-flex h-7 w-7 items-center justify-center rounded-md text-zinc-400 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 disabled:opacity-40 ${
         danger ? "hover:bg-red-950 hover:text-red-300" : "hover:bg-zinc-800 hover:text-zinc-100"
       } ${className}`}
       {...rest}
@@ -171,9 +179,9 @@ export function EmptyState({
 }) {
   return (
     <div className="flex flex-col items-center gap-1.5 rounded-lg border border-dashed border-zinc-800 px-4 py-8 text-center">
-      {icon && <div className="text-zinc-600">{icon}</div>}
+      {icon && <div className="text-zinc-500">{icon}</div>}
       <div className="text-sm text-zinc-400">{title}</div>
-      {hint && <div className="text-xs text-zinc-600">{hint}</div>}
+      {hint && <div className="text-xs text-zinc-500">{hint}</div>}
     </div>
   );
 }
@@ -218,20 +226,55 @@ export function Modal({
   children: ReactNode;
   wide?: boolean;
 }) {
+  const dlgRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
-    const h = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const prev = document.activeElement as HTMLElement | null;
+    dlgRef.current?.focus();
+    const h = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        onClose();
+        return;
+      }
+      // minimal focus trap — keep Tab cycling inside the dialog
+      if (e.key !== "Tab" || !dlgRef.current) return;
+      const els = dlgRef.current.querySelectorAll<HTMLElement>(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+      );
+      const list = [...els].filter((el) => !el.hasAttribute("disabled"));
+      if (!list.length) return;
+      const first = list[0];
+      const last = list[list.length - 1];
+      if (!dlgRef.current.contains(document.activeElement)) {
+        e.preventDefault();
+        (e.shiftKey ? last : first).focus();
+      } else if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
     window.addEventListener("keydown", h);
-    return () => window.removeEventListener("keydown", h);
+    return () => {
+      window.removeEventListener("keydown", h);
+      prev?.focus?.();
+    };
   }, [open, onClose]);
   if (!open) return null;
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
-      onMouseDown={(e) => e.target === e.currentTarget && onClose()}
+      onClick={(e) => e.target === e.currentTarget && onClose()}
     >
       <div
-        className={`w-full ${wide ? "max-w-3xl" : "max-w-md"} rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl`}
+        ref={dlgRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        tabIndex={-1}
+        className={`w-full ${wide ? "max-w-3xl" : "max-w-md"} rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl outline-none`}
       >
         <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
           <h2 className="text-sm font-semibold">{title}</h2>
@@ -278,16 +321,27 @@ export function ConfirmModal({
 }
 
 export function Lightbox({ src, onClose }: { src: string | null; onClose: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!src) return;
+    const prev = document.activeElement as HTMLElement | null;
+    ref.current?.focus();
     const h = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", h);
-    return () => window.removeEventListener("keydown", h);
+    return () => {
+      window.removeEventListener("keydown", h);
+      prev?.focus?.();
+    };
   }, [src, onClose]);
   if (!src) return null;
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-8"
+      ref={ref}
+      role="dialog"
+      aria-modal="true"
+      aria-label="image preview"
+      tabIndex={-1}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-8 outline-none"
       onClick={onClose}
     >
       <img src={src} className="max-h-full max-w-full rounded shadow-2xl" alt="" />
@@ -309,12 +363,29 @@ export function Tabs<T extends string>({
   className?: string;
 }) {
   return (
-    <div className={`flex gap-0.5 rounded-lg border border-zinc-800 bg-zinc-900 p-1 ${className}`}>
+    <div
+      role="tablist"
+      className={`flex gap-0.5 rounded-lg border border-zinc-800 bg-zinc-900 p-1 ${className}`}
+      onKeyDown={(e) => {
+        if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+        e.preventDefault();
+        const i = tabs.findIndex((t) => t.id === active);
+        if (i < 0) return;
+        const n = (i + (e.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length;
+        onChange(tabs[n].id);
+        e.currentTarget
+          .querySelectorAll<HTMLElement>('[role="tab"]')
+          [n]?.focus();
+      }}
+    >
       {tabs.map((t) => (
         <button
           key={t.id}
+          role="tab"
+          aria-selected={active === t.id}
+          tabIndex={active === t.id ? 0 : -1}
           onClick={() => onChange(t.id)}
-          className={`flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+          className={`flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 ${
             active === t.id
               ? "bg-zinc-800 text-zinc-100 shadow-sm"
               : "text-zinc-500 hover:text-zinc-300"
@@ -342,7 +413,7 @@ export function Field({
     <label className="mb-3 block">
       <span className="text-sm text-zinc-400">{label}</span>
       <div className="mt-1">{children}</div>
-      {hint && <span className="mt-0.5 block text-xs text-zinc-600">{hint}</span>}
+      {hint && <span className="mt-0.5 block text-xs text-zinc-500">{hint}</span>}
     </label>
   );
 }
@@ -458,4 +529,46 @@ export function useStickyBottom(dep: unknown) {
       boxRef.current.scrollTop = boxRef.current.scrollHeight;
   }, [dep]);
   return { boxRef, onScroll };
+}
+
+/** Numeric input that commits on blur/Enter and keeps the raw text while
+ *  editing (typing "1." must not snap back to "1"). Shared by the editors
+ *  and param panels — keeps behaviour identical everywhere. */
+export function NumInput({
+  value,
+  onChange,
+  step = 1,
+  className = "",
+}: {
+  value: number;
+  onChange: (n: number) => void;
+  step?: number;
+  className?: string;
+}) {
+  const [txt, setTxt] = useState(String(value));
+  const [editing, setEditing] = useState(false);
+  useEffect(() => {
+    if (!editing) setTxt(String(value));
+  }, [value, editing]);
+  const commit = () => {
+    setEditing(false);
+    const n = Number(txt);
+    if (Number.isFinite(n)) onChange(n);
+    else setTxt(String(value));
+  };
+  return (
+    <input
+      type="number"
+      step={step}
+      className={`${inputCls} px-1.5 py-0.5 text-[11px] ${className}`}
+      value={editing ? txt : String(value)}
+      onFocus={() => {
+        setEditing(true);
+        setTxt(String(value));
+      }}
+      onChange={(e) => setTxt(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => e.key === "Enter" && commit()}
+    />
+  );
 }

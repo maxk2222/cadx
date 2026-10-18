@@ -25,7 +25,8 @@ export default function AnchorsPanel({ versionId }: { versionId: string }) {
         measured/declared holes, bores and seats — keep regions and refine
         re-cuts reference these indices
       </div>
-      <table className="w-full text-xs">
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
         <thead>
           <tr className="text-left text-[10px] uppercase tracking-wider text-zinc-500">
             <th className="pb-1 font-medium">#</th>
@@ -61,7 +62,8 @@ export default function AnchorsPanel({ versionId }: { versionId: string }) {
             );
           })}
         </tbody>
-      </table>
+        </table>
+      </div>
     </Card>
   );
 }

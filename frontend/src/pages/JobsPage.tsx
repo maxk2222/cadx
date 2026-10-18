@@ -1,18 +1,39 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleDot, Flag, Inbox, Square } from "lucide-react";
-import { useEffect, useState } from "react";
+import { CircleDot, Flag, Inbox, RotateCcw, Square } from "lucide-react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import StatusBadge from "../components/StatusBadge";
-import { EmptyState, ProgressBar, useToast } from "../components/ui";
-import { api } from "../lib/api";
-import { fmtDuration, fmtSecs, timeAgo } from "../lib/format";
+import { Btn, EmptyState, ProgressBar, inputCls, useToast } from "../components/ui";
+import { api, errMsg } from "../lib/api";
+import { fmtDuration, timeAgo } from "../lib/format";
 import { stepLabel } from "../lib/steps";
 import type { JobListItem } from "../lib/types";
 import { useTitle } from "../lib/useTitle";
 
 const ACTIVE = new Set(["queued", "running", "waiting_for_input"]);
 
-function JobRow({
+const STATUS_FILTERS = [
+  { id: "all", label: "all" },
+  { id: "active", label: "running + queued" },
+  { id: "waiting_for_input", label: "needs input" },
+  { id: "failed", label: "failed" },
+  { id: "succeeded", label: "succeeded" },
+] as const;
+type StatusFilter = (typeof STATUS_FILTERS)[number]["id"];
+
+/** 1s self-ticking elapsed counter — keeps the re-render inside this leaf
+ *  instead of invalidating the whole job list every second. */
+function Elapsed({ since, live }: { since: string | null; live: boolean }) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!live) return;
+    const t = setInterval(() => setTick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [live]);
+  return <>{fmtDuration(since, null)}</>;
+}
+
+const JobRow = memo(function JobRow({
   job,
   onChanged,
 }: {
@@ -23,9 +44,9 @@ function JobRow({
   const toast = useToast();
   const live = job.live ?? {};
   const active = ACTIVE.has(job.status);
-  const running = job.status === "running";
   const scores = live.scores ?? [];
   const best = scores.length ? Math.max(...scores.map((s) => s.score)) : null;
+  const firstQuestion = job.questions?.[0]?.question;
 
   return (
     <div
@@ -61,11 +82,13 @@ function JobRow({
           </span>
         )}
         <span className="font-mono text-xs text-zinc-500">
-          {active && job.started_at
-            ? fmtDuration(job.started_at, null)
-            : job.finished_at
-              ? fmtDuration(job.started_at, job.finished_at)
-              : timeAgo(job.created_at)}
+          {active && job.started_at ? (
+            <Elapsed since={job.started_at} live />
+          ) : job.finished_at ? (
+            fmtDuration(job.started_at, job.finished_at)
+          ) : (
+            timeAgo(job.created_at)
+          )}
         </span>
       </div>
 
@@ -91,7 +114,7 @@ function JobRow({
               <span className="font-mono">it {job.iteration}</span>
             ) : null}
             {live.sub_label && (
-              <span className="truncate font-mono text-zinc-600">
+              <span className="truncate font-mono text-zinc-500">
                 ↳ {live.sub_label}
                 {live.sub_progress != null
                   ? ` ${Math.round(live.sub_progress * 100)}%`
@@ -110,7 +133,7 @@ function JobRow({
                   api
                     .finishJob(job.id)
                     .then(onChanged)
-                    .catch((err) => toast(String(err), "error"));
+                    .catch((err) => toast(errMsg(err), "error"));
                 }}
               >
                 <Flag className="h-3 w-3" /> finish
@@ -125,7 +148,7 @@ function JobRow({
                   api
                     .cancelJob(job.id)
                     .then(onChanged)
-                    .catch((err) => toast(String(err), "error"));
+                    .catch((err) => toast(errMsg(err), "error"));
                 }}
               >
                 <Square className="h-3 w-3" /> cancel
@@ -136,43 +159,78 @@ function JobRow({
             value={job.progress}
             tone={job.status === "waiting_for_input" ? "amber" : "blue"}
           />
+          {job.status === "waiting_for_input" && firstQuestion && (
+            <div className="mt-1.5 truncate text-[11px] text-amber-300/90" title={firstQuestion}>
+              “{firstQuestion}”
+              {(job.questions?.length ?? 0) > 1
+                ? ` (+${job.questions!.length - 1} more)`
+                : ""}
+            </div>
+          )}
         </div>
       )}
       {!active && job.status === "failed" && (
-        <div className="mt-1 truncate font-mono text-[10px] text-red-400/80">
-          {(job.log ?? "").trim().split("\n").filter(Boolean).slice(-1)[0] ?? ""}
+        <div className="mt-1 flex items-center gap-2">
+          <div className="min-w-0 flex-1 truncate font-mono text-[10px] text-red-400/80">
+            {(job.log ?? "").trim().split("\n").filter(Boolean).slice(-1)[0] ?? ""}
+          </div>
+          <Btn
+            variant="subtle"
+            size="sm"
+            className="shrink-0"
+            title="restart this job — creates a new run"
+            onClick={(e) => {
+              e.stopPropagation();
+              api
+                .restartJob(job.id)
+                .then((r) => nav(`/versions/${r.version_id}?job=${r.job_id}`))
+                .catch((err) => toast(errMsg(err), "error"));
+            }}
+          >
+            <RotateCcw className="h-3 w-3" /> retry
+          </Btn>
         </div>
       )}
     </div>
   );
-}
+});
 
 export default function JobsPage() {
   useTitle("Jobs");
   const qc = useQueryClient();
   const jobs = useQuery({
-    queryKey: ["jobs-all"],
+    queryKey: ["jobs", "all"],
     queryFn: () => api.listJobsAll(),
     refetchInterval: (q) =>
       (q.state.data ?? []).some((j) => ACTIVE.has(j.status)) ? 3000 : 15000,
   });
-  // 1s tick so elapsed times count up while anything is active
-  const anyActive = (jobs.data ?? []).some((j) => ACTIVE.has(j.status));
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    if (!anyActive) return;
-    const t = setInterval(() => setTick((n) => n + 1), 1000);
-    return () => clearInterval(t);
-  }, [anyActive]);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [typeFilter, setTypeFilter] = useState("all");
 
-  const refresh = () => qc.invalidateQueries({ queryKey: ["jobs-all"] });
+  const refresh = useCallback(
+    () => qc.invalidateQueries({ queryKey: ["jobs", "all"] }),
+    [qc]
+  );
   const items = jobs.data ?? [];
-  const active = items.filter((j) => ACTIVE.has(j.status));
-  const recent = items.filter((j) => !ACTIVE.has(j.status)).slice(0, 40);
+  const types = useMemo(
+    () => [...new Set(items.map((j) => j.type))].sort(),
+    [items]
+  );
+  const matches = (j: JobListItem) => {
+    if (typeFilter !== "all" && j.type !== typeFilter) return false;
+    if (statusFilter === "all") return true;
+    if (statusFilter === "active")
+      return j.status === "running" || j.status === "queued";
+    return j.status === statusFilter;
+  };
+  const filtered = items.filter(matches);
+  const active = filtered.filter((j) => ACTIVE.has(j.status));
+  const recentAll = filtered.filter((j) => !ACTIVE.has(j.status));
+  const recent = recentAll.slice(0, 40);
 
   return (
     <div className="mx-auto max-w-4xl p-6">
-      <div className="mb-5 flex items-center gap-3">
+      <div className="mb-3 flex items-center gap-3">
         <h1 className="text-2xl font-bold">Jobs</h1>
         <span className="text-sm text-zinc-500">
           {active.length ? `${active.length} active · ` : ""}
@@ -180,11 +238,47 @@ export default function JobsPage() {
         </span>
       </div>
 
-      {jobs.isLoading ? null : !items.length ? (
+      <div className="mb-4 flex flex-wrap items-center gap-1.5">
+        {STATUS_FILTERS.map((f) => (
+          <button
+            key={f.id}
+            type="button"
+            onClick={() => setStatusFilter(f.id)}
+            className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+              statusFilter === f.id
+                ? "border-brand-600 bg-brand-950/60 text-brand-200"
+                : "border-zinc-700 bg-zinc-900 text-zinc-400 hover:border-zinc-600 hover:text-zinc-300"
+            }`}
+          >
+            {f.label}
+          </button>
+        ))}
+        {types.length > 1 && (
+          <select
+            className={`${inputCls} ml-auto w-auto px-2 py-1 text-[11px]`}
+            value={typeFilter}
+            onChange={(e) => setTypeFilter(e.target.value)}
+            aria-label="filter by job type"
+          >
+            <option value="all">all types</option>
+            {types.map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+
+      {jobs.isLoading ? null : !filtered.length ? (
         <EmptyState
           icon={<Inbox className="h-10 w-10" />}
-          title="No jobs yet"
-          hint="Jobs appear here as soon as a generation, edit or export is queued."
+          title={items.length ? "No jobs match the filters" : "No jobs yet"}
+          hint={
+            items.length
+              ? undefined
+              : "Jobs appear here as soon as a generation, edit or export is queued."
+          }
         />
       ) : (
         <div className="flex flex-col gap-2">
@@ -204,6 +298,11 @@ export default function JobsPage() {
           {recent.map((j) => (
             <JobRow key={j.id} job={j} onChanged={refresh} />
           ))}
+          {recentAll.length > recent.length && (
+            <div className="text-center text-[11px] text-zinc-500">
+              showing {recent.length} of {recentAll.length} completed jobs
+            </div>
+          )}
         </div>
       )}
     </div>

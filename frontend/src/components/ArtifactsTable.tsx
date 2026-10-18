@@ -71,6 +71,7 @@ export default function ArtifactsTable({ artifacts }: { artifacts: Artifact[] })
                     <a
                       href={`${a.url}?download=1`}
                       title="download"
+                      aria-label={`download ${a.path.split("/").pop() ?? a.kind}`}
                       className="inline-flex h-6 w-6 items-center justify-center rounded-md text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
                     >
                       <Download className="h-3.5 w-3.5" />

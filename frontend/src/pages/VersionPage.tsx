@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, Clock, Cpu, Gauge, Layers, PencilRuler, Plus, Shrink, Sprout, Trash2, TriangleAlert } from "lucide-react";
+import { Activity, Clock, Cpu, FileBox, Gauge, Layers, PencilRuler, Plus, RotateCcw, Shrink, Sprout, Trash2, TriangleAlert } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import AnchorsPanel from "../components/AnchorsPanel";
@@ -37,7 +37,7 @@ import {
   inputCls,
   useToast,
 } from "../components/ui";
-import { api } from "../lib/api";
+import { api, errMsg } from "../lib/api";
 import { fmtDuration, fmtSecs, fmtTokens } from "../lib/format";
 import { stepLabel } from "../lib/steps";
 import type { GenMode, Job, RunOptions } from "../lib/types";
@@ -98,10 +98,10 @@ function SaveToLibrary({
         </Btn>
         {done && <span className="text-xs text-emerald-400">saved ✓</span>}
         {save.isError && (
-          <span className="text-xs text-red-400">{String(save.error)}</span>
+          <span className="text-xs text-red-400">{errMsg(save.error)}</span>
         )}
       </div>
-      <div className="mt-1.5 text-[11px] text-zinc-600">
+      <div className="mt-1.5 text-[11px] text-zinc-500">
         Saved parts can be attached to new generations via the library picker on
         the project page; bodies are available to generated code through
         load_reference().
@@ -170,6 +170,14 @@ export default function VersionPage() {
     version.data ? `v${version.data.number} · ${project.data?.name ?? ""}` : "Version"
   );
 
+  // keep the streamed job in sync with the URL — navigating between versions
+  // or to a new ?job= must switch the stream, not keep the stale one. With no
+  // ?job= param, fall back to the version's live job.
+  const jobParam = sp.get("job");
+  useEffect(() => {
+    setJobId(jobParam ?? v?.active_job?.id ?? null);
+  }, [id, jobParam, v?.active_job?.id]);
+
   // pick latest job once loaded (jobs are sorted newest-first)
   useEffect(() => {
     if (!jobId && jobs.data?.length) setJobId(jobs.data[0].id);
@@ -179,7 +187,7 @@ export default function VersionPage() {
   useEffect(() => {
     if (v && v.id !== optFor) {
       setEditPrompt("");
-      setEditAssets(new Set());
+      setEditAssets(new Set(v.asset_ids ?? []));
       setEditMode("auto");
       setRegenMesh(false);
       setEditOptions(v.options ?? {});
@@ -221,7 +229,13 @@ export default function VersionPage() {
       qc.invalidateQueries({ queryKey: ["versions", v?.project_id] });
       nav(`/projects/${v?.project_id}`);
     },
-    onError: (e) => toast(String(e), "error"),
+    onError: (e) => toast(errMsg(e), "error"),
+  });
+
+  const retry = useMutation({
+    mutationFn: (jobId: string) => api.restartJob(jobId),
+    onSuccess: (r) => nav(`/versions/${r.version_id}?job=${r.job_id}`),
+    onError: (e) => toast(errMsg(e), "error"),
   });
 
   const uploadEditAssets = async (files: FileList | null) => {
@@ -255,13 +269,12 @@ export default function VersionPage() {
 
   const active = ["queued", "running", "waiting_for_input"].includes(v.status);
   const glb = v.artifacts.find((a) => a.kind === "glb");
-  const a = v.analysis as {
-    bbox_size?: number[];
-    volume?: number;
-    is_valid?: boolean;
-    watertight?: boolean;
-    triangle_count?: number;
-  } | null;
+  const a = v.analysis;
+  // newest job on this version (list is sorted newest-first) — restart target
+  // when the version failed; active_job is null for terminal versions.
+  const lastJobId = v.active_job?.id ?? jobs.data?.[0]?.id;
+  const assetById = new Map((assets.data ?? []).map((as) => [as.id, as]));
+  const libById = new Map((library.data ?? []).map((p) => [p.id, p]));
   const curJob: Job | undefined = (jobs.data ?? []).find((j) => j.id === jobId);
   const liveJob =
     stream.job &&
@@ -335,9 +348,67 @@ export default function VersionPage() {
         </div>
 
         <div className="mb-3 text-sm text-zinc-400">{v.prompt}</div>
+
+        {/* source context: reference assets + library parts this version ran with */}
+        {(v.asset_ids.length > 0 || v.library_part_ids.length > 0) && (
+          <div className="mb-3 flex flex-wrap items-center gap-1.5">
+            <span className="text-[10px] font-medium uppercase tracking-wider text-zinc-500">
+              sources
+            </span>
+            {v.asset_ids.map((aid) => {
+              const as = assetById.get(aid);
+              if (!as) return null;
+              return as.kind === "image" ||
+                as.kind === "generated_image" ||
+                as.mime.startsWith("image/") ? (
+                <img
+                  key={aid}
+                  src={as.url}
+                  alt={as.filename}
+                  title={as.filename}
+                  className="h-10 w-10 rounded border border-zinc-700 object-cover"
+                />
+              ) : (
+                <span
+                  key={aid}
+                  title={as.filename}
+                  className="inline-flex max-w-40 items-center gap-1 rounded border border-zinc-700 bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-400"
+                >
+                  <FileBox className="h-3 w-3 shrink-0" />
+                  <span className="truncate">{as.filename}</span>
+                </span>
+              );
+            })}
+            {v.library_part_ids.map((pid) => {
+              const p = libById.get(pid);
+              return (
+                <span
+                  key={pid}
+                  title={p ? `${p.kind}: ${p.caption || p.filename || p.name}` : "library part"}
+                  className="inline-flex items-center gap-1 rounded-full border border-teal-800/60 bg-teal-950/40 px-2 py-0.5 text-[10px] text-teal-300"
+                >
+                  <FileBox className="h-3 w-3" />
+                  {p?.name ?? "library part"}
+                </span>
+              );
+            })}
+          </div>
+        )}
+
         {v.error && (
-          <div className="mb-3 rounded-lg border border-red-800 bg-red-950/50 p-2.5 text-sm text-red-300">
-            {v.error}
+          <div className="mb-3 flex items-start gap-3 rounded-lg border border-red-800 bg-red-950/50 p-2.5 text-sm text-red-300">
+            <span className="min-w-0 flex-1 break-words">{v.error}</span>
+            {lastJobId && (
+              <Btn
+                variant="ghost"
+                size="sm"
+                className="shrink-0 border border-red-800/60 text-red-300"
+                busy={retry.isPending}
+                onClick={() => retry.mutate(lastJobId)}
+              >
+                <RotateCcw className="h-3 w-3" /> retry job
+              </Btn>
+            )}
           </div>
         )}
 
@@ -427,8 +498,19 @@ export default function VersionPage() {
 
         {tab === "overview" && (
           <>
-            <div className="relative mb-4 h-[460px] overflow-hidden rounded-lg border border-zinc-800">
-              <Viewer3D url={glb ? glb.url : null} />
+            <div className="relative mb-4 h-[460px] overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950">
+              {glb || !active ? (
+                <Viewer3D url={glb ? glb.url : null} />
+              ) : (
+                <span className="absolute inset-0 flex flex-col items-center justify-center gap-1 text-xs text-zinc-400">
+                  waiting for first render…
+                  {liveJob && !stream.connected && (
+                    <span className="text-[10px] text-zinc-500">
+                      stream reconnecting…
+                    </span>
+                  )}
+                </span>
+              )}
               {active && !glb && <LivePreview versionId={v.id} />}
             </div>
 
@@ -508,8 +590,8 @@ export default function VersionPage() {
           <div className="flex flex-col gap-4">
             {(!!v.mesh?.topopt || !!v.mesh?.refine) && (
               <TopOptPanel
-                topopt={(v.mesh.topopt ?? {}) as never}
-                refine={v.mesh.refine as never}
+                topopt={v.mesh.topopt ?? {}}
+                refine={v.mesh.refine}
                 versionId={v.id}
                 onJobStarted={structuralStarted}
               />
@@ -527,26 +609,28 @@ export default function VersionPage() {
             {!!v.bom?.length && (
               <Card className="p-4">
                 <SectionTitle>Bill of materials (standard parts used)</SectionTitle>
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="text-left text-zinc-500">
-                      <th className="pb-1 pr-2">count</th>
-                      <th className="pb-1 pr-2">class</th>
-                      <th className="pb-1 pr-2">type</th>
-                      <th className="pb-1">size</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {v.bom.map((e, i) => (
-                      <tr key={i} className="border-t border-zinc-800/60 text-zinc-300">
-                        <td className="py-1 pr-2 font-mono">{e.count}×</td>
-                        <td className="py-1 pr-2 font-mono">{e.part_class}</td>
-                        <td className="py-1 pr-2 font-mono text-zinc-500">{e.type ?? "—"}</td>
-                        <td className="py-1 font-mono text-zinc-500">{e.size ?? "—"}</td>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-left text-zinc-500">
+                        <th className="pb-1 pr-2">count</th>
+                        <th className="pb-1 pr-2">class</th>
+                        <th className="pb-1 pr-2">type</th>
+                        <th className="pb-1">size</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {v.bom.map((e, i) => (
+                        <tr key={i} className="border-t border-zinc-800/60 text-zinc-300">
+                          <td className="py-1 pr-2 font-mono">{e.count}×</td>
+                          <td className="py-1 pr-2 font-mono">{e.part_class}</td>
+                          <td className="py-1 pr-2 font-mono text-zinc-500">{e.type ?? "—"}</td>
+                          <td className="py-1 font-mono text-zinc-500">{e.size ?? "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </Card>
             )}
             {!!v.issues?.length && (
@@ -602,11 +686,11 @@ export default function VersionPage() {
                     ))}
                   </div>
                 )}
-                {!!(v.critique as { matches?: string[] }).matches?.length && (
+                {!!v.critique.matches?.length && (
                   <div>
                     <h4 className="mb-1 text-xs font-semibold text-zinc-400">Matches</h4>
                     <ul className="list-inside list-disc text-xs text-zinc-500">
-                      {(v.critique as { matches?: string[] }).matches!.map((m, i) => (
+                      {v.critique.matches.map((m, i) => (
                         <li key={i}>{m}</li>
                       ))}
                     </ul>
@@ -678,7 +762,15 @@ export default function VersionPage() {
 
         {(v.status === "succeeded" || v.status === "needs_review") && (
           <Card className="p-3">
-            <SectionTitle>Edit this model</SectionTitle>
+            <SectionTitle
+              right={
+                <span className="text-[11px] normal-case tracking-normal text-zinc-500">
+                  Ctrl+Enter to apply
+                </span>
+              }
+            >
+              Edit this model
+            </SectionTitle>
             <textarea
               className={`${inputCls} h-20 resize-y`}
               placeholder="Describe the change… (e.g. 'add M5 mounting holes on the back', 'increase height to 15mm')"
@@ -693,10 +785,14 @@ export default function VersionPage() {
             />
             <div className="my-2 flex flex-wrap gap-1">
               {(assets.data ?? [])
-                .filter((as) => as.kind === "image")
+                .filter(
+                  (as) => as.kind === "image" || as.kind === "generated_image"
+                )
                 .map((as) => (
                   <button
                     key={as.id}
+                    type="button"
+                    aria-label={`${editAssets.has(as.id) ? "remove" : "use"} reference image ${as.filename}`}
                     onClick={() =>
                       setEditAssets((s) => {
                         const n = new Set(s);
@@ -713,6 +809,8 @@ export default function VersionPage() {
                   </button>
                 ))}
               <button
+                type="button"
+                aria-label="upload more reference images"
                 className="flex h-10 w-10 items-center justify-center rounded border border-dashed border-zinc-600 text-zinc-400 hover:border-zinc-400"
                 onClick={() => fileRef.current?.click()}
                 title="upload more reference images"
@@ -761,7 +859,7 @@ export default function VersionPage() {
                         }
                       >
                         {p.name}
-                        <span className="ml-1 text-[10px] text-zinc-600">{p.kind}</span>
+                        <span className="ml-1 text-[10px] text-zinc-500">{p.kind}</span>
                       </button>
                     );
                   })}
@@ -780,7 +878,7 @@ export default function VersionPage() {
               </label>
             )}
             {edit.isError && (
-              <div className="mb-2 text-xs text-red-400">{String(edit.error)}</div>
+              <div className="mb-2 text-xs text-red-400">{errMsg(edit.error)}</div>
             )}
             <Btn
               variant="success"

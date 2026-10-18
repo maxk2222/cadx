@@ -53,6 +53,35 @@ export interface RunOptions {
   max_iterations?: number;
   max_repairs?: number;
   pass_score?: number;
+  /** persisted GUI editor state (options['ui_editor']) — stripped before
+   *  the backend merges options into run settings. */
+  ui_editor?: UiEditorState;
+}
+
+/** `options.ui_editor` — draft state persisted by the visual editors
+ *  (merge target server-side; see backend EditorStateRequest). */
+export interface UiEditorState {
+  /** mesh-editor op draft (EditPage). */
+  ops?: MeshOp[];
+  /** structural editor (StructuralEditor) painted/resolved state. */
+  load_cases?: LoadCase[];
+  keep_regions?: RegionSpec[];
+  void_regions?: RegionSpec[];
+  material?: string;
+  volfrac?: number;
+  keep_mode?: "manual" | "auto";
+  min_member_mm?: number;
+  density_threshold?: number;
+  auto_refine?: boolean;
+  self_supporting?: boolean;
+  print_direction?: "+x" | "-x" | "+y" | "-y" | "+z" | "-z";
+  multires?: boolean;
+  solver?: "oc" | "mma";
+  case_objective?: "weighted" | "minmax";
+  max_displacement_mm?: number;
+  max_stress_mpa?: number;
+  min_gap_mm?: number;
+  penal_init?: number;
 }
 
 export interface VersionSummary {
@@ -105,6 +134,8 @@ export interface MeshInfo {
   orientation_source?: string;
   post?: Record<string, unknown>;
   organic?: OrganicReport;
+  topopt?: TopOptInfo;
+  refine?: RefineInfo;
   triangles?: number;
   scale_factor?: number;
   solid_ok?: boolean;
@@ -113,7 +144,91 @@ export interface MeshInfo {
   best_iteration?: number;
   dim_issues?: string[];
   reused_solid?: boolean;
+  // evolving backend dict — new report fields appear without a frontend
+  // release, so unknown keys stay reachable as `unknown` (never `any`).
   [key: string]: unknown;
+}
+
+/* ---------- topology optimization / refine reports ---------- */
+
+export interface TopOptRun {
+  it?: number;
+  volfrac?: number | null;
+  achieved?: number | null;
+  iterations?: number;
+  worst_sf?: number | null;
+  min_member_mm?: number | null;
+  thin_fraction?: number | null;
+  chosen?: boolean;
+  reasoning?: string;
+  warnings?: string[];
+  /** in-job feature-finishing report (applied/skipped/probes/step). */
+  refine?: RefineInfo;
+}
+
+export interface TopOptHistoryEntry {
+  it?: number;
+  compliance?: number;
+  volfrac?: number;
+  change?: number;
+  solve_s?: number;
+}
+
+/** `MeshInfo.topopt` — the SIMP optimization report persisted on a version. */
+export interface TopOptInfo {
+  volfrac_achieved?: number;
+  iterations?: number;
+  converged?: boolean;
+  agent_runs?: TopOptRun[];
+  /** compact SIMP convergence trace (persisted on the version). */
+  history?: TopOptHistoryEntry[];
+  /** multiresolution coarse-pass stats. */
+  multires?: {
+    coarse_pitch_mm?: number;
+    coarse_cells?: number;
+    coarse_iterations?: number;
+    seconds?: number;
+  };
+  /** base-mesh provenance / spec-envelope normalization. */
+  base_mesh_relpath?: string;
+  input_bbox?: number[];
+  spec_bbox?: number[];
+  input_normalized?: boolean;
+  /** stored density field — enables resampling without a new SIMP run. */
+  density_relpath?: string;
+  density_threshold?: number;
+  warnings?: string[];
+}
+
+export interface RefineFeature {
+  kind?: string;
+  name?: string;
+  axis?: string;
+  dia?: number;
+  depth?: number;
+  anchor_index?: number;
+  /** measured-vs-declared deviations reported by the verify pass. */
+  measured_dia_mm?: number;
+  dia_deviation_mm?: number;
+}
+
+/** `MeshInfo.refine` — feature-finishing report (exact bores/threads,
+ *  restored keep surfaces, blind probes) on a refined version. */
+export interface RefineInfo {
+  applied?: RefineFeature[];
+  skipped?: { feature?: RefineFeature; reason?: string }[];
+  restored_regions?: number;
+  warnings?: string[];
+  /** analytic cuts applied to the exported STEP (feature name/kind/axis). */
+  step_features?: { name?: string; kind?: string; axis?: string; analytic?: boolean }[];
+  /** blind-feature probe results (non-through holes verified by raycast). */
+  probes?: {
+    name?: string;
+    open?: boolean;
+    found?: boolean;
+    measured_depth_mm?: number | null;
+    measured_dia_mm?: number | null;
+  }[];
 }
 
 export interface ParamDef {
@@ -450,6 +565,73 @@ export interface FemReport {
   note?: string;
 }
 
+/** `VersionDetail.analysis` — measured geometry from `cad/analysis.py::Analysis`
+ *  plus agent-merged `anchors`/`measurements` extras (orchestrator outcome). */
+export interface VersionAnalysis {
+  bbox_min?: number[];
+  bbox_max?: number[];
+  bbox_size?: number[];
+  volume?: number;
+  surface_area?: number;
+  center_of_mass?: number[];
+  solid_count?: number;
+  is_valid?: boolean;
+  watertight?: boolean | null;
+  watertight_after_repair?: boolean | null;
+  face_count?: number;
+  edge_count?: number;
+  sits_on_xy?: boolean;
+  centered_xy?: boolean;
+  warnings?: string[];
+  source?: string;
+  triangle_count?: number;
+  roughness_deg?: number;
+  footprint_iou?: number | null;
+  /** agent-merged spec/image anchors (agent/anchors.py FeatureAnchors) —
+   *  plus an optional executor-side minimal `spec` sub-dict. */
+  anchors?: {
+    holes?: FeatureAnchor[];
+    image_outline?: number[][];
+    mirror_x?: boolean;
+    note?: string;
+    spec?: Record<string, unknown>;
+  };
+  /** agent-merged image measurements — free-form per pipeline step. */
+  measurements?: Record<string, unknown>;
+}
+
+export interface CritiqueDiscrepancy {
+  what: string;
+  where: string;
+  severity: "major" | "minor" | string;
+  fix_hint: string;
+  source?: string;
+}
+
+export interface FeatureVerdict {
+  name: string;
+  status: "present" | "missing" | "wrong" | "unsure" | string;
+  note: string;
+}
+
+export interface VerificationAnswer {
+  question: string;
+  answer: "yes" | "no" | "unclear" | string;
+  evidence?: string;
+}
+
+/** `VersionDetail.critique` — `llm/schemas.py::Critique.model_dump()`. */
+export interface VersionCritique {
+  score: number;
+  passed: boolean;
+  discrepancies: CritiqueDiscrepancy[];
+  feature_verdicts?: FeatureVerdict[];
+  /** aspects of the request the critic verified as present (plain strings). */
+  matches?: string[];
+  verification_answers?: VerificationAnswer[];
+  confidence?: number;
+}
+
 export interface ModelingPlan {
   approach?: string;
   approach_reason?: string;
@@ -470,8 +652,8 @@ export interface VersionDetail extends VersionSummary {
   code: string | null;
   params: Record<string, unknown> | null;
   params_schema: ParamDef[] | null;
-  analysis: Record<string, unknown> | null;
-  critique: { score: number; passed: boolean; discrepancies: { what: string; where: string; severity: string; fix_hint: string }[] } | null;
+  analysis: VersionAnalysis | null;
+  critique: VersionCritique | null;
   dfm: { warnings: DfmWarning[]; metrics?: Record<string, unknown> } | null;
   bom?: BomEntry[] | null;
   issues: { source: string; severity: string; what: string; where?: string; fix_hint?: string }[] | null;
