@@ -9,10 +9,19 @@ it). Edit-only (`requires_image=True`): it never serves plain txt2img jobs.
 Install: same mflux extra as FLUX.1-schnell
     pip install 'meshserver[image-mlx]'   or   mesh_server/scripts/install_image_mlx.sh
 First load downloads ~10-14 GB (4-bit quantized) to ~/.cache/mflux.
+
+When ServerConfig.qwen_edit_lightning is on (default; env
+MESH_QWEN_EDIT_LIGHTNING) the LightX2V "Lightning" distillation LoRA is
+baked into the transformer at load time, collapsing the edit schedule
+from ~28 steps to 8 — roughly 4x faster per synth view. The LoRA file is
+resolved with hf_hub_download (single safetensors, not a repo snapshot —
+the lightx2v repo bundles ~20 variants) and passed as a local lora path.
+Falls back to the un-distilled 28-step model when the download fails.
 """
 
 from __future__ import annotations
 
+import logging
 import platform
 from typing import Any, ClassVar
 
@@ -20,6 +29,27 @@ from PIL import Image
 
 from meshserver.adapters.base import hard_unload, missing
 from meshserver.adapters.image_base import ImageAdapter, ImageGenOpts, ImageGenResult
+
+logger = logging.getLogger(__name__)
+
+# bf16 variant — matches the MLX compute dtype; the fp32 twin doubles the
+# download for no quality gain at inference.
+_LIGHTNING_REPO = "lightx2v/Qwen-Image-Lightning"
+_LIGHTNING_FILE = (
+    "Qwen-Image-Edit-2509/Qwen-Image-Edit-2509-Lightning-8steps-V1.0-bf16.safetensors"
+)
+LIGHTNING_STEPS = 8
+
+
+def _resolve_lightning_lora() -> str | None:
+    """Download just the 8-step edit LoRA file; None when unreachable."""
+    try:
+        from huggingface_hub import hf_hub_download
+
+        return hf_hub_download(repo_id=_LIGHTNING_REPO, filename=_LIGHTNING_FILE)
+    except Exception as e:  # noqa: BLE001 — any failure means "no LoRA"
+        logger.warning("qwen_edit_lightning_lora_unavailable", error=str(e)[:200])
+        return None
 
 
 def _patch_mflux_tf4_qwen2() -> None:
@@ -59,6 +89,9 @@ class QwenImageEditAdapter(ImageAdapter):
     supports_edit: ClassVar[bool] = True
     requires_image: ClassVar[bool] = True
     est_mem_mb = 16000
+    # set by load() once the Lightning LoRA actually made it into the pipe;
+    # class default keeps direct _pipe injection in tests working
+    _lightning: bool = False
 
     @classmethod
     def available(cls, cfg: Any) -> bool:  # noqa: ARG003
@@ -75,11 +108,20 @@ class QwenImageEditAdapter(ImageAdapter):
     def load(self) -> None:
         quant = int(getattr(self.cfg, "flux_mlx_quant", 4) or 4)
         _patch_mflux_tf4_qwen2()
+        self._lightning = False
+        lora_kw: dict[str, Any] = {}
+        if getattr(self.cfg, "qwen_edit_lightning", False):
+            lora_path = _resolve_lightning_lora()
+            if lora_path:
+                lora_kw = {"lora_paths": [lora_path], "lora_scales": [1.0]}
+                self._lightning = True
         # ModelConfig moved between mflux releases; it is optional anyway —
         # the bare ctor falls back to the default edit config on every
         # version that ships QwenImageEdit at all.
         try:
-            from mflux.models.common.config.model_config import ModelConfig  # mflux >= 0.14
+            from mflux.models.common.config.model_config import (
+                ModelConfig,
+            )  # mflux >= 0.14
         except ImportError:
             try:
                 from mflux.config.model_config import ModelConfig  # mflux <= 0.12.x
@@ -91,19 +133,24 @@ class QwenImageEditAdapter(ImageAdapter):
             missing(type(self), f"mflux qwen-edit import failed: {e}")
         errors: list[str] = []
         for mc_name in ("qwen_image_edit_2511", "qwen_image_edit"):
-            mc = getattr(ModelConfig, mc_name, None) if ModelConfig is not None else None
+            mc = (
+                getattr(ModelConfig, mc_name, None) if ModelConfig is not None else None
+            )
             if mc is None:
                 continue
             try:
-                self._pipe = QwenImageEdit(quantize=quant, model_config=mc())
+                self._pipe = QwenImageEdit(quantize=quant, model_config=mc(), **lora_kw)
                 self._loaded = True
                 return
             except TypeError as e:
                 errors.append(f"QwenImageEdit({mc_name}): {e}")
         try:
-            self._pipe = QwenImageEdit(quantize=quant)
+            self._pipe = QwenImageEdit(quantize=quant, **lora_kw)
         except TypeError as e:  # pragma: no cover
-            missing(type(self), "no working QwenImageEdit ctor: " + "; ".join(errors + [str(e)]))
+            missing(
+                type(self),
+                "no working QwenImageEdit ctor: " + "; ".join(errors + [str(e)]),
+            )
         self._loaded = True
 
     def unload(self) -> None:
@@ -127,7 +174,15 @@ class QwenImageEditAdapter(ImageAdapter):
                 break
             if progress:
                 progress(0.1 + 0.8 * i / max(1, opts.count), f"Qwen-Image-Edit {i + 1}")
-            steps = opts.steps or 28
+            # Lightning is distilled for exactly its NFE count at cfg 1.0 —
+            # more steps or real guidance degrade instead of improving, so
+            # pin both when the LoRA is baked in.
+            steps = LIGHTNING_STEPS if self._lightning else (opts.steps or 28)
+            guidance = (
+                1.0
+                if self._lightning
+                else (opts.guidance if opts.guidance is not None else 4.0)
+            )
             out = self._pipe.generate_image(
                 seed=(opts.seed + i * 1000) & 0xFFFFFFFF,
                 prompt=opts.prompt,
@@ -135,7 +190,7 @@ class QwenImageEditAdapter(ImageAdapter):
                 num_inference_steps=steps,
                 height=min(opts.height, self.max_side),
                 width=min(opts.width, self.max_side),
-                guidance=opts.guidance if opts.guidance is not None else 4.0,
+                guidance=guidance,
             )
             img = out.image if hasattr(out, "image") else out
             if not isinstance(img, Image.Image):
@@ -146,6 +201,6 @@ class QwenImageEditAdapter(ImageAdapter):
             model=self.id,
             backend=self.backend,
             seed=opts.seed,
-            steps=opts.steps or 28,
-            guidance=opts.guidance if opts.guidance is not None else 4.0,
+            steps=steps,
+            guidance=guidance,
         )

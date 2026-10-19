@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import sys
-import time
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from PIL import Image
-
 from meshserver.adapters.image_base import ImageGenOpts
 from meshserver.config import ServerConfig
+from PIL import Image
 
 
 class _Pipe:
@@ -34,7 +31,9 @@ def test_flux_mlx_passes_image_path_and_strength(tmp_path):
     init = tmp_path / "init.png"
     Image.new("RGB", (16, 16)).save(init)
 
-    res = a.generate(ImageGenOpts(prompt="make it black", image_path=init, image_strength=0.45))
+    res = a.generate(
+        ImageGenOpts(prompt="make it black", image_path=init, image_strength=0.45)
+    )
     assert res.images and res.model == "flux-schnell-mlx"
     assert a._pipe.kwargs["image_path"] == str(init)
     assert a._pipe.kwargs["image_strength"] == 0.45
@@ -91,6 +90,82 @@ def test_qwen_edit_passes_image_paths(tmp_path):
     assert kw["num_inference_steps"] == 10
 
 
+def test_qwen_edit_lightning_pins_steps_and_guidance(tmp_path):
+    """With the Lightning LoRA baked in the schedule is pinned to 8 steps at
+    cfg 1.0 regardless of what the caller asked for."""
+    from meshserver.adapters.qwen_edit_mlx import LIGHTNING_STEPS, QwenImageEditAdapter
+
+    a = QwenImageEditAdapter(ServerConfig(job_dir=tmp_path))
+    a._pipe = _Pipe()
+    a._loaded = True
+    a._lightning = True
+    init = tmp_path / "init.png"
+    Image.new("RGB", (16, 16)).save(init)
+
+    res = a.generate(
+        ImageGenOpts(prompt="add fins", image_path=init, steps=28, guidance=4.0)
+    )
+    kw = a._pipe.kwargs
+    assert kw["num_inference_steps"] == LIGHTNING_STEPS == 8
+    assert kw["guidance"] == 1.0
+    assert res.steps == 8 and res.guidance == 1.0
+
+
+def test_qwen_edit_lightning_lora_wiring(tmp_path):
+    """load() resolves the lightning LoRA file and passes it to the ctor."""
+    import meshserver.adapters.qwen_edit_mlx as qe
+
+    captured = {}
+
+    class _FakeEdit:
+        def __init__(self, **kw):
+            captured.update(kw)
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(qe, "_resolve_lightning_lora", lambda: "/cache/lora.safetensors")
+    monkey.setattr(qe, "_patch_mflux_tf4_qwen2", lambda: None)
+    import types
+
+    mod = types.ModuleType("mflux.models.qwen.variants.edit.qwen_image_edit")
+    mod.QwenImageEdit = _FakeEdit
+    monkey.setitem(sys.modules, "mflux.models.qwen.variants.edit.qwen_image_edit", mod)
+
+    cfg = ServerConfig(job_dir=tmp_path, qwen_edit_lightning=True)
+    a = qe.QwenImageEditAdapter(cfg)
+    a.load()
+    assert a._lightning is True
+    assert captured["lora_paths"] == ["/cache/lora.safetensors"]
+    assert captured["lora_scales"] == [1.0]
+    monkey.undo()
+
+
+def test_qwen_edit_lightning_download_failure_falls_back(tmp_path):
+    """A failed LoRA download must not kill load() — plain model, 28 steps."""
+    import meshserver.adapters.qwen_edit_mlx as qe
+
+    captured = {}
+
+    class _FakeEdit:
+        def __init__(self, **kw):
+            captured.update(kw)
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(qe, "_resolve_lightning_lora", lambda: None)
+    monkey.setattr(qe, "_patch_mflux_tf4_qwen2", lambda: None)
+    import types
+
+    mod = types.ModuleType("mflux.models.qwen.variants.edit.qwen_image_edit")
+    mod.QwenImageEdit = _FakeEdit
+    monkey.setitem(sys.modules, "mflux.models.qwen.variants.edit.qwen_image_edit", mod)
+
+    cfg = ServerConfig(job_dir=tmp_path, qwen_edit_lightning=True)
+    a = qe.QwenImageEditAdapter(cfg)
+    a.load()
+    assert a._lightning is False
+    assert "lora_paths" not in captured
+    monkey.undo()
+
+
 def test_flux_diffusers_i2i_clamps_strength(tmp_path):
     """img2img path: _pipe_edit receives PIL image + clamped strength."""
     from meshserver.adapters.flux_diffusers import FluxSchnellAdapter
@@ -113,7 +188,7 @@ def test_flux_diffusers_i2i_clamps_strength(tmp_path):
     a = FluxSchnellAdapter(ServerConfig(job_dir=tmp_path))
     a._loaded = True
     a._torch = FakeTorch
-    a._pipe = lambda **kw: SimpleNamespace(images=[Image.new("RGB", (8, 8))])  # noqa: E731
+    a._pipe = lambda **kw: SimpleNamespace(images=[Image.new("RGB", (8, 8))])
     a._pipe_edit = EditPipe()
 
     init = tmp_path / "init.png"
@@ -129,7 +204,6 @@ def test_init_image_cleanup_on_delete(tmp_path):
     import json as _json
 
     from fastapi.testclient import TestClient
-
     from meshserver.app import create_app
 
     cfg = ServerConfig(fake=True, job_dir=tmp_path / "jobs", bg_removal="never")
@@ -158,7 +232,6 @@ def test_edit_filename_is_sanitized(tmp_path):
     import json as _json
 
     from fastapi.testclient import TestClient
-
     from meshserver.app import create_app
 
     cfg = ServerConfig(fake=True, job_dir=tmp_path / "jobs", bg_removal="never")
