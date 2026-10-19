@@ -602,6 +602,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "huggingface-hub" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
@@ -648,7 +649,6 @@ image-torch = [
     { name = "transformers" },
 ]
 llm = [
-    { name = "httpx" },
     { name = "llama-cpp-python", extra = ["server"], marker = "sys_platform != 'darwin'" },
     { name = "mlx-lm", marker = "sys_platform == 'darwin'" },
 ]
@@ -697,7 +697,7 @@ requires-dist = [
     { name = "diffusers", marker = "extra == 'mps'", specifier = ">=0.30,<0.32" },
     { name = "diffusers", marker = "extra == 'rocm'", specifier = ">=0.30,<0.32" },
     { name = "fastapi", specifier = ">=0.115" },
-    { name = "httpx", marker = "extra == 'llm'", specifier = ">=0.27" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "huggingface-hub", specifier = ">=0.24" },
     { name = "huggingface-hub", marker = "extra == 'cuda'", specifier = "<1" },
     { name = "huggingface-hub", marker = "extra == 'image-torch'", specifier = "<1" },

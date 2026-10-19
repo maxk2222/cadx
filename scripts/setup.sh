@@ -61,6 +61,11 @@ if [ "$EXTRA_HUNYUAN" = 1 ] && [ "$TIER" != "rocm" ]; then
 fi
 MODEL=$(gpu_default_model "$TIER")
 IMG_MODEL=$(gpu_default_image_model "$TIER")
+# platform extras for the shared mesh venv — mirror Makefile's MESH_EXTRA:
+# bg+llm on arm64 macs (rembg fallback + legacy mlx-lm fallback for older
+# architectures; the modern stack lives in .venv-llm via install_llm.sh)
+MESH_EXTRA="."
+[ "$TIER" = "mlx" ] && MESH_EXTRA=".[bg,llm]"
 
 mesh_model_available() {
   local id="$1"
@@ -102,6 +107,9 @@ if [ "$DOCTOR" = 1 ]; then
   say "environment"
   info "backend venv:      $([ -x .venv/bin/python ] && echo ok || echo MISSING)"
   info "mesh venv:         $([ -x mesh_server/.venv/bin/python ] && echo ok || echo MISSING)"
+  if [ "$TIER" = "mlx" ]; then
+    info "llm venv (.venv-llm): $([ -x mesh_server/.venv-llm/bin/python ] && echo ok || echo 'MISSING — mesh_server/scripts/install_llm.sh')"
+  fi
   info "node_modules:      $([ -d frontend/node_modules ] && echo ok || echo MISSING)"
   info ".env overrides:    $([ -f .env ] && echo 'present — used by docker compose for POSTGRES_* etc.' || echo none)"
   info "last setup log:    $(ls -t logs/setup-*.log 2>/dev/null | head -1 || echo none)"
@@ -139,7 +147,12 @@ case "$TIER" in
     ;;
 esac
 
-steps_total 7
+# 8th numbered step (dedicated .venv-llm) only on Apple Silicon w/o --skip-mesh
+if [ "$TIER" = "mlx" ] && [ "$SKIP_MESH" = 0 ]; then
+  steps_total 8
+else
+  steps_total 7
+fi
 
 # ---------- 1. prerequisites ----------
 step_begin "prerequisites"
@@ -196,8 +209,16 @@ if [ "$SKIP_MESH" = 0 ] && [ "$TIER" != "none" ]; then
     run_step "mesh-server venv" bash -c 'cd mesh_server && ../.venv/bin/uv venv .venv' \
       || exit 1
   fi
-  run_step "mesh-server deps" bash -c 'cd mesh_server && ../.venv/bin/uv pip install -e . --python .venv/bin/python -q' \
+  run_step "mesh-server deps" bash -c "cd mesh_server && ../.venv/bin/uv pip install -e '$MESH_EXTRA' --python .venv/bin/python -q" \
     || exit 1
+  if [ "$TIER" = "mlx" ]; then
+    # dedicated LLM venv: mlx-lm>=0.32 + mlx-vlm (transformers>=5 — cannot
+    # share the torch/tf4 venv). install_llm.sh is idempotent.
+    run_step "llm venv (.venv-llm)" env "DRY=$DRY" bash mesh_server/scripts/install_llm.sh \
+      || exit 1
+  else
+    info "llm: local LLMs need llama.cpp — run mesh_server/scripts/install_llm.sh (or LLAMA_SERVER_BIN)"
+  fi
 else
   step_begin "mesh-server env"
   step_skip "$([ "$SKIP_MESH" = 1 ] && echo '--skip-mesh' || echo "tier=$TIER")"

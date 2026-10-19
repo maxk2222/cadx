@@ -134,7 +134,7 @@ tier_disk_need_mb() {
     cuda:trellis2)  echo 32000 ;;   # torch cu + trellis deps + ~10GB weights
     cuda:*)         echo 12000 ;;   # triposg
     rocm:*)         echo 16000 ;;   # rocm torch wheels are chunky
-    mlx:*)          echo 16000 ;;   # mlx deps + flux weights (~12GB)
+    mlx:*)          echo 19000 ;;   # mlx deps + .venv-llm (~2GB) + flux weights (~12GB)
     *)              echo 800 ;;     # fake/none — tiny deps only
   esac
 }
