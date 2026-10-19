@@ -14,47 +14,38 @@
 #   PYTORCH_INDEX_URL  alias honoured by pip/uv directly (set if you prefer)
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$ROOT"
+source scripts/lib/pkg.sh
+
 VENV="${VENV:-mesh_server/.venv}"
 TORCH_ROCM_INDEX="${TORCH_ROCM_INDEX:-https://download.pytorch.org/whl/rocm6.4}"
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 if [ "$(uname -s)" != "Linux" ]; then
-  echo "ROCm tier is Linux-only (amdgpu/KFD) — on this host use the mlx or fake tier" >&2
-  exit 1
+  die "ROCm tier is Linux-only (amdgpu/KFD) — on this host use the mlx or fake tier"
 fi
 
-if [ ! -d "$VENV" ]; then
-  echo "venv $VENV not found — run 'make mesh-sync' first" >&2
-  exit 1
-fi
-PY="$VENV/bin/python"
+need_venv
+pkg_detect
 
 if "$PY" -m pip --version >/dev/null 2>&1; then
-  INSTALL() { "$PY" -m pip install "$@"; }
   REINSTALL=(--force-reinstall)
-elif command -v uv >/dev/null 2>&1; then
-  INSTALL() { uv pip install --python "$PY" "$@"; }
-  REINSTALL=(--reinstall-package torch)
-elif [ -x ".venv/bin/uv" ]; then
-  INSTALL() { .venv/bin/uv pip install --python "$PY" "$@"; }
-  REINSTALL=(--reinstall-package torch)
 else
-  echo "neither pip nor uv available — install uv or add pip to $VENV" >&2
-  exit 1
+  REINSTALL=(--reinstall-package torch)   # uv spelling
 fi
 
-echo "== ROCm torch =="
-echo "   index: $TORCH_ROCM_INDEX  (override via TORCH_ROCM_INDEX)"
+say "ROCm torch"
+info "index: $TORCH_ROCM_INDEX  (override via TORCH_ROCM_INDEX)"
 # a satisfied 'torch>=x' spec alone is NOT enough: a CPU/CUDA build would be
 # kept silently — verify the HIP flavour and force-replace anything else
 if "$PY" -c "import sys, torch; sys.exit(0 if getattr(torch.version, 'hip', None) else 1)" \
     2>/dev/null; then
-  echo "   ROCm torch already installed — skipping"
+  info "ROCm torch already installed — skipping"
 else
   INSTALL "${REINSTALL[@]}" "torch>=2.6" --index-url "$TORCH_ROCM_INDEX"
 fi
 
-echo "== sanity check =="
+say "sanity check"
 "$PY" - <<'EOF' || true
 import torch
 hip = getattr(torch.version, "hip", None)
@@ -73,17 +64,17 @@ EOF
 GFX="$(rocminfo 2>/dev/null | grep -o 'gfx[0-9a-f]*' | head -1 || true)"
 case "$GFX" in
   ""|gfx900|gfx906|gfx908|gfx90a|gfx942|gfx1030|gfx1100|gfx1101|gfx1102|gfx1200|gfx1201) ;;
-  *) echo "   NOTE: gfx arch '$GFX' is not in the standard wheel support list —"
-     echo "         you may need HSA_OVERRIDE_GFX_VERSION (e.g. 11.0.0 for gfx103x,"
-     echo "         12.0.1 for gfx12xx)" ;;
+  *) info "NOTE: gfx arch '$GFX' is not in the standard wheel support list —"
+     info "      you may need HSA_OVERRIDE_GFX_VERSION (e.g. 11.0.0 for gfx103x,"
+     info "      12.0.1 for gfx12xx)" ;;
 esac
 
-echo "== TripoSG (mesh adapter) =="
-VENV="$VENV" bash "$ROOT/scripts/install_triposg.sh"
+say "TripoSG (mesh adapter)"
+VENV="$VENV" bash "$ROOT/mesh_server/scripts/install_triposg.sh"
 
 if [ "${HUNYUAN:-0}" = "1" ]; then
-  echo "== Hunyuan3D-2 torch adapters =="
-  VENV="$VENV" bash "$ROOT/scripts/install_hunyuan_torch.sh"
+  say "Hunyuan3D-2 torch adapters"
+  VENV="$VENV" bash "$ROOT/mesh_server/scripts/install_hunyuan_torch.sh"
 fi
 
-echo "done — 'meshserver models' should list triposg on device 'rocm'"
+ok "done — 'meshserver models' should list triposg on device 'rocm'"
