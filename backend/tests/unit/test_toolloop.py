@@ -455,6 +455,160 @@ def test_result_messages_missing_image_skipped(tmp_path):
     assert len(msgs) == 1 and msgs[0]["role"] == "tool"
 
 
+def _png_bytes(color=(10, 20, 30, 255)) -> bytes:
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGBA", (32, 24), color).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_result_messages_dedupes_identical_images(tmp_path):
+    """The session's _sent_image_hashes stubs byte-identical re-renders —
+    the first send goes out as an image, the repeat as a text stub."""
+    from cadx.agent.toolloop import _result_messages
+    from cadx.llm.tools import _mk_call
+
+    raw = _png_bytes()
+    img_a = tmp_path / "a.png"
+    img_b = tmp_path / "b.png"  # identical bytes, different path
+    img_a.write_bytes(raw)
+    img_b.write_bytes(raw)
+
+    session = ToolSession(_ctx(FakeLLM([])), kind="info")
+    seen = session._sent_image_hashes
+
+    first = _result_messages(
+        _mk_call("c1", "render_model", "{}"),
+        {"ok": True, "_images": [str(img_a)]},
+        native=True,
+        seen_hashes=seen,
+    )
+    assert any(p.get("type") == "image_url" for p in first[1]["content"])
+
+    second = _result_messages(
+        _mk_call("c2", "render_model", "{}"),
+        {"ok": True, "_images": [str(img_b)]},
+        native=True,
+        seen_hashes=seen,
+    )
+    parts = second[1]["content"]
+    assert not any(p.get("type") == "image_url" for p in parts)
+    assert any("identical image omitted" in str(p.get("text")) for p in parts)
+
+
+def test_result_messages_sends_distinct_images(tmp_path):
+    """Different file bytes are never deduped — both go out as images."""
+    from cadx.agent.toolloop import _result_messages
+    from cadx.llm.tools import _mk_call
+
+    img_a = tmp_path / "a.png"
+    img_b = tmp_path / "b.png"
+    img_a.write_bytes(_png_bytes((10, 20, 30, 255)))
+    img_b.write_bytes(_png_bytes((200, 100, 50, 255)))
+
+    session = ToolSession(_ctx(FakeLLM([])), kind="info")
+    seen = session._sent_image_hashes
+    for i, p in enumerate((img_a, img_b)):
+        msgs = _result_messages(
+            _mk_call(f"c{i}", "render_model", "{}"),
+            {"ok": True, "_images": [str(p)]},
+            native=True,
+            seen_hashes=seen,
+        )
+        assert any(part.get("type") == "image_url" for part in msgs[1]["content"])
+
+
+class _ImageLoopSession(ToolSession):
+    """Fake session whose single tool emits a queued `_images` result —
+    exercises the dedupe wiring inside run_session end to end."""
+
+    def __init__(self, ctx: AgentCtx, payloads: list[dict]) -> None:
+        super().__init__(ctx, kind="info")
+        self._payloads = list(payloads)
+
+    def tools(self) -> list[dict]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "snapshot",
+                    "description": "emit a render image",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+
+    async def execute(self, name: str, args: dict) -> dict:
+        result = self._payloads.pop(0) if self._payloads else {"ok": True}
+        self.tool_log.append({"name": name, "args": args, "result": result})
+        return result
+
+
+async def test_session_dedupes_repeat_render(tmp_path):
+    """End to end: two identical renders in one session — the second image
+    message reaching the model is a text stub, not another image part."""
+    img = tmp_path / "render.png"
+    img.write_bytes(_png_bytes())
+    llm = FakeLLM([_call("snapshot"), _call("snapshot"), {"text": "done"}])
+    llm.tools_mode = "auto"
+    ctx = _ctx(llm)
+    session = _ImageLoopSession(ctx, [{"ok": True, "_images": [str(img)]}] * 2)
+    res = await run_session(ctx, "vision", MESSAGES, session=session, max_calls=6, step="improve")
+    img_msgs = [
+        m
+        for m in res.messages_out
+        if m.get("role") == "user"
+        and isinstance(m.get("content"), list)
+        and "output image(s)" in str(m["content"][0])
+    ]
+    assert len(img_msgs) == 2
+    assert any(p.get("type") == "image_url" for p in img_msgs[0]["content"])
+    assert not any(p.get("type") == "image_url" for p in img_msgs[1]["content"])
+    assert any("identical image omitted" in str(p.get("text")) for p in img_msgs[1]["content"])
+
+
+def test_msg_budget_counts():
+    """_msg_budget totals text chars, image parts and base64 payload bytes."""
+    from cadx.agent.toolloop import _msg_budget
+
+    msgs = [
+        {"role": "system", "content": "sys prompt"},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "hello"},
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,QUJD"}},
+                {"type": "text", "text": "tail"},
+            ],
+        },
+        {"role": "assistant", "content": "ok"},
+        {"role": "assistant", "content": None},  # tool-call echoes carry None
+    ]
+    b = _msg_budget(msgs)
+    assert b["n_messages"] == 4
+    assert b["text_chars"] == len("sys prompt") + len("hello") + len("tail") + len("ok")
+    assert b["image_parts"] == 1
+    assert b["image_bytes"] == len("QUJD")
+
+
+async def test_llm_call_budget_event_recorded():
+    """Each LLM call in the session loop emits a llm_call_budget trace event."""
+    llm = FakeLLM([_call("search_code", pattern="x"), {"text": "done"}])
+    llm.tools_mode = "auto"
+    ctx = _ctx(llm)
+    session = ToolSession(ctx, kind="edit", code=BOX_CODE)
+    await run_session(ctx, "code", MESSAGES, session=session, max_calls=6, step="improve")
+    events = [r for r in ctx.trace.records if r.get("event") == "llm_call_budget"]
+    assert len(events) == 2  # one per chat call
+    assert events[0]["step"] == "improve"
+    assert events[0]["n_messages"] == len(MESSAGES)
+    assert events[0]["text_chars"] > 0
+    assert events[1]["n_messages"] > events[0]["n_messages"]  # history grew
+
+
 def _mesh_wb(ctx: AgentCtx, tmp_path: Path, **kw):
     import trimesh
 

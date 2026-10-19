@@ -212,10 +212,39 @@ def test_trim_tool_results_drops_old_images():
         for m in msgs
         if isinstance(m.get("content"), list)
         and all(p.get("type") == "text" for p in m["content"])
-        and "preview image removed" in str(m["content"])
+        and "image removed" in str(m["content"])
     ]
     assert len(imgs) == 2
     assert len(stubs) == 3
+
+
+def test_trim_tool_results_elides_image_keeps_text_parts():
+    """Elision must stub ONLY the image parts — text parts in the same
+    message (captions, labels) survive, and multiple images collapse into
+    a single stub."""
+    img = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}}
+    msgs = [{"role": "system", "content": "sys"}]
+    msgs.append(
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "first label"},
+                img,
+                {"type": "text", "text": "second label"},
+                img,
+            ],
+        }
+    )
+    # two newer image-bearing messages keep their images
+    for _ in range(2):
+        msgs.append({"role": "user", "content": [img, {"type": "text", "text": "preview"}]})
+    _trim_tool_results(msgs)
+    content = msgs[1]["content"]
+    assert all(p.get("type") == "text" for p in content)
+    texts = [p["text"] for p in content]
+    assert "first label" in texts and "second label" in texts
+    stubs = [t for t in texts if "image removed" in t]
+    assert len(stubs) == 1  # one stub per message, not per image
 
 
 def test_only_dim_issues_gate():

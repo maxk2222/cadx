@@ -1294,6 +1294,9 @@ class ToolSession:
         self._unchanged_warned = False
         # build sessions: named buffer snapshots for rollback()
         self._checkpoints: dict[str, str] = {}
+        # sha1 of every image file already sent to the model — an identical
+        # re-render is stubbed to text instead of resending the same bytes
+        self._sent_image_hashes: set[str] = set()
 
     # -- schema selection --------------------------------------------------- #
 

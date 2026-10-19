@@ -158,3 +158,27 @@ def test_prepare_flattens_alpha_onto_white(tmp_path):
     out = Image.open(io.BytesIO(prepare(p)))
     corner = out.getpixel((0, 0))
     assert corner[0] > 240 and corner[1] > 240  # white, not black
+
+
+def test_prepare_max_edge_override(tmp_path):
+    """prepare(max_edge=N) downscales the long edge to N — the runtime
+    llm_image_max_edge knob rides on this parameter."""
+    p = tmp_path / "big.png"
+    Image.new("RGB", (1200, 600), (40, 80, 120)).save(p)
+    out = Image.open(io.BytesIO(prepare(p, max_edge=512)))
+    assert max(out.size) <= 512
+    assert out.size == (512, 256)
+
+
+def test_image_part_uses_runtime_defaults(tmp_path):
+    """image_part() picks detail/max-edge from RuntimeSettings when not
+    given explicitly — explicit args still win."""
+    from cadx.llm.images import image_part
+
+    p = tmp_path / "a.png"
+    Image.new("RGB", (64, 64), (1, 2, 3)).save(p)
+    part = image_part(p)
+    assert part["type"] == "image_url"
+    assert part["image_url"]["detail"] == "high"  # code default
+    assert part["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    assert image_part(p, detail="low")["image_url"]["detail"] == "low"

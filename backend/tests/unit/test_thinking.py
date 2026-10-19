@@ -30,6 +30,12 @@ OFF_BODY = {"chat_template_kwargs": {"enable_thinking": False}}
 MESSAGES = [{"role": "system", "content": "sys"}, {"role": "user", "content": "go"}]
 
 
+def _calls(ctx: AgentCtx) -> list[dict[str, Any]]:
+    """Trace records of actual LLM calls — `llm_call_budget` events sit in
+    the same list but carry no `parsed` payload."""
+    return [r for r in ctx.trace.records if "parsed" in r]
+
+
 def _ctx(llm: FakeLLM | None = None, escalated: bool = False, **settings: Any) -> AgentCtx:
     async def emit(step: str, it: int, msg: str, **_f: Any) -> None:
         pass
@@ -234,7 +240,7 @@ async def test_session_soft_step_gets_off_body():
     res = await run_session(ctx, "vision", MESSAGES, session=session, max_calls=3, step="critique")
     assert res.response is not None
     assert llm.calls[0]["extra_body"] == OFF_BODY
-    assert ctx.trace.records[0]["parsed"]["thinking"] is False
+    assert _calls(ctx)[0]["parsed"]["thinking"] is False
 
 
 async def test_session_hard_step_gets_on_body():
@@ -243,7 +249,7 @@ async def test_session_hard_step_gets_on_body():
     session = ToolSession(ctx, kind="info")
     await run_session(ctx, "vision", MESSAGES, session=session, max_calls=3, step="improve_2")
     assert llm.calls[0]["extra_body"] == ON_BODY
-    assert ctx.trace.records[0]["parsed"]["thinking"] is True
+    assert _calls(ctx)[0]["parsed"]["thinking"] is True
 
 
 async def test_session_escalated_latch_gets_on_body():
@@ -257,7 +263,7 @@ async def test_session_escalated_latch_gets_on_body():
     session = ToolSession(ctx, kind="info")
     await run_session(ctx, "vision", MESSAGES, session=session, max_calls=3, step="critique")
     assert llm.calls[0]["extra_body"] == ON_BODY
-    assert ctx.trace.records[0]["parsed"]["thinking"] is True
+    assert _calls(ctx)[0]["parsed"]["thinking"] is True
 
 
 async def test_grace_turn_carries_thinking_body():
@@ -282,4 +288,4 @@ async def test_grace_turn_carries_thinking_body():
     assert res.exhausted
     assert len(llm.calls) == 2  # session turn + grace turn
     assert all(c["extra_body"] == ON_BODY for c in llm.calls)
-    assert ctx.trace.records[-1]["parsed"]["thinking"] is True
+    assert _calls(ctx)[-1]["parsed"]["thinking"] is True

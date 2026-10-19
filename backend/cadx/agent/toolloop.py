@@ -17,6 +17,8 @@ Protocol notes:
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import json
 import re
 from collections.abc import Awaitable, Callable
@@ -119,10 +121,21 @@ def _trim_tool_results(msgs: list[dict[str, Any]], keep_last: int = 6) -> None:
         and any(isinstance(p, dict) and p.get("type") == "image_url" for p in m["content"])
     ]
     for i in img_idx[:-2]:
-        msgs[i] = {
-            **msgs[i],
-            "content": [{"type": "text", "text": "[earlier preview image removed — superseded]"}],
-        }
+        # rebuild the part list instead of replacing the whole content —
+        # text parts riding along with the image (tool captions, labels)
+        # must survive; image parts collapse into ONE stub per message
+        new_content: list[Any] = []
+        stubbed = False
+        for part in msgs[i]["content"]:
+            if isinstance(part, dict) and part.get("type") == "image_url":
+                if not stubbed:
+                    new_content.append(
+                        {"type": "text", "text": "[earlier image removed — superseded]"}
+                    )
+                    stubbed = True
+                continue
+            new_content.append(part)
+        msgs[i] = {**msgs[i], "content": new_content}
     # failed-verify results carry the full excerpt+traceback and repeat the
     # same blob turn after turn — keep the last 2 intact, compact older ones
     v_idx = [
@@ -359,10 +372,56 @@ def _assistant_echo(resp: LLMResponse, native: bool) -> dict[str, Any]:
     return {"role": "assistant", "content": resp.text}
 
 
-def _result_messages(tc: ToolCall, result: dict[str, Any], native: bool) -> list[dict[str, Any]]:
+def _msg_budget(msgs: list[dict[str, Any]]) -> dict[str, int]:
+    """Prompt-size counters for the llm_call_budget trace event — messages,
+    total text chars, image part count and summed base64 payload length."""
+    text_chars = 0
+    image_parts = 0
+    image_bytes = 0
+    for m in msgs:
+        content = m.get("content")
+        if isinstance(content, str):
+            text_chars += len(content)
+        elif isinstance(content, list):
+            for part in content:
+                if not isinstance(part, dict):
+                    text_chars += len(str(part))
+                    continue
+                if part.get("type") == "image_url":
+                    image_parts += 1
+                    iu = part.get("image_url")
+                    url = iu.get("url") if isinstance(iu, dict) else str(iu or "")
+                    image_bytes += len(url.rsplit(",", 1)[-1])
+                else:
+                    text_chars += len(str(part.get("text") or ""))
+    return {
+        "n_messages": len(msgs),
+        "text_chars": text_chars,
+        "image_parts": image_parts,
+        "image_bytes": image_bytes,
+    }
+
+
+async def _trace_budget(ctx: AgentCtx, step: str, msgs: list[dict[str, Any]]) -> None:
+    """Best-effort prompt-budget event before each LLM call — instrumentation
+    must never break the session loop."""
+    with contextlib.suppress(Exception):
+        await ctx.trace.event("llm_call_budget", step=step, **_msg_budget(msgs))
+
+
+def _result_messages(
+    tc: ToolCall,
+    result: dict[str, Any],
+    native: bool,
+    seen_hashes: set[str] | None = None,
+) -> list[dict[str, Any]]:
     """Serialise a tool result into message(s). A result may carry `"_images"`
     (list of image file paths) — OpenAI tool messages can't hold images, so
-    they go out as a following user message with image content parts."""
+    they go out as a following user message with image content parts.
+
+    `seen_hashes` (the session's `_sent_image_hashes`) dedupes by file bytes:
+    a byte-identical re-render becomes a text stub instead of resending the
+    same image — only repeats are stubbed, the first send always goes out."""
     images = result.get("_images") or []
     body = json.dumps({k: v for k, v in result.items() if k != "_images"}, default=str)
     out: list[dict[str, Any]] = []
@@ -374,7 +433,23 @@ def _result_messages(tc: ToolCall, result: dict[str, Any], native: bool) -> list
         parts: list[dict[str, Any]] = [{"type": "text", "text": f"{tc.name} output image(s):"}]
         for p in images:
             try:
-                parts.append(image_part(Path(p)))
+                path = Path(p)
+                if seen_hashes is not None:
+                    try:
+                        digest = hashlib.sha1(path.read_bytes()).hexdigest()
+                    except Exception:
+                        digest = ""  # unreadable → fall through, send normally
+                    if digest:
+                        if digest in seen_hashes:
+                            parts.append(
+                                {
+                                    "type": "text",
+                                    "text": "[render unchanged — identical image omitted]",
+                                }
+                            )
+                            continue
+                        seen_hashes.add(digest)
+                parts.append(image_part(path))
             except Exception:
                 continue
         if len(parts) > 1:
@@ -452,6 +527,7 @@ async def run_session(  # noqa: C901
         tools = session.tools()
         # resolved per turn — the escalation latch may flip mid-session
         thinking = thinking_body(ctx, step)
+        await _trace_budget(ctx, step, msgs)
         resp = await ctx.llm.chat(
             role,
             msgs,
@@ -512,7 +588,9 @@ async def run_session(  # noqa: C901
                     args=_short(tc.raw_arguments, 400),
                 )
                 result = await session.execute(tc.name, tc.arguments)
-            msgs.extend(_result_messages(tc, result, native))
+            msgs.extend(
+                _result_messages(tc, result, native, session._sent_image_hashes)
+            )
             error_streak = error_streak + 1 if not result.get("ok", True) else 0
             # same failure signature again? A verify loop patching around
             # ONE error won't converge — nudge once, kill the session at 3
@@ -650,19 +728,21 @@ async def _grace_turn(
 ) -> LLMResponse | None:
     """One final tools-off turn so an exhausted session can still deliver its
     schema answer. Returns None when even that fails."""
+    grace_msgs = [
+        *msgs,
+        {
+            "role": "user",
+            "content": (
+                "Tool budget reached. Return the FINAL answer JSON "
+                "now — no tool calls, just the JSON object."
+            ),
+        },
+    ]
     try:
+        await _trace_budget(ctx, step, grace_msgs)
         resp: LLMResponse = await ctx.llm.chat(
             role,
-            [
-                *msgs,
-                {
-                    "role": "user",
-                    "content": (
-                        "Tool budget reached. Return the FINAL answer JSON "
-                        "now — no tool calls, just the JSON object."
-                    ),
-                },
-            ],
+            grace_msgs,
             json_schema=json_schema,
             extra_body=thinking_body(ctx, step),
         )

@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import io
 from pathlib import Path
+from typing import Literal
 
 from PIL import Image, ImageOps
 
@@ -51,24 +52,34 @@ def normalize(
         return None
 
 
-def prepare(path: Path) -> bytes:
+def prepare(path: Path, max_edge: int | None = None) -> bytes:
     img = _flatten(ImageOps.exif_transpose(Image.open(path)))
     w, h = img.size
     long_edge = max(w, h)
-    if long_edge > MAX_EDGE:
-        scale = MAX_EDGE / long_edge
+    limit = max_edge or MAX_EDGE
+    if long_edge > limit:
+        scale = limit / long_edge
         img = img.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=JPEG_QUALITY)
     return buf.getvalue()
 
 
-def to_data_url(path: Path) -> str:
-    return "data:image/jpeg;base64," + base64.b64encode(prepare(path)).decode()
+def to_data_url(path: Path, max_edge: int | None = None) -> str:
+    return "data:image/jpeg;base64," + base64.b64encode(prepare(path, max_edge)).decode()
 
 
-def image_part(path: Path, detail: str = "high") -> dict:
+def image_part(path: Path, detail: Literal["high", "low"] | None = None) -> dict:
+    """OpenAI image_url content part. `detail`/size default to the runtime
+    settings — imported lazily: runtime_config pulls in the db model chain
+    and this module must stay a leaf."""
+    from cadx.runtime_config import RuntimeSettings
+
+    settings = RuntimeSettings()
     return {
         "type": "image_url",
-        "image_url": {"url": to_data_url(path), "detail": detail},
+        "image_url": {
+            "url": to_data_url(path, max_edge=settings.llm_image_max_edge),
+            "detail": detail or settings.llm_image_detail,
+        },
     }

@@ -48,6 +48,11 @@ class RuntimeSettings(BaseModel):
     # thinking_on() resolves OFF for the rest of the job regardless of policy
     # or the escalation latch. 0 disables thinking entirely.
     llm_thinking_max_calls: int = Field(default=8, ge=0, le=10_000)
+    # vision payload size: tool-result renders/contact sheets are the
+    # heaviest prompt item in long sessions — "low" detail and/or a smaller
+    # max edge cut the per-image token cost substantially
+    llm_image_detail: Literal["high", "low"] = "high"
+    llm_image_max_edge: int = Field(default=1568, ge=256, le=4096)
     agent_max_iterations: int = Field(default=3, ge=1, le=200)
     agent_max_repairs: int = Field(default=3, ge=0, le=200)
     agent_pass_score: int = Field(default=80, ge=0, le=100)
