@@ -588,9 +588,7 @@ async def run_session(  # noqa: C901
                     args=_short(tc.raw_arguments, 400),
                 )
                 result = await session.execute(tc.name, tc.arguments)
-            msgs.extend(
-                _result_messages(tc, result, native, session._sent_image_hashes)
-            )
+            msgs.extend(_result_messages(tc, result, native, session._sent_image_hashes))
             error_streak = error_streak + 1 if not result.get("ok", True) else 0
             # same failure signature again? A verify loop patching around
             # ONE error won't converge — nudge once, kill the session at 3
