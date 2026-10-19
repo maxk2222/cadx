@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from cadx.cad.poshint import parse_position_hints, resolve_end_hint
+from cadx.cad.poshint import parse_coord_points, parse_position_hints, resolve_end_hint
 
 
 def test_coord_and_midplane_hints():
@@ -97,3 +97,43 @@ def test_plus_signed_coord_parses():
     assert coords["x"] == 30.0
     coords2, _f2, _e2, _n2 = parse_position_hints("x=+45 mm")
     assert coords2["x"] == 45.0
+
+
+# --------------------------------------------------------------------------- #
+# parse_coord_points — multi-point coordinate groups
+# --------------------------------------------------------------------------- #
+
+
+def test_coord_points_two_xy_groups():
+    """'x=-25, y=0 and x=+45, y=0' declares TWO points — the per-axis dict
+    keeps only the last x, so the grouped parse must keep both."""
+    assert parse_coord_points("x=-25, y=0 and x=+45, y=0") == [
+        {"x": -25.0, "y": 0.0},
+        {"x": 45.0, "y": 0.0},
+    ]
+
+
+def test_coord_points_zy_groups():
+    assert parse_coord_points("z=15, y=0 and z=70, y=0") == [
+        {"z": 15.0, "y": 0.0},
+        {"z": 70.0, "y": 0.0},
+    ]
+
+
+def test_coord_points_single_axis_repeats():
+    assert parse_coord_points("x=-30 und x=+30") == [{"x": -30.0}, {"x": 30.0}]
+
+
+def test_coord_points_single_group():
+    assert parse_coord_points("x=12") == [{"x": 12.0}]
+
+
+def test_coord_points_parenthesised_endpoints():
+    assert parse_coord_points("(x=-55, z=35) to (x=+15, z=95)") == [
+        {"x": -55.0, "z": 35.0},
+        {"x": 15.0, "z": 95.0},
+    ]
+
+
+def test_coord_points_no_coords():
+    assert parse_coord_points("near the +X end, centered in Y") == []

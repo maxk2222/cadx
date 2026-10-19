@@ -102,6 +102,19 @@ No BuildPart context needed. Parts rest on XY (min Z = 0), centred — place wit
   `p.part += Pos(x, y, z) * Rot(0, -90, 0) * rib(10, 10, 3)` places it on a
   vertical wall with the base running up Z.
 
+### strut
+
+- `strut(p0, p1, width, thickness, embed=1.0)` — STRAIGHT rectangular bar
+  between two world points `p0`/`p1` (mm tuples); `width` runs along the
+  axis closest to world Y, `thickness` lies in the bar plane, both ends
+  extend `embed` mm so the fuse overlaps. USE THIS for diagonal
+  braces/struts/"Streben" between two bodies — e.g.
+  `part = part + strut((-55, 0, 35), (15, 0, 95), 10, 6)`. It is NOT a
+  filled triangular gusset — a spec that says "diagonal brace"/"Strebe"
+  wants this bar; only use `rib()` when the spec explicitly wants the
+  filled triangle. A filled gusset under a bore line gets drilled by
+  through-holes and fails verification.
+
 ### mounting_ear
 
 - `mounting_ear(length, width, thickness, hole_d=None, hole_offset=0,

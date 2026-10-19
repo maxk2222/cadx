@@ -34,7 +34,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from cadx.cad.poshint import parse_position_hints, resolve_end_hint
+from cadx.cad.poshint import parse_coord_points, parse_position_hints, resolve_end_hint
 
 Status = str  # "PASS" | "FAIL" | "UNVERIFIED"
 TIER_STRUCTURAL = "structural"
@@ -82,6 +82,7 @@ _AXIS_TEXT_RE = re.compile(
 # "y faces"/"+x side" — the envelope face a protrusion feature sits on
 _HINT_AXIS_RE = re.compile(r"(?<![\w])[+-]?([xyz])[\s-]*(?:faces?|sides?|seite)\b", re.I)
 _POS_TOL_MM = 2.0  # "x=12" offsets verified within ±2 mm
+_POS_GROUP_TOL_MM = 1.5  # a declared point must own one centre within ±1.5 mm
 _POS_SIDE_EPS = 0.5  # a centre this close to the mid-plane is ambiguous
 
 
@@ -300,6 +301,37 @@ def _centre_coord_check(
     return violations, verified
 
 
+def _point_group_check(
+    centers: list[Any], groups: list[dict[str, float]]
+) -> tuple[list[dict[str, Any]], int]:
+    """Multi-point check: each declared coordinate group must own ONE
+    measured [x, y] centre within ±_POS_GROUP_TOL_MM on every axis it
+    states. Groups naming z stay unverifiable — plan-view centres carry
+    no z (skipped, so the caller's hint count keeps them UNVERIFIED)."""
+    violations: list[dict[str, Any]] = []
+    verified = 0
+    for g in groups:
+        want = {ax: v for ax, v in g.items() if ax in ("x", "y")}
+        if not want or len(want) != len(g):
+            continue
+        best = min(
+            centers,
+            key=lambda c: max(abs(float(c[0 if ax == "x" else 1]) - v) for ax, v in want.items()),
+        )
+        dev = {ax: abs(float(best[0 if ax == "x" else 1]) - v) for ax, v in want.items()}
+        if all(d <= _POS_GROUP_TOL_MM for d in dev.values()):
+            verified += 1
+        else:
+            violations.append(
+                {
+                    "point": {ax: round(v, 3) for ax, v in g.items()},
+                    "measured_mm": [round(float(best[0]), 3), round(float(best[1]), 3)],
+                    "delta_mm": round(max(dev.values()), 3),
+                }
+            )
+    return violations, verified
+
+
 def _spec_void_dia(f: dict[str, Any]) -> float | None:
     """Declared void diameter of a spec feature (diameter|dia|bore_diameter)."""
     dims = f.get("dims")
@@ -359,6 +391,7 @@ def _void_pos_wants(
     (partial resolution allowed: an ``x=12``-only feature constrains x)."""
     text = str(f.get("position") or "").strip() or str(f.get("description") or "")
     coords, _faces, ends, nears = parse_position_hints(text)
+    groups = parse_coord_points(text)
     wants: dict[str, list[float]] = {"x": [], "y": []}
     for ax in ("x", "y"):
         # an end offset carries the user's stated semantics; a contradicting
@@ -370,10 +403,16 @@ def _void_pos_wants(
             for e in ends
             if str(e["axis"]) == ax and bnd is not None
         ]
-        coord_v = coords.get(ax)
-        if coord_v is not None and end_vals and all(abs(coord_v - v) > 1.0 for v in end_vals):
-            coord_v = None
-        if coord_v is not None:
+        # multi-point declarations ("x=-25, y=0 and x=+45, y=0") contribute
+        # every group's value — the flat dict only keeps the last one
+        coord_vals = (
+            sorted({g[ax] for g in groups if ax in g})
+            if len(groups) >= 2
+            else ([coords[ax]] if ax in coords else [])
+        )
+        for coord_v in coord_vals:
+            if end_vals and all(abs(coord_v - v) > 1.0 for v in end_vals):
+                continue
             wants[ax].append(coord_v)
         for v in end_vals:
             if v not in wants[ax]:
@@ -430,6 +469,29 @@ def _near_band_check(
     return violations, verified
 
 
+def _face_side_check(
+    faces: list[tuple[str, str]], centers: list[Any]
+) -> tuple[list[dict[str, Any]], int]:
+    """'+x face'/'front' side hints: the outermost measured centre must sit
+    on the declared side of the mid-plane. A mid-plane centre is ambiguous
+    (not wrong); z hints are skipped — centres carry no z."""
+    violations: list[dict[str, Any]] = []
+    verified = 0
+    for face in faces:
+        if face[1] == "z":
+            continue  # not verifiable from [x, y] centres
+        idx = 0 if face[1] == "x" else 1
+        vals = [float(c[idx]) for c in centers]
+        best = max(vals) if face[0] == "+" else min(vals)
+        if (face[0] == "+" and best > _POS_SIDE_EPS) or (face[0] == "-" and best < -_POS_SIDE_EPS):
+            verified += 1
+        elif abs(best) <= _POS_SIDE_EPS:
+            continue  # mid-plane centre — ambiguous, not wrong
+        else:
+            violations.append({"face": face, "measured_mm": round(best, 3)})
+    return violations, verified
+
+
 def _void_position_check(
     i: int,
     name: str,
@@ -453,6 +515,7 @@ def _void_position_check(
         return
     check_name = f"feat_{i}_position"
     coords, faces, ends, nears = parse_position_hints(pos)
+    groups = parse_coord_points(pos)
     base: dict[str, Any] = {"feature": name, "position": pos[:160]}
     if not coords and not faces and not ends and not nears:
         checks.append(
@@ -465,6 +528,8 @@ def _void_position_check(
         )
         return
     expected: dict[str, Any] = {"coords": coords, "faces": faces}
+    if len(groups) >= 2:
+        expected["points"] = groups
     if ends:
         expected["ends"] = ends
     if nears:
@@ -486,28 +551,33 @@ def _void_position_check(
         )
         return
     bounds = _bbox_bounds(bbox_min, bbox_max)
+    violations: list[dict[str, Any]] = []
+    verified = 0
+    # multi-point declarations ("x=-25, y=0 and x=+45, y=0") check each
+    # group against ONE centre — the flat coords dict would only check
+    # the last point and let a missing duplicate pass
+    n_coord_hints = len(coords)
     wants: dict[str, list[float]] = {}
-    for ax, want in coords.items():
-        wants.setdefault(ax, []).append(want)
+    if len(groups) >= 2:
+        gv, gn = _point_group_check(centers, groups)
+        violations += gv
+        verified += gn
+        n_coord_hints = len(groups)
+    else:
+        for ax, want in coords.items():
+            wants.setdefault(ax, []).append(want)
     for e in ends:
         bnd = bounds.get(e["axis"])
         if bnd is not None:
             wants.setdefault(e["axis"], []).append(
                 resolve_end_hint(e["axis"], e["end"], e["offset_mm"], *bnd)
             )
-    violations, verified = _centre_coord_check(centers, wants)
-    for face in faces:
-        if face[1] == "z":
-            continue  # not verifiable from [x, y] centres
-        idx = 0 if face[1] == "x" else 1
-        vals = [float(c[idx]) for c in centers]
-        best = max(vals) if face[0] == "+" else min(vals)
-        if (face[0] == "+" and best > _POS_SIDE_EPS) or (face[0] == "-" and best < -_POS_SIDE_EPS):
-            verified += 1
-        elif abs(best) <= _POS_SIDE_EPS:
-            continue  # mid-plane centre — ambiguous, not wrong
-        else:
-            violations.append({"face": face, "measured_mm": round(best, 3)})
+    w_viol, w_ver = _centre_coord_check(centers, wants)
+    violations += w_viol
+    verified += w_ver
+    f_viol, f_ver = _face_side_check(faces, centers)
+    violations += f_viol
+    verified += f_ver
     near_violations, near_verified = _near_band_check(nears, bounds, centers)
     violations += near_violations
     verified += near_verified
@@ -520,7 +590,7 @@ def _void_position_check(
     if violations:
         ev["violations"] = violations[:_MAX_EVIDENCE]
         checks.append(_check(check_name, TIER_FEATURES, "FAIL", ev))
-    elif verified and len(coords) + len(faces) + len(ends) + len(nears) == verified:
+    elif verified and n_coord_hints + len(faces) + len(ends) + len(nears) == verified:
         checks.append(_check(check_name, TIER_FEATURES, "PASS", ev))
     else:
         ev["reason"] = (

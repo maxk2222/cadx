@@ -42,6 +42,7 @@ from .shapes import (
     mounting_ear,
     rib,
     snap_fit_cantilever,
+    strut,
     text_label,
     tube,
 )
@@ -71,6 +72,7 @@ __all__ = [
     "safe_fillet",
     "slot_cutter",
     "snap_fit_cantilever",
+    "strut",
     "t_slot",
     "text_label",
     "through_hole",

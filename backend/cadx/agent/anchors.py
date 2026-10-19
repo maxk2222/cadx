@@ -21,7 +21,8 @@ from typing import Any, Literal
 import numpy as np
 from pydantic import BaseModel
 
-from cadx.cad.poshint import parse_position_hints, resolve_end_hint
+from cadx.agent.spechost import host_range
+from cadx.cad.poshint import parse_coord_points, parse_position_hints, resolve_end_hint
 from cadx.llm.schemas import Feature, PartSpec
 
 # axis -> (axial index, in-plane u index, in-plane v index) — same layout as
@@ -248,6 +249,58 @@ def _axis_vals(
     return vals
 
 
+def _centers_on_plane(
+    f: Feature, in_plane: tuple[str, str]
+) -> list[tuple[float, float, bool]] | None:
+    """Structured ``Feature.centers`` mapped onto the in-plane axes — the
+    intake's own per-instance coordinates beat any text re-parse. ``None``
+    when no usable centres are declared (caller falls back to text)."""
+    centers = getattr(f, "centers", None) or []
+    if not centers:
+        return None
+    u_ax, v_ax = in_plane
+    out: list[tuple[float, float, bool]] = []
+    for c in centers:
+        u = getattr(c, u_ax, None)
+        v = getattr(c, v_ax, None)
+        if u is None or v is None:
+            continue  # incomplete row — never guess one axis of a centre
+        out.append((float(u), float(v), False))
+    return out or None
+
+
+def _pairwise_pts(
+    groups: list[dict[str, float]],
+    vals: dict[str, list[tuple[float, bool]]],
+    in_plane: tuple[str, str],
+) -> list[tuple[float, float, bool]]:
+    """Pairwise (u, v) positions from multi-point coord groups.
+
+    "x=-25, y=0 and x=+45, y=0" must pair (-25, 0) and (45, 0) — a cross
+    product of the per-axis lists would work here but collapses whenever
+    the flat coords dict dropped a repeated axis. A group missing an
+    in-plane axis takes it from ``vals`` only when that axis resolved to
+    exactly one value; otherwise the group is skipped (a guessed
+    coordinate is worse than none)."""
+    out: list[tuple[float, float, bool]] = []
+    for g in groups:
+        uv: list[float] = []
+        est = False
+        ok = True
+        for ax in in_plane:
+            if ax in g:
+                uv.append(g[ax])
+            elif len(vals.get(ax) or []) == 1:
+                v, e = vals[ax][0]
+                uv.append(v)
+                est = est or e
+            else:
+                ok = False
+        if ok:
+            out.append((uv[0], uv[1], est))
+    return out
+
+
 def _spec_xy(
     f: Feature, bounds: dict[str, tuple[float, float]], dia: float
 ) -> list[tuple[float, float, bool]]:
@@ -265,12 +318,19 @@ def _spec_xy(
     """
     text = str(f.position or "").strip() or str(f.description or "")
     vals = _axis_vals(text, bounds, dia, ("x", "y"))
+    centers = _centers_on_plane(f, ("x", "y"))
+    if centers is not None:
+        return centers
+    groups = parse_coord_points(text)
+    if len(groups) >= 2:
+        return _pairwise_pts(groups, vals, ("x", "y"))
     if not vals["x"] or not vals["y"]:
         return []
     return [(x, y, ex or ey) for x, ex in vals["x"] for y, ey in vals["y"]]
 
 
 def _spec_plane(
+    spec: PartSpec,
     f: Feature,
     bounds: dict[str, tuple[float, float]],
     dia: float,
@@ -291,56 +351,83 @@ def _spec_plane(
     text = str(f.position or "").strip() or str(f.description or "")
     coords, _faces, ends, nears = parse_position_hints(text)
     vals = _axis_vals(text, bounds, dia, in_plane)
-    inset = max(1.5 * dia, 6.0)
     u_ax, v_ax = in_plane
-    # unresolved in-plane defaults to the plane mid (est); z rests on XY so
-    # its mid is h/2, not 0.0
-    for ax in in_plane:
-        if not vals[ax]:
-            lo, hi = bounds[ax]
-            vals[ax].append(((lo + hi) / 2 if ax == "z" else 0.0, True))
+    pts = _centers_on_plane(f, in_plane)
+    if pts is None:
+        groups = parse_coord_points(text)
+        if len(groups) >= 2:
+            pts = _pairwise_pts(groups, vals, in_plane)
+        else:
+            # unresolved in-plane defaults to the plane mid (est); z rests on
+            # XY so its mid is h/2, not 0.0
+            for ax in in_plane:
+                if not vals[ax]:
+                    lo, hi = bounds[ax]
+                    vals[ax].append(((lo + hi) / 2 if ax == "z" else 0.0, True))
+            pts = [(u, v, eu or ev) for u, eu in vals[u_ax] for v, ev in vals[v_ax]]
     bore_ax = next(a for a in "xyz" if a not in in_plane)
-    axial: float | None = None
-    axial_est = False
-    for e in ends:
-        if str(e["axis"]) == bore_ax:
-            axial = resolve_end_hint(
-                bore_ax, str(e["end"]), float(e["offset_mm"]), *bounds[bore_ax]
-            )
-            break
-    if axial is None:
-        for n in nears:
-            if str(n["axis"]) == bore_ax:
-                lo, hi = bounds[bore_ax]
-                axial = hi - inset if str(n["end"]).startswith("+") else lo + inset
-                axial_est = True
-                break
-    if axial is None and coords.get(bore_ax) is not None:
-        axial = coords[bore_ax]
-    axial_depth: float | None = None
-    # declared depth wins over the 2x-offset heuristic
-    declared = (f.dims or {}).get("depth") or (f.dims or {}).get("bore_depth")
-    try:
-        if declared:
-            axial_depth = float(declared)
-    except (TypeError, ValueError):
-        axial_depth = None
-    if axial_depth is None:
-        for e in ends:
-            if str(e["axis"]) == bore_ax:
-                axial_depth = min(
-                    2.0 * float(e["offset_mm"]), bounds[bore_ax][1] - bounds[bore_ax][0]
-                )
-                break
+    axial, axial_est = _axial_hint(spec, f, bounds, bore_ax, dia, coords, ends, nears)
+    axial_depth = _axial_depth(f, bounds, bore_ax, ends)
     return (
-        [
-            (u, v, eu or ev or (axial is not None and axial_est))
-            for u, eu in vals[u_ax]
-            for v, ev in vals[v_ax]
-        ],
+        [(u, v, est or (axial is not None and axial_est)) for u, v, est in pts],
         axial,
         axial_depth,
     )
+
+
+def _axial_hint(
+    spec: PartSpec,
+    f: Feature,
+    bounds: dict[str, tuple[float, float]],
+    bore_ax: str,
+    dia: float,
+    coords: dict[str, float],
+    ends: list[dict],
+    nears: list[dict],
+) -> tuple[float | None, bool]:
+    """Axial centre coordinate of a side-bore + whether it is an estimate.
+
+    Order: explicit end offset > near-end proximity (est) > bare coordinate
+    on the bore axis > host-body mid — a bore through ONE declared plate
+    sits at that plate's mid when nothing else resolves it."""
+    inset = max(1.5 * dia, 6.0)
+    for e in ends:
+        if str(e["axis"]) == bore_ax:
+            return (
+                resolve_end_hint(bore_ax, str(e["end"]), float(e["offset_mm"]), *bounds[bore_ax]),
+                False,
+            )
+    for n in nears:
+        if str(n["axis"]) == bore_ax:
+            lo, hi = bounds[bore_ax]
+            return (hi - inset if str(n["end"]).startswith("+") else lo + inset), True
+    if coords.get(bore_ax) is not None:
+        return coords[bore_ax], False
+    rng = host_range(spec, f, bore_ax)
+    if rng is not None:
+        return (rng[0] + rng[1]) / 2.0, False
+    return None, False
+
+
+def _axial_depth(
+    f: Feature,
+    bounds: dict[str, tuple[float, float]],
+    bore_ax: str,
+    ends: list[dict],
+) -> float | None:
+    """Bore-depth hint for keep-region slab sizing — a declared depth wins
+    over the 2x-offset heuristic (end-face bores only keep the entry
+    region)."""
+    declared = (f.dims or {}).get("depth") or (f.dims or {}).get("bore_depth")
+    try:
+        if declared:
+            return float(declared)
+    except (TypeError, ValueError):
+        pass
+    for e in ends:
+        if str(e["axis"]) == bore_ax:
+            return min(2.0 * float(e["offset_mm"]), bounds[bore_ax][1] - bounds[bore_ax][0])
+    return None
 
 
 def _spec_anchors(spec: PartSpec) -> list[Anchor]:
@@ -408,7 +495,7 @@ def _spec_anchors(spec: PartSpec) -> list[Anchor]:
             # side-face bore — resolve on the perpendicular plane; scan-format
             # pos[] carries in-plane u/v at their coordinate slots
             in_plane = ("y", "z") if axis == "x" else ("x", "z")
-            pts, axial, axial_depth = _spec_plane(f, bounds, dia, in_plane)
+            pts, axial, axial_depth = _spec_plane(spec, f, bounds, dia, in_plane)
             _ax, au, av = _AXES[f"+{axis}"]
             for u, v, est in pts:
                 pos: list[float | None] = [None, None, None]

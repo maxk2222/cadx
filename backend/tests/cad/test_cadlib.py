@@ -1,6 +1,10 @@
 """cadlib — native helper checks + sandbox round-trip (`import cadlib` in
 generated code must work under `python -I` + the import guard)."""
 
+import json
+import math
+from pathlib import Path
+
 import pytest
 from build123d import (
     Align,
@@ -10,12 +14,15 @@ from build123d import (
     Compound,
     Cylinder,
     Pos,
+    export_stl,
 )
 
 from cadx.cad import cadlib
 from cadx.cad.sandbox import run_user_code
 
 _ALIGN_MIN = (Align.CENTER, Align.CENTER, Align.MIN)
+
+_FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "specs"
 
 
 def test_boss_dims_and_bore():
@@ -456,3 +463,70 @@ def test_tube_open_bore_both_ends():
     assert not t.is_inside((0.0, 0.0, 29.8))
     # wall material present between inner and outer radius
     assert t.is_inside((5.0, 0.0, 15.0))
+
+
+# --------------------------------------------------------------------------- #
+# strut — straight diagonal bar between two points
+# --------------------------------------------------------------------------- #
+
+
+def test_strut_geometry():
+    """Bar from leg (x=-55, z=35) to arm underside (x=+15, z=95): the width
+    axis stays parallel to world Y, ends embed 1 mm each for the fuse."""
+    s = cadlib.strut((-55, 0, 35), (15, 0, 95), 10, 6)
+    bb = s.bounding_box()
+    assert pytest.approx(-5.0, abs=0.01) == bb.min.Y
+    assert pytest.approx(5.0, abs=0.01) == bb.max.Y
+    assert s.volume == pytest.approx((math.hypot(70, 60) + 2) * 10 * 6, rel=0.01)
+
+
+def test_strut_fuses_into_bracket():
+    leg = Pos(-57.5, 0, 50) * Box(5, 30, 100)
+    arm = Pos(0, 0, 97.5) * Box(120, 30, 5)
+    body = leg + arm + cadlib.strut((-55, 0, 35), (15, 0, 95), 10, 6)
+    assert len(body.solids()) == 1
+
+
+def test_strut_parallel_to_y_no_crash():
+    """The bar direction == world Y degenerates the width axis — the
+    fallback must still produce a solid bar."""
+    s = cadlib.strut((0, -10, 5), (0, 10, 5), 4, 4)
+    assert s.volume == pytest.approx((20 + 2) * 4 * 4, rel=0.01)
+
+
+def test_bound_snippets_execute_bracket(tmp_path):
+    """End-to-end: the bound snippets of the bracket intake fixture must
+    EXECUTE against the real cadlib — strut as a bar, and host-bounded
+    bores that pierce their own plate without touching the strut on the
+    same axis line (the E2E cross-channel defect)."""
+    from cadx.agent.featurebind import bind_features
+    from cadx.cad.features import extract_features
+    from cadx.llm.schemas import PartSpec
+
+    spec = PartSpec.model_validate(json.loads((_FIXTURES / "bracket_strut_cad.json").read_text(encoding="utf-8")))
+    by_name = {b.name: b for b in bind_features(spec)}
+    ns: dict = {}
+    header = "from build123d import *\nfrom cadx.cad.cadlib import *\n"
+    body = (
+        "part = Pos(-57.5, 0.0, 50.0) * Box(5.0, 30.0, 100.0)\n"
+        "part = part + Pos(0.0, 0.0, 97.5) * Box(120.0, 30.0, 5.0)\n"
+    )
+    exec(header + body, ns)
+    exec(by_name["diagonal_brace"].snippet, ns)
+    for name in ("arm_holes", "leg_holes"):
+        exec(by_name[name].snippet, ns)
+    part = ns["part"]
+    assert len(part.solids()) == 1
+    assert 33_000 <= part.volume <= 42_000
+    # the bore lines continue through air/strut — the host-bound cut must
+    # NOT have drilled the strut under the arm hole or beside the leg hole
+    assert part.is_inside((-25.0, 0.0, 60.0))  # strut on the arm-bore line
+    assert part.is_inside((-14.0, 0.0, 70.0))  # strut on the leg-bore line
+    stl = tmp_path / "bracket.stl"
+    export_stl(part, str(stl))
+    m = extract_features(part, stl)
+    by_axis: dict[str, float] = {}
+    for g in m.hole_groups:
+        if abs(g.diameter - 5.5) <= 0.3:
+            by_axis[g.axis.lstrip("+-")] = by_axis.get(g.axis.lstrip("+-"), 0) + g.count
+    assert by_axis.get("x", 0) >= 2 and by_axis.get("z", 0) >= 2, m.hole_groups

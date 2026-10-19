@@ -23,6 +23,7 @@ from build123d import (
     Pos,
     Rot,
     Text,
+    Vector,
     extrude,
     fillet,
 )
@@ -59,6 +60,31 @@ def tube(outer_d: float, inner_d: float, length: float) -> Part:
     return Cylinder(outer_d / 2, length, align=_CZ) - Pos(0, 0, -0.5) * Cylinder(
         inner_d / 2, length + 1.0, align=_CZ
     )
+
+
+def strut(
+    p0: tuple[float, float, float],
+    p1: tuple[float, float, float],
+    width: float,
+    thickness: float,
+    *,
+    embed: float = 1.0,
+) -> Part:
+    """Straight rectangular bar from p0 to p1 (world mm). ``width`` runs along
+    the axis perpendicular to p0->p1 closest to world Y; ``thickness`` lies in
+    the bar plane. Both ends extend ``embed`` mm past p0/p1 so the strut fuses
+    into the bodies it connects. NOT a filled gusset — use rib() for that."""
+    d = Vector(*p1) - Vector(*p0)
+    length = d.length + 2 * embed
+    x = d.normalized()
+    y = Vector(0, 1, 0) - x * x.dot(Vector(0, 1, 0))
+    if y.length < 1e-6:
+        y = Vector(1, 0, 0)
+    y = y.normalized()
+    z = x.cross(y)
+    mid = (Vector(*p0) + Vector(*p1)) * 0.5
+    plane = Plane(origin=mid, x_dir=x, z_dir=z)
+    return plane * Box(length, width, thickness)
 
 
 def rib(length: float, height: float, thickness: float) -> Part:

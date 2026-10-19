@@ -7,11 +7,21 @@ below pins one resolution that must never regress.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from cadx.agent.context import bindings_block
 from cadx.agent.featurebind import bind_features
 from cadx.llm.schemas import PartSpec
 
 _DIM = {"value": 60.0, "unit": "mm", "source": "stated"}
+
+_FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "specs"
+
+
+def _bracket_spec() -> PartSpec:
+    """Real CAD-intake output of the bracket E2E run (ground truth fixture)."""
+    return PartSpec.model_validate(json.loads((_FIXTURES / "bracket_strut_cad.json").read_text(encoding="utf-8")))
 
 
 def _spec(features, lx=60.0, wy=40.0, hz=54.0) -> PartSpec:
@@ -312,3 +322,104 @@ class TestBlock:
         )
         # must not raise — the slot just doesn't get a binding
         assert all(b.name != "leg_slot" for b in bind_features(spec))
+
+
+class TestStrutBinding:
+    def test_bracket_strut_binds_between_points(self):
+        """'diagonal brace' is a straight bar — never a filled gusset."""
+        by_name = {b.name: b for b in bind_features(_bracket_spec())}
+        s = by_name["diagonal_brace"].snippet
+        assert "strut((-55.0, 0.0, 35.0), (15.0, 0.0, 95.0), width=10, thickness=6)" in s
+        assert by_name["diagonal_brace"].resolved
+
+    def test_gusset_name_never_becomes_strut(self):
+        """A feature NAMED gusset/rib stays a filled triangle — the strut
+        regex must not steal it even when 'diagonal' appears nearby."""
+        spec = _spec(
+            [
+                _feat(
+                    name="diagonal gusset rib",
+                    type="rib",
+                    dims={"thickness": 4.0},
+                    position="outer sides",
+                )
+            ]
+        )
+        b = {x.name: x for x in bind_features(spec)}["diagonal gusset rib"]
+        assert "strut(" not in b.snippet
+
+    def test_strut_needs_two_points(self):
+        spec = _spec(
+            [
+                _feat(
+                    name="brace",
+                    type="brace",
+                    dims={"width": 10.0, "thickness": 6.0},
+                    position="diagonal from the leg to the arm",
+                )
+            ]
+        )
+        b = {x.name: x for x in bind_features(spec)}["brace"]
+        assert not b.resolved
+        assert "<p0>" in b.snippet and "strut(" in b.snippet
+
+
+class TestHostBoundedHoles:
+    def test_arm_holes_bounded_to_host_plate(self):
+        """Bore through ONE 5 mm plate: depth bound to the host range, the
+        workplane sits on the hi face so the cut runs lo-ward — a full
+        through-cut would keep drilling into the strut on the same line."""
+        by_name = {b.name: b for b in bind_features(_bracket_spec())}
+        s = by_name["arm_holes"].snippet
+        assert "through_hole(5.5, depth=5.5)" in s
+        assert "Pos(-25.0, 0.0, 100.0), Pos(45.0, 0.0, 100.0)" in s
+        assert "horizontal_arm" in s
+
+    def test_leg_holes_bounded_and_rotated(self):
+        by_name = {b.name: b for b in bind_features(_bracket_spec())}
+        s = by_name["leg_holes"].snippet
+        assert "through_hole(5.5, depth=5.5)" in s
+        assert "Pos(-55.0, 0.0, 15.0) * Rot(0, 90, 0)" in s
+        assert "Pos(-55.0, 0.0, 70.0) * Rot(0, 90, 0)" in s
+        assert "vertical_leg" in s
+
+    def test_through_both_walls_stays_unbounded(self):
+        """A bore meant to pierce SEVERAL plates ('through both walls')
+        resolves no single host — the full through-cut is correct."""
+        spec = _spec(
+            [
+                _feat(name="wall_a", type="box", position="x from -30 to -25"),
+                _feat(name="wall_b", type="box", position="x from 25 to 30"),
+                _feat(
+                    name="pin bore",
+                    type="through_hole",
+                    axis="x",
+                    dims={"diameter": 5.5},
+                    position="through both walls",
+                ),
+            ]
+        )
+        s = {b.name: b for b in bind_features(spec)}["pin bore"].snippet
+        assert "through_hole(5.5)" in s and "depth=" not in s
+
+    def test_thick_host_stays_unbounded(self):
+        """The host plate must be thin (<50% of the envelope on the bore
+        axis) — a bore 'in the body' of a block stays a full through-cut."""
+        spec = _spec(
+            [
+                _feat(
+                    name="body",
+                    type="box",
+                    dims={"length": 60.0, "width": 40.0, "height": 54.0},
+                    position="x from -30 to 30, z from 0 to 54",
+                ),
+                _feat(
+                    name="h",
+                    type="through_hole",
+                    dims={"diameter": 5.5},
+                    position="through the body",
+                ),
+            ]
+        )
+        s = {b.name: b for b in bind_features(spec)}["h"].snippet
+        assert "through_hole(5.5)" in s and "depth=" not in s

@@ -11,6 +11,13 @@ Fill ONLY:
   "3. fillet vertical outer edges r=2". Be GEOMETRICALLY EXPLICIT — name the
   axis an edge runs along or the face a hole opens on ("foot top face,
   through Z", "inside corner edge runs along Y"), not just "inner edge".
+  A "diagonal brace/strut/Strebe" is a straight bar between two points —
+  plan `cadlib.strut(p0, p1, width, thickness)`, never a filled triangle
+  (rib/gusset only when the spec says so). Holes declared in ONE plate of
+  a multi-body part are bounded to that plate's thickness and start on its
+  outer face — never drill the whole axis line. Name the ±face every hole
+  opens on (`axis="x"` → ±X faces); `Plane.XZ`/`Plane.YZ` cuts that must
+  reach both sides get `extrude(both=True)`.
 - `params`: the PARAMS table for the code (name, value, unit, min, max,
   description). Numeric values only where the user or spec gives them.
 - `optimize`: true ONLY when the user asks for lightweight optimisation or

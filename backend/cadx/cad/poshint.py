@@ -146,6 +146,30 @@ def parse_position_hints(
     return coords, sorted(faces), ends, nears
 
 
+def parse_coord_points(text: str) -> list[dict[str, float]]:
+    """'x=-25, y=0 and x=+45, y=0' -> [{'x': -25, 'y': 0}, {'x': 45, 'y': 0}].
+
+    Multi-point counterpart of the ``coords`` dict in
+    :func:`parse_position_hints`: a spec feature often declares several
+    instances on one line, and the flat dict silently keeps only the LAST
+    value per axis. Every ``x=12``-style hit of ``_POS_COORD_RE`` is grouped
+    in text order — a new group starts as soon as an axis letter repeats
+    inside the current group. Empty groups are dropped; ``[]`` when the text
+    carries no coordinate at all.
+    """
+    groups: list[dict[str, float]] = []
+    cur: dict[str, float] = {}
+    for m in _POS_COORD_RE.finditer(text or ""):
+        ax = m.group(1).lower()
+        if ax in cur:
+            groups.append(cur)
+            cur = {}
+        cur[ax] = float(m.group(2))
+    if cur:
+        groups.append(cur)
+    return groups
+
+
 def resolve_end_hint(axis: str, end: str, dist_mm: float, lo: float, hi: float) -> float:
     """Resolve an end-relative hint to an absolute coordinate on ``[lo, hi]``.
 

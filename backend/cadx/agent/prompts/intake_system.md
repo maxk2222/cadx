@@ -49,6 +49,13 @@ Rules:
   and give your best distance estimate otherwise. Features absent from the
   spec are never generated — when in doubt, list the feature and mark its
   dims `inferred`.
+  REPEATED FEATURES with numeric positions (holes, slots, bosses — anything
+  with count > 1 or several named points): also fill `feature.centers`, ONE
+  entry per instance so `len(centers) == count` — e.g. two holes "at x=-25
+  and x=+45, y=0" get centers [{x:-25, y:0}, {x:45, y:0}]. Use ABSOLUTE part
+  coordinates in mm (X/Y centred on origin, Z up from 0); an axis you did
+  not resolve stays null. Keep the `position` text too — centers are the
+  machine-readable copy downstream anchors and codegen trust first.
 - Emit 3-6 `verification_questions`: yes/no checks a vision critic can
   answer from rendered views alone — one per placement-critical feature
   plus every orientation/envelope constraint the spec asserts, phrased so

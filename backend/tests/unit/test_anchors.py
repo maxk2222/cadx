@@ -2,8 +2,21 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from cadx.agent.anchors import build_anchors
-from cadx.llm.schemas import Dim, Feature, PartSpec
+from cadx.agent.spechost import host_body, host_range, parse_ranges
+from cadx.llm.schemas import Dim, Feature, FeatureCenter, PartSpec
+
+_FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "specs"
+
+
+def _bracket_spec() -> PartSpec:
+    """Real CAD-intake output of the bracket E2E run (ground truth fixture)."""
+    return PartSpec.model_validate(
+        json.loads((_FIXTURES / "bracket_strut_cad.json").read_text(encoding="utf-8"))
+    )
 
 
 def _spec() -> PartSpec:
@@ -485,3 +498,67 @@ def test_spec_anchor_tap_hole_maps_to_tap_kind():
     )
     a = build_anchors(spec, {}, None)
     assert [(h.x, h.kind, h.bolt_size) for h in a.holes] == [(37.0, "tap", "M8")]
+
+
+# --------------------------------------------------------------------------- #
+# multi-point spec features + host-body resolution (bracket E2E regression)
+# --------------------------------------------------------------------------- #
+
+
+def test_bracket_spec_yields_four_anchors():
+    """The bracket E2E intake declares 2x2 holes in ONE feature each —
+    'x=-25, y=0 and x=+45, y=0' produced only the LAST x before, and the
+    side bore had no x at all. Now all four spec positions anchor."""
+    spec = _bracket_spec()
+    a = build_anchors(spec, {}, None)
+    assert len(a.holes) == 4
+    z_anchors = sorted(h.x for h in a.holes if h.axis == "+z")
+    assert z_anchors == [-25.0, 45.0]
+    x_anchors = sorted(h.pos[2] for h in a.holes if h.axis == "+x")
+    assert x_anchors == [15.0, 70.0]
+    for h in a.holes:
+        if h.axis == "+x":
+            # no x= in the text — the leg's own range pins the bore axis
+            assert h.pos == [-57.5, 0.0, h.pos[2]]
+            assert h.y == 0.0
+    assert "4 spec-declared" in a.note
+
+
+def test_bracket_spec_centers_beat_text():
+    """Structured `centers` on a feature replace the text parse entirely."""
+    spec = _bracket_spec()
+    arm = next(f for f in spec.features if f.name == "arm_holes")
+    arm.centers = [FeatureCenter(x=-10.0, y=0.0), FeatureCenter(x=30.0, y=0.0)]
+    a = build_anchors(spec, {}, None)
+    assert sorted(h.x for h in a.holes if h.axis == "+z") == [-10.0, 30.0]
+
+
+def test_parse_ranges_spellings():
+    assert parse_ranges("x from -60 to -55") == {"x": (-60.0, -55.0)}
+    assert parse_ranges("x=-60..-55") == {"x": (-60.0, -55.0)}
+    assert parse_ranges("x: -60 bis -55") == {"x": (-60.0, -55.0)}
+    assert parse_ranges("x zwischen -60 und -55") == {"x": (-60.0, -55.0)}
+    # lo/hi are sorted and several axes coexist
+    assert parse_ranges("x from -55 to -60, z from 0 to 100") == {
+        "x": (-60.0, -55.0),
+        "z": (0.0, 100.0),
+    }
+
+
+def test_host_body_and_range_bracket():
+    spec = _bracket_spec()
+    arm_holes = next(f for f in spec.features if f.name == "arm_holes")
+    leg_holes = next(f for f in spec.features if f.name == "leg_holes")
+    assert host_body(spec, arm_holes).name == "horizontal_arm"
+    assert host_range(spec, arm_holes, "z") == (95.0, 100.0)
+    assert host_body(spec, leg_holes).name == "vertical_leg"
+    assert host_range(spec, leg_holes, "x") == (-60.0, -55.0)
+
+
+def test_host_body_none_without_in_phrase():
+    spec = _bracket_spec()
+    arm_holes = next(f for f in spec.features if f.name == "arm_holes")
+    arm_holes.description = "two through-holes, axis Z"
+    arm_holes.position = "x=-25, y=0 and x=+45, y=0"
+    assert host_body(spec, arm_holes) is None
+    assert host_range(spec, arm_holes, "z") is None

@@ -90,3 +90,60 @@ for h in anchor_holes():
   when the context lists "measured image features".
 - `anchor_holes()` returns `{"x", "y", "dia", ...}` dicts; take `x`/`y`
   verbatim, keep your own spec `dia`.
+
+## Third example: multi-body bracket (strut + host-bounded holes)
+
+Spec: "90° L-bracket 120x30x100 mm — 5 mm vertical leg at −X, 5 mm top arm,
+diagonal 10x6 mm brace from the leg (z=35) to the arm underside (x=+15),
+two Ø5.5 holes in the arm (x=−25, x=+45), two Ø5.5 holes in the leg (z=15,
+z=70)."
+
+```python
+from build123d import *
+import cadlib
+
+PARAMS = {
+    "leg_t": 5.0,
+    "arm_t": 5.0,
+    "width": 30.0,
+    "hole_d": 5.5,
+    "strut_w": 10.0,
+    "strut_t": 6.0,
+}
+
+# leg plate x=-60..-55, arm plate z=95..100 — both centred on Y
+part = Pos(-57.5, 0.0, 50.0) * Box(PARAMS["leg_t"], PARAMS["width"], 100.0)
+part = part + Pos(0.0, 0.0, 97.5) * Box(120.0, PARAMS["width"], PARAMS["arm_t"])
+
+# diagonal brace — a straight bar between its two contact points,
+# NOT a filled triangular gusset
+part = part + cadlib.strut((-55, 0, 35), (15, 0, 95), PARAMS["strut_w"], PARAMS["strut_t"])
+
+# arm holes, axis Z — workplane on the arm's TOP face (z=100, the hi side)
+# and the cut bounded to the plate: an unbounded bore would keep going
+# down the Z line and drill the strut beneath x=-25
+with BuildPart() as _hb:
+    add(part)
+    with Locations(Pos(-25, 0, 100), Pos(45, 0, 100)):
+        cadlib.through_hole(PARAMS["hole_d"], depth=PARAMS["arm_t"] + 0.5)
+    part = _hb.part
+
+# leg holes, axis X — Rot(0, 90, 0) maps the local +Z bore axis onto world
+# +X; the workplane sits on the leg's outer face x=-55 (hi side) so the cut
+# runs lo-ward through the plate only, never into the brace at x≈-14
+with BuildPart() as _hb:
+    add(part)
+    with Locations(Pos(-55, 0, 15) * Rot(0, 90, 0), Pos(-55, 0, 70) * Rot(0, 90, 0)):
+        cadlib.through_hole(PARAMS["hole_d"], depth=PARAMS["leg_t"] + 0.5)
+    part = _hb.part
+
+result = part
+```
+
+- The strut is `strut(p0, p1, w, t)` between the spec's contact points —
+  never a swept/filled triangle.
+- Both hole groups sit on their host plate's HI face and cut `thickness +
+  0.5` deep — the bore pierces its own plate fully but stops before any
+  other body on the same axis line.
+- `Rot(0, 90, 0)` on the Pos maps local +Z (the cutter direction) onto +X —
+  the pattern for every `axis="x"` bore; `axis="y"` uses `Rot(-90, 0, 0)`.

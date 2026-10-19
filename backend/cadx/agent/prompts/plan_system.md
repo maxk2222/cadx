@@ -60,7 +60,20 @@ Then fill the rest:
   Be GEOMETRICALLY EXPLICIT — "fillet the inner edge" is ambiguous; say which
   edge runs where, e.g. "fillet the inside corner edge between foot and leg
   (runs along Y)". For holes name the FACE they open on and their axis
-  ("foot top face, through Z"), not just the diameter.
+  ("foot top face, through Z"), not just the diameter. Additional rules:
+  - STRUT vs GUSSET: a "diagonal brace/strut/Strebe" is a straight
+    rectangular bar between two contact points — plan it as
+    `cadlib.strut(p0, p1, width, thickness)` with both endpoints named,
+    never as a filled triangle. Reserve rib/gusset/Rippe for the filled
+    triangle a spec explicitly asks for.
+  - HOST-BOUNDED holes: a hole declared "in the arm"/"im Schenkel"/"through
+    the leg" pierces ONLY that plate — plan the bore on the host's outer
+    face bounded to the plate thickness, not through the whole envelope
+    (an unbounded cut drills every other body on that axis line).
+  - Axes to faces: name which ±face each hole opens on — `axis="x"` → the
+    ±X side faces (bore line along X), `axis="y"` → ±Y, `axis="z"` → top/
+    bottom. For cuts sketched on `Plane.XZ`/`Plane.YZ` that must remove
+    material on both sides, plan `extrude(both=True)`.
 - `params`: the PARAMS table for the code (name, value, unit, min, max, description).
   Numeric values only where the user or spec gives them; include fastener size strings
   (e.g. "screw": "M4-0.7") as string params so they stay user-adjustable.

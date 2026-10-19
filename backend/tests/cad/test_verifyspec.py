@@ -569,6 +569,40 @@ def test_position_two_end_offsets_both_checked():
     assert _by_name(report)["feat_0_position"]["status"] == "PASS"
 
 
+def test_position_multi_point_groups_checked():
+    """'x=-25, y=0 and x=+45, y=0' declares TWO points — each must own one
+    measured centre within ±1.5 mm. The flat coords dict only ever saw the
+    last x and let a missing duplicate pass."""
+    spec = _spec(
+        features=[_feat(name="mounts", type="hole", count=2, position="x=-25, y=0 and x=+45, y=0")]
+    )
+    res = _res(
+        features={
+            "hole_groups": [_hole_group(id="h1", count=2, centers=[[-25.3, 0.4], [45.2, -0.3]])]
+        }
+    )
+    report = verify_spec(spec, res, feature_findings=[])
+    c = _by_name(report)["feat_0_position"]
+    assert c["status"] == "PASS"
+    assert c["evidence"]["expected"]["points"] == [
+        {"x": -25.0, "y": 0.0},
+        {"x": 45.0, "y": 0.0},
+    ]
+
+
+def test_position_multi_point_missing_instance_fails():
+    """Only the second declared point measured -> the x=-25 group has no
+    centre and the check FAILs instead of passing on x=45 alone."""
+    spec = _spec(
+        features=[_feat(name="mounts", type="hole", count=2, position="x=-25, y=0 and x=+45, y=0")]
+    )
+    res = _res(features={"hole_groups": [_hole_group(id="h1", centers=[[45.0, 0.0]])]})
+    report = verify_spec(spec, res, feature_findings=[])
+    c = _by_name(report)["feat_0_position"]
+    assert c["status"] == "FAIL"
+    assert c["evidence"]["violations"][0]["point"]["x"] == -25.0
+
+
 def test_position_end_range_stays_unverified():
     """'between 20 and 30mm from -x end' is a range — never a point check.
     The bare '-x' still degrades gracefully to a side-face hint."""

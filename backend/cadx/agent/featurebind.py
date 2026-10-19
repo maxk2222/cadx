@@ -19,7 +19,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from cadx.agent.spechost import host_body, host_range
 from cadx.cad.features import _feature_axis_hint
+from cadx.cad.poshint import parse_coord_points
 from cadx.llm.schemas import Feature, PartSpec
 
 _MAX_BINDINGS = 12
@@ -99,11 +101,6 @@ def _thin_axis(f: Feature) -> str | None:
     return None
 
 
-_IN_RE = re.compile(
-    r"\b(?:in the|in a|in der|im|in|through the|through|durch(?: die| den| das)?)\s+(\w+)",
-    re.I,
-)
-
 _ENV_HALF = {"x": "length_x", "y": "width_y", "z": "height_z"}
 
 
@@ -156,42 +153,6 @@ def _pos_str(coords: dict[str, float | str]) -> str:
     return f"Pos({c('x')}, {c('y')}, {c('z')})"
 
 
-def _parent_feature(spec: PartSpec, f: Feature) -> Feature | None:
-    """The feature this feature lives IN ('slot centered in leg' → the leg).
-
-    Matches a word after in/through/durch against other features' name +
-    description, preferring solid-ish types over other cut features."""
-    hay = f"{f.position or ''} {f.description or ''}".lower()
-    words = [w for w in _IN_RE.findall(hay) if len(w) > 2 and w != "the"]
-    if not words:
-        return None
-    solids: list[Feature] = []
-    others: list[Feature] = []
-    for g in spec.features or []:
-        if g is f:
-            continue
-        ghay = f"{g.name or ''} {g.description or ''}".lower()
-        if any(w in ghay for w in words):
-            (solids if (g.type or "").lower() in _SOLID_TYPES else others).append(g)
-    return (solids or others or [None])[0]
-
-
-_SOLID_TYPES = {
-    "box",
-    "body",
-    "plate",
-    "base",
-    "leg",
-    "foot",
-    "wall",
-    "solid",
-    "prism",
-    "block",
-    "boss",
-    "tube",
-}
-
-
 _COORD_RE = re.compile(r"\b([xyz])\s*[=:]\s*([+-]?\d+(?:\.\d+)?)", re.I)
 _RANGE_RE = re.compile(
     r"\b([xyz])\s*[=:]\s*([+-]?\d+(?:\.\d+)?)\s*\.\.\s*([+-]?\d+(?:\.\d+)?)", re.I
@@ -220,6 +181,20 @@ def _hole_positions(
     dims = f.dims or {}
     off_letters = {a for a in "xyz" if a != _axis_letter(axis)}
 
+    # structured Feature.centers — one row per declared instance beats any
+    # text re-parse (a null axis centres on 0.0, same as the coord contract)
+    centers = getattr(f, "centers", None) or []
+    off = [a for a in "xyz" if a != _axis_letter(axis)]
+    if len(centers) == count and centers:
+        pts = [
+            (
+                float(getattr(c, off[0], None) or 0.0),
+                float(getattr(c, off[1], None) or 0.0),
+            )
+            for c in centers
+        ]
+        return pts, "explicit positions from spec centers"
+
     # PCD / bolt circle → polar ring
     m = _PCD_RE.search(text)
     pcd = m.group(1) if m else _dim(dims, "pcd", "diameter_pcd", "bolt_circle")
@@ -242,7 +217,6 @@ def _hole_positions(
     for letter, val in _COORD_RE.findall(text):
         if letter in off_letters:
             coord_lists.setdefault(letter, []).append(float(val))
-    off = [a for a in "xyz" if a != _axis_letter(axis)]
     if coord_lists:
         n = max(len(v) for v in coord_lists.values())
         ax_letters = sorted(coord_lists)
@@ -280,13 +254,15 @@ def _hole_positions(
     return [], ""
 
 
-def _pos_calls(pts: list[tuple[float, float]], axis: str, rot: str) -> str:
-    """Locations(...) scope line(s) for resolved off-axis points."""
+def _pos_calls(pts: list[tuple[float, float]], axis: str, rot: str, axial: float = 0.0) -> str:
+    """Locations(...) scope line(s) for resolved off-axis points; ``axial``
+    sets the workplane coordinate along the bore axis (host-bound holes sit
+    on the host's hi face so the cut runs lo-ward)."""
     letter = _axis_letter(axis) or "z"
     off = [a for a in "xyz" if a != letter]
 
     def xyz(p: tuple[float, float]) -> str:
-        c = {off[0]: p[0], off[1]: p[1], letter: 0.0}
+        c = {off[0]: p[0], off[1]: p[1], letter: axial}
         return f"Pos({c['x']}, {c['y']}, {c['z']}){rot}"
 
     if len(pts) == 1:
@@ -322,8 +298,58 @@ CADLIB_HELPERS = frozenset(
         "boss",
         "tube",
         "text_label",
+        "strut",
     }
 )
+
+_STRUT_RE = re.compile(r"strut|brace|strebe|diagonal", re.I)
+_NOT_STRUT_RE = re.compile(r"gusset|rib|rippe|knotenblech", re.I)
+
+
+def _is_strut(f: Feature) -> bool:
+    """Diagonal strut/brace — a straight bar between two points, not a
+    filled triangular gusset (that is `rib`). A gusset/rib NAME or TYPE
+    marks the filled triangle even when 'diagonal' appears nearby; the
+    description may still call a brace a 'gusset' colloquially."""
+    t = (f.type or "").lower().strip()
+    if t in {"strut", "brace", "strebe"}:
+        return True
+    if t in _BINDERS:  # a declared hole/slot/rib/… type always wins
+        return False
+    name = f"{f.type or ''} {f.name or ''}".lower()
+    if _NOT_STRUT_RE.search(name):
+        return False
+    return bool(_STRUT_RE.search(f"{name} {f.description or ''}"))
+
+
+def _host_bound(
+    spec: PartSpec, f: Feature, letter: str, depth: float | None
+) -> tuple[Feature, float, float] | None:
+    """Host-bounded through-cut target ``(host, lo, hi)`` — None for a
+    full-depth bore.
+
+    A bore through ONE declared plate of a multi-body part must not keep
+    drilling down the whole axis line (a strut/rib/opposite wall on the
+    same line gets pierced too — the bracket E2E cross-channels). Bound
+    the cut to the host's span and sit the workplane on the host's hi
+    face: through_hole(depth) cuts toward -local Z, i.e. lo-ward under
+    every _FRAME_ROT frame. Applies only when the host resolves
+    unambiguously, is thin (<50% of the envelope on the bore axis) and no
+    blind depth was declared — a declared partial depth still wins."""
+    if "through" not in f"{f.type} {f.description}".lower() and depth:
+        return None
+    host = host_body(spec, f)
+    hr = host_range(spec, f, letter)
+    if host is None or hr is None:
+        return None
+    lo, hi = hr
+    try:
+        env = float(getattr(spec, _ENV_HALF[letter]).value)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if env <= 0 or hi - lo >= 0.5 * env:
+        return None
+    return host, lo, hi
 
 
 def _bind_hole(spec: PartSpec, f: Feature) -> BoundFeature | None:
@@ -350,7 +376,17 @@ def _bind_hole(spec: PartSpec, f: Feature) -> BoundFeature | None:
     rot = _FRAME_ROT[axis]
     args = [f"{dia:g}"]
     depth = _dim(dims, "depth", "depth_partial", "depth_total")
-    if depth and "through" not in f"{f.type} {f.description}".lower():
+    letter = _axis_letter(axis) or "z"
+    bound = _host_bound(spec, f, letter, depth)
+    bound_note = ""
+    if bound is not None:
+        host, lo, hi = bound
+        args.append(f"depth={hi - lo + 0.5:g}")
+        bound_note = (
+            f"# through the host plate only ({host.name} "
+            f"{letter}={lo:g}..{hi:g}) — other bodies on this line stay intact"
+        )
+    elif depth and "through" not in f"{f.type} {f.description}".lower():
         args.append(f"depth={depth:g}")
     csk = _dim(dims, "countersink_diameter", "csk_dia")
     if csk:
@@ -366,7 +402,7 @@ def _bind_hole(spec: PartSpec, f: Feature) -> BoundFeature | None:
     pts, note = _hole_positions(spec, f, count, axis)
     call = f"through_hole({', '.join(args)})"
     if pts:
-        scope = _pos_calls(pts, axis, rot)
+        scope = _pos_calls(pts, axis, rot, axial=bound[2] if bound else 0.0)
     else:
         pos = (f.position or "").strip() or "stated location"
         scope = f"Locations(Pos(<{pos}>){rot})"
@@ -380,6 +416,8 @@ def _bind_hole(spec: PartSpec, f: Feature) -> BoundFeature | None:
     rot_note = f" — local z rotated onto {axis}, the hole pierces along {axis}" if rot else ""
     std = f" ({f.standard})" if f.standard else ""
     snip = f"## {f.name} — {count}x hole Ø{dia:g}{std}, axis {axis}{rot_note}\n{body}"
+    if bound_note:
+        snip += f"\n{bound_note}"
     if note:
         snip += f"\n# {note}"
     return BoundFeature(f.name, "hole", snip)
@@ -407,7 +445,7 @@ def _bind_slot(spec: PartSpec, f: Feature) -> BoundFeature | None:
         )
     normal = _norm_axis(f.axis)
     if not normal:
-        parent = _parent_feature(spec, f)
+        parent = host_body(spec, f)
         if parent is not None:
             ta = _thin_axis(parent)
             if ta:
@@ -434,7 +472,7 @@ def _bind_slot(spec: PartSpec, f: Feature) -> BoundFeature | None:
     pos = (f.position or "").strip() or "wall centre"
     # "centred in <parent>" → the parent's own centre resolves the Pos
     place = f"Pos(<{pos}>)"
-    parent = _parent_feature(spec, f)
+    parent = host_body(spec, f)
     if parent is not None and re.search(
         r"center|centr|mittig|zentriert", f"{f.position} {f.description}".lower()
     ):
@@ -450,6 +488,35 @@ def _bind_slot(spec: PartSpec, f: Feature) -> BoundFeature | None:
         f"# place on the {normal}-normal wall; the {perp[0]}/{perp[1]} coords centre it"
     )
     return BoundFeature(f.name, "slot", snip)
+
+
+def _bind_strut(spec: PartSpec, f: Feature) -> BoundFeature | None:
+    """Straight diagonal bar between two declared endpoints via cadlib.strut —
+    NOT a filled triangular gusset (the bracket E2E built one and the bore
+    line then pierced it). Needs exactly two coordinate groups plus
+    width/thickness dims."""
+    dims = f.dims or {}
+    width = _dim(dims, "width")
+    thick = _dim(dims, "thickness")
+    text = f"{f.position or ''} {f.description or ''}"
+    pts = parse_coord_points(text)
+    w_txt = f"{width:g}" if width else "<width>"
+    t_txt = f"{thick:g}" if thick else "<thickness>"
+    if len(pts) == 2 and width and thick:
+        p0 = tuple(float(pts[0].get(a, 0.0)) for a in "xyz")
+        p1 = tuple(float(pts[1].get(a, 0.0)) for a in "xyz")
+        snip = (
+            f"## {f.name} — straight strut between two points (NOT a filled gusset)\n"
+            f"part = part + strut({p0}, {p1}, width={w_txt}, thickness={t_txt})"
+        )
+        return BoundFeature(f.name, "strut", snip)
+    snip = (
+        f"## {f.name} — straight strut between two points (NOT a filled gusset)\n"
+        f"part = part + strut(<p0>, <p1>, width={w_txt}, thickness={t_txt})\n"
+        "# needs exactly two endpoint coords (e.g. (x=-55, z=35) to (x=+15, z=95))"
+        " and width/thickness dims — resolve the contact points from the spec"
+    )
+    return BoundFeature(f.name, "strut", snip, resolved=False)
 
 
 def _bind_rib(spec: PartSpec, f: Feature) -> BoundFeature | None:
@@ -737,7 +804,9 @@ def bind_features(spec: PartSpec | None) -> list[BoundFeature]:
         return []
     out: list[BoundFeature] = []
     for f in spec.features:
-        binder = _BINDERS.get((f.type or "").lower().strip())
+        # a strut/brace binds before the type dispatch — intake calls it
+        # "box"/"rib"/"gusset" but it is always the straight bar
+        binder = _bind_strut if _is_strut(f) else _BINDERS.get((f.type or "").lower().strip())
         if binder is None:
             continue
         try:

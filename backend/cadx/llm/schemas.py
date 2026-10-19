@@ -41,6 +41,17 @@ class Dim(BaseModel):
     source: Literal["stated", "inferred", "assumed"] = "inferred"
 
 
+class FeatureCenter(BaseModel):
+    """Absolute centre of one feature instance in mm — one entry per
+    repetition of a repeated feature (holes, slots, bosses). X/Y are
+    centred on the origin, Z measured up from 0 (the coordinate contract);
+    an axis the spec never names stays ``None``."""
+
+    x: float | None = None
+    y: float | None = None
+    z: float | None = None
+
+
 class Feature(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
@@ -99,6 +110,10 @@ class Feature(BaseModel):
         },
     )
     position: M = ""
+    # structured per-instance centres ("two holes at x=-25 and x=+45, y=0")
+    # — beats re-parsing `position` text downstream; NOT in `required` so
+    # older specs/fixtures still parse
+    centers: list[FeatureCenter] = Field(default_factory=list, max_length=24)
     axis: Annotated[str, Field(max_length=8)] = (
         ""  # x|y|z — direction a hole goes through / a slope or taper varies along
     )
