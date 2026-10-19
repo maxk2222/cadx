@@ -184,5 +184,6 @@
       ]
     }
   ],
-  "llm_tools": "auto"
+  "llm_tools": "auto",
+  "expect_watertight": true
 }

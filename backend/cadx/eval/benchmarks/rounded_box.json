@@ -68,5 +68,6 @@
       "matches": [],
       "confidence": 0.9
     }
-  ]
+  ],
+  "expect_watertight": true
 }

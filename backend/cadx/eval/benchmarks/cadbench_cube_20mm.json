@@ -1,5 +1,5 @@
 {
-  "prompt": "Create one solid cube.\n\nRequirements:\n- Side length exactly 20.0 mm.\n- Faces aligned to global X/Y/Z axes.\n- Top face lies on z=0.\n- Entire cube is in z<=0.\n- Center on X/Y is at (0, 0).\n\nContract: the generated build123d code must leave the completed model in a top-level variable named `result`.",
+  "prompt": "Create one solid cube.\n\nRequirements:\n- Side length exactly 20.0 mm.\n- Faces aligned to global X/Y/Z axes.\n- Bottom face lies on z=0.\n- Entire cube is in z>=0.\n- Center on X/Y is at (0, 0).\n\nContract: the generated build123d code must leave the completed model in a top-level variable named `result`.",
   "gen_mode": "cad",
   "expected_bbox": [
     20,

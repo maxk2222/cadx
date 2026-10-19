@@ -1,21 +1,26 @@
 {
- "prompt": "Gelenkhebel aus PETG, organisch geformter Hebelkoerper ca. 90 x 40 x 14 mm: zwei Lagerbohrungen Ø10 mm im Abstand 55 mm entlang der Laengsachse (fest eingespannt), eine M8-Gewindebohrung am Ende des langen Arms. Last 150 N senkrecht zur Hebelebene am Gewindeende.",
- "gen_mode": "topopt",
- "real_only": true,
- "expect_watertight": true,
- "expected_features": [
-  {
-   "type": "hole",
-   "count": 2,
-   "dia": 10.0
+  "prompt": "Gelenkhebel aus PETG, organisch geformter Hebelkoerper ca. 90 x 40 x 14 mm: zwei Lagerbohrungen Ø10 mm im Abstand 55 mm entlang der Laengsachse (fest eingespannt), eine M8-Gewindebohrung am Ende des langen Arms. Last 150 N senkrecht zur Hebelebene am Gewindeende.",
+  "gen_mode": "topopt",
+  "real_only": true,
+  "expect_watertight": true,
+  "expected_features": [
+    {
+      "type": "hole",
+      "count": 2,
+      "dia": 10.0
+    },
+    {
+      "type": "hole",
+      "count": 1,
+      "dia": 6.8
+    }
+  ],
+  "settings": {
+    "max_iterations": 8,
+    "topopt_iterations": 60
+  },
+  "runtime": {
+    "fem_voxel_mm": 1.5,
+    "topopt_auto_keep": true
   }
- ],
- "settings": {
-  "max_iterations": 8,
-  "topopt_iterations": 60
- },
- "runtime": {
-  "fem_voxel_mm": 1.5,
-  "topopt_auto_keep": true
- }
 }

@@ -1,5 +1,5 @@
 {
-  "prompt": "Griffschale (knife scale) fuer ein Messer MFX-12, wie auf den Fotos: organisch geformter Griff mit abgerundeten Kanten, ca. 119 x 34 x 8 mm, planare Unterseite (Tang-Kontaktflaeche). Drei versenkte Schraubloecher Ø5 mm mit 90-Grad-Senkung Ø9 mm fuer Griffbeschlaege, Positionen wie auf den Fotos. Material PETG.",
+  "prompt": "Griffschale (knife scale) fuer ein Messer MFX-12, wie auf den Fotos: organisch geformter Griff mit abgerundeten Kanten, ca. 119 x 34 x 8 mm, planare Unterseite (Tang-Kontaktflaeche). Drei versenkte Durchgangsbohrungen Ø5.5 mm (freies Durchgangsloch für Ø5-Schrauben) mit 90-Grad-Senkung Ø9 mm fuer Griffbeschlaege, Positionen wie auf den Fotos. Material PETG.",
   "gen_mode": "hybrid",
   "images": [
     "backend/cadx/eval/fixtures/knife_scale_1.jpg",
