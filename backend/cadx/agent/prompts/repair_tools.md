@@ -21,3 +21,19 @@ Guidance:
 - On a faceted mesh solid (hybrid mode only): use simple convex primitives
   oversized to fully intersect; prefer `result = body - tool` algebra over
   builder contexts.
+
+Defect-class ladder — pick the fix by failure class:
+
+- Malformed B-Rep ("command not done" on a boolean or fillet): rebuild the
+  offending feature — shrink the fillet/chamfer radius, split one combined
+  boolean into separate ops, reorder so cuts land on real material.
+- Open / non-manifold result: the boolean partners do not overlap — bury
+  additions 1-2 mm into the base and use fuse-then-cut order.
+- Tessellation failure on an otherwise valid solid: retry once with simpler
+  geometry (fewer/larger fillets, no tangent contacts) rather than stacking
+  repairs.
+- Selector found nothing (`filter_by`/`sort_by` returned 0 entities): the
+  previous boolean probably no-op'd, so the feature you select was never
+  created — fix the earlier construction, not the selector.
+- Wrong dimensions, geometry valid: fix the PARAMS value — never reshape the
+  geometry to compensate.

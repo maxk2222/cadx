@@ -15,13 +15,14 @@ from cadx.agent.trace import MemoryTrace
 from cadx.agent.types import AgentCtx, InputAsset
 from cadx.db.models import ProjectSettings
 from cadx.llm.fake import FakeLLM
+from cadx.runtime_config import RuntimeSettings
 from cadx.llm.schemas import PartSpec, PatchResponse
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 BOX_CODE = (FIXTURES / "simple_box.py").read_text()
 
 
-def _ctx(llm: FakeLLM) -> AgentCtx:
+def _ctx(llm: FakeLLM, **settings_kw) -> AgentCtx:
     async def emit(step: str, it: int, msg: str, **_f) -> None:
         pass
 
@@ -40,6 +41,7 @@ def _ctx(llm: FakeLLM) -> AgentCtx:
         prompt="test",
         mode="generate",
         settings=ProjectSettings(clarification_mode="assume"),
+        runtime_settings=RuntimeSettings(**settings_kw),
     )
 
 
@@ -261,8 +263,9 @@ async def test_unlisted_tool_call_rejected():
 
 
 async def test_verify_drops_from_schema_after_budget():
-    """session.tools() is recomputed each turn — a spent verify budget must
-    remove the tool from the advertised schema."""
+    """session.tools() is recomputed each turn — a spent verify budget leaves a
+    spent-stub whose description steers to done, and a call still gets an
+    actionable error (better than 'not available' feeding the error streak)."""
     llm = FakeLLM([_call("verify"), _call("verify"), _call("done")])
     llm.tools_mode = "auto"
     ctx = _ctx(llm)
@@ -274,8 +277,20 @@ async def test_verify_drops_from_schema_after_budget():
     session.verify_left = 1  # force a one-call budget
     res = await run_session(ctx, "code", MESSAGES, session=session, max_calls=10, step="improve")
     assert "verify" in llm.calls[0]["tool_names"]
-    assert "verify" not in llm.calls[1]["tool_names"]
-    assert "not available" in res.tool_log[1]["result"]["error"]
+    assert "verify" in llm.calls[1]["tool_names"]  # spent stub stays advertised
+    assert "budget spent" in res.tool_log[1]["result"]["error"]
+    assert res.tool_log[1]["result"]["budget_exhausted"] is True
+
+
+async def test_verify_disabled_offers_no_stub():
+    """verify_max=0 means DISABLED, not spent — no stub in the schema."""
+    ctx = _ctx(FakeLLM([]), agent_tool_verify_max=0)
+
+    async def verify_fn(code: str):
+        return {"ok": True}
+
+    session = ToolSession(ctx, kind="edit", code=BOX_CODE, verify_fn=verify_fn)
+    assert "verify" not in session.allowed_names()
 
 
 async def test_grace_turn_rescues_schema_answer():
@@ -843,9 +858,12 @@ async def test_render_model_shares_verify_budget():
     assert res["ok"]
     res = await session.execute("verify", {})
     assert res["ok"] is False
-    # spent budget drops both tools from the recomputed schema
+    # spent budget drops render_model; verify stays as a spent-stub that
+    # steers to done (a call returns the actionable budget_exhausted error)
     assert "render_model" not in session.allowed_names()
-    assert "verify" not in session.allowed_names()
+    assert "verify" in session.allowed_names()
+    spent = await session.execute("verify", {})
+    assert spent["ok"] is False and spent["budget_exhausted"] is True
 
 
 # --------------------------------------------------------------------------- #
@@ -1205,3 +1223,36 @@ async def test_improve_feature_only_uses_light_call_budget(monkeypatch):
         **kw,
     )
     assert seen["mc"] == s.agent_tool_max_calls
+
+
+def test_concept_image_schema_types():
+    """strength/mark_sketch must be typed number/boolean — as strings a
+    schema-obedient model sends 'false' which bool()s to True (silent
+    mis-tag of every edit as a sketch)."""
+    from cadx.agent.toolspecs import CONCEPT_IMAGE_TOOLS
+
+    props = CONCEPT_IMAGE_TOOLS[0]["function"]["parameters"]["properties"]
+    assert props["strength"]["type"] == "number"
+    assert props["mark_sketch"]["type"] == "boolean"
+
+
+async def test_concept_image_mark_sketch_string_false():
+    """'false' as a string must not tag the image as a sketch."""
+    from cadx.agent import toolspecs
+
+    captured: dict = {}
+
+    async def fake_gen(ctx, prompt, **kw):
+        captured.update(kw)
+        return [{"path": "/tmp/x.png", "asset_id": "a1", "label": "img1"}]
+
+    ctx = _ctx(FakeLLM([]))
+    session = ToolSession(ctx, kind="info")
+    session.image_left = 1
+    import unittest.mock as mock
+
+    with mock.patch("cadx.agent.concept_image.generate_concept_images", fake_gen):
+        res = await session._tool_generate_concept_image(
+            {"prompt": "p", "mark_sketch": "false"}
+        )
+    assert captured["mark_sketch"] is False

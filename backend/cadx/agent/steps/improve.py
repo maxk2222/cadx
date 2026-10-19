@@ -63,6 +63,7 @@ def _user_parts(
     issues: list[dict[str, Any]],
     features: dict[str, Any] | None,
     patch_errors: list[str] | None,
+    attempts: list[str] | None = None,
     *,
     numbered: bool = False,
 ) -> list[dict[str, Any]]:
@@ -117,18 +118,29 @@ def _user_parts(
     if mf:
         parts.append({"type": "text", "text": mf})
     parts.append({"type": "text", "text": issues_block(issues)})
-    if patch_errors:
+    if attempts:
         parts.append(
             {
                 "type": "text",
                 "text": (
-                    "YOUR PREVIOUS PATCH DID NOT APPLY — localised edits have "
-                    "already failed on this code, so return the COMPLETE corrected "
-                    "source in `full_code` (not `edits`). Errors to fix:\n- "
-                    + "\n- ".join(patch_errors)
+                    "PREVIOUS ATTEMPTS this job — these edits were already tried; "
+                    "do NOT repeat them, choose a different construction:\n- "
+                    + "\n- ".join(attempts[-6:])
                 ),
             }
         )
+    if patch_errors:
+        # one-shot path needs full_code to escape missed hunks; a tool session
+        # edits the live buffer, so the warning is "don't repeat those edits"
+        text = (
+            "YOUR PREVIOUS PATCH HUNKS DID NOT APPLY — those exact `find` "
+            "blocks did not match the code, do not repeat them:\n- "
+            if numbered
+            else "YOUR PREVIOUS PATCH DID NOT APPLY — localised edits have "
+            "already failed on this code, so return the COMPLETE corrected "
+            "source in `full_code` (not `edits`). Errors to fix:\n- "
+        )
+        parts.append({"type": "text", "text": text + "\n- ".join(patch_errors)})
     return parts
 
 
@@ -151,6 +163,7 @@ async def run(
     issues: list[dict[str, Any]],
     features: dict[str, Any] | None = None,
     patch_errors: list[str] | None = None,
+    attempts: list[str] | None = None,
     iteration: int,
     attempt: int = 1,
     verify_fn: VerifyFn | None = None,
@@ -176,6 +189,8 @@ async def run(
             base_code=base_code,
             issues=issues,
             features=features,
+            patch_errors=patch_errors,
+            attempts=attempts,
             iteration=iteration,
             attempt=attempt,
             verify_fn=verify_fn,
@@ -195,7 +210,9 @@ async def run(
         },
         {
             "role": "user",
-            "content": _user_parts(ctx, spec, plan, base_code, issues, features, patch_errors),
+            "content": _user_parts(
+                ctx, spec, plan, base_code, issues, features, patch_errors, attempts
+            ),
         },
     ]
     resp = await ctx.llm.chat(
@@ -232,6 +249,8 @@ async def _run_session(
     base_code: str,
     issues: list[dict[str, Any]],
     features: dict[str, Any] | None,
+    patch_errors: list[str] | None,
+    attempts: list[str] | None,
     iteration: int,
     attempt: int,
     verify_fn: VerifyFn | None,
@@ -247,7 +266,15 @@ async def _run_session(
         {
             "role": "user",
             "content": _user_parts(
-                ctx, spec, plan, base_code, issues, features, None, numbered=True
+                ctx,
+                spec,
+                plan,
+                base_code,
+                issues,
+                features,
+                patch_errors,
+                attempts,
+                numbered=True,
             ),
         },
     ]
@@ -261,9 +288,16 @@ async def _run_session(
         iteration=iteration,
         temperature=0.1,
     )
-    if res.exhausted:
+    # only a broken interaction pattern blinds later repairs — a session that
+    # merely ran out of budget still delivered its buffer, no reason to punish
+    # every subsequent improve with the blind one-shot path
+    if res.exhausted and res.end_reason in ("verify_loop", "repeat_loop"):
         ctx.edit_sessions_exhausted += 1
-        log.info("edit.oneshot_fallback", exhausted=ctx.edit_sessions_exhausted)
+        log.info(
+            "edit.oneshot_fallback",
+            exhausted=ctx.edit_sessions_exhausted,
+            reason=res.end_reason,
+        )
     if res.code and res.code != base_code:
         sub = res.submitted or {}
         return PatchResponse(

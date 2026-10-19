@@ -80,7 +80,9 @@ def test_build_tools_schema():
     ):
         assert t in names
     assert "submit_code" not in names
-    assert "check_code" not in names  # snippet check only — buffer check is done's job
+    # check_code validates the buffer — tools_protocol.md names it, so the
+    # schema must offer it (withholding it produced 'tool not available' errors)
+    assert "check_code" in names
 
     # no verify funding -> verify/render drop out of the advertised schema
     empty = ToolSession(ctx, kind="build", code=SEED)

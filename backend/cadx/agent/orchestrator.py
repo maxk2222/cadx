@@ -47,7 +47,7 @@ from cadx.cad.mesh_ops import (
     mesh_params_schema,
 )
 from cadx.cad.partspec import check_standard_part_calls
-from cadx.cad.patch import apply_patch
+from cadx.cad.patch import apply_patch, diff_summary
 from cadx.llm.schemas import CodeResponse, Critique, PartSpec, PatchResponse
 from cadx.logging import get_logger
 
@@ -386,6 +386,25 @@ def _repair_error_history(sig_counts: dict[str, int], attempts: int) -> str:
         "reproduces the same signature; change strategy"
     )
     return "\n".join(lines)
+
+
+def _attempt_history(entries: list[str], keep: int = 6) -> str:
+    """The edit-side counterpart of _repair_error_history: which code changes
+    were already applied this job. Without it an identical issue list +
+    identical base code regenerates the identical failed patch — the main
+    mechanical driver of repair/improve loops."""
+    if not entries:
+        return ""
+    lines = ["PREVIOUS ATTEMPTS this job — edits already tried, do NOT repeat them:"]
+    lines += ["  " + e for e in entries[-keep:]]
+    return "\n".join(lines)
+
+
+def _log_attempt(log_entries: list[str], prefix: str, old: str, new: str) -> None:
+    """Record one applied code change (bounded diffstat, capped log)."""
+    diff = diff_summary(old, new, 4).replace("\n", "; ")
+    log_entries.append(f"{prefix}: {diff[:200]}")
+    del log_entries[:-12]
 
 
 def _session_verify_fn(ctx: AgentCtx, iteration: int, attempt: Any):
@@ -2807,6 +2826,9 @@ async def _run_cad(  # noqa: C901
     # the repair context as deterministic failure memory
     repair_sig_counts: dict[str, int] = {}
     stall_sigs_announced: set[str] = set()
+    # applied-edit memory injected into improve/repair contexts — without it
+    # identical issue+code prompts deterministically regenerate the same patch
+    attempt_log: list[str] = []
     repair_calls = 0
     last_escalation_it = -1
 
@@ -2879,6 +2901,7 @@ async def _run_cad(  # noqa: C901
                         issues=issues,
                         features=features,
                         patch_errors=patch_errors,
+                        attempts=attempt_log,
                         iteration=it,
                         attempt=attempt,
                         verify_fn=_session_verify_fn(ctx, it, art_attempt),
@@ -2889,6 +2912,7 @@ async def _run_cad(  # noqa: C901
                     break
                 new_code, patch_errors = _resolve_patch(base_code, presp, patch_mode)
                 if new_code is not None:
+                    _log_attempt(attempt_log, f"it{it} improve", base_code, new_code)
                     code_resp = CodeResponse(
                         reasoning=presp.reasoning,
                         params=presp.params,
@@ -2898,6 +2922,8 @@ async def _run_cad(  # noqa: C901
                     break
             if code_resp is None:
                 improve_failures += 1
+                attempt_log.append(f"it{it} improve patch did not apply")
+                del attempt_log[:-12]
                 await ctx.emit("improve", it, "patch failed — falling back to fresh codegen next")
                 continue
         else:
@@ -2992,6 +3018,9 @@ async def _run_cad(  # noqa: C901
                     )
                 await ctx.emit("repair", it, "fixing execution error")
                 history = _repair_error_history(repair_sig_counts, repair_calls)
+                att = _attempt_history(attempt_log)
+                if att:
+                    history = f"{history}\n\n{att}" if history else att
                 try:
                     repair_calls += 1
                     presp = await codegen_step.repair(
@@ -3046,6 +3075,7 @@ async def _run_cad(  # noqa: C901
                     # repair's patch attempt already missed the text
                     pending_patch_errors = perrs
                     break
+                _log_attempt(attempt_log, f"it{it} repair{repair_n}", code, new_code)
                 code = new_code
                 code, codemod_notes = fix_api_misuse(code)
                 if codemod_notes:

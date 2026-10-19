@@ -75,6 +75,46 @@ def test_visual_features_caps_at_eight():
     assert "rib 9" not in out
 
 
+def test_visual_features_char_budget():
+    """t2i models truncate long prompts (Z-Image: 512 tokens) — the feature
+    list must stay within a hard character budget instead of silently
+    dropping tail features into the truncated zone."""
+    from cadx.agent.image_prompt import FEATURES_MAX_CHARS
+
+    long_desc = "x" * 200
+    spec = PartSpec(
+        name="p",
+        summary="s",
+        units="mm",
+        length_x={"value": 10},
+        width_y={"value": 10},
+        height_z={"value": 10},
+        features=[
+            {"name": f"f{i}", "type": "boss", "description": long_desc, "position": "at origin"}
+            for i in range(8)
+        ],
+        open_questions=[],
+    )
+    out = visual_features(spec)
+    assert len(out) <= FEATURES_MAX_CHARS + 200  # last clause may straddle
+    assert len(out) < len(", ".join(long_desc for _ in range(8)))
+
+
+def test_visual_features_desc_clipped():
+    spec = PartSpec(
+        name="p",
+        summary="s",
+        units="mm",
+        length_x={"value": 10},
+        width_y={"value": 10},
+        height_z={"value": 10},
+        features=[{"name": "boss", "type": "boss", "description": "y" * 300}],
+        open_questions=[],
+    )
+    out = visual_features(spec)
+    assert len(out) < 120
+
+
 def test_visual_features_empty():
     assert visual_features(None) == ""
     spec = PartSpec(name="p", length_x=dict(_DIM), width_y=dict(_DIM), height_z=dict(_DIM))

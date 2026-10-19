@@ -67,6 +67,28 @@ async def test_churn_guard_nudges_then_exhausts():
     assert len(nudges) == 1
 
 
+async def test_check_code_does_not_reset_churn():
+    """check_code is a free lint, not validation — an edit→check→edit ping
+    pong must count as churn (previously it reset the counter and ran
+    invisibly to the turn cap every time)."""
+    llm = FakeLLM(
+        [
+            c
+            for i in range(12)
+            for c in (
+                _call("replace_lines", start=i + 1, end=i + 1, text=f"# edit {i}"),
+                _call("check_code"),
+            )
+        ]
+    )
+    llm.tools_mode = "auto"
+    ctx = _ctx(llm, agent_tool_churn_limit=3, agent_tool_max_turns=30)
+    session = ToolSession(ctx, kind="edit", code=BOX_CODE)
+    res = await run_session(ctx, "code", MESSAGES, session=session, max_calls=50, step="improve")
+    assert res.exhausted
+    assert res.end_reason == "churn"
+
+
 async def test_turn_cap_ends_session():
     """A session that keeps making progress-free calls stops at max_turns
     even though the call budget is far from spent. edit sessions get the

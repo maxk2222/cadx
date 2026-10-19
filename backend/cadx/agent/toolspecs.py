@@ -216,10 +216,15 @@ CONCEPT_IMAGE_TOOLS = [
             "count": _i("number of variants, 1 or 2 (default 1)"),
             "seed": _i("optional seed for reproducibility"),
             "reference_asset_id": _s("optional id of an existing image asset to vary or edit"),
-            "strength": _s("img2img denoise strength 0..1 (only with reference_asset_id)"),
-            "mark_sketch": _s(
-                "tag result as a sketch/scribble for sketch-conditioned mesh adapters"
-            ),
+            "strength": {
+                "type": "number",
+                "description": "img2img denoise strength 0..1 (only with reference_asset_id)",
+            },
+            "mark_sketch": {
+                "type": "boolean",
+                "description": "tag result as a sketch/scribble for sketch-conditioned "
+                "mesh adapters",
+            },
         },
         ["prompt"],
     ),
@@ -291,6 +296,17 @@ VERIFY_TOOLS = [
     ),
 ]
 
+# offered once the sandbox budget is spent — the description itself steers
+# the model to done, and a call still gets an actionable handler error
+_VERIFY_SPENT_TOOLS = [
+    _fn(
+        "verify",
+        "SANDBOX BUDGET SPENT — do not call this tool; finish with done.",
+        {},
+        [],
+    ),
+]
+
 RENDER_TOOLS = [
     _fn(
         "render_model",
@@ -319,11 +335,10 @@ FEATURE_EDIT_TOOLS = [
     ),
     _fn(
         "edit_feature",
-        "Resize a recognised through-hole to a new diameter on the last "
-        "verified solid — runs the executor's transactional gate (volume "
-        "annulus, envelope, sibling holes, re-recognition) and returns the "
-        "gate report. This is a CHECK: it does not commit geometry — bake "
-        "the accepted resize into the code buffer afterwards.",
+        "DRY-RUN CHECK ONLY — tests whether a recognised through-hole can be "
+        "resized to a new diameter on the last verified solid (volume "
+        "annulus, envelope, sibling holes, re-recognition gate). Commits "
+        "nothing — bake an accepted resize into the code buffer afterwards.",
         {
             "feature_id": _i("feature_id from list_editable_features"),
             "diameter": {
@@ -856,7 +871,8 @@ MESH_TRANSFORM_TOOLS = [
     _fn(
         "mesh_scale",
         "Uniform (`factor`) or per-axis (`x`/`y`/`z`) scaling about the bbox "
-        "centre. Per-axis is THE fix for aspect-ratio mismatches.",
+        "centre — at least ONE of them is required. Per-axis is THE fix for "
+        "aspect-ratio mismatches.",
         {
             "factor": {"type": "number", "description": "uniform multiplier"},
             "x": {"type": "number", "description": "X-axis multiplier"},
@@ -976,8 +992,10 @@ MESH_TRANSFORM_TOOLS = [
         "extra holes; depth_mm for blind holes, csk_dia/csk_angle_deg for "
         "countersinks. `axis` sets the drill direction: 'z' (default, "
         "position = x,y), 'x' (position = y,z coords via x,y fields), 'y' "
-        "(position = x,z). Use the critique's hole axis — e.g. a bore through "
-        "a lengthwise grip is axis='x' centered at the section centre.",
+        '(position = x,z). Example: {"axis":"x","holes":[{"x":0,'
+        '"y":15,"dia":8}]} bores along X centred at y=0,z=15. Use the '
+        "critique's hole axis — a lengthwise grip bore is axis='x'. At least "
+        "one of from_anchors or holes is required.",
         {
             "from_anchors": {
                 "type": "boolean",
@@ -1090,7 +1108,9 @@ MESH_TRANSFORM_TOOLS = [
     _fn(
         "mesh_boolean_add",
         "Union a primitive with the part — e.g. add a base plate "
-        "(box [x,y,z] centred at [0,0,h/2]) or a boss (cylinder).",
+        "(box [x,y,z] centred at [0,0,h/2]) or a boss (cylinder). Required "
+        "per shape — box: size or size_xyz; cylinder: radius+height; "
+        "sphere: radius.",
         {
             "shape": {"type": "string", "enum": ["box", "cylinder", "sphere"]},
             "size": {"type": "number", "description": "box: uniform edge length mm"},
@@ -1106,7 +1126,8 @@ MESH_TRANSFORM_TOOLS = [
     _fn(
         "mesh_boolean_cut",
         "Subtract a primitive from the part — e.g. drill a hole (cylinder), "
-        "cut a pocket (box) or slice off a region.",
+        "cut a pocket (box) or slice off a region. Required per shape — "
+        "box: size or size_xyz; cylinder: radius+height; sphere: radius.",
         {
             "shape": {"type": "string", "enum": ["box", "cylinder", "sphere"]},
             "size": {"type": "number", "description": "box: uniform edge length mm"},
@@ -1275,6 +1296,9 @@ class ToolSession:
             settings.agent_build_verify_max if kind == "build" else settings.agent_tool_verify_max
         )
         self.verify_left = verify_max if (verify_fn and settings.agent_tool_verify) else 0
+        # verify_max==0 means verify is disabled, not spent — only offer the
+        # spent-stub once a real budget was granted and consumed
+        self._verify_budgeted = self.verify_left > 0
         self.fem_left = (
             settings.agent_fem_max_runs if (fem_fn and settings.agent_struct_tools) else 0
         )
@@ -1302,11 +1326,18 @@ class ToolSession:
 
     def _verify_render_tools(self) -> list[dict[str, Any]]:
         """verify + render_model schemas — only while the shared sandbox
-        budget lasts. No render callback → render_model could only fall back
-        to the light verify and return no image, so it isn't offered."""
+        budget lasts. Once spent, a spent-stub keeps the name visible: a call
+        gets the handler's actionable error instead of 'not available', and
+        the schema text itself tells the model to finish."""
         if self.verify_left <= 0:
-            return []
-        out = list(VERIFY_TOOLS)
+            return _VERIFY_SPENT_TOOLS if self._verify_budgeted else []
+        verify_desc = "Execute the CURRENT code in the CAD sandbox and return the outcome: error diagnosis on failure, measured geometry (bbox, holes, fillets…) on success. Limited calls — "
+        verify_desc += (
+            "call once per stage, right after each add_block — errors name the failing block."
+            if self.kind == "build"
+            else "use once, after your edits, before done."
+        )
+        out = [_fn("verify", verify_desc, {}, [])]
         if self.render_fn is not None:
             out += RENDER_TOOLS
         return out
@@ -1338,6 +1369,9 @@ class ToolSession:
                 *CODE_EDIT_TOOLS,
                 *INFO_TOOLS,
                 *LIBRARY_TOOLS,
+                # both checks: check_code validates the session buffer, the
+                # snippet variant validates a block before add_block commits it
+                *CHECK_TOOLS,
                 *CHECK_SNIPPET_TOOLS,
             ]
             out += self._verify_render_tools()
@@ -1728,7 +1762,10 @@ class ToolSession:
                     "calls_left": self.image_left,
                 }
         strength = a.get("strength")
-        mark_sketch = bool(a.get("mark_sketch"))
+        mark_sketch = a.get("mark_sketch")
+        # tolerate "false"/"0" strings — a schema-obedient literal bool("false")
+        # would wrongly tag every edit as a sketch
+        mark_sketch = mark_sketch is True or str(mark_sketch).lower() in ("true", "1", "yes")
         self.image_left -= 1
 
         try:
@@ -1940,7 +1977,11 @@ class ToolSession:
 
     async def _tool_verify(self, a: dict[str, Any]) -> dict[str, Any]:
         if self.verify_fn is None or self.verify_left <= 0:
-            return {"ok": False, "error": "verify not available (budget exhausted or disabled)"}
+            return {
+                "ok": False,
+                "error": "verify budget spent — finish with done now; do NOT call verify again",
+                "budget_exhausted": True,
+            }
         if err := self._require_buffer():
             return err
         self.verify_left -= 1

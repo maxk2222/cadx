@@ -13,8 +13,13 @@ from typing import Any
 from cadx.llm.schemas import PartSpec
 
 MAX_FEATURES = 8
-INTENT_MAX_CHARS = 600
-POSITION_MAX_CHARS = 60
+INTENT_MAX_CHARS = 420
+DESC_MAX_CHARS = 60
+POSITION_MAX_CHARS = 45
+# total character budget for the feature clause list — t2i models truncate
+# prompts (Z-Image at 512 tokens), so an overlong feature dump silently loses
+# the tail features (observed: holes dropped → verify retried uselessly)
+FEATURES_MAX_CHARS = 420
 
 _HOLE_TYPES = ("hole", "through_hole")
 _AXIS_WORDS = {"z": "vertical", "x": "horizontal (X-axis)", "y": "horizontal (Y-axis)"}
@@ -68,15 +73,17 @@ def visual_features(spec: PartSpec | None) -> str:
             clause = f"{count} round {_AXIS_WORDS[axis]} through-holes"
             desc = str(getattr(f, "description", "") or "").strip()
             if desc:
-                clause += f" — {desc}"
+                clause += f" — {_clip(desc, DESC_MAX_CHARS)}"
         else:
-            label = _label(f)
+            label = _clip(_label(f), DESC_MAX_CHARS)
             if not label:
                 continue
             clause = f"{count}x {label}" if count > 1 else label
         pos = _clip(getattr(f, "position", "") or "", POSITION_MAX_CHARS)
         if pos:
             clause += f" at {pos}"
+        if sum(len(c) + 2 for c in clauses) + len(clause) > FEATURES_MAX_CHARS:
+            break
         clauses.append(clause)
     return ", ".join(clauses)
 

@@ -298,6 +298,7 @@ async def repair(
             verify_fn=verify_fn,
             max_calls=ctx.runtime_settings.agent_tool_max_calls,
             render_fn=render_fn,
+            prefer_full_code=prefer_full_code,
         )
     if prefer_full_code:
         user = (
@@ -385,15 +386,22 @@ async def _repair_session(
     verify_fn: VerifyFn | None,
     max_calls: int,
     render_fn: VerifyFn | None = None,
+    prefer_full_code: bool = False,
 ) -> PatchResponse:
     from cadx.agent.context import system_prompt
 
     session = ToolSession(
         ctx, kind="edit", code=prev_code, verify_fn=verify_fn, render_fn=render_fn
     )
-    parts: list[dict[str, Any]] = [
-        {"type": "text", "text": "Fix this code using the tools — minimal edit only."},
-    ]
+    # stalled flag means minimal edits kept producing the same error —
+    # asking for another minimal edit contradicts the diagnosis
+    seed = (
+        "Earlier minimal edits kept failing with the SAME error — restructure the "
+        "failing feature instead of tuning it (simplify or rebuild that construction)."
+        if prefer_full_code
+        else "Fix this code using the tools — minimal edit only."
+    )
+    parts: list[dict[str, Any]] = [{"type": "text", "text": seed}]
     rb = request_block(ctx.prompt)
     if rb:
         parts.append({"type": "text", "text": rb})
@@ -434,7 +442,7 @@ async def _repair_session(
         iteration=iteration,
         temperature=0.1,
     )
-    if res.exhausted:
+    if res.exhausted and res.end_reason in ("verify_loop", "repeat_loop"):
         ctx.edit_sessions_exhausted += 1
     if res.code and res.code != prev_code and elision_marker(res.code) is None:
         sub = res.submitted or {}

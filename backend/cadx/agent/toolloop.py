@@ -80,9 +80,10 @@ def tools_enabled(ctx: AgentCtx, role: str) -> bool:
     return ok is not False  # legacy bool/None shape
 
 
-# tools that validate progress — a turn without any of these counts as churn
+# tools that validate progress — a turn without any of these counts as churn.
+# check_code is deliberately NOT here: it's a free static lint, so counting it
+# as a check let edit→check→edit ping-pong run invisible to the churn detector
 _CHECK_TOOLS = {
-    "check_code",
     "verify",
     "render_model",
     "done",

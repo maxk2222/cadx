@@ -26,6 +26,15 @@ Rules:
 
 - Make the SMALLEST change that fixes the listed problem. Do not reformat,
   rename variables, reorder code or "clean up" working parts.
+- If `verify` reports the SAME error category at the SAME line twice, tuning
+  that line will not fix it — the cause is earlier in the file. Read
+  `geometry_at_failure` for where bodies actually are (a discarded
+  `Pos * X(...)` placement leaves geometry at the origin), and fix the
+  construction — never re-apply the edit verify just rejected.
+- `check_code` is a static lint only — it does NOT prove the geometry works;
+  only `verify` executes the code.
+- `quickref("build123d.<symbol>")` returns the INSTALLED API signature — when
+  a call failed on args or name, look it up there instead of guessing again.
 - Keep PARAMS keys stable and the coordinate frame contract intact.
 - Do not add imports outside the allow-list.
 - You may emit ONE tool call per response. Do not write prose around it.

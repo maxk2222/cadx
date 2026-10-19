@@ -15,7 +15,11 @@
    }
    ```
    Use `PARAMS["name"]` everywhere below. Never hard-code a dimension twice.
-3. Build the part with build123d (builder mode `with BuildPart() as p:` or algebra mode).
+3. Coordinate frame: X = length (left->right), Y = width (+Y is the "front" face),
+   Z = height (up). The part must rest on the XY plane (min Z = 0) and be centred on
+   the origin in X and Y. Use `align=(Align.CENTER, Align.CENTER, Align.MIN)` on
+   primitives to achieve this. Units are millimetres.
+4. Build the part with build123d (builder mode `with BuildPart() as p:` or algebra mode).
    At the end assign: `result = p.part` — a build123d Part/Solid/Compound with exactly
    ONE solid unless the task is an assembly.
    Optional for flat 2D-CNC/laser parts: `flat_profile = <Sketch or Face>`.
@@ -92,18 +96,13 @@
      actually changed the part: `measure(part)` and compare face/solid counts
      — unchanged counts mean the boolean silently no-op'd (misaligned or
      grazing cutter). Fix the cutter before adding the next feature.
-4. Coordinate frame: X = length (left->right), Y = width (+Y is the "front" face),
-   Z = height (up). The part must rest on the XY plane (min Z = 0) and be centred on
-   the origin in X and Y. Use `align=(Align.CENTER, Align.CENTER, Align.MIN)` on
-   primitives to achieve this.
-5. Units are millimetres.
-6. A helper `load_reference(asset_id: str) -> Shape` is predefined for user-provided
+5. A helper `load_reference(asset_id: str) -> Shape` is predefined for user-provided
    STEP/STL reference bodies (their asset ids are listed in the context).
    Injected inspect helpers (bare names, no import needed):
    - `measure(shape)` -> dict with volume, bbox and face/solid counts.
    - `find_holes(shape)` -> list of holes, each with position, diameter, depth, axis.
    - `bbox_dims(shape)` -> `[dx, dy, dz]` overall extents in mm.
-7. MEASURED PLAN VIEW (only when the context shows "measured image features"):
+6. MEASURED PLAN VIEW (only when the context shows "measured image features"):
    - `anchor_holes()` returns the hole positions measured from the top-view image
      as a list of `{"index", "x", "y", "dia", "axis"}` dicts (XY in the part frame, the
      origin at the bbox centre — same frame as `MESH_BBOX`). `axis` is the
@@ -124,7 +123,7 @@
      — instead of drawing your own guessed outline.
    - `IMAGE_PROFILE` is the raw `[[x, y], ...]` outline list for custom
      constructions.
-8. STANDARD PARTS: whenever the user names a screw/nut/insert/bearing/thread size, do
+7. STANDARD PARTS: whenever the user names a screw/nut/insert/bearing/thread size, do
    NOT type its dimensions by hand. Create the bd_warehouse object and cut the hole with
    `ClearanceHole` / `TapHole` / `ThreadedHole` / `InsertHole` / `PressFitHole` (see the
    bd_warehouse reference). Purchased parts (screws, nuts, bearings) are NOT part of
@@ -132,9 +131,9 @@
    Threads: use `simple=True` (cosmetic) unless the user asks for printed/machined real
    threads; real threads must use `end_finishes=("fade","square")` or `("raw","raw")`
    and `manufacturing_compensation=PARAMS["thread_comp"]` for FDM.
-9. Keep the code deterministic, under ~200 lines, with a short comment naming the feature
+8. Keep the code deterministic, under ~200 lines, with a short comment naming the feature
    each block creates.
-10. BOUND FEATURE SNIPPETS: when the context contains "BOUND FEATURE SNIPPETS"
+9. BOUND FEATURE SNIPPETS: when the context contains "BOUND FEATURE SNIPPETS"
     those calls are resolved geometry — copy them VERBATIM (axes, direction,
     normal, dims, frame rotations). Do NOT re-derive or "fix" their arguments;
     only fill in the `<…>` placement coordinates and decide the build order.

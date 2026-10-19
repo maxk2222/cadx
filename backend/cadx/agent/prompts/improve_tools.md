@@ -21,3 +21,9 @@ Guidance:
   with `search_catalog` / `lookup_part` instead of guessing.
 - Common cadlib helpers cover typical features — query signatures with
   `cadlib_lookup` rather than hand-rolling.
+- If a "PREVIOUS ATTEMPTS" block is present it lists edits already tried —
+  do NOT repeat them; pick a structurally different fix (tuning the same
+  line or value a second time never helps).
+- For a pure hole-diameter issue on a verified part: `list_editable_features`
+  then `edit_feature(feature_id, diameter)` validates the resize on the real
+  solid before you touch code.
