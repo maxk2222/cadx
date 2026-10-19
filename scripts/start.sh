@@ -188,6 +188,7 @@ if [ "${MESH_HOST:-}" != "" ]; then
       # gfx archs not covered by the installed torch wheel
       MESH_HOST="$MESH_HOST" MESH_PORT="$MESH_PORT" MESH_DEVICE="$TIER" \
         MESH_FAKE="${MESH_FAKE:-}" \
+        MESH_JOB_MAX_RSS_MB="${MESH_JOB_MAX_RSS_MB:-}" \
         HSA_OVERRIDE_GFX_VERSION="${HSA_OVERRIDE_GFX_VERSION:-}" \
         PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-}" \
         nohup mesh_server/.venv/bin/meshserver serve > logs/mesh-server.log 2>&1 &

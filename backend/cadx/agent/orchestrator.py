@@ -1059,6 +1059,9 @@ async def _ensure_synth_views(ctx: AgentCtx, iteration: int, spec: PartSpec | No
             count=2,
             source="synth_side_view",
             spec=spec,
+            # mflux edit defaults to 28 steps/image — ~19min per view on MLX;
+            # 14 steps keeps both views under the image timeout budget
+            steps=14,
         )
     except Exception as e:
         log.warning("meshgen.synth_views_failed", error=str(e)[:200])
@@ -3915,9 +3918,7 @@ async def _run_mesh(  # noqa: C901
             # generated ones are the untrusted conditioning this gate exists
             # for (also keeps a vision call out of runs that never made one)
             used = set((ctx.mesh_info.get("generation") or {}).get("images") or [])
-            has_gen = any(
-                a.kind == "generated_image" and a.asset_id in used for a in ctx.assets
-            )
+            has_gen = any(a.kind == "generated_image" and a.asset_id in used for a in ctx.assets)
             sheet = _sheet(exec_result)
             verdict = None
             if sheet is not None and has_gen:

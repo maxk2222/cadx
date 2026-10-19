@@ -34,6 +34,7 @@ async def generate_concept_images(
     mark_sketch: bool = False,
     source: str = "concept_tool",
     spec: PartSpec | None = None,
+    steps: int | None = None,
 ) -> list[InputAsset]:
     """Generate `count` images via the mesh-server image adapter, persist them
     as generated_image assets and append them to `ctx.assets` so downstream
@@ -73,7 +74,7 @@ async def generate_concept_images(
             count=max(1, min(2, count)),
             width=side,
             height=side,
-            steps=s.image_steps,
+            steps=steps if steps is not None else s.image_steps,
             guidance=s.image_guidance,
             init_image=init_image,
             strength=(
