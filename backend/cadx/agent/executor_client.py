@@ -148,7 +148,20 @@ class QueueExecutor:
                 return result if isinstance(result, dict) else {"ok": False, "error": "bad result"}
             await asyncio.sleep(1.0)
             waited += 1.0
-        return {"ok": False, "error": f"executor task '{func}' timed out after {timeout_s}s"}
+        # the cad task is still running — set the cancel flag it polls
+        # between stages (and mid-SIMP) so the timeout doesn't leave it
+        # burning a cad slot until it finishes on its own
+        job_key = payload.get("job_id")
+        if job_key:
+            try:
+                await pool.setex(f"cancel:{job_key}", 3600, b"1")
+            except Exception:  # best-effort — report the timeout either way
+                log.warning("executor.cancel_flag_failed", func=func, job_id=str(job_key))
+        return {
+            "ok": False,
+            "timed_out": True,
+            "error": f"executor task '{func}' timed out after {timeout_s}s",
+        }
 
     async def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
         timeout = self.runtime_settings.exec_timeout_s * 2 + 120
@@ -183,8 +196,13 @@ class QueueExecutor:
         return await self._run_task("topopt_resample", payload, timeout)
 
     async def refine(self, payload: dict[str, Any]) -> dict[str, Any]:
-        # booleans + optional FEM verify — same envelope as a FEM check
-        timeout = self.runtime_settings.fem_timeout_s + 120
+        # booleans + optional FEM verify + optional analytic STEP export —
+        # a maxed FEM followed by a maxed STEP stage must still fit
+        timeout = (
+            self.runtime_settings.fem_timeout_s
+            + self.runtime_settings.analytic_step_timeout_s
+            + 120
+        )
         return await self._run_task("refine", payload, timeout)
 
     async def organic(self, payload: dict[str, Any]) -> dict[str, Any]:

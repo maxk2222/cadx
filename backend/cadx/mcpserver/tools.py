@@ -44,8 +44,8 @@ from cadx.db.models import (
     AssetKind,
     Job,
     JobStatus,
+    JobType,
     Version,
-    VersionKind,
     VersionStatus,
 )
 from cadx.db.session import session_scope
@@ -97,8 +97,12 @@ _WAIT = {
     }
 }
 
-_CODE = {"code": _s("complete build123d code file — top-level PARAMS dict, "
-                    "assigns `result`; see codegen_contract")}
+_CODE = {
+    "code": _s(
+        "complete build123d code file — top-level PARAMS dict, "
+        "assigns `result`; see codegen_contract"
+    )
+}
 
 MCP_TOOL_SCHEMAS: list[dict[str, Any]] = [
     # -- code loop ------------------------------------------------------- #
@@ -217,8 +221,7 @@ MCP_TOOL_SCHEMAS: list[dict[str, Any]] = [
             "asset_ids": {
                 "type": "array",
                 "items": _s("asset id"),
-                "description": "image/generated_image asset ids from upload_asset "
-                "or list_assets",
+                "description": "image/generated_image asset ids from upload_asset or list_assets",
             },
             "subject": _s("what the images show — guides adapter selection"),
             "model": _s("adapter id — empty = runtime default (see mesh_health)"),
@@ -326,8 +329,12 @@ MCP_TOOL_SCHEMAS: list[dict[str, Any]] = [
         "list_assets",
         "List the bound project's assets (images, generated images, "
         "STEP/STL/DXF references): id, kind, filename, caption, dimensions.",
-        {"kind": _s("optional filter: image | generated_image | reference_step "
-                    "| reference_stl | reference_dxf")},
+        {
+            "kind": _s(
+                "optional filter: image | generated_image | reference_step "
+                "| reference_stl | reference_dxf"
+            )
+        },
         [],
     ),
     _fn(
@@ -920,10 +927,12 @@ async def _h_restart_job(session: Any, args: dict[str, Any]) -> dict[str, Any]:
         job = resolved
         if job.status not in _TERMINAL_JOB_STATES:
             raise SpawnError(f"job is {job.status.value} — cancel it before restarting")
-        # HARD LLM-free guard: spawn_restart re-runs generate/edit versions
-        # via run_agent_job (the LLM-driven agent) — never expose that on MCP.
-        v = await db.get(Version, job.version_id)
-        if v is not None and v.kind in (VersionKind.generate, VersionKind.edit):
+        # HARD LLM-free guard: generate/edit/resume jobs restart through
+        # run_agent_job (the LLM-driven agent) — never expose those on MCP.
+        # Deterministic job types (fem/reexport/refine/resample/organic/
+        # mesh_edit/edit_feature/params/optimize/code/meshgen) replay their
+        # stored requests without an LLM — including on LLM-kind versions.
+        if job.type in (JobType.generate, JobType.edit, JobType.resume):
             raise SpawnError(
                 "restart is only exposed for deterministic jobs — this "
                 "version is LLM-generated; write new code and submit_code "
@@ -973,8 +982,7 @@ async def _h_list_assets(session: Any, args: dict[str, Any]) -> dict[str, Any]:
         except ValueError:
             return {
                 "ok": False,
-                "error": f"unknown kind '{kind}' — valid: "
-                f"{', '.join(k.value for k in AssetKind)}",
+                "error": f"unknown kind '{kind}' — valid: {', '.join(k.value for k in AssetKind)}",
             }
     else:
         kind_filter = None
@@ -982,11 +990,7 @@ async def _h_list_assets(session: Any, args: dict[str, Any]) -> dict[str, Any]:
         async with session_scope() as db:
             await session._project(db)
             pid = _session_pid(session)
-            q = (
-                select(Asset)
-                .where(Asset.project_id == pid)
-                .order_by(col(Asset.created_at))
-            )
+            q = select(Asset).where(Asset.project_id == pid).order_by(col(Asset.created_at))
             if kind_filter is not None:
                 q = q.where(Asset.kind == kind_filter)
             rows = await db.execute(q)

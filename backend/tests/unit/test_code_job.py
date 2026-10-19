@@ -8,6 +8,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from sqlmodel import select
 
 from cadx import spawn, storage
 from cadx.db.models import (
@@ -24,11 +25,7 @@ from cadx.db.models import (
 from cadx.db.session import async_session, create_all
 from cadx.runtime_config import RuntimeSettings, save_runtime_settings
 
-CODE = (
-    'PARAMS = {"w": 20.0}\n'
-    "from build123d import Box\n"
-    'result = Box(PARAMS["w"], 10.0, 5.0)\n'
-)
+CODE = 'PARAMS = {"w": 20.0}\nfrom build123d import Box\nresult = Box(PARAMS["w"], 10.0, 5.0)\n'
 CODE_NO_PARAMS = "PARAMS = {}\nfrom build123d import Box\nresult = Box(10, 10, 5)\n"
 
 
@@ -390,12 +387,380 @@ async def test_spawn_restart_dispatches_meshgen():
 
 
 async def test_spawn_restart_rejects_unknown_kind():
+    # a mesh_edit version whose job never ran has no recorded ops to replay
     _p, _v, j = await _mk_terminal_job(kind=VersionKind.mesh_edit, jtype=JobType.mesh_edit)
     async with async_session() as db:
         job = await db.get(Job, j.id)
         with pytest.raises(spawn.SpawnError) as ei:
             await spawn.spawn_restart(db, job)
         assert ei.value.status == 409
+
+
+async def _mk_parent_and_child(
+    *,
+    parent_kind: VersionKind,
+    child_kind: VersionKind,
+    child_jtype: JobType,
+    child_options: dict | None = None,
+    child_prompt: str = "child",
+    child_params: dict | None = None,
+    parent_mesh: dict | None = None,
+    job_kwargs: dict | None = None,
+) -> tuple[Project, Version, Version, Job]:
+    """succeeded parent + terminal child job, wired as a spawn tree."""
+    async with async_session() as db:
+        p = Project(name="restart-tree")
+        db.add(p)
+        await db.flush()
+        parent = Version(
+            project_id=p.id,
+            number=1,
+            kind=parent_kind,
+            prompt="base",
+            status=VersionStatus.succeeded,
+            mesh=parent_mesh,
+        )
+        db.add(parent)
+        await db.flush()
+        child = Version(
+            project_id=p.id,
+            parent_id=parent.id,
+            number=2,
+            kind=child_kind,
+            prompt=child_prompt,
+            status=VersionStatus.succeeded,
+            options=child_options or {},
+            params=child_params,
+        )
+        db.add(child)
+        await db.flush()
+        j = Job(
+            version_id=child.id, type=child_jtype, status=JobStatus.failed, **(job_kwargs or {})
+        )
+        db.add(j)
+        await db.commit()
+        return p, parent, child, j
+
+
+async def test_spawn_restart_resample_replays_stored_request():
+    # a resample child shares kind=optimize with real optimize children —
+    # dispatch must be on job.type or it re-runs a full SIMP
+    _p, parent, v, j = await _mk_parent_and_child(
+        parent_kind=VersionKind.optimize,
+        parent_mesh={"topopt": {"density_relpath": "projects/x/density.npz"}},
+        child_kind=VersionKind.optimize,
+        child_jtype=JobType.resample,
+        child_options={
+            "topopt": True,
+            "optimize_request": {
+                "optimize": {"density_threshold": 0.35, "min_member_mm": 2.5},
+                "material": "pla",
+            },
+        },
+    )
+    calls, enq = _enqueue_recorder()
+    async with async_session() as db:
+        job = await db.get(Job, j.id)
+        new_v, new_j = await spawn.spawn_restart(db, job, enqueue_fn=enq)
+    assert new_v.id != v.id
+    assert new_v.parent_id == parent.id
+    assert new_v.kind == VersionKind.optimize
+    assert new_j.type == JobType.resample
+    assert calls and calls[0]["func"] == "run_topopt_resample_job"
+    payload = calls[0]["payload"]
+    assert payload["optimize"] == {"density_threshold": 0.35, "min_member_mm": 2.5}
+    assert payload["material"] == "pla"
+
+
+async def test_spawn_restart_refine_replays_stored_request():
+    _p, parent, v, j = await _mk_parent_and_child(
+        parent_kind=VersionKind.optimize,
+        child_kind=VersionKind.refine,
+        child_jtype=JobType.refine,
+        child_options={
+            "refine_request": {
+                "features": [{"type": "bore", "dia": 5.0}],
+                "load_cases": [{"name": "lc"}],
+                "keep_regions": [{"kind": "box"}],
+                "material": "petg",
+                "voxel_mm": 0.8,
+                "restore_planes": True,
+                "helical_threads": False,
+                "auto_plane_restore": True,
+            }
+        },
+    )
+    calls, enq = _enqueue_recorder()
+    async with async_session() as db:
+        job = await db.get(Job, j.id)
+        new_v, new_j = await spawn.spawn_restart(db, job, enqueue_fn=enq)
+    assert new_v.id != v.id
+    assert new_v.parent_id == parent.id
+    assert new_v.kind == VersionKind.refine
+    assert new_j.type == JobType.refine
+    assert calls and calls[0]["func"] == "run_refine_job"
+    payload = calls[0]["payload"]
+    assert payload["features"] == [{"type": "bore", "dia": 5.0}]
+    assert payload["load_cases"] == [{"name": "lc"}]
+    assert payload["voxel_mm"] == 0.8
+    assert payload["auto_plane_restore"] is True
+
+
+async def test_spawn_restart_organic_replays_stored_request():
+    _p, parent, _v, j = await _mk_parent_and_child(
+        parent_kind=VersionKind.generate,
+        child_kind=VersionKind.organic,
+        child_jtype=JobType.organic,
+        child_options={"organic_request": {"style": "gyroid", "seed": 4, "volfrac": 0.3}},
+    )
+    calls, enq = _enqueue_recorder()
+    async with async_session() as db:
+        job = await db.get(Job, j.id)
+        new_v, new_j = await spawn.spawn_restart(db, job, enqueue_fn=enq)
+    assert new_v.parent_id == parent.id
+    assert new_v.kind == VersionKind.organic
+    assert new_j.type == JobType.organic
+    assert calls and calls[0]["func"] == "run_organic_job"
+    assert calls[0]["payload"]["organic"] == {"style": "gyroid", "seed": 4, "volfrac": 0.3}
+
+
+async def test_spawn_restart_mesh_edit_replays_recorded_ops():
+    p, parent, _v, j = await _mk_parent_and_child(
+        parent_kind=VersionKind.generate,
+        child_kind=VersionKind.mesh_edit,
+        child_jtype=JobType.mesh_edit,
+        child_prompt="visual edit of v1",
+        child_params={
+            "ops": [{"op": "rotate", "args": {"axis": "z", "deg": 45}}],
+            "scale": 1.0,
+        },
+    )
+    # mesh_edit_source guard: a finished STL on the parent
+    exp_dir = storage.export_dir(p.id, parent.id)
+    exp_dir.mkdir(parents=True, exist_ok=True)
+    (exp_dir / "model.stl").write_text("solid m\nendsolid m\n")
+    calls, enq = _enqueue_recorder()
+    async with async_session() as db:
+        job = await db.get(Job, j.id)
+        new_v, new_j = await spawn.spawn_restart(db, job, enqueue_fn=enq)
+    assert new_v.parent_id == parent.id
+    assert new_v.kind == VersionKind.mesh_edit
+    assert new_j.type == JobType.mesh_edit
+    assert calls and calls[0]["func"] == "run_mesh_edit_job"
+    payload = calls[0]["payload"]
+    assert payload["ops"] == [{"op": "rotate", "args": {"axis": "z", "deg": 45}}]
+    assert payload["post"] == {"scale": 1.0}
+
+
+async def test_spawn_restart_fem_same_version():
+    async with async_session() as db:
+        p = Project(name="fem-restart")
+        db.add(p)
+        await db.flush()
+        v = Version(
+            project_id=p.id,
+            number=1,
+            kind=VersionKind.generate,
+            prompt="bracket",
+            status=VersionStatus.succeeded,
+        )
+        db.add(v)
+        await db.flush()
+        j = Job(
+            version_id=v.id,
+            type=JobType.fem,
+            status=JobStatus.failed,
+            resume_state={
+                "fem_request": {
+                    "load_cases": [{"name": "down", "load_n": [0, 0, -50]}],
+                    "keep_regions": [],
+                    "material": "pla",
+                }
+            },
+        )
+        db.add(j)
+        await db.commit()
+        vid = v.id
+    # spawn_fem requires a mesh artifact on disk
+    exp_dir = storage.export_dir(p.id, vid)
+    exp_dir.mkdir(parents=True, exist_ok=True)
+    (exp_dir / "model.stl").write_text("solid m\nendsolid m\n")
+
+    calls, enq = _enqueue_recorder()
+    async with async_session() as db:
+        job = await db.get(Job, j.id)
+        res = await spawn.spawn_restart(db, job, enqueue_fn=enq)
+    assert isinstance(res, Job)  # same-version job — no new Version row
+    assert res.version_id == vid
+    assert res.type == JobType.fem
+    assert calls and calls[0]["func"] == "run_fem_job"
+    payload = calls[0]["payload"]
+    assert payload["version_id"] == str(vid)
+    assert payload["load_cases"] == [{"name": "down", "load_n": [0, 0, -50]}]
+    assert payload["material"] == "pla"
+
+
+async def test_spawn_restart_fem_without_stored_request_409s():
+    # fem jobs spawned before requests were recorded have nothing to replay
+    async with async_session() as db:
+        p = Project(name="fem-restart-old")
+        db.add(p)
+        await db.flush()
+        v = Version(
+            project_id=p.id,
+            number=1,
+            kind=VersionKind.generate,
+            prompt="bracket",
+            status=VersionStatus.succeeded,
+        )
+        db.add(v)
+        await db.flush()
+        j = Job(version_id=v.id, type=JobType.fem, status=JobStatus.failed)
+        db.add(j)
+        await db.commit()
+        jid = j.id
+    async with async_session() as db:
+        job = await db.get(Job, jid)
+        with pytest.raises(spawn.SpawnError) as ei:
+            await spawn.spawn_restart(db, job)
+        assert ei.value.status == 409
+
+
+async def test_spawn_restart_reexport_same_version():
+    _p, v, j = await _mk_terminal_job(
+        kind=VersionKind.generate, jtype=JobType.reexport, iterations=3
+    )
+    calls, enq = _enqueue_recorder()
+    async with async_session() as db:
+        job = await db.get(Job, j.id)
+        res = await spawn.spawn_restart(db, job, enqueue_fn=enq)
+    assert isinstance(res, Job)
+    assert res.version_id == v.id
+    assert res.type == JobType.reexport
+    assert calls and calls[0]["func"] == "run_reexport_job"
+    assert calls[0]["payload"] == {
+        "job_id": str(res.id),
+        "version_id": str(v.id),
+        "iteration": 3,
+    }
+
+
+async def test_spawn_restart_edit_feature_replays_gate():
+    # kind=edit + type=edit but spawned by spawn_edit_feature — must replay
+    # run_edit_feature_job, not the LLM edit branch
+    p, parent, v, j = await _mk_parent_and_child(
+        parent_kind=VersionKind.generate,
+        child_kind=VersionKind.edit,
+        child_jtype=JobType.edit,
+        child_prompt="feature edit: diameter=8.0 on feature 3 (of v1)",
+        child_options={
+            "edit_feature_request": {"feature_id": 3, "parameter": "diameter", "value": 8.0}
+        },
+    )
+    # feature_edit_source guard: a B-Rep on the parent
+    m_dir = storage.version_dir(p.id, parent.id) / "mesh"
+    m_dir.mkdir(parents=True, exist_ok=True)
+    (m_dir / "solid.brep").write_bytes(b"brep")
+    calls, enq = _enqueue_recorder()
+    async with async_session() as db:
+        job = await db.get(Job, j.id)
+        new_v, new_j = await spawn.spawn_restart(db, job, enqueue_fn=enq)
+    assert new_v.id != v.id
+    assert new_v.parent_id == parent.id
+    assert new_v.kind == VersionKind.edit
+    assert new_j.type == JobType.edit
+    assert calls and calls[0]["func"] == "run_edit_feature_job"
+    payload = calls[0]["payload"]
+    assert payload["feature_id"] == 3
+    assert payload["parameter"] == "diameter"
+    assert payload["value"] == 8.0
+
+
+async def test_spawn_restart_llm_edit_ignores_inherited_feature_request():
+    # a genuine LLM edit child of a feature-edit version inherits the
+    # options key — the prompt is the discriminator
+    _p, parent, _v, j = await _mk_parent_and_child(
+        parent_kind=VersionKind.generate,
+        child_kind=VersionKind.edit,
+        child_jtype=JobType.edit,
+        child_prompt="make it taller",
+        child_options={
+            "edit_feature_request": {"feature_id": 3, "parameter": "diameter", "value": 8.0}
+        },
+    )
+    calls, enq = _enqueue_recorder()
+    async with async_session() as db:
+        job = await db.get(Job, j.id)
+        new_v, new_j = await spawn.spawn_restart(db, job, enqueue_fn=enq)
+    assert new_v.parent_id == parent.id
+    assert new_v.kind == VersionKind.edit
+    assert new_j.type == JobType.edit
+    assert calls and calls[0]["func"] == "run_agent_job"
+
+
+async def test_spawn_restart_resume_preserves_type_and_state():
+    resume_state = {"spec": {"name": "bracket", "load_cases": []}}
+    _p, v, j = await _mk_terminal_job(
+        kind=VersionKind.generate,
+        jtype=JobType.resume,
+        gen_mode="auto",
+    )
+    async with async_session() as db:
+        job = await db.get(Job, j.id)
+        job.resume_state = resume_state
+        await db.commit()
+    calls, enq = _enqueue_recorder()
+    async with async_session() as db:
+        job = await db.get(Job, j.id)
+        new_v, new_j = await spawn.spawn_restart(db, job, enqueue_fn=enq)
+    assert new_v.id != v.id
+    assert new_v.kind == VersionKind.generate
+    # must stay `resume` — run_agent_job only restores the stored spec for
+    # JobType.resume
+    assert new_j.type == JobType.resume
+    assert new_j.resume_state == resume_state
+    assert calls and calls[0]["func"] == "run_agent_job"
+
+
+async def test_spawn_enqueue_failure_raises_503_and_fails_rows(monkeypatch):
+    """deps.enqueue returning None must surface as SpawnError(503) and the
+    committed Version/Job rows get marked failed — nothing may stay queued
+    with no arq task behind it."""
+    import cadx.api.deps as deps
+
+    async def _none_enqueue(func, payload):
+        return None
+
+    monkeypatch.setattr(deps, "enqueue", _none_enqueue)
+    p = await _mk_project()
+    with pytest.raises(spawn.SpawnError) as ei:
+        async with async_session() as db:
+            await spawn.spawn_generate(db, p, "a box")
+    assert ei.value.status == 503
+
+    async with async_session() as db:
+        vs = (await db.execute(select(Version).where(Version.project_id == p.id))).scalars().all()
+        js = (await db.execute(select(Job))).scalars().all()
+    assert len(vs) == 1
+    job = next(j for j in js if j.version_id == vs[0].id)
+    assert vs[0].status == VersionStatus.failed
+    assert job.status == JobStatus.failed
+
+
+async def test_spawn_enqueue_exception_marks_rows_failed():
+    async def _boom(func, payload):
+        raise RuntimeError("redis down")
+
+    p = await _mk_project()
+    with pytest.raises(RuntimeError):
+        async with async_session() as db:
+            await spawn.spawn_generate(db, p, "a box", enqueue_fn=_boom)
+    async with async_session() as db:
+        vs = (await db.execute(select(Version).where(Version.project_id == p.id))).scalars().all()
+        js = (await db.execute(select(Job))).scalars().all()
+    job = next(j for j in js if j.version_id == vs[0].id)
+    assert vs[0].status == VersionStatus.failed
+    assert job.status == JobStatus.failed
 
 
 async def test_spawn_restart_rejects_running_job():

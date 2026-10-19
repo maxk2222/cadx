@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import inspect
 import json
 import os
 import pickle
@@ -55,6 +56,20 @@ async def _cancelled(ctx: dict[str, Any], key: str | None) -> bool:
         return False
 
 
+def _cancel_kwargs(fn: Callable[..., Any], cancelled: Callable[[], bool] | None) -> dict[str, Any]:
+    """Kwargs bridge for the engine ``cancelled=`` contract: forwards the
+    checker only to entry points that already accept it — the kwarg is being
+    added across engine.py, and a blind pass would TypeError meanwhile.
+    Once every engine function carries the kwarg this can go away."""
+    if cancelled is None:
+        return {}
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return {}
+    return {"cancelled": cancelled} if "cancelled" in params else {}
+
+
 def _artifact_dir(payload: dict[str, Any]) -> Path:
     """Iteration dir, namespaced by attempt — several pipeline runs share one
     iteration number (repair verifies, autofix, mesh refine rounds) and would
@@ -69,7 +84,9 @@ def _artifact_dir(payload: dict[str, Any]) -> Path:
     return it_dir / sub if sub else it_dir
 
 
-def run_execute_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def run_execute_payload(
+    payload: dict[str, Any], cancelled: Callable[[], bool] | None = None
+) -> dict[str, Any]:
     """Synchronous part of execute_version — shared with InProcessExecutor."""
     version_id = uuid.UUID(payload["version_id"])
 
@@ -92,6 +109,7 @@ def run_execute_payload(payload: dict[str, Any]) -> dict[str, Any]:
         mesh_bbox=payload.get("mesh_bbox"),
         anchors=payload.get("anchors"),
         light=bool(payload.get("light")),
+        **_cancel_kwargs(run_pipeline, cancelled),
     )
 
     d = result.to_dict()
@@ -122,7 +140,12 @@ async def execute_version(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[
     # (observed: a stuck job starved the loop so jobs queued 480 s unclaimed).
     deadline = _runtime(payload).exec_timeout_s * 2 + 120
     try:
-        d = await asyncio.wait_for(asyncio.to_thread(run_execute_payload, payload), deadline)
+        d = await asyncio.wait_for(
+            asyncio.to_thread(
+                run_execute_payload, payload, cancelled=_sync_cancel_checker(cancel_key)
+            ),
+            deadline,
+        )
     except TimeoutError:
         log.error("execute_version.pipeline_hang", version=payload["version_id"])
         r = ExecResult()
@@ -249,12 +272,21 @@ async def export_all(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, 
     return {"ok": True, "exports": {k: (f"{rel}/{v}" if v else None) for k, v in exports.items()}}
 
 
-def run_mesh_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def run_mesh_payload(
+    payload: dict[str, Any], cancelled: Callable[[], bool] | None = None
+) -> dict[str, Any]:
     """Synchronous part of process_mesh — shared with InProcessExecutor.
 
     mode="candidates": render orientation candidates (returns sheet + per-up pngs).
     mode="final":      full mesh pipeline (clean/orient/scale/analysis/renders/dfm/exports).
     """
+    if cancelled is None:
+        # the queue path runs this in a subprocess (mesh_payload_entry) — a
+        # callable can't cross the pickle boundary, so rebuild the redis
+        # checker from the payload's job_id in whichever process runs us
+        cancelled = _sync_cancel_checker(
+            f"cancel:{payload['job_id']}" if payload.get("job_id") else None
+        )
     project_id = uuid.UUID(payload["project_id"])
     version_id = uuid.UUID(payload["version_id"])
     mode = payload.get("mode", "final")
@@ -303,6 +335,7 @@ def run_mesh_payload(payload: dict[str, Any]) -> dict[str, Any]:
         anchors=payload.get("anchors"),
         solid_max_faces=payload.get("solid_max_faces"),
         ref_mask_rel=payload.get("ref_mask_rel"),
+        **_cancel_kwargs(run_mesh_pipeline, cancelled),
     )
 
     d = result.to_dict()
@@ -499,6 +532,9 @@ async def process_mesh(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str
         return r.to_dict()
 
     workdir = _artifact_dir(payload) / "_meshjob"
+    # the pipeline runs in a child process — the cancel callable can't cross
+    # the pickle boundary, so run_mesh_payload rebuilds it from payload's
+    # job_id inside the child instead
     d = await asyncio.to_thread(_run_mesh_payload_subprocess, payload, workdir)
 
     if await _cancelled(ctx, cancel_key):
@@ -507,7 +543,9 @@ async def process_mesh(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str
     return d
 
 
-def run_parametrize_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def run_parametrize_payload(
+    payload: dict[str, Any], cancelled: Callable[[], bool] | None = None
+) -> dict[str, Any]:
     """Synchronous part of parametrize_mesh — shared with InProcessExecutor.
 
     Reproduces the final mesh (the stored STL the winning process_mesh run
@@ -578,6 +616,7 @@ def run_parametrize_payload(payload: dict[str, Any]) -> dict[str, Any]:
         anchors=payload.get("anchors"),
         spec=payload.get("spec"),
         light=bool(payload.get("light")),
+        **_cancel_kwargs(run_pipeline, cancelled),
     )
     exec_result = {
         "ok": result.ok,
@@ -645,7 +684,12 @@ async def parametrize_mesh(ctx: dict[str, Any], payload: dict[str, Any]) -> dict
     # job slot when the thread wedges (same pattern as execute_version)
     deadline = _runtime(payload).exec_timeout_s * 2 + 120
     try:
-        d = await asyncio.wait_for(asyncio.to_thread(run_parametrize_payload, payload), deadline)
+        d = await asyncio.wait_for(
+            asyncio.to_thread(
+                run_parametrize_payload, payload, cancelled=_sync_cancel_checker(cancel_key)
+            ),
+            deadline,
+        )
     except TimeoutError:
         log.error("parametrize_mesh.pipeline_hang", version=payload.get("version_id"))
         return {
@@ -670,7 +714,9 @@ def _relpath_exports(d: dict[str, Any], result: ExecResult, out_dir: Path) -> di
     return d
 
 
-def run_fem_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def run_fem_payload(
+    payload: dict[str, Any], cancelled: Callable[[], bool] | None = None
+) -> dict[str, Any]:
     """Synchronous part of fem_analyze — shared with InProcessExecutor."""
     if payload.get("scratch"):
         # GUI region preview — write renders into the transient _scratch dir
@@ -698,6 +744,7 @@ def run_fem_payload(payload: dict[str, Any]) -> dict[str, Any]:
         scan_anchors=bool(payload.get("scan_anchors", True)),
         scan_only=bool(payload.get("scan_only")),
         runtime=_runtime(payload),
+        **_cancel_kwargs(run_fem_pipeline, cancelled),
     )
     preview = d.get("preview") or {}
     if preview.get("regions_png"):
@@ -708,9 +755,12 @@ def run_fem_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 async def fem_analyze(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     """arq task (queue "cad"): FEM verification of a stored mesh artifact."""
-    if await _cancelled(ctx, f"cancel:{payload.get('job_id')}" if payload.get("job_id") else None):
+    cancel_key = f"cancel:{payload['job_id']}" if payload.get("job_id") else None
+    if await _cancelled(ctx, cancel_key):
         return {"ok": False, "error": "cancelled"}
-    d = await asyncio.to_thread(run_fem_payload, payload)
+    d = await asyncio.to_thread(
+        run_fem_payload, payload, cancelled=_sync_cancel_checker(cancel_key)
+    )
     fem = d.get("fem") or {}
     log.info(
         "fem_analyze",
@@ -810,7 +860,9 @@ async def optimize(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, An
     return d
 
 
-def run_topopt_resample_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def run_topopt_resample_payload(
+    payload: dict[str, Any], cancelled: Callable[[], bool] | None = None
+) -> dict[str, Any]:
     """Synchronous part of topopt_resample — re-extract a stored density
     field at a new threshold without re-running SIMP."""
     from cadx.cad.engine import run_topopt_resample
@@ -830,6 +882,7 @@ def run_topopt_resample_payload(payload: dict[str, Any]) -> dict[str, Any]:
         anchors=payload.get("anchors"),
         name=payload.get("name", "model"),
         runtime=_runtime(payload),
+        **_cancel_kwargs(run_topopt_resample, cancelled),
     )
     d = result.to_dict()
     d = _relpath_exports(d, result, out_dir)
@@ -845,12 +898,17 @@ def run_topopt_resample_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 async def topopt_resample(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     """arq task (queue "cad"): threshold resample of a stored density field."""
-    if await _cancelled(ctx, f"cancel:{payload.get('job_id')}" if payload.get("job_id") else None):
+    cancel_key = f"cancel:{payload['job_id']}" if payload.get("job_id") else None
+    if await _cancelled(ctx, cancel_key):
         return {"ok": False, "error": "cancelled"}
-    return await asyncio.to_thread(run_topopt_resample_payload, payload)
+    return await asyncio.to_thread(
+        run_topopt_resample_payload, payload, cancelled=_sync_cancel_checker(cancel_key)
+    )
 
 
-def run_refine_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def run_refine_payload(
+    payload: dict[str, Any], cancelled: Callable[[], bool] | None = None
+) -> dict[str, Any]:
     """Synchronous part of refine — post-TopOpt feature finishing (exact
     bores/threads/inserts, keep-region surface restore)."""
     from cadx.cad.engine import run_refine
@@ -880,6 +938,7 @@ def run_refine_payload(payload: dict[str, Any]) -> dict[str, Any]:
         max_elements=payload.get("max_elements"),
         name=payload.get("name", "model"),
         runtime=_runtime(payload),
+        **_cancel_kwargs(run_refine, cancelled),
     )
     d = result.to_dict()
     d = _relpath_exports(d, result, out_dir)
@@ -895,12 +954,17 @@ def run_refine_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 async def refine(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     """arq task (queue "cad"): post-TopOpt feature finishing."""
-    if await _cancelled(ctx, f"cancel:{payload.get('job_id')}" if payload.get("job_id") else None):
+    cancel_key = f"cancel:{payload['job_id']}" if payload.get("job_id") else None
+    if await _cancelled(ctx, cancel_key):
         return {"ok": False, "error": "cancelled"}
-    return await asyncio.to_thread(run_refine_payload, payload)
+    return await asyncio.to_thread(
+        run_refine_payload, payload, cancelled=_sync_cancel_checker(cancel_key)
+    )
 
 
-def run_organic_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def run_organic_payload(
+    payload: dict[str, Any], cancelled: Callable[[], bool] | None = None
+) -> dict[str, Any]:
     """Synchronous part of organic — procedural pseudo-topology restyle."""
     from cadx.cad.engine import run_organic_pipeline
 
@@ -918,6 +982,7 @@ def run_organic_payload(payload: dict[str, Any]) -> dict[str, Any]:
         anchors=payload.get("anchors"),
         name=payload.get("name", "model"),
         runtime=_runtime(payload),
+        **_cancel_kwargs(run_organic_pipeline, cancelled),
     )
     d = result.to_dict()
     d = _relpath_exports(d, result, out_dir)
@@ -937,12 +1002,17 @@ def run_organic_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 async def organic(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     """arq task (queue "cad"): procedural organic restyle — no FEM/SIMP."""
-    if await _cancelled(ctx, f"cancel:{payload.get('job_id')}" if payload.get("job_id") else None):
+    cancel_key = f"cancel:{payload['job_id']}" if payload.get("job_id") else None
+    if await _cancelled(ctx, cancel_key):
         return {"ok": False, "error": "cancelled"}
-    return await asyncio.to_thread(run_organic_payload, payload)
+    return await asyncio.to_thread(
+        run_organic_payload, payload, cancelled=_sync_cancel_checker(cancel_key)
+    )
 
 
-def run_edit_feature_payload(payload: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
+def run_edit_feature_payload(  # noqa: C901
+    payload: dict[str, Any], cancelled: Callable[[], bool] | None = None
+) -> dict[str, Any]:
     """Verified parametric feature edit (M9) — synchronous executor body.
 
     Loads the PARENT's canonical B-Rep (``source_brep`` relpath), runs
@@ -991,6 +1061,7 @@ def run_edit_feature_payload(payload: dict[str, Any]) -> dict[str, Any]:  # noqa
         feature_id,
         str(payload.get("parameter") or "diameter"),
         payload.get("value"),
+        **_cancel_kwargs(edit_feature, cancelled),
     )
     report = res.get("report") or {}
     if not res.get("ok"):
@@ -1142,6 +1213,9 @@ async def edit_feature(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str
     Discovery when ``feature_id`` is absent, dry-run gate check when
     ``dry_run`` is set — only a full run writes artifacts.
     """
-    if await _cancelled(ctx, f"cancel:{payload.get('job_id')}" if payload.get("job_id") else None):
+    cancel_key = f"cancel:{payload['job_id']}" if payload.get("job_id") else None
+    if await _cancelled(ctx, cancel_key):
         return {"ok": False, "error": "cancelled"}
-    return await asyncio.to_thread(run_edit_feature_payload, payload)
+    return await asyncio.to_thread(
+        run_edit_feature_payload, payload, cancelled=_sync_cancel_checker(cancel_key)
+    )

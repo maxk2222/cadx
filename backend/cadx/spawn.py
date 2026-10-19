@@ -53,7 +53,39 @@ def _u(s: str | uuid.UUID) -> uuid.UUID:
 async def _enqueue(func: str, payload: dict[str, Any]) -> None:
     from cadx.api.deps import enqueue
 
-    await enqueue(func, payload)
+    if await enqueue(func, payload) is None:
+        # deps.enqueue already logged the failure — without raising here the
+        # freshly-committed Version/Job rows would sit `queued` forever with
+        # no arq task behind them
+        raise SpawnError("enqueue failed — worker queue unavailable", status=503)
+
+
+async def _enqueue_or_fail(
+    db: AsyncSession,
+    enqueue: Callable[[str, dict[str, Any]], Awaitable[Any]],
+    func: str,
+    payload: dict[str, Any],
+    *,
+    version: Version | None = None,
+    job: Job | None = None,
+) -> None:
+    """Enqueue the worker task, marking the freshly-spawned rows failed when
+    the queue can't take the job — the boot reaper only reaps `running` jobs,
+    so a `queued` row with no arq task would dangle forever."""
+    try:
+        await enqueue(func, payload)
+    except Exception:
+        try:
+            if version is not None:
+                version.status = VersionStatus.failed
+                version.error = "enqueue failed — worker queue unavailable"
+            if job is not None:
+                job.status = JobStatus.failed
+            if version is not None or job is not None:
+                await db.commit()
+        except Exception:  # never mask the original enqueue error
+            log.warning("enqueue_failure_mark_failed_error", func=func)
+        raise
 
 
 async def next_version_number(db: AsyncSession, project_id: uuid.UUID) -> int:
@@ -94,7 +126,14 @@ async def spawn_version_job(
     job = Job(version_id=v.id, type=job_type, **(extra_job or {}))
     db.add(job)
     await db.commit()
-    await (enqueue_fn or _enqueue)(func, {"job_id": str(job.id), "version_id": str(v.id)})
+    await _enqueue_or_fail(
+        db,
+        enqueue_fn or _enqueue,
+        func,
+        {"job_id": str(job.id), "version_id": str(v.id)},
+        version=v,
+        job=job,
+    )
     return v, job
 
 
@@ -203,9 +242,13 @@ async def spawn_params(
     job = Job(version_id=v.id, type=JobType.params)
     db.add(job)
     await db.commit()
-    await (enqueue_fn or _enqueue)(
+    await _enqueue_or_fail(
+        db,
+        enqueue_fn or _enqueue,
         "run_params_job",
         {"job_id": str(job.id), "version_id": str(v.id), "params": params},
+        version=v,
+        job=job,
     )
     return v, job
 
@@ -250,7 +293,9 @@ async def spawn_optimize(
     job = Job(version_id=v.id, type=JobType.optimize)
     db.add(job)
     await db.commit()
-    await (enqueue_fn or _enqueue)(
+    await _enqueue_or_fail(
+        db,
+        enqueue_fn or _enqueue,
         "run_optimize_job",
         {
             "job_id": str(job.id),
@@ -259,6 +304,8 @@ async def spawn_optimize(
             "optimize": optimize,
             "material": material,
         },
+        version=v,
+        job=job,
     )
     return v, job
 
@@ -308,7 +355,9 @@ async def spawn_resample(
     job = Job(version_id=v.id, type=JobType.resample)
     db.add(job)
     await db.commit()
-    await (enqueue_fn or _enqueue)(
+    await _enqueue_or_fail(
+        db,
+        enqueue_fn or _enqueue,
         "run_topopt_resample_job",
         {
             "job_id": str(job.id),
@@ -321,6 +370,8 @@ async def spawn_resample(
                 "min_member_mm": min_member_mm or None,
             },
         },
+        version=v,
+        job=job,
     )
     return v, job
 
@@ -370,7 +421,9 @@ async def spawn_refine(
     job = Job(version_id=v.id, type=JobType.refine)
     db.add(job)
     await db.commit()
-    await (enqueue_fn or _enqueue)(
+    await _enqueue_or_fail(
+        db,
+        enqueue_fn or _enqueue,
         "run_refine_job",
         {
             "job_id": str(job.id),
@@ -384,6 +437,8 @@ async def spawn_refine(
             "helical_threads": helical_threads,
             "auto_plane_restore": auto_plane_restore,
         },
+        version=v,
+        job=job,
     )
     return v, job
 
@@ -411,9 +466,13 @@ async def spawn_organic(
     job = Job(version_id=v.id, type=JobType.organic)
     db.add(job)
     await db.commit()
-    await (enqueue_fn or _enqueue)(
+    await _enqueue_or_fail(
+        db,
+        enqueue_fn or _enqueue,
         "run_organic_job",
         {"job_id": str(job.id), "version_id": str(v.id), "organic": organic},
+        version=v,
+        job=job,
     )
     return v, job
 
@@ -512,7 +571,7 @@ async def spawn_meshgen(
     )
 
 
-async def spawn_restart(
+async def spawn_restart(  # noqa: C901
     db: AsyncSession,
     job: Job,
     *,
@@ -521,7 +580,23 @@ async def spawn_restart(
     """Re-run a finished/failed/cancelled job with the same inputs — shared
     by the REST jobs router and the MCP server.
 
-    generate/edit → new sibling version cloning the version's inputs.
+    Dispatch is on `job.type` first — several job types share a version kind
+    with siblings of other types (resample jobs produce kind=optimize
+    versions like optimize jobs do), and fem/reexport jobs have no child
+    version at all — then falls back to the version-kind branches:
+
+    resample      → new resample child replaying options.optimize_request.
+    refine        → new refine child replaying options.refine_request.
+    organic       → new organic child replaying options.organic_request.
+    mesh_edit     → new mesh_edit child replaying the recorded params.ops.
+    fem           → new fem Job on the SAME version (stored fem_request).
+    reexport      → new reexport Job on the SAME version.
+    edit+feature  → kind=edit version spawned by spawn_edit_feature replays
+                    options.edit_feature_request (genuine LLM edits take the
+                    kind branch below).
+    generate/edit → new sibling version cloning the version's inputs; a
+                    `resume` job stays `resume` so run_agent_job restores
+                    its stored spec.
     params        → new params child carrying the same effective overrides.
     optimize      → new optimize child of the same parent (stored request
                     when the original run saved one, spec fallback otherwise).
@@ -535,6 +610,130 @@ async def spawn_restart(
     if not v:
         raise SpawnError("version not found", status=404)
     enqueue = enqueue_fn or _enqueue
+    parent = await db.get(Version, v.parent_id) if v.parent_id else None
+    opts = v.options or {}
+
+    # --- job.type dispatch (before the kind branches — these types share
+    # version kinds with siblings of other types) ---
+
+    if job.type == JobType.resample:
+        if parent is None:
+            raise SpawnError("parent version missing — cannot restart")
+        # resample children store the request as optimize_request (only the
+        # optimize block + material — load cases/keep regions resolve from
+        # the parent's params/spec at run time, as in the original run)
+        req = opts.get("optimize_request") or {}
+        opt = req.get("optimize") or {}
+        return await spawn_resample(
+            db,
+            parent,
+            density_threshold=opt.get("density_threshold"),
+            min_member_mm=opt.get("min_member_mm"),
+            material=req.get("material"),
+            enqueue_fn=enqueue_fn,
+        )
+
+    if job.type == JobType.refine:
+        if parent is None:
+            raise SpawnError("parent version missing — cannot restart")
+        req = opts.get("refine_request")
+        if not isinstance(req, dict):
+            raise SpawnError("version has no stored refine request — cannot restart")
+        return await spawn_refine(
+            db,
+            parent,
+            features=req.get("features"),
+            load_cases=req.get("load_cases"),
+            keep_regions=req.get("keep_regions"),
+            material=req.get("material"),
+            voxel_mm=req.get("voxel_mm"),
+            restore_planes=req.get("restore_planes"),
+            helical_threads=req.get("helical_threads"),
+            auto_plane_restore=req.get("auto_plane_restore"),
+            enqueue_fn=enqueue_fn,
+        )
+
+    if job.type == JobType.organic:
+        if parent is None:
+            raise SpawnError("parent version missing — cannot restart")
+        organic = opts.get("organic_request")
+        if not isinstance(organic, dict):
+            raise SpawnError("version has no stored organic request — cannot restart")
+        return await spawn_organic(db, parent, organic, enqueue_fn=enqueue_fn)
+
+    if job.type == JobType.mesh_edit:
+        if parent is None:
+            raise SpawnError("parent version missing — cannot restart")
+        # run_mesh_edit_job persists the applied op stack as version.params
+        # (a MeshPostParams dump); a job that died before the run has no
+        # recorded ops to replay
+        recorded = v.params or {}
+        ops = recorded.get("ops") or []
+        if not ops:
+            raise SpawnError("version has no recorded mesh ops — cannot restart")
+        post = {k: val for k, val in recorded.items() if k != "ops"}
+        return await spawn_mesh_edit(
+            db, parent, ops=ops, post=post, note=v.prompt or "", enqueue_fn=enqueue_fn
+        )
+
+    if job.type == JobType.fem:
+        # same-version job — the request lives on the job's resume_state
+        # (spawn_fem); fem jobs spawned before that was stored have nothing
+        # recoverable to replay
+        req = (job.resume_state or {}).get("fem_request") or {}
+        if not req.get("load_cases"):
+            raise SpawnError("fem job has no stored load cases — cannot restart")
+        return await spawn_fem(
+            db,
+            v,
+            load_cases=req.get("load_cases"),
+            keep_regions=req.get("keep_regions"),
+            material=req.get("material"),
+            enqueue_fn=enqueue_fn,
+        )
+
+    if job.type == JobType.reexport:
+        # same-version job, like the reexport endpoint — no child version
+        new_job = Job(version_id=v.id, type=JobType.reexport)
+        db.add(new_job)
+        await db.commit()
+        await _enqueue_or_fail(
+            db,
+            enqueue,
+            "run_reexport_job",
+            {
+                "job_id": str(new_job.id),
+                "version_id": str(v.id),
+                "iteration": v.iterations or 1,
+            },
+            job=new_job,
+        )
+        return new_job
+
+    if (
+        job.type == JobType.edit
+        and v.kind == VersionKind.edit
+        and isinstance(opts.get("edit_feature_request"), dict)
+        and str(v.prompt or "").startswith("feature edit:")
+    ):
+        # a deterministic feature edit, not an LLM edit (the prompt check
+        # keeps LLM-edit children — which inherit the parent's options — on
+        # the kind branch below)
+        if parent is None:
+            raise SpawnError("parent version missing — cannot restart")
+        req = opts["edit_feature_request"]
+        if req.get("feature_id") is None or req.get("value") is None:
+            raise SpawnError("stored feature-edit request is incomplete — cannot restart")
+        return await spawn_edit_feature(
+            db,
+            parent,
+            feature_id=req["feature_id"],
+            parameter=req.get("parameter") or "diameter",
+            value=req["value"],
+            enqueue_fn=enqueue_fn,
+        )
+
+    # --- version-kind dispatch (LLM-generated kinds + the rest) ---
 
     if v.kind in (VersionKind.generate, VersionKind.edit):
         new_v = Version(
@@ -552,16 +751,31 @@ async def spawn_restart(
         await db.flush()
         new_job = Job(
             version_id=new_v.id,
-            type=JobType.edit if v.kind == VersionKind.edit else JobType.generate,
+            # a resume job must stay `resume` — run_agent_job only restores
+            # the stored spec for JobType.resume; re-typing it to
+            # generate/edit silently dropped the resume semantics
+            type=(
+                JobType.resume
+                if job.type == JobType.resume
+                else JobType.edit
+                if v.kind == VersionKind.edit
+                else JobType.generate
+            ),
             resume_state=job.resume_state,
         )
         db.add(new_job)
         await db.commit()
-        await enqueue("run_agent_job", {"job_id": str(new_job.id), "version_id": str(new_v.id)})
+        await _enqueue_or_fail(
+            db,
+            enqueue,
+            "run_agent_job",
+            {"job_id": str(new_job.id), "version_id": str(new_v.id)},
+            version=new_v,
+            job=new_job,
+        )
         return new_v, new_job
 
     if v.kind == VersionKind.params:
-        parent = await db.get(Version, v.parent_id) if v.parent_id else None
         if parent is None:
             raise SpawnError("parent version missing — cannot restart")
         new_v = Version(
@@ -580,17 +794,20 @@ async def spawn_restart(
         new_job = Job(version_id=new_v.id, type=JobType.params)
         db.add(new_job)
         await db.commit()
-        await enqueue(
+        await _enqueue_or_fail(
+            db,
+            enqueue,
             "run_params_job",
             {"job_id": str(new_job.id), "version_id": str(new_v.id), "params": v.params or {}},
+            version=new_v,
+            job=new_job,
         )
         return new_v, new_job
 
     if v.kind == VersionKind.optimize:
-        parent = await db.get(Version, v.parent_id) if v.parent_id else None
         if parent is None:
             raise SpawnError("parent version missing — cannot restart")
-        req = (v.options or {}).get("optimize_request") or {}
+        req = opts.get("optimize_request") or {}
         new_v = Version(
             project_id=v.project_id,
             parent_id=parent.id,
@@ -606,7 +823,9 @@ async def spawn_restart(
         new_job = Job(version_id=new_v.id, type=JobType.optimize)
         db.add(new_job)
         await db.commit()
-        await enqueue(
+        await _enqueue_or_fail(
+            db,
+            enqueue,
             "run_optimize_job",
             {
                 "job_id": str(new_job.id),
@@ -615,6 +834,8 @@ async def spawn_restart(
                 "optimize": req.get("optimize") or {},
                 "material": req.get("material") or "",
             },
+            version=new_v,
+            job=new_job,
         )
         return new_v, new_job
 
@@ -624,7 +845,6 @@ async def spawn_restart(
         project = await db.get(Project, v.project_id)
         if project is None:
             raise SpawnError("project not found", status=404)
-        parent = await db.get(Version, v.parent_id) if v.parent_id else None
         return await spawn_code(
             db,
             project,
@@ -639,7 +859,6 @@ async def spawn_restart(
         project = await db.get(Project, v.project_id)
         if project is None:
             raise SpawnError("project not found", status=404)
-        opts = v.options or {}
         return await spawn_meshgen(
             db,
             project,
@@ -701,9 +920,13 @@ async def spawn_mesh_edit(
     job = Job(version_id=v.id, type=JobType.mesh_edit)
     db.add(job)
     await db.commit()
-    await (enqueue_fn or _enqueue)(
+    await _enqueue_or_fail(
+        db,
+        enqueue_fn or _enqueue,
         "run_mesh_edit_job",
         {"job_id": str(job.id), "version_id": str(v.id), "ops": ops, "post": post or {}},
+        version=v,
+        job=job,
     )
     return v, job
 
@@ -791,7 +1014,9 @@ async def spawn_edit_feature(
     job = Job(version_id=v.id, type=JobType.edit)
     db.add(job)
     await db.commit()
-    await (enqueue_fn or _enqueue)(
+    await _enqueue_or_fail(
+        db,
+        enqueue_fn or _enqueue,
         "run_edit_feature_job",
         {
             "job_id": str(job.id),
@@ -800,6 +1025,8 @@ async def spawn_edit_feature(
             "parameter": parameter,
             "value": value,
         },
+        version=v,
+        job=job,
     )
     return v, job
 
@@ -819,10 +1046,26 @@ async def spawn_fem(
         raise SpawnError("version has no mesh artifact to analyse")
     if not load_cases:
         raise SpawnError("at least one load case is required", status=422)
-    job = Job(version_id=version.id, type=JobType.fem)
+    job = Job(
+        version_id=version.id,
+        type=JobType.fem,
+        # the Job hangs off the version itself (no child) — the request has to
+        # live on the job row so spawn_restart can replay it
+        resume_state={
+            "fem_request": {
+                "load_cases": load_cases,
+                "keep_regions": keep_regions,
+                "material": material,
+            }
+        },
+    )
     db.add(job)
     await db.commit()
-    await (enqueue_fn or _enqueue)(
+    # only the new Job row is ours to fail — the version is the user's
+    # existing (succeeded) version, untouched by this spawn
+    await _enqueue_or_fail(
+        db,
+        enqueue_fn or _enqueue,
         "run_fem_job",
         {
             "job_id": str(job.id),
@@ -831,6 +1074,7 @@ async def spawn_fem(
             "keep_regions": keep_regions,
             "material": material,
         },
+        job=job,
     )
     return job
 
@@ -854,9 +1098,20 @@ async def enqueue_resume(
     new_job = Job(version_id=v.id, type=JobType.resume, resume_state=job.resume_state)
     db.add(new_job)
     await db.commit()
-    await (enqueue_fn or _enqueue)(
-        "run_agent_job", {"job_id": str(new_job.id), "version_id": str(v.id)}
-    )
+    try:
+        await (enqueue_fn or _enqueue)(
+            "run_agent_job", {"job_id": str(new_job.id), "version_id": str(v.id)}
+        )
+    except Exception:
+        # fail the new job and put the version back — the original job is
+        # still waiting_for_input, so 'failed' would misrepresent it
+        try:
+            new_job.status = JobStatus.failed
+            v.status = VersionStatus.waiting_for_input
+            await db.commit()
+        except Exception:  # never mask the original enqueue error
+            log.warning("enqueue_failure_mark_failed_error", func="run_agent_job")
+        raise
     return v, new_job
 
 

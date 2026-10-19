@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import threading
 import uuid
 from pathlib import Path
 from typing import Any
@@ -34,6 +36,7 @@ from cadx.api.schemas import (
 from cadx.db.models import (
     AgentTrace,
     Artifact,
+    ArtifactKind,
     Job,
     JobStatus,
     JobType,
@@ -373,10 +376,15 @@ async def reexport(version_id: uuid.UUID, db: AsyncSession = Depends(get_session
     job = Job(version_id=v.id, type=JobType.reexport)
     db.add(job)
     await db.commit()
-    await enqueue(
+    jid = await enqueue(
         "run_reexport_job",
         {"job_id": str(job.id), "version_id": str(v.id), "iteration": v.iterations or 1},
     )
+    if jid is None:
+        # no worker behind the row — mark it instead of leaving it queued
+        job.status = JobStatus.failed
+        await db.commit()
+        raise HTTPException(503, "enqueue failed — worker queue unavailable")
     return EnqueueResponse(version_id=v.id, job_id=job.id)
 
 
@@ -412,30 +420,58 @@ async def get_version(version_id: uuid.UUID, db: AsyncSession = Depends(get_sess
     return await _detail(v, db)
 
 
-def _compare_geometry_path(v: Version) -> Path | None:
+# OCC isn't thread-safe — concurrent compares run serialized under this
+# lock; the acquire timeout is what actually bounds pile-up (a running OCC
+# thread can't be killed).
+_OCC_LOCK = threading.Lock()
+_COMPARE_TIMEOUT_S = 300.0
+
+
+class _CompareBusy(RuntimeError):
+    """The OCC compare slot did not free up within _COMPARE_TIMEOUT_S."""
+
+
+async def _compare_geometry_path(v: Version, db: AsyncSession) -> Path | None:
     """Best loadable geometry artifact for shape diffing, or None.
 
-    Prefers the analytic STEP export; falls back to the best triangle mesh
-    (converted to a sewn solid inside the worker thread).
+    Prefers the version-level ``exports/model.step``; else the newest
+    ``kind="step"`` Artifact row (optimize/resample/mesh versions keep STEP
+    under ``iterations/<n>/exports/``); else the best triangle mesh (sewn
+    into a solid inside the worker thread).
     """
     from cadx import storage
 
     step = storage.export_dir(v.project_id, v.id) / "model.step"
     if step.exists():
         return step
+    rows = await db.execute(
+        select(Artifact)
+        .where(Artifact.version_id == v.id, Artifact.kind == ArtifactKind.step)
+        .order_by(col(Artifact.created_at).desc())
+    )
+    for art in rows.scalars().all():
+        with contextlib.suppress(ValueError):
+            p = storage.resolve(art.path)
+            if p.suffix.lower() in (".step", ".stp") and p.exists():
+                return p
     rel = storage.best_mesh_relpath(v.project_id, v.id, v.iterations)
     return storage.resolve(rel) if rel else None
 
 
 def _load_compare_shape(path: Path) -> Any:
-    """STEP via build123d; anything else via trimesh -> sewn solid."""
+    """STEP via build123d; anything else via trimesh -> sewn solid.
+
+    The mesh path is bounded by MAX_FACES_FOR_BOOLEAN — an unbounded
+    ``mesh_to_solid`` can sew a huge STL effectively forever.
+    """
     if path.suffix.lower() in (".step", ".stp"):
         from build123d import import_step
 
         return import_step(str(path))
+    from cadx.cad.compare import MAX_FACES_FOR_BOOLEAN
     from cadx.cad.mesh_ops import load_mesh, mesh_to_solid
 
-    return mesh_to_solid(load_mesh(path))
+    return mesh_to_solid(load_mesh(path), max_faces=MAX_FACES_FOR_BOOLEAN)
 
 
 def _params_diff(a: dict[str, Any] | None, b: dict[str, Any] | None) -> list[ParamsDiffEntry]:
@@ -464,7 +500,7 @@ async def compare_versions(
     if not b:
         raise HTTPException(404, "version not found")
 
-    path_a, path_b = _compare_geometry_path(a), _compare_geometry_path(b)
+    path_a, path_b = await _compare_geometry_path(a, db), await _compare_geometry_path(b, db)
     if path_a is None or path_b is None:
         missing = a.id if path_a is None else b.id
         raise HTTPException(409, f"version {missing} has no loadable geometry artifact")
@@ -478,11 +514,28 @@ async def compare_versions(
     def _run() -> dict[str, Any]:
         from cadx.cad.compare import diff_summary, shape_compare
 
-        sa, sb = _load_compare_shape(path_a), _load_compare_shape(path_b)
-        return {"shape": shape_compare(sa, sb), "diff_summary": diff_summary(sa, sb)}
+        if not _OCC_LOCK.acquire(timeout=_COMPARE_TIMEOUT_S):
+            raise _CompareBusy("compare busy — another comparison is still running")
+        try:
+            sa, sb = _load_compare_shape(path_a), _load_compare_shape(path_b)
+            shape = shape_compare(sa, sb)
+            return {"shape": shape, "diff_summary": diff_summary(sa, sb, cmp=shape)}
+        finally:
+            _OCC_LOCK.release()
 
     try:
-        out = await asyncio.to_thread(_run)
+        # bounded wait — a timed-out coroutine can't kill its worker thread,
+        # which finishes (and releases the lock) in the background
+        out = await asyncio.wait_for(asyncio.to_thread(_run), timeout=_COMPARE_TIMEOUT_S)
+    except TimeoutError:
+        log.warning("versions.compare_timeout", a=str(version_id), b=str(other_id))
+        return CompareResult(
+            **base,
+            ok=False,
+            diff_summary="",
+            shape=None,
+            error=f"compare timed out after {_COMPARE_TIMEOUT_S:g}s",
+        )
     except Exception as e:
         log.warning("versions.compare_failed", a=str(version_id), b=str(other_id), error=str(e))
         return CompareResult(

@@ -153,7 +153,7 @@ async def scratch_file(version_id: uuid.UUID, path: str, db: AsyncSession = Depe
         raise HTTPException(404, "version not found")
     base = storage.scratch_dir(v.project_id, v.id).resolve()
     p = (base / path).resolve()
-    if not str(p).startswith(str(base)) or not p.is_file():
+    if not p.is_relative_to(base) or not p.is_file():
         raise HTTPException(404, "not found")
     if p.suffix.lower() not in _SCRATCH_SUFFIXES:
         raise HTTPException(403, "file type not allowed")

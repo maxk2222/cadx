@@ -161,10 +161,13 @@ async def finish(job_id: uuid.UUID, db: AsyncSession = Depends(get_session)):
 async def restart(job_id: uuid.UUID, db: AsyncSession = Depends(get_session)):
     """Re-run a finished/failed/cancelled job with the same inputs.
 
-    The per-kind dispatch lives in `spawn.spawn_restart` (shared with the
-    MCP server): generate/edit clone inputs into a sibling version, params
-    spawns a new params child, optimize re-uses the stored request, and
-    code/meshgen replay their stored inputs — unknown kinds 409.
+    The dispatch lives in `spawn.spawn_restart` (shared with the MCP server)
+    and keys off `job.type` first: resample/refine/organic/mesh_edit replay
+    their stored requests into a fresh child of the same parent, fem and
+    reexport spawn a new Job on the SAME version (returned without a new
+    Version row), edit-feature jobs replay `run_edit_feature_job`, and
+    generate/edit/params/optimize/code/meshgen follow their version-kind
+    branches — unrecoverable inputs 409.
     """
     j = await db.get(Job, job_id)
     if not j:

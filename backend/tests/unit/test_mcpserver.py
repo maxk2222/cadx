@@ -155,9 +155,7 @@ class _StubSession:
             return {"ok": False, "error": str(e)}
         job = out[1] if isinstance(out, tuple) else out
         version_id = out[0].id if isinstance(out, tuple) else getattr(job, "version_id", None)
-        self.spawned.append(
-            {"tool": name, "job_id": str(job.id), "version_id": str(version_id)}
-        )
+        self.spawned.append({"tool": name, "job_id": str(job.id), "version_id": str(version_id)})
         return {
             "ok": True,
             "status": "queued",
@@ -216,9 +214,11 @@ async def _mk_version(
         return v
 
 
-async def _mk_job(v: Version, *, status: JobStatus = JobStatus.queued) -> Job:
+async def _mk_job(
+    v: Version, *, status: JobStatus = JobStatus.queued, jtype: JobType = JobType.params
+) -> Job:
     async with session_scope() as db:
-        j = Job(version_id=v.id, type=JobType.params, status=status)
+        j = Job(version_id=v.id, type=jtype, status=status)
         db.add(j)
         await db.commit()
         await db.refresh(j)
@@ -428,9 +428,7 @@ async def test_submit_code_spawns_version_and_job():
 async def test_submit_code_rejects_bad_code():
     """spawn_code contract-checks before persisting — invalid code fails."""
     pid = await _mk_project()
-    res = await _StubSession(pid=pid).execute(
-        "submit_code", {"code": "import os\nresult = 1\n"}
-    )
+    res = await _StubSession(pid=pid).execute("submit_code", {"code": "import os\nresult = 1\n"})
     assert res["ok"] is False
 
 
@@ -550,9 +548,7 @@ async def test_edit_feature_spawns_child():
 async def test_parametrize_mesh_no_artifact():
     pid = await _mk_project()
     v = await _mk_version(pid)
-    res = await _StubSession(pid=pid).execute(
-        "parametrize_mesh", {"version_id": str(v.id)}
-    )
+    res = await _StubSession(pid=pid).execute("parametrize_mesh", {"version_id": str(v.id)})
     assert res["ok"] is False
     assert "no mesh" in res["error"]
 
@@ -659,14 +655,20 @@ async def test_restart_job_terminal_only():
 
 
 async def test_restart_job_refuses_llm_versions():
-    """generate/edit versions re-run via run_agent_job — the LLM. The MCP
-    surface must refuse that path (deterministic kinds only)."""
+    """generate/edit/resume jobs re-run via run_agent_job — the LLM. The MCP
+    surface must refuse those job types; deterministic jobs on LLM-kind
+    versions (fem, params, …) replay without an LLM and are allowed."""
     pid = await _mk_project()
     v = await _mk_version(pid, kind=VersionKind.generate)
-    done = await _mk_job(v, status=JobStatus.failed)
+    done = await _mk_job(v, status=JobStatus.failed, jtype=JobType.generate)
     res = await _StubSession(pid=pid).execute("restart_job", {"job_id": str(done.id)})
     assert res["ok"] is False
     assert "deterministic" in res["error"] or "LLM" in res["error"]
+
+    # a deterministic job on the same LLM-kind version is allowed through
+    det = await _mk_job(v, status=JobStatus.failed, jtype=JobType.params)
+    res2 = await _StubSession(pid=pid).execute("restart_job", {"job_id": str(det.id)})
+    assert res2["ok"], res2
 
 
 async def test_task_status_survives_missing_redis():
@@ -942,7 +944,9 @@ async def test_call_tool_text_and_image_content():
     # seed an image asset directly (upload itself is covered above)
     png = _png_bytes()
     async with session_scope() as db:
-        a = Asset(project_id=pid, kind=AssetKind.image, filename="ref.png", path="", mime="image/png")
+        a = Asset(
+            project_id=pid, kind=AssetKind.image, filename="ref.png", path="", mime="image/png"
+        )
         path = storage.asset_path(pid, a.id, a.filename)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(png)
@@ -966,9 +970,7 @@ async def test_call_tool_text_and_image_content():
         assert not res.is_error
         res = await client.call_tool("list_versions", {})
         assert not res.is_error
-        payload = json.loads(
-            next(c for c in res.content if isinstance(c, mt.TextContent)).text
-        )
+        payload = json.loads(next(c for c in res.content if isinstance(c, mt.TextContent)).text)
         assert payload["ok"]
 
         # view_image emits image content

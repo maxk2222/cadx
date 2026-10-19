@@ -239,21 +239,22 @@ async def chat_events(chat_id: uuid.UUID, db: AsyncSession = Depends(get_session
     chat = await _chat_or_404(db, chat_id)
 
     async def gen():
-        rows = await db.execute(
-            select(ChatMessage)
-            .where(ChatMessage.chat_id == chat_id)
-            .order_by(col(ChatMessage.created_at))
-        )
-        yield _fmt(
-            "snapshot",
-            {
-                "chat": _chat_out(chat).model_dump(),
-                "messages": [_msg_out(m).model_dump() for m in rows.scalars().all()],
-            },
-        )
+        # subscribe BEFORE reading the snapshot — pub/sub has no backlog, so
+        # a message committed+published between the read and subscribe would
+        # be lost. The post-subscribe read catches anything committed in the
+        # gap; `seen` dedupes a message delivered both ways (published after
+        # subscribe but committed before the snapshot read).
         client, ps = events.subscribe_chat(str(chat_id))
         try:
             await ps.subscribe(events.chat_channel(str(chat_id)))
+            rows = await db.execute(
+                select(ChatMessage)
+                .where(ChatMessage.chat_id == chat_id)
+                .order_by(col(ChatMessage.created_at))
+            )
+            messages = [_msg_out(m).model_dump() for m in rows.scalars().all()]
+            seen = {str(m["id"]) for m in messages}
+            yield _fmt("snapshot", {"chat": _chat_out(chat).model_dump(), "messages": messages})
             while True:
                 m = await ps.get_message(ignore_subscribe_messages=True, timeout=15.0)
                 if m and m.get("data"):
@@ -261,6 +262,13 @@ async def chat_events(chat_id: uuid.UUID, db: AsyncSession = Depends(get_session
                         data = json.loads(m["data"])
                     except Exception:
                         continue
+                    if data.get("type") == "message":
+                        mobj = data.get("message")
+                        mid = mobj.get("id") if isinstance(mobj, dict) else None
+                        if mid is not None:
+                            if str(mid) in seen:
+                                continue
+                            seen.add(str(mid))
                     yield _fmt(data.get("type", "event"), data)
                 else:
                     yield ": keepalive\n\n"

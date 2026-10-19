@@ -473,14 +473,18 @@ def _region_hint(bbox: dict[str, list[float]] | None, solids: int) -> str:
     return f"at {spans}{regions}"
 
 
-def diff_summary(a: Any, b: Any) -> str:
+def diff_summary(a: Any, b: Any, *, cmp: dict[str, Any] | None = None) -> str:
     """One-line human summary of what changed from ``a`` to ``b``.
 
     e.g. ``"1000.0 → 1500.0 mm³ (Δ +500.0); +500.0 mm³ added at z∈[8, 10]"``.
     Never raises — a failure yields ``"compare failed: <err>"``.
+
+    ``cmp`` optionally carries a precomputed :func:`shape_compare` result —
+    callers that already ran the compare shouldn't pay for the OCC work
+    twice.
     """
     try:
-        cmp = shape_compare(a, b)
+        cmp = cmp if cmp is not None else shape_compare(a, b)
         if "error" in cmp:
             return f"compare failed: {cmp['error']}"
         parts = [f"{cmp['volume_a']:g} → {cmp['volume_b']:g} mm³ (Δ {cmp['volume_delta']:+g})"]

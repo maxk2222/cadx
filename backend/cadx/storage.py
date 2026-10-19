@@ -31,7 +31,9 @@ def data_root() -> Path:
 def resolve(relpath: str | Path) -> Path:
     """Resolve a stored relative path safely inside DATA_DIR."""
     p = (data_root() / relpath).resolve()
-    if not str(p).startswith(str(data_root())):
+    # segment-wise check — a raw str.startswith would let a sibling like
+    # `data_evil/` pass because it shares the `data` string prefix
+    if not p.is_relative_to(data_root().resolve()):
         raise ValueError(f"path escapes data dir: {relpath}")
     return p
 
