@@ -194,6 +194,8 @@ export default function SettingsPage() {
   const [clearTripoKey, setClearTripoKey] = useState(false);
   const [imageKey, setImageKey] = useState("");
   const [clearImageKey, setClearImageKey] = useState(false);
+  const [hfKey, setHfKey] = useState("");
+  const [clearHfKey, setClearHfKey] = useState(false);
   // per-field "custom…" mode for the external-LLM model comboboxes
   const [customModel, setCustomModel] = useState<Record<string, boolean>>({});
   const [saved, setSaved] = useState(false);
@@ -255,7 +257,8 @@ export default function SettingsPage() {
         k === "data_dir" ||
         k === "llm_api_key_set" ||
         k === "tripo_api_key_set" ||
-        k === "image_api_key_set"
+        k === "image_api_key_set" ||
+        k === "hf_token_set"
       )
         continue;
       out[k] = v == null ? "" : String(v); // nullable fields show empty = default
@@ -277,14 +280,27 @@ export default function SettingsPage() {
       tripoKey.trim() ||
       clearTripoKey ||
       imageKey.trim() ||
-      clearImageKey
+      clearImageKey ||
+      hfKey.trim() ||
+      clearHfKey
     )
       return true;
     for (const k of new Set([...Object.keys(form), ...Object.keys(initial)])) {
       if ((form[k] ?? "") !== (initial[k] ?? "")) return true;
     }
     return false;
-  }, [form, initial, apiKey, clearKey, tripoKey, clearTripoKey, imageKey, clearImageKey]);
+  }, [
+    form,
+    initial,
+    apiKey,
+    clearKey,
+    tripoKey,
+    clearTripoKey,
+    imageKey,
+    clearImageKey,
+    hfKey,
+    clearHfKey,
+  ]);
 
   const revert = () => {
     setForm(initial);
@@ -294,6 +310,8 @@ export default function SettingsPage() {
     setClearTripoKey(false);
     setImageKey("");
     setClearImageKey(false);
+    setHfKey("");
+    setClearHfKey(false);
     setSaveError("");
   };
 
@@ -336,6 +354,8 @@ export default function SettingsPage() {
       else if (tripoKey.trim()) body.tripo_api_key = tripoKey.trim();
       if (clearImageKey) body.clear_image_api_key = true;
       else if (imageKey.trim()) body.image_api_key = imageKey.trim();
+      if (clearHfKey) body.clear_hf_token = true;
+      else if (hfKey.trim()) body.hf_token = hfKey.trim();
       return api.updateSettings(body);
     },
     onSuccess: () => {
@@ -351,6 +371,8 @@ export default function SettingsPage() {
       setClearTripoKey(false);
       setImageKey("");
       setClearImageKey(false);
+      setHfKey("");
+      setClearHfKey(false);
       setSaveError("");
       setInitial(form);
       setSaved(true);
@@ -456,7 +478,7 @@ export default function SettingsPage() {
             hint ??
             (isSet
               ? "a key is stored — enter a new one to replace it (never shown again)"
-              : "stored in the app database, write-only")
+              : "stored encrypted in the app database, write-only")
           }
         >
           <input
@@ -836,7 +858,23 @@ export default function SettingsPage() {
       </Card>
       )}
 
-      {tab === "models" && <ModelsTab models={models} />}
+      {tab === "models" && (
+        <>
+          <Card className="mb-4 p-4">
+            <SectionTitle>Hugging Face</SectionTitle>
+            {apiKeyField(
+              "Access token",
+              s.hf_token_set,
+              hfKey,
+              setHfKey,
+              clearHfKey,
+              () => setClearHfKey((c) => !c),
+              "hf_… token — forwarded to the sidecar for gated repos and higher rate limits; empty = anonymous; stored encrypted",
+            )}
+          </Card>
+          <ModelsTab models={models} />
+        </>
+      )}
 
       {tab === "agent" && (
       <Card className="p-4">

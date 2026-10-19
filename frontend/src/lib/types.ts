@@ -797,6 +797,7 @@ export interface Settings {
   image_openai_model: string;
   image_api_base: string;
   image_api_key_set: boolean;
+  hf_token_set: boolean;
   image_default_strength: number;
   image_steps: number | null;
   image_guidance: number | null;
@@ -820,7 +821,11 @@ export interface SettingsUpdate
   extends Partial<
     Omit<
       Settings,
-      "llm_api_key_set" | "tripo_api_key_set" | "image_api_key_set" | "data_dir"
+      | "llm_api_key_set"
+      | "tripo_api_key_set"
+      | "image_api_key_set"
+      | "hf_token_set"
+      | "data_dir"
     >
   > {
   llm_api_key?: string;
@@ -829,6 +834,8 @@ export interface SettingsUpdate
   clear_tripo_api_key?: boolean;
   image_api_key?: string;
   clear_image_api_key?: boolean;
+  hf_token?: string;
+  clear_hf_token?: boolean;
 }
 
 export interface ProviderTestResult {

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -63,6 +64,17 @@ def create_app(cfg: ServerConfig | None = None) -> FastAPI:
         registry.unload_all()
 
     app = FastAPI(title="mesh-server", version="0.1.0", lifespan=lifespan)
+
+    @app.middleware("http")
+    async def hf_token_forward(request: Request, call_next):
+        """The CADX backend forwards the configured Hugging Face token as a
+        per-request header. Apply it process-wide so every huggingface_hub
+        call — managed weight downloads, adapter loads, gen_worker children
+        (they inherit os.environ at spawn) — can reach gated repos."""
+        token = request.headers.get("x-hf-token", "").strip()
+        if token:
+            os.environ["HF_TOKEN"] = token
+        return await call_next(request)
 
     @app.get("/v1/health", response_model=Health)
     async def health() -> Health:

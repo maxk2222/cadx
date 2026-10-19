@@ -24,6 +24,7 @@ _SECRET_KEYS = (
     "llm_api_key",
     "tripo_api_key",
     "image_api_key",
+    "hf_token",
 )
 
 

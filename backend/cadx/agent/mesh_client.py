@@ -177,16 +177,24 @@ class HttpMeshClient(MeshPort):
         timeout_s: float = 900,
         stall_timeout_s: float = 300,
         min_free_mb: float = 0,
+        hf_token: str = "",
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_s = timeout_s
         self.stall_timeout_s = stall_timeout_s
         self.min_free_mb = min_free_mb
+        self.hf_token = hf_token
+
+    def _headers(self) -> dict[str, str]:
+        """Per-request credentials for the sidecar — its middleware applies
+        X-HF-Token as HF_TOKEN so managed downloads and model loads can
+        reach gated Hugging Face repos."""
+        return {"X-HF-Token": self.hf_token} if self.hf_token else {}
 
     async def health(self) -> MeshHealth:
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
-                r = await client.get(f"{self.base_url}/v1/health")
+                r = await client.get(f"{self.base_url}/v1/health", headers=self._headers())
                 r.raise_for_status()
                 return MeshHealth(**r.json())
         except Exception as e:
@@ -195,7 +203,7 @@ class HttpMeshClient(MeshPort):
     async def models(self) -> list[MeshModelInfo]:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                r = await client.get(f"{self.base_url}/v1/models")
+                r = await client.get(f"{self.base_url}/v1/models", headers=self._headers())
                 r.raise_for_status()
                 return [MeshModelInfo(**m) for m in r.json().get("models", [])]
         except Exception:
@@ -270,7 +278,9 @@ class HttpMeshClient(MeshPort):
     async def _submit(self, files: list[tuple[str, tuple[str, bytes, str]]]) -> str:
         submit_timeout = min(60.0, self.timeout_s)
         async with httpx.AsyncClient(timeout=submit_timeout) as client:
-            r = await client.post(f"{self.base_url}/v1/jobs", files=files)
+            r = await client.post(
+                f"{self.base_url}/v1/jobs", files=files, headers=self._headers()
+            )
             if r.status_code != 200:
                 raise MeshGenError(f"mesh-server submit failed: {r.status_code} {r.text[:300]}")
             return str(r.json()["job_id"])
@@ -298,7 +308,9 @@ class HttpMeshClient(MeshPort):
             if should_abort is not None and await should_abort():
                 raise MeshGenError("job cancelled by user")
             async with httpx.AsyncClient(timeout=15.0) as client:
-                st = await client.get(f"{self.base_url}/v1/jobs/{server_job}")
+                st = await client.get(
+                    f"{self.base_url}/v1/jobs/{server_job}", headers=self._headers()
+                )
             if st.status_code != 200:
                 raise MeshGenError(f"mesh-server job poll failed: {st.status_code}")
             status = st.json()
@@ -325,7 +337,11 @@ class HttpMeshClient(MeshPort):
 
     async def _download(self, server_job: str, out_path: Path, i: int = 0) -> None:
         async with httpx.AsyncClient(timeout=300.0) as client:
-            dl = await client.get(f"{self.base_url}/v1/jobs/{server_job}/mesh", params={"i": i})
+            dl = await client.get(
+                f"{self.base_url}/v1/jobs/{server_job}/mesh",
+                params={"i": i},
+                headers=self._headers(),
+            )
         if dl.status_code != 200:
             raise MeshGenError(f"mesh download failed: {dl.status_code}")
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -334,7 +350,9 @@ class HttpMeshClient(MeshPort):
     async def _delete_job(self, server_job: str) -> None:
         def _del() -> None:
             with httpx.Client(timeout=10.0) as client:
-                client.delete(f"{self.base_url}/v1/jobs/{server_job}")
+                client.delete(
+                    f"{self.base_url}/v1/jobs/{server_job}", headers=self._headers()
+                )
 
         with contextlib.suppress(Exception):
             await asyncio.to_thread(_del)
@@ -542,4 +560,5 @@ def make_mesh_client(
         timeout_s=timeout_s or settings.mesh_timeout_s,
         stall_timeout_s=settings.mesh_stall_timeout_s,
         min_free_mb=float(getattr(settings, "mesh_min_free_mb", 0) or 0),
+        hf_token=settings.hf_token.get_secret_value(),
     )

@@ -235,11 +235,13 @@ class LLMClient:
         json_mode: str | None = None,
         timeout_s: float | None = None,
         runtime_settings: RuntimeSettings | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> None:
         settings = runtime_settings or RuntimeSettings()
         self.runtime_settings = settings
         self.base_url = (base_url or settings.llm_base_url).rstrip("/")
         self.api_key = api_key if api_key is not None else settings.llm_api_key.get_secret_value()
+        self.extra_headers = extra_headers or {}
         self.models: dict[Role, str] = {
             "vision": model_vision or settings.llm_model_vision,
             "code": model_code or settings.llm_model_code,
@@ -287,7 +289,7 @@ class LLMClient:
         return {"type": "json_object"}
 
     async def _post(self, payload: dict[str, Any], role: Role) -> dict[str, Any]:
-        headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json", **self.extra_headers}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         delay = 2.0
@@ -466,7 +468,7 @@ class LLMClient:
         """POST with stream=true; idle timeout applies between chunks so a
         slow-but-progressing call keeps going while a stalled one aborts."""
         payload = dict(payload, stream=True, stream_options={"include_usage": True})
-        headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json", **self.extra_headers}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         delay = 2.0
@@ -718,11 +720,17 @@ def make_llm(runtime: RuntimeSettings, *, backend: str | None = None) -> LLMClie
         if not base.endswith("/v1"):
             base = f"{base}/v1"
         model = runtime.llm_sidecar_model.strip() or None
+        # forward the HF token so lazy downloads of gated model repos work
+        # (the sidecar middleware applies it as HF_TOKEN for the process)
+        headers = {}
+        if tok := runtime.hf_token.get_secret_value():
+            headers["X-HF-Token"] = tok
         return LLMClient(
             base_url=base,
             api_key="",
             model_vision=model,
             model_code=model,
             runtime_settings=runtime,
+            extra_headers=headers,
         )
     return LLMClient(runtime_settings=runtime)

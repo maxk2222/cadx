@@ -52,13 +52,6 @@ async def mesh_models(db: AsyncSession = Depends(get_session)):
 # --------------------------------------------------------------------------- #
 
 
-async def _sidecar_base(db: AsyncSession) -> str:
-    base = (await load_runtime_settings(db)).mesh_base_url.strip().rstrip("/")
-    if not base:
-        raise HTTPException(503, "mesh server not configured")
-    return base
-
-
 def _sidecar_detail(r: httpx.Response) -> Any:
     try:
         data = r.json()
@@ -77,11 +70,19 @@ async def _proxy(
     timeout_s: float = 15.0,
     body: dict[str, Any] | None = None,
 ) -> Any:
-    """Forward one request to the sidecar; map its error body onto the API."""
-    base = await _sidecar_base(db)
+    """Forward one request to the sidecar; map its error body onto the API.
+    Carries the configured Hugging Face token so model downloads/loads can
+    reach gated repos."""
+    settings = await load_runtime_settings(db)
+    base = settings.mesh_base_url.strip().rstrip("/")
+    if not base:
+        raise HTTPException(503, "mesh server not configured")
+    headers = {}
+    if tok := settings.hf_token.get_secret_value():
+        headers["X-HF-Token"] = tok
     try:
         async with httpx.AsyncClient(timeout=timeout_s) as client:
-            r = await client.request(method, f"{base}{path}", json=body)
+            r = await client.request(method, f"{base}{path}", json=body, headers=headers)
     except httpx.HTTPError as e:
         raise HTTPException(503, f"mesh server unreachable: {e}") from e
     if r.status_code >= 400:

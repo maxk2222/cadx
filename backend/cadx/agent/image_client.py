@@ -89,14 +89,21 @@ class ImagePort:
 
 
 class HttpImageClient(ImagePort):
-    def __init__(self, base_url: str, *, timeout_s: float = 300) -> None:
+    def __init__(self, base_url: str, *, timeout_s: float = 300, hf_token: str = "") -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_s = timeout_s
+        self.hf_token = hf_token
+
+    def _headers(self) -> dict[str, str]:
+        """Per-request credentials for the sidecar — its middleware applies
+        X-HF-Token as HF_TOKEN so downloads and model loads can reach gated
+        Hugging Face repos."""
+        return {"X-HF-Token": self.hf_token} if self.hf_token else {}
 
     async def health(self) -> MeshHealth:
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
-                r = await client.get(f"{self.base_url}/v1/health")
+                r = await client.get(f"{self.base_url}/v1/health", headers=self._headers())
                 r.raise_for_status()
                 return MeshHealth(**r.json())
         except Exception as e:
@@ -105,7 +112,7 @@ class HttpImageClient(ImagePort):
     async def models(self) -> list[MeshModelInfo]:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                r = await client.get(f"{self.base_url}/v1/models")
+                r = await client.get(f"{self.base_url}/v1/models", headers=self._headers())
                 r.raise_for_status()
                 return [
                     MeshModelInfo(**m)
@@ -137,9 +144,13 @@ class HttpImageClient(ImagePort):
                         ),
                     ),
                 ]
-                r = await client.post(f"{self.base_url}/v1/image-edit-jobs", files=files)
+                r = await client.post(
+                    f"{self.base_url}/v1/image-edit-jobs", files=files, headers=self._headers()
+                )
             else:
-                r = await client.post(f"{self.base_url}/v1/image-jobs", json=params)
+                r = await client.post(
+                    f"{self.base_url}/v1/image-jobs", json=params, headers=self._headers()
+                )
             if r.status_code != 200:
                 raise ImageGenError(f"image-server submit failed: {r.status_code} {r.text[:300]}")
             server_job = r.json()["job_id"]
@@ -155,7 +166,10 @@ class HttpImageClient(ImagePort):
                 if should_abort is not None and await should_abort():
                     raise ImageGenError("job cancelled by user")
                 async with httpx.AsyncClient(timeout=15.0) as client:
-                    st = await client.get(f"{self.base_url}/v1/image-jobs/{server_job}")
+                    st = await client.get(
+                        f"{self.base_url}/v1/image-jobs/{server_job}",
+                        headers=self._headers(),
+                    )
                 if st.status_code != 200:
                     raise ImageGenError(f"image-server job poll failed: {st.status_code}")
                 status = st.json()
@@ -176,7 +190,9 @@ class HttpImageClient(ImagePort):
             for i in range(n_images):
                 async with httpx.AsyncClient(timeout=60.0) as client:
                     dl = await client.get(
-                        f"{self.base_url}/v1/image-jobs/{server_job}/image", params={"i": i}
+                        f"{self.base_url}/v1/image-jobs/{server_job}/image",
+                        params={"i": i},
+                        headers=self._headers(),
                     )
                 if dl.status_code != 200:
                     raise ImageGenError(f"image download failed: {dl.status_code}")
@@ -188,7 +204,9 @@ class HttpImageClient(ImagePort):
                 httpx.Client(timeout=10.0) as client,
                 contextlib.suppress(Exception),
             ):
-                client.delete(f"{self.base_url}/v1/image-jobs/{server_job}")
+                client.delete(
+                    f"{self.base_url}/v1/image-jobs/{server_job}", headers=self._headers()
+                )
 
         return ImageGenResult(
             model=status.get("model") or req.model,
@@ -499,4 +517,8 @@ def make_image_client(
     url = (base_url if base_url is not None else settings.mesh_base_url).strip()
     if not url:
         return None
-    return HttpImageClient(url, timeout_s=timeout_s or settings.image_timeout_s)
+    return HttpImageClient(
+        url,
+        timeout_s=timeout_s or settings.image_timeout_s,
+        hf_token=settings.hf_token.get_secret_value(),
+    )

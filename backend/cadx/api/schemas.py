@@ -608,6 +608,7 @@ class SettingsOut(BaseModel):
     image_openai_model: str
     image_api_base: str
     image_api_key_set: bool
+    hf_token_set: bool
     image_model: str
     image_edit_model: str
     image_steps: int | None
@@ -721,6 +722,8 @@ class SettingsUpdate(BaseModel):
     tripo_model: str | None = Field(default=None, max_length=200)
     image_api_key: str | None = Field(default=None, max_length=4000)
     clear_image_api_key: bool = False
+    hf_token: str | None = Field(default=None, max_length=4000)
+    clear_hf_token: bool = False
     image_api_base: str | None = Field(default=None, max_length=500)
     image_openai_model: str | None = Field(default=None, max_length=200)
     image_model: str | None = Field(default=None, max_length=200)

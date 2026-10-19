@@ -88,10 +88,19 @@ def test_new_secret_fields_not_public():
     for secret in ("sk-llm-1", "sk-tripo-1", "sk-img-1"):
         assert secret not in dumped
     assert pub["llm_api_key_set"] and pub["tripo_api_key_set"] and pub["image_api_key_set"]
-    # storage roundtrip keeps the raw secrets for internal use
+    # storage roundtrip keeps the secrets for internal use — encrypted at
+    # rest (enc:v1: prefix), decrypted back by model_validate
     stored = s.to_storage()
-    assert stored["tripo_api_key"] == "sk-tripo-1"
-    assert stored["image_api_key"] == "sk-img-1"
+    from cadx.secrets_crypto import SECRET_PREFIX, decrypt_stored
+
+    for field, secret in (
+        ("tripo_api_key", "sk-tripo-1"),
+        ("image_api_key", "sk-img-1"),
+        ("llm_api_key", "sk-llm-1"),
+    ):
+        assert stored[field].startswith(SECRET_PREFIX)
+        assert secret not in stored[field]
+        assert decrypt_stored(stored[field]) == secret
     rt2 = RuntimeSettings.model_validate(stored)
     assert rt2.tripo_api_key.get_secret_value() == "sk-tripo-1"
     assert rt2.image_api_key.get_secret_value() == "sk-img-1"

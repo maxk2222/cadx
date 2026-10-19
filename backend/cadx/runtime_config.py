@@ -9,6 +9,13 @@ from pydantic import BaseModel, Field, SecretStr, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cadx.db.models import AppSetting
+from cadx.secrets_crypto import decrypt_stored, encrypt_secret
+
+# write-only credentials — raw values live only in to_storage()/internal
+# use; public_values() exposes "<name>_set" booleans instead. to_storage()
+# encrypts them (secrets_crypto); stored "enc:v1:" values are decrypted by
+# the _decrypt_secrets validator on load.
+_SECRET_FIELDS = ("llm_api_key", "tripo_api_key", "image_api_key", "hf_token")
 
 
 class RuntimeSettings(BaseModel):
@@ -211,6 +218,10 @@ class RuntimeSettings(BaseModel):
     image_openai_model: str = "gpt-image-1"
     image_api_base: str = ""  # empty -> llm_base_url
     image_api_key: SecretStr = SecretStr("")  # empty -> llm_api_key
+    # Hugging Face access token — forwarded to the mesh sidecar as the
+    # X-HF-Token header; the server applies it as HF_TOKEN for downloads and
+    # model loads (gated repos, higher rate limits)
+    hf_token: SecretStr = SecretStr("")
     image_model: str = "auto"
     image_edit_model: str = "auto"  # default adapter for edit/i2i requests
     image_default_strength: float = Field(default=0.6, gt=0, le=1)  # img2img denoise
@@ -253,6 +264,11 @@ class RuntimeSettings(BaseModel):
     # repair). Falls back to the cold subprocess path on any zygote failure.
     exec_warm_runner: bool = True
 
+    @field_validator(*_SECRET_FIELDS, mode="before")
+    @classmethod
+    def _decrypt_secrets(cls, value: Any) -> Any:
+        return decrypt_stored(value)
+
     @field_validator(
         "llm_extra_body",
         "llm_thinking_body_on",
@@ -282,7 +298,7 @@ class RuntimeSettings(BaseModel):
         for name in _SECRET_FIELDS:
             key = getattr(self, name).get_secret_value()
             if key:
-                value[name] = key
+                value[name] = encrypt_secret(key)
         return value
 
     def public_values(self) -> dict[str, Any]:
@@ -294,11 +310,6 @@ class RuntimeSettings(BaseModel):
     def executor_values(self) -> dict[str, Any]:
         """Subset shipped to the cad-executor process inside each task payload."""
         return self.model_dump(mode="json", include=_EXECUTOR_FIELDS)
-
-
-# write-only credentials — raw values live only in to_storage()/internal
-# use; public_values() exposes "<name>_set" booleans instead
-_SECRET_FIELDS = ("llm_api_key", "tripo_api_key", "image_api_key")
 
 
 _EXECUTOR_FIELDS = {
@@ -377,5 +388,8 @@ async def ensure_runtime_seeded(db: AsyncSession) -> bool:
     seed_img = os.environ.get("MESH_IMAGE_MODEL", "").strip()
     if seed_img:
         settings.image_model = seed_img
+    seed_hf = os.environ.get("HF_TOKEN", "").strip()
+    if seed_hf:
+        settings.hf_token = SecretStr(seed_hf)
     await save_runtime_settings(db, settings)
     return True
