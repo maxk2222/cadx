@@ -528,7 +528,7 @@ export function useStickyBottom(dep: unknown) {
     if (stick.current && boxRef.current)
       boxRef.current.scrollTop = boxRef.current.scrollHeight;
   }, [dep]);
-  return { boxRef, onScroll };
+  return { boxRef, onScroll, stick };
 }
 
 /** Numeric input that commits on blur/Enter and keeps the raw text while

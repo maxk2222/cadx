@@ -6,7 +6,14 @@ import {
   Square,
   Trash2,
 } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import Composer from "../components/chat/Composer";
 import MessageBubble from "../components/chat/MessageBubble";
@@ -25,6 +32,14 @@ import {
 import { api, errMsg } from "../lib/api";
 import type { Asset } from "../lib/types";
 import { useChatEvents } from "../lib/useChatEvents";
+import {
+  computeWindow,
+  estimateMessageHeight,
+  ROW_GAP,
+  tailWindow,
+  VIRTUALIZE_MIN_ITEMS,
+  type VirtualWindow,
+} from "../lib/virtualList";
 import { useTitle } from "../lib/useTitle";
 
 /* ---------------------------------------------------------------------- */
@@ -94,6 +109,29 @@ function ChatIndex() {
 /* ---------------------------------------------------------------------- */
 /* conversation                                                           */
 /* ---------------------------------------------------------------------- */
+
+/** wraps a virtualized row — reports its rendered height so the window's
+ *  spacer math can replace the estimate with the real measurement. */
+function MeasuredRow({
+  id,
+  onSize,
+  children,
+}: {
+  id: string;
+  onSize: (id: string, h: number) => void;
+  children: ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    onSize(id, el.offsetHeight);
+    const ro = new ResizeObserver(() => onSize(id, el.offsetHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [id, onSize]);
+  return <div ref={ref}>{children}</div>;
+}
 
 function ChatView({ chatId }: { chatId: string }) {
   const qc = useQueryClient();
@@ -212,9 +250,78 @@ function ChatView({ chatId }: { chatId: string }) {
     () => [messages, toolEvents] as const,
     [messages, toolEvents],
   );
-  const { boxRef, onScroll } = useStickyBottom(scrollDep);
+  const { boxRef, onScroll, stick } = useStickyBottom(scrollDep);
 
   const streamingId = messages.find((m) => m.meta?.streaming)?.id;
+
+  /* windowed rendering for long threads — see lib/virtualList.ts. Rows
+   * report their real height via ResizeObserver; unmeasured rows use a
+   * height estimate. Skipped entirely under VIRTUALIZE_MIN_ITEMS. */
+  const virtual = messages.length >= VIRTUALIZE_MIN_ITEMS;
+  const measured = useRef(new Map<string, number>());
+  const [win, setWin] = useState<VirtualWindow | null>(null);
+  const [measureTick, setMeasureTick] = useState(0);
+  const tickRaf = useRef(0);
+
+  const slots = useMemo(
+    () =>
+      messages.map(
+        (m) => (measured.current.get(m.id) ?? estimateMessageHeight(m)) + ROW_GAP,
+      ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- measureTick re-reads the measured map
+    [messages, measureTick],
+  );
+
+  const updateWindow = useCallback(() => {
+    const el = boxRef.current;
+    if (!el || messages.length < VIRTUALIZE_MIN_ITEMS) {
+      setWin(null);
+      return;
+    }
+    // while pinned the viewport sits at the tail — compute the window
+    // there rather than at the stale pre-scroll position
+    const top = stick.current ? el.scrollHeight : el.scrollTop;
+    const next = computeWindow(slots, top, el.clientHeight);
+    setWin((w) =>
+      w &&
+      w.start === next.start &&
+      w.end === next.end &&
+      w.topPad === next.topPad &&
+      w.bottomPad === next.bottomPad
+        ? w
+        : next,
+    );
+  }, [boxRef, stick, messages.length, slots]);
+
+  // recompute on content/measure/viewport changes
+  useEffect(() => updateWindow(), [updateWindow, measureTick]);
+  useEffect(() => {
+    const el = boxRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(updateWindow);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [boxRef, updateWindow]);
+  useEffect(() => () => cancelAnimationFrame(tickRaf.current), []);
+
+  /** row reported its real height — correct the estimate (rAF-coalesced) */
+  const noteSize = useCallback((id: string, h: number) => {
+    const prev = measured.current.get(id);
+    if (prev !== undefined && Math.abs(prev - h) < 1) return;
+    measured.current.set(id, h);
+    if (!tickRaf.current)
+      tickRaf.current = requestAnimationFrame(() => {
+        tickRaf.current = 0;
+        setMeasureTick((t) => t + 1);
+      });
+  }, []);
+
+  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    onScroll(e); // updates stick.current first — updateWindow reads it
+    updateWindow();
+  };
+
+  const activeWin = virtual ? (win ?? tailWindow(slots)) : null;
 
   return (
     <div className="flex h-screen min-h-0">
@@ -296,7 +403,7 @@ function ChatView({ chatId }: { chatId: string }) {
 
         <div
           ref={boxRef}
-          onScroll={onScroll}
+          onScroll={handleScroll}
           className="min-h-0 flex-1 overflow-y-auto px-4 py-4"
         >
           <div className="mx-auto flex max-w-3xl flex-col gap-3">
@@ -306,14 +413,34 @@ function ChatView({ chatId }: { chatId: string }) {
                 hint="Describe a part, attach reference images, or ask the agent to modify an existing version."
               />
             )}
-            {messages.map((m) => (
-              <MessageBubble
-                key={m.id}
-                msg={m}
-                assetsById={assetsById}
-                liveTools={m.id === streamingId ? toolEvents : undefined}
-              />
-            ))}
+            {activeWin ? (
+              <>
+                {activeWin.topPad > 0 && (
+                  <div aria-hidden style={{ height: activeWin.topPad }} />
+                )}
+                {messages.slice(activeWin.start, activeWin.end).map((m) => (
+                  <MeasuredRow key={m.id} id={m.id} onSize={noteSize}>
+                    <MessageBubble
+                      msg={m}
+                      assetsById={assetsById}
+                      liveTools={m.id === streamingId ? toolEvents : undefined}
+                    />
+                  </MeasuredRow>
+                ))}
+                {activeWin.bottomPad > 0 && (
+                  <div aria-hidden style={{ height: activeWin.bottomPad }} />
+                )}
+              </>
+            ) : (
+              messages.map((m) => (
+                <MessageBubble
+                  key={m.id}
+                  msg={m}
+                  assetsById={assetsById}
+                  liveTools={m.id === streamingId ? toolEvents : undefined}
+                />
+              ))
+            )}
           </div>
         </div>
 

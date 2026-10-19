@@ -1,6 +1,13 @@
 import { useEffect } from "react";
 import { useThree } from "@react-three/fiber";
 import * as THREE from "three";
+import { positionsToWire } from "../../lib/meshArrays";
+import {
+  fillVertexColors,
+  flattenPoints,
+  type FillEntryData,
+} from "../../lib/regionFill";
+import { viewerWorker } from "../../lib/viewerWorker";
 
 export interface RegionFillEntry {
   /** painted surface points (model-space mm) */
@@ -12,6 +19,10 @@ export interface RegionFillEntry {
 
 const MAX_VERTS = 500_000;
 
+/** below this many vertices the fill is cheap enough to run inline — the
+ *  worker round-trip would cost more than it saves. */
+const FILL_WORKER_MIN_VERTS = 50_000;
+
 /**
  * Colours the model's surface where painted `points` regions would select:
  * every vertex within `radius` of a painted point gets the region colour —
@@ -19,9 +30,11 @@ const MAX_VERTS = 500_000;
  * resolves exactly (see `cells_preview`).
  *
  * Recomputes are debounced (strokes stream points) and guarded by a vertex
- * cap. Geometry/material state is restored on cleanup. Above the cap the
- * fills stay hidden — `onTooDense` lets the editor say why instead of
- * silently no-oping.
+ * cap. Dense models run the vertex loop in the viewer worker (identical
+ * result via lib/regionFill.ts); smaller ones stay synchronous. Geometry
+ * and material state are restored on cleanup. Above the cap the fills stay
+ * hidden — `onTooDense` lets the editor say why instead of silently
+ * no-oping.
  */
 export default function RegionFill({
   model,
@@ -41,6 +54,7 @@ export default function RegionFill({
 
   useEffect(() => {
     if (!model) return;
+    let cancelled = false;
     const timer = setTimeout(() => {
       // collect meshes + their transform relative to the model root
       const meshes: { mesh: THREE.Mesh; rel: THREE.Matrix4 }[] = [];
@@ -53,9 +67,11 @@ export default function RegionFill({
       walk(model, new THREE.Matrix4());
 
       const active = entries.filter((e) => e.points.length && e.radius > 0);
-      const tooDense =
-        meshes.reduce((n, m) => n + (m.mesh.geometry.getAttribute("position")?.count ?? 0), 0) >
-        MAX_VERTS;
+      const totalVerts = meshes.reduce(
+        (n, m) => n + (m.mesh.geometry.getAttribute("position")?.count ?? 0),
+        0
+      );
+      const tooDense = totalVerts > MAX_VERTS;
       onTooDense?.(tooDense);
       if (!active.length || tooDense) {
         cleanup(meshes.map((m) => m.mesh));
@@ -63,66 +79,89 @@ export default function RegionFill({
         return;
       }
 
-      // spatial hash: cellKey -> list of (pointIdx within entry, entryIdx)
-      type P = { e: number; p: THREE.Vector3 };
-      const grids = active.map((entry) => {
-        const cell = Math.max(entry.radius, 0.5);
-        const map = new Map<string, P[]>();
-        entry.points.forEach((p, i) => {
-          if (p.length < 3) return;
-          const v = new THREE.Vector3(p[0], p[1], p[2]);
-          const k = [v.x, v.y, v.z].map((c) => Math.floor(c / cell)).join(",");
-          (map.get(k) ?? map.set(k, []).get(k)!).push({ e: i, p: v });
-        });
-        return { cell, map, r2: entry.radius * entry.radius };
+      // resolve colours on this side — THREE.Color decodes hex into the
+      // linear working space, which is what the attribute must contain
+      const wireEntries: FillEntryData[] = active.map((e) => {
+        const c = new THREE.Color(e.color);
+        return {
+          points: flattenPoints(e.points),
+          radius: e.radius,
+          color: [c.r, c.g, c.b],
+        };
       });
+      const jobs = meshes
+        .map(({ mesh, rel }) => {
+          const attr = mesh.geometry.getAttribute("position") as
+            | THREE.BufferAttribute
+            | THREE.InterleavedBufferAttribute
+            | undefined;
+          if (!attr) return null;
+          const base = (
+            Array.isArray(mesh.material) ? mesh.material[0] : mesh.material
+          ) as THREE.MeshStandardMaterial;
+          const bc = base?.color ?? new THREE.Color(0.6, 0.6, 0.65);
+          return {
+            mesh,
+            attr,
+            matrix: rel.elements.slice(),
+            base: [bc.r, bc.g, bc.b] as [number, number, number],
+          };
+        })
+        .filter((x): x is NonNullable<typeof x> => !!x);
 
-      const colors = active.map((e) => new THREE.Color(e.color));
-      const pos = new THREE.Vector3();
-      for (const { mesh, rel } of meshes) {
-        const attr = mesh.geometry.getAttribute("position") as THREE.BufferAttribute | undefined;
-        if (!attr) continue;
-        const base =
-          (Array.isArray(mesh.material) ? mesh.material[0] : mesh.material) as THREE.MeshStandardMaterial;
-        const baseColor = base?.color ?? new THREE.Color(0.6, 0.6, 0.65);
-        const arr = new Float32Array(attr.count * 3);
-        for (let i = 0; i < attr.count; i++) {
-          pos.fromBufferAttribute(attr, i).applyMatrix4(rel);
-          let col: THREE.Color = baseColor;
-          for (let e = 0; e < grids.length && col === baseColor; e++) {
-            const { cell, map, r2 } = grids[e];
-            const cx = Math.floor(pos.x / cell);
-            const cy = Math.floor(pos.y / cell);
-            const cz = Math.floor(pos.z / cell);
-            outer: for (let dx = -1; dx <= 1; dx++)
-              for (let dy = -1; dy <= 1; dy++)
-                for (let dz = -1; dz <= 1; dz++) {
-                  const pts = map.get(`${cx + dx},${cy + dy},${cz + dz}`);
-                  if (!pts) continue;
-                  for (const { p } of pts) {
-                    if (pos.distanceToSquared(p) <= r2) {
-                      col = colors[e];
-                      break outer;
-                    }
-                  }
-                }
-          }
-          arr[i * 3] = col.r;
-          arr[i * 3 + 1] = col.g;
-          arr[i * 3 + 2] = col.b;
-        }
-        mesh.geometry.setAttribute("color", new THREE.BufferAttribute(arr, 3));
-        forEachMat(mesh, (m) => {
-          if ("vertexColors" in m) {
-            m.userData.__rfPrev = m.vertexColors;
-            m.vertexColors = true;
-            m.needsUpdate = true;
-          }
+      const applyColors = (
+        targets: typeof jobs,
+        perMesh: (Float32Array | null)[]
+      ) => {
+        if (cancelled) return;
+        targets.forEach((j, i) => {
+          const arr = perMesh[i];
+          if (!arr) return;
+          j.mesh.geometry.setAttribute("color", new THREE.BufferAttribute(arr, 3));
+          forEachMat(j.mesh, (m) => {
+            if ("vertexColors" in m) {
+              m.userData.__rfPrev = m.vertexColors;
+              m.vertexColors = true;
+              m.needsUpdate = true;
+            }
+          });
         });
+        invalidate();
+      };
+      const syncPath = () =>
+        applyColors(
+          jobs,
+          jobs.map((j) => fillVertexColors(j.attr, j.matrix, wireEntries, j.base))
+        );
+
+      // worker path — only meshes whose attribute serialized stay paired
+      const wire = jobs
+        .map((j) => ({ j, pos: positionsToWire(j.attr) }))
+        .filter(
+          (x): x is { j: (typeof jobs)[number]; pos: NonNullable<typeof x.pos> } =>
+            !!x.pos
+        );
+      const req =
+        totalVerts >= FILL_WORKER_MIN_VERTS && wire.length
+          ? viewerWorker.fills({
+              entries: wireEntries,
+              meshes: wire.map((x) => ({
+                pos: x.pos,
+                matrix: x.j.matrix,
+                base: x.j.base,
+              })),
+            })
+          : null;
+      if (!req) {
+        syncPath();
+        return;
       }
-      invalidate();
+      req.then((res) => applyColors(wire.map((x) => x.j), res)).catch(syncPath);
     }, debounceMs);
-    return () => clearTimeout(timer);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [model, entries, debounceMs, invalidate, onTooDense]);
 
   // restore on unmount/model change

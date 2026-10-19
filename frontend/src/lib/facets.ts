@@ -1,5 +1,12 @@
 import * as THREE from "three";
 import { mergeVertices } from "three-stdlib";
+import {
+  indexToWire,
+  positionsAttribute,
+  positionsToWire,
+  type MeshTypedArray,
+  type PositionsWire,
+} from "./meshArrays";
 
 /**
  * Surface-facet segmentation for viewer picking: triangles are welded, then
@@ -31,7 +38,8 @@ export interface FacetSet {
   /** facet id per triangle (-1 never occurs after clustering) */
   facetOf: Int32Array;
   facets: Facet[];
-  /** edge key -> adjacent face indices */
+  /** edge key -> adjacent face indices — clustering-internal adjacency;
+   *  empty for worker-built sets (nothing downstream reads it) */
   edgeFaces: Map<number, number[]>;
 }
 
@@ -51,24 +59,51 @@ export function buildFacets(
   angleDeg = 30
 ): FacetSet | null {
   const src = mesh.geometry as THREE.BufferGeometry | undefined;
-  const srcPos = src?.getAttribute("position") as THREE.BufferAttribute | undefined;
-  if (!src || !srcPos || srcPos.count < 3 || srcPos.count > MAX_VERTS) return null;
+  const srcPos = src?.getAttribute("position") as
+    | THREE.BufferAttribute
+    | THREE.InterleavedBufferAttribute
+    | undefined;
+  if (!src || !srcPos) return null;
+  return buildFacetData(
+    srcPos,
+    src.getIndex(),
+    meshToRootMatrix(mesh, root).elements,
+    angleDeg
+  );
+}
 
+/** mesh→root relative transform (world matrices refreshed first). */
+function meshToRootMatrix(mesh: THREE.Object3D, root: THREE.Object3D): THREE.Matrix4 {
   mesh.updateWorldMatrix(true, false);
   root.updateWorldMatrix(true, false);
-  const rel = new THREE.Matrix4()
+  return new THREE.Matrix4()
     .copy(root.matrixWorld)
     .invert()
     .multiply(mesh.matrixWorld);
+}
+
+/**
+ * Weld + cluster core: pure buffer math on the given position/index
+ * attributes — a live attribute on the main thread or a worker-rebuilt
+ * PositionsWire. `relMatrix` is the column-major mesh→root transform
+ * applied to the welded positions. Returns null for empty/huge inputs.
+ */
+export function buildFacetData(
+  srcPos: THREE.BufferAttribute | THREE.InterleavedBufferAttribute,
+  srcIndex: THREE.BufferAttribute | null,
+  relMatrix: number[],
+  angleDeg = 30
+): FacetSet | null {
+  if (srcPos.count < 3 || srcPos.count > MAX_VERTS) return null;
 
   // weld positions only — mergeVertices hashes every attribute, so UV/normal
   // seams would stay split and read as fake mesh boundaries
   const posOnly = new THREE.BufferGeometry();
   posOnly.setAttribute("position", srcPos);
-  if (src.getIndex()) posOnly.setIndex(src.getIndex()!.clone());
+  if (srcIndex) posOnly.setIndex(srcIndex.clone());
   const welded = mergeVertices(posOnly, 1e-4);
   posOnly.dispose();
-  welded.applyMatrix4(rel);
+  welded.applyMatrix4(new THREE.Matrix4().fromArray(relMatrix));
   const index = welded.getIndex();
   const pos = welded.getAttribute("position") as THREE.BufferAttribute | undefined;
   if (!index || !pos || pos.count > MAX_VERTS) {
@@ -381,4 +416,86 @@ export function resampleLoop(
   // open chains never emit their endpoint otherwise
   if (!closed && out.length < maxPts) out.push([...pts[n - 1]]);
   return out;
+}
+
+/* ------------------------------------------------------------------ */
+/* worker wire format — the whole computation also runs off-thread      */
+/* ------------------------------------------------------------------ */
+
+/** transferable input for one mesh's facet build (see viewer.worker.ts). */
+export interface FacetJob {
+  pos: PositionsWire;
+  index: MeshTypedArray | null;
+  /** mesh→root transform, column-major 16 (Matrix4.elements) */
+  matrix: number[];
+  angleDeg: number;
+}
+
+/** structured-cloneable FacetSet — `welded` as raw arrays. `edgeFaces` is
+ *  dropped: it is clustering-internal and nothing downstream reads it. */
+export interface FacetWireResult {
+  /** welded positions in model space (mergeVertices always emits Float32) */
+  positions: Float32Array;
+  index: MeshTypedArray;
+  faceCount: number;
+  facetOf: Int32Array;
+  facets: Facet[];
+}
+
+/**
+ * Worker payload for one mesh — private attribute copies (safe to
+ * transfer) plus the mesh→root transform. Returns null for the same inputs
+ * buildFacets rejects. `estFaces` is the pre-weld triangle estimate used
+ * for the sync/worker threshold decision.
+ */
+export function facetJobForMesh(
+  mesh: THREE.Mesh,
+  root: THREE.Object3D,
+  angleDeg = 30
+): { job: FacetJob; estFaces: number } | null {
+  const src = mesh.geometry as THREE.BufferGeometry | undefined;
+  const srcPos = src?.getAttribute("position") as
+    | THREE.BufferAttribute
+    | THREE.InterleavedBufferAttribute
+    | undefined;
+  if (!src || !srcPos || srcPos.count < 3 || srcPos.count > MAX_VERTS) return null;
+  const pos = positionsToWire(srcPos);
+  if (!pos) return null;
+  const index = indexToWire(src.getIndex());
+  return {
+    job: { pos, index, matrix: meshToRootMatrix(mesh, root).elements.slice(), angleDeg },
+    estFaces: Math.floor((index ? index.length : srcPos.count) / 3),
+  };
+}
+
+/** run a wire job — identical result to the buildFacets path. */
+export function buildFacetJob(job: FacetJob): FacetSet | null {
+  const index = job.index ? new THREE.BufferAttribute(job.index, 1) : null;
+  return buildFacetData(positionsAttribute(job.pos), index, job.matrix, job.angleDeg);
+}
+
+/** serialize a built set — the welded geometry's arrays transfer back. */
+export function facetSetToWire(fs: FacetSet): FacetWireResult {
+  return {
+    positions: (fs.welded.getAttribute("position") as THREE.BufferAttribute)
+      .array as Float32Array,
+    index: fs.welded.getIndex()!.array as MeshTypedArray,
+    faceCount: fs.faceCount,
+    facetOf: fs.facetOf,
+    facets: fs.facets,
+  };
+}
+
+/** rehydrate a worker result into a FacetSet. */
+export function facetSetFromWire(w: FacetWireResult): FacetSet {
+  const welded = new THREE.BufferGeometry();
+  welded.setAttribute("position", new THREE.BufferAttribute(w.positions, 3));
+  welded.setIndex(new THREE.BufferAttribute(w.index, 1));
+  return {
+    welded,
+    faceCount: w.faceCount,
+    facetOf: w.facetOf,
+    facets: w.facets,
+    edgeFaces: new Map(),
+  };
 }

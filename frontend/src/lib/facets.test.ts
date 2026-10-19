@@ -1,12 +1,16 @@
 import { describe, expect, it } from "vitest";
 import * as THREE from "three";
 import {
+  buildFacetJob,
   buildFacets,
   facetAtHit,
   facetGeometry,
+  facetJobForMesh,
   facetLoop,
   facetPickPoints,
   facetRadius,
+  facetSetFromWire,
+  facetSetToWire,
   resampleLoop,
 } from "./facets";
 
@@ -101,6 +105,48 @@ describe("buildFacets", () => {
   it("returns null for empty geometry", () => {
     const { mesh, root } = meshOf(new THREE.BufferGeometry());
     expect(buildFacets(mesh, root)).toBeNull();
+  });
+});
+
+describe("worker wire path", () => {
+  it("job → build → wire → rehydrate matches buildFacets exactly", () => {
+    const { mesh, root } = meshOf(new THREE.BoxGeometry(10, 20, 30));
+    mesh.position.set(3, -2, 1);
+    mesh.rotation.z = Math.PI / 5;
+    root.updateMatrixWorld(true);
+    const sync = buildFacets(mesh, root, 30)!;
+
+    const j = facetJobForMesh(mesh, root, 30)!;
+    expect(j.estFaces).toBe(12);
+    expect(j.job.index).not.toBeNull();
+
+    // facetSetToWire is what the worker posts back; facetSetFromWire is the
+    // main-thread rehydration — the pair must reproduce the sync result
+    const wire = facetSetToWire(buildFacetJob(j.job)!);
+    const viaWorker = facetSetFromWire(wire);
+
+    expect(viaWorker.faceCount).toBe(sync.faceCount);
+    expect(viaWorker.facetOf).toEqual(sync.facetOf);
+    expect(viaWorker.facets.length).toBe(sync.facets.length);
+    expect(viaWorker.edgeFaces.size).toBe(0); // clustering-internal, dropped
+    const pSync = sync.welded.getAttribute("position").array;
+    const pWire = viaWorker.welded.getAttribute("position").array;
+    expect([...pWire]).toEqual([...pSync]);
+    for (let i = 0; i < sync.facets.length; i++) {
+      expect(viaWorker.facets[i].faces).toEqual(sync.facets[i].faces);
+      expect(viaWorker.facets[i].centroid).toEqual(sync.facets[i].centroid);
+      expect(viaWorker.facets[i].normal).toEqual(sync.facets[i].normal);
+      expect(viaWorker.facets[i].area).toBe(sync.facets[i].area);
+      expect(viaWorker.facets[i].boundary).toEqual(sync.facets[i].boundary);
+    }
+    // the rehydrated set answers pick queries identically
+    expect(facetAtHit(viaWorker, 0)?.id).toBe(facetAtHit(sync, 0)?.id);
+    expect(facetLoop(viaWorker, viaWorker.facets[0])?.closed).toBe(true);
+  });
+
+  it("rejects the same inputs buildFacets rejects", () => {
+    const { mesh, root } = meshOf(new THREE.BufferGeometry());
+    expect(facetJobForMesh(mesh, root)).toBeNull();
   });
 });
 

@@ -22,13 +22,17 @@ import {
   buildFacets,
   facetAtHit,
   facetGeometry,
+  facetJobForMesh,
   facetLoop,
   facetPickPoints,
   facetRadius,
+  facetSetFromWire,
   resampleLoop,
   type Facet,
+  type FacetJob,
   type FacetSet,
 } from "../lib/facets";
+import { viewerWorker } from "../lib/viewerWorker";
 import type {
   FeatureAnchor,
   FemPreviewResult,
@@ -62,6 +66,10 @@ const COLORS: Record<RegionColor, string> = {
   anchor: "#22d3ee",
 };
 const GIZMO_COLORS = { force: "#f59e0b", moment: "#f472b6", preload: "#facc15" };
+
+/** below this many faces the facet build is cheap enough to run inline —
+ *  the worker round-trip would cost more than it saves. */
+const FACET_WORKER_MIN_FACES = 50_000;
 
 /** Where the next brush stroke (or center-pick) appends. */
 type PaintTarget =
@@ -1335,7 +1343,9 @@ export default function StructuralEditor({
     }
   }, [model]);
 
-  // facet segmentation — deferred so arming a tool doesn't block the frame
+  // facet segmentation — deferred so arming a tool doesn't block the
+  // frame; large meshes go through the viewer worker (identical results,
+  // off-thread — see lib/viewer.worker.ts) with a synchronous fallback.
   const surfacePickArmed = !!target && (mode === "face" || mode === "edge");
   useEffect(() => {
     if (!model || !surfacePickArmed) {
@@ -1344,19 +1354,53 @@ export default function StructuralEditor({
       return;
     }
     setFacetBusy(true);
+    let cancelled = false;
     const t = setTimeout(() => {
-      const m = new Map<THREE.BufferGeometry, FacetSet>();
+      const meshes: THREE.Mesh[] = [];
       model.traverse((o) => {
         const mesh = o as THREE.Mesh;
-        if (mesh.isMesh && mesh.geometry) {
-          const fs = buildFacets(mesh, model, creaseDeg);
-          if (fs) m.set(mesh.geometry as THREE.BufferGeometry, fs);
-        }
+        if (mesh.isMesh && mesh.geometry) meshes.push(mesh);
       });
-      setFacetSets(m);
-      setFacetBusy(false);
+      const jobs = meshes
+        .map((mesh) => ({ mesh, j: facetJobForMesh(mesh, model, creaseDeg) }))
+        .filter(
+          (x): x is { mesh: THREE.Mesh; j: { job: FacetJob; estFaces: number } } =>
+            x.j != null
+        );
+
+      const apply = (results: (FacetSet | null)[]) => {
+        const m = new Map<THREE.BufferGeometry, FacetSet>();
+        jobs.forEach((x, i) => {
+          const fs = results[i];
+          if (fs) m.set(x.mesh.geometry as THREE.BufferGeometry, fs);
+        });
+        if (cancelled) {
+          // never published — nothing else will dispose these geometries
+          m.forEach((fs) => fs.welded.dispose());
+          return;
+        }
+        setFacetSets(m);
+        setFacetBusy(false);
+      };
+
+      const syncPath = () => apply(jobs.map((x) => buildFacets(x.mesh, model, creaseDeg)));
+      const totalFaces = jobs.reduce((n, x) => n + x.j.estFaces, 0);
+      const req =
+        totalFaces >= FACET_WORKER_MIN_FACES
+          ? viewerWorker.facets(jobs.map((x) => x.j.job))
+          : null;
+      if (!req) {
+        syncPath();
+        return;
+      }
+      req
+        .then((wires) => apply(wires.map((w) => (w ? facetSetFromWire(w) : null))))
+        .catch(syncPath);
     }, 120);
-    return () => clearTimeout(t);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
   }, [model, surfacePickArmed, creaseDeg]);
 
   // drop cached facet overlays + pick bookkeeping when facets change, and
