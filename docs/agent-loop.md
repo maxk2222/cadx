@@ -260,9 +260,25 @@ Tool sessions: `llm_tools` (`auto|on|off`), `agent_tool_max_calls`,
 `agent_quickref_context`, `agent_plan_mode` (`full|lite|auto`),
 `agent_mesh_shape_guard_iou`. Adaptive reasoning: `llm_thinking`,
 `llm_thinking_hard_steps`, `llm_thinking_escalate_after`,
-`llm_thinking_max_calls`, `llm_thinking_body_on/_off`,
+`llm_thinking_max_calls`, `llm_thinking_body_on/_off/_medium/_high`,
 `llm_degenerate_stall_s`. The full reference is
 [configuration.md](configuration.md).
+
+Candidate ranking and progress are driven by `det_quality`
+(`agent/quality.py`): a 0–100 number computed from the executor's
+`verify_spec` PASS/FAIL report, dim issues and the single-solid check — a
+deterministic gradient that still moves when the vision-critique score has
+saturated at 0. Stalls are measured against it (best replacement, dq rise or
+score rise all count as progress). On a stall the loop first escalates
+reasoning one stage (`ctx.thinking_level` 1 → `body_medium`, 2 → `body_high`,
+each falling back to `body_on`) and a dq regression ≥ 10 points escalates
+too; hard-step thinking stays off by default. A second stall triggers ONE
+fresh codegen from the accumulated issue list before the run finalises, so
+improve patches that keep circling the same broken code get a clean escape.
+In a mesh→CAD or hybrid→CAD fallback the plan is rewritten deterministically
+(`plan.cad_fallback_plan`) so codegen never sees `load_mesh_solid()` —
+the hybrid contract block (`code_contract_hybrid.md`) is only included when
+a real mesh solid exists.
 
 ### Recommended settings for local ~27B models
 

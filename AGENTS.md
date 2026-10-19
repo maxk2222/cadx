@@ -65,11 +65,24 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
   roundtrip gate catches "valid in memory, broken on export",
   `cad/compare.py` diffs/interference-checks solids.
 - Adaptive reasoning: `agent/thinking.py` resolves per-call `extra_body`
-  (provider-dialect JSON in `llm_thinking_body_on/_off`) — `llm_thinking=auto`
-  enables thinking for `llm_thinking_hard_steps` and once the orchestrator
-  latches `ctx.thinking_escalated` (repeated error, patch miss, stalled score).
+  (provider-dialect JSON in `llm_thinking_body_on/_off/_medium/_high`) —
+  `llm_thinking=auto` enables thinking for `llm_thinking_hard_steps` (empty by
+  default) and once the orchestrator latches `ctx.thinking_escalated`. The
+  escalation is staged on `ctx.thinking_level` (1 → medium, 2 → high) and
+  fires ONLY on stall (`llm_thinking_escalate_after` iterations without
+  progress) or a measured dq regression ≥ 10 — never on a single patch miss.
   `agent/quickref.py` serves runtime-introspected signatures to the `quickref`
   tool.
+- Loop progress is measured by `agent/quality.py` `det_quality` (verify_spec
+  PASS/FAIL → 0..100) — the critique score saturates at 0 and cannot detect
+  stalls. A stall gets ONE fresh-codegen escape before finalising; a
+  mesh/hybrid→CAD fallback rewrites the plan via `cad_fallback_plan` so
+  `load_mesh_solid` never reaches the prompt.
+- `cadlib.strut(p0, p1, width, thickness)` builds a straight diagonal bar
+  between two points — a "Strebe/brace" is never a filled triangular gusset
+  (`rib` is). Bound hole snippets cut only through their declared host plate
+  (`through_hole(depth=host_span+0.5)` on the hi face) so struts/ribs on the
+  same bore line stay intact.
 - Coordinate frame contract: X=length, Y=width (+Y front), Z=height; part rests on XY plane,
   centered at origin; mm units. Result must be assigned to `result`; flat parts may also
   assign `flat_profile`. The same contract applies to post-processed meshes

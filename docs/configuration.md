@@ -36,10 +36,11 @@ the database.
 | `llm_degenerate_stall_s` | `60` | abort a stream emitting only whitespace/indentation (invisible to the byte-progress watchdog) |
 | `llm_extra_body` | `""` | extra JSON object merged into every request body (provider-specific flags) |
 | `llm_tools` | `auto` | `auto` probes native tool support per role; `on` is strict; `off` uses legacy JSON |
-| `llm_thinking` | `auto` | `off` / `auto` / `always` — adaptive reasoning (`agent/thinking.py`); `auto` enables thinking for hard steps and escalates after repeated errors |
+| `llm_thinking` | `auto` | `off` / `auto` / `always` — adaptive reasoning (`agent/thinking.py`); `auto` enables thinking for hard steps and escalates only on stall/regression |
 | `llm_thinking_body_on` / `llm_thinking_body_off` | `""` | provider-dialect extra_body JSON merged when thinking resolves on/off; `""` = model default |
-| `llm_thinking_hard_steps` | `repair,improve` | CSV step names that get thinking under `auto` |
-| `llm_thinking_escalate_after` | `2` | stalls/errors before `auto` latches thinking on for the rest of the job |
+| `llm_thinking_body_medium` / `llm_thinking_body_high` | `""` | per-escalation-stage overrides — level 1 merges `medium`, level 2 `high`, each falling back to `body_on` when empty |
+| `llm_thinking_hard_steps` | `""` | CSV step names that always get thinking under `auto`; empty by default — escalation is stall/regression-driven |
+| `llm_thinking_escalate_after` | `2` | iterations without progress before `auto` raises `ctx.thinking_level` (medium, then high) for the rest of the job; a dq regression ≥10 also escalates |
 | `llm_thinking_max_calls` | `8` | per-job cap on thinking-on calls (`0` disables thinking) |
 
 ## Agent loop
