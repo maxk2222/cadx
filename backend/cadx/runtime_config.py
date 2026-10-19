@@ -234,7 +234,7 @@ class RuntimeSettings(BaseModel):
     image_max_count: int = Field(default=4, ge=1, le=16)  # per-request clamp
     image_autogen_mesh: bool = True  # synthesise hero image for mesh jobs w/o inputs
     image_tool_budget: int = Field(default=4, ge=0, le=50)  # concept-image calls per session
-    image_timeout_s: int = Field(default=300, ge=1, le=86_400)
+    image_timeout_s: int = Field(default=900, ge=1, le=86_400)
     mesh_timeout_s: int = Field(default=900, ge=1, le=86_400)
     # abort polling a server job whose (progress,message) pair hasn't moved
     # for this long — MPS/MLX adapters can freeze at 0% CPU and would

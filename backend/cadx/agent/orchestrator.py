@@ -3910,9 +3910,17 @@ async def _run_mesh(  # noqa: C901
                 )
                 if worst > 0.35:
                     gate_reasons.append(f"bbox shape signature off by {worst:.0%}")
+            # vision half: only when the mesh was conditioned by SYNTHETIC
+            # images — user-supplied references are trusted ground truth,
+            # generated ones are the untrusted conditioning this gate exists
+            # for (also keeps a vision call out of runs that never made one)
+            used = set((ctx.mesh_info.get("generation") or {}).get("images") or [])
+            has_gen = any(
+                a.kind == "generated_image" and a.asset_id in used for a in ctx.assets
+            )
             sheet = _sheet(exec_result)
             verdict = None
-            if sheet is not None:
+            if sheet is not None and has_gen:
                 from cadx.agent.image_check import verify_concept_image
 
                 verdict = await verify_concept_image(ctx, sheet, spec)
@@ -3925,7 +3933,6 @@ async def _run_mesh(  # noqa: C901
             if gate_reasons and regens < 1 and it < start_iteration + max_iterations - 1:
                 ctx.mesh_info["_mesh_gate_regens"] = regens + 1
                 ctx.mesh_info["_mesh_gate_done"] = False  # re-arm for the regenerated baseline
-                used = set((ctx.mesh_info.get("generation") or {}).get("images") or [])
                 if used:
                     ctx.assets[:] = [
                         a
