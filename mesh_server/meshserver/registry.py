@@ -124,11 +124,13 @@ class Registry:
         from meshserver.adapters.qwen_edit_mlx import QwenImageEditAdapter
         from meshserver.adapters.qwen_image_mlx import QwenImageMlxAdapter
         from meshserver.adapters.sd_torch import Sd15Adapter, SdxlAdapter
+        from meshserver.adapters.z_image_mlx import ZImageTurboAdapter
 
         classes += [
             FluxKontextMlxAdapter,
             QwenImageEditAdapter,
             QwenImageMlxAdapter,
+            ZImageTurboAdapter,
             FluxSchnellMlxAdapter,
             FluxSchnellAdapter,
             SdxlAdapter,
@@ -349,10 +351,10 @@ class Registry:
         elif device in ("cuda", "rocm"):
             pref = ["flux-schnell", "sdxl", "sd15"]
         elif device == "mlx":
-            # qwen-image first: ungated Apache-2.0 weights and far better
-            # prompt adherence than SDXL; flux-schnell-mlx is the fallback
-            # once an HF token unlocks the gated repo
-            pref = ["qwen-image", "flux-schnell-mlx", "sdxl", "sd15"]
+            # z-image-turbo first: ungated Apache-2.0, 6B distilled at 8
+            # steps — ~10x faster than qwen-image at benchmark parity;
+            # qwen stays as the quality fallback, gated flux last
+            pref = ["z-image-turbo", "qwen-image", "flux-schnell-mlx", "sdxl", "sd15"]
         elif device == "mps":
             pref = ["sdxl", "sd15"]
         else:

@@ -94,7 +94,9 @@ def _registry(tmp_path):
     from meshserver.adapters.qwen_edit_mlx import QwenImageEditAdapter
     from meshserver.adapters.qwen_image_mlx import QwenImageMlxAdapter
 
-    cfg = ServerConfig(device="mlx", job_dir=tmp_path)
+    # fake=False explicitly: test_image_jobs.py sets MESH_FAKE=1 at module
+    # level, which would flip select_image() into the fake-only pref ladder
+    cfg = ServerConfig(device="mlx", fake=False, job_dir=tmp_path)
     reg = Registry(cfg)
     # every class in the ladder reports available — only the preference
     # order decides
@@ -114,9 +116,12 @@ def _registry(tmp_path):
 
 
 def test_mlx_ladder_prefers_qwen_image(tmp_path):
+    """qwen-image wins the MLX txt2img ladder once the faster z-image-turbo
+    is badlisted/absent — it stays the quality fallback."""
     from meshserver.adapters.qwen_image_mlx import QwenImageMlxAdapter
 
     reg = _registry(tmp_path)
+    reg._failed["z-image-turbo"] = "probe failed"
     assert reg.select_image("auto") is QwenImageMlxAdapter
 
 
