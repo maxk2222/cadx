@@ -125,6 +125,20 @@ gpu_default_image_model() {
   esac
 }
 
+tier_disk_need_mb() {
+  # rough free-disk requirement (MiB) for the tier's default adapters —
+  # deps + model weights; used by setup.sh preflight.
+  local tier="${1:-$(gpu_detect_tier)}" model
+  model=$(gpu_default_model "$tier")
+  case "$tier:$model" in
+    cuda:trellis2)  echo 32000 ;;   # torch cu + trellis deps + ~10GB weights
+    cuda:*)         echo 12000 ;;   # triposg
+    rocm:*)         echo 16000 ;;   # rocm torch wheels are chunky
+    mlx:*)          echo 16000 ;;   # mlx deps + flux weights (~12GB)
+    *)              echo 800 ;;     # fake/none — tiny deps only
+  esac
+}
+
 gpu_image_install_script() {
   local tier="${1:-$(gpu_detect_tier)}"
   case "$tier" in
