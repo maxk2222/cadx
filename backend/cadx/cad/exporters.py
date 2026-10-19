@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 import math
 import time
+from collections import defaultdict
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -660,6 +661,514 @@ def _cut_analytic_features(
     return solid, applied, failed, degraded
 
 
+# --------------------------------------------------------------------------- #
+# face-swap fallback — replace a faceted bore wall with an analytic cylinder    #
+# --------------------------------------------------------------------------- #
+#
+# When the boolean cut is dead on a B-Rep (keep-restore union seams leave
+# boolean-toxic neighbourhoods: cut() spins past the per-feature timeout or
+# collapses the solid to vol=0), the feature's tunnel still exists as facets.
+# The swap identifies the wall's facet faces inside a cylindrical shell around
+# the feature axis, drops them, and re-sews the shell with a bounded
+# Geom_CylindricalSurface face bridging the remaining boundary loops. No OCC
+# boolean is involved — the only risky step is sewing, already proven by
+# mesh_to_solid. Every rejection returns None so the caller's honest skip —
+# "faceted STEP kept" — never regresses.
+
+
+def _vkey(x: float, y: float, z: float) -> tuple[float, float, float]:
+    """Vertex identity by rounded coordinate — sewn shells share vertex
+    positions exactly; 0.1 µm rounding only absorbs read jitter."""
+    return (round(x, 4), round(y, 4), round(z, 4))
+
+
+def _face_pts_edges(
+    face: Any,
+) -> tuple[list[tuple[float, float, float]], list[frozenset[tuple[float, float, float]]]]:
+    """Vertex coords and real edge vertex-key pairs of one face.
+
+    ``face.vertices()`` is not wire-ordered (chords appear on merged quads),
+    so edges come from a TopExp traversal instead."""
+    from OCP.BRep import BRep_Tool
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_VERTEX
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    pts = [(float(v.X), float(v.Y), float(v.Z)) for v in face.vertices()]
+    edges: list[frozenset[tuple[float, float, float]]] = []
+    ex = TopExp_Explorer(face.wrapped, TopAbs_EDGE)
+    while ex.More():
+        vex = TopExp_Explorer(ex.Current(), TopAbs_VERTEX)
+        ks = []
+        while vex.More():
+            p = BRep_Tool.Pnt_s(TopoDS.Vertex(vex.Current()))
+            ks.append(_vkey(p.X(), p.Y(), p.Z()))
+            vex.Next()
+        if len(ks) >= 2:
+            edges.append(frozenset((ks[0], ks[-1])))
+        ex.Next()
+    return pts, edges
+
+
+def _faceswap_radius_guess(feat: Any, feature: Any) -> float | None:
+    """Guessed wall radius: the measured tunnel diameter when the record
+    carries one (refine reams can land oversize — Ø10 spec → Ø10.4 measured),
+    else the requested cut diameter (tap-drill for threads)."""
+    from cadx.cad.fem import refine as rf
+
+    for key in ("measured_dia_mm", "dia_mm", "requested_dia_mm"):
+        d = _feat_field(feature, key)
+        if d:
+            return float(d) / 2.0
+    try:
+        return (
+            float(rf._effective_dia(feat)) + float(_feat_field(feat, "dia_extra", 0.0) or 0.0)
+        ) / 2.0
+    except Exception:
+        d = _feat_field(feat, "dia")
+        return float(d) / 2.0 if d else None
+
+
+def _faceswap_params(
+    feat: Any, feature: Any, solid: Any, mesh: trimesh.Trimesh
+) -> dict[str, Any] | None:
+    """Axis line, guessed wall radius and axial search window."""
+    from cadx.cad.fem import refine as rf
+
+    axis = str(_feat_field(feat, "axis", "+z") or "+z")
+    if axis not in rf._AXES:
+        return None
+    ax, au, av = rf._AXES[axis]
+    u, v = _feat_field(feat, "u"), _feat_field(feat, "v")
+    if u is None or v is None:
+        return None
+    r_guess = _faceswap_radius_guess(feat, feature)
+    if r_guess is None or r_guess <= 0:
+        return None
+    bb = solid.bounding_box()
+    lo, hi = (bb.min.X, bb.min.Y, bb.min.Z)[ax], (bb.max.X, bb.max.Y, bb.max.Z)[ax]
+    if _feat_field(feat, "depth_mm"):
+        # blind bore: the wall lives between the entry face and the first
+        # ray hit at (u, v) — on an open blind tunnel that hit IS the cap
+        try:
+            entry = rf._entry_point(mesh, axis, float(u), float(v))
+        except Exception:
+            entry = None
+        if entry is not None:
+            if axis[0] == "-":
+                hi = float(entry)
+            else:
+                lo = float(entry)
+    return {
+        "ax": ax,
+        "au": au,
+        "av": av,
+        "u": float(u),
+        "v": float(v),
+        "r_guess": r_guess,
+        "z_win": (lo - 0.6, hi + 0.6),
+    }
+
+
+def _grow_patch(
+    pts_l: list[list[tuple[float, float, float]]], seeds: set[int], cands: set[int]
+) -> set[int]:
+    """Flood-fill the seed wall faces over shared vertices. Adjacency — not
+    the radial band alone — so a coaxial counterbore wall or a crossing
+    feature's facets can never be pulled into the patch."""
+    v2f: dict[tuple[float, float, float], set[int]] = defaultdict(set)
+    for i, pts in enumerate(pts_l):
+        for p in pts:
+            v2f[_vkey(*p)].add(i)
+    patch = set(seeds)
+    stack = list(seeds)
+    while stack:
+        i = stack.pop()
+        for p in pts_l[i]:
+            for j in v2f[_vkey(*p)]:
+                if j in cands and j not in patch:
+                    patch.add(j)
+                    stack.append(j)
+    return patch
+
+
+def _heal_enclosed(
+    patch: set[int],
+    edges_l: list[list[frozenset[tuple[float, float, float]]]],
+    rad_l: list[list[float]],
+    ndot_l: list[float],
+    r_lo: float,
+    r_hi: float,
+) -> set[int]:
+    """Absorb faces ringed on every edge by the patch — corrupt-seam slivers
+    that failed the wall test but sit enclosed inside the wall region would
+    otherwise leave pinhole boundary loops. Restricted to faces inside the
+    radial band AND not axis-normal: a legit flat end cap is also rimmed by
+    the wall but is a valid ``Geom_Plane`` bottom the swap must keep."""
+    pedge: set[frozenset[tuple[float, float, float]]] = set()
+    for i in patch:
+        pedge.update(edges_l[i])
+    grown = set(patch)
+    for i, edges in enumerate(edges_l):
+        if i in grown or not edges or not rad_l[i]:
+            continue
+        if ndot_l[i] > 0.8:
+            continue
+        if all(r_lo <= r <= r_hi for r in rad_l[i]) and all(e in pedge for e in edges):
+            grown.add(i)
+    return grown
+
+
+def _patch_boundary_loops(
+    patch: set[int], edges_l: list[list[frozenset[tuple[float, float, float]]]]
+) -> list[list[tuple[float, float, float]]] | None:
+    """Ordered boundary vertex rings of the patch — the rims the analytic
+    wall re-joins. Exactly two clean rings (one per bore end); a torn or
+    partial patch is refused."""
+    cnt: dict[frozenset[tuple[float, float, float]], int] = defaultdict(int)
+    for i in patch:
+        for e in edges_l[i]:
+            cnt[e] += 1
+    bnd = [e for e, c in cnt.items() if c == 1]
+    if len(bnd) < 6:
+        return None
+    adj: dict[tuple[float, float, float], list[tuple[float, float, float]]] = defaultdict(list)
+    for e in bnd:
+        a, b = tuple(e)
+        adj[a].append(b)
+        adj[b].append(a)
+    if any(len(nbrs) != 2 for nbrs in adj.values()):
+        return None
+    loops: list[list[tuple[float, float, float]]] = []
+    seen: set[tuple[float, float, float]] = set()
+    for start in adj:
+        if start in seen:
+            continue
+        loop = [start]
+        seen.add(start)
+        prev, cur = None, start
+        while True:
+            nxt = next(n for n in adj[cur] if n != prev)
+            if nxt == start:
+                break
+            if nxt in seen or len(loop) > 200000:
+                return None
+            loop.append(nxt)
+            seen.add(nxt)
+            prev, cur = cur, nxt
+        loops.append(loop)
+    if len(loops) != 2 or min(len(lp) for lp in loops) < 3:
+        return None
+    return loops
+
+
+def _fit_bore_cylinder(
+    patch: set[int],
+    loops: list[list[tuple[float, float, float]]],
+    pts_l: list[list[tuple[float, float, float]]],
+    params: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Circle-fit the patch vertices in the plane ⟂ to the axis and bound
+    the cylinder by the two boundary loops. Refuses walls too irregular for
+    an analytic surface (wavy organic rims, torn seams)."""
+    import numpy as np
+
+    ax, au, av = params["ax"], params["au"], params["av"]
+    cu, cv, r_g = params["u"], params["v"], params["r_guess"]
+    xy = np.array([[p[au], p[av]] for i in patch for p in pts_l[i]], dtype=float)
+    if len(xy) < 6:
+        return None
+    try:
+        a = np.c_[2.0 * xy[:, 0], 2.0 * xy[:, 1], np.ones(len(xy))]
+        sol, *_ = np.linalg.lstsq(a, (xy**2).sum(axis=1), rcond=None)
+        fu, fv = float(sol[0]), float(sol[1])
+        if math.hypot(fu - cu, fv - cv) <= max(1.0, 0.5 * r_g):
+            cu, cv = fu, fv
+    except Exception:
+        pass  # keep the feature's declared (u, v) as the centre
+    rad = [math.hypot(p[au] - cu, p[av] - cv) for i in patch for p in pts_l[i]]
+    r_cyl = float(np.median(rad))
+    if not (0.5 * r_g <= r_cyl <= 1.9 * r_g):
+        return None
+    z_mean = [sum(p[ax] for p in loop) / len(loop) for loop in loops]
+    z_lo, z_hi = min(z_mean), max(z_mean)
+    if z_hi - z_lo < 0.3:
+        return None
+    max_dev = 0.0
+    for loop, zm in zip(loops, z_mean, strict=True):
+        for p in loop:
+            dev = math.hypot(math.hypot(p[au] - cu, p[av] - cv) - r_cyl, p[ax] - zm)
+            max_dev = max(max_dev, dev)
+    # polygon-chord sagitta between the rim edges and the true circle —
+    # the sew tolerance must cover it even when vertices sit exactly on
+    sag = max(r_cyl * (1.0 - math.cos(math.pi / len(loop))) for loop in loops)
+    sew_tol = 0.02 + 1.4 * max_dev + sag
+    if max_dev > 0.8 or sew_tol > 0.9:
+        return None
+    return {
+        **params,
+        "r_cyl": r_cyl,
+        "cu": cu,
+        "cv": cv,
+        "z_lo": z_lo,
+        "z_hi": z_hi,
+        "sew_tol": max(0.04, sew_tol),
+        "boundary_verts": {p for loop in loops for p in loop},
+    }
+
+
+def _bore_wall_patch(
+    faces: list[Any], params: dict[str, Any]
+) -> tuple[set[int], dict[str, Any]] | None:
+    """Connected patch of facet faces forming the feature's bore wall plus
+    the fitted cylinder description — None when the wall cannot be isolated
+    cleanly enough to swap."""
+    ax, au, av = params["ax"], params["au"], params["av"]
+    u, v, r_g = params["u"], params["v"], params["r_guess"]
+    z_lo, z_hi = params["z_win"]
+    pts_l: list[list[tuple[float, float, float]]] = []
+    edges_l: list[list[frozenset[tuple[float, float, float]]]] = []
+    ndot_l: list[float] = []
+    for f in faces:
+        try:
+            pts, edges = _face_pts_edges(f)
+        except Exception:
+            pts, edges = [], []
+        pts_l.append(pts)
+        edges_l.append(edges)
+        try:
+            n = f.normal_at()
+            ndot_l.append(abs((float(n.X), float(n.Y), float(n.Z))[ax]))
+        except Exception:
+            ndot_l.append(0.0)
+    rad_l = [[math.hypot(p[au] - u, p[av] - v) for p in pts] for pts in pts_l]
+    win = [bool(pts) and all(z_lo <= p[ax] <= z_hi for p in pts) for pts in pts_l]
+    t_seed = max(0.3, 0.12 * r_g)
+
+    def cand(i: int, r_c: float) -> bool:
+        return (
+            win[i]
+            and all(0.5 * r_c <= r <= 1.7 * r_c + 1.0 for r in rad_l[i])
+            and ndot_l[i] <= 0.55
+        )
+
+    seeds, r_g = _wall_seed_faces(rad_l, ndot_l, win, r_g, t_seed, cand)
+    if len(seeds) < 4:
+        return None
+    patch = _grow_patch(pts_l, seeds, {i for i in range(len(faces)) if cand(i, r_g)})
+    if len(patch) < 4:
+        return None
+    patch = _heal_enclosed(patch, edges_l, rad_l, ndot_l, 0.5 * r_g, 1.7 * r_g + 1.0)
+    loops = _patch_boundary_loops(patch, edges_l)
+    if loops is None:
+        return None
+    meta = _fit_bore_cylinder(patch, loops, pts_l, {**params, "r_guess": r_g})
+    if meta is None:
+        return None
+    meta["face_keys"] = [{_vkey(*p) for p in pts} for pts in pts_l]
+    return patch, meta
+
+
+def _wall_seed_faces(
+    rad_l: list[list[float]],
+    ndot_l: list[float],
+    win: list[bool],
+    r_g: float,
+    t_seed: float,
+    cand: Callable[[int, float], bool],
+) -> tuple[set[int], float]:
+    """Faces confidently ON the bore wall (all vertices hug the radius guess,
+    normal ⊥ axis) — plus a re-centred guess when the recorded diameter is
+    off the real tunnel (nominal-vs-tap mismatch, unrecorded ream)."""
+    import numpy as np
+
+    def seed_set(r_c: float) -> set[int]:
+        return {
+            i
+            for i in range(len(rad_l))
+            if win[i] and ndot_l[i] <= 0.5 and all(abs(r - r_c) <= t_seed for r in rad_l[i])
+        }
+
+    seeds = seed_set(r_g)
+    if len(seeds) < 4:
+        shell_r = [r for i in range(len(rad_l)) if cand(i, r_g) for r in rad_l[i]]
+        if shell_r:
+            r_med = float(np.median(shell_r))
+            if abs(r_med - r_g) > t_seed:
+                seeds = seed_set(r_med)
+                if seeds:
+                    r_g = r_med
+    return seeds, r_g
+
+
+def _bore_cylinder_face(meta: dict[str, Any]) -> Any:
+    """Bounded Geom_CylindricalSurface face spanning the wall patch, reversed
+    so its normal points at the axis (the bore is a void, not a boss)."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.gp import gp_Ax2, gp_Ax3, gp_Cylinder, gp_Dir, gp_Pnt
+
+    ax, au, av = meta["ax"], meta["au"], meta["av"]
+    origin = [0.0, 0.0, 0.0]
+    origin[ax], origin[au], origin[av] = meta["z_lo"], meta["cu"], meta["cv"]
+    direction = [0.0, 0.0, 0.0]
+    direction[ax] = 1.0
+    ax3 = gp_Ax3(gp_Ax2(gp_Pnt(*origin), gp_Dir(*direction)))
+    cyl = gp_Cylinder(ax3, float(meta["r_cyl"]))
+    mf = BRepBuilderAPI_MakeFace(cyl, 0.0, 2.0 * math.pi, 0.0, meta["z_hi"] - meta["z_lo"])
+    if not mf.IsDone():
+        raise ValueError("cylinder face build failed")
+    face = mf.Face()
+    face.Reverse()
+    return face
+
+
+def _resew_swapped_shell(
+    faces: list[Any], patch: set[int], cyl_face: Any, meta: dict[str, Any]
+) -> Any | None:
+    """Sew ``faces - patch + cyl_face`` back into a solid.
+
+    Two passes: the analytic face and the rim-adjacent faces sew at the gap
+    tolerance bridging polygon rim ↔ true circle, then the result re-joins
+    the rest of the shell at the usual 1e-4 — the large tolerance never
+    reaches distant lattice edges. Orientation normalised like mesh_to_solid
+    (negative-volume solids break every downstream consumer)."""
+    from build123d import Shape, Shell, Solid
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
+    from OCP.ShapeFix import ShapeFix_Shape
+
+    bverts = meta["boundary_verts"]
+    ring, rest = [], []
+    for i, f in enumerate(faces):
+        if i in patch:
+            continue
+        (ring if meta["face_keys"][i] & bverts else rest).append(f.wrapped)
+    sew1 = BRepBuilderAPI_Sewing(float(meta["sew_tol"]))
+    sew1.Add(cyl_face)
+    for w in ring:
+        sew1.Add(w)
+    sew1.Perform()
+    sew2 = BRepBuilderAPI_Sewing(1e-4)
+    sew2.Add(sew1.SewedShape())
+    for w in rest:
+        sew2.Add(w)
+    sew2.Perform()
+    fixed = ShapeFix_Shape(sew2.SewedShape()).Shape()
+    wrapped = Shape.cast(fixed)
+    shells = wrapped.shells()
+    if not shells:
+        return None
+    shell = max(shells, key=lambda sh: sh.area)
+    if not isinstance(shell, Shell):
+        shell = Shell(shell.wrapped)
+    res = Solid(Solid._make_solid(shell.fix()))
+    try:
+        if float(res.volume) < 0:
+            wr = res.wrapped
+            wr.Reverse()
+            res = Solid(wr)
+    except Exception:
+        pass
+    return res
+
+
+def _faceswap_ok(solid: Any, res: Any, meta: dict[str, Any]) -> bool:
+    """Sanity gate mirroring ``_cut_volume_ok``: the swap may only remove up
+    to roughly the bore's swept volume and never add material — plus the
+    analytic cylinder must actually be present in the result."""
+    if res is None:
+        return False
+    try:
+        if not res.solids():
+            return False
+        s, v = abs(float(solid.volume)), float(res.volume)
+        bore_vol = math.pi * meta["r_cyl"] ** 2 * (meta["z_hi"] - meta["z_lo"])
+        if not (s - 1.3 * bore_vol - 0.5 <= v <= s * 1.02 + max(0.5, 0.05 * s)):
+            return False
+        r_cyl = float(meta["r_cyl"])
+        for f in res.faces():
+            if f.geom_type == GeomType.CYLINDER and abs(float(f.radius) - r_cyl) <= 0.3 * r_cyl:
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def _faceswap_bore(
+    solid: Any, feature: Any, mesh: trimesh.Trimesh
+) -> tuple[Any | None, str | None]:
+    """Replace a feature's faceted bore wall with a true analytic cylinder.
+
+    Fallback for solids whose OCC booleans are dead near the feature: no
+    boolean is attempted — the wall's facet faces are dropped and the shell
+    is re-sewn with a Geom_CylindricalSurface face spanning the boundary
+    loops, ends bounded by the loops themselves (caps are never wall faces
+    — their inner vertices fall inside the shell radius). Returns
+    ``(solid, degraded_note)``; ``(None, None)`` on any rejection so the
+    caller's honest skip is preserved. For thread/counter kinds only the
+    pilot wall is swapped — the caller records the feature as degraded."""
+    feat = _norm_refine_feature(feature)
+    if feat is None:
+        return None, None
+    kind = str(_feat_field(feat, "kind", "hole") or "hole")
+    if kind not in _STEP_CYLINDER_KINDS | _STEP_THREAD_KINDS | _STEP_COUNTER_KINDS:
+        return None, None
+    name = str(_feat_field(feature, "name", "") or kind)
+    res = None
+    try:
+        params = _faceswap_params(feat, feature, solid, mesh)
+        if params is not None:
+            faces = list(solid.faces())
+            found = _bore_wall_patch(faces, params)
+            if found is not None:
+                patch, meta = found
+                res = _resew_swapped_shell(faces, patch, _bore_cylinder_face(meta), meta)
+                if not _faceswap_ok(solid, res, meta):
+                    res = None
+    except Exception:
+        res = None
+    if res is None:
+        log.info("export.analytic_step_faceswap_rejected", feature=name, kind=kind)
+        return None, None
+    note = None
+    if kind in _STEP_THREAD_KINDS:
+        note = "face-swap fallback — pilot bore wall analytic, thread groove not restored"
+    elif kind in _STEP_COUNTER_KINDS:
+        note = "face-swap fallback — pilot bore wall analytic, counter region remains faceted"
+    return res, note
+
+
+def _norm_for_worker(raw: Any) -> Any | None:
+    """Normed RefineFeature for a worker child — also forwards measured
+    tunnel diameters the normaliser drops (the face-swap fallback sizes
+    its wall-search shell from them)."""
+    feat = _norm_refine_feature(raw)
+    if feat is not None:
+        for k in ("measured_dia_mm", "dia_mm", "requested_dia_mm"):
+            if _feat_field(raw, k) is not None and _feat_field(feat, k) is None:
+                with contextlib.suppress(Exception):
+                    setattr(feat, k, float(_feat_field(raw, k)))
+    return feat
+
+
+def _worker_try_faceswap(
+    solid: Any, feature: Any, mesh: trimesh.Trimesh, name: str, out: dict[str, Any], why: str
+) -> tuple[Any | None, str | None]:
+    """Boolean-dead fallback inside a worker child: swap the feature's
+    faceted bore wall for an analytic cylinder face on the SAME B-Rep
+    input. Returns (solid, degraded_note); (None, None) keeps the skip."""
+    try:
+        swapped, swap_note = _faceswap_bore(solid, feature, mesh)
+    except Exception:
+        swapped, swap_note = None, None
+    if swapped is None:
+        return None, None
+    out["warnings"].append(
+        f"feature '{name}': {why} — bore wall rebuilt as an analytic face (face-swap)"
+    )
+    log.info("export.analytic_step_faceswap", feature=name)
+    return swapped, swap_note
+
+
 def _analytic_step_worker(
     stl_path: str,
     brep_in: str,
@@ -667,13 +1176,17 @@ def _analytic_step_worker(
     out_brep: str,
     result_path: str,
     max_faces: int | None,
+    swap_only: bool = False,
 ) -> None:
     """Subprocess body for ONE feature of the analytic STEP export.
 
     Loads the input B-Rep (empty brep_in → sew the shipped STL fresh), cuts
     the feature's analytic tools and writes the result B-Rep plus a JSON
     status the parent collects. B-Rep round-tripping keeps earlier features'
-    analytic faces intact — an STL round-trip would re-facet them."""
+    analytic faces intact — an STL round-trip would re-facet them.
+    ``swap_only`` children skip the boolean entirely (the parent only
+    retries that way after a cut already spun past its timeout) and go
+    straight to the face-swap — bounded work, no OCC boolean to hang."""
     import json as _json
 
     out: dict[str, Any] = {"applied": False, "warnings": []}
@@ -696,20 +1209,41 @@ def _analytic_step_worker(
 
     ok = False
     degraded_note = None
-    for i, tool in enumerate(cutters):
-        try:
-            res = _occ_cut(solid, tool, fuzzy_levels=(0.05,))
-        except Exception:
-            res = None
-        if res is not None and res.solids() and res.volume >= solid.volume * 0.3:
-            solid = res
-            ok = True
-        else:
-            if i > 0 and ok:
-                degraded_note = f"secondary cutter {i} failed — pilot bore applied"
+    if swap_only:
+        swapped, swap_note = _worker_try_faceswap(
+            solid, feature, mesh, name, out, "boolean cut exceeded budget"
+        )
+        if swapped is not None:
+            solid, ok, degraded_note = swapped, True, swap_note
+    else:
+        for i, tool in enumerate(cutters):
+            try:
+                res = _occ_cut(solid, tool, fuzzy_levels=(0.05,))
+            except Exception:
+                res = None
+            if res is not None and res.solids() and res.volume >= solid.volume * 0.3:
+                solid = res
+                ok = True
             else:
-                ok = False
-            break
+                if i == 0:
+                    # boolean cut failed or collapsed on this B-Rep — try
+                    # swapping the feature's faceted bore wall for an
+                    # analytic cylinder face on the SAME input first
+                    swapped, swap_note = _worker_try_faceswap(
+                        solid, feature, mesh, name, out, "boolean cut failed"
+                    )
+                    if swapped is not None:
+                        solid, ok, degraded_note = swapped, True, swap_note
+                        # the body is proven boolean-dead near this feature —
+                        # spending the child's remaining timeout on secondary
+                        # cutters risks losing the checkpoint; the swapped
+                        # pilot wall is the analytic win here
+                        break
+                elif ok:
+                    degraded_note = f"secondary cutter {i} failed — pilot bore applied"
+                else:
+                    ok = False
+                break
     if ok:
         out["applied"] = True
         _write_worker_brep(solid, out_brep, name, out)
@@ -831,7 +1365,7 @@ def export_analytic_step_isolated(
 
     normed: list[tuple[str, Any]] = []
     for raw in features or []:
-        feat = _norm_refine_feature(raw)
+        feat = _norm_for_worker(raw)
         name = str(_feat_field(raw, "name", "") or _feat_field(raw, "kind", "feature"))
         if feat is None:
             warnings.append(f"feature '{name}': no usable refine pose — skipped")
@@ -880,11 +1414,34 @@ def export_analytic_step_isolated(
             proc.start()
             proc.join(per_feature)
             if proc.is_alive():
+                # the boolean spun past the budget — kill it and retry
+                # swap-only: the fallback does no OCC boolean and is
+                # bounded by the re-sew, so it cannot hang the same way
                 proc.terminate()
                 proc.join(5)
-                warnings.append(f"feature '{name}': cut exceeded {per_feature:.0f}s — skipped")
+                warnings.append(
+                    f"feature '{name}': cut exceeded {per_feature:.0f}s — face-swap retry"
+                )
                 logger.warning("export.analytic_step_feature_timeout", feature=name)
-                continue
+                proc = ctx.Process(
+                    target=_analytic_step_worker,
+                    args=(
+                        str(mesh_path),
+                        brep_in,
+                        feat,
+                        str(child_brep),
+                        str(child_res),
+                        max_faces,
+                        True,
+                    ),
+                    daemon=True,
+                )
+                proc.start()
+                proc.join(per_feature)
+                if proc.is_alive():
+                    proc.terminate()
+                    proc.join(5)
+                    continue
             try:
                 cres = _json.loads(child_res.read_text())
             except Exception:

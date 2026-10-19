@@ -452,3 +452,283 @@ def test_isolated_export_no_valid_cut_keeps_faceted(tmp_path):
     assert res["step_features"] == []
     assert any("bad" in w for w in res["warnings"])
     assert not out_step.exists()
+
+
+# --------------------------------------------------------------------------- #
+# face-swap fallback (boolean-dead B-Reps)                                     #
+# --------------------------------------------------------------------------- #
+
+
+def _inline_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run spawn-context targets synchronously in-process.
+
+    Real spawn children are fresh interpreters — a monkeypatched
+    ``_occ_cut`` failure would not reach them. Running the worker inline
+    exercises the same target/args/JSON contract deterministically."""
+
+    import multiprocessing.context as mpctx
+
+    class _InlineProcess:
+        def __init__(self, *a: object, **kw: object) -> None:
+            self._target = kw["target"]
+            self._args = kw["args"]
+
+        def start(self) -> None:
+            self._target(*self._args)
+
+        def join(self, timeout: float | None = None) -> None:
+            pass
+
+        def is_alive(self) -> bool:
+            return False
+
+        def terminate(self) -> None:
+            pass
+
+        @property
+        def exitcode(self) -> int | None:
+            return 0
+
+    monkeypatch.setattr(
+        mpctx.SpawnContext,
+        "Process",
+        lambda _ctx, *a, **kw: _InlineProcess(*a, **kw),
+    )
+
+
+def test_faceswap_bore_replaces_faceted_wall():
+    """Unit-level: the wall patch is swapped for a true cylinder face."""
+    b3d = pytest.importorskip("build123d")
+    import cadx.cad.exporters as ex
+    from cadx.cad.mesh_ops import mesh_to_solid
+
+    mesh = _bored()
+    solid = mesh_to_solid(mesh, max_faces=50000)
+    res, note = ex._faceswap_bore(
+        solid, {"name": "b1", "kind": "hole", "axis": "+z", "u": 10.0, "v": 0.0, "dia": 6.0}, mesh
+    )
+    assert res is not None and note is None
+    cyl = [f for f in res.faces() if f.geom_type == b3d.GeomType.CYLINDER]
+    assert cyl and cyl[0].radius == pytest.approx(3.0, abs=0.1)
+    assert abs(res.volume - solid.volume) < solid.volume * 0.02
+
+
+def test_faceswap_bore_no_wall_returns_none():
+    """No faceted tunnel (uncut box) → honest refusal, never a fake solid."""
+    pytest.importorskip("build123d")
+    import cadx.cad.exporters as ex
+    from cadx.cad.mesh_ops import mesh_to_solid
+
+    mesh = _box()
+    solid = mesh_to_solid(mesh, max_faces=50000)
+    res, note = ex._faceswap_bore(
+        solid, {"name": "b1", "kind": "hole", "axis": "+z", "u": 10.0, "v": 0.0, "dia": 6.0}, mesh
+    )
+    assert res is None and note is None
+
+
+def test_isolated_faceswap_when_boolean_dead(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    """_occ_cut forced to fail → the worker falls back to the face-swap and
+    the feature still lands an analytic CYLINDER in the STEP."""
+    b3d = pytest.importorskip("build123d")
+    import cadx.cad.exporters as ex
+
+    monkeypatch.setattr(ex, "_occ_cut", lambda *a, **kw: None)
+    _inline_process(monkeypatch)
+
+    stl = tmp_path / "base.stl"
+    _bored().export(stl)
+    out_step = tmp_path / "out.step"
+    res = ex.export_analytic_step_isolated(
+        stl,
+        [{"name": "b1", "kind": "hole", "axis": "+z", "u": 10.0, "v": 0.0, "dia": 6.0}],
+        out_step,
+        timeout_s=120.0,
+    )
+    assert res["step"] == "out.step"
+    assert [f["name"] for f in res["step_features"]] == ["b1"]
+    assert any("face-swap" in w for w in res["warnings"])
+    solid = b3d.import_step(str(out_step))
+    cyl = [f for f in solid.faces() if f.geom_type == b3d.GeomType.CYLINDER]
+    assert cyl and cyl[0].radius == pytest.approx(3.0, abs=0.05)
+
+
+def test_isolated_faceswap_no_wall_keeps_honest_skip(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    """Boolean dead AND no faceted wall to swap → the honest skip is intact."""
+    pytest.importorskip("build123d")
+    import cadx.cad.exporters as ex
+
+    monkeypatch.setattr(ex, "_occ_cut", lambda *a, **kw: None)
+    _inline_process(monkeypatch)
+
+    stl = tmp_path / "base.stl"
+    _box().export(stl)
+    out_step = tmp_path / "out.step"
+    res = ex.export_analytic_step_isolated(
+        stl,
+        [{"name": "b1", "kind": "hole", "axis": "+z", "u": 10.0, "v": 0.0, "dia": 6.0}],
+        out_step,
+        timeout_s=120.0,
+    )
+    assert res["step"] is None
+    assert res["step_features"] == []
+    assert any("b1" in w for w in res["warnings"])
+    assert not out_step.exists()
+
+
+def test_faceswap_uses_measured_diameter():
+    """A reamed-oversize tunnel (Ø10 spec → Ø10.4 measured) still lands."""
+    b3d = pytest.importorskip("build123d")
+    import cadx.cad.exporters as ex
+    from cadx.cad.mesh_ops import mesh_to_solid
+
+    mesh = _bored(dia=6.4)
+    solid = mesh_to_solid(mesh, max_faces=50000)
+    res, note = ex._faceswap_bore(
+        solid,
+        {
+            "name": "b1",
+            "kind": "hole",
+            "axis": "+z",
+            "u": 10.0,
+            "v": 0.0,
+            "dia": 6.0,
+            "measured_dia_mm": 6.4,
+        },
+        mesh,
+    )
+    assert res is not None and note is None
+    cyl = [f for f in res.faces() if f.geom_type == b3d.GeomType.CYLINDER]
+    assert cyl and cyl[0].radius == pytest.approx(3.2, abs=0.1)
+
+
+def test_norm_for_worker_forwards_measured_dia():
+    """measured_dia_mm survives normalisation → the worker's radius guess."""
+    pytest.importorskip("build123d")
+    import cadx.cad.exporters as ex
+
+    feat = ex._norm_for_worker(
+        {
+            "name": "b1",
+            "kind": "hole",
+            "axis": "+z",
+            "u": 10.0,
+            "v": 0.0,
+            "dia": 6.0,
+            "measured_dia_mm": 6.4,
+        }
+    )
+    assert feat is not None and feat.measured_dia_mm == 6.4
+
+
+def test_isolated_faceswap_retries_after_cut_timeout(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    """A spinning boolean child is killed; the swap-only retry child (no OCC
+    boolean) still lands the analytic wall on the same checkpoint."""
+    b3d = pytest.importorskip("build123d")
+    import multiprocessing.context as mpctx
+
+    import cadx.cad.exporters as ex
+
+    class _Hang:
+        def __init__(self, *a: object, **kw: object) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def join(self, timeout: float | None = None) -> None:
+            pass
+
+        def is_alive(self) -> bool:
+            return True
+
+        def terminate(self) -> None:
+            pass
+
+        @property
+        def exitcode(self) -> int | None:
+            return None
+
+    class _Inline:
+        def __init__(self, *a: object, **kw: object) -> None:
+            self._target = kw["target"]
+            self._args = kw["args"]
+
+        def start(self) -> None:
+            self._target(*self._args)
+
+        def join(self, timeout: float | None = None) -> None:
+            pass
+
+        def is_alive(self) -> bool:
+            return False
+
+        def terminate(self) -> None:
+            pass
+
+        @property
+        def exitcode(self) -> int | None:
+            return 0
+
+    def make_process(_ctx: object, *a: object, **kw: object) -> object:
+        args = kw.get("args") or ()
+        # feature children get 6 args (implicit swap_only=False) or 7 for the
+        # swap-only retry; the base checkpoint child gets 4. Only the boolean
+        # child hangs — the retry must run.
+        if len(args) == 6:
+            return _Hang()
+        return _Inline(*a, **kw)
+
+    monkeypatch.setattr(mpctx.SpawnContext, "Process", make_process)
+
+    stl = tmp_path / "base.stl"
+    _bored().export(stl)
+    out_step = tmp_path / "out.step"
+    res = ex.export_analytic_step_isolated(
+        stl,
+        [{"name": "b1", "kind": "hole", "axis": "+z", "u": 10.0, "v": 0.0, "dia": 6.0}],
+        out_step,
+        timeout_s=120.0,
+        per_feature_s=5.0,
+    )
+    assert res["step"] == "out.step"
+    assert [f["name"] for f in res["step_features"]] == ["b1"]
+    assert any("b1" in w and "exceeded" in w for w in res["warnings"])
+    solid = b3d.import_step(str(out_step))
+    cyl = [f for f in solid.faces() if f.geom_type == b3d.GeomType.CYLINDER]
+    assert cyl and cyl[0].radius == pytest.approx(3.0, abs=0.05)
+
+
+def test_isolated_faceswap_thread_marks_degraded(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    """Thread feature swapped as pilot-wall-only → applied but degraded."""
+    b3d = pytest.importorskip("build123d")
+    pytest.importorskip("bd_warehouse.thread")
+    import cadx.cad.exporters as ex
+
+    monkeypatch.setattr(ex, "_occ_cut", lambda *a, **kw: None)
+    _inline_process(monkeypatch)
+
+    stl = tmp_path / "base.stl"
+    _bored(dia=6.75).export(stl)  # M8 tap drill
+    out_step = tmp_path / "out.step"
+    res = ex.export_analytic_step_isolated(
+        stl,
+        [
+            {
+                "name": "m8",
+                "kind": "thread",
+                "axis": "+z",
+                "u": 10.0,
+                "v": 0.0,
+                "dia": 8.0,
+                "thread_spec": "M8-1.25",
+            }
+        ],
+        out_step,
+        timeout_s=120.0,
+    )
+    assert res["step"] == "out.step"
+    rec = res["step_features"][0]
+    assert rec["name"] == "m8" and "degraded" in rec
+    solid = b3d.import_step(str(out_step))
+    assert any(f.geom_type == b3d.GeomType.CYLINDER for f in solid.faces())
