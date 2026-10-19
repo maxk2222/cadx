@@ -76,7 +76,9 @@ log = get_logger(__name__)
 # MCP-only handlers: name -> async (session, args) -> result dict. Populated
 # by `cadx.mcpserver.tools` (SA-3) on import; empty until then. Checked
 # BEFORE the `_tool_*` method fallback in `_dispatch`.
-MCP_HANDLERS: dict[str, Callable[[ProjectToolSession, dict[str, Any]], Awaitable[dict[str, Any]]]] = {}
+MCP_HANDLERS: dict[
+    str, Callable[[ProjectToolSession, dict[str, Any]], Awaitable[dict[str, Any]]]
+] = {}
 
 # project.settings keys the agent may change (validated through
 # ProjectSettings before persisting — unknown/unsafe keys are refused)
@@ -396,9 +398,7 @@ CHAT_ACTION_TOOLS = [
 # surfaces (the MCP server offers SAFE_ACTION_TOOLS only).
 LLM_ONLY_TOOL_NAMES = frozenset({"generate_part", "edit_version", "answer_questions"})
 
-LLM_ACTION_TOOLS = [
-    t for t in CHAT_ACTION_TOOLS if t["function"]["name"] in LLM_ONLY_TOOL_NAMES
-]
+LLM_ACTION_TOOLS = [t for t in CHAT_ACTION_TOOLS if t["function"]["name"] in LLM_ONLY_TOOL_NAMES]
 SAFE_ACTION_TOOLS = [
     t for t in CHAT_ACTION_TOOLS if t["function"]["name"] not in LLM_ONLY_TOOL_NAMES
 ]

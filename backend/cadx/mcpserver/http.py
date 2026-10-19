@@ -67,10 +67,7 @@ class MCPAuthMiddleware:
 
 
 async def _reject(send: Send) -> None:
-    body = (
-        b'{"ok":false,"error":"unauthorized - '
-        b'expected Authorization: Bearer <CADX_MCP_TOKEN>"}'
-    )
+    body = b'{"ok":false,"error":"unauthorized - expected Authorization: Bearer <CADX_MCP_TOKEN>"}'
     await send(
         {
             "type": "http.response.start",

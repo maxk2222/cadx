@@ -375,9 +375,7 @@ def test_isolated_export_applies_feature(tmp_path):
     assert out_step.exists()
 
 
-def test_isolated_export_timeout_keeps_prior_checkpoint(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-):
+def test_isolated_export_timeout_keeps_prior_checkpoint(tmp_path, monkeypatch: pytest.MonkeyPatch):
     """A hanging child is killed; earlier applied features still ship."""
     pytest.importorskip("build123d")
     import multiprocessing.context as mpctx
@@ -410,11 +408,7 @@ def test_isolated_export_timeout_keeps_prior_checkpoint(
     def make_process(_ctx_self, *a, **kw):  # type: ignore[no-untyped-def]
         args = kw.get("args") or ()
         feature = args[2] if len(args) > 2 else None
-        name = (
-            feature.get("name")
-            if isinstance(feature, dict)
-            else getattr(feature, "name", "")
-        )
+        name = feature.get("name") if isinstance(feature, dict) else getattr(feature, "name", "")
         if name == "b2":
             return _FakeHangProcess()
         return mpctx.SpawnProcess(*a, **kw)

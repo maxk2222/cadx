@@ -73,9 +73,7 @@ def mcp(
 
         starlette = Starlette(
             lifespan=lifespan,
-            middleware=[
-                Middleware(MCPDispatchMiddleware, prefix="/mcp", subapp=mcp_asgi_app())
-            ],
+            middleware=[Middleware(MCPDispatchMiddleware, prefix="/mcp", subapp=mcp_asgi_app())],
         )
         uvicorn.run(starlette, host="127.0.0.1", port=port)
         return
