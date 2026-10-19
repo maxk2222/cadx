@@ -89,7 +89,7 @@ class MeshModelInfo(BaseModel):
     name: str = ""
     device: str = ""
     backend: str = ""
-    kind: str = "mesh"  # "mesh" | "image" — second adapter family on the sidecar
+    kind: str = "mesh"  # "mesh" | "image" | "llm" — adapter families on the sidecar
     supports_multiview: bool = False
     max_images: int = 1
     license_note: str = ""
@@ -102,6 +102,15 @@ class MeshModelInfo(BaseModel):
     requires_image: bool = False  # image adapters: edit-only, no txt2img
     default_steps: int | None = None  # adapter-native steps when request omits them
     canonical_up: str | None = None  # up-axis of the raw output frame
+    # model-management fields (newer sidecars expose weight lifecycle state)
+    downloaded: bool = False
+    downloading: bool = False
+    size_gb: float | None = None
+    est_mem_mb: int | None = None
+    supports_vision: bool = False  # llm adapters: accepts image inputs
+    supports_tools: bool = False  # llm adapters: OpenAI tool_calls
+    pinned: bool = False  # resident model pinned in memory
+    custom: bool = False  # user-registered via POST /v1/models/register
 
 
 class MeshHealth(BaseModel):
@@ -505,11 +514,26 @@ def make_mesh_client(
     base_url: str | None = None,
     timeout_s: float | None = None,
     runtime_settings: RuntimeSettings | None = None,
+    backend: str | None = None,
 ) -> MeshPort | None:
-    """Build the sidecar client from an explicit DB-backed runtime snapshot."""
+    """Build the mesh client from an explicit DB-backed runtime snapshot.
+
+    ``backend`` overrides ``settings.mesh_backend``: ``"sidecar"`` talks to
+    the local mesh-server (mesh_base_url required, else None), ``"tripo"``
+    to the Tripo3D cloud API (tripo_api_key/base/model — no sidecar needed)."""
     settings = runtime_settings or RuntimeSettings()
     if fake:
         return FakeMeshClient()
+    mode = backend or settings.mesh_backend
+    if mode == "tripo":
+        from cadx.agent.tripo_client import TripoMeshClient
+
+        return TripoMeshClient(
+            settings.tripo_api_key.get_secret_value(),
+            base_url=settings.tripo_api_base,
+            model_version=settings.tripo_model,
+            timeout_s=timeout_s or settings.mesh_timeout_s,
+        )
     url = (base_url if base_url is not None else settings.mesh_base_url).strip()
     if not url:
         return None

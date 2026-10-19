@@ -17,8 +17,10 @@ Contract (see docs/mesh-server-api.md):
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import hashlib
+import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -199,6 +201,183 @@ class HttpImageClient(ImagePort):
         )
 
 
+class OpenAIImageClient(ImagePort):
+    """OpenAI-compatible images API client (images/generations + edits).
+
+    Used when ``runtime.image_backend == "openai"``. ``base_url`` resolves to
+    ``image_api_base or llm_base_url`` and the key to
+    ``image_api_key or llm_api_key`` — so any OpenAI-compatible provider
+    (OpenAI, OpenRouter, Azure-style proxies) works. Synchronous API: no job
+    queue, no server-side cancel — `should_abort` is checked before submit.
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str = "",
+        *,
+        model: str = "gpt-image-1",
+        timeout_s: float = 300,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.model = model
+        self.timeout_s = timeout_s
+
+    def _auth(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+
+    async def health(self) -> MeshHealth:
+        if not self.api_key:
+            return MeshHealth(ok=False, backend="openai", error="no api key configured")
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                r = await client.get(f"{self.base_url}/models", headers=self._auth())
+            if r.status_code == 200:
+                return MeshHealth(ok=True, backend="openai", models=await self.models())
+            return MeshHealth(ok=False, backend="openai", error=f"HTTP {r.status_code}")
+        except Exception as e:
+            return MeshHealth(ok=False, backend="openai", error=str(e))
+
+    async def models(self) -> list[MeshModelInfo]:
+        known = {
+            "gpt-image-1": MeshModelInfo(
+                id="gpt-image-1",
+                name="gpt-image-1",
+                backend="openai",
+                kind="image",
+                supports_edit=True,
+                default_size=1024,
+                max_count=4,
+            ),
+            "dall-e-3": MeshModelInfo(
+                id="dall-e-3",
+                name="dall-e-3",
+                backend="openai",
+                kind="image",
+                supports_edit=False,
+                default_size=1024,
+                max_count=1,
+            ),
+            "dall-e-2": MeshModelInfo(
+                id="dall-e-2",
+                name="dall-e-2",
+                backend="openai",
+                kind="image",
+                supports_edit=True,
+                default_size=1024,
+                max_count=10,
+            ),
+        }
+        if self.model and self.model not in known:
+            # custom deployment/endpoint model — surface it as the default entry
+            return [
+                MeshModelInfo(
+                    id=self.model,
+                    name=self.model,
+                    backend="openai",
+                    kind="image",
+                    supports_edit=True,
+                    default_size=1024,
+                    max_count=4,
+                ),
+                *known.values(),
+            ]
+        return list(known.values())
+
+    async def generate(
+        self,
+        req: ImageGenRequest,
+        on_progress: ProgressFn | None,
+        should_abort: Callable[[], Awaitable[bool]] | None = None,
+    ) -> ImageGenResult:
+        if not self.api_key:
+            raise ImageGenError(
+                "no api key for image backend 'openai' (image_api_key/llm_api_key)"
+            )
+        model = req.model if req.model and req.model != "auto" else self.model
+        n = max(1, req.count)
+        size = f"{req.width}x{req.height}"
+        if should_abort is not None and await should_abort():
+            raise ImageGenError("job cancelled by user")
+        if on_progress:
+            await on_progress("image generation running", 0.2)
+        t0 = time.monotonic()
+        if req.init_image is not None:
+            data = {
+                "model": model,
+                "prompt": req.prompt,
+                "n": str(n),
+                "size": size,
+            }
+            files = [
+                (
+                    "image",
+                    (
+                        req.init_image.name or "init.png",
+                        req.init_image.read_bytes(),
+                        "application/octet-stream",
+                    ),
+                )
+            ]
+            async with httpx.AsyncClient(timeout=self.timeout_s) as client:
+                r = await client.post(
+                    f"{self.base_url}/images/edits",
+                    data=data,
+                    files=files,
+                    headers=self._auth(),
+                )
+        else:
+            payload: dict[str, Any] = {
+                "model": model,
+                "prompt": req.prompt,
+                "n": n,
+                "size": size,
+            }
+            if model.startswith("dall-e"):
+                # gpt-image-1 always returns b64_json and rejects the param
+                payload["response_format"] = "b64_json"
+            async with httpx.AsyncClient(timeout=self.timeout_s) as client:
+                r = await client.post(
+                    f"{self.base_url}/images/generations",
+                    json=payload,
+                    headers=self._auth(),
+                )
+        if r.status_code != 200:
+            raise ImageGenError(f"image api error: {r.status_code} {r.text[:300]}")
+        entries = r.json().get("data") or []
+        req.out_dir.mkdir(parents=True, exist_ok=True)
+        paths: list[Path] = []
+        for i, entry in enumerate(entries[:n]):
+            blob: bytes | None = None
+            if entry.get("b64_json"):
+                blob = base64.b64decode(entry["b64_json"])
+            elif entry.get("url"):
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    dl = await client.get(str(entry["url"]))
+                if dl.status_code != 200:
+                    raise ImageGenError(f"image download failed: {dl.status_code}")
+                blob = dl.content
+            if blob is None:
+                continue
+            p = req.out_dir / f"image{i}.png"
+            p.write_bytes(blob)
+            paths.append(p)
+        if not paths:
+            raise ImageGenError("image api returned no usable images")
+        if on_progress:
+            await on_progress("image generation done", 1.0)
+        return ImageGenResult(
+            model=model,
+            backend="openai",
+            seed=req.seed,
+            steps=req.steps,
+            guidance=req.guidance,
+            duration_s=time.monotonic() - t0,
+            image_paths=paths,
+        )
+
+
 class FakeImageClient(ImagePort):
     """Deterministic generator for tests — PIL gradient from seed+prompt."""
 
@@ -291,11 +470,32 @@ def make_image_client(
     base_url: str | None = None,
     timeout_s: float | None = None,
     runtime_settings: RuntimeSettings | None = None,
+    backend: str | None = None,
 ) -> ImagePort | None:
-    """Build the image client — same sidecar as the mesh generator."""
+    """Build the image client for the configured backend.
+
+    ``backend`` overrides ``settings.image_backend``: ``"sidecar"`` talks to
+    the local mesh-server (mesh_base_url), ``"openai"`` to an
+    OpenAI-compatible images API (image_api_base/key fall back to the llm_*
+    provider)."""
     settings = runtime_settings or RuntimeSettings()
     if fake:
         return FakeImageClient()
+    mode = backend or settings.image_backend
+    if mode == "openai":
+        base = (settings.image_api_base or settings.llm_base_url).strip()
+        if not base:
+            return None
+        key = (
+            settings.image_api_key.get_secret_value()
+            or settings.llm_api_key.get_secret_value()
+        )
+        return OpenAIImageClient(
+            base,
+            key,
+            model=settings.image_openai_model,
+            timeout_s=timeout_s or settings.image_timeout_s,
+        )
     url = (base_url if base_url is not None else settings.mesh_base_url).strip()
     if not url:
         return None

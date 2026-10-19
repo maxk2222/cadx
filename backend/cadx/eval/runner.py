@@ -374,7 +374,7 @@ async def run_benchmark(
     eval_root: Path | None = None,
 ) -> EvalResult:
     from cadx.agent.mesh_client import make_mesh_client
-    from cadx.llm.client import LLMClient
+    from cadx.llm.client import make_llm
     from cadx.runtime_config import runtime_from_db_or_default
 
     project_id = uuid.uuid4()
@@ -389,7 +389,7 @@ async def run_benchmark(
         llm = FakeLLM(bm.llm_script)
         llm.tools_mode = bm.llm_tools
     elif llm is None:
-        llm = LLMClient(runtime_settings=runtime)
+        llm = make_llm(runtime)
 
     mesh = (
         make_mesh_client(fake=True) if bm.fake_mesh else make_mesh_client(runtime_settings=runtime)

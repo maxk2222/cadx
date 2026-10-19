@@ -828,7 +828,7 @@ async def test_run_meshgen_job_generates_processes_and_succeeds(monkeypatch):
 
     mesh = _FakeMesh()
     fake = _FakeMeshExec()
-    monkeypatch.setattr(wj, "_make_mesh", lambda _rt: mesh)
+    monkeypatch.setattr(wj, "_make_mesh", lambda _rt, **kw: mesh)
     monkeypatch.setattr(wj, "QueueExecutor", lambda *a, **k: fake)
 
     async with async_session() as db:

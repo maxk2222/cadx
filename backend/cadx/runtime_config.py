@@ -14,6 +14,13 @@ from cadx.db.models import AppSetting
 class RuntimeSettings(BaseModel):
     llm_base_url: str = "https://api.openai.com/v1"
     llm_api_key: SecretStr = SecretStr("")
+    # provider routing: "external" = llm_base_url provider (OpenAI-compatible
+    # cloud/self-hosted), "sidecar" = the OpenAI-compatible endpoint on the
+    # local mesh-server sidecar (mesh_base_url, no auth)
+    llm_backend: Literal["external", "sidecar"] = "external"
+    # optional single local model for both roles when llm_backend="sidecar"
+    # ("" = llm_model_vision/llm_model_code apply there too)
+    llm_sidecar_model: str = ""
     llm_model_vision: str = "gpt-4o"
     llm_model_code: str = "gpt-4o"
     llm_json_mode: Literal["json_object", "json_schema", "none"] = "json_object"
@@ -193,6 +200,17 @@ class RuntimeSettings(BaseModel):
     refine_helical_threads: bool = True
     mesh_base_url: str = ""
     mesh_model: str = "auto"
+    # provider routing: "sidecar" = local mesh-server, "tripo" = Tripo3D cloud
+    mesh_backend: Literal["sidecar", "tripo"] = "sidecar"
+    # provider routing: "sidecar" = local mesh-server, "openai" = OpenAI-
+    # compatible images API (image_api_base falls back to llm_base_url)
+    image_backend: Literal["sidecar", "openai"] = "sidecar"
+    tripo_api_key: SecretStr = SecretStr("")
+    tripo_api_base: str = "https://api.tripo3d.ai/v2/openapi"
+    tripo_model: str = "v2.5-20250123"
+    image_openai_model: str = "gpt-image-1"
+    image_api_base: str = ""  # empty -> llm_base_url
+    image_api_key: SecretStr = SecretStr("")  # empty -> llm_api_key
     image_model: str = "auto"
     image_edit_model: str = "auto"  # default adapter for edit/i2i requests
     image_default_strength: float = Field(default=0.6, gt=0, le=1)  # img2img denoise
@@ -258,19 +276,29 @@ class RuntimeSettings(BaseModel):
         """Sparse dict: only non-default values are persisted — an absent key
         means 'use the code default'."""
         value = self.model_dump(mode="python", exclude_defaults=True)
-        key = self.llm_api_key.get_secret_value()
-        if key:
-            value["llm_api_key"] = key
+        # non-default SecretStrs dump as SecretStr objects — replace with the
+        # raw secret so the JSON column stays serialisable (empty == default,
+        # already excluded)
+        for name in _SECRET_FIELDS:
+            key = getattr(self, name).get_secret_value()
+            if key:
+                value[name] = key
         return value
 
     def public_values(self) -> dict[str, Any]:
-        value = self.model_dump(exclude={"llm_api_key"})
-        value["llm_api_key_set"] = bool(self.llm_api_key.get_secret_value())
+        value = self.model_dump(exclude=set(_SECRET_FIELDS))
+        for name in _SECRET_FIELDS:
+            value[f"{name}_set"] = bool(getattr(self, name).get_secret_value())
         return value
 
     def executor_values(self) -> dict[str, Any]:
         """Subset shipped to the cad-executor process inside each task payload."""
         return self.model_dump(mode="json", include=_EXECUTOR_FIELDS)
+
+
+# write-only credentials — raw values live only in to_storage()/internal
+# use; public_values() exposes "<name>_set" booleans instead
+_SECRET_FIELDS = ("llm_api_key", "tripo_api_key", "image_api_key")
 
 
 _EXECUTOR_FIELDS = {

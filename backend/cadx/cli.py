@@ -208,7 +208,7 @@ def run(
         from cadx.agent.trace import MemoryTrace
         from cadx.agent.types import AgentCtx, InputAsset
         from cadx.db.models import ProjectSettings
-        from cadx.llm.client import LLMClient
+        from cadx.llm.client import make_llm
         from cadx.llm.fake import FakeLLM
         from cadx.runtime_config import runtime_from_db_or_default
 
@@ -224,7 +224,7 @@ def run(
             for p in images
         ]
         runtime = await runtime_from_db_or_default()
-        llm = FakeLLM(_fake_script(mode)) if fake else LLMClient(runtime_settings=runtime)
+        llm = FakeLLM(_fake_script(mode)) if fake else make_llm(runtime)
         mesh = (
             make_mesh_client(fake=True) if fake_mesh else make_mesh_client(runtime_settings=runtime)
         )

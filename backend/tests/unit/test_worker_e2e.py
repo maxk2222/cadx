@@ -79,7 +79,7 @@ async def _mk_version() -> tuple[Job, Version]:
 async def test_run_agent_job_end_to_end(_db, monkeypatch):
     monkeypatch.setattr(wj, "QueueExecutor", lambda *a, **k: InProcessExecutor())
     llm = FakeLLM([SPEC, PLAN, CODE, CRITIQUE])
-    monkeypatch.setattr(wj, "_make_llm", lambda rt: llm)
+    monkeypatch.setattr(wj, "_make_llm", lambda rt, **kw: llm)
 
     job, version = await _mk_version()
     result = await wj.run_agent_job({}, {"job_id": str(job.id), "version_id": str(version.id)})
@@ -135,7 +135,7 @@ async def test_run_agent_job_waiting_then_resume(_db, monkeypatch):
     spec = dict(SPEC)
     spec["open_questions"] = [{"question": "wall?", "blocking": True, "default_assumption": "2"}]
     llm = FakeLLM([spec])
-    monkeypatch.setattr(wj, "_make_llm", lambda rt: llm)
+    monkeypatch.setattr(wj, "_make_llm", lambda rt, **kw: llm)
     job, version = await _mk_version()
     # force clarification_mode=ask via project settings
     async with async_session() as db:

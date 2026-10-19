@@ -56,7 +56,7 @@ from cadx.db.models import (
     VersionStatus,
 )
 from cadx.db.session import session_scope
-from cadx.llm.client import LLMClient
+from cadx.llm.client import LLMClient, make_llm
 from cadx.llm.schemas import PartSpec
 from cadx.logging import get_logger
 from cadx.runtime_config import RuntimeSettings, load_runtime_settings
@@ -485,17 +485,19 @@ async def run_agent_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[st
                 )
 
         runtime_settings = await load_runtime_settings(db)
-        llm = _make_llm(runtime_settings)
-        emit = make_emit(job_id, tokens_fn=lambda: dict(getattr(llm, "total_usage", {}) or {}))
-        executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=runtime_settings)
-        trace = DbTrace(job_id)
-        mesh = _make_mesh(runtime_settings)
-        image = _make_image(runtime_settings)
-
         project = await db.get(Project, version.project_id)
         merged = _merge_settings((project.settings or {}) if project else {}, version.options or {})
+        # per-job backend/model overrides (RunOptions < project settings)
+        job_runtime = _job_runtime(runtime_settings, merged)
+        llm = _make_llm(job_runtime, backend=merged.llm_backend)
+        emit = make_emit(job_id, tokens_fn=lambda: dict(getattr(llm, "total_usage", {}) or {}))
+        executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=job_runtime)
+        trace = DbTrace(job_id)
+        mesh = _make_mesh(job_runtime, backend=merged.mesh_backend)
+        image = _make_image(job_runtime, backend=merged.image_backend)
+
         explicit_max_iterations = merged.max_iterations is not None
-        settings = _fill_settings(merged, runtime_settings)
+        settings = _fill_settings(merged, job_runtime)
 
         # assets
         asset_ids = version.asset_ids or []
@@ -550,7 +552,7 @@ async def run_agent_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[st
             mode=mode,
             prompt=version.prompt,
             settings=settings,
-            runtime_settings=runtime_settings,
+            runtime_settings=job_runtime,
             assets=input_assets,
             library_templates=library_templates,
             parent=parent_ctx,
@@ -1006,15 +1008,14 @@ async def run_meshgen_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[
         ]
 
         runtime_settings = await load_runtime_settings(db)
-        mesh_client = _make_mesh(runtime_settings)
+        project = await db.get(Project, version.project_id)
+        merged = _merge_settings((project.settings or {}) if project else {}, version.options or {})
+        job_runtime = _job_runtime(runtime_settings, merged)
+        mesh_client = _make_mesh(job_runtime, backend=merged.mesh_backend)
         if not await _mesh_available(mesh_client):
             return await _fail("mesh server not configured or unreachable")
-        executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=runtime_settings)
-        project = await db.get(Project, version.project_id)
-        settings = _fill_settings(
-            _merge_settings((project.settings or {}) if project else {}, version.options or {}),
-            runtime_settings,
-        )
+        executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=job_runtime)
+        settings = _fill_settings(merged, job_runtime)
 
         opts = version.options or {}
         subject = str(opts.get("subject") or version.prompt or "part")[:200]
@@ -1198,8 +1199,9 @@ async def _try_optimize_session(
             )
 
     sheet = storage.version_dir(parent.project_id, parent.id) / "contact_sheet.png"
+    job_runtime = _job_runtime(runtime_settings, settings)
     actx = AgentCtx(
-        llm=_make_llm(runtime_settings),
+        llm=_make_llm(job_runtime, backend=settings.llm_backend),
         executor=executor,
         trace=DbTrace(job_id),
         emit=emit,
@@ -1210,7 +1212,7 @@ async def _try_optimize_session(
         mode="generate",
         prompt=parent.prompt or "",
         settings=settings,
-        runtime_settings=runtime_settings,
+        runtime_settings=job_runtime,
         parent=_parent_ctx(version, parent),
         anchors=(parent.analysis or {}).get("anchors"),
     )
@@ -2493,17 +2495,37 @@ def _fill_settings(settings: ProjectSettings, runtime: RuntimeSettings) -> Proje
     return settings
 
 
-def _make_mesh(runtime: RuntimeSettings) -> MeshPort | None:
+def _job_runtime(runtime: RuntimeSettings, merged: ProjectSettings) -> RuntimeSettings:
+    """Effective runtime snapshot for one job: per-job provider/model
+    overrides (RunOptions keys merged into ProjectSettings) win over the
+    global defaults wherever the job's code path reads
+    ``ctx.runtime_settings.*``."""
+    updates: dict[str, Any] = {}
+    for key in (
+        "llm_backend",
+        "mesh_backend",
+        "image_backend",
+        "mesh_model",
+        "image_model",
+        "image_edit_model",
+    ):
+        v = getattr(merged, key, None)
+        if v:
+            updates[key] = v
+    return runtime.model_copy(update=updates) if updates else runtime
+
+
+def _make_mesh(runtime: RuntimeSettings, backend: str | None = None) -> MeshPort | None:
     return make_mesh_client(
-        base_url=runtime.mesh_base_url,
-        timeout_s=runtime.mesh_timeout_s,
+        runtime_settings=runtime,
+        backend=backend,
     )
 
 
-def _make_image(runtime: RuntimeSettings) -> ImagePort | None:
+def _make_image(runtime: RuntimeSettings, backend: str | None = None) -> ImagePort | None:
     return make_image_client(
-        base_url=runtime.mesh_base_url,  # same sidecar hosts the image adapters
-        timeout_s=runtime.image_timeout_s,
+        runtime_settings=runtime,
+        backend=backend,
     )
 
 
@@ -2526,8 +2548,8 @@ async def _mesh_available(client: MeshPort | None) -> bool:
         return False
 
 
-def _make_llm(runtime: RuntimeSettings) -> LLMClient:
-    return LLMClient(runtime_settings=runtime)
+def _make_llm(runtime: RuntimeSettings, backend: str | None = None) -> LLMClient:
+    return make_llm(runtime, backend=backend)
 
 
 def _copy_best_artifacts_ctxless(

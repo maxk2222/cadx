@@ -555,15 +555,15 @@ async def reap_orphaned_chats(ctx: dict[str, Any]) -> None:
 
 
 def _make_llm(runtime: RuntimeSettings):
-    from cadx.llm.client import LLMClient
+    from cadx.llm.client import make_llm
 
-    return LLMClient(runtime_settings=runtime)
+    return make_llm(runtime)
 
 
 def _make_image(runtime: RuntimeSettings):
     from cadx.agent.image_client import make_image_client
 
-    return make_image_client(base_url=runtime.mesh_base_url, timeout_s=runtime.image_timeout_s)
+    return make_image_client(runtime_settings=runtime)
 
 
 async def _image_available(client: Any) -> bool:

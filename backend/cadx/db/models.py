@@ -115,6 +115,13 @@ class ProjectSettings(BaseModel):
     include_fasteners: bool = False
     gen_mode: GenMode = "auto"
     mesh_model: str = ""
+    # provider backend overrides (None -> runtime default); RunOptions carries
+    # the same keys so per-run options merge over these project defaults
+    llm_backend: Literal["external", "sidecar"] | None = None
+    mesh_backend: Literal["sidecar", "tripo"] | None = None
+    image_backend: Literal["sidecar", "openai"] | None = None
+    image_model: str | None = None  # empty/None -> runtime default
+    image_edit_model: str | None = None
     mesh_steps: int | None = None
     mesh_guidance: float | None = None
     mesh_resolution: int | None = None

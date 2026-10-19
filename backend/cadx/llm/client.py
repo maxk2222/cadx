@@ -694,3 +694,35 @@ class LLMClient:
         except Exception as e:
             out["vision_error"] = str(e)
         return out
+
+
+def make_llm(runtime: RuntimeSettings, *, backend: str | None = None) -> LLMClient:
+    """Central LLM factory — resolves the configured provider backend.
+
+    ``backend`` overrides ``runtime.llm_backend`` (per-job RunOptions):
+
+    - ``"external"`` (default): ``llm_base_url`` + ``llm_api_key`` — OpenAI,
+      OpenRouter, vLLM, ... — the historical behaviour.
+    - ``"sidecar"``: the OpenAI-compatible chat endpoint hosted by the local
+      mesh-server sidecar at ``runtime.mesh_base_url`` (no auth). When
+      ``llm_sidecar_model`` is set it pins BOTH roles to that one local
+      model; otherwise the configured role models apply there too.
+    """
+    mode = backend or runtime.llm_backend
+    if mode == "sidecar":
+        base = runtime.mesh_base_url.strip().rstrip("/")
+        if not base:
+            raise ValueError("local sidecar not configured")
+        # the sidecar serves chat under /v1/chat/completions (mesh_base_url
+        # itself is version-agnostic — HttpMeshClient appends /v1 the same way)
+        if not base.endswith("/v1"):
+            base = f"{base}/v1"
+        model = runtime.llm_sidecar_model.strip() or None
+        return LLMClient(
+            base_url=base,
+            api_key="",
+            model_vision=model,
+            model_code=model,
+            runtime_settings=runtime,
+        )
+    return LLMClient(runtime_settings=runtime)

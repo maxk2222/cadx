@@ -790,14 +790,15 @@ async def test_settings_get_contains_no_secrets():
     res = await _StubSession().execute("settings_get", {})
     assert res["ok"]
     settings = res["settings"]
-    # NEVER the key material itself — only the presence flag
+    # NEVER the key material itself — only the presence flags
+    presence_flags = {"llm_api_key_set", "tripo_api_key_set", "image_api_key_set"}
     assert "llm_api_key" not in settings
     assert "llm_api_key_set" in settings
     forbidden = [
         k
         for k in settings
         if any(t in k.lower() for t in ("secret", "password", "api_key", "auth"))
-        and k != "llm_api_key_set"
+        and k not in presence_flags
     ]
     assert forbidden == [], forbidden
     json.dumps(settings)  # everything returned must be JSON-serialisable

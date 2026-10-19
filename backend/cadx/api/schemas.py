@@ -93,6 +93,13 @@ class RunOptions(BaseModel):
     max_iterations: int | None = Field(default=None, ge=1, le=200)
     max_repairs: int | None = Field(default=None, ge=0, le=200)
     pass_score: int | None = Field(default=None, ge=0, le=100)
+    # provider backend overrides (None -> project settings -> runtime default)
+    llm_backend: Literal["external", "sidecar"] | None = None
+    mesh_backend: Literal["sidecar", "tripo"] | None = None
+    image_backend: Literal["sidecar", "openai"] | None = None
+    mesh_model: str | None = Field(default=None, max_length=80)
+    image_model: str | None = Field(default=None, max_length=80)
+    image_edit_model: str | None = Field(default=None, max_length=80)
 
 
 class GenerateRequest(BaseModel):
@@ -514,6 +521,8 @@ class CatalogEntry(BaseModel):
 
 class SettingsOut(BaseModel):
     llm_base_url: str
+    llm_backend: Literal["external", "sidecar"]
+    llm_sidecar_model: str
     llm_model_vision: str
     llm_model_code: str
     llm_json_mode: str
@@ -591,6 +600,14 @@ class SettingsOut(BaseModel):
     refine_helical_threads: bool
     mesh_base_url: str
     mesh_model: str
+    mesh_backend: Literal["sidecar", "tripo"]
+    image_backend: Literal["sidecar", "openai"]
+    tripo_api_base: str
+    tripo_model: str
+    tripo_api_key_set: bool
+    image_openai_model: str
+    image_api_base: str
+    image_api_key_set: bool
     image_model: str
     image_edit_model: str
     image_steps: int | None
@@ -618,6 +635,8 @@ class SettingsUpdate(BaseModel):
     llm_base_url: str | None = None
     llm_api_key: str | None = Field(default=None, max_length=4000)
     clear_llm_api_key: bool = False
+    llm_backend: Literal["external", "sidecar"] | None = None
+    llm_sidecar_model: str | None = Field(default=None, max_length=200)
     llm_model_vision: str | None = Field(default=None, max_length=200)
     llm_model_code: str | None = Field(default=None, max_length=200)
     llm_json_mode: Literal["json_object", "json_schema", "none"] | None = None
@@ -694,6 +713,16 @@ class SettingsUpdate(BaseModel):
     refine_helical_threads: bool | None = None
     mesh_base_url: str | None = None
     mesh_model: str | None = Field(default=None, max_length=200)
+    mesh_backend: Literal["sidecar", "tripo"] | None = None
+    image_backend: Literal["sidecar", "openai"] | None = None
+    tripo_api_key: str | None = Field(default=None, max_length=4000)
+    clear_tripo_api_key: bool = False
+    tripo_api_base: str | None = Field(default=None, max_length=500)
+    tripo_model: str | None = Field(default=None, max_length=200)
+    image_api_key: str | None = Field(default=None, max_length=4000)
+    clear_image_api_key: bool = False
+    image_api_base: str | None = Field(default=None, max_length=500)
+    image_openai_model: str | None = Field(default=None, max_length=200)
     image_model: str | None = Field(default=None, max_length=200)
     image_edit_model: str | None = Field(default=None, max_length=200)
     image_default_strength: float | None = Field(default=None, gt=0, le=1)
@@ -719,7 +748,7 @@ class MeshModelOut(BaseModel):
     name: str = ""
     device: str = ""
     backend: str = ""
-    kind: str = "mesh"  # "mesh" | "image"
+    kind: Literal["mesh", "image", "llm"] = "mesh"  # adapter family on the sidecar
     supports_multiview: bool = False
     max_images: int = 1
     license_note: str = ""
@@ -730,6 +759,65 @@ class MeshModelOut(BaseModel):
     max_count: int | None = None
     supports_edit: bool = False  # accepts an init image (img2img/instruction edit)
     requires_image: bool = False  # edit-only adapter, no txt2img
+    # model-management fields — all defaulted so older sidecars still parse
+    downloaded: bool = False
+    downloading: bool = False
+    size_gb: float | None = None
+    est_mem_mb: int | None = None
+    supports_vision: bool = False
+    supports_tools: bool = False
+    pinned: bool = False
+    custom: bool = False
+
+
+class QueueJobOut(BaseModel):
+    """One queued/running generation job on the sidecar."""
+
+    id: str = ""
+    kind: str = ""
+    model: str = ""
+    resolved_model: str = ""
+    status: str = ""
+    waited_s: float = 0.0
+    est_mem_mb: int | None = None
+    message: str = ""
+
+
+class QueueResidentOut(BaseModel):
+    """One model resident in sidecar memory."""
+
+    id: str = ""
+    mb: int = 0
+    kind: str = ""
+    pinned: bool = False
+    idle_s: float = 0.0
+
+
+class QueueInfoOut(BaseModel):
+    jobs: list[QueueJobOut] = Field(default_factory=list)
+    free_mb: float | None = None
+    residents: list[QueueResidentOut] = Field(default_factory=list)
+
+
+class DownloadStatusOut(BaseModel):
+    status: Literal["idle", "downloading", "done", "error"] = "idle"
+    bytes_done: int = 0
+    bytes_total: int | None = None
+    error: str | None = None
+
+
+class MeshRegisterIn(BaseModel):
+    """Register a custom model (HuggingFace repo) on the sidecar."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    repo: str = Field(min_length=1, max_length=300)
+    kind: Literal["llm", "mesh", "image"]
+    backend: str | None = Field(default=None, max_length=60)
+    name: str | None = Field(default=None, max_length=200)
+    vision: bool | None = None
+    tools: bool | None = None
+    est_mem_mb: int | None = Field(default=None, ge=0)
 
 
 # --------------------------------------------------------------------------- #
