@@ -46,33 +46,52 @@ async def version_code(version_id: uuid.UUID, db: AsyncSession = Depends(get_ses
     return PlainTextResponse(v.code or "")
 
 
-_PREVIEW_PREFER = ("iso.png", "contact_sheet.png", "thumbnail.png")
+_PREVIEW_PREFER = ("iso", "contact_sheet", "orient_sheet", "thumbnail")
 _VIEW_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
-def _render_dirs(v_dir: Path) -> list[tuple[Path, Path]]:
-    """(renders_dir, base_dir) pairs, finalized renders first then newest
-    iteration. `base_dir` holds contact_sheet.png / fem/ next to renders/."""
-    dirs = [(v_dir / "renders", v_dir)]
+def _pngs(d: Path) -> list[Path]:
+    return sorted(d.glob("*.png")) if d.is_dir() else []
+
+
+def _base_views(base: Path) -> dict[str, Path]:
+    """All live-previewable images of one artifact dir: renders/<view>.png,
+    the contact/orient sheet and thumbnail at the base level, fem/*.png."""
+    views = {p.stem: p for p in _pngs(base / "renders")}
+    for name in ("contact_sheet", "orient_sheet", "thumbnail"):
+        p = base / f"{name}.png"
+        if p.exists():
+            views[name] = p
+    views.update({f"fem:{p.stem}": p for p in _pngs(base / "fem")})
+    return views
+
+
+def _render_bases(v_dir: Path) -> list[tuple[Path, int | None, dict[str, Path]]]:
+    """(base_dir, iteration, views) with previewable images — freshest write
+    first. The finalized set at the version root (iteration=None) wins equal
+    mtimes: shutil.copy2 keeps the source mtime, so a tie means it IS the
+    newest iteration's render. Every exec writes into its own per-attempt
+    subdir (a1, a2, parametrize, …) so iteration dirs are scanned one level
+    deep — otherwise a running job would look like it produced no renders."""
+    out: list[tuple[float, int, Path, int | None, dict[str, Path]]] = []
+
+    def add(base: Path, it: int | None, prio: int) -> None:
+        views = _base_views(base)
+        if views:
+            out.append((max(p.stat().st_mtime for p in views.values()), prio, base, it, views))
+
+    add(v_dir, None, 1)
     it_root = v_dir / "iterations"
     if it_root.is_dir():
-        its = sorted(
-            (d for d in it_root.iterdir() if d.is_dir() and d.name.isdigit()),
-            key=lambda d: int(d.name),
-            reverse=True,
-        )
-        dirs += [(d / "renders", d) for d in its]
-    return dirs
-
-
-def _view_png(rdir: Path, base: Path, view: str) -> Path:
-    """Resolve a view name: render stems -> renders/<view>.png,
-    'contact_sheet' -> <iter>/contact_sheet.png, 'fem:<x>' -> <iter>/fem/<x>.png."""
-    if view == "contact_sheet":
-        return base / "contact_sheet.png"
-    if view.startswith("fem:"):
-        return base / "fem" / f"{view[4:]}.png"
-    return rdir / f"{view}.png"
+        for it in it_root.iterdir():
+            if not (it.is_dir() and it.name.isdigit()):
+                continue
+            add(it, int(it.name), 0)
+            for sub in it.iterdir():
+                if sub.is_dir():
+                    add(sub, int(it.name), 0)
+    out.sort(key=lambda t: (t[0], t[1]), reverse=True)
+    return [(b, it, vws) for _f, _p, b, it, vws in out]
 
 
 def _png(p: Path) -> FileResponse:
@@ -83,50 +102,24 @@ def _png(p: Path) -> FileResponse:
 async def live_renders(version_id: uuid.UUID, db: AsyncSession = Depends(get_session)):
     """Which render views exist right now (for the running-job live preview).
 
-    Finalized renders (version root) win; otherwise the newest iteration dir.
-    """
+    Freshest write wins: finalized renders at the version root once the job
+    promotes its winner, otherwise the newest attempt's renders — including
+    per-attempt subdirs under each iteration."""
     v = await db.get(Version, version_id)
     if not v:
         raise HTTPException(404, "version not found")
     v_dir = storage.version_dir(v.project_id, v.id)
-    it_root = v_dir / "iterations"
 
-    root_pngs = sorted((v_dir / "renders").glob("*.png")) if (v_dir / "renders").is_dir() else []
-    if root_pngs:
-        views = sorted(p.stem for p in root_pngs)
-        if (v_dir / "contact_sheet.png").exists():
-            views.append("contact_sheet")
-        return {
-            "iteration": None,
-            "views": views,
-            "mtime": max(p.stat().st_mtime for p in root_pngs),
-            "final": True,
-        }
-
-    if it_root.is_dir():
-        its = sorted(
-            (d for d in it_root.iterdir() if d.is_dir() and d.name.isdigit()),
-            key=lambda d: int(d.name),
-            reverse=True,
-        )
-        for d in its:
-            rdir = d / "renders"
-            pngs = sorted(rdir.glob("*.png")) if rdir.is_dir() else []
-            if not pngs:
-                continue
-            views = sorted(p.stem for p in pngs)
-            if (d / "contact_sheet.png").exists():
-                views.append("contact_sheet")
-            fem_dir = d / "fem"
-            if fem_dir.is_dir():
-                views += [f"fem:{p.stem}" for p in sorted(fem_dir.glob("*.png"))]
-            return {
-                "iteration": int(d.name),
-                "views": views,
-                "mtime": max(p.stat().st_mtime for p in pngs),
-                "final": False,
-            }
-    return {"iteration": None, "views": [], "mtime": 0.0, "final": False}
+    sets = _render_bases(v_dir)
+    if not sets:
+        return {"iteration": None, "views": [], "mtime": 0.0, "final": False}
+    _base, it_no, views_map = sets[0]
+    return {
+        "iteration": it_no,
+        "views": sorted(views_map),
+        "mtime": max(p.stat().st_mtime for p in views_map.values()),
+        "final": it_no is None,
+    }
 
 
 @router.get("/versions/{version_id}/preview")
@@ -137,10 +130,12 @@ async def version_preview(
 ):
     """Newest render image — provisional while a job is running.
 
-    The executor writes renders under versions/<vid>/iterations/<n>/renders/
-    on the shared DATA_DIR volume; artifacts only land at finalize, so this
-    scans the directories directly. Finalized renders (version root) win.
-    `view` picks a specific render (stem name, 'contact_sheet', 'fem:<stem>').
+    The executor writes renders under
+    versions/<vid>/iterations/<n>/<attempt>/renders/ on the shared DATA_DIR
+    volume; artifacts only land at the version root at finalize, so this
+    scans the directories directly — freshest write first (_render_bases).
+    `view` picks a specific render (stem name, 'contact_sheet',
+    'orient_sheet', 'thumbnail', 'fem:<stem>').
     """
     v = await db.get(Version, version_id)
     if not v:
@@ -148,20 +143,18 @@ async def version_preview(
     if view is not None and not _VIEW_RE.fullmatch(view.removeprefix("fem:")):
         raise HTTPException(400, "invalid view name")
     v_dir = storage.version_dir(v.project_id, v.id)
-    dirs = _render_dirs(v_dir)
+    sets = _render_bases(v_dir)
     if view is not None:
-        for rdir, base in dirs:
-            p = _view_png(rdir, base, view)
-            if p.exists():
+        for _base, _it, views_map in sets:
+            p = views_map.get(view)
+            if p is not None:
                 return _png(p)
         raise HTTPException(404, f"no render for view '{view}'")
-    for rdir, _base in dirs:
+    for _base, _it, views_map in sets:
         for name in _PREVIEW_PREFER:
-            p = rdir / name
-            if p.exists():
+            p = views_map.get(name)
+            if p is not None:
                 return _png(p)
-        if rdir.is_dir():
-            pngs = sorted(rdir.glob("*.png"), key=lambda x: x.stat().st_mtime, reverse=True)
-            if pngs:
-                return _png(pngs[0])
+        newest = max(views_map.values(), key=lambda p: p.stat().st_mtime)
+        return _png(newest)
     raise HTTPException(404, "no preview yet")

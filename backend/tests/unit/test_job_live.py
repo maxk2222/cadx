@@ -6,6 +6,10 @@ Plus the live-renders manifest + ?view= preview selection."""
 from __future__ import annotations
 
 import io
+import os
+import time
+import uuid
+from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -259,6 +263,95 @@ async def test_live_renders_and_view_selection(client):
     (fdir / "iso.png").write_bytes(_png_bytes())
     r = await client.get(f"/api/versions/{vid}/live-renders")
     assert r.json()["final"] is True and r.json()["iteration"] is None
+
+
+async def _mk_version(name: str) -> tuple[uuid.UUID, uuid.UUID]:
+    async with async_session() as db:
+        p = Project(name=name)
+        db.add(p)
+        await db.flush()
+        v = Version(project_id=p.id, number=1, kind=VersionKind.generate, prompt="x")
+        db.add(v)
+        await db.flush()
+        vid, pid = v.id, p.id
+        await db.commit()
+    return vid, pid
+
+
+def _touch(p: Path, when: float) -> None:
+    os.utime(p, (when, when))
+
+
+async def test_live_renders_attempt_subdirs(client):
+    """Per-attempt artifact dirs (a1, a2, parametrize, …) must be discovered —
+    the executor never writes iterations/<n>/renders directly anymore."""
+    vid, pid = await _mk_version("renders-attempts")
+
+    it = storage.iteration_dir(pid, vid, 2)
+    a1 = it / "a1" / "renders"
+    a1.mkdir(parents=True)
+    (a1 / "iso.png").write_bytes(_png_bytes())
+    (it / "a1" / "contact_sheet.png").write_bytes(_png_bytes())
+
+    r = await client.get(f"/api/versions/{vid}/live-renders")
+    assert r.status_code == 200
+    assert r.json()["iteration"] == 2
+    assert sorted(r.json()["views"]) == ["contact_sheet", "iso"]
+    assert r.json()["final"] is False
+
+    r = await client.get(f"/api/versions/{vid}/preview?view=iso")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "image/png"
+    # no-view fallback must reach into the attempt dir too
+    r = await client.get(f"/api/versions/{vid}/preview")
+    assert r.status_code == 200
+
+    # a newer attempt outranks the earlier one — its extra view proves the pick
+    a2 = it / "a2" / "renders"
+    a2.mkdir(parents=True)
+    (a2 / "iso.png").write_bytes(_png_bytes())
+    (a2 / "top.png").write_bytes(_png_bytes())
+    newer = time.time() + 60
+    _touch(a2 / "iso.png", newer)
+    _touch(a2 / "top.png", newer)
+
+    r = await client.get(f"/api/versions/{vid}/live-renders")
+    assert sorted(r.json()["views"]) == ["iso", "top"]
+    assert r.json()["iteration"] == 2
+
+
+async def test_live_renders_aux_and_rerun_freshness(client):
+    """orient_sheet/fem views are listed, and a re-run on a version with
+    finalized renders must surface the fresh iteration (always newest)."""
+    vid, pid = await _mk_version("renders-rerun")
+
+    # finalized root renders (old)
+    rdir = storage.version_dir(pid, vid) / "renders"
+    rdir.mkdir(parents=True)
+    (rdir / "iso.png").write_bytes(_png_bytes())
+    old = time.time() - 3600
+    _touch(rdir / "iso.png", old)
+
+    r = await client.get(f"/api/versions/{vid}/live-renders")
+    assert r.json()["final"] is True
+
+    # a new run's attempt renders are newer than the finalized copy
+    base = storage.iteration_dir(pid, vid, 7) / "a3"
+    (base / "renders").mkdir(parents=True)
+    (base / "fem").mkdir()
+    (base / "renders" / "iso.png").write_bytes(_png_bytes())
+    (base / "orient_sheet.png").write_bytes(_png_bytes())
+    (base / "fem" / "stress.png").write_bytes(_png_bytes())
+
+    r = await client.get(f"/api/versions/{vid}/live-renders")
+    d = r.json()
+    assert d["final"] is False and d["iteration"] == 7
+    assert sorted(d["views"]) == ["fem:stress", "iso", "orient_sheet"]
+
+    r = await client.get(f"/api/versions/{vid}/preview?view=orient_sheet")
+    assert r.status_code == 200
+    r = await client.get(f"/api/versions/{vid}/preview?view=fem:stress")
+    assert r.status_code == 200
 
 
 async def test_jobs_list_endpoint(client):
