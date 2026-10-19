@@ -231,3 +231,100 @@ def test_normalize_positions_multi_offset_untouched() -> None:
     )
     notes = normalize_feature_positions(s)
     assert not notes
+
+
+def _handle_spec() -> PartSpec:
+    """The observed mis-parse: '120 x 40 x 30' -> height_z=120 (echoing
+    length_x) while every feature says z <= 30."""
+    return PartSpec(
+        name="Tragegriff",
+        summary="arched carry handle",
+        length_x={"value": 120.0, "source": "stated"},
+        width_y={"value": 40.0, "source": "stated"},
+        height_z={"value": 120.0, "source": "stated"},
+        features=[
+            {
+                "name": "arch",
+                "type": "arch",
+                "dims": {"height": 30},
+                "position": "zentriert, x=-45 bis +45, Scheitel bei z=30",
+            },
+            {
+                "name": "tab -x",
+                "type": "boss",
+                "dims": {"length": 30, "thickness": 6},
+                "position": "x=-60 bis -30, y=-10 bis +10, z=0 bis 6",
+            },
+            {
+                "name": "tab +x",
+                "type": "boss",
+                "dims": {"length": 30, "thickness": 6},
+                "position": "x=+30 bis +60, y=-10 bis +10, z=0 bis 6",
+            },
+        ],
+        image_roles=[],
+    )
+
+
+def test_dim_echo_recovers_misread_height() -> None:
+    from cadx.agent.steps.intake import sanitize_dim_echo
+
+    s = _handle_spec()
+    notes = sanitize_dim_echo(s, "Bügel ca. 120 x 40 x 30 mm")
+    assert notes
+    assert s.height_z.value == 30.0
+    # x stays: feature extents -60..+60 match the declared 120
+    assert s.length_x.value == 120.0
+
+
+def test_dim_echo_ignores_consistent_dims() -> None:
+    from cadx.agent.steps.intake import sanitize_dim_echo
+
+    s = _handle_spec()
+    s.height_z = s.height_z.model_copy(update={"value": 30.0})
+    assert sanitize_dim_echo(s, "Bügel ca. 120 x 40 x 30 mm") == []
+
+
+def test_dim_echo_needs_the_echo_signature() -> None:
+    """A unique large dim is NOT rewritten — features legitimately may not
+    span the full envelope."""
+    from cadx.agent.steps.intake import sanitize_dim_echo
+
+    s = _handle_spec()
+    s.height_z = s.height_z.model_copy(update={"value": 95.0})  # unique, no echo
+    assert sanitize_dim_echo(s, "Bügel ca. 120 x 40 x 30 mm") == []
+
+
+def test_dim_echo_prefers_unmatched_prompt_value() -> None:
+    """'120 x 40 x 90' mis-parsed as z=120: the prompt's own 90 is stronger
+    evidence than the features' 30 — the prompt is ground truth."""
+    from cadx.agent.steps.intake import sanitize_dim_echo
+
+    s = _handle_spec()
+    notes = sanitize_dim_echo(s, "Bügel ca. 120 x 40 x 90 mm")
+    assert notes
+    assert s.height_z.value == 90.0
+
+
+def test_dim_echo_no_mm_prompt_uses_feature_extent() -> None:
+    """A dim-free prompt gives nothing to check against — the spec's own
+    feature extent is the best remaining evidence."""
+    from cadx.agent.steps.intake import sanitize_dim_echo
+
+    s = _handle_spec()
+    notes = sanitize_dim_echo(s, "ein Griff mit Laschen")
+    assert notes
+    assert s.height_z.value == 30.0
+
+
+def test_dim_echo_leaves_ambiguous_contradiction() -> None:
+    """Prompt states dims, the suggested extent is none of them and no
+    orphan value exists — rewriting would trade a guess for a guess."""
+    from cadx.agent.steps.intake import sanitize_dim_echo
+
+    s = _handle_spec()
+    # prompt claims 70 for z; the feature extent 30 has no footing, and 70
+    # is itself unmatched so it becomes the orphan -> rewritten to 70
+    notes = sanitize_dim_echo(s, "Bügel ca. 120 x 40 x 70 mm")
+    assert notes
+    assert s.height_z.value == 70.0

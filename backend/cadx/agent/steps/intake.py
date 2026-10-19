@@ -99,6 +99,86 @@ def sanitize_dims(spec: PartSpec, prompt: str) -> list[str]:
 
 
 _AXIS_COORD_RE = re.compile(r"\b([xyz])\s*=\s*([+-]?\d+(?:\.\d+)?)", re.IGNORECASE)
+_AXIS_RANGE_RE = re.compile(
+    r"\b([xyz])\s*=\s*([+-]?\d+(?:\.\d+)?)\s*(?:bis|to|\u2013|\u2014|\.\.)\s*([+-]?\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+_APEX_RE = re.compile(
+    r"\b(?:scheitel|apex|peak|oberkante|top)\s*(?:bei|at)?\s*([xyz])?\s*=?\s*(\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+
+
+def _feature_axis_extent(spec: PartSpec, axis: str) -> float:
+    """Largest |coordinate| the features claim along `axis` — from position
+    ranges ("x=-60 bis -30"), single coords and apex notes ("Scheitel z=30").
+    For z (0-based frame) the extent IS the max coordinate; for x/y the
+    caller compares against half the declared span."""
+    extent = 0.0
+    for f in spec.features:
+        pos = str(f.position or "")
+        for m in _AXIS_RANGE_RE.finditer(pos):
+            if m.group(1).lower() == axis:
+                extent = max(extent, abs(float(m.group(2))), abs(float(m.group(3))))
+        for m in _AXIS_COORD_RE.finditer(pos):
+            if m.group(1).lower() == axis:
+                extent = max(extent, abs(float(m.group(2))))
+        m = _APEX_RE.search(pos)
+        if m and (m.group(1) or "z").lower() == axis:
+            extent = max(extent, float(m.group(2)))
+    return extent
+
+
+def sanitize_dim_echo(spec: PartSpec, prompt: str) -> list[str]:
+    """Recover a declared bbox dim that echoes another axis's value while the
+    spec's own feature positions contradict it (observed: '120 x 40 x 30'
+    mis-parsed as height_z=120 duplicating length_x, while every feature
+    said z<=30). Only fires on the echo signature + a large contradiction —
+    features legitimately do not always span the full envelope, so a mere
+    mismatch is not enough. The replacement must appear in the prompt text.
+    """
+    notes: list[str] = []
+    dims = {"x": spec.length_x, "y": spec.width_y, "z": spec.height_z}
+    stated = {
+        ax: float(d.value)
+        for ax, d in dims.items()
+        if d is not None and d.source == "stated" and float(d.value or 0) > 0
+    }
+    if len(stated) < 2:
+        return notes
+    prompt_vals = set(_prompt_mm_values(prompt or ""))
+    for ax, v in stated.items():
+        echoes = any(v == w for other, w in stated.items() if other != ax)
+        if not echoes:
+            continue
+        extent = _feature_axis_extent(spec, ax)
+        if not extent:
+            continue
+        # z positions are 0-based extents; x/y are centred half-extents
+        expected = extent if ax == "z" else extent * 2.0
+        if v <= expected * 1.5:
+            continue
+        # prompt values no stated dim claims — the strongest ground truth for
+        # what the echoing dim was meant to be (e.g. "120 x 40 x 90" parsed
+        # as z=120: 90 is the orphaned truth)
+        unmatched = [p for p in prompt_vals if not any(abs(p - w) < 1.0 for w in stated.values())]
+        if unmatched:
+            new_v = min(unmatched, key=lambda p: abs(p - expected))
+        elif not prompt_vals or any(abs(expected - p) < 1.0 for p in prompt_vals):
+            new_v = expected  # feature extent has footing or nothing to check against
+        else:
+            continue  # prompt states dims and the smaller extent is not among them
+        notes.append(
+            f"{ax} dim {v:g} duplicates another axis but features only reach "
+            f"{expected:g} — re-stated {ax}={new_v:g}"
+        )
+        d = dims[ax]
+        setattr(
+            spec,
+            {"x": "length_x", "y": "width_y", "z": "height_z"}[ax],
+            d.model_copy(update={"value": new_v}),
+        )
+    return notes
 
 
 def normalize_feature_positions(spec: PartSpec) -> list[str]:
@@ -337,6 +417,8 @@ async def run(ctx: AgentCtx) -> PartSpec:
         _repair_image_roles(spec, ctx)
         sanitize_load_cases(spec)
         sanitize_dims(spec, ctx.prompt or "")
+        for note in sanitize_dim_echo(spec, ctx.prompt or ""):
+            log.info("intake.dim_echo_fixed", note=note)
         if not spec.process:
             spec.process = ctx.settings.process
         ctx.spec = spec
@@ -364,6 +446,8 @@ async def run(ctx: AgentCtx) -> PartSpec:
     _repair_image_roles(spec, ctx)
     sanitize_load_cases(spec)
     sanitize_dims(spec, ctx.prompt or "")
+    for note in sanitize_dim_echo(spec, ctx.prompt or ""):
+        log.info("intake.dim_echo_fixed", note=note)
     if not spec.process:
         spec.process = ctx.settings.process
     ctx.spec = spec
