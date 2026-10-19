@@ -202,7 +202,7 @@ async def test_no_answer_becomes_major_verify_issue() -> None:
     assert vq[0].what == QUESTIONS[0]
     assert "horizontal" in vq[0].fix_hint
     assert c.passed is False
-    assert c.score <= 75  # one major -> normalize_score ceiling
+    assert c.score <= 90  # one verify_question major -> ceiling (vq weigh 10)
 
 
 async def test_unclear_with_evidence_becomes_issue() -> None:

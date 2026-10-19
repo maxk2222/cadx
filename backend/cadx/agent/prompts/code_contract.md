@@ -62,6 +62,25 @@
      vertical case directly: `oblong_slot(6.5, 15, direction="+z", normal="+x")`
      cuts a slot running along Z through a wall thin in X — prefer it over
      hand-rolled sketches whenever the axes fit.
+   - Axes to faces: a hole/slot with `axis="x"` opens on the ±X faces — the
+     bore line runs along X and the cutter frame must map local +Z onto X
+     (`Pos(x, y, z) * Rot(0, 90, 0)` or an equivalent `Plane`); `axis="y"`
+     maps onto Y (`Rot(-90, 0, 0)`); `axis="z"` is the un-rotated default.
+     When a sketch on `Plane.XZ`/`Plane.YZ` must cut material on BOTH sides
+     of the plane, pass `both=True` to `extrude` — the default one-sided
+     extrude can miss the wall entirely.
+   - HOST-BOUNDED holes: in multi-body parts (brackets, housings) a through-
+     hole pierces ONLY the plate it is declared in — never keep drilling
+     down the whole axis line: the bore would also cut a strut/rib/opposite
+     wall on that line and fails verification. Put the hole workplane on the
+     host plate's outer (hi) face and bound the cut to the host thickness
+     (`through_hole(d, depth=host_thickness + 0.5)`), unless the spec says
+     the bore goes through several bodies.
+   - DIAGONAL BRACE / STRUT / "Strebe" is a straight rectangular bar between
+     two points — `cadlib.strut(p0, p1, width, thickness)`. It is NOT a
+     filled triangular gusset: only build `rib()`/triangles when the spec
+     explicitly wants a gusset/rib. A filled gusset under a declared bore
+     line gets drilled by the hole and then fails "brace width" checks.
    - Turned/revolved parts (grips, nozzles, bodies of revolution): build the
      profile as `(x, radius)` points in `BuildSketch(Plane.XZ)` — u maps to
      X, v is the radial distance — and close the profile DOWN TO THE AXIS
@@ -84,49 +103,7 @@
    - `measure(shape)` -> dict with volume, bbox and face/solid counts.
    - `find_holes(shape)` -> list of holes, each with position, diameter, depth, axis.
    - `bbox_dims(shape)` -> `[dx, dy, dz]` overall extents in mm.
-7. HYBRID MODE (only when the context mentions it): `load_mesh_solid() -> Shape` returns
-   the generated organic mesh as a faceted B-Rep solid, and `MESH_BBOX` holds its
-   `[L, W, H]` in mm. The solid is already oriented and scaled: it rests on XY and is
-   centred at the origin. Rules for mesh solids:
-   - NEVER rotate, mirror or translate the mesh solid — it is already in the part
-     frame: `MESH_BBOX[0]` is the length along X (the part's main axis),
-     `MESH_BBOX[1]` the width along Y, `MESH_BBOX[2]` the height along Z.
-   - add exact features ONLY via boolean ops on primitives: `mesh - Cylinder(...)` for
-     holes/bores, `mesh - Box(...)` or `split` for flat mounting faces, `mesh + Box(...)`/
-     `mesh + extrude(...)` for flanges and bosses.
-   - NEVER assign the result of an intersection back to the body:
-     `body = body & tool`, `body = body.common(tool)` and `body = body.intersect(tool)`
-     can return `None` on faceted mesh solids (OCC fails silently — the part then
-     becomes None and the run reports "no result assigned"). To intersect, use
-     `body = cadlib.mesh_intersect(body, tool)` (raises a real error). To flatten
-     the underside use `body = cadlib.trim_below(body, z=0)` — a cut, not an
-     intersection.
-   - Booleans on mesh solids can shed sub-mm SLIVER solids — the result then
-     holds several disconnected fragments and fails the single-part check.
-     Wrap cuts and fuses in `cadlib.mesh_cut(body, tool)` /
-     `cadlib.mesh_fuse(body, tool)` so debris is dropped at the op; plain
-     `body -= tool` / `body += tool` are accepted but less safe. Finish with
-     `result = cadlib.collapse_solids(body)` as a last-line guard.
-   - NEVER call fillet/chamfer on mesh edges and never select mesh faces via
-     `faces().filter_by(...)` — the solid has thousands of triangular facets; address
-     positions numerically (bbox from `MESH_BBOX`, e.g. centred hole:
-     `Cylinder(radius=..., height=MESH_BBOX[2]*3)` through Z=0).
-   - Organic bodies are curved/asymmetric: the bbox centreline is NOT the body's
-     spine. `spine_y(x)` returns the body's material-centre Y at position x
-     (`spine_x(y)` vice versa). ALWAYS place positioned features (holes, pockets)
-     on the spine, NEVER at y=0/x=0: a centreline hole at x=+40 goes to
-     `y = spine_y(40)`. `MESH_PROFILE` maps `"x"`/`"y"` to rows
-     `[pos, min_a, max_a, min_b, max_b]` — the actual material extent per axis
-     slice — when you need margins rather than the centre.
-   - `top_z(x, y)` returns the body's LOCAL top-surface height directly above that
-     point (falls back to MESH_BBOX[2] outside the silhouette). Organic tops dip
-     several mm below the global bbox max — countersinks, pockets and recesses
-     anchored at `MESH_BBOX[2]` float in air and cut NOTHING. Anchor them to the
-     local surface: `zt = top_z(x, y); cone_center_z = zt - depth/2`. Extend
-     shallow cutters slightly above `zt` so they break through local peaks.
-   - `result` must contain the mesh solid (possibly with additions/cuts). Do not replace
-     it with a parametric approximation.
-7b. MEASURED PLAN VIEW (only when the context shows "measured image features"):
+7. MEASURED PLAN VIEW (only when the context shows "measured image features"):
    - `anchor_holes()` returns the hole positions measured from the top-view image
      as a list of `{"index", "x", "y", "dia", "axis"}` dicts (XY in the part frame, the
      origin at the bbox centre — same frame as `MESH_BBOX`). `axis` is the

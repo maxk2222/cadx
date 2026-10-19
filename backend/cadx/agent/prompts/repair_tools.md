@@ -18,6 +18,6 @@ Guidance:
   Mode.SUBTRACT before any base geometry exists.
 - If a bd_warehouse call failed with "invalid size" / "invalid fastener_type",
   look up the nearest valid value with `search_catalog` / `lookup_part`.
-- Boolean errors on the hybrid mesh solid (`load_mesh_solid`): use simple
-  convex primitives oversized to fully intersect, positioned from `MESH_BBOX`;
-  prefer `result = mesh_solid - tool` algebra over builder contexts.
+- On a faceted mesh solid (hybrid mode only): use simple convex primitives
+  oversized to fully intersect; prefer `result = body - tool` algebra over
+  builder contexts.

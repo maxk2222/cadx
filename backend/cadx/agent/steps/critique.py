@@ -165,17 +165,19 @@ async def run(
         )
         assert isinstance(resp.parsed, Critique)
         critique = resp.parsed
-    await ctx.trace.record(
-        step=STEP,
-        iteration=iteration,
-        model=resp.model,
-        messages=messages,
-        response_text=resp.text,
-        parsed=critique.model_dump(),
-        prompt_tokens=resp.prompt_tokens,
-        completion_tokens=resp.completion_tokens,
-        latency_ms=resp.latency_ms,
-    )
+        # the tool session already wrote its own step=STEP record(s) — only
+        # the one-shot path writes here, else token stats double-count
+        await ctx.trace.record(
+            step=STEP,
+            iteration=iteration,
+            model=resp.model,
+            messages=messages,
+            response_text=resp.text,
+            parsed=critique.model_dump(),
+            prompt_tokens=resp.prompt_tokens,
+            completion_tokens=resp.completion_tokens,
+            latency_ms=resp.latency_ms,
+        )
 
     # empty-discrepancy guard: a failing score with no issues listed gives the
     # loop nothing to fix — re-ask once for concrete problems.
@@ -564,7 +566,15 @@ def normalize_score(critique: Critique) -> Critique:
     if critique.discrepancies:
         n_major = sum(1 for d in critique.discrepancies if d.severity == "major")
         n_minor = len(critique.discrepancies) - n_major
-        ceiling = max(0, 100 - 25 * n_major - 10 * n_minor)
+        # verify_question majors weigh less: a "no" answer usually duplicates
+        # a discrepancy the critic already listed (observed: one missing-hole
+        # pair -> 4 majors -> score clamped to 0, no gradient left)
+        n_major_vq = sum(
+            1
+            for d in critique.discrepancies
+            if d.severity == "major" and d.source == "verify_question"
+        )
+        ceiling = max(0, 100 - 25 * (n_major - n_major_vq) - 10 * n_major_vq - 10 * n_minor)
         if critique.score > ceiling:
             critique.score = ceiling
     elif critique.score < 60:

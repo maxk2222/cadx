@@ -180,3 +180,35 @@ def _finalize(plan: ModelingPlan, forced: str) -> None:
     elif not plan.strategy:
         plan.strategy = [plan.approach]
     plan.approach = plan.strategy[0]
+
+
+# plan-step wording that only makes sense for mesh/hybrid generation — a CAD
+# fallback must never see them (the codegen prompt echoes `steps` verbatim and
+# the model then calls load_mesh_solid() against a nonexistent base)
+_FALLBACK_DROP = ("mesh", "load_mesh_solid", "image-to-3d", "hybrid", "organisch")
+
+
+def cad_fallback_plan(plan: ModelingPlan | None) -> ModelingPlan | None:
+    """Strip mesh/hybrid instructions so a CAD fallback never codes against
+    load_mesh_solid().
+
+    Deterministic rewrite (no LLM call): the original plan object is left
+    untouched — a deep copy is re-approached as cad, mesh-pipeline steps are
+    dropped, `hybrid_cad_features` are appended as regular steps, and the
+    mesh-routing fields are cleared.
+    """
+    if plan is None:
+        return None
+    p = plan.model_copy(deep=True)
+    p.approach = "cad"
+    p.strategy = ["cad"]
+    p.steps = [
+        "0. CAD fallback: build every body parametrically from the spec features (no mesh)",
+        *[s for s in p.steps if not any(k in str(s).lower() for k in _FALLBACK_DROP)],
+        *[str(f) for f in p.hybrid_cad_features],
+    ]
+    for f in ("mesh_subject", "mesh_source_images", "mesh_up_hint"):
+        if f in type(p).model_fields:
+            setattr(p, f, [] if f == "mesh_source_images" else "")
+    p.approach_reason = (p.approach_reason + " (cad fallback)").strip()
+    return p

@@ -138,10 +138,13 @@ class AgentCtx:
     # first exhaustion callers fall back to the one-shot PatchResponse path
     edit_sessions_exhausted: int = 0
     # adaptive-reasoning latch: set by the orchestrator on stall signals
-    # (no new best for `llm_thinking_escalate_after` iters, failed repair
-    # patch, repeated same-category exec error); once True every subsequent
-    # "auto"-policy call for this job runs with thinking enabled
+    # (no progress for `llm_thinking_escalate_after` iters or a measured dq
+    # regression); once True every subsequent "auto"-policy call for this
+    # job runs with thinking enabled. `thinking_level` carries the stage:
+    # 0 = none, 1 = medium body, 2 = high body (llm_thinking_body_medium /
+    # _high fall back to llm_thinking_body_on when unset)
     thinking_escalated: bool = False
+    thinking_level: int = 0
     # thinking cost cap: incremented by thinking_body() each time a call is
     # made WITH reasoning on; at llm_thinking_max_calls the policy resolves
     # OFF for the rest of the job (thinking_budget_exhausted logs once)

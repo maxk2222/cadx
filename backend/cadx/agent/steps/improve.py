@@ -132,12 +132,12 @@ def _user_parts(
     return parts
 
 
-def _session_system(spec: PartSpec, plan: ModelingPlan | None) -> str:
+def _session_system(ctx: AgentCtx, spec: PartSpec, plan: ModelingPlan | None) -> str:
     return "\n\n".join(
         [
             system_prompt("improve_tools.md"),
             system_prompt("tools_protocol.md"),
-            codegen_system(plan=plan, spec=spec, fresh=False),
+            codegen_system(plan=plan, spec=spec, fresh=False, hybrid=ctx.hybrid_solid is not None),
         ]
     )
 
@@ -189,7 +189,9 @@ async def run(
             "role": "system",
             "content": system_prompt("improve_system.md")
             + "\n\n"
-            + codegen_system(plan=plan, spec=spec, fresh=False),
+            + codegen_system(
+                plan=plan, spec=spec, fresh=False, hybrid=ctx.hybrid_solid is not None
+            ),
         },
         {
             "role": "user",
@@ -241,7 +243,7 @@ async def _run_session(
         ctx, kind="edit", code=base_code, verify_fn=verify_fn, render_fn=render_fn
     )
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": _session_system(spec, plan)},
+        {"role": "system", "content": _session_system(ctx, spec, plan)},
         {
             "role": "user",
             "content": _user_parts(

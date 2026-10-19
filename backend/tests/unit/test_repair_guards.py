@@ -160,7 +160,7 @@ def test_thinking_budget_latches_off() -> None:
 
 
 def test_thinking_budget_counts_only_thinking_calls() -> None:
-    ctx = _ctx(llm_thinking="auto", llm_thinking_max_calls=2)
+    ctx = _ctx(llm_thinking="auto", llm_thinking_max_calls=2, llm_thinking_hard_steps="repair")
     # soft steps resolve OFF under "auto" — they must not drain the budget
     assert thinking_on(ctx, "critique") is False
     thinking_body(ctx, "critique")

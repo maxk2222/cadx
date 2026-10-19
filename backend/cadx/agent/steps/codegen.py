@@ -213,7 +213,9 @@ async def run(
     messages: list[dict[str, Any]] = [
         {
             "role": "system",
-            "content": codegen_system(plan=plan, spec=spec, fresh=True),
+            "content": codegen_system(
+                plan=plan, spec=spec, fresh=True, hybrid=ctx.hybrid_solid is not None
+            ),
         },
         {"role": "user", "content": _user_parts(ctx, spec, plan, feedback)},
     ]
@@ -338,7 +340,9 @@ async def repair(
             "role": "system",
             "content": system_prompt("repair_system.md")
             + "\n\n"
-            + codegen_system(plan=plan, spec=spec, fresh=False),
+            + codegen_system(
+                plan=plan, spec=spec, fresh=False, hybrid=ctx.hybrid_solid is not None
+            ),
         },
         {"role": "user", "content": parts},
     ]
@@ -414,7 +418,7 @@ async def _repair_session(
         [
             system_prompt("repair_tools.md"),
             system_prompt("tools_protocol.md"),
-            codegen_system(plan=plan, spec=spec, fresh=False),
+            codegen_system(plan=plan, spec=spec, fresh=False, hybrid=ctx.hybrid_solid is not None),
         ]
     )
     res = await run_session(
@@ -488,10 +492,14 @@ async def _codegen_session(
             verify_fn=verify_fn,
             render_fn=render_fn,
         )
-        system = codegen_build_system(plan=plan, spec=spec, fresh=True)
+        system = codegen_build_system(
+            plan=plan, spec=spec, fresh=True, hybrid=ctx.hybrid_solid is not None
+        )
     else:
         session = ToolSession(ctx, kind="codegen")
-        system = codegen_tools_system(plan=plan, spec=spec, fresh=True)
+        system = codegen_tools_system(
+            plan=plan, spec=spec, fresh=True, hybrid=ctx.hybrid_solid is not None
+        )
     if out is not None:
         out["session"] = session
     messages: list[dict[str, Any]] = [

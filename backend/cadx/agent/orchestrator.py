@@ -24,6 +24,7 @@ from cadx.agent.anchors import build_anchors
 from cadx.agent.autofix import propose_fixes
 from cadx.agent.executor_client import exec_error
 from cadx.agent.mesh_client import MeshGenError, MeshGenRequest, MeshGenVariant
+from cadx.agent.quality import det_quality
 from cadx.agent.steps import codegen as codegen_step
 from cadx.agent.steps import critique as critique_step
 from cadx.agent.steps import improve as improve_step
@@ -35,6 +36,7 @@ from cadx.agent.steps import optimize as optimize_step
 from cadx.agent.steps import plan as plan_step
 from cadx.agent.types import IMAGE_INPUT_KINDS, AgentCtx, InputAsset
 from cadx.cad.allowlist import check_code
+from cadx.cad.codemod import fix_api_misuse
 from cadx.cad.features import compare_features
 from cadx.cad.fem.analyze import FemReport, fem_feedback_lines
 from cadx.cad.mesh_ops import (
@@ -62,6 +64,9 @@ class Candidate:
     mesh_post: dict[str, Any] | None = None  # MeshPostParams used (mesh/hybrid modes)
     feature_findings: list[dict[str, Any]] = field(default_factory=list)
     hybrid_missing: bool = False  # code dropped load_mesh_solid()
+    # deterministic quality from the executor's verify_spec report (0..100) —
+    # keeps a progress gradient where the saturated critique score flatlines
+    dq: int = 0
 
     @property
     def measured_feature_count(self) -> int:
@@ -81,20 +86,26 @@ class Candidate:
         )
 
     @property
-    def rank(self) -> tuple[int, int, int, int, int]:
+    def rank(self) -> tuple[int, int, int, int, int, int, int]:
         major = (
             sum(1 for d in self.critique.discrepancies if d.severity == "major")
             if self.critique
             else 99
         )
         score = self.critique.score if self.critique else 0
-        # hybrid-missing first: a parametric stand-in is never the organic body
+        # hard gates first (hybrid-missing, fractured solid, dim misses), then
+        # the measured verify_spec gradient — the critique score saturates at
+        # 0 long before the part is actually hopeless, and the raw feature
+        # count is only a tiebreak now (extra holes drilled through a gusset
+        # must not be rewarded)
         return (
             0 if self.hybrid_missing else 1,
+            0 if _multi_solid(self.exec_result) else 1,
             0 if self.dim_issues else 1,
-            self.measured_feature_count,
+            self.dq,
             -major,
             score,
+            self.measured_feature_count,
         )
 
 
@@ -2401,10 +2412,18 @@ def _orientation_ranking(
     a flat scale standing on its edge). Both are None when the mesh cannot be
     loaded."""
     try:
+        import math
+
         import trimesh
 
         from cadx.agent.mesh_score import score_raw_mesh, support_score
-        from cadx.cad.mesh_ops import decimate, orient, rest_on_xy_center, scale_to_spec
+        from cadx.cad.mesh_ops import (
+            decimate,
+            footprint_yaw_deg,
+            orient,
+            rest_on_xy_center,
+            scale_to_spec,
+        )
 
         m = trimesh.load(storage.resolve(mesh_rel), force="mesh")
         if not isinstance(m, trimesh.Trimesh):
@@ -2415,6 +2434,16 @@ def _orientation_ranking(
 
         def _key(up: str, front: str, mirror: bool = False) -> tuple[int, float]:
             c = rest_on_xy_center(orient(m, up, front, mirror_x=mirror))
+            # rank dims the way baseline_mesh will process them: a generative
+            # mesh keeps the image's iso yaw, and auto_yaw straightens the
+            # footprint before the dim gate — scoring the un-rotated box
+            # would reject a perfectly good candidate for the wrong reason
+            yaw = footprint_yaw_deg(c)
+            if yaw:
+                c.apply_transform(
+                    trimesh.transformations.rotation_matrix(math.radians(yaw), [0, 0, 1])
+                )
+                c = rest_on_xy_center(c)
             c, _, _ = scale_to_spec(c, spec)
             n = len(
                 compare_dims(spec, {"bbox_size": [float(v) for v in c.extents]}, tol_pct, tol_mm)
@@ -2700,11 +2729,18 @@ async def _run_cad(  # noqa: C901
     patch_mode = s.agent_patch_mode
     best: Candidate | None = None
     best_issues: list[dict[str, Any]] = []  # issue list belonging to `best`
-    # score plateau tracker — a later candidate can outrank `best` on fewer
-    # dim issues/majors while the critique score stays flat; that must not
-    # reset the stall window forever
-    best_score = 0
-    best_score_it = start_iteration - 1
+    # progress tracker — a later candidate can outrank `best` on fewer dim
+    # issues/majors while the critique score stays flat; measured dq moves
+    # count as progress too so a saturated score-0 plateau no longer aborts
+    # a run that is actually converging (observed: bracket stalled out at
+    # iteration 2 while it had just added the missing arm holes)
+    last_progress_it = start_iteration - 1
+    best_dq = -1
+    best_score = -1
+    # stall escape: ONE fresh codegen from the issue list before finalising —
+    # improve patches circle the same broken code, a clean regen breaks free
+    fresh_retry_used = False
+    force_fresh = False
     issues: list[dict[str, Any]] = []
     iterations_done = 0
     improve_failures = 0
@@ -2719,16 +2755,27 @@ async def _run_cad(  # noqa: C901
     repair_sig_counts: dict[str, int] = {}
     stall_sigs_announced: set[str] = set()
     repair_calls = 0
+    last_escalation_it = -1
 
     def _escalate_thinking(reason: str) -> bool:
-        """Latch adaptive-reasoning escalation for the rest of the job —
-        `llm_thinking="auto"` then merges the thinking-on payload into
-        every subsequent call (run_session re-reads it each turn).
-        Returns True only on the flip so callers emit once."""
-        if ctx.thinking_escalated:
+        """Raise the reasoning level one step (0 -> medium -> high) and latch
+        `ctx.thinking_escalated` for the rest of the job —
+        `llm_thinking="auto"` then merges the level's thinking payload into every
+        subsequent call (run_session re-reads it each turn). At most one
+        raise per iteration; returns True only on an actual raise so
+        callers emit once."""
+        nonlocal last_escalation_it
+        if last_escalation_it == it or ctx.thinking_level >= 2:
             return False
+        ctx.thinking_level += 1
         ctx.thinking_escalated = True
-        log.info("agent.thinking_escalated", iteration=it, reason=reason)
+        last_escalation_it = it
+        log.info(
+            "agent.thinking_escalated",
+            iteration=it,
+            reason=reason,
+            level=ctx.thinking_level,
+        )
         return True
 
     def issues_text(items: list[dict[str, Any]]) -> str:
@@ -2757,7 +2804,11 @@ async def _run_cad(  # noqa: C901
         # ---------- obtain code: fresh codegen vs targeted improve ----------
         base_code = best.code_response.code if best and best.code_response else ""
         use_improve = (
-            bool(base_code) and it > start_iteration and issues != [] and improve_failures < 2
+            bool(base_code)
+            and it > start_iteration
+            and issues != []
+            and improve_failures < 2
+            and not force_fresh
         )
         code_resp: CodeResponse | None = None
         if use_improve:
@@ -2794,8 +2845,6 @@ async def _run_cad(  # noqa: C901
                     break
             if code_resp is None:
                 improve_failures += 1
-                if _escalate_thinking("improve patch failed"):
-                    await ctx.emit("improve", it, "patch failed — escalating reasoning")
                 await ctx.emit("improve", it, "patch failed — falling back to fresh codegen next")
                 continue
         else:
@@ -2810,6 +2859,7 @@ async def _run_cad(  # noqa: C901
                     verify_fn=_session_verify_fn(ctx, it, art_attempt),
                     render_fn=_session_render_fn(ctx, it, art_attempt),
                 )
+                force_fresh = False
             except Exception as e:
                 issues = [
                     {
@@ -2822,6 +2872,10 @@ async def _run_cad(  # noqa: C901
                 continue
 
         code = code_resp.code
+        code, codemod_notes = fix_api_misuse(code)
+        if codemod_notes:
+            log.info("agent.codemod", iteration=it, notes=codemod_notes)
+            await ctx.emit("execute", it, codemod_notes[0])
 
         # ---------- execute with patch-based repairs ----------
         # The static contract check runs inside the repair loop: violations are
@@ -2867,8 +2921,6 @@ async def _run_cad(  # noqa: C901
                 sig = _exec_error_signature(exec_result)
                 stalled = _note_exec_error(repair_sig_counts, sig)
                 if err_sig and err_sig == prev_err_sig:
-                    if _escalate_thinking("same execution error twice"):
-                        await ctx.emit("repair", it, "same error twice — escalating reasoning")
                     await ctx.emit("repair", it, "same error twice — repair not converging")
                     break
                 prev_err_sig = err_sig
@@ -2940,10 +2992,12 @@ async def _run_cad(  # noqa: C901
                     # the next improve session patches best.code — tell it the
                     # repair's patch attempt already missed the text
                     pending_patch_errors = perrs
-                    if _escalate_thinking("repair patch did not apply"):
-                        await ctx.emit("repair", it, "patch missed — escalating reasoning")
                     break
                 code = new_code
+                code, codemod_notes = fix_api_misuse(code)
+                if codemod_notes:
+                    log.info("agent.codemod", iteration=it, notes=codemod_notes)
+                    await ctx.emit("repair", it, codemod_notes[0])
 
         if not exec_result.get("ok"):
             issues = [
@@ -3188,6 +3242,7 @@ async def _run_cad(  # noqa: C901
         await fem_task
 
         cand = Candidate(it, code_resp, exec_result, critique, dim_issues)
+        cand.dq = det_quality(exec_result, dim_issues)
         cand.feature_findings = feature_findings
         # hybrid guard: an improve pass that silently drops load_mesh_solid()
         # regresses to a parametric part and no longer IS the organic body —
@@ -3221,19 +3276,36 @@ async def _run_cad(  # noqa: C901
                 exec_result.get("analysis"),
             )
         )
-        if best is None or cand.rank > best.rank:
+        best_replaced = best is None or cand.rank > best.rank
+        if best_replaced:
             best = cand
             # improve always patches best.code — its issue list must describe
             # that same code, not a regressed later candidate
             best_issues = cur_issues
         cur_score = cand.critique.score if cand.critique else 0
-        if cur_score > best_score:
-            best_score = cur_score
-            best_score_it = it
-        elif it - best_score_it >= s.llm_thinking_escalate_after and _escalate_thinking(
-            f"no new best score for {it - best_score_it} iterations"
+        # progress = a new best OR a rise in either quality number — a
+        # saturated critique score (0 after enough majors) must not read as
+        # a stall while verify_spec keeps improving
+        if best_replaced or cand.dq > best_dq or cur_score > best_score:
+            last_progress_it = it
+            best_dq = max(best_dq, cand.dq)
+            best_score = max(best_score, cur_score)
+        elif it - last_progress_it >= s.llm_thinking_escalate_after and _escalate_thinking("stall"):
+            await ctx.emit("improve", it, f"stalled — reasoning level {ctx.thinking_level}")
+        # regression: a candidate far below the best measured quality means
+        # the last change went backwards — reason about it before patching on
+        if (
+            best is not None
+            and cand is not best
+            and cand.dq <= best.dq - 10
+            and _escalate_thinking("regression")
         ):
-            await ctx.emit("improve", it, "score stalled — escalating reasoning")
+            await ctx.emit(
+                "improve",
+                it,
+                f"quality regressed (dq {cand.dq} vs best {best.dq}) — "
+                f"reasoning level {ctx.thinking_level}",
+            )
 
         major = [d for d in critique.discrepancies if d.severity == "major"]
         await ctx.emit(
@@ -3267,18 +3339,29 @@ async def _run_cad(  # noqa: C901
             outcome.switch_requested = True
             break
 
-        # stall early-exit: no new best for `agent_stall_patience` iterations —
-        # more improve loops are unlikely to converge, finalise what we have.
-        # Score plateau counts too: a reshuffling `best` on dim-issues while
-        # the critique score stays flat is still a stall.
-        if (
+        # stall early-exit: no progress for `agent_stall_patience` iterations
+        # (progress = new best, dq rise or score rise — see above). Before
+        # finalising, a stalled run gets ONE fresh codegen from the issue
+        # list: improve patches keep circling the same broken code, a clean
+        # regen conditioned on the accumulated issues is the cheaper escape.
+        stalled = (
             best is not None
-            and s.agent_stall_patience
-            and (
-                it - best.iteration >= s.agent_stall_patience
-                or it - best_score_it >= s.agent_stall_patience
-            )
-        ):
+            and bool(s.agent_stall_patience)
+            and it - last_progress_it >= s.agent_stall_patience
+        )
+        if stalled and not fresh_retry_used and it + 1 < start_iteration + max_iterations:
+            best_score_val = best.critique.score if best is not None and best.critique else 0
+            if best_score_val < pass_score:
+                fresh_retry_used = True
+                force_fresh = True
+                last_progress_it = it
+                await ctx.emit(
+                    "plan",
+                    it,
+                    "stalled — one fresh codegen from the issue list before finalising",
+                )
+                continue
+        if stalled:
             await ctx.emit(
                 "finalize",
                 it,
@@ -3578,6 +3661,7 @@ async def _run_mesh(  # noqa: C901
                 up=orientation.get("up"),  # type: ignore[arg-type]
                 front=orientation.get("front"),  # type: ignore[arg-type]
                 mirror_x=bool(orientation.get("mirror_x")),
+                auto_yaw=True,
             )
             post = merge_post_params(post, {})
 
@@ -4549,6 +4633,7 @@ async def _prepare_hybrid_mesh(
         up=orientation.get("up"),  # type: ignore[arg-type]
         front=orientation.get("front"),  # type: ignore[arg-type]
         mirror_x=bool(orientation.get("mirror_x")),
+        auto_yaw=True,
     )
 
     await ctx.emit("meshprocess", it, "processing mesh and building solid")
@@ -4712,6 +4797,11 @@ async def _run_approach(
             outcome.resolved_mode = "cad"
             ctx.resolved_mode = "cad"
             await ctx.emit("plan", 0, note)
+            # the planner's mesh/hybrid steps must not leak into CAD codegen —
+            # they mention load_mesh_solid() which does not exist here
+            plan = plan_step.cad_fallback_plan(plan)
+            ctx.plan = plan
+            outcome.plan = plan.model_dump() if plan else outcome.plan
             outcome = await _run_cad(
                 ctx,
                 outcome,
@@ -4765,6 +4855,9 @@ async def _run_approach(
             ctx.resolved_mode = "cad"
             outcome.mode_note += f" | hybrid failed ({note}) — CAD fallback"
             await ctx.emit("plan", 0, outcome.mode_note)
+            plan = plan_step.cad_fallback_plan(plan)
+            ctx.plan = plan
+            outcome.plan = plan.model_dump() if plan else outcome.plan
             outcome = await _run_cad(
                 ctx,
                 outcome,
@@ -4779,6 +4872,13 @@ async def _run_approach(
                 **kwargs,
             )
     else:
+        # cad can also be reached via mode-resolution fallbacks (mesh mode
+        # without a server, strategy approach #2 after a failed mesh leg) —
+        # the plan may still carry mesh-only steps; strip them
+        if plan is not None and getattr(plan, "approach", "cad") != "cad":
+            plan = plan_step.cad_fallback_plan(plan)
+            ctx.plan = plan
+            outcome.plan = plan.model_dump() if plan else outcome.plan
         outcome = await _run_cad(
             ctx,
             outcome,

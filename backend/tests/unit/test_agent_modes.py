@@ -1381,8 +1381,9 @@ def test_hybrid_missing_mesh_ranks_lower():
 
 
 def test_feature_regression_ranks_lower():
-    """A rewrite that drops previously measured features must not outrank the
-    iteration that still has them — even with a higher critique score."""
+    """Measured feature count is the LAST rank tiebreak now: it still splits
+    otherwise-identical candidates, but it no longer outweighs dq/score —
+    extra holes drilled through a gusset used to be rewarded (bracket run)."""
     from cadx.agent.orchestrator import Candidate
     from cadx.llm.schemas import Critique
 
@@ -1393,13 +1394,153 @@ def test_feature_regression_ranks_lower():
         Critique(score=40, passed=False),
         [],
     )
+    with_feats.dq = 50
     dropped = Candidate(
         2,
         None,
         {"features": {"total_holes": 0}},
-        Critique(score=80, passed=True),
+        Critique(score=40, passed=False),
         [],
     )
+    dropped.dq = 50
     assert with_feats.measured_feature_count == 4
     assert dropped.measured_feature_count == 0
     assert with_feats.rank > dropped.rank
+    # dq dominates the raw feature count: a measured-clean candidate beats
+    # one that merely accumulated (possibly misplaced) features
+    better = Candidate(
+        3,
+        None,
+        {"features": {"total_holes": 0}},
+        Critique(score=40, passed=False),
+        [],
+    )
+    better.dq = 80
+    assert better.rank > with_feats.rank
+    # a fractured multi-solid part is a hard gate — ranked below any
+    # single-solid candidate regardless of score
+    fractured = Candidate(
+        4,
+        None,
+        {"features": {"total_holes": 4}, "analysis": {"solid_count": 3}},
+        Critique(score=95, passed=True),
+        [],
+    )
+    fractured.dq = 30
+    assert with_feats.rank > fractured.rank
+
+
+async def test_cad_fallback_strips_mesh_plan(monkeypatch, tmp_path):
+    """F4: a mesh->cad fallback must not hand the mesh plan to codegen —
+    steps mentioning load_mesh_solid()/image-to-3d are stripped, mesh fields
+    cleared, approach rewritten to cad."""
+    import json
+
+    from cadx.agent.steps import mesh_refine as mesh_refine_step
+
+    async def always_regen(*a, **kw):
+        return mesh_refine_step.RefineResult(regenerate=True, reasoning="flat slab")
+
+    monkeypatch.setattr(mesh_refine_step, "run", always_regen)
+
+    spec = dict(MESH_SPEC)
+    spec["width_y"] = {"value": 40.0, "unit": "mm", "source": "stated"}
+    spec["height_z"] = {"value": 30.0, "unit": "mm", "source": "stated"}
+    mesh_plan = {
+        **MESH_PLAN,
+        "steps": [
+            "1. generate base mesh from the reference image (image-to-3d)",
+            "2. call load_mesh_solid() and cut the bore",
+        ],
+        "mesh_up_hint": "dome up",
+    }
+    fail_crit = {
+        "score": 20,
+        "passed": False,
+        "discrepancies": [
+            {
+                "what": "wrong shape vs the stated part",
+                "where": "overall",
+                "severity": "major",
+                "source": "spec",
+                "fix_hint": "reshape the body",
+            }
+        ],
+        "matches": [],
+        "confidence": 0.9,
+    }
+    box_code = (FIXTURES / "simple_box.py").read_text()
+    llm = FakeLLM(
+        [
+            spec,
+            mesh_plan,
+            MESH_ORIENT,
+            fail_crit,
+            fail_crit,
+            fail_crit,
+            {
+                "reasoning": "box",
+                "params": [],
+                "expected_bbox": [40, 20, 10],
+                "code": box_code,
+            },
+            MESH_CRITIQUE,
+        ]
+    )
+    ctx = _ctx(
+        llm=llm,
+        gen_mode="mesh",
+        assets=[_img(seed=1)],
+        mesh=FakeMeshClient(),
+        mesh_available=True,
+        prompt="40x40x30 block",
+        settings=ProjectSettings(clarification_mode="assume", max_iterations=3),
+    )
+    outcome = await run_generation(ctx)
+    assert outcome.resolved_mode == "cad"
+    assert ctx.plan is not None and ctx.plan.approach == "cad"
+    assert ctx.plan.mesh_subject == "" and ctx.plan.mesh_up_hint == ""
+    # the codegen prompt embeds the plan JSON — the plan must carry no
+    # mesh-only instructions (code_contract.md still documents the helper
+    # generically; the plan must not instruct its use)
+    plan_calls = [c for c in llm.calls if "MODELING PLAN" in json.dumps(c["messages"])]
+    assert plan_calls
+    for c in plan_calls:
+        blob = json.dumps(c["messages"])
+        plan_json = blob.split("MODELING PLAN (JSON):", 1)[1]
+        assert "load_mesh_solid" not in plan_json
+        assert "image-to-3d" not in plan_json
+    # the persisted plan is the rewritten cad one
+    assert outcome.plan and outcome.plan.get("approach") == "cad"
+
+
+def test_cad_fallback_plan_unit():
+    """Deterministic plan rewrite: mesh steps dropped, hybrid features kept."""
+    from cadx.agent.steps.plan import cad_fallback_plan
+
+    plan = ModelingPlan(
+        approach="hybrid",  # type: ignore[arg-type]
+        approach_reason="organic base + precise holes",
+        strategy=["hybrid"],  # type: ignore[list-item]
+        mesh_subject="domed knob",
+        mesh_source_images=["a1"],
+        mesh_up_hint="dome up",
+        hybrid_cad_features=["cut M4 through-hole"],
+        steps=[
+            "1. generate organic mesh via image-to-3d",
+            "2. load_mesh_solid() then cut holes",
+            "3. add the top chamfer",
+        ],
+    )
+    fb = cad_fallback_plan(plan)
+    assert fb is not None
+    assert fb.approach == "cad" and fb.strategy == ["cad"]
+    assert "cad fallback" in fb.approach_reason
+    assert fb.steps[0].startswith("0. CAD fallback")
+    assert any("top chamfer" in s for s in fb.steps)
+    assert any("M4 through-hole" in s for s in fb.steps)
+    assert not any("mesh" in s.lower() for s in fb.steps[1:])
+    assert fb.mesh_subject == "" and fb.mesh_source_images == [] and fb.mesh_up_hint == ""
+    # original untouched
+    assert plan.approach == "hybrid" and plan.mesh_subject == "domed knob"
+    assert cad_fallback_plan(None) is None

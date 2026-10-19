@@ -37,10 +37,15 @@ class RuntimeSettings(BaseModel):
     llm_thinking: Literal["off", "auto", "always"] = "auto"
     llm_thinking_body_on: str = ""
     llm_thinking_body_off: str = ""
-    llm_thinking_hard_steps: str = "repair,improve"  # csv step names for "auto"
-    # iterations without a new best score (or a failed repair patch / repeated
-    # same-category exec error) before "auto" escalates to thinking-on — the
-    # latch stays for the rest of the job
+    # escalation-stage bodies: the orchestrator raises ctx.thinking_level on
+    # stall/regression — level 1 merges body_medium, level 2 body_high
+    # (each falls back to llm_thinking_body_on when unset/empty)
+    llm_thinking_body_medium: str = ""
+    llm_thinking_body_high: str = ""
+    llm_thinking_hard_steps: str = ""  # csv step names that always think in "auto"
+    # iterations without progress before "auto" escalates thinking one stage
+    # (medium, then high on the next stall/regression) — the latch stays for
+    # the rest of the job
     llm_thinking_escalate_after: int = Field(default=2, ge=1, le=50)
     # hard per-job cap on calls made WITH thinking on — reasoning tokens are
     # the dominant completion cost and escalation can amplify a non-converging
@@ -230,7 +235,13 @@ class RuntimeSettings(BaseModel):
     # repair). Falls back to the cold subprocess path on any zygote failure.
     exec_warm_runner: bool = True
 
-    @field_validator("llm_extra_body", "llm_thinking_body_on", "llm_thinking_body_off")
+    @field_validator(
+        "llm_extra_body",
+        "llm_thinking_body_on",
+        "llm_thinking_body_off",
+        "llm_thinking_body_medium",
+        "llm_thinking_body_high",
+    )
     @classmethod
     def validate_extra_body(cls, value: str) -> str:
         if not value:

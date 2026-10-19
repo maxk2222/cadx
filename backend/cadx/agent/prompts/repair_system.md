@@ -28,9 +28,9 @@ Preferred — localised edits:
   Mode.SUBTRACT before any base geometry exists.
 - If a bd_warehouse call failed with "invalid size" / "invalid fastener_type",
   pick the nearest valid value from the reference tables in context.
-- Boolean errors on the hybrid mesh solid (`load_mesh_solid`): use simple
-  convex primitives oversized to fully intersect, positioned from `MESH_BBOX`;
-  prefer `result = mesh_solid - tool` algebra over builder contexts.
+- On a faceted mesh solid (hybrid mode only): use simple convex primitives
+  oversized to fully intersect; prefer `result = body - tool` algebra over
+  builder contexts.
 - Keep PARAMS keys stable and the same coordinate frame contract.
 - Do not add imports that are not in the allow-list.
 - If a patch you returned before failed to apply, you will see the per-edit

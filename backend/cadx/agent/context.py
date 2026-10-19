@@ -179,13 +179,25 @@ def _reference_docs(
     return "\n\n".join(p for p in parts if p)
 
 
+def _hybrid_contract(hybrid: bool) -> str:
+    # `load_mesh_solid()` only exists in generated code when the executor got a
+    # real mesh solid — in a CAD fallback the string must not appear anywhere
+    # in the prompt, or the model codes against a nonexistent base
+    return read_prompt("code_contract_hybrid.md") if hybrid else ""
+
+
 def codegen_system(
-    *, plan: Any | None = None, spec: PartSpec | None = None, fresh: bool = True
+    *,
+    plan: Any | None = None,
+    spec: PartSpec | None = None,
+    fresh: bool = True,
+    hybrid: bool = False,
 ) -> str:
     return "\n\n".join(
         [
             read_prompt("codegen_system.md"),
             read_prompt("code_contract.md"),
+            _hybrid_contract(hybrid),
             read_prompt("code_contract_responses.md"),
             _reference_docs(plan=plan, spec=spec, fresh=fresh),
         ]
@@ -193,7 +205,11 @@ def codegen_system(
 
 
 def codegen_tools_system(
-    *, plan: Any | None = None, spec: PartSpec | None = None, fresh: bool = True
+    *,
+    plan: Any | None = None,
+    spec: PartSpec | None = None,
+    fresh: bool = True,
+    hybrid: bool = False,
 ) -> str:
     """Codegen system prompt for tool sessions — submit_code replaces the
     CodeResponse channel, the file contract stays identical."""
@@ -202,6 +218,7 @@ def codegen_tools_system(
             read_prompt("codegen_tools.md"),
             read_prompt("tools_protocol.md"),
             read_prompt("code_contract.md"),
+            _hybrid_contract(hybrid),
             read_prompt("code_contract_responses_tools.md"),
             _reference_docs(plan=plan, spec=spec, fresh=fresh),
         ]
@@ -209,7 +226,11 @@ def codegen_tools_system(
 
 
 def codegen_build_system(
-    *, plan: Any | None = None, spec: PartSpec | None = None, fresh: bool = True
+    *,
+    plan: Any | None = None,
+    spec: PartSpec | None = None,
+    fresh: bool = True,
+    hybrid: bool = False,
 ) -> str:
     """Codegen system prompt for staged build sessions — the model grows the
     buffer feature-by-feature (add_block/verify/checkpoint/rollback) and
@@ -219,6 +240,7 @@ def codegen_build_system(
             read_prompt("codegen_build_system.md"),
             read_prompt("tools_protocol.md"),
             read_prompt("code_contract.md"),
+            _hybrid_contract(hybrid),
             _reference_docs(plan=plan, spec=spec, fresh=fresh),
         ]
     )

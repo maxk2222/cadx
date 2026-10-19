@@ -530,6 +530,8 @@ class SettingsOut(BaseModel):
     llm_thinking: Literal["off", "auto", "always"]
     llm_thinking_body_on: str
     llm_thinking_body_off: str
+    llm_thinking_body_medium: str
+    llm_thinking_body_high: str
     llm_thinking_hard_steps: str
     llm_thinking_escalate_after: int
     agent_max_iterations: int
@@ -631,6 +633,8 @@ class SettingsUpdate(BaseModel):
     llm_thinking: Literal["off", "auto", "always"] | None = None
     llm_thinking_body_on: str | None = Field(default=None, max_length=20_000)
     llm_thinking_body_off: str | None = Field(default=None, max_length=20_000)
+    llm_thinking_body_medium: str | None = Field(default=None, max_length=20_000)
+    llm_thinking_body_high: str | None = Field(default=None, max_length=20_000)
     llm_thinking_hard_steps: str | None = Field(default=None, max_length=200)
     llm_thinking_escalate_after: int | None = Field(default=None, ge=1, le=50)
     agent_max_iterations: int | None = Field(default=None, ge=1, le=200)

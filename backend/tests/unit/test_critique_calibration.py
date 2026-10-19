@@ -260,3 +260,119 @@ async def test_low_silhouette_keeps_image_majors():
         features={"total_holes": 1},
     )
     assert any(d.severity == "major" for d in c.discrepancies)
+
+
+async def test_verify_question_majors_weigh_less():
+    """M6 duplicates: a 'no' verification answer usually repeats a discrepancy
+    the critic already listed. 2 spec majors + 2 VQ majors used to clamp the
+    score to 0 (4x25) — now the VQ copies weigh 10 each -> ceiling 30."""
+    spec = _spec()
+    spec.verification_questions = ["are both holes through?", "is the rib centred?"]
+    llm = FakeLLM(
+        [
+            _llm_critique(
+                95,
+                True,
+                [
+                    {
+                        "what": "arm holes are blind, not through",
+                        "severity": "major",
+                        "source": "spec",
+                        "fix_hint": "drill through",
+                    },
+                    {
+                        "what": "strut is a filled gusset",
+                        "severity": "major",
+                        "source": "spec",
+                        "fix_hint": "rebuild as a bar",
+                    },
+                ],
+            )
+        ]
+    )
+    ctx = _ctx(llm, prompt="bracket with holes and a rib")
+    c = await critique_step.run(
+        ctx,
+        spec,
+        None,
+        {"bbox_size": [60, 40, 4], "watertight": True},
+        [],
+        None,
+        iteration=1,
+        features={"total_holes": 2},
+    )
+    # without verification answers only the 2 spec majors exist
+    assert c.score == 50
+
+
+async def test_verify_question_duplicates_do_not_saturate_score():
+    """Same as above but the critic also answers 'no' on both questions —
+    the added verify_question majors must not drive the score to 0."""
+    spec = _spec()
+    spec.verification_questions = ["are both holes through?", "is the rib centred?"]
+    resp = _llm_critique(
+        95,
+        True,
+        [
+            {
+                "what": "arm holes are blind, not through",
+                "severity": "major",
+                "source": "spec",
+                "fix_hint": "drill through",
+            },
+            {
+                "what": "strut is a filled gusset",
+                "severity": "major",
+                "source": "spec",
+                "fix_hint": "rebuild as a bar",
+            },
+        ],
+    )
+    resp["verification_answers"] = [
+        {"question": "are both holes through?", "answer": "no", "evidence": "blind bores"},
+        {"question": "is the rib centred?", "answer": "no", "evidence": "offset rib"},
+    ]
+    llm = FakeLLM([resp])
+    ctx = _ctx(llm, prompt="bracket with holes and a rib")
+    c = await critique_step.run(
+        ctx,
+        spec,
+        None,
+        {"bbox_size": [60, 40, 4], "watertight": True},
+        [],
+        None,
+        iteration=1,
+        features={"total_holes": 2},
+    )
+    vq = [d for d in c.discrepancies if d.source == "verify_question"]
+    assert len(vq) == 2 and all(d.severity == "major" for d in vq)
+    assert c.score == 30  # 100 - 25*2 - 10*2
+    assert c.passed is False
+
+
+def test_normalize_score_vq_weighting():
+    """Direct unit check of the ceiling formula."""
+    from cadx.agent.steps.critique import normalize_score
+    from cadx.llm.schemas import Critique, Discrepancy
+
+    def disc(src: str) -> Discrepancy:
+        return Discrepancy(what=src, severity="major", source=src)  # type: ignore[arg-type]
+
+    c = Critique(
+        score=95,
+        passed=True,
+        discrepancies=[
+            disc("spec"),
+            disc("spec"),
+            disc("verify_question"),
+            disc("verify_question"),
+        ],
+    )
+    assert normalize_score(c).score == 30
+    # four non-VQ majors still saturate to 0
+    c2 = Critique(
+        score=95,
+        passed=True,
+        discrepancies=[disc("spec"), disc("spec"), disc("prompt"), disc("image")],
+    )
+    assert normalize_score(c2).score == 0

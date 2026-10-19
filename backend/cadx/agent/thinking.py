@@ -1,9 +1,12 @@
 """Adaptive per-call reasoning ("thinking") control.
 
 Reasoning tokens are expensive: the policy keeps them OFF for cheap steps
-and ON for hard steps (``repair,improve`` by default) plus every call once
-the orchestrator latches ``ctx.thinking_escalated``. Provider dialects stay
-config-driven — ``llm_thinking_body_on`` / ``llm_thinking_body_off`` are
+and ON for steps listed in ``llm_thinking_hard_steps`` (empty by default —
+escalation is now stall/regression-driven) plus every call once the
+orchestrator latches ``ctx.thinking_escalated``. The escalation is staged:
+``ctx.thinking_level`` 1 merges ``llm_thinking_body_medium``, level 2
+``llm_thinking_body_high``, each falling back to ``llm_thinking_body_on``
+when unset. Provider dialects stay config-driven — the body settings are
 JSON dicts merged verbatim into the request payload by the client
 (Qwen3-style ``{"chat_template_kwargs": {"enable_thinking": false}}``,
 OpenAI-style ``{"reasoning_effort": "low"}``); nothing is hardcoded here.
@@ -98,14 +101,21 @@ def thinking_on(ctx: AgentCtx, step: str) -> bool:
 def thinking_body(ctx: AgentCtx, step: str) -> dict[str, Any] | None:
     """Resolve the per-call request-body override for `step`.
 
-    Returns the parsed ``llm_thinking_body_on`` dict when the policy resolves
-    to thinking-ON, ``llm_thinking_body_off`` when OFF, or None when the
-    selected body is empty/unparseable (provider default — nothing merged).
+    Thinking-OFF returns ``llm_thinking_body_off``; ON picks the escalation
+    stage's body — level 2 ``llm_thinking_body_high``, level 1
+    ``llm_thinking_body_medium``, level 0 (hard-step only, or no stage body
+    configured) ``llm_thinking_body_on`` — or None when the selected body
+    is empty/unparseable (provider default — nothing merged).
 
     Call sites invoke this exactly once per chat call, so the ON count is
     also the per-job thinking budget ledger (``ctx.thinking_calls_used``)."""
     s = ctx.runtime_settings
-    on = thinking_on(ctx, step)
-    if on:
-        ctx.thinking_calls_used = getattr(ctx, "thinking_calls_used", 0) + 1
-    return _body(s.llm_thinking_body_on if on else s.llm_thinking_body_off, "on" if on else "off")
+    if not thinking_on(ctx, step):
+        return _body(s.llm_thinking_body_off, "off")
+    ctx.thinking_calls_used = getattr(ctx, "thinking_calls_used", 0) + 1
+    level = getattr(ctx, "thinking_level", 0)
+    if level >= 2:
+        return _body(s.llm_thinking_body_high, "high") or _body(s.llm_thinking_body_on, "on")
+    if level >= 1:
+        return _body(s.llm_thinking_body_medium, "medium") or _body(s.llm_thinking_body_on, "on")
+    return _body(s.llm_thinking_body_on, "on")

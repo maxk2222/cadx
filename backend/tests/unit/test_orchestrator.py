@@ -225,3 +225,195 @@ def test_orientation_ranking_support_picks_standing():
     lying = rank_fn({"up": "+x", "front": "+y"})
     standing = rank_fn({"up": "+y", "front": "+x"})
     assert lying[0] >= standing[0] and standing <= lying
+
+
+# --------------------------------------------------------------------------- #
+# _run_cad stall/progress loop (dq-based, F1 regression)
+# --------------------------------------------------------------------------- #
+
+_SPEC = {
+    "name": "block",
+    "summary": "40x20x10 block",
+    "units": "mm",
+    "length_x": {"value": 40.0, "unit": "mm", "source": "stated"},
+    "width_y": {"value": 20.0, "unit": "mm", "source": "stated"},
+    "height_z": {"value": 10.0, "unit": "mm", "source": "stated"},
+    "features": [],
+    "open_questions": [],
+}
+
+
+def _exec_res(np_pass: int, n_fail: int, bbox=None) -> dict:
+    checks = [{"name": f"c{i}", "status": "PASS"} for i in range(np_pass)]
+    checks += [{"name": f"f{i}", "status": "FAIL"} for i in range(n_fail)]
+    return {
+        "ok": True,
+        "analysis": {"bbox_size": bbox or [40.0, 20.0, 10.0], "solid_count": 1},
+        "verify_spec": {"status": "FAIL" if n_fail else "PASS", "checks": checks},
+        "features": {},
+        "params_used": {},
+    }
+
+
+class _ScriptedExec:
+    """Executor port stub: pops scripted execute() results, exports nothing."""
+
+    def __init__(self, results: list[dict]) -> None:
+        self._script = list(results)
+        self.exec_calls = 0
+
+    async def execute(self, payload):
+        self.exec_calls += 1
+        if len(self._script) > 1:
+            return self._script.pop(0)
+        return self._script[0]
+
+    async def export_all(self, payload):
+        return {"exports": {}}
+
+
+def _box_code() -> str:
+    from pathlib import Path
+
+    return (Path(__file__).resolve().parent.parent / "fixtures" / "simple_box.py").read_text()
+
+
+def _fail_critique():
+    return {
+        "score": 0,
+        "passed": False,
+        "discrepancies": [
+            {"what": f"issue {i}", "where": "part", "severity": "major", "source": "spec"}
+            for i in range(4)
+        ],
+        "matches": [],
+        "confidence": 0.9,
+    }
+
+
+def _pass_critique():
+    return {
+        "score": 95,
+        "passed": True,
+        "discrepancies": [],
+        "matches": ["block"],
+        "confidence": 0.9,
+    }
+
+
+async def _drive_cad(llm, results, emitted, *, max_iterations, patience):
+    """Run _run_cad with a scripted FakeLLM + scripted executor."""
+    import time
+    import uuid as _uuid
+
+    from cadx.agent.orchestrator import RunOutcome, _run_cad
+    from cadx.agent.trace import MemoryTrace
+    from cadx.agent.types import AgentCtx
+    from cadx.db.models import ProjectSettings
+    from cadx.llm.schemas import ModelingPlan, PartSpec
+    from cadx.runtime_config import RuntimeSettings
+
+    async def emit(step, it, msg, **_f):
+        emitted.append((step, it, msg))
+
+    async def no_cancel():
+        return False
+
+    ctx = AgentCtx(
+        llm=llm,
+        executor=_ScriptedExec(results),
+        trace=MemoryTrace(),
+        emit=emit,
+        check_cancel=no_cancel,
+        job_id="t",
+        project_id=_uuid.uuid4(),
+        version_id=_uuid.uuid4(),
+        prompt="block 40x20x10",
+        mode="generate",
+        settings=ProjectSettings(clarification_mode="assume"),
+        runtime_settings=RuntimeSettings(
+            agent_max_wall_s=86_400,
+            agent_param_autofix=False,
+            agent_stall_patience=patience,
+        ),
+    )
+    spec = PartSpec.model_validate(_SPEC)
+    plan = ModelingPlan(approach="cad", approach_reason="r")
+    outcome = RunOutcome()
+    return await _run_cad(
+        ctx,
+        outcome,
+        spec,
+        plan,
+        time.monotonic(),
+        no_cancel,
+        no_cancel,
+        max_iterations=max_iterations,
+        max_repairs=0,
+        pass_score=80,
+        tol_pct=2.0,
+        tol_mm=0.5,
+    ), ctx
+
+
+async def test_stall_progress_via_dq_not_score():
+    """F1: critique score pinned at 0 used to stall-abort at iteration 2 —
+    but a rising verify_spec pass count (dq) is progress and must keep the
+    loop going until the pass lands."""
+    from cadx.llm.fake import FakeLLM
+
+    box_code = _box_code()
+    llm = FakeLLM(
+        [
+            {"reasoning": "v1", "params": [], "expected_bbox": [40, 20, 10], "code": box_code},
+            _fail_critique(),
+            {"reasoning": "imp", "params": [], "edits": [], "full_code": box_code},
+            _fail_critique(),
+            {"reasoning": "imp2", "params": [], "edits": [], "full_code": box_code},
+            _pass_critique(),
+        ]
+    )
+    emitted: list = []
+    outcome, _ctx = await _drive_cad(
+        llm,
+        [
+            _exec_res(2, 4),  # it1: dq 33, score 0 -> new best, progress
+            _exec_res(3, 3, bbox=[45.0, 20.0, 10.0]),  # it2: dq 40, dim issue -> not best, dq rises
+            _exec_res(6, 0),  # it3: clean pass
+        ],
+        emitted,
+        max_iterations=4,
+        patience=2,
+    )
+    # the old score-only tracker would have stalled out at it2
+    assert outcome.iterations == 3
+    assert outcome.status == "succeeded"
+    # no fresh-codegen escape was needed — dq progress kept the loop alive
+    assert not any("fresh codegen" in m for _s, _i, m in emitted)
+
+
+async def test_stall_triggers_one_fresh_codegen_then_finalize():
+    """A truly flat run gets exactly ONE fresh-codegen escape (force_fresh
+    skips the improve path once), then finalises on the next stall."""
+    from cadx.llm.fake import FakeLLM
+
+    box_code = _box_code()
+    code_resp = {"reasoning": "v", "params": [], "expected_bbox": [40, 20, 10], "code": box_code}
+    patch = {"reasoning": "imp", "params": [], "edits": [], "full_code": box_code}
+    llm = FakeLLM(
+        [code_resp, _fail_critique(), patch, _fail_critique(), code_resp, _fail_critique()]
+    )
+    emitted: list = []
+    outcome, _ctx = await _drive_cad(
+        llm,
+        [_exec_res(2, 4)],
+        emitted,
+        max_iterations=5,
+        patience=1,
+    )
+    assert outcome.iterations == 3  # it1 + improve it2 + fresh it3, then break
+    fresh = [m for s, _i, m in emitted if s == "plan" and "fresh codegen" in m]
+    assert len(fresh) == 1
+    assert any(s == "codegen" and i == 3 for s, i, _m in emitted)
+    assert not any(s == "improve" and i == 3 and "fixing" in m for s, i, m in emitted)
+    assert any(s == "finalize" and "no improvement" in m for s, _i, m in emitted)

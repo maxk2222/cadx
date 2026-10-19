@@ -140,11 +140,49 @@ def test_malformed_body_json_degrades_to_none():
 def test_body_json_parsed_per_call():
     ctx = _ctx(
         llm_thinking="auto",
+        llm_thinking_hard_steps="repair,improve",
         llm_thinking_body_on='{"reasoning_effort": "high"}',
         llm_thinking_body_off='{"reasoning_effort": "low"}',
     )
     assert thinking_body(ctx, "repair") == {"reasoning_effort": "high"}
     assert thinking_body(ctx, "intake") == {"reasoning_effort": "low"}
+
+
+def test_default_hard_steps_empty_no_thinking_on_repair():
+    """Default config: repair is NOT a hard step — thinking only comes on via
+    the stall/regression escalation latch, never unconditionally."""
+    ctx = _ctx(llm_thinking="auto", llm_thinking_body_on=ON, llm_thinking_body_off=OFF)
+    assert RuntimeSettings().llm_thinking_hard_steps == ""
+    assert thinking_on(ctx, "repair") is False
+    assert thinking_on(ctx, "improve") is False
+    assert thinking_body(ctx, "repair") == OFF_BODY
+
+
+def test_escalation_level_picks_staged_body():
+    """Level 1 -> medium body, level 2 -> high body, each falling back to the
+    plain on-body when its stage body is unset."""
+    ctx = _ctx(
+        escalated=True,
+        llm_thinking="auto",
+        llm_thinking_body_on=ON,
+        llm_thinking_body_medium='{"reasoning_effort": "medium"}',
+        llm_thinking_body_high='{"reasoning_effort": "high"}',
+    )
+    ctx.thinking_level = 1
+    assert thinking_body(ctx, "critique") == {"reasoning_effort": "medium"}
+    ctx.thinking_level = 2
+    assert thinking_body(ctx, "critique") == {"reasoning_effort": "high"}
+    # level 0 (e.g. a hard step without escalation) still uses the on body
+    ctx.thinking_level = 0
+    assert thinking_body(ctx, "critique") == ON_BODY
+
+
+def test_escalation_level_falls_back_to_on_body():
+    ctx = _ctx(escalated=True, llm_thinking="auto", llm_thinking_body_on=ON)
+    ctx.thinking_level = 1
+    assert thinking_body(ctx, "critique") == ON_BODY
+    ctx.thinking_level = 2
+    assert thinking_body(ctx, "critique") == ON_BODY
 
 
 # --------------------------------------------------------------------------- #
@@ -245,7 +283,13 @@ async def test_session_soft_step_gets_off_body():
 
 async def test_session_hard_step_gets_on_body():
     llm = FakeLLM([{"text": "final"}])
-    ctx = _ctx(llm=llm, llm_thinking="auto", llm_thinking_body_on=ON, llm_thinking_body_off=OFF)
+    ctx = _ctx(
+        llm=llm,
+        llm_thinking="auto",
+        llm_thinking_hard_steps="repair,improve",
+        llm_thinking_body_on=ON,
+        llm_thinking_body_off=OFF,
+    )
     session = ToolSession(ctx, kind="info")
     await run_session(ctx, "vision", MESSAGES, session=session, max_calls=3, step="improve_2")
     assert llm.calls[0]["extra_body"] == ON_BODY
