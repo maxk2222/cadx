@@ -10,6 +10,9 @@ export interface ToolEvent {
   ok?: boolean;
   result?: Record<string, unknown>;
   done: boolean;
+  /** client-side receipt ms of the tool_start — drives the elapsed readout
+   *  on running tool chips; survives the tool_result merge (spread keeps it). */
+  t_ms?: number;
 }
 
 interface ChatStreamState {
@@ -165,7 +168,13 @@ export function useChatEvents(
           ...s,
           toolEvents: [
             ...s.toolEvents,
-            { seq: seqRef.current++, name: t.name, args: t.args, done: false },
+            {
+              seq: seqRef.current++,
+              name: t.name,
+              args: t.args,
+              done: false,
+              t_ms: Date.now(),
+            },
           ],
         }));
       },

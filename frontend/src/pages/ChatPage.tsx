@@ -16,6 +16,7 @@ import {
 } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import Composer from "../components/chat/Composer";
+import JobLivePanel from "../components/chat/JobLivePanel";
 import MessageBubble from "../components/chat/MessageBubble";
 import LivePreview from "../components/LivePreview";
 import Viewer3D from "../components/Viewer3D";
@@ -26,10 +27,12 @@ import {
   Crumbs,
   EmptyState,
   IconBtn,
+  useNow,
   useStickyBottom,
   useToast,
 } from "../components/ui";
 import { api, errMsg } from "../lib/api";
+import { fmtDur } from "../lib/liveStats";
 import type { Asset } from "../lib/types";
 import { useChatEvents } from "../lib/useChatEvents";
 import {
@@ -133,6 +136,26 @@ function MeasuredRow({
   return <div ref={ref}>{children}</div>;
 }
 
+/** Header chip shown while a turn is running — mounts on turn start (the
+ *  parent renders it only then), so mount time is the turn start. */
+function TurnTimerChip() {
+  const [since] = useState(() => Date.now());
+  const now = useNow(1000);
+  return (
+    <span className="flex items-center gap-1.5 rounded-full border border-brand-800 bg-brand-950/60 px-2.5 py-0.5 text-xs text-brand-300">
+      <span className="pulse-dot h-1.5 w-1.5 rounded-full bg-brand-400" />
+      turn running {fmtDur((now - since) / 1000)}
+    </span>
+  );
+}
+
+/** Clickable starter prompts for an empty thread. */
+const SUGGESTIONS = [
+  "Erstelle eine Winkelhalterung mit 2× Ø5 Löchern",
+  "Optimiere das letzte Teil topologisch (leichter, SF ≥ 2)",
+  "FEM-Analyse der aktuellen Version",
+];
+
 function ChatView({ chatId }: { chatId: string }) {
   const qc = useQueryClient();
   const toast = useToast();
@@ -222,6 +245,17 @@ function ChatView({ chatId }: { chatId: string }) {
       return v.artifacts.some((a) => a.kind === "glb") ? false : 4000;
     },
   });
+  // the job behind the panel version → live monitor under the viewer
+  const panelJobId = useMemo(() => {
+    const activeId = panelVersion.data?.active_job?.id;
+    if (activeId) return activeId;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      for (const s of messages[i].meta?.spawned ?? []) {
+        if (s.job_id) return s.job_id;
+      }
+    }
+    return null;
+  }, [panelVersion.data, messages]);
   const glb = panelVersion.data?.artifacts.find((a) => a.kind === "glb");
   const panelActive = panelVersion.data
     ? !["succeeded", "needs_review", "failed", "cancelled"].includes(
@@ -379,6 +413,7 @@ function ChatView({ chatId }: { chatId: string }) {
             {!connected && (
               <span className="text-xs text-amber-500">reconnecting…</span>
             )}
+            {turnRunning && <TurnTimerChip />}
             {turnRunning && (
               <Btn
                 variant="ghost"
@@ -408,10 +443,26 @@ function ChatView({ chatId }: { chatId: string }) {
         >
           <div className="mx-auto flex max-w-3xl flex-col gap-3">
             {messages.length === 0 && !turnRunning && (
-              <EmptyState
-                title="Start the conversation"
-                hint="Describe a part, attach reference images, or ask the agent to modify an existing version."
-              />
+              <div className="flex flex-col gap-3">
+                <EmptyState
+                  title="Start the conversation"
+                  hint="Describe a part, attach reference images, or ask the agent to modify an existing version."
+                />
+                <div className="flex flex-wrap justify-center gap-2">
+                  {SUGGESTIONS.map((s) => (
+                    <button
+                      key={s}
+                      className="rounded-full border border-zinc-800 px-3 py-1.5 text-xs text-zinc-400 transition-colors hover:border-brand-500 hover:text-brand-300 disabled:opacity-40"
+                      disabled={send.isPending}
+                      onClick={() =>
+                        send.mutateAsync({ content: s, asset_ids: [] })
+                      }
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              </div>
             )}
             {activeWin ? (
               <>
@@ -458,7 +509,7 @@ function ChatView({ chatId }: { chatId: string }) {
         </div>
       </div>
 
-      {/* right: live model panel */}
+      {/* right: live model panel + job monitor */}
       {show3d && panelVid && (
         <div className="hidden w-[420px] shrink-0 flex-col border-l border-zinc-800 lg:flex">
           <div className="border-b border-zinc-800 px-3 py-2 text-xs font-medium text-zinc-400">
@@ -471,6 +522,11 @@ function ChatView({ chatId }: { chatId: string }) {
               <LivePreview versionId={panelVid} active={panelActive} />
             )}
           </div>
+          {panelJobId && (
+            <div className="max-h-[45%] shrink-0 overflow-y-auto">
+              <JobLivePanel jobId={panelJobId} />
+            </div>
+          )}
         </div>
       )}
 

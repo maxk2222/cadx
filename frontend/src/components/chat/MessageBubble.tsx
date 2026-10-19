@@ -1,8 +1,10 @@
-import { AlertTriangle, Check, Loader2, Wrench, X } from "lucide-react";
+import { AlertTriangle, Check, Loader2, Wrench } from "lucide-react";
 import { memo, useState } from "react";
+import { fmtDur } from "../../lib/liveStats";
 import { splitMd } from "../../lib/mdText";
 import type { ToolEvent } from "../../lib/useChatEvents";
 import type { Asset, ChatMessage, SpawnedRef, ToolLogEntry } from "../../lib/types";
+import { useNow } from "../ui";
 import ChatJobCard from "./ChatJobCard";
 
 /** Minimal markdown-ish renderer — fenced code blocks, inline code, bold,
@@ -78,6 +80,7 @@ function ToolChip({
   ok,
   result,
   done,
+  t_ms,
   assetsById,
 }: {
   name: string;
@@ -85,9 +88,12 @@ function ToolChip({
   ok?: boolean;
   result?: Record<string, unknown>;
   done: boolean;
+  t_ms?: number;
   assetsById: Map<string, Asset>;
 }) {
   const [open, setOpen] = useState(false);
+  // ticks only while the call is in flight — shows live elapsed next to spinner
+  const now = useNow(1000, !done);
   const imgIds = (
     (result?.assets as { asset_id?: string }[] | undefined) ?? []
   )
@@ -109,9 +115,16 @@ function ToolChip({
         <span className="font-mono text-zinc-300">{name}</span>
         <span className="ml-auto flex items-center gap-1 text-zinc-500">
           {!done ? (
-            <Loader2 className="h-3 w-3 animate-spin" />
+            <>
+              <Loader2 className="h-3 w-3 animate-spin" />
+              {t_ms != null && (
+                <span className="font-mono text-[10px]">
+                  {fmtDur((now - t_ms) / 1000)}
+                </span>
+              )}
+            </>
           ) : ok === false ? (
-            <X className="h-3 w-3 text-red-400" />
+            <AlertTriangle className="h-3 w-3 text-red-400" />
           ) : (
             <Check className="h-3 w-3 text-emerald-400" />
           )}
@@ -194,7 +207,7 @@ const MessageBubble = memo(function MessageBubble({
 
   if (msg.role === "user") {
     return (
-      <div className="flex justify-end">
+      <div className="anim-fade-in-up flex justify-end">
         <div className="max-w-[75%] rounded-2xl rounded-br-sm bg-brand-900/60 px-3.5 py-2.5">
           {att.length > 0 && (
             <div className="mb-2 flex flex-wrap gap-2">
@@ -226,7 +239,7 @@ const MessageBubble = memo(function MessageBubble({
   }
 
   return (
-    <div className="flex justify-start">
+    <div className="anim-fade-in-up flex justify-start">
       <div className="max-w-[85%] rounded-2xl rounded-bl-sm border border-zinc-800 bg-zinc-900 px-3.5 py-2.5">
         {streaming && !msg.content && log.length === 0 && (
           <div className="flex items-center gap-2 text-sm text-zinc-500">
@@ -242,7 +255,7 @@ const MessageBubble = memo(function MessageBubble({
         )}
         {msg.content && <MdText text={msg.content} />}
         {streaming && msg.content && (
-          <span className="ml-1 inline-block h-3.5 w-1.5 animate-pulse bg-brand-400/70" />
+          <span className="anim-caret ml-1 inline-block h-3.5 w-1.5 bg-brand-400/70" />
         )}
         {spawned.length > 0 && (
           <div className="mt-2 flex flex-col gap-2">

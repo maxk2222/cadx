@@ -6,7 +6,14 @@ import { fmtDuration, fmtSecs, fmtTokens } from "../lib/format";
 import { stepLabel } from "../lib/steps";
 import type { Job, JobLive } from "../lib/types";
 import type { JobEvent, JobStream } from "../lib/useJobEvents";
-import { Btn, ProgressBar, useStickyBottom, useToast } from "./ui";
+import {
+  Btn,
+  PipelineStepper,
+  ProgressBar,
+  StepWaterfall,
+  useStickyBottom,
+  useToast,
+} from "./ui";
 
 const TERMINAL = ["succeeded", "failed", "cancelled"];
 
@@ -348,12 +355,21 @@ export default function JobLog({
         </div>
       )}
 
-      <StepsTimeline
-        live={live}
-        iteration={job?.iteration ?? 0}
-        done={isDone || !running}
-        events={events}
-      />
+      {/* structured pipeline view when live data exists; StepsTimeline stays
+          as the event-only fallback for pre-live jobs */}
+      {live.step || (live.step_history?.length ?? 0) > 0 ? (
+        <div className="flex flex-col gap-2">
+          <PipelineStepper live={live} />
+          <StepWaterfall live={live} />
+        </div>
+      ) : (
+        <StepsTimeline
+          live={live}
+          iteration={job?.iteration ?? 0}
+          done={isDone || !running}
+          events={events}
+        />
+      )}
 
       <div className="flex items-center gap-2">
         <ProgressBar
