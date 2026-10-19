@@ -58,6 +58,10 @@ async def test_stats_shape_and_days(client):
         "top_errors",
         "failed_steps",
         "mesh",
+        "fem",
+        "mode_stats",
+        "issue_sources",
+        "assets_by_kind",
         "artifacts_by_kind",
         "projects",
     ):
@@ -98,6 +102,12 @@ async def test_stats_seeded(client):
             iterations=6,
             usage={"prompt_tokens": 500, "completion_tokens": 100, "calls": 4},
             mesh={"generation": {"model": f"meshm-{tag}", "duration_s": 12.0, "cached": False}},
+            issues=[
+                {"source": "dims", "severity": "major", "what": f"dim-{tag}"},
+                {"source": "lint", "severity": "minor", "what": f"lint-{tag}"},
+                {"source": "lint", "severity": "minor", "what": f"lint2-{tag}"},
+            ],
+            fem={"cases": [{"safety_factor": 2.5}, {"safety_factor": 1.8}]},
         )
         v2 = Version(
             project_id=p.id,
@@ -132,6 +142,14 @@ async def test_stats_seeded(client):
             live={"step_history": [{"step": "codegen", "it": 1, "dt_s": 42.0}]},
         )
         db.add(j)
+        j2 = Job(
+            version_id=v1.id,
+            type=JobType.optimize,
+            status=JobStatus.succeeded,
+            started_at=datetime.now(UTC) - timedelta(minutes=20),
+            finished_at=datetime.now(UTC) - timedelta(minutes=5),
+        )
+        db.add(j2)
         await db.flush()
         db.add(
             AgentTrace(
@@ -188,6 +206,29 @@ async def test_stats_seeded(client):
     # score buckets contain our two scored versions
     buckets = {b["name"]: b["count"] for b in d["score"]["buckets"]}
     assert buckets["80-100"] >= 1 and buckets["<40"] >= 1
+
+    # per-mode stats: cad has the succeeded v1, mesh has the failed v2
+    modes = {m["mode"]: m for m in d["mode_stats"]}
+    assert modes["cad"]["succeeded"] >= 1 and modes["cad"]["avg_score"] is not None
+    assert modes["mesh"]["versions"] >= 1
+    assert modes["cad"]["tokens"] >= 600
+
+    # issue sources aggregated from Version.issues
+    iss = {i["source"]: i for i in d["issue_sources"]}
+    assert iss["dims"]["major"] >= 1
+    assert iss["lint"]["minor"] >= 2 and iss["lint"]["total"] >= 2
+
+    # fem stats: v1's worst case SF is min(2.5, 1.8) = 1.8
+    assert d["fem"]["versions"] >= 1
+    assert d["fem"]["avg_worst_sf"] is not None
+
+    # job type percentiles + today's outcome bucket
+    jt_opt = next(x for x in d["job_types"] if x["type"] == "optimize")
+    assert jt_opt["p50_duration_s"] is not None and jt_opt["max_duration_s"] is not None
+    today = datetime.now(UTC).date().isoformat()
+    today_bucket = next(b for b in d["activity"] if b["date"] == today)
+    assert today_bucket["succeeded"] >= 1 and today_bucket["failed"] >= 1
+    assert today_bucket["score_avg"] is not None
 
     # days=7 filter: the 60-day-old version drops out, project keeps 2 versions
     d7 = (await client.get("/api/stats", params={"days": 7})).json()

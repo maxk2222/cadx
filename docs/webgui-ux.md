@@ -234,15 +234,26 @@ The Stats page aggregates generation history across all projects, with a
 (read-only, no migration needed). Sections:
 
 - KPI cards: versions/projects/jobs, success rate, average score and
-  iterations, LLM tokens and calls, total compute time, artifact storage.
-- Activity: versions + jobs per day (stacked bars) and LLM tokens per day.
-- Distributions: version status, resolved generation mode, job status donuts.
-- Quality: score histogram (`<40`, `40-59`, `60-79`, `80-100`).
+  iterations, LLM tokens and calls, tokens per succeeded version, total
+  compute time, artifact storage — plus a secondary strip with mesh
+  generations + cache rate, FEM analyses + average worst safety factor,
+  assets and library parts.
+- Trends: versions + jobs created per day (bars), job outcomes by finish day
+  (stacked succeeded/failed bars) overlaid with the average score line
+  (secondary axis), and LLM tokens per day.
+- Mode performance: per `resolved_mode` comparison — versions, pass rate
+  (bar), average score, average iterations and tokens.
+- Distributions: version status, resolved generation mode, job status donuts
+  with semantic colors (succeeded green, needs_review amber, failed red).
+- Quality: score histogram (`<40`, `40-59`, `60-79`, `80-100`, red→green) and
+  issue sources aggregated from `Version.issues` (major/minor per source).
 - LLM usage: tokens / calls / average latency per model and per pipeline step;
   per-step wall time comes from `Job.live.step_history`.
-- Performance: job count / failure count / average wall duration per job type.
+- Performance: job count / failure count / avg / p50 / max wall duration per
+  job type.
 - Failures: most common error lines and the pipeline step jobs died in.
-- Projects: per-project versions, success count, average score, tokens and
+- Data inventory: version kinds, assets, artifact kinds and mesh models used.
+- Projects: per-project versions, success share, average score, tokens and
   last activity with deep links into the project.
 
 Charts use Recharts; the page is lazy-loaded so the chart bundle does not

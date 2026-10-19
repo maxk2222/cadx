@@ -974,6 +974,9 @@ export interface StatsDayBucket {
   versions: number;
   jobs: number;
   tokens: number;
+  succeeded: number; // jobs finished this day with status=succeeded
+  failed: number; // jobs finished this day failed or cancelled
+  score_avg: number | null; // avg score of versions created this day
 }
 
 export interface ModelStat {
@@ -997,6 +1000,25 @@ export interface JobTypeStat {
   count: number;
   failed: number;
   avg_duration_s: number | null;
+  p50_duration_s: number | null;
+  max_duration_s: number | null;
+}
+
+export interface ModeStat {
+  mode: string;
+  versions: number;
+  succeeded: number;
+  pass_rate: number | null;
+  avg_score: number | null;
+  avg_iterations: number | null;
+  tokens: number;
+}
+
+export interface IssueStat {
+  source: string;
+  major: number;
+  minor: number;
+  total: number;
 }
 
 export interface ProjectStat {
@@ -1049,6 +1071,13 @@ export interface Stats {
     avg_duration_s: number | null;
     models: NamedCount[];
   };
+  fem: {
+    versions: number;
+    avg_worst_sf: number | null;
+  };
+  mode_stats: ModeStat[];
+  issue_sources: IssueStat[];
+  assets_by_kind: NamedCount[];
   artifacts_by_kind: NamedCount[];
   projects: ProjectStat[];
 }

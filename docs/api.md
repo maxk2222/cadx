@@ -100,11 +100,13 @@ GET           /api/stats?days=N                          aggregated generation s
 ```
 
 Read-only aggregate for the Stats page: totals, status/mode/kind
-distributions, score buckets + pass rate, per-day activity, token usage by
-model and pipeline step (from `AgentTrace`), job durations by type, mesh
-generation stats, top errors/failed steps, artifact kinds, per-project
-leaderboard. Aggregation happens over column selects — the heavy JSON columns
-(`messages`, `log`, `code`, …) are never loaded.
+distributions, score buckets + pass rate, per-day activity (created counts,
+job outcomes by finish day, average score), token usage by model and
+pipeline step (from `AgentTrace`), job durations by type (avg/p50/max),
+per-mode performance (`mode_stats`), issue sources from `Version.issues`,
+mesh generation stats, FEM coverage (`avg_worst_sf`), asset/artifact kinds,
+per-project leaderboard. Aggregation happens over column selects — the heavy
+JSON columns (`messages`, `log`, `code`, …) are never loaded.
 
 ## Library
 

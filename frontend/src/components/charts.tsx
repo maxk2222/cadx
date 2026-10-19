@@ -7,7 +7,9 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
+  ComposedChart,
   Legend,
+  Line,
   Pie,
   PieChart,
   ResponsiveContainer,
@@ -82,6 +84,7 @@ export function StatBars({
   bars,
   height = 220,
   layout = "horizontal",
+  colorFor,
 }: {
   data: object[];
   xKey: string;
@@ -89,6 +92,8 @@ export function StatBars({
   height?: number;
   /** "vertical" = category axis on Y (long labels). */
   layout?: "horizontal" | "vertical";
+  /** Per-category color override, e.g. semantic score-bucket colors. */
+  colorFor?: (name: string) => string;
 }) {
   const vertical = layout === "vertical";
   return (
@@ -138,9 +143,78 @@ export function StatBars({
             stackId={bars.length > 1 ? "1" : undefined}
             fill={b.color ?? CHART_COLORS[i % CHART_COLORS.length]}
             radius={[3, 3, 0, 0]}
-          />
+          >
+            {colorFor &&
+              data.map((row, ri) => (
+                <Cell
+                  key={ri}
+                  fill={colorFor(String((row as Record<string, unknown>)[xKey]))}
+                />
+              ))}
+          </Bar>
         ))}
       </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+/** Stacked bars + a line on a secondary axis — e.g. outcomes/day + avg score. */
+export function StatComposed({
+  data,
+  xKey,
+  bars,
+  line,
+  height = 220,
+}: {
+  data: object[];
+  xKey: string;
+  bars: { key: string; name: string; color: string }[];
+  line?: { key: string; name: string; color?: string };
+  height?: number;
+}) {
+  return (
+    <ResponsiveContainer width="100%" height={height}>
+      <ComposedChart data={data} margin={{ top: 4, right: 8, bottom: 0, left: -18 }}>
+        <CartesianGrid stroke="#27272a" strokeDasharray="3 3" vertical={false} />
+        <XAxis dataKey={xKey} tick={AXIS_STYLE} tickLine={false} axisLine={false} minTickGap={24} />
+        <YAxis yAxisId="l" tick={AXIS_STYLE} tickLine={false} axisLine={false} allowDecimals={false} />
+        {line && (
+          <YAxis
+            yAxisId="r"
+            orientation="right"
+            domain={[0, 100]}
+            tick={AXIS_STYLE}
+            tickLine={false}
+            axisLine={false}
+            width={28}
+          />
+        )}
+        <Tooltip {...TOOLTIP_STYLE} />
+        <Legend wrapperStyle={{ fontSize: 12 }} />
+        {bars.map((b) => (
+          <Bar
+            key={b.key}
+            yAxisId="l"
+            dataKey={b.key}
+            name={b.name}
+            stackId="1"
+            fill={b.color}
+            radius={[0, 0, 0, 0]}
+          />
+        ))}
+        {line && (
+          <Line
+            yAxisId="r"
+            type="monotone"
+            dataKey={line.key}
+            name={line.name}
+            stroke={line.color ?? "#fbbf24"}
+            strokeWidth={1.5}
+            dot={false}
+            connectNulls
+          />
+        )}
+      </ComposedChart>
     </ResponsiveContainer>
   );
 }
@@ -148,9 +222,12 @@ export function StatBars({
 export function StatDonut({
   data,
   height = 200,
+  colorFor,
 }: {
   data: { name: string; count: number }[];
   height?: number;
+  /** Name-based color override — keeps e.g. "failed" red in any order. */
+  colorFor?: (name: string) => string;
 }) {
   return (
     <ResponsiveContainer width="100%" height={height}>
@@ -164,8 +241,11 @@ export function StatDonut({
           paddingAngle={2}
           stroke="none"
         >
-          {data.map((_, i) => (
-            <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
+          {data.map((d, i) => (
+            <Cell
+              key={i}
+              fill={colorFor?.(d.name) ?? CHART_COLORS[i % CHART_COLORS.length]}
+            />
           ))}
         </Pie>
         <Tooltip {...TOOLTIP_STYLE} />

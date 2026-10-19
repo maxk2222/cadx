@@ -842,6 +842,9 @@ class StatsDayBucket(BaseModel):
     versions: int = 0
     jobs: int = 0
     tokens: int = 0  # prompt + completion tokens (from AgentTrace rows)
+    succeeded: int = 0  # jobs that finished this day with status=succeeded
+    failed: int = 0  # jobs that finished this day failed or cancelled
+    score_avg: float | None = None  # avg score of versions created this day
 
 
 class ModelStat(BaseModel):
@@ -865,6 +868,29 @@ class JobTypeStat(BaseModel):
     count: int
     failed: int
     avg_duration_s: float | None = None
+    p50_duration_s: float | None = None
+    max_duration_s: float | None = None
+
+
+class ModeStat(BaseModel):
+    """Per resolved_mode quality comparison — which pipeline works best."""
+
+    mode: str
+    versions: int
+    succeeded: int
+    pass_rate: float | None = None
+    avg_score: float | None = None
+    avg_iterations: float | None = None
+    tokens: int = 0
+
+
+class IssueStat(BaseModel):
+    """Version.issues aggregated by source (dims, dfm, lint, features, ...)."""
+
+    source: str
+    major: int = 0
+    minor: int = 0
+    total: int = 0
 
 
 class ProjectStat(BaseModel):
@@ -889,6 +915,11 @@ class MeshStats(BaseModel):
     cached: int
     avg_duration_s: float | None = None
     models: list[NamedCount] = Field(default_factory=list)
+
+
+class FemStats(BaseModel):
+    versions: int = 0  # versions carrying a fem.cases report
+    avg_worst_sf: float | None = None  # mean of each version's worst safety factor
 
 
 class StatsTotals(BaseModel):
@@ -923,6 +954,10 @@ class StatsOut(BaseModel):
     top_errors: list[NamedCount] = Field(default_factory=list)
     failed_steps: list[NamedCount] = Field(default_factory=list)
     mesh: MeshStats = Field(default_factory=lambda: MeshStats(generations=0, cached=0))
+    fem: FemStats = Field(default_factory=FemStats)
+    mode_stats: list[ModeStat] = Field(default_factory=list)
+    issue_sources: list[IssueStat] = Field(default_factory=list)
+    assets_by_kind: list[NamedCount] = Field(default_factory=list)
     artifacts_by_kind: list[NamedCount] = Field(default_factory=list)
     projects: list[ProjectStat] = Field(default_factory=list)
 

@@ -18,9 +18,12 @@ from sqlmodel import col, func, select
 
 from cadx.api.deps import get_session
 from cadx.api.schemas import (
+    FemStats,
+    IssueStat,
     JobTypeStat,
     MeshStats,
     ModelStat,
+    ModeStat,
     NamedCount,
     ProjectStat,
     ScoreStats,
@@ -101,6 +104,22 @@ class _VersionAgg:
         self.mesh_count = 0
         self.mesh_cached = 0
         self.mesh_durations: list[float] = []
+        self.modes: dict[str, dict[str, Any]] = defaultdict(
+            lambda: {
+                "versions": 0,
+                "succeeded": 0,
+                "terminal": 0,
+                "scores": [],
+                "iters": [],
+                "tokens": 0,
+            }
+        )
+        self.issue_sources: dict[str, dict[str, int]] = defaultdict(
+            lambda: {"major": 0, "minor": 0}
+        )
+        self.fem_versions = 0
+        self.fem_worst_sfs: list[float] = []
+        self.day_scores: dict[str, list[float]] = defaultdict(list)
         self.per_project: dict[Any, dict[str, Any]] = defaultdict(
             lambda: {"versions": 0, "succeeded": 0, "scores": [], "tokens": 0, "last": None}
         )
@@ -119,6 +138,8 @@ async def _versions_agg(db: AsyncSession, cutoff: datetime | None) -> _VersionAg
         Version.usage,
         Version.error,
         Version.mesh,
+        Version.fem,
+        Version.issues,
         Version.created_at,
     )
     if cutoff:
@@ -128,40 +149,91 @@ async def _versions_agg(db: AsyncSession, cutoff: datetime | None) -> _VersionAg
     a = _VersionAgg()
     a.total = len(rows)
     for v in rows:
-        a.by_status[str(v["status"])] += 1
-        a.by_kind[str(v["kind"])] += 1
-        if v["gen_mode"]:
-            a.by_mode_req[str(v["gen_mode"])] += 1
-        if v["resolved_mode"]:
-            a.by_mode_res[str(v["resolved_mode"])] += 1
-        if v["score"] is not None:
-            a.scores.append(v["score"])
-            a.score_buckets[_score_bucket(v["score"])] += 1
-        if v["iterations"]:
-            a.iters.append(v["iterations"])
-        if (head := _err_head(v["error"])) is not None:
-            a.top_errors[head] += 1
-        gen = (v["mesh"] or {}).get("generation") or {}
-        if gen:
-            a.mesh_count += 1
-            if gen.get("cached"):
-                a.mesh_cached += 1
-            if isinstance(gen.get("duration_s"), (int, float)) and gen["duration_s"]:
-                a.mesh_durations.append(float(gen["duration_s"]))
-            if gen.get("model"):
-                a.mesh_models[str(gen["model"])] += 1
-        usage = v["usage"] or {}
-        ptok = int(usage.get("prompt_tokens") or 0) + int(usage.get("completion_tokens") or 0)
-        pp = a.per_project[v["project_id"]]
-        pp["versions"] += 1
-        pp["succeeded"] += 1 if v["status"] == VersionStatus.succeeded else 0
-        if v["score"] is not None:
-            pp["scores"].append(v["score"])
-        pp["tokens"] += ptok
-        if pp["last"] is None or v["created_at"] > pp["last"]:
-            pp["last"] = v["created_at"]
-        a.day[v["created_at"].date().isoformat()] += 1
+        _version_row(a, v)
     return a
+
+
+def _v_mesh(a: _VersionAgg, v: Any) -> None:
+    gen = (v["mesh"] or {}).get("generation") or {}
+    if not gen:
+        return
+    a.mesh_count += 1
+    if gen.get("cached"):
+        a.mesh_cached += 1
+    if isinstance(gen.get("duration_s"), (int, float)) and gen["duration_s"]:
+        a.mesh_durations.append(float(gen["duration_s"]))
+    if gen.get("model"):
+        a.mesh_models[str(gen["model"])] += 1
+
+
+def _v_mode(a: _VersionAgg, v: Any, ptok: int) -> None:
+    if not v["resolved_mode"]:
+        return
+    m = a.modes[str(v["resolved_mode"])]
+    m["versions"] += 1
+    m["succeeded"] += 1 if v["status"] == VersionStatus.succeeded else 0
+    m["terminal"] += 1 if v["status"] in _TERMINAL else 0
+    if v["score"] is not None:
+        m["scores"].append(v["score"])
+    if v["iterations"]:
+        m["iters"].append(v["iterations"])
+    m["tokens"] += ptok
+
+
+def _v_issues(a: _VersionAgg, v: Any) -> None:
+    for i in v["issues"] or []:
+        if not isinstance(i, dict) or not i.get("source"):
+            continue
+        sev = "minor" if i.get("severity") == "minor" else "major"
+        a.issue_sources[str(i["source"])][sev] += 1
+
+
+def _v_fem(a: _VersionAgg, v: Any) -> None:
+    fem_cases = (v["fem"] or {}).get("cases") or []
+    if not fem_cases:
+        return
+    a.fem_versions += 1
+    sfs = [
+        float(c["safety_factor"])
+        for c in fem_cases
+        if isinstance(c, dict) and isinstance(c.get("safety_factor"), (int, float))
+    ]
+    if sfs:
+        a.fem_worst_sfs.append(min(sfs))
+
+
+def _version_row(a: _VersionAgg, v: Any) -> None:
+    a.by_status[str(v["status"])] += 1
+    a.by_kind[str(v["kind"])] += 1
+    if v["gen_mode"]:
+        a.by_mode_req[str(v["gen_mode"])] += 1
+    if v["resolved_mode"]:
+        a.by_mode_res[str(v["resolved_mode"])] += 1
+    if v["score"] is not None:
+        a.scores.append(v["score"])
+        a.score_buckets[_score_bucket(v["score"])] += 1
+    if v["iterations"]:
+        a.iters.append(v["iterations"])
+    if (head := _err_head(v["error"])) is not None:
+        a.top_errors[head] += 1
+    _v_mesh(a, v)
+    usage = v["usage"] or {}
+    ptok = int(usage.get("prompt_tokens") or 0) + int(usage.get("completion_tokens") or 0)
+    _v_mode(a, v, ptok)
+    _v_issues(a, v)
+    _v_fem(a, v)
+    pp = a.per_project[v["project_id"]]
+    pp["versions"] += 1
+    pp["succeeded"] += 1 if v["status"] == VersionStatus.succeeded else 0
+    if v["score"] is not None:
+        pp["scores"].append(v["score"])
+    pp["tokens"] += ptok
+    if pp["last"] is None or v["created_at"] > pp["last"]:
+        pp["last"] = v["created_at"]
+    day = v["created_at"].date().isoformat()
+    a.day[day] += 1
+    if v["score"] is not None:
+        a.day_scores[day].append(v["score"])
 
 
 class _JobAgg:
@@ -174,6 +246,7 @@ class _JobAgg:
         self.failed_steps: Counter = Counter()
         self.step_wall: Counter = Counter()
         self.day: Counter = Counter()
+        self.done_day: dict[str, Counter] = defaultdict(Counter)  # finish-day → outcome
         self.compute_seconds = 0.0
 
 
@@ -206,6 +279,12 @@ async def _jobs_agg(db: AsyncSession, cutoff: datetime | None) -> _JobAgg:
             dur = max(0.0, (j["finished_at"] - j["started_at"]).total_seconds())
             jt["durs"].append(dur)
             a.compute_seconds += dur
+        if j["finished_at"]:
+            dkey = j["finished_at"].date().isoformat()
+            if j["status"] == JobStatus.succeeded:
+                a.done_day[dkey]["succeeded"] += 1
+            elif j["status"] in (JobStatus.failed, JobStatus.cancelled):
+                a.done_day[dkey]["failed"] += 1
         for h in (j["live"] or {}).get("step_history") or []:
             if isinstance(h.get("dt_s"), (int, float)) and h.get("step"):
                 a.step_wall[_step_base(str(h["step"]))] += float(h["dt_s"])
@@ -291,6 +370,11 @@ async def stats(days: int = Query(0, ge=0, le=3650), db: AsyncSession = Depends(
         aq = aq.where(col(Artifact.created_at) >= cutoff)
     artifact_rows = (await db.execute(aq)).all()
 
+    sq = select(Asset.kind, func.count()).group_by(Asset.kind)
+    if cutoff:
+        sq = sq.where(col(Asset.created_at) >= cutoff)
+    asset_rows = (await db.execute(sq)).all()
+
     project_names = {
         p["id"]: p["name"] for p in (await db.execute(select(Project.id, Project.name))).mappings()
     }
@@ -311,6 +395,9 @@ async def stats(days: int = Query(0, ge=0, le=3650), db: AsyncSession = Depends(
                 versions=va.day.get(key, 0),
                 jobs=ja.day.get(key, 0),
                 tokens=ta.day.get(key, 0),
+                succeeded=ja.done_day.get(key, Counter()).get("succeeded", 0),
+                failed=ja.done_day.get(key, Counter()).get("failed", 0),
+                score_avg=round(sum(ss) / len(ss), 1) if (ss := va.day_scores.get(key)) else None,
             )
         )
         d += timedelta(days=1)
@@ -345,9 +432,37 @@ async def stats(days: int = Query(0, ge=0, le=3650), db: AsyncSession = Depends(
                 count=x["count"],
                 failed=x["failed"],
                 avg_duration_s=round(sum(x["durs"]) / len(x["durs"]), 1) if x["durs"] else None,
+                p50_duration_s=round(sorted(x["durs"])[len(x["durs"]) // 2], 1)
+                if x["durs"]
+                else None,
+                max_duration_s=round(max(x["durs"]), 1) if x["durs"] else None,
             )
             for t, x in sorted(ja.by_type.items(), key=lambda kv: -kv[1]["count"])
         ],
+        mode_stats=[
+            ModeStat(
+                mode=m,
+                versions=x["versions"],
+                succeeded=x["succeeded"],
+                pass_rate=round(x["succeeded"] / x["terminal"], 3) if x["terminal"] else None,
+                avg_score=round(sum(x["scores"]) / len(x["scores"]), 1) if x["scores"] else None,
+                avg_iterations=round(sum(x["iters"]) / len(x["iters"]), 1) if x["iters"] else None,
+                tokens=x["tokens"],
+            )
+            for m, x in sorted(va.modes.items(), key=lambda kv: -kv[1]["versions"])
+        ],
+        issue_sources=[
+            IssueStat(source=s, major=x["major"], minor=x["minor"], total=x["major"] + x["minor"])
+            for s, x in sorted(
+                va.issue_sources.items(), key=lambda kv: -(kv[1]["major"] + kv[1]["minor"])
+            )
+        ],
+        fem=FemStats(
+            versions=va.fem_versions,
+            avg_worst_sf=round(sum(va.fem_worst_sfs) / len(va.fem_worst_sfs), 2)
+            if va.fem_worst_sfs
+            else None,
+        ),
         score=ScoreStats(
             avg=round(sum(va.scores) / len(va.scores), 1) if va.scores else None,
             best=max(va.scores) if va.scores else None,
@@ -386,6 +501,7 @@ async def stats(days: int = Query(0, ge=0, le=3650), db: AsyncSession = Depends(
             else None,
             models=_named(va.mesh_models),
         ),
+        assets_by_kind=[NamedCount(name=str(r[0]), count=int(r[1])) for r in asset_rows],
         artifacts_by_kind=[NamedCount(name=str(r[0]), count=int(r[1])) for r in artifact_rows],
         projects=[
             ProjectStat(
