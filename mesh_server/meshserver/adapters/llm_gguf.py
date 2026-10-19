@@ -62,7 +62,11 @@ class LlamaCppAdapter(LlmAdapter):
             cls.available_error = "no gguf_files declared"
             return False
         if cls._resolve_server(cfg) is None:
-            cls.available_error = "no llama-server binary / llama_cpp module found"
+            cls.available_error = (
+                "llama.cpp backend not installed — install the llm extra "
+                "('uv pip install -e .[llm]' / mesh_server/scripts/install_llm.sh), "
+                "a system llama-server ('brew install llama.cpp'), or set LLAMA_SERVER_BIN"
+            )
             return False
         return True
 

@@ -34,6 +34,15 @@ RUN uv venv /opt/venv && \
 
 ENV PATH=/opt/venv/bin:$PATH
 
+# Optional: local-LLM backends (llama.cpp GGUF serving). llama-cpp-python
+# compiles from source and needs cmake — opt in with --build-arg WITH_LLM=1.
+ARG WITH_LLM=0
+RUN if [ "$WITH_LLM" = "1" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends cmake && \
+      rm -rf /var/lib/apt/lists/* && \
+      uv pip install --python /opt/venv/bin/python -e ".[llm]"; \
+    fi
+
 # Optional adapter sources — uncomment to bake TRELLIS.2 into the image, or run
 # scripts/install_trellis2.sh inside the container.
 # ARG TRELLIS2_COMMIT=main

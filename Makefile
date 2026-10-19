@@ -139,8 +139,9 @@ eval-real: ## Eval against the real LLM/mesh stack
 
 MESH := mesh_server
 MESHVENV := $(MESH)/.venv
-# platform extras: mlx on arm64 macs, nothing heavy elsewhere (install adapters via scripts)
-MESH_EXTRA := $(shell [ "$$(uname -sm)" = "Darwin arm64" ] && echo ".[bg]" || echo ".")
+# platform extras: bg+llm on arm64 macs (mlx-lm ships the local-LLM adapters),
+# nothing heavy elsewhere (install adapters via scripts)
+MESH_EXTRA := $(shell [ "$$(uname -sm)" = "Darwin arm64" ] && echo ".[bg,llm]" || echo ".")
 
 mesh-sync: setup ## uv venv + deps for mesh_server/
 	cd $(MESH) && ../$(VENV)/bin/uv venv $(VENV)

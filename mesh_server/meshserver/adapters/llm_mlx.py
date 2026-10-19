@@ -66,7 +66,11 @@ class MlxLmAdapter(LlmAdapter):
 
             return True
         except Exception as e:
-            cls.available_error = f"mlx_lm not importable: {e}"
+            cls.available_error = (
+                f"mlx_lm backend not installed ({e}) — optional extra: "
+                "run mesh_server/scripts/install_llm.sh or "
+                "'uv pip install -e .[llm]' inside mesh_server/"
+            )
             return False
 
     @classmethod

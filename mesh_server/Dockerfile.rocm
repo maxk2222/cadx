@@ -39,6 +39,15 @@ COPY meshserver ./meshserver
 # a CUDA wheel from PyPI (a fresh venv would NOT see the base image's torch!)
 RUN uv pip install --system -e ".[rocm]" 'scikit-image>=0.24'
 
+# Optional: local-LLM backends (llama.cpp GGUF serving). llama-cpp-python
+# compiles from source and needs cmake — opt in with --build-arg WITH_LLM=1.
+ARG WITH_LLM=0
+RUN if [ "$WITH_LLM" = "1" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends cmake && \
+      rm -rf /var/lib/apt/lists/* && \
+      uv pip install --system -e ".[llm]"; \
+    fi
+
 # Optional adapter sources — uncomment to bake TripoSG into the image, or run
 # scripts/install_triposg.sh inside the container (it filters the CUDA-only
 # `diso` extension and the numpy pin automatically on non-CUDA torch).
