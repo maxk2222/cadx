@@ -30,8 +30,67 @@ body {
   background: transparent;
 }
 
+@keyframes fade-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes caret-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+@keyframes shimmer {
+  from {
+    background-position: -200% 0;
+  }
+  to {
+    background-position: 200% 0;
+  }
+}
+
+@keyframes pulse-soft {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(96, 165, 250, 0.5);
+  }
+  50% {
+    box-shadow: 0 0 0 5px rgba(96, 165, 250, 0);
+  }
+}
+
 @layer utilities {
   .focus-ring {
     @apply outline-none focus-visible:ring-2 focus-visible:ring-brand-500/60;
+  }
+  .anim-fade-in-up {
+    animation: fade-slide-in 0.25s ease-out both;
+  }
+  .anim-caret {
+    animation: caret-blink 1s step-end infinite;
+  }
+  .shimmer {
+    background-image: linear-gradient(
+      100deg,
+      transparent 30%,
+      rgba(255, 255, 255, 0.06) 50%,
+      transparent 70%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.6s linear infinite;
+  }
+  .pulse-dot {
+    animation: pulse-soft 1.4s ease-out infinite;
   }
 }

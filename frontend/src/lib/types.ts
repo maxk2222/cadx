@@ -675,6 +675,17 @@ export interface JobLive {
   sub_progress?: number;
   sub_label?: string;
   tokens?: Record<string, number>;
+  /** Flat live metrics published by the worker (job-type specific keys). */
+  metrics?: Record<string, number>;
+  /** Per-run stats for multi-run jobs (topopt / refine sweeps). */
+  runs?: {
+    index?: number;
+    type?: string; // "topopt" | "refine"
+    volfrac?: number | null; // target
+    achieved?: number | null; // achieved volfrac
+    worst_sf?: number | null;
+    applied?: number;
+  }[];
 }
 
 export interface Job {

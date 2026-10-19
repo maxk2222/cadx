@@ -4,10 +4,13 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useRef,
   useState,
   type ReactNode,
 } from "react";
+import { fmtDur, sparkPoints, stepRows } from "../lib/liveStats";
+import type { JobLive } from "../lib/types";
 
 /* ---------- primitives ---------- */
 
@@ -570,5 +573,248 @@ export function NumInput({
       onBlur={commit}
       onKeyDown={(e) => e.key === "Enter" && commit()}
     />
+  );
+}
+
+/* ---------- live stats ---------- */
+
+/** Date.now() ticking every intervalMs while active; with active=false no
+ *  interval runs and the last value is kept. */
+export function useNow(intervalMs: number, active = true): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(id);
+  }, [intervalMs, active]);
+  return now;
+}
+
+/** Min/max-normalized SVG sparkline with a dezent area fill and an optional
+ *  dashed reference line (value given in data units). */
+export function Sparkline({
+  values,
+  width = 80,
+  height = 24,
+  refLine,
+  className = "",
+}: {
+  values: number[];
+  width?: number;
+  height?: number;
+  refLine?: number;
+  className?: string;
+}) {
+  const gid = useId();
+  const pts = sparkPoints(values, width, height);
+  if (!pts) return <svg width={width} height={height} className={className} aria-hidden="true" />;
+  const min = Math.min(...values);
+  const span = Math.max(...values) - min;
+  const refY =
+    refLine != null && span > 0 ? height - ((refLine - min) / span) * height : null;
+  return (
+    <svg width={width} height={height} className={className} aria-hidden="true">
+      <defs>
+        <linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="rgb(96 165 250 / 0.25)" />
+          <stop offset="100%" stopColor="rgb(96 165 250 / 0)" />
+        </linearGradient>
+      </defs>
+      <polygon
+        points={`${pts} ${width},${height} 0,${height}`}
+        fill={`url(#${gid})`}
+        stroke="none"
+      />
+      {refY != null && (
+        <line
+          x1={0}
+          x2={width}
+          y1={refY}
+          y2={refY}
+          stroke="rgb(82 82 91)"
+          strokeWidth={1}
+          strokeDasharray="3 2"
+        />
+      )}
+      <polyline
+        points={pts}
+        fill="none"
+        stroke="rgb(96 165 250)"
+        strokeWidth={1.5}
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+/** Circular progress: zinc-800 track, brand-400→emerald-400 gradient arc,
+ *  centered percentage (or custom label). */
+export function ProgressRing({
+  value,
+  size = 48,
+  label,
+  className = "",
+}: {
+  value: number;
+  size?: number;
+  label?: string;
+  className?: string;
+}) {
+  const gid = useId();
+  const v = Math.min(1, Math.max(0, value));
+  const sw = 4;
+  const r = (size - sw) / 2;
+  const c = 2 * Math.PI * r;
+  return (
+    <div
+      className={`relative inline-flex items-center justify-center ${className}`}
+      style={{ width: size, height: size }}
+    >
+      <svg width={size} height={size} className="-rotate-90">
+        <defs>
+          <linearGradient id={gid} x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor="#60a5fa" />
+            <stop offset="100%" stopColor="#34d399" />
+          </linearGradient>
+        </defs>
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#27272a" strokeWidth={sw} />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={r}
+          fill="none"
+          stroke={`url(#${gid})`}
+          strokeWidth={sw}
+          strokeLinecap="round"
+          strokeDasharray={c}
+          strokeDashoffset={c * (1 - v)}
+          className="transition-[stroke-dashoffset] duration-500"
+        />
+      </svg>
+      <span className="absolute font-mono text-xs text-zinc-200">
+        {label ?? `${Math.round(v * 100)}%`}
+      </span>
+    </div>
+  );
+}
+
+/** Horizontal flex-wrap pills of completed + running pipeline steps (ticks
+ *  every second). Done: emerald check + duration below; active: pulsing dot,
+ *  brand border + shimmer; compact drops the duration row. */
+export function PipelineStepper({
+  live,
+  compact,
+  className = "",
+}: {
+  live: JobLive;
+  compact?: boolean;
+  className?: string;
+}) {
+  const now = useNow(1000, true);
+  const rows = stepRows(live, now);
+  if (!rows.length) return null;
+  return (
+    <div className={`flex flex-wrap items-center gap-1 ${className}`}>
+      {rows.map((r, i) => (
+        <span
+          key={`${r.step}-${i}`}
+          className={`inline-flex flex-col rounded border px-1.5 py-0.5 text-[10px] font-medium ${
+            r.active
+              ? "shimmer border-brand-700 bg-brand-950/50 text-brand-300"
+              : "border-zinc-800 bg-zinc-900 text-zinc-400"
+          }`}
+        >
+          <span className="flex items-center gap-1">
+            {r.active ? (
+              <span className="pulse-dot inline-block h-1.5 w-1.5 rounded-full bg-brand-400" />
+            ) : (
+              <Check className="h-3 w-3 text-emerald-400" />
+            )}
+            {r.label}
+          </span>
+          {!compact && (
+            <span className="pl-4 font-mono text-[9px] opacity-60">{fmtDur(r.dt_s)}</span>
+          )}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/** Per-step duration bars (width ∝ dt_s/max); the active step's bar grows
+ *  live. Shows the last maxRows steps. */
+export function StepWaterfall({
+  live,
+  maxRows = 12,
+  className = "",
+}: {
+  live: JobLive;
+  maxRows?: number;
+  className?: string;
+}) {
+  const now = useNow(1000, true);
+  const rows = stepRows(live, now).slice(-maxRows);
+  if (!rows.length) return null;
+  const maxDt = Math.max(1, ...rows.map((r) => r.dt_s));
+  return (
+    <div className={`flex flex-col gap-1 ${className}`}>
+      {rows.map((r, i) => (
+        <div key={`${r.step}-${i}`} className="flex items-center gap-2">
+          <span
+            className={`w-20 shrink-0 truncate text-xs ${
+              r.active ? "text-brand-300" : "text-zinc-400"
+            }`}
+            title={r.label}
+          >
+            {r.label}
+          </span>
+          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-zinc-800/60">
+            <div
+              className={`h-full rounded-full transition-[width] duration-500 ${
+                r.active ? "bg-brand-500/70" : "bg-zinc-600"
+              }`}
+              style={{ width: `${(r.dt_s / maxDt) * 100}%` }}
+            />
+          </div>
+          <span className="w-10 shrink-0 text-right font-mono text-[10px] text-zinc-500">
+            {fmtDur(r.dt_s)}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const STAT_TONES = {
+  default: "text-zinc-100",
+  ok: "text-emerald-300",
+  warn: "text-amber-300",
+  error: "text-red-300",
+} as const;
+
+/** Compact metric tile: small uppercase label, mono value, optional hint. */
+export function StatChip({
+  label,
+  value,
+  hint,
+  tone = "default",
+  className = "",
+}: {
+  label: string;
+  value: ReactNode;
+  hint?: string;
+  tone?: keyof typeof STAT_TONES;
+  className?: string;
+}) {
+  return (
+    <div
+      className={`min-w-0 rounded-md border border-zinc-800 bg-zinc-900/60 px-2 py-1.5 ${className}`}
+    >
+      <div className="text-[10px] font-medium uppercase tracking-wider text-zinc-500">{label}</div>
+      <div className={`truncate font-mono text-sm ${STAT_TONES[tone]}`}>{value}</div>
+      {hint && <div className="truncate text-[10px] text-zinc-500">{hint}</div>}
+    </div>
   );
 }
