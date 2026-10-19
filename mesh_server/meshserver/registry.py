@@ -122,11 +122,13 @@ class Registry:
         from meshserver.adapters.flux_kontext_mlx import FluxKontextMlxAdapter
         from meshserver.adapters.flux_mlx import FluxSchnellMlxAdapter
         from meshserver.adapters.qwen_edit_mlx import QwenImageEditAdapter
+        from meshserver.adapters.qwen_image_mlx import QwenImageMlxAdapter
         from meshserver.adapters.sd_torch import Sd15Adapter, SdxlAdapter
 
         classes += [
             FluxKontextMlxAdapter,
             QwenImageEditAdapter,
+            QwenImageMlxAdapter,
             FluxSchnellMlxAdapter,
             FluxSchnellAdapter,
             SdxlAdapter,
@@ -347,7 +349,10 @@ class Registry:
         elif device in ("cuda", "rocm"):
             pref = ["flux-schnell", "sdxl", "sd15"]
         elif device == "mlx":
-            pref = ["flux-schnell-mlx", "sdxl", "sd15"]
+            # qwen-image first: ungated Apache-2.0 weights and far better
+            # prompt adherence than SDXL; flux-schnell-mlx is the fallback
+            # once an HF token unlocks the gated repo
+            pref = ["qwen-image", "flux-schnell-mlx", "sdxl", "sd15"]
         elif device == "mps":
             pref = ["sdxl", "sd15"]
         else:
