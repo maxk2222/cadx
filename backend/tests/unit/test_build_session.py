@@ -60,7 +60,7 @@ def test_build_tools_schema():
     """build kind offers the code suite + build tools; submit_code is gone —
     the buffer itself is the submission."""
     ctx = _ctx(FakeLLM([]))
-    session = ToolSession(ctx, kind="build", code=SEED, verify_fn=_ok_verify)
+    session = ToolSession(ctx, kind="build", code=SEED, verify_fn=_ok_verify, render_fn=_ok_verify)
     names = session.allowed_names()
     for t in ("add_block", "checkpoint", "rollback", "verify", "render_model", "done"):
         assert t in names

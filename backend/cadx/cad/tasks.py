@@ -158,7 +158,9 @@ async def execute_version(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[
     return d
 
 
-def run_audit_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def run_audit_payload(
+    payload: dict[str, Any], cancelled: Callable[[], bool] | None = None
+) -> dict[str, Any]:
     """Synchronous part of audit_params — shared with InProcessExecutor.
 
     Perturbs each numeric PARAMS value ±epsilon and re-runs the SAME code in
@@ -184,6 +186,7 @@ def run_audit_payload(payload: dict[str, Any]) -> dict[str, Any]:
         mesh_solid=Path(payload["mesh_solid"]) if payload.get("mesh_solid") else None,
         mesh_bbox=payload.get("mesh_bbox"),
         anchors=payload.get("anchors"),
+        cancelled=cancelled,
     )
     try:
         report = audit_params(
@@ -192,6 +195,7 @@ def run_audit_payload(payload: dict[str, Any]) -> dict[str, Any]:
             epsilon=float(payload.get("epsilon") or 0.05),
             max_params=int(payload.get("max_params") or 8),
             runner=runner,
+            **_cancel_kwargs(audit_params, cancelled),
         )
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
@@ -217,7 +221,12 @@ async def audit_params(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str
     runs = 2 * int(payload.get("max_params") or 8) + 1
     deadline = _runtime(payload).exec_timeout_s * runs + 120
     try:
-        d = await asyncio.wait_for(asyncio.to_thread(run_audit_payload, payload), deadline)
+        d = await asyncio.wait_for(
+            asyncio.to_thread(
+                run_audit_payload, payload, cancelled=_sync_cancel_checker(cancel_key)
+            ),
+            deadline,
+        )
     except TimeoutError:
         log.error("audit_params.pipeline_hang", version=payload.get("version_id"))
         return {

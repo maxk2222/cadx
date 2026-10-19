@@ -1297,6 +1297,17 @@ class ToolSession:
 
     # -- schema selection --------------------------------------------------- #
 
+    def _verify_render_tools(self) -> list[dict[str, Any]]:
+        """verify + render_model schemas — only while the shared sandbox
+        budget lasts. No render callback → render_model could only fall back
+        to the light verify and return no image, so it isn't offered."""
+        if self.verify_left <= 0:
+            return []
+        out = list(VERIFY_TOOLS)
+        if self.render_fn is not None:
+            out += RENDER_TOOLS
+        return out
+
     def tools(self) -> list[dict[str, Any]]:
         if self.kind == "edit":
             out = [
@@ -1305,9 +1316,8 @@ class ToolSession:
                 *INFO_TOOLS,
                 *LIBRARY_TOOLS,
                 *CHECK_TOOLS,
+                *self._verify_render_tools(),
             ]
-            if self.verify_left > 0:
-                out += VERIFY_TOOLS + RENDER_TOOLS
             if getattr(self.ctx.executor, "edit_feature", None) is not None:
                 out += FEATURE_EDIT_TOOLS
             return out + DONE_TOOLS + IMAGE_TOOLS
@@ -1327,8 +1337,7 @@ class ToolSession:
                 *LIBRARY_TOOLS,
                 *CHECK_SNIPPET_TOOLS,
             ]
-            if self.verify_left > 0:
-                out += VERIFY_TOOLS + RENDER_TOOLS
+            out += self._verify_render_tools()
             return out + DONE_TOOLS + BUILD_TOOLS + IMAGE_TOOLS
         if self.kind == "inspect":
             return [*CODE_READ_TOOLS, *INFO_TOOLS, *LIBRARY_INFO_TOOLS, *IMAGE_TOOLS]

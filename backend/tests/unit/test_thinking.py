@@ -72,6 +72,12 @@ def test_step_is_hard_prefix_matching():
     assert not step_is_hard("critique", csv)
     assert not step_is_hard("intake", csv)
     assert not step_is_hard("repairman", csv)  # boundary-aware, not a bare prefix
+    # only numeric attempt suffixes prefix-match — minor improve rounds keep
+    # their own name out of the hard-steps set (thinking budget stays for
+    # real hard steps)
+    assert not step_is_hard("improve_minor", csv)
+    assert not step_is_hard("improve_minor_2", csv)
+    assert step_is_hard("improve_minor", "improve_minor")  # exact names still honoured
     assert not step_is_hard("rep", csv)
     assert not step_is_hard("repair", "")
 

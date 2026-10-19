@@ -36,6 +36,15 @@ DEFAULT_DRIFT_PCT = 10.0
 _VERDICT_RANK = {"robust": 0, "brittle": 1, "fails": 2}
 
 
+def _is_cancelled(cancelled: Callable[[], bool] | None) -> bool:
+    """Poll the optional cancellation checker — never raises (same contract
+    as ``engine._is_cancelled``)."""
+    try:
+        return bool(cancelled is not None and cancelled())
+    except Exception:
+        return False
+
+
 def _is_numeric(v: object) -> bool:
     # bools are ints in Python but are categorical switches, not dimensions
     return isinstance(v, int | float) and not isinstance(v, bool)
@@ -60,6 +69,7 @@ def make_pipeline_runner(
     mesh_solid: Path | None = None,
     mesh_bbox: list[float] | None = None,
     anchors: dict[str, Any] | None = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> Runner:
     """Production runner: light pipeline run (sandbox + analysis, no renders/
     DfM) per perturbation, each into its own subdir of ``base_dir``."""
@@ -80,6 +90,7 @@ def make_pipeline_runner(
             mesh_bbox=mesh_bbox,
             anchors=anchors,
             light=True,
+            cancelled=cancelled,
         )
         return res.to_dict()
 
@@ -156,6 +167,53 @@ def _verdict(
     return "robust", "both perturbations stayed within drift tolerance"
 
 
+def _perturb_param(
+    runner: Runner,
+    name: str,
+    value: float,
+    baseline_overrides: dict[str, object],
+    baseline: dict[str, Any],
+    epsilon: float,
+    drift_pct: float,
+    cancelled: Callable[[], bool] | None,
+) -> dict[str, Any] | None:
+    """One param's +ε/-ε runs plus its verdict — None when cancelled mid-pair."""
+    entry: dict[str, Any] = {"value": value}
+    runs: dict[str, dict[str, Any]] = {}
+    for side, sign in (("plus", 1), ("minus", -1)):
+        if _is_cancelled(cancelled):
+            return None
+        pv = _perturbed(value, epsilon, sign)
+        ov = {**baseline_overrides, name: pv}
+        run = _summarize_run(_safe_run(runner, ov), baseline)
+        run["override"] = pv
+        runs[side] = run
+        entry[side] = run
+    verdict, reason = _verdict(runs["plus"], runs["minus"], baseline, drift_pct)
+    entry["verdict"] = verdict
+    entry["reason"] = reason
+    return entry
+
+
+def _cancelled_report(
+    baseline: dict[str, Any] | None,
+    report_params: dict[str, Any],
+    skipped: list[dict[str, str]],
+    epsilon: float,
+) -> dict[str, Any]:
+    """Early-cancel shape — same keys as the normal report so partial results
+    stay readable; ``error: "cancelled"`` matches the task-level contract."""
+    return {
+        "status": "fails",
+        "error": "cancelled",
+        "baseline": baseline,
+        "audited": len(report_params),
+        "params": report_params,
+        "skipped": skipped,
+        "epsilon": epsilon,
+    }
+
+
 def audit_params(
     code: str,
     params: Mapping[str, object],
@@ -164,12 +222,15 @@ def audit_params(
     max_params: int = 8,
     drift_pct: float = DEFAULT_DRIFT_PCT,
     runner: Runner | None = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Perturb each numeric PARAMS value ±epsilon and re-run the validity gate.
 
     ``params`` are the baseline values to audit around (typically the declared
     PARAMS merged with any job overrides); names not declared in the code's
     PARAMS literal are ignored — the sandbox would reject them anyway.
+    ``cancelled`` is polled between perturbation runs — a trip returns the
+    ``error: "cancelled"`` report shape with whatever params completed.
 
     Returns ``{"status", "baseline", "params", "audited", "skipped", ...}`` with
     per-param ``{"value", "plus", "minus", "verdict", "reason"}`` entries.
@@ -220,63 +281,73 @@ def audit_params(
     tmp: tempfile.TemporaryDirectory[str] | None = None
     if runner is None:
         tmp = tempfile.TemporaryDirectory(prefix="cadx_audit_")
-        runner = make_pipeline_runner(code, Path(tmp.name))
+        runner = make_pipeline_runner(code, Path(tmp.name), cancelled=cancelled)
     try:
-        baseline_overrides = {k: effective[k] for k in declared}
-        baseline = _summarize_run(_safe_run(runner, baseline_overrides), None)
-        if not baseline["ok"] or baseline.get("is_valid") is False:
-            return {
-                "status": "fails",
-                "baseline": baseline,
-                "audited": 0,
-                "params": {},
-                "skipped": skipped,
-                "epsilon": epsilon,
-                "note": "baseline run failed — parameter robustness is not decidable",
-            }
-
-        report_params: dict[str, Any] = {}
-        worst = "robust"
-        for name in audited_names:
-            value = effective[name]
-            assert isinstance(value, int | float)  # narrowed by _is_numeric above
-            entry: dict[str, Any] = {"value": value}
-            runs: dict[str, dict[str, Any]] = {}
-            for side, sign in (("plus", 1), ("minus", -1)):
-                pv = _perturbed(value, epsilon, sign)
-                ov = {**baseline_overrides, name: pv}
-                run = _summarize_run(_safe_run(runner, ov), baseline)
-                run["override"] = pv
-                runs[side] = run
-                entry[side] = run
-            verdict, reason = _verdict(runs["plus"], runs["minus"], baseline, drift_pct)
-            entry["verdict"] = verdict
-            entry["reason"] = reason
-            report_params[name] = entry
-            if _VERDICT_RANK[verdict] > _VERDICT_RANK[worst]:
-                worst = verdict
-            log.info(
-                "design_audit.param",
-                param=name,
-                verdict=verdict,
-                reason=reason[:120],
-            )
-
-        return {
-            "status": worst,
-            "baseline": {
-                "ok": baseline["ok"],
-                "is_valid": baseline.get("is_valid"),
-                "volume": baseline.get("volume"),
-                "bbox_size": baseline.get("bbox_size"),
-                "warnings": baseline.get("warnings") or [],
-            },
-            "params": report_params,
-            "audited": len(audited_names),
-            "skipped": skipped,
-            "epsilon": epsilon,
-            "drift_pct": drift_pct,
-        }
+        return _audit_loop(runner, audited_names, effective, skipped, epsilon, drift_pct, cancelled)
     finally:
         if tmp is not None:
             tmp.cleanup()
+
+
+def _audit_loop(
+    runner: Runner,
+    audited_names: list[str],
+    effective: dict[str, object],
+    skipped: list[dict[str, str]],
+    epsilon: float,
+    drift_pct: float,
+    cancelled: Callable[[], bool] | None,
+) -> dict[str, Any]:
+    """Baseline + per-param perturbation loop: the full audit report, or the
+    cancelled shape when the checker trips between runs."""
+    if _is_cancelled(cancelled):
+        return _cancelled_report(None, {}, skipped, epsilon)
+    baseline = _summarize_run(_safe_run(runner, dict(effective)), None)
+    if not baseline["ok"] or baseline.get("is_valid") is False:
+        return {
+            "status": "fails",
+            "baseline": baseline,
+            "audited": 0,
+            "params": {},
+            "skipped": skipped,
+            "epsilon": epsilon,
+            "note": "baseline run failed — parameter robustness is not decidable",
+        }
+
+    report_params: dict[str, Any] = {}
+    worst = "robust"
+    for name in audited_names:
+        if _is_cancelled(cancelled):
+            return _cancelled_report(baseline, report_params, skipped, epsilon)
+        value = effective[name]
+        assert isinstance(value, int | float)  # narrowed by _is_numeric above
+        entry = _perturb_param(
+            runner, name, value, dict(effective), baseline, epsilon, drift_pct, cancelled
+        )
+        if entry is None:
+            return _cancelled_report(baseline, report_params, skipped, epsilon)
+        report_params[name] = entry
+        if _VERDICT_RANK[entry["verdict"]] > _VERDICT_RANK[worst]:
+            worst = entry["verdict"]
+        log.info(
+            "design_audit.param",
+            param=name,
+            verdict=entry["verdict"],
+            reason=str(entry["reason"])[:120],
+        )
+
+    return {
+        "status": worst,
+        "baseline": {
+            "ok": baseline["ok"],
+            "is_valid": baseline.get("is_valid"),
+            "volume": baseline.get("volume"),
+            "bbox_size": baseline.get("bbox_size"),
+            "warnings": baseline.get("warnings") or [],
+        },
+        "params": report_params,
+        "audited": len(audited_names),
+        "skipped": skipped,
+        "epsilon": epsilon,
+        "drift_pct": drift_pct,
+    }

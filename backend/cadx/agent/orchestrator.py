@@ -22,6 +22,7 @@ from typing import Any
 from cadx import storage
 from cadx.agent.anchors import build_anchors
 from cadx.agent.autofix import propose_fixes
+from cadx.agent.executor_client import exec_error
 from cadx.agent.mesh_client import MeshGenError, MeshGenRequest, MeshGenVariant
 from cadx.agent.steps import codegen as codegen_step
 from cadx.agent.steps import critique as critique_step
@@ -825,8 +826,8 @@ async def _run_topopt_phase(
             }
         )
     if not res.get("ok"):
-        outcome.mode_note += f" | topopt failed: {res.get('error')}"
-        await ctx.emit("optimize", it, f"failed: {res.get('error')}")
+        outcome.mode_note += f" | topopt failed: {exec_error(res)}"
+        await ctx.emit("optimize", it, f"failed: {exec_error(res)}")
         return outcome
 
     arts = _copy_best_artifacts(ctx, it, res)
@@ -2627,7 +2628,11 @@ async def _parametrize_best(
 
     reason = ""
     if not res.get("ok"):
-        reason = str(res.get("reason") or res.get("error") or "executor failed")
+        reason = (
+            exec_error(res)
+            if res.get("timed_out")
+            else str(res.get("reason") or res.get("error") or "executor failed")
+        )
     else:
         chamfer_raw = res.get("chamfer_mm")
         chamfer = float(chamfer_raw) if chamfer_raw is not None else float("inf")
@@ -3154,7 +3159,7 @@ async def _run_cad(  # noqa: C901
                     else "done: no solvable case",
                 )
             else:
-                await ctx.emit("fem", it, f"skipped: {fem_res.get('error') or 'no result'}")
+                await ctx.emit("fem", it, f"skipped: {exec_error(fem_res, 'no result')}")
 
         # FEM smoke + vision critique are independent — run concurrently.
         fem_task = asyncio.create_task(_fem_smoke(it, exec_result, fem_issues))
@@ -4551,7 +4556,7 @@ async def _prepare_hybrid_mesh(
     )
 
     if not exec_result.get("ok"):
-        return False, exec_result.get("error") or "mesh processing failed"
+        return False, exec_error(exec_result, "mesh processing failed")
 
     # deterministic flat-back: when the spec demands a planar -z face and the
     # generative mesh bows its bottom, shave it flat BEFORE the dim gate — the

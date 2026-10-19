@@ -26,6 +26,19 @@ log = get_logger(__name__)
 CAD_QUEUE = "cad"
 
 
+def exec_error(res: dict[str, Any], default: str = "executor failed") -> str:
+    """User-facing error for an executor result dict.
+
+    A queue-side timeout carries ``timed_out`` (the task itself is still
+    running until its cancel flag lands) — surface that as a cancelled task,
+    not a raw failure string, wherever the error reaches mode_note /
+    Version.error / job logs.
+    """
+    if res.get("timed_out"):
+        return "executor timed out (task cancelled)"
+    return str(res.get("error") or default)
+
+
 class InProcessExecutor:
     """Runs the CAD pipeline in the current process (CLI, tests, dev without queues)."""
 
@@ -138,6 +151,9 @@ class QueueExecutor:
         await pool.enqueue_job(func, payload, _queue_name=CAD_QUEUE, _job_id=job_id)
         job = Job(job_id, pool)
         waited = 0.0
+        # capped exponential backoff: fast tasks answer on the first short
+        # polls, long ones settle to a 5s cadence instead of 1 Hz for hours
+        delay = 0.5
         while waited < timeout_s:
             status = await job.status()
             if status == JobStatus.complete:
@@ -146,8 +162,9 @@ class QueueExecutor:
                 except Exception as e:
                     return {"ok": False, "error": f"executor task failed: {e}"}
                 return result if isinstance(result, dict) else {"ok": False, "error": "bad result"}
-            await asyncio.sleep(1.0)
-            waited += 1.0
+            await asyncio.sleep(delay)
+            waited += delay
+            delay = min(delay * 1.5, 5.0)
         # the cad task is still running — set the cancel flag it polls
         # between stages (and mid-SIMP) so the timeout doesn't leave it
         # burning a cad slot until it finishes on its own

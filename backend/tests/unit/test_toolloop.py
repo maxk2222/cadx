@@ -655,7 +655,7 @@ async def test_render_model_returns_contact_sheet():
             "contact_sheet": storage.relpath(sheet),
         }
 
-    session = ToolSession(ctx, kind="edit", code=BOX_CODE, verify_fn=verify_fn)
+    session = ToolSession(ctx, kind="edit", code=BOX_CODE, verify_fn=verify_fn, render_fn=verify_fn)
     assert "render_model" in session.allowed_names()
     res = await run_session(ctx, "code", MESSAGES, session=session, max_calls=10, step="improve")
     result = res.tool_log[0]["result"]
@@ -670,7 +670,7 @@ async def test_render_model_exec_failure_diag():
         return {"ok": False, "error": "NameError: nope"}
 
     ctx = _ctx(FakeLLM([]))
-    session = ToolSession(ctx, kind="edit", code=BOX_CODE, verify_fn=verify_fn)
+    session = ToolSession(ctx, kind="edit", code=BOX_CODE, verify_fn=verify_fn, render_fn=verify_fn)
     res = await session.execute("render_model", {})
     assert res["ok"] is False and res["render"] == "execution failed"
     assert res["error"]
@@ -683,7 +683,7 @@ async def test_render_model_shares_verify_budget():
     async def verify_fn(code: str):
         return {"ok": True, "analysis": {}}
 
-    session = ToolSession(ctx, kind="edit", code=BOX_CODE, verify_fn=verify_fn)
+    session = ToolSession(ctx, kind="edit", code=BOX_CODE, verify_fn=verify_fn, render_fn=verify_fn)
     session.verify_left = 1
     res = await session.execute("render_model", {})
     assert res["ok"]

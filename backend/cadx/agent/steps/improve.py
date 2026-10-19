@@ -34,6 +34,25 @@ from cadx.logging import get_logger
 log = get_logger(__name__)
 
 STEP = "improve"
+# minor-issue rounds (feature findings, lint minors — mostly "apply the bound
+# snippet") get their own step name so they stay OUT of the hard-steps set:
+# step_is_hard only matches numeric attempt suffixes, so "improve_minor*"
+# never consumes the per-job thinking budget (observed: the 8-call budget
+# fully spent by early minor improves, leaving later hard steps unthunked)
+STEP_MINOR = "improve_minor"
+
+_HARD_SOURCES = ("dims", "critique", "verify_question", "dfm", "solids", "exec")
+
+
+def _hard_issues(issues: list[dict[str, Any]]) -> bool:
+    """Any major issue from a source that needs real exploration — minor
+    rounds just patch snippets/fix lint, no vision or deep reasoning."""
+    return any(i.get("severity") == "major" and i.get("source") in _HARD_SOURCES for i in issues)
+
+
+def _step_name(hard: bool, attempt: int) -> str:
+    base = STEP if hard else STEP_MINOR
+    return base if attempt == 1 else f"{base}_{attempt}"
 
 
 def _user_parts(
@@ -137,15 +156,13 @@ async def run(
     verify_fn: VerifyFn | None = None,
     render_fn: VerifyFn | None = None,
 ) -> PatchResponse:
+    hard = _hard_issues(issues)
+    step = _step_name(hard, attempt)
     if tools_enabled(ctx, "code") and ctx.edit_sessions_exhausted < 1:
         # feature-only improve (missing hole/slot/rib findings + lint minors)
         # is mostly "apply the bound snippet" — a full exploration budget
-        # just buys churn (observed: 12-call sessions at ~16k ptok each)
-        hard = any(
-            i.get("severity") == "major"
-            and i.get("source") in ("dims", "critique", "verify_question", "dfm", "solids", "exec")
-            for i in issues
-        )
+        # just buys churn (observed: 12-call sessions at ~16k ptok each), and
+        # vision renders add nothing a light verify can't tell it
         s = ctx.runtime_settings
         mc = (
             s.agent_tool_max_calls
@@ -162,8 +179,9 @@ async def run(
             iteration=iteration,
             attempt=attempt,
             verify_fn=verify_fn,
-            render_fn=render_fn,
+            render_fn=render_fn if hard else None,
             max_calls=mc,
+            step=step,
         )
 
     messages: list[dict[str, Any]] = [
@@ -183,11 +201,11 @@ async def run(
         messages,
         json_schema=PatchResponse,
         temperature=0.1,
-        extra_body=thinking_body(ctx, STEP if attempt == 1 else f"{STEP}_{attempt}"),
+        extra_body=thinking_body(ctx, step),
     )
     assert isinstance(resp.parsed, PatchResponse)
     await ctx.trace.record(
-        step=STEP if attempt == 1 else f"{STEP}_{attempt}",
+        step=step,
         iteration=iteration,
         model=resp.model,
         messages=messages,
@@ -217,6 +235,7 @@ async def _run_session(
     verify_fn: VerifyFn | None,
     render_fn: VerifyFn | None = None,
     max_calls: int,
+    step: str = STEP,
 ) -> PatchResponse:
     session = ToolSession(
         ctx, kind="edit", code=base_code, verify_fn=verify_fn, render_fn=render_fn
@@ -236,7 +255,7 @@ async def _run_session(
         messages,
         session=session,
         max_calls=max_calls,
-        step=STEP if attempt == 1 else f"{STEP}_{attempt}",
+        step=step,
         iteration=iteration,
         temperature=0.1,
     )

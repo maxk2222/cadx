@@ -30,11 +30,16 @@ _warned: set[str] = set()
 def step_is_hard(step: str, csv: str) -> bool:
     """Prefix match against the hard-steps CSV: "repair_2" matches "repair".
 
-    The match is boundary-aware ("repairman" does NOT match "repair") so a
-    step named like a hard step's prefix doesn't escalate by accident.
+    The match is boundary-aware ("repairman" does NOT match "repair") and the
+    suffix must be an attempt counter, so a deliberately-named non-hard
+    variant ("improve_minor") of a hard step doesn't escalate by accident.
+    An exact name still always matches — "improve_minor" in the CSV is
+    honoured verbatim.
     """
     hard = [s.strip() for s in csv.split(",") if s.strip()]
-    return any(step == h or step.startswith(h + "_") for h in hard)
+    return any(
+        step == h or (step.startswith(h + "_") and step[len(h) + 1 :].isdigit()) for h in hard
+    )
 
 
 def _body(raw: str, which: str) -> dict[str, Any] | None:

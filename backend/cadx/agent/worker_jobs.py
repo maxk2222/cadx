@@ -23,7 +23,7 @@ from sqlalchemy.sql import func
 from sqlmodel import col, select
 
 from cadx import events, storage
-from cadx.agent.executor_client import QueueExecutor
+from cadx.agent.executor_client import QueueExecutor, exec_error
 from cadx.agent.image_client import ImagePort, make_image_client
 from cadx.agent.mesh_client import MeshGenRequest, MeshPort, make_mesh_client
 from cadx.agent.orchestrator import RunOutcome, run_generation
@@ -694,7 +694,7 @@ async def run_params_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[s
         if not exec_result.get("ok"):
             was_cancelled = (exec_result.get("error") or "") == "cancelled"
             version.status = VersionStatus.cancelled if was_cancelled else VersionStatus.failed
-            version.error = exec_result.get("error") or "execution failed"
+            version.error = exec_error(exec_result, "execution failed")
             job.status = JobStatus.cancelled if was_cancelled else JobStatus.failed
             job.finished_at = datetime.now(UTC)
             await _append_job_log(
@@ -927,7 +927,7 @@ async def run_code_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str
         if not exec_result.get("ok"):
             was_cancelled = (exec_result.get("error") or "") == "cancelled"
             version.status = VersionStatus.cancelled if was_cancelled else VersionStatus.failed
-            version.error = exec_result.get("error") or "execution failed"
+            version.error = exec_error(exec_result, "execution failed")
             job.status = JobStatus.cancelled if was_cancelled else JobStatus.failed
             job.finished_at = datetime.now(UTC)
             await _append_job_log(
@@ -1077,7 +1077,7 @@ async def run_meshgen_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[
         if not exec_result.get("ok"):
             was_cancelled = (exec_result.get("error") or "") == "cancelled"
             return await _fail(
-                exec_result.get("error") or "mesh processing failed", cancelled=was_cancelled
+                exec_error(exec_result, "mesh processing failed"), cancelled=was_cancelled
             )
 
         # params carries the effective post stack so a params child can
@@ -1531,7 +1531,7 @@ async def run_optimize_job(  # noqa: C901
         if not result.get("ok"):
             was_cancelled = (result.get("error") or "") == "cancelled"
             version.status = VersionStatus.cancelled if was_cancelled else VersionStatus.failed
-            version.error = result.get("error") or "optimization failed"
+            version.error = exec_error(result, "optimization failed")
             job.status = JobStatus.cancelled if was_cancelled else JobStatus.failed
             job.finished_at = datetime.now(UTC)
             await _append_job_log(
@@ -1718,7 +1718,7 @@ async def run_topopt_resample_job(ctx: dict[str, Any], payload: dict[str, Any]) 
 
         if not result.get("ok"):
             version.status = VersionStatus.failed
-            version.error = result.get("error") or "resample failed"
+            version.error = exec_error(result, "resample failed")
             job.status = JobStatus.failed
             job.finished_at = datetime.now(UTC)
             await _append_job_log(db, job, f"failed: {version.error}\n")
@@ -1908,7 +1908,7 @@ async def run_refine_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[s
 
         if not result.get("ok"):
             version.status = VersionStatus.failed
-            version.error = result.get("error") or "refine failed"
+            version.error = exec_error(result, "refine failed")
             job.status = JobStatus.failed
             job.finished_at = datetime.now(UTC)
             await _append_job_log(db, job, f"failed: {version.error}\n")
@@ -2087,7 +2087,7 @@ async def run_organic_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[
         if not result.get("ok"):
             was_cancelled = (result.get("error") or "") == "cancelled"
             version.status = VersionStatus.cancelled if was_cancelled else VersionStatus.failed
-            version.error = result.get("error") or "organic restyle failed"
+            version.error = exec_error(result, "organic restyle failed")
             job.status = JobStatus.cancelled if was_cancelled else JobStatus.failed
             job.finished_at = datetime.now(UTC)
             await _append_job_log(
@@ -2251,7 +2251,7 @@ async def run_mesh_edit_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dic
         if not exec_result.get("ok"):
             was_cancelled = (exec_result.get("error") or "") == "cancelled"
             version.status = VersionStatus.cancelled if was_cancelled else VersionStatus.failed
-            version.error = exec_result.get("error") or "mesh edit failed"
+            version.error = exec_error(exec_result, "mesh edit failed")
             job.status = JobStatus.cancelled if was_cancelled else JobStatus.failed
             job.finished_at = datetime.now(UTC)
             await _append_job_log(
@@ -2355,7 +2355,7 @@ async def run_fem_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str,
 
         if not result.get("ok"):
             version.status = prev_status
-            version.error = result.get("error") or "FEM failed"
+            version.error = exec_error(result, "FEM failed")
             job.status = JobStatus.failed
             job.finished_at = datetime.now(UTC)
             await _append_job_log(db, job, f"failed: {version.error}\n")
@@ -2808,7 +2808,7 @@ async def run_edit_feature_job(ctx: dict[str, Any], payload: dict[str, Any]) -> 
         )
 
         if not exec_result.get("ok"):
-            refusal = exec_result.get("error") or "edit refused"
+            refusal = exec_error(exec_result, "edit refused")
             was_cancelled = refusal == "cancelled"
             version.status = VersionStatus.cancelled if was_cancelled else VersionStatus.failed
             version.error = refusal
