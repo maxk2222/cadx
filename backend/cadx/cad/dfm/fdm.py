@@ -86,6 +86,32 @@ def fdm_mesh_checks(
     return warnings
 
 
+def _looks_like_small_hole(shape: Shape, face: object, r: float) -> bool:
+    """A small cylindrical face counts as a hole only when its axis sits in
+    void surrounded by material — inside-fraction of a ring sampled around
+    the axis >= 0.7 (same discriminator as the feature extractor). Concave
+    fillet arcs score lower and are skipped. Classification failure keeps
+    the advisory warning rather than silently dropping it."""
+    try:
+        from OCP.BRepAdaptor import BRepAdaptor_Surface
+
+        from cadx.cad.features import _inside_fraction
+
+        cyl = BRepAdaptor_Surface(face.wrapped).Cylinder()  # type: ignore[attr-defined]
+        a = cyl.Axis().Direction()
+        axis = [a.X(), a.Y(), a.Z()]
+        n = math.sqrt(sum(c * c for c in axis)) or 1.0
+        axis = [c / n for c in axis]
+        loc = cyl.Axis().Location()
+        fc = face.center()  # type: ignore[attr-defined]
+        d = [fc.X - loc.X(), fc.Y - loc.Y(), fc.Z - loc.Z()]
+        par = sum(d[i] * axis[i] for i in range(3))
+        on_axis = [loc.X() + par * axis[0], loc.Y() + par * axis[1], loc.Z() + par * axis[2]]
+        return _inside_fraction(shape, on_axis, axis, r) >= 0.7
+    except Exception:
+        return True
+
+
 def fdm_brep_checks(
     shape: Shape,
     analysis: Analysis,
@@ -102,7 +128,10 @@ def fdm_brep_checks(
             if f.geom_type != GeomType.CYLINDER:
                 continue
             r = float(f.radius or 0.0)
-            if r < 1.0:
+            # r==0 is a degenerate adaptor read, not a hole; and concave
+            # fillet arcs (gear tooth roots, inside corners) are not holes —
+            # their axis runs through mostly open space
+            if 0.0 < r < 1.0 and _looks_like_small_hole(shape, f, r):
                 warnings.append(
                     DfmWarning(
                         code="small_hole",

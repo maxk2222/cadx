@@ -293,6 +293,9 @@ _PATTERN_RE = re.compile(
     r"bolt.?circle|pitch.?circle|\bpcd\b|pattern|array|grid|loch(?:bild|kreis|reihe)",
     re.I,
 )
+# pattern expectations only apply to hole-ish features — a gear's tooth ring
+# legitimately says "pitch circle Ø40" without describing a hole pattern
+_HOLEISH_RE = re.compile(r"hole|bore|bohrung|loch", re.I)
 # protruding cylinders (tube, boss, standoff …) — the feature's own axis is
 # meaningful, unlike a fillet radius. 'dome' is deliberately absent: a dome
 # is a curved cap, never measurable as a protruding cylinder.
@@ -1690,8 +1693,12 @@ def _check_pattern_features(
         return []
     findings: list[FeatureFinding] = []
     for f in spec_features:
+        ftype = (f.type or "").lower()
         text = f"{f.type or ''} {f.name or ''} {f.description or ''}"
-        if (f.type or "").lower() != "pattern" and not _PATTERN_RE.search(text):
+        # a non-hole feature whose description merely mentions a circle term
+        # (e.g. a gear tooth ring's "pitch circle") is not a hole pattern
+        holeish = ftype in _HOLE_TYPES or bool(_HOLEISH_RE.search(text))
+        if ftype != "pattern" and not (holeish and _PATTERN_RE.search(text)):
             continue
         want_n = max(1, int(f.count or 1))
         if measured.hole_patterns:

@@ -24,6 +24,7 @@ from build123d import (
 from cadx.cad.features import (
     MeasuredFeatures,
     MeasuredHoleGroup,
+    MeasuredPattern,
     assign_feature_ids,
     compare_anchor_positions,
     compare_features,
@@ -430,3 +431,66 @@ def test_extract_membrane_blocked_hole_with_mesh_is_blind(tmp_path):
     assert m.total_holes == 1
     assert m.hole_groups[0].depth_class == "blind"
     assert m.hole_groups[0].blocked == 1
+
+
+def test_pattern_check_ignores_gear_teeth_pitch_circle():
+    """Regression: a gear's 'involute tooth ring' feature legitimately mentions
+    'pitch circle Ø40' — the pattern check must not demand 20 hole-pattern
+    members from it (observed: gear scored 55 chasing a phantom pattern)."""
+    m = MeasuredFeatures(
+        recognition_ran=True,
+        hole_patterns=[MeasuredPattern(kind="bolt_circle", count=4, diameter=28.0)],
+        total_holes=5,
+    )
+    spec = [
+        Feature(
+            name="involute tooth ring",
+            type="gear_teeth",
+            count=20,
+            description="20 involute spur teeth, module 2, pitch circle Ø40 mm",
+        )
+    ]
+    assert compare_features(spec, m) == []
+
+
+def test_pattern_check_still_fires_for_hole_bolt_circle():
+    """A hole feature described as a bolt circle remains pattern-checked —
+    the hole-ish gate must not swallow real pattern expectations."""
+    m = MeasuredFeatures(
+        recognition_ran=True,
+        hole_patterns=[MeasuredPattern(kind="bolt_circle", count=4, diameter=28.0)],
+        total_holes=5,
+    )
+    spec = [
+        Feature(
+            name="mounting holes",
+            type="through_hole",
+            count=6,
+            description="6 holes on bolt circle Ø40",
+        )
+    ]
+    findings = compare_features(spec, m)
+    assert any(f.severity == "major" and "pattern" in f.expected for f in findings)
+
+
+def test_small_hole_dfm_ignores_fillets_and_degenerate():
+    """DFM small_hole: a real sub-1mm bore warns; a concave edge fillet and a
+    degenerate zero-radius read do not (observed: gear tooth roots produced
+    spurious 'hole radius 0.00 mm' warnings)."""
+    from cadx.cad.analysis import analyze
+    from cadx.cad.dfm.fdm import fdm_brep_checks
+
+    with BuildPart() as p:
+        Box(40, 40, 10, align=(Align.CENTER, Align.CENTER, Align.MIN))
+        Hole(0.8)  # r=0.8 real through-bore -> warn
+    warns = fdm_brep_checks(p.part, analyze(p.part))
+    assert any(w.code == "small_hole" for w in warns)
+
+    with BuildPart() as q:
+        Box(40, 40, 10, align=(Align.CENTER, Align.CENTER, Align.MIN))
+        # inner pocket -> inside vertical edges; fillet them concavely —
+        # a concave fillet arc is not a hole
+        q.part -= Pos(0, 0, 5) * Box(20, 20, 5.01, align=(Align.CENTER, Align.CENTER, Align.MIN))
+        fillet(q.part.edges().filter_by(Axis.Z), radius=0.5)
+    warns2 = fdm_brep_checks(q.part, analyze(q.part))
+    assert not any(w.code == "small_hole" for w in warns2)
