@@ -59,7 +59,7 @@ log_init() {
   mkdir -p logs
   LOG_FILE="logs/${name}-${ts}.log"
   : > "$LOG_FILE"
-  ln -sf "$LOG_FILE" "logs/${name}-latest.log" 2>/dev/null \
+  ln -sf "${name}-${ts}.log" "logs/${name}-latest.log" 2>/dev/null \
     || cp "$LOG_FILE" "logs/${name}-latest.log" 2>/dev/null || true
 }
 
