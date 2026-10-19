@@ -27,7 +27,12 @@ interface FieldSpec {
   hint?: string;
   kind?: "text" | "number" | "bool";
   options?: [string, string][];
+  /** span the full row of the two-column field grid (URLs, JSON, long hints) */
+  wide?: boolean;
 }
+
+/** responsive field layout — one column on narrow screens, two from sm up */
+const FIELD_GRID = "grid grid-cols-1 gap-x-4 sm:grid-cols-2";
 
 const NUM_FIELDS = new Set<string>([
   "llm_temperature_code",
@@ -366,39 +371,33 @@ export default function SettingsPage() {
 
   const field = (spec: FieldSpec) => {
     const { key, label, hint } = spec;
-    if (spec.options) {
-      return (
-        <Field key={key} label={label} hint={hint}>
-          <select
-            className={inputCls}
-            value={form[key] ?? ""}
-            onChange={(e) => set(key, e.target.value)}
-          >
-            {spec.options.map(([v, l]) => (
-              <option key={v} value={v}>
-                {l}
-              </option>
-            ))}
-          </select>
-        </Field>
-      );
-    }
-    if (spec.kind === "bool") {
-      return (
-        <Field key={key} label={label} hint={hint}>
-          <label className="flex items-center gap-2 text-sm text-zinc-300">
-            <input
-              type="checkbox"
-              checked={form[key] === "true"}
-              onChange={(e) => set(key, String(e.target.checked))}
-            />
-            enabled
-          </label>
-        </Field>
-      );
-    }
     const b = spec.kind === "number" ? FIELD_BOUNDS[key] : undefined;
-    return (
+    const el = spec.options ? (
+      <Field key={key} label={label} hint={hint}>
+        <select
+          className={inputCls}
+          value={form[key] ?? ""}
+          onChange={(e) => set(key, e.target.value)}
+        >
+          {spec.options.map(([v, l]) => (
+            <option key={v} value={v}>
+              {l}
+            </option>
+          ))}
+        </select>
+      </Field>
+    ) : spec.kind === "bool" ? (
+      <Field key={key} label={label} hint={hint}>
+        <label className="flex items-center gap-2 text-sm text-zinc-300">
+          <input
+            type="checkbox"
+            checked={form[key] === "true"}
+            onChange={(e) => set(key, String(e.target.checked))}
+          />
+          enabled
+        </label>
+      </Field>
+    ) : (
       <Field key={key} label={label} hint={hint}>
         <input
           className={inputCls}
@@ -410,6 +409,13 @@ export default function SettingsPage() {
           onChange={(e) => set(key, e.target.value)}
         />
       </Field>
+    );
+    return spec.wide ? (
+      <div key={key} className="sm:col-span-2">
+        {el}
+      </div>
+    ) : (
+      el
     );
   };
 
@@ -609,11 +615,11 @@ export default function SettingsPage() {
   );
 
   return (
-    <div className="mx-auto max-w-xl p-6 pb-28">
+    <div className="mx-auto w-full max-w-xl p-4 pb-28 sm:p-6 md:max-w-3xl lg:max-w-5xl xl:max-w-6xl">
       <h1 className="mb-4 text-2xl font-bold">Settings</h1>
 
-      {/* service health — 2×2 */}
-      <div className="mb-4 grid grid-cols-2 gap-3">
+      {/* service health — 2×2 on narrow screens, one row from lg up */}
+      <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
         {statusCard(
           "API",
           health.data?.ok ? "online" : "offline",
@@ -652,8 +658,9 @@ export default function SettingsPage() {
         )}
       </div>
 
-      {/* category tabs */}
-      <div className="mb-4 flex gap-1 overflow-x-auto rounded-lg border border-zinc-800 bg-zinc-900/60 p-1">
+      {/* tabs: scrollable strip on narrow screens, sticky sidebar from lg up */}
+      <div className="lg:flex lg:items-start lg:gap-5">
+      <div className="mb-4 flex gap-1 overflow-x-auto rounded-lg border border-zinc-800 bg-zinc-900/60 p-1 lg:sticky lg:top-6 lg:mb-0 lg:w-44 lg:shrink-0 lg:flex-col lg:overflow-visible">
         {TABS.map((tb) => (
           <button
             key={tb.id}
@@ -662,7 +669,7 @@ export default function SettingsPage() {
               localStorage.setItem("settings.tab", tb.id);
               setSp({ tab: tb.id }, { replace: true });
             }}
-            className={`whitespace-nowrap rounded-md px-3 py-1.5 text-sm transition-colors ${
+            className={`whitespace-nowrap rounded-md px-3 py-1.5 text-sm transition-colors lg:text-left ${
               tab === tb.id
                 ? "bg-zinc-700 font-medium text-zinc-100"
                 : "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
@@ -673,6 +680,7 @@ export default function SettingsPage() {
         ))}
       </div>
 
+      <div className="min-w-0 flex-1">
       {tab === "provider" && (
       <Card className="p-4">
         <SectionTitle>LLM provider</SectionTitle>
@@ -710,29 +718,34 @@ export default function SettingsPage() {
                 one only for providers that skip authentication.
               </div>
             )}
-            {field({
-              key: "llm_base_url",
-              label: "Base URL",
-              hint: "e.g. https://api.openai.com/v1, http://localhost:11434/v1 (Ollama), https://openrouter.ai/api/v1",
-            })}
-            {apiKeyField(
-              "API key",
-              s.llm_api_key_set,
-              apiKey,
-              setApiKey,
-              clearKey,
-              () => setClearKey((c) => !c),
-            )}
-            {extModelField(
-              "llm_model_vision",
-              "Vision model",
-              "used for image analysis & visual critique",
-            )}
-            {extModelField(
-              "llm_model_code",
-              "Code model",
-              "used for CAD code generation",
-            )}
+            <div className={FIELD_GRID}>
+              {field({
+                key: "llm_base_url",
+                label: "Base URL",
+                hint: "e.g. https://api.openai.com/v1, http://localhost:11434/v1 (Ollama), https://openrouter.ai/api/v1",
+                wide: true,
+              })}
+              <div className="sm:col-span-2">
+                {apiKeyField(
+                  "API key",
+                  s.llm_api_key_set,
+                  apiKey,
+                  setApiKey,
+                  clearKey,
+                  () => setClearKey((c) => !c),
+                )}
+              </div>
+              {extModelField(
+                "llm_model_vision",
+                "Vision model",
+                "used for image analysis & visual critique",
+              )}
+              {extModelField(
+                "llm_model_code",
+                "Code model",
+                "used for CAD code generation",
+              )}
+            </div>
           </>
         ) : (
           <>
@@ -741,22 +754,24 @@ export default function SettingsPage() {
                 ? `sidecar online · ${sidecarLlm.filter((m) => m.downloaded).length}/${sidecarLlm.length} llm models downloaded — manage downloads under “Local models”`
                 : "sidecar offline — start it with make mesh-server, then download an llm model under “Local models”"}
             </div>
-            {sidecarModelField({
-              key: "llm_model_vision",
-              label: "Vision model",
-              hint: "used for image analysis & visual critique",
-            })}
-            {sidecarModelField({
-              key: "llm_model_code",
-              label: "Code model",
-              hint: "used for CAD code generation",
-            })}
-            {sidecarModelField({
-              key: "llm_sidecar_model",
-              label: "Single-model override",
-              hint: "serve one model for all roles instead of separate vision/code picks",
-              empty: "— per role —",
-            })}
+            <div className={FIELD_GRID}>
+              {sidecarModelField({
+                key: "llm_model_vision",
+                label: "Vision model",
+                hint: "used for image analysis & visual critique",
+              })}
+              {sidecarModelField({
+                key: "llm_model_code",
+                label: "Code model",
+                hint: "used for CAD code generation",
+              })}
+              {sidecarModelField({
+                key: "llm_sidecar_model",
+                label: "Single-model override",
+                hint: "serve one model for all roles instead of separate vision/code picks",
+                empty: "— per role —",
+              })}
+            </div>
             {pickedVision && !pickedVision.supports_vision && (
               <div className="mb-3 rounded-md border border-amber-700 bg-amber-950/40 p-2 text-sm text-amber-300">
                 pipeline needs a vision-capable local model — intake/critique read images
@@ -764,40 +779,45 @@ export default function SettingsPage() {
             )}
           </>
         )}
-        {field({
-          key: "llm_json_mode",
-          label: "JSON mode",
-          options: [
-            ["json_object", "json_object (default)"],
-            ["json_schema", "json_schema (strict)"],
-            ["none", "none (parse from text)"],
-          ],
-        })}
-        {field({
-          key: "llm_tools",
-          label: "Native tool calling",
-          hint: "auto: fall back per model when the provider rejects tools; on: strict; off: legacy JSON steps",
-          options: [
-            ["auto", "auto (recommended)"],
-            ["on", "on (strict)"],
-            ["off", "off"],
-          ],
-        })}
+        <div className={FIELD_GRID}>
+          {field({
+            key: "llm_json_mode",
+            label: "JSON mode",
+            options: [
+              ["json_object", "json_object (default)"],
+              ["json_schema", "json_schema (strict)"],
+              ["none", "none (parse from text)"],
+            ],
+          })}
+          {field({
+            key: "llm_tools",
+            label: "Native tool calling",
+            hint: "auto: fall back per model when the provider rejects tools; on: strict; off: legacy JSON steps",
+            options: [
+              ["auto", "auto (recommended)"],
+              ["on", "on (strict)"],
+              ["off", "off"],
+            ],
+          })}
+        </div>
         <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
           advanced
         </div>
-        {field({ key: "llm_temperature_code", label: "Temperature (code)", kind: "number" })}
-        {field({ key: "llm_max_tokens", label: "Max tokens per response", kind: "number" })}
-        {field({ key: "llm_stream", label: "Streaming", kind: "bool" })}
-        {field({ key: "llm_timeout_s", label: "Request timeout (s)", kind: "number" })}
-        {field({ key: "llm_idle_timeout_s", label: "Stream idle timeout (s)", kind: "number" })}
-        {field({ key: "llm_degenerate_stall_s", label: "Degenerate stream abort (s)", kind: "number" })}
-        {field({ key: "llm_total_timeout_s", label: "Stream total cap (s)", kind: "number" })}
-        {field({
-          key: "llm_extra_body",
-          label: "Extra request body (JSON)",
-          hint: 'merged into every request, e.g. {"chat_template_kwargs": {"enable_thinking": false}}',
-        })}
+        <div className={FIELD_GRID}>
+          {field({ key: "llm_temperature_code", label: "Temperature (code)", kind: "number" })}
+          {field({ key: "llm_max_tokens", label: "Max tokens per response", kind: "number" })}
+          {field({ key: "llm_stream", label: "Streaming", kind: "bool" })}
+          {field({ key: "llm_timeout_s", label: "Request timeout (s)", kind: "number" })}
+          {field({ key: "llm_idle_timeout_s", label: "Stream idle timeout (s)", kind: "number" })}
+          {field({ key: "llm_degenerate_stall_s", label: "Degenerate stream abort (s)", kind: "number" })}
+          {field({ key: "llm_total_timeout_s", label: "Stream total cap (s)", kind: "number" })}
+          {field({
+            key: "llm_extra_body",
+            label: "Extra request body (JSON)",
+            hint: 'merged into every request, e.g. {"chat_template_kwargs": {"enable_thinking": false}}',
+            wide: true,
+          })}
+        </div>
         <div className="mt-2 flex items-center gap-2">
           <Btn variant="ghost" onClick={() => testProvider.mutate()} busy={testProvider.isPending}>
             Test provider
@@ -821,111 +841,122 @@ export default function SettingsPage() {
       {tab === "agent" && (
       <Card className="p-4">
         <SectionTitle>Agent</SectionTitle>
-        {field({
-          key: "agent_default_gen_mode",
-          label: "Default generation mode",
-          options: [
-            ["auto", "auto (planner decides)"],
-            ["cad", "cad (parametric code)"],
-            ["mesh", "mesh (image → 3D)"],
-            ["hybrid", "hybrid (mesh + CAD features)"],
-            ["topopt", "topopt (topology optimization)"],
-          ],
-        })}
-        {field({ key: "agent_max_iterations", label: "Max iterations", kind: "number" })}
-        {field({ key: "agent_max_repairs", label: "Max repair attempts", kind: "number" })}
-        {field({ key: "agent_pass_score", label: "Critique pass score (0–100)", kind: "number" })}
-        {field({ key: "agent_dim_tolerance_pct", label: "Dim tolerance (%)", kind: "number" })}
-        {field({ key: "agent_dim_tolerance_mm", label: "Dim tolerance (mm)", kind: "number" })}
-        {field({
-          key: "agent_clarification_mode",
-          label: "Clarification mode",
-          options: [
-            ["assume", "assume (agent decides)"],
-            ["ask", "ask (clarifying questions)"],
-          ],
-        })}
+        <div className={FIELD_GRID}>
+          {field({
+            key: "agent_default_gen_mode",
+            label: "Default generation mode",
+            options: [
+              ["auto", "auto (planner decides)"],
+              ["cad", "cad (parametric code)"],
+              ["mesh", "mesh (image → 3D)"],
+              ["hybrid", "hybrid (mesh + CAD features)"],
+              ["topopt", "topopt (topology optimization)"],
+            ],
+          })}
+          {field({ key: "agent_max_iterations", label: "Max iterations", kind: "number" })}
+          {field({ key: "agent_max_repairs", label: "Max repair attempts", kind: "number" })}
+          {field({ key: "agent_pass_score", label: "Critique pass score (0–100)", kind: "number" })}
+          {field({ key: "agent_dim_tolerance_pct", label: "Dim tolerance (%)", kind: "number" })}
+          {field({ key: "agent_dim_tolerance_mm", label: "Dim tolerance (mm)", kind: "number" })}
+          {field({
+            key: "agent_clarification_mode",
+            label: "Clarification mode",
+            options: [
+              ["assume", "assume (agent decides)"],
+              ["ask", "ask (clarifying questions)"],
+            ],
+          })}
+        </div>
         <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
           budgets & robustness
         </div>
-        {field({ key: "agent_max_input_images", label: "Max input images", kind: "number" })}
-        {field({ key: "agent_max_tokens_per_job", label: "Token budget per job", kind: "number" })}
-        {field({ key: "agent_max_wall_s", label: "Wall-clock budget per job (s)", kind: "number" })}
-        {field({ key: "agent_param_autofix", label: "Deterministic param autofix", kind: "bool" })}
-        {field({
-          key: "agent_patch_mode",
-          label: "Patch mode",
-          hint: "auto: patch on repair, rewrite on improve",
-          options: [
-            ["auto", "auto"],
-            ["always", "always"],
-            ["never", "never"],
-          ],
-        })}
-        {field({ key: "agent_patch_retries", label: "Patch retries", kind: "number" })}
-        {field({ key: "agent_feature_feedback", label: "Feature measurement feedback", kind: "bool" })}
-        {field({ key: "agent_critique_reask", label: "Critique re-ask on empty verdicts", kind: "bool" })}
+        <div className={FIELD_GRID}>
+          {field({ key: "agent_max_input_images", label: "Max input images", kind: "number" })}
+          {field({ key: "agent_max_tokens_per_job", label: "Token budget per job", kind: "number" })}
+          {field({ key: "agent_max_wall_s", label: "Wall-clock budget per job (s)", kind: "number" })}
+          {field({ key: "agent_param_autofix", label: "Deterministic param autofix", kind: "bool" })}
+          {field({
+            key: "agent_patch_mode",
+            label: "Patch mode",
+            hint: "auto: patch on repair, rewrite on improve",
+            options: [
+              ["auto", "auto"],
+              ["always", "always"],
+              ["never", "never"],
+            ],
+          })}
+          {field({ key: "agent_patch_retries", label: "Patch retries", kind: "number" })}
+          {field({ key: "agent_feature_feedback", label: "Feature measurement feedback", kind: "bool" })}
+          {field({ key: "agent_critique_reask", label: "Critique re-ask on empty verdicts", kind: "bool" })}
+        </div>
         <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
           tool sessions
         </div>
-        {field({ key: "agent_tool_max_calls", label: "Max tool calls (edit steps)", kind: "number" })}
-        {field({ key: "agent_tool_max_calls_info", label: "Max tool calls (info steps)", kind: "number" })}
-        {field({ key: "agent_tool_verify", label: "Sandbox verify tool", kind: "bool" })}
-        {field({ key: "agent_tool_verify_max", label: "Verify runs per session", kind: "number" })}
+        <div className={FIELD_GRID}>
+          {field({ key: "agent_tool_max_calls", label: "Max tool calls (edit steps)", kind: "number" })}
+          {field({ key: "agent_tool_max_calls_info", label: "Max tool calls (info steps)", kind: "number" })}
+          {field({ key: "agent_tool_verify", label: "Sandbox verify tool", kind: "bool" })}
+          {field({ key: "agent_tool_verify_max", label: "Verify runs per session", kind: "number" })}
+        </div>
         <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
           mesh transform session
         </div>
-        {field({
-          key: "agent_mesh_tools",
-          label: "Mesh transform tools",
-          hint: "MESH_REFINE session: agent fixes generated meshes with transform ops instead of blind re-generation",
-          kind: "bool",
-        })}
-        {field({ key: "agent_mesh_max_ops", label: "Max ops per mesh session", kind: "number" })}
-        {field({ key: "agent_mesh_preview_max", label: "Preview renders per session", kind: "number" })}
-        {field({ key: "agent_mesh_refine_rounds", label: "Post-critique repair rounds", kind: "number" })}
-        {field({
-          key: "agent_mesh_hard_fail_score",
-          label: "Mesh hard-fail score",
-          hint: "a generation scoring ≤ this with major issues counts as a hard fail",
-          kind: "number",
-        })}
-        {field({
-          key: "agent_mesh_hard_fail_limit",
-          label: "Mesh hard-fail limit",
-          hint: "after this many consecutive hard fails the mesh loop stops (CAD fallback for dimensioned parts)",
-          kind: "number",
-        })}
+        <div className={FIELD_GRID}>
+          {field({
+            key: "agent_mesh_tools",
+            label: "Mesh transform tools",
+            hint: "MESH_REFINE session: agent fixes generated meshes with transform ops instead of blind re-generation",
+            kind: "bool",
+          })}
+          {field({ key: "agent_mesh_max_ops", label: "Max ops per mesh session", kind: "number" })}
+          {field({ key: "agent_mesh_preview_max", label: "Preview renders per session", kind: "number" })}
+          {field({ key: "agent_mesh_refine_rounds", label: "Post-critique repair rounds", kind: "number" })}
+          {field({
+            key: "agent_mesh_hard_fail_score",
+            label: "Mesh hard-fail score",
+            hint: "a generation scoring ≤ this with major issues counts as a hard fail",
+            kind: "number",
+          })}
+          {field({
+            key: "agent_mesh_hard_fail_limit",
+            label: "Mesh hard-fail limit",
+            hint: "after this many consecutive hard fails the mesh loop stops (CAD fallback for dimensioned parts)",
+            kind: "number",
+          })}
+        </div>
         <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
           chat agent
         </div>
-        {field({
-          key: "chat_model_role",
-          label: "Chat model role",
-          hint: "vision: the agent can see uploaded + generated images; code: text-only (image tools limited to captions)",
-          options: [
-            ["vision", "vision (multimodal)"],
-            ["code", "code (text-only)"],
-          ],
-        })}
-        {field({ key: "chat_tool_max_calls", label: "Max tool calls per turn", kind: "number" })}
-        {field({ key: "chat_max_turns", label: "Max tool rounds per turn", kind: "number" })}
-        {field({
-          key: "chat_spawn_timeout_s",
-          label: "Spawned-job wait timeout (s)",
-          hint: "how long a chat turn blocks on a spawned job before returning control",
-          kind: "number",
-        })}
-        {field({ key: "chat_history_messages", label: "History size (messages)", kind: "number" })}
-        {field({
-          key: "chat_image_max",
-          label: "Max images per message",
-          kind: "number",
-        })}
+        <div className={FIELD_GRID}>
+          {field({
+            key: "chat_model_role",
+            label: "Chat model role",
+            hint: "vision: the agent can see uploaded + generated images; code: text-only (image tools limited to captions)",
+            options: [
+              ["vision", "vision (multimodal)"],
+              ["code", "code (text-only)"],
+            ],
+          })}
+          {field({ key: "chat_tool_max_calls", label: "Max tool calls per turn", kind: "number" })}
+          {field({ key: "chat_max_turns", label: "Max tool rounds per turn", kind: "number" })}
+          {field({
+            key: "chat_spawn_timeout_s",
+            label: "Spawned-job wait timeout (s)",
+            hint: "how long a chat turn blocks on a spawned job before returning control",
+            kind: "number",
+          })}
+          {field({ key: "chat_history_messages", label: "History size (messages)", kind: "number" })}
+          {field({
+            key: "chat_image_max",
+            label: "Max images per message",
+            kind: "number",
+          })}
+        </div>
       </Card>
       )}
 
       {tab === "mesh" && (
+      <div className="grid gap-4 xl:grid-cols-2">
       <Card className="p-4">
         <div className="mb-3 flex items-center justify-between">
           <SectionTitle>Mesh generation</SectionTitle>
@@ -955,67 +986,77 @@ export default function SettingsPage() {
             <div className="mb-3 text-xs text-zinc-500">
               image → 3D via the hosted Tripo3D API — no local weights needed
             </div>
-            {apiKeyField(
-              "Tripo API key",
-              s.tripo_api_key_set,
-              tripoKey,
-              setTripoKey,
-              clearTripoKey,
-              () => setClearTripoKey((c) => !c),
-            )}
-            {field({
-              key: "tripo_model",
-              label: "Tripo model",
-              options: [
-                ["v2.5-20250123", "v2.5-20250123"],
-                ["v2.0-20240919", "v2.0-20240919"],
-                ["v1.4-20240625", "v1.4-20240625"],
-              ],
-            })}
-            {field({
-              key: "tripo_api_base",
-              label: "Tripo API base",
-              hint: "empty = default https://api.tripo3d.ai",
-            })}
+            <div className={FIELD_GRID}>
+              <div className="sm:col-span-2">
+                {apiKeyField(
+                  "Tripo API key",
+                  s.tripo_api_key_set,
+                  tripoKey,
+                  setTripoKey,
+                  clearTripoKey,
+                  () => setClearTripoKey((c) => !c),
+                )}
+              </div>
+              {field({
+                key: "tripo_model",
+                label: "Tripo model",
+                options: [
+                  ["v2.5-20250123", "v2.5-20250123"],
+                  ["v2.0-20240919", "v2.0-20240919"],
+                  ["v1.4-20240625", "v1.4-20240625"],
+                ],
+              })}
+              {field({
+                key: "tripo_api_base",
+                label: "Tripo API base",
+                hint: "empty = default https://api.tripo3d.ai",
+                wide: true,
+              })}
+            </div>
           </>
         ) : (
           <>
-        {field({
-          key: "mesh_base_url",
-          label: "Mesh server URL",
-          hint: "e.g. http://localhost:8765 (native) or http://mesh-server:8765 (compose gpu profile); empty = disabled",
-        })}
-        <Field
-          label="Default mesh model"
-          hint="auto picks by device. On Apple-silicon MPS the hunyuan3d-2mv variant can stall under memory pressure — prefer hunyuan3d-2.1-mlx or the mini/turbo variants there."
-        >
-          <select
-            className={inputCls}
-            value={form.mesh_model}
-            onChange={(e) => set("mesh_model", e.target.value)}
-          >
-            <option value="auto">auto (device default)</option>
-            {meshModels.map((m) => (
-              <option key={m.id} value={m.id} disabled={!m.available}>
-                {m.name || m.id} ({m.device}){m.available ? "" : " — not installed"}
-              </option>
-            ))}
-            {form.mesh_model &&
-              !["auto", ...meshModels.map((m) => m.id)].includes(form.mesh_model) && (
-                <option value={form.mesh_model}>{form.mesh_model}</option>
-              )}
-          </select>
-        </Field>
-        {field({ key: "mesh_timeout_s", label: "Generation timeout (s)", kind: "number" })}
-        {field({ key: "mesh_stall_timeout_s", label: "Stall abort — no progress (s)", kind: "number" })}
-        {field({
-          key: "mesh_min_free_mb",
-          label: "Min free host RAM (MB)",
-          kind: "number",
-          hint: "refuse new generation jobs when the sidecar host has less free RAM — 0 disables. Prevents MPS stalls under memory pressure.",
-        })}
-        {field({ key: "mesh_decimate_faces", label: "Decimate target (faces)", kind: "number" })}
-        {field({ key: "mesh_max_faces_for_cad", label: "Max faces for CAD conversion", kind: "number" })}
+        <div className={FIELD_GRID}>
+          {field({
+            key: "mesh_base_url",
+            label: "Mesh server URL",
+            hint: "e.g. http://localhost:8765 (native) or http://mesh-server:8765 (compose gpu profile); empty = disabled",
+            wide: true,
+          })}
+          <div className="sm:col-span-2">
+            <Field
+              label="Default mesh model"
+              hint="auto picks by device. On Apple-silicon MPS the hunyuan3d-2mv variant can stall under memory pressure — prefer hunyuan3d-2.1-mlx or the mini/turbo variants there."
+            >
+              <select
+                className={inputCls}
+                value={form.mesh_model}
+                onChange={(e) => set("mesh_model", e.target.value)}
+              >
+                <option value="auto">auto (device default)</option>
+                {meshModels.map((m) => (
+                  <option key={m.id} value={m.id} disabled={!m.available}>
+                    {m.name || m.id} ({m.device}){m.available ? "" : " — not installed"}
+                  </option>
+                ))}
+                {form.mesh_model &&
+                  !["auto", ...meshModels.map((m) => m.id)].includes(form.mesh_model) && (
+                    <option value={form.mesh_model}>{form.mesh_model}</option>
+                  )}
+              </select>
+            </Field>
+          </div>
+          {field({ key: "mesh_timeout_s", label: "Generation timeout (s)", kind: "number" })}
+          {field({ key: "mesh_stall_timeout_s", label: "Stall abort — no progress (s)", kind: "number" })}
+          {field({
+            key: "mesh_min_free_mb",
+            label: "Min free host RAM (MB)",
+            kind: "number",
+            hint: "refuse new generation jobs when the sidecar host has less free RAM — 0 disables. Prevents MPS stalls under memory pressure.",
+          })}
+          {field({ key: "mesh_decimate_faces", label: "Decimate target (faces)", kind: "number" })}
+          {field({ key: "mesh_max_faces_for_cad", label: "Max faces for CAD conversion", kind: "number" })}
+        </div>
         {meshModels.length > 0 && (
           <div className="mb-2 flex flex-col gap-1.5 text-xs text-zinc-500">
             {meshModels.map((m) => (
@@ -1047,9 +1088,7 @@ export default function SettingsPage() {
           </>
         )}
       </Card>
-      )}
 
-      {tab === "mesh" && (
       <Card className="p-4">
         <div className="mb-3 flex items-center justify-between">
           <SectionTitle>Image generation</SectionTitle>
@@ -1090,29 +1129,34 @@ export default function SettingsPage() {
               text-to-image and image editing via the OpenAI images API — empty
               connection fields reuse the LLM provider config
             </div>
-            {field({
-              key: "image_openai_model",
-              label: "OpenAI image model",
-              options: [
-                ["gpt-image-1", "gpt-image-1"],
-                ["dall-e-3", "dall-e-3"],
-                ["dall-e-2", "dall-e-2"],
-              ],
-            })}
-            {field({
-              key: "image_api_base",
-              label: "Image API base",
-              hint: "empty = reuse LLM provider config",
-            })}
-            {apiKeyField(
-              "Image API key",
-              s.image_api_key_set,
-              imageKey,
-              setImageKey,
-              clearImageKey,
-              () => setClearImageKey((c) => !c),
-              "empty = reuse the LLM API key",
-            )}
+            <div className={FIELD_GRID}>
+              {field({
+                key: "image_openai_model",
+                label: "OpenAI image model",
+                options: [
+                  ["gpt-image-1", "gpt-image-1"],
+                  ["dall-e-3", "dall-e-3"],
+                  ["dall-e-2", "dall-e-2"],
+                ],
+              })}
+              {field({
+                key: "image_api_base",
+                label: "Image API base",
+                hint: "empty = reuse LLM provider config",
+                wide: true,
+              })}
+              <div className="sm:col-span-2">
+                {apiKeyField(
+                  "Image API key",
+                  s.image_api_key_set,
+                  imageKey,
+                  setImageKey,
+                  clearImageKey,
+                  () => setClearImageKey((c) => !c),
+                  "empty = reuse the LLM API key",
+                )}
+              </div>
+            </div>
           </>
         ) : (
           <>
@@ -1121,47 +1165,49 @@ export default function SettingsPage() {
           images, design ideation, img2img variations and auto-generated hero images
           for mesh mode.
         </div>
-        <Field label="Default image model">
-          <select
-            className={inputCls}
-            value={form.image_model}
-            onChange={(e) => set("image_model", e.target.value)}
-          >
-            <option value="auto">auto (device default)</option>
-            {(imageModels.data ?? []).map((m) => (
-              <option key={m.id} value={m.id} disabled={!m.available}>
-                {m.name || m.id} ({m.device}){m.available ? "" : " — not installed"}
-              </option>
-            ))}
-            {form.image_model &&
-              !["auto", ...(imageModels.data ?? []).map((m) => m.id)].includes(
-                form.image_model
-              ) && <option value={form.image_model}>{form.image_model}</option>}
-          </select>
-        </Field>
-        <Field
-          label="Default edit model"
-          hint="used when a reference image is given (img2img / instruction edit)"
-        >
-          <select
-            className={inputCls}
-            value={form.image_edit_model}
-            onChange={(e) => set("image_edit_model", e.target.value)}
-          >
-            <option value="auto">auto (edit-capable adapter)</option>
-            {(imageModels.data ?? [])
-              .filter((m) => m.supports_edit)
-              .map((m) => (
+        <div className={FIELD_GRID}>
+          <Field label="Default image model">
+            <select
+              className={inputCls}
+              value={form.image_model}
+              onChange={(e) => set("image_model", e.target.value)}
+            >
+              <option value="auto">auto (device default)</option>
+              {(imageModels.data ?? []).map((m) => (
                 <option key={m.id} value={m.id} disabled={!m.available}>
                   {m.name || m.id} ({m.device}){m.available ? "" : " — not installed"}
                 </option>
               ))}
-            {form.image_edit_model &&
-              !["auto", ...(imageModels.data ?? []).map((m) => m.id)].includes(
-                form.image_edit_model
-              ) && <option value={form.image_edit_model}>{form.image_edit_model}</option>}
-          </select>
-        </Field>
+              {form.image_model &&
+                !["auto", ...(imageModels.data ?? []).map((m) => m.id)].includes(
+                  form.image_model
+                ) && <option value={form.image_model}>{form.image_model}</option>}
+            </select>
+          </Field>
+          <Field
+            label="Default edit model"
+            hint="used when a reference image is given (img2img / instruction edit)"
+          >
+            <select
+              className={inputCls}
+              value={form.image_edit_model}
+              onChange={(e) => set("image_edit_model", e.target.value)}
+            >
+              <option value="auto">auto (edit-capable adapter)</option>
+              {(imageModels.data ?? [])
+                .filter((m) => m.supports_edit)
+                .map((m) => (
+                  <option key={m.id} value={m.id} disabled={!m.available}>
+                    {m.name || m.id} ({m.device}){m.available ? "" : " — not installed"}
+                  </option>
+                ))}
+              {form.image_edit_model &&
+                !["auto", ...(imageModels.data ?? []).map((m) => m.id)].includes(
+                  form.image_edit_model
+                ) && <option value={form.image_edit_model}>{form.image_edit_model}</option>}
+            </select>
+          </Field>
+        </div>
         {(imageModels.data ?? []).length > 0 ? (
           <div className="mb-2 flex flex-col gap-1.5 text-xs text-zinc-500">
             {(imageModels.data ?? []).map((m) => (
@@ -1192,28 +1238,31 @@ export default function SettingsPage() {
           </>
         )}
         {/* shared tuning — applies to both image backends */}
-        {field({
-          key: "image_default_strength",
-          label: "Default edit strength (0–1)",
-          kind: "number",
-        })}
-        {field({ key: "image_steps", label: "Steps (empty = adapter default)", kind: "number" })}
-        {field({ key: "image_guidance", label: "Guidance (empty = adapter default)", kind: "number" })}
-        {field({ key: "image_max_side", label: "Max image side (px)", kind: "number" })}
-        {field({ key: "image_max_count", label: "Max images per request", kind: "number" })}
-        {field({ key: "image_timeout_s", label: "Generation timeout (s)", kind: "number" })}
-        {field({
-          key: "image_autogen_mesh",
-          label: "Auto hero image for mesh runs",
-          hint: "synthesise a reference image when a mesh/hybrid job has no input images",
-          kind: "bool",
-        })}
-        {field({
-          key: "image_tool_budget",
-          label: "Agent concept-image calls per session",
-          kind: "number",
-        })}
+        <div className={FIELD_GRID}>
+          {field({
+            key: "image_default_strength",
+            label: "Default edit strength (0–1)",
+            kind: "number",
+          })}
+          {field({ key: "image_steps", label: "Steps (empty = adapter default)", kind: "number" })}
+          {field({ key: "image_guidance", label: "Guidance (empty = adapter default)", kind: "number" })}
+          {field({ key: "image_max_side", label: "Max image side (px)", kind: "number" })}
+          {field({ key: "image_max_count", label: "Max images per request", kind: "number" })}
+          {field({ key: "image_timeout_s", label: "Generation timeout (s)", kind: "number" })}
+          {field({
+            key: "image_autogen_mesh",
+            label: "Auto hero image for mesh runs",
+            hint: "synthesise a reference image when a mesh/hybrid job has no input images",
+            kind: "bool",
+          })}
+          {field({
+            key: "image_tool_budget",
+            label: "Agent concept-image calls per session",
+            kind: "number",
+          })}
+        </div>
       </Card>
+      </div>
       )}
 
       {tab === "fem" && (
@@ -1222,31 +1271,37 @@ export default function SettingsPage() {
         <div className="mb-3 text-xs text-zinc-500">
           engineering feedback only — not a certification tool
         </div>
-        {field({ key: "fem_voxel_mm", label: "Voxel size (mm)", kind: "number" })}
-        {field({ key: "fem_max_elements", label: "Max FEM elements", kind: "number" })}
-        {field({ key: "fem_timeout_s", label: "FEM timeout (s)", kind: "number" })}
+        <div className={FIELD_GRID}>
+          {field({ key: "fem_voxel_mm", label: "Voxel size (mm)", kind: "number" })}
+          {field({ key: "fem_max_elements", label: "Max FEM elements", kind: "number" })}
+          {field({ key: "fem_timeout_s", label: "FEM timeout (s)", kind: "number" })}
+        </div>
         <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
           topopt
         </div>
-        {field({ key: "topopt_timeout_s", label: "TopOpt timeout (s)", kind: "number" })}
-        {field({ key: "topopt_max_iterations", label: "Max SIMP iterations", kind: "number" })}
-        {field({ key: "topopt_default_volfrac", label: "Default volume fraction", kind: "number" })}
-        {field({ key: "topopt_default_rmin_mm", label: "Filter radius (mm)", kind: "number" })}
+        <div className={FIELD_GRID}>
+          {field({ key: "topopt_timeout_s", label: "TopOpt timeout (s)", kind: "number" })}
+          {field({ key: "topopt_max_iterations", label: "Max SIMP iterations", kind: "number" })}
+          {field({ key: "topopt_default_volfrac", label: "Default volume fraction", kind: "number" })}
+          {field({ key: "topopt_default_rmin_mm", label: "Filter radius (mm)", kind: "number" })}
+        </div>
       </Card>
       )}
 
       {tab === "system" && (
-        <>
+        <div className="grid gap-4 lg:grid-cols-2">
           <Card className="p-4">
             <SectionTitle>Executor</SectionTitle>
-            {field({ key: "exec_timeout_s", label: "Code execution timeout (s)", kind: "number" })}
-            {field({ key: "exec_mem_limit_mb", label: "Sandbox memory limit (MB)", kind: "number" })}
+            <div className={FIELD_GRID}>
+              {field({ key: "exec_timeout_s", label: "Code execution timeout (s)", kind: "number" })}
+              {field({ key: "exec_mem_limit_mb", label: "Sandbox memory limit (MB)", kind: "number" })}
+            </div>
             <div className="mt-2 text-xs text-zinc-500">
               hard outer caps are set by docker (cpus/mem_limit); these apply inside the sandbox
             </div>
           </Card>
 
-          <Card className="mt-4 p-4 text-sm text-zinc-400">
+          <Card className="p-4 text-sm text-zinc-400">
             <SectionTitle>Runtime</SectionTitle>
             <div>
               data dir: <code className="text-zinc-300">{s.data_dir}</code>
@@ -1256,8 +1311,10 @@ export default function SettingsPage() {
               (database, redis, ports) is fixed by docker compose / launcher defaults
             </div>
           </Card>
-        </>
+        </div>
       )}
+      </div>
+      </div>
 
       {/* floating save bar — appears while there are unsaved changes */}
       {(dirty || save.isPending || saved || saveError) && (

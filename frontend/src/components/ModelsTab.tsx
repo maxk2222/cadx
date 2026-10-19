@@ -255,7 +255,7 @@ export default function ModelsTab({ models }: { models: MeshModelInfo[] }) {
   const q = queue.data;
 
   return (
-    <>
+    <div className={q ? "grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]" : ""}>
       <Card className="p-4">
         <SectionTitle>Local models</SectionTitle>
         {KIND_GROUPS.map((g) => {
@@ -267,20 +267,22 @@ export default function ModelsTab({ models }: { models: MeshModelInfo[] }) {
               </div>
               {g.kind === "llm" && registerForm}
               {rows.length ? (
-                <table className="w-full text-left text-xs">
-                  <thead>
-                    <tr className="text-[10px] uppercase tracking-wider text-zinc-600">
-                      <th className="pb-1 pr-2 font-medium">model</th>
-                      <th className="pb-1 pr-2 font-medium">device</th>
-                      <th className="pb-1 pr-2 font-medium">mem</th>
-                      <th className="pb-1 pr-2 font-medium">size</th>
-                      <th className="pb-1 pr-2 font-medium">state</th>
-                      <th className="pb-1 pr-2 font-medium">flags</th>
-                      <th className="pb-1 font-medium" />
-                    </tr>
-                  </thead>
-                  <tbody>{rows.map(row)}</tbody>
-                </table>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[34rem] text-left text-xs">
+                    <thead>
+                      <tr className="text-[10px] uppercase tracking-wider text-zinc-600">
+                        <th className="pb-1 pr-2 font-medium">model</th>
+                        <th className="pb-1 pr-2 font-medium">device</th>
+                        <th className="pb-1 pr-2 font-medium">mem</th>
+                        <th className="pb-1 pr-2 font-medium">size</th>
+                        <th className="pb-1 pr-2 font-medium">state</th>
+                        <th className="pb-1 pr-2 font-medium">flags</th>
+                        <th className="pb-1 font-medium" />
+                      </tr>
+                    </thead>
+                    <tbody>{rows.map(row)}</tbody>
+                  </table>
+                </div>
               ) : (
                 <div className="text-xs text-zinc-500">
                   no {g.label.toLowerCase()} models known to the sidecar
@@ -297,7 +299,7 @@ export default function ModelsTab({ models }: { models: MeshModelInfo[] }) {
       </Card>
 
       {q && (
-        <Card className="mt-4 p-4">
+        <Card className="p-4">
           <SectionTitle
             right={
               q.free_mb != null ? (
@@ -362,6 +364,6 @@ export default function ModelsTab({ models }: { models: MeshModelInfo[] }) {
           )}
         </Card>
       )}
-    </>
+    </div>
   );
 }
