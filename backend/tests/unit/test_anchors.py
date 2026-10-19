@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from cadx.agent.anchors import build_anchors
-from cadx.agent.spechost import host_body, host_range, parse_ranges
+from cadx.agent.spechost import host_body, host_range, host_span, parse_ranges
 from cadx.llm.schemas import Dim, Feature, FeatureCenter, PartSpec
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "specs"
@@ -569,6 +569,8 @@ def test_parse_ranges_spellings():
     assert parse_ranges("x from -60 to -55") == {"x": (-60.0, -55.0)}
     assert parse_ranges("x=-60..-55") == {"x": (-60.0, -55.0)}
     assert parse_ranges("x: -60 bis -55") == {"x": (-60.0, -55.0)}
+    assert parse_ranges("x=-5 bis x=+115") == {"x": (-5.0, 115.0)}
+    assert parse_ranges("von z=0 bis z=100") == {"z": (0.0, 100.0)}
     assert parse_ranges("x zwischen -60 und -55") == {"x": (-60.0, -55.0)}
     # lo/hi are sorted and several axes coexist
     assert parse_ranges("x from -55 to -60, z from 0 to 100") == {
@@ -587,9 +589,82 @@ def test_host_body_and_range_bracket():
     assert host_range(spec, leg_holes, "x") == (-60.0, -55.0)
 
 
-def test_host_body_none_without_in_phrase():
+def test_host_body_resolves_via_feature_name():
+    """No in-phrase, but the name names the host: 'arm_holes' -> the arm.
+
+    Intake splits multi-hole features into name-tagged singles without
+    'im <host>' text — the name token still resolves the plate."""
     spec = _bracket_spec()
     arm_holes = next(f for f in spec.features if f.name == "arm_holes")
+    arm_holes.description = "two through-holes, axis Z"
+    arm_holes.position = "x=-25, y=0 and x=+45, y=0"
+    assert host_body(spec, arm_holes).name == "horizontal_arm"
+    assert host_range(spec, arm_holes, "z") == (95.0, 100.0)
+
+
+def _live_rerun_spec() -> PartSpec:
+    """Shape of the second live CAD intake: name-tagged single holes, hosts
+    declared as '<±axis>-Ende/Oberkante + thickness' instead of axis ranges."""
+    d = lambda v: Dim(value=v, unit="mm", source="stated")  # noqa: E731
+    return PartSpec(
+        name="winkel",
+        summary="",
+        units="mm",
+        length_x=d(120),
+        width_y=d(30),
+        height_z=d(100),
+        features=[
+            Feature(
+                name="senkrechter Schenkel",
+                type="box",
+                position="am -X-Ende, von z=0 bis z=100",
+                dims={"thickness": 5.0},
+            ),
+            Feature(
+                name="horizontaler Arm",
+                type="box",
+                position="an der Oberkante des Schenkels, von x=-5 bis x=+115",
+                dims={"thickness": 5.0},
+            ),
+            Feature(
+                name="Schenkel-Bohrung 1",
+                type="hole",
+                position="z=15, y=0, Achse X",
+                dims={"diameter": 5.5, "depth": 5.0},
+                axis="x",
+                count=1,
+            ),
+            Feature(
+                name="Arm-Bohrung 1",
+                type="hole",
+                position="x=-25, y=0, Achse Z",
+                dims={"diameter": 5.5, "depth": 5.0},
+                axis="z",
+                count=1,
+            ),
+        ],
+        image_roles=[],
+    )
+
+
+def test_host_span_end_anchored_plate():
+    """'am -X-Ende + thickness' -> [env_lo, env_lo+t]; 'Oberkante' -> top."""
+    spec = _live_rerun_spec()
+    leg_hole = next(f for f in spec.features if f.name == "Schenkel-Bohrung 1")
+    arm_hole = next(f for f in spec.features if f.name == "Arm-Bohrung 1")
+    assert host_body(spec, leg_hole).name == "senkrechter Schenkel"
+    assert host_span(spec, leg_hole, "x") == (-60.0, -55.0)
+    assert host_body(spec, arm_hole).name == "horizontaler Arm"
+    assert host_span(spec, arm_hole, "z") == (95.0, 100.0)
+    a = build_anchors(spec, {}, None)
+    leg = next(h for h in a.holes if h.axis == "+x")
+    assert leg.pos == [-57.5, 0.0, 15.0]
+
+
+def test_host_body_none_without_in_phrase_or_name():
+    spec = _bracket_spec()
+    arm_holes = next(f for f in spec.features if f.name == "arm_holes")
+    arm_holes.name = "mounting bores"
     arm_holes.description = "two through-holes, axis Z"
     arm_holes.position = "x=-25, y=0 and x=+45, y=0"
     assert host_body(spec, arm_holes) is None

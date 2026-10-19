@@ -503,7 +503,9 @@ def test_bound_snippets_execute_bracket(tmp_path):
     from cadx.cad.features import extract_features
     from cadx.llm.schemas import PartSpec
 
-    spec = PartSpec.model_validate(json.loads((_FIXTURES / "bracket_strut_cad.json").read_text(encoding="utf-8")))
+    spec = PartSpec.model_validate(
+        json.loads((_FIXTURES / "bracket_strut_cad.json").read_text(encoding="utf-8"))
+    )
     by_name = {b.name: b for b in bind_features(spec)}
     ns: dict = {}
     header = "from build123d import *\nfrom cadx.cad.cadlib import *\n"

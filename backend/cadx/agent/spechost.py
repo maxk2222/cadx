@@ -26,8 +26,12 @@ _NUM = r"([+-]?\d+(?:\.\d+)?)"
 # axis range spellings — lo/hi are sorted, order in text is irrelevant
 _RANGE_RES = (
     re.compile(rf"\b([xyz])\s+(?:from|von)\s+{_NUM}\s+(?:to|bis)\s+{_NUM}", re.I),
+    re.compile(
+        rf"(?:from|von)\s+([xyz])\s*[=:]?\s*{_NUM}\s+(?:to|bis)\s+(?:[xyz]\s*[=:]?\s*)?{_NUM}",
+        re.I,
+    ),
     re.compile(rf"\b([xyz])\s*[=:]\s*{_NUM}\s*\.\.\s*{_NUM}", re.I),
-    re.compile(rf"\b([xyz])\s*[=:]\s*{_NUM}\s+bis\s+{_NUM}", re.I),
+    re.compile(rf"\b([xyz])\s*[=:]\s*{_NUM}\s+bis\s+(?:[xyz]\s*[=:]?\s*)?{_NUM}", re.I),
     re.compile(rf"\b([xyz])\s+zwischen\s+{_NUM}\s+und\s+{_NUM}", re.I),
     re.compile(rf"\b([xyz])\s+{_NUM}\s*\.\.\s*{_NUM}", re.I),
     re.compile(rf"\b([xyz])\s+{_NUM}\s+(?:to|bis)\s+{_NUM}", re.I),
@@ -70,6 +74,23 @@ _SOLID_TYPES = {
     "tube",
 }
 
+# tokens that never identify a host when they appear in a feature name
+# ("Schenkel-Bohrung" -> "schenkel" matches the plate, "bohrung" is noise)
+_NAME_STOP = {
+    "bohrung",
+    "bore",
+    "hole",
+    "durchgangsbohrung",
+    "gewinde",
+    "thread",
+    "senkung",
+    "slot",
+    "nut",
+    "tasche",
+    "pocket",
+    "senkbohrung",
+}
+
 # spec authors name host plates loosely — a bore "in the vertical" means
 # the leg, one "in the top" means the arm/deck plate
 _SYNONYM_GROUPS: tuple[frozenset[str], ...] = (
@@ -95,20 +116,42 @@ def host_body(spec: PartSpec, f: Feature) -> Feature | None:
     position+description against other features' name + description,
     preferring solid-ish types over plain or range-only candidates. Only
     features with a solid type or a position declaring axis ranges on >= 2
-    axes qualify as hosts at all.
+    axes qualify as hosts at all. When no preposition is present the
+    feature's own NAME is matched too ("Schenkel-Bohrung" -> the feature
+    named "senkrechter Schenkel") — intake splits multi-hole features into
+    name-tagged singles that carry no "im <host>" text.
     """
     hay = f"{f.position or ''} {f.description or ''}".lower()
     words = [w for w in _IN_RE.findall(hay) if len(w) > 2 and w != "the"]
-    if not words:
-        return None
-    terms = _expand(words)
     solids: list[Feature] = []
     ranged: list[Feature] = []
+    if words:
+        terms = _expand(words)
+        for g in spec.features or []:
+            if g is f:
+                continue
+            ghay = f"{g.name or ''} {g.description or ''}".lower()
+            if not any(w in ghay for w in terms):
+                continue
+            if (g.type or "").lower() in _SOLID_TYPES:
+                solids.append(g)
+            elif len(parse_ranges(g.position or "")) >= 2:
+                ranged.append(g)
+        if solids or ranged:
+            return (solids or ranged)[0]
+    fname = f.name or ""
+    if not fname:
+        return None
+    ftokens = {t for t in re.findall(r"[a-zäöü]+", fname.lower()) if len(t) > 2}
     for g in spec.features or []:
         if g is f:
             continue
-        ghay = f"{g.name or ''} {g.description or ''}".lower()
-        if not any(w in ghay for w in terms):
+        gtokens = {
+            t
+            for t in re.findall(r"[a-zäöü]+", (g.name or "").lower())
+            if len(t) > 2 and t not in _NAME_STOP
+        }
+        if not gtokens or not (gtokens & ftokens):
             continue
         if (g.type or "").lower() in _SOLID_TYPES:
             solids.append(g)
@@ -124,4 +167,76 @@ def host_range(spec: PartSpec, f: Feature, axis: str) -> tuple[float, float] | N
     if host is None:
         return None
     letter = str(axis or "").strip().lower().lstrip("+-")
-    return parse_ranges(host.position or "").get(letter)
+    return parse_ranges(f"{host.position or ''} {host.description or ''}").get(letter)
+
+
+_ENV_ATTR = {"x": "length_x", "y": "width_y", "z": "height_z"}
+
+
+def _env_bounds(spec: PartSpec, letter: str) -> tuple[float, float] | None:
+    """Envelope span on one axis (z rests on XY -> [0, h]; x/y centred)."""
+    try:
+        v = float(getattr(spec, _ENV_ATTR[letter]).value)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if v <= 0:
+        return None
+    return (0.0, v) if letter == "z" else (-v / 2, v / 2)
+
+
+_END_RE = {
+    "-": re.compile(r"-\s*([xyz])\s*-?(?:end|ende|seite|side)\b", re.I),
+    "+": re.compile(r"\+\s*([xyz])\s*-?(?:end|ende|seite|side)\b", re.I),
+}
+_Z_END_WORDS = {
+    "-": re.compile(r"\b(?:unterkante|bottom|unten|lower)\b", re.I),
+    "+": re.compile(r"\b(?:oberkante|top|oben|upper)\b", re.I),
+}
+
+
+def _host_end_span(host: Feature, spec: PartSpec, letter: str) -> tuple[float, float] | None:
+    """Derive an end-anchored host's span from 'am -X-Ende'/'an der
+    Oberkante' + its declared thickness.
+
+    Intake often writes a plate as "<pos>-end + thickness" instead of an
+    explicit axis range — "senkrechter Schenkel am -X-Ende, thickness 5"
+    means x ∈ [env_lo, env_lo+5], "Arm an der Oberkante, thickness 5" means
+    z ∈ [env_hi-5, env_hi]. Ambiguous (both ends named) or thickness-less
+    hosts resolve to None — a wrong bound is worse than a full-depth cut.
+    """
+    dims = host.dims or {}
+    thick = dims.get("thickness") or dims.get("thickness_mm") or dims.get("wandstaerke")
+    try:
+        t = float(thick)
+    except (TypeError, ValueError):
+        return None
+    if t <= 0:
+        return None
+    hay = f"{host.position or ''} {host.description or ''}".lower()
+    m_neg, m_pos = _END_RE["-"].search(hay), _END_RE["+"].search(hay)
+    neg = m_neg is not None and m_neg.group(1) == letter
+    pos = m_pos is not None and m_pos.group(1) == letter
+    if letter == "z":
+        neg = neg or bool(_Z_END_WORDS["-"].search(hay))
+        pos = pos or bool(_Z_END_WORDS["+"].search(hay))
+    if pos == neg:
+        return None
+    env = _env_bounds(spec, letter)
+    if env is None:
+        return None
+    lo, hi = env
+    return (hi - t, hi) if pos else (lo, lo + t)
+
+
+def host_span(spec: PartSpec, f: Feature, axis: str) -> tuple[float, float] | None:
+    """Host's span on ``axis`` — the declared range when present, else the
+    end-anchored span derived from 'am <±axis>-Ende'/'an der Oberkante' plus
+    the host's declared thickness."""
+    host = host_body(spec, f)
+    if host is None:
+        return None
+    letter = str(axis or "").strip().lower().lstrip("+-")
+    declared = parse_ranges(f"{host.position or ''} {host.description or ''}").get(letter)
+    if declared is not None:
+        return declared
+    return _host_end_span(host, spec, letter)

@@ -21,7 +21,9 @@ _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "specs"
 
 def _bracket_spec() -> PartSpec:
     """Real CAD-intake output of the bracket E2E run (ground truth fixture)."""
-    return PartSpec.model_validate(json.loads((_FIXTURES / "bracket_strut_cad.json").read_text(encoding="utf-8")))
+    return PartSpec.model_validate(
+        json.loads((_FIXTURES / "bracket_strut_cad.json").read_text(encoding="utf-8"))
+    )
 
 
 def _spec(features, lx=60.0, wy=40.0, hz=54.0) -> PartSpec:
@@ -161,8 +163,11 @@ class TestHoleBinding:
     def test_explicit_positions(self):
         spec = _l_bracket_spec()
         s = {b.name: b for b in bind_features(spec)}["foot_hole_1"].snippet
-        assert "Pos(-15.0, 0.0, 0.0), Pos(15.0, 0.0, 0.0)" in s
-        assert "through_hole(5.5)" in s
+        # host-bounded to the foot plate (z=0..4): workplane on the hi face,
+        # depth = span + 0.5 instead of a full-depth bore
+        assert "Pos(-15.0, 0.0, 4.0), Pos(15.0, 0.0, 4.0)" in s
+        assert "through_hole(5.5, depth=4.5)" in s
+        assert "foot z=0..4" in s
 
     def test_apart_spacing_centred(self):
         spec = _spec(

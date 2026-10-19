@@ -21,7 +21,7 @@ from typing import Any, Literal
 import numpy as np
 from pydantic import BaseModel
 
-from cadx.agent.spechost import host_range, parse_ranges
+from cadx.agent.spechost import host_span, parse_ranges
 from cadx.cad.poshint import parse_coord_points, parse_position_hints, resolve_end_hint
 from cadx.llm.schemas import Feature, PartSpec
 
@@ -406,7 +406,7 @@ def _axial_hint(
     # would surface the range's own lo endpoint instead (observed: anchor at
     # x=-60 while the measured bore sits at leg mid -57.5 -> false major)
     text = f"{f.position or ''} {f.description or ''}"
-    rng = parse_ranges(text).get(bore_ax) or host_range(spec, f, bore_ax)
+    rng = parse_ranges(text).get(bore_ax) or host_span(spec, f, bore_ax)
     if rng is not None:
         return (rng[0] + rng[1]) / 2.0, False
     if coords.get(bore_ax) is not None:
@@ -525,12 +525,23 @@ def _spec_anchors(spec: PartSpec) -> list[Anchor]:
                 )
             continue
         for x, y, est in _spec_xy(f, bounds, dia):
+            # a +z bore bound to ONE declared plate carries the plate's axial
+            # centre + span so the deterministic re-cut drills the plate only —
+            # a full-length cutter would pierce a strut/rib on the same ray
+            rng = parse_ranges(text).get("z") or host_span(spec, f, "z")
+            z_mid = (rng[0] + rng[1]) / 2.0 if rng is not None else None
+            depth_mm = rng[1] - rng[0] if rng is not None else None
             out.append(
                 Anchor(
                     index=0,  # re-indexed by build_anchors
                     x=round(x, 2),
                     y=round(y, 2),
                     dia=round(dia, 2),
+                    z=round(z_mid, 2) if z_mid is not None else None,
+                    depth_mm=round(depth_mm, 2) if depth_mm else None,
+                    pos=(
+                        [round(x, 2), round(y, 2), round(z_mid, 2)] if z_mid is not None else None
+                    ),
                     source="spec-est" if est else "spec",
                     name=f.name or "",
                     kind=kind,

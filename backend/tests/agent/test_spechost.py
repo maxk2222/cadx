@@ -13,7 +13,9 @@ _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "specs"
 
 @pytest.fixture()
 def bracket() -> PartSpec:
-    return PartSpec.model_validate(json.loads((_FIXTURES / "bracket_strut_cad.json").read_text(encoding="utf-8")))
+    return PartSpec.model_validate(
+        json.loads((_FIXTURES / "bracket_strut_cad.json").read_text(encoding="utf-8"))
+    )
 
 
 @pytest.mark.parametrize(

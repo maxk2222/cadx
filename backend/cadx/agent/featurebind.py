@@ -19,7 +19,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from cadx.agent.spechost import host_body, host_range
+from cadx.agent.spechost import host_body, host_span
 from cadx.cad.features import _feature_axis_hint
 from cadx.cad.poshint import parse_coord_points
 from cadx.llm.schemas import Feature, PartSpec
@@ -334,20 +334,27 @@ def _host_bound(
     the cut to the host's span and sit the workplane on the host's hi
     face: through_hole(depth) cuts toward -local Z, i.e. lo-ward under
     every _FRAME_ROT frame. Applies only when the host resolves
-    unambiguously, is thin (<50% of the envelope on the bore axis) and no
-    blind depth was declared — a declared partial depth still wins."""
-    if "through" not in f"{f.type} {f.description}".lower() and depth:
-        return None
+    unambiguously and is thin (<50% of the envelope on the bore axis). A
+    declared depth clearly SHALLOWER than the host span stays a blind hole;
+    a depth matching the span is the plate thickness itself (intake writes
+    depth=5 for a through-bore in a 5mm plate) — still bound."""
     host = host_body(spec, f)
-    hr = host_range(spec, f, letter)
+    hr = host_span(spec, f, letter)
     if host is None or hr is None:
         return None
     lo, hi = hr
+    span = hi - lo
+    if (
+        depth
+        and "through" not in f"{f.type} {f.description}".lower()
+        and abs(depth - span) > max(0.6, 0.15 * span)
+    ):
+        return None
     try:
         env = float(getattr(spec, _ENV_HALF[letter]).value)
     except (AttributeError, TypeError, ValueError):
         return None
-    if env <= 0 or hi - lo >= 0.5 * env:
+    if env <= 0 or span >= 0.5 * env:
         return None
     return host, lo, hi
 

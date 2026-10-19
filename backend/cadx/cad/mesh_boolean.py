@@ -307,14 +307,28 @@ def _bore_cutter(hole: dict[str, Any], idx: int, u: float, v: float, bb: Any, ma
     mins = [bb.min.X, bb.min.Y, bb.min.Z]
     maxs = [bb.max.X, bb.max.Y, bb.max.Z]
     depth = hole.get("depth_mm")
+    pos = hole.get("pos")
+    axial = (
+        pos[idx]
+        if isinstance(pos, (list, tuple)) and len(pos) == 3 and pos[idx] is not None
+        else None
+    )
     if depth:
-        # blind bore entering from the axis-sign face — the cutter (always
-        # aligned +axis) overhangs ABOVE the entry face only; the blind
-        # bottom must land exactly at the stated depth
-        neg = str(hole.get("axis", "+"))[0] == "-"
-        entry = mins[idx] if neg else maxs[idx]
-        span = float(depth) + margin / 2
-        lo = entry - margin / 2 if neg else entry - float(depth)
+        if axial is not None:
+            # the anchor carries the bore's axial centre (spec anchors:
+            # host-plate mid) — centre the cutter on it so a blind/bounded
+            # bore lands on its plate instead of the envelope's axis-sign
+            # face, which can sit 100mm away on a multi-body part
+            span = float(depth) + margin
+            lo = float(axial) - span / 2
+        else:
+            # blind bore entering from the axis-sign face — the cutter
+            # (always aligned +axis) overhangs ABOVE the entry face only;
+            # the blind bottom must land exactly at the stated depth
+            neg = str(hole.get("axis", "+"))[0] == "-"
+            entry = mins[idx] if neg else maxs[idx]
+            span = float(depth) + margin / 2
+            lo = entry - margin / 2 if neg else entry - float(depth)
     else:
         span = (maxs[idx] - mins[idx]) + 2 * margin
         lo = mins[idx] - margin

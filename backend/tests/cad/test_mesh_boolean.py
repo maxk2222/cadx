@@ -142,6 +142,37 @@ def test_recut_blind_depth():
     assert removed == pytest.approx(np.pi * 4.0 * 4.0, rel=0.15)  # r²·π·4mm
 
 
+def test_recut_blind_depth_centred_on_axial():
+    """Anchor pos[axial] centres a bounded re-cut on the host plate — the
+    envelope's axis-sign face would miss a plate sitting at the other end
+    (bracket leg at x=-60..-55 vs bbox x max=+60)."""
+    leg = Pos(-57.5, 0, 50) * Box(5, 30, 100)
+    arm = Pos(0, 0, 97.5) * Box(120, 30, 5)
+    part = leg + arm
+    out, applied = mb.recut_missing_holes(
+        part,
+        [
+            {
+                "x": 0.0,
+                "y": 0.0,
+                "dia": 5.5,
+                "axis": "+x",
+                "kind": "hole",
+                "source": "spec",
+                "depth_mm": 5.0,
+                "pos": [-57.5, 0.0, 15.0],
+            }
+        ],
+    )
+    assert applied
+    # bore landed inside the leg (material removed there), not at +x end
+    removed = part.volume - out.volume
+    assert removed == pytest.approx(np.pi * 2.75**2 * 5.0, rel=0.15)
+    # the ray along +x at (y=0, z=15) is now open — the leg got the bore
+    assert mb.tunnel_open(out, 0.0, 15.0, "+x")
+    assert not mb.tunnel_open(part, 0.0, 15.0, "+x")  # sanity: was blocked before
+
+
 def test_cadlib_backend_injection(sphere_solid):
     """cadlib.mesh_cut must route to the injected backend when OCC output is
     unusable — and keep working identically when OCC succeeds."""
