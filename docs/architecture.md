@@ -15,7 +15,7 @@ diffable, re-runnable.
 | `cad-executor` | arq worker on queue `cad`: sandboxed CAD execution, render, DfM, voxel FEM and SIMP TopOpt |
 | `postgres`   | SQLModel/SQLAlchemy database (async)                          |
 | `redis`      | arq queues + pub/sub for SSE events                            |
-| `mesh-server` | (optional, external) multi-model inference sidecar: image→3D (TRELLIS.2, Hunyuan3D, TripoSG), text-to-image (FLUX, SDXL, Qwen) and **llm** adapters (managed OpenAI-compatible server subprocesses — mlx-lm, llama.cpp). Runs **natively** on the host (macOS has no docker GPU) or on a CUDA box (`--profile gpu`). Contract: [mesh-server-api.md](mesh-server-api.md). |
+| `mesh-server` | (optional, external) multi-model inference sidecar: image→3D (TRELLIS.2, Hunyuan3D, TripoSG), text-to-image (FLUX, SDXL, Qwen) and **llm** adapters (managed OpenAI-compatible server subprocesses — mlx-lm/mlx-vlm, llama.cpp). Runs **natively** on the host (macOS has no docker GPU) or on a CUDA box (`--profile gpu`). Contract: [mesh-server-api.md](mesh-server-api.md). |
 
 The split between `worker` and `cad-executor` is deliberate: the agent loop
 is cheap I/O, while CAD execution is CPU-bound and sandboxed. They scale and
@@ -26,7 +26,7 @@ GLBs flow to the executor purely through `DATA_DIR` files. Beyond mesh
 generation it also hosts local text-to-image and — when
 `llm_backend="sidecar"` — the agent's LLM itself via
 `POST /v1/chat/completions` (OpenAI-compatible proxy onto managed
-mlx-lm/llama.cpp server subprocesses). Internally it is a multi-model host:
+mlx-lm/mlx-vlm/llama.cpp server subprocesses). Internally it is a multi-model host:
 a memory ledger admits residents only while `mem_headroom_mb` stays free
 (measured peak RSS beats declared estimates), LRU-evicts non-pinned models
 under pressure, and a model-affine queue prefers jobs matching resident/

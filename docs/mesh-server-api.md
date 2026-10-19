@@ -168,20 +168,59 @@ Same semantics as mesh job deletion.
 ## LLM chat completions
 
 Third adapter family (`kind: "llm"`): local LLMs served as managed
-OpenAI-compatible **server subprocesses** on a loopback port — `mlx-lm`
-(`python -m mlx_lm.server`, Apple Silicon) and `llama.cpp` (`llama-server`
-binary or `python -m llama_cpp.server`, GGUF weights; a `gguf_mmproj`
-projector file enables vision). The proxy resolves the requested model,
-loads its server through the registry's single-flight `get()` (concurrent
+OpenAI-compatible **server subprocesses** on a loopback port —
+`mlx-lm`/`mlx-vlm` (`python -m mlx_lm.server` / `python -m
+mlx_vlm.server`, Apple Silicon) and `llama.cpp` (`llama-server` binary or
+`python -m llama_cpp.server`, GGUF weights; a `gguf_mmproj` projector file
+enables vision). Vision adapters spawn `mlx_vlm.server`, not
+`mlx_lm.server` — mlx_lm's server has no Qwen-family vision processor and
+would silently drop image parts; the adapter picks the module itself
+(`vision=True` → `mlx_vlm`). The proxy resolves the requested model, loads
+its server through the registry's single-flight `get()` (concurrent
 requests converge on ONE load), rewrites `model` to the id the inner server
 actually serves, then relays the response verbatim — `stream: true` bodies
 pass through as SSE.
 
-Built-in catalog: `qwen2.5-vl-7b-mlx` (vision), `qwen3-8b-mlx`,
-`qwen2.5-7b-gguf`; user-registered repos are added via
+#### Catalog
+
+The built-in catalog is **platform-gated** — MLX quants on darwin-arm64,
+llama.cpp GGUFs (each with a `mmproj-BF16` vision projector) on
+CUDA/ROCm/other hosts. All entries are natively multimodal
+(image-text-to-text), 262k context:
+
+| id (darwin-arm64 / other) | weights | size |
+|---|---|---|
+| `qwen3.5-9b-mlx` / `qwen3.5-9b-gguf` | `mlx-community/Qwen3.5-9B-4bit` / `unsloth/Qwen3.5-9B-GGUF` Q4_K_M | ~6 GB |
+| `qwen3.8-27b-mlx` / `qwen3.8-27b-gguf` | `mlx-community/Qwen3.8-27B-4bit` / `unsloth/Qwen3.8-27B-GGUF` Q4_K_M | ~16/~17 GB |
+| `qwen3.6-35b-a3b-mlx` / `qwen3.6-35b-a3b-gguf` | `mlx-community/Qwen3.6-35B-A3B-4bit` / `unsloth/Qwen3.6-35B-A3B-GGUF` Q4_K_M (MoE) | ~20/~21 GB |
+| `qwen3.5-122b-a10b-mlx` / `qwen3.5-122b-a10b-gguf` | `mlx-community/Qwen3.5-122B-A10B-4bit` / `unsloth/…-GGUF` split Q4_K_M (MoE; MLX needs ≥96 GB RAM) | ~70 GB |
+| `qwen3.8-flash-next-mlx` (darwin only) | `mlx-community/Qwen3.8-Flash-Next-4bit` (≥128 GB RAM) | ~112 GB |
+
+Image parts arrive as OpenAI `image_url` data-URIs; there is no model-side
+image-count limit — context is the bound (the CADX worker caps at 8
+images/message anyway). User-registered repos are added via
 `POST /v1/models/register` and persisted in
 `model_dir/custom_models.json`. Adapter subprocess logs land in
 `job_dir/llm-<id>.log`.
+
+#### Install
+
+`mesh_server/scripts/install_llm.sh` sets up the backend deps. On
+darwin-arm64 it creates a dedicated `mesh_server/.venv-llm` holding
+`mlx-lm>=0.32` + `mlx-vlm>=0.7` — both need `transformers>=5`, which
+conflicts with the shared venv's `transformers<5` pin (torch/diffusers
+extras). The mlx adapter resolves its interpreter as `MESH_LLM_PYTHON` →
+`mesh_server/.venv-llm/bin/python` → `sys.executable`; a legacy
+`mlx-lm<0.30` stays in the shared venv (`llm` extra) as fallback for older
+architectures. On other hosts the script installs the `llm` extra
+(`llama-cpp-python[server]`) into the shared venv — a system
+`llama-server` binary or `LLAMA_SERVER_BIN` also works. GGUF vision needs
+a llama.cpp build that supports the `qwen3_5` architecture family plus
+`--mmproj` (added automatically for `gguf_mmproj` entries).
+
+`HF_TOKEN` in the environment — or the token stored via WebUI settings,
+which the backend forwards per request — makes downloads of gated repos
+work transparently.
 
 ### `POST /v1/chat/completions`
 
@@ -309,7 +348,7 @@ model):
   ],
   "free_mb": 41000,
   "residents": [
-    {"id": "qwen3-8b-mlx", "mb": 5200, "kind": "model", "pinned": true, "idle_s": 3.1},
+    {"id": "qwen3.5-9b-mlx", "mb": 5200, "kind": "model", "pinned": true, "idle_s": 3.1},
     {"id": "warm:triposg", "mb": 6100, "kind": "warm", "pinned": false, "idle_s": 41.0}
   ]
 }
@@ -346,6 +385,7 @@ In addition to the existing `MESH_*` knobs (see
 | `MESH_LLM_PIN` | `0` | pin loaded llm servers — never evicted for memory pressure |
 | `MESH_LLM_LOAD_TIMEOUT_S` | `300` | readiness bound for a managed llm server subprocess |
 | `MESH_LLM_CTX` | `16384` | context size passed to llama.cpp servers |
+| `MESH_LLM_PYTHON` | `""` | interpreter for mlx llm servers (else `mesh_server/.venv-llm/bin/python`, else the shared venv) |
 | `LLAMA_SERVER_BIN` | `""` | explicit `llama-server` binary (else PATH, else `llama_cpp.server`) |
 
 ## Semantics

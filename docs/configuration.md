@@ -264,6 +264,7 @@ Infrastructure-only bootstrap settings; everything else lives in the DB.
 | `MESH_LLM_PIN` | `0` | pin loaded llm servers — never evicted under memory pressure |
 | `MESH_LLM_LOAD_TIMEOUT_S` | `300` | readiness bound for a managed llm server subprocess |
 | `MESH_LLM_CTX` | `16384` | context size passed to llama.cpp servers |
+| `MESH_LLM_PYTHON` | — | interpreter for mlx llm servers (else `mesh_server/.venv-llm/bin/python`, else shared venv) |
 | `LLAMA_SERVER_BIN` | — | explicit `llama-server` binary (else PATH, else `python -m llama_cpp.server`) |
 
 ## See also

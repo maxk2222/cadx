@@ -154,6 +154,10 @@ docker run --device=/dev/kfd --device=/dev/dri --group-add video \
 # or: docker compose --profile gpu-rocm up -d mesh-server-rocm
 # gfx arch not covered by the torch wheel? → HSA_OVERRIDE_GFX_VERSION, see
 # troubleshooting.md
+
+# local LLMs for llm_backend=sidecar (kind="llm" catalog — see mesh-server-api.md)
+mesh_server/scripts/install_llm.sh     # dedicated .venv-llm on arm64 macOS,
+                                       # llama.cpp llm extra on other hosts
 ```
 
 ## Adapter benchmark
