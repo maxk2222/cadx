@@ -5,6 +5,7 @@ Degrades gracefully: render_views() returns {} when VTK cannot initialise.
 
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 
@@ -55,44 +56,52 @@ def render_views(
     x, y, z = bbox_size
     title = f"L {x:.1f} x W {y:.1f} x H {z:.1f} mm"
 
+    # one VTK render window for all seven views — creating/closing a Plotter
+    # per view paid a fresh GL context + window init each time (most of the
+    # per-view cost); only the camera + label change between shots
+    positions = {
+        "front": ((0, 1, 0), (0, 0, 1)),
+        "back": ((0, -1, 0), (0, 0, 1)),
+        "left": ((-1, 0, 0), (0, 0, 1)),
+        "right": ((1, 0, 0), (0, 0, 1)),
+        "top": ((0, 0, 1), (0, 1, 0)),
+        "bottom": ((0, 0, -1), (0, -1, 0)),
+    }
+    diag = math.sqrt(x * x + y * y + z * z)
+    c = mesh.center
     results: dict[str, Path] = {}
-    for view in VIEWS:
-        pl = pv.Plotter(off_screen=True, window_size=(size, size))
+    pl = pv.Plotter(off_screen=True, window_size=(size, size))
+    try:
         pl.set_background("white")
         pl.add_mesh(mesh, color="#9aa3ad", smooth_shading=True)
         if edges.n_points:
             pl.add_mesh(edges, color="#222222", line_width=1.5)
         pl.add_mesh(outline, color="#888888", line_width=2)
-
-        if view == "iso":
-            pl.camera_position = "iso"
-        else:
-            positions = {
-                "front": ((0, 1, 0), (0, 0, 1)),
-                "back": ((0, -1, 0), (0, 0, 1)),
-                "left": ((-1, 0, 0), (0, 0, 1)),
-                "right": ((1, 0, 0), (0, 0, 1)),
-                "top": ((0, 0, 1), (0, 1, 0)),
-                "bottom": ((0, 0, -1), (0, -1, 0)),
-            }
-            pos, up = positions[view]
-            c = mesh.center
-            import math
-
-            diag = math.sqrt(x * x + y * y + z * z)
-            pl.camera.position = (c[0] + pos[0] * diag, c[1] + pos[1] * diag, c[2] + pos[2] * diag)
-            pl.camera.focal_point = c
-            pl.camera.up = up
-            pl.camera.parallel_projection = True
-
-        pl.reset_camera()
-        pl.camera.zoom(1.15)
-        pl.add_text(f"{view}  -  {title}", position="upper_edge", font_size=14, color="black")
         pl.add_axes(color="black")
-        out = out_dir / f"{view}.png"
-        pl.screenshot(str(out))
+        for view in VIEWS:
+            if view == "iso":
+                pl.camera_position = "iso"
+            else:
+                pos, up = positions[view]
+                pl.camera.position = (
+                    c[0] + pos[0] * diag,
+                    c[1] + pos[1] * diag,
+                    c[2] + pos[2] * diag,
+                )
+                pl.camera.focal_point = c
+                pl.camera.up = up
+                pl.camera.parallel_projection = True
+            pl.reset_camera()
+            pl.camera.zoom(1.15)
+            label = pl.add_text(
+                f"{view}  -  {title}", position="upper_edge", font_size=14, color="black"
+            )
+            out = out_dir / f"{view}.png"
+            pl.screenshot(str(out))
+            pl.remove_actor(label)
+            results[view] = out
+    finally:
         pl.close()
-        results[view] = out
     return results
 
 

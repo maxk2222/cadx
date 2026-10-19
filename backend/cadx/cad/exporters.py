@@ -3,8 +3,10 @@ a single failing export never fails the job; the error is recorded instead."""
 
 from __future__ import annotations
 
+import contextlib
 import math
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +47,18 @@ def export_step_checked(solid: Any, out_path: Path) -> None:
             export_step(solid, str(out_path))
     except Exception:
         pass
+
+
+def _export_step_atomic(solid: Any, out_path: Path) -> None:
+    """`export_step_checked` via a sibling .tmp file + os.replace.
+
+    The analytic-STEP paths overwrite a previously-good faceted STEP in
+    place — a mid-write OCC failure would truncate it. Write the candidate
+    beside it first, then swap atomically on success."""
+    out_path = Path(out_path)
+    tmp = out_path.with_suffix(".step.tmp")
+    export_step_checked(solid, tmp)
+    tmp.replace(out_path)
 
 
 def export_step_file(shape: Shape, path: Path) -> None:
@@ -761,6 +775,29 @@ def _write_worker_brep(solid: Any, out_brep: str, name: str, out: dict[str, Any]
         out["warnings"].append(f"feature '{name}': BREP write failed: {e}")
 
 
+def _analytic_base_worker(
+    stl_path: str, out_brep: str, result_path: str, max_faces: int | None
+) -> None:
+    """Setup child for the isolated analytic STEP export: sew the shipped
+    STL into the BASE B-Rep once so the per-feature children load this
+    checkpoint instead of each re-running decimate+mesh_to_solid (the sew
+    is the multi-minute part and used to repeat per feature)."""
+    import json as _json
+
+    out: dict[str, Any] = {"applied": False, "warnings": []}
+    try:
+        mesh = trimesh.load(stl_path, force="mesh")
+        solid = _load_solid_for_worker("", mesh, max_faces, out)
+        if solid is not None:
+            out["applied"] = True
+            _write_worker_brep(solid, out_brep, "base", out)
+    except Exception as e:
+        out["applied"] = False
+        out["warnings"].append(f"base solid sew failed: {e}")
+    with contextlib.suppress(Exception):
+        Path(result_path).write_text(_json.dumps(out))
+
+
 def export_analytic_step_isolated(
     mesh_path: Path,
     features: list[Any],
@@ -770,6 +807,7 @@ def export_analytic_step_isolated(
     per_feature_s: float | None = None,
     max_faces: int | None = None,
     log: Any = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Run the analytic STEP export feature-by-feature in child processes.
 
@@ -810,12 +848,20 @@ def export_analytic_step_isolated(
     t_all = time.monotonic()
     with tempfile.TemporaryDirectory(dir=out_path.parent) as td:
         tdir = Path(td)
+        if normed:
+            # checkpoint the sewn base solid ONCE before the feature loop —
+            # brep_in="" would make every feature child re-run the
+            # decimate+mesh_to_solid sew (minutes) before its own cut
+            brep_in = _base_solid_checkpoint(ctx, mesh_path, per_feature, max_faces, tdir, warnings)
         for idx, (name, feat) in enumerate(normed):
             if time.monotonic() - t_all > timeout_s:
                 warnings.append(
                     f"analytic STEP exceeded {timeout_s:.0f}s total budget — "
                     "remaining features skipped"
                 )
+                break
+            if cancelled is not None and cancelled():
+                warnings.append("analytic STEP cancelled — remaining features skipped")
                 break
             child_brep = tdir / f"feat{idx}.brep"
             child_res = tdir / f"feat{idx}.json"
@@ -836,9 +882,7 @@ def export_analytic_step_isolated(
             if proc.is_alive():
                 proc.terminate()
                 proc.join(5)
-                warnings.append(
-                    f"feature '{name}': cut exceeded {per_feature:.0f}s — skipped"
-                )
+                warnings.append(f"feature '{name}': cut exceeded {per_feature:.0f}s — skipped")
                 logger.warning("export.analytic_step_feature_timeout", feature=name)
                 continue
             try:
@@ -859,9 +903,10 @@ def export_analytic_step_isolated(
                     rec["degraded"] = str(cres["degraded"])
                 applied.append(rec)
 
-        if brep_in:
+        if brep_in and applied:
             # final solid → STEP; child wrote BREPs into tdir, so the last one
-            # is the accumulated body
+            # is the accumulated body. Without an applied feature the base
+            # brep is just a re-sewn copy — the faceted STEP stays instead.
             try:
                 from OCP.BRep import BRep_Builder
                 from OCP.BRepTools import BRepTools
@@ -869,7 +914,7 @@ def export_analytic_step_isolated(
 
                 sh = TopoDS_Shape()
                 BRepTools.Read_s(sh, brep_in, BRep_Builder())
-                export_step_checked(Shape.cast(sh), out_path)
+                _export_step_atomic(Shape.cast(sh), out_path)
                 out["step"] = out_path.name
                 out["step_features"] = applied
             except Exception as e:
@@ -883,6 +928,47 @@ def export_analytic_step_isolated(
         warnings=len(warnings),
     )
     return out
+
+
+def _base_solid_checkpoint(
+    ctx: Any,
+    mesh_path: Path,
+    per_feature: float,
+    max_faces: int | None,
+    tdir: Path,
+    warnings: list[str],
+) -> str:
+    """Sew the base solid once in a child process and return its BREP path.
+
+    An empty string means "no checkpoint" — feature children then re-sew
+    per cut (slow, but correct)."""
+    import json as _json
+
+    base_brep = tdir / "feat_base.brep"
+    base_res = tdir / "feat_base.json"
+    proc = ctx.Process(
+        target=_analytic_base_worker,
+        args=(str(mesh_path), str(base_brep), str(base_res), max_faces),
+        daemon=True,
+    )
+    proc.start()
+    proc.join(per_feature)
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(5)
+        warnings.append(
+            f"base solid sew exceeded {per_feature:.0f}s — feature children will re-sew per cut"
+        )
+        return ""
+    try:
+        cres = _json.loads(base_res.read_text())
+    except Exception:
+        cres = {}
+    warnings += [str(w) for w in cres.get("warnings", [])]
+    if cres.get("applied") and cres.get("brep") and Path(cres["brep"]).exists():
+        return str(cres["brep"])
+    warnings.append("base solid checkpoint unavailable — feature children re-sew per cut")
+    return ""
 
 
 def _decimate_for_analytic(mesh: trimesh.Trimesh, logger: Any) -> trimesh.Trimesh:
@@ -1026,7 +1112,7 @@ def export_analytic_step(
 
     try:
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        export_step_checked(solid, out_path)
+        _export_step_atomic(solid, out_path)
         out["step"] = out_path.name
         out["step_features"] = applied
     except Exception as e:

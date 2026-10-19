@@ -12,6 +12,7 @@ import json
 import re
 import shutil
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +66,21 @@ log = get_logger(__name__)
 # STEP roundtrip gate: skip when the pipeline has already burned most of the
 # per-execution budget — the gate adds a full export+import roundtrip
 _STEP_GATE_BUDGET_FRACTION = 0.8
+
+
+def _is_cancelled(cancelled: Callable[[], bool] | None) -> bool:
+    """Poll the optional cancellation checker — never raises (a flaky
+    checker must not fail the pipeline)."""
+    try:
+        return bool(cancelled is not None and cancelled())
+    except Exception:
+        return False
+
+
+def _mark_cancelled(res: ExecResult) -> None:
+    """Same 'cancelled' error shape the task-level checks produce."""
+    res.ok = False
+    res.error = "cancelled"
 
 
 class ExecResult:
@@ -246,6 +262,7 @@ def run_pipeline(  # noqa: C901
     anchors: dict[str, Any] | None = None,
     light: bool = False,
     spec: dict[str, Any] | None = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> ExecResult:
     """Full executor pipeline for one candidate. out_dir receives all artifacts.
 
@@ -311,6 +328,9 @@ def run_pipeline(  # noqa: C901
     # 4. analysis
     res.analysis = analyze(shape, stl_path)
     _repair_analysis_mesh(res.analysis, stl_path)
+    if _is_cancelled(cancelled):
+        _mark_cancelled(res)
+        return _attach_verify_spec(res, spec_dict, settings, rt)
 
     # 4b. deterministic feature extraction (feedback-only, never blocks)
     try:
@@ -402,6 +422,9 @@ def run_pipeline(  # noqa: C901
 
     # 7. exports
     t = time.monotonic()
+    if _is_cancelled(cancelled):
+        _mark_cancelled(res)
+        return _attach_verify_spec(res, spec_dict, settings, rt)
     exp_dir = out_dir / "exports"
     if full_exports:
         res.exports = export_all_3d(shape, exp_dir, name=name)
@@ -488,6 +511,7 @@ def run_mesh_pipeline(  # noqa: C901
     anchors: dict[str, Any] | None = None,
     solid_max_faces: int | None = None,
     ref_mask_rel: str | None = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> ExecResult:
     """Mesh-mode pipeline: clean -> orient -> scale -> analyse -> render -> DfM -> export.
 
@@ -558,6 +582,9 @@ def run_mesh_pipeline(  # noqa: C901
         res.mesh.update(base_info)
 
     # 5b. agent transform ops (validated MeshOp list inside post.params)
+    if _is_cancelled(cancelled):
+        _mark_cancelled(res)
+        return _done()
     if post.ops:
         if post.ops_version and post.ops_version != MESH_OPS_VERSION:
             log.warning(
@@ -655,6 +682,9 @@ def run_mesh_pipeline(  # noqa: C901
             log.warning("mesh.silhouette_iou_failed", error=str(e)[:200])
 
     # 8. optional solid conversion (hybrid bridge + tessellated STEP)
+    if _is_cancelled(cancelled):
+        _mark_cancelled(res)
+        return _done()
     if make_solid:
         t = time.monotonic()
         try:
@@ -728,6 +758,9 @@ def run_mesh_pipeline(  # noqa: C901
 
     # 11. exports
     t = time.monotonic()
+    if _is_cancelled(cancelled):
+        _mark_cancelled(res)
+        return _done()
     if full_exports:
         # STEP comes from the same solid built above when available
         res.exports = export_mesh_all(mesh, out_dir / "exports", name=name, try_step=False)
@@ -1072,6 +1105,7 @@ def run_fem_pipeline(
     scan_anchors: bool = True,
     scan_only: bool = False,
     runtime: RuntimeSettings | None = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """FEM verification on an existing mesh artifact. Writes fem/report.json +
     stress renders into <out_dir>/fem/. Returns the report as a dict.
@@ -1133,6 +1167,7 @@ def run_fem_pipeline(
         keep_regions=keep,
         spsolve_dofs=s.fem_spsolve_dofs,
         mem_budget_mb=float(s.exec_mem_limit_mb),
+        cancelled=cancelled,
     )
     report_to_json(report, out_dir / "fem" / "report.json")
     return {"ok": True, "fem": report.model_dump()}
@@ -1598,6 +1633,7 @@ def run_topopt_pipeline(  # noqa: C901
             keep_regions=keep_list,
             spsolve_dofs=s.fem_spsolve_dofs,
             suffix=fem_suffix,
+            cancelled=cancelled,
         )
         out["verify"] = verify
         out["verify_s"] = round(time.monotonic() - t, 2)
@@ -1615,6 +1651,7 @@ def run_topopt_pipeline(  # noqa: C901
                 keep_regions=keep_list,
                 spsolve_dofs=s.fem_spsolve_dofs,
                 suffix=f"{fem_suffix}_export",
+                cancelled=cancelled,
             )
         except Exception as e:
             log.warning("topopt.verify_export.failed", error=str(e)[:200])
@@ -1825,6 +1862,7 @@ def run_topopt_resample(
     anchors: list[dict] | None = None,
     name: str = "model",
     runtime: RuntimeSettings | None = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> ExecResult:
     """Re-extract a stored SIMP density field at a different threshold /
     min-member without re-running SIMP — the threshold-sweep endpoint.
@@ -1965,6 +2003,9 @@ def run_topopt_resample(
         res.error = f"failed to write resampled STL: {e}"
         return res
 
+    if _is_cancelled(cancelled):
+        _mark_cancelled(res)
+        return res
     if cases:
         verify = run_fem_domain(
             domain,
@@ -1974,6 +2015,7 @@ def run_topopt_resample(
             out_dir=out_dir,
             anchors=anchors,
             keep_regions=keep_list,
+            cancelled=cancelled,
         )
         report_to_json(verify, out_dir / "fem" / "report.json")
         res.fem = verify.model_dump()
@@ -1988,6 +2030,7 @@ def run_topopt_resample(
                 anchors=anchors,
                 keep_regions=keep_list,
                 suffix="_export",
+                cancelled=cancelled,
             )
             report_to_json(verify_exp, out_dir / "fem" / "report_export.json")
             res.fem_export = verify_exp.model_dump()
@@ -1997,6 +2040,9 @@ def run_topopt_resample(
             log.warning("topopt.resample_verify_failed", error=str(e)[:200])
             res.topopt["sf_mask"] = verify.worst_safety_factor
 
+    if _is_cancelled(cancelled):
+        _mark_cancelled(res)
+        return res
     res.exports = export_mesh_all(
         opt_mesh,
         out_dir / "exports",
@@ -2034,6 +2080,7 @@ def run_organic_pipeline(
     anchors: list[dict] | None = None,
     name: str = "model",
     runtime: RuntimeSettings | None = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> ExecResult:
     """Pseudo-topology-optimization: procedural organic restyling.
 
@@ -2064,6 +2111,9 @@ def run_organic_pipeline(
         return res
 
     anchors = _scan_anchors(mesh, anchors)
+    if _is_cancelled(cancelled):
+        _mark_cancelled(res)
+        return res
     try:
         out = organic_transform(
             mesh,
@@ -2122,6 +2172,9 @@ def run_organic_pipeline(
     # renders
     t = time.monotonic()
     render_dir = out_dir / "renders"
+    if _is_cancelled(cancelled):
+        _mark_cancelled(res)
+        return res
     render_paths = render_views(stl_path, render_dir, res.analysis.bbox_size)
     res.renders = {v: p.name for v, p in render_paths.items()}
     thumb = render_thumbnail(stl_path, out_dir / "thumbnail.png")
@@ -2184,6 +2237,7 @@ def run_refine(
     max_elements: int | None = None,
     name: str = "model",
     runtime: RuntimeSettings | None = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> ExecResult:
     """Post-TopOpt feature finishing: re-cut exact bores/threads/inserts and
     restore keep-region surfaces on a (usually optimized) mesh.
@@ -2279,6 +2333,9 @@ def run_refine(
     }
 
     # FEM re-verify — the cuts remove material, the SF must be re-issued
+    if _is_cancelled(cancelled):
+        _mark_cancelled(res)
+        return res
     cases = [LoadCase(**c) for c in (load_cases or [])]
     if cases:
         verify = run_fem(
@@ -2290,6 +2347,7 @@ def run_refine(
             out_dir=out_dir,
             anchors=anchors,
             spsolve_dofs=s.fem_spsolve_dofs,
+            cancelled=cancelled,
         )
         report_to_json(verify, out_dir / "fem" / "report.json")
         res.fem = verify.model_dump()
@@ -2307,7 +2365,10 @@ def run_refine(
     _repair_analysis_mesh(res.analysis, stl_path)
     if res.analysis.watertight is False:
         _repair_export_meshes(res.exports, out_dir / "exports")
-    _refine_analytic_step(res, out, feats, rep, out_dir, name, warnings, s)
+    if _is_cancelled(cancelled):
+        _mark_cancelled(res)
+        return res
+    _refine_analytic_step(res, out, feats, rep, out_dir, name, warnings, s, cancelled=cancelled)
     warnings = res.features["refine"]["warnings"]
     res.mesh = {
         "pipeline": "refine",
@@ -2335,6 +2396,7 @@ def _refine_analytic_step(
     name: str,
     warnings: list[str],
     s: RuntimeSettings,
+    cancelled: Callable[[], bool] | None = None,
 ) -> None:
     """Analytic STEP for refine — cut real Cylinder/Helix faces into the sewn
     solid for each applied feature; keeps the faceted STEP as fallback.
@@ -2365,17 +2427,26 @@ def _refine_analytic_step(
         return
     # self-describing dicts for the subprocess boundary — feature objects
     # may not survive pickling; rep.applied records already carry u/v/dia
-    feat_dicts = [
-        f if isinstance(f, dict) else dataclasses.asdict(f) for f in analytic_src
-    ]
-    step_res = export_analytic_step_isolated(
-        out_dir / "exports" / stl_name,
-        feat_dicts,
-        out_dir / "exports" / f"{name}.step",
-        timeout_s=float(s.analytic_step_timeout_s),
-        max_faces=s.mesh_max_faces_for_cad,
-        log=log,
-    )
+    feat_dicts = [f if isinstance(f, dict) else dataclasses.asdict(f) for f in analytic_src]
+    try:
+        step_res = export_analytic_step_isolated(
+            out_dir / "exports" / stl_name,
+            feat_dicts,
+            out_dir / "exports" / f"{name}.step",
+            timeout_s=float(s.analytic_step_timeout_s),
+            max_faces=s.mesh_max_faces_for_cad,
+            log=log,
+            cancelled=cancelled,
+        )
+    except Exception as e:
+        # the isolated export (spawn, sew, per-feature children) can raise —
+        # a spawn failure must not kill a refine job that already produced a
+        # good mesh + faceted STEP
+        log.warning("export.analytic_step_isolated_failed", error=str(e)[:300])
+        warnings.append(f"analytic STEP skipped — isolated export failed: {str(e)[:200]}")
+        res.features["refine"]["warnings"] = warnings
+        res.features["refine"]["step_features"] = []
+        return
     if step_res.get("step"):
         res.exports["step"] = step_res["step"]
     res.features["refine"]["step_features"] = step_res.get("step_features") or []

@@ -89,6 +89,17 @@ def main() -> int:
         return 1
     with contextlib.suppress(Exception):
         import cadlib  # noqa: F401
+    # warm the runner + mesh stack too — the child used to import
+    # runner_entry (and its trimesh/manifold3d deps) after every fork;
+    # failures are non-fatal, the child still imports them on demand
+    with contextlib.suppress(Exception):
+        import trimesh  # noqa: F401
+    with contextlib.suppress(Exception):
+        import manifold3d  # noqa: F401
+    with contextlib.suppress(Exception):
+        from cadx.cad import mesh_boolean  # noqa: F401
+    with contextlib.suppress(Exception):
+        from cadx.cad import runner_entry  # noqa: F401
 
     _reply({"ready": True})
     for line in sys.stdin:
