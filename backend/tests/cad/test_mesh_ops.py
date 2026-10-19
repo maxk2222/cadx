@@ -20,6 +20,7 @@ from cadx.cad.mesh_ops import (
     default_front,
     flat_base_ratio,
     flatten_bottom,
+    heal_seam_slivers,
     load_mesh,
     merge_post_params,
     mesh_analysis,
@@ -1074,3 +1075,58 @@ def test_op_radial_profile_auto_validation():
                 },
             ),
         )
+
+
+# --------------------------------------------------------------------------- #
+# heal_seam_slivers
+
+
+def _sliver_mesh() -> trimesh.Trimesh:
+    """Icosphere with one vertex dragged to within 2e-5 mm of its neighbour —
+    mimics the float32-quantized seam slivers manifold3d booleans leave on
+    keep-restore unions (degenerate B-Rep edges → stalled OCC booleans)."""
+    m = trimesh.creation.icosphere(subdivisions=2, radius=10.0)
+    e = m.edges_unique[0]
+    v0, v1 = m.vertices[e[0]].copy(), m.vertices[e[1]].copy()
+    verts = m.vertices.copy()
+    verts[e[0]] = v1 + (v0 - v1) / np.linalg.norm(v0 - v1) * 2e-5
+    out = trimesh.Trimesh(vertices=verts, faces=m.faces.copy(), process=False)
+    assert out.is_volume
+    assert (out.area_faces < 1e-4).any()  # fixture sanity: really has slivers
+    return out
+
+
+def test_heal_seam_slivers_removes_slivers():
+    m = _sliver_mesh()
+    healed = heal_seam_slivers(m)
+    assert healed.is_volume
+    assert not (healed.area_faces < 1e-4).any()
+    assert len(healed.faces) < len(m.faces)
+    assert healed.volume == pytest.approx(m.volume, rel=0.01)
+
+
+def test_heal_seam_slivers_clean_mesh_unchanged():
+    """A clean mesh has nothing to weld — vertex/face counts stay identical."""
+    m = _box(10, 20, 30)
+    healed = heal_seam_slivers(m)
+    assert len(healed.faces) == len(m.faces)
+    assert len(healed.vertices) == len(m.vertices)
+
+
+def test_heal_seam_slivers_returns_original_when_not_volume():
+    """Regression guard: healing is lossless-only — when the welded result is
+    no longer a volume the ORIGINAL mesh comes back (never a half-healed
+    mesh that would trip the voxel-remesh fallback in _ensure_watertight)."""
+    m = _box(10, 10, 10)
+    m.update_faces(np.arange(len(m.faces)) > 2)  # open shell
+    assert not m.is_volume
+    assert heal_seam_slivers(m) is m
+
+
+def test_mesh_to_solid_heals_slivers():
+    """Integration: a slivered (but watertight) mesh converts to a B-Rep
+    without exception — the weld gate runs before sewing."""
+    pytest.importorskip("build123d")
+    solid = mesh_to_solid(_sliver_mesh())
+    assert solid is not None
+    assert solid.volume > 0

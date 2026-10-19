@@ -1808,6 +1808,43 @@ def _ensure_watertight(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
     )
 
 
+def heal_seam_slivers(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+    """Weld float32-quantized seam slivers left by manifold3d booleans.
+
+    manifold3d quantizes output vertices to float32, leaving near-degenerate
+    triangles (area < ~1e-4 mm²) along boolean seams; sewn into B-Reps they
+    become degenerate edges that stall OCC booleans for minutes. Welding
+    vertices at 1e-4 mm collapses the slivers to edges — the shell stays
+    closed, unlike naive face dropping which breaks watertightness and
+    triggers the lossy voxel-remesh fallback in _ensure_watertight.
+
+    Lossless-only: returns the ORIGINAL mesh unchanged when the healed mesh
+    is not a volume, loses >2% of its faces, or drifts >0.5% in volume.
+    """
+    m = mesh.copy()
+    m.merge_vertices(digits_vertex=4)
+    m.update_faces(m.nondegenerate_faces())
+    m.update_faces(m.unique_faces())
+    m.remove_unreferenced_vertices()
+    if not m.is_volume:
+        return mesh
+    if len(m.faces) < 0.98 * len(mesh.faces):
+        return mesh
+    try:
+        drift = abs(float(m.volume) - float(mesh.volume)) / max(abs(float(mesh.volume)), 1.0)
+        if drift > 0.005:
+            return mesh
+    except Exception:
+        return mesh
+    if len(m.faces) != len(mesh.faces):
+        log.debug(
+            "mesh.heal_seam_slivers",
+            faces_in=len(mesh.faces),
+            faces_out=len(m.faces),
+        )
+    return m
+
+
 def mesh_to_solid(mesh: trimesh.Trimesh, *, max_faces: int | None = None) -> Any:
     """Convert a (watertight) trimesh into a build123d Solid via STL + sewing.
 
@@ -1837,6 +1874,12 @@ def mesh_to_solid(mesh: trimesh.Trimesh, *, max_faces: int | None = None) -> Any
         mesh = decimate(mesh, max_faces)
     if len(mesh.faces) > max_faces * 4:
         raise ValueError(f"mesh too dense for B-rep conversion ({len(mesh.faces)} faces)")
+    # manifold booleans (keep-restore unions, hybrid ops) leave
+    # float32-quantized sliver triangles along seams — sewn into degenerate
+    # B-Rep edges they stall OCC booleans. Weld before sewing; the area_faces
+    # gate keeps clean meshes on the zero-overhead path.
+    if len(mesh.faces) and bool((mesh.area_faces < 1e-4).any()):
+        mesh = heal_seam_slivers(mesh)
 
     from cadx.cad.mesh_boolean import sew_mesh, unify_checked
 

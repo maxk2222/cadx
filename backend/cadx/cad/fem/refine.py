@@ -965,7 +965,7 @@ def restore_keep_surface(
     non-volume base or a sliver patch is repaired once via _ensure_watertight;
     if it still is not a volume the region is skipped with a warning instead
     of aborting the whole restore."""
-    from cadx.cad.mesh_ops import _ensure_watertight
+    from cadx.cad.mesh_ops import _ensure_watertight, heal_seam_slivers
 
     warnings: list[str] = []
     out = opt_mesh
@@ -1034,6 +1034,11 @@ def restore_keep_surface(
         auto_restored += auto2
     if auto_restored:
         warnings.append(f"auto keep-restore: {auto_restored} anchor ring(s) restored")
+    # every union above ran through manifold3d — its float32 vertex
+    # quantization leaves sliver triangles on the seam that sew into
+    # degenerate B-Rep edges and stall the later OCC re-cut. Weld them now
+    # (lossless-only: returns `out` untouched when the weld isn't clean).
+    out = heal_seam_slivers(out)
     return out, warnings, restored
 
 
