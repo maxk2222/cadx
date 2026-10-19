@@ -137,3 +137,23 @@ def test_coord_points_parenthesised_endpoints():
 
 def test_coord_points_no_coords():
     assert parse_coord_points("near the +X end, centered in Y") == []
+
+
+def test_coord_points_range_link_merges():
+    """'x=-60 bis x=-55' is ONE span declaration, not two points — the
+    repeated axis merges to the span's midpoint (lo/hi stay in
+    parse_ranges). Live intake writes side-bore positions like this and the
+    phantom second group spawned duplicate spec anchors."""
+    assert parse_coord_points("z=15, y=0, x=-60 bis x=-55") == [{"z": 15.0, "y": 0.0, "x": -57.5}]
+    assert parse_coord_points("x=-25, y=0, z=95 bis z=100") == [{"x": -25.0, "y": 0.0, "z": 97.5}]
+
+
+def test_coord_points_wordy_connector_still_splits():
+    """A range word inside a longer phrase is not a span — the two strut
+    endpoints stay separate groups."""
+    assert parse_coord_points(
+        "from (x=-55, z=35) on the leg to (x=+15, z=95) on the arm underside"
+    ) == [
+        {"x": -55.0, "z": 35.0},
+        {"x": 15.0, "z": 95.0},
+    ]

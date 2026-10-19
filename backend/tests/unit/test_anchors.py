@@ -661,6 +661,44 @@ def test_host_span_end_anchored_plate():
     assert leg.pos == [-57.5, 0.0, 15.0]
 
 
+def test_bore_axis_inferred_from_declared_range():
+    """axis-less features: 'x=-60 bis x=-55' is the pierced plate's span ->
+    the bore runs along x. Hybrid intake omits both the axis field and the
+    'Achse' word; treating it as +z drilled phantom plan-view bores."""
+    d = lambda v: Dim(value=v, unit="mm", source="stated")  # noqa: E731
+    spec = PartSpec(
+        name="w",
+        summary="",
+        units="mm",
+        length_x=d(120),
+        width_y=d(30),
+        height_z=d(100),
+        features=[
+            Feature(
+                name="leg",
+                type="box",
+                position="am -X-Ende",
+                dims={"thickness": 5.0},
+            ),
+            Feature(
+                name="leg_hole",
+                type="through_hole",
+                position="z=15, y=0, x=-60 bis x=-55",
+                dims={"diameter": 5.5},
+                count=1,
+            ),
+        ],
+        image_roles=[],
+    )
+    a = build_anchors(spec, {}, None)
+    assert len(a.holes) == 1
+    h = a.holes[0]
+    assert h.axis == "+x"
+    assert h.pos == [-57.5, 0.0, 15.0]
+    # and no phantom plan-view bore at the range endpoints
+    assert all(h.axis != "+z" for h in a.holes)
+
+
 def test_host_body_none_without_in_phrase_or_name():
     spec = _bracket_spec()
     arm_holes = next(f for f in spec.features if f.name == "arm_holes")

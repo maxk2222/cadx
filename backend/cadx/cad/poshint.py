@@ -146,6 +146,12 @@ def parse_position_hints(
     return coords, sorted(faces), ends, nears
 
 
+# " bis ", " to ", "..", en/em dash as the WHOLE text between two values
+# of the SAME axis mean a span declaration, not a second point ("x=-60 bis
+# x=-55"). Wordy connectors ("on the leg to (x=..)", "and") still separate.
+_RANGE_LINK_RE = re.compile(r"^\s*,?\s*(?:bis|to|through|thru|\.\.|\u2013|\u2014)\s*$", re.I)
+
+
 def parse_coord_points(text: str) -> list[dict[str, float]]:
     """'x=-25, y=0 and x=+45, y=0' -> [{'x': -25, 'y': 0}, {'x': 45, 'y': 0}].
 
@@ -154,17 +160,27 @@ def parse_coord_points(text: str) -> list[dict[str, float]]:
     instances on one line, and the flat dict silently keeps only the LAST
     value per axis. Every ``x=12``-style hit of ``_POS_COORD_RE`` is grouped
     in text order — a new group starts as soon as an axis letter repeats
-    inside the current group. Empty groups are dropped; ``[]`` when the text
-    carries no coordinate at all.
+    inside the current group, UNLESS the text between the two values is a
+    range connector ("x=-60 bis x=-55") — a span is one declaration, not
+    two points; the group's value becomes the span's midpoint (the precise
+    lo/hi stay available via ``parse_ranges``). Empty groups are dropped;
+    ``[]`` when the text carries no coordinate at all.
     """
     groups: list[dict[str, float]] = []
     cur: dict[str, float] = {}
+    prev_end = 0
     for m in _POS_COORD_RE.finditer(text or ""):
         ax = m.group(1).lower()
         if ax in cur:
-            groups.append(cur)
-            cur = {}
-        cur[ax] = float(m.group(2))
+            between = text[prev_end : m.start()]
+            if _RANGE_LINK_RE.search(between):
+                cur[ax] = (cur[ax] + float(m.group(2))) / 2.0
+            else:
+                groups.append(cur)
+                cur = {}
+        if ax not in cur:
+            cur[ax] = float(m.group(2))
+        prev_end = m.end()
     if cur:
         groups.append(cur)
     return groups

@@ -204,6 +204,13 @@ def _declared_bore_axis(f: Feature, text: str) -> str:
         _c, faces, _e, _n = parse_position_hints(text)
         if len(faces) == 1:
             axis = faces[0].lstrip("+-")
+    if not axis:
+        # a through-bore's axial coordinate is declared as the pierced
+        # plate's SPAN ("x=-60 bis x=-55" -> bore along x) — a single
+        # declared range identifies the axis even without an axis word
+        rng = parse_ranges(text)
+        if len(rng) == 1:
+            axis = next(iter(rng))
     return axis
 
 
