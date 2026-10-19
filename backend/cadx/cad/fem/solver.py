@@ -10,7 +10,10 @@ Units: mm, N, MPa (E). Displacements in mm.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import lru_cache
+from typing import Any
 
 import numpy as np
 from scipy import sparse
@@ -80,8 +83,12 @@ def _D(nu: float) -> np.ndarray:
     )
 
 
+@lru_cache(maxsize=32)
 def _ke_unit(nu: float, pitch: float) -> np.ndarray:
-    """Element stiffness for E=1, uniform cube of edge `pitch`."""
+    """Element stiffness for E=1, uniform cube of edge `pitch`.
+
+    Memoized — pure function of (nu, pitch); the returned matrix is shared,
+    callers must treat it as read-only."""
     D = _D(nu)
     detJ = (pitch / 2.0) ** 3
     ke = np.zeros((24, 24))
@@ -118,6 +125,12 @@ def element_dofs(elem_nodes: np.ndarray) -> np.ndarray:
     return d
 
 
+def domain_edof(domain: VoxelDomain) -> np.ndarray:
+    """(ncells, 24) dof table of the full grid — memoized on the domain
+    (pure function of the dims; the shared array is read-only)."""
+    return domain.cached("element_dofs", lambda: element_dofs(domain.element_nodes()))
+
+
 def assemble(
     domain: VoxelDomain,
     elem_E: np.ndarray,
@@ -138,8 +151,10 @@ def assemble(
     """
     mask = domain.solid.ravel() if cell_mask is None else np.asarray(cell_mask).ravel()
     active = np.flatnonzero(mask)
-    en = domain.element_nodes()[active]
-    edof = element_dofs(en)
+    # element_nodes/element_dofs/_ke_unit are pure functions of the domain —
+    # memoized, so repeated assembles (one per SIMP iteration, one per FEM
+    # load case) only pay the COO value fill
+    edof = domain_edof(domain)[active]
     ke = _ke_unit(nu, domain.pitch)
 
     if ij is None:
@@ -186,30 +201,56 @@ def _ssor_preconditioner(Kf: sparse.csr_matrix) -> spla.LinearOperator | None:
         return None
 
 
-def solve(
-    domain: VoxelDomain,
-    elem_E: np.ndarray,
-    nu: float,
-    fixed_nodes: np.ndarray,
-    F: np.ndarray,
-    *,
-    cell_mask: np.ndarray | None = None,
-    u0: np.ndarray | None = None,
-    spsolve_dofs: int = 120_000,
-    E_ref: float | None = None,
-) -> FemSolution:
-    """Solve K u = F with Dirichlet BCs on `fixed_nodes`.
+def factor_symmetric(Kf: sparse.csr_matrix) -> Callable[[np.ndarray], np.ndarray] | None:
+    """Direct-solve callable ``b -> x`` for the reduced stiffness matrix.
 
-    `fixed_nodes` accepts a (nnodes,) node mask (all 3 DOFs pinned — legacy)
-    or a (nnodes, 3) per-DOF mask for roller/symmetry supports.
-    elem_E is per-cell Young's modulus; only `cell_mask` cells (default:
-    domain.solid) carry stiffness and are solved for stress.
+    Kf is symmetric (structural elasticity), so SuperLU's SymmetricMode gets
+    a symmetric permutation + half the numeric work of the generic path —
+    measurably cheaper than ``factorized``/``spsolve``'s default unsymmetric
+    symbolic+numeric factorization on the same constant sparsity pattern.
+    Falls back to ``factorized``, then None (caller degrades to CG)."""
+    try:
+        return spla.splu(Kf.tocsc(), options={"SymmetricMode": True}).solve
+    except Exception:
+        pass
+    try:
+        return spla.factorized(Kf.tocsc())
+    except Exception:
+        return None
+
+
+@dataclass
+class CaseSolve:
+    """Reduced system for one fixed-DOF signature on an assembled K.
+
+    `free` are the unconstrained DOFs (sorted), `Kf = K[free][:, free]`,
+    `factor` the direct-solve callable (None above the spsolve_dofs cutoff),
+    `M` the CG preconditioner. Multi-case verifies with per-case fixtures
+    (or SIMP cases sharing one fixture) reuse one CaseSolve per distinct
+    `free` set instead of re-factorizing per case.
     """
-    warnings: list[str] = []
-    mask = domain.solid.ravel() if cell_mask is None else np.asarray(cell_mask).ravel()
-    K, edof, active = assemble(domain, elem_E, nu, mask)
 
-    used_nodes = np.unique(domain.element_nodes()[active])
+    free: np.ndarray
+    Kf: sparse.csr_matrix
+    factor: Callable[[np.ndarray], np.ndarray] | None
+    M: Any
+    warnings: list[str] = field(default_factory=list)
+
+
+def reduce_case(
+    domain: VoxelDomain,
+    K: sparse.csr_matrix,
+    edof: np.ndarray,
+    fixed_nodes: np.ndarray,
+    *,
+    spsolve_dofs: int = 120_000,
+) -> CaseSolve:
+    """Extract the reduced system Kf = K[free][:, free] for one constraint
+    mask and prepare its solver (symmetric SuperLU under the cutoff, SSOR-CG
+    above). `fixed_nodes` accepts a (nnodes,) node mask or a (nnodes,3)
+    per-DOF mask — cases with identical fixed DOFs produce identical `free`
+    signatures and can share the returned context."""
+    warnings: list[str] = []
     used_dofs = np.unique(edof.ravel())
     fixed_dofs = np.unique(_fixed_dofs(fixed_nodes, domain.node_count))
     if np.asarray(fixed_nodes).ndim == 2:
@@ -220,8 +261,44 @@ def solve(
                 f"only {constrained_dirs}/3 translation directions are constrained — "
                 "check for unconstrained rigid-body modes"
             )
-    fixed_set = set(fixed_dofs.tolist())
-    free = np.array([d for d in used_dofs if d not in fixed_set], dtype=np.int64)
+    free = used_dofs[~np.isin(used_dofs, fixed_dofs, assume_unique=True)]
+    if free.size == 0:
+        Kf = sparse.csr_matrix((0, 0))
+        return CaseSolve(free=free, Kf=Kf, factor=None, M=None, warnings=warnings)
+
+    Kf = K[free][:, free]
+    factor: Callable[[np.ndarray], np.ndarray] | None = None
+    M: Any = None
+    if free.size <= spsolve_dofs:
+        factor = factor_symmetric(Kf)
+        if factor is None:
+            warnings.append("direct factorization failed; falling back to CG")
+    if factor is None:
+        M = _ssor_preconditioner(Kf.tocsr())
+        if M is None:
+            diag = Kf.diagonal()
+            diag[diag == 0] = 1.0
+            M = spla.diags(1.0 / diag)
+    return CaseSolve(free=free, Kf=Kf, factor=factor, M=M, warnings=warnings)
+
+
+def solve_reduced(
+    domain: VoxelDomain,
+    ctx: CaseSolve,
+    edof: np.ndarray,
+    active: np.ndarray,
+    F: np.ndarray,
+    elem_E: np.ndarray,
+    nu: float,
+    *,
+    u0: np.ndarray | None = None,
+    E_ref: float | None = None,
+) -> FemSolution:
+    """Solve + post-stress for a case on its `reduce_case` context."""
+    warnings = list(ctx.warnings)
+    free = ctx.free
+    Kf = ctx.Kf
+    used_nodes = np.unique(domain.element_nodes()[active])
     if free.size == 0:
         return FemSolution(
             u=np.zeros(3 * domain.node_count),
@@ -235,24 +312,24 @@ def solve(
             warnings=["no free DOFs — everything is constrained"],
         )
 
-    Kf = K[free][:, free]
     Ff = F[free]
-
     u = np.zeros(3 * domain.node_count)
     solver_name = "spsolve"
     converged = True
-    if free.size <= spsolve_dofs:
+    if ctx.factor is not None:
         try:
-            u[free] = spla.spsolve(Kf, Ff)
+            u[free] = np.asarray(ctx.factor(Ff), dtype=float)
         except Exception as e:
-            warnings.append(f"spsolve failed ({e}); falling back to CG")
+            warnings.append(f"direct solve failed ({e}); falling back to CG")
             solver_name = "cg"
             converged = False
     else:
         solver_name = "cg"
         converged = False
     if solver_name == "cg":
-        M = _ssor_preconditioner(Kf.tocsr())
+        M = ctx.M
+        if M is None:
+            M = _ssor_preconditioner(Kf.tocsr())
         if M is None:
             diag = Kf.diagonal()
             diag[diag == 0] = 1.0
@@ -297,3 +374,33 @@ def solve(
         solver=solver_name,
         warnings=warnings,
     )
+
+
+def solve(
+    domain: VoxelDomain,
+    elem_E: np.ndarray,
+    nu: float,
+    fixed_nodes: np.ndarray,
+    F: np.ndarray,
+    *,
+    cell_mask: np.ndarray | None = None,
+    u0: np.ndarray | None = None,
+    spsolve_dofs: int = 120_000,
+    E_ref: float | None = None,
+) -> FemSolution:
+    """Solve K u = F with Dirichlet BCs on `fixed_nodes`.
+
+    `fixed_nodes` accepts a (nnodes,) node mask (all 3 DOFs pinned — legacy)
+    or a (nnodes, 3) per-DOF mask for roller/symmetry supports.
+    elem_E is per-cell Young's modulus; only `cell_mask` cells (default:
+    domain.solid) carry stiffness and are solved for stress.
+
+    Single-case convenience wrapper over assemble + reduce_case +
+    solve_reduced; multi-case callers should hoist `assemble` and cache
+    `reduce_case` per fixed-DOF signature themselves (see
+    ``analyze._solve_cases``).
+    """
+    mask = domain.solid.ravel() if cell_mask is None else np.asarray(cell_mask).ravel()
+    K, edof, active = assemble(domain, elem_E, nu, mask)
+    ctx = reduce_case(domain, K, edof, fixed_nodes, spsolve_dofs=spsolve_dofs)
+    return solve_reduced(domain, ctx, edof, active, F, elem_E, nu, u0=u0, E_ref=E_ref)

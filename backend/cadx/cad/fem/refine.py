@@ -1076,9 +1076,7 @@ def _union_keep_patches(
     return out, warnings, restored, auto_restored
 
 
-def _snap_plane_verts(
-    out: trimesh.Trimesh, plane_boxes: list[Any], base_bounds: np.ndarray
-) -> int:
+def _snap_plane_verts(out: trimesh.Trimesh, plane_boxes: list[Any], base_bounds: np.ndarray) -> int:
     """Snap outward-facing vertices inside each plane slab onto the base
     plane. Restores flattened top/bottom skins after smoothing shrank them —
     no boolean, so no coincident-face seams. Returns snapped vertex count."""
@@ -1407,9 +1405,7 @@ def _watertight_postpass(out: trimesh.Trimesh, report: RefineReport) -> trimesh.
         except Exception as e:
             report.warnings.append(f"watertight repair failed: {e}")
     if not out.is_watertight:
-        report.warnings.append(
-            "refined mesh is not watertight — STEP/analytic cuts may degrade"
-        )
+        report.warnings.append("refined mesh is not watertight — STEP/analytic cuts may degrade")
     return out
 
 

@@ -9,7 +9,8 @@ Nodes are the cell corners — node (i,j,k) sits at
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 
 import numpy as np
 import trimesh
@@ -23,6 +24,10 @@ class VoxelDomain:
     dims: tuple[int, int, int]  # (nx, ny, nz) cells
     solid: np.ndarray  # bool (nx, ny, nz) — inside the part
     pitch_requested: float = 0.0  # before adaptive coarsening
+    # memo table for the pure (dims/pitch/origin-derived) geometry tables —
+    # element_nodes/element_centers are recomputed per region per load case
+    # otherwise (region resolution calls them constantly on big grids)
+    _cache: dict[str, np.ndarray] = field(default_factory=dict, repr=False, compare=False)
 
     @property
     def node_dims(self) -> tuple[int, int, int]:
@@ -56,32 +61,49 @@ class VoxelDomain:
         grid = np.stack([i, j, k], axis=-1)
         return self.origin[None, :] + self.pitch * grid.astype(float)
 
+    def cached(self, key: str, build: Callable[[], np.ndarray]) -> np.ndarray:
+        """Memoize a pure function of (dims, pitch, origin) on this domain —
+        the cached arrays must be treated read-only by callers."""
+        out = self._cache.get(key)
+        if out is None:
+            out = build()
+            self._cache[key] = out
+        return out
+
     def element_nodes(self) -> np.ndarray:
         """(ncells, 8) flat node indices of every cell, Hex8 order:
         (-,-,-) (+,-,-) (+,+,-) (-,+,-) (-,-,+) (+,-,+) (+,+,+) (-,+,+)."""
-        nx, ny, nz = self.dims
-        ii, jj, kk = np.meshgrid(np.arange(nx), np.arange(ny), np.arange(nz), indexing="ij")
-        i, j, k = ii.ravel(), jj.ravel(), kk.ravel()
-        return np.stack(
-            [
-                self.node_index(i, j, k),
-                self.node_index(i + 1, j, k),
-                self.node_index(i + 1, j + 1, k),
-                self.node_index(i, j + 1, k),
-                self.node_index(i, j, k + 1),
-                self.node_index(i + 1, j, k + 1),
-                self.node_index(i + 1, j + 1, k + 1),
-                self.node_index(i, j + 1, k + 1),
-            ],
-            axis=1,
-        )
+
+        def _build() -> np.ndarray:
+            nx, ny, nz = self.dims
+            ii, jj, kk = np.meshgrid(np.arange(nx), np.arange(ny), np.arange(nz), indexing="ij")
+            i, j, k = ii.ravel(), jj.ravel(), kk.ravel()
+            return np.stack(
+                [
+                    self.node_index(i, j, k),
+                    self.node_index(i + 1, j, k),
+                    self.node_index(i + 1, j + 1, k),
+                    self.node_index(i, j + 1, k),
+                    self.node_index(i, j, k + 1),
+                    self.node_index(i + 1, j, k + 1),
+                    self.node_index(i + 1, j + 1, k + 1),
+                    self.node_index(i, j + 1, k + 1),
+                ],
+                axis=1,
+            )
+
+        return self.cached("element_nodes", _build)
 
     def element_centers(self) -> np.ndarray:
         """(ncells, 3) world coords of cell centers, flat (i,j,k) order."""
-        nx, ny, nz = self.dims
-        ii, jj, kk = np.meshgrid(np.arange(nx), np.arange(ny), np.arange(nz), indexing="ij")
-        idx = np.stack([ii, jj, kk], axis=-1).reshape(-1, 3)
-        return self.origin[None, :] + self.pitch * (idx.astype(float) + 0.5)
+
+        def _build() -> np.ndarray:
+            nx, ny, nz = self.dims
+            ii, jj, kk = np.meshgrid(np.arange(nx), np.arange(ny), np.arange(nz), indexing="ij")
+            idx = np.stack([ii, jj, kk], axis=-1).reshape(-1, 3)
+            return self.origin[None, :] + self.pitch * (idx.astype(float) + 0.5)
+
+        return self.cached("element_centers", _build)
 
 
 def choose_pitch(
@@ -114,11 +136,22 @@ def _fill_grid(
             m = m.copy()
             m.merge_vertices(merge_norm=True)  # split STL vertices -> watertight
         if m.is_watertight:
-            # contains() allocates per-ray intermediate buffers — unchunked on
-            # dense organic meshes it peaks >14 GB; small batches stay flat
+            # contains() allocates per-ray candidate buffers that scale with
+            # the mesh's face count — unchunked on dense organic meshes it
+            # peaks >14 GB. Bound each batch to ~256 MB of worst-case working
+            # set (64 B per face per point is conservative for the ray/hit
+            # arrays trimesh builds) — ~8k points on typical meshes, shrinking
+            # back to 512 on very dense ones rather than unbounded.
+            chunk = int(
+                np.clip(
+                    (256 * 1024 * 1024) // (64 * max(len(m.faces), 1)),
+                    512,
+                    8192,
+                )
+            )
             out = np.zeros(len(centers), dtype=bool)
-            for s in range(0, len(centers), 512):
-                out[s : s + 512] = np.asarray(m.contains(centers[s : s + 512]))
+            for s in range(0, len(centers), chunk):
+                out[s : s + chunk] = np.asarray(m.contains(centers[s : s + chunk]))
             # degenerate/flipped watertight meshes can report every center as
             # outside — don't accept an empty grid, fall through to the
             # surface-distance path instead

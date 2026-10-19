@@ -8,6 +8,7 @@ task and by the TopOpt post-verification.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +18,14 @@ from pydantic import BaseModel, Field, computed_field
 
 from cadx.cad.fem.materials import MaterialProps, resolve_material
 from cadx.cad.fem.regions import case_reactions, material_cell_factors, resolve_case_dofs
-from cadx.cad.fem.solver import FemSolution, solve
+from cadx.cad.fem.solver import (
+    CaseSolve,
+    FemSolution,
+    _fixed_dofs,
+    assemble,
+    reduce_case,
+    solve_reduced,
+)
 from cadx.cad.fem.voxelize import VoxelDomain, volume_of_solid, voxelize
 from cadx.llm.schemas import LoadCase
 from cadx.logging import get_logger
@@ -163,6 +171,7 @@ def run_fem(
     spsolve_dofs: int = 120_000,
     mem_budget_mb: float | None = None,
     suffix: str = "",
+    cancelled: Callable[[], bool] | None = None,
 ) -> FemReport:
     """Solve each load case on the voxelized mesh. Always returns a report —
     per-case failures are captured in case.warnings."""
@@ -186,7 +195,16 @@ def run_fem(
             )
             return report
     _solve_cases(
-        domain, mat, load_cases, report, out_dir, anchors, suffix, keep_regions, spsolve_dofs
+        domain,
+        mat,
+        load_cases,
+        report,
+        out_dir,
+        anchors,
+        suffix,
+        keep_regions,
+        spsolve_dofs,
+        cancelled=cancelled,
     )
     return report
 
@@ -203,6 +221,7 @@ def run_fem_domain(
     keep_regions: list | None = None,
     spsolve_dofs: int = 120_000,
     suffix: str = "",
+    cancelled: Callable[[], bool] | None = None,
 ) -> FemReport:
     """Verify a structure defined directly on an existing grid — used for
     TopOpt post-verification where re-voxelizing the smoothed export mesh
@@ -216,7 +235,18 @@ def run_fem_domain(
         solid=np.asarray(solid_mask, dtype=bool).reshape(domain.dims),
         pitch_requested=domain.pitch,
     )
-    _solve_cases(sub, mat, load_cases, report, out_dir, anchors, suffix, keep_regions, spsolve_dofs)
+    _solve_cases(
+        sub,
+        mat,
+        load_cases,
+        report,
+        out_dir,
+        anchors,
+        suffix,
+        keep_regions,
+        spsolve_dofs,
+        cancelled=cancelled,
+    )
     return report
 
 
@@ -230,6 +260,7 @@ def _solve_cases(
     suffix: str = "",
     keep_regions: list | None = None,
     spsolve_dofs: int = 120_000,
+    cancelled: Callable[[], bool] | None = None,
 ) -> None:
     report.grid = {
         "pitch_mm": round(domain.pitch, 4),
@@ -252,7 +283,17 @@ def _solve_cases(
     if fem_dir:
         fem_dir.mkdir(parents=True, exist_ok=True)
 
+    # K is identical across load cases (elem_E is fixed — only the BCs and
+    # the load vector differ): assemble once (lazily, on the first solvable
+    # case) and share one reduced system (Kf extraction + factorization)
+    # between cases whose fixed-DOF signature is identical.
+    asm: tuple[Any, np.ndarray, np.ndarray] | None = None  # (K, edof, active)
+    ctx_cache: dict[bytes, CaseSolve] = {}
+
     for i, case in enumerate(load_cases):
+        if cancelled is not None and cancelled():
+            report.warnings.append("cancelled — remaining load cases skipped")
+            break
         res = FemCaseResult(name=case.name or f"case{i + 1}")
         fixed3, F, warnings = resolve_case_dofs(
             domain, case, anchors, density_g_cm3=mat.density_g_cm3
@@ -262,14 +303,23 @@ def _solve_cases(
         if not fixed3.any() or not np.any(F):
             report.cases.append(res)
             continue
-        sol = solve(
+        if asm is None:
+            asm = assemble(domain, elem_E, mat.poisson)
+        K, edof, active = asm
+        sig = np.unique(_fixed_dofs(fixed3, domain.node_count)).tobytes()
+        ctx = ctx_cache.get(sig)
+        if ctx is None:
+            ctx = reduce_case(domain, K, edof, fixed3, spsolve_dofs=spsolve_dofs)
+            ctx_cache[sig] = ctx
+        sol = solve_reduced(
             domain,
+            ctx,
+            edof,
+            active,
+            F,
             elem_E,
             mat.poisson,
-            fixed3,
-            F,
             E_ref=mat.elastic_modulus_mpa,
-            spsolve_dofs=spsolve_dofs,
         )
         res.warnings += sol.warnings
         res.max_vm_mpa = round(sol.max_vm_mpa, 3)

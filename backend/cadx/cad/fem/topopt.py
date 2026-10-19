@@ -554,24 +554,36 @@ class _Projector:
 
 
 def _prepare_solve(Kf: sparse.csr_matrix, spsolve_dofs: int) -> tuple[Any, Any]:
-    """Per-iteration solver setup shared across load cases.
+    """Per-iteration solver setup for one reduced system.
 
-    Returns (factor, M): `factor` is a `spla.factorized` callable when the
-    system is small enough for a direct solve, else None; `M` is the SSOR
-    (fallback diagonal) preconditioner for CG."""
-    from cadx.cad.fem.solver import _ssor_preconditioner
+    Returns (factor, M): `factor` is a direct-solve callable (SuperLU in
+    SymmetricMode — Kf is symmetric structural stiffness) when the system is
+    small enough for a direct solve, else None; `M` is the SSOR (fallback
+    diagonal) preconditioner for CG."""
+    from cadx.cad.fem.solver import _ssor_preconditioner, factor_symmetric
 
     if Kf.shape[0] <= spsolve_dofs:
-        try:
-            return spla.factorized(Kf.tocsc()), None
-        except Exception:
-            pass
+        factor = factor_symmetric(Kf)
+        if factor is not None:
+            return factor, None
     M = _ssor_preconditioner(Kf)
     if M is None:
         diag = Kf.diagonal()
         diag[diag == 0] = 1.0
         M = spla.diags(1.0 / diag)
     return None, M
+
+
+@dataclass
+class _CaseCtx:
+    """Per-load-case reduced system for one `_eval` — the case's own free
+    DOFs (fixed DOFs are per-case, never unioned across cases), its reduced
+    stiffness Kf and the solver handles for the primal and adjoint solves."""
+
+    free: np.ndarray
+    Kf: sparse.csr_matrix
+    factor: Any
+    M: Any
 
 
 def _solve_u(
@@ -586,6 +598,8 @@ def _solve_u(
 ) -> tuple[np.ndarray, str]:
     """Light solve: return full u vector."""
     u = np.zeros(3 * domain.node_count)
+    if free.size == 0:
+        return u, "none"
     if factor is not None:
         u[free] = factor(F[free])
         return u, "spsolve"
@@ -741,19 +755,30 @@ def simp(  # noqa: C901
         """blueprint density -> physical printed density (flat cell order)."""
         return _project(xb, eta)[1]
 
-    # free DOFs: union over cases (all cells assembled — void gets Emin)
+    # free DOFs are PER CASE: K is identical across cases (E_e depends on
+    # the density, not the BCs), but each case must solve on
+    # `used - its own fixed DOFs`. Unioning every case's fixed DOFs into one
+    # shared `free` pins case i at the OTHER cases' fixtures — an
+    # over-constrained system with under-predicted compliance and wrong
+    # sensitivities (multi-fixture runs, e.g. cantilever + 3-point bend).
+    # Single-fixture runs reduce to the same `free` as the union, unchanged.
     used_dofs = np.unique(edof.ravel())
-    fixed_dofs: set[int] = set()
+    case_free: list[np.ndarray] = []
     for f, _ in cases:
-        fixed_dofs |= set(_fixed_dofs(f, domain.node_count).tolist())
-    free = np.array([d for d in used_dofs if d not in fixed_dofs], dtype=np.int64)
-    if free.size == 0:
+        fd = np.unique(_fixed_dofs(f, domain.node_count))
+        case_free.append(used_dofs[~np.isin(used_dofs, fd, assume_unique=True)])
+    if all(fi.size == 0 for fi in case_free):
         return TopOptResult(
             density=x,
             iterations=0,
             converged=False,
             warnings=["no free DOFs — the whole domain is constrained"],
         )
+    for ci, fi in enumerate(case_free):
+        if fi.size == 0:
+            warnings.append(
+                f"load case {ci} has no free DOFs — fully constrained, contributes zero compliance"
+            )
 
     v_target = params.volfrac * nsolid
     history: list[dict[str, Any]] = []
@@ -797,44 +822,68 @@ def simp(  # noqa: C901
     def _eval(xb: np.ndarray, eta: float = _ETA):
         """One FEM evaluation at blueprint density `xb` projected at `eta`.
 
-        Returns (xp, p, xt, ce_cases, obj_cases, us, Kf, factor, M):
-        pre-AM physical density, post-AM physical density, filtered
-        density (cone or PDE-filtered field), per-case element strain
-        energies, per-case compliances, per-case displacement vectors,
-        reduced stiffness and its solver handles."""
+        Returns (xp, p, xt, ce_cases, obj_cases, us, ctxs): pre-AM physical
+        density, post-AM physical density, filtered density (cone or
+        PDE-filtered field), per-case element strain energies, per-case
+        compliances, per-case displacement vectors, and per-case solve
+        contexts `_CaseCtx` (free/Kf/factor/M — cases with an identical
+        fixed-DOF signature share one context)."""
         pen = _penal_now()
         xp, p, xt = _project(xb, eta)
         E_e = Emin + np.power(p, pen) * (E0 - Emin)
         t_asm = time.monotonic()
         K, _, _ = assemble(domain, E_e, nu, np.ones(ncells, dtype=bool), ij=ij_cache)
-        Kf = K[free][:, free].tocsr()
         phase_t["assemble_s"] += time.monotonic() - t_asm
-        t_fac = time.monotonic()
-        factor, M = _prepare_solve(Kf, spsolve_dofs)
-        phase_t["factorize_s"] += time.monotonic() - t_fac
         cg_rtol = (
             1e-3 if change_box[0] > 0.1 else (1e-4 if change_box[0] > 10 * params.tol else 1e-6)
         )
         ce_cases: list[np.ndarray] = []
         obj_cases: list[float] = []
         us: list[np.ndarray] = []
+        ctxs: list[_CaseCtx] = []
+        # K is identical across cases (E_e depends on the density, not the
+        # BCs) — assemble once; only the per-case `free` differs. Cases with
+        # an identical fixed-DOF signature (direction-cone variants share a
+        # fixture) reuse one Kf extraction + factorization.
+        ctx_cache: dict[bytes, _CaseCtx] = {}
         t_solve = time.monotonic()
         for ci, (_, F) in enumerate(cases):
+            free_i = case_free[ci]
+            ctx = ctx_cache.get(free_i.tobytes())
+            if ctx is None:
+                t_fac = time.monotonic()
+                if free_i.size:
+                    Kf_i = K[free_i][:, free_i].tocsr()
+                    factor_i, M_i = _prepare_solve(Kf_i, spsolve_dofs)
+                else:
+                    Kf_i = sparse.csr_matrix((0, 0))
+                    factor_i = M_i = None
+                phase_t["factorize_s"] += time.monotonic() - t_fac
+                ctx = _CaseCtx(free=free_i, Kf=Kf_i, factor=factor_i, M=M_i)
+                ctx_cache[free_i.tobytes()] = ctx
+            ctxs.append(ctx)
             u, _solver = _solve_u(
-                domain, Kf, F, free, u_prev[ci], factor=factor, M=M, cg_rtol=cg_rtol
+                domain,
+                ctx.Kf,
+                F,
+                ctx.free,
+                u_prev[ci],
+                factor=ctx.factor,
+                M=ctx.M,
+                cg_rtol=cg_rtol,
             )
             u_prev[ci] = u
             us.append(u)
             ue = u[edof]
             ce_cases.append(np.einsum("ni,ij,nj->n", ue, ke, ue))
-            obj_cases.append(float(F[free] @ u[free]))
+            obj_cases.append(float(F[ctx.free] @ u[ctx.free]))
         phase_t["solve_s"] += time.monotonic() - t_solve
-        return xp, p, xt, ce_cases, obj_cases, us, Kf, factor, M
+        return xp, p, xt, ce_cases, obj_cases, us, ctxs
 
     def _sens_per_case(xb: np.ndarray, ev, oc_filter: bool, eta: float = _ETA) -> list[np.ndarray]:
         """Per-case objective sensitivity wrt blueprint x for the design
         evaluated at `eta` (ev must come from _eval(xb, eta))."""
-        xp, p, xt, ce_cases, _, _, _, _, _ = ev
+        xp, p, xt, ce_cases = ev[0], ev[1], ev[2], ev[3]
         pen = _penal_now()
         dE = -pen * np.power(np.clip(p, 1e-3, None), pen - 1) * (E0 - Emin)
         return [_chain(dE * ce_i, xp, p, xt, xb, oc_filter, eta) for ce_i in ce_cases]
@@ -867,7 +916,6 @@ def simp(  # noqa: C901
                 domain=domain,
                 edof=edof,
                 ke=ke,
-                free=free,
                 E0=E0,
                 Emin=Emin,
                 cases=cases,
@@ -930,7 +978,7 @@ def simp(  # noqa: C901
         ]
         wi = int(np.argmax(obj_designs))
         eta_w = etas[wi]
-        xp, p, _xt, ce_cases, _oc, _us, _Kf, _factor, _M = evs[wi]
+        xp, p, _xt, ce_cases = evs[wi][0], evs[wi][1], evs[wi][2], evs[wi][3]
         objective = obj_designs[wi]
 
         # sensitivity w.r.t. physical density, then chain-rule back through
@@ -1055,6 +1103,8 @@ def _adjoint_solve(
 ) -> np.ndarray:
     """Solve Kᵀ λ = rhs (K symmetric → same factor/preconditioner)."""
     lam = np.zeros(3 * n_nodes)
+    if free.size == 0:
+        return lam
     if factor is not None:
         lam[free] = factor(rhs[free])
         return lam
@@ -1125,7 +1175,6 @@ def _run_mma(  # noqa: C901
     domain: VoxelDomain,
     edof: np.ndarray,
     ke: np.ndarray,
-    free: np.ndarray,
     E0: np.ndarray,
     Emin: np.ndarray,
     cases: list[tuple[np.ndarray, np.ndarray]],
@@ -1336,11 +1385,12 @@ def _run_mma(  # noqa: C901
             if grad.size:
                 ci = int(np.argmax([float(np.abs(u).max()) for u in us]))
                 u = us[ci]
+                ctx = ev[6][ci]  # the argmax case's own free DOFs/system
                 dof_star = int(np.abs(u).argmax())
                 rhs = np.zeros(3 * domain.node_count)
                 rhs[dof_star] = np.sign(u[dof_star])
                 t_adj = time.monotonic()
-                lam = _adjoint_solve(ev[6], rhs, free, ev[7], ev[8], domain.node_count)
+                lam = _adjoint_solve(ctx.Kf, rhs, ctx.free, ctx.factor, ctx.M, domain.node_count)
                 if phase_t is not None:
                     phase_t["solve_s"] += time.monotonic() - t_adj
                 xp, p, xt = ev[0], ev[1], ev[2]
@@ -1362,7 +1412,7 @@ def _run_mma(  # noqa: C901
             def g(v: np.ndarray, grad: np.ndarray) -> float:
                 evs, xb = _ev(v)
                 ev = evs[0]  # eroded = worst design for the constraint
-                xp, p, xt, _, _, us, Kf, factor, M = ev
+                xp, p, xt, us, ctx = ev[0], ev[1], ev[2], ev[5], ev[6][ci]
                 u = us[ci]
                 vm, _sig, dvm_due = _element_vm(domain, u, edof, E0, nu)
                 sm = np.clip(vm, 1e-9, None)
@@ -1383,7 +1433,9 @@ def _run_mma(  # noqa: C901
                     rhs = np.zeros(3 * domain.node_count)
                     np.add.at(rhs, edof.ravel(), rhs_e.ravel())
                     t_adj = time.monotonic()
-                    lam = _adjoint_solve(Kf, rhs, free, factor, M, domain.node_count)
+                    lam = _adjoint_solve(
+                        ctx.Kf, rhs, ctx.free, ctx.factor, ctx.M, domain.node_count
+                    )
                     if phase_t is not None:
                         phase_t["solve_s"] += time.monotonic() - t_adj
                     pen = penal_now()
