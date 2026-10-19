@@ -1380,6 +1380,50 @@ def test_hybrid_missing_mesh_ranks_lower():
     assert good.rank > bad.rank
 
 
+def test_wrecked_hybrid_candidate_never_ranks_best():
+    """Observed live: score sequence [80,0,80,80,0] exported the iteration-2
+    candidate — a faceted score-0 wreck that happened to keep load_mesh_solid()
+    while every healthier iteration had dropped it. Contract fidelity must only
+    decide BETWEEN viable candidates; a critique-floor wreck with majors can
+    never claim best."""
+    from cadx.agent.orchestrator import Candidate
+    from cadx.llm.schemas import Critique, Discrepancy
+
+    def _majors(n: int) -> list[Discrepancy]:
+        return [
+            Discrepancy(
+                what=f"defect {i}",
+                where="arm",
+                severity="major",
+                fix_hint="fix it",
+            )
+            for i in range(n)
+        ]
+
+    viable_parametric = Candidate(
+        1,
+        None,
+        {},
+        Critique(score=80, passed=True, discrepancies=[]),
+        [],
+        hybrid_missing=True,
+    )
+    wrecked_mesh = Candidate(
+        2,
+        None,
+        {},
+        Critique(score=0, passed=False, discrepancies=_majors(5)),
+        [],
+        wrecked=True,
+    )
+    assert viable_parametric.rank > wrecked_mesh.rank
+    # viability gate sits ABOVE the hybrid contract: a wrecked mesh-keeper
+    # also loses against an equally wrecked parametric part on the fine keys,
+    # and a viable mesh-keeper still outranks a viable parametric one
+    viable_mesh = Candidate(4, None, {}, Critique(score=70, passed=True, discrepancies=[]), [])
+    assert viable_mesh.rank > viable_parametric.rank
+
+
 def test_feature_regression_ranks_lower():
     """Measured feature count is the LAST rank tiebreak now: it still splits
     otherwise-identical candidates, but it no longer outweighs dq/score —

@@ -64,6 +64,10 @@ class Candidate:
     mesh_post: dict[str, Any] | None = None  # MeshPostParams used (mesh/hybrid modes)
     feature_findings: list[dict[str, Any]] = field(default_factory=list)
     hybrid_missing: bool = False  # code dropped load_mesh_solid()
+    # critique floor reached with major discrepancies — a wrecked candidate must
+    # never claim "best" just for keeping a contract call (load_mesh_solid);
+    # observed: score-0 faceted mesh part outranked every viable analytic one
+    wrecked: bool = False
     # deterministic quality from the executor's verify_spec report (0..100) —
     # keeps a progress gradient where the saturated critique score flatlines
     dq: int = 0
@@ -93,15 +97,18 @@ class Candidate:
             else 99
         )
         score = self.critique.score if self.critique else 0
-        # hard gates first (hybrid-missing, fractured solid, dim misses), then
-        # the measured verify_spec gradient — the critique score saturates at
-        # 0 long before the part is actually hopeless, and the raw feature
-        # count is only a tiebreak now (extra holes drilled through a gusset
-        # must not be rewarded)
+        # hard gates first (fractured solid, dim misses, critique wreck), then
+        # the hybrid contract: load_mesh_solid() only outranks among viable
+        # candidates — it must not rescue a wrecked mesh attempt over a
+        # healthy parametric one. After that the measured verify_spec
+        # gradient — the critique score saturates at 0 long before the part
+        # is actually hopeless, and the raw feature count is only a tiebreak
+        # now (extra holes drilled through a gusset must not be rewarded)
         return (
-            0 if self.hybrid_missing else 1,
             0 if _multi_solid(self.exec_result) else 1,
             0 if self.dim_issues else 1,
+            0 if self.wrecked else 1,
+            0 if self.hybrid_missing else 1,
             self.dq,
             -major,
             score,
@@ -3250,6 +3257,9 @@ async def _run_cad(  # noqa: C901
         # notice the missing mesh
         hybrid_missing = ctx.hybrid_solid is not None and "load_mesh_solid" not in code_resp.code
         cand.hybrid_missing = hybrid_missing
+        cand.wrecked = critique.score <= getattr(s, "agent_mesh_hard_fail_score", 30) and any(
+            d.severity == "major" for d in critique.discrepancies
+        )
         hybrid_issues = (
             [
                 {
@@ -3832,6 +3842,10 @@ async def _run_mesh(  # noqa: C901
             mesh_post=(exec_result.get("mesh") or {}).get("post"),
         )
         cand.feature_findings = feature_findings
+        cand.dq = det_quality(exec_result, dim_issues)
+        cand.wrecked = critique.score <= getattr(s, "agent_mesh_hard_fail_score", 30) and any(
+            d.severity == "major" for d in critique.discrepancies
+        )
         if best is None or cand.rank > best.rank:
             best = cand
 
@@ -3910,6 +3924,10 @@ async def _run_mesh(  # noqa: C901
                 mesh_post=(new_exec.get("mesh") or {}).get("post"),
             )
             cand.feature_findings = findings2
+            cand.dq = det_quality(new_exec, dim_issues2)
+            cand.wrecked = critique2.score <= getattr(s, "agent_mesh_hard_fail_score", 30) and any(
+                d.severity == "major" for d in critique2.discrepancies
+            )
             if best is None or cand.rank > best.rank:
                 best = cand
             if rr.new_mesh_rel or cand.rank >= prev_rank:
@@ -3938,7 +3956,7 @@ async def _run_mesh(  # noqa: C901
                     "meshrefine",
                     it,
                     f"refine round regressed (score {cand.critique.score if cand.critique else 0}"
-                    f" vs {prev_rank[4]}) — keeping previous ops",
+                    f" vs {prev_rank[6]}) — keeping previous ops",
                 )
                 break
             if _passed(critique, dim_issues, exec_result):
