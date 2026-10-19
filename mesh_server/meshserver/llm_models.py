@@ -49,50 +49,107 @@ def _slug_id(repo: str, backend: str) -> str:
 # -- built-in catalog ------------------------------------------------------- #
 
 
-def builtin_llm_classes() -> list[type[LlmAdapter]]:
-    """Curated defaults — small enough for unified memory, ungated repos."""
+def _builtin_mlx() -> list[type[LlmAdapter]]:
+    """darwin-arm64: mlx-community 4-bit quants via mlx_vlm.server (all
+    entries are natively multimodal — vision_config + image-text-to-text)."""
     return [
-        make_mlx_adapter(
-            "mlx-community/Qwen2.5-VL-7B-Instruct-4bit",
-            id="qwen2.5-vl-7b-mlx",
-            name="Qwen2.5-VL 7B Instruct 4-bit (MLX)",
-            vision=True,
-            ctx=32768,
-            est_mb=5600,
-        ),
         make_mlx_adapter(
             "mlx-community/Qwen3.5-9B-4bit",
             id="qwen3.5-9b-mlx",
-            name="Qwen3.5 9B 4-bit (MLX)",
-            vision=False,
-            ctx=32768,
-            est_mb=5600,
+            name="Qwen3.5 9B 4-bit (MLX, ~6 GB)",
+            vision=True,
+            ctx=262144,
+            est_mb=6000,
         ),
         make_mlx_adapter(
             "mlx-community/Qwen3.8-27B-4bit",
             id="qwen3.8-27b-mlx",
-            name="Qwen3.8 27B 4-bit (MLX)",
-            vision=False,
-            ctx=32768,
+            name="Qwen3.8 27B 4-bit (MLX, ~16 GB)",
+            vision=True,
+            ctx=262144,
             est_mb=16000,
         ),
         make_mlx_adapter(
             "mlx-community/Qwen3.6-35B-A3B-4bit",
             id="qwen3.6-35b-a3b-mlx",
-            name="Qwen3.6 35B-A3B MoE 4-bit (MLX)",
-            vision=False,
-            ctx=32768,
+            name="Qwen3.6 35B-A3B MoE 4-bit (MLX, ~20 GB)",
+            vision=True,
+            ctx=262144,
             est_mb=20000,
         ),
-        make_gguf_adapter(
-            "bartowski/Qwen2.5-7B-Instruct-GGUF",
-            ["Qwen2.5-7B-Instruct-Q4_K_M.gguf"],
-            id="qwen2.5-7b-gguf",
-            name="Qwen2.5 7B Instruct Q4_K_M (llama.cpp)",
-            ctx=32768,
-            est_mb=5000,
+        make_mlx_adapter(
+            "mlx-community/Qwen3.5-122B-A10B-4bit",
+            id="qwen3.5-122b-a10b-mlx",
+            name="Qwen3.5 122B-A10B MoE 4-bit (MLX, ~70 GB — ≥96 GB RAM)",
+            vision=True,
+            ctx=262144,
+            est_mb=70000,
+        ),
+        make_mlx_adapter(
+            "mlx-community/Qwen3.8-Flash-Next-4bit",
+            id="qwen3.8-flash-next-mlx",
+            name="Qwen3.8 Flash-Next 4-bit (MLX, ~112 GB — ≥128 GB RAM)",
+            vision=True,
+            ctx=262144,
+            est_mb=112000,
         ),
     ]
+
+
+def _builtin_gguf() -> list[type[LlmAdapter]]:
+    """non-darwin: unsloth Q4_K_M GGUFs via llama.cpp; the paired mmproj
+    projector enables vision under llama-server."""
+    return [
+        make_gguf_adapter(
+            "unsloth/Qwen3.5-9B-GGUF",
+            ["Qwen3.5-9B-Q4_K_M.gguf"],
+            mmproj="mmproj-BF16.gguf",
+            id="qwen3.5-9b-gguf",
+            name="Qwen3.5 9B Q4_K_M (llama.cpp, ~6 GB)",
+            ctx=262144,
+            est_mb=6000,
+        ),
+        make_gguf_adapter(
+            "unsloth/Qwen3.8-27B-GGUF",
+            ["Qwen3.8-27B-UD-Q4_K_M.gguf"],
+            mmproj="mmproj-BF16.gguf",
+            id="qwen3.8-27b-gguf",
+            name="Qwen3.8 27B Q4_K_M (llama.cpp, ~17 GB)",
+            ctx=262144,
+            est_mb=17000,
+        ),
+        make_gguf_adapter(
+            "unsloth/Qwen3.6-35B-A3B-GGUF",
+            ["Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"],
+            mmproj="mmproj-BF16.gguf",
+            id="qwen3.6-35b-a3b-gguf",
+            name="Qwen3.6 35B-A3B MoE Q4_K_M (llama.cpp, ~21 GB)",
+            ctx=262144,
+            est_mb=21000,
+        ),
+        make_gguf_adapter(
+            "unsloth/Qwen3.5-122B-A10B-GGUF",
+            [
+                "Q4_K_M/Qwen3.5-122B-A10B-Q4_K_M-00001-of-00003.gguf",
+                "Q4_K_M/Qwen3.5-122B-A10B-Q4_K_M-00002-of-00003.gguf",
+                "Q4_K_M/Qwen3.5-122B-A10B-Q4_K_M-00003-of-00003.gguf",
+            ],
+            mmproj="mmproj-BF16.gguf",
+            id="qwen3.5-122b-a10b-gguf",
+            name="Qwen3.5 122B-A10B MoE Q4_K_M (llama.cpp, ~70 GB)",
+            ctx=262144,
+            est_mb=70000,
+        ),
+    ]
+
+
+def builtin_llm_classes() -> list[type[LlmAdapter]]:
+    """Curated defaults — the platform's native backend only: MLX quants on
+    Apple Silicon, llama.cpp GGUFs elsewhere (so CUDA/ROCm hosts
+    automatically see their matching variants)."""
+    if platform.system() == "Darwin" and platform.machine() == "arm64":
+        return _builtin_mlx()
+    return _builtin_gguf()
 
 
 # -- custom entries --------------------------------------------------------- #

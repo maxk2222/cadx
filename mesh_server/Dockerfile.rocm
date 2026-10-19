@@ -41,6 +41,8 @@ RUN uv pip install --system -e ".[rocm]" 'scikit-image>=0.24'
 
 # Optional: local-LLM backends (llama.cpp GGUF serving). llama-cpp-python
 # compiles from source and needs cmake — opt in with --build-arg WITH_LLM=1.
+# The built-in catalog auto-shows GGUF variants on non-darwin hosts; for
+# ROCm offload use a llama.cpp build with GGML_HIP.
 ARG WITH_LLM=0
 RUN if [ "$WITH_LLM" = "1" ]; then \
       apt-get update && apt-get install -y --no-install-recommends cmake && \

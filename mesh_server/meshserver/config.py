@@ -124,6 +124,12 @@ class ServerConfig:
     llama_server_bin: str = field(
         default_factory=lambda: os.environ.get("LLAMA_SERVER_BIN", "")
     )
+    # interpreter for mlx LLM servers (empty = auto: mesh_server/.venv-llm,
+    # else sys.executable) — the dedicated venv holds transformers>=5 stacks
+    # (mlx-lm>=0.32, mlx-vlm) isolated from the shared torch/tf4 env
+    llm_python: str = field(
+        default_factory=lambda: os.environ.get("MESH_LLM_PYTHON", "")
+    )
 
 
 def get_config() -> ServerConfig:

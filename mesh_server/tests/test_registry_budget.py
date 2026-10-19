@@ -97,6 +97,10 @@ def registry(tmp_path, monkeypatch):
     )
     reg = Registry(cfg)
     reg._classes = [TinyA, TinyB, TinyC, BigC]
+    # isolate from the host's builtin llm catalog — on darwin-arm64 with a
+    # working .venv-llm the real mlx adapters probe as available and would
+    # leak into select_llm()/models()
+    reg._llm_classes = []
     FREE["mb"] = 1000.0
     monkeypatch.setattr(reg.ledger, "free_mb", lambda: FREE["mb"])
     return reg

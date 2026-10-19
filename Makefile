@@ -143,10 +143,11 @@ MESHVENV := $(MESH)/.venv
 # nothing heavy elsewhere (install adapters via scripts)
 MESH_EXTRA := $(shell [ "$$(uname -sm)" = "Darwin arm64" ] && echo ".[bg,llm]" || echo ".")
 
-mesh-sync: setup ## uv venv + deps for mesh_server/
+mesh-sync: setup ## uv venv + deps for mesh_server/ (+ .venv-llm on Apple Silicon)
 	cd $(MESH) && ../$(VENV)/bin/uv venv $(VENV)
 	cd $(MESH) && ../$(VENV)/bin/uv pip install -e '$(MESH_EXTRA)' --python $(VENV)/bin/python
 	cd $(MESH) && ../$(VENV)/bin/uv pip install --group dev --python $(VENV)/bin/python
+	[ "$$(uname -sm)" = "Darwin arm64" ] && ./$(MESH)/scripts/install_llm.sh || true
 
 mesh-server: ## Run the mesh-server on :8765 (foreground)
 	cd $(MESH) && $(VENV)/bin/meshserver serve

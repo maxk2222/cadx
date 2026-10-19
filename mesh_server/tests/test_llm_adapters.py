@@ -6,6 +6,7 @@ The "server" is a tiny stdlib HTTP stub — no mlx_lm / llama.cpp needed.
 
 from __future__ import annotations
 
+import sys
 import textwrap
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,11 @@ import pytest
 
 from meshserver.adapters.llm_base import LlmAdapter, free_port
 from meshserver.adapters.llm_gguf import LlamaCppAdapter, make_gguf_adapter
-from meshserver.adapters.llm_mlx import MlxLmAdapter, make_mlx_adapter
+from meshserver.adapters.llm_mlx import (
+    MlxLmAdapter,
+    _resolve_python,
+    make_mlx_adapter,
+)
 from meshserver.config import ServerConfig
 
 _STUB = textwrap.dedent(
@@ -229,6 +234,114 @@ def test_mlx_argv(tmp_path):
     argv = inst.server_argv(7777)
     assert argv[1:3] == ["-m", "mlx_lm.server"]
     assert "org/m" in argv and "7777" in argv
+
+
+def test_make_mlx_adapter_required_module():
+    """vision adapters are served by mlx_vlm.server (mlx_lm strips image
+    parts for the qwen3_5 family); text adapters stay on mlx_lm."""
+    vision = make_mlx_adapter("org/x", id="v", vision=True)
+    assert vision.required_module == "mlx_vlm"
+    text = make_mlx_adapter("org/x", id="t", vision=False)
+    assert text.required_module == "mlx_lm"
+    assert MlxLmAdapter.required_module == "mlx_lm"
+
+
+def test_mlx_argv_vision_module(tmp_path):
+    cls = make_mlx_adapter("org/m", id="mv", vision=True)
+    argv = cls(_cfg(tmp_path)).server_argv(7777)
+    assert argv[1:3] == ["-m", "mlx_vlm.server"]
+    assert "org/m" in argv and "7777" in argv
+
+
+def test_resolve_python_cfg_override(tmp_path):
+    cfg = _cfg(tmp_path)
+    cfg.llm_python = "/custom/llm/python"
+    assert _resolve_python(cfg) == "/custom/llm/python"
+
+
+def test_resolve_python_venv_llm(tmp_path, monkeypatch):
+    import meshserver.adapters.llm_mlx as llm_mlx
+
+    venv_py = tmp_path / ".venv-llm" / "bin" / "python"
+    venv_py.parent.mkdir(parents=True)
+    venv_py.touch()
+    monkeypatch.setattr(llm_mlx, "_llm_venv_python", lambda: venv_py)
+    assert _resolve_python(_cfg(tmp_path)) == str(venv_py)
+
+
+def test_resolve_python_falls_back_to_sys(tmp_path, monkeypatch):
+    import meshserver.adapters.llm_mlx as llm_mlx
+
+    monkeypatch.setattr(
+        llm_mlx, "_llm_venv_python", lambda: tmp_path / "absent" / "bin" / "python"
+    )
+    assert _resolve_python(_cfg(tmp_path)) == sys.executable
+
+
+def test_module_importable_probes_and_caches(monkeypatch):
+    import meshserver.adapters.llm_mlx as llm_mlx
+
+    calls: list[list[str]] = []
+
+    class _Ok:
+        returncode = 0
+
+    def fake_run(cmd: list[str], **kw: Any) -> Any:
+        calls.append(cmd)
+        return _Ok()
+
+    monkeypatch.setattr(llm_mlx.subprocess, "run", fake_run)
+    llm_mlx._MODULE_IMPORT_CACHE.clear()
+    assert llm_mlx._module_importable("/py", "mlx_lm") is True
+    assert llm_mlx._module_importable("/py", "mlx_lm") is True
+    assert len(calls) == 1  # second call served from the cache
+    assert calls[0][:2] == ["/py", "-c"] and "import mlx_lm" in calls[0][2]
+
+    class _Bad:
+        returncode = 1
+
+    monkeypatch.setattr(llm_mlx.subprocess, "run", lambda cmd, **kw: _Bad())
+    llm_mlx._MODULE_IMPORT_CACHE.clear()
+    assert llm_mlx._module_importable("/py2", "mlx_vlm") is False
+    llm_mlx._MODULE_IMPORT_CACHE.clear()
+
+
+def test_mlx_available_darwin_probe_ok(tmp_path, monkeypatch):
+    import meshserver.adapters.llm_mlx as llm_mlx
+
+    monkeypatch.setattr(llm_mlx.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(llm_mlx.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(llm_mlx, "_module_importable", lambda py, mod: True)
+    cls = make_mlx_adapter("org/m", id="av")
+    assert cls.available(_cfg(tmp_path)) is True
+
+
+def test_mlx_available_darwin_probe_fails(tmp_path, monkeypatch):
+    import meshserver.adapters.llm_mlx as llm_mlx
+
+    monkeypatch.setattr(llm_mlx.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(llm_mlx.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(llm_mlx, "_module_importable", lambda py, mod: False)
+    cls = make_mlx_adapter("org/m", id="av2", vision=True)
+    assert cls.available(_cfg(tmp_path)) is False
+    err = cls.available_error or ""
+    assert "install_llm.sh" in err or "mlx_vlm" in err
+
+
+def test_mlx_available_non_darwin(tmp_path, monkeypatch):
+    import meshserver.adapters.llm_mlx as llm_mlx
+
+    monkeypatch.setattr(llm_mlx.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(llm_mlx.platform, "machine", lambda: "x86_64")
+    # the import probe must not even run off Apple Silicon
+    monkeypatch.setattr(
+        llm_mlx,
+        "_module_importable",
+        lambda py, mod: pytest.fail("probe ran on non-darwin"),
+    )
+    cls = make_mlx_adapter("org/m", id="av3")
+    assert cls.available(_cfg(tmp_path)) is False
+    assert "Apple Silicon" in (cls.available_error or "")
 
 
 def test_llm_kind_marked(tmp_path):

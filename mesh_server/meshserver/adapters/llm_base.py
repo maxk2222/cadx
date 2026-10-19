@@ -251,8 +251,19 @@ class LlmAdapter(ABC):
                     if path == "/v1/models" and r.status == 200:
                         with contextlib.suppress(Exception):
                             items = json.loads(r.read().decode()).get("data") or []
-                            if items and isinstance(items[0], dict) and items[0].get("id"):
-                                self._served_id = str(items[0]["id"])
+                            ids = [
+                                str(m["id"])
+                                for m in items
+                                if isinstance(m, dict) and m.get("id")
+                            ]
+                            if ids:
+                                # mlx_vlm lists every cached HF repo, not just
+                                # the served one — prefer the id matching this
+                                # adapter's repo, else fall back to the first
+                                # (llama.cpp derives its id from the .gguf path)
+                                self._served_id = (
+                                    self.hf_repo if self.hf_repo in ids else ids[0]
+                                )
                     if r.status < 500:
                         return True
             except urllib.error.HTTPError as e:

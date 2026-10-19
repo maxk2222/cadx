@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import platform
 from pathlib import Path
 
 import pytest
@@ -30,9 +31,40 @@ def test_builtin_catalog_shape():
     assert len(ids) == len(set(ids))
     assert all(c.kind == "llm" for c in classes)
     backends = {c.backend for c in classes}
-    assert "mlx-lm" in backends and "llama.cpp" in backends
-    gguf = next(c for c in classes if c.backend == "llama.cpp")
-    assert gguf.gguf_files and gguf.hf_repo
+    if platform.system() == "Darwin" and platform.machine() == "arm64":
+        # Apple Silicon serves only the native mlx-lm variants
+        assert backends == {"mlx-lm"}
+        assert all(c.hf_repo for c in classes)
+    else:
+        # everywhere else: llama.cpp GGUF variants only
+        assert backends == {"llama.cpp"}
+        gguf = next(c for c in classes if c.backend == "llama.cpp")
+        assert gguf.gguf_files and gguf.hf_repo
+
+
+def test_builtin_catalog_platform_gated(monkeypatch):
+    import meshserver.llm_models as lm
+
+    # darwin-arm64 → mlx-lm builtins only
+    monkeypatch.setattr(lm.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(lm.platform, "machine", lambda: "arm64")
+    classes = lm.builtin_llm_classes()
+    assert len(classes) == 5
+    assert all(c.backend == "mlx-lm" for c in classes)
+    assert all(c.supports_vision is True for c in classes)
+    assert all(c.context_len == 262144 for c in classes)
+    ids = {c.id for c in classes}
+    assert "qwen3.8-flash-next-mlx" in ids
+    assert not any("qwen2.5" in i for i in ids)
+
+    # non-darwin → llama.cpp GGUF builtins only (mmproj → vision)
+    monkeypatch.setattr(lm.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(lm.platform, "machine", lambda: "x86_64")
+    classes = lm.builtin_llm_classes()
+    assert len(classes) == 4
+    assert all(c.backend == "llama.cpp" for c in classes)
+    assert all(c.supports_vision is True for c in classes)
+    assert all(c.gguf_files and c.gguf_mmproj for c in classes)
 
 
 def test_register_mlx_custom_roundtrip(tmp_path):

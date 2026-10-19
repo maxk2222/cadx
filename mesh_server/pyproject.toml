@@ -65,6 +65,9 @@ bg = [
 # or LLAMA_SERVER_BIN also works without the python package.
 # mlx-lm>=0.30 requires transformers>=5 — incompatible with the transformers<5
 # pin of the torch extras sharing this venv, so stay on the last tf4 release.
+# The modern multimodal Qwen generation (qwen3_5 / qwen4_exp architectures)
+# needs mlx-lm>=0.32 + mlx-vlm — both live in a dedicated mesh_server/.venv-llm
+# created by scripts/install_llm.sh; the mlx adapter auto-resolves it.
 llm = [
     "httpx>=0.27",
     "mlx-lm>=0.24,<0.30; sys_platform=='darwin'",
