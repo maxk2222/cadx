@@ -706,7 +706,7 @@ requires-dist = [
     { name = "llama-cpp-python", extras = ["server"], marker = "sys_platform != 'darwin' and extra == 'llm'", specifier = ">=0.2.90" },
     { name = "mlx", marker = "extra == 'image-mlx'", specifier = ">=0.32" },
     { name = "mlx", marker = "extra == 'mlx'", specifier = ">=0.20" },
-    { name = "mlx-lm", marker = "sys_platform == 'darwin' and extra == 'llm'", specifier = ">=0.24" },
+    { name = "mlx-lm", marker = "sys_platform == 'darwin' and extra == 'llm'", specifier = ">=0.24,<0.30" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "onnxruntime", marker = "extra == 'bg'", specifier = ">=1.18" },
     { name = "onnxruntime", marker = "extra == 'mps'", specifier = ">=1.18" },
