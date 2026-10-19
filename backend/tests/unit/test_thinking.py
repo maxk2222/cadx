@@ -185,6 +185,53 @@ def test_escalation_level_falls_back_to_on_body():
     assert thinking_body(ctx, "critique") == ON_BODY
 
 
+def test_thinking_max_tokens_injected_on_thinking_calls():
+    """Reasoning shares the completion budget — a deep effort must not spend
+    the whole llm_max_tokens on reasoning and truncate the content. ON calls
+    get the raised budget merged last; OFF calls keep llm_max_tokens."""
+    ctx = _ctx(
+        escalated=True,
+        llm_thinking="auto",
+        llm_thinking_body_on=ON,
+        llm_thinking_body_medium='{"reasoning_effort": "medium"}',
+        llm_thinking_body_off=OFF,
+        llm_thinking_max_tokens=32_768,
+    )
+    ctx.thinking_level = 1
+    assert thinking_body(ctx, "critique") == {
+        "reasoning_effort": "medium",
+        "max_tokens": 32_768,
+    }
+    # off calls (budget cap) never get the bump
+    ctx2 = _ctx(llm_thinking="auto", llm_thinking_body_off=OFF, llm_thinking_max_tokens=32_768)
+    assert thinking_body(ctx2, "critique") == OFF_BODY
+
+
+def test_thinking_max_tokens_zero_or_empty_body():
+    """0 disables the override; an empty ON body still yields the max_tokens
+    override alone (provider default reasoning, raised budget)."""
+    ctx = _ctx(escalated=True, llm_thinking="auto", llm_thinking_body_on=ON)
+    assert thinking_body(ctx, "critique") == ON_BODY
+    ctx2 = _ctx(escalated=True, llm_thinking="auto", llm_thinking_max_tokens=48_000)
+    assert thinking_body(ctx2, "critique") == {"max_tokens": 48_000}
+
+
+def test_qwen38_dual_format_bodies_preserved():
+    """Qwen3.8 dialect: effort lives BOTH top-level and inside
+    chat_template_kwargs — the merge must keep the dict verbatim and never
+    emit 'high' (Qwen's enum is low/medium/xhigh)."""
+    body = '{"chat_template_kwargs": {"enable_thinking": true, "reasoning_effort": "xhigh"}, "reasoning_effort": "xhigh"}'
+    ctx = _ctx(
+        escalated=True, llm_thinking="auto", llm_thinking_body_on=ON, llm_thinking_body_high=body
+    )
+    ctx.thinking_level = 2
+    resolved = thinking_body(ctx, "critique")
+    assert resolved is not None
+    assert resolved["reasoning_effort"] == "xhigh"
+    assert resolved["chat_template_kwargs"]["reasoning_effort"] == "xhigh"
+    assert resolved["reasoning_effort"] != "high"
+
+
 # --------------------------------------------------------------------------- #
 # client + fake                                                                #
 # --------------------------------------------------------------------------- #

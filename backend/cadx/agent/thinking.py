@@ -98,6 +98,21 @@ def thinking_on(ctx: AgentCtx, step: str) -> bool:
     return True
 
 
+def _effort_of(body: dict[str, Any] | None) -> str:
+    """Best-effort label of the effort a resolved body requests — for the
+    ``thinking.resolved`` trace line only, not a policy input."""
+    if not body:
+        return "default"
+    eff = body.get("reasoning_effort")
+    if eff is None:
+        kw = body.get("chat_template_kwargs")
+        if isinstance(kw, dict):
+            eff = kw.get("reasoning_effort")
+            if eff is None and kw.get("enable_thinking") is False:
+                return "off"
+    return str(eff) if eff is not None else "on"
+
+
 def thinking_body(ctx: AgentCtx, step: str) -> dict[str, Any] | None:
     """Resolve the per-call request-body override for `step`.
 
@@ -105,7 +120,10 @@ def thinking_body(ctx: AgentCtx, step: str) -> dict[str, Any] | None:
     stage's body — level 2 ``llm_thinking_body_high``, level 1
     ``llm_thinking_body_medium``, level 0 (hard-step only, or no stage body
     configured) ``llm_thinking_body_on`` — or None when the selected body
-    is empty/unparseable (provider default — nothing merged).
+    is empty/unparseable (provider default — nothing merged). ON calls also
+    get ``max_tokens`` raised to ``llm_thinking_max_tokens`` when configured —
+    reasoning tokens share the completion budget, so deep efforts would
+    otherwise truncate the actual content.
 
     Call sites invoke this exactly once per chat call, so the ON count is
     also the per-job thinking budget ledger (``ctx.thinking_calls_used``)."""
@@ -115,7 +133,18 @@ def thinking_body(ctx: AgentCtx, step: str) -> dict[str, Any] | None:
     ctx.thinking_calls_used = getattr(ctx, "thinking_calls_used", 0) + 1
     level = getattr(ctx, "thinking_level", 0)
     if level >= 2:
-        return _body(s.llm_thinking_body_high, "high") or _body(s.llm_thinking_body_on, "on")
-    if level >= 1:
-        return _body(s.llm_thinking_body_medium, "medium") or _body(s.llm_thinking_body_on, "on")
-    return _body(s.llm_thinking_body_on, "on")
+        body = _body(s.llm_thinking_body_high, "high") or _body(s.llm_thinking_body_on, "on")
+    elif level >= 1:
+        body = _body(s.llm_thinking_body_medium, "medium") or _body(s.llm_thinking_body_on, "on")
+    else:
+        body = _body(s.llm_thinking_body_on, "on")
+    if s.llm_thinking_max_tokens > 0:
+        body = {**(body or {}), "max_tokens": s.llm_thinking_max_tokens}
+    log.debug(
+        "thinking.resolved",
+        step=step,
+        level=level,
+        effort=_effort_of(body),
+        max_tokens=(body or {}).get("max_tokens"),
+    )
+    return body

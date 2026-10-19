@@ -80,6 +80,11 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
   escalation is staged on `ctx.thinking_level` (1 → medium, 2 → high) and
   fires ONLY on stall (`llm_thinking_escalate_after` iterations without
   progress) or a measured dq regression ≥ 10 — never on a single patch miss.
+  Qwen3.8 dialect maps on=low → medium → xhigh; send `reasoning_effort` both
+  top-level and inside `chat_template_kwargs` (never bare `"high"` — the
+  template enum is low/medium/xhigh). Thinking calls get
+  `max_tokens=llm_thinking_max_tokens` when set — reasoning shares the
+  completion budget.
   `agent/quickref.py` serves runtime-introspected signatures to the `quickref`
   tool.
 - Loop progress is measured by `agent/quality.py` `det_quality` (verify_spec

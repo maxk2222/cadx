@@ -543,6 +543,8 @@ class SettingsOut(BaseModel):
     llm_thinking_body_high: str
     llm_thinking_hard_steps: str
     llm_thinking_escalate_after: int
+    llm_thinking_max_calls: int
+    llm_thinking_max_tokens: int
     agent_max_iterations: int
     agent_max_repairs: int
     agent_pass_score: int
@@ -657,6 +659,8 @@ class SettingsUpdate(BaseModel):
     llm_thinking_body_high: str | None = Field(default=None, max_length=20_000)
     llm_thinking_hard_steps: str | None = Field(default=None, max_length=200)
     llm_thinking_escalate_after: int | None = Field(default=None, ge=1, le=50)
+    llm_thinking_max_calls: int | None = Field(default=None, ge=0, le=10_000)
+    llm_thinking_max_tokens: int | None = Field(default=None, ge=0, le=2_000_000)
     agent_max_iterations: int | None = Field(default=None, ge=1, le=200)
     agent_max_repairs: int | None = Field(default=None, ge=0, le=200)
     agent_pass_score: int | None = Field(default=None, ge=0, le=100)

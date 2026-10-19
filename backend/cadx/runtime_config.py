@@ -67,6 +67,12 @@ class RuntimeSettings(BaseModel):
     # thinking_on() resolves OFF for the rest of the job regardless of policy
     # or the escalation latch. 0 disables thinking entirely.
     llm_thinking_max_calls: int = Field(default=8, ge=0, le=10_000)
+    # completion budget for calls made WITH thinking on — reasoning tokens
+    # count toward max_tokens, so an xhigh call can otherwise spend the whole
+    # llm_max_tokens budget reasoning and return truncated/empty content
+    # (parse failure → retry loop). Merged as max_tokens into the resolved
+    # thinking body; 0 = keep llm_max_tokens for thinking calls too.
+    llm_thinking_max_tokens: int = Field(default=0, ge=0, le=2_000_000)
     # vision payload size: tool-result renders/contact sheets are the
     # heaviest prompt item in long sessions — "low" detail and/or a smaller
     # max edge cut the per-image token cost substantially
