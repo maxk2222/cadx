@@ -21,7 +21,7 @@ from typing import Any, Literal
 import numpy as np
 from pydantic import BaseModel
 
-from cadx.agent.spechost import host_range
+from cadx.agent.spechost import host_range, parse_ranges
 from cadx.cad.poshint import parse_coord_points, parse_position_hints, resolve_end_hint
 from cadx.llm.schemas import Feature, PartSpec
 
@@ -387,9 +387,9 @@ def _axial_hint(
 ) -> tuple[float | None, bool]:
     """Axial centre coordinate of a side-bore + whether it is an estimate.
 
-    Order: explicit end offset > near-end proximity (est) > bare coordinate
-    on the bore axis > host-body mid — a bore through ONE declared plate
-    sits at that plate's mid when nothing else resolves it."""
+    Order: explicit end offset > near-end proximity (est) > declared range
+    mid (own text, then host body) > bare coordinate — a bore through ONE
+    declared plate sits at that plate's mid when nothing else resolves it."""
     inset = max(1.5 * dia, 6.0)
     for e in ends:
         if str(e["axis"]) == bore_ax:
@@ -401,11 +401,16 @@ def _axial_hint(
         if str(n["axis"]) == bore_ax:
             lo, hi = bounds[bore_ax]
             return (hi - inset if str(n["end"]).startswith("+") else lo + inset), True
-    if coords.get(bore_ax) is not None:
-        return coords[bore_ax], False
-    rng = host_range(spec, f, bore_ax)
+    # a declared span on the bore axis ("x=-60 bis -55") is the plate the
+    # bore pierces — its MID is the right axial centre; the flat coord parse
+    # would surface the range's own lo endpoint instead (observed: anchor at
+    # x=-60 while the measured bore sits at leg mid -57.5 -> false major)
+    text = f"{f.position or ''} {f.description or ''}"
+    rng = parse_ranges(text).get(bore_ax) or host_range(spec, f, bore_ax)
     if rng is not None:
         return (rng[0] + rng[1]) / 2.0, False
+    if coords.get(bore_ax) is not None:
+        return coords[bore_ax], False
     return None, False
 
 

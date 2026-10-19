@@ -524,6 +524,38 @@ def test_bracket_spec_yields_four_anchors():
     assert "4 spec-declared" in a.note
 
 
+def test_side_bore_range_on_bore_axis_anchors_at_mid():
+    """'x=-60 bis -55' on the bore axis is the plate span, not an endpoint —
+    the flat coord parse used to surface x=-60 (the range's own lo edge),
+    putting the anchor 2.5 mm off the measured bore at leg mid -57.5 and
+    scoring a false major (live E2E intake declared ranges like this)."""
+    d = lambda v: Dim(value=v, unit="mm", source="stated")  # noqa: E731
+    spec = PartSpec(
+        name="t",
+        summary="t",
+        length_x=d(120),
+        width_y=d(30),
+        height_z=d(100),
+        features=[
+            Feature(name="leg", type="box", position="x from -60 to -55, z from 0 to 100"),
+            Feature(
+                name="leg_hole",
+                type="through_hole",
+                description="bore through the leg, axis X",
+                dims={"diameter": 5.5},
+                position="x=-60 bis -55, y=0, z=15",
+                axis="x",
+                count=1,
+            ),
+        ],
+    )
+    a = build_anchors(spec, {}, None)
+    assert len(a.holes) == 1
+    h = a.holes[0]
+    assert h.axis == "+x"
+    assert h.pos == [-57.5, 0.0, 15.0]
+
+
 def test_bracket_spec_centers_beat_text():
     """Structured `centers` on a feature replace the text parse entirely."""
     spec = _bracket_spec()
