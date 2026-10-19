@@ -15,14 +15,23 @@ diffable, re-runnable.
 | `cad-executor` | arq worker on queue `cad`: sandboxed CAD execution, render, DfM, voxel FEM and SIMP TopOpt |
 | `postgres`   | SQLModel/SQLAlchemy database (async)                          |
 | `redis`      | arq queues + pub/sub for SSE events                            |
-| `mesh-server` | (optional, external) image→3D sidecar: local models (TRELLIS.2, Hunyuan3D, TripoSG). Runs **natively** on the host (macOS has no docker GPU) or on a CUDA box (`--profile gpu`). Contract: [mesh-server-api.md](mesh-server-api.md). |
+| `mesh-server` | (optional, external) multi-model inference sidecar: image→3D (TRELLIS.2, Hunyuan3D, TripoSG), text-to-image (FLUX, SDXL, Qwen) and **llm** adapters (managed OpenAI-compatible server subprocesses — mlx-lm, llama.cpp). Runs **natively** on the host (macOS has no docker GPU) or on a CUDA box (`--profile gpu`). Contract: [mesh-server-api.md](mesh-server-api.md). |
 
 The split between `worker` and `cad-executor` is deliberate: the agent loop
 is cheap I/O, while CAD execution is CPU-bound and sandboxed. They scale and
 fail independently. The mesh server is deliberately *not* in the default
 compose stack — only the worker talks to it (`mesh_base_url` runtime
 setting), and generated
-GLBs flow to the executor purely through `DATA_DIR` files.
+GLBs flow to the executor purely through `DATA_DIR` files. Beyond mesh
+generation it also hosts local text-to-image and — when
+`llm_backend="sidecar"` — the agent's LLM itself via
+`POST /v1/chat/completions` (OpenAI-compatible proxy onto managed
+mlx-lm/llama.cpp server subprocesses). Internally it is a multi-model host:
+a memory ledger admits residents only while `mem_headroom_mb` stays free
+(measured peak RSS beats declared estimates), LRU-evicts non-pinned models
+under pressure, and a model-affine queue prefers jobs matching resident/
+warm `gen_worker --serve` workers subject to a fairness cap — see
+[mesh-server-api.md](mesh-server-api.md#queue--memory).
 
 ## Request flow
 
@@ -122,7 +131,9 @@ sequenceDiagram
 
 - `agent/` — orchestrator state machine, per-step modules (`steps/`),
   tool sessions (`toolloop.py`, `toolspecs.py`, `mesh_tools.py`), mesh/image
-  clients (`mesh_client.py`, `image_client.py`, `concept_image.py`,
+  clients (`mesh_client.py` + `tripo_client.py` — `MeshPort` for sidecar and
+  Tripo3D cloud backends, `image_client.py` — `ImagePort` for sidecar and
+  OpenAI-compatible images APIs, `concept_image.py`,
   `image_assets.py`), candidate scoring (`mesh_score.py`, `model_pick.py`,
   `anchors.py`), `autofix.py`, `thinking.py` (adaptive reasoning escalation
   policy), `quickref.py` (runtime API signature digests), `featurebind.py`
@@ -155,7 +166,10 @@ sequenceDiagram
   (full bd_warehouse registry + lookup/search), `partspec.py` (AST
   validation of standard-part calls), `cadlib/` (reviewed helpers allowed in
   the sandbox), tasks (queue payloads)
-- `llm/` — `client.py` (httpx, OpenAI-compatible), `structured.py`
+- `llm/` — `client.py` (httpx, OpenAI-compatible; `make_llm` is the central
+  factory — `llm_backend=external` uses `llm_base_url`/`llm_api_key`,
+  `sidecar` points both roles at the mesh-server's `/v1` chat endpoint),
+  `structured.py`
   (parse/validate/re-ask), `tools.py` (tool-call parsing/fallbacks),
   `images.py` (EXIF→resize→JPEG→data-URL), `schemas.py` (Pydantic
   contracts), `fake.py` (deterministic test LLM)

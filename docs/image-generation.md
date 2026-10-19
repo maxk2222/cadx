@@ -1,7 +1,13 @@
 # Local image generation
 
 CADX can synthesise images with a **local text-to-image model** hosted on the
-same `mesh_server` sidecar as the image→3D generators. Three use cases:
+same `mesh_server` sidecar as the image→3D generators — or with an external
+**OpenAI-compatible images API** when `image_backend="openai"`
+(`image_openai_model` — `gpt-image-1` / `dall-e-3` / `dall-e-2`;
+`image_api_base`/`image_api_key` fall back to `llm_base_url`/`llm_api_key`).
+`OpenAIImageClient` implements the same `ImagePort` (`POST
+/images/generations`, multipart `/images/edits` for init-image jobs) and the
+backend can be overridden per project/run (`image_backend`). Three use cases:
 
 1. **Concept images in the asset manager** — "Generate image" button creates
    `generated_image` assets that feed the agent like uploaded references.
@@ -77,6 +83,7 @@ mesh_server/.venv/bin/meshserver image --prompt "a red gear" --model flux-schnel
 
 | setting              | default | meaning                                              |
 |----------------------|---------|------------------------------------------------------|
+| `image_backend`      | `sidecar` | `sidecar` = local adapters below; `openai` = OpenAI-compatible images API (`image_openai_model`, `image_api_base`, `image_api_key`) |
 | `image_model`        | `auto`  | adapter id; `auto` = device preference + OOM fallback |
 | `image_edit_model`   | `auto`  | adapter for reference-image jobs; `auto` = edit ladder (qwen-image-edit first) |
 | `image_default_strength` | 0.6 | img2img denoise when the request has no `strength`   |
@@ -93,8 +100,11 @@ afterwards the DB row is authoritative.
 
 ## VRAM / OOM
 
-Mesh and image models **share one residency slot** — loading one unloads all
-others, so they never compete for VRAM at the same time. On OOM the adapter is
+Mesh and image models draw from the **same memory budget** on the sidecar —
+a memory ledger admits residents only while `MESH_MEM_HEADROOM_MB` stays
+free and evicts non-pinned LRU models for newcomers (several models may
+coexist while they fit; see
+[mesh-server-api.md](mesh-server-api.md#queue--memory)). On OOM the adapter is
 unloaded, badlisted (`last_error` in `/v1/models`, Settings shows it) and
 `auto` selection moves to the next adapter; explicitly requested models return
 the real error (no silent downgrade).

@@ -55,9 +55,12 @@
     </td>
     <td width="50%">
       <b>Open-weights &amp; local-first</b><br>
-      Image→3D via TRELLIS.2, Hunyuan3D-2.1 or TripoSG; local text-to-image
-      (FLUX, Qwen, SDXL); and any OpenAI-compatible LLM — Ollama, LM Studio,
-      vLLM or hosted. Runs entirely on your own hardware.
+      Local or external inference per subsystem: image→3D on the sidecar
+      (TRELLIS.2, Hunyuan3D-2.1, TripoSG) or Tripo3D cloud; text-to-image via
+      local FLUX/Qwen/SDXL or an OpenAI images API; the agent LLM via any
+      OpenAI-compatible endpoint (Ollama, vLLM, hosted) or a local model the
+      sidecar hosts itself (mlx-lm, llama.cpp). Model downloads and HF-repo
+      registration live in Settings → Models.
     </td>
   </tr>
   <tr>
@@ -199,7 +202,7 @@ flowchart LR
     api --> redis[("Redis · queues + SSE")]
     api --> worker["worker · agent loop<br/>intake → plan → codegen → critique<br/>chat turns · MCP job runners"]
     worker --> llm["LLM · any OpenAI-compatible endpoint"]
-    worker --> mesh["mesh-server · open-weights models<br/>image→3D + text→image"]
+    worker --> mesh["mesh-server · open-weights models<br/>image→3D + text→image + local LLM"]
     worker --> exec["cad-executor · sealed sandbox"]
     exec --> out["build123d · FEM · TopOpt · DfM<br/>STEP · STL · 3MF · GLB · DXF · SVG"]
 ```
@@ -262,7 +265,7 @@ audience:
 |------|----------|
 | `backend/` | FastAPI app, agent loop, CAD pipeline, CLI (`cadx`) |
 | `frontend/` | React/Vite/Three.js web GUI |
-| `mesh_server/` | image→3D + text→image sidecar (own uv project) |
+| `mesh_server/` | image→3D + text→image + local-LLM sidecar (own uv project) |
 | `scripts/` | `setup.sh` / `start.sh` / `stop.sh` / `status.sh` |
 | `docs/` | documentation |
 | `data/` | projects, library, models, caches (runtime data) |

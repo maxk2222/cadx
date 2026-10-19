@@ -32,7 +32,13 @@ hybrid only:  runner_entry injects load_mesh_solid() + MESH_BBOX
 ```
 
 - The **worker** calls the mesh server (`public` network); the **executor**
-  only sees files under `DATA_DIR` (internal, sealed).
+  only sees files under `DATA_DIR` (internal, sealed). The provider is
+  switchable: `mesh_backend="sidecar"` (default) drives the local
+  mesh-server below; `mesh_backend="tripo"` uses the Tripo3D cloud API
+  instead (`tripo_api_key`/`tripo_api_base`/`tripo_model` —
+  `TripoMeshClient` implements the same `MeshPort`: upload →
+  `image_to_model` task → poll → GLB download, `GET /balance` as health).
+  Both are overridable per project and per run (`RunOptions.mesh_backend`).
 - The watertight repair ladder is `clean → manifold3d → PyMeshLab alpha
   wrap → bounded voxel fallback` (`cad/mesh_repair_pml.py`). PyMeshLab is
   **GPL and optional** — installed as the `repair` extra

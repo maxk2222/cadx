@@ -129,8 +129,14 @@ GET           /api/catalog/{category}/{class_name}       class detail
 GET|PUT       /api/settings                              runtime settings (see configuration.md)
 POST          /api/settings/test                         probe code + vision models without exposing the key
 GET           /api/settings/health                       same probe, GET — polled by the status cards/sidebar
+GET           /api/settings/llm-models                   models the active llm backend can serve (model pickers)
 GET           /api/mesh/health                           mesh-server reachability + device
 GET           /api/mesh/models                           installed adapter/model info + licenses
+GET           /api/mesh/queue                            sidecar queue snapshot: jobs + residents + free_mb
+POST|GET|DELETE /api/mesh/models/{id}/download           start / status / cancel a sidecar weight download
+DELETE        /api/mesh/models/{id}/weights              delete cached weights (refused while loaded/downloading)
+POST          /api/mesh/models/register                  register a custom HF repo (llm kind)
+DELETE        /api/mesh/models/{id}/custom               unregister a custom model
 GET           /api/images/models                         installed image adapters
 GET           /api/health                                liveness
 GET           /api/artifacts/{id}/file                   artifact downloads (step/stl/3mf/glb/dxf/svg/png/json)

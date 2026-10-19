@@ -6,7 +6,10 @@ to *new* jobs — a running job keeps the runtime snapshot it was started with.
 The settings status cards and the sidebar health dots poll
 `GET /api/settings/health` (a real code+vision probe of the configured
 provider), `/api/mesh/health` and `/api/images/models` — the sidecar serves
-both the mesh and image adapter families.
+all three adapter families (mesh, image and llm). The **Models** tab manages
+sidecar models directly (downloads, weight deletion, HF-repo registration,
+queue/resident view — proxied under `/api/mesh/*`); the provider tab's model
+dropdowns are fed by `GET /api/settings/llm-models`.
 
 Run options are merged in this order, later layers winning:
 
@@ -22,6 +25,8 @@ the database.
 
 | Setting | Default | Notes |
 |---------|---------|-------|
+| `llm_backend` | `external` | `external` = `llm_base_url` provider; `sidecar` = the OpenAI-compatible endpoint on the local mesh-server (`mesh_base_url`, no auth) |
+| `llm_sidecar_model` | `""` | single local model for both roles when `llm_backend=sidecar`; empty = `llm_model_*` names apply there too (unknown ids fall back to `auto`) |
 | `llm_base_url` | `https://api.openai.com/v1` | any OpenAI-compatible endpoint |
 | `llm_api_key` | — | write-only in the UI; never logged or returned by the API |
 | `llm_model_vision` | `gpt-4o` | needs image input for intake/critique |
@@ -114,6 +119,10 @@ Chat-agent session settings — see [chat.md](chat.md).
 
 | Setting | Default | Notes |
 |---------|---------|-------|
+| `mesh_backend` | `sidecar` | `sidecar` = local mesh-server; `tripo` = Tripo3D cloud (no sidecar needed) |
+| `tripo_api_key` | — | write-only; bearer token for `mesh_backend=tripo` (`tripo_api_key_set` in GET) |
+| `tripo_api_base` | `https://api.tripo3d.ai/v2/openapi` | Tripo3D OpenAPI base |
+| `tripo_model` | `v2.5-20250123` | Tripo3D `model_version` for `image_to_model` tasks |
 | `mesh_base_url` | `""` | mesh-server URL; seeded once from `MESH_BASE_URL` env |
 | `mesh_model` | `auto` | adapter id or `auto`; seeded once from `MESH_MODEL` |
 | `mesh_timeout_s` | `900` | client-side generation timeout |
@@ -133,6 +142,10 @@ Chat-agent session settings — see [chat.md](chat.md).
 
 | Setting | Default | Notes |
 |---------|---------|-------|
+| `image_backend` | `sidecar` | `sidecar` = local mesh-server; `openai` = OpenAI-compatible images API |
+| `image_openai_model` | `gpt-image-1` | model for `image_backend=openai` (`gpt-image-1` / `dall-e-3` / `dall-e-2` or a custom deployment id) |
+| `image_api_base` | `""` | images API base; empty = `llm_base_url` |
+| `image_api_key` | — | write-only; empty = `llm_api_key` (`image_api_key_set` in GET) |
 | `image_model` | `auto` | text-to-image adapter; seeded once from `MESH_IMAGE_MODEL` |
 | `image_edit_model` | `auto` | adapter for reference-image edits; `auto` = edit ladder |
 | `image_default_strength` | `0.6` | img2img denoise when the request has no `strength` |
@@ -188,6 +201,12 @@ runtime defaults per project/version: `units`, `process` (`fdm` / `sla` /
 TopOpt toggles `fem`, `fem_note`, `fem_material`, `fem_voxel_mm`, `topopt`,
 `topopt_volfrac`, `topopt_iterations`.
 
+Provider backends and models can also be overridden per project and per run
+(RunOptions / OptionsPanel): `llm_backend` (`external`/`sidecar`),
+`mesh_backend` (`sidecar`/`tripo`), `image_backend` (`sidecar`/`openai`),
+`mesh_model`, `image_model`, `image_edit_model`. Merge order is unchanged:
+version options win over project settings, which win over runtime defaults.
+
 ## Environment variables
 
 ### Backend (`backend/cadx/config.py`)
@@ -231,6 +250,21 @@ Infrastructure-only bootstrap settings; everything else lives in the DB.
 | `MESH_CUDA_OFFLOAD_VRAM_GB` | `24` | free-VRAM threshold for `auto` offload |
 | `MESH_MLX_MEM_LIMIT_GB` | `0` | unified-memory cap (0 = unlimited) |
 | `MESH_TRELLIS_MIN_VRAM_GB` | `20` | VRAM threshold for the setup TRELLIS.2 pick |
+| `MESH_JOB_STALL_S` | `600` | fail a running job whose (progress,message) hasn't moved |
+| `MESH_JOB_CANCEL_IDLE_S` | `60` | idle threshold after which a client abort is recorded as a stall |
+| `MESH_JOBS_SUBPROCESS` | `1` | run each generation in `python -m meshserver.gen_worker` (killable, RSS-capped) |
+| `MESH_JOB_MAX_RSS_MB` | `24576` | hard RSS cap for the generation subprocess (0 = off) |
+| `MESH_JOB_MIN_FREE_MB` | `0` | refuse new jobs below this much free host RAM (0 = off) |
+| `MESH_MEM_HEADROOM_MB` | `4096` | host RAM kept free when admitting a model (memory ledger) |
+| `MESH_WARM_WORKERS` | `1` | keep `gen_worker --serve` children resident between same-model jobs |
+| `MESH_WARM_IDLE_S` | `300` | warm worker self-exit after this much stdin silence |
+| `MESH_WARM_MAX` | `2` | max concurrent warm workers |
+| `MESH_QUEUE_FAIR_S` | `120` | jobs older than this beat model-affinity ordering |
+| `MESH_QUEUE_MEM_WAIT_S` | `300` | queued job waiting on memory admission fails after this (0 = never) |
+| `MESH_LLM_PIN` | `0` | pin loaded llm servers — never evicted under memory pressure |
+| `MESH_LLM_LOAD_TIMEOUT_S` | `300` | readiness bound for a managed llm server subprocess |
+| `MESH_LLM_CTX` | `16384` | context size passed to llama.cpp servers |
+| `LLAMA_SERVER_BIN` | — | explicit `llama-server` binary (else PATH, else `python -m llama_cpp.server`) |
 
 ## See also
 

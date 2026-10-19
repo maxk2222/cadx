@@ -47,13 +47,13 @@
 | [Agent loop](agent-loop.md) | State machine, tool sessions, step reference, budgets |
 | [Prompts](prompts.md) | Prompt files under `backend/cadx/agent/prompts/` and their conventions |
 | [HTTP API](api.md) | Backend REST endpoints grouped by router |
-| [mesh-server API](mesh-server-api.md) | Sidecar contract (mesh + image jobs) |
+| [mesh-server API](mesh-server-api.md) | Sidecar contract (mesh/image/llm adapters, chat proxy, model management, queue) |
 | [Evaluation](eval.md) | `cadx eval` benchmark harness and benchmark format |
 | [Roadmap](roadmap.md) | Shipped milestones and remaining backlog |
 
 ## Component READMEs
 
-- [`mesh_server/README.md`](../mesh_server/README.md) — the image→3D sidecar:
-  adapters, install scripts, env configuration, CLI.
+- [`mesh_server/README.md`](../mesh_server/README.md) — the multi-model
+  inference sidecar: adapters, install scripts, env configuration, CLI.
 - [`AGENTS.md`](../AGENTS.md) — working rules for coding agents in this repo.
 - [`CONTRIBUTING.md`](../CONTRIBUTING.md) — development setup and conventions.
