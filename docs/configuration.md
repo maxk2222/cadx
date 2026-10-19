@@ -8,7 +8,8 @@ The settings status cards and the sidebar health dots poll
 provider), `/api/mesh/health` and `/api/images/models` — the sidecar serves
 all three adapter families (mesh, image and llm). The **Models** tab manages
 sidecar models directly (downloads, weight deletion, HF-repo registration,
-queue/resident view — proxied under `/api/mesh/*`); the provider tab's model
+queue/resident view — proxied under `/api/mesh/*`) and holds the Hugging Face
+access token; the provider tab's model
 dropdowns are fed by `GET /api/settings/llm-models`.
 
 Run options are merged in this order, later layers winning:
@@ -19,7 +20,10 @@ code defaults < saved runtime settings < project settings < per-version options
 
 The tables below list the code defaults (`RuntimeSettings` in
 `backend/cadx/runtime_config.py`). Only non-default values are persisted in
-the database.
+the database. Secret values (`llm_api_key`, `tripo_api_key`, `image_api_key`,
+`hf_token`) are stored Fernet-encrypted (`enc:v1:` prefix); the key comes
+from the `CADX_SETTINGS_KEY` env var or an auto-generated
+`{DATA_DIR}/.settings.key` file (mode 0600).
 
 ## LLM provider
 
@@ -146,6 +150,7 @@ Chat-agent session settings — see [chat.md](chat.md).
 | `image_openai_model` | `gpt-image-1` | model for `image_backend=openai` (`gpt-image-1` / `dall-e-3` / `dall-e-2` or a custom deployment id) |
 | `image_api_base` | `""` | images API base; empty = `llm_base_url` |
 | `image_api_key` | — | write-only; empty = `llm_api_key` (`image_api_key_set` in GET) |
+| `hf_token` | — | write-only; Hugging Face token forwarded to the sidecar as `X-HF-Token` (applied as `HF_TOKEN` for downloads/model loads — gated repos, higher rate limits); seeded once from `HF_TOKEN` (`hf_token_set` in GET) |
 | `image_model` | `auto` | text-to-image adapter; seeded once from `MESH_IMAGE_MODEL` |
 | `image_edit_model` | `auto` | adapter for reference-image edits; `auto` = edit ladder |
 | `image_default_strength` | `0.6` | img2img denoise when the request has no `strength` |
@@ -223,6 +228,8 @@ Infrastructure-only bootstrap settings; everything else lives in the DB.
 | `MESH_BASE_URL` | — | seeds `mesh_base_url` **once** on first boot |
 | `MESH_MODEL` | — | seeds `mesh_model` once |
 | `MESH_IMAGE_MODEL` | — | seeds `image_model` once |
+| `HF_TOKEN` | — | seeds `hf_token` once |
+| `CADX_SETTINGS_KEY` | — | Fernet key encrypting stored secrets; default: auto-generated `{DATA_DIR}/.settings.key` (0600) |
 | `U2NET_HOME` | `~/.u2net` (`/data/rembg` on compose) | rembg model cache |
 | `CADX_MCP_TOKEN` | — | optional bearer token gating the `/mcp` HTTP endpoint |
 

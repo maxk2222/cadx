@@ -83,11 +83,11 @@ Tools (`agent/toolspecs.py`, primitives in `cad/codeedits.py`):
 | Step | Tools |
 |------|-------|
 | intake / plan | `search_catalog`, `lookup_part`, `cadlib_lookup`, `search_library`, `library_part`, `attach_library_part` |
-| codegen | + `check_snippet`, `submit_code` (catalog + library tools too) |
-| repair / improve | `read_lines`, `search_code`, `replace_lines`, `insert_after`/`insert_before`, `find_replace`, `set_param`, `check_code`, `verify`*, `render_model`* + catalog/library lookups + `done` |
+| codegen | + `check_snippet`, `submit_code` (catalog + library tools too); staged build (`kind="build"`) instead gets `add_block`, `checkpoint`/`rollback`, `verify`*, `done` |
+| repair / improve | `read_lines`, `search_code`, `replace_lines`, `insert_after`/`insert_before`, `find_replace`, `set_param`, `check_code`, `verify`*, `render_model`* + `list_editable_features`/`edit_feature` (executor-gated hole resize check) + catalog/library lookups + `done` |
 | critique | `read_lines`, `search_code`, `lookup_part`, `search_library`, `library_part` (read-only — no attach) |
-| mesh_refine | `mesh_inspect`, `mesh_preview`* + inspection (`mesh_measure`, `mesh_section`, `mesh_overlay`) + transforms (`mesh_set_up`, `mesh_rotate`, `mesh_mirror`, `mesh_scale`, `mesh_flatten_bottom`, `mesh_slice`, `mesh_crop`, `mesh_clip_height`, `mesh_decimate`, `mesh_smooth`, `mesh_smooth_preserve`, `mesh_remesh`, `mesh_symmetrize`, `mesh_shell`, `mesh_drill_holes`, `mesh_keep_largest`, `mesh_drop_small`, `mesh_repair`, `mesh_boolean_add`, `mesh_boolean_cut`) + `mesh_undo`/`mesh_reset` + `mesh_regen_edit`** + `done` + `regenerate` |
-| optimize | `list_anchors`, `check_load`, `preview_regions`, `analyze_fem(load_cases, material?, voxel_mm?)`, `topopt_run(target_volume_fraction?, max_iterations?, keep_regions?, load_cases?, material?, voxel_mm?)` + `done(run_index)` — agent-driven FEM/SIMP parameter search |
+| mesh_refine | `mesh_inspect`, `mesh_preview`* + inspection (`mesh_measure`, `mesh_section`, `mesh_overlay`) + transforms (`mesh_set_up`, `mesh_rotate`, `mesh_mirror`, `mesh_scale`, `mesh_flatten_bottom`, `mesh_slice`, `mesh_crop`, `mesh_clip_height`, `mesh_decimate`, `mesh_smooth`, `mesh_smooth_preserve`, `mesh_remesh`, `mesh_symmetrize`, `mesh_shell`, `mesh_drill_holes`, `mesh_radial_profile`/`mesh_radial_profile_auto`, `mesh_silhouette_carve`, `mesh_keep_largest`, `mesh_drop_small`, `mesh_repair`, `mesh_boolean_add`, `mesh_boolean_cut`) + `mesh_undo`/`mesh_reset` + `mesh_regen_edit`** + `done` + `regenerate` |
+| optimize | `list_anchors`, `check_load`, `preview_regions`, `analyze_fem(load_cases, material?, voxel_mm?)`, `topopt_run(target_volume_fraction?, max_iterations?, keep_regions?, load_cases?, material?, voxel_mm?)` + `refine_features(run_index)` + `done(run_index)` — agent-driven FEM/SIMP parameter search |
 | all sessions | `view_image` — re-view an uploaded reference image by `asset_id` (ids are in the "Image N (asset <id>)" context labels; useful when `agent_max_input_images` capped the initial set or a detail needs a second look). The image returns via the `_images` tool-result channel. Info-type sessions additionally get `generate_concept_image` (budget `image_tool_budget`). |
 
 *`mesh_preview` renders the workbench state via the executor
@@ -283,7 +283,7 @@ a real mesh solid exists.
 ### Recommended settings for local ~27B models
 
 The code defaults assume a strong hosted model. For a local code/vision
-model (e.g. qwen3-27b via vLLM) the following values keep sessions
+model (e.g. qwen3.8-27b via vLLM) the following values keep sessions
 productive and bounded — set via the Settings GUI or `PUT /api/settings`:
 
 | Setting | Recommended |

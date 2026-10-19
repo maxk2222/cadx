@@ -22,6 +22,7 @@ growing conversation, only the slices relevant to the current call.
 | `image_hero.md`      | hero autogen | Text-to-image template producing a clean studio reference photo for mesh runs without input images. |
 | `code_examples.md`   | CODEGEN  | Few-shot model.py example (PARAMS, counterbored plate, chamfer) — appended to the codegen system prompt. |
 | `code_contract.md`   | CODEGEN/REPAIR/IMPROVE | Hard contract (rules only, no output format): `PARAMS` dict at top, part assigned to `result` (or `part`/`model`), mm units, coordinate frame (X=length, Y=width, Z=height, part on XY plane, centered). Hybrid addendum: `load_mesh_solid()`/`MESH_BBOX` are injected and only boolean ops may touch the mesh solid (no fillet/edge-select on mesh faces). |
+| `code_contract_hybrid.md` | CODEGEN/REPAIR/IMPROVE (hybrid) | Appended when a mesh solid exists: `load_mesh_solid()`/`MESH_BBOX`, boolean-only edits, no fillet/edge-select on mesh faces, `cadlib.mesh_*` helpers. |
 | `code_contract_responses.md` | +CODEGEN/REPAIR/IMPROVE (legacy) | Output-channel contract for non-tool calls: `CodeResponse` / `PatchResponse` JSON shapes. |
 | `code_contract_responses_tools.md` | +CODEGEN (tool sessions) | Output-channel contract with tools: call `submit_code`. |
 | `tools_protocol.md`   | all tool sessions | How tool calls work, line numbering (`NNN │`), session lifecycle, `done`/`submit_code` contract. |

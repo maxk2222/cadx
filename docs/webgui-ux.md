@@ -204,7 +204,8 @@ surface-coverage metric. Aesthetic only, no FEM. See [organic.md](organic.md).
 
 ### Settings
 
-Settings (`/settings`) is organized into tabs — **LLM Provider**, **Agent**,
+Settings (`/settings`) is organized into tabs — **LLM Provider**, **Local
+models** (Hugging Face token + sidecar model downloads/removal), **Agent**,
 **Mesh & Image** (local mesh generator + image generation on the same sidecar),
 **FEM / TopOpt**, and **System** — with a floating save bar that applies to new
 jobs only. Four status cards on top show live service health: API, LLM (a real

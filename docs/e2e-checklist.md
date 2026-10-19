@@ -61,8 +61,8 @@ Run against `make up` (full compose stack) at http://localhost:8080.
 Prereq: mesh server running — easiest via `./scripts/start.sh` (auto-detects
 the GPU tier and installs+starts the native mesh-server); alternatives:
 `make mesh-server`, compose `--profile gpu`, or `start.sh --fake` for the
-deterministic fake. Settings → "Mesh & Image" tab shows device + available
-models.
+deterministic fake. Settings → "Mesh & Image" tab shows the device; "Local
+models" lists/downloads/removes the sidecar models.
 
 - [ ] Generate with mode **mesh** + a reference photo → version shows a mesh
       badge, STL/3MF/GLB exports download, no `model.py` code panel,

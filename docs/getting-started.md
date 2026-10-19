@@ -25,8 +25,8 @@ native `mesh-server` sidecar. Flags:
 
 ```
 scripts/start.sh [--dev] [--tier mlx|cuda|rocm|none|fake] [--fake] [--no-mesh]
-                 [--no-setup] [--no-build] [--bind-local] [--open]
-                 [--quiet|--verbose|--no-color]
+                 [--no-setup] [--no-build] [--bind-local] [--dry-run] [--open]
+                 [--yes] [--quiet|--verbose|--no-color]
 ```
 
 All launcher scripts share a common UX: numbered steps with spinners and live
@@ -34,6 +34,9 @@ command output on a TTY (plain lines when piped or in CI), a per-run log under
 `logs/<name>-<timestamp>.log` (`logs/<name>-latest.log` always points to the
 most recent one), preflight checks (docker daemon, port collisions, disk
 space), and a failure trap that prints the failing step plus a log tail.
+When the mesh port is already held by a *healthy* mesh-server (one that
+answers `/v1/health`), `start.sh` adopts it instead of failing or starting a
+second one.
 `--help` works on every script; `--verbose` streams command output instead of
 spinners, `--quiet` reduces output to errors and the summary, `--no-color`/
 `NO_COLOR` disables ANSI entirely.
@@ -98,18 +101,23 @@ scripts/status.sh --watch    # refreshing dashboard           (--json also exist
 scripts/stop.sh              # stop everything                (make stop)
 scripts/setup.sh             # re-run the installer           (make autosetup)
 scripts/setup.sh --doctor    # diagnostics: tier, adapters, env overrides
-make help                    # annotated list of every make target
+make help                    # annotated list of every make target (also plain `make`)
+make restart                 # stop + start (docker mode; `restart-dev` for native)
+make update                  # git pull --ff-only, then re-run the installer
+make open                    # open the app in the browser
 ```
 
 `setup.sh` is idempotent and supports `--tier`, `--dev`, `--fake`,
 `--extra mps` (hunyuan torch adapters on Apple Silicon), `--extra hunyuan`
-(them on the rocm tier), `--skip-mesh`, `--skip-image`, `--yes` and
-`--doctor`. Before downloading adapter weights it checks free disk space
+(them on the rocm tier), `--skip-mesh`, `--skip-image`, `--dry-run`, `--yes`
+and `--doctor`. Before downloading adapter weights it checks free disk space
 against a per-tier estimate and asks for confirmation when space is tight.
 
 Before stopping, `stop.sh` verifies that each recorded pid still belongs to
 its expected process so a recycled PID is never killed by accident; it also
 warns about foreign processes still holding the well-known ports.
+`stop.sh --purge` additionally removes the docker volumes (database + data
+volumes).
 
 Models, renders and exports persist under `./data/`.
 
@@ -133,8 +141,10 @@ make dev-web         # Vite dev server on :5173 (proxies /api)
 ### Mesh server in dev mode
 
 ```bash
-make mesh-sync                                # uv venv + deps for mesh_server/
+make mesh-sync                                # uv venv + deps (+ .venv-llm on Apple Silicon)
 mesh_server/scripts/install_hunyuan_mlx.sh    # adapter for your tier (see mesh_server/scripts/)
+mesh_server/scripts/install_llm.sh            # local-LLM backend (auto-run by mesh-sync on macOS;
+                                              # llama.cpp extra / LLAMA_SERVER_BIN elsewhere)
 make mesh-server                              # http://localhost:8765 (health: /v1/health)
 ```
 

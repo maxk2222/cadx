@@ -60,6 +60,7 @@ the identical part.
 | `shell_mm` | 0–50 | skin depth for `surface_open` (0 = auto: ~0.2·`period_mm`, clamped to [1.6·pitch, 10] mm) |
 | `floor_mm` | 0–100 | always-solid stand band above the part's min Z |
 | `min_member_mm` | 0–50 | printable-feature floor (default: runtime setting) |
+| `min_gap_mm` | 0–50 | enclosed void channels narrower than this emit a fused-gap warning |
 | `density_threshold` | 0.2–0.9 | explicit iso override (default: quantile for `volfrac`) |
 | `auto_keep` | bool | pin a keep ring around every detected feature anchor |
 | `auto_keep_margin_mm` | >0 | auto-keep ring margin |

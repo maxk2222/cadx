@@ -6,6 +6,30 @@
 plus `agent/steps/optimize.py`, `agent/toolspecs.py`, `cad/fem/voxelize.py` als Kontext.
 Branch `dev`, READ-ONLY — nur verifizierte Code-Befunde, keine Vermutungen.
 
+> **Nachtrag (Fix-Stand):** Die Befunde wurden seitdem adressiert — der Audit
+> unten dokumentiert den damaligen Stand:
+>
+> - **BUG-1/BUG-2 gefixt:** `_one_pass` übergibt `void_cells | ~domain.solid` an
+>   `density_to_mesh` (engine.py:~1615) und `density.npz` persistiert `voids`
+>   (engine.py:~1788); der Resample nutzt den Key bzw. re-resolved
+>   `void_regions` (engine.py:~1958–1977).
+> - **RISK-1 gefixt:** `solver=oc` warnt jetzt explizit bei gesetzten
+>   MMA-Constraints (topopt.py:~896).
+> - **RISK-2 gefixt:** `OptimizeSpec` trägt `Field(ge/le)`-Bounds
+>   (schemas.py:~300–355).
+> - **RISK-3 gefixt:** `spn` ist 1/N-normiert (`/ n_sol`, topopt.py:~1425).
+> - **RISK-4 gefixt:** `change_box` teilt `last_change` mit `_run_mma` — CG-rtol
+>   liest den Live-Wert (topopt.py:~787, ~1267–1295).
+> - **Item-10-Hinweis gefixt:** Pass-2-Renders bekommen Suffix `_p2`
+>   (engine.py:~1587), kein Überschreiben mehr.
+> - **Item-11 Telemetrie umgesetzt:** `res.topopt`/`verification` enthält jetzt
+>   `compliance_export_j`, `max_disp_export_mm`, `max_vm_export_mpa`,
+>   `gray_fraction`, `volfrac_mask`, `solver_used`, `beta_final`, `sf_gap`,
+>   `case_sfs_export` u. a. (engine.py:~1716–1755); `_run_summary` nutzt
+>   `sf_export` (optimize.py:~61–81).
+> - **Offen:** Item 4c (heuristischer Objektiv-Gradient `oc_filter=True` im
+>   MMA-Weighted-Pfad, topopt.py:~1353) und die übrigen Hinweise.
+
 ## Ergebnis-Tabelle
 
 | # | Item | Status | file:line | Befund |

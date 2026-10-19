@@ -37,7 +37,10 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
 - Python: type hints everywhere; `ruff` line-length 100; async FastAPI handlers;
   pydantic v2 for all JSON; no business logic in routers; `structlog` not `print`.
 - TypeScript strict; functional components; TanStack Query for server state; Tailwind only.
-- Never put the LLM API key in DB/logs/traces. Trace messages replace image data with placeholders.
+- Never put LLM/HF secrets in logs/traces or return them via the API — stored
+  runtime secrets are Fernet-encrypted at rest (`cadx/secrets_crypto.py`,
+  `enc:v1:` in DB, key `CADX_SETTINGS_KEY` or `data/.settings.key`).
+  Trace messages replace image data with placeholders.
 - Every prompt lives in `backend/cadx/agent/prompts/*.md` — never inline prompt text in Python.
 - All file paths go through `cadx/storage.py`. All DB writes in short transactions.
 - LLM-generated code must ONLY ever run through `cad/sandbox.py` (AST allow-list + subprocess

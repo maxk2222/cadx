@@ -213,6 +213,8 @@ data/projects/<pid>/
     topopt/{density.npz,history.json}  density field + SIMP convergence history
     exports/model.{step,stl,3mf,glb,dxf,svg}
     iterations/<n>/              per-iteration run dir (_run/, renders/, …)
+    iterations/<n>/<attempt>/    per-attempt subdir (a1, a2, parametrize, …) —
+                                 each exec writes its own renders dir
     iterations/0/                hybrid: mesh generation + orientation + solid prep
     _scratch/                    transient GUI previews (ops GLBs, region PNGs)
 data/library/<part_id>/<file>    reusable user library (uploaded STEP/STL bodies;

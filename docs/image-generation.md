@@ -36,7 +36,11 @@ backend can be overridden per project/run (`image_backend`). Three use cases:
 
 FLUX.1-schnell is **Apache-2.0** and ungated on HuggingFace. Weights download
 on first use (~12 GB 4-bit MLX, ~24 GB fp16 diffusers). SDXL (~7 GB) and SD1.5
-(~4 GB) are the fallbacks for tight memory.
+(~4 GB) are the fallbacks for tight memory. Gated repos (e.g. the Kontext-dev
+weights) fail with a 401 without a token — set one in Settings → Models →
+Hugging Face; the backend forwards it as `X-HF-Token` on every sidecar
+request and the sidecar applies it as `HF_TOKEN` (an `HF_TOKEN` env on the
+sidecar host works the same).
 
 ### Image editing (img2img / instruction edit)
 
@@ -87,7 +91,7 @@ mesh_server/.venv/bin/meshserver image --prompt "a red gear" --model flux-schnel
 | `image_model`        | `auto`  | adapter id; `auto` = device preference + OOM fallback |
 | `image_edit_model`   | `auto`  | adapter for reference-image jobs; `auto` = edit ladder (qwen-image-edit first) |
 | `image_default_strength` | 0.6 | img2img denoise when the request has no `strength`   |
-| `image_steps`        | empty   | diffusion steps (FLUX 4, SDXL ~30)                   |
+| `image_steps`        | empty   | diffusion steps (FLUX 4, SDXL/SD1.5 25)              |
 | `image_guidance`     | empty   | cfg scale                                            |
 | `image_max_side`     | 1024    | clamp on width/height — OOM prevention               |
 | `image_max_count`    | 4       | clamp per request                                    |

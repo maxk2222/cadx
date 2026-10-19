@@ -9,16 +9,19 @@ feature docs — this page is the index of common failures.
 scripts/status.sh              # health of all components        (make status)
 scripts/status.sh --watch      # auto-refreshing dashboard (--json for scripts)
 scripts/setup.sh --doctor      # GPU tier, adapter availability, env overrides
-docker compose logs -f --tail=200            # service logs      (make logs)
-tail -f logs/*.log                            # native --dev mode logs
+docker compose logs -f --tail=200            # service logs      (make logs;
+                                             #  per-service: logs-api/-worker/-executor/-web)
+tail -f logs/*.log                            # native --dev mode logs (make logs-dev)
 ```
 
 Every launcher run writes a timestamped log: `logs/setup-*.log`,
 `logs/start-*.log` (`logs/setup-latest.log` / `logs/start-latest.log` point
 at the newest). On failure the scripts print the last lines of that log plus
 its path — include it when reporting bugs. `start.sh` preflight refuses to
-run when the docker daemon is down or when ports 8080/8000/5173/8765 are held
-by foreign processes, and prints the owning `pid command`.
+run when the docker daemon is down or when ports 8080/8000/5173 are held by
+foreign processes, and prints the owning `pid command`. Port 8765 is the
+exception: a listener that answers `/v1/health` is adopted as the
+mesh-server instead of being treated as a conflict.
 
 In the UI: **Settings** shows provider health, mesh-server reachability and
 adapter licenses/errors; a version's **job log** shows every pipeline step and
@@ -65,6 +68,18 @@ its duration.
   quantization.
 - **rembg download** — `MESH_BG_REMOVAL=auto` only uses an already-cached
   model; set `always` to allow the one-time download.
+- **`mlx-lm backend not installed` / `llama.cpp backend not installed`** — the
+  local `llm` adapters need a separate backend. On Apple Silicon run
+  `mesh_server/scripts/install_llm.sh` (dedicated `mesh_server/.venv-llm`
+  with mlx-lm + mlx-vlm; `make mesh-sync` and `setup.sh` run it too);
+  `MESH_LLM_PYTHON` overrides the resolved interpreter. Elsewhere install the
+  `llm` extra (`uv pip install -e .[llm]` in `mesh_server/`, also done by
+  `install_llm.sh`), a system `llama-server` (`brew install llama.cpp`), or
+  point `LLAMA_SERVER_BIN` at a binary.
+- **Gated Hugging Face repo (401 / authorization error on download)** — set
+  the Hugging Face token under Settings → Models (or seed it via `HF_TOKEN`);
+  the backend forwards it to the sidecar on every request, which applies it
+  as `HF_TOKEN`. E.g. FLUX.1-Kontext weights are gated.
 - **AMD GPU not detected (tier `none`)** — ROCm support is Linux-only. The
   probe needs the `amdgpu` driver: `/dev/kfd` plus a `/dev/dri/renderD*` node,
   or `amd-smi`/`rocm-smi`/`rocminfo` on PATH. In containers pass

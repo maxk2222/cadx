@@ -50,6 +50,7 @@
 | [mesh-server API](mesh-server-api.md) | Sidecar contract (mesh/image/llm adapters, chat proxy, model management, queue) |
 | [Evaluation](eval.md) | `cadx eval` benchmark harness and benchmark format |
 | [Roadmap](roadmap.md) | Shipped milestones and remaining backlog |
+| [TopOpt audit 2026-10](audit-topopt-2026-10.md) | Point-in-time defect-class audit of the FEM/TopOpt pipeline (German) |
 
 ## Component READMEs
 

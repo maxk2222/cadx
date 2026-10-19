@@ -81,8 +81,9 @@ Spawn tools (`submit_code`, `mesh_generate`, `edit_feature`, `restart_job` and
 the inherited `wait`-capable actions) default to **`wait: false`** over MCP —
 they return `{job_id, version_id}` immediately; poll `job_status`/`wait_job`.
 
-`settings_get` never returns secrets — the LLM key only appears as the
-`llm_api_key_set` boolean.
+`settings_get` never returns secrets — stored secrets only appear as `*_set`
+booleans (`llm_api_key_set`, `tripo_api_key_set`, `image_api_key_set`,
+`hf_token_set`).
 
 ## Typical flow
 

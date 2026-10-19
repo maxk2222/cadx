@@ -42,8 +42,9 @@ POST          /api/versions/{id}/organic                 procedural organic rest
 POST          /api/versions/{id}/reexport                re-run export pipeline
 GET           /api/versions/{id}/jobs                    jobs for this version
 GET           /api/versions/{id}/code                    generated model.py (text/plain)
-GET           /api/versions/{id}/live-renders            render manifest for in-progress preview
-GET           /api/versions/{id}/preview?view=…          live render image (`iso`, `front`, `top`, `fem:*`, …)
+GET           /api/versions/{id}/live-renders            render manifest for in-progress preview (views + freshest iteration)
+GET           /api/versions/{id}/preview?view=…          live render image — render stems (`iso`, `front`, …) plus
+                                                         `contact_sheet`, `orient_sheet`, `thumbnail`, `fem:<stem>`
 GET           /api/versions/{a}/compare/{b}              geometry diff (STEP load, STL fallback) + `params_diff`; `ok:false` partial when booleans are skipped
 ```
 
@@ -126,7 +127,11 @@ GET           /api/catalog/{category}/{class_name}       class detail
 ## Settings, mesh, images, health
 
 ```
-GET|PUT       /api/settings                              runtime settings (see configuration.md)
+GET|PUT       /api/settings                              runtime settings (see configuration.md) — secrets
+                                                         (`llm_api_key`, `tripo_api_key`, `image_api_key`,
+                                                         `hf_token`) are write-only: GET reports `*_set` flags,
+                                                         PUT stores a new value or `clear_*` removes it
+                                                         (Fernet-encrypted at rest, `enc:v1:`)
 POST          /api/settings/test                         probe code + vision models without exposing the key
 GET           /api/settings/health                       same probe, GET — polled by the status cards/sidebar
 GET           /api/settings/llm-models                   models the active llm backend can serve (model pickers)

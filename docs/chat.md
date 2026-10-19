@@ -30,7 +30,7 @@ a project is bound.
 | `update_project_settings` | whitelisted project settings (material, process, …) |
 | `save_library_part` | save a finished version as STEP/template library part |
 | `create_project` / `attach_project` / `list_projects` | project binding — available even while unbound |
-| info tools | `list_versions`, `version_details`, `view_render`, catalog, library, model lists, `view_image` |
+| info tools | `list_versions`, `version_details`, `view_render`, `project_settings`, `job_status`, catalog + library lookups, `view_image` |
 
 Spawned jobs are real `Job`/`Version` rows (shared helpers in `cadx/spawn.py`),
 so they appear in the version tree, the Jobs page and the job SSE stream

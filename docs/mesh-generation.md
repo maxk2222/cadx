@@ -57,13 +57,13 @@ hybrid only:  runner_entry injects load_mesh_solid() + MESH_BBOX
 | adapter id | model | device | license |
 |---|---|---|---|
 | `trellis2` | TRELLIS.2-4B (shape only) | CUDA ≥ ~24 GB | **MIT** |
-| `triposg` | TripoSG 1.5B | CUDA, MPS exp. | **MIT** |
-| `triposg-scribble` | TripoSG-scribble (sketch+text) | CUDA, MPS exp. | **MIT** (experimental) |
+| `triposg` | TripoSG 1.5B | CUDA, ROCm, MPS exp. | **MIT** |
+| `triposg-scribble` | TripoSG-scribble (sketch+text) | CUDA, ROCm, MPS exp. | **MIT** (experimental) |
 | `step1x-3d` | Step1X-3D geometry 1.3B | CUDA only | **Apache-2.0** |
-| `hunyuan3d-omni` | Hunyuan3D-Omni (controllable) | torch MPS, CUDA | Tencent* |
+| `hunyuan3d-omni` | Hunyuan3D-Omni (controllable) | torch MPS, CUDA/ROCm | Tencent* |
 | `hunyuan3d-2.1-mlx` | Hunyuan3D-2.1 shape | arm64 Mac (MLX) | Tencent* |
-| `hunyuan3d-2mini` / `-turbo` | Hunyuan3D-2 mini | torch MPS | Tencent* |
-| `hunyuan3d-2mv` / `-mv-turbo` | Hunyuan3D-2 multi-view | torch MPS | Tencent* |
+| `hunyuan3d-2mini` / `-turbo` | Hunyuan3D-2 mini | torch MPS, ROCm | Tencent* |
+| `hunyuan3d-2mv` / `-mv-turbo` | Hunyuan3D-2 multi-view | torch MPS, ROCm | Tencent* |
 | `fake` | deterministic fixture | any | MIT |
 
 \* **The Tencent Hunyuan Community License excludes the EU/UK/South Korea.**
@@ -154,6 +154,10 @@ docker run --device=/dev/kfd --device=/dev/dri --group-add video \
 # or: docker compose --profile gpu-rocm up -d mesh-server-rocm
 # gfx arch not covered by the torch wheel? → HSA_OVERRIDE_GFX_VERSION, see
 # troubleshooting.md
+
+# optional extras (not auto-picked by setup.sh)
+mesh_server/scripts/install_step1x.sh    # Step1X-3D (CUDA only)
+mesh_server/scripts/install_omni.sh      # Hunyuan3D-Omni (torch MPS/CUDA/ROCm)
 
 # local LLMs for llm_backend=sidecar (kind="llm" catalog — see mesh-server-api.md)
 mesh_server/scripts/install_llm.sh     # dedicated .venv-llm on arm64 macOS,
@@ -286,6 +290,10 @@ Common mesh-server and pipeline failures are indexed in
   (`needs_review`).
 - **rembg download** — `MESH_BG_REMOVAL=auto` only uses an already-cached
   model; set `always` to allow the one-time download.
+- **gated-repo 401 / weight download fails** — set a Hugging Face token in
+  Settings → Models → Hugging Face; the backend forwards it as `X-HF-Token`
+  on every sidecar request and the sidecar applies it as `HF_TOKEN`
+  (an `HF_TOKEN` env on the sidecar host works the same).
 
 ## See also
 

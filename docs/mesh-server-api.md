@@ -12,6 +12,13 @@ The sidecar is a multi-model inference host with three adapter families:
 Base URL: `MESH_BASE_URL`, e.g. `http://localhost:8765` (native) or
 `http://mesh-server:8765` (compose `gpu` profile).
 
+The backend forwards the Hugging Face token stored in WebUI Settings →
+Models → Hugging Face as an `X-HF-Token` request header on every call; a
+middleware applies it process-wide as `HF_TOKEN`, so managed weight
+downloads and adapter loads against gated repos authenticate transparently.
+`HF_TOKEN` in the sidecar's own environment works the same for non-backend
+callers.
+
 ## Endpoints
 
 ### `GET /v1/health`
@@ -21,7 +28,8 @@ Base URL: `MESH_BASE_URL`, e.g. `http://localhost:8765` (native) or
   "ok": true,
   "device": "mlx",                 // cuda | mps | mlx | cpu | fake
   "backend": "local",
-  "models": [MeshModelInfo]
+  "models": [MeshModelInfo],
+  "mem_free_mb": 41000             // host RAM available to new jobs
 }
 ```
 
@@ -42,6 +50,9 @@ Base URL: `MESH_BASE_URL`, e.g. `http://localhost:8765` (native) or
   "kind": "mesh",                   // "mesh" | "image" | "llm" — adapter family
   "supports_multiview": false,
   "max_images": 1,
+  "supports_edit": false,           // image: accepts an init image
+  "requires_image": false,          // image: edit-only — never wins a txt2img auto pick
+  "max_count": 4,                   // image: max result images per job
   "license_note": "Tencent Hunyuan Community License — …",
   "loaded": false,
   "available": true,                // deps + weights usable on this host
@@ -75,12 +86,18 @@ Base URL: `MESH_BASE_URL`, e.g. `http://localhost:8765` (native) or
   "image_roles": ["front", "back"],   // front|back|left|right|iso|other (aligned with images)
   "steps": 30,              // optional inference steps
   "guidance": 5.0,          // optional
-  "resolution": 256         // optional octree/voxel hint
+  "resolution": 256,        // optional octree/voxel hint
+  "batch": [{"seed": 1}, {"seed": 2}],   // optional: N variants in ONE job —
+                                         // candidate screening shares the load
+  "control_type": "bbox",   // optional conditioning (hunyuan3d-omni):
+                            // bbox | voxel | point | pose
+  "control_input": [60, 40, 12]          // bbox = [dx,dy,dz] mm; ignored elsewhere
 }
 ```
 
 Response `200`: `{ "job_id": "…" }` — `422` if no image, `429` when the queue
-is full. One generation job runs at a time; the rest queue.
+is full or free host RAM is below `MESH_JOB_MIN_FREE_MB`. One generation job
+runs at a time; the rest queue.
 
 ### `GET /v1/jobs/{id}`
 
@@ -98,6 +115,8 @@ is full. One generation job runs at a time; the rest queue.
   "resolution": 256,
   "duration_s": 12.3,
   "triangles": 18420,
+  "busy": true,            // subprocess liveness: child CPU >2% recently
+  "outputs": [0, 2],       // batch jobs: succeeded variant indices
   "error": null
 }
 ```
@@ -105,8 +124,9 @@ is full. One generation job runs at a time; the rest queue.
 ### `GET /v1/jobs/{id}/mesh`
 
 `200` → GLB bytes (`model/gltf-binary`) in **generator-normalized space**
-(not mm, not oriented — the cad-executor pipeline handles that).
-`409` while the job is not `succeeded`, `404` unknown id.
+(not mm, not oriented — the cad-executor pipeline handles that). `?i=N`
+selects batch variant `N` (see `outputs` on the job status); `409` while the
+job is not `succeeded`, `404` unknown id/variant.
 
 ### `DELETE /v1/jobs/{id}`
 
@@ -141,8 +161,9 @@ Plain JSON body `ImageGenParams` (no multipart — there are no inputs):
 }
 ```
 
-Response `200`: `{ "job_id": "…" }` — `422` on invalid params, `503` when no
-image adapter is installed.
+Response `200`: `{ "job_id": "…" }` — `422` on invalid params, `429` when the
+queue is full. With no usable adapter (none installed / all badlisted) the
+submitted job lands in `failed` with a "no image adapter available" error.
 
 ### `POST /v1/image-edit-jobs`
 
@@ -159,7 +180,7 @@ Same shape as mesh jobs plus `"images": <n>` (result count) and `"backend"`.
 ### `GET /v1/image-jobs/{id}/image?i=0`
 
 `200` → PNG bytes of result image `i` (0-indexed). `409` while the job is not
-`succeeded`, `404` unknown id/index.
+`succeeded`, `404` unknown id, `400` index out of range.
 
 ### `DELETE /v1/image-jobs/{id}`
 
@@ -382,6 +403,7 @@ In addition to the existing `MESH_*` knobs (see
 | `MESH_WARM_MAX` | `2` | max concurrent warm workers |
 | `MESH_QUEUE_FAIR_S` | `120` | fairness window — jobs older than this beat model affinity |
 | `MESH_QUEUE_MEM_WAIT_S` | `300` | queued job waiting on memory fails after this (0 = never) |
+| `MESH_JOB_MIN_FREE_MB` | `0` | refuse new jobs (→ `429`) when host free RAM is below this (0 = off) |
 | `MESH_LLM_PIN` | `0` | pin loaded llm servers — never evicted for memory pressure |
 | `MESH_LLM_LOAD_TIMEOUT_S` | `300` | readiness bound for a managed llm server subprocess |
 | `MESH_LLM_CTX` | `16384` | context size passed to llama.cpp servers |
