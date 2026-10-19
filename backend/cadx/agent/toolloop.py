@@ -227,8 +227,47 @@ def _digest_call(name: str, args: dict[str, Any]) -> str:
     return name
 
 
+_METRIC_KEYS = (
+    "volfrac_achieved",
+    "volfrac_target",
+    "safety_factor",
+    "worst_safety_factor",
+    "sf_export",
+    "sf_mask",
+    "bbox_size",
+    "volume_mm3",
+    "watertight",
+    "measured_dia_mm",
+    "dia_mm",
+    "faces",
+    "error",
+)
+
+
+def _metrics_hint(res: dict[str, Any]) -> str:
+    """Compact `k=v` tail for digested tool results — optimize/mesh sessions
+    must not lose the numbers `done(run_index)`/issue fixes compare on.
+    Scans the result plus its `topopt`/`fem`/`analysis` sub-dicts for the
+    known metric keys (first 3 wins)."""
+    found: list[str] = []
+    scopes: list[dict[str, Any]] = [res] + [
+        res.get(k) or {} for k in ("topopt", "fem", "analysis", "report")
+    ]
+    for scope in scopes:
+        if not isinstance(scope, dict):
+            continue
+        for k in _METRIC_KEYS:
+            v = scope.get(k)
+            if v is None or isinstance(v, dict | list) or f"{k}=" in ";".join(found):
+                continue
+            found.append(f"{k}={_one_line(str(v), 40)}")
+            if len(found) >= 3:
+                return "; ".join(found)
+    return "; ".join(found)
+
+
 def _digest_line(entry: dict[str, Any]) -> str:
-    """One `call(args) -> ok` / `-> fail: <category> <one-line error>` line."""
+    """One `call(args) -> ok(hint)` / `-> fail: <category> <one-line error>` line."""
     call = _digest_call(str(entry.get("name") or "?"), entry.get("args") or {})
     res = entry.get("result")
     if isinstance(res, str):
@@ -237,7 +276,8 @@ def _digest_line(entry: dict[str, Any]) -> str:
             return f"{call} -> ok"
         return f"{call} -> fail: {_one_line(res, 140)}"
     if not isinstance(res, dict) or res.get("ok", True):
-        return f"{call} -> ok"
+        hint = _metrics_hint(res) if isinstance(res, dict) else ""
+        return f"{call} -> ok" + (f" ({hint})" if hint else "")
     tail = " ".join(
         p
         for p in (

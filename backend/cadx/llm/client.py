@@ -631,6 +631,11 @@ class LLMClient:
                 self.total_usage["completion_tokens"] += int(u2.get("completion_tokens", 0))
                 self.total_usage["cached_tokens"] += _cached_tokens(u2)
                 self.total_usage["calls"] += 1
+                # attribute the re-ask's usage to this call too — the returned
+                # response feeds per-step trace/token accounting
+                prompt_tokens += int(u2.get("prompt_tokens", 0))
+                completion_tokens += int(u2.get("completion_tokens", 0))
+                cached_tokens += _cached_tokens(u2)
                 parsed = parse_model(text2, json_schema)  # raises if still bad
                 text = text2
 

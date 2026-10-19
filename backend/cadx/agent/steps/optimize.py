@@ -19,6 +19,7 @@ from __future__ import annotations
 import contextlib
 import itertools
 import json
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -134,6 +135,21 @@ class _SessionOps:
     default_material: str
     alloc: Any
     contact_sheet: Path | None
+    deadline: float | None = None  # monotonic timestamp — job-timeout bound
+
+
+def _budget_exceeded(ops: _SessionOps, needed_s: float) -> dict[str, Any] | None:
+    """Refuse a new executor run that cannot plausibly finish inside the
+    job's wall-clock bound — the tool error pushes the model to `done()`."""
+    if ops.deadline is None or time.monotonic() + needed_s <= ops.deadline:
+        return None
+    return {
+        "ok": False,
+        "error": (
+            "job time budget exhausted — no new run can finish in time; "
+            "call done(run_index) with the best completed run (or -1 to keep the base)"
+        ),
+    }
 
 
 def _make_fem_fn(ops: _SessionOps) -> Any:
@@ -143,6 +159,8 @@ def _make_fem_fn(ops: _SessionOps) -> Any:
         cases, err = _valid_cases(a.get("load_cases"))
         if err:
             return {"ok": False, "error": err}
+        if (guard := _budget_exceeded(ops, ctx.runtime_settings.fem_timeout_s + 60)) is not None:
+            return guard
         it = next(ops.alloc)
         await ctx.emit("optimize", it, f"FEM probe — {len(cases or ops.spec_cases)} load case(s)")
         res = await ctx.executor.fem_analyze(
@@ -209,6 +227,10 @@ def _make_topopt_fn(ops: _SessionOps) -> Any:
         cases, err = _valid_cases(a.get("load_cases"))
         if err:
             return {"ok": False, "error": err}
+        if (
+            guard := _budget_exceeded(ops, ctx.runtime_settings.topopt_timeout_s + 180)
+        ) is not None:
+            return guard
         it = next(ops.alloc)
         opt = _opt_overrides(a)
         keep, kerr = _valid_regions(a.get("keep_regions"))
@@ -263,6 +285,8 @@ def _make_preview_fn(ops: _SessionOps) -> Any:
         cases, err = _valid_cases(a.get("load_cases"))
         if err:
             return {"ok": False, "error": err}
+        if (guard := _budget_exceeded(ops, ctx.runtime_settings.fem_timeout_s + 30)) is not None:
+            return guard
         it = next(ops.alloc)
         keep, kerr = _valid_regions(a.get("keep_regions"))
         if kerr:
@@ -311,6 +335,11 @@ def _make_refine_fn(ops: _SessionOps) -> Any:
         cases, err = _valid_cases(a.get("load_cases"))
         if err:
             return {"ok": False, "error": err}
+        rs = ctx.runtime_settings
+        if (
+            guard := _budget_exceeded(ops, rs.fem_timeout_s + rs.analytic_step_timeout_s + 120)
+        ) is not None:
+            return guard
         run_params = run.get("params") or {}
         spec_opt = ops.spec.optimize
         it = next(ops.alloc)
@@ -374,6 +403,7 @@ def _setup_session(
     default_material: str,
     anchors: list[dict[str, Any]] | None,
     contact_sheet: Path | None,
+    deadline: float | None = None,
 ) -> ToolSession:
     """ToolSession with fem/topopt/preview callbacks; each executor call
     allocates its own iteration dir and attaches renders as `_images`."""
@@ -393,6 +423,7 @@ def _setup_session(
         default_material=default_material,
         alloc=itertools.count(base_it + 1),
         contact_sheet=contact_sheet,
+        deadline=deadline,
     )
     return ToolSession(
         ctx,
@@ -467,12 +498,15 @@ async def run(
     analysis: dict[str, Any] | None = None,
     contact_sheet: Path | None = None,
     request: dict[str, Any] | None = None,
+    deadline: float | None = None,
 ) -> AgentOptResult | None:
     """Run the optimize session. None → caller uses the deterministic path.
 
     `request` carries a standalone-optimize API request: its load_cases /
     optimize / material values override the spec-derived defaults and are
-    shown to the model as an explicit user request.
+    shown to the model as an explicit user request. `deadline` (monotonic)
+    bounds the phase — tool calls that cannot finish in time are refused so
+    the session commits a completed run instead of dying mid-SIMP.
     """
     s = ctx.runtime_settings
     if not s.agent_struct_tools or not tools_enabled(ctx, "vision"):
@@ -492,6 +526,7 @@ async def run(
         default_material=default_material,
         anchors=(ctx.anchors or {}).get("holes") or None,
         contact_sheet=contact_sheet,
+        deadline=deadline,
     )
     messages = _opt_messages(ctx, spec, request, analysis, contact_sheet)
 

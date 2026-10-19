@@ -37,6 +37,7 @@ from cadx.cad.mesh_ops import (
     merge_post_params,
     mesh_params_schema,
 )
+from cadx.config import get_settings
 from cadx.db.models import (
     IMAGE_ASSET_KINDS,
     AgentTrace,
@@ -703,9 +704,7 @@ async def run_params_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[s
             return {"ok": False, "error": version.error, "design_audit": audit_report}
 
         version.code = src_code or None
-        await _finalize_exec_version(
-            db, job, version, exec_result, mode=parent_mode, parent=parent
-        )
+        await _finalize_exec_version(db, job, version, exec_result, mode=parent_mode, parent=parent)
         return {"ok": True, "design_audit": audit_report}
 
 
@@ -1217,6 +1216,9 @@ async def _try_optimize_session(
                 "optimize": payload.get("optimize"),
                 "material": payload.get("material"),
             },
+            # bound by the arq job timeout minus a finalize margin — a chain
+            # of full-length SIMP runs must not outlive the job
+            deadline=time.monotonic() + get_settings().agent_job_timeout_s - 300,
         )
     except Exception as e:
         log.warning("optimize.agent_session_failed", error=str(e)[:300])

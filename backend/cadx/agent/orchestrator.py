@@ -616,9 +616,7 @@ def _copy_mesh_artifacts(
     return out
 
 
-def _promote_topopt_exports(
-    ctx: AgentCtx, iteration: int, res: dict[str, Any]
-) -> dict[str, str]:
+def _promote_topopt_exports(ctx: AgentCtx, iteration: int, res: dict[str, Any]) -> dict[str, str]:
     """Copy the winning optimize iteration's ``exports/model.*`` up to the
     version-level ``exports/`` dir so API/UI serve the optimized part, not the
     pre-topopt base. Returns artifact records for the promoted paths."""
@@ -735,9 +733,15 @@ def _topopt_optimize_payload(
     return opt
 
 
-async def _run_topopt_phase(ctx: AgentCtx, outcome: RunOutcome, spec: PartSpec) -> RunOutcome:
+async def _run_topopt_phase(
+    ctx: AgentCtx, outcome: RunOutcome, spec: PartSpec, t0: float
+) -> RunOutcome:
     """OPTIMIZE phase after a successful base generation (gen_mode=topopt or
-    plan.optimize): run SIMP on the best candidate + FEM-verify the result."""
+    plan.optimize): run SIMP on the best candidate + FEM-verify the result.
+
+    `t0` is the job's start (time.monotonic) — the optimize session is
+    bounded by the arq job timeout minus a finalization margin so a string
+    of 47-minute SIMP runs can't outlive the job and leave zombie tasks."""
     if outcome.status not in ("succeeded", "needs_review"):
         return outcome
     if not spec.load_cases:
@@ -774,6 +778,8 @@ async def _run_topopt_phase(ctx: AgentCtx, outcome: RunOutcome, spec: PartSpec) 
     # the best run — falls back to the deterministic single shot below
     res: dict[str, Any] | None = None
     base_sheet = it_dir / "contact_sheet.png"
+    from cadx.config import get_settings
+
     agent = await optimize_step.run(
         ctx,
         spec,
@@ -781,6 +787,7 @@ async def _run_topopt_phase(ctx: AgentCtx, outcome: RunOutcome, spec: PartSpec) 
         base_it=outcome.iterations or base_it,
         analysis=outcome.analysis,
         contact_sheet=base_sheet if base_sheet.exists() else None,
+        deadline=t0 + get_settings().agent_job_timeout_s - 300,
     )
     if agent is not None and agent.chosen_run == -1:
         outcome.mode_note += " | topopt skipped — agent kept the base part"
@@ -2576,6 +2583,10 @@ async def _process_mesh(
     return res
 
 
+async def _none() -> None:
+    return None
+
+
 async def _parametrize_best(
     ctx: AgentCtx,
     best: Candidate,
@@ -3089,7 +3100,12 @@ async def _run_cad(  # noqa: C901
 
         # ---------- FEM check (only when the spec declares loads) ----------
         fem_issues: list[dict[str, Any]] = []
-        if spec.load_cases:
+
+        async def _fem_smoke(
+            it: int, exec_result: dict[str, Any], fem_issues: list[dict[str, Any]]
+        ) -> None:
+            if not spec.load_cases:
+                return
             # FEM reads the exec's STL — must come from the attempt dir the
             # current exec_result was written to, not the shared iteration dir
             it_rel = str(
@@ -3140,6 +3156,9 @@ async def _run_cad(  # noqa: C901
             else:
                 await ctx.emit("fem", it, f"skipped: {fem_res.get('error') or 'no result'}")
 
+        # FEM smoke + vision critique are independent — run concurrently.
+        fem_task = asyncio.create_task(_fem_smoke(it, exec_result, fem_issues))
+
         # ---------- vision critique ----------
         await ctx.emit("critique", it, "comparing renders with your images")
         sheet_rel = exec_result.get("contact_sheet")
@@ -3160,6 +3179,7 @@ async def _run_cad(  # noqa: C901
         except Exception as e:
             log.warning("agent.critique_failed", iteration=it, error=str(e))
             critique = Critique(score=0, passed=False, confidence=0.0)
+        await fem_task
 
         cand = Candidate(it, code_resp, exec_result, critique, dim_issues)
         cand.feature_findings = feature_findings
@@ -3887,15 +3907,25 @@ async def _run_mesh(  # noqa: C901
         return outcome
 
     await ctx.emit("finalize", best.iteration, "exporting mesh formats")
-    exports = await ctx.executor.export_all(
-        {
-            "job_id": ctx.job_id,
-            "project_id": str(ctx.project_id),
-            "version_id": str(ctx.version_id),
-            "iteration": best.iteration,
-            "art_dir": best.exec_result.get("art_dir"),
-            "name": "model",
-        }
+    # export + parametric reconstruction are independent executor tasks —
+    # run them concurrently instead of serializing two round trips
+    param_coro = (
+        _parametrize_best(ctx, best, spec, tol_pct=tol_pct, tol_mm=tol_mm)
+        if ctx.runtime_settings.agent_parametrize
+        else None
+    )
+    exports, param_res = await asyncio.gather(
+        ctx.executor.export_all(
+            {
+                "job_id": ctx.job_id,
+                "project_id": str(ctx.project_id),
+                "version_id": str(ctx.version_id),
+                "iteration": best.iteration,
+                "art_dir": best.exec_result.get("art_dir"),
+                "name": "model",
+            }
+        ),
+        param_coro if param_coro is not None else _none(),
     )
     artifacts = _copy_best_artifacts(ctx, best.iteration, best.exec_result)
     for fmt, rel in (exports.get("exports") or {}).items():
@@ -3905,14 +3935,6 @@ async def _run_mesh(  # noqa: C901
         _copy_mesh_artifacts(
             ctx.project_id, ctx.version_id, best.iteration, best.exec_result.get("art_dir")
         )
-    )
-
-    # best-effort parametric reconstruction — code+schema for downstream
-    # editing; failure leaves the mesh outcome untouched
-    param_res = (
-        await _parametrize_best(ctx, best, spec, tol_pct=tol_pct, tol_mm=tol_mm)
-        if ctx.runtime_settings.agent_parametrize
-        else None
     )
     if param_res is not None:
         ctx.mesh_info["parametric"] = param_res
@@ -4967,30 +4989,36 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
     # would produce a confident-but-wrong part downstream (observed: bracket
     # prompt -> `name:"search_catalog"` -> plain box scored 95)
     gaps = intake_step.spec_gaps(spec, prompt)
-    if gaps:
-        await ctx.emit("intake", 0, "spec incomplete: " + "; ".join(gaps) + " — re-asking")
-        fixed = await intake_step.extract_features(ctx, spec)
-        if fixed.features:
-            spec.features = fixed.features
-        if fixed.name.strip() and any("tool echo" in g for g in gaps):
-            spec.name, spec.summary = fixed.name, fixed.summary or spec.summary
-        outcome.spec = spec.model_dump()
-        ctx.spec = spec
-        await ctx.emit("intake", 0, f"recovered {len(spec.features)} feature(s)")
-
-    if prompt_hints_loads and not spec.load_cases:
-        tried_load_extraction = True
-        cases, opt = await intake_step.extract_load_cases(ctx, spec)
-        if cases:
-            spec.load_cases = cases
-            if (
-                opt is not None
-                and opt.enabled
-                and (spec.optimize is None or not spec.optimize.enabled)
-            ):
-                spec.optimize = opt
+    want_loads = bool(prompt_hints_loads and not spec.load_cases)
+    if gaps or want_loads:
+        if gaps:
+            await ctx.emit("intake", 0, "spec incomplete: " + "; ".join(gaps) + " — re-asking")
+        # feature + load-case recovery are independent vision calls — gather
+        fixed, loads_res = await asyncio.gather(
+            intake_step.extract_features(ctx, spec) if gaps else _none(),
+            intake_step.extract_load_cases(ctx, spec) if want_loads else _none(),
+        )
+        if gaps:
+            if fixed.features:
+                spec.features = fixed.features
+            if fixed.name.strip() and any("tool echo" in g for g in gaps):
+                spec.name, spec.summary = fixed.name, fixed.summary or spec.summary
             outcome.spec = spec.model_dump()
-            await ctx.emit("intake", 0, f"recovered {len(cases)} load case(s) missed by intake")
+            ctx.spec = spec
+            await ctx.emit("intake", 0, f"recovered {len(spec.features)} feature(s)")
+        if want_loads:
+            tried_load_extraction = True
+            cases, opt = loads_res if loads_res else (None, None)
+            if cases:
+                spec.load_cases = cases
+                if (
+                    opt is not None
+                    and opt.enabled
+                    and (spec.optimize is None or not spec.optimize.enabled)
+                ):
+                    spec.optimize = opt
+                outcome.spec = spec.model_dump()
+                await ctx.emit("intake", 0, f"recovered {len(cases)} load case(s) missed by intake")
 
     # ---------- MEASURE ----------
     try:
@@ -5125,7 +5153,7 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
         else:
             why = "prompt asks for loads/optimization"
         await ctx.emit("optimize", 0, f"topology optimization: {why}")
-        outcome = await _run_topopt_phase(ctx, outcome, spec)
+        outcome = await _run_topopt_phase(ctx, outcome, spec, t0)
     elif plan is not None and not plan.optimize and prompt_hints_loads:
         await ctx.emit(
             "optimize",

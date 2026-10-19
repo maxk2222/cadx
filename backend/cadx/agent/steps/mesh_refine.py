@@ -85,16 +85,6 @@ def _parts(
             ),
         }
     ]
-    if issues:
-        parts.append({"type": "text", "text": issues_block(issues)})
-    if initial_ops:
-        parts.append(
-            {
-                "type": "text",
-                "text": "OPS ALREADY APPLIED (you may undo/reset or build on them):\n"
-                + "\n".join(f"- {o.op}({o.args})" for o in initial_ops),
-            }
-        )
     rb = request_block(ctx.prompt)
     if rb:
         parts.append({"type": "text", "text": rb})
@@ -105,6 +95,18 @@ def _parts(
         parts.append({"type": "text", "text": dfm_txt})
     parts.append({"type": "text", "text": "USER INPUT IMAGES (for reference):"})
     parts += images_block(ctx.assets, ctx.runtime_settings.agent_max_input_images)
+    # APC ordering: per-session dynamic blocks go last so the stable prefix
+    # (request/spec/renders/images) keeps its prefix-cache hits
+    if issues:
+        parts.append({"type": "text", "text": issues_block(issues)})
+    if initial_ops:
+        parts.append(
+            {
+                "type": "text",
+                "text": "OPS ALREADY APPLIED (you may undo/reset or build on them):\n"
+                + "\n".join(f"- {o.op}({o.args})" for o in initial_ops),
+            }
+        )
     return parts
 
 
