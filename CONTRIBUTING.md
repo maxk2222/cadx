@@ -48,6 +48,11 @@ humans and agents alike. The short version:
 - LLM-generated code only ever runs through `cad/sandbox.py` inside the
   executor — never `exec()` in-process. Allowed imports: `build123d`,
   `bd_warehouse.*`, `cadlib`, `math`, `numpy`, `typing`, `dataclasses`.
+- Shell scripts stay bash-3.2 compatible (macOS system bash) and source the
+  shared helpers in `scripts/lib/` (`ui.sh` for output/steps/logs,
+  `pkg.sh` for venv/installer/download boilerplate) instead of re-rolling
+  `echo`/pip/uv handling. Every script accepts `--help`, `--quiet`,
+  `--verbose` and `--no-color`.
 - Commits: one per milestone step, descriptive message.
 
 ## Testing rules

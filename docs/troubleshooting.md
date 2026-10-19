@@ -7,10 +7,18 @@ feature docs — this page is the index of common failures.
 
 ```bash
 scripts/status.sh              # health of all components        (make status)
+scripts/status.sh --watch      # auto-refreshing dashboard (--json for scripts)
 scripts/setup.sh --doctor      # GPU tier, adapter availability, env overrides
 docker compose logs -f --tail=200            # service logs      (make logs)
 tail -f logs/*.log                            # native --dev mode logs
 ```
+
+Every launcher run writes a timestamped log: `logs/setup-*.log`,
+`logs/start-*.log` (`logs/setup-latest.log` / `logs/start-latest.log` point
+at the newest). On failure the scripts print the last lines of that log plus
+its path — include it when reporting bugs. `start.sh` preflight refuses to
+run when the docker daemon is down or when ports 8080/8000/5173/8765 are held
+by foreign processes, and prints the owning `pid command`.
 
 In the UI: **Settings** shows provider health, mesh-server reachability and
 adapter licenses/errors; a version's **job log** shows every pipeline step and

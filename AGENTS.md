@@ -11,7 +11,13 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
 - One-command start:     `make start` / `./scripts/start.sh` — auto-detects GPU
   tier (mlx|cuda|rocm|none), installs the mesh adapter, starts docker stack +
   native mesh-server. `make stop`, `make status`, `make autosetup`,
-  `scripts/setup.sh --doctor`
+  `scripts/setup.sh --doctor`, `make help` lists every annotated target.
+- Launcher scripts share `scripts/lib/ui.sh` (spinner/step output, `run_step`
+  live-log, `wait_for_url`, port/disk/pidfile helpers, failure traps —
+  bash 3.2, TTY+NO_COLOR aware) and `scripts/lib/pkg.sh` (venv/installer/
+  clone/HF-download helpers used by `mesh_server/scripts/install_*.sh`).
+  Per-run logs land in `logs/<name>-<ts>.log`. Extend the libs rather than
+  duplicating output/detect code in a new script.
 - Setup env once:        `python3 -m venv .venv && .venv/bin/python -m pip install uv`
 - Install backend deps:  `make sync`            (creates backend/.venv via uv)
 - Infra for local dev:   `make infra`           (postgres+redis via docker-compose.dev.yml)

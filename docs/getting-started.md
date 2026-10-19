@@ -25,8 +25,18 @@ native `mesh-server` sidecar. Flags:
 
 ```
 scripts/start.sh [--dev] [--tier mlx|cuda|rocm|none|fake] [--fake] [--no-mesh]
-                 [--no-setup] [--bind-local]
+                 [--no-setup] [--no-build] [--bind-local] [--open]
+                 [--quiet|--verbose|--no-color]
 ```
+
+All launcher scripts share a common UX: numbered steps with spinners and live
+command output on a TTY (plain lines when piped or in CI), a per-run log under
+`logs/<name>-<timestamp>.log` (`logs/<name>-latest.log` always points to the
+most recent one), preflight checks (docker daemon, port collisions, disk
+space), and a failure trap that prints the failing step plus a log tail.
+`--help` works on every script; `--verbose` streams command output instead of
+spinners, `--quiet` reduces output to errors and the summary, `--no-color`/
+`NO_COLOR` disables ANSI entirely.
 
 The detected GPU tier decides which mesh adapter gets installed:
 
@@ -84,14 +94,22 @@ read by docker compose for infrastructure overrides (`POSTGRES_*`,
 
 ```bash
 scripts/status.sh            # health of all components       (make status)
+scripts/status.sh --watch    # refreshing dashboard           (--json also exists)
 scripts/stop.sh              # stop everything                (make stop)
 scripts/setup.sh             # re-run the installer           (make autosetup)
 scripts/setup.sh --doctor    # diagnostics: tier, adapters, env overrides
+make help                    # annotated list of every make target
 ```
 
 `setup.sh` is idempotent and supports `--tier`, `--dev`, `--fake`,
 `--extra mps` (hunyuan torch adapters on Apple Silicon), `--extra hunyuan`
-(them on the rocm tier), `--skip-mesh`, `--skip-image` and `--doctor`.
+(them on the rocm tier), `--skip-mesh`, `--skip-image`, `--yes` and
+`--doctor`. Before downloading adapter weights it checks free disk space
+against a per-tier estimate and asks for confirmation when space is tight.
+
+Before stopping, `stop.sh` verifies that each recorded pid still belongs to
+its expected process so a recycled PID is never killed by accident; it also
+warns about foreign processes still holding the well-known ports.
 
 Models, renders and exports persist under `./data/`.
 
