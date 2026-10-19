@@ -340,6 +340,20 @@ def run_pipeline(  # noqa: C901
     except Exception as e:
         log.warning("features.extract_failed", error=str(e)[:200])
 
+    # 4b1. declared connection spans: a "strut from A to B" must carry
+    # material along the whole path — a detached bar reads as correctly
+    # connected to the visual critic, so the centreline is sampled here
+    try:
+        spec_feats = (spec_dict or {}).get("features") or []
+        if spec_feats:
+            from cadx.cad.spans import span_checks
+
+            if not isinstance(res.features, dict):
+                res.features = {}
+            res.features["spans"] = span_checks(shape, spec_feats)
+    except Exception as e:
+        log.warning("features.span_checks_failed", error=str(e)[:200])
+
     # 4b2. invalid B-Rep → locate defects so repair feedback gets coordinates
     # (WHERE geometry is broken), not just "is_valid: false"
     if not res.analysis.is_valid:

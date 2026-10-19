@@ -554,6 +554,10 @@ def test_side_bore_range_on_bore_axis_anchors_at_mid():
     h = a.holes[0]
     assert h.axis == "+x"
     assert h.pos == [-57.5, 0.0, 15.0]
+    # the declared plate span bounds the deterministic re-cut to its host —
+    # without it a full-bbox cutter drills every body sharing the bore ray
+    # (observed: the leg re-cut pierced the diagonal strut at x≈+7)
+    assert h.depth_mm == 5.0
 
 
 def test_bracket_spec_centers_beat_text():

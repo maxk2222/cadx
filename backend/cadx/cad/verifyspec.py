@@ -1108,6 +1108,28 @@ def _features(
                 },
             )
         )
+    # declared connection spans: "strut from A to B" must carry material
+    # along the whole declared path — a detached bar passes every hole/bbox
+    # check while missing its host (bracket run: strut built from x=-5
+    # instead of the leg at x=-55, critic still called it connected)
+    for i, sp in enumerate((measured.get("spans") or [])[:8]):
+        if not isinstance(sp, dict):
+            continue
+        cov = sp.get("coverage")
+        ok = bool(sp.get("ok")) and cov is not None and float(cov) >= 0.85
+        checks.append(
+            _check(
+                f"span_{i}",
+                TIER_FEATURES,
+                "PASS" if ok else "FAIL",
+                {
+                    "name": sp.get("name"),
+                    "coverage": cov,
+                    "points": sp.get("points"),
+                    "required": "material along the declared connection path",
+                },
+            )
+        )
     if not any(_wants_pattern(f) for f in spec_feats):
         return
     if not measured.get("recognition_ran"):

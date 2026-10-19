@@ -173,6 +173,38 @@ def test_recut_blind_depth_centred_on_axial():
     assert not mb.tunnel_open(part, 0.0, 15.0, "+x")  # sanity: was blocked before
 
 
+def test_recut_bounded_does_not_pierce_strut_on_same_ray():
+    """Live hybrid failure: the leg bore at z=70 shares its +x ray with the
+    diagonal strut (material at x≈5..10 there). A bounded anchor
+    (depth_mm = host plate span) must drill the leg only — the unbounded
+    cutter pierced the strut and produced a phantom bore."""
+    leg = Pos(-57.5, 0, 50) * Box(5, 30, 100)
+    arm = Pos(0, 0, 97.5) * Box(120, 30, 5)
+    from cadx.cad import cadlib
+
+    part = leg + arm + cadlib.strut((-55, 0, 35), (15, 0, 95), 10, 6)
+    strut_probe = (-14.0, 0.0, 70.0)
+    assert part.is_inside(strut_probe)  # strut material on the bore ray
+    out, applied = mb.recut_missing_holes(
+        part,
+        [
+            {
+                "x": -57.5,
+                "y": 0.0,
+                "dia": 5.5,
+                "axis": "+x",
+                "kind": "hole",
+                "source": "spec",
+                "depth_mm": 5.0,
+                "pos": [-57.5, 0.0, 70.0],
+            }
+        ],
+    )
+    assert applied
+    assert not out.is_inside((-57.5, 0.0, 70.0))  # leg bored
+    assert out.is_inside(strut_probe)  # strut intact — the bug pierced it
+
+
 def test_cadlib_backend_injection(sphere_solid):
     """cadlib.mesh_cut must route to the injected backend when OCC output is
     unusable — and keep working identically when OCC succeeds."""

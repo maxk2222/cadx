@@ -3133,6 +3133,22 @@ async def _run_cad(  # noqa: C901
                 ]
             except Exception as e:
                 log.warning("features.anchor_compare_failed", error=str(e)[:200])
+        # declared connection spans (executor samples the centreline — the
+        # critic cannot tell a detached strut from a connected one)
+        for sp in (features.get("spans") or []):
+            if isinstance(sp, dict) and not sp.get("ok", True):
+                feature_findings.append(
+                    {
+                        "feature": str(sp.get("name") or "span"),
+                        "expected": "material along the declared connection path "
+                        + " → ".join(str(p) for p in (sp.get("points") or [])),
+                        "actual": f"only {float(sp.get('coverage') or 0.0):.0%} of the "
+                        "declared span is inside material — the connection is detached",
+                        "severity": "major",
+                        "fix_hint": "the feature does not reach its declared endpoints — "
+                        "rebuild it so both ends embed into the bodies it must connect",
+                    }
+                )
         f_iou = (analysis or {}).get("footprint_iou")
         if f_iou is not None and f_iou < 0.85:
             # only an authoritative plan-view measurement (or an explicit

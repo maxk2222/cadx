@@ -374,7 +374,7 @@ def _spec_plane(
             pts = [(u, v, eu or ev) for u, eu in vals[u_ax] for v, ev in vals[v_ax]]
     bore_ax = next(a for a in "xyz" if a not in in_plane)
     axial, axial_est = _axial_hint(spec, f, bounds, bore_ax, dia, coords, ends, nears)
-    axial_depth = _axial_depth(f, bounds, bore_ax, ends)
+    axial_depth = _axial_depth(spec, f, bounds, bore_ax, ends, text)
     return (
         [(u, v, est or (axial is not None and axial_est)) for u, v, est in pts],
         axial,
@@ -422,14 +422,19 @@ def _axial_hint(
 
 
 def _axial_depth(
+    spec: PartSpec,
     f: Feature,
     bounds: dict[str, tuple[float, float]],
     bore_ax: str,
     ends: list[dict],
+    text: str = "",
 ) -> float | None:
-    """Bore-depth hint for keep-region slab sizing — a declared depth wins
-    over the 2x-offset heuristic (end-face bores only keep the entry
-    region)."""
+    """Bore-depth hint for keep-region slab sizing and the deterministic
+    re-cut — a declared depth wins over the 2x-offset heuristic (end-face
+    bores only keep the entry region). Falling back to the declared axial
+    range or the host body's span bounds the re-cut to its plate: a
+    full-length cutter drilled through a strut sharing the bore's ray
+    (hybrid bracket run)."""
     declared = (f.dims or {}).get("depth") or (f.dims or {}).get("bore_depth")
     try:
         if declared:
@@ -439,6 +444,9 @@ def _axial_depth(
     for e in ends:
         if str(e["axis"]) == bore_ax:
             return min(2.0 * float(e["offset_mm"]), bounds[bore_ax][1] - bounds[bore_ax][0])
+    rng = parse_ranges(text).get(bore_ax) or host_span(spec, f, bore_ax)
+    if rng is not None:
+        return rng[1] - rng[0]
     return None
 
 
