@@ -41,6 +41,7 @@ class FluxSchnellAdapter(ImageAdapter):
     max_count = 4
     max_side = 1024
     supports_edit: ClassVar[bool] = True  # img2img via FluxImg2ImgPipeline.from_pipe
+    est_mem_mb = 8000
 
     @classmethod
     def available(cls, cfg: Any) -> bool:

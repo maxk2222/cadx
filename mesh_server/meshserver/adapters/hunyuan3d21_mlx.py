@@ -116,6 +116,7 @@ class Hunyuan3D21MlxAdapter(MeshAdapter):
         "Tencent Hunyuan Community License — restricted in EU/UK/KR; "
         "prefer TRELLIS.2/TripoSG (MIT) where required"
     )
+    est_mem_mb = 12000
 
     @classmethod
     def available(cls, cfg: Any) -> bool:

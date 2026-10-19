@@ -17,9 +17,11 @@ Exit codes: 0 ok, 2 generation/cancel abort, 1 crash (stderr has the error).
 
 from __future__ import annotations
 
+import contextlib
 import gc
 import json
 import os
+import select
 import sys
 import time
 from pathlib import Path
@@ -225,43 +227,40 @@ def _run_image(req: dict, cfg: ServerConfig, registry: Registry, work: Path) -> 
     }
 
 
-def main() -> int:
-    if len(sys.argv) != 2:
-        print("usage: python -m meshserver.gen_worker <request.json>", file=sys.stderr)
-        return 2
-    req_path = Path(sys.argv[1])
-    req = json.loads(req_path.read_text())
-    work = req_path.parent
-    cfg = ServerConfig()
-    # MPS shares unified memory with the host OS — an unbounded torch MPS
-    # allocator can over-commit the machine and stall the Metal queue,
-    # freezing macOS instead of raising OOM (observed: mv-turbo job hung in
-    # mps_copy_ at 0% CPU → full system crash). Cap it BEFORE any torch/mps
-    # use so a runaway job dies cleanly. setdefault: operator env wins.
-    # ratio × Metal's recommendedMaxWorkingSetSize (~75% RAM ≈ 48GB @64GB):
-    # 0.65 ≈ 31GB MPS budget — above mv-turbo's ~25GB peak, well below the
-    # point where Metal page starvation froze the whole UI (observed crash)
-    os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.65")
-    os.environ.setdefault("PYTORCH_MPS_LOW_WATERMARK_RATIO", "0.55")
-    # config knobs the parent resolved explicitly (e.g. fake=True in tests
-    # never reaches the child via env) — whitelist, no env passthrough needed
-    for key in (
-        "fake",
-        "allow_cpu",
-        "device",
-        "model_dir",
-        "bg_removal",
-        "default_model",
-        "image_default_model",
-        "cuda_offload",
-        "cuda_offload_vram_gb",
-        "flux_mlx_quant",
-        "mlx_mem_limit_gb",
-    ):
-        if key in req.get("cfg", {}):
-            v = req["cfg"][key]
+# config knobs the parent resolved explicitly (e.g. fake=True in tests
+# never reaches the child via env) — whitelist, no env passthrough needed
+_CFG_OVERRIDE_KEYS = (
+    "fake",
+    "allow_cpu",
+    "device",
+    "model_dir",
+    "bg_removal",
+    "default_model",
+    "image_default_model",
+    "cuda_offload",
+    "cuda_offload_vram_gb",
+    "flux_mlx_quant",
+    "mlx_mem_limit_gb",
+    # --serve: parent-configured idle exit
+    "warm_idle_s",
+)
+
+
+def _apply_cfg_overrides(cfg: ServerConfig, overrides: dict) -> None:
+    for key in _CFG_OVERRIDE_KEYS:
+        if key in overrides:
+            v = overrides[key]
             setattr(cfg, key, Path(v) if key == "model_dir" else v)
-    registry = Registry(cfg)
+
+
+def _dispatch_request(req: dict, cfg: ServerConfig, registry: Registry, work: Path) -> int:
+    """Run one request dir; returns the single-shot exit-code semantics
+    (0 ok, 2 cancel abort, 1 crash). --serve maps these onto its
+    done/fail stdout protocol."""
+    global _current_model
+    _current_model = ""
+    # parent's badlist carries over — adapters that stalled/OOM'd in a
+    # previous child must not be retried by this one
     for adapter_id, err in req.get("badlist", {}).items():
         registry.mark_failed(adapter_id, err)
     try:
@@ -282,6 +281,109 @@ def main() -> int:
         return 1
     _atomic_json(work / "result.json", meta)
     return 0
+
+
+def _resolve_request_model(req: dict, registry: Registry) -> str:
+    """The adapter id this request would resolve to — used by --serve to
+    pin the worker's model before running the request."""
+    try:
+        if req.get("kind") == "image":
+            cls = registry.select_image(
+                req.get("model", "auto"), need_edit=bool(req.get("init_image_path"))
+            )
+        else:
+            cls = registry.select(
+                req.get("model", "auto"), max(1, len(req.get("image_paths") or [""]))
+            )
+    except Exception:
+        return ""
+    return cls.id if cls else ""
+
+
+def _serve() -> int:
+    """Warm-worker mode: read request-dir paths from stdin (one per line),
+    run each against the model pinned by the first request, report
+    'done|fail <dir>' per request on stdout.
+
+    Prints 'ready' once the registry is built (the model loads lazily on
+    the first request). A request resolving to a different adapter than the
+    pinned one prints 'wrong-model <dir>' and exits 4 — the parent falls
+    back to a cold subprocess. Exits 0 on stdin EOF or after
+    cfg.warm_idle_s of stdin silence."""
+    cfg = ServerConfig()
+    os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.65")
+    os.environ.setdefault("PYTORCH_MPS_LOW_WATERMARK_RATIO", "0.55")
+    with contextlib.suppress(Exception):
+        _apply_cfg_overrides(cfg, json.loads(os.environ.get("MESH_SERVE_CFG", "{}")))
+    registry = Registry(cfg)
+    print("ready", flush=True)
+    pinned = ""
+    # raw fd reads + own buffer: select() on sys.stdin's buffered reader can
+    # report "no data" while a whole request line sits in its buffer
+    buf = b""
+    while True:
+        if b"\n" not in buf:
+            if cfg.warm_idle_s > 0:
+                try:
+                    r, _, _ = select.select([sys.stdin.fileno()], [], [], cfg.warm_idle_s)
+                except (OSError, ValueError):
+                    r = [0]
+                if not r:
+                    return 0  # idle timeout — the parent decides to respawn
+            chunk = os.read(sys.stdin.fileno(), 65536)
+            if not chunk:
+                return 0  # stdin closed — parent is shutting down
+            buf += chunk
+            continue
+        line, buf = buf.split(b"\n", 1)
+        raw = line.decode(errors="replace").strip()
+        if not raw:
+            continue
+        work = Path(raw)
+        try:
+            req = json.loads((work / "request.json").read_text())
+        except (OSError, json.JSONDecodeError):
+            print(f"fail {work}", flush=True)
+            continue
+        # apply the request's badlist before resolving so the pin check
+        # sees the parent's current view
+        for adapter_id, err in req.get("badlist", {}).items():
+            registry.mark_failed(adapter_id, err)
+        resolved = _resolve_request_model(req, registry)
+        if pinned and resolved and resolved != pinned:
+            print(f"wrong-model {work}", flush=True)
+            return 4
+        rc = _dispatch_request(req, cfg, registry, work)
+        if not pinned:
+            # pin to the adapter that actually ran — an 'auto' request may
+            # have fallen through to a ladder fallback mid-request
+            pinned = _current_model or resolved
+        print(("done" if rc == 0 else "fail") + f" {work}", flush=True)
+
+
+def main() -> int:
+    if len(sys.argv) >= 2 and sys.argv[1] == "--serve":
+        return _serve()
+    if len(sys.argv) != 2:
+        print("usage: python -m meshserver.gen_worker <request.json>", file=sys.stderr)
+        return 2
+    req_path = Path(sys.argv[1])
+    req = json.loads(req_path.read_text())
+    work = req_path.parent
+    cfg = ServerConfig()
+    # MPS shares unified memory with the host OS — an unbounded torch MPS
+    # allocator can over-commit the machine and stall the Metal queue,
+    # freezing macOS instead of raising OOM (observed: mv-turbo job hung in
+    # mps_copy_ at 0% CPU → full system crash). Cap it BEFORE any torch/mps
+    # use so a runaway job dies cleanly. setdefault: operator env wins.
+    # ratio × Metal's recommendedMaxWorkingSetSize (~75% RAM ≈ 48GB @64GB):
+    # 0.65 ≈ 31GB MPS budget — above mv-turbo's ~25GB peak, well below the
+    # point where Metal page starvation froze the whole UI (observed crash)
+    os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.65")
+    os.environ.setdefault("PYTORCH_MPS_LOW_WATERMARK_RATIO", "0.55")
+    _apply_cfg_overrides(cfg, req.get("cfg", {}))
+    registry = Registry(cfg)
+    return _dispatch_request(req, cfg, registry, work)
 
 
 if __name__ == "__main__":

@@ -26,6 +26,7 @@ class FakeImageAdapter(ImageAdapter):
     max_count = 4
     max_side = 2048
     supports_edit = True  # echoes the init image — covers the edit API in tests
+    est_mem_mb = 100
 
     @classmethod
     def available(cls, cfg) -> bool:  # noqa: ARG003

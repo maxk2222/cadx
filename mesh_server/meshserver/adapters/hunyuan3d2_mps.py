@@ -141,6 +141,7 @@ class _Hy3DTorchBase(MeshAdapter):
     license_note = _LICENSE
     canonical_up = "y"  # image-space convention: raw output is Y-up
     default_steps = 30
+    est_mem_mb = 10000  # torch pipeline + DiT on MPS/ROCm
     use_flashvdm: ClassVar[bool] = False
     _variant_key: str = ""
 
@@ -271,12 +272,14 @@ class Hunyuan3D2MiniAdapter(_Hy3DTorchBase):
     id = "hunyuan3d-2mini"
     name = "Hunyuan3D-2 mini Shape (torch)"
     _variant_key = "hunyuan3d-2mini"
+    est_mem_mb = 6000  # mini weights are roughly half the mv variant
 
 
 class Hunyuan3D2MiniTurboAdapter(_Hy3DTorchBase):
     id = "hunyuan3d-2mini-turbo"
     name = "Hunyuan3D-2 mini turbo Shape (torch)"
     _variant_key = "hunyuan3d-2mini-turbo"
+    est_mem_mb = 6000
     # step-distilled: upstream runs it at 5 steps + FlashVDM
     default_steps = 5
     use_flashvdm = True

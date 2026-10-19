@@ -164,6 +164,7 @@ class Step1X3DAdapter(MeshAdapter):
     max_images = 1
     license_note = "Apache-2.0"
     default_steps = 50  # upstream inference.py default
+    est_mem_mb = 12000
 
     @classmethod
     def available(cls, cfg: Any) -> bool:

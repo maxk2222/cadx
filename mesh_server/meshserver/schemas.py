@@ -87,7 +87,7 @@ class ModelInfo(BaseModel):
     name: str = ""
     device: str = ""
     backend: str = ""
-    kind: Literal["mesh", "image"] = "mesh"
+    kind: Literal["mesh", "image", "llm"] = "mesh"
     supports_multiview: bool = False
     max_images: int = 1
     license_note: str = ""
@@ -100,6 +100,56 @@ class ModelInfo(BaseModel):
     requires_image: bool = False  # image adapters: edit-only, no txt2img
     default_steps: int | None = None  # adapter-native steps when request omits them
     canonical_up: str | None = None  # up-axis of the raw output frame ("y" = hunyuan)
+    # --- model management / memory ledger ---
+    downloaded: bool = True  # weights present in the local cache
+    downloading: bool = False  # a download job is in flight for this model
+    size_gb: float | None = None  # on-disk weights size (GB) once known
+    est_mem_mb: int | None = None  # estimated resident footprint (measured beats declared)
+    supports_vision: bool = False  # llm adapters: accepts image_url parts
+    supports_tools: bool = False  # llm adapters: accepts OpenAI tool calls
+    pinned: bool = False  # never evicted by memory pressure (llm)
+    custom: bool = False  # user-registered via /v1/models/register
+
+
+class QueueEntry(BaseModel):
+    """One job in the scheduling queue — model-affinity order, not FIFO."""
+
+    id: str
+    kind: str  # "mesh" | "image"
+    model: str = ""  # requested ('auto' allowed)
+    resolved_model: str = ""  # adapter picked at submit/attempt time
+    status: str = "queued"
+    waited_s: float = 0.0
+    est_mem_mb: int | None = None
+    message: str = ""
+
+
+class QueueInfo(BaseModel):
+    jobs: list[QueueEntry] = Field(default_factory=list)
+    free_mb: float | None = None
+    residents: list[dict] = Field(
+        default_factory=list
+    )  # [{id, mb, kind, pinned, idle_s}] loaded models + warm workers
+
+
+class DownloadStatus(BaseModel):
+    status: str = "idle"  # idle | downloading | done | error
+    bytes_done: int = 0
+    bytes_total: int | None = None
+    error: str | None = None
+
+
+class RegisterModelRequest(BaseModel):
+    """Register a custom (mostly LLM) model repo at runtime — persisted to
+    model_dir/custom_models.json so restarts keep it."""
+
+    repo: str
+    kind: Literal["llm", "mesh", "image"] = "llm"
+    backend: str = ""  # llm: "mlx-lm"|"llama.cpp" — empty = auto by device
+    name: str = ""
+    vision: bool = False
+    tools: bool = True
+    est_mem_mb: int | None = None
 
 
 class Health(BaseModel):

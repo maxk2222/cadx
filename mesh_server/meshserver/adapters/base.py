@@ -63,6 +63,9 @@ class MeshAdapter(ABC):
     # canonical up-axis of the raw output frame ("y" for image-space
     # generators like Hunyuan3D) — clients use it as an orientation prior
     canonical_up: str | None = None
+    # declared resident footprint in MB — the memory ledger prefers the
+    # measured peak RSS once a generation subprocess has reported one
+    est_mem_mb: int | None = None
 
     @classmethod
     def available(cls, cfg: Any) -> bool:

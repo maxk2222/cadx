@@ -12,8 +12,12 @@ from meshserver.adapters.fake import FakeAdapter
 from meshserver.adapters.fake_image import FakeImageAdapter
 from meshserver.adapters.image_base import ImageAdapter
 from meshserver.config import ServerConfig
+from meshserver.logging import get_logger
+from meshserver.memory import MemoryLedger
 from meshserver.schemas import ModelInfo
 from meshserver.torch_util import is_rocm
+
+log = get_logger(__name__)
 
 
 def detect_device(cfg: ServerConfig) -> str:
@@ -68,6 +72,18 @@ class Registry:
         self._failed: dict[str, str] = {}  # adapter id -> last load/OOM error
         self._probe_errors: dict[str, str] = {}  # adapter id -> availability-check error
         self._classes: list[type] = self._adapter_classes() + self._image_adapter_classes()
+        # llm adapter family — kept separate so select()/select_image() never
+        # see kind="llm" classes; refresh_llm_classes() re-reads the catalog +
+        # custom_models.json (app.py calls it after register/unregister)
+        self._llm_classes: list[type] = []
+        self.refresh_llm_classes()
+        # optional DownloadManager handle — app.py sets it post-construction;
+        # models() reads it for downloading/size_gb
+        self.downloads: object | None = None
+        # pinned models are never evicted for memory pressure (llm pin)
+        self._pinned: set[str] = set()
+        # learned footprints + resident bookkeeping for admission control
+        self.ledger = MemoryLedger(cfg)
 
     @staticmethod
     def _adapter_classes() -> list[type[MeshAdapter]]:
@@ -130,19 +146,62 @@ class Registry:
                 self._probe_errors[cls.id] = err
         return ok
 
+    def refresh_llm_classes(self) -> None:
+        """(Re)load the llm adapter catalog — builtin + custom_models.json.
+
+        Called once at construction and again after register/unregister so
+        custom models serve without a restart."""
+        with contextlib.suppress(Exception):
+            from meshserver.llm_models import llm_adapter_classes
+
+            self._llm_classes = llm_adapter_classes(self.cfg)
+
+    def find_class(self, model_id: str) -> type | None:
+        """Adapter class lookup across all kinds (download/management routes)."""
+        for cls in self._classes + self._llm_classes:
+            if cls.id == model_id:
+                return cls
+        return None
+
+    def _weights_size_gb(self, cls: type) -> float | None:
+        """On-disk weights size for an llm adapter — HF repo cache for
+        repo-based models, the gguf dir files for llama.cpp."""
+        from meshserver.adapters.llm_base import dir_size_bytes, hf_repo_cache_dir
+
+        with contextlib.suppress(Exception):
+            files = getattr(cls, "gguf_files", None) or []
+            if files:
+                base = self.cfg.model_dir / "gguf"
+                total = sum((base / f).stat().st_size for f in files if (base / f).exists())
+                return round(total / 1e9, 2) if total else None
+            repo = getattr(cls, "hf_repo", "")
+            if repo:
+                total = dir_size_bytes(hf_repo_cache_dir(repo))
+                return round(total / 1e9, 2) if total else None
+        return None
+
     def models(self) -> list[ModelInfo]:
         out: list[ModelInfo] = []
-        for cls in self._classes:
+        for cls in self._classes + self._llm_classes:
+            kind = getattr(cls, "kind", "mesh")
             # the fake adapters are only listed when explicitly enabled
             avail = self._probe(cls) if (not _is_fake(cls) or self.cfg.fake) else False
             inst = self._instances.get(cls.id)
+            est = self.ledger.est_mb(cls.id, getattr(cls, "est_mem_mb", None))
+            downloaded: bool = avail
+            size_gb: float | None = None
+            if kind == "llm":
+                with contextlib.suppress(Exception):
+                    downloaded = bool(cls.downloaded(self.cfg))
+                if downloaded:
+                    size_gb = self._weights_size_gb(cls)
             out.append(
                 ModelInfo(
                     id=cls.id,
                     name=cls.name,
                     device=cls.device,
                     backend=cls.backend,
-                    kind=getattr(cls, "kind", "mesh"),
+                    kind=kind,
                     supports_multiview=getattr(cls, "supports_multiview", False),
                     max_images=getattr(cls, "max_images", 0),
                     license_note=cls.license_note,
@@ -155,6 +214,19 @@ class Registry:
                     max_count=getattr(cls, "max_count", None),
                     default_steps=getattr(cls, "default_steps", None),
                     canonical_up=getattr(cls, "canonical_up", None),
+                    # mesh/image weights live in the HF/pipeline cache —
+                    # availability implies presence; llm adapters report the
+                    # real downloaded state + on-disk size
+                    downloaded=downloaded,
+                    downloading=bool(
+                        self.downloads and self.downloads.is_downloading(cls.id)
+                    ),
+                    size_gb=size_gb,
+                    est_mem_mb=round(est) if est else None,
+                    supports_vision=getattr(cls, "supports_vision", False),
+                    supports_tools=getattr(cls, "supports_tools", False),
+                    pinned=cls.id in self._pinned,
+                    custom=getattr(cls, "custom", False),
                 )
             )
         return out
@@ -286,19 +358,56 @@ class Registry:
         # no ladder hit — any remaining adapter is better than failing
         return next(iter(avail.values()), None)
 
+    def select_llm(self, requested: str) -> type | None:
+        """Pick an llm adapter class. 'auto' returns the first available and
+        downloaded class; explicit ids return the class (or None). The family
+        list may be empty until llm adapters are registered.
+
+        Unknown explicit ids (e.g. an external provider's model name leaking
+        through because llm_sidecar_model is unset) fall through to auto —
+        the sidecar is the model authority in local mode, and a stale name
+        should degrade to "any local model" instead of a hard 404."""
+        all_llm = {
+            cls.id: cls
+            for cls in self._classes + self._llm_classes
+            if getattr(cls, "kind", "mesh") == "llm"
+        }
+        if requested and requested != "auto":
+            if cls := all_llm.get(requested):
+                return cls
+            log.warning("registry.unknown_llm_model", requested=requested)
+        for cls in all_llm.values():
+            if cls.id in self._failed:
+                continue
+            with contextlib.suppress(Exception):
+                if not cls.downloaded(self.cfg):
+                    continue
+            if self._probe(cls):
+                return cls
+        return None
+
     def get(self, cls: type) -> object:
-        """Instantiate + load the adapter; only one model stays loaded."""
+        """Instantiate + load the adapter, evicting LRU residents when the
+        host can't keep mem_headroom_mb free with the newcomer aboard.
+
+        Multiple models may stay resident as long as they fit — the old
+        single-model invariant is replaced by memory admission."""
         with self._lock:
             inst = self._instances.get(cls.id)
             if inst is None:
                 inst = cls.create(self.cfg)
                 self._instances[cls.id] = inst
             if not inst.loaded:
-                # free other models first — one heavy model at a time
-                for other_id, other in self._instances.items():
-                    if other_id != cls.id and other.loaded:
-                        with contextlib.suppress(Exception):
-                            other.unload()
+                # llm servers pin when configured — a generation job must not
+                # evict a pinned chat backend mid-conversation
+                if getattr(cls, "kind", "") == "llm" and self.cfg.llm_pin:
+                    self._pinned.add(cls.id)
+                need = self.ledger.est_mb(cls.id, getattr(cls, "est_mem_mb", None))
+                # best-effort eviction: if nothing is evictable the load runs
+                # anyway and the OOM handler sorts out the wreckage
+                while not self.ledger.fits(need):
+                    if self._evict_lru_locked(exclude={cls.id}) is None:
+                        break
                 try:
                     inst.load()
                 except Exception as e:
@@ -309,28 +418,79 @@ class Registry:
                         inst.unload()
                     hard_unload()
                     raise
+                self.ledger.reserve(
+                    cls.id, need, pinned=cls.id in self._pinned, kind="model"
+                )
             self._last_used[cls.id] = time.monotonic()
+            self.ledger.touch(cls.id)
             return inst
 
     def mark_failed(self, adapter_id: str, error: str) -> None:
         """Record an inference-time failure (e.g. OOM inside generate())."""
         self._failed[adapter_id] = error[:300]
 
+    def pin(self, adapter_id: str, on: bool) -> None:
+        """Pin/unpin a resident model — pinned ids are never evicted for
+        memory pressure (the llm family uses this via cfg.llm_pin)."""
+        with self._lock:
+            if on:
+                self._pinned.add(adapter_id)
+            else:
+                self._pinned.discard(adapter_id)
+            self.ledger.set_pinned(adapter_id, on)
+
+    def _unload_instance(self, adapter_id: str, inst: object) -> None:
+        """Unload one adapter instance and drop its ledger reservation —
+        every unload path funnels here so the ledger stays consistent."""
+        with contextlib.suppress(Exception):
+            inst.unload()
+        self.ledger.release(adapter_id)
+
+    def _evict_lru_locked(self, exclude: set[str]) -> str | None:
+        """Unload the least-recently-used non-pinned loaded instance not in
+        `exclude`; returns its adapter id or None when nothing is evictable.
+        Caller must hold _lock."""
+        candidates = [
+            (self._last_used.get(aid, 0.0), aid)
+            for aid, inst in self._instances.items()
+            if inst.loaded and aid not in exclude and aid not in self._pinned
+        ]
+        if not candidates:
+            return None
+        _, aid = min(candidates)
+        self._unload_instance(aid, self._instances[aid])
+        # purge allocator caches — without this the "freed" memory stays in
+        # torch/MLX pools and the newcomer still can't fit
+        hard_unload()
+        return aid
+
+    def evict_lru(self, exclude: set[str] | None = None) -> str | None:
+        """Queue-admission hook: evict one LRU resident to make room for a
+        new model (idle warm workers are evicted first by the caller)."""
+        with self._lock:
+            return self._evict_lru_locked(set(exclude or ()))
+
     def unload_all(self) -> None:
         """Unload every resident model + purge device caches (OOM recovery)."""
         with self._lock:
-            for inst in self._instances.values():
+            for aid, inst in self._instances.items():
                 if inst.loaded:
-                    with contextlib.suppress(Exception):
-                        inst.unload()
+                    self._unload_instance(aid, inst)
         hard_unload()
 
     def maybe_unload_idle(self) -> None:
         if self.cfg.unload_idle_s <= 0:
             return
         now = time.monotonic()
+        unloaded = False
         with self._lock:
             for aid, inst in self._instances.items():
-                if inst.loaded and now - self._last_used.get(aid, 0.0) > self.cfg.unload_idle_s:
-                    with contextlib.suppress(Exception):
-                        inst.unload()
+                if (
+                    inst.loaded
+                    and aid not in self._pinned
+                    and now - self._last_used.get(aid, 0.0) > self.cfg.unload_idle_s
+                ):
+                    self._unload_instance(aid, inst)
+                    unloaded = True
+        if unloaded:
+            hard_unload()

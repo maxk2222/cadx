@@ -47,6 +47,7 @@ class Trellis2Adapter(MeshAdapter):
     supports_multiview = False
     max_images = 1
     license_note = "MIT"
+    est_mem_mb = 16000  # 4B model — heaviest adapter in the registry
 
     @classmethod
     def available(cls, cfg: Any) -> bool:

@@ -32,6 +32,7 @@ class FluxKontextMlxAdapter(ImageAdapter):
     max_side = 1024
     supports_edit: ClassVar[bool] = True
     requires_image: ClassVar[bool] = True
+    est_mem_mb = 16000  # kontext-dev, not the quantized schnell
 
     @classmethod
     def available(cls, cfg: Any) -> bool:  # noqa: ARG003

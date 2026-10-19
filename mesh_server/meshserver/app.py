@@ -1,5 +1,7 @@
 """FastAPI app: /v1/health, /v1/models, /v1/jobs CRUD + mesh download,
-/v1/image-jobs CRUD + PNG download (text-to-image adapter family)."""
+/v1/image-jobs CRUD + PNG download (text-to-image adapter family),
+/v1/chat/completions (OpenAI-compatible proxy to local llm adapters),
+/v1/queue + model download/registration management routes."""
 
 from __future__ import annotations
 
@@ -8,20 +10,26 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import Response
 
 from meshserver.config import ServerConfig, get_config
+from meshserver.downloads import DownloadManager, downloadable
 from meshserver.jobs import ImageJob, JobManager, MeshJob
+from meshserver.llm_models import register_custom_model, unregister_custom_model
+from meshserver.llm_proxy import chat_completions
 from meshserver.logging import configure_logging, get_logger
 from meshserver.registry import Registry
 from meshserver.schemas import (
+    DownloadStatus,
     GenParams,
     Health,
     ImageGenParams,
     JobCreated,
     JobStatus,
     ModelInfo,
+    QueueInfo,
+    RegisterModelRequest,
 )
 
 log = get_logger(__name__)
@@ -33,13 +41,26 @@ def create_app(cfg: ServerConfig | None = None) -> FastAPI:
     registry = Registry(cfg)
     manager = JobManager(cfg, registry)
 
+    def _is_loaded(model_id: str) -> bool:
+        inst = registry._instances.get(model_id)
+        return bool(inst and inst.loaded)
+
+    downloads = DownloadManager(cfg, is_loaded=_is_loaded)
+    registry.downloads = downloads
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         cfg.job_dir.mkdir(parents=True, exist_ok=True)
         manager.start()
-        log.info("meshserver.start", device=registry.device, port=cfg.port)
+        log.info(
+            "meshserver.start",
+            device=registry.device,
+            port=cfg.port,
+            llm_models=len(getattr(registry, "_llm_classes", [])),
+        )
         yield
         await manager.stop()
+        registry.unload_all()
 
     app = FastAPI(title="mesh-server", version="0.1.0", lifespan=lifespan)
 
@@ -171,8 +192,66 @@ def create_app(cfg: ServerConfig | None = None) -> FastAPI:
         deleted = await manager.delete(job_id)
         return {"ok": True, "deleted": deleted}
 
+    # -- llm chat completions (OpenAI-compatible proxy) -------------------- #
+
+    @app.post("/v1/chat/completions")
+    async def llm_chat(request: Request) -> Response:
+        return await chat_completions(registry, cfg, json_loads(await request.body()))
+
+    # -- scheduling / model management ------------------------------------- #
+
+    @app.get("/v1/queue", response_model=QueueInfo)
+    async def queue_info() -> QueueInfo:
+        return manager.queue_snapshot()
+
+    @app.post("/v1/models/{model_id}/download", response_model=DownloadStatus)
+    async def model_download(model_id: str) -> DownloadStatus:
+        cls = registry.find_class(model_id)
+        if cls is None:
+            raise HTTPException(404, f"unknown model '{model_id}'")
+        if not downloadable(cls):
+            raise HTTPException(400, f"model '{model_id}' has no managed download")
+        return downloads.start(model_id, cls)
+
+    @app.get("/v1/models/{model_id}/download", response_model=DownloadStatus)
+    async def model_download_status(model_id: str) -> DownloadStatus:
+        return downloads.status(model_id)
+
+    @app.delete("/v1/models/{model_id}/download")
+    async def model_download_cancel(model_id: str) -> dict:
+        return {"ok": downloads.cancel(model_id)}
+
+    @app.delete("/v1/models/{model_id}/weights")
+    async def model_weights_delete(model_id: str) -> dict:
+        cls = registry.find_class(model_id)
+        if cls is None:
+            raise HTTPException(404, f"unknown model '{model_id}'")
+        deleted = downloads.delete_weights(model_id, cls)
+        if not deleted:
+            return {"deleted": False, "error": "model is loaded or downloading"}
+        return {"deleted": True, "error": None}
+
+    @app.post("/v1/models/register", response_model=ModelInfo)
+    async def model_register(req: RegisterModelRequest) -> ModelInfo:
+        try:
+            info = register_custom_model(cfg, req)
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+        registry.refresh_llm_classes()
+        return info
+
+    @app.delete("/v1/models/{model_id}/custom")
+    async def model_unregister(model_id: str) -> dict:
+        if _is_loaded(model_id):
+            raise HTTPException(409, "model is loaded — unload it first")
+        ok = unregister_custom_model(cfg, model_id)
+        if ok:
+            registry.refresh_llm_classes()
+        return {"ok": ok}
+
     app.state.registry = registry
     app.state.manager = manager
+    app.state.downloads = downloads
     app.state.cfg = cfg
     return app
 

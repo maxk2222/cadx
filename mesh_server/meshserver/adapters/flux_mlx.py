@@ -37,6 +37,7 @@ class FluxSchnellMlxAdapter(ImageAdapter):
     max_count = 4
     max_side = 1024
     supports_edit: ClassVar[bool] = True  # mflux generate_image takes image_path/strength
+    est_mem_mb = 8000  # 4-bit quantized schnell weights
 
     @classmethod
     def available(cls, cfg: Any) -> bool:  # noqa: ARG003

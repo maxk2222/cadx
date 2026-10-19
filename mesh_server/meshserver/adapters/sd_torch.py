@@ -152,6 +152,7 @@ class SdxlAdapter(_SdBase):
     default_size = 1024
     max_count = 4
     max_side = 1024
+    est_mem_mb = 7000
 
 
 class Sd15Adapter(_SdBase):
@@ -165,3 +166,4 @@ class Sd15Adapter(_SdBase):
     default_size = 512
     max_count = 4
     max_side = 768
+    est_mem_mb = 3500

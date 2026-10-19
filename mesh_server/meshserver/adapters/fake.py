@@ -22,6 +22,7 @@ class FakeAdapter(MeshAdapter):
     supports_multiview = True
     max_images = 8
     license_note = "MIT (test fixture)"
+    est_mem_mb = 100
 
     @classmethod
     def available(cls, cfg) -> bool:  # noqa: ARG003

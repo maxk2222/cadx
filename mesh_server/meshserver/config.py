@@ -85,6 +85,46 @@ class ServerConfig:
         default_factory=lambda: float(os.environ.get("MESH_MLX_MEM_LIMIT_GB", "0"))
     )
 
+    # --- memory ledger / scheduling (Phase: multi-model residency) ---
+    # host RAM kept free below this reserved amount when admitting models (MB)
+    mem_headroom_mb: int = field(
+        default_factory=lambda: int(os.environ.get("MESH_MEM_HEADROOM_MB", "4096"))
+    )
+    # keep a warm per-model generation worker alive between jobs (saves the
+    # model reload each subprocess job pays today)
+    warm_workers: bool = field(
+        default_factory=lambda: _env_bool("MESH_WARM_WORKERS", True)
+    )
+    warm_idle_s: int = field(
+        default_factory=lambda: int(os.environ.get("MESH_WARM_IDLE_S", "300"))
+    )
+    warm_max: int = field(
+        default_factory=lambda: int(os.environ.get("MESH_WARM_MAX", "2"))
+    )
+    # queue policy: a queued job older than this wins over model affinity
+    queue_fair_s: int = field(
+        default_factory=lambda: int(os.environ.get("MESH_QUEUE_FAIR_S", "120"))
+    )
+    # queued job waiting on memory admission fails after this (s, 0 = never)
+    queue_mem_wait_s: int = field(
+        default_factory=lambda: int(os.environ.get("MESH_QUEUE_MEM_WAIT_S", "300"))
+    )
+
+    # --- LLM adapter family (kind="llm") ---
+    # a pinned LLM is never evicted by generation jobs; default lets the
+    # scheduler reclaim its memory when a mesh/image job needs it
+    llm_pin: bool = field(default_factory=lambda: _env_bool("MESH_LLM_PIN"))
+    llm_load_timeout_s: int = field(
+        default_factory=lambda: int(os.environ.get("MESH_LLM_LOAD_TIMEOUT_S", "300"))
+    )
+    llm_ctx: int = field(
+        default_factory=lambda: int(os.environ.get("MESH_LLM_CTX", "16384"))
+    )
+    # llama-server binary override (empty = python -m llama_cpp.server)
+    llama_server_bin: str = field(
+        default_factory=lambda: os.environ.get("LLAMA_SERVER_BIN", "")
+    )
+
 
 def get_config() -> ServerConfig:
     return ServerConfig()

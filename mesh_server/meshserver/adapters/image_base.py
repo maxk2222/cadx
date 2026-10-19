@@ -59,6 +59,9 @@ class ImageAdapter(ABC):
     max_side: int = 1024  # request clamp: width/height <= max_side
     supports_edit: ClassVar[bool] = False  # accepts an init image to edit
     requires_image: ClassVar[bool] = False  # edit-only adapters (no txt2img)
+    # declared resident footprint in MB — the memory ledger prefers the
+    # measured peak RSS once a generation subprocess has reported one
+    est_mem_mb: int | None = None
 
     @classmethod
     def available(cls, cfg: Any) -> bool:

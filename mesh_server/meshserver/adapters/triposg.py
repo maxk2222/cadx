@@ -202,6 +202,7 @@ class TripoSGAdapter(MeshAdapter):
     supports_multiview = False
     max_images = 1
     license_note = "MIT"
+    est_mem_mb = 10000
 
     @classmethod
     def available(cls, cfg: Any) -> bool:

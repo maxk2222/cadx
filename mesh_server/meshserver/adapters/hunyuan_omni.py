@@ -167,6 +167,7 @@ class Hunyuan3DOmniAdapter(MeshAdapter):
     license_note = _LICENSE
     canonical_up = "y"  # same image-space convention as the other Hunyuan adapters
     default_steps = 50  # upstream inference.py default
+    est_mem_mb = 14000
 
     @classmethod
     def available(cls, cfg: Any) -> bool:
