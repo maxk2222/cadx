@@ -2248,6 +2248,24 @@ class ToolSession:
         images = [str(p) for p in res.get("_images") or []]
         if images:
             out["_images"] = images
+        # structured run row for the job's live table — emit is a noop in
+        # non-job contexts (MCP/chat) and must never break the tool result
+        worst_sf = top.get("sf_export") or (min(sfs) if sfs else None)
+        emit = getattr(self.ctx, "emit", None)
+        if emit is not None:
+            with contextlib.suppress(Exception):
+                await emit(
+                    "optimize",
+                    res.get("_iteration") or 0,
+                    f"run {idx} done — volfrac {top.get('volfrac_achieved')}, SF {worst_sf}",
+                    run={
+                        "index": idx,
+                        "type": "topopt",
+                        "volfrac": top.get("volfrac_target"),
+                        "achieved": top.get("volfrac_achieved"),
+                        "worst_sf": worst_sf,
+                    },
+                )
         return out
 
     async def _tool_refine_features(self, a: dict[str, Any]) -> dict[str, Any]:
@@ -2307,6 +2325,21 @@ class ToolSession:
         images = [str(p) for p in res.get("_images") or []]
         if images:
             out["_images"] = images
+        emit = getattr(self.ctx, "emit", None)
+        if emit is not None:
+            with contextlib.suppress(Exception):
+                await emit(
+                    "optimize",
+                    res.get("_iteration") or 0,
+                    f"run {new_idx} done — refined run {idx}, SF {min(sfs) if sfs else None}",
+                    run={
+                        "index": new_idx,
+                        "type": "refine",
+                        "refined_from": idx,
+                        "applied": len(rep.get("applied") or []),
+                        "worst_sf": min(sfs) if sfs else None,
+                    },
+                )
         return out
 
     # -- submission ------------------------------------------------------------ #

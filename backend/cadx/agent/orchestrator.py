@@ -3157,6 +3157,7 @@ async def _run_cad(  # noqa: C901
                     f"done: worst safety factor {worst}"
                     if worst is not None
                     else "done: no solvable case",
+                    metrics={"worst_sf": float(worst)} if worst is not None else None,
                 )
             else:
                 await ctx.emit("fem", it, f"skipped: {exec_error(fem_res, 'no result')}")

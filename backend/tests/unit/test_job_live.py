@@ -115,6 +115,87 @@ async def test_emit_tokens_fn():
     assert live["tokens"] == {"prompt_tokens": 10, "completion_tokens": 5}
 
 
+async def test_emit_metrics_merge_and_none_filter(monkeypatch):
+    published: list[dict] = []
+
+    async def fake_publish(job_id: str, event: dict) -> None:
+        published.append(event)
+
+    monkeypatch.setattr(wj.events, "publish", fake_publish)
+
+    job = await _mk_job()
+    emit = make_emit(job.id)
+    await emit("optimize", 1, "fem probe", metrics={"probe_sf": 1.8})
+    await emit("optimize", 2, "probe again", metrics={"probe_sf": 1.4, "worst_sf": None})
+    await emit("fem", 2, "verify done", metrics={"worst_sf": 1.4})
+
+    live = await _live(job.id)
+    # latest value wins per name; the None entry dropped instead of erasing
+    assert live["metrics"] == {"probe_sf": 1.4, "worst_sf": 1.4}
+    # metrics alone must not create a runs table
+    assert "runs" not in live
+
+    # raw field lands on the event top-level, merged snapshot under .live
+    assert published[0]["metrics"] == {"probe_sf": 1.8}
+    assert published[-1]["metrics"] == {"worst_sf": 1.4}
+    assert published[-1]["live"]["metrics"] == {"probe_sf": 1.4, "worst_sf": 1.4}
+
+
+async def test_emit_runs_append_and_cap_40(monkeypatch):
+    published: list[dict] = []
+
+    async def fake_publish(job_id: str, event: dict) -> None:
+        published.append(event)
+
+    monkeypatch.setattr(wj.events, "publish", fake_publish)
+
+    job = await _mk_job()
+    emit = make_emit(job.id)
+    for i in range(45):
+        await emit("optimize", i, f"run {i} done", run={"index": i, "type": "topopt"})
+
+    live = await _live(job.id)
+    assert len(live["runs"]) == 40
+    assert live["runs"][0]["index"] == 5  # oldest 5 evicted by the cap
+    assert live["runs"][-1] == {"index": 44, "type": "topopt"}
+    # run rows don't touch the scalar metrics map
+    assert "metrics" not in live
+
+    # raw run field on each event + persisted snapshot under .live
+    assert published[-1]["run"] == {"index": 44, "type": "topopt"}
+    assert len(published[-1]["live"]["runs"]) == 40
+
+
+async def test_emit_metrics_and_run_leave_existing_fields(monkeypatch):
+    job = await _mk_job()
+    emit = make_emit(job.id)
+    await emit("plan", 0, "approach", max_iterations=10)
+    await emit("critique", 1, "score 62", score=62)
+    await emit(
+        "optimize",
+        2,
+        "run 0 done",
+        metrics={"probe_sf": 2.0},
+        run={"index": 0, "type": "topopt"},
+        sub_progress=0.5,
+        sub_label="simp",
+    )
+
+    live = await _live(job.id)
+    # new fields alongside the existing whitelist/score behaviour
+    assert live["max_iterations"] == 10
+    assert live["scores"] == [{"it": 1, "score": 62}]
+    assert live["sub_progress"] == 0.5 and live["sub_label"] == "simp"
+    assert live["metrics"] == {"probe_sf": 2.0}
+    assert live["runs"] == [{"index": 0, "type": "topopt"}]
+    assert [h["step"] for h in live["step_history"]] == ["plan", "critique"]
+
+    async with async_session() as db:
+        j = await db.get(Job, job.id)
+        # progress still computed from the iteration budget, not the new fields
+        assert j.progress == pytest.approx((2 - 1 + 0.5) / 10)
+
+
 # --------------------------------------------------------------------------- #
 # API-level: live-renders manifest + ?view= preview + global /jobs list
 

@@ -106,9 +106,10 @@ def make_emit(
     (0%)' dozens of times.
 
     Optional structured fields on the call (`score=`, `max_iterations=`,
-    `sub_progress=`, `sub_label=`) are merged into the published SSE event and
-    rolled into the persisted Job.live snapshot (iteration budget, score
-    history, per-step timings, token usage) so reconnects restore the full UI.
+    `sub_progress=`, `sub_label=`, `metrics=`, `run=`) are merged into the
+    published SSE event and rolled into the persisted Job.live snapshot
+    (iteration budget, score history, per-step timings, token usage, named
+    scalar metrics, completed-run rows) so reconnects restore the full UI.
     """
     last: tuple[str, int, str] | None = None
     live: dict[str, Any] = {"scores": [], "step_history": []}
@@ -140,6 +141,16 @@ def make_emit(
             scores = live.setdefault("scores", [])
             if not any(s["it"] == iteration for s in scores):
                 scores.append({"it": iteration, "score": score})
+        if (metrics := fields.get("metrics")) is not None:
+            # flat named scalars (worst_sf, probe_sf, …) — latest value wins;
+            # None entries are dropped so a failed probe never erases a value
+            merged = live.setdefault("metrics", {})
+            merged.update({k: v for k, v in metrics.items() if v is not None})
+        if (run := fields.get("run")) is not None:
+            # one row per completed topopt/refine run — same cap as step_history
+            runs = live.setdefault("runs", [])
+            runs.append(run)
+            del runs[:-40]
         if tokens_fn is not None:
             with contextlib.suppress(Exception):
                 live["tokens"] = tokens_fn()
@@ -2389,7 +2400,12 @@ async def run_fem_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str,
         )
         version.error = None
         register_artifacts(db, version.id, artifacts)
-        await emit("fem", 1, f"done: worst SF {worst_sf}")
+        await emit(
+            "fem",
+            1,
+            f"done: worst SF {worst_sf}",
+            metrics={"worst_sf": float(worst_sf)} if worst_sf is not None else None,
+        )
         job.status = JobStatus.succeeded
         job.finished_at = datetime.now(UTC)
         job.progress = 1.0

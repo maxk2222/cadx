@@ -172,6 +172,21 @@ def _make_fem_fn(ops: _SessionOps) -> Any:
                 "voxel_mm": a.get("voxel_mm") or ctx.settings.fem_voxel_mm or None,
             }
         )
+        probe_sfs = [
+            c.get("safety_factor")
+            for c in (res.get("fem") or {}).get("cases") or []
+            if c.get("safety_factor") is not None
+        ]
+        if probe_sfs:
+            # live metric for the job SSE stream — emit failure must never
+            # break the tool result
+            with contextlib.suppress(Exception):
+                await ctx.emit(
+                    "optimize",
+                    it,
+                    f"FEM probe done — worst SF {min(probe_sfs)}",
+                    metrics={"probe_sf": float(min(probe_sfs))},
+                )
         fem_dir = storage.iteration_dir(ctx.project_id, ctx.version_id, it) / "fem"
         images = [
             fem_dir / p

@@ -44,8 +44,9 @@ class ParentContext:
 
 class EmitFn(Protocol):
     """(step, iteration, message, **fields) — optional structured fields like
-    `score=`, `max_iterations=`, `sub_progress=`, `sub_label=` are merged into
-    the published SSE event and rolled into the persisted Job.live snapshot."""
+    `score=`, `max_iterations=`, `sub_progress=`, `sub_label=`, `metrics=`,
+    `run=` are merged into the published SSE event and rolled into the
+    persisted Job.live snapshot."""
 
     def __call__(
         self, step: str, iteration: int, message: str, **fields: Any
