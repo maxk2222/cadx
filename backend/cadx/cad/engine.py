@@ -838,7 +838,7 @@ def run_mesh_candidates(*, mesh_path: Path, out_dir: Path, size: int = 512) -> d
             pvm = pv.read(str(stl))
             pl: Any = pv.Plotter(off_screen=True, window_size=[size, size])
             pl.set_background("white")
-            pl.add_mesh(pvm, color="#9aa3ad", smooth_shading=True)
+            pl.add_mesh(pvm, color="#9aa3ad", smooth_shading=True, split_sharp_edges=True)
             fedges = pvm.extract_feature_edges(30)
             if fedges.n_points:
                 pl.add_mesh(fedges, color="#222222", line_width=1.0)

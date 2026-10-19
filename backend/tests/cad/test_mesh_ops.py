@@ -20,6 +20,7 @@ from cadx.cad.mesh_ops import (
     default_front,
     flat_base_ratio,
     flatten_bottom,
+    footprint_yaw_deg,
     heal_seam_slivers,
     load_mesh,
     merge_post_params,
@@ -1130,3 +1131,75 @@ def test_mesh_to_solid_heals_slivers():
     solid = mesh_to_solid(_sliver_mesh())
     assert solid is not None
     assert solid.volume > 0
+
+
+# --------------------------------------------------------------------------- #
+# footprint auto-yaw (M3)
+
+
+def _yawed_box(deg: float, x=120.0, y=30.0, z=20.0) -> trimesh.Trimesh:
+    m = _box(x, y, z)
+    m.apply_transform(trimesh.transformations.rotation_matrix(np.radians(deg), [0, 0, 1]))
+    return m
+
+
+def _apply_yaw(m: trimesh.Trimesh, yaw: float) -> trimesh.Trimesh:
+    out = m.copy()
+    out.apply_transform(trimesh.transformations.rotation_matrix(np.radians(yaw), [0, 0, 1]))
+    return out
+
+
+def test_footprint_yaw_rot45_box_aligns_long_side_on_x():
+    """The hybrid-run failure: a 120x30 footprint delivered at 45° yaw failed
+    the dim gate (width/Y measured 134 mm) though the mesh itself was true."""
+    box = _yawed_box(45)
+    yaw = footprint_yaw_deg(box)
+    assert yaw != 0.0
+    fixed = _apply_yaw(box, yaw)
+    assert fixed.extents[0] == pytest.approx(120, abs=1)
+    assert fixed.extents[1] == pytest.approx(30, abs=1)
+
+
+def test_footprint_yaw_cylinder_is_zero():
+    cyl = trimesh.creation.cylinder(radius=15, height=40)
+    assert footprint_yaw_deg(cyl) == 0.0
+
+
+def test_footprint_yaw_axis_aligned_is_zero():
+    assert footprint_yaw_deg(_box(120, 30, 20)) == 0.0
+
+
+def test_footprint_yaw_rot90_puts_long_side_on_x():
+    box = _yawed_box(90)
+    yaw = footprint_yaw_deg(box)
+    fixed = _apply_yaw(box, yaw)
+    assert fixed.extents[0] == pytest.approx(120, abs=1)
+    assert fixed.extents[1] == pytest.approx(30, abs=1)
+
+
+def test_footprint_yaw_rounded_to_half_degree():
+    box = _yawed_box(33.3)
+    yaw = footprint_yaw_deg(box)
+    assert yaw == pytest.approx(round(yaw * 2) / 2)
+
+
+def test_baseline_mesh_auto_yaw_aligns_and_reports():
+    post = MeshPostParams(up="+z", front="+y", auto_yaw=True)
+    m, info = baseline_mesh(_yawed_box(45), post, None)
+    assert info["orientation"]["yaw_auto_deg"] != 0.0
+    assert m.extents[0] == pytest.approx(120, abs=1)
+    assert m.extents[1] == pytest.approx(30, abs=1)
+
+
+def test_baseline_mesh_auto_yaw_off_by_default():
+    post = MeshPostParams(up="+z", front="+y")
+    m, info = baseline_mesh(_yawed_box(45), post, None)
+    assert info["orientation"]["yaw_auto_deg"] == 0.0
+    assert m.extents[0] > 100  # still yawed — no silent behaviour change
+
+
+def test_baseline_mesh_rotate_z_suppresses_auto_yaw():
+    """An explicit rotate_z_deg wins — auto_yaw must not undo a user choice."""
+    post = MeshPostParams(up="+z", front="+y", rotate_z_deg=10, auto_yaw=True)
+    _m, info = baseline_mesh(_yawed_box(45), post, None)
+    assert info["orientation"]["yaw_auto_deg"] == 0.0

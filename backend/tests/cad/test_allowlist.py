@@ -418,3 +418,88 @@ result = part
     )
     r = check_code(code)
     assert not any("locate()" in w for w in r.warnings)
+
+
+def test_extrude_on_xz_sketch_without_both_warns():
+    """M5: the bracket gusset — BuildSketch(Plane.XZ) + extrude(amount=10) is
+    one-sided (-Y); a body meant centred in Y ends up offset. Pattern taken
+    from the CAD bracket run iterations/2 model.py (lines ~42-53)."""
+    code = (
+        GOOD
+        + """with BuildPart() as p:
+    add(result)
+    with BuildSketch(Plane.XZ) as s:
+        with BuildLine() as l:
+            Polyline((-55, 35), (-55, 95), (15, 95), close=True)
+        make_face()
+    extrude(amount=10, mode=Mode.ADD)
+result = p.part
+"""
+    )
+    r = check_code(code)
+    assert r.ok  # warning only, not an error
+    assert any("one-sided" in w and "both=True" in w for w in r.warnings)
+
+
+def test_extrude_on_xz_sketch_with_both_is_fine():
+    code = (
+        GOOD
+        + """with BuildPart() as p:
+    add(result)
+    with BuildSketch(Plane.XZ) as s:
+        with BuildLine() as l:
+            Polyline((-55, 35), (-55, 95), (15, 95), close=True)
+        make_face()
+    extrude(amount=5, both=True, mode=Mode.ADD)
+result = p.part
+"""
+    )
+    r = check_code(code)
+    assert not any("one-sided" in w for w in r.warnings)
+
+
+def test_extrude_on_xy_sketch_no_warning():
+    """Default XY sketch extrudes +Z — one-sided is the normal intent."""
+    code = (
+        GOOD
+        + """with BuildPart() as p:
+    with BuildSketch():
+        Rectangle(10, 10)
+    extrude(amount=5)
+result = p.part
+"""
+    )
+    r = check_code(code)
+    assert not any("one-sided" in w for w in r.warnings)
+
+
+def test_extrude_on_yz_sketch_warns_x():
+    code = (
+        GOOD
+        + """with BuildPart() as p:
+    with BuildSketch(Plane.YZ):
+        Rectangle(10, 10)
+    extrude(amount=5)
+result = p.part
+"""
+    )
+    r = check_code(code)
+    assert any("one-sided (-X)" in w for w in r.warnings)
+
+
+def test_extrude_after_new_xy_sketch_resets_warning():
+    """A second sketch on another plane ends the XZ one-sided context."""
+    code = (
+        GOOD
+        + """with BuildPart() as p:
+    with BuildSketch(Plane.XZ):
+        Rectangle(10, 10)
+    extrude(amount=5, both=True)
+    with BuildSketch():
+        Circle(3)
+    extrude(amount=4, mode=Mode.SUBTRACT)
+result = p.part
+"""
+    )
+    r = check_code(code)
+    assert not any("one-sided" in w for w in r.warnings)

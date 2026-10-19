@@ -257,3 +257,62 @@ async def test_submit_code_clean_passes_gate():
         {"code": "from build123d import *\nPARAMS = {}\nresult = Box(1, 1, 1)\n"},
     )
     assert res["ok"] is True
+
+
+# --------------------------------------------------------------------------- #
+# strict arity for Shape copy-transforms (M4)
+
+
+def test_translate_three_positional_args_is_error():
+    """The observed `translate(x, y, z)` misuse — an ERROR now, not a warning."""
+    rep = check_code_signatures(GOOD + "result = result.translate(1, 2, 3)\n")
+    assert any("translate" in e and "ONE vector" in e for e in rep.errors)
+
+
+def test_translate_tuple_is_fine():
+    rep = check_code_signatures(GOOD + "result = result.translate((1, 2, 3))\n")
+    assert not rep.errors and not rep.warnings
+
+
+def test_translate_two_args_second_not_bool_is_error():
+    rep = check_code_signatures(GOOD + "result = result.translate(5, 10)\n")
+    assert any("ONE vector" in e for e in rep.errors)
+
+
+def test_translate_two_args_bool_flag_is_fine():
+    rep = check_code_signatures(GOOD + "result = result.translate((1, 0, 0), True)\n")
+    assert not rep.errors
+
+
+def test_rotate_three_positional_args_is_error():
+    """The observed `rotate((x, y, z), Axis, angle)` — Point, Axis, angle is not
+    the build123d signature."""
+    rep = check_code_signatures(GOOD + "result = result.rotate((0, 0, 0), Axis.Y, 30)\n")
+    assert any("rotate" in e and "Axis, angle" in e for e in rep.errors)
+
+
+def test_rotate_axis_angle_is_fine():
+    rep = check_code_signatures(GOOD + "result = result.rotate(Axis.Y, 30)\n")
+    assert not rep.errors and not rep.warnings
+
+
+def test_strict_arity_still_silent_on_uninferable_receiver():
+    rep = check_code_signatures(
+        GOOD + "v = load_reference('abc')\nv = v.translate(1, 2, 3)\nv = v.rotate(1, 2, 3)\n"
+    )
+    assert not rep.errors
+
+
+def test_strict_arity_other_methods_still_warn():
+    """Non-Shape methods keep the warning-only policy (e.g. math module)."""
+    rep = check_code_signatures(
+        "import math\nPARAMS = {}\nresult = Box(1,1,1)\nx = math.sqrt(1, 2)\n"
+    )
+    assert not rep.errors
+    assert any("sqrt" in w for w in rep.warnings)
+
+
+def test_check_code_sigcheck_translate_error_blocks():
+    res = check_code(GOOD + "result = result.translate(1, 2, 3)\n", sigcheck=True)
+    assert not res.ok
+    assert any("translate" in e for e in res.sig_errors)

@@ -80,6 +80,17 @@ _SAME_TYPE_METHODS = {
     "scale",
     "transform_geometry",
 }
+# Shape methods with unambiguous signatures — an arity violation is an ERROR
+# (not a warning): observed LLM output `translate(x, y, z)` / `rotate(origin,
+# axis, angle)` costs a full repair session each. Still gated on an inferred
+# Shape receiver — the conservative principle is unchanged.
+_STRICT_ARITY = {"translate", "rotate", "moved", "located", "scale"}
+_STRICT_FIX = {
+    "translate": "translate takes ONE vector: .translate((x, y, z))",
+    "rotate": (
+        "rotate takes (Axis, angle): .rotate(Axis.Y, 30) or .rotate(Axis((x, y, z), (0, 1, 0)), 30)"
+    ),
+}
 # builtins applied to a ShapeList
 _LIST_YIELDING = {"sorted", "list", "tuple", "reversed"}  # -> same ShapeList
 _ELEM_YIELDING = {"min", "max"}  # -> single element
@@ -645,7 +656,27 @@ class _Visitor(ast.NodeVisitor):
 
     # -- call checks ----------------------------------------------------------- #
 
-    def _check_arity(self, node: ast.Call, m: Member, class_receiver: bool, label: str) -> None:
+    def _is_shape_receiver(self, owner: _Owner) -> bool:
+        """Strict arity applies only when the receiver resolves to a Shape
+        subclass — the signatures there are fixed and unambiguous."""
+        cls = self.idx.classes.get("Shape")
+        return (
+            cls is not None
+            and isinstance(owner.obj, type)
+            and owner.recv in ("instance", "classobj")
+            and issubclass(owner.obj, cls)
+        )
+
+    def _check_arity(
+        self,
+        node: ast.Call,
+        m: Member,
+        class_receiver: bool,
+        label: str,
+        *,
+        strict: bool = False,
+        fix: str | None = None,
+    ) -> None:
         sig = m.sig
         if sig is None:
             return
@@ -653,6 +684,7 @@ class _Visitor(ast.NodeVisitor):
             return
         if any(k.arg is None for k in node.keywords):
             return
+        emit = self._err if strict else self._warn
         n_pos = len(node.args)
         min_req, max_pos = sig.min_args, sig.max_args
         if class_receiver and m.needs_self:
@@ -661,23 +693,26 @@ class _Visitor(ast.NodeVisitor):
             max_pos = None if max_pos is None else max_pos + 1
         kw = {k.arg for k in node.keywords if k.arg}
         if max_pos is not None and n_pos > max_pos:
-            self._warn(
+            emit(
                 node,
-                f"{label}() takes at most {max_pos} positional arg(s), {n_pos} given",
+                f"{label}() takes at most {max_pos} positional arg(s), {n_pos} given"
+                + (f" — {fix}" if fix else ""),
             )
             return
         missing_kw = sig.req_kw - kw
         given = n_pos + len(kw & sig.params)
         required = min_req + len(sig.req_kw)
         if missing_kw:
-            self._warn(
+            emit(
                 node,
-                f"{label}() is missing required keyword arg(s) {sorted(missing_kw)}",
+                f"{label}() is missing required keyword arg(s) {sorted(missing_kw)}"
+                + (f" — {fix}" if fix else ""),
             )
         elif given < required:
-            self._warn(
+            emit(
                 node,
-                f"{label}() expects at least {required} arg(s), {given} given",
+                f"{label}() expects at least {required} arg(s), {given} given"
+                + (f" — {fix}" if fix else ""),
             )
 
     def _check_attr_call(self, node: ast.Call, f: ast.Attribute) -> None:
@@ -704,7 +739,38 @@ class _Visitor(ast.NodeVisitor):
         if m.kind == "module":
             self._err(node, f"{owner.label}.{f.attr} is a module, not callable")
             return
-        self._check_arity(node, m, owner.recv == "classobj", f"{owner.label}.{f.attr}")
+        label = f"{owner.label}.{f.attr}"
+        strict = f.attr in _STRICT_ARITY and self._is_shape_receiver(owner)
+        # translate(vec, <not a bool literal>) — the LLM meant translate(x, y, z)
+        # with a missing third component; a real transform flag is a bool
+        if (
+            strict
+            and f.attr == "translate"
+            and len(node.args) == 2
+            and not (
+                isinstance(node.args[1], ast.Constant) and isinstance(node.args[1].value, bool)
+            )
+        ):
+            self._err(node, f"{label}() with 2 positional args — {_STRICT_FIX['translate']}")
+            return
+        # rotate((x, y, z), Axis.Y, a) — the CadQuery origin/axis/angle idiom;
+        # arity fits (axis, angle, transform) but a literal tuple is never an Axis
+        if (
+            strict
+            and f.attr == "rotate"
+            and node.args
+            and isinstance(node.args[0], ast.Tuple | ast.List)
+        ):
+            self._err(node, f"{label}() — {_STRICT_FIX['rotate']}")
+            return
+        self._check_arity(
+            node,
+            m,
+            owner.recv == "classobj",
+            label,
+            strict=strict,
+            fix=_STRICT_FIX.get(f.attr) if strict else None,
+        )
 
     def _check_name_call(self, node: ast.Call, name: str) -> None:
         if name in self.local_defs or name in self.types or name in self.class_vars:

@@ -491,6 +491,47 @@ def _ray_tunnel(mesh, center: list[float], axis: int, r: float) -> bool:
     return int((~np.asarray(hits)).sum()) >= 3
 
 
+def _bore_open_local(mesh, center: list[float], axis: int, r: float, vspan: float) -> bool:
+    """True when the bore is open through its HOST material: walking outward
+    from both bore ends, the axis stays void for as long as the ring around it
+    is still inside material. A body further along the same line (strut,
+    opposite wall) after an air gap does not count as a membrane."""
+    import numpy as np
+
+    a1, a2 = (i for i in range(3) if i != axis)
+    step = max(0.25, min(0.5, r / 2))
+    s0 = center[axis] - vspan / 2
+    s1 = center[axis] + vspan / 2
+    ring_off = [(1.6 * r, 0.0), (-1.6 * r, 0.0), (0.0, 1.6 * r), (0.0, -1.6 * r)]
+    for direction in (1, -1):
+        start = s1 if direction > 0 else s0
+        limit = mesh.bounds[1][axis] + step if direction > 0 else mesh.bounds[0][axis] - step
+        ts: list[float] = []
+        t = start
+        while (t <= limit) if direction > 0 else (t >= limit):
+            ts.append(t)
+            t += direction * step
+        if not ts:
+            continue
+        # one bundled contains() per direction: row i = [core, ring x4]
+        pts = np.zeros((len(ts), 5, 3))
+        pts[:, :, a1] = center[a1]
+        pts[:, :, a2] = center[a2]
+        pts[:, :, axis] = np.asarray(ts)[:, None]
+        for k, (o1, o2) in enumerate(ring_off):
+            pts[:, k + 1, a1] += o1
+            pts[:, k + 1, a2] += o2
+        inside = np.asarray(mesh.contains(pts.reshape(-1, 3))).reshape(len(ts), 5)
+        for row in inside:
+            ring_in = bool(row[1:].any())
+            if not ring_in:
+                break  # left the host material — this side is open to air
+            if bool(row[0]):
+                return False  # core sealed while still inside the host — membrane
+        # ran past the part bound without finding material: open
+    return True
+
+
 def _mesh_through_holes(stl_path: Path, mesh=None) -> tuple[list[MeasuredHoleGroup], int, int]:
     """Detect through-holes on a faceted solid via ray casting.
 
@@ -1183,14 +1224,14 @@ def extract_features(  # noqa: C901 — sequential measurement passes
         # vspan is measured on the CUT face's parameter range — it can claim
         # "through" even when a membrane seals the bore, and it is capped by
         # LOCAL thickness so a real through bore in a dipped region always
-        # looks "blind" against the global extent. Verify both directions with
-        # a tunnel ray when the tessellation is available.
+        # looks "blind" against the global extent. When the tessellation is
+        # available the local bore-open walk decides instead: it only asks
+        # whether the bore exits its HOST material, so a body further along
+        # the same line (strut, opposite wall) behind an air gap no longer
+        # counts as a blockage (observed: bracket arm bore marked "blocked"
+        # because a strut crossed the axis below the plate).
         if mesh is not None:
-            tunnel = _ray_tunnel(mesh, center, ax_idx, r)
-            if depth == "through" and not tunnel:
-                depth = "blind"
-            elif depth == "blind" and tunnel:
-                depth = "through"
+            depth = "through" if _bore_open_local(mesh, center, ax_idx, r, vspan) else "blind"
         dia = 2.0 * r
         cxy = [round(float(center[0]), 2), round(float(center[1]), 2)]
         for g in groups:

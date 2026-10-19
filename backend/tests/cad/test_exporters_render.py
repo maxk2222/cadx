@@ -1,8 +1,18 @@
 from pathlib import Path
 
+import numpy as np
 import pytest
 import trimesh
-from build123d import import_brep, import_step
+from build123d import (
+    Align,
+    Box,
+    BuildPart,
+    Hole,
+    Locations,
+    Pos,
+    import_brep,
+    import_step,
+)
 
 from cadx.cad.exporters import export_2d, export_all_3d, quick_stl
 from cadx.cad.render import render_available, render_views
@@ -56,3 +66,26 @@ def test_render_views(shape, tmp_path):
     assert len(renders) == 7
     for p in renders.values():
         assert p.exists() and p.stat().st_size > 1000
+
+
+@pytest.mark.render
+def test_render_flat_face_has_no_shading_gradient(tmp_path):
+    """Regression M2: smooth_shading without split_sharp_edges blended face
+    normals across sharp edges — planar faces rendered with visible gradients
+    that the critic then "saw" as curved surfaces. A hole-free 64x64 patch on
+    the top face measured grayscale std ~13 before the fix; with
+    split_sharp_edges=True it is ~0."""
+    if not render_available():
+        pytest.skip("offscreen rendering unavailable")
+    from PIL import Image
+
+    with BuildPart() as p:
+        Box(60, 40, 6, align=(Align.CENTER, Align.CENTER, Align.MIN))
+        with Locations(Pos(-18, 0, 6)):
+            Hole(3.0)
+    stl = quick_stl(p.part, tmp_path / "r", name="bore")
+    renders = render_views(stl, tmp_path / "r", [60.0, 40.0, 6.0], size=256)
+    gray = np.asarray(Image.open(renders["top"]).convert("L"))
+    # 64x64 patch on the planar top face, clear of the bore and the outline
+    patch = gray[64:128, 96:160]
+    assert float(patch.std()) < 4.0

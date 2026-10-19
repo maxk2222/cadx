@@ -17,6 +17,7 @@ from build123d import (
     Locations,
     Pos,
     chamfer,
+    export_stl,
     fillet,
 )
 
@@ -379,3 +380,53 @@ def test_compare_anchor_positions_z_anchor_matches_z_hole():
         total_holes=1,
     )
     assert compare_anchor_positions(anchors, measured) == []
+
+
+def test_extract_bore_through_plate_only_not_blocked_by_body_below(tmp_path):
+    """Bracket bug (M1): a bore through ONE plate of a multi-body part was
+    classified 'blind'/'blocked' because a fused body further along the same
+    axis blocked the whole-part tunnel ray. The local bore-open walk stops at
+    the host boundary — the air gap means open, not a membrane."""
+    part = (
+        Pos(0, 0, 95) * Box(30, 30, 5, align=(Align.CENTER, Align.CENTER, Align.MIN))
+        + Pos(0, 0, 40) * Box(24, 24, 40, align=(Align.CENTER, Align.CENTER, Align.MIN))
+        + Pos(10, 0, 40) * Box(4, 30, 57, align=(Align.CENTER, Align.CENTER, Align.MIN))
+        - Pos(0, 0, 97.5) * Cylinder(2.75, 8)
+    )
+    assert len(part.solids()) == 1
+    stl = tmp_path / "plate.stl"
+    export_stl(part, str(stl))
+    m = extract_features(part, stl)
+    assert m.total_holes == 1
+    g = m.hole_groups[0]
+    assert g.diameter == pytest.approx(5.5, abs=0.1)
+    assert g.depth_class == "through"
+    assert g.blocked == 0
+
+
+def test_extract_blind_hole_with_mesh_is_blind(tmp_path):
+    """Same as test_extract_blind_hole but with the tessellation available —
+    the local walk must still find the sealed bottom."""
+    with BuildPart() as p:
+        Box(30, 30, 10, align=(Align.CENTER, Align.CENTER, Align.MIN))
+        p.part -= Pos(0, 0, 8.5) * Cylinder(2.5, 3)
+    stl = tmp_path / "blind.stl"
+    export_stl(p.part, str(stl))
+    m = extract_features(p.part, stl)
+    assert m.total_holes == 1
+    assert m.hole_groups[0].depth_class == "blind"
+    assert m.hole_groups[0].blocked == 1
+
+
+def test_extract_membrane_blocked_hole_with_mesh_is_blind(tmp_path):
+    """test_extract_membrane_blocked_hole_is_blind plus the mesh path: the
+    membrane sealing the bore top must still classify as blind."""
+    with BuildPart() as p:
+        Box(60, 40, 6, align=(Align.CENTER, Align.CENTER, Align.MIN))
+        p.part -= Pos(0, 0, -1) * Cylinder(2.5, 9)
+    stl = tmp_path / "membrane.stl"
+    export_stl(p.part, str(stl))
+    m = extract_features(p.part, stl)
+    assert m.total_holes == 1
+    assert m.hole_groups[0].depth_class == "blind"
+    assert m.hole_groups[0].blocked == 1

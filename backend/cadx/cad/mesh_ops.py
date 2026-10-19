@@ -64,6 +64,7 @@ class MeshPostParams(BaseModel):
     up: AxisName | None = None  # generator axis that maps to +Z (None = keep/detected)
     front: AxisName | None = None  # generator axis that maps to +Y (must be ⊥ up)
     rotate_z_deg: float = 0.0  # extra yaw around +Z after orientation
+    auto_yaw: bool = False  # align XY footprint's min-area rect to the axes (post-orient)
     decimate_faces: int | None = None  # target triangle count (None = keep all)
     flatten_bottom_mm: float = 0.0  # cut + cap at this height above bbox min Z
     mirror_x: bool = False
@@ -264,6 +265,43 @@ def default_front(up: AxisName, extents: np.ndarray) -> AxisName:
     # the wider axis becomes length/X; front (width/Y) is the other one
     other = horiz[0] if horiz[1] == sorted(horiz, key=lambda i: -extents[i])[0] else horiz[1]
     return cast(AxisName, f"+{'xyz'[other]}")  # sign convention: camera default +Y
+
+
+def footprint_yaw_deg(mesh: trimesh.Trimesh) -> float:
+    """Yaw (deg) that aligns the XY footprint's minimum-area rectangle with the
+    axes, longest side on X. 0.0 when the footprint is roundish or already aligned."""
+    pts = np.asarray(mesh.vertices)[:, :2]
+    if len(pts) < 3:
+        return 0.0
+    try:
+        t2, ext = trimesh.bounds.oriented_bounds_2D(pts)
+    except Exception:
+        return 0.0
+    ext = np.asarray(ext, dtype=float)
+    if ext.min() <= 0:
+        return 0.0
+    aspect = float(ext.max() / ext.min())
+    if aspect < 1.3:
+        return 0.0  # roundish footprint — no stable yaw to recover
+    lo = pts.min(axis=0)
+    hi = pts.max(axis=0)
+    a0 = float((hi[0] - lo[0]) * (hi[1] - lo[1]))  # axis-aligned bbox area
+    obb = float(ext[0] * ext[1])
+    if a0 <= 0:
+        return 0.0
+    if obb > 0.9 * a0 and (hi[0] - lo[0]) >= (hi[1] - lo[1]):
+        # OBB barely beats the axis-aligned box AND the long side already sits
+        # on X — nothing to fix. A long-side-on-Y footprint (90° yaw) still
+        # rotates so length lands on X.
+        return 0.0
+    yaw = math.degrees(math.atan2(t2[1, 0], t2[0, 0]))
+    if ext[1] > ext[0]:
+        yaw += 90.0  # long rectangle side would land on Y — put it on X
+    while yaw <= -90.0:
+        yaw += 180.0
+    while yaw > 90.0:
+        yaw -= 180.0
+    return round(yaw * 2) / 2
 
 
 def suggest_up(mesh: trimesh.Trimesh) -> AxisName:
@@ -1610,6 +1648,16 @@ def baseline_mesh(
 
     mesh = orient(mesh, post.up, post.front, post.rotate_z_deg, post.mirror_x)
 
+    yaw_auto = 0.0
+    if post.auto_yaw and not post.rotate_z_deg:
+        # generative output keeps the source image's iso yaw — a footprint
+        # that is far off-axis fails the dim gate for the wrong reason
+        yaw_auto = footprint_yaw_deg(mesh)
+        if yaw_auto:
+            mesh.apply_transform(
+                trimesh.transformations.rotation_matrix(math.radians(yaw_auto), [0, 0, 1])
+            )
+
     mesh, factor, dim_issues = scale_to_spec(mesh, spec)
     if post.scale and abs(post.scale - 1.0) > 1e-9:
         mesh.apply_scale(post.scale)
@@ -1629,6 +1677,7 @@ def baseline_mesh(
             "up": post.up,
             "front": post.front,
             "rotate_z_deg": post.rotate_z_deg,
+            "yaw_auto_deg": yaw_auto,
             "mirror_x": post.mirror_x,
         },
         "scale_factor": round(factor, 6),

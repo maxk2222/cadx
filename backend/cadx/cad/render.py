@@ -73,7 +73,7 @@ def render_views(
     pl = pv.Plotter(off_screen=True, window_size=(size, size))
     try:
         pl.set_background("white")
-        pl.add_mesh(mesh, color="#9aa3ad", smooth_shading=True)
+        pl.add_mesh(mesh, color="#9aa3ad", smooth_shading=True, split_sharp_edges=True)
         if edges.n_points:
             pl.add_mesh(edges, color="#222222", line_width=1.5)
         pl.add_mesh(outline, color="#888888", line_width=2)
@@ -113,7 +113,7 @@ def render_thumbnail(stl_path: Path, out_path: Path, size: int = 256) -> Path | 
     mesh = pv.read(str(stl_path))
     pl = pv.Plotter(off_screen=True, window_size=(size, size))
     pl.set_background("white")
-    pl.add_mesh(mesh, color="#9aa3ad", smooth_shading=True)
+    pl.add_mesh(mesh, color="#9aa3ad", smooth_shading=True, split_sharp_edges=True)
     edges = mesh.extract_feature_edges(30)
     if edges.n_points:
         pl.add_mesh(edges, color="#333333", line_width=1)

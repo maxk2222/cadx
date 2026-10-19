@@ -261,8 +261,67 @@ class _Checker(ast.NodeVisitor):
                 return sub.func.attr
         return None
 
+    def _sketch_plane(self, ctx: ast.AST) -> str | None:
+        """'XZ'/'YZ' when ctx is ``BuildSketch(<...Plane.XZ/Plane.YZ...>)``."""
+        if not (
+            isinstance(ctx, ast.Call)
+            and isinstance(ctx.func, ast.Name)
+            and ctx.func.id == "BuildSketch"
+        ):
+            return None
+        for sub in ast.walk(ctx):
+            if (
+                isinstance(sub, ast.Attribute)
+                and sub.attr in ("XZ", "YZ")
+                and isinstance(sub.value, ast.Name)
+                and sub.value.id == "Plane"
+            ):
+                return sub.attr
+        return None
+
+    def _check_onesided_extrude(self, node: ast.With) -> None:
+        """extrude() after ``with BuildSketch(Plane.XZ/YZ)`` in the same
+        BuildPart block is one-sided (XZ extrudes -Y, YZ extrudes -X). A body
+        meant centred on that axis needs `both=True` — observed: the bracket
+        gusset extruded 10 mm one-sided instead of centred in Y."""
+        side: str | None = None
+        for stmt in node.body:
+            if isinstance(stmt, ast.With):
+                sketched = False
+                for item in stmt.items:
+                    p = self._sketch_plane(item.context_expr)
+                    if p is not None:
+                        side = p
+                        sketched = True
+                    elif (
+                        isinstance(item.context_expr, ast.Call)
+                        and isinstance(item.context_expr.func, ast.Name)
+                        and item.context_expr.func.id == "BuildSketch"
+                    ):
+                        sketched = True
+                        side = None  # sketch on another plane — no longer applies
+                if sketched:
+                    continue  # extrudes live in sibling statements, not in the sketch
+            if side is None:
+                continue
+            axis = "Y" if side == "XZ" else "X"
+            for sub in ast.walk(stmt):
+                if (
+                    isinstance(sub, ast.Call)
+                    and isinstance(sub.func, ast.Name)
+                    and sub.func.id == "extrude"
+                    and all(k.arg != "both" for k in sub.keywords)
+                ):
+                    self._warn(
+                        sub,
+                        f"extrude after BuildSketch(Plane.{side}) is one-sided "
+                        f"(-{axis}); a body centred in {axis} needs "
+                        "extrude(amount=w/2, both=True)",
+                    )
+
     def visit_With(self, node: ast.With) -> None:
         entered: list[str] = []
+        in_part = False
         for item in node.items:
             ctx = item.context_expr
             if (
@@ -271,9 +330,13 @@ class _Checker(ast.NodeVisitor):
                 and ctx.func.id in _BUILDER_CTX
             ):
                 self._builder_depth += 1
+                if ctx.func.id == "BuildPart":
+                    in_part = True
                 if isinstance(item.optional_vars, ast.Name):
                     self._builder_vars.add(item.optional_vars.id)
                     entered.append(item.optional_vars.id)
+        if in_part:
+            self._check_onesided_extrude(node)
         self.generic_visit(node)
         self._builder_depth -= 1
         for v in entered:
