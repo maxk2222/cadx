@@ -1,3 +1,4 @@
+import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
   ChevronDown,
@@ -7,7 +8,8 @@ import {
   Wrench,
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
-import type { ProcessType, RunOptions } from "../lib/types";
+import { api } from "../lib/api";
+import type { MeshModelInfo, ProcessType, RunOptions } from "../lib/types";
 import { Chip } from "./ui";
 
 export const PROCESS_OPTIONS: { id: ProcessType; label: string; title: string }[] = [
@@ -40,6 +42,12 @@ export function optionsCount(o: RunOptions): number {
   if (o.max_iterations != null) n++;
   if (o.max_repairs != null) n++;
   if (o.pass_score != null) n++;
+  if (o.llm_backend) n++;
+  if (o.mesh_backend) n++;
+  if (o.image_backend) n++;
+  if (o.mesh_model) n++;
+  if (o.image_model) n++;
+  if (o.image_edit_model) n++;
   return n;
 }
 
@@ -76,6 +84,36 @@ export function OptionChips({ options }: { options: RunOptions | null | undefine
       {options.include_fasteners && (
         <Chip tone="amber" title="include standard fasteners">
           <Wrench className="h-3 w-3" /> fasteners
+        </Chip>
+      )}
+      {options.llm_backend && (
+        <Chip tone="blue" title="LLM backend override">
+          llm→{options.llm_backend}
+        </Chip>
+      )}
+      {options.mesh_backend && (
+        <Chip tone="blue" title="mesh backend override">
+          mesh→{options.mesh_backend}
+        </Chip>
+      )}
+      {options.image_backend && (
+        <Chip tone="blue" title="image backend override">
+          img→{options.image_backend}
+        </Chip>
+      )}
+      {options.mesh_model && (
+        <Chip tone="zinc" title="mesh model override">
+          mesh: {options.mesh_model}
+        </Chip>
+      )}
+      {options.image_model && (
+        <Chip tone="zinc" title="image model override">
+          img: {options.image_model}
+        </Chip>
+      )}
+      {options.image_edit_model && (
+        <Chip tone="zinc" title="image edit model override">
+          img edit: {options.image_edit_model}
         </Chip>
       )}
     </>
@@ -120,6 +158,49 @@ function Group({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
+const selCls =
+  "rounded border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 text-[11px] text-zinc-200 outline-none focus:border-brand-600";
+
+/** small labelled select for the backends group — first option is the
+ *  "default (settings)" passthrough (empty value). */
+function Sel({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: [string, string][];
+  onChange: (v: string) => void;
+}) {
+  return (
+    <label className="flex items-center gap-1.5 rounded border border-zinc-700 bg-zinc-800/60 px-2 py-1 text-[11px] text-zinc-400">
+      {label}
+      <select
+        className={selCls}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        {options.map(([v, l]) => (
+          <option key={v} value={v}>
+            {l}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+const DEFAULT_OPT: [string, string] = ["", "default (settings)"];
+
+function modelOpts(list: MeshModelInfo[]): [string, string][] {
+  return [
+    DEFAULT_OPT,
+    ...list.map((m): [string, string] => [m.id, m.name || m.id]),
+  ];
+}
+
 /** Collapsible run-options panel — selections are injected into the agent run. */
 export default function OptionsPanel({
   value,
@@ -131,6 +212,26 @@ export default function OptionsPanel({
   const count = optionsCount(value);
   const [open, setOpen] = useState(count > 0);
   const set = (patch: Partial<RunOptions>) => onChange({ ...value, ...patch });
+
+  // sidecar model lists — only fetched when the panel is open and the
+  // corresponding backend override selects the sidecar
+  const sidecarModels = useQuery({
+    queryKey: ["meshModels"],
+    queryFn: api.meshModels,
+    enabled: open && value.mesh_backend === "sidecar",
+    staleTime: 30_000,
+    retry: false,
+  });
+  const imageModels = useQuery({
+    queryKey: ["imageModels"],
+    queryFn: api.imageModels,
+    enabled: open && value.image_backend === "sidecar",
+    staleTime: 30_000,
+    retry: false,
+  });
+  const meshOpts = (sidecarModels.data ?? []).filter(
+    (m) => m.kind !== "image" && m.kind !== "llm",
+  );
   const customMaterial =
     value.material && !MATERIAL_OPTIONS.includes(value.material)
       ? value.material
@@ -247,6 +348,65 @@ export default function OptionsPanel({
               </span>
             </div>
           )}
+
+          <Group label="Backends">
+            <Sel
+              label="llm"
+              value={value.llm_backend ?? ""}
+              options={[
+                DEFAULT_OPT,
+                ["external", "external"],
+                ["sidecar", "sidecar"],
+              ]}
+              onChange={(v) => set({ llm_backend: (v || undefined) as RunOptions["llm_backend"] })}
+            />
+            <Sel
+              label="mesh"
+              value={value.mesh_backend ?? ""}
+              options={[
+                DEFAULT_OPT,
+                ["sidecar", "sidecar"],
+                ["tripo", "tripo"],
+              ]}
+              onChange={(v) => set({ mesh_backend: (v || undefined) as RunOptions["mesh_backend"] })}
+            />
+            <Sel
+              label="image"
+              value={value.image_backend ?? ""}
+              options={[
+                DEFAULT_OPT,
+                ["sidecar", "sidecar"],
+                ["openai", "openai"],
+              ]}
+              onChange={(v) => set({ image_backend: (v || undefined) as RunOptions["image_backend"] })}
+            />
+            {value.mesh_backend === "sidecar" && (
+              <Sel
+                label="mesh model"
+                value={value.mesh_model ?? ""}
+                options={modelOpts(meshOpts)}
+                onChange={(v) => set({ mesh_model: v || undefined })}
+              />
+            )}
+            {value.image_backend === "sidecar" && (
+              <>
+                <Sel
+                  label="image model"
+                  value={value.image_model ?? ""}
+                  options={modelOpts(imageModels.data ?? [])}
+                  onChange={(v) => set({ image_model: v || undefined })}
+                />
+                <Sel
+                  label="edit model"
+                  value={value.image_edit_model ?? ""}
+                  options={modelOpts(
+                    (imageModels.data ?? []).filter((m) => m.supports_edit),
+                  )}
+                  onChange={(v) => set({ image_edit_model: v || undefined })}
+                />
+              </>
+            )}
+          </Group>
 
           <Group label="Agent budget (override defaults)">
             {(

@@ -53,6 +53,13 @@ export interface RunOptions {
   max_iterations?: number;
   max_repairs?: number;
   pass_score?: number;
+  /** backend overrides — null/undefined = use the global setting */
+  llm_backend?: "external" | "sidecar" | null;
+  mesh_backend?: "sidecar" | "tripo" | null;
+  image_backend?: "sidecar" | "openai" | null;
+  mesh_model?: string | null;
+  image_model?: string | null;
+  image_edit_model?: string | null;
   /** persisted GUI editor state (options['ui_editor']) — stripped before
    *  the backend merges options into run settings. */
   ui_editor?: UiEditorState;
@@ -724,6 +731,7 @@ export interface LiveRenders {
 }
 
 export interface Settings {
+  llm_backend: "external" | "sidecar";
   llm_base_url: string;
   llm_model_vision: string;
   llm_model_code: string;
@@ -738,6 +746,7 @@ export interface Settings {
   llm_degenerate_stall_s: number;
   llm_extra_body: string;
   llm_tools: "auto" | "on" | "off";
+  llm_sidecar_model: string;
   agent_max_iterations: number;
   agent_max_repairs: number;
   agent_pass_score: number;
@@ -777,9 +786,17 @@ export interface Settings {
   topopt_default_volfrac: number;
   topopt_default_rmin_mm: number;
   mesh_base_url: string;
+  mesh_backend: "sidecar" | "tripo";
   mesh_model: string;
+  tripo_api_base: string;
+  tripo_model: string;
+  tripo_api_key_set: boolean;
+  image_backend: "sidecar" | "openai";
   image_model: string;
   image_edit_model: string;
+  image_openai_model: string;
+  image_api_base: string;
+  image_api_key_set: boolean;
   image_default_strength: number;
   image_steps: number | null;
   image_guidance: number | null;
@@ -798,10 +815,20 @@ export interface Settings {
   data_dir: string;
 }
 
-/** PUT /settings payload — all fields optional; key is write-only. */
-export interface SettingsUpdate extends Partial<Omit<Settings, "llm_api_key_set" | "data_dir">> {
+/** PUT /settings payload — all fields optional; keys are write-only. */
+export interface SettingsUpdate
+  extends Partial<
+    Omit<
+      Settings,
+      "llm_api_key_set" | "tripo_api_key_set" | "image_api_key_set" | "data_dir"
+    >
+  > {
   llm_api_key?: string;
   clear_llm_api_key?: boolean;
+  tripo_api_key?: string;
+  clear_tripo_api_key?: boolean;
+  image_api_key?: string;
+  clear_image_api_key?: boolean;
 }
 
 export interface ProviderTestResult {
@@ -817,8 +844,8 @@ export interface MeshModelInfo {
   name: string;
   device: string;
   backend: string;
-  /** "mesh" | "image" — the sidecar hosts both adapter families */
-  kind: string;
+  /** the sidecar hosts llm / mesh / image adapter families */
+  kind: "mesh" | "image" | "llm";
   supports_multiview: boolean;
   max_images: number;
   license_note: string;
@@ -831,6 +858,57 @@ export interface MeshModelInfo {
   supports_edit: boolean;
   /** edit-only adapter — cannot do text-to-image */
   requires_image: boolean;
+  /** weights present on the sidecar host (downloadable when false) */
+  downloaded: boolean;
+  /** a download job is currently running for this model */
+  downloading: boolean;
+  /** on-disk footprint of the weights, GiB */
+  size_gb: number | null;
+  /** estimated RAM/VRAM needed to serve the model */
+  est_mem_mb: number | null;
+  supports_vision: boolean;
+  supports_tools: boolean;
+  /** pinned residents are never evicted by the sidecar queue */
+  pinned: boolean;
+  /** user-registered model (custom HF repo) — can be unregistered */
+  custom: boolean;
+}
+
+/** GET /mesh/queue — scheduler state of the sidecar. */
+export interface MeshQueue {
+  jobs: {
+    id: string;
+    kind: string;
+    model: string;
+    resolved_model: string;
+    status: string;
+    waited_s: number;
+    est_mem_mb: number | null;
+    message: string | null;
+  }[];
+  free_mb: number | null;
+  residents: {
+    id: string;
+    mb: number;
+    kind: string;
+    pinned: boolean;
+    idle_s: number;
+  }[];
+}
+
+/** POST/GET /mesh/models/{id}/download — transfer progress. */
+export interface MeshDownloadStatus {
+  status: "idle" | "downloading" | "done" | "error";
+  bytes_done: number;
+  bytes_total: number | null;
+  error: string | null;
+}
+
+/** GET /settings/llm-models — models offered by the active LLM backend. */
+export interface LlmModelsResult {
+  backend: "external" | "sidecar";
+  models: { id: string; vision: boolean; downloaded?: boolean }[];
+  error: string | null;
 }
 
 export interface MeshHealth {

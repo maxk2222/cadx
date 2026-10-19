@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import ModelsTab from "../components/ModelsTab";
 import {
   Btn,
   Card,
@@ -11,6 +12,12 @@ import {
   inputCls,
 } from "../components/ui";
 import { api, errMsg } from "../lib/api";
+import {
+  fmtMemGb,
+  modelStateLabel,
+  modelStateTone,
+  urlHost,
+} from "../lib/models";
 import type { Settings, SettingsUpdate } from "../lib/types";
 import { useTitle } from "../lib/useTitle";
 
@@ -140,9 +147,10 @@ const FIELD_BOUNDS: Record<
   exec_mem_limit_mb: { min: 256, max: 1_048_576, int: true },
 };
 
-type TabId = "provider" | "agent" | "mesh" | "fem" | "system";
+type TabId = "provider" | "models" | "agent" | "mesh" | "fem" | "system";
 const TABS: { id: TabId; label: string }[] = [
   { id: "provider", label: "LLM Provider" },
+  { id: "models", label: "Local models" },
   { id: "agent", label: "Agent" },
   { id: "mesh", label: "Mesh & Image" },
   { id: "fem", label: "FEM / TopOpt" },
@@ -177,6 +185,12 @@ export default function SettingsPage() {
   const [initial, setInitial] = useState<Record<string, string> | null>(null);
   const [apiKey, setApiKey] = useState("");
   const [clearKey, setClearKey] = useState(false);
+  const [tripoKey, setTripoKey] = useState("");
+  const [clearTripoKey, setClearTripoKey] = useState(false);
+  const [imageKey, setImageKey] = useState("");
+  const [clearImageKey, setClearImageKey] = useState(false);
+  // per-field "custom…" mode for the external-LLM model comboboxes
+  const [customModel, setCustomModel] = useState<Record<string, boolean>>({});
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState("");
 
@@ -205,6 +219,21 @@ export default function SettingsPage() {
     refetchInterval: 60_000,
     retry: false,
   });
+  const llmModels = useQuery({
+    queryKey: ["llmModels"],
+    queryFn: api.llmModels,
+    refetchInterval: 60_000,
+    retry: false,
+  });
+  // full model registry (llm/mesh/image kinds) — /mesh/health only carries
+  // mesh+image adapters; poll faster while a download is in flight
+  const meshModelsList = useQuery({
+    queryKey: ["meshModels"],
+    queryFn: api.meshModels,
+    refetchInterval: (q) =>
+      (q.state.data ?? []).some((m) => m.downloading) ? 3000 : 30_000,
+    retry: false,
+  });
   const testProvider = useMutation({
     mutationFn: api.testProvider,
     // a manual test doubles as the shared health probe — keep card + sidebar in sync
@@ -217,26 +246,49 @@ export default function SettingsPage() {
     const d = settings.data;
     const out: Record<string, string> = {};
     for (const [k, v] of Object.entries(d)) {
-      if (k === "data_dir" || k === "llm_api_key_set") continue;
+      if (
+        k === "data_dir" ||
+        k === "llm_api_key_set" ||
+        k === "tripo_api_key_set" ||
+        k === "image_api_key_set"
+      )
+        continue;
       out[k] = v == null ? "" : String(v); // nullable fields show empty = default
     }
+    // backend selectors need a concrete value even when an older backend
+    // payload omits the keys entirely
+    out.llm_backend ??= "external";
+    out.mesh_backend ??= "sidecar";
+    out.image_backend ??= "sidecar";
     setForm(out);
     setInitial(out);
   }, [settings.data, form]);
 
   const dirty = useMemo(() => {
     if (!form || !initial) return false;
-    if (apiKey.trim() || clearKey) return true;
+    if (
+      apiKey.trim() ||
+      clearKey ||
+      tripoKey.trim() ||
+      clearTripoKey ||
+      imageKey.trim() ||
+      clearImageKey
+    )
+      return true;
     for (const k of new Set([...Object.keys(form), ...Object.keys(initial)])) {
       if ((form[k] ?? "") !== (initial[k] ?? "")) return true;
     }
     return false;
-  }, [form, initial, apiKey, clearKey]);
+  }, [form, initial, apiKey, clearKey, tripoKey, clearTripoKey, imageKey, clearImageKey]);
 
   const revert = () => {
     setForm(initial);
     setApiKey("");
     setClearKey(false);
+    setTripoKey("");
+    setClearTripoKey(false);
+    setImageKey("");
+    setClearImageKey(false);
     setSaveError("");
   };
 
@@ -275,15 +327,25 @@ export default function SettingsPage() {
       }
       if (clearKey) body.clear_llm_api_key = true;
       else if (apiKey.trim()) body.llm_api_key = apiKey.trim();
+      if (clearTripoKey) body.clear_tripo_api_key = true;
+      else if (tripoKey.trim()) body.tripo_api_key = tripoKey.trim();
+      if (clearImageKey) body.clear_image_api_key = true;
+      else if (imageKey.trim()) body.image_api_key = imageKey.trim();
       return api.updateSettings(body);
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["settings"] });
       qc.invalidateQueries({ queryKey: ["meshHealth"] });
+      qc.invalidateQueries({ queryKey: ["meshModels"] });
       qc.invalidateQueries({ queryKey: ["health"] });
       qc.invalidateQueries({ queryKey: ["llmHealth"] });
+      qc.invalidateQueries({ queryKey: ["llmModels"] });
       setApiKey("");
       setClearKey(false);
+      setTripoKey("");
+      setClearTripoKey(false);
+      setImageKey("");
+      setClearImageKey(false);
       setSaveError("");
       setInitial(form);
       setSaved(true);
@@ -351,12 +413,160 @@ export default function SettingsPage() {
     );
   };
 
-  // the sidecar hosts both adapter families — split them for display
-  const models = meshHealth.data?.models ?? [];
-  const meshModels = models.filter((m) => m.kind !== "image");
+  // the registry endpoint lists llm/mesh/image kinds; fall back to the
+  // health payload when the sidecar speaks the old protocol
+  const models = meshModelsList.data ?? meshHealth.data?.models ?? [];
+  const meshModels = models.filter((m) => m.kind !== "image" && m.kind !== "llm");
+  const sidecarLlm = models.filter((m) => m.kind === "llm");
   const imageAdapters = (imageModels.data ?? []).filter((m) => m.available);
   const lp = llmHealth.data;
   const t = testProvider.data;
+
+  // backend selectors — missing keys (old backend payload) default sanely
+  const llmBackend = form.llm_backend || "external";
+  const meshBackend = form.mesh_backend || "sidecar";
+  const imageBackend = form.image_backend || "sidecar";
+  const llmBackendText =
+    llmBackend === "sidecar"
+      ? `sidecar · ${urlHost(s.mesh_base_url) || "mesh server"}`
+      : `external · ${urlHost(s.llm_base_url) || "no base url"}`;
+  const pickedVision = sidecarLlm.find((m) => m.id === form.llm_model_vision);
+
+  /** write-only API-key row — mirrors the llm_api_key handling. */
+  const apiKeyField = (
+    label: string,
+    isSet: boolean,
+    value: string,
+    onChange: (v: string) => void,
+    cleared: boolean,
+    onToggleClear: () => void,
+    hint?: string,
+  ) => (
+    <>
+      <div className="mb-3 flex items-end gap-2">
+        <Field
+          label={label}
+          hint={
+            hint ??
+            (isSet
+              ? "a key is stored — enter a new one to replace it (never shown again)"
+              : "stored in the app database, write-only")
+          }
+        >
+          <input
+            className={inputCls}
+            type="password"
+            autoComplete="off"
+            placeholder={isSet ? "••••••••" : "key…"}
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+          />
+        </Field>
+        {isSet && (
+          <Chip tone="green" className="mb-3 shrink-0">
+            key set
+          </Chip>
+        )}
+        {isSet && (
+          <Btn variant="ghost" className="mb-3" onClick={onToggleClear}>
+            {cleared ? "keep key" : "clear key"}
+          </Btn>
+        )}
+      </div>
+      {cleared && (
+        <div className="mb-3 text-xs text-amber-400">
+          the stored API key will be removed on save
+        </div>
+      )}
+    </>
+  );
+
+  /** external provider model picker — select from /settings/llm-models with
+   *  a "custom…" escape hatch; falls back to plain text when the probe fails. */
+  const extModelField = (key: string, label: string, hint?: string) => {
+    const opts = llmModels.data?.models ?? [];
+    const val = form[key] ?? "";
+    if (llmModels.isError || customModel[key]) {
+      return (
+        <Field key={key} label={label} hint={hint}>
+          <div className="flex items-center gap-2">
+            <input
+              className={inputCls}
+              value={val}
+              onChange={(e) => set(key, e.target.value)}
+            />
+            {!llmModels.isError && (
+              <Btn
+                variant="ghost"
+                onClick={() => setCustomModel((c) => ({ ...c, [key]: false }))}
+              >
+                list
+              </Btn>
+            )}
+          </div>
+        </Field>
+      );
+    }
+    return (
+      <Field key={key} label={label} hint={hint}>
+        <select
+          className={inputCls}
+          value={val}
+          onChange={(e) => {
+            if (e.target.value === "__custom__") {
+              setCustomModel((c) => ({ ...c, [key]: true }));
+            } else {
+              set(key, e.target.value);
+            }
+          }}
+        >
+          {!opts.some((o) => o.id === val) && (
+            <option value={val}>{val || "— pick a model —"}</option>
+          )}
+          {opts.map((o) => (
+            <option key={o.id} value={o.id}>
+              {o.id}
+              {o.vision ? " · vision" : ""}
+              {o.downloaded === false ? " · not downloaded" : ""}
+            </option>
+          ))}
+          <option value="__custom__">custom…</option>
+        </select>
+      </Field>
+    );
+  };
+
+  /** sidecar model picker — /mesh/models rows of the given family; models
+   *  without local weights stay visible but disabled. */
+  const sidecarModelField = (spec: {
+    key: string;
+    label: string;
+    hint?: string;
+    empty?: string;
+  }) => {
+    const val = form[spec.key] ?? "";
+    return (
+      <Field key={spec.key} label={spec.label} hint={spec.hint}>
+        <select
+          className={inputCls}
+          value={val}
+          onChange={(e) => set(spec.key, e.target.value)}
+        >
+          {spec.empty != null && <option value="">{spec.empty}</option>}
+          {sidecarLlm.map((m) => (
+            <option key={m.id} value={m.id} disabled={!m.downloaded}>
+              {m.name && m.name !== m.id ? `${m.name} — ${m.id}` : m.id}
+              {m.supports_vision ? " · 👁 vision" : ""}
+              {!m.downloaded ? " · not downloaded" : ""}
+            </option>
+          ))}
+          {val && !sidecarLlm.some((m) => m.id === val) && (
+            <option value={val}>{val}</option>
+          )}
+        </select>
+      </Field>
+    );
+  };
 
   const statusCard = (
     label: string,
@@ -412,12 +622,15 @@ export default function SettingsPage() {
         {statusCard(
           "LLM",
           lp?.ok
-            ? `online · ${lp.latency_ms}ms${lp.vision_ok ? " · vision" : ""}`
+            ? `online · ${lp.latency_ms}ms${lp.vision_ok ? " · vision" : ""} · ${llmBackendText}`
             : llmHealth.isPending
               ? "checking…"
-              : "offline",
+              : `offline · ${llmBackendText}`,
           lp?.ok ? "ok" : llmHealth.isPending ? "idle" : "bad",
-          lp?.error ?? (s.llm_api_key_set ? undefined : "no API key configured"),
+          lp?.error ??
+            (llmBackend === "sidecar" || s.llm_api_key_set
+              ? undefined
+              : "no API key configured"),
         )}
         {statusCard(
           "Mesh server",
@@ -462,49 +675,95 @@ export default function SettingsPage() {
 
       {tab === "provider" && (
       <Card className="p-4">
-        <SectionTitle>LLM provider (OpenAI-compatible)</SectionTitle>
-        {!s.llm_api_key_set && (
-          <div className="mb-3 rounded-md border border-amber-700 bg-amber-950/40 p-2 text-sm text-amber-300">
-            No API key configured — paste a key below and save. Generation works without
-            one only for providers that skip authentication.
-          </div>
-        )}
-        {field({
-          key: "llm_base_url",
-          label: "Base URL",
-          hint: "e.g. https://api.openai.com/v1, http://localhost:11434/v1 (Ollama), https://openrouter.ai/api/v1",
-        })}
-        <div className="mb-3 flex items-end gap-2">
-          <Field
-            label="API key"
-            hint={
-              s.llm_api_key_set
-                ? "a key is stored — enter a new one to replace it (never shown again)"
-                : "stored in the app database, write-only"
-            }
-          >
-            <input
-              className={inputCls}
-              type="password"
-              autoComplete="off"
-              placeholder={s.llm_api_key_set ? "••••••••" : "sk-…"}
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-            />
-          </Field>
-          {s.llm_api_key_set && (
-            <Btn variant="ghost" onClick={() => setClearKey((c) => !c)}>
-              {clearKey ? "keep key" : "clear key"}
-            </Btn>
-          )}
+        <SectionTitle>LLM provider</SectionTitle>
+        {/* backend selector — external OpenAI-compatible API or the local sidecar */}
+        <div className="mb-4 flex gap-1 rounded-lg border border-zinc-800 bg-zinc-900/80 p-1">
+          {(
+            [
+              ["external", "External API"],
+              ["sidecar", "Local sidecar"],
+            ] as const
+          ).map(([v, l]) => (
+            <button
+              key={v}
+              onClick={() => set("llm_backend", v)}
+              className={`flex-1 rounded-md px-3 py-1.5 text-sm transition-colors ${
+                llmBackend === v
+                  ? "bg-zinc-700 font-medium text-zinc-100"
+                  : "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+              }`}
+            >
+              {l}
+            </button>
+          ))}
         </div>
-        {clearKey && (
-          <div className="mb-3 text-xs text-amber-400">
-            the stored API key will be removed on save
-          </div>
+
+        {llmBackend === "external" ? (
+          <>
+            <div className="mb-3 text-xs text-zinc-500">
+              any OpenAI-compatible endpoint — cloud provider or a local server
+              (Ollama, vLLM, LM Studio)
+            </div>
+            {!s.llm_api_key_set && (
+              <div className="mb-3 rounded-md border border-amber-700 bg-amber-950/40 p-2 text-sm text-amber-300">
+                No API key configured — paste a key below and save. Generation works without
+                one only for providers that skip authentication.
+              </div>
+            )}
+            {field({
+              key: "llm_base_url",
+              label: "Base URL",
+              hint: "e.g. https://api.openai.com/v1, http://localhost:11434/v1 (Ollama), https://openrouter.ai/api/v1",
+            })}
+            {apiKeyField(
+              "API key",
+              s.llm_api_key_set,
+              apiKey,
+              setApiKey,
+              clearKey,
+              () => setClearKey((c) => !c),
+            )}
+            {extModelField(
+              "llm_model_vision",
+              "Vision model",
+              "used for image analysis & visual critique",
+            )}
+            {extModelField(
+              "llm_model_code",
+              "Code model",
+              "used for CAD code generation",
+            )}
+          </>
+        ) : (
+          <>
+            <div className="mb-3 text-xs text-zinc-500">
+              {meshHealth.data?.ok
+                ? `sidecar online · ${sidecarLlm.filter((m) => m.downloaded).length}/${sidecarLlm.length} llm models downloaded — manage downloads under “Local models”`
+                : "sidecar offline — start it with make mesh-server, then download an llm model under “Local models”"}
+            </div>
+            {sidecarModelField({
+              key: "llm_model_vision",
+              label: "Vision model",
+              hint: "used for image analysis & visual critique",
+            })}
+            {sidecarModelField({
+              key: "llm_model_code",
+              label: "Code model",
+              hint: "used for CAD code generation",
+            })}
+            {sidecarModelField({
+              key: "llm_sidecar_model",
+              label: "Single-model override",
+              hint: "serve one model for all roles instead of separate vision/code picks",
+              empty: "— per role —",
+            })}
+            {pickedVision && !pickedVision.supports_vision && (
+              <div className="mb-3 rounded-md border border-amber-700 bg-amber-950/40 p-2 text-sm text-amber-300">
+                pipeline needs a vision-capable local model — intake/critique read images
+              </div>
+            )}
+          </>
         )}
-        {field({ key: "llm_model_vision", label: "Vision model", hint: "used for image analysis & visual critique" })}
-        {field({ key: "llm_model_code", label: "Code model", hint: "used for CAD code generation" })}
         {field({
           key: "llm_json_mode",
           label: "JSON mode",
@@ -556,6 +815,8 @@ export default function SettingsPage() {
         </div>
       </Card>
       )}
+
+      {tab === "models" && <ModelsTab models={models} />}
 
       {tab === "agent" && (
       <Card className="p-4">
@@ -667,16 +928,58 @@ export default function SettingsPage() {
       {tab === "mesh" && (
       <Card className="p-4">
         <div className="mb-3 flex items-center justify-between">
-          <SectionTitle>Mesh generator (local models)</SectionTitle>
-          {meshHealth.data && (
-            <Chip
-              tone={meshHealth.data.ok ? "green" : "red"}
-              title={meshHealth.data.error ?? ""}
-            >
-              {meshHealth.data.ok ? `online · ${meshHealth.data.device}` : "offline"}
-            </Chip>
+          <SectionTitle>Mesh generation</SectionTitle>
+          {meshBackend === "tripo" ? (
+            <Chip tone="blue">tripo api</Chip>
+          ) : (
+            meshHealth.data && (
+              <Chip
+                tone={meshHealth.data.ok ? "green" : "red"}
+                title={meshHealth.data.error ?? ""}
+              >
+                {meshHealth.data.ok ? `online · ${meshHealth.data.device}` : "offline"}
+              </Chip>
+            )
           )}
         </div>
+        {field({
+          key: "mesh_backend",
+          label: "Backend",
+          options: [
+            ["sidecar", "Local sidecar"],
+            ["tripo", "Tripo3D API"],
+          ],
+        })}
+        {meshBackend === "tripo" ? (
+          <>
+            <div className="mb-3 text-xs text-zinc-500">
+              image → 3D via the hosted Tripo3D API — no local weights needed
+            </div>
+            {apiKeyField(
+              "Tripo API key",
+              s.tripo_api_key_set,
+              tripoKey,
+              setTripoKey,
+              clearTripoKey,
+              () => setClearTripoKey((c) => !c),
+            )}
+            {field({
+              key: "tripo_model",
+              label: "Tripo model",
+              options: [
+                ["v2.5-20250123", "v2.5-20250123"],
+                ["v2.0-20240919", "v2.0-20240919"],
+                ["v1.4-20240625", "v1.4-20240625"],
+              ],
+            })}
+            {field({
+              key: "tripo_api_base",
+              label: "Tripo API base",
+              hint: "empty = default https://api.tripo3d.ai",
+            })}
+          </>
+        ) : (
+          <>
         {field({
           key: "mesh_base_url",
           label: "Mesh server URL",
@@ -714,19 +1017,25 @@ export default function SettingsPage() {
         {field({ key: "mesh_decimate_faces", label: "Decimate target (faces)", kind: "number" })}
         {field({ key: "mesh_max_faces_for_cad", label: "Max faces for CAD conversion", kind: "number" })}
         {meshModels.length > 0 && (
-          <div className="mb-2 flex flex-col gap-1 text-xs text-zinc-500">
-            {meshModels
-              .filter((m) => m.available)
-              .map((m) => (
-                <div key={m.id}>
-                  <b className="text-zinc-300">{m.id}</b> · {m.device}
-                  {m.supports_multiview ? " · multiview" : ""}
-                  {m.loaded ? " · loaded" : ""}
-                  {m.license_note ? (
-                    <div className="text-zinc-500">license: {m.license_note}</div>
-                  ) : null}
-                </div>
-              ))}
+          <div className="mb-2 flex flex-col gap-1.5 text-xs text-zinc-500">
+            {meshModels.map((m) => (
+              <div key={m.id} className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                <b className="text-zinc-300">{m.id}</b> · {m.device}
+                <Chip tone={modelStateTone(m)}>{modelStateLabel(m)}</Chip>
+                {m.est_mem_mb != null && <span>{fmtMemGb(m.est_mem_mb)}</span>}
+                {m.supports_multiview ? " · multiview" : ""}
+                {m.license_note ? (
+                  <div className="basis-full text-zinc-500">license: {m.license_note}</div>
+                ) : null}
+                {m.last_error ? (
+                  <div className="basis-full text-amber-500">last error: {m.last_error}</div>
+                ) : null}
+              </div>
+            ))}
+            <div>
+              downloads &amp; custom models live under{" "}
+              <b className="text-zinc-400">Local models</b>
+            </div>
           </div>
         )}
         {!meshHealth.data?.ok && (
@@ -735,32 +1044,78 @@ export default function SettingsPage() {
             to CAD while it is unreachable.
           </div>
         )}
+          </>
+        )}
       </Card>
       )}
 
       {tab === "mesh" && (
       <Card className="p-4">
         <div className="mb-3 flex items-center justify-between">
-          <SectionTitle>Image generation (local models)</SectionTitle>
-          {meshHealth.data && (
-            <Chip
-              tone={
-                !meshHealth.data.ok
-                  ? "red"
+          <SectionTitle>Image generation</SectionTitle>
+          {imageBackend === "openai" ? (
+            <Chip tone="blue">openai api</Chip>
+          ) : (
+            meshHealth.data && (
+              <Chip
+                tone={
+                  !meshHealth.data.ok
+                    ? "red"
+                    : imageAdapters.length
+                      ? "green"
+                      : "amber"
+                }
+                title={meshHealth.data.error ?? ""}
+              >
+                {!meshHealth.data.ok
+                  ? "offline"
                   : imageAdapters.length
-                    ? "green"
-                    : "amber"
-              }
-              title={meshHealth.data.error ?? ""}
-            >
-              {!meshHealth.data.ok
-                ? "offline"
-                : imageAdapters.length
-                  ? `online · ${imageAdapters.length} adapter${imageAdapters.length > 1 ? "s" : ""}`
-                  : "no adapters"}
-            </Chip>
+                    ? `online · ${imageAdapters.length} adapter${imageAdapters.length > 1 ? "s" : ""}`
+                    : "no adapters"}
+              </Chip>
+            )
           )}
         </div>
+        {field({
+          key: "image_backend",
+          label: "Backend",
+          options: [
+            ["sidecar", "Local sidecar"],
+            ["openai", "OpenAI API"],
+          ],
+        })}
+        {imageBackend === "openai" ? (
+          <>
+            <div className="mb-3 text-xs text-zinc-500">
+              text-to-image and image editing via the OpenAI images API — empty
+              connection fields reuse the LLM provider config
+            </div>
+            {field({
+              key: "image_openai_model",
+              label: "OpenAI image model",
+              options: [
+                ["gpt-image-1", "gpt-image-1"],
+                ["dall-e-3", "dall-e-3"],
+                ["dall-e-2", "dall-e-2"],
+              ],
+            })}
+            {field({
+              key: "image_api_base",
+              label: "Image API base",
+              hint: "empty = reuse LLM provider config",
+            })}
+            {apiKeyField(
+              "Image API key",
+              s.image_api_key_set,
+              imageKey,
+              setImageKey,
+              clearImageKey,
+              () => setClearImageKey((c) => !c),
+              "empty = reuse the LLM API key",
+            )}
+          </>
+        ) : (
+          <>
         <div className="mb-3 text-xs text-zinc-500">
           text-to-image and image editing on the same mesh-server sidecar — for concept
           images, design ideation, img2img variations and auto-generated hero images
@@ -807,6 +1162,36 @@ export default function SettingsPage() {
               ) && <option value={form.image_edit_model}>{form.image_edit_model}</option>}
           </select>
         </Field>
+        {(imageModels.data ?? []).length > 0 ? (
+          <div className="mb-2 flex flex-col gap-1.5 text-xs text-zinc-500">
+            {(imageModels.data ?? []).map((m) => (
+              <div key={m.id} className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                <b className="text-zinc-300">{m.id}</b> · {m.device}
+                <Chip tone={modelStateTone(m)}>{modelStateLabel(m)}</Chip>
+                {m.supports_edit ? (m.requires_image ? " · edit-only" : " · edit-capable") : ""}
+                {m.last_error ? (
+                  <div className="basis-full text-amber-500">last error: {m.last_error}</div>
+                ) : null}
+                {m.license_note ? (
+                  <div className="basis-full text-zinc-500">license: {m.license_note}</div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        ) : meshHealth.data && !meshHealth.data.ok ? (
+          <div className="mb-2 text-xs text-zinc-500">
+            mesh-server sidecar unreachable — image generation shares it; start
+            it with <code>make mesh-server</code>.
+          </div>
+        ) : (
+          <div className="mb-2 text-xs text-zinc-500">
+            no image adapter installed — see <code>docs/image-generation.md</code> for
+            setup (FLUX.1-schnell on MLX/CUDA, SDXL fallback).
+          </div>
+        )}
+          </>
+        )}
+        {/* shared tuning — applies to both image backends */}
         {field({
           key: "image_default_strength",
           label: "Default edit strength (0–1)",
@@ -828,34 +1213,6 @@ export default function SettingsPage() {
           label: "Agent concept-image calls per session",
           kind: "number",
         })}
-        {(imageModels.data ?? []).length > 0 ? (
-          <div className="mb-2 flex flex-col gap-1 text-xs text-zinc-500">
-            {(imageModels.data ?? []).map((m) => (
-              <div key={m.id}>
-                <b className="text-zinc-300">{m.id}</b> · {m.device}
-                {m.loaded ? " · loaded" : ""}
-                {m.supports_edit ? (m.requires_image ? " · edit-only" : " · edit-capable") : ""}
-                {m.available ? "" : " · not installed"}
-                {m.last_error ? (
-                  <div className="text-amber-500">last error: {m.last_error}</div>
-                ) : null}
-                {m.license_note ? (
-                  <div className="text-zinc-500">license: {m.license_note}</div>
-                ) : null}
-              </div>
-            ))}
-          </div>
-        ) : meshHealth.data && !meshHealth.data.ok ? (
-          <div className="mb-2 text-xs text-zinc-500">
-            mesh-server sidecar unreachable — image generation shares it; start
-            it with <code>make mesh-server</code>.
-          </div>
-        ) : (
-          <div className="mb-2 text-xs text-zinc-500">
-            no image adapter installed — see <code>docs/image-generation.md</code> for
-            setup (FLUX.1-schnell on MLX/CUDA, SDXL fallback).
-          </div>
-        )}
       </Card>
       )}
 

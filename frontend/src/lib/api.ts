@@ -16,10 +16,13 @@ import type {
   LibraryPart,
   LiveRenders,
   LoadCase,
+  LlmModelsResult,
+  MeshDownloadStatus,
   MeshHealth,
   MeshModelInfo,
   MeshOp,
   MeshPreviewResult,
+  MeshQueue,
   OptimizeSpec,
   OrganicParams,
   Project,
@@ -226,6 +229,7 @@ export const api = {
     req<Settings>("/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
   testProvider: () => req<ProviderTestResult>("/settings/test", { method: "POST" }),
   llmHealth: () => req<ProviderTestResult>("/settings/health"),
+  llmModels: () => req<LlmModelsResult>("/settings/llm-models"),
 
   getCatalog: () => req<Record<string, Record<string, CatalogEntry>>>("/catalog"),
   searchCatalog: (q: string) =>
@@ -261,6 +265,29 @@ export const api = {
 
   meshHealth: () => req<MeshHealth>("/mesh/health"),
   meshModels: () => req<MeshModelInfo[]>("/mesh/models"),
+  meshQueue: () => req<MeshQueue>("/mesh/queue"),
+  meshModelDownload: (id: string) =>
+    req<MeshDownloadStatus>(`/mesh/models/${encodeURIComponent(id)}/download`, { method: "POST" }),
+  meshModelDownloadStatus: (id: string) =>
+    req<MeshDownloadStatus>(`/mesh/models/${encodeURIComponent(id)}/download`),
+  meshModelDownloadCancel: (id: string) =>
+    req<{ ok: boolean }>(`/mesh/models/${encodeURIComponent(id)}/download`, { method: "DELETE" }),
+  meshModelDeleteWeights: (id: string) =>
+    req<{ deleted: boolean; error: string | null }>(
+      `/mesh/models/${encodeURIComponent(id)}/weights`,
+      { method: "DELETE" }
+    ),
+  meshModelRegister: (body: {
+    repo: string;
+    kind?: "llm" | "mesh" | "image";
+    backend?: string;
+    name?: string;
+    vision?: boolean;
+    tools?: boolean;
+    est_mem_mb?: number;
+  }) => req<MeshModelInfo>("/mesh/models/register", json(body)),
+  meshModelUnregister: (id: string) =>
+    req<{ ok: boolean }>(`/mesh/models/${encodeURIComponent(id)}/custom`, { method: "DELETE" }),
 
   getStats: (days = 0) => req<Stats>(`/stats${days ? `?days=${days}` : ""}`),
 
