@@ -225,6 +225,9 @@ class RuntimeSettings(BaseModel):
     image_model: str = "auto"
     image_edit_model: str = "auto"  # default adapter for edit/i2i requests
     image_default_strength: float = Field(default=0.6, gt=0, le=1)  # img2img denoise
+    # vision check on synthesised hero/concept images: extra generation
+    # attempts when the verdict is "major" (worker-side, not executor)
+    image_verify_retries: int = Field(default=2, ge=0, le=4)
     image_steps: int | None = None  # None = adapter default (FLUX:4, SDXL:30)
     image_guidance: float | None = None  # None = adapter default
     image_max_side: int = Field(default=1024, ge=64, le=4096)  # w/h clamp — OOM prevention

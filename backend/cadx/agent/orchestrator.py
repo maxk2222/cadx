@@ -999,16 +999,19 @@ async def _bootstrap_concept_images(
     ctx.mesh_info["_concept_bootstrap"] = True
     if ctx.image is None or not ctx.image_available:
         return []
+    from cadx.agent.context import read_prompt
+
     subject = (plan.mesh_subject if plan else "") or (spec.name if spec else "") or ctx.prompt[:200]
-    prompt = (
-        f"{subject}, single manufactured part, isolated product photo, centered, "
-        "neutral light-grey studio background, soft even lighting, slight 3/4 view, "
-        "photorealistic, no text"
-    )
+    regen_hint = str(ctx.mesh_info.get("_regen_hint") or "").strip()
+    if regen_hint:
+        subject = f"{subject} — MUST include: {regen_hint}"
+    prompt = read_prompt("image_concept.md").format(subject=subject)
     try:
         from cadx.agent.concept_image import generate_concept_images
 
-        out = await generate_concept_images(ctx, prompt, count=1, source="concept_bootstrap")
+        out = await generate_concept_images(
+            ctx, prompt, count=1, source="concept_bootstrap", spec=spec
+        )
     except Exception as e:
         log.warning("meshgen.concept_bootstrap_failed", error=str(e))
         await ctx.emit("meshgen", iteration, f"concept image generation failed: {e}")
@@ -1055,6 +1058,7 @@ async def _ensure_synth_views(ctx: AgentCtx, iteration: int, spec: PartSpec | No
             ref_asset=images[0],
             count=2,
             source="synth_side_view",
+            spec=spec,
         )
     except Exception as e:
         log.warning("meshgen.synth_views_failed", error=str(e)[:200])
@@ -1233,6 +1237,17 @@ async def _resolve_mesh_adapter(
     from cadx.agent.model_pick import load_bench, part_class, pick_adapter
 
     bench = load_bench()
+    # hunyuan3d-omni takes the spec's stated dims as bbox conditioning
+    # (_omni_control) — prefer it over the generic auto ladder for fully
+    # dimensioned single-image parts when the weights are already local.
+    # Bench data, when present, stays authoritative.
+    if bench is None:
+        omni = next((m for m in models if "omni" in m.id.lower() and m.downloaded), None)
+        dims_full = spec is not None and all(
+            float(d.value or 0) > 0 for d in (spec.length_x, spec.width_y, spec.height_z)
+        )
+        if omni is not None and dims_full and n_images <= max(1, omni.max_images or 1):
+            return omni.id, omni.max_images
     pick = pick_adapter(
         models,
         part_class(spec),
@@ -1300,40 +1315,59 @@ async def _autogen_hero_image(ctx: AgentCtx, spec: PartSpec | None, plan: Any) -
         or ctx.prompt[:80]
     )
     from cadx.agent.context import read_prompt
+    from cadx.agent.image_check import generate_with_verification
+    from cadx.agent.image_prompt import hero_prompt_parts
 
     s = ctx.runtime_settings
-    feats = ""
-    if spec is not None and spec.features:
-        names = [f.name or f.type for f in spec.features if (f.name or f.type)]
-        if names:
-            feats = ". The part must clearly show these features in the photo: " + ", ".join(
-                names[:8]
-            )
-    prompt = read_prompt("image_hero.md").format(
-        subject=subject, prompt=ctx.prompt.strip(), features=feats
-    )
+    parts = hero_prompt_parts(spec, ctx.prompt.strip(), subject)
+    prompt = read_prompt("image_hero.md").format(**parts)
     await ctx.emit("imagegen", 0, "no reference image — generating a hero image")
 
     async def _prog(msg: str, _p: float) -> None:
         await ctx.emit("imagegen", 0, msg, sub_progress=_p, sub_label=msg)
 
-    tmp = Path(tempfile.mkdtemp(prefix="cadx-hero-"))
-    try:
+    # generate → vision-verify → persist ONLY the winning attempt: rejected
+    # images must never reach ctx.assets (a bad hero poisons the whole run)
+    side = min(1024, s.image_max_side)
+    tmp_dirs: list[Path] = []
+    last: dict[str, Any] = {}
+
+    async def _gen(p: str) -> list[InputAsset]:
         from cadx.agent.image_client import ImageGenRequest
 
-        side = min(1024, s.image_max_side)
+        tmp = Path(tempfile.mkdtemp(prefix="cadx-hero-"))
+        tmp_dirs.append(tmp)
         req = ImageGenRequest(
-            prompt=prompt,
+            prompt=p,
             model=s.image_model,
-            seed=_base_seed(ctx),
+            seed=_base_seed(ctx) + len(tmp_dirs) * 977,
             count=1,
             width=side,
             height=side,
             steps=s.image_steps,
             guidance=s.image_guidance,
+            negative=parts["negative"],
             out_dir=tmp,
         )
         result = await ctx.image.generate(req, _prog, ctx.check_cancel)
+        last["result"] = result
+        return [
+            InputAsset(
+                asset_id="",
+                kind="generated_image",
+                path=pp,
+                caption="",
+                filename=pp.name,
+            )
+            for pp in result.image_paths
+        ]
+
+    try:
+        retries = int(getattr(s, "image_verify_retries", 0) or 0)
+        gen_assets, verdict = await generate_with_verification(
+            ctx, prompt=prompt, spec=spec, gen_fn=_gen, retries=retries
+        )
+        result = last["result"]
         from cadx.agent.image_assets import persist_generated_images
         from cadx.db.session import session_scope
 
@@ -1341,7 +1375,7 @@ async def _autogen_hero_image(ctx: AgentCtx, spec: PartSpec | None, plan: Any) -
             assets = persist_generated_images(
                 db,
                 ctx.project_id,
-                result.image_paths,
+                [a.path for a in gen_assets],
                 prompt=subject,
                 caption=f"generated hero — {subject}",
                 gen_params={
@@ -1356,6 +1390,8 @@ async def _autogen_hero_image(ctx: AgentCtx, spec: PartSpec | None, plan: Any) -
                     "height": side,
                     "duration_s": result.duration_s,
                     "source": "hero_autogen",
+                    "verify": verdict.model_dump(),
+                    "attempts": len(tmp_dirs),
                 },
             )
             await db.commit()
@@ -1370,12 +1406,19 @@ async def _autogen_hero_image(ctx: AgentCtx, spec: PartSpec | None, plan: Any) -
                 )
             )
             ctx.generated_asset_ids.append(str(a.id))
+        if verdict.severity == "major":
+            await ctx.emit(
+                "imagegen",
+                0,
+                "hero image does not match the spec after retries — continuing anyway",
+            )
         await ctx.emit("imagegen", 0, f"hero image generated ({result.model})")
     except Exception as e:
         log.warning("agent.hero_image_failed", error=str(e))
         await ctx.emit("imagegen", 0, f"hero image generation failed: {e} — continuing without")
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        for d in tmp_dirs:
+            shutil.rmtree(d, ignore_errors=True)
 
 
 _CANDIDATE_VIABLE_SCORE = 0.25
@@ -3135,7 +3178,7 @@ async def _run_cad(  # noqa: C901
                 log.warning("features.anchor_compare_failed", error=str(e)[:200])
         # declared connection spans (executor samples the centreline — the
         # critic cannot tell a detached strut from a connected one)
-        for sp in (features.get("spans") or []):
+        for sp in features.get("spans") or []:
             if isinstance(sp, dict) and not sp.get("ok", True):
                 feature_findings.append(
                     {
@@ -3840,6 +3883,71 @@ async def _run_mesh(  # noqa: C901
                 )
                 break
             continue
+
+        # MESH-VS-SPEC GATE — check the processed baseline against the SPEC,
+        # not the reference image: a generative mesh can pass the silhouette
+        # pre-gate while being topologically wrong when the conditioning image
+        # itself was wrong (T-bar photo of an arched handle). On a major
+        # mismatch the producing generated assets are dropped and the run
+        # re-bootstraps a corrected concept image → new mesh; bounded to one
+        # regen per job, re-armed once so the regenerated baseline is checked
+        # again. Warn-and-continue when the budget is spent.
+        if spec is not None and not ctx.mesh_info.get("_mesh_gate_done"):
+            ctx.mesh_info["_mesh_gate_done"] = True
+            gate_reasons: list[str] = []
+            # deterministic half: sorted side-length signature of the spec vs
+            # the mesh bbox — the scorer's axis-wise aspect+height terms let a
+            # wrong Z/W signature through when L/W happens to match
+            spec_sig = sorted(
+                (float(d.value or 0) for d in (spec.length_x, spec.width_y, spec.height_z)),
+                reverse=True,
+            )
+            ana_bbox = list((exec_result.get("analysis") or {}).get("bbox_size") or [])
+            if len(ana_bbox) == 3 and all(v > 0 for v in spec_sig):
+                mesh_sig = sorted((float(v) for v in ana_bbox), reverse=True)
+                worst = max(
+                    abs(a - b) / max(a, 1e-6) for a, b in zip(spec_sig, mesh_sig, strict=True)
+                )
+                if worst > 0.35:
+                    gate_reasons.append(f"bbox shape signature off by {worst:.0%}")
+            sheet = _sheet(exec_result)
+            verdict = None
+            if sheet is not None:
+                from cadx.agent.image_check import verify_concept_image
+
+                verdict = await verify_concept_image(ctx, sheet, spec)
+            if verdict is not None and verdict.severity == "major":
+                gate_reasons.append(
+                    "render does not match spec: "
+                    + ", ".join(verdict.missing[:4] or ["shape mismatch"])
+                )
+            regens = int(ctx.mesh_info.get("_mesh_gate_regens") or 0)
+            if gate_reasons and regens < 1 and it < start_iteration + max_iterations - 1:
+                ctx.mesh_info["_mesh_gate_regens"] = regens + 1
+                ctx.mesh_info["_mesh_gate_done"] = False  # re-arm for the regenerated baseline
+                used = set((ctx.mesh_info.get("generation") or {}).get("images") or [])
+                if used:
+                    ctx.assets[:] = [
+                        a
+                        for a in ctx.assets
+                        if not (a.kind == "generated_image" and a.asset_id in used)
+                    ]
+                ctx.mesh_info["_concept_bootstrap"] = False
+                ctx.mesh_info["_regen_hint"] = "; ".join(gate_reasons)
+                await ctx.emit(
+                    "meshgen",
+                    it,
+                    "mesh does not match the spec ("
+                    + "; ".join(gate_reasons)
+                    + ") — regenerating reference image",
+                )
+                continue
+            if gate_reasons:
+                await ctx.emit(
+                    "meshgen",
+                    it,
+                    "mesh/spec mismatch persists (" + "; ".join(gate_reasons) + ") — continuing",
+                )
 
         # ANALYZE + CRITIQUE the baseline BEFORE any refine session — the
         # deterministic baseline is always a scored candidate, so an
