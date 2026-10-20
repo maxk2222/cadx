@@ -73,6 +73,22 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
   `cad/defects.py` locates BRepCheck faults with coordinates and the STEP
   roundtrip gate catches "valid in memory, broken on export",
   `cad/compare.py` diffs/interference-checks solids.
+- Context-window detection (`llm/capabilities.py` + `LLMClient._ensure_caps`): the
+  effective window resolves manual `llm_context_tokens` (>0) → DB cache
+  (`AppSetting` row `llm_caps`, keyed by model id) → live probe
+  (`/models` vLLM `max_model_len` / OpenRouter `context_length` / sidecar
+  `context_len` → LM Studio `/api/v1|v0/models` → llama.cpp `/props` →
+  Ollama `/api/show` → static name table), plus opportunistic learning from
+  provider error bodies (`parse_ctx_from_error`). Probing is lazy, once per
+  role per client; results persist via `caps_cb`. `llm_max_tokens=0` means
+  auto → `clamp(ctx//4, 2048, 128k)`, additionally clamped so
+  prompt (`estimate_prompt_tokens`) + completion fits the window; explicit
+  values are hard caps still clamped to fit. When the estimated prompt
+  exceeds `agent_context_budget_frac` of the window, the tool loop condenses
+  early and `chat_worker` collapses history into a `[EARLIER CONVERSATION
+  SUMMARY]` digest instead of silently truncating. The mesh sidecar reports
+  its effective ctx as `context_len` in `/v1/models` (`MESH_LLM_CTX` beats
+  the adapter catalog max).
 - Adaptive reasoning: `agent/thinking.py` resolves per-call `extra_body`
   (provider-dialect JSON in `llm_thinking_body_on/_off/_medium/_high`) —
   `llm_thinking=auto` enables thinking for `llm_thinking_hard_steps` (empty by

@@ -37,7 +37,9 @@ from the `CADX_SETTINGS_KEY` env var or an auto-generated
 | `llm_model_code` | `gpt-4o` | code generation |
 | `llm_json_mode` | `json_object` | `json_object` / `json_schema` / `none`; client auto-retries without `response_format` on 400s |
 | `llm_temperature_code` | `0.2` | sampling temperature for code steps (0–2) |
-| `llm_max_tokens` | `8000` | completion cap per call |
+| `llm_context_tokens` | `0` | context window override: `0` = auto-detect from the provider (`/models` → vLLM `max_model_len` / OpenRouter `context_length` / sidecar `context_len`, then native LM Studio `/api/v1/models`, llama.cpp `/props`, Ollama `/api/show`, static name table, provider error bodies); `>0` = manual override for both roles. Detections cache in the `llm_caps` AppSetting row and surface as `llm_detected` in GET /settings |
+| `llm_max_tokens` | `0` | completion cap per call: `0` = auto → `clamp(ctx//4, 2048, 128000)` additionally clamped so prompt+completion fits the detected window; `>0` = hard cap (still clamped to fit); falls back to 8000 when no context is known |
+| `agent_context_budget_frac` | `0.8` | fraction of the detected context window a prompt may occupy before tool-loop history condenses / chat history summarises early — bounds the resend before the provider rejects with a context error |
 | `llm_timeout_s` | `180` | per-request timeout |
 | `llm_stream` | `true` | stream completions |
 | `llm_idle_timeout_s` | `180` | abort a stalled stream with no content |
@@ -270,7 +272,7 @@ Infrastructure-only bootstrap settings; everything else lives in the DB.
 | `MESH_QUEUE_MEM_WAIT_S` | `300` | queued job waiting on memory admission fails after this (0 = never) |
 | `MESH_LLM_PIN` | `0` | pin loaded llm servers — never evicted under memory pressure |
 | `MESH_LLM_LOAD_TIMEOUT_S` | `300` | readiness bound for a managed llm server subprocess |
-| `MESH_LLM_CTX` | `16384` | context size passed to llama.cpp servers |
+| `MESH_LLM_CTX` | `16384` | context size passed to llama.cpp servers — the effective served window; reported to CADX as `context_len` in `/v1/models` (beats the adapter catalog max) |
 | `MESH_LLM_PYTHON` | — | interpreter for mlx llm servers (else `mesh_server/.venv-llm/bin/python`, else shared venv) |
 | `LLAMA_SERVER_BIN` | — | explicit `llama-server` binary (else PATH, else `python -m llama_cpp.server`) |
 
