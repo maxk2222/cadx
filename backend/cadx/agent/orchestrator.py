@@ -4814,15 +4814,18 @@ async def _fit_mesh_to_stated(
         )
         if not fit_result.get("ok"):
             return None
+        # degenerate-fit guard: ops that collapse the body to a sliver produce
+        # a crust, not a part. Compare post-op volume to the PRE-OP volume —
+        # an absolute bbox fraction rejects open-frame parts whose envelope
+        # is mostly void (observed: a correct bail-handle mesh at ~7% fill,
+        # dims fitted, rejected by the old 8%-of-bbox rule).
+        ana = fit_result.get("analysis") or {}
+        vol = ana.get("volume")
+        prev_vol = (cur_result.get("analysis") or {}).get("volume")
+        if vol and prev_vol and vol < 0.5 * prev_vol:
+            return None
         cur_result, cur_post = fit_result, post_fit
-        if not compare_dims(spec, fit_result.get("analysis") or {}, tol_pct, tol_mm):
-            # degenerate-fit guard: ops that collapse the body to a sliver
-            # (volume < ~8% of its own bbox) produce a crust, not a part
-            ana = fit_result.get("analysis") or {}
-            bb = ana.get("bbox_size") or []
-            vol = ana.get("volume")
-            if bb and vol and vol < 0.08 * (bb[0] * bb[1] * bb[2]):
-                return None
+        if not compare_dims(spec, ana, tol_pct, tol_mm):
             return cur_result, cur_post
     return None
 

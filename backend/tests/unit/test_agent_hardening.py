@@ -568,6 +568,86 @@ def test_fit_ops_z_extreme_still_rejects():
     assert ops == []
 
 
+async def test_fit_mesh_accepts_low_fill_open_frame(monkeypatch):
+    """Live case (iter-9): a bail-handle mesh fills only ~7% of its bbox —
+    the arch underside is void. The degenerate-fit guard must compare post-op
+    volume to the PRE-OP volume, not to the envelope, or real parts die."""
+    import itertools
+
+    from cadx.agent import orchestrator as orch
+    from cadx.agent.orchestrator import MeshPostParams
+
+    async def fake_process(ctx, it, mesh_rel, spec, post, **kw):
+        return {
+            "ok": True,
+            "analysis": {"bbox_size": [120.0, 40.0, 30.0], "volume": 10679.0},
+        }
+
+    monkeypatch.setattr(orch, "_process_mesh", fake_process)
+    ctx = type("C", (), {"mesh_info": {}, "emit": staticmethod(lambda *a, **k: None)})()
+
+    async def _emit(*a, **k):
+        return None
+
+    ctx.emit = _emit
+    exec_result = {
+        "ok": True,
+        "analysis": {"bbox_size": [120.0, 40.0, 30.8], "volume": 10963.0},
+    }
+    out = await orch._fit_mesh_to_stated(
+        ctx,
+        0,
+        "mesh.glb",
+        _stated_spec(x=120.0, y=40.0, z=30.0),
+        MeshPostParams(),
+        exec_result,
+        2.0,
+        0.6,
+        itertools.count(10),
+        make_solid=False,
+    )
+    assert out is not None
+
+
+async def test_fit_mesh_rejects_volume_collapse(monkeypatch):
+    """Ops that collapse the body to a sliver are still rejected."""
+    import itertools
+
+    from cadx.agent import orchestrator as orch
+    from cadx.agent.orchestrator import MeshPostParams
+
+    async def fake_process(ctx, it, mesh_rel, spec, post, **kw):
+        return {
+            "ok": True,
+            "analysis": {"bbox_size": [120.0, 40.0, 30.0], "volume": 3000.0},
+        }
+
+    monkeypatch.setattr(orch, "_process_mesh", fake_process)
+    ctx = type("C", (), {"mesh_info": {}})()
+
+    async def _emit(*a, **k):
+        return None
+
+    ctx.emit = _emit
+    exec_result = {
+        "ok": True,
+        "analysis": {"bbox_size": [120.0, 40.0, 30.8], "volume": 10963.0},
+    }
+    out = await orch._fit_mesh_to_stated(
+        ctx,
+        0,
+        "mesh.glb",
+        _stated_spec(x=120.0, y=40.0, z=30.0),
+        MeshPostParams(),
+        exec_result,
+        2.0,
+        0.6,
+        itertools.count(10),
+        make_solid=False,
+    )
+    assert out is None
+
+
 async def test_trace_orphan_circuit_breaker(monkeypatch):
     """FK violation → DbTrace goes dead, stops hitting the DB, keeps memory."""
 
