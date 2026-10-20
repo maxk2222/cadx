@@ -122,6 +122,9 @@ def collapse_solids(shape):
     return largest_solid(shape)
 
 
+_FILLET_MAX_EDGES = 300
+
+
 def safe_fillet(edges, radius: float, min_radius: float = 0.2) -> float:
     """Fillet ``edges``, halving the radius until OCC accepts it.
 
@@ -137,6 +140,21 @@ def safe_fillet(edges, radius: float, min_radius: float = 0.2) -> float:
         if not fillet_r:
             pass  # no fillet applied — part stays valid
     """
+    try:
+        n_edges = len(edges)
+    except TypeError:
+        n_edges = 0
+    if n_edges > _FILLET_MAX_EDGES:
+        # a selection this large is a faceted mesh body — OCC grinds on
+        # thousands of triangle edges for minutes (live hang: >480s pipeline
+        # timeout). Skip immediately; filleting belongs on the analytic
+        # sub-part BEFORE mesh_fuse, or on a chamfer-in-mesh workaround.
+        print(
+            f"safe_fillet: skipped — selection holds {n_edges} edges "
+            f"(limit {_FILLET_MAX_EDGES}); faceted mesh bodies cannot be "
+            "filleted — fillet the analytic sub-part before mesh_fuse instead"
+        )
+        return 0.0
     r = float(radius)
     while r >= min_radius:
         try:

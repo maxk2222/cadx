@@ -47,11 +47,27 @@ def _runtime(payload: dict[str, Any]) -> RuntimeSettings:
     return RuntimeSettings.model_validate(payload.get("runtime_settings") or {})
 
 
-async def _cancelled(ctx: dict[str, Any], key: str | None) -> bool:
-    if not key:
+def _cancel_keys(payload: dict[str, Any]) -> list[str]:
+    """Cancel keys a cad task must honour: the JOB-level flag (user pressed
+    cancel — kills every task of the job) plus the TASK-level flag the
+    worker sets when THIS task ran past its wait deadline. The two must
+    stay distinct — a task timeout setting the job key cancelled every
+    later task of that job for an hour (observed live: one hung execute
+    turned all following iterations into instant 'cancelled' results)."""
+    keys: list[str] = []
+    if payload.get("job_id"):
+        keys.append(f"cancel:{payload['job_id']}")
+    if payload.get("_task_id"):
+        keys.append(f"cancel:{payload['_task_id']}")
+    return keys
+
+
+async def _cancelled(ctx: dict[str, Any], key: str | list[str] | None) -> bool:
+    keys = [key] if isinstance(key, str) else (key or [])
+    if not keys:
         return False
     try:
-        return bool(await ctx["redis"].exists(key))
+        return bool(await ctx["redis"].exists(*keys))
     except Exception:
         return False
 
@@ -127,8 +143,8 @@ def run_execute_payload(
 
 async def execute_version(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     """arq task (queue "cad"): run sandbox + analysis + renders + dfm (+exports)."""
-    cancel_key = f"cancel:{payload['job_id']}" if payload.get("job_id") else None
-    if await _cancelled(ctx, cancel_key):
+    cancel_keys = _cancel_keys(payload)
+    if await _cancelled(ctx, cancel_keys):
         r = ExecResult()
         r.error = "cancelled"
         return r.to_dict()
@@ -142,7 +158,7 @@ async def execute_version(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[
     try:
         d = await asyncio.wait_for(
             asyncio.to_thread(
-                run_execute_payload, payload, cancelled=_sync_cancel_checker(cancel_key)
+                run_execute_payload, payload, cancelled=_sync_cancel_checker(cancel_keys)
             ),
             deadline,
         )
@@ -152,7 +168,7 @@ async def execute_version(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[
         r.error = f"executor pipeline exceeded {deadline}s — worker thread may be stuck"
         return r.to_dict()
 
-    if await _cancelled(ctx, cancel_key):
+    if await _cancelled(ctx, cancel_keys):
         d["ok"] = False
         d["error"] = "cancelled"
     return d
@@ -211,8 +227,8 @@ def run_audit_payload(
 
 async def audit_params(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     """arq task (queue "cad"): design-robustness audit of a version's PARAMS."""
-    cancel_key = f"cancel:{payload['job_id']}" if payload.get("job_id") else None
-    if await _cancelled(ctx, cancel_key):
+    cancel_keys = _cancel_keys(payload)
+    if await _cancelled(ctx, cancel_keys):
         return {"ok": False, "status": "fails", "error": "cancelled"}
 
     # one baseline + up to 2 runs per audited param, each bounded by the
@@ -223,7 +239,7 @@ async def audit_params(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str
     try:
         d = await asyncio.wait_for(
             asyncio.to_thread(
-                run_audit_payload, payload, cancelled=_sync_cancel_checker(cancel_key)
+                run_audit_payload, payload, cancelled=_sync_cancel_checker(cancel_keys)
             ),
             deadline,
         )
@@ -235,7 +251,7 @@ async def audit_params(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str
             "error": f"audit pipeline exceeded {deadline}s — worker thread may be stuck",
         }
 
-    if await _cancelled(ctx, cancel_key):
+    if await _cancelled(ctx, cancel_keys):
         d["ok"] = False
         d["error"] = "cancelled"
     return d
@@ -293,9 +309,7 @@ def run_mesh_payload(
         # the queue path runs this in a subprocess (mesh_payload_entry) — a
         # callable can't cross the pickle boundary, so rebuild the redis
         # checker from the payload's job_id in whichever process runs us
-        cancelled = _sync_cancel_checker(
-            f"cancel:{payload['job_id']}" if payload.get("job_id") else None
-        )
+        cancelled = _sync_cancel_checker(_cancel_keys(payload))
     project_id = uuid.UUID(payload["project_id"])
     version_id = uuid.UUID(payload["version_id"])
     mode = payload.get("mode", "final")
@@ -534,8 +548,8 @@ def _run_mesh_payload_subprocess(payload: dict[str, Any], workdir: Path) -> dict
 
 async def process_mesh(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     """arq task (queue "cad"): mesh post-processing + optional solid conversion."""
-    cancel_key = f"cancel:{payload['job_id']}" if payload.get("job_id") else None
-    if await _cancelled(ctx, cancel_key):
+    cancel_keys = _cancel_keys(payload)
+    if await _cancelled(ctx, cancel_keys):
         r = ExecResult()
         r.error = "cancelled"
         return r.to_dict()
@@ -546,7 +560,7 @@ async def process_mesh(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str
     # job_id inside the child instead
     d = await asyncio.to_thread(_run_mesh_payload_subprocess, payload, workdir)
 
-    if await _cancelled(ctx, cancel_key):
+    if await _cancelled(ctx, cancel_keys):
         d["ok"] = False
         d["error"] = "cancelled"
     return d
@@ -684,8 +698,8 @@ def run_parametrize_payload(
 async def parametrize_mesh(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     """arq task (queue "cad"): best-effort parametric reconstruction of a
     finished mesh — dispatched once per job when the mesh loop finalises."""
-    cancel_key = f"cancel:{payload['job_id']}" if payload.get("job_id") else None
-    if await _cancelled(ctx, cancel_key):
+    cancel_keys = _cancel_keys(payload)
+    if await _cancelled(ctx, cancel_keys):
         return {"ok": False, "error": "cancelled"}
 
     # mesh replay + reconstruction + one full sandbox pipeline — same
@@ -695,7 +709,7 @@ async def parametrize_mesh(ctx: dict[str, Any], payload: dict[str, Any]) -> dict
     try:
         d = await asyncio.wait_for(
             asyncio.to_thread(
-                run_parametrize_payload, payload, cancelled=_sync_cancel_checker(cancel_key)
+                run_parametrize_payload, payload, cancelled=_sync_cancel_checker(cancel_keys)
             ),
             deadline,
         )
@@ -706,7 +720,7 @@ async def parametrize_mesh(ctx: dict[str, Any], payload: dict[str, Any]) -> dict
             "error": f"parametrize pipeline exceeded {deadline}s — worker thread may be stuck",
         }
 
-    if await _cancelled(ctx, cancel_key):
+    if await _cancelled(ctx, cancel_keys):
         d["ok"] = False
         d["error"] = "cancelled"
     return d
@@ -764,11 +778,11 @@ def run_fem_payload(
 
 async def fem_analyze(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     """arq task (queue "cad"): FEM verification of a stored mesh artifact."""
-    cancel_key = f"cancel:{payload['job_id']}" if payload.get("job_id") else None
-    if await _cancelled(ctx, cancel_key):
+    cancel_keys = _cancel_keys(payload)
+    if await _cancelled(ctx, cancel_keys):
         return {"ok": False, "error": "cancelled"}
     d = await asyncio.to_thread(
-        run_fem_payload, payload, cancelled=_sync_cancel_checker(cancel_key)
+        run_fem_payload, payload, cancelled=_sync_cancel_checker(cancel_keys)
     )
     fem = d.get("fem") or {}
     log.info(
@@ -780,13 +794,16 @@ async def fem_analyze(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str,
     return d
 
 
-def _sync_cancel_checker(cancel_key: str | None) -> Callable[[], bool] | None:
+def _sync_cancel_checker(
+    cancel_keys: str | list[str] | None,
+) -> Callable[[], bool] | None:
     """Polling checker usable inside synchronous SIMP/FEM loops.
 
     The arq redis client is async and can't be awaited mid-solve, so we open
-    a separate sync connection for the cancel key the API sets.
+    a separate sync connection for the cancel keys (job + task level).
     """
-    if not cancel_key:
+    keys = [cancel_keys] if isinstance(cancel_keys, str) else (cancel_keys or [])
+    if not keys:
         return None
     url = os.environ.get("REDIS_URL")
     if not url:
@@ -800,7 +817,7 @@ def _sync_cancel_checker(cancel_key: str | None) -> Callable[[], bool] | None:
 
     def check() -> bool:
         try:
-            return bool(client.exists(cancel_key))
+            return bool(client.exists(*keys))
         except Exception:
             return False
 
@@ -855,15 +872,15 @@ def run_optimize_payload(
 
 async def optimize(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     """arq task (queue "cad"): SIMP topology optimization + FEM verification."""
-    cancel_key = f"cancel:{payload['job_id']}" if payload.get("job_id") else None
-    if await _cancelled(ctx, cancel_key):
+    cancel_keys = _cancel_keys(payload)
+    if await _cancelled(ctx, cancel_keys):
         r = ExecResult()
         r.error = "cancelled"
         return r.to_dict()
     d = await asyncio.to_thread(
-        run_optimize_payload, payload, cancelled=_sync_cancel_checker(cancel_key)
+        run_optimize_payload, payload, cancelled=_sync_cancel_checker(cancel_keys)
     )
-    if await _cancelled(ctx, cancel_key):
+    if await _cancelled(ctx, cancel_keys):
         d["ok"] = False
         d["error"] = "cancelled"
     return d
@@ -907,11 +924,11 @@ def run_topopt_resample_payload(
 
 async def topopt_resample(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     """arq task (queue "cad"): threshold resample of a stored density field."""
-    cancel_key = f"cancel:{payload['job_id']}" if payload.get("job_id") else None
-    if await _cancelled(ctx, cancel_key):
+    cancel_keys = _cancel_keys(payload)
+    if await _cancelled(ctx, cancel_keys):
         return {"ok": False, "error": "cancelled"}
     return await asyncio.to_thread(
-        run_topopt_resample_payload, payload, cancelled=_sync_cancel_checker(cancel_key)
+        run_topopt_resample_payload, payload, cancelled=_sync_cancel_checker(cancel_keys)
     )
 
 
@@ -963,11 +980,11 @@ def run_refine_payload(
 
 async def refine(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     """arq task (queue "cad"): post-TopOpt feature finishing."""
-    cancel_key = f"cancel:{payload['job_id']}" if payload.get("job_id") else None
-    if await _cancelled(ctx, cancel_key):
+    cancel_keys = _cancel_keys(payload)
+    if await _cancelled(ctx, cancel_keys):
         return {"ok": False, "error": "cancelled"}
     return await asyncio.to_thread(
-        run_refine_payload, payload, cancelled=_sync_cancel_checker(cancel_key)
+        run_refine_payload, payload, cancelled=_sync_cancel_checker(cancel_keys)
     )
 
 
@@ -1011,11 +1028,11 @@ def run_organic_payload(
 
 async def organic(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     """arq task (queue "cad"): procedural organic restyle — no FEM/SIMP."""
-    cancel_key = f"cancel:{payload['job_id']}" if payload.get("job_id") else None
-    if await _cancelled(ctx, cancel_key):
+    cancel_keys = _cancel_keys(payload)
+    if await _cancelled(ctx, cancel_keys):
         return {"ok": False, "error": "cancelled"}
     return await asyncio.to_thread(
-        run_organic_payload, payload, cancelled=_sync_cancel_checker(cancel_key)
+        run_organic_payload, payload, cancelled=_sync_cancel_checker(cancel_keys)
     )
 
 
@@ -1222,9 +1239,9 @@ async def edit_feature(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str
     Discovery when ``feature_id`` is absent, dry-run gate check when
     ``dry_run`` is set — only a full run writes artifacts.
     """
-    cancel_key = f"cancel:{payload['job_id']}" if payload.get("job_id") else None
-    if await _cancelled(ctx, cancel_key):
+    cancel_keys = _cancel_keys(payload)
+    if await _cancelled(ctx, cancel_keys):
         return {"ok": False, "error": "cancelled"}
     return await asyncio.to_thread(
-        run_edit_feature_payload, payload, cancelled=_sync_cancel_checker(cancel_key)
+        run_edit_feature_payload, payload, cancelled=_sync_cancel_checker(cancel_keys)
     )

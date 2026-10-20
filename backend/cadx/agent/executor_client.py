@@ -148,6 +148,10 @@ class QueueExecutor:
     ) -> dict[str, Any]:
         pool = await self._get_pool()
         job_id = f"{func}-{uuid.uuid4()}"
+        # task-scoped identity for the cancel flag — the timeout below must
+        # kill THIS task only, never the whole cadx job (a job-level flag
+        # silently cancelled every later execute for an hour)
+        payload["_task_id"] = job_id
         await pool.enqueue_job(func, payload, _queue_name=CAD_QUEUE, _job_id=job_id)
         job = Job(job_id, pool)
         waited = 0.0
@@ -165,15 +169,16 @@ class QueueExecutor:
             await asyncio.sleep(delay)
             waited += delay
             delay = min(delay * 1.5, 5.0)
-        # the cad task is still running — set the cancel flag it polls
-        # between stages (and mid-SIMP) so the timeout doesn't leave it
-        # burning a cad slot until it finishes on its own
-        job_key = payload.get("job_id")
-        if job_key:
-            try:
-                await pool.setex(f"cancel:{job_key}", 3600, b"1")
-            except Exception:  # best-effort — report the timeout either way
-                log.warning("executor.cancel_flag_failed", func=func, job_id=str(job_key))
+        # the cad task is still running — set the TASK-level cancel flag it
+        # polls between stages (and mid-SIMP) so the timeout doesn't leave it
+        # burning a cad slot until it finishes on its own. The job-level key
+        # cancel:{payload['job_id']} belongs to user cancellation only —
+        # setting it here bricked every subsequent task of the job (observed:
+        # one pipeline_hang turned all later iterations into 'cancelled').
+        try:
+            await pool.setex(f"cancel:{job_id}", 3600, b"1")
+        except Exception:  # best-effort — report the timeout either way
+            log.warning("executor.cancel_flag_failed", func=func, job_id=str(job_id))
         return {
             "ok": False,
             "timed_out": True,
