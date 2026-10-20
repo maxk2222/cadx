@@ -108,9 +108,8 @@ def _render_case(
     """Render von-Mises clip + exaggerated deformed shape. Returns filenames.
 
     The stress field lives on the voxel grid (solver resolution); the part
-    outline is the smooth source surface at ~40% opacity, itself painted
-    with the interpolated stress — the colour overlay stays confined to
-    the part instead of floating on a blocky voxel cloud."""
+    outline is the smooth source surface at ~35% opacity — the field stays
+    confined to the part volume instead of floating on a blocky voxel cloud."""
     try:
         import pyvista as pv
     except Exception:
@@ -133,20 +132,10 @@ def _render_case(
             scalar_bar_args={"title": "von Mises [MPa]"},
         )
         skin = _part_surface(source_mesh, body)
-        if source_mesh is not None:
-            # paint the real surface with the interpolated stress field —
-            # same cutaway as the voxel clip so the interior reads cleanly
-            skin = skin.sample(body.cell_data_to_point_data())
-            pl.add_mesh(
-                skin.clip(normal="-x"),
-                scalars="vm",
-                cmap="jet",
-                clim=[0, vmax],
-                opacity=0.55,
-                show_scalar_bar=False,
-            )
-        else:
-            pl.add_mesh(skin.clip(normal="-x"), color="#b8b8b8", opacity=0.3)
+        # transparent true-shape shell gives part context; the opaque voxel
+        # cutaway inside carries the field. An opaque painted skin hides the
+        # interior entirely (the voxel hull extends past the real surface).
+        pl.add_mesh(skin, color="#c8ccd4", opacity=0.35, show_scalar_bar=False)
         pl.add_mesh(body.outline(), color="black", line_width=1.5)
         pl.camera_position = "iso"
         pl.reset_camera()
@@ -180,7 +169,7 @@ def _render_case(
             nn = cKDTree(domain.node_coords()).query(np.asarray(skin.points))[1]
             skin_w = skin.copy()
             skin_w.points = skin_w.points + u_nodes[nn] * factor
-            pl.add_mesh(skin_w, color="#9ab3cc", opacity=0.35, show_scalar_bar=False)
+            pl.add_mesh(skin_w, color="#c8ccd4", opacity=0.35, show_scalar_bar=False)
         except Exception:
             pass
         pl.add_mesh(body.outline(), color="#888888", line_width=1.0)
