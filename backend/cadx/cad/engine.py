@@ -1210,7 +1210,11 @@ def run_fem_pipeline(
             domain = voxelize(mesh, voxel_mm or s.fem_voxel_mm, max_elements or s.fem_max_elements)
         except Exception as e:
             return {"ok": False, "error": f"voxelization failed: {e}"}
-        pngs = render_regions(domain, cases, keep, out_dir / "fem", anchors) if render_pngs else []
+        pngs = (
+            render_regions(domain, cases, keep, out_dir / "fem", anchors, source_mesh=mesh)
+            if render_pngs
+            else []
+        )
         return {
             "ok": True,
             "preview": {
@@ -1490,7 +1494,9 @@ def run_topopt_pipeline(  # noqa: C901
     passive = passive_solid_mask(domain, [keep_cells], fixed_node_masks, load_node_masks)
 
     # region-selection previews so the agent/user can see where forces land
-    res.topopt["regions_png"] = render_regions(domain, cases, keep_list, out_dir / "fem", anchors)
+    res.topopt["regions_png"] = render_regions(
+        domain, cases, keep_list, out_dir / "fem", anchors, source_mesh=mesh
+    )
 
     min_member = float(opt.min_member_mm or s.topopt_min_member_mm or 0.0)
     min_gap = float(opt.min_gap_mm or min_member or 0.0)

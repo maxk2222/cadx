@@ -1,17 +1,19 @@
 """Render fixed/load/keep region selections on the voxel domain.
 
-One labelled PNG per load case: the part semi-transparent grey, fixed cells
-blue, load cells red, keep cells green. Used by the optimize session's
-`preview_regions` tool so the agent can sanity-check where forces land
-before spending a SIMP run.
+One labelled PNG per load case: the selections painted onto the smooth part
+skin (fixed=blue, load=red, keep=green) with force arrows landing on each
+load centroid. Used by the optimize session's `preview_regions` tool so the
+agent can sanity-check where forces land before spending a SIMP run.
 """
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import trimesh
 
 from cadx.cad.fem.regions import case_reactions, region_cell_mask, resolve_case_dofs
 from cadx.cad.fem.voxelize import VoxelDomain
@@ -65,17 +67,29 @@ def cells_preview(
     return out
 
 
+_TAG_RGB = {
+    0: (184, 190, 198),  # base part — light grey
+    _FIXED: (65, 105, 225),  # blue
+    _LOAD: (220, 70, 60),  # red
+    _KEEP: (70, 170, 90),  # green
+    _VOID: (150, 90, 200),  # purple
+}
+
+
 def render_regions(
     domain: VoxelDomain,
     cases: list[LoadCase],
     keep_regions: list[RegionSpec],
     out_dir: Path,
     anchors: list[dict] | None = None,
+    source_mesh: trimesh.Trimesh | None = None,
 ) -> list[str]:
     """Write regions_<case>.png previews (iso + top, with force arrows);
     returns the filenames written."""
     try:
         import pyvista as pv
+
+        from cadx.cad.fem.analyze import _part_surface
     except Exception:
         log.warning("fem.preview.no_pyvista")
         return []
@@ -125,9 +139,9 @@ def render_regions(
                     force_n += float(load.pressure_mpa) * int(load_cells.sum()) * domain.pitch**2
 
             tag = np.zeros(domain.dims, dtype=np.uint8)
-            tag[fixed_cells] = _FIXED
             tag[load_cells] = _LOAD
             tag[keep_cells] = _KEEP
+            tag[fixed_cells] = _FIXED  # constraints outrank loads on overlap
             grid = pv.ImageData(
                 dimensions=tuple(d + 1 for d in domain.dims),
                 spacing=(domain.pitch,) * 3,
@@ -137,26 +151,46 @@ def render_regions(
             grid.cell_data["tag"] = tag.ravel()
             body = grid.threshold(0.5, scalars="solid")
 
+            # region tags painted onto the smooth part skin — opaque voxel
+            # dumps turned unreadable on thin shells (a legitimately large
+            # 'surface' selection covered most cells and rendered as
+            # full-height red stripes)
+            skin = _part_surface(source_mesh, body)
+            if getattr(skin, "n_faces", 0) < 8000:
+                with contextlib.suppress(Exception):
+                    skin = skin.subdivide(1, subfilter="linear")
+            rgb = np.tile(np.asarray(_TAG_RGB[0], dtype=np.uint8), (skin.n_points, 1))
+            try:
+                from scipy import ndimage
+                from scipy.spatial import cKDTree
+
+                # only boundary cells carry surface paint — nearest-ANY-cell
+                # lookups hit untagged interior cells and speckle the overlay
+                boundary = domain.solid & ~ndimage.binary_erosion(domain.solid)
+                flat = centers3d.reshape(-1, 3)[boundary.ravel()]
+                nn = cKDTree(flat).query(np.asarray(skin.points))[1]
+                ptag = tag.ravel()[np.flatnonzero(boundary.ravel())[nn]]
+                for value, color in _TAG_RGB.items():
+                    rgb[ptag == value] = color
+            except Exception:
+                pass
+
             caption = (
                 f"{case.name}: fixed {int(fixed_cells.sum())} | load "
                 f"{int(load_cells.sum())} ({force_n:.0f} N) | keep "
-                f"{int(keep_cells.sum())} cells — blue=fix red=load green=keep"
+                f"{int(keep_cells.sum())} cells"
             )
-            if f_strs:
-                caption += " | " + "; ".join(f_strs)
 
             pl: Any = pv.Plotter(off_screen=True, shape=(1, 2), window_size=[1600, 700])
             pl.set_background("white")
 
             def _add_regions(
-                pl: Any = pl, body: Any = body, grid: Any = grid, arrows: Any = arrows
+                pl: Any = pl, skin: Any = skin, rgb: Any = rgb, arrows: Any = arrows
             ) -> None:
-                pl.add_mesh(body, color="#b8bec6", opacity=0.25, smooth_shading=True)
-                for value, color in ((_FIXED, "blue"), (_LOAD, "red"), (_KEEP, "green")):
-                    sub = grid.threshold([value - 0.5, value + 0.5], scalars="tag")
-                    if sub.n_cells:
-                        pl.add_mesh(sub, color=color, opacity=0.9)
-                pl.add_mesh(body.outline(), color="#555555", line_width=1.0)
+                # no voxel body ghost — the skin carries the part shape; a
+                # translucent sparse-voxel halo reintroduces the floating-
+                # debris look on thin shells
+                pl.add_mesh(skin, scalars=rgb, rgb=True, opacity=0.95, smooth_shading=True)
                 for arrow, marker in arrows:
                     pl.add_mesh(arrow, color="darkorange", opacity=1.0)
                     pl.add_mesh(marker, color="orange", opacity=1.0)
@@ -166,6 +200,10 @@ def render_regions(
             pl.camera_position = "iso"
             pl.reset_camera()
             pl.add_text(caption, position="upper_edge", font_size=9, color="black")
+            legend = "blue=fix red=load green=keep"
+            if f_strs:
+                legend += " | " + "; ".join(f_strs)
+            pl.add_text(legend, position="lower_edge", font_size=9, color="black")
             pl.add_text("iso", position="upper_left", font_size=9, color="black")
 
             pl.subplot(0, 1)

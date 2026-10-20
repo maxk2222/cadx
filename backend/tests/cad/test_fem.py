@@ -762,6 +762,36 @@ def test_render_case_outer_views_skin_only(tmp_path: Path, monkeypatch) -> None:
     assert len(grid_calls) == 1  # the clipped section body only
 
 
+def test_load_region_covering_most_of_part_warns() -> None:
+    """A force/moment load spread over >50% of the solid understates local
+    stress — resolve_case_dofs must warn so the agent can narrow the region
+    (observed: an unbounded `area +z` region on the thin bail-handle shell
+    covered ~70% of all cells). Uniform pressure/g-loads stay silent."""
+    from cadx.cad.fem.regions import resolve_case_dofs
+
+    dom = voxelize(_box_mesh(), 3.0, 150_000)
+    case = LoadCase(
+        name="broad",
+        fixed=[RegionSpec(kind="face", axis="-z")],
+        loads=[LoadSpec(region=RegionSpec(kind="all"), force_n=[0.0, 0.0, -50.0])],
+    )
+    _, _, warnings = resolve_case_dofs(dom, case)
+    assert any("% of the part" in w for w in warnings)
+
+    quiet = LoadCase(
+        name="fine",
+        fixed=[RegionSpec(kind="face", axis="-z")],
+        loads=[
+            LoadSpec(
+                region=RegionSpec(kind="face", axis="+x", margin_mm=1.0),
+                force_n=[0.0, 0.0, -50.0],
+            )
+        ],
+    )
+    _, _, warnings = resolve_case_dofs(dom, quiet)
+    assert not any("% of the part" in w for w in warnings)
+
+
 def test_render_regions_writes_case_png(tmp_path: Path) -> None:
     """preview render writes regions_<case>.png when offscreen rendering is
     available and returns [] when it isn't — the test passes either way, so

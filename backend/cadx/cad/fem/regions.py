@@ -546,6 +546,21 @@ def resolve_case_dofs(  # noqa: C901
                 f"unresolved on the geometry; applied on {fb_ax} boundary patch "
                 f"({int(cells.sum())} cells)"
             )
+        elif (
+            not r.material
+            and (load.force_n or load.bearing_n or load.moment_nm or load.remote_point)
+            and cells.sum() > 0.5 * domain.solid_count
+        ):
+            # a discrete force smeared over most of the part understates local
+            # stress — legitimate for uniform pressure/g-loads, suspicious for
+            # force/moment/bearing loads (e.g. an unbounded `area` on a thin
+            # shell selects ~70% of the cells)
+            warnings.append(
+                f"case '{case.name}': load region {r.kind} {tag} covers "
+                f"{100.0 * cells.sum() / max(domain.solid_count, 1):.0f}% of the "
+                "part — the force is spread very thin; narrow it with "
+                "x_range/y_range/center or confirm uniform loading is intended"
+            )
         idx = np.flatnonzero(m)
 
         applied = False
