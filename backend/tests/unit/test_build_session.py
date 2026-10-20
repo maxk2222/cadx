@@ -106,6 +106,18 @@ def test_build_verify_budget_uses_build_max():
     assert "verify" not in s0.allowed_names()
 
 
+async def test_missing_required_arg_returns_named_error():
+    """replace_lines without `start` surfaced as a bare KeyError ('start')
+    before the arg guard — the model needs the param name to retry."""
+    ctx = _ctx(FakeLLM([]))
+    session = ToolSession(ctx, kind="build", code=SEED)
+    res = await session.execute("replace_lines", {"end": 3, "code": "x=1"})
+    assert res["ok"] is False
+    assert "start" in res["error"] and "missing required" in res["error"]
+    res = await session.execute("add_block", {"code": "result = Box(1,1,1)"})
+    assert res["ok"] is False and "name" in res["error"]
+
+
 async def test_add_block_appends_and_rejects_duplicates():
     ctx = _ctx(FakeLLM([]))
     session = ToolSession(ctx, kind="build", code=SEED)

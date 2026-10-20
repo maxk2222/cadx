@@ -1479,8 +1479,21 @@ class ToolSession:
     # -- dispatch ------------------------------------------------------------ #
 
     async def execute(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
-        if name not in self.allowed_names():
+        schemas = self.tools()
+        spec = next((t["function"] for t in schemas if t["function"]["name"] == name), None)
+        if spec is None:
             result = {"ok": False, "error": f"tool '{name}' is not available in this session"}
+            self.tool_log.append({"name": name, "args": _truncate_args(args), "result": result})
+            return result
+        # required-arg guard: a missing param otherwise surfaces as a
+        # cryptic KeyError ('start') instead of telling the model what to send
+        req = spec.get("parameters", {}).get("required") or []
+        missing = [k for k in req if not isinstance(args, dict) or k not in args]
+        if missing:
+            result = {
+                "ok": False,
+                "error": f"missing required argument(s): {', '.join(missing)}",
+            }
             self.tool_log.append({"name": name, "args": _truncate_args(args), "result": result})
             return result
         try:

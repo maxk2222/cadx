@@ -99,8 +99,11 @@
 5. A helper `load_reference(asset_id: str) -> Shape` is predefined for user-provided
    STEP/STL reference bodies (their asset ids are listed in the context).
    Injected inspect helpers (bare names, no import needed):
-   - `measure(shape)` -> dict with volume, bbox and face/solid counts.
-   - `find_holes(shape)` -> list of holes, each with position, diameter, depth, axis.
+   - `measure(shape)` -> dict with keys `bbox_min`/`bbox_max`, `dims` ({x,y,z}
+     extents), `volume_mm3`, `area_mm2`, `solids`, `faces`, `edges`,
+     `face_types`, `is_valid`. There is no `volume` key — use `volume_mm3`.
+   - `find_holes(shape)` -> list of dicts with keys `diameter`, `axis`,
+     `direction`, `center`, `through`, `depth`, `id`.
    - `bbox_dims(shape)` -> `[dx, dy, dz]` overall extents in mm.
 6. MEASURED PLAN VIEW (only when the context shows "measured image features"):
    - `anchor_holes()` returns the hole positions measured from the top-view image
