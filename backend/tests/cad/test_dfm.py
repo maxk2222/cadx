@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+import trimesh
 from build123d import (
     Align,
     Axis,
@@ -52,6 +54,26 @@ def test_overhang_flagged(tmp_path):
     mesh = _mesh(shape, tmp_path)
     warnings = fdm_checks(shape, mesh, analyze(shape))
     assert any(w.code == "overhang" for w in warnings)
+
+
+def test_overhang_ratio_directions():
+    """overhang_ratio: an inverted-T's slab underside is the overhang for a
+    +z build; flipped (-z) the same slab is the base and nothing overhangs.
+    A plain box resting on the plate has no overhang either way."""
+    from cadx.cad.dfm.fdm import overhang_ratio
+
+    post = trimesh.creation.box(extents=[40.0, 40.0, 5.0])
+    post.apply_translation([0, 0, 2.5])
+    slab = trimesh.creation.box(extents=[60.0, 60.0, 5.0])
+    slab.apply_translation([0, 0, 7.5])
+    tee = post.union(slab, engine="manifold")
+    # underside annulus 60²-40² = 2000 mm² of the ~10 400 mm² surface
+    assert overhang_ratio(tee, "+z") == pytest.approx(2000 / tee.area, abs=0.02)
+    # upside-down the slab rests on the plate — the overhang disappears
+    assert overhang_ratio(tee, "-z") == pytest.approx(0.0, abs=0.01)
+    box = trimesh.creation.box(extents=[10.0, 10.0, 5.0])
+    box.apply_translation([0, 0, 2.5])
+    assert overhang_ratio(box, "+z") == pytest.approx(0.0, abs=1e-6)
 
 
 def test_sharp_internal_corner_cnc(tmp_path):

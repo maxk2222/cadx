@@ -1885,6 +1885,21 @@ def run_topopt_pipeline(  # noqa: C901
     if verify_export.cases:
         verification["case_sfs_export"] = [c.safety_factor for c in verify_export.cases]
 
+    # manufacturing signal for candidate selection — the FDM overhang metric
+    # on the extracted part, parameterized on the run's print direction.
+    # Reported per-run so the agent can steer: a support-free variant is one
+    # self_supporting=True rerun away.
+    from cadx.cad.dfm.fdm import overhang_ratio
+
+    overhang = round(overhang_ratio(opt_mesh, params.print_direction) * 100, 1)
+    verification["overhang_pct"] = overhang
+    if overhang > 20.0 and not params.self_supporting:
+        res.topopt["warnings"].append(
+            f"{overhang:.0f}% of the surface overhangs >50° from "
+            f"{params.print_direction} — rerun with self_supporting=True "
+            "for a support-free variant, or accept support material"
+        )
+
     res.topopt.update(
         {
             "iterations": result.iterations,

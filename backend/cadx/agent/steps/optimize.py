@@ -84,6 +84,7 @@ def _run_summary(r: dict[str, Any], chosen: bool, reasoning: Any) -> dict[str, A
         "min_member_mm": top.get("min_member_mm"),
         "thin_fraction": top.get("thin_fraction"),
         "n_components": top.get("n_components"),
+        "overhang_pct": (top.get("verification") or {}).get("overhang_pct"),
         "n_bodies_export": top.get("n_bodies_export"),
         "warnings": (top.get("warnings") or [])[:5],
         **refine_block,

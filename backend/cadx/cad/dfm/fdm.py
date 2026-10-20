@@ -15,6 +15,23 @@ from cadx.cad.dfm.report import DfmWarning
 OVERHANG_COS = math.sin(math.radians(40))  # faces > ~50° from vertical
 
 
+def overhang_ratio(mesh: trimesh.Trimesh, direction: str = "+z") -> float:
+    """Fraction of surface area facing >~50° down from the build direction.
+
+    Same metric as the FDM overhang DFM check, parameterised on the print
+    direction (`+z` plate below the part, `-z` plate above) — used to score
+    TopOpt candidates before the DFM report even runs."""
+    ax = {"x": 0, "y": 1, "z": 2}[direction[1]]
+    sgn = 1.0 if direction[0] == "+" else -1.0
+    plate = float(mesh.bounds[0][ax] if sgn > 0 else mesh.bounds[1][ax])
+    normals = mesh.face_normals
+    centers = mesh.triangles_center
+    mask = (normals[:, ax] * sgn < -OVERHANG_COS) & (
+        sgn * (centers[:, ax] - plate) > 0.5
+    )
+    return float(mesh.area_faces[mask].sum()) / max(mesh.area, 1e-9)
+
+
 def fdm_mesh_checks(
     mesh: trimesh.Trimesh | None,
     analysis: Analysis,
