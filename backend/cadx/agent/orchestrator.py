@@ -1072,7 +1072,17 @@ async def _bootstrap_concept_images(
     regen_hint = str(ctx.mesh_info.get("_regen_hint") or "").strip()
     if regen_hint:
         subject = f"{subject} — MUST include: {regen_hint}"
-    prompt = read_prompt("image_concept.md").format(subject=subject)
+    if spec is not None:
+        # same rich prompt as the hero path — proportions + visual features +
+        # intent; the bare concept template produced an L-bracket for a bail
+        # handle spec and failed the silhouette gate anyway
+        from cadx.agent.image_prompt import hero_prompt_parts
+
+        prompt = read_prompt("image_hero.md").format(
+            **hero_prompt_parts(spec, ctx.prompt.strip(), subject)
+        )
+    else:
+        prompt = read_prompt("image_concept.md").format(subject=subject)
     try:
         from cadx.agent.concept_image import generate_concept_images
 
