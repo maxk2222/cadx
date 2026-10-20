@@ -184,6 +184,15 @@ def _band_extent(
     )
 
 
+# "x=-45" / "x=+45" / "x=±45" single-axis centre declarations — a point,
+# not a range (range syntax "x=-60..-55" is handled by parse_ranges first)
+_POINT_RE = re.compile(r"\b([xyz])\s*=\s*[±+]?\s*(-?\d+(?:\.\d+)?)(?!\s*\.\.)", re.I)
+
+
+def _parse_points(text: str) -> dict[str, float]:
+    return {m.group(1).lower(): float(m.group(2)) for m in _POINT_RE.finditer(text or "")}
+
+
 def plate_checks(shape: Any, features: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """[{name, declared, measured, ok}] — plates/pads whose declared x/y/z
     ranges bound a flat host. Material at the plate's band mid-height must
@@ -197,6 +206,17 @@ def plate_checks(shape: Any, features: list[dict[str, Any]]) -> list[dict[str, A
             continue
         text = " ".join(str(f.get(k) or "") for k in ("position", "description", "name"))
         rng = parse_ranges(text)
+        # flat pads are usually declared as centre point + dims
+        # ("centered at x=-45, y=0, z=0..6" + {length,width,thickness}) —
+        # synthesise the missing footprint ranges from centre ± dim/2
+        pts = _parse_points(text)
+        dims = f.get("dims") or {}
+        if "x" not in rng and "x" in pts and dims.get("length"):
+            half = float(dims["length"]) / 2
+            rng["x"] = (pts["x"] - half, pts["x"] + half)
+        if "y" not in rng and "y" in pts and dims.get("width"):
+            half = float(dims["width"]) / 2
+            rng["y"] = (pts["y"] - half, pts["y"] + half)
         if "x" not in rng or "y" not in rng or "z" not in rng:
             continue  # no declared bounded plate — nothing to check
         dx, dy, dz = rng["x"], rng["y"], rng["z"]

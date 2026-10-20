@@ -96,3 +96,26 @@ def test_plate_checks_skips_unranged_features():
     assert (
         plate_checks(Box(10, 10, 10), [{"name": "pad", "type": "pad", "position": "centred"}]) == []
     )
+
+
+def test_plate_checks_synthesises_footprint_from_centre_and_dims():
+    """Real handle spec: 'centered at x=-45, y=0, z=0..6' + dims
+    {length,width} — no x/y ranges in text. The centre point plus dims
+    must still bound the footprint check."""
+    feats = [
+        {
+            "name": "mounting lug -x",
+            "type": "pad",
+            "position": "centered at x=-45, y=0, z=0..6",
+            "dims": {"length": 30, "width": 20, "thickness": 6},
+        }
+    ]
+    pad = Pos(-45, 0, 3) * Box(30, 40, 6)  # organic flange 40 in Y
+    res = plate_checks(pad, feats)
+    assert len(res) == 1
+    assert res[0]["declared"]["x"] == (-60.0, -30.0)
+    assert res[0]["declared"]["y"] == (-10.0, 10.0)
+    assert not res[0]["ok"]
+    # and the spec-conform pad passes the same declaration
+    ok = plate_checks(Pos(-45, 0, 3) * Box(30, 20, 6), feats)
+    assert ok[0]["ok"]
