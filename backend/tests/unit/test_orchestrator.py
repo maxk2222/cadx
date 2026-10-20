@@ -467,7 +467,6 @@ def test_gate_generated_images_drops_bad_hero(tmp_path):
     from cadx.agent.types import InputAsset
 
     def _png(w: int, h: int):
-        from pathlib import Path as _P  # noqa: F401
         from PIL import Image
 
         p = tmp_path / f"img_{w}x{h}.png"
