@@ -1347,11 +1347,43 @@ def run_topopt_pipeline(  # noqa: C901
             )
 
     # --- design domain -------------------------------------------------------
+    req_voxel = voxel_mm or s.fem_voxel_mm
     try:
-        domain = voxelize(mesh, voxel_mm or s.fem_voxel_mm, max_elements or s.fem_max_elements)
+        domain = voxelize(mesh, req_voxel, max_elements or s.fem_max_elements)
     except Exception as e:
         res.error = f"voxelization failed: {e}"
         return res
+    # auto-coarsen the design grid until its system fits the direct solver —
+    # SIMP re-solves it every iteration, so the SSOR-CG fallback above
+    # fem_spsolve_dofs turns a minutes-long run into hours (observed ~300s/it
+    # on a 143k-DOF bail handle vs ~2s/it direct). The printed part is the
+    # smoothed *mesh*, not this grid: export verification below re-voxelizes
+    # at the requested fine pitch, and the mask FEM stays consistent with
+    # the grid it was optimized on.
+    dofs_cap = int(getattr(s, "fem_spsolve_dofs", 120_000) or 120_000)
+    coarsen_steps = 0
+    while 3 * domain.node_count > dofs_cap and coarsen_steps < 4:
+        coarsen_steps += 1
+        try:
+            domain = voxelize(mesh, domain.pitch * 1.4, max_elements or s.fem_max_elements)
+        except Exception:
+            break
+    if coarsen_steps:
+        res.topopt["auto_coarsen"] = {
+            "requested_pitch_mm": round(req_voxel, 4),
+            "design_pitch_mm": round(float(domain.pitch), 4),
+            "dofs": int(3 * domain.node_count),
+        }
+        log.info(
+            "topopt.auto_coarsen",
+            pitch=round(float(domain.pitch), 4),
+            dofs=int(3 * domain.node_count),
+        )
+    if 3 * domain.node_count > dofs_cap:
+        res.topopt.setdefault("warnings", []).append(
+            f"design grid {int(3 * domain.node_count)} DOFs exceeds the direct-solve "
+            f"cutoff {dofs_cap} after coarsening — CG fallback, expect slow iterations"
+        )
     d_lo, d_hi = grid_bounds_mm(domain)
     res.topopt["domain_bbox"] = [
         [round(float(v), 3) for v in d_lo],
@@ -1720,9 +1752,11 @@ def run_topopt_pipeline(  # noqa: C901
         out["verify"] = verify
         out["verify_s"] = round(time.monotonic() - t, 2)
 
-        # export verification: re-voxelize the smoothed mesh that gets printed
+        # export verification: re-voxelize the smoothed mesh that gets printed —
+        # at the *requested* pitch, not the (possibly auto-coarsened) design
+        # pitch: the mesh is smooth, so verification fidelity stays nominal
         try:
-            domain_exp = voxelize(opt_mesh, domain.pitch, max_elements or s.fem_max_elements)
+            domain_exp = voxelize(opt_mesh, req_voxel, max_elements or s.fem_max_elements)
             verify_exp = run_fem_domain(
                 domain_exp,
                 domain_exp.solid,

@@ -1,0 +1,27 @@
+{
+  "prompt": "Bügelgriff aus PETG: organischer Griffkörper ca. 120 x 40 x 30 mm mit Befestigungslaschen an beiden Enden — je eine M5-Durchgangsbohrung Ø5.5 mm in jeder Lasche, mittig in Y, 15 mm vom jeweiligen ±X-Ende (x = -45 und x = +45). Das vorhandene Griff-Mesh soll wiederverwendet werden — nur die beiden Bohrungen exakt setzen, sonst nichts an der organischen Form ändern. Lastfall: 300 N nach unten (-Z) am Griffzentrum, eingespannt an beiden M5-Laschen. Danach soll der Griff topologieoptimiert werden (Ziel-Volumenanteil 0.5) — die Laschen und Bohrungen müssen erhalten bleiben.",
+  "gen_mode": "hybrid",
+  "real_only": true,
+  "reuse_mesh_dir": "data/projects/3cb49780-cdb0-4142-b9df-65ef6d0cae61/versions/41f9a657-babd-4de1-b86c-e85823c6bea7/mesh",
+  "expected_bbox": [120.0, 40.0, 30.0],
+  "tolerance_mm": 1.0,
+  "expect_watertight": true,
+  "expected_features": [
+    {
+      "type": "hole",
+      "count": 2,
+      "dia": 5.5,
+      "axis": "+z",
+      "positions": [[-45.0, 0.0], [45.0, 0.0]]
+    }
+  ],
+  "settings": {
+    "max_iterations": 8,
+    "topopt_iterations": 60
+  },
+  "runtime": {
+    "image_autogen_mesh": false,
+    "fem_voxel_mm": 1.5,
+    "topopt_auto_keep": true
+  }
+}
