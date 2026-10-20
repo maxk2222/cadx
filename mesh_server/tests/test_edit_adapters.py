@@ -166,6 +166,32 @@ def test_qwen_edit_lightning_download_failure_falls_back(tmp_path):
     monkey.undo()
 
 
+def test_flux2_klein_edit_requires_init_image(tmp_path):
+    from meshserver.adapters.flux2_klein_mlx import Flux2KleinEditAdapter
+
+    a = Flux2KleinEditAdapter(ServerConfig(job_dir=tmp_path))
+    a._pipe = _Pipe()
+    a._loaded = True
+    with pytest.raises(RuntimeError, match="init image"):
+        a.generate(ImageGenOpts(prompt="x"))
+
+
+def test_flux2_klein_edit_passes_image_paths(tmp_path):
+    from meshserver.adapters.flux2_klein_mlx import Flux2KleinEditAdapter
+
+    a = Flux2KleinEditAdapter(ServerConfig(job_dir=tmp_path))
+    a._pipe = _Pipe()
+    a._loaded = True
+    init = tmp_path / "init.png"
+    Image.new("RGB", (16, 16)).save(init)
+
+    res = a.generate(ImageGenOpts(prompt="side view", image_path=init))
+    assert res.images and res.model == "flux2-klein-4b-edit"
+    kw = a._pipe.kwargs
+    assert kw["image_paths"] == [str(init)]
+    assert kw["num_inference_steps"] == 4  # distilled default
+
+
 def test_flux_diffusers_i2i_clamps_strength(tmp_path):
     """img2img path: _pipe_edit receives PIL image + clamped strength."""
     from meshserver.adapters.flux_diffusers import FluxSchnellAdapter

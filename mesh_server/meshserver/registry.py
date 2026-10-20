@@ -118,6 +118,7 @@ class Registry:
     @staticmethod
     def _image_adapter_classes() -> list[type[ImageAdapter]]:
         classes: list[type[ImageAdapter]] = [FakeImageAdapter]
+        from meshserver.adapters.flux2_klein_mlx import Flux2KleinEditAdapter
         from meshserver.adapters.flux_diffusers import FluxSchnellAdapter
         from meshserver.adapters.flux_kontext_mlx import FluxKontextMlxAdapter
         from meshserver.adapters.flux_mlx import FluxSchnellMlxAdapter
@@ -127,6 +128,7 @@ class Registry:
         from meshserver.adapters.z_image_mlx import ZImageTurboAdapter
 
         classes += [
+            Flux2KleinEditAdapter,
             FluxKontextMlxAdapter,
             QwenImageEditAdapter,
             QwenImageMlxAdapter,
@@ -338,6 +340,11 @@ class Registry:
             # path on ROCm — the *-mlx edit adapters don't exist on Linux.
             if device in ("cuda", "mlx"):
                 pref = [
+                    # flux2-klein-4b-edit first: Apache-2.0 + ungated, distilled
+                    # to 4 steps — ~10x faster than qwen-image-edit on MLX for
+                    # the conditioning-view edits these jobs run; qwen stays
+                    # as the bigger/steadier fallback
+                    "flux2-klein-4b-edit",
                     "qwen-image-edit",
                     "flux-kontext-mlx",
                     "flux-schnell-mlx",
