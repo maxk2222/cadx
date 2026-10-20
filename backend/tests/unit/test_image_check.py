@@ -250,3 +250,50 @@ def test_image_verdict_defaults():
     assert v.severity == "ok"
     assert v.missing == []
     assert v.wrong == []
+
+
+def _flat_spec() -> PartSpec:
+    return PartSpec(
+        name="flat handle",
+        length_x={"value": 120.0, "unit": "mm", "source": "stated"},
+        width_y={"value": 40.0, "unit": "mm", "source": "stated"},
+        height_z={"value": 30.0, "unit": "mm", "source": "stated"},
+    )
+
+
+def _studio_png(tmp_path, w: int, h: int) -> Path:
+    """White studio backdrop + one centered dark subject blob w x h px."""
+    p = tmp_path / f"subj_{w}x{h}.png"
+    img = Image.new("RGB", (512, 512), (245, 245, 245))
+    for x in range(256 - w // 2, 256 + w // 2):
+        for y in range(256 - h // 2, 256 + h // 2):
+            img.putpixel((x, y), (80, 80, 80))
+    img.save(p)
+    return p
+
+
+async def test_verify_flags_tall_image_for_flat_spec(tmp_path):
+    """Live failure: z-image rendered a tall U-arch (aspect ~1.4) for the
+    4:1 flat handle spec and the vision verdict passed it — the
+    silhouette gate must escalate to major."""
+    png = _studio_png(tmp_path, w=200, h=280)  # ~0.7 aspect — far too tall
+    llm = FakeLLM([{"match": True, "severity": "ok"}])
+    v = await verify_concept_image(_ctx(llm), png, _flat_spec())
+    assert v.severity == "major"
+    assert any("proportions" in m for m in v.missing)
+
+
+async def test_verify_accepts_flat_image_for_flat_spec(tmp_path):
+    png = _studio_png(tmp_path, w=360, h=110)  # ~3.3 aspect — fits 4:1 spec
+    llm = FakeLLM([{"match": True, "severity": "ok"}])
+    v = await verify_concept_image(_ctx(llm), png, _flat_spec())
+    assert v.severity == "ok"
+
+
+async def test_verify_aspect_gate_skips_square_spec(tmp_path):
+    """Near-square specs (L:H ~1) give no view-robust proportion signal —
+    the gate must stay silent even on odd silhouettes."""
+    png = _studio_png(tmp_path, w=200, h=280)
+    llm = FakeLLM([{"match": True, "severity": "ok"}])
+    v = await verify_concept_image(_ctx(llm), png, _spec())  # 80x80x80
+    assert v.severity == "ok"

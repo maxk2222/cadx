@@ -57,6 +57,70 @@ def _spec_summary(ctx: AgentCtx, spec: PartSpec | None) -> str:
     return "\n".join(lines)
 
 
+def _silhouette_aspect(image_path: Path) -> float | None:
+    """Pixel w/h of the subject silhouette — deterministic proportion evidence
+    the vision model does not measure (it passed a tall-arch hero for a
+    4:1-flat handle spec because 'a handle IS a tall arch' to it).
+
+    Studio-background assumption: the border median is the backdrop; the
+    subject is the largest component above a colour-distance threshold.
+    """
+    try:
+        import numpy as np
+        from PIL import Image
+        from scipy import ndimage
+
+        img = np.asarray(Image.open(image_path).convert("RGB"), dtype=np.int16)
+        border = np.concatenate([img[0], img[-1], img[:, 0], img[:, -1]])
+        bg = np.median(border, axis=0)
+        mask = np.abs(img - bg).sum(axis=2) > 60
+        lab, n = ndimage.label(mask)
+        if n == 0:
+            return None
+        sizes = ndimage.sum(mask, lab, range(1, n + 1))
+        subject = lab == int(np.argmax(sizes)) + 1
+        ys, xs = np.where(subject)
+        ph, pw = ys.max() - ys.min() + 1, xs.max() - xs.min() + 1
+        return float(pw / ph) if ph else None
+    except Exception:
+        return None
+
+
+def _aspect_verdict(image_path: Path, spec: PartSpec | None) -> str | None:
+    """Mismatch text when the silhouette aspect is far off the spec's L:H
+    ratio — None when it fits or is unmeasurable. Only enforced for
+    clearly non-square specs where the view direction cannot explain the
+    gap (3/4 views land between the ratio and its square root)."""
+    if spec is None:
+        return None
+    try:
+        lx = float(spec.length_x.value or 0)
+        hz = float(spec.height_z.value or 0)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if lx <= 0 or hz <= 0:
+        return None
+    expected = lx / hz
+    if 0.55 < expected < 1.8:
+        return None  # near-square silhouette — view-robust, nothing to check
+    measured = _silhouette_aspect(image_path)
+    if measured is None:
+        return None
+    if expected >= 1.8 and measured < expected * 0.5:
+        return (
+            f"the declared proportions: the photo shows a much TALLER shape "
+            f"(pixel aspect {measured:.2g}) than the spec's {expected:.2g}:1 "
+            f"length-to-height ratio — render the part low and elongated"
+        )
+    if expected <= 0.55 and measured > expected * 2.8:
+        return (
+            f"the declared proportions: the photo shows a much FLATTER shape "
+            f"(pixel aspect {measured:.2g}) than the spec's tall "
+            f"{expected:.2g}:1 length-to-height ratio"
+        )
+    return None
+
+
 async def verify_concept_image(
     ctx: AgentCtx, image_path: Path, spec: PartSpec | None
 ) -> ImageVerdict:
@@ -92,6 +156,16 @@ async def verify_concept_image(
             verdict = parsed
         else:
             verdict = ImageVerdict.model_validate(parsed)
+        # deterministic proportion gate — the vision model accepts a wrong
+        # aspect whenever the shape is plausible for the part category
+        aspect_issue = _aspect_verdict(image_path, spec)
+        if aspect_issue and verdict.severity in ("ok", "minor"):
+            verdict = ImageVerdict(
+                match=False,
+                missing=[aspect_issue],
+                wrong=verdict.wrong,
+                severity="major",
+            )
     except Exception as e:
         log.warning("image_check.failed", error=str(e)[:200])
         verdict = ImageVerdict(match=True, severity="unverifiable")

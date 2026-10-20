@@ -16,3 +16,4 @@ uv.lock.d
 mesh_server/.src/
 run/
 logs/
+evals/
