@@ -43,12 +43,19 @@ def _parts(
     )
     parts: list[dict[str, Any]] = [{"type": "text", "text": "USER INPUT IMAGES (for reference):"}]
     parts += images_block(ctx.assets, ctx.runtime_settings.agent_max_input_images)
-    if ctx.mode == "edit" and ctx.parent.contact_sheet is not None:
+    if ctx.parent.contact_sheet is not None and (
+        ctx.mode == "edit" or ctx.parent.mesh_solid is not None
+    ):
         parts += parent_block(None, None, ctx.parent.contact_sheet)
         parts.append(
             {
                 "type": "text",
-                "text": "Only the requested changes should differ from the previous version.",
+                "text": (
+                    "Only the requested changes should differ from the previous version."
+                    if ctx.mode == "edit"
+                    else "REFERENCE SOLID — the stored mesh this job reuses: the organic "
+                    "form must be identical; only the requested cuts/features may differ."
+                ),
             }
         )
     if ctx.resolved_mode in ("mesh", "hybrid"):
@@ -294,6 +301,7 @@ def _finalize_critique(
     # (minor), not 'missing' (major).
     _verify_missing_verdicts(critique, spec, features or {})
     _verify_wrong_verdicts(critique, spec, features or {})
+    _drop_facet_dia_noise(critique, spec, features or {})
     _downgrade_image_majors_on_silhouette(critique, ctx)
     # runs before the empty-discrepancy synthesis: a failed spec check on an
     # otherwise clean pass inserts its own discrepancy, skipping synthesis
@@ -398,6 +406,39 @@ _MEASURABLE_KINDS: tuple[tuple[str, str], ...] = (
     ("countersink", "countersinks"),
     ("counterbore", "counterbores"),
 )
+
+
+def _drop_facet_dia_noise(critique: Critique, spec: PartSpec, features: dict[str, Any]) -> None:
+    """On faceted mesh solids a hole Ø read off tessellated cylinders carries
+    a few % of polygon noise (observed: Ø5.5 cutters measuring 5.47/5.91) —
+    a "wrong diameter" discrepancy within 8% of a stated dia is a measurement
+    artifact, not a defect. Dropping it stops the improve loop from chasing
+    cutter radius back and forth; the observation stays in feature_verdicts."""
+    if not features.get("approximate"):
+        return
+    stated = [
+        float(f.dims["diameter"])
+        for f in spec.features
+        if isinstance(f.dims, dict) and f.dims.get("diameter")
+    ]
+    measured = [
+        float(g["diameter"]) for g in features.get("hole_groups") or [] if g.get("diameter")
+    ]
+    if not stated or not measured:
+        return
+    close = any(abs(m - s) <= 0.08 * s for s in stated for m in measured)
+    if not close:
+        return
+    keep = [
+        d
+        for d in critique.discrepancies
+        if not (
+            d.severity == "minor"
+            and d.source == "spec"
+            and any(k in d.what.lower() for k in ("diameter", "ø", "dia"))
+        )
+    ]
+    critique.discrepancies = keep
 
 
 def _measured_presence(kind_key: str, features: dict[str, Any]) -> bool:

@@ -422,6 +422,19 @@ def _apply_reuse_mesh_dir(ctx: AgentCtx, mdir: Path | str | None) -> bool:
         # same wiring _ref_side_mask produces — process_mesh reuses the
         # stored mask for silhouette IoU instead of re-extracting it
         ctx.mesh_info["_ref_mask_rel"] = storage.relpath(dst)
+    # reuse semantics are "the stored solid IS the reference" — attach its
+    # contact sheet to the critique context so "unchanged vs reference"
+    # questions are answerable from evidence instead of stalling the verdict
+    ver_dir = src.parent
+    sheets = sorted(
+        ver_dir.glob("iterations/*/a*/contact_sheet.png"),
+        key=lambda p: p.stat().st_mtime,
+    ) or sorted(
+        ver_dir.glob("iterations/*/orient_sheet.png"),
+        key=lambda p: p.stat().st_mtime,
+    )
+    if sheets:
+        ctx.parent.contact_sheet = sheets[-1]
     return True
 
 

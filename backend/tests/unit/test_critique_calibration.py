@@ -376,3 +376,118 @@ def test_normalize_score_vq_weighting():
         discrepancies=[disc("spec"), disc("spec"), disc("prompt"), disc("image")],
     )
     assert normalize_score(c2).score == 0
+
+
+async def test_facet_dia_noise_dropped_on_approximate():
+    """Mesh-derived solids: a 'wrong Ø' discrepancy within 8% of stated is
+    facet noise — dropping it keeps the improve loop from oscillating the
+    cutter radius (observed: 5.47 -> +0.15 -> 5.91)."""
+    llm = FakeLLM(
+        [
+            _llm_critique(
+                88,
+                True,
+                [
+                    {
+                        "what": "Hole diameters measure Ø5.47/Ø5.36 instead of Ø5.5",
+                        "severity": "minor",
+                        "source": "spec",
+                        "where": "both holes",
+                    }
+                ],
+            )
+        ]
+    )
+    ctx = _ctx(llm, prompt="plate with M5 holes")
+    spec = _spec()
+    spec.features = [
+        Feature(name="h1", type="through_hole", count=1, dims={"diameter": 5.5})
+    ]
+    c = await critique_step.run(
+        ctx,
+        spec,
+        None,
+        {"bbox_size": [60, 40, 4]},
+        [],
+        None,
+        iteration=1,
+        features={
+            "total_holes": 2,
+            "approximate": True,
+            "hole_groups": [{"diameter": 5.47, "count": 1, "axis": "+z", "depth_class": "through"}, {"diameter": 5.36, "count": 1, "axis": "+z", "depth_class": "through"}],
+        },
+    )
+    assert not any("diameter" in d.what.lower() or "ø" in d.what.lower() for d in c.discrepancies)
+
+
+async def test_facet_dia_real_error_kept():
+    """A genuinely wrong hole Ø (>8% off stated) on a faceted solid is NOT
+    noise — the discrepancy must survive."""
+    llm = FakeLLM(
+        [
+            _llm_critique(
+                70,
+                False,
+                [
+                    {
+                        "what": "hole diameter measures Ø8.0 instead of Ø5.5",
+                        "severity": "minor",
+                        "source": "spec",
+                    }
+                ],
+            )
+        ]
+    )
+    ctx = _ctx(llm, prompt="plate with M5 holes")
+    spec = _spec()
+    spec.features = [
+        Feature(name="h1", type="through_hole", count=1, dims={"diameter": 5.5})
+    ]
+    c = await critique_step.run(
+        ctx,
+        spec,
+        None,
+        {"bbox_size": [60, 40, 4]},
+        [],
+        None,
+        iteration=1,
+        features={
+            "total_holes": 1,
+            "approximate": True,
+            "hole_groups": [{"diameter": 8.0, "count": 1, "axis": "+z", "depth_class": "through"}],
+        },
+    )
+    assert any("diameter" in d.what.lower() for d in c.discrepancies)
+
+
+def test_reference_sheet_attached_for_mesh_reuse(tmp_path):
+    """Hybrid reuse: the stored parent solid's contact sheet is shown to the
+    critic so 'unchanged vs reference' questions are answerable."""
+    from cadx.agent.steps.critique import _parts
+
+    sheet = tmp_path / "ref_sheet.png"
+    sheet.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 64)  # exists() is the gate
+    ctx = _ctx(FakeLLM([]), prompt="reuse mesh")
+    ctx.parent.mesh_solid = tmp_path / "solid.brep"
+    ctx.parent.contact_sheet = sheet
+    ctx.resolved_mode = "hybrid"
+
+    parts = _parts(ctx, _spec(), None, {}, [], [], None, None)
+    texts = "\n".join(p.get("text", "") for p in parts if p.get("type") == "text")
+    assert "REFERENCE SOLID" in texts
+
+
+def test_reference_sheet_not_attached_for_plain_cad(tmp_path):
+    """Pure CAD runs keep the reference block out of the prompt."""
+    from cadx.agent.steps.critique import _parts
+
+    sheet = tmp_path / "ref_sheet.png"
+    sheet.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
+    ctx = _ctx(FakeLLM([]), prompt="box")
+    ctx.parent.contact_sheet = sheet  # present but mode=generate, no mesh solid
+    ctx.resolved_mode = "cad"
+
+    parts = _parts(ctx, _spec(), None, {}, [], [], None, None)
+    texts = "\n".join(p.get("text", "") for p in parts if p.get("type") == "text")
+    assert "REFERENCE SOLID" not in texts
+    assert "PREVIOUS VERSION" not in texts

@@ -564,6 +564,13 @@ class MeshOrientation(BaseModel):
     reason: M = ""
 
 
+def _clamp_reasoning(v: Any) -> Any:
+    """`reasoning` is advisory — guided decoders that ignore `maxLength` can
+    overshoot L, and failing the whole response over a comment wastes the
+    call (observed: improve patch dropped for a 1200+ char reasoning)."""
+    return v[:1200] if isinstance(v, str) and len(v) > 1200 else v
+
+
 class CodeResponse(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={"required": ["reasoning", "expected_bbox", "code"]}
@@ -573,6 +580,8 @@ class CodeResponse(BaseModel):
     params: list[ParamDef] = Field(default_factory=list, max_length=40)
     expected_bbox: list[float] = Field(default_factory=list, max_length=6)
     code: str
+
+    _clamp = field_validator("reasoning", mode="before")(_clamp_reasoning)
 
 
 class PatchEdit(BaseModel):
@@ -594,6 +603,8 @@ class PatchResponse(BaseModel):
     expected_bbox: list[float] = Field(default_factory=list, max_length=6)
     edits: list[PatchEdit] = Field(default_factory=list, max_length=40)
     full_code: str | None = None
+
+    _clamp = field_validator("reasoning", mode="before")(_clamp_reasoning)
 
 
 class Discrepancy(BaseModel):

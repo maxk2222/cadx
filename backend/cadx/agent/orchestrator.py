@@ -292,9 +292,16 @@ def build_issues(
                     }
                 )
     if dfm:
+        # a mesh-derived/organic solid cannot be "reoriented" by editing CAD
+        # params — an overhang there is a print-process note, not a geometry
+        # defect that the improve loop could ever fix
+        mesh_derived = (analysis or {}).get("source") == "mesh" or int(
+            (analysis or {}).get("face_count") or 0
+        ) > 2000
         for w in dfm.get("warnings", []):
             if w.get("severity") == "high":
-                issues.append({"source": "dfm", "severity": "major", "what": w["message"]})
+                sev = "minor" if mesh_derived and w.get("code") == "overhang" else "major"
+                issues.append({"source": "dfm", "severity": sev, "what": w["message"]})
     return issues[:12]
 
 
@@ -3477,13 +3484,17 @@ async def _run_cad(  # noqa: C901
                 sf_min = spec.optimize.safety_factor_min if spec.optimize else 1.5
                 rep = FemReport(**fem_res["fem"])
                 worst = rep.worst_safety_factor
-                for line in fem_feedback_lines(rep, sf_min):
+                for severity, line in fem_feedback_lines(rep, sf_min):
                     fem_issues.append(
                         {
                             "source": "fem",
-                            "severity": "major",
+                            "severity": severity,
                             "what": line,
-                            "fix_hint": "increase section sizes / add ribs on the load path",
+                            "fix_hint": (
+                                "increase section sizes / add ribs on the load path"
+                                if severity == "major"
+                                else "informational — only act if lightweighting was requested"
+                            ),
                         }
                     )
                 await ctx.emit(

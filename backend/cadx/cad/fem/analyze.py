@@ -500,28 +500,42 @@ def default_load_case() -> LoadCase:
     )
 
 
-def fem_feedback_lines(report: FemReport, sf_min: float) -> list[str]:
-    """Short engineering feedback strings for the agent's build_feedback."""
-    lines: list[str] = []
+def fem_feedback_lines(report: FemReport, sf_min: float) -> list[tuple[str, str]]:
+    """(severity, text) engineering feedback for the agent's issue list.
+
+    ``sf < 1``/``sf < sf_min`` are majors — the part fails the declared load.
+    An over-built part (``sf > 3*sf_min``) is only a minor advisory: being too
+    strong is never a defect, and on form-locked tasks (mesh reuse, "change
+    nothing else") the advice is unactionable anyway."""
+    lines: list[tuple[str, str]] = []
     for c in report.cases:
         sf = c.safety_factor
         if sf is None:
             continue
         if sf < 1.0:
             lines.append(
-                f"fem[{c.name}]: safety factor {sf:.2f} < 1 — part fails under the "
-                f"declared load (max stress {c.max_vm_mpa:.1f} MPa); add material "
-                f"near the load/fix regions"
+                (
+                    "major",
+                    f"fem[{c.name}]: safety factor {sf:.2f} < 1 — part fails under the "
+                    f"declared load (max stress {c.max_vm_mpa:.1f} MPa); add material "
+                    f"near the load/fix regions",
+                )
             )
         elif sf < sf_min:
             lines.append(
-                f"fem[{c.name}]: safety factor {sf:.2f} below target {sf_min:g} — "
-                f"strengthen the load path (walls, ribs, fillets near mounts)"
+                (
+                    "major",
+                    f"fem[{c.name}]: safety factor {sf:.2f} below target {sf_min:g} — "
+                    f"strengthen the load path (walls, ribs, fillets near mounts)",
+                )
             )
         elif sf > 3.0 * sf_min:
             lines.append(
-                f"fem[{c.name}]: safety factor {sf:.2f} well above target {sf_min:g} — "
-                f"part could be lightened (thinner walls or topology optimization)"
+                (
+                    "minor",
+                    f"fem[{c.name}]: safety factor {sf:.2f} well above target {sf_min:g} — "
+                    f"part could be lightened (thinner walls or topology optimization)",
+                )
             )
         if not math.isfinite(c.max_disp_mm) or c.max_disp_mm <= 0:
             continue

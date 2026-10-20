@@ -303,3 +303,43 @@ def test_benchmark_reuse_mesh_dir_optional() -> None:
     assert bm.reuse_mesh_dir == "a/b"
     assert runner.Benchmark(name="y", prompt="p").reuse_mesh_dir is None
     assert load_benchmarks()  # all existing benchmark JSONs still parse
+
+
+def test_apply_reuse_mesh_dir_finds_reference_sheet(tmp_path) -> None:
+    """The stored version's last contact sheet is wired to parent.contact_sheet
+    so the critique can answer 'unchanged vs reference' from evidence."""
+    import json
+    from pathlib import Path
+
+    from cadx.eval.runner import _apply_reuse_mesh_dir
+
+    ver = tmp_path / "ver"
+    mdir = ver / "mesh"
+    mdir.mkdir(parents=True)
+    (mdir / "solid.brep").write_bytes(b"brep-bytes")
+    (mdir / "mesh.json").write_text(json.dumps({"bbox_size": [120, 40, 30]}))
+    sheet_dir = ver / "iterations" / "2" / "a8"
+    sheet_dir.mkdir(parents=True)
+    sheet = sheet_dir / "contact_sheet.png"
+    sheet.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
+
+    ctx = _bare_ctx()
+    assert _apply_reuse_mesh_dir(ctx, mdir)
+    assert Path(ctx.parent.contact_sheet) == sheet
+
+
+def test_apply_reuse_mesh_dir_no_sheet_is_fine(tmp_path) -> None:
+    """No contact sheet under the source version → reference stays unset,
+    reuse still works."""
+    import json
+
+    from cadx.eval.runner import _apply_reuse_mesh_dir
+
+    ver = tmp_path / "ver"
+    mdir = ver / "mesh"
+    mdir.mkdir(parents=True)
+    (mdir / "solid.brep").write_bytes(b"b")
+    (mdir / "mesh.json").write_text(json.dumps({"bbox_size": [1, 1, 1]}))
+    ctx = _bare_ctx()
+    assert _apply_reuse_mesh_dir(ctx, mdir)
+    assert ctx.parent.contact_sheet is None
