@@ -738,6 +738,9 @@ export interface Settings {
   llm_json_mode: string;
   llm_api_key_set: boolean;
   llm_temperature_code: number;
+  /** context window override — 0 = auto-detect from the provider */
+  llm_context_tokens: number;
+  /** completion cap — 0 = auto (derived from the detected context window) */
   llm_max_tokens: number;
   llm_timeout_s: number;
   llm_stream: boolean;
@@ -754,6 +757,8 @@ export interface Settings {
   agent_dim_tolerance_mm: number;
   agent_clarification_mode: "assume" | "ask";
   agent_max_input_images: number;
+  /** fraction of the detected context window a prompt may occupy before condensing */
+  agent_context_budget_frac: number;
   agent_max_tokens_per_job: number;
   agent_max_wall_s: number;
   agent_default_gen_mode: GenMode;
@@ -814,6 +819,8 @@ export interface Settings {
   exec_timeout_s: number;
   exec_mem_limit_mb: number;
   data_dir: string;
+  /** model id → detected context window (read-only; from the llm_caps cache) */
+  llm_detected: Record<string, number>;
 }
 
 /** PUT /settings payload — all fields optional; keys are write-only. */
@@ -826,6 +833,7 @@ export interface SettingsUpdate
       | "image_api_key_set"
       | "hf_token_set"
       | "data_dir"
+      | "llm_detected"
     >
   > {
   llm_api_key?: string;
@@ -844,6 +852,11 @@ export interface ProviderTestResult {
   latency_ms: number;
   error: string | null;
   vision_error?: string;
+  /** detected context window per role — populated by the lazy probe */
+  context?: Record<
+    string,
+    { model: string; context_tokens: number | null; source: string }
+  >;
 }
 
 export interface MeshModelInfo {
@@ -875,6 +888,8 @@ export interface MeshModelInfo {
   est_mem_mb: number | null;
   supports_vision: boolean;
   supports_tools: boolean;
+  /** effective context window the llm adapter serves at (llm kind only) */
+  context_len: number | null;
   /** pinned residents are never evicted by the sidecar queue */
   pinned: boolean;
   /** user-registered model (custom HF repo) — can be unregistered */
@@ -914,7 +929,12 @@ export interface MeshDownloadStatus {
 /** GET /settings/llm-models — models offered by the active LLM backend. */
 export interface LlmModelsResult {
   backend: "external" | "sidecar";
-  models: { id: string; vision: boolean; downloaded?: boolean }[];
+  models: {
+    id: string;
+    vision: boolean;
+    downloaded?: boolean;
+    context_tokens?: number | null;
+  }[];
   error: string | null;
 }
 

@@ -33,6 +33,7 @@ function mk(p: Partial<MeshModelInfo>): MeshModelInfo {
     est_mem_mb: null,
     supports_vision: false,
     supports_tools: false,
+    context_len: null,
     pinned: false,
     custom: false,
     ...p,

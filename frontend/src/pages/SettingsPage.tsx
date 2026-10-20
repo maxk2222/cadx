@@ -36,6 +36,7 @@ const FIELD_GRID = "grid grid-cols-1 gap-x-4 sm:grid-cols-2";
 
 const NUM_FIELDS = new Set<string>([
   "llm_temperature_code",
+  "llm_context_tokens",
   "llm_max_tokens",
   "llm_timeout_s",
   "llm_idle_timeout_s",
@@ -47,6 +48,7 @@ const NUM_FIELDS = new Set<string>([
   "agent_dim_tolerance_pct",
   "agent_dim_tolerance_mm",
   "agent_max_input_images",
+  "agent_context_budget_frac",
   "agent_max_tokens_per_job",
   "agent_max_wall_s",
   "agent_patch_retries",
@@ -102,7 +104,8 @@ const FIELD_BOUNDS: Record<
   { min?: number; max?: number; exclusiveMin?: boolean; int?: boolean }
 > = {
   llm_temperature_code: { min: 0, max: 2 },
-  llm_max_tokens: { min: 1, max: 2_000_000, int: true },
+  llm_context_tokens: { min: 0, max: 8_000_000, int: true },
+  llm_max_tokens: { min: 0, max: 2_000_000, int: true },
   llm_timeout_s: { min: 0, exclusiveMin: true },
   llm_idle_timeout_s: { min: 0, exclusiveMin: true },
   llm_degenerate_stall_s: { min: 0, exclusiveMin: true },
@@ -113,6 +116,7 @@ const FIELD_BOUNDS: Record<
   agent_dim_tolerance_pct: { min: 0, max: 100 },
   agent_dim_tolerance_mm: { min: 0, max: 1000 },
   agent_max_input_images: { min: 0, max: 100, int: true },
+  agent_context_budget_frac: { min: 0.1, max: 0.95, exclusiveMin: true },
   agent_max_tokens_per_job: { min: 1, int: true },
   agent_max_wall_s: { min: 0, exclusiveMin: true },
   agent_patch_retries: { min: 0, max: 20, int: true },
@@ -163,6 +167,14 @@ const TABS: { id: TabId; label: string }[] = [
 ];
 
 const TAB_IDS = new Set<string>(TABS.map((t) => t.id));
+
+/** compact token-count rendering for context-window chips: 131k, 262k, 1M */
+const fmtCtx = (n: number | null | undefined): string => {
+  if (!n || n <= 0) return "";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n % 1_000_000 ? 1 : 0)}M`;
+  if (n >= 1000) return `${Math.round(n / 1000)}k`;
+  return String(n);
+};
 
 export default function SettingsPage() {
   useTitle("Settings");
@@ -555,6 +567,7 @@ export default function SettingsPage() {
             <option key={o.id} value={o.id}>
               {o.id}
               {o.vision ? " · vision" : ""}
+              {o.context_tokens ? ` · ${fmtCtx(o.context_tokens)} ctx` : ""}
               {o.downloaded === false ? " · not downloaded" : ""}
             </option>
           ))}
@@ -585,6 +598,7 @@ export default function SettingsPage() {
             <option key={m.id} value={m.id} disabled={!m.downloaded}>
               {m.name && m.name !== m.id ? `${m.name} — ${m.id}` : m.id}
               {m.supports_vision ? " · 👁 vision" : ""}
+              {m.context_len ? ` · ${fmtCtx(m.context_len)} ctx` : ""}
               {!m.downloaded ? " · not downloaded" : ""}
             </option>
           ))}
@@ -801,6 +815,14 @@ export default function SettingsPage() {
             )}
           </>
         )}
+        {Object.keys(s.llm_detected ?? {}).length > 0 && (
+          <div className="mb-3 text-xs text-zinc-500">
+            detected context:{" "}
+            {Object.entries(s.llm_detected)
+              .map(([id, n]) => `${id} ${fmtCtx(n)}`)
+              .join(" · ")}
+          </div>
+        )}
         <div className={FIELD_GRID}>
           {field({
             key: "llm_json_mode",
@@ -827,7 +849,18 @@ export default function SettingsPage() {
         </div>
         <div className={FIELD_GRID}>
           {field({ key: "llm_temperature_code", label: "Temperature (code)", kind: "number" })}
-          {field({ key: "llm_max_tokens", label: "Max tokens per response", kind: "number" })}
+          {field({
+            key: "llm_context_tokens",
+            label: "Context window (tokens)",
+            hint: "0 = auto-detect from the provider (probed lazily, cached); >0 = manual override",
+            kind: "number",
+          })}
+          {field({
+            key: "llm_max_tokens",
+            label: "Max tokens per response",
+            hint: "0 = auto — derived from the detected context window and clamped so prompt + completion fits",
+            kind: "number",
+          })}
           {field({ key: "llm_stream", label: "Streaming", kind: "bool" })}
           {field({ key: "llm_timeout_s", label: "Request timeout (s)", kind: "number" })}
           {field({ key: "llm_idle_timeout_s", label: "Stream idle timeout (s)", kind: "number" })}
@@ -847,7 +880,11 @@ export default function SettingsPage() {
           {t && (
             <span className={`text-xs ${t.ok ? "text-emerald-400" : "text-red-400"}`}>
               {t.ok
-                ? `code ok · ${t.latency_ms}ms${t.vision_ok ? " · vision ok" : " · vision failed"}`
+                ? `code ok · ${t.latency_ms}ms${t.vision_ok ? " · vision ok" : " · vision failed"}${
+                    t.context?.code?.context_tokens
+                      ? ` · ctx ${fmtCtx(t.context.code.context_tokens)} (${t.context.code.source || "detected"})`
+                      : ""
+                  }`
                 : `failed: ${t.error ?? "unknown"}`}
             </span>
           )}
@@ -910,6 +947,12 @@ export default function SettingsPage() {
         </div>
         <div className={FIELD_GRID}>
           {field({ key: "agent_max_input_images", label: "Max input images", kind: "number" })}
+          {field({
+            key: "agent_context_budget_frac",
+            label: "Context budget fraction",
+            hint: "share of the detected context window a prompt may fill before history is condensed early",
+            kind: "number",
+          })}
           {field({ key: "agent_max_tokens_per_job", label: "Token budget per job", kind: "number" })}
           {field({ key: "agent_max_wall_s", label: "Wall-clock budget per job (s)", kind: "number" })}
           {field({ key: "agent_param_autofix", label: "Deterministic param autofix", kind: "bool" })}
