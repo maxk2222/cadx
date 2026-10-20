@@ -753,9 +753,19 @@ def _judge(
     if bm.expected_bbox and bbox:
         exp = sorted(bm.expected_bbox)
         act = sorted(bbox)
-        dim_ok = all(
-            abs(a - e) <= max(bm.tolerance_mm, e * 0.02) for a, e in zip(act, exp, strict=True)
-        )
+        if outcome.resolved_mode == "topopt":
+            # a topology-optimized part only has to fit *inside* the declared
+            # envelope — SIMP legitimately shrinks the bbox by removing
+            # unloaded material, so the check is "within", not "matches"
+            dim_ok = all(
+                a <= e + max(bm.tolerance_mm, e * 0.02)
+                for a, e in zip(act, exp, strict=True)
+            )
+        else:
+            dim_ok = all(
+                abs(a - e) <= max(bm.tolerance_mm, e * 0.02)
+                for a, e in zip(act, exp, strict=True)
+            )
 
     analysis = outcome.analysis or {}
     watertight = analysis.get("watertight_after_repair")

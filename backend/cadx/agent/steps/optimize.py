@@ -240,6 +240,19 @@ def _make_fem_fn(ops: _SessionOps) -> Any:
                     f"FEM probe done — worst SF {min(probe_sfs)}",
                     metrics={"probe_sf": float(min(probe_sfs))},
                 )
+        # impossible-target diagnostic — removing material cannot raise the
+        # safety factor above the full-density baseline, so a probe already
+        # below the spec minimum means no SIMP run will pass it. Surface that
+        # once instead of letting the agent burn its run budget discovering it.
+        opt = ops.spec.optimize
+        if opt and probe_sfs and min(probe_sfs) < opt.safety_factor_min:
+            res.setdefault("fem", {}).setdefault("warnings", []).append(
+                f"baseline worst SF {min(probe_sfs)} is below the spec minimum "
+                f"{opt.safety_factor_min} — topology optimization removes "
+                "material and cannot raise the safety factor above this "
+                "baseline; keep volfrac near the keep-region floor, or commit "
+                "the best run rather than searching for a passing one"
+            )
         fem_dir = storage.iteration_dir(ctx.project_id, ctx.version_id, it) / "fem"
         images = [
             fem_dir / p

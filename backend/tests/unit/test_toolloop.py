@@ -1338,3 +1338,83 @@ async def test_feature_audit_missing_helper():
     assert feature_audit_missing(REAL_CODE, _FEATS) == []  # ops present
     assert feature_audit_missing(STUB_CODE, _FEATS[:1]) == []  # <2 addable feats
     assert feature_audit_missing(STUB_CODE, []) == []
+
+
+async def test_fem_fn_warns_on_unreachable_sf_target():
+    """A FEM probe already below the spec SF minimum must flag the impossible
+    target — SIMP only removes material, so no run can beat the baseline
+    (bail handle: base SF 0.49 vs target 1.6 burned the run budget)."""
+    import itertools
+    from unittest.mock import AsyncMock, MagicMock
+
+    from cadx.agent.steps.optimize import _make_fem_fn, _SessionOps
+    from cadx.llm.schemas import Dim, OptimizeSpec
+
+    ctx = _ctx(FakeLLM([]))
+    ctx.executor = MagicMock()
+    ctx.executor.fem_analyze = AsyncMock(
+        return_value={
+            "ok": True,
+            "fem": {"cases": [{"name": "c", "safety_factor": 0.49}]},
+        }
+    )
+    spec = PartSpec(
+        name="t",
+        summary="t",
+        units="mm",
+        length_x=Dim(value=10.0, unit="mm", source="stated"),
+        width_y=Dim(value=10.0, unit="mm", source="stated"),
+        height_z=Dim(value=10.0, unit="mm", source="stated"),
+        features=[],
+        optimize=OptimizeSpec(enabled=True, safety_factor_min=1.6),
+    )
+    ops = _SessionOps(
+        ctx=ctx,
+        base={},
+        spec=spec,
+        spec_cases=[],
+        default_material="petg",
+        alloc=itertools.count(0),
+        contact_sheet=None,
+    )
+    res = await _make_fem_fn(ops)({"load_cases": [{"name": "c", "loads": []}]})
+    assert res["ok"]
+    warns = res["fem"]["warnings"]
+    assert any("cannot raise" in w and "0.49" in w and "1.6" in w for w in warns)
+
+
+async def test_fem_fn_no_warning_when_target_reachable():
+    """Baseline above the spec minimum stays silent — SIMP headroom exists."""
+    import itertools
+    from unittest.mock import AsyncMock, MagicMock
+
+    from cadx.agent.steps.optimize import _make_fem_fn, _SessionOps
+    from cadx.llm.schemas import Dim, OptimizeSpec
+
+    ctx = _ctx(FakeLLM([]))
+    ctx.executor = MagicMock()
+    ctx.executor.fem_analyze = AsyncMock(
+        return_value={"ok": True, "fem": {"cases": [{"safety_factor": 19.0}]}}
+    )
+    spec = PartSpec(
+        name="t",
+        summary="t",
+        units="mm",
+        length_x=Dim(value=10.0, unit="mm", source="stated"),
+        width_y=Dim(value=10.0, unit="mm", source="stated"),
+        height_z=Dim(value=10.0, unit="mm", source="stated"),
+        features=[],
+        optimize=OptimizeSpec(enabled=True, safety_factor_min=1.6),
+    )
+    ops = _SessionOps(
+        ctx=ctx,
+        base={},
+        spec=spec,
+        spec_cases=[],
+        default_material="petg",
+        alloc=itertools.count(0),
+        contact_sheet=None,
+    )
+    res = await _make_fem_fn(ops)({"load_cases": [{"name": "c", "loads": []}]})
+    assert res["ok"]
+    assert not res["fem"].get("warnings")

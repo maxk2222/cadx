@@ -294,6 +294,40 @@ def test_apply_reuse_mesh_dir_missing_solid_returns_false(tmp_path) -> None:
     assert ctx.parent.mesh_solid is None
 
 
+def test_judge_topopt_bbox_is_envelope(tmp_path) -> None:
+    """TopOpt commits legitimately shrink the part inside the declared design
+    envelope — dim_ok must gate on fitting *within* expected_bbox, not on
+    matching it (observed: bail handle topopt at 105x23x27 vs spec 120x40x30
+    judged dim_ok=False though the part fit the envelope perfectly)."""
+    from cadx.agent.orchestrator import RunOutcome
+    from cadx.eval.runner import Benchmark, _judge
+
+    bm = Benchmark(name="bail", prompt="p", expected_bbox=[120.0, 40.0, 30.0])
+    outcome = RunOutcome()
+    outcome.status = "needs_review"
+    outcome.resolved_mode = "topopt"
+    outcome.analysis = {"bbox_size": [105.73, 22.69, 27.26], "watertight": True}
+    res = _judge(bm, outcome, 100.0, tmp_path)
+    assert res.dim_ok is True
+    # overshooting the envelope is still a failure (beyond 2% + tolerance)
+    outcome.analysis["bbox_size"] = [130.0, 40.0, 30.0]
+    assert _judge(bm, outcome, 100.0, tmp_path).dim_ok is False
+
+
+def test_judge_non_topopt_bbox_still_matches(tmp_path) -> None:
+    """Non-topopt modes keep the closeness check — a shrunken hybrid part is
+    a real dimension defect, not an optimization result."""
+    from cadx.agent.orchestrator import RunOutcome
+    from cadx.eval.runner import Benchmark, _judge
+
+    bm = Benchmark(name="bail", prompt="p", expected_bbox=[120.0, 40.0, 30.0])
+    outcome = RunOutcome()
+    outcome.status = "needs_review"
+    outcome.resolved_mode = "hybrid"
+    outcome.analysis = {"bbox_size": [105.73, 22.69, 27.26]}
+    assert _judge(bm, outcome, 100.0, tmp_path).dim_ok is False
+
+
 def test_benchmark_reuse_mesh_dir_optional() -> None:
     """The field is optional — new benchmarks may set it, every shipped
     benchmark JSON must still parse without it."""

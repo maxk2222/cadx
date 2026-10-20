@@ -1863,6 +1863,21 @@ def run_topopt_pipeline(  # noqa: C901
         verification["sf_gap"] = round(
             verify.worst_safety_factor - verify_export.worst_safety_factor, 4
         )
+        # a >=2x divergence between the two verifications means one of them is
+        # modelling a different structure than the other: usually the discrete
+        # mask solve hits a one-voxel connection the smoothing fills in (mask
+        # pessimistic) or the smooth skin bridges a severed section (export
+        # optimistic). sf_export governs the printed part, but the agent
+        # should inspect the thin junction instead of trusting either blind.
+        lo, hi = sorted([verify.worst_safety_factor, verify_export.worst_safety_factor])
+        if hi > 0 and lo / hi < 0.5:
+            res.topopt["warnings"].append(
+                f"sf_mask {verify.worst_safety_factor} diverges "
+                f"{hi / max(lo, 1e-9):.0f}x from sf_export "
+                f"{verify_export.worst_safety_factor} — mask and smoothed mesh "
+                "disagree on a thin junction; sf_export governs the printed "
+                "part but inspect the connection before committing"
+            )
     if verify.grid.get("dofs"):
         verification["dofs"] = verify.grid["dofs"]
     if verify.cases:
