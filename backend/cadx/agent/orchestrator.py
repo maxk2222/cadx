@@ -1101,38 +1101,39 @@ async def _bootstrap_concept_images(
     return list(out)
 
 
-async def _ensure_synth_views(ctx: AgentCtx, iteration: int, spec: PartSpec | None) -> None:
+async def _ensure_synth_views(
+    ctx: AgentCtx, iteration: int, spec: PartSpec | None, front_asset: Any
+) -> list[Any]:
     """Single-image non-flat part: synthesise up to two orthographic side
     views from the hero image so multiview adapters get left/right
     conditioning instead of guessing depth from one perspective shot.
 
-    Runs once per run (`_synth_views_done`); the generated assets are marked
-    (`role_hint="synth_view"`, `synth:` caption, `_synth_view_roles` map) so
-    reference-mask/carving/scoring paths never treat them as ground truth —
-    they are generator conditioning only. Any failure degrades to the
-    unchanged single-image path."""
+    `front_asset` is the image the generator will actually use as its front
+    view — an upload or a bootstrap concept image (the bootstrap hero had no
+    conditioning at all: hunyuan reconstructed a solid channel instead of the
+    hollow bail). Runs once per run (`_synth_views_done`); the generated
+    assets are marked (`role_hint="synth_view"`, `synth:` caption,
+    `_synth_view_roles` map) so reference-mask/carving/scoring paths never
+    treat them as ground truth — they are generator conditioning only. Any
+    failure degrades to the unchanged single-image path. Returns the new
+    synth assets (left/right order)."""
     if ctx.mesh_info.get("_synth_views_done"):
-        return
+        return []
     ctx.mesh_info["_synth_views_done"] = True
-    if ctx.image is None or not ctx.image_available or spec is None:
-        return
-    images = [
-        a
-        for a in ctx.assets
-        if a.kind in IMAGE_INPUT_KINDS and getattr(a, "role_hint", "") != "synth_view"
-    ]
-    if len(images) != 1:
-        return
+    if ctx.image is None or not ctx.image_available or spec is None or front_asset is None:
+        return []
+    if getattr(front_asset, "role_hint", "") == "synth_view":
+        return []
     dims = (spec.length_x.value, spec.width_y.value, spec.height_z.value)
     if _is_flat_spec_dims(dims):
-        return  # flat parts get the measured-outline 'back' synth instead
+        return []  # flat parts get the measured-outline 'back' synth instead
     try:
         from cadx.agent.concept_image import generate_concept_images
 
         out = await generate_concept_images(
             ctx,
             "same object, orthographic side view, neutral grey background, no text",
-            ref_asset=images[0],
+            ref_asset=front_asset,
             count=2,
             source="synth_side_view",
             spec=spec,
@@ -1147,7 +1148,7 @@ async def _ensure_synth_views(ctx: AgentCtx, iteration: int, spec: PartSpec | No
             iteration,
             f"side-view synthesis failed: {e} — continuing with the single view",
         )
-        return
+        return []
     roles: dict[str, str] = {}
     for a, slot in zip(out, ("left", "right"), strict=False):
         a.role_hint = "synth_view"
@@ -1160,6 +1161,7 @@ async def _ensure_synth_views(ctx: AgentCtx, iteration: int, spec: PartSpec | No
             iteration,
             f"generated {len(roles)} synthetic side view(s) for multiview conditioning",
         )
+    return list(out)
 
 
 def _rotate_hero(ordered: list[Any], synth_roles: dict[str, str]) -> list[Any]:
@@ -1201,7 +1203,11 @@ def _gate_generated_images(ordered: list[Any], spec: PartSpec | None) -> list[An
 
     kept, dropped = [], []
     for a in ordered:
-        if a.kind == "generated_image" and aspect_mismatch(a.path, spec):
+        if getattr(a, "role_hint", "") == "synth_view":
+            # conditioning side views, not hero candidates — their silhouette
+            # legitimately differs from the front-view aspect the gate checks
+            kept.append(a)
+        elif a.kind == "generated_image" and aspect_mismatch(a.path, spec):
             dropped.append(a.asset_id)
         else:
             kept.append(a)
@@ -1623,7 +1629,6 @@ async def _generate_mesh_batch(  # noqa: C901
     n = len(seeds)
     it_dir = storage.iteration_dir(ctx.project_id, ctx.version_id, iteration)
     it_dir.mkdir(parents=True, exist_ok=True)
-    await _ensure_synth_views(ctx, iteration, spec)
     images, roles = _mesh_source_images(ctx, iteration, spec)
     if not images:
         boot = await _bootstrap_concept_images(ctx, iteration, spec, plan)
@@ -1632,6 +1637,10 @@ async def _generate_mesh_batch(  # noqa: C901
     if not images:
         ctx.mesh_info["gen_error"] = "no image input for mesh generation"
         return [None] * n
+    if len(images) == 1:
+        synth = await _ensure_synth_views(ctx, iteration, spec, images[0])
+        images += synth
+        roles += ["left", "right"][: len(synth)]
     model_r, images, roles = await _arrange_gen_images(
         ctx, iteration, images, roles, spec, prefer=model
     )
@@ -2258,7 +2267,6 @@ async def _generate_mesh(  # noqa: C901
             shutil.copy2(ctx.mesh_raw_reuse, out_path)
         return rel
 
-    await _ensure_synth_views(ctx, iteration, spec)
     images, roles = _mesh_source_images(ctx, iteration, spec)
     if not images:
         # text-only job: image->3D still needs a reference — synthesise a
@@ -2269,6 +2277,10 @@ async def _generate_mesh(  # noqa: C901
     if not images:
         ctx.mesh_info["gen_error"] = "no image input for mesh generation"
         return None
+    if len(images) == 1:
+        synth = await _ensure_synth_views(ctx, iteration, spec, images[0])
+        images += synth
+        roles += ["left", "right"][: len(synth)]
     await ctx.emit("meshgen", iteration, f"views: {', '.join(roles[: len(images)])}")
 
     base_seed = _base_seed(ctx)

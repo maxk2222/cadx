@@ -199,9 +199,11 @@ async def test_synth_views_assigned_left_right_roles(monkeypatch, tmp_path):
 
     monkeypatch.setattr("cadx.agent.concept_image.generate_concept_images", fake_gen)
 
-    ctx = _ctx(assets=[_img()], image=object(), image_available=True)
+    hero = _img()
+    ctx = _ctx(assets=[hero], image=object(), image_available=True)
     spec = _spec((40.0, 30.0, 35.0))  # non-flat
-    await orch._ensure_synth_views(ctx, 1, spec)
+    out = await orch._ensure_synth_views(ctx, 1, spec, hero)
+    assert len(out) == 2
 
     images, roles = orch._mesh_source_images(ctx, 1, spec)
     assert len(images) == 3
@@ -210,7 +212,7 @@ async def test_synth_views_assigned_left_right_roles(monkeypatch, tmp_path):
     assert len(synth) == 2
     assert all(a.caption.startswith("synth:") for a in synth)
     # runs once per run — a second call must not generate again
-    await orch._ensure_synth_views(ctx, 1, spec)
+    assert await orch._ensure_synth_views(ctx, 1, spec, hero) == []
     assert sum(1 for a in ctx.assets if a.role_hint == "synth_view") == 2
 
 
@@ -226,13 +228,14 @@ async def test_synth_views_skipped_when_flat_or_multi(monkeypatch, tmp_path):
     monkeypatch.setattr("cadx.agent.concept_image.generate_concept_images", fake_gen)
 
     # flat part: the measured-outline 'back' synth covers that case instead
-    ctx = _ctx(assets=[_img()], image=object(), image_available=True)
-    await orch._ensure_synth_views(ctx, 1, _spec((100.0, 80.0, 5.0)))
+    hero = _img()
+    ctx = _ctx(assets=[hero], image=object(), image_available=True)
+    assert await orch._ensure_synth_views(ctx, 1, _spec((100.0, 80.0, 5.0)), hero) == []
     assert calls == []
 
-    # more than one input image — no synthesis
+    # no front asset — caller decides there's more than one view or none
     ctx = _ctx(assets=[_img(1), _img(2)], image=object(), image_available=True)
-    await orch._ensure_synth_views(ctx, 1, _spec((40.0, 30.0, 35.0)))
+    assert await orch._ensure_synth_views(ctx, 1, _spec((40.0, 30.0, 35.0)), None) == []
     assert calls == []
 
     # generation failure is tolerated (flagged done, no raise)
@@ -240,8 +243,9 @@ async def test_synth_views_skipped_when_flat_or_multi(monkeypatch, tmp_path):
         raise RuntimeError("image backend down")
 
     monkeypatch.setattr("cadx.agent.concept_image.generate_concept_images", boom)
-    ctx = _ctx(assets=[_img()], image=object(), image_available=True)
-    await orch._ensure_synth_views(ctx, 1, _spec((40.0, 30.0, 35.0)))
+    hero = _img()
+    ctx = _ctx(assets=[hero], image=object(), image_available=True)
+    assert await orch._ensure_synth_views(ctx, 1, _spec((40.0, 30.0, 35.0)), hero) == []
     assert ctx.mesh_info["_synth_views_done"] is True
     assert not ctx.mesh_info.get("_synth_view_roles")
 
@@ -272,7 +276,7 @@ async def test_synth_views_never_used_as_reference_mask(monkeypatch, tmp_path):
     hero = _img()
     ctx = _ctx(assets=[hero], image=object(), image_available=True)
     spec = _spec((40.0, 30.0, 35.0))
-    await orch._ensure_synth_views(ctx, 1, spec)
+    await orch._ensure_synth_views(ctx, 1, spec, hero)
     # a measured-outline back render must also never feed the reference mask
     ctx.assets.append(
         InputAsset(
