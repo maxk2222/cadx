@@ -3469,6 +3469,10 @@ async def _run_cad(  # noqa: C901
                         "iteration": it,
                         "mesh_rel": f"{it_rel}/renders/mesh.stl",
                         "load_cases": [c.model_dump() for c in spec.load_cases],
+                        # spec-ordered anchor table so hole_index resolves
+                        # against declaration order — scanned holes still
+                        # merge in afterwards (scan_anchors is on)
+                        "anchors": (ctx.anchors or {}).get("holes") or None,
                         "material": ctx.settings.fem_material or spec.material,
                         # iteration verify is a smoke check (solvable? sane SF?) —
                         # a coarser pitch keeps it inside the task timeout on
