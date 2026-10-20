@@ -328,3 +328,81 @@ def test_dim_echo_leaves_ambiguous_contradiction() -> None:
     notes = sanitize_dim_echo(s, "Bügel ca. 120 x 40 x 70 mm")
     assert notes
     assert s.height_z.value == 70.0
+
+
+def test_mirror_host_gap_detects_dropped_hole() -> None:
+    """Observed E2E: intake emitted lugs at x=±45 but only the -x through-
+    hole — 'je eine Bohrung' makes the +x hole a real spec gap."""
+    s = PartSpec(
+        name="Tragegriff",
+        summary="handle",
+        length_x={"value": 120.0, "source": "stated"},
+        width_y={"value": 40.0, "source": "stated"},
+        height_z={"value": 30.0, "source": "stated"},
+        features=[
+            {"type": "arch", "name": "bail", "position": "x=-45 to +45, apex z=30"},
+            {"type": "pad", "name": "lug -x", "position": "centered at x=-45, y=0, z=0..6"},
+            {"type": "pad", "name": "lug +x", "position": "centered at x=+45, y=0, z=0..6"},
+            {
+                "type": "through_hole",
+                "name": "bore -x",
+                "dims": {"diameter": 5.5},
+                "position": "x=-45, y=0, through z=0..6",
+            },
+        ],
+        image_roles=[],
+    )
+    gaps = spec_gaps(s, "Tragegriff mit je einer Durchgangsbohrung in beiden Laschen")
+    assert any("appears missing" in g for g in gaps)
+
+
+def test_mirror_host_gap_silent_without_quantifier() -> None:
+    """Same spec, but the prompt never promised a hole per side — an
+    asymmetric design must not trip the gap."""
+    s = PartSpec(
+        name="h",
+        summary="",
+        length_x={"value": 120.0, "source": "stated"},
+        width_y={"value": 40.0, "source": "stated"},
+        height_z={"value": 30.0, "source": "stated"},
+        features=[
+            {"type": "pad", "name": "lug -x", "position": "centered at x=-45"},
+            {"type": "pad", "name": "lug +x", "position": "centered at x=+45"},
+            {
+                "type": "through_hole",
+                "name": "bore -x",
+                "dims": {"diameter": 5.5},
+                "position": "x=-45, y=0",
+            },
+        ],
+        image_roles=[],
+    )
+    assert spec_gaps(s, "Griff mit einer Bohrung") == []
+
+
+def test_mirror_host_gap_silent_when_both_sides_present() -> None:
+    s = PartSpec(
+        name="h",
+        summary="",
+        length_x={"value": 120.0, "source": "stated"},
+        width_y={"value": 40.0, "source": "stated"},
+        height_z={"value": 30.0, "source": "stated"},
+        features=[
+            {"type": "pad", "name": "lug -x", "position": "x=-45"},
+            {"type": "pad", "name": "lug +x", "position": "x=+45"},
+            {
+                "type": "through_hole",
+                "name": "bore -x",
+                "dims": {"diameter": 5.5},
+                "position": "x=-45",
+            },
+            {
+                "type": "through_hole",
+                "name": "bore +x",
+                "dims": {"diameter": 5.5},
+                "position": "x=+45",
+            },
+        ],
+        image_roles=[],
+    )
+    assert spec_gaps(s, "je eine Bohrung in beiden Laschen") == []

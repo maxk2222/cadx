@@ -256,6 +256,74 @@ _FEATURE_WORDS = re.compile(
 )
 
 
+_HOST_TYPES = ("pad", "boss", "tab", "lug", "plate", "mount", "flange", "base")
+# quantifiers that promise a feature PER host/side — "je eine Bohrung",
+# "one hole in each lug", "an beiden Enden" — making a missing mirror-side
+# feature a real spec gap instead of an asymmetric design choice
+_PER_HOST_QUANT_RE = re.compile(
+    r"\b(je|jeweils|jeder|jede|each|per|both|beiden|beidseitig|either)\w*", re.I
+)
+# hole words as SUBSTRINGS — German compounds ("Durchgangsbohrung") break
+# \b-based matching, and a false positive only costs one cheap re-ask gate
+_HOLE_WORD_RE = re.compile(r"loch|bohr|hole|bore|gewinde|thread", re.I)
+
+
+def _axis_side(text: str, axis: str) -> int | None:
+    """Sign (-1/+1) a feature position claims on `axis`, from absolute
+    coords, ranges or face hints. None = unresolved."""
+    from cadx.agent.spechost import parse_ranges
+    from cadx.cad.poshint import parse_position_hints
+
+    coords, faces, _ends, _nears = parse_position_hints(text)
+    v = coords.get(axis)
+    if v is None:
+        rng = parse_ranges(text).get(axis)
+        if rng is not None:
+            v = (rng[0] + rng[1]) / 2.0
+    if v is None:
+        for fc in faces:
+            if len(fc) == 2 and fc[1] == axis:
+                v = 1.0 if fc[0] == "+" else -1.0
+                break
+    if v is None or abs(v) < 1e-6:
+        return None
+    return 1 if v > 0 else -1
+
+
+def _mirror_host_gaps(spec: PartSpec) -> list[str]:
+    """Hole declared for only one side of a mirrored host pair (observed:
+    'je eine Durchgangsbohrung in den Laschen' -> intake emitted pads at
+    x=±45 but only the -x through-hole). Host = pad/boss/tab/lug-type
+    feature; binding = sign of the resolved axis position."""
+    from cadx.agent.anchors import _hole_like
+
+    gaps: list[str] = []
+    for axis in ("x", "y"):
+        host_sides: set[int] = set()
+        hole_sides: set[int] = set()
+        unresolved_holes = 0
+        for f in spec.features:
+            text = f"{f.position or ''} {f.description or ''}".strip()
+            if not text:
+                continue
+            side = _axis_side(text, axis)
+            if _hole_like(f):
+                if side is None:
+                    unresolved_holes += 1
+                else:
+                    hole_sides.add(side)
+            elif str(f.type or "").lower() in _HOST_TYPES and side is not None:
+                host_sides.add(side)
+        if host_sides == {-1, 1} and hole_sides and len(hole_sides) < len(host_sides):
+            present = f"+{axis}" if 1 in hole_sides else f"-{axis}"
+            missing = f"-{axis}" if 1 in hole_sides else f"+{axis}"
+            gaps.append(
+                f"hole-like features resolve to the {present} side only while "
+                f"host features span both ±{axis} — the {missing} hole appears missing"
+            )
+    return gaps
+
+
 def spec_gaps(spec: PartSpec, prompt: str) -> list[str]:
     """Deterministic plausibility check. Returns reasons (empty = ok)."""
     gaps: list[str] = []
@@ -264,6 +332,12 @@ def spec_gaps(spec: PartSpec, prompt: str) -> list[str]:
     words = sorted({m.group(0).lower() for m in _FEATURE_WORDS.finditer(prompt or "")})
     if words and not spec.features:
         gaps.append(f"prompt names features ({', '.join(words[:8])}) but spec.features is empty")
+    if (
+        spec.features
+        and _HOLE_WORD_RE.search(prompt or "")
+        and _PER_HOST_QUANT_RE.search(prompt or "")
+    ):
+        gaps.extend(_mirror_host_gaps(spec))
     return gaps
 
 
