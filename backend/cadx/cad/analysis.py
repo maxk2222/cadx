@@ -54,29 +54,69 @@ def _cyl_axis(face: Any) -> list[float]:
     return _vec(axis)
 
 
+# above this face count the shape is a faceted mesh solid: BRepCheck and the
+# per-face GeomType scan each cost minutes on OCC (observed: 448s pipeline_hang
+# on a 40k-face hybrid solid) while finding nothing a sewn mesh can't already
+# tell us — those bodies take the fast path below
+_FACET_FACE_CAP = 2000
+
+
+def _mass_props(shape: Shape, use_src_mesh: bool) -> tuple[float, float, list[float]]:
+    """Volume, area, centre of mass. A faceted solid re-tessellates to its own
+    triangles for OCC mass properties — when the source trimesh is attached it
+    delivers identical numbers in ms."""
+    src_mesh = getattr(shape, "_cadx_mesh", None) if use_src_mesh else None
+    if src_mesh is not None:
+        try:
+            return (
+                round(float(src_mesh.volume), 3),
+                round(float(src_mesh.area), 3),
+                [round(float(c), 4) for c in src_mesh.center_mass],
+            )
+        except Exception:
+            pass
+    try:
+        com = _vec(shape.center())
+    except Exception:
+        com = []
+    return round(float(shape.volume), 3), round(float(shape.area), 3), com
+
+
 def analyze(shape: Shape, stl_path: Path | None = None) -> Analysis:
     bb = shape.bounding_box()
     size = _vec(bb.max - bb.min)
     warnings: list[str] = []
 
     solid_count = len(shape.solids())
-    is_valid = bool(shape.is_valid)
+    face_count = len(shape.faces())
+    faceted = face_count > _FACET_FACE_CAP
+    if faceted:
+        # sewn mesh solid: a BRepCheck verdict on tens of thousands of
+        # triangles costs minutes and is not actionable — watertightness of
+        # the tessellation (checked below) is the meaningful signal
+        is_valid = solid_count == 1
+        warnings.append(f"faceted solid ({face_count} faces) — validity check skipped")
+    else:
+        is_valid = bool(shape.is_valid)
     if solid_count != 1:
         warnings.append(f"part has {solid_count} solids (expected 1)")
     if not is_valid:
         warnings.append("B-Rep is not valid")
 
     cyl_faces: list[CylFace] = []
-    for f in shape.faces():
-        try:
-            if f.geom_type == GeomType.CYLINDER:
-                cyl_faces.append(
-                    CylFace(
-                        radius=float(f.radius or 0.0), axis=_cyl_axis(f), center=_vec(f.center())
+    if not faceted:
+        for f in shape.faces():
+            try:
+                if f.geom_type == GeomType.CYLINDER:
+                    cyl_faces.append(
+                        CylFace(
+                            radius=float(f.radius or 0.0),
+                            axis=_cyl_axis(f),
+                            center=_vec(f.center()),
+                        )
                     )
-                )
-        except Exception:
-            continue
+            except Exception:
+                continue
 
     watertight: bool | None = None
     if stl_path is not None and stl_path.exists():
@@ -103,22 +143,19 @@ def analyze(shape: Shape, stl_path: Path | None = None) -> Analysis:
     if not centered:
         warnings.append("part is not centred at the origin in XY")
 
-    try:
-        com = _vec(shape.center())
-    except Exception:
-        com = []
+    volume, surface_area, com = _mass_props(shape, use_src_mesh=faceted)
 
     return Analysis(
         bbox_min=_vec(bb.min),
         bbox_max=_vec(bb.max),
         bbox_size=size,
-        volume=round(float(shape.volume), 3),
-        surface_area=round(float(shape.area), 3),
+        volume=volume,
+        surface_area=surface_area,
         center_of_mass=com,
         solid_count=solid_count,
         is_valid=is_valid,
         watertight=watertight,
-        face_count=len(shape.faces()),
+        face_count=face_count,
         edge_count=len(shape.edges()),
         cylindrical_faces=cyl_faces,
         sits_on_xy=sits,

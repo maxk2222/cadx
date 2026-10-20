@@ -27,6 +27,8 @@ from OCP.gp import gp_Pnt, gp_Pnt2d, gp_Vec
 from OCP.TopAbs import TopAbs_Orientation, TopAbs_State
 from pydantic import BaseModel, Field
 
+from cadx.cad.analysis import _FACET_FACE_CAP
+
 
 class MeasuredHoleGroup(BaseModel):
     id: str = ""  # stable selector id (h1… round bore, s1… slot) — assign_feature_ids
@@ -404,6 +406,11 @@ def _scan_faces(
     cones: list[tuple[list[float], list[float], float, float]] = []
     tori: list[float] = []
     chamfer_planes = 0
+    # faceted mesh solid: every face is a PLANE triangle — a BRepAdaptor scan
+    # over tens of thousands of faces costs minutes and can only find noise;
+    # mesh-level probes (ray sampling) below carry the real signal
+    if len(shape.faces()) > _FACET_FACE_CAP:
+        return cyl_faces, cones, tori, chamfer_planes
     for f in shape.faces():
         try:
             gt = f.geom_type
@@ -1159,6 +1166,8 @@ def extract_features(  # noqa: C901 — sequential measurement passes
             out.approximate = True
 
     cyl_faces, cones, tori, chamfer_planes = _scan_faces(shape)
+    if len(shape.faces()) > _FACET_FACE_CAP:
+        out.approximate = True
 
     # classify cylinders: hole (axis void surrounded by material) vs round
     # (edge fillet) vs boss (protruding full-wrap cylinder — a tube/handle).
