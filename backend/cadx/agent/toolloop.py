@@ -471,6 +471,9 @@ async def run_session(  # noqa: C901
     temperature: float | None = None,
     drain_fn: Callable[[], Awaitable[list[dict[str, Any]]]] | None = None,
     on_delta: Callable[[str], None] | None = None,
+    # "required" forces a tool call every turn — build sessions use it so a
+    # weak model cannot skip the staged protocol with a bare content answer
+    tool_choice: str = "auto",
 ) -> SessionResult:
     """Run the tool-call turn loop. Returns when the model stops calling tools.
 
@@ -534,6 +537,7 @@ async def run_session(  # noqa: C901
             msgs,
             json_schema=json_schema,
             tools=tools,
+            tool_choice=tool_choice,
             temperature=temperature,
             on_delta=on_delta,
             extra_body=thinking,

@@ -15,8 +15,8 @@ from cadx.agent.trace import MemoryTrace
 from cadx.agent.types import AgentCtx, InputAsset
 from cadx.db.models import ProjectSettings
 from cadx.llm.fake import FakeLLM
-from cadx.runtime_config import RuntimeSettings
 from cadx.llm.schemas import PartSpec, PatchResponse
+from cadx.runtime_config import RuntimeSettings
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 BOX_CODE = (FIXTURES / "simple_box.py").read_text()
@@ -1238,7 +1238,6 @@ def test_concept_image_schema_types():
 
 async def test_concept_image_mark_sketch_string_false():
     """'false' as a string must not tag the image as a sketch."""
-    from cadx.agent import toolspecs
 
     captured: dict = {}
 
@@ -1252,7 +1251,90 @@ async def test_concept_image_mark_sketch_string_false():
     import unittest.mock as mock
 
     with mock.patch("cadx.agent.concept_image.generate_concept_images", fake_gen):
-        res = await session._tool_generate_concept_image(
-            {"prompt": "p", "mark_sketch": "false"}
-        )
+        await session._tool_generate_concept_image({"prompt": "p", "mark_sketch": "false"})
     assert captured["mark_sketch"] is False
+
+
+# ---------------------------------------------------------------------------
+# submission feature audit (exploration stubs)
+
+
+STUB_CODE = """from build123d import *
+import cadlib
+
+PARAMS = {"l": 120.0}
+
+mesh = load_mesh_solid()
+print(measure(mesh))
+part = mesh
+result = part
+"""
+
+REAL_CODE = """from build123d import *
+import cadlib
+
+PARAMS = {"l": 120.0}
+
+mesh = load_mesh_solid()
+lug = Pos(45, 0, 0) * Box(30, 20, 6)
+part = cadlib.mesh_fuse(mesh, lug)
+part = cadlib.mesh_cut(part, Pos(45, 0, -1) * Cylinder(2.75, 10))
+result = cadlib.collapse_solids(part)
+"""
+
+_FEATS = [
+    {"type": "arched bar", "name": "bail"},
+    {"type": "pad", "name": "lug -x"},
+    {"type": "pad", "name": "lug +x"},
+    {"type": "through hole", "name": "bore -x"},
+    {"type": "through hole", "name": "bore +x"},
+]
+
+
+async def test_submit_code_rejects_feature_stub():
+    """Live failure: the model submitted `result = mesh` twice — submit_code
+    must refuse it while named spec features are missing."""
+    session = ToolSession(_ctx(FakeLLM([])), kind="codegen", spec_features=_FEATS)
+    res = await session.execute("submit_code", {"code": STUB_CODE})
+    assert not res["ok"]
+    assert "feature audit" in res["error"]
+    assert session.submitted is None
+    res = await session.execute("submit_code", {"code": REAL_CODE})
+    assert res["ok"] and session.submitted is not None
+
+
+async def test_build_done_rejects_feature_stub():
+    """`done` on a buffer without feature ops is refused with the missing
+    feature names — the session keeps building instead of shipping a stub."""
+    session = ToolSession(
+        _ctx(FakeLLM([])),
+        kind="build",
+        code="from build123d import *\nimport cadlib\n\nPARAMS = {}\n",
+        spec_features=_FEATS,
+    )
+    res = await session.execute(
+        "add_block", {"name": "base", "code": "part = load_mesh_solid()\nresult = part"}
+    )
+    assert res["ok"]
+    res = await session.execute("done", {})
+    assert not res["ok"] and "feature audit" in res["error"]
+    assert session.submitted is None
+    res = await session.execute(
+        "add_block",
+        {
+            "name": "lugs",
+            "code": "part = cadlib.mesh_fuse(part, Pos(45,0,0) * Box(30,20,6))\nresult = part",
+        },
+    )
+    assert res["ok"]
+    res = await session.execute("done", {})
+    assert res["ok"] and session.submitted is not None
+
+
+async def test_feature_audit_missing_helper():
+    from cadx.agent.toolspecs import feature_audit_missing
+
+    assert feature_audit_missing(STUB_CODE, _FEATS)  # nothing built
+    assert feature_audit_missing(REAL_CODE, _FEATS) == []  # ops present
+    assert feature_audit_missing(STUB_CODE, _FEATS[:1]) == []  # <2 addable feats
+    assert feature_audit_missing(STUB_CODE, []) == []

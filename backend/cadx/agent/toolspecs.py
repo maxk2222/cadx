@@ -298,6 +298,56 @@ VERIFY_TOOLS = [
 
 # offered once the sandbox budget is spent — the description itself steers
 # the model to done, and a call still gets an actionable handler error
+# ---------------------------------------------------------------------------
+# submission feature audit — deterministic gate against "exploration stubs":
+# a submission that builds NONE of the spec's declared features (observed
+# twice live: `load_mesh_solid() + prints + result = mesh`) would otherwise
+# be accepted, burn a critique round and get patched by improve instead of
+# ever being built. submit_code/done reject it with the missing feature
+# names so the session keeps building.
+
+_FEATURE_OP_RE = re.compile(
+    r"Cylinder\(|Cone\(|Hole\(|CounterSink|CounterBore|Box\(|Sphere\(|"
+    r"extrude\(|loft\(|sweep\(|revolve\(|fillet\(|chamfer\(|"
+    r"mesh_cut\(|mesh_fuse\(|mesh_intersect\(|trim_below\(|"
+    r"\+\s*Pos\(|-\s*Pos\(|"
+    r"\.union\(|\.cut\(|\.fuse\(|\.difference\(|"
+    r"\w+\s*[-+]=\s*\w+|\w+\s*[-+]\s*=\s*\w+\s*[-+]\s*\w+",
+    re.IGNORECASE,
+)
+
+# feature types that describe the base body itself, not an addable feature
+_AUDIT_BASE_TYPES = {
+    "arch",
+    "arched bar",
+    "body",
+    "shell",
+    "frame",
+    "housing",
+    "enclosure",
+    "base",
+    "blank",
+    "bar",
+    "bail",
+    "handle",
+    "grip",
+    "knob",
+    "disc",
+    "gear",
+}
+
+
+def feature_audit_missing(code: str, features: list[dict[str, Any]]) -> list[str]:
+    """Declared features the code cannot possibly produce.
+
+    Only fires when ≥2 addable features are declared and the code shows no
+    boolean/feature op at all — partial builds stay the critique's job."""
+    feats = [f for f in features if str(f.get("type") or "").lower() not in _AUDIT_BASE_TYPES]
+    if len(feats) < 2 or _FEATURE_OP_RE.search(code or ""):
+        return []
+    return [str(f.get("name") or f.get("type") or "feature") for f in feats[:6]]
+
+
 _VERIFY_SPENT_TOOLS = [
     _fn(
         "verify",
@@ -1276,6 +1326,9 @@ class ToolSession:
         preview_fn: StructFn | None = None,
         anchors_fn: StructFn | None = None,
         refine_fn: StructFn | None = None,
+        # spec features for the submission audit — [{"type":..., "name":...}];
+        # submit_code/done reject stubs that build none of them
+        spec_features: list[dict[str, Any]] | None = None,
     ) -> None:
         self.ctx = ctx
         self.kind = kind
@@ -1288,6 +1341,7 @@ class ToolSession:
         self.preview_fn = preview_fn
         self.anchors_fn = anchors_fn
         self.refine_fn = refine_fn
+        self.spec_features = spec_features
         self._refined_runs: set[int] = set()
         settings = ctx.runtime_settings
         # build sessions verify once per feature block — they get the larger
@@ -2426,6 +2480,17 @@ class ToolSession:
                 "error": "contract check failed — fix before done",
                 "errors": errs[:10],
             }
+        if self.spec_features:
+            missing = feature_audit_missing(self.buffer, self.spec_features)
+            if missing and self._done_reasks < 2:
+                self._done_reasks += 1
+                return {
+                    "ok": False,
+                    "error": "feature audit failed — the buffer builds none of the "
+                    f"required features: {', '.join(missing)}. Add them stage by "
+                    "stage (add_block + verify each), then done again.",
+                    "missing": missing,
+                }
         self.submitted = {
             "code": self.buffer,
             "reasoning": str(a.get("reasoning", "")),
@@ -2447,6 +2512,18 @@ class ToolSession:
                 "error": "contract check failed — fix and submit again",
                 "errors": errs[:10],
             }
+        if self.spec_features:
+            missing = feature_audit_missing(code, self.spec_features)
+            if missing and self._done_reasks < 2:
+                self._done_reasks += 1
+                return {
+                    "ok": False,
+                    "error": "feature audit failed — the submission builds none of the "
+                    f"required features: {', '.join(missing)}. This is an exploration "
+                    "stub, not the part — add the features (add_block + verify each), "
+                    "then submit again.",
+                    "missing": missing,
+                }
         self.submitted = {
             "code": code,
             "reasoning": str(a.get("reasoning", "")),

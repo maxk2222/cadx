@@ -23,7 +23,12 @@ from cadx.agent.context import (
 from cadx.agent.docfetch import docs_for_error
 from cadx.agent.thinking import thinking_body
 from cadx.agent.toolloop import run_session, tools_enabled
-from cadx.agent.toolspecs import ToolSession, VerifyFn, elision_marker
+from cadx.agent.toolspecs import (
+    ToolSession,
+    VerifyFn,
+    elision_marker,
+    feature_audit_missing,
+)
 from cadx.agent.types import AgentCtx
 from cadx.cad.allowlist import check_code
 from cadx.cad.errordiag import diag_block, diagnose
@@ -462,56 +467,20 @@ async def _repair_session(
     return PatchResponse(reasoning="tool session produced no changes")
 
 
-_FEATURE_OP_RE = re.compile(
-    r"Cylinder\(|Cone\(|Hole\(|CounterSink|CounterBore|Box\(|Sphere\(|"
-    r"extrude\(|loft\(|sweep\(|revolve\(|fillet\(|chamfer\(|"
-    r"mesh_cut\(|mesh_fuse\(|mesh_intersect\(|trim_below\(|"
-    r"\+\s*Pos\(|-\s*Pos\(|"
-    r"\.union\(|\.cut\(|\.fuse\(|\.difference\(|"
-    r"\w+\s*[-+]=\s*\w+|\w+\s*[-+]\s*=\s*\w+\s*[-+]\s*\w+",
-    re.IGNORECASE,
-)
-_BASE_TYPES = {
-    "arch",
-    "arched bar",
-    "body",
-    "shell",
-    "frame",
-    "housing",
-    "enclosure",
-    "base",
-    "blank",
-    "bar",
-    "bail",
-    "handle",
-    "grip",
-    "knob",
-    "disc",
-    "gear",
-}
-
-
 def _feature_audit(code: str, spec: PartSpec | None) -> list[str]:
     """Declared features the submitted code cannot possibly produce —
     catches the 'probe script' failure (observed: hybrid build session
     answered `load_mesh_solid() + prints + result=mesh`, all lugs and both
-    bores missing, burning a critique + 4 improve iterations).
-
-    The audit only fires when the spec declares ≥2 features beyond the
-    organic base body and the code shows no boolean/feature ops at all —
-    partial builds stay the critique's job."""
+    bores missing, burning a critique + 4 improve iterations)."""
     if spec is None:
         return []
-    feats = [
-        f
-        for f in (spec.features or [])
-        if str(getattr(f, "type", "") or "").lower() not in _BASE_TYPES
-    ]
-    if len(feats) < 2:
-        return []
-    if _FEATURE_OP_RE.search(code or ""):
-        return []
-    return [str(getattr(f, "name", "") or getattr(f, "type", "")) for f in feats[:6]]
+    return feature_audit_missing(
+        code,
+        [
+            {"type": getattr(f, "type", ""), "name": getattr(f, "name", "")}
+            for f in spec.features or []
+        ],
+    )
 
 
 async def _codegen_session(
@@ -545,19 +514,28 @@ async def _codegen_session(
     staged = ctx.runtime_settings.agent_staged_build == "on" or (
         ctx.runtime_settings.agent_staged_build == "auto" and tools_enabled(ctx, "code")
     )
+    spec_feats = (
+        [
+            {"type": getattr(f, "type", ""), "name": getattr(f, "name", "")}
+            for f in spec.features or []
+        ]
+        if spec is not None
+        else None
+    )
     if staged:
         session = ToolSession(
             ctx,
             kind="build",
             code=_BUILD_SEED,
             verify_fn=verify_fn,
+            spec_features=spec_feats,
             render_fn=render_fn,
         )
         system = codegen_build_system(
             plan=plan, spec=spec, fresh=True, hybrid=ctx.hybrid_solid is not None
         )
     else:
-        session = ToolSession(ctx, kind="codegen")
+        session = ToolSession(ctx, kind="codegen", spec_features=spec_feats)
         system = codegen_tools_system(
             plan=plan, spec=spec, fresh=True, hybrid=ctx.hybrid_solid is not None
         )
@@ -582,6 +560,9 @@ async def _codegen_session(
         ),
         step=STEP,
         iteration=iteration,
+        # staged builds must end via `done` — forcing tool calls closes the
+        # content-answer shortcut weak models took to submit stubs
+        tool_choice="required" if staged else "auto",
     )
     if (
         res.submitted

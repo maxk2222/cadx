@@ -136,7 +136,7 @@ def test_load_benchmarks_parses_new_fields() -> None:
     assert fl.real_only is True
     assert any(e.get("pcd") for e in fl.expected_features)
     fs = bms["firesteel_auto"]
-    assert fs.max_prompt_tokens == 4_000_000
+    assert fs.max_prompt_tokens == 1_500_000
     assert len(fs.images) == 3
     assert bms["knife_scale_hybrid"].gen_mode == "hybrid"
     assert bms["grip_mesh"].expect_watertight is True
