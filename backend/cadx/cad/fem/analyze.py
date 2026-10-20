@@ -94,7 +94,7 @@ def _part_surface(mesh: trimesh.Trimesh | None, body: Any) -> Any:
             return pv.PolyData(np.asarray(mesh.vertices, dtype=float), faces)
         except Exception:
             pass
-    return body.extract_surface()
+    return body.extract_surface(algorithm="dataset_surface")
 
 
 def _render_case(

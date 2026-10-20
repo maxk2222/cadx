@@ -163,9 +163,19 @@ async def execute_version(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[
             deadline,
         )
     except TimeoutError:
-        log.error("execute_version.pipeline_hang", version=payload["version_id"])
+        from cadx.cad.engine import pipeline_step
+
+        hb = pipeline_step(str(_artifact_dir(payload)))
+        log.error(
+            "execute_version.pipeline_hang",
+            version=payload["version_id"],
+            step=hb[0] if hb else None,
+            step_s=round(time.monotonic() - hb[1], 1) if hb else None,
+        )
         r = ExecResult()
         r.error = f"executor pipeline exceeded {deadline}s — worker thread may be stuck"
+        if hb:
+            r.error += f" (last step: {hb[0]})"
         return r.to_dict()
 
     if await _cancelled(ctx, cancel_keys):

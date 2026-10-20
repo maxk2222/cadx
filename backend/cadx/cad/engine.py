@@ -67,6 +67,28 @@ log = get_logger(__name__)
 # per-execution budget — the gate adds a full export+import roundtrip
 _STEP_GATE_BUDGET_FRACTION = 0.8
 
+# Mesh-derived (faceted) solids: their STEP export carries every triangle as
+# an analytic face (~18k faces → 58 MB, minutes of OCC time). A full
+# roundtrip inside an iteration run is not worth that cost — the
+# deterministic mesh checks carry the evidence instead.
+_STEP_GATE_MESH_MAX_FACES = 4_000
+
+# per-run step heartbeat: the executor thread cannot be killed on a hang —
+# this map at least tells the task-level timeout WHICH step is grinding
+# (observed: pipeline_hang with no clue whether sandbox, OCC boolean,
+# tessellation or the STEP gate was stuck)
+_PIPELINE_STEPS: dict[str, tuple[str, float]] = {}
+
+
+def _mark_step(key: str | None, name: str) -> None:
+    if key is not None:
+        _PIPELINE_STEPS[key] = (name, time.monotonic())
+
+
+def pipeline_step(key: str) -> tuple[str, float] | None:
+    """Last heartbeat of the run identified by `key` (its out_dir) or None."""
+    return _PIPELINE_STEPS.get(key)
+
 
 def _is_cancelled(cancelled: Callable[[], bool] | None) -> bool:
     """Poll the optional cancellation checker — never raises (a flaky
@@ -282,6 +304,8 @@ def run_pipeline(  # noqa: C901
         embedded = anchors.get("spec")
         spec_dict = embedded if isinstance(embedded, dict) else None
 
+    step_key = str(out_dir)
+    _mark_step(step_key, "sandbox")
     # 1. sandboxed execution
     workdir = out_dir / "_run"
     ro: RunnerOutput = run_user_code(
@@ -316,6 +340,7 @@ def run_pipeline(  # noqa: C901
         return _attach_verify_spec(res, spec_dict, settings, rt)
 
     # 3. quick STL for mesh analysis + renders
+    _mark_step(step_key, "tessellate")
     t = time.monotonic()
     mesh_dir = out_dir / "renders"
     try:
@@ -326,6 +351,7 @@ def run_pipeline(  # noqa: C901
     res.timings["tessellate_s"] = round(time.monotonic() - t, 2)
 
     # 4. analysis
+    _mark_step(step_key, "analyze")
     res.analysis = analyze(shape, stl_path)
     _repair_analysis_mesh(res.analysis, stl_path)
     if _is_cancelled(cancelled):
@@ -393,6 +419,7 @@ def run_pipeline(  # noqa: C901
 
     if not light:
         # 5. renders + contact sheet + thumbnail
+        _mark_step(step_key, "render")
         t = time.monotonic()
         render_paths = render_views(stl_path, mesh_dir, res.analysis.bbox_size)
         res.renders = {v: p.name for v, p in render_paths.items()}
@@ -438,6 +465,7 @@ def run_pipeline(  # noqa: C901
         res.timings["dfm_s"] = 0.0
 
     # 7. exports
+    _mark_step(step_key, "export")
     t = time.monotonic()
     if _is_cancelled(cancelled):
         _mark_cancelled(res)
@@ -458,16 +486,28 @@ def run_pipeline(  # noqa: C901
     # 8. STEP roundtrip gate — a shape can be valid in memory yet break on
     # serialisation; bounded by face count (inside the check) and by the
     # remaining exec budget here. Success-path only, never fatal.
+    # Light runs (tool-session verifies) ship no STEP at all — a full
+    # export+import roundtrip on an ~18k-face mesh solid is a >400 s OCC
+    # grind that was observed to trigger pipeline_hang; the gate is skipped
+    # outright. Mesh-derived (faceted) solids get a much lower cap for the
+    # same reason.
     t = time.monotonic()
-    if t - t0 <= rt.exec_timeout_s * _STEP_GATE_BUDGET_FRACTION:
+    if not light and t - t0 <= rt.exec_timeout_s * _STEP_GATE_BUDGET_FRACTION:
         try:
-            from cadx.cad.defects import step_roundtrip_check
+            from cadx.cad.defects import STEP_GATE_MAX_FACES, step_roundtrip_check
 
+            gate_faces = (
+                _STEP_GATE_MESH_MAX_FACES if mesh_solid is not None else STEP_GATE_MAX_FACES
+            )
             shipped = res.exports.get("step")
             if shipped:
-                gate = step_roundtrip_check(shape, exp_dir / shipped, write=False)
+                gate = step_roundtrip_check(
+                    shape, exp_dir / shipped, write=False, max_faces=gate_faces
+                )
             else:
-                gate = step_roundtrip_check(shape, workdir / "step_gate.step")
+                gate = step_roundtrip_check(
+                    shape, workdir / "step_gate.step", max_faces=gate_faces
+                )
             # store the gate result unconditionally — verify_spec reads it as
             # structural evidence (ok→PASS, warning→FAIL, skipped→UNVERIFIED)
             res.features["step_roundtrip"] = gate
