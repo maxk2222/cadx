@@ -81,14 +81,36 @@ def _grid_image(domain: VoxelDomain, elem_scalar: np.ndarray, node_vec: np.ndarr
     return grid
 
 
+def _part_surface(mesh: trimesh.Trimesh | None, body: Any) -> Any:
+    """Smooth part skin for overlay — the real trimesh surface when the run
+    has one, else the voxel body's extracted surface (still blocky, but
+    confined to the part)."""
+    import pyvista as pv
+
+    faces = getattr(mesh, "faces", None)
+    if mesh is not None and faces is not None and len(faces):
+        try:
+            faces = np.hstack([np.full((len(mesh.faces), 1), 3), mesh.faces]).ravel()
+            return pv.PolyData(np.asarray(mesh.vertices, dtype=float), faces)
+        except Exception:
+            pass
+    return body.extract_surface()
+
+
 def _render_case(
     domain: VoxelDomain,
     sol: FemSolution,
     case_name: str,
     out_dir: Path,
     suffix: str = "",
+    source_mesh: trimesh.Trimesh | None = None,
 ) -> tuple[str | None, str | None]:
-    """Render von-Mises clip + exaggerated deformed shape. Returns filenames."""
+    """Render von-Mises clip + exaggerated deformed shape. Returns filenames.
+
+    The stress field lives on the voxel grid (solver resolution); the part
+    outline is the smooth source surface at ~40% opacity, itself painted
+    with the interpolated stress — the colour overlay stays confined to
+    the part instead of floating on a blocky voxel cloud."""
     try:
         import pyvista as pv
     except Exception:
@@ -99,10 +121,10 @@ def _render_case(
     try:
         grid = _grid_image(domain, sol.elem_vm, sol.node_disp)
         body = grid.threshold(0.5, scalars="solid")
+        vmax = max(float(sol.elem_vm.max()), 1e-9)
 
         pl: Any = pv.Plotter(off_screen=True, window_size=[900, 700])
         pl.set_background("white")
-        vmax = max(float(sol.elem_vm.max()), 1e-9)
         pl.add_mesh(
             body.clip(normal="-x"),
             scalars="vm",
@@ -110,6 +132,21 @@ def _render_case(
             clim=[0, vmax],
             scalar_bar_args={"title": "von Mises [MPa]"},
         )
+        skin = _part_surface(source_mesh, body)
+        if source_mesh is not None:
+            # paint the real surface with the interpolated stress field —
+            # same cutaway as the voxel clip so the interior reads cleanly
+            skin = skin.sample(body.cell_data_to_point_data())
+            pl.add_mesh(
+                skin.clip(normal="-x"),
+                scalars="vm",
+                cmap="jet",
+                clim=[0, vmax],
+                opacity=0.55,
+                show_scalar_bar=False,
+            )
+        else:
+            pl.add_mesh(skin.clip(normal="-x"), color="#b8b8b8", opacity=0.3)
         pl.add_mesh(body.outline(), color="black", line_width=1.5)
         pl.camera_position = "iso"
         pl.reset_camera()
@@ -127,7 +164,25 @@ def _render_case(
         warped = body.warp_by_vector("u", factor=factor)
         pl = pv.Plotter(off_screen=True, window_size=[900, 700])
         pl.set_background("white")
-        pl.add_mesh(warped, scalars="vm", cmap="jet", clim=[0, vmax], show_scalar_bar=False)
+        pl.add_mesh(
+            warped.clip(normal="-x"),
+            scalars="vm",
+            cmap="jet",
+            clim=[0, vmax],
+            show_scalar_bar=False,
+        )
+        # deformed smooth skin: displace the real surface by the nearest
+        # voxel node's solution vector — smooth shape, field-driven motion
+        u_nodes = np.asarray(sol.node_disp, dtype=float).reshape(-1, 3)
+        try:
+            from scipy.spatial import cKDTree
+
+            nn = cKDTree(domain.node_coords()).query(np.asarray(skin.points))[1]
+            skin_w = skin.copy()
+            skin_w.points = skin_w.points + u_nodes[nn] * factor
+            pl.add_mesh(skin_w, color="#9ab3cc", opacity=0.35, show_scalar_bar=False)
+        except Exception:
+            pass
         pl.add_mesh(body.outline(), color="#888888", line_width=1.0)
         pl.camera_position = "iso"
         pl.reset_camera()
@@ -204,6 +259,7 @@ def run_fem(
         suffix,
         keep_regions,
         spsolve_dofs,
+        source_mesh=mesh,
         cancelled=cancelled,
     )
     return report
@@ -221,6 +277,7 @@ def run_fem_domain(
     keep_regions: list | None = None,
     spsolve_dofs: int = 120_000,
     suffix: str = "",
+    source_mesh: trimesh.Trimesh | None = None,
     cancelled: Callable[[], bool] | None = None,
 ) -> FemReport:
     """Verify a structure defined directly on an existing grid — used for
@@ -245,6 +302,7 @@ def run_fem_domain(
         suffix,
         keep_regions,
         spsolve_dofs,
+        source_mesh=source_mesh,
         cancelled=cancelled,
     )
     return report
@@ -260,6 +318,7 @@ def _solve_cases(
     suffix: str = "",
     keep_regions: list | None = None,
     spsolve_dofs: int = 120_000,
+    source_mesh: trimesh.Trimesh | None = None,
     cancelled: Callable[[], bool] | None = None,
 ) -> None:
     report.grid = {
@@ -332,7 +391,9 @@ def _solve_cases(
             res.warnings.append(f"safety factor {res.safety_factor} < 1 — likely failure")
         report.grid["dofs"] = sol.dofs
         if fem_dir:
-            vm_png, def_png = _render_case(domain, sol, res.name, fem_dir, suffix)
+            vm_png, def_png = _render_case(
+                domain, sol, res.name, fem_dir, suffix, source_mesh=source_mesh
+            )
             res.vonmises_png = vm_png
             res.deformed_png = def_png
         report.cases.append(res)
