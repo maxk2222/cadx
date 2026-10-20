@@ -108,11 +108,9 @@ def _render_case(
 ) -> tuple[str | None, str | None]:
     """Render a 2x2 von-Mises sheet + exaggerated deformed shape. Returns filenames.
 
-    The sheet shows iso / top / front / y-mid-section views of the same
-    content: the per-cell stress field projected onto the smooth part surface
-    (semi-transparent) with the opaque interior hotspot voxels showing
-    through — the whole part stays visible instead of a clipped half-shell.
-    """
+    The sheet shows iso / top / front views of the per-cell stress field
+    projected onto the smooth part surface, plus a y-mid section view that
+    clips the voxel body so interior hotspots stay visible."""
     try:
         import pyvista as pv
     except Exception:
@@ -153,7 +151,6 @@ def _render_case(
             if has_vm
             else {"color": "#c8ccd4"}
         )
-        hot = body.threshold(max(vmax * 0.40, 1e-6), scalars="vm")
         try:
             edges = skin.extract_feature_edges(30)
         except Exception:
@@ -163,24 +160,18 @@ def _render_case(
         pl.set_background("white")
 
         def _add_stress_view(show_bar: bool) -> None:
+            # outer views: smooth skin painted with the projected field —
+            # hotspot VOXELS belong to the section view; on thin curved
+            # shells boundary cells poke past the skin and read as floating
+            # debris (observed on the bail handle)
             pl.add_mesh(
                 skin,
-                opacity=0.58,
+                opacity=0.92,
                 smooth_shading=True,
                 show_scalar_bar=show_bar and has_vm,
                 scalar_bar_args={"title": "von Mises [MPa]"} if has_vm else None,
                 **skin_kw,
             )
-            # opaque hotspot voxels show through the translucent skin
-            if hot.n_cells:
-                pl.add_mesh(
-                    hot,
-                    scalars="vm",
-                    cmap="turbo",
-                    clim=[0, vmax],
-                    opacity=0.92,
-                    show_scalar_bar=False,
-                )
             if edges is not None and edges.n_cells:
                 pl.add_mesh(
                     edges,

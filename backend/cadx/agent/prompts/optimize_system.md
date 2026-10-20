@@ -142,8 +142,8 @@ Each `topopt_run` reports:
   mounting features or a dissolved surface are a reject regardless of SF.
 - Attached images: every `analyze_fem`/`topopt_run`/`refine_features` result
   carries a 2×2 von Mises sheet per load case (iso / top / front / mid-plane
-  section) — the stress field painted smoothly on the real part surface
-  (semi-transparent) with opaque interior hotspot voxels — plus a
+  section) — the stress field painted smoothly on the opaque part surface in
+  the outer views; the section view shows the interior voxel field — plus a
   deformed-shape render. `topopt_run` also attaches the optimized-shape
   renders and region previews (iso + top, orange force arrows landing on
   each load centroid).

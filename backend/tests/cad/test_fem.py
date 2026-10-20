@@ -736,6 +736,32 @@ def test_run_fem_writes_case_renders(tmp_path: Path) -> None:
         assert png.stat().st_size > 0
 
 
+def test_render_case_outer_views_skin_only(tmp_path: Path, monkeypatch) -> None:
+    """Regression: outer views (iso/top/front) must not add voxel cells.
+
+    On thin curved shells boundary voxels poke past the smooth skin and
+    rendered as floating opaque cubes in the iso/top/front views (bail-handle
+    iteration). Hotspot voxels belong only to the section view — spy on
+    Plotter.add_mesh and assert the 2x2 plotter receives exactly one
+    UnstructuredGrid (the clipped section body); all other meshes are
+    PolyData skin/edges."""
+    pv = pytest.importorskip("pyvista")
+    calls: list[tuple[tuple[int, int] | None, str]] = []
+    orig = pv.Plotter.add_mesh
+
+    def spy(self, mesh=None, *args, **kwargs):
+        calls.append((getattr(self, "shape", None), type(mesh).__name__))
+        return orig(self, mesh, *args, **kwargs)
+
+    monkeypatch.setattr(pv.Plotter, "add_mesh", spy)
+    rep = run_fem(_box_mesh(), [_cantilever_case()], "pla", voxel_mm=3.0, out_dir=tmp_path)
+    case = rep.cases[0]
+    if case.vonmises_png is None:
+        pytest.skip("offscreen rendering unavailable")
+    grid_calls = [c for c in calls if c[0] == (2, 2) and c[1] == "UnstructuredGrid"]
+    assert len(grid_calls) == 1  # the clipped section body only
+
+
 def test_render_regions_writes_case_png(tmp_path: Path) -> None:
     """preview render writes regions_<case>.png when offscreen rendering is
     available and returns [] when it isn't — the test passes either way, so
