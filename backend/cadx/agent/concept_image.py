@@ -32,6 +32,7 @@ async def generate_concept_images(
     ref_asset: InputAsset | None = None,
     strength: float | None = None,
     mark_sketch: bool = False,
+    role_hint: str = "",
     source: str = "concept_tool",
     spec: PartSpec | None = None,
     steps: int | None = None,
@@ -136,7 +137,11 @@ async def generate_concept_images(
                         if ref_asset is not None
                         else {}
                     ),
-                    **({"role_hint": "sketch"} if mark_sketch else {}),
+                    **(
+                        {"role_hint": role_hint or ("sketch" if mark_sketch else "")}
+                        if role_hint or mark_sketch
+                        else {}
+                    ),
                 },
             )
             await db.commit()
@@ -151,7 +156,7 @@ async def generate_concept_images(
             path=storage.resolve(asset.path),
             caption=asset.caption,
             filename=asset.filename,
-            role_hint="sketch" if mark_sketch else "",
+            role_hint=role_hint or ("sketch" if mark_sketch else ""),
         )
         ctx.assets.append(a)
         ctx.generated_asset_ids.append(str(asset.id))

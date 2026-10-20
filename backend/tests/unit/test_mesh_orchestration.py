@@ -291,6 +291,37 @@ async def test_synth_views_never_used_as_reference_mask(monkeypatch, tmp_path):
     assert seen == [hero.path.name]
 
 
+def test_synth_view_roles_recovered_on_reload(tmp_path):
+    """Synth views persisted in a previous version reload with role_hint +
+    `synth:<slot>` captions but no `_synth_view_roles` map — the slots must be
+    reconstructed or every rerun regenerates both views (~13min of imagegen)."""
+    from PIL import Image
+
+    from cadx.agent import orchestrator as orch
+
+    hero = _img()
+    synths = []
+    for i, slot in enumerate(("left", "right")):
+        p = tmp_path / f"s{i}.png"
+        Image.new("RGB", (64, 64), (150 + i * 40, 150, 150)).save(p)
+        synths.append(
+            InputAsset(
+                asset_id=f"s{i}",
+                kind="generated_image",
+                path=p,
+                caption=f"synth:{slot} — side view",
+                role_hint="synth_view",
+            )
+        )
+    ctx = _ctx(assets=[hero, *synths])
+    assert not ctx.mesh_info.get("_synth_view_roles")
+
+    images, roles = orch._mesh_source_images(ctx, 1, _spec((40.0, 30.0, 35.0)))
+    assert len(images) == 3
+    assert roles == ["front", "left", "right"]
+    assert ctx.mesh_info["_synth_view_roles"] == {"s0": "left", "s1": "right"}
+
+
 # --------------------------------------------------------------------------- #
 # deterministic silhouette ops
 

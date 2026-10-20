@@ -1144,6 +1144,10 @@ async def _ensure_synth_views(
             # mflux edit defaults to 28 steps/image — ~19min per view on MLX;
             # 14 steps keeps both views under the image timeout budget
             steps=14,
+            # persisted into gen_params so later versions reload the assets
+            # with role_hint intact — runtime-only marking meant each fresh
+            # run re-gated them as hero candidates and regenerated both views
+            role_hint="synth_view",
         )
     except Exception as e:
         log.warning("meshgen.synth_views_failed", error=str(e)[:200])
@@ -1249,6 +1253,17 @@ def _mesh_source_images(
         # concept image on the empty list; mapping roles over nothing crashes
         return [], []
     synth_roles: dict[str, str] = ctx.mesh_info.get("_synth_view_roles") or {}
+    if not synth_roles:
+        # reload path: synth views persisted with role_hint + "synth:<slot>"
+        # captions survive into later versions — recover their view slots so
+        # they land on left/right again instead of being re-generated
+        for a in ordered:
+            if getattr(a, "role_hint", "") == "synth_view":
+                m = re.match(r"synth:(left|right)", a.caption or "")
+                if m:
+                    synth_roles[a.asset_id] = m.group(1)
+        if synth_roles:
+            ctx.mesh_info["_synth_view_roles"] = synth_roles
     if iteration > 1 and len(ordered) > 1:
         ordered = _rotate_hero(ordered, synth_roles)
     return _gen_view_roles(ctx, ordered, synth_roles, iteration, spec)
