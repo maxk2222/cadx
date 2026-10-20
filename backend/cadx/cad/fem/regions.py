@@ -559,10 +559,13 @@ def resolve_case_dofs(  # noqa: C901
                 moment = np.cross(lever, f) / 1e3  # N·mm -> N·m
                 ld.spread_force(F, idx, f)
                 got = ld.spread_moment(domain, F, idx, moment)
-                warnings.append(
-                    f"case '{case.name}': remote force at {load.remote_point[:3]} adds "
-                    f"{got:.2f} N·m on the region"
-                )
+                want = float(np.linalg.norm(moment))
+                if want >= 1e-3 and got <= 0:
+                    warnings.append(
+                        f"case '{case.name}': remote force at {load.remote_point[:3]} "
+                        f"should add {want:.2f} N·m but the region cannot carry a "
+                        "couple (too small or degenerate) — only the force applied"
+                    )
             else:
                 ld.spread_force(F, idx, f)
             applied = True

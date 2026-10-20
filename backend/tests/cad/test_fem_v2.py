@@ -451,7 +451,29 @@ def test_remote_point_adds_lever_moment() -> None:
         m += np.cross(coords[i] - c, fx[i])
     lever_y = 30.0 - c[1]
     assert m[0] == pytest.approx(-lever_y * 100.0, rel=0.2)
-    assert any("adds" in x for x in w)
+    assert not any("cannot carry" in x for x in w)
+
+
+def test_remote_point_on_region_is_silent() -> None:
+    """Remote point at the region centroid: lever ~0 so no couple exists —
+    the old unconditional 'adds 0.00 N·m' warning was pure noise (fired on
+    every real FEM run where the load point sat on its own region)."""
+    dom = voxelize(_box_mesh(), 3.0, 150_000)
+    region = RegionSpec(kind="face", axis="+x")
+    case = LoadCase(
+        name="on_point",
+        fixed=[RegionSpec(kind="face", axis="-x")],
+        loads=[
+            LoadSpec(
+                region=region,
+                force_n=[0.0, 0.0, -100.0],
+                remote_point=[30.0, 0.0, 6.0],  # the +x face centroid itself
+            )
+        ],
+    )
+    _fixed3, F, w = resolve_case_dofs(dom, case)
+    assert F.reshape(-1, 3).sum(axis=0)[2] == pytest.approx(-100.0)
+    assert not any("remote force" in x for x in w)
 
 
 def test_preload_opposing_mouths() -> None:
