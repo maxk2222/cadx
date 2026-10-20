@@ -406,3 +406,49 @@ def test_mirror_host_gap_silent_when_both_sides_present() -> None:
         image_roles=[],
     )
     assert spec_gaps(s, "je eine Bohrung in beiden Laschen") == []
+
+
+def _mspec(**kw) -> PartSpec:
+    d = {"value": 10.0, "source": "stated"}
+    return PartSpec(length_x=d, width_y=d, height_z=d, image_roles=[], **kw)
+
+
+def test_sanitize_material_fills_from_prompt() -> None:
+    """A material named in the prompt must reach spec.material — otherwise
+    FEM/topopt silently verify against the default (observed: 'PETG lever'
+    solved with PLA properties)."""
+    from cadx.agent.steps.intake import sanitize_material
+
+    s = _mspec(name="lever", summary="")
+    sanitize_material(s, "PETG joint lever, 90x40x14")
+    assert s.material == "petg"
+
+    s2 = _mspec(name="lever", summary="", material="abs")
+    sanitize_material(s2, "PETG lever")
+    assert s2.material == "abs"  # explicit value wins
+
+    s3 = _mspec(name="PA-Hebel", summary="")
+    sanitize_material(s3, "Lever with bore")
+    assert s3.material == "pa"  # name is scanned too
+
+    s4 = _mspec(name="lever", summary="")
+    sanitize_material(s4, "plain lever, 90x40x14")
+    assert s4.material == ""
+
+
+def test_sanitize_material_resolves_downstream() -> None:
+    """Every emitted token must re-resolve in the FEM material table —
+    storing display names like 'PA (nylon)' would fall back to PLA."""
+    from cadx.agent.steps.intake import sanitize_material
+    from cadx.cad.fem.materials import resolve_material
+
+    for prompt, want in [
+        ("PETG bracket", "petg"),
+        ("Alu-Platte", "aluminum"),
+        ("Stahl Winkel", "steel"),
+        ("Nylon block", "pa"),
+    ]:
+        s = _mspec(name="p", summary="")
+        sanitize_material(s, prompt)
+        assert resolve_material(s.material).name != "PLA" or want == "pla"
+        assert resolve_material(s.material).name.lower() == resolve_material(want).name.lower()

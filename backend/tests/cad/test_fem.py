@@ -816,3 +816,52 @@ def test_render_regions_writes_case_png(tmp_path: Path) -> None:
         png = out / name
         assert png.exists()
         assert png.stat().st_size > 0
+
+
+def test_feedback_lines_report_unsolvable_case() -> None:
+    """A case whose loads resolve to zero force yields safety_factor=None —
+    fem_feedback_lines must still surface it (with the region warnings) or the
+    improve loop iterates blind on an unverifiable part."""
+    from cadx.cad.fem.analyze import FemCaseResult, fem_feedback_lines
+
+    rep = FemReport(
+        cases=[
+            FemCaseResult(
+                name="press",
+                warnings=[
+                    "case 'press': bearing load on anchor #3 at (-36.6, 13.6, 7.0) "
+                    "Ø10 produced no force — no bore wall resolved there"
+                ],
+            )
+        ]
+    )
+    lines = fem_feedback_lines(rep, 1.5)
+    assert lines and lines[0][0] == "major"
+    assert "press" in lines[0][1] and "no force" in lines[0][1]
+
+    solvable = FemReport(cases=[FemCaseResult(name="ok", safety_factor=2.0)])
+    assert fem_feedback_lines(solvable, 1.5) == []
+
+
+def test_bearing_zero_force_warning_names_anchor_position() -> None:
+    """The zero-force bearing warning must carry the resolved anchor
+    coordinates — 'check bore/direction' alone leaves the model guessing."""
+    from cadx.cad.fem.regions import resolve_case_dofs
+
+    dom = voxelize(_box_mesh(), 3.0, 150_000)
+    case = LoadCase(
+        name="press",
+        fixed=[RegionSpec(kind="face", axis="-z")],
+        loads=[
+            LoadSpec(
+                region=RegionSpec(kind="bore", hole_index=1),
+                bearing_n=150.0,
+                bearing_dir=[0.0, 0.0, -1.0],
+            )
+        ],
+    )
+    # anchor sits at the box centre — a solid point, no bore wall
+    anchors = [{"x": 0.0, "y": 0.0, "z": 5.0, "dia": 8.0, "axis": "+z"}]
+    _, _, warnings = resolve_case_dofs(dom, case, anchors)
+    hit = [w for w in warnings if "anchor #1" in w]
+    assert hit and "(0.0, 0.0, 5.0)" in hit[0]

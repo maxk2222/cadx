@@ -369,7 +369,7 @@ def _bind_hole(spec: PartSpec, f: Feature) -> BoundFeature | None:
                 from cadx.cad.catalog import nominal_hole_diameter
 
                 kind = "tap" if re.search(r"tap|gewinde|thread", f.standard, re.I) else "clearance"
-                dia = nominal_hole_diameter(f"M{m.group(1)}", kind)
+                dia = nominal_hole_diameter(int(float(m.group(1))), kind)
             except Exception:
                 dia = None
     if not dia:
@@ -723,7 +723,7 @@ def _bind_thread(spec: PartSpec, f: Feature) -> BoundFeature | None:
         try:
             from cadx.cad.catalog import nominal_hole_diameter
 
-            dia = nominal_hole_diameter(f"M{m.group(1)}", "tap")
+            dia = nominal_hole_diameter(int(float(m.group(1))), "tap")
         except Exception:
             dia = None
     pos = (f.position or "").strip() or "spec position"

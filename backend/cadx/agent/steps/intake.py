@@ -47,6 +47,36 @@ def sanitize_load_cases(spec: PartSpec) -> None:
     spec.load_cases = kept
 
 
+_MATERIAL_RE = re.compile(
+    r"\b(petg|pet-g|pla|abs|asa|nylon|pa6|pa12|\bpa\b|pc|resin|"
+    r"aluminium|aluminum|alu|steel|stahl|s235)\b",
+    re.IGNORECASE,
+)
+
+
+def sanitize_material(spec: PartSpec, prompt: str) -> None:
+    """Fill `spec.material` when the prompt names a material the model dropped.
+
+    FEM/topopt fall back to the default (PLA) on an empty field — a declared
+    "PETG" or "aluminium" then silently verifies against wrong E/yield. Scans
+    the prompt and the generated part name for the material table's known
+    tokens; leaves an explicitly set value untouched."""
+    if (spec.material or "").strip():
+        return
+    for m in _MATERIAL_RE.finditer(f"{prompt or ''} {spec.name or ''}"):
+        token = m.group(1).lower()
+        try:
+            from cadx.cad.fem.materials import resolve_material
+
+            # keep the literal token (alias-aware) — display names like
+            # "PA (nylon)" do not re-resolve downstream
+            resolve_material(token)
+            spec.material = token
+            return
+        except Exception:
+            continue
+
+
 _MM_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*mm\b", re.IGNORECASE)
 _DIMSET_RE = re.compile(
     r"(\d+(?:[.,]\d+)?)\s*[x\u00d7]\s*(\d+(?:[.,]\d+)?)\s*[x\u00d7]\s*(\d+(?:[.,]\d+)?)\s*mm",
@@ -491,6 +521,7 @@ async def run(ctx: AgentCtx) -> PartSpec:
         _repair_image_roles(spec, ctx)
         sanitize_load_cases(spec)
         sanitize_dims(spec, ctx.prompt or "")
+        sanitize_material(spec, ctx.prompt or "")
         for note in sanitize_dim_echo(spec, ctx.prompt or ""):
             log.info("intake.dim_echo_fixed", note=note)
         if not spec.process:
@@ -520,6 +551,7 @@ async def run(ctx: AgentCtx) -> PartSpec:
     _repair_image_roles(spec, ctx)
     sanitize_load_cases(spec)
     sanitize_dims(spec, ctx.prompt or "")
+    sanitize_material(spec, ctx.prompt or "")
     for note in sanitize_dim_echo(spec, ctx.prompt or ""):
         log.info("intake.dim_echo_fixed", note=note)
     if not spec.process:

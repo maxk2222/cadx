@@ -587,7 +587,11 @@ def resolve_case_dofs(  # noqa: C901
         if load.bearing_n is not None and load.bearing_n > 0:
             g = _anchor_geometry(domain, r, anchors)
             if g is None:
-                warnings.append(f"case '{case.name}': bearing_n needs a hole/anchor/bore region")
+                warnings.append(
+                    f"case '{case.name}': bearing_n needs a hole/anchor/bore region "
+                    f"(kind={r.kind}, hole_index={r.hole_index}, "
+                    f"anchors={len(anchors) if anchors else 0})"
+                )
             else:
                 center, avec, _dia, _half = g
                 dvec = (
@@ -599,7 +603,10 @@ def resolve_case_dofs(  # noqa: C901
                 if got <= 0:
                     warnings.append(
                         f"case '{case.name}': bearing load on anchor "
-                        f"#{r.hole_index} produced no force — check bore/direction"
+                        f"#{r.hole_index} at ({center[0]:.1f}, {center[1]:.1f}, "
+                        f"{center[2]:.1f}) Ø{_dia:g} produced no force — no bore "
+                        "wall resolved there; check that hole_index maps to a "
+                        "real bore on the current part"
                     )
                 applied = applied or got > 0
         if load.moment_nm and len(load.moment_nm) == 3:
@@ -619,8 +626,9 @@ def resolve_case_dofs(  # noqa: C901
                 got = ld.bolt_preload(domain, F, cells.ravel(), avec, float(load.preload_n))
                 if got <= 0:
                     warnings.append(
-                        f"case '{case.name}': preload on anchor #{r.hole_index} found no "
-                        "open bore mouths (blind hole or solid region?)"
+                        f"case '{case.name}': preload on anchor #{r.hole_index} at "
+                        f"({_center[0]:.1f}, {_center[1]:.1f}, {_center[2]:.1f}) "
+                        "found no open bore mouths (blind hole or solid region?)"
                     )
                 applied = applied or got > 0
         if load.g_load and len(load.g_load) == 3:

@@ -502,6 +502,18 @@ def fem_feedback_lines(report: FemReport, sf_min: float) -> list[tuple[str, str]
     for c in report.cases:
         sf = c.safety_factor
         if sf is None:
+            # unsolvable case (empty regions / zero resultant) — without this
+            # line the failure is invisible to the improve loop and the model
+            # keeps iterating blind
+            why = "; ".join(dict.fromkeys(c.warnings)) if c.warnings else "no result"
+            lines.append(
+                (
+                    "major",
+                    f"fem[{c.name}]: no solvable result — {why}; check that the "
+                    "region's hole_index/area actually matches material on the "
+                    "current part",
+                )
+            )
             continue
         if sf < 1.0:
             lines.append(

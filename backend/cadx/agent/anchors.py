@@ -185,15 +185,33 @@ def _is_blind(f: Feature) -> bool:
 
 
 def _hole_dia(f: Feature) -> float | None:
-    """Declared bore diameter of a spec feature (diameter|dia|bore_diameter)."""
+    """Declared bore diameter of a spec feature (diameter|dia|bore_diameter).
+
+    Tapped/threaded holes usually declare the fastener ("M8-1.25") instead of
+    the drilled diameter — fall back to the norm table so the feature still
+    emits an anchor (the physical bore is the tap drill; a plain named
+    clearance hole gets the clearance diameter)."""
     dia = (
         (f.dims or {}).get("diameter")
         or (f.dims or {}).get("dia")
         or (f.dims or {}).get("bore_diameter")
     )
     try:
-        return float(dia) if dia else None
+        if dia:
+            return float(dia)
     except (TypeError, ValueError):
+        return None
+    bolt = _bolt_size(f"{f.standard or ''} {f.thread_spec or ''} {f.name or ''}")
+    m = re.search(r"\d+", bolt)
+    if not m:
+        return None
+    try:
+        from cadx.cad.catalog import nominal_hole_diameter
+
+        blob = f"{f.type or ''} {f.name or ''} {f.description or ''}".lower()
+        kind = "tap" if re.search(r"tap|thread|gewinde", blob) else "clearance"
+        return nominal_hole_diameter(int(m.group(0)), kind)
+    except Exception:
         return None
 
 

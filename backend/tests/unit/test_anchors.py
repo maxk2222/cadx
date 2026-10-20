@@ -711,3 +711,62 @@ def test_host_body_none_without_in_phrase_or_name():
     arm_holes.position = "x=-25, y=0 and x=+45, y=0"
     assert host_body(spec, arm_holes) is None
     assert host_range(spec, arm_holes, "z") is None
+
+
+def test_tapped_hole_without_diameter_gets_tap_drill_anchor():
+    """A tapped_hole that declares only depth + an M-size standard must still
+    emit a spec anchor — the physical bore is the tap drill (M8 -> Ø6.8).
+    Regression: e2e_hebel_topopt left the M8 feature unanchored, so the FEM
+    load case's hole_index landed on a drifted mesh hole and resolved to
+    zero force."""
+    spec = _plate_spec(
+        [
+            Feature(
+                name="Bearing bore 1 (-x side)",
+                type="through_hole",
+                dims={"diameter": 10.0, "depth": 14.0},
+                position="x=-27.5, y=0, through in z",
+            ),
+            Feature(
+                name="Bearing bore 2 (+x side)",
+                type="through_hole",
+                dims={"diameter": 10.0, "depth": 14.0},
+                position="x=+27.5, y=0, through in z",
+            ),
+            Feature(
+                name="M8 tapped hole at long-arm end",
+                type="tapped_hole",
+                dims={"depth": 12.0},
+                position="x=+38, y=0, drilled from +z face",
+                standard="M8-1.25 ISO metric thread",
+                thread_spec="M8x1.25",
+            ),
+        ]
+    )
+    a = build_anchors(spec, {}, None)
+    # spec declaration order — hole_index 3 in a load case must be the M8
+    assert [(h.index, h.name, h.x, h.dia, h.kind) for h in a.holes] == [
+        (1, "Bearing bore 1 (-x side)", -27.5, 10.0, "hole"),
+        (2, "Bearing bore 2 (+x side)", 27.5, 10.0, "hole"),
+        (3, "M8 tapped hole at long-arm end", 38.0, 6.8, "tap"),
+    ]
+    assert a.holes[2].blind and a.holes[2].depth_mm == 12.0
+    assert a.holes[2].bolt_size == "M8"
+
+
+def test_named_clearance_hole_without_diameter_gets_clearance_dia():
+    """A clearance-style hole that names only its fastener resolves to the
+    nominal clearance diameter, not the tap drill."""
+    spec = _plate_spec(
+        [
+            Feature(
+                name="M5 clearance hole",
+                type="clearance_hole",
+                position="x=0, y=0",
+                standard="M5",
+            ),
+        ]
+    )
+    a = build_anchors(spec, {}, None)
+    assert len(a.holes) == 1
+    assert 5.0 < a.holes[0].dia < 6.5  # normal M5 clearance ≈ 5.3-5.5
