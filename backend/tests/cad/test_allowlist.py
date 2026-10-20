@@ -1,4 +1,9 @@
-from cadx.cad.allowlist import apply_params_override, check_code, validate_overrides
+from cadx.cad.allowlist import (
+    apply_params_override,
+    check_code,
+    mesh_solid_flows_to_result,
+    validate_overrides,
+)
 
 GOOD = """from build123d import *
 PARAMS = {"length": 10.0, "name": "a", "flag": True}
@@ -545,3 +550,31 @@ def test_fuse_after_loop_no_warning():
     )
     r = check_code(code)
     assert not any("accumulates booleans" in w for w in r.warnings)
+
+
+def test_parked_mesh_solid_flagged():
+    """Observed: `mesh = load_mesh_solid()` inside try/except, never used —
+    passed the substring guard while result was fully parametric."""
+    code = (
+        GOOD
+        + "try:\n    mesh = load_mesh_solid()\nexcept Exception:\n    mesh = None\n"
+        + "part = Box(10, 10, 10)\nresult = part\n"
+    )
+    assert not mesh_solid_flows_to_result(code)
+    r = check_code(code)
+    assert any("never reaches" in w for w in r.warnings)
+
+
+def test_mesh_solid_used_passes():
+    code = (
+        GOOD
+        + "mesh = load_mesh_solid()\n"
+        + "part = cadlib.mesh_cut(mesh, Cylinder(2, 30))\nresult = part\n"
+    )
+    assert mesh_solid_flows_to_result(code)
+    code_inline = GOOD + "result = load_mesh_solid() - Cylinder(2, 30)\n"
+    assert mesh_solid_flows_to_result(code_inline)
+
+
+def test_mesh_solid_absent_flagged():
+    assert not mesh_solid_flows_to_result(GOOD + "part = Box(1,1,1)\nresult = part\n")

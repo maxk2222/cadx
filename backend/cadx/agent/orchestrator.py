@@ -35,7 +35,7 @@ from cadx.agent.steps import mesh_refine as mesh_refine_step
 from cadx.agent.steps import optimize as optimize_step
 from cadx.agent.steps import plan as plan_step
 from cadx.agent.types import IMAGE_INPUT_KINDS, AgentCtx, InputAsset
-from cadx.cad.allowlist import check_code
+from cadx.cad.allowlist import check_code, mesh_solid_flows_to_result
 from cadx.cad.codemod import fix_api_misuse
 from cadx.cad.features import compare_features
 from cadx.cad.fem.analyze import FemReport, fem_feedback_lines
@@ -3456,7 +3456,9 @@ async def _run_cad(  # noqa: C901
         # regresses to a parametric part and no longer IS the organic body —
         # flag it deterministically instead of relying on the critique to
         # notice the missing mesh
-        hybrid_missing = ctx.hybrid_solid is not None and "load_mesh_solid" not in code_resp.code
+        hybrid_missing = ctx.hybrid_solid is not None and not mesh_solid_flows_to_result(
+            code_resp.code
+        )
         cand.hybrid_missing = hybrid_missing
         cand.wrecked = critique.score <= getattr(s, "agent_mesh_hard_fail_score", 30) and any(
             d.severity == "major" for d in critique.discrepancies
@@ -3466,10 +3468,11 @@ async def _run_cad(  # noqa: C901
                 {
                     "source": "hybrid",
                     "severity": "major",
-                    "what": "hybrid part no longer calls load_mesh_solid() — the organic "
-                    "base body is missing",
-                    "fix_hint": "rebuild on `mesh = load_mesh_solid()` and only add/cut "
-                    "the exact features; never replace the mesh with primitives",
+                    "what": "hybrid part does not use the mesh body — load_mesh_solid() "
+                    "is missing or its result never reaches `result`",
+                    "fix_hint": "build ON `mesh = load_mesh_solid()` (mesh_fuse/mesh_cut "
+                    "for every feature) and derive `result` from it; a parked/unused "
+                    "mesh variable does not satisfy the hybrid contract",
                 }
             ]
             if hybrid_missing

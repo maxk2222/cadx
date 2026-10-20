@@ -859,6 +859,13 @@ def check_code(code: str, *, sigcheck: bool = False) -> CheckResult:
     errors = checker.errors + param_errors
     if not checker.has_result:
         errors.append("missing assignment to `result` (a build123d Part/Solid/Compound)")
+    if "load_mesh_solid" in code and not mesh_solid_flows_to_result(code):
+        checker.warnings.append(
+            "load_mesh_solid() result never reaches `result` — in hybrid mode the "
+            "organic mesh body must be part of the final geometry "
+            "(mesh_fuse/mesh_cut/booleans), not a parked variable. A parametric "
+            "replacement is rejected by the hybrid guard."
+        )
     sig_errors: list[str] = []
     sig_warnings: list[str] = []
     if sigcheck:
@@ -914,3 +921,65 @@ def validate_overrides(overrides: dict[str, object], declared: dict[str, object]
         elif not isinstance(value, declared_type):
             errors.append(f"param '{key}' must be {declared_type.__name__}")
     return errors
+
+
+def mesh_solid_flows_to_result(code: str) -> bool:
+    """Hybrid-contract check: does a `load_mesh_solid()` result actually reach
+    the geometry, or is it parked in a dead variable?
+
+    Observed evasion: `mesh = load_mesh_solid()` inside try/except with the
+    name never referenced again — the substring check passes while `result`
+    is a fully parametric replacement. Returns True when:
+      - the call is used inline in an expression (not a bare-name assign), or
+      - every name it is assigned to is loaded somewhere else in the file.
+    """
+    try:
+        tree = ast.parse(code)
+    except Exception:
+        return "load_mesh_solid" in code
+
+    def _has_call(node: ast.AST) -> bool:
+        return any(
+            isinstance(sub, ast.Call)
+            and isinstance(sub.func, ast.Name)
+            and sub.func.id == "load_mesh_solid"
+            for sub in ast.walk(node)
+        )
+
+    mesh_vars: set[str] = set()
+    assign_lines: set[int] = set()
+    inline_use = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            # bare parking: `mesh = load_mesh_solid()` — the RHS is exactly the
+            # call; `x = load_mesh_solid() + Box` uses it inline instead
+            if (
+                isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Name)
+                and node.value.func.id == "load_mesh_solid"
+            ):
+                for t in node.targets:
+                    if isinstance(t, ast.Name):
+                        mesh_vars.add(t.id)
+                        assign_lines.add(node.lineno)
+            elif _has_call(node.value):
+                inline_use = True
+        elif (
+            isinstance(node, ast.Expr | ast.Return | ast.AnnAssign | ast.AugAssign)
+            and getattr(node, "value", None) is not None
+            and _has_call(node.value)
+        ):
+            inline_use = True
+    if inline_use:
+        return True
+    if not mesh_vars:
+        return False
+    loaded = {
+        sub.id
+        for sub in ast.walk(tree)
+        if isinstance(sub, ast.Name)
+        and sub.id in mesh_vars
+        and isinstance(sub.ctx, ast.Load)
+        and getattr(sub, "lineno", -1) not in assign_lines
+    }
+    return bool(loaded)
