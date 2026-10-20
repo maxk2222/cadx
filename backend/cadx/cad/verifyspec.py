@@ -993,6 +993,8 @@ def _envelope(
     tol_pct: float,
     tol_mm: float,
     checks: list[dict[str, Any]],
+    *,
+    bound_only: bool = False,
 ) -> None:
     bbox = (res.get("analysis") or {}).get("bbox_size")
     if not spec:
@@ -1038,6 +1040,26 @@ def _envelope(
             continue
         actual = float(bbox["xyz".index(ax)])
         tol = max(want * tol_pct / 100.0, tol_mm)
+        if bound_only:
+            # topopt/refine result: the stated dim is an upper bound — the
+            # optimized part must fit inside the envelope, shrinking below
+            # it is the point of the exercise, not a defect
+            over = actual - want
+            checks.append(
+                _check(
+                    name,
+                    TIER_ENVELOPE,
+                    "PASS" if over <= tol else "FAIL",
+                    {
+                        "expected_mm": want,
+                        "actual_mm": round(actual, 3),
+                        "over_mm": round(over, 3),
+                        "tol_mm": round(tol, 3),
+                        "bound": "upper",
+                    },
+                )
+            )
+            continue
         delta = abs(actual - want)
         checks.append(
             _check(
@@ -1240,6 +1262,7 @@ def verify_spec(
     measured_features: dict[str, Any] | None = None,
     dim_tolerance_pct: float = 2.0,
     dim_tolerance_mm: float = 0.5,
+    envelope_bound_only: bool = False,
 ) -> dict[str, Any]:
     """Build the canonical conformance report for one executed candidate.
 
@@ -1250,6 +1273,9 @@ def verify_spec(
     ``feature_findings`` are the already-computed ``compare_features`` results;
     ``measured_features`` overrides ``res["features"]`` as the feature-tier
     evidence source (mesh pipeline passes the adapted mesh measurements).
+    ``envelope_bound_only`` switches the envelope tier to bound semantics for
+    topopt/refine results — stated dims are upper bounds the optimized part
+    must fit inside, not targets to match.
 
     Returns ``{"status": "PASS"|"FAIL"|"UNVERIFIED", "checks": [...],
     "summary": str}`` — plain JSON-serializable dicts only.
@@ -1258,7 +1284,9 @@ def verify_spec(
     measured = measured_features if measured_features is not None else (res.get("features") or {})
 
     _structural(res, checks)
-    _envelope(spec, res, dim_tolerance_pct, dim_tolerance_mm, checks)
+    _envelope(
+        spec, res, dim_tolerance_pct, dim_tolerance_mm, checks, bound_only=envelope_bound_only
+    )
     _features(spec, measured, feature_findings, checks)
     if (spec or {}).get("features"):
         analysis = res.get("analysis") or {}

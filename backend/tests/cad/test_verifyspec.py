@@ -95,6 +95,36 @@ def test_dim_drift_fails_envelope():
     assert _by_name(report)["envelope_x"]["status"] == "PASS"
 
 
+def test_envelope_bound_shrunken_part_passes():
+    # topopt semantics: stated dims are an upper bound — SIMP legitimately
+    # removes material, so a smaller bbox must PASS, not "dim drift" FAIL
+    res = _res(analysis={"bbox_size": [80.0, 40.0, 15.0], "solid_count": 1, "is_valid": True})
+    report = verify_spec(_spec(), res, envelope_bound_only=True)
+    checks = _by_name(report)
+    for ax in "xyz":
+        assert checks[f"envelope_{ax}"]["status"] == "PASS", checks[f"envelope_{ax}"]
+        assert checks[f"envelope_{ax}"]["evidence"]["bound"] == "upper"
+    assert report["status"] == "PASS"
+
+
+def test_envelope_bound_overshoot_fails():
+    # exceeding the stated envelope past tolerance is still a hard FAIL —
+    # the bound only forgives shrinking, never growth
+    res = _res(analysis={"bbox_size": [130.0, 50.0, 20.0], "solid_count": 1, "is_valid": True})
+    report = verify_spec(_spec(), res, envelope_bound_only=True)
+    x = _by_name(report)["envelope_x"]
+    assert x["status"] == "FAIL"
+    assert x["evidence"]["over_mm"] > 0
+    assert report["status"] == "FAIL"
+
+
+def test_envelope_bound_within_tolerance_passes():
+    # a 1% overshoot sits inside the 2% tolerance band
+    res = _res(analysis={"bbox_size": [101.0, 50.0, 20.0], "solid_count": 1, "is_valid": True})
+    report = verify_spec(_spec(), res, envelope_bound_only=True)
+    assert _by_name(report)["envelope_x"]["status"] == "PASS"
+
+
 def test_inferred_dims_are_unverified_not_failed():
     spec = _spec(height_z={"value": 999.0, "source": "inferred"})
     report = verify_spec(spec, _res())

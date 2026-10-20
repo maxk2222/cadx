@@ -63,7 +63,7 @@ def _cantilever_case() -> dict[str, Any]:
     ).model_dump()
 
 
-def _run(src: Path, out_dir: Path, rt: RuntimeSettings, **opt: Any):
+def _run(src: Path, out_dir: Path, rt: RuntimeSettings, spec: dict | None = None, **opt: Any):
     from cadx.cad.engine import run_topopt_pipeline
 
     return run_topopt_pipeline(
@@ -81,6 +81,7 @@ def _run(src: Path, out_dir: Path, rt: RuntimeSettings, **opt: Any):
         anchors=[dict(_ANCHOR)],
         scan_anchors=False,  # keep the synthetic anchor table as declared
         runtime=rt,
+        spec=spec,
     )
 
 
@@ -161,6 +162,43 @@ def test_design_domain_auto_coarsens_to_direct_solver(tmp_path: Path) -> None:
     # the density field must live on the coarsened grid, matching the report
     npz = np.load(tmp_path / "c" / "topopt" / "density.npz")
     assert float(npz["pitch"]) == pytest.approx(ac["design_pitch_mm"], abs=1e-6)
+
+
+def test_topopt_result_carries_bound_verify_spec(tmp_path: Path) -> None:
+    """The optimize payload's spec must reach run_topopt_pipeline, which
+    attaches the canonical verify_spec report with *bound* envelope
+    semantics: stated dims are an upper bound the optimized part fits
+    inside — a shrunken SIMP result passes, exact-match would flag drift."""
+    src = tmp_path / "b.stl"
+    _box_mesh().export(str(src))
+    spec = {
+        "name": "b",
+        "length_x": {"value": 24.0, "source": "stated"},
+        "width_y": {"value": 24.0, "source": "stated"},
+        "height_z": {"value": 24.0, "source": "stated"},
+        "features": [],
+    }
+    res = _run(src, tmp_path / "vs", RuntimeSettings(), spec=spec)
+    assert res.ok, res.error
+    vs = (res.to_dict() or {}).get("verify_spec")
+    assert vs is not None, "topopt result must carry the canonical verify_spec report"
+    env = {c["name"]: c for c in vs["checks"] if c["name"].startswith("envelope_")}
+    assert env, "envelope checks missing from the report"
+    for c in env.values():
+        # the SIMP'd part is smaller than the 24 mm box — under exact-match
+        # semantics that is a FAIL; bound semantics must read PASS
+        assert c["evidence"].get("bound") == "upper"
+        assert c["status"] == "PASS", c
+    shrunk = [
+        c
+        for c in env.values()
+        if c["evidence"]["actual_mm"] < c["evidence"]["expected_mm"] - c["evidence"]["tol_mm"]
+    ]
+    assert shrunk, "test premise broken — the optimized part shrank on no axis"
+    # a watertight single-body optimized part has no legitimately FAILing tier
+    # — anything else would flag false negatives on every topopt result
+    fails = [c["name"] for c in vs["checks"] if c["status"] == "FAIL"]
+    assert not fails, f"spurious FAIL tiers on a valid topopt result: {fails}"
 
 
 def test_export_mesh_all_writes_step(tmp_path: Path) -> None:

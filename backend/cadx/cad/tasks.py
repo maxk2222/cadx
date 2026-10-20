@@ -857,6 +857,7 @@ def run_optimize_payload(
         runtime=_runtime(payload),
         cancelled=cancelled,
         scan_anchors=bool(payload.get("scan_anchors", True)),
+        spec=payload.get("spec"),
     )
     d = result.to_dict()
     d = _relpath_exports(d, result, out_dir)
@@ -918,6 +919,7 @@ def run_topopt_resample_payload(
         anchors=payload.get("anchors"),
         name=payload.get("name", "model"),
         runtime=_runtime(payload),
+        spec=payload.get("spec"),
         **_cancel_kwargs(run_topopt_resample, cancelled),
     )
     d = result.to_dict()
@@ -974,6 +976,7 @@ def run_refine_payload(
         max_elements=payload.get("max_elements"),
         name=payload.get("name", "model"),
         runtime=_runtime(payload),
+        spec=payload.get("spec"),
         **_cancel_kwargs(run_refine, cancelled),
     )
     d = result.to_dict()

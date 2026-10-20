@@ -923,6 +923,7 @@ async def _run_topopt_phase(
                 "runtime_settings": ctx.runtime_settings.executor_values(),
                 "name": "model",
                 "anchors": (ctx.anchors or {}).get("holes"),
+                "spec": spec.model_dump(mode="json"),
             }
         )
     if not res.get("ok"):
@@ -943,6 +944,8 @@ async def _run_topopt_phase(
         top = {**top, **norm_rep}
     if agent is not None and agent.runs:
         top = {**top, "agent_runs": agent.runs}
+    if res.get("verify_spec"):
+        top = {**top, "verify_spec": res["verify_spec"]}
     outcome.mesh = {**(outcome.mesh or {}), "pipeline": "topopt", "topopt": top}
     outcome.resolved_mode = "topopt"
     sfs = [
@@ -957,6 +960,12 @@ async def _run_topopt_phase(
     if (top.get("verification") or {}).get("valid") is False:
         outcome.status = "needs_review"
         outcome.mode_note += " | export FEM solve degenerate — optimization unverified"
+    # canonical verify_spec verdict heads the persisted issue list — the
+    # topopt result dict plays the exec_result role here (bound-semantics
+    # envelope checks, feature + structural tiers)
+    vs_entry = _verify_spec_issue(res)
+    if vs_entry:
+        outcome.issues = [vs_entry, *list(outcome.issues or [])]
     await ctx.emit(
         "optimize",
         it,

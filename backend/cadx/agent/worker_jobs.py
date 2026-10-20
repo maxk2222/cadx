@@ -1549,6 +1549,7 @@ async def run_optimize_job(  # noqa: C901
                     "runtime_settings": runtime_settings.executor_values(),
                     "name": "model",
                     "anchors": (parent.analysis or {}).get("anchors", {}).get("holes"),
+                    "spec": spec.model_dump(mode="json") if spec else None,
                 }
             )
 
@@ -1737,6 +1738,7 @@ async def run_topopt_resample_job(ctx: dict[str, Any], payload: dict[str, Any]) 
                 # (mesh-scanned + merged); fall back to declared anchors
                 "anchors": ((parent.mesh or {}).get("topopt") or {}).get("anchors")
                 or (parent.analysis or {}).get("anchors", {}).get("holes"),
+                "spec": spec.model_dump(mode="json") if spec else None,
             }
         )
 
@@ -1927,6 +1929,7 @@ async def run_refine_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[s
                 "auto_keep_anchors": bool(payload.get("auto_keep_anchors")),
                 "runtime_settings": runtime_settings.executor_values(),
                 "name": "model",
+                "spec": spec.model_dump(mode="json") if spec else None,
             }
         )
 

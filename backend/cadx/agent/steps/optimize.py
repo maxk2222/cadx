@@ -510,6 +510,7 @@ def _setup_session(
             "runtime_settings": ctx.runtime_settings.executor_values(),
             "name": "model",
             "anchors": anchors,
+            "spec": spec.model_dump(mode="json"),
         },
         spec_cases=spec_cases,
         default_material=default_material,

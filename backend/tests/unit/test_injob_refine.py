@@ -711,6 +711,69 @@ def test_refine_payload_forwards_auto_keep_anchors(monkeypatch, tmp_path):
     assert captured["auto_keep_anchors"] is True
 
 
+def test_refine_payload_forwards_spec(monkeypatch, tmp_path):
+    """The serialized PartSpec must reach run_refine so its canonical
+    verify_spec report receives the design intent (dims, features)."""
+    import cadx.cad.tasks as tasks
+    from cadx.cad.engine import ExecResult
+
+    captured: dict = {}
+
+    def fake_run_refine(**kw):
+        captured.update(kw)
+        r = ExecResult()
+        r.ok = True
+        return r
+
+    monkeypatch.setattr("cadx.cad.engine.run_refine", fake_run_refine)
+    mesh = storage.tmp_dir() / "in.stl"
+    mesh.write_text("solid m\nendsolid m\n")
+    spec = {"name": "p", "length_x": {"value": 100.0, "source": "stated"}, "features": []}
+    d = tasks.run_refine_payload(
+        {
+            "project_id": str(uuid.uuid4()),
+            "version_id": str(uuid.uuid4()),
+            "iteration": 1,
+            "mesh_rel": storage.relpath(mesh),
+            "spec": spec,
+        }
+    )
+    assert d["ok"] is True
+    assert captured["spec"] == spec
+
+
+def test_optimize_payload_forwards_spec(monkeypatch, tmp_path):
+    """run_optimize_payload must forward the serialized PartSpec so the
+    topopt pipeline can attach a spec-aware canonical verify_spec report."""
+    import cadx.cad.tasks as tasks
+    from cadx.cad.engine import ExecResult
+
+    captured: dict = {}
+
+    def fake_pipeline(**kw):
+        captured.update(kw)
+        r = ExecResult()
+        r.ok = True
+        return r
+
+    # bound at module import time — patch the tasks-module name, not engine's
+    monkeypatch.setattr(tasks, "run_topopt_pipeline", fake_pipeline)
+    mesh = storage.tmp_dir() / "in.stl"
+    mesh.write_text("solid m\nendsolid m\n")
+    spec = {"name": "p", "length_x": {"value": 100.0, "source": "stated"}, "features": []}
+    d = tasks.run_optimize_payload(
+        {
+            "project_id": str(uuid.uuid4()),
+            "version_id": str(uuid.uuid4()),
+            "iteration": 1,
+            "mesh_rel": storage.relpath(mesh),
+            "spec": spec,
+        }
+    )
+    assert d["ok"] is True
+    assert captured["spec"] == spec
+
+
 def test_run_refine_synthesizes_auto_keep_regions(monkeypatch, tmp_path):
     """auto_keep_anchors + empty keep_regions -> one hole keep-region per
     fastener anchor (hole_index = 1-based list position); explicit

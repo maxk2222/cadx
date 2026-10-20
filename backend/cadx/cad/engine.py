@@ -221,6 +221,7 @@ def _attach_verify_spec(
     *,
     measured_features: dict[str, Any] | None = None,
     feature_findings: list[dict[str, Any]] | None = None,
+    envelope_bound_only: bool = False,
 ) -> ExecResult:
     """Compute the canonical M6 conformance report over the measured evidence
     already in ``res`` and store it at ``res.verify_spec`` (shipped as
@@ -242,6 +243,10 @@ def _attach_verify_spec(
             else rt.agent_dim_tolerance_mm
         )
         measured = measured_features if measured_features is not None else res.features
+        if spec_dict is not None and spec_dict.get("min_wall_mm") is None:
+            # project default supplies the robustness tier's wall floor when
+            # the spec itself does not declare one
+            spec_dict = {**spec_dict, "min_wall_mm": settings.min_wall_mm}
         if (
             feature_findings is None
             and spec_dict
@@ -263,6 +268,7 @@ def _attach_verify_spec(
             measured_features=measured,
             dim_tolerance_pct=tol_pct,
             dim_tolerance_mm=tol_mm,
+            envelope_bound_only=envelope_bound_only,
         )
     except Exception as e:
         log.warning("verify_spec.failed", error=str(e)[:200])
@@ -1260,6 +1266,7 @@ def run_topopt_pipeline(  # noqa: C901
     scan_anchors: bool = True,
     runtime: RuntimeSettings | None = None,
     spec_dims_mm: list[float | None] | None = None,
+    spec: dict[str, Any] | None = None,
 ) -> ExecResult:
     """SIMP topology optimization on the part's voxelized design domain.
 
@@ -2008,6 +2015,9 @@ def run_topopt_pipeline(  # noqa: C901
             "optimized mesh is not watertight — inspect before manufacturing"
         )
     res.ok = True
+    # canonical conformance report — bound semantics: the stated dims are an
+    # envelope the optimized part must fit inside, not targets to match
+    _attach_verify_spec(res, spec, ProjectSettings(), s, envelope_bound_only=True)
     res.timings["total_s"] = round(time.monotonic() - t0, 2)
     return res
 
@@ -2024,6 +2034,7 @@ def run_topopt_resample(
     name: str = "model",
     runtime: RuntimeSettings | None = None,
     cancelled: Callable[[], bool] | None = None,
+    spec: dict[str, Any] | None = None,
 ) -> ExecResult:
     """Re-extract a stored SIMP density field at a different threshold /
     min-member without re-running SIMP — the threshold-sweep endpoint.
@@ -2232,6 +2243,7 @@ def run_topopt_resample(
     thumb = render_thumbnail(stl_path, out_dir / "thumbnail.png")
     res.thumbnail = thumb.name if thumb else None
     res.ok = True
+    _attach_verify_spec(res, spec, ProjectSettings(), s, envelope_bound_only=True)
     res.timings["total_s"] = round(time.monotonic() - t0, 2)
     return res
 
@@ -2404,6 +2416,7 @@ def run_refine(
     name: str = "model",
     runtime: RuntimeSettings | None = None,
     cancelled: Callable[[], bool] | None = None,
+    spec: dict[str, Any] | None = None,
 ) -> ExecResult:
     """Post-TopOpt feature finishing: re-cut exact bores/threads/inserts and
     restore keep-region surfaces on a (usually optimized) mesh.
@@ -2549,6 +2562,11 @@ def run_refine(
     if not out.is_watertight:
         warnings.append("refined mesh is not watertight — inspect before manufacturing")
     res.ok = True
+    # canonical conformance report on the finished part — bound semantics:
+    # the refined body is still the optimized envelope, not a CAD target
+    _attach_verify_spec(
+        res, spec, ProjectSettings(), s, envelope_bound_only=True
+    )
     res.timings["total_s"] = round(time.monotonic() - t0, 2)
     return res
 
