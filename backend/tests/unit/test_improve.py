@@ -12,7 +12,7 @@ from cadx.agent.trace import MemoryTrace
 from cadx.agent.types import AgentCtx
 from cadx.db.models import ProjectSettings
 from cadx.llm.fake import FakeLLM
-from cadx.llm.schemas import PartSpec
+from cadx.llm.schemas import Feature, PartSpec
 from cadx.runtime_config import RuntimeSettings
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
@@ -169,3 +169,51 @@ async def test_attempts_reach_session_prompt():
     )
     msgs = llm.calls[0]["messages"]
     assert "PREVIOUS ATTEMPTS" in json.dumps(msgs)
+
+
+def test_feature_audit_flags_probe_stub():
+    """The observed stub: load_mesh_solid + prints only, spec declares lugs
+    and bores — the audit must reject it before critique burns iterations."""
+    from cadx.agent.steps.codegen import _feature_audit
+
+    stub = (
+        "from build123d import *\nimport cadlib\n"
+        "PARAMS = {'hole_diameter': 5.5}\n"
+        "mesh = load_mesh_solid()\nprint(measure(mesh))\nresult = mesh\n"
+    )
+    spec = PartSpec(
+        name="handle",
+        length_x={"value": 120.0},
+        width_y={"value": 40.0},
+        height_z={"value": 30.0},
+        features=[
+            Feature(name="arch", type="arch", dims={}),
+            Feature(name="lug -x", type="pad", dims={}),
+            Feature(name="lug +x", type="pad", dims={}),
+            Feature(name="bore -x", type="through_hole", dims={"diameter": 5.5}),
+        ],
+    )
+    assert _feature_audit(stub, spec)
+
+
+def test_feature_audit_accepts_real_build():
+    from cadx.agent.steps.codegen import _feature_audit
+
+    code = (
+        "mesh = load_mesh_solid()\n"
+        "lug = Pos(-45,0,3) * Box(30,20,6)\n"
+        "body = cadlib.mesh_fuse(mesh, lug)\n"
+        "body = cadlib.mesh_cut(body, Pos(-45,0,-1) * Cylinder(radius=2.75, height=12))\n"
+        "result = body\n"
+    )
+    spec = PartSpec(
+        name="handle",
+        length_x={"value": 120.0},
+        width_y={"value": 40.0},
+        height_z={"value": 30.0},
+        features=[
+            Feature(name="lug", type="pad", dims={}),
+            Feature(name="bore", type="through_hole", dims={}),
+        ],
+    )
+    assert _feature_audit(code, spec) == []

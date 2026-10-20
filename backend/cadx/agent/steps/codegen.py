@@ -462,6 +462,58 @@ async def _repair_session(
     return PatchResponse(reasoning="tool session produced no changes")
 
 
+_FEATURE_OP_RE = re.compile(
+    r"Cylinder\(|Cone\(|Hole\(|CounterSink|CounterBore|Box\(|Sphere\(|"
+    r"extrude\(|loft\(|sweep\(|revolve\(|fillet\(|chamfer\(|"
+    r"mesh_cut\(|mesh_fuse\(|mesh_intersect\(|trim_below\(|"
+    r"\+\s*Pos\(|-\s*Pos\(|"
+    r"\.union\(|\.cut\(|\.fuse\(|\.difference\(|"
+    r"\w+\s*[-+]=\s*\w+|\w+\s*[-+]\s*=\s*\w+\s*[-+]\s*\w+",
+    re.IGNORECASE,
+)
+_BASE_TYPES = {
+    "arch",
+    "arched bar",
+    "body",
+    "shell",
+    "frame",
+    "housing",
+    "enclosure",
+    "base",
+    "blank",
+    "bar",
+    "bail",
+    "handle",
+    "grip",
+    "knob",
+    "disc",
+    "gear",
+}
+
+
+def _feature_audit(code: str, spec: PartSpec | None) -> list[str]:
+    """Declared features the submitted code cannot possibly produce —
+    catches the 'probe script' failure (observed: hybrid build session
+    answered `load_mesh_solid() + prints + result=mesh`, all lugs and both
+    bores missing, burning a critique + 4 improve iterations).
+
+    The audit only fires when the spec declares ≥2 features beyond the
+    organic base body and the code shows no boolean/feature ops at all —
+    partial builds stay the critique's job."""
+    if spec is None:
+        return []
+    feats = [
+        f
+        for f in (spec.features or [])
+        if str(getattr(f, "type", "") or "").lower() not in _BASE_TYPES
+    ]
+    if len(feats) < 2:
+        return []
+    if _FEATURE_OP_RE.search(code or ""):
+        return []
+    return [str(getattr(f, "name", "") or getattr(f, "type", "")) for f in feats[:6]]
+
+
 async def _codegen_session(
     ctx: AgentCtx,
     spec: PartSpec,
@@ -472,6 +524,7 @@ async def _codegen_session(
     verify_fn: VerifyFn | None = None,
     render_fn: VerifyFn | None = None,
     out: dict[str, Any] | None = None,
+    _audit_retry: int = 0,
 ) -> CodeResponse:
     """Fresh generation via tool session.
 
@@ -560,26 +613,48 @@ async def _codegen_session(
             for k, v in (chk.params or {}).items()
             if isinstance(v, str | int | float | bool)
         ]
-        return CodeResponse(
+        resp_code = CodeResponse(
             reasoning=str(res.submitted.get("reasoning", "")),
             params=params,
             expected_bbox=list(res.submitted.get("expected_bbox") or []),
             code=code,
         )
-    if res.response is not None and isinstance(res.response.parsed, CodeResponse):
-        return res.response.parsed
+    elif res.response is not None and isinstance(res.response.parsed, CodeResponse):
+        resp_code = res.response.parsed
     # build-session rescue: the model ran out of budget without `done` but
     # leaves a grown buffer — submit it (it goes through the same contract
     # gate as any codegen; a broken buffer gets a repair session, which is
     # strictly better than throwing the work away)
-    if staged and res.code and res.code != _BUILD_SEED and elision_marker(res.code) is None:
-        return CodeResponse(
+    elif staged and res.code and res.code != _BUILD_SEED and elision_marker(res.code) is None:
+        resp_code = CodeResponse(
             reasoning="staged build session ended without done — buffer submitted as-is",
             params=[],
             expected_bbox=[],
             code=str(res.code),
         )
-    raise LLMFormatError("codegen session produced no code")
+    else:
+        raise LLMFormatError("codegen session produced no code")
+    missing = _feature_audit(resp_code.code or "", spec)
+    if missing and _audit_retry < 1:
+        note = (
+            "Your previous submission was an exploration stub, not the part — it "
+            "declares none of the required features. Rebuild stage by stage: one "
+            "add_block per feature (lugs, holes, bosses …), verify each block, "
+            f"then done. Missing: {', '.join(missing)}."
+        )
+        await ctx.emit("codegen", iteration, "feature audit: " + note)
+        return await _codegen_session(
+            ctx,
+            spec,
+            plan,
+            iteration=iteration,
+            feedback=note,
+            verify_fn=verify_fn,
+            render_fn=render_fn,
+            out=out,
+            _audit_retry=_audit_retry + 1,
+        )
+    return resp_code
 
 
 # --------------------------------------------------------------------------- #
