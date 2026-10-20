@@ -1163,6 +1163,25 @@ async def _ensure_synth_views(
         a.caption = f"synth:{slot} — {a.caption}"
         roles[a.asset_id] = slot
     if roles:
+        # persist the slot mapping — the runtime caption/role_hint die with
+        # this run; a later version reloads assets from the DB and must be
+        # able to rebuild _synth_view_roles instead of regenerating the views
+        try:
+            import uuid
+
+            from cadx.db.models import Asset
+            from cadx.db.session import session_scope
+
+            async with session_scope() as db:
+                for aid, slot in roles.items():
+                    row = await db.get(Asset, uuid.UUID(aid))
+                    if row is None:
+                        continue
+                    row.caption = f"synth:{slot} — {row.caption}"
+                    row.gen_params = {**(row.gen_params or {}), "synth_slot": slot}
+                await db.commit()
+        except Exception as e:
+            log.warning("meshgen.synth_slot_persist_failed", error=str(e)[:200])
         ctx.mesh_info["_synth_view_roles"] = roles
         await ctx.emit(
             "meshgen",
