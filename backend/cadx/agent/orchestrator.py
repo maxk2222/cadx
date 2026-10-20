@@ -1224,10 +1224,25 @@ def _mesh_source_images(
     ordered += [a for a in images if a not in ordered]
     ordered = _dedupe_near_identical(ctx, ordered)
     ordered = _gate_generated_images(ordered, spec)
+    if not ordered:
+        # every reference was gated/deduped away — callers bootstrap a fresh
+        # concept image on the empty list; mapping roles over nothing crashes
+        return [], []
     synth_roles: dict[str, str] = ctx.mesh_info.get("_synth_view_roles") or {}
     if iteration > 1 and len(ordered) > 1:
         ordered = _rotate_hero(ordered, synth_roles)
+    return _gen_view_roles(ctx, ordered, synth_roles, iteration, spec)
 
+
+def _gen_view_roles(
+    ctx: AgentCtx,
+    ordered: list[Any],
+    synth_roles: dict[str, str],
+    iteration: int,
+    spec: PartSpec | None,
+) -> tuple[list[Any], list[str]]:
+    """Map ordered source images to generator view roles (see
+    `_mesh_source_images` docstring for the mapping rules)."""
     intake_roles: dict[str, str] = {}
     flat = False
     if spec is not None:
@@ -1293,7 +1308,7 @@ def _map_gen_roles(
     if front_i is not None and front_i != 0:
         ordered.insert(0, ordered.pop(front_i))
         roles.insert(0, roles.pop(front_i))
-    if "front" not in roles and (not roles or roles[0] != "scribble"):
+    if roles and "front" not in roles and roles[0] != "scribble":
         roles[0] = "front"
     return ordered, roles
 
