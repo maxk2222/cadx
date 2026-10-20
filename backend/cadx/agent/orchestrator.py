@@ -1136,7 +1136,11 @@ async def _ensure_synth_views(
             ref_asset=front_asset,
             count=2,
             source="synth_side_view",
-            spec=spec,
+            # conditioning views, not heroes — a real side view can't show the
+            # whole feature list, so full-spec verification rejected valid
+            # output and burned retries (observed: both synth attempts
+            # verdicted major on "missing tabs/holes" for a bail handle)
+            spec=None,
             # mflux edit defaults to 28 steps/image — ~19min per view on MLX;
             # 14 steps keeps both views under the image timeout budget
             steps=14,
