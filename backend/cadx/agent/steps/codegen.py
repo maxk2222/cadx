@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from cadx import storage
 from cadx.agent.context import (
     anchors_block,
     bindings_block,
@@ -33,6 +35,7 @@ from cadx.agent.types import AgentCtx
 from cadx.cad.allowlist import check_code
 from cadx.cad.errordiag import diag_block, diagnose
 from cadx.cad.partspec import check_standard_part_calls
+from cadx.llm.images import image_part
 from cadx.llm.schemas import (
     CodeResponse,
     ModelingPlan,
@@ -104,6 +107,52 @@ def _quickref_part(ctx: AgentCtx) -> dict[str, Any] | None:
     return {"type": "text", "text": text} if text else None
 
 
+def _hybrid_parts(ctx: AgentCtx, plan: ModelingPlan | None) -> list[dict[str, Any]]:
+    """Hybrid-mesh context for code sessions — bbox stats plus the processed
+    mesh's contact sheet. A bbox+triangle count alone reads as "organic blob"
+    and weak models rebuild the whole part parametrically, parking the mesh in
+    dead code (use_mesh_arch=False anti-pattern); seeing the render shows them
+    which features the mesh already provides."""
+    if ctx.hybrid_solid is None:
+        return []
+    bbox = ctx.hybrid_mesh_info.get("bbox_size") or "unknown"
+    tris = ctx.hybrid_mesh_info.get("triangles") or "?"
+    feats = (
+        "\nHybrid CAD features to implement: " + "; ".join(plan.hybrid_cad_features)
+        if plan and plan.hybrid_cad_features
+        else ""
+    )
+    parts: list[dict[str, Any]] = [
+        {
+            "type": "text",
+            "text": (
+                "HYBRID MODE: a generated organic mesh is already converted to a B-Rep "
+                f"solid and available via `load_mesh_solid()` (faceted solid, ~{tris} "
+                f"triangles). It is oriented and scaled: rests on the XY plane, centred "
+                f"at origin, bbox LxWxH = {bbox} mm (also in `MESH_BBOX`). "
+                "Use it as the base body and add the exact CAD features via boolean "
+                "ops — the mesh supplies the organic shape, your code supplies the "
+                "precision features." + feats
+            ),
+        }
+    ]
+    art_dir = ctx.mesh_info.get("_prep_art_dir")
+    sheet = storage.resolve(art_dir) / "contact_sheet.png" if art_dir else None
+    if sheet is not None and sheet.exists():
+        parts.append(
+            {
+                "type": "text",
+                "text": (
+                    "THE MESH SOLID — this is what load_mesh_solid() returns. "
+                    "Keep its shape; only add/cut the CAD features it lacks:"
+                ),
+            }
+        )
+        with contextlib.suppress(Exception):
+            parts.append(image_part(sheet))
+    return parts
+
+
 def _user_parts(
     ctx: AgentCtx,
     spec: PartSpec,
@@ -125,28 +174,7 @@ def _user_parts(
     cat = catalog_block(plan, spec)
     if cat:
         parts.append({"type": "text", "text": cat})
-    if ctx.hybrid_solid is not None:
-        bbox = ctx.hybrid_mesh_info.get("bbox_size") or "unknown"
-        tris = ctx.hybrid_mesh_info.get("triangles") or "?"
-        feats = (
-            "\nHybrid CAD features to implement: " + "; ".join(plan.hybrid_cad_features)
-            if plan and plan.hybrid_cad_features
-            else ""
-        )
-        parts.append(
-            {
-                "type": "text",
-                "text": (
-                    "HYBRID MODE: a generated organic mesh is already converted to a B-Rep "
-                    f"solid and available via `load_mesh_solid()` (faceted solid, ~{tris} "
-                    f"triangles). It is oriented and scaled: rests on the XY plane, centred "
-                    f"at origin, bbox LxWxH = {bbox} mm (also in `MESH_BBOX`). "
-                    "Use it as the base body and add the exact CAD features via boolean "
-                    "ops — the mesh supplies the organic shape, your code supplies the "
-                    "precision features." + feats
-                ),
-            }
-        )
+    parts.extend(_hybrid_parts(ctx, plan))
     ref = references_block(ctx.assets)
     if ref:
         parts.append({"type": "text", "text": ref})
@@ -422,6 +450,7 @@ async def _repair_session(
     cat = catalog_block(plan, spec)
     if cat:
         parts.append({"type": "text", "text": cat})
+    parts.extend(_hybrid_parts(ctx, plan))
     # APC ordering: numbered code + diagnosis change every attempt — they go
     # LAST so the stable head (system + request/spec/plan/context) stays a
     # shared prefix across repair sessions
