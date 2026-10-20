@@ -788,6 +788,7 @@ def simp(  # noqa: C901
     it = 0
     stall = 0
     prev_objective: float | None = None
+    prev_mask: np.ndarray | None = None  # thresholded design set, for flip count
     t0 = time.monotonic()
     ncells = domain.cell_count
     it_box = [0]  # shared iteration counter (nlopt drives iterations in MMA mode)
@@ -1053,20 +1054,31 @@ def simp(  # noqa: C901
         # the objective already settled — count a stalled objective only when
         # the field itself stopped evolving, otherwise a still-blurry density
         # is extracted while members keep churning and fragments. `change`
-        # below the move cap or a near-binary field (<5% gray design cells)
-        # both count as settled. While a Heaviside continuation can still run
-        # it IS the mechanism that settles the field — the projection ramp is
-        # triggered by the stalled objective, so it must fire even when the
-        # density is still gray; only at the beta cap does `settled` gate.
+        # below the move cap, a near-binary field (<5% gray design cells) or
+        # a stable thresholded set (<0.5% of design cells flipping — the
+        # printed part is the mask, not the raw densities) all count as
+        # settled. While a Heaviside continuation can still run it IS the
+        # mechanism that settles the field — the projection ramp is triggered
+        # by the stalled objective, so it must fire even when the density is
+        # still gray; only at the beta cap does `settled` gate.
         if prev_objective is not None and prev_objective > 0:
             rel = abs(objective - prev_objective) / prev_objective
             design_sel = design[solid_idx]
-            gray = (
-                float(np.mean((phys_now[design_sel] > 0.2) & (phys_now[design_sel] < 0.8)))
-                if design_sel.any()
-                else 0.0
+            if design_sel.any():
+                phys_d = phys_now[design_sel]
+                gray = float(np.mean((phys_d > 0.2) & (phys_d < 0.8)))
+                mask_now = phys_d >= 0.5
+                flips = (
+                    float(np.mean(mask_now != prev_mask))
+                    if prev_mask is not None
+                    else 1.0
+                )
+                prev_mask = mask_now
+            else:
+                gray, flips = 0.0, 0.0
+            settled = (
+                change <= 0.9 * params.move or gray <= 0.05 or flips <= 0.005
             )
-            settled = change <= 0.9 * params.move or gray <= 0.05
             continuing = heaviside and proj.beta < params.beta_max
             stall = stall + 1 if (rel < params.tol and (continuing or settled)) else 0
             if stall >= params.converge_patience:
