@@ -64,10 +64,12 @@ pick the best one.
   feature finishing on a completed run: re-cuts EXACT bores, printed threads
   (tap-drill for `thread_spec`/`standard` M-sizes), inserts, bearing seats,
   countersinks/counterbores at the measured anchors — the smoothed SIMP
-  surface is only approximately exact. Also restores keep-region surfaces
-  that smoothing shrank. FEM re-verified; returns a NEW run_index usable in
-  `done()`. Call it on your best candidate BEFORE committing when the part
-  has threads/inserts/precision bores.
+  surface is only approximately exact: channels left by the optimizer are
+  wavy and off-spec, and the re-cut plugs then drills them to the declared
+  diameter. Also restores keep-region surfaces that smoothing shrank. FEM
+  re-verified; returns a NEW run_index usable in `done()`. Call it on your
+  best candidate BEFORE committing whenever the spec declares holes/bores —
+  not only for threads or precision fits.
 - `done(run_index, reasoning)` — commit one run as the version result.
   `run_index: -1` keeps the base part unoptimized (e.g. when every run
   weakened it below the target safety factor or destroyed required features).

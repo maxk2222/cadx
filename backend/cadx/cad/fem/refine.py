@@ -103,6 +103,11 @@ class RefineFeature:
     # before cutting (a scoop whose ring was eaten and never restored leaves
     # nothing to bore into)
     admit_on_material: bool = False
+    # internal: snapped spec feature — fill the measured wavy channel first,
+    # then drill at the exact spec diameter. A plain difference can't shrink
+    # a void, so without the plug the cutter reams +0.4 past every wall
+    # bulge; the plug restores nominal-diameter walls
+    plug_first: bool = False
 
 
 # --------------------------------------------------------------------------- #
@@ -145,11 +150,16 @@ def _parse_spec(spec: str) -> tuple[float, float] | None:
     return float(m.group(1)), float(m.group(2))
 
 
-def _thread_spec_from(sf: dict[str, Any], dia: float) -> str:
+def _thread_spec_from(sf: dict[str, Any], dia: float, *, allow_dia_snap: bool = False) -> str:
     """Resolve a fastener spec string from Feature.standard/name/description.
 
     Accepts 'M4-0.7' verbatim; a bare 'M4' gets the coarse pitch for its
-    diameter. Returns '' when nothing looks like a metric size."""
+    diameter. Returns '' when nothing looks like a metric size.
+
+    `allow_dia_snap` additionally infers the spec from the bare diameter
+    (tap-drill sizes) — only for thread-typed features: a Ø5.5 *clearance*
+    hole is the standard M5 fit and must not earn an M5 thread spec by
+    diameter proximity alone."""
     import re
 
     for f_name in ("standard", "name", "description"):
@@ -161,7 +171,7 @@ def _thread_spec_from(sf: dict[str, Any], dia: float) -> str:
         if m:
             d = float(m.group(1))
             return f"M{d:g}-{_metric_pitch(d):g}"
-    if dia > 0:
+    if allow_dia_snap and dia > 0:
         nearest = min(_COARSE_PITCH, key=lambda d: abs(d - dia))
         if abs(nearest - dia) <= 0.6:
             return f"M{nearest:g}-{_COARSE_PITCH[nearest]:g}"
@@ -401,7 +411,10 @@ def resolve_refine_features(  # noqa: C901
         if anchor is None:
             continue
         used_anchors.add(id(anchor))
-        dims["thread_spec"] = _thread_spec_from(sf, dia)
+        # dia-snap only when the feature actually means a thread — otherwise
+        # a Ø5.5 M5-clearance hole silently picks up an 'M5' spec
+        threadish = stype in ("thread", "tap", "insert") or bool(dims.get("thread_spec"))
+        dims["thread_spec"] = _thread_spec_from(sf, dia, allow_dia_snap=threadish)
         f = _from_anchor(anchor, kind=stype, dims=dims)
         if f:
             f.name = str(sf.get("name") or f.name)
@@ -712,6 +725,77 @@ def _tunnel_center(
     return float(center[0]), float(center[1])
 
 
+def _plug_cylinder(mesh: trimesh.Trimesh, feat: RefineFeature) -> trimesh.Trimesh | None:
+    """Filler cylinder that swallows the measured wavy channel at a snapped
+    bore — unioned in BEFORE the nominal-diameter drill so the re-cut walls
+    are exact instead of 'channel + ream margin'.
+
+    A boolean difference can't shrink a void: a Ø5.5 cutter inside a ~Ø5.9
+    wavy channel removes nothing and the ragged walls survive. Plug radius
+    covers the widest measured wall bulge (first-hit radius over 24
+    directions) plus weld margin, capped by the part silhouette (last-hit
+    radius) so the plug can never stick out through an open channel mouth.
+    Axial span covers the two part surfaces at the bore centre."""
+    ax, au, av = _AXES[feat.axis]
+    opp = ("-" if feat.axis[0] == "+" else "+") + feat.axis[1]
+    # channel span along the axis — the centre ray of a through-channel hits
+    # nothing, so surface coords are sampled on rings around the bore
+    side_a: list[float] = []
+    side_b: list[float] = []
+    for r_probe in (feat.dia * 0.5 + 1.2, feat.dia * 0.5 + 2.5):
+        for ang in np.linspace(0.0, 2.0 * np.pi, 12, endpoint=False):
+            uu = feat.u + r_probe * math.cos(ang)
+            vv = feat.v + r_probe * math.sin(ang)
+            e = _entry_point(mesh, feat.axis, uu, vv)
+            if e is not None:
+                side_a.append(e)
+            e = _entry_point(mesh, opp, uu, vv)
+            if e is not None:
+                side_b.append(e)
+        if side_a and side_b:
+            break
+    if not side_a or not side_b:
+        return None
+    entry = float(np.median(side_a))
+    exit_ = float(np.median(side_b))
+    lo, hi = min(entry, exit_), max(entry, exit_)
+    span_ax = hi - lo
+    if span_ax <= 0.5:
+        return None
+    mid = (lo + hi) / 2.0
+    n_rays = 24
+    angs = np.linspace(0.0, 2.0 * np.pi, n_rays, endpoint=False)
+    origin = np.zeros(3)
+    origin[au], origin[av], origin[ax] = feat.u, feat.v, mid
+    origins = np.tile(origin, (n_rays, 1))
+    dirs = np.zeros((n_rays, 3))
+    dirs[:, au] = np.cos(angs)
+    dirs[:, av] = np.sin(angs)
+    locs, ray_ids, _ = mesh.ray.intersects_location(
+        ray_origins=origins, ray_directions=dirs, multiple_hits=True
+    )
+    first = np.full(n_rays, np.inf)
+    last = np.zeros(n_rays)
+    for loc, ri in zip(locs, ray_ids, strict=True):
+        p = np.zeros(3)
+        p[au], p[av] = loc[au], loc[av]
+        d = float(np.linalg.norm(p - origin))
+        first[int(ri)] = min(first[int(ri)], d)
+        last[int(ri)] = max(last[int(ri)], d)
+    finite = np.isfinite(first)
+    if not finite.any():
+        return None
+    r_void = float(first[finite].max()) + 0.4  # widest bulge + weld margin
+    r_part = float(last[finite].min()) - 0.3  # never protrude the silhouette
+    plug_r = min(r_void, r_part)
+    if plug_r <= feat.dia / 2.0 + 0.05:
+        return None
+    plug = trimesh.creation.cylinder(radius=plug_r, height=span_ax + 0.6, sections=48)
+    plug.apply_translation([0, 0, -span_ax / 2.0])
+    _orient_cutter(plug, feat.axis, feat.u, feat.v, entry)
+    return plug
+
+
 def _snap_dedup_features(
     mesh: trimesh.Trimesh,
     features: list[RefineFeature],
@@ -739,14 +823,21 @@ def _snap_dedup_features(
         if c is None and base_mesh is not None and base_mesh is not mesh:
             c = _tunnel_center(base_mesh, feat.axis, feat.u, feat.v, r, feat.dia)
         if c is not None:
+            spec_dia = feat.source == "spec"
             if math.hypot(c[0] - feat.u, c[1] - feat.v) > 0.02:
                 report.warnings.append(
                     f"feature '{feat.name}': re-cut snapped to measured tunnel "
-                    f"centre ({c[0]:.2f}, {c[1]:.2f}), reamed +0.4 mm"
+                    f"centre ({c[0]:.2f}, {c[1]:.2f})"
+                    + (", plugged then drilled at spec dia" if spec_dia else ", reamed +0.4 mm")
                 )
             feat.u, feat.v = c
             snapped[id(feat)] = c
-            feat.dia_extra = max(feat.dia_extra, 0.4)
+            if spec_dia:
+                # spec'd diameter is authoritative: fill the wavy channel
+                # then drill nominal — a +0.4 ream would oversize the bore
+                feat.plug_first = True
+            else:
+                feat.dia_extra = max(feat.dia_extra, 0.4)
         resolved.append(feat)
 
     merged: list[RefineFeature] = []
@@ -779,6 +870,9 @@ def _snap_dedup_features(
             )
         )
         keep.dia_extra = max(keep.dia_extra, drop.dia_extra)
+        keep.plug_first = keep.plug_first or drop.plug_first
+        if keep.plug_first:
+            keep.dia_extra = 0.0  # plugged bores drill nominal — no ream
         merged[target_i] = keep
         report.warnings.append(
             f"features '{target.name}' and '{feat.name}' resolve to the same "
@@ -1185,6 +1279,8 @@ def _record_applied(
         entry_rec["helical"] = feat.helical
     if feat.dia_extra:
         entry_rec["ream_extra_mm"] = round(feat.dia_extra, 2)
+    if feat.plug_first:
+        entry_rec["plugged"] = True
     try:
         requested = _effective_dia(feat) + feat.dia_extra
         measured = _measure_feature_dia(mesh, feat, entry, span)
@@ -1221,6 +1317,42 @@ def _apply_cut(out: trimesh.Trimesh, feat: RefineFeature, report: RefineReport) 
             "open or optimized away; cutting anyway"
         )
     span = float(out.bounds[1][ax] - out.bounds[0][ax])
+    if feat.plug_first:
+        # spec'd bore over a wavy channel: fill the measured void first so the
+        # nominal drill leaves exact walls — a plain cut can only widen, never
+        # shrink, an existing tunnel. On plug failure fall back to the +0.4
+        # ream (oversized but clean) rather than cutting ragged walls.
+        plug = _plug_cylinder(out, feat)
+        if plug is not None:
+            try:
+                filled = out.union(plug, engine="manifold")
+                if filled is None or not len(getattr(filled, "faces", [])):
+                    filled = None
+            except Exception:
+                filled = None
+            if filled is not None:
+                out = filled
+                # seat the drill on the plug surface — the channel surface
+                # entry measured above is gone now
+                entry = _entry_point(out, feat.axis, feat.u, feat.v)
+                if entry is None:
+                    entry = float(
+                        out.bounds[1][ax] if feat.axis[0] == "+" else out.bounds[0][ax]
+                    )
+            else:
+                feat.plug_first = False
+                feat.dia_extra = max(feat.dia_extra, 0.4)
+                report.warnings.append(
+                    f"feature '{feat.name}': channel plug union failed — "
+                    "reamed +0.4 mm instead of drilling at spec dia"
+                )
+        else:
+            feat.plug_first = False
+            feat.dia_extra = max(feat.dia_extra, 0.4)
+            report.warnings.append(
+                f"feature '{feat.name}': no plug geometry at measured tunnel — "
+                "reamed +0.4 mm instead of drilling at spec dia"
+            )
     cutter = _cutter_mesh(feat, entry, span)
     _orient_cutter(cutter, feat.axis, feat.u, feat.v, entry)
     # overlap sanity: AABBs must intersect (cheap) — a fully disjoint

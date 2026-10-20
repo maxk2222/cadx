@@ -69,8 +69,12 @@ def test_thread_spec_resolution():
     assert _thread_spec_from({"standard": "M4 ISO 10642"}, 5.0) == "M4-0.7"
     assert _thread_spec_from({"name": "M3 insert"}, 0) == "M3-0.5"
     assert _thread_spec_from({"standard": ""}, 0) == ""
-    # dia-only fallback picks nearest coarse size within tolerance
-    assert _thread_spec_from({}, 4.0) == "M4-0.7"
+    # dia-only fallback picks nearest coarse size within tolerance — but
+    # ONLY for thread-typed features (a Ø5.5 clearance hole is the standard
+    # M5 fit and must not earn an M5 spec by proximity alone)
+    assert _thread_spec_from({}, 4.0, allow_dia_snap=True) == "M4-0.7"
+    assert _thread_spec_from({}, 4.0) == ""
+    assert _thread_spec_from({"name": "Ø5.5 Durchgangsloch"}, 5.5) == ""
 
 
 def test_metric_pitch_table():
@@ -386,6 +390,34 @@ def test_recut_snaps_via_base_mesh():
     tunnels = _z_tunnels_near(out, -35.15)
     assert len(tunnels) == 1
     assert tunnels[0]["x"] == pytest.approx(-35.15, abs=0.5)
+
+
+def test_recut_spec_dia_plugs_then_drills_nominal():
+    """A spec-diameter bore over an oversized wavy channel comes out at the
+    SPEC diameter — the measured void is plugged, then drilled nominal. A
+    plain difference can't shrink a void, so without the plug the cutter
+    reams +0.4 past every wall bulge (bail handle: spec 5.5 cut at 5.9)."""
+    mesh = _bored_wide(-35.13, 6.8)  # oversized ~6.8 channel where the bore belongs
+    feat = RefineFeature(
+        name="m5", kind="hole", axis="+z", u=-35.16, v=0.0, dia=5.5, source="spec"
+    )
+    out, rep = apply_refine(mesh, [feat], restore_keeps=False)
+    assert len(rep.applied) == 1
+    assert rep.applied[0].get("plugged") is True
+    tunnels = _z_tunnels_near(out, -35.15)
+    assert len(tunnels) == 1
+    assert tunnels[0]["dia"] == pytest.approx(5.5, abs=0.7)
+
+
+def test_recut_non_spec_keeps_ream_fallback():
+    """Scanned (non-spec) anchors still get the +0.4 ream — cleanliness beats
+    nominal diameter when no spec pins the size."""
+    mesh = _bored_wide(-35.13, 6.8)
+    feat = RefineFeature(name="b", kind="hole", axis="+z", u=-35.16, v=0.0, dia=6.75)
+    _out, rep = apply_refine(mesh, [feat], restore_keeps=False)
+    assert len(rep.applied) == 1
+    assert not rep.applied[0].get("plugged")
+    assert rep.applied[0]["ream_extra_mm"] == pytest.approx(0.4)
 
 
 def test_dedup_merges_near_concentric_anchors():
