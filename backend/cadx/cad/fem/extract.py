@@ -43,6 +43,114 @@ def _connectivity_mask(mask: np.ndarray, required: np.ndarray) -> tuple[np.ndarr
     return labels == biggest, int(mask.sum() - sizes[biggest - 1])
 
 
+def _void_corridor(
+    labels: np.ndarray,
+    main: int,
+    target: int,
+    walkable: np.ndarray,
+) -> np.ndarray | None:
+    """Shortest void-cell corridor between components `target` and `main`.
+
+    Breadth-first search through `walkable` cells seeded at every walkable
+    cell face-adjacent to `target`; stops at the first cell face-adjacent to
+    `main`. Uniform edge cost, so the reconstructed path is a minimum-cell
+    corridor — greedy distance-descent would get trapped where the straight
+    line leaves the design domain (e.g. rounded envelope at the gap).
+    Returns flat indices of the corridor cells, or None when unreachable.
+    """
+    from collections import deque
+
+    face = ndimage.generate_binary_structure(3, 1)
+    starts = np.flatnonzero(
+        ndimage.binary_dilation(labels == target, structure=face) & walkable
+    )
+    if not starts.size:
+        return None
+    nx, ny, nz = labels.shape
+    offsets = ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1))
+    visited = np.zeros(labels.size, dtype=bool)
+    parent = np.full(labels.size, -1, dtype=np.int64)
+    visited[starts] = True
+    queue: deque[int] = deque(int(s) for s in starts)
+    last = -1
+    while queue and last < 0:
+        cur = queue.popleft()
+        ci, cj, ck = np.unravel_index(cur, labels.shape)
+        for di, dj, dk in offsets:
+            i, j, k = ci + di, cj + dj, ck + dk
+            if not (0 <= i < nx and 0 <= j < ny and 0 <= k < nz):
+                continue
+            if labels[i, j, k] == main:
+                last = cur
+                break
+            if not walkable[i, j, k]:
+                continue
+            fi = int(np.ravel_multi_index((i, j, k), labels.shape))
+            if visited[fi]:
+                continue
+            visited[fi] = True
+            parent[fi] = cur
+            queue.append(fi)
+    if last < 0:
+        return None
+    path = []
+    while last >= 0:
+        path.append(last)
+        last = int(parent[last])
+    return np.asarray(path, dtype=np.int64)
+
+
+def _bridge_components(
+    mask: np.ndarray,
+    walkable: np.ndarray,
+    max_added_frac: float = 0.15,
+) -> tuple[np.ndarray, int]:
+    """Reconnect disjoint mask components with minimal void-cell corridors.
+
+    Keep/load-region islands each carry `required` cells, so connectivity
+    pruning keeps them all — yet a printed part must be a single body.
+    Merge each island nearest-first into the largest component along the
+    shortest void corridor, thickened by one cell so the bridge survives
+    regularization. `walkable` bounds where new material may go (inside the
+    design domain, outside carved voids). Stops early when a corridor would
+    add more than `max_added_frac` of the existing volume — a flagged
+    multi-body defect is more honest than a bridge thicker than the
+    optimized structure.
+
+    Returns (mask, cells_added).
+    """
+    face = ndimage.generate_binary_structure(3, 1)
+    budget = max(1, round(float(mask.sum()) * max_added_frac))
+    added = 0
+    while added < budget:
+        labels, n = ndimage.label(mask, structure=face)
+        if n <= 1:
+            break
+        sizes = np.asarray(
+            ndimage.sum_labels(np.ones_like(labels), labels, index=np.arange(1, n + 1))
+        )
+        main = int(np.argmax(sizes)) + 1
+        dist = ndimage.distance_transform_edt(labels != main)
+        others = [k for k in range(1, n + 1) if k != main]
+        # nearest island to the main body first — star topology keeps the
+        # corridor count minimal and each merge shrinks the remaining gaps
+        target = min(others, key=lambda k: float(dist[labels == k].min()))
+        path = _void_corridor(labels, main, target, walkable & ~mask)
+        if path is None or not path.size:
+            break
+        path_mask = np.zeros_like(mask)
+        path_mask[np.unravel_index(path, mask.shape)] = True
+        corridor = (
+            ndimage.binary_dilation(path_mask, structure=face) & walkable & ~mask
+        ) | path_mask
+        n_new = int(corridor.sum())
+        if added + n_new > budget:
+            break
+        mask = mask | corridor
+        added += n_new
+    return mask, added
+
+
 def _regularize_mask(mask: np.ndarray, max_passes: int = 6) -> np.ndarray:
     """Fill cells so no grid edge is touched by two diagonally-opposed
     occupied cells — such checkerboard edges yield a non-manifold surface.
@@ -240,6 +348,7 @@ def density_to_mask(
     void_cells: np.ndarray | None = None,
     min_member_mm: float = 0.0,
     min_gap_mm: float = 0.0,
+    bridge_islands: bool = True,
 ) -> tuple[np.ndarray, list[str], int]:
     """Threshold + clean the density field into a final solid mask (nx,ny,nz).
 
@@ -249,6 +358,11 @@ def density_to_mask(
     should run on. `void_cells` ((nx,ny,nz) bool) marks cells that must stay
     empty — a carved region wins over thickening/regularization, which would
     otherwise grow material back into it.
+
+    `bridge_islands` rejoins surviving disjoint keep/load islands with a
+    minimal void-cell corridor — a structural part must be one body. Pass
+    False for purely-aesthetic density fields (organic styling) where
+    disjoint bodies are valid output.
     """
     warnings: list[str] = []
     void3 = void_cells if void_cells is not None else None
@@ -285,16 +399,30 @@ def density_to_mask(
             f"dropped {dropped} disconnected voxels "
             f"({100 * dropped / max(int(mask.sum()) + dropped, 1):.0f}% of material)"
         )
+    # kept components can still be disjoint: a keep/load region forming its
+    # own island touches `required` trivially, so pruning cannot see it. A
+    # severed island is a functional feature, not debris — rejoin survivors
+    # with a minimal corridor before regularization (which only adds
+    # material, so it cannot break the bridge again)
+    structure = ndimage.generate_binary_structure(3, 1)
+    if bridge_islands and int(ndimage.label(mask, structure=structure)[1]) > 1:
+        walkable = domain.solid & ~mask
+        if void3 is not None:
+            walkable &= ~void3
+        mask, bridged = _bridge_components(mask, walkable)
+        if bridged:
+            warnings.append(
+                f"reconnected disjoint keep/load islands with {bridged} bridge "
+                "voxels — a severed anchor region was rejoined to the body"
+            )
     mask = _regularize_mask(mask)
     if void3 is not None:
         # diagonal-edge regularization can fill cells inside a carved void —
         # removing cells cannot create new non-manifold edges, so re-carving
         # afterwards is safe
         mask &= ~void3
-    # kept components can still be disjoint: a keep/load region forming its
-    # own island touches `required` trivially, so pruning cannot see it —
-    # report it so the caller/agent can adjust regions or volfrac
-    structure = ndimage.generate_binary_structure(3, 1)
+    # islands the bridge pass could not rejoin inside its volume budget stay
+    # disjoint — report so the caller/agent can adjust regions or volfrac
     _labels, n_components = ndimage.label(mask, structure=structure)
     if n_components > 1:
         warnings.append(
@@ -354,6 +482,7 @@ def density_to_mesh(
     extract_smooth: bool = True,
     sigma_px: float = 0.8,
     volume_preserve: bool = True,
+    bridge_islands: bool = True,
 ) -> tuple[trimesh.Trimesh, np.ndarray, list[str], int, dict[str, Any]]:
     """Convert the optimized density field into a trimesh.
 
@@ -384,6 +513,7 @@ def density_to_mesh(
         void_cells=void_cells,
         min_member_mm=min_member_mm,
         min_gap_mm=min_gap_mm,
+        bridge_islands=bridge_islands,
     )
     rho3 = density.reshape(domain.dims)
     solid_rho = rho3[mask]
@@ -415,6 +545,12 @@ def density_to_mesh(
                     f"iso threshold {threshold:g} outside the smoothed field "
                     f"range — using t={iso:g}"
                 )
+            # mask-verified cells must stay inside the iso surface — bridge
+            # corridors and min-member regrowth carry rho≈0 in the smoothed
+            # field, so floor them just above the chosen level; the surface
+            # still interpolates sub-voxel in the 1-cell shell
+            floor = iso * 1.05 + 1e-9
+            field = np.where(mask & (field < floor), floor, field)
             mesh = _surface_mesh_mc(domain, field, iso)
         else:
             iso = 0.5  # binary mask -> fixed level

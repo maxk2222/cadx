@@ -70,3 +70,51 @@ def test_best_run_none_without_metrics() -> None:
     s.struct_runs.append({"index": 0, "res": {"topopt": {}}, "params": {}})
     assert _best_run_index(s) is None
     assert _best_run_index(_session_with_runs()) is None
+
+
+def test_best_run_skips_disconnected_and_invalid() -> None:
+    """A high-SF run whose export mesh is several bodies — or whose export
+    verification was flagged degenerate — must never be salvaged: the SF
+    describes only the loaded island, not a printable part."""
+    s = _session_with_runs()
+    s.struct_runs.append(
+        {
+            "index": 0,
+            "res": {
+                "topopt": {"sf_export": 19.2, "n_components": 26},
+                "fem": {"cases": [{"safety_factor": 19.2}]},
+            },
+            "params": {},
+        }
+    )
+    s.struct_runs.append(
+        {
+            "index": 1,
+            "res": {
+                "topopt": {"sf_export": 3.1, "n_bodies_export": 2},
+                "fem": {"cases": [{"safety_factor": 3.1}]},
+            },
+            "params": {},
+        }
+    )
+    s.struct_runs.append(
+        {
+            "index": 2,
+            "res": {
+                "topopt": {"sf_export": 5.5, "verification": {"valid": False}},
+                "fem": {"cases": [{"safety_factor": 5.5}]},
+            },
+            "params": {},
+        }
+    )
+    s.struct_runs.append(
+        {
+            "index": 3,
+            "res": {
+                "topopt": {"sf_export": 2.0, "n_components": 1, "n_bodies_export": 1},
+                "fem": {"cases": [{"safety_factor": 2.0}]},
+            },
+            "params": {},
+        }
+    )
+    assert _best_run_index(s) == 3  # only the connected, verified run counts

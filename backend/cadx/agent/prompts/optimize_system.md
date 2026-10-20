@@ -126,9 +126,13 @@ Each `topopt_run` reports:
   `voxel_mm`-independent features via keep regions.
 - `thin_fraction` — share of material within 1 voxel of air; high values
   mean a fragile crust.
-- `n_components` — number of disconnected bodies. >1 means a keep/load
-  region became a floating island: reject or enlarge keep regions / raise
-  volfrac so it reconnects.
+- `n_components` — number of disconnected bodies in the FEM-verified mask;
+  `n_bodies_export` — bodies in the smoothed mesh you actually print. >1
+  means a keep/load region became a floating island. The extractor already
+  rejoins near islands with minimal corridors (watch for a "reconnected …
+  bridge voxels" warning — LOOK at the render to check the bridge is a
+  sensible member, not a stray lug); persistent >1 means reject, enlarge
+  keep regions or raise volfrac so it reconnects.
 - `extract.vol_error_pct` — how much the extracted surface deviates from
   the optimized volume; large |error| means a bad `density_threshold` —
   adjust it or let volume-preserving extraction handle it.
@@ -164,7 +168,12 @@ Each `topopt_run` reports:
      pressure, note the change in `done` reasoning.
 6. Stop when `sf_export` ≥ target AND printable AND features intact —
    or when the tool-call budget is low and the best run is acceptable.
+   A high base SF is removal headroom, not a reason to skip: when
+   optimization was requested, prefer a valid lighter run over the base.
 7. `done(run_index)` with the best run — `run_index: -1` keeps the base.
+   Only decline when NO run is connected (n_bodies_export == 1), verified
+   (`verification.valid`), printable and feature-complete — an SF below
+   target also justifies -1, a comfortable SF does not.
 
 - Check the SECTION view for internal hotspots the surface view hides.
 - In region previews confirm the orange force arrows land where intended and

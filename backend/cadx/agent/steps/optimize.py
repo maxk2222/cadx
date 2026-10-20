@@ -84,6 +84,7 @@ def _run_summary(r: dict[str, Any], chosen: bool, reasoning: Any) -> dict[str, A
         "min_member_mm": top.get("min_member_mm"),
         "thin_fraction": top.get("thin_fraction"),
         "n_components": top.get("n_components"),
+        "n_bodies_export": top.get("n_bodies_export"),
         "warnings": (top.get("warnings") or [])[:5],
         **refine_block,
         "chosen": chosen,
@@ -95,13 +96,20 @@ def _best_run_index(session: ToolSession) -> int | None:
     """Index of the best completed run — for auto-commit when the session
     exhausts its budget without done(). Prefers sf_export (the safety factor
     on the printed export geometry), else the run's worst case SF; None when
-    no run produced a metric."""
+    no run produced a metric. Multi-body or unverified exports are skipped —
+    a disconnected print or a degenerate solve must never win by SF."""
     best_idx: int | None = None
     best_sf = -1.0
     for r in session.struct_runs:
         res = r.get("res") or {}
         top = res.get("topopt") or {}
         fem = res.get("fem") or {}
+        bodies = max(
+            int(top.get("n_components") or 1),
+            int(top.get("n_bodies_export") or 1),
+        )
+        if bodies > 1 or (top.get("verification") or {}).get("valid") is False:
+            continue
         sfs = [c.get("safety_factor") for c in fem.get("cases") or [] if c.get("safety_factor")]
         sf = top.get("sf_export") or (min(sfs) if sfs else None)
         if sf is not None and float(sf) > best_sf:

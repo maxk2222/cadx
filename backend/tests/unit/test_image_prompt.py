@@ -177,7 +177,12 @@ def test_proportion_hint_tall_column():
 
 
 def test_proportion_hint_missing_dims():
-    spec = PartSpec(name="x")
+    spec = PartSpec(
+        name="x",
+        length_x={"value": 0, "source": "inferred"},
+        width_y={"value": 40, "source": "stated"},
+        height_z={"value": 30, "source": "stated"},
+    )
     assert proportion_hint(spec) == ""
     assert proportion_hint(None) == ""
 

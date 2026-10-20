@@ -1023,7 +1023,8 @@ def simp(  # noqa: C901
         change = float(np.abs(xnew - x).max())
         change_box[0] = change
         x = xnew
-        vol_now = float(_physical(x, eta=eta_vol)[solid_idx].sum()) / nsolid
+        phys_now = _physical(x, eta=eta_vol)[solid_idx]
+        vol_now = float(phys_now.sum()) / nsolid
         rec = {
             "iteration": it,
             "compliance_mj": round(objective, 3),
@@ -1049,12 +1050,25 @@ def simp(  # noqa: C901
                 )
 
         # secondary convergence: OC 'change' can stay at the move limit while
-        # the objective already settled — stop on stalled compliance too.
-        # With a Heaviside filter a stall first doubles beta (continuation)
-        # until the cap, THEN counts as converged.
+        # the objective already settled — count a stalled objective only when
+        # the field itself stopped evolving, otherwise a still-blurry density
+        # is extracted while members keep churning and fragments. `change`
+        # below the move cap or a near-binary field (<5% gray design cells)
+        # both count as settled. While a Heaviside continuation can still run
+        # it IS the mechanism that settles the field — the projection ramp is
+        # triggered by the stalled objective, so it must fire even when the
+        # density is still gray; only at the beta cap does `settled` gate.
         if prev_objective is not None and prev_objective > 0:
             rel = abs(objective - prev_objective) / prev_objective
-            stall = stall + 1 if rel < params.tol else 0
+            design_sel = design[solid_idx]
+            gray = (
+                float(np.mean((phys_now[design_sel] > 0.2) & (phys_now[design_sel] < 0.8)))
+                if design_sel.any()
+                else 0.0
+            )
+            settled = change <= 0.9 * params.move or gray <= 0.05
+            continuing = heaviside and proj.beta < params.beta_max
+            stall = stall + 1 if (rel < params.tol and (continuing or settled)) else 0
             if stall >= params.converge_patience:
                 if heaviside and proj.beta < params.beta_max:
                     proj.beta = min(proj.beta * 2.0, params.beta_max)

@@ -1687,6 +1687,10 @@ def run_topopt_pipeline(  # noqa: C901
         opt_mesh = smooth_preserve(opt_mesh, iterations=4, pin_floor=base_flat)
         out["opt_mesh"] = opt_mesh
         out["final_mask"] = final_mask
+        # body count of the actual export mesh — smoothing can merge or
+        # split mask-space components; this is the number the printed part
+        # is judged by
+        out["n_bodies_export"] = int(opt_mesh.body_count)
 
         # thin-member metrics (printability feedback for the agent)
         edt = ndimage.distance_transform_edt(final_mask)
@@ -1764,7 +1768,11 @@ def run_topopt_pipeline(  # noqa: C901
         }
         res.timings["simp_s"] += p2["simp_s"]
         res.timings["verify_s"] += p2["verify_s"]
-        if sf_exp2 is not None and sf_exp2 > sf_exp:
+        # a connected part always beats a disconnected one — SF on a
+        # multi-body export is not trustworthy regardless of its value
+        p1_ok = max(int(p1["n_components"]), int(p1["n_bodies_export"])) <= 1
+        p2_ok = max(int(p2["n_components"]), int(p2["n_bodies_export"])) <= 1
+        if (p2_ok and not p1_ok) or (p2_ok == p1_ok and sf_exp2 is not None and sf_exp2 > sf_exp):
             best = p2
 
     result = best["result"]
@@ -1796,6 +1804,8 @@ def run_topopt_pipeline(  # noqa: C901
     # degenerate export solve — load regions missed the extracted mesh, the
     # part flies away (disp >> part size) or compliance goes non-physical.
     # The SF number is then meaningless, flag instead of storing as valid.
+    # A multi-body export is also not a verified single part: voxel FEM can
+    # solve on one island while the others carry no load.
     span = float(np.linalg.norm(domain.pitch * np.asarray(domain.dims)))
     disp = verification["max_disp_export_mm"]
     comps = [c for c in verification["compliance_export_j"] if c is not None]
@@ -1804,6 +1814,13 @@ def run_topopt_pipeline(  # noqa: C901
         res.topopt["warnings"].append(
             "export FEM solve degenerate (unconstrained part or unresolved "
             "load regions) — sf_export not trustworthy"
+        )
+    elif max(int(best["n_components"]), int(best["n_bodies_export"])) > 1:
+        verification["valid"] = False
+        res.topopt["warnings"].append(
+            f"optimized part has {best['n_bodies_export']} disconnected bodies "
+            "in the export mesh — sf_export describes only the loaded island, "
+            "not a single part"
         )
     else:
         verification["valid"] = True
@@ -1837,6 +1854,7 @@ def run_topopt_pipeline(  # noqa: C901
             "min_member_mm": best["min_member_mm"],
             "thin_fraction": round(best["thin_fraction"], 4),
             "n_components": best["n_components"],
+            "n_bodies_export": best["n_bodies_export"],
             "extract": best["extract"],
             "verification": verification,
         }
@@ -2072,6 +2090,7 @@ def run_topopt_resample(
     opt_mesh = smooth_preserve(
         opt_mesh, iterations=4, pin_floor=bool(npz.get("flat_bottom", False))
     )
+    res.topopt["n_bodies_export"] = int(opt_mesh.body_count)
 
     run_dir = out_dir / "_run"
     run_dir.mkdir(parents=True, exist_ok=True)

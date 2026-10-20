@@ -657,6 +657,28 @@ def test_extract_flags_disconnected_keep_island() -> None:
     assert len(mesh.split()) == 2
 
 
+def test_extract_bridges_severed_keep_island() -> None:
+    """A keep island separated by only a few cells is a functional feature
+    whose load path got optimized away — the pipeline must rejoin it with a
+    minimal corridor so the exported part is one printable body."""
+    dom = voxelize(_box_mesh(), 2.0, 150_000)
+    nx, ny, nz = dom.dims
+    density = np.zeros(nx * ny * nz)
+    dense = np.zeros(dom.dims, dtype=bool)
+    dense[:10] = True
+    dense[12:15, 4:7, 2:5] = True  # island only 2 cells from the main slab
+    density[dense.ravel()] = 1.0
+    passive = np.zeros(dom.dims, dtype=bool)
+    passive[0] = True
+    passive[12:15, 4:7, 2:5] = True
+    mesh, _mask, warnings, n_components, _info = density_to_mesh(
+        dom, density, passive_solid=passive.ravel(), smooth_iterations=0
+    )
+    assert n_components == 1
+    assert any("reconnected" in w for w in warnings)
+    assert len(mesh.split()) == 1
+
+
 def test_run_topopt_pipeline_void_regions_survive_extraction(tmp_path: Path) -> None:
     """Declared void_regions must stay empty in the extracted mask — even under
     min-member thickening (audit fix: void_cells was never passed to

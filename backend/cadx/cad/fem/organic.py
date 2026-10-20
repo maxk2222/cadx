@@ -388,6 +388,10 @@ def organic_transform(
                     if p.smooth_iterations is not None
                     else s.topopt_smooth_iterations
                 ),
+                # aesthetic fields may legitimately produce disjoint
+                # trabecular bodies — bridging them would smear unintended
+                # material into the lattice
+                bridge_islands=False,
             )
             warnings += ext_w
             if len(out_mesh.faces) and final_mask.any():
