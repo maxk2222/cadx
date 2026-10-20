@@ -281,6 +281,95 @@ def _metrics_hint(res: dict[str, Any]) -> str:
     return "; ".join(found)
 
 
+def _digest_state_lines(session: ToolSession, entries: list[dict[str, Any]]) -> list[str]:
+    """Synthesized STATE footer for the digest — a bare per-call log reads as
+    bookkeeping and doesn't tell the post-condense model what already exists
+    or was verified. Without it the model re-explored (search_library,
+    re-added existing blocks) instead of continuing the task."""
+    lines: list[str] = []
+
+    last_v = next(
+        (
+            e
+            for e in reversed(entries)
+            if e.get("name") == "verify" and isinstance(e.get("result"), dict)
+        ),
+        None,
+    )
+    if last_v is not None:
+        r = last_v["result"]
+        if r.get("ok"):
+            # verify handlers return measurements either top-level or nested
+            # under `analysis`
+            scopes = [r, r.get("analysis") or {}]
+            get = lambda k: next(  # noqa: E731
+                (s[k] for s in scopes if isinstance(s, dict) and s.get(k) is not None),
+                None,
+            )
+            bits: list[str] = []
+            if get("watertight") is not None:
+                bits.append(f"watertight={get('watertight')}")
+            bbox = get("bbox_size")
+            if isinstance(bbox, list) and bbox:
+                bits.append("bbox=" + "x".join(f"{float(v):g}" for v in bbox))
+            feats = get("features")
+            if isinstance(feats, dict) and feats.get("total_holes") is not None:
+                bits.append(f"holes={feats['total_holes']}")
+            lines.append("STATE last verify: OK" + (f" ({'; '.join(bits)})" if bits else ""))
+        else:
+            tail = " ".join(str(r.get(k) or "") for k in ("category", "error")).strip()
+            lines.append(f"STATE last verify: FAILED — {_one_line(tail, 140)}")
+
+    if any(
+        e.get("name") in ("done", "submit_code")
+        and isinstance(e.get("result"), dict)
+        and e["result"].get("ok", True)
+        for e in entries
+    ):
+        lines.append(
+            "STATE: a submission was already ACCEPTED — refine open issues only, "
+            "do not rebuild the part"
+        )
+
+    if session.kind == "optimize" and session.struct_runs:
+        rows: list[str] = []
+        for r in session.struct_runs:
+            res = r.get("res") or {}
+            top = res.get("topopt") or {}
+            fem = res.get("fem") or {}
+            sfs = [
+                c.get("safety_factor")
+                for c in fem.get("cases") or []
+                if c.get("safety_factor") is not None
+            ]
+            sf = top.get("sf_export") or (min(sfs) if sfs else None)
+            vf = top.get("volfrac_achieved")
+            row = f"run{r.get('index')}"
+            if sf is not None:
+                row += f" sf_export={float(sf):g}"
+            if vf is not None:
+                row += f" volfrac={float(vf):g}"
+            rows.append(row)
+        lines.append(
+            "STATE optimize runs so far: "
+            + "; ".join(rows)
+            + " — pass the best index to done(run_index)"
+        )
+
+    if session.kind == "mesh":
+        wb = getattr(session, "workbench", None)
+        ops = list(getattr(wb, "ops", None) or []) if wb is not None else []
+        if ops:
+            names = [str(o.get("op") if isinstance(o, dict) else getattr(o, "op", o)) for o in ops]
+            lines.append(
+                "STATE mesh ops already applied: "
+                + ", ".join(names)
+                + " — they are replayed on the real mesh; don't re-apply them"
+            )
+
+    return lines
+
+
 def _digest_line(entry: dict[str, Any]) -> str:
     """One `call(args) -> ok(hint)` / `-> fail: <category> <one-line error>` line."""
     call = _digest_call(str(entry.get("name") or "?"), entry.get("args") or {})
@@ -353,10 +442,17 @@ async def _condense_history(
     if session.kind == "build":
         # the model must never lose track of which feature blocks exist
         blocks = session._block_names()
-        lines.append("BLOCKS IN BUFFER NOW: " + (", ".join(blocks) if blocks else "(none)"))
+        lines.append(
+            "BLOCKS IN BUFFER NOW: "
+            + (", ".join(blocks) if blocks else "(none)")
+            + " — the geometry already exists; edit it via read_lines/replace_lines "
+            "instead of re-adding blocks"
+        )
+    lines.extend(_digest_state_lines(session, entries))
     lines.append(
-        "Live session state (code buffer, checkpoints) is unchanged — use "
-        "read_lines/search_code to inspect it rather than dropped results."
+        "Live session state (code buffer, checkpoints) is unchanged — the work "
+        "above is DONE; use read_lines/search_code to inspect it and continue "
+        "with the remaining steps instead of re-exploring."
     )
     tail_msgs = [msgs[i] for u in tail for i in u]
     before_len = len(msgs)

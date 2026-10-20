@@ -149,6 +149,55 @@ async def test_condense_replaces_middle_with_digest():
         _assert_no_orphaned_tool_results(c["messages"])
 
 
+async def test_condense_digest_carries_state_lines():
+    """The digest footer synthesizes STATE: last verify outcome, accepted
+    submissions, per-kind progress — so the post-condense model continues
+    instead of re-exploring (observed: a build session re-ran
+    search_library and re-added an existing block)."""
+    from cadx.agent.toolloop import _digest_state_lines
+
+    ctx = _ctx(FakeLLM([{"content": "x"}]))
+    session = ToolSession(ctx, kind="build", code=SEED)
+    entries = [
+        {"name": "add_block", "args": {"name": "base"}, "result": {"ok": True}},
+        {
+            "name": "verify",
+            "args": {},
+            "result": {
+                "ok": True,
+                "analysis": {
+                    "bbox_size": [10, 10, 8],
+                    "watertight": True,
+                    "features": {"total_holes": 2},
+                },
+            },
+        },
+        {"name": "done", "args": {}, "result": {"ok": True}},
+    ]
+    lines = _digest_state_lines(session, entries)
+    blob = "\n".join(lines)
+    assert "STATE last verify: OK" in blob
+    assert "watertight=True" in blob and "10x10x8" in blob and "holes=2" in blob
+    assert "already ACCEPTED" in blob
+
+    # optimize sessions summarize runs for done(run_index)
+    session2 = ToolSession(ctx, kind="optimize")
+    session2.struct_runs.append(
+        {
+            "index": 0,
+            "res": {"topopt": {"sf_export": 2.4, "volfrac_achieved": 0.41}},
+            "params": {},
+        }
+    )
+    lines2 = _digest_state_lines(session2, [])
+    assert any("run0" in ln and "sf_export=2.4" in ln for ln in lines2)
+
+    # a failed verify surfaces the error, not a stale OK
+    bad = [{"name": "verify", "args": {}, "result": {"ok": False, "category": "boom"}}]
+    lines3 = _digest_state_lines(ToolSession(ctx, kind="edit", code=SEED), bad)
+    assert any("FAILED" in ln and "boom" in ln for ln in lines3)
+
+
 async def test_condense_disabled_at_zero():
     """agent_session_condense_turns=0 keeps the full growing history."""
     llm = FakeLLM(

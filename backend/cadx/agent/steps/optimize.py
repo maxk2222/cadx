@@ -91,6 +91,24 @@ def _run_summary(r: dict[str, Any], chosen: bool, reasoning: Any) -> dict[str, A
     }
 
 
+def _best_run_index(session: ToolSession) -> int | None:
+    """Index of the best completed run — for auto-commit when the session
+    exhausts its budget without done(). Prefers sf_export (the safety factor
+    on the printed export geometry), else the run's worst case SF; None when
+    no run produced a metric."""
+    best_idx: int | None = None
+    best_sf = -1.0
+    for r in session.struct_runs:
+        res = r.get("res") or {}
+        top = res.get("topopt") or {}
+        fem = res.get("fem") or {}
+        sfs = [c.get("safety_factor") for c in fem.get("cases") or [] if c.get("safety_factor")]
+        sf = top.get("sf_export") or (min(sfs) if sfs else None)
+        if sf is not None and float(sf) > best_sf:
+            best_idx, best_sf = r["index"], float(sf)
+    return best_idx
+
+
 def _valid_regions(raw: Any) -> tuple[list[dict[str, Any]] | None, str | None]:
     """Validate keep/region dicts — same contract as load-case regions."""
     from cadx.llm.schemas import RegionSpec
@@ -600,15 +618,25 @@ async def run(
 
     sub = res.submitted
     if sub is None:
-        return None
-    chosen = int(sub.get("chosen_run", -1))
+        # budget/turns exhausted without done() — salvage the best completed
+        # run instead of discarding all executor work and re-running the
+        # deterministic single-shot path from scratch
+        salvage = _best_run_index(session) if res.exhausted else None
+        if salvage is None:
+            return None
+        log.info("optimize.salvaged_run", run=salvage, reason=res.end_reason)
+        chosen = salvage
+        reasoning = (
+            "auto-selected best completed run — the session exhausted its "
+            "budget without calling done()"
+        )
+    else:
+        chosen = int(sub.get("chosen_run", -1))
+        reasoning = str(sub.get("reasoning", ""))
     out = AgentOptResult(
         chosen_run=chosen,
-        reasoning=str(sub.get("reasoning", "")),
-        runs=[
-            _run_summary(r, chosen == r["index"], sub.get("reasoning", ""))
-            for r in session.struct_runs
-        ],
+        reasoning=reasoning,
+        runs=[_run_summary(r, chosen == r["index"], reasoning) for r in session.struct_runs],
     )
     if chosen >= 0:
         entry = session.struct_runs[chosen]
