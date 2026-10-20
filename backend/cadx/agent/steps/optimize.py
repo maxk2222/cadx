@@ -118,6 +118,14 @@ def _best_run_index(session: ToolSession) -> int | None:
             continue
         sfs = [c.get("safety_factor") for c in fem.get("cases") or [] if c.get("safety_factor")]
         sf = top.get("sf_export") or (min(sfs) if sfs else None)
+        # when the voxel-mask and export solves diverge by >=2x, the part's
+        # integrity depends on discretization luck — rank it by the
+        # pessimistic bound, not the optimistic export number
+        sf_mask, sf_exp = top.get("sf_mask"), top.get("sf_export")
+        if sf_mask is not None and sf_exp is not None:
+            lo, hi = min(float(sf_mask), float(sf_exp)), max(float(sf_mask), float(sf_exp))
+            if lo > 0 and hi / lo >= 2.0:
+                sf = lo
         if sf is not None and float(sf) > best_sf:
             best_idx, best_sf = r["index"], float(sf)
     return best_idx

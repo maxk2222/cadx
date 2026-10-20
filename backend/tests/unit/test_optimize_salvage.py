@@ -118,3 +118,61 @@ def test_best_run_skips_disconnected_and_invalid() -> None:
         }
     )
     assert _best_run_index(s) == 3  # only the connected, verified run counts
+
+
+def test_best_run_skips_verify_spec_fail() -> None:
+    """A canonical FAIL (e.g. envelope overshoot) disqualifies a run even
+    when its safety factor is the best in the table."""
+    s = _session_with_runs()
+    s.struct_runs.append(
+        {
+            "index": 0,
+            "res": {
+                "topopt": {"sf_export": 9.0},
+                "fem": {"cases": [{"safety_factor": 9.0}]},
+                "verify_spec": {"status": "FAIL", "checks": [{"name": "envelope_x"}]},
+            },
+            "params": {},
+        }
+    )
+    s.struct_runs.append(
+        {
+            "index": 1,
+            "res": {
+                "topopt": {"sf_export": 1.8},
+                "fem": {"cases": [{"safety_factor": 1.8}]},
+                "verify_spec": {"status": "PASS"},
+            },
+            "params": {},
+        }
+    )
+    assert _best_run_index(s) == 1
+
+
+def test_best_run_ranks_divergent_sf_by_pessimistic_bound() -> None:
+    """sf_mask 0.05 / sf_export 1.37 means the load junction is one thin
+    voxel wall the smoothing fattened — the part's honest bound is the
+    pessimistic solve, so the divergent run must lose to a convergent one."""
+    s = _session_with_runs()
+    s.struct_runs.append(
+        {
+            "index": 0,
+            "res": {
+                "topopt": {"sf_mask": 0.05, "sf_export": 1.37},
+                "fem": {"cases": [{"safety_factor": 0.05}]},
+            },
+            "params": {},
+        }
+    )
+    s.struct_runs.append(
+        {
+            "index": 1,
+            "res": {
+                # convergent solves — mask and export agree
+                "topopt": {"sf_mask": 1.2, "sf_export": 1.3},
+                "fem": {"cases": [{"safety_factor": 1.3}]},
+            },
+            "params": {},
+        }
+    )
+    assert _best_run_index(s) == 1  # 1.3 > pessimistic 0.05
