@@ -532,3 +532,98 @@ def test_bound_snippets_execute_bracket(tmp_path):
         if abs(g.diameter - 5.5) <= 0.3:
             by_axis[g.axis.lstrip("+-")] = by_axis.get(g.axis.lstrip("+-"), 0) + g.count
     assert by_axis.get("x", 0) >= 2 and by_axis.get("z", 0) >= 2, m.hole_groups
+
+
+# --------------------------------------------------------------------------- #
+# clip_to_box — clip a body to an axis-aligned envelope
+# --------------------------------------------------------------------------- #
+
+
+def test_clip_to_box_clips_oversized_x():
+    """Half-extent smaller than the body cuts the overshoot — the other two
+    axes must pass through untouched (x ±60 -> ±50; y ±20, z 10..30)."""
+    body = Pos(0, 0, 10) * Box(120, 40, 20, align=_ALIGN_MIN)
+    out = cadlib.clip_to_box(body, x=50)
+    bb = out.bounding_box()
+    assert pytest.approx(100.0, abs=0.5) == bb.size.X
+    assert pytest.approx(40.0, abs=0.5) == bb.size.Y
+    assert pytest.approx(20.0, abs=0.5) == bb.size.Z
+    assert len(out.solids()) >= 1
+
+
+def test_clip_to_box_inside_body_passes_through():
+    """Every bound contains the body -> no cutter side engages: the body
+    comes back unchanged and no empty-boolean exception is raised."""
+    body = Pos(0, 0, 0) * Box(120, 40, 20, align=_ALIGN_MIN)  # z 0..20 ⊂ [0, 25]
+    out = cadlib.clip_to_box(body, x=80, y=30, z_min=0, z_max=25)
+    assert out.volume == pytest.approx(body.volume, rel=0.01)
+    bb_out, bb_in = out.bounding_box(), body.bounding_box()
+    for attr in ("min", "max", "size"):
+        a, b = getattr(bb_out, attr), getattr(bb_in, attr)
+        assert pytest.approx((b.X, b.Y, b.Z)) == (a.X, a.Y, a.Z)
+
+
+def test_clip_to_box_z_min_lifts_underside():
+    """A body sunk below the build plane gets its underside trimmed flat —
+    the top of the body is untouched."""
+    body = Pos(0, 0, -5) * Box(40, 40, 20, align=_ALIGN_MIN)  # z -5..15
+    out = cadlib.clip_to_box(body, z_min=0)
+    bb = out.bounding_box()
+    assert bb.min.Z >= -0.05
+    assert pytest.approx(15.0, abs=0.5) == bb.max.Z
+
+
+def test_clip_to_box_combined_axes():
+    """x + y + z_max bounds clip their sides together in one call."""
+    body = Pos(0, 0, 0) * Box(120, 40, 20, align=_ALIGN_MIN)
+    out = cadlib.clip_to_box(body, x=50, y=15, z_max=15)
+    bb = out.bounding_box()
+    assert pytest.approx(100.0, abs=0.5) == bb.size.X
+    assert pytest.approx(30.0, abs=0.5) == bb.size.Y
+    assert pytest.approx(15.0, abs=0.5) == bb.max.Z
+    assert pytest.approx(0.0, abs=0.5) == bb.min.Z
+
+
+def test_clip_to_box_returns_single_solid():
+    """The clipped result collapses to one solid — downstream code does
+    result.solids() bookkeeping on it."""
+    body = Pos(0, 0, 10) * Box(120, 40, 20, align=_ALIGN_MIN)
+    out = cadlib.clip_to_box(body, x=50)
+    assert len(out.solids()) == 1
+
+
+# --------------------------------------------------------------------------- #
+# arch_bridge — arched bar lofted along a three-point arc in XZ
+# --------------------------------------------------------------------------- #
+
+
+def test_arch_bridge_single_solid():
+    a = cadlib.arch_bridge(60, 25, 12, 8)
+    assert len(a.solids()) == 1
+
+
+def test_arch_bridge_top_reaches_apex():
+    """The loft passes through the apex CENTRE (apex_z - thickness/2), so the
+    outer surface tops out at the declared apex height."""
+    a = cadlib.arch_bridge(60, 25, 12, 8)
+    assert pytest.approx(25.0, abs=0.5) == a.bounding_box().max.Z
+
+
+def test_arch_bridge_width_along_y():
+    a = cadlib.arch_bridge(60, 25, 12, 8)
+    assert pytest.approx(12.0, abs=0.5) == a.bounding_box().size.Y
+
+
+def test_arch_bridge_span_plus_foot_margin():
+    """Feet sit at ±span_x/2; the radial section adds at most one thickness
+    of margin beyond the span on each side."""
+    a = cadlib.arch_bridge(60, 25, 12, 8)
+    sx = a.bounding_box().size.X
+    assert 60.0 <= sx <= 60.0 + 2 * 8
+
+
+def test_arch_bridge_feet_embed_below_foot_z():
+    """embed sinks the feet under foot_z — a fuse into the base body needs
+    material below the contact plane to bite into."""
+    a = cadlib.arch_bridge(60, 25, 12, 8)  # foot_z=0.0 default
+    assert a.bounding_box().min.Z <= 0.0 + 0.5

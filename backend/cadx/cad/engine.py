@@ -390,7 +390,7 @@ def run_pipeline(  # noqa: C901
             res.features["spans"] = span_checks(shape, spec_feats)
             from cadx.cad.spans import plate_checks
 
-            res.features["plates"] = plate_checks(shape, spec_feats)
+            res.features["plates"] = plate_checks(shape, spec_feats, spec_dict=spec_dict)
     except Exception as e:
         log.warning("features.span_checks_failed", error=str(e)[:200])
 
@@ -1691,6 +1691,9 @@ def run_topopt_pipeline(  # noqa: C901
         )
 
         t = time.monotonic()
+        # opt_mesh is the extraction of this mask — same coordinate frame, so
+        # the renderer can draw the smooth true surface instead of the voxel
+        # hull
         verify = run_fem_domain(
             domain,
             final_mask,
@@ -1701,6 +1704,7 @@ def run_topopt_pipeline(  # noqa: C901
             keep_regions=keep_list,
             spsolve_dofs=s.fem_spsolve_dofs,
             suffix=fem_suffix,
+            source_mesh=opt_mesh,
             cancelled=cancelled,
         )
         out["verify"] = verify
@@ -1719,6 +1723,7 @@ def run_topopt_pipeline(  # noqa: C901
                 keep_regions=keep_list,
                 spsolve_dofs=s.fem_spsolve_dofs,
                 suffix=f"{fem_suffix}_export",
+                source_mesh=opt_mesh,
                 cancelled=cancelled,
             )
         except Exception as e:
@@ -2075,6 +2080,8 @@ def run_topopt_resample(
         _mark_cancelled(res)
         return res
     if cases:
+        # opt_mesh shares the mask's frame / IS the export surface — the FEM
+        # renders draw its smooth skin instead of a blocky voxel hull
         verify = run_fem_domain(
             domain,
             final_mask,
@@ -2083,6 +2090,7 @@ def run_topopt_resample(
             out_dir=out_dir,
             anchors=anchors,
             keep_regions=keep_list,
+            source_mesh=opt_mesh,
             cancelled=cancelled,
         )
         report_to_json(verify, out_dir / "fem" / "report.json")
@@ -2098,6 +2106,7 @@ def run_topopt_resample(
                 anchors=anchors,
                 keep_regions=keep_list,
                 suffix="_export",
+                source_mesh=opt_mesh,
                 cancelled=cancelled,
             )
             report_to_json(verify_exp, out_dir / "fem" / "report_export.json")

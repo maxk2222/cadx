@@ -80,12 +80,56 @@ _RULES: list[tuple[re.Pattern[str], str, str]] = [
         "cadlib.safe_fillet(edges, r) which shrinks the radius until it fits.",
     ),
     (
+        re.compile(
+            r"Face can only be created with closed wires|No objects to create a hull"
+            r"|Failed to.*loft",
+            re.I,
+        ),
+        "occ-loft",
+        "loft/sweep failed — a section wire isn't closed or no valid section "
+        "reached the kernel. For arched handles/bridges use "
+        "`cadlib.arch_bridge(span_x, apex_z, width_y, thickness)`; for "
+        "straight connectors `cadlib.strut(p0, p1, w, t)`.",
+    ),
+    (
         re.compile(r"BRep_API: command not done|StdFail_NotDone|BRepFilletAPI", re.I),
         "occ-fillet",
         "fillet/chamfer failed: radius/length too large for the selected edges, or "
         "edges already consumed by a previous feature. Fix: reduce the radius, "
         "apply it to fewer edges (e.g. only vertical: edges().filter_by(Axis.Z)), "
         "or drop the fillet entirely.",
+    ),
+    (
+        re.compile(r"mesh_cut removed no material|mesh_fuse added no material", re.I),
+        "hybrid-boolean-noop",
+        "The cutter's bounding box doesn't overlap the body or the boolean "
+        "removed <1e-4 volume — check feature coordinates against MESH_BBOX "
+        "(the part is centred at origin, so 'N mm from an end' is NOT an "
+        "absolute coordinate). For trimming the mesh to the declared envelope "
+        "use `cadlib.clip_to_box(body, x=..., y=..., z_min=...)` — it skips "
+        "sides that need no cut instead of raising.",
+    ),
+    (
+        re.compile(r"TopoDS_FrozenShape|frozen shape", re.I),
+        "occ-frozen",
+        "fillet/chamfer hit an immutable/faceted OCC shape. Wrap with "
+        "`cadlib.safe_fillet(edges, r)` or fillet the analytic sub-part BEFORE "
+        "`mesh_fuse` — never fillet a mesh solid.",
+    ),
+    (
+        re.compile(r"unexpected keyword argument 'normal'|keyword arguments.*\bnormal\b", re.I),
+        "api-plane-normal",
+        "build123d `Plane` has no `normal=` kwarg — use `Plane(z_dir=...)`. For "
+        "a sketch plane ON a curve use `Plane(origin=pt, x_dir=in_plane_dir, "
+        "z_dir=tangent)`. For arched handles/bridges use `cadlib.arch_bridge("
+        "span_x, apex_z, width_y, thickness)`.",
+    ),
+    (
+        re.compile(r"unexpected keyword argument 'profile'", re.I),
+        "api-sweep-profile",
+        "build123d `sweep` takes `sections`/`path` — there is no `profile=` "
+        "kwarg. Use `loft(sections=[sk1, sk2, ...])`/`sweep(sections=[...], "
+        "path=wire)`, or `cadlib.arch_bridge` for arched handles.",
     ),
     (
         re.compile(

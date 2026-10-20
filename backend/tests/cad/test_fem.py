@@ -712,3 +712,51 @@ def test_simp_oc_warns_on_mma_only_options(tmp_path: Path) -> None:
     assert res.ok, res.error
     warn_blob = " ".join(res.topopt.get("warnings") or [])
     assert "solver=oc" in warn_blob and "mma" in warn_blob
+
+
+# --------------------------------------------------------------------------- #
+# renders                                                                      #
+# --------------------------------------------------------------------------- #
+
+
+def test_run_fem_writes_case_renders(tmp_path: Path) -> None:
+    """out_dir -> per-case von-Mises + deformed PNGs under <out>/fem/.
+
+    Offscreen pyvista may be unavailable — the case fields stay None then
+    and there is nothing on disk to assert (same skip-gracefully convention
+    as the preview-pipeline tests above)."""
+    rep = run_fem(_box_mesh(), [_cantilever_case()], "pla", voxel_mm=3.0, out_dir=tmp_path)
+    case = rep.cases[0]
+    assert case.max_vm_mpa > 0  # the solve ran — rendering is the variable part
+    for name in (case.vonmises_png, case.deformed_png):
+        if name is None:
+            continue  # render skipped gracefully — nothing to check on disk
+        png = tmp_path / "fem" / name
+        assert png.exists()
+        assert png.stat().st_size > 0
+
+
+def test_render_regions_writes_case_png(tmp_path: Path) -> None:
+    """preview render writes regions_<case>.png when offscreen rendering is
+    available and returns [] when it isn't — the test passes either way, so
+    assert only that returned files exist."""
+    from cadx.cad.fem.preview import render_regions
+
+    dom = voxelize(_box_mesh(), 3.0, 150_000)
+    case = LoadCase(
+        name="press",
+        fixed=[RegionSpec(kind="face", axis="-z")],
+        loads=[
+            LoadSpec(
+                region=RegionSpec(kind="surface", axis="+z"),
+                force_n=[0.0, 0.0, -50.0],
+            )
+        ],
+    )
+    out = tmp_path / "regions"
+    names = render_regions(dom, [case], [], out)
+    assert names in ([], ["regions_press.png"])
+    for name in names:
+        png = out / name
+        assert png.exists()
+        assert png.stat().st_size > 0

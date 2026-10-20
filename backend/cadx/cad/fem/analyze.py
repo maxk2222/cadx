@@ -7,6 +7,7 @@ task and by the TopOpt post-verification.
 
 from __future__ import annotations
 
+import contextlib
 import math
 from collections.abc import Callable
 from pathlib import Path
@@ -105,11 +106,13 @@ def _render_case(
     suffix: str = "",
     source_mesh: trimesh.Trimesh | None = None,
 ) -> tuple[str | None, str | None]:
-    """Render von-Mises clip + exaggerated deformed shape. Returns filenames.
+    """Render a 2x2 von-Mises sheet + exaggerated deformed shape. Returns filenames.
 
-    The stress field lives on the voxel grid (solver resolution); the part
-    outline is the smooth source surface at ~35% opacity — the field stays
-    confined to the part volume instead of floating on a blocky voxel cloud."""
+    The sheet shows iso / top / front / y-mid-section views of the same
+    content: the per-cell stress field projected onto the smooth part surface
+    (semi-transparent) with the opaque interior hotspot voxels showing
+    through — the whole part stays visible instead of a clipped half-shell.
+    """
     try:
         import pyvista as pv
     except Exception:
@@ -122,56 +125,140 @@ def _render_case(
         body = grid.threshold(0.5, scalars="solid")
         vmax = max(float(sol.elem_vm.max()), 1e-9)
 
-        pl: Any = pv.Plotter(off_screen=True, window_size=[900, 700])
-        pl.set_background("white")
-        pl.add_mesh(
-            body.clip(normal="-x"),
-            scalars="vm",
-            cmap="jet",
-            clim=[0, vmax],
-            scalar_bar_args={"title": "von Mises [MPa]"},
-        )
+        lo = np.asarray(domain.origin, dtype=float)
+        hi = lo + domain.pitch * np.asarray(domain.dims, dtype=float)
+        center = (lo + hi) / 2.0
+        diag = float(np.linalg.norm(hi - lo)) or 1.0
+
         skin = _part_surface(source_mesh, body)
-        # transparent true-shape shell gives part context; the opaque voxel
-        # cutaway inside carries the field. An opaque painted skin hides the
-        # interior entirely (the voxel hull extends past the real surface).
-        pl.add_mesh(skin, color="#c8ccd4", opacity=0.35, show_scalar_bar=False)
-        pl.add_mesh(body.outline(), color="black", line_width=1.5)
+        if getattr(skin, "n_faces", 0) < 8000:
+            # smooth coarse analytic surfaces so the overlay isn't faceted
+            with contextlib.suppress(Exception):
+                skin = skin.subdivide(1, subfilter="linear")
+        # paint the per-cell field onto the smooth skin — nearest element
+        # centre gives a continuous overlay instead of blocky voxel faces
+        try:
+            from scipy.spatial import cKDTree
+
+            solid_mask = np.asarray(domain.solid).ravel()
+            centers = domain.element_centers()[solid_mask]
+            vals = np.asarray(sol.elem_vm, dtype=float)[solid_mask]
+            nn = cKDTree(centers).query(np.asarray(skin.points))[1]
+            skin.point_data["vm"] = vals[nn]
+        except Exception:
+            pass
+        has_vm = "vm" in skin.point_data
+        skin_kw: dict[str, Any] = (
+            {"scalars": "vm", "cmap": "turbo", "clim": [0, vmax]}
+            if has_vm
+            else {"color": "#c8ccd4"}
+        )
+        hot = body.threshold(max(vmax * 0.40, 1e-6), scalars="vm")
+        try:
+            edges = skin.extract_feature_edges(30)
+        except Exception:
+            edges = None
+
+        pl: Any = pv.Plotter(off_screen=True, shape=(2, 2), window_size=[1400, 1000])
+        pl.set_background("white")
+
+        def _add_stress_view(show_bar: bool) -> None:
+            pl.add_mesh(
+                skin,
+                opacity=0.58,
+                smooth_shading=True,
+                show_scalar_bar=show_bar and has_vm,
+                scalar_bar_args={"title": "von Mises [MPa]"} if has_vm else None,
+                **skin_kw,
+            )
+            # opaque hotspot voxels show through the translucent skin
+            if hot.n_cells:
+                pl.add_mesh(
+                    hot,
+                    scalars="vm",
+                    cmap="turbo",
+                    clim=[0, vmax],
+                    opacity=0.92,
+                    show_scalar_bar=False,
+                )
+            if edges is not None and edges.n_cells:
+                pl.add_mesh(
+                    edges,
+                    color="#222222",
+                    line_width=1.0,
+                    opacity=0.5,
+                    show_scalar_bar=False,
+                )
+
+        pl.subplot(0, 0)
+        _add_stress_view(True)
         pl.camera_position = "iso"
         pl.reset_camera()
+        pl.add_text("iso", position="upper_left", font_size=10, color="black")
         pl.add_text(
             f"{case_name}: max {sol.max_vm_mpa:.1f} MPa, max disp {sol.max_disp_mm:.2f} mm",
             position="upper_edge",
             font_size=10,
             color="black",
         )
+
+        pl.subplot(0, 1)
+        _add_stress_view(False)
+        pl.camera.position = (center[0], center[1], center[2] + diag)
+        pl.camera.focal_point = tuple(center)
+        pl.camera.up = (0.0, 1.0, 0.0)
+        pl.reset_camera()
+        pl.camera.parallel_projection = True
+        pl.add_text("top", position="upper_left", font_size=10, color="black")
+
+        pl.subplot(1, 0)
+        _add_stress_view(False)
+        pl.camera.position = (center[0], center[1] + diag, center[2])
+        pl.camera.focal_point = tuple(center)
+        pl.camera.up = (0.0, 0.0, 1.0)
+        pl.reset_camera()
+        pl.camera.parallel_projection = True
+        pl.add_text("front", position="upper_left", font_size=10, color="black")
+
+        pl.subplot(1, 1)
+        # keep the -Y half: from a +Y camera the cut face exposes the interior
+        section = body.clip(normal="y", origin=tuple(center))
+        pl.add_mesh(section, scalars="vm", cmap="turbo", clim=[0, vmax], show_scalar_bar=False)
+        pl.add_mesh(skin, color="#c8ccd4", opacity=0.28, show_scalar_bar=False)
+        pl.camera.position = (center[0], center[1] + diag, center[2])
+        pl.camera.focal_point = tuple(center)
+        pl.camera.up = (0.0, 0.0, 1.0)
+        pl.reset_camera()
+        pl.camera.parallel_projection = True
+        pl.add_text("section y-mid", position="upper_left", font_size=10, color="black")
+
         pl.screenshot(str(out_dir / vm_png))
         pl.close()
 
         scale = domain.pitch * min(domain.dims) * 0.15 / max(sol.max_disp_mm, 1e-6)
         factor = min(scale, domain.pitch * min(domain.dims))
-        warped = body.warp_by_vector("u", factor=factor)
-        pl = pv.Plotter(off_screen=True, window_size=[900, 700])
-        pl.set_background("white")
-        pl.add_mesh(
-            warped.clip(normal="-x"),
-            scalars="vm",
-            cmap="jet",
-            clim=[0, vmax],
-            show_scalar_bar=False,
-        )
         # deformed smooth skin: displace the real surface by the nearest
         # voxel node's solution vector — smooth shape, field-driven motion
         u_nodes = np.asarray(sol.node_disp, dtype=float).reshape(-1, 3)
+        pl = pv.Plotter(off_screen=True, window_size=[900, 700])
+        pl.set_background("white")
+        pl.add_mesh(skin, color="#b0b8c4", opacity=0.22, show_scalar_bar=False)
         try:
             from scipy.spatial import cKDTree
 
             nn = cKDTree(domain.node_coords()).query(np.asarray(skin.points))[1]
             skin_w = skin.copy()
             skin_w.points = skin_w.points + u_nodes[nn] * factor
-            pl.add_mesh(skin_w, color="#c8ccd4", opacity=0.35, show_scalar_bar=False)
+            pl.add_mesh(
+                skin_w,
+                opacity=0.85,
+                smooth_shading=True,
+                scalar_bar_args={"title": "von Mises [MPa]"} if has_vm else None,
+                **skin_kw,
+            )
         except Exception:
-            pass
+            warped = body.warp_by_vector("u", factor=factor)
+            pl.add_mesh(warped, scalars="vm", cmap="turbo", clim=[0, vmax])
         pl.add_mesh(body.outline(), color="#888888", line_width=1.0)
         pl.camera_position = "iso"
         pl.reset_camera()

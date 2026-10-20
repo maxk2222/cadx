@@ -222,3 +222,84 @@ async def test_run_benchmark_dumps_trace_on_crash(monkeypatch, tmp_path) -> None
 
     recs = json.loads(hits[0].read_text())
     assert recs and recs[0]["step"] == "intake"
+
+
+# --------------------------------------------------------------------------- #
+# reuse_mesh_dir — benchmarks may pin a recorded mesh/ dir instead of         #
+# regenerating the organic body each run                                      #
+# --------------------------------------------------------------------------- #
+
+
+def _bare_ctx():
+    """Minimal AgentCtx — _apply_reuse_mesh_dir only touches parent/mesh
+    fields, so llm/executor/trace/emit/cancel are inert stubs."""
+    import uuid
+    from unittest.mock import MagicMock
+
+    from cadx.agent.trace import MemoryTrace
+    from cadx.agent.types import AgentCtx
+    from cadx.db.models import ProjectSettings
+    from cadx.llm.fake import FakeLLM
+
+    async def emit(step: str, it: int, msg: str, **_f) -> None:
+        pass
+
+    async def no_cancel() -> bool:
+        return False
+
+    return AgentCtx(
+        llm=FakeLLM([]),
+        executor=MagicMock(),
+        trace=MemoryTrace(),
+        emit=emit,
+        check_cancel=no_cancel,
+        job_id="test",
+        project_id=None,
+        version_id=uuid.uuid4(),
+        mode="generate",
+        prompt="p",
+        settings=ProjectSettings(),
+    )
+
+
+def test_apply_reuse_mesh_dir_wires_parent_and_raw(tmp_path) -> None:
+    """A recorded mesh dir hands the hybrid loop its solid.brep, the stored
+    version.mesh dict and the raw GLB — no mesh-server roundtrip."""
+    import json
+    from pathlib import Path
+
+    from cadx.eval.runner import _apply_reuse_mesh_dir
+
+    (tmp_path / "solid.brep").write_bytes(b"brep-bytes")  # path check only
+    (tmp_path / "mesh.json").write_text(
+        json.dumps({"bbox_size": [120, 40, 30], "triangles": 40000})
+    )
+    (tmp_path / "mesh_raw.glb").write_bytes(b"glb")
+
+    ctx = _bare_ctx()
+    assert _apply_reuse_mesh_dir(ctx, tmp_path)
+    assert Path(ctx.parent.mesh_solid) == tmp_path / "solid.brep"
+    assert ctx.parent.mesh["bbox_size"] == [120, 40, 30]
+    assert Path(ctx.mesh_raw_reuse) == tmp_path / "mesh_raw.glb"
+
+
+def test_apply_reuse_mesh_dir_missing_solid_returns_false(tmp_path) -> None:
+    """Without solid.brep the dir is not a usable reuse source — the run
+    falls back to normal mesh generation."""
+    from cadx.eval.runner import _apply_reuse_mesh_dir
+
+    (tmp_path / "mesh.json").write_text("{}")
+    ctx = _bare_ctx()
+    assert not _apply_reuse_mesh_dir(ctx, tmp_path)
+    assert ctx.parent.mesh_solid is None
+
+
+def test_benchmark_reuse_mesh_dir_optional() -> None:
+    """The field is optional — new benchmarks may set it, every shipped
+    benchmark JSON must still parse without it."""
+    import cadx.eval.runner as runner
+
+    bm = runner.Benchmark(name="x", prompt="p", reuse_mesh_dir="a/b")
+    assert bm.reuse_mesh_dir == "a/b"
+    assert runner.Benchmark(name="y", prompt="p").reuse_mesh_dir is None
+    assert load_benchmarks()  # all existing benchmark JSONs still parse

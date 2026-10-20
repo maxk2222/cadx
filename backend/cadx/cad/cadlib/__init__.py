@@ -24,6 +24,7 @@ from .cutouts import (
 )
 from .ops import (
     bbox_dims,
+    clip_to_box,
     collapse_solids,
     largest_solid,
     mesh_cut,
@@ -34,6 +35,7 @@ from .ops import (
 )
 from .profile import closed_polyline, profile_body
 from .shapes import (
+    arch_bridge,
     boss,
     filleted_box,
     knurl_ring,
@@ -48,9 +50,11 @@ from .shapes import (
 )
 
 __all__ = [
+    "arch_bridge",
     "bbox_dims",
     "bearing_seat",
     "boss",
+    "clip_to_box",
     "closed_polyline",
     "collapse_solids",
     "dovetail_slot",

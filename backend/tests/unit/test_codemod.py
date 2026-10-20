@@ -86,3 +86,74 @@ def test_result_parses_and_runs():
     fixed, _notes = fix_api_misuse(code)
     ast.parse(fixed)
     assert "b.translate((v[0], v[1], 0))" in fixed
+
+
+# --------------------------------------------------------------------------- #
+# Plane(normal=...) -> z_dir= and sweep(profile=...) -> sections=            #
+# --------------------------------------------------------------------------- #
+
+
+def test_plane_normal_kwarg_rewritten():
+    """build123d Plane has no `normal` kwarg — the hallucinated name maps to
+    `z_dir`."""
+    fixed, notes = fix_api_misuse("p = Plane(normal=v)\n")
+    assert "z_dir=v" in fixed
+    assert "normal=" not in fixed
+    assert len(notes) == 1
+    assert "z_dir" in notes[0]
+
+
+def test_plane_normal_rewrite_preserves_kwargs():
+    code = "p = Plane(origin=p, normal=n)\n"
+    fixed, notes = fix_api_misuse(code)
+    assert fixed == "p = Plane(origin=p, z_dir=n)\n"
+    assert len(notes) == 1
+
+
+def test_plane_normal_attribute_call_rewritten():
+    """`<attr>.Plane(...)` hits the same rule as the bare `Plane` call."""
+    fixed, notes = fix_api_misuse("p = geometry.Plane(normal=v)\n")
+    assert "geometry.Plane(z_dir=v)" in fixed
+    assert len(notes) == 1
+
+
+def test_plane_z_dir_already_present_unchanged():
+    for code in [
+        "p = Plane(z_dir=n)\n",
+        "p = Plane(normal=v, z_dir=w)\n",  # both present — ambiguous, skip
+    ]:
+        fixed, notes = fix_api_misuse(code)
+        assert fixed == code, code
+        assert notes == []
+
+
+def test_sweep_profile_kwarg_rewritten():
+    """build123d sweep() takes `sections` — the `profile` hallucination is
+    only unambiguous on the all-keyword call form."""
+    code = "sweep(profile=sk, path=w)\n"
+    fixed, notes = fix_api_misuse(code)
+    assert fixed == "sweep(sections=sk, path=w)\n"
+    assert len(notes) == 1
+
+
+def test_sweep_profile_positional_unchanged():
+    for code in [
+        "sweep(sk, profile=x)\n",  # positional present — ambiguous, skip
+        "sweep(sections=sk, path=w)\n",  # already correct
+        "sweep(profile=x, sections=y)\n",  # sections present — skip
+    ]:
+        fixed, notes = fix_api_misuse(code)
+        assert fixed == code, code
+        assert notes == []
+
+
+def test_local_plane_or_sweep_def_is_ambiguous():
+    """A user-defined Plane()/sweep() makes the call legal — leave the file
+    alone, same rule as a local translate def."""
+    for code in [
+        "def Plane(origin=None, normal=None):\n    return normal\np = Plane(normal=v)\n",
+        "def sweep(profile=None, path=None):\n    return profile\nsweep(profile=sk, path=w)\n",
+    ]:
+        fixed, notes = fix_api_misuse(code)
+        assert fixed == code
+        assert notes == []

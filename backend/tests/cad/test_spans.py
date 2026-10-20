@@ -1,5 +1,6 @@
 """cad/spans.py — declared from-to connections must carry material."""
 
+import trimesh
 from build123d import Box, Pos
 
 from cadx.cad import cadlib
@@ -119,3 +120,88 @@ def test_plate_checks_synthesises_footprint_from_centre_and_dims():
     # and the spec-conform pad passes the same declaration
     ok = plate_checks(Pos(-45, 0, 3) * Box(30, 20, 6), feats)
     assert ok[0]["ok"]
+
+
+# ---------------------------------------------------------------------------
+# plate_checks — hybrid exemption
+#
+# On a mesh-derived solid the runner attaches the source trimesh as
+# `shape._cadx_mesh`; the band probe then reads the organic base body, whose
+# whole extent may legitimately span a declared plate footprint — but only
+# while it stays inside the STATED overall dims.
+
+
+def _organic_envelope() -> tuple:
+    """(build123d shape, source trimesh) — both cover 120x40x30 resting on
+    z>=0, centred in XY: the hybrid case where the sewn solid and the raw
+    mesh share the envelope."""
+    shape = Pos(0, 0, 15) * Box(120, 40, 30)
+    mesh = trimesh.creation.box(extents=[120, 40, 30])
+    # trimesh.creation.box is origin-centred — shift up so it rests on z>=0
+    mesh.apply_translation([0.0, 0.0, 15.0])
+    return shape, mesh
+
+
+def _organic_pad_feature() -> list[dict]:
+    return [
+        {
+            "type": "tab",
+            "name": "pad",
+            "position": "centered at x=-45, y=0, z=0..6",
+            "dims": {"length": 30, "width": 20, "thickness": 6},
+        }
+    ]
+
+
+_STATED_ENVELOPE = {
+    "length_x": {"value": 120, "source": "stated"},
+    "width_y": {"value": 40, "source": "stated"},
+}
+
+
+def test_plate_checks_spec_dict_alone_does_not_exempt_cad_shape():
+    """Pure-CAD behaviour unchanged: stated overall dims without a source
+    mesh don't excuse the band overshoot."""
+    shape, _mesh = _organic_envelope()
+    res = plate_checks(shape, _organic_pad_feature(), spec_dict=_STATED_ENVELOPE)
+    assert len(res) == 1
+    assert not res[0]["ok"]
+
+
+def test_plate_checks_mesh_solid_exempted_within_stated_envelope():
+    """Band extent ~40 in Y overshoots the declared 20 mm pad width but sits
+    inside the stated 120x40 envelope — the organic base body legitimately
+    spans the footprint."""
+    shape, mesh = _organic_envelope()
+    shape._cadx_mesh = mesh
+    res = plate_checks(shape, _organic_pad_feature(), spec_dict=_STATED_ENVELOPE)
+    assert len(res) == 1
+    assert res[0]["ok"]
+
+
+def test_plate_checks_mesh_exemption_requires_stated_source():
+    """An `inferred` overall dim is the agent's own guess — it cannot excuse
+    the overshoot the way a stated requirement can."""
+    shape, mesh = _organic_envelope()
+    shape._cadx_mesh = mesh
+    spec = {
+        "length_x": {"value": 120, "source": "stated"},
+        "width_y": {"value": 40, "source": "inferred"},
+    }
+    res = plate_checks(shape, _organic_pad_feature(), spec_dict=spec)
+    assert len(res) == 1
+    assert not res[0]["ok"]
+
+
+def test_plate_checks_mesh_extent_beyond_stated_envelope_still_flags():
+    """The exemption is bounded by the stated dims — a measured band wider
+    than even the declared overall width is real overshoot, not organics."""
+    shape, mesh = _organic_envelope()
+    shape._cadx_mesh = mesh
+    spec = {
+        "length_x": {"value": 120, "source": "stated"},
+        "width_y": {"value": 30, "source": "stated"},
+    }
+    res = plate_checks(shape, _organic_pad_feature(), spec_dict=spec)
+    assert len(res) == 1
+    assert not res[0]["ok"]

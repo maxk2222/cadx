@@ -22,10 +22,12 @@ pick the best one.
   resultant force and applied moment about the support — WITHOUT solving.
   Free. Call after writing each case.
 - `preview_regions(load_cases, keep_regions?)` — additionally renders the
-  selection (fixed=blue, load=red, keep=green). Free.
+  selection iso+top with force arrows (fixed=blue, load=red, keep=green).
+  Free.
 - `analyze_fem(load_cases, material?, voxel_mm?)` — FEM on the unmodified base
   part. Returns per-case safety factor AND the reaction force at the
-  supports (should balance the applied load — check it). Use it to see
+  supports (should balance the applied load — check it), plus rendered von
+  Mises sheets and a deformed view (see Results). Use it to see
   whether optimization is even needed and which case is critical.
 - `topopt_run(...)` — full SIMP run + automatic FEM verification of the
   result. Parameters you may vary between runs:
@@ -138,6 +140,13 @@ Each `topopt_run` reports:
   surface eats strength — raise volfrac or min_member.
 - A render of the optimized shape — LOOK at it: disconnected struts, lost
   mounting features or a dissolved surface are a reject regardless of SF.
+- Attached images: every `analyze_fem`/`topopt_run`/`refine_features` result
+  carries a 2×2 von Mises sheet per load case (iso / top / front / mid-plane
+  section) — the stress field painted smoothly on the real part surface
+  (semi-transparent) with opaque interior hotspot voxels — plus a
+  deformed-shape render. `topopt_run` also attaches the optimized-shape
+  renders and region previews (iso + top, orange force arrows landing on
+  each load centroid).
 
 ## Iteration loop
 
@@ -156,6 +165,10 @@ Each `topopt_run` reports:
 6. Stop when `sf_export` ≥ target AND printable AND features intact —
    or when the tool-call budget is low and the best run is acceptable.
 7. `done(run_index)` with the best run — `run_index: -1` keeps the base.
+
+- Check the SECTION view for internal hotspots the surface view hides.
+- In region previews confirm the orange force arrows land where intended and
+  point along the load.
 
 ## Rules
 

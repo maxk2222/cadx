@@ -115,6 +115,17 @@ No BuildPart context needed. Parts rest on XY (min Z = 0), centred — place wit
   filled triangle. A filled gusset under a bore line gets drilled by
   through-holes and fails verification.
 
+### arch_bridge
+
+- `arch_bridge(span_x, apex_z, width_y, thickness, *, foot_z=0, embed=1.0,
+  n_sections=15)` — ARCHED bar/handle between two feet at ±`span_x`/2 rising
+  in the XZ plane so the top surface reaches `apex_z`; feet extend `embed`
+  mm below `foot_z` so the fuse overlaps. Cross-section: `thickness` radial
+  (in the arch plane) × `width_y` along Y. USE THIS for arched handles and
+  bridges — a hand-rolled loft collapses to a flat bar because
+  `Plane(normal=...)` is not valid build123d (use `z_dir`). `strut` stays
+  the choice for STRAIGHT braces: `part += arch_bridge(90, 25, 8, 6)`.
+
 ### mounting_ear
 
 - `mounting_ear(length, width, thickness, hole_d=None, hole_offset=0,
@@ -206,6 +217,16 @@ No BuildPart context needed. Parts rest on XY (min Z = 0), centred — place wit
   flatten the underside of a mesh solid instead of
   `body & Box(..., Align.MIN)` — an intersection that silently returns
   `None` on faceted meshes.
+
+### clip_to_box (hybrid mode)
+
+- `clip_to_box(body, x=None, y=None, z_min=None, z_max=None, tol=0.01)` —
+  trims a mesh solid to the declared envelope: `x`/`y` are half-extents
+  (material beyond ±x/±y goes), `z_min`/`z_max` absolute Z bounds. Each side
+  is checked against the real bbox first and sides already inside the bound
+  get NO cutter — it skips non-overlapping cuts instead of raising. USE THIS
+  for envelope trimming instead of hand-rolled `mesh_cut` box-cutter calls:
+  `body = clip_to_box(body, x=L/2, y=W/2, z_min=0)`.
 
 ### bbox_dims
 

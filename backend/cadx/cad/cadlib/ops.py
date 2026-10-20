@@ -131,7 +131,10 @@ def safe_fillet(edges, radius: float, min_radius: float = 0.2) -> float:
     build123d raises ``ValueError`` both when the edge selection is empty
     (stale list after ``locate``/``translate``, overly strict filter) and when
     the radius does not fit. Both cases are retried with a smaller radius —
-    an empty selection never fits, so the loop ends at ``min_radius``.
+    an empty selection never fits, so it short-circuits to ``0.0`` without
+    burning OCC calls. Faceted/frozen TopoDS shapes raise OCC-layer
+    exceptions (``Standard_Failure``/``RuntimeError``), so the retry catches
+    broadly instead of just ``ValueError``.
 
     Returns the applied radius, or ``0.0`` when nothing could be filleted —
     the caller can then fall back (e.g. keep sharp edges) instead of dying.
@@ -144,6 +147,10 @@ def safe_fillet(edges, radius: float, min_radius: float = 0.2) -> float:
         n_edges = len(edges)
     except TypeError:
         n_edges = 0
+    if n_edges == 0:
+        # fast path — the shrink loop would still burn one OCC fillet call
+        # per halving step on a selection that can never accept a radius
+        return 0.0
     if n_edges > _FILLET_MAX_EDGES:
         # a selection this large is a faceted mesh body — OCC grinds on
         # thousands of triangle edges for minutes (live hang: >480s pipeline
@@ -160,7 +167,10 @@ def safe_fillet(edges, radius: float, min_radius: float = 0.2) -> float:
         try:
             fillet(edges, radius=r)
             return r
-        except ValueError:
+        except Exception:
+            # faceted/frozen TopoDS shapes raise Standard_Failure / RuntimeError
+            # from the OCC layer, not ValueError — a radius retry may still
+            # succeed, so every kernel-side failure folds into the shrink loop
             r = round(r / 2, 3)
     return 0.0
 
@@ -309,3 +319,54 @@ def trim_below(body, z: float = 0.0, margin: float = 400.0):
     if rb is not None:
         return rb
     return body
+
+
+def clip_to_box(
+    body: Shape,
+    x: float | None = None,
+    y: float | None = None,
+    z_min: float | None = None,
+    z_max: float | None = None,
+    tol: float = 0.01,
+) -> Shape:
+    """Trim ``body`` to the declared envelope — the safe way to force a mesh
+    solid inside its ``[L, W, H]`` spec after hand-tuned boolean ops left
+    overhangs.
+
+    ``x``/``y`` are HALF-extents (the part is centred at origin): material
+    beyond ±x / ±y is removed; ``z_min``/``z_max`` are absolute Z bounds.
+    Each of the six sides is checked against ``body.bounding_box()`` first
+    and only cut where the body actually exceeds the bound by more than
+    ``tol`` mm — a side already inside gets NO cutter, which is the point:
+    ``mesh_cut`` raises on a non-overlapping cutter, so blind
+    "cut every side" loops drown in `removed no material` errors. A side
+    whose checked cut still removes nothing is skipped, not fatal.
+
+        body = clip_to_box(body, x=L/2, y=W/2, z_min=0)   # trim to envelope
+    """
+    big = 500.0  # cutter half-extent — covers any overhang at part scale
+    bb = body.bounding_box()
+    cutters: list[Shape] = []
+    if x is not None:
+        if bb.max.X - x > tol:
+            cutters.append(Pos(x + big / 2, 0, 0) * Box(big, big, big))
+        if -bb.min.X - x > tol:
+            cutters.append(Pos(-x - big / 2, 0, 0) * Box(big, big, big))
+    if y is not None:
+        if bb.max.Y - y > tol:
+            cutters.append(Pos(0, y + big / 2, 0) * Box(big, big, big))
+        if -bb.min.Y - y > tol:
+            cutters.append(Pos(0, -y - big / 2, 0) * Box(big, big, big))
+    if z_max is not None and bb.max.Z - z_max > tol:
+        cutters.append(Pos(0, 0, z_max + big / 2) * Box(big, big, big))
+    for cutter in cutters:
+        try:
+            body = mesh_cut(body, cutter)
+        except ValueError:
+            # the bbox said "overhang" but the kernel removed nothing
+            # (grazing sliver under the delta eps) — skip the side instead
+            # of crashing the whole trim
+            continue
+    if z_min is not None and z_min - bb.min.Z > tol:
+        body = trim_below(body, z=z_min)  # sliver-safe already
+    return collapse_solids(body)

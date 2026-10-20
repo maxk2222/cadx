@@ -152,6 +152,33 @@ def _budget_exceeded(ops: _SessionOps, needed_s: float) -> dict[str, Any] | None
     }
 
 
+def _fem_case_images(res: dict[str, Any], it_dir: Path) -> list[str]:
+    """Per-case FEM renders (vonmises/deformed PNGs) under <it_dir>/fem/ —
+    the fem / fem_export reports carry bare filenames."""
+    fem_dir = it_dir / "fem"
+    out: list[str] = []
+    for rep_key in ("fem", "fem_export"):
+        for c in (res.get(rep_key) or {}).get("cases") or []:
+            for p in (c.get("vonmises_png"), c.get("deformed_png")):
+                if p and (fem_dir / p).exists():
+                    out.append(str(fem_dir / p))
+    return out
+
+
+def _render_view_images(res: dict[str, Any]) -> list[str]:
+    """Shape-view renders — the task layer rewrites `renders` to
+    {view: relpath} via _relpath_exports, so resolve like contact_sheet."""
+    out: list[str] = []
+    for rel in (res.get("renders") or {}).values():
+        if not rel:
+            continue
+        with contextlib.suppress(ValueError):
+            p = storage.resolve(rel)
+            if p.exists():
+                out.append(str(p))
+    return out
+
+
 def _make_fem_fn(ops: _SessionOps) -> Any:
     ctx = ops.ctx
 
@@ -286,6 +313,11 @@ def _make_topopt_fn(ops: _SessionOps) -> Any:
                 p = storage.resolve(rel)
                 if p.exists():
                     images.append(str(p))
+        # FEM verification renders (mask + export-mesh reports) written under
+        # <iteration_dir>/fem/, plus the optimized-shape view renders
+        it_dir = storage.iteration_dir(ctx.project_id, ctx.version_id, it)
+        images += _render_view_images(res)
+        images += _fem_case_images(res, it_dir)
         # base render first so the model can compare base vs optimized
         res["_images"] = ([str(ops.contact_sheet)] if ops.contact_sheet else []) + images
         return res
@@ -387,6 +419,11 @@ def _make_refine_fn(ops: _SessionOps) -> Any:
             if rel := res.get(key):
                 with contextlib.suppress(ValueError):
                     images.append(str(storage.resolve(rel)))
+        # refine has no contact sheet — attach the shape views plus the FEM
+        # re-verification renders written under <iteration_dir>/fem/
+        it_dir = storage.iteration_dir(ctx.project_id, ctx.version_id, it)
+        images += _render_view_images(res)
+        images += _fem_case_images(res, it_dir)
         res["_images"] = images
         return res
 

@@ -12,6 +12,7 @@ import json
 import math
 import os
 import re
+import shutil
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -174,6 +175,9 @@ class Benchmark:
     gen_mode: str = "auto"  # auto | cad | mesh | hybrid
     fake_mesh: bool = False  # use FakeMeshClient instead of a real mesh server
     images: list[str] = field(default_factory=list)  # fixture image paths (repo-relative)
+    # stored versions/<vid>/mesh/ dir to reuse — hybrid/mesh runs without
+    # image input or a live mesh server (edit-style benchmarks)
+    reuse_mesh_dir: str | None = None
     runtime: dict[str, Any] = field(default_factory=dict)  # RuntimeSettings overrides
     expected_features: list[dict[str, Any]] = field(default_factory=list)
     expect_watertight: bool = False
@@ -364,6 +368,63 @@ async def _ensure_eval_project(project_id: uuid.UUID, name: str) -> None:
         log.warning("eval.project_insert_failed", error=str(e)[:200])
 
 
+def _apply_reuse_mesh_dir(ctx: AgentCtx, mdir: Path | str | None) -> bool:
+    """Wire a stored versions/<vid>/mesh/ dir into ctx for mesh-solid reuse.
+
+    The benchmark's `reuse_mesh_dir` may be repo-relative (a checked-in
+    fixture or the host's DATA_DIR at the repo root), DATA_DIR-relative
+    (`projects/<pid>/versions/<vid>/mesh`), or backend-relative — same
+    convention as benchmark image paths. Populates ctx.parent (the hybrid
+    reuse gate in _prepare_hybrid_mesh reads mesh_solid + a truthy mesh dict)
+    and ctx.mesh_raw_reuse, plus the stored reference mask when present.
+    """
+    from cadx.config import REPO_ROOT
+
+    if not mdir:
+        return False
+    mdir = Path(mdir)
+    candidates = [REPO_ROOT / mdir]
+    with contextlib.suppress(Exception):  # paths escaping DATA_DIR raise here
+        candidates.append(storage.resolve(str(mdir)))
+    candidates.append(_BACKEND_ROOT / str(mdir).removeprefix("backend/"))
+    src = next((p for p in candidates if p.is_dir()), None)
+    if src is None:
+        log.warning("eval.reuse_mesh_dir_missing", reuse_mesh_dir=str(mdir))
+        return False
+
+    solid = src / "solid.brep"
+    if not solid.exists():
+        log.warning("eval.reuse_mesh_dir_missing", reuse_mesh_dir=str(mdir), missing="solid.brep")
+        return False
+    ctx.parent.mesh_solid = solid
+    ctx.parent.resolved_mode = "hybrid"
+
+    mesh_info: dict[str, Any] = {}
+    mj = src / "mesh.json"
+    if mj.exists():
+        with contextlib.suppress(Exception):
+            data = json.loads(mj.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                mesh_info = data
+    if not mesh_info:
+        # the reuse gate requires a truthy parent.mesh — keep the minimal
+        # keys _reuse_parent_mesh_assets reads (bbox_size, triangles)
+        mesh_info = {"reused_solid": True, "bbox_size": mesh_info.get("bbox_size")}
+    ctx.parent.mesh = mesh_info
+
+    raw = src / "mesh_raw.glb"
+    if raw.exists():
+        ctx.mesh_raw_reuse = raw
+    mask = src.parent / "_ref_mask.png"
+    if mask.exists():
+        dst = storage.ensure(storage.version_dir(ctx.project_id, ctx.version_id)) / "_ref_mask.png"
+        shutil.copy2(mask, dst)
+        # same wiring _ref_side_mask produces — process_mesh reuses the
+        # stored mask for silhouette IoU instead of re-extracting it
+        ctx.mesh_info["_ref_mask_rel"] = storage.relpath(dst)
+    return True
+
+
 async def run_benchmark(
     bm: Benchmark,
     llm: Any | None = None,
@@ -497,6 +558,9 @@ async def run_benchmark(
         budget_tokens=runtime.agent_max_tokens_per_job,
         explicit_max_iterations=bool(bm.settings.get("max_iterations")),
     )
+    # reuse benchmarks seed the stored mesh intermediates — resolve_mode's
+    # exemption then keeps hybrid/mesh viable without images or a mesh server
+    _apply_reuse_mesh_dir(ctx, bm.reuse_mesh_dir)
     root = eval_root or eval_out_root()
     t0 = time.monotonic()
     try:

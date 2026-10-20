@@ -22,6 +22,10 @@ origin. Rules for mesh solids:
   `cadlib.mesh_fuse(body, tool)` so debris is dropped at the op; plain
   `body -= tool` / `body += tool` are accepted but less safe. Finish with
   `result = cadlib.collapse_solids(body)` as a last-line guard.
+- For envelope trimming use `body = cadlib.clip_to_box(body, x=..., y=...,
+  z_min=...)` — it checks each side against the actual bbox and skips
+  non-overlapping cutters (a plain `mesh_cut` that removes nothing is an
+  error).
 - NEVER call fillet/chamfer on mesh edges and never select mesh faces via
   `faces().filter_by(...)` — the solid has thousands of triangular facets; address
   positions numerically (bbox from `MESH_BBOX`, e.g. centred hole:

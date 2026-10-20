@@ -16,16 +16,20 @@ import math
 from build123d import (
     Align,
     Box,
+    BuildSketch,
     Cone,
     Cylinder,
+    Ellipse,
     Plane,
     Polygon,
     Pos,
     Rot,
     Text,
+    ThreePointArc,
     Vector,
     extrude,
     fillet,
+    loft,
 )
 from build123d.topology import Part
 
@@ -85,6 +89,56 @@ def strut(
     mid = (Vector(*p0) + Vector(*p1)) * 0.5
     plane = Plane(origin=mid, x_dir=x, z_dir=z)
     return plane * Box(length, width, thickness)
+
+
+def arch_bridge(
+    span_x: float,
+    apex_z: float,
+    width_y: float,
+    thickness: float,
+    *,
+    foot_z: float = 0.0,
+    embed: float = 1.0,
+    n_sections: int = 15,
+) -> Part:
+    """Arched bar/handle between two feet at ±``span_x``/2, arch rising in the
+    XZ plane so the top outer surface reaches ``apex_z``. The feet sit
+    ``embed`` mm below ``foot_z`` so a fuse overlaps — place the part by its
+    feet, not its apex.
+
+    USE THIS for arched handles/bridges — the hand-rolled version collapses
+    to a flat bar because ``Plane(normal=...)`` is not valid build123d (the
+    kwarg is ``z_dir``) and the loft then never leaves the XY plane. Here the
+    section planes are built from the arc's own frame: ``x_dir`` is the
+    in-plane (XZ) radial direction — ``(tg.Z, 0, -tg.X)`` rotated 90° off the
+    tangent — and ``z_dir`` is the tangent, so each ellipse stands
+    perpendicular to the arch curve.
+
+    Cross-section: ``thickness`` (radial, in the XZ arch plane) by ``width_y``
+    (global Y). Example:
+    ``part += arch_bridge(span_x=90, apex_z=25, width_y=8, thickness=6)``.
+    """
+    # the arc rides the cross-section CENTRE: the apex control point sits at
+    # apex_z - thickness/2 so the outer (+radial) surface tops out at apex_z
+    arc = ThreePointArc(
+        Vector(-span_x / 2, 0, foot_z - embed),
+        Vector(0, 0, apex_z - thickness / 2),
+        Vector(span_x / 2, 0, foot_z - embed),
+    ).edges()[0]
+    n = max(2, n_sections)
+    sections = []
+    for i in range(n):
+        u = i / (n - 1)
+        pt = arc.position_at(u)
+        tg = arc.tangent_at(u)
+        nm = Vector(tg.Z, 0, -tg.X).normalized()  # in-plane radial direction
+        with BuildSketch(Plane(origin=pt, x_dir=nm, z_dir=tg)) as sk:
+            Ellipse(x_radius=thickness / 2, y_radius=width_y / 2)
+        sections.append(sk.sketch)
+    try:
+        return loft(sections, ruled=False)
+    except TypeError:
+        return loft(sections)
 
 
 def rib(length: float, height: float, thickness: float) -> Part:

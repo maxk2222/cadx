@@ -9,6 +9,7 @@ INTAKE -> (CLARIFY?) -> PLAN -> mode resolution -> one of:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import itertools
 import json
 import re
@@ -532,6 +533,13 @@ def resolve_mode(ctx: AgentCtx) -> tuple[str, str]:
     if requested == "cad":
         return "cad", "CAD mode selected"
     if requested in ("mesh", "hybrid"):
+        # reuse exemption: a job that only re-processes stored intermediates
+        # (parent solid.brep for a hybrid edit, a kept raw GLB for mesh mode)
+        # needs neither image input nor a live mesh server
+        if requested == "hybrid" and ctx.parent.mesh_solid is not None and ctx.parent.mesh:
+            return "hybrid", "hybrid mode — reusing stored mesh solid"
+        if requested == "mesh" and ctx.mesh_raw_reuse is not None:
+            return "mesh", "mesh mode — reusing stored raw mesh"
         if not has_images:
             return "cad", f"mode '{requested}' needs image input — falling back to CAD"
         if not mesh_ok:
@@ -3458,7 +3466,7 @@ async def _run_cad(  # noqa: C901
                         # iteration verify is a smoke check (solvable? sane SF?) —
                         # a coarser pitch keeps it inside the task timeout on
                         # long parts; the optimize phase re-verifies at full res
-                        "voxel_mm": max(2.5, ctx.settings.fem_voxel_mm or 1.5),
+                        "voxel_mm": max(1.5, ctx.settings.fem_voxel_mm or 1.5),
                         "runtime_settings": ctx.runtime_settings.executor_values(),
                     }
                 )
@@ -4958,6 +4966,16 @@ async def _reuse_parent_mesh_assets(ctx: AgentCtx, it: int) -> bool:
     return True
 
 
+def _persist_hybrid_mesh(ctx: AgentCtx, it: int) -> None:
+    """Best-effort early persistence of the mesh intermediates into
+    versions/<vid>/mesh/ — a codegen crash in the following CAD loop must not
+    lose the generated solid. The finalize path re-registers the same files
+    as attempt artifacts, so persistence here must never break prep."""
+    with contextlib.suppress(Exception):
+        _copy_mesh_artifacts(ctx.project_id, ctx.version_id, it, ctx.mesh_info.get("_prep_art_dir"))
+        _write_mesh_json(ctx.project_id, ctx.version_id, ctx.mesh_info)
+
+
 async def _prepare_hybrid_mesh(
     ctx: AgentCtx,
     spec: PartSpec,
@@ -5088,6 +5106,7 @@ async def _prepare_hybrid_mesh(
 
     if (exec_result.get("mesh") or {}).get("solid_ok") and exec_result["mesh"].get("solid_relpath"):
         ctx.hybrid_solid = storage.resolve(exec_result["mesh"]["solid_relpath"])
+        _persist_hybrid_mesh(ctx, it)
         return True, "mesh solid ready"
 
     # retry once with a tighter cap on the *solid copy* only — the pipeline
@@ -5115,6 +5134,7 @@ async def _prepare_hybrid_mesh(
             "volume": (exec_result.get("analysis") or {}).get("volume"),
             "triangles": (exec_result.get("mesh") or {}).get("triangles"),
         }
+        _persist_hybrid_mesh(ctx, it)
         return True, "mesh solid ready (decimated)"
 
     # keep the processed mesh as a candidate for the mesh-mode fallback
@@ -5277,8 +5297,15 @@ def _viable_approaches(ctx: AgentCtx, mode: str, plan: Any) -> tuple[list[str], 
     has_images = any(a.kind in IMAGE_INPUT_KINDS for a in ctx.assets)
     viable: list[str] = []
     for a in approaches[: s.agent_max_approaches]:
-        if a in ("mesh", "hybrid") and (not has_images or not ctx.mesh_available):
-            continue  # resolve_mode's guards, applied per strategy entry
+        if a in ("mesh", "hybrid"):
+            # resolve_mode's reuse exemption, per entry: a stored parent solid
+            # (hybrid) / raw GLB (mesh) stays viable without images or a live
+            # mesh server — nothing is generated, only re-processed
+            reuse = (a == "hybrid" and ctx.parent.mesh_solid is not None and ctx.parent.mesh) or (
+                a == "mesh" and ctx.mesh_raw_reuse is not None
+            )
+            if not reuse and (not has_images or not ctx.mesh_available):
+                continue  # resolve_mode's guards, applied per strategy entry
         viable.append(a)
     return viable or [mode], len(approaches)
 

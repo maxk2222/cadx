@@ -204,13 +204,42 @@ def _parse_points(text: str) -> dict[str, float]:
     return {m.group(1).lower(): float(m.group(2)) for m in _POINT_RE.finditer(text or "")}
 
 
-def plate_checks(shape: Any, features: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _stated_dim(spec_dict: dict[str, Any] | None, key: str) -> float | None:
+    """Stated overall dim of a serialized PartSpec ({"value","unit","source"})
+    — only source="stated" is a real user-given envelope."""
+    d = (spec_dict or {}).get(key)
+    if isinstance(d, dict) and d.get("source") == "stated":
+        try:
+            return float(d["value"])
+        except (TypeError, ValueError, KeyError):
+            return None
+    return None
+
+
+def plate_checks(
+    shape: Any, features: list[dict[str, Any]], spec_dict: dict[str, Any] | None = None
+) -> list[dict[str, Any]]:
     """[{name, declared, measured, ok}] — plates/pads whose declared x/y/z
     ranges bound a flat host. Material at the plate's band mid-height must
-    not sprawl past the declared footprint."""
+    not sprawl past the declared footprint.
+
+    Hybrid exemption: on a mesh-derived solid (source trimesh attached as
+    `_cadx_mesh`) the organic body inside a pad's window legitimately spans
+    up to the *stated overall* dim — compare_dims already enforces that
+    envelope. Flagging it as overshoot whipsaws the agent into cutting the
+    part below its own declared size (observed: 40mm organic pad vs a
+    pad-dims width of 20 while the spec's width_y stayed stated=40)."""
     from cadx.agent.spechost import parse_ranges
 
     bb = shape.bounding_box()
+    # only mesh-derived solids get the envelope exemption — a pure-CAD part
+    # has no organic base, overshoot stays a real error there
+    mesh_derived = getattr(shape, "_cadx_mesh", None) is not None
+    stated = (
+        (_stated_dim(spec_dict, "length_x"), _stated_dim(spec_dict, "width_y"))
+        if mesh_derived
+        else (None, None)
+    )
     out: list[dict[str, Any]] = []
     for f in features:
         if str(f.get("type") or "").lower() in _VOID_TYPES:
@@ -248,6 +277,12 @@ def plate_checks(shape: Any, features: list[dict[str, Any]]) -> list[dict[str, A
             continue
         over_x = ext[0] - (dx[1] - dx[0])
         over_y = ext[1] - (dy[1] - dy[0])
+        # exempt only material that stays inside the stated overall envelope —
+        # a part wider than its own declared envelope is still a real error
+        if stated[0] is not None and ext[0] <= stated[0] + 0.5:
+            over_x = 0.0
+        if stated[1] is not None and ext[1] <= stated[1] + 0.5:
+            over_y = 0.0
         ok = over_x <= max(_OVERSHOOT_REL * (dx[1] - dx[0]), _OVERSHOOT_ABS_MM) and over_y <= max(
             _OVERSHOOT_REL * (dy[1] - dy[0]), _OVERSHOOT_ABS_MM
         )

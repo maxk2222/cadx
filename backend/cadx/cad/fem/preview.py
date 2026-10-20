@@ -72,7 +72,8 @@ def render_regions(
     out_dir: Path,
     anchors: list[dict] | None = None,
 ) -> list[str]:
-    """Write regions_<case>.png previews; returns the filenames written."""
+    """Write regions_<case>.png previews (iso + top, with force arrows);
+    returns the filenames written."""
     try:
         import pyvista as pv
     except Exception:
@@ -80,21 +81,53 @@ def render_regions(
         return []
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    lo = np.asarray(domain.origin, dtype=float)
+    hi = lo + domain.pitch * np.asarray(domain.dims, dtype=float)
+    center = (lo + hi) / 2.0
+    diag = float(np.linalg.norm(hi - lo)) or 1.0
+    centers3d = domain.element_centers().reshape((*domain.dims, 3))
+    arrow_len = 0.25 * diag
+
     written: list[str] = []
     for case in cases:
-        fixed_cells, load_cells, keep_cells = case_region_masks(domain, case, keep_regions, anchors)
-        force_n = 0.0
-        for load in case.loads:
-            if load.force_n and len(load.force_n) == 3:
-                force_n += float(np.linalg.norm(np.asarray(load.force_n, dtype=float)))
-            elif load.pressure_mpa is not None:
-                force_n += float(load.pressure_mpa) * int(load_cells.sum()) * domain.pitch**2
-
-        tag = np.zeros(domain.dims, dtype=np.uint8)
-        tag[fixed_cells] = _FIXED
-        tag[load_cells] = _LOAD
-        tag[keep_cells] = _KEEP
         try:
+            fixed_cells, load_cells, keep_cells = case_region_masks(
+                domain, case, keep_regions, anchors
+            )
+            force_n = 0.0
+            arrows: list[tuple[Any, Any]] = []  # (arrow, centroid marker)
+            f_strs: list[str] = []
+            for load in case.loads:
+                if load.force_n and len(load.force_n) >= 3:
+                    vec = np.asarray(load.force_n[:3], dtype=float)
+                    n = float(np.linalg.norm(vec))
+                    force_n += n
+                    f_strs.append(f"F=({vec[0]:.0f},{vec[1]:.0f},{vec[2]:.0f}) N")
+                    if n <= 0:
+                        continue
+                    lmask = region_cell_mask(domain, load.region, anchors)
+                    if not lmask.any():
+                        continue
+                    # arrow TIP lands on the load-region centroid
+                    centroid = centers3d[lmask].mean(axis=0)
+                    unit = vec / n
+                    arrows.append(
+                        (
+                            pv.Arrow(
+                                start=centroid - unit * arrow_len,
+                                direction=unit,
+                                scale=arrow_len,
+                            ),
+                            pv.Sphere(radius=domain.pitch, center=centroid),
+                        )
+                    )
+                elif load.pressure_mpa is not None:
+                    force_n += float(load.pressure_mpa) * int(load_cells.sum()) * domain.pitch**2
+
+            tag = np.zeros(domain.dims, dtype=np.uint8)
+            tag[fixed_cells] = _FIXED
+            tag[load_cells] = _LOAD
+            tag[keep_cells] = _KEEP
             grid = pv.ImageData(
                 dimensions=tuple(d + 1 for d in domain.dims),
                 spacing=(domain.pitch,) * 3,
@@ -104,24 +137,46 @@ def render_regions(
             grid.cell_data["tag"] = tag.ravel()
             body = grid.threshold(0.5, scalars="solid")
 
-            pl: Any = pv.Plotter(off_screen=True, window_size=[900, 700])
-            pl.set_background("white")
-            pl.add_mesh(body, color="#b8bec6", opacity=0.25, smooth_shading=True)
-            for value, color in ((_FIXED, "blue"), (_LOAD, "red"), (_KEEP, "green")):
-                sub = grid.threshold([value - 0.5, value + 0.5], scalars="tag")
-                if sub.n_cells:
-                    pl.add_mesh(sub, color=color, opacity=0.9)
-            pl.add_mesh(body.outline(), color="#555555", line_width=1.0)
-            pl.camera_position = "iso"
-            pl.reset_camera()
-            pl.add_text(
+            caption = (
                 f"{case.name}: fixed {int(fixed_cells.sum())} | load "
                 f"{int(load_cells.sum())} ({force_n:.0f} N) | keep "
-                f"{int(keep_cells.sum())} cells — blue=fix red=load green=keep",
-                position="upper_edge",
-                font_size=9,
-                color="black",
+                f"{int(keep_cells.sum())} cells — blue=fix red=load green=keep"
             )
+            if f_strs:
+                caption += " | " + "; ".join(f_strs)
+
+            pl: Any = pv.Plotter(off_screen=True, shape=(1, 2), window_size=[1600, 700])
+            pl.set_background("white")
+
+            def _add_regions(
+                pl: Any = pl, body: Any = body, grid: Any = grid, arrows: Any = arrows
+            ) -> None:
+                pl.add_mesh(body, color="#b8bec6", opacity=0.25, smooth_shading=True)
+                for value, color in ((_FIXED, "blue"), (_LOAD, "red"), (_KEEP, "green")):
+                    sub = grid.threshold([value - 0.5, value + 0.5], scalars="tag")
+                    if sub.n_cells:
+                        pl.add_mesh(sub, color=color, opacity=0.9)
+                pl.add_mesh(body.outline(), color="#555555", line_width=1.0)
+                for arrow, marker in arrows:
+                    pl.add_mesh(arrow, color="darkorange", opacity=1.0)
+                    pl.add_mesh(marker, color="orange", opacity=1.0)
+
+            pl.subplot(0, 0)
+            _add_regions()
+            pl.camera_position = "iso"
+            pl.reset_camera()
+            pl.add_text(caption, position="upper_edge", font_size=9, color="black")
+            pl.add_text("iso", position="upper_left", font_size=9, color="black")
+
+            pl.subplot(0, 1)
+            _add_regions()
+            pl.camera.position = (center[0], center[1], center[2] + diag)
+            pl.camera.focal_point = tuple(center)
+            pl.camera.up = (0.0, 1.0, 0.0)
+            pl.reset_camera()
+            pl.camera.parallel_projection = True
+            pl.add_text("top", position="upper_left", font_size=9, color="black")
+
             png = out_dir / f"regions_{case.name}.png"
             pl.screenshot(str(png))
             pl.close()
