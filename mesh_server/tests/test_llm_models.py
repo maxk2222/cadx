@@ -176,3 +176,41 @@ def test_llm_adapter_classes_merges(tmp_path):
     builtin_ids = {c.id for c in builtin_llm_classes()}
     assert builtin_ids <= ids
     assert len(ids) == len(builtin_ids) + 1
+
+
+def test_register_custom_ctx_persists(tmp_path):
+    """req.ctx flows into the persisted entry, the adapter class, and the
+    returned ModelInfo.context_len (surfaced via /v1/models)."""
+    cfg = _cfg(tmp_path)
+    info = register_custom_model(
+        cfg,
+        RegisterModelRequest(repo="org/ctx-model", backend="mlx-lm", ctx=65536),
+    )
+    assert info.context_len == 65536
+    data = json.loads((Path(cfg.model_dir) / "custom_models.json").read_text())
+    assert data[0]["ctx"] == 65536
+    customs = custom_llm_classes(cfg)
+    assert customs[0].context_len == 65536
+
+
+def test_registry_models_exposes_context_len(tmp_path):
+    """registry.models() reports the effective ctx (cfg.llm_ctx overrides the
+    catalog value — llama.cpp server_argv resolves the same way)."""
+    from meshserver.adapters.llm_mlx import make_mlx_adapter
+    from meshserver.registry import Registry
+
+    cfg = _cfg(tmp_path)
+    reg = Registry(cfg)
+    reg._classes = []
+    reg._llm_classes = [make_mlx_adapter("org/m", id="llm-ctx-test", ctx=32768)]
+    info = next(m for m in reg.models() if m.id == "llm-ctx-test")
+    # cfg.llm_ctx defaults to 16384 — the effective served window beats the
+    # adapter's catalog max
+    assert info.context_len == 16384
+    cfg.llm_ctx = 8192
+    info = next(m for m in reg.models() if m.id == "llm-ctx-test")
+    assert info.context_len == 8192
+    # llm_ctx=0 falls back to the catalog value
+    cfg.llm_ctx = 0
+    info = next(m for m in reg.models() if m.id == "llm-ctx-test")
+    assert info.context_len == 32768

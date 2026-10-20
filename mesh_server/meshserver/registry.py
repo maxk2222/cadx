@@ -231,6 +231,17 @@ class Registry:
                     est_mem_mb=round(est) if est else None,
                     supports_vision=getattr(cls, "supports_vision", False),
                     supports_tools=getattr(cls, "supports_tools", False),
+                    # effective context the server will run at — cfg.llm_ctx
+                    # overrides the adapter's catalog value (llama.cpp
+                    # server_argv resolves the same way)
+                    context_len=(
+                        (
+                            int(getattr(self.cfg, "llm_ctx", 0) or 0)
+                            or getattr(cls, "context_len", None)
+                        )
+                        if kind == "llm"
+                        else None
+                    ),
                     pinned=cls.id in self._pinned,
                     custom=getattr(cls, "custom", False),
                 )

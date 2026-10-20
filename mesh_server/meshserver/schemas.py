@@ -107,6 +107,7 @@ class ModelInfo(BaseModel):
     est_mem_mb: int | None = None  # estimated resident footprint (measured beats declared)
     supports_vision: bool = False  # llm adapters: accepts image_url parts
     supports_tools: bool = False  # llm adapters: accepts OpenAI tool calls
+    context_len: int | None = None  # llm adapters: effective context window, tokens
     pinned: bool = False  # never evicted by memory pressure (llm)
     custom: bool = False  # user-registered via /v1/models/register
 
@@ -150,6 +151,7 @@ class RegisterModelRequest(BaseModel):
     vision: bool = False
     tools: bool = True
     est_mem_mb: int | None = None
+    ctx: int | None = None  # context window to serve this model at (None = default)
 
 
 class Health(BaseModel):

@@ -270,6 +270,8 @@ def register_custom_model(cfg: Any, req: RegisterModelRequest) -> ModelInfo:
         "tools": req.tools,
         "est_mem_mb": req.est_mem_mb,
     }
+    if req.ctx:
+        entry["ctx"] = int(req.ctx)
     if backend == "llama.cpp":
         # no file list on the request — try to infer one from the repo so
         # the entry is usable immediately; stays skippable when offline
@@ -299,6 +301,7 @@ def register_custom_model(cfg: Any, req: RegisterModelRequest) -> ModelInfo:
         kind="llm",
         supports_vision=cls.supports_vision,
         supports_tools=cls.supports_tools,
+        context_len=cls.context_len,
         est_mem_mb=cls.est_mem_mb,
         custom=True,
         pinned=bool(getattr(cfg, "llm_pin", False)),

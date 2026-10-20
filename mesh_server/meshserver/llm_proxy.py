@@ -152,6 +152,9 @@ async def llm_models(registry: Any) -> dict:
     models_fn = getattr(registry, "models", None)
     if callable(models_fn):
         infos = {m.id: m for m in models_fn()}
+    # effective served ctx — the sidecar config override (llm_ctx) beats the
+    # adapter's catalog max (same resolution as llm_gguf.server_argv)
+    cfg_ctx = int(getattr(getattr(registry, "cfg", None), "llm_ctx", 0) or 0)
     data: list[dict[str, Any]] = []
     for cls in _llm_classes(registry):
         info = infos.get(getattr(cls, "id", ""))
@@ -163,6 +166,7 @@ async def llm_models(registry: Any) -> dict:
                 "owned_by": "meshserver",
                 "supports_vision": getattr(cls, "supports_vision", False),
                 "supports_tools": getattr(cls, "supports_tools", True),
+                "context_len": cfg_ctx or getattr(cls, "context_len", None),
                 "downloaded": getattr(info, "downloaded", True) if info else True,
                 "loaded": getattr(info, "loaded", False) if info else False,
             }
