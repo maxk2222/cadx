@@ -86,7 +86,7 @@ def _silhouette_aspect(image_path: Path) -> float | None:
         return None
 
 
-def _aspect_verdict(image_path: Path, spec: PartSpec | None) -> str | None:
+def aspect_mismatch(image_path: Path, spec: PartSpec | None) -> str | None:
     """Mismatch text when the silhouette aspect is far off the spec's L:H
     ratio — None when it fits or is unmeasurable. Only enforced for
     clearly non-square specs where the view direction cannot explain the
@@ -158,7 +158,7 @@ async def verify_concept_image(
             verdict = ImageVerdict.model_validate(parsed)
         # deterministic proportion gate — the vision model accepts a wrong
         # aspect whenever the shape is plausible for the part category
-        aspect_issue = _aspect_verdict(image_path, spec)
+        aspect_issue = aspect_mismatch(image_path, spec)
         if aspect_issue and verdict.severity in ("ok", "minor"):
             verdict = ImageVerdict(
                 match=False,

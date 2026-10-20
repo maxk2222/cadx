@@ -1174,6 +1174,32 @@ def _assign_synth_roles(
     return roles
 
 
+def _gate_generated_images(ordered: list[Any], spec: PartSpec | None) -> list[Any]:
+    """Drop generated reference images that fail the deterministic proportion
+    gate at selection time.
+
+    Generated heroes are verified at creation — but assets PERSIST across
+    versions, so a hero generated before a spec/gate change (or under a
+    different spec) reaches the generator unchecked (observed: tall-arch hero
+    for a 4:1-flat handle spec feeding hunyuan in every iteration). A dropped
+    hero just falls through to the bootstrap generator. User-supplied images
+    are never gated — the user's photo is ground truth.
+    """
+    if spec is None:
+        return ordered
+    from cadx.agent.image_check import aspect_mismatch
+
+    kept, dropped = [], []
+    for a in ordered:
+        if a.kind == "generated_image" and aspect_mismatch(a.path, spec):
+            dropped.append(a.asset_id)
+        else:
+            kept.append(a)
+    if dropped:
+        log.info("mesh.aspect_gate_dropped", assets=dropped)
+    return kept
+
+
 def _mesh_source_images(
     ctx: AgentCtx, iteration: int, spec: PartSpec | None = None
 ) -> tuple[list[Any], list[str]]:
@@ -1197,6 +1223,7 @@ def _mesh_source_images(
                 ordered.append(by_id[aid])
     ordered += [a for a in images if a not in ordered]
     ordered = _dedupe_near_identical(ctx, ordered)
+    ordered = _gate_generated_images(ordered, spec)
     synth_roles: dict[str, str] = ctx.mesh_info.get("_synth_view_roles") or {}
     if iteration > 1 and len(ordered) > 1:
         ordered = _rotate_hero(ordered, synth_roles)

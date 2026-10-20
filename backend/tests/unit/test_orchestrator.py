@@ -457,3 +457,55 @@ def test_regression_critique_ignores_normal_candidates():
     assert _regression_critique(best, {"volume": 36000.0, "bbox_size": [120, 40, 30]}) is None
     # no best candidate -> never fire
     assert _regression_critique(None, {"volume": 100.0, "bbox_size": [5, 5, 5]}) is None
+
+
+def test_gate_generated_images_drops_bad_hero(tmp_path):
+    """A persisted generated hero from an earlier version must not feed the
+    mesh generator when its silhouette contradicts the spec — selection-time
+    gate (creation-time verify only covers THIS job's images)."""
+    from cadx.agent.orchestrator import _gate_generated_images
+    from cadx.agent.types import InputAsset
+
+    def _png(w: int, h: int):
+        from pathlib import Path as _P  # noqa: F401
+        from PIL import Image
+
+        p = tmp_path / f"img_{w}x{h}.png"
+        img = Image.new("RGB", (400, 400), (250, 250, 250))
+        # dark subject block centred, w x h pixels
+        for x in range(200 - w // 2, 200 + w // 2):
+            for y in range(200 - h // 2, 200 + h // 2):
+                img.putpixel((x, y), (20, 20, 20))
+        img.save(p)
+        return p
+
+    def _dim(v):
+        return {"value": v, "unit": "mm", "source": "stated"}
+
+    from cadx.llm.schemas import PartSpec
+
+    spec = PartSpec(
+        name="t",
+        summary="t",
+        units="mm",
+        length_x=_dim(120),
+        width_y=_dim(40),
+        height_z=_dim(30),
+        features=[],
+        open_questions=[],
+    )
+    bad = InputAsset(
+        asset_id="bad1", kind="generated_image", path=_png(60, 200), caption="", filename="b.png"
+    )
+    good = InputAsset(
+        asset_id="good1", kind="generated_image", path=_png(300, 80), caption="", filename="g.png"
+    )
+    user = InputAsset(
+        asset_id="user1", kind="image", path=_png(60, 200), caption="", filename="u.png"
+    )
+    out = _gate_generated_images([bad, good, user], spec)
+    ids = [a.asset_id for a in out]
+    assert "bad1" not in ids  # tall image vs 4:1-flat spec -> dropped
+    assert "good1" in ids
+    assert "user1" in ids  # user photos are never gated
+    assert _gate_generated_images([bad], None) == [bad]
