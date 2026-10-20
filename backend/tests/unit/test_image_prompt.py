@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from cadx.agent.image_prompt import (
     hero_prompt_parts,
+    proportion_hint,
     rest_pose_hint,
     visual_features,
 )
@@ -127,7 +128,7 @@ def test_rest_pose_hint_non_empty():
 
 def test_hero_prompt_parts_keys():
     parts = hero_prompt_parts(_spec(), "a wall plate with two tabs", "mounting plate")
-    assert set(parts) == {"subject", "intent", "features_visual", "pose", "negative"}
+    assert set(parts) == {"subject", "intent", "features_visual", "proportions", "pose", "negative"}
     assert parts["subject"] == "mounting plate"
     assert parts["intent"] == "a wall plate with two tabs"
     assert parts["features_visual"]
@@ -148,3 +149,39 @@ def test_hero_prompt_parts_empty_features():
     spec = PartSpec(name="p", length_x=dict(_DIM), width_y=dict(_DIM), height_z=dict(_DIM))
     parts = hero_prompt_parts(spec, "plain box", "box")
     assert parts["features_visual"] == ""
+
+
+def test_proportion_hint_flat_handle():
+    """The iter-2 bug: a 120x40x30 arched handle rendered as a tall U-arch —
+    the hint must say 'low and flat' so the mesh does not inherit a wrong
+    silhouette."""
+    spec = PartSpec(
+        name="handle",
+        length_x={"value": 120, "source": "stated"},
+        width_y={"value": 40, "source": "stated"},
+        height_z={"value": 30, "source": "stated"},
+    )
+    hint = proportion_hint(spec)
+    assert "4 : 1.333 : 1" in hint
+    assert "low and flat" in hint
+
+
+def test_proportion_hint_tall_column():
+    spec = PartSpec(
+        name="tower",
+        length_x={"value": 20, "source": "stated"},
+        width_y={"value": 20, "source": "stated"},
+        height_z={"value": 80, "source": "stated"},
+    )
+    assert "tall" in proportion_hint(spec)
+
+
+def test_proportion_hint_missing_dims():
+    spec = PartSpec(name="x")
+    assert proportion_hint(spec) == ""
+    assert proportion_hint(None) == ""
+
+
+def test_hero_prompt_parts_includes_proportions():
+    parts = hero_prompt_parts(_spec(), "plate", "plate")
+    assert "proportions" in parts

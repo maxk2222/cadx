@@ -88,6 +88,42 @@ def visual_features(spec: PartSpec | None) -> str:
     return ", ".join(clauses)
 
 
+def proportion_hint(spec: PartSpec | None) -> str:
+    """Qualitative silhouette descriptor derived from the spec dims — t2i
+    models do not translate '120 x 40 x 30 mm' into aspect ratio (observed:
+    a flat 120x40x30 handle rendered as a tall U-arch ~4x too high). Giving
+    the ratio plus a plain-English qualifier fixes the proportion the mesh
+    later inherits."""
+    if spec is None:
+        return ""
+    try:
+        lx = float(spec.length_x.value or 0)
+        wy = float(spec.width_y.value or 0)
+        hz = float(spec.height_z.value or 0)
+    except (AttributeError, TypeError, ValueError):
+        return ""
+    if lx <= 0 or wy <= 0 or hz <= 0:
+        return ""
+    unit = min(lx, wy, hz)
+    ratio = f"{lx / unit:.4g} : {wy / unit:.4g} : {hz / unit:.4g}"
+    footprint = max(lx, wy)
+    qualifiers: list[str] = []
+    if max(lx, wy, hz) / unit < 1.35:
+        qualifiers.append("roughly equal dimensions in all directions")
+    if hz / footprint < 0.35:
+        qualifiers.append(
+            "very low and flat — the height is only a small fraction of the footprint"
+        )
+    elif hz / footprint < 0.6:
+        qualifiers.append("low in height relative to the footprint")
+    elif hz / footprint > 2.0:
+        qualifiers.append("tall and slender — the height dominates the footprint")
+    if lx / wy > 2.5:
+        qualifiers.append("strongly elongated in one direction")
+    desc = ", ".join(qualifiers) if qualifiers else "moderate proportions"
+    return f"roughly {ratio} length-to-width-to-height — {desc}"
+
+
 def rest_pose_hint(spec: PartSpec | None) -> str:
     """Pose clause for the hero prompt — parts rest on z=0 per the
     coordinate contract, so the photo should show them lying flat."""
@@ -101,6 +137,7 @@ def hero_prompt_parts(spec: PartSpec | None, prompt: str, subject: str) -> dict[
         "subject": subject,
         "intent": _clip(prompt, INTENT_MAX_CHARS),
         "features_visual": visual_features(spec),
+        "proportions": proportion_hint(spec),
         "pose": rest_pose_hint(spec),
         "negative": NEGATIVE_PROMPT,
     }
