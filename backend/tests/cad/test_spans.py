@@ -3,7 +3,7 @@
 from build123d import Box, Pos
 
 from cadx.cad import cadlib
-from cadx.cad.spans import declared_spans, span_checks, span_coverage
+from cadx.cad.spans import declared_spans, plate_checks, span_checks, span_coverage
 
 
 def _features(position: str) -> list[dict]:
@@ -20,9 +20,10 @@ def test_declared_spans_finds_from_to_features():
 
 
 def test_declared_spans_skips_voids_and_single_points():
-    assert declared_spans(
-        [{"name": "h", "type": "through_hole", "position": "from x=0 to x=10"}]
-    ) == []
+    assert (
+        declared_spans([{"name": "h", "type": "through_hole", "position": "from x=0 to x=10"}])
+        == []
+    )
     assert declared_spans(_features("at x=5, y=0")) == []
 
 
@@ -55,3 +56,43 @@ def test_span_checks_end_to_end():
     bad = leg + arm + cadlib.strut((-5, 0, 35), (15, 0, 95), 10, 6)
     res2 = span_checks(bad, feats)
     assert len(res2) == 1 and not res2[0]["ok"]
+
+
+# ---------------------------------------------------------------------------
+# plate_checks
+
+
+def _plate_feature() -> list[dict]:
+    return [
+        {
+            "name": "Mounting lug -x",
+            "type": "pad",
+            "position": "centred at x=-45, y=0; lug extends x=-60..-30, y=-10..10, z=0..6",
+        }
+    ]
+
+
+def test_plate_checks_flags_overshoot():
+    """Live hybrid failure: the mesh lug pad stays organic at ~40 mm in Y
+    while the spec declares y=-10..10 — renders looked 'flat enough' so the
+    critic never saw it. The band sample must flag it."""
+    pad = Pos(-45, 0, 10) * Box(30, 40, 20)  # organic pad 40 wide in Y
+    res = plate_checks(pad, _plate_feature())
+    assert len(res) == 1
+    assert not res[0]["ok"]
+    assert res[0]["measured_span_mm"]["y"] > 20
+
+
+def test_plate_checks_passes_declared_footprint():
+    leg = Pos(-33, 0, 15) * Box(6, 14, 30)  # leg rising at pad inner edge
+    pad = Pos(-45, 0, 3) * Box(30, 20, 6)
+    part = pad + leg
+    res = plate_checks(part, _plate_feature())
+    assert len(res) == 1
+    assert res[0]["ok"]
+
+
+def test_plate_checks_skips_unranged_features():
+    assert (
+        plate_checks(Box(10, 10, 10), [{"name": "pad", "type": "pad", "position": "centred"}]) == []
+    )

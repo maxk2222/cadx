@@ -134,7 +134,17 @@ def test_recut_blind_depth():
     b = Box(20, 20, 10)
     out, applied = mb.recut_missing_holes(
         b,
-        [{"x": 5, "y": 5, "dia": 4.0, "axis": "+z", "kind": "hole", "depth_mm": 4.0}],
+        [
+            {
+                "x": 5,
+                "y": 5,
+                "dia": 4.0,
+                "axis": "+z",
+                "kind": "hole",
+                "depth_mm": 4.0,
+                "blind": True,
+            }
+        ],
     )
     assert applied
     assert not mb.tunnel_open(out, 5, 5, "+z")
@@ -203,6 +213,60 @@ def test_recut_bounded_does_not_pierce_strut_on_same_ray():
     assert applied
     assert not out.is_inside((-57.5, 0.0, 70.0))  # leg bored
     assert out.is_inside(strut_probe)  # strut intact — the bug pierced it
+
+
+def test_recut_through_anchor_pierces_thick_pad():
+    """Live hybrid failure: a Ø5.5 through-hole in a lug declared 6 mm thick
+    carried depth_mm=6 — but the mesh pad there is ~20 mm of continuous
+    material. The bounded cutter left a blind bore; the through-anchor must
+    pierce the whole continuous material interval."""
+    pad = Pos(45, 0, 10) * Box(30, 20, 20)  # mesh-inherited lug, z 0..20
+    out, applied = mb.recut_missing_holes(
+        pad,
+        [
+            {
+                "x": 45.0,
+                "y": 0.0,
+                "dia": 5.5,
+                "axis": "+z",
+                "kind": "hole",
+                "source": "spec",
+                "depth_mm": 6.0,
+                "pos": [45.0, 0.0, 3.0],
+            }
+        ],
+    )
+    assert applied
+    assert mb.tunnel_open(out, 45, 0, "+z")
+    assert not mb.tunnel_open(pad, 45, 0, "+z")  # sanity: was blocked before
+
+
+def test_recut_through_anchor_keeps_gap_to_other_body():
+    """A through-anchor extends to its OWN continuous interval — a second
+    body on the same ray stays intact (the bounded-cutter contract)."""
+    low = Pos(45, 0, 10) * Box(30, 20, 20)  # pad, z 0..20
+    high = Pos(45, 0, 34) * Box(10, 10, 4)  # strut fragment, z 32..36
+    part = low + high
+    out, applied = mb.recut_missing_holes(
+        part,
+        [
+            {
+                "x": 45.0,
+                "y": 0.0,
+                "dia": 5.5,
+                "axis": "+z",
+                "kind": "hole",
+                "source": "spec",
+                "depth_mm": 6.0,
+                "pos": [45.0, 0.0, 3.0],
+            }
+        ],
+    )
+    assert applied
+    assert out.is_inside((45, 0, 34))  # upper body intact
+    # bore tunnels the low pad; the ray is still blocked by the strut above
+    assert not mb.tunnel_open(out, 45, 0, "+z")
+    assert not out.is_inside((45, 0, 10))
 
 
 def test_cadlib_backend_injection(sphere_solid):

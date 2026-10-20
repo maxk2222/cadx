@@ -108,3 +108,125 @@ def span_checks(shape: Any, features: list[dict[str, Any]]) -> list[dict[str, An
             }
         )
     return out
+
+
+# ---------------------------------------------------------------------------
+# declared plate footprints — the visual critic cannot tell a 30x20 pad from
+# a 40x30 blob when the outer surface looks flat (hybrid run: mesh lug pads
+# stayed image-organic at ~2x the declared footprint while renders looked
+# "fine"). Sampling a band of space around the declared z range is LLM-free
+# evidence of the overshoot.
+
+# grid pitch for the band samples and the margin around the declared box —
+# the window must include the host's surroundings but not the rest of the
+# part; a leg rising at the pad's inner edge lives inside the window yet
+# stays within tolerance (its cross-section is smaller than the pad's)
+_BAND_PITCH_MM = 1.5
+_BAND_WINDOW_MM = 12.0
+# allowed footprint growth per axis before flagging (relative + absolute):
+# below this the host "follows" the declaration with organic tolerance
+_OVERSHOOT_REL = 0.35
+_OVERSHOOT_ABS_MM = 4.0
+
+
+def _band_cells_mesh(
+    mesh: Any, xs: list[float], ys: list[float], zmid: float
+) -> set[tuple[int, int]]:
+    """Grid cells inside the source mesh at the band mid height — trimesh's
+    ray-parity `contains` is orders of magnitude faster than OCC is_inside
+    on sewn faceted solids (~200 ms/point)."""
+    import numpy as np
+
+    pts = np.array([[x, y, zmid] for x in xs for y in ys], dtype=float)
+    try:
+        inside = np.asarray(mesh.contains(pts), dtype=bool)
+    except Exception:
+        return set()
+    n_y = len(ys)
+    return {(int(k) // n_y, int(k) % n_y) for k in np.flatnonzero(inside)}
+
+
+def _band_cells_occ(
+    shape: Any, xs: list[float], ys: list[float], zmid: float
+) -> set[tuple[int, int]]:
+    out: set[tuple[int, int]] = set()
+    for i, x in enumerate(xs):
+        for j, y in enumerate(ys):
+            try:
+                if shape.is_inside((x, y, zmid)):
+                    out.add((i, j))
+            except Exception:
+                continue
+    return out
+
+
+def _band_extent(
+    shape: Any,
+    xs: list[float],
+    ys: list[float],
+    zmid: float,
+) -> tuple[float, float] | None:
+    """(x_span, y_span) of material at the horizontal band plane z=zmid
+    inside the sampling window."""
+    mesh = getattr(shape, "_cadx_mesh", None)
+    cells = (
+        _band_cells_mesh(mesh, xs, ys, zmid)
+        if mesh is not None
+        else _band_cells_occ(shape, xs, ys, zmid)
+    )
+    if not cells:
+        return None
+    ix = [c[0] for c in cells]
+    iy = [c[1] for c in cells]
+    return (
+        (max(ix) - min(ix) + 1) * _BAND_PITCH_MM,
+        (max(iy) - min(iy) + 1) * _BAND_PITCH_MM,
+    )
+
+
+def plate_checks(shape: Any, features: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """[{name, declared, measured, ok}] — plates/pads whose declared x/y/z
+    ranges bound a flat host. Material at the plate's band mid-height must
+    not sprawl past the declared footprint."""
+    from cadx.agent.spechost import parse_ranges
+
+    bb = shape.bounding_box()
+    out: list[dict[str, Any]] = []
+    for f in features:
+        if str(f.get("type") or "").lower() in _VOID_TYPES:
+            continue
+        text = " ".join(str(f.get(k) or "") for k in ("position", "description", "name"))
+        rng = parse_ranges(text)
+        if "x" not in rng or "y" not in rng or "z" not in rng:
+            continue  # no declared bounded plate — nothing to check
+        dx, dy, dz = rng["x"], rng["y"], rng["z"]
+        # skip degenerate declarations (a point, or a band spanning the body)
+        if dx[1] - dx[0] < 2 or dy[1] - dy[0] < 2 or dz[1] - dz[0] < 1:
+            continue
+        zmid = (dz[0] + dz[1]) / 2
+        x0, x1 = dx[0] - _BAND_WINDOW_MM, dx[1] + _BAND_WINDOW_MM
+        y0, y1 = dy[0] - _BAND_WINDOW_MM, dy[1] + _BAND_WINDOW_MM
+        x0, x1 = max(x0, float(bb.min.X)), min(x1, float(bb.max.X))
+        y0, y1 = max(y0, float(bb.min.Y)), min(y1, float(bb.max.Y))
+        if x1 <= x0 or y1 <= y0:
+            continue
+        xs = [x0 + i * _BAND_PITCH_MM for i in range(int((x1 - x0) / _BAND_PITCH_MM) + 1)]
+        ys = [y0 + i * _BAND_PITCH_MM for i in range(int((y1 - y0) / _BAND_PITCH_MM) + 1)]
+        ext = _band_extent(shape, xs, ys, zmid)
+        if ext is None:
+            continue
+        over_x = ext[0] - (dx[1] - dx[0])
+        over_y = ext[1] - (dy[1] - dy[0])
+        ok = over_x <= max(_OVERSHOOT_REL * (dx[1] - dx[0]), _OVERSHOOT_ABS_MM) and over_y <= max(
+            _OVERSHOOT_REL * (dy[1] - dy[0]), _OVERSHOOT_ABS_MM
+        )
+        out.append(
+            {
+                "name": str(f.get("name") or f.get("type") or "plate"),
+                "declared": {"x": dx, "y": dy, "z": dz},
+                "measured_span_mm": {"x": round(ext[0], 1), "y": round(ext[1], 1)},
+                "z_mid": round(zmid, 2),
+                "ok": ok,
+            }
+        )
+    return out

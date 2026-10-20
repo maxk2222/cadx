@@ -351,6 +351,9 @@ def run_pipeline(  # noqa: C901
             if not isinstance(res.features, dict):
                 res.features = {}
             res.features["spans"] = span_checks(shape, spec_feats)
+            from cadx.cad.spans import plate_checks
+
+            res.features["plates"] = plate_checks(shape, spec_feats)
     except Exception as e:
         log.warning("features.span_checks_failed", error=str(e)[:200])
 

@@ -3225,6 +3225,30 @@ async def _run_cad(  # noqa: C901
                         "rebuild it so both ends embed into the bodies it must connect",
                     }
                 )
+        # declared plate footprints: material at the host's band height must
+        # not sprawl past the declared x/y ranges — a mesh-inherited pad
+        # looks "flat enough" to the critic while being 2x the declared size
+        for pc in features.get("plates") or []:
+            if isinstance(pc, dict) and not pc.get("ok", True):
+                d = pc.get("declared") or {}
+                m = pc.get("measured_span_mm") or {}
+                dx, dy = d.get("x") or (0, 0), d.get("y") or (0, 0)
+                feature_findings.append(
+                    {
+                        "feature": str(pc.get("name") or "plate"),
+                        "expected": (
+                            f"footprint {dx[1] - dx[0]:.0f}x{dy[1] - dy[0]:.0f} mm "
+                            f"(x {dx[0]:g}..{dx[1]:g}, y {dy[0]:g}..{dy[1]:g})"
+                        ),
+                        "actual": f"material spans {m.get('x'):g}x{m.get('y'):g} mm "
+                        f"at z={pc.get('z_mid'):g}",
+                        "severity": "minor",
+                        "fix_hint": "trim the host plate to the declared footprint — "
+                        "cut the excess material outside the declared box within the "
+                        "plate's z band (mesh_cut with a frame cutter), do NOT touch "
+                        "the band's connection to the rest of the body",
+                    }
+                )
         f_iou = (analysis or {}).get("footprint_iou")
         if f_iou is not None and f_iou < 0.85:
             # only an authoritative plan-view measurement (or an explicit

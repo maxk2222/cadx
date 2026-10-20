@@ -105,6 +105,10 @@ class Anchor(BaseModel):
     axis: str = "+z"  # +x | +y | +z — bore/feature axis
     z: float | None = None  # centre coord along the bore axis (None = part mid)
     depth_mm: float | None = None  # bore length along `axis`
+    # True only when the spec DECLARES a bottomed bore ("blind", "Sackloch",
+    # dims.depth). Host-span depth bounds (the plate the bore pierces) are
+    # NOT blind intent — a through-hole through a 6 mm lug also carries 6 mm.
+    blind: bool = False
     kind: str = "hole"  # hole | thread | insert | bearing_seat | dimple
     bolt_size: str = ""  # matched spec feature standard, e.g. "M5"
     # full 3D in-plane position for non-+z anchors (axial coord may be None)
@@ -161,6 +165,23 @@ def _hole_like(f: Feature) -> bool:
         or bool(re.search(r"hole|bore|loch|bohr|thread|gewinde|tap|durchgang|senk", blob))
         or bool(_bolt_size(f.standard or f.name or ""))
     )
+
+
+_BLIND_RE = re.compile(
+    r"\bblind\b|sackloch|sackbohr|grundloch|\btiefe\b|\bdepth\b|\bdeep\b|"
+    r"nicht\s+durchgehend|partial\s+depth",
+    re.I,
+)
+
+
+def _is_blind(f: Feature) -> bool:
+    """Spec feature declares a bottomed bore — explicit 'blind'/'Sackloch'
+    text/type or a depth dimension on the hole itself."""
+    blob = f"{f.type or ''} {f.name or ''} {f.position or ''} {f.description or ''}".lower()
+    if _BLIND_RE.search(blob):
+        return True
+    dims = f.dims or {}
+    return any(k in dims and dims[k] for k in ("depth", "depth_mm", "tiefe", "bore_depth"))
 
 
 def _hole_dia(f: Feature) -> float | None:
@@ -535,10 +556,12 @@ def _spec_anchors(spec: PartSpec) -> list[Anchor]:
                         source="spec-est" if est else "spec",
                         name=f.name or "",
                         kind=kind,
+                        blind=_is_blind(f),
                         bolt_size=bolt,
                     )
                 )
             continue
+        blind = _is_blind(f)
         for x, y, est in _spec_xy(f, bounds, dia):
             # a +z bore bound to ONE declared plate carries the plate's axial
             # centre + span so the deterministic re-cut drills the plate only —
@@ -546,6 +569,13 @@ def _spec_anchors(spec: PartSpec) -> list[Anchor]:
             rng = parse_ranges(text).get("z") or host_span(spec, f, "z")
             z_mid = (rng[0] + rng[1]) / 2.0 if rng is not None else None
             depth_mm = rng[1] - rng[0] if rng is not None else None
+            if blind and depth_mm is None:
+                # declared blind depth (dims.depth) — never fall through to a
+                # full-length cut for a bottomed bore
+                for dk in ("depth", "depth_mm", "tiefe", "bore_depth"):
+                    if (f.dims or {}).get(dk):
+                        depth_mm = float(f.dims[dk])
+                        break
             out.append(
                 Anchor(
                     index=0,  # re-indexed by build_anchors
@@ -560,6 +590,7 @@ def _spec_anchors(spec: PartSpec) -> list[Anchor]:
                     source="spec-est" if est else "spec",
                     name=f.name or "",
                     kind=kind,
+                    blind=blind,
                     bolt_size=bolt,
                 )
             )

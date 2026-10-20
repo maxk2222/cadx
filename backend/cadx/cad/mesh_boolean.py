@@ -334,11 +334,121 @@ def tunnel_open(shape: Any, u: float, v: float, axis: str) -> bool:
     return True
 
 
-def _bore_cutter(hole: dict[str, Any], idx: int, u: float, v: float, bb: Any, margin: float) -> Any:
+def _pair_hits(ts: list[float], tol: float = 0.2) -> list[tuple[float, float]]:
+    """Sorted surface hits → material intervals (entry, exit) pairs.
+
+    Faceted bodies report grazing duplicates at seam/tangent facets — hits
+    closer than `tol` collapse into one crossing. A trailing unpaired hit
+    (ray exiting at the bbox boundary) is dropped."""
+    ts = sorted(ts)
+    deduped: list[float] = []
+    for t in ts:
+        if deduped and t - deduped[-1] < tol:
+            continue
+        deduped.append(t)
+    return [(deduped[i], deduped[i + 1]) for i in range(0, len(deduped) - 1, 2)]
+
+
+def _material_intervals(shape: Any, u: float, v: float, axis: str) -> list[tuple[float, float]]:
+    """Continuous material intervals along the axis ray through (u, v), in
+    part-frame coordinates (entry, exit) — trimesh path for solids carrying
+    their source mesh, `is_inside` sampling otherwise."""
+    idx, direction = _axis_vec(axis)
+    bb = shape.bounding_box()
+    mins = [bb.min.X, bb.min.Y, bb.min.Z]
+    maxs = [bb.max.X, bb.max.Y, bb.max.Z]
+    span = maxs[idx] - mins[idx]
+    if span <= 0:
+        return []
+    margin = 50.0
+    others = [i for i in range(3) if i != idx]
+    start = (mins[idx] - margin) if axis[0] == "-" else (maxs[idx] + margin)
+    d = tuple(-c for c in direction)
+
+    mesh = getattr(shape, MESH_ATTR, None)
+    if mesh is not None:
+        origin = [0.0, 0.0, 0.0]
+        origin[others[0]], origin[others[1]] = u, v
+        origin[idx] = start
+        locs, _, _ = mesh.ray.intersects_location(
+            ray_origins=[origin],
+            ray_directions=[list(d)],
+            multiple_hits=True,
+        )
+        ts: list[float] = []
+        for p in locs:
+            t = (
+                (float(p[0]) - origin[0]) * d[0]
+                + (float(p[1]) - origin[1]) * d[1]
+                + (float(p[2]) - origin[2]) * d[2]
+            )
+            if margin - 1e-4 < t < margin + span + 1e-4:
+                ts.append(start + d[idx] * t)  # axial coord of the hit
+        return _pair_hits(ts)
+
+    n = max(7, int(span / 2))
+    edges: list[tuple[float, float]] = []
+    lo: float | None = None
+    for i in range(1, n + 1):
+        p = [0.0, 0.0, 0.0]
+        p[others[0]], p[others[1]] = u, v
+        a = mins[idx] + span * i / (n + 1)
+        p[idx] = a
+        try:
+            cur = bool(shape.is_inside(tuple(p)))
+        except Exception:
+            cur = False
+        if cur and lo is None:
+            lo = a
+        elif not cur and lo is not None:
+            edges.append((lo, a))
+            lo = None
+    if lo is not None:
+        edges.append((lo, mins[idx] + span))
+    return edges
+
+
+def _cut_span(
+    hole: dict[str, Any],
+    idx: int,
+    intervals: list[tuple[float, float]],
+    lo_decl: float | None,
+) -> tuple[float, float] | None:
+    """(lo, hi) of the material interval the cutter must pierce for a
+    through-bore — the interval containing the anchor's declared axial
+    centre, else the interval nearest it (a separate strut on the same ray
+    is deliberately left uncut)."""
+    if not intervals:
+        return None
+    if lo_decl is not None:
+        for lo, hi in intervals:
+            if lo - 0.25 <= lo_decl <= hi + 0.25:
+                return lo, hi
+        return min(intervals, key=lambda iv: abs((iv[0] + iv[1]) / 2 - lo_decl))
+    # no declared centre: the plate the bore ENTERS through — the axis-sign
+    # face (+z enters from the top, -z from the bottom)
+    if len(intervals) == 1:
+        return intervals[0]
+    neg = str(hole.get("axis") or "+z")[0] == "-"
+    return min(intervals, key=lambda iv: iv[0]) if neg else max(intervals, key=lambda iv: iv[1])
+
+
+def _bore_cutter(
+    hole: dict[str, Any],
+    idx: int,
+    u: float,
+    v: float,
+    bb: Any,
+    margin: float,
+    material_span: tuple[float, float] | None = None,
+) -> Any:
     """Positioned cylinder cutter along the anchor axis through the bbox.
 
-    Blind anchors (`depth_mm` set) cut only the stated depth from the entry
-    face; everything else goes clean through with margin on both sides."""
+    Blind anchors (`blind` flag or `depth_mm` from a declared bore depth)
+    cut only the stated depth from the entry face. Host-span-bounded
+    through-anchors keep the plate's axial centre but pierce the ACTUAL
+    material interval there (`material_span`) — a mesh pad thicker than
+    the declared plate depth must still yield a through-bore."""
     from build123d import Align, Axis, Cylinder, Pos
 
     mins = [bb.min.X, bb.min.Y, bb.min.Z]
@@ -351,7 +461,14 @@ def _bore_cutter(hole: dict[str, Any], idx: int, u: float, v: float, bb: Any, ma
         else None
     )
     if depth:
-        if axial is not None:
+        if (
+            not hole.get("blind")
+            and material_span is not None
+            and material_span[1] - material_span[0] > float(depth) + 1e-3
+        ):
+            span = (material_span[1] - material_span[0]) + 2 * margin
+            lo = material_span[0] - margin
+        elif axial is not None:
             # the anchor carries the bore's axial centre (spec anchors:
             # host-plate mid) — centre the cutter on it so a blind/bounded
             # bore lands on its plate instead of the envelope's axis-sign
@@ -384,6 +501,23 @@ def _bore_cutter(hole: dict[str, Any], idx: int, u: float, v: float, bb: Any, ma
     others = [i for i in range(3) if i != idx]
     pos[others[0]], pos[others[1]] = u, v
     return Pos(*pos) * cyl
+
+
+def _recut_span(
+    h: dict[str, Any], shape: Any, idx: int, u: float, v: float
+) -> tuple[float, float] | None:
+    """Material interval a bounded through-cutter must pierce (None = keep
+    the declared depth bound)."""
+    if not h.get("depth_mm") or h.get("blind"):
+        return None
+    try:
+        pos = h.get("pos")
+        axial = pos[idx] if isinstance(pos, (list, tuple)) and len(pos) == 3 else None
+        return _cut_span(
+            h, idx, _material_intervals(shape, u, v, str(h.get("axis") or "+z")), axial
+        )
+    except Exception:
+        return None
 
 
 def recut_missing_holes(
@@ -429,7 +563,10 @@ def recut_missing_holes(
         return shape, []
 
     bb = shape.bounding_box()
-    cutters = [_bore_cutter(h, idx, u, v, bb, margin) for h, idx, u, v in blocked]
+    cutters = [
+        _bore_cutter(h, idx, u, v, bb, margin, _recut_span(h, shape, idx, u, v))
+        for h, idx, u, v in blocked
+    ]
     labels = [f"Ø{float(h['dia']):g}@{h.get('axis', '+z')}" for h, _idx, _u, _v in blocked]
 
     # OCC first — on a mostly-analytic result the bore walls stay analytic
