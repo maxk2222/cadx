@@ -47,6 +47,7 @@ def _warmup() -> None:
     so trimesh's internal submodules (boolean/repair/exchange) and the OCP
     wrappers must be resolved here while only runner frames are live."""
     import trimesh.boolean
+    import trimesh.ray
     import trimesh.repair  # noqa: F401
     from build123d import Box
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing  # noqa: F401
@@ -259,7 +260,8 @@ def _plane_coords(hole: dict[str, Any], idx: int) -> tuple[float, float] | None:
 
 
 def _surface_hits(shape: Any, origin: Any, direction: tuple[float, float, float]) -> list[float]:
-    """Line-vs-B-Rep intersections; returns the parameter t of every hit."""
+    """Line-vs-B-Rep intersections; returns the ray parameter t of every hit
+    (t = distance from `origin` along the unit `direction`)."""
     from OCP.BRepIntCurveSurface import BRepIntCurveSurface_Inter
     from OCP.gp import gp_Dir, gp_Lin
 
@@ -268,8 +270,13 @@ def _surface_hits(shape: Any, origin: Any, direction: tuple[float, float, float]
     ts: list[float] = []
     while inter.More():
         p = inter.Pnt()
-        # t along the unit direction == distance from origin
-        ts.append(float(p.X() * direction[0] + p.Y() * direction[1] + p.Z() * direction[2]))
+        ts.append(
+            float(
+                (p.X() - origin.X()) * direction[0]
+                + (p.Y() - origin.Y()) * direction[1]
+                + (p.Z() - origin.Z()) * direction[2]
+            )
+        )
         inter.Next()
     return ts
 
@@ -277,24 +284,54 @@ def _surface_hits(shape: Any, origin: Any, direction: tuple[float, float, float]
 def tunnel_open(shape: Any, u: float, v: float, axis: str) -> bool:
     """True when a ray through (u, v) along `axis` meets NO material — i.e. a
     through-tunnel exists at the anchor position. Any surface hit means the
-    nominal bore is missing, blocked or undersized."""
-    from OCP.gp import gp_Pnt
+    nominal bore is missing, blocked or undersized.
 
+    Two probes: solids carrying their source trimesh use `ray.intersects_-
+    location` (the OCC ray on 30k-facet bodies is slow and reports phantom
+    hits); analytic bodies use `is_inside` sampling — the OCC ray reports
+    grazing hits at the far face plane on drilled analytical bores."""
     idx, direction = _axis_vec(axis)
     bb = shape.bounding_box()
     mins = [bb.min.X, bb.min.Y, bb.min.Z]
     maxs = [bb.max.X, bb.max.Y, bb.max.Z]
-    origin = [0.0, 0.0, 0.0]
-    others = [i for i in range(3) if i != idx]
-    origin[others[0]], origin[others[1]] = u, v
-    origin[idx] = maxs[idx] + 50.0
-    d = tuple(-c for c in direction)
-    ts = _surface_hits(shape, gp_Pnt(*origin), d)
-    # hits must lie strictly inside the bbox span — grazing hits on the outer
-    # face planes are tessellation noise, not blockers
     span = maxs[idx] - mins[idx]
-    inside = [t for t in ts if -1e-4 < t < span + 1e-4]
-    return not inside
+    margin = 50.0
+    others = [i for i in range(3) if i != idx]
+    # ray starts outside on the axis-sign face and travels INTO the part:
+    # +z probes come down from above the bbox, -z probes come up from below
+    start = (mins[idx] - margin) if axis[0] == "-" else (maxs[idx] + margin)
+    d = tuple(-c for c in direction)
+
+    mesh = getattr(shape, MESH_ATTR, None)
+    if mesh is not None:
+        origin = [0.0, 0.0, 0.0]
+        origin[others[0]], origin[others[1]] = u, v
+        origin[idx] = start
+        locs, _, _ = mesh.ray.intersects_location(
+            ray_origins=[origin],
+            ray_directions=[list(d)],
+            multiple_hits=True,
+        )
+        for p in locs:
+            t = (
+                (float(p[0]) - origin[0]) * d[0]
+                + (float(p[1]) - origin[1]) * d[1]
+                + (float(p[2]) - origin[2]) * d[2]
+            )
+            if margin - 1e-4 < t < margin + span + 1e-4:
+                return False
+        return True
+
+    # analytic: sample interior points — thin plates must still count, so
+    # the pitch adapts to the span (~2 mm resolution, 7 samples minimum)
+    n = max(7, int(span / 2))
+    for i in range(1, n + 1):
+        p = [0.0, 0.0, 0.0]
+        p[others[0]], p[others[1]] = u, v
+        p[idx] = mins[idx] + span * i / (n + 1)
+        if shape.is_inside(tuple(p)):
+            return False
+    return True
 
 
 def _bore_cutter(hole: dict[str, Any], idx: int, u: float, v: float, bb: Any, margin: float) -> Any:

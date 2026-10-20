@@ -255,3 +255,24 @@ def test_cadlib_mesh_cut_rescue_via_backend(sphere_solid, monkeypatch):
         assert out.volume < sphere_solid.volume
     finally:
         cadlib.ops.set_boolean_backend(None)
+
+
+def test_tunnel_open_negative_axis():
+    """-z probes must start BELOW the part and travel up — the old ray
+    always started above and reported every -z bore as open."""
+    b = Pos(0, 0, 10) * Box(20, 20, 10)
+    assert not mb.tunnel_open(b, 0, 0, "-z")
+    holed = b - Pos(0, 0, -1) * Cylinder(radius=2.5, height=30)
+    assert mb.tunnel_open(holed, 0, 0, "-z")
+
+
+def test_tunnel_open_elevated_part():
+    """A part floating above z=0 (or offset in x) must not read as open —
+    the old probe projected hit points onto the direction from the world
+    origin, so every hit beyond the span was filtered away (observed: all
+    spec anchors skipped on a 120x40x30 mesh handle)."""
+    b = Pos(0, 0, 15) * Box(20, 20, 10)  # z in [10, 20]
+    assert not mb.tunnel_open(b, 0, 0, "+z")
+    off = Pos(40, 0, 5) * Box(10, 10, 10)  # x in [35, 45]
+    assert not mb.tunnel_open(off, 40, 0, "+z")
+    assert mb.tunnel_open(off, 0, 0, "+z")  # ray at x=0 misses the part
