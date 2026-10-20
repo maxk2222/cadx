@@ -57,7 +57,13 @@ to violate a dimension the spec pins — when the OVERALL envelope misses the
 spec but individual features are already correct, the missing extent must come
 from unpinned body material (e.g. the organic body/flanges in mesh modes), so
 name that region; do NOT tell the builder to grow a pinned feature to fill the
-envelope.
+envelope. When NO declared feature or body region can supply the missing
+extent (the widest declared feature is 20 mm but the spec claims 40 mm overall
+width), still flag the envelope, but make the fix_hint honest:
+"overall Y=40 is unreachable by any declared feature (max 20 mm) — either the
+envelope is aspirational or a feature is undersized". NEVER ask the builder to
+add filler geometry (decks, webs, filler slabs) whose only purpose is reaching
+the envelope — an honest spec-unreachable flag beats an invented body.
 Every discrepancy must cite its origin in `source`: `spec` (feature/dimension
 in the PART SPEC), `prompt` (named in the USER REQUEST), `image` (visible in
 the reference images), `dfm` (manufacturing warning). Never invent requirements

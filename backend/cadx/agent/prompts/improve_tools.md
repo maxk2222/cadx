@@ -24,6 +24,11 @@ Guidance:
 - If a "PREVIOUS ATTEMPTS" block is present it lists edits already tried —
   do NOT repeat them; pick a structurally different fix (tuning the same
   line or value a second time never helps).
+- If an issue says an overall dimension is unreachable by the declared
+  features ("spec unreachable"/"aspirational envelope"): do NOT add filler
+  geometry (decks, webs, slabs) just to reach the envelope. State in your
+  reply that the gap is spec-inherent and leave the geometry honest —
+  matching a wrong envelope by inventing material is worse than flagging it.
 - For a pure hole-diameter issue on a verified part: `list_editable_features`
   then `edit_feature(feature_id, diameter)` validates the resize on the real
   solid before you touch code.
