@@ -203,6 +203,12 @@ def quick_stl(shape: Shape, out_dir: Path, name: str = "mesh") -> Path:
     """STL used for renders/mesh analysis (coarser than the export STL)."""
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"{name}.stl"
+    src = getattr(shape, "_cadx_mesh", None)
+    if src is not None:
+        # faceted hybrid: the attached mesh is already the exact surface —
+        # OCC re-meshing of a sewn 40k-face solid costs minutes
+        src.export(str(path))
+        return path
     export_stl(shape, str(path), tolerance=0.05, angular_tolerance=0.2)
     return path
 

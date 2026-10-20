@@ -548,6 +548,15 @@ def main(workdir: Path | None = None) -> int:  # noqa: C901
 
         export_brep(shape, str(workdir / "model.brep"))
 
+        # faceted hybrid result: the attached manifold mesh IS the exact
+        # geometry — ship it next to the brep so the pipeline re-attaches it
+        # instead of re-tessellating tens of thousands of OCC faces (minutes)
+        if mesh_boolean is not None:
+            _res_mesh = getattr(shape, mesh_boolean.MESH_ATTR, None)
+            if _res_mesh is not None:
+                with contextlib.suppress(Exception):
+                    _res_mesh.export(str(workdir / "result_mesh.glb"))
+
         flat = namespace.get("flat_profile")
         if isinstance(flat, Shape):
             export_brep(flat, str(workdir / "flat_profile.brep"))

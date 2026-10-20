@@ -80,10 +80,21 @@ def declared_spans(features: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def span_coverage(shape: Any, p0: list[float], p1: list[float]) -> float:
     """Fraction of centreline samples inside the solid (0..1)."""
+    import numpy as np
+
+    ts = [i / (_N_SAMPLES - 1) for i in range(_N_SAMPLES)]
+    pts = [[p0[k] + t * (p1[k] - p0[k]) for k in range(3)] for t in ts]
+    mesh = getattr(shape, "_cadx_mesh", None)
+    if mesh is not None:
+        # trimesh ray-parity containment — OCC is_inside on a sewn faceted
+        # solid costs ~200ms/point and grinds the analyze step for minutes
+        try:
+            inside = np.asarray(mesh.contains(np.asarray(pts)), dtype=bool)
+            return float(inside.sum()) / _N_SAMPLES
+        except Exception:
+            pass
     inside = 0
-    for i in range(_N_SAMPLES):
-        t = i / (_N_SAMPLES - 1)
-        pt = [p0[k] + t * (p1[k] - p0[k]) for k in range(3)]
+    for pt in pts:
         try:
             if shape.is_inside(pt):
                 inside += 1

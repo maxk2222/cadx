@@ -20,7 +20,7 @@ import numpy as np
 import trimesh
 from build123d import import_brep
 
-from cadx.cad.analysis import Analysis, analyze
+from cadx.cad.analysis import _FACET_FACE_CAP, Analysis, analyze
 from cadx.cad.contact_sheet import make_contact_sheet
 from cadx.cad.dfm import DfmReport
 from cadx.cad.dfm.cnc import cnc_checks, cnc_mesh_checks
@@ -339,6 +339,17 @@ def run_pipeline(  # noqa: C901
         res.error = f"failed to load generated shape: {e}"
         return _attach_verify_spec(res, spec_dict, settings, rt)
 
+    # hybrid: the runner ships the result's manifold mesh next to the brep —
+    # re-attach it so tessellation/analysis skip re-meshing the faceted solid
+    _res_glb = ro.brep_path.parent / "result_mesh.glb"
+    if _res_glb.exists():
+        try:
+            from cadx.cad.mesh_boolean import attach_mesh
+
+            attach_mesh(shape, load_triangle_mesh(_res_glb))
+        except Exception:
+            pass
+
     # 3. quick STL for mesh analysis + renders
     _mark_step(step_key, "tessellate")
     t = time.monotonic()
@@ -384,8 +395,10 @@ def run_pipeline(  # noqa: C901
         log.warning("features.span_checks_failed", error=str(e)[:200])
 
     # 4b2. invalid B-Rep → locate defects so repair feedback gets coordinates
-    # (WHERE geometry is broken), not just "is_valid: false"
-    if not res.analysis.is_valid:
+    # (WHERE geometry is broken), not just "is_valid: false". On faceted
+    # solids BRepCheck localization is a multi-minute per-face grind with no
+    # actionable output — the faceted fast path already gates on it
+    if not res.analysis.is_valid and res.analysis.face_count <= _FACET_FACE_CAP:
         try:
             from cadx.cad.defects import locate_defects, summarize_defects
 
@@ -505,9 +518,7 @@ def run_pipeline(  # noqa: C901
                     shape, exp_dir / shipped, write=False, max_faces=gate_faces
                 )
             else:
-                gate = step_roundtrip_check(
-                    shape, workdir / "step_gate.step", max_faces=gate_faces
-                )
+                gate = step_roundtrip_check(shape, workdir / "step_gate.step", max_faces=gate_faces)
             # store the gate result unconditionally — verify_spec reads it as
             # structural evidence (ok→PASS, warning→FAIL, skipped→UNVERIFIED)
             res.features["step_roundtrip"] = gate

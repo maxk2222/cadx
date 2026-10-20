@@ -228,6 +228,12 @@ def unify_checked(shape: Any, *, vol_tol: float = 0.02) -> Any:
             return shape
         if len(res.solids()) != len(shape.solids()):
             return shape
+        # unify only merges coplanar faces — geometry is identical, so the
+        # attached manifold mesh stays exact and saves a re-tessellation
+        src = getattr(shape, MESH_ATTR, None)
+        if src is not None:
+            with contextlib.suppress(Exception):
+                setattr(res, MESH_ATTR, src)
         return res
     except Exception:
         return shape
