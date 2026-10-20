@@ -52,7 +52,12 @@ Score 0-100. `passed=true` requires: no major discrepancy, no dimension issue
 reported in the numeric results, and shape/features matching the spec.
 For each discrepancy give a concrete `fix_hint` referring to features and axes
 (e.g. "increase slot length to 25 mm", "holes are on the wrong face — they must
-be on +Z", "missing the countersink").
+be on +Z", "missing the countersink"). A `fix_hint` must never ask the builder
+to violate a dimension the spec pins — when the OVERALL envelope misses the
+spec but individual features are already correct, the missing extent must come
+from unpinned body material (e.g. the organic body/flanges in mesh modes), so
+name that region; do NOT tell the builder to grow a pinned feature to fill the
+envelope.
 Every discrepancy must cite its origin in `source`: `spec` (feature/dimension
 in the PART SPEC), `prompt` (named in the USER REQUEST), `image` (visible in
 the reference images), `dfm` (manufacturing warning). Never invent requirements

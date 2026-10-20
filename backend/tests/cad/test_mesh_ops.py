@@ -187,6 +187,55 @@ def test_scale_to_spec_no_dims_normalizes():
     assert issues
 
 
+def test_fit_stated_dims_stretches_deficient_axis():
+    """Handle case: mesh arrives 120x20x37 vs stated 120x40x30 — the repair
+    loop cannot legally fix the envelope, so the baseline fits stated axes
+    non-uniformly (y x2, z x0.81) instead of reporting forever."""
+    from cadx.cad.mesh_ops import fit_stated_dims
+
+    m = _box(120, 20, 37)
+    out, fit, issues = fit_stated_dims(m, _spec(x=120, y=40, z=30), [])
+    assert fit["y"] == pytest.approx(2.0, abs=1e-3)
+    assert fit["z"] == pytest.approx(30 / 37, abs=1e-3)
+    assert out.extents[0] == pytest.approx(120, rel=1e-3)
+    assert out.extents[1] == pytest.approx(40, rel=1e-3)
+    assert out.extents[2] == pytest.approx(30, rel=1e-3)
+    assert issues == []
+
+
+def test_fit_stated_dims_out_of_bounds_keeps_issue():
+    """A generator output 9x off the stated dim cannot be trusted — fitting it
+    would produce garbage, so the axis stays reported."""
+    from cadx.cad.mesh_ops import fit_stated_dims
+
+    m = _box(60, 30, 90)
+    # pipeline order: scale_to_spec reports first, fit decides what remains
+    _, _, issues = scale_to_spec(m, _spec(x=60, y=30, z=10))
+    out, fit, issues = fit_stated_dims(m, _spec(x=60, y=30, z=10), issues)
+    assert fit == {}
+    assert any("height/Z" in i for i in issues)
+    assert out.extents[2] == pytest.approx(90)
+
+
+def test_fit_stated_dims_inferred_dims_untouched():
+    """Only 'stated' dims are authoritative — inferred dims never force a fit."""
+    from cadx.cad.mesh_ops import fit_stated_dims
+
+    m = _box(120, 20, 37)
+    out, fit, issues = fit_stated_dims(m, _spec(x=120, y=40, z=30, source="inferred"), [])
+    assert fit == {} and issues == []
+    assert out.extents[1] == pytest.approx(20)
+
+
+def test_baseline_mesh_dim_fit_reaches_spec_envelope():
+    raw = _box(120, 20, 37)
+    m, info = baseline_mesh(raw, MeshPostParams(), _spec(x=120, y=40, z=30))
+    assert m.extents[1] == pytest.approx(40, rel=1e-3)
+    assert m.extents[2] == pytest.approx(30, rel=1e-3)
+    assert info["dim_fit"]["y"] == pytest.approx(2.0, abs=1e-2)
+    assert info["dim_issues"] == []
+
+
 def test_rest_on_xy_center():
     m = _box(10, 10, 10)
     m.apply_translation([50, -30, 7])

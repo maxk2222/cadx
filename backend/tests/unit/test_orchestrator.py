@@ -417,3 +417,43 @@ async def test_stall_triggers_one_fresh_codegen_then_finalize():
     assert any(s == "codegen" and i == 3 for s, i, _m in emitted)
     assert not any(s == "improve" and i == 3 and "fixing" in m for s, i, m in emitted)
     assert any(s == "finalize" and "no improvement" in m for s, _i, m in emitted)
+
+
+def test_regression_critique_fires_on_collapse():
+    """Iter-6 handle: improve rebuilt a 30x20x6 plate (~10% volume) where the
+    best candidate had the full mesh body — the vision critique just restated
+    the obvious at full reasoning cost. Synthesize the verdict instead."""
+    from cadx.agent.orchestrator import Candidate, _regression_critique
+    from cadx.llm.schemas import CodeResponse
+
+    best = Candidate(
+        1,
+        CodeResponse(reasoning="", params=[], expected_bbox=[], code="result=1"),
+        {"analysis": {"volume": 40000.0, "bbox_size": [120, 40, 30]}},
+        None,
+        [],
+    )
+    collapsed = _regression_critique(
+        best, {"volume": 3600.0, "bbox_size": [30, 20, 6]}
+    )
+    assert collapsed is not None
+    assert collapsed.passed is False and collapsed.score <= 30
+    assert collapsed.discrepancies[0].severity == "major"
+    assert "minimal change" in collapsed.discrepancies[0].fix_hint
+
+
+def test_regression_critique_ignores_normal_candidates():
+    from cadx.agent.orchestrator import Candidate, _regression_critique
+    from cadx.llm.schemas import CodeResponse
+
+    best = Candidate(
+        1,
+        CodeResponse(reasoning="", params=[], expected_bbox=[], code="result=1"),
+        {"analysis": {"volume": 40000.0, "bbox_size": [120, 40, 30]}},
+        None,
+        [],
+    )
+    # small volume reduction from a feature cut is not a collapse
+    assert _regression_critique(best, {"volume": 36000.0, "bbox_size": [120, 40, 30]}) is None
+    # no best candidate -> never fire
+    assert _regression_critique(None, {"volume": 100.0, "bbox_size": [5, 5, 5]}) is None

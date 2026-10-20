@@ -392,6 +392,75 @@ def scale_to_spec(
     return out, float(factor), issues
 
 
+def fit_stated_dims(
+    mesh: trimesh.Trimesh,
+    spec: PartSpec | None,
+    issues: list[str],
+    *,
+    tol: float = 0.10,
+    lo: float = 0.45,
+    hi: float = 2.2,
+) -> tuple[trimesh.Trimesh, dict[str, float], list[str]]:
+    """Non-uniform per-axis fit onto STATED spec dims (uniform scale's residue).
+
+    `scale_to_spec` keeps the generator's proportions and only reports axis
+    mismatches — so a wrong image ratio propagates into the part and the
+    repair loop can then only satisfy the envelope by resizing a spec-pinned
+    feature (observed: lugs widened 20->40 mm because the mesh body could not
+    supply the declared 40 mm width). When the deviation is moderate the
+    stated dimension wins over the generated shape: stretch/shrink each axis
+    to spec. Axes needing an extreme factor (>hi/<lo) mean the generator
+    output is badly wrong — those stay reported, not fitted.
+
+    Returns (mesh, applied_factors, remaining_issues).
+    """
+    if spec is None:
+        return mesh, {}, issues
+    stated = [
+        (d, i, n)
+        for d, i, n in (
+            (spec.length_x, 0, "length/X"),
+            (spec.width_y, 1, "width/Y"),
+            (spec.height_z, 2, "height/Z"),
+        )
+        if d is not None and d.source == "stated" and float(d.value or 0) > 0
+    ]
+    if not stated:
+        return mesh, {}, issues
+    ext = np.asarray(mesh.extents, dtype=float)
+    targets: dict[int, float] = {}
+    for dim, idx, _name in stated:
+        value = float(dim.value)
+        if abs(ext[idx] - value) / value <= tol:
+            continue
+        f = value / max(float(ext[idx]), 1e-9)
+        if lo <= f <= hi:
+            targets[idx] = f
+    if not targets:
+        return mesh, {}, issues
+    factors = np.array([targets.get(i, 1.0) for i in range(3)])
+    out = mesh.copy()
+    c = _bbox_center(mesh)
+    m = np.eye(4)
+    m[:3, :3] = np.diag(factors)
+    m[:3, 3] = c - factors * c
+    out.apply_transform(m)
+    # re-check against the fitted result: out-of-range axes keep reporting
+    remaining: list[str] = []
+    new_ext = np.asarray(out.extents, dtype=float)
+    for dim, idx, name in stated:
+        value = float(dim.value)
+        dev = abs(new_ext[idx] - value) / value
+        if dev > tol:
+            remaining.append(
+                f"aspect mismatch on {name}: spec {value:g} mm vs fitted "
+                f"{new_ext[idx]:.1f} mm ({dev * 100:.0f}% off; generator output "
+                "is not dimension-true)"
+            )
+    applied = {"xyz"[i]: round(float(factors[i]), 4) for i in targets}
+    return out, applied, remaining
+
+
 def rest_on_xy_center(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
     """Translate so bbox min.z == 0 and XY center is at the origin."""
     out = mesh.copy()
@@ -1659,6 +1728,7 @@ def baseline_mesh(
             )
 
     mesh, factor, dim_issues = scale_to_spec(mesh, spec)
+    mesh, dim_fit, dim_issues = fit_stated_dims(mesh, spec, dim_issues)
     if post.scale and abs(post.scale - 1.0) > 1e-9:
         mesh.apply_scale(post.scale)
         factor *= post.scale
@@ -1681,6 +1751,7 @@ def baseline_mesh(
             "mirror_x": post.mirror_x,
         },
         "scale_factor": round(factor, 6),
+        "dim_fit": dim_fit,
         "dim_issues": dim_issues,
     }
     return mesh, info

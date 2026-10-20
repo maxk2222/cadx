@@ -48,7 +48,7 @@ from cadx.cad.mesh_ops import (
 )
 from cadx.cad.partspec import check_standard_part_calls
 from cadx.cad.patch import apply_patch, diff_summary
-from cadx.llm.schemas import CodeResponse, Critique, PartSpec, PatchResponse
+from cadx.llm.schemas import CodeResponse, Critique, Discrepancy, PartSpec, PatchResponse
 from cadx.logging import get_logger
 
 log = get_logger(__name__)
@@ -295,6 +295,54 @@ def build_issues(
             if w.get("severity") == "high":
                 issues.append({"source": "dfm", "severity": "major", "what": w["message"]})
     return issues[:12]
+
+
+def _regression_critique(best: Candidate | None, analysis: dict[str, Any]) -> Critique | None:
+    """Deterministic rebuild-collapse verdict — skips the vision critique.
+
+    When a rebuild (improve patch or fresh codegen) produces a fraction of the
+    best candidate's body (observed: single-tab plate at ~10% of the volume,
+    full 10-minute critique just to say 'the arch is gone'), the measured
+    metrics already prove the regression. Returns a synthesized Critique whose
+    fix_hint points back at the working structure, or None when the candidate
+    is not a clear collapse.
+    """
+    if best is None:
+        return None
+    b_ana = (best.exec_result or {}).get("analysis") or {}
+    b_vol = float(b_ana.get("volume") or 0)
+    a_vol = float(analysis.get("volume") or 0)
+    b_bb = b_ana.get("bbox_size") or []
+    a_bb = analysis.get("bbox_size") or []
+    if b_vol <= 0 or a_vol <= 0 or len(b_bb) != 3 or len(a_bb) != 3:
+        return None
+    collapsed_axes = sum(1 for a, b in zip(a_bb, b_bb, strict=True) if a < 0.5 * b)
+    if a_vol >= 0.30 * b_vol and collapsed_axes < 2:
+        return None
+    bb = "x".join(f"{float(x):.0f}" for x in a_bb), "x".join(f"{float(x):.0f}" for x in b_bb)
+    return Critique(
+        score=10,
+        passed=False,
+        confidence=1.0,
+        discrepancies=[
+            Discrepancy(
+                what=(
+                    f"catastrophic regression vs the best candidate: bbox "
+                    f"{bb[0]} vs {bb[1]} mm, volume {a_vol:.0f} vs "
+                    f"{b_vol:.0f} mm³ — the rebuilt code lost the main body"
+                ),
+                where="whole part",
+                severity="major",
+                source="spec",
+                fix_hint=(
+                    "keep the previous working structure (the mesh/CAD base "
+                    "plus every feature block) and apply ONLY the minimal "
+                    "change the listed issues ask for — do not rewrite or "
+                    "re-trim the part from scratch"
+                ),
+            )
+        ],
+    )
 
 
 def _verify_spec_issue(exec_result: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -2908,7 +2956,7 @@ async def _run_cad(  # noqa: C901
                         render_fn=_session_render_fn(ctx, it, art_attempt),
                     )
                 except Exception as e:
-                    log.warning("agent.improve_failed", iteration=it, error=str(e))
+                    log.warning("agent.improve_failed", iteration=it, error=repr(e))
                     break
                 new_code, patch_errors = _resolve_patch(base_code, presp, patch_mode)
                 if new_code is not None:
@@ -2947,7 +2995,7 @@ async def _run_cad(  # noqa: C901
                         "what": f"code generation failed: {e}",
                     }
                 ]
-                log.warning("agent.codegen_failed", iteration=it, error=str(e))
+                log.warning("agent.codegen_failed", iteration=it, error=repr(e))
                 continue
 
         code = code_resp.code
@@ -3343,25 +3391,35 @@ async def _run_cad(  # noqa: C901
         fem_task = asyncio.create_task(_fem_smoke(it, exec_result, fem_issues))
 
         # ---------- vision critique ----------
-        await ctx.emit("critique", it, "comparing renders with your images")
-        sheet_rel = exec_result.get("contact_sheet")
-        sheet = storage.resolve(sheet_rel) if sheet_rel else None
-        try:
-            critique = await critique_step.run(
-                ctx,
-                spec,
-                sheet,
-                analysis,
-                dim_issues,
-                exec_result.get("dfm"),
-                iteration=it,
-                feature_findings=feature_findings,
-                features=features,
-                code=code,
-            )
-        except Exception as e:
-            log.warning("agent.critique_failed", iteration=it, error=str(e))
-            critique = Critique(score=0, passed=False, confidence=0.0)
+        # deterministic regression guard: when a rebuild collapses the part vs
+        # the best candidate (observed: improve pass returning a single tab
+        # plate, volume 10% of best) the vision call only restates the obvious
+        # at ~10 min of reasoning cost — synthesize the verdict instead. The
+        # fix_hint is also more useful: it tells improve to keep the working
+        # structure instead of "fix the plate".
+        critique = _regression_critique(best, analysis)
+        if critique is not None:
+            await ctx.emit("critique", it, "regression vs best candidate — skipping vision call")
+        else:
+            await ctx.emit("critique", it, "comparing renders with your images")
+            sheet_rel = exec_result.get("contact_sheet")
+            sheet = storage.resolve(sheet_rel) if sheet_rel else None
+            try:
+                critique = await critique_step.run(
+                    ctx,
+                    spec,
+                    sheet,
+                    analysis,
+                    dim_issues,
+                    exec_result.get("dfm"),
+                    iteration=it,
+                    feature_findings=feature_findings,
+                    features=features,
+                    code=code,
+                )
+            except Exception as e:
+                log.warning("agent.critique_failed", iteration=it, error=repr(e))
+                critique = Critique(score=0, passed=False, confidence=0.0)
         await fem_task
 
         cand = Candidate(it, code_resp, exec_result, critique, dim_issues)
