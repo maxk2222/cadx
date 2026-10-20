@@ -68,6 +68,19 @@ def _i(desc: str) -> dict[str, Any]:
     return {"type": "integer", "description": desc}
 
 
+def _verify_spec_compact(report: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Compact canonical conformance verdict for a tool response — the model
+    sees the status plus the names of any FAILing checks, not the full tier
+    detail (which persists on the version's verify_spec report)."""
+    if not isinstance(report, dict) or not report.get("status"):
+        return None
+    out: dict[str, Any] = {"status": report["status"]}
+    failing = [c["name"] for c in report.get("checks") or [] if c.get("status") == "FAIL"]
+    if failing:
+        out["failing"] = failing[:6]
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # tool schemas
 # --------------------------------------------------------------------------- #
@@ -2361,6 +2374,7 @@ class ToolSession:
             "overhang_pct": (top.get("verification") or {}).get("overhang_pct"),
             "cases": self._fem_compact(fem).get("cases"),
             "warnings": (top.get("warnings") or [])[:10],
+            "verify_spec": _verify_spec_compact(res.get("verify_spec")),
             "topopt_calls_left": self.topopt_left,
         }
         images = [str(p) for p in res.get("_images") or []]
@@ -2439,6 +2453,7 @@ class ToolSession:
             "worst_safety_factor": min(sfs) if sfs else None,
             "cases": self._fem_compact(fem).get("cases") if fem else None,
             "warnings": (rep.get("warnings") or [])[:10],
+            "verify_spec": _verify_spec_compact(res.get("verify_spec")),
         }
         images = [str(p) for p in res.get("_images") or []]
         if images:

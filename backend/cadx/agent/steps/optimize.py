@@ -86,6 +86,7 @@ def _run_summary(r: dict[str, Any], chosen: bool, reasoning: Any) -> dict[str, A
         "n_components": top.get("n_components"),
         "overhang_pct": (top.get("verification") or {}).get("overhang_pct"),
         "n_bodies_export": top.get("n_bodies_export"),
+        "verify_spec": (res.get("verify_spec") or {}).get("status"),
         "warnings": (top.get("warnings") or [])[:5],
         **refine_block,
         "chosen": chosen,
@@ -110,6 +111,10 @@ def _best_run_index(session: ToolSession) -> int | None:
             int(top.get("n_bodies_export") or 1),
         )
         if bodies > 1 or (top.get("verification") or {}).get("valid") is False:
+            continue
+        # a canonical FAIL (e.g. the part overshoots the declared envelope)
+        # must not win by safety factor either
+        if (res.get("verify_spec") or {}).get("status") == "FAIL":
             continue
         sfs = [c.get("safety_factor") for c in fem.get("cases") or [] if c.get("safety_factor")]
         sf = top.get("sf_export") or (min(sfs) if sfs else None)
