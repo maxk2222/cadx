@@ -31,6 +31,7 @@ from pydantic import BaseModel
 from cadx.agent.thinking import thinking_body, thinking_on
 from cadx.agent.toolspecs import ToolSession
 from cadx.agent.types import AgentCtx
+from cadx.llm.capabilities import estimate_prompt_tokens, prompt_over_budget
 from cadx.llm.client import LLMResponse
 from cadx.llm.images import image_part
 from cadx.llm.tools import ToolCall
@@ -304,24 +305,39 @@ def _digest_line(entry: dict[str, Any]) -> str:
 
 
 async def _condense_history(
-    ctx: AgentCtx, session: ToolSession, msgs: list[dict[str, Any]], step: str
+    ctx: AgentCtx, session: ToolSession, msgs: list[dict[str, Any]], step: str, role: str = ""
 ) -> None:
     """Replace the middle of `msgs` with a one-message digest, in place.
 
     Fires once the middle holds more than `agent_session_condense_turns`
-    exchange units; keeps the system+seed head and the last ~half of the
-    exchanges verbatim. The digest covers every tool call NOT in the kept
-    tail (from session.tool_log — append-only, so re-condenses rebuild a
-    complete digest) plus the build session's current block list, so the
-    model never loses track of what exists."""
+    exchange units OR the estimated prompt exceeds `agent_context_budget_frac`
+    of the detected context window; keeps the system+seed head and the last
+    ~half of the exchanges verbatim. The digest covers every tool call NOT in
+    the kept tail (from session.tool_log — append-only, so re-condenses
+    rebuild a complete digest) plus the build session's current block list,
+    so the model never loses track of what exists."""
     threshold = int(ctx.runtime_settings.agent_session_condense_turns or 0)
-    if threshold <= 0 or len(msgs) <= _CONDENSE_HEAD:
+    over_budget = False
+    if role:
+        s = ctx.runtime_settings
+        ctx_len = (getattr(ctx.llm, "context_len", None) or {}).get(role)
+        if ctx_len:
+            est = estimate_prompt_tokens(
+                msgs,
+                image_detail=s.llm_image_detail,
+                image_max_edge=s.llm_image_max_edge,
+            )
+            over_budget = prompt_over_budget(s, int(ctx_len), est)
+    if len(msgs) <= _CONDENSE_HEAD or (threshold <= 0 and not over_budget):
         return
     units = _exchange_units(msgs, _CONDENSE_HEAD)
-    keep = max(4, threshold // 2)
+    keep = max(4, threshold // 2) if threshold > 0 else 4
     # only fire when something would actually be dropped — tiny thresholds
-    # (<8) keep more than they trigger at
-    if len(units) <= threshold or len(units) <= keep:
+    # (<8) keep more than they trigger at. When the token estimate is over
+    # budget but nothing drops, trim tool results harder instead.
+    if len(units) <= keep or (not over_budget and len(units) <= threshold):
+        if over_budget and len(units) <= keep:
+            _trim_tool_results(msgs, keep_last=3)
         return
     tail = units[-keep:]
     tail_calls = sum(_unit_tool_calls(msgs, u) for u in tail)
@@ -345,14 +361,20 @@ async def _condense_history(
     tail_msgs = [msgs[i] for u in tail for i in u]
     before_len = len(msgs)
     msgs[_CONDENSE_HEAD:] = [{"role": "user", "content": "\n".join(lines)}, *tail_msgs]
+    trigger = "tokens" if over_budget else "turns"
     log.info(
         "tool_session.condensed",
         step=step,
+        trigger=trigger,
         before_len=before_len,
         after_len=len(msgs),
     )
     await ctx.trace.event(
-        "tool_session.condensed", step=step, before_len=before_len, after_len=len(msgs)
+        "tool_session.condensed",
+        step=step,
+        trigger=trigger,
+        before_len=before_len,
+        after_len=len(msgs),
     )
 
 
@@ -407,7 +429,14 @@ async def _trace_budget(ctx: AgentCtx, step: str, msgs: list[dict[str, Any]]) ->
     """Best-effort prompt-budget event before each LLM call — instrumentation
     must never break the session loop."""
     with contextlib.suppress(Exception):
-        await ctx.trace.event("llm_call_budget", step=step, **_msg_budget(msgs))
+        s = ctx.runtime_settings
+        fields = _msg_budget(msgs)
+        fields["est_tokens"] = estimate_prompt_tokens(
+            msgs,
+            image_detail=s.llm_image_detail,
+            image_max_edge=s.llm_image_max_edge,
+        )
+        await ctx.trace.event("llm_call_budget", step=step, **fields)
 
 
 def _result_messages(
@@ -526,7 +555,7 @@ async def run_session(  # noqa: C901
             # Chat sessions (drain_fn set) skip it: they persist
             # messages_out[n0:] positionally, so rewriting the middle here
             # would corrupt that slice — _trim_history bounds them instead.
-            await _condense_history(ctx, session, msgs, step)
+            await _condense_history(ctx, session, msgs, step, role=role)
         # fresh each turn: e.g. `verify` drops out once its budget is spent
         tools = session.tools()
         # resolved per turn — the escalation latch may flip mid-session

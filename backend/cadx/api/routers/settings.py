@@ -9,6 +9,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from cadx.api.deps import get_session
 from cadx.api.schemas import SettingsOut, SettingsUpdate
 from cadx.config import get_settings
+from cadx.llm.capabilities import (
+    caps_from_card,
+    load_caps_session,
+    load_llm_caps,
+    record_caps_session,
+)
 from cadx.llm.client import make_llm
 from cadx.runtime_config import (
     RuntimeSettings,
@@ -28,13 +34,19 @@ _SECRET_KEYS = (
 )
 
 
-def _out(settings: RuntimeSettings) -> SettingsOut:
-    return SettingsOut(**settings.public_values(), data_dir=get_settings().data_dir)
+async def _out(db: AsyncSession, settings: RuntimeSettings) -> SettingsOut:
+    caps = await load_llm_caps(db)
+    detected = {k: c.context_tokens for k, c in caps.items() if c.context_tokens}
+    return SettingsOut(
+        **settings.public_values(),
+        data_dir=get_settings().data_dir,
+        llm_detected=detected,
+    )
 
 
 @router.get("", response_model=SettingsOut)
 async def read_settings(db: AsyncSession = Depends(get_session)) -> SettingsOut:
-    return _out(await load_runtime_settings(db))
+    return await _out(db, await load_runtime_settings(db))
 
 
 @router.put("", response_model=SettingsOut)
@@ -61,7 +73,11 @@ async def update_settings(
     updated = RuntimeSettings.model_validate(values)
     await save_runtime_settings(db, updated)
     await db.commit()
-    return _out(updated)
+    return await _out(db, updated)
+
+
+async def _test_client(settings: RuntimeSettings) -> Any:
+    return make_llm(settings, caps=await load_caps_session(), caps_cb=record_caps_session)
 
 
 @router.post("/test")
@@ -69,7 +85,7 @@ async def test_provider(db: AsyncSession = Depends(get_session)) -> dict[str, ob
     """Test the saved provider config without returning or logging credentials."""
     settings = await load_runtime_settings(db)
     try:
-        client = make_llm(settings)
+        client = await _test_client(settings)
     except ValueError as e:
         return {"ok": False, "vision_ok": False, "error": str(e), "latency_ms": 0}
     return await client.test()
@@ -81,7 +97,7 @@ async def llm_health(db: AsyncSession = Depends(get_session)) -> dict[str, objec
     same probe as POST /test, GET so it can sit in a cached query."""
     settings = await load_runtime_settings(db)
     try:
-        client = make_llm(settings)
+        client = await _test_client(settings)
     except ValueError as e:
         return {"ok": False, "vision_ok": False, "error": str(e), "latency_ms": 0}
     return await client.test()
@@ -113,6 +129,7 @@ async def llm_models(db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
                     "id": str(m.get("id")),
                     "vision": bool(m.get("supports_vision")),
                     "downloaded": bool(m.get("downloaded")),
+                    "context_tokens": m.get("context_len"),
                 }
                 for m in r.json().get("models", [])
                 if m.get("kind") == "llm" and m.get("id")
@@ -123,12 +140,16 @@ async def llm_models(db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
             if key:
                 headers["Authorization"] = f"Bearer {key}"
             async with httpx.AsyncClient(timeout=10.0) as client:
-                r = await client.get(
-                    f"{settings.llm_base_url.rstrip('/')}/models", headers=headers
-                )
+                r = await client.get(f"{settings.llm_base_url.rstrip('/')}/models", headers=headers)
             r.raise_for_status()
             models = [
-                {"id": str(m.get("id")), "vision": False}
+                {
+                    "id": str(m.get("id")),
+                    "vision": False,
+                    "context_tokens": (
+                        caps.context_tokens if (caps := caps_from_card(m)) else None
+                    ),
+                }
                 for m in r.json().get("data", [])
                 if m.get("id")
             ]

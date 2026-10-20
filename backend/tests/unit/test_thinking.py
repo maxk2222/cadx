@@ -297,6 +297,7 @@ async def test_400_fallback_strips_extra_body_keys(monkeypatch):
     monkeypatch.setattr(client_mod.httpx, "AsyncClient", patched)
     c = LLMClient(base_url="http://x", api_key="k")
     c.stream = False
+    c._probed_roles = {"vision", "code"}  # capability probing is off-topic here
     r = await c.chat(
         "code",
         [{"role": "user", "content": "hi"}],

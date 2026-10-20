@@ -450,7 +450,9 @@ async def run_benchmark(
         llm = FakeLLM(bm.llm_script)
         llm.tools_mode = bm.llm_tools
     elif llm is None:
-        llm = make_llm(runtime)
+        from cadx.llm.capabilities import load_caps_session, record_caps_session
+
+        llm = make_llm(runtime, caps=await load_caps_session(), caps_cb=record_caps_session)
 
     mesh = (
         make_mesh_client(fake=True) if bm.fake_mesh else make_mesh_client(runtime_settings=runtime)

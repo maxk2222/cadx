@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import time
 import uuid
 from collections import deque
@@ -44,6 +45,11 @@ from cadx.db.models import (
     Project,
 )
 from cadx.db.session import session_scope
+from cadx.llm.capabilities import (
+    estimate_prompt_tokens,
+    load_caps_session,
+    record_caps_session,
+)
 from cadx.llm.images import image_part
 from cadx.logging import get_logger
 from cadx.runtime_config import RuntimeSettings, load_runtime_settings
@@ -141,6 +147,91 @@ def _trim_history(msgs: list[dict[str, Any]], keep: int) -> list[dict[str, Any]]
     while msgs and msgs[0].get("role") != "user":
         msgs = msgs[1:]
     return msgs
+
+
+_SUMMARY_MARKER = "[EARLIER CONVERSATION SUMMARY — older messages condensed]"
+
+
+def _flatten_content(c: Any) -> str:
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        parts: list[str] = []
+        for p in c:
+            if isinstance(p, dict):
+                t = p.get("type")
+                if t == "asset_ref":
+                    parts.append(f"[image asset {p.get('asset_id')}]")
+                elif t == "image_url":
+                    parts.append("[image]")
+                else:
+                    parts.append(str(p.get("text") or ""))
+            else:
+                parts.append(str(p))
+        return " ".join(parts)
+    return ""
+
+
+def _digest_messages(dropped: list[dict[str, Any]], keep_digests: bool = True) -> str:
+    """One line per dropped message — a summary, not a silent cut. An earlier
+    digest is carried forward verbatim so re-condenses stay lossless —
+    unless `keep_digests` is false (aggressive token-pressure path), where
+    it collapses to a normal line."""
+    lines = [_SUMMARY_MARKER]
+    for m in dropped:
+        text = re.sub(r"\s+", " ", _flatten_content(m.get("content"))).strip()
+        if keep_digests and _SUMMARY_MARKER in text[:120]:
+            lines.append(text)
+            continue
+        role = str(m.get("role") or "?")
+        calls = m.get("tool_calls") or []
+        names = ",".join(
+            str((tc.get("function") or {}).get("name") or "")
+            for tc in calls
+            if isinstance(tc, dict)
+        )
+        if names:
+            text += f" [tools: {names}]"
+        if len(text) > 160:
+            text = text[:159] + "…"
+        lines.append(f"{role}: {text}" if text else role)
+    return "\n".join(lines)
+
+
+def _summarize_history(msgs: list[dict[str, Any]], keep: int) -> list[dict[str, Any]]:
+    """Cap the conversation at `keep` messages — the dropped prefix becomes a
+    digest user message (summarized, not truncated). Cut stays at a user
+    boundary so tool_call/result pairs are never split."""
+    if len(msgs) <= keep:
+        return msgs
+    cut = len(msgs) - keep
+    while cut < len(msgs) and msgs[cut].get("role") != "user":
+        cut += 1
+    if cut >= len(msgs):
+        return msgs[-keep:]
+    return [{"role": "user", "content": _digest_messages(msgs[:cut])}, *msgs[cut:]]
+
+
+def _summarize_for_ctx(
+    msgs: list[dict[str, Any]], est_fn: Any, budget: int
+) -> list[dict[str, Any]]:
+    """Token-pressure variant: msgs = [system, *history] — collapse the oldest
+    half of history into a digest until the estimate fits `budget`
+    (bounded rounds)."""
+    sys, rest = msgs[0], list(msgs[1:])
+    for _ in range(6):
+        if len(rest) <= 2 or est_fn([sys, *rest]) <= budget:
+            break
+        cut = max(1, (len(rest) + 1) // 2)
+        while cut < len(rest) and rest[cut].get("role") != "user":
+            cut += 1
+        if cut >= len(rest):
+            break
+        rest = [
+            {"role": "user", "content": _digest_messages(rest[:cut], keep_digests=False)},
+            *rest[cut:],
+        ]
+    return [sys, *rest]
 
 
 # --------------------------------------------------------------------------- #
@@ -328,7 +419,7 @@ async def _run_turns(  # noqa: C901
     # the tool loop enforces runtime_settings.agent_tool_max_turns — chat
     # gets its own (larger) budget, so the ctx carries an adjusted copy
     turn_runtime = runtime.model_copy(update={"agent_tool_max_turns": runtime.chat_max_turns})
-    llm = _make_llm(runtime)
+    llm = _make_llm(runtime, caps=await load_caps_session(), caps_cb=record_caps_session)
     image = _make_image(runtime)
     image_ok = await _image_available(image)
 
@@ -363,11 +454,28 @@ async def _run_turns(  # noqa: C901
             bound_pid = chat.project_id
         if not fresh and not history:
             break  # nothing to answer — defensive; the API always enqueues on a msg
-        history = _trim_history(history, runtime.chat_history_messages)
+        history = _summarize_history(history, runtime.chat_history_messages)
         msgs = [
             {"role": "system", "content": sys_prompt},
             *[_hydrate(m, vision, assets_by_id, runtime.chat_image_max) for m in history],
         ]
+        # token-pressure pass — when the detected context window is known and
+        # the hydrated prompt is over budget, collapse more history into a
+        # digest before the provider rejects with a 400
+        ctx_len = (getattr(llm, "context_len", None) or {}).get(role)
+        if ctx_len:
+
+            def _est(m: list[dict[str, Any]]) -> int:
+                return estimate_prompt_tokens(
+                    m,
+                    image_detail=runtime.llm_image_detail,
+                    image_max_edge=runtime.llm_image_max_edge,
+                )
+
+            if _est(msgs) > int(ctx_len * runtime.agent_context_budget_frac):
+                msgs = _summarize_for_ctx(
+                    msgs, _est, int(ctx_len * runtime.agent_context_budget_frac)
+                )
         n0 = len(msgs)
         drained_this_turn.clear()
 
@@ -479,7 +587,7 @@ async def _run_turns(  # noqa: C901
         async with session_scope() as db:
             chat = await db.get(Chat, chat_id)
             if chat is not None:
-                chat.llm_messages = _trim_history(
+                chat.llm_messages = _summarize_history(
                     [*(chat.llm_messages or []), *new_llm], runtime.chat_history_messages
                 )
                 chat.updated_at = datetime.now(UTC)
@@ -554,10 +662,15 @@ async def reap_orphaned_chats(ctx: dict[str, Any]) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def _make_llm(runtime: RuntimeSettings):
+def _make_llm(
+    runtime: RuntimeSettings,
+    *,
+    caps: dict[str, Any] | None = None,
+    caps_cb: Any = None,
+):
     from cadx.llm.client import make_llm
 
-    return make_llm(runtime)
+    return make_llm(runtime, caps=caps, caps_cb=caps_cb)
 
 
 def _make_image(runtime: RuntimeSettings):

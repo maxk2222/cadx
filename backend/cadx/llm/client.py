@@ -12,6 +12,7 @@ while a stalled connection dies fast.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 import time
@@ -22,6 +23,13 @@ from typing import Any, Literal
 import httpx
 from pydantic import BaseModel
 
+from cadx.llm.capabilities import (
+    ModelCaps,
+    estimate_prompt_tokens,
+    parse_ctx_from_error,
+    probe_context,
+    resolve_max_tokens,
+)
 from cadx.llm.structured import LLMFormatError, parse_model
 from cadx.llm.tools import (
     ToolCall,
@@ -236,6 +244,8 @@ class LLMClient:
         timeout_s: float | None = None,
         runtime_settings: RuntimeSettings | None = None,
         extra_headers: dict[str, str] | None = None,
+        caps: dict[str, ModelCaps] | None = None,
+        caps_cb: Callable[[str, ModelCaps], Any] | None = None,
     ) -> None:
         settings = runtime_settings or RuntimeSettings()
         self.runtime_settings = settings
@@ -273,6 +283,72 @@ class LLMClient:
             "cached_tokens": 0,
             "calls": 0,
         }
+        # detected context windows: caps cache (model_id -> ModelCaps) filled
+        # lazily by _ensure_caps/probe_context and opportunistically by
+        # _learn_ctx (error bodies); context_len holds the resolved value
+        # per role (None = unknown/unprobed). caps_cb persists new findings.
+        self.caps: dict[str, ModelCaps] = dict(caps or {})
+        self._caps_cb = caps_cb
+        self.context_len: dict[Role, int | None] = {}
+        self._probed_roles: set[Role] = set()
+
+    async def _ensure_caps(self, role: Role) -> None:
+        """Resolve this role's context window once: manual setting > cached
+        caps > live probe. Non-fatal — unknown stays None and callers keep
+        heuristic defaults."""
+        if role in self._probed_roles:
+            return
+        self._probed_roles.add(role)
+        model = self.models[role]
+        manual = int(getattr(self.runtime_settings, "llm_context_tokens", 0) or 0)
+        if manual > 0:
+            self.context_len[role] = manual
+            return
+        cached = self.caps.get(model)
+        if cached and cached.context_tokens:
+            self.context_len[role] = cached.context_tokens
+            return
+        try:
+            found = await probe_context(
+                self.base_url, self.api_key, [model], extra_headers=self.extra_headers
+            )
+        except Exception:
+            found = {}
+        caps = found.get(model)
+        if caps and caps.context_tokens:
+            self.caps[model] = caps
+            self.context_len[role] = caps.context_tokens
+            log.info(
+                "llm.context", role=role, model=model, ctx=caps.context_tokens, source=caps.source
+            )
+            if self._caps_cb is not None:
+                with contextlib.suppress(Exception):
+                    await self._caps_cb(model, caps)
+        else:
+            self.context_len[role] = None
+
+    async def _learn_ctx(self, status: int, body: str, role: Role) -> None:
+        """Opportunistic: provider error bodies often name the context limit
+        ("maximum context length is N", llama.cpp `n_ctx`). Record it so the
+        next call clamps instead of repeating the overflow."""
+        ctx = parse_ctx_from_error(status, body)
+        model = self.models.get(role, "")
+        if not ctx or not model:
+            return
+        existing = self.caps.get(model)
+        if existing and existing.context_tokens and existing.context_tokens <= ctx:
+            return  # already know a consistent (or tighter) limit
+        caps = ModelCaps(
+            context_tokens=ctx,
+            max_output_tokens=existing.max_output_tokens if existing else None,
+            source="error",
+        )
+        self.caps[model] = caps
+        self.context_len[role] = ctx
+        log.warning("llm.context.learned", model=model, ctx=ctx, status=status)
+        if self._caps_cb is not None:
+            with contextlib.suppress(Exception):
+                await self._caps_cb(model, caps)
 
     def _response_format(self, schema: type[BaseModel] | None) -> dict[str, Any] | None:
         if schema is None or self.json_mode == "none":
@@ -307,6 +383,7 @@ class LLMClient:
                     delay *= 2
                     continue
                 if resp.status_code != 200:
+                    await self._learn_ctx(resp.status_code, resp.text[:500], role)
                     raise LLMError(f"HTTP {resp.status_code}: {resp.text[:500]}")
                 data: dict[str, Any] = resp.json()
                 return data
@@ -500,6 +577,9 @@ class LLMClient:
                         continue
                     if resp.status_code != 200:
                         body = (await resp.aread())[:400]
+                        await self._learn_ctx(
+                            resp.status_code, body.decode("utf-8", "replace"), role
+                        )
                         raise LLMError(f"HTTP {resp.status_code}: {body!r}")
                     return await self._consume_stream(resp, on_delta=on_delta)
             except _RetryNoStream:
@@ -516,6 +596,25 @@ class LLMClient:
         """Whether to attach `tools` to the next request for this role."""
         return bool(tools) and self.tools_mode != "off" and self.tools_ok.get(role) is not False
 
+    def _eff_max_tokens(
+        self, role: Role, model: str, messages: list[dict[str, Any]], requested: int | None
+    ) -> int:
+        """Resolve the completion budget for one call against the detected
+        context window. An explicit per-call value is honoured but still
+        clamped so prompt + completion fits; None goes through the auto path
+        (llm_max_tokens=0 → clamp(ctx//4, 2048, 128k); >0 → hard cap)."""
+        est = estimate_prompt_tokens(
+            messages,
+            image_detail=self.runtime_settings.llm_image_detail,
+            image_max_edge=self.runtime_settings.llm_image_max_edge,
+        )
+        ctx = self.context_len.get(role) or 0
+        if requested is not None:
+            if ctx <= 0:
+                return requested
+            return max(16, min(requested, ctx - est - max(1024, ctx // 16)))
+        return resolve_max_tokens(self.runtime_settings, self.caps.get(model), est, ctx=ctx)
+
     async def chat(
         self,
         role: Role,
@@ -530,13 +629,15 @@ class LLMClient:
         extra_body: dict[str, Any] | None = None,
     ) -> LLMResponse:
         model = self.models[role]
+        await self._ensure_caps(role)
+        eff_max = self._eff_max_tokens(role, model, messages, max_tokens)
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
             "temperature": (
                 self.runtime_settings.llm_temperature_code if temperature is None else temperature
             ),
-            "max_tokens": max_tokens or self.runtime_settings.llm_max_tokens,
+            "max_tokens": eff_max,
         }
         payload.update(self.extra_body)
         # per-call body (e.g. the adaptive thinking dialect) is merged LAST —
@@ -695,10 +796,28 @@ class LLMClient:
             out["vision_ok"] = True
         except Exception as e:
             out["vision_error"] = str(e)
+        # detected context windows (probe ran lazily inside chat already)
+        ctx_info: dict[str, Any] = {}
+        for role in ("vision", "code"):
+            model = self.models.get(role, "")
+            caps = self.caps.get(model)
+            manual = int(getattr(self.runtime_settings, "llm_context_tokens", 0) or 0)
+            ctx_info[role] = {
+                "model": model,
+                "context_tokens": self.context_len.get(role),
+                "source": "manual" if manual > 0 else (caps.source if caps else ""),
+            }
+        out["context"] = ctx_info
         return out
 
 
-def make_llm(runtime: RuntimeSettings, *, backend: str | None = None) -> LLMClient:
+def make_llm(
+    runtime: RuntimeSettings,
+    *,
+    backend: str | None = None,
+    caps: dict[str, ModelCaps] | None = None,
+    caps_cb: Callable[[str, ModelCaps], Any] | None = None,
+) -> LLMClient:
     """Central LLM factory — resolves the configured provider backend.
 
     ``backend`` overrides ``runtime.llm_backend`` (per-job RunOptions):
@@ -732,5 +851,7 @@ def make_llm(runtime: RuntimeSettings, *, backend: str | None = None) -> LLMClie
             model_code=model,
             runtime_settings=runtime,
             extra_headers=headers,
+            caps=caps,
+            caps_cb=caps_cb,
         )
-    return LLMClient(runtime_settings=runtime)
+    return LLMClient(runtime_settings=runtime, caps=caps, caps_cb=caps_cb)

@@ -528,6 +528,7 @@ class SettingsOut(BaseModel):
     llm_json_mode: str
     llm_api_key_set: bool
     llm_temperature_code: float
+    llm_context_tokens: int
     llm_max_tokens: int
     llm_timeout_s: float
     llm_stream: bool
@@ -552,6 +553,7 @@ class SettingsOut(BaseModel):
     agent_dim_tolerance_mm: float
     agent_clarification_mode: Literal["assume", "ask"]
     agent_max_input_images: int
+    agent_context_budget_frac: float
     agent_max_tokens_per_job: int
     agent_max_wall_s: float
     agent_default_gen_mode: Literal["auto", "cad", "mesh", "hybrid", "topopt"]
@@ -630,6 +632,9 @@ class SettingsOut(BaseModel):
     exec_mem_limit_mb: int
     exec_warm_runner: bool
     data_dir: str
+    # detected context windows per model id — from the llm_caps cache row,
+    # read-only for the UI (override via llm_context_tokens)
+    llm_detected: dict[str, int] = Field(default_factory=dict)
 
 
 class SettingsUpdate(BaseModel):
@@ -644,7 +649,8 @@ class SettingsUpdate(BaseModel):
     llm_model_code: str | None = Field(default=None, max_length=200)
     llm_json_mode: Literal["json_object", "json_schema", "none"] | None = None
     llm_temperature_code: float | None = Field(default=None, ge=0, le=2)
-    llm_max_tokens: int | None = Field(default=None, ge=1, le=2_000_000)
+    llm_context_tokens: int | None = Field(default=None, ge=0, le=8_000_000)
+    llm_max_tokens: int | None = Field(default=None, ge=0, le=2_000_000)
     llm_timeout_s: float | None = Field(default=None, gt=0)
     llm_stream: bool | None = None
     llm_idle_timeout_s: float | None = Field(default=None, gt=0)
@@ -668,6 +674,7 @@ class SettingsUpdate(BaseModel):
     agent_dim_tolerance_mm: float | None = Field(default=None, ge=0, le=1000)
     agent_clarification_mode: Literal["assume", "ask"] | None = None
     agent_max_input_images: int | None = Field(default=None, ge=0, le=100)
+    agent_context_budget_frac: float | None = Field(default=None, gt=0.1, le=0.95)
     agent_max_tokens_per_job: int | None = Field(default=None, ge=1)
     agent_max_wall_s: float | None = Field(default=None, gt=0)
     agent_default_gen_mode: Literal["auto", "cad", "mesh", "hybrid", "topopt"] | None = None

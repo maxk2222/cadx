@@ -56,6 +56,7 @@ from cadx.db.models import (
     VersionStatus,
 )
 from cadx.db.session import session_scope
+from cadx.llm.capabilities import load_caps_session, record_caps_session
 from cadx.llm.client import LLMClient, make_llm
 from cadx.llm.schemas import PartSpec
 from cadx.logging import get_logger
@@ -489,7 +490,12 @@ async def run_agent_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[st
         merged = _merge_settings((project.settings or {}) if project else {}, version.options or {})
         # per-job backend/model overrides (RunOptions < project settings)
         job_runtime = _job_runtime(runtime_settings, merged)
-        llm = _make_llm(job_runtime, backend=merged.llm_backend)
+        llm = _make_llm(
+            job_runtime,
+            backend=merged.llm_backend,
+            caps=await load_caps_session(),
+            caps_cb=record_caps_session,
+        )
         emit = make_emit(job_id, tokens_fn=lambda: dict(getattr(llm, "total_usage", {}) or {}))
         executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=job_runtime)
         trace = DbTrace(job_id)
@@ -1201,7 +1207,12 @@ async def _try_optimize_session(
     sheet = storage.version_dir(parent.project_id, parent.id) / "contact_sheet.png"
     job_runtime = _job_runtime(runtime_settings, settings)
     actx = AgentCtx(
-        llm=_make_llm(job_runtime, backend=settings.llm_backend),
+        llm=_make_llm(
+            job_runtime,
+            backend=settings.llm_backend,
+            caps=await load_caps_session(),
+            caps_cb=record_caps_session,
+        ),
         executor=executor,
         trace=DbTrace(job_id),
         emit=emit,
@@ -2548,8 +2559,14 @@ async def _mesh_available(client: MeshPort | None) -> bool:
         return False
 
 
-def _make_llm(runtime: RuntimeSettings, backend: str | None = None) -> LLMClient:
-    return make_llm(runtime, backend=backend)
+def _make_llm(
+    runtime: RuntimeSettings,
+    backend: str | None = None,
+    *,
+    caps: dict[str, Any] | None = None,
+    caps_cb: Any = None,
+) -> LLMClient:
+    return make_llm(runtime, backend=backend, caps=caps, caps_cb=caps_cb)
 
 
 def _copy_best_artifacts_ctxless(

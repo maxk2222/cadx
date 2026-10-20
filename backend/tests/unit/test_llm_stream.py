@@ -31,6 +31,9 @@ def _patch_transport(monkeypatch, handler):
 
 def _mk(**kw) -> LLMClient:
     c = LLMClient(api_key="k", base_url="http://llm.test/v1")
+    # capability probing is off-topic here — pre-mark roles probed so the
+    # request log only sees chat traffic
+    c._probed_roles = {"vision", "code"}
     for k, v in kw.items():
         setattr(c, k, v)
     return c

@@ -49,6 +49,9 @@ class FakeLLM:
             else "off"
         )
         self.tools_ok: dict[str, bool] = {}  # per-role probe state, like LLMClient
+        # mirrors LLMClient.context_len — empty means "unknown window" so the
+        # tool loop's token-pressure path stays inert under fakes
+        self.context_len: dict[str, int | None] = {}
 
     @classmethod
     def from_file(cls, path: Path) -> FakeLLM:

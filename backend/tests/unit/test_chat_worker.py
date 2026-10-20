@@ -34,7 +34,7 @@ async def _mk_chat(content: str = "make me a cube") -> tuple[uuid.UUID, uuid.UUI
 
 
 def _patch_llm(monkeypatch, fake: FakeLLM) -> None:
-    monkeypatch.setattr(chat_worker, "_make_llm", lambda _rt: fake)
+    monkeypatch.setattr(chat_worker, "_make_llm", lambda _rt, **_kw: fake)
 
     def _no_image(_rt):
         return None

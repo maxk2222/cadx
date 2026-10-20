@@ -224,7 +224,12 @@ def run(
             for p in images
         ]
         runtime = await runtime_from_db_or_default()
-        llm = FakeLLM(_fake_script(mode)) if fake else make_llm(runtime)
+        if fake:
+            llm = FakeLLM(_fake_script(mode))
+        else:
+            from cadx.llm.capabilities import load_caps_session, record_caps_session
+
+            llm = make_llm(runtime, caps=await load_caps_session(), caps_cb=record_caps_session)
         mesh = (
             make_mesh_client(fake=True) if fake_mesh else make_mesh_client(runtime_settings=runtime)
         )

@@ -210,16 +210,12 @@ async def test_mesh_proxy_passthroughs(client, monkeypatch):
                         }
                     ],
                     "free_mb": 2048.0,
-                    "residents": [
-                        {"id": "hunyuan", "mb": 8000, "kind": "mesh", "pinned": True}
-                    ],
+                    "residents": [{"id": "hunyuan", "mb": 8000, "kind": "mesh", "pinned": True}],
                 },
             )
         if p == "/v1/models/m1/download":
             if request.method == "POST":
-                return httpx.Response(
-                    202, json={"status": "downloading", "bytes_done": 10}
-                )
+                return httpx.Response(202, json={"status": "downloading", "bytes_done": 10})
             if request.method == "DELETE":
                 return httpx.Response(200, json={"ok": True})
             return httpx.Response(
@@ -301,7 +297,10 @@ async def test_llm_models_endpoint_external(client, monkeypatch):
         body = r.json()
         assert body["backend"] == "external"
         assert body["error"] is None
-        assert body["models"] == [{"id": "gpt-4o", "vision": False}, {"id": "x", "vision": False}]
+        assert body["models"] == [
+            {"id": "gpt-4o", "vision": False, "context_tokens": None},
+            {"id": "x", "vision": False, "context_tokens": None},
+        ]
     finally:
         await _clear_runtime()
 
@@ -320,6 +319,7 @@ async def test_llm_models_endpoint_sidecar(client, monkeypatch):
                             "kind": "llm",
                             "supports_vision": True,
                             "downloaded": True,
+                            "context_len": 262144,
                         },
                         {"id": "hunyuan", "kind": "mesh"},
                     ]
@@ -334,7 +334,7 @@ async def test_llm_models_endpoint_sidecar(client, monkeypatch):
         assert body["backend"] == "sidecar"
         # only kind=="llm" listed, vision+downloaded flags mapped through
         assert body["models"] == [
-            {"id": "qwen3", "vision": True, "downloaded": True}
+            {"id": "qwen3", "vision": True, "downloaded": True, "context_tokens": 262144}
         ]
     finally:
         await _clear_runtime()

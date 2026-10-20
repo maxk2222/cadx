@@ -32,7 +32,14 @@ class RuntimeSettings(BaseModel):
     llm_model_code: str = "gpt-4o"
     llm_json_mode: Literal["json_object", "json_schema", "none"] = "json_object"
     llm_temperature_code: float = Field(default=0.2, ge=0, le=2)
-    llm_max_tokens: int = Field(default=8000, ge=1, le=2_000_000)
+    # context window of the served model, tokens: 0 = auto-detect via the
+    # provider's /models + native APIs (llm/capabilities.py, cached in the
+    # AppSetting row "llm_caps"); >0 = manual override for both roles
+    llm_context_tokens: int = Field(default=0, ge=0, le=8_000_000)
+    # completion budget per call: 0 = auto — derived from the detected
+    # context window as clamp(ctx//4, 2048, 128_000) and additionally
+    # clamped so prompt+completion fits the window; >0 = hard cap
+    llm_max_tokens: int = Field(default=0, ge=0, le=2_000_000)
     llm_timeout_s: float = Field(default=180, gt=0)
     llm_stream: bool = True
     llm_idle_timeout_s: float = Field(default=180, gt=0)
@@ -85,6 +92,10 @@ class RuntimeSettings(BaseModel):
     agent_dim_tolerance_mm: float = Field(default=0.5, ge=0, le=1000)
     agent_clarification_mode: Literal["assume", "ask"] = "assume"
     agent_max_input_images: int = Field(default=8, ge=0, le=100)
+    # fraction of the detected context window a prompt may occupy before the
+    # tool loop condenses history / trims tool results early — bounds the
+    # resend before the provider rejects the request with a context error
+    agent_context_budget_frac: float = Field(default=0.8, gt=0.1, le=0.95)
     agent_max_tokens_per_job: int = Field(default=400_000, ge=1)
     agent_max_wall_s: float = Field(default=900, gt=0)
     agent_default_gen_mode: Literal["auto", "cad", "mesh", "hybrid", "topopt"] = "auto"
