@@ -606,24 +606,37 @@ async def run_session(  # noqa: C901
                 verify_fails[vsig] = verify_fails.get(vsig, 0) + 1
                 if verify_fails[vsig] == 2 and not verify_nudged:
                     verify_nudged = True
-                    msgs.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                f"verify failed again with the SAME error "
-                                f"({result.get('category')} at line "
-                                f"{result.get('line')}) — tuning that line won't "
-                                "fix it, the cause is EARLIER. Check "
-                                "geometry_at_failure for where the bodies "
-                                "actually are (a part at the origin whose code "
-                                "says otherwise had its placement discarded by "
-                                "a bare `Pos * X(...)` — use "
-                                "`with Locations(Pos(...)):` or `add(...)`). "
-                                "Fix the construction, not the selector; if the "
-                                "shape is structurally wrong, call done."
-                            ),
-                        }
-                    )
+                    cat = str(result.get("category") or "")
+                    if cat.startswith("api-") or cat in ("runtime", "name"):
+                        # code-level failure (KeyError/NameError/AttributeError):
+                        # the repeated crash is in the script's own calls, not
+                        # in geometry — the geometry advice below misses it
+                        nudge = (
+                            f"verify failed again with the SAME error "
+                            f"({cat} at line {result.get('line')}) — the crash "
+                            "is in the code itself, not the geometry. Read the "
+                            "exception name carefully: a KeyError/NameError/"
+                            "AttributeError means a wrong dict key or name — "
+                            "compare the call against the documented helper "
+                            "signatures (quickref, contract) instead of guessing, "
+                            "and drop debug prints that keep breaking. Do NOT "
+                            "keep the same call and tweak something else."
+                        )
+                    else:
+                        nudge = (
+                            f"verify failed again with the SAME error "
+                            f"({cat} at line "
+                            f"{result.get('line')}) — tuning that line won't "
+                            "fix it, the cause is EARLIER. Check "
+                            "geometry_at_failure for where the bodies "
+                            "actually are (a part at the origin whose code "
+                            "says otherwise had its placement discarded by "
+                            "a bare `Pos * X(...)` — use "
+                            "`with Locations(Pos(...)):` or `add(...)`). "
+                            "Fix the construction, not the selector; if the "
+                            "shape is structurally wrong, call done."
+                        )
+                    msgs.append({"role": "user", "content": nudge})
                 elif verify_fails[vsig] >= 3:
                     verify_loop = True
             if session.is_done and tc.name in ("done", "submit_code", "regenerate"):
