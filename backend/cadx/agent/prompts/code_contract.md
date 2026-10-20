@@ -96,6 +96,12 @@
      actually changed the part: `measure(part)` and compare face/solid counts
      — unchanged counts mean the boolean silently no-op'd (misaligned or
      grazing cutter). Fix the cutter before adding the next feature.
+   - NEVER fuse solids one-by-one inside a Python loop (`arch = arch + seg` or
+     `arch += seg` per segment): each iteration runs a full OCC boolean on the
+     GROWN solid, and curved chains of 10+ pieces stall for minutes. Collect
+     the pieces in a list and fuse ONCE after the loop
+     (`parts[0].fuse(*parts[1:])`). For a swept/curved profile prefer
+     `sweep()`/`loft()` or `revolve` over stacked primitives.
 5. A helper `load_reference(asset_id: str) -> Shape` is predefined for user-provided
    STEP/STL reference bodies (their asset ids are listed in the context).
    Injected inspect helpers (bare names, no import needed):

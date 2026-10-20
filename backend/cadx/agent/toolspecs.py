@@ -1976,11 +1976,16 @@ class ToolSession:
             errs += check_standard_part_calls(code)
         return errs
 
+    def _contract_warnings(self, code: str) -> list[str]:
+        return list(check_code(code).warnings)
+
     def _tool_check_code(self, a: dict[str, Any]) -> dict[str, Any]:
         if err := self._require_buffer():
             return err
         errs = self._contract_errors(self.buffer)
         out: dict[str, Any] = {"ok": not errs, "errors": errs[:10]}
+        if warns := self._contract_warnings(self.buffer):
+            out["warnings"] = warns[:10]
         _, sig_warnings = self._sig_findings(self.buffer)
         if sig_warnings:
             out["sig_warnings"] = sig_warnings[:10]
@@ -1990,6 +1995,8 @@ class ToolSession:
         code = str(a.get("code", ""))
         errs = self._contract_errors(code)
         out: dict[str, Any] = {"ok": not errs, "errors": errs[:10]}
+        if warns := self._contract_warnings(code):
+            out["warnings"] = warns[:10]
         _, sig_warnings = self._sig_findings(code)
         if sig_warnings:
             out["sig_warnings"] = sig_warnings[:10]
@@ -2067,6 +2074,8 @@ class ToolSession:
                 "watertight": ana.get("watertight"),
                 "warnings": ana.get("warnings"),
             }
+            if code_warns := self._contract_warnings(self.buffer):
+                out["code_warnings"] = code_warns[:10]
             if res.get("features"):
                 out["features"] = res["features"]
             return out

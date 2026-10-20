@@ -165,6 +165,11 @@ class _Checker(ast.NodeVisitor):
         # `with BuildPart() as p` -> "p"; >0 while inside that block
         self._builder_vars: set[str] = set()
         self._builder_depth = 0
+        # >0 inside for/while bodies — self-referential boolean accumulation
+        # (`arch = arch + seg` per segment) runs one OCC fuse per iteration and
+        # re-sews the grown solid every time (observed: 40-cylinder arch →
+        # >480 s pipeline hang)
+        self._loop_depth = 0
 
     # ---- constant evaluation over literals, PARAMS subs and simple arith ----
     def _const(self, node: ast.AST) -> float | None:
@@ -341,6 +346,44 @@ class _Checker(ast.NodeVisitor):
         self._builder_depth -= 1
         for v in entered:
             self._builder_vars.discard(v)
+
+    def visit_For(self, node: ast.For) -> None:
+        self._loop_depth += 1
+        self.generic_visit(node)
+        self._loop_depth -= 1
+
+    def visit_While(self, node: ast.While) -> None:
+        self._loop_depth += 1
+        self.generic_visit(node)
+        self._loop_depth -= 1
+
+    def _loop_fuse_warn(self, node: ast.AST, expr: str) -> None:
+        self._warn(
+            node,
+            f"`{expr}` accumulates booleans inside a loop — "
+            "each iteration runs a full OCC fuse on the grown solid "
+            "(~seconds→minutes for >10 segments; observed >480 s). "
+            "Collect the pieces in a list and fuse once after the loop "
+            "(`parts[0].fuse(*parts[1:])`), or model swept profiles with "
+            "`sweep()`/`loft()` instead of stacked primitives.",
+        )
+
+    def _check_loop_fuse(self, node: ast.AST, name: str, value: ast.AST) -> None:
+        """`x = x + seg` / `x = a if c else x + seg` inside a loop —
+        each iteration performs a full OCC boolean on the grown solid."""
+        if self._loop_depth == 0:
+            return
+        for sub in ast.walk(value):
+            if (
+                isinstance(sub, ast.BinOp)
+                and isinstance(sub.op, ast.Add)
+                and (
+                    (isinstance(sub.left, ast.Name) and sub.left.id == name)
+                    or (isinstance(sub.right, ast.Name) and sub.right.id == name)
+                )
+            ):
+                self._loop_fuse_warn(node, f"{name} = {name} + ...")
+                return
 
     def visit_Expr(self, node: ast.Expr) -> None:
         # `Box(...).translate(5,0,0)` as a statement: translate/rotate RETURN a
@@ -644,6 +687,12 @@ class _Checker(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        if (
+            isinstance(node.target, ast.Name)
+            and isinstance(node.op, ast.Add)
+            and self._loop_depth > 0
+        ):
+            self._loop_fuse_warn(node, f"{node.target.id} += ...")
         # `p.part += x` inside `with BuildPart() as p` bypasses the builder —
         # works, but skips BuildPart bookkeeping; the idiomatic call is add()
         if (
@@ -669,6 +718,9 @@ class _Checker(ast.NodeVisitor):
             if isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name)
             else None
         )
+        for t in node.targets:
+            if isinstance(t, ast.Name) and self._loop_depth > 0:
+                self._check_loop_fuse(node, t.id, node.value)
         for t in node.targets:
             if isinstance(t, ast.Name):
                 v = node.value

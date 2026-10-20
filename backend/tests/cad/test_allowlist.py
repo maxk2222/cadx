@@ -503,3 +503,45 @@ result = p.part
     )
     r = check_code(code)
     assert not any("one-sided" in w for w in r.warnings)
+
+
+def test_loop_fuse_accumulator_warns():
+    """Observed: a 40-segment cylinder arch fused via `arch = arch + seg` inside
+    a loop — each iteration runs a full OCC boolean on the grown solid and the
+    pipeline ground for >480 s."""
+    code = (
+        GOOD
+        + "arch = None\n"
+        + "for i in range(40):\n"
+        + "    seg = Pos(i, 0, i) * Cylinder(5, 3)\n"
+        + "    arch = seg if arch is None else arch + seg\n"
+        + "result = arch\n"
+    )
+    r = check_code(code)
+    assert r.ok
+    assert any("accumulates booleans" in w for w in r.warnings)
+
+
+def test_loop_augassign_fuse_warns():
+    code = (
+        GOOD
+        + "part = Box(10, 10, 10)\n"
+        + "for i in range(5):\n"
+        + "    part += Pos(i, 0, 0) * Box(2, 2, 2)\n"
+        + "result = part\n"
+    )
+    r = check_code(code)
+    assert any("accumulates booleans" in w for w in r.warnings)
+
+
+def test_fuse_after_loop_no_warning():
+    code = (
+        GOOD
+        + "segs = []\n"
+        + "for i in range(40):\n"
+        + "    segs.append(Pos(i, 0, i) * Cylinder(5, 3))\n"
+        + "arch = segs[0].fuse(*segs[1:])\n"
+        + "result = arch\n"
+    )
+    r = check_code(code)
+    assert not any("accumulates booleans" in w for w in r.warnings)
