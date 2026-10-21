@@ -186,6 +186,25 @@ def _hybrid_contract(hybrid: bool) -> str:
     return read_prompt("code_contract_hybrid.md") if hybrid else ""
 
 
+def optimize_requested(spec: PartSpec | None) -> bool:
+    """True when the spec asks for downstream topology optimization —
+    `spec.optimize` present counts as intent unless it explicitly carries
+    `enabled=False` (older payloads may lack the flag entirely)."""
+    opt = getattr(spec, "optimize", None)
+    if opt is None:
+        return False
+    enabled = getattr(opt, "enabled", None)
+    return bool(enabled) if enabled is not None else True
+
+
+def _optimize_note(spec: PartSpec | None) -> str:
+    # topopt runs downstream on the generated solid — codegen must produce the
+    # FULL design domain, not a hand-lightened skeleton (observed: a run
+    # carved weight-reduction pockets to hit "40% volume" before topopt ever
+    # ran — the optimizer was left with no material to remove)
+    return read_prompt("code_optimize_note.md") if optimize_requested(spec) else ""
+
+
 def codegen_system(
     *,
     plan: Any | None = None,
@@ -198,6 +217,7 @@ def codegen_system(
             read_prompt("codegen_system.md"),
             read_prompt("code_contract.md"),
             _hybrid_contract(hybrid),
+            _optimize_note(spec),
             read_prompt("code_contract_responses.md"),
             _reference_docs(plan=plan, spec=spec, fresh=fresh),
         ]
@@ -219,6 +239,7 @@ def codegen_tools_system(
             read_prompt("tools_protocol.md"),
             read_prompt("code_contract.md"),
             _hybrid_contract(hybrid),
+            _optimize_note(spec),
             read_prompt("code_contract_responses_tools.md"),
             _reference_docs(plan=plan, spec=spec, fresh=fresh),
         ]
@@ -241,6 +262,7 @@ def codegen_build_system(
             read_prompt("tools_protocol.md"),
             read_prompt("code_contract.md"),
             _hybrid_contract(hybrid),
+            _optimize_note(spec),
             _reference_docs(plan=plan, spec=spec, fresh=fresh),
         ]
     )

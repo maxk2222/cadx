@@ -11,13 +11,14 @@ so a broken vision path can never block generation.
 from __future__ import annotations
 
 import inspect
+import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from cadx.agent.context import system_prompt
+from cadx.agent.context import optimize_requested, system_prompt
 from cadx.agent.image_prompt import visual_features
 from cadx.agent.types import IMAGE_INPUT_KINDS, AgentCtx, InputAsset
 from cadx.llm.images import image_part
@@ -39,9 +40,42 @@ def _dim_text(dim: Any) -> str:
     return f"{getattr(dim, 'value', 0):g} {unit}"
 
 
+# Optimization-intent sentences describe the downstream PROCESS, not the base
+# part's visible shape — the intake folds e.g. "topologieoptimiert (40%
+# Volumen)" into spec.summary and the verifier then chased a phantom
+# criterion (an already-optimized shape) on the concept image for ~4.5min.
+_OPT_SENTENCE = re.compile(
+    r"topolog|optimiz|optimier|volumen|volumenanteil|volume\s*fraction|"
+    r"mass\s*reduction|massenred|gewichtsred|volfrac|\bsimp\b",
+    re.IGNORECASE,
+)
+
+_OPT_BASE_NOTE = (
+    "Note: the part will be topology-optimized downstream — the image must "
+    "show the SOLID base part (full design domain), not an optimized/lattice "
+    "shape."
+)
+
+
+def _strip_opt_intent(summary: str) -> str:
+    """Drop summary sentences about the downstream optimization process —
+    they are not visible features of the SOLID base part the image must show.
+    Split on sentence boundaries (and newlines), keep the rest."""
+    kept = [
+        s.strip()
+        for s in re.split(r"[.!?;\n]+", summary)
+        if s.strip() and not _OPT_SENTENCE.search(s)
+    ]
+    return ". ".join(kept)
+
+
 def _spec_summary(ctx: AgentCtx, spec: PartSpec | None) -> str:
     """Text block injected into image_verify.md — name, overall dims and the
-    visual feature list. Without a spec the raw user prompt is the fallback."""
+    visual feature list. Without a spec the raw user prompt is the fallback.
+
+    When the spec requests downstream topology optimization, optimize-intent
+    sentences are filtered out of the summary and a base-part note is
+    appended — the hero image must show the full design domain."""
     if spec is None:
         return ctx.prompt[:200]
     lines = [
@@ -49,11 +83,15 @@ def _spec_summary(ctx: AgentCtx, spec: PartSpec | None) -> str:
         "Dimensions (L x W x H): "
         + " x ".join(_dim_text(d) for d in (spec.length_x, spec.width_y, spec.height_z)),
     ]
-    if spec.summary:
-        lines.append(f"Summary: {spec.summary}")
+    optimized = optimize_requested(spec)
+    summary = _strip_opt_intent(spec.summary or "") if optimized else (spec.summary or "")
+    if summary.strip():
+        lines.append(f"Summary: {summary}")
     feats = visual_features(spec)
     if feats:
         lines.append(f"Visual features: {feats}")
+    if optimized:
+        lines.append(_OPT_BASE_NOTE)
     return "\n".join(lines)
 
 

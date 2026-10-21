@@ -8,8 +8,15 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from cadx.agent.context import (
+    _optimize_note,
+    codegen_build_system,
+    codegen_system,
+    codegen_tools_system,
+)
 from cadx.agent.image_check import (
     ImageVerdict,
+    _spec_summary,
     generate_with_verification,
     verify_concept_image,
 )
@@ -17,7 +24,7 @@ from cadx.agent.types import AgentCtx, InputAsset
 from cadx.db.models import ProjectSettings
 from cadx.llm.client import LLMResponse
 from cadx.llm.fake import FakeLLM
-from cadx.llm.schemas import Feature, PartSpec
+from cadx.llm.schemas import Feature, OptimizeSpec, PartSpec
 
 _DIM = {"value": 80.0, "unit": "mm", "source": "stated"}
 
@@ -329,3 +336,78 @@ async def test_verify_aspect_gate_skips_square_spec(tmp_path):
     llm = FakeLLM([{"match": True, "severity": "ok"}])
     v = await verify_concept_image(_ctx(llm), png, _spec())  # 80x80x80
     assert v.severity == "ok"
+
+
+# --- B7/O5: optimize-intent must not leak into image verify / codegen ------
+
+
+def _opt_spec(summary: str = "", enabled: bool = True) -> PartSpec:
+    return PartSpec(
+        name="l-bracket",
+        length_x=dict(_DIM),
+        width_y=dict(_DIM),
+        height_z=dict(_DIM),
+        summary=summary,
+        optimize=OptimizeSpec(enabled=enabled),
+    )
+
+
+def test_spec_summary_strips_optimize_intent():
+    """Observed eval failure: the intake wrote "topologieoptimiert (40%
+    Volumen)" into spec.summary and the image verifier demanded that
+    phantom criterion on the CONCEPT image — ~4.5min of retries. The hero
+    image must show the SOLID base part (design domain); topopt is
+    downstream and not visible on the photo."""
+    spec = _opt_spec("L-Winkel mit zwei Bohrungen. Wird topologieoptimiert (40% Volumen).")
+    out = _spec_summary(_ctx(FakeLLM([])), spec)
+    assert "40%" not in out
+    assert "topologieoptimiert" not in out
+    assert "L-Winkel" in out  # shape sentences survive the filter
+    assert "topology-optimized downstream" in out
+    assert "SOLID base part" in out
+
+
+def test_spec_summary_unchanged_without_optimize():
+    """No spec.optimize → verbatim pass-through, no base-part note."""
+    spec = _spec()
+    spec.summary = "Wird topologieoptimiert (40% Volumen) — L-Winkel."
+    out = _spec_summary(_ctx(FakeLLM([])), spec)
+    assert "40% Volumen" in out
+    assert "topology-optimized downstream" not in out
+
+
+def test_spec_summary_omits_empty_summary_line():
+    """A summary that is ONLY optimize intent filters to nothing — the
+    Summary line is dropped entirely, the base-part note stays."""
+    spec = _opt_spec("Topologieoptimierung mit 40% Volumenanteil.")
+    out = _spec_summary(_ctx(FakeLLM([])), spec)
+    assert "Summary:" not in out
+    assert "SOLID base part" in out
+
+
+async def test_verify_prompt_excludes_optimize_intent(png):
+    """End-to-end: the vision system message must not contain the
+    optimization criterion, only the base-part note."""
+    llm = FakeLLM([{"match": True, "severity": "ok"}])
+    spec = _opt_spec("L-Winkel. Wird topologieoptimiert (40% Volumen).")
+    v = await verify_concept_image(_ctx(llm), png, spec)
+    assert v.match
+    sys_msg = llm.calls[0]["messages"][0]["content"]
+    assert "40%" not in sys_msg
+    assert "SOLID base part" in sys_msg
+
+
+def test_optimize_note_gating():
+    assert _optimize_note(_opt_spec(enabled=True))
+    assert _optimize_note(_opt_spec(enabled=False)) == ""
+    assert _optimize_note(_spec()) == ""  # no optimize block
+    assert _optimize_note(None) == ""
+
+
+def test_codegen_systems_include_optimize_note_only_when_requested():
+    """All three codegen assemblies must carry the design-domain contract
+    for optimize specs and stay clean otherwise."""
+    opt, plain = _opt_spec(), _spec()
+    for build in (codegen_system, codegen_tools_system, codegen_build_system):
+        assert "DESIGN DOMAIN" in build(spec=opt)
+        assert "DESIGN DOMAIN" not in build(spec=plain)
