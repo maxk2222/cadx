@@ -851,6 +851,9 @@ def run_optimize_payload(
         int(payload.get("iteration", 1)),
     )
     mesh_path = storage.resolve(payload["mesh_rel"])
+    opt = payload.get("optimize") or {}
+    if opt.get("structure_mode") == "infill":
+        return run_infill_payload(payload, out_dir, mesh_path, cancelled)
     result = run_topopt_pipeline(
         mesh_path=mesh_path,
         out_dir=out_dir,
@@ -883,6 +886,49 @@ def run_optimize_payload(
         version=payload.get("version_id"),
         ok=d["ok"],
         iters=result.topopt.get("iterations"),
+        timings=d["timings"],
+    )
+    return d
+
+
+def run_infill_payload(
+    payload: dict[str, Any],
+    out_dir: Path,
+    mesh_path: Path,
+    cancelled: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
+    """structure_mode=infill: shell + physics-graded lattice instead of SIMP."""
+    from cadx.cad.engine import run_infill_pipeline
+
+    result = run_infill_pipeline(
+        mesh_path=mesh_path,
+        out_dir=out_dir,
+        load_cases=payload.get("load_cases") or [],
+        optimize=payload.get("optimize"),
+        material=payload.get("material") or "",
+        voxel_mm=payload.get("voxel_mm"),
+        max_elements=payload.get("max_elements"),
+        anchors=payload.get("anchors"),
+        name=payload.get("name", "model"),
+        runtime=_runtime(payload),
+        cancelled=cancelled,
+        spec=payload.get("spec"),
+    )
+    d = result.to_dict()
+    d = _relpath_exports(d, result, out_dir)
+    it_rel = storage.relpath(out_dir)
+    d.setdefault("topopt", {})
+    d["topopt"]["density_relpath"] = f"{it_rel}/topopt/density.npz"
+    d["fem_report_relpath"] = f"{it_rel}/fem/report.json" if result.fem else None
+    d["fem_report_export_relpath"] = (
+        f"{it_rel}/fem/report_export.json" if result.fem_export else None
+    )
+    d.setdefault("mesh", {})["stl_relpath"] = f"{it_rel}/_run/model.stl"
+    log.info(
+        "infill",
+        version=payload.get("version_id"),
+        ok=d["ok"],
+        mode=(payload.get("optimize") or {}).get("infill_scope"),
         timings=d["timings"],
     )
     return d

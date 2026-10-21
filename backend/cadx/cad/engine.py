@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import json
+import math
 import re
 import shutil
 import time
@@ -1263,6 +1264,107 @@ def _compact_history(history: list[dict[str, Any]], cap: int = 200) -> list[dict
     ]
 
 
+def _resolve_topopt_cases(
+    domain: Any,
+    cases: list[Any],
+    anchors: list[dict] | None,
+    mat: Any,
+    max_cases: int,
+    *,
+    warn: bool = True,
+    warnings_out: list[str] | None = None,
+) -> tuple[
+    list[tuple[np.ndarray, np.ndarray]],
+    list[float],
+    list[np.ndarray],
+    list[np.ndarray],
+    list[str],
+]:
+    """Resolve load cases + passive-pin node masks on `domain` — shared by
+    the SIMP/BESO pipeline (which calls it again on the coarse multires
+    grid, warn=False) and the shell+infill pipeline.
+
+    Returns (resolved (fixed3, F) tuples, case weights, fixed node masks,
+    load node masks, unresolved-region messages). Direction-cone loads
+    expand into extra case variants capped at `max_cases`; load regions
+    that carry only body forces or match the whole part are not pinned —
+    they would freeze the design domain."""
+    from cadx.cad.fem.loads import expand_cone
+    from cadx.cad.fem.regions import region_node_mask, resolve_case_dofs
+
+    warn_list = warnings_out if warnings_out is not None else []
+    r_resolved: list[tuple[np.ndarray, np.ndarray]] = []
+    r_weights: list[float] = []
+    r_fixed_nm: list[np.ndarray] = []
+    r_load_nm: list[np.ndarray] = []
+    r_unresolved: list[str] = []
+
+    def _add(c: Any, weight: float) -> None:
+        fixed3, F, w = resolve_case_dofs(domain, c, anchors, density_g_cm3=mat.density_g_cm3)
+        if warn:
+            warn_list.extend(w)
+            # a fixed/load region that matched nothing means the constraint
+            # the spec declared is absent from the geometry — optimizing
+            # anyway produces a structurally meaningless result
+            r_unresolved.extend(
+                m for m in w if re.search(r"(fixed|load) region .*matched no nodes", m)
+            )
+        if not fixed3.any() or not np.any(F):
+            if warn:
+                warn_list.append(
+                    f"case '{c.name}' skipped — no fixed region or no effective load"
+                )
+            return
+        r_resolved.append((fixed3, F))
+        r_weights.append(weight)
+
+    for c in cases:
+        cone_idx = [
+            li
+            for li, ld in enumerate(c.loads)
+            if (ld.direction_cone_deg or 0) > 0 and ld.force_n and len(ld.force_n) == 3
+        ]
+        _add(c, float(c.weight))
+        for li in cone_idx:
+            ld = c.loads[li]
+            variants = expand_cone(
+                np.asarray(ld.force_n, dtype=float), float(ld.direction_cone_deg or 0.0)
+            )
+            for vi, fvar in enumerate(variants):
+                if len(r_resolved) >= max_cases:
+                    if warn:
+                        warn_list.append(
+                            f"direction-cone expansion capped at {max_cases} cases"
+                        )
+                    break
+                vc = c.model_copy(deep=True)
+                vc.name = f"{c.name}_cone{vi + 1}"
+                vc.loads[li].force_n = [float(v) for v in fvar]
+                if vc.loads[li].bearing_dir:
+                    vc.loads[li].bearing_dir = [float(v) for v in fvar]
+                vc.loads[li].direction_cone_deg = None
+                _add(vc, float(c.weight))
+        for load in c.loads:
+            # don't pin body-load or whole-part regions — gravity acts on
+            # whatever material survives and `all` re-matches the
+            # extracted mesh; pinning them would freeze the domain.
+            concentrated = bool(
+                load.force_n
+                or load.pressure_mpa
+                or load.moment_nm
+                or load.preload_n
+                or load.remote_point
+            )
+            if load.g_load and not concentrated:
+                continue
+            if getattr(load.region, "kind", "") == "all":
+                continue
+            r_load_nm.append(region_node_mask(domain, load.region, anchors))
+    for f3, _ in r_resolved:
+        r_fixed_nm.append(np.asarray(f3).any(axis=1) if np.ndim(f3) == 2 else f3)
+    return r_resolved, r_weights, r_fixed_nm, r_load_nm, r_unresolved
+
+
 def run_fem_pipeline(
     *,
     mesh_path: Path,
@@ -1414,19 +1516,18 @@ def run_topopt_pipeline(  # noqa: C901
 
     from cadx import storage
     from cadx.cad.fem.analyze import report_to_json, run_fem_domain
+    from cadx.cad.fem.beso import beso
     from cadx.cad.fem.extract import density_to_mesh
-    from cadx.cad.fem.loads import expand_cone
+    from cadx.cad.fem.loadpath import loadpath_field
     from cadx.cad.fem.preview import render_regions
     from cadx.cad.fem.regions import (
         auto_keep_regions,
         empty_region_warnings,
         keep_element_mask,
         material_cell_factors,
-        region_node_mask,
-        resolve_case_dofs,
     )
     from cadx.cad.fem.topopt import TopOptParams, passive_solid_mask, simp
-    from cadx.cad.fem.voxelize import grid_bounds_mm, voxelize
+    from cadx.cad.fem.voxelize import dilate_solid, grid_bounds_mm, voxelize
     from cadx.llm.schemas import LoadCase, OptimizeSpec
 
     res = ExecResult()
@@ -1448,7 +1549,20 @@ def run_topopt_pipeline(  # noqa: C901
     from cadx.cad.fem.materials import resolve_material
 
     mat_name = material or ""
-    mat = resolve_material(mat_name)
+    # aniso_material: opt-in FDM layer weakening — the layer-normal
+    # stiffness factor (default 0.6, typical interlayer bond) acts along
+    # the print direction's axis; runs through the material so BOTH the
+    # optimizer and the verification solves see the same weakened D
+    aniso_axis = {"+x": 0, "-x": 0, "+y": 1, "-y": 1, "+z": 2, "-z": 2}.get(
+        str(getattr(opt, "print_direction", "+z") or "+z"), 2
+    )
+    mat = resolve_material(
+        mat_name,
+        aniso_z=(float(opt.aniso_factor) if opt.aniso_factor else 0.6)
+        if opt.aniso_material
+        else None,
+        aniso_axis=aniso_axis if opt.aniso_material else None,
+    )
 
     # --- input normalization -------------------------------------------------
     # `spec_dims_mm` ([length_x, width_y, height_z], None = unconstrained
@@ -1485,8 +1599,18 @@ def run_topopt_pipeline(  # noqa: C901
 
     # --- design domain -------------------------------------------------------
     req_voxel = voxel_mm or s.fem_voxel_mm
+    # grow_mm: pad the grid so the optimizer can also ADD material beyond the
+    # part silhouette — the pad ring stays void in `domain.solid` and becomes
+    # designable space only in `design_domain` below
+    grow_mm = float(getattr(opt, "grow_mm", 0.0) or 0.0)
+
+    def _pad_cells(pitch: float) -> int:
+        return math.ceil(grow_mm / max(float(pitch), 1e-6)) if grow_mm > 0 else 0
+
     try:
-        domain = voxelize(mesh, req_voxel, max_elements or s.fem_max_elements)
+        domain = voxelize(
+            mesh, req_voxel, max_elements or s.fem_max_elements, pad_cells=_pad_cells(req_voxel)
+        )
     except Exception as e:
         res.error = f"voxelization failed: {e}"
         return res
@@ -1502,7 +1626,12 @@ def run_topopt_pipeline(  # noqa: C901
     while 3 * domain.node_count > dofs_cap and coarsen_steps < 4:
         coarsen_steps += 1
         try:
-            domain = voxelize(mesh, domain.pitch * 1.4, max_elements or s.fem_max_elements)
+            domain = voxelize(
+                mesh,
+                domain.pitch * 1.4,
+                max_elements or s.fem_max_elements,
+                pad_cells=_pad_cells(domain.pitch * 1.4),
+            )
         except Exception:
             break
     if coarsen_steps:
@@ -1526,6 +1655,30 @@ def run_topopt_pipeline(  # noqa: C901
         [round(float(v), 3) for v in d_lo],
         [round(float(v), 3) for v in d_hi],
     ]
+
+    # two domains on ONE shared grid when grow_mm > 0: `part_domain.solid`
+    # is the physical part (regions/anchors/passive masks resolve on it — a
+    # face region must match the real surface, never padded or dilated
+    # cells), `design_domain.solid` additionally holds the dilated ring the
+    # optimizer may fill. Identical dims/origin/pitch → every mask and DOF
+    # vector indexes both domains without remapping.
+    part_domain = domain
+    design_domain = domain
+    if grow_mm > 0:
+        grow_cells = math.ceil(grow_mm / domain.pitch)
+        if grow_cells > 0:
+            design_domain = dataclasses.replace(domain, solid=dilate_solid(domain, grow_cells))
+        res.topopt["design_domain"] = {
+            "grow_mm": round(grow_mm, 3),
+            "part_cells": int(part_domain.solid_count),
+            "design_cells": int(design_domain.solid_count),
+        }
+        log.info(
+            "topopt.design_domain",
+            grow_mm=grow_mm,
+            part_cells=int(part_domain.solid_count),
+            design_cells=int(design_domain.solid_count),
+        )
 
     # predictive memory budget — an OOM kill mid-SIMP loses the whole job;
     # better to refuse early with a pointer to the knobs that fix it
@@ -1555,76 +1708,15 @@ def run_topopt_pipeline(  # noqa: C901
         """Re-resolve the load cases + passive-pin node masks on `dom` —
         needed again on the coarse multiresolution grid (masks are
         domain-specific)."""
-        r_resolved: list[tuple[np.ndarray, np.ndarray]] = []
-        r_weights: list[float] = []
-        r_fixed_nm: list[np.ndarray] = []
-        r_load_nm: list[np.ndarray] = []
-        r_unresolved: list[str] = []
-
-        def _add(c: LoadCase, weight: float) -> None:
-            fixed3, F, w = resolve_case_dofs(dom, c, anchors, density_g_cm3=mat.density_g_cm3)
-            if warn:
-                res.topopt.setdefault("warnings", []).extend(w)
-                # a fixed/load region that matched nothing means the constraint
-                # the spec declared is absent from the geometry — optimizing
-                # anyway produces a structurally meaningless result
-                r_unresolved.extend(
-                    m for m in w if re.search(r"(fixed|load) region .*matched no nodes", m)
-                )
-            if not fixed3.any() or not np.any(F):
-                if warn:
-                    res.topopt["warnings"].append(
-                        f"case '{c.name}' skipped — no fixed region or no effective load"
-                    )
-                return
-            r_resolved.append((fixed3, F))
-            r_weights.append(weight)
-
-        for c in cases:
-            cone_idx = [
-                li
-                for li, ld in enumerate(c.loads)
-                if (ld.direction_cone_deg or 0) > 0 and ld.force_n and len(ld.force_n) == 3
-            ]
-            _add(c, float(c.weight))
-            for li in cone_idx:
-                ld = c.loads[li]
-                variants = expand_cone(
-                    np.asarray(ld.force_n, dtype=float), float(ld.direction_cone_deg or 0.0)
-                )
-                for vi, fvar in enumerate(variants):
-                    if len(r_resolved) >= max_cases:
-                        if warn:
-                            res.topopt["warnings"].append(
-                                f"direction-cone expansion capped at {max_cases} cases"
-                            )
-                        break
-                    vc = c.model_copy(deep=True)
-                    vc.name = f"{c.name}_cone{vi + 1}"
-                    vc.loads[li].force_n = [float(v) for v in fvar]
-                    if vc.loads[li].bearing_dir:
-                        vc.loads[li].bearing_dir = [float(v) for v in fvar]
-                    vc.loads[li].direction_cone_deg = None
-                    _add(vc, float(c.weight))
-            for load in c.loads:
-                # don't pin body-load or whole-part regions — gravity acts on
-                # whatever material survives and `all` re-matches the
-                # extracted mesh; pinning them would freeze the domain.
-                concentrated = bool(
-                    load.force_n
-                    or load.pressure_mpa
-                    or load.moment_nm
-                    or load.preload_n
-                    or load.remote_point
-                )
-                if load.g_load and not concentrated:
-                    continue
-                if getattr(load.region, "kind", "") == "all":
-                    continue
-                r_load_nm.append(region_node_mask(dom, load.region, anchors))
-        for f3, _ in r_resolved:
-            r_fixed_nm.append(np.asarray(f3).any(axis=1) if np.ndim(f3) == 2 else f3)
-        return r_resolved, r_weights, r_fixed_nm, r_load_nm, r_unresolved
+        return _resolve_topopt_cases(
+            dom,
+            cases,
+            anchors,
+            mat,
+            max_cases,
+            warn=warn,
+            warnings_out=res.topopt.setdefault("warnings", []),
+        )
 
     resolved, case_weights, fixed_node_masks, load_node_masks, unresolved = _resolve_cases_on(
         domain
@@ -1654,17 +1746,22 @@ def run_topopt_pipeline(  # noqa: C901
         keep_list += auto_keeps
         n_auto_keeps = len(auto_keeps)
     res.topopt["auto_keep_applied"] = bool(n_auto_keeps)
-    res.topopt.setdefault("warnings", []).extend(empty_region_warnings(domain, keep_list, anchors))
+    res.topopt.setdefault("warnings", []).extend(empty_region_warnings(part_domain, keep_list, anchors))
     res.topopt.setdefault("warnings", []).extend(
-        empty_region_warnings(domain, list(opt.void_regions), anchors)
+        empty_region_warnings(part_domain, list(opt.void_regions), anchors)
     )
-    keep_cells = keep_element_mask(domain, keep_list, anchors)
-    void_cells = keep_element_mask(domain, list(opt.void_regions), anchors)
-    passive = passive_solid_mask(domain, [keep_cells], fixed_node_masks, load_node_masks)
+    keep_cells = keep_element_mask(part_domain, keep_list, anchors)
+    void_cells = keep_element_mask(part_domain, list(opt.void_regions), anchors)
+    # passive pins run on the DESIGN domain: grown cells sharing a
+    # fix/load node stay material — the load-introduction patch can use
+    # the extra design space (masks share the grid, resolved on the part)
+    passive = passive_solid_mask(
+        design_domain, [keep_cells], fixed_node_masks, load_node_masks
+    )
 
     # region-selection previews so the agent/user can see where forces land
     res.topopt["regions_png"] = render_regions(
-        domain, cases, keep_list, out_dir / "fem", anchors, source_mesh=mesh
+        part_domain, cases, keep_list, out_dir / "fem", anchors, source_mesh=mesh
     )
 
     min_member = float(opt.min_member_mm or s.topopt_min_member_mm or 0.0)
@@ -1684,7 +1781,11 @@ def run_topopt_pipeline(  # noqa: C901
         print_direction=str(getattr(opt, "print_direction", "+z") or "+z"),
         penal=float(opt.penal or 3.0),
         penal_init=opt.penal_init,
+        volfrac_init=opt.volfrac_init,
         solver=str(getattr(opt, "solver", "oc") or "oc"),
+        solver_backend=str(getattr(s, "fem_solver_backend", "auto") or "auto"),
+        beso_er=float(getattr(opt, "beso_er", 0.02) or 0.02),
+        aniso=(mat.aniso_z, float(mat.aniso_axis)) if mat.aniso_z != 1.0 else None,
         case_objective=str(getattr(opt, "case_objective", "weighted") or "weighted"),
         max_displacement_mm=opt.max_displacement_mm,
         max_stress_mpa=opt.max_stress_mpa,
@@ -1723,6 +1824,17 @@ def run_topopt_pipeline(  # noqa: C901
                 warm_src = opt.warm_density_relpath
         except Exception as e:
             res.topopt["warnings"].append(f"warm-start density unreadable: {e}")
+    elif str(getattr(opt, "warmstart", "") or "") == "loadpath":
+        # deterministic Dijkstra corridor field (load centroids -> fixed
+        # regions) — skips SIMP's broad-search phase; on the DESIGN domain
+        # so corridors may route through grow_mm space too
+        try:
+            x0 = loadpath_field(
+                design_domain, resolved, passive_solid=passive, passive_void=void_cells
+            )
+            warm_src = "loadpath"
+        except Exception as e:
+            res.topopt["warnings"].append(f"loadpath warm start failed: {e}")
     else:
         # no explicit warm start — reuse a previous run's density.npz when its
         # grid is identical (agent sessions chain SIMP runs on one base mesh)
@@ -1750,7 +1862,20 @@ def run_topopt_pipeline(  # noqa: C901
     ):
         t_mr = time.monotonic()
         try:
-            coarse = voxelize(mesh, domain.pitch * 2.0, max_elements or s.fem_max_elements)
+            coarse = voxelize(
+                mesh,
+                domain.pitch * 2.0,
+                max_elements or s.fem_max_elements,
+                pad_cells=_pad_cells(domain.pitch * 2.0),
+            )
+            # same two-domain split on the coarse grid when grow_mm is on
+            coarse_design = coarse
+            if design_domain is not part_domain:
+                gcells_c = math.ceil(grow_mm / coarse.pitch)
+                if gcells_c > 0:
+                    coarse_design = dataclasses.replace(
+                        coarse, solid=dilate_solid(coarse, gcells_c)
+                    )
             if coarse.cell_count >= domain.cell_count // 2:
                 res.topopt["warnings"].append("multires: coarse grid not much coarser — skipped")
             else:
@@ -1762,7 +1887,7 @@ def run_topopt_pipeline(  # noqa: C901
                 else:
                     keep_c = keep_element_mask(coarse, keep_list, anchors)
                     void_c = keep_element_mask(coarse, list(opt.void_regions), anchors)
-                    passive_c = passive_solid_mask(coarse, [keep_c], fix_c, load_nm_c)
+                    passive_c = passive_solid_mask(coarse_design, [keep_c], fix_c, load_nm_c)
                     E0_c = mat.elastic_modulus_mpa * material_cell_factors(
                         coarse, keep_list, anchors, mat.elastic_modulus_mpa
                     )
@@ -1773,12 +1898,14 @@ def run_topopt_pipeline(  # noqa: C901
                         threshold=params.threshold,
                         filter="cone",  # no projection on the coarse pass
                         penal=params.penal,
+                        solver_backend=params.solver_backend,
+                        aniso=params.aniso,
                         self_supporting=params.self_supporting,
                         print_direction=params.print_direction,
                         symmetry=params.symmetry,  # keep the warm-start symmetric too
                     )
                     warm_r = simp(
-                        coarse,
+                        coarse_design,
                         E0_c,
                         mat.poisson,
                         res_c,
@@ -1789,7 +1916,9 @@ def run_topopt_pipeline(  # noqa: C901
                         spsolve_dofs=s.fem_spsolve_dofs,
                         cancelled=cancelled,
                     )
-                    x0 = _upsample_density(warm_r.density.reshape(coarse.dims), coarse, domain)
+                    x0 = _upsample_density(
+                        warm_r.density.reshape(coarse.dims), coarse, design_domain
+                    )
                     res.topopt["multires"] = {
                         "coarse_pitch_mm": coarse.pitch,
                         "coarse_cells": int(coarse.solid_count),
@@ -1816,8 +1945,12 @@ def run_topopt_pipeline(  # noqa: C901
         fem_suffix = "" if pass_idx <= 1 else f"_p{pass_idx}"
         p = dataclasses.replace(params, volfrac=volfrac)
         t = time.monotonic()
-        result = simp(
-            domain,
+        # solver="beso" routes to the binary evolutionary optimizer — same
+        # contract (domain, E0, nu, cases, passive, params) as simp(), but
+        # the returned density field is natively 0/1
+        opt_fn = beso if p.solver == "beso" else simp
+        result = opt_fn(
+            design_domain,
             E0_arr,
             mat.poisson,
             resolved,
@@ -1835,13 +1968,13 @@ def run_topopt_pipeline(  # noqa: C901
         out["params"] = p
 
         opt_mesh, final_mask, extract_warnings, n_components, extract_info = density_to_mesh(
-            domain,
+            design_domain,
             result.density,
             threshold=p.threshold,
             passive_solid=passive,
             # declared void regions + outside-domain cells must stay empty —
             # min-member dilation / regularization would regrow them otherwise
-            void_cells=void_cells.reshape(domain.dims) | ~domain.solid,
+            void_cells=void_cells.reshape(design_domain.dims) | ~design_domain.solid,
             min_member_mm=min_member,
             min_gap_mm=min_gap,
             smooth_iterations=s.topopt_smooth_iterations,
@@ -1874,10 +2007,11 @@ def run_topopt_pipeline(  # noqa: C901
         # the renderer can draw the smooth true surface instead of the voxel
         # hull
         verify = run_fem_domain(
-            domain,
+            design_domain,
             final_mask,
             cases,
             mat_name,
+            material=mat,
             out_dir=out_dir,
             anchors=anchors,
             keep_regions=keep_list,
@@ -1887,6 +2021,7 @@ def run_topopt_pipeline(  # noqa: C901
             suffix=fem_suffix,
             source_mesh=opt_mesh,
             cancelled=cancelled,
+            solver_backend=params.solver_backend,
         )
         out["verify"] = verify
         out["verify_s"] = round(time.monotonic() - t, 2)
@@ -1901,6 +2036,7 @@ def run_topopt_pipeline(  # noqa: C901
                 domain_exp.solid,
                 cases,
                 mat_name,
+                material=mat,
                 out_dir=out_dir,
                 anchors=anchors,
                 keep_regions=keep_list,
@@ -1910,6 +2046,7 @@ def run_topopt_pipeline(  # noqa: C901
                 suffix=f"{fem_suffix}_export",
                 source_mesh=opt_mesh,
                 cancelled=cancelled,
+                solver_backend=params.solver_backend,
             )
         except Exception as e:
             log.warning("topopt.verify_export.failed", error=str(e)[:200])
@@ -1988,7 +2125,9 @@ def run_topopt_pipeline(  # noqa: C901
         "gray_fraction": best["extract"].get("gray_fraction"),
         "vol_error_pct": best["extract"].get("vol_error_pct"),
         # solid fraction of the design space the extracted mask actually keeps
-        "volfrac_mask": round(float(final_mask.sum()) / max(int(domain.solid.sum()), 1), 4),
+        "volfrac_mask": round(
+            float(final_mask.sum()) / max(int(design_domain.solid.sum()), 1), 4
+        ),
         "solver_used": params.solver,
     }
     if result.history and result.history[-1].get("beta") is not None:
@@ -2101,7 +2240,8 @@ def run_topopt_pipeline(  # noqa: C901
             "volfrac_requested": params.volfrac,
             "volfrac_target": best["volfrac"],
             "volfrac_achieved": round(
-                float(result.density[domain.solid.ravel()].sum()) / max(int(domain.solid.sum()), 1),
+                float(result.density[design_domain.solid.ravel()].sum())
+                / max(int(design_domain.solid.sum()), 1),
                 4,
             ),
             "history": _compact_history(result.history),
@@ -2123,14 +2263,15 @@ def run_topopt_pipeline(  # noqa: C901
         opt_dir / "density.npz",
         density=result.density.astype(np.float32),
         mask=final_mask,
-        solid=domain.solid,
-        passive=passive.reshape(domain.dims),
+        solid=design_domain.solid,
+        part_solid=part_domain.solid,
+        passive=passive.reshape(design_domain.dims),
         # persisted so topopt_resample can re-carve declared void regions
         # (kept cells alone cannot express them)
-        voids=void_cells.reshape(domain.dims),
-        origin=domain.origin,
-        pitch=np.float64(domain.pitch),
-        dims=np.asarray(domain.dims),
+        voids=void_cells.reshape(design_domain.dims),
+        origin=design_domain.origin,
+        pitch=np.float64(design_domain.pitch),
+        dims=np.asarray(design_domain.dims),
         flat_bottom=np.bool_(base_flat),
     )
     # compact convergence trace alongside the per-iteration progress files —
@@ -2205,6 +2346,574 @@ def run_topopt_pipeline(  # noqa: C901
     res.ok = True
     # canonical conformance report — bound semantics: the stated dims are an
     # envelope the optimized part must fit inside, not targets to match
+    _attach_verify_spec(res, spec, ProjectSettings(), s, envelope_bound_only=True)
+    res.timings["total_s"] = round(time.monotonic() - t0, 2)
+    return res
+
+
+def run_infill_pipeline(  # noqa: C901
+    *,
+    mesh_path: Path,
+    out_dir: Path,
+    load_cases: list[dict[str, Any]],
+    optimize: dict[str, Any] | None = None,
+    material: str = "",
+    voxel_mm: float | None = None,
+    max_elements: int | None = None,
+    anchors: list[dict] | None = None,
+    name: str = "model",
+    cancelled: Any = None,
+    runtime: RuntimeSettings | None = None,
+    spec: dict[str, Any] | None = None,
+) -> ExecResult:
+    """Shell+Infill structure method — the FDM-native alternative to SIMP.
+
+    One FEM solve per load case on the FULL part supplies the element
+    strain energies; a closed outer skin plus a density-graded gyroid /
+    strut lattice inside (fem/infill.py) then produces a watertight
+    structure in ~2 solves instead of 60+ iterations. scope="guided"
+    additionally restricts the lattice to the topology a cheap coarse
+    SIMP retains. Verified through the same mask + export FEM path as
+    run_topopt_pipeline — sf_export still describes the printed mesh.
+    """
+    from scipy import ndimage
+
+    from cadx import storage
+    from cadx.cad.fem.analyze import report_to_json, run_fem_domain
+    from cadx.cad.fem.extract import density_to_mesh
+    from cadx.cad.fem.infill import (
+        InfillParams,
+        element_principal_dirs,
+        element_strain_energy,
+        infill_field,
+    )
+    from cadx.cad.fem.materials import resolve_material
+    from cadx.cad.fem.preview import render_regions
+    from cadx.cad.fem.regions import (
+        auto_keep_regions,
+        empty_region_warnings,
+        keep_element_mask,
+        material_cell_factors,
+    )
+    from cadx.cad.fem.topopt import TopOptParams, passive_solid_mask, simp
+    from cadx.cad.fem.voxelize import grid_bounds_mm, voxelize
+    from cadx.llm.schemas import LoadCase, OptimizeSpec
+
+    res = ExecResult()
+    s = runtime or RuntimeSettings()
+    opt = OptimizeSpec(**(optimize or {}))
+    t0 = time.monotonic()
+
+    try:
+        mesh = load_triangle_mesh(mesh_path)
+    except Exception as e:
+        res.error = f"failed to load mesh for optimization: {e}"
+        return res
+
+    cases = [LoadCase(**c) for c in load_cases]
+    if not cases:
+        res.error = "topology optimization requires at least one load case"
+        return res
+
+    mat_name = material or ""
+    aniso_axis = {"+x": 0, "-x": 0, "+y": 1, "-y": 1, "+z": 2, "-z": 2}.get(
+        str(getattr(opt, "print_direction", "+z") or "+z"), 2
+    )
+    mat = resolve_material(
+        mat_name,
+        aniso_z=(float(opt.aniso_factor) if opt.aniso_factor else 0.6)
+        if opt.aniso_material
+        else None,
+        aniso_axis=aniso_axis if opt.aniso_material else None,
+    )
+
+    try:
+        res.topopt["base_mesh_relpath"] = storage.relpath(mesh_path)
+    except Exception:
+        res.topopt["base_mesh_relpath"] = str(mesh_path)
+    dims_spec = (optimize or {}).get("spec_dims_mm")
+    if dims_spec:
+        mesh, norm_rep = normalize_mesh_to_spec_envelope(mesh, list(dims_spec))
+        res.topopt["spec_bbox"] = norm_rep["spec_bbox"]
+        res.topopt["input_normalized"] = norm_rep["input_normalized"]
+        if norm_rep.get("warning"):
+            res.topopt.setdefault("warnings", []).append(norm_rep["warning"])
+
+    req_voxel = voxel_mm or s.fem_voxel_mm
+    try:
+        domain = voxelize(mesh, req_voxel, max_elements or s.fem_max_elements)
+    except Exception as e:
+        res.error = f"voxelization failed: {e}"
+        return res
+    d_lo, d_hi = grid_bounds_mm(domain)
+    res.topopt["domain_bbox"] = [
+        [round(float(v), 3) for v in d_lo],
+        [round(float(v), 3) for v in d_hi],
+    ]
+
+    from cadx.cad.fem.voxelize import estimate_fem_memory_mb
+
+    mem_budget = float(resources.effective_exec_mem_mb(s))
+    if mem_budget:
+        n_eff = min(len(cases) * 2, s.fem_max_effective_cases)
+        est_mb = estimate_fem_memory_mb(
+            domain, n_eff, direct=3 * domain.node_count <= s.fem_spsolve_dofs
+        )
+        if est_mb > mem_budget * 0.75:
+            res.error = (
+                f"predicted FEM memory ~{est_mb:.0f} MB exceeds the executor "
+                f"budget ({mem_budget:.0f} MB) — raise fem_voxel_mm or "
+                "exec_mem_limit_mb"
+            )
+            return res
+
+    anchors = _scan_anchors(mesh, anchors, enabled=True)
+    res.topopt["anchors"] = anchors
+
+    resolved, _cw, fixed_node_masks, load_node_masks, unresolved = (
+        _resolve_topopt_cases(
+            domain,
+            cases,
+            anchors,
+            mat,
+            s.fem_max_effective_cases,
+            warnings_out=res.topopt.setdefault("warnings", []),
+        )
+    )
+    if unresolved:
+        res.error = (
+            "load-case regions did not resolve on the geometry — "
+            + "; ".join(unresolved[:4])
+            + ". The declared fix/load feature is missing from the solid or its "
+            "anchor is unresolvable; fix the geometry (feature placement) before "
+            "optimizing — a result optimized under wrong constraints is unusable."
+        )
+        return res
+    if not resolved:
+        res.error = "no solvable load case — check fixed/load regions"
+        return res
+
+    keep_list = list(opt.keep_regions)
+    if anchors and (opt.keep_mode == "auto" or (opt.keep_mode == "manual" and s.topopt_auto_keep)):
+        margin = opt.auto_keep_margin_mm or s.topopt_auto_keep_margin_mm
+        keep_list += auto_keep_regions(anchors, margin)
+    res.topopt.setdefault("warnings", []).extend(
+        empty_region_warnings(domain, keep_list, anchors)
+    )
+    res.topopt.setdefault("warnings", []).extend(
+        empty_region_warnings(domain, list(opt.void_regions), anchors)
+    )
+    keep_cells = keep_element_mask(domain, keep_list, anchors)
+    void_cells = keep_element_mask(domain, list(opt.void_regions), anchors)
+    passive = passive_solid_mask(domain, [keep_cells], fixed_node_masks, load_node_masks)
+
+    res.topopt["regions_png"] = render_regions(
+        domain, cases, keep_list, out_dir / "fem", anchors, source_mesh=mesh
+    )
+
+    min_member = float(opt.min_member_mm or s.topopt_min_member_mm or 0.0)
+    min_gap = float(opt.min_gap_mm or min_member or 0.0)
+    solver_backend = str(getattr(s, "fem_solver_backend", "auto") or "auto")
+
+    # --- stage 1: full-solid FEM — the baseline report AND the energy field
+    # that grades the lattice (fields_out returns the per-case solves)
+    t = time.monotonic()
+    fo: dict[str, Any] = {}
+    verify_base = run_fem_domain(
+        domain,
+        domain.solid,
+        cases,
+        mat_name,
+        material=mat,
+        out_dir=out_dir,
+        anchors=anchors,
+        keep_regions=keep_list,
+        spsolve_dofs=s.fem_spsolve_dofs,
+        pool_workers=s.exec_pool_workers,
+        mem_budget_mb=mem_budget,
+        suffix="_baseline",
+        source_mesh=mesh,
+        cancelled=cancelled,
+        solver_backend=solver_backend,
+        fields_out=fo,
+    )
+    res.timings["baseline_fem_s"] = round(time.monotonic() - t, 2)
+    report_to_json(verify_base, out_dir / "fem" / "report_baseline.json")
+
+    # solutions index the RAW case list (run_fem_domain resolves each
+    # declared case once — cone expansion lives in the optimizer's resolved
+    # set, not here); weights come from the cases themselves
+    sols_pairs = [(i, sol) for i, sol in enumerate(fo.get("solutions") or []) if sol is not None]
+    energies: list[np.ndarray] = []
+    energy_w: list[float] = []
+    for i, sol in sols_pairs:
+        energies.append(
+            element_strain_energy(
+                domain, sol.u, fo["edof"], fo["active"], fo["elem_E"], fo["nu"]
+            )
+        )
+        energy_w.append(float(cases[i].weight) if i < len(cases) else 1.0)
+    if not energies:
+        res.error = "no load case produced a displacement field — cannot grade infill"
+        return res
+
+    dirs = None
+    if opt.infill_style == "struts_aligned":
+        try:
+            acc = np.zeros((domain.cell_count, 3))
+            wsum = 0.0
+            for (_i, sol), w in zip(sols_pairs, energy_w, strict=True):
+                acc += w * element_principal_dirs(
+                    domain, sol.u, fo["edof"], fo["active"], fo["elem_E"], fo["nu"]
+                )
+                wsum += w
+            if wsum > 0:
+                dirs = acc / wsum  # strut_occupancy re-normalizes rows
+        except Exception as e:
+            res.topopt["warnings"].append(
+                f"principal-direction solve failed — struts fall back to gyroid: {e}"
+            )
+
+    # --- stage 2 (optional): guided scope — a cheap coarse SIMP picks the
+    # retained topology and the lattice only fills what it keeps
+    guide_mask: np.ndarray | None = None
+    if opt.infill_scope == "guided":
+        try:
+            coarse = voxelize(mesh, domain.pitch * 2.0, max_elements or s.fem_max_elements)
+            res_c, w_c, fix_c, load_c, _un = _resolve_topopt_cases(
+                coarse, cases, anchors, mat, s.fem_max_effective_cases, warn=False
+            )
+            if res_c:
+                keep_c = keep_element_mask(coarse, keep_list, anchors)
+                void_c = keep_element_mask(coarse, list(opt.void_regions), anchors)
+                passive_c = passive_solid_mask(coarse, [keep_c], fix_c, load_c)
+                E0_c = mat.elastic_modulus_mpa * material_cell_factors(
+                    coarse, keep_list, anchors, mat.elastic_modulus_mpa
+                )
+                pc = TopOptParams(
+                    volfrac=opt.target_volume_fraction or s.topopt_default_volfrac,
+                    rmin_mm=max(s.topopt_default_rmin_mm, min_member / 2),
+                    max_iter=max(10, (opt.max_iterations or s.topopt_max_iterations) // 3),
+                    filter="cone",
+                    solver_backend=solver_backend,
+                    aniso=(mat.aniso_z, float(mat.aniso_axis)) if mat.aniso_z != 1.0 else None,
+                )
+                guide_r = simp(
+                    coarse,
+                    E0_c,
+                    mat.poisson,
+                    res_c,
+                    passive_c,
+                    pc,
+                    passive_void=void_c,
+                    case_weights=np.asarray(w_c),
+                    spsolve_dofs=s.fem_spsolve_dofs,
+                    cancelled=cancelled,
+                )
+                guide_mask = (
+                    _upsample_density(guide_r.density.reshape(coarse.dims), coarse, domain).reshape(
+                        domain.dims
+                    )
+                    >= 0.5
+                )
+                res.topopt["guide"] = {
+                    "coarse_pitch_mm": round(float(coarse.pitch), 4),
+                    "coarse_iterations": guide_r.iterations,
+                    "kept_cells": int(guide_mask.sum()),
+                }
+            else:
+                res.topopt["warnings"].append(
+                    "guided scope: no solvable case on the coarse grid — full infill"
+                )
+        except Exception as e:
+            res.topopt["warnings"].append(f"guided scope coarse pass failed: {e} — full infill")
+
+    p_infill = InfillParams(
+        shell_mm=float(opt.infill_shell_mm),
+        infill_cell_mm=float(opt.infill_period_mm),
+        dmin=float(opt.infill_min_density),
+        dmax=float(opt.infill_max_density),
+        alpha=float(opt.infill_alpha),
+        style=opt.infill_style,
+        scope="guided" if guide_mask is not None else "full",
+        seed=int(opt.infill_seed),
+    )
+    t_field = time.monotonic()
+    rho, _mask, meta = infill_field(
+        domain,
+        p_infill,
+        energies,
+        dirs,
+        passive,
+        void_cells,
+        guide_mask=guide_mask,
+        weights=energy_w,
+    )
+    meta["scope_requested"] = opt.infill_scope
+    res.topopt["infill"] = meta
+    res.timings["infill_field_s"] = round(time.monotonic() - t_field, 2)
+
+    opt_dir = out_dir / "topopt"
+    opt_dir.mkdir(parents=True, exist_ok=True)
+    base_flat = is_flat_bottom(mesh)
+
+    # --- extraction: the binary field drops into the same density_to_mesh
+    # path SIMP uses — threshold 0.5 on an already-binary field
+    opt_mesh, final_mask, extract_warnings, n_components, extract_info = density_to_mesh(
+        domain,
+        rho,
+        threshold=0.5,
+        passive_solid=passive,
+        void_cells=void_cells.reshape(domain.dims) | ~domain.solid,
+        min_member_mm=min_member,
+        min_gap_mm=min_gap,
+        smooth_iterations=s.topopt_smooth_iterations,
+        extract_smooth=opt.extract_smooth,
+        sigma_px=opt.extract_sigma_px,
+        volume_preserve=opt.volume_preserve,
+    )
+    res.topopt["warnings"] += extract_warnings
+    opt_mesh = smooth_preserve(opt_mesh, iterations=4, pin_floor=base_flat)
+    # marching cubes on the lattice leaves degenerate sliver bodies inside
+    # the closed shell (inverted/zero-volume fragments that can never
+    # print) — drop them; real secondary bodies (>=0.5% of the main
+    # volume) stay and keep n_bodies_export honest
+    parts = opt_mesh.split(only_watertight=False)
+    if len(parts) > 1:
+        main_body = max(parts, key=lambda m: m.volume)
+        min_real = max(1.0, 0.005 * abs(main_body.volume))
+        kept = [m for m in parts if m.volume > min_real]
+        if len(kept) < len(parts):
+            opt_mesh = (
+                kept[0] if len(kept) == 1 else trimesh.util.concatenate(kept)
+            )
+            res.topopt["warnings"].append(
+                f"dropped {len(parts) - len(kept)} degenerate lattice sliver "
+                "bodies (marching-cubes artifacts sealed inside the shell)"
+            )
+    n_bodies_export = int(opt_mesh.body_count)
+
+    edt = ndimage.distance_transform_edt(final_mask)
+    inside = edt[final_mask]
+    thin_fraction = float((inside <= 1.0).mean()) if len(inside) else 0.0
+    min_member_mm = (
+        round(2 * domain.pitch * float(np.percentile(inside, 5)), 2) if len(inside) else 0.0
+    )
+
+    # --- verification: same two-level evidence as SIMP — mask (exact voxel
+    # structure) and re-voxelized export mesh (what actually gets printed)
+    t = time.monotonic()
+    verify = run_fem_domain(
+        domain,
+        final_mask,
+        cases,
+        mat_name,
+        material=mat,
+        out_dir=out_dir,
+        anchors=anchors,
+        keep_regions=keep_list,
+        spsolve_dofs=s.fem_spsolve_dofs,
+        pool_workers=s.exec_pool_workers,
+        mem_budget_mb=mem_budget,
+        source_mesh=opt_mesh,
+        cancelled=cancelled,
+        solver_backend=solver_backend,
+    )
+    export_solve_ok = True
+    try:
+        domain_exp = voxelize(opt_mesh, req_voxel, max_elements or s.fem_max_elements)
+        verify_exp = run_fem_domain(
+            domain_exp,
+            domain_exp.solid,
+            cases,
+            mat_name,
+            material=mat,
+            out_dir=out_dir,
+            anchors=anchors,
+            keep_regions=keep_list,
+            spsolve_dofs=s.fem_spsolve_dofs,
+            pool_workers=s.exec_pool_workers,
+            mem_budget_mb=mem_budget,
+            suffix="_export",
+            source_mesh=opt_mesh,
+            cancelled=cancelled,
+            solver_backend=solver_backend,
+        )
+    except Exception as e:
+        log.warning("infill.verify_export.failed", error=str(e)[:200])
+        verify_exp = verify
+        export_solve_ok = False
+        res.topopt["warnings"].append(
+            f"export FEM solve failed ({str(e)[:80]}) — sf_export "
+            "duplicates the voxel-mask result, not the printed mesh"
+        )
+    res.timings["verify_s"] = round(time.monotonic() - t, 2)
+
+    verification: dict[str, Any] = {
+        "compliance_mask_j": [c.compliance_j for c in verify.cases],
+        "compliance_export_j": [c.compliance_j for c in verify_exp.cases],
+        "sf_mask": verify.worst_safety_factor,
+        "sf_export": verify_exp.worst_safety_factor,
+        "max_disp_export_mm": max((c.max_disp_mm for c in verify_exp.cases), default=None),
+        "max_vm_export_mpa": max((c.max_vm_mpa for c in verify_exp.cases), default=None),
+        "volfrac_mask": round(float(final_mask.sum()) / max(int(domain.solid.sum()), 1), 4),
+        "solver_used": "infill",
+    }
+    span = float(np.linalg.norm(domain.pitch * np.asarray(domain.dims)))
+    comps = [c for c in verification["compliance_export_j"] if c is not None]
+    deg_valid, deg_warnings = _export_degeneracy(
+        disp_mm=verification["max_disp_export_mm"],
+        max_vm_mpa=verification["max_vm_export_mpa"],
+        span_mm=span,
+        yield_mpa=getattr(mat, "yield_mpa", None),
+    )
+    res.topopt["warnings"].extend(deg_warnings)
+    nonphysical = bool(comps) and any(c <= 0 for c in comps)
+    if nonphysical or not deg_valid:
+        verification["valid"] = False
+        if nonphysical:
+            res.topopt["warnings"].append(
+                "export FEM solve degenerate (unconstrained part or unresolved "
+                "load regions) — sf_export not trustworthy"
+            )
+    elif not export_solve_ok:
+        verification["valid"] = False
+    elif verify_exp.worst_safety_factor is None:
+        verification["valid"] = False
+        res.topopt["warnings"].append(
+            "no export FEM case produced a safety factor — sf_export is unverified, not safe"
+        )
+    elif max(int(n_components), int(n_bodies_export)) > 1:
+        verification["valid"] = False
+        res.topopt["warnings"].append(
+            f"optimized part has {n_bodies_export} disconnected bodies "
+            "in the export mesh — sf_export describes only the loaded island, "
+            "not a single part"
+        )
+    else:
+        verification["valid"] = True
+    sf_min = getattr(opt, "safety_factor_min", None)
+    if sf_min is not None and verify_exp.worst_safety_factor is not None:
+        verification["meets_safety_factor"] = bool(
+            verify_exp.worst_safety_factor >= sf_min
+        )
+    if verify.grid.get("dofs"):
+        verification["dofs"] = verify.grid["dofs"]
+    if verify.cases:
+        verification["case_sfs_mask"] = [c.safety_factor for c in verify.cases]
+    if verify_exp.cases:
+        verification["case_sfs_export"] = [c.safety_factor for c in verify_exp.cases]
+
+    from cadx.cad.dfm.fdm import overhang_ratio
+
+    overhang = round(
+        overhang_ratio(opt_mesh, str(getattr(opt, "print_direction", "+z") or "+z")) * 100, 1
+    )
+    verification["overhang_pct"] = overhang
+
+    res.topopt.update(
+        {
+            "method": "infill",
+            "solver": "infill",
+            "iterations": 0,
+            # the run has no optimizer loop — "converged" reports the
+            # pipeline completed with a valid structure, "degenerate" flags
+            # the verification gates firing (valid=False is the honest read)
+            "status": "converged" if verification["valid"] else "degenerate",
+            "converged": bool(verification["valid"]),
+            "volfrac_requested": opt.target_volume_fraction,
+            "volfrac_achieved": meta.get("volfrac_estimate"),
+            "passive_frac": round(float(passive.sum()) / max(int(domain.solid.sum()), 1), 4),
+            "material": mat.name,
+            "sf_mask": verify.worst_safety_factor,
+            "sf_export": verify_exp.worst_safety_factor,
+            "min_member_mm": min_member_mm,
+            "thin_fraction": round(thin_fraction, 4),
+            "n_components": n_components,
+            "n_bodies_export": n_bodies_export,
+            "extract": extract_info,
+            "verification": verification,
+        }
+    )
+
+    np.savez_compressed(
+        opt_dir / "density.npz",
+        density=rho.astype(np.float32),
+        mask=final_mask,
+        solid=domain.solid,
+        passive=passive.reshape(domain.dims),
+        voids=void_cells.reshape(domain.dims),
+        origin=domain.origin,
+        pitch=np.float64(domain.pitch),
+        dims=np.asarray(domain.dims),
+        flat_bottom=np.bool_(base_flat),
+    )
+    with contextlib.suppress(Exception):
+        (opt_dir / "infill_meta.json").write_text(
+            json.dumps(meta, indent=1, default=str), encoding="utf-8"
+        )
+        (opt_dir / "history.json").write_text(
+            json.dumps({"history": []}, indent=1), encoding="utf-8"
+        )
+    report_to_json(verify, out_dir / "fem" / "report.json")
+    report_to_json(verify_exp, out_dir / "fem" / "report_export.json")
+    res.fem = verify.model_dump()
+    res.fem_export = verify_exp.model_dump()
+
+    run_dir = out_dir / "_run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    stl_path = run_dir / "model.stl"
+    try:
+        opt_mesh.export(str(stl_path), file_type="stl")
+    except Exception as e:
+        res.error = f"failed to write optimized STL: {e}"
+        return res
+    res.exports = export_mesh_all(
+        opt_mesh,
+        out_dir / "exports",
+        name=name,
+        try_step=True,
+        max_faces=s.mesh_max_faces_for_cad,
+    )
+    res.exports["dxf"] = None
+    res.exports["svg"] = None
+    res.analysis = mesh_analysis(opt_mesh)
+    _repair_analysis_mesh(res.analysis, stl_path)
+    if res.analysis.watertight is False:
+        _repair_export_meshes(res.exports, out_dir / "exports")
+    res.mesh = {
+        "pipeline": "infill",
+        "triangles": len(opt_mesh.faces),
+        "volume_mm3": round(float(opt_mesh.volume), 1),
+        "solid_elements": int(final_mask.sum()),
+        "pitch_mm": domain.pitch,
+    }
+
+    t = time.monotonic()
+    render_dir = out_dir / "renders"
+    render_paths = render_views(stl_path, render_dir, res.analysis.bbox_size)
+    res.renders = {v: p.name for v, p in render_paths.items()}
+    thumb = render_thumbnail(stl_path, out_dir / "thumbnail.png")
+    res.thumbnail = thumb.name if thumb else None
+    stats = [
+        f"bbox: {res.analysis.bbox_size[0]:.1f} x {res.analysis.bbox_size[1]:.1f} "
+        f"x {res.analysis.bbox_size[2]:.1f} mm",
+        f"volume: {res.analysis.volume:.0f} mm^3",
+        f"triangles: {res.analysis.triangle_count}",
+        f"watertight: {res.analysis.watertight_after_repair}",
+        f"SF mask/export: {verify.worst_safety_factor} / {verify_exp.worst_safety_factor}",
+        f"infill: {meta.get('style')} / {meta.get('scope')} "
+        f"(occ {meta.get('infill_occupancy')})",
+    ]
+    sheet = make_contact_sheet(render_paths, out_dir / "contact_sheet.png", stats)
+    res.contact_sheet = sheet.name if sheet else None
+    res.timings["render_s"] = round(time.monotonic() - t, 2)
+
+    if not opt_mesh.is_watertight:
+        res.topopt["warnings"].append(
+            "optimized mesh is not watertight — inspect before manufacturing"
+        )
+    res.ok = True
     _attach_verify_spec(res, spec, ProjectSettings(), s, envelope_bound_only=True)
     res.timings["total_s"] = round(time.monotonic() - t0, 2)
     return res
