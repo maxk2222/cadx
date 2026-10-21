@@ -817,10 +817,19 @@ export interface Settings {
   mesh_decimate_faces: number;
   mesh_max_faces_for_cad: number;
   exec_timeout_s: number;
+  /** 0 = auto (60% of detected memory, clamped) */
   exec_mem_limit_mb: number;
+  /** 0 = auto (min(detected cpus, 8)) — BLAS/OCC/llvmpipe threads per stage */
+  exec_threads: number;
+  /** 0 = auto (min(4, cpus-1)); 1 disables fork pools and pipeline fan-out */
+  exec_pool_workers: number;
+  /** 0 = auto — parallel ±ε perturbation runs in the design audit */
+  audit_parallel_runs: number;
   data_dir: string;
   /** model id → detected context window (read-only; from the llm_caps cache) */
   llm_detected: Record<string, number>;
+  /** read-only: executor-reported host budget {cpus, mem_mb, threads, pool} */
+  resources_detected: Record<string, number>;
 }
 
 /** PUT /settings payload — all fields optional; keys are write-only. */
@@ -834,6 +843,7 @@ export interface SettingsUpdate
       | "hf_token_set"
       | "data_dir"
       | "llm_detected"
+      | "resources_detected"
     >
   > {
   llm_api_key?: string;

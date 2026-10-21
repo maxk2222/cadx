@@ -48,6 +48,16 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
   With `exec_warm_runner` (default on) the sandbox forks a pre-warmed `cad/zygote.py`
   child instead of a cold subprocess — identical isolation; falls back to cold on any
   zygote failure. Keep both paths' limits/guards in sync when touching either.
+- CPU/memory budgets come from `cad/resources.py` (cgroup-aware: `cpus:` in
+  compose is a CFS quota, NOT a cpuset — always intersect affinity with
+  cpu.max). `exec_threads`/`exec_pool_workers`/`audit_parallel_runs`/
+  `exec_mem_limit_mb` are `0` = auto; explicit values win. Fork pools share
+  state via the module-global `_POOL` (COW) — `CaseSolve.factor` is not
+  picklable. Parallel audits must run the cold path (zygote serializes).
+  RLIMIT_CPU counts CPU-seconds across threads — scale it via
+  `resources.rlimit_cpu_s`; the proc timeout stays the wall-clock deadline.
+  Container caps auto-size via `scripts/lib/host_detect.sh` → `.env`
+  (`CADX_EXECUTOR_CPUS/_MEM`, `CADX_WORKER_*`); user keys win.
 - Allowed imports for generated code: build123d, bd_warehouse.*, cadlib, math, numpy,
   typing, dataclasses. `cadlib` (`cadx/cad/cadlib/`) is the reviewed helper library —
   extend it deliberately, never import unlisted modules from it (the runtime guard

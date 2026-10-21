@@ -86,6 +86,9 @@ const NUM_FIELDS = new Set<string>([
   "image_timeout_s",
   "exec_timeout_s",
   "exec_mem_limit_mb",
+  "exec_threads",
+  "exec_pool_workers",
+  "audit_parallel_runs",
 ]);
 
 const BOOL_FIELDS = new Set<string>([
@@ -153,7 +156,10 @@ const FIELD_BOUNDS: Record<
   image_tool_budget: { min: 0, max: 50, int: true },
   image_timeout_s: { min: 1, max: 86_400, int: true },
   exec_timeout_s: { min: 1, max: 86_400, int: true },
-  exec_mem_limit_mb: { min: 256, max: 1_048_576, int: true },
+  exec_mem_limit_mb: { min: 0, max: 1_048_576, int: true },
+  exec_threads: { min: 0, max: 64, int: true },
+  exec_pool_workers: { min: 0, max: 16, int: true },
+  audit_parallel_runs: { min: 0, max: 8, int: true },
 };
 
 type TabId = "provider" | "models" | "agent" | "mesh" | "fem" | "system";
@@ -1375,10 +1381,42 @@ export default function SettingsPage() {
             <SectionTitle>Executor</SectionTitle>
             <div className={FIELD_GRID}>
               {field({ key: "exec_timeout_s", label: "Code execution timeout (s)", kind: "number" })}
-              {field({ key: "exec_mem_limit_mb", label: "Sandbox memory limit (MB)", kind: "number" })}
+              {field({
+                key: "exec_mem_limit_mb",
+                label: "Sandbox memory limit (MB)",
+                kind: "number",
+                hint: "0 = auto",
+              })}
+              {field({
+                key: "exec_threads",
+                label: "Threads per stage",
+                kind: "number",
+                hint: "0 = auto — OCC meshing, BLAS, software raster",
+              })}
+              {field({
+                key: "exec_pool_workers",
+                label: "Process pool workers",
+                kind: "number",
+                hint: "0 = auto; 1 disables FEM case pool / pipeline fan-out",
+              })}
+              {field({
+                key: "audit_parallel_runs",
+                label: "Audit parallel runs",
+                kind: "number",
+                hint: "0 = auto — parallel ±ε design-audit perturbations",
+              })}
             </div>
+            {Object.keys(s.resources_detected ?? {}).length > 0 && (
+              <div className="mt-2 text-xs text-zinc-500">
+                detected: {s.resources_detected.cpus ?? "?"} cpus ·{" "}
+                {Math.round((s.resources_detected.mem_mb ?? 0) / 1024)}g mem ·{" "}
+                {s.resources_detected.threads ?? "?"} threads/stage ·{" "}
+                {s.resources_detected.pool ?? "?"} pool workers
+              </div>
+            )}
             <div className="mt-2 text-xs text-zinc-500">
-              hard outer caps are set by docker (cpus/mem_limit); these apply inside the sandbox
+              hard outer caps are set by docker (cpus/mem_limit, auto-sized at startup); these
+              apply inside the sandbox
             </div>
           </Card>
 

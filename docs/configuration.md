@@ -190,11 +190,36 @@ Chat-agent session settings — see [chat.md](chat.md).
 | Setting | Default | Notes |
 |---------|---------|-------|
 | `exec_timeout_s` | `180` | sandbox run timeout |
-| `exec_mem_limit_mb` | `4096` | sandbox memory cap (enforced via rlimits on Linux); FEM/TopOpt
+| `exec_mem_limit_mb` | `0` (auto) | sandbox memory cap (enforced via rlimits on Linux); FEM/TopOpt
 fail fast with a memory estimate when the voxelized domain would exceed
-this budget instead of being OOM-killed mid-iteration |
+this budget instead of being OOM-killed mid-iteration. `0` = 60 % of the
+detected (cgroup-aware) memory, clamped to 2048–32768 MB |
+| `exec_threads` | `0` (auto) | threads one CPU-bound stage may use — OCC meshing, BLAS/SciPy,
+llvmpipe raster. Auto = min(detected cpus, 8), exported as
+`OMP_NUM_THREADS`/`OPENBLAS_NUM_THREADS`/`MKL_NUM_THREADS`/`LP_NUM_THREADS`
+on the executor and inside every sandbox child |
+| `exec_pool_workers` | `0` (auto) | fork-pool workers for parallel FEM load cases + the render/DfM/export
+pipeline fan-out. Auto = min(4, cpus − 1); `1` disables pools entirely |
+| `audit_parallel_runs` | `0` (auto) | parallel ±ε sandbox runs in `audit_params` — forces the cold
+subprocess path (the zygote serializes all runs anyway). Auto = min(4, cpus − 1) |
 | `analytic_step_timeout_s` | `240` | wall-clock budget for the isolated per-feature analytic-STEP subprocess; on timeout the faceted STEP ships |
 | `exec_warm_runner` | `true` | pre-warmed zygote fork per sandbox run — identical isolation, cold-subprocess fallback on failure |
+
+Detection lives in `cadx/cad/resources.py` and is cgroup-aware: `cpus:` in
+docker-compose is a CFS quota (`cpu.max`), not a cpuset — affinity alone
+would report the whole host. `detect_cpus()` = min(affinity, quota);
+`detect_mem_mb()` = cgroup memory limit else physical RAM. The executor
+publishes its detected values to the settings API (`resources_detected` in
+GET /settings, shown on the System tab); `RLIMIT_CPU` scales with the
+thread budget because it counts CPU-seconds across all threads.
+
+`start.sh` additionally auto-sizes the compose container caps via
+`scripts/lib/host_detect.sh` (docker VM budget on Desktop, host resources
+on native dockerd) into `.env`: `CADX_EXECUTOR_CPUS`/`CADX_EXECUTOR_MEM`,
+`CADX_WORKER_CPUS`/`CADX_WORKER_MEM`, `CADX_EXECUTOR_PIDS` — existing keys
+win, so pinning a value in `.env` is a permanent override. The cad queue's
+`max_jobs` scales as `max(2, detected_cpus // 4)`; pin `CADX_CAD_MAX_JOBS`
+to override.
 
 ## Project settings and per-run options
 
