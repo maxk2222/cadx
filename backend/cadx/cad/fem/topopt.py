@@ -670,6 +670,14 @@ def simp(  # noqa: C901
         x[~solid] = RHO_MIN
     else:
         x = np.where(solid, params.volfrac, RHO_MIN)
+        # the volume budget counts passive cells pinned at 1.0 — a uniform
+        # volfrac init already sits passive_frac*(1-vf) over budget. OC
+        # rescales itself to v_target on iteration 1 and does not care, but
+        # MMA is a local method: observed a 0.4-passive run converging on
+        # the infeasible init (final volfrac 0.67 for a 0.45 target). Start
+        # the free design cells at the actually-feasible mean instead.
+        free_frac = (params.volfrac * nsolid - float(passive_solid.sum())) / ndesign
+        x[design] = float(np.clip(free_frac, RHO_MIN, 1.0))
     x[passive_solid] = 1.0
     x[pvoid] = RHO_MIN
     x = x.astype(float)

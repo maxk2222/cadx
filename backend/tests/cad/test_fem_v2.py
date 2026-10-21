@@ -611,6 +611,30 @@ def test_simp_mma_minmax_balances_cases() -> None:
     assert res.iterations > 0
 
 
+def test_simp_mma_respects_volume_with_passive_regions() -> None:
+    """Passive keep cells are pinned at 1.0 and count toward the volume
+    budget — a uniform volfrac init already starts over budget, and MMA
+    (a local method) 'converged' on the infeasible field (observed in the
+    wild: 0.45 target + 40% passive -> 0.67). The free cells must start at
+    the feasible mean."""
+    pytest.importorskip("nlopt")
+    dom, fixed3, F = _cantilever()
+    centers = dom.element_centers()
+    x_max = dom.origin[0] + dom.dims[0] * dom.pitch
+    passive = dom.solid.ravel() & (centers[:, 0] < dom.origin[0] + 0.4 * (x_max - dom.origin[0]))
+    res = simp(
+        dom,
+        E_PLA,
+        NU,
+        [(fixed3, F)],
+        passive,
+        TopOptParams(volfrac=0.45, rmin_mm=4.0, max_iter=40, tol=0.01, solver="mma"),
+    )
+    rho = res.density.reshape(dom.dims)
+    assert rho[dom.solid].mean() == pytest.approx(0.45, abs=0.05)
+    assert not any("above target" in w for w in res.warnings)
+
+
 def test_simp_mma_stress_constraint_adds_material() -> None:
     """A stress cap below the unconstrained optimum forces extra material —
     the volume fraction must rise above the target."""
