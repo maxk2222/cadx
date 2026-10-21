@@ -1203,9 +1203,7 @@ def _export_degeneracy(
     """
     warnings: list[str] = []
     valid = True
-    vm_over = (
-        max_vm_mpa is not None and bool(yield_mpa) and max_vm_mpa > 10.0 * float(yield_mpa)
-    )
+    vm_over = max_vm_mpa is not None and bool(yield_mpa) and max_vm_mpa > 10.0 * float(yield_mpa)
     if vm_over and max_vm_mpa is not None:
         warnings.append(
             f"max von Mises {max_vm_mpa:.0f} MPa exceeds 10x material yield — "
@@ -2074,9 +2072,7 @@ def run_topopt_pipeline(  # noqa: C901
     # field is omitted when no export SF was measured
     sf_min = getattr(opt, "safety_factor_min", None)
     if sf_min is not None and verify_export.worst_safety_factor is not None:
-        verification["meets_safety_factor"] = bool(
-            verify_export.worst_safety_factor >= sf_min
-        )
+        verification["meets_safety_factor"] = bool(verify_export.worst_safety_factor >= sf_min)
     if verify.worst_safety_factor is not None and verify_export.worst_safety_factor is not None:
         # >0 means the smoothed export mesh is stiffer than the mask suggests
         verification["sf_gap"] = round(

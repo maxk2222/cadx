@@ -194,9 +194,7 @@ def _hybrid_prefers_cad(spec: PartSpec) -> bool:
     needs the parametric B-rep the rest of the pipeline verifies/optimizes
     (observed: a lattice scaffold that couldn't sew into a solid was still
     committed as the 'mesh' answer for a dimensioned L-bracket spec)."""
-    return stated_dim_count(spec) >= 2 or (
-        spec.optimize is not None and spec.optimize.enabled
-    )
+    return stated_dim_count(spec) >= 2 or (spec.optimize is not None and spec.optimize.enabled)
 
 
 def adaptive_max_iterations(
@@ -295,9 +293,7 @@ def _annotate_anchor_sources(
 
 # feature vocabulary shared by findings/issues — pairs a demand with a
 # same-feature negation in another issue
-_ISSUE_FEATURE_RE = re.compile(
-    r"hole|bore|slot|boss|rib|gusset|fillet|chamfer|pocket|insert", re.I
-)
+_ISSUE_FEATURE_RE = re.compile(r"hole|bore|slot|boss|rib|gusset|fillet|chamfer|pocket|insert", re.I)
 # phrasing marking a feature as NOT wanted / a fixed count excluding it —
 # "remove the extra hole", "spec declares exactly 2 bores", "not in the spec"
 _ISSUE_NEGATION_RE = re.compile(
@@ -325,8 +321,10 @@ def _resolve_issue_conflicts(
 
     def _mesh_only(it: dict[str, Any]) -> bool:
         src = str(it.get("anchor_source") or "")
-        return it.get("source") == "features" and bool(src) and (
-            "spec" not in src and "image" not in src
+        return (
+            it.get("source") == "features"
+            and bool(src)
+            and ("spec" not in src and "image" not in src)
         )
 
     def _text(it: dict[str, Any]) -> str:
@@ -5519,11 +5517,7 @@ async def _run_approach(
             # a declared-cad_fallback best resolves "cad" inside _run_cad —
             # such an outcome must not report mesh provenance for a part
             # that is pure parametric CAD
-            if (
-                outcome.status != "failed"
-                and ctx.mesh_info
-                and ctx.resolved_mode == "hybrid"
-            ):
+            if outcome.status != "failed" and ctx.mesh_info and ctx.resolved_mode == "hybrid":
                 outcome.mesh = {k: v for k, v in ctx.mesh_info.items() if not k.startswith("_")}
         elif ctx.mesh_info.get("_pre_result") and not _hybrid_prefers_cad(spec):
             outcome.resolved_mode = "mesh"

@@ -125,9 +125,7 @@ async def mesh_model_weights_delete(model_id: str, db: AsyncSession = Depends(ge
 @router.post("/models/register", response_model=MeshModelOut)
 async def mesh_model_register(body: MeshRegisterIn, db: AsyncSession = Depends(get_session)):
     return MeshModelOut(
-        **await _proxy(
-            db, "POST", "/v1/models/register", body=body.model_dump(exclude_none=True)
-        )
+        **await _proxy(db, "POST", "/v1/models/register", body=body.model_dump(exclude_none=True))
     )
 
 

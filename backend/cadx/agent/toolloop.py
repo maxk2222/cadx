@@ -134,7 +134,7 @@ def _trim_tool_results(
         and isinstance(m.get("content"), list)
         and any(isinstance(p, dict) and p.get("type") == "image_url" for p in m["content"])
     ]
-    for i in img_idx[:-max(1, img_keep_last)]:
+    for i in img_idx[: -max(1, img_keep_last)]:
         # rebuild the part list instead of replacing the whole content —
         # text parts riding along with the image (tool captions, labels)
         # must survive; image parts collapse into ONE stub per message

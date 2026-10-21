@@ -177,8 +177,17 @@ result = cadlib.collapse_solids(body)
     shape = import_brep(str(tmp_path / "it1" / "_run" / "model.brep"))
     shape2, applied = mb.recut_missing_holes(
         shape,
-        [{"index": 1, "x": 0.0, "y": 0.0, "dia": 6.0, "axis": "+z",
-          "kind": "hole", "source": "spec"}],
+        [
+            {
+                "index": 1,
+                "x": 0.0,
+                "y": 0.0,
+                "dia": 6.0,
+                "axis": "+z",
+                "kind": "hole",
+                "source": "spec",
+            }
+        ],
     )
     assert applied
     assert mb.tunnel_open(shape2, 0, 0, "+z")

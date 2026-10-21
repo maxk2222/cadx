@@ -43,7 +43,7 @@ def test_faceted_feature_extraction_degrades_to_approximate():
 def test_attached_source_mesh_supplies_mass_props():
     solid = _faceted_solid()
     m = trimesh.creation.icosphere(subdivisions=4, radius=20)
-    solid._cadx_mesh = m  # noqa: SLF001 — same attachment the runner performs
+    solid._cadx_mesh = m  # same attachment the runner performs
     a = analyze(solid)
     assert a.volume == round(float(m.volume), 3)
     assert a.surface_area == round(float(m.area), 3)

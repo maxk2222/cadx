@@ -121,10 +121,7 @@ def test_spec_gaps_feature_class_complete_spec() -> None:
             {"name": "edge fillets", "type": "fillet", "dims": {"radius": 3}},
         ]
     )
-    assert (
-        spec_gaps(s, "L-Winkel mit Langloch, Kanten verrunden, mit Rippen verstaerkt")
-        == []
-    )
+    assert spec_gaps(s, "L-Winkel mit Langloch, Kanten verrunden, mit Rippen verstaerkt") == []
 
 
 def test_spec_gaps_feature_class_slot_covers_hole_word() -> None:

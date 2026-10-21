@@ -61,9 +61,7 @@ def _void_corridor(
     from collections import deque
 
     face = ndimage.generate_binary_structure(3, 1)
-    starts = np.flatnonzero(
-        ndimage.binary_dilation(labels == target, structure=face) & walkable
-    )
+    starts = np.flatnonzero(ndimage.binary_dilation(labels == target, structure=face) & walkable)
     if not starts.size:
         return None
     nx, ny, nz = labels.shape

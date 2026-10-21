@@ -630,12 +630,7 @@ def _anchor_plane_uv(a: Anchor) -> tuple[float, float] | None:
     anchor carries no usable in-plane position."""
     _ax, au, av = _AXES.get(str(a.axis or "+z").lower(), _AXES["+z"])
     pos = a.pos
-    if (
-        isinstance(pos, list)
-        and len(pos) == 3
-        and pos[au] is not None
-        and pos[av] is not None
-    ):
+    if isinstance(pos, list) and len(pos) == 3 and pos[au] is not None and pos[av] is not None:
         return float(pos[au]), float(pos[av])
     if (au, av) == (0, 1):
         return float(a.x), float(a.y)
@@ -726,8 +721,7 @@ def _type_anchors(spec: PartSpec, anchors: list[Anchor]) -> None:
             if rel > 0.15:
                 continue
             full = uv is not None and any(
-                float(np.hypot(uv[0] - u, uv[1] - v)) <= max(2.0 * f_dia, 6.0)
-                for u, v in pts
+                float(np.hypot(uv[0] - u, uv[1] - v)) <= max(2.0 * f_dia, 6.0) for u, v in pts
             )
             if full:
                 if best_full is None or rel < best_full[0]:
@@ -859,8 +853,7 @@ def build_anchors(  # noqa: C901
                     and a.axis == sa.axis
                     and sa_uv is not None
                     and (a_uv := _anchor_plane_uv(a)) is not None
-                    and float(np.hypot(a_uv[0] - sa_uv[0], a_uv[1] - sa_uv[1]))
-                    <= _SPEC_MERGE_MM
+                    and float(np.hypot(a_uv[0] - sa_uv[0], a_uv[1] - sa_uv[1])) <= _SPEC_MERGE_MM
                 ),
                 None,
             )

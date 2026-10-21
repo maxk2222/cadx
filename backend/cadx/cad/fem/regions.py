@@ -182,9 +182,7 @@ def _cylinder_disc_cells(
     return np.asarray(d2 <= radius * radius)
 
 
-def _anchor_has_void(
-    domain: VoxelDomain, axis: str, center: list[float], dia: float
-) -> bool:
+def _anchor_has_void(domain: VoxelDomain, axis: str, center: list[float], dia: float) -> bool:
     """True when the interior cylinder of the measured bore is mostly
     void — the anchor sits on a real hole. An anchor inside solid material
     (phantom mesh feature, stale hole_index) has no void to clamp a ring
@@ -520,9 +518,7 @@ def _grow_load_spec(r: RegionSpec, pitch: float) -> RegionSpec | None:
     return None
 
 
-def _anchor_note(
-    domain: VoxelDomain, region: RegionSpec, anchors: list[dict] | None
-) -> str:
+def _anchor_note(domain: VoxelDomain, region: RegionSpec, anchors: list[dict] | None) -> str:
     """`` (anchor #i at (x, y, z) — verify ...)`` suffix for unresolved
     hole/anchor/bore regions — the resolved anchor identity + position so a
     phantom anchor (stale hole_index, mesh artefact) is visible in the

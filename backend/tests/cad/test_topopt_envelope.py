@@ -293,9 +293,7 @@ def test_symmetry_plane_mismatch_warns() -> None:
     solid = np.zeros((12, 8, 8), dtype=bool)
     solid[:, :, :2] = True
     solid[:, :2, :] = True
-    dom = VoxelDomain(
-        origin=np.zeros(3), pitch=1.0, dims=(12, 8, 8), solid=solid
-    )
+    dom = VoxelDomain(origin=np.zeros(3), pitch=1.0, dims=(12, 8, 8), solid=solid)
     fixed, F, _ = resolve_case(dom, _cantilever(), [])
     passive = passive_solid_mask(dom, [], [fixed], [])
 

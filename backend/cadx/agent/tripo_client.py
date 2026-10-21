@@ -175,9 +175,7 @@ class TripoMeshClient(MeshPort):
             "model_version": self.model_version,
         }
         async with httpx.AsyncClient(timeout=60.0) as client:
-            r = await client.post(
-                f"{self.base_url}/task", json=payload, headers=self._headers()
-            )
+            r = await client.post(f"{self.base_url}/task", json=payload, headers=self._headers())
         if r.status_code != 200:
             raise MeshGenError(f"tripo task submit failed: {r.status_code} {r.text[:300]}")
         body = r.json()
@@ -201,9 +199,7 @@ class TripoMeshClient(MeshPort):
                 await self._cancel(task_id)
                 raise MeshGenError("job cancelled by user")
             async with httpx.AsyncClient(timeout=15.0) as client:
-                r = await client.get(
-                    f"{self.base_url}/task/{task_id}", headers=self._headers()
-                )
+                r = await client.get(f"{self.base_url}/task/{task_id}", headers=self._headers())
             if r.status_code != 200:
                 raise MeshGenError(f"tripo task poll failed: {r.status_code}")
             body = r.json()
@@ -226,9 +222,7 @@ class TripoMeshClient(MeshPort):
     @staticmethod
     def _result_url(status: dict[str, Any]) -> str:
         result = status.get("result") or {}
-        url = (result.get("model") or {}).get("url") or (result.get("pbr_model") or {}).get(
-            "url"
-        )
+        url = (result.get("model") or {}).get("url") or (result.get("pbr_model") or {}).get("url")
         if not url:
             raise MeshGenError(f"tripo task succeeded without a model url: {status}")
         return str(url)
@@ -244,6 +238,4 @@ class TripoMeshClient(MeshPort):
     async def _cancel(self, task_id: str) -> None:
         with contextlib.suppress(Exception):
             async with httpx.AsyncClient(timeout=10.0) as client:
-                await client.post(
-                    f"{self.base_url}/task/{task_id}/cancel", headers=self._headers()
-                )
+                await client.post(f"{self.base_url}/task/{task_id}/cancel", headers=self._headers())

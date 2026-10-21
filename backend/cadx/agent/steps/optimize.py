@@ -294,9 +294,7 @@ def _make_fem_fn(ops: _SessionOps) -> Any:
         # preview/check_load keep fem_voxel_mm (their region resolution must
         # match the grid a topopt_run would use) and the export verification
         # in the optimize pipeline always runs at the fine pitch.
-        export_pitch = float(
-            ctx.settings.fem_voxel_mm or ctx.runtime_settings.fem_voxel_mm or 0.0
-        )
+        export_pitch = float(ctx.settings.fem_voxel_mm or ctx.runtime_settings.fem_voxel_mm or 0.0)
         probe_voxel = a.get("voxel_mm") or (2.0 * export_pitch if export_pitch else None)
         res = await ctx.executor.fem_analyze(
             {

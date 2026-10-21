@@ -260,9 +260,7 @@ def _anchor_material(mesh: trimesh.Trimesh, u: float, v: float, axis: str) -> bo
     return not _tunnel_open_mesh(mesh, u, v, axis)
 
 
-def _bore_ring_material(
-    mesh: trimesh.Trimesh, axis: str, u: float, v: float, dia: float
-) -> bool:
+def _bore_ring_material(mesh: trimesh.Trimesh, axis: str, u: float, v: float, dia: float) -> bool:
     """True when solid material rings the (u, v) position on `axis` — the
     discriminating test for an entry-less feature: an open channel that
     refine should re-cut still has wall material around it; a SIMP-eaten
@@ -466,9 +464,7 @@ def resolve_refine_features(  # noqa: C901
                 ),
             )
         elif cands:
-            anchor = min(
-                cands, key=lambda a: "spec" not in str(a.get("source") or "")
-            )
+            anchor = min(cands, key=lambda a: "spec" not in str(a.get("source") or ""))
         if anchor is None:
             continue
         used_anchors.add(id(anchor))
@@ -1417,9 +1413,7 @@ def _apply_cut(out: trimesh.Trimesh, feat: RefineFeature, report: RefineReport) 
                 # entry measured above is gone now
                 entry = _entry_point(out, feat.axis, feat.u, feat.v)
                 if entry is None:
-                    entry = float(
-                        out.bounds[1][ax] if feat.axis[0] == "+" else out.bounds[0][ax]
-                    )
+                    entry = float(out.bounds[1][ax] if feat.axis[0] == "+" else out.bounds[0][ax])
             else:
                 feat.plug_first = False
                 feat.dia_extra = max(feat.dia_extra, 0.4)

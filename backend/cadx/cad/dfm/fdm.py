@@ -26,9 +26,7 @@ def overhang_ratio(mesh: trimesh.Trimesh, direction: str = "+z") -> float:
     plate = float(mesh.bounds[0][ax] if sgn > 0 else mesh.bounds[1][ax])
     normals = mesh.face_normals
     centers = mesh.triangles_center
-    mask = (normals[:, ax] * sgn < -OVERHANG_COS) & (
-        sgn * (centers[:, ax] - plate) > 0.5
-    )
+    mask = (normals[:, ax] * sgn < -OVERHANG_COS) & (sgn * (centers[:, ax] - plate) > 0.5)
     return float(mesh.area_faces[mask].sum()) / max(mesh.area, 1e-9)
 
 

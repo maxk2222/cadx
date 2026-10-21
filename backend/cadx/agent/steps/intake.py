@@ -370,9 +370,7 @@ _CLASS_TEXT_TRIGGERS: dict[str, tuple[str, ...]] = {
     "countersink": ("countersink", "counterbore", "countersunk", "senkbohrung", "senkung"),
 }
 
-_UMLAUTS = str.maketrans(
-    {"ä": "a", "ö": "o", "ü": "u", "Ä": "a", "Ö": "o", "Ü": "u", "ß": "ss"}
-)
+_UMLAUTS = str.maketrans({"ä": "a", "ö": "o", "ü": "u", "Ä": "a", "Ö": "o", "Ü": "u", "ß": "ss"})
 
 # _FEATURE_WORDS swallows whole words on stem matches ("senk" + \w* eats
 # "senkrechter") — these inflected false friends would fire phantom
@@ -411,9 +409,7 @@ def _prompt_feature_classes(prompt: str, words: list[str]) -> dict[str, str]:
                 found[cls] = w
     hay = _fold_feature_text(prompt or "")
     trig_cls = [
-        (t, cls)
-        for cls, _trig, _req in _FEATURE_CLASSES
-        for t in _CLASS_TEXT_TRIGGERS[cls]
+        (t, cls) for cls, _trig, _req in _FEATURE_CLASSES for t in _CLASS_TEXT_TRIGGERS[cls]
     ]
     for t, cls in sorted(trig_cls, key=lambda p: -len(p[0])):
         if t not in hay:

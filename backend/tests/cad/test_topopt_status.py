@@ -206,9 +206,7 @@ def test_windowed_compliance_improvement() -> None:
     # the trailing same-beta segment is judged, and its first record (a
     # stale objective under the previous projection) is dropped, so a fresh
     # ramp reads 'unknown' until the segment fills
-    hist = [{"compliance_mj": 50.0, "beta": 1.0}] * 5 + [
-        {"compliance_mj": 80.0, "beta": 2.0}
-    ] * 7
+    hist = [{"compliance_mj": 50.0, "beta": 1.0}] * 5 + [{"compliance_mj": 80.0, "beta": 2.0}] * 7
     assert _windowed_compliance_improvement(hist, 10) is None
     hist += [{"compliance_mj": 76.0, "beta": 2.0}] * 4
     imp = _windowed_compliance_improvement(hist, 10)
@@ -382,9 +380,7 @@ def test_fem_preview_carries_cell_metrics(tmp_path: Path) -> None:
         mesh_path=src,
         out_dir=tmp_path / "o",
         load_cases=[_cantilever().model_dump()],
-        keep_regions=[
-            RegionSpec(kind="box", center=[0.0, 0.0, 3.0], diameter_mm=6.0).model_dump()
-        ],
+        keep_regions=[RegionSpec(kind="box", center=[0.0, 0.0, 3.0], diameter_mm=6.0).model_dump()],
         voxel_mm=1.5,
         preview_only=True,
         render_pngs=False,
@@ -402,9 +398,10 @@ def test_fem_preview_carries_cell_metrics(tmp_path: Path) -> None:
     assert case["n_load_cells"] > 0
     assert case["n_keep_cells"] > 0
     # the union bound: passive fraction covers keep+fixed+load cells
-    assert prev["passive_fraction"] >= (
-        case["n_fixed_cells"] + case["n_keep_cells"]
-    ) / prev["solid_elements"] * 0.9
+    assert (
+        prev["passive_fraction"]
+        >= (case["n_fixed_cells"] + case["n_keep_cells"]) / prev["solid_elements"] * 0.9
+    )
 
 
 def _opt_session(**kw: Any):
@@ -562,9 +559,7 @@ def test_pipeline_warns_high_floor_when_feasible(tmp_path: Path) -> None:
         load_cases=[_cantilever().model_dump()],
         optimize={
             "target_volume_fraction": 0.6,
-            "keep_regions": [
-                {"kind": "box", "center": [0.0, 0.0, 12.0], "diameter_mm": 12.0}
-            ],
+            "keep_regions": [{"kind": "box", "center": [0.0, 0.0, 12.0], "diameter_mm": 12.0}],
             "keep_mode": "manual",
             "max_iterations": 4,
         },

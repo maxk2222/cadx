@@ -441,9 +441,7 @@ def test_regression_critique_fires_on_collapse():
         None,
         [],
     )
-    collapsed = _regression_critique(
-        best, {"volume": 3600.0, "bbox_size": [30, 20, 6]}
-    )
+    collapsed = _regression_critique(best, {"volume": 3600.0, "bbox_size": [30, 20, 6]})
     assert collapsed is not None
     assert collapsed.passed is False and collapsed.score <= 30
     assert collapsed.discrepancies[0].severity == "major"
@@ -589,9 +587,7 @@ async def test_cad_fallback_marker_resolves_honest_cad():
     mode "cad" instead of claiming a hybrid part."""
     from cadx.llm.fake import FakeLLM
 
-    fb_code = (
-        _box_code() + 'cad_fallback = "mesh booleans collapsed the organic body"\n'
-    )
+    fb_code = _box_code() + 'cad_fallback = "mesh booleans collapsed the organic body"\n'
     llm = FakeLLM(
         [
             {"reasoning": "v", "params": [], "expected_bbox": [40, 20, 10], "code": fb_code},
@@ -639,9 +635,7 @@ async def test_hybrid_missing_without_marker_stays_major():
         patience=50,
         hybrid=True,
     )
-    assert any(
-        i["source"] == "hybrid" and i["severity"] == "major" for i in outcome.issues
-    )
+    assert any(i["source"] == "hybrid" and i["severity"] == "major" for i in outcome.issues)
     # no declared fallback — the mode must not be rewritten to "cad"
     assert outcome.resolved_mode is None
     assert ctx.resolved_mode == "hybrid"
@@ -692,9 +686,7 @@ def test_build_issues_mesh_only_anchor_downgraded():
         _anchor_finding(1, "spec+mesh"),
         _anchor_finding(3, "mesh_scan"),
     ]
-    issues = build_issues(
-        None, [], findings, None, {"solid_count": 1}, spec=_spec_two_bores()
-    )
+    issues = build_issues(None, [], findings, None, {"solid_count": 1}, spec=_spec_two_bores())
     spec_issue = [i for i in issues if "hole 1" in i["what"]]
     mesh_issue = [i for i in issues if "hole 3" in i["what"]]
     assert spec_issue and spec_issue[0]["severity"] == "major"
@@ -724,9 +716,7 @@ def test_build_issues_drops_contradicted_mesh_only_demand():
         ],
     )
     findings = [_anchor_finding(3, "mesh_scan")]
-    issues = build_issues(
-        critique, [], findings, None, {"solid_count": 1}, spec=_spec_two_bores()
-    )
+    issues = build_issues(critique, [], findings, None, {"solid_count": 1}, spec=_spec_two_bores())
     assert not any("hole 3" in i["what"] for i in issues)
     assert any("exactly 2" in i["what"] for i in issues)
 

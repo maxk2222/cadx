@@ -758,13 +758,11 @@ def _judge(
             # envelope — SIMP legitimately shrinks the bbox by removing
             # unloaded material, so the check is "within", not "matches"
             dim_ok = all(
-                a <= e + max(bm.tolerance_mm, e * 0.02)
-                for a, e in zip(act, exp, strict=True)
+                a <= e + max(bm.tolerance_mm, e * 0.02) for a, e in zip(act, exp, strict=True)
             )
         else:
             dim_ok = all(
-                abs(a - e) <= max(bm.tolerance_mm, e * 0.02)
-                for a, e in zip(act, exp, strict=True)
+                abs(a - e) <= max(bm.tolerance_mm, e * 0.02) for a, e in zip(act, exp, strict=True)
             )
 
     analysis = outcome.analysis or {}

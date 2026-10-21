@@ -316,21 +316,15 @@ def _resolved_evidence(critique: Critique, d: Discrepancy) -> bool:
     words = _issue_words(d.what)
     if not words:
         return False
-    overlapping = [
-        fv for fv in critique.feature_verdicts if _issue_words(fv.name) & words
-    ]
+    overlapping = [fv for fv in critique.feature_verdicts if _issue_words(fv.name) & words]
     if any(fv.status in ("present", "resolved", "refuted") for fv in overlapping):
         return True
     if any(fv.status in ("missing", "wrong") for fv in overlapping):
         return False
-    return not any(
-        _issue_words(x.what) & words for x in critique.discrepancies if x is not d
-    )
+    return not any(_issue_words(x.what) & words for x in critique.discrepancies if x is not d)
 
 
-def _drop_prev_issue_repeats(
-    critique: Critique, prev_issues: list[dict[str, Any]] | None
-) -> None:
+def _drop_prev_issue_repeats(critique: Critique, prev_issues: list[dict[str, Any]] | None) -> None:
     """Drop discrepancies verbatim-repeating a previous-iteration issue the
     new critique shows as resolved (P10) — re-emitting the same `what`
     every round burned fix cycles on phantoms (observed: 'the vertical leg
@@ -520,15 +514,65 @@ _NAME_WORD_RE = re.compile(r"[a-zäöü]+")
 # a name match between "vertical leg" and "vertical foot"
 _NAME_SKIP = frozenset(
     {
-        "the", "a", "an", "der", "die", "das", "ein", "eine", "einen", "und",
-        "and", "mit", "with", "von", "vom", "fuer", "für", "vertical",
-        "horizontal", "senkrecht", "senkrechte", "senkrechter", "waagrecht",
-        "waagerecht", "waagerechte", "upper", "lower", "obere", "oberer",
-        "untere", "unterer", "outer", "inner", "vordere", "vorderer",
-        "hintere", "hinterer", "seitliche", "seitlicher", "mittlere",
-        "mittlerer", "left", "right", "front", "rear", "top", "bottom",
-        "oben", "unten", "vorne", "hinten", "links", "rechts", "middle",
-        "center", "centre", "centered", "zentriert", "mittig",
+        "the",
+        "a",
+        "an",
+        "der",
+        "die",
+        "das",
+        "ein",
+        "eine",
+        "einen",
+        "und",
+        "and",
+        "mit",
+        "with",
+        "von",
+        "vom",
+        "fuer",
+        "für",
+        "vertical",
+        "horizontal",
+        "senkrecht",
+        "senkrechte",
+        "senkrechter",
+        "waagrecht",
+        "waagerecht",
+        "waagerechte",
+        "upper",
+        "lower",
+        "obere",
+        "oberer",
+        "untere",
+        "unterer",
+        "outer",
+        "inner",
+        "vordere",
+        "vorderer",
+        "hintere",
+        "hinterer",
+        "seitliche",
+        "seitlicher",
+        "mittlere",
+        "mittlerer",
+        "left",
+        "right",
+        "front",
+        "rear",
+        "top",
+        "bottom",
+        "oben",
+        "unten",
+        "vorne",
+        "hinten",
+        "links",
+        "rechts",
+        "middle",
+        "center",
+        "centre",
+        "centered",
+        "zentriert",
+        "mittig",
     }
 )
 
@@ -537,9 +581,7 @@ def _name_words(text: str) -> set[str]:
     """Content words of a feature name — alpha tokens, len > 2, minus
     positional/directional descriptors."""
     return {
-        w
-        for w in _NAME_WORD_RE.findall((text or "").lower())
-        if len(w) > 2 and w not in _NAME_SKIP
+        w for w in _NAME_WORD_RE.findall((text or "").lower()) if len(w) > 2 and w not in _NAME_SKIP
     }
 
 
@@ -558,9 +600,7 @@ def _plate_named_ok(name: str, features: dict[str, Any]) -> bool:
     return False
 
 
-def _measured_presence_key(
-    haystack: str, name: str, features: dict[str, Any]
-) -> str | None:
+def _measured_presence_key(haystack: str, name: str, features: dict[str, Any]) -> str | None:
     """Measured-features key proving a claimed-missing feature exists —
     plate kinds need an ok plate_check naming the feature; scalar kinds
     only need a nonzero count. None = nothing proves presence."""
@@ -581,10 +621,28 @@ _AXIS_IDX = {"x": 0, "y": 1, "z": 2}
 # proves nothing about their existence (envelope refute is structure-only)
 _VOID_WORDS = frozenset(
     {
-        "hole", "bore", "slot", "pocket", "cutout", "groove", "thread",
-        "countersink", "counterbore", "chamfer", "fillet", "radius",
-        "loch", "bohrung", "nut", "tasche", "aussparung", "recess",
-        "gewinde", "senkung", "senkbohrung", "fase",
+        "hole",
+        "bore",
+        "slot",
+        "pocket",
+        "cutout",
+        "groove",
+        "thread",
+        "countersink",
+        "counterbore",
+        "chamfer",
+        "fillet",
+        "radius",
+        "loch",
+        "bohrung",
+        "nut",
+        "tasche",
+        "aussparung",
+        "recess",
+        "gewinde",
+        "senkung",
+        "senkbohrung",
+        "fase",
     }
 )
 
@@ -621,9 +679,7 @@ def _spec_feature_for(spec: PartSpec, name: str) -> Feature | None:
         if (f.name or "").lower() == name:
             return f
     cand = [
-        f
-        for f in spec.features
-        if f.name and (f.name.lower() in name or name in f.name.lower())
+        f for f in spec.features if f.name and (f.name.lower() in name or name in f.name.lower())
     ]
     return cand[0] if len(cand) == 1 else None
 
@@ -654,10 +710,31 @@ def _envelope_refutes(f: Feature | None, features: dict[str, Any]) -> bool:
 # whose declared dims must roughly explain the measured solid volume
 _PLATE_LIKE = frozenset(
     {
-        "foot", "feet", "leg", "legs", "wall", "walls", "base", "plate",
-        "plates", "deck", "flange", "arm", "pad", "tab", "lug", "bracket",
-        "winkel", "fuss", "fuß", "schenkel", "wand", "platte", "boden",
-        "flansch", "lasche",
+        "foot",
+        "feet",
+        "leg",
+        "legs",
+        "wall",
+        "walls",
+        "base",
+        "plate",
+        "plates",
+        "deck",
+        "flange",
+        "arm",
+        "pad",
+        "tab",
+        "lug",
+        "bracket",
+        "winkel",
+        "fuss",
+        "fuß",
+        "schenkel",
+        "wand",
+        "platte",
+        "boden",
+        "flansch",
+        "lasche",
     }
 )
 _VOL_DIMS = ("length", "width", "height", "thickness")
@@ -709,9 +786,7 @@ def _structure_hit(what: str, spec: PartSpec) -> bool:
     words = set(_NAME_WORD_RE.findall(what.lower()))
     if words & _PLATE_LIKE:
         return True
-    return any(
-        _name_words(f.name) & words for f in spec.features if _plate_like(f)
-    )
+    return any(_name_words(f.name) & words for f in spec.features if _plate_like(f))
 
 
 def _drop_facet_dia_noise(critique: Critique, spec: PartSpec, features: dict[str, Any]) -> None:

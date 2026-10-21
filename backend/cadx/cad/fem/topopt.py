@@ -606,9 +606,7 @@ _SAME_FLIP_FLOOR = 0.0005
 _SAME_FLIP_MIN_RUN = 4
 
 
-def _windowed_compliance_improvement(
-    history: list[dict[str, Any]], window: int
-) -> float | None:
+def _windowed_compliance_improvement(history: list[dict[str, Any]], window: int) -> float | None:
     """Relative compliance improvement, (c_old - c_now)/c_old, over the last
     `window` history records AT THE CURRENT beta. A Heaviside continuation
     step legitimately spikes the objective (the sharper projection is a
@@ -1228,9 +1226,7 @@ def simp(  # noqa: C901
             phys_d = phys_now[design_sel]
             gray = float(np.mean((phys_d > 0.2) & (phys_d < 0.8)))
             mask_now = phys_d >= 0.5
-            flips = (
-                float(np.mean(mask_now != prev_mask)) if prev_mask is not None else 1.0
-            )
+            flips = float(np.mean(mask_now != prev_mask)) if prev_mask is not None else 1.0
             prev_mask = mask_now
         else:
             gray, flips = 0.0, 0.0
@@ -1287,9 +1283,7 @@ def simp(  # noqa: C901
         # compliance stopped improving over that window, the field is
         # bouncing between competing layouts, not converging. Same honest
         # extraction as the beta-cap break, ~10-20 solver minutes earlier.
-        move_sat_streak = (
-            move_sat_streak + 1 if change >= _MOVE_SAT_FRAC * params.move else 0
-        )
+        move_sat_streak = move_sat_streak + 1 if change >= _MOVE_SAT_FRAC * params.move else 0
         # mask-churn streak — the density field must keep flipping cells to
         # count as oscillating; a Heaviside continuation can saturate the
         # move cap for a whole window while compliance sits flat on the
@@ -1409,10 +1403,7 @@ def simp(  # noqa: C901
         # region alone already exceeds the requested volume, the target was
         # infeasible by construction, not an optimum
         achieved = float(_physical(x, eta=eta_vol)[solid_idx].sum()) / nsolid
-        if (
-            achieved > params.volfrac + 0.02
-            and float(x[design].max()) <= _FLOOR_PIN
-        ):
+        if achieved > params.volfrac + 0.02 and float(x[design].max()) <= _FLOOR_PIN:
             converged = False
             status = "infeasible_target"
             warnings_out.append(

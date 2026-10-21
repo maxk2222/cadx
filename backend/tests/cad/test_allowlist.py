@@ -666,12 +666,7 @@ def test_mesh_solid_builder_overwrite_flagged():
 def test_mesh_solid_builder_direct_call_passes():
     """`add(load_mesh_solid())` inside the builder feeds the mesh directly —
     `result = p.part` then carries it."""
-    code = (
-        GOOD
-        + "with BuildPart() as p:\n"
-        + "    add(load_mesh_solid())\n"
-        + "result = p.part\n"
-    )
+    code = GOOD + "with BuildPart() as p:\n" + "    add(load_mesh_solid())\n" + "result = p.part\n"
     assert mesh_solid_flows_to_result(code)
 
 

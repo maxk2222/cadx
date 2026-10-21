@@ -400,9 +400,7 @@ def test_recut_spec_dia_plugs_then_drills_nominal():
     plain difference can't shrink a void, so without the plug the cutter
     reams +0.4 past every wall bulge (bail handle: spec 5.5 cut at 5.9)."""
     mesh = _bored_wide(-35.13, 6.8)  # oversized ~6.8 channel where the bore belongs
-    feat = RefineFeature(
-        name="m5", kind="hole", axis="+z", u=-35.16, v=0.0, dia=5.5, source="spec"
-    )
+    feat = RefineFeature(name="m5", kind="hole", axis="+z", u=-35.16, v=0.0, dia=5.5, source="spec")
     out, rep = apply_refine(mesh, [feat], restore_keeps=False)
     assert len(rep.applied) == 1
     assert rep.applied[0].get("plugged") is True
@@ -765,9 +763,7 @@ def test_run_refine_verify_misses_surfaced(tmp_path, monkeypatch: pytest.MonkeyP
     res = run_refine(
         mesh_path=_write_box_stl(tmp_path),
         out_dir=tmp_path / "out",
-        features=[
-            {"name": "m6", "kind": "hole", "axis": "+z", "x": 10.0, "y": 0.0, "dia": 6.0}
-        ],
+        features=[{"name": "m6", "kind": "hole", "axis": "+z", "x": 10.0, "y": 0.0, "dia": 6.0}],
     )
     assert res.ok
     report = res.features["refine"]
@@ -783,9 +779,7 @@ def test_run_refine_verify_passes_clean(tmp_path):
     res = run_refine(
         mesh_path=_write_box_stl(tmp_path),
         out_dir=tmp_path / "out",
-        features=[
-            {"name": "m6", "kind": "hole", "axis": "+z", "x": 10.0, "y": 0.0, "dia": 6.0}
-        ],
+        features=[{"name": "m6", "kind": "hole", "axis": "+z", "x": 10.0, "y": 0.0, "dia": 6.0}],
         anchors=[
             {
                 "index": 1,

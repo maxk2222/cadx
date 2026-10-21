@@ -382,9 +382,7 @@ def _input_assets(assets: list[Asset]) -> list[InputAsset]:
             caption=a.caption,
             filename=a.filename,
             role_hint=str((a.gen_params or {}).get("role_hint") or ""),
-            verify_severity=str(
-                ((a.gen_params or {}).get("verify") or {}).get("severity") or ""
-            ),
+            verify_severity=str(((a.gen_params or {}).get("verify") or {}).get("severity") or ""),
         )
         for a in assets
     ]
@@ -2168,9 +2166,7 @@ async def run_organic_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[
         # unprintable multi-body results are flagged; the result is
         # intentionally NOT structural — "needs_review" is only about
         # manufacturability here, never about strength
-        n_bodies = max(
-            int(org.get("n_components") or 1), int(org.get("n_bodies_export") or 1)
-        )
+        n_bodies = max(int(org.get("n_components") or 1), int(org.get("n_bodies_export") or 1))
         version.status = VersionStatus.needs_review if n_bodies > 1 else VersionStatus.succeeded
         register_artifacts(db, version.id, artifacts, tessellated_step=True)
         await emit(

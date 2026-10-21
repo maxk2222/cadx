@@ -400,9 +400,7 @@ async def test_facet_dia_noise_dropped_on_approximate():
     )
     ctx = _ctx(llm, prompt="plate with M5 holes")
     spec = _spec()
-    spec.features = [
-        Feature(name="h1", type="through_hole", count=1, dims={"diameter": 5.5})
-    ]
+    spec.features = [Feature(name="h1", type="through_hole", count=1, dims={"diameter": 5.5})]
     c = await critique_step.run(
         ctx,
         spec,
@@ -414,7 +412,10 @@ async def test_facet_dia_noise_dropped_on_approximate():
         features={
             "total_holes": 2,
             "approximate": True,
-            "hole_groups": [{"diameter": 5.47, "count": 1, "axis": "+z", "depth_class": "through"}, {"diameter": 5.36, "count": 1, "axis": "+z", "depth_class": "through"}],
+            "hole_groups": [
+                {"diameter": 5.47, "count": 1, "axis": "+z", "depth_class": "through"},
+                {"diameter": 5.36, "count": 1, "axis": "+z", "depth_class": "through"},
+            ],
         },
     )
     assert not any("diameter" in d.what.lower() or "ø" in d.what.lower() for d in c.discrepancies)
@@ -440,9 +441,7 @@ async def test_facet_dia_real_error_kept():
     )
     ctx = _ctx(llm, prompt="plate with M5 holes")
     spec = _spec()
-    spec.features = [
-        Feature(name="h1", type="through_hole", count=1, dims={"diameter": 5.5})
-    ]
+    spec.features = [Feature(name="h1", type="through_hole", count=1, dims={"diameter": 5.5})]
     c = await critique_step.run(
         ctx,
         spec,
@@ -525,9 +524,7 @@ def test_missing_verdict_refuted_by_plate_presence():
     c = Critique(
         score=30,
         passed=False,
-        feature_verdicts=[
-            FeatureVerdict(name="leg", status="missing", note="not in any view")
-        ],
+        feature_verdicts=[FeatureVerdict(name="leg", status="missing", note="not in any view")],
         discrepancies=[
             Discrepancy(
                 what="the vertical leg is missing entirely",
@@ -554,13 +551,9 @@ def test_missing_verdict_plate_presence_needs_name_overlap():
         score=30,
         passed=False,
         feature_verdicts=[FeatureVerdict(name="leg", status="missing", note="")],
-        discrepancies=[
-            Discrepancy(what="leg missing", severity="major", source="spec")
-        ],
+        discrepancies=[Discrepancy(what="leg missing", severity="major", source="spec")],
     )
-    _verify_missing_verdicts(
-        c, _lbracket_spec(), {"plates": [{"name": "foot plate", "ok": True}]}
-    )
+    _verify_missing_verdicts(c, _lbracket_spec(), {"plates": [{"name": "foot plate", "ok": True}]})
     assert c.feature_verdicts[0].status == "missing"
     assert c.discrepancies[0].severity == "major"
 
@@ -575,9 +568,7 @@ def test_missing_verdict_refuted_by_envelope():
         score=30,
         passed=False,
         feature_verdicts=[FeatureVerdict(name="leg", status="missing", note="")],
-        discrepancies=[
-            Discrepancy(what="leg missing", severity="major", source="spec")
-        ],
+        discrepancies=[Discrepancy(what="leg missing", severity="major", source="spec")],
     )
     _verify_missing_verdicts(c, _lbracket_spec(), {"bbox_size": [60, 40, 50]})
     assert c.feature_verdicts[0].status == "wrong"
@@ -594,9 +585,7 @@ def test_missing_verdict_stays_when_extent_off():
         score=30,
         passed=False,
         feature_verdicts=[FeatureVerdict(name="leg", status="missing", note="")],
-        discrepancies=[
-            Discrepancy(what="leg missing", severity="major", source="spec")
-        ],
+        discrepancies=[Discrepancy(what="leg missing", severity="major", source="spec")],
     )
     # the leg declares width 40 / height 50 — bbox 60x55x70 agrees with
     # neither extent, so 'missing' stands
@@ -617,9 +606,7 @@ def test_missing_major_downgraded_when_volume_consistent():
         passed=False,
         feature_verdicts=[FeatureVerdict(name="leg", status="missing", note="")],
         discrepancies=[
-            Discrepancy(
-                what="vertical leg is missing", severity="major", source="spec"
-            )
+            Discrepancy(what="vertical leg is missing", severity="major", source="spec")
         ],
     )
     _verify_missing_verdicts(c, _lbracket_spec(), {"volume": 21500.0})
@@ -638,9 +625,7 @@ def test_missing_major_kept_when_volume_off():
         passed=False,
         feature_verdicts=[FeatureVerdict(name="leg", status="missing", note="")],
         discrepancies=[
-            Discrepancy(
-                what="vertical leg is missing", severity="major", source="spec"
-            )
+            Discrepancy(what="vertical leg is missing", severity="major", source="spec")
         ],
     )
     _verify_missing_verdicts(c, _lbracket_spec(), {"volume": 8000.0})
@@ -678,9 +663,7 @@ async def test_prev_issues_shown_and_resolved_repeat_dropped():
         None,
         iteration=2,
         features={"plates": [{"name": "vertical leg", "ok": True}]},
-        prev_issues=[
-            {"what": "the vertical leg is missing entirely", "severity": "major"}
-        ],
+        prev_issues=[{"what": "the vertical leg is missing entirely", "severity": "major"}],
     )
     user = llm.calls[0]["messages"][1]["content"]
     texts = "\n".join(p.get("text", "") for p in user if p.get("type") == "text")
@@ -701,9 +684,7 @@ async def test_prev_issue_repeat_kept_when_still_asserted():
         },
         {"what": "the leg is 5 mm too short", "severity": "minor", "source": "spec"},
     ]
-    resp["feature_verdicts"] = [
-        {"name": "leg", "status": "missing", "note": "still absent"}
-    ]
+    resp["feature_verdicts"] = [{"name": "leg", "status": "missing", "note": "still absent"}]
     llm = FakeLLM([resp])
     ctx = _ctx(llm, prompt="L-bracket with leg and foot")
     c = await critique_step.run(
@@ -715,9 +696,7 @@ async def test_prev_issue_repeat_kept_when_still_asserted():
         None,
         iteration=2,
         features={},
-        prev_issues=[
-            {"what": "the vertical leg is missing entirely", "severity": "major"}
-        ],
+        prev_issues=[{"what": "the vertical leg is missing entirely", "severity": "major"}],
     )
     assert any("vertical leg is missing" in d.what for d in c.discrepancies)
 

@@ -278,9 +278,7 @@ class HttpMeshClient(MeshPort):
     async def _submit(self, files: list[tuple[str, tuple[str, bytes, str]]]) -> str:
         submit_timeout = min(60.0, self.timeout_s)
         async with httpx.AsyncClient(timeout=submit_timeout) as client:
-            r = await client.post(
-                f"{self.base_url}/v1/jobs", files=files, headers=self._headers()
-            )
+            r = await client.post(f"{self.base_url}/v1/jobs", files=files, headers=self._headers())
             if r.status_code != 200:
                 raise MeshGenError(f"mesh-server submit failed: {r.status_code} {r.text[:300]}")
             return str(r.json()["job_id"])
@@ -350,9 +348,7 @@ class HttpMeshClient(MeshPort):
     async def _delete_job(self, server_job: str) -> None:
         def _del() -> None:
             with httpx.Client(timeout=10.0) as client:
-                client.delete(
-                    f"{self.base_url}/v1/jobs/{server_job}", headers=self._headers()
-                )
+                client.delete(f"{self.base_url}/v1/jobs/{server_job}", headers=self._headers())
 
         with contextlib.suppress(Exception):
             await asyncio.to_thread(_del)

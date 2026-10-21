@@ -225,11 +225,7 @@ def test_topopt_images_capped_at_budget(tmp_path) -> None:
     img_dir = storage.ensure(storage.data_root() / "_test_imgs" / str(tmp_path.name))
     for i in range(12):
         (img_dir / f"v{i}.png").write_bytes(b"png")
-    res = {
-        "renders": {
-            f"view{i}": storage.relpath(img_dir / f"v{i}.png") for i in range(12)
-        }
-    }
+    res = {"renders": {f"view{i}": storage.relpath(img_dir / f"v{i}.png") for i in range(12)}}
     ops = types.SimpleNamespace(contact_sheet=None)
     images = _topopt_images(ops, res, tmp_path)
     assert len(images) == _TOPOPT_IMAGE_BUDGET

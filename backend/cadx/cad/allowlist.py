@@ -947,9 +947,7 @@ def _builder_absorption(tree: ast.Module) -> tuple[dict[str, set[str]], set[str]
         if not isinstance(node, ast.With):
             continue
         bound = [
-            item.optional_vars.id
-            for item in node.items
-            if isinstance(item.optional_vars, ast.Name)
+            item.optional_vars.id for item in node.items if isinstance(item.optional_vars, ast.Name)
         ]
         if not bound:
             continue
@@ -1006,11 +1004,7 @@ def mesh_solid_flows_to_result(code: str) -> bool:
 
     builder_feeds, builder_direct = _builder_absorption(tree)
     assigns = sorted(
-        (
-            n
-            for n in ast.walk(tree)
-            if isinstance(n, ast.Assign | ast.AnnAssign | ast.AugAssign)
-        ),
+        (n for n in ast.walk(tree) if isinstance(n, ast.Assign | ast.AnnAssign | ast.AugAssign)),
         key=lambda n: (n.lineno, n.col_offset),
     )
 

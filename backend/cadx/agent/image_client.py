@@ -310,9 +310,7 @@ class OpenAIImageClient(ImagePort):
         should_abort: Callable[[], Awaitable[bool]] | None = None,
     ) -> ImageGenResult:
         if not self.api_key:
-            raise ImageGenError(
-                "no api key for image backend 'openai' (image_api_key/llm_api_key)"
-            )
+            raise ImageGenError("no api key for image backend 'openai' (image_api_key/llm_api_key)")
         model = req.model if req.model and req.model != "auto" else self.model
         n = max(1, req.count)
         size = f"{req.width}x{req.height}"
@@ -504,10 +502,7 @@ def make_image_client(
         base = (settings.image_api_base or settings.llm_base_url).strip()
         if not base:
             return None
-        key = (
-            settings.image_api_key.get_secret_value()
-            or settings.llm_api_key.get_secret_value()
-        )
+        key = settings.image_api_key.get_secret_value() or settings.llm_api_key.get_secret_value()
         return OpenAIImageClient(
             base,
             key,

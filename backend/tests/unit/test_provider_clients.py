@@ -80,9 +80,7 @@ def _tripo(state: dict[str, Any]):
         if path.endswith("/task") and request.method == "POST":
             state["task_body"] = json.loads(request.content)
             if "submit_error" in state:
-                return httpx.Response(
-                    200, json={"code": 1001, "message": state["submit_error"]}
-                )
+                return httpx.Response(200, json={"code": 1001, "message": state["submit_error"]})
             return httpx.Response(200, json={"code": 0, "data": {"task_id": "task-1"}})
         if path.endswith("/task/task-1/cancel"):
             state["cancelled"] = True
@@ -198,9 +196,7 @@ def test_make_mesh_client_backend_switch():
     assert isinstance(make_mesh_client(runtime_settings=rt), TripoMeshClient)
     # per-job override beats the runtime default
     rt2 = RuntimeSettings(mesh_base_url="http://s:1")  # sidecar default
-    assert isinstance(
-        make_mesh_client(runtime_settings=rt2, backend="tripo"), TripoMeshClient
-    )
+    assert isinstance(make_mesh_client(runtime_settings=rt2, backend="tripo"), TripoMeshClient)
     assert isinstance(make_mesh_client(runtime_settings=rt2), HttpMeshClient)
     assert make_mesh_client() is None  # default sidecar, no mesh_base_url
 
@@ -338,6 +334,4 @@ def test_make_image_client_backend_switch():
     # per-job override + unchanged default path
     rt3 = RuntimeSettings(mesh_base_url="http://sidecar:8765")
     assert isinstance(make_image_client(runtime_settings=rt3), object)
-    assert isinstance(
-        make_image_client(runtime_settings=rt3, backend="openai"), OpenAIImageClient
-    )
+    assert isinstance(make_image_client(runtime_settings=rt3, backend="openai"), OpenAIImageClient)

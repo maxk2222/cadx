@@ -129,6 +129,7 @@ async def test_session_exhaustion_budget_does_not_latch():
 async def test_session_exhaustion_verify_loop_latches():
     """verify_loop means the session interaction pattern is broken — THAT is
     the case the blind one-shot fallback exists for."""
+
     async def failing_verify(code: str):
         return {
             "ok": False,
