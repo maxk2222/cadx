@@ -214,6 +214,9 @@ class EvalResult:
     step_stats: dict[str, Any] = field(default_factory=dict)
     execs: int = 0  # executor.execute calls (incl. session verifies, autofix)
     exec_s: float = 0.0  # total wall time inside executor.execute
+    verify_spec_status: str | None = None
+    verify_spec_failures: list[str] = field(default_factory=list)
+    verify_spec_unverified: list[str] = field(default_factory=list)
 
 
 def _features_ok(expected: list[dict[str, Any]], features: dict[str, Any] | None) -> bool | None:
@@ -231,6 +234,26 @@ def _features_ok(expected: list[dict[str, Any]], features: dict[str, Any] | None
     feats = features or {}
     groups = feats.get("hole_groups") or []
     return all(_feature_entry_ok(ef, feats, groups) for ef in expected)
+
+
+def _verify_spec_report(outcome: Any) -> dict[str, Any] | None:
+    """Read the final structured report before falling back to issue summaries.
+
+    Do not infer conformance from its display string: the nested report keeps
+    the status and failing check names machine-readable for eval gates.
+    """
+    mesh = getattr(outcome, "mesh", None)
+    topopt = mesh.get("topopt") if isinstance(mesh, dict) else None
+    report = topopt.get("verify_spec") if isinstance(topopt, dict) else None
+    if isinstance(report, dict) and report.get("status") in ("PASS", "FAIL", "UNVERIFIED"):
+        return report
+    for issue in getattr(outcome, "issues", None) or []:
+        if not isinstance(issue, dict) or issue.get("source") != "verify_spec":
+            continue
+        report = issue.get("report")
+        if isinstance(report, dict) and report.get("status") in ("PASS", "FAIL", "UNVERIFIED"):
+            return report
+    return None
 
 
 def _feature_entry_ok(  # noqa: C901
@@ -776,18 +799,48 @@ def _judge(
     completion_tokens = int(usage.get("completion_tokens") or 0)
     calls = int(usage.get("calls") or 0)
     features_ok = _features_ok(bm.expected_features, outcome.features)
+    verify_report = _verify_spec_report(outcome)
+    verify_spec_status = str(verify_report["status"]) if verify_report else None
+    verify_spec_failures = [
+        str(check.get("name") or "unnamed_check")
+        for check in (verify_report or {}).get("checks") or []
+        if isinstance(check, dict) and check.get("status") == "FAIL"
+    ]
+    verify_spec_unverified = [
+        str(check.get("name") or "unnamed_check")
+        for check in (verify_report or {}).get("checks") or []
+        if isinstance(check, dict) and check.get("status") == "UNVERIFIED"
+    ]
+    verify_spec_failed = verify_spec_status == "FAIL" or bool(verify_spec_failures)
     code_ok = (outcome.code is not None) if bm.expect_code else None
     issue_texts = [
         f"{i.get('what', '')} {i.get('fix_hint', '')}".strip() for i in outcome.issues or []
     ]
+    if outcome.status == "needs_review":
+        mesh = outcome.mesh or {}
+        topopt = mesh.get("topopt") if isinstance(mesh, dict) else None
+        verification = topopt.get("verification") if isinstance(topopt, dict) else None
+        topopt_warnings = topopt.get("warnings") if isinstance(topopt, dict) else None
+        review_detail = (
+            next((str(w) for w in topopt_warnings or [] if w), "")
+            if isinstance(verification, dict) and verification.get("valid") is False
+            else str(outcome.mode_note or "").strip()
+        )
+        issue_texts.append(
+            f"run status needs_review — {review_detail}"
+            if review_detail
+            else "run status needs_review"
+        )
     issue_ok = None
     if bm.expect_issue_contains:
         needle = bm.expect_issue_contains.lower()
         issue_ok = any(needle in t.lower() for t in issue_texts)
 
-    passed: bool | None = outcome.status in ("succeeded", "needs_review")
+    passed: bool | None = outcome.status == "succeeded"
     if passed:
         if dim_ok is False or features_ok is False:
+            passed = False
+        if verify_spec_failed:
             passed = False
         if bm.expect_watertight and watertight is not True:
             passed = False
@@ -823,6 +876,9 @@ def _judge(
         execs=execs,
         exec_s=round(exec_s, 1),
         step_stats=step_stats or {},
+        verify_spec_status=verify_spec_status,
+        verify_spec_failures=verify_spec_failures,
+        verify_spec_unverified=verify_spec_unverified,
         mode_reason=" | ".join(
             p
             for p in (

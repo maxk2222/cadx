@@ -314,6 +314,34 @@ def test_judge_topopt_bbox_is_envelope(tmp_path) -> None:
     assert _judge(bm, outcome, 100.0, tmp_path).dim_ok is False
 
 
+def test_judge_does_not_pass_topopt_with_invalid_export_verification(tmp_path) -> None:
+    from cadx.agent.orchestrator import RunOutcome
+    from cadx.eval.runner import Benchmark, _judge
+
+    outcome = RunOutcome(
+        status="needs_review",
+        resolved_mode="topopt",
+        analysis={"bbox_size": [38.0, 37.0, 4.0], "watertight": True},
+        mesh={
+            "topopt": {
+                "verification": {"valid": False},
+                "warnings": ["mask/export safety-factor ratio remains 5.3x after the retry"],
+            }
+        },
+        issues=[{"source": "verify_spec", "report": {"status": "PASS", "checks": []}}],
+    )
+    result = _judge(
+        Benchmark(name="topopt_review", prompt="plate", expected_bbox=[40, 40, 4]),
+        outcome,
+        1.0,
+        tmp_path,
+    )
+
+    assert result.verify_spec_status == "PASS"
+    assert result.passed is False
+    assert any("safety-factor ratio remains 5.3x" in issue for issue in result.issues)
+
+
 def test_judge_non_topopt_bbox_still_matches(tmp_path) -> None:
     """Non-topopt modes keep the closeness check — a shrunken hybrid part is
     a real dimension defect, not an optimization result."""
@@ -328,6 +356,120 @@ def test_judge_non_topopt_bbox_still_matches(tmp_path) -> None:
     assert _judge(bm, outcome, 100.0, tmp_path).dim_ok is False
 
 
+def test_judge_fails_when_structured_verify_spec_fails(tmp_path) -> None:
+    """A complete benchmark bbox/mesh pass cannot override a deterministic
+    verify_spec FAIL."""
+    from cadx.agent.orchestrator import RunOutcome
+    from cadx.eval.runner import Benchmark, _judge
+
+    bm = Benchmark(
+        name="position_gate",
+        prompt="slot",
+        expected_bbox=[60.0, 40.0, 50.0],
+        expect_watertight=True,
+    )
+    outcome = RunOutcome(
+        status="succeeded",
+        analysis={"bbox_size": [60.0, 40.0, 50.0], "watertight": True},
+        issues=[
+            {
+                "source": "verify_spec",
+                "what": "verify_spec FAIL — feat_3_position",
+                "report": {
+                    "status": "FAIL",
+                    "checks": [
+                        {
+                            "name": "feat_3_position",
+                            "status": "FAIL",
+                            "tier": "features",
+                            "evidence": {"violations": [{"axis": "y"}]},
+                        }
+                    ],
+                },
+            }
+        ],
+    )
+
+    result = _judge(bm, outcome, 10.0, tmp_path)
+
+    assert result.dim_ok is True
+    assert result.watertight is True
+    assert result.verify_spec_status == "FAIL"
+    assert result.verify_spec_failures == ["feat_3_position"]
+    assert result.passed is False
+
+
+def test_judge_prefers_final_topopt_verify_spec_over_base_issue(tmp_path) -> None:
+    from cadx.agent.orchestrator import RunOutcome
+    from cadx.eval.runner import Benchmark, _judge
+
+    outcome = RunOutcome(
+        status="succeeded",
+        mesh={
+            "pipeline": "topopt",
+            "topopt": {
+                "verify_spec": {
+                    "status": "FAIL",
+                    "checks": [{"name": "envelope_z", "status": "FAIL"}],
+                }
+            },
+        },
+        issues=[
+            {
+                "source": "verify_spec",
+                "report": {"status": "PASS", "checks": []},
+            }
+        ],
+    )
+    result = _judge(Benchmark(name="topopt_gate", prompt="plate"), outcome, 1.0, tmp_path)
+
+    assert result.verify_spec_status == "FAIL"
+    assert result.verify_spec_failures == ["envelope_z"]
+    assert result.passed is False
+
+
+def test_judge_preserves_pass_when_verify_spec_passes(tmp_path) -> None:
+    from cadx.agent.orchestrator import RunOutcome
+    from cadx.eval.runner import Benchmark, _judge
+
+    bm = Benchmark(name="position_gate", prompt="slot", expected_bbox=[60.0, 40.0, 50.0])
+    outcome = RunOutcome(
+        status="succeeded",
+        analysis={"bbox_size": [60.0, 40.0, 50.0], "watertight": True},
+        issues=[{"source": "verify_spec", "report": {"status": "PASS", "checks": []}}],
+    )
+
+    result = _judge(bm, outcome, 10.0, tmp_path)
+
+    assert result.verify_spec_status == "PASS"
+    assert result.verify_spec_failures == []
+    assert result.passed is True
+
+
+def test_judge_exposes_unverified_checks_without_treating_them_as_failures(tmp_path) -> None:
+    from cadx.agent.orchestrator import RunOutcome
+    from cadx.eval.runner import Benchmark, _judge
+
+    outcome = RunOutcome(
+        status="succeeded",
+        issues=[
+            {
+                "source": "verify_spec",
+                "report": {
+                    "status": "PASS",
+                    "checks": [{"name": "feat_3_position", "status": "UNVERIFIED"}],
+                },
+            }
+        ],
+    )
+    result = _judge(Benchmark(name="axis", prompt="slot"), outcome, 1.0, tmp_path)
+
+    assert result.verify_spec_status == "PASS"
+    assert result.verify_spec_failures == []
+    assert result.verify_spec_unverified == ["feat_3_position"]
+    assert result.passed is True
+
+
 def test_benchmark_reuse_mesh_dir_optional() -> None:
     """The field is optional — new benchmarks may set it, every shipped
     benchmark JSON must still parse without it."""
@@ -337,6 +479,19 @@ def test_benchmark_reuse_mesh_dir_optional() -> None:
     assert bm.reuse_mesh_dir == "a/b"
     assert runner.Benchmark(name="y", prompt="p").reuse_mesh_dir is None
     assert load_benchmarks()  # all existing benchmark JSONs still parse
+
+
+def test_scripted_hybrid_mesh_benchmarks_are_seeded_and_use_through_cutters() -> None:
+    benchmarks = {bm.name: bm for bm in load_benchmarks()}
+    for name in ("knob_with_m4_insert_hybrid", "hybrid_2d_repair_scripted"):
+        bm = benchmarks[name]
+        assert bm.settings["mesh_seed"] == 4242
+        correct_code = "\n".join(
+            str(reply.get("code") or reply.get("full_code") or "") for reply in bm.llm_script or []
+        )
+        assert "bb = base.bounding_box()" in correct_code
+        assert "height=bb.size.Z + 2.0" in correct_code
+        assert "cadlib.mesh_cut(base, hole)" in correct_code
 
 
 def test_apply_reuse_mesh_dir_finds_reference_sheet(tmp_path) -> None:
