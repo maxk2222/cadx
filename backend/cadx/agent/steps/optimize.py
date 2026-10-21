@@ -74,6 +74,7 @@ def _run_summary(r: dict[str, Any], chosen: bool, reasoning: Any) -> dict[str, A
         "it": r.get("iteration"),
         "params": {k: v for k, v in (r.get("params") or {}).items() if k != "load_cases"},
         "volfrac": top.get("volfrac_target"),
+        "volfrac_requested": top.get("volfrac_requested"),
         "achieved": top.get("volfrac_achieved"),
         "iterations": top.get("iterations"),
         "worst_sf": worst_sf,
