@@ -862,6 +862,7 @@ def _slot_group(**over):
         axis="+x",
         elongated=True,
         centers=[[-20.0, 0.0]],
+        centers_xyz=[[None, 0.0, 25.0]],
         through_axis="+x",
         elong_axis="+z",
         width_mm=6.5,
@@ -896,6 +897,30 @@ def test_slot_orientation_declared_axis_matches_elongation():
     checks = _by_name(verify_spec(spec, res, feature_findings=[]))
     assert checks["feat_0_orientation"]["status"] == "PASS"
     assert checks["feat_0_axis"]["status"] == "PASS"
+
+
+def test_slot_drill_along_x_is_through_axis_not_elongation():
+    """Intake prose can state both axes: 'long axis along Z, drill along X'.
+    The latter is a through-direction phrase, not a conflicting elongation."""
+    spec = _spec(
+        features=[
+            _feat(
+                name="leg slot",
+                type="slot",
+                description="15 mm long axis along Z",
+                position="centered at x=-28, y=0, z=25; drill along X",
+            )
+        ]
+    )
+    checks = _by_name(
+        verify_spec(
+            spec,
+            _res(features={"hole_groups": [_slot_group()], "slots": 1}),
+            feature_findings=[],
+        )
+    )
+    assert checks["feat_0_axis"]["status"] == "PASS"
+    assert checks["feat_0_orientation"]["status"] == "PASS"
 
 
 def test_slot_orientation_mismatch_fails():
@@ -960,7 +985,7 @@ def test_unrequested_voids_slot_matched_by_dims_not_dia():
                 name="leg slot",
                 type="slot",
                 dims={"width": 6.5, "slot_length": 15.0},
-                position="x=-20",
+                position="y=10",
             ),
         ]
     )
@@ -989,7 +1014,7 @@ def test_unrequested_voids_slot_dims_mismatch_still_fails():
                 name="leg slot",
                 type="slot",
                 dims={"width": 6.5, "slot_length": 15.0},
-                position="x=-20",
+                position="y=10",
             ),
         ]
     )
@@ -1005,3 +1030,115 @@ def test_unrequested_voids_slot_dims_mismatch_still_fails():
     c = _by_name(report)["unrequested_voids"]
     assert c["status"] == "FAIL"
     assert c["evidence"]["unmatched_ids"] == ["s1"]
+
+
+def test_x_through_slot_does_not_compare_bbox_midpoint_as_x_position():
+    """Legacy XY centers for an X-through slot contain a bbox-derived X
+    placeholder, not a measured slot X coordinate. The slot is centered in
+    its measurable Y/Z plane; the through-axis coordinate stays UNVERIFIED."""
+    spec = _spec(
+        features=[
+            _feat(
+                name="leg slot",
+                type="slot",
+                position="x=-28, y=0, z=25",
+                dims={"width": 6.5, "slot_length": 15.0},
+            )
+        ]
+    )
+    measured = _slot_group(
+        centers=[[0.0, -0.05]],
+        centers_xyz=[[None, 0.0, 25.0]],
+    )
+    report = verify_spec(
+        spec, _res(features={"hole_groups": [measured], "slots": 1}), feature_findings=[]
+    )
+    check = _by_name(report)["feat_0_position"]
+    assert check["status"] == "UNVERIFIED"
+    assert not check["evidence"].get("violations")
+    assert check["evidence"]["measured_centers_by_axis"] == [{"y": 0.0, "z": 25.0}]
+    assert {"axis": "x", "expected_mm": -28.0} in check["evidence"]["unverified"]
+
+
+def test_slot_explanatory_range_does_not_become_a_second_position_point():
+    """The intake phrase gives one center and then parenthetical host bounds;
+    z=20..35 must normalize to z=27.5, not become a second expected point."""
+    spec = _spec(
+        features=[
+            _feat(
+                name="leg slot",
+                type="slot",
+                position="x=-30..-26 (through), y=0 centered, "
+                "z centered on leg height (~z=27.5 mid, i.e. z=20..35)",
+                dims={"width": 6.5, "slot_length": 15.0},
+            )
+        ]
+    )
+    measured = _slot_group(centers_xyz=[[None, -0.05, 27.65]])
+    report = verify_spec(
+        spec, _res(features={"hole_groups": [measured], "slots": 1}), feature_findings=[]
+    )
+    check = _by_name(report)["feat_0_position"]
+    assert check["status"] == "UNVERIFIED"  # only the through-axis X is unmeasured
+    assert check["evidence"]["expected"]["coords"] == {
+        "x": -28.0,
+        "y": 0.0,
+        "z": 27.5,
+    }
+    assert check["evidence"].get("points") is None
+    assert check["evidence"]["unverified"][0]["axis"] == "x"
+
+
+def test_legacy_x_through_centers_only_verify_the_measurable_y_axis():
+    """Older serialized results remain safe: for +x voids, only legacy
+    centers[1] is known to be Y; centers[0] is not compared as X."""
+    spec = _spec(features=[_feat(name="leg slot", type="slot", position="x=-28, y=0")])
+    measured = _slot_group(centers=[[0.0, -0.05]], centers_xyz=[])
+    report = verify_spec(
+        spec, _res(features={"hole_groups": [measured], "slots": 1}), feature_findings=[]
+    )
+    check = _by_name(report)["feat_0_position"]
+    assert check["status"] == "UNVERIFIED"
+    assert not check["evidence"].get("violations")
+    assert check["evidence"]["measured_centers_by_axis"] == [{"y": -0.05}]
+
+
+def test_x_through_slot_real_in_plane_position_error_still_fails():
+    spec = _spec(
+        features=[
+            _feat(
+                name="leg slot",
+                type="slot",
+                position="x=-28, y=10, z=25",
+                dims={"width": 6.5, "slot_length": 15.0},
+            )
+        ]
+    )
+    measured = _slot_group(centers_xyz=[[None, 0.0, 25.0]])
+    report = verify_spec(
+        spec, _res(features={"hole_groups": [measured], "slots": 1}), feature_findings=[]
+    )
+    check = _by_name(report)["feat_0_position"]
+    assert check["status"] == "FAIL"
+    assert check["evidence"]["violations"][0]["axis"] == "y"
+    assert {"axis": "x", "expected_mm": -28.0} in check["evidence"]["unverified"]
+
+
+def test_structured_feature_center_is_used_by_position_check():
+    spec = _spec(
+        features=[
+            _feat(
+                name="leg slot",
+                type="slot",
+                centers=[{"x": -28.0, "y": 0.0, "z": 25.0}],
+            )
+        ]
+    )
+    measured = _slot_group(centers_xyz=[[None, 0.0, 25.0]])
+    report = verify_spec(
+        spec, _res(features={"hole_groups": [measured], "slots": 1}), feature_findings=[]
+    )
+    check = _by_name(report)["feat_0_position"]
+    assert check["status"] == "UNVERIFIED"
+    assert check["evidence"]["expected"]["points"] == [{"x": -28.0, "y": 0.0, "z": 25.0}]
+    assert check["evidence"]["unverified"][0]["axes"] == ["x"]

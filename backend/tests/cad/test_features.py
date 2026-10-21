@@ -29,6 +29,7 @@ from cadx.cad.features import (
     compare_anchor_positions,
     compare_features,
     extract_features,
+    mesh_features_to_measured,
 )
 from cadx.llm.schemas import Feature
 
@@ -283,6 +284,50 @@ def test_extract_coaxial_bore_segments_count_once():
     g = next(g for g in m.hole_groups if abs(g.diameter - 5.0) < 0.1)
     assert g.count == 3
     assert len(g.centers) == 3
+
+
+def test_mesh_slot_scan_does_not_fabricate_through_axis_center(tmp_path):
+    """Ray-grid centers are on the Y/Z projection plane for an X-through
+    slot; the X coordinate is unobserved, not the full-part bbox midpoint."""
+    from cadx.cad.cadlib.cutouts import slot_cutter
+    from cadx.cad.features import _mesh_through_holes
+
+    foot = Box(60, 40, 4, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    leg = Pos(-28, 0, 25) * Box(4, 40, 50)
+    part = foot + leg
+    cutter = slot_cutter(6.5, 15, direction="+z", normal="+x", part=part)
+    part = part - Pos(-28, 0, 25) * cutter
+    stl_path = tmp_path / "x_through_slot.stl"
+    export_stl(part, str(stl_path))
+
+    groups, _, _ = _mesh_through_holes(stl_path)
+    slot = next(group for group in groups if group.axis == "+x" and group.elongated)
+    assert slot.centers_xyz[0][0] is None
+    assert slot.centers_xyz[0][1] == pytest.approx(0.0, abs=0.5)
+    assert slot.centers_xyz[0][2] == pytest.approx(25.0, abs=0.5)
+    assert slot.centers[0][0] == pytest.approx(0.0, abs=0.5)  # legacy field retained
+
+
+def test_mesh_feature_adapter_names_projection_axes_for_x_tunnel():
+    """A +x tunnel's ray coordinates are Y/Z; its legacy XY pair must not be
+    mistaken for a physical X/Y center."""
+    measured = mesh_features_to_measured(
+        {
+            "holes": [
+                {
+                    "kind": "tunnel",
+                    "axis": "x",
+                    "x": 0.0,
+                    "y": 27.0,
+                    "dia": 10.5,
+                    "depth": 4.0,
+                }
+            ]
+        }
+    )
+    group = measured.hole_groups[0]
+    assert group.centers == [[0.0, 27.0]]  # compatibility payload unchanged
+    assert group.centers_xyz == [[None, 0.0, 27.0]]
 
 
 def test_extract_countersunk_bore_is_one_hole():

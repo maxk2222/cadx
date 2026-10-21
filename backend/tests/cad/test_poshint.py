@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from cadx.cad.poshint import parse_coord_points, parse_position_hints, resolve_end_hint
+from cadx.cad.poshint import (
+    parse_axis_ranges,
+    parse_coord_points,
+    parse_position_hints,
+    resolve_end_hint,
+)
 
 
 def test_coord_and_midplane_hints():
@@ -146,6 +151,15 @@ def test_coord_points_range_link_merges():
     phantom second group spawned duplicate spec anchors."""
     assert parse_coord_points("z=15, y=0, x=-60 bis x=-55") == [{"z": 15.0, "y": 0.0, "x": -57.5}]
     assert parse_coord_points("x=-25, y=0, z=95 bis z=100") == [{"x": -25.0, "y": 0.0, "z": 97.5}]
+
+
+def test_explanatory_ranges_are_not_second_feature_centers():
+    text = (
+        "x=-30..-26 (through), y=0 centered, z centered on leg height (~z=27.5 mid, i.e. z=20..35)"
+    )
+    assert parse_axis_ranges(text) == {"x": (-30.0, -26.0), "z": (20.0, 35.0)}
+    assert parse_position_hints(text)[0] == {"x": -28.0, "y": 0.0, "z": 27.5}
+    assert parse_coord_points(text) == [{"x": -28.0, "y": 0.0, "z": 27.5}]
 
 
 def test_coord_points_wordy_connector_still_splits():

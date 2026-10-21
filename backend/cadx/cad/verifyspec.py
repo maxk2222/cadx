@@ -86,6 +86,12 @@ _POS_GROUP_TOL_MM = 1.5  # a declared point must own one centre within ±1.5 mm
 _POS_SIDE_EPS = 0.5  # a centre this close to the mid-plane is ambiguous
 
 
+def _position_coords(text: str) -> dict[str, float]:
+    """Coordinate hints with ranges normalized by the shared position parser."""
+    coords, _faces, _ends, _nears = parse_position_hints(text)
+    return coords
+
+
 def _check(name: str, tier: str, status: Status, evidence: dict[str, Any]) -> dict[str, Any]:
     return {"name": name, "tier": tier, "status": status, "evidence": evidence}
 
@@ -131,8 +137,9 @@ def _spec_axis(f: dict[str, Any]) -> str:
 # slot free-text direction phrases: for a SLOT an axis phrase in
 # position/description names the long axis it runs along ("slot along z",
 # "Langloch in Z-Richtung") — the elongation direction, NOT the pierce
-# direction a hole's axis phrase names. Only a bare "durch x" stays a
-# through declaration. The structured `axis` field keeps its
+# direction a hole's axis phrase names. Phrases such as "drill along X"
+# explicitly name the through direction and must not be mistaken for the
+# slot's long axis. The structured `axis` field keeps its
 # through-normal meaning (featurebind maps it to oblong_slot's `normal=`).
 _AXIS_SLOT_ELONG_RE = re.compile(
     r"\b([xyz])[\s-]*(?:axis|achse)\b"
@@ -140,7 +147,12 @@ _AXIS_SLOT_ELONG_RE = re.compile(
     r"|\bin\s+(?:der\s+)?([xyz])[\s-]*richtung\b",
     re.I,
 )
-_AXIS_SLOT_THROUGH_RE = re.compile(r"\bdurch\s+([xyz])\b", re.I)
+_AXIS_SLOT_THROUGH_RE = re.compile(
+    r"\bdurch\s+([xyz])\b"
+    r"|\b(?:drill|drilled|drilling|bore|bored|pierce|pierced)\s+along\s+([xyz])\b"
+    r"|\bthrough\s+([xyz])(?:[\s-]*axis)?\b",
+    re.I,
+)
 
 
 def _slot_declared_dirs(f: dict[str, Any]) -> tuple[str, str]:
@@ -153,11 +165,11 @@ def _slot_declared_dirs(f: dict[str, Any]) -> tuple[str, str]:
     """
     text = f"{f.get('position') or ''} {f.get('description') or ''}".lower()
     through = _axis_letter(f.get("axis"))
-    if not through:
-        m = _AXIS_SLOT_THROUGH_RE.search(text)
-        if m:
-            through = m.group(1)
-    m = _AXIS_SLOT_ELONG_RE.search(text)
+    through_match = _AXIS_SLOT_THROUGH_RE.search(text)
+    if not through and through_match:
+        through = next(group for group in through_match.groups() if group)
+    elong_text = _AXIS_SLOT_THROUGH_RE.sub(" ", text)
+    m = _AXIS_SLOT_ELONG_RE.search(elong_text)
     elong = next((g for g in m.groups() if g), "") if m else ""
     return through, elong
 
@@ -389,20 +401,24 @@ def _bbox_bounds(bbox_min: Any, bbox_max: Any) -> dict[str, tuple[float, float]]
 
 
 def _centre_coord_check(
-    centers: list[Any], wants: dict[str, list[float]]
-) -> tuple[list[dict[str, Any]], int]:
-    """Per-axis absolute-coord check against measured [x, y] centres: each
-    expected value passes when the nearest centre is within _POS_TOL_MM.
-    z stays unverifiable — centres carry no z."""
+    centers: list[dict[str, float]], wants: dict[str, list[float]]
+) -> tuple[list[dict[str, Any]], int, list[dict[str, Any]]]:
+    """Check only coordinate axes actually measured for each void centre.
+
+    A through-axis coordinate is not a centre coordinate for a tunnel and
+    must not be filled with the global bbox midpoint.
+    """
     violations: list[dict[str, Any]] = []
     verified = 0
+    unverified: list[dict[str, Any]] = []
     for ax, ax_wants in sorted(wants.items()):
-        if ax == "z":
+        values = [float(c[ax]) for c in centers if ax in c]
+        if not values:
+            unverified.extend({"axis": ax, "expected_mm": want} for want in ax_wants)
             continue
-        idx = 0 if ax == "x" else 1
         for want in ax_wants:
-            nearest = min(centers, key=lambda c: abs(float(c[idx]) - want))
-            delta = abs(float(nearest[idx]) - want)
+            nearest = min(values, key=lambda value: abs(value - want))
+            delta = abs(nearest - want)
             if delta <= _POS_TOL_MM:
                 verified += 1
             else:
@@ -410,42 +426,65 @@ def _centre_coord_check(
                     {
                         "axis": ax,
                         "expected_mm": want,
-                        "measured_mm": round(float(nearest[idx]), 3),
+                        "measured_mm": round(nearest, 3),
                         "delta_mm": round(delta, 3),
                     }
                 )
-    return violations, verified
+    return violations, verified, unverified
 
 
 def _point_group_check(
-    centers: list[Any], groups: list[dict[str, float]]
-) -> tuple[list[dict[str, Any]], int]:
+    centers: list[dict[str, float]], groups: list[dict[str, float]]
+) -> tuple[list[dict[str, Any]], int, list[dict[str, Any]]]:
     """Multi-point check: each declared coordinate group must own ONE
-    measured [x, y] centre within ±_POS_GROUP_TOL_MM on every axis it
-    states. Groups naming z stay unverifiable — plan-view centres carry
-    no z (skipped, so the caller's hint count keeps them UNVERIFIED)."""
+    measured centre within ±_POS_GROUP_TOL_MM on every observable axis.
+    Missing measured axes are UNVERIFIED, never compared against a
+    placeholder coordinate."""
     violations: list[dict[str, Any]] = []
     verified = 0
+    unverified: list[dict[str, Any]] = []
     for g in groups:
-        want = {ax: v for ax, v in g.items() if ax in ("x", "y")}
-        if not want or len(want) != len(g):
+        want = {ax: v for ax, v in g.items() if ax in ("x", "y", "z")}
+        if not want:
+            continue
+        candidates = [c for c in centers if any(ax in c for ax in want)]
+        if not candidates:
+            unverified.append(
+                {
+                    "point": {ax: round(v, 3) for ax, v in want.items()},
+                    "reason": "no point axes measured",
+                }
+            )
             continue
         best = min(
-            centers,
-            key=lambda c: max(abs(float(c[0 if ax == "x" else 1]) - v) for ax, v in want.items()),
+            candidates,
+            key=lambda c: (
+                -sum(ax in c for ax in want),
+                max(abs(float(c[ax]) - v) for ax, v in want.items() if ax in c),
+            ),
         )
-        dev = {ax: abs(float(best[0 if ax == "x" else 1]) - v) for ax, v in want.items()}
-        if all(d <= _POS_GROUP_TOL_MM for d in dev.values()):
-            verified += 1
-        else:
+        measured_axes = [ax for ax in want if ax in best]
+        missing_axes = [ax for ax in want if ax not in best]
+        dev = {ax: abs(float(best[ax]) - want[ax]) for ax in measured_axes}
+        bad = {ax: delta for ax, delta in dev.items() if delta > _POS_GROUP_TOL_MM}
+        verified += len(measured_axes)
+        if bad:
             violations.append(
                 {
                     "point": {ax: round(v, 3) for ax, v in g.items()},
-                    "measured_mm": [round(float(best[0]), 3), round(float(best[1]), 3)],
-                    "delta_mm": round(max(dev.values()), 3),
+                    "measured_by_axis": {ax: round(float(best[ax]), 3) for ax in measured_axes},
+                    "delta_mm": round(max(bad.values()), 3),
                 }
             )
-    return violations, verified
+        if missing_axes:
+            unverified.append(
+                {
+                    "point": {ax: round(v, 3) for ax, v in want.items()},
+                    "axes": missing_axes,
+                    "reason": "position lies along the void's through axis or lacks measurement",
+                }
+            )
+    return violations, verified, unverified
 
 
 def _spec_void_dia(f: dict[str, Any]) -> float | None:
@@ -525,33 +564,111 @@ def _dia_matched(f: dict[str, Any], cands: list[dict[str, Any]]) -> list[dict[st
     return matched or cands
 
 
-def _void_centers(e: dict[str, Any]) -> list[tuple[float, float]]:
-    """Plan-view [x, y] centres of a measured void entry — hole_groups carry
-    ``centers``, patterns ``members`` plus a pattern ``center``."""
-    pts: list[tuple[float, float]] = []
-    for key in ("centers", "members", "center"):
+def _void_center_maps(e: dict[str, Any]) -> list[dict[str, float]]:  # noqa: C901
+    """Axis-named coordinates for every measured void centre.
+
+    New ``centers_xyz`` rows explicitly carry ``None`` on an unmeasured
+    through axis. Legacy XY centers remain supported: for +z they represent
+    x/y; for +x only y is trustworthy; for +y only x is trustworthy.
+    """
+    xyz = e.get("centers_xyz")
+    maps: list[dict[str, float]] = []
+    if isinstance(xyz, list):
+        for row in xyz:
+            if not isinstance(row, list | tuple) or len(row) != 3:
+                continue
+            point = {
+                ax: float(value)
+                for ax, value in zip("xyz", row, strict=True)
+                if isinstance(value, int | float) and not isinstance(value, bool)
+            }
+            if point:
+                maps.append(point)
+    if maps:
+        return maps
+
+    axis = _axis_letter(e.get("through_axis") or e.get("axis"))
+    legacy = e.get("centers")
+    if isinstance(legacy, list):
+        for row in legacy:
+            if not isinstance(row, list | tuple) or len(row) < 2:
+                continue
+            if axis == "x":
+                maps.append({"y": float(row[1])})
+            elif axis == "y":
+                maps.append({"x": float(row[0])})
+            else:
+                maps.append({"x": float(row[0]), "y": float(row[1])})
+
+    # Recognition patterns carry absolute 3D centers; unlike a tunnel's
+    # projected centers, their axes are not fabricated from a bbox midpoint.
+    for key in ("members", "center"):
         raw = e.get(key)
         if key == "center":
             raw = [raw] if isinstance(raw, list | tuple) else []
         if not isinstance(raw, list | tuple):
             continue
-        for c in raw:
-            if isinstance(c, list | tuple) and len(c) >= 2:
-                pts.append((float(c[0]), float(c[1])))
-    return pts
+        for row in raw:
+            if not isinstance(row, list | tuple):
+                continue
+            if len(row) >= 3:
+                maps.append(
+                    {
+                        ax: float(value)
+                        for ax, value in zip("xyz", row[:3], strict=False)
+                        if isinstance(value, int | float) and not isinstance(value, bool)
+                    }
+                )
+            elif len(row) >= 2:
+                maps.append({"x": float(row[0]), "y": float(row[1])})
+    return maps
+
+
+def _void_kind_compatible(feature: dict[str, Any], measured: dict[str, Any]) -> bool:
+    """Do not let a slot's unmeasured through-axis coordinate make a round
+    hole look like the spec feature's positional match (or vice versa)."""
+    ftype = str(feature.get("type") or "").lower()
+    wants_slot = "slot" in ftype or "langloch" in ftype
+    measured_kind = _kind_label(measured)
+    is_slot = measured_kind == "slot" or (
+        measured_kind.startswith("pattern:") and "slot" in measured_kind
+    )
+    if wants_slot and not is_slot:
+        return False
+    return not (is_slot and not wants_slot and ftype not in {"cutout", "pattern"})
+
+
+def _structured_feature_centers(feature: dict[str, Any]) -> list[dict[str, float]]:
+    """Absolute centers from ``Feature.centers``; partial XYZ is allowed."""
+    raw = feature.get("centers")
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, float]] = []
+    for row in raw:
+        if not isinstance(row, dict):
+            continue
+        point = {
+            ax: float(row[ax])
+            for ax in "xyz"
+            if isinstance(row.get(ax), int | float) and not isinstance(row.get(ax), bool)
+        }
+        if point:
+            out.append(point)
+    return out
 
 
 def _void_pos_wants(
     f: dict[str, Any], bounds: dict[str, tuple[float, float]]
 ) -> dict[str, list[float]]:
-    """Resolved in-plane position wants of one spec void feature — explicit
-    coords, resolved end offsets and near-end inset estimates per axis
-    (partial resolution allowed: an ``x=12``-only feature constrains x)."""
+    """Resolved position wants from structured centers or free-text hints."""
     text = str(f.get("position") or "").strip() or str(f.get("description") or "")
-    coords, _faces, ends, nears = parse_position_hints(text)
-    groups = parse_coord_points(text)
-    wants: dict[str, list[float]] = {"x": [], "y": []}
-    for ax in ("x", "y"):
+    coords = _position_coords(text)
+    _raw_coords, _faces, ends, nears = parse_position_hints(text)
+    count = int(f.get("count") or 1)
+    groups = parse_coord_points(text) if count > 1 else []
+    structured = _structured_feature_centers(f)
+    wants: dict[str, list[float]] = {ax: [] for ax in "xyz"}
+    for ax in "xyz":
         # an end offset carries the user's stated semantics; a contradicting
         # model-computed coord ("75mm from -x end (x=20)") is dropped so it
         # cannot spawn a second, wrong want
@@ -561,12 +678,16 @@ def _void_pos_wants(
             for e in ends
             if str(e["axis"]) == ax and bnd is not None
         ]
-        # multi-point declarations ("x=-25, y=0 and x=+45, y=0") contribute
-        # every group's value — the flat dict only keeps the last one
+        # Structured centers are the authoritative per-instance targets.
+        # Otherwise preserve all repeated text coordinates.
         coord_vals = (
-            sorted({g[ax] for g in groups if ax in g})
-            if len(groups) >= 2
-            else ([coords[ax]] if ax in coords else [])
+            sorted({g[ax] for g in structured if ax in g})
+            if structured
+            else (
+                sorted({g[ax] for g in groups if ax in g})
+                if len(groups) >= 2
+                else ([coords[ax]] if ax in coords else [])
+            )
         )
         for coord_v in coord_vals:
             if end_vals and all(abs(coord_v - v) > 1.0 for v in end_vals):
@@ -592,26 +713,25 @@ def _void_pos_wants(
 def _near_band_check(
     nears: list[dict[str, Any]],
     bounds: dict[str, tuple[float, float]],
-    centers: list[Any],
-) -> tuple[list[dict[str, Any]], int]:
+    centers: list[dict[str, float]],
+) -> tuple[list[dict[str, Any]], int, list[dict[str, Any]]]:
     """'near the +x end' proximity hints resolve to an end-band region: the
     outermost 30% of the measured bbox span on that axis. The centre nearest
-    the declared end must sit inside the band; without bbox bounds the hint
-    stays unverifiable. z hints are skipped — centres carry no z."""
+    the declared end must sit inside the band; without a measurement on that
+    axis the hint stays unverifiable."""
     violations: list[dict[str, Any]] = []
     verified = 0
+    unverified: list[dict[str, Any]] = []
     for n in nears:
         nax = str(n.get("axis") or "")
-        if nax == "z":
-            continue
         bnd = bounds.get(nax)
-        if bnd is None or bnd[1] - bnd[0] <= 0:
+        vals = [float(c[nax]) for c in centers if nax in c]
+        if bnd is None or bnd[1] - bnd[0] <= 0 or not vals:
+            unverified.append({"near": str(n.get("end")), "axis": nax})
             continue
         lo, hi = bnd
         plus = str(n.get("end") or "").startswith("+")
         edge = lo + (0.7 if plus else 0.3) * (hi - lo)
-        idx = 0 if nax == "x" else 1
-        vals = [float(c[idx]) for c in centers]
         best = max(vals) if plus else min(vals)
         if (plus and best >= edge) or (not plus and best <= edge):
             verified += 1
@@ -624,22 +744,23 @@ def _near_band_check(
                     "band_edge_mm": round(edge, 3),
                 }
             )
-    return violations, verified
+    return violations, verified, unverified
 
 
 def _face_side_check(
-    faces: list[tuple[str, str]], centers: list[Any]
-) -> tuple[list[dict[str, Any]], int]:
+    faces: list[tuple[str, str]], centers: list[dict[str, float]]
+) -> tuple[list[dict[str, Any]], int, list[dict[str, Any]]]:
     """'+x face'/'front' side hints: the outermost measured centre must sit
     on the declared side of the mid-plane. A mid-plane centre is ambiguous
-    (not wrong); z hints are skipped — centres carry no z."""
+    (not wrong); missing coordinate axes stay UNVERIFIED."""
     violations: list[dict[str, Any]] = []
     verified = 0
+    unverified: list[dict[str, Any]] = []
     for face in faces:
-        if face[1] == "z":
-            continue  # not verifiable from [x, y] centres
-        idx = 0 if face[1] == "x" else 1
-        vals = [float(c[idx]) for c in centers]
+        vals = [float(c[face[1]]) for c in centers if face[1] in c]
+        if not vals:
+            unverified.append({"face": face, "axis": face[1]})
+            continue
         best = max(vals) if face[0] == "+" else min(vals)
         if (face[0] == "+" and best > _POS_SIDE_EPS) or (face[0] == "-" and best < -_POS_SIDE_EPS):
             verified += 1
@@ -647,10 +768,10 @@ def _face_side_check(
             continue  # mid-plane centre — ambiguous, not wrong
         else:
             violations.append({"face": face, "measured_mm": round(best, 3)})
-    return violations, verified
+    return violations, verified, unverified
 
 
-def _void_position_check(
+def _void_position_check(  # noqa: C901
     i: int,
     name: str,
     f: dict[str, Any],
@@ -666,16 +787,22 @@ def _void_position_check(
     coords via the measured bbox ('-x end +75mm' -> x=xmin+75); without bbox
     bounds they stay unverifiable, never a guess. 'near the +x end'
     proximity hints resolve to an end-band region check (the outermost 30%
-    of the measured bbox span). Measured void centres carry plan-view
-    [x, y] only, so z constraints stay unverifiable."""
+    of the measured bbox span). Axis-aware centers only verify coordinates
+    that were measured; an unobserved through-axis coordinate is UNVERIFIED
+    rather than compared against a fabricated bbox midpoint."""
     pos = str(f.get("position") or "").strip()
-    if not pos:
+    structured = _structured_feature_centers(f)
+    if not pos and not structured:
         return
     check_name = f"feat_{i}_position"
-    coords, faces, ends, nears = parse_position_hints(pos)
-    groups = parse_coord_points(pos)
-    base: dict[str, Any] = {"feature": name, "position": pos[:160]}
-    if not coords and not faces and not ends and not nears:
+    hint_text = pos or str(f.get("description") or "")
+    coords = _position_coords(hint_text)
+    _raw_coords, faces, ends, nears = parse_position_hints(hint_text)
+    count = int(f.get("count") or 1)
+    text_groups = parse_coord_points(hint_text) if count > 1 else []
+    groups = structured or text_groups
+    base: dict[str, Any] = {"feature": name, "position": pos[:160] or None}
+    if not structured and not coords and not faces and not ends and not nears:
         checks.append(
             _check(
                 check_name,
@@ -686,18 +813,15 @@ def _void_position_check(
         )
         return
     expected: dict[str, Any] = {"coords": coords, "faces": faces}
-    if len(groups) >= 2:
+    if structured:
+        expected["points"] = structured
+    elif len(text_groups) >= 2:
         expected["points"] = groups
     if ends:
         expected["ends"] = ends
     if nears:
         expected["nears"] = nears
-    centers = [
-        c
-        for g in cands
-        for c in (g.get("centers") or [])
-        if isinstance(c, list | tuple) and len(c) >= 2
-    ]
+    centers = [c for g in cands for c in _void_center_maps(g)]
     if not centers:
         checks.append(
             _check(
@@ -711,16 +835,18 @@ def _void_position_check(
     bounds = _bbox_bounds(bbox_min, bbox_max)
     violations: list[dict[str, Any]] = []
     verified = 0
+    unverified: list[dict[str, Any]] = []
     # multi-point declarations ("x=-25, y=0 and x=+45, y=0") check each
     # group against ONE centre — the flat coords dict would only check
     # the last point and let a missing duplicate pass
-    n_coord_hints = len(coords)
+    n_coord_hints = sum(len(group) for group in groups) if groups else len(coords)
     wants: dict[str, list[float]] = {}
-    if len(groups) >= 2:
-        gv, gn = _point_group_check(centers, groups)
+    use_point_groups = bool(structured) or len(text_groups) >= 2
+    if use_point_groups:
+        gv, gn, gu = _point_group_check(centers, groups)
         violations += gv
         verified += gn
-        n_coord_hints = len(groups)
+        unverified += gu
     else:
         for ax, want in coords.items():
             wants.setdefault(ax, []).append(want)
@@ -730,24 +856,40 @@ def _void_position_check(
             wants.setdefault(e["axis"], []).append(
                 resolve_end_hint(e["axis"], e["end"], e["offset_mm"], *bnd)
             )
-    w_viol, w_ver = _centre_coord_check(centers, wants)
+    if structured:
+        structured_axes = {ax for point in structured for ax in point}
+        for ax in structured_axes:
+            wants.pop(ax, None)
+        ends = [e for e in ends if e["axis"] not in structured_axes]
+        nears = [n for n in nears if n["axis"] not in structured_axes]
+    w_viol, w_ver, w_unverified = _centre_coord_check(centers, wants)
     violations += w_viol
     verified += w_ver
-    f_viol, f_ver = _face_side_check(faces, centers)
+    unverified += w_unverified
+    f_viol, f_ver, f_unverified = _face_side_check(faces, centers)
     violations += f_viol
     verified += f_ver
-    near_violations, near_verified = _near_band_check(nears, bounds, centers)
+    unverified += f_unverified
+    near_violations, near_verified, near_unverified = _near_band_check(nears, bounds, centers)
     violations += near_violations
     verified += near_verified
+    unverified += near_unverified
     ev = {
         **base,
         "expected": expected,
-        "measured_centers": [[round(float(v), 3) for v in c] for c in centers[:6]],
+        "measured_centers_by_axis": [
+            {ax: round(value, 3) for ax, value in c.items()} for c in centers[:6]
+        ],
         "measured_ids": _measured_ids(cands),
     }
+    if unverified:
+        ev["unverified"] = unverified[:_MAX_EVIDENCE]
     if violations:
         ev["violations"] = violations[:_MAX_EVIDENCE]
         checks.append(_check(check_name, TIER_FEATURES, "FAIL", ev))
+    elif unverified:
+        ev["reason"] = "one or more requested position axes were not measured"
+        checks.append(_check(check_name, TIER_FEATURES, "UNVERIFIED", ev))
     elif verified and n_coord_hints + len(faces) + len(ends) + len(nears) == verified:
         checks.append(_check(check_name, TIER_FEATURES, "PASS", ev))
     else:
@@ -998,7 +1140,7 @@ def _fillet_check(
         checks.append(_check(f"feat_{i}_fillet", TIER_FEATURES, "FAIL", evidence))
 
 
-def _unrequested_voids_check(
+def _unrequested_voids_check(  # noqa: C901
     spec_feats: list[Any],
     voids: list[dict[str, Any]],
     bounds: dict[str, tuple[float, float]],
@@ -1062,16 +1204,27 @@ def _unrequested_voids_check(
         dia_feats = [
             i for i in info if i["dia"] is not None and abs(dia - i["dia"]) <= 0.3 * i["dia"]
         ]
-        centers = _void_centers(e)
-        pos_hit = any(
-            all(
-                any(abs(c[0 if ax == "x" else 1] - v) <= 4.0 for v in vals)
-                for ax, vals in i["wants"].items()
-            )
-            for i in info
-            if i["wants"]
-            for c in centers
-        )
+        centers = _void_center_maps(e)
+        pos_hit = False
+        position_candidates = dia_feats or [
+            i for i in info if _void_kind_compatible(i["feature"], e)
+        ]
+        for item in position_candidates:
+            if not item["wants"]:
+                continue
+            for center in centers:
+                measured_axes = [ax for ax in item["wants"] if ax in center]
+                if not measured_axes or all(
+                    any(abs(center[ax] - value) <= 4.0 for value in item["wants"][ax])
+                    for ax in measured_axes
+                ):
+                    # Ambiguous/unmeasured coordinates are conservative:
+                    # they must not turn an otherwise requested void into an
+                    # "unrequested" failure.
+                    pos_hit = True
+                    break
+            if pos_hit:
+                break
         # a slot's equivalent-area dia never matches its declared width —
         # a slot-typed feature declaring matching width/length dims counts
         # the elongated void as requested before the dia check runs
@@ -1081,7 +1234,9 @@ def _unrequested_voids_check(
             "dia": round(dia, 3),
         }
         if centers:
-            entry["centers"] = [[round(v, 3) for v in c] for c in centers[:6]]
+            entry["centers_by_axis"] = [
+                {ax: round(value, 3) for ax, value in c.items()} for c in centers[:6]
+            ]
         if not dia_feats and not pos_hit and not slot_hit:
             entry["reason"] = "no spec feature declares this void"
             unmatched.append(entry)

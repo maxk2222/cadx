@@ -19,31 +19,8 @@ from __future__ import annotations
 
 import re
 
-from cadx.cad.poshint import _norm_numtext
+from cadx.cad.poshint import parse_axis_ranges
 from cadx.llm.schemas import Feature, PartSpec
-
-_NUM = r"([+-]?\d+(?:\.\d+)?)"
-
-# axis range spellings — lo/hi are sorted, order in text is irrelevant
-_RANGE_RES = (
-    re.compile(rf"\b([xyz])\s+(?:from|von)\s+{_NUM}\s+(?:to|bis)\s+{_NUM}", re.I),
-    re.compile(
-        rf"(?:from|von)\s+([xyz])\s*[=:]?\s*{_NUM}\s+(?:to|bis)\s+(?:[xyz]\s*[=:]?\s*)?{_NUM}",
-        re.I,
-    ),
-    re.compile(rf"\b([xyz])\s*[=:]\s*{_NUM}\s*\.\.\s*{_NUM}", re.I),
-    re.compile(rf"\b([xyz])\s*[=:]\s*{_NUM}\s+bis\s+(?:[xyz]\s*[=:]?\s*)?{_NUM}", re.I),
-    re.compile(rf"\b([xyz])\s+zwischen\s+{_NUM}\s+und\s+{_NUM}", re.I),
-    re.compile(rf"\b([xyz])\s+{_NUM}\s*\.\.\s*{_NUM}", re.I),
-    re.compile(rf"\b([xyz])\s+{_NUM}\s+(?:to|bis)\s+{_NUM}", re.I),
-    # "y durchgehend (\u221230..\u221220)" — filler words and parens between the axis
-    # letter and the range (intake's German 'through the plate' style); the
-    # parens keep a bare "x foo -30..-20" sentence from binding falsely
-    re.compile(
-        rf"\b([xyz])(?:\s+[a-zäöü]+)*\s*\(\s*{_NUM}\s*\.\.\s*{_NUM}\s*\)",
-        re.I,
-    ),
-)
 
 
 def parse_ranges(text: str) -> dict[str, tuple[float, float]]:
@@ -56,13 +33,7 @@ def parse_ranges(text: str) -> dict[str, tuple[float, float]]:
     normalized to their ASCII equivalents first — intake writes them
     verbatim ("y durchgehend (\u221230..\u221220)").
     """
-    text = _norm_numtext(text)
-    out: dict[str, tuple[float, float]] = {}
-    for rx in _RANGE_RES:
-        for m in rx.finditer(text or ""):
-            a, b = float(m.group(2)), float(m.group(3))
-            out[m.group(1).lower()] = (min(a, b), max(a, b))
-    return out
+    return parse_axis_ranges(text)
 
 
 # word right after in/im/through/durch ("in the ARM", "durch den Schenkel")

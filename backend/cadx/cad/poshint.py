@@ -35,6 +35,26 @@ def _norm_numtext(text: str) -> str:
 # end-relative offsets, "centred in y" mid-plane hints, "+y"/"front" face words
 _POS_COORD_RE = re.compile(r"\b([xyz])\s*=\s*([+-]?\d+(?:\.\d+)?)", re.I)
 _POS_END_NUM_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(mm|cm)?", re.I)
+_RANGE_NUM = r"([+-]?\d+(?:\.\d+)?)"
+_AXIS_RANGE_RES = (
+    re.compile(rf"\b([xyz])\s+(?:from|von)\s+{_RANGE_NUM}\s+(?:to|bis)\s+{_RANGE_NUM}", re.I),
+    re.compile(
+        rf"(?:from|von)\s+([xyz])\s*[=:]?\s*{_RANGE_NUM}\s+(?:to|bis)\s+(?:[xyz]\s*[=:]?\s*)?{_RANGE_NUM}",
+        re.I,
+    ),
+    re.compile(rf"\b([xyz])\s*[=:]\s*{_RANGE_NUM}\s*\.\.\s*{_RANGE_NUM}", re.I),
+    re.compile(
+        rf"\b([xyz])\s*[=:]\s*{_RANGE_NUM}\s+(?:to|bis)\s+(?:[xyz]\s*[=:]?\s*)?{_RANGE_NUM}",
+        re.I,
+    ),
+    re.compile(rf"\b([xyz])\s+zwischen\s+{_RANGE_NUM}\s+und\s+{_RANGE_NUM}", re.I),
+    re.compile(rf"\b([xyz])\s+{_RANGE_NUM}\s*\.\.\s*{_RANGE_NUM}", re.I),
+    re.compile(rf"\b([xyz])\s+{_RANGE_NUM}\s+(?:to|bis)\s+{_RANGE_NUM}", re.I),
+    re.compile(
+        rf"\b([xyz])(?:\s+[a-zäöü]+)*\s*\(\s*{_RANGE_NUM}\s*\.\.\s*{_RANGE_NUM}\s*\)",
+        re.I,
+    ),
+)
 # "75mm from -x end", "20 and 75mm from the +y edge" — the sign is mandatory
 # ("from x end" is ambiguous which end) and binds the bbox lo/hi side
 _POS_END_RE = re.compile(
@@ -82,6 +102,34 @@ _POS_FACE_WORDS = {
 }
 
 
+def _axis_range_matches(text: str) -> list[tuple[int, int, str, float, float]]:
+    normalized = _norm_numtext(text or "")
+    matches: dict[tuple[int, int, str], tuple[int, int, str, float, float]] = {}
+    for pattern in _AXIS_RANGE_RES:
+        for match in pattern.finditer(normalized):
+            axis = match.group(1).lower()
+            lo, hi = sorted((float(match.group(2)), float(match.group(3))))
+            matches[(match.start(), match.end(), axis)] = (
+                match.start(),
+                match.end(),
+                axis,
+                lo,
+                hi,
+            )
+    return sorted(matches.values())
+
+
+def parse_axis_ranges(text: str) -> dict[str, tuple[float, float]]:
+    """Axis spans in free text as sorted ``{axis: (lo, hi)}`` pairs."""
+    return {axis: (lo, hi) for _start, _end, axis, lo, hi in _axis_range_matches(text)}
+
+
+def _normalize_range_coords(coords: dict[str, float], text: str) -> dict[str, float]:
+    for axis, (lo, hi) in parse_axis_ranges(text).items():
+        coords[axis] = (lo + hi) / 2.0
+    return coords
+
+
 def parse_position_hints(
     text: str,
 ) -> tuple[dict[str, float], list[str], list[dict[str, Any]], list[dict[str, Any]]]:
@@ -111,6 +159,7 @@ def parse_position_hints(
     for m in _POS_COORD_RE.finditer(low):
         coords[m.group(1).lower()] = float(m.group(2))
         _mask(m.span())
+    _normalize_range_coords(coords, low)
     ends: list[dict[str, Any]] = []
     work = "".join(masked)
     for m in _POS_END_RE.finditer(work):
@@ -183,21 +232,31 @@ def parse_coord_points(text: str) -> list[dict[str, float]]:
     ``[]`` when the text carries no coordinate at all.
     """
     text = _norm_numtext(text or "")
+    ranges = _axis_range_matches(text)
+    tokens: list[tuple[int, int, str, float]] = []
+    for match in _POS_COORD_RE.finditer(text):
+        if any(start <= match.start() < end for start, end, *_ in ranges):
+            continue
+        tokens.append((match.start(), match.end(), match.group(1).lower(), float(match.group(2))))
+    tokens.extend((start, end, axis, (lo + hi) / 2.0) for start, end, axis, lo, hi in ranges)
+    tokens.sort(key=lambda token: (token[0], token[1]))
     groups: list[dict[str, float]] = []
     cur: dict[str, float] = {}
     prev_end = 0
-    for m in _POS_COORD_RE.finditer(text or ""):
-        ax = m.group(1).lower()
+    for start, end, ax, value in tokens:
         if ax in cur:
-            between = text[prev_end : m.start()]
+            between = text[prev_end:start]
             if _RANGE_LINK_RE.search(between):
-                cur[ax] = (cur[ax] + float(m.group(2))) / 2.0
+                cur[ax] = (cur[ax] + value) / 2.0
+            elif abs(cur[ax] - value) <= 1e-9:
+                prev_end = end
+                continue
             else:
                 groups.append(cur)
                 cur = {}
         if ax not in cur:
-            cur[ax] = float(m.group(2))
-        prev_end = m.end()
+            cur[ax] = value
+        prev_end = end
     if cur:
         groups.append(cur)
     return groups

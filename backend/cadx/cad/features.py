@@ -36,7 +36,11 @@ class MeasuredHoleGroup(BaseModel):
     count: int
     axis: str = ""  # dominant axis direction: +x|-x|+y|-y|+z|-z
     depth_class: str = "through"  # through | blind | unknown
-    centers: list[list[float]] = Field(default_factory=list)  # per-hole [x, y]
+    centers: list[list[float]] = Field(default_factory=list)  # legacy per-hole [x, y]
+    # Axis-aware center coordinates: one [x, y, z] row per member; None means
+    # that coordinate is not observable (notably the through-axis position of
+    # a ray-detected tunnel). Never substitute the global bbox midpoint.
+    centers_xyz: list[list[float | None]] = Field(default_factory=list)
     blocked: int = 0  # bores in this group sealed by a membrane (tunnel-verified)
     elongated: bool = False  # slot-like void (aspect ratio > threshold), not a round hole
     # through_axis is the tunnel/pierce direction — same value as `axis`,
@@ -626,6 +630,9 @@ def _mesh_through_holes(stl_path: Path, mesh=None) -> tuple[list[MeasuredHoleGro
             center[axis] = (mn[axis] + mx[axis]) / 2
             if is_slot:
                 slot_count += 1
+            center_xyz: list[float | None] = [None, None, None]
+            center_xyz[a1] = round(float(center[a1]), 2)
+            center_xyz[a2] = round(float(center[a2]), 2)
             # the elongation direction is the in-plane axis (a1/a2 — the
             # two non-tunnel axes) with the larger span; sign-less on
             # purpose — a symmetric span has no orientation
@@ -637,6 +644,7 @@ def _mesh_through_holes(stl_path: Path, mesh=None) -> tuple[list[MeasuredHoleGro
                     axis=f"+{'xyz'[axis]}",
                     depth_class="through",
                     centers=[[round(float(center[0]), 2), round(float(center[1]), 2)]],
+                    centers_xyz=[center_xyz],
                     elongated=is_slot,
                     through_axis=f"+{'xyz'[axis]}",
                     elong_axis=elong_axis,
@@ -1269,11 +1277,16 @@ def extract_features(  # noqa: C901 — sequential measurement passes
             depth = "through" if _bore_open_local(mesh, center, ax_idx, r, vspan) else "blind"
         dia = 2.0 * r
         cxy = [round(float(center[0]), 2), round(float(center[1]), 2)]
+        aligned = abs(abs(axis[ax_idx]) - 1.0) <= 0.01
+        center_xyz: list[float | None] = [
+            None if i == ax_idx or not aligned else round(float(center[i]), 2) for i in range(3)
+        ]
         for g in groups:
             if g.axis == dom and abs(g.diameter - dia) <= _GROUP_DIA_TOL:
                 g.count += 1
                 g.diameter = round((g.diameter * (g.count - 1) + dia) / g.count, 3)
                 g.centers.append(cxy)
+                g.centers_xyz.append(center_xyz)
                 if g.depth_class != depth:
                     g.depth_class = "unknown"
                 if depth == "blind":
@@ -1287,6 +1300,7 @@ def extract_features(  # noqa: C901 — sequential measurement passes
                     axis=dom,
                     depth_class=depth,
                     centers=[cxy],
+                    centers_xyz=[center_xyz],
                     blocked=1 if depth == "blind" else 0,
                     through_axis=dom,
                 )
@@ -1843,9 +1857,8 @@ def compare_features(spec_features: list[Any], measured: MeasuredFeatures) -> li
 def mesh_features_to_measured(mesh_feats: dict[str, Any]) -> MeasuredFeatures:
     """Adapt detect_mesh_features output (trimesh ray-grid tunnels/dimples)
     into MeasuredFeatures so the spec/anchor comparators can run on the pure
-    mesh path too. Tunnel centres keep their projection-plane coords — only
-    z-axis tunnels carry true XY (plan view), so position findings for
-    off-axis bores are inherently approximate; `approximate=True` marks that.
+    mesh path too. `centers` preserves the legacy projection pair; `centers_xyz`
+    maps that pair to its real world axes and leaves the tunnel axis unknown.
     """
     groups: list[MeasuredHoleGroup] = []
     n_dimples = 0
@@ -1858,6 +1871,11 @@ def mesh_features_to_measured(mesh_feats: dict[str, Any]) -> MeasuredFeatures:
             continue
         ax = str(h.get("axis") or "z")
         x, y = float(h.get("x") or 0), float(h.get("y") or 0)
+        through_idx = "xyz".index(ax) if ax in "xyz" else 2
+        in_plane = [idx for idx in range(3) if idx != through_idx]
+        center_xyz: list[float | None] = [None, None, None]
+        center_xyz[in_plane[0]] = x
+        center_xyz[in_plane[1]] = y
         groups.append(
             MeasuredHoleGroup(
                 diameter=float(h.get("dia") or 0),
@@ -1865,6 +1883,7 @@ def mesh_features_to_measured(mesh_feats: dict[str, Any]) -> MeasuredFeatures:
                 axis=f"+{ax}",
                 depth_class="through",
                 centers=[[x, y]],
+                centers_xyz=[center_xyz],
                 through_axis=f"+{ax}",
             )
         )
