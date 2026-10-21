@@ -366,7 +366,7 @@ requires-dist = [
     { name = "rembg", extras = ["cpu"], specifier = ">=2.0.57" },
     { name = "rtree", specifier = ">=1.0" },
     { name = "scikit-image", specifier = ">=0.24" },
-    { name = "scikit-sparse", marker = "extra == 'fem'", specifier = ">=0.4" },
+    { name = "scikit-sparse", marker = "extra == 'fem'", git = "https://github.com/scikit-sparse/scikit-sparse?rev=5f4772d01053bafb534672191457beb2d2a8c21c" },
     { name = "shapely", specifier = ">=2.0" },
     { name = "sqlmodel", specifier = ">=0.0.22" },
     { name = "sse-starlette", specifier = ">=2.1" },
@@ -3662,7 +3662,7 @@ wheels = [
 [[package]]
 name = "scikit-sparse"
 version = "0.5.0"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/scikit-sparse/scikit-sparse?rev=5f4772d01053bafb534672191457beb2d2a8c21c#5f4772d01053bafb534672191457beb2d2a8c21c" }
 dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
@@ -3670,7 +3670,6 @@ dependencies = [
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4a/70/2351a8755de0b3d9821864299d6bba3feafb91e106b9b762a2675910392e/scikit_sparse-0.5.0.tar.gz", hash = "sha256:217579251b1d91dcfeab5a16d6408f462dc353939f9e5dfa65ec0b41f0b603dc", size = 106285, upload-time = "2026-03-03T19:18:41.586Z" }
 
 [[package]]
 name = "scipy"

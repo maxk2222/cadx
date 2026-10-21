@@ -1,5 +1,9 @@
 # syntax=docker/dockerfile:1
-FROM python:3.12-slim-bookworm AS base
+# trixie (Debian 13): SuiteSparse 7.x — the only distro line whose
+# cholmod_common carries both field generations (dbound/ndbounds_hit AND
+# sbound/nsbounds_hit) that scikit-sparse's compat .pxd can compile
+# against. bookworm's SS 5.12 cannot build it.
+FROM python:3.12-slim-trixie AS base
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -9,6 +13,7 @@ ENV PYTHONUNBUFFERED=1 \
 RUN apt-get update && apt-get install -y --no-install-recommends \
       libgl1 libegl1 libopengl0 libxrender1 libgomp1 libglu1-mesa curl \
       libsuitesparse-dev \
+      libharfbuzz0b \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
@@ -32,11 +37,19 @@ FROM base AS worker
 CMD ["arq", "cadx.queue.AgentWorkerSettings"]
 
 FROM base AS executor
-# FEM solver tier lands only in the executor image: libsuitesparse-dev (in
-# base) lets scikit-sparse compile CHOLMOD bindings, pyamg ships pure
-# wheels. solver.py falls back to SuperLU/SSOR-CG when either import fails,
+# FEM solver tier lands only in the executor image: scikit-sparse is a
+# git-pinned sdist (see pyproject) built against libsuitesparse-dev (in
+# base), pyamg builds a pybind11 extension on platforms without wheels —
+# both need a compiler, and uv needs git to fetch the pinned repo.
+# All build tools are purged inside this one layer so the image stays
+# slim. solver.py falls back to SuperLU/SSOR-CG when either import fails,
 # so the extra is strictly additive.
-RUN uv sync --frozen --no-dev --extra repair --extra fem
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential git \
+    && uv sync --frozen --no-dev --extra repair --extra fem \
+    && apt-get purge -y build-essential git \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
 RUN groupadd -r cad && useradd -r -g cad -u 1000 -m cad \
     && mkdir -p /data && chown -R cad:cad /data
 USER cad

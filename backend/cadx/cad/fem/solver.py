@@ -447,8 +447,10 @@ class CholmodFactor:
 
     `refactorize` refreshes the numeric factorization on a matrix with the
     same sparsity pattern (SIMP density updates rescale values, never the
-    pattern) via ``cholesky_inplace`` — one symbolic analysis amortized
-    across many solves.
+    pattern) — one symbolic analysis amortized across many solves. Two
+    scikit-sparse APIs are supported: the released one (callable factor +
+    ``cholesky_inplace``) and upstream's reworked ``CholeskyFactor``
+    (``.factorize``/``.solve``), which no longer makes factors callable.
     """
 
     def __init__(self, factor: Any, pattern: sparse.spmatrix) -> None:
@@ -456,12 +458,17 @@ class CholmodFactor:
         self._shape = pattern.shape
         self._nnz = pattern.nnz
         self._dtype = pattern.dtype
+        # new API: factorize(A) refreshes numerics; old: cholesky_inplace(A)
+        self._refactor = getattr(factor, "factorize", None) or getattr(
+            factor, "cholesky_inplace", None
+        )
 
     def __call__(self, b: np.ndarray) -> np.ndarray:
-        return np.asarray(self._f(b), dtype=float)
+        f = self._f
+        return np.asarray(f.solve(b) if hasattr(f, "solve") else f(b), dtype=float)
 
     def solve(self, b: np.ndarray) -> np.ndarray:
-        """Alias for __call__ — cholmod factors are callable directly."""
+        """Alias for __call__."""
         return self(b)
 
     def refactorize(self, K_new: sparse.spmatrix) -> bool:
@@ -469,11 +476,16 @@ class CholmodFactor:
         must carry the stored sparsity pattern (shape/nnz/dtype checked).
         Returns False on any mismatch or CHOLMOD failure — the caller then
         re-factorizes fresh."""
-        if K_new.shape != self._shape or K_new.nnz != self._nnz or K_new.dtype != self._dtype:
+        if (
+            self._refactor is None
+            or K_new.shape != self._shape
+            or K_new.nnz != self._nnz
+            or K_new.dtype != self._dtype
+        ):
             return False
         try:
             A = K_new if sparse.isspmatrix_csc(K_new) else K_new.tocsc()
-            self._f.cholesky_inplace(A)
+            self._refactor(A)
         except Exception:
             return False
         return True
@@ -498,6 +510,12 @@ def factor_symmetric(
             from sksparse import cholmod
 
             kf = Kf.tocsc()
+            if hasattr(cholmod, "CholeskyFactor"):
+                # upstream API: symbolic analysis at construction, then
+                # factorize() computes numerics
+                fac = cholmod.CholeskyFactor(kf)
+                fac.factorize(kf)
+                return CholmodFactor(fac, kf)
             return CholmodFactor(cholmod.cholesky(kf), kf)
         except Exception:
             pass

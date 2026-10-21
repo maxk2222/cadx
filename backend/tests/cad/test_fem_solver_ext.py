@@ -18,9 +18,9 @@ from cadx.cad.fem import solver
 from cadx.cad.fem.materials import resolve_material
 from cadx.cad.fem.regions import resolve_case
 from cadx.cad.fem.solver import (
-    _D,
     CholmodFactor,
     _amg_preconditioner,
+    _D,
     _elastic_preconditioner,
     _fixed_dofs,
     _free_node_coords,
@@ -142,7 +142,13 @@ def test_cholmod_refactorize_density_rescale() -> None:
     Ff = F[free]
 
     kf = Kf.tocsc()
-    fac = CholmodFactor(cholmod.cholesky(kf), kf)
+    if hasattr(cholmod, "CholeskyFactor"):
+        # upstream API: symbolic at construction, factorize() for numerics
+        raw = cholmod.CholeskyFactor(kf)
+        raw.factorize(kf)
+    else:
+        raw = cholmod.cholesky(kf)
+    fac = CholmodFactor(raw, kf)
     x0 = np.asarray(fac(Ff))
     res = Kf @ x0 - Ff
     assert np.linalg.norm(res) <= 1e-8 * max(np.linalg.norm(Ff), 1.0)
