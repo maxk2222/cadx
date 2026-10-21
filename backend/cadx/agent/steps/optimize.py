@@ -77,6 +77,10 @@ def _run_summary(r: dict[str, Any], chosen: bool, reasoning: Any) -> dict[str, A
         "volfrac_requested": top.get("volfrac_requested"),
         "achieved": top.get("volfrac_achieved"),
         "iterations": top.get("iterations"),
+        # B18 outcome vocabulary + O6 pitch label on the run digest
+        "status": top.get("status"),
+        "pitch_mm": (res.get("mesh") or {}).get("pitch_mm"),
+        "meets_safety_factor": (top.get("verification") or {}).get("meets_safety_factor"),
         "worst_sf": worst_sf,
         "sf_mask": top.get("sf_mask"),
         "sf_export": top.get("sf_export"),
@@ -278,15 +282,38 @@ def _make_fem_fn(ops: _SessionOps) -> Any:
             return guard
         it = next(ops.alloc)
         await ctx.emit("optimize", it, f"FEM probe — {len(cases or ops.spec_cases)} load case(s)")
+        # O1: probes default to 2x the verification pitch — a coarse SF
+        # estimate, ~8x fewer elements. An explicit voxel_mm arg wins;
+        # preview/check_load keep fem_voxel_mm (their region resolution must
+        # match the grid a topopt_run would use) and the export verification
+        # in the optimize pipeline always runs at the fine pitch.
+        export_pitch = float(
+            ctx.settings.fem_voxel_mm or ctx.runtime_settings.fem_voxel_mm or 0.0
+        )
+        probe_voxel = a.get("voxel_mm") or (2.0 * export_pitch if export_pitch else None)
         res = await ctx.executor.fem_analyze(
             {
                 **ops.base,
                 "iteration": it,
                 "load_cases": cases if cases is not None else ops.spec_cases,
                 "material": str(a.get("material") or "") or ops.default_material,
-                "voxel_mm": a.get("voxel_mm") or ctx.settings.fem_voxel_mm or None,
+                "voxel_mm": probe_voxel,
             }
         )
+        # O6: label a coarse probe pitch so the SF isn't read as the export
+        # verification number
+        fem_d = res.get("fem") or {}
+        probe_pitch = (fem_d.get("grid") or {}).get("pitch")
+        if (
+            res.get("ok")
+            and probe_pitch is not None
+            and export_pitch
+            and float(probe_pitch) > export_pitch + 1e-9
+        ):
+            fem_d["pitch_note"] = (
+                f"probe at {float(probe_pitch):g}mm — coarse estimate; "
+                "export verification runs finer"
+            )
         probe_sfs = [
             c.get("safety_factor")
             for c in (res.get("fem") or {}).get("cases") or []

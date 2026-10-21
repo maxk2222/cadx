@@ -666,7 +666,9 @@ STRUCT_TOOLS = [
         "analyze_fem",
         "Run FEM on the BASE part with the given load cases — returns per-case "
         "safety factor, max von-Mises stress and displacement, warnings, and "
-        "stress renders. Use to check the design before optimizing or to "
+        "stress renders. Runs at a coarser default voxel pitch (2x) for speed: "
+        "the probe SF is a coarse estimate — the topopt_run export verification "
+        "solves finer. Use to check the design before optimizing or to "
         "compare load-case variants.",
         {
             "load_cases": _LOAD_CASES_SCHEMA,
@@ -2227,6 +2229,8 @@ class ToolSession:
         return {
             "material": (fem.get("material") or {}).get("name"),
             "grid": {k: fem.get("grid", {}).get(k) for k in ("pitch", "elements", "dofs")},
+            "pitch_mm": (fem.get("grid") or {}).get("pitch"),
+            "pitch_note": fem.get("pitch_note"),
             "cases": [
                 {
                     "name": c.get("name"),
@@ -2255,10 +2259,19 @@ class ToolSession:
         if not res.get("ok"):
             return {"ok": False, "error": res.get("error") or "preview failed"}
         prev = res.get("preview") or {}
+        passive_frac = prev.get("passive_fraction")
         out: dict[str, Any] = {
             "ok": True,
             "pitch_mm": prev.get("pitch_mm"),
             "solid_elements": prev.get("solid_elements"),
+            "n_keep_cells": prev.get("n_keep_cells"),
+            "n_fixed_cells": prev.get("n_fixed_cells"),
+            "n_load_cells": prev.get("n_load_cells"),
+            "passive_fraction": passive_frac,
+            "free_fraction": (
+                round(1.0 - float(passive_frac), 4) if passive_frac is not None else None
+            ),
+            "min_feasible_volfrac": prev.get("min_feasible_volfrac"),
             "cases": prev.get("cases") or [],
         }
         images = [str(p) for p in res.get("_images") or []]
@@ -2319,6 +2332,11 @@ class ToolSession:
             "ok": True,
             "pitch_mm": prev.get("pitch_mm"),
             "solid_elements": prev.get("solid_elements"),
+            "n_keep_cells": prev.get("n_keep_cells"),
+            "n_fixed_cells": prev.get("n_fixed_cells"),
+            "n_load_cells": prev.get("n_load_cells"),
+            "passive_fraction": prev.get("passive_fraction"),
+            "min_feasible_volfrac": prev.get("min_feasible_volfrac"),
             "cases": prev.get("cases") or [],
         }
 
@@ -2374,6 +2392,9 @@ class ToolSession:
         # whose exported part actually measured 0.53
         sf_export = top.get("sf_export")
         worst = [v for v in (*sfs, sf_export) if v is not None]
+        # fraction of the design space pinned by keep/load/fix regions —
+        # i.e. the minimum volfrac a run can possibly reach
+        passive_frac = top.get("passive_frac")
         out: dict[str, Any] = {
             "ok": True,
             "run_index": idx,
@@ -2382,6 +2403,15 @@ class ToolSession:
             "volfrac_achieved": top.get("volfrac_achieved"),
             "iterations": top.get("iterations"),
             "converged": top.get("converged"),
+            # how the run ended — converged | infeasible_target |
+            # limit_cycle | degenerate | budget_exhausted
+            "status": top.get("status"),
+            "passive_fraction": passive_frac,
+            "free_fraction": (
+                round(1.0 - float(passive_frac), 4) if passive_frac is not None else None
+            ),
+            "min_feasible_volfrac": passive_frac,
+            "meets_safety_factor": (top.get("verification") or {}).get("meets_safety_factor"),
             "worst_safety_factor": min(worst) if worst else None,
             "sf_mask": top.get("sf_mask"),
             "sf_export": top.get("sf_export"),

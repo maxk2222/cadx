@@ -113,6 +113,15 @@ class TopOptResult:
     history: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     passive_frac: float = 0.0  # fraction of solid pinned by keep/load/fixed cells
+    # how the run ended — honest outcome vocabulary for the agent surface:
+    #   "converged"          loop settled on a valid optimum
+    #   "infeasible_target"  settled at the passive floor above the requested
+    #                        volfrac — the target is unreachable by construction
+    #   "limit_cycle"        density field oscillated (move-cap streak, no
+    #                        compliance progress) — not a converged design
+    #   "degenerate"         solver divergence/exception mid-run
+    #   "budget_exhausted"   iteration budget spent without settling
+    status: str = "converged"
     blueprint: np.ndarray | None = (
         None  # (ncells,) pre-projection design field — needed to re-evaluate
         # the design under shifted Heaviside thresholds (robust formulation
@@ -574,6 +583,50 @@ def _prepare_solve(Kf: sparse.csr_matrix, spsolve_dofs: int) -> tuple[Any, Any]:
     return None, M
 
 
+# a free design cell counts as "pinned at the floor" when its blueprint
+# density sits at ~rho_min — the volume-constraint bisection multiplies by
+# sqrt(-dc/lam) and clips at the move limit, so a drained field lands at
+# <= a few percent, never exactly 0
+_FLOOR_PIN = 0.05
+# O2: consecutive iterations with change saturating >= this fraction of the
+# OC move limit count as a limit-cycle streak (early detection runs on a
+# looser saturation than the 0.95 backstop streak)
+_MOVE_SAT_FRAC = 0.9
+_MOVE_SAT_STREAK = 10  # iterations
+_MOVE_SAT_WINDOW = 10  # compliance-improvement window, in iterations
+_FLIP_FRAC = 0.005  # share of design cells flipping membership per iteration —
+# the same 0.5% the `settled` gate below uses; sustained churn over a full
+# window is what "density oscillation persists" means
+
+
+def _windowed_compliance_improvement(
+    history: list[dict[str, Any]], window: int
+) -> float | None:
+    """Relative compliance improvement, (c_old - c_now)/c_old, over the last
+    `window` history records AT THE CURRENT beta. A Heaviside continuation
+    step legitimately spikes the objective (the sharper projection is a
+    weaker structure) then re-decays — comparing across a beta change
+    misreads that transient as 'no improvement'. Restricting the window to
+    the current-beta segment also skips the not-yet-full post-ramp stretch.
+    Returns None when the segment isn't full or the baseline is
+    non-positive — the caller treats that as 'unknown', not as stall."""
+    last_beta = history[-1].get("beta") if history else None
+    seg = [h for h in history if h.get("beta") == last_beta]
+    if seg and seg[0] is not history[0]:
+        # the first record of a new beta segment was still EVALUATED under
+        # the previous projection (history stores the pre-update objective
+        # with the post-update beta) — its stale objective would masquerade
+        # as a regression on the next window's baseline
+        seg = seg[1:]
+    if len(seg) < window:
+        return None
+    old = float(seg[-window].get("compliance_mj") or 0.0)
+    new = float(seg[-1].get("compliance_mj") or 0.0)
+    if old <= 0.0:
+        return None
+    return (old - new) / old
+
+
 @dataclass
 class _CaseCtx:
     """Per-load-case reduced system for one `_eval` — the case's own free
@@ -660,6 +713,7 @@ def simp(  # noqa: C901
             density=solid.astype(float),
             iterations=0,
             converged=False,
+            status="infeasible_target",  # passive floor is the whole domain
             warnings=["no free design cells — everything is kept/pinned"],
         )
 
@@ -797,6 +851,7 @@ def simp(  # noqa: C901
             density=x,
             iterations=0,
             converged=False,
+            status="degenerate",
             warnings=["no free DOFs — the whole domain is constrained"],
         )
     for ci, fi in enumerate(case_free):
@@ -812,9 +867,14 @@ def simp(  # noqa: C901
     change_box = [change]  # shared with _run_mma: cg_rtol reads the live value
     it = 0
     stall = 0
+    stop: str | None = None  # how the loop ended: None | cancelled | limit_cycle | degenerate
     move_streak = 0  # consecutive iterations with change saturated at the move cap
+    move_sat_streak = 0  # O2 early detection: streak at >= _MOVE_SAT_FRAC of move
+    flip_streak = 0  # O2: consecutive iterations with the mask still churning
     prev_objective: float | None = None
     prev_mask: np.ndarray | None = None  # thresholded design set, for flip count
+    x_prev: np.ndarray | None = None  # blueprint before the last update — a
+    # limit cycle bounces between two phases; extraction prefers the crisper
     t0 = time.monotonic()
     ncells = domain.cell_count
     it_box = [0]  # shared iteration counter (nlopt drives iterations in MMA mode)
@@ -925,7 +985,7 @@ def simp(  # noqa: C901
         )
     if params.solver == "mma":
         try:
-            mma_x, it, converged, change = _run_mma(
+            mma_x, it, converged, change, mma_status = _run_mma(
                 x,
                 des=np.flatnonzero(design),
                 eval_fn=_eval,
@@ -966,9 +1026,37 @@ def simp(  # noqa: C901
             )
         except ImportError:
             warnings.append("mma solver unavailable (nlopt missing) — fell back to oc")
+        except Exception as e:
+            # solver diverged/crashed — return the current field honestly
+            # flagged instead of losing the run to an exception
+            warnings.append(
+                f"mma solver failed ({type(e).__name__}: {e}) — extracting the "
+                "last evaluated density field"
+            )
+            passive_frac = float(passive_solid.sum()) / nsolid
+            return TopOptResult(
+                density=_physical(x),
+                iterations=it_box[0],
+                converged=False,
+                status="degenerate",
+                history=history,
+                warnings=warnings,
+                passive_frac=passive_frac,
+                blueprint=x.copy(),
+            )
     if mma_x is not None:
         warnings_out = warnings
         passive_frac = float(passive_solid.sum()) / nsolid
+        density = _physical(mma_x)
+        status = mma_status
+        if converged:
+            # settled above the volume target with every free cell drained to
+            # the floor → the passive floor itself exceeds the requested
+            # volfrac: the target was infeasible, not converged
+            achieved = float(density[solid_idx].sum()) / nsolid
+            if achieved > params.volfrac + 0.02 and float(mma_x[design].max()) <= _FLOOR_PIN:
+                status = "infeasible_target"
+                converged = False
         if passive_frac > params.volfrac * 1.02:
             warnings_out.append(
                 f"passive (keep/load/fixed) cells cover {passive_frac:.0%} of the part — "
@@ -979,9 +1067,10 @@ def simp(  # noqa: C901
                 "very few free design cells (<5%) — keep regions cover most of the part"
             )
         return TopOptResult(
-            density=_physical(mma_x),
+            density=density,
             iterations=it,
             converged=converged,
+            status=status,
             history=history,
             warnings=warnings_out,
             passive_frac=passive_frac,
@@ -993,13 +1082,25 @@ def simp(  # noqa: C901
         it_box[0] = it
         if cancelled and cancelled():
             warnings.append(f"cancelled after iteration {it - 1}")
+            stop = "cancelled"
             break
 
         # robust formulation: evaluate the blueprint under every eta
         # realization and let the WORST compliance drive the update
         # (subgradient of the argmax design); a single eta is the classic
         # deterministic formulation.
-        evs = [_eval(x, eta=e) for e in etas]
+        try:
+            evs = [_eval(x, eta=e) for e in etas]
+        except Exception as e:
+            # solver divergence/crash mid-iteration — the last density field
+            # is still extractable, so report it flagged 'degenerate' instead
+            # of propagating the exception and losing the run
+            warnings.append(
+                f"FEM solve failed at iteration {it} ({type(e).__name__}: {e}) — "
+                "extracting the last density field"
+            )
+            stop = "degenerate"
+            break
         obj_designs = [
             float(np.dot(weights[: len(cases)], ev[4])) if len(cases) else 0.0 for ev in evs
         ]
@@ -1049,14 +1150,32 @@ def simp(  # noqa: C901
             xnew = _symmetrize(xnew)
         change = float(np.abs(xnew - x).max())
         change_box[0] = change
+        x_prev = x
         x = xnew
         phys_now = _physical(x, eta=eta_vol)[solid_idx]
         vol_now = float(phys_now.sum()) / nsolid
+        # mask churn — fraction of design cells whose 0.5-thresholded
+        # membership flipped vs the previous iteration. Settles toward 0
+        # under monotonic sharpening (beta ramp); a genuine limit cycle
+        # keeps a persistent share of cells bouncing. Used by both the
+        # stall test below and the early limit-cycle break.
+        design_sel = design[solid_idx]
+        if design_sel.any():
+            phys_d = phys_now[design_sel]
+            gray = float(np.mean((phys_d > 0.2) & (phys_d < 0.8)))
+            mask_now = phys_d >= 0.5
+            flips = (
+                float(np.mean(mask_now != prev_mask)) if prev_mask is not None else 1.0
+            )
+            prev_mask = mask_now
+        else:
+            gray, flips = 0.0, 0.0
         rec = {
             "iteration": it,
             "compliance_mj": round(objective, 3),
             "volfrac": round(vol_now, 4),
             "change": round(change, 5),
+            "flips": round(flips, 5),
             "penal": round(pen, 3),
             "elapsed_s": round(time.monotonic() - t0, 1),
         }
@@ -1097,7 +1216,46 @@ def simp(  # noqa: C901
                 "the current density field. Retry with symmetry=<plane> or a "
                 "different filter/threshold"
             )
+            stop = "limit_cycle"
             break
+        # O2 early detection — don't wait for the beta cap: when the density
+        # has saturated the move limit for 10+ consecutive iterations AND
+        # compliance stopped improving over that window, the field is
+        # bouncing between competing layouts, not converging. Same honest
+        # extraction as the beta-cap break, ~10-20 solver minutes earlier.
+        move_sat_streak = (
+            move_sat_streak + 1 if change >= _MOVE_SAT_FRAC * params.move else 0
+        )
+        # mask-churn streak — the density field must keep flipping cells to
+        # count as oscillating; a Heaviside continuation can saturate the
+        # move cap for a whole window while compliance sits flat on the
+        # SAME mask (sharpening gray cells), which is progress, not a cycle
+        flip_streak = flip_streak + 1 if flips > _FLIP_FRAC else 0
+        if move_sat_streak >= _MOVE_SAT_STREAK and flip_streak >= _MOVE_SAT_STREAK:
+            # stalled = <1% improvement across a same-beta window (the
+            # helper returns None while the current-beta segment is short —
+            # a ramp in flight is 'unknown', never 'stalled')
+            imp = _windowed_compliance_improvement(history, _MOVE_SAT_WINDOW)
+            if imp is not None and imp < 0.01:
+                if heaviside and proj.beta >= params.beta_max:
+                    warnings.append(
+                        f"limit cycle persisted past the beta cap ({params.beta_max:g}) "
+                        f"at iteration {it} — density saturated the move limit for "
+                        f"{move_sat_streak} consecutive iterations with <1% compliance "
+                        "change; no settling mechanism left — extracting the current "
+                        "density field. Retry with symmetry=<plane> or a different "
+                        "filter/threshold"
+                    )
+                else:
+                    warnings.append(
+                        f"limit cycle detected at iteration {it} — density saturated "
+                        f"the move limit for {move_sat_streak} consecutive iterations "
+                        "with <1% compliance improvement; extracting the current "
+                        "density field. Retry with symmetry=<plane> or a different "
+                        "filter/threshold"
+                    )
+                stop = "limit_cycle"
+                break
 
         # secondary convergence: OC 'change' can stay at the move limit while
         # the objective already settled — count a stalled objective only when
@@ -1112,19 +1270,6 @@ def simp(  # noqa: C901
         # still gray; only at the beta cap does `settled` gate.
         if prev_objective is not None and prev_objective > 0:
             rel = abs(objective - prev_objective) / prev_objective
-            design_sel = design[solid_idx]
-            if design_sel.any():
-                phys_d = phys_now[design_sel]
-                gray = float(np.mean((phys_d > 0.2) & (phys_d < 0.8)))
-                mask_now = phys_d >= 0.5
-                flips = (
-                    float(np.mean(mask_now != prev_mask))
-                    if prev_mask is not None
-                    else 1.0
-                )
-                prev_mask = mask_now
-            else:
-                gray, flips = 0.0, 0.0
             settled = (
                 change <= 0.9 * params.move or gray <= 0.05 or flips <= 0.005
             )
@@ -1148,6 +1293,46 @@ def simp(  # noqa: C901
     warnings_out = warnings
     converged = change <= params.tol or stall >= params.converge_patience
     passive_frac = float(passive_solid.sum()) / nsolid
+    # honest outcome label (B18): how the loop actually ended, not just a
+    # bool — the agent distinguishes "converged" from "the request was
+    # infeasible" and "the field never settled"
+    status = "converged"
+    if stop is not None:
+        # limit_cycle | degenerate | cancelled (an externally cancelled run
+        # spent its remaining budget — report it as budget_exhausted)
+        converged = False
+        status = "budget_exhausted" if stop == "cancelled" else stop
+        if stop == "limit_cycle" and x_prev is not None:
+            # extract the better phase of the bounce — a period-2 limit cycle
+            # alternates between a crisp layout and its blurrier mirror, and
+            # the break lands wherever the streak ends. The previous
+            # blueprint is the other phase; pick the one with fewer gray
+            # cells (no extra solve needed — projection is elementwise)
+            def _gray(blueprint: np.ndarray) -> float:
+                phys = _physical(blueprint, eta=eta_vol)[solid_idx]
+                return float(np.mean((phys > 0.2) & (phys < 0.8))) if phys.size else 1.0
+
+            if _gray(x_prev) < _gray(x):
+                x = x_prev
+    elif not converged:
+        status = "budget_exhausted"
+    elif it > 0:
+        # settled — but if the field only "converged" because every free
+        # design cell drained to the density floor while the pinned passive
+        # region alone already exceeds the requested volume, the target was
+        # infeasible by construction, not an optimum
+        achieved = float(_physical(x, eta=eta_vol)[solid_idx].sum()) / nsolid
+        if (
+            achieved > params.volfrac + 0.02
+            and float(x[design].max()) <= _FLOOR_PIN
+        ):
+            converged = False
+            status = "infeasible_target"
+            warnings_out.append(
+                f"target volfrac {params.volfrac:.0%} sits below the passive floor "
+                f"— achieved {achieved:.0%} with every free design cell at the "
+                "density minimum; status=infeasible_target"
+            )
     if passive_frac > params.volfrac * 1.02:
         warnings_out.append(
             f"passive (keep/load/fixed) cells cover {passive_frac:.0%} of the part — "
@@ -1161,6 +1346,7 @@ def simp(  # noqa: C901
         density=_physical(x),
         iterations=it,
         converged=converged,
+        status=status,
         history=history,
         warnings=warnings_out,
         passive_frac=passive_frac,
@@ -1270,7 +1456,7 @@ def _run_mma(  # noqa: C901
     symmetrize_fn: Callable[[np.ndarray], np.ndarray] | None = None,
     phase_t: dict[str, float] | None = None,
     phase_timings: Callable[[], dict[str, float]] | None = None,
-) -> tuple[np.ndarray, int, bool, float]:
+) -> tuple[np.ndarray, int, bool, float, str]:
     """MMA driver (Svanberg, via nlopt LD_MMA).
 
     Replaces the OC update: handles a real constraint set —
@@ -1279,7 +1465,9 @@ def _run_mma(  # noqa: C901
     limit (qp-relaxation, adjoint sensitivities). Each nlopt evaluation maps
     to one SIMP "iteration" in history.
 
-    Returns (x_blueprint, iterations, converged, last_change)."""
+    Returns (x_blueprint, iterations, converged, last_change, status_hint) —
+    status_hint is simp()'s TopOptResult.status candidate ("converged" unless
+    the optimizer stopped abnormally)."""
     import nlopt
 
     minmax = params.case_objective == "minmax" and len(cases) > 1
@@ -1536,6 +1724,7 @@ def _run_mma(  # noqa: C901
 
     # ---- drive -------------------------------------------------------------
     converged = False
+    mma_status = "budget_exhausted"  # ForcedStop / maxeval without settling
     v = x[des].copy()
     v = np.asarray(v, dtype=float)
     beta_cur = beta0
@@ -1544,12 +1733,19 @@ def _run_mma(  # noqa: C901
         try:
             v = np.asarray(opt.optimize(v), dtype=float)
             converged = True
+            mma_status = "converged"
         except nlopt.ForcedStop:
             warnings.append(f"cancelled after {it_box[0]} MMA evaluations")
             break
         except Exception as e:
             warnings.append(f"mma stopped ({type(e).__name__}: {e})")
-            converged = True
+            # nlopt's soft numeric stop (roundoff-limited) still returns a
+            # usable best point; an exception raised by OUR evaluation (FEM
+            # crash, numpy failure) or an nlopt failure code means the run
+            # degenerated mid-optimization — don't call it converged
+            soft = getattr(nlopt, "RoundoffLimited", None)
+            converged = bool(soft is not None and isinstance(e, soft))
+            mma_status = "converged" if converged else "degenerate"
             break
         x = _unpack(v)
         # Heaviside beta-continuation: converge at beta, then sharpen
@@ -1572,7 +1768,7 @@ def _run_mma(  # noqa: C901
             f"mma converged with volfrac {final_vol:.0%} above target "
             f"{vol_frac_target:.0%} — another constraint (stress/disp) is binding"
         )
-    return x, it_box[0], converged, last_change[0]
+    return x, it_box[0], converged, last_change[0], mma_status
 
 
 def passive_solid_mask(

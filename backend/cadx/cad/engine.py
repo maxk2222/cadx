@@ -1185,6 +1185,65 @@ def _auto_warm_density(out_dir: Path, domain: Any) -> tuple[np.ndarray | None, s
     return None, None
 
 
+def _export_degeneracy(
+    disp_mm: float | None,
+    max_vm_mpa: float | None,
+    span_mm: float,
+    yield_mpa: float | None,
+) -> tuple[bool, list[str]]:
+    """Degeneracy gates on the export-verification numbers (B19).
+
+    A linear voxel solve reporting a displacement on the order of the part
+    span is not a weaker-but-valid part — it is an unconstrained or
+    noodle-thin load path whose safety factor is meaningless; and a
+    von Mises orders of magnitude past yield sits far outside the linear
+    model's validity. Returns ``(valid, warnings)`` — ``valid=False`` marks
+    sf_export untrustworthy. All thresholds are fractions of the domain
+    diagonal `span_mm`; `yield_mpa` None/0 disables the stress gate.
+    """
+    warnings: list[str] = []
+    valid = True
+    vm_over = (
+        max_vm_mpa is not None and bool(yield_mpa) and max_vm_mpa > 10.0 * float(yield_mpa)
+    )
+    if vm_over and max_vm_mpa is not None:
+        warnings.append(
+            f"max von Mises {max_vm_mpa:.0f} MPa exceeds 10x material yield — "
+            "linear model far outside validity"
+        )
+    if disp_mm is None:
+        return valid, warnings
+    if disp_mm > 0.5 * span_mm:
+        valid = False
+        warnings.append(
+            f"export FEM solve degenerate — displacement {disp_mm:.0f}mm exceeds "
+            "half the part span; unconstrained or noodle-thin load path"
+        )
+    elif disp_mm > 0.15 * span_mm:
+        warnings.append(
+            f"unusually large displacement {disp_mm:.0f}mm — linear FEM "
+            "questionable, inspect load paths"
+        )
+    if disp_mm > 0.3 * span_mm and vm_over:
+        valid = False
+        if not any("degenerate" in w for w in warnings):
+            warnings.append(
+                f"export FEM solve degenerate — displacement {disp_mm:.0f}mm "
+                "combined with von Mises far past yield; unconstrained or "
+                "noodle-thin load path"
+            )
+    if disp_mm > 10.0 * span_mm:
+        # the historical hard gate — always implied by the 0.5-span rule
+        # above, kept so the validity contract stays explicit
+        valid = False
+        if not any("degenerate" in w for w in warnings):
+            warnings.append(
+                "export FEM solve degenerate (unconstrained part or unresolved "
+                "load regions) — sf_export not trustworthy"
+            )
+    return valid, warnings
+
+
 def _compact_history(history: list[dict[str, Any]], cap: int = 200) -> list[dict[str, Any]]:
     """Frontend chart series for a SIMP run: one ``{it, compliance, volfrac,
     change, solve_s}`` dict per iteration, decimated to `cap` entries (first
@@ -1246,6 +1305,7 @@ def run_fem_pipeline(
 
     if preview_only:
         from cadx.cad.fem.preview import (
+            case_region_masks,
             cells_preview,
             render_regions,
             resolve_case_summary,
@@ -1261,13 +1321,42 @@ def run_fem_pipeline(
             if render_pngs
             else []
         )
+        # structured region coverage per case — the values the PNG captions
+        # already show — plus the passive-cell union across all cases: the
+        # fraction of the design space a SIMP run cannot touch, i.e. the
+        # minimum feasible volfrac
+        case_summaries: list[dict[str, Any]] = []
+        passive_cells = np.zeros(domain.dims, dtype=bool)
+        keep_union = np.zeros(domain.dims, dtype=bool)
+        fixed_union = np.zeros(domain.dims, dtype=bool)
+        load_union = np.zeros(domain.dims, dtype=bool)
+        for c in cases:
+            summary = resolve_case_summary(domain, c, anchors)
+            fixed_m, load_m, keep_m = case_region_masks(domain, c, keep, anchors)
+            summary["n_fixed_cells"] = int(fixed_m.sum())
+            summary["n_load_cells"] = int(load_m.sum())
+            summary["n_keep_cells"] = int(keep_m.sum())
+            passive_cells |= fixed_m | load_m | keep_m
+            keep_union |= keep_m
+            fixed_union |= fixed_m
+            load_union |= load_m
+            case_summaries.append(summary)
+        passive_fraction = round(
+            float((passive_cells & domain.solid).sum()) / max(int(domain.solid.sum()), 1),
+            4,
+        )
         return {
             "ok": True,
             "preview": {
                 "pitch_mm": round(domain.pitch, 4),
                 "dims": list(domain.dims),
                 "solid_elements": domain.solid_count,
-                "cases": [resolve_case_summary(domain, c, anchors) for c in cases],
+                "n_keep_cells": int(keep_union.sum()),
+                "n_fixed_cells": int(fixed_union.sum()),
+                "n_load_cells": int(load_union.sum()),
+                "passive_fraction": passive_fraction,
+                "min_feasible_volfrac": passive_fraction,
+                "cases": case_summaries,
                 "cells": cells_preview(domain, cases, keep, anchors),
                 "regions_png": pngs,
                 "anchors": anchors,
@@ -1905,19 +1994,30 @@ def run_topopt_pipeline(  # noqa: C901
     if result.history and result.history[-1].get("beta") is not None:
         verification["beta_final"] = result.history[-1]["beta"]
     # degenerate export solve — load regions missed the extracted mesh, the
-    # part flies away (disp >> part size) or compliance goes non-physical.
-    # The SF number is then meaningless, flag instead of storing as valid.
+    # part flies away (disp on the order of the part size), stress sits far
+    # outside the linear model, or compliance goes non-physical. The SF
+    # number is then meaningless, flag instead of storing as valid.
     # A multi-body export is also not a verified single part: voxel FEM can
     # solve on one island while the others carry no load.
     span = float(np.linalg.norm(domain.pitch * np.asarray(domain.dims)))
     disp = verification["max_disp_export_mm"]
+    vm_max = verification["max_vm_export_mpa"]
     comps = [c for c in verification["compliance_export_j"] if c is not None]
-    if (comps and any(c <= 0 for c in comps)) or (disp is not None and disp > 10 * span):
+    deg_valid, deg_warnings = _export_degeneracy(
+        disp_mm=disp,
+        max_vm_mpa=vm_max,
+        span_mm=span,
+        yield_mpa=getattr(mat, "yield_mpa", None),
+    )
+    res.topopt["warnings"].extend(deg_warnings)
+    nonphysical = bool(comps) and any(c <= 0 for c in comps)
+    if nonphysical or not deg_valid:
         verification["valid"] = False
-        res.topopt["warnings"].append(
-            "export FEM solve degenerate (unconstrained part or unresolved "
-            "load regions) — sf_export not trustworthy"
-        )
+        if nonphysical:
+            res.topopt["warnings"].append(
+                "export FEM solve degenerate (unconstrained part or unresolved "
+                "load regions) — sf_export not trustworthy"
+            )
     elif best.get("export_solve_ok") is False:
         # the export solve crashed and the mask report was substituted —
         # sf_export is a label, not a measurement
@@ -1938,6 +2038,14 @@ def run_topopt_pipeline(  # noqa: C901
         )
     else:
         verification["valid"] = True
+    # "is the measurement valid" (above) is a different question from "does
+    # the printed part meet the requested safety floor" — report both; the
+    # field is omitted when no export SF was measured
+    sf_min = getattr(opt, "safety_factor_min", None)
+    if sf_min is not None and verify_export.worst_safety_factor is not None:
+        verification["meets_safety_factor"] = bool(
+            verify_export.worst_safety_factor >= sf_min
+        )
     if verify.worst_safety_factor is not None and verify_export.worst_safety_factor is not None:
         # >0 means the smoothed export mesh is stiffer than the mask suggests
         verification["sf_gap"] = round(
@@ -1984,6 +2092,9 @@ def run_topopt_pipeline(  # noqa: C901
         {
             "iterations": result.iterations,
             "converged": result.converged,
+            # how the run ended — converged | infeasible_target | limit_cycle
+            # | degenerate | budget_exhausted (topopt.py TopOptResult.status)
+            "status": result.status,
             # the caller's ask vs the pass the sweep actually committed —
             # `volfrac_target` alone reported the silent +0.1 retry as the
             # target and misled the agent about what ran

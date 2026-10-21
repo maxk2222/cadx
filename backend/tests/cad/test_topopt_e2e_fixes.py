@@ -45,9 +45,21 @@ _KEEP_MARGIN_MM = 3.0
 
 
 def _box_mesh(size: float = 24.0) -> trimesh.Trimesh:
+    """Cube with a REAL dia-4 bore through +z at (0,0) — matching `_ANCHOR`.
+
+    regions.py now requires the anchor's interior cylinder to sit on actual
+    void cells: a phantom anchor inside solid material resolves to an empty
+    ring by design (that was the phantom-fixture bug), so the fixture needs
+    the declared hole to exist in the geometry."""
     m = trimesh.creation.box(extents=[size, size, size])
     m.apply_translation([0.0, 0.0, size / 2])  # contract: rests on XY, centred
-    return m
+    bore = trimesh.creation.cylinder(radius=float(_ANCHOR["dia"]) / 2, height=size + 2.0)
+    bore.apply_translation([0.0, 0.0, size / 2])
+    try:
+        holed = m.difference(bore)
+    except Exception:  # boolean backend missing — phantom fixture again
+        return m
+    return holed if isinstance(holed, trimesh.Trimesh) else m
 
 
 def _cantilever_case() -> dict[str, Any]:
@@ -131,7 +143,14 @@ def test_auto_keep_flag_fires_in_manual_mode(tmp_path: Path) -> None:
 
 def test_auto_keep_flag_off_disables_manual_keeps(tmp_path: Path) -> None:
     """T1: the flag is the opt-out — keep_mode='manual' + flag False adds no
-    auto keeps, so the anchor ring stays unpinned."""
+    auto keeps, so passive covers ONLY the cells the fix/load regions touch.
+    (The bore wall legitimately belongs to the -x face region — surface
+    normals, not just the outer skin — so a ring-disjoint check no longer
+    works once the anchor hole is real; checking the passive mask is a pure
+    fix+load expansion asserts the same thing directly.)"""
+    from cadx.cad.fem.regions import region_node_mask, resolve_case_dofs
+    from cadx.cad.fem.topopt import passive_solid_mask
+
     src = tmp_path / "b.stl"
     _box_mesh().export(str(src))
     res = _run(src, tmp_path / "off", RuntimeSettings(topopt_auto_keep=False))
@@ -140,10 +159,13 @@ def test_auto_keep_flag_off_disables_manual_keeps(tmp_path: Path) -> None:
 
     npz = np.load(tmp_path / "off" / "topopt" / "density.npz")
     passive = np.asarray(npz["passive"], dtype=bool)
-    ring = _anchor_ring()
-    # no declared keep regions -> passive only covers fix/load cells, which
-    # live on the +-x faces and never reach the centred anchor ring
-    assert not (ring & passive).any()
+    dom = voxelize(_box_mesh(), VOXEL_MM, 150_000)
+    case = LoadCase(**_cantilever_case())
+    fixed3, _, _ = resolve_case_dofs(dom, case, [dict(_ANCHOR)])
+    load_nm = region_node_mask(dom, case.loads[0].region, [dict(_ANCHOR)])
+    expected = passive_solid_mask(dom, [], [fixed3.any(axis=1)], [load_nm])
+    # no keep regions -> nothing pinned beyond the fix+load expansion
+    assert not (passive.ravel() & ~expected).any()
 
 
 def test_design_domain_auto_coarsens_to_direct_solver(tmp_path: Path) -> None:
