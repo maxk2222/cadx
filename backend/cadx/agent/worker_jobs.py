@@ -1490,8 +1490,16 @@ async def run_optimize_job(  # noqa: C901
             **(payload.get("optimize") or {}),
         }
         # multires is default-on executor-side — a serialized OptimizeSpec
-        # carries schema-False which would read as an opt-out
-        if not optimize.get("multires"):
+        # carries schema-False which would read as an opt-out. Drop the key
+        # only when it wasn't explicitly declared by the spec or the caller.
+        if not optimize.get("multires") and not (
+            (
+                spec is not None
+                and spec.optimize is not None
+                and "multires" in spec.optimize.model_fields_set
+            )
+            or "multires" in (payload.get("optimize") or {})
+        ):
             optimize.pop("multires", None)
         # stated spec envelope → executor clips the base mesh to the design
         # domain before voxelizing (raw hero meshes can overshoot it)

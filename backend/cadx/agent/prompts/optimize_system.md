@@ -56,8 +56,11 @@ pick the best one.
     filter — combine with `filter:"helmholtz+heaviside"` for best surfaces.
   - `symmetry:"xy"|"xz"|"yz"` — mirror-average the density across that
     domain mid-plane every iteration so the printed part comes out
-    symmetric. Use when the part should look/behave identically mirrored;
-    pick the plane your loads and keep/fix regions are symmetric about.
+    symmetric. The value names the MIRROR PLANE: `"yz"` flips X
+    (left↔right — correct for a part that is identical on its ±X sides),
+    `"xz"` flips Y (front↔back), `"xy"` flips Z (top↔bottom). Use when
+    the part should look/behave identically mirrored; pick the plane your
+    loads and keep/fix regions are symmetric about.
   - `load_cases`: override/extend the spec cases (same schema).
   - `material`, `voxel_mm`, `max_iterations`, `density_threshold`.
 - `refine_features(run_index, features?, restore_planes?, load_cases?)` —
@@ -135,15 +138,19 @@ Each `topopt_run` reports:
   bridge voxels" warning — LOOK at the render to check the bridge is a
   sensible member, not a stray lug); persistent >1 means reject, enlarge
   keep regions or raise volfrac so it reconnects.
-- `extract.vol_error_pct` — how much the extracted surface deviates from
-  the optimized volume; large |error| means a bad `density_threshold` —
-  adjust it or let volume-preserving extraction handle it.
-- `extract.gray_fraction` — share of intermediate densities in the design;
-  high values mean a diffuse, threshold-sensitive layout → prefer
-  `heaviside`-bearing filter or `robust` next run.
-- `verification` — SIMP-predicted vs measured compliance/SF on mask and
-  export mesh; a large `sf_mask` ≫ `sf_export` gap means the smoothed
-  surface eats strength — raise volfrac or min_member.
+- `verified` — false when the export FEM could not produce a trustworthy
+  safety factor: degenerate solve (unconstrained part, unresolved load
+  regions, crashed solver substituted by mask numbers), multiple bodies,
+  or no solvable case. A high `sf_export` on an unverified run is
+  numerical noise — reject it, do not chase it.
+- `sf_gap` — `sf_mask − sf_export`. A large gap means the smoothed
+  surface eats strength (or one solve modelled a different structure) —
+  raise volfrac or min_member before trusting either number.
+- `retry` — when the first pass misses the safety factor (or its export
+  solve degenerates), the engine warm-starts one pass at +0.1 volfrac and
+  reports `volfrac_first/second`, `sf_export_first/second` and
+  `first_export_degenerate`. The reported `volfrac_target`/`sf_export`
+  are then the WINNING pass — not necessarily the values you requested.
 - A render of the optimized shape — LOOK at it: disconnected struts, lost
   mounting features or a dissolved surface are a reject regardless of SF.
 - Attached images: every `analyze_fem`/`topopt_run`/`refine_features` result
@@ -174,7 +181,7 @@ Each `topopt_run` reports:
    optimization was requested, prefer a valid lighter run over the base.
 7. `done(run_index)` with the best run — `run_index: -1` keeps the base.
    Only decline when NO run is connected (n_bodies_export == 1), verified
-   (`verification.valid`), printable and feature-complete — an SF below
+   (`verified` true), printable and feature-complete — an SF below
    target also justifies -1, a comfortable SF does not.
 
 - Check the SECTION view for internal hotspots the surface view hides.

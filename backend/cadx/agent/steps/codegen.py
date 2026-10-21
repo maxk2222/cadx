@@ -15,6 +15,7 @@ from cadx.agent.context import (
     catalog_block,
     codegen_system,
     library_block,
+    measured_features_block,
     measurements_block,
     numbered_code_block,
     plan_block,
@@ -158,6 +159,7 @@ def _user_parts(
     spec: PartSpec,
     plan: ModelingPlan | None,
     feedback: str | None,
+    features: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     parts: list[dict[str, Any]] = []
     rb = request_block(ctx.prompt)
@@ -205,6 +207,11 @@ def _user_parts(
                 "text": ("PREVIOUS ATTEMPT — issues to fix, ALL of them:\n" + feedback),
             }
         )
+    # measured geometry of the last attempt — the stall-escape regen needs
+    # the same evidence the improve session gets, not just the issue text
+    mf = measured_features_block(features)
+    if mf:
+        parts.append({"type": "text", "text": mf})
     return parts
 
 
@@ -217,6 +224,7 @@ async def run(
     feedback: str | None = None,
     verify_fn: VerifyFn | None = None,
     render_fn: VerifyFn | None = None,
+    features: dict[str, Any] | None = None,
 ) -> CodeResponse:
     if tools_enabled(ctx, "code"):
         n = int(ctx.runtime_settings.agent_codegen_samples)
@@ -242,6 +250,7 @@ async def run(
             feedback=feedback,
             verify_fn=verify_fn,
             render_fn=render_fn,
+            features=features,
         )
     messages: list[dict[str, Any]] = [
         {
@@ -250,7 +259,7 @@ async def run(
                 plan=plan, spec=spec, fresh=True, hybrid=ctx.hybrid_solid is not None
             ),
         },
-        {"role": "user", "content": _user_parts(ctx, spec, plan, feedback)},
+        {"role": "user", "content": _user_parts(ctx, spec, plan, feedback, features)},
     ]
     resp = await ctx.llm.chat(
         "code", messages, json_schema=CodeResponse, extra_body=thinking_body(ctx, STEP)
@@ -522,6 +531,7 @@ async def _codegen_session(
     verify_fn: VerifyFn | None = None,
     render_fn: VerifyFn | None = None,
     out: dict[str, Any] | None = None,
+    features: dict[str, Any] | None = None,
     _audit_retry: int = 0,
 ) -> CodeResponse:
     """Fresh generation via tool session.
@@ -572,7 +582,7 @@ async def _codegen_session(
         out["session"] = session
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system},
-        {"role": "user", "content": _user_parts(ctx, spec, plan, feedback)},
+        {"role": "user", "content": _user_parts(ctx, spec, plan, feedback, features)},
     ]
     res = await run_session(
         ctx,

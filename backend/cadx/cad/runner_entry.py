@@ -225,6 +225,11 @@ def main(workdir: Path | None = None) -> int:  # noqa: C901
     if mesh_boolean is not None and mesh_solid_path:
         try:
             stl_sib = Path(mesh_solid_path).resolve().with_name("model.stl")
+            if not stl_sib.exists():
+                # edit/params runs ship the cleaned baseline mesh under its
+                # own name — without it the manifold rescue lane and the
+                # deterministic anchor re-cut silently lose their operand
+                stl_sib = Path(mesh_solid_path).resolve().with_name("mesh_clean.stl")
             if stl_sib.exists():
                 import trimesh
 

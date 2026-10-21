@@ -572,9 +572,11 @@ def _opt_messages(
     return [
         {
             "role": "system",
-            "content": system_prompt("optimize_system.md")
-            + "\n\n"
-            + system_prompt("tools_protocol.md"),
+            # tools_protocol.md describes the code-buffer edit session —
+            # this session's tools are analyze_fem/topopt_run/refine_features;
+            # concatenating it taught the model nonexistent verbs and could
+            # invite hallucinated verify/render_model calls
+            "content": system_prompt("optimize_system.md"),
         },
         {
             "role": "user",

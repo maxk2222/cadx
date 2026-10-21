@@ -822,9 +822,9 @@ def _topopt_optimize_payload(
     opt: dict[str, Any] = spec.optimize.model_dump() if spec.optimize else {}
     # OptimizeSpec.multires is schema-False even when the field was never
     # set — a serialized dump would read as an opt-out to the executor, which
-    # treats an ABSENT key as default-on. Pop the falsy value; an explicit
-    # multires=true still passes through.
-    if not opt.get("multires"):
+    # treats an ABSENT key as default-on. Drop it only when it wasn't
+    # explicitly declared; an explicit multires=false is a real opt-out.
+    if spec.optimize and "multires" not in spec.optimize.model_fields_set:
         opt.pop("multires", None)
     if ctx.settings.topopt_volfrac:
         opt["target_volume_fraction"] = ctx.settings.topopt_volfrac
@@ -3060,9 +3060,11 @@ async def _run_cad(  # noqa: C901
             and not force_fresh
         )
         code_resp: CodeResponse | None = None
+        # measured geometry of the best-so-far candidate — the improve
+        # session and the fresh-codegen stall escape both need it
+        features = (best.exec_result.get("features") or None) if best else None
         if use_improve:
             await ctx.emit("improve", it, f"fixing {len(issues)} issue(s) on the best candidate")
-            features = (best.exec_result.get("features") or None) if best else None
             patch_errors: list[str] | None = pending_patch_errors
             pending_patch_errors = None
             for attempt in range(1, s.agent_patch_retries + 1):
@@ -3111,6 +3113,7 @@ async def _run_cad(  # noqa: C901
                     feedback=issues_text(issues) if issues else None,
                     verify_fn=_session_verify_fn(ctx, it, art_attempt),
                     render_fn=_session_render_fn(ctx, it, art_attempt),
+                    features=features,
                 )
                 force_fresh = False
             except Exception as e:

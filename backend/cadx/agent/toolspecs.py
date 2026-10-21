@@ -81,6 +81,17 @@ def _verify_spec_compact(report: dict[str, Any] | None) -> dict[str, Any] | None
     return out
 
 
+def _warning_window(warnings: list[str] | None, n: int = 10) -> list[str]:
+    """Validity-critical warnings (degenerate solves, disconnected bodies,
+    sf divergence) are appended LAST by the topopt pipeline — a plain
+    head-window loses exactly them on noisy runs. Keep the first entries for
+    context and always preserve the tail."""
+    w = list(warnings or [])
+    if len(w) <= n:
+        return w
+    return [*w[: n - 3], "…", *w[-3:]]
+
+
 # --------------------------------------------------------------------------- #
 # tool schemas
 # --------------------------------------------------------------------------- #
@@ -2372,9 +2383,15 @@ class ToolSession:
             "thin_fraction": top.get("thin_fraction"),
             "n_components": top.get("n_components"),
             "n_bodies_export": top.get("n_bodies_export"),
+            "verified": (top.get("verification") or {}).get("valid"),
+            "sf_gap": (top.get("verification") or {}).get("sf_gap"),
+            "retry": top.get("retry"),
             "overhang_pct": (top.get("verification") or {}).get("overhang_pct"),
             "cases": self._fem_compact(fem).get("cases"),
-            "warnings": (top.get("warnings") or [])[:10],
+            # validity-critical warnings (degenerate solve, disconnected
+            # bodies, divergence) are appended LAST by the pipeline — a plain
+            # head-window drops exactly them on noisy runs
+            "warnings": _warning_window(top.get("warnings")),
             "verify_spec": _verify_spec_compact(res.get("verify_spec")),
             "topopt_calls_left": self.topopt_left,
         }
@@ -2453,7 +2470,7 @@ class ToolSession:
             "restored_regions": rep.get("restored_regions") or 0,
             "worst_safety_factor": min(sfs) if sfs else None,
             "cases": self._fem_compact(fem).get("cases") if fem else None,
-            "warnings": (rep.get("warnings") or [])[:10],
+            "warnings": _warning_window(rep.get("warnings")),
             "verify_spec": _verify_spec_compact(res.get("verify_spec")),
         }
         images = [str(p) for p in res.get("_images") or []]

@@ -41,7 +41,10 @@ STEP = "improve"
 # fully spent by early minor improves, leaving later hard steps unthunked)
 STEP_MINOR = "improve_minor"
 
-_HARD_SOURCES = ("dims", "critique", "verify_question", "dfm", "solids", "exec")
+# a structural FEM failure or a measured-feature defect is exactly the kind
+# of issue that benefits from seeing the part — they must not take the
+# cheap path (fewer calls, no render)
+_HARD_SOURCES = ("dims", "critique", "verify_question", "dfm", "solids", "exec", "fem", "features")
 
 
 def _hard_issues(issues: list[dict[str, Any]]) -> bool:

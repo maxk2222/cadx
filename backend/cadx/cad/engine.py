@@ -1779,7 +1779,15 @@ def run_topopt_pipeline(  # noqa: C901
             )
         except Exception as e:
             log.warning("topopt.verify_export.failed", error=str(e)[:200])
+            # falling back to the MASK report makes sf_export indistinguishable
+            # from a real export solve — record it so downstream consumers and
+            # the agent see the substitution instead of trusting the number
             verify_exp = verify
+            res.topopt.setdefault("warnings", []).append(
+                f"export FEM solve failed ({str(e)[:80]}) — sf_export "
+                "duplicates the voxel-mask result, not the printed mesh"
+            )
+            out["export_solve_ok"] = False
         out["verify_export"] = verify_exp
         return out
 
@@ -1789,9 +1797,17 @@ def run_topopt_pipeline(  # noqa: C901
     best = p1
 
     sf_exp = p1["verify_export"].worst_safety_factor
+    # a degenerate export solve can report a HIGH sf (singular stiffness →
+    # near-zero stress at a severed load path) — that number must not block
+    # the retry; more material is also the likeliest cure for the disconnect
+    exp_span = float(np.linalg.norm(domain.pitch * np.asarray(domain.dims)))
+    exp_degenerate = (
+        p1.get("export_solve_ok") is False
+        or any((c.compliance_j or 1.0) <= 0 for c in p1["verify_export"].cases)
+        or any((c.max_disp_mm or 0.0) > 10 * exp_span for c in p1["verify_export"].cases)
+    )
     if (
-        sf_exp is not None
-        and sf_exp < opt.safety_factor_min
+        (exp_degenerate or (sf_exp is not None and sf_exp < opt.safety_factor_min))
         and params.volfrac + 0.1 <= 0.9
         and (cancelled is None or not cancelled())
     ):
@@ -1806,6 +1822,7 @@ def run_topopt_pipeline(  # noqa: C901
             "sf_export_first": sf_exp,
             "sf_export_second": sf_exp2,
             "warm_start": "pass1_density",
+            "first_export_degenerate": exp_degenerate or None,
         }
         res.timings["simp_s"] += p2["simp_s"]
         res.timings["verify_s"] += p2["verify_s"]
@@ -1855,6 +1872,18 @@ def run_topopt_pipeline(  # noqa: C901
         res.topopt["warnings"].append(
             "export FEM solve degenerate (unconstrained part or unresolved "
             "load regions) — sf_export not trustworthy"
+        )
+    elif best.get("export_solve_ok") is False:
+        # the export solve crashed and the mask report was substituted —
+        # sf_export is a label, not a measurement
+        verification["valid"] = False
+    elif verify_export.worst_safety_factor is None:
+        # every export case was skipped (e.g. load region missed the
+        # smoothed mesh) — no export evidence exists at all
+        verification["valid"] = False
+        res.topopt["warnings"].append(
+            "no export FEM case produced a safety factor — sf_export is "
+            "unverified, not safe"
         )
     elif max(int(best["n_components"]), int(best["n_bodies_export"])) > 1:
         verification["valid"] = False
