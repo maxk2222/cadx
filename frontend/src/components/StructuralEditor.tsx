@@ -839,12 +839,24 @@ type StructuralDraft = {
   self_supporting?: boolean;
   print_direction?: "+x" | "-x" | "+y" | "-y" | "+z" | "-z";
   multires?: boolean;
-  solver?: "oc" | "mma";
+  solver?: "oc" | "mma" | "beso";
   case_objective?: "weighted" | "minmax";
   max_displacement_mm?: number;
   max_stress_mpa?: number;
   min_gap_mm?: number;
   penal_init?: number;
+  structure_mode?: "simp" | "infill";
+  infill_scope?: "full" | "guided";
+  infill_style?: "gyroid_graded" | "struts_aligned";
+  infill_shell_mm?: number;
+  infill_period_mm?: number;
+  grow_mm?: number;
+  aniso_material?: boolean;
+  volfrac_init?: number;
+  warmstart?: "uniform" | "loadpath";
+  volfrac_ramp_iters?: number;
+  loadpath_corridor_mm?: number;
+  mma_final_beta?: number;
 };
 
 export default function StructuralEditor({
@@ -874,7 +886,19 @@ export default function StructuralEditor({
   const [selfSupport, setSelfSupport] = useState(false);
   const [printDir, setPrintDir] = useState<"+x" | "-x" | "+y" | "-y" | "+z" | "-z">("+z");
   const [multires, setMultires] = useState(false);
-  const [solver, setSolver] = useState<"oc" | "mma">("oc");
+  const [solver, setSolver] = useState<"oc" | "mma" | "beso">("oc");
+  const [structureMode, setStructureMode] = useState<"simp" | "infill">("simp");
+  const [infillScope, setInfillScope] = useState<"full" | "guided">("guided");
+  const [infillStyle, setInfillStyle] = useState<"gyroid_graded" | "struts_aligned">("gyroid_graded");
+  const [infillShell, setInfillShell] = useState(2.0);
+  const [infillPeriod, setInfillPeriod] = useState(8.0);
+  const [growMm, setGrowMm] = useState(0);
+  const [aniso, setAniso] = useState(false);
+  const [volfracRamp, setVolfracRamp] = useState(false);
+  const [loadpathStart, setLoadpathStart] = useState(false);
+  const [rampIters, setRampIters] = useState(0);
+  const [corridorMm, setCorridorMm] = useState(0);
+  const [mmaFinalBeta, setMmaFinalBeta] = useState(0);
   const [minmax, setMinmax] = useState(false);
   const [dispMax, setDispMax] = useState(0);
   const [stressMax, setStressMax] = useState(0);
@@ -960,6 +984,28 @@ export default function StructuralEditor({
         (saved.penal_init ?? specOpt?.penal_init) != null &&
           (saved.penal_init ?? specOpt?.penal_init ?? 0) > 0
       );
+      setStructureMode(saved.structure_mode ?? specOpt?.structure_mode ?? "simp");
+      setInfillScope(saved.infill_scope ?? specOpt?.infill_scope ?? "guided");
+      setInfillStyle(saved.infill_style ?? specOpt?.infill_style ?? "gyroid_graded");
+      setInfillShell(saved.infill_shell_mm ?? specOpt?.infill_shell_mm ?? 2.0);
+      setInfillPeriod(saved.infill_period_mm ?? specOpt?.infill_period_mm ?? 8.0);
+      setGrowMm(saved.grow_mm ?? specOpt?.grow_mm ?? 0);
+      setAniso(saved.aniso_material ?? specOpt?.aniso_material ?? false);
+      setVolfracRamp(
+        (saved.volfrac_init ?? specOpt?.volfrac_init ?? 0) > volfrac
+      );
+      setLoadpathStart(
+        (saved.warmstart ?? specOpt?.warmstart) === "loadpath"
+      );
+      setRampIters(
+        saved.volfrac_ramp_iters ?? specOpt?.volfrac_ramp_iters ?? 0
+      );
+      setCorridorMm(
+        saved.loadpath_corridor_mm ?? specOpt?.loadpath_corridor_mm ?? 0
+      );
+      setMmaFinalBeta(
+        saved.mma_final_beta ?? specOpt?.mma_final_beta ?? 0
+      );
     } else if (version.spec?.load_cases?.length) {
       setCases(version.spec.load_cases);
       setKeep(specOpt?.keep_regions ?? []);
@@ -978,6 +1024,18 @@ export default function StructuralEditor({
       setStressMax(specOpt?.max_stress_mpa ?? 0);
       setMinGap(specOpt?.min_gap_mm ?? 0);
       setPenalCont(specOpt?.penal_init != null && specOpt.penal_init > 0);
+      setStructureMode(specOpt?.structure_mode ?? "simp");
+      setInfillScope(specOpt?.infill_scope ?? "guided");
+      setInfillStyle(specOpt?.infill_style ?? "gyroid_graded");
+      setInfillShell(specOpt?.infill_shell_mm ?? 2.0);
+      setInfillPeriod(specOpt?.infill_period_mm ?? 8.0);
+      setGrowMm(specOpt?.grow_mm ?? 0);
+      setAniso(specOpt?.aniso_material ?? false);
+      setVolfracRamp((specOpt?.volfrac_init ?? 0) > volfrac);
+      setLoadpathStart(specOpt?.warmstart === "loadpath");
+      setRampIters(specOpt?.volfrac_ramp_iters ?? 0);
+      setCorridorMm(specOpt?.loadpath_corridor_mm ?? 0);
+      setMmaFinalBeta(specOpt?.mma_final_beta ?? 0);
     } else {
       setCases([{ name: "case1", fixed: [], loads: [] }]);
       setKeep([]);
@@ -1455,6 +1513,20 @@ export default function StructuralEditor({
         max_stress_mpa: stressMax || undefined,
         min_gap_mm: minGap || undefined,
         penal_init: penalCont ? 1.5 : undefined,
+        structure_mode: structureMode,
+        infill_scope: structureMode === "infill" ? infillScope : undefined,
+        infill_style: structureMode === "infill" ? infillStyle : undefined,
+        infill_shell_mm: structureMode === "infill" ? infillShell : undefined,
+        infill_period_mm: structureMode === "infill" ? infillPeriod : undefined,
+        grow_mm: growMm || undefined,
+        aniso_material: aniso || undefined,
+        volfrac_init: volfracRamp ? 0.7 : undefined,
+        warmstart: loadpathStart ? "loadpath" : undefined,
+        volfrac_ramp_iters: volfracRamp && rampIters > 0 ? rampIters : undefined,
+        loadpath_corridor_mm:
+          loadpathStart && corridorMm > 0 ? corridorMm : undefined,
+        mma_final_beta:
+          solver === "mma" && mmaFinalBeta > 0 ? mmaFinalBeta : undefined,
       })
       .then(
         (r) => {
@@ -1480,7 +1552,7 @@ export default function StructuralEditor({
       if (saveTimer.current) clearTimeout(saveTimer.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cases, keep, voids, material, volfrac, keepMode, minMember, densityThreshold, autoRefine, selfSupport, printDir, multires, solver, minmax, dispMax, stressMax, minGap, penalCont, open]);
+  }, [cases, keep, voids, material, volfrac, keepMode, minMember, densityThreshold, autoRefine, selfSupport, printDir, multires, solver, minmax, dispMax, stressMax, minGap, penalCont, structureMode, infillScope, infillStyle, infillShell, infillPeriod, growMm, aniso, volfracRamp, loadpathStart, rampIters, corridorMm, mmaFinalBeta, open]);
 
   const checkRegions = async () => {
     setBusy("preview");
@@ -1552,6 +1624,21 @@ export default function StructuralEditor({
           max_stress_mpa: solver === "mma" && stressMax ? stressMax : undefined,
           min_gap_mm: minGap || undefined,
           penal_init: penalCont ? 1.5 : undefined,
+          structure_mode: structureMode === "infill" ? "infill" : undefined,
+          infill_scope: structureMode === "infill" ? infillScope : undefined,
+        infill_style: structureMode === "infill" ? infillStyle : undefined,
+          infill_shell_mm: structureMode === "infill" ? infillShell : undefined,
+          infill_period_mm: structureMode === "infill" ? infillPeriod : undefined,
+          grow_mm: growMm || undefined,
+          aniso_material: aniso || undefined,
+          volfrac_init: volfracRamp ? 0.7 : undefined,
+          warmstart: loadpathStart ? "loadpath" : undefined,
+          volfrac_ramp_iters:
+            volfracRamp && rampIters > 0 ? rampIters : undefined,
+          loadpath_corridor_mm:
+            loadpathStart && corridorMm > 0 ? corridorMm : undefined,
+          mma_final_beta:
+            solver === "mma" && mmaFinalBeta > 0 ? mmaFinalBeta : undefined,
         },
         material: material || undefined,
       });
@@ -2440,7 +2527,72 @@ export default function StructuralEditor({
                     fast start
                   </label>
                 </Field>
-                <Field label="Solver" hint="oc = fast, mma = constraints">
+                <Field label="Mode" hint="simp topology | shell+infill">
+                  <select
+                    className={`${inputCls} px-2 py-1 text-xs`}
+                    value={structureMode}
+                    onChange={(e) =>
+                      setStructureMode(e.target.value as typeof structureMode)
+                    }
+                  >
+                    <option value="simp">simp</option>
+                    <option value="infill">infill</option>
+                  </select>
+                </Field>
+                {structureMode === "infill" && (
+                  <>
+                    <Field label="Scope" hint="guided = coarse SIMP picks topology">
+                      <select
+                        className={`${inputCls} px-2 py-1 text-xs`}
+                        value={infillScope}
+                        onChange={(e) =>
+                          setInfillScope(e.target.value as typeof infillScope)
+                        }
+                      >
+                        <option value="guided">guided</option>
+                        <option value="full">full</option>
+                      </select>
+                    </Field>
+                    <Field label="Style" hint="lattice geometry">
+                      <select
+                        className={`${inputCls} px-2 py-1 text-xs`}
+                        value={infillStyle}
+                        onChange={(e) =>
+                          setInfillStyle(e.target.value as typeof infillStyle)
+                        }
+                      >
+                        <option value="gyroid_graded">gyroid</option>
+                        <option value="struts_aligned">struts</option>
+                      </select>
+                    </Field>
+                    <Field label="Shell" hint="outer skin mm">
+                      <input
+                        type="number"
+                        min={0}
+                        step={0.5}
+                        className={`${inputCls} w-16 px-2 py-1 text-xs`}
+                        value={infillShell}
+                        onChange={(e) =>
+                          setInfillShell(parseFloat(e.target.value) || 2.0)
+                        }
+                      />
+                    </Field>
+                    <Field label="Period" hint="lattice cell mm">
+                      <input
+                        type="number"
+                        min={2}
+                        step={1}
+                        className={`${inputCls} w-16 px-2 py-1 text-xs`}
+                        value={infillPeriod}
+                        onChange={(e) =>
+                          setInfillPeriod(parseFloat(e.target.value) || 8.0)
+                        }
+                      />
+                    </Field>
+                  </>
+                )}
+                {structureMode === "simp" && (
+                <Field label="Solver" hint="oc fast | mma constraints | beso binary">
                   <select
                     className={`${inputCls} px-2 py-1 text-xs`}
                     value={solver}
@@ -2448,9 +2600,11 @@ export default function StructuralEditor({
                   >
                     <option value="oc">oc</option>
                     <option value="mma">mma</option>
+                    <option value="beso">beso</option>
                   </select>
                 </Field>
-                {solver === "mma" && (
+                )}
+                {structureMode === "simp" && solver === "mma" && (
                   <>
                     <Field label="MinMax" hint="worst-case over load cases">
                       <label className="flex h-7 items-center gap-1.5 text-[11px] text-zinc-400">
@@ -2507,6 +2661,90 @@ export default function StructuralEditor({
                       onChange={(e) => setPenalCont(e.target.checked)}
                     />
                     continue
+                  </label>
+                </Field>
+                <Field label="Vol ramp" hint="0.7→target, broad start">
+                  <label className="flex h-7 items-center gap-1.5 text-[11px] text-zinc-400">
+                    <input
+                      type="checkbox"
+                      className="accent-brand-500"
+                      checked={volfracRamp}
+                      onChange={(e) => setVolfracRamp(e.target.checked)}
+                    />
+                    continue
+                  </label>
+                </Field>
+                <Field label="Warm" hint="loadpath seed, fewer iters">
+                  <label className="flex h-7 items-center gap-1.5 text-[11px] text-zinc-400">
+                    <input
+                      type="checkbox"
+                      className="accent-brand-500"
+                      checked={loadpathStart}
+                      onChange={(e) => setLoadpathStart(e.target.checked)}
+                    />
+                    loadpath
+                  </label>
+                </Field>
+                <Field label="Ramp iters" hint="volfrac ramp length (20)">
+                  <input
+                    type="number"
+                    min={0}
+                    step={5}
+                    className={`${inputCls} w-16 px-2 py-1 text-xs`}
+                    value={rampIters || ""}
+                    placeholder="20"
+                    disabled={!volfracRamp}
+                    onChange={(e) => setRampIters(parseInt(e.target.value) || 0)}
+                  />
+                </Field>
+                <Field label="Corridor" hint="loadpath width mm (2.5×pitch)">
+                  <input
+                    type="number"
+                    min={0}
+                    step={0.5}
+                    className={`${inputCls} w-16 px-2 py-1 text-xs`}
+                    value={corridorMm || ""}
+                    placeholder="auto"
+                    disabled={!loadpathStart}
+                    onChange={(e) =>
+                      setCorridorMm(parseFloat(e.target.value) || 0)
+                    }
+                  />
+                </Field>
+                <Field label="MMA beta" hint="sharpen gray result (mma)">
+                  <input
+                    type="number"
+                    min={0}
+                    step={1}
+                    className={`${inputCls} w-16 px-2 py-1 text-xs`}
+                    value={mmaFinalBeta || ""}
+                    placeholder="off"
+                    disabled={solver !== "mma"}
+                    onChange={(e) =>
+                      setMmaFinalBeta(parseFloat(e.target.value) || 0)
+                    }
+                  />
+                </Field>
+                <Field label="Grow" hint="add material beyond silhouette mm">
+                  <input
+                    type="number"
+                    min={0}
+                    step={0.5}
+                    className={`${inputCls} w-16 px-2 py-1 text-xs`}
+                    value={growMm || ""}
+                    placeholder="off"
+                    onChange={(e) => setGrowMm(parseFloat(e.target.value) || 0)}
+                  />
+                </Field>
+                <Field label="FDM aniso" hint="weaker layer direction">
+                  <label className="flex h-7 items-center gap-1.5 text-[11px] text-zinc-400">
+                    <input
+                      type="checkbox"
+                      className="accent-brand-500"
+                      checked={aniso}
+                      onChange={(e) => setAniso(e.target.checked)}
+                    />
+                    orthotropic
                   </label>
                 </Field>
               </div>

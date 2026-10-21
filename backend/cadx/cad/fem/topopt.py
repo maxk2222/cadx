@@ -85,6 +85,37 @@ class TopOptParams:
     # over `penal_ramp_iters` — softer start escapes grayscale local minima
     penal_init: float | None = None  # None = no continuation
     penal_ramp_iters: int = 30
+    # volfrac continuation: ramp the volume target from `volfrac_init` down
+    # to `volfrac` over `volfrac_ramp_iters` — starting material-rich keeps
+    # the first iterations out of the sparse-layout local minima; OC only
+    # (an MMA inequality bound must hold from iteration 0)
+    volfrac_init: float | None = None  # None = constant target
+    volfrac_ramp_iters: int = 20
+    # sparse-direct / iterative backend hint: "auto" lets solver.py pick
+    # (CHOLMOD > SuperLU; AMG > SSOR above the DOF cap); anything else is a
+    # forced choice for benchmarking
+    solver_backend: str = "auto"
+    # BESO evolutionary ratio (solver="beso" only): volume-ramp step per
+    # iteration — V_{k+1} = max(volfrac, V_k*(1-ER)); 0.02 is the classic
+    # Huang & Xie setting
+    beso_er: float = 0.02
+    # beso connectivity guard: re-bond the kept set to the passive skeleton
+    # every iteration — a floating load island makes F·u explode and poisons
+    # the sensitivity ranking. Debug opt-out for diagnosis only.
+    beso_connectivity: bool = True
+    # MMA quality gates (solver="mma"): minimum FEM evaluations before the
+    # nlopt xtol may end the run — a warm-started gray field otherwise
+    # "converges" in ~2 evals; optional blueprint finalization at
+    # mma_final_beta returns the eta-projected density (crisper field)
+    mma_min_evals: int = 8
+    mma_final_beta: float | None = None
+    # loadpath warm-start corridor width (mm) — None keeps the field's own
+    # default (2.5 x pitch); wider corridors seed thicker junctions
+    loadpath_corridor_mm: float | None = None
+    # orthotropic FDM stiffness: (k, axis) scales the element constitutive
+    # matrix's layer-normal response (see solver._D) — the optimizer then
+    # grows members that compensate for the weaker build-axis direction
+    aniso: tuple[float, float] | None = None
     # robust formulation (Sigmund 2009 / Wang et al. 2011): the blueprint is
     # evaluated under three Heaviside thresholds — eroded (eta=0.5+delta),
     # intermediate (0.5) and dilated (0.5-delta) — and the optimizer works on
@@ -562,20 +593,30 @@ class _Projector:
         return out
 
 
-def _prepare_solve(Kf: sparse.csr_matrix, spsolve_dofs: int) -> tuple[Any, Any]:
+def _prepare_solve(
+    Kf: sparse.csr_matrix,
+    spsolve_dofs: int,
+    solver_backend: str = "auto",
+    *,
+    domain: VoxelDomain | None = None,
+    free: np.ndarray | None = None,
+) -> tuple[Any, Any]:
     """Per-iteration solver setup for one reduced system.
 
-    Returns (factor, M): `factor` is a direct-solve callable (SuperLU in
-    SymmetricMode — Kf is symmetric structural stiffness) when the system is
-    small enough for a direct solve, else None; `M` is the SSOR (fallback
-    diagonal) preconditioner for CG."""
-    from cadx.cad.fem.solver import _ssor_preconditioner, factor_symmetric
+    Returns (factor, M): `factor` is a direct-solve callable when the system
+    is small enough for a direct solve (CHOLMOD when the optional
+    scikit-sparse dep is present, else SuperLU in SymmetricMode), else None;
+    `M` is the iterative preconditioner for CG — smoothed-aggregation AMG
+    when pyamg is importable and `domain`+`free` supply the node coords the
+    near-nullspace needs, else SSOR/diagonal. `solver_backend` forces a
+    backend for benchmarking; "auto" picks the best available."""
+    from cadx.cad.fem.solver import factor_symmetric, iterative_preconditioner
 
     if Kf.shape[0] <= spsolve_dofs:
-        factor = factor_symmetric(Kf)
+        factor = factor_symmetric(Kf, backend=solver_backend)
         if factor is not None:
             return factor, None
-    M = _ssor_preconditioner(Kf)
+    M = iterative_preconditioner(Kf, backend=solver_backend, domain=domain, free=free)
     if M is None:
         diag = Kf.diagonal()
         diag[diag == 0] = 1.0
@@ -588,6 +629,7 @@ def _prepare_solve(Kf: sparse.csr_matrix, spsolve_dofs: int) -> tuple[Any, Any]:
 # sqrt(-dc/lam) and clips at the move limit, so a drained field lands at
 # <= a few percent, never exactly 0
 _FLOOR_PIN = 0.05
+_MIN_PRIMARY_ITERS = 3
 # O2: consecutive iterations with change saturating >= this fraction of the
 # OC move limit count as a limit-cycle streak (early detection runs on a
 # looser saturation than the 0.95 backstop streak)
@@ -604,6 +646,12 @@ _FLIP_FRAC = 0.005  # share of design cells flipping membership per iteration �
 # _SAME_FLIP_FLOOR excludes a settling tail's residual 1-3 cell flicker.
 _SAME_FLIP_FLOOR = 0.0005
 _SAME_FLIP_MIN_RUN = 4
+
+_BETA_DWELL = 10  # max iterations spent on one Heaviside sharpness level —
+# the stall trigger (rel < tol) can starve when the objective jitters inside
+# the move cap (the robust worst-case realization oscillates a few percent on
+# a stable mask), which would freeze the ramp mid-way. One full window per
+# level guarantees the ramp reaches beta_max while budget remains to sharpen.
 
 
 def _windowed_compliance_improvement(history: list[dict[str, Any]], window: int) -> float | None:
@@ -689,6 +737,7 @@ def _solve_u(
     factor: Any = None,
     M: Any = None,
     cg_rtol: float = 1e-5,
+    solver_backend: str = "auto",
 ) -> tuple[np.ndarray, str]:
     """Light solve: return full u vector."""
     u = np.zeros(3 * domain.node_count)
@@ -698,7 +747,13 @@ def _solve_u(
         u[free] = factor(F[free])
         return u, "spsolve"
     if M is None:
-        _, M = _prepare_solve(Kf, spsolve_dofs=0)
+        _, M = _prepare_solve(
+            Kf,
+            spsolve_dofs=0,
+            solver_backend=solver_backend,
+            domain=domain,
+            free=free,
+        )
     x, info = spla.cg(
         Kf,
         F[free],
@@ -835,7 +890,11 @@ def simp(  # noqa: C901
         else np.asarray(case_weights, dtype=float)[: len(cases)]
     )
 
-    ke = _ke_unit(nu, domain.pitch)
+    ke = (
+        _ke_unit(nu, domain.pitch)
+        if params.aniso is None
+        else _ke_unit(nu, domain.pitch, float(params.aniso[0]), int(params.aniso[1]))
+    )
     en = domain.element_nodes()
     edof = element_dofs(en)
     # SIMP assembles ALL cells each iteration — the sparsity pattern is
@@ -933,6 +992,7 @@ def simp(  # noqa: C901
     move_streak = 0  # consecutive iterations with change saturated at the move cap
     move_sat_streak = 0  # O2 early detection: streak at >= _MOVE_SAT_FRAC of move
     flip_streak = 0  # O2: consecutive iterations with the mask still churning
+    beta_age = 0  # iterations spent on the current Heaviside sharpness level
     prev_objective: float | None = None
     prev_mask: np.ndarray | None = None  # thresholded design set, for flip count
     x_prev: np.ndarray | None = None  # blueprint before the last update — a
@@ -965,6 +1025,16 @@ def simp(  # noqa: C901
         f = min(1.0, it_box[0] / max(1, params.penal_ramp_iters))
         return params.penal_init + (params.penal - params.penal_init) * f
 
+    def _vol_now() -> float:
+        """A5 volfrac continuation: ramp the volume target linearly from
+        volfrac_init down to volfrac over volfrac_ramp_iters iterations.
+        A material-rich start explores broad layouts before the budget
+        tightens — escapes the same local minima as penal_init."""
+        if params.volfrac_init is None or params.volfrac_init <= params.volfrac:
+            return params.volfrac
+        f = min(1.0, it_box[0] / max(1, params.volfrac_ramp_iters))
+        return params.volfrac_init + (params.volfrac - params.volfrac_init) * f
+
     def _set_beta(b: float) -> None:
         proj.beta = b
 
@@ -981,7 +1051,9 @@ def simp(  # noqa: C901
         xp, p, xt = _project(xb, eta)
         E_e = Emin + np.power(p, pen) * (E0 - Emin)
         t_asm = time.monotonic()
-        K, _, _ = assemble(domain, E_e, nu, np.ones(ncells, dtype=bool), ij=ij_cache)
+        K, _, _ = assemble(
+            domain, E_e, nu, np.ones(ncells, dtype=bool), ij=ij_cache, aniso=params.aniso
+        )
         phase_t["assemble_s"] += time.monotonic() - t_asm
         cg_rtol = (
             1e-3 if change_box[0] > 0.1 else (1e-4 if change_box[0] > 10 * params.tol else 1e-6)
@@ -1003,7 +1075,13 @@ def simp(  # noqa: C901
                 t_fac = time.monotonic()
                 if free_i.size:
                     Kf_i = K[free_i][:, free_i].tocsr()
-                    factor_i, M_i = _prepare_solve(Kf_i, spsolve_dofs)
+                    factor_i, M_i = _prepare_solve(
+                        Kf_i,
+                        spsolve_dofs,
+                        params.solver_backend,
+                        domain=domain,
+                        free=free_i,
+                    )
                 else:
                     Kf_i = sparse.csr_matrix((0, 0))
                     factor_i = M_i = None
@@ -1020,6 +1098,7 @@ def simp(  # noqa: C901
                 factor=ctx.factor,
                 M=ctx.M,
                 cg_rtol=cg_rtol,
+                solver_backend=params.solver_backend,
             )
             u_prev[ci] = u
             us.append(u)
@@ -1109,7 +1188,31 @@ def simp(  # noqa: C901
     if mma_x is not None:
         warnings_out = warnings
         passive_frac = float(passive_solid.sum()) / nsolid
+        if params.mma_final_beta is not None:
+            # Opt-in finalization sharpens the returned field without changing
+            # the optimized blueprint or its FEM objective history.
+            proj.heaviside = True
+            _set_beta(params.mma_final_beta)
+            warnings_out.append(
+                f"mma final density projected at beta={params.mma_final_beta:g}"
+            )
         density = _physical(mma_x)
+        gray_fraction = (
+            float(np.mean((density[design] > 0.2) & (density[design] < 0.8)))
+            if design.any()
+            else 0.0
+        )
+        if converged and gray_fraction > 0.15:
+            warnings_out.append(
+                f"mma converged with {gray_fraction:.0%} gray density — export may lose "
+                "volume; consider mma_final_beta or filter='heaviside'"
+            )
+        final_volfrac = float(density[solid_idx].sum()) / nsolid
+        if params.mma_final_beta is not None and abs(final_volfrac - params.volfrac) > 0.03:
+            warnings_out.append(
+                f"mma final projection changed volfrac to {final_volfrac:.0%} "
+                f"(target {params.volfrac:.0%}) — verify export volume"
+            )
         status = mma_status
         if converged:
             # settled above the volume target with every free cell drained to
@@ -1139,7 +1242,9 @@ def simp(  # noqa: C901
             blueprint=mma_x.copy(),
         )
 
-    while it < params.max_iter and change > params.tol:
+    # A multires-warmed field can satisfy change<=tol almost immediately;
+    # still give the fine grid a few real FEM/update passes before stopping.
+    while it < params.max_iter and (change > params.tol or it < _MIN_PRIMARY_ITERS):
         it += 1
         it_box[0] = it
         if cancelled and cancelled():
@@ -1181,7 +1286,9 @@ def simp(  # noqa: C901
         dc = -pen * np.power(np.clip(p, 1e-3, None), pen - 1) * (E0 - Emin) * dcw
         dcf = _chain(dc, xp, p, _xt, x, oc_filter=True, eta=eta_w)
 
-        # OC update with bisection on the PHYSICAL volume constraint
+        # OC update with bisection on the PHYSICAL volume constraint —
+        # v_now ramps down from volfrac_init when continuation is on
+        v_now = _vol_now() * nsolid
         xnew = x.copy()
         l1, l2 = 0.0, 1e9
         for _ in range(60):
@@ -1198,7 +1305,7 @@ def simp(  # noqa: C901
                 vol_c = _physical(cand, eta=eta_vol)[solid_idx].sum()
             else:
                 vol_c = cand[solid_idx].sum()
-            if vol_c > v_target:
+            if vol_c > v_now:
                 l1 = lmid
             else:
                 l2 = lmid
@@ -1239,6 +1346,8 @@ def simp(  # noqa: C901
             "penal": round(pen, 3),
             "elapsed_s": round(time.monotonic() - t0, 1),
         }
+        if params.volfrac_init is not None and params.volfrac_init > params.volfrac:
+            rec["volfrac_target"] = round(_vol_now(), 4)
         rec.update(_phase_timings())
         if robust:
             rec["obj_per_design"] = [round(o, 3) for o in obj_designs]
@@ -1289,6 +1398,7 @@ def simp(  # noqa: C901
         # move cap for a whole window while compliance sits flat on the
         # SAME mask (sharpening gray cells), which is progress, not a cycle
         flip_streak = flip_streak + 1 if flips > _FLIP_FRAC else 0
+        beta_age += 1
         if move_sat_streak >= _MOVE_SAT_STREAK and flip_streak >= _MOVE_SAT_STREAK:
             # stalled = <1% improvement across a same-beta window (the
             # helper returns None while the current-beta segment is short —
@@ -1323,7 +1433,14 @@ def simp(  # noqa: C901
         # requirement keeps a plateaued near-optimum (its update isn't
         # fighting the constraint) from being mislabeled a cycle.
         same_flip_run = _same_flip_run(history)
-        if same_flip_run >= _SAME_FLIP_MIN_RUN and move_sat_streak >= _MOVE_SAT_STREAK:
+        # A Heaviside level below beta_max still has a continuation mechanism
+        # left; let its dwell advance the projection before declaring a
+        # period-1 bounce terminal. At beta_max the guard remains active.
+        if (
+            not (heaviside and proj.beta < params.beta_max)
+            and same_flip_run >= _SAME_FLIP_MIN_RUN
+            and move_sat_streak >= _MOVE_SAT_STREAK
+        ):
             imp = _span_compliance_improvement(history, same_flip_run)
             if imp is not None and imp < 0.01:
                 warnings.append(
@@ -1356,12 +1473,15 @@ def simp(  # noqa: C901
             )
             continuing = heaviside and proj.beta < params.beta_max
             stall = stall + 1 if (rel < params.tol and (continuing or settled)) else 0
+            if continuing and (stall >= params.converge_patience or beta_age >= _BETA_DWELL):
+                # advance the ramp on an objective stall OR when a level has
+                # run a full window without settling — whichever comes first
+                proj.beta = min(proj.beta * 2.0, params.beta_max)
+                stall = 0
+                beta_age = 0
+                warnings.append(f"beta continuation -> {proj.beta:g} at iteration {it}")
+                continue
             if stall >= params.converge_patience:
-                if heaviside and proj.beta < params.beta_max:
-                    proj.beta = min(proj.beta * 2.0, params.beta_max)
-                    stall = 0
-                    warnings.append(f"beta continuation -> {proj.beta:g} at iteration {it}")
-                    continue
                 warnings.append(
                     f"converged: compliance stalled (<{params.tol:g} rel. change "
                     f"for {stall} iterations) at iteration {it}"
@@ -1455,7 +1575,12 @@ def _adjoint_solve(
 
 
 def _element_vm(
-    domain: VoxelDomain, u: np.ndarray, edof: np.ndarray, E_per_cell: np.ndarray, nu: float
+    domain: VoxelDomain,
+    u: np.ndarray,
+    edof: np.ndarray,
+    E_per_cell: np.ndarray,
+    nu: float,
+    aniso: tuple[float, float] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Centroid von-Mises per cell + per-element stress vector.
 
@@ -1465,7 +1590,7 @@ def _element_vm(
     from cadx.cad.fem.solver import _B0, _D
 
     B0 = _B0(domain.pitch)
-    Dm = _D(nu)
+    Dm = _D(nu) if aniso is None else _D(nu, float(aniso[0]), int(aniso[1]))
     ue = u[edof]  # (ncells, 24)
     eps = ue @ B0.T  # (ncells, 6)
     sig = eps @ Dm.T * E_per_cell[:, None]
@@ -1595,7 +1720,8 @@ def _run_mma(  # noqa: C901
     opt.set_lower_bounds(lb)
     opt.set_upper_bounds(ub)
     opt.set_maxeval(max(1, params.max_iter))
-    opt.set_xtol_rel(max(1e-4, params.tol * 0.2))
+    xtol = max(1e-4, params.tol * 0.2)
+    opt.set_xtol_rel(xtol)
     opt.set_ftol_rel(1e-9)
 
     def _wsum(obj_cases: list[float]) -> float:
@@ -1691,7 +1817,9 @@ def _run_mma(  # noqa: C901
                     g += wi[ci] * d_i
                 grad[:] = _grad_adj(g)[des]
             else:
-                dcfs = sens_fn(xb, ev, oc_filter=True, eta=eta_w)
+                # true chain-rule sensitivity for the weighted objective —
+                # the OC-filtered heuristic is not a gradient and misled MMA
+                dcfs = sens_fn(xb, ev, oc_filter=False, eta=eta_w)
                 g = np.zeros(ncells)
                 for ci, d_i in enumerate(dcfs):
                     w = float(weights[ci]) if ci < len(weights) else 1.0
@@ -1755,7 +1883,7 @@ def _run_mma(  # noqa: C901
                 ev = evs[0]  # eroded = worst design for the constraint
                 xp, p, xt, us, ctx = ev[0], ev[1], ev[2], ev[5], ev[6][ci]
                 u = us[ci]
-                vm, _sig, dvm_due = _element_vm(domain, u, edof, E0, nu)
+                vm, _sig, dvm_due = _element_vm(domain, u, edof, E0, nu, params.aniso)
                 sm = np.clip(vm, 1e-9, None)
                 relax = np.power(np.clip(p, 1e-6, None), q)
                 srel = relax * vm  # relaxed stress
@@ -1807,7 +1935,15 @@ def _run_mma(  # noqa: C901
     v = np.asarray(v, dtype=float)
     beta_cur = beta0
     restart = 0
+    gate_warned = False
     while True:
+        remaining = params.max_iter - it_box[0]
+        if remaining <= 0:
+            converged = False
+            mma_status = "budget_exhausted"
+            break
+        opt.set_maxeval(remaining)
+        evals_before = it_box[0]
         try:
             v = np.asarray(opt.optimize(v), dtype=float)
             converged = True
@@ -1826,6 +1962,24 @@ def _run_mma(  # noqa: C901
             mma_status = "converged" if converged else "degenerate"
             break
         x = _unpack(v)
+        p_now = project_fn(x, eta_vol)[1]
+        d_now = p_now[solid_idx]
+        gray_now = float(np.mean((d_now > 0.2) & (d_now < 0.8))) if d_now.size else 0.0
+        if it_box[0] < params.mma_min_evals and gray_now > 0.05:
+            if it_box[0] <= evals_before:
+                converged = False
+                mma_status = "budget_exhausted"
+                break
+            if not gate_warned:
+                warnings.append(
+                    f"mma xtol stopped after {it_box[0]} evaluations with "
+                    f"{gray_now:.0%} gray density — tightening xtol to reach "
+                    f"mma_min_evals={params.mma_min_evals}"
+                )
+                gate_warned = True
+            xtol *= 0.5
+            opt.set_xtol_rel(xtol)
+            continue
         # Heaviside beta-continuation: converge at beta, then sharpen
         if heaviside and beta_cur < params.beta_max:
             beta_cur = min(beta_cur * 2.0, params.beta_max)

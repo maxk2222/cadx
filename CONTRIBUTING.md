@@ -8,6 +8,8 @@ the Python backend/agent, the React frontend and the `mesh_server` sidecar.
 ```bash
 python3 -m venv .venv && .venv/bin/python -m pip install uv
 make sync                      # backend venv + locked deps
+make sync-fem                  # optional: CHOLMOD/AMG FEM solver tier
+                               # (needs SuiteSparse headers, see fem-topopt.md)
 cd frontend && npm install
 ```
 

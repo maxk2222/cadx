@@ -185,6 +185,19 @@ def test_status_degenerate_solver_crash(monkeypatch: pytest.MonkeyPatch) -> None
     assert any("FEM solve failed" in w and "boom" in w for w in res.warnings)
 
 
+def test_min_primary_iters_runs_at_least_three() -> None:
+    """P5: a warm-started field already at the optimum can satisfy
+    change<=tol at it=0-2 — the OC loop owes at least a few evaluations
+    before trusting that early exit (a multires-warmed density otherwise
+    'converges' having done no work at the fine resolution)."""
+    dom, fixed, F = _case()
+    p = TopOptParams(volfrac=0.4, rmin_mm=2.0, max_iter=10)
+    passive = np.zeros(dom.cell_count, dtype=bool)
+    res1 = simp(dom, E_PLA, NU, [(fixed, F)], passive, p)
+    warm = simp(dom, E_PLA, NU, [(fixed, F)], passive, p, x0=res1.density)
+    assert warm.iterations >= 3
+
+
 # ---------------------------------------------------------------------------
 # O2 — early limit-cycle detection
 # ---------------------------------------------------------------------------
@@ -570,6 +583,41 @@ def test_pipeline_warns_high_floor_when_feasible(tmp_path: Path) -> None:
     )
     assert res.topopt.get("infeasible_preflight") is not True
     assert 0.0 < res.topopt["passive_frac"] <= 0.6
+
+
+def test_grow_preflight_uses_design_domain_volume(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """grow_mm enlarges the volume denominator; the passive-floor preflight
+    must use the same design domain as SIMP rather than the input mesh."""
+    from cadx.cad.engine import run_topopt_pipeline
+
+    def quarter_passive(domain, extra, fixed, loads):
+        del extra, fixed, loads
+        cells = np.flatnonzero(domain.solid.ravel())
+        mask = np.zeros(domain.cell_count, dtype=bool)
+        mask[cells[: round(0.25 * len(cells))]] = True
+        return mask
+
+    monkeypatch.setattr(topopt_mod, "passive_solid_mask", quarter_passive)
+    src = tmp_path / "b.stl"
+    _box_mesh().export(str(src))
+    res = run_topopt_pipeline(
+        mesh_path=src,
+        out_dir=tmp_path / "grow",
+        load_cases=[_cantilever().model_dump()],
+        optimize={
+            "target_volume_fraction": 0.3,
+            "grow_mm": 3.0,
+            "max_iterations": 1,
+        },
+        material="pla",
+        voxel_mm=1.0,
+        scan_anchors=False,
+        runtime=RuntimeSettings(topopt_multires_min_cells=10_000_000),
+    )
+    assert res.topopt.get("infeasible_preflight") is not True
+    assert res.topopt["passive_frac"] == pytest.approx(0.25)
 
 
 async def test_topopt_run_infeasible_preflight_refunds_budget() -> None:

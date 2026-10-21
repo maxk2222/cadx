@@ -31,8 +31,28 @@ pick the best one.
   whether optimization is even needed and which case is critical.
 - `topopt_run(...)` — full SIMP run + automatic FEM verification of the
   result. Parameters you may vary between runs:
+  - `solver`: `oc` (default, volume-only), `mma` (enables the constraint
+    fields below), `beso` (binary evolution — crisp 0/1 designs with no
+    gray/threshold ambiguity; volume-only like oc). BESO bonds its
+    load/fix-bearing components before each solve; residual islands are
+    flagged and the export FEM remains the quality gate.
   - `target_volume_fraction` (0.1–0.9, default from spec): lower = lighter but
-    weaker.
+    weaker. `volfrac_init` (e.g. 0.7) ramps the target down over ~20
+    iterations (`volfrac_ramp_iters` changes the ramp length) — escapes
+    sparse-layout local minima, but the richer start lands in a different
+    topology class; skip it when the part is stress-critical.
+  - `warmstart:"loadpath"`: seeds the density from deterministic load-path
+    corridors (load centroids → fixed regions) — typically 20–40% fewer
+    iterations to a similar design. `loadpath_corridor_mm` widens the
+    seed corridors (default 2.5×pitch) when junctions come out too thin
+    for the export mesh.
+  - `mma_final_beta` (solver=mma only, e.g. 8): projects the converged
+    blueprint at this sharpness — collapses a residual gray field an
+    mma+cone run can leave behind.
+  - `grow_mm`: lets the optimizer also ADD material up to grow_mm beyond the
+    part silhouette (reinforcement ribs, thicker walls) — not just remove.
+  - `aniso_material`: orthotropic FDM stiffness — weaker along the
+    `print_direction` layer normal; use for realistic FDM safety factors.
   - `keep_regions`: regions that MUST stay solid — mounting bores, interfaces.
     Add `"material":"aluminum"` (etc.) for threaded inserts / bushings.
   - `keep_mode:"auto"` — automatically keep a ring around EVERY detected
@@ -63,6 +83,15 @@ pick the best one.
     loads and keep/fix regions are symmetric about.
   - `load_cases`: override/extend the spec cases (same schema).
   - `material`, `voxel_mm`, `max_iterations`, `density_threshold`.
+- `infill_run(...)` — the second structural strategy: shell + physics-graded
+  lattice instead of SIMP. A full-density FEM solve measures where load
+  flows; a closed outer skin (`infill_shell_mm`) keeps the silhouette and a
+  density-graded gyroid lattice fills the interior stiffer where strain
+  energy concentrates. `infill_scope:"full"` infills the whole part,
+  `"guided"` runs a coarse SIMP first and only fills what it keeps.
+  ~2 solves total and natively watertight — the FDM-friendlier result;
+  prefer it when the part should look like slicer shell+infill rather than
+  a skeletal topology. Same `sf_export` verification and run_index contract.
 - `refine_features(run_index, features?, restore_planes?, load_cases?)` —
   feature finishing on a completed run: re-cuts EXACT bores, printed threads
   (tap-drill for `thread_spec`/`standard` M-sizes), inserts, bearing seats,
@@ -147,7 +176,10 @@ Each `topopt_run` reports:
   numerical noise — reject it, do not chase it.
 - `sf_gap` — `sf_mask − sf_export`. A large gap means the smoothed
   surface eats strength (or one solve modelled a different structure) —
-  raise volfrac or min_member before trusting either number.
+  raise volfrac or min_member before trusting either number. A ratio
+  >3 triggers an automatic `min_member_mm` retry (see `retry.trigger`).
+- `iterations` — finest-grid SIMP passes only; `iterations_total` adds
+  the coarse multires work. Judge convergence effort by the total.
 - `retry` — when the first pass misses the safety factor (or its export
   solve degenerates), the engine warm-starts one pass at +0.1 volfrac and
   reports `volfrac_first/second`, `sf_export_first/second` and

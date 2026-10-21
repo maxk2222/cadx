@@ -296,6 +296,7 @@ def run_fem(
     pool_workers: int = 0,
     suffix: str = "",
     cancelled: Callable[[], bool] | None = None,
+    solver_backend: str = "auto",
 ) -> FemReport:
     """Solve each load case on the voxelized mesh. Always returns a report —
     per-case failures are captured in case.warnings."""
@@ -332,6 +333,7 @@ def run_fem(
         pool_workers=pool_workers,
         mem_budget_mb=mem_budget_mb,
         cancelled=cancelled,
+        solver_backend=solver_backend,
     )
     return report
 
@@ -352,10 +354,18 @@ def run_fem_domain(
     suffix: str = "",
     source_mesh: trimesh.Trimesh | None = None,
     cancelled: Callable[[], bool] | None = None,
+    solver_backend: str = "auto",
+    fields_out: dict[str, Any] | None = None,
 ) -> FemReport:
     """Verify a structure defined directly on an existing grid — used for
     TopOpt post-verification where re-voxelizing the smoothed export mesh
-    would drop thin members."""
+    would drop thin members.
+
+    `fields_out` (optional dict) receives the internal solve fields the
+    caller may reuse without re-assembling: ``solutions`` (per-case
+    FemSolution, aligned to `load_cases`, None for skipped cases), ``edof``,
+    ``active``, ``elem_E``, ``nu`` and ``aniso`` — the energy/principal-
+    direction drivers in `fem.infill` consume exactly these."""
     mat = material or resolve_material(material_name)
     report = _report_skeleton(mat)
     sub = VoxelDomain(
@@ -379,6 +389,8 @@ def run_fem_domain(
         pool_workers=pool_workers,
         mem_budget_mb=mem_budget_mb,
         cancelled=cancelled,
+        solver_backend=solver_backend,
+        fields_out=fields_out,
     )
     return report
 
@@ -401,6 +413,8 @@ def _solve_case_child(i: int) -> tuple[int, FemSolution]:
         st["elem_E"],
         st["poisson"],
         E_ref=st["E_ref"],
+        aniso=st.get("aniso"),
+        solver_backend=st.get("solver_backend", "auto"),
     )
     return i, sol
 
@@ -419,6 +433,8 @@ def _solve_cases(  # noqa: C901
     pool_workers: int = 0,
     mem_budget_mb: float | None = None,
     cancelled: Callable[[], bool] | None = None,
+    solver_backend: str = "auto",
+    fields_out: dict[str, Any] | None = None,
 ) -> None:
     report.grid = {
         "pitch_mm": round(domain.pitch, 4),
@@ -447,6 +463,8 @@ def _solve_cases(  # noqa: C901
     # between cases whose fixed-DOF signature is identical.
     asm: tuple[Any, np.ndarray, np.ndarray] | None = None  # (K, edof, active)
     ctx_cache: dict[bytes, CaseSolve] = {}
+    # opt-in FDM layer weakening — None keeps the isotropic hot path identical
+    aniso = (mat.aniso_z, float(mat.aniso_axis)) if mat.aniso_z != 1.0 else None
 
     # Phase 1 — resolve regions/loads serially (cheap vs solves). Solvable
     # cases collect (sig, F); the solves themselves can then fan out.
@@ -466,11 +484,19 @@ def _solve_cases(  # noqa: C901
         if not fixed3.any() or not np.any(F):
             continue
         if asm is None:
-            asm = assemble(domain, elem_E, mat.poisson)
+            asm = assemble(domain, elem_E, mat.poisson, aniso=aniso)
         K, edof, active = asm
         sig = np.unique(_fixed_dofs(fixed3, domain.node_count)).tobytes()
         if sig not in ctx_cache:
-            ctx_cache[sig] = reduce_case(domain, K, edof, fixed3, spsolve_dofs=spsolve_dofs)
+            ctx_cache[sig] = reduce_case(
+                domain,
+                K,
+                edof,
+                fixed3,
+                spsolve_dofs=spsolve_dofs,
+                aniso=aniso,
+                solver_backend=solver_backend,
+            )
         preps[i] = (sig, F)
 
     def _record(res: FemCaseResult, sol: FemSolution) -> None:
@@ -522,14 +548,16 @@ def _solve_cases(  # noqa: C901
                 elem_E=elem_E,
                 poisson=mat.poisson,
                 E_ref=mat.elastic_modulus_mpa,
+                aniso=aniso,
+                solver_backend=solver_backend,
             )
             with ProcessPoolExecutor(
                 max_workers=workers, mp_context=mp.get_context("fork")
             ) as pool:
                 futures = {pool.submit(_solve_case_child, i): i for i in preps}
                 for fut in as_completed(futures):
-                    i, sol = fut.result()
-                    solved[i] = sol
+                    i, case_sol = fut.result()
+                    solved[i] = case_sol
         except Exception as e:
             log.warning("fem.solve_pool_failed", error=str(e)[:200])
         finally:
@@ -538,9 +566,10 @@ def _solve_cases(  # noqa: C901
     # record in index order: pool results first, then serial fallback for
     # cases the pool didn't finish — report.cases stays deterministic
     assert asm is not None or not preps
+    sol_by_i: dict[int, FemSolution] = {}
     for i in sorted(preps):
         res = results[i]
-        sol = solved.get(i)
+        sol: FemSolution | None = solved.get(i)
         if sol is None:
             sig, F = preps[i]
             assert asm is not None
@@ -553,8 +582,24 @@ def _solve_cases(  # noqa: C901
                 elem_E,
                 mat.poisson,
                 E_ref=mat.elastic_modulus_mpa,
+                aniso=aniso,
+                solver_backend=solver_backend,
             )
         _record(res, sol)
+        sol_by_i[i] = sol
+
+    if fields_out is not None and asm is not None:
+        # expose the solve fields in load-case order for downstream drivers
+        # (infill energy/principal-direction computation) — solutions[i] is
+        # None for cases that resolved no system (skipped above)
+        fields_out.update(
+            solutions=[sol_by_i.get(i) for i in range(len(load_cases))],
+            edof=asm[1],
+            active=asm[2],
+            elem_E=elem_E,
+            nu=mat.poisson,
+            aniso=aniso,
+        )
 
     report.cases.extend(results)
     report.warnings.append(

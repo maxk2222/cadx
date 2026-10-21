@@ -10,7 +10,7 @@ PY := $(VENV)/bin/python
 BACKEND := backend
 FRONTEND := frontend
 
-.PHONY: help setup lock sync dev-api dev-worker dev-executor dev-web infra \
+.PHONY: help setup lock sync sync-fem dev-api dev-worker dev-executor dev-web infra \
         up down logs logs-dev logs-api logs-worker logs-executor logs-web \
         test lint fmt eval eval-real migrate build clean clean-all \
         mesh-sync mesh-server mesh-models mesh-test dev-mesh \
@@ -71,6 +71,23 @@ lock: setup ## Resolve backend dependencies
 
 sync: lock ## Install backend dependencies into backend/.venv
 	cd $(BACKEND) && ../$(VENV)/bin/uv sync
+
+# optional FEM solver tier (CHOLMOD direct + AMG preconditioner) — needs
+# SuiteSparse headers: `brew install suite-sparse` (macOS) or
+# `apt install libsuitesparse-dev` (Debian/Ubuntu). scikit-sparse is a
+# git-pinned sdist (see pyproject note) so the build also needs git + a
+# compiler. Everything missing falls back to SuperLU/SSOR at runtime.
+ifeq ($(shell uname -s),Darwin)
+SUITESPARSE_PREFIX ?= $(shell brew --prefix suite-sparse 2>/dev/null || echo /opt/homebrew)
+SUITESPARSE_INCLUDE_DIR ?= $(SUITESPARSE_PREFIX)/include/suitesparse
+SUITESPARSE_LIBRARY_DIR ?= $(SUITESPARSE_PREFIX)/lib
+endif
+
+sync-fem: lock ## Install backend deps + optional FEM solver tier (CHOLMOD/AMG)
+	cd $(BACKEND) && \
+	  SUITESPARSE_INCLUDE_DIR="$(SUITESPARSE_INCLUDE_DIR)" \
+	  SUITESPARSE_LIBRARY_DIR="$(SUITESPARSE_LIBRARY_DIR)" \
+	  ../$(VENV)/bin/uv sync --extra fem
 
 infra: ## Postgres + Redis in docker for native dev
 	docker compose -f docker-compose.dev.yml up -d postgres redis

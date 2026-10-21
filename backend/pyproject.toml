@@ -47,6 +47,19 @@ dependencies = [
 repair = [
     "pymeshlab>=2023.12",
 ]
+# optional FEM solver tier — both lazy-imported with graceful fallbacks:
+#   scikit-sparse: CHOLMOD sparse Cholesky for the direct path. Pinned to
+#     an unreleased git SHA: the last PyPI release (0.5.0, 2023) ships a
+#     stale generated cholmod.c that cannot compile against SuiteSparse≥5.4
+#     (sbound→dbound field rename); upstream HEAD carries the compat pxd.
+#     Needs SuiteSparse headers + a compiler + git at build time — apt:
+#     libsuitesparse-dev build-essential git (executor image provides them).
+#   pyamg: smoothed-aggregation AMG preconditioner for CG above
+#     fem_spsolve_dofs — the >120k-DOF cliff becomes minutes, not hours
+fem = [
+    "scikit-sparse @ git+https://github.com/scikit-sparse/scikit-sparse@5f4772d01053bafb534672191457beb2d2a8c21c",
+    "pyamg>=5.0,<6",
+]
 
 [dependency-groups]
 dev = [
@@ -62,6 +75,11 @@ dev = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+# the [fem] extra pins scikit-sparse to a git SHA (no released version
+# compiles against modern SuiteSparse — see the optional-dependencies note)
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["cadx"]

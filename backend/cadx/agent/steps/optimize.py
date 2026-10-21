@@ -361,7 +361,7 @@ def _make_fem_fn(ops: _SessionOps) -> Any:
 
 
 def _opt_overrides(a: dict[str, Any]) -> dict[str, Any]:
-    """Map `topopt_run` tool args onto `OptimizeSpec` fields."""
+    """Map `topopt_run`/`infill_run` tool args onto `OptimizeSpec` fields."""
     opt: dict[str, Any] = {}
     num = {
         "target_volume_fraction": float,
@@ -374,6 +374,18 @@ def _opt_overrides(a: dict[str, Any]) -> dict[str, Any]:
         "penal_init": float,
         "penal": float,
         "robust_delta_eta": float,
+        "volfrac_init": float,
+        "volfrac_ramp_iters": int,
+        "loadpath_corridor_mm": float,
+        "mma_final_beta": float,
+        "grow_mm": float,
+        "aniso_factor": float,
+        "beso_er": float,
+        "infill_shell_mm": float,
+        "infill_period_mm": float,
+        "infill_min_density": float,
+        "infill_max_density": float,
+        "infill_alpha": float,
     }
     for k, conv in num.items():
         if a.get(k) is not None:
@@ -386,10 +398,15 @@ def _opt_overrides(a: dict[str, Any]) -> dict[str, Any]:
         "solver",
         "case_objective",
         "robust_designs",
+        "warmstart",
+        "infill_scope",
+        "infill_style",
     ):
         if a.get(k):
             opt[k] = str(a[k])
-    for k in ("self_supporting", "multires", "robust"):
+    if a.get("infill_seed") is not None:
+        opt["infill_seed"] = int(a["infill_seed"])
+    for k in ("self_supporting", "multires", "robust", "aniso_material"):
         if a.get(k) is not None:
             opt[k] = bool(a[k])
     return opt
@@ -440,6 +457,43 @@ def _make_topopt_fn(ops: _SessionOps) -> Any:
         return res
 
     return topopt_fn
+
+
+def _make_infill_fn(ops: _SessionOps) -> Any:
+    ctx = ops.ctx
+
+    async def infill_fn(a: dict[str, Any]) -> dict[str, Any]:
+        cases, err = _valid_cases(a.get("load_cases"))
+        if err:
+            return {"ok": False, "error": err}
+        if (
+            guard := _budget_exceeded(ops, ctx.runtime_settings.topopt_timeout_s + 180)
+        ) is not None:
+            return guard
+        it = next(ops.alloc)
+        opt = _opt_overrides(a)
+        opt["structure_mode"] = "infill"
+        await ctx.emit(
+            "optimize",
+            it,
+            f"shell+infill run — {opt.get('infill_scope', 'guided')} scope",
+        )
+        res = await ctx.executor.optimize(
+            {
+                **ops.base,
+                "iteration": it,
+                "load_cases": cases if cases is not None else ops.spec_cases,
+                "optimize": opt,
+                "material": str(a.get("material") or "") or ops.default_material,
+                "voxel_mm": a.get("voxel_mm") or ctx.settings.fem_voxel_mm or None,
+            }
+        )
+        res["_iteration"] = it
+        it_dir = storage.iteration_dir(ctx.project_id, ctx.version_id, it)
+        res["_images"] = _topopt_images(ops, res, it_dir)
+        return res
+
+    return infill_fn
 
 
 def _make_preview_fn(ops: _SessionOps) -> Any:
@@ -613,6 +667,7 @@ def _setup_session(
         preview_fn=_make_preview_fn(ops),
         anchors_fn=_make_anchors_fn(ops),
         refine_fn=_make_refine_fn(ops),
+        infill_fn=_make_infill_fn(ops),
         target_volfrac=target_volfrac,
     )
 

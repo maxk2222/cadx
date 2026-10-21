@@ -85,7 +85,9 @@ Printability and filter options (`optimize.*`):
   insensitive to `density_threshold`, at the cost of more iterations.
 - `multires` — a coarse SIMP pass at 2× pitch warm-starts the fine grid
   (~3× fewer fine iterations on large parts); skipped below a domain-size
-  floor and when an explicit `warm_density_relpath` is given.
+  floor and when an explicit `warm_density_relpath` is given. The report's
+  `iterations` counts the finest-grid passes only; `iterations_total`
+  adds the coarse pass(es) — that is the wall-clock-relevant number.
 - `penal` — SIMP penalization exponent (default 3); leave alone unless
   experimenting.
 
@@ -242,15 +244,56 @@ equilibrium sanity.
   supports material zones; `x0` warm-starts from a prior density field.
   Element-assembly index arrays (`iK`/`jK`) are cached across iterations
   since the sparsity pattern is constant for a fixed domain.
-- `optimize.solver`: `oc` (default, volume-only bisection) or `mma`
+- `optimize.solver`: `oc` (default, volume-only bisection), `mma`
   (nlopt LD_MMA) which enables real constraints — `case_objective: "minmax"`
   minimizes a smooth P-norm worst-case over all load cases instead of the
   weighted sum, `max_displacement_mm` caps nodal displacement per case
   (adjoint gradients), `max_stress_mpa` adds a per-case P-norm von-Mises
-  constraint with qp-relaxation (Le et al. 2010). `optimize.penal_init`
-  < `penal` enables penal continuation (ramp `penal_init`→`penal` over 30
-  iterations, escapes grayscale local minima). All run through
-  `topopt_run`/`optimize` and land in `history.json` with solver diagnostics.
+  constraint with qp-relaxation (Le et al. 2010) — or `beso`
+  (soft-kill bidirectional evolutionary structural optimization): a binary
+  0/1 design field with no grayscale, no threshold problem and no Heaviside
+  tuning. `beso_er` (default 0.02) sets the evolutionary volume-ramp step
+  per iteration; sensitivities are cone-filtered, temporally averaged and
+  ranked, elements are added/removed bidirectionally. BESO reports honest
+  statuses (`converged`, `budget_exhausted`, `limit_cycle`, `degenerate`)
+  and warns when MMA-only constraint options are supplied. Its connectivity
+  guard bonds load/fix-bearing components before each solve so a floating
+  island cannot poison the compliance ranking; residual disconnected
+  components are surfaced as warnings.
+  `optimize.mma_final_beta` (e.g. 8) projects an `mma` run's converged
+  blueprint through a sharp Heaviside for the returned density — collapses
+  residual gray fields a cone-filtered MMA can leave behind.
+- `optimize.penal_init` < `penal` enables penal continuation (ramp
+  `penal_init`→`penal` over `penal_ramp_iters` = 30 iterations, escapes
+  grayscale local minima); `optimize.volfrac_init` > target enables the
+  analogous volume-fraction continuation (ramp over `volfrac_ramp_iters` =
+  20 iterations by default, settable via `optimize.volfrac_ramp_iters`,
+  OC path only — MMA owns the volume constraint itself). Caveat: the
+  material-rich start explores a *different topology class* — evals show
+  the same predicted compliance but a measurably weaker stress response
+  (sf_export ~8× lower on the cantilever fixture). Prefer no
+  `volfrac_init`, or a shorter ramp, for stress-critical parts.
+- `optimize.warmstart: "loadpath"` seeds the initial density from a
+  deterministic load-path field: for every case a multi-source Dijkstra on
+  the 6-connected solid grid finds least-cost corridors between load
+  centroids and fixed regions, weighted by `weight·|F|`; passive
+  solid/void precedence is preserved. `optimize.loadpath_corridor_mm`
+  widens the corridor bump (default 2.5 × voxel pitch) — wider corridors
+  seed thicker junctions that survive export smoothing with a smaller
+  sf_mask↔sf_export gap. A load-path start typically saves
+  20–40 % of SIMP iterations vs. a uniform `volfrac` start and doubles as a
+  cheap physics-informed preview.
+- `optimize.grow_mm` dilates the design domain beyond the part silhouette
+  (padded voxel grid, `dilate_solid`) so the optimizer may also *add*
+  material — stiffening ribs that protrude from the original envelope.
+  Region resolution, anchors and passive masks still use the true part
+  domain; only the optimizer's playable field grows. Reports
+  `topopt.design_domain` (`part_cells` vs `design_cells`).
+- `optimize.aniso_material` + `aniso_factor` (default 0.6) switch the
+  constitutive matrix to a transversely-isotropic FDM model: E and ν along
+  the `print_direction` axis are scaled by `aniso_factor` while in-plane
+  stiffness is preserved — layer adhesion is weaker than bulk material.
+  Applies to FEM checks, SIMP/BESO and infill verification.
 - Filters: `optimize.filter` `cone`|`heaviside`|`helmholtz`|
   `helmholtz+heaviside` — `heaviside` adds β-continuation for crisp 0/1
   fields; `helmholtz` is the Lazarov–Sigmund PDE filter (`−r²∇²x̃+x̃=x`,
@@ -278,10 +321,23 @@ equilibrium sanity.
   compares predicted vs measured compliance and `sf_mask` vs `sf_export`.
 - Mesh extraction uses marching cubes (scikit-image) when available and falls
   back to the voxel-boundary surface, so `skimage` is optional at runtime.
-- The solver accepts per-DOF `(nnodes,3)` fixed masks; systems beyond
-  `fem_spsolve_dofs` use SSOR-preconditioned conjugate gradients with
-  adaptive relative tolerance (loose while the design is changing, tight
-  near convergence).
+- The solver accepts per-DOF `(nnodes,3)` fixed masks. Backend selection is
+  tiered (`fem_solver_backend` = `auto`|`cholmod`|`superlu`|`amg`|`ssor`,
+  default `auto`): systems up to `fem_spsolve_dofs` factorize directly —
+  sparse Cholesky via CHOLMOD when the optional `scikit-sparse` extra is
+  installed (2–5× faster than LU for SPD systems; the symbolic analysis is
+  reused across iterations since the sparsity pattern is constant), else
+  SuperLU. Beyond the cap, preconditioned conjugate gradients run with
+  adaptive relative tolerance; the preconditioner is smoothed-aggregation
+  AMG via the optional `pyamg` extra (rigid-body modes of the regular grid
+  as near-nullspace — turns the >120k-DOF cliff from ~300 s/iter to tens of
+  seconds), falling back to SSOR then diagonal scaling. Both optional
+  dependencies ship as the `fem` extra and are installed in the executor
+  image; for native dev use `make sync-fem` (needs SuiteSparse headers —
+  `brew install suite-sparse` / `apt install libsuitesparse-dev` — plus
+  git and a compiler, since scikit-sparse builds from a git-pinned sdist;
+  no released version compiles against SuiteSparse ≥ 5.4). Missing
+  imports degrade gracefully per solve.
 - Grid pitch starts at `fem_voxel_mm` and is adaptively coarsened to stay
   under `fem_max_elements`. After voxelization the peak memory for assembly,
   the CSR matrix and (for direct solves) LU fill-in is estimated and
@@ -301,7 +357,36 @@ equilibrium sanity.
 
 The agent optimize session offers `list_anchors` (the measured anchor table),
 `check_load` (region resolution + resultant/moment without a solve),
-`preview_regions`, `analyze_fem`, `topopt_run` and `done`.
+`preview_regions`, `analyze_fem`, `topopt_run`, `infill_run` and `done`.
+
+### Shell + graded infill (second structural strategy)
+
+`optimize.structure_mode: "infill"` (tool `infill_run`) replaces SIMP with a
+two-solve pipeline aimed at what FDM actually prints — a closed shell plus a
+physics-graded lattice instead of open-cell "hole cheese":
+
+1. A full-material FEM solve per load case yields per-element strain energy
+  `uᵀ(E·kₑ)u` and principal stress directions.
+2. Target lattice density `d(x)` follows p95-normalized energy (weighted max
+   across cases), graded `d_min`→`d_max` by `infill_alpha` (default 0.7).
+3. `infill_style: "gyroid_graded"` thresholds a TPMS gyroid whose local level
+   tracks `d(x)`; `infill_style: "struts_aligned"` grows struts along the
+   principal stress direction field instead.
+4. `infill_scope`: `"full"` fills the whole interior; `"guided"` first runs a
+   coarse SIMP and lattices only what it retains (topology-aware lightening).
+5. A closed outer shell of `infill_shell_mm` (default 2 mm) wraps everything;
+   a bonding band at full density fuses lattice to shell, keep/passive regions
+   stay solid, void regions stay void. `infill_seed` fixes the lattice phase —
+   same seed + mesh ⇒ identical part. Unbonded lattice islands and
+   zero/negative-volume marching-cubes slivers are dropped (reported as
+   warnings, not silently kept).
+
+The result is verified exactly like TopOpt — `sf_mask` on the binary field,
+`sf_export` on the smoothed export mesh, same warnings, same `density.npz` —
+at ~2 FEM solves instead of 60+ iterations. Tuning: `infill_period_mm`
+(lattice cell size, default 8), `infill_min_density`/`infill_max_density`
+(occupancy bounds). The lattice cannot redistribute load paths the way SIMP
+can — for thin shells or aggressive volume targets prefer `topopt_run`.
 
 The FEM report includes per-case max von Mises stress, max displacement,
 compliance, safety factor, solver/convergence status, and warnings. Safety
@@ -328,9 +413,11 @@ result.
 
 ## Limits and interpretation
 
-This is design-feedback FEM, not a certification solver. The current model does
-not account for print-direction anisotropy, plasticity, contact, buckling,
-fatigue, geometric nonlinearity, or manufacturing residual stress. Boundary
+This is design-feedback FEM, not a certification solver. Print-direction
+anisotropy is modelled only when `aniso_material` is enabled (transverse
+isotropy, tunable via `aniso_factor`) — the default remains isotropic. The
+model does not account for plasticity, contact, buckling, fatigue, geometric
+nonlinearity, or manufacturing residual stress. Boundary
 conditions and material properties dominate result quality; voxel resolution
 adds discretization error, and loads at sharp constraints may create local
 stress concentrations. Validate important designs with an independent

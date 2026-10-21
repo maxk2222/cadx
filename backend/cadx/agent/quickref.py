@@ -254,12 +254,17 @@ def _is_enum(obj: Any) -> bool:
 def _build123d_digest(compact: bool = False) -> str:
     import build123d  # deferred: cold import costs seconds
 
-    # compact digests put the gotcha-prone surface (enums, Pos/Rot/Plane/Axis
-    # hints) first — a truncation then only drops trailing primitive classes
+    # compact digests put the gotcha-prone surface first — a truncation then
+    # only drops trailing primitive classes. Single-line enum entries lead:
+    # Mode/Align/Select are unguessable vocabulary and cost ~1 line each,
+    # so they survive even when the budget cuts mid-digest.
     names = _BUILD123D_CORE
     if compact:
-        head = [n for n in names if n in _SIG_HINTS or _is_enum(getattr(build123d, n, None))]
-        names = tuple(head) + tuple(n for n in names if n not in head)
+        enums = [n for n in names if _is_enum(getattr(build123d, n, None))]
+        hints = [n for n in names if n in _SIG_HINTS and n not in enums]
+        names = tuple(enums) + tuple(hints) + tuple(
+            n for n in names if n not in (*enums, *hints)
+        )
     lines = [f"build123d {dist_version('build123d')} — core API digest (runtime introspection)"]
     for name in names:
         obj = getattr(build123d, name, None)
