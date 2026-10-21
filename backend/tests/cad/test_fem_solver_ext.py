@@ -18,9 +18,9 @@ from cadx.cad.fem import solver
 from cadx.cad.fem.materials import resolve_material
 from cadx.cad.fem.regions import resolve_case
 from cadx.cad.fem.solver import (
+    _D,
     CholmodFactor,
     _amg_preconditioner,
-    _D,
     _elastic_preconditioner,
     _fixed_dofs,
     _free_node_coords,
