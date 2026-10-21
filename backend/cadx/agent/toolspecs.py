@@ -2371,6 +2371,7 @@ class ToolSession:
             "min_member_mm": top.get("min_member_mm"),
             "thin_fraction": top.get("thin_fraction"),
             "n_components": top.get("n_components"),
+            "n_bodies_export": top.get("n_bodies_export"),
             "overhang_pct": (top.get("verification") or {}).get("overhang_pct"),
             "cases": self._fem_compact(fem).get("cases"),
             "warnings": (top.get("warnings") or [])[:10],

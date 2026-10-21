@@ -1609,7 +1609,9 @@ async def run_optimize_job(  # noqa: C901
         # disconnected keep/load islands make a multi-body part = defect
         sfs = [c.get("safety_factor") for c in fem.get("cases", []) if c.get("safety_factor")]
         worst_sf = min(sfs) if sfs else None
-        n_bodies = topopt.get("n_components") or 1
+        n_bodies = max(
+            int(topopt.get("n_components") or 1), int(topopt.get("n_bodies_export") or 1)
+        )
         version.status = (
             VersionStatus.needs_review
             if worst_sf is None or worst_sf < 1.0 or n_bodies > 1
@@ -1799,7 +1801,9 @@ async def run_topopt_resample_job(ctx: dict[str, Any], payload: dict[str, Any]) 
         version.iterations = 1
         sfs = [c.get("safety_factor") for c in fem.get("cases", []) if c.get("safety_factor")]
         worst_sf = min(sfs) if sfs else None
-        n_bodies = topopt.get("n_components") or 1
+        n_bodies = max(
+            int(topopt.get("n_components") or 1), int(topopt.get("n_bodies_export") or 1)
+        )
         version.status = (
             VersionStatus.needs_review
             if n_bodies > 1 or (not organic_parent and (worst_sf is None or worst_sf < 1.0))
@@ -2153,7 +2157,9 @@ async def run_organic_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[
         # unprintable multi-body results are flagged; the result is
         # intentionally NOT structural — "needs_review" is only about
         # manufacturability here, never about strength
-        n_bodies = org.get("n_components") or 1
+        n_bodies = max(
+            int(org.get("n_components") or 1), int(org.get("n_bodies_export") or 1)
+        )
         version.status = VersionStatus.needs_review if n_bodies > 1 else VersionStatus.succeeded
         register_artifacts(db, version.id, artifacts, tessellated_step=True)
         await emit(

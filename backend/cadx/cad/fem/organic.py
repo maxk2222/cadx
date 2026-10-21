@@ -438,6 +438,10 @@ def organic_transform(
         "dims": list(domain.dims),
         "solid_elements": solid_cells,
         "n_components": n_components,
+        # body count of the actual export mesh — smoothing can merge or
+        # split mask-space components; this is the number the printed part
+        # is judged by
+        "n_bodies_export": int(out_mesh.body_count),
         "floor_mm": p.floor_mm,
         "surface_open": p.surface_open,
         "shell_mm": round(_resolved_shell_mm(domain, p), 3),
