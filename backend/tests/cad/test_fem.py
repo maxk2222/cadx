@@ -887,3 +887,41 @@ def test_bearing_zero_force_warning_names_anchor_position() -> None:
     _, _, warnings = resolve_case_dofs(dom, case, anchors)
     hit = [w for w in warnings if "anchor #1" in w]
     assert hit and "(0.0, 0.0, 5.0)" in hit[0]
+
+
+def test_cg_watchdog_aborts_divergent_system() -> None:
+    """Singular K (no constraints → rigid-body nullspace) + a load with a
+    nullspace component makes CG explode. The watchdog must abort well
+    before maxiter — same converged=False verdict, minutes sooner."""
+    from scipy import sparse
+
+    from cadx.cad.fem.solver import _cg_watchdog
+
+    n = 400
+    diag = np.full(n, 2.0)
+    off = np.full(n - 1, -1.0)
+    K = sparse.diags([diag, off, off], [0, 1, -1], format="csr")
+    K[0, 0] = K[-1, -1] = 1.0  # all-free beam — constant nullspace
+    rng = np.random.default_rng(0)
+    F = rng.random(n)  # generic RHS — has a nullspace component
+    x, info, diverged = _cg_watchdog(K, F, None, None, maxiter=5000)
+    assert diverged is not None
+    assert diverged.it < 5000
+    assert x is None and info is None
+
+
+def test_cg_watchdog_converges_well_conditioned() -> None:
+    """A normal SPD system must still converge — the watchdog only fires on
+    divergence, never on legitimate iteration counts."""
+    from scipy import sparse
+
+    from cadx.cad.fem.solver import _cg_watchdog
+
+    n = 300
+    rng = np.random.default_rng(1)
+    A = sparse.random(n, n, density=0.08, random_state=rng)
+    K = (A.T @ A + sparse.eye(n) * 5.0).tocsr()
+    F = rng.random(n)
+    x, info, diverged = _cg_watchdog(K, F, None, None, maxiter=2000)
+    assert diverged is None and info == 0 and x is not None
+    assert np.linalg.norm(K @ x - F) / np.linalg.norm(F) < 1e-4

@@ -117,6 +117,64 @@ class FemSolution:
     warnings: list[str] = field(default_factory=list)
 
 
+class _CgDiverged(Exception):
+    def __init__(self, it: int, ratio: float):
+        self.it = it
+        self.ratio = ratio
+        super().__init__(f"iter {it}, ||r||/||b|| {ratio:g}")
+
+
+def _cg_watchdog(
+    Kf: sparse.csr_matrix,
+    Ff: np.ndarray,
+    x0: np.ndarray | None,
+    M: Any,
+    *,
+    maxiter: int,
+) -> tuple[np.ndarray | None, int | None, _CgDiverged | None]:
+    """spla.cg with a divergence watchdog.
+
+    An unconstrained/under-constrained K (region_fallback patch that fails
+    to kill rigid-body modes, load components in the nullspace) makes CG
+    explode rather than converge: observed 5000-iter burn ≈ 13 min on
+    132k DOFs producing e14-mm garbage the caller then marks
+    converged=False anyway. Three abort signals, sampled every 40
+    iterations (~2% overhead): (a) |x| beyond any physically sane mm
+    displacement, (b) residual blowing >5x past best-seen for 3 straight
+    samples, (c) residual stuck above ||b|| with no improvement for 10
+    samples (400 iters — plateaus in a converging run still trend down).
+    """
+    bnorm = float(np.linalg.norm(Ff)) or 1.0
+    state = {"it": 0, "best": np.inf, "bad": 0, "flat": 0}
+
+    def callback(xk: np.ndarray) -> None:
+        state["it"] += 1
+        if state["it"] % 40:
+            return
+        xnorm = float(np.max(np.abs(xk)))
+        ratio = float(np.linalg.norm(Ff - Kf @ xk)) / bnorm
+        if xnorm > 1e6 or not np.isfinite(ratio):
+            raise _CgDiverged(state["it"], ratio)
+        if ratio < state["best"] * 0.9:
+            state["best"] = ratio
+            state["bad"] = 0
+            state["flat"] = 0
+            return
+        state["flat"] += 1
+        if ratio > max(5.0 * state["best"], 5.0):
+            state["bad"] += 1
+        if state["bad"] >= 3 or (state["flat"] >= 10 and ratio > 1.0):
+            raise _CgDiverged(state["it"], ratio)
+
+    try:
+        x, info = spla.cg(
+            Kf, Ff, x0=x0, rtol=1e-6, atol=0.0, maxiter=maxiter, M=M, callback=callback
+        )
+    except _CgDiverged as e:
+        return None, None, e
+    return x, info, None
+
+
 def element_dofs(elem_nodes: np.ndarray) -> np.ndarray:
     """(nelem, 24) dof indices: [3n0,3n0+1,3n0+2, 3n1, ...]."""
     d = np.empty((elem_nodes.shape[0], 24), dtype=np.int64)
@@ -335,11 +393,20 @@ def solve_reduced(
             diag[diag == 0] = 1.0
             M = spla.diags(1.0 / diag)
         x0 = u0[free] if u0 is not None else None
-        x, info = spla.cg(Kf, Ff, x0=x0, rtol=1e-6, atol=0.0, maxiter=5000, M=M)
-        u[free] = x
-        converged = info == 0
-        if info > 0:
-            warnings.append(f"CG did not converge in {info} iterations")
+        x, info, diverged = _cg_watchdog(Kf, Ff, x0, M, maxiter=5000)
+        if diverged is not None:
+            # divergent iterate is numerically meaningless — return zeros so
+            # downstream stress fields read as a failed solve, not e14-mm junk
+            converged = False
+            warnings.append(
+                f"CG diverging — aborted at iteration {diverged.it} "
+                f"(||r||/||b|| {diverged.ratio:g}); check fixed/load regions"
+            )
+        else:
+            u[free] = x
+            converged = info == 0
+            if info is not None and info > 0:
+                warnings.append(f"CG did not converge in {info} iterations")
 
     if not np.all(np.isfinite(u)):
         warnings.append("solution contains NaN/inf — likely unconstrained rigid-body modes")
