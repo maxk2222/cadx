@@ -1785,6 +1785,9 @@ def run_topopt_pipeline(  # noqa: C901
         solver=str(getattr(opt, "solver", "oc") or "oc"),
         solver_backend=str(getattr(s, "fem_solver_backend", "auto") or "auto"),
         beso_er=float(getattr(opt, "beso_er", 0.02) or 0.02),
+        mma_final_beta=opt.mma_final_beta,
+        loadpath_corridor_mm=opt.loadpath_corridor_mm,
+        volfrac_ramp_iters=opt.volfrac_ramp_iters or 20,
         aniso=(mat.aniso_z, float(mat.aniso_axis)) if mat.aniso_z != 1.0 else None,
         case_objective=str(getattr(opt, "case_objective", "weighted") or "weighted"),
         max_displacement_mm=opt.max_displacement_mm,
@@ -1830,7 +1833,11 @@ def run_topopt_pipeline(  # noqa: C901
         # so corridors may route through grow_mm space too
         try:
             x0 = loadpath_field(
-                design_domain, resolved, passive_solid=passive, passive_void=void_cells
+                design_domain,
+                resolved,
+                passive_solid=passive,
+                passive_void=void_cells,
+                corridor_mm=params.loadpath_corridor_mm,
             )
             warm_src = "loadpath"
         except Exception as e:
@@ -1933,7 +1940,10 @@ def run_topopt_pipeline(  # noqa: C901
     base_flat = is_flat_bottom(mesh)
 
     def _one_pass(
-        volfrac: float, pass_idx: int = 1, warm: np.ndarray | None = None
+        volfrac: float,
+        pass_idx: int = 1,
+        warm: np.ndarray | None = None,
+        member_floor_mm: float | None = None,
     ) -> dict[str, Any]:
         """One SIMP run at `volfrac` + extraction, smoothing and both FEM
         verifications. Returns the pieces needed for artifacts/retry.
@@ -1943,7 +1953,13 @@ def run_topopt_pipeline(  # noqa: C901
         # pass-indexed render names: pass 1 keeps the historical names,
         # retries must not overwrite its evidence in out_dir/fem
         fem_suffix = "" if pass_idx <= 1 else f"_p{pass_idx}"
-        p = dataclasses.replace(params, volfrac=volfrac)
+        effective_member = min_member if member_floor_mm is None else member_floor_mm
+        p = dataclasses.replace(
+            params,
+            volfrac=volfrac,
+            rmin_mm=max(params.rmin_mm, effective_member / 2),
+        )
+        out["min_member_mm"] = effective_member
         t = time.monotonic()
         # solver="beso" routes to the binary evolutionary optimizer — same
         # contract (domain, E0, nu, cases, passive, params) as simp(), but
@@ -1975,7 +1991,7 @@ def run_topopt_pipeline(  # noqa: C901
             # declared void regions + outside-domain cells must stay empty —
             # min-member dilation / regularization would regrow them otherwise
             void_cells=void_cells.reshape(design_domain.dims) | ~design_domain.solid,
-            min_member_mm=min_member,
+            min_member_mm=effective_member,
             min_gap_mm=min_gap,
             smooth_iterations=s.topopt_smooth_iterations,
             extract_smooth=opt.extract_smooth,
@@ -2068,41 +2084,59 @@ def run_topopt_pipeline(  # noqa: C901
     best = p1
 
     sf_exp = p1["verify_export"].worst_safety_factor
-    # a degenerate export solve can report a HIGH sf (singular stiffness →
-    # near-zero stress at a severed load path) — that number must not block
-    # the retry; more material is also the likeliest cure for the disconnect
+    sf_mask_first = p1["verify"].worst_safety_factor
+    sf_ratio = (
+        sf_mask_first / sf_exp
+        if sf_mask_first is not None and sf_exp is not None and sf_exp > 0
+        else None
+    )
+    # A degenerate export or missed safety floor needs more volume. A large
+    # mask/export ratio instead points to thin members erased by smoothing;
+    # retry that case at the same volume with a thicker member floor.
     exp_span = float(np.linalg.norm(domain.pitch * np.asarray(domain.dims)))
     exp_degenerate = (
         p1.get("export_solve_ok") is False
         or any((c.compliance_j or 1.0) <= 0 for c in p1["verify_export"].cases)
         or any((c.max_disp_mm or 0.0) > 10 * exp_span for c in p1["verify_export"].cases)
     )
-    if (
-        (exp_degenerate or (sf_exp is not None and sf_exp < opt.safety_factor_min))
-        and params.volfrac + 0.1 <= 0.9
-        and (cancelled is None or not cancelled())
-    ):
-        # warm-start the retry from pass 1's converged field — the extra
-        # volfrac material grows into the existing design instead of
-        # re-optimizing from a uniform start
-        p2 = _one_pass(params.volfrac + 0.1, pass_idx=2, warm=p1["result"].density)
-        sf_exp2 = p2["verify_export"].worst_safety_factor
-        res.topopt["retry"] = {
-            "volfrac_first": params.volfrac,
-            "volfrac_second": params.volfrac + 0.1,
-            "sf_export_first": sf_exp,
-            "sf_export_second": sf_exp2,
-            "warm_start": "pass1_density",
-            "first_export_degenerate": exp_degenerate or None,
-        }
-        res.timings["simp_s"] += p2["simp_s"]
-        res.timings["verify_s"] += p2["verify_s"]
-        # a connected part always beats a disconnected one — SF on a
-        # multi-body export is not trustworthy regardless of its value
-        p1_ok = max(int(p1["n_components"]), int(p1["n_bodies_export"])) <= 1
-        p2_ok = max(int(p2["n_components"]), int(p2["n_bodies_export"])) <= 1
-        if (p2_ok and not p1_ok) or (p2_ok == p1_ok and sf_exp2 is not None and sf_exp2 > sf_exp):
-            best = p2
+    safety_retry = exp_degenerate or (
+        sf_exp is not None and sf_exp < opt.safety_factor_min
+    )
+    gap_retry = sf_ratio is not None and sf_ratio > 3.0
+    if (safety_retry or gap_retry) and (cancelled is None or not cancelled()):
+        retry_volfrac = params.volfrac + 0.1 if safety_retry else params.volfrac
+        retry_member = (
+            min_member
+            if safety_retry
+            else max(min_member, 2.0 * float(design_domain.pitch))
+        )
+        if retry_volfrac <= 0.9:
+            p2 = _one_pass(
+                retry_volfrac,
+                pass_idx=2,
+                warm=p1["result"].density,
+                member_floor_mm=retry_member,
+            )
+            sf_exp2 = p2["verify_export"].worst_safety_factor
+            res.topopt["retry"] = {
+                "trigger": "safety" if safety_retry else "sf_gap",
+                "volfrac_first": params.volfrac,
+                "volfrac_second": retry_volfrac,
+                "sf_export_first": sf_exp,
+                "sf_export_second": sf_exp2,
+                "sf_ratio_first": sf_ratio,
+                "min_member_mm": retry_member,
+                "warm_start": "pass1_density",
+                "first_export_degenerate": exp_degenerate or None,
+            }
+            res.timings["simp_s"] += p2["simp_s"]
+            res.timings["verify_s"] += p2["verify_s"]
+            p1_ok = max(int(p1["n_components"]), int(p1["n_bodies_export"])) <= 1
+            p2_ok = max(int(p2["n_components"]), int(p2["n_bodies_export"])) <= 1
+            if (p2_ok and not p1_ok) or (
+                p2_ok == p1_ok and sf_exp2 is not None and (sf_exp is None or sf_exp2 > sf_exp)
+            ):
+                best = p2
 
     result = best["result"]
     opt_mesh = best["opt_mesh"]
@@ -2196,14 +2230,22 @@ def run_topopt_pipeline(  # noqa: C901
         # pessimistic) or the smooth skin bridges a severed section (export
         # optimistic). sf_export governs the printed part, but the agent
         # should inspect the thin junction instead of trusting either blind.
-        lo, hi = sorted([verify.worst_safety_factor, verify_export.worst_safety_factor])
-        if hi > 0 and lo / hi < 0.5:
+        sf_ratio = verify.worst_safety_factor / max(verify_export.worst_safety_factor, 1e-9)
+        if sf_ratio > 2.0:
+            retry_fired = res.topopt.get("retry", {}).get("trigger") == "sf_gap"
+            advice = (
+                "inspect the thin junction; sf_export governs the printed part"
+                if retry_fired
+                else "smoothing removed load-bearing material; increase min_member_mm "
+                "or lower extract_sigma_px to reduce loss"
+            )
             res.topopt["warnings"].append(
-                f"sf_mask {verify.worst_safety_factor} diverges "
-                f"{hi / max(lo, 1e-9):.0f}x from sf_export "
-                f"{verify_export.worst_safety_factor} — mask and smoothed mesh "
-                "disagree on a thin junction; sf_export governs the printed "
-                "part but inspect the connection before committing"
+                f"sf_mask is {sf_ratio:.1f}x sf_export — {advice}"
+            )
+        elif sf_ratio < 0.5:
+            res.topopt["warnings"].append(
+                f"sf_export is {1.0 / max(sf_ratio, 1e-9):.1f}x sf_mask — the smoothed "
+                "mesh and voxel mask model different load paths; inspect the geometry"
             )
     if verify.grid.get("dofs"):
         verification["dofs"] = verify.grid["dofs"]
@@ -2230,6 +2272,9 @@ def run_topopt_pipeline(  # noqa: C901
     res.topopt.update(
         {
             "iterations": result.iterations,
+            "iterations_total": int(
+                (res.topopt.get("multires") or {}).get("coarse_iterations", 0)
+            ) + result.iterations,
             "converged": result.converged,
             # how the run ended — converged | infeasible_target | limit_cycle
             # | degenerate | budget_exhausted (topopt.py TopOptResult.status)
@@ -2651,6 +2696,21 @@ def run_infill_pipeline(  # noqa: C901
     )
     meta["scope_requested"] = opt.infill_scope
     res.topopt["infill"] = meta
+    if meta.get("degenerated_to_solid"):
+        if int(meta.get("core_cells") or 0) == 0:
+            warning = "no interior cells — the part is too thin for shell+infill entirely"
+        else:
+            warning = (
+                "infill degenerated to solid — the part is too thin for "
+                f"infill_period_mm={opt.infill_period_mm}; increase the period "
+                "or thicken the part"
+            )
+        res.topopt["warnings"].append(warning)
+    elif opt.infill_scope == "guided" and int(meta.get("interior_cells") or 0) == 0:
+        res.topopt["warnings"].append(
+            "guided SIMP retained no interior cells for lattice — the export is shell-only; "
+            "use infill_scope='full' or revise the guided topology"
+        )
     res.timings["infill_field_s"] = round(time.monotonic() - t_field, 2)
 
     opt_dir = out_dir / "topopt"

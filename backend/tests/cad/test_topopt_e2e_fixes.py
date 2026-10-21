@@ -12,6 +12,13 @@ T8 — a fixed/load region that resolves to zero nodes is a hard error:
      optimizing under constraints that are absent from the geometry produces
      a meaningless result (previously it was a buried warning while the run
      shipped a blob).
+M4 — res.topopt["iterations_total"] counts the multires coarse pass too:
+     `iterations` stays the fine-phase count for backward compat.
+M8 — an sf_mask >> sf_export divergence (>3x) means smoothing deleted
+     load-bearing members; it must retry at the SAME volfrac with a
+     thicker min-member floor, not bump the volume fraction.
+M2 — a shell+infill run degenerating to fully solid surfaces an
+     actionable warning instead of silently shipping the heavier part.
 """
 
 from __future__ import annotations
@@ -327,3 +334,123 @@ def test_unresolved_fixed_region_is_a_hard_error(tmp_path: Path) -> None:
     assert not res.ok
     assert "did not resolve" in (res.error or "")
     assert "hole" in res.error
+
+
+def test_multires_reports_iterations_total(tmp_path: Path) -> None:
+    """M4: under multires `iterations` counts only the fine phase — a run
+    that reports "converged, 2 iters" after a 10-iter coarse pass misleads
+    the agent about what the optimization cost. `iterations_total` must
+    report coarse + fine while `iterations` keeps the fine-phase count."""
+    src = tmp_path / "b.stl"
+    _box_mesh().export(str(src))
+    res = _run(
+        src,
+        tmp_path / "mr",
+        # force the coarse pass below the default 4000-cell payoff floor
+        RuntimeSettings(topopt_multires_min_cells=100),
+    )
+    assert res.ok, res.error
+    mr = res.topopt.get("multires")
+    assert mr is not None, "multires coarse pass did not run"
+    assert mr["coarse_iterations"] > 0
+    assert (
+        res.topopt["iterations_total"]
+        == mr["coarse_iterations"] + res.topopt["iterations"]
+    )
+
+
+def test_sf_gap_divergence_triggers_thick_member_retry(monkeypatch, tmp_path: Path) -> None:
+    """M8: sf_mask >> sf_export means extraction smoothing deleted
+    load-bearing members (the mask solve verified the voxel structure, the
+    export solve the smoothed printed mesh). A >3x gap must retry at the
+    SAME volfrac with a thicker min-member floor — more volume is the wrong
+    cure — and the retry record must not be shadowed by a second warning."""
+    import cadx.cad.fem.analyze as analyze_mod
+    from cadx.cad.engine import run_topopt_pipeline
+
+    real = analyze_mod.run_fem_domain
+
+    def spy(domain, solid_mask, load_cases, material_name="", **kw):
+        rep = real(domain, solid_mask, load_cases, material_name, **kw)
+        # deterministic 5x mask/export gap, safely above the 1.5 sf floor so
+        # the safety (volfrac) retry cannot steal the trigger
+        sf = 10.0 if str(kw.get("suffix", "")).endswith("_export") else 50.0
+        for c in rep.cases:
+            c.safety_factor = sf
+        return rep
+
+    monkeypatch.setattr(analyze_mod, "run_fem_domain", spy)
+
+    src = tmp_path / "b.stl"
+    _box_mesh().export(str(src))
+    res = run_topopt_pipeline(
+        mesh_path=src,
+        out_dir=tmp_path / "o",
+        load_cases=[_cantilever_case()],
+        optimize={
+            "target_volume_fraction": 0.5,
+            "max_iterations": 4,
+            "safety_factor_min": 1.5,
+        },
+        material="pla",
+        voxel_mm=VOXEL_MM,
+        scan_anchors=False,
+        runtime=RuntimeSettings(),
+    )
+    assert res.ok, res.error
+    retry = res.topopt.get("retry")
+    assert retry is not None, "sf_gap retry did not fire on a 5x divergence"
+    assert retry["trigger"] == "sf_gap"
+    # the divergence retry holds the volume target — it thickens members
+    # instead of adding material
+    assert retry["volfrac_second"] == retry["volfrac_first"]
+    assert retry["sf_ratio_first"] == pytest.approx(5.0)
+    assert retry["min_member_mm"] >= 2 * res.mesh["pitch_mm"]
+    # the retry record documents the divergence — no duplicate warning
+    assert not any(
+        "smoothing removed load-bearing material" in w for w in res.topopt["warnings"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("interior_cells", "expected"),
+    [
+        (0, "no interior cells — the part is too thin for shell+infill entirely"),
+        (5, "infill degenerated to solid — the part is too thin for infill_period_mm=8.0"),
+    ],
+)
+def test_infill_degenerate_to_solid_warns(
+    monkeypatch, tmp_path: Path, interior_cells: int, expected: str
+) -> None:
+    """M2: a part too thin for shell+infill used to ship fully solid with no
+    hint. infill.py flags the degeneration in its meta (core_cells==0 means
+    no room for a shell+core split at all); the pipeline must surface
+    an actionable warning either way."""
+    import cadx.cad.fem.infill as infill_mod
+    from cadx.cad.engine import run_infill_pipeline
+
+    real = infill_mod.infill_field
+
+    def spy(domain, p, energies, dirs, passive, void, **kw):
+        rho, mask, meta = real(domain, p, energies, dirs, passive, void, **kw)
+        meta["degenerated_to_solid"] = True
+        meta["interior_cells"] = interior_cells
+        meta["core_cells"] = interior_cells
+        return rho, mask, meta
+
+    monkeypatch.setattr(infill_mod, "infill_field", spy)
+
+    src = tmp_path / "b.stl"
+    _box_mesh().export(str(src))
+    res = run_infill_pipeline(
+        mesh_path=src,
+        out_dir=tmp_path / "o",
+        load_cases=[_cantilever_case()],
+        optimize={"infill_scope": "full"},  # skip the guided coarse SIMP
+        material="pla",
+        voxel_mm=VOXEL_MM,
+        runtime=RuntimeSettings(),
+    )
+    assert res.ok, res.error
+    assert res.topopt["infill"]["degenerated_to_solid"] is True
+    assert any(expected in w for w in res.topopt["warnings"])
