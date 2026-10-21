@@ -41,8 +41,9 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from scipy import sparse
+from scipy import ndimage, sparse
 
+from cadx.cad.fem.extract import _bridge_components, _connectivity_mask
 from cadx.cad.fem.solver import _fixed_dofs, _ke_unit, assemble, domain_edof
 from cadx.cad.fem.topopt import (
     _FLIP_FRAC,
@@ -73,6 +74,39 @@ _ER_DEFAULT = 0.02
 # compliance is "plateaued" below this relative improvement over the
 # _MOVE_SAT_WINDOW window (same ~1% threshold simp's stall detection uses)
 _PLATEAU_IMP = 0.01
+
+
+def _bond_keep(
+    keep3: np.ndarray,
+    required3: np.ndarray,
+    walkable3: np.ndarray,
+) -> tuple[np.ndarray, int, int, int]:
+    """Re-bond a 3-D keep mask to the passive skeleton.
+
+    Keep the largest structural component as the bridge root even when a
+    coarse warm-start has severed it from every passive anchor; also retain
+    all components carrying load/fix/keep cells. Drop only smaller islands
+    with no required cell, then rejoin the survivors nearest-first through
+    `walkable` void cells. This is the same repair extraction runs
+    post-hoc — running it inside the loop keeps the ranking honest instead
+    of only fixing the export.
+
+    Returns (bonded mask, debris cells dropped, corridor cells added,
+    island count before bonding).
+    """
+    structure = ndimage.generate_binary_structure(3, 1)
+    labels, n_islands = ndimage.label(keep3, structure=structure)
+    if n_islands <= 1:
+        return keep3, 0, 0, n_islands
+    sizes = np.bincount(labels.ravel())[1:]
+    main_label = int(np.argmax(sizes)) + 1
+    # Preserve the largest structural body even if the warm-start severed it
+    # from every passive anchor. Also retain all components carrying a load
+    # or support; the shared extraction helper then drops only true debris.
+    required_or_main = required3 | (labels == main_label)
+    bonded, n_debris = _connectivity_mask(keep3, required_or_main)
+    bonded, n_bridged = _bridge_components(bonded, walkable3)
+    return bonded, n_debris, n_bridged, n_islands
 
 
 def beso(  # noqa: C901
@@ -116,6 +150,25 @@ def beso(  # noqa: C901
             converged=False,
             status="infeasible_target",  # passive floor is the whole domain
             warnings=["no free design cells — everything is kept/pinned"],
+        )
+    passive_frac = float(passive_solid.sum()) / nsolid
+    if passive_frac > params.volfrac:
+        # the pinned keep/load/fixed floor alone overshoots the target —
+        # every free cell drained still exceeds it; refuse honestly instead
+        # of iterating (the connectivity guard would even BRIDGE extra
+        # material into the structure on top of the floor)
+        return TopOptResult(
+            density=np.where(passive_solid, 1.0, RHO_MIN).astype(float),
+            iterations=0,
+            converged=False,
+            status="infeasible_target",
+            warnings=[
+                f"passive (keep/load/fixed) cells cover {passive_frac:.0%} of the "
+                f"part — above the requested volfrac {params.volfrac:.0%}; the "
+                "target is unreachable — reduce keep regions or raise "
+                "target_volume_fraction above the floor"
+            ],
+            passive_frac=passive_frac,
         )
 
     # ---- params that do not map onto a discrete optimizer ------------------
@@ -163,6 +216,48 @@ def beso(  # noqa: C901
     keep &= solid
     keep[pvoid] = False
     keep[passive_solid] = True
+
+    # connectivity guard: a kept island that never reaches a passive
+    # (load/fix) cell floats — the solve still returns a finite u on it
+    # but F·u explodes (~1e6+) and poisons the sensitivity ranking, which
+    # then churns into a limit cycle. Bond the kept set every iteration;
+    # `bridge_pin` one-way ratchets the corridor cells the bridge added so
+    # the next keep-ranking cannot immediately remove them again (the
+    # corridor would otherwise flap in/out of the kept set and the guard
+    # itself becomes the oscillation source).
+    bridge_pin = np.zeros(domain.cell_count, dtype=bool)
+    pvoid3 = pvoid.reshape(domain.dims)
+    # the guard's anchor set: passive cells PLUS every cell carrying a fixed
+    # or loaded dof — a load island disconnected from the supports is
+    # exactly the F·u explosion this guard exists to prevent, and a caller
+    # may pin nothing at all (passive empty) while the load still floats.
+    # Deriving it from `cases` keeps the semantics correct either way.
+    required_flat = passive_solid.copy()
+    if params.beso_connectivity:
+        edof = domain_edof(domain)
+        for fixed, F in cases:
+            anchor_dofs = np.concatenate(
+                [_fixed_dofs(fixed, F.size // 3), np.flatnonzero(F)]
+            )
+            if anchor_dofs.size:
+                required_flat |= np.isin(edof, anchor_dofs).any(axis=1)
+    required3 = required_flat.reshape(domain.dims)
+    resid_warned = False
+    if params.beso_connectivity:
+        # a multires/warm-start x0 can already be disconnected — bond once
+        # before the first solve so iteration 1 sees a sane field
+        keep3 = keep.reshape(domain.dims)
+        bonded3, n_debris0, n_bridged0, _ = _bond_keep(
+            keep3, required3, domain.solid & ~keep3 & ~pvoid3
+        )
+        bonded0 = bonded3.ravel()
+        bridge_pin |= bonded0 & ~keep
+        keep = bonded0
+        if n_debris0 or n_bridged0:
+            warnings.append(
+                f"connectivity guard re-bonded the initial keep set — dropped "
+                f"{n_debris0} floating cells, added {n_bridged0} bridge cells"
+            )
 
     # mirror symmetry: symmetrize the filtered sensitivity NUMBERS before
     # the keep-ranking — the kept set then mirrors across the mid-plane too
@@ -359,7 +454,10 @@ def beso(  # noqa: C901
         # the numbers so ~V_k·nsolid cells stay solid (a bisection can't
         # split a tie at the boundary; stable argsort keeps the cut exact
         # and deterministic)
-        n_keep = round(v_k * nsolid) - npassive
+        # pinned bridge corridors are force-kept below — subtract them from
+        # the ranking budget so vol_now still tracks v_k (the ranking then
+        # drops the weakest cells as compensation) instead of overshooting
+        n_keep = round(v_k * nsolid) - npassive - int(bridge_pin.sum())
         n_keep = min(max(n_keep, 0), ndesign)
         if n_keep >= ndesign:
             sel = np.ones(ndesign, dtype=bool)
@@ -373,7 +471,40 @@ def beso(  # noqa: C901
         keep = np.zeros(ncells, dtype=bool)
         keep[des_idx] = sel
         keep[passive_solid] = True
-        change = float(np.mean(sel != keep_prev[des_idx]))
+        n_debris = n_bridged = n_isl = n_resid = 0
+        if params.beso_connectivity:
+            # restore corridor cells the ranking just removed, then re-bond
+            keep |= bridge_pin
+            keep3 = keep.reshape(domain.dims)
+            bonded3, n_debris, n_bridged, n_isl = _bond_keep(
+                keep3, required3, domain.solid & ~keep3 & ~pvoid3
+            )
+            bonded = bonded3.ravel()
+            # pins inside a dropped debris island are dead weight — the
+            # `& bonded` clears them so the pin set only holds live
+            # corridor cells
+            bridge_pin = (bridge_pin | (bonded & ~keep)) & bonded
+            if sym_axis is not None:
+                # mirror the pins like the sensitivity symmetrization so the
+                # corridor survives on both sides of the mid-plane (same
+                # asymmetry caveat as the passive re-pinning)
+                bridge_pin |= np.flip(
+                    bridge_pin.reshape(domain.dims), axis=sym_axis
+                ).ravel()
+                bridge_pin &= design
+            keep = bonded | bridge_pin
+            structure = ndimage.generate_binary_structure(3, 1)
+            n_resid = int(
+                ndimage.label(keep.reshape(domain.dims), structure=structure)[1]
+            )
+            if n_resid > 1 and not resid_warned:
+                warnings.append(
+                    f"connectivity guard left {n_resid} disconnected components "
+                    f"at iteration {it} — the bridge budget is exhausted; the "
+                    "export may drop islands"
+                )
+                resid_warned = True
+        change = float(np.mean(keep[des_idx] != keep_prev[des_idx]))
         vol_now = float(keep.sum()) / nsolid
 
         rec = {
@@ -386,6 +517,14 @@ def beso(  # noqa: C901
             "penal": round(pen, 3),
             "elapsed_s": round(time.monotonic() - t0, 1),
         }
+        if n_debris:
+            rec["n_debris_dropped"] = n_debris
+        if n_bridged:
+            rec["n_bridged"] = n_bridged
+        if n_isl > 1:
+            rec["n_islands"] = n_isl
+        if n_resid > 1:
+            rec["n_islands_residual"] = n_resid
         rec.update(_phase_timings())
         history.append(rec)
         if progress_cb:
@@ -426,7 +565,9 @@ def beso(  # noqa: C901
                     f"above {_FLIP_FRAC:.1%} of design cells for {flip_streak} "
                     "consecutive iterations with <1% compliance improvement; "
                     "extracting the current density field. Retry with "
-                    "symmetry=<plane> or a different filter/threshold"
+                    "symmetry=<plane> or a different filter/threshold — "
+                    "boundary-cell churn is common in beso; sf_export is the "
+                    "quality gate (the current design may still be sound)"
                 )
                 stop = "limit_cycle"
                 break
@@ -437,6 +578,17 @@ def beso(  # noqa: C901
                 )
                 settled = True
                 break
+
+    # a keep set that stayed multi-component after the last guard pass
+    # exports as floating islands — flag it on the result, not just the log
+    if params.beso_connectivity:
+        structure = ndimage.generate_binary_structure(3, 1)
+        n_comp = int(ndimage.label(keep.reshape(domain.dims), structure=structure)[1])
+        if n_comp > 1:
+            warnings.append(
+                f"final keep set has {n_comp} disconnected components — "
+                "export may drop islands"
+            )
 
     # ---- outcome ----------------------------------------------------------
     density = _density()
