@@ -18,6 +18,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 import trimesh
 
@@ -276,3 +277,44 @@ def test_multires_default_on_with_opt_out(tmp_path: Path) -> None:
     )
     assert res_off.ok, res_off.error
     assert "multires" not in res_off.topopt
+
+
+def test_symmetry_plane_mismatch_warns() -> None:
+    """Mirror-averaging density across a plane the solid isn't symmetric
+    about distorts the load paths — the run must warn instead of silently
+    producing a mangled skeleton (observed: L-bracket at symmetry="xz",
+    a Y-flip on a Y-asymmetric part, stalling at SF 0.04)."""
+    from cadx.cad.fem.regions import resolve_case
+    from cadx.cad.fem.topopt import TopOptParams, passive_solid_mask, simp
+    from cadx.cad.fem.voxelize import VoxelDomain
+
+    # L-section: base plate (z<2) + wall (y<2), full in X — symmetric about
+    # the yz mid-plane (X-flip) only
+    solid = np.zeros((12, 8, 8), dtype=bool)
+    solid[:, :, :2] = True
+    solid[:, :2, :] = True
+    dom = VoxelDomain(
+        origin=np.zeros(3), pitch=1.0, dims=(12, 8, 8), solid=solid
+    )
+    fixed, F, _ = resolve_case(dom, _cantilever(), [])
+    passive = passive_solid_mask(dom, [], [fixed], [])
+
+    res = simp(
+        dom,
+        3500.0,
+        0.36,
+        [(fixed, F)],
+        passive,
+        TopOptParams(volfrac=0.5, rmin_mm=1.5, max_iter=3, symmetry="xz"),
+    )
+    assert any("not symmetric" in w for w in res.warnings)
+
+    res_ok = simp(
+        dom,
+        3500.0,
+        0.36,
+        [(fixed, F)],
+        passive,
+        TopOptParams(volfrac=0.5, rmin_mm=1.5, max_iter=3, symmetry="yz"),
+    )
+    assert not any("not symmetric" in w for w in res_ok.warnings)

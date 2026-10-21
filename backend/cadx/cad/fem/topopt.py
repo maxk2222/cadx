@@ -681,6 +681,23 @@ def simp(  # noqa: C901
     sym_axis: int | None = _SYM_AXES.get(params.symmetry) if params.symmetry else None
     if params.symmetry and sym_axis is None:
         warnings.append(f"unknown symmetry plane '{params.symmetry}' — ignored")
+    elif sym_axis is not None:
+        # domain sanity: mirroring density across a plane the solid itself is
+        # not symmetric about fights the load paths — observed: an L-bracket
+        # (bores at x=±30, wall at -Y, load at +Y front edge — X-symmetric,
+        # not Y-symmetric) run with symmetry="xz" stalled into a 0.33-volfrac
+        # skeleton at SF 0.04. Tell the caller the geometry doesn't support
+        # the chosen plane instead of silently distorting the design.
+        vox = domain.solid
+        mismatch = float(np.mean(vox != np.flip(vox, axis=sym_axis)))
+        if mismatch > 0.15:
+            plane_names = {0: "yz (X-flip)", 1: "xz (Y-flip)", 2: "xy (Z-flip)"}
+            warnings.append(
+                f"symmetry '{params.symmetry}' mirror-averages density across the "
+                f"{plane_names[sym_axis]} mid-plane, but {mismatch:.0%} of solid "
+                "voxels are not mirrored — the part is not symmetric about this "
+                "plane; the constraint distorts the load paths"
+            )
 
     def _symmetrize(xb: np.ndarray) -> np.ndarray:
         assert sym_axis is not None
