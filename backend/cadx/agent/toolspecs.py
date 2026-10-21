@@ -803,7 +803,8 @@ STRUCT_TOOLS = [
             "volfrac_ramp_iters": {
                 "type": "integer",
                 "description": "iterations for the volfrac_init -> target "
-                "ramp (default 20) — shorter tightens the budget sooner",
+                "staged ramp (default 40) — shorter schedules may advance "
+                "before the stress layout settles",
             },
             "warmstart": {
                 "type": "string",

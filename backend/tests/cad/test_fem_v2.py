@@ -5,6 +5,7 @@ SIMP extras (void, warm start, weights, per-cell E) and resampling."""
 from __future__ import annotations
 
 import math
+from itertools import pairwise
 from pathlib import Path
 
 import numpy as np
@@ -779,6 +780,35 @@ def test_simp_penal_continuation_records_ramp() -> None:
     pens = [h["penal"] for h in res.history]
     assert pens[0] < pens[-1]
     assert pens[-1] == pytest.approx(3.0)
+
+
+def test_simp_volfrac_continuation_is_staged_and_reaches_target() -> None:
+    """The material-rich start is held for a settle window at each volume
+    plateau rather than decreasing the bound every iteration."""
+    dom, fixed3, F = _cantilever()
+    res = simp(
+        dom,
+        E_PLA,
+        NU,
+        [(fixed3, F)],
+        np.zeros(dom.cell_count, dtype=bool),
+        TopOptParams(
+            volfrac=0.45,
+            volfrac_init=0.75,
+            volfrac_ramp_iters=24,
+            rmin_mm=4.0,
+            max_iter=40,
+            tol=0.01,
+            converge_patience=3,
+        ),
+    )
+    targets = [r["volfrac_target"] for r in res.history if "volfrac_target" in r]
+    stages = [r["volfrac_stage"] for r in res.history if "volfrac_stage" in r]
+    assert targets[0] == pytest.approx(0.75)
+    assert targets[-1] == pytest.approx(0.45)
+    assert all(b <= a for a, b in pairwise(targets))
+    assert len(set(stages)) >= 3
+    assert any("volfrac continuation" in warning for warning in res.warnings)
 
 
 def test_simp_passive_void_stays_empty() -> None:

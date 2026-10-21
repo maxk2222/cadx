@@ -422,6 +422,7 @@ def infill_field(
     *,
     guide_mask: np.ndarray | None = None,
     weights: np.ndarray | list[float] | None = None,
+    density_offset: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     """Build the shell+infill density field and occupancy mask.
 
@@ -475,6 +476,9 @@ def infill_field(
         dmax=p.dmax,
         alpha=p.alpha,
     )
+    if density_offset:
+        gradable = interior.ravel()
+        d[gradable] = np.clip(d[gradable] + float(density_offset), p.dmin, p.dmax)
 
     phase = _seed_phase(p.seed, p.infill_cell_mm)
     style = p.style

@@ -49,6 +49,7 @@ from cadx.cad.mesh_ops import (
     decimate,
     flat_base_ratio,
     is_flat_bottom,
+    keep_significant_components,
     mesh_analysis,
     mesh_to_solid,
     rest_on_xy_center,
@@ -1085,16 +1086,34 @@ def _spec_envelope_bounds(
     return np.stack([lo, hi]) if constrained else None
 
 
+def _spec_dims_from_dict(spec: dict[str, Any] | None) -> list[float | None] | None:
+    """Stated [X,Y,Z] envelope dimensions from an executor spec payload."""
+    if not isinstance(spec, dict):
+        return None
+    dims: list[float | None] = []
+    for key in ("length_x", "width_y", "height_z"):
+        row = spec.get(key)
+        value = row.get("value") if isinstance(row, dict) else None
+        source = row.get("source") if isinstance(row, dict) else None
+        dims.append(float(value) if source == "stated" and isinstance(value, int | float) else None)
+    return dims if any(d is not None for d in dims) else None
+
+
 def normalize_mesh_to_spec_envelope(
-    mesh: trimesh.Trimesh, spec_dims_mm: list[float | None]
+    mesh: trimesh.Trimesh,
+    spec_dims_mm: list[float | None],
+    *,
+    scale_fallback: bool = True,
+    slack_mm: float | None = None,
+    slack_frac: float | None = None,
 ) -> tuple[trimesh.Trimesh, dict[str, Any]]:
     """Clip an out-of-envelope topopt input back to the declared spec dims.
 
     The clip is a manifold boolean intersection with the spec-envelope box
-    (same engine as the rest of the codebase). A failed/empty boolean falls
-    back to uniform scale-to-fit — only on a watertight input, which scaling
-    keeps watertight-plausible; leaky geometry passes through unchanged with
-    a warning. Never raises, never blocks the run.
+    (same engine as the rest of the codebase). A failed/empty boolean may
+    fall back to uniform scale-to-fit on a watertight input. Export callers
+    can disable that fallback so a failed trim is surfaced instead of
+    silently rescaling optimized geometry.
 
     Returns ``(mesh, report)``; report keys: ``input_bbox``/``spec_bbox``
     (flat [x, y, z] mm extents — the frontend's TopOptPanel contract),
@@ -1112,8 +1131,13 @@ def normalize_mesh_to_spec_envelope(
         return mesh, report
     if all(d and d > 0 for d in spec_dims_mm):
         report["spec_bbox"] = [round(float(d), 3) for d in spec_dims_mm]
+    abs_slack = _ENVELOPE_CLIP_SLACK_MM if slack_mm is None else max(0.0, float(slack_mm))
+    rel_slack = _ENVELOPE_CLIP_SLACK_FRAC if slack_frac is None else max(0.0, float(slack_frac))
     over = any(
-        ext[ax] > d + _ENVELOPE_CLIP_SLACK_MM or ext[ax] > d * (1.0 + _ENVELOPE_CLIP_SLACK_FRAC)
+        ext[ax] > float(d) + abs_slack
+        or ext[ax] > float(d) * (1.0 + rel_slack)
+        or bounds[0, ax] < env[0, ax] - abs_slack
+        or bounds[1, ax] > env[1, ax] + abs_slack
         for ax, d in enumerate(spec_dims_mm)
         if d and d > 0
     )
@@ -1135,6 +1159,10 @@ def normalize_mesh_to_spec_envelope(
     if "warning" not in report:
         report["warning"] = "spec-envelope clip produced no usable volume — input left as-is"
 
+    if not scale_fallback:
+        report["warning"] += " — scale fallback disabled"
+        return mesh, report
+
     # bounds-based fallback: a watertight solid stays watertight under uniform
     # scaling about the origin (XY-centred/on-plane inputs keep the contract)
     if mesh.is_watertight:
@@ -1151,6 +1179,30 @@ def normalize_mesh_to_spec_envelope(
             report["warning"] += " — fell back to uniform scale-to-fit"
             return out, report
     return mesh, report
+
+
+def _clip_export_to_spec_envelope(
+    mesh: trimesh.Trimesh,
+    spec_dims_mm: list[float | None] | None,
+    *,
+    label: str,
+) -> tuple[trimesh.Trimesh, dict[str, Any] | None, bool, list[str]]:
+    """Strictly clip an optimized export without scaling failed candidates."""
+    if not spec_dims_mm:
+        return mesh, None, True, []
+    clipped, report = normalize_mesh_to_spec_envelope(
+        mesh,
+        spec_dims_mm,
+        scale_fallback=False,
+        slack_mm=0.25,
+        slack_frac=0.01,
+    )
+    warnings = []
+    if report.get("input_normalized"):
+        warnings.append(f"{label} clipped to the stated spec envelope")
+    if report.get("warning"):
+        warnings.append(f"{label} could not be clipped to the spec envelope: {report['warning']}")
+    return clipped, report, not bool(report.get("warning")), warnings
 
 
 def _auto_warm_density(out_dir: Path, domain: Any) -> tuple[np.ndarray | None, str | None]:
@@ -1309,9 +1361,7 @@ def _resolve_topopt_cases(
             )
         if not fixed3.any() or not np.any(F):
             if warn:
-                warn_list.append(
-                    f"case '{c.name}' skipped — no fixed region or no effective load"
-                )
+                warn_list.append(f"case '{c.name}' skipped — no fixed region or no effective load")
             return
         r_resolved.append((fixed3, F))
         r_weights.append(weight)
@@ -1331,9 +1381,7 @@ def _resolve_topopt_cases(
             for vi, fvar in enumerate(variants):
                 if len(r_resolved) >= max_cases:
                     if warn:
-                        warn_list.append(
-                            f"direction-cone expansion capped at {max_cases} cases"
-                        )
+                        warn_list.append(f"direction-cone expansion capped at {max_cases} cases")
                     break
                 vc = c.model_copy(deep=True)
                 vc.name = f"{c.name}_cone{vi + 1}"
@@ -1573,7 +1621,11 @@ def run_topopt_pipeline(  # noqa: C901
     res.topopt["input_bbox"] = [round(float(v), 3) for v in (mesh.bounds[1] - mesh.bounds[0])]
     res.topopt["spec_bbox"] = None
     res.topopt["input_normalized"] = False
-    dims_spec = spec_dims_mm if spec_dims_mm is not None else (optimize or {}).get("spec_dims_mm")
+    dims_spec = (
+        spec_dims_mm
+        if spec_dims_mm is not None
+        else (optimize or {}).get("spec_dims_mm") or _spec_dims_from_dict(spec)
+    )
     if dims_spec:
         mesh, norm_rep = normalize_mesh_to_spec_envelope(mesh, list(dims_spec))
         res.topopt["spec_bbox"] = norm_rep["spec_bbox"]
@@ -1744,7 +1796,9 @@ def run_topopt_pipeline(  # noqa: C901
         keep_list += auto_keeps
         n_auto_keeps = len(auto_keeps)
     res.topopt["auto_keep_applied"] = bool(n_auto_keeps)
-    res.topopt.setdefault("warnings", []).extend(empty_region_warnings(part_domain, keep_list, anchors))
+    res.topopt.setdefault("warnings", []).extend(
+        empty_region_warnings(part_domain, keep_list, anchors)
+    )
     res.topopt.setdefault("warnings", []).extend(
         empty_region_warnings(part_domain, list(opt.void_regions), anchors)
     )
@@ -1753,9 +1807,7 @@ def run_topopt_pipeline(  # noqa: C901
     # passive pins run on the DESIGN domain: grown cells sharing a
     # fix/load node stay material — the load-introduction patch can use
     # the extra design space (masks share the grid, resolved on the part)
-    passive = passive_solid_mask(
-        design_domain, [keep_cells], fixed_node_masks, load_node_masks
-    )
+    passive = passive_solid_mask(design_domain, [keep_cells], fixed_node_masks, load_node_masks)
 
     # preflight: the pinned keep/load/fixed floor alone exceeding the
     # requested volfrac makes the target unreachable regardless of what
@@ -1820,7 +1872,7 @@ def run_topopt_pipeline(  # noqa: C901
         beso_er=float(getattr(opt, "beso_er", 0.02) or 0.02),
         mma_final_beta=opt.mma_final_beta,
         loadpath_corridor_mm=opt.loadpath_corridor_mm,
-        volfrac_ramp_iters=opt.volfrac_ramp_iters or 20,
+        volfrac_ramp_iters=opt.volfrac_ramp_iters or 40,
         aniso=(mat.aniso_z, float(mat.aniso_axis)) if mat.aniso_z != 1.0 else None,
         case_objective=str(getattr(opt, "case_objective", "weighted") or "weighted"),
         max_displacement_mm=opt.max_displacement_mm,
@@ -1977,6 +2029,7 @@ def run_topopt_pipeline(  # noqa: C901
         pass_idx: int = 1,
         warm: np.ndarray | None = None,
         member_floor_mm: float | None = None,
+        crisp_extraction: bool = False,
     ) -> dict[str, Any]:
         """One SIMP run at `volfrac` + extraction, smoothing and both FEM
         verifications. Returns the pieces needed for artifacts/retry.
@@ -2026,22 +2079,43 @@ def run_topopt_pipeline(  # noqa: C901
             void_cells=void_cells.reshape(design_domain.dims) | ~design_domain.solid,
             min_member_mm=effective_member,
             min_gap_mm=min_gap,
-            smooth_iterations=s.topopt_smooth_iterations,
-            extract_smooth=opt.extract_smooth,
-            sigma_px=opt.extract_sigma_px,
+            smooth_iterations=0 if crisp_extraction else s.topopt_smooth_iterations,
+            extract_smooth=opt.extract_smooth and not crisp_extraction,
+            sigma_px=0.0 if crisp_extraction else opt.extract_sigma_px,
             volume_preserve=opt.volume_preserve,
         )
-        out["extract_warnings"] = extract_warnings
         out["n_components"] = n_components
         out["extract"] = extract_info
         # floor-pinned smoothing: keeps a flat manufacturing base flat
-        opt_mesh = smooth_preserve(opt_mesh, iterations=4, pin_floor=base_flat)
+        if not crisp_extraction:
+            opt_mesh = smooth_preserve(opt_mesh, iterations=4, pin_floor=base_flat)
+        opt_mesh, output_envelope, output_envelope_ok, envelope_warnings = (
+            _clip_export_to_spec_envelope(
+                opt_mesh, list(dims_spec) if dims_spec else None, label="smoothed export"
+            )
+        )
+        extract_warnings.extend(envelope_warnings)
+        if output_envelope is not None:
+            out["output_envelope"] = output_envelope
+        out["output_envelope_ok"] = output_envelope_ok
+        out["extract_warnings"] = extract_warnings
+        mask_volume = float(final_mask.sum()) * design_domain.pitch**3
+        volfrac_mask = float(final_mask.sum()) / max(int(design_domain.solid.sum()), 1)
+        extract_info["vol_error_pct"] = round(
+            100.0 * (abs(float(opt_mesh.volume)) - mask_volume) / max(mask_volume, 1e-9), 3
+        )
+        out["volfrac_export"] = abs(float(opt_mesh.volume)) / max(
+            float(design_domain.solid_count) * design_domain.pitch**3, 1e-9
+        )
+        out["volfrac_mask"] = volfrac_mask
+        extract_info["vol_error_pp"] = round(100.0 * (out["volfrac_export"] - volfrac_mask), 3)
+        out["crisp_extraction"] = crisp_extraction
         out["opt_mesh"] = opt_mesh
         out["final_mask"] = final_mask
-        # body count of the actual export mesh — smoothing can merge or
-        # split mask-space components; this is the number the printed part
-        # is judged by
-        out["n_bodies_export"] = int(opt_mesh.body_count)
+        # Surface components include nested cavity walls. The physical body
+        # count is updated from the re-voxelized export solid below.
+        out["n_surface_components"] = int(opt_mesh.body_count)
+        out["n_bodies_export"] = None
 
         # thin-member metrics (printability feedback for the agent)
         edt = ndimage.distance_transform_edt(final_mask)
@@ -2080,6 +2154,12 @@ def run_topopt_pipeline(  # noqa: C901
         # pitch: the mesh is smooth, so verification fidelity stays nominal
         try:
             domain_exp = voxelize(opt_mesh, req_voxel, max_elements or s.fem_max_elements)
+            out["n_bodies_export"] = int(
+                ndimage.label(
+                    domain_exp.solid,
+                    structure=ndimage.generate_binary_structure(3, 1),
+                )[1]
+            )
             verify_exp = run_fem_domain(
                 domain_exp,
                 domain_exp.solid,
@@ -2119,8 +2199,8 @@ def run_topopt_pipeline(  # noqa: C901
     sf_exp = p1["verify_export"].worst_safety_factor
     sf_mask_first = p1["verify"].worst_safety_factor
     sf_ratio = (
-        sf_mask_first / sf_exp
-        if sf_mask_first is not None and sf_exp is not None and sf_exp > 0
+        max(sf_mask_first, sf_exp) / max(min(sf_mask_first, sf_exp), 1e-9)
+        if sf_mask_first is not None and sf_exp is not None
         else None
     )
     # A degenerate export or missed safety floor needs more volume. A large
@@ -2129,46 +2209,91 @@ def run_topopt_pipeline(  # noqa: C901
     exp_span = float(np.linalg.norm(domain.pitch * np.asarray(domain.dims)))
     exp_degenerate = (
         p1.get("export_solve_ok") is False
+        or p1.get("output_envelope_ok") is False
         or any((c.compliance_j or 1.0) <= 0 for c in p1["verify_export"].cases)
         or any((c.max_disp_mm or 0.0) > 10 * exp_span for c in p1["verify_export"].cases)
     )
-    safety_retry = exp_degenerate or (
-        sf_exp is not None and sf_exp < opt.safety_factor_min
-    )
+    safety_retry = exp_degenerate or (sf_exp is not None and sf_exp < opt.safety_factor_min)
     gap_retry = sf_ratio is not None and sf_ratio > 3.0
-    if (safety_retry or gap_retry) and (cancelled is None or not cancelled()):
+    connectivity_retry = (
+        p1.get("n_bodies_export") is None
+        or max(int(p1["n_components"]), int(p1["n_bodies_export"])) > 1
+    )
+    # Stated spec envelopes intentionally allow a shrunken export; avoid
+    # replacing that geometry with a crisp full-boundary retry.
+    volume_retry = not dims_spec and abs(float(p1["extract"].get("vol_error_pp") or 0.0)) > 5.0
+    retry_needed = safety_retry or gap_retry or connectivity_retry or volume_retry
+    if retry_needed and (cancelled is None or not cancelled()):
         retry_volfrac = params.volfrac + 0.1 if safety_retry else params.volfrac
         retry_member = (
-            min_member
-            if safety_retry
-            else max(min_member, 2.0 * float(design_domain.pitch))
+            max(min_member, 2.0 * design_domain.pitch)
+            if gap_retry or connectivity_retry
+            else min_member
         )
+        retry_crisp = not dims_spec and (gap_retry or connectivity_retry or volume_retry)
         if retry_volfrac <= 0.9:
             p2 = _one_pass(
                 retry_volfrac,
                 pass_idx=2,
                 warm=p1["result"].density,
                 member_floor_mm=retry_member,
+                crisp_extraction=retry_crisp,
             )
             sf_exp2 = p2["verify_export"].worst_safety_factor
+            trigger_reasons = [
+                reason
+                for enabled, reason in (
+                    (safety_retry, "safety"),
+                    (gap_retry, "sf_gap"),
+                    (connectivity_retry, "connectivity"),
+                    (volume_retry, "volume_preserve"),
+                )
+                if enabled
+            ]
             res.topopt["retry"] = {
-                "trigger": "safety" if safety_retry else "sf_gap",
+                "trigger": trigger_reasons[0],
+                "triggers": trigger_reasons,
                 "volfrac_first": params.volfrac,
                 "volfrac_second": retry_volfrac,
                 "sf_export_first": sf_exp,
                 "sf_export_second": sf_exp2,
                 "sf_ratio_first": sf_ratio,
                 "min_member_mm": retry_member,
+                "crisp_extraction": retry_crisp,
                 "warm_start": "pass1_density",
                 "first_export_degenerate": exp_degenerate or None,
             }
             res.timings["simp_s"] += p2["simp_s"]
             res.timings["verify_s"] += p2["verify_s"]
-            p1_ok = max(int(p1["n_components"]), int(p1["n_bodies_export"])) <= 1
-            p2_ok = max(int(p2["n_components"]), int(p2["n_bodies_export"])) <= 1
-            if (p2_ok and not p1_ok) or (
-                p2_ok == p1_ok and sf_exp2 is not None and (sf_exp is None or sf_exp2 > sf_exp)
-            ):
+            p1_ok = (
+                p1.get("output_envelope_ok") is not False
+                and p1.get("n_bodies_export") is not None
+                and max(int(p1["n_components"]), int(p1["n_bodies_export"])) <= 1
+            )
+            p2_ok = (
+                p2.get("output_envelope_ok") is not False
+                and p2.get("n_bodies_export") is not None
+                and max(int(p2["n_components"]), int(p2["n_bodies_export"])) <= 1
+            )
+            p2_sf_mask = p2["verify"].worst_safety_factor
+            p2_ratio = (
+                max(p2_sf_mask, sf_exp2) / max(min(p2_sf_mask, sf_exp2), 1e-9)
+                if p2_sf_mask is not None and sf_exp2 is not None
+                else None
+            )
+            p1_quality = (
+                p1_ok,
+                abs(float(p1["extract"].get("vol_error_pp") or 0.0)) <= 5.0,
+                sf_ratio is None or sf_ratio <= 3.0,
+                float(sf_exp or 0.0),
+            )
+            p2_quality = (
+                p2_ok,
+                abs(float(p2["extract"].get("vol_error_pp") or 0.0)) <= 5.0,
+                p2_ratio is None or p2_ratio <= 3.0,
+                float(sf_exp2 or 0.0),
+            )
+            if p2_quality > p1_quality:
                 best = p2
 
     result = best["result"]
@@ -2187,14 +2312,21 @@ def run_topopt_pipeline(  # noqa: C901
         "compliance_export_j": [c.compliance_j for c in verify_export.cases],
         "sf_mask": verify.worst_safety_factor,
         "sf_export": verify_export.worst_safety_factor,
+        "sf_ratio": (
+            max(verify.worst_safety_factor, verify_export.worst_safety_factor)
+            / max(min(verify.worst_safety_factor, verify_export.worst_safety_factor), 1e-9)
+            if verify.worst_safety_factor is not None
+            and verify_export.worst_safety_factor is not None
+            else None
+        ),
+        "volfrac_export": best["volfrac_export"],
+        "vol_error_pp": best["extract"].get("vol_error_pp"),
         "max_disp_export_mm": max((c.max_disp_mm for c in verify_export.cases), default=None),
         "max_vm_export_mpa": max((c.max_vm_mpa for c in verify_export.cases), default=None),
         "gray_fraction": best["extract"].get("gray_fraction"),
         "vol_error_pct": best["extract"].get("vol_error_pct"),
         # solid fraction of the design space the extracted mask actually keeps
-        "volfrac_mask": round(
-            float(final_mask.sum()) / max(int(design_domain.solid.sum()), 1), 4
-        ),
+        "volfrac_mask": round(float(final_mask.sum()) / max(int(design_domain.solid.sum()), 1), 4),
         "solver_used": params.solver,
     }
     if result.history and result.history[-1].get("beta") is not None:
@@ -2228,6 +2360,17 @@ def run_topopt_pipeline(  # noqa: C901
         # the export solve crashed and the mask report was substituted —
         # sf_export is a label, not a measurement
         verification["valid"] = False
+    elif best.get("output_envelope_ok") is False:
+        verification["valid"] = False
+        res.topopt["warnings"].append(
+            "smoothed export remains outside the stated spec envelope — "
+            "manufacturing verification is invalid"
+        )
+    elif best.get("n_bodies_export") is None:
+        verification["valid"] = False
+        res.topopt["warnings"].append(
+            "physical export body count is unverified because the export could not be re-voxelized"
+        )
     elif verify_export.worst_safety_factor is None:
         # every export case was skipped (e.g. load region missed the
         # smoothed mesh) — no export evidence exists at all
@@ -2244,6 +2387,23 @@ def run_topopt_pipeline(  # noqa: C901
         )
     else:
         verification["valid"] = True
+    if verification["sf_ratio"] is not None and verification["sf_ratio"] > 3.0:
+        verification["valid"] = False
+        res.topopt["warnings"].append(
+            f"mask/export safety-factor ratio remains {verification['sf_ratio']:.1f}x "
+            "after the bounded retry — the STL FEM result does not reproduce the mask"
+        )
+    elif verification["sf_ratio"] is not None and verification["sf_ratio"] > 2.0:
+        res.topopt["warnings"].append(
+            f"mask/export safety-factor ratio is {verification['sf_ratio']:.1f}x — "
+            "inspect the final STL load path; sf_export governs"
+        )
+    if abs(float(verification["vol_error_pp"] or 0.0)) > 5.0:
+        verification["valid"] = False
+        res.topopt["warnings"].append(
+            f"final STL volume differs from the FEM mask by "
+            f"{verification['vol_error_pp']:.1f} percentage points after the bounded retry"
+        )
     # "is the measurement valid" (above) is a different question from "does
     # the printed part meet the requested safety floor" — report both; the
     # field is omitted when no export SF was measured
@@ -2270,9 +2430,7 @@ def run_topopt_pipeline(  # noqa: C901
                 else "smoothing removed load-bearing material; increase min_member_mm "
                 "or lower extract_sigma_px to reduce loss"
             )
-            res.topopt["warnings"].append(
-                f"sf_mask is {sf_ratio:.1f}x sf_export — {advice}"
-            )
+            res.topopt["warnings"].append(f"sf_mask is {sf_ratio:.1f}x sf_export — {advice}")
         elif sf_ratio < 0.5:
             res.topopt["warnings"].append(
                 f"sf_export is {1.0 / max(sf_ratio, 1e-9):.1f}x sf_mask — the smoothed "
@@ -2303,9 +2461,8 @@ def run_topopt_pipeline(  # noqa: C901
     res.topopt.update(
         {
             "iterations": result.iterations,
-            "iterations_total": int(
-                (res.topopt.get("multires") or {}).get("coarse_iterations", 0)
-            ) + result.iterations,
+            "iterations_total": int((res.topopt.get("multires") or {}).get("coarse_iterations", 0))
+            + result.iterations,
             "converged": result.converged,
             # how the run ended — converged | infeasible_target | limit_cycle
             # | degenerate | budget_exhausted (topopt.py TopOptResult.status)
@@ -2320,6 +2477,7 @@ def run_topopt_pipeline(  # noqa: C901
                 / max(int(design_domain.solid.sum()), 1),
                 4,
             ),
+            "volfrac_export": verification["volfrac_export"],
             "history": _compact_history(result.history),
             "passive_frac": round(result.passive_frac, 4),
             "warnings": res.topopt.get("warnings", []) + result.warnings,
@@ -2330,6 +2488,9 @@ def run_topopt_pipeline(  # noqa: C901
             "thin_fraction": round(best["thin_fraction"], 4),
             "n_components": best["n_components"],
             "n_bodies_export": best["n_bodies_export"],
+            "n_surface_components": best["n_surface_components"],
+            "output_envelope": best.get("output_envelope"),
+            "output_envelope_ok": best.get("output_envelope_ok", True),
             "extract": best["extract"],
             "verification": verification,
         }
@@ -2507,9 +2668,10 @@ def run_infill_pipeline(  # noqa: C901
         res.topopt["base_mesh_relpath"] = storage.relpath(mesh_path)
     except Exception:
         res.topopt["base_mesh_relpath"] = str(mesh_path)
-    dims_spec = (optimize or {}).get("spec_dims_mm")
+    dims_spec = (optimize or {}).get("spec_dims_mm") or _spec_dims_from_dict(spec)
     if dims_spec:
         mesh, norm_rep = normalize_mesh_to_spec_envelope(mesh, list(dims_spec))
+        res.topopt["input_bbox"] = norm_rep["input_bbox"]
         res.topopt["spec_bbox"] = norm_rep["spec_bbox"]
         res.topopt["input_normalized"] = norm_rep["input_normalized"]
         if norm_rep.get("warning"):
@@ -2546,15 +2708,13 @@ def run_infill_pipeline(  # noqa: C901
     anchors = _scan_anchors(mesh, anchors, enabled=True)
     res.topopt["anchors"] = anchors
 
-    resolved, _cw, fixed_node_masks, load_node_masks, unresolved = (
-        _resolve_topopt_cases(
-            domain,
-            cases,
-            anchors,
-            mat,
-            s.fem_max_effective_cases,
-            warnings_out=res.topopt.setdefault("warnings", []),
-        )
+    resolved, _cw, fixed_node_masks, load_node_masks, unresolved = _resolve_topopt_cases(
+        domain,
+        cases,
+        anchors,
+        mat,
+        s.fem_max_effective_cases,
+        warnings_out=res.topopt.setdefault("warnings", []),
     )
     if unresolved:
         res.error = (
@@ -2573,9 +2733,7 @@ def run_infill_pipeline(  # noqa: C901
     if anchors and (opt.keep_mode == "auto" or (opt.keep_mode == "manual" and s.topopt_auto_keep)):
         margin = opt.auto_keep_margin_mm or s.topopt_auto_keep_margin_mm
         keep_list += auto_keep_regions(anchors, margin)
-    res.topopt.setdefault("warnings", []).extend(
-        empty_region_warnings(domain, keep_list, anchors)
-    )
+    res.topopt.setdefault("warnings", []).extend(empty_region_warnings(domain, keep_list, anchors))
     res.topopt.setdefault("warnings", []).extend(
         empty_region_warnings(domain, list(opt.void_regions), anchors)
     )
@@ -2624,9 +2782,7 @@ def run_infill_pipeline(  # noqa: C901
     energy_w: list[float] = []
     for i, sol in sols_pairs:
         energies.append(
-            element_strain_energy(
-                domain, sol.u, fo["edof"], fo["active"], fo["elem_E"], fo["nu"]
-            )
+            element_strain_energy(domain, sol.u, fo["edof"], fo["active"], fo["elem_E"], fo["nu"])
         )
         energy_w.append(float(cases[i].weight) if i < len(cases) else 1.0)
     if not energies:
@@ -2714,75 +2870,161 @@ def run_infill_pipeline(  # noqa: C901
         scope="guided" if guide_mask is not None else "full",
         seed=int(opt.infill_seed),
     )
-    t_field = time.monotonic()
-    rho, _mask, meta = infill_field(
-        domain,
-        p_infill,
-        energies,
-        dirs,
-        passive,
-        void_cells,
-        guide_mask=guide_mask,
-        weights=energy_w,
-    )
-    meta["scope_requested"] = opt.infill_scope
-    res.topopt["infill"] = meta
-    if meta.get("degenerated_to_solid"):
-        if int(meta.get("core_cells") or 0) == 0:
-            warning = "no interior cells — the part is too thin for shell+infill entirely"
-        else:
-            warning = (
-                "infill degenerated to solid — the part is too thin for "
-                f"infill_period_mm={opt.infill_period_mm}; increase the period "
-                "or thicken the part"
-            )
-        res.topopt["warnings"].append(warning)
-    elif opt.infill_scope == "guided" and int(meta.get("interior_cells") or 0) == 0:
-        res.topopt["warnings"].append(
-            "guided SIMP retained no interior cells for lattice — the export is shell-only; "
-            "use infill_scope='full' or revise the guided topology"
-        )
-    res.timings["infill_field_s"] = round(time.monotonic() - t_field, 2)
-
     opt_dir = out_dir / "topopt"
     opt_dir.mkdir(parents=True, exist_ok=True)
     base_flat = is_flat_bottom(mesh)
 
-    # --- extraction: the binary field drops into the same density_to_mesh
-    # path SIMP uses — threshold 0.5 on an already-binary field
-    opt_mesh, final_mask, extract_warnings, n_components, extract_info = density_to_mesh(
-        domain,
-        rho,
-        threshold=0.5,
-        passive_solid=passive,
-        void_cells=void_cells.reshape(domain.dims) | ~domain.solid,
-        min_member_mm=min_member,
-        min_gap_mm=min_gap,
-        smooth_iterations=s.topopt_smooth_iterations,
-        extract_smooth=opt.extract_smooth,
-        sigma_px=opt.extract_sigma_px,
-        volume_preserve=opt.volume_preserve,
+    part_volume = (
+        abs(float(mesh.volume))
+        if mesh.is_watertight and abs(float(mesh.volume)) > 0
+        else float(domain.solid_count) * domain.pitch**3
     )
-    res.topopt["warnings"] += extract_warnings
-    opt_mesh = smooth_preserve(opt_mesh, iterations=4, pin_floor=base_flat)
-    # marching cubes on the lattice leaves degenerate sliver bodies inside
-    # the closed shell (inverted/zero-volume fragments that can never
-    # print) — drop them; real secondary bodies (>=0.5% of the main
-    # volume) stay and keep n_bodies_export honest
-    parts = opt_mesh.split(only_watertight=False)
-    if len(parts) > 1:
-        main_body = max(parts, key=lambda m: m.volume)
-        min_real = max(1.0, 0.005 * abs(main_body.volume))
-        kept = [m for m in parts if m.volume > min_real]
-        if len(kept) < len(parts):
-            opt_mesh = (
-                kept[0] if len(kept) == 1 else trimesh.util.concatenate(kept)
+    target_volfrac = float(opt.target_volume_fraction or s.topopt_default_volfrac)
+
+    def _build_candidate(density_offset: float, *, crisp: bool = False) -> dict[str, Any]:
+        rho, _mask, meta = infill_field(
+            domain,
+            p_infill,
+            energies,
+            dirs,
+            passive,
+            void_cells,
+            guide_mask=guide_mask,
+            weights=energy_w,
+            density_offset=density_offset,
+        )
+        candidate_mesh, mask, extract_warnings, components, extract = density_to_mesh(
+            domain,
+            rho,
+            threshold=0.5,
+            passive_solid=passive,
+            void_cells=void_cells.reshape(domain.dims) | ~domain.solid,
+            min_member_mm=min_member,
+            min_gap_mm=min_gap,
+            smooth_iterations=0 if crisp else s.topopt_smooth_iterations,
+            extract_smooth=opt.extract_smooth and not crisp,
+            sigma_px=0.0 if crisp else opt.extract_sigma_px,
+            volume_preserve=opt.volume_preserve,
+        )
+        if not crisp:
+            candidate_mesh = smooth_preserve(candidate_mesh, iterations=4, pin_floor=base_flat)
+        candidate_mesh, dropped_slivers = keep_significant_components(candidate_mesh)
+        warnings = list(extract_warnings)
+        if dropped_slivers:
+            warnings.append(f"dropped {dropped_slivers} near-zero-volume mesh sliver components")
+        candidate_mesh, output_envelope, output_envelope_ok, envelope_warnings = (
+            _clip_export_to_spec_envelope(
+                candidate_mesh,
+                list(dims_spec) if dims_spec else None,
+                label="smoothed infill export",
             )
-            res.topopt["warnings"].append(
-                f"dropped {len(parts) - len(kept)} degenerate lattice sliver "
-                "bodies (marching-cubes artifacts sealed inside the shell)"
+        )
+        warnings.extend(envelope_warnings)
+        mask_volume = float(mask.sum()) * domain.pitch**3
+        export_fraction = abs(float(candidate_mesh.volume)) / part_volume
+        extract["vol_error_pct"] = round(
+            100.0 * (abs(float(candidate_mesh.volume)) - mask_volume) / max(mask_volume, 1e-9),
+            3,
+        )
+        meta["density_offset"] = round(float(density_offset), 6)
+        meta["volfrac_export_estimate"] = round(export_fraction, 4)
+        meta["target_volume_fraction"] = target_volfrac
+        meta["target_volume_error_pp"] = round(100.0 * (export_fraction - target_volfrac), 2)
+        meta["scope_requested"] = opt.infill_scope
+        if meta.get("degenerated_to_solid"):
+            if int(meta.get("core_cells") or 0) == 0:
+                warnings.append(
+                    "no interior cells — the part is too thin for shell+infill entirely"
+                )
+            else:
+                warnings.append(
+                    "infill degenerated to solid — the eligible core is too thin for "
+                    f"infill_period_mm={opt.infill_period_mm}; increase the period "
+                    "or thicken the part"
+                )
+        elif opt.infill_scope == "guided" and int(meta.get("interior_cells") or 0) == 0:
+            warnings.append(
+                "guided SIMP retained no interior cells for lattice — the export is shell-only; "
+                "use infill_scope='full' or revise the guided topology"
             )
-    n_bodies_export = int(opt_mesh.body_count)
+        return {
+            "rho": rho,
+            "mask": mask,
+            "mesh": candidate_mesh,
+            "warnings": warnings,
+            "components": components,
+            "extract": extract,
+            "meta": meta,
+            "export_fraction": export_fraction,
+            "density_offset": density_offset,
+            "output_envelope": output_envelope,
+            "output_envelope_ok": output_envelope_ok,
+        }
+
+    t_field = time.monotonic()
+    best = _build_candidate(0.0)
+    target_min: float | None = None
+    target_max: float | None = None
+    target_infeasible = False
+    volume_tolerance = 0.05
+    if abs(float(best["export_fraction"]) - target_volfrac) > volume_tolerance:
+        offset_min = p_infill.dmin - p_infill.dmax
+        offset_max = p_infill.dmax - p_infill.dmin
+        low = _build_candidate(offset_min)
+        high = _build_candidate(offset_max)
+        low_fraction = float(low["export_fraction"])
+        high_fraction = float(high["export_fraction"])
+        target_min, target_max = sorted((low_fraction, high_fraction))
+        increasing = low_fraction <= high_fraction
+        best = min(
+            (best, low, high),
+            key=lambda row: abs(float(row["export_fraction"]) - target_volfrac),
+        )
+        target_infeasible = not (
+            target_min - volume_tolerance <= target_volfrac <= target_max + volume_tolerance
+        )
+        lo, hi = offset_min, offset_max
+        if not target_infeasible:
+            for _ in range(12):
+                mid = 0.5 * (lo + hi)
+                trial = _build_candidate(mid)
+                trial_fraction = float(trial["export_fraction"])
+                if abs(trial_fraction - target_volfrac) < abs(
+                    float(best["export_fraction"]) - target_volfrac
+                ):
+                    best = trial
+                if abs(trial_fraction - target_volfrac) <= 0.01:
+                    best = trial
+                    break
+                if (trial_fraction < target_volfrac) == increasing:
+                    lo = mid
+                else:
+                    hi = mid
+            if abs(float(best["export_fraction"]) - target_volfrac) > volume_tolerance:
+                target_infeasible = True
+
+    meta = best["meta"]
+    if target_min is not None and target_max is not None:
+        meta["volfrac_min_feasible"] = round(target_min, 4)
+        meta["volfrac_max_feasible"] = round(target_max, 4)
+    meta["target_infeasible"] = target_infeasible
+    res.topopt["infill"] = meta
+    res.topopt["output_envelope"] = best.get("output_envelope")
+    res.topopt["output_envelope_ok"] = best.get("output_envelope_ok", True)
+    if target_infeasible and target_min is not None and target_max is not None:
+        res.topopt["warnings"].append(
+            f"requested final STL volume fraction {target_volfrac:.0%} is outside the "
+            f"reachable interval {target_min:.0%} to {target_max:.0%} with the current "
+            "shell, guide, passive regions and minimum infill density"
+        )
+    res.timings["infill_field_s"] = round(time.monotonic() - t_field, 2)
+    rho = best["rho"]
+    final_mask = best["mask"]
+    opt_mesh = best["mesh"]
+    n_components = best["components"]
+    extract_info = best["extract"]
+    n_surface_components = int(opt_mesh.body_count)
+    n_bodies_export: int | None = None
 
     edt = ndimage.distance_transform_edt(final_mask)
     inside = edt[final_mask]
@@ -2810,12 +3052,19 @@ def run_infill_pipeline(  # noqa: C901
         cancelled=cancelled,
         solver_backend=solver_backend,
     )
-    export_solve_ok = True
-    try:
-        domain_exp = voxelize(opt_mesh, req_voxel, max_elements or s.fem_max_elements)
-        verify_exp = run_fem_domain(
-            domain_exp,
-            domain_exp.solid,
+
+    def _verify_export_candidate(candidate: dict[str, Any], suffix: str) -> tuple[Any, int]:
+        candidate_mesh = candidate["mesh"]
+        export_domain = voxelize(candidate_mesh, req_voxel, max_elements or s.fem_max_elements)
+        export_bodies = int(
+            ndimage.label(
+                export_domain.solid,
+                structure=ndimage.generate_binary_structure(3, 1),
+            )[1]
+        )
+        report = run_fem_domain(
+            export_domain,
+            export_domain.solid,
             cases,
             mat_name,
             material=mat,
@@ -2825,11 +3074,16 @@ def run_infill_pipeline(  # noqa: C901
             spsolve_dofs=s.fem_spsolve_dofs,
             pool_workers=s.exec_pool_workers,
             mem_budget_mb=mem_budget,
-            suffix="_export",
-            source_mesh=opt_mesh,
+            suffix=suffix,
+            source_mesh=candidate_mesh,
             cancelled=cancelled,
             solver_backend=solver_backend,
         )
+        return report, export_bodies
+
+    export_solve_ok = True
+    try:
+        verify_exp, n_bodies_export = _verify_export_candidate(best, "_export")
     except Exception as e:
         log.warning("infill.verify_export.failed", error=str(e)[:200])
         verify_exp = verify
@@ -2838,6 +3092,142 @@ def run_infill_pipeline(  # noqa: C901
             f"export FEM solve failed ({str(e)[:80]}) — sf_export "
             "duplicates the voxel-mask result, not the printed mesh"
         )
+
+    def _export_metrics(
+        candidate: dict[str, Any], report: Any, body_count: int | None
+    ) -> tuple[float | None, float | None, bool]:
+        sf_mask = verify.worst_safety_factor
+        sf_export = report.worst_safety_factor
+        ratio = (
+            max(sf_mask, sf_export) / max(min(sf_mask, sf_export), 1e-9)
+            if sf_mask is not None and sf_export is not None
+            else None
+        )
+        export_fraction = float(candidate["export_fraction"])
+        meets_target = abs(export_fraction - target_volfrac) <= volume_tolerance
+        gate_failed = (
+            candidate.get("output_envelope_ok") is False
+            or body_count is None
+            or body_count > 1
+            or (ratio is not None and ratio > 3.0)
+            or (not target_infeasible and not meets_target)
+        )
+        return ratio, export_fraction, gate_failed
+
+    sf_ratio, volfrac_export, initial_gate_failed = _export_metrics(
+        best, verify_exp, n_bodies_export
+    )
+    sf_export_first = verify_exp.worst_safety_factor
+    volfrac_first = volfrac_export
+    ratio_first = sf_ratio
+    bodies_first = n_bodies_export
+    sf_min = float(opt.safety_factor_min)
+    retry_needed = (
+        initial_gate_failed
+        or best.get("output_envelope_ok") is False
+        or n_bodies_export is None
+        or n_bodies_export > 1
+        or not export_solve_ok
+        or verify_exp.worst_safety_factor is None
+        or (sf_ratio is not None and sf_ratio > 3.0)
+        or (verify_exp.worst_safety_factor is not None and verify_exp.worst_safety_factor < sf_min)
+    )
+    if retry_needed and (cancelled is None or not cancelled()):
+        retry_reasons = []
+        if n_bodies_export is None:
+            retry_reasons.append("body_count_unverified")
+        elif n_bodies_export > 1:
+            retry_reasons.append("multi_body")
+        if best.get("output_envelope_ok") is False:
+            retry_reasons.append("output_envelope")
+        if not export_solve_ok or verify_exp.worst_safety_factor is None:
+            retry_reasons.append("export_solve")
+        if sf_ratio is not None and sf_ratio > 3.0:
+            retry_reasons.append("sf_divergence")
+        if (
+            not target_infeasible
+            and abs(float(best["export_fraction"]) - target_volfrac) > volume_tolerance
+        ):
+            retry_reasons.append("stl_volume")
+        if verify_exp.worst_safety_factor is not None and verify_exp.worst_safety_factor < sf_min:
+            retry_reasons.append("safety_factor")
+        retry_started = time.monotonic()
+        retry_candidate = _build_candidate(float(best["density_offset"]), crisp=True)
+        try:
+            retry_report, retry_bodies = _verify_export_candidate(retry_candidate, "_retry_export")
+            retry_export_ok = True
+        except Exception as e:
+            log.warning("infill.verify_export_retry.failed", error=str(e)[:200])
+            retry_report, retry_bodies = verify, None
+            retry_export_ok = False
+            retry_candidate["warnings"].append(f"crisp export retry FEM failed ({str(e)[:80]})")
+        retry_ratio, retry_fraction, _retry_gate_failed = _export_metrics(
+            retry_candidate, retry_report, retry_bodies
+        )
+
+        def _retry_score(
+            report: Any,
+            bodies: int | None,
+            ratio: float | None,
+            fraction: float,
+            solved: bool,
+            envelope_ok: bool,
+        ) -> tuple[int, int, int, int, int, float]:
+            return (
+                int(solved),
+                int(envelope_ok),
+                int(bodies is not None and bodies <= 1),
+                int(ratio is None or ratio <= 3.0),
+                int(target_infeasible or abs(fraction - target_volfrac) <= volume_tolerance),
+                float(report.worst_safety_factor or 0.0),
+            )
+
+        if _retry_score(
+            retry_report,
+            retry_bodies,
+            retry_ratio,
+            retry_fraction,
+            retry_export_ok,
+            retry_candidate.get("output_envelope_ok") is not False,
+        ) > _retry_score(
+            verify_exp,
+            n_bodies_export,
+            sf_ratio,
+            volfrac_export,
+            export_solve_ok,
+            best.get("output_envelope_ok") is not False,
+        ):
+            best = retry_candidate
+            opt_mesh = best["mesh"]
+            final_mask = best["mask"]
+            rho = best["rho"]
+            n_components = best["components"]
+            extract_info = best["extract"]
+            meta = best["meta"]
+            n_surface_components = int(opt_mesh.body_count)
+            verify_exp, n_bodies_export = retry_report, retry_bodies
+            export_solve_ok = retry_export_ok
+            sf_ratio, volfrac_export = retry_ratio, retry_fraction
+        res.topopt["retry"] = {
+            "trigger": retry_reasons,
+            "mode": "crisp_extraction",
+            "volfrac_requested": target_volfrac,
+            "volfrac_first": volfrac_first,
+            "volfrac_second": volfrac_export,
+            "sf_export_first": sf_export_first,
+            "sf_export_second": verify_exp.worst_safety_factor,
+            "sf_ratio_first": ratio_first,
+            "sf_ratio_second": sf_ratio,
+            "n_bodies_export_first": bodies_first,
+            "n_bodies_export_second": n_bodies_export,
+        }
+        res.timings["verify_retry_s"] = round(time.monotonic() - retry_started, 2)
+    meta = best["meta"]
+    meta["volfrac_min_feasible"] = round(target_min, 4) if target_min is not None else None
+    meta["volfrac_max_feasible"] = round(target_max, 4) if target_max is not None else None
+    meta["target_infeasible"] = target_infeasible
+    res.topopt["infill"] = meta
+    res.topopt["warnings"] += best["warnings"]
     res.timings["verify_s"] = round(time.monotonic() - t, 2)
 
     verification: dict[str, Any] = {
@@ -2845,9 +3235,30 @@ def run_infill_pipeline(  # noqa: C901
         "compliance_export_j": [c.compliance_j for c in verify_exp.cases],
         "sf_mask": verify.worst_safety_factor,
         "sf_export": verify_exp.worst_safety_factor,
+        "sf_gap": (
+            round(verify.worst_safety_factor - verify_exp.worst_safety_factor, 4)
+            if verify.worst_safety_factor is not None and verify_exp.worst_safety_factor is not None
+            else None
+        ),
+        "sf_ratio_mask_export": (
+            round(verify.worst_safety_factor / max(verify_exp.worst_safety_factor, 1e-9), 4)
+            if verify.worst_safety_factor is not None and verify_exp.worst_safety_factor is not None
+            else None
+        ),
+        "sf_ratio": sf_ratio,
         "max_disp_export_mm": max((c.max_disp_mm for c in verify_exp.cases), default=None),
         "max_vm_export_mpa": max((c.max_vm_mpa for c in verify_exp.cases), default=None),
         "volfrac_mask": round(float(final_mask.sum()) / max(int(domain.solid.sum()), 1), 4),
+        "volfrac_export": round(float(best["export_fraction"]), 4),
+        "target_volume_error_pp": round(
+            100.0 * (float(best["export_fraction"]) - target_volfrac), 2
+        ),
+        "meets_target_volume": abs(float(best["export_fraction"]) - target_volfrac)
+        <= volume_tolerance,
+        "target_infeasible": target_infeasible,
+        "output_envelope_ok": best.get("output_envelope_ok", True),
+        "n_bodies_export": n_bodies_export,
+        "n_surface_components": n_surface_components,
         "solver_used": "infill",
     }
     span = float(np.linalg.norm(domain.pitch * np.asarray(domain.dims)))
@@ -2869,6 +3280,12 @@ def run_infill_pipeline(  # noqa: C901
             )
     elif not export_solve_ok:
         verification["valid"] = False
+    elif best.get("output_envelope_ok") is False:
+        verification["valid"] = False
+        res.topopt["warnings"].append(
+            "infill export remains outside the stated spec envelope — "
+            "manufacturing verification is invalid"
+        )
     elif verify_exp.worst_safety_factor is None:
         verification["valid"] = False
         res.topopt["warnings"].append(
@@ -2883,11 +3300,27 @@ def run_infill_pipeline(  # noqa: C901
         )
     else:
         verification["valid"] = True
+    if sf_ratio is not None and sf_ratio > 3.0:
+        verification["valid"] = False
+        res.topopt["warnings"].append(
+            f"mask/export safety-factor ratio remains {sf_ratio:.1f}x after the "
+            "bounded retry — the STL verification does not reproduce the mask result"
+        )
+    elif sf_ratio is not None and sf_ratio > 2.0:
+        res.topopt["warnings"].append(
+            f"mask/export safety-factor ratio is {sf_ratio:.1f}x — inspect the "
+            "load path on the final STL; sf_export governs"
+        )
+    if not verification["meets_target_volume"] and not target_infeasible:
+        verification["valid"] = False
+        res.topopt["warnings"].append(
+            f"final STL material fraction {best['export_fraction']:.1%} remains outside "
+            f"the requested {target_volfrac:.1%} ±{volume_tolerance:.0%} after the "
+            "bounded retry"
+        )
     sf_min = getattr(opt, "safety_factor_min", None)
     if sf_min is not None and verify_exp.worst_safety_factor is not None:
-        verification["meets_safety_factor"] = bool(
-            verify_exp.worst_safety_factor >= sf_min
-        )
+        verification["meets_safety_factor"] = bool(verify_exp.worst_safety_factor >= sf_min)
     if verify.grid.get("dofs"):
         verification["dofs"] = verify.grid["dofs"]
     if verify.cases:
@@ -2908,12 +3341,20 @@ def run_infill_pipeline(  # noqa: C901
             "solver": "infill",
             "iterations": 0,
             # the run has no optimizer loop — "converged" reports the
-            # pipeline completed with a valid structure, "degenerate" flags
-            # the verification gates firing (valid=False is the honest read)
-            "status": "converged" if verification["valid"] else "degenerate",
-            "converged": bool(verification["valid"]),
+            # pipeline completed with a valid structure; target infeasibility
+            # and failed export gates remain separate, explicit outcomes
+            "status": (
+                "infeasible_target"
+                if target_infeasible
+                else "degenerate"
+                if not verification["valid"]
+                else "converged"
+            ),
+            "converged": bool(verification["valid"] and not target_infeasible),
             "volfrac_requested": opt.target_volume_fraction,
-            "volfrac_achieved": meta.get("volfrac_estimate"),
+            "volfrac_achieved": verification["volfrac_export"],
+            "volfrac_mask": verification["volfrac_mask"],
+            "volfrac_export": verification["volfrac_export"],
             "passive_frac": round(float(passive.sum()) / max(int(domain.solid.sum()), 1), 4),
             "material": mat.name,
             "sf_mask": verify.worst_safety_factor,
@@ -2922,6 +3363,7 @@ def run_infill_pipeline(  # noqa: C901
             "thin_fraction": round(thin_fraction, 4),
             "n_components": n_components,
             "n_bodies_export": n_bodies_export,
+            "n_surface_components": n_surface_components,
             "extract": extract_info,
             "verification": verification,
         }
@@ -2993,8 +3435,7 @@ def run_infill_pipeline(  # noqa: C901
         f"triangles: {res.analysis.triangle_count}",
         f"watertight: {res.analysis.watertight_after_repair}",
         f"SF mask/export: {verify.worst_safety_factor} / {verify_exp.worst_safety_factor}",
-        f"infill: {meta.get('style')} / {meta.get('scope')} "
-        f"(occ {meta.get('infill_occupancy')})",
+        f"infill: {meta.get('style')} / {meta.get('scope')} (occ {meta.get('infill_occupancy')})",
     ]
     sheet = make_contact_sheet(render_paths, out_dir / "contact_sheet.png", stats)
     res.contact_sheet = sheet.name if sheet else None
@@ -3031,6 +3472,8 @@ def run_topopt_resample(
     domain from the stored grid meta, extracts + verifies both the exact
     mask and the smoothed export mesh, writes exports + reports.
     """
+    from scipy import ndimage
+
     from cadx import storage
     from cadx.cad.fem.analyze import report_to_json, run_fem_domain
     from cadx.cad.fem.extract import density_to_mesh
@@ -3153,7 +3596,19 @@ def run_topopt_resample(
     opt_mesh = smooth_preserve(
         opt_mesh, iterations=4, pin_floor=bool(npz.get("flat_bottom", False))
     )
-    res.topopt["n_bodies_export"] = int(opt_mesh.body_count)
+    dims_spec = (optimize or {}).get("spec_dims_mm") or _spec_dims_from_dict(spec)
+    opt_mesh, output_envelope, output_envelope_ok, envelope_warnings = (
+        _clip_export_to_spec_envelope(
+            opt_mesh,
+            list(dims_spec) if dims_spec else None,
+            label="smoothed resampled export",
+        )
+    )
+    res.topopt.setdefault("warnings", []).extend(envelope_warnings)
+    res.topopt["output_envelope"] = output_envelope
+    res.topopt["output_envelope_ok"] = output_envelope_ok
+    res.topopt["n_surface_components"] = int(opt_mesh.body_count)
+    res.topopt["n_bodies_export"] = None
 
     run_dir = out_dir / "_run"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -3187,6 +3642,12 @@ def run_topopt_resample(
         res.fem = verify.model_dump()
         try:
             domain_exp = voxelize(opt_mesh, pitch, max_elements or s.fem_max_elements)
+            res.topopt["n_bodies_export"] = int(
+                ndimage.label(
+                    domain_exp.solid,
+                    structure=ndimage.generate_binary_structure(3, 1),
+                )[1]
+            )
             verify_exp = run_fem_domain(
                 domain_exp,
                 domain_exp.solid,

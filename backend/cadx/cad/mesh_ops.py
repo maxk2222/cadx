@@ -578,6 +578,28 @@ def smooth_preserve(
     return out
 
 
+def keep_significant_components(
+    mesh: trimesh.Trimesh, min_fraction: float = 0.005, min_volume_mm3: float = 1.0
+) -> tuple[trimesh.Trimesh, int]:
+    """Drop only near-zero-volume mesh components, preserving signed cavity shells.
+
+    Marching cubes can produce tiny closed slivers, but a large negative
+    signed-volume component may be the inner wall of a real hollow lattice.
+    Testing ``volume > cutoff`` drops that surface and turns the cavity into
+    solid material; the cutoff therefore applies to absolute volume.
+    """
+    parts = mesh.split(only_watertight=False)
+    if len(parts) <= 1:
+        return mesh, 0
+    dominant_volume = max(abs(float(part.volume)) for part in parts)
+    cutoff = max(float(min_volume_mm3), dominant_volume * float(min_fraction))
+    kept = [part for part in parts if abs(float(part.volume)) >= cutoff]
+    if not kept:
+        return mesh, 0
+    out = kept[0] if len(kept) == 1 else trimesh.util.concatenate(kept)
+    return out, len(parts) - len(kept)
+
+
 def surface_roughness_deg(mesh: trimesh.Trimesh) -> float:
     """Mean dihedral angle (deg) between adjacent near-vertical faces.
 

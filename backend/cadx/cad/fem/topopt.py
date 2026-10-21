@@ -85,12 +85,11 @@ class TopOptParams:
     # over `penal_ramp_iters` — softer start escapes grayscale local minima
     penal_init: float | None = None  # None = no continuation
     penal_ramp_iters: int = 30
-    # volfrac continuation: ramp the volume target from `volfrac_init` down
-    # to `volfrac` over `volfrac_ramp_iters` — starting material-rich keeps
-    # the first iterations out of the sparse-layout local minima; OC only
-    # (an MMA inequality bound must hold from iteration 0)
+    # volfrac continuation: hold a material-rich target at plateau stages
+    # before stepping down to `volfrac`; OC only (MMA's volume bound must hold
+    # from iteration 0)
     volfrac_init: float | None = None  # None = constant target
-    volfrac_ramp_iters: int = 20
+    volfrac_ramp_iters: int = 40
     # sparse-direct / iterative backend hint: "auto" lets solver.py pick
     # (CHOLMOD > SuperLU; AMG > SSOR above the DOF cap); anything else is a
     # forced choice for benchmarking
@@ -833,6 +832,17 @@ def simp(  # noqa: C901
             ],
             passive_frac=passive_frac,
         )
+    if (
+        params.solver == "oc"
+        and params.volfrac_init is not None
+        and params.volfrac_init > params.volfrac
+        and params.volfrac_ramp_iters < 40
+    ):
+        warnings.append(
+            f"volfrac continuation has only {params.volfrac_ramp_iters} ramp iterations "
+            "— fewer than the recommended 40 may force stage advances before the "
+            "stress layout settles; increase volfrac_ramp_iters for critical parts"
+        )
 
     E0 = np.broadcast_to(np.asarray(elem_E0, dtype=float), domain.cell_count).copy()
     Emin = E0 * E_MIN_FRAC
@@ -982,6 +992,26 @@ def simp(  # noqa: C901
             )
 
     v_target = params.volfrac * nsolid
+    volfrac_continuation = (
+        params.solver == "oc"
+        and params.volfrac_init is not None
+        and params.volfrac_init > params.volfrac
+    )
+    if volfrac_continuation:
+        stage_count = min(
+            5, max(2, min(params.volfrac_ramp_iters, math.ceil(params.volfrac_ramp_iters / 8)))
+        )
+        volfrac_stages = np.linspace(
+            float(params.volfrac_init), params.volfrac, stage_count
+        ).tolist()
+        stage_dwell, remainder = divmod(params.volfrac_ramp_iters, stage_count)
+        volfrac_stage_dwells = [stage_dwell] * stage_count
+        volfrac_stage_dwells[-1] += remainder
+    else:
+        volfrac_stages = [params.volfrac]
+        volfrac_stage_dwells = [0]
+    volfrac_stage = 0
+    volfrac_stage_age = 0
     history: list[dict[str, Any]] = []
     u_prev: list[np.ndarray | None] = [None] * len(cases)
     change = 1.0
@@ -1026,14 +1056,14 @@ def simp(  # noqa: C901
         return params.penal_init + (params.penal - params.penal_init) * f
 
     def _vol_now() -> float:
-        """A5 volfrac continuation: ramp the volume target linearly from
-        volfrac_init down to volfrac over volfrac_ramp_iters iterations.
-        A material-rich start explores broad layouts before the budget
-        tightens — escapes the same local minima as penal_init."""
-        if params.volfrac_init is None or params.volfrac_init <= params.volfrac:
-            return params.volfrac
-        f = min(1.0, it_box[0] / max(1, params.volfrac_ramp_iters))
-        return params.volfrac_init + (params.volfrac - params.volfrac_init) * f
+        """Current plateau-held target in the staged volume continuation."""
+        return float(volfrac_stages[volfrac_stage])
+
+    def _volfrac_schedule_active() -> bool:
+        return volfrac_continuation and (
+            volfrac_stage < len(volfrac_stages) - 1
+            or volfrac_stage_age < volfrac_stage_dwells[volfrac_stage]
+        )
 
     def _set_beta(b: float) -> None:
         proj.beta = b
@@ -1193,9 +1223,7 @@ def simp(  # noqa: C901
             # the optimized blueprint or its FEM objective history.
             proj.heaviside = True
             _set_beta(params.mma_final_beta)
-            warnings_out.append(
-                f"mma final density projected at beta={params.mma_final_beta:g}"
-            )
+            warnings_out.append(f"mma final density projected at beta={params.mma_final_beta:g}")
         density = _physical(mma_x)
         gray_fraction = (
             float(np.mean((density[design] > 0.2) & (density[design] < 0.8)))
@@ -1244,7 +1272,9 @@ def simp(  # noqa: C901
 
     # A multires-warmed field can satisfy change<=tol almost immediately;
     # still give the fine grid a few real FEM/update passes before stopping.
-    while it < params.max_iter and (change > params.tol or it < _MIN_PRIMARY_ITERS):
+    while it < params.max_iter and (
+        change > params.tol or it < _MIN_PRIMARY_ITERS or _volfrac_schedule_active()
+    ):
         it += 1
         it_box[0] = it
         if cancelled and cancelled():
@@ -1346,8 +1376,10 @@ def simp(  # noqa: C901
             "penal": round(pen, 3),
             "elapsed_s": round(time.monotonic() - t0, 1),
         }
-        if params.volfrac_init is not None and params.volfrac_init > params.volfrac:
+        if volfrac_continuation:
             rec["volfrac_target"] = round(_vol_now(), 4)
+            rec["volfrac_stage"] = volfrac_stage + 1
+            rec["volfrac_stage_age"] = volfrac_stage_age
         rec.update(_phase_timings())
         if robust:
             rec["obj_per_design"] = [round(o, 3) for o in obj_designs]
@@ -1363,6 +1395,9 @@ def simp(  # noqa: C901
                 progress_file.write_text(
                     json.dumps({"history": history}, indent=1), encoding="utf-8"
                 )
+        if volfrac_continuation:
+            volfrac_stage_age += 1
+        volume_stage_active = _volfrac_schedule_active()
         # limit-cycle detection: change saturating the OC move cap for many
         # consecutive iterations means the density field bounces between
         # competing layouts rather than converging — surface it once so the
@@ -1378,7 +1413,12 @@ def simp(  # noqa: C901
         # mechanism left to settle an oscillating field — it will bounce
         # between layouts until the iteration cap. Extract the current field
         # honestly instead of burning ~10-20 more solver minutes per pass.
-        if move_streak >= 15 and heaviside and proj.beta >= params.beta_max:
+        if (
+            move_streak >= 15
+            and heaviside
+            and proj.beta >= params.beta_max
+            and not volume_stage_active
+        ):
             warnings.append(
                 f"limit cycle persisted past the beta cap ({params.beta_max:g}) "
                 f"at iteration {it} — no settling mechanism left; extracting "
@@ -1399,7 +1439,11 @@ def simp(  # noqa: C901
         # SAME mask (sharpening gray cells), which is progress, not a cycle
         flip_streak = flip_streak + 1 if flips > _FLIP_FRAC else 0
         beta_age += 1
-        if move_sat_streak >= _MOVE_SAT_STREAK and flip_streak >= _MOVE_SAT_STREAK:
+        if (
+            move_sat_streak >= _MOVE_SAT_STREAK
+            and flip_streak >= _MOVE_SAT_STREAK
+            and not volume_stage_active
+        ):
             # stalled = <1% improvement across a same-beta window (the
             # helper returns None while the current-beta segment is short —
             # a ramp in flight is 'unknown', never 'stalled')
@@ -1438,6 +1482,7 @@ def simp(  # noqa: C901
         # period-1 bounce terminal. At beta_max the guard remains active.
         if (
             not (heaviside and proj.beta < params.beta_max)
+            and not volume_stage_active
             and same_flip_run >= _SAME_FLIP_MIN_RUN
             and move_sat_streak >= _MOVE_SAT_STREAK
         ):
@@ -1481,6 +1526,24 @@ def simp(  # noqa: C901
                 beta_age = 0
                 warnings.append(f"beta continuation -> {proj.beta:g} at iteration {it}")
                 continue
+            if (
+                volfrac_continuation
+                and volfrac_stage < len(volfrac_stages) - 1
+                and (
+                    stall >= params.converge_patience
+                    or volfrac_stage_age >= volfrac_stage_dwells[volfrac_stage]
+                )
+            ):
+                forced = stall < params.converge_patience
+                volfrac_stage += 1
+                volfrac_stage_age = 0
+                stall = 0
+                prev_objective = None
+                warnings.append(
+                    f"volfrac continuation -> {_vol_now():g} at iteration {it}"
+                    + (" (stage dwell elapsed without plateau)" if forced else " (stage plateau)")
+                )
+                continue
             if stall >= params.converge_patience:
                 warnings.append(
                     f"converged: compliance stalled (<{params.tol:g} rel. change "
@@ -1492,7 +1555,21 @@ def simp(  # noqa: C901
     # return the PHYSICAL (printed) density — extraction thresholds it at 0.5;
     # with Heaviside it is near-binary anyway
     warnings_out = warnings
-    converged = change <= params.tol or stall >= params.converge_patience
+    volume_schedule_complete = not volfrac_continuation or (
+        volfrac_stage == len(volfrac_stages) - 1
+        and (
+            volfrac_stage_age >= volfrac_stage_dwells[volfrac_stage]
+            or stall >= params.converge_patience
+        )
+    )
+    converged = (
+        change <= params.tol or stall >= params.converge_patience
+    ) and volume_schedule_complete
+    if volfrac_continuation and not volume_schedule_complete and stop is None:
+        warnings_out.append(
+            f"volfrac continuation spent max_iter before reaching and settling at "
+            f"the final target {params.volfrac:.0%}"
+        )
     # passive_frac was computed at the top (early infeasible_target refuse)
     # honest outcome label (B18): how the loop actually ended, not just a
     # bool — the agent distinguishes "converged" from "the request was

@@ -266,13 +266,13 @@ equilibrium sanity.
 - `optimize.penal_init` < `penal` enables penal continuation (ramp
   `penal_init`→`penal` over `penal_ramp_iters` = 30 iterations, escapes
   grayscale local minima); `optimize.volfrac_init` > target enables the
-  analogous volume-fraction continuation (ramp over `volfrac_ramp_iters` =
-  20 iterations by default, settable via `optimize.volfrac_ramp_iters`,
-  OC path only — MMA owns the volume constraint itself). Caveat: the
-  material-rich start explores a *different topology class* — evals show
-  the same predicted compliance but a measurably weaker stress response
-  (sf_export ~8× lower on the cantilever fixture). Prefer no
-  `volfrac_init`, or a shorter ramp, for stress-critical parts.
+  staged volume-fraction continuation (holds a material-rich topology at
+  settle windows before stepping down; `volfrac_ramp_iters` defaults to 40
+  and is settable, OC path only — MMA owns the volume constraint itself).
+  The rich start can still land in a *different topology class* — earlier
+  linear-ramp evals had similar compliance but `sf_export` ~8× lower.
+  Compare against no continuation on stress-critical parts; short schedules
+  (<40) may advance stages before the stress layout settles.
 - `optimize.warmstart: "loadpath"` seeds the initial density from a
   deterministic load-path field: for every case a multi-source Dijkstra on
   the 6-connected solid grid finds least-cost corridors between load
@@ -316,9 +316,16 @@ equilibrium sanity.
   density field (`extract_sigma_px`) instead of the binary mask — sub-voxel
   isosurfaces without staircase artefacts; `volume_preserve` bisects the
   iso level so the surface encloses the optimized volume (reported as
-  `topopt.extract.iso`/`vol_error_pct`/`gray_fraction`). The FEM
+  `topopt.extract.iso`/`vol_error_pct`/`vol_error_pp`/`gray_fraction`).
+  `vol_error_pct` is relative to the mask volume; `vol_error_pp` is the
+  absolute mask/export fraction difference. A >5 pp discrepancy gets one
+  bounded crisp-extraction retry and remains invalid if unresolved. The FEM
   verification still uses the exact binary mask; `topopt.verification`
   compares predicted vs measured compliance and `sf_mask` vs `sf_export`.
+  `n_components` counts mask components, `n_surface_components` includes
+  nested cavity walls, and `n_bodies_export` counts connected material bodies
+  after re-voxelizing the STL; only the latter determines physical
+  multi-body validity.
 - Mesh extraction uses marching cubes (scikit-image) when available and falls
   back to the voxel-boundary surface, so `skimage` is optional at runtime.
 - The solver accepts per-DOF `(nnodes,3)` fixed masks. Backend selection is

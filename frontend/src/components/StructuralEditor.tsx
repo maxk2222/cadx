@@ -2685,14 +2685,14 @@ export default function StructuralEditor({
                     loadpath
                   </label>
                 </Field>
-                <Field label="Ramp iters" hint="volfrac ramp length (20)">
+                <Field label="Ramp iters" hint="staged volfrac ramp (40 recommended)">
                   <input
                     type="number"
                     min={0}
                     step={5}
                     className={`${inputCls} w-16 px-2 py-1 text-xs`}
                     value={rampIters || ""}
-                    placeholder="20"
+                    placeholder="40"
                     disabled={!volfracRamp}
                     onChange={(e) => setRampIters(parseInt(e.target.value) || 0)}
                   />

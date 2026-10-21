@@ -37,10 +37,11 @@ pick the best one.
     load/fix-bearing components before each solve; residual islands are
     flagged and the export FEM remains the quality gate.
   - `target_volume_fraction` (0.1–0.9, default from spec): lower = lighter but
-    weaker. `volfrac_init` (e.g. 0.7) ramps the target down over ~20
-    iterations (`volfrac_ramp_iters` changes the ramp length) — escapes
-    sparse-layout local minima, but the richer start lands in a different
-    topology class; skip it when the part is stress-critical.
+    weaker. `volfrac_init` (e.g. 0.7) holds a richer layout and steps down
+    after settle windows (`volfrac_ramp_iters`, 40 by default). It can find a
+    different topology class; compare `sf_export` with a no-continuation run
+    on stress-critical parts, and avoid short ramps (<40) that may advance
+    before the stress layout settles.
   - `warmstart:"loadpath"`: seeds the density from deterministic load-path
     corridors (load centroids → fixed regions) — typically 20–40% fewer
     iterations to a similar design. `loadpath_corridor_mm` widens the

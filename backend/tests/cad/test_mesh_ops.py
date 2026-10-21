@@ -22,6 +22,7 @@ from cadx.cad.mesh_ops import (
     flatten_bottom,
     footprint_yaw_deg,
     heal_seam_slivers,
+    keep_significant_components,
     load_mesh,
     merge_post_params,
     mesh_analysis,
@@ -1161,6 +1162,21 @@ def test_heal_seam_slivers_clean_mesh_unchanged():
     healed = heal_seam_slivers(m)
     assert len(healed.faces) == len(m.faces)
     assert len(healed.vertices) == len(m.vertices)
+
+
+def test_keep_significant_components_preserves_inner_negative_shell():
+    outer = trimesh.creation.box(extents=[20.0, 20.0, 20.0])
+    cavity = trimesh.creation.box(extents=[10.0, 10.0, 10.0])
+    cavity.invert()
+    sliver = trimesh.creation.box(extents=[0.5, 0.5, 0.5])
+    sliver.apply_translation([30.0, 0.0, 0.0])
+    combined = trimesh.util.concatenate([outer, cavity, sliver])
+
+    kept, dropped = keep_significant_components(combined)
+
+    assert dropped == 1
+    assert len(kept.split(only_watertight=False)) == 2
+    assert kept.volume == pytest.approx(7000.0)
 
 
 def test_heal_seam_slivers_returns_original_when_not_volume():

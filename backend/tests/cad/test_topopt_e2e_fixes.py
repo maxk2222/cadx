@@ -362,10 +362,72 @@ def test_multires_reports_iterations_total(tmp_path: Path) -> None:
     mr = res.topopt.get("multires")
     assert mr is not None, "multires coarse pass did not run"
     assert mr["coarse_iterations"] > 0
-    assert (
-        res.topopt["iterations_total"]
-        == mr["coarse_iterations"] + res.topopt["iterations"]
-    )
+    assert res.topopt["iterations_total"] == mr["coarse_iterations"] + res.topopt["iterations"]
+
+
+def test_staged_volfrac_continuation_preserves_export_sf(tmp_path: Path) -> None:
+    """The plateau-held schedule should avoid the old order-of-magnitude
+    SF collapse; it remains an opt-in when its topology basin is weaker."""
+    from cadx.cad.engine import run_topopt_pipeline
+
+    mesh = trimesh.creation.box(extents=[60.0, 40.0, 6.0])
+    mesh.apply_translation([0.0, 0.0, 3.0])
+    src = tmp_path / "plate.stl"
+    mesh.export(str(src))
+    cases = [
+        LoadCase(
+            name="bend",
+            fixed=[RegionSpec(kind="face", axis="-x")],
+            loads=[
+                LoadSpec(
+                    region=RegionSpec(kind="face", axis="+x", margin_mm=2.0),
+                    force_n=[0.0, 0.0, -50.0],
+                )
+            ],
+        ).model_dump(),
+        LoadCase(
+            name="shear",
+            fixed=[RegionSpec(kind="face", axis="-x")],
+            loads=[
+                LoadSpec(
+                    region=RegionSpec(kind="face", axis="+x", margin_mm=2.0),
+                    force_n=[0.0, 40.0, 0.0],
+                )
+            ],
+        ).model_dump(),
+    ]
+
+    def run(name: str, continuation: bool):
+        optimize = {
+            "target_volume_fraction": 0.4,
+            "max_iterations": 55,
+            "min_member_mm": 1.5,
+            "solver": "oc",
+            "filter": "cone",
+        }
+        if continuation:
+            optimize.update(volfrac_init=0.9, volfrac_ramp_iters=40)
+        return run_topopt_pipeline(
+            mesh_path=src,
+            out_dir=tmp_path / name,
+            load_cases=cases,
+            optimize=optimize,
+            material="pla",
+            voxel_mm=1.5,
+            scan_anchors=False,
+            runtime=RuntimeSettings(),
+        )
+
+    baseline = run("baseline", False)
+    staged = run("staged", True)
+    sf_base = baseline.topopt["sf_export"]
+    sf_staged = staged.topopt["sf_export"]
+    assert baseline.ok and staged.ok
+    assert sf_base is not None and sf_staged is not None
+    assert staged.topopt["verification"]["valid"] is True
+    assert staged.topopt["n_bodies_export"] == 1
+    assert abs(staged.topopt["verification"]["vol_error_pp"]) <= 5.0
+    assert sf_staged >= 0.9 * sf_base
 
 
 def test_sf_gap_divergence_triggers_thick_member_retry(monkeypatch, tmp_path: Path) -> None:
@@ -410,22 +472,24 @@ def test_sf_gap_divergence_triggers_thick_member_retry(monkeypatch, tmp_path: Pa
     retry = res.topopt.get("retry")
     assert retry is not None, "sf_gap retry did not fire on a 5x divergence"
     assert retry["trigger"] == "sf_gap"
+    assert retry["crisp_extraction"] is True
     # the divergence retry holds the volume target — it thickens members
     # instead of adding material
     assert retry["volfrac_second"] == retry["volfrac_first"]
     assert retry["sf_ratio_first"] == pytest.approx(5.0)
     assert retry["min_member_mm"] >= 2 * res.mesh["pitch_mm"]
     # the retry record documents the divergence — no duplicate warning
-    assert not any(
-        "smoothing removed load-bearing material" in w for w in res.topopt["warnings"]
-    )
+    assert not any("smoothing removed load-bearing material" in w for w in res.topopt["warnings"])
 
 
 @pytest.mark.parametrize(
     ("interior_cells", "expected"),
     [
         (0, "no interior cells — the part is too thin for shell+infill entirely"),
-        (5, "infill degenerated to solid — the part is too thin for infill_period_mm=8.0"),
+        (
+            5,
+            "infill degenerated to solid — the eligible core is too thin for infill_period_mm=8.0",
+        ),
     ],
 )
 def test_infill_degenerate_to_solid_warns(
@@ -463,3 +527,262 @@ def test_infill_degenerate_to_solid_warns(
     assert res.ok, res.error
     assert res.topopt["infill"]["degenerated_to_solid"] is True
     assert any(expected in w for w in res.topopt["warnings"])
+
+
+def test_thick_infill_export_preserves_nested_lattice_shells(tmp_path: Path) -> None:
+    """A substantial negative-volume inner shell is the gyroid cavity, not a
+    marching-cubes sliver; preserve it while counting physical export bodies."""
+    from cadx.cad.engine import run_infill_pipeline
+
+    mesh = trimesh.creation.box(extents=[60.0, 40.0, 24.0])
+    mesh.apply_translation([0.0, 0.0, 12.0])
+    src = tmp_path / "plate24.stl"
+    mesh.export(str(src))
+    res = run_infill_pipeline(
+        mesh_path=src,
+        out_dir=tmp_path / "infill24",
+        load_cases=[_cantilever_case()],
+        optimize={
+            "infill_scope": "full",
+            "infill_style": "gyroid_graded",
+            "target_volume_fraction": 0.7,
+            "infill_shell_mm": 2.0,
+            "infill_period_mm": 8.0,
+        },
+        material="pla",
+        voxel_mm=1.5,
+        runtime=RuntimeSettings(),
+    )
+    assert res.ok, res.error
+    part_fraction = res.mesh["volume_mm3"] / (60.0 * 40.0 * 24.0)
+    mask_fraction = res.topopt["verification"]["volfrac_mask"]
+    assert res.topopt["n_surface_components"] >= 2
+    assert res.topopt["n_bodies_export"] == 1
+    assert res.topopt["verification"]["valid"] is True
+    assert abs(part_fraction - mask_fraction) <= 0.05
+    assert part_fraction < 0.9
+
+
+def test_infill_target_fraction_calibrates_full_and_guided_stl(tmp_path: Path) -> None:
+    """Full and Guided target_volume_fraction refers to exported STL mass,
+    not only the coarse guide or pre-extraction occupancy estimate."""
+    from cadx.cad.engine import run_infill_pipeline
+
+    mesh = trimesh.creation.box(extents=[60.0, 40.0, 24.0])
+    mesh.apply_translation([0.0, 0.0, 12.0])
+    src = tmp_path / "plate24.stl"
+    mesh.export(str(src))
+
+    def run(scope: str, target: float, out_name: str):
+        return run_infill_pipeline(
+            mesh_path=src,
+            out_dir=tmp_path / out_name,
+            load_cases=[_cantilever_case()],
+            optimize={
+                "infill_scope": scope,
+                "infill_style": "gyroid_graded",
+                "target_volume_fraction": target,
+                "infill_shell_mm": 2.0,
+                "infill_period_mm": 8.0,
+            },
+            material="pla",
+            voxel_mm=1.5,
+            runtime=RuntimeSettings(),
+        )
+
+    full_60 = run("full", 0.60, "full60")
+    full_75 = run("full", 0.75, "full75")
+    guided_40 = run("guided", 0.40, "guided40")
+    for result, target in ((full_60, 0.60), (full_75, 0.75), (guided_40, 0.40)):
+        assert result.ok, result.error
+        assert result.topopt["verification"]["volfrac_export"] == pytest.approx(target, abs=0.05)
+        assert result.topopt["verification"]["meets_target_volume"] is True
+    assert abs(full_60.topopt["volfrac_achieved"] - full_75.topopt["volfrac_achieved"]) > 0.1
+
+
+def test_infill_target_below_shell_floor_is_reported_infeasible(tmp_path: Path) -> None:
+    """Do not silently return a shell whose material floor is far above the
+    requested full-infill fraction."""
+    from cadx.cad.engine import run_infill_pipeline
+
+    mesh = trimesh.creation.box(extents=[60.0, 40.0, 24.0])
+    mesh.apply_translation([0.0, 0.0, 12.0])
+    src = tmp_path / "plate24.stl"
+    mesh.export(str(src))
+    res = run_infill_pipeline(
+        mesh_path=src,
+        out_dir=tmp_path / "infeasible",
+        load_cases=[_cantilever_case()],
+        optimize={
+            "infill_scope": "full",
+            "target_volume_fraction": 0.05,
+            "infill_shell_mm": 2.0,
+            "infill_period_mm": 8.0,
+        },
+        material="pla",
+        voxel_mm=1.5,
+        runtime=RuntimeSettings(),
+    )
+    assert res.ok, res.error
+    assert res.topopt["status"] == "infeasible_target"
+    assert res.topopt["verification"]["target_infeasible"] is True
+    assert res.topopt["volfrac_achieved"] > 0.05
+
+
+def test_topopt_smoothed_export_is_clipped_to_spec_envelope(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Surface smoothing may grow beyond a thin stated envelope; clip the
+    print/export candidate before FEM and the final conformance report."""
+    import cadx.cad.engine as engine_mod
+
+    real_smooth = engine_mod.smooth_preserve
+
+    def overshoot(mesh, *args, **kwargs):
+        out = real_smooth(mesh, *args, **kwargs)
+        zmax = float(out.bounds[1][2])
+        out.vertices[:, 2] *= 24.8 / max(zmax, 1e-6)
+        return out
+
+    monkeypatch.setattr(engine_mod, "smooth_preserve", overshoot)
+    src = tmp_path / "b.stl"
+    _box_mesh().export(str(src))
+    res = _run(
+        src,
+        tmp_path / "envelope",
+        RuntimeSettings(topopt_auto_keep=False),
+        spec_dims_mm=[24.0, 24.0, 24.0],
+        target_volume_fraction=0.7,
+        max_iterations=3,
+    )
+
+    assert res.ok, res.error
+    assert res.topopt["output_envelope_ok"] is True
+    assert res.analysis.bbox_size[2] <= 24.0 + 0.05
+
+
+def test_infill_smoothed_export_is_clipped_to_spec_envelope(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import cadx.cad.engine as engine_mod
+    from cadx.cad.engine import run_infill_pipeline
+
+    real_smooth = engine_mod.smooth_preserve
+
+    def overshoot(mesh, *args, **kwargs):
+        out = real_smooth(mesh, *args, **kwargs)
+        zmax = float(out.bounds[1][2])
+        out.vertices[out.vertices[:, 2] >= zmax - 1e-6, 2] += 0.8
+        return out
+
+    monkeypatch.setattr(engine_mod, "smooth_preserve", overshoot)
+    src = tmp_path / "b.stl"
+    _box_mesh().export(str(src))
+    res = run_infill_pipeline(
+        mesh_path=src,
+        out_dir=tmp_path / "infill-envelope",
+        load_cases=[_cantilever_case()],
+        optimize={
+            "infill_scope": "full",
+            "target_volume_fraction": 0.7,
+            "infill_shell_mm": 2.0,
+            "infill_period_mm": 8.0,
+            "spec_dims_mm": [24.0, 24.0, 24.0],
+        },
+        material="pla",
+        voxel_mm=VOXEL_MM,
+        runtime=RuntimeSettings(),
+    )
+
+    assert res.ok, res.error
+    assert res.topopt["output_envelope"]["method"] == "clip"
+    assert res.topopt["output_envelope_ok"] is True
+    assert res.analysis.bbox_size[2] <= 24.0 + 0.05
+
+
+def test_infill_export_body_count_stays_unknown_when_revoxelization_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import cadx.cad.fem.analyze as analyze_mod
+    from cadx.cad.engine import run_infill_pipeline
+
+    real_solve = analyze_mod.run_fem_domain
+
+    def fail_export(domain, solid_mask, load_cases, material_name="", **kwargs):
+        if str(kwargs.get("suffix", "")).endswith("export"):
+            raise RuntimeError("injected export re-voxel solve failure")
+        return real_solve(domain, solid_mask, load_cases, material_name, **kwargs)
+
+    monkeypatch.setattr(analyze_mod, "run_fem_domain", fail_export)
+    src = tmp_path / "b.stl"
+    _box_mesh().export(str(src))
+    res = run_infill_pipeline(
+        mesh_path=src,
+        out_dir=tmp_path / "body-count-unknown",
+        load_cases=[_cantilever_case()],
+        optimize={
+            "infill_scope": "full",
+            "target_volume_fraction": 0.7,
+            "infill_shell_mm": 2.0,
+            "infill_period_mm": 8.0,
+        },
+        material="pla",
+        voxel_mm=VOXEL_MM,
+        runtime=RuntimeSettings(),
+    )
+
+    assert res.ok, res.error
+    assert res.topopt["n_surface_components"] >= 1
+    assert res.topopt["n_bodies_export"] is None
+    assert res.topopt["verification"]["valid"] is False
+
+
+def test_infill_export_divergence_gets_one_crisp_retry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A >3x mask/export SF gap retries once with crisp extraction; the
+    final verification must describe the selected retry candidate."""
+    import cadx.cad.fem.analyze as analyze_mod
+    from cadx.cad.engine import run_infill_pipeline
+
+    real = analyze_mod.run_fem_domain
+
+    def spy(domain, solid_mask, load_cases, material_name="", **kw):
+        report = real(domain, solid_mask, load_cases, material_name, **kw)
+        suffix = str(kw.get("suffix", ""))
+        safety = 30.0 if suffix == "_retry_export" else 10.0 if suffix == "_export" else 50.0
+        for case in report.cases:
+            case.safety_factor = safety
+            case.compliance_j = 1e-3
+            case.max_disp_mm = 0.1
+            case.max_vm_mpa = 1.0
+        return report
+
+    monkeypatch.setattr(analyze_mod, "run_fem_domain", spy)
+    mesh = trimesh.creation.box(extents=[60.0, 40.0, 24.0])
+    mesh.apply_translation([0.0, 0.0, 12.0])
+    src = tmp_path / "plate24.stl"
+    mesh.export(str(src))
+    res = run_infill_pipeline(
+        mesh_path=src,
+        out_dir=tmp_path / "retry",
+        load_cases=[_cantilever_case()],
+        optimize={
+            "infill_scope": "full",
+            "target_volume_fraction": 0.75,
+            "infill_shell_mm": 2.0,
+            "infill_period_mm": 8.0,
+        },
+        material="pla",
+        voxel_mm=1.5,
+        runtime=RuntimeSettings(),
+    )
+
+    assert res.ok, res.error
+    assert res.topopt["retry"]["trigger"] == ["sf_divergence"]
+    assert res.topopt["verification"]["sf_export"] == pytest.approx(30.0)
+    assert res.topopt["verification"]["sf_ratio"] == pytest.approx(50.0 / 30.0)
+    assert res.topopt["verification"]["valid"] is True, (
+        res.topopt["warnings"],
+        res.topopt["verification"],
+    )

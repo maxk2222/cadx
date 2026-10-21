@@ -369,8 +369,8 @@ class OptimizeSpec(BaseModel):
     )
     volfrac_ramp_iters: int | None = Field(
         default=None, ge=1, le=200
-    )  # iterations for the volfrac_init -> target ramp (default 20); a
-    # shorter ramp tightens the budget sooner, a longer one explores more
+    )  # total iterations for staged volfrac_init -> target continuation
+    # (default 40); shorter schedules may advance before the stress layout settles
     loadpath_corridor_mm: float | None = Field(
         default=None, gt=0.0, le=50.0
     )  # corridor width for warmstart="loadpath" (default 2.5xvoxel pitch);
