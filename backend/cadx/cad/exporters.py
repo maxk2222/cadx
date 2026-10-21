@@ -72,9 +72,20 @@ def export_stl_file(
     export_stl(shape, str(path), tolerance=tolerance, angular_tolerance=angular_tolerance)
 
 
-def export_3mf_file(shape: Shape, path: Path, name: str = "part") -> None:
+def export_3mf_file(
+    shape: Shape,
+    path: Path,
+    name: str = "part",
+    linear_deflection: float = 0.001,
+    angular_deflection: float = 0.1,
+) -> None:
     m = Mesher()
-    m.add_shape(shape, part_number=name)
+    m.add_shape(
+        shape,
+        part_number=name,
+        linear_deflection=linear_deflection,
+        angular_deflection=angular_deflection,
+    )
     m.write(str(path))
 
 
@@ -171,6 +182,30 @@ def export_2d(
     return results
 
 
+def _premesh(shape: Shape, linear_deflection: float, angular_deflection: float) -> None:
+    """Tessellate once at the finest deflection the exporters will ask for.
+
+    Every mesher entry point (stl writer, Mesher/3mf, tessellate/glb) runs
+    its own BRepMesh_IncrementalMesh — on a sewn or complex solid that is
+    the dominant export cost, paid three times over. OCC keeps the finest
+    triangulation per face and skips faces whose stored mesh already
+    satisfies a requested deflection, so meshing once at the tightest
+    tolerance lets all three consumers read the same OCC triangulation.
+    Best-effort: a failed premesh just means each export meshes on its own."""
+    try:
+        from OCP.BRepMesh import BRepMesh_IncrementalMesh
+
+        BRepMesh_IncrementalMesh(
+            shape.wrapped,
+            linear_deflection,
+            True,
+            angular_deflection,
+            True,
+        )
+    except Exception:
+        pass
+
+
 def export_all_3d(
     shape: Shape,
     out_dir: Path,
@@ -179,16 +214,43 @@ def export_all_3d(
     stl_tolerance: float = 0.01,
     stl_angular: float = 0.1,
     glb_deflection: float = 0.05,
+    parallel: int = 0,
 ) -> dict[str, str | None]:
-    """Export step/stl/3mf/glb. Returns {fmt: filename or None}."""
+    """Export step/stl/3mf/glb. Returns {fmt: filename or None}.
+
+    ``parallel`` > 1 pre-meshes the shape once at the tightest tolerance
+    (stl/3mf/glb then share OCC's cached triangulation instead of
+    re-meshing three times) and runs the independent file writers in a
+    thread pool — each still fails independently. 0 auto-detects."""
+    from cadx.cad import resources
+
+    workers = resources.pool_size(parallel)
     out_dir.mkdir(parents=True, exist_ok=True)
-    results: dict[str, str | None] = {}
-    exporters = {
+    # 3mf defaults to a 10x finer deflection than the shipped STL — align it
+    # with the STL grade so the premesh covers all three mesh consumers
+    exporters: dict[str, Callable[[Path], None]] = {
         "step": lambda p: export_step_file(shape, p),
         "stl": lambda p: export_stl_file(shape, p, stl_tolerance, stl_angular),
-        "3mf": lambda p: export_3mf_file(shape, p, name),
+        "3mf": lambda p: export_3mf_file(shape, p, name, stl_tolerance, stl_angular),
         "glb": lambda p: export_glb_file(shape, p, glb_deflection),
     }
+    if workers > 1:
+        _premesh(shape, min(stl_tolerance, glb_deflection), min(stl_angular, 0.3))
+        from concurrent.futures import ThreadPoolExecutor
+
+        results: dict[str, str | None] = {}
+        with ThreadPoolExecutor(max_workers=min(workers, len(exporters))) as pool:
+            futures = {
+                fmt: pool.submit(fn, out_dir / f"{name}.{fmt}") for fmt, fn in exporters.items()
+            }
+            for fmt, fut in futures.items():
+                try:
+                    fut.result()
+                    results[fmt] = f"{name}.{fmt}"
+                except Exception:
+                    results[fmt] = None
+        return results
+    results = {}
     for fmt, fn in exporters.items():
         path = out_dir / f"{name}.{fmt}"
         try:

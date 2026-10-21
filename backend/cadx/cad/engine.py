@@ -20,6 +20,7 @@ import numpy as np
 import trimesh
 from build123d import import_brep
 
+from cadx.cad import resources
 from cadx.cad.analysis import _FACET_FACE_CAP, Analysis, analyze
 from cadx.cad.contact_sheet import make_contact_sheet
 from cadx.cad.dfm import DfmReport
@@ -28,6 +29,7 @@ from cadx.cad.dfm.common import common_checks, load_mesh
 from cadx.cad.dfm.fdm import fdm_checks, fdm_mesh_checks
 from cadx.cad.dfm.report import DfmWarning
 from cadx.cad.exporters import (
+    _premesh,
     export_2d,
     export_all_3d,
     export_analytic_step_isolated,
@@ -325,6 +327,7 @@ def run_pipeline(  # noqa: C901
         timeout_s=rt.exec_timeout_s,
         mem_mb=rt.exec_mem_limit_mb,
         warm=rt.exec_warm_runner,
+        threads=rt.exec_threads,
     )
     res.stdout = ro.stdout
     res.params_used = ro.params_used
@@ -436,9 +439,10 @@ def run_pipeline(  # noqa: C901
         except Exception as e:
             log.warning("features.footprint_iou_failed", error=str(e)[:200])
 
-    if not light:
+    exp_dir = out_dir / "exports"
+
+    def _do_renders() -> float:
         # 5. renders + contact sheet + thumbnail
-        _mark_step(step_key, "render")
         t = time.monotonic()
         render_paths = render_views(stl_path, mesh_dir, res.analysis.bbox_size)
         res.renders = {v: p.name for v, p in render_paths.items()}
@@ -453,8 +457,9 @@ def run_pipeline(  # noqa: C901
         ]
         sheet = make_contact_sheet(render_paths, out_dir / "contact_sheet.png", stats)
         res.contact_sheet = sheet.name if sheet else None
-        res.timings["render_s"] = round(time.monotonic() - t, 2)
+        return time.monotonic() - t
 
+    def _do_dfm() -> float:
         # 6. DfM
         t = time.monotonic()
         mesh = load_mesh(stl_path)
@@ -478,29 +483,64 @@ def run_pipeline(  # noqa: C901
                 thread_count=res.thread_count,
             )
         res.dfm = DfmReport(process=settings.process, warnings=warnings).sort()
-        res.timings["dfm_s"] = round(time.monotonic() - t, 2)
-    else:
-        res.timings["render_s"] = 0.0
-        res.timings["dfm_s"] = 0.0
+        return time.monotonic() - t
 
-    # 7. exports
-    _mark_step(step_key, "export")
-    t = time.monotonic()
+    def _do_exports() -> float:
+        # 7. exports
+        t = time.monotonic()
+        if full_exports:
+            res.exports = export_all_3d(shape, exp_dir, name=name, parallel=rt.exec_pool_workers)
+            res.exports.update(export_2d(shape, exp_dir, name, ro.flat_brep_path))
+            if res.analysis.watertight is False:
+                # same repair the analysis STL got — the shipped mesh formats
+                # must not leak non-watertight geometry to the slicer
+                _repair_export_meshes(res.exports, exp_dir)
+        else:
+            # iterations only need the STL (already exported for renders)
+            res.exports = {"stl": None}
+        return time.monotonic() - t
+
+    fanout = resources.pool_size(rt.exec_pool_workers) > 1 and not light
+    if fanout:
+        # one shared OCC triangulation up front — after this every consumer
+        # below (writers, DfM face reads) is read-only on the shape, which
+        # makes the thread fan-out safe (no concurrent re-mesh writes)
+        _premesh(shape, 0.01, 0.1)
+
+    _mark_step(step_key, "render" if not light else "export")
     if _is_cancelled(cancelled):
         _mark_cancelled(res)
         return _attach_verify_spec(res, spec_dict, settings, rt)
-    exp_dir = out_dir / "exports"
-    if full_exports:
-        res.exports = export_all_3d(shape, exp_dir, name=name)
-        res.exports.update(export_2d(shape, exp_dir, name, ro.flat_brep_path))
-        if res.analysis.watertight is False:
-            # same repair the analysis STL got — the shipped mesh formats
-            # must not leak non-watertight geometry to the slicer
-            _repair_export_meshes(res.exports, exp_dir)
+
+    if fanout:
+        from concurrent.futures import ThreadPoolExecutor
+
+        _mark_step(step_key, "export")
+        t = time.monotonic()
+        try:
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                f_ren = pool.submit(_do_renders)
+                f_dfm = pool.submit(_do_dfm)
+                f_exp = pool.submit(_do_exports)
+                render_s, dfm_s, export_s = f_ren.result(), f_dfm.result(), f_exp.result()
+        except Exception as e:  # a crashed fan-out retries serially
+            log.warning("pipeline.fanout_failed", error=str(e)[:200])
+            render_s, dfm_s, export_s = _do_renders(), _do_dfm(), _do_exports()
+        res.timings["render_s"] = round(render_s, 2)
+        res.timings["dfm_s"] = round(dfm_s, 2)
+        res.timings["export_s"] = round(export_s, 2)
     else:
-        # iterations only need the STL (already exported for renders)
-        res.exports = {"stl": None}
-    res.timings["export_s"] = round(time.monotonic() - t, 2)
+        if not light:
+            res.timings["render_s"] = round(_do_renders(), 2)
+            res.timings["dfm_s"] = round(_do_dfm(), 2)
+        else:
+            res.timings["render_s"] = 0.0
+            res.timings["dfm_s"] = 0.0
+        _mark_step(step_key, "export")
+        if _is_cancelled(cancelled):
+            _mark_cancelled(res)
+            return _attach_verify_spec(res, spec_dict, settings, rt)
+        res.timings["export_s"] = round(_do_exports(), 2)
 
     # 8. STEP roundtrip gate — a shape can be valid in memory yet break on
     # serialisation; bounded by face count (inside the check) and by the
@@ -1244,7 +1284,8 @@ def run_fem_pipeline(
         anchors=anchors,
         keep_regions=keep,
         spsolve_dofs=s.fem_spsolve_dofs,
-        mem_budget_mb=float(s.exec_mem_limit_mb),
+        mem_budget_mb=float(resources.effective_exec_mem_mb(s)),
+        pool_workers=s.exec_pool_workers,
         cancelled=cancelled,
     )
     report_to_json(report, out_dir / "fem" / "report.json")
@@ -1401,7 +1442,7 @@ def run_topopt_pipeline(  # noqa: C901
     # better to refuse early with a pointer to the knobs that fix it
     from cadx.cad.fem.voxelize import estimate_fem_memory_mb
 
-    mem_budget = float(getattr(s, "exec_mem_limit_mb", 0) or 0)
+    mem_budget = float(resources.effective_exec_mem_mb(s))
     if mem_budget:
         n_eff = min(len(cases) * 2, s.fem_max_effective_cases)
         est_mb = estimate_fem_memory_mb(
@@ -1752,6 +1793,8 @@ def run_topopt_pipeline(  # noqa: C901
             anchors=anchors,
             keep_regions=keep_list,
             spsolve_dofs=s.fem_spsolve_dofs,
+            pool_workers=s.exec_pool_workers,
+            mem_budget_mb=float(resources.effective_exec_mem_mb(s)),
             suffix=fem_suffix,
             source_mesh=opt_mesh,
             cancelled=cancelled,
@@ -1773,6 +1816,8 @@ def run_topopt_pipeline(  # noqa: C901
                 anchors=anchors,
                 keep_regions=keep_list,
                 spsolve_dofs=s.fem_spsolve_dofs,
+                pool_workers=s.exec_pool_workers,
+                mem_budget_mb=float(resources.effective_exec_mem_mb(s)),
                 suffix=f"{fem_suffix}_export",
                 source_mesh=opt_mesh,
                 cancelled=cancelled,
@@ -1882,8 +1927,7 @@ def run_topopt_pipeline(  # noqa: C901
         # smoothed mesh) — no export evidence exists at all
         verification["valid"] = False
         res.topopt["warnings"].append(
-            "no export FEM case produced a safety factor — sf_export is "
-            "unverified, not safe"
+            "no export FEM case produced a safety factor — sf_export is unverified, not safe"
         )
     elif max(int(best["n_components"]), int(best["n_bodies_export"])) > 1:
         verification["valid"] = False
@@ -2223,6 +2267,8 @@ def run_topopt_resample(
             out_dir=out_dir,
             anchors=anchors,
             keep_regions=keep_list,
+            pool_workers=s.exec_pool_workers,
+            mem_budget_mb=float(resources.effective_exec_mem_mb(s)),
             source_mesh=opt_mesh,
             cancelled=cancelled,
         )
@@ -2238,6 +2284,8 @@ def run_topopt_resample(
                 out_dir=out_dir,
                 anchors=anchors,
                 keep_regions=keep_list,
+                pool_workers=s.exec_pool_workers,
+                mem_budget_mb=float(resources.effective_exec_mem_mb(s)),
                 suffix="_export",
                 source_mesh=opt_mesh,
                 cancelled=cancelled,
@@ -2559,6 +2607,8 @@ def run_refine(
             out_dir=out_dir,
             anchors=anchors,
             spsolve_dofs=s.fem_spsolve_dofs,
+            mem_budget_mb=float(resources.effective_exec_mem_mb(s)),
+            pool_workers=s.exec_pool_workers,
             cancelled=cancelled,
         )
         report_to_json(verify, out_dir / "fem" / "report.json")
@@ -2597,9 +2647,7 @@ def run_refine(
     res.ok = True
     # canonical conformance report on the finished part — bound semantics:
     # the refined body is still the optimized envelope, not a CAD target
-    _attach_verify_spec(
-        res, spec, ProjectSettings(), s, envelope_bound_only=True
-    )
+    _attach_verify_spec(res, spec, ProjectSettings(), s, envelope_bound_only=True)
     res.timings["total_s"] = round(time.monotonic() - t0, 2)
     return res
 

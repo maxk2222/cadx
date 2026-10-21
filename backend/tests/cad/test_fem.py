@@ -925,3 +925,30 @@ def test_cg_watchdog_converges_well_conditioned() -> None:
     x, info, diverged = _cg_watchdog(K, F, None, None, maxiter=2000)
     assert diverged is None and info == 0 and x is not None
     assert np.linalg.norm(K @ x - F) / np.linalg.norm(F) < 1e-4
+
+
+def test_run_fem_pool_matches_serial(tmp_path: Path) -> None:
+    """Fork-pool case solves must produce identical reports — same grid,
+    same per-case numbers, same order."""
+    cases = [
+        _cantilever_case(-100.0),
+        LoadCase(
+            name="top",
+            fixed=[RegionSpec(kind="face", axis="-z")],
+            loads=[
+                LoadSpec(
+                    region=RegionSpec(kind="face", axis="+z", margin_mm=1.0),
+                    force_n=[0.0, 0.0, -80.0],
+                )
+            ],
+        ),
+    ]
+    mesh = _box_mesh()
+    serial = run_fem(mesh, cases, "pla", voxel_mm=4.0, pool_workers=1)
+    pooled = run_fem(mesh, cases, "pla", voxel_mm=4.0, pool_workers=2)
+    assert len(pooled.cases) == len(serial.cases) == 2
+    for c_par, c_ser in zip(pooled.cases, serial.cases, strict=True):
+        assert c_par.name == c_ser.name
+        assert c_par.max_vm_mpa == pytest.approx(c_ser.max_vm_mpa)
+        assert c_par.max_disp_mm == pytest.approx(c_ser.max_disp_mm)
+        assert c_par.converged == c_ser.converged

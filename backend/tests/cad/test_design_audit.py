@@ -166,6 +166,53 @@ def test_baseline_failure_aborts_audit():
     assert report["baseline"]["ok"] is False
 
 
+def test_parallel_audit_matches_serial():
+    """parallel=4 runs the ±ε jobs on a thread pool — verdicts must match
+    the serial report bit for bit (runner is a pure fake here)."""
+    serial = audit_params(CODE, BASE_PARAMS, runner=ok_run)
+    report = audit_params(CODE, BASE_PARAMS, runner=ok_run, parallel=4)
+    assert report["status"] == serial["status"]
+    assert report["params"] == serial["params"]
+    assert report["audited"] == serial["audited"]
+
+
+def test_parallel_audit_real_concurrency():
+    """The pool must actually overlap runner calls — a runner that sleeps
+    and records the max in-flight count proves it."""
+    import threading
+    import time
+
+    lock = threading.Lock()
+    live = [0, 0]  # [current, max]
+
+    def slow_runner(ov: dict[str, object]) -> dict[str, Any]:
+        with lock:
+            live[0] += 1
+            live[1] = max(live[1], live[0])
+        try:
+            time.sleep(0.05)
+            return ok_run(ov)
+        finally:
+            with lock:
+                live[0] -= 1
+
+    report = audit_params(CODE, BASE_PARAMS, runner=slow_runner, parallel=3)
+    assert report["status"] == "robust"
+    assert live[1] > 1
+
+
+def test_parallel_audit_failing_param():
+    def runner(ov: dict[str, object]) -> dict[str, Any]:
+        if float(ov["length"]) > 40.0:
+            return {"ok": False, "error": "boom", "analysis": None}
+        return ok_run(ov)
+
+    report = audit_params(CODE, BASE_PARAMS, runner=runner, parallel=3)
+    assert report["status"] == "fails"
+    assert report["params"]["length"]["verdict"] == "fails"
+    assert report["params"]["width"]["verdict"] == "robust"
+
+
 def test_int_params_perturb_by_at_least_one():
     code = (
         "from build123d import *\n\n"

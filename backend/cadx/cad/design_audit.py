@@ -70,12 +70,22 @@ def make_pipeline_runner(
     mesh_bbox: list[float] | None = None,
     anchors: dict[str, Any] | None = None,
     cancelled: Callable[[], bool] | None = None,
+    warm: bool | None = None,
 ) -> Runner:
     """Production runner: light pipeline run (sandbox + analysis, no renders/
-    DfM) per perturbation, each into its own subdir of ``base_dir``."""
+    DfM) per perturbation, each into its own subdir of ``base_dir``.
+
+    ``warm=False`` forces the cold subprocess path — required for parallel
+    audits: the singleton zygote serializes all runs through _ZYGOTE_LOCK,
+    so warm runs from concurrent threads would not overlap at all."""
     from cadx.cad.engine import run_pipeline
 
     counter = itertools.count()
+    rt = (
+        runtime.model_copy(update={"exec_warm_runner": warm})
+        if (runtime is not None and warm is not None)
+        else runtime
+    )
 
     def _run(overrides: dict[str, object]) -> Mapping[str, Any]:
         res = run_pipeline(
@@ -84,7 +94,7 @@ def make_pipeline_runner(
             params_override=dict(overrides) or None,
             references=references,
             settings=settings,
-            runtime=runtime,
+            runtime=rt,
             name="audit",
             mesh_solid=mesh_solid,
             mesh_bbox=mesh_bbox,
@@ -223,6 +233,7 @@ def audit_params(
     drift_pct: float = DEFAULT_DRIFT_PCT,
     runner: Runner | None = None,
     cancelled: Callable[[], bool] | None = None,
+    parallel: int = 1,
 ) -> dict[str, Any]:
     """Perturb each numeric PARAMS value ±epsilon and re-run the validity gate.
 
@@ -281,9 +292,16 @@ def audit_params(
     tmp: tempfile.TemporaryDirectory[str] | None = None
     if runner is None:
         tmp = tempfile.TemporaryDirectory(prefix="cadx_audit_")
-        runner = make_pipeline_runner(code, Path(tmp.name), cancelled=cancelled)
+        runner = make_pipeline_runner(
+            code,
+            Path(tmp.name),
+            cancelled=cancelled,
+            warm=False if parallel > 1 else None,
+        )
     try:
-        return _audit_loop(runner, audited_names, effective, skipped, epsilon, drift_pct, cancelled)
+        return _audit_loop(
+            runner, audited_names, effective, skipped, epsilon, drift_pct, cancelled, parallel
+        )
     finally:
         if tmp is not None:
             tmp.cleanup()
@@ -297,9 +315,16 @@ def _audit_loop(
     epsilon: float,
     drift_pct: float,
     cancelled: Callable[[], bool] | None,
+    parallel: int = 1,
 ) -> dict[str, Any]:
     """Baseline + per-param perturbation loop: the full audit report, or the
-    cancelled shape when the checker trips between runs."""
+    cancelled shape when the checker trips between runs.
+
+    ``parallel > 1`` runs the per-param ±ε pairs in a thread pool — each run
+    is a subprocess inside ``runner``, so threads give true parallelism. The
+    caller must have provided a non-zygote runner (``warm=False``) or the
+    pool serializes on the sandbox lock anyway. Params evaluate
+    independently; cancellation is honoured between completed futures."""
     if _is_cancelled(cancelled):
         return _cancelled_report(None, {}, skipped, epsilon)
     baseline = _summarize_run(_safe_run(runner, dict(effective)), None)
@@ -316,16 +341,9 @@ def _audit_loop(
 
     report_params: dict[str, Any] = {}
     worst = "robust"
-    for name in audited_names:
-        if _is_cancelled(cancelled):
-            return _cancelled_report(baseline, report_params, skipped, epsilon)
-        value = effective[name]
-        assert isinstance(value, int | float)  # narrowed by _is_numeric above
-        entry = _perturb_param(
-            runner, name, value, dict(effective), baseline, epsilon, drift_pct, cancelled
-        )
-        if entry is None:
-            return _cancelled_report(baseline, report_params, skipped, epsilon)
+
+    def _record(name: str, entry: dict[str, Any]) -> None:
+        nonlocal worst
         report_params[name] = entry
         if _VERDICT_RANK[entry["verdict"]] > _VERDICT_RANK[worst]:
             worst = entry["verdict"]
@@ -335,6 +353,32 @@ def _audit_loop(
             verdict=entry["verdict"],
             reason=str(entry["reason"])[:120],
         )
+
+    def _job(name: str) -> dict[str, Any] | None:
+        value = effective[name]
+        assert isinstance(value, int | float)  # narrowed by _is_numeric above
+        return _perturb_param(
+            runner, name, value, dict(effective), baseline, epsilon, drift_pct, cancelled
+        )
+
+    if parallel > 1 and len(audited_names) > 1:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        with ThreadPoolExecutor(max_workers=parallel) as pool:
+            futures = {pool.submit(_job, n): n for n in audited_names}
+            for fut in as_completed(futures):
+                entry = fut.result()
+                if entry is None or _is_cancelled(cancelled):
+                    return _cancelled_report(baseline, report_params, skipped, epsilon)
+                _record(futures[fut], entry)
+    else:
+        for name in audited_names:
+            if _is_cancelled(cancelled):
+                return _cancelled_report(baseline, report_params, skipped, epsilon)
+            entry = _job(name)
+            if entry is None:
+                return _cancelled_report(baseline, report_params, skipped, epsilon)
+            _record(name, entry)
 
     return {
         "status": worst,

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from cadx import storage
+from cadx.cad import resources
 from cadx.cad.engine import (
     ExecResult,
     export_from_brep,
@@ -203,16 +204,21 @@ def run_audit_payload(
     ]
 
     scratch = storage.ensure(storage.scratch_dir(project_id, version_id) / "audit")
+    rt = _runtime(payload)
+    parallel = resources.pool_size(rt.audit_parallel_runs)
     runner = make_pipeline_runner(
         payload["code"],
         scratch,
         references=references,
         settings=settings,
-        runtime=_runtime(payload),
+        runtime=rt,
         mesh_solid=Path(payload["mesh_solid"]) if payload.get("mesh_solid") else None,
         mesh_bbox=payload.get("mesh_bbox"),
         anchors=payload.get("anchors"),
         cancelled=cancelled,
+        # the zygote serializes runs globally — parallel audits need cold
+        # subprocesses (spawn cost amortized by the concurrency win)
+        warm=False if parallel > 1 else None,
     )
     try:
         report = audit_params(
@@ -221,6 +227,7 @@ def run_audit_payload(
             epsilon=float(payload.get("epsilon") or 0.05),
             max_params=int(payload.get("max_params") or 8),
             runner=runner,
+            parallel=parallel,
             **_cancel_kwargs(audit_params, cancelled),
         )
     finally:
@@ -526,14 +533,14 @@ def _run_mesh_payload_subprocess(payload: dict[str, Any], workdir: Path) -> dict
     (workdir / "input.pkl").write_bytes(pickle.dumps(payload))
 
     env = dict(os.environ)
-    env.setdefault("OMP_NUM_THREADS", "2")
+    resources.configure_thread_env(env)
     # inherit stdout/stderr so the child's structlog lines keep landing in the
     # executor's docker logs
     proc = subprocess.Popen(
         [sys.executable, "-m", "cadx.cad.mesh_payload_entry", str(workdir)],
         cwd=str(workdir),
         env=env,
-        preexec_fn=lambda: _mesh_child_limits(rt.exec_mem_limit_mb),
+        preexec_fn=lambda: _mesh_child_limits(resources.effective_exec_mem_mb(rt)),
     )
     try:
         proc.wait(timeout=timeout_s + 15)

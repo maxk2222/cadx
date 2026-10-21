@@ -17,6 +17,7 @@ import numpy as np
 import trimesh
 from pydantic import BaseModel, Field, computed_field
 
+from cadx.cad import resources
 from cadx.cad.fem.materials import MaterialProps, resolve_material
 from cadx.cad.fem.regions import case_reactions, material_cell_factors, resolve_case_dofs
 from cadx.cad.fem.solver import (
@@ -292,6 +293,7 @@ def run_fem(
     keep_regions: list | None = None,
     spsolve_dofs: int = 120_000,
     mem_budget_mb: float | None = None,
+    pool_workers: int = 0,
     suffix: str = "",
     cancelled: Callable[[], bool] | None = None,
 ) -> FemReport:
@@ -327,6 +329,8 @@ def run_fem(
         keep_regions,
         spsolve_dofs,
         source_mesh=mesh,
+        pool_workers=pool_workers,
+        mem_budget_mb=mem_budget_mb,
         cancelled=cancelled,
     )
     return report
@@ -343,6 +347,8 @@ def run_fem_domain(
     anchors: list[dict] | None = None,
     keep_regions: list | None = None,
     spsolve_dofs: int = 120_000,
+    pool_workers: int = 0,
+    mem_budget_mb: float | None = None,
     suffix: str = "",
     source_mesh: trimesh.Trimesh | None = None,
     cancelled: Callable[[], bool] | None = None,
@@ -370,12 +376,36 @@ def run_fem_domain(
         keep_regions,
         spsolve_dofs,
         source_mesh=source_mesh,
+        pool_workers=pool_workers,
+        mem_budget_mb=mem_budget_mb,
         cancelled=cancelled,
     )
     return report
 
 
-def _solve_cases(
+_POOL: dict[str, Any] = {}
+
+
+def _solve_case_child(i: int) -> tuple[int, FemSolution]:
+    """Fork-pool worker. Shared inputs live in the module-global ``_POOL`` —
+    populated by the parent before the pool is created, so fork children
+    read K/ctx/F via copy-on-write instead of pickling hundreds of MB per
+    task. Returns (index, solution) so the parent can render in order."""
+    st = _POOL
+    sol = solve_reduced(
+        st["domain"],
+        st["ctx"][i],
+        st["edof"],
+        st["active"],
+        st["F"][i],
+        st["elem_E"],
+        st["poisson"],
+        E_ref=st["E_ref"],
+    )
+    return i, sol
+
+
+def _solve_cases(  # noqa: C901
     domain: VoxelDomain,
     mat: MaterialProps,
     load_cases: list[LoadCase],
@@ -386,6 +416,8 @@ def _solve_cases(
     keep_regions: list | None = None,
     spsolve_dofs: int = 120_000,
     source_mesh: trimesh.Trimesh | None = None,
+    pool_workers: int = 0,
+    mem_budget_mb: float | None = None,
     cancelled: Callable[[], bool] | None = None,
 ) -> None:
     report.grid = {
@@ -416,37 +448,32 @@ def _solve_cases(
     asm: tuple[Any, np.ndarray, np.ndarray] | None = None  # (K, edof, active)
     ctx_cache: dict[bytes, CaseSolve] = {}
 
+    # Phase 1 — resolve regions/loads serially (cheap vs solves). Solvable
+    # cases collect (sig, F); the solves themselves can then fan out.
+    results: list[FemCaseResult] = []
+    preps: dict[int, tuple[bytes, np.ndarray]] = {}  # case index -> (sig, F)
     for i, case in enumerate(load_cases):
         if cancelled is not None and cancelled():
             report.warnings.append("cancelled — remaining load cases skipped")
             break
         res = FemCaseResult(name=case.name or f"case{i + 1}")
+        results.append(res)
         fixed3, F, warnings = resolve_case_dofs(
             domain, case, anchors, density_g_cm3=mat.density_g_cm3
         )
         res.warnings += warnings
         res.reactions = case_reactions(domain, fixed3, F)
         if not fixed3.any() or not np.any(F):
-            report.cases.append(res)
             continue
         if asm is None:
             asm = assemble(domain, elem_E, mat.poisson)
         K, edof, active = asm
         sig = np.unique(_fixed_dofs(fixed3, domain.node_count)).tobytes()
-        ctx = ctx_cache.get(sig)
-        if ctx is None:
-            ctx = reduce_case(domain, K, edof, fixed3, spsolve_dofs=spsolve_dofs)
-            ctx_cache[sig] = ctx
-        sol = solve_reduced(
-            domain,
-            ctx,
-            edof,
-            active,
-            F,
-            elem_E,
-            mat.poisson,
-            E_ref=mat.elastic_modulus_mpa,
-        )
+        if sig not in ctx_cache:
+            ctx_cache[sig] = reduce_case(domain, K, edof, fixed3, spsolve_dofs=spsolve_dofs)
+        preps[i] = (sig, F)
+
+    def _record(res: FemCaseResult, sol: FemSolution) -> None:
         res.warnings += sol.warnings
         res.max_vm_mpa = round(sol.max_vm_mpa, 3)
         res.max_disp_mm = round(sol.max_disp_mm, 4)
@@ -463,8 +490,73 @@ def _solve_cases(
             )
             res.vonmises_png = vm_png
             res.deformed_png = def_png
-        report.cases.append(res)
 
+    # Phase 2 — solve. A fork pool shares the assembled system + factored
+    # contexts via copy-on-write (CaseSolve.factor is a SuperLU callable and
+    # not picklable, so _solve_case_child reads it from the module global).
+    # Children each hold one transient solve's worth of memory on top of the
+    # shared COW pages — refuse the pool when the estimate would exceed the
+    # budget, and fall back to serial on any pool failure.
+    workers = min(resources.pool_size(pool_workers), len(preps))
+    if workers > 1 and asm is not None and mem_budget_mb:
+        from cadx.cad.fem.voxelize import estimate_fem_memory_mb
+
+        est = estimate_fem_memory_mb(
+            domain, len(preps), direct=3 * domain.node_count <= spsolve_dofs
+        )
+        workers = min(workers, max(1, int(mem_budget_mb // max(est, 512))))
+    solved: dict[int, FemSolution] = {}
+    if workers > 1 and asm is not None:
+        K, edof, active = asm
+        try:
+            import multiprocessing as mp
+            from concurrent.futures import ProcessPoolExecutor, as_completed
+
+            _POOL.clear()
+            _POOL.update(
+                domain=domain,
+                ctx={i: ctx_cache[sig] for i, (sig, _f) in preps.items()},
+                edof=edof,
+                active=active,
+                F={i: f for i, (_s, f) in preps.items()},
+                elem_E=elem_E,
+                poisson=mat.poisson,
+                E_ref=mat.elastic_modulus_mpa,
+            )
+            with ProcessPoolExecutor(
+                max_workers=workers, mp_context=mp.get_context("fork")
+            ) as pool:
+                futures = {pool.submit(_solve_case_child, i): i for i in preps}
+                for fut in as_completed(futures):
+                    i, sol = fut.result()
+                    solved[i] = sol
+        except Exception as e:
+            log.warning("fem.solve_pool_failed", error=str(e)[:200])
+        finally:
+            _POOL.clear()
+
+    # record in index order: pool results first, then serial fallback for
+    # cases the pool didn't finish — report.cases stays deterministic
+    assert asm is not None or not preps
+    for i in sorted(preps):
+        res = results[i]
+        sol = solved.get(i)
+        if sol is None:
+            sig, F = preps[i]
+            assert asm is not None
+            sol = solve_reduced(
+                domain,
+                ctx_cache[sig],
+                asm[1],
+                asm[2],
+                F,
+                elem_E,
+                mat.poisson,
+                E_ref=mat.elastic_modulus_mpa,
+            )
+        _record(res, sol)
+
+    report.cases.extend(results)
     report.warnings.append(
         "boundary resolution is voxel-limited; stresses near load/fix regions are approximate"
     )

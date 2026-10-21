@@ -20,6 +20,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from cadx.cad import resources
 from cadx.cad.allowlist import apply_params_override, check_code, validate_overrides
 from cadx.runtime_config import RuntimeSettings
 
@@ -88,9 +89,9 @@ class _Zygote:
             "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
             "PYTHONHASHSEED": "0",
             "PYTHONNOUSERSITE": "1",
-            "OMP_NUM_THREADS": "2",
             "LANG": "C.UTF-8",
         }
+        resources.configure_thread_env(env)
         self.proc = subprocess.Popen(
             [sys.executable, "-I", str(ZYGOTE)],
             stdin=subprocess.PIPE,
@@ -133,16 +134,18 @@ class _Zygote:
                 return ""
             self.buf += chunk
 
-    def run(self, workdir: Path, timeout_s: int, mem_mb: int) -> RunnerOutput:
+    def run(self, workdir: Path, timeout_s: int, mem_mb: int, cpu_s: int) -> RunnerOutput:
         """Serve one run. Raises RuntimeError when the zygote is unusable so
-        the caller falls back to the cold subprocess path."""
+        the caller falls back to the cold subprocess path. ``timeout_s`` is
+        the wall-clock watchdog budget; ``cpu_s`` the RLIMIT_CPU budget
+        (thread-scaled by the caller)."""
         if self.proc is None or self.proc.poll() is not None:
             self.spawn()
         assert self.proc is not None and self.proc.stdin is not None
         started = time.monotonic()
         self.proc.stdin.write(
             (
-                json.dumps({"workdir": str(workdir), "mem_mb": mem_mb, "cpu_s": timeout_s}) + "\n"
+                json.dumps({"workdir": str(workdir), "mem_mb": mem_mb, "cpu_s": cpu_s}) + "\n"
             ).encode()
         )
         self.proc.stdin.flush()
@@ -201,11 +204,16 @@ def run_user_code(
     timeout_s: int | None = None,
     mem_mb: int | None = None,
     warm: bool | None = None,
+    threads: int | None = None,
 ) -> RunnerOutput:
     settings = RuntimeSettings()
     timeout_s = timeout_s or settings.exec_timeout_s
-    mem_mb = mem_mb or settings.exec_mem_limit_mb
+    mem_mb = mem_mb or resources.effective_exec_mem_mb(settings)
     warm = settings.exec_warm_runner if warm is None else warm
+    nthreads = resources.thread_budget(threads or settings.exec_threads)
+    # RLIMIT_CPU counts CPU-seconds across threads — scale it so the budget
+    # stays "wall-clock seconds of work"; the proc timeout is the real deadline
+    cpu_s = resources.rlimit_cpu_s(timeout_s, nthreads)
     workdir.mkdir(parents=True, exist_ok=True)
 
     # 1. static checks (no execution on failure)
@@ -248,7 +256,7 @@ def run_user_code(
     if warm:
         try:
             with _ZYGOTE_LOCK:
-                return _ZYGOTE.run(workdir, timeout_s, mem_mb)
+                return _ZYGOTE.run(workdir, timeout_s, mem_mb, cpu_s)
         except Exception:
             _ZYGOTE.kill()  # a half-broken zygote must not poison later runs
 
@@ -257,9 +265,9 @@ def run_user_code(
         "HOME": str(workdir),
         "PYTHONHASHSEED": "0",
         "PYTHONNOUSERSITE": "1",
-        "OMP_NUM_THREADS": "2",
         "LANG": "C.UTF-8",
     }
+    resources.configure_thread_env(env, nthreads)
     started = time.monotonic()
     proc = subprocess.Popen(
         [sys.executable, "-I", str(RUNNER), str(workdir)],
@@ -267,7 +275,7 @@ def run_user_code(
         env=env,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
-        preexec_fn=lambda: _limits(mem_mb, timeout_s),
+        preexec_fn=lambda: _limits(mem_mb, cpu_s),
         text=True,
     )
     try:
