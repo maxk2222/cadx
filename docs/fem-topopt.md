@@ -85,7 +85,9 @@ Printability and filter options (`optimize.*`):
   insensitive to `density_threshold`, at the cost of more iterations.
 - `multires` — a coarse SIMP pass at 2× pitch warm-starts the fine grid
   (~3× fewer fine iterations on large parts); skipped below a domain-size
-  floor and when an explicit `warm_density_relpath` is given.
+  floor and when an explicit `warm_density_relpath` is given. The report's
+  `iterations` counts the finest-grid passes only; `iterations_total`
+  adds the coarse pass(es) — that is the wall-clock-relevant number.
 - `penal` — SIMP penalization exponent (default 3); leave alone unless
   experimenting.
 
@@ -254,17 +256,31 @@ equilibrium sanity.
   per iteration; sensitivities are cone-filtered, temporally averaged and
   ranked, elements are added/removed bidirectionally. BESO reports honest
   statuses (`converged`, `budget_exhausted`, `limit_cycle`, `degenerate`)
-  and warns when MMA-only constraint options are supplied.
+  and warns when MMA-only constraint options are supplied. Its connectivity
+  guard bonds load/fix-bearing components before each solve so a floating
+  island cannot poison the compliance ranking; residual disconnected
+  components are surfaced as warnings.
+  `optimize.mma_final_beta` (e.g. 8) projects an `mma` run's converged
+  blueprint through a sharp Heaviside for the returned density — collapses
+  residual gray fields a cone-filtered MMA can leave behind.
 - `optimize.penal_init` < `penal` enables penal continuation (ramp
   `penal_init`→`penal` over `penal_ramp_iters` = 30 iterations, escapes
   grayscale local minima); `optimize.volfrac_init` > target enables the
-  analogous volume-fraction continuation (ramp over `volfrac_ramp_iters`,
-  OC path only — MMA owns the volume constraint itself).
+  analogous volume-fraction continuation (ramp over `volfrac_ramp_iters` =
+  20 iterations by default, settable via `optimize.volfrac_ramp_iters`,
+  OC path only — MMA owns the volume constraint itself). Caveat: the
+  material-rich start explores a *different topology class* — evals show
+  the same predicted compliance but a measurably weaker stress response
+  (sf_export ~8× lower on the cantilever fixture). Prefer no
+  `volfrac_init`, or a shorter ramp, for stress-critical parts.
 - `optimize.warmstart: "loadpath"` seeds the initial density from a
   deterministic load-path field: for every case a multi-source Dijkstra on
   the 6-connected solid grid finds least-cost corridors between load
   centroids and fixed regions, weighted by `weight·|F|`; passive
-  solid/void precedence is preserved. A load-path start typically saves
+  solid/void precedence is preserved. `optimize.loadpath_corridor_mm`
+  widens the corridor bump (default 2.5 × voxel pitch) — wider corridors
+  seed thicker junctions that survive export smoothing with a smaller
+  sf_mask↔sf_export gap. A load-path start typically saves
   20–40 % of SIMP iterations vs. a uniform `volfrac` start and doubles as a
   cheap physics-informed preview.
 - `optimize.grow_mm` dilates the design domain beyond the part silhouette

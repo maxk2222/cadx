@@ -401,6 +401,12 @@ export interface OptimizeSpec {
   min_gap_mm?: number | null;
   /** volfrac continuation start (> target, e.g. 0.7 — OC only). */
   volfrac_init?: number | null;
+  /** volfrac_init → target ramp length in iterations (default 20). */
+  volfrac_ramp_iters?: number | null;
+  /** corridor width for warmstart="loadpath", mm (default 2.5×pitch). */
+  loadpath_corridor_mm?: number | null;
+  /** mma only: Heaviside sharpness for the returned density (e.g. 8). */
+  mma_final_beta?: number | null;
   /** "loadpath" seeds density from load-path corridors (Dijkstra) —
    * typically 20-40% fewer SIMP iterations. */
   warmstart?: "uniform" | "loadpath";

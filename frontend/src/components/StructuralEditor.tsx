@@ -854,6 +854,9 @@ type StructuralDraft = {
   aniso_material?: boolean;
   volfrac_init?: number;
   warmstart?: "uniform" | "loadpath";
+  volfrac_ramp_iters?: number;
+  loadpath_corridor_mm?: number;
+  mma_final_beta?: number;
 };
 
 export default function StructuralEditor({
@@ -893,6 +896,9 @@ export default function StructuralEditor({
   const [aniso, setAniso] = useState(false);
   const [volfracRamp, setVolfracRamp] = useState(false);
   const [loadpathStart, setLoadpathStart] = useState(false);
+  const [rampIters, setRampIters] = useState(0);
+  const [corridorMm, setCorridorMm] = useState(0);
+  const [mmaFinalBeta, setMmaFinalBeta] = useState(0);
   const [minmax, setMinmax] = useState(false);
   const [dispMax, setDispMax] = useState(0);
   const [stressMax, setStressMax] = useState(0);
@@ -991,6 +997,15 @@ export default function StructuralEditor({
       setLoadpathStart(
         (saved.warmstart ?? specOpt?.warmstart) === "loadpath"
       );
+      setRampIters(
+        saved.volfrac_ramp_iters ?? specOpt?.volfrac_ramp_iters ?? 0
+      );
+      setCorridorMm(
+        saved.loadpath_corridor_mm ?? specOpt?.loadpath_corridor_mm ?? 0
+      );
+      setMmaFinalBeta(
+        saved.mma_final_beta ?? specOpt?.mma_final_beta ?? 0
+      );
     } else if (version.spec?.load_cases?.length) {
       setCases(version.spec.load_cases);
       setKeep(specOpt?.keep_regions ?? []);
@@ -1018,6 +1033,9 @@ export default function StructuralEditor({
       setAniso(specOpt?.aniso_material ?? false);
       setVolfracRamp((specOpt?.volfrac_init ?? 0) > volfrac);
       setLoadpathStart(specOpt?.warmstart === "loadpath");
+      setRampIters(specOpt?.volfrac_ramp_iters ?? 0);
+      setCorridorMm(specOpt?.loadpath_corridor_mm ?? 0);
+      setMmaFinalBeta(specOpt?.mma_final_beta ?? 0);
     } else {
       setCases([{ name: "case1", fixed: [], loads: [] }]);
       setKeep([]);
@@ -1504,6 +1522,11 @@ export default function StructuralEditor({
         aniso_material: aniso || undefined,
         volfrac_init: volfracRamp ? 0.7 : undefined,
         warmstart: loadpathStart ? "loadpath" : undefined,
+        volfrac_ramp_iters: volfracRamp && rampIters > 0 ? rampIters : undefined,
+        loadpath_corridor_mm:
+          loadpathStart && corridorMm > 0 ? corridorMm : undefined,
+        mma_final_beta:
+          solver === "mma" && mmaFinalBeta > 0 ? mmaFinalBeta : undefined,
       })
       .then(
         (r) => {
@@ -1529,7 +1552,7 @@ export default function StructuralEditor({
       if (saveTimer.current) clearTimeout(saveTimer.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cases, keep, voids, material, volfrac, keepMode, minMember, densityThreshold, autoRefine, selfSupport, printDir, multires, solver, minmax, dispMax, stressMax, minGap, penalCont, structureMode, infillScope, infillStyle, infillShell, infillPeriod, growMm, aniso, volfracRamp, loadpathStart, open]);
+  }, [cases, keep, voids, material, volfrac, keepMode, minMember, densityThreshold, autoRefine, selfSupport, printDir, multires, solver, minmax, dispMax, stressMax, minGap, penalCont, structureMode, infillScope, infillStyle, infillShell, infillPeriod, growMm, aniso, volfracRamp, loadpathStart, rampIters, corridorMm, mmaFinalBeta, open]);
 
   const checkRegions = async () => {
     setBusy("preview");
@@ -1610,6 +1633,12 @@ export default function StructuralEditor({
           aniso_material: aniso || undefined,
           volfrac_init: volfracRamp ? 0.7 : undefined,
           warmstart: loadpathStart ? "loadpath" : undefined,
+          volfrac_ramp_iters:
+            volfracRamp && rampIters > 0 ? rampIters : undefined,
+          loadpath_corridor_mm:
+            loadpathStart && corridorMm > 0 ? corridorMm : undefined,
+          mma_final_beta:
+            solver === "mma" && mmaFinalBeta > 0 ? mmaFinalBeta : undefined,
         },
         material: material || undefined,
       });
@@ -2655,6 +2684,46 @@ export default function StructuralEditor({
                     />
                     loadpath
                   </label>
+                </Field>
+                <Field label="Ramp iters" hint="volfrac ramp length (20)">
+                  <input
+                    type="number"
+                    min={0}
+                    step={5}
+                    className={`${inputCls} w-16 px-2 py-1 text-xs`}
+                    value={rampIters || ""}
+                    placeholder="20"
+                    disabled={!volfracRamp}
+                    onChange={(e) => setRampIters(parseInt(e.target.value) || 0)}
+                  />
+                </Field>
+                <Field label="Corridor" hint="loadpath width mm (2.5×pitch)">
+                  <input
+                    type="number"
+                    min={0}
+                    step={0.5}
+                    className={`${inputCls} w-16 px-2 py-1 text-xs`}
+                    value={corridorMm || ""}
+                    placeholder="auto"
+                    disabled={!loadpathStart}
+                    onChange={(e) =>
+                      setCorridorMm(parseFloat(e.target.value) || 0)
+                    }
+                  />
+                </Field>
+                <Field label="MMA beta" hint="sharpen gray result (mma)">
+                  <input
+                    type="number"
+                    min={0}
+                    step={1}
+                    className={`${inputCls} w-16 px-2 py-1 text-xs`}
+                    value={mmaFinalBeta || ""}
+                    placeholder="off"
+                    disabled={solver !== "mma"}
+                    onChange={(e) =>
+                      setMmaFinalBeta(parseFloat(e.target.value) || 0)
+                    }
+                  />
                 </Field>
                 <Field label="Grow" hint="add material beyond silhouette mm">
                   <input
