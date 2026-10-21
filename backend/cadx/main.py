@@ -24,6 +24,7 @@ from cadx.api.routers import (
     settings,
     sse,
     stats,
+    system,
     versions,
 )
 from cadx.config import get_settings
@@ -91,6 +92,7 @@ for r in (
     images.router,
     sse.router,
     stats.router,
+    system.router,
     chat.router,
 ):
     app.include_router(r, prefix="/api")

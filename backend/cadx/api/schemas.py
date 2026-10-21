@@ -1002,3 +1002,76 @@ class MeshHealthOut(BaseModel):
     backend: str = ""
     error: str | None = None
     models: list[MeshModelOut] = Field(default_factory=list)
+
+
+class UpdateCommitOut(BaseModel):
+    sha: str
+    subject: str = ""
+    date: str = ""
+
+
+class UpdateCheckOut(BaseModel):
+    behind: int | None = None
+    ahead: int | None = None
+    commits: list[UpdateCommitOut] = Field(default_factory=list)
+    branches: list[str] = Field(default_factory=list)
+    current_ref: str = ""
+    target_ref: str = ""
+    current_sha: str = ""
+    target_sha: str | None = None
+    update_available: bool = False
+    dirty: list[str] = Field(default_factory=list)
+    checked_at: str | None = None
+    stale: bool = False
+    refreshing: bool = False
+
+
+class UpdateCheckIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ref: str | None = None
+
+
+class UpdateStartIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ref: str | None = None
+    confirm_jobs: bool = False  # required when generation jobs are active
+
+
+class UpdateStartOut(BaseModel):
+    started: bool = True
+
+
+class SystemVersionGit(BaseModel):
+    sha: str = ""
+    branch: str = ""
+    dirty: int = 0
+    ts: str | None = None
+
+
+class SystemVersionOut(BaseModel):
+    version: str
+    updater_ok: bool = False
+    git: SystemVersionGit | None = None
+
+
+class UpdateStatusOut(BaseModel):
+    state: str = "idle"  # idle|checking|running|rolling-back|done|failed
+    phase: str | None = None
+    error: str | None = None
+    ref: str | None = None
+    prev_sha: str | None = None
+    new_sha: str | None = None
+    active_jobs: int = 0
+    mode: str = ""
+    log: str | None = None
+    log_tail: list[str] = Field(default_factory=list)
+    started_at: str | None = None
+    finished_at: str | None = None
+
+
+class RollbackIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirm: bool = False
