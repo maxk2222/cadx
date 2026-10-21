@@ -316,8 +316,12 @@ equilibrium sanity.
   AMG via the optional `pyamg` extra (rigid-body modes of the regular grid
   as near-nullspace — turns the >120k-DOF cliff from ~300 s/iter to tens of
   seconds), falling back to SSOR then diagonal scaling. Both optional
-  dependencies are strict extras (`pip install .[fem]`, installed in the
-  executor image); missing imports degrade gracefully per solve.
+  dependencies ship as the `fem` extra and are installed in the executor
+  image; for native dev use `make sync-fem` (needs SuiteSparse headers —
+  `brew install suite-sparse` / `apt install libsuitesparse-dev` — plus
+  git and a compiler, since scikit-sparse builds from a git-pinned sdist;
+  no released version compiles against SuiteSparse ≥ 5.4). Missing
+  imports degrade gracefully per solve.
 - Grid pitch starts at `fem_voxel_mm` and is adaptively coarsened to stay
   under `fem_max_elements`. After voxelization the peak memory for assembly,
   the CSR matrix and (for direct solves) LU fill-in is estimated and

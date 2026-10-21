@@ -130,6 +130,12 @@ instead of docker (logs under `logs/`). The manual equivalent:
 make sync            # uv venv + locked deps (backend)
 cd frontend && npm install
 
+# optional: faster FEM solvers (CHOLMOD direct + AMG preconditioner).
+# needs SuiteSparse headers — `brew install suite-sparse` (macOS) or
+# `apt install libsuitesparse-dev` (Debian/Ubuntu) — plus git + a compiler.
+# skipping this is fine: everything falls back to SuperLU/SSOR-CG.
+make sync-fem
+
 make infra           # postgres + redis in docker
 make migrate         # alembic upgrade head
 make dev-api         # FastAPI on :8000 (reload)
