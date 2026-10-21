@@ -625,6 +625,11 @@ _MOVE_SAT_WINDOW = 10  # compliance-improvement window, in iterations
 _FLIP_FRAC = 0.005  # share of design cells flipping membership per iteration —
 # the same 0.5% the `settled` gate below uses; sustained churn over a full
 # window is what "density oscillation persists" means
+_BETA_DWELL = 10  # max iterations spent on one Heaviside sharpness level —
+# the stall trigger (rel < tol) can starve when the objective jitters inside
+# the move cap (the robust worst-case realization oscillates a few percent on
+# a stable mask), which would freeze the ramp mid-way. One full window per
+# level guarantees the ramp reaches beta_max while budget remains to sharpen.
 
 
 def _windowed_compliance_improvement(
@@ -910,6 +915,7 @@ def simp(  # noqa: C901
     move_streak = 0  # consecutive iterations with change saturated at the move cap
     move_sat_streak = 0  # O2 early detection: streak at >= _MOVE_SAT_FRAC of move
     flip_streak = 0  # O2: consecutive iterations with the mask still churning
+    beta_age = 0  # iterations spent on the current Heaviside sharpness level
     prev_objective: float | None = None
     prev_mask: np.ndarray | None = None  # thresholded design set, for flip count
     x_prev: np.ndarray | None = None  # blueprint before the last update — a
@@ -1293,6 +1299,7 @@ def simp(  # noqa: C901
         # move cap for a whole window while compliance sits flat on the
         # SAME mask (sharpening gray cells), which is progress, not a cycle
         flip_streak = flip_streak + 1 if flips > _FLIP_FRAC else 0
+        beta_age += 1
         if move_sat_streak >= _MOVE_SAT_STREAK and flip_streak >= _MOVE_SAT_STREAK:
             # stalled = <1% improvement across a same-beta window (the
             # helper returns None while the current-beta segment is short —
@@ -1337,12 +1344,15 @@ def simp(  # noqa: C901
             )
             continuing = heaviside and proj.beta < params.beta_max
             stall = stall + 1 if (rel < params.tol and (continuing or settled)) else 0
+            if continuing and (stall >= params.converge_patience or beta_age >= _BETA_DWELL):
+                # advance the ramp on an objective stall OR when a level has
+                # run a full window without settling — whichever comes first
+                proj.beta = min(proj.beta * 2.0, params.beta_max)
+                stall = 0
+                beta_age = 0
+                warnings.append(f"beta continuation -> {proj.beta:g} at iteration {it}")
+                continue
             if stall >= params.converge_patience:
-                if heaviside and proj.beta < params.beta_max:
-                    proj.beta = min(proj.beta * 2.0, params.beta_max)
-                    stall = 0
-                    warnings.append(f"beta continuation -> {proj.beta:g} at iteration {it}")
-                    continue
                 warnings.append(
                     f"converged: compliance stalled (<{params.tol:g} rel. change "
                     f"for {stall} iterations) at iteration {it}"
