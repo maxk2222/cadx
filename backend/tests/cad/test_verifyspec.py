@@ -810,3 +810,163 @@ def test_unrequested_voids_wildcard_feature_matches():
     res = _res(features={"hole_groups": [_hole_group(id="h1", axis="+z", centers=[[9.0, 3.0]])]})
     report = verify_spec(spec, res, feature_findings=[])
     assert _by_name(report)["unrequested_voids"]["status"] == "PASS"
+
+
+# ---------------------------------------------------------------------------
+# slot semantics: through_axis vs elong_axis (the leg-slot phantom)
+# ---------------------------------------------------------------------------
+
+
+def _slot_group(**over):
+    """A measured leg slot: 6.5x15 through the X-thin wall, elongated along
+    Z — through_axis and elong_axis carry the two distinct directions the
+    bare `axis` label used to conflate."""
+    g = _hole_group(
+        id="s1",
+        diameter=10.5,  # equivalent-area diameter of a 6.5x15 void
+        axis="+x",
+        elongated=True,
+        centers=[[-20.0, 0.0]],
+        through_axis="+x",
+        elong_axis="+z",
+        width_mm=6.5,
+        length_mm=15.0,
+    )
+    g.update(over)
+    return g
+
+
+def test_slot_orientation_text_direction_passes():
+    """The eval phantom: spec declares the slot 'along Z' — the direction
+    word names the ELONGATION for slots, and the measured slot elongated
+    along +z through +x must PASS both the axis and orientation checks
+    instead of flagging the through direction as a wrong axis."""
+    spec = _spec(
+        features=[_feat(name="leg slot", type="slot", position="centered in leg, along Z")]
+    )
+    res = _res(features={"hole_groups": [_slot_group()], "slots": 1})
+    report = verify_spec(spec, res, feature_findings=[])
+    checks = _by_name(report)
+    assert checks["feat_0_orientation"]["status"] == "PASS"
+    assert checks["feat_0_orientation"]["evidence"]["measured_elong_axes"] == ["z"]
+    assert checks["feat_0_axis"]["status"] == "PASS"
+    assert checks["feat_0_axis"]["evidence"]["measured_elong_axes"] == ["z"]
+
+
+def test_slot_orientation_declared_axis_matches_elongation():
+    """Slot feature with axis=z + measured elong_axis +z -> orientation PASS
+    even though the slot pierces +x."""
+    spec = _spec(features=[_feat(name="slot", type="slot", axis="z")])
+    res = _res(features={"hole_groups": [_slot_group()], "slots": 1})
+    checks = _by_name(verify_spec(spec, res, feature_findings=[]))
+    assert checks["feat_0_orientation"]["status"] == "PASS"
+    assert checks["feat_0_axis"]["status"] == "PASS"
+
+
+def test_slot_orientation_mismatch_fails():
+    """Spec wants the slot to run along Y; the measured slot runs along Z —
+    a real orientation defect, FAIL with both directions in the reason."""
+    spec = _spec(features=[_feat(name="leg slot", type="slot", position="along Y")])
+    res = _res(features={"hole_groups": [_slot_group()], "slots": 1})
+    report = verify_spec(spec, res, feature_findings=[])
+    c = _by_name(report)["feat_0_orientation"]
+    assert c["status"] == "FAIL"
+    assert c["evidence"]["reason"] == "slot elongated along +z, spec declares y"
+    assert report["status"] == "FAIL"
+
+
+def test_slot_orientation_langloch_type_checked():
+    """A 'langloch'-typed feature is a slot for matching/orientation too."""
+    spec = _spec(features=[_feat(name="Langloch", type="langloch", position="in Z-Richtung")])
+    res = _res(features={"hole_groups": [_slot_group()], "slots": 1})
+    checks = _by_name(verify_spec(spec, res, feature_findings=[]))
+    assert checks["feat_0_orientation"]["status"] == "PASS"
+
+
+def test_slot_orientation_through_axis_declaration_unverified():
+    """f.axis declares the wall normal the slot pierces (featurebind maps
+    it to oblong_slot's normal=). When the measured slot satisfies that
+    through direction, orientation stays UNVERIFIED — the same letter is
+    not second-guessed as an elongation declaration."""
+    spec = _spec(features=[_feat(name="leg slot", type="slot", axis="x")])
+    res = _res(features={"hole_groups": [_slot_group()], "slots": 1})
+    checks = _by_name(verify_spec(spec, res, feature_findings=[]))
+    assert checks["feat_0_axis"]["status"] == "PASS"  # through +x declared+met
+    assert checks["feat_0_orientation"]["status"] == "UNVERIFIED"
+
+
+def test_slot_orientation_unverified_without_elong_data():
+    """Older payloads lack elong_axis — declared orientation evidence stays
+    UNVERIFIED instead of fabricating a direction."""
+    spec = _spec(features=[_feat(name="leg slot", type="slot", position="along Z")])
+    res = _res(features={"hole_groups": [_hole_group(id="s1", axis="+x", elongated=True)]})
+    checks = _by_name(verify_spec(spec, res, feature_findings=[]))
+    assert checks["feat_0_orientation"]["status"] == "UNVERIFIED"
+
+
+def test_slot_axis_fail_when_elong_runs_elsewhere():
+    """The declared direction matches NEITHER through nor elongation —
+    the axis check still fails (orientation fails alongside)."""
+    spec = _spec(features=[_feat(name="leg slot", type="slot", axis="y")])
+    res = _res(features={"hole_groups": [_slot_group()], "slots": 1})
+    checks = _by_name(verify_spec(spec, res, feature_findings=[]))
+    assert checks["feat_0_axis"]["status"] == "FAIL"
+    assert checks["feat_0_orientation"]["status"] == "FAIL"
+
+
+def test_unrequested_voids_slot_matched_by_dims_not_dia():
+    """A 6.5x15 slot's equivalent-area diameter (~10.5) is >30% off the
+    declared 6.5 width — matching width_mm/length_mm counts the slot as
+    requested; the position check owns the actual placement error."""
+    spec = _spec(
+        features=[
+            _feat(name="mount", type="hole", dims={"diameter": 8.0}, position="x=30"),
+            _feat(
+                name="leg slot",
+                type="slot",
+                dims={"width": 6.5, "slot_length": 15.0},
+                position="x=-20",
+            ),
+        ]
+    )
+    res = _res_bbox90(
+        features={
+            "hole_groups": [
+                _hole_group(id="h1", diameter=8.0, centers=[[30.0, 0.0]]),
+                _slot_group(centers=[[-35.0, 0.0]]),
+            ]
+        }
+    )
+    report = verify_spec(spec, res, feature_findings=[])
+    checks = _by_name(report)
+    assert checks["unrequested_voids"]["status"] == "PASS"
+    # the misplaced slot is still a position FAIL — just not 'unrequested'
+    assert checks["feat_1_position"]["status"] == "FAIL"
+
+
+def test_unrequested_voids_slot_dims_mismatch_still_fails():
+    """Dims that match nothing declared stay unrequested — a 9x18 void is
+    not the spec's 6.5x15 slot."""
+    spec = _spec(
+        features=[
+            _feat(name="mount", type="hole", dims={"diameter": 8.0}, position="x=30"),
+            _feat(
+                name="leg slot",
+                type="slot",
+                dims={"width": 6.5, "slot_length": 15.0},
+                position="x=-20",
+            ),
+        ]
+    )
+    res = _res_bbox90(
+        features={
+            "hole_groups": [
+                _hole_group(id="h1", diameter=8.0, centers=[[30.0, 0.0]]),
+                _slot_group(width_mm=9.0, length_mm=18.0, centers=[[-35.0, 0.0]]),
+            ]
+        }
+    )
+    report = verify_spec(spec, res, feature_findings=[])
+    c = _by_name(report)["unrequested_voids"]
+    assert c["status"] == "FAIL"
+    assert c["evidence"]["unmatched_ids"] == ["s1"]

@@ -36,6 +36,16 @@ For EVERY feature listed in the spec's `features` array, add one verdict:
 - wrong: the feature exists but wrong type/size/position (explain in `note`).
 - unsure: not determinable from the images (say why in `note`).
 
+## Previous-iteration issues
+
+When the context lists PREVIOUS ITERATION ISSUES, each was flagged on the
+last version. Check every one against the renders and the MEASURED GEOMETRY:
+when the evidence shows it resolved — or never real — say so in the matching
+`feature_verdicts` entry (`present`) and do NOT re-emit the same discrepancy
+verbatim; a repeated claim needs concrete new evidence (a measurement, a
+rendered view, a failed verification question). Problems that persist MUST
+still be listed, with a concrete `fix_hint`.
+
 ## verification_answers
 
 When the context lists SPEC VERIFICATION QUESTIONS, answer EVERY one in

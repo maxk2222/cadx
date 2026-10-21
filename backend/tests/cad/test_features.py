@@ -494,3 +494,40 @@ def test_small_hole_dfm_ignores_fillets_and_degenerate():
         fillet(q.part.edges().filter_by(Axis.Z), radius=0.5)
     warns2 = fdm_brep_checks(q.part, analyze(q.part))
     assert not any(w.code == "small_hole" for w in warns2)
+
+
+def test_extract_slot_reports_through_and_elong_axes(tmp_path):
+    """P4 slot semantics: a leg slot through the X-thin wall, elongated
+    along Z — the group must label through_axis +x separately from
+    elong_axis +z (the bare `axis` field used to be misread as the
+    elongation and spawned the phantom 'slot axis wrong' critique)."""
+    with BuildPart() as p:
+        Box(8, 30, 40, align=(Align.CENTER, Align.CENTER, Align.MIN))
+        p.part -= Pos(0, 0, 20) * Box(12, 6.5, 15)
+    assert len(p.part.solids()) == 1
+    stl = tmp_path / "leg_slot.stl"
+    export_stl(p.part, str(stl))
+    m = extract_features(p.part, stl)
+    slots = [g for g in m.hole_groups if g.elongated]
+    assert len(slots) == 1
+    g = slots[0]
+    assert g.axis == "+x"  # the tunnel/pierce direction
+    assert g.through_axis == "+x"
+    assert g.elong_axis == "+z"  # the span direction the slot runs along
+    assert g.width_mm == pytest.approx(6.5, abs=1.0)
+    assert g.length_mm == pytest.approx(15.0, abs=1.0)
+    # the new fields survive the ExecResult dict round-trip
+    d = next(s for s in m.model_dump()["hole_groups"] if s["elongated"])
+    for key in ("through_axis", "elong_axis", "width_mm", "length_mm"):
+        assert key in d
+    assert d["elong_axis"] == "+z"
+
+
+def test_round_hole_group_reports_through_axis_only():
+    """Round bores carry through_axis (same as axis) and empty slot dims."""
+    m = extract_features(_plate())
+    g = m.hole_groups[0]
+    assert not g.elongated
+    assert g.through_axis == g.axis
+    assert g.elong_axis == ""
+    assert g.width_mm == 0.0 and g.length_mm == 0.0

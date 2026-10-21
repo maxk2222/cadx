@@ -50,6 +50,16 @@ def _excerpt(code: str | None, line: int | None, ctx: int = 2) -> str:
 
 _RULES: list[tuple[re.Pattern[str], str, str]] = [
     (
+        re.compile(
+            r"executor task failed.*(?:validation error|RuntimeSettings|pydantic)"
+            r"|validation error for RuntimeSettings",
+            re.I | re.S,
+        ),
+        "infra",
+        "Sandbox infrastructure error (executor/runtime-settings mismatch) — "
+        "not a code problem; do not patch generated code for this.",
+    ),
+    (
         re.compile(r"SyntaxError|IndentationError", re.I),
         "syntax",
         "Fix the syntax at the marked line — unclosed bracket/quote or bad indentation.",

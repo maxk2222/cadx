@@ -81,3 +81,59 @@ def test_cadlib_filter_flange_hole_circle():
     spec = _spec([Feature(name="Lochkreis", type="hole", dims={}, count=6)])
     text = codegen_system(plan=None, spec=spec, fresh=False)
     assert "### hole_grid" in text or "### through_hole" in text
+
+
+def test_measured_features_block_renders_slot_fields():
+    """P8: measured slot groups carry through/elongation axes and w x l —
+    render them so the patcher sees exact geometry, not a round-hole
+    approximation."""
+    from cadx.agent.context import measured_features_block
+
+    block = measured_features_block(
+        {
+            "hole_groups": [
+                {
+                    "id": "s1",
+                    "diameter": 8.0,
+                    "count": 1,
+                    "axis": "+z",
+                    "depth_class": "through",
+                    "centers": [[3.0, -2.0]],
+                    "elongated": True,
+                    "through_axis": "+z",
+                    "elong_axis": "+x",
+                    "width_mm": 4.0,
+                    "length_mm": 12.0,
+                }
+            ],
+            "total_holes": 0,
+        }
+    )
+    assert "slot s1" in block
+    assert "through_axis +z" in block
+    assert "elongated along +x" in block
+    assert "4x12 mm" in block
+    assert "(3, -2)" in block
+
+
+def test_measured_features_block_legacy_slot_line():
+    """Slot groups without the new measured fields keep the generic
+    elongated-void line."""
+    from cadx.agent.context import measured_features_block
+
+    block = measured_features_block(
+        {
+            "hole_groups": [
+                {
+                    "diameter": 8.0,
+                    "count": 1,
+                    "axis": "+z",
+                    "depth_class": "through",
+                    "elongated": True,
+                }
+            ],
+            "total_holes": 0,
+        }
+    )
+    assert "elongated void" in block
+    assert "through_axis" not in block

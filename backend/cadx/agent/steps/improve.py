@@ -54,6 +54,15 @@ def _hard_issues(issues: list[dict[str, Any]]) -> bool:
     return any(i.get("severity") == "major" and i.get("source") in _HARD_SOURCES for i in issues)
 
 
+def _actionable(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Issues a patch can actually act on — artifact-flagged repeats (same
+    fingerprint on unchanged measured geometry) and executor ``infra``
+    errors carry no code change; spending a session on them just burns
+    the tool-call budget. They stay on the persisted issue list, they
+    simply must not reach the patcher."""
+    return [i for i in issues if not i.get("artifact") and i.get("source") != "infra"]
+
+
 def _step_name(hard: bool, attempt: int) -> str:
     base = STEP if hard else STEP_MINOR
     return base if attempt == 1 else f"{base}_{attempt}"
@@ -173,6 +182,9 @@ async def run(
     verify_fn: VerifyFn | None = None,
     render_fn: VerifyFn | None = None,
 ) -> PatchResponse:
+    issues = _actionable(issues)
+    if not issues:
+        return PatchResponse(reasoning="no actionable issues — measurement artifacts or infra only")
     hard = _hard_issues(issues)
     step = _step_name(hard, attempt)
     if tools_enabled(ctx, "code") and ctx.edit_sessions_exhausted < 1:
@@ -237,6 +249,9 @@ async def run(
             "reasoning": resp.parsed.reasoning,
             "n_edits": len(resp.parsed.edits),
             "has_full_code": bool(resp.parsed.full_code),
+            # vLLM APC: prefix-cache hits land here so trace rows show the
+            # deployment actually shares prefixes across steps (P8b)
+            **({"cached_tokens": resp.cached_tokens} if resp.cached_tokens else {}),
         },
         prompt_tokens=resp.prompt_tokens,
         completion_tokens=resp.completion_tokens,
@@ -295,19 +310,25 @@ async def _run_session(
     # only a broken interaction pattern blinds later repairs — a session that
     # merely ran out of budget still delivered its buffer, no reason to punish
     # every subsequent improve with the blind one-shot path
-    if res.exhausted and res.end_reason in ("verify_loop", "repeat_loop"):
+    if res.exhausted and res.end_reason in ("verify_loop", "repeat_loop", "infra_error"):
         ctx.edit_sessions_exhausted += 1
         log.info(
             "edit.oneshot_fallback",
             exhausted=ctx.edit_sessions_exhausted,
             reason=res.end_reason,
         )
-    if res.code and res.code != base_code:
+    # P6: prefer the last known-good buffer the session verified — the head
+    # buffer may hold a broken half-edit when the session ran out of budget;
+    # an exhausted session with nothing better falls back to base_code so
+    # the loop treats it as "no changes", not as a patch to apply
+    last_good = getattr(res, "last_good", None)
+    candidate = last_good or (base_code if res.exhausted else res.code)
+    if candidate and candidate != base_code:
         sub = res.submitted or {}
         return PatchResponse(
             reasoning=str(sub.get("reasoning", "")),
             expected_bbox=list(sub.get("expected_bbox") or []),
-            full_code=res.code,
+            full_code=candidate,
         )
     # session produced nothing usable — signal patch failure so the
     # orchestrator falls back to fresh codegen

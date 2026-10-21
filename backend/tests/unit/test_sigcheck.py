@@ -316,3 +316,88 @@ def test_check_code_sigcheck_translate_error_blocks():
     res = check_code(GOOD + "result = result.translate(1, 2, 3)\n", sigcheck=True)
     assert not res.ok
     assert any("translate" in e for e in res.sig_errors)
+
+
+# --------------------------------------------------------------------------- #
+# keyword-arg binding + arg-type hints (P5)
+
+
+def test_unknown_kwarg_on_module_call_is_error():
+    """The observed `cadlib.oblong_slot(..., part=p)` eval burn — an unknown
+    kwarg is a guaranteed TypeError in the sandbox, so the gate flags it."""
+    rep = check_code_signatures(
+        "import cadlib\nPARAMS = {}\nresult = Box(1,1,1)\ncadlib.oblong_slot(6.5, 15, part=p)\n"
+    )
+    assert any("oblong_slot" in e and "'part'" in e for e in rep.errors)
+
+
+def test_unknown_kwarg_on_bare_call_is_error():
+    rep = check_code_signatures(
+        "from cadlib import through_hole\nPARAMS = {}\nresult = Box(1,1,1)\n"
+        "through_hole(5.5, bogus=1)\n"
+    )
+    assert any("through_hole" in e and "'bogus'" in e for e in rep.errors)
+
+
+def test_known_kwargs_stay_clean():
+    rep = check_code_signatures(
+        "import cadlib\nfrom cadlib import through_hole\n"
+        "PARAMS = {}\nresult = Box(1,1,1)\n"
+        "through_hole(5.5, csk_dia=8.4)\n"
+        "through_hole(diameter=5.5)\n"
+        "cadlib.oblong_slot(6.5, 15, direction='+y', normal='+z', depth=2)\n"
+    )
+    assert not rep.errors
+
+
+def test_varkw_signature_accepts_any_kwarg():
+    """`_bounds` must capture **kwargs — such callables take any keyword."""
+    from cadx.cad.sigcheck import _bounds
+
+    def _f(a: int, **kw) -> None: ...
+
+    sig, _ = _bounds(inspect.signature(_f))
+    assert sig is not None and sig.varkw
+
+    def _g(a: int, b: int = 0) -> None: ...
+
+    sig2, _ = _bounds(inspect.signature(_g))
+    assert sig2 is not None and not sig2.varkw
+
+
+def test_local_varkw_function_calls_not_flagged():
+    """`def f(**kw)` — a locally defined callable is never checked at all."""
+    rep = check_code_signatures(GOOD + "def f(**kw):\n    return kw\nx = f(anything=1)\n")
+    assert not rep.errors
+
+
+def test_moved_vector_arg_is_location_error():
+    """`p.moved(Vector(...))` — arity-legal but a guaranteed TypeError:
+    moved/located take a Location, not a Vector."""
+    rep = check_code_signatures(
+        "from build123d import *\nPARAMS = {}\n"
+        "p = Box(10, 10, 5)\nresult = p.moved(Vector(0, 1, 0))\n"
+    )
+    assert any("moved" in e and "Location" in e and "Vector" in e for e in rep.errors)
+
+
+def test_located_dotted_vector_arg_is_location_error():
+    rep = check_code_signatures(
+        "import build123d\nPARAMS = {}\n"
+        "p = build123d.Box(10, 10, 5)\nresult = p.located(build123d.Vector(0, 0, 3))\n"
+    )
+    assert any("located" in e and "Location" in e for e in rep.errors)
+
+
+def test_moved_pos_arg_is_legal():
+    """Pos IS a Location subclass — the correct placement call is not flagged."""
+    rep = check_code_signatures(
+        "from build123d import *\nPARAMS = {}\np = Box(10, 10, 5)\nresult = p.moved(Pos(0, 1, 0))\n"
+    )
+    assert not rep.errors
+
+
+def test_moved_vector_silent_on_uninferable_receiver():
+    """No inferred Shape receiver -> no finding (conservative principle)."""
+    rep = check_code_signatures(GOOD + "v = load_reference('abc')\nv = v.moved(Vector(0, 1, 0))\n")
+    assert not rep.errors

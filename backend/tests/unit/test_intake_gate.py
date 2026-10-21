@@ -54,6 +54,86 @@ def test_spec_gaps_features_present_ok() -> None:
     assert spec_gaps(s, "Platte mit Bohrung") == []
 
 
+def _lbracket_spec() -> PartSpec:
+    """L-bracket: foot plate, vertical leg wall, two holes — the prompt's
+    slot/rib/fillet classes are silently dropped."""
+    return _spec(
+        features=[
+            {
+                "name": "foot plate",
+                "type": "plate",
+                "dims": {"length": 60, "width": 40, "thickness": 5},
+            },
+            {
+                "name": "leg wall",
+                "type": "wall",
+                "dims": {"width": 40, "height": 50, "thickness": 5},
+            },
+            {
+                "name": "holes",
+                "type": "hole",
+                "dims": {"diameter": 5.5},
+                "count": 2,
+            },
+        ]
+    )
+
+
+def test_spec_gaps_feature_class_coverage() -> None:
+    """P1: prompt names slot/rib/fillet classes; the spec kept only
+    plates + holes — each absent class is a coverage gap (the old gate
+    only fired on a COMPLETELY empty feature list)."""
+    gaps = spec_gaps(
+        _lbracket_spec(),
+        "L-Winkel mit Langloch, Kanten verrunden, mit Rippen verstaerkt",
+    )
+    assert any("slot" in g for g in gaps)
+    assert any("rib" in g for g in gaps)
+    assert any("fillet" in g for g in gaps)
+
+
+def test_spec_gaps_feature_class_compound_word() -> None:
+    """German compounds hide the feature noun from the word-boundary regex
+    ('Verstaerkungsrippen' is one word) — the raw-text trigger scan still
+    detects the rib class."""
+    s = _spec(features=[{"name": "base plate", "type": "plate"}])
+    gaps = spec_gaps(s, "Winkel mit Verstaerkungsrippen")
+    assert any("rib" in g for g in gaps)
+
+
+def test_spec_gaps_feature_class_complete_spec() -> None:
+    """Same prompt, complete spec — no coverage gap."""
+    s = _spec(
+        features=[
+            {
+                "name": "foot plate",
+                "type": "plate",
+                "dims": {"length": 60, "width": 40, "thickness": 5},
+            },
+            {
+                "name": "leg wall",
+                "type": "wall",
+                "dims": {"width": 40, "height": 50, "thickness": 5},
+            },
+            {"name": "holes", "type": "hole", "dims": {"diameter": 5.5}, "count": 2},
+            {"name": "slot", "type": "slot", "dims": {"slot_width": 6, "slot_length": 25}},
+            {"name": "ribs", "type": "rib", "count": 2},
+            {"name": "edge fillets", "type": "fillet", "dims": {"radius": 3}},
+        ]
+    )
+    assert (
+        spec_gaps(s, "L-Winkel mit Langloch, Kanten verrunden, mit Rippen verstaerkt")
+        == []
+    )
+
+
+def test_spec_gaps_feature_class_slot_covers_hole_word() -> None:
+    """A 'Langloch' feature satisfies both the slot and the hole class —
+    no spurious hole gap on a slot-only spec."""
+    s = _spec(features=[{"name": "langloch", "type": "slot"}])
+    assert spec_gaps(s, "Platte mit Langloch") == []
+
+
 def _ctx(llm: FakeLLM, prompt: str, **kw) -> AgentCtx:
     async def emit(step: str, it: int, msg: str, **_f) -> None:
         pass

@@ -171,3 +171,53 @@ def test_diag_block_without_geometry_unchanged():
     d = diagnose("AttributeError", 'File "model.py", line 2\nx.pos()', CODE)
     txt = diag_block(d, "err", "tb", "")
     assert "GEOMETRY AT FAILURE" not in txt
+
+
+def test_executor_settings_validation_error_is_infra():
+    """Executor schema skew — 'validation error for RuntimeSettings' — is a
+    sandbox infrastructure problem, not a code defect: classify as infra so
+    the repair loop never patches generated code for it."""
+    d = diagnose(
+        "executor task failed: validation error for RuntimeSettings\n"
+        "exec_mem_limit_mb\n Input should be >= 256",
+        None,
+    )
+    assert d.category == "infra"
+    assert "not a code problem" in d.hint
+    # a bare pydantic dump without the 'executor task failed' wrapper too
+    d2 = diagnose("validation error for RuntimeSettings\nexec_mem_limit_mb", None)
+    assert d2.category == "infra"
+
+
+def test_infra_rule_does_not_steal_code_errors():
+    """The infra rule sits first — a plain TypeError must still classify as
+    a code error, not infra."""
+    d = diagnose("TypeError: unsupported operand", None, CODE)
+    assert d.category != "infra"
+
+
+# fem_feedback_lines (cad.fem.analyze) severity gating lives here — the FEM
+# test module is out of scope for this change; the check is the same class
+# of issue-list classification diagnose() performs.
+
+
+def test_fem_feedback_lightened_minor_gated_on_request():
+    """P9: 'safety factor well above target — could be lightened' is only
+    emitted when lightweighting was actually requested — otherwise it is
+    phantom feedback that lands in the issue list forever."""
+    from cadx.cad.fem.analyze import FemCaseResult, FemReport, fem_feedback_lines
+
+    rep = FemReport(cases=[FemCaseResult(name="load", safety_factor=40.0)])
+    assert fem_feedback_lines(rep, 1.5) == []  # default: not requested
+    lines = fem_feedback_lines(rep, 1.5, lightweight_requested=True)
+    assert lines == [
+        (
+            "minor",
+            "fem[load]: safety factor 40.00 well above target 1.5 — "
+            "part could be lightened (thinner walls or topology optimization)",
+        )
+    ]
+    # majors stay ungated: sf below target still reports regardless
+    weak = FemReport(cases=[FemCaseResult(name="load", safety_factor=1.2)])
+    lines = fem_feedback_lines(weak, 1.5)
+    assert lines and lines[0][0] == "major" and "below target" in lines[0][1]

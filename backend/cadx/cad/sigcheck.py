@@ -85,6 +85,10 @@ _SAME_TYPE_METHODS = {
 # axis, angle)` costs a full repair session each. Still gated on an inferred
 # Shape receiver — the conservative principle is unchanged.
 _STRICT_ARITY = {"translate", "rotate", "moved", "located", "scale"}
+# copy-transforms that take a Location — a Vector arg is arity-legal but a
+# guaranteed TypeError (the observed `p.moved(Vector(...))` eval failure)
+_LOCATION_ARG_METHODS = {"moved", "located", "translated", "located_at"}
+_VECTOR_CTOR_NAMES = frozenset({"Vector"})
 _STRICT_FIX = {
     "translate": "translate takes ONE vector: .translate((x, y, z))",
     "rotate": (
@@ -99,17 +103,36 @@ _SELF_ATTR_RE = re.compile(r"\bself\.(\w+)\s*=")
 _ANN_NAME_RE = re.compile(r"^['\"]?(\w+)(?:\[['\"]?(\w+)['\"]?[^\]]*\])?['\"]?$")
 
 
+def _is_ctor_call(arg: ast.AST, names: frozenset[str]) -> bool:
+    """``Vector(...)``-style arg — a call to a bare name in ``names`` or to
+    ``build123d.<name>`` (dotted module access)."""
+    if not isinstance(arg, ast.Call):
+        return False
+    f = arg.func
+    if isinstance(f, ast.Name):
+        return f.id in names
+    return (
+        isinstance(f, ast.Attribute)
+        and f.attr in names
+        and isinstance(f.value, ast.Name)
+        and f.value.id == "build123d"
+    )
+
+
 @dataclass(frozen=True)
 class Sig:
     """Call-arity bounds of a callable in bound form (self/cls removed).
 
     ``max_args`` is None for unbounded (*args). ``req_kw`` holds required
-    keyword-only params; ``params`` every named param for coverage counts."""
+    keyword-only params; ``params`` every named param for coverage counts.
+    ``varkw`` is True when the callable accepts ``**kwargs`` — unknown
+    keyword args are then legal and must not be flagged."""
 
     min_args: int
     max_args: int | None
     req_kw: frozenset[str] = frozenset()
     params: frozenset[str] = frozenset()
+    varkw: bool = False
 
 
 @dataclass(frozen=True)
@@ -166,13 +189,14 @@ def _bounds(sig: inspect.Signature | None) -> tuple[Sig | None, bool]:
         params = params[1:]
     min_a = max_a = 0
     unbounded = False
+    varkw = False
     req_kw: set[str] = set()
     names: set[str] = set()
     for p in params:
         if p.kind is inspect.Parameter.VAR_POSITIONAL:
             unbounded = True
         elif p.kind is inspect.Parameter.VAR_KEYWORD:
-            continue
+            varkw = True
         elif p.kind is inspect.Parameter.KEYWORD_ONLY:
             names.add(p.name)
             if p.default is inspect.Parameter.empty:
@@ -183,7 +207,13 @@ def _bounds(sig: inspect.Signature | None) -> tuple[Sig | None, bool]:
             if p.default is inspect.Parameter.empty:
                 min_a += 1
     return (
-        Sig(min_a, None if unbounded else max_a, frozenset(req_kw), frozenset(names)),
+        Sig(
+            min_a,
+            None if unbounded else max_a,
+            frozenset(req_kw),
+            frozenset(names),
+            varkw,
+        ),
         had_self,
     )
 
@@ -714,6 +744,15 @@ class _Visitor(ast.NodeVisitor):
                 f"{label}() expects at least {required} arg(s), {given} given"
                 + (f" — {fix}" if fix else ""),
             )
+        unknown_kw = kw - sig.params
+        if unknown_kw and not sig.varkw:
+            # always an error — an unknown keyword is a guaranteed TypeError
+            # (the observed `cadlib.oblong_slot(..., part=p)` eval failure)
+            self._err(
+                node,
+                f"{label}() got unexpected keyword arg(s) {sorted(unknown_kw)}"
+                " — check the signature",
+            )
 
     def _check_attr_call(self, node: ast.Call, f: ast.Attribute) -> None:
         if isinstance(f.value, ast.Name) and f.attr in self.dyn_attrs.get(f.value.id, ()):
@@ -762,6 +801,20 @@ class _Visitor(ast.NodeVisitor):
             and isinstance(node.args[0], ast.Tuple | ast.List)
         ):
             self._err(node, f"{label}() — {_STRICT_FIX['rotate']}")
+            return
+        # .moved(Vector(...)) — arity-legal but a guaranteed TypeError: these
+        # copy-transforms take a Location. (Pos is a Location subclass —
+        # legal, not flagged.)
+        if (
+            f.attr in _LOCATION_ARG_METHODS
+            and self._is_shape_receiver(owner)
+            and any(_is_ctor_call(a, _VECTOR_CTOR_NAMES) for a in node.args)
+        ):
+            self._err(
+                node,
+                f"{label}() takes a Location, not a Vector — use Pos(x, y, z) "
+                "or Location(...) instead of Vector(...)",
+            )
             return
         self._check_arity(
             node,

@@ -485,7 +485,7 @@ async def _repair_session(
         iteration=iteration,
         temperature=0.1,
     )
-    if res.exhausted and res.end_reason in ("verify_loop", "repeat_loop"):
+    if res.exhausted and res.end_reason in ("verify_loop", "repeat_loop", "infra_error"):
         ctx.edit_sessions_exhausted += 1
     if res.code and res.code != prev_code and elision_marker(res.code) is None:
         sub = res.submitted or {}
@@ -644,13 +644,19 @@ async def _codegen_session(
     # build-session rescue: the model ran out of budget without `done` but
     # leaves a grown buffer — submit it (it goes through the same contract
     # gate as any codegen; a broken buffer gets a repair session, which is
-    # strictly better than throwing the work away)
+    # strictly better than throwing the work away). When the head buffer was
+    # edited AFTER the last verified-good state, submit that checkpoint
+    # instead — the head may be mid-repair breakage.
     elif staged and res.code and res.code != _BUILD_SEED and elision_marker(res.code) is None:
         resp_code = CodeResponse(
-            reasoning="staged build session ended without done — buffer submitted as-is",
+            reasoning=(
+                "staged build session ended without done — submitted last verified-good buffer"
+                if res.last_good and res.last_good != res.code
+                else "staged build session ended without done — buffer submitted as-is"
+            ),
             params=[],
             expected_bbox=[],
-            code=str(res.code),
+            code=str(res.last_good or res.code),
         )
     else:
         raise LLMFormatError("codegen session produced no code")

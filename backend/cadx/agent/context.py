@@ -533,10 +533,31 @@ def measured_features_block(features: dict[str, Any] | None) -> str:
     ]
     for g in features.get("hole_groups") or []:
         if g.get("elongated"):
-            lines.append(
-                f"- slot (elongated void) ~Ø{g['diameter']}mm equiv, "
-                f"axis {g['axis']}, {g['depth_class']}"
-            )
+            # newer measurements carry exact slot geometry — render it when
+            # present so the model gets width/length/axes, not a round-hole
+            # approximation (P8); fall back to the generic line otherwise
+            through_axis = g.get("through_axis")
+            elong_axis = g.get("elong_axis")
+            width_mm = g.get("width_mm")
+            length_mm = g.get("length_mm")
+            if through_axis and elong_axis and width_mm and length_mm:
+                centers = ", ".join(
+                    "(" + ", ".join(f"{float(v):g}" for v in c[:2]) + ")"
+                    for c in (g.get("centers") or [])
+                    if isinstance(c, list | tuple) and len(c) >= 2
+                )
+                label = f"slot {g['id']}" if g.get("id") else "slot"
+                lines.append(
+                    f"- {label}: through_axis {through_axis}, "
+                    f"elongated along {elong_axis}, "
+                    f"{float(width_mm):g}x{float(length_mm):g} mm"
+                    + (f", centers {centers}" if centers else "")
+                )
+            else:
+                lines.append(
+                    f"- slot (elongated void) ~Ø{g['diameter']}mm equiv, "
+                    f"axis {g['axis']}, {g['depth_class']}"
+                )
         else:
             lines.append(
                 f"- {g['count']}x hole Ø{g['diameter']}mm, axis {g['axis']}, {g['depth_class']}"

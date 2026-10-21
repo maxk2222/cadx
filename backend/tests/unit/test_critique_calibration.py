@@ -491,3 +491,243 @@ def test_reference_sheet_not_attached_for_plain_cad(tmp_path):
     texts = "\n".join(p.get("text", "") for p in parts if p.get("type") == "text")
     assert "REFERENCE SOLID" not in texts
     assert "PREVIOUS VERSION" not in texts
+
+
+# --------------------------------------------------------------------------- #
+# structure 'missing' refutation (P3)                                          #
+# --------------------------------------------------------------------------- #
+
+
+def _lbracket_spec() -> PartSpec:
+    s = _spec()
+    s.features = [
+        Feature(
+            name="foot plate",
+            type="plate",
+            dims={"length": 60.0, "width": 40.0, "thickness": 5.0},
+        ),
+        Feature(
+            name="vertical leg",
+            type="wall",
+            dims={"width": 40.0, "height": 50.0, "thickness": 5.0},
+        ),
+    ]
+    return s
+
+
+def test_missing_verdict_refuted_by_plate_presence():
+    """'The vertical leg is missing entirely' on a correct L-bracket: an
+    ok plate_check naming the leg proves the footprint is material —
+    'missing' flips to 'wrong' and the repeating discrepancy demotes."""
+    from cadx.agent.steps.critique import _verify_missing_verdicts
+    from cadx.llm.schemas import Critique, Discrepancy, FeatureVerdict
+
+    c = Critique(
+        score=30,
+        passed=False,
+        feature_verdicts=[
+            FeatureVerdict(name="leg", status="missing", note="not in any view")
+        ],
+        discrepancies=[
+            Discrepancy(
+                what="the vertical leg is missing entirely",
+                severity="major",
+                source="spec",
+            )
+        ],
+    )
+    _verify_missing_verdicts(
+        c, _lbracket_spec(), {"plates": [{"name": "vertical leg", "ok": True}]}
+    )
+    assert c.feature_verdicts[0].status == "wrong"
+    assert "refuted" in c.feature_verdicts[0].note
+    assert c.discrepancies[0].severity == "minor"
+
+
+def test_missing_verdict_plate_presence_needs_name_overlap():
+    """An ok plate named differently does NOT refute 'leg missing' —
+    name overlap, not 'some plate exists'."""
+    from cadx.agent.steps.critique import _verify_missing_verdicts
+    from cadx.llm.schemas import Critique, Discrepancy, FeatureVerdict
+
+    c = Critique(
+        score=30,
+        passed=False,
+        feature_verdicts=[FeatureVerdict(name="leg", status="missing", note="")],
+        discrepancies=[
+            Discrepancy(what="leg missing", severity="major", source="spec")
+        ],
+    )
+    _verify_missing_verdicts(
+        c, _lbracket_spec(), {"plates": [{"name": "foot plate", "ok": True}]}
+    )
+    assert c.feature_verdicts[0].status == "missing"
+    assert c.discrepancies[0].severity == "major"
+
+
+def test_missing_verdict_refuted_by_envelope():
+    """Declared leg height 50 vs measured bbox z=50 — material achieving
+    that extent exists, so 'missing' cannot stand."""
+    from cadx.agent.steps.critique import _verify_missing_verdicts
+    from cadx.llm.schemas import Critique, Discrepancy, FeatureVerdict
+
+    c = Critique(
+        score=30,
+        passed=False,
+        feature_verdicts=[FeatureVerdict(name="leg", status="missing", note="")],
+        discrepancies=[
+            Discrepancy(what="leg missing", severity="major", source="spec")
+        ],
+    )
+    _verify_missing_verdicts(c, _lbracket_spec(), {"bbox_size": [60, 40, 50]})
+    assert c.feature_verdicts[0].status == "wrong"
+    assert "bbox" in c.feature_verdicts[0].note
+    assert c.discrepancies[0].severity == "minor"
+
+
+def test_missing_verdict_stays_when_extent_off():
+    """No numeric agreement — 'missing' is never refuted on a guess."""
+    from cadx.agent.steps.critique import _verify_missing_verdicts
+    from cadx.llm.schemas import Critique, Discrepancy, FeatureVerdict
+
+    c = Critique(
+        score=30,
+        passed=False,
+        feature_verdicts=[FeatureVerdict(name="leg", status="missing", note="")],
+        discrepancies=[
+            Discrepancy(what="leg missing", severity="major", source="spec")
+        ],
+    )
+    # the leg declares width 40 / height 50 — bbox 60x55x70 agrees with
+    # neither extent, so 'missing' stands
+    _verify_missing_verdicts(c, _lbracket_spec(), {"bbox_size": [60, 55, 70]})
+    assert c.feature_verdicts[0].status == "missing"
+    assert c.discrepancies[0].severity == "major"
+
+
+def test_missing_major_downgraded_when_volume_consistent():
+    """Measured 21.5 cm^3 vs declared foot+leg 22 cm^3 — the structure
+    demonstrably exists; the 'missing' major is a misread (minor) while
+    the verdict itself is NOT flipped."""
+    from cadx.agent.steps.critique import _verify_missing_verdicts
+    from cadx.llm.schemas import Critique, Discrepancy, FeatureVerdict
+
+    c = Critique(
+        score=30,
+        passed=False,
+        feature_verdicts=[FeatureVerdict(name="leg", status="missing", note="")],
+        discrepancies=[
+            Discrepancy(
+                what="vertical leg is missing", severity="major", source="spec"
+            )
+        ],
+    )
+    _verify_missing_verdicts(c, _lbracket_spec(), {"volume": 21500.0})
+    assert c.feature_verdicts[0].status == "missing"
+    assert c.discrepancies[0].severity == "minor"
+    assert "misread" in c.discrepancies[0].what
+
+
+def test_missing_major_kept_when_volume_off():
+    """A part way off the declared plate volume keeps its major."""
+    from cadx.agent.steps.critique import _verify_missing_verdicts
+    from cadx.llm.schemas import Critique, Discrepancy, FeatureVerdict
+
+    c = Critique(
+        score=30,
+        passed=False,
+        feature_verdicts=[FeatureVerdict(name="leg", status="missing", note="")],
+        discrepancies=[
+            Discrepancy(
+                what="vertical leg is missing", severity="major", source="spec"
+            )
+        ],
+    )
+    _verify_missing_verdicts(c, _lbracket_spec(), {"volume": 8000.0})
+    assert c.discrepancies[0].severity == "major"
+
+
+# --------------------------------------------------------------------------- #
+# previous-iteration issues channel (P10)                                      #
+# --------------------------------------------------------------------------- #
+
+
+async def test_prev_issues_shown_and_resolved_repeat_dropped():
+    """Last iteration's issues reach the critic prompt; a verbatim repeat
+    is not re-emitted when the new verdict marks the feature present."""
+    resp = _llm_critique(85, True)
+    resp["discrepancies"] = [
+        {
+            "what": "the vertical leg is missing entirely",
+            "severity": "major",
+            "source": "spec",
+        }
+    ]
+    resp["feature_verdicts"] = [
+        {"name": "leg", "status": "present", "note": "clearly visible in iso"}
+    ]
+    llm = FakeLLM([resp])
+    ctx = _ctx(llm, prompt="L-bracket with leg and foot")
+    spec = _lbracket_spec()
+    c = await critique_step.run(
+        ctx,
+        spec,
+        None,
+        {"bbox_size": [60, 40, 50]},
+        [],
+        None,
+        iteration=2,
+        features={"plates": [{"name": "vertical leg", "ok": True}]},
+        prev_issues=[
+            {"what": "the vertical leg is missing entirely", "severity": "major"}
+        ],
+    )
+    user = llm.calls[0]["messages"][1]["content"]
+    texts = "\n".join(p.get("text", "") for p in user if p.get("type") == "text")
+    assert "PREVIOUS ITERATION ISSUES" in texts
+    assert "the vertical leg is missing entirely" in texts
+    assert not any("vertical leg is missing" in d.what for d in c.discrepancies)
+
+
+async def test_prev_issue_repeat_kept_when_still_asserted():
+    """No resolution evidence (verdict still 'missing', another issue on
+    the same feature) — the verbatim repeat stays."""
+    resp = _llm_critique(40, False)
+    resp["discrepancies"] = [
+        {
+            "what": "the vertical leg is missing entirely",
+            "severity": "major",
+            "source": "spec",
+        },
+        {"what": "the leg is 5 mm too short", "severity": "minor", "source": "spec"},
+    ]
+    resp["feature_verdicts"] = [
+        {"name": "leg", "status": "missing", "note": "still absent"}
+    ]
+    llm = FakeLLM([resp])
+    ctx = _ctx(llm, prompt="L-bracket with leg and foot")
+    c = await critique_step.run(
+        ctx,
+        _lbracket_spec(),
+        None,
+        {"bbox_size": [60, 40, 50]},
+        [],
+        None,
+        iteration=2,
+        features={},
+        prev_issues=[
+            {"what": "the vertical leg is missing entirely", "severity": "major"}
+        ],
+    )
+    assert any("vertical leg is missing" in d.what for d in c.discrepancies)
+
+
+def test_prev_issues_block_absent_without_prev():
+    """No prev_issues -> no PREVIOUS ITERATION ISSUES block (APC prefix
+    stays stable across first iterations)."""
+    from cadx.agent.steps.critique import _parts
+
+    ctx = _ctx(FakeLLM([]), prompt="box")
+    parts = _parts(ctx, _spec(), None, {}, [], [], None, None, [])
+    texts = "\n".join(p.get("text", "") for p in parts if p.get("type") == "text")
+    assert "PREVIOUS ITERATION ISSUES" not in texts

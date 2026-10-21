@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +22,7 @@ from cadx.agent.thinking import thinking_body
 from cadx.agent.toolloop import run_session, tools_enabled
 from cadx.agent.toolspecs import ToolSession
 from cadx.agent.types import AgentCtx
-from cadx.llm.schemas import Critique, Discrepancy, PartSpec
+from cadx.llm.schemas import Critique, Discrepancy, Feature, PartSpec
 
 STEP = "critique"
 
@@ -35,6 +36,7 @@ def _parts(
     feature_findings: list[dict[str, Any]],
     features: dict[str, Any] | None,
     dfm: dict[str, Any] | None,
+    prev_issues: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     numeric = (
         "Numeric dimension check: " + "; ".join(dim_issues)
@@ -94,6 +96,18 @@ def _parts(
         parts.append({"type": "text", "text": ab})
     parts += renders_block(contact_sheet, analysis)
     parts.append({"type": "text", "text": numeric})
+    if prev_issues:
+        pi_lines = [
+            "PREVIOUS ITERATION ISSUES (flagged last iteration — verify "
+            "against the renders/measurements and mark each in "
+            "feature_verdicts as resolved, refuted, or still-present):"
+        ]
+        for it in prev_issues[:8]:
+            what = str((it or {}).get("what") or "")[:160]
+            if what:
+                pi_lines.append(f"{len(pi_lines)}. {what}")
+        if len(pi_lines) > 1:
+            parts.append({"type": "text", "text": "\n".join(pi_lines)})
     mf = measured_features_block(features)
     if mf:
         parts.append({"type": "text", "text": mf})
@@ -123,9 +137,18 @@ async def run(
     feature_findings: list[dict[str, Any]] | None = None,
     features: dict[str, Any] | None = None,
     code: str = "",
+    prev_issues: list[dict[str, Any]] | None = None,
 ) -> Critique:
     parts = _parts(
-        ctx, spec, contact_sheet, analysis, dim_issues, feature_findings or [], features, dfm
+        ctx,
+        spec,
+        contact_sheet,
+        analysis,
+        dim_issues,
+        feature_findings or [],
+        features,
+        dfm,
+        prev_issues,
     )
 
     system = system_prompt("critique_system.md")
@@ -234,7 +257,16 @@ async def run(
     # the floor only applies to the LLM's own discrepancy list — capture it
     # before _finalize_critique mutates the object in place
     raw_had_discrepancies = bool(critique.discrepancies)
-    final = _finalize_critique(critique, ctx, spec, dim_issues, feature_findings or [], features)
+    # merge analysis scalars the verify passes read (envelope refute /
+    # volume sanity) into a features copy — the measured-features payload
+    # may not carry them yet
+    feats = dict(features or {})
+    if analysis:
+        feats.setdefault("bbox_size", analysis.get("bbox_size"))
+        feats.setdefault("volume", analysis.get("volume"))
+    final = _finalize_critique(
+        critique, ctx, spec, dim_issues, feature_findings or [], feats, prev_issues
+    )
     await ctx.trace.record(
         step=f"{STEP}_calibrated",
         iteration=iteration,
@@ -262,6 +294,68 @@ async def run(
     return final
 
 
+_ISSUE_DIGITS_RE = re.compile(r"\d+")
+
+
+def _norm_issue(text: str) -> str:
+    """Issue-text normalization for repeat detection: lowercase + digit
+    runs folded so 'leg is 5 mm short' matches 'leg is 4 mm short'."""
+    return _ISSUE_DIGITS_RE.sub("#", (text or "").lower()).strip()
+
+
+def _issue_words(text: str) -> set[str]:
+    return {w for w in _NAME_WORD_RE.findall((text or "").lower()) if len(w) > 2}
+
+
+def _resolved_evidence(critique: Critique, d: Discrepancy) -> bool:
+    """The new critique suggests a verbatim-repeated issue is resolved:
+    a verdict confirms an overlapping feature (present/resolved/refuted),
+    or nothing else in the response re-describes it — a parroted line adds
+    no information. An overlapping verdict still asserting the problem
+    (missing/wrong) vetoes resolution outright."""
+    words = _issue_words(d.what)
+    if not words:
+        return False
+    overlapping = [
+        fv for fv in critique.feature_verdicts if _issue_words(fv.name) & words
+    ]
+    if any(fv.status in ("present", "resolved", "refuted") for fv in overlapping):
+        return True
+    if any(fv.status in ("missing", "wrong") for fv in overlapping):
+        return False
+    return not any(
+        _issue_words(x.what) & words for x in critique.discrepancies if x is not d
+    )
+
+
+def _drop_prev_issue_repeats(
+    critique: Critique, prev_issues: list[dict[str, Any]] | None
+) -> None:
+    """Drop discrepancies verbatim-repeating a previous-iteration issue the
+    new critique shows as resolved (P10) — re-emitting the same `what`
+    every round burned fix cycles on phantoms (observed: 'the vertical leg
+    is missing entirely' on a correct L-bracket, re-flagged each run).
+
+    Conservative: only an IDENTICAL normalized `what` with resolution
+    evidence is dropped; verify_question discrepancies (deterministic spec
+    checks) and anything uncertain stay — a wrong drop is worse than a
+    repeat."""
+    prev = {
+        _norm_issue(str(p.get("what") or ""))
+        for p in prev_issues or []
+        if isinstance(p, dict) and str(p.get("what") or "").strip()
+    }
+    if not prev or not critique.discrepancies:
+        return
+    critique.discrepancies = [
+        d
+        for d in critique.discrepancies
+        if d.source == "verify_question"
+        or _norm_issue(d.what) not in prev
+        or not _resolved_evidence(critique, d)
+    ]
+
+
 def _downgrade_image_majors_on_silhouette(critique: Critique, ctx: AgentCtx) -> None:
     """Mesh-mode shape calibration: when the measured silhouette IoU says the
     outline matches the reference (>=0.8), majors sourced purely from image
@@ -286,9 +380,14 @@ def _finalize_critique(
     dim_issues: list[str],
     feature_findings: list[dict[str, Any]],
     features: dict[str, Any] | None,
+    prev_issues: list[dict[str, Any]] | None = None,
 ) -> Critique:
     """Post-LLM calibration: synthesize missing discrepancies, enforce the
     feature hard rule, then bound the score by measured facts."""
+    # P10: verbatim repeats of previous-iteration issues the new critique
+    # shows resolved are dropped before anything else — they must not count
+    # as "the model listed complaints" for the floor or burn a fix cycle
+    _drop_prev_issue_repeats(critique, prev_issues)
     # the floor below protects against UNSOURCED complaints — it only applies
     # when the model itself listed them; a bare failed verdict (discrepancies
     # synthesized here) is the model's own call and must stay low
@@ -405,7 +504,214 @@ _MEASURABLE_KINDS: tuple[tuple[str, str], ...] = (
     ("chamfer", "chamfer_faces"),
     ("countersink", "countersinks"),
     ("counterbore", "counterbores"),
+    # plate-like structure — presence is an ok plate_check entry naming
+    # the feature (footprint measured inside material), not a scalar count
+    ("plate", "plates"),
+    ("wall", "plates"),
+    ("leg", "plates"),
+    ("deck", "plates"),
+    ("flange", "plates"),
+    ("base", "plates"),
 )
+
+
+_NAME_WORD_RE = re.compile(r"[a-zäöü]+")
+# descriptors that locate rather than identify — "vertical" must not bridge
+# a name match between "vertical leg" and "vertical foot"
+_NAME_SKIP = frozenset(
+    {
+        "the", "a", "an", "der", "die", "das", "ein", "eine", "einen", "und",
+        "and", "mit", "with", "von", "vom", "fuer", "für", "vertical",
+        "horizontal", "senkrecht", "senkrechte", "senkrechter", "waagrecht",
+        "waagerecht", "waagerechte", "upper", "lower", "obere", "oberer",
+        "untere", "unterer", "outer", "inner", "vordere", "vorderer",
+        "hintere", "hinterer", "seitliche", "seitlicher", "mittlere",
+        "mittlerer", "left", "right", "front", "rear", "top", "bottom",
+        "oben", "unten", "vorne", "hinten", "links", "rechts", "middle",
+        "center", "centre", "centered", "zentriert", "mittig",
+    }
+)
+
+
+def _name_words(text: str) -> set[str]:
+    """Content words of a feature name — alpha tokens, len > 2, minus
+    positional/directional descriptors."""
+    return {
+        w
+        for w in _NAME_WORD_RE.findall((text or "").lower())
+        if len(w) > 2 and w not in _NAME_SKIP
+    }
+
+
+def _plate_named_ok(name: str, features: dict[str, Any]) -> bool:
+    """An ok plate_check entry names this feature — the declared footprint
+    measured inside material, so 'missing entirely' cannot stand. Matches
+    by shared name words, not a fuzzy haystack substring."""
+    words = _name_words(name)
+    if not words:
+        return False
+    for p in features.get("plates") or []:
+        if not isinstance(p, dict) or not p.get("ok"):
+            continue
+        if _name_words(str(p.get("name") or "")) & words:
+            return True
+    return False
+
+
+def _measured_presence_key(
+    haystack: str, name: str, features: dict[str, Any]
+) -> str | None:
+    """Measured-features key proving a claimed-missing feature exists —
+    plate kinds need an ok plate_check naming the feature; scalar kinds
+    only need a nonzero count. None = nothing proves presence."""
+    for kw, key in _MEASURABLE_KINDS:
+        if kw not in haystack:
+            continue
+        if key == "plates":
+            if _plate_named_ok(name, features):
+                return key
+        elif _measured_presence(key, features):
+            return key
+    return None
+
+
+_DIM_AXIS = {"length": "x", "width": "y", "height": "z"}
+_AXIS_IDX = {"x": 0, "y": 1, "z": 2}
+# void-ish feature words — removing material, so a matching bbox extent
+# proves nothing about their existence (envelope refute is structure-only)
+_VOID_WORDS = frozenset(
+    {
+        "hole", "bore", "slot", "pocket", "cutout", "groove", "thread",
+        "countersink", "counterbore", "chamfer", "fillet", "radius",
+        "loch", "bohrung", "nut", "tasche", "aussparung", "recess",
+        "gewinde", "senkung", "senkbohrung", "fase",
+    }
+)
+
+
+def _voidish(f: Feature) -> bool:
+    return bool(set(_NAME_WORD_RE.findall(f"{f.type or ''} {f.name or ''}".lower())) & _VOID_WORDS)
+
+
+def _declared_extents(f: Feature) -> dict[str, float]:
+    """Per-axis extent the spec feature declares — from dims
+    (length->x, width->y, height->z) and from position range spans
+    ("x=-30 bis +30" -> 60)."""
+    out: dict[str, float] = {}
+    dims = f.dims or {}
+    for k, ax in _DIM_AXIS.items():
+        v = dims.get(k)
+        if isinstance(v, int | float) and float(v) > 0:
+            out[ax] = max(out.get(ax, 0.0), float(v))
+    from cadx.agent.spechost import parse_ranges
+
+    for ax, (lo, hi) in parse_ranges(str(f.position or "")).items():
+        if ax in _AXIS_IDX and hi > lo:
+            out[ax] = max(out.get(ax, 0.0), hi - lo)
+    return out
+
+
+def _spec_feature_for(spec: PartSpec, name: str) -> Feature | None:
+    """Spec feature a verdict names — exact name match, else a single
+    unambiguous containment ("leg" -> "vertical leg"). Ambiguity -> None:
+    guessing which feature was meant must never drive a refute."""
+    if not name:
+        return None
+    for f in spec.features:
+        if (f.name or "").lower() == name:
+            return f
+    cand = [
+        f
+        for f in spec.features
+        if f.name and (f.name.lower() in name or name in f.name.lower())
+    ]
+    return cand[0] if len(cand) == 1 else None
+
+
+def _envelope_refutes(f: Feature | None, features: dict[str, Any]) -> bool:
+    """A structure feature spanning a full measured axis cannot be
+    'missing': the bbox proves material reaches that extent (observed:
+    'the vertical leg is missing entirely' on a correct L-bracket —
+    declared leg height 50, measured bbox z=50). Only a resolvable numeric
+    extent matching within 5% refutes — never a guess, never a void."""
+    if f is None or _voidish(f):
+        return False
+    bbox = features.get("bbox_size")
+    if not isinstance(bbox, list | tuple) or len(bbox) < 3:
+        return False
+    try:
+        meas = [float(bbox[0]), float(bbox[1]), float(bbox[2])]
+    except (TypeError, ValueError):
+        return False
+    for ax, ext in _declared_extents(f).items():
+        m = meas[_AXIS_IDX[ax]]
+        if m > 0 and abs(m - ext) <= 0.05 * m:
+            return True
+    return False
+
+
+# plate-like feature words for the volume sanity check — the structure
+# whose declared dims must roughly explain the measured solid volume
+_PLATE_LIKE = frozenset(
+    {
+        "foot", "feet", "leg", "legs", "wall", "walls", "base", "plate",
+        "plates", "deck", "flange", "arm", "pad", "tab", "lug", "bracket",
+        "winkel", "fuss", "fuß", "schenkel", "wand", "platte", "boden",
+        "flansch", "lasche",
+    }
+)
+_VOL_DIMS = ("length", "width", "height", "thickness")
+
+
+def _plate_like(f: Feature) -> bool:
+    words = set(_NAME_WORD_RE.findall(f"{f.type or ''} {f.name or ''}".lower()))
+    return bool(words & _PLATE_LIKE)
+
+
+def _declared_plate_volume(spec: PartSpec) -> float:
+    """Sum of declared plate-like feature volumes — the product of the
+    >= 2 plate dims (length*width*thickness or length*width*height) per
+    declared instance count."""
+    total = 0.0
+    for f in spec.features:
+        if not _plate_like(f):
+            continue
+        dims = f.dims or {}
+        vals = [
+            float(dims[k])
+            for k in _VOL_DIMS
+            if isinstance(dims.get(k), int | float) and float(dims[k]) > 0
+        ]
+        if len(vals) < 2:
+            continue
+        v = 1.0
+        for d in vals:
+            v *= d
+        total += v * max(1, int(f.count or 1))
+    return total
+
+
+def _volume_consistent(spec: PartSpec, features: dict[str, Any]) -> bool:
+    """Measured volume within ±30% of the declared plate volume — the
+    structure demonstrably exists, so a 'missing' major on it is a
+    misread, not absent geometry."""
+    try:
+        measured = float(features.get("volume") or 0.0)
+    except (TypeError, ValueError):
+        return False
+    declared = _declared_plate_volume(spec)
+    return measured > 0 and declared > 0 and abs(measured - declared) <= 0.30 * declared
+
+
+def _structure_hit(what: str, spec: PartSpec) -> bool:
+    """The discrepancy names a plate-like word or a plate-like spec
+    feature by name."""
+    words = set(_NAME_WORD_RE.findall(what.lower()))
+    if words & _PLATE_LIKE:
+        return True
+    return any(
+        _name_words(f.name) & words for f in spec.features if _plate_like(f)
+    )
 
 
 def _drop_facet_dia_noise(critique: Critique, spec: PartSpec, features: dict[str, Any]) -> None:
@@ -453,9 +759,20 @@ def _verify_missing_verdicts(critique: Critique, spec: PartSpec, features: dict[
 
     The vision model occasionally reports a feature absent that renders and
     measurements show present (observed: firesteel 'tube missing' while the
-    tube spanned the plate). Only applies to measurable kinds — 'rib',
-    'texture' etc. stay LLM-judged. A refuted 'missing' becomes 'wrong':
-    the feature exists but position/shape may still mismatch.
+    tube spanned the plate — and 'the vertical leg is missing entirely' on
+    a correct L-bracket). Three conservative refuters, each only flipping
+    'missing' -> 'wrong' (the feature exists; position/shape may still
+    mismatch):
+
+    1. measured presence — holes/slots/fillets the counters see, and
+       plate-like features an ok plate_check names,
+    2. envelope — the spec feature's declared extent matching a measured
+       bbox axis within 5% (material achieving it exists),
+    3. volume sanity — discrepancy level only: measured volume ≈ the
+       declared plate volumes makes 'missing' majors on structure
+       implausible (severity downgrade, the verdict is NOT flipped).
+
+    Unmeasurable kinds ('rib', 'texture', ...) stay LLM-judged.
     """
     spec_types = {f.name.lower(): (f.type or "") for f in spec.features}
     refuted: list[str] = []
@@ -465,15 +782,22 @@ def _verify_missing_verdicts(critique: Critique, spec: PartSpec, features: dict[
         name = (fv.name or "").lower()
         ftype = spec_types.get(name, "")
         haystack = f"{ftype} {name}"
-        for kw, key in _MEASURABLE_KINDS:
-            if kw in haystack and _measured_presence(key, features):
-                fv.status = "wrong"
-                fv.note = (fv.note or "") + (
-                    f" [measured: {key} present — 'missing' refuted, position/quality unverified]"
-                )
-                refuted.append(name)
-                break
-    if not refuted:
+        key = _measured_presence_key(haystack, name, features)
+        if key is not None:
+            fv.status = "wrong"
+            fv.note = (fv.note or "") + (
+                f" [measured: {key} present — 'missing' refuted, position/quality unverified]"
+            )
+            refuted.append(name)
+        elif _envelope_refutes(_spec_feature_for(spec, name), features):
+            fv.status = "wrong"
+            fv.note = (fv.note or "") + (
+                " [measured: declared extent matches the bbox — 'missing' "
+                "refuted, position/quality unverified]"
+            )
+            refuted.append(name)
+    vol_ok = _volume_consistent(spec, features)
+    if not refuted and not vol_ok:
         return
     # discrepancies that repeat a refuted 'missing' claim lose their major
     # severity — they may still describe a real placement problem (minor)
@@ -483,6 +807,9 @@ def _verify_missing_verdicts(critique: Critique, spec: PartSpec, features: dict[
         if any(n in d.what.lower() for n in refuted):
             d.severity = "minor"
             d.what += " (feature measured present — likely a placement/shape issue)"
+        elif vol_ok and _structure_hit(d.what, spec):
+            d.severity = "minor"
+            d.what += " (volume consistent with declared plates — likely a misread)"
 
 
 def _verify_wrong_verdicts(critique: Critique, spec: PartSpec, features: dict[str, Any]) -> None:

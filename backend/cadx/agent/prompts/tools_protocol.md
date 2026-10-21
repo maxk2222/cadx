@@ -37,6 +37,6 @@ Rules:
   a call failed on args or name, look it up there instead of guessing again.
 - Keep PARAMS keys stable and the coordinate frame contract intact.
 - Do not add imports outside the allow-list.
-- You may emit ONE tool call per response. Do not write prose around it.
+- Batch INDEPENDENT calls in one response (multiple read_lines/search_code/lookups at once). A call that DEPENDS on another's result (edit→verify, read→edit-range, add_block→checkpoint) must wait for it. Do not write prose around tool calls.
 - If you cannot emit native tool calls, answer with exactly ONE JSON object:
   `{"name": "<tool>", "arguments": {...}}` and nothing else.

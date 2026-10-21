@@ -128,6 +128,49 @@ def _spec_axis(f: dict[str, Any]) -> str:
     return ""
 
 
+# slot free-text direction phrases: for a SLOT an axis phrase in
+# position/description names the long axis it runs along ("slot along z",
+# "Langloch in Z-Richtung") — the elongation direction, NOT the pierce
+# direction a hole's axis phrase names. Only a bare "durch x" stays a
+# through declaration. The structured `axis` field keeps its
+# through-normal meaning (featurebind maps it to oblong_slot's `normal=`).
+_AXIS_SLOT_ELONG_RE = re.compile(
+    r"\b([xyz])[\s-]*(?:axis|achse)\b"
+    r"|\balong\s+(?:the\s+)?([xyz])(?:[\s-]*axis)?\b"
+    r"|\bin\s+(?:der\s+)?([xyz])[\s-]*richtung\b",
+    re.I,
+)
+_AXIS_SLOT_THROUGH_RE = re.compile(r"\bdurch\s+([xyz])\b", re.I)
+
+
+def _slot_declared_dirs(f: dict[str, Any]) -> tuple[str, str]:
+    """(through, elongation) axis letters a slot spec feature declares.
+
+    ``f.axis`` is the wall normal the slot pierces — the through direction.
+    A free-text axis phrase in position/description names the ELONGATION
+    for slots (the phrase ``_spec_axis`` would wrongly read as the bore
+    axis). A bare "durch x" phrase stays a through declaration.
+    """
+    text = f"{f.get('position') or ''} {f.get('description') or ''}".lower()
+    through = _axis_letter(f.get("axis"))
+    if not through:
+        m = _AXIS_SLOT_THROUGH_RE.search(text)
+        if m:
+            through = m.group(1)
+    m = _AXIS_SLOT_ELONG_RE.search(text)
+    elong = next((g for g in m.groups() if g), "") if m else ""
+    return through, elong
+
+
+def _slot_elong_letter(e: dict[str, Any]) -> str:
+    """Axis letter a measured slot-like void is elongated along —
+    elongated hole_groups carry ``elong_axis``; for grooves/slot patterns
+    the entry's own ``axis`` IS the long direction."""
+    if e.get("elongated") or "elong_axis" in e:
+        return _axis_letter(e.get("elong_axis"))
+    return _axis_letter(e.get("axis"))
+
+
 def _measured_ids(entries: list[dict[str, Any]]) -> list[str]:
     return [str(e["id"]) for e in entries if e.get("id")]
 
@@ -241,12 +284,25 @@ def _void_kind_axis_check(
             )
         )
         return
-    matching = [g for g in cands if _axis_letter(g.get("axis")) == want_ax]
+    slotish = "slot" in ftype or "langloch" in ftype
+    matching = [
+        g
+        for g in cands
+        if _axis_letter(g.get("axis")) == want_ax
+        # a slot's declared direction is ambiguous — `axis` names the wall
+        # normal (through) while free text usually names the long axis;
+        # either measured direction may satisfy it (through_axis == axis)
+        or (slotish and _axis_letter(g.get("elong_axis")) == want_ax)
+    ]
     ev = {
         **base,
         "measured_axes": _axes_of(cands),
         "measured_ids": _measured_ids(matching or cands),
     }
+    if slotish:
+        elong_axes = sorted(a for a in {_axis_letter(g.get("elong_axis")) for g in cands} if a)
+        if elong_axes:
+            ev["measured_elong_axes"] = elong_axes
     if other:
         ev["other_kind_axes"] = _axes_of(other)
     if matching:
@@ -254,6 +310,66 @@ def _void_kind_axis_check(
     else:
         ev["reason"] = f"no measured {ftype} runs along the {want_ax} axis"
         checks.append(_check(check_name, TIER_FEATURES, "FAIL", ev))
+
+
+def _slot_orientation_check(
+    i: int,
+    name: str,
+    ftype: str,
+    f: dict[str, Any],
+    cands: list[dict[str, Any]],
+    checks: list[dict[str, Any]],
+) -> None:
+    """Slot elongation-direction check — the leg-slot phantom class.
+
+    A measured slot group reports ``elong_axis`` (the in-plane direction
+    the void is stretched along) separately from ``axis``/``through_axis``
+    (the pierce direction) — the single ``axis`` label used to let a
+    critique read the through direction as the elongation and flag a
+    correct part. The spec side declares the elongation with a free-text
+    direction phrase ("slot along z", "Langloch in Z-Richtung") while
+    ``f.axis`` stays the through normal; an explicit elongation phrase is
+    checked strictly against ``elong_axis``. A bare ``f.axis``/``durch x``
+    declaration is ambiguous — when it lands on the through direction the
+    feat_{i}_axis check owns it and orientation stays UNVERIFIED rather
+    than second-guessing which direction the spec meant.
+    """
+    through_w, elong_w = _slot_declared_dirs(f)
+    strict = bool(elong_w)  # free-text direction = explicit elongation decl
+    want = elong_w or through_w
+    if not want or not cands:
+        return
+    check_name = f"feat_{i}_orientation"
+    ev: dict[str, Any] = {
+        "feature": name,
+        "feature_type": ftype,
+        "expected_axis": want,
+    }
+    elong_axes = sorted(a for a in {_slot_elong_letter(e) for e in cands} if a)
+    if elong_axes:
+        ev["measured_elong_axes"] = elong_axes
+    elong_hits = [e for e in cands if _slot_elong_letter(e) == want]
+    if elong_hits:
+        ev["measured_ids"] = _measured_ids(elong_hits)
+        checks.append(_check(check_name, TIER_FEATURES, "PASS", ev))
+        return
+    if not strict:
+        through_hits = [e for e in cands if _axis_letter(e.get("axis")) == want]
+        if through_hits:
+            ev["measured_ids"] = _measured_ids(through_hits)
+            ev["reason"] = (
+                "declared axis matches the slot's through direction — no "
+                "separate elongation declaration to verify"
+            )
+            checks.append(_check(check_name, TIER_FEATURES, "UNVERIFIED", ev))
+            return
+    ev["measured_ids"] = _measured_ids(cands)
+    if not elong_axes:
+        ev["reason"] = "no measured slot reports an elongation direction"
+        checks.append(_check(check_name, TIER_FEATURES, "UNVERIFIED", ev))
+        return
+    ev["reason"] = f"slot elongated along +{elong_axes[0]}, spec declares {want}"
+    checks.append(_check(check_name, TIER_FEATURES, "FAIL", ev))
 
 
 def _bbox_bounds(bbox_min: Any, bbox_max: Any) -> dict[str, tuple[float, float]]:
@@ -353,6 +469,48 @@ def _void_dia(e: dict[str, Any]) -> float | None:
         if isinstance(v, int | float) and not isinstance(v, bool) and v > 0:
             return float(v)
     return None
+
+
+def _spec_slot_dims(f: dict[str, Any]) -> tuple[float | None, float | None]:
+    """Declared (width, length) of a slot spec feature — dims keys
+    ``slot_width``/``width`` and ``slot_length``/``length``."""
+    dims = f.get("dims")
+    if not isinstance(dims, dict):
+        return None, None
+
+    def _num(*keys: str) -> float | None:
+        for k in keys:
+            v = dims.get(k)
+            if isinstance(v, int | float) and not isinstance(v, bool) and v > 0:
+                return float(v)
+        return None
+
+    return _num("slot_width", "width"), _num("slot_length", "length")
+
+
+def _slot_dims_hit(f: dict[str, Any], e: dict[str, Any]) -> bool:
+    """True when a measured elongated void's span dims match the slot
+    feature's declared width/length within the same 30% band as the dia
+    match. The measured ``diameter`` of a slot is an equivalent-area value
+    (≈10.5 for a 6.5x15 slot) that never equals the declared width — the
+    dia check alone flags a correctly cut slot as unrequested. Only runs
+    when the measured span fields are populated (older payloads lack
+    them)."""
+    if not e.get("elongated"):
+        return False
+    mw, ml = e.get("width_mm"), e.get("length_mm")
+    if not (
+        isinstance(mw, int | float)
+        and not isinstance(mw, bool)
+        and mw > 0
+        and isinstance(ml, int | float)
+        and not isinstance(ml, bool)
+        and ml > 0
+    ):
+        return False
+    sw, sl = _spec_slot_dims(f)
+    pairs = [(d, m) for d, m in ((sw, mw), (sl, ml)) if d is not None]
+    return bool(pairs) and all(abs(m - d) <= 0.3 * d for d, m in pairs)
 
 
 def _dia_matched(f: dict[str, Any], cands: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -740,7 +898,7 @@ def _feature_placement(
                 round_groups + hole_pats,
                 slot_groups + slot_pats + pockets + grooves + notches,
             )
-        elif "slot" in ftype:
+        elif "slot" in ftype or "langloch" in ftype:
             cands, other = slot_groups + slot_pats + grooves, round_groups + hole_pats
         elif "notch" in ftype:
             cands, other = notches + grooves, groups + hole_pats + slot_pats
@@ -759,6 +917,8 @@ def _feature_placement(
         pos_cands = _dia_matched(f, cands)
         _void_kind_axis_check(i, name, ftype, f, pos_cands, other, checks)
         _void_position_check(i, name, f, pos_cands, bbox_min, bbox_max, checks)
+        if "slot" in ftype or "langloch" in ftype:
+            _slot_orientation_check(i, name, ftype, f, pos_cands, checks)
 
     _unrequested_voids_check(
         spec_feats,
@@ -783,7 +943,10 @@ def _unrequested_voids_check(
     Dia-matched groups may still carry excess centres beyond the declared
     count — the duplicate-in-one-group case. Conservative throughout: only
     voids with dia >= 3 mm are counted (chamfer/countersink pseudo-voids are
-    never unrequested) and anything ambiguous counts as matched."""
+    never unrequested) and anything ambiguous counts as matched. An
+    elongated void whose measured ``width_mm``/``length_mm`` spans match a
+    slot feature's declared dims counts as matched too — its
+    equivalent-area ``diameter`` never equals the declared width."""
     void_types = _HOLE_KIND_TYPES | {"pocket", "cutout"}
     feats = [
         f
@@ -793,6 +956,7 @@ def _unrequested_voids_check(
             (ft := str(f.get("type") or "").lower()) in void_types
             or "hole" in ft
             or "slot" in ft
+            or "langloch" in ft
             or "notch" in ft
             or _wants_pattern(f)
         )
@@ -810,6 +974,7 @@ def _unrequested_voids_check(
                 "dia": _spec_void_dia(f),
                 "wants": _void_pos_wants(f, bounds),
                 "count": count,
+                "feature": f,
             }
         )
     # an unconstrained spec void (no dia, no resolvable position) could be
@@ -837,13 +1002,17 @@ def _unrequested_voids_check(
             if i["wants"]
             for c in centers
         )
+        # a slot's equivalent-area dia never matches its declared width —
+        # a slot-typed feature declaring matching width/length dims counts
+        # the elongated void as requested before the dia check runs
+        slot_hit = any(_slot_dims_hit(i["feature"], e) for i in info)
         entry: dict[str, Any] = {
             "id": str(e.get("id") or ""),
             "dia": round(dia, 3),
         }
         if centers:
             entry["centers"] = [[round(v, 3) for v in c] for c in centers[:6]]
-        if not dia_feats and not pos_hit:
+        if not dia_feats and not pos_hit and not slot_hit:
             entry["reason"] = "no spec feature declares this void"
             unmatched.append(entry)
         elif dia_feats and centers:

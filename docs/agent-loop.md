@@ -301,6 +301,13 @@ Every iteration produces a structured `issues` list (dims / measured
 features / critique / DfM) that is persisted on `Version.issues` and shown
 in the UI quality tab.
 
+vLLM servers should run with prefix caching enabled
+(`--enable-prefix-caching`, default on vLLM ≥0.9) — the agent deliberately
+orders every prompt so the long static prefix (system docs, spec,
+measurements) is shared across codegen/improve/repair calls. Trace
+`cached_tokens` verifies it: 0 across a session means the deployment has
+prefix caching off.
+
 ## LLM calling discipline
 
 - Every step = fresh `system` + `user` messages; no chat accumulation.

@@ -583,13 +583,16 @@ def default_load_case() -> LoadCase:
     )
 
 
-def fem_feedback_lines(report: FemReport, sf_min: float) -> list[tuple[str, str]]:
+def fem_feedback_lines(
+    report: FemReport, sf_min: float, *, lightweight_requested: bool = False
+) -> list[tuple[str, str]]:
     """(severity, text) engineering feedback for the agent's issue list.
 
     ``sf < 1``/``sf < sf_min`` are majors — the part fails the declared load.
-    An over-built part (``sf > 3*sf_min``) is only a minor advisory: being too
-    strong is never a defect, and on form-locked tasks (mesh reuse, "change
-    nothing else") the advice is unactionable anyway."""
+    An over-built part (``sf > 3*sf_min``) only earns the "could be lightened"
+    advisory when the spec actually asked for lightweighting
+    (``lightweight_requested``) — being too strong is never a defect, and on
+    form-locked tasks the advice is unactionable anyway."""
     lines: list[tuple[str, str]] = []
     for c in report.cases:
         sf = c.safety_factor
@@ -624,7 +627,7 @@ def fem_feedback_lines(report: FemReport, sf_min: float) -> list[tuple[str, str]
                     f"strengthen the load path (walls, ribs, fillets near mounts)",
                 )
             )
-        elif sf > 3.0 * sf_min:
+        elif lightweight_requested and sf > 3.0 * sf_min:
             lines.append(
                 (
                     "minor",

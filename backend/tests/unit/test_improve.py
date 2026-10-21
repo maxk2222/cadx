@@ -217,3 +217,116 @@ def test_feature_audit_accepts_real_build():
         ],
     )
     assert _feature_audit(code, spec) == []
+
+
+async def test_artifact_and_infra_issues_spawn_no_session():
+    """Artifact-flagged repeats and infra errors carry no code change —
+    when nothing actionable remains, improve must not spawn a session at
+    all (no LLM call, no tool budget spent)."""
+    llm = FakeLLM([_call("done", reasoning="x")])
+    llm.tools_mode = "auto"
+    ctx = _ctx(llm)
+    presp = await improve.run(
+        ctx,
+        SPEC,
+        None,
+        base_code=BOX_CODE,
+        issues=[
+            {
+                "source": "critique",
+                "severity": "minor",
+                "what": "edge looks off",
+                "artifact": True,
+            },
+            {
+                "source": "infra",
+                "severity": "major",
+                "what": "sandbox infrastructure error — not a code problem",
+            },
+        ],
+        iteration=2,
+    )
+    assert "no actionable" in presp.reasoning
+    assert llm.calls == []
+
+
+async def test_mixed_issues_still_reach_session():
+    """Gating drops the noise but keeps real issues — a mixed list still
+    drives a session on the actionable remainder."""
+    llm = FakeLLM([_call("done", reasoning="fixed the fillet")])
+    llm.tools_mode = "auto"
+    ctx = _ctx(llm)
+    presp = await improve.run(
+        ctx,
+        SPEC,
+        None,
+        base_code=BOX_CODE,
+        issues=[
+            {"source": "critique", "severity": "major", "what": "missing fillet"},
+            {"source": "infra", "severity": "major", "what": "sandbox schema skew"},
+        ],
+        iteration=2,
+    )
+    assert presp is not None
+    assert llm.calls  # a session actually spawned
+    # the session prompt only carries the actionable issue
+    assert "missing fillet" in json.dumps(llm.calls[0]["messages"])
+    assert "schema skew" not in json.dumps(llm.calls[0]["messages"])
+
+
+async def test_last_good_rescues_broken_head_buffer(monkeypatch):
+    """P6: a session that exhausted its budget mid-edit leaves a broken
+    head buffer — the last verified-good buffer is the candidate."""
+    from cadx.agent.toolloop import SessionResult
+
+    good = BOX_CODE + "\n# verified-safe edit\n"
+    res = SessionResult(code="result = broken_call(", exhausted=True, end_reason="budget")
+    res.last_good = good  # contract field lands on SessionResult separately
+
+    async def fake_session(*_a, **_kw):
+        return res
+
+    monkeypatch.setattr(improve, "run_session", fake_session)
+    llm = FakeLLM([_call("done")])
+    llm.tools_mode = "auto"
+    ctx = _ctx(llm)
+    presp = await improve.run(ctx, SPEC, None, base_code=BOX_CODE, issues=ISSUES, iteration=2)
+    assert presp.full_code == good
+
+
+async def test_exhausted_session_with_no_better_buffer_yields_nothing(monkeypatch):
+    """P6: exhausted + last_good identical to base (or absent) means the
+    session produced no changes — do not submit a 'patch'."""
+    from cadx.agent.toolloop import SessionResult
+
+    res = SessionResult(code="result = broken_call(", exhausted=True, end_reason="budget")
+    res.last_good = BOX_CODE  # the only good state IS the base — nothing new
+
+    async def fake_session(*_a, **_kw):
+        return res
+
+    monkeypatch.setattr(improve, "run_session", fake_session)
+    llm = FakeLLM([_call("done")])
+    llm.tools_mode = "auto"
+    ctx = _ctx(llm)
+    presp = await improve.run(ctx, SPEC, None, base_code=BOX_CODE, issues=ISSUES, iteration=2)
+    assert "no changes" in presp.reasoning
+    assert not presp.full_code
+
+
+async def test_infra_error_latches_one_shot_fallback(monkeypatch):
+    """An executor-infra session abort is a broken interaction pattern —
+    it counts toward the blind one-shot fallback like verify_loop."""
+    from cadx.agent.toolloop import SessionResult
+
+    res = SessionResult(code=None, exhausted=True, end_reason="infra_error")
+
+    async def fake_session(*_a, **_kw):
+        return res
+
+    monkeypatch.setattr(improve, "run_session", fake_session)
+    llm = FakeLLM([_call("done")])
+    llm.tools_mode = "auto"
+    ctx = _ctx(llm)
+    await improve.run(ctx, SPEC, None, base_code=BOX_CODE, issues=ISSUES, iteration=2)
+    assert ctx.edit_sessions_exhausted == 1

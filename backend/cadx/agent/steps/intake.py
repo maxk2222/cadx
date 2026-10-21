@@ -298,6 +298,161 @@ _PER_HOST_QUANT_RE = re.compile(
 _HOLE_WORD_RE = re.compile(r"loch|bohr|hole|bore|gewinde|thread", re.I)
 
 
+# P1 feature-coverage gate: every feature-word CLASS the prompt names must
+# map to >= 1 spec feature whose name/type/description carries a class
+# keyword. The empty-features gap only fires when the model dropped
+# EVERYTHING — a spec that kept plates+holes but silently lost the named
+# slot/rib/fillet still reached codegen (observed: "Langloch … verrunden …
+# Verstärkungsrippen" -> spec with foot, leg and 2 holes only).
+_FEATURE_CLASSES: tuple[tuple[str, frozenset[str], frozenset[str]], ...] = (
+    # (class label, prompt-word triggers, required keywords in feature text)
+    (
+        "hole",
+        frozenset({"hole", "bore", "loch", "bohrung", "durchgang"}),
+        frozenset({"hole", "bore", "loch", "bohrung", "durchgang"}),
+    ),
+    (
+        "slot",
+        frozenset({"slot", "langloch", "nut"}),
+        frozenset({"slot", "langloch", "nut"}),
+    ),
+    (
+        "rib",
+        frozenset({"rib", "rippe", "ribs", "rippen", "steg", "web", "gusset"}),
+        frozenset({"rib", "rippe", "gusset", "steg", "web"}),
+    ),
+    (
+        "fillet",
+        frozenset({"fillet", "radius", "radien", "verrund"}),
+        frozenset({"fillet", "radius", "rund", "verrund"}),
+    ),
+    (
+        "chamfer",
+        frozenset({"chamfer", "fase"}),
+        frozenset({"chamfer", "fase"}),
+    ),
+    (
+        "pocket",
+        frozenset({"pocket", "tasche", "aussparung", "recess"}),
+        frozenset({"pocket", "tasche", "ausspar", "recess"}),
+    ),
+    (
+        "thread",
+        frozenset({"thread", "gewinde"}),
+        frozenset({"thread", "gewinde"}),
+    ),
+    (
+        "boss",
+        frozenset({"boss", "zapfen"}),
+        frozenset({"boss", "zapfen"}),
+    ),
+    (
+        "countersink",
+        frozenset({"countersink", "senk", "countersunk", "counterbore"}),
+        frozenset({"counter", "senk"}),
+    ),
+)
+
+# bare-substring triggers for the raw-prompt scan — catches German compounds
+# the boundary-anchored _FEATURE_WORDS structurally misses
+# ("Verstärkungsrippen" glues the noun inside). Only unambiguous stems are
+# scanned bare: "senk" would false-trip on "senkrecht", "fase" on "Faser",
+# "nut" on "Minuten"-like words — those stay word-matched only.
+_CLASS_TEXT_TRIGGERS: dict[str, tuple[str, ...]] = {
+    "hole": ("bohrung", "durchgang", "loch", "hole", "bore"),
+    "slot": ("langloch", "slot"),
+    "rib": ("rippen", "rippe", "gusset", "ribs", "steg"),
+    "fillet": ("verrund", "fillet", "radius", "radien"),
+    "chamfer": ("chamfer",),
+    "pocket": ("aussparung", "tasche", "pocket", "recess"),
+    "thread": ("gewinde", "thread"),
+    "boss": ("zapfen", "boss"),
+    "countersink": ("countersink", "counterbore", "countersunk", "senkbohrung", "senkung"),
+}
+
+_UMLAUTS = str.maketrans(
+    {"ä": "a", "ö": "o", "ü": "u", "Ä": "a", "Ö": "o", "Ü": "u", "ß": "ss"}
+)
+
+# _FEATURE_WORDS swallows whole words on stem matches ("senk" + \w* eats
+# "senkrechter") — these inflected false friends would fire phantom
+# classes (a "senkrechter Schenkel" is the vertical leg, no countersink;
+# "Nutzen"/"nützlich" is no Nut, "Faser" no Fase)
+_WORD_FALSE_FRIENDS = ("senkrecht", "faser", "nutz")
+
+
+def _fold_feature_text(text: str) -> str:
+    """Fold umlauts and their digraph spellings so "Löcher"/"Loecher" hit
+    the same class triggers as "Loch"."""
+    t = text.lower().translate(_UMLAUTS)
+    return t.replace("ae", "a").replace("oe", "o").replace("ue", "u")
+
+
+def _prompt_feature_classes(prompt: str, words: list[str]) -> dict[str, str]:
+    """Feature classes the prompt names -> {class: evidence word}.
+
+    `words` are the _FEATURE_WORDS matches — each joins a class when it
+    starts with a trigger (inflection tails ride along) or is one inside a
+    longer trigger ("counter" inside "countersink"). The raw-text scan
+    additionally catches compounds the regex cannot see; its triggers are
+    the long, unambiguous stems only. The scan claims longest-first:
+    a shorter stem inside a claimed trigger ("loch" inside "langloch",
+    "bohrung" inside "senkbohrung") belongs to the more specific class —
+    a Langloch is a slot, not an extra hole."""
+    found: dict[str, str] = {}
+    for w in words:
+        fw = _fold_feature_text(w)
+        if any(fw.startswith(bad) for bad in _WORD_FALSE_FRIENDS):
+            continue
+        for cls, triggers, _required in _FEATURE_CLASSES:
+            if cls in found:
+                continue
+            if any(fw.startswith(t) or (len(fw) >= 5 and fw in t) for t in triggers):
+                found[cls] = w
+    hay = _fold_feature_text(prompt or "")
+    trig_cls = [
+        (t, cls)
+        for cls, _trig, _req in _FEATURE_CLASSES
+        for t in _CLASS_TEXT_TRIGGERS[cls]
+    ]
+    for t, cls in sorted(trig_cls, key=lambda p: -len(p[0])):
+        if t not in hay:
+            continue
+        if cls not in found:
+            found[cls] = t
+        # the trigger's text is claimed either way — a shorter stem inside
+        # it must not fire a second class afterwards
+        hay = hay.replace(t, " ")
+    return found
+
+
+def _feature_class_gaps(spec: PartSpec, words: list[str], prompt: str) -> list[str]:
+    """Prompt-named feature classes with NO matching spec feature (P1).
+
+    Conservative: a class only reports when it is completely absent — one
+    feature whose name/type/description carries any class keyword covers
+    it (counts and variants are not audited). A fired gap re-triggers the
+    extract_features re-ask like the empty-features case."""
+    if not spec.features:
+        return []
+    present = _prompt_feature_classes(prompt, words)
+    if not present:
+        return []
+    have = [
+        _fold_feature_text(f"{f.name or ''} {f.type or ''} {f.description or ''}")
+        for f in spec.features
+    ]
+    gaps: list[str] = []
+    for cls, _trig, required in _FEATURE_CLASSES:
+        word = present.get(cls)
+        if word is None:
+            continue
+        if any(any(k in h for k in required) for h in have):
+            continue
+        gaps.append(f"prompt names {cls} ({word}) but spec.features has none")
+    return gaps
+
+
 def _axis_side(text: str, axis: str) -> int | None:
     """Sign (-1/+1) a feature position claims on `axis`, from absolute
     coords, ranges or face hints. None = unresolved."""
@@ -362,6 +517,10 @@ def spec_gaps(spec: PartSpec, prompt: str) -> list[str]:
     words = sorted({m.group(0).lower() for m in _FEATURE_WORDS.finditer(prompt or "")})
     if words and not spec.features:
         gaps.append(f"prompt names features ({', '.join(words[:8])}) but spec.features is empty")
+    elif spec.features:
+        # per-class coverage: a named class with NO matching feature is a
+        # silent drop, not a design choice (P1)
+        gaps.extend(_feature_class_gaps(spec, words, prompt or ""))
     if (
         spec.features
         and _HOLE_WORD_RE.search(prompt or "")

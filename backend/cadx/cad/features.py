@@ -39,6 +39,21 @@ class MeasuredHoleGroup(BaseModel):
     centers: list[list[float]] = Field(default_factory=list)  # per-hole [x, y]
     blocked: int = 0  # bores in this group sealed by a membrane (tunnel-verified)
     elongated: bool = False  # slot-like void (aspect ratio > threshold), not a round hole
+    # through_axis is the tunnel/pierce direction — same value as `axis`,
+    # restated so slot consumers never misread `axis` as the elongation
+    # direction (a leg slot is THROUGH +x but elongated ALONG +z).
+    through_axis: str = ""
+    # elong_axis: the in-plane direction the void is stretched along,
+    # perpendicular to through_axis — populated for elongated slots only
+    # ("" for round bores). The "+" sign is a fixed placeholder: a
+    # symmetric span has no orientation, only the axis letter is meaningful.
+    elong_axis: str = ""
+    # width_mm/length_mm: minor/major in-plane spans of the void's
+    # tunnel-grid footprint — a 6.5x15 slot reports 6.5/15; a round bore
+    # spans ~diameter on both. 0.0 when the spans were never measured
+    # (the analytic B-Rep path measures diameter only).
+    width_mm: float = 0.0
+    length_mm: float = 0.0
 
 
 class MeasuredBoss(BaseModel):
@@ -611,6 +626,10 @@ def _mesh_through_holes(stl_path: Path, mesh=None) -> tuple[list[MeasuredHoleGro
             center[axis] = (mn[axis] + mx[axis]) / 2
             if is_slot:
                 slot_count += 1
+            # the elongation direction is the in-plane axis (a1/a2 — the
+            # two non-tunnel axes) with the larger span; sign-less on
+            # purpose — a symmetric span has no orientation
+            elong_axis = f"+{'xyz'[a1 if span_u >= span_v else a2]}" if is_slot else ""
             groups.append(
                 MeasuredHoleGroup(
                     diameter=round(dia, 3),
@@ -619,6 +638,10 @@ def _mesh_through_holes(stl_path: Path, mesh=None) -> tuple[list[MeasuredHoleGro
                     depth_class="through",
                     centers=[[round(float(center[0]), 2), round(float(center[1]), 2)]],
                     elongated=is_slot,
+                    through_axis=f"+{'xyz'[axis]}",
+                    elong_axis=elong_axis,
+                    width_mm=round(min(span_u, span_v), 2),
+                    length_mm=round(max(span_u, span_v), 2),
                 )
             )
 
@@ -1265,6 +1288,7 @@ def extract_features(  # noqa: C901 — sequential measurement passes
                     depth_class=depth,
                     centers=[cxy],
                     blocked=1 if depth == "blind" else 0,
+                    through_axis=dom,
                 )
             )
 
@@ -1820,6 +1844,7 @@ def mesh_features_to_measured(mesh_feats: dict[str, Any]) -> MeasuredFeatures:
                 axis=f"+{ax}",
                 depth_class="through",
                 centers=[[x, y]],
+                through_axis=f"+{ax}",
             )
         )
     return assign_feature_ids(
