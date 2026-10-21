@@ -85,6 +85,24 @@ class TopOptParams:
     # over `penal_ramp_iters` — softer start escapes grayscale local minima
     penal_init: float | None = None  # None = no continuation
     penal_ramp_iters: int = 30
+    # volfrac continuation: ramp the volume target from `volfrac_init` down
+    # to `volfrac` over `volfrac_ramp_iters` — starting material-rich keeps
+    # the first iterations out of the sparse-layout local minima; OC only
+    # (an MMA inequality bound must hold from iteration 0)
+    volfrac_init: float | None = None  # None = constant target
+    volfrac_ramp_iters: int = 20
+    # sparse-direct / iterative backend hint: "auto" lets solver.py pick
+    # (CHOLMOD > SuperLU; AMG > SSOR above the DOF cap); anything else is a
+    # forced choice for benchmarking
+    solver_backend: str = "auto"
+    # BESO evolutionary ratio (solver="beso" only): volume-ramp step per
+    # iteration — V_{k+1} = max(volfrac, V_k*(1-ER)); 0.02 is the classic
+    # Huang & Xie setting
+    beso_er: float = 0.02
+    # orthotropic FDM stiffness: (k, axis) scales the element constitutive
+    # matrix's layer-normal response (see solver._D) — the optimizer then
+    # grows members that compensate for the weaker build-axis direction
+    aniso: tuple[float, float] | None = None
     # robust formulation (Sigmund 2009 / Wang et al. 2011): the blueprint is
     # evaluated under three Heaviside thresholds — eroded (eta=0.5+delta),
     # intermediate (0.5) and dilated (0.5-delta) — and the optimizer works on
@@ -562,20 +580,30 @@ class _Projector:
         return out
 
 
-def _prepare_solve(Kf: sparse.csr_matrix, spsolve_dofs: int) -> tuple[Any, Any]:
+def _prepare_solve(
+    Kf: sparse.csr_matrix,
+    spsolve_dofs: int,
+    solver_backend: str = "auto",
+    *,
+    domain: VoxelDomain | None = None,
+    free: np.ndarray | None = None,
+) -> tuple[Any, Any]:
     """Per-iteration solver setup for one reduced system.
 
-    Returns (factor, M): `factor` is a direct-solve callable (SuperLU in
-    SymmetricMode — Kf is symmetric structural stiffness) when the system is
-    small enough for a direct solve, else None; `M` is the SSOR (fallback
-    diagonal) preconditioner for CG."""
-    from cadx.cad.fem.solver import _ssor_preconditioner, factor_symmetric
+    Returns (factor, M): `factor` is a direct-solve callable when the system
+    is small enough for a direct solve (CHOLMOD when the optional
+    scikit-sparse dep is present, else SuperLU in SymmetricMode), else None;
+    `M` is the iterative preconditioner for CG — smoothed-aggregation AMG
+    when pyamg is importable and `domain`+`free` supply the node coords the
+    near-nullspace needs, else SSOR/diagonal. `solver_backend` forces a
+    backend for benchmarking; "auto" picks the best available."""
+    from cadx.cad.fem.solver import factor_symmetric, iterative_preconditioner
 
     if Kf.shape[0] <= spsolve_dofs:
-        factor = factor_symmetric(Kf)
+        factor = factor_symmetric(Kf, backend=solver_backend)
         if factor is not None:
             return factor, None
-    M = _ssor_preconditioner(Kf)
+    M = iterative_preconditioner(Kf, backend=solver_backend, domain=domain, free=free)
     if M is None:
         diag = Kf.diagonal()
         diag[diag == 0] = 1.0
@@ -648,6 +676,7 @@ def _solve_u(
     factor: Any = None,
     M: Any = None,
     cg_rtol: float = 1e-5,
+    solver_backend: str = "auto",
 ) -> tuple[np.ndarray, str]:
     """Light solve: return full u vector."""
     u = np.zeros(3 * domain.node_count)
@@ -657,7 +686,13 @@ def _solve_u(
         u[free] = factor(F[free])
         return u, "spsolve"
     if M is None:
-        _, M = _prepare_solve(Kf, spsolve_dofs=0)
+        _, M = _prepare_solve(
+            Kf,
+            spsolve_dofs=0,
+            solver_backend=solver_backend,
+            domain=domain,
+            free=free,
+        )
     x, info = spla.cg(
         Kf,
         F[free],
@@ -773,7 +808,11 @@ def simp(  # noqa: C901
         else np.asarray(case_weights, dtype=float)[: len(cases)]
     )
 
-    ke = _ke_unit(nu, domain.pitch)
+    ke = (
+        _ke_unit(nu, domain.pitch)
+        if params.aniso is None
+        else _ke_unit(nu, domain.pitch, float(params.aniso[0]), int(params.aniso[1]))
+    )
     en = domain.element_nodes()
     edof = element_dofs(en)
     # SIMP assembles ALL cells each iteration — the sparsity pattern is
@@ -903,6 +942,16 @@ def simp(  # noqa: C901
         f = min(1.0, it_box[0] / max(1, params.penal_ramp_iters))
         return params.penal_init + (params.penal - params.penal_init) * f
 
+    def _vol_now() -> float:
+        """A5 volfrac continuation: ramp the volume target linearly from
+        volfrac_init down to volfrac over volfrac_ramp_iters iterations.
+        A material-rich start explores broad layouts before the budget
+        tightens — escapes the same local minima as penal_init."""
+        if params.volfrac_init is None or params.volfrac_init <= params.volfrac:
+            return params.volfrac
+        f = min(1.0, it_box[0] / max(1, params.volfrac_ramp_iters))
+        return params.volfrac_init + (params.volfrac - params.volfrac_init) * f
+
     def _set_beta(b: float) -> None:
         proj.beta = b
 
@@ -919,7 +968,9 @@ def simp(  # noqa: C901
         xp, p, xt = _project(xb, eta)
         E_e = Emin + np.power(p, pen) * (E0 - Emin)
         t_asm = time.monotonic()
-        K, _, _ = assemble(domain, E_e, nu, np.ones(ncells, dtype=bool), ij=ij_cache)
+        K, _, _ = assemble(
+            domain, E_e, nu, np.ones(ncells, dtype=bool), ij=ij_cache, aniso=params.aniso
+        )
         phase_t["assemble_s"] += time.monotonic() - t_asm
         cg_rtol = (
             1e-3 if change_box[0] > 0.1 else (1e-4 if change_box[0] > 10 * params.tol else 1e-6)
@@ -941,7 +992,13 @@ def simp(  # noqa: C901
                 t_fac = time.monotonic()
                 if free_i.size:
                     Kf_i = K[free_i][:, free_i].tocsr()
-                    factor_i, M_i = _prepare_solve(Kf_i, spsolve_dofs)
+                    factor_i, M_i = _prepare_solve(
+                        Kf_i,
+                        spsolve_dofs,
+                        params.solver_backend,
+                        domain=domain,
+                        free=free_i,
+                    )
                 else:
                     Kf_i = sparse.csr_matrix((0, 0))
                     factor_i = M_i = None
@@ -958,6 +1015,7 @@ def simp(  # noqa: C901
                 factor=ctx.factor,
                 M=ctx.M,
                 cg_rtol=cg_rtol,
+                solver_backend=params.solver_backend,
             )
             u_prev[ci] = u
             us.append(u)
@@ -1119,7 +1177,9 @@ def simp(  # noqa: C901
         dc = -pen * np.power(np.clip(p, 1e-3, None), pen - 1) * (E0 - Emin) * dcw
         dcf = _chain(dc, xp, p, _xt, x, oc_filter=True, eta=eta_w)
 
-        # OC update with bisection on the PHYSICAL volume constraint
+        # OC update with bisection on the PHYSICAL volume constraint —
+        # v_now ramps down from volfrac_init when continuation is on
+        v_now = _vol_now() * nsolid
         xnew = x.copy()
         l1, l2 = 0.0, 1e9
         for _ in range(60):
@@ -1136,7 +1196,7 @@ def simp(  # noqa: C901
                 vol_c = _physical(cand, eta=eta_vol)[solid_idx].sum()
             else:
                 vol_c = cand[solid_idx].sum()
-            if vol_c > v_target:
+            if vol_c > v_now:
                 l1 = lmid
             else:
                 l2 = lmid
@@ -1179,6 +1239,8 @@ def simp(  # noqa: C901
             "penal": round(pen, 3),
             "elapsed_s": round(time.monotonic() - t0, 1),
         }
+        if params.volfrac_init is not None and params.volfrac_init > params.volfrac:
+            rec["volfrac_target"] = round(_vol_now(), 4)
         rec.update(_phase_timings())
         if robust:
             rec["obj_per_design"] = [round(o, 3) for o in obj_designs]
@@ -1377,7 +1439,12 @@ def _adjoint_solve(
 
 
 def _element_vm(
-    domain: VoxelDomain, u: np.ndarray, edof: np.ndarray, E_per_cell: np.ndarray, nu: float
+    domain: VoxelDomain,
+    u: np.ndarray,
+    edof: np.ndarray,
+    E_per_cell: np.ndarray,
+    nu: float,
+    aniso: tuple[float, float] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Centroid von-Mises per cell + per-element stress vector.
 
@@ -1387,7 +1454,7 @@ def _element_vm(
     from cadx.cad.fem.solver import _B0, _D
 
     B0 = _B0(domain.pitch)
-    Dm = _D(nu)
+    Dm = _D(nu) if aniso is None else _D(nu, float(aniso[0]), int(aniso[1]))
     ue = u[edof]  # (ncells, 24)
     eps = ue @ B0.T  # (ncells, 6)
     sig = eps @ Dm.T * E_per_cell[:, None]
@@ -1613,7 +1680,9 @@ def _run_mma(  # noqa: C901
                     g += wi[ci] * d_i
                 grad[:] = _grad_adj(g)[des]
             else:
-                dcfs = sens_fn(xb, ev, oc_filter=True, eta=eta_w)
+                # true chain-rule sensitivity for the weighted objective —
+                # the OC-filtered heuristic is not a gradient and misled MMA
+                dcfs = sens_fn(xb, ev, oc_filter=False, eta=eta_w)
                 g = np.zeros(ncells)
                 for ci, d_i in enumerate(dcfs):
                     w = float(weights[ci]) if ci < len(weights) else 1.0
@@ -1677,7 +1746,7 @@ def _run_mma(  # noqa: C901
                 ev = evs[0]  # eroded = worst design for the constraint
                 xp, p, xt, us, ctx = ev[0], ev[1], ev[2], ev[5], ev[6][ci]
                 u = us[ci]
-                vm, _sig, dvm_due = _element_vm(domain, u, edof, E0, nu)
+                vm, _sig, dvm_due = _element_vm(domain, u, edof, E0, nu, params.aniso)
                 sm = np.clip(vm, 1e-9, None)
                 relax = np.power(np.clip(p, 1e-6, None), q)
                 srel = relax * vm  # relaxed stress

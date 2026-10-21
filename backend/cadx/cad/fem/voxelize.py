@@ -24,6 +24,10 @@ class VoxelDomain:
     dims: tuple[int, int, int]  # (nx, ny, nz) cells
     solid: np.ndarray  # bool (nx, ny, nz) — inside the part
     pitch_requested: float = 0.0  # before adaptive coarsening
+    # number of void padding cells the grid was grown with on every side
+    # (design-domain dilation for grow_mm / filter-boundary headroom) —
+    # `solid` stays the part mask; the pad ring is False by construction
+    pad_cells: int = 0
     # memo table for the pure (dims/pitch/origin-derived) geometry tables —
     # element_nodes/element_centers are recomputed per region per load case
     # otherwise (region resolution calls them constantly on big grids)
@@ -175,27 +179,49 @@ def _fill_grid(
     return np.ones(dims, dtype=bool)
 
 
-def voxelize(mesh: trimesh.Trimesh, pitch_mm: float, max_elements: int) -> VoxelDomain:
+def voxelize(
+    mesh: trimesh.Trimesh, pitch_mm: float, max_elements: int, pad_cells: int = 0
+) -> VoxelDomain:
     """Rasterize the mesh into a filled uniform grid aligned to its bbox.
 
     Adaptive: pitch grows until the solid element count fits `max_elements`.
     Cell-center containment keeps the voxel volume close to the real part
     (stair-stepping at boundaries, ~half a cell).
+
+    `pad_cells` > 0 grows the grid bounds by that many cells on EVERY side
+    before `dims` are computed — the padding stays void (the mesh fill does
+    not cover it) so `solid` remains the part mask only. Used for
+    design-domain dilation (`grow_mm`): optimizer filters and region
+    masks then have void headroom instead of clipping at the part bbox.
     """
     bounds = np.asarray(mesh.bounds, dtype=float)
     lo, hi = bounds[0], bounds[1]
     volume = abs(float(mesh.volume)) if mesh.is_watertight else float(np.prod(hi - lo))
     pitch, _ = choose_pitch(volume, pitch_mm, max_elements)
+    pad = int(max(0, pad_cells))
 
     matrix = np.zeros(1, dtype=bool)
     dims = (1, 1, 1)
+    origin = lo
     for _attempt in range(12):
+        # pad in cell units of the CURRENT pitch — the adaptive retry grows
+        # the pitch, so the padded bounds are recomputed per attempt and the
+        # pad width stays `pad` cells regardless of coarsening
+        origin = lo - pad * pitch
+        hi_p = hi + pad * pitch
         dims = (
-            int(max(1, math.ceil(float((hi - lo)[0] / pitch)))),
-            int(max(1, math.ceil(float((hi - lo)[1] / pitch)))),
-            int(max(1, math.ceil(float((hi - lo)[2] / pitch)))),
+            int(max(1, math.ceil(float((hi_p - origin)[0] / pitch)))),
+            int(max(1, math.ceil(float((hi_p - origin)[1] / pitch)))),
+            int(max(1, math.ceil(float((hi_p - origin)[2] / pitch)))),
         )
-        matrix = _fill_grid(mesh, lo, dims, pitch)
+        matrix = _fill_grid(mesh, origin, dims, pitch)
+        if pad:
+            # the pad ring is void by definition — enforce it on the fill
+            # fallbacks too (the surface-distance path can mark cells whose
+            # centre sits just outside the bbox)
+            inner = np.zeros(dims, dtype=bool)
+            inner[pad : dims[0] - pad, pad : dims[1] - pad, pad : dims[2] - pad] = True
+            matrix &= inner
         if int(matrix.sum()) <= max_elements:
             break
         pitch *= (int(matrix.sum()) / max_elements) ** (1.0 / 3.0) * 1.05
@@ -203,11 +229,12 @@ def voxelize(mesh: trimesh.Trimesh, pitch_mm: float, max_elements: int) -> Voxel
         raise ValueError("voxelization produced an empty grid")
 
     return VoxelDomain(
-        origin=lo.astype(float),
+        origin=origin.astype(float),
         pitch=float(pitch),
         dims=dims,
         solid=matrix,
         pitch_requested=pitch_mm,
+        pad_cells=pad,
     )
 
 
