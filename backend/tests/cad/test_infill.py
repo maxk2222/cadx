@@ -376,6 +376,27 @@ def test_infill_field_closed_shell(solved_cantilever) -> None:
     assert 0.0 < meta["volfrac_estimate"] < 1.0
 
 
+@pytest.mark.parametrize(("thickness", "expected"), [(6.0, True), (24.0, False)])
+def test_infill_flags_thin_shell_degeneracy(thickness: float, expected: bool) -> None:
+    """A one-cell-thick interior can be entirely consumed by the skin
+    bonding band; report that as a solid fallback rather than silent infill."""
+    dom = voxelize(_box_mesh(48.0, 24.0, thickness), 1.5, 150_000)
+    rho, _mask, meta = infill_field(
+        dom,
+        InfillParams(shell_mm=2.0, infill_cell_mm=8.0),
+        np.ones(dom.cell_count),
+        None,
+        None,
+        None,
+    )
+    assert rho.shape == (dom.cell_count,)
+    assert meta["degenerated_to_solid"] is expected
+    if expected:
+        assert meta["lattice_cells"] >= meta["interior_cells"]
+    else:
+        assert meta["lattice_cells"] < meta["interior_cells"]
+
+
 @pytest.mark.parametrize("style", ["gyroid_graded", "struts_aligned"])
 def test_infill_field_styles_closed(solved_cantilever, style) -> None:
     dom, _case, sol, edof, active, elem_E = solved_cantilever
@@ -445,6 +466,27 @@ def test_infill_field_guided_scope(solved_cantilever) -> None:
 
     with pytest.raises(ValueError, match="guide_mask"):
         infill_field(dom, InfillParams(scope="guided"), [w], None, None, None)
+
+
+
+def test_empty_guided_scope_is_not_misreported_as_thin_part(solved_cantilever) -> None:
+    """An empty coarse-SIMP guide means shell-only, not a physically thin
+    part; keep the geometric core count distinct from eligible guide cells."""
+    dom, _case, sol, edof, active, elem_E = solved_cantilever
+    w = element_strain_energy(dom, sol.u, edof, active, elem_E, NU)
+    guide = np.zeros(dom.cell_count, dtype=bool)
+    _rho, _mask, meta = infill_field(
+        dom,
+        InfillParams(scope="guided", shell_mm=2.0),
+        [w],
+        None,
+        None,
+        None,
+        guide_mask=guide,
+    )
+    assert meta["core_cells"] > 0
+    assert meta["interior_cells"] == 0
+    assert meta["degenerated_to_solid"] is False
 
 
 def test_infill_field_deterministic(solved_cantilever) -> None:

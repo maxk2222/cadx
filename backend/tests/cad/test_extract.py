@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from cadx.cad.fem.extract import density_to_mask, density_to_mesh
+from cadx.cad.fem.extract import _volume_preserved_iso, density_to_mask, density_to_mesh
 from cadx.cad.fem.voxelize import VoxelDomain
 
 
@@ -99,6 +99,16 @@ def test_bisect_fallback_on_zero_field() -> None:
     assert any("volume-preserving iso" in w for w in warnings)
     assert mesh.is_watertight
     assert info["iso"] == 0.0  # 0.5 * field max (= 0)
+
+
+def test_rank_iso_fallback_handles_tied_values() -> None:
+    """When ties make the target count unreachable by threshold bisection,
+    the rank fallback chooses the closest threshold instead of 0.5*max."""
+    field = np.array([0.0] * 4 + [0.4] * 3 + [0.8] * 3 + [1.0] * 2)
+    iso, warning = _volume_preserved_iso(field, target=6, max_iter=1)
+    assert iso > 0.4
+    assert int((field >= iso).sum()) == 5
+    assert warning is not None and "rank threshold" in warning
 
 
 def test_empty_density_raises() -> None:

@@ -443,13 +443,25 @@ def _volume_preserved_iso(
     (0, fmax] is exact up to ties. Returns (iso, warning): warning is set
     when no `t` hits `target` within `max_iter` halvings — e.g. cells with
     field == 0 inside the mask (min-member/passive cells the smoother
-    cannot reach) — and the caller falls back to t = 0.5*max.
+    cannot reach). The fallback is then the rank iso — the `target`-th
+    largest value keeps at least `target` cells (ties can overshoot, but
+    never the arbitrary 0.5*max cut that produced -36% volume errors).
     """
-    fmax = float(field.max())
-    if target <= 0 or fmax <= 0.0:
-        return 0.5 * fmax, (
+    vals = field.ravel()
+    if not vals.size:
+        raise ValueError("cannot preserve volume on an empty density field")
+    fmax = float(vals.max())
+    if target <= 0:
+        return float(np.nextafter(fmax, np.inf)), None
+    if target > len(vals):
+        iso = float(vals.min())
+        return iso, None if int((vals >= iso).sum()) == target else (
+            f"volume-preserving iso target {target} exceeds field size {len(vals)}"
+        )
+    if fmax <= 0.0:
+        return 0.0, (
             f"volume-preserving iso impossible (max field {fmax:g}, "
-            f"target {target} voxels) — using t=0.5*max"
+            f"target {target} voxels) — zero field contains {len(vals)} tied cells"
         )
     lo, hi = 0.0, fmax
     for _ in range(max_iter):
@@ -463,10 +475,21 @@ def _volume_preserved_iso(
             lo = mid
         else:
             hi = mid
-    return 0.5 * fmax, (
-        f"volume-preserving iso did not converge in {max_iter} bisections "
-        f"(mask {target} voxels) — using t=0.5*max"
-    )
+    rank = min(max(len(vals) - target, 0), len(vals) - 1)
+    iso = float(np.partition(vals, rank)[rank])
+    n_iso = int((field >= iso).sum())
+    above_iso = float(np.nextafter(iso, np.inf))
+    n_above = int((field >= above_iso).sum())
+    if abs(n_above - target) < abs(n_iso - target):
+        iso, n_iso = above_iso, n_above
+    warn = None
+    if n_iso != target:
+        warn = (
+            f"volume-preserving iso fell back to the rank threshold "
+            f"(mask {target} voxels, got {n_iso} — ties/zero cells make the "
+            "exact count unattainable)"
+        )
+    return iso, warn
 
 
 def density_to_mesh(

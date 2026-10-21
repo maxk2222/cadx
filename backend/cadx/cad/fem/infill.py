@@ -457,7 +457,8 @@ def infill_field(
 
     shell_mm = _resolved_shell_mm(domain, p)
     skin = _skin_mask(domain, shell_mm)
-    interior = solid3 & ~skin & ~pas3 & ~vod3
+    core = solid3 & ~skin & ~pas3 & ~vod3
+    interior = core.copy()
     if p.scope == "guided":
         if guide_mask is None:
             raise ValueError('scope="guided" requires a guide_mask')
@@ -515,7 +516,12 @@ def infill_field(
         "cell_mm": float(p.infill_cell_mm),
         "skin_cells": int(skin.sum()),
         "interior_cells": int(interior.sum()),
+        "core_cells": int(core.sum()),
         "lattice_cells": int(occ3.sum()),
+        "degenerated_to_solid": bool(
+            int(core.sum()) == 0
+            or (int(interior.sum()) > 0 and int(occ3.sum()) >= int(interior.sum()))
+        ),
         "d_mean": round(float(di.mean()), 4) if di.size else None,
         "d_p50": round(float(np.quantile(di, 0.5)), 4) if di.size else None,
         "d_p95": round(float(np.quantile(di, 0.95)), 4) if di.size else None,
