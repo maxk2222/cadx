@@ -556,8 +556,8 @@ def _solve_cases(  # noqa: C901
             ) as pool:
                 futures = {pool.submit(_solve_case_child, i): i for i in preps}
                 for fut in as_completed(futures):
-                    i, sol = fut.result()
-                    solved[i] = sol
+                    i, case_sol = fut.result()
+                    solved[i] = case_sol
         except Exception as e:
             log.warning("fem.solve_pool_failed", error=str(e)[:200])
         finally:
@@ -569,7 +569,7 @@ def _solve_cases(  # noqa: C901
     sol_by_i: dict[int, FemSolution] = {}
     for i in sorted(preps):
         res = results[i]
-        sol = solved.get(i)
+        sol: FemSolution | None = solved.get(i)
         if sol is None:
             sig, F = preps[i]
             assert asm is not None
