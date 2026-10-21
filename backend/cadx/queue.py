@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from arq.connections import RedisSettings
@@ -21,6 +22,7 @@ from cadx.agent.worker_jobs import (
     run_refine_job,
     run_topopt_resample_job,
 )
+from cadx.cad import resources
 from cadx.cad.tasks import (
     audit_params,
     edit_feature,
@@ -97,7 +99,29 @@ async def agent_startup(ctx: dict[str, Any]) -> None:
 
 
 async def cad_startup(ctx: dict[str, Any]) -> None:
+    from cadx.cad import resources
+
+    # cgroup-aware thread defaults for everything the executor process spawns
+    # or runs in-process (BLAS, OCCT pools, llvmpipe raster)
+    resources.configure_thread_env(os.environ)
+    resources.log_detected()
     await _startup_common(ctx)
+    # publish the executor's view of the world so the settings API shows the
+    # numbers the 0=auto knobs actually resolve to (the api container sees a
+    # different cgroup)
+    try:
+        from cadx.db.models import AppSetting
+        from cadx.db.session import session_scope
+
+        async with session_scope() as db:
+            row = await db.get(AppSetting, "resources_detected")
+            if row is None:
+                db.add(AppSetting(key="resources_detected", value=resources.detected()))
+            else:
+                row.value = resources.detected()
+            await db.commit()
+    except Exception:
+        pass
 
 
 async def worker_shutdown(ctx: dict[str, Any]) -> None:
@@ -153,7 +177,10 @@ class CadWorkerSettings:
     on_shutdown = worker_shutdown
     redis_settings = _redis()
     queue_name = "cad"
-    max_jobs = 2
+    # cad tasks are CPU-heavy — scale with the detected (cgroup-aware) cpu
+    # budget; ~1 job per 4 cores, at least the historical 2. Override via
+    # CADX_CAD_MAX_JOBS.
+    max_jobs = int(os.environ.get("CADX_CAD_MAX_JOBS") or max(2, resources.detect_cpus() // 4))
     # generous outer cap — per-job limits come from RuntimeSettings payload
     # (topopt_timeout_s up to 2700s+); QueueExecutor enforces the real timeout
     job_timeout = 7200

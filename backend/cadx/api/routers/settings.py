@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from cadx.api.deps import get_session
 from cadx.api.schemas import SettingsOut, SettingsUpdate
 from cadx.config import get_settings
+from cadx.db.models import AppSetting
 from cadx.llm.capabilities import (
     caps_from_card,
     load_caps_session,
@@ -37,10 +38,20 @@ _SECRET_KEYS = (
 async def _out(db: AsyncSession, settings: RuntimeSettings) -> SettingsOut:
     caps = await load_llm_caps(db)
     detected = {k: c.context_tokens for k, c in caps.items() if c.context_tokens}
+    # executor-reported resources (written by cad_startup into an AppSetting
+    # row); falls back to local detection for dev mode where api+executor
+    # share the host anyway
+    row = await db.get(AppSetting, "resources_detected")
+    res: dict[str, int] = dict(row.value) if isinstance(row and row.value, dict) else {}
+    if not res:
+        from cadx.cad.resources import detected as _local
+
+        res = _local()
     return SettingsOut(
         **settings.public_values(),
         data_dir=get_settings().data_dir,
         llm_detected=detected,
+        resources_detected=res,
     )
 
 

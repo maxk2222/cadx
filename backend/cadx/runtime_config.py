@@ -278,11 +278,24 @@ class RuntimeSettings(BaseModel):
     mesh_prep_images: bool = True
     mesh_cache_enabled: bool = True
     exec_timeout_s: int = Field(default=180, ge=1, le=86_400)
-    exec_mem_limit_mb: int = Field(default=4096, ge=256, le=1_048_576)
+    # 0 = auto: 60% of the detected (cgroup-aware) memory, clamped to
+    # 2048..32768 MB — cad/resources.effective_exec_mem_mb resolves it at
+    # call time so the executor's own container limit wins over a stale
+    # host-detection
+    exec_mem_limit_mb: int = Field(default=0, ge=0, le=1_048_576)
     # warm sandbox: one pre-imported zygote forks per job instead of paying
     # the ~4s build123d cold-import on every execution (incl. every failed
     # repair). Falls back to the cold subprocess path on any zygote failure.
     exec_warm_runner: bool = True
+    # 0 = auto: threads a single CPU-bound stage may use (OCC meshing,
+    # BLAS, llvmpipe raster) — min(detected cpus, 8)
+    exec_threads: int = Field(default=0, ge=0, le=64)
+    # 0 = auto: fork/spawn pool workers for parallel FEM load cases,
+    # topopt verifies and render fan-out — min(4, cpus-1); 1 disables
+    exec_pool_workers: int = Field(default=0, ge=0, le=16)
+    # 0 = auto: parallel perturbation runs in the design audit
+    # (baseline + 2 sandbox runs per PARAM) — min(4, cpus-1)
+    audit_parallel_runs: int = Field(default=0, ge=0, le=8)
 
     @field_validator(*_SECRET_FIELDS, mode="before")
     @classmethod
@@ -336,6 +349,9 @@ _EXECUTOR_FIELDS = {
     "exec_timeout_s",
     "exec_mem_limit_mb",
     "exec_warm_runner",
+    "exec_threads",
+    "exec_pool_workers",
+    "audit_parallel_runs",
     "fem_voxel_mm",
     "fem_max_elements",
     "fem_spsolve_dofs",

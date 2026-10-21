@@ -631,7 +631,13 @@ class SettingsOut(BaseModel):
     exec_timeout_s: int
     exec_mem_limit_mb: int
     exec_warm_runner: bool
+    exec_threads: int
+    exec_pool_workers: int
+    audit_parallel_runs: int
     data_dir: str
+    # detected executor resources (cgroup-aware) — read-only, resolved by
+    # cad/resources.py at GET time; the 0=auto fields resolve against it
+    resources_detected: dict[str, int] = Field(default_factory=dict)
     # detected context windows per model id — from the llm_caps cache row,
     # read-only for the UI (override via llm_context_tokens)
     llm_detected: dict[str, int] = Field(default_factory=dict)
@@ -753,8 +759,11 @@ class SettingsUpdate(BaseModel):
     mesh_decimate_faces: int | None = Field(default=None, ge=1)
     mesh_max_faces_for_cad: int | None = Field(default=None, ge=1)
     exec_timeout_s: int | None = Field(default=None, ge=1, le=86_400)
-    exec_mem_limit_mb: int | None = Field(default=None, ge=256, le=1_048_576)
+    exec_mem_limit_mb: int | None = Field(default=None, ge=0, le=1_048_576)
     exec_warm_runner: bool | None = None
+    exec_threads: int | None = Field(default=None, ge=0, le=64)
+    exec_pool_workers: int | None = Field(default=None, ge=0, le=16)
+    audit_parallel_runs: int | None = Field(default=None, ge=0, le=8)
 
 
 class MeshModelOut(BaseModel):
