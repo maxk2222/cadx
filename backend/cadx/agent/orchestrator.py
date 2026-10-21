@@ -1258,6 +1258,12 @@ def _gate_generated_images(ordered: list[Any], spec: PartSpec | None) -> list[An
             # conditioning side views, not hero candidates — their silhouette
             # legitimately differs from the front-view aspect the gate checks
             kept.append(a)
+        elif a.kind == "generated_image" and getattr(a, "verify_severity", "") == "major":
+            # the vision check certified this image as the wrong part — feeding
+            # it to the generator builds a certified-wrong mesh (observed:
+            # U-channel hero → 26 mm mesh for a 60 mm spec). The drop falls
+            # through to the concept bootstrap, same as the aspect gate.
+            dropped.append(a.asset_id)
         elif a.kind == "generated_image" and aspect_mismatch(a.path, spec):
             dropped.append(a.asset_id)
         else:
@@ -1593,6 +1599,7 @@ async def _autogen_hero_image(ctx: AgentCtx, spec: PartSpec | None, plan: Any) -
                     path=storage.resolve(a.path),
                     caption=a.caption,
                     filename=a.filename,
+                    verify_severity=verdict.severity,
                 )
             )
             ctx.generated_asset_ids.append(str(a.id))

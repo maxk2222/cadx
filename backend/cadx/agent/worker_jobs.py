@@ -382,6 +382,9 @@ def _input_assets(assets: list[Asset]) -> list[InputAsset]:
             caption=a.caption,
             filename=a.filename,
             role_hint=str((a.gen_params or {}).get("role_hint") or ""),
+            verify_severity=str(
+                ((a.gen_params or {}).get("verify") or {}).get("severity") or ""
+            ),
         )
         for a in assets
     ]

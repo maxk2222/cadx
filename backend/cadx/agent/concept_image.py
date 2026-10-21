@@ -157,6 +157,7 @@ async def generate_concept_images(
             caption=asset.caption,
             filename=asset.filename,
             role_hint=role_hint or ("sketch" if mark_sketch else ""),
+            verify_severity=verdict.severity,
         )
         ctx.assets.append(a)
         ctx.generated_asset_ids.append(str(asset.id))

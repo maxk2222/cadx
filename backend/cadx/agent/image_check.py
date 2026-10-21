@@ -213,4 +213,13 @@ async def generate_with_verification(
         if verdict.severity != "major" or attempt >= retries:
             return assets, verdict
         attempt += 1
-        prompt += " The photo MUST clearly show: " + ", ".join(verdict.missing) + "."
+        # missing alone produced blind retries that repeated the same wrong
+        # shape — the corrective suffix must name the defect too (observed:
+        # 3x U-channel for an L-bracket spec, each retry only told
+        # "MUST show: L-shape" and never "NOT a U-channel")
+        fix = []
+        if verdict.missing:
+            fix.append("The photo MUST clearly show: " + ", ".join(verdict.missing))
+        if verdict.wrong:
+            fix.append("Correct these errors: " + ", ".join(verdict.wrong))
+        prompt += " " + ". ".join(fix) + "."

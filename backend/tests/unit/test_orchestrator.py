@@ -508,3 +508,62 @@ def test_gate_generated_images_drops_bad_hero(tmp_path):
     assert "good1" in ids
     assert "user1" in ids  # user photos are never gated
     assert _gate_generated_images([bad], None) == [bad]
+
+
+def test_gate_generated_images_drops_major_verdict(tmp_path):
+    """A generated image whose vision verdict is `major` (certified wrong
+    part) must not condition the mesh generator — the drop falls through to
+    the concept bootstrap, like the aspect gate."""
+    from cadx.agent.orchestrator import _gate_generated_images
+    from cadx.agent.types import InputAsset
+
+    p = tmp_path / "hero.png"
+    from PIL import Image
+
+    Image.new("RGB", (400, 400), (120, 120, 120)).save(p)
+
+    def _dim(v):
+        return {"value": v, "unit": "mm", "source": "stated"}
+
+    from cadx.llm.schemas import PartSpec
+
+    spec = PartSpec(
+        name="t",
+        summary="t",
+        units="mm",
+        length_x=_dim(120),
+        width_y=_dim(40),
+        height_z=_dim(30),
+        features=[],
+        open_questions=[],
+    )
+    bad = InputAsset(
+        asset_id="bad1",
+        kind="generated_image",
+        path=p,
+        caption="",
+        filename="b.png",
+        verify_severity="major",
+    )
+    fine = InputAsset(
+        asset_id="fine1",
+        kind="generated_image",
+        path=p,
+        caption="",
+        filename="f.png",
+        verify_severity="ok",
+    )
+    unver = InputAsset(
+        asset_id="unver1",
+        kind="generated_image",
+        path=p,
+        caption="",
+        filename="u.png",
+        verify_severity="unverifiable",
+    )
+    user = InputAsset(asset_id="user1", kind="image", path=p, caption="", filename="i.png")
+    ids = [a.asset_id for a in _gate_generated_images([bad, fine, unver, user], spec)]
+    assert "bad1" not in ids
+    assert "fine1" in ids
+    assert "unver1" in ids  # unverifiable never blocks generation
+    assert "user1" in ids

@@ -176,6 +176,38 @@ async def test_gen_verify_retries_on_major_then_accepts(png):
     assert len(assets) == 1
 
 
+async def test_gen_verify_retry_prompt_names_the_defect(png):
+    """`wrong` verdicts must reach the corrective prompt — naming only the
+    missing parts left the generator repeating the same wrong shape (3x
+    U-channel for an L-bracket spec on z-image-turbo)."""
+    llm = FakeLLM(
+        [
+            {
+                "match": False,
+                "missing": ["through-holes in the back wall"],
+                "wrong": ["U-channel instead of a single-wall L-bracket"],
+                "severity": "major",
+            },
+            {"match": True, "missing": [], "wrong": [], "severity": "ok"},
+        ]
+    )
+    calls: list[str] = []
+
+    async def gen(prompt: str) -> list[InputAsset]:
+        calls.append(prompt)
+        return _asset(png)
+
+    _assets, verdict = await generate_with_verification(
+        _ctx(llm), prompt="p", spec=_spec(), gen_fn=gen, retries=1
+    )
+    assert len(calls) == 2
+    assert "MUST clearly show" in calls[1]
+    assert "through-holes in the back wall" in calls[1]
+    assert "Correct these errors" in calls[1]
+    assert "U-channel" in calls[1]
+    assert verdict.severity == "ok"
+
+
 async def test_gen_verify_respects_retry_budget(png):
     llm = FakeLLM(
         [

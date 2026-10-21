@@ -24,6 +24,12 @@ class InputAsset:
     # (routes the image to *-scribble mesh adapters). Stored in the DB asset's
     # gen_params JSON so no schema migration is needed.
     role_hint: str = ""
+    # vision-verification verdict severity for generated images
+    # (gen_params.verify.severity) — "" for user images/unchecked assets.
+    # "major" means the verifier certified the image as the wrong part;
+    # meshgen must not condition on it (the drop just re-triggers the
+    # concept-image bootstrap, same as the aspect gate).
+    verify_severity: str = ""
 
 
 # Asset kinds usable as image inputs (LLM context, mesh source images).
