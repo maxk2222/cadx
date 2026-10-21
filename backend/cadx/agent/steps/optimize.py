@@ -192,17 +192,64 @@ def _budget_exceeded(ops: _SessionOps, needed_s: float) -> dict[str, Any] | None
     }
 
 
-def _fem_case_images(res: dict[str, Any], it_dir: Path) -> list[str]:
+def _fem_case_images(res: dict[str, Any], it_dir: Path) -> tuple[list[str], list[str]]:
     """Per-case FEM renders (vonmises/deformed PNGs) under <it_dir>/fem/ —
-    the fem / fem_export reports carry bare filenames."""
+    the fem / fem_export reports carry bare filenames. Returns
+    ``(vonmises, deformed)`` — vonmises carries the decision-relevant stress
+    picture; deformed views are nice-to-have and the first to be dropped
+    under the image budget."""
     fem_dir = it_dir / "fem"
-    out: list[str] = []
+    von: list[str] = []
+    deformed: list[str] = []
     for rep_key in ("fem", "fem_export"):
         for c in (res.get(rep_key) or {}).get("cases") or []:
-            for p in (c.get("vonmises_png"), c.get("deformed_png")):
+            for p, bucket in ((c.get("vonmises_png"), von), (c.get("deformed_png"), deformed)):
                 if p and (fem_dir / p).exists():
-                    out.append(str(fem_dir / p))
-    return out
+                    bucket.append(str(fem_dir / p))
+    return von, deformed
+
+
+#: image budget for one topopt_run result — every render stays on disk, and
+#: a single result exceeding ~12 images costs more context than the marginal
+#: view is worth (a 17-image result ≈ 40k tokens on a local model).
+_TOPOPT_IMAGE_BUDGET = 12
+
+
+def _topopt_images(
+    ops: _SessionOps,
+    res: dict[str, Any],
+    it_dir: Path,
+) -> list[str]:
+    """Priority-ordered image set for a topopt_run result, capped at the
+    budget: base sheet → run sheet/thumb → region previews → shape views →
+    vonmises overlays → deformed views (first dropped)."""
+    head: list[str] = []
+    if ops.contact_sheet:
+        head.append(str(ops.contact_sheet))
+    for key in ("contact_sheet", "thumbnail"):
+        if rel := res.get(key):
+            with contextlib.suppress(ValueError):
+                p = storage.resolve(rel)
+                if p.exists():
+                    head.append(str(p))
+    for rel in (res.get("topopt") or {}).get("regions_png") or []:
+        with contextlib.suppress(ValueError):
+            p = storage.resolve(rel)
+            if p.exists():
+                head.append(str(p))
+    views = _render_view_images(res)
+    von, deformed = _fem_case_images(res, it_dir)
+    images = head + views + von
+    if len(images) < _TOPOPT_IMAGE_BUDGET:
+        images += deformed[: _TOPOPT_IMAGE_BUDGET - len(images)]
+    else:
+        images = images[:_TOPOPT_IMAGE_BUDGET]
+    if omitted := (len(head) + len(views) + len(von) + len(deformed)) - len(images):
+        res.setdefault("warnings", []).append(
+            f"{omitted} render image(s) omitted from this result (context budget) — "
+            "they are written under the iteration dir"
+        )
+    return images
 
 
 def _render_view_images(res: dict[str, Any]) -> list[str]:
@@ -355,24 +402,8 @@ def _make_topopt_fn(ops: _SessionOps) -> Any:
             }
         )
         res["_iteration"] = it
-        images: list[str] = []
-        for key in ("contact_sheet", "thumbnail"):
-            if rel := res.get(key):
-                with contextlib.suppress(ValueError):
-                    images.append(str(storage.resolve(rel)))
-        # region-selection previews drawn by the executor
-        for rel in (res.get("topopt") or {}).get("regions_png") or []:
-            with contextlib.suppress(ValueError):
-                p = storage.resolve(rel)
-                if p.exists():
-                    images.append(str(p))
-        # FEM verification renders (mask + export-mesh reports) written under
-        # <iteration_dir>/fem/, plus the optimized-shape view renders
         it_dir = storage.iteration_dir(ctx.project_id, ctx.version_id, it)
-        images += _render_view_images(res)
-        images += _fem_case_images(res, it_dir)
-        # base render first so the model can compare base vs optimized
-        res["_images"] = ([str(ops.contact_sheet)] if ops.contact_sheet else []) + images
+        res["_images"] = _topopt_images(ops, res, it_dir)
         return res
 
     return topopt_fn
@@ -476,7 +507,8 @@ def _make_refine_fn(ops: _SessionOps) -> Any:
         # re-verification renders written under <iteration_dir>/fem/
         it_dir = storage.iteration_dir(ctx.project_id, ctx.version_id, it)
         images += _render_view_images(res)
-        images += _fem_case_images(res, it_dir)
+        von, deformed = _fem_case_images(res, it_dir)
+        images += von + deformed
         res["_images"] = images
         return res
 

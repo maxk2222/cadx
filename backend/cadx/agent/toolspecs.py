@@ -2369,6 +2369,11 @@ class ToolSession:
                 "params": a,
             }
         )
+        # headline SF must be the pessimistic bound across mask + export —
+        # reporting only the mask number presented a 1.29 headline for a run
+        # whose exported part actually measured 0.53
+        sf_export = top.get("sf_export")
+        worst = [v for v in (*sfs, sf_export) if v is not None]
         out: dict[str, Any] = {
             "ok": True,
             "run_index": idx,
@@ -2376,7 +2381,7 @@ class ToolSession:
             "volfrac_achieved": top.get("volfrac_achieved"),
             "iterations": top.get("iterations"),
             "converged": top.get("converged"),
-            "worst_safety_factor": min(sfs) if sfs else None,
+            "worst_safety_factor": min(worst) if worst else None,
             "sf_mask": top.get("sf_mask"),
             "sf_export": top.get("sf_export"),
             "min_member_mm": top.get("min_member_mm"),
