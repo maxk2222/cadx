@@ -367,6 +367,19 @@ class OptimizeSpec(BaseModel):
         # load centroids and fixed regions seeds x0 — skips the broad-search
         # phase, typically ~20-40% fewer iterations
     )
+    volfrac_ramp_iters: int | None = Field(
+        default=None, ge=1, le=200
+    )  # iterations for the volfrac_init -> target ramp (default 20); a
+    # shorter ramp tightens the budget sooner, a longer one explores more
+    loadpath_corridor_mm: float | None = Field(
+        default=None, gt=0.0, le=50.0
+    )  # corridor width for warmstart="loadpath" (default 2.5xvoxel pitch);
+    # wider corridors seed thicker junctions — survives smoothing better
+    mma_final_beta: float | None = Field(
+        default=None, ge=1.0, le=32.0
+    )  # solver="mma" only: project the converged blueprint at this
+    # Heaviside sharpness for the returned density — collapses residual
+    # gray fields from a cone-filtered run (e.g. 8.0)
     grow_mm: float = Field(
         default=0.0, ge=0.0, le=50.0
     )  # design-domain dilation: the optimizer may also ADD material up to

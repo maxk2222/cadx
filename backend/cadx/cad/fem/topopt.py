@@ -99,6 +99,19 @@ class TopOptParams:
     # iteration — V_{k+1} = max(volfrac, V_k*(1-ER)); 0.02 is the classic
     # Huang & Xie setting
     beso_er: float = 0.02
+    # beso connectivity guard: re-bond the kept set to the passive skeleton
+    # every iteration — a floating load island makes F·u explode and poisons
+    # the sensitivity ranking. Debug opt-out for diagnosis only.
+    beso_connectivity: bool = True
+    # MMA quality gates (solver="mma"): minimum FEM evaluations before the
+    # nlopt xtol may end the run — a warm-started gray field otherwise
+    # "converges" in ~2 evals; optional blueprint finalization at
+    # mma_final_beta returns the eta-projected density (crisper field)
+    mma_min_evals: int = 8
+    mma_final_beta: float | None = None
+    # loadpath warm-start corridor width (mm) — None keeps the field's own
+    # default (2.5 x pitch); wider corridors seed thicker junctions
+    loadpath_corridor_mm: float | None = None
     # orthotropic FDM stiffness: (k, axis) scales the element constitutive
     # matrix's layer-normal response (see solver._D) — the optimizer then
     # grows members that compensate for the weaker build-axis direction

@@ -800,12 +800,23 @@ STRUCT_TOOLS = [
                 "target (e.g. 0.7) — a material-rich start explores broad "
                 "layouts before the budget tightens (OC only)",
             },
+            "volfrac_ramp_iters": {
+                "type": "integer",
+                "description": "iterations for the volfrac_init -> target "
+                "ramp (default 20) — shorter tightens the budget sooner",
+            },
             "warmstart": {
                 "type": "string",
                 "enum": ["uniform", "loadpath"],
                 "description": "'loadpath' seeds the density from deterministic "
                 "load-path corridors (load centroids → fixed regions) — "
                 "typically 20-40% fewer iterations to a similar design",
+            },
+            "loadpath_corridor_mm": {
+                "type": "number",
+                "description": "corridor width for warmstart=loadpath in mm "
+                "(default 2.5xvoxel pitch) — wider corridors seed thicker "
+                "junctions that survive mesh smoothing better",
             },
             "grow_mm": {
                 "type": "number",
@@ -830,6 +841,12 @@ STRUCT_TOOLS = [
                 "description": "BESO evolutionary ratio — volume-ramp step "
                 "per iteration for solver=beso (default 0.02, classic "
                 "Huang & Xie setting; larger = faster but noisier)",
+            },
+            "mma_final_beta": {
+                "type": "number",
+                "description": "solver=mma only: project the converged "
+                "blueprint at this Heaviside sharpness for the returned "
+                "density (e.g. 8.0) — collapses residual gray fields",
             },
             "load_cases": _LOAD_CASES_SCHEMA,
             "material": _s("material name — empty = spec default"),
