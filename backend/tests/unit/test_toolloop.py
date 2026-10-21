@@ -15,7 +15,7 @@ from cadx.agent.trace import MemoryTrace
 from cadx.agent.types import AgentCtx, InputAsset
 from cadx.db.models import ProjectSettings
 from cadx.llm.fake import FakeLLM
-from cadx.llm.schemas import PartSpec, PatchResponse
+from cadx.llm.schemas import Dim, PartSpec, PatchResponse
 from cadx.runtime_config import RuntimeSettings
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
@@ -1418,3 +1418,106 @@ async def test_fem_fn_no_warning_when_target_reachable():
     res = await _make_fem_fn(ops)({"load_cases": [{"name": "c", "loads": []}]})
     assert res["ok"]
     assert not res["fem"].get("warnings")
+
+
+# --------------------------------------------------------------------------- #
+# infra-error kill (P7) + last-good checkpoint (P6)
+
+# executor-side failure shape — errordiag classifies it 'infra' (not a code
+# problem, so code edits can never fix it)
+_INFRA_ERR = "executor task failed: 1 validation error for RuntimeSettings\n  bad field"
+
+
+async def test_infra_verify_kills_session():
+    """A verify failure classified 'infra' means the SANDBOX is broken, not
+    the code — the session ends 'infra_error' without nudges or extra turns."""
+    calls_n = {"n": 0}
+
+    async def verify_fn(code: str):
+        calls_n["n"] += 1
+        return {"ok": False, "error": _INFRA_ERR}
+
+    llm = FakeLLM([_call("verify"), _call("verify"), _call("done")])
+    llm.tools_mode = "auto"
+    ctx = _ctx(llm)
+    session = ToolSession(ctx, kind="edit", code=BOX_CODE, verify_fn=verify_fn)
+    res = await run_session(ctx, "code", MESSAGES, session=session, max_calls=10, step="repair_1")
+    assert res.exhausted
+    assert res.end_reason == "infra_error"
+    assert res.tool_log[0]["result"]["category"] == "infra"  # real classification
+    assert calls_n["n"] == 1  # no verify retries
+    assert len(llm.calls) == 1  # and no further LLM turns
+    # no "SAME error" nudge went out — infra isn't a code problem
+    assert not any(
+        "SAME error" in str(m.get("content", ""))
+        for m in llm.calls[-1]["messages"]
+        if m.get("role") == "user"
+    )
+
+
+async def test_last_good_checkpoint_survives_infra_kill():
+    """The verified-good buffer rides out on SessionResult.last_good even
+    when a later infra failure kills the session with a broken head."""
+    calls: list[str] = []
+
+    async def verify_fn(code: str):
+        calls.append(code)
+        if len(calls) == 1:
+            return {"ok": True, "analysis": {"bbox_size": [40, 20, 10]}}
+        return {"ok": False, "error": _INFRA_ERR}
+
+    llm = FakeLLM(
+        [
+            _call("verify"),
+            _call("set_param", name="width", value=30.0),
+            _call("verify"),
+            _call("done"),
+        ]
+    )
+    llm.tools_mode = "auto"
+    ctx = _ctx(llm)
+    session = ToolSession(ctx, kind="edit", code=BOX_CODE, verify_fn=verify_fn)
+    res = await run_session(ctx, "code", MESSAGES, session=session, max_calls=10, step="repair_1")
+    assert res.exhausted and res.end_reason == "infra_error"
+    assert res.last_good == BOX_CODE  # the buffer as it passed verify
+    assert res.code is not None and '"width": 30.0' in res.code  # broken head
+    assert session.last_good_buffer == BOX_CODE
+
+
+async def test_exhausted_build_session_rescues_last_good():
+    """P6: a build session that verified a buffer, then grew a post-verify
+    block and hit the call cap submits the last VERIFIED-GOOD buffer —
+    not the possibly-broken head."""
+    from cadx.agent.steps import codegen as codegen_step
+
+    llm = FakeLLM(
+        [
+            _call("add_block", name="base", code="result = Box(10, 10, 5)"),
+            _call("verify"),
+            _call(
+                "add_block",
+                name="post_verify",
+                code="result = result + Pos(0, 0, 9) * Box(2, 2, 2)",
+            ),
+        ]
+    )
+    llm.tools_mode = "auto"
+    ctx = _ctx(llm, agent_staged_build="on", agent_tool_max_calls_build=3)
+    verified: list[str] = []
+
+    async def verify_fn(code: str):
+        verified.append(code)
+        return {"ok": True, "analysis": {"bbox_size": [10, 10, 5]}}
+
+    spec = PartSpec(
+        name="box",
+        length_x=Dim(value=10),
+        width_y=Dim(value=10),
+        height_z=Dim(value=5),
+    )
+    resp = await codegen_step.run(ctx, spec, None, iteration=1, verify_fn=verify_fn)
+    assert len(verified) == 1
+    assert resp.code == verified[0]  # last-good checkpoint, not the head
+    assert "## block: base" in resp.code
+    assert "post_verify" not in resp.code
+    assert "verified-good" in resp.reasoning

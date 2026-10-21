@@ -12,12 +12,14 @@ import trimesh
 from cadx.cad.fem.anchors3d import scan_mesh_anchors
 from cadx.cad.fem.refine import (
     RefineFeature,
+    _bore_ring_material,
     _cutter_mesh,
     _entry_point,
     _metric_pitch,
     _parse_spec,
     _thread_spec_from,
     _tunnel_open_mesh,
+    _verify_expected_uv,
     apply_refine,
     resolve_refine_features,
     restore_keep_surface,
@@ -267,7 +269,7 @@ def test_apply_refine_skips_out_of_bounds_feature():
     feats = [RefineFeature(name="far", kind="hole", axis="+z", u=500.0, v=0.0, dia=4.0)]
     out, rep = apply_refine(mesh, feats, restore_keeps=False)
     assert not rep.applied
-    assert rep.skipped and "misses the part" in rep.skipped[0]["reason"]
+    assert rep.skipped and "no material" in rep.skipped[0]["reason"]
     assert out.volume == pytest.approx(mesh.volume)
 
 
@@ -650,3 +652,152 @@ def test_scan_anchor_mesh_source_still_skipped():
     feats, warns = resolve_refine_features(anchors, None, None, base_mesh=_slab())
     assert not feats
     assert any("without a base-mesh tunnel" in w for w in warns)
+
+
+# --------------------------------------------------------------------------- #
+# bore-ring material gate — the "cut into void" defect                        #
+# --------------------------------------------------------------------------- #
+
+
+def test_bore_ring_material_probe():
+    """Ring probe: solid plate counts as material; an open bore still has
+    wall material around it; a scoop that ate the whole neighbourhood does
+    not — that is the no-host case the gate must catch."""
+    assert _bore_ring_material(_slab(), "+z", 10.0, 0.0, 6.0)
+    assert _bore_ring_material(_slab_bored(10.0, 6.8), "+z", 10.0, 0.0, 6.0)
+    scooped = _scooped_opt(_slab(), 10.0, 15.0)
+    assert not _bore_ring_material(scooped, "+z", 10.0, 0.0, 6.0)
+
+
+def test_apply_refine_skips_feature_over_void():
+    """Centre ray open AND ring empty (host region optimized away) → honest
+    skip instead of a bogus bore drilled at the bbox face."""
+    opt = _scooped_opt(_slab(), 10.0, 15.0)
+    feat = RefineFeature(name="gone", kind="hole", axis="+z", u=10.0, v=0.0, dia=6.0)
+    out, rep = apply_refine(opt, [feat], restore_keeps=False)
+    assert not rep.applied
+    assert rep.skipped and "no material" in rep.skipped[0]["reason"]
+    assert any("no material" in w for w in rep.warnings)
+    assert out.volume == pytest.approx(opt.volume)
+
+
+def test_apply_refine_open_channel_still_recuts():
+    """Gate must not kill the legitimate case: an existing tunnel whose
+    walls survived → still re-cut from the bbox face."""
+    mesh = _slab_bored(10.0, 8.0)
+    feat = RefineFeature(name="b", kind="hole", axis="+z", u=10.0, v=0.0, dia=6.0)
+    out, rep = apply_refine(mesh, [feat], restore_keeps=False)
+    assert len(rep.applied) == 1
+    assert out.is_watertight
+
+
+# --------------------------------------------------------------------------- #
+# spec-anchor preference + verify disambiguation                              #
+# --------------------------------------------------------------------------- #
+
+
+def test_spec_feature_prefers_spec_anchor_over_scanned():
+    """Two same-family anchors, scanned one closer in dia: the spec-declared
+    anchor carries the authoritative position and must win the feature."""
+    anchors = [
+        {
+            "index": 1,
+            "kind": "hole",
+            "axis": "+z",
+            "pos": [40.0, 0.0, 7.0],
+            "x": 40.0,
+            "y": 0.0,
+            "dia": 6.7,
+            "source": "scan",
+        },
+        {
+            "index": 2,
+            "kind": "hole",
+            "axis": "+z",
+            "pos": [-30.0, 0.0, 7.0],
+            "x": -30.0,
+            "y": 0.0,
+            "dia": 7.0,
+            "source": "spec",
+        },
+    ]
+    spec_features = [{"type": "hole", "name": "m6", "dims": {"diameter": 6.8}}]
+    feats, _ = resolve_refine_features(anchors, spec_features, None)
+    f = next(f for f in feats if f.name == "m6")
+    assert f.u == pytest.approx(-30.0) and f.v == pytest.approx(0.0)
+    assert f.source == "spec"
+
+
+def test_verify_expected_uv_disambiguates_twin_anchors():
+    """Twin M6 bores share name+dia: the applied entry's recorded u/v picks
+    the anchor it actually cut — verify must check THAT position."""
+    anchors = [
+        {"index": 1, "name": "m6", "axis": "+z", "pos": [10.0, 0.0, 7.0], "dia": 6.0},
+        {"index": 2, "name": "m6", "axis": "+z", "pos": [-30.0, 0.0, 7.0], "dia": 6.0},
+    ]
+    entry = {"name": "m6", "dia": 6.0, "u": -30.0, "v": 0.0}
+    assert _verify_expected_uv(entry, anchors, None) == pytest.approx((-30.0, 0.0))
+    # without recorded u/v the first name hit is used — still deterministic
+    assert _verify_expected_uv({"name": "m6", "dia": 6.0}, anchors, None) == pytest.approx(
+        (10.0, 0.0)
+    )
+
+
+# --------------------------------------------------------------------------- #
+# run_refine → refine_verify plumbing                                          #
+# --------------------------------------------------------------------------- #
+
+
+def _write_box_stl(tmp_path) -> object:
+    p = tmp_path / "base.stl"
+    _slab().export(str(p))
+    return p
+
+
+def test_run_refine_verify_misses_surfaced(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    """A cut that 'applied' but fails the post-refine rescan surfaces as
+    verify_misses + a warning — the tool layer reads exactly that."""
+    import cadx.cad.fem.refine as refine_mod
+    from cadx.cad.engine import run_refine
+
+    miss = [{"entry": {"name": "m6"}, "x": -30.0, "y": 0.0, "dia": 6.0}]
+    monkeypatch.setattr(refine_mod, "refine_verify", lambda *a, **k: miss)
+    res = run_refine(
+        mesh_path=_write_box_stl(tmp_path),
+        out_dir=tmp_path / "out",
+        features=[
+            {"name": "m6", "kind": "hole", "axis": "+z", "x": 10.0, "y": 0.0, "dia": 6.0}
+        ],
+    )
+    assert res.ok
+    report = res.features["refine"]
+    assert report["verify_misses"] == miss
+    assert any("FAILED" in w for w in report["warnings"])
+
+
+def test_run_refine_verify_passes_clean(tmp_path):
+    """Happy path: the re-cut bore scans back at the requested position —
+    no verify_misses key on the report."""
+    from cadx.cad.engine import run_refine
+
+    res = run_refine(
+        mesh_path=_write_box_stl(tmp_path),
+        out_dir=tmp_path / "out",
+        features=[
+            {"name": "m6", "kind": "hole", "axis": "+z", "x": 10.0, "y": 0.0, "dia": 6.0}
+        ],
+        anchors=[
+            {
+                "index": 1,
+                "name": "m6",
+                "kind": "hole",
+                "axis": "+z",
+                "pos": [10.0, 0.0, 7.0],
+                "x": 10.0,
+                "y": 0.0,
+                "dia": 6.0,
+            }
+        ],
+    )
+    assert res.ok
+    assert not res.features["refine"].get("verify_misses")

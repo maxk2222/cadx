@@ -260,6 +260,55 @@ def _anchor_material(mesh: trimesh.Trimesh, u: float, v: float, axis: str) -> bo
     return not _tunnel_open_mesh(mesh, u, v, axis)
 
 
+def _bore_ring_material(
+    mesh: trimesh.Trimesh, axis: str, u: float, v: float, dia: float
+) -> bool:
+    """True when solid material rings the (u, v) position on `axis` — the
+    discriminating test for an entry-less feature: an open channel that
+    refine should re-cut still has wall material around it; a SIMP-eaten
+    host region (wall optimized away) has none, and cutting there drills a
+    bogus hole at the bbox face (observed: Ø6.8 spec bores landing as
+    Ø3.8 mm nicks 40+ mm off-anchor on a lattice field).
+
+    Casts rays along `axis` on a ring just outside the bore radius — a ray
+    counts "material" when its blocked span exceeds the same threshold
+    `_tunnel_open_mesh` uses (short grazes are noise); >=40% material rays
+    means enough host survives to cut into."""
+    ax, au, av = _AXES[axis]
+    lo, hi = float(mesh.bounds[0][ax]), float(mesh.bounds[1][ax])
+    span = hi - lo
+    if span <= 0:
+        return False
+    r = dia / 2.0 + max(1.5, 0.15 * dia)
+    n = 10
+    origins = np.zeros((n, 3))
+    dirs = np.zeros((n, 3))
+    for i in range(n):
+        a = 2.0 * math.pi * i / n
+        origins[i, au] = u + r * math.cos(a)
+        origins[i, av] = v + r * math.sin(a)
+    sgn = 1.0 if axis[0] == "+" else -1.0
+    origins[:, ax] = hi + 5.0 if sgn > 0 else lo - 5.0
+    dirs[:, ax] = -sgn
+    locs, ray_ids, _ = mesh.ray.intersects_location(
+        ray_origins=origins, ray_directions=dirs, multiple_hits=True
+    )
+    hits: list[list[float]] = [[] for _ in range(n)]
+    for r_id, loc in zip(ray_ids, locs, strict=True):
+        hits[int(r_id)].append(float(loc[ax]))
+    blocked_min = max(1.0, 0.2 * span)
+    far = lo if sgn > 0 else hi
+    material = 0
+    for z in hits:
+        zc = np.sort(np.asarray(z, dtype=float))
+        if len(zc) % 2:
+            zc = np.append(zc, far)
+        blocked = float(zc[1::2].sum() - zc[0::2].sum()) if len(zc) else 0.0
+        if blocked > blocked_min:
+            material += 1
+    return material >= math.ceil(0.4 * n)
+
+
 def resolve_refine_features(  # noqa: C901
     anchors: list[dict[str, Any]] | None,
     spec_features: list[dict[str, Any]] | None,
@@ -405,9 +454,21 @@ def resolve_refine_features(  # noqa: C901
         if not cands:
             cands = [a for a in anchors if id(a) not in used_anchors]
         if cands and dia > 0:
-            anchor = min(cands, key=lambda a: abs(float(a.get("dia") or 0) - dia))
+            # spec-declared anchors carry the authoritative position —
+            # a scanned anchor at a lattice opening/scan artifact with a
+            # near diameter must not win the feature (observed: spec bore
+            # bound to a scaffold tunnel 43 mm off its declared anchor)
+            anchor = min(
+                cands,
+                key=lambda a: (
+                    "spec" not in str(a.get("source") or ""),
+                    abs(float(a.get("dia") or 0) - dia),
+                ),
+            )
         elif cands:
-            anchor = cands[0]
+            anchor = min(
+                cands, key=lambda a: "spec" not in str(a.get("source") or "")
+            )
         if anchor is None:
             continue
         used_anchors.add(id(anchor))
@@ -1308,13 +1369,33 @@ def _apply_cut(out: trimesh.Trimesh, feat: RefineFeature, report: RefineReport) 
     if entry is None:
         # ray at the bore centre hits nothing — the channel is already
         # open (tunnel through the part) OR the region was fully
-        # optimized away. Re-cutting the wavy channel walls is still
+        # optimized away. The two cases look identical on the centre ray;
+        # the bore-ring test separates them: no wall material around the
+        # position means there is nothing to drill INTO — seating the
+        # cutter at the bbox face would shave a nick off an unrelated
+        # surface and report it as the spec's bore (the eval's Ø3.8 mm
+        # hole 43 mm off-anchor). Skip honestly instead.
+        if not _bore_ring_material(out, feat.axis, feat.u, feat.v, feat.dia):
+            report.skipped.append(
+                {
+                    "name": feat.name,
+                    "kind": feat.kind,
+                    "reason": "no material at feature position — region optimized away",
+                }
+            )
+            report.warnings.append(
+                f"feature '{feat.name}': no entry surface and no material "
+                "ring at the anchor — the optimized part removed the host "
+                "region; the cut is skipped, not re-seated"
+            )
+            return out
+        # open channel with surviving walls — re-cutting them is still
         # the point of refine, so seat the cutter at the bbox face and
         # let the boolean decide; warn so the report stays honest.
         entry = float(out.bounds[1][ax] if feat.axis[0] == "+" else out.bounds[0][ax])
         report.warnings.append(
             f"feature '{feat.name}': no entry surface — channel already "
-            "open or optimized away; cutting anyway"
+            "open; re-cutting from the bbox face"
         )
     span = float(out.bounds[1][ax] - out.bounds[0][ax])
     if feat.plug_first:
@@ -1605,6 +1686,7 @@ def _verify_expected_uv(
     dia = float(entry.get("requested_dia_mm") or entry.get("dia") or 0.0)
     best: tuple[float, float] | None = None
     best_dev: float | None = None
+    name_hits: list[tuple[float, float]] = []
     for a in anchors or []:
         if str(a.get("axis") or "+z") != axis:
             continue
@@ -1612,11 +1694,18 @@ def _verify_expected_uv(
         if uv is None:
             continue
         if str(a.get("name") or f"anchor {a.get('index', '?')}") == name:
-            return uv
+            name_hits.append(uv)
         if dia > 0:
             dev = abs(float(a.get("dia") or 0.0) - dia)
             if best_dev is None or dev < best_dev:
                 best, best_dev = uv, dev
+    if name_hits:
+        # twin features share name+dia (e.g. two M6 bores) — the applied
+        # entry's own recorded u/v disambiguates which anchor is expected
+        eu, ev = entry.get("u"), entry.get("v")
+        if isinstance(eu, int | float) and isinstance(ev, int | float):
+            return min(name_hits, key=lambda uv: math.hypot(uv[0] - eu, uv[1] - ev))
+        return name_hits[0]
     return best
 
 

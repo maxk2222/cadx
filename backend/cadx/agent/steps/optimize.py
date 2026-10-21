@@ -121,6 +121,11 @@ def _best_run_index(session: ToolSession) -> int | None:
         # must not win by safety factor either
         if (res.get("verify_spec") or {}).get("status") == "FAIL":
             continue
+        # a refine run whose applied features left no matching tunnel/dimple
+        # (bore drilled into a void, wrong diameter) failed the task too —
+        # salvaging it ships broken features
+        if (res.get("features") or {}).get("refine", {}).get("verify_misses"):
+            continue
         sfs = [c.get("safety_factor") for c in fem.get("cases") or [] if c.get("safety_factor")]
         sf = top.get("sf_export") or (min(sfs) if sfs else None)
         # when the voxel-mask and export solves diverge by >=2x, the part's
@@ -215,9 +220,11 @@ def _fem_case_images(res: dict[str, Any], it_dir: Path) -> tuple[list[str], list
 
 
 #: image budget for one topopt_run result — every render stays on disk, and
-#: a single result exceeding ~12 images costs more context than the marginal
-#: view is worth (a 17-image result ≈ 40k tokens on a local model).
-_TOPOPT_IMAGE_BUDGET = 12
+#: a single result exceeding ~8 images costs more context than the marginal
+#: view is worth (a 17-image result ≈ 40k tokens on a local model; optimize
+#: sessions accumulate renders across runs, so the cap is also the main
+#: context lever — N4)
+_TOPOPT_IMAGE_BUDGET = 8
 
 
 def _topopt_images(
@@ -532,11 +539,19 @@ def _make_refine_fn(ops: _SessionOps) -> Any:
                 with contextlib.suppress(ValueError):
                     images.append(str(storage.resolve(rel)))
         # refine has no contact sheet — attach the shape views plus the FEM
-        # re-verification renders written under <iteration_dir>/fem/
+        # re-verification renders written under <iteration_dir>/fem/ —
+        # capped like a topopt run: images accumulate across the session
         it_dir = storage.iteration_dir(ctx.project_id, ctx.version_id, it)
         images += _render_view_images(res)
         von, deformed = _fem_case_images(res, it_dir)
         images += von + deformed
+        if len(images) > _TOPOPT_IMAGE_BUDGET:
+            omitted = len(images) - _TOPOPT_IMAGE_BUDGET
+            images = images[:_TOPOPT_IMAGE_BUDGET]
+            res.setdefault("warnings", []).append(
+                f"{omitted} render image(s) omitted from this result (context budget) — "
+                "they are written under the iteration dir"
+            )
         res["_images"] = images
         return res
 
@@ -569,6 +584,7 @@ def _setup_session(
     anchors: list[dict[str, Any]] | None,
     contact_sheet: Path | None,
     deadline: float | None = None,
+    target_volfrac: float | None = None,
 ) -> ToolSession:
     """ToolSession with fem/topopt/preview callbacks; each executor call
     allocates its own iteration dir and attaches renders as `_images`."""
@@ -599,6 +615,7 @@ def _setup_session(
         preview_fn=_make_preview_fn(ops),
         anchors_fn=_make_anchors_fn(ops),
         refine_fn=_make_refine_fn(ops),
+        target_volfrac=target_volfrac,
     )
 
 
@@ -685,6 +702,15 @@ async def run(
         log.warning("optimize.request_cases_invalid", error=req_err)
     spec_cases = req_cases or [c.model_dump() for c in spec.load_cases]
     default_material = (request or {}).get("material") or ctx.settings.fem_material or spec.material
+    # the session's volume target — request overrides the spec, the spec
+    # overrides the runtime default; preview/check_load warn and topopt_run
+    # refuses when the keep/load/fixed floor sits above it
+    req_opt = (request or {}).get("optimize") or {}
+    target_volfrac = (
+        req_opt.get("target_volume_fraction")
+        or (spec.optimize.target_volume_fraction if spec.optimize else None)
+        or s.topopt_default_volfrac
+    )
     session = _setup_session(
         ctx,
         base_stl=base_stl,
@@ -695,6 +721,7 @@ async def run(
         anchors=(ctx.anchors or {}).get("holes") or None,
         contact_sheet=contact_sheet,
         deadline=deadline,
+        target_volfrac=target_volfrac,
     )
     messages = _opt_messages(ctx, spec, request, analysis, contact_sheet)
 

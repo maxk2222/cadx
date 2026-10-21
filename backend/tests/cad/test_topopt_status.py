@@ -33,6 +33,8 @@ import cadx.cad.fem.topopt as topopt_mod
 from cadx.cad.fem.regions import resolve_case
 from cadx.cad.fem.topopt import (
     TopOptParams,
+    _same_flip_run,
+    _span_compliance_improvement,
     _windowed_compliance_improvement,
     simp,
 )
@@ -92,8 +94,8 @@ def test_status_converged() -> None:
 
 def test_status_infeasible_target() -> None:
     """Passive cells covering more than the requested volfrac pin the floor
-    above the target: the optimizer drains every free cell and settles —
-    that is infeasible_target, not a converged optimum."""
+    above the target — unreachable by construction, so the run refuses up
+    front (0 iterations) rather than draining every free cell first."""
     dom, fixed, F = _case()
     passive = np.zeros(dom.cell_count, dtype=bool)
     sidx = np.flatnonzero(dom.solid.ravel())
@@ -108,6 +110,7 @@ def test_status_infeasible_target() -> None:
     )
     assert res.status == "infeasible_target"
     assert res.converged is False
+    assert res.iterations == 0
     assert res.passive_frac == pytest.approx(0.62, abs=0.01)
     assert any("passive" in w and "floor" in w for w in res.warnings)
 
@@ -137,6 +140,27 @@ def test_status_budget_exhausted() -> None:
     assert res.iterations == 4
     assert res.status == "budget_exhausted"
     assert res.converged is False
+
+
+def test_status_infeasible_target_at_boundary() -> None:
+    """floor == target is degenerate but NOT refused (strict '>'): the free
+    cells can still choose — only a floor strictly above volfrac is
+    unreachable."""
+    dom, fixed, F = _case()
+    passive = np.zeros(dom.cell_count, dtype=bool)
+    sidx = np.flatnonzero(dom.solid.ravel())
+    n_pass = int(0.40 * sidx.size)
+    passive[sidx[:n_pass]] = True
+    floor = n_pass / sidx.size
+    res = simp(
+        dom,
+        E_PLA,
+        NU,
+        [(fixed, F)],
+        passive,
+        TopOptParams(volfrac=floor + 0.001, rmin_mm=2.0, max_iter=6),
+    )
+    assert res.status != "infeasible_target" or res.iterations > 0
 
 
 def test_status_degenerate_solver_crash(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -458,3 +482,157 @@ async def test_preview_and_check_load_surface_passive_metrics() -> None:
     assert out["passive_fraction"] == pytest.approx(0.25)
     assert out["min_feasible_volfrac"] == pytest.approx(0.25)
     assert out["cases"][0]["n_fixed_cells"] == 100
+
+
+# ---------------------------------------------------------------------------
+# N5 — period-1 limit cycle below the churn threshold
+# ---------------------------------------------------------------------------
+
+
+def test_same_flip_run_counts_identical_tail() -> None:
+    """Identical nonzero flips > _SAME_FLIP_FLOOR count up from the tail;
+    a settling tail (few cells) and zero-flip records never count."""
+    hist = [{"flips": v} for v in (0.01, 0.00245, 0.00245, 0.00245, 0.00245)]
+    assert _same_flip_run(hist) == 4  # the eval pattern: fires at the 4th repeat
+    assert _same_flip_run([{"flips": 0.00028}] * 5) == 0  # settling-tail flicker
+    assert _same_flip_run([{"flips": 0.00245}] * 3 + [{"flips": 0.004}]) == 1
+    assert _same_flip_run([{"flips": 0.0}] * 4) == 0
+    assert _same_flip_run([]) == 0
+    assert _same_flip_run([{"flips": 0.00245}]) == 1
+
+
+def test_span_compliance_improvement() -> None:
+    """Span-local relative improvement — works on segments too short for
+    the same-beta window (the capped-beta eval case)."""
+    hist = [{"compliance_mj": 100.0}] * 3 + [{"compliance_mj": 99.0}]
+    assert _span_compliance_improvement(hist, 4) == pytest.approx(0.01)
+    # oscillating ~0 -> clearly stalled
+    hist = [{"compliance_mj": v} for v in (100.0, 99.98, 100.01, 99.99)]
+    imp = _span_compliance_improvement(hist, 4)
+    assert imp is not None and imp < 0.01
+    assert _span_compliance_improvement([{"compliance_mj": 100.0}] * 2, 4) is None
+    assert _span_compliance_improvement([{"compliance_mj": 0.0}] * 5, 5) is None
+
+
+# ---------------------------------------------------------------------------
+# N3 — passive-floor preflight refuse
+# ---------------------------------------------------------------------------
+
+
+def test_pipeline_refuses_floor_above_target(tmp_path: Path) -> None:
+    """keep_regions covering the whole part make the requested volfrac
+    unreachable — the pipeline refuses before any SIMP iteration instead
+    of burning a run (the eval's 0.62-floor vs 0.40-target case)."""
+    from cadx.cad.engine import run_topopt_pipeline
+
+    src = tmp_path / "b.stl"
+    _box_mesh(24.0, 24.0, 24.0).export(str(src))
+    res = run_topopt_pipeline(
+        mesh_path=src,
+        out_dir=tmp_path / "o",
+        load_cases=[_cantilever().model_dump()],
+        optimize={
+            "target_volume_fraction": 0.4,
+            "keep_regions": [{"kind": "all"}],
+            "keep_mode": "manual",
+            "max_iterations": 4,
+        },
+        material="pla",
+        voxel_mm=1.5,
+        scan_anchors=False,
+        runtime=RuntimeSettings(topopt_auto_keep=False),
+    )
+    assert not res.ok
+    assert res.error and "unreachable" in res.error
+    assert res.topopt["infeasible_preflight"] is True
+    assert res.topopt["passive_frac"] > 0.9
+    assert res.topopt["min_feasible_volfrac"] == res.topopt["passive_frac"]
+
+
+def test_pipeline_warns_high_floor_when_feasible(tmp_path: Path) -> None:
+    """A floor that still fits under the target is feasible — the run
+    proceeds (no preflight refuse) and exposes the floor metrics."""
+    from cadx.cad.engine import run_topopt_pipeline
+
+    src = tmp_path / "b.stl"
+    _box_mesh(24.0, 24.0, 24.0).export(str(src))
+    res = run_topopt_pipeline(
+        mesh_path=src,
+        out_dir=tmp_path / "o",
+        load_cases=[_cantilever().model_dump()],
+        optimize={
+            "target_volume_fraction": 0.6,
+            "keep_regions": [
+                {"kind": "box", "center": [0.0, 0.0, 12.0], "diameter_mm": 12.0}
+            ],
+            "keep_mode": "manual",
+            "max_iterations": 4,
+        },
+        material="pla",
+        voxel_mm=1.5,
+        scan_anchors=False,
+        runtime=RuntimeSettings(topopt_auto_keep=False),
+    )
+    assert res.topopt.get("infeasible_preflight") is not True
+    assert 0.0 < res.topopt["passive_frac"] <= 0.6
+
+
+async def test_topopt_run_infeasible_preflight_refunds_budget() -> None:
+    """A preflight-refused run never executed SIMP — the call budget is
+    refunded and the floor fields reach the agent for re-targeting."""
+
+    async def fake_topopt(a: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "error": "passive keep/load/fixed cells cover 62% — unreachable",
+            "topopt": {
+                "infeasible_preflight": True,
+                "passive_frac": 0.62,
+                "min_feasible_volfrac": 0.62,
+            },
+        }
+
+    session = _opt_session(topopt_fn=fake_topopt)
+    before = session.topopt_left
+    out = await session.execute("topopt_run", {"load_cases": [{"name": "c"}]})
+    assert out["ok"] is False
+    assert out["infeasible_target"] is True
+    assert out["min_feasible_volfrac"] == pytest.approx(0.62)
+    assert out["passive_fraction"] == pytest.approx(0.62)
+    assert session.topopt_left == before  # refunded — the run never ran
+
+
+async def test_preview_and_check_load_warn_floor_above_target() -> None:
+    """With a session target below the keep/load/fix floor, both free
+    preview tools flag infeasible_target before a run is wasted."""
+    preview = {
+        "pitch_mm": 1.5,
+        "solid_elements": 4000,
+        "n_keep_cells": 2500,
+        "passive_fraction": 0.62,
+        "min_feasible_volfrac": 0.62,
+        "cases": [{"case": "c", "n_fixed_cells": 100, "n_load_cells": 30}],
+    }
+
+    async def fake_preview(a: dict[str, Any]) -> dict[str, Any]:
+        return {"ok": True, "preview": preview}
+
+    session = _opt_session(preview_fn=fake_preview, target_volfrac=0.4)
+    out = await session.execute("preview_regions", {"load_cases": [{"name": "c"}]})
+    assert out["ok"], out
+    assert out["infeasible_target"] is True
+    assert out["suggested_min_target"] == pytest.approx(0.64)
+    assert "floor" in out["warning"]
+
+    out = await session.execute("check_load", {"load_cases": [{"name": "c"}]})
+    assert out["infeasible_target"] is True
+
+    # same preview without a session target carries no verdict
+    session = _opt_session(preview_fn=fake_preview)
+    out = await session.execute("preview_regions", {"load_cases": [{"name": "c"}]})
+    assert "infeasible_target" not in out
+
+    # and a floor under the target stays silent
+    session = _opt_session(preview_fn=fake_preview, target_volfrac=0.8)
+    out = await session.execute("preview_regions", {"load_cases": [{"name": "c"}]})
+    assert "infeasible_target" not in out

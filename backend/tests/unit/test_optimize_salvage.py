@@ -176,3 +176,62 @@ def test_best_run_ranks_divergent_sf_by_pessimistic_bound() -> None:
         }
     )
     assert _best_run_index(s) == 1  # 1.3 > pessimistic 0.05
+
+
+def test_best_run_skips_refine_verify_misses() -> None:
+    """A refine run whose 'applied' bore failed the post-cut rescan (void
+    cut, wrong diameter) must not be salvaged — the unrefined parent run
+    stays the honest result."""
+    s = _session_with_runs()
+    s.struct_runs.append(
+        {
+            "index": 0,
+            "res": {
+                "topopt": {"sf_export": 2.0, "n_components": 1},
+                "fem": {"cases": [{"safety_factor": 2.0}]},
+            },
+            "params": {},
+        }
+    )
+    s.struct_runs.append(
+        {
+            "index": 1,
+            "res": {
+                "topopt": {"sf_export": 9.0, "n_components": 1},
+                "fem": {"cases": [{"safety_factor": 9.0}]},
+                "features": {
+                    "refine": {
+                        "applied": [{"name": "m6"}],
+                        "verify_misses": [{"x": -30.0, "y": 0.0, "dia": 6.0}],
+                    }
+                },
+            },
+            "params": {"refine_of": 0},
+        }
+    )
+    assert _best_run_index(s) == 0
+
+
+def test_topopt_images_capped_at_budget(tmp_path) -> None:
+    """N4: a run result carrying 10+ renders attaches at most
+    _TOPOPT_IMAGE_BUDGET and says how many were omitted — the on-disk
+    files are untouched, only the context payload shrinks."""
+    import types
+
+    from cadx import storage
+    from cadx.agent.steps.optimize import _TOPOPT_IMAGE_BUDGET, _topopt_images
+
+    assert _TOPOPT_IMAGE_BUDGET == 8
+    img_dir = storage.ensure(storage.data_root() / "_test_imgs" / str(tmp_path.name))
+    for i in range(12):
+        (img_dir / f"v{i}.png").write_bytes(b"png")
+    res = {
+        "renders": {
+            f"view{i}": storage.relpath(img_dir / f"v{i}.png") for i in range(12)
+        }
+    }
+    ops = types.SimpleNamespace(contact_sheet=None)
+    images = _topopt_images(ops, res, tmp_path)
+    assert len(images) == _TOPOPT_IMAGE_BUDGET
+    assert all((img_dir / f"v{i}.png").exists() for i in range(12))
+    assert any("omitted" in w for w in res.get("warnings") or [])

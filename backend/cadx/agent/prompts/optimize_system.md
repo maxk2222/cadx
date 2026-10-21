@@ -181,6 +181,10 @@ Each `topopt_run` reports:
      FORMULATION, not just the volume: set `symmetry:` to the plane the part
      is actually mirrored about (an L-bracket with bores at ±X is `yz`), or
      switch `filter:` (helmholtz+heaviside → cone, or the reverse).
+   - `infeasible_target` / `min_feasible_volfrac` above your target → the
+     keep/load/fixed floor alone exceeds the volume budget; no run can reach
+     it. Shrink `keep_regions` (smaller margin, fewer auto-keeps) or raise
+     `target_volume_fraction` above the reported floor — don't retry as-is.
    - unrealistic load (e.g. thousands of N by accident) → fix the region/
      pressure, note the change in `done` reasoning.
 6. Stop when `sf_export` ≥ target AND printable AND features intact —

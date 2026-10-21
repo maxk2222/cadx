@@ -301,7 +301,9 @@ def _pass_critique():
     }
 
 
-async def _drive_cad(llm, results, emitted, *, max_iterations, patience, hybrid=False):
+async def _drive_cad(
+    llm, results, emitted, *, max_iterations, patience, hybrid=False, max_repairs=0
+):
     """Run _run_cad with a scripted FakeLLM + scripted executor."""
     import time
     import uuid as _uuid
@@ -355,7 +357,7 @@ async def _drive_cad(llm, results, emitted, *, max_iterations, patience, hybrid=
         no_cancel,
         no_cancel,
         max_iterations=max_iterations,
-        max_repairs=0,
+        max_repairs=max_repairs,
         pass_score=80,
         tol_pct=2.0,
         tol_mm=0.5,
@@ -825,3 +827,310 @@ def test_gate_generated_images_logs_drop_once(tmp_path, monkeypatch):
     assert drops == [["bad1"]]
     # and the asset is still dropped on every pass — only the log is deduped
     assert "bad1" not in [a.asset_id for a in orch._gate_generated_images([bad], spec, logged)]
+
+
+# --------------------------------------------------------------------------- #
+# P10: issue-fingerprint stall — repeat issues on unchanged geometry
+# --------------------------------------------------------------------------- #
+
+
+async def test_issue_fingerprint_flags_artifacts_and_skips_improve():
+    """The same number-normalised issue text surviving 2+ iterations while
+    the measured features did not move is a measurement artifact: flagged
+    on the persisted list (honesty) but never fed to the patcher. When
+    every remaining issue is an artifact the loop converges instead of
+    burning another improve round."""
+    from cadx.llm.fake import FakeLLM
+
+    box_code = _box_code()
+    llm = FakeLLM(
+        [
+            {"reasoning": "v", "params": [], "expected_bbox": [40, 20, 10], "code": box_code},
+            _fail_critique(),  # it1: 4x "issue N" — one fingerprint after #-normalisation
+            {"reasoning": "imp", "params": [], "edits": [], "full_code": box_code},
+            _fail_critique(),  # it2: identical texts on identical features -> artifacts
+        ]
+    )
+    emitted: list = []
+    outcome, ctx = await _drive_cad(
+        llm,
+        [
+            _exec_res(2, 4),  # it1: dq 33 -> best
+            _exec_res(6, 0),  # it2: dq 100 -> best replaced, its (flagged) issues feed back
+        ],
+        emitted,
+        max_iterations=5,
+        patience=50,
+    )
+    # the stall emit fired once, on the second sighting (iteration 2)
+    stall_emits = [
+        (i, m) for s, i, m in emitted if s == "improve" and "unchanged 2+ iterations" in m
+    ]
+    assert len(stall_emits) == 1 and stall_emits[0][0] == 2
+    # flagged issues stay on the persisted list — honest, just not actionable
+    assert any(i.get("artifact") for i in outcome.issues)
+    critique_issues = [i for i in outcome.issues if i.get("source") == "critique"]
+    assert critique_issues and all(i.get("artifact") for i in critique_issues)
+    # all-artifact issue list -> converged before improve round 3: no
+    # further LLM calls (2 codegen/improve + 2 critique) and no it3 exec
+    assert any(s == "improve" and "converged" in m for s, _i, m in emitted)
+    assert len(llm.calls) == 4
+    assert ctx.executor.exec_calls == 2
+
+
+async def test_issue_fingerprint_resets_when_issue_changes():
+    """A different issue text restarting the streak must NOT flag — the
+    fingerprint gate only fires on a genuinely repeated finding."""
+    from cadx.llm.fake import FakeLLM
+
+    box_code = _box_code()
+
+    def _crit(what):
+        return {
+            "score": 40,
+            "passed": False,
+            "discrepancies": [
+                {"what": what, "where": "part", "severity": "major", "source": "spec"}
+            ],
+            "matches": [],
+            "confidence": 0.9,
+        }
+
+    llm = FakeLLM(
+        [
+            {"reasoning": "v", "params": [], "expected_bbox": [40, 20, 10], "code": box_code},
+            _crit("edge too sharp"),
+            {"reasoning": "i", "params": [], "edits": [], "full_code": box_code},
+            _crit("top face scratched"),  # different text -> no artifact
+        ]
+    )
+    emitted: list = []
+    outcome, _ctx = await _drive_cad(
+        llm,
+        [_exec_res(2, 4), _exec_res(6, 0)],
+        emitted,
+        max_iterations=3,
+        patience=1,
+    )
+    assert not any("unchanged 2+ iterations" in m for _s, _i, m in emitted)
+    assert not any(i.get("artifact") for i in outcome.issues)
+
+
+async def test_infra_exec_error_skips_repair(monkeypatch):
+    """Executor-side failures (schema skew, sandbox outage) are not code
+    bugs — the repair loop must not spend an LLM call on them, and the
+    fabricated issue is recorded as source 'infra'."""
+    import cadx.agent.orchestrator as orch
+    from cadx.llm.fake import FakeLLM
+
+    monkeypatch.setattr(
+        orch,
+        "_exec_error_signature",
+        lambda _res: "infra:validation error for RuntimeSettings",
+    )
+    llm = FakeLLM(
+        [
+            {
+                "reasoning": "v",
+                "params": [],
+                "expected_bbox": [40, 20, 10],
+                "code": _box_code(),
+            },
+        ]
+    )
+    emitted: list = []
+    outcome, _ctx = await _drive_cad(
+        llm,
+        [
+            {
+                "ok": False,
+                "error": "executor task failed: validation error for RuntimeSettings",
+                "traceback": None,
+                "stdout": "",
+            }
+        ],
+        emitted,
+        max_iterations=4,
+        patience=1,
+        max_repairs=1,
+    )
+    # repair skipped — no LLM call beyond the single codegen
+    assert any(
+        s == "repair" and "infrastructure error — skipping model repair" in m
+        for s, _i, m in emitted
+    )
+    assert len(llm.calls) == 1
+    # nothing executable ever landed -> honest failure, not a code verdict
+    assert outcome.error == "all iterations failed to produce executable code"
+
+
+def test_merge_features_appends_only_new_pairs():
+    """P1: retry extraction merges into the spec's existing features —
+    the old wholesale replace dropped entries intake got right."""
+    from cadx.agent.orchestrator import _merge_features
+    from cadx.llm.schemas import Feature
+
+    old = [
+        Feature(name="base plate", type="plate"),
+        Feature(name="M6 bore", type="through_hole"),
+    ]
+    new = [
+        Feature(name="m6 BORE", type="Through_Hole"),  # case-insensitive dup
+        Feature(name="stiffening rib", type="rib"),
+    ]
+    merged = _merge_features(old, new)
+    assert [f.name for f in merged] == ["base plate", "M6 bore", "stiffening rib"]
+    # a wholly-new list merges cleanly; empty new keeps old untouched
+    assert _merge_features([], new) == new
+    assert _merge_features(old, []) == old
+
+
+# --------------------------------------------------------------------------- #
+# N1 — forced-hybrid conversion failure → CAD fallback for dimensioned specs  #
+# --------------------------------------------------------------------------- #
+
+
+def test_hybrid_prefers_cad_guard():
+    """The stated-dimension/optimize guard: mesh-only rescue is only honest
+    for organic (image-driven) requests."""
+    from cadx.agent.orchestrator import _hybrid_prefers_cad
+    from cadx.llm.schemas import PartSpec
+
+    dim_spec = PartSpec.model_validate(_SPEC)  # 3 stated dims
+    assert _hybrid_prefers_cad(dim_spec)
+
+    organic = PartSpec.model_validate(
+        {
+            "name": "toy",
+            "summary": "organic figurine",
+            "units": "mm",
+            "length_x": {"value": 80.0, "unit": "mm", "source": "inferred"},
+            "width_y": {"value": 60.0, "unit": "mm", "source": "inferred"},
+            "height_z": {"value": 90.0, "unit": "mm", "source": "inferred"},
+            "features": [],
+        }
+    )
+    assert not _hybrid_prefers_cad(organic)
+
+    opt_spec = PartSpec.model_validate(
+        {
+            "name": "bracket",
+            "summary": "organic-ish bracket with one dim",
+            "units": "mm",
+            "length_x": {"value": 80.0, "unit": "mm", "source": "stated"},
+            "width_y": {"value": 60.0, "unit": "mm", "source": "inferred"},
+            "height_z": {"value": 90.0, "unit": "mm", "source": "inferred"},
+            "features": [],
+            "optimize": {"enabled": True},
+        }
+    )
+    assert _hybrid_prefers_cad(opt_spec)  # one stated dim + optimize → CAD
+
+
+async def _drive_hybrid_approach(monkeypatch, spec):
+    """_run_approach('hybrid') with a failed _prepare_hybrid_mesh and
+    stubbed _run_cad/_run_mesh — records which leg ran."""
+    import time
+    import uuid as _uuid
+
+    import cadx.agent.orchestrator as orc
+    from cadx.agent.orchestrator import RunOutcome, _run_approach
+    from cadx.agent.trace import MemoryTrace
+    from cadx.agent.types import AgentCtx
+    from cadx.db.models import ProjectSettings
+    from cadx.llm.fake import FakeLLM
+    from cadx.llm.schemas import ModelingPlan
+    from cadx.runtime_config import RuntimeSettings
+
+    async def emit(step, it, msg, **_f):
+        pass
+
+    async def no_cancel():
+        return False
+
+    ctx = AgentCtx(
+        llm=FakeLLM([{"text": "x"}]),
+        executor=None,  # type: ignore[arg-type]
+        trace=MemoryTrace(),
+        emit=emit,
+        check_cancel=no_cancel,
+        job_id="t",
+        project_id=_uuid.uuid4(),
+        version_id=_uuid.uuid4(),
+        prompt="t",
+        mode="generate",
+        settings=ProjectSettings(clarification_mode="assume"),
+        runtime_settings=RuntimeSettings(),
+    )
+    ctx.mesh_info = {"_pre_result": {"pipeline": "mesh"}, "pipeline": "mesh"}
+    ctx.resolved_mode = "hybrid"
+
+    async def fail_prepare(*a, **k):
+        return False, "mesh->solid conversion failed"
+
+    calls: list[str] = []
+
+    async def fake_run_cad(ctx, outcome, *a, **k):
+        calls.append("cad")
+        outcome.resolved_mode = "cad"
+        return outcome
+
+    async def fake_run_mesh(ctx, outcome, *a, **k):
+        calls.append("mesh")
+        outcome.resolved_mode = "mesh"
+        return outcome
+
+    monkeypatch.setattr(orc, "_prepare_hybrid_mesh", fail_prepare)
+    monkeypatch.setattr(orc, "_run_cad", fake_run_cad)
+    monkeypatch.setattr(orc, "_run_mesh", fake_run_mesh)
+
+    plan = ModelingPlan(approach="hybrid", approach_reason="r")
+    outcome = await _run_approach(
+        ctx,
+        RunOutcome(),
+        spec,
+        plan,
+        time.monotonic(),
+        no_cancel,
+        no_cancel,
+        approach="hybrid",
+        max_repairs=0,
+        tol_pct=2.0,
+        tol_mm=0.5,
+    )
+    return outcome, calls
+
+
+async def test_hybrid_failure_falls_back_to_cad_for_dimensioned_spec(monkeypatch):
+    """N1: forced-hybrid conversion failure on a spec with stated dims must
+    take the CAD fallback — a lattice that won't sew is not the answer."""
+    from cadx.llm.schemas import PartSpec
+
+    outcome, calls = await _drive_hybrid_approach(monkeypatch, PartSpec.model_validate(_SPEC))
+    assert calls == ["cad"]
+    assert outcome.resolved_mode == "cad"
+    assert "CAD fallback" in outcome.mode_note
+    # cad_fallback_plan stripped mesh provenance + steps
+    assert (outcome.plan or {}).get("approach") == "cad"
+
+
+async def test_hybrid_failure_keeps_mesh_rescue_for_organic(monkeypatch):
+    """Organic (image-driven) requests keep the mesh-only rescue — there is
+    no parametric spec to rebuild from."""
+    from cadx.llm.schemas import PartSpec
+
+    organic = PartSpec.model_validate(
+        {
+            "name": "toy",
+            "summary": "organic figurine",
+            "units": "mm",
+            "length_x": {"value": 80.0, "unit": "mm", "source": "inferred"},
+            "width_y": {"value": 60.0, "unit": "mm", "source": "inferred"},
+            "height_z": {"value": 90.0, "unit": "mm", "source": "inferred"},
+            "features": [],
+        }
+    )
+    outcome, calls = await _drive_hybrid_approach(monkeypatch, organic)
+    assert calls == ["mesh"]
+    assert outcome.resolved_mode == "mesh"
+    assert "mesh-only result" in outcome.mode_note

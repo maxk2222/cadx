@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import itertools
 import json
 import re
@@ -53,10 +54,31 @@ from cadx.cad.mesh_ops import (
 )
 from cadx.cad.partspec import check_standard_part_calls
 from cadx.cad.patch import apply_patch, diff_summary
-from cadx.llm.schemas import CodeResponse, Critique, Discrepancy, PartSpec, PatchResponse
+from cadx.llm.schemas import (
+    CodeResponse,
+    Critique,
+    Discrepancy,
+    Feature,
+    PartSpec,
+    PatchResponse,
+)
 from cadx.logging import get_logger
 
 log = get_logger(__name__)
+
+# prompt keyword hint for "the user wants a lighter part" — gates the
+# informational fem "could be lightened" minor so it only appears when
+# lightweighting was actually requested (P9)
+_LIGHTWEIGHT_RE = re.compile(
+    r"leichtbau|lightweight|topolog|material\s+spar|save material|weight sav|reduce weight",
+    re.I,
+)
+
+# cross-agent contract kwargs: the concurrent changes that consume these
+# land independently — probe the signatures once so this file works both
+# before and after they merge (P9/P10)
+_CRITIQUE_PREV_ISSUES = "prev_issues" in inspect.signature(critique_step.run).parameters
+_FEM_LIGHTWEIGHT_KW = "lightweight_requested" in inspect.signature(fem_feedback_lines).parameters
 
 
 @dataclass
@@ -164,6 +186,17 @@ class RunOutcome:
 
 def stated_dim_count(spec: PartSpec) -> int:
     return sum(1 for d in (spec.length_x, spec.width_y, spec.height_z) if d.source == "stated")
+
+
+def _hybrid_prefers_cad(spec: PartSpec) -> bool:
+    """A mesh-only rescue after a failed mesh->solid conversion is only a
+    real fallback for organic parts — a dimensioned or optimization spec
+    needs the parametric B-rep the rest of the pipeline verifies/optimizes
+    (observed: a lattice scaffold that couldn't sew into a solid was still
+    committed as the 'mesh' answer for a dimensioned L-bracket spec)."""
+    return stated_dim_count(spec) >= 2 or (
+        spec.optimize is not None and spec.optimize.enabled
+    )
 
 
 def adaptive_max_iterations(
@@ -3104,6 +3137,12 @@ async def _run_cad(  # noqa: C901
     patch_mode = s.agent_patch_mode
     best: Candidate | None = None
     best_issues: list[dict[str, Any]] = []  # issue list belonging to `best`
+    # issue-fingerprint stall memory (P10): an issue whose normalised text
+    # survives 2+ consecutive iterations while the measured geometry did
+    # not move is a measurement artifact, not an actionable defect — it
+    # gets flagged (stays visible for honesty) but stops driving improve
+    prev_issue_fps: dict[str, int] = {}
+    prev_features_hash: str | None = None
     # progress tracker — a later candidate can outrank `best` on fewer dim
     # issues/majors while the critique score stays flat; measured dq moves
     # count as progress too so a saturated score-0 plateau no longer aborts
@@ -3181,10 +3220,23 @@ async def _run_cad(  # noqa: C901
 
         # ---------- obtain code: fresh codegen vs targeted improve ----------
         base_code = best.code_response.code if best and best.code_response else ""
+        # artifact-flagged issues (same fingerprint 2+ iterations on
+        # unchanged geometry) and executor infra errors stay on the
+        # persisted issue list for honesty, but they carry no code change
+        # — feeding them back just re-spends an iteration reproducing the
+        # same "fix" (P10 / infra)
+        actionable = [i for i in issues if not i.get("artifact") and i.get("source") != "infra"]
+        if issues and not actionable:
+            await ctx.emit(
+                "improve",
+                it,
+                "only measurement-artifact / infra issues remain — converged",
+            )
+            break
         use_improve = (
             bool(base_code)
             and it > start_iteration
-            and issues != []
+            and bool(actionable)
             and improve_failures < 2
             and not force_fresh
         )
@@ -3193,7 +3245,9 @@ async def _run_cad(  # noqa: C901
         # session and the fresh-codegen stall escape both need it
         features = (best.exec_result.get("features") or None) if best else None
         if use_improve:
-            await ctx.emit("improve", it, f"fixing {len(issues)} issue(s) on the best candidate")
+            await ctx.emit(
+                "improve", it, f"fixing {len(actionable)} issue(s) on the best candidate"
+            )
             patch_errors: list[str] | None = pending_patch_errors
             pending_patch_errors = None
             for attempt in range(1, s.agent_patch_retries + 1):
@@ -3203,7 +3257,7 @@ async def _run_cad(  # noqa: C901
                         spec,
                         plan,
                         base_code=base_code,
-                        issues=issues,
+                        issues=actionable,
                         features=features,
                         patch_errors=patch_errors,
                         attempts=attempt_log,
@@ -3239,7 +3293,7 @@ async def _run_cad(  # noqa: C901
                     spec,
                     plan,
                     iteration=it,
-                    feedback=issues_text(issues) if issues else None,
+                    feedback=issues_text(actionable) if actionable else None,
                     verify_fn=_session_verify_fn(ctx, it, art_attempt),
                     render_fn=_session_render_fn(ctx, it, art_attempt),
                     features=features,
@@ -3304,6 +3358,16 @@ async def _run_cad(  # noqa: C901
                 # job-wide signature tally: the same root cause seen twice
                 # across repair attempts switches the next repair to full_code
                 sig = _exec_error_signature(exec_result)
+                if sig.startswith("infra:"):
+                    # executor-side failure (payload/schema skew, sandbox
+                    # outage) — no model patch can fix infrastructure, so
+                    # don't burn repair calls on it
+                    await ctx.emit(
+                        "repair",
+                        it,
+                        "executor infrastructure error — skipping model repair",
+                    )
+                    break
                 stalled = _note_exec_error(repair_sig_counts, sig)
                 if err_sig and err_sig == prev_err_sig:
                     await ctx.emit("repair", it, "same error twice — repair not converging")
@@ -3389,9 +3453,17 @@ async def _run_cad(  # noqa: C901
                     await ctx.emit("repair", it, codemod_notes[0])
 
         if not exec_result.get("ok"):
-            issues = [
-                *best_issues,
-                {
+            if _exec_error_signature(exec_result).startswith("infra:"):
+                # not a code problem — record it as infra so the issue
+                # list stays honest while the patcher skips it
+                exec_issue: dict[str, Any] = {
+                    "source": "infra",
+                    "severity": "major",
+                    "what": "sandbox infrastructure error — not a code problem: "
+                    + str(exec_result.get("error") or "")[:200],
+                }
+            else:
+                exec_issue = {
                     "source": "exec",
                     "severity": "major",
                     "what": (
@@ -3399,8 +3471,8 @@ async def _run_cad(  # noqa: C901
                         "avoid that change and write simpler geometry"
                     ),
                     "fix_hint": (exec_result.get("error") or "")[:400],
-                },
-            ]
+                }
+            issues = [*best_issues, exec_issue]
             continue
 
         # repairs may have patched the code — keep the response in sync so the
@@ -3631,7 +3703,13 @@ async def _run_cad(  # noqa: C901
                 sf_min = spec.optimize.safety_factor_min if spec.optimize else 1.5
                 rep = FemReport(**fem_res["fem"])
                 worst = rep.worst_safety_factor
-                for severity, line in fem_feedback_lines(rep, sf_min):
+                # "could be lightened" advisories only belong on the issue
+                # list when lightweighting was actually requested (P9)
+                lw_requested = bool(spec.optimize and spec.optimize.enabled) or bool(
+                    _LIGHTWEIGHT_RE.search(ctx.prompt or "")
+                )
+                fb_kwargs = {"lightweight_requested": lw_requested} if _FEM_LIGHTWEIGHT_KW else {}
+                for severity, line in fem_feedback_lines(rep, sf_min, **fb_kwargs):
                     fem_issues.append(
                         {
                             "source": "fem",
@@ -3684,6 +3762,9 @@ async def _run_cad(  # noqa: C901
                     feature_findings=feature_findings,
                     features=features,
                     code=code,
+                    # the previous iteration's issue list — lets the critic
+                    # see which issues were already reported (P10)
+                    **({"prev_issues": best_issues} if _CRITIQUE_PREV_ISSUES else {}),
                 )
             except Exception as e:
                 log.warning("agent.critique_failed", iteration=it, error=repr(e))
@@ -3739,6 +3820,34 @@ async def _run_cad(  # noqa: C901
                 spec=spec,
             )
         )
+        # issue-fingerprint stall (P10): an issue whose number-normalised
+        # text appears in 2+ consecutive iterations while the measured
+        # geometry did not change is a phantom — a measurement artifact,
+        # not a code defect. Flag it (the issue stays on the persisted
+        # list for honesty) so the improve feed above skips it.
+        feat_hash = json.dumps(
+            {k: features.get(k) for k in ("hole_groups", "plates", "slots")},
+            sort_keys=True,
+            default=str,
+        )
+        cur_fps: dict[str, int] = {}
+        stalled_issues = 0
+        for issue in cur_issues:
+            fp = re.sub(r"[\d.]+", "#", (issue.get("what") or "").lower().strip())
+            cur_fps[fp] = prev_issue_fps.get(fp, 0) + 1
+            if cur_fps[fp] >= 2 and feat_hash == prev_features_hash:
+                issue["artifact"] = True
+                stalled_issues += 1
+        if stalled_issues:
+            log.info("agent.issue_stall", iteration=it, count=stalled_issues)
+            await ctx.emit(
+                "improve",
+                it,
+                f"{stalled_issues} issue(s) unchanged 2+ iterations — "
+                "likely a measurement artifact",
+            )
+        prev_issue_fps = cur_fps
+        prev_features_hash = feat_hash
         best_replaced = best is None or cand.rank > best.rank
         if best_replaced:
             best = cand
@@ -5416,7 +5525,7 @@ async def _run_approach(
                 and ctx.resolved_mode == "hybrid"
             ):
                 outcome.mesh = {k: v for k, v in ctx.mesh_info.items() if not k.startswith("_")}
-        elif ctx.mesh_info.get("_pre_result"):
+        elif ctx.mesh_info.get("_pre_result") and not _hybrid_prefers_cad(spec):
             outcome.resolved_mode = "mesh"
             ctx.resolved_mode = "mesh"
             outcome.mode_note += " | hybrid conversion failed — mesh-only result"
@@ -5600,6 +5709,24 @@ async def _run_strategy(
     return best
 
 
+def _merge_features(old: list[Feature], new: list[Feature]) -> list[Feature]:
+    """Merge second-chance extraction results into the existing spec list.
+
+    ``spec.features = fixed.features`` used to REPLACE the list wholesale —
+    the retry answers "every feature the prompt names" from scratch, so a
+    partial intake lost the entries it had actually gotten right. Keep all
+    existing features and append retry entries whose (name, type) pair is
+    not already declared (P1)."""
+    seen = {((f.name or "").strip().lower(), (f.type or "").strip().lower()) for f in old}
+    merged = list(old)
+    for f in new:
+        key = ((f.name or "").strip().lower(), (f.type or "").strip().lower())
+        if key not in seen:
+            seen.add(key)
+            merged.append(f)
+    return merged
+
+
 # --------------------------------------------------------------------------- #
 # main state machine                                                           #
 # --------------------------------------------------------------------------- #
@@ -5694,9 +5821,14 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
             intake_step.extract_load_cases(ctx, spec) if want_loads else _none(),
         )
         if gaps:
+            tool_echo = any("tool echo" in g for g in gaps)
             if fixed.features:
-                spec.features = fixed.features
-            if fixed.name.strip() and any("tool echo" in g for g in gaps):
+                # degenerate spec (tool echo) — wholesale replace as before;
+                # otherwise merge so entries intake got right survive (P1)
+                spec.features = (
+                    fixed.features if tool_echo else _merge_features(spec.features, fixed.features)
+                )
+            if fixed.name.strip() and tool_echo:
                 spec.name, spec.summary = fixed.name, fixed.summary or spec.summary
             outcome.spec = spec.model_dump()
             ctx.spec = spec

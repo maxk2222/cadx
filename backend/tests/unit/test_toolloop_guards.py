@@ -299,3 +299,53 @@ async def test_trim_runs_during_session():
     last_msgs = llm.calls[-1]["messages"]
     big = [m for m in last_msgs if m.get("role") == "tool" and len(str(m.get("content", ""))) > 400]
     assert len(big) <= 6
+
+
+def test_trim_tool_results_img_keep_one():
+    """img_keep_last=1 (optimize sessions): only the latest render batch
+    survives — a session accumulating one batch per topopt/refine run stays
+    bounded instead of dragging ~70k tokens of stale images."""
+    img = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}}
+    msgs = [{"role": "system", "content": "sys"}]
+    for _ in range(4):
+        msgs.append({"role": "user", "content": [img, {"type": "text", "text": "batch"}]})
+    _trim_tool_results(msgs, img_keep_last=1)
+    imgs = [
+        m
+        for m in msgs
+        if isinstance(m.get("content"), list)
+        and any(p.get("type") == "image_url" for p in m["content"])
+    ]
+    assert imgs == [msgs[-1]]
+    stubs = [m for m in msgs[1:-1] if "image removed" in str(m.get("content"))]
+    assert len(stubs) == 3
+
+
+async def test_optimize_session_trims_images_to_one(monkeypatch):
+    """The session-level wiring: kind='optimize' passes img_keep_last=1 —
+    other kinds keep the default 2."""
+    import cadx.agent.toolloop as tl
+
+    seen: list[int] = []
+    real = tl._trim_tool_results
+
+    def spy(msgs, keep_last=6, img_keep_last=2):
+        seen.append(img_keep_last)
+        return real(msgs, keep_last=keep_last, img_keep_last=img_keep_last)
+
+    monkeypatch.setattr(tl, "_trim_tool_results", spy)
+
+    llm = FakeLLM([{"text": "done"}])
+    llm.tools_mode = "auto"
+    ctx = _ctx(llm)
+    session = ToolSession(ctx, kind="optimize")
+    await run_session(ctx, "vision", MESSAGES, session=session, max_calls=3, step="optimize")
+    assert seen and all(v == 1 for v in seen)
+
+    seen.clear()
+    llm2 = FakeLLM([{"text": "done"}])
+    llm2.tools_mode = "auto"
+    ctx2 = _ctx(llm2)
+    session2 = ToolSession(ctx2, kind="edit", code=BOX_CODE)
+    await run_session(ctx2, "code", MESSAGES, session=session2, max_calls=3, step="improve")
+    assert seen and all(v == 2 for v in seen)

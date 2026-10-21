@@ -1662,6 +1662,37 @@ def run_topopt_pipeline(  # noqa: C901
     void_cells = keep_element_mask(domain, list(opt.void_regions), anchors)
     passive = passive_solid_mask(domain, [keep_cells], fixed_node_masks, load_node_masks)
 
+    # preflight: the pinned keep/load/fixed floor alone exceeding the
+    # requested volfrac makes the target unreachable regardless of what
+    # SIMP finds — refuse before voxel FEM setup instead of burning a run
+    # (observed: agent's keeps grew 0.22 -> 0.62 while the target stayed
+    # 0.40; every pass still ran ~20-27 iterations)
+    nsolid = int(domain.solid.sum())
+    passive_frac = float(passive.sum()) / nsolid if nsolid else 0.0
+    volfrac = opt.target_volume_fraction or s.topopt_default_volfrac
+    res.topopt["passive_frac"] = round(passive_frac, 4)
+    res.topopt["min_feasible_volfrac"] = round(passive_frac, 4)
+    if passive_frac > volfrac:
+        res.error = (
+            f"passive keep/load/fixed cells cover {passive_frac:.0%} of the part — "
+            f"above the requested volume fraction {volfrac:.0%}; the target is "
+            "unreachable regardless of optimization. Reduce keep/auto-keep "
+            "regions or set target_volume_fraction >= "
+            f"{min(0.95, passive_frac + 0.02):.2f}"
+        )
+        res.topopt["infeasible_preflight"] = True
+        return res
+    if passive_frac > 0.3:
+        res.topopt.setdefault("warnings", []).append(
+            f"keep/load/fixed regions cover {passive_frac:.0%} of the part — "
+            f"only {1.0 - passive_frac:.0%} is free for optimization"
+        )
+    ndesign = int((domain.solid.ravel() & ~passive & ~void_cells.ravel()).sum())
+    if nsolid and ndesign < 0.05 * nsolid:
+        res.topopt.setdefault("warnings", []).append(
+            "very few free design cells (<5%) — keep regions cover most of the part"
+        )
+
     # region-selection previews so the agent/user can see where forces land
     res.topopt["regions_png"] = render_regions(
         domain, cases, keep_list, out_dir / "fem", anchors, source_mesh=mesh
@@ -2627,6 +2658,7 @@ def run_refine(
     from cadx.cad.fem.analyze import report_to_json, run_fem
     from cadx.cad.fem.refine import (
         apply_refine,
+        refine_verify,
         resolve_refine_features,
     )
     from cadx.llm.schemas import LoadCase
@@ -2702,6 +2734,28 @@ def run_refine(
         "restored_regions": rep.restored_regions,
         "warnings": warnings,
     }
+
+    # post-cut verification: an "applied" entry only means the boolean ran —
+    # rescan the mesh and require a tunnel/dimple within tolerance of the
+    # expected position+diameter (the standalone worker job already does
+    # this; the optimize-session path previously trusted the self-report).
+    # Passing the report dict itself records blind-probe records on it.
+    verify_misses = refine_verify(
+        out,
+        res.features["refine"],
+        anchors=anchors,
+        request_features=features,
+    )
+    if verify_misses:
+        res.features["refine"]["verify_misses"] = verify_misses
+        for m in verify_misses:
+            entry = m.get("entry") or {}
+            warnings.append(
+                f"feature '{entry.get('name')}': cut verified FAILED — no "
+                f"tunnel/dimple within 3 mm / ±25% dia of expected position "
+                f"({m.get('x')}, {m.get('y')}) Ø{m.get('dia')} mm"
+            )
+        res.features["refine"]["warnings"] = warnings
 
     # FEM re-verify — the cuts remove material, the SF must be re-issued
     if _is_cancelled(cancelled):

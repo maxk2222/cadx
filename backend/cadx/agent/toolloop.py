@@ -53,10 +53,15 @@ class SessionResult:
     response: LLMResponse | None = None
     submitted: dict[str, Any] | None = None
     code: str | None = None
+    # last buffer that passed a sandbox verify/render — rescue paths submit
+    # this instead of a possibly-broken head when the session exhausts
+    last_good: str | None = None
     exhausted: bool = False
     # why the session exhausted: budget | turns | error_streak | churn |
-    # repeat_loop | verify_loop — callers use "verify_loop" to switch to the
-    # full-code one-shot path (a session stuck on one error won't converge)
+    # repeat_loop | verify_loop | infra_error — callers use "verify_loop" to
+    # switch to the full-code one-shot path (a session stuck on one error
+    # won't converge); "infra_error" means the sandbox itself is broken and
+    # repairing the code can't help
     end_reason: str = ""
     cancelled: bool = False
     tool_calls_made: int = 0
@@ -94,8 +99,15 @@ _CHECK_TOOLS = {
 }
 
 
-def _trim_tool_results(msgs: list[dict[str, Any]], keep_last: int = 6) -> None:
-    """Replace bodies of old read-only tool results with a stub (in place)."""
+def _trim_tool_results(
+    msgs: list[dict[str, Any]], keep_last: int = 6, img_keep_last: int = 2
+) -> None:
+    """Replace bodies of old read-only tool results with a stub (in place).
+
+    `img_keep_last` bounds how many recent image-bearing user messages stay
+    verbatim — optimize sessions attach a render batch per topopt/refine run
+    and accumulate them, so they pass 1; the default 2 keeps the last
+    before/after pair for code/edit sessions."""
     idx = [
         i
         for i, m in enumerate(msgs)
@@ -114,7 +126,7 @@ def _trim_tool_results(msgs: list[dict[str, Any]], keep_last: int = 6) -> None:
             # stale once a newer measurement exists — a stub keeps the shape
             m["content"] = body[:120] + " …[elided — superseded tool result]"
     # preview/section/overlay images are the heaviest history items — the
-    # latest render makes older ones worthless, keep only the last 2
+    # latest render makes older ones worthless
     img_idx = [
         i
         for i, m in enumerate(msgs)
@@ -122,7 +134,7 @@ def _trim_tool_results(msgs: list[dict[str, Any]], keep_last: int = 6) -> None:
         and isinstance(m.get("content"), list)
         and any(isinstance(p, dict) and p.get("type") == "image_url" for p in m["content"])
     ]
-    for i in img_idx[:-2]:
+    for i in img_idx[:-max(1, img_keep_last)]:
         # rebuild the part list instead of replacing the whole content —
         # text parts riding along with the image (tool captions, labels)
         # must survive; image parts collapse into ONE stub per message
@@ -616,6 +628,9 @@ async def run_session(  # noqa: C901
     nudged = False
     churn_exceeded = False
     verify_loop = False
+    # verify failed on INFRASTRUCTURE (executor/schema skew), not on the code
+    # — kill the session; a repair loop can never fix a broken sandbox
+    infra_kill = False
     # per-error-class tally of FAILED verify results — survives interleaved
     # successful edits (the observed non-converging repair did
     # find_replace/verify ping-pong 24 turns on one fillet error)
@@ -639,13 +654,20 @@ async def run_session(  # noqa: C901
             return SessionResult(
                 cancelled=True,
                 exhausted=True,
+                last_good=session.last_good_buffer,
                 tool_calls_made=calls,
                 tool_log=session.tool_log,
                 messages_out=msgs,
             )
         if drain_fn is not None:
             msgs.extend(await drain_fn())
-        _trim_tool_results(msgs)
+        # optimize sessions attach a render batch per topopt/refine call and
+        # accumulate them across runs — keeping only the latest image
+        # message is the difference between a bounded session and ~70k
+        # tokens of stale renders (N4); all other kinds keep the default 2
+        _trim_tool_results(
+            msgs, img_keep_last=1 if getattr(session, "kind", "") == "optimize" else 2
+        )
         if drain_fn is None:
             # OpenHands-style condensation bounds the resend on long sessions.
             # Chat sessions (drain_fn set) skip it: they persist
@@ -692,6 +714,7 @@ async def run_session(  # noqa: C901
                 response=resp,
                 submitted=session.submitted,
                 code=session.buffer or None,
+                last_good=session.last_good_buffer,
                 tool_calls_made=calls,
                 tool_log=session.tool_log,
                 messages_out=msgs,
@@ -727,6 +750,13 @@ async def run_session(  # noqa: C901
                 and result.get("ok") is False
                 and result.get("category")
             ):
+                if result.get("category") == "infra":
+                    # the SANDBOX is broken (schema skew, missing runner) —
+                    # no nudge and no repair budget: editing the code cannot
+                    # fix infrastructure, so the session ends at the next
+                    # end-check with "infra_error"
+                    infra_kill = True
+                    continue
                 vsig = f"{result.get('category')}:{result.get('line')}"
                 verify_fails[vsig] = verify_fails.get(vsig, 0) + 1
                 if verify_fails[vsig] == 2 and not verify_nudged:
@@ -769,6 +799,7 @@ async def run_session(  # noqa: C901
                     response=resp,
                     submitted=session.submitted,
                     code=session.buffer or None,
+                    last_good=session.last_good_buffer,
                     tool_calls_made=calls,
                     tool_log=session.tool_log,
                     messages_out=msgs,
@@ -816,9 +847,12 @@ async def run_session(  # noqa: C901
             or repeat_streak >= 2
             or churn_exceeded
             or verify_loop
+            or infra_kill
         ):
             reason = (
-                "budget"
+                "infra_error"
+                if infra_kill
+                else "budget"
                 if calls >= max_calls
                 else "turns"
                 if turns >= max_turns
@@ -841,6 +875,7 @@ async def run_session(  # noqa: C901
                         response=resp,
                         submitted=session.submitted,
                         code=session.buffer or None,
+                        last_good=session.last_good_buffer,
                         exhausted=True,
                         end_reason=reason,
                         tool_calls_made=calls,
@@ -851,6 +886,7 @@ async def run_session(  # noqa: C901
                 response=None,
                 submitted=session.submitted,
                 code=session.buffer or None,
+                last_good=session.last_good_buffer,
                 exhausted=True,
                 end_reason=reason,
                 tool_calls_made=calls,

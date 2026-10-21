@@ -597,6 +597,13 @@ _MOVE_SAT_WINDOW = 10  # compliance-improvement window, in iterations
 _FLIP_FRAC = 0.005  # share of design cells flipping membership per iteration —
 # the same 0.5% the `settled` gate below uses; sustained churn over a full
 # window is what "density oscillation persists" means
+# period-1 cycle detection: the SAME mask-flip fraction repeating every
+# iteration means one boundary set bounces in place (observed: flips=0.00245
+# for 5+ iters at the move cap) — below _FLIP_FRAC it escapes the churn
+# streak, so identical values over >= _SAME_FLIP_MIN_RUN iters are the signal.
+# _SAME_FLIP_FLOOR excludes a settling tail's residual 1-3 cell flicker.
+_SAME_FLIP_FLOOR = 0.0005
+_SAME_FLIP_MIN_RUN = 4
 
 
 def _windowed_compliance_improvement(
@@ -622,6 +629,42 @@ def _windowed_compliance_improvement(
         return None
     old = float(seg[-window].get("compliance_mj") or 0.0)
     new = float(seg[-1].get("compliance_mj") or 0.0)
+    if old <= 0.0:
+        return None
+    return (old - new) / old
+
+
+def _same_flip_run(history: list[dict[str, Any]]) -> int:
+    """Trailing run length of identical mask-flip fractions — the same cell
+    set bouncing every iteration is a period-1 limit cycle (the flip count
+    repeats exactly because the bouncing population is identical). Values
+    are the recorded ``round(flips, 5)``; a run needs >=2 identical nonzero
+    readings above _SAME_FLIP_FLOOR."""
+    vals = [h.get("flips") for h in history]
+    last = vals[-1] if vals else None
+    if not isinstance(last, int | float) or last <= _SAME_FLIP_FLOOR:
+        return 0
+    run = 1
+    for v in reversed(vals[:-1]):
+        if v == last:
+            run += 1
+        else:
+            break
+    return run
+
+
+def _span_compliance_improvement(history: list[dict[str, Any]], span: int) -> float | None:
+    """Relative compliance improvement, (c_old - c_now)/c_old, across the
+    last `span` history records — no same-beta restriction: an identical-
+    flips run can only persist inside one projection regime, and the eval
+    case that motivated this sits on a capped-beta segment shorter than
+    _MOVE_SAT_WINDOW (the same-beta helper returns None there forever).
+    None when the span isn't full or the baseline is non-positive."""
+    rec = history[-span:]
+    if len(rec) < 3:
+        return None
+    old = float(rec[0].get("compliance_mj") or 0.0)
+    new = float(rec[-1].get("compliance_mj") or 0.0)
     if old <= 0.0:
         return None
     return (old - new) / old
@@ -715,6 +758,27 @@ def simp(  # noqa: C901
             converged=False,
             status="infeasible_target",  # passive floor is the whole domain
             warnings=["no free design cells — everything is kept/pinned"],
+        )
+    passive_frac = float(passive_solid.sum()) / nsolid
+    if passive_frac > params.volfrac:
+        # the pinned keep/load/fixed floor alone overshoots the requested
+        # volume — every free cell at the density floor still exceeds the
+        # target, so no field can satisfy it. The old post-hoc check only
+        # labeled this once the loop 'converged' on the drained state — a
+        # limit-cycle/budget ending burned the whole run silently. Refuse
+        # honestly up front.
+        return TopOptResult(
+            density=np.where(passive_solid, 1.0, RHO_MIN).astype(float),
+            iterations=0,
+            converged=False,
+            status="infeasible_target",
+            warnings=[
+                f"passive (keep/load/fixed) cells cover {passive_frac:.0%} of the "
+                f"part — above the requested volfrac {params.volfrac:.0%}; the "
+                "target is unreachable — reduce keep regions or raise "
+                "target_volume_fraction above the floor"
+            ],
+            passive_frac=passive_frac,
         )
 
     E0 = np.broadcast_to(np.asarray(elem_E0, dtype=float), domain.cell_count).copy()
@@ -1257,6 +1321,27 @@ def simp(  # noqa: C901
                 stop = "limit_cycle"
                 break
 
+        # period-1 cycle: the SAME flip fraction repeating for 4+ iterations
+        # means one boundary set bounces in place — below _FLIP_FRAC it never
+        # fills flip_streak, and on a capped-beta segment shorter than
+        # _MOVE_SAT_WINDOW the same-beta stall probe stays 'unknown' forever,
+        # so this path uses a span-local stall test instead. The move-sat
+        # requirement keeps a plateaued near-optimum (its update isn't
+        # fighting the constraint) from being mislabeled a cycle.
+        same_flip_run = _same_flip_run(history)
+        if same_flip_run >= _SAME_FLIP_MIN_RUN and move_sat_streak >= _MOVE_SAT_STREAK:
+            imp = _span_compliance_improvement(history, same_flip_run)
+            if imp is not None and imp < 0.01:
+                warnings.append(
+                    f"limit cycle: identical mask churn (flips={rec['flips']:g}) for "
+                    f"{same_flip_run} consecutive iterations at the move cap with <1% "
+                    f"compliance change — a periodic bounce, not convergence. "
+                    "Extracting the current density field. Retry with "
+                    "symmetry=<plane> or a different filter/threshold"
+                )
+                stop = "limit_cycle"
+                break
+
         # secondary convergence: OC 'change' can stay at the move limit while
         # the objective already settled — count a stalled objective only when
         # the field itself stopped evolving, otherwise a still-blurry density
@@ -1271,7 +1356,9 @@ def simp(  # noqa: C901
         if prev_objective is not None and prev_objective > 0:
             rel = abs(objective - prev_objective) / prev_objective
             settled = (
-                change <= 0.9 * params.move or gray <= 0.05 or flips <= 0.005
+                change <= 0.9 * params.move
+                or gray <= 0.05
+                or (flips <= 0.005 and same_flip_run < _SAME_FLIP_MIN_RUN)
             )
             continuing = heaviside and proj.beta < params.beta_max
             stall = stall + 1 if (rel < params.tol and (continuing or settled)) else 0
@@ -1292,7 +1379,7 @@ def simp(  # noqa: C901
     # with Heaviside it is near-binary anyway
     warnings_out = warnings
     converged = change <= params.tol or stall >= params.converge_patience
-    passive_frac = float(passive_solid.sum()) / nsolid
+    # passive_frac was computed at the top (early infeasible_target refuse)
     # honest outcome label (B18): how the loop actually ended, not just a
     # bool — the agent distinguishes "converged" from "the request was
     # infeasible" and "the field never settled"

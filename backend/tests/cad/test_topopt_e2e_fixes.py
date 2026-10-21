@@ -175,12 +175,21 @@ def test_design_domain_auto_coarsens_to_direct_solver(tmp_path: Path) -> None:
     system fits the direct solver and report the choice."""
     src = tmp_path / "b.stl"
     _box_mesh().export(str(src))
-    res = _run(src, tmp_path / "c", RuntimeSettings(fem_spsolve_dofs=1000))
+    # a coarse grid inflates the pinned keep/fix/load fraction — with the
+    # anchor ring at ~4 cells pitch that floor legitimately tops the default
+    # 0.5 target and the pipeline rightly refuses as infeasible; a 0.8 target
+    # keeps the (still coarsened) run solvable so the coarsen is exercised
+    res = _run(
+        src,
+        tmp_path / "c",
+        RuntimeSettings(fem_spsolve_dofs=5000),
+        target_volume_fraction=0.8,
+    )
     assert res.ok, res.error
     ac = res.topopt.get("auto_coarsen")
     assert ac is not None, "grid over the DOF cap must record the coarsen"
     assert ac["design_pitch_mm"] > ac["requested_pitch_mm"]
-    assert ac["dofs"] <= 1000
+    assert ac["dofs"] <= 5000
     # the density field must live on the coarsened grid, matching the report
     npz = np.load(tmp_path / "c" / "topopt" / "density.npz")
     assert float(npz["pitch"]) == pytest.approx(ac["design_pitch_mm"], abs=1e-6)

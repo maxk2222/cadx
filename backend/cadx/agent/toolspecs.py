@@ -1333,6 +1333,24 @@ def _elision_error(marker: str) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
+def _floor_target_warning(out: dict[str, Any], target_volfrac: float | None) -> None:
+    """Annotate a preview/check_load result when the keep/load/fix floor
+    already exceeds the session's volume target — the follow-up topopt_run
+    would refuse on `infeasible_preflight`, so surface it early."""
+    if target_volfrac is None:
+        return
+    floor = out.get("min_feasible_volfrac") or out.get("passive_fraction")
+    if not isinstance(floor, int | float) or floor <= target_volfrac:
+        return
+    out["infeasible_target"] = True
+    out["suggested_min_target"] = round(min(0.95, floor + 0.02), 4)
+    out["warning"] = (
+        f"keep/load/fixed floor {floor:.0%} exceeds the session target "
+        f"{target_volfrac:.0%} — a topopt_run at that target will refuse; "
+        "shrink keep regions or raise target_volume_fraction"
+    )
+
+
 class ToolSession:
     """Mutable state + dispatch for one tool-calling session."""
 
@@ -1355,6 +1373,9 @@ class ToolSession:
         # spec features for the submission audit — [{"type":..., "name":...}];
         # submit_code/done reject stubs that build none of them
         spec_features: list[dict[str, Any]] | None = None,
+        # optimize sessions: the session's volume target — preview/check_load
+        # warn when the passive floor already exceeds it
+        target_volfrac: float | None = None,
     ) -> None:
         self.ctx = ctx
         self.kind = kind
@@ -1368,6 +1389,7 @@ class ToolSession:
         self.anchors_fn = anchors_fn
         self.refine_fn = refine_fn
         self.spec_features = spec_features
+        self.target_volfrac = target_volfrac
         self._refined_runs: set[int] = set()
         settings = ctx.runtime_settings
         # build sessions verify once per feature block — they get the larger
@@ -1396,6 +1418,9 @@ class ToolSession:
         self.tool_log: list[dict[str, Any]] = []
         self._done_reasks = 0
         self._unchanged_warned = False
+        # last buffer that passed a sandbox verify/render — the rescue path
+        # submits this instead of a possibly-broken head on exhaustion
+        self._last_good: str | None = None
         # build sessions: named buffer snapshots for rollback()
         self._checkpoints: dict[str, str] = {}
         # sha1 of every image file already sent to the model — an identical
@@ -2090,6 +2115,7 @@ class ToolSession:
         except Exception as e:
             return {"ok": False, "error": f"verify execution failed: {e}"}
         if res.get("ok"):
+            self._last_good = self.buffer
             ana = res.get("analysis") or {}
             out: dict[str, Any] = {
                 "ok": True,
@@ -2123,6 +2149,7 @@ class ToolSession:
             return {"ok": False, "error": f"render execution failed: {e}"}
         if not res.get("ok"):
             return self._exec_diag(res, "render")
+        self._last_good = self.buffer
         images: list[str] = []
         if sheet := res.get("contact_sheet"):
             with contextlib.suppress(ValueError):
@@ -2274,6 +2301,7 @@ class ToolSession:
             "min_feasible_volfrac": prev.get("min_feasible_volfrac"),
             "cases": prev.get("cases") or [],
         }
+        _floor_target_warning(out, self.target_volfrac)
         images = [str(p) for p in res.get("_images") or []]
         if images:
             out["_images"] = images
@@ -2328,7 +2356,7 @@ class ToolSession:
         if not res.get("ok"):
             return {"ok": False, "error": res.get("error") or "check failed"}
         prev = res.get("preview") or {}
-        return {
+        out = {
             "ok": True,
             "pitch_mm": prev.get("pitch_mm"),
             "solid_elements": prev.get("solid_elements"),
@@ -2339,6 +2367,8 @@ class ToolSession:
             "min_feasible_volfrac": prev.get("min_feasible_volfrac"),
             "cases": prev.get("cases") or [],
         }
+        _floor_target_warning(out, self.target_volfrac)
+        return out
 
     async def _tool_analyze_fem(self, a: dict[str, Any]) -> dict[str, Any]:
         if self.fem_fn is None or self.fem_left <= 0:
@@ -2370,7 +2400,17 @@ class ToolSession:
             }
         )
         if not res.get("ok"):
-            return {"ok": False, "error": res.get("error") or "optimization failed"}
+            top = res.get("topopt") or {}
+            out: dict[str, Any] = {"ok": False, "error": res.get("error") or "optimization failed"}
+            if top.get("infeasible_preflight"):
+                # refused before any SIMP iteration — refund the run budget
+                # and hand back the floor so the caller can re-target
+                self.topopt_left += 1
+                out["infeasible_target"] = True
+                out["min_feasible_volfrac"] = top.get("min_feasible_volfrac")
+                out["passive_fraction"] = top.get("passive_frac")
+                out["topopt_calls_left"] = self.topopt_left
+            return out
         top = res.get("topopt") or {}
         fem = res.get("fem") or {}
         sfs = [
@@ -2497,6 +2537,7 @@ class ToolSession:
                 "params": {"refine_of": idx, "features": a.get("features") or "auto"},
             }
         )
+        verify_misses = rep.get("verify_misses") or []
         out: dict[str, Any] = {
             "ok": True,
             "run_index": new_idx,
@@ -2509,6 +2550,21 @@ class ToolSession:
             "warnings": _warning_window(rep.get("warnings")),
             "verify_spec": _verify_spec_compact(res.get("verify_spec")),
         }
+        if verify_misses:
+            out["verify_misses"] = [
+                {
+                    "name": (m.get("entry") or {}).get("name"),
+                    "expected_uv": [m.get("x"), m.get("y")],
+                    "dia_mm": m.get("dia"),
+                }
+                for m in verify_misses
+            ]
+            out["warning"] = (
+                f"{len(verify_misses)} cut feature(s) did not verify — no tunnel/"
+                "dimple at the expected position+diameter; the host region may "
+                "be gone or the anchor table stale. Check renders/spec anchors "
+                "before committing this run."
+            )
         images = [str(p) for p in res.get("_images") or []]
         if images:
             out["_images"] = images
@@ -2640,6 +2696,12 @@ class ToolSession:
     @property
     def is_done(self) -> bool:
         return self.submitted is not None
+
+    @property
+    def last_good_buffer(self) -> str | None:
+        """Newest buffer that passed a sandbox verify/render this session —
+        None when nothing was verified ok."""
+        return self._last_good
 
 
 def _truncate(v: Any, limit: int = 1200) -> Any:
