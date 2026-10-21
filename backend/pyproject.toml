@@ -47,6 +47,16 @@ dependencies = [
 repair = [
     "pymeshlab>=2023.12",
 ]
+# optional FEM solver tier — both lazy-imported with graceful fallbacks:
+#   scikit-sparse: CHOLMOD sparse Cholesky for the direct path (needs
+#     SuiteSparse headers — apt: libsuitesparse-dev; fails to build on
+#     bare macOS, so the executor image provides it)
+#   pyamg: smoothed-aggregation AMG preconditioner for CG above
+#     fem_spsolve_dofs — the >120k-DOF cliff becomes minutes, not hours
+fem = [
+    "scikit-sparse>=0.4",
+    "pyamg>=5.0,<6",
+]
 
 [dependency-groups]
 dev = [

@@ -8,6 +8,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       libgl1 libegl1 libopengl0 libxrender1 libgomp1 libglu1-mesa curl \
+      libsuitesparse-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
@@ -31,6 +32,11 @@ FROM base AS worker
 CMD ["arq", "cadx.queue.AgentWorkerSettings"]
 
 FROM base AS executor
+# FEM solver tier lands only in the executor image: libsuitesparse-dev (in
+# base) lets scikit-sparse compile CHOLMOD bindings, pyamg ships pure
+# wheels. solver.py falls back to SuperLU/SSOR-CG when either import fails,
+# so the extra is strictly additive.
+RUN uv sync --frozen --no-dev --extra repair --extra fem
 RUN groupadd -r cad && useradd -r -g cad -u 1000 -m cad \
     && mkdir -p /data && chown -R cad:cad /data
 USER cad
@@ -43,5 +49,5 @@ CMD ["sh", "-c", "trap 'echo \"[diag] got SIGTERM, forwarding\" >&2; kill -TERM 
 # `docker build --target executor-test` then run pytest tests/cad inside it.
 FROM executor AS executor-test
 USER root
-RUN uv sync --frozen --extra repair
+RUN uv sync --frozen --extra repair --extra fem
 USER cad

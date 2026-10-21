@@ -10,6 +10,7 @@ Units: mm, N, MPa (E). Displacements in mm.
 from __future__ import annotations
 
 import math
+import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -20,6 +21,9 @@ from scipy import sparse
 from scipy.sparse import linalg as spla
 
 from cadx.cad.fem.voxelize import VoxelDomain
+from cadx.logging import get_logger
+
+log = get_logger(__name__)
 
 # natural coords of the 8 hex nodes, matching voxelize.element_nodes order
 _NODES_NAT = np.array(
@@ -67,11 +71,19 @@ def _B_matrix(dn_dx: np.ndarray) -> np.ndarray:
     return B
 
 
-def _D(nu: float) -> np.ndarray:
-    """Isotropic elasticity matrix for E = 1 (scale later)."""
+def _D(nu: float, aniso_z: float = 1.0, axis: int = 2) -> np.ndarray:
+    """Constitutive matrix for E = 1 (scale later), Voigt order
+    [xx, yy, zz, xy, yz, zx].
+
+    ``aniso_z != 1`` builds an engineering model of FDM layer weakening —
+    not a full orthotropic tensor. The congruence ``S @ D_iso @ S`` with
+    ``S = diag(sqrt(k) * indicator)`` scales the ``axis``-normal stiffness
+    and the two shear terms containing ``axis`` by ~k: pure-axis modulus
+    drops to ~k·E, the axis shears to ~k·G, the in-plane response is
+    untouched and the result stays SPD for any k > 0."""
     c = 1.0 / ((1.0 + nu) * (1.0 - 2.0 * nu))
     s = (1.0 - 2.0 * nu) / 2.0
-    return c * np.array(
+    D = c * np.array(
         [
             [1 - nu, nu, nu, 0, 0, 0],
             [nu, 1 - nu, nu, 0, 0, 0],
@@ -81,15 +93,30 @@ def _D(nu: float) -> np.ndarray:
             [0, 0, 0, 0, 0, s],
         ]
     )
+    if aniso_z == 1.0:
+        return D
+    axis = int(axis)
+    if axis not in (0, 1, 2):
+        raise ValueError(f"aniso axis must be 0, 1 or 2, got {axis}")
+    if aniso_z <= 0.0:
+        raise ValueError(f"aniso factor must be > 0, got {aniso_z}")
+    # the shear not touching `axis` is the one spanned by the two in-plane
+    # directions: axis=x -> yz(4), axis=y -> zx(5), axis=z -> xy(3)
+    shear_clear = {0: 4, 1: 5, 2: 3}[axis]
+    idx = [axis] + [i for i in (3, 4, 5) if i != shear_clear]
+    sv = np.ones(6)
+    sv[idx] = math.sqrt(aniso_z)
+    S = np.diag(sv)
+    return S @ D @ S
 
 
-@lru_cache(maxsize=32)
-def _ke_unit(nu: float, pitch: float) -> np.ndarray:
+@lru_cache(maxsize=64)
+def _ke_unit(nu: float, pitch: float, aniso_z: float = 1.0, axis: int = 2) -> np.ndarray:
     """Element stiffness for E=1, uniform cube of edge `pitch`.
 
-    Memoized — pure function of (nu, pitch); the returned matrix is shared,
-    callers must treat it as read-only."""
-    D = _D(nu)
+    Memoized — pure function of (nu, pitch, aniso_z, axis); the returned
+    matrix is shared, callers must treat it as read-only."""
+    D = _D(nu, aniso_z, axis)
     detJ = (pitch / 2.0) ** 3
     ke = np.zeros((24, 24))
     for xi, eta, zeta in _GAUSS:
@@ -195,6 +222,8 @@ def assemble(
     nu: float,
     cell_mask: np.ndarray | None = None,
     ij: tuple[np.ndarray, np.ndarray] | None = None,
+    *,
+    aniso: tuple[float, float] | None = None,
 ) -> tuple[sparse.csr_matrix, np.ndarray, np.ndarray]:
     """Assemble K over selected cells.
 
@@ -206,6 +235,9 @@ def assemble(
     `cell_mask` selects the same cells it was built for (SIMP assembles ALL
     cells every iteration, so the pattern is constant and caching it skips an
     O(nelem·576) index build per solve).
+
+    `aniso` = (k, axis) applies the FDM layer-weakening factor to the
+    element stiffness (see _D); None assembles the isotropic ke.
     """
     mask = domain.solid.ravel() if cell_mask is None else np.asarray(cell_mask).ravel()
     active = np.flatnonzero(mask)
@@ -213,7 +245,11 @@ def assemble(
     # memoized, so repeated assembles (one per SIMP iteration, one per FEM
     # load case) only pay the COO value fill
     edof = domain_edof(domain)[active]
-    ke = _ke_unit(nu, domain.pitch)
+    ke = (
+        _ke_unit(nu, domain.pitch)
+        if aniso is None
+        else _ke_unit(nu, domain.pitch, float(aniso[0]), int(aniso[1]))
+    )
 
     if ij is None:
         iK = np.repeat(edof, 24, axis=1).ravel()
@@ -259,14 +295,212 @@ def _ssor_preconditioner(Kf: sparse.csr_matrix) -> spla.LinearOperator | None:
         return None
 
 
-def factor_symmetric(Kf: sparse.csr_matrix) -> Callable[[np.ndarray], np.ndarray] | None:
+def _free_node_coords(domain: VoxelDomain, free: np.ndarray) -> np.ndarray:
+    """(n_free_nodes, 3) world-mm coords of the nodes carrying `free` DOFs.
+
+    Node flat index is ``i + nx1*(j + ny1*k)`` on the (dims+1) node grid
+    (VoxelDomain.node_index), so ``free // 3`` recovers the node ids —
+    sorted, matching `free`'s ordering — and coordinates follow
+    ``origin + pitch * (i, j, k)`` exactly like domain.node_coords."""
+    nodes = np.unique(np.asarray(free, dtype=np.int64) // 3)
+    nx1, ny1, _ = domain.node_dims
+    i = nodes % nx1
+    j = (nodes // nx1) % ny1
+    k = nodes // (nx1 * ny1)
+    grid = np.stack([i, j, k], axis=-1)
+    return domain.origin[None, :] + domain.pitch * grid.astype(float)
+
+
+_PYAMG_AVAILABLE: bool | None = None
+
+
+def _pyamg_available() -> bool:
+    """Import-probe pyamg once — it is an optional dependency."""
+    global _PYAMG_AVAILABLE
+    if _PYAMG_AVAILABLE is None:
+        try:
+            import pyamg  # noqa: F401
+        except Exception:
+            _PYAMG_AVAILABLE = False
+        else:
+            _PYAMG_AVAILABLE = True
+    return _PYAMG_AVAILABLE
+
+
+def _amg_preconditioner(
+    Kf: sparse.csr_matrix, coords_mm: np.ndarray
+) -> spla.LinearOperator | None:
+    """Smoothed-aggregation AMG preconditioner for 3D elasticity.
+
+    `B` carries the 6 rigid-body modes (3 translations + 3 infinitesimal
+    rotations) per node — the classic SA-AMG near-nullspace for elasticity,
+    so aggregation keeps the coarse level well-conditioned. Requires every
+    free node to own all 3 DOFs (checked via shape); returns None when
+    pyamg is missing, the shapes disagree, or the hierarchy build fails."""
+    if not _pyamg_available():
+        return None
+    n = int(np.asarray(coords_mm).shape[0])
+    if n == 0 or Kf.shape[0] != 3 * n:
+        return None
+    try:
+        import pyamg
+
+        x, y, z = np.asarray(coords_mm, dtype=float).T
+        B = np.zeros((3 * n, 6))
+        B[0::3, 0] = 1.0
+        B[0::3, 4] = -z
+        B[0::3, 5] = y
+        B[1::3, 1] = 1.0
+        B[1::3, 3] = z
+        B[1::3, 5] = -x
+        B[2::3, 2] = 1.0
+        B[2::3, 3] = -y
+        B[2::3, 4] = x
+        ml = pyamg.smoothed_aggregation_solver(Kf, B=B)
+        return ml.aspreconditioner()
+    except Exception:
+        return None
+
+
+def iterative_preconditioner(
+    Kf: sparse.csr_matrix,
+    backend: str = "auto",
+    domain: VoxelDomain | None = None,
+    free: np.ndarray | None = None,
+) -> spla.LinearOperator:
+    """CG preconditioner for a reduced elastic stiffness matrix.
+
+    `backend` (auto|amg|ssor) overrides CADX_FEM_CG_PRECONDITIONER when not
+    "auto". Smoothed-aggregation AMG is tried first — it needs pyamg plus
+    `domain`+`free` to place the rigid-body near-nullspace vectors — then
+    SSOR, then plain diagonal scaling. Always returns a usable M."""
+    want = str(backend).strip().lower()
+    if want in ("", "auto"):
+        want = os.environ.get("CADX_FEM_CG_PRECONDITIONER", "auto").strip().lower()
+    if want != "ssor" and domain is not None and free is not None:
+        M = _amg_preconditioner(Kf, _free_node_coords(domain, free))
+        if M is not None:
+            return M
+    M = _ssor_preconditioner(Kf)
+    if M is not None:
+        return M
+    diag = Kf.diagonal()
+    diag[diag == 0] = 1.0
+    return spla.aslinearoperator(sparse.diags(1.0 / diag))
+
+
+def _elastic_preconditioner(
+    Kf: sparse.csr_matrix,
+    domain: VoxelDomain | None = None,
+    free: np.ndarray | None = None,
+    backend: str = "auto",
+) -> spla.LinearOperator:
+    """Auto-tier alias for `iterative_preconditioner` — the env var and the
+    amg->ssor->diagonal chain apply unchanged (reduce_case/solve_reduced
+    call sites)."""
+    return iterative_preconditioner(Kf, backend=backend, domain=domain, free=free)
+
+
+_CHOLMOD_AVAILABLE: bool | None = None
+_TIER_LOGGED = False
+
+
+def _cholmod_available() -> bool:
+    """Import-probe scikit-sparse CHOLMOD once — it is an optional dep."""
+    global _CHOLMOD_AVAILABLE
+    if _CHOLMOD_AVAILABLE is None:
+        try:
+            import sksparse.cholmod  # noqa: F401
+        except Exception:
+            _CHOLMOD_AVAILABLE = False
+        else:
+            _CHOLMOD_AVAILABLE = True
+    return _CHOLMOD_AVAILABLE
+
+
+def solver_tier(backend: str = "auto") -> str:
+    """Resolve the direct-solve backend: "cholmod" or "splu".
+
+    `backend` (auto|cholmod|splu|superlu) overrides the
+    CADX_FEM_DIRECT_SOLVER env var when not "auto" — topopt's
+    `solver_backend` benchmark knob shares this vocabulary. An unavailable
+    or unrecognized name resolves to the auto pick: "cholmod" when
+    scikit-sparse imports cleanly, else "splu". The import probe is cached
+    and the resolved backend is logged once."""
+    global _TIER_LOGGED
+    want = backend if backend != "auto" else os.environ.get("CADX_FEM_DIRECT_SOLVER", "auto")
+    want = str(want).strip().lower()
+    # auto / cholmod / unknown names prefer cholmod when importable
+    tier = (
+        "splu"
+        if want in ("splu", "superlu") or not _cholmod_available()
+        else "cholmod"
+    )
+    if not _TIER_LOGGED:
+        _TIER_LOGGED = True
+        log.info("fem.solver_tier", backend=tier)
+    return tier
+
+
+class CholmodFactor:
+    """CHOLMOD Cholesky factor wrapped as the ``b -> x`` solve callable.
+
+    `refactorize` refreshes the numeric factorization on a matrix with the
+    same sparsity pattern (SIMP density updates rescale values, never the
+    pattern) via ``cholesky_inplace`` — one symbolic analysis amortized
+    across many solves.
+    """
+
+    def __init__(self, factor: Any, pattern: sparse.spmatrix) -> None:
+        self._f = factor
+        self._shape = pattern.shape
+        self._nnz = pattern.nnz
+        self._dtype = pattern.dtype
+
+    def __call__(self, b: np.ndarray) -> np.ndarray:
+        return np.asarray(self._f(b), dtype=float)
+
+    def solve(self, b: np.ndarray) -> np.ndarray:
+        """Alias for __call__ — cholmod factors are callable directly."""
+        return self(b)
+
+    def refactorize(self, K_new: sparse.spmatrix) -> bool:
+        """Recompute the numeric factorization in place for `K_new`, which
+        must carry the stored sparsity pattern (shape/nnz/dtype checked).
+        Returns False on any mismatch or CHOLMOD failure — the caller then
+        re-factorizes fresh."""
+        if K_new.shape != self._shape or K_new.nnz != self._nnz or K_new.dtype != self._dtype:
+            return False
+        try:
+            A = K_new if sparse.isspmatrix_csc(K_new) else K_new.tocsc()
+            self._f.cholesky_inplace(A)
+        except Exception:
+            return False
+        return True
+
+
+def factor_symmetric(
+    Kf: sparse.csr_matrix, backend: str = "auto"
+) -> Callable[[np.ndarray], np.ndarray] | None:
     """Direct-solve callable ``b -> x`` for the reduced stiffness matrix.
 
-    Kf is symmetric (structural elasticity), so SuperLU's SymmetricMode gets
-    a symmetric permutation + half the numeric work of the generic path —
-    measurably cheaper than ``factorized``/``spsolve``'s default unsymmetric
-    symbolic+numeric factorization on the same constant sparsity pattern.
-    Falls back to ``factorized``, then None (caller degrades to CG)."""
+    `backend` overrides CADX_FEM_DIRECT_SOLVER (auto|cholmod|splu|superlu);
+    the iterative names (amg|ssor) return None so a benchmarking caller
+    lands on the CG path. Kf is SPD, so the priority is CHOLMOD Cholesky
+    (scikit-sparse, when the tier resolves to cholmod), then SuperLU's
+    SymmetricMode — a symmetric permutation + half the numeric work of the
+    generic path — then ``factorized``, then None (caller degrades to CG)."""
+    want = str(backend).strip().lower()
+    if want in ("amg", "ssor"):
+        return None
+    if solver_tier(want if want in ("cholmod", "splu", "superlu") else "auto") == "cholmod":
+        try:
+            from sksparse import cholmod
+
+            kf = Kf.tocsc()
+            return CholmodFactor(cholmod.cholesky(kf), kf)
+        except Exception:
+            pass
     try:
         return spla.splu(Kf.tocsc(), options={"SymmetricMode": True}).solve
     except Exception:
@@ -302,12 +536,19 @@ def reduce_case(
     fixed_nodes: np.ndarray,
     *,
     spsolve_dofs: int = 120_000,
+    aniso: tuple[float, float] | None = None,
+    solver_backend: str = "auto",
 ) -> CaseSolve:
     """Extract the reduced system Kf = K[free][:, free] for one constraint
-    mask and prepare its solver (symmetric SuperLU under the cutoff, SSOR-CG
-    above). `fixed_nodes` accepts a (nnodes,) node mask or a (nnodes,3)
-    per-DOF mask — cases with identical fixed DOFs produce identical `free`
-    signatures and can share the returned context."""
+    mask and prepare its solver (CHOLMOD/symmetric SuperLU under the cutoff,
+    AMG/SSOR-CG above). `fixed_nodes` accepts a (nnodes,) node mask or a
+    (nnodes,3) per-DOF mask — cases with identical fixed DOFs produce
+    identical `free` signatures and can share the returned context.
+
+    `aniso` is accepted for call-site uniformity — it only changes the
+    assembled K upstream (already reflected in Kf) and the stress recovery
+    in solve_reduced; the reduction itself is material-blind."""
+    _ = aniso
     warnings: list[str] = []
     used_dofs = np.unique(edof.ravel())
     fixed_dofs = np.unique(_fixed_dofs(fixed_nodes, domain.node_count))
@@ -328,15 +569,11 @@ def reduce_case(
     factor: Callable[[np.ndarray], np.ndarray] | None = None
     M: Any = None
     if free.size <= spsolve_dofs:
-        factor = factor_symmetric(Kf)
+        factor = factor_symmetric(Kf, backend=solver_backend)
         if factor is None:
             warnings.append("direct factorization failed; falling back to CG")
     if factor is None:
-        M = _ssor_preconditioner(Kf.tocsr())
-        if M is None:
-            diag = Kf.diagonal()
-            diag[diag == 0] = 1.0
-            M = spla.diags(1.0 / diag)
+        M = _elastic_preconditioner(Kf.tocsr(), domain, free, backend=solver_backend)
     return CaseSolve(free=free, Kf=Kf, factor=factor, M=M, warnings=warnings)
 
 
@@ -351,8 +588,13 @@ def solve_reduced(
     *,
     u0: np.ndarray | None = None,
     E_ref: float | None = None,
+    aniso: tuple[float, float] | None = None,
+    solver_backend: str = "auto",
 ) -> FemSolution:
-    """Solve + post-stress for a case on its `reduce_case` context."""
+    """Solve + post-stress for a case on its `reduce_case` context.
+
+    `aniso` = (k, axis) must match the value K was assembled with — it
+    rescales the constitutive matrix used for von Mises recovery (see _D)."""
     warnings = list(ctx.warnings)
     free = ctx.free
     Kf = ctx.Kf
@@ -387,11 +629,7 @@ def solve_reduced(
     if solver_name == "cg":
         M = ctx.M
         if M is None:
-            M = _ssor_preconditioner(Kf.tocsr())
-        if M is None:
-            diag = Kf.diagonal()
-            diag[diag == 0] = 1.0
-            M = spla.diags(1.0 / diag)
+            M = _elastic_preconditioner(Kf.tocsr(), domain, free, backend=solver_backend)
         x0 = u0[free] if u0 is not None else None
         x, info, diverged = _cg_watchdog(Kf, Ff, x0, M, maxiter=5000)
         if diverged is not None:
@@ -412,7 +650,10 @@ def solve_reduced(
         warnings.append("solution contains NaN/inf — likely unconstrained rigid-body modes")
 
     # element von Mises at cell centres (only for cells carrying real stiffness)
-    D = _D(nu) * (E_ref if E_ref is not None else float(elem_E[active].max(initial=1.0)))
+    k_aniso, a_axis = (1.0, 2) if aniso is None else (float(aniso[0]), int(aniso[1]))
+    D = _D(nu, k_aniso, a_axis) * (
+        E_ref if E_ref is not None else float(elem_E[active].max(initial=1.0))
+    )
     ue = u[edof]
     eps = ue @ _B0(domain.pitch).T  # (nelem, 6)
     sig = eps @ D.T  # (nelem, 6)
@@ -454,6 +695,7 @@ def solve(
     u0: np.ndarray | None = None,
     spsolve_dofs: int = 120_000,
     E_ref: float | None = None,
+    aniso: tuple[float, float] | None = None,
 ) -> FemSolution:
     """Solve K u = F with Dirichlet BCs on `fixed_nodes`.
 
@@ -468,6 +710,8 @@ def solve(
     ``analyze._solve_cases``).
     """
     mask = domain.solid.ravel() if cell_mask is None else np.asarray(cell_mask).ravel()
-    K, edof, active = assemble(domain, elem_E, nu, mask)
-    ctx = reduce_case(domain, K, edof, fixed_nodes, spsolve_dofs=spsolve_dofs)
-    return solve_reduced(domain, ctx, edof, active, F, elem_E, nu, u0=u0, E_ref=E_ref)
+    K, edof, active = assemble(domain, elem_E, nu, mask, aniso=aniso)
+    ctx = reduce_case(domain, K, edof, fixed_nodes, spsolve_dofs=spsolve_dofs, aniso=aniso)
+    return solve_reduced(
+        domain, ctx, edof, active, F, elem_E, nu, u0=u0, E_ref=E_ref, aniso=aniso
+    )

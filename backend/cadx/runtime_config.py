@@ -190,6 +190,11 @@ class RuntimeSettings(BaseModel):
     fem_voxel_mm: float = Field(default=1.5, gt=0, le=100)
     fem_max_elements: int = Field(default=150_000, ge=1, le=5_000_000)
     fem_spsolve_dofs: int = Field(default=120_000, ge=1_000, le=5_000_000)
+    # sparse-direct backend for the Kff solve: auto picks CHOLMOD when the
+    # optional sksparse dep is importable (SuiteSparse inside the executor
+    # image), else SuperLU. Iterative tier picks AMG (pyamg) above the DOF
+    # cap, else SSOR/diagonal CG. Force a backend to benchmark/fallback.
+    fem_solver_backend: str = Field(default="auto", max_length=20)  # auto|cholmod|superlu|amg|ssor
     fem_max_effective_cases: int = Field(
         default=8, ge=1, le=64
     )  # cap on load-case expansion (direction cones)
@@ -355,6 +360,7 @@ _EXECUTOR_FIELDS = {
     "fem_voxel_mm",
     "fem_max_elements",
     "fem_spsolve_dofs",
+    "fem_solver_backend",
     "fem_max_effective_cases",
     "topopt_default_volfrac",
     "topopt_default_rmin_mm",

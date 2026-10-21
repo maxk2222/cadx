@@ -591,6 +591,7 @@ class SettingsOut(BaseModel):
     fem_max_elements: int
     fem_timeout_s: int
     fem_spsolve_dofs: int
+    fem_solver_backend: str
     fem_max_effective_cases: int
     topopt_timeout_s: int
     topopt_max_iterations: int
@@ -718,6 +719,7 @@ class SettingsUpdate(BaseModel):
     fem_max_elements: int | None = Field(default=None, ge=1, le=5_000_000)
     fem_timeout_s: int | None = Field(default=None, ge=1, le=86_400)
     fem_spsolve_dofs: int | None = Field(default=None, ge=1_000, le=5_000_000)
+    fem_solver_backend: str | None = Field(default=None, max_length=20)
     fem_max_effective_cases: int | None = Field(default=None, ge=1, le=64)
     topopt_timeout_s: int | None = Field(default=None, ge=1, le=86_400)
     topopt_max_iterations: int | None = Field(default=None, ge=1, le=1000)

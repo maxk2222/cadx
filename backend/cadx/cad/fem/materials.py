@@ -16,6 +16,10 @@ class MaterialProps:
     poisson: float  # Poisson's ratio nu
     yield_mpa: float  # tensile yield strength (design allowable)
     density_g_cm3: float
+    # FDM layer weakening, opt-in via resolve_material overrides —
+    # aniso_z = stiffness factor along the layer normal (1.0 = isotropic)
+    aniso_z: float = 1.0
+    aniso_axis: int = 2  # 0=x, 1=y, 2=z (build direction)
 
 
 _MATERIALS: dict[str, MaterialProps] = {
@@ -57,11 +61,13 @@ def resolve_material(
     e_mpa: float | None = None,
     nu: float | None = None,
     yield_mpa: float | None = None,
+    aniso_z: float | None = None,
+    aniso_axis: int | None = None,
 ) -> MaterialProps:
     """Look up a material by name (falls back to PLA) and apply overrides."""
     key = _ALIASES.get(name.strip().lower(), name.strip().lower())
     base = _MATERIALS.get(key, DEFAULT)
-    if e_mpa is None and nu is None and yield_mpa is None:
+    if all(v is None for v in (e_mpa, nu, yield_mpa, aniso_z, aniso_axis)):
         return base
     return MaterialProps(
         name=base.name,
@@ -69,4 +75,6 @@ def resolve_material(
         poisson=nu if nu is not None else base.poisson,
         yield_mpa=yield_mpa or base.yield_mpa,
         density_g_cm3=base.density_g_cm3,
+        aniso_z=aniso_z if aniso_z is not None else base.aniso_z,
+        aniso_axis=aniso_axis if aniso_axis is not None else base.aniso_axis,
     )
