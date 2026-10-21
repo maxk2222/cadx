@@ -18,6 +18,13 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
   clone/HF-download helpers used by `mesh_server/scripts/install_*.sh`).
   Per-run logs land in `logs/<name>-<ts>.log`. Extend the libs rather than
   duplicating output/detect code in a new script.
+- Self-update: `make update` / `scripts/update.sh` (`--check`, `--ref`,
+  `--rollback`, `--force`) — pull + deps + rebuild + restart + verify, driven
+  on the host by the token-authed updater daemon `scripts/update_server.py`
+  (:8766, survives the restart it drives); the api only proxies it via
+  `/api/system/*` and the GUI card lives in Settings → System. Never put
+  update/git logic inside the api container — it can't see the repo.
+  See `docs/updating.md`.
 - Setup env once:        `python3 -m venv .venv && .venv/bin/python -m pip install uv`
 - Install backend deps:  `make sync`            (creates backend/.venv via uv)
 - Infra for local dev:   `make infra`           (postgres+redis via docker-compose.dev.yml)

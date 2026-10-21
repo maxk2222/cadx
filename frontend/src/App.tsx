@@ -48,6 +48,7 @@ function NavItem({
   active,
   badge,
   badgeWarn,
+  badgeTitle,
 }: {
   to: string;
   icon: LucideIcon;
@@ -56,6 +57,8 @@ function NavItem({
   badge?: number;
   /** some badge jobs wait for user input — recolour to draw attention */
   badgeWarn?: boolean;
+  /** tooltip override (e.g. "N commits behind origin") */
+  badgeTitle?: string;
 }) {
   return (
     <Link
@@ -75,7 +78,7 @@ function NavItem({
       <span className="hidden md:inline">{label}</span>
       {badge ? (
         <span
-          title={badgeWarn ? "a job is waiting for input" : "active jobs"}
+          title={badgeTitle ?? (badgeWarn ? "a job is waiting for input" : "active jobs")}
           className={`absolute right-1.5 top-1/2 flex h-4 min-w-4 -translate-y-1/2 items-center justify-center rounded-full px-1 text-[10px] font-semibold text-white md:static md:translate-y-0 ${
             badgeWarn ? "bg-amber-500 text-zinc-950" : "bg-brand-600"
           }`}
@@ -96,6 +99,18 @@ function SideNav() {
     refetchInterval: (q) => (q.state.data?.length ? 8000 : false),
   });
   const waiting = activeJobs.data?.some((j) => j.status === "waiting_for_input") ?? false;
+  // cheap: serves the daemon's cached check and only self-refreshes when >6h stale
+  const updateCheck = useQuery({
+    queryKey: ["update", "check"],
+    queryFn: api.updateCheck,
+    refetchInterval: 10 * 60_000,
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+  const updatesBehind =
+    updateCheck.data?.update_available && updateCheck.data.behind
+      ? updateCheck.data.behind
+      : undefined;
   return (
     <aside className="sticky top-0 z-40 flex h-screen w-14 shrink-0 flex-col border-r border-zinc-800/80 bg-zinc-950 md:w-44">
       <Link
@@ -154,6 +169,10 @@ function SideNav() {
           icon={Settings}
           label="Settings"
           active={loc.pathname === "/settings"}
+          badge={updatesBehind}
+          badgeTitle={
+            updatesBehind ? `${updatesBehind} update${updatesBehind > 1 ? "s" : ""} available` : undefined
+          }
         />
       </nav>
       <div className="mt-auto flex justify-center border-t border-zinc-800/80 py-3 md:justify-start md:px-3">

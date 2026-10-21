@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import ModelsTab from "../components/ModelsTab";
+import UpdateCard from "../components/UpdateCard";
 import {
   Btn,
   Card,
@@ -1430,6 +1431,8 @@ export default function SettingsPage() {
               (database, redis, ports) is fixed by docker compose / launcher defaults
             </div>
           </Card>
+
+          <UpdateCard />
         </div>
       )}
       </div>

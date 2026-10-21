@@ -1234,3 +1234,50 @@ export interface CompareResult {
   params_diff: ParamDiff[];
   error?: string;
 }
+
+/** GET /system/version — git info comes from the host updater daemon. */
+export interface SystemVersion {
+  version: string;
+  updater_ok: boolean;
+  git: { sha: string; branch: string; dirty: number; ts: string | null } | null;
+}
+
+export interface UpdateCommit {
+  sha: string;
+  subject: string;
+  date: string;
+}
+
+/** GET /system/update/check — update.sh --check result, daemon-cached. */
+export interface UpdateCheck {
+  behind: number | null;
+  ahead: number | null;
+  commits: UpdateCommit[];
+  branches: string[];
+  current_ref: string;
+  target_ref: string;
+  current_sha: string;
+  target_sha: string | null;
+  update_available: boolean;
+  dirty: string[];
+  checked_at: string | null;
+  stale: boolean;
+  refreshing: boolean;
+}
+
+/** GET /system/update/status — update-state.json + log tail from the daemon. */
+export interface UpdateStatus {
+  state: "idle" | "checking" | "running" | "rolling-back" | "done" | "failed";
+  phase: string | null;
+  error: string | null;
+  ref: string | null;
+  prev_sha: string | null;
+  new_sha: string | null;
+  active_jobs: number;
+  mode: string;
+  log: string | null;
+  log_tail: string[];
+  started_at: string | null;
+  finished_at: string | null;
+  version?: { sha: string; branch: string; dirty: number } | null;
+}

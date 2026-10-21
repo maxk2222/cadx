@@ -32,6 +32,9 @@ import type {
   Settings,
   SettingsUpdate,
   Stats,
+  SystemVersion,
+  UpdateCheck,
+  UpdateStatus,
   VersionDetail,
   VersionSummary,
 } from "./types";
@@ -308,6 +311,17 @@ export const api = {
     req<ChatMessage>(`/chats/${id}/messages`, json(body)),
   runChat: (id: string) => req<{ ok: boolean }>(`/chats/${id}/run`, { method: "POST" }),
   cancelChat: (id: string) => req<{ ok: boolean }>(`/chats/${id}/cancel`, { method: "POST" }),
+
+  // system update — proxied to the host-side updater daemon (port 8766)
+  systemVersion: () => req<SystemVersion>("/system/version"),
+  updateCheck: () => req<UpdateCheck>("/system/update/check"),
+  updateCheckRun: (ref?: string) =>
+    req<{ started: boolean }>("/system/update/check", json({ ref: ref ?? null })),
+  updateStart: (body: { ref?: string; confirm_jobs?: boolean }) =>
+    req<{ started: boolean }>("/system/update", json(body)),
+  updateStatus: () => req<UpdateStatus>("/system/update/status"),
+  updateRollback: () =>
+    req<{ started: boolean }>("/system/update/rollback", json({ confirm: true })),
 };
 
 export function jobEventsUrl(jobId: string): string {

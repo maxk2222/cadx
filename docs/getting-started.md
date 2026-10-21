@@ -103,7 +103,7 @@ scripts/setup.sh             # re-run the installer           (make autosetup)
 scripts/setup.sh --doctor    # diagnostics: tier, adapters, env overrides
 make help                    # annotated list of every make target (also plain `make`)
 make restart                 # stop + start (docker mode; `restart-dev` for native)
-make update                  # git pull --ff-only, then re-run the installer
+make update                  # full self-update: pull + deps + rebuild + restart (docs/updating.md)
 make open                    # open the app in the browser
 ```
 

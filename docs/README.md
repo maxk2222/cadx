@@ -16,6 +16,7 @@
 |-----|----------|
 | [Getting started](getting-started.md) | Prerequisites, one-command install, GPU tiers, docker vs. native dev mode, first run |
 | [Configuration](configuration.md) | Authoritative reference for all runtime settings, project options and environment variables |
+| [Updating](updating.md) | Self-update from GitHub: `make update` / the Settings button, channels, rollback, the updater daemon |
 | [Troubleshooting](troubleshooting.md) | Diagnostics (`--doctor`, `status.sh`) and common failures |
 
 ## Using CADX
