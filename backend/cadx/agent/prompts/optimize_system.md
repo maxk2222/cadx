@@ -123,7 +123,9 @@ Kinds:
 
 Each `topopt_run` reports:
 
-- `sf_mask` — safety factor on the exact voxel structure.
+- `sf_mask` — safety factor on the exact voxel structure. On an
+  auto-coarsened grid it reads systematically ~1.5-2× optimistic (the coarse
+  pitch under-resolves thin junctions) — never rank a run by it alone.
 - `sf_export` — safety factor on the smoothed mesh you will actually print.
   **Judge by `sf_export`.**
 - `min_member_mm` — thinnest structural member. Below ~2× nozzle (≈1.6 mm
@@ -173,12 +175,23 @@ Each `topopt_run` reports:
      failing area (check the von Mises render).
    - thin/unprintable members → +0.1 volfrac or larger keep regions.
    - visual break-up → keep regions on the affected features.
+   - a `limit cycle` warning (density oscillating at the move limit, or
+     "persisted past the beta cap") → the optimizer is bouncing between
+     competing layouts; repeating the call reproduces the cycle. Change the
+     FORMULATION, not just the volume: set `symmetry:` to the plane the part
+     is actually mirrored about (an L-bracket with bores at ±X is `yz`), or
+     switch `filter:` (helmholtz+heaviside → cone, or the reverse).
    - unrealistic load (e.g. thousands of N by accident) → fix the region/
      pressure, note the change in `done` reasoning.
 6. Stop when `sf_export` ≥ target AND printable AND features intact —
    or when the tool-call budget is low and the best run is acceptable.
    A high base SF is removal headroom, not a reason to skip: when
    optimization was requested, prefer a valid lighter run over the base.
+   If the probe warned that the baseline SF is already below the spec
+   minimum, NO run can reach the target (SIMP only removes material) — run
+   at most ONE confirmatory pass, then `done(-1)` to keep the base or
+   `done` with the best verified run; do not sweep volume fractions
+   looking for an impossible value.
 7. `done(run_index)` with the best run — `run_index: -1` keeps the base.
    Only decline when NO run is connected (n_bodies_export == 1), verified
    (`verified` true), printable and feature-complete — an SF below

@@ -1940,6 +1940,10 @@ def run_topopt_pipeline(  # noqa: C901
         {
             "iterations": result.iterations,
             "converged": result.converged,
+            # the caller's ask vs the pass the sweep actually committed —
+            # `volfrac_target` alone reported the silent +0.1 retry as the
+            # target and misled the agent about what ran
+            "volfrac_requested": params.volfrac,
             "volfrac_target": best["volfrac"],
             "volfrac_achieved": round(
                 float(result.density[domain.solid.ravel()].sum()) / max(int(domain.solid.sum()), 1),

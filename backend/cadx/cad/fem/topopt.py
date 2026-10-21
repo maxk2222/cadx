@@ -1061,6 +1061,18 @@ def simp(  # noqa: C901
                 "consecutive iterations — a limit cycle, not convergence; "
                 "consider symmetry=<plane> or a different filter/threshold"
             )
+        # once the Heaviside continuation has hit its beta cap there is no
+        # mechanism left to settle an oscillating field — it will bounce
+        # between layouts until the iteration cap. Extract the current field
+        # honestly instead of burning ~10-20 more solver minutes per pass.
+        if move_streak >= 15 and heaviside and proj.beta >= params.beta_max:
+            warnings.append(
+                f"limit cycle persisted past the beta cap ({params.beta_max:g}) "
+                f"at iteration {it} — no settling mechanism left; extracting "
+                "the current density field. Retry with symmetry=<plane> or a "
+                "different filter/threshold"
+            )
+            break
 
         # secondary convergence: OC 'change' can stay at the move limit while
         # the objective already settled — count a stalled objective only when

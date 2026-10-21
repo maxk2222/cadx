@@ -1914,6 +1914,7 @@ def _ensure_watertight(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
         except Exception:
             pass
         if len(rem.faces) and rem.is_watertight:
+            rem = _rescale_to_envelope(rem, m)
             log.warning(
                 "mesh.repair_voxel_fallback",
                 faces_in=len(mesh.faces),
@@ -1926,6 +1927,34 @@ def _ensure_watertight(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
         f"mesh could not be made watertight ({len(mesh.faces)} faces) — "
         "run mesh_repair/mesh_keep_largest first"
     )
+
+
+def _rescale_to_envelope(rem: trimesh.Trimesh, ref: trimesh.Trimesh) -> trimesh.Trimesh:
+    """Fit ``rem`` onto ``ref``'s bbox (per-axis scale about the bbox centre).
+
+    Marching cubes quantizes the envelope outward (~a pitch per side) — the
+    pad absorbs a dim-gate fit loop's scale ops round after round (observed:
+    the identical y-fit factor applied twice without the measured bbox
+    moving). Rescaling the rebuild back to the input envelope keeps the
+    shape while restoring exact bounds.
+    """
+    try:
+        src_b = np.asarray(ref.bounds, dtype=float)
+        dst_b = np.asarray(rem.bounds, dtype=float)
+        src_span = src_b[1] - src_b[0]
+        dst_span = dst_b[1] - dst_b[0]
+        if not (np.all(src_span > 1e-6) and np.all(dst_span > 1e-6)):
+            return rem
+        factors = src_span / dst_span
+        c_src = (src_b[0] + src_b[1]) / 2.0
+        c_dst = (dst_b[0] + dst_b[1]) / 2.0
+        t = np.eye(4)
+        t[:3, :3] = np.diag(factors)
+        t[:3, 3] = c_src - factors * c_dst
+        rem.apply_transform(t)
+    except Exception:
+        pass
+    return rem
 
 
 def heal_seam_slivers(mesh: trimesh.Trimesh) -> trimesh.Trimesh:

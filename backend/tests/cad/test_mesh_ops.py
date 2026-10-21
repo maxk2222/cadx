@@ -1252,3 +1252,52 @@ def test_baseline_mesh_rotate_z_suppresses_auto_yaw():
     post = MeshPostParams(up="+z", front="+y", rotate_z_deg=10, auto_yaw=True)
     _m, info = baseline_mesh(_yawed_box(45), post, None)
     assert info["orientation"]["yaw_auto_deg"] == 0.0
+
+
+def test_ensure_watertight_voxel_fallback_preserves_envelope(monkeypatch):
+    """The marching-cubes rebuild quantizes the envelope outward (~a pitch
+    per side). The pad once absorbed a dim-gate fit loop's scale ops round
+    after round — the rebuild must come back on the input bounds."""
+    from cadx.cad import mesh_ops
+
+    m = _box(103.6, 60.0, 61.8)
+    # open it so the ladder must go past fill_holes/manifold into voxels
+    leaky = m.submesh([list(range(len(m.faces) - 1))], append=True)
+    assert not leaky.is_watertight
+    monkeypatch.setattr(trimesh.Trimesh, "fill_holes", lambda _m: None)
+    monkeypatch.setattr(mesh_ops, "_alpha_wrap_repair", lambda *_a, **_k: None)
+
+    # a manifold3d success would skip the voxel path — force it too
+    import sys
+
+    class _NoManifold:
+        def __getattr__(self, name):
+            raise ImportError("manifold3d unavailable in test")
+
+    monkeypatch.setitem(sys.modules, "manifold3d", _NoManifold())
+
+    out = mesh_ops._ensure_watertight(leaky)
+    assert out.is_watertight
+    np.testing.assert_allclose(out.extents, leaky.extents, atol=0.5)
+
+
+def test_ensure_watertight_voxel_fallback_keeps_center(monkeypatch):
+    """The envelope rescale must preserve the part's bbox centre, not shift it."""
+    from cadx.cad import mesh_ops
+
+    m = _box(20.0, 20.0, 20.0)
+    m.apply_translation([50.0, -10.0, 7.0])
+    leaky = m.submesh([list(range(len(m.faces) - 1))], append=True)
+    monkeypatch.setattr(trimesh.Trimesh, "fill_holes", lambda _m: None)
+    monkeypatch.setattr(mesh_ops, "_alpha_wrap_repair", lambda *_a, **_k: None)
+
+    import sys
+
+    class _NoManifold:
+        def __getattr__(self, name):
+            raise ImportError("manifold3d unavailable in test")
+
+    monkeypatch.setitem(sys.modules, "manifold3d", _NoManifold())
+
+    out = mesh_ops._ensure_watertight(leaky)
+    np.testing.assert_allclose(out.bounds.mean(axis=0), leaky.bounds.mean(axis=0), atol=0.5)

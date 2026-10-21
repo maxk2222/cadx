@@ -216,6 +216,41 @@ def test_move_limit_oscillation_warning() -> None:
     assert any("limit cycle" in w for w in res.warnings)
 
 
+def test_limit_cycle_break_at_beta_cap() -> None:
+    """Once the Heaviside continuation sits at beta_max and the density still
+    saturates the move cap, no mechanism remains to settle the field — the
+    loop must break and extract rather than burn solver minutes to the cap."""
+    from cadx.cad.fem.regions import resolve_case
+    from cadx.cad.fem.topopt import TopOptParams, passive_solid_mask, simp
+    from cadx.cad.fem.voxelize import voxelize
+
+    dom = voxelize(_box(20.0, 8.0, 8.0), 1.0, 200_000)
+    fixed, F, _ = resolve_case(dom, _cantilever(), [])
+    passive = passive_solid_mask(dom, [], [fixed], [])
+    res = simp(
+        dom,
+        3500.0,
+        0.36,
+        [(fixed, F)],
+        passive,
+        # beta already at the cap + a move far below any real step: the
+        # streak counter hits 15 with no settle mechanism left — break
+        TopOptParams(
+            volfrac=0.4,
+            rmin_mm=2.0,
+            max_iter=30,
+            move=0.001,
+            tol=0.0,
+            converge_patience=50,
+            filter="heaviside",
+            beta0=8.0,
+            beta_max=8.0,
+        ),
+    )
+    assert res.iterations <= 20
+    assert any("persisted past the beta cap" in w for w in res.warnings)
+
+
 def test_multires_default_on_with_opt_out(tmp_path: Path) -> None:
     """S1: multires runs by default once the domain clears
     topopt_multires_min_cells; an explicit multires=false opts out."""

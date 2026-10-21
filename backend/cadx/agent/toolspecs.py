@@ -2377,6 +2377,7 @@ class ToolSession:
         out: dict[str, Any] = {
             "ok": True,
             "run_index": idx,
+            "volfrac_requested": top.get("volfrac_requested"),
             "volfrac_target": top.get("volfrac_target"),
             "volfrac_achieved": top.get("volfrac_achieved"),
             "iterations": top.get("iterations"),
