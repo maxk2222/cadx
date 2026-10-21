@@ -15,7 +15,7 @@ FRONTEND := frontend
         test lint fmt eval eval-real migrate build clean clean-all \
         mesh-sync mesh-server mesh-models mesh-test dev-mesh \
         start start-dev stop status restart restart-dev autosetup doctor \
-        open update
+        open update update-check
 
 ##@ Setup & run (one command)
 
@@ -53,8 +53,11 @@ autosetup: ## Re-run the installer (GPU detection + adapters + dev deps)
 doctor: ## Diagnostics: tier, adapters, tool versions, disk, ports
 	bash scripts/setup.sh --doctor
 
-update: ## git pull --ff-only, then re-run the installer
-	git pull --ff-only && bash scripts/setup.sh --dev
+update: ## full update: pull + reinstall + rebuild + restart (scripts/update.sh)
+	bash scripts/update.sh --yes
+
+update-check: ## report how far behind origin the checkout is
+	bash scripts/update.sh --check
 
 ##@ Development
 

@@ -59,7 +59,7 @@ render() {
 
   say "native processes"
   local found=0 name st
-  for name in api worker executor web mesh-server; do
+  for name in api worker executor web mesh-server updater; do
     st=$(proc_status "$name")
     [ "$st" = "-" ] && continue
     found=1
@@ -76,6 +76,7 @@ render() {
   http_check "api (native dev)" http://localhost:8000/api/health
   http_check "vite (native dev)" http://localhost:5173
   http_check "mesh-server"      http://localhost:8765/v1/health
+  http_check "updater"          http://localhost:8766/v1/health
 
   say "docker"
   docker compose ps --format '  {{.Name}}: {{.Status}}' 2>/dev/null \
@@ -90,6 +91,20 @@ models = data.get("models", data if isinstance(data, list) else [])
 for m in models:
     mark = "x" if m.get("available") else "-"
     print(f"   {mark} {m.get('id')}  ({m.get('device')})")
+PY
+  fi
+
+  if [ -f run/update-check.json ]; then
+    python3 - <<'PY' 2>/dev/null || true
+import json
+try:
+    c = json.load(open("run/update-check.json"))
+    b = c.get("behind")
+    if b is not None:
+        print(f"   updates: {b} commit(s) behind origin/{c.get('target_ref')} "
+              f"(checked {c.get('checked_at','?')})")
+except Exception:
+    pass
 PY
   fi
 

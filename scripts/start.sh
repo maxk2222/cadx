@@ -43,6 +43,8 @@ TIER=$(gpu_detect_tier)
 MODEL=$(gpu_default_model "$TIER")
 IMG_MODEL=$(gpu_default_image_model "$TIER")
 mkdir -p run logs
+# run/mode records how the stack was started — update.sh restarts the same way
+echo "$([ "$DEV" = 1 ] && echo dev || echo docker)" > run/mode
 
 say "CADX start — tier: $TIER · mode: $([ "$DEV" = 1 ] && echo dev || echo docker)"
 info "log: $LOG_FILE"
@@ -104,6 +106,32 @@ if [ "$NO_MESH" = 0 ] && [ "$TIER" != "none" ]; then
 fi
 [ "$PF_FAIL" = 1 ] && { step_fail "resolve the problems above"; exit 1; }
 step_done
+
+# ---------- 2b. updater token/url ----------
+# The host-side updater daemon authenticates with a bearer token that must be
+# identical for the daemon (env/file), the native dev api (inherited env) and
+# the docker api (.env -> compose env). Precedence: .env > env > generated.
+step_begin "updater token"
+if [ ! -s run/updater.token ]; then
+  python3 -c 'import secrets;print(secrets.token_hex(24))' > run/updater.token
+  chmod 600 run/updater.token
+fi
+export CADX_UPDATE_TOKEN
+CADX_UPDATE_TOKEN="${CADX_UPDATE_TOKEN:-$(cat run/updater.token)}"
+export CADX_UPDATE_URL="http://127.0.0.1:${UPDATE_PORT:-8766}"
+if [ "$DEV" = 0 ]; then
+  touch .env
+  if grep -q '^CADX_UPDATE_TOKEN=' .env; then
+    CADX_UPDATE_TOKEN=$(grep '^CADX_UPDATE_TOKEN=' .env | tail -1 | cut -d= -f2-)
+    export CADX_UPDATE_TOKEN
+    printf '%s\n' "$CADX_UPDATE_TOKEN" > run/updater.token
+    chmod 600 run/updater.token
+  else
+    printf 'CADX_UPDATE_TOKEN=%s\n' "$CADX_UPDATE_TOKEN" >> .env
+  fi
+  export CADX_UPDATE_URL="http://host.docker.internal:${UPDATE_PORT:-8766}"
+fi
+step_done "token ready"
 
 # ---------- 3. mesh-server config ----------
 # MESH_BASE_URL / MESH_MODEL are exported as SEED env: the app copies them
@@ -228,6 +256,35 @@ PY
 else
   step_begin "mesh-server"
   step_skip "$([ "$NO_MESH" = 1 ] && echo '--no-mesh' || echo "tier=$TIER")"
+fi
+
+# ---------- 5b. updater daemon ----------
+# Tiny stdlib http service that runs scripts/update.sh on the host so the web
+# GUI can trigger a full-stack update (the api container cannot update itself).
+step_begin "updater"
+if pidfile_alive updater; then
+  step_skip "already running (pid $(pidfile_pid updater))"
+elif ! port_free "${UPDATE_PORT:-8766}"; then
+  if curl -sf --max-time 3 "http://localhost:${UPDATE_PORT:-8766}/v1/health" >/dev/null 2>&1; then
+    step_skip "already serving on :${UPDATE_PORT:-8766} (adopted)"
+  else
+    warn "port ${UPDATE_PORT:-8766} held by a foreign process — update button will be offline"
+  fi
+elif [ "$DRY" = 1 ]; then
+  step_skip "dry-run: would start update_server.py"
+else
+  UPDATE_BIND="127.0.0.1"
+  if [ "$DEV" = 0 ]; then
+    # docker api reaches the host via host.docker.internal — on Linux that's
+    # the docker0 gw, on macOS the host's LAN IP; a loopback bind is
+    # unreachable either way. the bearer token gates all writes.
+    UPDATE_BIND="0.0.0.0"
+    warn "binding updater to 0.0.0.0 (required so the docker api can reach it; token-protected)"
+  fi
+  UPDATE_HOST="$UPDATE_BIND" UPDATE_PORT="${UPDATE_PORT:-8766}" \
+    pidfile_start updater . python3 scripts/update_server.py
+  wait_for_url "http://localhost:${UPDATE_PORT:-8766}/v1/health" 30 updater \
+    || warn "updater did not answer — update button will be offline"
 fi
 
 # ---------- ready ----------

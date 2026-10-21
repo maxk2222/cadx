@@ -381,6 +381,7 @@ pidfile_proc_matches() {
     executor)    printf '%s' "$cmd" | grep -q 'arq.*CadWorker\|cadx.queue' ;;
     web)         printf '%s' "$cmd" | grep -q 'vite\|npm' ;;
     mesh-server) printf '%s' "$cmd" | grep -q 'meshserver\|mesh_server' ;;
+    updater)     printf '%s' "$cmd" | grep -q 'update_server' ;;
     *)           return 0 ;;
   esac
 }

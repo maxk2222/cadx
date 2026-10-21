@@ -24,7 +24,23 @@ say "stopping cadx"
 
 # native processes — pidfile_stop verifies the pid still belongs to the
 # expected service before signalling (PID-reuse guard)
-for name in mesh-server api worker executor web; do
+update_in_progress() {
+  # the updater daemon must survive the stop it drives mid-update
+  [ -f run/update-state.json ] || return 1
+  python3 - <<'PY' 2>/dev/null | grep -q '^1$'
+import json
+try:
+    print(1 if json.load(open("run/update-state.json")).get("state")
+          in ("running", "rolling-back", "checking") else 0)
+except Exception:
+    print(0)
+PY
+}
+for name in mesh-server api worker executor web updater; do
+  if [ "$name" = updater ] && update_in_progress; then
+    info "update in progress — leaving the updater daemon running"
+    continue
+  fi
   if [ -f "run/$name.pid" ]; then
     pidfile_stop "$name"
   fi
@@ -46,7 +62,7 @@ if [ -f docker-compose.dev.yml ] \
 fi
 
 # leftover port squatters without pidfiles — report, don't kill blindly
-for port in 8080 8000 5173 8765; do
+for port in 8080 8000 5173 8765 8766; do
   owner=$(port_owner "$port")
   [ -n "$owner" ] && warn "port $port still held by: $owner"
 done

@@ -37,9 +37,17 @@ services:
       # bootstrap seed only — used once to create the DB runtime row when it
       # does not exist yet; afterwards the DB value wins and this is ignored
       MESH_BASE_URL: ${MESH_BASE_URL:-http://host.docker.internal:8765}
+      # host-side updater daemon (scripts/update_server.py) — lets the GUI
+      # trigger a full-stack update the api container can't perform itself
+      CADX_UPDATE_URL: ${CADX_UPDATE_URL:-http://host.docker.internal:8766}
+      CADX_UPDATE_TOKEN: ${CADX_UPDATE_TOKEN:-}
       # keep the rembg u2net model (~170 MB, first bg-removal call) on the
       # data volume so container recreates don't re-download it
       U2NET_HOME: /data/rembg
+    extra_hosts:
+      # api needs this to reach the updater on native dockerd (docker0 gw);
+      # Docker Desktop resolves host.docker.internal either way
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./data:/data
     depends_on:
