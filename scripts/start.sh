@@ -11,6 +11,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 source scripts/lib/gpu_detect.sh
+source scripts/lib/host_detect.sh
 source scripts/lib/ui.sh
 
 usage() { sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//; /^set -euo/d'; }
@@ -160,6 +161,13 @@ if [ "$DEV" = 1 ]; then
     done
   fi
 else
+  # container cpu/mem caps follow the detected system (docker VM budget on
+  # Desktop, host resources on native dockerd) — merged into .env only for
+  # keys the user hasn't pinned, so overrides survive restarts
+  step_begin "resource limits (auto)"
+  host_detect_merge_env .env
+  while IFS='=' read -r k v; do info "$k=$v"; done < <(host_detect_env)
+  step_done
   if [ "$NO_BUILD" = 1 ]; then
     run_step "docker stack" docker compose up -d || exit 1
   else

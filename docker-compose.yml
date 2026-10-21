@@ -80,8 +80,8 @@ services:
     # uncapped worker grew to ~12GB during mesh evals and took the whole
     # Docker VM down — cap below VM total so an OOM kills one container,
     # not the stack (eval runs additionally carry an RLIMIT_DATA guard)
-    mem_limit: 12g
-    cpus: 4
+    mem_limit: ${CADX_WORKER_MEM:-12g}
+    cpus: ${CADX_WORKER_CPUS:-4}
 
   cad-executor:
     build:
@@ -111,11 +111,11 @@ services:
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
-    pids_limit: 256
+    pids_limit: ${CADX_EXECUTOR_PIDS:-512}
     # headroom for STL->B-rep sewing + pyvista renders on capped meshes —
     # 6g was hit by the uncapped watertight ladder (283k-face input, rc=137)
-    mem_limit: 8g
-    cpus: 4
+    mem_limit: ${CADX_EXECUTOR_MEM:-8g}
+    cpus: ${CADX_EXECUTOR_CPUS:-4}
 
   # GPU mesh generator — only on CUDA hosts; on macOS run it natively instead
   # (make mesh-server). Enable with: docker compose --profile gpu up -d
