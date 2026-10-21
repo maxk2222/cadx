@@ -12,6 +12,42 @@ def test_build_issues_solids_gate():
     assert build_issues(None, [], [], None, None) == []
 
 
+def test_params_vs_spec_only_checks_parametric_cad_envelopes():
+    from cadx.agent.orchestrator import _params_vs_spec
+    from cadx.llm.schemas import PartSpec
+
+    spec = PartSpec(
+        name="mesh-backed knob",
+        summary="40 mm knob with a centered bore",
+        length_x={"value": 40.0, "source": "stated"},
+        width_y={"value": 40.0, "source": "stated"},
+        height_z={"value": 30.0, "source": "stated"},
+        features=[],
+        image_roles=[],
+        verification_questions=[],
+    )
+    params = {"hole_d": 4.2}
+
+    assert _params_vs_spec(spec, params, mode="hybrid") == []
+    assert _params_vs_spec(spec, params, mode="mesh") == []
+    assert len(_params_vs_spec(spec, params, mode="cad")) == 3
+
+
+def test_best_candidate_keeps_its_own_issue_list():
+    from cadx.agent.orchestrator import Candidate, _select_best_candidate
+    from cadx.llm.schemas import Critique
+
+    old = Candidate(1, None, {}, Critique(score=40, passed=False), [])
+    current = Candidate(2, None, {}, Critique(score=80, passed=True), [])
+    old_issues = [{"what": "old oversized-rib claim"}]
+    current_issues = [{"what": "current slot tolerance note"}]
+
+    best, issues = _select_best_candidate(old, old_issues, current, current_issues)
+
+    assert best is current
+    assert issues is current_issues
+
+
 def test_copy_best_artifacts_uses_art_dir(tmp_path):
     """T8.7: when several pipeline runs share an iteration dir, the winner's
     renders must come from its own attempt subdir — the shared dir holds the

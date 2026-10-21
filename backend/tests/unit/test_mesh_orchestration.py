@@ -84,6 +84,17 @@ def _spec(dims: tuple[float, float, float], **kw) -> PartSpec:
     )
 
 
+def test_base_seed_honors_fixed_mesh_seed_across_random_eval_ids() -> None:
+    from cadx.agent.orchestrator import _base_seed
+
+    settings = ProjectSettings(mesh_seed=4242)
+    first = _ctx(settings=settings, assets=[_img(1)])
+    second = _ctx(settings=settings, assets=[_img(2)])
+    assert first.project_id != second.project_id
+    assert first.assets[0].asset_id != second.assets[0].asset_id
+    assert _base_seed(first) == _base_seed(second) == 4242
+
+
 def _plan() -> ModelingPlan:
     return ModelingPlan(approach="mesh", approach_reason="r", mesh_subject="knob")  # type: ignore[arg-type]
 

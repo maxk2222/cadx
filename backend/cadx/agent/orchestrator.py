@@ -148,6 +148,17 @@ class Candidate:
         )
 
 
+def _select_best_candidate(
+    best: Candidate | None,
+    best_issues: list[dict[str, Any]],
+    candidate: Candidate,
+    candidate_issues: list[dict[str, Any]],
+) -> tuple[Candidate, list[dict[str, Any]]]:
+    if best is None or candidate.rank > best.rank:
+        return candidate, candidate_issues
+    return best, best_issues
+
+
 @dataclass
 class RunOutcome:
     status: str = "failed"  # succeeded | needs_review | failed | waiting_for_input | cancelled
@@ -629,10 +640,17 @@ def _session_render_fn(ctx: AgentCtx, iteration: int, attempt: Any):
     return run
 
 
-def _params_vs_spec(spec: PartSpec, literal_params: dict[str, Any]) -> list[dict[str, Any]]:
-    """Cheap consistency check: stated spec dims should appear in PARAMS values."""
+def _params_vs_spec(
+    spec: PartSpec, literal_params: dict[str, Any], *, mode: str = "cad"
+) -> list[dict[str, Any]]:
+    """Cheap CAD consistency check: stated part dims should appear in PARAMS.
+
+    Mesh/hybrid base dimensions come from the normalized source mesh; their
+    code PARAMS usually describe only a bore/cut and cannot represent the
+    whole envelope.
+    """
     issues: list[dict[str, Any]] = []
-    if not literal_params:
+    if mode != "cad" or not literal_params:
         return issues
     vals = [float(v) for v in literal_params.values() if isinstance(v, int | float)]
     for dim, name in (
@@ -3477,7 +3495,9 @@ async def _run_cad(  # noqa: C901
         # persisted version holds the EXECUTED code, not the broken original
         code_resp = code_resp.model_copy(update={"code": code})
 
-        pre_issues = _params_vs_spec(spec, chk.params)
+        pre_issues = _params_vs_spec(
+            spec, chk.params, mode=ctx.resolved_mode or outcome.resolved_mode or "cad"
+        )
         # static lint warnings (discarded transforms, no-op rotations, 2D
         # shapes in booleans) are probable bugs — surface them to the
         # improve/repair steps as minor issues
@@ -3847,11 +3867,10 @@ async def _run_cad(  # noqa: C901
         prev_issue_fps = cur_fps
         prev_features_hash = feat_hash
         best_replaced = best is None or cand.rank > best.rank
-        if best_replaced:
-            best = cand
-            # improve always patches best.code — its issue list must describe
-            # that same code, not a regressed later candidate
-            best_issues = cur_issues
+        best, best_issues = _select_best_candidate(best, best_issues, cand, cur_issues)
+        # Keep the live issue list paired with the selected code even when a
+        # passing candidate breaks out of the loop immediately below.
+        issues = best_issues
         cur_score = cand.critique.score if cand.critique else 0
         # progress = a new best OR a rise in either quality number — a
         # saturated critique score (0 after enough majors) must not read as

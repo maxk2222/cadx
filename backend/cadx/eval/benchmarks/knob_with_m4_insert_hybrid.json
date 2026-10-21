@@ -3,7 +3,7 @@
   "gen_mode": "hybrid",
   "fake_mesh": true,
   "images": ["backend/cadx/eval/fixtures/knob.png"],
-  "settings": { "max_iterations": 1 },
+  "settings": { "max_iterations": 1, "mesh_seed": 4242 },
   "llm_script": [
     {
       "name": "knob with M4 insert",
@@ -45,7 +45,7 @@
         { "name": "hole_d", "value": 4.2, "unit": "mm", "description": "M4 clearance diameter" }
       ],
       "expected_bbox": [40, 40, 30],
-      "code": "from build123d import *\n\nPARAMS = {\"hole_d\": 4.2}\n\nbase = load_mesh_solid()\nhole = Pos(0, 0, -100) * Cylinder(radius=PARAMS[\"hole_d\"] / 2, height=300)\nresult = base - hole\n"
+      "code": "from build123d import *\nimport cadlib\n\nPARAMS = {\"hole_d\": 4.2}\n\nbase = load_mesh_solid()\nbb = base.bounding_box()\nhole = Pos(0, 0, bb.min.Z - 1.0) * Cylinder(\n    radius=PARAMS[\"hole_d\"] / 2,\n    height=bb.size.Z + 2.0,\n    align=(Align.CENTER, Align.CENTER, Align.MIN),\n)\nresult = cadlib.mesh_cut(base, hole)\n"
     },
     {
       "score": 90,
