@@ -787,6 +787,7 @@ def simp(  # noqa: C901
     change_box = [change]  # shared with _run_mma: cg_rtol reads the live value
     it = 0
     stall = 0
+    move_streak = 0  # consecutive iterations with change saturated at the move cap
     prev_objective: float | None = None
     prev_mask: np.ndarray | None = None  # thresholded design set, for flip count
     t0 = time.monotonic()
@@ -1049,6 +1050,17 @@ def simp(  # noqa: C901
                 progress_file.write_text(
                     json.dumps({"history": history}, indent=1), encoding="utf-8"
                 )
+        # limit-cycle detection: change saturating the OC move cap for many
+        # consecutive iterations means the density field bounces between
+        # competing layouts rather than converging — surface it once so the
+        # caller (agent) can retry with a symmetry plane or another filter
+        move_streak = move_streak + 1 if change >= 0.95 * params.move else 0
+        if move_streak == 15:
+            warnings.append(
+                f"density field oscillating at the move limit for {move_streak} "
+                "consecutive iterations — a limit cycle, not convergence; "
+                "consider symmetry=<plane> or a different filter/threshold"
+            )
 
         # secondary convergence: OC 'change' can stay at the move limit while
         # the objective already settled — count a stalled objective only when

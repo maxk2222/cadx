@@ -183,6 +183,39 @@ def test_simp_history_phase_timings() -> None:
     assert sum(r["assemble_s"] + r["solve_s"] for r in res.history) > 0.0
 
 
+def test_move_limit_oscillation_warning() -> None:
+    """A run whose OC update stays saturated at the move cap for 15+
+    consecutive iterations is a limit cycle — it must surface a warning so
+    the caller can react (symmetry plane, different filter/threshold)."""
+    from cadx.cad.fem.regions import resolve_case
+    from cadx.cad.fem.topopt import TopOptParams, passive_solid_mask, simp
+    from cadx.cad.fem.voxelize import voxelize
+
+    dom = voxelize(_box(20.0, 8.0, 8.0), 1.0, 200_000)
+    fixed, F, _ = resolve_case(dom, _cantilever(), [])
+    passive = passive_solid_mask(dom, [], [fixed], [])
+    res = simp(
+        dom,
+        3500.0,
+        0.36,
+        [(fixed, F)],
+        passive,
+        # move far below any real density step: every iteration where the
+        # field still evolves reports change == move — a saturated streak;
+        # tol=0 + high patience keep the run alive to the iteration cap
+        TopOptParams(
+            volfrac=0.4,
+            rmin_mm=2.0,
+            max_iter=20,
+            move=0.001,
+            tol=0.0,
+            converge_patience=50,
+        ),
+    )
+    assert res.iterations == 20
+    assert any("limit cycle" in w for w in res.warnings)
+
+
 def test_multires_default_on_with_opt_out(tmp_path: Path) -> None:
     """S1: multires runs by default once the domain clears
     topopt_multires_min_cells; an explicit multires=false opts out."""
