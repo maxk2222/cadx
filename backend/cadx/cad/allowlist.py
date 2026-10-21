@@ -923,63 +923,172 @@ def validate_overrides(overrides: dict[str, object], declared: dict[str, object]
     return errors
 
 
+def _has_load_mesh_call(node: ast.AST) -> bool:
+    return any(
+        isinstance(sub, ast.Call)
+        and isinstance(sub.func, ast.Name)
+        and sub.func.id == "load_mesh_solid"
+        for sub in ast.walk(node)
+    )
+
+
+def _builder_absorption(tree: ast.Module) -> tuple[dict[str, set[str]], set[str]]:
+    """`with X() as v` builder absorption for the mesh-flow dataflow.
+
+    Returns (feeds, direct): `feeds[v]` are the names the bound var received
+    inside its body via add(...) calls or `v.part = expr`/`v.part += expr`;
+    `direct` marks vars whose body contains the load call itself. A later
+    `x = v.part` then flows from whatever the builder took in — the
+    featurebind host-bound hole snippets emit exactly this shape when they
+    bore into the mesh body (`add(part); through_hole; part = _hb.part`)."""
+    feeds_map: dict[str, set[str]] = {}
+    direct: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.With):
+            continue
+        bound = [
+            item.optional_vars.id
+            for item in node.items
+            if isinstance(item.optional_vars, ast.Name)
+        ]
+        if not bound:
+            continue
+        feeds: set[str] = set()
+        for sub in ast.walk(node):
+            if (
+                isinstance(sub, ast.Call)
+                and isinstance(sub.func, ast.Name)
+                and sub.func.id == "add"
+            ):
+                feeds.update(
+                    n.id
+                    for arg in (*sub.args, *(k.value for k in sub.keywords))
+                    for n in ast.walk(arg)
+                    if isinstance(n, ast.Name)
+                )
+            elif isinstance(sub, ast.Assign | ast.AnnAssign | ast.AugAssign):
+                sub_tgts = sub.targets if isinstance(sub, ast.Assign) else [sub.target]
+                if any(
+                    isinstance(t, ast.Attribute)
+                    and isinstance(t.value, ast.Name)
+                    and t.value.id in bound
+                    for t in sub_tgts
+                ):
+                    feeds.update(n.id for n in ast.walk(sub.value) if isinstance(n, ast.Name))
+        for v in bound:
+            feeds_map.setdefault(v, set()).update(feeds)
+            if _has_load_mesh_call(node):
+                direct.add(v)
+    return feeds_map, direct
+
+
 def mesh_solid_flows_to_result(code: str) -> bool:
     """Hybrid-contract check: does a `load_mesh_solid()` result actually reach
-    the geometry, or is it parked in a dead variable?
+    `result`, or is the mesh body parked/discarded along the way?
 
-    Observed evasion: `mesh = load_mesh_solid()` inside try/except with the
-    name never referenced again — the substring check passes while `result`
-    is a fully parametric replacement. Returns True when:
-      - the call is used inline in an expression (not a bare-name assign), or
-      - every name it is assigned to is loaded somewhere else in the file.
+    Order-aware dataflow: Assign/AnnAssign/AugAssign nodes are processed in
+    source order (nested function/if/try bodies flattened — generated code is
+    mostly flat, so source order is a good approximation of dataflow). A name
+    is *mesh-derived* while its last assignment traces back to the call; a
+    re-assignment without the call and without a mesh-derived reference drops
+    the flag — `part = load_mesh_solid(); part = l_profile; result = part` is
+    correctly NOT hybrid (observed bypass: the fused mesh body was discarded
+    by overwrite while the name-presence check still passed).
+
+    `with BuildPart() as p: add(body); ...; part = p.part` keeps the flow —
+    the bound builder var absorbed a derived body. Returns True iff the LAST
+    assignment to `result` is mesh-derived.
     """
     try:
         tree = ast.parse(code)
     except Exception:
         return "load_mesh_solid" in code
 
-    def _has_call(node: ast.AST) -> bool:
-        return any(
-            isinstance(sub, ast.Call)
-            and isinstance(sub.func, ast.Name)
-            and sub.func.id == "load_mesh_solid"
-            for sub in ast.walk(node)
-        )
+    builder_feeds, builder_direct = _builder_absorption(tree)
+    assigns = sorted(
+        (
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Assign | ast.AnnAssign | ast.AugAssign)
+        ),
+        key=lambda n: (n.lineno, n.col_offset),
+    )
 
-    mesh_vars: set[str] = set()
-    assign_lines: set[int] = set()
-    inline_use = False
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            # bare parking: `mesh = load_mesh_solid()` — the RHS is exactly the
-            # call; `x = load_mesh_solid() + Box` uses it inline instead
-            if (
-                isinstance(node.value, ast.Call)
-                and isinstance(node.value.func, ast.Name)
-                and node.value.func.id == "load_mesh_solid"
-            ):
-                for t in node.targets:
-                    if isinstance(t, ast.Name):
-                        mesh_vars.add(t.id)
-                        assign_lines.add(node.lineno)
-            elif _has_call(node.value):
-                inline_use = True
-        elif (
-            isinstance(node, ast.Expr | ast.Return | ast.AnnAssign | ast.AugAssign)
-            and getattr(node, "value", None) is not None
-            and _has_call(node.value)
-        ):
-            inline_use = True
-    if inline_use:
-        return True
-    if not mesh_vars:
+    mesh_derived: set[str] = set()
+    result_derived = False
+
+    def _rhs_derived(expr: ast.AST | None) -> bool:
+        """RHS carries the mesh body: the call itself, a mesh-derived name,
+        or a bound builder var that absorbed a derived body."""
+        if expr is None:
+            return False
+        if _has_load_mesh_call(expr):
+            return True
+        for sub in ast.walk(expr):
+            if not (isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load)):
+                continue
+            if sub.id in mesh_derived or sub.id in builder_direct:
+                return True
+            feeds = builder_feeds.get(sub.id)
+            if feeds and not feeds.isdisjoint(mesh_derived):
+                return True
         return False
-    loaded = {
-        sub.id
-        for sub in ast.walk(tree)
-        if isinstance(sub, ast.Name)
-        and sub.id in mesh_vars
-        and isinstance(sub.ctx, ast.Load)
-        and getattr(sub, "lineno", -1) not in assign_lines
-    }
-    return bool(loaded)
+
+    for node in assigns:
+        rhs = _rhs_derived(node.value)
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        names = {
+            sub.id
+            for t in targets
+            for sub in ast.walk(t)
+            if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store)
+        }
+        if isinstance(node, ast.AugAssign):
+            # `x += y` accumulates onto x — keeps derived status and gains it
+            # when the RHS is mesh-derived; never a discarding overwrite
+            if rhs:
+                mesh_derived |= names
+        else:
+            if rhs:
+                mesh_derived |= names
+            else:
+                mesh_derived -= names
+            # a rebind also ends any with-builder absorption recorded for
+            # the name — `p = …` after the block is no longer `p.part` of it
+            for n in names:
+                builder_feeds.pop(n, None)
+                builder_direct.discard(n)
+        if "result" in names:
+            # last assignment wins — a later `result = <parametric>` overwrite
+            # correctly drops the hybrid flag
+            result_derived = "result" in mesh_derived
+    return result_derived
+
+
+def declared_cad_fallback(code: str) -> str | None:
+    """`cad_fallback = "<reason>"` marker — generated code declares an
+    intentional parametric replacement for the hybrid mesh body.
+
+    The orchestrator scores such a candidate as honest CAD instead of
+    flagging the missing mesh flow as a contract violation; when it wins,
+    the outcome resolves mode "cad". Returns the reason string or None."""
+    try:
+        tree = ast.parse(code)
+    except Exception:
+        return None
+    for node in ast.walk(tree):
+        value: ast.AST | None
+        targets: list[ast.expr]
+        if isinstance(node, ast.Assign):
+            value, targets = node.value, list(node.targets)
+        elif isinstance(node, ast.AnnAssign):
+            value, targets = node.value, [node.target]
+        else:
+            continue
+        if (
+            isinstance(value, ast.Constant)
+            and isinstance(value.value, str)
+            and any(isinstance(t, ast.Name) and t.id == "cad_fallback" for t in targets)
+        ):
+            return value.value
+    return None

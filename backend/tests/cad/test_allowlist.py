@@ -578,3 +578,129 @@ def test_mesh_solid_used_passes():
 
 def test_mesh_solid_absent_flagged():
     assert not mesh_solid_flows_to_result(GOOD + "part = Box(1,1,1)\nresult = part\n")
+
+
+# --------------------------------------------------------------------- #
+# B20a: order-aware dataflow — a mesh-derived name loses its status when
+# re-assigned from a non-mesh expression (the fused-then-discarded bypass)
+# --------------------------------------------------------------------- #
+
+
+def test_mesh_solid_overwrite_flagged():
+    """Observed evasion: `part = load_mesh_solid(); part = mesh_fuse(part, …)`
+    then `part = l_profile` — the mesh body was fused and DISCARDED by
+    overwrite while the name-presence check still passed."""
+    code = (
+        GOOD
+        + "part = load_mesh_solid()\n"
+        + "part = cadlib.mesh_fuse(part, Box(1, 1, 1))\n"
+        + "part = Box(2, 2, 2)\n"  # parametric overwrite — mesh body dropped
+        + "result = part\n"
+    )
+    assert not mesh_solid_flows_to_result(code)
+
+
+def test_mesh_solid_fuse_chain_passes():
+    code = (
+        GOOD
+        + "part = load_mesh_solid()\n"
+        + "part = cadlib.mesh_fuse(part, Box(1, 1, 1))\n"
+        + "result = part\n"
+    )
+    assert mesh_solid_flows_to_result(code)
+
+
+def test_mesh_solid_inline_result_passes():
+    code = GOOD + "result = load_mesh_solid() + Pos(0, 0, 5) * Box(3, 3, 3)\n"
+    assert mesh_solid_flows_to_result(code)
+
+
+def test_mesh_solid_never_used_flagged():
+    """Bare-name parking without any flow into result stays rejected."""
+    assert not mesh_solid_flows_to_result(
+        GOOD + "mesh = load_mesh_solid()\nresult = Box(1, 1, 1)\n"
+    )
+
+
+def test_mesh_solid_result_reassign_last_wins():
+    # `result = None` does not undo a later mesh-derived assignment
+    code = GOOD + "part = load_mesh_solid()\nresult = None\nresult = part\n"
+    assert mesh_solid_flows_to_result(code)
+    # but a later parametric `result = …` overwrite drops the flag
+    code2 = GOOD + "part = load_mesh_solid()\nresult = part\nresult = Box(1, 1, 1)\n"
+    assert not mesh_solid_flows_to_result(code2)
+
+
+def test_mesh_solid_builder_absorption_passes():
+    """featurebind's host-bound hole snippets rebuild via `add(part)` inside
+    `with BuildPart() as p` and read `p.part` back out — the bound builder
+    absorbed the mesh-derived body, so the flow must survive."""
+    code = (
+        GOOD
+        + "part = load_mesh_solid()\n"
+        + "with BuildPart() as p:\n"
+        + "    add(part)\n"
+        + "    with Locations(Pos(1, 2, 0)):\n"
+        + "        through_hole(7)\n"
+        + "    part = p.part\n"
+        + "result = part\n"
+    )
+    assert mesh_solid_flows_to_result(code)
+
+
+def test_mesh_solid_builder_overwrite_flagged():
+    """Same builder shape, but the absorbed body is parametric — the with
+    block must not launder a non-mesh body back into `result`."""
+    code = (
+        GOOD
+        + "part = load_mesh_solid()\n"
+        + "part = Box(2, 2, 2)\n"  # overwrite loses the mesh body
+        + "with BuildPart() as p:\n"
+        + "    add(part)\n"
+        + "    part = p.part\n"
+        + "result = part\n"
+    )
+    assert not mesh_solid_flows_to_result(code)
+
+
+def test_mesh_solid_builder_direct_call_passes():
+    """`add(load_mesh_solid())` inside the builder feeds the mesh directly —
+    `result = p.part` then carries it."""
+    code = (
+        GOOD
+        + "with BuildPart() as p:\n"
+        + "    add(load_mesh_solid())\n"
+        + "result = p.part\n"
+    )
+    assert mesh_solid_flows_to_result(code)
+
+
+def test_mesh_solid_augassign_keeps_flow():
+    code = (
+        GOOD
+        + "part = load_mesh_solid()\n"
+        + "part += Pos(0, 0, 5) * Box(3, 3, 3)\n"
+        + "result = part\n"
+    )
+    assert mesh_solid_flows_to_result(code)
+
+
+# --------------------------------------------------------------------- #
+# B20b: declared CAD fallback marker
+# --------------------------------------------------------------------- #
+
+
+def test_declared_cad_fallback():
+    from cadx.cad.allowlist import declared_cad_fallback
+
+    code = (
+        GOOD
+        + 'cad_fallback = "mesh booleans collapsed the organic body"\n'
+        + "result = Box(1, 1, 1)\n"
+    )
+    assert declared_cad_fallback(code) == "mesh booleans collapsed the organic body"
+    assert declared_cad_fallback(GOOD) is None
+    # non-string and non-literal values don't count
+    assert declared_cad_fallback(GOOD + "cad_fallback = 5\n") is None
+    assert declared_cad_fallback(GOOD + "cad_fallback = PARAMS\n") is None
+    assert declared_cad_fallback("def broken(:\n") is None

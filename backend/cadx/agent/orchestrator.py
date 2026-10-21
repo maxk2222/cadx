@@ -36,7 +36,11 @@ from cadx.agent.steps import mesh_refine as mesh_refine_step
 from cadx.agent.steps import optimize as optimize_step
 from cadx.agent.steps import plan as plan_step
 from cadx.agent.types import IMAGE_INPUT_KINDS, AgentCtx, InputAsset
-from cadx.cad.allowlist import check_code, mesh_solid_flows_to_result
+from cadx.cad.allowlist import (
+    check_code,
+    declared_cad_fallback,
+    mesh_solid_flows_to_result,
+)
 from cadx.cad.codemod import fix_api_misuse
 from cadx.cad.features import compare_features
 from cadx.cad.fem.analyze import FemReport, fem_feedback_lines
@@ -65,6 +69,11 @@ class Candidate:
     mesh_post: dict[str, Any] | None = None  # MeshPostParams used (mesh/hybrid modes)
     feature_findings: list[dict[str, Any]] = field(default_factory=list)
     hybrid_missing: bool = False  # code dropped load_mesh_solid()
+    # declared parametric replacement (`cad_fallback = "<reason>"` in the
+    # code) — the model openly gave up the mesh body; not a contract
+    # violation, and when such a candidate wins the outcome resolves "cad"
+    # so scoring/reporting stays honest (B20b)
+    cad_fallback: str | None = None
     # critique floor reached with major discrepancies — a wrecked candidate must
     # never claim "best" just for keeping a contract call (load_mesh_solid);
     # observed: score-0 faceted mesh part outranked every viable analytic one
@@ -232,12 +241,106 @@ def build_feedback(
     return "\n".join(f"{i + 1}. {x}" for i, x in enumerate(items[:12]))
 
 
+def _annotate_anchor_sources(
+    findings: list[dict[str, Any]], anchors: dict[str, Any] | None
+) -> None:
+    """Stamp ``anchor_source`` on anchor-position findings (``hole <index>``)
+    so ``build_issues`` can tell spec/image-declared anchors from
+    mesh-scan-only detections (B22). Mutates ``findings`` in place."""
+    src_by_idx = {
+        str(a.get("index")): str(a.get("source") or "")
+        for a in (anchors or {}).get("holes") or []
+        if a.get("index") is not None
+    }
+    if not src_by_idx:
+        return
+    for f in findings:
+        m = re.match(r"hole\s+(\S+)", str(f.get("feature") or ""))
+        if m and m.group(1) in src_by_idx:
+            f["anchor_source"] = src_by_idx[m.group(1)]
+
+
+# feature vocabulary shared by findings/issues — pairs a demand with a
+# same-feature negation in another issue
+_ISSUE_FEATURE_RE = re.compile(
+    r"hole|bore|slot|boss|rib|gusset|fillet|chamfer|pocket|insert", re.I
+)
+# phrasing marking a feature as NOT wanted / a fixed count excluding it —
+# "remove the extra hole", "spec declares exactly 2 bores", "not in the spec"
+_ISSUE_NEGATION_RE = re.compile(
+    r"\b(?:remove|delete|drop|extra|spurious|phantom|superfluous|"
+    r"must not|should not|do not|not (?:in|part of|declared in)|"
+    r"too many|only \d+|exactly \d+|entfern\w*|weglassen|überzählig)\b",
+    re.I,
+)
+
+
+def _resolve_issue_conflicts(
+    issues: list[dict[str, Any]], spec: PartSpec | None
+) -> list[dict[str, Any]]:
+    """Post-pass: keep the issue list self-consistent when mesh-scan anchors
+    demand features the spec never declared (B22).
+
+    Observed: a phantom mesh-only anchor produced 'hole 3 missing — cut it'
+    while the spec declared exactly two bores — improve was told to add and
+    not-add the same hole. Anchors without spec/image provenance never
+    outrank the spec: their demands are downgraded to an advisory
+    "mesh-detected (not spec-declared)" note, and dropped outright when
+    another issue already negates the same feature (fixed count / removal)."""
+    if spec is None or not issues:
+        return issues
+
+    def _mesh_only(it: dict[str, Any]) -> bool:
+        src = str(it.get("anchor_source") or "")
+        return it.get("source") == "features" and bool(src) and (
+            "spec" not in src and "image" not in src
+        )
+
+    def _text(it: dict[str, Any]) -> str:
+        return " ".join(str(it.get(k) or "") for k in ("what", "where", "fix_hint"))
+
+    out: list[dict[str, Any]] = []
+    for it in issues:
+        if not _mesh_only(it):
+            out.append(it)
+            continue
+        token = _ISSUE_FEATURE_RE.search(_text(it).lower())
+        dropped = False
+        if token:
+            # hard contradiction: another (non-mesh-only) issue says this
+            # feature class must not exist / is capped by a fixed count —
+            # the spec-authoritative side wins
+            for other in issues:
+                if other is it or _mesh_only(other):
+                    continue
+                ot = _text(other).lower()
+                if token.group(0) in ot and _ISSUE_NEGATION_RE.search(ot):
+                    log.info(
+                        "agent.issue_conflict",
+                        dropped=str(it.get("what"))[:160],
+                        kept=str(other.get("what"))[:160],
+                    )
+                    dropped = True
+                    break
+        if dropped:
+            continue
+        out.append(
+            {
+                **it,
+                "severity": "minor",
+                "what": f"mesh-detected (not spec-declared): {it.get('what', '')}",
+            }
+        )
+    return out
+
+
 def build_issues(
     critique: Critique | None,
     dim_issues: list[str],
     feature_findings: list[dict[str, Any]],
     dfm: dict[str, Any] | None,
     analysis: dict[str, Any] | None = None,
+    spec: PartSpec | None = None,
 ) -> list[dict[str, Any]]:
     """Structured issue list for the IMPROVE step + trace/UI persistence."""
     issues: list[dict[str, Any]] = []
@@ -260,14 +363,17 @@ def build_issues(
     for i in dim_issues:
         issues.append({"source": "dims", "severity": "major", "what": f"dimension mismatch — {i}"})
     for f in feature_findings:
-        issues.append(
-            {
-                "source": "features",
-                "severity": f.get("severity", "minor"),
-                "what": f"{f.get('feature')}: expected {f.get('expected')}, actual {f.get('actual')}",
-                "fix_hint": f.get("fix_hint", ""),
-            }
-        )
+        issue = {
+            "source": "features",
+            "severity": f.get("severity", "minor"),
+            "what": f"{f.get('feature')}: expected {f.get('expected')}, actual {f.get('actual')}",
+            "fix_hint": f.get("fix_hint", ""),
+        }
+        # anchor-derived findings carry provenance ("spec"/"image"/"mesh…")
+        # — the conflict pass below needs it to spot mesh-only demands
+        if f.get("anchor_source"):
+            issue["anchor_source"] = str(f["anchor_source"])
+        issues.append(issue)
     if critique:
         for d in critique.discrepancies:
             issues.append(
@@ -302,7 +408,7 @@ def build_issues(
             if w.get("severity") == "high":
                 sev = "minor" if mesh_derived and w.get("code") == "overhang" else "major"
                 issues.append({"source": "dfm", "severity": sev, "what": w["message"]})
-    return issues[:12]
+    return _resolve_issue_conflicts(issues, spec)[:12]
 
 
 def _regression_critique(best: Candidate | None, analysis: dict[str, Any]) -> Critique | None:
@@ -1237,7 +1343,9 @@ def _assign_synth_roles(
     return roles
 
 
-def _gate_generated_images(ordered: list[Any], spec: PartSpec | None) -> list[Any]:
+def _gate_generated_images(
+    ordered: list[Any], spec: PartSpec | None, logged: set[str] | None = None
+) -> list[Any]:
     """Drop generated reference images that fail the deterministic proportion
     gate at selection time.
 
@@ -1247,6 +1355,10 @@ def _gate_generated_images(ordered: list[Any], spec: PartSpec | None) -> list[An
     for a 4:1-flat handle spec feeding hunyuan in every iteration). A dropped
     hero just falls through to the bootstrap generator. User-supplied images
     are never gated — the user's photo is ground truth.
+
+    ``logged`` is a caller-held dedupe set of already-reported asset ids —
+    the gate runs per selection pass (hero list, combined list), so the same
+    drop is only logged once per job.
     """
     if spec is None:
         return ordered
@@ -1269,7 +1381,11 @@ def _gate_generated_images(ordered: list[Any], spec: PartSpec | None) -> list[An
         else:
             kept.append(a)
     if dropped:
-        log.info("mesh.aspect_gate_dropped", assets=dropped)
+        new_dropped = [d for d in dropped if logged is None or d not in logged]
+        if logged is not None:
+            logged.update(dropped)
+        if new_dropped:
+            log.info("mesh.aspect_gate_dropped", assets=new_dropped)
     return kept
 
 
@@ -1296,7 +1412,13 @@ def _mesh_source_images(
                 ordered.append(by_id[aid])
     ordered += [a for a in images if a not in ordered]
     ordered = _dedupe_near_identical(ctx, ordered)
-    ordered = _gate_generated_images(ordered, spec)
+    # the gate runs for every selection pass — a ctx-level set keeps each
+    # dropped asset logged once per job instead of once per pass
+    gate_logged = getattr(ctx, "_aspect_gate_logged", None)
+    if gate_logged is None:
+        gate_logged = set()
+        ctx._aspect_gate_logged = gate_logged
+    ordered = _gate_generated_images(ordered, spec, gate_logged)
     if not ordered:
         # every reference was gated/deduped away — callers bootstrap a fresh
         # concept image on the empty list; mapping roles over nothing crashes
@@ -3387,10 +3509,12 @@ async def _run_cad(  # noqa: C901
                     compare_anchor_positions,
                 )
 
-                feature_findings += [
+                anchor_findings = [
                     f.model_dump()
                     for f in compare_anchor_positions(ctx.anchors, MeasuredFeatures(**features))
                 ]
+                _annotate_anchor_sources(anchor_findings, ctx.anchors)
+                feature_findings += anchor_findings
             except Exception as e:
                 log.warning("features.anchor_compare_failed", error=str(e)[:200])
         # declared connection spans (executor samples the centreline — the
@@ -3572,10 +3696,17 @@ async def _run_cad(  # noqa: C901
         # hybrid guard: an improve pass that silently drops load_mesh_solid()
         # regresses to a parametric part and no longer IS the organic body —
         # flag it deterministically instead of relying on the critique to
-        # notice the missing mesh
+        # notice the missing mesh. Exception: the code may DECLARE the
+        # replacement (`cad_fallback = "<reason>"`) — that candidate is then
+        # scored as honest CAD, and the run resolves "cad" if it wins (B20b)
         hybrid_missing = ctx.hybrid_solid is not None and not mesh_solid_flows_to_result(
             code_resp.code
         )
+        fb_reason = declared_cad_fallback(code_resp.code) if hybrid_missing else None
+        if hybrid_missing and fb_reason is not None:
+            cand.cad_fallback = fb_reason
+            hybrid_missing = False
+            log.info("agent.cad_fallback_declared", iteration=it, reason=fb_reason[:200])
         cand.hybrid_missing = hybrid_missing
         cand.wrecked = critique.score <= getattr(s, "agent_mesh_hard_fail_score", 30) and any(
             d.severity == "major" for d in critique.discrepancies
@@ -3605,6 +3736,7 @@ async def _run_cad(  # noqa: C901
                 feature_findings,
                 exec_result.get("dfm"),
                 exec_result.get("analysis"),
+                spec=spec,
             )
         )
         best_replaced = best is None or cand.rank > best.rank
@@ -3751,6 +3883,20 @@ async def _run_cad(  # noqa: C901
     outcome.bom = best.exec_result.get("bom")
     outcome.score = best.critique.score if best.critique else None
     outcome.best_iteration = best.iteration
+    # declared CAD fallback won (B20b): the final part is an honest
+    # parametric replacement, not a hybrid — resolve/report "cad" so the
+    # outcome never claims a mesh body the code discarded. The plan is NOT
+    # rewritten mid-loop; only the final mode is corrected here (before the
+    # hybrid artifact copy below so it correctly stays empty)
+    if best.cad_fallback:
+        outcome.resolved_mode = "cad"
+        ctx.resolved_mode = "cad"
+        outcome.mode_note += f" | declared CAD fallback: {best.cad_fallback[:120]}"
+        log.info(
+            "agent.cad_fallback_resolved",
+            iteration=best.iteration,
+            reason=best.cad_fallback[:200],
+        )
     # canonical verify_spec verdict heads the persisted issue list; the
     # per-source issues after it carry the per-finding detail
     vs_entry = _verify_spec_issue(best.exec_result)
@@ -3846,9 +3992,11 @@ async def _run_mesh(  # noqa: C901
                         f.model_dump() for f in compare_features(spec.features, measured)
                     ]
                 if ctx.anchors:
-                    feature_findings += [
+                    anchor_findings = [
                         f.model_dump() for f in compare_anchor_positions(ctx.anchors, measured)
                     ]
+                    _annotate_anchor_sources(anchor_findings, ctx.anchors)
+                    feature_findings += anchor_findings
             except Exception as e:
                 log.warning("mesh.features_compare_failed", error=str(e)[:200])
         sil = (exec_result.get("mesh") or {}).get("silhouette_iou")
@@ -4264,6 +4412,7 @@ async def _run_mesh(  # noqa: C901
             feature_findings,
             exec_result.get("dfm"),
             exec_result.get("analysis"),
+            spec=spec,
         )
         only_dims = _only_dim_issues(dim_issues, issues0)
         if only_dims:
@@ -4335,6 +4484,7 @@ async def _run_mesh(  # noqa: C901
                     findings2 or [],
                     exec_result.get("dfm"),
                     exec_result.get("analysis"),
+                    spec=spec,
                 )
             else:
                 # deterministic regression — restore the better op list so the
@@ -4472,6 +4622,7 @@ async def _run_mesh(  # noqa: C901
         [],
         best.exec_result.get("dfm"),
         best.exec_result.get("analysis"),
+        spec=spec,
     )
     vs_entry = _verify_spec_issue(best.exec_result)
     if vs_entry:
@@ -5256,7 +5407,14 @@ async def _run_approach(
                 start_iteration=start_iteration,
                 **kwargs,
             )
-            if outcome.status != "failed" and ctx.mesh_info:
+            # a declared-cad_fallback best resolves "cad" inside _run_cad —
+            # such an outcome must not report mesh provenance for a part
+            # that is pure parametric CAD
+            if (
+                outcome.status != "failed"
+                and ctx.mesh_info
+                and ctx.resolved_mode == "hybrid"
+            ):
                 outcome.mesh = {k: v for k, v in ctx.mesh_info.items() if not k.startswith("_")}
         elif ctx.mesh_info.get("_pre_result"):
             outcome.resolved_mode = "mesh"

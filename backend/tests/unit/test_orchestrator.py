@@ -301,10 +301,11 @@ def _pass_critique():
     }
 
 
-async def _drive_cad(llm, results, emitted, *, max_iterations, patience):
+async def _drive_cad(llm, results, emitted, *, max_iterations, patience, hybrid=False):
     """Run _run_cad with a scripted FakeLLM + scripted executor."""
     import time
     import uuid as _uuid
+    from pathlib import Path
 
     from cadx.agent.orchestrator import RunOutcome, _run_cad
     from cadx.agent.trace import MemoryTrace
@@ -337,6 +338,11 @@ async def _drive_cad(llm, results, emitted, *, max_iterations, patience):
             agent_stall_patience=patience,
         ),
     )
+    if hybrid:
+        # stand-in for the prepared hybrid mesh body — only `is not None`
+        # gates the hybrid guard, the scripted executor never reads it
+        ctx.hybrid_solid = Path("/tmp/fake_solid.brep")
+        ctx.resolved_mode = "hybrid"
     spec = PartSpec.model_validate(_SPEC)
     plan = ModelingPlan(approach="cad", approach_reason="r")
     outcome = RunOutcome()
@@ -567,3 +573,255 @@ def test_gate_generated_images_drops_major_verdict(tmp_path):
     assert "fine1" in ids
     assert "unver1" in ids  # unverifiable never blocks generation
     assert "user1" in ids
+
+
+# --------------------------------------------------------------------------- #
+# B20b: declared CAD fallback in hybrid mode
+# --------------------------------------------------------------------------- #
+
+
+async def test_cad_fallback_marker_resolves_honest_cad():
+    """`cad_fallback = "<reason>"` in hybrid mode: the code openly declares a
+    parametric replacement for the mesh body — not a contract violation, so
+    no hybrid major issue; when that candidate wins the outcome reports
+    mode "cad" instead of claiming a hybrid part."""
+    from cadx.llm.fake import FakeLLM
+
+    fb_code = (
+        _box_code() + 'cad_fallback = "mesh booleans collapsed the organic body"\n'
+    )
+    llm = FakeLLM(
+        [
+            {"reasoning": "v", "params": [], "expected_bbox": [40, 20, 10], "code": fb_code},
+            _pass_critique(),
+        ]
+    )
+    emitted: list = []
+    outcome, ctx = await _drive_cad(
+        llm,
+        [_exec_res(6, 0)],
+        emitted,
+        max_iterations=2,
+        patience=50,
+        hybrid=True,
+    )
+    assert outcome.status == "succeeded"
+    assert outcome.resolved_mode == "cad"
+    assert ctx.resolved_mode == "cad"
+    assert "declared CAD fallback" in outcome.mode_note
+    assert not any(i["source"] == "hybrid" for i in outcome.issues)
+
+
+async def test_hybrid_missing_without_marker_stays_major():
+    """Same overwrite-without-declaration code in hybrid mode keeps the
+    hybrid contract violation as a major issue."""
+    from cadx.llm.fake import FakeLLM
+
+    llm = FakeLLM(
+        [
+            {
+                "reasoning": "v",
+                "params": [],
+                "expected_bbox": [40, 20, 10],
+                "code": _box_code(),
+            },
+            _pass_critique(),
+        ]
+    )
+    emitted: list = []
+    outcome, ctx = await _drive_cad(
+        llm,
+        [_exec_res(6, 0)],
+        emitted,
+        max_iterations=1,
+        patience=50,
+        hybrid=True,
+    )
+    assert any(
+        i["source"] == "hybrid" and i["severity"] == "major" for i in outcome.issues
+    )
+    # no declared fallback — the mode must not be rewritten to "cad"
+    assert outcome.resolved_mode is None
+    assert ctx.resolved_mode == "hybrid"
+
+
+# --------------------------------------------------------------------------- #
+# B22: issue-conflict pass — mesh-only anchor demands vs spec
+# --------------------------------------------------------------------------- #
+
+
+def _spec_two_bores():
+    from cadx.llm.schemas import PartSpec
+
+    return PartSpec.model_validate(
+        {
+            **_SPEC,
+            "features": [
+                {
+                    "name": "M6 Durchgangsbohrung",
+                    "type": "through_hole",
+                    "count": 2,
+                    "dims": {"diameter": 7.0},
+                    "position": "y durchgehend",
+                    "description": "two M6 through bores",
+                }
+            ],
+        }
+    )
+
+
+def _anchor_finding(idx, source, *, actual="missing", severity="major"):
+    return {
+        "feature": f"hole {idx}",
+        "expected": "at anchored position Ø7.0",
+        "actual": actual,
+        "severity": severity,
+        "fix_hint": "cut the hole at the anchored position — use anchor_holes()",
+        "anchor_source": source,
+    }
+
+
+def test_build_issues_mesh_only_anchor_downgraded():
+    """A mesh-scan-only anchor demanding a hole the spec never declared must
+    not appear as a major — the spec's declared feature set wins."""
+    from cadx.agent.orchestrator import build_issues
+
+    findings = [
+        _anchor_finding(1, "spec+mesh"),
+        _anchor_finding(3, "mesh_scan"),
+    ]
+    issues = build_issues(
+        None, [], findings, None, {"solid_count": 1}, spec=_spec_two_bores()
+    )
+    spec_issue = [i for i in issues if "hole 1" in i["what"]]
+    mesh_issue = [i for i in issues if "hole 3" in i["what"]]
+    assert spec_issue and spec_issue[0]["severity"] == "major"
+    assert mesh_issue and mesh_issue[0]["severity"] == "minor"
+    assert mesh_issue[0]["what"].startswith("mesh-detected (not spec-declared):")
+
+
+def test_build_issues_drops_contradicted_mesh_only_demand():
+    """Direct contradiction: a critique/spec-side issue already demands the
+    extra hole NOT exist — the mesh-only 'cut a third hole' demand is
+    dropped, not merely softened."""
+    from cadx.agent.orchestrator import build_issues
+    from cadx.llm.schemas import Critique, Discrepancy
+
+    critique = Critique(
+        score=50,
+        passed=False,
+        discrepancies=[
+            Discrepancy(
+                what="the part shows three holes but the spec declares exactly 2 "
+                "— remove the extra hole",
+                where="top face",
+                severity="major",
+                source="spec",
+                fix_hint="",
+            )
+        ],
+    )
+    findings = [_anchor_finding(3, "mesh_scan")]
+    issues = build_issues(
+        critique, [], findings, None, {"solid_count": 1}, spec=_spec_two_bores()
+    )
+    assert not any("hole 3" in i["what"] for i in issues)
+    assert any("exactly 2" in i["what"] for i in issues)
+
+
+def test_build_issues_no_spec_keeps_mesh_findings():
+    """Without a spec there is no authoritative declaration to conflict
+    with — mesh-only anchor findings keep their original severity."""
+    from cadx.agent.orchestrator import build_issues
+
+    findings = [_anchor_finding(3, "mesh_scan")]
+    issues = build_issues(None, [], findings, None, {"solid_count": 1})
+    assert issues[0]["severity"] == "major"
+    assert not issues[0]["what"].startswith("mesh-detected")
+
+
+def test_annotate_anchor_sources():
+    """The `hole <index>` finding text maps back to the anchor's source so
+    the conflict pass can see mesh-only provenance."""
+    from cadx.agent.orchestrator import _annotate_anchor_sources
+
+    anchors = {
+        "holes": [
+            {"index": 1, "source": "spec+mesh"},
+            {"index": 2, "source": "mesh_scan"},
+        ]
+    }
+    findings = [
+        {"feature": "hole 1"},
+        {"feature": "hole 2"},
+        {"feature": "slot width"},  # not an anchor finding — untouched
+    ]
+    _annotate_anchor_sources(findings, anchors)
+    assert findings[0]["anchor_source"] == "spec+mesh"
+    assert findings[1]["anchor_source"] == "mesh_scan"
+    assert "anchor_source" not in findings[2]
+    # empty/absent anchors are a no-op
+    findings2 = [{"feature": "hole 9"}]
+    _annotate_anchor_sources(findings2, None)
+    assert "anchor_source" not in findings2[0]
+
+
+def test_gate_generated_images_logs_drop_once(tmp_path, monkeypatch):
+    """B24: the gate runs per selection pass (hero list, combined list) —
+    a dropped asset must be logged once per job, not once per pass."""
+    import cadx.agent.orchestrator as orch
+    from cadx.agent.types import InputAsset
+
+    events: list = []
+
+    class _Log:
+        def info(self, ev, **kw):
+            events.append((ev, kw))
+
+        def warning(self, *a, **kw):
+            pass
+
+        def error(self, *a, **kw):
+            pass
+
+    monkeypatch.setattr(orch, "log", _Log())
+
+    def _png(w: int, h: int):
+        from PIL import Image
+
+        p = tmp_path / f"img_{w}x{h}.png"
+        img = Image.new("RGB", (400, 400), (250, 250, 250))
+        for x in range(200 - w // 2, 200 + w // 2):
+            for y in range(200 - h // 2, 200 + h // 2):
+                img.putpixel((x, y), (20, 20, 20))
+        img.save(p)
+        return p
+
+    def _dim(v):
+        return {"value": v, "unit": "mm", "source": "stated"}
+
+    from cadx.llm.schemas import PartSpec
+
+    spec = PartSpec(
+        name="t",
+        summary="t",
+        units="mm",
+        length_x=_dim(120),
+        width_y=_dim(40),
+        height_z=_dim(30),
+        features=[],
+        open_questions=[],
+    )
+    bad = InputAsset(
+        asset_id="bad1", kind="generated_image", path=_png(60, 200), caption="", filename="b.png"
+    )
+    good = InputAsset(
+        asset_id="good1", kind="generated_image", path=_png(300, 80), caption="", filename="g.png"
+    )
+    logged: set[str] = set()
+    orch._gate_generated_images([bad, good], spec, logged)
+    orch._gate_generated_images([bad, good], spec, logged)
+    drops = [kw["assets"] for ev, kw in events if ev == "mesh.aspect_gate_dropped"]
+    assert drops == [["bad1"]]
+    # and the asset is still dropped on every pass — only the log is deduped
+    assert "bad1" not in [a.asset_id for a in orch._gate_generated_images([bad], spec, logged)]
