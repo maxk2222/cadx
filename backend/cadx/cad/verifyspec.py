@@ -890,6 +890,9 @@ def _feature_placement(
             continue
         ftype = str(f.get("type") or "").lower()
         name = str(f.get("name") or f.get("type") or f"feature_{i}")
+        if ftype in {"fillet", "round"}:
+            _fillet_check(i, name, f, measured, checks)
+            continue
         if ftype in _PROTRUSION_TYPES:
             _protrusion_check(i, name, ftype, f, stated_env, bosses, bbox, tol_pct, tol_mm, checks)
             continue
@@ -926,6 +929,73 @@ def _feature_placement(
         _bbox_bounds(bbox_min, bbox_max),
         checks,
     )
+
+
+def _fillet_check(
+    i: int,
+    name: str,
+    feature: dict[str, Any],
+    measured: dict[str, Any],
+    checks: list[dict[str, Any]],
+) -> None:
+    """Require explicit evidence for requested rounds; missing evidence on a
+    reliable B-Rep is a failure, while approximate/faceted evidence stays
+    UNVERIFIED rather than being treated as absence."""
+    dims = feature.get("dims") if isinstance(feature.get("dims"), dict) else {}
+    want = next(
+        (
+            float(dims[k])
+            for k in ("radius", "fillet_radius", "r")
+            if isinstance(dims.get(k), int | float)
+            and not isinstance(dims.get(k), bool)
+            and float(dims[k]) > 0
+        ),
+        None,
+    )
+    radii: list[float] = []
+    for value in measured.get("rounds") or []:
+        if isinstance(value, int | float) and not isinstance(value, bool) and value > 0:
+            radii.append(float(value))
+    fillets = [row for row in measured.get("fillets") or [] if isinstance(row, dict)]
+    radii.extend(
+        float(row["radius"])
+        for row in fillets
+        if isinstance(row.get("radius"), int | float)
+        and not isinstance(row.get("radius"), bool)
+        and row["radius"] > 0
+    )
+    evidence: dict[str, Any] = {
+        "feature": name,
+        "expected_radius_mm": want,
+        "measured_radii_mm": sorted(round(r, 3) for r in radii),
+    }
+    if not radii:
+        approximate = bool(measured.get("approximate"))
+        evidence["reason"] = (
+            "fillet surface not detected on reliable B-Rep"
+            if not approximate
+            else "fillet recognition unavailable on approximate/faceted geometry"
+        )
+        checks.append(
+            _check(
+                f"feat_{i}_fillet",
+                TIER_FEATURES,
+                "UNVERIFIED" if approximate else "FAIL",
+                evidence,
+            )
+        )
+        return
+    if want is None:
+        checks.append(_check(f"feat_{i}_fillet", TIER_FEATURES, "PASS", evidence))
+        return
+    tolerance = max(0.5, 0.2 * want) if measured.get("approximate") else max(0.25, 0.1 * want)
+    matches = [r for r in radii if abs(r - want) <= tolerance]
+    if matches:
+        evidence["matched_radius_mm"] = min(matches, key=lambda r: abs(r - want))
+        checks.append(_check(f"feat_{i}_fillet", TIER_FEATURES, "PASS", evidence))
+    else:
+        evidence["reason"] = f"no measured fillet radius within {tolerance:g} mm of spec"
+        checks.append(_check(f"feat_{i}_fillet", TIER_FEATURES, "FAIL", evidence))
 
 
 def _unrequested_voids_check(

@@ -31,6 +31,7 @@ from .ops import (
     mesh_fuse,
     mesh_intersect,
     safe_fillet,
+    safe_fillet_shape,
     trim_below,
 )
 from .profile import closed_polyline, profile_body
@@ -74,6 +75,7 @@ __all__ = [
     "profile_body",
     "rib",
     "safe_fillet",
+    "safe_fillet_shape",
     "slot_cutter",
     "snap_fit_cantilever",
     "strut",

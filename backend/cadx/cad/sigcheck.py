@@ -990,6 +990,26 @@ class _Visitor(ast.NodeVisitor):
     visit_AsyncWith = visit_With
 
     def visit_Assign(self, node: ast.Assign) -> None:
+        if (
+            isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name | ast.Attribute)
+            and (
+                node.value.func.id
+                if isinstance(node.value.func, ast.Name)
+                else node.value.func.attr
+            )
+            == "safe_fillet"
+            and any(
+                isinstance(t, ast.Name) and t.id in {"part", "result", "shape"}
+                for target in node.targets
+                for t in (ast.walk(target))
+            )
+        ):
+            self._err(
+                node,
+                "safe_fillet() returns an applied radius, not a Shape — inside BuildPart call "
+                "it as a statement; in algebra mode use safe_fillet_shape(shape, edges, radius)",
+            )
         for t in node.targets:
             if isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name):
                 self.dyn_attrs.setdefault(t.value.id, set()).add(t.attr)

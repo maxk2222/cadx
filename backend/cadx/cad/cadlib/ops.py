@@ -5,7 +5,9 @@ call graceful. ``safe_fillet`` retries with a shrinking radius instead of
 crashing the whole run on an empty/stale edge selection.
 """
 
-from build123d import Align, Box, Pos, Shape, fillet
+from typing import Sequence  # noqa: UP035 — keep cadlib's sandbox import allow-list
+
+from build123d import Align, Box, BuildPart, Edge, Pos, Shape, fillet
 
 # runner_entry injects the manifold3d backend (`cadx.cad.mesh_boolean`) for
 # hybrid runs — kept as an injected callable so cadlib itself never imports
@@ -151,6 +153,11 @@ def safe_fillet(edges, radius: float, min_radius: float = 0.2) -> float:
         # fast path — the shrink loop would still burn one OCC fillet call
         # per halving step on a selection that can never accept a radius
         return 0.0
+    if BuildPart._get_context() is None:
+        raise RuntimeError(
+            "safe_fillet() only edits an active BuildPart and returns the applied radius, "
+            "not a Shape; use safe_fillet_shape(shape, edges, radius) in algebra mode"
+        )
     if n_edges > _FILLET_MAX_EDGES:
         # a selection this large is a faceted mesh body — OCC grinds on
         # thousands of triangle edges for minutes (live hang: >480s pipeline
@@ -173,6 +180,39 @@ def safe_fillet(edges, radius: float, min_radius: float = 0.2) -> float:
             # succeed, so every kernel-side failure folds into the shrink loop
             r = round(r / 2, 3)
     return 0.0
+
+
+def safe_fillet_shape(
+    shape: Shape, edges: Sequence[Edge], radius: float, min_radius: float = 0.2
+) -> tuple[Shape, float]:
+    """Functionally fillet an algebra-mode shape and return ``(shape, radius)``.
+
+    ``safe_fillet`` is a BuildPart operation: outside a builder, build123d's
+    ``fillet`` returns a new Shape. This companion preserves that return value
+    so code cannot mistake a successful radius for a mutated input shape.
+    ``edges`` must be selected from ``shape`` before calling this function.
+    """
+    try:
+        n_edges = len(edges)
+    except TypeError:
+        n_edges = 0
+    if n_edges == 0 or n_edges > _FILLET_MAX_EDGES:
+        return shape, 0.0
+    if BuildPart._get_context() is not None:
+        raise RuntimeError(
+            "safe_fillet_shape() is for algebra mode outside BuildPart; "
+            "use safe_fillet(edges, radius) inside the builder"
+        )
+    r = float(radius)
+    while r >= min_radius:
+        try:
+            result = fillet(edges, radius=r)
+            if isinstance(result, Shape) and result.solids():
+                return result, r
+        except Exception:
+            pass
+        r = round(r / 2, 3)
+    return shape, 0.0
 
 
 def mesh_intersect(body, tool):

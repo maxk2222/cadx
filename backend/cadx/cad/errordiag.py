@@ -51,6 +51,15 @@ def _excerpt(code: str | None, line: int | None, ctx: int = 2) -> str:
 _RULES: list[tuple[re.Pattern[str], str, str]] = [
     (
         re.compile(
+            r"safe_fillet\(\).*active BuildPart|safe_fillet_shape\(\).*outside BuildPart", re.I
+        ),
+        "api-misuse",
+        "Fillet helper used in the wrong execution mode. `safe_fillet` edits the active "
+        "BuildPart and returns only a radius; use it as a statement inside the builder. "
+        "For algebra mode use `part, applied_r = safe_fillet_shape(part, edges, radius)`.",
+    ),
+    (
+        re.compile(
             r"executor task failed.*(?:validation error|RuntimeSettings|pydantic)"
             r"|validation error for RuntimeSettings",
             re.I | re.S,

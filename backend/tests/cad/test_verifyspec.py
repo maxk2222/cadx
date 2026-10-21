@@ -7,6 +7,8 @@ skipped detector must read UNVERIFIED, never FAIL.
 
 import json
 
+import pytest
+
 from cadx.cad.verifyspec import verify_spec
 
 
@@ -57,6 +59,39 @@ def test_clean_pass():
         assert checks[name]["status"] == "PASS"
     assert checks["dfm"]["status"] == "PASS"
     json.dumps(report)
+
+
+def test_requested_fillet_missing_on_reliable_brep_fails():
+    spec = _spec(features=[{"name": "inner fillet", "type": "fillet", "dims": {"radius": 3.0}}])
+    res = _res(features={"rounds": [], "fillets": [], "approximate": False})
+    report = verify_spec(spec, res, feature_findings=[])
+    check = _by_name(report)["feat_0_fillet"]
+    assert check["status"] == "FAIL"
+    assert "not detected" in check["evidence"]["reason"]
+    assert report["status"] == "FAIL"
+
+
+def test_requested_fillet_radius_passes_with_analytic_evidence():
+    spec = _spec(features=[{"name": "inner fillet", "type": "fillet", "dims": {"radius": 3.0}}])
+    res = _res(features={"rounds": [3.02], "approximate": False})
+    report = verify_spec(spec, res, feature_findings=[])
+    check = _by_name(report)["feat_0_fillet"]
+    assert check["status"] == "PASS"
+    assert check["evidence"]["matched_radius_mm"] == pytest.approx(3.02)
+
+
+def test_missing_fillet_on_approximate_geometry_is_unverified():
+    spec = _spec(features=[{"name": "inner fillet", "type": "fillet", "dims": {"radius": 3.0}}])
+    res = _res(features={"rounds": [], "fillets": [], "approximate": True})
+    check = _by_name(verify_spec(spec, res, feature_findings=[]))["feat_0_fillet"]
+    assert check["status"] == "UNVERIFIED"
+
+
+def test_wrong_fillet_radius_fails():
+    spec = _spec(features=[{"name": "inner fillet", "type": "fillet", "dims": {"radius": 3.0}}])
+    res = _res(features={"rounds": [1.0], "approximate": False})
+    check = _by_name(verify_spec(spec, res, feature_findings=[]))["feat_0_fillet"]
+    assert check["status"] == "FAIL"
 
 
 def test_exec_failure_is_fail():

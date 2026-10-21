@@ -128,6 +128,27 @@ def test_compare_missing_countersink():
     assert any(f.feature == "countersinks" for f in findings)
 
 
+def test_compare_missing_fillet_is_major_on_analytic_geometry():
+    """A reliable B-Rep with no round surfaces must not silently satisfy an
+    explicit fillet requirement."""
+    sharp = MeasuredFeatures(approximate=False)
+    spec = [Feature(name="inner fillet", type="fillet", dims={"radius": 3.0})]
+    findings = compare_features(spec, sharp)
+    assert any(
+        f.feature == "inner fillet" and f.severity == "major" and "no analytic" in f.actual
+        for f in findings
+    )
+
+
+def test_compare_missing_fillet_stays_conservative_on_approximate_geometry():
+    """A faceted source cannot prove the absence of a round face."""
+    findings = compare_features(
+        [Feature(name="inner fillet", type="fillet", dims={"radius": 3.0})],
+        MeasuredFeatures(approximate=True),
+    )
+    assert not any(f.feature == "inner fillet" for f in findings)
+
+
 def test_compare_chamfer_vs_fillet():
     m = MeasuredFeatures(rounds=[5.0, 5.0, 5.0, 5.0], chamfer_faces=0)
     spec = [Feature(name="edge", type="chamfer", dims={"length": 1.0})]

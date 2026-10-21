@@ -174,6 +174,12 @@ No BuildPart context needed. Parts rest on XY (min Z = 0), centred — place wit
 
 - `safe_fillet(edges, radius, min_radius=0.2)` — fillet with fallback: halves
   the radius until OCC accepts it, returns the applied radius or `0.0`.
+  This is a builder operation and MUST run inside `with BuildPart() as p:`.
+  It returns a float, not the modified Shape: call it as a statement, then
+  read `p.part`. For algebra-mode code use
+  `part, applied_r = safe_fillet_shape(part, edges, radius)`; that helper
+  returns the new Shape and accepted radius. A nonzero radius by itself is
+  not proof the input Shape changed.
   USE THIS instead of raw `fillet()` whenever the edge selector could be
   empty (stale `part.edges()` saved before a `locate`/`translate`, strict
   filters, edges consumed by a previous feature) — an empty selection crashes

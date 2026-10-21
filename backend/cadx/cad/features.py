@@ -1621,9 +1621,30 @@ def _check_edge_features(
                 )
         elif f.type == "fillet":
             r_want = f.dims.get("radius") or f.dims.get("r") if f.dims else None
-            if isinstance(r_want, int | float) and measured.rounds:
-                r_act = min(measured.rounds, key=lambda r: abs(r - float(r_want)))
-                if abs(r_act - float(r_want)) > 0.5 * float(r_want):
+            measured_radii = [
+                *measured.rounds,
+                *(f.radius for f in measured.fillets if f.radius > 0),
+            ]
+            if not measured_radii and not measured.approximate:
+                findings.append(
+                    FeatureFinding(
+                        feature=f.name or "fillet",
+                        expected=(
+                            f"fillet r≈{float(r_want):g}mm"
+                            if isinstance(r_want, int | float)
+                            else "fillet present"
+                        ),
+                        actual="no analytic or recognized fillet surface detected",
+                        severity="major",
+                        fix_hint=(
+                            "apply the requested fillet to the intended edge and verify "
+                            "that the resulting Shape, not only the applied radius, is retained"
+                        ),
+                    )
+                )
+            elif isinstance(r_want, int | float) and measured_radii:
+                r_act = min(measured_radii, key=lambda r: abs(r - float(r_want)))
+                if abs(r_act - float(r_want)) > max(0.5, 0.2 * float(r_want)):
                     findings.append(
                         FeatureFinding(
                             feature=f.name or "fillet",

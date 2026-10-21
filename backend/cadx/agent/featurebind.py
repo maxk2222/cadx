@@ -294,6 +294,7 @@ CADLIB_HELPERS = frozenset(
         "insert_pocket",
         "bearing_seat",
         "safe_fillet",
+        "safe_fillet_shape",
         "rib",
         "boss",
         "tube",
@@ -587,21 +588,50 @@ def _bind_fillet(spec: PartSpec, f: Feature) -> BoundFeature | None:
     if not r:
         return BoundFeature(f.name, "fillet", f"# {f.name}: fillet — radius missing in spec", False)
     text = f"{f.position or ''} {f.description or ''}".lower()
+    coords = {a.lower(): float(v) for a, v in _COORD_RE.findall(text)}
     if "inner" in text or "innen" in text or "junction" in text:
-        sel = "_fb.edges().filter_by(Axis.Y).sort_by(Axis.X)[0]"
-        hint = "# the inner corner edge runs along Y at the leg/foot junction — pick the SHORTEST Y-edge"
+        axis = _axis_letter(_norm_axis(f.axis)) or _axis_letter(_axis_in_text(text)) or "y"
+        wanted = [a for a in "xyz" if a != axis]
+        if not all(a in coords for a in wanted):
+            return BoundFeature(
+                f.name,
+                "fillet",
+                f"# {f.name}: target inner edge is unresolved — use measured coordinates; "
+                f"do not guess from edge order (position: {f.position or 'unspecified'})",
+                False,
+            )
+        conds = [
+            f"abs(e.center().{'XYZ'['xyz'.index(a)]} - ({coords[a]:g})) <= 0.5" for a in wanted
+        ]
+        sel = f"[e for e in _fb.edges().filter_by(Axis.{axis.upper()}) if {' and '.join(conds)}]"
+        hint = (
+            f"# select the inner edge by its declared coordinates; Axis.{axis.upper()} "
+            "is the edge direction"
+        )
     elif "rim" in text or "rand" in text or "outer" in text:
-        sel = "_fb.edges() >> Axis.Z"
+        axis = _axis_letter(_norm_axis(f.axis)) or _axis_letter(_axis_in_text(text)) or "z"
+        sel = f"_fb.edges() >> Axis.{axis.upper()}"
         hint = "# rim/top perimeter edges"
     else:
-        sel = "<edges>"
-        hint = f"# select the edge(s) described as: {f.position or 'see spec'}"
+        return BoundFeature(
+            f.name,
+            "fillet",
+            f"# {f.name}: edge selector unresolved — select geometry from: "
+            f"{f.position or 'see spec'}",
+            False,
+        )
     snip = (
         f"## {f.name} — fillet R{r:g} (self-contained: works wherever you paste it;\n"
         f"## replace `part` if your body variable has a different name)\n"
         f"with BuildPart() as _fb:\n"
         f"    add(part)\n"
-        f"    safe_fillet({sel}, {r:g})\n"
+        f"    _fillet_edges = {sel}\n"
+        f"    if not _fillet_edges:\n"
+        f"        raise ValueError('fillet target edge not found at the declared position')\n"
+        f"    _applied_fillet_r = safe_fillet(_fillet_edges, {r:g})\n"
+        f"    if abs(_applied_fillet_r - {r:g}) > {max(0.1, 0.05 * r):g}:\n"
+        f"        raise ValueError(f'R{r:g} fillet not applied; safe_fillet returned "
+        f"{{_applied_fillet_r:g}} mm')\n"
         f"    part = _fb.part\n"
         f"{hint}"
     )

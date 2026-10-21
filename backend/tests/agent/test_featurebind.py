@@ -257,9 +257,38 @@ class TestRibBinding:
 
 class TestOtherBindings:
     def test_inner_fillet_selector(self):
-        spec = _l_bracket_spec()
+        spec = _spec(
+            [
+                _feat(
+                    name="inner_fillet",
+                    type="fillet",
+                    dims={"radius": 3.0},
+                    position="inner corner at x=-26, z=4",
+                    axis="y",
+                )
+            ]
+        )
         s = {b.name: b for b in bind_features(spec)}["inner_fillet"].snippet
         assert "safe_fillet(" in s and "3" in s and "Axis.Y" in s
+        assert "e.center().X - (-26)" in s
+        assert "e.center().Z - (4)" in s
+        assert "_applied_fillet_r" in s and "fillet target edge not found" in s
+        assert ".sort_by(Axis.X)[0]" not in s
+
+    def test_inner_fillet_without_location_is_unresolved(self):
+        spec = _spec(
+            [
+                _feat(
+                    name="inner fillet",
+                    type="fillet",
+                    dims={"radius": 3.0},
+                    position="inner corner",
+                )
+            ]
+        )
+        binding = bind_features(spec)[0]
+        assert not binding.resolved
+        assert "do not guess from edge order" in binding.snippet
 
     def test_chamfer(self):
         spec = _spec([_feat(name="c", type="chamfer", dims={"chamfer": 1.0}, position="outer rim")])

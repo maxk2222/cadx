@@ -401,3 +401,14 @@ def test_moved_vector_silent_on_uninferable_receiver():
     """No inferred Shape receiver -> no finding (conservative principle)."""
     rep = check_code_signatures(GOOD + "v = load_reference('abc')\nv = v.moved(Vector(0, 1, 0))\n")
     assert not rep.errors
+
+
+def test_safe_fillet_radius_cannot_overwrite_shape():
+    """The helper returns a radius, so assigning it to the model shape is a
+    guaranteed downstream geometry failure."""
+    code = (
+        "from build123d import *\nfrom cadlib import safe_fillet\nPARAMS = {}\n"
+        "part = Box(10, 10, 10)\npart = safe_fillet(part.edges(), 2)\n"
+    )
+    rep = check_code_signatures(code)
+    assert any("returns an applied radius, not a Shape" in e for e in rep.errors)

@@ -177,6 +177,37 @@ def test_safe_fillet_shrinks_oversized_radius():
     assert 0.0 < applied < 14.0
 
 
+def test_safe_fillet_shape_keeps_algebra_result():
+    """Algebra mode must retain the new Shape; a nonzero radius alone is not
+    evidence that the immutable input was changed."""
+    from cadx.cad.features import extract_features
+
+    foot = Box(60, 40, 4, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    leg = Pos(-28, 0, 25) * Box(4, 40, 50)
+    sharp = foot + leg
+    edges = [
+        e
+        for e in sharp.edges().filter_by(Axis.Y)
+        if abs(e.center().X - (-26.0)) < 0.1 and abs(e.center().Z - 4.0) < 0.1
+    ]
+
+    rounded, applied = cadlib.safe_fillet_shape(sharp, edges, radius=3.0)
+    features = extract_features(rounded)
+
+    assert applied == pytest.approx(3.0)
+    assert rounded.volume > sharp.volume
+    assert features.rounds and features.rounds[0] == pytest.approx(3.0, abs=0.01)
+
+
+def test_safe_fillet_outside_builder_fails_loudly():
+    """The builder-only helper cannot silently return a radius while
+    discarding build123d's functional Shape result."""
+    shape = Box(30, 20, 8, align=_ALIGN_MIN)
+    edges = shape.edges().filter_by(Axis.Z)
+    with pytest.raises(RuntimeError, match="safe_fillet_shape"):
+        cadlib.safe_fillet(edges, radius=2.0)
+
+
 def test_through_hole_requires_buildpart():
     with pytest.raises(RuntimeError, match="BuildPart"):
         cadlib.through_hole(5.0)

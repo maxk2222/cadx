@@ -53,6 +53,16 @@ def test_occ_fillet_empty_selection():
     assert "safe_fillet" in d.hint
 
 
+def test_safe_fillet_algebra_mode_gets_shape_preservation_hint():
+    d = diagnose(
+        "RuntimeError: safe_fillet() only edits an active BuildPart and returns the applied radius",
+        None,
+        CODE,
+    )
+    assert d.category == "api-misuse"
+    assert "safe_fillet_shape" in d.hint
+
+
 def test_removesplitter_api_missing_method():
     """Observed: `body.removeSplitter()` (CadQuery idiom) looped 3x in repair —
     must get a dedicated category + the .clean() hint, not generic api-misuse."""
