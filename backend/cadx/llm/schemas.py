@@ -347,12 +347,71 @@ class OptimizeSpec(BaseModel):
     )
     penal: float | None = Field(default=None, ge=1.0, le=8.0)  # SIMP exponent (default 3.0)
     penal_init: float | None = Field(default=None, ge=1.0, le=8.0)  # continuation start
-    solver: Literal["oc", "mma"] = "oc"  # oc (fast, volume-only) | mma (constraints below)
+    solver: Literal["oc", "mma", "beso"] = (
+        "oc"  # oc (fast, volume-only) | mma (constraints) | beso (binary 0/1
+        # evolutionary update — crisp binary designs, no gray/threshold
+        # ambiguity; volume-only, ignores the constraint fields below)
+    )
     case_objective: Literal["weighted", "minmax"] = (
         "weighted"  # minmax = robust worst-case over load cases (needs mma)
     )
     max_displacement_mm: float | None = Field(default=None, gt=0.0, le=1e4)
     max_stress_mpa: float | None = Field(default=None, gt=0.0, le=1e5)
+    volfrac_init: float | None = Field(
+        default=None, ge=0.05, le=0.95
+    )  # volfrac continuation start (e.g. 0.7 → ramps to target) —
+    # escapes the same local minima as penal_init; ignored when MMA
+    # constraints are active (the volume bound must hold from iter 0)
+    warmstart: Literal["uniform", "loadpath"] = (
+        "uniform"  # loadpath: deterministic Dijkstra corridor field between
+        # load centroids and fixed regions seeds x0 — skips the broad-search
+        # phase, typically ~20-40% fewer iterations
+    )
+    grow_mm: float = Field(
+        default=0.0, ge=0.0, le=50.0
+    )  # design-domain dilation: the optimizer may also ADD material up to
+    # grow_mm beyond the part silhouette (reinforcement ribs, enlarged
+    # walls) — regions still resolve on the true part surface
+    aniso_material: bool = (
+        False  # orthotropic FDM stiffness along print_direction (weaker
+        # interlayer direction); ignored without a print_direction effect
+    )
+    aniso_factor: float | None = Field(
+        default=None, ge=0.05, le=1.0
+    )  # layer-normal stiffness factor when aniso_material is on (default 0.6 —
+    # typical FDM interlayer bond strength vs in-plane)
+    beso_er: float = Field(
+        default=0.02, ge=0.005, le=0.2
+    )  # BESO evolutionary ratio — volume-ramp step per iteration (solver=beso)
+    # selectable structural strategy — "simp" (default, density TopOpt) or
+    # "infill" (shell + physics-graded internal lattice; ~2 FEM solves)
+    structure_mode: Literal["simp", "infill"] = "simp"
+    infill_scope: Literal["full", "guided"] = (
+        "guided"  # full: infill the whole part | guided: coarse SIMP picks
+        # the retained topology, infill only fills what it keeps
+    )
+    infill_style: Literal["gyroid_graded", "struts_aligned"] = (
+        "gyroid_graded"  # struts_aligned orients the lattice to the solved
+        # principal stress directions
+    )
+    infill_shell_mm: float = Field(
+        default=2.0, ge=0.0, le=20.0
+    )  # closed outer skin thickness under which the lattice lives
+    infill_period_mm: float = Field(
+        default=8.0, ge=2.0, le=40.0
+    )  # lattice cell size (modulated ±50% by local stiffness)
+    infill_min_density: float = Field(
+        default=0.25, ge=0.0, le=0.9
+    )  # lattice occupancy floor — keeps the core connected and printable
+    infill_max_density: float = Field(
+        default=0.9, ge=0.1, le=1.0
+    )  # lattice occupancy cap at energy hotspots (~solid below the skin)
+    infill_alpha: float = Field(
+        default=0.7, ge=0.1, le=3.0
+    )  # energy→density grading exponent (<1 flattens, >1 concentrates)
+    infill_seed: int = Field(
+        default=0, ge=0, le=2_147_483_647
+    )  # deterministic lattice phase — same seed + same mesh = same part
     # post-optimization feature finishing (POST /versions/{id}/refine)
     auto_refine_features: bool = (
         False  # auto-enqueue feature re-cut (bores/threads/inserts) after optimize
@@ -366,7 +425,17 @@ class OptimizeSpec(BaseModel):
     helical_threads: bool = False  # refine: cut real helical thread grooves (experimental, FDM)
     note: M = ""
 
-    @field_validator("solver", "case_objective", "filter", "symmetry", mode="before")
+    @field_validator(
+        "solver",
+        "case_objective",
+        "filter",
+        "symmetry",
+        "warmstart",
+        "structure_mode",
+        "infill_scope",
+        "infill_style",
+        mode="before",
+    )
     @classmethod
     def _enum_or_default(cls, v: Any, info: ValidationInfo) -> Any:
         """Silent tolerance for hallucinated enum values: anything outside
@@ -374,16 +443,24 @@ class OptimizeSpec(BaseModel):
         falls back to the documented default instead of failing the whole
         OptimizeSpec parse."""
         allowed: dict[str, tuple[str, ...]] = {
-            "solver": ("oc", "mma"),
+            "solver": ("oc", "mma", "beso"),
             "case_objective": ("weighted", "minmax"),
             "filter": ("cone", "heaviside", "helmholtz", "helmholtz+heaviside"),
             "symmetry": ("xy", "xz", "yz"),
+            "warmstart": ("uniform", "loadpath"),
+            "structure_mode": ("simp", "infill"),
+            "infill_scope": ("full", "guided"),
+            "infill_style": ("gyroid_graded", "struts_aligned"),
         }
         defaults: dict[str, Any] = {
             "solver": "oc",
             "case_objective": "weighted",
             "filter": "cone",
             "symmetry": None,
+            "warmstart": "uniform",
+            "structure_mode": "simp",
+            "infill_scope": "guided",
+            "infill_style": "gyroid_graded",
         }
         s = v.strip().lower() if isinstance(v, str) else v
         if s in allowed[info.field_name]:

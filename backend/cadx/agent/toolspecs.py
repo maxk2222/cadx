@@ -764,10 +764,11 @@ STRUCT_TOOLS = [
             },
             "solver": {
                 "type": "string",
-                "enum": ["oc", "mma"],
-                "description": "optimizer — 'oc' (fast, volume-only) or 'mma' "
-                "(enables real constraints below; slower but required for "
-                "minmax/stress/displacement)",
+                "enum": ["oc", "mma", "beso"],
+                "description": "optimizer — 'oc' (fast, volume-only), 'mma' "
+                "(enables real constraints below; required for "
+                "minmax/stress/displacement) or 'beso' (binary add/remove "
+                "evolution — crisp 0/1 designs by construction, volume-only)",
             },
             "case_objective": {
                 "type": "string",
@@ -792,6 +793,122 @@ STRUCT_TOOLS = [
                 "type": "number",
                 "description": "penal continuation: start exponent < penal "
                 "(softer start escapes grayscale local minima)",
+            },
+            "volfrac_init": {
+                "type": "number",
+                "description": "volfrac continuation: start volume fraction > "
+                "target (e.g. 0.7) — a material-rich start explores broad "
+                "layouts before the budget tightens (OC only)",
+            },
+            "warmstart": {
+                "type": "string",
+                "enum": ["uniform", "loadpath"],
+                "description": "'loadpath' seeds the density from deterministic "
+                "load-path corridors (load centroids → fixed regions) — "
+                "typically 20-40% fewer iterations to a similar design",
+            },
+            "grow_mm": {
+                "type": "number",
+                "description": "allow the optimizer to also ADD material up to "
+                "grow_mm beyond the part silhouette (reinforcement ribs, "
+                "thicker walls) — not just remove it",
+            },
+            "aniso_material": {
+                "type": "boolean",
+                "description": "orthotropic FDM stiffness: weaker along the "
+                "print_direction's layer normal — use with self_supporting "
+                "for realistic FDM safety factors",
+            },
+            "aniso_factor": {
+                "type": "number",
+                "description": "layer-normal stiffness factor when "
+                "aniso_material is on (default 0.6 — typical FDM "
+                "interlayer bond vs in-plane)",
+            },
+            "beso_er": {
+                "type": "number",
+                "description": "BESO evolutionary ratio — volume-ramp step "
+                "per iteration for solver=beso (default 0.02, classic "
+                "Huang & Xie setting; larger = faster but noisier)",
+            },
+            "load_cases": _LOAD_CASES_SCHEMA,
+            "material": _s("material name — empty = spec default"),
+            "voxel_mm": {"type": "number", "description": "voxel pitch in mm"},
+        },
+        [],
+    ),
+    _fn(
+        "infill_run",
+        "Shell + physics-graded lattice infill instead of SIMP: a full-"
+        "density FEM solve measures the per-element strain energy, a closed "
+        "outer shell keeps the silhouette and a density-graded gyroid "
+        "lattice fills the interior stiffer where load flows. ~2 solves "
+        "total (vs 60+ SIMP iterations) and natively watertight — best for "
+        "FDM parts that want shell+infill rather than voxel topology "
+        "changes. Same FEM verification + sf_export as topopt_run; returns "
+        "a run_index for done().",
+        {
+            "infill_scope": {
+                "type": "string",
+                "enum": ["full", "guided"],
+                "description": "'full' = infill the whole part; 'guided' = a "
+                "coarse SIMP picks the retained topology and the lattice "
+                "only fills what it keeps (stiffer result, slower)",
+            },
+            "infill_style": {
+                "type": "string",
+                "enum": ["gyroid_graded", "struts_aligned"],
+                "description": "lattice geometry — 'struts_aligned' orients "
+                "struts to the solved principal stress directions",
+            },
+            "infill_shell_mm": {
+                "type": "number",
+                "description": "closed outer skin thickness in mm (default 2.0)",
+            },
+            "infill_period_mm": {
+                "type": "number",
+                "description": "lattice cell size in mm (default 8.0), "
+                "modulated ±50% by local stiffness",
+            },
+            "infill_min_density": {
+                "type": "number",
+                "description": "lattice occupancy floor 0..0.9 (default "
+                "0.25) — keeps the core connected and printable",
+            },
+            "infill_max_density": {
+                "type": "number",
+                "description": "lattice occupancy cap at energy hotspots "
+                "(default 0.9 — near-solid below the skin)",
+            },
+            "infill_alpha": {
+                "type": "number",
+                "description": "energy→density grading exponent (default "
+                "0.7; <1 flattens the grading, >1 concentrates density "
+                "on hot cells)",
+            },
+            "infill_seed": {
+                "type": "integer",
+                "description": "deterministic lattice phase shift — same "
+                "seed + same mesh = same part",
+            },
+            "target_volume_fraction": {
+                "type": "number",
+                "description": "overall material fraction including shell "
+                "(0.1-0.9, default from spec)",
+            },
+            "min_member_mm": {
+                "type": "number",
+                "description": "enforce minimum member thickness (e.g. 1.6 for FDM)",
+            },
+            "self_supporting": {
+                "type": "boolean",
+                "description": "keep the lattice printable: solid floor band "
+                "near the build plate instead of a full AM filter",
+            },
+            "print_direction": {
+                "type": "string",
+                "enum": ["+x", "-x", "+y", "-y", "+z", "-z"],
+                "description": "build direction for self_supporting (default +z)",
             },
             "load_cases": _LOAD_CASES_SCHEMA,
             "material": _s("material name — empty = spec default"),
@@ -1352,6 +1469,7 @@ class ToolSession:
         preview_fn: StructFn | None = None,
         anchors_fn: StructFn | None = None,
         refine_fn: StructFn | None = None,
+        infill_fn: StructFn | None = None,
         # spec features for the submission audit — [{"type":..., "name":...}];
         # submit_code/done reject stubs that build none of them
         spec_features: list[dict[str, Any]] | None = None,
@@ -1367,6 +1485,7 @@ class ToolSession:
         self.preview_fn = preview_fn
         self.anchors_fn = anchors_fn
         self.refine_fn = refine_fn
+        self.infill_fn = infill_fn
         self.spec_features = spec_features
         self._refined_runs: set[int] = set()
         settings = ctx.runtime_settings
@@ -1481,6 +1600,11 @@ class ToolSession:
                 for t in STRUCT_TOOLS
                 if (t["function"]["name"] == "analyze_fem" and self.fem_left > 0)
                 or (t["function"]["name"] == "topopt_run" and self.topopt_left > 0)
+                or (
+                    t["function"]["name"] == "infill_run"
+                    and self.infill_fn
+                    and self.topopt_left > 0
+                )
                 or (t["function"]["name"] == "preview_regions" and self.preview_fn)
                 or (t["function"]["name"] == "check_load" and self.preview_fn)
                 or (t["function"]["name"] == "list_anchors" and self.anchors_fn)
@@ -2449,6 +2573,76 @@ class ToolSession:
                         "type": "topopt",
                         "volfrac": top.get("volfrac_target"),
                         "achieved": top.get("volfrac_achieved"),
+                        "worst_sf": worst_sf,
+                    },
+                )
+        return out
+
+    async def _tool_infill_run(self, a: dict[str, Any]) -> dict[str, Any]:
+        # shell+infill burns an executor run like topopt_run — shared budget
+        if self.infill_fn is None or self.topopt_left <= 0:
+            return {"ok": False, "error": "infill_run not available (budget exhausted)"}
+        self.topopt_left -= 1
+        res = await self.infill_fn(
+            {
+                **a,
+                "load_cases": self._coerce_obj_list(a.get("load_cases")),
+            }
+        )
+        if not res.get("ok"):
+            return {"ok": False, "error": res.get("error") or "infill generation failed"}
+        top = res.get("topopt") or {}
+        fem = res.get("fem") or {}
+        sfs = [
+            c.get("safety_factor")
+            for c in fem.get("cases") or []
+            if c.get("safety_factor") is not None
+        ]
+        idx = len(self.struct_runs)
+        self.struct_runs.append(
+            {
+                "index": idx,
+                "iteration": res.get("_iteration"),
+                "res": res,
+                "params": {**a, "structure_mode": "infill"},
+            }
+        )
+        sf_export = top.get("sf_export")
+        worst = [v for v in (*sfs, sf_export) if v is not None]
+        out: dict[str, Any] = {
+            "ok": True,
+            "run_index": idx,
+            "structure_mode": "infill",
+            "volfrac_achieved": top.get("volfrac_achieved"),
+            "meets_safety_factor": (top.get("verification") or {}).get("meets_safety_factor"),
+            "worst_safety_factor": min(worst) if worst else None,
+            "sf_mask": top.get("sf_mask"),
+            "sf_export": top.get("sf_export"),
+            "min_member_mm": top.get("min_member_mm"),
+            "n_components": top.get("n_components"),
+            "n_bodies_export": top.get("n_bodies_export"),
+            "verified": (top.get("verification") or {}).get("valid"),
+            "status": top.get("status"),
+            "infill": top.get("infill"),
+            "cases": self._fem_compact(fem).get("cases"),
+            "warnings": _warning_window(top.get("warnings")),
+            "verify_spec": _verify_spec_compact(res.get("verify_spec")),
+            "topopt_calls_left": self.topopt_left,
+        }
+        images = [str(p) for p in res.get("_images") or []]
+        if images:
+            out["_images"] = images
+        worst_sf = top.get("sf_export") or (min(sfs) if sfs else None)
+        emit = getattr(self.ctx, "emit", None)
+        if emit is not None:
+            with contextlib.suppress(Exception):
+                await emit(
+                    "optimize",
+                    res.get("_iteration") or 0,
+                    f"infill run {idx} done — SF {worst_sf}",
+                    run={
+                        "index": idx,
+                        "type": "infill",
                         "worst_sf": worst_sf,
                     },
                 )

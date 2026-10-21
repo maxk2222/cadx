@@ -31,8 +31,19 @@ pick the best one.
   whether optimization is even needed and which case is critical.
 - `topopt_run(...)` — full SIMP run + automatic FEM verification of the
   result. Parameters you may vary between runs:
+  - `solver`: `oc` (default, volume-only), `mma` (enables the constraint
+    fields below), `beso` (binary evolution — crisp 0/1 designs with no
+    gray/threshold ambiguity; volume-only like oc).
   - `target_volume_fraction` (0.1–0.9, default from spec): lower = lighter but
-    weaker.
+    weaker. `volfrac_init` (e.g. 0.7) ramps the target down over ~20
+    iterations — escapes sparse-layout local minima.
+  - `warmstart:"loadpath"`: seeds the density from deterministic load-path
+    corridors (load centroids → fixed regions) — typically 20–40% fewer
+    iterations to a similar design.
+  - `grow_mm`: lets the optimizer also ADD material up to grow_mm beyond the
+    part silhouette (reinforcement ribs, thicker walls) — not just remove.
+  - `aniso_material`: orthotropic FDM stiffness — weaker along the
+    `print_direction` layer normal; use for realistic FDM safety factors.
   - `keep_regions`: regions that MUST stay solid — mounting bores, interfaces.
     Add `"material":"aluminum"` (etc.) for threaded inserts / bushings.
   - `keep_mode:"auto"` — automatically keep a ring around EVERY detected
@@ -63,6 +74,15 @@ pick the best one.
     loads and keep/fix regions are symmetric about.
   - `load_cases`: override/extend the spec cases (same schema).
   - `material`, `voxel_mm`, `max_iterations`, `density_threshold`.
+- `infill_run(...)` — the second structural strategy: shell + physics-graded
+  lattice instead of SIMP. A full-density FEM solve measures where load
+  flows; a closed outer skin (`infill_shell_mm`) keeps the silhouette and a
+  density-graded gyroid lattice fills the interior stiffer where strain
+  energy concentrates. `infill_scope:"full"` infills the whole part,
+  `"guided"` runs a coarse SIMP first and only fills what it keeps.
+  ~2 solves total and natively watertight — the FDM-friendlier result;
+  prefer it when the part should look like slicer shell+infill rather than
+  a skeletal topology. Same `sf_export` verification and run_index contract.
 - `refine_features(run_index, features?, restore_planes?, load_cases?)` —
   feature finishing on a completed run: re-cuts EXACT bores, printed threads
   (tap-drill for `thread_spec`/`standard` M-sizes), inserts, bearing seats,

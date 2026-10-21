@@ -169,7 +169,8 @@ Chat-agent session settings — see [chat.md](chat.md).
 |---------|---------|-------|
 | `fem_voxel_mm` | `1.5` | voxel pitch (adaptively coarsened to stay under `fem_max_elements`) |
 | `fem_max_elements` | `150000` | element cap |
-| `fem_spsolve_dofs` | `120000` | above this, SSOR-CG replaces the direct solver |
+| `fem_solver_backend` | `auto` | `auto\|cholmod\|superlu\|amg\|ssor` — CHOLMOD/pyamg are optional extras (`[fem]`); missing imports fall back per solve |
+| `fem_spsolve_dofs` | `120000` | above this, preconditioned CG replaces the direct solver (AMG if `pyamg` installed, else SSOR) |
 | `fem_max_effective_cases` | `8` | cap on direction-cone load-case expansion |
 | `fem_timeout_s` | `600` | executor task timeout |
 | `topopt_timeout_s` | `2700` | executor task timeout |

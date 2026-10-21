@@ -375,8 +375,9 @@ export interface OptimizeSpec {
   /** 45° AM support filter — no unsupported overhangs (print_direction). */
   self_supporting?: boolean;
   print_direction?: "+x" | "-x" | "+y" | "-y" | "+z" | "-z";
-  /** density filter — heaviside gives crisp 0/1 fields. */
-  filter?: "cone" | "heaviside";
+  /** density filter — heaviside gives crisp 0/1 fields; helmholtz is the
+   * PDE filter with consistent feature size at the domain boundary. */
+  filter?: "cone" | "heaviside" | "helmholtz" | "helmholtz+heaviside";
   /** coarse 2x-pitch SIMP warm-starts the fine grid (~3x faster). */
   multires?: boolean;
   /** union original keep-region surfaces back during refine (default on). */
@@ -385,8 +386,9 @@ export interface OptimizeSpec {
   auto_plane_restore?: boolean;
   /** refine: cut real helical thread grooves (experimental, FDM). */
   helical_threads?: boolean;
-  /** optimizer: "oc" (default) or "mma" — enables constraint support. */
-  solver?: "oc" | "mma";
+  /** optimizer: "oc" (fast, volume-only), "mma" (enables the constraint
+   * fields below) or "beso" (binary evolution — crisp 0/1 designs). */
+  solver?: "oc" | "mma" | "beso";
   /** "minmax" optimizes the worst load case (smooth P-norm, mma only). */
   case_objective?: "weighted" | "minmax";
   /** displacement cap per load case, mm (mma only). */
@@ -397,6 +399,40 @@ export interface OptimizeSpec {
   penal_init?: number | null;
   /** warn when void gaps below this size survive extraction, mm. */
   min_gap_mm?: number | null;
+  /** volfrac continuation start (> target, e.g. 0.7 — OC only). */
+  volfrac_init?: number | null;
+  /** "loadpath" seeds density from load-path corridors (Dijkstra) —
+   * typically 20-40% fewer SIMP iterations. */
+  warmstart?: "uniform" | "loadpath";
+  /** design-domain dilation — the optimizer may also ADD material up to
+   * grow_mm beyond the part silhouette (reinforcement ribs). */
+  grow_mm?: number;
+  /** orthotropic FDM stiffness along print_direction (weaker layers). */
+  aniso_material?: boolean;
+  /** layer-normal stiffness factor when aniso_material (default 0.6). */
+  aniso_factor?: number | null;
+  /** BESO evolutionary ratio — volume-ramp step/iter (default 0.02). */
+  beso_er?: number;
+  /** structural strategy: "simp" (density TopOpt) or "infill" (closed
+   * shell + physics-graded lattice, ~2 FEM solves). */
+  structure_mode?: "simp" | "infill";
+  /** "full" fills the whole part; "guided" restricts the lattice to what
+   * a coarse SIMP retains. */
+  infill_scope?: "full" | "guided";
+  /** "struts_aligned" orients struts to principal stress directions. */
+  infill_style?: "gyroid_graded" | "struts_aligned";
+  /** closed outer skin thickness, mm (default 2.0). */
+  infill_shell_mm?: number;
+  /** lattice cell size, mm (default 8.0). */
+  infill_period_mm?: number;
+  /** lattice occupancy floor (default 0.25). */
+  infill_min_density?: number;
+  /** lattice occupancy cap at hotspots (default 0.9). */
+  infill_max_density?: number;
+  /** energy→density grading exponent (default 0.7). */
+  infill_alpha?: number;
+  /** deterministic lattice phase (same seed + mesh = same part). */
+  infill_seed?: number;
   note?: string;
 }
 
