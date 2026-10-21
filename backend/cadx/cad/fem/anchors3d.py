@@ -75,6 +75,60 @@ def _heightfield_axis(
     return H, us, vs
 
 
+def _tunnel_depth(
+    mesh: trimesh.Trimesh,
+    axis: str,
+    void_cells: np.ndarray,
+    inside: np.ndarray,
+    us: np.ndarray,
+    vs: np.ndarray,
+    span: float,
+    max_rays: int = 8,
+) -> float:
+    """Real length of a through-tunnel along `axis` (the pierced wall's
+    thickness), not the whole bbox span.
+
+    Rays at the void cells themselves pass clean through — that is what
+    made them voids — so the pierced material is measured on the ring of
+    hit cells enclosing the void: per rim ray, the consecutive hit pairs
+    are material runs and the longest one is the wall the channel pierces;
+    the median over the rim rays is the tunnel depth. Falls back to `span`
+    when no rim ray resolves.
+    """
+    import scipy.ndimage as ndi
+
+    rim = ndi.binary_dilation(void_cells) & inside & ~void_cells
+    ii, jj = np.nonzero(rim)
+    if len(ii) == 0:
+        return span
+    sel = np.linspace(0, len(ii) - 1, min(max_rays, len(ii))).astype(int)
+    ax, au, av = _AXES[axis]
+    origins = np.zeros((len(sel), 3))
+    origins[:, au] = us[ii[sel]]
+    origins[:, av] = vs[jj[sel]]
+    origins[:, ax] = mesh.bounds[1][ax] + 10.0
+    directions = np.zeros((len(sel), 3))
+    directions[:, ax] = -1.0
+    try:
+        locs, ray_ids, _ = mesh.ray.intersects_location(
+            ray_origins=origins, ray_directions=directions, multiple_hits=True
+        )
+    except Exception:
+        return span
+    hits: list[list[float]] = [[] for _ in range(len(sel))]
+    for r, loc in zip(ray_ids, locs, strict=True):
+        hits[int(r)].append(float(loc[ax]))
+    runs: list[float] = []
+    for h in hits:
+        h.sort()
+        pairs = [h[k + 1] - h[k] for k in range(0, len(h) - 1, 2)]
+        if pairs:
+            runs.append(max(pairs))
+    if not runs:
+        return span
+    return float(min(float(np.median(runs)), span))
+
+
 def _anchor(axis: str, u: float, v: float, dia: float, depth: float, kind: str) -> dict[str, Any]:
     """Anchor dict for a feature at in-plane (u, v) on `axis`.
 
@@ -140,7 +194,7 @@ def scan_mesh_anchors(
                     float(us[ii].mean()),
                     float(vs[jj].mean()),
                     2.0 * np.sqrt(area / np.pi) + 0.5 * step_mm,
-                    span,
+                    _tunnel_depth(mesh, axis, cells, inside, us, vs, span),
                     "hole",
                 )
             )

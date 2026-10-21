@@ -168,22 +168,60 @@ def _axial_slab(domain: VoxelDomain, axis_idx: int, center: float, half: float) 
     return np.asarray(np.abs(centers[..., axis_idx] - center) <= half)
 
 
+def _cylinder_disc_cells(
+    domain: VoxelDomain, axis: str, center: list[float], radius: float
+) -> np.ndarray:
+    """Geometric disc mask — cells whose centre lies within `radius` of the
+    axis line at `center`, NOT intersected with solid (for void-fraction
+    checks, where the void cells are the signal)."""
+    idx, _ = _axis_parts(axis)
+    others = [i for i in range(3) if i != idx]
+    centers = domain.element_centers().reshape((*domain.dims, 3))
+    c = np.array([center[others[0]], center[others[1]]], dtype=float)
+    d2 = (centers[..., others[0]] - c[0]) ** 2 + (centers[..., others[1]] - c[1]) ** 2
+    return np.asarray(d2 <= radius * radius)
+
+
+def _anchor_has_void(
+    domain: VoxelDomain, axis: str, center: list[float], dia: float
+) -> bool:
+    """True when the interior cylinder of the measured bore is mostly
+    void — the anchor sits on a real hole. An anchor inside solid material
+    (phantom mesh feature, stale hole_index) has no void to clamp a ring
+    around and must resolve to nothing rather than pin a material column.
+    A bore too small for the grid (no cell centre inside the interior
+    radius) is inconclusive and passes — the grow loop handles it."""
+    if dia <= 0:
+        return True
+    r_inner = max(dia / 2 - domain.pitch, domain.pitch)
+    inner = _cylinder_disc_cells(domain, axis, center, r_inner)
+    if not inner.any():
+        return True
+    solid_frac = float((inner & domain.solid).sum()) / float(inner.sum())
+    return solid_frac <= 0.5
+
+
 def _hole_cells(domain: VoxelDomain, region: RegionSpec, anchors: list[dict] | None) -> np.ndarray:
     """Material ring around a hole anchor (any axis). The bore itself is
     void, so the cylinder degenerates to the ring clamped by the pin.
 
     The measured dia can undersize the real bore (countersinks, tolerances)
     which would leave the disc fully inside the void — grow until it hits
-    solid material."""
+    solid material. When the anchor position holds NO void at all (phantom
+    anchor inside solid material) the mask stays empty instead — the
+    region fallback then pins a declared boundary patch rather than a
+    phantom material column."""
     g = _anchor_geometry(domain, region, anchors)
     if g is None:
         return np.zeros(domain.dims, dtype=bool)
     center, avec, dia, half = g
     idx = int(np.argmax(np.abs(avec)))
-    margin = max(region.margin_mm, domain.pitch)
-    radius = dia / 2 + margin
     axis = f"+{'xyz'[idx]}"
     ctr = [float(v) for v in center]
+    if not _anchor_has_void(domain, axis, ctr, dia):
+        return np.zeros(domain.dims, dtype=bool)
+    margin = max(region.margin_mm, domain.pitch)
+    radius = dia / 2 + margin
     cells = _cylinder_cells(domain, axis, ctr, radius)
     for _ in range(4):
         if cells.any():
@@ -207,9 +245,14 @@ def _bore_cells(domain: VoxelDomain, region: RegionSpec, anchors: list[dict] | N
     center, avec, dia, half = g
     idx = int(np.argmax(np.abs(avec)))
     axis = f"+{'xyz'[idx]}"
+    ctr = [float(v) for v in center]
+    # same void check as _hole_cells, BEFORE the wall ring — a phantom
+    # anchor must not fall through to the hole grow loop and resurrect a
+    # material column out of solid material
+    if not _anchor_has_void(domain, axis, ctr, dia):
+        return np.zeros(domain.dims, dtype=bool)
     # solid cells whose radial distance is within [0.5*dia, 0.5*dia + band]
     band = max(domain.pitch * 1.6, 0.35 * dia, 1.0)
-    ctr = [float(v) for v in center]
     in_cyl = _cylinder_cells(domain, axis, ctr, dia / 2 + band) & ~_cylinder_cells(
         domain, axis, ctr, max(dia / 2 - domain.pitch, 0.0)
     )
@@ -461,6 +504,42 @@ def surface_area_per_node(domain: VoxelDomain, cell_mask: np.ndarray, axis: str)
     return areas
 
 
+def _grow_load_spec(r: RegionSpec, pitch: float) -> RegionSpec | None:
+    """A copy of a load RegionSpec enlarged by ~one pitch — the patch grows
+    around its declared centre (center/points stay fixed, no centroid
+    shift). ``None`` for kinds that cannot grow this way (hole/bore
+    anchors carry their own ring logic, `all` is already maximal)."""
+    if r.kind == "box":
+        edge = (r.diameter_mm or 4 * r.margin_mm) + pitch
+        return r.model_copy(update={"diameter_mm": edge})
+    if r.kind == "points":
+        radius = (r.radius_mm or max(2.0 * r.margin_mm, 3.0)) + pitch
+        return r.model_copy(update={"radius_mm": radius})
+    if r.kind in ("area", "surface", "face", "cylinder"):
+        return r.model_copy(update={"margin_mm": r.margin_mm + pitch})
+    return None
+
+
+def _anchor_note(
+    domain: VoxelDomain, region: RegionSpec, anchors: list[dict] | None
+) -> str:
+    """`` (anchor #i at (x, y, z) — verify ...)`` suffix for unresolved
+    hole/anchor/bore regions — the resolved anchor identity + position so a
+    phantom anchor (stale hole_index, mesh artefact) is visible in the
+    warning. Empty string when the region names no anchor."""
+    idx = region.hole_index
+    if not idx or not anchors or not (1 <= idx <= len(anchors)):
+        return ""
+    g = _anchor_geometry(domain, region, anchors)
+    if g is None:
+        return f" (anchor #{idx} — verify the hole exists in the geometry)"
+    c = g[0]
+    return (
+        f" (anchor #{idx} at ({c[0]:.1f}, {c[1]:.1f}, {c[2]:.1f}) — "
+        "verify the hole exists in the geometry)"
+    )
+
+
 def _fixed_dof_mask(domain: VoxelDomain, region: RegionSpec, node_mask: np.ndarray) -> np.ndarray:
     """(nnodes, 3) bool — which DOFs of the region's nodes are constrained.
 
@@ -524,7 +603,7 @@ def resolve_case_dofs(  # noqa: C901
             warnings.append(
                 f"case '{case.name}': region_fallback — fixed region {r.kind} {tag} "
                 f"unresolved on the geometry; pinned {fb_ax} boundary patch "
-                f"({int(cells.sum())} cells)"
+                f"({int(cells.sum())} cells)" + _anchor_note(domain, r, anchors)
             )
         fixed3 |= _fixed_dof_mask(domain, r, m)
         if r.fix_mode == "normal":
@@ -540,11 +619,24 @@ def resolve_case_dofs(  # noqa: C901
         if not m.any():
             warnings.append(f"case '{case.name}': load region {r.kind} {tag} matched no nodes")
             continue
+        # a load patch of only a few cells concentrates a point-load
+        # singularity — grow the declared region by ~one pitch at a time
+        # (centre kept) until it covers a ~2-pitch block; warn when it
+        # still can't (never applied to case.fixed regions)
+        min_load_cells = max(8, round(0.5 * (2 * domain.pitch) ** 3 / domain.pitch**3))
+        tries = 0
+        while cells.sum() < min_load_cells and tries < 3:
+            grown = _grow_load_spec(r, domain.pitch)
+            if grown is None:
+                break  # kinds that cannot grow this way (hole/bore/all)
+            r = grown
+            m, cells, fb_ax = _nodes_cells(r)
+            tries += 1
         if fb_ax:
             warnings.append(
                 f"case '{case.name}': region_fallback — load region {r.kind} {tag} "
                 f"unresolved on the geometry; applied on {fb_ax} boundary patch "
-                f"({int(cells.sum())} cells)"
+                f"({int(cells.sum())} cells)" + _anchor_note(domain, r, anchors)
             )
         elif (
             not r.material
@@ -560,6 +652,11 @@ def resolve_case_dofs(  # noqa: C901
                 f"{100.0 * cells.sum() / max(domain.solid_count, 1):.0f}% of the "
                 "part — the force is spread very thin; narrow it with "
                 "x_range/y_range/center or confirm uniform loading is intended"
+            )
+        if cells.sum() < min_load_cells:
+            warnings.append(
+                f"case '{case.name}': load region {r.kind} {tag} covers only "
+                f"{int(cells.sum())} cells — point-load singularity risk"
             )
         idx = np.flatnonzero(m)
 

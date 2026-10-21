@@ -157,3 +157,25 @@ def test_coord_points_wordy_connector_still_splits():
         {"x": -55.0, "z": 35.0},
         {"x": 15.0, "z": 95.0},
     ]
+
+
+# --------------------------------------------------------------------------- #
+# unicode normalization (U+2212 minus, en/em dash, NBSP)                      #
+# --------------------------------------------------------------------------- #
+
+
+def test_unicode_minus_coords_parse():
+    """LLM intake writes U+2212 verbatim — 'x=\u221230' must parse as -30."""
+    coords, _f, _e, _n = parse_position_hints("x=\u221230, z=45 mm")
+    assert coords == {"x": -30.0, "z": 45.0}
+    assert parse_coord_points("x=\u221225, y=0 and x=+45, y=0") == [
+        {"x": -25.0, "y": 0.0},
+        {"x": 45.0, "y": 0.0},
+    ]
+
+
+def test_nbsp_and_dash_offsets_parse():
+    """NBSP between value and unit, and a unicode minus before the axis of
+    an end hint, both normalize away."""
+    _c, _f, ends, _n = parse_position_hints("5\u00a0mm from \u2212x end")
+    assert [(e["end"], e["offset_mm"]) for e in ends] == [("-x", 5.0)]

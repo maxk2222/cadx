@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 
+from cadx.cad.poshint import _norm_numtext
 from cadx.llm.schemas import Feature, PartSpec
 
 _NUM = r"([+-]?\d+(?:\.\d+)?)"
@@ -35,6 +36,13 @@ _RANGE_RES = (
     re.compile(rf"\b([xyz])\s+zwischen\s+{_NUM}\s+und\s+{_NUM}", re.I),
     re.compile(rf"\b([xyz])\s+{_NUM}\s*\.\.\s*{_NUM}", re.I),
     re.compile(rf"\b([xyz])\s+{_NUM}\s+(?:to|bis)\s+{_NUM}", re.I),
+    # "y durchgehend (\u221230..\u221220)" — filler words and parens between the axis
+    # letter and the range (intake's German 'through the plate' style); the
+    # parens keep a bare "x foo -30..-20" sentence from binding falsely
+    re.compile(
+        rf"\b([xyz])(?:\s+[a-zäöü]+)*\s*\(\s*{_NUM}\s*\.\.\s*{_NUM}\s*\)",
+        re.I,
+    ),
 )
 
 
@@ -43,7 +51,12 @@ def parse_ranges(text: str) -> dict[str, tuple[float, float]]:
 
     Recognises "x from -60 to -55", "x=-60..-55", "x: -60 bis -55" and
     "x zwischen -60 und -55" (plus the "von..bis" German mix).
+
+    Unicode minus/dashes (U+2212/U+2013/U+2014) and non-breaking spaces are
+    normalized to their ASCII equivalents first — intake writes them
+    verbatim ("y durchgehend (\u221230..\u221220)").
     """
+    text = _norm_numtext(text)
     out: dict[str, tuple[float, float]] = {}
     for rx in _RANGE_RES:
         for m in rx.finditer(text or ""):

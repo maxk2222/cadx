@@ -15,6 +15,22 @@ from __future__ import annotations
 import re
 from typing import Any
 
+
+def _norm_numtext(text: str) -> str:
+    """Normalize typographic minus/dash/space characters that the ASCII-only
+    number regexes would otherwise miss: U+2212 (minus), U+2013/U+2014
+    (en/em dash) -> ``-``, U+00A0 (non-breaking space) -> a plain space.
+    LLM intake writes these freely in German spec text ("y durchgehend
+    (\u221230..\u221220)")."""
+    return (
+        (text or "")
+        .replace("\u2212", "-")
+        .replace("\u2013", "-")
+        .replace("\u2014", "-")
+        .replace("\u00a0", " ")
+    )
+
+
 # machine-readable position hints: "x=12" offsets, "75mm from -x end"
 # end-relative offsets, "centred in y" mid-plane hints, "+y"/"front" face words
 _POS_COORD_RE = re.compile(r"\b([xyz])\s*=\s*([+-]?\d+(?:\.\d+)?)", re.I)
@@ -84,7 +100,7 @@ def parse_position_hints(
       to an end-band region check or an estimated inset position.
     Parsed spans are masked so a token is never read as two hint kinds.
     """
-    low = text.lower()
+    low = _norm_numtext(text).lower()
     masked = list(low)
 
     def _mask(span: tuple[int, int]) -> None:
@@ -166,6 +182,7 @@ def parse_coord_points(text: str) -> list[dict[str, float]]:
     lo/hi stay available via ``parse_ranges``). Empty groups are dropped;
     ``[]`` when the text carries no coordinate at all.
     """
+    text = _norm_numtext(text or "")
     groups: list[dict[str, float]] = []
     cur: dict[str, float] = {}
     prev_end = 0

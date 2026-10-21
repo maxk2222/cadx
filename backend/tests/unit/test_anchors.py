@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from cadx.agent.anchors import build_anchors
+from cadx.agent.anchors import Anchor, _spec_anchors, _type_anchors, build_anchors
 from cadx.agent.spechost import host_body, host_range, host_span, parse_ranges
 from cadx.llm.schemas import Dim, Feature, FeatureCenter, PartSpec
 
@@ -770,3 +770,154 @@ def test_named_clearance_hole_without_diameter_gets_clearance_dia():
     a = build_anchors(spec, {}, None)
     assert len(a.holes) == 1
     assert 5.0 < a.holes[0].dia < 6.5  # normal M5 clearance ≈ 5.3-5.5
+
+
+# --------------------------------------------------------------------------- #
+# Unicode-minus / phantom-anchor regression (L-bracket eval causal chain)     #
+# --------------------------------------------------------------------------- #
+
+
+def test_parse_ranges_unicode_minus_and_parenthesised():
+    """U+2212 minus / en-dash / NBSP are normalized before the ASCII _NUM
+    regex — the live eval's 'y durchgehend (\u221230..\u221220)' parsed to {} and the
+    spec bores never became anchors."""
+    assert parse_ranges("y durchgehend (\u221230..\u221220)") == {"y": (-30.0, -20.0)}
+    assert parse_ranges("x von \u221260 bis \u221255") == {"x": (-60.0, -55.0)}
+    assert parse_ranges("x\u00a0-60..-55") == {"x": (-60.0, -55.0)}
+    assert parse_ranges("y \u221230..+30") == {"y": (-30.0, 30.0)}
+    # filler words + parens between the axis letter and the range
+    assert parse_ranges("x=-30, y durchgehend (\u221230..\u221220), Z=45 mm") == {
+        "y": (-30.0, -20.0)
+    }
+
+
+def _lbracket_spec() -> PartSpec:
+    """The eval spec verbatim: 100x60x60 L-bracket, two M6 through-bores
+    along Y through the 10 mm back wall at (x=-30 / x=+30, z=45)."""
+    d = lambda v: Dim(value=v, unit="mm", source="stated")  # noqa: E731
+    return PartSpec(
+        name="90° L-Winkelkonsole PETG",
+        summary="",
+        units="mm",
+        length_x=d(100),
+        width_y=d(60),
+        height_z=d(60),
+        features=[
+            Feature(
+                name="Grundplatte",
+                type="base_plate",
+                position="Z 0\u201310 mm, x \u221250..+50, y \u221230..+30",
+            ),
+            Feature(
+                name="Stegwand",
+                type="wall",
+                position="y \u221230..\u221220, x \u221250..+50, Z 0..60",
+            ),
+            Feature(
+                name="M6-Durchgangsbohrung links",
+                type="through_hole",
+                dims={"diameter": 6.8, "depth": 10.0},
+                position="x=-30, y durchgehend (\u221230..\u221220), Z=45 mm",
+                standard="M6 clearance Ø6.8 through hole",
+            ),
+            Feature(
+                name="M6-Durchgangsbohrung rechts",
+                type="through_hole",
+                dims={"diameter": 6.8, "depth": 10.0},
+                position="x=+30, y durchgehend (\u221230..\u221220), Z=45 mm",
+                standard="M6 clearance Ø6.8 through hole",
+            ),
+        ],
+        image_roles=[],
+    )
+
+
+def test_spec_anchors_unicode_minus_y_bores():
+    """'y durchgehend (\u221230..\u221220)' declares a +y bore: the axis comes from
+    the single resolved range, the in-plane position from x/z coords and
+    the axial centre from the pierced wall's mid-plane."""
+    anchors = _spec_anchors(_lbracket_spec())
+    assert len(anchors) == 2
+    assert all(a.axis == "+y" for a in anchors)
+    assert sorted(a.x for a in anchors) == [-30.0, 30.0]
+    for a in anchors:
+        assert a.pos is not None
+        assert a.pos[2] == 45.0  # z height on the wall
+        assert a.pos[1] == -25.0  # axial centre = wall mid-plane
+        assert a.depth_mm == 10.0  # declared wall thickness, not the 60mm span
+        assert a.bolt_size == "M6" and a.source == "spec"
+    assert sorted(a.name for a in anchors) == [
+        "M6-Durchgangsbohrung links",
+        "M6-Durchgangsbohrung rechts",
+    ]
+
+
+def test_type_anchors_requires_axis_and_position_match():
+    """Diameter alone must not transfer a spec name: a +z phantom whose
+    diameter nearly matches the M6 bore keeps neither name nor bolt_size,
+    while a measured +y bore at the declared position inherits both."""
+    spec = _lbracket_spec()
+    phantom = Anchor(index=1, x=-6.06, y=14.61, dia=7.76, source="mesh", axis="+z")
+    bore = Anchor(
+        index=2,
+        x=-30.0,
+        y=-25.0,
+        dia=7.0,
+        source="mesh",
+        axis="+y",
+        pos=[-30.0, None, 45.0],
+    )
+    # same axis + diameter but far from every declared position -> kind only
+    far = Anchor(
+        index=3,
+        x=48.0,
+        y=-25.0,
+        dia=6.9,
+        source="mesh",
+        axis="+y",
+        pos=[48.0, None, 45.0],
+    )
+    _type_anchors(spec, [phantom, bore, far])
+    assert phantom.name == "" and phantom.bolt_size == "" and phantom.kind == "hole"
+    assert bore.name == "M6-Durchgangsbohrung links" and bore.bolt_size == "M6"
+    assert far.name == "" and far.bolt_size == ""
+
+
+def test_type_anchors_axis_only_feature_upgrades_kind_not_name():
+    """A feature whose axis resolves but whose position does not upgrades
+    kind only — never name/bolt_size."""
+    spec = _plate_spec(
+        [
+            Feature(
+                name="M8 insert",
+                type="insert",
+                axis="z",
+                dims={"diameter": 8.0},
+            ),
+        ]
+    )
+    a = Anchor(index=1, x=5.0, y=5.0, dia=8.5, source="mesh", axis="+z")
+    _type_anchors(spec, [a])
+    assert a.kind == "insert"  # axis matched within the diameter gate
+    assert a.name == "" and a.bolt_size == ""  # position unresolvable
+
+
+def test_build_anchors_phantom_mesh_hole_cannot_absorb_spec_bore():
+    """End-to-end of the eval bug: one +z mesh phantom plus the two +y spec
+    bores -> spec anchors keep indices 1,2 and the phantom stays nameless
+    at 3 instead of absorbing 'M6-Durchgangsbohrung rechts'."""
+    a = build_anchors(
+        _lbracket_spec(),
+        {},
+        {
+            "holes": [{"x": -6.06, "y": 14.61, "dia": 7.76, "kind": "tunnel"}],
+            "outline_mm": [],
+        },
+    )
+    assert [h.index for h in a.holes] == [1, 2, 3]
+    assert a.holes[0].axis == "+y" and a.holes[0].x == -30.0
+    assert a.holes[1].axis == "+y" and a.holes[1].x == 30.0
+    ph = a.holes[2]
+    assert ph.axis == "+z" and ph.source == "mesh"
+    assert ph.name == "" and ph.bolt_size == ""
+    assert "2 spec-declared" in a.note

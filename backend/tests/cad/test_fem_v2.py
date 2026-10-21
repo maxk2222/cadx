@@ -961,3 +961,200 @@ def test_case_reactions_report() -> None:
     assert rep["fixed_nodes"] > 0
     # 100 N at the tip, ~30 mm from the clamp centre → ~3000 N·mm = 3 N·m
     assert rep["moment_mag_nm"] > 1.0
+
+
+# --------------------------------------------------------------------------- #
+# tunnel depth — the pierced wall's thickness, not the bbox axis span         #
+# --------------------------------------------------------------------------- #
+
+
+def _wall_bored_mesh() -> trimesh.Trimesh:
+    """L-bracket-ish part: 40x60x8 base + 40x10x30 back wall; a Ø6 bore
+    pierces the 10 mm wall along +y at (x=0, z=18) — the tunnel length is
+    10 mm, NOT the 60 mm y-span of the part."""
+    base = _box_mesh(40.0, 60.0, 8.0)
+    wall = trimesh.creation.box(extents=[40.0, 10.0, 30.0])
+    wall.apply_translation([0.0, -25.0, 15.0])  # y in [-30,-20]
+    bore = trimesh.creation.cylinder(radius=3.0, height=30.0, sections=32)
+    bore.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0]))
+    bore.apply_translation([0.0, -25.0, 18.0])
+    out = trimesh.util.concatenate([base, wall]).difference(bore, engine="manifold")
+    assert isinstance(out, trimesh.Trimesh)
+    return out
+
+
+def test_tunnel_depth_measures_pierced_wall_not_span() -> None:
+    """_tunnel_depth on a synthetic void column between two plates: the rim
+    rays' longest material run is the 10 mm wall, not the 50 mm gap between
+    the plates (rays through the void itself hit nothing)."""
+    from cadx.cad.fem.anchors3d import _tunnel_depth
+
+    wall = trimesh.creation.box(extents=[40.0, 10.0, 30.0])
+    wall.apply_translation([0.0, -25.0, 15.0])  # y in [-30,-20]
+    rib = trimesh.creation.box(extents=[40.0, 10.0, 30.0])
+    rib.apply_translation([0.0, 15.0, 15.0])  # y in [10,20]
+    mesh = trimesh.util.concatenate([wall, rib])
+    step = 1.0
+    us = np.arange(mesh.bounds[0][0], mesh.bounds[1][0] + step, step)
+    vs = np.arange(mesh.bounds[0][2], mesh.bounds[1][2] + step, step)
+    inside = np.ones((len(us), len(vs)), dtype=bool)
+    void = np.zeros_like(inside)
+    void[len(us) // 2, len(vs) // 2] = True  # detected bore cell (x~0, z~15)
+    span = float(mesh.bounds[1][1] - mesh.bounds[0][1])  # 50
+    depth = _tunnel_depth(mesh, "+y", void, inside, us, vs, span)
+    assert depth == pytest.approx(10.0, abs=1.0)
+    assert depth < span / 3.0
+
+
+def test_scan_mesh_anchors_wall_bore_depth_is_wall_not_span() -> None:
+    """A bore through a 10 mm wall reports ~10 mm depth — the 60 mm bbox
+    y-span is NOT the tunnel length (eval regression: depth_mm=60 told keep
+    regions and spec matching the bore ran the whole part)."""
+    anchors = scan_mesh_anchors(_wall_bored_mesh(), step_mm=1.0)
+    y_anchors = [a for a in anchors if a["axis"] == "+y" and a["kind"] == "hole"]
+    assert y_anchors, f"no +y hole found in {anchors}"
+    a = y_anchors[0]
+    assert a["depth_mm"] == pytest.approx(10.0, abs=2.0)
+    assert a["pos"] is not None
+    assert a["pos"][0] == pytest.approx(0.0, abs=2.0)
+    assert a["pos"][2] == pytest.approx(18.0, abs=2.0)
+
+
+def test_merge_anchor_lists_keeps_spec_declaration_order() -> None:
+    """Spec-declared anchors keep their declaration order before scan-only
+    entries — hole_index 1/2 must stay the two +y spec bores even when the
+    scan reports a +z phantom (L-bracket eval regression)."""
+    existing = [
+        {
+            "index": 1,
+            "x": -30.0,
+            "y": -25.0,
+            "dia": 6.8,
+            "axis": "+y",
+            "pos": [-30.0, -25.0, 45.0],
+            "z": -25.0,
+            "depth_mm": 10.0,
+            "kind": "hole",
+            "source": "spec",
+            "name": "bore L",
+        },
+        {
+            "index": 2,
+            "x": 30.0,
+            "y": -25.0,
+            "dia": 6.8,
+            "axis": "+y",
+            "pos": [30.0, -25.0, 45.0],
+            "z": -25.0,
+            "depth_mm": 10.0,
+            "kind": "hole",
+            "source": "spec",
+            "name": "bore R",
+        },
+    ]
+    scanned = [
+        {
+            "x": -6.0,
+            "y": 14.6,
+            "dia": 7.8,
+            "axis": "+z",
+            "pos": [-6.0, 14.6, None],
+            "z": None,
+            "depth_mm": 12.0,
+            "kind": "hole",
+            "source": "scan",
+        },
+        {
+            "x": -30.0,
+            "y": 0.0,
+            "dia": 7.1,
+            "axis": "+y",
+            "pos": [-30.0, None, 45.0],
+            "z": None,
+            "depth_mm": 10.0,
+            "kind": "hole",
+            "source": "scan",
+        },
+        {
+            "x": 30.0,
+            "y": 0.0,
+            "dia": 7.1,
+            "axis": "+y",
+            "pos": [30.0, None, 45.0],
+            "z": None,
+            "depth_mm": 10.0,
+            "kind": "hole",
+            "source": "scan",
+        },
+    ]
+    merged = merge_anchor_lists(existing, scanned)
+    # the scans matched the two specs; only the phantom is new
+    assert len(merged) == 3
+    assert [a["index"] for a in merged] == [1, 2, 3]
+    assert merged[0]["name"] == "bore L" and merged[0]["source"] == "spec+scan"
+    assert merged[1]["name"] == "bore R" and merged[1]["source"] == "spec+scan"
+    assert merged[2]["axis"] == "+z" and merged[2]["source"] == "scan"
+
+
+# --------------------------------------------------------------------------- #
+# minimum load-region size — point-load singularity guard                     #
+# --------------------------------------------------------------------------- #
+
+
+def test_load_region_min_cells_grows_tiny_box() -> None:
+    """A 1-cell box load at the part edge grows until it covers ~8 cells —
+    the force resultant is preserved but spread over a real patch."""
+    dom = voxelize(_box_mesh(), 3.0, 150_000)
+    case = LoadCase(
+        name="edge",
+        fixed=[RegionSpec(kind="face", axis="-x")],
+        loads=[
+            LoadSpec(
+                region=RegionSpec(kind="box", center=[28.5, -10.5, 1.5], diameter_mm=2.0),
+                force_n=[0.0, 0.0, -50.0],
+            )
+        ],
+    )
+    _fixed, F, w = resolve_case_dofs(dom, case)
+    assert F.reshape(-1, 3).sum(axis=0)[2] == pytest.approx(-50.0)
+    assert not any("point-load singularity" in x for x in w)
+    # the grown patch spreads the force over many nodes, not one cell
+    fmag = np.abs(F.reshape(-1, 3)).sum(axis=1)
+    assert (fmag > 0).sum() >= 8
+
+
+def test_load_region_min_cells_warns_when_ungrowable() -> None:
+    """A bounds-limited area that cannot reach ~8 cells keeps its declared
+    bounds and warns about the point-load singularity risk."""
+    dom = voxelize(_box_mesh(), 2.0, 150_000)
+    case = LoadCase(
+        name="tiny",
+        fixed=[RegionSpec(kind="face", axis="-x")],
+        loads=[
+            LoadSpec(
+                region=RegionSpec(kind="area", x_range=[0.0, 1.0], y_range=[0.0, 1.0]),
+                force_n=[0.0, 0.0, -10.0],
+            )
+        ],
+    )
+    _fixed, F, w = resolve_case_dofs(dom, case)
+    assert F.reshape(-1, 3).sum(axis=0)[2] == pytest.approx(-10.0)
+    assert any("point-load singularity" in x for x in w)
+
+
+def test_load_region_min_cells_ignores_fixed() -> None:
+    """The min-cell guard applies to loads only — a 1-cell FIXED region is
+    left alone (growing a fixture would fake stiffness)."""
+    dom = voxelize(_box_mesh(), 3.0, 150_000)
+    case = LoadCase(
+        name="fix",
+        fixed=[RegionSpec(kind="box", center=[-28.5, -10.5, 1.5], diameter_mm=2.0)],
+        loads=[
+            LoadSpec(
+                region=RegionSpec(kind="face", axis="+x", margin_mm=1.0),
+                force_n=[0.0, 0.0, -50.0],
+            )
+        ],
+    )
+    _fixed, _F, w = resolve_case_dofs(dom, case)
+    assert not any("point-load singularity" in x for x in w)

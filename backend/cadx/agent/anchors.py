@@ -489,6 +489,27 @@ def _axial_depth(
     return None
 
 
+def _spec_bounds(spec: PartSpec) -> dict[str, tuple[float, float]] | None:
+    """Spec envelope bounds for hint resolution: x/y centred at origin,
+    z resting on 0 (the coordinate contract). ``None`` when the spec
+    declares no usable envelope."""
+    lx = getattr(spec, "length_x", None)
+    wy = getattr(spec, "width_y", None)
+    hz = getattr(spec, "height_z", None)
+    try:
+        lx_v, wy_v = float(lx.value), float(wy.value)  # type: ignore[union-attr]
+        hz_v = float(hz.value)  # type: ignore[union-attr]
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if lx_v <= 0 or wy_v <= 0:
+        return None
+    return {
+        "x": (-lx_v / 2, lx_v / 2),
+        "y": (-wy_v / 2, wy_v / 2),
+        "z": (0.0, max(hz_v, 0.0)),
+    }
+
+
 def _spec_anchors(spec: PartSpec) -> list[Anchor]:
     """Anchors synthesized from spec features with resolvable positions.
 
@@ -508,21 +529,9 @@ def _spec_anchors(spec: PartSpec) -> list[Anchor]:
     distinguishable from exact spec anchors. One feature may emit several
     anchors: "20 and 75mm from -X end" resolves to both x positions.
     """
-    lx = getattr(spec, "length_x", None)
-    wy = getattr(spec, "width_y", None)
-    hz = getattr(spec, "height_z", None)
-    try:
-        lx_v, wy_v = float(lx.value), float(wy.value)  # type: ignore[union-attr]
-        hz_v = float(hz.value)  # type: ignore[union-attr]
-    except (AttributeError, TypeError, ValueError):
+    bounds = _spec_bounds(spec)
+    if bounds is None:
         return []  # no declared envelope — end-relative hints unresolvable
-    if lx_v <= 0 or wy_v <= 0:
-        return []
-    bounds = {
-        "x": (-lx_v / 2, lx_v / 2),
-        "y": (-wy_v / 2, wy_v / 2),
-        "z": (0.0, max(hz_v, 0.0)),
-    }
     out: list[Anchor] = []
     for f in spec.features:
         if not _hole_like(f):
@@ -615,42 +624,129 @@ def _spec_anchors(spec: PartSpec) -> list[Anchor]:
     return out
 
 
-def _type_anchors(spec: PartSpec, anchors: list[Anchor]) -> None:
-    """Assign kind/bolt_size to anchors from spec.features (diameter-matched).
+def _anchor_plane_uv(a: Anchor) -> tuple[float, float] | None:
+    """In-plane (u, v) of an anchor on its own declared axis — the ``pos``
+    slots first, then the legacy x/y pair for +z anchors. ``None`` when the
+    anchor carries no usable in-plane position."""
+    _ax, au, av = _AXES.get(str(a.axis or "+z").lower(), _AXES["+z"])
+    pos = a.pos
+    if (
+        isinstance(pos, list)
+        and len(pos) == 3
+        and pos[au] is not None
+        and pos[av] is not None
+    ):
+        return float(pos[au]), float(pos[av])
+    if (au, av) == (0, 1):
+        return float(a.x), float(a.y)
+    return None
 
-    Only upgrades "hole" anchors: a spec feature of type thread/insert/
-    bearing_seat whose diameter (or bolt clearance) is within 15% of the
-    anchor bore sets the anchor's kind and bolt size — the FEM side then
-    knows this anchor takes a bearing/preload load, not just a pin.
-    """
-    feats = [f for f in spec.features if _hole_like(f)]
-    for a in anchors:
-        if a.kind != "hole" or not feats:
+
+def _feature_plane_pts(
+    spec: PartSpec,
+    f: Feature,
+    bounds: dict[str, tuple[float, float]] | None,
+    axis: str,
+    dia: float,
+) -> list[tuple[float, float]]:
+    """Exact (non-estimated) in-plane positions a spec feature resolves to —
+    the same machinery ``_spec_anchors`` uses, filtered to ``est=False``
+    points so a mid-plane default never poses as a measured position."""
+    if bounds is None:
+        return []
+    if axis in ("x", "y"):
+        in_plane = ("y", "z") if axis == "x" else ("x", "z")
+        pts, _axial, _depth = _spec_plane(spec, f, bounds, dia, in_plane)
+    else:
+        pts = _spec_xy(f, bounds, dia)
+    return [(u, v) for u, v, est in pts if not est]
+
+
+def _typed_bore_geo(
+    spec: PartSpec,
+) -> list[tuple[Feature, str, float, list[tuple[float, float]]]]:
+    """(feature, bore axis letter, dia, exact in-plane pts) per hole-like
+    spec feature whose bore axis resolves — the matching table for
+    ``_type_anchors``. Features with an unresolvable axis contribute
+    nothing: without a declared direction, diameter-only matching let a +z
+    phantom absorb a +y bore's name."""
+    out: list[tuple[Feature, str, float, list[tuple[float, float]]]] = []
+    bounds = _spec_bounds(spec)
+    for f in spec.features:
+        if not _hole_like(f):
             continue
-        best = None
-        best_rel = 0.15
-        for f in feats:
-            dia = (
-                (f.dims or {}).get("diameter")
-                or (f.dims or {}).get("dia")
-                or (f.dims or {}).get("bore_diameter")
-                or (f.dims or {}).get("counterbore_diameter")
-            )
-            if not dia or a.dia <= 0:
+        text = str(f.position or "").strip() or str(f.description or "")
+        axis = _declared_bore_axis(f, text)
+        if axis not in ("x", "y", "z"):
+            continue
+        dia = (
+            (f.dims or {}).get("diameter")
+            or (f.dims or {}).get("dia")
+            or (f.dims or {}).get("bore_diameter")
+            or (f.dims or {}).get("counterbore_diameter")
+        )
+        try:
+            f_dia = float(dia)
+        except (TypeError, ValueError):
+            continue
+        if f_dia <= 0:
+            continue
+        out.append((f, axis, f_dia, _feature_plane_pts(spec, f, bounds, axis, f_dia)))
+    return out
+
+
+def _type_anchors(spec: PartSpec, anchors: list[Anchor]) -> None:
+    """Assign kind/bolt_size/name to measured anchors from spec.features.
+
+    Runs AFTER the spec-anchor merge in ``build_anchors`` so the declared
+    anchors already exist. A measured anchor inherits a feature's
+    name/bolt_size/kind ONLY when the feature's declared bore axis equals
+    the anchor's axis AND a resolvable in-plane position lies within
+    ``max(2*dia, 6mm)`` of the anchor — diameter alone once let a +z
+    phantom pocket absorb the M6 name meant for a +y bore. Axis resolvable
+    but position not -> ``kind`` upgrade only (never name/bolt_size); axis
+    unresolvable -> the feature transfers nothing at all. The +/-15%
+    diameter gate applies to every transfer. Spec-sourced anchors are
+    already authoritative and are never re-typed here.
+    """
+    geo = _typed_bore_geo(spec)
+    if not geo:
+        return
+    for a in anchors:
+        if a.kind != "hole" or "spec" in a.source or a.dia <= 0:
+            continue
+        a_axis = str(a.axis or "+z").strip().lower().lstrip("+-")
+        uv = _anchor_plane_uv(a)
+        best_full: tuple[float, Feature] | None = None
+        best_axis: tuple[float, Feature] | None = None
+        for f, f_axis, f_dia, pts in geo:
+            if f_axis != a_axis:
                 continue
-            rel = abs(float(dia) - a.dia) / max(a.dia, float(dia))
-            if rel <= best_rel:
-                best_rel, best = rel, f
+            rel = abs(f_dia - a.dia) / max(a.dia, f_dia)
+            if rel > 0.15:
+                continue
+            full = uv is not None and any(
+                float(np.hypot(uv[0] - u, uv[1] - v)) <= max(2.0 * f_dia, 6.0)
+                for u, v in pts
+            )
+            if full:
+                if best_full is None or rel < best_full[0]:
+                    best_full = (rel, f)
+            elif best_axis is None or rel < best_axis[0]:
+                best_axis = (rel, f)
+        best = best_full or best_axis
         if best is None:
             continue
+        f = best[1]
         a.kind = {
             "thread": "thread",
             "insert": "insert",
             "bearing_seat": "bearing_seat",
-        }.get(best.type, "hole")
-        a.bolt_size = _bolt_size(best.standard or "") or _bolt_size(best.name or "")
-        if not a.name:
-            a.name = best.name or ""
+        }.get(f.type, "hole")
+        if best_full is not None:
+            a.bolt_size = _bolt_size(f.standard or "") or _bolt_size(f.name or "")
+            if not a.name:
+                a.name = f.name or ""
 
 
 def build_anchors(  # noqa: C901
@@ -743,8 +839,6 @@ def build_anchors(  # noqa: C901
             if a.source != "mesh":
                 a.dia = round(round(a.dia * 2) / 2, 2)
 
-    _type_anchors(spec, anchors)
-
     # spec-declared positions are authoritative intent: each merges onto a
     # measured anchor within _SPEC_MERGE_MM (same axis — the measured x/y
     # wins, real geometry beats declared) or appends as a pure-spec anchor.
@@ -756,13 +850,17 @@ def build_anchors(  # noqa: C901
         claimed: set[int] = set()
         ordered: list[Anchor] = []
         for sa in spec_anchors:
+            sa_uv = _anchor_plane_uv(sa)
             hit = next(
                 (
                     (i, a)
                     for i, a in enumerate(anchors)
                     if i not in claimed
                     and a.axis == sa.axis
-                    and float(np.hypot(a.x - sa.x, a.y - sa.y)) <= _SPEC_MERGE_MM
+                    and sa_uv is not None
+                    and (a_uv := _anchor_plane_uv(a)) is not None
+                    and float(np.hypot(a_uv[0] - sa_uv[0], a_uv[1] - sa_uv[1]))
+                    <= _SPEC_MERGE_MM
                 ),
                 None,
             )
@@ -782,6 +880,11 @@ def build_anchors(  # noqa: C901
         anchors = ordered + [a for i, a in enumerate(anchors) if i not in claimed]
     for i, a in enumerate(anchors):
         a.index = i + 1
+
+    # typing runs AFTER the spec merge: a measured anchor may inherit a
+    # feature's name/bolt_size/kind only on an axis+position match — never
+    # on diameter alone (a phantom must not absorb a spec bore's name)
+    _type_anchors(spec, anchors)
 
     note = (
         f"{len(img_holes)} image holes, {n_conf} confirmed by mesh, "

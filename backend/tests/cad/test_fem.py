@@ -158,10 +158,14 @@ def test_region_area_selects_xy_subregion() -> None:
 
 def test_region_hole_anchor() -> None:
     dom = voxelize(_box_mesh(), 2.0, 150_000)
+    # a real Ø6 bore at the anchor — hole regions need a void to clamp;
+    # an anchor inside solid material is a phantom and resolves empty
+    centers = dom.element_centers().reshape((*dom.dims, 3))
+    bore = (centers[..., 0] - 10.0) ** 2 + (centers[..., 1] - 0.0) ** 2 <= 3.0**2
+    dom = VoxelDomain(dom.origin, dom.pitch, dom.dims, dom.solid & ~bore)
     anchors = [{"x": 10.0, "y": 0.0, "dia": 4.0}]
     cells = region_cell_mask(dom, RegionSpec(kind="hole", hole_index=1, margin_mm=2.0), anchors)
     assert cells.any()
-    centers = dom.element_centers().reshape((*dom.dims, 3))
     sel = centers[cells]
     assert np.linalg.norm(sel[:, :2] - [10.0, 0.0], axis=1).max() < 2.0 + 2.0 + dom.pitch
     # out-of-range index selects nothing
@@ -174,6 +178,56 @@ def test_region_hole_anchor() -> None:
 
     with pytest.raises(ValidationError):
         RegionSpec(kind="hole", hole_index=0)
+
+
+def test_region_hole_phantom_anchor_resolves_empty() -> None:
+    """An anchor inside solid material is a phantom (stale hole_index /
+    mesh artefact) — hole/bore regions must resolve to nothing instead of
+    pinning a material column (eval bug: a phantom +z mesh hole fixed 936
+    nodes -> 0.10mm fiction vs the real bores' ~3.9mm)."""
+    dom = voxelize(_box_mesh(), 2.0, 150_000)
+    anchors = [{"x": 10.0, "y": 0.0, "dia": 6.0, "axis": "+z"}]
+    assert not region_cell_mask(
+        dom, RegionSpec(kind="hole", hole_index=1, margin_mm=2.0), anchors
+    ).any()
+    assert not region_cell_mask(dom, RegionSpec(kind="bore", hole_index=1), anchors).any()
+    # the case-level fallback still rescues the declared side — and names
+    # the anchor in the warning so the phantom is visible
+    case = LoadCase(
+        name="phantom",
+        fixed=[RegionSpec(kind="face", axis="-x")],
+        loads=[
+            LoadSpec(
+                region=RegionSpec(kind="hole", hole_index=1),
+                force_n=[0.0, 0.0, -50.0],
+            )
+        ],
+    )
+    _fixed, F, w = resolve_case(dom, case, anchors)
+    assert np.isclose(F.reshape(-1, 3).sum(axis=0)[2], -50.0)
+    fb = [x for x in w if "region_fallback" in x]
+    assert fb and "anchor #1" in fb[0] and "verify the hole exists" in fb[0]
+
+
+def test_region_fixed_phantom_anchor_fallback_names_anchor() -> None:
+    """A fixed region whose anchor is phantom falls back to the declared
+    side face — and the warning carries the anchor identity."""
+    dom = voxelize(_box_mesh(), 2.0, 150_000)
+    anchors = [{"x": 10.0, "y": 0.0, "dia": 6.0, "axis": "+z"}]
+    case = LoadCase(
+        name="phantom_fixed",
+        fixed=[RegionSpec(kind="hole", hole_index=1)],
+        loads=[
+            LoadSpec(
+                region=RegionSpec(kind="face", axis="+x"),
+                force_n=[0.0, 0.0, -10.0],
+            )
+        ],
+    )
+    fixed, _F, w = resolve_case(dom, case, anchors)
+    assert fixed.any()
+    fb = [x for x in w if "region_fallback" in x]
+    assert fb and "anchor #1" in fb[0]
 
 
 def test_region_hole_grows_past_countersink() -> None:
