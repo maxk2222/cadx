@@ -629,6 +629,7 @@ def _prepare_solve(
 # sqrt(-dc/lam) and clips at the move limit, so a drained field lands at
 # <= a few percent, never exactly 0
 _FLOOR_PIN = 0.05
+_MIN_PRIMARY_ITERS = 3
 # O2: consecutive iterations with change saturating >= this fraction of the
 # OC move limit count as a limit-cycle streak (early detection runs on a
 # looser saturation than the 0.95 backstop streak)
@@ -1124,7 +1125,31 @@ def simp(  # noqa: C901
     if mma_x is not None:
         warnings_out = warnings
         passive_frac = float(passive_solid.sum()) / nsolid
+        if params.mma_final_beta is not None:
+            # Opt-in finalization sharpens the returned field without changing
+            # the optimized blueprint or its FEM objective history.
+            proj.heaviside = True
+            _set_beta(params.mma_final_beta)
+            warnings_out.append(
+                f"mma final density projected at beta={params.mma_final_beta:g}"
+            )
         density = _physical(mma_x)
+        gray_fraction = (
+            float(np.mean((density[design] > 0.2) & (density[design] < 0.8)))
+            if design.any()
+            else 0.0
+        )
+        if converged and gray_fraction > 0.15:
+            warnings_out.append(
+                f"mma converged with {gray_fraction:.0%} gray density — export may lose "
+                "volume; consider mma_final_beta or filter='heaviside'"
+            )
+        final_volfrac = float(density[solid_idx].sum()) / nsolid
+        if params.mma_final_beta is not None and abs(final_volfrac - params.volfrac) > 0.03:
+            warnings_out.append(
+                f"mma final projection changed volfrac to {final_volfrac:.0%} "
+                f"(target {params.volfrac:.0%}) — verify export volume"
+            )
         status = mma_status
         if converged:
             # settled above the volume target with every free cell drained to
@@ -1154,7 +1179,9 @@ def simp(  # noqa: C901
             blueprint=mma_x.copy(),
         )
 
-    while it < params.max_iter and change > params.tol:
+    # A multires-warmed field can satisfy change<=tol almost immediately;
+    # still give the fine grid a few real FEM/update passes before stopping.
+    while it < params.max_iter and (change > params.tol or it < _MIN_PRIMARY_ITERS):
         it += 1
         it_box[0] = it
         if cancelled and cancelled():
@@ -1607,7 +1634,8 @@ def _run_mma(  # noqa: C901
     opt.set_lower_bounds(lb)
     opt.set_upper_bounds(ub)
     opt.set_maxeval(max(1, params.max_iter))
-    opt.set_xtol_rel(max(1e-4, params.tol * 0.2))
+    xtol = max(1e-4, params.tol * 0.2)
+    opt.set_xtol_rel(xtol)
     opt.set_ftol_rel(1e-9)
 
     def _wsum(obj_cases: list[float]) -> float:
@@ -1821,7 +1849,15 @@ def _run_mma(  # noqa: C901
     v = np.asarray(v, dtype=float)
     beta_cur = beta0
     restart = 0
+    gate_warned = False
     while True:
+        remaining = params.max_iter - it_box[0]
+        if remaining <= 0:
+            converged = False
+            mma_status = "budget_exhausted"
+            break
+        opt.set_maxeval(remaining)
+        evals_before = it_box[0]
         try:
             v = np.asarray(opt.optimize(v), dtype=float)
             converged = True
@@ -1840,6 +1876,24 @@ def _run_mma(  # noqa: C901
             mma_status = "converged" if converged else "degenerate"
             break
         x = _unpack(v)
+        p_now = project_fn(x, eta_vol)[1]
+        d_now = p_now[solid_idx]
+        gray_now = float(np.mean((d_now > 0.2) & (d_now < 0.8))) if d_now.size else 0.0
+        if it_box[0] < params.mma_min_evals and gray_now > 0.05:
+            if it_box[0] <= evals_before:
+                converged = False
+                mma_status = "budget_exhausted"
+                break
+            if not gate_warned:
+                warnings.append(
+                    f"mma xtol stopped after {it_box[0]} evaluations with "
+                    f"{gray_now:.0%} gray density — tightening xtol to reach "
+                    f"mma_min_evals={params.mma_min_evals}"
+                )
+                gate_warned = True
+            xtol *= 0.5
+            opt.set_xtol_rel(xtol)
+            continue
         # Heaviside beta-continuation: converge at beta, then sharpen
         if heaviside and beta_cur < params.beta_max:
             beta_cur = min(beta_cur * 2.0, params.beta_max)

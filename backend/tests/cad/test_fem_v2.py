@@ -685,6 +685,77 @@ def test_simp_mma_displacement_cap() -> None:
     assert not any("IndexError" in w for w in res.warnings)
 
 
+def _gray_frac(rho: np.ndarray, cells: np.ndarray) -> float:
+    """Fraction of `cells` densities in the (0.2, 0.8) gray band — the same
+    metric simp() reports on."""
+    d = rho[cells]
+    return float(np.mean((d > 0.2) & (d < 0.8))) if d.size else 0.0
+
+
+def test_simp_mma_min_evals_gates_early_xtol() -> None:
+    """A gray warm start must not let nlopt's xtol 'converge' before MMA
+    spent real evaluations (eval regression: iterations=2 on a 49%-gray
+    upsampled field, then the export lost a third of the volume). The gate
+    forces polish passes until mma_min_evals — or the run ends honestly
+    flagged gray."""
+    pytest.importorskip("nlopt")
+    dom, fixed3, F = _cantilever()
+    passive = np.zeros(dom.cell_count, dtype=bool)
+    # uniform gray field — the multires-upsampled start that triggered it
+    gray_x0 = np.where(dom.solid.ravel(), 0.45, 1e-3)
+    res = simp(
+        dom,
+        E_PLA,
+        NU,
+        [(fixed3, F)],
+        passive,
+        TopOptParams(volfrac=0.45, rmin_mm=4.0, max_iter=40, tol=0.01, solver="mma"),
+        x0=gray_x0,
+    )
+    assert res.iterations >= 8 or any("gray" in w for w in res.warnings)
+
+
+def test_simp_mma_final_beta_sharpens_returned_density() -> None:
+    """mma_final_beta re-projects the converged blueprint at the requested
+    sharpness — the returned density is measurably less gray than the raw
+    MMA field a cone-filtered run settles into."""
+    pytest.importorskip("nlopt")
+    dom, fixed3, F = _cantilever()
+    passive = np.zeros(dom.cell_count, dtype=bool)
+    # a gray-ish but structured warm start — a few OC iterations leave a
+    # real layout with a still-broad gray interface
+    oc = simp(
+        dom,
+        E_PLA,
+        NU,
+        [(fixed3, F)],
+        passive,
+        TopOptParams(volfrac=0.45, rmin_mm=4.0, max_iter=8, tol=0.0),
+    )
+    p = TopOptParams(volfrac=0.45, rmin_mm=4.0, max_iter=40, tol=0.01, solver="mma")
+    raw = simp(dom, E_PLA, NU, [(fixed3, F)], passive, p, x0=oc.density)
+    fin = simp(
+        dom,
+        E_PLA,
+        NU,
+        [(fixed3, F)],
+        passive,
+        TopOptParams(
+            volfrac=0.45,
+            rmin_mm=4.0,
+            max_iter=40,
+            tol=0.01,
+            solver="mma",
+            mma_final_beta=8.0,
+        ),
+        x0=oc.density,
+    )
+    solid = dom.solid.ravel()
+    gray_raw = _gray_frac(raw.density, solid)
+    gray_fin = _gray_frac(fin.density, solid)
+    assert gray_fin < gray_raw
+
+
 def test_simp_penal_continuation_records_ramp() -> None:
     """penal_init < penal ramps the exponent across iterations."""
     dom, fixed3, F = _cantilever()

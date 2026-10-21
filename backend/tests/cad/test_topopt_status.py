@@ -161,6 +161,19 @@ def test_status_degenerate_solver_crash(monkeypatch: pytest.MonkeyPatch) -> None
     assert any("FEM solve failed" in w and "boom" in w for w in res.warnings)
 
 
+def test_min_primary_iters_runs_at_least_three() -> None:
+    """P5: a warm-started field already at the optimum can satisfy
+    change<=tol at it=0-2 — the OC loop owes at least a few evaluations
+    before trusting that early exit (a multires-warmed density otherwise
+    'converges' having done no work at the fine resolution)."""
+    dom, fixed, F = _case()
+    p = TopOptParams(volfrac=0.4, rmin_mm=2.0, max_iter=10)
+    passive = np.zeros(dom.cell_count, dtype=bool)
+    res1 = simp(dom, E_PLA, NU, [(fixed, F)], passive, p)
+    warm = simp(dom, E_PLA, NU, [(fixed, F)], passive, p, x0=res1.density)
+    assert warm.iterations >= 3
+
+
 # ---------------------------------------------------------------------------
 # O2 — early limit-cycle detection
 # ---------------------------------------------------------------------------
