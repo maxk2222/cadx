@@ -175,5 +175,6 @@ async def version_preview(
         non_fem = [p for k, p in views_map.items() if not k.startswith("fem:")]
         if non_fem:
             return _png(max(non_fem, key=lambda p: p.stat().st_mtime))
-    _base, _it, views_map = sets[0]
-    return _png(max(views_map.values(), key=lambda p: p.stat().st_mtime))
+    if not sets:
+        raise HTTPException(404, "no renders yet")
+    return _png(max(sets[0][2].values(), key=lambda p: p.stat().st_mtime))
