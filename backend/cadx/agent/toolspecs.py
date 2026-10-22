@@ -681,7 +681,9 @@ STRUCT_TOOLS = [
         "topopt_run",
         "Run SIMP topology optimization on the base part, then FEM-verify the "
         "result. Returns run_index, achieved volume fraction, iterations, "
-        "worst safety factor and a render of the optimized shape. Vary "
+        "the verified worst-case safety factor (sf_verified — the worst "
+        "across the nominal/eroded/dilated export realizations) and a render "
+        "of the optimized shape. Vary "
         "target_volume_fraction / keep_regions / material between runs and "
         "pick the best one with done(run_index).",
         {
@@ -849,6 +851,20 @@ STRUCT_TOOLS = [
                 "blueprint at this Heaviside sharpness for the returned "
                 "density (e.g. 8.0) — collapses residual gray fields",
             },
+            "verify_robust": {
+                "type": "boolean",
+                "description": "export-verification sweep: re-solve eroded "
+                "and dilated realizations of the printed mask alongside the "
+                "nominal one — sf_verified reports the worst case (default "
+                "follows the fem_verify_realizations setting)",
+            },
+            "verify_homogenized": {
+                "type": "boolean",
+                "description": "also verify the homogenized infill model "
+                "(C_H(rho) class tensors + micro localization — sf_homog / "
+                "sf_micro); only meaningful for infill runs (default "
+                "follows the fem_homogenized_infill setting)",
+            },
             "load_cases": _LOAD_CASES_SCHEMA,
             "material": _s("material name — empty = spec default"),
             "voxel_mm": {"type": "number", "description": "voxel pitch in mm"},
@@ -863,8 +879,10 @@ STRUCT_TOOLS = [
         "lattice fills the interior stiffer where load flows. ~2 solves "
         "total (vs 60+ SIMP iterations) and natively watertight — best for "
         "FDM parts that want shell+infill rather than voxel topology "
-        "changes. Same FEM verification + sf_export as topopt_run; returns "
-        "a run_index for done().",
+        "changes. Same hardened export verification as topopt_run "
+        "(sf_verified = worst case across eroded/nominal/dilated "
+        "realizations; the homogenized lattice model adds sf_homog / "
+        "sf_micro); returns a run_index for done().",
         {
             "infill_scope": {
                 "type": "string",
@@ -908,6 +926,26 @@ STRUCT_TOOLS = [
                 "type": "integer",
                 "description": "deterministic lattice phase shift — same "
                 "seed + same mesh = same part",
+            },
+            "infill_octet": {
+                "type": "boolean",
+                "description": "struts_aligned only: include the 45° diagonal "
+                "strut families aligned to the stress frames (default "
+                "follows the infill_octet setting)",
+            },
+            "verify_robust": {
+                "type": "boolean",
+                "description": "export-verification sweep: re-solve eroded "
+                "and dilated realizations of the printed mask alongside the "
+                "nominal one — sf_verified reports the worst case (default "
+                "follows the fem_verify_realizations setting)",
+            },
+            "verify_homogenized": {
+                "type": "boolean",
+                "description": "also verify the homogenized infill model "
+                "(C_H(rho) class tensors + micro localization — sf_homog / "
+                "sf_micro; default follows the fem_homogenized_infill "
+                "setting)",
             },
             "target_volume_fraction": {
                 "type": "number",
@@ -2573,7 +2611,8 @@ class ToolSession:
         # reporting only the mask number presented a 1.29 headline for a run
         # whose exported part actually measured 0.53
         sf_export = top.get("sf_export")
-        worst = [v for v in (*sfs, sf_export) if v is not None]
+        sf_verified = top.get("sf_verified")
+        worst = [v for v in (*sfs, sf_export, sf_verified) if v is not None]
         # fraction of the design space pinned by keep/load/fix regions —
         # i.e. the minimum volfrac a run can possibly reach
         passive_frac = top.get("passive_frac")
@@ -2597,6 +2636,14 @@ class ToolSession:
             "worst_safety_factor": min(worst) if worst else None,
             "sf_mask": top.get("sf_mask"),
             "sf_export": top.get("sf_export"),
+            "sf_verified": sf_verified,
+            "sf_realizations": top.get("sf_realizations"),
+            "sf_micro": top.get("sf_micro"),
+            "bottleneck_mm2": top.get("bottleneck_mm2"),
+            "sf_floor": top.get("sf_floor"),
+            "load_path_ok": top.get("load_path_ok"),
+            "strut_align_deg": top.get("strut_align_deg"),
+            "sf_mesh_sensitive": top.get("sf_mesh_sensitive"),
             "min_member_mm": top.get("min_member_mm"),
             "thin_fraction": top.get("thin_fraction"),
             "n_components": top.get("n_components"),
@@ -2617,8 +2664,11 @@ class ToolSession:
         if images:
             out["_images"] = images
         # structured run row for the job's live table — emit is a noop in
-        # non-job contexts (MCP/chat) and must never break the tool result
-        worst_sf = top.get("sf_export") or (min(sfs) if sfs else None)
+        # non-job contexts (MCP/chat) and must never break the tool result.
+        # None-checked, not or-chained — a solved SF of 0.0 IS a verdict
+        worst_sf = sf_verified if sf_verified is not None else sf_export
+        if worst_sf is None:
+            worst_sf = min(sfs) if sfs else None
         emit = getattr(self.ctx, "emit", None)
         if emit is not None:
             with contextlib.suppress(Exception):
@@ -2666,7 +2716,8 @@ class ToolSession:
             }
         )
         sf_export = top.get("sf_export")
-        worst = [v for v in (*sfs, sf_export) if v is not None]
+        sf_verified = top.get("sf_verified")
+        worst = [v for v in (*sfs, sf_export, sf_verified) if v is not None]
         out: dict[str, Any] = {
             "ok": True,
             "run_index": idx,
@@ -2676,6 +2727,15 @@ class ToolSession:
             "worst_safety_factor": min(worst) if worst else None,
             "sf_mask": top.get("sf_mask"),
             "sf_export": top.get("sf_export"),
+            "sf_verified": sf_verified,
+            "sf_realizations": top.get("sf_realizations"),
+            "sf_homog": top.get("sf_homog"),
+            "sf_micro": top.get("sf_micro"),
+            "bottleneck_mm2": top.get("bottleneck_mm2"),
+            "sf_floor": top.get("sf_floor"),
+            "load_path_ok": top.get("load_path_ok"),
+            "strut_align_deg": top.get("strut_align_deg"),
+            "sf_mesh_sensitive": top.get("sf_mesh_sensitive"),
             "min_member_mm": top.get("min_member_mm"),
             "n_components": top.get("n_components"),
             "n_bodies_export": top.get("n_bodies_export"),
@@ -2690,7 +2750,10 @@ class ToolSession:
         images = [str(p) for p in res.get("_images") or []]
         if images:
             out["_images"] = images
-        worst_sf = top.get("sf_export") or (min(sfs) if sfs else None)
+        # None-checked — a solved SF of 0.0 IS a verdict
+        worst_sf = sf_verified if sf_verified is not None else sf_export
+        if worst_sf is None:
+            worst_sf = min(sfs) if sfs else None
         emit = getattr(self.ctx, "emit", None)
         if emit is not None:
             with contextlib.suppress(Exception):

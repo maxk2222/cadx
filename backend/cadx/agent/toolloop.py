@@ -259,7 +259,13 @@ _METRIC_KEYS = (
     "volfrac_target",
     "safety_factor",
     "worst_safety_factor",
+    "sf_verified",
     "sf_export",
+    "sf_micro",
+    "sf_homog",
+    "sf_floor",
+    "load_path_ok",
+    "bottleneck_mm2",
     "sf_mask",
     "bbox_size",
     "volume_mm3",
@@ -354,11 +360,18 @@ def _digest_state_lines(session: ToolSession, entries: list[dict[str, Any]]) -> 
                 for c in fem.get("cases") or []
                 if c.get("safety_factor") is not None
             ]
-            sf = top.get("sf_export") or (min(sfs) if sfs else None)
+            # the verified worst-case realization is the headline when the
+            # hardened export sweep produced one (sf_verified -> sf_export
+            # -> mask fallback chain; a solved 0.0 IS a verdict — None-check)
+            sf = top.get("sf_verified")
+            if sf is None:
+                sf = top.get("sf_export")
+            if sf is None:
+                sf = min(sfs) if sfs else None
             vf = top.get("volfrac_achieved")
             row = f"run{r.get('index')}"
             if sf is not None:
-                row += f" sf_export={float(sf):g}"
+                row += f" sf={float(sf):g}"
             if vf is not None:
                 row += f" volfrac={float(vf):g}"
             rows.append(row)

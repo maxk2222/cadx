@@ -219,6 +219,23 @@ class LibraryFromVersion(BaseModel):
     as_template: bool = False  # True: keep the parametric code; False: copy the STEP
 
 
+class MeshgenRequest(BaseModel):
+    """Image->mesh generation via the mesh sidecar (LLM-free).
+
+    Thin REST surface over `spawn_meshgen` — generation inputs are stored in
+    the version's options so restart replays them verbatim.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    asset_ids: list[uuid.UUID] = Field(min_length=1)
+    subject: str = Field(default="", max_length=500)
+    prompt: str = Field(default="", max_length=500)
+    model: str = Field(default="", max_length=80)
+    seed: int = Field(default=0, ge=0)
+    post: dict[str, Any] = Field(default_factory=dict)
+
+
 class ParamsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

@@ -850,6 +850,22 @@ export interface Settings {
   fem_voxel_mm: number;
   fem_max_elements: number;
   fem_timeout_s: number;
+  /** hardened export verification — see docs/fem-topopt.md */
+  fem_verify_realizations: boolean;
+  /** erode/dilate depth of the worst-case realization masks (voxels) */
+  fem_verify_realization_cells: number;
+  /** scale elem_E by the per-cell mesh fill fraction at the boundary */
+  fem_verify_coverage_e: boolean;
+  /** half-pitch re-voxelization probe — flags grid-sensitive verdicts */
+  fem_verify_mesh_shift: boolean;
+  /** FEM-independent min-cut certificate: bottleneck / sf_floor / load_path_ok */
+  fem_loadpath_cert: boolean;
+  /** solve the infill lattice on homogenized C_H(rho) class tensors */
+  fem_homogenized_infill: boolean;
+  /** voxel edge length of one representative lattice cell for homogenization */
+  fem_homog_cell_voxels: number;
+  /** struts_aligned: include the 45° body-diagonal strut families */
+  infill_octet: boolean;
   topopt_timeout_s: number;
   topopt_max_iterations: number;
   topopt_default_volfrac: number;

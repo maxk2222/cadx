@@ -376,7 +376,12 @@ equilibrium sanity.
   `topopt_auto_keep_margin_mm`, `fem_spsolve_dofs` and
   `fem_max_effective_cases` are runtime settings edited in the Settings page;
   `fem_timeout_s` and `topopt_timeout_s` bound executor task time. Per-run
-  overrides live in the options panel / version options. The full
+  overrides live in the options panel / version options. The hardened
+  verification layer has its own settings — `fem_verify_realizations`,
+  `fem_verify_realization_cells`, `fem_verify_coverage_e`,
+  `fem_verify_mesh_shift`, `fem_loadpath_cert`, `fem_homogenized_infill`,
+  `fem_homog_cell_voxels` and `infill_octet` (see the verification section
+  above). The full
   settings reference is in [configuration.md](configuration.md).
 
 The agent optimize session offers `list_anchors` (the measured anchor table),
@@ -395,7 +400,12 @@ physics-graded lattice instead of open-cell "hole cheese":
    across cases), graded `d_min`→`d_max` by `infill_alpha` (default 0.7).
 3. `infill_style: "gyroid_graded"` thresholds a TPMS gyroid whose local level
    tracks `d(x)`; `infill_style: "struts_aligned"` grows struts along the
-   principal stress direction field instead.
+   combined principal-stress *frame* of each cell (`element_principal_frames`
+   per case merged by `combine_stress_frames` — a genuinely bi-axial frame
+   when two orthogonal cases dominate, unlike a mean-of-directions). With
+   `infill_octet` (default on) the four 45° body-diagonal families join the
+   three axis families, so diagonal stress states grow real members;
+   `strut_align_deg` in the report measures achieved alignment.
 4. `infill_scope`: `"full"` fills the whole interior; `"guided"` first runs a
    coarse SIMP and lattices only what it retains (topology-aware lightening).
 5. A closed outer shell of `infill_shell_mm` (default 2 mm) wraps everything;
@@ -406,11 +416,66 @@ physics-graded lattice instead of open-cell "hole cheese":
    warnings, not silently kept).
 
 The result is verified exactly like TopOpt — `sf_mask` on the binary field,
-`sf_export` on the smoothed export mesh, same warnings, same `density.npz` —
-at ~2 FEM solves instead of 60+ iterations. Tuning: `infill_period_mm`
+`sf_export` on the smoothed export mesh, `sf_verified` over the realization
+sweep, same warnings, same `density.npz` — at ~2 FEM solves instead of 60+
+iterations. `verify_homogenized` (default follows `fem_homogenized_infill`)
+adds a third model: the same lattice layout solved on homogenized class
+tensors — each interior cell carries `C_H(ρ)`/`A(ρ)` from a cached unit-cell
+table (`lattice_table` + `infill_homog_elems`, cell size
+`fem_homog_cell_voxels`) instead of resolved strut geometry. The homog solve
+reports `sf_homog` (macro safety factor on effective stiffness) and
+`sf_micro` (the macro von Mises amplified by the per-cell localization
+factor `A(ρ)` — the member-scale estimate a resolved strut solve would
+see). A failed or empty homog solve degrades to a warning, never a run
+failure. Tuning: `infill_period_mm`
 (lattice cell size, default 8), `infill_min_density`/`infill_max_density`
 (occupancy bounds). The lattice cannot redistribute load paths the way SIMP
 can — for thin shells or aggressive volume targets prefer `topopt_run`.
+
+### Hardened export verification
+
+Both structural pipelines share `_verify_export_structure` — the re-
+voxelized smoothed mesh is what gets verified, with three optional layers
+on top of the nominal export solve (all degrade to warnings, only a
+nominal-solve failure propagates to the mask fallback):
+
+- **Coverage-weighted boundary** (`fem_verify_coverage_e`, default on):
+  `voxelize(coverage=True)` stores each cell's fill fraction — a two-tier
+  probe (corner containment, then a 3³ subsample only on corner-mixed
+  cells); non-watertight meshes degrade to `coverage=None`. The solve
+  scales `elem_E` by the fraction, so a half-filled surface cell carries
+  half the load-path area instead of the binary all-or-nothing boundary.
+- **Realization sweep** (`fem_verify_realizations`, default on;
+  `fem_verify_realization_cells` erode/dilate depth, default 1): the
+  nominal mask plus its `binary_erosion`/`binary_dilation` variants are
+  each solved. `sf_realizations{nominal,eroded,dilated}` reports all
+  three; **`sf_verified` = the minimum across realizations is the
+  headline number — but only while the nominal realization itself
+  solved** (an unsolvable nominal IS the verdict: `sf_verified` stays
+  None and the run is flagged) — it feeds retry gating,
+  `meets_safety_factor`,
+  worker status and the agent's run comparison. `sf_export` stays the
+  nominal-mesh value for compatibility. `optimize.verify_robust` is the
+  per-run override.
+- **Mesh-shift probe** (`fem_verify_mesh_shift`, default off): the export
+  mesh is translated half a pitch and re-voxelized/solved; a >20 % SF
+  drift flags `sf_mesh_sensitive` + a warning — the verdict is then an
+  artefact of the raster grid, not the part.
+- **Load-path certificate** (`fem_loadpath_cert`, default on):
+  `loadpath_certificate` is FEM-independent — the 6-connected solid graph
+  becomes a flow network (super-source → loaded cells, fixed cells →
+  super-sink) where every edge carries the thinner endpoint's inscribed
+  section `(2·(EDT−0.5)·pitch)²`. `scipy` `maximum_flow` then yields
+  `bottleneck_mm2` (the thinnest cross-section the load must pass),
+  `sf_floor = bottleneck·yield / |F|` (the axial-SF lower bound) and
+  `load_path_ok` per case. A case whose loads cannot reach its fixtures
+  fails verification outright (`verification.valid = false`). It is a
+  geometric bound — optimistic for bending-dominated parts — always read
+  alongside the FEM numbers, never alone.
+
+`n_bodies_export` counts physical mesh solids, `n_bodies_voxel` the
+re-voxelized raster's components — a raster fusion (voxel < export) means
+the FEM verified a phantom and the run is invalid.
 
 The FEM report includes per-case max von Mises stress, max displacement,
 compliance, safety factor, solver/convergence status, and warnings. Safety

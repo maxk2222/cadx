@@ -850,6 +850,7 @@ type StructuralDraft = {
   infill_style?: "gyroid_graded" | "struts_aligned";
   infill_shell_mm?: number;
   infill_period_mm?: number;
+  infill_octet?: boolean;
   grow_mm?: number;
   aniso_material?: boolean;
   volfrac_init?: number;
@@ -892,6 +893,7 @@ export default function StructuralEditor({
   const [infillStyle, setInfillStyle] = useState<"gyroid_graded" | "struts_aligned">("gyroid_graded");
   const [infillShell, setInfillShell] = useState(2.0);
   const [infillPeriod, setInfillPeriod] = useState(8.0);
+  const [infillOctet, setInfillOctet] = useState(true);
   const [growMm, setGrowMm] = useState(0);
   const [aniso, setAniso] = useState(false);
   const [volfracRamp, setVolfracRamp] = useState(false);
@@ -989,6 +991,7 @@ export default function StructuralEditor({
       setInfillStyle(saved.infill_style ?? specOpt?.infill_style ?? "gyroid_graded");
       setInfillShell(saved.infill_shell_mm ?? specOpt?.infill_shell_mm ?? 2.0);
       setInfillPeriod(saved.infill_period_mm ?? specOpt?.infill_period_mm ?? 8.0);
+      setInfillOctet(saved.infill_octet ?? specOpt?.infill_octet ?? true);
       setGrowMm(saved.grow_mm ?? specOpt?.grow_mm ?? 0);
       setAniso(saved.aniso_material ?? specOpt?.aniso_material ?? false);
       setVolfracRamp(
@@ -1029,6 +1032,7 @@ export default function StructuralEditor({
       setInfillStyle(specOpt?.infill_style ?? "gyroid_graded");
       setInfillShell(specOpt?.infill_shell_mm ?? 2.0);
       setInfillPeriod(specOpt?.infill_period_mm ?? 8.0);
+      setInfillOctet(specOpt?.infill_octet ?? true);
       setGrowMm(specOpt?.grow_mm ?? 0);
       setAniso(specOpt?.aniso_material ?? false);
       setVolfracRamp((specOpt?.volfrac_init ?? 0) > volfrac);
@@ -1518,6 +1522,7 @@ export default function StructuralEditor({
         infill_style: structureMode === "infill" ? infillStyle : undefined,
         infill_shell_mm: structureMode === "infill" ? infillShell : undefined,
         infill_period_mm: structureMode === "infill" ? infillPeriod : undefined,
+        infill_octet: structureMode === "infill" ? infillOctet : undefined,
         grow_mm: growMm || undefined,
         aniso_material: aniso || undefined,
         volfrac_init: volfracRamp ? 0.7 : undefined,
@@ -1552,7 +1557,7 @@ export default function StructuralEditor({
       if (saveTimer.current) clearTimeout(saveTimer.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cases, keep, voids, material, volfrac, keepMode, minMember, densityThreshold, autoRefine, selfSupport, printDir, multires, solver, minmax, dispMax, stressMax, minGap, penalCont, structureMode, infillScope, infillStyle, infillShell, infillPeriod, growMm, aniso, volfracRamp, loadpathStart, rampIters, corridorMm, mmaFinalBeta, open]);
+  }, [cases, keep, voids, material, volfrac, keepMode, minMember, densityThreshold, autoRefine, selfSupport, printDir, multires, solver, minmax, dispMax, stressMax, minGap, penalCont, structureMode, infillScope, infillStyle, infillShell, infillPeriod, infillOctet, growMm, aniso, volfracRamp, loadpathStart, rampIters, corridorMm, mmaFinalBeta, open]);
 
   const checkRegions = async () => {
     setBusy("preview");
@@ -1629,6 +1634,9 @@ export default function StructuralEditor({
         infill_style: structureMode === "infill" ? infillStyle : undefined,
           infill_shell_mm: structureMode === "infill" ? infillShell : undefined,
           infill_period_mm: structureMode === "infill" ? infillPeriod : undefined,
+          // checked = follow the infill_octet setting (default on); the
+          // box only disables the diagonal strut families explicitly
+          infill_octet: structureMode === "infill" && !infillOctet ? false : undefined,
           grow_mm: growMm || undefined,
           aniso_material: aniso || undefined,
           volfrac_init: volfracRamp ? 0.7 : undefined,
@@ -2588,6 +2596,17 @@ export default function StructuralEditor({
                           setInfillPeriod(parseFloat(e.target.value) || 8.0)
                         }
                       />
+                    </Field>
+                    <Field label="Octet" hint="45° diagonal strut families">
+                      <label className="flex h-7 items-center gap-1.5 text-[11px] text-zinc-400">
+                        <input
+                          type="checkbox"
+                          className="accent-brand-500"
+                          checked={infillOctet}
+                          onChange={(e) => setInfillOctet(e.target.checked)}
+                        />
+                        diagonals
+                      </label>
                     </Field>
                   </>
                 )}

@@ -1618,19 +1618,34 @@ async def run_optimize_job(  # noqa: C901
         # disconnected keep/load islands make a multi-body part = defect
         sfs = [c.get("safety_factor") for c in fem.get("cases", []) if c.get("safety_factor")]
         worst_sf = min(sfs) if sfs else None
+        # the verified worst-case realization is the effective structural
+        # verdict when the hardened export sweep produced one — a solved
+        # 0.0 is a verdict, so None-check rather than or-chain
+        sf_eff = topopt.get("sf_verified")
+        if sf_eff is None:
+            sf_eff = topopt.get("sf_export")
+        if sf_eff is None:
+            sf_eff = worst_sf
         n_bodies = max(
             int(topopt.get("n_components") or 1), int(topopt.get("n_bodies_export") or 1)
         )
         version.status = (
             VersionStatus.needs_review
-            if worst_sf is None or worst_sf < 1.0 or n_bodies > 1
+            if sf_eff is None
+            or sf_eff < 1.0
+            or n_bodies > 1
+            or topopt.get("load_path_ok") is False
+            # member-scale floor from the homogenized infill model — the
+            # lattice strut itself over yield is unsafe even when the macro
+            # SF clears (only emitted for homog-verified infill runs)
+            or (topopt.get("sf_micro") is not None and topopt.get("sf_micro") < 1.0)
             else VersionStatus.succeeded
         )
         register_artifacts(db, version.id, artifacts, tessellated_step=False)
         await emit(
             "optimize",
             1,
-            f"done: volfrac {topopt.get('volfrac_achieved')}, SF {worst_sf}, "
+            f"done: volfrac {topopt.get('volfrac_achieved')}, SF {sf_eff}, "
             f"{topopt.get('iterations')} iterations",
         )
         job.status = JobStatus.succeeded
@@ -1810,19 +1825,29 @@ async def run_topopt_resample_job(ctx: dict[str, Any], payload: dict[str, Any]) 
         version.iterations = 1
         sfs = [c.get("safety_factor") for c in fem.get("cases", []) if c.get("safety_factor")]
         worst_sf = min(sfs) if sfs else None
+        # the verified worst-case realization is the effective structural
+        # verdict when the hardened export sweep produced one — a solved
+        # 0.0 is a verdict, so None-check rather than or-chain
+        sf_eff = topopt.get("sf_verified")
+        if sf_eff is None:
+            sf_eff = topopt.get("sf_export")
+        if sf_eff is None:
+            sf_eff = worst_sf
         n_bodies = max(
             int(topopt.get("n_components") or 1), int(topopt.get("n_bodies_export") or 1)
         )
         version.status = (
             VersionStatus.needs_review
-            if n_bodies > 1 or (not organic_parent and (worst_sf is None or worst_sf < 1.0))
+            if n_bodies > 1
+            or topopt.get("load_path_ok") is False
+            or (not organic_parent and (sf_eff is None or sf_eff < 1.0))
             else VersionStatus.succeeded
         )
         register_artifacts(db, version.id, artifacts, tessellated_step=organic_parent)
         await emit(
             "optimize",
             1,
-            f"resample done: threshold {topopt.get('threshold')}, SF {worst_sf}",
+            f"resample done: threshold {topopt.get('threshold')}, SF {sf_eff}",
         )
         job.status = JobStatus.succeeded
         job.finished_at = datetime.now(UTC)
@@ -2031,9 +2056,18 @@ async def run_refine_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[s
         if issues:
             version.issues = (version.issues or []) + issues
 
+        # the verified worst-case realization is the effective structural
+        # verdict when the run produced one (plain refine re-solves do not)
+        topopt_res = result.get("topopt") or {}
+        sf_eff = topopt_res.get("sf_verified")
+        if sf_eff is None:
+            sf_eff = topopt_res.get("sf_export")
+        if sf_eff is None:
+            sf_eff = worst_sf
         version.status = (
             VersionStatus.needs_review
-            if (worst_sf is not None and worst_sf < 1.0)
+            if (sf_eff is not None and sf_eff < 1.0)
+            or topopt_res.get("load_path_ok") is False
             or (n_skipped and not refine_report.get("applied"))
             or bool(misses)
             else VersionStatus.succeeded

@@ -108,6 +108,77 @@ export default function TopOptPanel({
           {w}
         </div>
       ))}
+      {(topopt.sf_verified != null ||
+        topopt.sf_homog != null ||
+        topopt.sf_micro != null ||
+        topopt.bottleneck_mm2 != null ||
+        topopt.load_path_ok != null ||
+        topopt.strut_align_deg != null ||
+        topopt.sf_mesh_sensitive) && (
+        <div
+          className="mb-2 text-[10px] text-zinc-500"
+          data-testid="topopt-verification"
+          title="hardened export verification — sf_verified is the worst case across the nominal/eroded/dilated printed-mask realizations; the load-path certificate bounds the thinnest section the load must pass"
+        >
+          <span className="mr-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+            verification:
+          </span>
+          {topopt.sf_verified != null && (
+            <span className={sfTone(topopt.sf_verified)}>
+              sf_verified {topopt.sf_verified.toFixed(2)}
+            </span>
+          )}
+          {topopt.sf_realizations &&
+            (topopt.sf_realizations.nominal != null ||
+              topopt.sf_realizations.eroded != null ||
+              topopt.sf_realizations.dilated != null) && (
+              <span>
+                {` (nom ${topopt.sf_realizations.nominal?.toFixed(2) ?? "—"} / ero ${topopt.sf_realizations.eroded?.toFixed(2) ?? "—"} / dil ${topopt.sf_realizations.dilated?.toFixed(2) ?? "—"})`}
+              </span>
+            )}
+          {topopt.sf_homog != null && (
+            <span className={sfTone(topopt.sf_homog)}>
+              {" "}
+              · sf_homog {topopt.sf_homog.toFixed(2)}
+            </span>
+          )}
+          {topopt.sf_micro != null && (
+            <span className={sfTone(topopt.sf_micro)}>
+              {" "}
+              · sf_micro {topopt.sf_micro.toFixed(2)}
+            </span>
+          )}
+          {topopt.bottleneck_mm2 != null && (
+            <span> · bottleneck {topopt.bottleneck_mm2.toFixed(1)} mm²</span>
+          )}
+          {topopt.sf_floor != null && <span> · floor {topopt.sf_floor.toFixed(2)}</span>}
+          {topopt.load_path_ok != null && (
+            <span
+              className={
+                topopt.load_path_ok
+                  ? "text-emerald-400"
+                  : "font-semibold text-red-400"
+              }
+              title="min-cut load-path certificate: every load case reaches its fixtures through the export solid"
+            >
+              {" "}
+              · load path {topopt.load_path_ok ? "ok" : "BROKEN"}
+            </span>
+          )}
+          {topopt.strut_align_deg != null && (
+            <span> · strut align {topopt.strut_align_deg.toFixed(0)}°</span>
+          )}
+          {topopt.sf_mesh_sensitive && (
+            <span
+              className="text-amber-400"
+              title="a half-pitch grid shift changes the export SF materially — the result is voxel-grid sensitive"
+            >
+              {" "}
+              · mesh-sensitive!
+            </span>
+          )}
+        </div>
+      )}
       {(topopt.multires || topopt.input_normalized || topopt.base_mesh_relpath) && (
         <div className="mb-2 text-[10px] text-zinc-500">
           {topopt.multires &&

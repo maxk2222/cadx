@@ -58,12 +58,17 @@ def _run_summary(r: dict[str, Any], chosen: bool, reasoning: Any) -> dict[str, A
     res = r.get("res") or {}
     top = res.get("topopt") or {}
     fem = res.get("fem") or {}
-    # sf_export is the safety factor on the printed geometry — prefer it over
-    # the voxel-mask fem report when the optimize pipeline produced both
+    # headline SF: the verified realization worst-case, then the printed-
+    # geometry export SF, then the voxel-mask report — a solved 0.0 is a
+    # verdict, so None-check rather than or-chain
     sfs = [
         c.get("safety_factor") for c in fem.get("cases") or [] if c.get("safety_factor") is not None
     ]
-    worst_sf = top.get("sf_export") or (min(sfs) if sfs else None)
+    worst_sf = top.get("sf_verified")
+    if worst_sf is None:
+        worst_sf = top.get("sf_export")
+    if worst_sf is None:
+        worst_sf = min(sfs) if sfs else None
     # refine runs carry their finishing report — surface it so the version's
     # agent_runs table (and the GUI) sees applied/skipped features, probes
     # and analytic-STEP provenance instead of an empty record
@@ -127,7 +132,13 @@ def _best_run_index(session: ToolSession) -> int | None:
         if (res.get("features") or {}).get("refine", {}).get("verify_misses"):
             continue
         sfs = [c.get("safety_factor") for c in fem.get("cases") or [] if c.get("safety_factor")]
-        sf = top.get("sf_export") or (min(sfs) if sfs else None)
+        # prefer the verified realization worst-case, then the export SF,
+        # then the mask SF — a solved 0.0 is a verdict, never or-chain
+        sf = top.get("sf_verified")
+        if sf is None:
+            sf = top.get("sf_export")
+        if sf is None:
+            sf = min(sfs) if sfs else None
         # when the voxel-mask and export solves diverge by >=2x, the part's
         # integrity depends on discretization luck — rank it by the
         # pessimistic bound, not the optimistic export number
@@ -135,7 +146,7 @@ def _best_run_index(session: ToolSession) -> int | None:
         if sf_mask is not None and sf_exp is not None:
             lo, hi = min(float(sf_mask), float(sf_exp)), max(float(sf_mask), float(sf_exp))
             if lo > 0 and hi / lo >= 2.0:
-                sf = lo
+                sf = min(sf, lo) if sf is not None else lo
         if sf is not None and float(sf) > best_sf:
             best_idx, best_sf = r["index"], float(sf)
     return best_idx
@@ -406,7 +417,15 @@ def _opt_overrides(a: dict[str, Any]) -> dict[str, Any]:
             opt[k] = str(a[k])
     if a.get("infill_seed") is not None:
         opt["infill_seed"] = int(a["infill_seed"])
-    for k in ("self_supporting", "multires", "robust", "aniso_material"):
+    for k in (
+        "self_supporting",
+        "multires",
+        "robust",
+        "aniso_material",
+        "infill_octet",
+        "verify_robust",
+        "verify_homogenized",
+    ):
         if a.get(k) is not None:
             opt[k] = bool(a[k])
     return opt

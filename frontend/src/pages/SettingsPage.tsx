@@ -69,6 +69,8 @@ const NUM_FIELDS = new Set<string>([
   "fem_voxel_mm",
   "fem_max_elements",
   "fem_timeout_s",
+  "fem_verify_realization_cells",
+  "fem_homog_cell_voxels",
   "topopt_timeout_s",
   "topopt_max_iterations",
   "topopt_default_volfrac",
@@ -100,6 +102,12 @@ const BOOL_FIELDS = new Set<string>([
   "agent_tool_verify",
   "agent_mesh_tools",
   "image_autogen_mesh",
+  "fem_verify_realizations",
+  "fem_verify_coverage_e",
+  "fem_verify_mesh_shift",
+  "fem_loadpath_cert",
+  "fem_homogenized_infill",
+  "infill_octet",
 ]);
 
 // mirrors the bounds in backend SettingsUpdate — keep in sync with schemas.py
@@ -140,6 +148,8 @@ const FIELD_BOUNDS: Record<
   fem_voxel_mm: { min: 0, max: 100, exclusiveMin: true },
   fem_max_elements: { min: 1, max: 5_000_000, int: true },
   fem_timeout_s: { min: 1, max: 86_400, int: true },
+  fem_verify_realization_cells: { min: 1, max: 4, int: true },
+  fem_homog_cell_voxels: { min: 8, max: 48, int: true },
   topopt_timeout_s: { min: 1, max: 86_400, int: true },
   topopt_max_iterations: { min: 1, max: 1000, int: true },
   topopt_default_volfrac: { min: 0, max: 1, exclusiveMin: true },
@@ -1372,6 +1382,59 @@ export default function SettingsPage() {
           {field({ key: "topopt_max_iterations", label: "Max SIMP iterations", kind: "number" })}
           {field({ key: "topopt_default_volfrac", label: "Default volume fraction", kind: "number" })}
           {field({ key: "topopt_default_rmin_mm", label: "Filter radius (mm)", kind: "number" })}
+        </div>
+        <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+          verification
+        </div>
+        <div className={FIELD_GRID}>
+          {field({
+            key: "fem_verify_realizations",
+            label: "Verify print realizations",
+            kind: "bool",
+            hint: "eroded/dilated variants → worst-case SF",
+          })}
+          {field({
+            key: "fem_verify_realization_cells",
+            label: "Realization boundary cells",
+            kind: "number",
+            hint: "erode/dilate depth in voxels",
+          })}
+          {field({
+            key: "fem_verify_coverage_e",
+            label: "Coverage-weighted stiffness",
+            kind: "bool",
+            hint: "partial voxels get reduced modulus",
+          })}
+          {field({
+            key: "fem_verify_mesh_shift",
+            label: "Mesh-shift probe",
+            kind: "bool",
+            hint: "re-voxelize shifted ½ pitch — grid sensitivity",
+          })}
+          {field({
+            key: "fem_loadpath_cert",
+            label: "Load-path certificate",
+            kind: "bool",
+            hint: "geometric min-cut SF floor + bottleneck",
+          })}
+          {field({
+            key: "fem_homogenized_infill",
+            label: "Homogenized infill verify",
+            kind: "bool",
+            hint: "lattice C(ρ) elements → sf_homog + sf_micro",
+          })}
+          {field({
+            key: "fem_homog_cell_voxels",
+            label: "Homog cell voxels",
+            kind: "number",
+            hint: "voxel size of one representative cell",
+          })}
+          {field({
+            key: "infill_octet",
+            label: "Octet infill diagonals",
+            kind: "bool",
+            hint: "45° strut families in aligned infill",
+          })}
         </div>
       </Card>
       )}
