@@ -157,7 +157,15 @@ class RegionSpec(BaseModel):
     - surface:  actual part surface facing `axis` — works on curved parts
     - area:     XY footprint sub-area (polygon/x_range/y_range/center+diameter);
                 add `axis` to restrict it to the surface facing that way
-    - cylinder: material within radius around an axis line (e.g. a bore)
+    - cylinder: material within radius around an axis line (e.g. a bore);
+                `inner_diameter_mm` makes it a hollow annulus/ring
+    - rim:      outer radial band of width `margin_mm` following the part
+                silhouette around `axis` (default +z) — the tooth ring of a
+                gear/sprocket; `diameter_mm`+`inner_diameter_mm` select an
+                exact annulus instead
+    - border:   band of width `margin_mm` at the bbox outer edges along the
+                axes named in `axis` ("x"/"xy"/"xyz" both sides, "+x" etc.
+                one side only; default "xy")
     - box:      cube centred at `center` with edge `diameter_mm` (or 4*margin)
     - hole:     measured hole/feature anchor — `hole_index` (1-based) refers
                 to the anchors listed in the context; the anchor's own axis
@@ -180,17 +188,34 @@ class RegionSpec(BaseModel):
     """
 
     kind: Literal[
-        "face", "surface", "area", "cylinder", "box", "hole", "anchor", "bore", "points", "all"
+        "face",
+        "surface",
+        "area",
+        "cylinder",
+        "rim",
+        "border",
+        "box",
+        "hole",
+        "anchor",
+        "bore",
+        "points",
+        "all",
     ] = "face"
     axis: Annotated[str, Field(max_length=8)] = (
         ""  # +x|-x|+y|-y|+z|-z (face normal or cylinder axis)
     )
     center: list[float] = Field(default_factory=list, max_length=6)  # optional mm hint
     diameter_mm: float | None = None  # cylinder diameter / box edge length
+    inner_diameter_mm: float | None = Field(
+        default=None, ge=0.0
+    )  # hollow cylinder/annulus inner diameter (cylinder/area/rim)
     margin_mm: float = 2.0  # selection depth/extent added around the region
     polygon: list[list[float]] = Field(default_factory=list, max_length=40)  # XY mm polygon (area)
     x_range: list[float] = Field(default_factory=list, max_length=2)  # [min,max] mm (area)
     y_range: list[float] = Field(default_factory=list, max_length=2)  # [min,max] mm (area)
+    z_range: list[float] = Field(
+        default_factory=list, max_length=2
+    )  # [min,max] mm (area/surface/rim/border/cylinder)
     hole_index: int | None = Field(
         default=None, ge=1
     )  # 1-based index into the measured anchors (hole)
@@ -223,6 +248,13 @@ class RegionSpec(BaseModel):
             if any(w in desc for w in words):
                 self.axis = ax
                 break
+        # rim/border carry sensible axis defaults of their own — a gear rim
+        # wraps around +z, a border band guards the lateral (XY) bbox edges
+        if not self.axis:
+            if self.kind == "rim":
+                self.axis = "+z"
+            elif self.kind == "border":
+                self.axis = "xy"
         return self
 
 
@@ -246,6 +278,9 @@ class LoadSpec(BaseModel):
       bore wall (hole/anchor/bore region), pointing along `bearing_dir`
       (or `force_n` when bearing_dir is empty)
     - moment_nm [mx,my,mz] — pure torque/couple distributed on the region
+    - normal_force_n — total force orthogonal to the region's surface:
+      + pushes into the part, - pulls; the outward normal comes from the
+      region axis/normal or the exposed skin of the selected cells
     - preload_n — bolt pretension: compressive axial pair on the two bore
       mouths of a hole/anchor region
     - remote_point [x,y,z] — force_n applied at that point instead of on the
@@ -264,6 +299,9 @@ class LoadSpec(BaseModel):
         default_factory=list, max_length=3
     )  # bearing dir (else force_n)
     moment_nm: list[float] = Field(default_factory=list, max_length=3)  # pure couple [N*m]
+    normal_force_n: float | None = (
+        None  # total N orthogonal to the region face (+ pushes in, - pulls out)
+    )
     preload_n: float | None = None  # bolt pretension along the bore axis (N)
     remote_point: list[float] = Field(default_factory=list, max_length=3)  # force lever point mm
     g_load: list[float] = Field(default_factory=list, max_length=3)  # body accel in units of g

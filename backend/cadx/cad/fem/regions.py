@@ -12,6 +12,11 @@ Region kinds (see llm.schemas.RegionSpec):
 - anchor:   alias of hole (typed feature anchors: thread/insert/bearing)
 - bore:     bore WALL of a hole anchor — solid cells bordering the void
             cylinder; the natural target for bearing loads
+- rim:      outer radial band of width `margin_mm` following the part
+            silhouette around `axis` (gear/sprocket tooth ring); an exact
+            annulus when `diameter_mm`+`inner_diameter_mm` are given
+- border:   band of width `margin_mm` at the bbox outer edges along the
+            axes named in `axis` (letters or signed; default "xy")
 - points:   painted surface patch (GUI brush)
 - all:      the whole solid
 
@@ -26,12 +31,16 @@ LLM loads step or to continue without that region).
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import numpy as np
 from scipy import ndimage
 
 from cadx.cad.fem.voxelize import VoxelDomain, shift_mask
 from cadx.llm.schemas import LoadCase, RegionSpec
+from cadx.logging import get_logger
+
+log = get_logger(__name__)
 
 _AXIS_IDX = {"x": 0, "y": 1, "z": 2}
 _AXIS3 = {"+x": 0, "+y": 1, "+z": 2, "-x": 0, "-y": 1, "-z": 2, "x": 0, "y": 1, "z": 2}
@@ -127,7 +136,7 @@ def _area_cells(domain: VoxelDomain, region: RegionSpec) -> np.ndarray:
     else:
         sel = domain.solid.copy()
     centers = domain.element_centers().reshape((*domain.dims, 3))
-    cx, cy = centers[..., 0], centers[..., 1]
+    cx, cy, cz = centers[..., 0], centers[..., 1], centers[..., 2]
     inside = np.ones(domain.dims, dtype=bool)
     restricted = False
     if len(region.polygon) >= 3:
@@ -144,15 +153,65 @@ def _area_cells(domain: VoxelDomain, region: RegionSpec) -> np.ndarray:
         lo, hi = sorted(float(v) for v in region.y_range)
         inside &= (cy >= lo) & (cy <= hi)
         restricted = True
+    if len(region.z_range) == 2:
+        lo, hi = sorted(float(v) for v in region.z_range)
+        inside &= (cz >= lo) & (cz <= hi)
+        restricted = True
     if not restricted and len(region.center) >= 2 and region.diameter_mm:
-        r = region.diameter_mm / 2 + region.margin_mm
-        inside &= (cx - region.center[0]) ** 2 + (cy - region.center[1]) ** 2 <= r * r
+        d2 = (cx - region.center[0]) ** 2 + (cy - region.center[1]) ** 2
+        if region.inner_diameter_mm is not None:
+            # exact annulus — the declared radii bound the ring, no margin
+            r_out = region.diameter_mm / 2
+            r_in = region.inner_diameter_mm / 2
+            inside &= (d2 <= r_out * r_out) & (d2 >= r_in * r_in)
+        else:
+            r = region.diameter_mm / 2 + region.margin_mm
+            inside &= d2 <= r * r
         restricted = True
     if not restricted:
         # `area` with an axis but no XY bounds means "the whole face" —
         # degrade gracefully to the axis-facing surface instead of nothing
         return np.asarray(sel if region.axis else np.zeros(domain.dims, dtype=bool))
     return np.asarray(sel & inside)
+
+
+def _axial_wall_mid(
+    domain: VoxelDomain, idx: int, center: np.ndarray, dia: float
+) -> float | None:
+    """Axial centre of the wall a bore pierces, estimated on the voxel grid.
+
+    Anchors without a measured axial position (no `z`/`pos[ax]`) used to
+    drop onto the bbox mid-plane — a bore through the 10 mm plate of a
+    40 mm stepped part then resolved at z=20 instead of z=5. Sample the
+    solid columns on a ring just outside the bore radius: per column the
+    SHORTEST contiguous material run along the axis is the pierced wall
+    (the plate), not bulk further along; the median of the run midpoints
+    locates the wall. None when no ring column carries material."""
+    others = [i for i in range(3) if i != idx]
+    centers = domain.element_centers().reshape((*domain.dims, 3))
+    du = centers[..., others[0]] - float(center[others[0]])
+    dv = centers[..., others[1]] - float(center[others[1]])
+    r = np.hypot(du, dv)
+    r_ring = max(dia / 2.0 + domain.pitch, 2.0 * domain.pitch)
+    band = domain.solid & (r >= r_ring - domain.pitch) & (r <= r_ring + domain.pitch)
+    # walk each rim column along the axis (moved last for easy run scans)
+    sol = np.moveaxis(domain.solid, idx, -1).reshape(-1, domain.dims[idx])
+    rng = np.moveaxis(band, idx, -1).reshape(-1, domain.dims[idx])
+    zc = domain.origin[idx] + (np.arange(domain.dims[idx], dtype=float) + 0.5) * domain.pitch
+    mids: list[float] = []
+    for line, in_ring in zip(sol, rng, strict=True):
+        if not in_ring.any():
+            continue
+        padded = np.concatenate([[False], line, [False]])
+        starts = np.flatnonzero(~padded[:-1] & padded[1:])
+        ends = np.flatnonzero(padded[:-1] & ~padded[1:])
+        if not len(starts):
+            continue
+        k = int(np.argmin(ends - starts))
+        mids.append(0.5 * (zc[starts[k]] + zc[ends[k] - 1]))
+    if not mids:
+        return None
+    return float(np.median(mids))
 
 
 def _anchor_geometry(
@@ -185,16 +244,31 @@ def _anchor_geometry(
         for i in range(3):
             if pos[i] is not None:
                 center[i] = float(pos[i])
+    dia = float(a.get("dia") or 0.0)
     az = a.get("z")
+    axc: float | None = None
     if az is not None:
-        center[idx] = float(az)
+        axc = float(az)
     elif isinstance(pos, (list, tuple)) and len(pos) == 3 and pos[idx] is not None:
-        center[idx] = float(pos[idx])
-    else:
-        center[idx] = mid[idx]
+        axc = float(pos[idx])
+    if axc is None:
+        # no measured axial centre — estimate the pierced wall's mid from
+        # the shortest material run on a ring around the bore before
+        # degrading to the bbox mid-plane
+        axc = _axial_wall_mid(domain, idx, center, dia)
+    if axc is None:
+        axc = float(mid[idx])
+        log.warning(
+            "fem.anchor_axial_unknown",
+            hole_index=region.hole_index,
+            axis=axis,
+            fallback_z=float(mid[idx]),
+            reason="anchor has no z/pos axial centre and no resolvable wall run",
+        )
+    center[idx] = axc
     depth = a.get("depth_mm")
     half = float(depth) / 2 + max(region.margin_mm, domain.pitch) if depth else None
-    return center, avec, float(a.get("dia") or 0.0), half
+    return center, avec, dia, half
 
 
 def _axial_slab(domain: VoxelDomain, axis_idx: int, center: float, half: float) -> np.ndarray:
@@ -252,7 +326,9 @@ def _hole_cells(domain: VoxelDomain, region: RegionSpec, anchors: list[dict] | N
     ctr = [float(v) for v in center]
     if not _anchor_has_void(domain, axis, ctr, dia):
         return np.zeros(domain.dims, dtype=bool)
-    margin = max(region.margin_mm, domain.pitch)
+    # keep-ring floor: a bore used as a fixture/load point needs meat around
+    # it — at least 2 mm or a fifth of the bore diameter, whichever is more
+    margin = max(float(region.margin_mm), 2.0, 0.2 * dia, domain.pitch)
     radius = dia / 2 + margin
     cells = _cylinder_cells(domain, axis, ctr, radius)
     for _ in range(4):
@@ -296,7 +372,12 @@ def _bore_cells(domain: VoxelDomain, region: RegionSpec, anchors: list[dict] | N
 
 
 def _cylinder_cells(
-    domain: VoxelDomain, axis: str, center: list[float], radius: float
+    domain: VoxelDomain,
+    axis: str,
+    center: list[float],
+    radius: float,
+    inner_radius: float = 0.0,
+    z_range: list[float] | None = None,
 ) -> np.ndarray:
     idx, _ = _axis_parts(axis)
     others = [i for i in range(3) if i != idx]
@@ -308,7 +389,114 @@ def _cylinder_cells(
         lo, hi = domain.origin, domain.origin + domain.pitch * np.asarray(domain.dims)
         c = np.array([(lo[others[0]] + hi[others[0]]) / 2, (lo[others[1]] + hi[others[1]]) / 2])
     d2 = (centers[..., others[0]] - c[0]) ** 2 + (centers[..., others[1]] - c[1]) ** 2
-    return np.asarray((d2 <= radius * radius) & domain.solid)
+    mask = (d2 <= radius * radius) & (d2 >= inner_radius * inner_radius) & domain.solid
+    if z_range is not None and len(z_range) == 2:
+        # the range bounds the CYLINDER axis coordinate (idx), not literal z
+        lo_z, hi_z = sorted(float(v) for v in z_range)
+        mask &= (centers[..., idx] >= lo_z) & (centers[..., idx] <= hi_z)
+    return np.asarray(mask)
+
+
+def _range_clip(domain: VoxelDomain, region: RegionSpec, sel: np.ndarray) -> np.ndarray:
+    """Intersect a cell selection with the optional x/y/z_range bounds."""
+    ranges = (region.x_range, region.y_range, region.z_range)
+    if not any(len(rng) == 2 for rng in ranges):
+        return sel
+    centers = domain.element_centers().reshape((*domain.dims, 3))
+    for i, rng in enumerate(ranges):
+        if len(rng) == 2:
+            lo, hi = sorted(float(v) for v in rng)
+            sel &= (centers[..., i] >= lo) & (centers[..., i] <= hi)
+    return sel
+
+
+def _z_clip(domain: VoxelDomain, region: RegionSpec, sel: np.ndarray) -> np.ndarray:
+    """Clip a selection to `z_range` when the region declares one (Z in mm)."""
+    if len(region.z_range) != 2:
+        return sel
+    centers = domain.element_centers().reshape((*domain.dims, 3))
+    lo, hi = sorted(float(v) for v in region.z_range)
+    return np.asarray(sel & (centers[..., 2] >= lo) & (centers[..., 2] <= hi))
+
+
+def _rim_cells(domain: VoxelDomain, region: RegionSpec) -> np.ndarray:
+    """Outer radial rim of width `margin_mm` following the part silhouette
+    around `axis` (e.g. a gear/sprocket tooth ring).
+
+    Per 5° angle sector the local outer radius of the solid cells sets the
+    band floor, so non-circular parts and toothed rims keep a uniform band
+    inward from their own outer tips instead of a global-radius cut that
+    would swallow the hub. `diameter_mm` + `inner_diameter_mm` select an
+    exact annulus instead of the silhouette band."""
+    axis = region.axis or "+z"
+    if region.diameter_mm and region.inner_diameter_mm is not None:
+        return _cylinder_cells(
+            domain,
+            axis,
+            region.center,
+            float(region.diameter_mm) / 2.0,
+            inner_radius=float(region.inner_diameter_mm) / 2.0,
+            z_range=region.z_range or None,
+        )
+    idx, _ = _axis_parts(axis)
+    others = [i for i in range(3) if i != idx]
+    centers = domain.element_centers().reshape((*domain.dims, 3))
+    lo = domain.origin
+    hi = domain.origin + domain.pitch * np.asarray(domain.dims, dtype=float)
+    c0 = (
+        float(region.center[others[0]])
+        if len(region.center) > others[0]
+        else float((lo[others[0]] + hi[others[0]]) / 2)
+    )
+    c1 = (
+        float(region.center[others[1]])
+        if len(region.center) > others[1]
+        else float((lo[others[1]] + hi[others[1]]) / 2)
+    )
+    u = centers[..., others[0]] - c0
+    v = centers[..., others[1]] - c1
+    r = np.hypot(u, v)
+    r_solid = r[domain.solid]
+    if not r_solid.size:
+        return np.zeros(domain.dims, dtype=bool)
+    margin = max(float(region.margin_mm), domain.pitch)
+    bins = 72
+    ang = ((np.arctan2(v, u) + math.pi) / (2.0 * math.pi) * bins).astype(int) % bins
+    sector_max = np.zeros(bins, dtype=float)
+    np.maximum.at(sector_max, ang[domain.solid], r_solid)
+    r_outer = float(r_solid.max())
+    local_max = np.where(sector_max[ang] > 0, sector_max[ang], r_outer)
+    # include all teeth down to min(local_max - margin, r_outer - margin)
+    r_floor = np.minimum(local_max - margin, r_outer - margin)
+    sel = domain.solid & (r >= r_floor)
+    return np.asarray(_range_clip(domain, region, sel), dtype=bool)
+
+
+def _border_cells(domain: VoxelDomain, region: RegionSpec) -> np.ndarray:
+    """Solid cells within `margin_mm` of the bbox outer edges along the axes
+    named in `axis`: a signed axis ("+x"/"-z") selects only that one side,
+    plain letters ("x", "xy", "xyz") select both sides of each named axis.
+    Default "xy" — the lateral clamp edges of a plate."""
+    ax_s = (region.axis or "xy").strip().lower()
+    margin = max(float(region.margin_mm), domain.pitch)
+    lo = domain.origin
+    hi = domain.origin + domain.pitch * np.asarray(domain.dims, dtype=float)
+    centers = domain.element_centers().reshape((*domain.dims, 3))
+    sel = np.zeros(domain.dims, dtype=bool)
+    if ax_s.startswith(("+", "-")):
+        idx, sign = _axis_parts(ax_s)
+        if sign > 0:
+            sel |= hi[idx] - centers[..., idx] <= margin
+        else:
+            sel |= centers[..., idx] - lo[idx] <= margin
+    else:
+        for ch in ax_s:
+            i = _AXIS_IDX.get(ch)
+            if i is None:
+                continue
+            sel |= (centers[..., i] - lo[i] <= margin) | (hi[i] - centers[..., i] <= margin)
+    sel &= domain.solid
+    return np.asarray(_range_clip(domain, region, sel), dtype=bool)
 
 
 def _box_cells(domain: VoxelDomain, center: list[float], edge: float) -> np.ndarray:
@@ -384,18 +572,46 @@ def region_cell_mask(
     if kind == "all":
         return domain.solid.copy()
     if kind == "face":
-        return _face_cells(domain, region.axis or "+z", region.margin_mm)
+        sel = _face_cells(domain, region.axis or "+z", region.margin_mm)
+        return _z_clip(domain, region, sel)
     if kind == "surface":
-        return _surface_cells(domain, region.axis or "+z", region.margin_mm)
+        sel = _surface_cells(domain, region.axis or "+z", region.margin_mm)
+        return _z_clip(domain, region, sel)
     if kind == "area":
         return _area_cells(domain, region)
+    if kind == "rim":
+        return _rim_cells(domain, region)
+    if kind == "border":
+        return _border_cells(domain, region)
     if kind in ("hole", "anchor"):
         return np.asarray(_hole_cells(domain, region, anchors), dtype=bool)
     if kind == "bore":
         return _bore_cells(domain, region, anchors)
     if kind == "cylinder":
+        if region.inner_diameter_mm is not None:
+            # exact annulus — the declared radii bound the ring, no margin
+            r_in = float(region.inner_diameter_mm) / 2.0
+            r_out = (
+                float(region.diameter_mm)
+                if region.diameter_mm
+                else float(region.inner_diameter_mm) + 2.0 * region.margin_mm
+            ) / 2.0
+            return _cylinder_cells(
+                domain,
+                region.axis or "+z",
+                region.center,
+                r_out,
+                inner_radius=r_in,
+                z_range=region.z_range or None,
+            )
         radius = (region.diameter_mm or 4 * region.margin_mm) / 2 + region.margin_mm
-        return _cylinder_cells(domain, region.axis or "+z", region.center, radius)
+        return _cylinder_cells(
+            domain,
+            region.axis or "+z",
+            region.center,
+            radius,
+            z_range=region.z_range or None,
+        )
     if kind == "box":
         edge = region.diameter_mm or 4 * region.margin_mm
         return _box_cells(domain, region.center, edge)
@@ -493,6 +709,33 @@ def _region_fallback(
     return np.asarray(face, dtype=bool), ax_s
 
 
+def _exterior_normal_mean(domain: VoxelDomain, cell_mask: np.ndarray) -> np.ndarray | None:
+    """Mean outward unit normal of the selected cells' exposed faces.
+
+    Each direction ±x/±y/±z votes with the count of selected cells whose
+    neighbour that way is outside air (or the domain border); the
+    normalised vector sum is the average skin normal — radial/organic
+    regions like `rim` get their net pull direction this way. ``None``
+    when nothing is exposed or symmetric faces cancel out.
+    """
+    outside = _exterior_void(domain)
+    acc = np.zeros(3)
+    for ax in range(3):
+        for sgn in (1, -1):
+            d = np.zeros(3, dtype=int)
+            d[ax] = sgn
+            edge = np.zeros(domain.dims, dtype=bool)
+            sl: list[slice] = [slice(None)] * 3
+            sl[ax] = slice(-1, None) if sgn > 0 else slice(0, 1)
+            edge[tuple(sl)] = True
+            exp = cell_mask & (shift_mask(outside, d) | edge)
+            acc[ax] += sgn * float(exp.sum())
+    mag = float(np.linalg.norm(acc))
+    if mag < 1e-9:
+        return None
+    return acc / mag
+
+
 def region_face_normal(region: RegionSpec) -> np.ndarray | None:
     """Outward unit normal for face-like regions (used for pressure loads)."""
     if region.kind == "points":
@@ -507,6 +750,17 @@ def region_face_normal(region: RegionSpec) -> np.ndarray | None:
             v[idx] = float(sign)
             return v
         return None
+    if region.kind == "border":
+        # a signed border side ("+x") presses along that axis; unsigned
+        # multi-side bands have no unique normal (callers fall back to
+        # the mean exposed-face normal)
+        ax_s = (region.axis or "").strip().lower()
+        if not ax_s.startswith(("+", "-")):
+            return None
+        idx, sign = _axis_parts(ax_s)
+        v = np.zeros(3)
+        v[idx] = float(sign)
+        return v
     if region.kind not in ("face", "surface", "area"):
         return None
     idx, sign = _axis_parts(region.axis or "+z")
@@ -547,7 +801,7 @@ def _grow_load_spec(r: RegionSpec, pitch: float) -> RegionSpec | None:
     if r.kind == "points":
         radius = (r.radius_mm or max(2.0 * r.margin_mm, 3.0)) + pitch
         return r.model_copy(update={"radius_mm": radius})
-    if r.kind in ("area", "surface", "face", "cylinder"):
+    if r.kind in ("area", "surface", "face", "cylinder", "rim", "border"):
         return r.model_copy(update={"margin_mm": r.margin_mm + pitch})
     return None
 
@@ -602,8 +856,12 @@ def resolve_case_dofs(  # noqa: C901
     F is a dense (3*nnodes,) force vector in Newton. Loads with zero matching
     nodes are skipped with a warning. Beyond force_n/pressure_mpa this handles
     bearing_n (cosine wall distribution), moment_nm (pure couple), preload_n
-    (axial bore-mouth pair), remote_point (force + induced moment) and g_load
-    (body force over the region's mass).
+    (axial bore-mouth pair), normal_force_n (total force along the region's
+    inward surface normal), remote_point (force + induced moment) and g_load
+    (body force over the region's mass). bearing_n/preload_n on a hole/anchor
+    region introduce the force on the bore WALL (`_bore_cells`), never on the
+    keep ring; a `kind="all"` fixed region is refused (it would rigid-lock
+    the whole part).
     """
     from cadx.cad.fem import loads as ld
 
@@ -624,6 +882,12 @@ def resolve_case_dofs(  # noqa: C901
         return np.zeros(nn, dtype=bool), cells, ""
 
     for r in case.fixed:
+        if r.kind == "all":
+            warnings.append(
+                f"case '{case.name}': fixed region 'all' is invalid "
+                "(would constrain every DOF) — skipped"
+            )
+            continue
         m, cells, fb_ax = _nodes_cells(r)
         tag = f"#{r.hole_index}" if r.hole_index else (r.axis or "")
         if not m.any():
@@ -645,6 +909,14 @@ def resolve_case_dofs(  # noqa: C901
     for load in case.loads:
         r = load.region
         m, cells, fb_ax = _nodes_cells(r)
+        if r.kind in ("hole", "anchor") and (load.bearing_n or load.preload_n):
+            # a bolt presses on the bore WALL, not on the clamp ring around
+            # the hole — re-resolve through _bore_cells (itself falling back
+            # to the hole ring when no wall can be located)
+            bore = _bore_cells(domain, r, anchors)
+            if bore.any():
+                cells = bore
+                m = _nodes_of_cells(domain, cells.ravel())
         tag = f"#{r.hole_index}" if r.hole_index else (r.axis or "")
         if not m.any():
             warnings.append(f"case '{case.name}': load region {r.kind} {tag} matched no nodes")
@@ -670,7 +942,13 @@ def resolve_case_dofs(  # noqa: C901
             )
         elif (
             not r.material
-            and (load.force_n or load.bearing_n or load.moment_nm or load.remote_point)
+            and (
+                load.force_n
+                or load.bearing_n
+                or load.moment_nm
+                or load.remote_point
+                or load.normal_force_n
+            )
             and cells.sum() > 0.5 * domain.solid_count
         ):
             # a discrete force smeared over most of the part understates local
@@ -758,6 +1036,32 @@ def resolve_case_dofs(  # noqa: C901
                         "found no open bore mouths (blind hole or solid region?)"
                     )
                 applied = applied or got > 0
+        if load.normal_force_n is not None and abs(float(load.normal_force_n)) > 0:
+            n = region_face_normal(r)
+            if n is None:
+                # no declared direction — average the outward normals of
+                # the selected cells' exposed faces instead
+                n = _exterior_normal_mean(domain, cells)
+            if n is None:
+                warnings.append(
+                    f"case '{case.name}': normal_force_n on {r.kind} — "
+                    "no outward surface normal resolvable"
+                )
+            else:
+                # + pushes INTO the part along the inward normal
+                f_vec = -n * float(load.normal_force_n)
+                # area-weighted spread on the exposed face when the region
+                # presents an identifiable skin; even split otherwise
+                areas = surface_area_per_node(domain, cells, _dominant_axis(n))
+                tot = float(areas.sum())
+                if tot > 0:
+                    pidx = np.flatnonzero(areas > 0)
+                    w = areas[pidx] / tot
+                    for cc in range(3):
+                        F[3 * pidx + cc] += f_vec[cc] * w
+                else:
+                    ld.spread_force(F, idx, f_vec)
+                applied = True
         if load.g_load and len(load.g_load) == 3:
             rho = density_g_cm3
             if r.material:
@@ -945,6 +1249,61 @@ def keep_element_mask(
     for r in regions:
         mask |= region_cell_mask(domain, r, anchors).ravel()
     return mask
+
+
+def case_anchor_keep_mask(
+    domain: VoxelDomain, cases: list[LoadCase], anchors: list[dict] | None
+) -> np.ndarray:
+    """Bool (nx,ny,nz) protective keep rings around every hole/anchor/bore
+    region the load cases touch — fixed regions and load regions alike.
+
+    A bore that carries a fixture or a load must keep its material ring in
+    TopOpt even when the user forgot a matching keep_region; union this
+    mask into the passive/keep mask so no loaded or clamped bore gets
+    optimized away."""
+    out = np.zeros(domain.dims, dtype=bool)
+    for case in cases or []:
+        regions: list[RegionSpec] = list(case.fixed)
+        regions += [ld.region for ld in case.loads]
+        for r in regions:
+            if r.kind not in ("hole", "anchor", "bore"):
+                continue
+            keep = r.model_copy(update={"margin_mm": max(float(r.margin_mm), 2.0)})
+            out |= np.asarray(_hole_cells(domain, keep, anchors), dtype=bool)
+    return out
+
+
+def case_region_breakdown(
+    domain: VoxelDomain, case: LoadCase, anchors: list[dict] | None = None
+) -> list[dict[str, Any]]:
+    """Per-region resolved cell counts for reporting — one entry per fixed
+    region and per load region. Lets summaries show WHICH region resolved
+    how much instead of only aggregate node counts."""
+    out: list[dict[str, Any]] = []
+    for r in case.fixed:
+        cells = region_cell_mask(domain, r, anchors)
+        out.append(
+            {
+                "role": "fixed",
+                "kind": r.kind,
+                "axis": r.axis or "",
+                "hole_index": r.hole_index,
+                "cells": int(cells.sum()),
+            }
+        )
+    for ld in case.loads:
+        r = ld.region
+        cells = region_cell_mask(domain, r, anchors)
+        out.append(
+            {
+                "role": "load",
+                "kind": r.kind,
+                "axis": r.axis or "",
+                "hole_index": r.hole_index,
+                "cells": int(cells.sum()),
+            }
+        )
+    return out
 
 
 def auto_keep_regions(anchors: list[dict] | None, margin_mm: float = 3.0) -> list[RegionSpec]:

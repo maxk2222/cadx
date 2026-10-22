@@ -500,11 +500,17 @@ _REGION_SCHEMA = {
     "type": "object",
     "description": "geometric region: surface (part skin facing axis, follows "
     "curves), area (XY sub-area via polygon/x_range/y_range/center+diameter_mm, "
-    "optionally restricted to the surface facing axis), hole/anchor (measured "
-    "feature anchor via hole_index — any axis; use list_anchors first), bore "
-    "(the bore WALL of an anchor — for bearing/preload loads), face (legacy "
-    "surface alias), cylinder (around an axis — needs axis+diameter_mm), box "
-    "(center+diameter_mm edge) or all",
+    "optionally restricted to the surface facing axis), rim (outer radial band "
+    "of width margin_mm following the part silhouette around axis — the "
+    "gear/sprocket tooth ring; diameter_mm+inner_diameter_mm give an exact "
+    "annulus), border (band of width margin_mm at the bbox outer edges along "
+    "the axes named in axis — letters or signed, default 'xy'), hole/anchor "
+    "(measured feature anchor via hole_index — any axis; use list_anchors "
+    "first; loads/constraints apply on the bore wall and a keep ring of "
+    "margin_mm is auto-protected), bore (the bore WALL of an anchor — for "
+    "bearing/preload loads), face (legacy surface alias), cylinder (around an "
+    "axis — needs axis+diameter_mm; inner_diameter_mm for a hollow ring), box "
+    "(center+diameter_mm edge) or all (whole part — never in fixed regions)",
     "properties": {
         "kind": {
             "type": "string",
@@ -513,6 +519,8 @@ _REGION_SCHEMA = {
                 "surface",
                 "area",
                 "cylinder",
+                "rim",
+                "border",
                 "box",
                 "hole",
                 "anchor",
@@ -520,9 +528,17 @@ _REGION_SCHEMA = {
                 "all",
             ],
         },
-        "axis": _s("signed axis, e.g. -z (face normal or cylinder axis)"),
+        "axis": _s(
+            "axis, e.g. -z — face normal or cylinder/rim axis; border also "
+            "accepts letter sets like 'x'/'xy'/'xyz' (both sides each)"
+        ),
         "center": {**_VEC3, "description": "optional mm hint, e.g. hole position"},
         "diameter_mm": {"type": "number", "description": "cylinder diameter / box edge"},
+        "inner_diameter_mm": {
+            "type": "number",
+            "description": "cylinder/area/rim: inner diameter in mm for a "
+            "hollow ring/annulus",
+        },
         "margin_mm": {"type": "number", "description": "selection depth, default 2"},
         "polygon": {
             "type": "array",
@@ -538,6 +554,11 @@ _REGION_SCHEMA = {
             "type": "array",
             "items": {"type": "number"},
             "description": "area: [min, max] mm in Y",
+        },
+        "z_range": {
+            "type": "array",
+            "items": {"type": "number"},
+            "description": "area/surface/rim/border/cylinder: [min, max] mm in Z",
         },
         "hole_index": {
             "type": "integer",
@@ -561,7 +582,9 @@ _REGION_SCHEMA = {
 _LOAD_SCHEMA = {
     "type": "object",
     "description": "one load on a region — combine freely: force_n (total force, "
-    "split over region nodes), pressure_mpa (on face/surface/area), bearing_n "
+    "split over region nodes), pressure_mpa (on face/surface/area), normal_force_n "
+    "(total force orthogonal to the region surface — + pushes in, - pulls; the "
+    "normal comes from the region axis or its exposed skin), bearing_n "
     "(cosine-distributed bolt/bearing force on a bore wall — needs a "
     "hole/anchor/bore region), moment_nm (pure couple [mx,my,mz] in N·m), "
     "preload_n (bolt pretension — axial squeeze on the two bore mouths), "
@@ -585,6 +608,11 @@ _LOAD_SCHEMA = {
         },
         "bearing_dir": {**_VEC3, "description": "bearing direction (default: force_n)"},
         "moment_nm": {**_VEC3, "description": "pure couple [mx,my,mz] in N·m"},
+        "normal_force_n": {
+            "type": "number",
+            "description": "total force in N orthogonal to the region surface "
+            "(+ pushes into the surface, - pulls away)",
+        },
         "preload_n": {
             "type": "number",
             "description": "bolt pretension along the bore axis (N)",
