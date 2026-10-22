@@ -490,6 +490,67 @@ def _volume_preserved_iso(
     return iso, warn
 
 
+def _volume_bisect_mesh(
+    domain: VoxelDomain,
+    field: np.ndarray,
+    mask: np.ndarray,
+    iso0: float,
+    target_vol: float,
+    max_evals: int = 6,
+) -> tuple[trimesh.Trimesh, float, str | None]:
+    """Refine the iso level by bisecting on the enclosed *mesh* volume.
+
+    The cell-count bisect only guarantees `count(field >= t) == mask.sum()`,
+    but the iso surface shrinks inside thin members — measured volume runs
+    well under the verified mask (observed ~35% on thin plates). The
+    enclosed volume is monotone non-increasing in `iso`, so bisection
+    converges; verified mask cells are floored just above the running iso
+    so they stay enclosed at any level. Returns (mesh, iso, warning) —
+    the mesh is already extracted at the final level; warning is set when
+    the residual error stays above 5% of the target.
+    """
+    lo, hi = 0.0, float(field.max())
+    best_mesh: trimesh.Trimesh | None = None
+    best_iso = iso0
+    best_err = float("inf")
+    iso = iso0
+    for _ in range(max_evals):
+        # mask cells must stay enclosed at any iso — bridge corridors and
+        # min-member regrowth carry rho≈0 in the smoothed field, so floor
+        # them just above the running level; the surface still interpolates
+        # sub-voxel in the 1-cell shell
+        floor = iso * 1.05 + 1e-9
+        f2 = np.where(mask & (field < floor), floor, field)
+        try:
+            m = _surface_mesh_mc(domain, f2, iso)
+            vol = abs(float(m.volume))
+        except Exception:
+            m, vol = None, 0.0  # iso above the surface — drive it down
+        err = vol - target_vol
+        if abs(err) < best_err:
+            best_err, best_mesh, best_iso = abs(err), m, iso
+        if abs(err) <= 0.02 * max(target_vol, 1e-9):
+            break
+        if vol < target_vol:
+            hi = min(hi, iso)
+            iso = 0.5 * (lo + iso)
+        else:
+            lo = max(lo, iso)
+            iso = 0.5 * (iso + hi)
+        if hi - lo <= 1e-6:
+            break
+    if best_mesh is None:
+        raise ValueError("iso-surface is empty at every bisected level")
+    warn = None
+    if best_err > 0.05 * max(target_vol, 1e-9):
+        warn = (
+            f"volume-preserving iso bisect left {best_err:.0f} mm^3 residual "
+            f"(target {target_vol:.0f} mm^3) — shell headroom or field shape "
+            "limits the attainable volume"
+        )
+    return best_mesh, best_iso, warn
+
+
 def density_to_mesh(
     domain: VoxelDomain,
     density: np.ndarray,
@@ -503,6 +564,7 @@ def density_to_mesh(
     extract_smooth: bool = True,
     sigma_px: float = 0.8,
     volume_preserve: bool = True,
+    vol_target_scale: float = 1.0,
     bridge_islands: bool = True,
 ) -> tuple[trimesh.Trimesh, np.ndarray, list[str], int, dict[str, Any]]:
     """Convert the optimized density field into a trimesh.
@@ -517,9 +579,12 @@ def density_to_mesh(
     one-cell-dilated mask —
     a sub-voxel iso-surface instead of the staircase boundary of the
     binary field. `volume_preserve` bisects the iso level so the enclosed
-    voxel count matches `final_mask.sum()` (rho2sdf-style); without it the
-    fixed `threshold` level is used. `extract_smooth=False` reproduces the
-    legacy path bit-identically (binary mask -> MC at 0.5 -> Taubin).
+    mesh volume matches the mask volume (cell-count seed + volume
+    refinement); `vol_target_scale` >1 compensates known downstream
+    shrinkage (smoothing, envelope clip) by aiming above the mask volume.
+    Without it the fixed `threshold` level is used. `extract_smooth=False`
+    reproduces the legacy path bit-identically (binary mask -> MC at 0.5
+    -> Taubin).
 
     `extract_info` carries extraction telemetry: `iso` (level used),
     `vol_error_pct` (mesh volume vs mask volume), `gray_fraction`
@@ -560,19 +625,36 @@ def density_to_mesh(
                         target=int(mask.sum()),
                         field_max=fmax,
                     )
-            elif not (0.0 < iso < fmax):
-                iso = 0.5 * fmax
-                warnings.append(
-                    f"iso threshold {threshold:g} outside the smoothed field "
-                    f"range — using t={iso:g}"
+                # the cell-count iso only bounds count(field>=t); the iso
+                # surface itself can still shrink inside thin members
+                # (~35% underfill measured) — refine on enclosed volume
+                target_vol = (
+                    float(mask.sum()) * domain.pitch**3 * float(np.clip(vol_target_scale, 0.5, 2.0))
                 )
-            # mask-verified cells must stay inside the iso surface — bridge
-            # corridors and min-member regrowth carry rho≈0 in the smoothed
-            # field, so floor them just above the chosen level; the surface
-            # still interpolates sub-voxel in the 1-cell shell
-            floor = iso * 1.05 + 1e-9
-            field = np.where(mask & (field < floor), floor, field)
-            mesh = _surface_mesh_mc(domain, field, iso)
+                try:
+                    mesh, iso, vb_warn = _volume_bisect_mesh(domain, field, mask, iso, target_vol)
+                    if vb_warn:
+                        warnings.append(vb_warn)
+                except Exception:
+                    log.warning("topopt.volume_bisect_fallback", exc_info=True)
+                    floor = iso * 1.05 + 1e-9
+                    field = np.where(mask & (field < floor), floor, field)
+                    mesh = _surface_mesh_mc(domain, field, iso)
+            else:
+                if not (0.0 < iso < fmax):
+                    iso = 0.5 * fmax
+                    warnings.append(
+                        f"iso threshold {threshold:g} outside the smoothed field "
+                        f"range — using t={iso:g}"
+                    )
+                # mask-verified cells must stay inside the iso surface —
+                # bridge corridors and min-member regrowth carry rho≈0 in
+                # the smoothed field, so floor them just above the chosen
+                # level; the surface still interpolates sub-voxel in the
+                # 1-cell shell
+                floor = iso * 1.05 + 1e-9
+                field = np.where(mask & (field < floor), floor, field)
+                mesh = _surface_mesh_mc(domain, field, iso)
         else:
             iso = 0.5  # binary mask -> fixed level
             mesh = _surface_mesh_mc(domain, mask)

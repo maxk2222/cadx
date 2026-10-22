@@ -153,6 +153,11 @@ Kinds:
 
 Each `topopt_run` reports:
 
+- `domain_pitch` / `domain_spec_overshoot_mm` — the design grid is snapped
+  so the thinnest stated dim lands on an integer cell count (`snapped:
+  true` in `domain_pitch`); positive per-axis overshoot means the FEM
+  domain still exceeds the spec envelope and the export clip will remove
+  material the mask verified — treat >half a cell as suspect.
 - `sf_mask` — safety factor on the exact voxel structure. On an
   auto-coarsened grid it reads systematically ~1.5-2× optimistic (the coarse
   pitch under-resolves thin junctions) — never rank a run by it alone.

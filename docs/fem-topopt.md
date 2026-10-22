@@ -317,15 +317,19 @@ equilibrium sanity.
   isosurfaces without staircase artefacts; `volume_preserve` bisects the
   iso level so the surface encloses the optimized volume (reported as
   `topopt.extract.iso`/`vol_error_pct`/`vol_error_pp`/`gray_fraction`).
-  `vol_error_pct` is relative to the mask volume; `vol_error_pp` is the
-  absolute mask/export fraction difference. A >5 pp discrepancy gets one
-  bounded crisp-extraction retry and remains invalid if unresolved. The FEM
-  verification still uses the exact binary mask; `topopt.verification`
-  compares predicted vs measured compliance and `sf_mask` vs `sf_export`.
-  `n_components` counts mask components, `n_surface_components` includes
-  nested cavity walls, and `n_bodies_export` counts connected material bodies
-  after re-voxelizing the STL; only the latter determines physical
-  multi-body validity.
+  The bisect seeds from `count(field>=t)==mask.sum()` then refines on the
+  enclosed *mesh* volume — thin members otherwise underfill sub-voxel
+  (~35% measured on 2-cell-thick plates). `vol_error_pct` is relative to
+  the mask volume; `vol_error_pp` is the absolute mask/export fraction
+  difference. A >5 pp discrepancy gets one bounded retry — crisp boundary
+  fill when no spec dims are stated, a raised extraction-volume target
+  (`vol_target_scale`) when they are — and remains invalid if unresolved.
+  The FEM verification still uses the exact binary mask;
+  `topopt.verification` compares predicted vs measured compliance and
+  `sf_mask` vs `sf_export`. `n_components` counts mask components,
+  `n_surface_components` includes nested cavity walls, and
+  `n_bodies_export` counts connected material bodies after re-voxelizing
+  the STL; only the latter determines physical multi-body validity.
 - Mesh extraction uses marching cubes (scikit-image) when available and falls
   back to the voxel-boundary surface, so `skimage` is optional at runtime.
 - The solver accepts per-DOF `(nnodes,3)` fixed masks. Backend selection is
@@ -345,8 +349,16 @@ equilibrium sanity.
   git and a compiler, since scikit-sparse builds from a git-pinned sdist;
   no released version compiles against SuiteSparse ≥ 5.4). Missing
   imports degrade gracefully per solve.
-- Grid pitch starts at `fem_voxel_mm` and is adaptively coarsened to stay
-  under `fem_max_elements`. After voxelization the peak memory for assembly,
+- Grid pitch starts at `fem_voxel_mm`, is first snapped so the thinnest
+  effective span (stated spec dim, else mesh bbox) lands on an integer
+  cell count — a 4 mm plate at 2.5 mm becomes 2×2.0 mm cells, not a 5 mm
+  domain the mask FEM would over-verify (`optimize.min_cells_thinnest`,
+  default 3, floors the thin-axis resolution; refused + warned when the
+  element budget would break) — then adaptively coarsened to stay under
+  `fem_max_elements`/`fem_spsolve_dofs`. Reported as
+  `topopt.domain_pitch{requested_mm,design_mm,snapped}` and
+  `domain_spec_overshoot_mm` per axis. After voxelization the peak memory
+  for assembly,
   the CSR matrix and (for direct solves) LU fill-in is estimated and
   compared against `exec_mem_limit_mb` — oversized jobs fail early with a
   memory warning instead of being OOM-killed (rc=137) mid-iteration.

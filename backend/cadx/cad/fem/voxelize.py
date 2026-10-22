@@ -121,6 +121,57 @@ def choose_pitch(
     return pitch, est
 
 
+def snapped_pitch(
+    spans: np.ndarray | list[float],
+    pitch_target: float,
+    *,
+    min_cells: int = 1,
+    mesh_volume: float = 0.0,
+    max_elements: int = 0,
+) -> tuple[float, str | None]:
+    """Snap the requested pitch so the thinnest span is an integer cell
+    count — the rasterized domain then models the same thickness the part
+    actually has (and the spec-envelope clip enforces on the export).
+    Without it a 4 mm plate at a 2.5 mm pitch voxelizes to 2 cells = a
+    5 mm design domain: the mask FEM verifies a part 25% thicker than the
+    one that gets printed.
+
+    `spans` is the effective per-axis extent (spec dim where stated, mesh
+    bbox otherwise). The snap only applies when it reduces the total
+    domain overhang vs the unsnapped pitch, and `min_cells` sets the floor
+    for cells through the thinnest axis (thin plates need >=2-3 layers for
+    meaningful bending resolution). Returns (pitch, warning): warning is
+    set when the snap had to be refused (element budget would break), in
+    which case the caller keeps `pitch_target` and the domain/spec
+    mismatch is surfaced instead of silently accepted.
+    """
+    p0 = float(max(pitch_target, 1e-6))
+    spans_a = np.asarray(spans, dtype=float)
+    if spans_a.shape != (3,) or not np.isfinite(spans_a).all():
+        return p0, None
+    span_min = float(spans_a.min())
+    if span_min <= 0.0:
+        return p0, None
+    n = max(round(span_min / p0), int(min_cells), 1)
+    p_snap = span_min / n
+
+    def _overhang(p: float) -> float:
+        # total domain extent beyond the effective spans, all axes
+        return float(np.sum(np.ceil(np.maximum(spans_a / p - 1e-9, 0.0)) * p - spans_a))
+
+    if _overhang(p_snap) >= _overhang(p0) - 1e-9:
+        return p0, None
+    if max_elements > 0 and mesh_volume > 0 and mesh_volume / p_snap**3 > max_elements:
+        return p0, (
+            f"spec-fit pitch {p_snap:.3f} mm ({n} cells through "
+            f"{span_min:g} mm) would exceed the element budget "
+            f"({int(mesh_volume / p_snap**3)} > {max_elements} est. solid "
+            f"cells) — keeping {p0:g} mm; the FEM domain thickness may "
+            "differ from the spec envelope"
+        )
+    return float(p_snap), None
+
+
 def _fill_grid(
     mesh: trimesh.Trimesh, origin: np.ndarray, dims: tuple[int, int, int], pitch: float
 ) -> np.ndarray:

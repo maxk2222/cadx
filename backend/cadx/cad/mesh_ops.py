@@ -537,12 +537,14 @@ def smooth_preserve(
     pin_floor: bool = True,
     floor_tol: float = 0.05,
 ) -> trimesh.Trimesh:
-    """Taubin smoothing that keeps the flat bottom and the XY envelope fixed.
+    """Taubin smoothing that keeps the flat bottom and the envelope fixed.
 
     Vertices on the lowest Z layer (z <= zmin + floor_tol) are pinned so the
-    manufacturing floor stays a plane; after smoothing the XY extents are
-    rescaled back to the input bounds. Returns the input unchanged when the
-    result is not watertight or degenerate.
+    manufacturing floor stays a plane; after smoothing all three extents are
+    rescaled back to the input bounds — Taubin otherwise shrinks thin members
+    measurably per pass (~20% volume on 2-cell plates), and the Z span is
+    exactly the thickness the spec envelope clip enforces. Returns the input
+    unchanged when the result is not watertight or degenerate.
     """
     out = mesh.copy()
     out.merge_vertices()
@@ -561,12 +563,17 @@ def smooth_preserve(
         return mesh
     b0 = np.asarray(mesh.bounds, dtype=float)
     b1 = np.asarray(out.bounds, dtype=float)
-    for axis in (0, 1):
+    for axis in (0, 1, 2):
         span0 = float(b0[1][axis] - b0[0][axis])
         span1 = float(b1[1][axis] - b1[0][axis])
         factor = span0 / max(span1, 1e-9)
         if abs(factor - 1.0) > 1e-4:
+            # XY rescales about the bbox center like before; Z anchors at the
+            # floor plane when it is pinned (the pinned vertices must not
+            # move), otherwise at the center too
             c = (b0[0] + b0[1]) / 2.0
+            if axis == 2 and pin_floor:
+                c = np.asarray([c[0], c[1], b0[0][2]])
             factors = np.ones(3)
             factors[axis] = factor
             m = np.eye(4)

@@ -111,6 +111,36 @@ def test_rank_iso_fallback_handles_tied_values() -> None:
     assert warning is not None and "rank threshold" in warning
 
 
+def test_volume_bisect_hits_enclosed_volume() -> None:
+    """A solid 2-cell-thick plate: the count-based iso shrinks the surface
+    inside the thin member; the volume bisect must land within ~5% of the
+    mask volume even on a fully dense field."""
+    dims = (16, 16, 2)
+    dom = VoxelDomain(origin=np.zeros(3), pitch=1.0, dims=dims, solid=np.ones(dims, bool))
+    rho = np.ones(dom.dims)
+    mesh, mask, _w, _nc, info = density_to_mesh(dom, rho.ravel(), smooth_iterations=0)
+    mask_vol = float(mask.sum()) * dom.pitch**3
+    assert abs(float(mesh.volume) - mask_vol) / mask_vol < 0.05
+    assert abs(info["vol_error_pct"]) < 5.0
+
+
+def test_vol_target_scale_overshoots_extraction_volume() -> None:
+    """vol_target_scale raises the bisected target — used by the spec-part
+    underfill retry to compensate downstream smoothing/clip losses."""
+    dom = _domain()
+    rho = _sphere_density(dom)
+    m1, mask, _w1, _n1, _i1 = density_to_mesh(
+        dom, rho.ravel(), smooth_iterations=0, vol_target_scale=1.0
+    )
+    m2, _mask2, _w2, _n2, _i2 = density_to_mesh(
+        dom, rho.ravel(), smooth_iterations=0, vol_target_scale=1.2
+    )
+    assert float(m2.volume) > float(m1.volume) * 1.05
+    mask_vol = float(mask.sum()) * dom.pitch**3
+    # bounded by the 1-cell shell — may not reach 1.2x but must move past 1x
+    assert float(m2.volume) > mask_vol
+
+
 def test_empty_density_raises() -> None:
     dom = _domain()
     with pytest.raises(ValueError, match="empty part"):

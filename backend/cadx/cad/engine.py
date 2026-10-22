@@ -1573,7 +1573,7 @@ def run_topopt_pipeline(  # noqa: C901
         material_cell_factors,
     )
     from cadx.cad.fem.topopt import TopOptParams, passive_solid_mask, simp
-    from cadx.cad.fem.voxelize import dilate_solid, grid_bounds_mm, voxelize
+    from cadx.cad.fem.voxelize import dilate_solid, grid_bounds_mm, snapped_pitch, voxelize
     from cadx.llm.schemas import LoadCase, OptimizeSpec
 
     res = ExecResult()
@@ -1649,6 +1649,33 @@ def run_topopt_pipeline(  # noqa: C901
 
     # --- design domain -------------------------------------------------------
     req_voxel = voxel_mm or s.fem_voxel_mm
+    # spec-aware pitch snap: rasterize on a pitch that lands on an integer
+    # cell count through the thinnest effective span — a 4 mm plate at a
+    # 2.5 mm pitch otherwise becomes a 5 mm domain, so the mask FEM would
+    # verify a part 25% thicker than the export the envelope clip produces
+    # (observed ~30 pp volume loss / 5x sf_ratio divergence downstream)
+    mesh_span = np.asarray(mesh.bounds[1] - mesh.bounds[0], dtype=float)
+    eff_span = np.asarray(
+        [
+            float(d) if d else float(mesh_span[i])
+            for i, d in enumerate(list(dims_spec or [None, None, None])[:3])
+        ],
+        dtype=float,
+    )
+    design_pitch, snap_warn = snapped_pitch(
+        eff_span,
+        req_voxel,
+        min_cells=int(opt.min_cells_thinnest or 3),
+        mesh_volume=abs(float(mesh.volume)) if mesh.is_watertight else 0.0,
+        max_elements=max_elements or s.fem_max_elements,
+    )
+    if snap_warn:
+        res.topopt.setdefault("warnings", []).append(snap_warn)
+    res.topopt["domain_pitch"] = {
+        "requested_mm": round(req_voxel, 4),
+        "design_mm": round(design_pitch, 4),
+        "snapped": abs(design_pitch - req_voxel) > 1e-6,
+    }
     # grow_mm: pad the grid so the optimizer can also ADD material beyond the
     # part silhouette — the pad ring stays void in `domain.solid` and becomes
     # designable space only in `design_domain` below
@@ -1659,7 +1686,10 @@ def run_topopt_pipeline(  # noqa: C901
 
     try:
         domain = voxelize(
-            mesh, req_voxel, max_elements or s.fem_max_elements, pad_cells=_pad_cells(req_voxel)
+            mesh,
+            design_pitch,
+            max_elements or s.fem_max_elements,
+            pad_cells=_pad_cells(design_pitch),
         )
     except Exception as e:
         res.error = f"voxelization failed: {e}"
@@ -1705,6 +1735,22 @@ def run_topopt_pipeline(  # noqa: C901
         [round(float(v), 3) for v in d_lo],
         [round(float(v), 3) for v in d_hi],
     ]
+    # domain vs the effective (spec-or-mesh) spans — positive means the
+    # rasterized domain sticks out beyond the part; on a stated spec axis
+    # the export clip then removes material the mask FEM verified
+    span_cells = np.asarray(domain.dims, dtype=float) - 2 * domain.pad_cells
+    overshoot = domain.pitch * span_cells - eff_span
+    res.topopt["domain_spec_overshoot_mm"] = [round(float(v), 3) for v in overshoot]
+    if dims_spec:
+        bad_axes = [
+            "xyz"[i] for i, d in enumerate(dims_spec) if d and overshoot[i] > 0.5 * domain.pitch
+        ]
+        if bad_axes:
+            res.topopt.setdefault("warnings", []).append(
+                f"design domain exceeds the spec envelope on "
+                f"{','.join(bad_axes)} by more than half a cell — the export "
+                "clip removes material the mask FEM verified"
+            )
 
     # two domains on ONE shared grid when grow_mm > 0: `part_domain.solid`
     # is the physical part (regions/anchors/passive masks resolve on it — a
@@ -2030,6 +2076,7 @@ def run_topopt_pipeline(  # noqa: C901
         warm: np.ndarray | None = None,
         member_floor_mm: float | None = None,
         crisp_extraction: bool = False,
+        vol_target_scale: float = 1.0,
     ) -> dict[str, Any]:
         """One SIMP run at `volfrac` + extraction, smoothing and both FEM
         verifications. Returns the pieces needed for artifacts/retry.
@@ -2083,12 +2130,23 @@ def run_topopt_pipeline(  # noqa: C901
             extract_smooth=opt.extract_smooth and not crisp_extraction,
             sigma_px=0.0 if crisp_extraction else opt.extract_sigma_px,
             volume_preserve=opt.volume_preserve,
+            vol_target_scale=vol_target_scale,
         )
         out["n_components"] = n_components
         out["extract"] = extract_info
-        # floor-pinned smoothing: keeps a flat manufacturing base flat
+        # floor-pinned smoothing: keeps a flat manufacturing base flat.
+        # Taubin shrinks thin members measurably per pass — on parts only a
+        # few cells thick, cap iterations so the export keeps the volume
+        # the mask FEM verified. Measured on the part span, not the
+        # extracted extent — the candidate-to-candidate jitter around the
+        # threshold must not flip the smoothing regime between passes.
         if not crisp_extraction:
-            opt_mesh = smooth_preserve(opt_mesh, iterations=4, pin_floor=base_flat)
+            thin_cells = float(eff_span.min()) / max(design_domain.pitch, 1e-6)
+            opt_mesh = smooth_preserve(
+                opt_mesh,
+                iterations=2 if thin_cells < 4.0 else 4,
+                pin_floor=base_flat,
+            )
         opt_mesh, output_envelope, output_envelope_ok, envelope_warnings = (
             _clip_export_to_spec_envelope(
                 opt_mesh, list(dims_spec) if dims_spec else None, label="smoothed export"
@@ -2150,10 +2208,11 @@ def run_topopt_pipeline(  # noqa: C901
         out["verify_s"] = round(time.monotonic() - t, 2)
 
         # export verification: re-voxelize the smoothed mesh that gets printed —
-        # at the *requested* pitch, not the (possibly auto-coarsened) design
-        # pitch: the mesh is smooth, so verification fidelity stays nominal
+        # at the requested (spec-snapped) pitch, not the possibly
+        # auto-coarsened design pitch: the mesh is smooth, so verification
+        # fidelity stays nominal and mask/export share one grid convention
         try:
-            domain_exp = voxelize(opt_mesh, req_voxel, max_elements or s.fem_max_elements)
+            domain_exp = voxelize(opt_mesh, design_pitch, max_elements or s.fem_max_elements)
             out["n_bodies_export"] = int(
                 ndimage.label(
                     domain_exp.solid,
@@ -2215,13 +2274,14 @@ def run_topopt_pipeline(  # noqa: C901
     )
     safety_retry = exp_degenerate or (sf_exp is not None and sf_exp < opt.safety_factor_min)
     gap_retry = sf_ratio is not None and sf_ratio > 3.0
-    connectivity_retry = (
-        p1.get("n_bodies_export") is None
-        or max(int(p1["n_components"]), int(p1["n_bodies_export"])) > 1
-    )
+    connectivity_retry = p1.get("n_bodies_export") is None or int(p1["n_bodies_export"]) > 1
     # Stated spec envelopes intentionally allow a shrunken export; avoid
-    # replacing that geometry with a crisp full-boundary retry.
-    volume_retry = not dims_spec and abs(float(p1["extract"].get("vol_error_pp") or 0.0)) > 5.0
+    # replacing that geometry with a crisp full-boundary retry. A real
+    # volume *deficit* on a spec'd part instead retries at a raised
+    # extraction volume target — the iso moves outward, the boundary does
+    # not get filled.
+    p1_vol_err_pp = float(p1["extract"].get("vol_error_pp") or 0.0)
+    volume_retry = p1_vol_err_pp < -5.0 if dims_spec else abs(p1_vol_err_pp) > 5.0
     retry_needed = safety_retry or gap_retry or connectivity_retry or volume_retry
     if retry_needed and (cancelled is None or not cancelled()):
         retry_volfrac = params.volfrac + 0.1 if safety_retry else params.volfrac
@@ -2231,6 +2291,14 @@ def run_topopt_pipeline(  # noqa: C901
             else min_member
         )
         retry_crisp = not dims_spec and (gap_retry or connectivity_retry or volume_retry)
+        # compensate the measured deficit: vol_error_pp is relative to the
+        # design-space volume, so scale the mask-volume target by that
+        # fraction of the mask plus a small margin, bounded at 1.5x
+        retry_vol_scale = 1.0
+        if dims_spec and p1_vol_err_pp < -5.0:
+            mask_vol = max(float(p1["final_mask"].sum()) * design_domain.pitch**3, 1e-9)
+            design_vol = float(design_domain.solid_count) * design_domain.pitch**3
+            retry_vol_scale = min(1.5, 1.0 + (-p1_vol_err_pp / 100.0) * design_vol / mask_vol * 1.1)
         if retry_volfrac <= 0.9:
             p2 = _one_pass(
                 retry_volfrac,
@@ -2238,6 +2306,7 @@ def run_topopt_pipeline(  # noqa: C901
                 warm=p1["result"].density,
                 member_floor_mm=retry_member,
                 crisp_extraction=retry_crisp,
+                vol_target_scale=retry_vol_scale,
             )
             sf_exp2 = p2["verify_export"].worst_safety_factor
             trigger_reasons = [
@@ -2260,6 +2329,7 @@ def run_topopt_pipeline(  # noqa: C901
                 "sf_ratio_first": sf_ratio,
                 "min_member_mm": retry_member,
                 "crisp_extraction": retry_crisp,
+                "vol_target_scale": retry_vol_scale,
                 "warm_start": "pass1_density",
                 "first_export_degenerate": exp_degenerate or None,
             }
@@ -2268,12 +2338,12 @@ def run_topopt_pipeline(  # noqa: C901
             p1_ok = (
                 p1.get("output_envelope_ok") is not False
                 and p1.get("n_bodies_export") is not None
-                and max(int(p1["n_components"]), int(p1["n_bodies_export"])) <= 1
+                and int(p1["n_bodies_export"]) <= 1
             )
             p2_ok = (
                 p2.get("output_envelope_ok") is not False
                 and p2.get("n_bodies_export") is not None
-                and max(int(p2["n_components"]), int(p2["n_bodies_export"])) <= 1
+                and int(p2["n_bodies_export"]) <= 1
             )
             p2_sf_mask = p2["verify"].worst_safety_factor
             p2_ratio = (
@@ -2378,7 +2448,7 @@ def run_topopt_pipeline(  # noqa: C901
         res.topopt["warnings"].append(
             "no export FEM case produced a safety factor — sf_export is unverified, not safe"
         )
-    elif max(int(best["n_components"]), int(best["n_bodies_export"])) > 1:
+    elif int(best["n_bodies_export"]) > 1:
         verification["valid"] = False
         res.topopt["warnings"].append(
             f"optimized part has {best['n_bodies_export']} disconnected bodies "
@@ -2633,7 +2703,7 @@ def run_infill_pipeline(  # noqa: C901
         material_cell_factors,
     )
     from cadx.cad.fem.topopt import TopOptParams, passive_solid_mask, simp
-    from cadx.cad.fem.voxelize import grid_bounds_mm, voxelize
+    from cadx.cad.fem.voxelize import grid_bounds_mm, snapped_pitch, voxelize
     from cadx.llm.schemas import LoadCase, OptimizeSpec
 
     res = ExecResult()
@@ -2678,8 +2748,32 @@ def run_infill_pipeline(  # noqa: C901
             res.topopt.setdefault("warnings", []).append(norm_rep["warning"])
 
     req_voxel = voxel_mm or s.fem_voxel_mm
+    # same spec-aware pitch snap as run_topopt_pipeline — the domain must
+    # model the thickness the envelope clip enforces on the export
+    mesh_span = np.asarray(mesh.bounds[1] - mesh.bounds[0], dtype=float)
+    eff_span = np.asarray(
+        [
+            float(d) if d else float(mesh_span[i])
+            for i, d in enumerate(list(dims_spec or [None, None, None])[:3])
+        ],
+        dtype=float,
+    )
+    design_pitch, snap_warn = snapped_pitch(
+        eff_span,
+        req_voxel,
+        min_cells=int(opt.min_cells_thinnest or 3),
+        mesh_volume=abs(float(mesh.volume)) if mesh.is_watertight else 0.0,
+        max_elements=max_elements or s.fem_max_elements,
+    )
+    if snap_warn:
+        res.topopt.setdefault("warnings", []).append(snap_warn)
+    res.topopt["domain_pitch"] = {
+        "requested_mm": round(req_voxel, 4),
+        "design_mm": round(design_pitch, 4),
+        "snapped": abs(design_pitch - req_voxel) > 1e-6,
+    }
     try:
-        domain = voxelize(mesh, req_voxel, max_elements or s.fem_max_elements)
+        domain = voxelize(mesh, design_pitch, max_elements or s.fem_max_elements)
     except Exception as e:
         res.error = f"voxelization failed: {e}"
         return res
@@ -2688,6 +2782,19 @@ def run_infill_pipeline(  # noqa: C901
         [round(float(v), 3) for v in d_lo],
         [round(float(v), 3) for v in d_hi],
     ]
+    span_cells = np.asarray(domain.dims, dtype=float) - 2 * domain.pad_cells
+    overshoot = domain.pitch * span_cells - eff_span
+    res.topopt["domain_spec_overshoot_mm"] = [round(float(v), 3) for v in overshoot]
+    if dims_spec:
+        bad_axes = [
+            "xyz"[i] for i, d in enumerate(dims_spec) if d and overshoot[i] > 0.5 * domain.pitch
+        ]
+        if bad_axes:
+            res.topopt.setdefault("warnings", []).append(
+                f"design domain exceeds the spec envelope on "
+                f"{','.join(bad_axes)} by more than half a cell — the export "
+                "clip removes material the mask FEM verified"
+            )
 
     from cadx.cad.fem.voxelize import estimate_fem_memory_mb
 
@@ -2907,7 +3014,12 @@ def run_infill_pipeline(  # noqa: C901
             volume_preserve=opt.volume_preserve,
         )
         if not crisp:
-            candidate_mesh = smooth_preserve(candidate_mesh, iterations=4, pin_floor=base_flat)
+            thin_cells = float(eff_span.min()) / max(domain.pitch, 1e-6)
+            candidate_mesh = smooth_preserve(
+                candidate_mesh,
+                iterations=2 if thin_cells < 4.0 else 4,
+                pin_floor=base_flat,
+            )
         candidate_mesh, dropped_slivers = keep_significant_components(candidate_mesh)
         warnings = list(extract_warnings)
         if dropped_slivers:
@@ -3055,7 +3167,7 @@ def run_infill_pipeline(  # noqa: C901
 
     def _verify_export_candidate(candidate: dict[str, Any], suffix: str) -> tuple[Any, int]:
         candidate_mesh = candidate["mesh"]
-        export_domain = voxelize(candidate_mesh, req_voxel, max_elements or s.fem_max_elements)
+        export_domain = voxelize(candidate_mesh, design_pitch, max_elements or s.fem_max_elements)
         export_bodies = int(
             ndimage.label(
                 export_domain.solid,

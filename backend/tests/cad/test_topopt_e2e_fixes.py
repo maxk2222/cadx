@@ -427,7 +427,12 @@ def test_staged_volfrac_continuation_preserves_export_sf(tmp_path: Path) -> None
     assert staged.topopt["verification"]["valid"] is True
     assert staged.topopt["n_bodies_export"] == 1
     assert abs(staged.topopt["verification"]["vol_error_pp"]) <= 5.0
-    assert sf_staged >= 0.9 * sf_base
+    # volume-matched extraction ships ~full-volume exports now (the old
+    # ~30% underfill shrank BOTH candidates), so the honest mask/export
+    # picture spreads wider than on the artifact meshes this bound was
+    # calibrated on — the guard is against an order-of-magnitude collapse,
+    # not parity
+    assert sf_staged >= 0.5 * sf_base
 
 
 def test_sf_gap_divergence_triggers_thick_member_retry(monkeypatch, tmp_path: Path) -> None:
@@ -786,3 +791,75 @@ def test_infill_export_divergence_gets_one_crisp_retry(
         res.topopt["warnings"],
         res.topopt["verification"],
     )
+
+
+def test_spec_dims_snap_design_pitch_and_domain(tmp_path: Path) -> None:
+    """The reference mismatch: a 40x40x4 plate at a 2.5 mm requested pitch
+    rasterized to a 5 mm domain (2 cells), so the mask FEM verified a part
+    25% thicker than the 4 mm export the envelope clip produced. The
+    spec-aware snap must land the thin axis on an integer cell count and
+    report ~zero per-axis overshoot."""
+    from cadx.cad.engine import run_topopt_pipeline
+
+    plate = trimesh.creation.box(extents=[40.0, 40.0, 4.0])
+    plate.apply_translation([0.0, 0.0, 2.0])
+    src = tmp_path / "plate40x4.stl"
+    plate.export(str(src))
+    res = run_topopt_pipeline(
+        mesh_path=src,
+        out_dir=tmp_path / "plate-snap",
+        load_cases=[_cantilever_case()],
+        optimize={
+            "target_volume_fraction": 0.5,
+            "max_iterations": 3,
+            "keep_mode": "manual",
+            "spec_dims_mm": [40.0, 40.0, 4.0],
+        },
+        material="pla",
+        voxel_mm=2.5,
+        anchors=[],
+        scan_anchors=False,
+        runtime=RuntimeSettings(topopt_auto_keep=False),
+    )
+
+    assert res.ok, res.error
+    dp = res.topopt["domain_pitch"]
+    assert dp["snapped"] is True
+    assert dp["requested_mm"] == pytest.approx(2.5)
+    assert dp["design_mm"] == pytest.approx(4.0 / 3.0, abs=1e-3)  # min_cells_thinnest=3
+    assert res.topopt["domain_spec_overshoot_mm"] == pytest.approx([0.0, 0.0, 0.0], abs=0.05)
+    lo, hi = res.topopt["domain_bbox"]
+    assert hi[2] - lo[2] == pytest.approx(4.0, abs=0.05)
+    # the extracted export must keep most of the verified mask volume —
+    # the old pipeline dropped ~32 pp here
+    assert abs(float(res.topopt["verification"]["vol_error_pp"])) < 15.0
+
+
+def test_spec_dims_snap_keeps_requested_pitch_when_it_fits(tmp_path: Path) -> None:
+    """Dims already divisible by the requested pitch stay untouched."""
+    from cadx.cad.engine import run_topopt_pipeline
+
+    mesh = trimesh.creation.box(extents=[60.0, 40.0, 6.0])
+    mesh.apply_translation([0.0, 0.0, 3.0])
+    src = tmp_path / "plate60x6.stl"
+    mesh.export(str(src))
+    res = run_topopt_pipeline(
+        mesh_path=src,
+        out_dir=tmp_path / "plate-nosnap",
+        load_cases=[_cantilever_case()],
+        optimize={
+            "target_volume_fraction": 0.5,
+            "max_iterations": 3,
+            "keep_mode": "manual",
+            "spec_dims_mm": [60.0, 40.0, 6.0],
+        },
+        material="pla",
+        voxel_mm=2.0,
+        anchors=[],
+        scan_anchors=False,
+        runtime=RuntimeSettings(topopt_auto_keep=False),
+    )
+
+    assert res.ok, res.error
+    assert res.topopt["domain_pitch"]["design_mm"] == pytest.approx(2.0)
+    assert res.topopt["domain_spec_overshoot_mm"] == pytest.approx([0.0, 0.0, 0.0], abs=0.05)

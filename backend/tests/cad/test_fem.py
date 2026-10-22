@@ -77,6 +77,69 @@ def test_voxelize_nonwatertight_stl(tmp_path: Path) -> None:
     assert dom.solid[0].any() and dom.solid[-1].any()
 
 
+def test_snapped_pitch_exact_fit_thin_plate() -> None:
+    """The reference case: a 40x40x4 plate at 2.5 mm pitch must not become
+    a 5 mm domain — snap to a pitch that fits the thin axis exactly."""
+    from cadx.cad.fem.voxelize import snapped_pitch
+
+    p, warn = snapped_pitch(
+        [40.0, 40.0, 4.0], 2.5, min_cells=2, mesh_volume=6400.0, max_elements=150_000
+    )
+    assert warn is None
+    assert p == pytest.approx(2.0)
+    # and the grid it produces covers the spec with zero overshoot
+    dom = voxelize(_box_mesh(40.0, 40.0, 4.0), p, 150_000)
+    assert dom.dims == (20, 20, 2)
+    assert dom.pitch * dom.dims[2] == pytest.approx(4.0)
+
+
+def test_snapped_pitch_min_cells_raises_resolution() -> None:
+    """min_cells floors the thin-axis resolution: a 4 mm plate gets >=3
+    cell layers even when 2 would already fit."""
+    from cadx.cad.fem.voxelize import snapped_pitch
+
+    p, warn = snapped_pitch(
+        [40.0, 40.0, 4.0], 2.5, min_cells=3, mesh_volume=6400.0, max_elements=150_000
+    )
+    assert warn is None
+    assert p == pytest.approx(4.0 / 3.0)
+
+
+def test_snapped_pitch_refused_when_it_worsens_overhang() -> None:
+    """If snapping the thin axis creates MORE total overhang elsewhere
+    (e.g. 9.9 mm -> 4x2.475 = 16.16 cells on x), keep the target pitch."""
+    from cadx.cad.fem.voxelize import snapped_pitch
+
+    p, warn = snapped_pitch(
+        [40.0, 40.0, 9.9], 2.5, min_cells=3, mesh_volume=15840.0, max_elements=150_000
+    )
+    assert warn is None
+    assert p == pytest.approx(2.5)
+
+
+def test_snapped_pitch_refused_on_element_budget() -> None:
+    """A very thin large part would explode the grid — refuse with an
+    honest warning instead of silently keeping the mismatched domain."""
+    from cadx.cad.fem.voxelize import snapped_pitch
+
+    p, warn = snapped_pitch(
+        [200.0, 200.0, 1.0], 2.5, min_cells=3, mesh_volume=40_000.0, max_elements=150_000
+    )
+    assert p == pytest.approx(2.5)
+    assert warn is not None and "element budget" in warn
+
+
+def test_snapped_pitch_span_already_divisible() -> None:
+    """No-op when the requested pitch already divides the thin axis."""
+    from cadx.cad.fem.voxelize import snapped_pitch
+
+    p, warn = snapped_pitch(
+        [60.0, 40.0, 6.0], 2.0, min_cells=3, mesh_volume=14_400.0, max_elements=150_000
+    )
+    assert warn is None
+    assert p == pytest.approx(2.0)
+
+
 # --------------------------------------------------------------------------- #
 # regions                                                                      #
 # --------------------------------------------------------------------------- #

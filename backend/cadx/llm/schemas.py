@@ -385,6 +385,11 @@ class OptimizeSpec(BaseModel):
     )  # design-domain dilation: the optimizer may also ADD material up to
     # grow_mm beyond the part silhouette (reinforcement ribs, enlarged
     # walls) — regions still resolve on the true part surface
+    min_cells_thinnest: int | None = Field(
+        default=None, ge=1, le=32
+    )  # voxel layers guaranteed through the thinnest spec axis when the
+    # design pitch is snapped to spec dims (default 3 in the pipelines);
+    # raise for finer thin-wall resolution, set 1 to keep the raw pitch
     aniso_material: bool = (
         False  # orthotropic FDM stiffness along print_direction (weaker
         # interlayer direction); ignored without a print_direction effect
