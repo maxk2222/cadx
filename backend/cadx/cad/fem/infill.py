@@ -37,7 +37,7 @@ from typing import Any
 import numpy as np
 from scipy import ndimage
 
-from cadx.cad.fem.solver import _B0, _D, _ke_unit
+from cadx.cad.fem.solver import _ke_from_D, _ke_unit, recover_elem_stress
 from cadx.cad.fem.voxelize import VoxelDomain
 from cadx.logging import get_logger
 
@@ -70,6 +70,9 @@ class InfillParams:
                     lattice to a caller-supplied guide mask (the rest of the
                     interior stays a hollow pocket enclosed by the skin)
     seed:           deterministic lattice phase shift
+    octet:          struts_aligned only — add the 4 body-diagonal families
+                    (octet lattice) so 45°-dominated stress states grow real
+                    diagonal members instead of stair-stepped axis pairs
     """
 
     shell_mm: float = 2.0
@@ -80,6 +83,7 @@ class InfillParams:
     style: str = "gyroid_graded"
     scope: str = "full"
     seed: int = 0
+    octet: bool = True
 
 
 def _flat(mask: np.ndarray | None, domain: VoxelDomain) -> np.ndarray:
@@ -122,6 +126,10 @@ def element_strain_energy(
     active: np.ndarray,
     elem_E: np.ndarray,
     nu: float,
+    *,
+    aniso: tuple[float, float] | None = None,
+    elem_class: np.ndarray | None = None,
+    class_D: np.ndarray | None = None,
 ) -> np.ndarray:
     """(ncells,) element strain energy w_e = u_eᵀ(E_e·k_e)u_e.
 
@@ -132,20 +140,147 @@ def element_strain_energy(
     FemSolution.elem_vm. Summed over the domain, w_e equals uᵀKu (= uᵀF, the
     compliance). On the uniform grid w_e ∝ strain-energy density (divide by
     pitch³ for J/mm³); the grading only uses relative values.
+
+    `aniso`/`elem_class`/`class_D` must match the values `assemble` used —
+    the energy is only consistent when k_e is the SAME element stiffness the
+    solve ran with (`class_D` wins over `aniso`, like everywhere else).
     """
     out = np.zeros(domain.cell_count)
     active = np.asarray(active, dtype=np.int64)
     if not active.size:
         return out
-    ke = _ke_unit(float(nu), domain.pitch)
     E = np.asarray(elem_E, dtype=float).ravel()[active]
     uf = np.asarray(u, dtype=float).reshape(-1)
     w = np.empty(active.size)
-    for s in range(0, active.size, 200_000):  # chunked: 24 floats/cell adds up
-        ue = uf[edof[s : s + 200_000]]  # (m, 24)
-        w[s : s + 200_000] = np.einsum("ij,ij->i", ue, ue @ ke.T)
+    if class_D is not None:
+        ke_table = np.stack(
+            [_ke_from_D(np.asarray(Dk, dtype=float), domain.pitch) for Dk in class_D]
+        )
+        cls = np.asarray(elem_class, dtype=np.int64).ravel()[active]
+        for s in range(0, active.size, 200_000):  # chunked: 24 floats/cell adds up
+            e = min(s + 200_000, active.size)
+            ue = uf[edof[s:e]]  # (m, 24)
+            for c in range(ke_table.shape[0]):
+                sel = cls[s:e] == c
+                if sel.any():
+                    ue_c = ue[sel]
+                    w[s:e][sel] = np.einsum("ij,ij->i", ue_c, ue_c @ ke_table[c].T)
+    else:
+        ke = (
+            _ke_unit(float(nu), domain.pitch)
+            if aniso is None
+            else _ke_unit(float(nu), domain.pitch, float(aniso[0]), int(aniso[1]))
+        )
+        for s in range(0, active.size, 200_000):
+            ue = uf[edof[s : s + 200_000]]  # (m, 24)
+            w[s : s + 200_000] = np.einsum("ij,ij->i", ue, ue @ ke.T)
     out[active] = w * E
     return out
+
+
+def _canonical_frame(evals: np.ndarray, evecs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Deterministic eigensystem: per-eigenvector sign canonicalized so the
+    largest-|component| entry is positive (strut directions are unsigned
+    anyway), and degenerate tensors (max |λ| <= 1e-12) collapsed to zero
+    evals + identity evecs so downstream code has one convention."""
+    lead = np.argmax(np.abs(evecs), axis=1)  # (m,3): argmax component per column
+    comps = np.take_along_axis(evecs, lead[:, None, :], axis=1)[:, 0, :]
+    sgn = np.sign(comps)
+    sgn[sgn == 0] = 1.0
+    evecs = evecs * sgn[:, None, :]
+    deg = np.max(np.abs(evals), axis=1) <= 1e-12
+    if deg.any():
+        evals = np.where(deg[:, None], 0.0, evals)
+        evecs = np.where(deg[:, None, None], np.eye(3)[None], evecs)
+    return evals, evecs
+
+
+def element_principal_frames(
+    domain: VoxelDomain,
+    u: np.ndarray,
+    edof: np.ndarray,
+    active: np.ndarray,
+    elem_E: np.ndarray,
+    nu: float,
+    *,
+    aniso: tuple[float, float] | None = None,
+    elem_class: np.ndarray | None = None,
+    class_D: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """(evals (ncells,3) ascending, evecs (ncells,3,3) columns) — the full
+    principal-stress frame of each cell's centre stress tensor.
+
+    Shares the `recover_elem_stress` path so aniso/per-class constitutive
+    tensors produce the same stress the solve reported (a shared-D recovery
+    would hand material zones the wrong frame). Eigenvalues carry the TRUE
+    stress magnitude (unit-E stress scaled by E_e — eigenvectors are
+    scale-invariant, but `combine_stress_frames` weights families by |λ|).
+    Signs canonicalized via `_canonical_frame`; degenerate cells get zero
+    evals + identity evecs, inactive cells stay all-zero.
+    """
+    evals_out = np.zeros((domain.cell_count, 3))
+    evecs_out = np.zeros((domain.cell_count, 3, 3))
+    active = np.asarray(active, dtype=np.int64)
+    if not active.size:
+        return evals_out, evecs_out
+    _vm, sig = recover_elem_stress(
+        domain,
+        u,
+        edof,
+        active,
+        elem_E,
+        nu,
+        aniso=aniso,
+        # class tensors already carry E_e — force unit E on the shared-D
+        # path so the per-element modulus can be applied honestly
+        E_ref=None if class_D is not None else 1.0,
+        elem_class=elem_class,
+        class_D=class_D,
+    )
+    if class_D is None:
+        sig = sig * np.asarray(elem_E, dtype=float).ravel()[active][:, None]
+    for s in range(0, active.size, 100_000):
+        sig_c = sig[s : s + 100_000]  # (m, 6) Voigt [sx,sy,sz,txy,tyz,tzx]
+        m = sig_c.shape[0]
+        S = np.zeros((m, 3, 3))
+        S[:, 0, 0] = sig_c[:, 0]
+        S[:, 1, 1] = sig_c[:, 1]
+        S[:, 2, 2] = sig_c[:, 2]
+        S[:, 0, 1] = S[:, 1, 0] = sig_c[:, 3]  # txy
+        S[:, 1, 2] = S[:, 2, 1] = sig_c[:, 4]  # tyz
+        S[:, 0, 2] = S[:, 2, 0] = sig_c[:, 5]  # tzx
+        evals, evecs = np.linalg.eigh(S)  # ascending; columns are eigenvectors
+        evals, evecs = _canonical_frame(evals, evecs)
+        evals_out[active[s : s + m]] = evals
+        evecs_out[active[s : s + m]] = evecs
+    return evals_out, evecs_out
+
+
+def combine_stress_frames(
+    frames_list: list[tuple[np.ndarray, np.ndarray]],
+    weights: list[float],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Merge per-case principal frames into one stress-weighted frame.
+
+    T_c = Σ_j |λ_j|·(v_j ⊗ v_j) is a case's |stress| tensor; T = Σ_c w_c·T_c
+    accumulates the weighted tensor once — a dominant case wins the
+    dominant axis and orthogonal cases produce a genuinely bi-axial frame
+    (unlike the old mean-of-directions, which snaps to whichever axis the
+    average vector favours). Returns (evals (n,3) ascending, evecs
+    (n,3,3) columns) in `_canonical_frame` convention."""
+    T = None
+    for (evals, evecs), w in zip(frames_list, weights, strict=True):
+        if not w:
+            continue
+        lam = np.abs(np.asarray(evals, dtype=float))
+        V = np.asarray(evecs, dtype=float)
+        T_c = np.einsum("nj,naj,nbj->nab", lam, V, V)
+        T = (float(w) * T_c) if T is None else T + float(w) * T_c
+    if T is None:
+        n = int(np.asarray(frames_list[0][0]).shape[0]) if frames_list else 0
+        return np.zeros((n, 3)), np.broadcast_to(np.eye(3), (n, 3, 3)).copy()
+    evals, evecs = np.linalg.eigh(T)
+    return _canonical_frame(evals, evecs)
 
 
 def element_principal_dirs(
@@ -155,56 +290,41 @@ def element_principal_dirs(
     active: np.ndarray,
     elem_E: np.ndarray,
     nu: float,
+    *,
+    aniso: tuple[float, float] | None = None,
+    elem_class: np.ndarray | None = None,
+    class_D: np.ndarray | None = None,
 ) -> np.ndarray:
     """(ncells,3) unit direction of the largest-|sigma| principal stress.
 
-    Recomputes the cell-centre stress exactly like `solve_reduced` post
-    passes do: eps = u_e·_B0(pitch)ᵀ, sig = eps·Dᵀ with D = _D(nu) scaled by
-    the element's own modulus (a positive per-element scale does not change
-    eigenvectors — it only keeps the tensor honest). The Voigt 6-vector is
-    [sx, sy, sz, txy, tyz, tzx] (row order of `solver._B_matrix`), mapped
-    onto the symmetric 3x3 tensor and eigh'ed; the eigenvector of the
-    largest-|λ| eigenvalue is returned.
-
-    Signs are canonicalized (largest-|component| positive) so the result is
-    reproducible across BLAS variants — a strut direction is unsigned
-    anyway. Cells with vanishing stress get +z (build-axis default);
-    inactive cells get zeros.
+    Thin wrapper over `element_principal_frames` (same `recover_elem_stress`
+    stress path — aniso- and class-D-aware): picks the eigenvector of the
+    largest-|λ| eigenvalue per cell. Signs are canonicalized (largest-
+    |component| positive) so the result is reproducible across BLAS
+    variants — a strut direction is unsigned anyway. Cells with vanishing
+    stress get +z (build-axis default); inactive cells get zeros.
     """
     out = np.zeros((domain.cell_count, 3))
     active = np.asarray(active, dtype=np.int64)
     if not active.size:
         return out
-    B0 = _B0(domain.pitch)
-    D = _D(float(nu))
-    E = np.asarray(elem_E, dtype=float).ravel()[active]
-    uf = np.asarray(u, dtype=float).reshape(-1)
-    dirs = np.zeros((active.size, 3))
-    for s in range(0, active.size, 100_000):
-        ue = uf[edof[s : s + 100_000]]  # (m, 24)
-        eps = ue @ B0.T  # (m, 6)
-        sig = (eps @ D.T) * E[s : s + 100_000, None]  # (m, 6) Voigt
-        m = ue.shape[0]
-        S = np.zeros((m, 3, 3))
-        S[:, 0, 0] = sig[:, 0]
-        S[:, 1, 1] = sig[:, 1]
-        S[:, 2, 2] = sig[:, 2]
-        S[:, 0, 1] = S[:, 1, 0] = sig[:, 3]  # txy
-        S[:, 1, 2] = S[:, 2, 1] = sig[:, 4]  # tyz
-        S[:, 0, 2] = S[:, 2, 0] = sig[:, 5]  # tzx
-        evals, evecs = np.linalg.eigh(S)  # ascending; columns are eigenvectors
-        sl = np.arange(s, min(s + 100_000, active.size))
-        k = np.argmax(np.abs(evals), axis=1)
-        v = evecs[np.arange(m), :, k]  # (m, 3)
-        # canonical sign: the largest-|component| entry is positive
-        lead = np.argmax(np.abs(v), axis=1)
-        sgn = np.sign(v[np.arange(m), lead])
-        sgn[sgn == 0] = 1.0
-        v = v * sgn[:, None]
-        # vanishing stress → degenerate eigenvector → build-axis default
-        v[np.abs(evals[np.arange(m), k]) <= 1e-12] = (0.0, 0.0, 1.0)
-        dirs[sl] = v
-    out[active] = dirs
+    evals, evecs = element_principal_frames(
+        domain,
+        u,
+        edof,
+        active,
+        elem_E,
+        nu,
+        aniso=aniso,
+        elem_class=elem_class,
+        class_D=class_D,
+    )
+    ev = evals[active]
+    k = np.argmax(np.abs(ev), axis=1)
+    v = evecs[active][np.arange(active.size), :, k]  # (nact, 3)
+    # vanishing stress → degenerate eigenvector → build-axis default
+    v[np.abs(ev[np.arange(active.size), k]) <= 1e-12] = (0.0, 0.0, 1.0)
+    out[active] = v
     return out
 
 
@@ -348,55 +468,236 @@ def _line_dist(x: np.ndarray, period: float) -> np.ndarray:
     return 2.0 * np.minimum(frac, 1.0 - frac)
 
 
+_AXIS_FAMILIES = np.eye(3)
+_OCTET_FAMILIES = (
+    np.array(
+        [[1.0, 1.0, 1.0], [1.0, 1.0, -1.0], [1.0, -1.0, 1.0], [-1.0, 1.0, 1.0]]
+    )
+    / math.sqrt(3.0)
+)
+
+
+def _strut_families(octet: bool) -> np.ndarray:
+    """(nfam,3) strut family directions — the 3 axis families first, then
+    the 4 body-diagonal families when `octet` (the octet-truss lattice:
+    45°-dominated stress states get real diagonal members instead of
+    stair-stepped axis pairs)."""
+    return (
+        np.concatenate([_AXIS_FAMILIES, _OCTET_FAMILIES], axis=0)
+        if octet
+        else _AXIS_FAMILIES
+    )
+
+
+def _perp_lattice_basis(f: np.ndarray) -> np.ndarray:
+    """(3,2) basis of the strut-line lattice proj_{f⊥}(Z³).
+
+    Family-f struts run along f through the integer grid — two grid points
+    share one strut line iff they differ along f, so the in-plane strut
+    positions are the projection of Z³ onto the plane ⊥f. Only commensurate
+    integer directions are allowed (the projected point set is a lattice
+    only then) — asserted. For (±1,±1,±1) body diagonals the two shortest
+    projected axis vectors span the triangular lattice."""
+    fn = np.asarray(f, dtype=float)
+    fn = fn / np.linalg.norm(fn)
+    scaled = fn / np.min(np.abs(fn[np.abs(fn) > 1e-12]))
+    assert np.allclose(scaled, np.rint(scaled), atol=1e-9), (
+        f"diagonal strut family must be a commensurate integer direction, got {f}"
+    )
+    cands: list[tuple[float, np.ndarray]] = []
+    for n in np.indices((3, 3, 3)).reshape(3, -1).T - 1:
+        v = n.astype(float) - (n.astype(float) @ fn) * fn
+        ln = float(v @ v)
+        if ln > 1e-9:
+            cands.append((ln, v))
+    cands.sort(key=lambda t: t[0])
+    b1 = cands[0][1]
+    b2 = cands[-1][1]
+    for _ln, v in cands[1:]:
+        if np.linalg.norm(np.cross(b1, v)) > 1e-9:
+            b2 = v
+            break
+    return np.stack([b1, b2], axis=1)
+
+
+def _strut_family_widths(
+    n: int,
+    d: np.ndarray,
+    dirs: np.ndarray | None,
+    frames: tuple[np.ndarray, np.ndarray] | None,
+    fams: np.ndarray,
+) -> np.ndarray:
+    """(n, nfam) per-family rod half-widths in units of half the period.
+
+    - `frames` = (evals, evecs): tensor-projected weight
+      ``w_f² = clip(d,0,1) · Σ_i|λ_i|(f·v_i)² / max(Σ_i|λ_i|, 1e-12)`` —
+      the family aligned with the dominant principal direction carries most
+      of the local density, and a bi-axial stress state thickens two
+      families honestly. Degenerate cells (Σ|λ| <= 1e-12) split evenly:
+      ``w_f = sqrt(d / nfam)``.
+    - `dirs` (legacy uniaxial): ``w_f = |f·d_unit|·sqrt(d)`` — the special
+      case of the frame formula for a single eigenpair; zero-length rows
+      fall back to the isotropic (1,1,1)/√3 direction.
+    - neither: the isotropic blend ``w_f = sqrt(d / nfam)``.
+    """
+    nfam = fams.shape[0]
+    dc = np.clip(d, 0.0, 1.0)
+    w = np.empty((n, nfam))
+    if frames is not None:
+        evals = np.asarray(frames[0], dtype=float).reshape(n, 3)
+        evecs = np.asarray(frames[1], dtype=float).reshape(n, 3, 3)
+        lam = np.abs(evals)
+        tsum = lam.sum(axis=1)
+        deg = tsum <= 1e-12
+        for fi in range(nfam):
+            pr = evecs @ fams[fi]  # (n,3): (f·v_i) per eigenpair
+            w2 = dc * (lam * pr * pr).sum(axis=1) / np.maximum(tsum, 1e-12)
+            w[:, fi] = np.sqrt(np.clip(w2, 0.0, None))
+        w[deg] = np.sqrt(dc / nfam)[deg][:, None]
+    elif dirs is not None:
+        v = np.asarray(dirs, dtype=float).reshape(n, 3)
+        vn = np.linalg.norm(v, axis=1)
+        iso = np.full(3, 1.0 / math.sqrt(3.0))
+        uvec = np.where(vn[:, None] > 1e-9, v / np.maximum(vn[:, None], 1e-30), iso)
+        for fi in range(nfam):
+            w[:, fi] = np.abs(uvec @ fams[fi]) * np.sqrt(dc)
+    else:
+        w[:] = np.sqrt(dc / nfam)[:, None]
+    return np.clip(w, 0.0, 1.0)
+
+
+def _strut_family_dists(
+    centers: np.ndarray, p: float, fams: np.ndarray
+) -> np.ndarray:
+    """(n, nfam) normalized distance to the nearest strut line per family —
+    0 on a strut axis, 1 at the in-plane mid-point between struts. Axis
+    families use the square-rod Chebyshev distance on the p-grid; diagonal
+    families the Euclidean distance to the projected integer lattice
+    proj_{f⊥}(Z³) (triangular for body diagonals), expressed in the same
+    half-period units."""
+    n = centers.shape[0]
+    dists = np.empty((n, fams.shape[0]))
+    for fi in range(fams.shape[0]):
+        f = fams[fi]
+        if fi < 3:
+            o0, o1 = tuple(i for i in range(3) if i != fi)
+            dists[:, fi] = np.maximum(
+                _line_dist(centers[:, o0], p), _line_dist(centers[:, o1], p)
+            )
+        else:
+            xu = centers / p  # period units
+            xp = xu - (xu @ f)[:, None] * f[None, :]
+            B = _perp_lattice_basis(f)  # (3,2)
+            c = np.linalg.lstsq(B, xp.T, rcond=None)[0].T  # (n,2)
+            c0 = np.floor(c)
+            dd = np.full(n, np.inf)
+            # the 4 parallelogram corners around the lattice coords — for
+            # the triangular lattice the nearest site is always among them
+            for d1 in (0.0, 1.0):
+                for d2 in (0.0, 1.0):
+                    cand = c0 + np.array([d1, d2])
+                    dd = np.minimum(dd, np.linalg.norm(xp - cand @ B.T, axis=1))
+            dists[:, fi] = 2.0 * dd  # dist/(p/2) expressed in period units
+    return dists
+
+
 def strut_occupancy(
     domain: VoxelDomain,
     d_target: np.ndarray,
-    dirs: np.ndarray,
-    cell_mm: float,
+    dirs: np.ndarray | None = None,
+    cell_mm: float = 8.0,
     *,
+    frames: tuple[np.ndarray, np.ndarray] | None = None,
     margin_cells: int = 1,
     phase_mm: np.ndarray | None = None,
+    octet: bool = True,
+    normalize: bool = True,
 ) -> np.ndarray:
-    """(nx,ny,nz) bool — direction-weighted strut lattice (stage-2).
+    """(nx,ny,nz) bool — direction/frame-weighted strut lattice.
 
-    Three orthogonal strut families — square rods along x, y, z on a
-    cell_mm grid — are superposed by max. Per cell, family a's rod
-    half-width is w_a = |dir_a|·sqrt(d) (in units of half the period), so a
-    purely x-directed stress state grows only x-struts at occupancy ≈ d and
-    a general direction gets the thickest member along its dominant axis.
-    `dirs` is the (ncells,3) principal-direction field from
-    `element_principal_dirs`; zero-length rows fall back to an isotropic
-    (1,1,1)/√3 blend.
+    Strut families — the 3 axis rods plus the 4 body-diagonal rods when
+    `octet` — are superposed by max; per-cell rod half-widths come from
+    `_strut_family_widths` (tensor-projected frame weights, uniaxial `dirs`
+    legacy, or the isotropic blend).
 
-    Documented limits (best-effort stage): principal directions snap to
-    grid axes — a 45° stress state builds stair-stepped x/y struts rather
-    than true diagonal members; rod intersections overfill locally (the
-    Σw² superposition beats the d target by up to ~3x at nodes); lattice
-    connectivity comes from family overlap plus the same bonding band the
-    gyroid uses, not from explicit node placement.
+    `normalize` rescales ALL widths by one bisected global factor so the
+    measured interior occupancy meets the target mean — the Σw² union
+    superposition overfills intersections ~3x otherwise. Applied before the
+    bonding band; `margin_cells`/`phase_mm`/`full`-pin/`d>0` semantics are
+    identical to the axis-only version.
     """
     centers = domain.element_centers()
     if phase_mm is not None:
         centers = centers + np.asarray(phase_mm, dtype=float)[None, :]
     d = np.asarray(d_target, dtype=float).ravel()
-    v = np.asarray(dirs, dtype=float).reshape(-1, 3)
-    vn = np.linalg.norm(v, axis=1)
-    iso = np.full(3, 1.0 / math.sqrt(3.0))
-    uvec = np.where(vn[:, None] > 1e-9, v / np.maximum(vn[:, None], 1e-30), iso)
-    width = np.abs(uvec) * np.sqrt(np.clip(d, 0.0, 1.0))[:, None]  # (n,3)
-
+    n = domain.cell_count
+    fams = _strut_families(octet)
     p = max(float(cell_mm), 1e-6)
-    occ = np.zeros(domain.cell_count, dtype=bool)
-    for ax in range(3):
-        o0, o1 = tuple(i for i in range(3) if i != ax)
-        saw = np.maximum(
-            _line_dist(centers[:, o0], p), _line_dist(centers[:, o1], p)
-        )  # 0 on a strut line along `ax`
-        occ |= saw <= np.clip(width[:, ax], 0.0, 1.0)
+
+    w = _strut_family_widths(n, d, dirs, frames, fams)
+    dists = _strut_family_dists(centers, p, fams)
+
+    # ---- optional global width normalization ----------------------------
+    # the union superposition overshoots Σw²; a single bisected multiplier
+    # pulls the measured interior fraction back onto the target mean
+    scale = 1.0
+    graded = (d > 0.0) & (d < _FULL_DENSITY)
+    gidx = np.flatnonzero(graded)
+    if normalize and gidx.size:
+        target = float(d[gidx].mean())
+        if target > 0.0:
+            wd = w[gidx]
+            dd = dists[gidx]
+
+            def _frac(s: float) -> float:
+                return float((dd <= np.clip(s * wd, 0.0, 1.0)).any(axis=1).mean())
+
+            lo_s, hi_s = 0.0, 1.0
+            while _frac(hi_s) < target and hi_s < 16.0:
+                hi_s *= 2.0
+            for _ in range(5):
+                mid = 0.5 * (lo_s + hi_s)
+                if _frac(mid) < target:
+                    lo_s = mid
+                else:
+                    hi_s = mid
+            # quantized occupancy: pick whichever bracket lands closer to
+            # the target (a coarse grid can only step in whole cell rings)
+            scale = lo_s if abs(_frac(lo_s) - target) <= abs(_frac(hi_s) - target) else hi_s
+    occ = (dists <= np.clip(scale * w, 0.0, 1.0)).any(axis=1)
+
     full = d >= _FULL_DENSITY
     occ = (occ | full) & (d > 0.0)
     occ |= _bonding_band(full, domain.dims, margin_cells) & (d > 0.0)
     return np.asarray(occ.reshape(domain.dims))
+
+
+def strut_alignment_deg(
+    domain: VoxelDomain,
+    occ3: np.ndarray,
+    evals: np.ndarray,
+    evecs: np.ndarray,
+    *,
+    octet: bool = True,
+) -> dict[str, float | None]:
+    """Alignment error of the built lattice vs the target stress frame.
+
+    For each occupied, non-degenerate cell the achieved dominant strut is
+    the family direction closest to the target dominant principal axis v1;
+    the error is the unsigned angle between them (deg). Returns
+    {"mean", "p95"} over the measured cells — None entries when no cell
+    qualifies (no occupied lattice or all frames degenerate)."""
+    occ = np.asarray(occ3, dtype=bool).ravel()
+    ev = np.asarray(evals, dtype=float).reshape(-1, 3)
+    V = np.asarray(evecs, dtype=float).reshape(-1, 3, 3)
+    good = occ & (np.max(np.abs(ev), axis=1) > 1e-12)
+    if not good.any():
+        return {"mean": None, "p95": None}
+    v1 = V[good, :, 2]  # dominant eigenvector (ascending eval order)
+    fams = _strut_families(octet)
+    cos = np.clip(np.abs(v1 @ fams.T).max(axis=1), -1.0, 1.0)
+    err = np.degrees(np.arccos(cos))
+    return {"mean": float(err.mean()), "p95": float(np.quantile(err, 0.95))}
 
 
 # --------------------------------------------------------------------------- #
@@ -423,15 +724,27 @@ def infill_field(
     guide_mask: np.ndarray | None = None,
     weights: np.ndarray | list[float] | None = None,
     density_offset: float = 0.0,
+    frames: tuple[np.ndarray, np.ndarray] | None = None,
+    fields_out: dict[str, Any] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     """Build the shell+infill density field and occupancy mask.
 
     interior = solid - skin - passive - void (and ∩ guide_mask when
     scope="guided"); the skin is the padded-EDT band `_skin_mask` at the
     resolved shell_mm, `energies` is one (ncells,) array per load case from
-    `element_strain_energy`, `dirs` the matching principal-direction field
-    (required for style="struts_aligned" — without it the style falls back
-    to "gyroid_graded" and the fallback is reported in meta).
+    `element_strain_energy`, `dirs` the matching principal-direction field.
+
+    For style="struts_aligned" either `frames` — the combined
+    (evals, evecs) field from `element_principal_frames` /
+    `combine_stress_frames` — or `dirs` is required; with neither the style
+    falls back to "gyroid_graded" (reported in meta). `frames` takes the
+    tensor-projected family path in `strut_occupancy`; `dirs` stays the
+    meta/fallback driver.
+
+    `fields_out` (optional dict) receives the internal fields the
+    homogenized-verification path needs: ``d`` (post-offset target
+    density), ``interior`` (flat bool, post guide-intersection) and
+    ``occ3`` (flat bool, final lattice occupancy).
 
     mask = (skin | occupancy | passive) & ~void & solid — void wins over
     every pin (a declared carve opens the shell deliberately). Cells of the
@@ -482,12 +795,18 @@ def infill_field(
 
     phase = _seed_phase(p.seed, p.infill_cell_mm)
     style = p.style
-    if style == "struts_aligned" and dirs is None:
+    if style == "struts_aligned" and dirs is None and frames is None:
         log.warning("infill.struts_no_dirs", fallback="gyroid_graded")
         style = "gyroid_graded"
     if style == "struts_aligned":
         occ = strut_occupancy(
-            domain, d, np.asarray(dirs, dtype=float), p.infill_cell_mm, phase_mm=phase
+            domain,
+            d,
+            None if dirs is None else np.asarray(dirs, dtype=float),
+            p.infill_cell_mm,
+            frames=frames,
+            phase_mm=phase,
+            octet=p.octet,
         )
     else:
         occ = gyroid_occupancy(domain, d, p.infill_cell_mm, phase_mm=phase)
@@ -511,6 +830,32 @@ def infill_field(
     mask = np.asarray((skin | occ3 | pas3) & ~vod3 & solid3)
     rho = mask.ravel().astype(np.float32)
 
+    # achieved-vs-target alignment of the strut lattice — scored on the
+    # same family set the occupancy was built from; dirs only get a
+    # synthesized uniaxial frame when no tensor frame was fed in
+    align_deg: float | None = None
+    if style == "struts_aligned":
+        if frames is not None:
+            fa_e = np.asarray(frames[0], dtype=float)
+            fa_v = np.asarray(frames[1], dtype=float)
+        else:
+            vv = np.asarray(dirs, dtype=float).reshape(-1, 3)
+            vn = np.linalg.norm(vv, axis=1)
+            fa_e = np.zeros((domain.cell_count, 3))
+            fa_e[:, 2] = (vn > 1e-9).astype(float)
+            fa_v = np.zeros((domain.cell_count, 3, 3))
+            fa_v[:, :, 2] = np.where(
+                vn[:, None] > 1e-9, vv / np.maximum(vn[:, None], 1e-30), 0.0
+            )
+        align_deg = strut_alignment_deg(domain, occ3, fa_e, fa_v, octet=p.octet)["mean"]
+
+    if fields_out is not None:
+        fields_out.update(
+            d=d,
+            interior=interior.ravel(),
+            occ3=occ3.ravel(),
+        )
+
     di = d[interior.ravel()]
     meta: dict[str, Any] = {
         "style": style,
@@ -532,6 +877,8 @@ def infill_field(
         "infill_occupancy": round(float(occ3.sum() / max(int(interior.sum()), 1)), 4),
         "dropped_lattice_cells": dropped_islands,
         "volfrac_estimate": round(float(mask.sum() / max(domain.solid_count, 1)), 4),
+        "families": (7 if p.octet else 3) if style == "struts_aligned" else None,
+        "strut_align_deg": round(align_deg, 2) if align_deg is not None else None,
     }
     log.info(
         "infill.field",

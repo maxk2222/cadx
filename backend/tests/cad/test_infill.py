@@ -18,16 +18,19 @@ from scipy import ndimage
 from cadx.cad.fem.infill import (
     InfillParams,
     _skin_mask,
+    combine_stress_frames,
     element_principal_dirs,
+    element_principal_frames,
     element_strain_energy,
     gyroid_occupancy,
     infill_field,
+    strut_alignment_deg,
     strut_occupancy,
     target_density,
 )
 from cadx.cad.fem.regions import resolve_case_dofs
-from cadx.cad.fem.solver import assemble, reduce_case, solve_reduced
-from cadx.cad.fem.voxelize import voxelize
+from cadx.cad.fem.solver import _D, assemble, reduce_case, solve_reduced
+from cadx.cad.fem.voxelize import VoxelDomain, voxelize
 from cadx.llm.schemas import LoadCase, LoadSpec, RegionSpec
 
 E_PLA = 3500.0
@@ -569,3 +572,210 @@ def test_infill_mask_verifies_under_fem(solved_cantilever) -> None:
     c = rep.cases[0]
     assert c.safety_factor is not None
     assert c.max_disp_mm > 0
+
+
+# --------------------------------------------------------------------------- #
+# principal-stress frames                                                     #
+# --------------------------------------------------------------------------- #
+
+
+def test_element_principal_frames_shapes(solved_cantilever) -> None:
+    """(evals (n,3) ascending, evecs (n,3,3) orthonormal columns) — and the
+    dominant eigvec agrees with element_principal_dirs everywhere stress
+    is non-degenerate."""
+    dom, _case, sol, edof, active, elem_E = solved_cantilever
+    evals, evecs = element_principal_frames(dom, sol.u, edof, active, elem_E, NU)
+    assert evals.shape == (dom.cell_count, 3)
+    assert evecs.shape == (dom.cell_count, 3, 3)
+    sa = evals[dom.solid.ravel()]
+    assert (np.diff(sa, axis=1) >= -1e-9).all()  # ascending order
+    V = evecs[dom.solid.ravel()]
+    np.testing.assert_allclose(
+        V.transpose(0, 2, 1) @ V, np.broadcast_to(np.eye(3), V.shape), atol=1e-6
+    )
+    # dominant eigenvector matches the dirs field (sign canonicalized)
+    dirs = element_principal_dirs(dom, sol.u, edof, active, elem_E, NU)
+    k = np.argmax(np.abs(sa), axis=1)
+    v1 = V[np.arange(V.shape[0]), :, k]
+    hot = np.abs(sa[np.arange(sa.shape[0]), k]) > 1e-9
+    np.testing.assert_allclose(v1[hot], dirs[dom.solid.ravel()][hot], atol=1e-6)
+    assert not evals[~dom.solid.ravel()].any()
+    assert not evecs[~dom.solid.ravel()].any()
+
+
+def test_combine_stress_frames_weighted_dominance() -> None:
+    """Tensor-weighted merge: the heavier case keeps the dominant axis;
+    equal weights produce a genuinely bi-axial frame (two equal evals)."""
+    n = 8
+    e = np.zeros((n, 3))
+    e[:, 2] = 1.0  # unit dominant eigenvalue
+    vA = np.broadcast_to(
+        np.array([[0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]), (n, 3, 3)
+    ).copy()  # columns y, z, x -> dominant +x
+    vB = np.broadcast_to(np.eye(3), (n, 3, 3)).copy()  # dominant +z
+
+    ev, V = combine_stress_frames([(e, vA), (e, vB)], [1.0, 0.2])
+    np.testing.assert_allclose(np.abs(V[:, :, 2] @ np.array([1.0, 0.0, 0.0])), 1.0, atol=1e-8)
+    np.testing.assert_allclose(ev[:, 2], 1.0, atol=1e-9)
+    np.testing.assert_allclose(ev[:, 1], 0.2, atol=1e-9)
+
+    ev2, _ = combine_stress_frames([(e, vA), (e, vB)], [1.0, 1.0])
+    np.testing.assert_allclose(ev2[:, 1], ev2[:, 2], atol=1e-9)  # bi-axial
+
+    # a zero-weighted frame contributes nothing
+    ev3, V3 = combine_stress_frames([(e, vA)], [0.0])
+    assert not ev3.any()
+    np.testing.assert_allclose(V3, np.broadcast_to(np.eye(3), (n, 3, 3)))
+
+
+# --------------------------------------------------------------------------- #
+# octet strut lattice                                                         #
+# --------------------------------------------------------------------------- #
+
+
+def _full_domain(v: int = 24) -> VoxelDomain:
+    return VoxelDomain(
+        origin=np.zeros(3),
+        pitch=1.0,
+        dims=(v, v, v),
+        solid=np.ones((v, v, v), dtype=bool),
+    )
+
+
+def test_strut_occupancy_octet_body_diagonal() -> None:
+    """A (1,1,1)/sqrt3 target direction: the octet body-diagonal family
+    matches it exactly — the 3 axis-only families sit 54.7 deg off."""
+    dom = _full_domain(24)
+    n = dom.cell_count
+    d = np.full(n, 0.4)
+    diag = np.full(3, 1.0 / math.sqrt(3.0))
+    dirs = np.tile(diag, (n, 1))
+    e = np.zeros((n, 3))
+    e[:, 2] = 1.0
+    V = np.zeros((n, 3, 3))
+    V[:, :, 2] = diag
+
+    for octet, want in ((True, 0.0), (False, math.degrees(math.acos(1 / math.sqrt(3.0))))):
+        occ = strut_occupancy(dom, d, dirs, 12.0, margin_cells=0, octet=octet)
+        rep = strut_alignment_deg(dom, occ, e, V, octet=octet)
+        assert rep["mean"] == pytest.approx(want, abs=1.0)
+        assert rep["p95"] == pytest.approx(want, abs=1.0)
+
+
+def test_strut_occupancy_normalize_hits_target() -> None:
+    """The 7-family union overfills without normalization — the bisected
+    global width scale must pull measured occupancy onto the target mean.
+    (A graded density field: uniform d on a commensurate grid only offers
+    two coarse occupancy levels, so the check needs spatial variation.)"""
+    dom = _full_domain(24)
+    n = dom.cell_count
+    x = np.indices(dom.dims)[0].ravel()
+    d = np.where(x < 12, 0.55, 0.15)  # graded halves, mean 0.35
+    evals = np.ones((n, 3))  # hydrostatic -> every family equally weighted
+    evecs = np.broadcast_to(np.eye(3), (n, 3, 3)).copy()
+
+    kw = dict(frames=(evals, evecs), octet=True, margin_cells=0)
+    raw = strut_occupancy(dom, d, None, 8.0, normalize=False, **kw)
+    norm = strut_occupancy(dom, d, None, 8.0, normalize=True, **kw)
+    g = (d > 0) & (d < 0.995)
+    fr_raw = float(raw.ravel()[g].mean())
+    fr_norm = float(norm.ravel()[g].mean())
+    assert fr_raw > 1.5 * fr_norm  # union superposition overfills hard
+    assert fr_norm == pytest.approx(float(d[g].mean()), abs=0.08)
+
+
+# --------------------------------------------------------------------------- #
+# frames-driven orchestration                                                 #
+# --------------------------------------------------------------------------- #
+
+
+def test_infill_field_frames_path_meta(solved_cantilever) -> None:
+    """frames= drives struts_aligned through the tensor-projected family
+    path — meta reports the octet family count and an alignment score."""
+    dom, _case, sol, edof, active, elem_E = solved_cantilever
+    w = element_strain_energy(dom, sol.u, edof, active, elem_E, NU)
+    ev, V = element_principal_frames(dom, sol.u, edof, active, elem_E, NU)
+    _rho, mask, meta = infill_field(
+        dom,
+        InfillParams(style="struts_aligned", shell_mm=2.0, infill_cell_mm=8.0),
+        [w],
+        None,
+        None,
+        None,
+        frames=(ev, V),
+    )
+    assert meta["style"] == "struts_aligned"
+    assert meta["families"] == 7
+    assert meta["strut_align_deg"] is not None
+    assert mask.any() and mask.sum() < dom.solid_count
+    assert not _air_leak_cells(mask, dom.solid).any()
+
+    _r2, _m2, meta3 = infill_field(
+        dom,
+        InfillParams(
+            style="struts_aligned", shell_mm=2.0, infill_cell_mm=8.0, octet=False
+        ),
+        [w],
+        None,
+        None,
+        None,
+        frames=(ev, V),
+    )
+    assert meta3["families"] == 3
+
+
+def test_infill_field_fields_out(solved_cantilever) -> None:
+    """fields_out receives the internal (d, interior, occ3) the
+    homogenized-verification path needs — flat, cell-ordered."""
+    dom, _case, sol, edof, active, elem_E = solved_cantilever
+    w = element_strain_energy(dom, sol.u, edof, active, elem_E, NU)
+    fo: dict = {}
+    _rho, mask, _meta = infill_field(
+        dom, InfillParams(shell_mm=2.0, infill_cell_mm=8.0),
+        [w], None, None, None, fields_out=fo,
+    )
+    assert set(fo) >= {"d", "interior", "occ3"}
+    assert fo["d"].shape == (dom.cell_count,)
+    assert fo["interior"].dtype == bool and fo["interior"].shape == (dom.cell_count,)
+    assert fo["occ3"].dtype == bool and fo["occ3"].shape == (dom.cell_count,)
+    # the occupancy is exactly what landed in the mask interior
+    np.testing.assert_array_equal(fo["occ3"].reshape(dom.dims) & ~_skin_mask(dom, 2.0),
+                                  mask & ~_skin_mask(dom, 2.0))
+
+
+# --------------------------------------------------------------------------- #
+# aniso / class-D strain energy                                               #
+# --------------------------------------------------------------------------- #
+
+
+def test_element_strain_energy_aniso_and_class_consistency() -> None:
+    """w_e must be computed with the SAME ke the solve used: an aniso K
+    summed via the aniso path gives u'F exactly, and a single-class table
+    wrapping the same D reproduces both the matrix and the energy."""
+    dom = voxelize(_box_mesh(30.0, 12.0, 12.0), 3.0, 150_000)
+    case = _cantilever_case()
+    fixed3, F, _w = resolve_case_dofs(dom, case)
+    elem_E = np.where(dom.solid.ravel(), E_PLA, 0.0)
+    aniso = (0.6, 2)
+    K, edof, active = assemble(dom, elem_E, NU, aniso=aniso)
+    ctx = reduce_case(dom, K, edof, fixed3)
+    sol = solve_reduced(dom, ctx, edof, active, F, elem_E, NU, aniso=aniso)
+    assert sol.converged
+    w = element_strain_energy(dom, sol.u, edof, active, elem_E, NU, aniso=aniso)
+    assert w.sum() == pytest.approx(sol.compliance_j, rel=1e-4)
+
+    # the iso-computed energy on the same field differs — aniso ke is a
+    # genuinely different element stiffness, not a relabel
+    w_iso = element_strain_energy(dom, sol.u, edof, active, elem_E, NU)
+    assert not np.allclose(w_iso, w, rtol=1e-3)
+
+    # identical tensor expressed as a one-entry class table -> same K, same w
+    ec = np.zeros(dom.cell_count, dtype=np.int64)
+    cd = _D(NU, 0.6, 2)[None]
+    K2, _, _ = assemble(dom, elem_E, NU, elem_class=ec, class_D=cd)
+    assert (K - K2).nnz == 0
+    w2 = element_strain_energy(
+        dom, sol.u, edof, active, elem_E, NU, elem_class=ec, class_D=cd
+    )
+    np.testing.assert_allclose(w2, w, rtol=1e-10)
+    assert w2.sum() == pytest.approx(sol.compliance_j, rel=1e-4)

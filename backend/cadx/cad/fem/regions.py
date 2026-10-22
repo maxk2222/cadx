@@ -895,6 +895,48 @@ def material_cell_factors(
     return factors
 
 
+def material_cell_classes(
+    domain: VoxelDomain,
+    keep_regions: list[RegionSpec],
+    anchors: list[dict] | None,
+) -> tuple[np.ndarray | None, list[np.ndarray]]:
+    """Per-class constitutive split of the material zones.
+
+    Companion to `material_cell_factors`: a keep-region with `material` set
+    overrides E inside the region (the factor path) AND carries its own
+    Poisson ratio, which the single-D recovery cannot express (a steel
+    insert in PLA under-reads its von Mises by orders of magnitude with the
+    base matrix). Each DISTINCT resolved material — deduped on its
+    (E, nu) pair — becomes one class.
+
+    Returns ``(zone_cls, class_Ds)``: ``zone_cls`` is (ncells,) int32, -1
+    outside every material zone and 0..k-1 inside (last region wins on
+    overlap); ``class_Ds`` is the list of unit-E ``_D(nu_zone)`` matrices,
+    one per class. ``(None, [])`` when no region declares a material.
+    """
+    from cadx.cad.fem.materials import resolve_material
+    from cadx.cad.fem.solver import _D
+
+    zone_cls = np.full(domain.cell_count, -1, dtype=np.int32)
+    class_Ds: list[np.ndarray] = []
+    seen: dict[tuple[float, float], int] = {}
+    for r in keep_regions or []:
+        if not getattr(r, "material", None):
+            continue
+        mat = resolve_material(r.material)
+        key = (float(mat.elastic_modulus_mpa), float(mat.poisson))
+        idx = seen.get(key)
+        if idx is None:
+            idx = len(class_Ds)
+            seen[key] = idx
+            class_Ds.append(_D(float(mat.poisson)))
+        cells = region_cell_mask(domain, r, anchors).ravel()
+        zone_cls[cells] = idx
+    if not class_Ds:
+        return None, []
+    return zone_cls, class_Ds
+
+
 def keep_element_mask(
     domain: VoxelDomain, regions: list[RegionSpec], anchors: list[dict] | None = None
 ) -> np.ndarray:

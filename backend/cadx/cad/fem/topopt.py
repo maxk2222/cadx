@@ -1658,28 +1658,22 @@ def _element_vm(
     E_per_cell: np.ndarray,
     nu: float,
     aniso: tuple[float, float] | None = None,
+    *,
+    elem_class: np.ndarray | None = None,
+    class_D: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Centroid von-Mises per cell + per-element stress vector.
 
     Returns (vm(ncells), sig(ncells,6), deps_due(ncells,6,24)) — sig computed
     with the UNRELAXED modulus E_per_cell so the qp-relaxation can be applied
-    on top."""
+    on top. When `class_D` is given each element uses ``E_e·class_D[cls_e]``
+    (and `aniso` is ignored — baked into class_D[0]); otherwise the single-D
+    path is unchanged."""
     from cadx.cad.fem.solver import _B0, _D
 
     B0 = _B0(domain.pitch)
-    Dm = _D(nu) if aniso is None else _D(nu, float(aniso[0]), int(aniso[1]))
     ue = u[edof]  # (ncells, 24)
     eps = ue @ B0.T  # (ncells, 6)
-    sig = eps @ Dm.T * E_per_cell[:, None]
-    sx, sy, sz, txy, tyz, tzx = sig.T
-    vm = np.sqrt(
-        np.clip(
-            sx**2 + sy**2 + sz**2 - sx * sy - sy * sz - sz * sx + 3 * (txy**2 + tyz**2 + tzx**2),
-            0.0,
-            None,
-        )
-    )
-    # dvm/due = ((Vm @ sig)ᵀ D E0 B0) / vm — Vm the von-Mises coupling matrix
     Vm = np.array(
         [
             [1.0, -0.5, -0.5, 0, 0, 0],
@@ -1690,10 +1684,34 @@ def _element_vm(
             [0, 0, 0, 0, 0, 3.0],
         ]
     )
-    dvm_dsig = sig @ Vm.T  # (ncells, 6)
+    sig = np.empty((eps.shape[0], 6))
+    dvm_dsig_D = np.empty((eps.shape[0], 6))  # (Vm sig)ᵀ D per element
+    if class_D is not None:
+        class_D = np.asarray(class_D, dtype=float)
+        cls = np.asarray(elem_class, dtype=np.int64).ravel()
+        # dvm/due needs (Vm·sig)ᵀ·D — compute sig first, then the product
+        for c in range(class_D.shape[0]):
+            sel = cls == c
+            if not sel.any():
+                continue
+            sig[sel] = (eps[sel] @ class_D[c].T) * E_per_cell[sel, None]
+            dvm_dsig_D[sel] = (sig[sel] @ Vm.T) @ class_D[c].T
+    else:
+        Dm = _D(nu) if aniso is None else _D(nu, float(aniso[0]), int(aniso[1]))
+        sig = eps @ Dm.T * E_per_cell[:, None]
+        dvm_dsig_D = (sig @ Vm.T) @ Dm.T
+    sx, sy, sz, txy, tyz, tzx = sig.T
+    vm = np.sqrt(
+        np.clip(
+            sx**2 + sy**2 + sz**2 - sx * sy - sy * sz - sz * sx + 3 * (txy**2 + tyz**2 + tzx**2),
+            0.0,
+            None,
+        )
+    )
+    # dvm/due = ((Vm @ sig)ᵀ D E0 B0) / vm — Vm the von-Mises coupling matrix
     safe = np.clip(vm, 1e-12, None)
     # (Vm sig)^T D — per element then ·B0 -> (ncells, 24); E0 scales sig+deriv
-    dsig_due = (E_per_cell[:, None] * (dvm_dsig @ Dm.T) / safe[:, None]) @ B0
+    dsig_due = (E_per_cell[:, None] * dvm_dsig_D / safe[:, None]) @ B0
     return vm, sig, dsig_due
 
 

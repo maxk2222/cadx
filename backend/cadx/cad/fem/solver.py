@@ -110,19 +110,26 @@ def _D(nu: float, aniso_z: float = 1.0, axis: int = 2) -> np.ndarray:
     return S @ D @ S
 
 
-@lru_cache(maxsize=64)
-def _ke_unit(nu: float, pitch: float, aniso_z: float = 1.0, axis: int = 2) -> np.ndarray:
-    """Element stiffness for E=1, uniform cube of edge `pitch`.
-
-    Memoized — pure function of (nu, pitch, aniso_z, axis); the returned
-    matrix is shared, callers must treat it as read-only."""
-    D = _D(nu, aniso_z, axis)
+def _ke_from_D(D: np.ndarray, pitch: float) -> np.ndarray:
+    """Element stiffness for an explicit constitutive matrix, uniform cube
+    of edge `pitch` — the Gauss loop of `_ke_unit` factored out so per-class
+    stiffness tables can be built for any D (material zones, homogenized
+    lattice tensors) without going through (nu, aniso)."""
     detJ = (pitch / 2.0) ** 3
     ke = np.zeros((24, 24))
     for xi, eta, zeta in _GAUSS:
         B = _B_matrix(_dshape(xi, eta, zeta) * (2.0 / pitch))
         ke += B.T @ D @ B * detJ
     return ke
+
+
+@lru_cache(maxsize=64)
+def _ke_unit(nu: float, pitch: float, aniso_z: float = 1.0, axis: int = 2) -> np.ndarray:
+    """Element stiffness for E=1, uniform cube of edge `pitch`.
+
+    Memoized — pure function of (nu, pitch, aniso_z, axis); the returned
+    matrix is shared, callers must treat it as read-only."""
+    return _ke_from_D(_D(nu, aniso_z, axis), pitch)
 
 
 def _B0(pitch: float) -> np.ndarray:
@@ -224,6 +231,8 @@ def assemble(
     ij: tuple[np.ndarray, np.ndarray] | None = None,
     *,
     aniso: tuple[float, float] | None = None,
+    elem_class: np.ndarray | None = None,
+    class_D: np.ndarray | None = None,
 ) -> tuple[sparse.csr_matrix, np.ndarray, np.ndarray]:
     """Assemble K over selected cells.
 
@@ -234,10 +243,18 @@ def assemble(
     `ij` may carry a precomputed (iK, jK) sparsity pattern — valid only when
     `cell_mask` selects the same cells it was built for (SIMP assembles ALL
     cells every iteration, so the pattern is constant and caching it skips an
-    O(nelem·576) index build per solve).
+    O(nelem·576) index build per solve). The pattern only depends on the
+    mask, so it stays valid when `class_D` swaps stiffness VALUES.
 
     `aniso` = (k, axis) applies the FDM layer-weakening factor to the
     element stiffness (see _D); None assembles the isotropic ke.
+
+    `class_D` (ncls,6,6) assembles a per-class stiffness table: element e
+    gets ``elem_E[e] * _ke_from_D(class_D[cls_e], pitch)`` with cls_e =
+    ``elem_class[e]``. This is how material zones (different Poisson ratio)
+    and homogenized infill (different effective tensor) enter the solve —
+    a single D cannot represent them. When `class_D` is given `aniso` is
+    ignored (the caller already baked it into class_D[0]).
     """
     mask = domain.solid.ravel() if cell_mask is None else np.asarray(cell_mask).ravel()
     active = np.flatnonzero(mask)
@@ -245,18 +262,38 @@ def assemble(
     # memoized, so repeated assembles (one per SIMP iteration, one per FEM
     # load case) only pay the COO value fill
     edof = domain_edof(domain)[active]
-    ke = (
-        _ke_unit(nu, domain.pitch)
-        if aniso is None
-        else _ke_unit(nu, domain.pitch, float(aniso[0]), int(aniso[1]))
-    )
+
+    ke_table: np.ndarray | None = None
+    if class_D is not None:
+        class_D = np.asarray(class_D, dtype=float)
+        if elem_class is None:
+            raise ValueError("class_D requires elem_class (per-cell class index)")
+        cls = np.asarray(elem_class, dtype=np.int64).ravel()
+        if cls.shape != (domain.cell_count,):
+            raise ValueError(
+                f"elem_class must have shape ({domain.cell_count},), got {cls.shape}"
+            )
+        ncls = int(class_D.shape[0])
+        if ncls < 1 or cls.min(initial=0) < 0 or cls.max(initial=0) >= ncls:
+            raise ValueError(f"elem_class values must lie in [0, {ncls})")
+        ke_table = np.stack([_ke_from_D(D_k, domain.pitch) for D_k in class_D])
+        cls_active = cls[active]
+    else:
+        ke = (
+            _ke_unit(nu, domain.pitch)
+            if aniso is None
+            else _ke_unit(nu, domain.pitch, float(aniso[0]), int(aniso[1]))
+        )
 
     if ij is None:
         iK = np.repeat(edof, 24, axis=1).ravel()
         jK = np.tile(edof, (1, 24)).ravel()
     else:
         iK, jK = ij
-    sK = (elem_E[active][:, None, None] * ke[None]).reshape(-1)
+    if ke_table is not None:
+        sK = (elem_E[active][:, None, None] * ke_table[cls_active]).reshape(-1)
+    else:
+        sK = (elem_E[active][:, None, None] * ke[None]).reshape(-1)
     K = sparse.coo_matrix(
         (sK, (iK, jK)), shape=(3 * domain.node_count, 3 * domain.node_count)
     ).tocsr()
@@ -595,6 +632,69 @@ def reduce_case(
     return CaseSolve(free=free, Kf=Kf, factor=factor, M=M, warnings=warnings)
 
 
+def recover_elem_stress(
+    domain: VoxelDomain,
+    u: np.ndarray,
+    edof: np.ndarray,
+    active: np.ndarray,
+    elem_E: np.ndarray,
+    nu: float,
+    *,
+    aniso: tuple[float, float] | None = None,
+    E_ref: float | None = None,
+    elem_class: np.ndarray | None = None,
+    class_D: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Cell-centre stress recovery for a solved displacement field.
+
+    Returns ``(elem_vm, sig)``: ``elem_vm`` is (ncells,) von Mises per cell
+    (0 outside `active`), ``sig`` the (nact, 6) Voigt stress row per active
+    element, in the ``[sx, sy, sz, txy, tyz, tzx]`` order of ``_B_matrix``.
+
+    LEGACY PATH (``class_D`` is None): one shared constitutive matrix for
+    every element — ``sig = eps @ (D*(E_ref or max elem_E)).T`` — kept
+    byte-identical for all existing runs; per-element modulus differences
+    do NOT enter the recovered stress here.
+
+    CLASS PATH (``class_D`` given): each element uses its own tensor,
+    ``sig_e = eps_e @ (elem_E[e] * class_D[cls_e]).T``, grouped per class —
+    material zones (their own Poisson ratio) and homogenized infill need
+    this; a single D under-predicts stiff-zone stress by orders of
+    magnitude. `aniso` is ignored on this path — whoever built the table
+    already baked it into ``class_D[0]``. `elem_class` is (ncells,) int
+    with values in ``[0, len(class_D))``.
+    """
+    active = np.asarray(active, dtype=np.int64)
+    ue = np.asarray(u, dtype=float).reshape(-1)[edof]
+    eps = ue @ _B0(domain.pitch).T  # (nelem, 6)
+    if class_D is not None:
+        class_D = np.asarray(class_D, dtype=float)
+        cls = np.asarray(elem_class, dtype=np.int64).ravel()[active]
+        E = np.asarray(elem_E, dtype=float).ravel()[active]
+        sig = np.empty((active.size, 6))
+        for c in range(class_D.shape[0]):
+            sel = cls == c
+            if sel.any():
+                sig[sel] = (eps[sel] @ class_D[c].T) * E[sel, None]
+    else:
+        k_aniso, a_axis = (1.0, 2) if aniso is None else (float(aniso[0]), int(aniso[1]))
+        D = _D(nu, k_aniso, a_axis) * (
+            E_ref if E_ref is not None else float(elem_E[active].max(initial=1.0))
+        )
+        sig = eps @ D.T  # (nelem, 6)
+    sx, sy, sz, txy, tyz, tzx = sig.T
+    vm = np.sqrt(
+        np.clip(
+            sx**2 + sy**2 + sz**2 - sx * sy - sy * sz - sz * sx + 3 * (txy**2 + tyz**2 + tzx**2),
+            0.0,
+            None,
+        )
+    )
+    elem_vm = np.zeros(domain.cell_count)
+    elem_vm[active] = vm
+    return elem_vm, sig
+
+
 def solve_reduced(
     domain: VoxelDomain,
     ctx: CaseSolve,
@@ -608,11 +708,16 @@ def solve_reduced(
     E_ref: float | None = None,
     aniso: tuple[float, float] | None = None,
     solver_backend: str = "auto",
+    elem_class: np.ndarray | None = None,
+    class_D: np.ndarray | None = None,
 ) -> FemSolution:
     """Solve + post-stress for a case on its `reduce_case` context.
 
     `aniso` = (k, axis) must match the value K was assembled with — it
-    rescales the constitutive matrix used for von Mises recovery (see _D)."""
+    rescales the constitutive matrix used for von Mises recovery (see _D).
+    `elem_class`/`class_D` select the per-class constitutive path of
+    `recover_elem_stress` (must match the `assemble` inputs — `aniso` is
+    ignored while `class_D` is set since it is baked into class_D[0])."""
     warnings = list(ctx.warnings)
     free = ctx.free
     Kf = ctx.Kf
@@ -668,23 +773,18 @@ def solve_reduced(
         warnings.append("solution contains NaN/inf — likely unconstrained rigid-body modes")
 
     # element von Mises at cell centres (only for cells carrying real stiffness)
-    k_aniso, a_axis = (1.0, 2) if aniso is None else (float(aniso[0]), int(aniso[1]))
-    D = _D(nu, k_aniso, a_axis) * (
-        E_ref if E_ref is not None else float(elem_E[active].max(initial=1.0))
+    elem_vm, _sig = recover_elem_stress(
+        domain,
+        u,
+        edof,
+        active,
+        elem_E,
+        nu,
+        aniso=aniso,
+        E_ref=E_ref,
+        elem_class=elem_class,
+        class_D=class_D,
     )
-    ue = u[edof]
-    eps = ue @ _B0(domain.pitch).T  # (nelem, 6)
-    sig = eps @ D.T  # (nelem, 6)
-    sx, sy, sz, txy, tyz, tzx = sig.T
-    vm = np.sqrt(
-        np.clip(
-            sx**2 + sy**2 + sz**2 - sx * sy - sy * sz - sz * sx + 3 * (txy**2 + tyz**2 + tzx**2),
-            0.0,
-            None,
-        )
-    )
-    elem_vm = np.zeros(domain.cell_count)
-    elem_vm[active] = vm
 
     node_disp = u.reshape(-1, 3)
     disp_mag = np.linalg.norm(node_disp[used_nodes], axis=1) if used_nodes.size else [0.0]
@@ -692,7 +792,7 @@ def solve_reduced(
         u=u,
         elem_vm=elem_vm,
         node_disp=node_disp,
-        max_vm_mpa=float(vm.max(initial=0.0)),
+        max_vm_mpa=float(elem_vm.max(initial=0.0)),
         max_disp_mm=float(np.max(disp_mag)),
         compliance_j=float(F[free] @ u[free]),
         dofs=int(free.size),
@@ -714,6 +814,8 @@ def solve(
     spsolve_dofs: int = 120_000,
     E_ref: float | None = None,
     aniso: tuple[float, float] | None = None,
+    elem_class: np.ndarray | None = None,
+    class_D: np.ndarray | None = None,
 ) -> FemSolution:
     """Solve K u = F with Dirichlet BCs on `fixed_nodes`.
 
@@ -722,14 +824,31 @@ def solve(
     elem_E is per-cell Young's modulus; only `cell_mask` cells (default:
     domain.solid) carry stiffness and are solved for stress.
 
+    `elem_class`/`class_D` select the per-class constitutive path (see
+    `assemble` / `recover_elem_stress`) — material zones and homogenized
+    infill tensors; `aniso` is ignored while `class_D` is set.
+
     Single-case convenience wrapper over assemble + reduce_case +
     solve_reduced; multi-case callers should hoist `assemble` and cache
     `reduce_case` per fixed-DOF signature themselves (see
     ``analyze._solve_cases``).
     """
     mask = domain.solid.ravel() if cell_mask is None else np.asarray(cell_mask).ravel()
-    K, edof, active = assemble(domain, elem_E, nu, mask, aniso=aniso)
+    K, edof, active = assemble(
+        domain, elem_E, nu, mask, aniso=aniso, elem_class=elem_class, class_D=class_D
+    )
     ctx = reduce_case(domain, K, edof, fixed_nodes, spsolve_dofs=spsolve_dofs, aniso=aniso)
     return solve_reduced(
-        domain, ctx, edof, active, F, elem_E, nu, u0=u0, E_ref=E_ref, aniso=aniso
+        domain,
+        ctx,
+        edof,
+        active,
+        F,
+        elem_E,
+        nu,
+        u0=u0,
+        E_ref=E_ref,
+        aniso=aniso,
+        elem_class=elem_class,
+        class_D=class_D,
     )

@@ -8,6 +8,7 @@ task and by the TopOpt post-verification.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import math
 from collections.abc import Callable
 from pathlib import Path
@@ -19,8 +20,14 @@ from pydantic import BaseModel, Field, computed_field
 
 from cadx.cad import resources
 from cadx.cad.fem.materials import MaterialProps, resolve_material
-from cadx.cad.fem.regions import case_reactions, material_cell_factors, resolve_case_dofs
+from cadx.cad.fem.regions import (
+    case_reactions,
+    material_cell_classes,
+    material_cell_factors,
+    resolve_case_dofs,
+)
 from cadx.cad.fem.solver import (
+    _D,
     CaseSolve,
     FemSolution,
     _fixed_dofs,
@@ -47,6 +54,10 @@ class FemCaseResult(BaseModel):
     # applied resultant force / moment about the constraint centroid —
     # sanity check the resolved loads did what was requested
     reactions: dict = Field(default_factory=dict)
+    # homogenized-infill estimate: macro von Mises amplified by the cell's
+    # stress-localization factor A(rho) — the member-scale micro stress
+    micro_vm_mpa: float | None = None
+    safety_factor_micro: float | None = None
     vonmises_png: str | None = None
     deformed_png: str | None = None
 
@@ -56,6 +67,9 @@ class FemReport(BaseModel):
     grid: dict = Field(default_factory=dict)  # pitch, dims, elements, dofs
     cases: list[FemCaseResult] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    # "resolved" verifies the binary export mask; "homogenized" verifies
+    # the intended density field with effective lattice tensors C_H(rho)
+    model: str = "resolved"
     note: str = (
         "voxel-FEM estimate (linear elasticity, ~10-20% accuracy) — "
         "design feedback, not certification"
@@ -65,6 +79,14 @@ class FemReport(BaseModel):
     @property
     def worst_safety_factor(self) -> float | None:
         sfs = [c.safety_factor for c in self.cases if c.safety_factor is not None]
+        return min(sfs) if sfs else None
+
+    @computed_field
+    @property
+    def worst_safety_factor_micro(self) -> float | None:
+        sfs = [
+            c.safety_factor_micro for c in self.cases if c.safety_factor_micro is not None
+        ]
         return min(sfs) if sfs else None
 
 
@@ -356,24 +378,43 @@ def run_fem_domain(
     cancelled: Callable[[], bool] | None = None,
     solver_backend: str = "auto",
     fields_out: dict[str, Any] | None = None,
+    elem_class: np.ndarray | None = None,
+    class_D: np.ndarray | None = None,
+    micro_amp: np.ndarray | None = None,
+    model: str = "resolved",
 ) -> FemReport:
     """Verify a structure defined directly on an existing grid — used for
     TopOpt post-verification where re-voxelizing the smoothed export mesh
     would drop thin members.
 
+    `elem_class`/`class_D` switch assembly and stress recovery to the
+    per-class constitutive path (homogenized infill: effective lattice
+    tensors on the interior, the base material's D — aniso already baked —
+    at index 0). `micro_amp` (ncells,) scales the solved von Mises into the
+    micro/member estimate reported as `micro_vm_mpa`/`safety_factor_micro`.
+    `model` lands on `report.model` ("resolved" | "homogenized").
+
     `fields_out` (optional dict) receives the internal solve fields the
     caller may reuse without re-assembling: ``solutions`` (per-case
     FemSolution, aligned to `load_cases`, None for skipped cases), ``edof``,
-    ``active``, ``elem_E``, ``nu`` and ``aniso`` — the energy/principal-
-    direction drivers in `fem.infill` consume exactly these."""
+    ``active``, ``elem_E``, ``nu``, ``aniso``, ``elem_class`` and
+    ``class_D`` (post zone-merge) — the energy/principal-direction drivers
+    in `fem.infill` consume exactly these."""
     mat = material or resolve_material(material_name)
     report = _report_skeleton(mat)
+    report.model = model
+    sub_kw: dict[str, Any] = {}
+    if "coverage" in {f.name for f in dataclasses.fields(VoxelDomain)}:
+        # boundary-cell fill fractions (verify hardening) — copy onto the
+        # sub-domain so coverage-weighted E carries into this solve
+        sub_kw["coverage"] = getattr(domain, "coverage", None)
     sub = VoxelDomain(
         origin=domain.origin,
         pitch=domain.pitch,
         dims=domain.dims,
         solid=np.asarray(solid_mask, dtype=bool).reshape(domain.dims),
         pitch_requested=domain.pitch,
+        **sub_kw,
     )
     _solve_cases(
         sub,
@@ -391,6 +432,9 @@ def run_fem_domain(
         cancelled=cancelled,
         solver_backend=solver_backend,
         fields_out=fields_out,
+        elem_class=elem_class,
+        class_D=class_D,
+        micro_amp=micro_amp,
     )
     return report
 
@@ -415,6 +459,8 @@ def _solve_case_child(i: int) -> tuple[int, FemSolution]:
         E_ref=st["E_ref"],
         aniso=st.get("aniso"),
         solver_backend=st.get("solver_backend", "auto"),
+        elem_class=st.get("elem_class"),
+        class_D=st.get("class_D"),
     )
     return i, sol
 
@@ -435,6 +481,9 @@ def _solve_cases(  # noqa: C901
     cancelled: Callable[[], bool] | None = None,
     solver_backend: str = "auto",
     fields_out: dict[str, Any] | None = None,
+    elem_class: np.ndarray | None = None,
+    class_D: np.ndarray | None = None,
+    micro_amp: np.ndarray | None = None,
 ) -> None:
     report.grid = {
         "pitch_mm": round(domain.pitch, 4),
@@ -448,6 +497,14 @@ def _solve_cases(  # noqa: C901
         return
 
     elem_E = np.where(domain.solid.ravel(), mat.elastic_modulus_mpa, 0.0)
+    coverage = getattr(domain, "coverage", None)
+    if coverage is not None:
+        # boundary-cell fill fractions scale stiffness before zone factors —
+        # a half-filled surface cell carries half the load path area. The
+        # 5% floor keeps sliver cells (a few percent fill) from producing
+        # near-zero stiffness and an ill-conditioned/singular K while still
+        # making the boundary a soft transition.
+        elem_E = elem_E * np.clip(np.asarray(coverage, dtype=float).ravel(), 0.05, 1.0)
     if keep_regions:
         # insert/material zones: keep-regions with `material` override E
         factors = material_cell_factors(domain, keep_regions, anchors, mat.elastic_modulus_mpa)
@@ -465,6 +522,33 @@ def _solve_cases(  # noqa: C901
     ctx_cache: dict[bytes, CaseSolve] = {}
     # opt-in FDM layer weakening — None keeps the isotropic hot path identical
     aniso = (mat.aniso_z, float(mat.aniso_axis)) if mat.aniso_z != 1.0 else None
+
+    # material zones carry their own Poisson ratio: merge them into the
+    # per-class constitutive table appended after the caller's classes —
+    # class 0 stays the base material (with aniso already baked in when
+    # the caller did not supply a table)
+    if keep_regions:
+        zone_cls, zone_Ds = material_cell_classes(domain, keep_regions, anchors)
+        if zone_cls is not None:
+            ec = (
+                np.zeros(domain.cell_count, dtype=np.int64)
+                if elem_class is None
+                else np.asarray(elem_class, dtype=np.int64).ravel().copy()
+            )
+            if class_D is None:
+                k_aniso, a_axis = (1.0, 2) if aniso is None else (aniso[0], int(aniso[1]))
+                cds: list[np.ndarray] = [_D(mat.poisson, float(k_aniso), a_axis)]
+            else:
+                cds = [np.asarray(Dk, dtype=float) for Dk in class_D]
+            for zi, Dz in enumerate(zone_Ds):
+                ec[zone_cls == zi] = len(cds)
+                cds.append(Dz)
+            elem_class = ec
+            class_D = np.stack(cds)
+    if class_D is not None:
+        # whoever built the table baked aniso into class_D[0] — assemble and
+        # the stress recovery must not apply it a second time
+        aniso = None
 
     # Phase 1 — resolve regions/loads serially (cheap vs solves). Solvable
     # cases collect (sig, F); the solves themselves can then fan out.
@@ -484,7 +568,14 @@ def _solve_cases(  # noqa: C901
         if not fixed3.any() or not np.any(F):
             continue
         if asm is None:
-            asm = assemble(domain, elem_E, mat.poisson, aniso=aniso)
+            asm = assemble(
+                domain,
+                elem_E,
+                mat.poisson,
+                aniso=aniso,
+                elem_class=elem_class,
+                class_D=class_D,
+            )
         K, edof, active = asm
         sig = np.unique(_fixed_dofs(fixed3, domain.node_count)).tobytes()
         if sig not in ctx_cache:
@@ -509,6 +600,14 @@ def _solve_cases(  # noqa: C901
         res.safety_factor = round(mat.yield_mpa / sol.max_vm_mpa, 2) if sol.max_vm_mpa > 0 else None
         if res.safety_factor is not None and res.safety_factor < 1.0:
             res.warnings.append(f"safety factor {res.safety_factor} < 1 — likely failure")
+        if micro_amp is not None:
+            # member-scale micro stress: macro VM amplified by the lattice
+            # localization factor A(rho) on each homogenized cell
+            micro = sol.elem_vm * np.asarray(micro_amp, dtype=float).ravel()
+            res.micro_vm_mpa = round(float(micro.max(initial=0.0)), 3)
+            res.safety_factor_micro = (
+                round(mat.yield_mpa / res.micro_vm_mpa, 2) if res.micro_vm_mpa > 0 else None
+            )
         report.grid["dofs"] = sol.dofs
         if fem_dir:
             vm_png, def_png = _render_case(
@@ -550,6 +649,8 @@ def _solve_cases(  # noqa: C901
                 E_ref=mat.elastic_modulus_mpa,
                 aniso=aniso,
                 solver_backend=solver_backend,
+                elem_class=elem_class,
+                class_D=class_D,
             )
             with ProcessPoolExecutor(
                 max_workers=workers, mp_context=mp.get_context("fork")
@@ -584,6 +685,8 @@ def _solve_cases(  # noqa: C901
                 E_ref=mat.elastic_modulus_mpa,
                 aniso=aniso,
                 solver_backend=solver_backend,
+                elem_class=elem_class,
+                class_D=class_D,
             )
         _record(res, sol)
         sol_by_i[i] = sol
@@ -599,6 +702,8 @@ def _solve_cases(  # noqa: C901
             elem_E=elem_E,
             nu=mat.poisson,
             aniso=aniso,
+            elem_class=elem_class,
+            class_D=class_D,
         )
 
     report.cases.extend(results)
