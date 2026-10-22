@@ -1,5 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
-import { ExternalLink, XCircle } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  ExternalLink,
+  XCircle,
+} from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { api, errMsg } from "../../lib/api";
@@ -7,6 +12,7 @@ import { etaSeconds, fmtDur, fmtTokens } from "../../lib/liveStats";
 import { stepLabel } from "../../lib/steps";
 import type { JobLive, SpawnedRef } from "../../lib/types";
 import { useJobEvents } from "../../lib/useJobEvents";
+import { LogRow } from "../JobLog";
 import LivePreview from "../LivePreview";
 import StatusBadge from "../StatusBadge";
 import {
@@ -15,6 +21,7 @@ import {
   Sparkline,
   StatChip,
   useNow,
+  useStickyBottom,
   useToast,
 } from "../ui";
 
@@ -27,13 +34,24 @@ const TERMINAL = ["succeeded", "failed", "cancelled", "needs_review"];
 export default function ChatJobCard({ spawned }: { spawned: SpawnedRef }) {
   const toast = useToast();
   const [cancelling, setCancelling] = useState(false);
+  const [logOpen, setLogOpen] = useState(false);
   const stream = useJobEvents(spawned.job_id ?? null);
+  // live lines + replayed backlog; pinned to bottom while open
+  const { boxRef: logBoxRef, onScroll: onLogScroll } = useStickyBottom(
+    logOpen ? stream.events : null,
+  );
   const job = useQuery({
     queryKey: ["job", spawned.job_id],
     queryFn: () => api.getJob(spawned.job_id!),
     enabled: !!spawned.job_id,
+    // per-job SSE is the transport — the HTTP poll only runs while the
+    // stream is down (degraded mode), never alongside it
     refetchInterval: (q) =>
-      q.state.data && !TERMINAL.includes(q.state.data.status) ? 15000 : false,
+      !stream.connected &&
+      q.state.data &&
+      !TERMINAL.includes(q.state.data.status)
+        ? 15000
+        : false,
   });
   const j = stream.job ?? job.data;
   const active = j ? !TERMINAL.includes(j.status) : true;
@@ -79,6 +97,13 @@ export default function ChatJobCard({ spawned }: { spawned: SpawnedRef }) {
     live.step && live.step_started_ts
       ? (now - Date.parse(live.step_started_ts)) / 1000
       : null;
+
+  const logT0 = stream.events.find((e) => e.t_ms)?.t_ms;
+  const fallbackTail = (j?.log ?? "")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .slice(-40);
 
   return (
     <div className="overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950">
@@ -216,6 +241,51 @@ export default function ChatJobCard({ spawned }: { spawned: SpawnedRef }) {
               <li key={i}>{q.question}</li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {(stream.events.length > 0 || fallbackTail.length > 0 || active) && (
+        <div className="border-t border-zinc-800">
+          <button
+            className="flex w-full items-center gap-1.5 px-3 py-1.5 text-[11px] text-zinc-500 transition-colors hover:text-zinc-300"
+            onClick={() => setLogOpen((o) => !o)}
+            aria-expanded={logOpen}
+          >
+            {logOpen ? (
+              <ChevronDown className="h-3 w-3" />
+            ) : (
+              <ChevronRight className="h-3 w-3" />
+            )}
+            log
+            {stream.events.length > 0 && (
+              <span className="font-mono text-zinc-600">
+                {stream.events.length}
+              </span>
+            )}
+            {active && (
+              <span className="pulse-dot h-1.5 w-1.5 rounded-full bg-emerald-400" />
+            )}
+          </button>
+          {logOpen && (
+            <div
+              ref={logBoxRef}
+              onScroll={onLogScroll}
+              className="max-h-48 overflow-y-auto px-3 pb-2 font-mono text-[11px] leading-relaxed"
+            >
+              {stream.events.length > 0
+                ? stream.events.map((e, i) => (
+                    <LogRow key={i} e={e} t0={logT0} />
+                  ))
+                : fallbackTail.map((l, i) => (
+                    <div key={i} className="text-zinc-400">
+                      {l}
+                    </div>
+                  ))}
+              {!stream.events.length && !fallbackTail.length && (
+                <div className="text-zinc-600">waiting for job output…</div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

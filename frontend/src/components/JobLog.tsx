@@ -42,7 +42,7 @@ const Elapsed = memo(function Elapsed({ job }: { job: Job }) {
 });
 
 /** one log line — memoized so stream updates don't re-render the backlog */
-const LogRow = memo(function LogRow({
+export const LogRow = memo(function LogRow({
   e,
   t0,
 }: {
