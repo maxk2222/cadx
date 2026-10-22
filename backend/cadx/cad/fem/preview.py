@@ -18,6 +18,7 @@ import trimesh
 from cadx.cad.fem.regions import (
     _region_fallback,
     case_reactions,
+    case_region_breakdown,
     region_cell_mask,
     region_face_normal,
     resolve_case_dofs,
@@ -291,5 +292,6 @@ def resolve_case_summary(
         "loaded_nodes": int(loaded.sum()),
         "total_force_n": round(float(np.linalg.norm(forces[loaded].sum(axis=0))), 2),
         "reactions": case_reactions(domain, fixed3, F),
+        "per_region": case_region_breakdown(domain, case, anchors),
         "warnings": warnings,
     }
