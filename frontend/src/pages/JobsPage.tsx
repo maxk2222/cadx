@@ -209,7 +209,8 @@ export default function JobsPage() {
     // keep the last page visible while a bigger limit refetches
     placeholderData: keepPreviousData,
     refetchInterval: (q) =>
-      (q.state.data ?? []).some((j) => ACTIVE.has(j.status)) ? 3000 : 15000,
+      // no idle poll — the lifecycle stream's invalidation kicks activity in
+      (q.state.data ?? []).some((j) => ACTIVE.has(j.status)) ? 3000 : false,
   });
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [typeFilter, setTypeFilter] = useState("all");

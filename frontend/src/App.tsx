@@ -21,6 +21,7 @@ import HealthDots from "./components/HealthDots";
 import Logo from "./components/Logo";
 import { Spinner, ToastProvider } from "./components/ui";
 import { api } from "./lib/api";
+import { useJobsLive } from "./lib/useJobsLive";
 import JobsPage from "./pages/JobsPage";
 import LibraryPage from "./pages/LibraryPage";
 import ProjectPage from "./pages/ProjectPage";
@@ -90,13 +91,14 @@ function NavItem({
   );
 }
 
-function SideNav() {
+function SideNav({ jobsLive }: { jobsLive: boolean }) {
   const loc = useLocation();
-  // poll only while jobs are actually active — an idle nav needs no requests
+  // the lifecycle stream pushes the active list — the HTTP query is only the
+  // pre-snapshot fill; it polls solely while the stream is down (degraded)
   const activeJobs = useQuery({
     queryKey: ["jobs", "active"],
     queryFn: () => api.listJobsAll({ active: true, limit: 50 }),
-    refetchInterval: (q) => (q.state.data?.length ? 8000 : false),
+    refetchInterval: () => (jobsLive ? false : 15000),
   });
   const waiting = activeJobs.data?.some((j) => j.status === "waiting_for_input") ?? false;
   // cheap: serves the daemon's cached check and only self-refreshes when >6h stale
@@ -182,12 +184,17 @@ function SideNav() {
   );
 }
 
+function JobsLiveBridge() {
+  const connected = useJobsLive();
+  return <SideNav jobsLive={connected} />;
+}
+
 export default function App() {
   return (
     <BrowserRouter>
       <ToastProvider>
         <div className="flex min-h-screen">
-          <SideNav />
+          <JobsLiveBridge />
           <main className="min-w-0 flex-1">
             <Suspense fallback={<RouteFallback />}>
               <Routes>

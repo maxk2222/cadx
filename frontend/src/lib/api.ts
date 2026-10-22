@@ -328,6 +328,10 @@ export function jobEventsUrl(jobId: string): string {
   return `${BASE}/jobs/${jobId}/events`;
 }
 
+export function jobsEventsUrl(): string {
+  return `${BASE}/jobs/events`;
+}
+
 export function chatEventsUrl(chatId: string): string {
   return `${BASE}/chats/${chatId}/events`;
 }
