@@ -1,0 +1,16 @@
+{
+  "new_part": "新規パーツ",
+  "chat": "チャット",
+  "projects": "プロジェクト",
+  "jobs": "ジョブ",
+  "stats": "統計",
+  "library": "ライブラリ",
+  "settings": "設定",
+  "home_title": "CADX — ホーム",
+  "badge": {
+    "active_jobs": "件の実行中ジョブ",
+    "waiting_input": "件のジョブが入力待ち",
+    "updates_other": "{{count}} 件の更新があります"
+  },
+  "language": "言語"
+}

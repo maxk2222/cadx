@@ -46,7 +46,7 @@ humans and agents alike. The short version:
 - Frontend is fully internationalised (`react-i18next`): user-facing strings go
   through `t()` / `i18n.t()` — never hardcode prose in components. Namespaced
   locale files live in `frontend/src/i18n/locales/<lang>/` (en is the
-  reference; de/es/fr ship today); add the same key to every language (the
+  reference; de/es/fr/zh/pt/ru/pl/ja ship today); add the same key to every language (the
   `i18nParity` vitest test discovers languages from the locales dir, enforces
   key-set parity and flags unresolvable keys). To add a language: create
   `locales/<lang>/*.json` mirroring `en`, register it in

@@ -1,0 +1,19 @@
+{
+  "new_part": "Новая деталь",
+  "chat": "Чат",
+  "projects": "Проекты",
+  "jobs": "Задачи",
+  "stats": "Статистика",
+  "library": "Библиотека",
+  "settings": "Настройки",
+  "home_title": "CADX — главная",
+  "badge": {
+    "active_jobs": "активные задачи",
+    "waiting_input": "задача ждёт ввода",
+    "updates_one": "доступно {{count}} обновление",
+    "updates_few": "доступно {{count}} обновления",
+    "updates_many": "доступно {{count}} обновлений",
+    "updates_other": "доступно {{count}} обновления"
+  },
+  "language": "Язык"
+}

@@ -1,0 +1,16 @@
+{
+  "new_part": "新建零件",
+  "chat": "聊天",
+  "projects": "项目",
+  "jobs": "任务",
+  "stats": "统计",
+  "library": "库",
+  "settings": "设置",
+  "home_title": "CADX — 首页",
+  "badge": {
+    "active_jobs": "个进行中的任务",
+    "waiting_input": "个任务等待输入",
+    "updates_other": "{{count}} 个可用更新"
+  },
+  "language": "语言"
+}
