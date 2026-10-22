@@ -2,7 +2,7 @@
   "name": "sprocket_520_45t",
   "project": "eval:sprocket-520-45t",
   "difficulty": 2,
-  "description": "Aluminium 7075-T6 rear sprocket for a 520 chain — radial tooth repetition, PCD mounting circle and lightweight cutouts.",
+  "description": "Aluminium 7075-T6 motorcycle rear sprocket for a 520 chain — hub pilot bore, five-bolt circle, lightening windows, stamped teeth.",
   "settings": { "gen_mode": "cad" },
   "stages": [
     {
@@ -10,12 +10,12 @@
       "type": "generate",
       "mode": "cad",
       "timeout_s": 5400,
-      "prompt": "Aluminium rear sprocket (7075-T6) for a 520 motorcycle chain, fully parametric.\n\nFrame: the flat sprocket disc lies on the XY plane (bottom face at z = 0), centred on the origin in X and Y. Thickness 6 mm in Z. mm units.\n\nChain data (520): pitch p = 15.875 mm, roller diameter 10.16 mm. Teeth: N = 45 evenly spaced, pitch circle PCD = p / sin(180/N) = 227.6 mm.\n\nBuild it feature by feature:\n- Web disc: solid disc radius r = 0..108, 6 mm thick.\n- Tooth ring on the rim: 45 identical trapezoidal teeth, angular pitch 8 degrees. Each seat is a concave roller seat of radius 5.4 mm centred on the PCD (r = 113.8); tooth tips rise ~5 mm above the PCD so the outer diameter lands at ~236 mm; the gap between adjacent teeth seats the 10.16 mm roller.\n- Central locating bore dia 30 mm through Z at the origin.\n- Six M8 mounting holes dia 8.5 mm on a bolt circle of dia 80 mm, every 60 degrees, the first hole on the +X axis.\n- Six identical lightening pockets on the same angular axes as the mounting holes (each pocket centred on a bolt-hole axis): radially oriented capsule/obround slots, ~50 mm long in the radial direction x ~22 mm wide tangentially, centred at r = 77 mm; all pocket edges fully rounded (end radius ~11 mm). Webs between adjacent pockets, to the bolt holes and to the tooth ring >= 6 mm.\n- Rim edge break: ~0.5 mm chamfer or small fillet on the sharp rim edges.\nExpose teeth count, pitch, roller diameter, disc thickness, bolt-circle PCD and pocket count as named parameters.",
+      "prompt": "Aluminium motorcycle rear sprocket (7075-T6) for a 520 chain, fully parametric — a flat 6 mm plate part like the real stamped/machined part.\n\nFrame: the sprocket plate lies on the XY plane (bottom face at z = 0), centred on the origin in X and Y. Plate thickness 6 mm. mm units.\n\n- Teeth: 45 identical evenly spaced teeth around the rim (angular pitch 8 degrees). Tooth band root at r ~= 109, tips at r ~= 118 -> outer diameter ~236 mm (PCD 227.6 for the 520 chain: pitch 15.875, roller 10.16). Teeth ~9 mm tall, trapezoidal, tips a bit narrower than the gaps — the usual stamped-sprocket profile; no exact roller-seat geometry needed.\n- Web: solid plate from the centre out to the tooth band root.\n- Centre pilot bore dia 76 mm through Z at the origin (hub locating bore).\n- Five M10 mounting holes dia 10.5 mm on a bolt circle of dia 100 mm, every 72 degrees, first hole on the +X axis.\n- Five identical lightening windows between the bolt-hole axes (offset 36 degrees): rounded capsule/trapezoid openings ~40 mm in the radial direction x ~26 mm wide, centred at r ~= 79 mm; all corners fully rounded (radius >= 8 mm); webs to bore, bolt holes and tooth band >= 6 mm.\n- Rim edges broken with a ~0.5 mm chamfer.\nExpose tooth count, plate thickness, pilot bore, bolt-circle PCD and window count as named parameters.",
       "gates": [
         { "type": "status", "expect": ["succeeded", "needs_review"] },
         { "type": "bbox", "dims": [236, 236, 6], "match": "match", "tol_mm": 8 },
-        { "type": "holes", "count": 1, "dia": 30, "axis": "z" },
-        { "type": "holes", "count": 6, "dia": 8.5, "axis": "z", "pcd": 80 },
+        { "type": "holes", "count": 1, "dia": 76, "axis": "z" },
+        { "type": "holes", "count": 5, "dia": 10.5, "axis": "z", "pcd": 100 },
         { "type": "radial_peaks", "count": 45, "tol": 2, "axis": "z" },
         { "type": "volume_fraction", "of": "disk", "max": 0.86 },
         { "type": "watertight", "expect": true },
@@ -27,7 +27,7 @@
       "type": "imagegen",
       "enabled": false,
       "timeout_s": 600,
-      "image_prompt": "technical product render of an anodized aluminium motorcycle rear sprocket for a 520 chain, 45 teeth, six mounting holes, lightweight pockets, dark studio background",
+      "image_prompt": "technical product render of an anodized aluminium motorcycle rear sprocket for a 520 chain, 45 teeth, five bolt mounting, lightening windows, dark studio background",
       "count": 1,
       "gates": [
         { "type": "asset_image", "min": 1 }
@@ -39,7 +39,7 @@
       "enabled": false,
       "timeout_s": 3600,
       "assets_from": "imagegen",
-      "subject": "aluminium sprocket",
+      "subject": "aluminium motorcycle rear sprocket",
       "gates": [
         { "type": "status", "expect": ["succeeded", "needs_review"] },
         { "type": "bodies", "max": 2 }
