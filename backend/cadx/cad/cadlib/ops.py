@@ -5,9 +5,10 @@ call graceful. ``safe_fillet`` retries with a shrinking radius instead of
 crashing the whole run on an empty/stale edge selection.
 """
 
+import math
 from typing import Sequence  # noqa: UP035 — keep cadlib's sandbox import allow-list
 
-from build123d import Align, Box, BuildPart, Edge, Pos, Shape, fillet
+from build123d import Align, Box, BuildPart, Edge, GeomType, Pos, Shape, chamfer, fillet
 
 # runner_entry injects the manifold3d backend (`cadx.cad.mesh_boolean`) for
 # hybrid runs — kept as an injected callable so cadlib itself never imports
@@ -213,6 +214,317 @@ def safe_fillet_shape(
             pass
         r = round(r / 2, 3)
     return shape, 0.0
+
+
+def safe_chamfer(edges, length: float, min_length: float = 0.2) -> float:
+    """Chamfer ``edges``, halving the leg length until OCC accepts it.
+
+    Same shrink-to-fit contract as :func:`safe_fillet`: an empty selection
+    short-circuits to ``0.0``, oversized selections on faceted bodies are
+    refused, and every kernel-side failure folds into the retry loop.
+    Returns the applied length — ``0.0`` when nothing could be chamfered,
+    so the caller can fall back instead of dying.
+
+        chamfer_l = safe_chamfer(concave_edges(axis="y"), length=2)
+    """
+    try:
+        n_edges = len(edges)
+    except TypeError:
+        n_edges = 0
+    if n_edges == 0:
+        return 0.0
+    if BuildPart._get_context() is None:
+        raise RuntimeError(
+            "safe_chamfer() only edits an active BuildPart and returns the applied "
+            "length, not a Shape; use safe_chamfer_shape(shape, edges, length) "
+            "in algebra mode"
+        )
+    if n_edges > _FILLET_MAX_EDGES:
+        print(
+            f"safe_chamfer: skipped — selection holds {n_edges} edges "
+            f"(limit {_FILLET_MAX_EDGES}); faceted mesh bodies cannot be "
+            "chamfered — chamfer the analytic sub-part before mesh_fuse instead"
+        )
+        return 0.0
+    r = float(length)
+    while r >= min_length:
+        try:
+            chamfer(edges, length=r)
+            return r
+        except Exception:
+            r = round(r / 2, 3)
+    return 0.0
+
+
+def safe_chamfer_shape(
+    shape: Shape, edges: Sequence[Edge], length: float, min_length: float = 0.2
+) -> tuple[Shape, float]:
+    """Functionally chamfer an algebra-mode shape and return ``(shape, length)``.
+
+    Companion to :func:`safe_chamfer` outside a ``BuildPart`` — see
+    :func:`safe_fillet_shape` for the contract. ``edges`` must be selected
+    from ``shape`` before calling this function.
+    """
+    try:
+        n_edges = len(edges)
+    except TypeError:
+        n_edges = 0
+    if n_edges == 0 or n_edges > _FILLET_MAX_EDGES:
+        return shape, 0.0
+    if BuildPart._get_context() is not None:
+        raise RuntimeError(
+            "safe_chamfer_shape() is for algebra mode outside BuildPart; "
+            "use safe_chamfer(edges, length) inside the builder"
+        )
+    r = float(length)
+    while r >= min_length:
+        try:
+            result = chamfer(edges, length=r)
+            if isinstance(result, Shape) and result.solids():
+                return result, r
+        except Exception:
+            pass
+        r = round(r / 2, 3)
+    return shape, 0.0
+
+
+def _unwrap_shape(shape_or_builder=None):
+    """Resolve ``shape_or_builder`` to a concrete :class:`Shape`.
+
+    Accepts a Shape/Part (returned as-is), a ``BuildPart`` builder (its
+    ``.part``), or ``None`` — which reads the active BuildPart context's
+    current part, so helpers work bare inside ``with BuildPart() as p:``.
+    Returns whatever it was given when nothing resolves further.
+    """
+    part = getattr(shape_or_builder, "part", None)
+    if part is not None:
+        return part
+    if shape_or_builder is None:
+        ctx = BuildPart._get_context()
+        if ctx is not None:
+            return ctx.part
+    return shape_or_builder
+
+
+def _edge_kind(shape: Shape, edge: Edge, eps: float = 0.25) -> str:
+    """'convex' | 'concave' | 'tangent' — classify an edge without any OCP
+    convexity API (the sandbox allow-list forbids it).
+
+    Probes a ring of ``eps``-offset points in the plane perpendicular to the
+    edge's mid-tangent against ``shape.is_inside``: a re-entrant edge (inner
+    fillet root, groove corner, L-bracket inner join) is buried in material
+    on most sides (>=5 of 8 probes); a proud outer edge has material on few
+    (<=3); anything in between is a tangent/smooth join.
+    """
+    try:
+        p = edge.position_at(0.5)
+        t = edge.tangent_at(0.5)
+        tn = math.sqrt(t.X * t.X + t.Y * t.Y + t.Z * t.Z)
+        if tn <= 1e-9:
+            return "tangent"
+        tx, ty, tz = t.X / tn, t.Y / tn, t.Z / tn
+        # stable in-plane basis (u, w) perp. t: z-up as reference unless
+        # the tangent is near-vertical, where t cross z degenerates
+        rx, ry, rz = (0.0, 0.0, 1.0) if abs(tz) <= 0.9 else (0.0, 1.0, 0.0)
+        ux, uy, uz = (ty * rz - tz * ry, tz * rx - tx * rz, tx * ry - ty * rx)
+        un = math.sqrt(ux * ux + uy * uy + uz * uz)
+        if un <= 1e-9:
+            return "tangent"
+        ux, uy, uz = ux / un, uy / un, uz / un
+        wx, wy, wz = (ty * uz - tz * uy, tz * ux - tx * uz, tx * uy - ty * ux)
+        inside = 0
+        for k in range(8):
+            ang = 2.0 * math.pi * k / 8
+            c, s = math.cos(ang), math.sin(ang)
+            q = (
+                p.X + eps * (c * ux + s * wx),
+                p.Y + eps * (c * uy + s * wy),
+                p.Z + eps * (c * uz + s * wz),
+            )
+            try:
+                if shape.is_inside(q):
+                    inside += 1
+            except Exception:
+                continue
+        if inside <= 3:
+            return "convex"
+        if inside >= 5:
+            return "concave"
+        return "tangent"
+    except Exception:
+        return "tangent"
+
+
+def _circle_normal(edge: Edge):
+    """Unit normal of a circular rim edge — ``Edge.normal()`` where the
+    kernel exposes it (planar edges), else t(0) cross t(0.25): two tangents
+    a quarter-turn apart always span the rim plane."""
+    normal = getattr(edge, "normal", None)
+    if callable(normal):
+        try:
+            n = normal()
+            if n is not None:
+                return n.normalized()
+        except Exception:
+            pass
+    n = edge.tangent_at(0.0).cross(edge.tangent_at(0.25))
+    return n.normalized()
+
+
+def edges_at(
+    shape_or_builder=None,
+    *,
+    axis=None,
+    x=None,
+    y=None,
+    z=None,
+    x_range=None,
+    y_range=None,
+    z_range=None,
+    geom=None,
+    tol: float = 0.6,
+) -> list[Edge]:
+    """Filter a part's edges by geometry and position — the sandbox-safe way
+    to build a chamfer/fillet selection without hand-rolled OCP code.
+
+    ``axis`` (``"x"``/``"y"``/``"z"``, signs ignored) keeps edges whose
+    mid-tangent is axis-dominant (``|component| > 0.98``). ``x``/``y``/``z``
+    match the edge's bbox centre within ``±tol``; ``*_range`` keep centres
+    inside ``[lo, hi]``. ``geom`` narrows by geometry kind: ``"line"`` /
+    ``"circle"``. ``shape_or_builder=None`` inside an active ``BuildPart``
+    reads the builder's current part.
+
+        inner = edges_at(p.part, axis="y", x=-36, z=6, tol=1)
+    """
+    s = _unwrap_shape(shape_or_builder)
+    if s is None:
+        return []
+    ax = str(axis).lstrip("+-").lower() if axis is not None else ""
+    ai = {"x": 0, "y": 1, "z": 2}.get(ax)
+    want_geom = None
+    if geom is not None:
+        want_geom = {
+            "line": GeomType.LINE,
+            "circle": GeomType.CIRCLE,
+        }.get(str(geom).lower())
+
+    def _in_range(c, rng) -> bool:
+        lo, hi = rng
+        return (lo is None or c >= float(lo)) and (hi is None or c <= float(hi))
+
+    out: list[Edge] = []
+    for e in s.edges():
+        try:
+            if want_geom is not None and e.geom_type != want_geom:
+                continue
+            if ai is not None:
+                t = e.tangent_at(0.5)
+                comps = (abs(t.X), abs(t.Y), abs(t.Z))
+                if comps[ai] <= 0.98:
+                    continue
+            c = e.center()
+            if x is not None and abs(c.X - float(x)) > tol:
+                continue
+            if y is not None and abs(c.Y - float(y)) > tol:
+                continue
+            if z is not None and abs(c.Z - float(z)) > tol:
+                continue
+            if x_range is not None and not _in_range(c.X, x_range):
+                continue
+            if y_range is not None and not _in_range(c.Y, y_range):
+                continue
+            if z_range is not None and not _in_range(c.Z, z_range):
+                continue
+            out.append(e)
+        except Exception:
+            continue
+    return out
+
+
+def concave_edges(
+    shape_or_builder=None,
+    *,
+    axis=None,
+    x_range=None,
+    y_range=None,
+    z_range=None,
+) -> list[Edge]:
+    """Re-entrant edges (inner fillet roots, groove/pocket corners, the
+    L-bracket inner join) selected like :func:`edges_at` — the targets a
+    fillet or chamfer is usually aimed at. Each candidate is classified by
+    :func:`_edge_kind`'s inside-probe ring."""
+    s = _unwrap_shape(shape_or_builder)
+    if s is None:
+        return []
+    return [
+        e
+        for e in edges_at(s, axis=axis, x_range=x_range, y_range=y_range, z_range=z_range)
+        if _edge_kind(s, e) == "concave"
+    ]
+
+
+def convex_edges(
+    shape_or_builder=None,
+    *,
+    axis=None,
+    x_range=None,
+    y_range=None,
+    z_range=None,
+) -> list[Edge]:
+    """Proud outer edges (part silhouette, boss rims) — the counterpart of
+    :func:`concave_edges` for exterior rounding/chamfering."""
+    s = _unwrap_shape(shape_or_builder)
+    if s is None:
+        return []
+    return [
+        e
+        for e in edges_at(s, axis=axis, x_range=x_range, y_range=y_range, z_range=z_range)
+        if _edge_kind(s, e) == "convex"
+    ]
+
+
+def hole_rim_edges(
+    shape_or_builder=None,
+    *,
+    diameter=None,
+    axis=None,
+    z=None,
+    tol: float = 0.5,
+) -> list[Edge]:
+    """Circular edges — the rims of bores, counterbores, countersink mouths
+    and boss shoulders. ``diameter`` matches the rim's circle within ``±tol``
+    (a Ø5 bore produces two ~Ø5 rims); ``z`` matches the rim's height;
+    ``axis`` requires the rim plane's normal to run along it — a +z bore's
+    rims answer ``axis="z"``.
+
+        rims = hole_rim_edges(diameter=5, axis="z", z=plate_top, tol=0.6)
+    """
+    s = _unwrap_shape(shape_or_builder)
+    if s is None:
+        return []
+    ai = None
+    if axis is not None:
+        ai = {"x": 0, "y": 1, "z": 2}.get(str(axis).lstrip("+-").lower())
+    out: list[Edge] = []
+    for e in edges_at(s, geom="circle"):
+        try:
+            if diameter is not None:
+                try:
+                    r = float(e.radius)
+                except Exception:
+                    continue
+                if abs(2.0 * r - float(diameter)) > tol:
+                    continue
+            if z is not None and abs(e.center().Z - float(z)) > tol:
+                continue
+            if ai is not None:
+                n = _circle_normal(e)
+                if abs((n.X, n.Y, n.Z)[ai]) <= 0.98:
+                    continue
+            out.append(e)
+        except Exception:
+            continue
+    return out
 
 
 def mesh_intersect(body, tool):

@@ -123,12 +123,21 @@ def _axis_letter(axis: Any) -> str:
 
 def _spec_axis(f: dict[str, Any]) -> str:
     """Declared through-axis letter of a spec feature — structured ``axis``
-    field first, then a narrow axis-phrase regex on position/description."""
+    field first, then a narrow axis-phrase regex on position/description.
+    Positional phrases ("one hole ON +Y axis" — a hole placed on the +Y
+    face, not drilled along Y) are masked before the regex runs so they
+    cannot fabricate an axis declaration."""
     ax = _axis_letter(f.get("axis"))
     if ax:
         return ax
     text = f"{f.get('position') or ''} {f.get('description') or ''}"
-    m = _AXIS_TEXT_RE.search(text)
+    clean = re.sub(
+        r"\bon\s+(?:the\s+)?[+-]?[xyz][\s-]*(?:axis|achse)\b",
+        " ",
+        text,
+        flags=re.I,
+    )
+    m = _AXIS_TEXT_RE.search(clean)
     if m:
         return next(g for g in m.groups() if g).lower()
     return ""
@@ -800,6 +809,20 @@ def _void_position_check(  # noqa: C901
     _raw_coords, faces, ends, nears = parse_position_hints(hint_text)
     count = int(f.get("count") or 1)
     text_groups = parse_coord_points(hint_text) if count > 1 else []
+    want_ax = _spec_axis(f)
+    if want_ax:
+        # position evidence only counts centres of voids on the declared
+        # through axis — a differently-oriented bore cannot satisfy it
+        ax_cands = [g for g in cands if _axis_letter(g.get("axis")) == want_ax]
+        cands = ax_cands or cands
+        if "blind" not in str(f.get("type") or "").lower():
+            # the through axis is not an in-plane centre coordinate —
+            # "through z=0..6" parses as z=3.0 but a tunnel's z centre is
+            # never measured (centers_xyz marks it None)
+            coords.pop(want_ax, None)
+            text_groups = [
+                {k: v for k, v in g.items() if k != want_ax} for g in text_groups
+            ]
     groups = structured or text_groups
     base: dict[str, Any] = {"feature": name, "position": pos[:160] or None}
     if not structured and not coords and not faces and not ends and not nears:
@@ -1048,10 +1071,17 @@ def _feature_placement(
         elif "notch" in ftype:
             cands, other = notches + grooves, groups + hole_pats + slot_pats
         elif ftype == "pocket":
-            cands, other = (
-                pockets,
-                groups + hole_pats + slot_pats + grooves + notches,
-            )
+            # a "pocket" whose text describes a through-opening (window/
+            # cutout/Durchgang) is a cutout semantically — it must match
+            # measured through-voids, not only AAG floor pockets
+            blob = f"{name} {f.get('description') or ''}".lower()
+            if any(k in blob for k in ("through", "window", "cutout", "fenst", "durchg")):
+                cands, other = groups + hole_pats + slot_pats + pockets + grooves + notches, []
+            else:
+                cands, other = (
+                    pockets,
+                    groups + hole_pats + slot_pats + grooves + notches,
+                )
         elif ftype == "cutout":
             cands, other = groups + hole_pats + slot_pats + pockets + grooves + notches, []
         else:

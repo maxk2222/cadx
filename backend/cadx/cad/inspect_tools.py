@@ -595,3 +595,136 @@ def clearance(shape_a: Any, shape_b: Any) -> dict[str, Any]:
     else:
         out["status"] = "apart"
     return out
+
+
+def _edge_tangent_label(edge: Any) -> str:
+    """'+x'/'-y'/... axis label of an edge's mid-tangent, else 'other'."""
+    try:
+        t = edge.tangent_at(0.5)
+        return _axis_label([float(t.X), float(t.Y), float(t.Z)])
+    except Exception:
+        return "other"
+
+
+def _edge_side_label(shape: Shape, edge: Any, eps: float = 0.25) -> str:
+    """'convex' | 'concave' | 'tangent' — ring of probe points just off the
+    edge's mid-point counted against ``shape.is_inside`` (same trick as
+    ``_inside_fraction``): a re-entrant edge is buried in material on most
+    sides (>=5 of 8), a proud outer edge on few (<=3)."""
+    try:
+        p = edge.position_at(0.5)
+        t = edge.tangent_at(0.5)
+        axis = [float(t.X), float(t.Y), float(t.Z)]
+        an = _norm(axis)
+        if an <= 1e-9:
+            return "tangent"
+        axis = [c / an for c in axis]
+        ref = [0.0, 0.0, 1.0] if abs(axis[2]) <= 0.9 else [0.0, 1.0, 0.0]
+        u = [
+            axis[1] * ref[2] - axis[2] * ref[1],
+            axis[2] * ref[0] - axis[0] * ref[2],
+            axis[0] * ref[1] - axis[1] * ref[0],
+        ]
+        un = _norm(u)
+        if un <= 1e-9:
+            return "tangent"
+        u = [c / un for c in u]
+        w = [
+            axis[1] * u[2] - axis[2] * u[1],
+            axis[2] * u[0] - axis[0] * u[2],
+            axis[0] * u[1] - axis[1] * u[0],
+        ]
+        pt = [float(p.X), float(p.Y), float(p.Z)]
+        inside = 0
+        for i in range(_SAMPLE_DIRS):
+            ang = 2.0 * math.pi * i / _SAMPLE_DIRS
+            q = [pt[j] + eps * (math.cos(ang) * u[j] + math.sin(ang) * w[j]) for j in range(3)]
+            try:
+                if shape.is_inside(q):
+                    inside += 1
+            except Exception:
+                continue
+        if inside <= 3:
+            return "convex"
+        if inside >= 5:
+            return "concave"
+        return "tangent"
+    except Exception:
+        return "tangent"
+
+
+def _edge_circle_label(edge: Any) -> str:
+    """Axis label of a circle edge's rim-plane normal (the bore direction a
+    rim belongs to), falling back to the mid-tangent label."""
+    normal = getattr(edge, "normal", None)
+    if callable(normal):
+        try:
+            n = normal()
+            if n is not None:
+                return _axis_label([float(n.X), float(n.Y), float(n.Z)])
+        except Exception:
+            pass
+    return _edge_tangent_label(edge)
+
+
+def list_edges(obj: Any, axis: str | None = None) -> dict[str, Any]:
+    """Edge inventory for targeting fillet/chamfer selections.
+
+    ``{"total": n, "by_axis": {"+z": m, ...}, "concave": [...], "convex":
+    [...], "circles": [...]}`` — each list holds at most 20 entries of
+    ``{"center": [x, y, z], "length": mm, "axis": ax}``. ``axis`` (a letter,
+    signs ignored) restricts the report to edges whose mid-tangent runs
+    along that axis; ``by_axis`` always reports the full unfiltered split
+    so the rest of the inventory stays visible. Circles are labelled by
+    their rim-plane normal (the bore direction), not a tangent.
+    """
+    s = _as_shape(obj)
+    if s is None:
+        return {"error": f"not a shape: {type(obj).__name__}"}
+    want = str(axis).strip().lower().lstrip("+-") if axis else ""
+    if want and want not in _AXIS_INDEX:
+        return {"error": f"bad axis '{axis}' (expected x, y or z)"}
+    try:
+        edges = s.edges()
+    except Exception as e:
+        return _err(e)
+
+    def _entry(e: Any, ax_label: str) -> dict[str, Any]:
+        c = e.center()
+        return {
+            "center": [_r3(c.X), _r3(c.Y), _r3(c.Z)],
+            "length": _r3(float(e.length)),
+            "axis": ax_label,
+        }
+
+    by_axis: dict[str, int] = {}
+    concave: list[dict[str, Any]] = []
+    convex: list[dict[str, Any]] = []
+    circles: list[dict[str, Any]] = []
+    total = 0
+    for e in edges:
+        try:
+            is_circle = e.geom_type == GeomType.CIRCLE
+        except Exception:
+            is_circle = False
+        ax_label = _edge_circle_label(e) if is_circle else _edge_tangent_label(e)
+        by_axis[ax_label] = by_axis.get(ax_label, 0) + 1
+        if want and not ax_label.endswith(want):
+            continue
+        total += 1
+        if is_circle:
+            if len(circles) < 20:
+                circles.append(_entry(e, ax_label))
+            continue
+        kind = _edge_side_label(s, e)
+        if kind == "concave" and len(concave) < 20:
+            concave.append(_entry(e, ax_label))
+        elif kind == "convex" and len(convex) < 20:
+            convex.append(_entry(e, ax_label))
+    return {
+        "total": total,
+        "by_axis": by_axis,
+        "concave": concave,
+        "convex": convex,
+        "circles": circles,
+    }

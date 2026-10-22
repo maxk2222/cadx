@@ -287,10 +287,23 @@ def _surface_hits(shape: Any, origin: Any, direction: tuple[float, float, float]
     return ts
 
 
-def tunnel_open(shape: Any, u: float, v: float, axis: str) -> bool:
+def tunnel_open(
+    shape: Any,
+    u: float,
+    v: float,
+    axis: str,
+    axial_span: tuple[float, float] | None = None,
+) -> bool:
     """True when a ray through (u, v) along `axis` meets NO material — i.e. a
     through-tunnel exists at the anchor position. Any surface hit means the
     nominal bore is missing, blocked or undersized.
+
+    ``axial_span`` optionally restricts the check to the axial interval a
+    bounded bore must pierce — an anchor carrying its declared axial centre
+    (``pos[idx]``) and ``depth_mm`` only needs [pos-depth/2, pos+depth/2]
+    free; material further along the same ray (a strut or a second wall
+    beyond the declared host plate) is not a blockage and must not trigger
+    a re-cut that pierces it.
 
     Two probes: solids carrying their source trimesh use `ray.intersects_-
     location` (the OCC ray on 30k-facet bodies is slow and reports phantom
@@ -307,6 +320,8 @@ def tunnel_open(shape: Any, u: float, v: float, axis: str) -> bool:
     # +z probes come down from above the bbox, -z probes come up from below
     start = (mins[idx] - margin) if axis[0] == "-" else (maxs[idx] + margin)
     d = tuple(-c for c in direction)
+    span_lo = min(axial_span) - 1e-4 if axial_span is not None else None
+    span_hi = max(axial_span) + 1e-4 if axial_span is not None else None
 
     mesh = getattr(shape, MESH_ATTR, None)
     if mesh is not None:
@@ -325,16 +340,31 @@ def tunnel_open(shape: Any, u: float, v: float, axis: str) -> bool:
                 + (float(p[2]) - origin[2]) * d[2]
             )
             if margin - 1e-4 < t < margin + span + 1e-4:
+                if (
+                    span_lo is not None
+                    and span_hi is not None
+                    and not (span_lo <= float(p[idx]) <= span_hi)
+                ):
+                    continue  # material outside the declared bore interval
                 return False
         return True
 
     # analytic: sample interior points — thin plates must still count, so
-    # the pitch adapts to the span (~2 mm resolution, 7 samples minimum)
-    n = max(7, int(span / 2))
+    # the pitch adapts to the span (~2 mm resolution, 7 samples minimum).
+    # With an axial_span only the declared bore interval is probed; an
+    # interval that misses the part entirely reports open.
+    lo, hi = mins[idx], maxs[idx]
+    if axial_span is not None:
+        lo = max(lo, min(axial_span))
+        hi = min(hi, max(axial_span))
+    probe_span = hi - lo
+    if probe_span <= 0:
+        return True
+    n = max(7, int(probe_span / 2))
     for i in range(1, n + 1):
         p = [0.0, 0.0, 0.0]
         p[others[0]], p[others[1]] = u, v
-        p[idx] = mins[idx] + span * i / (n + 1)
+        p[idx] = lo + probe_span * i / (n + 1)
         if shape.is_inside(tuple(p)):
             return False
     return True
@@ -526,6 +556,25 @@ def _recut_span(
         return None
 
 
+def _declared_axial_span(h: dict[str, Any], idx: int) -> tuple[float, float] | None:
+    """(lo, hi) axial interval a bounded anchor bore must occupy — its
+    declared axial centre ``pos[idx]`` ± ``depth_mm``/2. ``None`` for plain
+    through anchors (no declared centre/depth): the whole-bbox tunnel check
+    stays in place for them."""
+    depth = h.get("depth_mm")
+    pos = h.get("pos")
+    if depth is None or not isinstance(pos, (list, tuple)) or len(pos) != 3:
+        return None
+    try:
+        axial = float(pos[idx])
+        half = float(depth) / 2.0
+    except (TypeError, ValueError):
+        return None
+    if half <= 0:
+        return None
+    return (axial - half, axial + half)
+
+
 def recut_missing_holes(
     shape: Any,
     holes: list[dict[str, Any]],
@@ -560,7 +609,14 @@ def recut_missing_holes(
             axis = str(h.get("axis") or "+z")
             idx, _dir = _axis_vec(axis)
             uv = _plane_coords(h, idx)
-            if uv is None or tunnel_open(shape, uv[0], uv[1], axis):
+            if uv is None:
+                continue
+            # a bounded anchor only owes an open tunnel across its declared
+            # bore interval — a body further along the same ray is not a
+            # blockage and must not trigger a re-cut that pierces it
+            if tunnel_open(
+                shape, uv[0], uv[1], axis, _declared_axial_span(h, idx)
+            ):
                 continue
             blocked.append((h, idx, uv[0], uv[1]))
         except Exception:

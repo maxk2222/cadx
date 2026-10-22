@@ -422,6 +422,7 @@ def main(workdir: Path | None = None) -> int:  # noqa: C901
                 "cross_sections": _inspect.cross_sections,
                 "clearance": _inspect.clearance,
                 "bbox_dims": _inspect.bbox_dims,
+                "list_edges": _inspect.list_edges,
             }
         )
     else:
@@ -437,6 +438,7 @@ def main(workdir: Path | None = None) -> int:  # noqa: C901
             "cross_sections",
             "clearance",
             "bbox_dims",
+            "list_edges",
         ):
             namespace[_name] = _unavailable_inspect
 
@@ -532,10 +534,23 @@ def main(workdir: Path | None = None) -> int:  # noqa: C901
 
         # deterministic anchor re-cut: bores measured on the reference image
         # are authoritative — when generated code missed or blocked one, cut
-        # it here instead of burning improve iterations on it
-        if mesh_boolean is not None and anchor_holes_list:
+        # it here instead of burning improve iterations on it. In pure CAD
+        # mode (no mesh solid) only image-measured anchors qualify — spec
+        # and mesh-derived anchors are declared intent the codegen owns;
+        # cutting them blind drills through features it placed deliberately.
+        recut_anchors = (
+            anchor_holes_list
+            if mesh_solid_path
+            else [
+                h
+                for h in anchor_holes_list
+                if isinstance(h, dict)
+                and str(h.get("source") or "") in ("image", "image+mesh")
+            ]
+        )
+        if mesh_boolean is not None and recut_anchors:
             try:
-                shape2, applied = mesh_boolean.recut_missing_holes(shape, anchor_holes_list)
+                shape2, applied = mesh_boolean.recut_missing_holes(shape, recut_anchors)
                 if applied:
                     shape = shape2
                     solids = shape.solids()

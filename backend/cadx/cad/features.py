@@ -1378,6 +1378,37 @@ def _merge_recognition(out: MeasuredFeatures, rec: dict[str, Any]) -> None:
         out.rounds = sorted(r for r in (rec.get("fillet_radii") or []) if r > 0)
 
 
+def _inplane_uv(group: MeasuredHoleGroup) -> list[tuple[float, float]]:
+    """(u, v) centre pairs on the plane perpendicular to the group's through
+    axis — the only coordinates comparable between the B-Rep scan and the
+    mesh tunnel scan.
+
+    The legacy ``centers`` field keeps a raw ``[x, y]`` projection for both:
+    for a ``+x`` bore that is ``[through_axis_x, y]`` on the B-Rep side but
+    ``[bbox_mid_x, y]`` on the mesh side — same axis, never matching. The
+    axis-aware ``centers_xyz`` rows mark the unobservable through-axis
+    coordinate ``None`` on both paths, so the two non-None in-plane values
+    are the truth. ``centers`` stays the fallback for groups without
+    axis-aware rows.
+    """
+    ax_idx = {"x": 0, "y": 1, "z": 2}.get(str(group.axis or "+z").lstrip("+-").lower(), 2)
+    others = [i for i in range(3) if i != ax_idx]
+    uvs: list[tuple[float, float]] = []
+    for row in group.centers_xyz or []:
+        if not isinstance(row, list | tuple) or len(row) != 3:
+            continue
+        u, v = row[others[0]], row[others[1]]
+        if u is None or v is None:
+            continue
+        uvs.append((float(u), float(v)))
+    if uvs:
+        return uvs
+    for row in group.centers or []:
+        if isinstance(row, list | tuple) and len(row) >= 2:
+            uvs.append((float(row[0]), float(row[1])))
+    return uvs
+
+
 def _mesh_fallback(out: MeasuredFeatures, stl_path: Path, mesh=None) -> None:
     try:
         m_groups, m_csk, m_slots = _mesh_through_holes(stl_path, mesh)
@@ -1389,21 +1420,23 @@ def _mesh_fallback(out: MeasuredFeatures, stl_path: Path, mesh=None) -> None:
         # the B-Rep scan already measured the round bores analytically —
         # merge only what it cannot see: elongated tunnels (slots) plus any
         # round tunnels it missed entirely. Round bores re-detected by the
-        # mesh scan (same axis, a center within ~2 mm) would double-count.
+        # mesh scan (same axis, a center within ~2 mm) would double-count —
+        # compared on the IN-PLANE coordinates only: the through-axis entry
+        # of a projected center pair is a fabricated bbox midpoint on the
+        # mesh side and the cylinder-face position on the B-Rep side, so it
+        # can never dedup (every side hole counted twice).
         new = []
         for g in m_groups:
             if g.elongated:
                 new.append(g)
                 continue
+            g_uvs = _inplane_uv(g)
             dupe = any(
-                g.axis == h.axis
+                _axis_letter(g.axis) == _axis_letter(h.axis)
                 and any(
-                    len(gc) >= 2
-                    and len(hc) >= 2
-                    and abs(float(gc[0]) - float(hc[0])) <= 2.0
-                    and abs(float(gc[1]) - float(hc[1])) <= 2.0
-                    for hc in (h.centers or [])
-                    for gc in (g.centers or [])
+                    abs(gu - hu) <= 2.0 and abs(gv - hv) <= 2.0
+                    for hu, hv in _inplane_uv(h)
+                    for gu, gv in g_uvs
                 )
                 for h in out.hole_groups
             )
