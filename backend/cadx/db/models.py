@@ -330,9 +330,45 @@ def _job_after_insert(mapper: Any, connection: Any, job: Job) -> None:
     _job_lifecycle(job)
 
 
+_TERMINAL_JOB = {JobStatus.succeeded, JobStatus.failed, JobStatus.cancelled}
+
+
+def _close_live_step(connection: Any, job: Job) -> None:
+    """Fold live.step into step_history when the job goes terminal.
+
+    emit() only retires a step when the NEXT one arrives — without this the
+    last step stays 'running' in the persisted live snapshot and every step
+    display computes `now - step_started_ts` forever. Runs after_update on
+    the flush's own connection so the extra write shares the transaction."""
+    live = job.live
+    if not isinstance(live, dict) or not live.get("step"):
+        return
+    new = dict(live)
+    dt = 0.0
+    if ts := new.get("step_started_ts"):
+        try:
+            t0 = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            if t0.tzinfo is None:
+                t0 = t0.replace(tzinfo=UTC)
+            end = job.finished_at or datetime.now(UTC)
+            if end.tzinfo is None:
+                end = end.replace(tzinfo=UTC)
+            dt = max(0.0, (end - t0).total_seconds())
+        except (TypeError, ValueError):
+            pass
+    hist = new.setdefault("step_history", [])
+    hist.append({"step": new["step"], "it": job.iteration or 0, "dt_s": round(dt, 1)})
+    del hist[:-40]
+    for k in ("step", "step_started_ts", "sub_progress", "sub_label"):
+        new.pop(k, None)
+    connection.execute(Job.__table__.update().where(Job.__table__.c.id == job.id).values(live=new))
+
+
 @event.listens_for(Job, "after_update")
 def _job_after_update(mapper: Any, connection: Any, job: Job) -> None:
     # only real status transitions are lifecycle — progress/log/step writes on
     # the same row are per-job stream material, not global-list changes
     if inspect(job).attrs.status.history.has_changes():
         _job_lifecycle(job)
+        if job.status in _TERMINAL_JOB:
+            _close_live_step(connection, job)

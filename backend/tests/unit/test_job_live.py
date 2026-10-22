@@ -9,6 +9,7 @@ import io
 import os
 import time
 import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -468,3 +469,48 @@ async def test_version_summary_active_job(client):
     assert vs["active_job"]["id"] == str(job.id)
     assert vs["active_job"]["status"] == "queued"
     assert vs["active_job"]["max_iterations"] == 9
+
+
+async def test_terminal_status_closes_live_step(client):
+    """Regression: a job reaching a terminal status must fold live.step into
+    step_history — otherwise the persisted snapshot keeps a 'running' step
+    forever and every step display computes now - step_started_ts."""
+    vid, _pid = await _mk_version("live-close")
+    t0 = datetime.now(UTC) - timedelta(seconds=25)
+    async with async_session() as db:
+        job = Job(
+            version_id=vid,
+            type=JobType.fem,
+            status=JobStatus.running,
+            started_at=datetime.now(UTC) - timedelta(seconds=30),
+            live={
+                "step": "fem",
+                "step_started_ts": t0.isoformat(),
+                "step_history": [{"step": "voxelize", "it": 0, "dt_s": 1.5}],
+                "sub_progress": 0.4,
+            },
+        )
+        db.add(job)
+        await db.commit()
+        jid = job.id
+        job.status = JobStatus.succeeded
+        job.finished_at = datetime.now(UTC)
+        await db.commit()
+
+    r = await client.get(f"/api/jobs/{jid}")
+    assert r.status_code == 200
+    live = r.json()["live"]
+    assert live.get("step") is None
+    assert live.get("step_started_ts") is None
+    assert live.get("sub_progress") is None
+    hist = live["step_history"]
+    assert [h["step"] for h in hist] == ["voxelize", "fem"]
+    assert 20 <= hist[-1]["dt_s"] <= 60
+
+    # an already-terminal job re-checked must not append twice
+    async with async_session() as db:
+        j = await db.get(Job, jid)
+        j.progress = 1.0
+        await db.commit()
+    r = await client.get(f"/api/jobs/{jid}")
+    assert [h["step"] for h in r.json()["live"]["step_history"]] == ["voxelize", "fem"]

@@ -92,11 +92,13 @@ function StepsTimeline({
   live,
   iteration,
   done,
+  endMs,
   events,
 }: {
   live: JobLive;
   iteration: number;
   done: boolean;
+  endMs?: number;
   events: { type: string; step?: string; iteration?: number }[];
 }) {
   const hist = live.step_history ?? [];
@@ -142,7 +144,10 @@ function StepsTimeline({
   if (live.step) {
     const it = iteration > 0 ? iteration : (hist[hist.length - 1]?.it ?? 0);
     const dt = live.step_started_ts
-      ? Math.max(0, (Date.now() - new Date(live.step_started_ts).getTime()) / 1000)
+      ? Math.max(
+          0,
+          ((endMs ?? Date.now()) - new Date(live.step_started_ts).getTime()) / 1000
+        )
       : undefined;
     push(it, { step: live.step, dt, active: !done });
   }
@@ -236,6 +241,11 @@ export default function JobLog({
     running && progress > 0.08 && progress < 0.95 && elapsed_s != null
       ? (elapsed_s * (1 - progress)) / progress
       : null;
+  // bound live-step clocks on terminal jobs — a stale persisted live.step
+  // otherwise ticks now - step_started_ts forever (closed on new jobs by the
+  // backend listener, kept here for already-persisted snapshots)
+  const stepEndMs =
+    isDone && job?.finished_at ? Date.parse(job.finished_at) : undefined;
   const scores = live.scores ?? [];
   const bestScore = scores.length ? Math.max(...scores.map((s) => s.score)) : null;
   const tokens = live.tokens
@@ -359,14 +369,15 @@ export default function JobLog({
           as the event-only fallback for pre-live jobs */}
       {live.step || (live.step_history?.length ?? 0) > 0 ? (
         <div className="flex flex-col gap-2">
-          <PipelineStepper live={live} />
-          <StepWaterfall live={live} />
+          <PipelineStepper live={live} endMs={stepEndMs} />
+          <StepWaterfall live={live} endMs={stepEndMs} />
         </div>
       ) : (
         <StepsTimeline
           live={live}
           iteration={job?.iteration ?? 0}
           done={isDone || !running}
+          endMs={stepEndMs}
           events={events}
         />
       )}

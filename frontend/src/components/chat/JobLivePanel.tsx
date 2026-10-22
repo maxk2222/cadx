@@ -91,8 +91,22 @@ export default function JobLivePanel({ jobId }: { jobId: string | null }) {
 
       {open && (
         <div className="flex flex-col gap-3 px-3 pb-3">
-          <PipelineStepper live={live} />
-          <StepWaterfall live={live} />
+          <PipelineStepper
+            live={live}
+            endMs={
+              job && isTerminalStatus(job.status) && job.finished_at
+                ? Date.parse(job.finished_at)
+                : undefined
+            }
+          />
+          <StepWaterfall
+            live={live}
+            endMs={
+              job && isTerminalStatus(job.status) && job.finished_at
+                ? Date.parse(job.finished_at)
+                : undefined
+            }
+          />
 
           {scoreData.length > 1 && (
             <div>

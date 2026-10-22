@@ -754,14 +754,17 @@ export function ProgressRing({
 export function PipelineStepper({
   live,
   compact,
+  endMs,
   className = "",
 }: {
   live: JobLive;
   compact?: boolean;
+  /** job.finished_at — bounds the running step's clock on finished jobs */
+  endMs?: number;
   className?: string;
 }) {
-  const now = useNow(1000, true);
-  const rows = stepRows(live, now);
+  const now = useNow(1000, endMs == null);
+  const rows = stepRows(live, now, endMs);
   if (!rows.length) return null;
   return (
     <div className={`flex flex-wrap items-center gap-1 ${className}`}>
@@ -796,14 +799,17 @@ export function PipelineStepper({
 export function StepWaterfall({
   live,
   maxRows = 12,
+  endMs,
   className = "",
 }: {
   live: JobLive;
   maxRows?: number;
+  /** job.finished_at — bounds the running step's clock on finished jobs */
+  endMs?: number;
   className?: string;
 }) {
-  const now = useNow(1000, true);
-  const rows = stepRows(live, now).slice(-maxRows);
+  const now = useNow(1000, endMs == null);
+  const rows = stepRows(live, now, endMs).slice(-maxRows);
   if (!rows.length) return null;
   const maxDt = Math.max(1, ...rows.map((r) => r.dt_s));
   return (

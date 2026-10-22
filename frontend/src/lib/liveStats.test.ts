@@ -55,6 +55,33 @@ describe("stepRows", () => {
     const rows = stepRows(live, NOW);
     expect(rows).toEqual([{ step: "fem", label: "fem", dt_s: 0, active: true }]);
   });
+
+  it("bounds the running step's clock at endMs (finished jobs)", () => {
+    // stale persisted snapshot: job succeeded but live.step was never closed
+    const live: JobLive = {
+      step: "fem",
+      step_started_ts: "2024-06-01T11:59:35Z",
+      step_history: [{ step: "voxelize", it: 0, dt_s: 1.5 }],
+    };
+    const end = Date.parse("2024-06-01T12:00:00Z"); // finished 25s after start
+    const rows = stepRows(live, NOW + 3_600_000, end); // viewed 1h later
+    expect(rows[1]).toEqual({ step: "fem", label: "fem", dt_s: 25, active: false });
+  });
+
+  it("uses min(now, endMs) — an endMs before now wins, after now is ignored", () => {
+    const live: JobLive = {
+      step: "finalize",
+      step_started_ts: "2024-06-01T11:59:00Z",
+    };
+    // endMs 30s before now → dt stops at endMs, not at now
+    expect(
+      stepRows(live, NOW, Date.parse("2024-06-01T11:59:30Z"))[0].dt_s
+    ).toBe(30);
+    // endMs after now → the clock can only run up to now anyway
+    expect(
+      stepRows(live, NOW, Date.parse("2024-06-01T12:30:00Z"))[0].dt_s
+    ).toBe(60);
+  });
 });
 
 describe("sparkPoints", () => {

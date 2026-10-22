@@ -172,7 +172,14 @@ export default function ChatJobCard({ spawned }: { spawned: SpawnedRef }) {
 
       {(hasLive || scores.length > 0) && (
         <div className="flex items-center gap-3 px-3 pt-2">
-          <PipelineStepper live={live} compact className="min-w-0 flex-1" />
+          <PipelineStepper
+            live={live}
+            compact
+            endMs={
+              !active && j?.finished_at ? Date.parse(j.finished_at) : undefined
+            }
+            className="min-w-0 flex-1"
+          />
           {scores.length > 0 && (
             <Sparkline
               values={scores}

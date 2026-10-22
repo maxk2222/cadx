@@ -14,8 +14,16 @@ export interface StepRow {
  *  running live.step appended at the end, its elapsed time computed live from
  *  step_started_ts against nowMs. History only ever holds completed steps (the
  *  worker appends a step on change), so a trailing entry equal to live.step is
- *  a stale duplicate — merged, not doubled. */
-export function stepRows(live: JobLive | null | undefined, nowMs: number): StepRow[] {
+ *  a stale duplicate — merged, not doubled.
+ *
+ *  `endMs` bounds the running step's clock (pass job.finished_at): a stale
+ *  live.step left in a finished snapshot then renders as a completed step
+ *  with its true duration instead of ticking forever. */
+export function stepRows(
+  live: JobLive | null | undefined,
+  nowMs: number,
+  endMs?: number
+): StepRow[] {
   if (!live) return [];
   const rows: StepRow[] = (live.step_history ?? []).map((h) => ({
     step: h.step,
@@ -25,13 +33,15 @@ export function stepRows(live: JobLive | null | undefined, nowMs: number): StepR
   }));
   if (live.step) {
     const t0 = live.step_started_ts ? Date.parse(live.step_started_ts) : NaN;
-    const dt = Number.isNaN(t0) ? 0 : Math.max(0, (nowMs - t0) / 1000);
+    const end = endMs != null ? Math.min(nowMs, endMs) : nowMs;
+    const dt = Number.isNaN(t0) ? 0 : Math.max(0, (end - t0) / 1000);
+    const active = endMs == null;
     const last = rows[rows.length - 1];
     if (last && last.step === live.step) {
       last.dt_s = dt;
-      last.active = true;
+      last.active = active;
     } else {
-      rows.push({ step: live.step, label: stepLabel(live.step), dt_s: dt, active: true });
+      rows.push({ step: live.step, label: stepLabel(live.step), dt_s: dt, active });
     }
   }
   return rows;
