@@ -501,7 +501,9 @@ def _regression_critique(best: Candidate | None, analysis: dict[str, Any]) -> Cr
     )
 
 
-def _verify_spec_issue(exec_result: dict[str, Any] | None) -> dict[str, Any] | None:
+def _verify_spec_issue(
+    exec_result: dict[str, Any] | None, *, stage: str | None = None
+) -> dict[str, Any] | None:
     """Canonical M6 conformance verdict — folded into ``Version.issues`` as ONE
     summary entry (same shape as the ``design_audit`` report entry). The
     per-source issues still carry the detail; this is the consolidated
@@ -509,10 +511,12 @@ def _verify_spec_issue(exec_result: dict[str, Any] | None) -> dict[str, Any] | N
     report = (exec_result or {}).get("verify_spec")
     if not isinstance(report, dict) or report.get("status") not in ("PASS", "FAIL", "UNVERIFIED"):
         return None
+    summary = str(report.get("summary") or "verify_spec conformance report")
     return {
         "source": "verify_spec",
         "severity": "major" if report.get("status") == "FAIL" else "minor",
-        "what": str(report.get("summary") or "verify_spec conformance report"),
+        "what": f"[{stage}] {summary}" if stage else summary,
+        "stage": stage,
         "report": report,
     }
 
@@ -1118,7 +1122,7 @@ async def _run_topopt_phase(
     # canonical verify_spec verdict heads the persisted issue list — the
     # topopt result dict plays the exec_result role here (bound-semantics
     # envelope checks, feature + structural tiers)
-    vs_entry = _verify_spec_issue(res)
+    vs_entry = _verify_spec_issue(res, stage="optimize")
     if vs_entry:
         outcome.issues = [vs_entry, *list(outcome.issues or [])]
     await ctx.emit(
@@ -4025,7 +4029,7 @@ async def _run_cad(  # noqa: C901
         )
     # canonical verify_spec verdict heads the persisted issue list; the
     # per-source issues after it carry the per-finding detail
-    vs_entry = _verify_spec_issue(best.exec_result)
+    vs_entry = _verify_spec_issue(best.exec_result, stage="cad")
     outcome.issues = [vs_entry, *issues] if vs_entry else issues
     if ctx.resolved_mode == "hybrid" and ctx.mesh_info:
         prep_it = int(ctx.mesh_info.get("_prep_it", 1))
@@ -4750,7 +4754,7 @@ async def _run_mesh(  # noqa: C901
         best.exec_result.get("analysis"),
         spec=spec,
     )
-    vs_entry = _verify_spec_issue(best.exec_result)
+    vs_entry = _verify_spec_issue(best.exec_result, stage="cad")
     if vs_entry:
         outcome.issues = [vs_entry, *list(outcome.issues or [])]
     if outcome.critique is not None:

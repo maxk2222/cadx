@@ -327,9 +327,14 @@ equilibrium sanity.
   The FEM verification still uses the exact binary mask;
   `topopt.verification` compares predicted vs measured compliance and
   `sf_mask` vs `sf_export`. `n_components` counts mask components,
-  `n_surface_components` includes nested cavity walls, and
-  `n_bodies_export` counts connected material bodies after re-voxelizing
-  the STL; only the latter determines physical multi-body validity.
+  `n_surface_components` counts boundary surface components (a closed
+  hollow shell legitimately has ≥2 — outer wall plus one component per
+  enclosed void; inner walls carry *negative* signed volume), and
+  `n_bodies_export` counts physical solids via `solid_body_count` —
+  positive-signed-volume mesh components. `n_bodies_voxel` counts
+  components of the re-voxelized FEM raster; when it reads lower than
+  `n_bodies_export`, the raster fused nested-but-disconnected bodies and
+  the export solve verified a phantom (verification is then invalid).
 - Mesh extraction uses marching cubes (scikit-image) when available and falls
   back to the voxel-boundary surface, so `skimage` is optional at runtime.
 - The solver accepts per-DOF `(nnodes,3)` fixed masks. Backend selection is

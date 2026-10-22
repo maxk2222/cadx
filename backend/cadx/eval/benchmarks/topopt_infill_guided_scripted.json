@@ -1,0 +1,102 @@
+{
+ "prompt": "Block 60 x 40 x 24 mm aus PLA, einseitig eingespannt, shell+infill topologieoptimiert (guided gyroid).",
+ "gen_mode": "cad",
+ "expect_watertight": true,
+ "settings": {
+  "max_iterations": 1,
+  "topopt_iterations": 15
+ },
+ "runtime": {
+  "fem_voxel_mm": 2.5,
+  "topopt_multires_min_cells": 200
+ },
+ "llm_script": [
+  {
+   "name": "infill_block_am",
+   "summary": "60x40x24 cantilever block, shell+infill TopOpt",
+   "units": "mm",
+   "length_x": {
+    "value": 60,
+    "source": "stated"
+   },
+   "width_y": {
+    "value": 40,
+    "source": "stated"
+   },
+   "height_z": {
+    "value": 24,
+    "source": "stated"
+   },
+   "features": [],
+   "load_cases": [
+    {
+     "name": "press",
+     "fixed": [
+      {
+       "kind": "face",
+       "axis": "-x"
+      }
+     ],
+     "loads": [
+      {
+       "region": {
+        "kind": "face",
+        "axis": "+x"
+       },
+       "force_n": [
+        0,
+        0,
+        -80
+       ]
+      }
+     ]
+    }
+   ],
+   "optimize": {
+    "enabled": true,
+    "structure_mode": "infill",
+    "infill_scope": "guided",
+    "infill_style": "gyroid_graded",
+    "infill_shell_mm": 2.0,
+    "infill_period_mm": 8.0,
+    "target_volume_fraction": 0.6,
+    "keep_mode": "manual"
+   },
+   "open_questions": []
+  },
+  {
+   "approach": "cad",
+   "approach_reason": "simple block",
+   "strategy": [
+    "cad"
+   ],
+   "steps": [
+    "block"
+   ],
+   "params": [],
+   "standard_parts": [],
+   "optimize": true,
+   "optimize_reason": "prompt asks for topology optimization",
+   "notes": ""
+  },
+  {
+   "reasoning": "simple block",
+   "params": [],
+   "expected_bbox": [
+    60,
+    40,
+    24
+   ],
+   "code": "PARAMS = {\"lx\": 60.0, \"ly\": 40.0, \"t\": 24.0}\nfrom build123d import *\nresult = Box(PARAMS[\"lx\"], PARAMS[\"ly\"], PARAMS[\"t\"], align=(Align.CENTER, Align.CENTER, Align.MIN))\n"
+  },
+  {
+   "score": 90,
+   "passed": true,
+   "discrepancies": [],
+   "matches": [
+    "block"
+   ],
+   "confidence": 0.9
+  }
+ ]
+}
