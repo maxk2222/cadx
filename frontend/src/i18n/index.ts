@@ -37,12 +37,25 @@ import esLibrary from "./locales/es/library.json";
 import esSettings from "./locales/es/settings.json";
 import esEditor from "./locales/es/editor.json";
 
-export const SUPPORTED = ["en", "de", "es"] as const;
+import frCommon from "./locales/fr/common.json";
+import frNav from "./locales/fr/nav.json";
+import frWizard from "./locales/fr/wizard.json";
+import frProjects from "./locales/fr/projects.json";
+import frVersion from "./locales/fr/version.json";
+import frJobs from "./locales/fr/jobs.json";
+import frChat from "./locales/fr/chat.json";
+import frStats from "./locales/fr/stats.json";
+import frLibrary from "./locales/fr/library.json";
+import frSettings from "./locales/fr/settings.json";
+import frEditor from "./locales/fr/editor.json";
+
+export const SUPPORTED = ["en", "de", "es", "fr"] as const;
 export type Lang = (typeof SUPPORTED)[number];
 export const LANG_LABEL: Record<Lang, string> = {
   en: "English",
   de: "Deutsch",
   es: "Español",
+  fr: "Français",
 };
 
 const LANG_KEY = "cadx:lang";
@@ -101,6 +114,19 @@ export const resources = {
     library: esLibrary,
     settings: esSettings,
     editor: esEditor,
+  },
+  fr: {
+    common: frCommon,
+    nav: frNav,
+    wizard: frWizard,
+    projects: frProjects,
+    version: frVersion,
+    jobs: frJobs,
+    chat: frChat,
+    stats: frStats,
+    library: frLibrary,
+    settings: frSettings,
+    editor: frEditor,
   },
 } as const;
 

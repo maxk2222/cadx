@@ -13,7 +13,11 @@ import { describe, expect, it } from "vitest";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const LOCALES = join(HERE, "..", "i18n", "locales");
 const SRC = join(HERE, "..");
-const LANGS = ["en", "de", "es"];
+const REF = "en";
+const LANGS = readdirSync(LOCALES, { withFileTypes: true })
+  .filter((e) => e.isDirectory())
+  .map((e) => e.name)
+  .sort();
 
 type Tree = Record<string, unknown>;
 
@@ -45,7 +49,7 @@ function* walk(dir: string): Generator<string> {
   }
 }
 
-const namespaces = readdirSync(join(LOCALES, "en"))
+const namespaces = readdirSync(join(LOCALES, REF))
   .filter((f) => f.endsWith(".json"))
   .map((f) => f.replace(/\.json$/, ""));
 
@@ -61,10 +65,10 @@ describe("i18n locale parity", () => {
     }
   });
 
-  for (const lang of ["de", "es"]) {
-    it(`key set of ${lang} matches en`, () => {
+  for (const lang of LANGS.filter((l) => l !== REF)) {
+    it(`key set of ${lang} matches ${REF}`, () => {
       for (const ns of namespaces) {
-        const enKeys = keySet(load("en", ns));
+        const enKeys = keySet(load(REF, ns));
         const lngKeys = keySet(load(lang, ns));
         const missing = [...enKeys].filter((k) => !lngKeys.has(k));
         const extra = [...lngKeys].filter((k) => !enKeys.has(k));

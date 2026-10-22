@@ -45,11 +45,14 @@ humans and agents alike. The short version:
   Tailwind only.
 - Frontend is fully internationalised (`react-i18next`): user-facing strings go
   through `t()` / `i18n.t()` — never hardcode prose in components. Namespaced
-  locale files live in `frontend/src/i18n/locales/{en,de,es}/`; add the same
-  key to all three files (the `i18nParity` vitest test enforces key-set parity
-  and flags unresolvable keys). To add a language: create `locales/<lang>/*.json`
-  mirroring `en`, register it in `frontend/src/i18n/index.ts`, extend `LANGS`
-  in the parity test and the `LanguageSwitcher` list.
+  locale files live in `frontend/src/i18n/locales/<lang>/` (en is the
+  reference; de/es/fr ship today); add the same key to every language (the
+  `i18nParity` vitest test discovers languages from the locales dir, enforces
+  key-set parity and flags unresolvable keys). To add a language: create
+  `locales/<lang>/*.json` mirroring `en`, register it in
+  `frontend/src/i18n/index.ts` (`SUPPORTED`, `LANG_LABEL`, `resources`) — the
+  switcher and parity test pick it up automatically. Keep every `{{var}}`
+  interpolation placeholder identical across languages.
 - Backend strings (job log lines, warnings, DFM codes) stay English by design —
   only UI chrome is translated.
 - Never put the LLM API key in DB/logs/traces.
