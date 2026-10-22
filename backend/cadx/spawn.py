@@ -896,6 +896,9 @@ async def spawn_restart(  # noqa: C901
             v.code or "",
             params=v.params or {},
             parent=parent,
+            # root restart stays in its own part; a child inherits via parent
+            # (part args on a child spawn are rejected by spawn_version_job)
+            part_id=None if parent else v.part_id,
             prompt=v.prompt,
             enqueue_fn=enqueue_fn,
         )
@@ -912,6 +915,8 @@ async def spawn_restart(  # noqa: C901
             model=str(opts.get("model") or ""),
             seed=int(opts.get("seed") or 0),
             post=opts.get("post") or {},
+            # root restart stays in its own part; a child inherits via parent
+            part_id=None if parent else v.part_id,
             prompt=v.prompt,
             enqueue_fn=enqueue_fn,
         )

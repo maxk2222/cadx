@@ -47,7 +47,12 @@ export default function PartsSection({
     v.name.toLowerCase().includes(needle);
   const shown = groups
     .map((g) => ({ ...g, versions: g.versions.filter(match) }))
-    .filter((g) => !needle || g.versions.length > 0);
+    .filter(
+      (g) =>
+        !needle ||
+        g.versions.length > 0 ||
+        g.part.name.toLowerCase().includes(needle),
+    );
   const shownOrphans = orphans.filter(match);
 
   const addPart = useMutation({

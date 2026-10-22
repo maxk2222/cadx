@@ -17,6 +17,7 @@ from cadx.db.models import (
     Job,
     JobStatus,
     JobType,
+    Part,
     Project,
     Version,
     VersionKind,
@@ -337,9 +338,14 @@ async def _mk_terminal_job(
         p = Project(name="restart-src")
         db.add(p)
         await db.flush()
+        # a real part row — restarts resolve version.part_id through
+        # resolve_part, which rejects unknown ids
+        pt = Part(project_id=p.id, number=1, name="src-part")
+        db.add(pt)
+        await db.flush()
         v = Version(
             project_id=p.id,
-            part_id=uuid.uuid4(),
+            part_id=pt.id,
             number=1,
             kind=kind,
             prompt="src",
@@ -364,6 +370,7 @@ async def test_spawn_restart_dispatches_code():
     assert new_v.id != v.id
     assert new_v.kind == VersionKind.code
     assert new_v.code == CODE
+    assert new_v.part_id == v.part_id  # root restart keeps its part
     assert new_j.type == JobType.code
     assert calls and calls[0]["func"] == "run_code_job"
     assert proj is not None
@@ -384,6 +391,7 @@ async def test_spawn_restart_dispatches_meshgen():
         new_v, new_j = await spawn.spawn_restart(db, job, enqueue_fn=enq)
     assert new_v.id != v.id
     assert new_v.kind == VersionKind.meshgen
+    assert new_v.part_id == v.part_id  # root restart keeps its part
     assert new_v.asset_ids == [aid]
     assert new_v.options["seed"] == 3
     assert new_v.options["post"] == {"scale": 0.9}

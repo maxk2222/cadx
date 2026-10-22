@@ -154,7 +154,7 @@ export default function PartCard({
             </button>
           )}
           <span className="shrink-0 text-[11px] text-faint/70">
-            {versions.length}
+            {synthetic ? versions.length : part.version_count}
           </span>
           <span className="flex-1" />
           {part.thumbnail_url && (
@@ -227,7 +227,8 @@ export default function PartCard({
         title={t("part_delete_title")}
         body={t("part_delete_body", {
           name: part.name || `P${part.number}`,
-          count: versions.length,
+          // server total — the filtered tree may show fewer
+          count: part.version_count,
         })}
       />
     </div>

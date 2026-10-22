@@ -195,6 +195,13 @@ export default function ProjectPage() {
     setModeInit(true);
   }, [project.data, modeInit]);
 
+  // drop a stale part selection (deleted part / project switch)
+  useEffect(() => {
+    if (partSel && parts.data && !parts.data.some((pt) => pt.id === partSel)) {
+      setPartSel("");
+    }
+  }, [partSel, parts.data]);
+
   const generate = useMutation({
     mutationFn: () =>
       api.generate(

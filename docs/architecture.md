@@ -224,6 +224,19 @@ data/library/<part_id>/<file>    reusable user library (uploaded STEP/STL bodies
 
 ## Design decisions
 
+- **Parts inside a project**: a project holds any number of independent
+  `Part` rows (`P1`, `P2`, … — `project_id`+`number` unique). Every
+  `Version` carries `part_id` (NOT NULL, FK): children strictly inherit
+  `parent.part_id`; a part owns one or more ROOT trees (multiple roots
+  arise from restarts and "try again" generations). Resolution lives in
+  one chokepoint — `cadx.parts.resolve_part`, called by
+  `spawn_version_job` for every new root: explicit `part_id` is validated
+  against the project, `part_name` matches case-insensitively or creates,
+  omitted → a new part is auto-created from the prompt (full backward
+  compatibility for evalkit/MCP/legacy callers). The Alembic migration
+  backfills one part per existing root tree. Settings stay project-wide;
+  part deletion cascades its subtree through the shared leaf cleanup and
+  refuses while any subtree job is non-terminal.
 - **Code, not meshes**: LLMs produce build123d source. Parametric `PARAMS`
   dict at top; deterministic rebuilds; cheap edits. Exception: `mesh`/`hybrid`
   modes — see [mesh-generation.md](mesh-generation.md). Hybrid is *CAD-hosted*: the generated
