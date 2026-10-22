@@ -2,12 +2,30 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ------------------------------------------------------------------ */
+/* design tokens — the only place raw palette values live              */
+/* ------------------------------------------------------------------ */
+
+:root {
+  --c-bg: 9 9 11; /* zinc-950 */
+  --c-panel: 24 24 27; /* zinc-900 */
+  --c-panel-2: 39 39 42; /* zinc-800 */
+  --c-edge: 39 39 42; /* zinc-800 */
+  --c-edge-2: 63 63 70; /* zinc-700 */
+  --c-fg: 244 244 245; /* zinc-100 */
+  --c-muted: 161 161 170; /* zinc-400 */
+  --c-faint: 113 113 122; /* zinc-500 */
+
+  /* accent ramp mirrors tailwind `brand`/blue — used for glow/focus vars */
+  --c-accent: 59 130 246;
+}
+
 body {
   font-family: ui-sans-serif, system-ui, sans-serif;
 }
 
 ::selection {
-  background: rgb(59 130 246 / 0.35);
+  background: rgb(var(--c-accent) / 0.35);
 }
 
 /* slim scrollbars for panels/logs */
@@ -16,13 +34,13 @@ body {
   height: 10px;
 }
 *::-webkit-scrollbar-thumb {
-  background: theme("colors.zinc.700");
+  background: rgb(var(--c-edge-2));
   border-radius: 6px;
   border: 3px solid transparent;
   background-clip: content-box;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: theme("colors.zinc.600");
+  background: rgb(var(--c-faint));
   background-clip: content-box;
   border: 3px solid transparent;
 }
@@ -34,6 +52,26 @@ body {
   from {
     opacity: 0;
     transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
   }
   to {
     opacity: 1;
@@ -70,12 +108,46 @@ body {
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* shared component classes                                            */
+/* ------------------------------------------------------------------ */
+
+@layer components {
+  /* standard card surface */
+  .panel {
+    @apply rounded-xl border border-edge bg-panel/80;
+  }
+
+  /* interactive card hover — subtle lift + border brightening */
+  .panel-hover {
+    @apply transition-all duration-150 hover:-translate-y-px hover:border-edge2 hover:shadow-lg hover:shadow-black/30;
+  }
+
+  /* restrained accent glow — active nav items, primary CTA */
+  .glow-accent {
+    box-shadow:
+      0 0 0 1px rgb(var(--c-accent) / 0.25),
+      0 4px 14px rgb(var(--c-accent) / 0.12);
+  }
+
+  /* shared input styling (was the `inputCls` export — alias kept there) */
+  .input {
+    @apply w-full rounded-md border border-edge2 bg-panel2/80 px-3 py-2 text-sm text-fg placeholder-faint outline-none transition-colors focus:border-brand-600 focus:ring-1 focus:ring-brand-600/40;
+  }
+}
+
 @layer utilities {
   .focus-ring {
     @apply outline-none focus-visible:ring-2 focus-visible:ring-brand-500/60;
   }
   .anim-fade-in-up {
     animation: fade-slide-in 0.25s ease-out both;
+  }
+  .anim-fade-in {
+    animation: fade-in 0.2s ease-out both;
+  }
+  .anim-scale-in {
+    animation: scale-in 0.15s ease-out both;
   }
   .anim-caret {
     animation: caret-blink 1s step-end infinite;
@@ -92,5 +164,28 @@ body {
   }
   .pulse-dot {
     animation: pulse-soft 1.4s ease-out infinite;
+  }
+  /* staggered child fade-in: set --i on each child */
+  .stagger > * {
+    animation: fade-slide-in 0.25s ease-out both;
+    animation-delay: calc(var(--i, 0) * 45ms);
+  }
+  /* two-line clamp for prompts/descriptions */
+  .clamp-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

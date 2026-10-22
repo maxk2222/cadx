@@ -1,5 +1,9 @@
-/** Thin Recharts wrappers with CADX dark-theme defaults — keeps StatsPage lean. */
+/** Thin Recharts wrappers with CADX dark-theme defaults — keeps StatsPage lean.
+ *  Axis ticks are locale-aware: pass `xTick`/`yTick` formatters; the Y axis
+ *  defaults to compact notation (150000 → "150K") with an explicit width so
+ *  long labels never get clipped. */
 
+import { useTranslation } from "react-i18next";
 import {
   Area,
   AreaChart,
@@ -41,23 +45,52 @@ const TOOLTIP_STYLE = {
   itemStyle: { color: "#e4e4e7" },
 } as const;
 
+type NumFmt = (n: number) => string;
+
+function useCompactFmt(): NumFmt {
+  const { i18n } = useTranslation();
+  return (n: number) =>
+    new Intl.NumberFormat(i18n.language, {
+      notation: "compact",
+      maximumFractionDigits: 1,
+    }).format(n);
+}
+
 export function StatArea({
   data,
   xKey,
   areas,
   height = 220,
+  xTick,
 }: {
   data: object[];
   xKey: string;
   areas: { key: string; name: string; color?: string }[];
   height?: number;
+  /** x tick formatter (e.g. localized date) */
+  xTick?: (v: string) => string;
 }) {
+  const yFmt = useCompactFmt();
   return (
     <ResponsiveContainer width="100%" height={height}>
-      <AreaChart data={data} margin={{ top: 4, right: 8, bottom: 0, left: -18 }}>
+      <AreaChart data={data} margin={{ top: 4, right: 12, bottom: 0, left: 0 }}>
         <CartesianGrid stroke="#27272a" strokeDasharray="3 3" vertical={false} />
-        <XAxis dataKey={xKey} tick={AXIS_STYLE} tickLine={false} axisLine={false} minTickGap={24} />
-        <YAxis tick={AXIS_STYLE} tickLine={false} axisLine={false} allowDecimals={false} />
+        <XAxis
+          dataKey={xKey}
+          tick={AXIS_STYLE}
+          tickLine={false}
+          axisLine={false}
+          minTickGap={24}
+          tickFormatter={xTick}
+        />
+        <YAxis
+          tick={AXIS_STYLE}
+          tickLine={false}
+          axisLine={false}
+          allowDecimals={false}
+          width={44}
+          tickFormatter={yFmt}
+        />
         <Tooltip {...TOOLTIP_STYLE} />
         {areas.length > 1 && <Legend wrapperStyle={{ fontSize: 12 }} />}
         {areas.map((a, i) => (
@@ -85,6 +118,8 @@ export function StatBars({
   height = 220,
   layout = "horizontal",
   colorFor,
+  xTick,
+  stacked,
 }: {
   data: object[];
   xKey: string;
@@ -94,14 +129,18 @@ export function StatBars({
   layout?: "horizontal" | "vertical";
   /** Per-category color override, e.g. semantic score-bucket colors. */
   colorFor?: (name: string) => string;
+  xTick?: (v: string) => string;
+  /** stack the bars — only correct for disjoint additive metrics */
+  stacked?: boolean;
 }) {
+  const yFmt = useCompactFmt();
   const vertical = layout === "vertical";
   return (
     <ResponsiveContainer width="100%" height={height}>
       <BarChart
         data={data}
         layout={layout}
-        margin={{ top: 4, right: 8, bottom: 0, left: vertical ? 8 : -18 }}
+        margin={{ top: 4, right: 12, bottom: 0, left: vertical ? 8 : 0 }}
       >
         <CartesianGrid
           stroke="#27272a"
@@ -111,7 +150,13 @@ export function StatBars({
         />
         {vertical ? (
           <>
-            <XAxis type="number" tick={AXIS_STYLE} tickLine={false} axisLine={false} />
+            <XAxis
+              type="number"
+              tick={AXIS_STYLE}
+              tickLine={false}
+              axisLine={false}
+              tickFormatter={yFmt}
+            />
             <YAxis
               type="category"
               dataKey={xKey}
@@ -129,8 +174,16 @@ export function StatBars({
               tickLine={false}
               axisLine={false}
               minTickGap={24}
+              tickFormatter={xTick}
             />
-            <YAxis tick={AXIS_STYLE} tickLine={false} axisLine={false} allowDecimals={false} />
+            <YAxis
+              tick={AXIS_STYLE}
+              tickLine={false}
+              axisLine={false}
+              allowDecimals={false}
+              width={44}
+              tickFormatter={yFmt}
+            />
           </>
         )}
         <Tooltip {...TOOLTIP_STYLE} />
@@ -140,9 +193,9 @@ export function StatBars({
             key={b.key}
             dataKey={b.key}
             name={b.name}
-            stackId={bars.length > 1 ? "1" : undefined}
+            stackId={stacked ? "1" : undefined}
             fill={b.color ?? CHART_COLORS[i % CHART_COLORS.length]}
-            radius={[3, 3, 0, 0]}
+            radius={stacked ? [0, 0, 0, 0] : [3, 3, 0, 0]}
           >
             {colorFor &&
               data.map((row, ri) => (
@@ -158,26 +211,45 @@ export function StatBars({
   );
 }
 
-/** Stacked bars + a line on a secondary axis — e.g. outcomes/day + avg score. */
+/** Stacked bars + a line on a secondary axis — e.g. outcomes/day + avg score.
+ *  Stacking is correct here because the bar series are disjoint outcomes. */
 export function StatComposed({
   data,
   xKey,
   bars,
   line,
   height = 220,
+  xTick,
 }: {
   data: object[];
   xKey: string;
   bars: { key: string; name: string; color: string }[];
   line?: { key: string; name: string; color?: string };
   height?: number;
+  xTick?: (v: string) => string;
 }) {
+  const yFmt = useCompactFmt();
   return (
     <ResponsiveContainer width="100%" height={height}>
-      <ComposedChart data={data} margin={{ top: 4, right: 8, bottom: 0, left: -18 }}>
+      <ComposedChart data={data} margin={{ top: 4, right: 0, bottom: 0, left: 0 }}>
         <CartesianGrid stroke="#27272a" strokeDasharray="3 3" vertical={false} />
-        <XAxis dataKey={xKey} tick={AXIS_STYLE} tickLine={false} axisLine={false} minTickGap={24} />
-        <YAxis yAxisId="l" tick={AXIS_STYLE} tickLine={false} axisLine={false} allowDecimals={false} />
+        <XAxis
+          dataKey={xKey}
+          tick={AXIS_STYLE}
+          tickLine={false}
+          axisLine={false}
+          minTickGap={24}
+          tickFormatter={xTick}
+        />
+        <YAxis
+          yAxisId="l"
+          tick={AXIS_STYLE}
+          tickLine={false}
+          axisLine={false}
+          allowDecimals={false}
+          width={44}
+          tickFormatter={yFmt}
+        />
         {line && (
           <YAxis
             yAxisId="r"
@@ -186,7 +258,8 @@ export function StatComposed({
             tick={AXIS_STYLE}
             tickLine={false}
             axisLine={false}
-            width={28}
+            allowDecimals={false}
+            width={36}
           />
         )}
         <Tooltip {...TOOLTIP_STYLE} />
@@ -224,7 +297,7 @@ export function StatDonut({
   height = 200,
   colorFor,
 }: {
-  data: { name: string; count: number }[];
+  data: { name: string; count: number; color?: string }[];
   height?: number;
   /** Name-based color override — keeps e.g. "failed" red in any order. */
   colorFor?: (name: string) => string;
@@ -244,7 +317,7 @@ export function StatDonut({
           {data.map((d, i) => (
             <Cell
               key={i}
-              fill={colorFor?.(d.name) ?? CHART_COLORS[i % CHART_COLORS.length]}
+              fill={d.color ?? colorFor?.(d.name) ?? CHART_COLORS[i % CHART_COLORS.length]}
             />
           ))}
         </Pie>

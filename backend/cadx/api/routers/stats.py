@@ -283,8 +283,10 @@ async def _jobs_agg(db: AsyncSession, cutoff: datetime | None) -> _JobAgg:
             dkey = j["finished_at"].date().isoformat()
             if j["status"] == JobStatus.succeeded:
                 a.done_day[dkey]["succeeded"] += 1
-            elif j["status"] in (JobStatus.failed, JobStatus.cancelled):
+            elif j["status"] == JobStatus.failed:
                 a.done_day[dkey]["failed"] += 1
+            elif j["status"] == JobStatus.cancelled:
+                a.done_day[dkey]["cancelled"] += 1
         for h in (j["live"] or {}).get("step_history") or []:
             if isinstance(h.get("dt_s"), (int, float)) and h.get("step"):
                 a.step_wall[_step_base(str(h["step"]))] += float(h["dt_s"])
@@ -397,6 +399,7 @@ async def stats(days: int = Query(0, ge=0, le=3650), db: AsyncSession = Depends(
                 tokens=ta.day.get(key, 0),
                 succeeded=ja.done_day.get(key, Counter()).get("succeeded", 0),
                 failed=ja.done_day.get(key, Counter()).get("failed", 0),
+                cancelled=ja.done_day.get(key, Counter()).get("cancelled", 0),
                 score_avg=round(sum(ss) / len(ss), 1) if (ss := va.day_scores.get(key)) else None,
             )
         )

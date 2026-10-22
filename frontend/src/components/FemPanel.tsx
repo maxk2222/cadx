@@ -1,5 +1,6 @@
 import { Activity } from "lucide-react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { Artifact, FemReport } from "../lib/types";
 import { Card, Lightbox, SectionTitle } from "./ui";
 
@@ -17,6 +18,7 @@ export default function FemPanel({
   fem: FemReport;
   artifacts: Artifact[];
 }) {
+  const { t } = useTranslation("version");
   const [lightbox, setLightbox] = useState<string | null>(null);
   const femImgs = artifacts.filter(
     (a) => a.kind === "fem" && /\.(png|jpg)$/i.test(a.path)
@@ -38,25 +40,25 @@ export default function FemPanel({
         right={
           worst != null && (
             <span className={`text-xs ${sfTone(worst)}`}>
-              worst SF {worst.toFixed(2)}
+              {t("fem_worst_sf", { v: worst.toFixed(2) })}
             </span>
           )
         }
       >
         <span className="inline-flex items-center gap-1">
-          <Activity className="h-3 w-3" /> Structural analysis (FEM)
+          <Activity className="h-3 w-3" /> {t("fem_title")}
         </span>
       </SectionTitle>
 
       <div className="mb-2 text-[11px] text-zinc-500">
-        {(fem.material?.name as string) ?? "material"}
+        {(fem.material?.name as string) ?? t("fem_material")}
         {grid.pitch_mm != null && ` · voxel ${grid.pitch_mm} mm`}
-        {grid.elements != null && ` · ${grid.elements} elements`}
+        {grid.elements != null && t("fem_elements", { n: grid.elements })}
       </div>
 
       {fem.valid === false && (
         <div className="mb-2 rounded border border-red-900/60 bg-red-950/40 px-2 py-1.5 text-[11px] font-medium text-red-400">
-          degenerate solve — displacements/stress are not physically meaningful
+          {t("fem_degenerate")}
         </div>
       )}
 
@@ -64,11 +66,11 @@ export default function FemPanel({
         <table className="w-full text-xs">
           <thead>
             <tr className="text-left text-[10px] uppercase tracking-wider text-zinc-500">
-              <th className="pb-1 font-medium">case</th>
-              <th className="pb-1 font-medium" title="solver converged">conv</th>
+              <th className="pb-1 font-medium">{t("fem_case")}</th>
+              <th className="pb-1 font-medium" title={t("fem_conv")}>{t("fem_conv_short")}</th>
               <th className="pb-1 font-medium">σ max (MPa)</th>
-              <th className="pb-1 font-medium">disp (mm)</th>
-              <th className="pb-1 font-medium">safety</th>
+              <th className="pb-1 font-medium">{t("fem_disp")}</th>
+              <th className="pb-1 font-medium">{t("fem_safety")}</th>
             </tr>
           </thead>
           <tbody>
@@ -77,7 +79,7 @@ export default function FemPanel({
                 <td className="py-1 pr-2">{c.name}</td>
                 <td
                   className={`py-1 pr-2 ${c.converged ? "text-emerald-400" : "text-red-400"}`}
-                  title={c.converged ? "solver converged" : "solver did not converge"}
+                  title={t(c.converged ? "fem_conv" : "fem_not_conv")}
                 >
                   {c.converged ? "✓" : "✗"}
                 </td>
@@ -95,11 +97,11 @@ export default function FemPanel({
       <div className="mt-1.5 space-y-0.5">
         {cases.map((c) => (
           <div key={c.name} className="text-[10px] text-zinc-500">
-            <span className="text-zinc-400">{c.name}:</span> {c.solver} ·
-            compliance {c.compliance_j.toPrecision(3)} J
-            {c.residual != null && ` · residual ${c.residual.toExponential(1)}`}
+            <span className="text-zinc-400">{c.name}:</span> {c.solver} ·{" "}
+            {t("fem_compliance", { v: c.compliance_j.toPrecision(3) })}
+            {c.residual != null && ` · ${t("fem_residual", { v: c.residual.toExponential(1) })}`}
             {!!c.reactions?.length &&
-              ` · reactions (${c.reactions.map((n) => n.toFixed(1)).join(", ")}) N — should balance the applied loads`}
+              ` · ${t("fem_reactions", { v: c.reactions.map((n) => n.toFixed(1)).join(", ") })}`}
           </div>
         ))}
       </div>

@@ -1,3 +1,4 @@
+import i18n from "../i18n";
 import type { MeshModelInfo } from "./types";
 
 /** Lifecycle state of a sidecar model, ordered most-specific first:
@@ -18,8 +19,7 @@ export function modelState(m: MeshModelInfo): ModelState {
 }
 
 export function modelStateLabel(m: MeshModelInfo): string {
-  const s = modelState(m);
-  return s === "not_installed" ? "not installed" : s;
+  return i18n.t(`settings:mdl_state_${modelState(m)}`);
 }
 
 export function modelStateTone(m: MeshModelInfo): "blue" | "green" | "purple" | "zinc" {

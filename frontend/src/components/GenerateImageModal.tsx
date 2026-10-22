@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { api, errMsg } from "../lib/api";
 import type { Asset } from "../lib/types";
 import { Btn, Field, Modal, inputCls, useToast } from "./ui";
@@ -17,6 +18,7 @@ export default function GenerateImageModal({
   referenceAsset?: Asset;
   onClose: () => void;
 }) {
+  const { t } = useTranslation("common");
   const qc = useQueryClient();
   const toast = useToast();
   const [prompt, setPrompt] = useState("");
@@ -55,7 +57,9 @@ export default function GenerateImageModal({
     onSuccess: (newAssets) => {
       qc.invalidateQueries({ queryKey: ["assets", projectId] });
       toast(
-        `${newAssets.length} image${newAssets.length > 1 ? "s" : ""} ${edit ? "edited" : "generated"}`,
+        t(edit ? "asset.gen.edited_n" : "asset.gen.generated_n", {
+          count: newAssets.length,
+        }),
         "success",
       );
       onClose();
@@ -84,7 +88,7 @@ export default function GenerateImageModal({
     <Modal
       open
       onClose={onClose}
-      title={edit ? "Edit / vary reference image" : "Generate reference image"}
+      title={edit ? t("asset.gen.title_edit") : t("asset.gen.title_gen")}
     >
       <form
         onSubmit={(e) => {
@@ -93,8 +97,8 @@ export default function GenerateImageModal({
         }}
       >
         <Field
-          label="Reference image"
-          hint="optional — pick an asset to vary or edit it (img2img / instruction edit)"
+          label={t("asset.gen.ref")}
+          hint={t("asset.gen.ref_hint")}
         >
           <div className="flex items-center gap-2">
             <select
@@ -102,7 +106,7 @@ export default function GenerateImageModal({
               value={refId}
               onChange={(e) => setRefId(e.target.value)}
             >
-              <option value="">none — text-to-image</option>
+              <option value="">{t("asset.gen.none")}</option>
               {imgAssets.map((a) => (
                 <option key={a.id} value={a.id}>
                   {a.caption || a.filename}
@@ -119,11 +123,11 @@ export default function GenerateImageModal({
           </div>
         </Field>
         <Field
-          label={edit ? "Edit instruction" : "Prompt"}
+          label={edit ? t("asset.gen.edit_instr") : t("asset.gen.prompt")}
           hint={
             edit
-              ? 'what to change — e.g. "make it matte black", "add cooling fins"'
-              : "what should the reference show — subject, view, style"
+              ? t("asset.gen.edit_hint")
+              : t("asset.gen.prompt_hint")
           }
         >
           <textarea
@@ -132,33 +136,33 @@ export default function GenerateImageModal({
             autoFocus
             placeholder={
               edit
-                ? "e.g. turn this into a clean black-and-white sketch"
-                : "e.g. a wall-mounted headphone holder, three-quarter view, studio light"
+                ? t("asset.gen.edit_ph")
+                : t("asset.gen.prompt_ph")
             }
             onChange={(e) => setPrompt(e.target.value)}
           />
         </Field>
-        <Field label="Negative prompt" hint="optional">
+        <Field label={t("asset.gen.negative")} hint={t("field.optional")}>
           <input
             className={inputCls}
             value={negative}
-            placeholder="text, watermark, hands"
+            placeholder={t("asset.gen.negative_ph")}
             onChange={(e) => setNegative(e.target.value)}
           />
         </Field>
         <div className="grid grid-cols-3 gap-3">
-          <Field label="Model">
+          <Field label={t("asset.gen.model")}>
             <select className={inputCls} value={model} onChange={(e) => setModel(e.target.value)}>
-              <option value="auto">auto{edit ? " (edit)" : ""}</option>
+              <option value="auto">{t("opt.auto")}{edit ? t("asset.gen.auto_edit") : ""}</option>
               {pickable.map((m) => (
                 <option key={m.id} value={m.id} disabled={!m.available}>
                   {m.name || m.id}
-                  {m.requires_image ? " (edit-only)" : ""}
+                  {m.requires_image ? t("asset.gen.edit_only") : ""}
                 </option>
               ))}
             </select>
           </Field>
-          <Field label="Size">
+          <Field label={t("asset.gen.size")}>
             <select
               className={inputCls}
               value={size}
@@ -171,7 +175,7 @@ export default function GenerateImageModal({
               ))}
             </select>
           </Field>
-          <Field label="Count">
+          <Field label={t("asset.gen.count")}>
             <select
               className={inputCls}
               value={count}
@@ -187,8 +191,8 @@ export default function GenerateImageModal({
         </div>
         {edit && (
           <Field
-            label={`Strength — ${Math.round(strength * 100)}%`}
-            hint="how much to change the reference (low = stay close, high = strong change)"
+            label={t("asset.gen.strength", { pct: Math.round(strength * 100) })}
+            hint={t("asset.gen.strength_hint")}
           >
             <input
               type="range"
@@ -208,39 +212,37 @@ export default function GenerateImageModal({
             checked={markSketch}
             onChange={(e) => setMarkSketch(e.target.checked)}
           />
-          Mark result as sketch — feeds it to the sketch-conditioned mesh adapter
-          (TripoSG-scribble)
+          {t("asset.gen.sketch_note")}
         </label>
-        <Field label="Seed" hint="optional — empty = random">
+        <Field label={t("asset.gen.seed")} hint={t("asset.gen.seed_hint")}>
           <input
             className={inputCls}
             value={seed}
-            placeholder="e.g. 42"
+            placeholder={t("asset.gen.seed_ph")}
             onChange={(e) => setSeed(e.target.value.replace(/[^0-9]/g, ""))}
           />
         </Field>
         {models.isSuccess && list.length === 0 && (
           <div className="mb-2 text-xs text-amber-400">
-            no image adapter reported by the mesh server — install one (see docs/image-generation)
+            {t("asset.gen.no_adapter")}
           </div>
         )}
         {noEditAdapter && (
           <div className="mb-2 text-xs text-amber-400">
-            no edit-capable image adapter available — qwen-image-edit is the default choice on
-            Apple Silicon (see docs/image-generation)
+            {t("asset.gen.no_edit_adapter")}
           </div>
         )}
         <div className="flex justify-end gap-2">
           <Btn variant="ghost" type="button" onClick={onClose}>
-            Cancel
+            {t("action.cancel")}
           </Btn>
           <Btn type="submit" busy={gen.isPending} disabled={!prompt.trim() || noEditAdapter}>
-            {edit ? "Generate edit" : "Generate"}
+            {edit ? t("asset.gen.submit_edit") : t("asset.gen.submit")}
           </Btn>
         </div>
         {gen.isPending && (
           <div className="mt-2 text-xs text-zinc-500">
-            local generation can take a moment — the model loads on first use
+            {t("asset.gen.slow_note")}
           </div>
         )}
       </form>

@@ -1,5 +1,6 @@
 import { ChevronDown, ChevronRight, CircleDot } from "lucide-react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 import { timeAgo } from "../lib/format";
 import { stepLabel } from "../lib/steps";
@@ -13,6 +14,7 @@ export default function VersionTree({
   versions: VersionSummary[];
   activeId?: string;
 }) {
+  const { t } = useTranslation("version");
   // ids whose subtrees are hidden — deep refine chains get long
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
   const toggleCollapse = (id: string) =>
@@ -76,8 +78,8 @@ export default function VersionTree({
           {kids > 0 ? (
             <button
               type="button"
-              aria-label={isCollapsed ? `expand subtree of v${v.number}` : `collapse subtree of v${v.number}`}
-              title={isCollapsed ? `expand ${kids} descendant${kids > 1 ? "s" : ""}` : "collapse subtree"}
+              aria-label={isCollapsed ? t("tree_expand_aria", { n: v.number }) : t("tree_collapse_aria", { n: v.number })}
+              title={isCollapsed ? t("tree_expand_n", { n: kids }) : t("tree_collapse")}
               onClick={(e) => {
                 e.preventDefault(); // don't follow the row link
                 e.stopPropagation();
@@ -117,7 +119,7 @@ export default function VersionTree({
                           ? "bg-amber-800 text-amber-200"
                           : "bg-teal-800 text-teal-200"
                   }`}
-                  title={`requested: ${v.gen_mode}`}
+                  title={t("tree_requested", { mode: v.gen_mode })}
                 >
                   {v.resolved_mode}
                 </span>
@@ -150,7 +152,7 @@ export default function VersionTree({
         </Link>
         );
       })}
-      {rows.length === 0 && <div className="px-2 py-4 text-sm text-zinc-500">no versions yet</div>}
+      {rows.length === 0 && <div className="px-2 py-4 text-sm text-muted">{t("tree_empty")}</div>}
     </div>
   );
 }

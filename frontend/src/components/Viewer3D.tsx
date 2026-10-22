@@ -10,6 +10,7 @@ import {
   Scan,
 } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import * as THREE from "three";
 import { distMm, nextMeasurePts, type Pt3 } from "../lib/measure";
 import ModelCanvas, {
@@ -31,6 +32,7 @@ function Marker({ p, color = "#f59e0b" }: { p: Pt3; color?: string }) {
 }
 
 export default function Viewer3D({ url }: { url: string | null }) {
+  const { t } = useTranslation("common");
   const [autoRotate, setAutoRotate] = useState(false);
   const [wireframe, setWireframe] = useState(false);
   const [opacity, setOpacity] = useState(1);
@@ -93,7 +95,7 @@ export default function Viewer3D({ url }: { url: string | null }) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-zinc-500">
         <Boxes className="h-8 w-8 text-zinc-700" />
-        no 3D preview yet
+        {t("viewer.no_preview")}
       </div>
     );
   }
@@ -157,7 +159,7 @@ export default function Viewer3D({ url }: { url: string | null }) {
       <div className="absolute left-2 top-2 flex gap-1">
         {VIEWS.map((v) =>
           toolBtn(
-            v.title,
+            t(`viewer.${v.title}`),
             false,
             () => setViewCmd({ view: v.id, n: Date.now() }),
             <span className="px-0.5 text-[10px] font-semibold uppercase">{v.id}</span>,
@@ -169,19 +171,19 @@ export default function Viewer3D({ url }: { url: string | null }) {
       {/* toolbar */}
       <div className="absolute right-2 top-2 flex flex-wrap justify-end gap-1">
         <OpacitySlider value={opacity} onChange={setOpacity} />
-        {toolBtn("fit / reset view", false, () => setFitKey((k) => k + 1), <Scan className="h-4 w-4" />)}
-        {toolBtn("auto-rotate", autoRotate, () => setAutoRotate((v) => !v), <RotateCw className="h-4 w-4" />)}
-        {toolBtn("wireframe", wireframe, () => setWireframe((v) => !v), <Boxes className="h-4 w-4" />)}
-        {toolBtn("toggle grid", grid, () => setGrid((v) => !v), <Grid3x3 className="h-4 w-4" />)}
+        {toolBtn(t("viewer.fit"), false, () => setFitKey((k) => k + 1), <Scan className="h-4 w-4" />)}
+        {toolBtn(t("viewer.rotate"), autoRotate, () => setAutoRotate((v) => !v), <RotateCw className="h-4 w-4" />)}
+        {toolBtn(t("viewer.wireframe"), wireframe, () => setWireframe((v) => !v), <Boxes className="h-4 w-4" />)}
+        {toolBtn(t("viewer.grid"), grid, () => setGrid((v) => !v), <Grid3x3 className="h-4 w-4" />)}
         {toolBtn(
-          "measure distance — click two surface points (Esc exits)",
+          t("viewer.measure"),
           measuring,
           () => setMeasuring((v) => !v),
           <Ruler className="h-4 w-4" />
         )}
-        {toolBtn("screenshot (PNG)", false, screenshot, <Camera className="h-4 w-4" />)}
+        {toolBtn(t("viewer.screenshot"), false, screenshot, <Camera className="h-4 w-4" />)}
         {toolBtn(
-          fullscreen ? "exit fullscreen" : "fullscreen",
+          fullscreen ? t("viewer.fs_exit") : t("viewer.fs_enter"),
           fullscreen,
           toggleFullscreen,
           fullscreen ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />
@@ -198,19 +200,17 @@ export default function Viewer3D({ url }: { url: string | null }) {
               {measureDist.toFixed(2)} mm
               <button
                 type="button"
-                aria-label="clear measurement"
+                aria-label={t("viewer.clear")}
                 className="ml-2 text-xs text-zinc-500 hover:text-zinc-300"
                 onClick={() => setMeasurePts([])}
               >
-                clear
+                {t("viewer.clear")}
               </button>
             </>
           ) : (
             <span className="text-xs">
-              {measurePts.length === 1
-                ? "click a second surface point"
-                : "click two surface points"}{" "}
-              · right-drag orbits · Esc exits
+              {t(measurePts.length === 1 ? "viewer.measure_2nd" : "viewer.measure_hint")}{" "}
+              · {t("viewer.measure_orbit")}
             </span>
           )}
         </div>

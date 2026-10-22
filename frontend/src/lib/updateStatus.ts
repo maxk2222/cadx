@@ -1,28 +1,31 @@
 /** Pure helpers for the UpdateCard — kept logic-only so they're unit-testable. */
 
+import i18n from "../i18n";
 import type { UpdateStatus } from "./types";
 
-const PHASE_LABELS: Record<string, string> = {
-  starting: "starting…",
-  fetch: "fetching origin",
-  check: "checking",
-  pull: "pulling changes",
-  reexec: "restarting updater",
-  deps: "installing dependencies",
-  restart: "restarting the stack",
-  verify: "verifying health",
-  rollback: "rolling back",
-  done: "finished",
-};
+const PHASES = new Set([
+  "starting",
+  "fetch",
+  "check",
+  "pull",
+  "reexec",
+  "deps",
+  "restart",
+  "verify",
+  "rollback",
+  "done",
+]);
 
 /** Human label for an update phase/state combination. */
 export function updatePhaseLabel(s: Pick<UpdateStatus, "state" | "phase">): string {
   if (s.state === "running" || s.state === "checking" || s.state === "rolling-back") {
-    return PHASE_LABELS[s.phase ?? ""] ?? s.phase ?? s.state;
+    return s.phase && PHASES.has(s.phase)
+      ? i18n.t(`settings:upd_phase_${s.phase}`)
+      : (s.phase ?? s.state);
   }
-  if (s.state === "done") return "done";
-  if (s.state === "failed") return "failed";
-  return "idle";
+  if (s.state === "done") return i18n.t("settings:upd_phase_state_done");
+  if (s.state === "failed") return i18n.t("settings:upd_phase_state_failed");
+  return i18n.t("settings:upd_phase_state_idle");
 }
 
 /** True while a status poll should keep running (update in flight). */

@@ -11,6 +11,7 @@ import {
   X,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { api, errMsg } from "../lib/api";
@@ -36,17 +37,12 @@ import { Btn, Chip, Field, IconBtn, inputCls, OpacitySlider, useToast } from "./
 const KEEP_COLOR = "#22c55e";
 const CARVE_COLOR = "#a855f7";
 
-const STYLES: { id: OrganicStyle; label: string; hint: string }[] = [
-  { id: "gyroid", label: "gyroid", hint: "smooth TPMS sheet — flowing minimal surface" },
-  { id: "trabecular", label: "trabecular", hint: "bone-like spongy core" },
-  { id: "voronoi", label: "voronoi", hint: "organic cell walls" },
-  { id: "branches", label: "branches", hint: "floor-rooted struts + canopy" },
-];
+const STYLES: OrganicStyle[] = ["gyroid", "trabecular", "voronoi", "branches"];
 
-const QUALITY: { id: string; label: string; voxel_mm: number; max_elements: number }[] = [
-  { id: "draft", label: "draft", voxel_mm: 3.0, max_elements: 120_000 },
-  { id: "normal", label: "normal", voxel_mm: 1.5, max_elements: 150_000 },
-  { id: "fine", label: "fine", voxel_mm: 1.0, max_elements: 400_000 },
+const QUALITY: { id: string; voxel_mm: number; max_elements: number }[] = [
+  { id: "draft", voxel_mm: 3.0, max_elements: 120_000 },
+  { id: "normal", voxel_mm: 1.5, max_elements: 150_000 },
+  { id: "fine", voxel_mm: 1.0, max_elements: 400_000 },
 ];
 
 function Slider({
@@ -102,6 +98,7 @@ export default function OrganicEditor({
   version: VersionDetail;
   onJobStarted: (r: { version_id: string; job_id: string }) => void;
 }) {
+  const { t } = useTranslation("editor");
   const toast = useToast();
 
   /* --- core parameters --------------------------------------------- */
@@ -219,7 +216,7 @@ export default function OrganicEditor({
       });
       if (seq !== previewSeq.current) return; // stale response
       setPreview(r);
-      setErr(r.ok ? null : (r.error ?? "preview failed"));
+      setErr(r.ok ? null : (r.error ?? t("org_preview_failed")));
     } catch (e) {
       if (seq === previewSeq.current) setErr(errMsg(e));
     } finally {
@@ -280,7 +277,7 @@ export default function OrganicEditor({
     const list = mode === "carve" ? voids : keeps;
     const set = mode === "carve" ? setVoids : setKeeps;
     if (list.length >= 10) {
-      toast("region limit reached (10 per type)", "error");
+      toast(t("org_region_limit"), "error");
       return;
     }
     set((rs) => [...rs, { kind: "points", points: [], radius_mm: brushR }]);
@@ -380,12 +377,12 @@ export default function OrganicEditor({
 
   const preserveHint =
     preservePct >= 95
-      ? "solid shell — structure hidden inside"
+      ? t("org_preserve_95")
       : preservePct >= 50
-        ? "carved windows — silhouette stays readable"
+        ? t("org_preserve_50")
         : preservePct > 0
-          ? "mostly open — approaching skeleton"
-          : "open skeleton — surface fully carved";
+          ? t("org_preserve_1")
+          : t("org_preserve_0");
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-zinc-950">
@@ -393,25 +390,24 @@ export default function OrganicEditor({
       <div className="flex items-center gap-3 border-b border-zinc-800 px-4 py-2.5">
         <h2 className="flex items-center gap-2 text-sm font-semibold">
           <Sprout className="h-4 w-4 text-emerald-400" />
-          Organic structure — v{version.number}
+          {t("org_title", { n: version.number })}
         </h2>
         <span className="text-xs text-zinc-500">
-          pseudo-topology restyle — pick a style, tune, then apply
+          {t("org_subtitle")}
         </span>
         <span className="flex-1" />
         {brushMode && (
           <Chip tone={brushMode === "keep" ? "green" : "purple"}>
-            <Brush className="h-3 w-3" /> painting {brushMode} regions — drag on the model,
-            right-drag orbits
+            <Brush className="h-3 w-3" /> {t("org_painting", { mode: t(`org_type_${brushMode}`) })}
           </Chip>
         )}
         {busy === "preview" && (
           <Chip tone="blue">
-            <Loader2 className="h-3 w-3 animate-spin" /> preview…
+            <Loader2 className="h-3 w-3 animate-spin" /> {t("org_preview")}
           </Chip>
         )}
         <OpacitySlider value={opacity} onChange={setOpacity} />
-        <IconBtn title="close (Esc)" onClick={onClose}>
+        <IconBtn title={t("common:action.close_esc")} onClick={onClose}>
           <X className="h-4 w-4" />
         </IconBtn>
       </div>
@@ -446,7 +442,7 @@ export default function OrganicEditor({
             </ModelCanvas>
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-zinc-500">
-              no mesh artifact
+              {t("org_no_mesh")}
             </div>
           )}
 
@@ -454,21 +450,20 @@ export default function OrganicEditor({
           <div className="absolute bottom-3 left-3 flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-950/90 px-3 py-1.5 text-[11px] backdrop-blur">
             <span className="flex items-center gap-1">
               <span className="h-2 w-2 rounded-full" style={{ background: KEEP_COLOR }} />
-              keep{nKeepPts ? ` (${nKeepPts} pts)` : ""}
+              {t("org_keep")}{nKeepPts ? ` (${nKeepPts} pts)` : ""}
             </span>
             <span className="flex items-center gap-1">
               <span className="h-2 w-2 rounded-full" style={{ background: CARVE_COLOR }} />
-              carve{nCarvePts ? ` (${nCarvePts} pts)` : ""}
+              {t("org_carve")}{nCarvePts ? ` (${nCarvePts} pts)` : ""}
             </span>
             {!!anchorMarkers.length && (
               <span className="flex items-center gap-1 text-cyan-300">
-                <ShieldCheck className="h-3 w-3" /> {anchorMarkers.length} anchor
-                {anchorMarkers.length > 1 ? "s" : ""}
+                <ShieldCheck className="h-3 w-3" /> {t("org_anchors_n", { count: anchorMarkers.length })}
               </span>
             )}
             {fillsCapped && (
-              <span className="text-amber-400" title="paint fills are skipped above 500k vertices">
-                fills hidden — mesh too dense
+              <span className="text-amber-400" title={t("org_fills_hint")}>
+                {t("org_fills_hidden")}
               </span>
             )}
             <span className="text-zinc-500">·</span>
@@ -476,31 +471,31 @@ export default function OrganicEditor({
               <span
                 className={brushMode === "keep" ? "text-emerald-300" : "text-purple-300"}
               >
-                painting on the source mesh
+                {t("org_painting_src")}
               </span>
             ) : showOriginal ? (
-              <span className="text-zinc-400">original part</span>
+              <span className="text-zinc-400">{t("org_original")}</span>
             ) : preview?.ok ? (
-              <span className="text-zinc-400">live preview of the organic structure</span>
+              <span className="text-zinc-400">{t("org_preview_live")}</span>
             ) : (
-              <span className="text-zinc-500">source mesh</span>
+              <span className="text-zinc-500">{t("org_source_mesh")}</span>
             )}
             {stats?.faces != null && preview?.ok && !showOriginal && (
               <span className="tabular-nums text-zinc-500">
-                · {stats.faces.toLocaleString()} tris
+                · {t("org_tris", { n: stats.faces.toLocaleString() })}
               </span>
             )}
             {stats?.watertight != null && preview?.ok && !showOriginal && (
               <span className={stats.watertight ? "text-emerald-400" : "text-amber-400"}>
-                · {stats.watertight ? "watertight" : "not watertight"}
+                · {stats.watertight ? t("org_watertight") : t("org_not_watertight")}
               </span>
             )}
             {coverage != null && preview?.ok && !showOriginal && (
               <span
                 className={coverage >= 0.4 ? "text-zinc-400" : "text-amber-400"}
-                title="share of the original surface that survived the carve — low values mean the shape is barely recognizable"
+                title={t("org_surface_hint")}
               >
-                · surface {Math.round(coverage * 100)}%
+                · {t("org_surface", { pct: Math.round(coverage * 100) })}
               </span>
             )}
           </div>
@@ -514,40 +509,40 @@ export default function OrganicEditor({
                   ? "border-emerald-700 bg-emerald-950/70 text-emerald-200"
                   : "border-zinc-700 bg-zinc-950/80 text-zinc-400 hover:text-zinc-200"
               }`}
-              title="flip between the organic preview and the original part"
+              title={t("org_compare_hint")}
             >
               <Eye className="h-3.5 w-3.5" />
-              {showOriginal ? "original" : "compare original"}
+              {showOriginal ? t("org_original_btn") : t("org_compare_btn")}
             </button>
           )}
         </div>
 
         {/* parameter panel */}
         <div className="flex w-80 shrink-0 flex-col overflow-y-auto border-l border-zinc-800 p-4">
-          <Field label="Style">
+          <Field label={t("org_style")}>
             <div className="grid grid-cols-2 gap-1">
-              {STYLES.map((s) => (
+              {STYLES.map((sid) => (
                 <button
-                  key={s.id}
-                  onClick={() => setStyle(s.id)}
-                  title={s.hint}
+                  key={sid}
+                  onClick={() => setStyle(sid)}
+                  title={t(`org_style_${sid}_hint`)}
                   className={`rounded-md border px-2 py-1.5 text-left text-xs transition-colors ${
-                    style === s.id
+                    style === sid
                       ? "border-emerald-600 bg-emerald-950/60 text-emerald-200"
                       : "border-zinc-700 bg-zinc-900 text-zinc-400 hover:border-zinc-600 hover:text-zinc-300"
                   }`}
                 >
-                  {s.label}
+                  {t(`org_style_${sid}`)}
                 </button>
               ))}
             </div>
             <span className="mt-1 block text-xs text-zinc-500">
-              {STYLES.find((s) => s.id === style)?.hint}
+              {t(`org_style_${style}_hint`)}
             </span>
           </Field>
 
           <Slider
-            label="Preserve surface"
+            label={t("org_preserve")}
             value={preservePct}
             min={0}
             max={100}
@@ -558,7 +553,7 @@ export default function OrganicEditor({
           <p className="-mt-2 mb-3 text-[11px] text-zinc-500">{preserveHint}</p>
 
           <Slider
-            label="Material density"
+            label={t("org_density")}
             value={volfrac}
             min={0.1}
             max={0.8}
@@ -567,7 +562,7 @@ export default function OrganicEditor({
             onChange={setVolfrac}
           />
           <Slider
-            label="Cell size"
+            label={t("org_cell")}
             value={period}
             min={4}
             max={40}
@@ -575,7 +570,7 @@ export default function OrganicEditor({
             format={(v) => `${v.toFixed(1)} mm`}
             onChange={setPeriod}
           />
-          <Field label="Seed">
+          <Field label={t("org_seed")}>
             <div className="flex gap-1.5">
               <input
                 type="number"
@@ -585,7 +580,7 @@ export default function OrganicEditor({
                 onChange={(e) => setSeed(Math.max(0, Math.round(num(e.target.value, 0))))}
               />
               <IconBtn
-                title="random seed"
+                title={t("org_seed_random")}
                 onClick={() => setSeed(Math.floor(Math.random() * 9999))}
               >
                 <Dices className="h-4 w-4" />
@@ -600,16 +595,16 @@ export default function OrganicEditor({
               onChange={(e) => setAutoKeep(e.target.checked)}
               className="accent-brand-500"
             />
-            protect detected features
+            {t("org_protect")}
             {anchors.length > 0 && (
-              <span className="text-xs text-cyan-400">({anchors.length} found)</span>
+              <span className="text-xs text-cyan-400">({t("org_found", { n: anchors.length })})</span>
             )}
           </label>
 
           {/* keep + carve regions */}
           <div className="mb-3">
             <div className="mb-1 flex items-center justify-between">
-              <span className="text-sm text-zinc-400">Regions</span>
+              <span className="text-sm text-zinc-400">{t("org_regions")}</span>
               <div className="flex gap-1">
                 {brushMode ? (
                   <Btn variant="ghost" className="!px-2 !py-1 text-xs" onClick={stopPainting}>
@@ -621,23 +616,23 @@ export default function OrganicEditor({
                       onClick={() => startPainting("keep")}
                       disabled={!baseUrl}
                       className="flex items-center gap-1 rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-400 hover:border-emerald-700 hover:text-emerald-300 disabled:opacity-40"
-                      title="paint zones that must stay solid (mounts, mating faces…)"
+                      title={t("org_keep_hint")}
                     >
-                      <Paintbrush className="h-3 w-3" /> keep
+                      <Paintbrush className="h-3 w-3" /> {t("org_keep")}
                     </button>
                     <button
                       onClick={() => startPainting("carve")}
                       disabled={!baseUrl}
                       className="flex items-center gap-1 rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-400 hover:border-purple-700 hover:text-purple-300 disabled:opacity-40"
-                      title="paint zones forced empty — punches through skin and protected areas"
+                      title={t("org_carve_hint")}
                     >
-                      <Paintbrush className="h-3 w-3" /> carve
+                      <Paintbrush className="h-3 w-3" /> {t("org_carve")}
                     </button>
                   </>
                 )}
                 {regions.length > 0 && (
                   <IconBtn
-                    title="clear all regions"
+                    title={t("org_clear_regions")}
                     danger
                     onClick={() => {
                       setKeeps([]);
@@ -651,7 +646,7 @@ export default function OrganicEditor({
             </div>
             {brushMode && (
               <label className="mb-2 flex items-center gap-2 text-xs text-zinc-500">
-                brush
+                {t("org_brush")}
                 <input
                   type="range"
                   min={1}
@@ -666,7 +661,7 @@ export default function OrganicEditor({
             )}
             {regions.length === 0 && !brushMode && (
               <p className="text-xs text-zinc-500">
-                none — painted zones stay solid (green) or are carved empty (purple)
+                {t("org_regions_none")}
               </p>
             )}
             {regions.map(({ type, r, i }) => (
@@ -679,11 +674,11 @@ export default function OrganicEditor({
                     className="h-2 w-2 rounded-full"
                     style={{ background: type === "keep" ? KEEP_COLOR : CARVE_COLOR }}
                   />
-                  {type} #{i + 1} — {r.points?.length ?? 0} pts · r=
+                  {t(`org_type_${type}`)} #{i + 1} — {r.points?.length ?? 0} {t("org_pts")} · r=
                   {r.radius_mm ?? brushR} mm
                 </span>
                 <IconBtn
-                  title="delete region"
+                  title={t("org_del_region")}
                   danger
                   onClick={() =>
                     (type === "keep" ? setKeeps : setVoids)((k) =>
@@ -700,59 +695,59 @@ export default function OrganicEditor({
           {/* advanced */}
           <details className="mb-3 rounded border border-zinc-800 bg-zinc-900/40 px-3 py-2">
             <summary className="cursor-pointer text-xs font-medium text-zinc-400 select-none hover:text-zinc-200">
-              Advanced
+              {t("org_advanced")}
             </summary>
             <div className="mt-3">
               <Slider
-                label="Skin thickness"
+                label={t("org_skin")}
                 value={shellMm}
                 min={0}
                 max={8}
                 step={0.5}
-                format={(v) => (v ? `${v.toFixed(1)} mm` : "auto")}
+                format={(v) => (v ? `${v.toFixed(1)} mm` : t("org_auto"))}
                 onChange={setShellMm}
               />
               <Slider
-                label="Solid base band"
+                label={t("org_floor")}
                 value={floorMm}
                 min={0}
                 max={15}
                 step={0.5}
-                format={(v) => (v ? `${v.toFixed(1)} mm` : "off")}
+                format={(v) => (v ? `${v.toFixed(1)} mm` : t("org_off"))}
                 onChange={setFloorMm}
               />
               <Slider
-                label="Min member"
+                label={t("org_min_member")}
                 value={minMember}
                 min={0}
                 max={8}
                 step={0.25}
-                format={(v) => (v ? `${v.toFixed(2)} mm` : "auto")}
+                format={(v) => (v ? `${v.toFixed(2)} mm` : t("org_auto"))}
                 onChange={setMinMember}
               />
               <Slider
-                label="Iso threshold"
+                label={t("org_iso")}
                 value={threshold}
                 min={0}
                 max={0.9}
                 step={0.05}
-                format={(v) => (v ? v.toFixed(2) : "auto")}
+                format={(v) => (v ? v.toFixed(2) : t("org_auto"))}
                 onChange={(v) => setThreshold(v < 0.2 ? 0 : v)}
               />
-              <Field label="Quality">
+              <Field label={t("org_quality")}>
                 <div className="flex overflow-hidden rounded border border-zinc-700 text-[11px]">
                   {QUALITY.map((x) => (
                     <button
                       key={x.id}
                       onClick={() => setQuality(x.id)}
-                      title={`voxel ${x.voxel_mm} mm · ≤${x.max_elements.toLocaleString()} cells`}
+                      title={t("org_quality_hint", { v: x.voxel_mm, n: x.max_elements.toLocaleString() })}
                       className={`flex-1 px-2 py-1 ${
                         quality === x.id
                           ? "bg-zinc-700 text-zinc-100"
                           : "text-zinc-500 hover:text-zinc-300"
                       }`}
                     >
-                      {x.label}
+                      {t(`org_q_${x.id}`)}
                     </button>
                   ))}
                 </div>
@@ -764,8 +759,7 @@ export default function OrganicEditor({
           <div className="mb-3 flex gap-2 rounded-md border border-amber-900/60 bg-amber-950/30 p-2 text-xs text-amber-200/90">
             <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>
-              Aesthetic styling only — this is <b>not</b> a structural optimization. No FEM
-              verification runs; check strength separately if the part is load-bearing.
+              {t("org_disclaimer_a")} <b>{t("org_disclaimer_b")}</b> {t("org_disclaimer_c")}
             </span>
           </div>
 
@@ -777,7 +771,7 @@ export default function OrganicEditor({
 
           <div className="mt-auto flex gap-2 pt-2">
             <Btn variant="ghost" className="flex-1" onClick={onClose}>
-              cancel
+              {t("common:action.cancel")}
             </Btn>
             <Btn
               variant="success"
@@ -785,9 +779,9 @@ export default function OrganicEditor({
               onClick={apply}
               busy={busy === "apply"}
               disabled={!!err && !preview?.ok}
-              title="create a child version with this structure"
+              title={t("org_apply_hint")}
             >
-              <Sprout className="h-4 w-4" /> apply
+              <Sprout className="h-4 w-4" /> {t("org_apply")}
             </Btn>
           </div>
         </div>

@@ -1,0 +1,17 @@
+{
+  "new_part": "Nueva pieza",
+  "chat": "Chat",
+  "projects": "Proyectos",
+  "jobs": "Trabajos",
+  "stats": "Estadísticas",
+  "library": "Biblioteca",
+  "settings": "Ajustes",
+  "home_title": "CADX — inicio",
+  "badge": {
+    "active_jobs": "trabajos activos",
+    "waiting_input": "un trabajo espera entrada",
+    "updates_one": "{{count}} actualización disponible",
+    "updates_other": "{{count}} actualizaciones disponibles"
+  },
+  "language": "Idioma"
+}

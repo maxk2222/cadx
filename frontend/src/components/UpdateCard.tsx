@@ -4,6 +4,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import { RefreshCw, RotateCcw, ArrowUpCircle } from "lucide-react";
 
 import { api, errMsg } from "../lib/api";
@@ -11,6 +12,7 @@ import { behindBadge, isUpdateActive, logTail, updatePhaseLabel } from "../lib/u
 import { Btn, Card, Chip, ConfirmModal, SectionTitle } from "./ui";
 
 export default function UpdateCard() {
+  const { t } = useTranslation("settings");
   const qc = useQueryClient();
   const [ref, setRef] = useState<string>("");
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -103,7 +105,7 @@ export default function UpdateCard() {
 
   return (
     <Card className="p-4 lg:col-span-2">
-      <SectionTitle>Software update</SectionTitle>
+      <SectionTitle>{t("upd_title")}</SectionTitle>
 
       <div className="flex flex-wrap items-center gap-2 text-sm">
         <span className="text-zinc-300">
@@ -114,22 +116,22 @@ export default function UpdateCard() {
             </>
           )}
         </span>
-        {(v?.git?.dirty ?? 0) > 0 && <Chip>dirty tree ({v?.git?.dirty})</Chip>}
-        {behind && <Chip>{behind} behind</Chip>}
-        {offline && <Chip>updater offline</Chip>}
+        {(v?.git?.dirty ?? 0) > 0 && <Chip>{t("upd_dirty_n", { n: v?.git?.dirty })}</Chip>}
+        {behind && <Chip>{t("upd_behind", { n: behind })}</Chip>}
+        {offline && <Chip>{t("upd_offline_chip")}</Chip>}
       </div>
 
       {offline ? (
         <p className="mt-3 text-xs text-zinc-500">
-          the updater daemon isn't reachable — start the stack via{" "}
-          <code className="text-zinc-300">scripts/start.sh</code> or update manually with{" "}
+          {t("upd_offline_pre")}{" "}
+          <code className="text-zinc-300">scripts/start.sh</code> {t("upd_offline_mid")}{" "}
           <code className="text-zinc-300">scripts/update.sh</code>.
         </p>
       ) : (
         <>
           {/* channel toggle — remote branches from the last check */}
           <div className="mt-3 flex flex-wrap items-center gap-3">
-            <span className="text-xs text-zinc-500">channel:</span>
+            <span className="text-xs text-zinc-500">{t("upd_channel")}</span>
             {branches.map((b) => (
               <label key={b} className="flex items-center gap-1.5 text-sm text-zinc-300">
                 <input
@@ -146,8 +148,7 @@ export default function UpdateCard() {
 
           {(c?.dirty?.length ?? 0) > 0 && (
             <p className="mt-2 text-xs text-amber-400">
-              {c?.dirty.length} uncommitted change(s) — the update refuses a dirty tree:
-              commit or stash first.
+              {t("upd_dirty_warn", { n: c?.dirty.length })}
             </p>
           )}
 
@@ -161,7 +162,7 @@ export default function UpdateCard() {
                 </li>
               ))}
               {c.commits.length > 8 && (
-                <li className="text-zinc-600">…and {c.commits.length - 8} more</li>
+                <li className="text-zinc-600">{t("upd_more", { n: c.commits.length - 8 })}</li>
               )}
             </ul>
           ) : null}
@@ -172,7 +173,7 @@ export default function UpdateCard() {
               <div className="mb-1.5 flex items-center gap-2 text-sm">
                 <RefreshCw className="h-3.5 w-3.5 animate-spin text-brand-400" />
                 <span className="text-zinc-200">
-                  {restarting ? "stack is restarting — waiting for it to come back…" : updatePhaseLabel(status.data ?? { state: "running", phase: "starting" })}
+                  {restarting ? t("upd_restarting") : updatePhaseLabel(status.data ?? { state: "running", phase: "starting" })}
                 </span>
                 {status.data?.ref && <Chip>{status.data.ref}</Chip>}
               </div>
@@ -180,7 +181,7 @@ export default function UpdateCard() {
                 ref={logRef}
                 className="max-h-40 overflow-y-auto rounded-md border border-zinc-800 bg-zinc-950/80 p-2 text-[11px] leading-relaxed text-zinc-500"
               >
-                {logTail(status.data?.log_tail) || "starting…"}
+                {logTail(status.data?.log_tail) || t("upd_starting")}
               </pre>
             </div>
           )}
@@ -188,18 +189,18 @@ export default function UpdateCard() {
           {done && seenRestart && (
             <div className="mt-3 flex flex-wrap items-center gap-3 rounded-md border border-emerald-800/60 bg-emerald-950/40 p-3 text-sm">
               <span className="text-emerald-300">
-                updated to <code>{status.data?.new_sha?.slice(0, 10) ?? "?"}</code>
+                {t("upd_done_pre")} <code>{status.data?.new_sha?.slice(0, 10) ?? "?"}</code>
                 {status.data?.ref ? ` (${status.data.ref})` : ""}
               </span>
               <Btn size="sm" variant="ghost" onClick={() => window.location.reload()}>
-                reload page
+                {t("upd_reload")}
               </Btn>
             </div>
           )}
 
           {failed && (
             <div className="mt-3 rounded-md border border-red-800/60 bg-red-950/40 p-3">
-              <p className="text-sm text-red-300">{status.data?.error ?? "update failed"}</p>
+              <p className="text-sm text-red-300">{status.data?.error ?? t("upd_failed")}</p>
               <pre className="mt-2 max-h-32 overflow-y-auto text-[11px] text-zinc-500">
                 {logTail(status.data?.log_tail, 10)}
               </pre>
@@ -210,10 +211,10 @@ export default function UpdateCard() {
                   onClick={() => setRollbackOpen(true)}
                   disabled={!status.data?.prev_sha}
                 >
-                  <RotateCcw className="h-3.5 w-3.5" /> roll back to {status.data?.prev_sha?.slice(0, 10) ?? "previous"}
+                  <RotateCcw className="h-3.5 w-3.5" /> {t("upd_rollback_btn", { sha: status.data?.prev_sha?.slice(0, 10) ?? "?" })}
                 </Btn>
                 {status.data?.log && (
-                  <span className="text-[11px] text-zinc-600">log: {status.data.log}</span>
+                  <span className="text-[11px] text-zinc-600">{t("upd_log")}: {status.data.log}</span>
                 )}
               </div>
             </div>
@@ -228,16 +229,16 @@ export default function UpdateCard() {
               disabled={active}
             >
               <RefreshCw className="h-3.5 w-3.5" />
-              {checkNow.isPending ? "checking…" : "Check for updates"}
+              {checkNow.isPending ? t("upd_checking") : t("upd_check")}
             </Btn>
             <Btn
               size="sm"
               onClick={() => setConfirmOpen(true)}
               disabled={active || (!!c && !c.update_available && behind === undefined)}
-              title={c && !c.update_available ? "already up to date on this channel" : undefined}
+              title={c && !c.update_available ? t("upd_uptodate_hint") : undefined}
             >
               <ArrowUpCircle className="h-4 w-4" />
-              Update &amp; restart
+              {t("upd_btn")}
             </Btn>
             {start.isError && !jobsWarn && (
               <span className="self-center text-xs text-red-400">{errMsg(start.error)}</span>
@@ -254,24 +255,23 @@ export default function UpdateCard() {
           setJobsWarn(0);
         }}
         onConfirm={() => start.mutate(jobsWarn > 0)}
-        title="Update & restart?"
-        confirmLabel={jobsWarn > 0 ? `Interrupt ${jobsWarn} job(s) & update` : "Update & restart"}
+        title={t("upd_confirm_title")}
+        confirmLabel={jobsWarn > 0 ? t("upd_confirm_jobs", { n: jobsWarn }) : t("upd_btn")}
         busy={start.isPending}
         body={
           <div className="space-y-2">
             <p>
-              pulls <code className="text-zinc-300">origin/{targetRef}</code>, reinstalls
-              dependencies, rebuilds images and restarts the whole stack — expect a few
-              minutes of downtime.
+                            {t("upd_body_a")} <code className="text-zinc-300">origin/{targetRef}</code>{" "}
+              {t("upd_body_b")}
             </p>
             {jobsWarn > 0 && (
               <p className="text-amber-400">
-                {jobsWarn} generation job(s) are still running — they will be interrupted.
+                {t("upd_jobs_warn", { n: jobsWarn })}
               </p>
             )}
             {(c?.dirty?.length ?? 0) > 0 && (
               <p className="text-amber-400">
-                working tree has uncommitted changes — the update will refuse.
+                {t("upd_dirty_body")}
               </p>
             )}
           </div>
@@ -283,19 +283,18 @@ export default function UpdateCard() {
         open={rollbackOpen}
         onClose={() => setRollbackOpen(false)}
         onConfirm={() => rollback.mutate()}
-        title="Roll back?"
-        confirmLabel="Roll back & restart"
+        title={t("upd_rb_title")}
+        confirmLabel={t("upd_rb_confirm")}
         busy={rollback.isPending}
         body={
           <div className="space-y-2">
             <p>
-              resets the checkout to{" "}
-              <code className="text-zinc-300">{status.data?.prev_sha?.slice(0, 10)}</code> and
-              restarts the stack.
+              {t("upd_rb_body_a")}{" "}
+              <code className="text-zinc-300">{status.data?.prev_sha?.slice(0, 10)}</code>{" "}
+              {t("upd_rb_body_b")}
             </p>
             <p className="text-amber-400">
-              database migrations are forward-only — if the failed update included one, rolling
-              code back can break the app (back up data/ first).
+              {t("upd_rb_warn")}
             </p>
           </div>
         }

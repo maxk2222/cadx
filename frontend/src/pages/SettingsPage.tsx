@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import ModelsTab from "../components/ModelsTab";
 import UpdateCard from "../components/UpdateCard";
@@ -8,6 +9,7 @@ import {
   Card,
   Chip,
   Field,
+  PageShell,
   SectionTitle,
   Spinner,
   inputCls,
@@ -174,16 +176,16 @@ const FIELD_BOUNDS: Record<
 };
 
 type TabId = "provider" | "models" | "agent" | "mesh" | "fem" | "system";
-const TABS: { id: TabId; label: string }[] = [
-  { id: "provider", label: "LLM Provider" },
-  { id: "models", label: "Local models" },
-  { id: "agent", label: "Agent" },
-  { id: "mesh", label: "Mesh & Image" },
-  { id: "fem", label: "FEM / TopOpt" },
-  { id: "system", label: "System" },
-];
+const TAB_IDS_LIST: TabId[] = ["provider", "models", "agent", "mesh", "fem", "system"];
 
-const TAB_IDS = new Set<string>(TABS.map((t) => t.id));
+const TAB_IDS = new Set<string>(TAB_IDS_LIST);
+
+const GEN_MODE_OPTS = [["auto"], ["cad"], ["mesh"], ["hybrid"], ["topopt"]] as const;
+const CLAR_OPTS = [["assume"], ["ask"]] as const;
+const PATCH_OPTS = [["auto"], ["always"], ["never"]] as const;
+const CHAT_ROLE_OPTS = [["vision"], ["code"]] as const;
+const JSON_MODE_OPTS = [["json_object"], ["json_schema"], ["none"]] as const;
+const LLM_TOOLS_OPTS = [["auto"], ["on"], ["off"]] as const;
 
 /** compact token-count rendering for context-window chips: 131k, 262k, 1M */
 const fmtCtx = (n: number | null | undefined): string => {
@@ -194,7 +196,8 @@ const fmtCtx = (n: number | null | undefined): string => {
 };
 
 export default function SettingsPage() {
-  useTitle("Settings");
+  const { t } = useTranslation("settings");
+  useTitle(t("title"));
   const qc = useQueryClient();
   const [sp, setSp] = useSearchParams();
   const navigate = useNavigate();
@@ -352,15 +355,15 @@ export default function SettingsPage() {
         if (!NUM_FIELDS.has(k) || v === "") continue;
         const n = Number(v);
         if (!Number.isFinite(n)) {
-          errs.push(`${k}: not a number`);
+          errs.push(`${k}: ${t("err_nan")}`);
           continue;
         }
         const b = FIELD_BOUNDS[k];
         if (!b) continue;
-        if (b.int && !Number.isInteger(n)) errs.push(`${k}: must be an integer`);
+        if (b.int && !Number.isInteger(n)) errs.push(`${k}: ${t("err_int")}`);
         else if (b.min != null && (b.exclusiveMin ? n <= b.min : n < b.min))
-          errs.push(`${k}: must be ${b.exclusiveMin ? ">" : "≥"} ${b.min}`);
-        else if (b.max != null && n > b.max) errs.push(`${k}: must be ≤ ${b.max}`);
+          errs.push(`${k}: ${t("err_min", { op: b.exclusiveMin ? ">" : "≥", min: b.min })}`);
+        else if (b.max != null && n > b.max) errs.push(`${k}: ${t("err_max", { max: b.max })}`);
       }
       if (errs.length) throw new Error(errs.join("; "));
 
@@ -477,7 +480,7 @@ export default function SettingsPage() {
   const sidecarLlm = models.filter((m) => m.kind === "llm");
   const imageAdapters = (imageModels.data ?? []).filter((m) => m.available);
   const lp = llmHealth.data;
-  const t = testProvider.data;
+  const tp = testProvider.data;
 
   // backend selectors — missing keys (old backend payload) default sanely
   const llmBackend = form.llm_backend || "external";
@@ -506,33 +509,33 @@ export default function SettingsPage() {
           hint={
             hint ??
             (isSet
-              ? "a key is stored — enter a new one to replace it (never shown again)"
-              : "stored encrypted in the app database, write-only")
+              ? t("key_isset_hint")
+              : t("key_hint"))
           }
         >
           <input
             className={inputCls}
             type="password"
             autoComplete="off"
-            placeholder={isSet ? "••••••••" : "key…"}
+            placeholder={isSet ? "••••••••" : t("key_ph")}
             value={value}
             onChange={(e) => onChange(e.target.value)}
           />
         </Field>
         {isSet && (
           <Chip tone="green" className="mb-3 shrink-0">
-            key set
+            {t("key_set")}
           </Chip>
         )}
         {isSet && (
           <Btn variant="ghost" className="mb-3" onClick={onToggleClear}>
-            {cleared ? "keep key" : "clear key"}
+            {cleared ? t("key_keep") : t("key_clear")}
           </Btn>
         )}
       </div>
       {cleared && (
         <div className="mb-3 text-xs text-amber-400">
-          the stored API key will be removed on save
+          {t("key_removed")}
         </div>
       )}
     </>
@@ -557,7 +560,7 @@ export default function SettingsPage() {
                 variant="ghost"
                 onClick={() => setCustomModel((c) => ({ ...c, [key]: false }))}
               >
-                list
+                {t("list_btn")}
               </Btn>
             )}
           </div>
@@ -578,17 +581,17 @@ export default function SettingsPage() {
           }}
         >
           {!opts.some((o) => o.id === val) && (
-            <option value={val}>{val || "— pick a model —"}</option>
+            <option value={val}>{val || t("pick_model")}</option>
           )}
           {opts.map((o) => (
             <option key={o.id} value={o.id}>
               {o.id}
-              {o.vision ? " · vision" : ""}
+              {o.vision ? ` · ${t("vision")}` : ""}
               {o.context_tokens ? ` · ${fmtCtx(o.context_tokens)} ctx` : ""}
-              {o.downloaded === false ? " · not downloaded" : ""}
+              {o.downloaded === false ? ` · ${t("not_downloaded")}` : ""}
             </option>
           ))}
-          <option value="__custom__">custom…</option>
+          <option value="__custom__">{t("custom")}</option>
         </select>
       </Field>
     );
@@ -614,9 +617,9 @@ export default function SettingsPage() {
           {sidecarLlm.map((m) => (
             <option key={m.id} value={m.id} disabled={!m.downloaded}>
               {m.name && m.name !== m.id ? `${m.name} — ${m.id}` : m.id}
-              {m.supports_vision ? " · 👁 vision" : ""}
+              {m.supports_vision ? ` · 👁 ${t("vision")}` : ""}
               {m.context_len ? ` · ${fmtCtx(m.context_len)} ctx` : ""}
-              {!m.downloaded ? " · not downloaded" : ""}
+              {!m.downloaded ? ` · ${t("not_downloaded")}` : ""}
             </option>
           ))}
           {val && !sidecarLlm.some((m) => m.id === val) && (
@@ -668,44 +671,43 @@ export default function SettingsPage() {
   );
 
   return (
-    <div className="mx-auto w-full max-w-xl p-4 pb-28 sm:p-6 md:max-w-3xl lg:max-w-5xl xl:max-w-6xl">
-      <h1 className="mb-4 text-2xl font-bold">Settings</h1>
+    <PageShell title={t("title")} className="pb-28">
 
       {/* service health — 2×2 on narrow screens, one row from lg up */}
       <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
         {statusCard(
           "API",
-          health.data?.ok ? "online" : "offline",
+          health.data?.ok ? t("st.online") : t("st.offline"),
           health.data?.ok ? "ok" : "bad",
         )}
         {statusCard(
           "LLM",
           lp?.ok
-            ? `online · ${lp.latency_ms}ms${lp.vision_ok ? " · vision" : ""} · ${llmBackendText}`
+            ? `${t("st.online")} · ${lp.latency_ms}ms${lp.vision_ok ? ` · ${t("st.vision")}` : ""} · ${llmBackendText}`
             : llmHealth.isPending
-              ? "checking…"
-              : `offline · ${llmBackendText}`,
+              ? t("st.checking")
+              : `${t("st.offline")} · ${llmBackendText}`,
           lp?.ok ? "ok" : llmHealth.isPending ? "idle" : "bad",
           lp?.error ??
             (llmBackend === "sidecar" || s.llm_api_key_set
               ? undefined
-              : "no API key configured"),
+              : t("st.no_api_key")),
         )}
         {statusCard(
-          "Mesh server",
+          t("st.mesh_server"),
           meshHealth.data?.ok
-            ? `online · ${meshHealth.data.device} · ${meshModels.filter((m) => m.available).length} models`
-            : "offline",
+            ? `${t("st.online")} · ${meshHealth.data.device} · ${t("st.models_n", { count: meshModels.filter((m) => m.available).length })}`
+            : t("st.offline"),
           meshHealth.data?.ok ? "ok" : "idle",
           meshHealth.data?.error ?? undefined,
         )}
         {statusCard(
-          "Image gen",
+          t("st.image_gen"),
           !meshHealth.data?.ok
-            ? "offline"
+            ? t("st.offline")
             : imageAdapters.length
-              ? `online · ${imageAdapters.length} adapter${imageAdapters.length > 1 ? "s" : ""}`
-              : "no adapters",
+              ? `${t("st.online")} · ${t("st.adapters_n", { count: imageAdapters.length })}`
+              : t("st.no_adapters"),
           !meshHealth.data?.ok ? "idle" : imageAdapters.length ? "ok" : "warn",
           meshHealth.data?.error ?? undefined,
         )}
@@ -714,21 +716,21 @@ export default function SettingsPage() {
       {/* tabs: scrollable strip on narrow screens, sticky sidebar from lg up */}
       <div className="lg:flex lg:items-start lg:gap-5">
       <div className="mb-4 flex gap-1 overflow-x-auto rounded-lg border border-zinc-800 bg-zinc-900/60 p-1 lg:sticky lg:top-6 lg:mb-0 lg:w-44 lg:shrink-0 lg:flex-col lg:overflow-visible">
-        {TABS.map((tb) => (
+        {TAB_IDS_LIST.map((tb) => (
           <button
-            key={tb.id}
+            key={tb}
             onClick={() => {
-              setTab(tb.id);
-              localStorage.setItem("settings.tab", tb.id);
-              setSp({ tab: tb.id }, { replace: true });
+              setTab(tb);
+              localStorage.setItem("settings.tab", tb);
+              setSp({ tab: tb }, { replace: true });
             }}
             className={`whitespace-nowrap rounded-md px-3 py-1.5 text-sm transition-colors lg:text-left ${
-              tab === tb.id
-                ? "bg-zinc-700 font-medium text-zinc-100"
-                : "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+              tab === tb
+                ? "bg-edge font-medium text-fg"
+                : "text-muted hover:bg-panel-alt hover:text-fg"
             }`}
           >
-            {tb.label}
+            {t(`tab.${tb}`)}
           </button>
         ))}
       </div>
@@ -736,13 +738,13 @@ export default function SettingsPage() {
       <div className="min-w-0 flex-1">
       {tab === "provider" && (
       <Card className="p-4">
-        <SectionTitle>LLM provider</SectionTitle>
+        <SectionTitle>{t("provider_title")}</SectionTitle>
         {/* backend selector — external OpenAI-compatible API or the local sidecar */}
         <div className="mb-4 flex gap-1 rounded-lg border border-zinc-800 bg-zinc-900/80 p-1">
           {(
             [
-              ["external", "External API"],
-              ["sidecar", "Local sidecar"],
+              ["external", t("backend_external")],
+              ["sidecar", t("backend_sidecar")],
             ] as const
           ).map(([v, l]) => (
             <button
@@ -761,26 +763,22 @@ export default function SettingsPage() {
 
         {llmBackend === "external" ? (
           <>
-            <div className="mb-3 text-xs text-zinc-500">
-              any OpenAI-compatible endpoint — cloud provider or a local server
-              (Ollama, vLLM, LM Studio)
-            </div>
+            <div className="mb-3 text-xs text-muted">{t("external_hint")}</div>
             {!s.llm_api_key_set && (
               <div className="mb-3 rounded-md border border-amber-700 bg-amber-950/40 p-2 text-sm text-amber-300">
-                No API key configured — paste a key below and save. Generation works without
-                one only for providers that skip authentication.
+                {t("no_key_warn")}
               </div>
             )}
             <div className={FIELD_GRID}>
               {field({
                 key: "llm_base_url",
-                label: "Base URL",
-                hint: "e.g. https://api.openai.com/v1, http://localhost:11434/v1 (Ollama), https://openrouter.ai/api/v1",
+                label: t("f.llm_base_url"),
+                hint: t("f.llm_base_url_h"),
                 wide: true,
               })}
               <div className="sm:col-span-2">
                 {apiKeyField(
-                  "API key",
+                  t("key_api"),
                   s.llm_api_key_set,
                   apiKey,
                   setApiKey,
@@ -790,13 +788,13 @@ export default function SettingsPage() {
               </div>
               {extModelField(
                 "llm_model_vision",
-                "Vision model",
-                "used for image analysis & visual critique",
+                t("f.llm_model_vision"),
+                t("f.llm_model_vision_h"),
               )}
               {extModelField(
                 "llm_model_code",
-                "Code model",
-                "used for CAD code generation",
+                t("f.llm_model_code"),
+                t("f.llm_model_code_h"),
               )}
             </div>
           </>
@@ -804,37 +802,40 @@ export default function SettingsPage() {
           <>
             <div className="mb-3 text-xs text-zinc-500">
               {meshHealth.data?.ok
-                ? `sidecar online · ${sidecarLlm.filter((m) => m.downloaded).length}/${sidecarLlm.length} llm models downloaded — manage downloads under “Local models”`
-                : "sidecar offline — start it with make mesh-server, then download an llm model under “Local models”"}
+                ? t("sidecar_online", {
+                    n: sidecarLlm.filter((m) => m.downloaded).length,
+                    total: sidecarLlm.length,
+                  })
+                : t("sidecar_offline")}
             </div>
             <div className={FIELD_GRID}>
               {sidecarModelField({
                 key: "llm_model_vision",
-                label: "Vision model",
-                hint: "used for image analysis & visual critique",
+                label: t("f.llm_model_vision"),
+                hint: t("f.llm_model_vision_h"),
               })}
               {sidecarModelField({
                 key: "llm_model_code",
-                label: "Code model",
-                hint: "used for CAD code generation",
+                label: t("f.llm_model_code"),
+                hint: t("f.llm_model_code_h"),
               })}
               {sidecarModelField({
                 key: "llm_sidecar_model",
-                label: "Single-model override",
-                hint: "serve one model for all roles instead of separate vision/code picks",
-                empty: "— per role —",
+                label: t("f.llm_sidecar_model"),
+                hint: t("f.llm_sidecar_model_h"),
+                empty: t("per_role"),
               })}
             </div>
             {pickedVision && !pickedVision.supports_vision && (
               <div className="mb-3 rounded-md border border-amber-700 bg-amber-950/40 p-2 text-sm text-amber-300">
-                pipeline needs a vision-capable local model — intake/critique read images
+                {t("vision_needed")}
               </div>
             )}
           </>
         )}
         {Object.keys(s.llm_detected ?? {}).length > 0 && (
           <div className="mb-3 text-xs text-zinc-500">
-            detected context:{" "}
+            {t("detected_ctx")}{" "}
             {Object.entries(s.llm_detected)
               .map(([id, n]) => `${id} ${fmtCtx(n)}`)
               .join(" · ")}
@@ -843,66 +844,58 @@ export default function SettingsPage() {
         <div className={FIELD_GRID}>
           {field({
             key: "llm_json_mode",
-            label: "JSON mode",
-            options: [
-              ["json_object", "json_object (default)"],
-              ["json_schema", "json_schema (strict)"],
-              ["none", "none (parse from text)"],
-            ],
+            label: t("f.llm_json_mode"),
+            options: JSON_MODE_OPTS.map(([v]) => [v, t(`opt.json_mode.${v}`)]),
           })}
           {field({
             key: "llm_tools",
-            label: "Native tool calling",
-            hint: "auto: fall back per model when the provider rejects tools; on: strict; off: legacy JSON steps",
-            options: [
-              ["auto", "auto (recommended)"],
-              ["on", "on (strict)"],
-              ["off", "off"],
-            ],
+            label: t("f.llm_tools"),
+            hint: t("f.llm_tools_h"),
+            options: LLM_TOOLS_OPTS.map(([v]) => [v, t(`opt.llm_tools.${v}`)]),
           })}
         </div>
-        <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
-          advanced
+        <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-faint">
+          {t("grp.advanced")}
         </div>
         <div className={FIELD_GRID}>
-          {field({ key: "llm_temperature_code", label: "Temperature (code)", kind: "number" })}
+          {field({ key: "llm_temperature_code", label: t("f.llm_temperature_code"), kind: "number" })}
           {field({
             key: "llm_context_tokens",
-            label: "Context window (tokens)",
-            hint: "0 = auto-detect from the provider (probed lazily, cached); >0 = manual override",
+            label: t("f.llm_context_tokens"),
+            hint: t("f.llm_context_tokens_h"),
             kind: "number",
           })}
           {field({
             key: "llm_max_tokens",
-            label: "Max tokens per response",
-            hint: "0 = auto — derived from the detected context window and clamped so prompt + completion fits",
+            label: t("f.llm_max_tokens"),
+            hint: t("f.llm_max_tokens_h"),
             kind: "number",
           })}
-          {field({ key: "llm_stream", label: "Streaming", kind: "bool" })}
-          {field({ key: "llm_timeout_s", label: "Request timeout (s)", kind: "number" })}
-          {field({ key: "llm_idle_timeout_s", label: "Stream idle timeout (s)", kind: "number" })}
-          {field({ key: "llm_degenerate_stall_s", label: "Degenerate stream abort (s)", kind: "number" })}
-          {field({ key: "llm_total_timeout_s", label: "Stream total cap (s)", kind: "number" })}
+          {field({ key: "llm_stream", label: t("f.llm_stream"), kind: "bool" })}
+          {field({ key: "llm_timeout_s", label: t("f.llm_timeout_s"), kind: "number" })}
+          {field({ key: "llm_idle_timeout_s", label: t("f.llm_idle_timeout_s"), kind: "number" })}
+          {field({ key: "llm_degenerate_stall_s", label: t("f.llm_degenerate_stall_s"), kind: "number" })}
+          {field({ key: "llm_total_timeout_s", label: t("f.llm_total_timeout_s"), kind: "number" })}
           {field({
             key: "llm_extra_body",
-            label: "Extra request body (JSON)",
+            label: t("f.llm_extra_body"),
             hint: 'merged into every request, e.g. {"chat_template_kwargs": {"enable_thinking": false}}',
             wide: true,
           })}
         </div>
         <div className="mt-2 flex items-center gap-2">
           <Btn variant="ghost" onClick={() => testProvider.mutate()} busy={testProvider.isPending}>
-            Test provider
+            {t("test_provider")}
           </Btn>
-          {t && (
-            <span className={`text-xs ${t.ok ? "text-emerald-400" : "text-red-400"}`}>
-              {t.ok
-                ? `code ok · ${t.latency_ms}ms${t.vision_ok ? " · vision ok" : " · vision failed"}${
-                    t.context?.code?.context_tokens
-                      ? ` · ctx ${fmtCtx(t.context.code.context_tokens)} (${t.context.code.source || "detected"})`
+          {tp && (
+            <span className={`text-xs ${tp.ok ? "text-emerald-400" : "text-red-400"}`}>
+              {tp.ok
+                ? `${t("test_ok", { ms: tp.latency_ms })}${tp.vision_ok ? ` · ${t("vision_ok")}` : ` · ${t("vision_failed")}`}${
+                    tp.context?.code?.context_tokens
+                      ? ` · ctx ${fmtCtx(tp.context.code.context_tokens)} (${tp.context.code.source || t("detected")})`
                       : ""
                   }`
-                : `failed: ${t.error ?? "unknown"}`}
+                : t("test_failed", { err: tp.error ?? "?" })}
             </span>
           )}
           {testProvider.isError && (
@@ -915,15 +908,15 @@ export default function SettingsPage() {
       {tab === "models" && (
         <>
           <Card className="mb-4 p-4">
-            <SectionTitle>Hugging Face</SectionTitle>
+            <SectionTitle>{t("hf_title")}</SectionTitle>
             {apiKeyField(
-              "Access token",
+              t("key_hf"),
               s.hf_token_set,
               hfKey,
               setHfKey,
               clearHfKey,
               () => setClearHfKey((c) => !c),
-              "hf_… token — forwarded to the sidecar for gated repos and higher rate limits; empty = anonymous; stored encrypted",
+              t("hf_hint"),
             )}
           </Card>
           <ModelsTab models={models} />
@@ -932,121 +925,105 @@ export default function SettingsPage() {
 
       {tab === "agent" && (
       <Card className="p-4">
-        <SectionTitle>Agent</SectionTitle>
+        <SectionTitle>{t("agent_title")}</SectionTitle>
         <div className={FIELD_GRID}>
           {field({
             key: "agent_default_gen_mode",
-            label: "Default generation mode",
-            options: [
-              ["auto", "auto (planner decides)"],
-              ["cad", "cad (parametric code)"],
-              ["mesh", "mesh (image → 3D)"],
-              ["hybrid", "hybrid (mesh + CAD features)"],
-              ["topopt", "topopt (topology optimization)"],
-            ],
+            label: t("f.agent_default_gen_mode"),
+            options: GEN_MODE_OPTS.map(([v]) => [v, t(`opt.gen_mode.${v}`)]),
           })}
-          {field({ key: "agent_max_iterations", label: "Max iterations", kind: "number" })}
-          {field({ key: "agent_max_repairs", label: "Max repair attempts", kind: "number" })}
-          {field({ key: "agent_pass_score", label: "Critique pass score (0–100)", kind: "number" })}
-          {field({ key: "agent_dim_tolerance_pct", label: "Dim tolerance (%)", kind: "number" })}
-          {field({ key: "agent_dim_tolerance_mm", label: "Dim tolerance (mm)", kind: "number" })}
+          {field({ key: "agent_max_iterations", label: t("f.agent_max_iterations"), kind: "number" })}
+          {field({ key: "agent_max_repairs", label: t("f.agent_max_repairs"), kind: "number" })}
+          {field({ key: "agent_pass_score", label: t("f.agent_pass_score"), kind: "number" })}
+          {field({ key: "agent_dim_tolerance_pct", label: t("f.agent_dim_tolerance_pct"), kind: "number" })}
+          {field({ key: "agent_dim_tolerance_mm", label: t("f.agent_dim_tolerance_mm"), kind: "number" })}
           {field({
             key: "agent_clarification_mode",
-            label: "Clarification mode",
-            options: [
-              ["assume", "assume (agent decides)"],
-              ["ask", "ask (clarifying questions)"],
-            ],
+            label: t("f.agent_clarification_mode"),
+            options: CLAR_OPTS.map(([v]) => [v, t(`opt.clar.${v}`)]),
           })}
         </div>
         <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
-          budgets & robustness
+          {t("grp.budgets")}
         </div>
         <div className={FIELD_GRID}>
-          {field({ key: "agent_max_input_images", label: "Max input images", kind: "number" })}
+          {field({ key: "agent_max_input_images", label: t("f.agent_max_input_images"), kind: "number" })}
           {field({
             key: "agent_context_budget_frac",
-            label: "Context budget fraction",
-            hint: "share of the detected context window a prompt may fill before history is condensed early",
+            label: t("f.agent_context_budget_frac"),
+            hint: t("f.agent_context_budget_frac_h"),
             kind: "number",
           })}
-          {field({ key: "agent_max_tokens_per_job", label: "Token budget per job", kind: "number" })}
-          {field({ key: "agent_max_wall_s", label: "Wall-clock budget per job (s)", kind: "number" })}
-          {field({ key: "agent_param_autofix", label: "Deterministic param autofix", kind: "bool" })}
+          {field({ key: "agent_max_tokens_per_job", label: t("f.agent_max_tokens_per_job"), kind: "number" })}
+          {field({ key: "agent_max_wall_s", label: t("f.agent_max_wall_s"), kind: "number" })}
+          {field({ key: "agent_param_autofix", label: t("f.agent_param_autofix"), kind: "bool" })}
           {field({
             key: "agent_patch_mode",
-            label: "Patch mode",
-            hint: "auto: patch on repair, rewrite on improve",
-            options: [
-              ["auto", "auto"],
-              ["always", "always"],
-              ["never", "never"],
-            ],
+            label: t("f.agent_patch_mode"),
+            hint: t("f.agent_patch_mode_h"),
+            options: PATCH_OPTS.map(([v]) => [v, t(`opt.patch.${v}`)]),
           })}
-          {field({ key: "agent_patch_retries", label: "Patch retries", kind: "number" })}
-          {field({ key: "agent_feature_feedback", label: "Feature measurement feedback", kind: "bool" })}
-          {field({ key: "agent_critique_reask", label: "Critique re-ask on empty verdicts", kind: "bool" })}
+          {field({ key: "agent_patch_retries", label: t("f.agent_patch_retries"), kind: "number" })}
+          {field({ key: "agent_feature_feedback", label: t("f.agent_feature_feedback"), kind: "bool" })}
+          {field({ key: "agent_critique_reask", label: t("f.agent_critique_reask"), kind: "bool" })}
         </div>
         <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
-          tool sessions
+          {t("grp.tools")}
         </div>
         <div className={FIELD_GRID}>
-          {field({ key: "agent_tool_max_calls", label: "Max tool calls (edit steps)", kind: "number" })}
-          {field({ key: "agent_tool_max_calls_info", label: "Max tool calls (info steps)", kind: "number" })}
-          {field({ key: "agent_tool_verify", label: "Sandbox verify tool", kind: "bool" })}
-          {field({ key: "agent_tool_verify_max", label: "Verify runs per session", kind: "number" })}
+          {field({ key: "agent_tool_max_calls", label: t("f.agent_tool_max_calls"), kind: "number" })}
+          {field({ key: "agent_tool_max_calls_info", label: t("f.agent_tool_max_calls_info"), kind: "number" })}
+          {field({ key: "agent_tool_verify", label: t("f.agent_tool_verify"), kind: "bool" })}
+          {field({ key: "agent_tool_verify_max", label: t("f.agent_tool_verify_max"), kind: "number" })}
         </div>
         <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
-          mesh transform session
+          {t("grp.mesh_session")}
         </div>
         <div className={FIELD_GRID}>
           {field({
             key: "agent_mesh_tools",
-            label: "Mesh transform tools",
-            hint: "MESH_REFINE session: agent fixes generated meshes with transform ops instead of blind re-generation",
+            label: t("f.agent_mesh_tools"),
+            hint: t("f.agent_mesh_tools_h"),
             kind: "bool",
           })}
-          {field({ key: "agent_mesh_max_ops", label: "Max ops per mesh session", kind: "number" })}
-          {field({ key: "agent_mesh_preview_max", label: "Preview renders per session", kind: "number" })}
-          {field({ key: "agent_mesh_refine_rounds", label: "Post-critique repair rounds", kind: "number" })}
+          {field({ key: "agent_mesh_max_ops", label: t("f.agent_mesh_max_ops"), kind: "number" })}
+          {field({ key: "agent_mesh_preview_max", label: t("f.agent_mesh_preview_max"), kind: "number" })}
+          {field({ key: "agent_mesh_refine_rounds", label: t("f.agent_mesh_refine_rounds"), kind: "number" })}
           {field({
             key: "agent_mesh_hard_fail_score",
-            label: "Mesh hard-fail score",
-            hint: "a generation scoring ≤ this with major issues counts as a hard fail",
+            label: t("f.agent_mesh_hard_fail_score"),
+            hint: t("f.agent_mesh_hard_fail_score_h"),
             kind: "number",
           })}
           {field({
             key: "agent_mesh_hard_fail_limit",
-            label: "Mesh hard-fail limit",
-            hint: "after this many consecutive hard fails the mesh loop stops (CAD fallback for dimensioned parts)",
+            label: t("f.agent_mesh_hard_fail_limit"),
+            hint: t("f.agent_mesh_hard_fail_limit_h"),
             kind: "number",
           })}
         </div>
         <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
-          chat agent
+          {t("grp.chat")}
         </div>
         <div className={FIELD_GRID}>
           {field({
             key: "chat_model_role",
-            label: "Chat model role",
-            hint: "vision: the agent can see uploaded + generated images; code: text-only (image tools limited to captions)",
-            options: [
-              ["vision", "vision (multimodal)"],
-              ["code", "code (text-only)"],
-            ],
+            label: t("f.chat_model_role"),
+            hint: t("f.chat_model_role_h"),
+            options: CHAT_ROLE_OPTS.map(([v]) => [v, t(`opt.chat_role.${v}`)]),
           })}
-          {field({ key: "chat_tool_max_calls", label: "Max tool calls per turn", kind: "number" })}
-          {field({ key: "chat_max_turns", label: "Max tool rounds per turn", kind: "number" })}
+          {field({ key: "chat_tool_max_calls", label: t("f.chat_tool_max_calls"), kind: "number" })}
+          {field({ key: "chat_max_turns", label: t("f.chat_max_turns"), kind: "number" })}
           {field({
             key: "chat_spawn_timeout_s",
-            label: "Spawned-job wait timeout (s)",
-            hint: "how long a chat turn blocks on a spawned job before returning control",
+            label: t("f.chat_spawn_timeout_s"),
+            hint: t("f.chat_spawn_timeout_s_h"),
             kind: "number",
           })}
-          {field({ key: "chat_history_messages", label: "History size (messages)", kind: "number" })}
+          {field({ key: "chat_history_messages", label: t("f.chat_history_messages"), kind: "number" })}
           {field({
             key: "chat_image_max",
-            label: "Max images per message",
+            label: t("f.chat_image_max"),
             kind: "number",
           })}
         </div>
@@ -1057,7 +1034,7 @@ export default function SettingsPage() {
       <div className="grid gap-4 xl:grid-cols-2">
       <Card className="p-4">
         <div className="mb-3 flex items-center justify-between">
-          <SectionTitle>Mesh generation</SectionTitle>
+          <SectionTitle>{t("mesh_title")}</SectionTitle>
           {meshBackend === "tripo" ? (
             <Chip tone="blue">tripo api</Chip>
           ) : (
@@ -1073,7 +1050,7 @@ export default function SettingsPage() {
         </div>
         {field({
           key: "mesh_backend",
-          label: "Backend",
+          label: t("f.mesh_backend"),
           options: [
             ["sidecar", "Local sidecar"],
             ["tripo", "Tripo3D API"],
@@ -1081,13 +1058,11 @@ export default function SettingsPage() {
         })}
         {meshBackend === "tripo" ? (
           <>
-            <div className="mb-3 text-xs text-zinc-500">
-              image → 3D via the hosted Tripo3D API — no local weights needed
-            </div>
+            <div className="mb-3 text-xs text-muted">{t("tripo_hint")}</div>
             <div className={FIELD_GRID}>
               <div className="sm:col-span-2">
                 {apiKeyField(
-                  "Tripo API key",
+                  t("key_tripo"),
                   s.tripo_api_key_set,
                   tripoKey,
                   setTripoKey,
@@ -1097,7 +1072,7 @@ export default function SettingsPage() {
               </div>
               {field({
                 key: "tripo_model",
-                label: "Tripo model",
+                label: t("f.tripo_model"),
                 options: [
                   ["v2.5-20250123", "v2.5-20250123"],
                   ["v2.0-20240919", "v2.0-20240919"],
@@ -1106,8 +1081,8 @@ export default function SettingsPage() {
               })}
               {field({
                 key: "tripo_api_base",
-                label: "Tripo API base",
-                hint: "empty = default https://api.tripo3d.ai",
+                label: t("f.tripo_api_base"),
+                hint: t("f.tripo_api_base_h"),
                 wide: true,
               })}
             </div>
@@ -1117,24 +1092,24 @@ export default function SettingsPage() {
         <div className={FIELD_GRID}>
           {field({
             key: "mesh_base_url",
-            label: "Mesh server URL",
-            hint: "e.g. http://localhost:8765 (native) or http://mesh-server:8765 (compose gpu profile); empty = disabled",
+            label: t("f.mesh_base_url"),
+            hint: t("f.mesh_base_url_h"),
             wide: true,
           })}
           <div className="sm:col-span-2">
             <Field
-              label="Default mesh model"
-              hint="auto picks by device. On Apple-silicon MPS the hunyuan3d-2mv variant can stall under memory pressure — prefer hunyuan3d-2.1-mlx or the mini/turbo variants there."
+              label={t("f.mesh_model")}
+              hint={t("f.mesh_model_h")}
             >
               <select
                 className={inputCls}
                 value={form.mesh_model}
                 onChange={(e) => set("mesh_model", e.target.value)}
               >
-                <option value="auto">auto (device default)</option>
+                <option value="auto">{t("auto_device")}</option>
                 {meshModels.map((m) => (
                   <option key={m.id} value={m.id} disabled={!m.available}>
-                    {m.name || m.id} ({m.device}){m.available ? "" : " — not installed"}
+                    {m.name || m.id} ({m.device}){m.available ? "" : ` — ${t("not_installed")}`}
                   </option>
                 ))}
                 {form.mesh_model &&
@@ -1144,16 +1119,16 @@ export default function SettingsPage() {
               </select>
             </Field>
           </div>
-          {field({ key: "mesh_timeout_s", label: "Generation timeout (s)", kind: "number" })}
-          {field({ key: "mesh_stall_timeout_s", label: "Stall abort — no progress (s)", kind: "number" })}
+          {field({ key: "mesh_timeout_s", label: t("f.mesh_timeout_s"), kind: "number" })}
+          {field({ key: "mesh_stall_timeout_s", label: t("f.mesh_stall_timeout_s"), kind: "number" })}
           {field({
             key: "mesh_min_free_mb",
-            label: "Min free host RAM (MB)",
+            label: t("f.mesh_min_free_mb"),
             kind: "number",
-            hint: "refuse new generation jobs when the sidecar host has less free RAM — 0 disables. Prevents MPS stalls under memory pressure.",
+            hint: t("f.mesh_min_free_mb_h"),
           })}
-          {field({ key: "mesh_decimate_faces", label: "Decimate target (faces)", kind: "number" })}
-          {field({ key: "mesh_max_faces_for_cad", label: "Max faces for CAD conversion", kind: "number" })}
+          {field({ key: "mesh_decimate_faces", label: t("f.mesh_decimate_faces"), kind: "number" })}
+          {field({ key: "mesh_max_faces_for_cad", label: t("f.mesh_max_faces_for_cad"), kind: "number" })}
         </div>
         {meshModels.length > 0 && (
           <div className="mb-2 flex flex-col gap-1.5 text-xs text-zinc-500">
@@ -1162,25 +1137,25 @@ export default function SettingsPage() {
                 <b className="text-zinc-300">{m.id}</b> · {m.device}
                 <Chip tone={modelStateTone(m)}>{modelStateLabel(m)}</Chip>
                 {m.est_mem_mb != null && <span>{fmtMemGb(m.est_mem_mb)}</span>}
-                {m.supports_multiview ? " · multiview" : ""}
+                {m.supports_multiview ? ` · ${t("multiview")}` : ""}
                 {m.license_note ? (
-                  <div className="basis-full text-zinc-500">license: {m.license_note}</div>
+                  <div className="basis-full text-muted">{t("license")} {m.license_note}</div>
                 ) : null}
                 {m.last_error ? (
-                  <div className="basis-full text-amber-500">last error: {m.last_error}</div>
+                  <div className="basis-full text-amber-500">{t("last_error")} {m.last_error}</div>
                 ) : null}
               </div>
             ))}
             <div>
-              downloads &amp; custom models live under{" "}
-              <b className="text-zinc-400">Local models</b>
+              {t("downloads_hint_pre")}{" "}
+              <b className="text-zinc-400">{t("tab.models")}</b>
             </div>
           </div>
         )}
         {!meshHealth.data?.ok && (
           <div className="mb-2 text-xs text-zinc-500">
-            start the sidecar with <code>make mesh-server</code>. Mesh/hybrid modes fall back
-            to CAD while it is unreachable.
+            {t("mesh_offline_pre")} <code>make mesh-server</code>.{" "}
+            {t("mesh_offline_post")}
           </div>
         )}
           </>
@@ -1189,7 +1164,7 @@ export default function SettingsPage() {
 
       <Card className="p-4">
         <div className="mb-3 flex items-center justify-between">
-          <SectionTitle>Image generation</SectionTitle>
+          <SectionTitle>{t("image_title")}</SectionTitle>
           {imageBackend === "openai" ? (
             <Chip tone="blue">openai api</Chip>
           ) : (
@@ -1215,7 +1190,7 @@ export default function SettingsPage() {
         </div>
         {field({
           key: "image_backend",
-          label: "Backend",
+          label: t("f.image_backend"),
           options: [
             ["sidecar", "Local sidecar"],
             ["openai", "OpenAI API"],
@@ -1223,14 +1198,11 @@ export default function SettingsPage() {
         })}
         {imageBackend === "openai" ? (
           <>
-            <div className="mb-3 text-xs text-zinc-500">
-              text-to-image and image editing via the OpenAI images API — empty
-              connection fields reuse the LLM provider config
-            </div>
+            <div className="mb-3 text-xs text-muted">{t("openai_img_hint")}</div>
             <div className={FIELD_GRID}>
               {field({
                 key: "image_openai_model",
-                label: "OpenAI image model",
+                label: t("f.image_openai_model"),
                 options: [
                   ["gpt-image-1", "gpt-image-1"],
                   ["dall-e-3", "dall-e-3"],
@@ -1239,38 +1211,36 @@ export default function SettingsPage() {
               })}
               {field({
                 key: "image_api_base",
-                label: "Image API base",
-                hint: "empty = reuse LLM provider config",
+                label: t("f.image_api_base"),
+                hint: t("f.image_api_base_h"),
                 wide: true,
               })}
               <div className="sm:col-span-2">
                 {apiKeyField(
-                  "Image API key",
+                  t("key_image"),
                   s.image_api_key_set,
                   imageKey,
                   setImageKey,
                   clearImageKey,
                   () => setClearImageKey((c) => !c),
-                  "empty = reuse the LLM API key",
+                  t("img_key_hint"),
                 )}
               </div>
             </div>
           </>
         ) : (
           <>
-        <div className="mb-3 text-xs text-zinc-500">
-          text-to-image and image editing on the same mesh-server sidecar — for concept
-          images, design ideation, img2img variations and auto-generated hero images
-          for mesh mode.
+        <div className="mb-3 text-xs text-muted">
+          {t("sidecar_img_hint")}
         </div>
         <div className={FIELD_GRID}>
-          <Field label="Default image model">
+          <Field label={t("f.image_model")}>
             <select
               className={inputCls}
               value={form.image_model}
               onChange={(e) => set("image_model", e.target.value)}
             >
-              <option value="auto">auto (device default)</option>
+              <option value="auto">{t("auto_device")}</option>
               {(imageModels.data ?? []).map((m) => (
                 <option key={m.id} value={m.id} disabled={!m.available}>
                   {m.name || m.id} ({m.device}){m.available ? "" : " — not installed"}
@@ -1283,15 +1253,15 @@ export default function SettingsPage() {
             </select>
           </Field>
           <Field
-            label="Default edit model"
-            hint="used when a reference image is given (img2img / instruction edit)"
+            label={t("f.image_edit_model")}
+            hint={t("f.image_edit_model_h")}
           >
             <select
               className={inputCls}
               value={form.image_edit_model}
               onChange={(e) => set("image_edit_model", e.target.value)}
             >
-              <option value="auto">auto (edit-capable adapter)</option>
+              <option value="auto">{t("auto_edit")}</option>
               {(imageModels.data ?? [])
                 .filter((m) => m.supports_edit)
                 .map((m) => (
@@ -1312,7 +1282,7 @@ export default function SettingsPage() {
               <div key={m.id} className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
                 <b className="text-zinc-300">{m.id}</b> · {m.device}
                 <Chip tone={modelStateTone(m)}>{modelStateLabel(m)}</Chip>
-                {m.supports_edit ? (m.requires_image ? " · edit-only" : " · edit-capable") : ""}
+                {m.supports_edit ? ` · ${m.requires_image ? t("edit_only") : t("edit_capable")}` : ""}
                 {m.last_error ? (
                   <div className="basis-full text-amber-500">last error: {m.last_error}</div>
                 ) : null}
@@ -1324,13 +1294,12 @@ export default function SettingsPage() {
           </div>
         ) : meshHealth.data && !meshHealth.data.ok ? (
           <div className="mb-2 text-xs text-zinc-500">
-            mesh-server sidecar unreachable — image generation shares it; start
-            it with <code>make mesh-server</code>.
+            {t("img_offline_pre")} <code>make mesh-server</code>.
           </div>
         ) : (
           <div className="mb-2 text-xs text-zinc-500">
-            no image adapter installed — see <code>docs/image-generation.md</code> for
-            setup (FLUX.1-schnell on MLX/CUDA, SDXL fallback).
+            {t("img_none_pre")} <code>docs/image-generation.md</code>{" "}
+            {t("img_none_post")}
           </div>
         )}
           </>
@@ -1339,23 +1308,23 @@ export default function SettingsPage() {
         <div className={FIELD_GRID}>
           {field({
             key: "image_default_strength",
-            label: "Default edit strength (0–1)",
+            label: t("f.image_default_strength"),
             kind: "number",
           })}
-          {field({ key: "image_steps", label: "Steps (empty = adapter default)", kind: "number" })}
-          {field({ key: "image_guidance", label: "Guidance (empty = adapter default)", kind: "number" })}
-          {field({ key: "image_max_side", label: "Max image side (px)", kind: "number" })}
-          {field({ key: "image_max_count", label: "Max images per request", kind: "number" })}
-          {field({ key: "image_timeout_s", label: "Generation timeout (s)", kind: "number" })}
+          {field({ key: "image_steps", label: t("f.image_steps"), kind: "number" })}
+          {field({ key: "image_guidance", label: t("f.image_guidance"), kind: "number" })}
+          {field({ key: "image_max_side", label: t("f.image_max_side"), kind: "number" })}
+          {field({ key: "image_max_count", label: t("f.image_max_count"), kind: "number" })}
+          {field({ key: "image_timeout_s", label: t("f.image_timeout_s"), kind: "number" })}
           {field({
             key: "image_autogen_mesh",
-            label: "Auto hero image for mesh runs",
-            hint: "synthesise a reference image when a mesh/hybrid job has no input images",
+            label: t("f.image_autogen_mesh"),
+            hint: t("f.image_autogen_mesh_h"),
             kind: "bool",
           })}
           {field({
             key: "image_tool_budget",
-            label: "Agent concept-image calls per session",
+            label: t("f.image_tool_budget"),
             kind: "number",
           })}
         </div>
@@ -1365,75 +1334,75 @@ export default function SettingsPage() {
 
       {tab === "fem" && (
       <Card className="p-4">
-        <SectionTitle>FEM & topology optimization</SectionTitle>
+        <SectionTitle>{t("fem_title")}</SectionTitle>
         <div className="mb-3 text-xs text-zinc-500">
-          engineering feedback only — not a certification tool
+          {t("fem_disclaimer")}
         </div>
         <div className={FIELD_GRID}>
-          {field({ key: "fem_voxel_mm", label: "Voxel size (mm)", kind: "number" })}
-          {field({ key: "fem_max_elements", label: "Max FEM elements", kind: "number" })}
-          {field({ key: "fem_timeout_s", label: "FEM timeout (s)", kind: "number" })}
+          {field({ key: "fem_voxel_mm", label: t("f.fem_voxel_mm"), kind: "number" })}
+          {field({ key: "fem_max_elements", label: t("f.fem_max_elements"), kind: "number" })}
+          {field({ key: "fem_timeout_s", label: t("f.fem_timeout_s"), kind: "number" })}
         </div>
         <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
-          topopt
+          {t("grp.topopt")}
         </div>
         <div className={FIELD_GRID}>
-          {field({ key: "topopt_timeout_s", label: "TopOpt timeout (s)", kind: "number" })}
-          {field({ key: "topopt_max_iterations", label: "Max SIMP iterations", kind: "number" })}
-          {field({ key: "topopt_default_volfrac", label: "Default volume fraction", kind: "number" })}
-          {field({ key: "topopt_default_rmin_mm", label: "Filter radius (mm)", kind: "number" })}
+          {field({ key: "topopt_timeout_s", label: t("f.topopt_timeout_s"), kind: "number" })}
+          {field({ key: "topopt_max_iterations", label: t("f.topopt_max_iterations"), kind: "number" })}
+          {field({ key: "topopt_default_volfrac", label: t("f.topopt_default_volfrac"), kind: "number" })}
+          {field({ key: "topopt_default_rmin_mm", label: t("f.topopt_default_rmin_mm"), kind: "number" })}
         </div>
         <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
-          verification
+          {t("grp.verification")}
         </div>
         <div className={FIELD_GRID}>
           {field({
             key: "fem_verify_realizations",
-            label: "Verify print realizations",
+            label: t("f.fem_verify_realizations"),
             kind: "bool",
-            hint: "eroded/dilated variants → worst-case SF",
+            hint: t("f.fem_verify_realizations_h"),
           })}
           {field({
             key: "fem_verify_realization_cells",
-            label: "Realization boundary cells",
+            label: t("f.fem_verify_realization_cells"),
             kind: "number",
-            hint: "erode/dilate depth in voxels",
+            hint: t("f.fem_verify_realization_cells_h"),
           })}
           {field({
             key: "fem_verify_coverage_e",
-            label: "Coverage-weighted stiffness",
+            label: t("f.fem_verify_coverage_e"),
             kind: "bool",
-            hint: "partial voxels get reduced modulus",
+            hint: t("f.fem_verify_coverage_e_h"),
           })}
           {field({
             key: "fem_verify_mesh_shift",
-            label: "Mesh-shift probe",
+            label: t("f.fem_verify_mesh_shift"),
             kind: "bool",
-            hint: "re-voxelize shifted ½ pitch — grid sensitivity",
+            hint: t("f.fem_verify_mesh_shift_h"),
           })}
           {field({
             key: "fem_loadpath_cert",
-            label: "Load-path certificate",
+            label: t("f.fem_loadpath_cert"),
             kind: "bool",
-            hint: "geometric min-cut SF floor + bottleneck",
+            hint: t("f.fem_loadpath_cert_h"),
           })}
           {field({
             key: "fem_homogenized_infill",
-            label: "Homogenized infill verify",
+            label: t("f.fem_homogenized_infill"),
             kind: "bool",
-            hint: "lattice C(ρ) elements → sf_homog + sf_micro",
+            hint: t("f.fem_homogenized_infill_h"),
           })}
           {field({
             key: "fem_homog_cell_voxels",
-            label: "Homog cell voxels",
+            label: t("f.fem_homog_cell_voxels"),
             kind: "number",
-            hint: "voxel size of one representative cell",
+            hint: t("f.fem_homog_cell_voxels_h"),
           })}
           {field({
             key: "infill_octet",
-            label: "Octet infill diagonals",
+            label: t("f.infill_octet"),
             kind: "bool",
-            hint: "45° strut families in aligned infill",
+            hint: t("f.infill_octet_h"),
           })}
         </div>
       </Card>
@@ -1442,56 +1411,52 @@ export default function SettingsPage() {
       {tab === "system" && (
         <div className="grid gap-4 lg:grid-cols-2">
           <Card className="p-4">
-            <SectionTitle>Executor</SectionTitle>
+            <SectionTitle>{t("exec_title")}</SectionTitle>
             <div className={FIELD_GRID}>
-              {field({ key: "exec_timeout_s", label: "Code execution timeout (s)", kind: "number" })}
+              {field({ key: "exec_timeout_s", label: t("f.exec_timeout_s"), kind: "number" })}
               {field({
                 key: "exec_mem_limit_mb",
-                label: "Sandbox memory limit (MB)",
+                label: t("f.exec_mem_limit_mb"),
                 kind: "number",
-                hint: "0 = auto",
+                hint: t("f.exec_mem_limit_mb_h"),
               })}
               {field({
                 key: "exec_threads",
-                label: "Threads per stage",
+                label: t("f.exec_threads"),
                 kind: "number",
-                hint: "0 = auto — OCC meshing, BLAS, software raster",
+                hint: t("f.exec_threads_h"),
               })}
               {field({
                 key: "exec_pool_workers",
-                label: "Process pool workers",
+                label: t("f.exec_pool_workers"),
                 kind: "number",
-                hint: "0 = auto; 1 disables FEM case pool / pipeline fan-out",
+                hint: t("f.exec_pool_workers_h"),
               })}
               {field({
                 key: "audit_parallel_runs",
-                label: "Audit parallel runs",
+                label: t("f.audit_parallel_runs"),
                 kind: "number",
-                hint: "0 = auto — parallel ±ε design-audit perturbations",
+                hint: t("f.audit_parallel_runs_h"),
               })}
             </div>
             {Object.keys(s.resources_detected ?? {}).length > 0 && (
               <div className="mt-2 text-xs text-zinc-500">
-                detected: {s.resources_detected.cpus ?? "?"} cpus ·{" "}
+                {t("detected_res")} {s.resources_detected.cpus ?? "?"} cpus ·{" "}
                 {Math.round((s.resources_detected.mem_mb ?? 0) / 1024)}g mem ·{" "}
                 {s.resources_detected.threads ?? "?"} threads/stage ·{" "}
                 {s.resources_detected.pool ?? "?"} pool workers
               </div>
             )}
-            <div className="mt-2 text-xs text-zinc-500">
-              hard outer caps are set by docker (cpus/mem_limit, auto-sized at startup); these
-              apply inside the sandbox
-            </div>
+            <div className="mt-2 text-xs text-muted">{t("exec_caps_hint")}</div>
           </Card>
 
           <Card className="p-4 text-sm text-zinc-400">
-            <SectionTitle>Runtime</SectionTitle>
+            <SectionTitle>{t("runtime_title")}</SectionTitle>
             <div>
-              data dir: <code className="text-zinc-300">{s.data_dir}</code>
+              {t("data_dir")} <code className="text-zinc-300">{s.data_dir}</code>
             </div>
             <div>
-              all runtime settings are stored in the app database — infrastructure
-              (database, redis, ports) is fixed by docker compose / launcher defaults
+              {t("runtime_hint")}
             </div>
           </Card>
 
@@ -1512,22 +1477,22 @@ export default function SettingsPage() {
             ) : (
               <span className="text-xs text-zinc-400">
                 {saved && !dirty
-                  ? "saved — applies to new jobs"
-                  : "unsaved changes — apply to new jobs; running jobs keep their snapshot"}
+                  ? t("saved_done")
+                  : t("saved_unsaved")}
               </span>
             )}
             {dirty && (
               <Btn variant="ghost" onClick={revert} disabled={save.isPending}>
-                revert
+                {t("common:action.revert")}
               </Btn>
             )}
             <Btn onClick={() => save.mutate()} busy={save.isPending} disabled={!dirty}>
-              {saved && !dirty ? "saved ✓" : "Save settings"}
+              {saved && !dirty ? t("saved_btn") : t("save_btn")}
             </Btn>
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }
 

@@ -1,5 +1,6 @@
 import { Eraser, Lasso, Paintbrush, Scissors, Undo2, Wand2, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { api, errMsg } from "../lib/api";
 import type { Asset } from "../lib/types";
 import { Btn, IconBtn, Spinner } from "./ui";
@@ -24,6 +25,7 @@ export default function ImageEditorModal({
   onSaved: (a: Asset) => void;
   onClose: () => void;
 }) {
+  const { t } = useTranslation("common");
   const viewRef = useRef<HTMLCanvasElement>(null);
   const workRef = useRef<HTMLCanvasElement | null>(null); // image-resolution bitmap
   const maskRef = useRef<HTMLCanvasElement | null>(null); // keep-region alpha mask
@@ -133,9 +135,9 @@ export default function ImageEditorModal({
       setUndoN(0);
       setReady(true);
     };
-    img.onerror = () => setErr("could not load image");
+    img.onerror = () => setErr(t("asset.ed.err_load"));
     img.src = `${asset.url}?t=${asset.created_at}`;
-  }, [asset]);
+  }, [asset, t]);
 
   useEffect(draw, [draw, ready]);
 
@@ -227,7 +229,7 @@ export default function ImageEditorModal({
           if (y > maxY) maxY = y;
         }
     if (maxX < 0) {
-      setErr("selection is empty — paint or lasso the area to keep first");
+      setErr(t("asset.ed.err_empty"));
       undoRef.current.pop();
       setUndoN(undoRef.current.length);
       return;
@@ -343,7 +345,7 @@ export default function ImageEditorModal({
   };
 
   const removeBg = async () => {
-    setBusy("removing background… (first run downloads the u2net model, ~170 MB)");
+    setBusy(t("asset.ed.busy_bg"));
     setErr("");
     try {
       const blob = await api.removeAssetBg(asset.id);
@@ -362,7 +364,7 @@ export default function ImageEditorModal({
   };
 
   const save = async () => {
-    setBusy("saving…");
+    setBusy(t("asset.ed.busy_save"));
     setErr("");
     try {
       const blob = await new Promise<Blob | null>((res) =>
@@ -395,18 +397,18 @@ export default function ImageEditorModal({
     <div className="fixed inset-0 z-50 flex flex-col bg-black/80 backdrop-blur-sm">
       <div className="flex items-center justify-between border-b border-zinc-800 bg-zinc-900 px-4 py-2">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold">Edit image</span>
+          <span className="text-sm font-semibold">{t("asset.ed.title")}</span>
           <span className="max-w-48 truncate text-xs text-zinc-500">{asset.filename}</span>
         </div>
-        <IconBtn title="close" onClick={onClose}>
+        <IconBtn title={t("action.close")} onClick={onClose}>
           <X className="h-4 w-4" />
         </IconBtn>
       </div>
 
       <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 bg-zinc-900/80 px-4 py-2">
-        {toolBtn("crop", <Scissors className="h-3.5 w-3.5" />, "crop")}
-        {toolBtn("brush", <Paintbrush className="h-3.5 w-3.5" />, "brush keep")}
-        {toolBtn("lasso", <Lasso className="h-3.5 w-3.5" />, "lasso")}
+        {toolBtn("crop", <Scissors className="h-3.5 w-3.5" />, t("asset.ed.crop"))}
+        {toolBtn("brush", <Paintbrush className="h-3.5 w-3.5" />, t("asset.ed.brush"))}
+        {toolBtn("lasso", <Lasso className="h-3.5 w-3.5" />, t("asset.ed.lasso"))}
         <span className="mx-1 h-5 w-px bg-zinc-700" />
         {tool === "crop" && (
           <>
@@ -424,14 +426,14 @@ export default function ImageEditorModal({
               ))}
             </select>
             <Btn variant="primary" onClick={applyCrop} disabled={!crop || crop.w < 4}>
-              apply crop
+              {t("asset.ed.apply_crop")}
             </Btn>
           </>
         )}
         {tool === "brush" && (
           <>
             <label className="flex items-center gap-1.5 text-xs text-zinc-400">
-              size
+              {t("asset.ed.size")}
               <input
                 type="range"
                 min={5}
@@ -448,18 +450,18 @@ export default function ImageEditorModal({
               onClick={() => setErase((v) => !v)}
             >
               <Eraser className="h-3.5 w-3.5" />
-              erase
+              {t("asset.ed.erase")}
             </button>
           </>
         )}
         {tool === "lasso" && lassoPts.length > 2 && (
           <Btn variant="primary" onClick={closeLasso}>
-            close selection
+            {t("asset.ed.close_sel")}
           </Btn>
         )}
         {hasMask && (
           <Btn variant="primary" onClick={applyMask}>
-            keep selected, remove rest
+            {t("asset.ed.keep_sel")}
           </Btn>
         )}
         <span className="mx-1 h-5 w-px bg-zinc-700" />
@@ -469,7 +471,7 @@ export default function ImageEditorModal({
           disabled={!!busy}
         >
           <Wand2 className="h-3.5 w-3.5" />
-          remove background
+          {t("asset.ed.remove_bg")}
         </button>
         <button
           className="flex items-center gap-1.5 rounded bg-zinc-800 px-2.5 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700 disabled:opacity-40"
@@ -477,7 +479,7 @@ export default function ImageEditorModal({
           disabled={!undoN || !!busy}
         >
           <Undo2 className="h-3.5 w-3.5" />
-          undo
+          {t("asset.ed.undo")}
         </button>
       </div>
 
@@ -492,7 +494,7 @@ export default function ImageEditorModal({
         <canvas
           ref={viewRef}
           role="img"
-          aria-label={`editing ${asset.filename}`}
+          aria-label={t("asset.ed.aria", { name: asset.filename })}
           className="max-h-full max-w-full cursor-crosshair shadow-2xl"
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
@@ -511,18 +513,18 @@ export default function ImageEditorModal({
             <span className="text-red-400">{err}</span>
           ) : (
             <span>
-              {tool === "crop" && "drag a rectangle — corners resize, inside moves"}
-              {tool === "brush" && "paint the region to keep — then “keep selected”"}
-              {tool === "lasso" && "click points, double-click or “close selection” to finish"}
+              {tool === "crop" && t("asset.ed.hint_crop")}
+              {tool === "brush" && t("asset.ed.hint_brush")}
+              {tool === "lasso" && t("asset.ed.hint_lasso")}
             </span>
           )}
         </div>
         <div className="flex gap-2">
           <Btn variant="ghost" onClick={onClose}>
-            cancel
+            {t("action.cancel")}
           </Btn>
           <Btn variant="primary" onClick={save} disabled={!ready || !!busy}>
-            save as copy
+            {t("asset.ed.save_copy")}
           </Btn>
         </div>
       </div>

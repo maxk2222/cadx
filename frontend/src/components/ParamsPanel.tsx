@@ -1,7 +1,9 @@
 import { useMutation } from "@tanstack/react-query";
 import { RotateCcw } from "lucide-react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
+import i18n from "../i18n";
 import { api, errMsg } from "../lib/api";
 import type { ParamDef } from "../lib/types";
 import { Btn, IconBtn, SectionTitle, inputCls } from "./ui";
@@ -12,9 +14,12 @@ export function paramError(p: ParamDef, cur: unknown, raw: string): string | nul
   const numeric = typeof cur === "number" || (cur == null && typeof p.value === "number");
   if (!numeric || raw === "") return null;
   const n = Number(raw);
-  if (!Number.isFinite(n)) return "not a number";
+  if (!Number.isFinite(n)) return i18n.t("version:params_err_nan");
   if ((p.min != null && n < p.min) || (p.max != null && n > p.max))
-    return `outside ${p.min ?? "−∞"}–${p.max ?? "∞"}`;
+    return i18n.t("version:params_err_range", {
+      min: p.min ?? "−∞",
+      max: p.max ?? "∞",
+    });
   return null;
 }
 
@@ -49,6 +54,7 @@ export default function ParamsPanel({
   schema: ParamDef[] | null;
   params: Record<string, unknown> | null;
 }) {
+  const { t } = useTranslation("version");
   const [values, setValues] = useState<Record<string, string>>({});
   // the panel is rendered unkeyed — drop stale edits when the version changes
   const [forVersion, setForVersion] = useState(versionId);
@@ -79,13 +85,13 @@ export default function ParamsPanel({
       <SectionTitle
         right={
           dirty && (
-            <IconBtn title="reset to current values" onClick={() => setValues({})}>
+            <IconBtn title={t("params_reset")} onClick={() => setValues({})}>
               <RotateCcw className="h-3.5 w-3.5" />
             </IconBtn>
           )
         }
       >
-        Parameters
+        {t("params_title")}
       </SectionTitle>
       <div className="grid grid-cols-2 gap-2">
         {schema.map((p) => {
@@ -111,7 +117,7 @@ export default function ParamsPanel({
                       setValues((v) => ({ ...v, [p.name]: String(e.target.checked) }))
                     }
                   />
-                  {raw === "true" ? "on" : "off"}
+                  {raw === "true" ? t("common:state.yes") : t("common:state.no")}
                 </span>
               ) : (
                 <input
@@ -137,7 +143,7 @@ export default function ParamsPanel({
       </div>
       {hasErrors && (
         <div className="mt-2 text-[10px] text-red-400">
-          fix the out-of-range fields before applying
+          {t("params_fix")}
         </div>
       )}
       {apply.isError && (
@@ -149,7 +155,7 @@ export default function ParamsPanel({
         busy={apply.isPending}
         onClick={() => apply.mutate()}
       >
-        Apply as new version
+        {t("common:action.apply_new_version")}
       </Btn>
     </div>
   );

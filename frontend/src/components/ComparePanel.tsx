@@ -1,5 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import { ArrowRight, TriangleAlert } from "lucide-react";
+import i18n from "../i18n";
 import { api, errMsg } from "../lib/api";
 import type {
   CompareResult,
@@ -20,7 +22,8 @@ export function shortId(id: string): string {
 
 /** picker option label: "v3 · mount plate · edit · make the wall thicker…" */
 export function versionLabel(o: VersionSummary, maxLen = 48): string {
-  const prompt = o.prompt.trim().replace(/\s+/g, " ") || "(no prompt)";
+  const prompt =
+    o.prompt.trim().replace(/\s+/g, " ") || i18n.t("version:cmp_no_prompt");
   const who = o.name || shortId(o.id);
   return `v${o.number} · ${who} · ${o.kind} · ${trunc(prompt, maxLen)}`;
 }
@@ -108,6 +111,7 @@ function CompareBody({
   aLabel: string;
   bLabel: string;
 }) {
+  const { t } = useTranslation("version");
   const s = r.shape;
   return (
     <>
@@ -115,7 +119,7 @@ function CompareBody({
         <div className="mb-3 flex items-start gap-2 rounded-md border border-amber-800 bg-amber-950/50 p-2.5 text-xs text-amber-300">
           <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <span className="min-w-0 break-words">
-            {r.error || "comparison incomplete — partial results below"}
+            {r.error || t("cmp_incomplete")}
           </span>
         </div>
       )}
@@ -129,7 +133,7 @@ function CompareBody({
         !r.params_diff.length &&
         r.ok && (
           <p className="mb-3 text-sm text-zinc-500">
-            No differences detected between these versions.
+            {t("cmp_no_diff")}
           </p>
         )
       )}
@@ -138,7 +142,7 @@ function CompareBody({
         <div className="mb-4">
           <div className="mb-1 flex flex-wrap items-center gap-2">
             <h4 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
-              Geometry
+              {t("cmp_geometry")}
             </h4>
             {s.boolean !== "ok" && (
               <Chip
@@ -146,7 +150,7 @@ function CompareBody({
                 title={s.error ?? s.note}
               >
                 <TriangleAlert className="h-3 w-3" />
-                boolean diff {s.boolean}
+                {t("cmp_bool_diff", { v: s.boolean })}
                 {s.note ? ` — ${s.note}` : ""}
               </Chip>
             )}
@@ -166,7 +170,7 @@ function CompareBody({
               </thead>
               <tbody>
                 <MetricRow
-                  label="volume"
+                  label={t("cmp_volume")}
                   a={fmtVol(s.volume_a)}
                   b={fmtVol(s.volume_b)}
                   d={
@@ -177,20 +181,20 @@ function CompareBody({
                   tone={deltaTone(s.volume_delta)}
                 />
                 <MetricRow
-                  label="bbox size"
+                  label={t("cmp_bbox")}
                   a={fmtVec(s.bbox_a?.size)}
                   b={fmtVec(s.bbox_b?.size)}
                   d={fmtVecDelta(s.bbox_delta?.size)}
                 />
                 <MetricRow
-                  label="solids"
+                  label={t("cmp_solids")}
                   a={String(s.solids_a)}
                   b={String(s.solids_b)}
                   d={fmtDelta(s.solids_b - s.solids_a, 0)}
                   tone={deltaTone(s.solids_b - s.solids_a)}
                 />
                 <MetricRow
-                  label="faces"
+                  label={t("cmp_faces")}
                   a={String(s.faces_a)}
                   b={String(s.faces_b)}
                   d={fmtDelta(s.faces_b - s.faces_a, 0)}
@@ -199,7 +203,7 @@ function CompareBody({
                 {s.boolean === "ok" && (
                   <>
                     <MetricRow
-                      label="added volume (only in b)"
+                      label={t("cmp_added_vol")}
                       a="—"
                       b={fmtVol(s.added_volume)}
                       d={
@@ -210,7 +214,7 @@ function CompareBody({
                       tone="text-emerald-400"
                     />
                     <MetricRow
-                      label="removed volume (only in a)"
+                      label={t("cmp_removed_vol")}
                       a={fmtVol(s.removed_volume)}
                       b="—"
                       d={
@@ -224,7 +228,7 @@ function CompareBody({
                 )}
                 {s.added_solids > 0 && (
                   <MetricRow
-                    label="added solids"
+                    label={t("cmp_added_solids")}
                     a="—"
                     b={String(s.added_solids)}
                     d={`+${s.added_solids}`}
@@ -233,7 +237,7 @@ function CompareBody({
                 )}
                 {s.removed_solids > 0 && (
                   <MetricRow
-                    label="removed solids"
+                    label={t("cmp_removed_solids")}
                     a={String(s.removed_solids)}
                     b="—"
                     d={`−${s.removed_solids}`}
@@ -242,7 +246,7 @@ function CompareBody({
                 )}
                 {s.added_bbox && (
                   <MetricRow
-                    label="added region bbox"
+                    label={t("cmp_added_bbox")}
                     a="—"
                     b={fmtVec(s.added_bbox.size)}
                     d=""
@@ -251,7 +255,7 @@ function CompareBody({
                 )}
                 {s.removed_bbox && (
                   <MetricRow
-                    label="removed region bbox"
+                    label={t("cmp_removed_bbox")}
                     a={fmtVec(s.removed_bbox.size)}
                     b="—"
                     d=""
@@ -264,20 +268,20 @@ function CompareBody({
         </div>
       ) : (
         <p className="mb-3 text-xs text-zinc-500">
-          No geometry available to diff (one or both versions have no solid).
+          {t("cmp_no_geom")}
         </p>
       )}
 
       {r.params_diff.length > 0 && (
         <div>
           <h4 className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
-            Parameters ({r.params_diff.length})
+            {t("cmp_params_n", { n: r.params_diff.length })}
           </h4>
           <div className="overflow-x-auto">
             <table className="w-full table-fixed text-xs">
               <thead>
                 <tr className="text-left text-zinc-500">
-                  <th className="w-1/4 pb-1 pr-3 font-medium">param</th>
+                  <th className="w-1/4 pb-1 pr-3 font-medium">{t("cmp_param")}</th>
                   <th className="pb-1 pr-3 font-medium">{aLabel}</th>
                   <th className="pb-1 font-medium">{bLabel}</th>
                 </tr>
@@ -323,6 +327,7 @@ export default function ComparePanel({
   otherId: string | null;
   versions: VersionSummary[];
 }) {
+  const { t } = useTranslation("version");
   const other = versions.find((x) => x.id === otherId) ?? null;
   const cmp = useQuery({
     queryKey: ["compare", base.id, otherId],
@@ -346,13 +351,13 @@ export default function ComparePanel({
           </span>
         }
       >
-        Compare
+        {t("cmp_title")}
       </SectionTitle>
 
       {!otherId ? (
         <EmptyState
-          title="Nothing to compare against"
-          hint="Pick another version of this project above."
+          title={t("cmp_empty")}
+          hint={t("cmp_empty_hint")}
         />
       ) : cmp.isLoading ? (
         <div className="space-y-2" aria-busy="true">

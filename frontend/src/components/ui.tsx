@@ -1,4 +1,4 @@
-import { Check, CheckCircle2, ChevronDown, Copy, Ghost, Info, Loader2, X, XCircle } from "lucide-react";
+import { Check, CheckCircle2, ChevronDown, Copy, EllipsisVertical, Ghost, Info, Loader2, X, XCircle } from "lucide-react";
 import {
   createContext,
   useCallback,
@@ -9,6 +9,8 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { useTranslation } from "react-i18next";
+import i18n from "../i18n";
 import { fmtDur, sparkPoints, stepRows } from "../lib/liveStats";
 import type { JobLive } from "../lib/types";
 
@@ -20,13 +22,16 @@ export function Spinner({ className = "h-4 w-4" }: { className?: string }) {
 
 export function Card({
   className = "",
+  interactive,
   children,
 }: {
   className?: string;
+  /** hover lift + border brightening — for clickable cards */
+  interactive?: boolean;
   children: ReactNode;
 }) {
   return (
-    <div className={`rounded-lg border border-zinc-800 bg-zinc-900/60 ${className}`}>
+    <div className={`panel ${interactive ? "panel-hover" : ""} ${className}`}>
       {children}
     </div>
   );
@@ -41,7 +46,7 @@ export function SectionTitle({
 }) {
   return (
     <div className="mb-2 flex items-center justify-between gap-2">
-      <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
+      <h3 className="text-xs font-semibold uppercase tracking-wider text-faint">
         {children}
       </h3>
       {right}
@@ -49,12 +54,15 @@ export function SectionTitle({
   );
 }
 
-/** collapsible section — SectionTitle-styled header with a chevron toggle */
+/** collapsible section — SectionTitle-styled header with a chevron toggle.
+ *  Animates via the grid-rows 0fr→1fr trick (no height JS). `persistKey`
+ *  remembers the open state in localStorage. */
 export function Collapsible({
   title,
   right,
   count,
   defaultOpen = true,
+  persistKey,
   className = "",
   children,
 }: {
@@ -63,22 +71,47 @@ export function Collapsible({
   /** optional item count shown as a muted suffix */
   count?: number;
   defaultOpen?: boolean;
+  /** localStorage key — persists the open/closed state across reloads */
+  persistKey?: string;
   className?: string;
   children: ReactNode;
 }) {
-  const [open, setOpen] = useState(defaultOpen);
+  const [open, setOpen] = useState(() => {
+    if (persistKey) {
+      try {
+        const s = localStorage.getItem(`collapse:${persistKey}`);
+        if (s != null) return s === "1";
+      } catch {
+        /* private mode */
+      }
+    }
+    return defaultOpen;
+  });
+  const toggle = () => {
+    setOpen((o) => {
+      const n = !o;
+      if (persistKey) {
+        try {
+          localStorage.setItem(`collapse:${persistKey}`, n ? "1" : "0");
+        } catch {
+          /* private mode */
+        }
+      }
+      return n;
+    });
+  };
   return (
     <div className={className}>
       <button
         type="button"
-        onClick={() => setOpen((o) => !o)}
+        onClick={toggle}
         aria-expanded={open}
         className="group mb-2 flex w-full items-center justify-between gap-2 text-left"
       >
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-500 transition-colors group-hover:text-zinc-300">
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-faint transition-colors group-hover:text-muted">
           {title}
           {count != null && (
-            <span className="ml-1.5 font-normal normal-case tracking-normal text-zinc-600">
+            <span className="ml-1.5 font-normal normal-case tracking-normal text-faint/70">
               {count}
             </span>
           )}
@@ -86,21 +119,62 @@ export function Collapsible({
         <span className="flex items-center gap-2">
           {right}
           <ChevronDown
-            className={`h-3.5 w-3.5 text-zinc-600 transition-transform group-hover:text-zinc-400 ${
+            className={`h-3.5 w-3.5 text-faint transition-transform duration-200 group-hover:text-muted ${
               open ? "" : "-rotate-90"
             }`}
           />
         </span>
       </button>
-      {open && children}
+      <div
+        className={`grid transition-[grid-template-rows] duration-200 ease-out ${
+          open ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
+        }`}
+      >
+        <div className="min-h-0 overflow-hidden">{children}</div>
+      </div>
     </div>
+  );
+}
+
+/** Card-wrapped Collapsible — the inspector/panel section pattern. */
+export function SectionCollapsible({
+  title,
+  right,
+  count,
+  defaultOpen = true,
+  persistKey,
+  className = "",
+  pad = "p-3",
+  children,
+}: {
+  title: ReactNode;
+  right?: ReactNode;
+  count?: number;
+  defaultOpen?: boolean;
+  persistKey?: string;
+  className?: string;
+  pad?: string;
+  children: ReactNode;
+}) {
+  return (
+    <Card className={`${pad} ${className}`}>
+      <Collapsible
+        title={title}
+        right={right}
+        count={count}
+        defaultOpen={defaultOpen}
+        persistKey={persistKey}
+      >
+        {children}
+      </Collapsible>
+    </Card>
   );
 }
 
 type Tone = "zinc" | "blue" | "green" | "amber" | "red" | "purple" | "teal";
 
 const CHIP_TONES: Record<Tone, string> = {
-  zinc: "border-zinc-700 bg-zinc-800 text-zinc-300",
+  zinc: "border-edge2 bg-panel2 text-zinc-300",
   blue: "border-brand-800 bg-brand-950/60 text-brand-300",
   green: "border-emerald-800 bg-emerald-950/60 text-emerald-300",
   amber: "border-amber-800 bg-amber-950/60 text-amber-300",
@@ -135,10 +209,12 @@ export function Chip({
 type BtnVariant = "primary" | "ghost" | "danger" | "success" | "subtle";
 
 const BTN: Record<BtnVariant, string> = {
-  primary: "bg-brand-600 text-white hover:bg-brand-500",
-  success: "bg-emerald-600 text-white hover:bg-emerald-500",
+  primary:
+    "bg-gradient-to-b from-brand-600 to-brand-700 text-white shadow-sm shadow-brand-950/50 hover:from-brand-500 hover:to-brand-600",
+  success:
+    "bg-gradient-to-b from-emerald-600 to-emerald-700 text-white shadow-sm shadow-emerald-950/50 hover:from-emerald-500 hover:to-emerald-600",
   danger: "bg-red-700 text-white hover:bg-red-600",
-  ghost: "bg-zinc-800 text-zinc-300 hover:bg-zinc-700 hover:text-zinc-100",
+  ghost: "bg-panel2 text-zinc-300 hover:bg-edge hover:text-zinc-100",
   subtle: "bg-transparent text-brand-400 hover:bg-brand-950/40 hover:text-brand-300",
 };
 
@@ -162,7 +238,7 @@ export function Btn({
 } & React.ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
     <button
-      className={`inline-flex items-center justify-center gap-1.5 rounded-md font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 disabled:cursor-not-allowed disabled:opacity-50 ${BTN_SIZE[size]} ${BTN[variant]} ${className}`}
+      className={`inline-flex items-center justify-center gap-1.5 rounded-md font-medium transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 active:scale-[.98] disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100 ${BTN_SIZE[size]} ${BTN[variant]} ${className}`}
       disabled={disabled || busy}
       {...rest}
     >
@@ -186,8 +262,8 @@ export function IconBtn({
     <button
       title={title}
       aria-label={title}
-      className={`inline-flex h-7 w-7 items-center justify-center rounded-md text-zinc-400 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 disabled:opacity-40 ${
-        danger ? "hover:bg-red-950 hover:text-red-300" : "hover:bg-zinc-800 hover:text-zinc-100"
+      className={`inline-flex h-7 w-7 items-center justify-center rounded-md text-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 disabled:opacity-40 ${
+        danger ? "hover:bg-red-950 hover:text-red-300" : "hover:bg-panel2 hover:text-fg"
       } ${className}`}
       {...rest}
     >
@@ -195,7 +271,6 @@ export function IconBtn({
     </button>
   );
 }
-
 
 /** compact model-transparency slider for the 3D viewers' toolbars —
  *  value 0.1–1; 1 = opaque */
@@ -208,10 +283,11 @@ export function OpacitySlider({
   onChange: (v: number) => void;
   className?: string;
 }) {
+  const { t } = useTranslation();
   return (
     <label
-      title="model opacity — drag left for an x-ray view"
-      className={`flex items-center gap-1.5 rounded-md bg-zinc-900/80 px-2 py-1 text-xs text-zinc-400 backdrop-blur ${className}`}
+      title={t("common:ui.model_opacity_hint")}
+      className={`flex items-center gap-1.5 rounded-md bg-panel/80 px-2 py-1 text-xs text-muted backdrop-blur ${className}`}
     >
       <Ghost className="h-3.5 w-3.5" />
       <input
@@ -223,16 +299,17 @@ export function OpacitySlider({
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
       />
-      <span className="w-8 tabular-nums text-zinc-500">{Math.round(value * 100)}%</span>
+      <span className="w-8 tabular-nums text-faint">{Math.round(value * 100)}%</span>
     </label>
   );
 }
 
 export function CopyBtn({ text, className = "" }: { text: string; className?: string }) {
+  const { t } = useTranslation();
   const [ok, setOk] = useState(false);
   return (
     <IconBtn
-      title="copy to clipboard"
+      title={t("common:action.copy_clipboard")}
       className={className}
       onClick={async () => {
         try {
@@ -261,10 +338,10 @@ export function EmptyState({
   hint?: string;
 }) {
   return (
-    <div className="flex flex-col items-center gap-1.5 rounded-lg border border-dashed border-zinc-800 px-4 py-8 text-center">
-      {icon && <div className="text-zinc-500">{icon}</div>}
-      <div className="text-sm text-zinc-400">{title}</div>
-      {hint && <div className="text-xs text-zinc-500">{hint}</div>}
+    <div className="flex flex-col items-center gap-1.5 rounded-lg border border-dashed border-edge px-4 py-8 text-center">
+      {icon && <div className="text-faint">{icon}</div>}
+      <div className="text-sm text-muted">{title}</div>
+      {hint && <div className="text-xs text-faint">{hint}</div>}
     </div>
   );
 }
@@ -279,13 +356,13 @@ export function ProgressBar({
   tone?: "blue" | "green" | "amber" | "red";
 }) {
   const colors = {
-    blue: "bg-brand-500",
-    green: "bg-emerald-500",
-    amber: "bg-amber-500",
-    red: "bg-red-500",
+    blue: "bg-gradient-to-r from-brand-600 to-brand-400",
+    green: "bg-gradient-to-r from-emerald-600 to-emerald-400",
+    amber: "bg-gradient-to-r from-amber-600 to-amber-400",
+    red: "bg-gradient-to-r from-red-600 to-red-400",
   };
   return (
-    <div className={`h-1.5 w-full overflow-hidden rounded-full bg-zinc-800 ${className}`}>
+    <div className={`h-1.5 w-full overflow-hidden rounded-full bg-panel2 ${className}`}>
       <div
         className={`h-full rounded-full transition-[width] duration-500 ${colors[tone]}`}
         style={{ width: `${Math.min(100, Math.max(0, value * 100))}%` }}
@@ -309,6 +386,7 @@ export function Modal({
   children: ReactNode;
   wide?: boolean;
 }) {
+  const { t } = useTranslation();
   const dlgRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
@@ -348,7 +426,7 @@ export function Modal({
   if (!open) return null;
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+      className="anim-fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
       <div
@@ -357,11 +435,11 @@ export function Modal({
         aria-modal="true"
         aria-label={title}
         tabIndex={-1}
-        className={`w-full ${wide ? "max-w-3xl" : "max-w-md"} rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl outline-none`}
+        className={`anim-scale-in w-full ${wide ? "max-w-3xl" : "max-w-md"} rounded-xl border border-edge2 bg-panel shadow-2xl shadow-black/50 outline-none`}
       >
-        <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
+        <div className="flex items-center justify-between border-b border-edge px-4 py-3">
           <h2 className="text-sm font-semibold">{title}</h2>
-          <IconBtn title="close" onClick={onClose}>
+          <IconBtn title={t("common:action.close")} onClick={onClose}>
             <X className="h-4 w-4" />
           </IconBtn>
         </div>
@@ -377,7 +455,7 @@ export function ConfirmModal({
   onConfirm,
   title,
   body,
-  confirmLabel = "Delete",
+  confirmLabel,
   busy,
 }: {
   open: boolean;
@@ -388,15 +466,16 @@ export function ConfirmModal({
   confirmLabel?: string;
   busy?: boolean;
 }) {
+  const { t } = useTranslation();
   return (
     <Modal open={open} onClose={onClose} title={title}>
-      <div className="mb-4 text-sm text-zinc-400">{body}</div>
+      <div className="mb-4 text-sm text-muted">{body}</div>
       <div className="flex justify-end gap-2">
         <Btn variant="ghost" onClick={onClose}>
-          Cancel
+          {t("common:action.cancel")}
         </Btn>
         <Btn variant="danger" onClick={onConfirm} busy={busy}>
-          {confirmLabel}
+          {confirmLabel ?? t("common:action.delete")}
         </Btn>
       </div>
     </Modal>
@@ -404,6 +483,7 @@ export function ConfirmModal({
 }
 
 export function Lightbox({ src, onClose }: { src: string | null; onClose: () => void }) {
+  const { t } = useTranslation();
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!src) return;
@@ -422,12 +502,12 @@ export function Lightbox({ src, onClose }: { src: string | null; onClose: () => 
       ref={ref}
       role="dialog"
       aria-modal="true"
-      aria-label="image preview"
+      aria-label={t("common:dialog.image_preview")}
       tabIndex={-1}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-8 outline-none"
+      className="anim-fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-8 outline-none"
       onClick={onClose}
     >
-      <img src={src} className="max-h-full max-w-full rounded shadow-2xl" alt="" />
+      <img src={src} className="anim-scale-in max-h-full max-w-full rounded shadow-2xl" alt="" />
     </div>
   );
 }
@@ -448,7 +528,7 @@ export function Tabs<T extends string>({
   return (
     <div
       role="tablist"
-      className={`flex gap-0.5 rounded-lg border border-zinc-800 bg-zinc-900 p-1 ${className}`}
+      className={`flex gap-0.5 rounded-lg border border-edge bg-panel p-1 ${className}`}
       onKeyDown={(e) => {
         if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
         e.preventDefault();
@@ -468,10 +548,10 @@ export function Tabs<T extends string>({
           aria-selected={active === t.id}
           tabIndex={active === t.id ? 0 : -1}
           onClick={() => onChange(t.id)}
-          className={`flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 ${
+          className={`relative flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 ${
             active === t.id
-              ? "bg-zinc-800 text-zinc-100 shadow-sm"
-              : "text-zinc-500 hover:text-zinc-300"
+              ? "bg-panel2 text-fg shadow-sm after:absolute after:inset-x-3 after:bottom-0.5 after:h-px after:rounded-full after:bg-brand-500/70"
+              : "text-faint hover:text-muted"
           }`}
         >
           {t.label}
@@ -494,24 +574,24 @@ export function Field({
 }) {
   return (
     <label className="mb-3 block">
-      <span className="text-sm text-zinc-400">{label}</span>
+      <span className="text-sm text-muted">{label}</span>
       <div className="mt-1">{children}</div>
-      {hint && <span className="mt-0.5 block text-xs text-zinc-500">{hint}</span>}
+      {hint && <span className="mt-0.5 block text-xs text-faint">{hint}</span>}
     </label>
   );
 }
 
-export const inputCls =
-  "w-full rounded-md border border-zinc-700 bg-zinc-800/80 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 outline-none transition-colors focus:border-brand-600 focus:ring-1 focus:ring-brand-600/40";
+/** @deprecated alias for the `.input` css class — kept for existing imports */
+export const inputCls = "input";
 
 /* ---------- crumbs ---------- */
 
 export function Crumbs({ items }: { items: ReactNode[] }) {
   return (
-    <nav className="flex items-center gap-1.5 text-sm text-zinc-500">
+    <nav className="flex items-center gap-1.5 text-sm text-faint">
       {items.map((it, i) => (
         <span key={i} className="flex items-center gap-1.5">
-          {i > 0 && <span className="text-zinc-700">/</span>}
+          {i > 0 && <span className="text-edge2">/</span>}
           {it}
         </span>
       ))}
@@ -552,12 +632,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         {toasts.map((t) => (
           <div
             key={t.id}
-            className={`pointer-events-auto flex items-start gap-2 rounded-lg border px-3 py-2 text-sm shadow-xl backdrop-blur ${
+            className={`anim-fade-in-up pointer-events-auto flex items-start gap-2 rounded-lg border px-3 py-2 text-sm shadow-xl shadow-black/40 backdrop-blur ${
               t.tone === "success"
                 ? "border-emerald-800 bg-emerald-950/90 text-emerald-200"
                 : t.tone === "error"
                   ? "border-red-800 bg-red-950/90 text-red-200"
-                  : "border-zinc-700 bg-zinc-900/90 text-zinc-300"
+                  : "border-edge2 bg-panel/90 text-zinc-300"
             }`}
           >
             {t.tone === "success" ? (
@@ -570,7 +650,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             <span className="min-w-0 flex-1 break-words">{t.text}</span>
             <button
               className="shrink-0 text-current opacity-50 hover:opacity-100"
-              aria-label="dismiss"
+              aria-label={i18n.t("action.dismiss")}
               onClick={() => setToasts((ts) => ts.filter((x) => x.id !== t.id))}
             >
               <X className="h-3.5 w-3.5" />
@@ -585,7 +665,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 /* ---------- skeletons ---------- */
 
 export function Skeleton({ className = "" }: { className?: string }) {
-  return <div className={`animate-pulse rounded bg-zinc-800 ${className}`} />;
+  return <div className={`animate-pulse rounded bg-panel2 ${className}`} />;
 }
 
 /* ---------- misc ---------- */
@@ -806,7 +886,7 @@ export function PipelineStepper({
           className={`inline-flex flex-col rounded border px-1.5 py-0.5 text-[10px] font-medium ${
             r.active
               ? "shimmer border-brand-700 bg-brand-950/50 text-brand-300"
-              : "border-zinc-800 bg-zinc-900 text-zinc-400"
+              : "border-edge bg-panel text-muted"
           }`}
         >
           <span className="flex items-center gap-1">
@@ -850,21 +930,21 @@ export function StepWaterfall({
         <div key={`${r.step}-${i}`} className="flex items-center gap-2">
           <span
             className={`w-20 shrink-0 truncate text-xs ${
-              r.active ? "text-brand-300" : "text-zinc-400"
+              r.active ? "text-brand-300" : "text-muted"
             }`}
             title={r.label}
           >
             {r.label}
           </span>
-          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-zinc-800/60">
+          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-panel2/60">
             <div
               className={`h-full rounded-full transition-[width] duration-500 ${
-                r.active ? "bg-brand-500/70" : "bg-zinc-600"
+                r.active ? "bg-brand-500/70" : "bg-faint"
               }`}
               style={{ width: `${(r.dt_s / maxDt) * 100}%` }}
             />
           </div>
-          <span className="w-10 shrink-0 text-right font-mono text-[10px] text-zinc-500">
+          <span className="w-10 shrink-0 text-right font-mono text-[10px] text-faint">
             {fmtDur(r.dt_s)}
           </span>
         </div>
@@ -874,7 +954,7 @@ export function StepWaterfall({
 }
 
 const STAT_TONES = {
-  default: "text-zinc-100",
+  default: "text-fg",
   ok: "text-emerald-300",
   warn: "text-amber-300",
   error: "text-red-300",
@@ -896,11 +976,143 @@ export function StatChip({
 }) {
   return (
     <div
-      className={`min-w-0 rounded-md border border-zinc-800 bg-zinc-900/60 px-2 py-1.5 ${className}`}
+      className={`min-w-0 rounded-md border border-edge bg-panel/60 px-2 py-1.5 ${className}`}
     >
-      <div className="text-[10px] font-medium uppercase tracking-wider text-zinc-500">{label}</div>
+      <div className="text-[10px] font-medium uppercase tracking-wider text-faint">{label}</div>
       <div className={`truncate font-mono text-sm ${STAT_TONES[tone]}`}>{value}</div>
-      {hint && <div className="truncate text-[10px] text-zinc-500">{hint}</div>}
+      {hint && <div className="truncate text-[10px] text-faint">{hint}</div>}
+    </div>
+  );
+}
+
+/* ---------- page scaffolding ---------- */
+
+/** Standard page wrapper — identical header rhythm on every page:
+ *  crumbs → title + subtitle → actions, then content in a soft fade. */
+export function PageShell({
+  title,
+  subtitle,
+  crumbs,
+  actions,
+  maxW = "default",
+  className = "",
+  children,
+}: {
+  title: ReactNode;
+  subtitle?: ReactNode;
+  crumbs?: ReactNode;
+  actions?: ReactNode;
+  /** "list" → max-w-4xl · "default" → max-w-6xl · "wide" → max-w-7xl */
+  maxW?: "list" | "default" | "wide";
+  className?: string;
+  children: ReactNode;
+}) {
+  const mw =
+    maxW === "list" ? "max-w-4xl" : maxW === "wide" ? "max-w-7xl" : "max-w-6xl";
+  return (
+    <div className={`mx-auto w-full ${mw} p-6 lg:p-8 ${className}`}>
+      <div className="anim-fade-in-up mb-5">
+        {crumbs && <div className="mb-1.5">{crumbs}</div>}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          <h1 className="text-xl font-semibold text-fg">{title}</h1>
+          {actions && (
+            <>
+              <span className="flex-1" />
+              <div className="flex flex-wrap items-center gap-2">{actions}</div>
+            </>
+          )}
+        </div>
+        {subtitle && <div className="mt-1 text-sm text-muted">{subtitle}</div>}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+/** One-line metric strip — `it 5/8 · 3:42 · 45k tok` style. Lighter than a
+ *  row of chips: muted text with middle-dot separators. */
+export function StatRow({
+  items,
+  className = "",
+}: {
+  items: (ReactNode | null | undefined | false)[];
+  className?: string;
+}) {
+  const shown = items.filter(Boolean);
+  if (!shown.length) return null;
+  return (
+    <div
+      className={`flex flex-wrap items-center gap-x-2 gap-y-1 text-xs tabular-nums text-muted ${className}`}
+    >
+      {shown.map((it, i) => (
+        <span key={i} className="flex items-center gap-2">
+          {i > 0 && <span className="text-faint/60">·</span>}
+          {it}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/** ⋯ overflow dropdown for secondary actions (rename/delete/…). */
+export function OverflowMenu({
+  title,
+  items,
+  className = "",
+}: {
+  title: string;
+  items: {
+    icon?: ReactNode;
+    label: ReactNode;
+    danger?: boolean;
+    disabled?: boolean;
+    onClick: () => void;
+  }[];
+  className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const h = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("mousedown", h);
+    document.addEventListener("keydown", esc);
+    return () => {
+      document.removeEventListener("mousedown", h);
+      document.removeEventListener("keydown", esc);
+    };
+  }, [open]);
+  return (
+    <div ref={ref} className={`relative ${className}`}>
+      <IconBtn title={title} onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+        <EllipsisVertical className="h-4 w-4" />
+      </IconBtn>
+      {open && (
+        <div className="anim-scale-in absolute right-0 top-8 z-40 min-w-44 origin-top-right rounded-lg border border-edge bg-panel p-1 shadow-xl shadow-black/40">
+          {items.map((it, i) => (
+            <button
+              key={i}
+              type="button"
+              disabled={it.disabled}
+              onClick={() => {
+                setOpen(false);
+                it.onClick();
+              }}
+              className={`flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors disabled:opacity-40 ${
+                it.danger
+                  ? "text-red-400 hover:bg-red-950/50"
+                  : "text-muted hover:bg-panel2 hover:text-fg"
+              }`}
+            >
+              {it.icon}
+              {it.label}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

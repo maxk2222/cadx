@@ -8,16 +8,12 @@ import {
   Wrench,
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { api } from "../lib/api";
 import type { MeshModelInfo, ProcessType, RunOptions } from "../lib/types";
 import { Chip } from "./ui";
 
-export const PROCESS_OPTIONS: { id: ProcessType; label: string; title: string }[] = [
-  { id: "fdm", label: "FDM", title: "FDM 3D printing (filament)" },
-  { id: "sla", label: "SLA", title: "SLA resin printing" },
-  { id: "cnc3", label: "CNC 3-axis", title: "3-axis CNC machining" },
-  { id: "cnc2d", label: "CNC 2D", title: "2D CNC cutting (sheet parts)" },
-];
+export const PROCESS_OPTIONS: ProcessType[] = ["fdm", "sla", "cnc3", "cnc2d"];
 
 export const MATERIAL_OPTIONS = [
   "pla",
@@ -53,66 +49,67 @@ export function optionsCount(o: RunOptions): number {
 
 /** read-only summary chips of the selected options (version header). */
 export function OptionChips({ options }: { options: RunOptions | null | undefined }) {
+  const { t } = useTranslation();
   if (!options) return null;
-  const proc = PROCESS_OPTIONS.find((p) => p.id === options.process);
+  const proc = options.process;
   return (
     <>
       {proc && (
-        <Chip tone="blue" title="manufacturing process">
-          {proc.label}
+        <Chip tone="blue" title={t("opt.process_hint")}>
+          {t(`opt.process.${proc}`)}
         </Chip>
       )}
       {options.material && (
-        <Chip tone="zinc" title="material">
+        <Chip tone="zinc" title={t("opt.material_hint")}>
           {options.material}
         </Chip>
       )}
       {options.fem && (
-        <Chip tone="purple" title={options.fem_note || "FEM structural analysis"}>
+        <Chip tone="purple" title={options.fem_note || t("opt.fem_hint")}>
           <Activity className="h-3 w-3" /> FEM
         </Chip>
       )}
       {options.topopt && (
         <Chip
           tone="teal"
-          title={`topology optimization${options.topopt_volfrac ? ` → ${Math.round(options.topopt_volfrac * 100)}% volume` : ""}`}
+          title={t("opt.topopt_hint") + (options.topopt_volfrac ? ` → ${Math.round(options.topopt_volfrac * 100)}% ${t("opt.volume")}` : "")}
         >
           <Shrink className="h-3 w-3" /> TopOpt
           {options.topopt_volfrac ? ` ${Math.round(options.topopt_volfrac * 100)}%` : ""}
         </Chip>
       )}
       {options.include_fasteners && (
-        <Chip tone="amber" title="include standard fasteners">
-          <Wrench className="h-3 w-3" /> fasteners
+        <Chip tone="amber" title={t("opt.fasteners_hint")}>
+          <Wrench className="h-3 w-3" /> {t("opt.fasteners")}
         </Chip>
       )}
       {options.llm_backend && (
-        <Chip tone="blue" title="LLM backend override">
+        <Chip tone="blue" title={t("opt.llm_override")}>
           llm→{options.llm_backend}
         </Chip>
       )}
       {options.mesh_backend && (
-        <Chip tone="blue" title="mesh backend override">
+        <Chip tone="blue" title={t("opt.mesh_override")}>
           mesh→{options.mesh_backend}
         </Chip>
       )}
       {options.image_backend && (
-        <Chip tone="blue" title="image backend override">
+        <Chip tone="blue" title={t("opt.img_override")}>
           img→{options.image_backend}
         </Chip>
       )}
       {options.mesh_model && (
-        <Chip tone="zinc" title="mesh model override">
+        <Chip tone="zinc" title={t("opt.mesh_model_override")}>
           mesh: {options.mesh_model}
         </Chip>
       )}
       {options.image_model && (
-        <Chip tone="zinc" title="image model override">
+        <Chip tone="zinc" title={t("opt.img_model_override")}>
           img: {options.image_model}
         </Chip>
       )}
       {options.image_edit_model && (
-        <Chip tone="zinc" title="image edit model override">
+        <Chip tone="zinc" title={t("opt.img_edit_override")}>
           img edit: {options.image_edit_model}
         </Chip>
       )}
@@ -192,13 +189,12 @@ function Sel({
   );
 }
 
-const DEFAULT_OPT: [string, string] = ["", "default (settings)"];
+function useDefaultOpt(t: (k: string) => string): [string, string] {
+  return ["", t("opt.default_settings")];
+}
 
-function modelOpts(list: MeshModelInfo[]): [string, string][] {
-  return [
-    DEFAULT_OPT,
-    ...list.map((m): [string, string] => [m.id, m.name || m.id]),
-  ];
+function modelOpts(list: MeshModelInfo[], def: [string, string]): [string, string][] {
+  return [def, ...list.map((m): [string, string] => [m.id, m.name || m.id])];
 }
 
 /** Collapsible run-options panel — selections are injected into the agent run. */
@@ -209,6 +205,8 @@ export default function OptionsPanel({
   value: RunOptions;
   onChange: (o: RunOptions) => void;
 }) {
+  const { t } = useTranslation();
+  const DEFAULT_OPT = useDefaultOpt(t);
   const count = optionsCount(value);
   const [open, setOpen] = useState(count > 0);
   const set = (patch: Partial<RunOptions>) => onChange({ ...value, ...patch });
@@ -245,7 +243,7 @@ export default function OptionsPanel({
         className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-zinc-400 hover:text-zinc-200"
       >
         <Settings2 className="h-3.5 w-3.5" />
-        Options
+        {t("opt.title")}
         {count > 0 && (
           <span className="rounded-full bg-brand-600 px-1.5 text-[10px] text-white">
             {count}
@@ -260,22 +258,22 @@ export default function OptionsPanel({
       </button>
       {open && (
         <div className="border-t border-zinc-800 px-3 pb-3 pt-2">
-          <Group label="Manufacturing process">
+          <Group label={t("opt.group_process")}>
             {PROCESS_OPTIONS.map((p) => (
               <Opt
-                key={p.id}
-                title={p.title}
-                active={value.process === p.id}
+                key={p}
+                title={t(`opt.process_${p}_h`)}
+                active={value.process === p}
                 onClick={() =>
-                  set({ process: value.process === p.id ? undefined : p.id })
+                  set({ process: value.process === p ? undefined : p })
                 }
               >
-                {p.label}
+                {t(`opt.process.${p}`)}
               </Opt>
             ))}
           </Group>
 
-          <Group label="Material">
+          <Group label={t("opt.group_material")}>
             {MATERIAL_OPTIONS.map((m) => (
               <Opt
                 key={m}
@@ -289,49 +287,49 @@ export default function OptionsPanel({
             ))}
             <input
               className="w-32 rounded border border-zinc-700 bg-zinc-800/80 px-2 py-1 text-[11px] text-zinc-200 placeholder-zinc-600 outline-none focus:border-brand-600"
-              placeholder="custom material…"
+              placeholder={t("opt.custom_material")}
               value={customMaterial}
               onChange={(e) => set({ material: e.target.value || undefined })}
             />
           </Group>
 
-          <Group label="Analysis & extras">
+          <Group label={t("opt.group_analysis")}>
             <Opt
-              title="run FEM structural analysis after generation"
+              title={t("opt.fem_check_h")}
               active={!!value.fem}
               onClick={() => set({ fem: !value.fem || undefined })}
             >
-              <Activity className="h-3 w-3" /> FEM check
+              <Activity className="h-3 w-3" /> {t("opt.fem_check")}
             </Opt>
             <Opt
-              title="topology-optimize the part (SIMP; generates a topopt version)"
+              title={t("opt.topopt_check_h")}
               active={!!value.topopt}
               onClick={() => set({ topopt: !value.topopt || undefined })}
             >
-              <Shrink className="h-3 w-3" /> Topology optimization
+              <Shrink className="h-3 w-3" /> {t("opt.topopt_check")}
             </Opt>
             <Opt
-              title="include standard fasteners from bd_warehouse"
+              title={t("opt.fasteners_check_h")}
               active={!!value.include_fasteners}
               onClick={() =>
                 set({ include_fasteners: !value.include_fasteners || undefined })
               }
             >
-              <Wrench className="h-3 w-3" /> Standard fasteners
+              <Wrench className="h-3 w-3" /> {t("opt.fasteners_check")}
             </Opt>
           </Group>
 
           {!!value.fem && (
             <input
               className="mt-2 w-full rounded border border-zinc-700 bg-zinc-800/80 px-2 py-1.5 text-[11px] text-zinc-200 placeholder-zinc-600 outline-none focus:border-brand-600"
-              placeholder="loads & fixtures (optional) — e.g. 'fixed at M4 holes, 100 N on top face'"
+              placeholder={t("opt.fem_note_ph")}
               value={value.fem_note ?? ""}
               onChange={(e) => set({ fem_note: e.target.value || undefined })}
             />
           )}
           {!!value.topopt && (
             <div className="mt-2 flex items-center gap-2">
-              <span className="text-[11px] text-zinc-500">target volume</span>
+              <span className="text-[11px] text-muted">{t("opt.target_volume")}</span>
               <input
                 type="range"
                 min={10}
@@ -349,7 +347,7 @@ export default function OptionsPanel({
             </div>
           )}
 
-          <Group label="Backends">
+          <Group label={t("opt.group_backends")}>
             <Sel
               label="llm"
               value={value.llm_backend ?? ""}
@@ -382,25 +380,26 @@ export default function OptionsPanel({
             />
             {value.mesh_backend === "sidecar" && (
               <Sel
-                label="mesh model"
+                label={t("opt.mesh_model")}
                 value={value.mesh_model ?? ""}
-                options={modelOpts(meshOpts)}
+                options={modelOpts(meshOpts, DEFAULT_OPT)}
                 onChange={(v) => set({ mesh_model: v || undefined })}
               />
             )}
             {value.image_backend === "sidecar" && (
               <>
                 <Sel
-                  label="image model"
+                  label={t("opt.image_model")}
                   value={value.image_model ?? ""}
-                  options={modelOpts(imageModels.data ?? [])}
+                  options={modelOpts(imageModels.data ?? [], DEFAULT_OPT)}
                   onChange={(v) => set({ image_model: v || undefined })}
                 />
                 <Sel
-                  label="edit model"
+                  label={t("opt.edit_model")}
                   value={value.image_edit_model ?? ""}
                   options={modelOpts(
                     (imageModels.data ?? []).filter((m) => m.supports_edit),
+                    DEFAULT_OPT,
                   )}
                   onChange={(v) => set({ image_edit_model: v || undefined })}
                 />
@@ -408,12 +407,12 @@ export default function OptionsPanel({
             )}
           </Group>
 
-          <Group label="Agent budget (override defaults)">
+          <Group label={t("opt.group_budget")}>
             {(
               [
-                ["max_iterations", "max iterations", 1, 200],
-                ["max_repairs", "max repairs", 0, 200],
-                ["pass_score", "pass score", 0, 100],
+                ["max_iterations", t("opt.max_iterations"), 1, 200],
+                ["max_repairs", t("opt.max_repairs"), 0, 200],
+                ["pass_score", t("opt.pass_score"), 0, 100],
               ] as const
             ).map(([key, label, min, max]) => (
               <label
@@ -427,7 +426,7 @@ export default function OptionsPanel({
                   max={max}
                   step={1}
                   className="w-16 rounded border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 text-[11px] text-zinc-200 outline-none focus:border-brand-600"
-                  placeholder="auto"
+                  placeholder={t("opt.auto")}
                   value={value[key] ?? ""}
                   onChange={(e) =>
                     set({

@@ -1,6 +1,8 @@
 import { Check, CircleDot, Cpu, Flag, Gauge, RotateCcw, XCircle } from "lucide-react";
 import { memo, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
+import i18n from "../i18n";
 import { api, errMsg } from "../lib/api";
 import { fmtDuration, fmtSecs, fmtTokens } from "../lib/format";
 import { stepLabel } from "../lib/steps";
@@ -20,6 +22,7 @@ const TERMINAL = ["succeeded", "failed", "cancelled"];
 /** 1s self-ticking elapsed readout — extracted so the tick re-renders this
  *  span instead of the whole log. */
 const Elapsed = memo(function Elapsed({ job }: { job: Job }) {
+  const { t } = useTranslation("jobs");
   const [, setTick] = useState(0);
   const running = job.status === "running" || job.status === "queued";
   useEffect(() => {
@@ -35,7 +38,7 @@ const Elapsed = memo(function Elapsed({ job }: { job: Job }) {
       1000,
   );
   return (
-    <span className="font-mono" title="elapsed">
+    <span className="font-mono" title={t("log_elapsed")}>
       {fmtSecs(s)}
     </span>
   );
@@ -74,7 +77,7 @@ export const LogRow = memo(function LogRow({
       )}
       {e.message ?? e.type}
       {e.type === "done"
-        ? ` (${e.status}${e.score != null ? `, score ${e.score}` : ""})`
+        ? ` (${e.status}${e.score != null ? `, ${i18n.t("jobs:log_score")} ${e.score}` : ""})`
         : ""}
     </div>
   );
@@ -101,6 +104,7 @@ function StepsTimeline({
   endMs?: number;
   events: { type: string; step?: string; iteration?: number }[];
 }) {
+  const { t } = useTranslation("jobs");
   const hist = live.step_history ?? [];
   const hasLive = hist.length > 0 || !!live.step;
 
@@ -160,7 +164,7 @@ function StepsTimeline({
       {its.map((it) => (
         <div key={it} className="flex flex-wrap items-center gap-1">
           <span className="w-9 shrink-0 text-[9px] font-semibold uppercase tracking-wider text-zinc-600">
-            {it > 0 ? `it ${it}` : "setup"}
+            {it > 0 ? t("log_it", { n: it }) : t("log_setup")}
           </span>
           {groups.get(it)!.map((s, i) => (
             <span
@@ -183,7 +187,7 @@ function StepsTimeline({
           {scores.has(it) && (
             <span
               className={`flex items-center gap-0.5 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] font-semibold ${scoreTone(scores.get(it)!)}`}
-              title="critique score for this iteration"
+              title={t("log_score_hint")}
             >
               <Gauge className="h-3 w-3" /> {scores.get(it)}
             </span>
@@ -218,6 +222,7 @@ export default function JobLog({
     connected,
     jobError,
   } = stream;
+  const { t } = useTranslation("jobs");
   const [restarting, setRestarting] = useState(false);
   const nav = useNavigate();
   const toast = useToast();
@@ -305,27 +310,27 @@ export default function JobLog({
           {live.max_iterations ? (
             <span
               className="font-mono font-semibold text-zinc-200"
-              title="agent iteration / resolved budget"
+              title={t("log_iter_hint")}
             >
-              it {Math.min(job.iteration, live.max_iterations)}/{live.max_iterations}
+              {t("log_iter_n", { n: Math.min(job.iteration, live.max_iterations), max: live.max_iterations })}
             </span>
           ) : job.iteration ? (
-            <span className="font-mono text-zinc-300">it {job.iteration}</span>
+            <span className="font-mono text-zinc-300">{t("log_it", { n: job.iteration })}</span>
           ) : null}
           <span className="flex-1" />
           {bestScore != null && (
-            <span className={`font-mono ${scoreTone(bestScore)}`} title="best critique score">
+            <span className={`font-mono ${scoreTone(bestScore)}`} title={t("log_best_hint")}>
               best {bestScore}
             </span>
           )}
           <Elapsed job={job} />
           {eta_s != null && (
-            <span className="font-mono text-zinc-500" title="rough estimate from progress">
-              ~{fmtSecs(eta_s)} left
+            <span className="font-mono text-zinc-500" title={t("log_eta_hint")}>
+              {t("log_eta", { t: fmtSecs(eta_s) })}
             </span>
           )}
           {tokens > 0 && (
-            <span className="flex items-center gap-0.5 font-mono text-zinc-500" title="LLM tokens used">
+            <span className="flex items-center gap-0.5 font-mono text-zinc-500" title={t("log_tokens_hint")}>
               <Cpu className="h-3 w-3" />
               {fmtTokens(tokens)}
             </span>
@@ -334,7 +339,7 @@ export default function JobLog({
             <Btn
               variant="ghost"
               className="!px-2 !py-0.5 text-[11px]"
-              title="re-run this job with the same inputs (new version)"
+              title={t("log_restart_hint")}
               disabled={restarting}
               onClick={() => {
                 setRestarting(true);
@@ -348,7 +353,7 @@ export default function JobLog({
               }}
             >
               <RotateCcw className="h-3 w-3" />
-              {restarting ? "restarting…" : "restart job"}
+              {restarting ? t("log_restarting") : t("log_restart")}
             </Btn>
           )}
         </div>
@@ -361,7 +366,7 @@ export default function JobLog({
       )}
       {job && running && !connected && (
         <div className="text-[10px] text-amber-500">
-          stream disconnected — retrying…
+          {t("log_disconnected")}
         </div>
       )}
 
@@ -416,7 +421,7 @@ export default function JobLog({
         ))}
         {!events.length && (
           <div className="py-4 text-center text-zinc-600">
-            {jobId ? "connecting to job stream…" : "no job selected"}
+            {jobId ? t("log_connecting") : t("log_no_job")}
           </div>
         )}
         <div />
@@ -426,8 +431,8 @@ export default function JobLog({
         <span>
           {job ? (
             <>
-              {job.cancel_requested ? "cancel requested" : ""}
-              {job.finish_requested ? "finishing early — keeping best" : ""}
+              {job.cancel_requested ? t("log_cancel_req") : ""}
+              {job.finish_requested ? t("log_finish_keep") : ""}
             </>
           ) : (
             ""
@@ -438,7 +443,7 @@ export default function JobLog({
             {job.status === "running" && !job.finish_requested && (
               <button
                 className="flex items-center gap-1 rounded px-1.5 py-0.5 text-amber-400 hover:bg-amber-950/50"
-                title="stop after this iteration and keep the best result so far"
+                title={t("log_finish_hint")}
                 onClick={() =>
                   api
                     .finishJob(job.id)
@@ -447,12 +452,12 @@ export default function JobLog({
                     .catch((e) => toast(errMsg(e), "error"))
                 }
               >
-                <Flag className="h-3 w-3" /> finish &amp; keep best
+                <Flag className="h-3 w-3" /> {t("log_finish_btn")}
               </button>
             )}
             <button
               className="flex items-center gap-1 rounded px-1.5 py-0.5 text-red-400 hover:bg-red-950/50"
-              title="abort the job — discards the result"
+              title={t("log_abort_hint")}
               onClick={() =>
                 api
                   .cancelJob(job.id)
@@ -461,7 +466,7 @@ export default function JobLog({
                   .catch((e) => toast(errMsg(e), "error"))
               }
             >
-              <XCircle className="h-3 w-3" /> cancel job
+              <XCircle className="h-3 w-3" /> {t("log_cancel_btn")}
             </button>
           </span>
         )}
@@ -476,7 +481,7 @@ export default function JobLog({
           }}
         >
           <div className="mb-2 text-sm font-semibold text-amber-300">
-            The agent needs answers:
+            {t("log_needs_answers")}
           </div>
           {job!.questions!.map((q, i) => (
             <div key={i} className="mb-2">
@@ -486,7 +491,7 @@ export default function JobLog({
               ) : null}
               <input
                 className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm"
-                placeholder={q.default_assumption ? `default: ${q.default_assumption}` : ""}
+                placeholder={q.default_assumption ? t("log_default_ph", { v: q.default_assumption }) : ""}
                 value={answers[i] ?? ""}
                 onChange={(e) =>
                   setAnswers((a) => a.map((v, j) => (j === i ? e.target.value : v)))
@@ -500,7 +505,7 @@ export default function JobLog({
               variant="primary"
               className="bg-amber-600 hover:bg-amber-500"
             >
-              Submit answers
+              {t("log_submit")}
             </Btn>
             <Btn type="button" variant="ghost" onClick={() => submitAnswers(true)}>
               use defaults

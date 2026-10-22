@@ -1,4 +1,5 @@
 import { ChevronDown, ChevronRight } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { isTerminalStatus } from "../../lib/jobStream";
 import { fmtTokens } from "../../lib/liveStats";
@@ -22,6 +23,7 @@ const fmtMetric = (v: number) =>
  *  Works for finished jobs too: `useJobEvents` seeds state from the job row,
  *  so persisted `live` snapshots render without an open stream. */
 export default function JobLivePanel({ jobId }: { jobId: string | null }) {
+  const { t } = useTranslation("chat");
   const stream = useJobEvents(jobId);
   const { events, job, live, connected } = stream;
   const [open, setOpen] = useState(true);
@@ -70,12 +72,12 @@ export default function JobLivePanel({ jobId }: { jobId: string | null }) {
         aria-expanded={open}
       >
         <span className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
-          job monitor
+          {t("job_monitor")}
         </span>
         {job ? (
           <StatusBadge status={job.status} />
         ) : (
-          <span className="text-[10px] text-zinc-600">connecting…</span>
+          <span className="text-[10px] text-zinc-600">{t("connecting")}</span>
         )}
         {connected && active && (
           <span className="pulse-dot h-1.5 w-1.5 rounded-full bg-emerald-400" />
@@ -111,13 +113,13 @@ export default function JobLivePanel({ jobId }: { jobId: string | null }) {
           {scoreData.length > 1 && (
             <div>
               <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-zinc-500">
-                critique score
+                {t("critique_score")}
               </div>
               <StatArea
                 data={scoreData}
                 xKey="it"
                 height={110}
-                areas={[{ key: "score", name: "score" }]}
+                areas={[{ key: "score", name: t("score") }]}
               />
             </div>
           )}
@@ -125,16 +127,16 @@ export default function JobLivePanel({ jobId }: { jobId: string | null }) {
           {tokSeries.length > 1 ? (
             <div>
               <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-zinc-500">
-                tokens
+                {t("tokens")}
               </div>
               <StatArea
                 data={tokSeries}
                 xKey="t"
                 height={110}
                 areas={[
-                  { key: "prompt", name: "prompt", color: "#7c9cf5" },
-                  { key: "completion", name: "completion", color: "#34d399" },
-                  { key: "cached", name: "cached", color: "#a1a1aa" },
+                  { key: "prompt", name: t("tok_prompt"), color: "#7c9cf5" },
+                  { key: "completion", name: t("tok_completion"), color: "#34d399" },
+                  { key: "cached", name: t("tok_cached"), color: "#a1a1aa" },
                 ]}
               />
             </div>
@@ -142,17 +144,17 @@ export default function JobLivePanel({ jobId }: { jobId: string | null }) {
             (tok.prompt_tokens ?? 0) + (tok.completion_tokens ?? 0) > 0 && (
               <div className="grid grid-cols-3 gap-1.5">
                 <StatChip
-                  label="prompt"
+                  label={t("tok_prompt")}
                   value={fmtTokens(tok.prompt_tokens ?? 0)}
                 />
                 <StatChip
-                  label="completion"
+                  label={t("tok_completion")}
                   value={fmtTokens(tok.completion_tokens ?? 0)}
                 />
                 <StatChip
-                  label="cached"
+                  label={t("tok_cached")}
                   value={fmtTokens(tok.cached_tokens ?? 0)}
-                  hint={tok.calls ? `${tok.calls} calls` : undefined}
+                  hint={tok.calls ? t("calls_n", { count: tok.calls }) : undefined}
                 />
               </div>
             )
@@ -178,10 +180,10 @@ export default function JobLivePanel({ jobId }: { jobId: string | null }) {
                       {r.type}
                     </span>
                   )}
-                  run {r.index ?? i + 1}
+                  {t("run_n", { n: r.index ?? i + 1 })}
                   {r.achieved != null && ` · volfrac ${r.achieved}`}
                   {r.worst_sf != null && ` · SF ${r.worst_sf}`}
-                  {r.applied != null && ` · ${r.applied} applied`}
+                  {r.applied != null && ` · ${t("applied_n", { n: r.applied })}`}
                 </span>
               ))}
             </div>
@@ -189,7 +191,7 @@ export default function JobLivePanel({ jobId }: { jobId: string | null }) {
 
           {!job && !events.length && (
             <div className="py-2 text-center text-[11px] text-zinc-600">
-              waiting for job stream…
+              {t("waiting_stream")}
             </div>
           )}
         </div>

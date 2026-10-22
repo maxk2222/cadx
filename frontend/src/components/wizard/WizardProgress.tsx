@@ -1,5 +1,6 @@
 import { CheckCircle2, FolderOpen, PencilRuler, RotateCcw, XCircle } from "lucide-react";
 import { useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { Link, useNavigate } from "react-router-dom";
 import { useJobEvents } from "../../lib/useJobEvents";
 import JobLog from "../JobLog";
@@ -30,6 +31,7 @@ export default function WizardProgress({
   onAdjustPrompt: () => void;
   onNewPart: () => void;
 }) {
+  const { t } = useTranslation("wizard");
   const nav = useNavigate();
   const stream = useJobEvents(jobId, onDone);
   const job = stream.job;
@@ -47,34 +49,28 @@ export default function WizardProgress({
       <h2 className="text-lg font-semibold">
         {done
           ? status === "succeeded"
-            ? "Your part is ready"
+            ? t("prog_ready")
             : status === "cancelled"
-              ? "Generation cancelled"
-              : "Generation failed"
-          : "Generating your part…"}
+              ? t("prog_cancelled")
+              : t("prog_failed")
+          : t("prog_running")}
       </h2>
-      {!done && (
-        <p className="mt-1 text-sm text-zinc-500">
-          The agent is iterating: plan → code → execute → measure → critique.
-          Answer any questions below — you can leave this page and come back via
-          Jobs.
-        </p>
-      )}
+      {!done && <p className="mt-1 text-sm text-faint">{t("prog_hint")}</p>}
       {projectId && (
-        <div className="mt-1 flex items-center gap-1.5 text-[11px] text-zinc-600">
+        <div className="mt-1 flex items-center gap-1.5 text-[11px] text-faint/80">
           <FolderOpen className="h-3 w-3" />
-          project{" "}
+          {t("prog_project")}{" "}
           <Link to={`/projects/${projectId}`} className="text-brand-400 hover:underline">
             {projectName || projectId}
           </Link>
         </div>
       )}
 
-      <div className="relative mt-4 h-[340px] overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950">
+      <div className="relative mt-4 h-[340px] overflow-hidden rounded-lg border border-edge bg-zinc-950">
         <LivePreview versionId={versionId} active={!done} />
         {!done && (
-          <span className="absolute inset-0 -z-10 flex items-center justify-center text-xs text-zinc-700">
-            waiting for first render…
+          <span className="absolute inset-0 -z-10 flex items-center justify-center text-xs text-faint/60">
+            {t("version:waiting_render")}
           </span>
         )}
       </div>
@@ -89,28 +85,25 @@ export default function WizardProgress({
       </div>
 
       {done && status === "succeeded" && (
-        <Card className="mt-4 flex flex-wrap items-center gap-3 border-emerald-800/60 bg-emerald-950/20 p-4">
+        <Card className="anim-fade-in-up mt-4 flex flex-wrap items-center gap-3 border-emerald-800/60 bg-emerald-950/20 p-4">
           <CheckCircle2 className="h-5 w-5 text-emerald-400" />
           <div className="min-w-0 flex-1 text-sm text-zinc-300">
-            The model was generated and verified. Open the result for the 3D
-            viewer, exports, quality report and edits.
+            {t("prog_done_hint")}
           </div>
           <Btn onClick={() => nav(`/versions/${versionId}?job=${jobId}`)}>
-            Open result
+            {t("prog_open")}
           </Btn>
           <Btn variant="ghost" onClick={onNewPart}>
-            <RotateCcw className="h-4 w-4" /> Create another part
+            <RotateCcw className="h-4 w-4" /> {t("prog_another")}
           </Btn>
         </Card>
       )}
 
       {done && status !== "succeeded" && (
-        <Card className="mt-4 border-red-800/60 bg-red-950/20 p-4">
+        <Card className="anim-fade-in-up mt-4 border-red-800/60 bg-red-950/20 p-4">
           <div className="flex items-center gap-2 text-sm font-medium text-red-300">
             <XCircle className="h-5 w-5" />
-            {status === "cancelled"
-              ? "The job was cancelled."
-              : "The job did not produce a verified result."}
+            {status === "cancelled" ? t("prog_cancelled_msg") : t("prog_failed_msg")}
           </div>
           {errorText && (
             <pre className="mt-2 max-h-32 overflow-y-auto whitespace-pre-wrap rounded bg-black/40 p-2 font-mono text-[11px] text-red-200/80">
@@ -119,13 +112,13 @@ export default function WizardProgress({
           )}
           <div className="mt-3 flex flex-wrap gap-2">
             <Btn onClick={onAdjustPrompt}>
-              <PencilRuler className="h-4 w-4" /> Back &amp; adjust prompt
+              <PencilRuler className="h-4 w-4" /> {t("prog_adjust")}
             </Btn>
             <Btn
               variant="ghost"
               onClick={() => nav(`/versions/${versionId}?job=${jobId}`)}
             >
-              Open version page
+              {t("prog_open_version")}
             </Btn>
           </div>
         </Card>

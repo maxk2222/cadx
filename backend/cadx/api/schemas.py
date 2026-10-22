@@ -901,7 +901,8 @@ class StatsDayBucket(BaseModel):
     jobs: int = 0
     tokens: int = 0  # prompt + completion tokens (from AgentTrace rows)
     succeeded: int = 0  # jobs that finished this day with status=succeeded
-    failed: int = 0  # jobs that finished this day failed or cancelled
+    failed: int = 0  # jobs that finished this day with status=failed
+    cancelled: int = 0  # jobs that finished this day with status=cancelled
     score_avg: float | None = None  # avg score of versions created this day
 
 

@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, FileText, Images, Layers, Rocket } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import StepImages from "../components/wizard/StepImages";
 import StepMode from "../components/wizard/StepMode";
@@ -16,10 +17,10 @@ import { useTitle } from "../lib/useTitle";
 const DRAFT_KEY = "wizard:draft";
 
 const STEPS = [
-  { id: 0, label: "Describe", icon: FileText },
-  { id: 1, label: "Images", icon: Images },
-  { id: 2, label: "Mode", icon: Layers },
-  { id: 3, label: "Generate", icon: Rocket },
+  { id: 0, labelKey: "step_describe", icon: FileText },
+  { id: 1, labelKey: "step_images", icon: Images },
+  { id: 2, labelKey: "step_mode", icon: Layers },
+  { id: 3, labelKey: "step_generate", icon: Rocket },
 ];
 
 interface WizardState {
@@ -71,7 +72,8 @@ function loadDraft(): WizardState {
 }
 
 export default function StartPage() {
-  useTitle("New part");
+  const { t } = useTranslation("wizard");
+  useTitle(t("page_title"));
   const nav = useNavigate();
   const qc = useQueryClient();
   const [s, setS] = useState<WizardState>(loadDraft);
@@ -140,7 +142,7 @@ export default function StartPage() {
       try {
         await ensureProject();
       } catch (e) {
-        setError(`could not create the project: ${errMsg(e)}`);
+        setError(t("create_failed", { msg: errMsg(e) }));
         setCreating(false);
         return;
       }
@@ -162,7 +164,7 @@ export default function StartPage() {
   useEffect(() => {
     if (s.phase === "edit" && s.step >= 1 && !s.projectId && !creatingRef.current) {
       ensureProject().catch((e) => {
-        setError(`could not create the project: ${errMsg(e)}`);
+        setError(t("create_failed", { msg: errMsg(e) }));
         set({ step: 0 });
       });
     }
@@ -229,7 +231,7 @@ export default function StartPage() {
     try {
       const versions = await api.listVersions(pid);
       if (versions.length) return;
-      if (window.confirm("Delete the empty draft project? It has no versions yet.")) {
+      if (window.confirm(t("discard_draft_confirm"))) {
         await api.deleteProject(pid);
         qc.invalidateQueries({ queryKey: ["projects"] });
       }
@@ -250,15 +252,10 @@ export default function StartPage() {
   };
 
   return (
-    <div className="mx-auto max-w-3xl p-6">
-      <div className="mb-6 text-center">
-        <h1 className="text-3xl font-bold tracking-tight">
-          Describe it. We build it.
-        </h1>
-        <p className="mt-1 text-sm text-zinc-500">
-          Text + reference images → a verified, exportable 3D model (STEP, STL,
-          3MF, DXF) for 3D printing and CNC.
-        </p>
+    <div className="mx-auto max-w-3xl p-6 lg:p-8">
+      <div className="anim-fade-in-up mb-6 text-center">
+        <h1 className="text-3xl font-bold tracking-tight">{t("hero_title")}</h1>
+        <p className="mt-1 text-sm text-faint">{t("hero_sub")}</p>
       </div>
 
       {/* stepper */}
@@ -269,17 +266,17 @@ export default function StartPage() {
           const reached = i <= s.maxStep || s.phase === "progress";
           return (
             <div key={st.id} className="flex flex-1 items-center gap-1">
-              {i > 0 && <span className="h-px flex-1 bg-zinc-800" />}
+              {i > 0 && <span className="h-px flex-1 bg-edge" />}
               <button
                 type="button"
                 disabled={!reached || s.phase === "progress"}
                 onClick={() => set({ step: i })}
-                className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-default ${
+                className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-all duration-150 disabled:cursor-default ${
                   active
-                    ? "bg-brand-600 text-white"
+                    ? "glow-accent bg-brand-600 text-white"
                     : reached
-                      ? "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
-                      : "bg-zinc-900 text-zinc-600"
+                      ? "bg-panel2 text-zinc-300 hover:bg-edge2"
+                      : "bg-panel text-faint/60"
                 }`}
               >
                 {s.phase === "progress" || (!active && i < s.step) ? (
@@ -287,9 +284,9 @@ export default function StartPage() {
                 ) : (
                   <Icon className="h-3.5 w-3.5" />
                 )}
-                {st.label}
+                {t(st.labelKey)}
               </button>
-              {i < STEPS.length - 1 && <span className="h-px flex-1 bg-zinc-800" />}
+              {i < STEPS.length - 1 && <span className="h-px flex-1 bg-edge" />}
             </div>
           );
         })}
@@ -382,19 +379,19 @@ export default function StartPage() {
       {s.phase === "edit" && (s.jobId || s.projectId) && (
         <div className="mt-3 text-center">
           <button
-            className="text-[11px] text-zinc-600 underline hover:text-zinc-400"
+            className="text-[11px] text-faint/70 underline transition-colors hover:text-muted"
             onClick={reset}
           >
-            start over — clear draft
-            {s.projectId ? " (empty draft project can be deleted)" : ""}
+            {t("start_over")}
+            {s.projectId ? ` ${t("start_over_note")}` : ""}
           </button>
         </div>
       )}
 
-      <div className="mt-8 text-center text-xs text-zinc-600">
-        Looking for existing work?{" "}
+      <div className="mt-8 text-center text-xs text-faint/70">
+        {t("looking_existing")}{" "}
         <button className="text-brand-400 hover:underline" onClick={() => nav("/projects")}>
-          Browse projects
+          {t("browse_projects")}
         </button>
       </div>
     </div>

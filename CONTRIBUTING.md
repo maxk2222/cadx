@@ -43,6 +43,15 @@ humans and agents alike. The short version:
   business logic in routers.
 - TypeScript strict; functional components; TanStack Query for server state;
   Tailwind only.
+- Frontend is fully internationalised (`react-i18next`): user-facing strings go
+  through `t()` / `i18n.t()` — never hardcode prose in components. Namespaced
+  locale files live in `frontend/src/i18n/locales/{en,de,es}/`; add the same
+  key to all three files (the `i18nParity` vitest test enforces key-set parity
+  and flags unresolvable keys). To add a language: create `locales/<lang>/*.json`
+  mirroring `en`, register it in `frontend/src/i18n/index.ts`, extend `LANGS`
+  in the parity test and the `LanguageSwitcher` list.
+- Backend strings (job log lines, warnings, DFM codes) stay English by design —
+  only UI chrome is translated.
 - Never put the LLM API key in DB/logs/traces.
 - Every LLM prompt lives in `backend/cadx/agent/prompts/*.md` — never inline
   prompt text in Python.

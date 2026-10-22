@@ -6,6 +6,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 import { api, errMsg } from "../../lib/api";
 import { etaSeconds, fmtDur, fmtTokens } from "../../lib/liveStats";
@@ -32,6 +33,7 @@ const TERMINAL = ["succeeded", "failed", "cancelled", "needs_review"];
  *  for terminal jobs whose stream already closed. Shows the live render while
  *  running and a static preview + deep link once finished. */
 export default function ChatJobCard({ spawned }: { spawned: SpawnedRef }) {
+  const { t } = useTranslation("chat");
   const toast = useToast();
   const [cancelling, setCancelling] = useState(false);
   const [logOpen, setLogOpen] = useState(false);
@@ -79,11 +81,11 @@ export default function ChatJobCard({ spawned }: { spawned: SpawnedRef }) {
   const tokCached = tok.cached_tokens ?? 0;
   const tokHint =
     tokCached > 0
-      ? `${tok.calls ?? 0} calls · ${Math.round(
+      ? `${t("calls_n", { count: tok.calls ?? 0 })} · ${Math.round(
           (tokCached / Math.max(1, tok.prompt_tokens ?? 0)) * 100,
         )}% cached`
       : tok.calls
-        ? `${tok.calls} calls`
+        ? t("calls_n", { count: tok.calls })
         : undefined;
 
   const elapsedS = j?.started_at
@@ -109,7 +111,7 @@ export default function ChatJobCard({ spawned }: { spawned: SpawnedRef }) {
     <div className="overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950">
       <div className="flex items-center gap-2 border-b border-zinc-800 px-3 py-1.5">
         <span className="text-xs font-medium text-zinc-300">
-          {spawned.tool ?? spawned.kind ?? "job"}
+          {spawned.tool ?? spawned.kind ?? t("job")}
         </span>
         {j && <StatusBadge status={j.status} />}
         {stepNow && active && (
@@ -126,8 +128,8 @@ export default function ChatJobCard({ spawned }: { spawned: SpawnedRef }) {
         {j && ["queued", "running"].includes(j.status) && (
           <button
             className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-red-400 hover:bg-red-950/50 disabled:opacity-40"
-            title="abort this job"
-            aria-label="cancel job"
+            title={t("abort_title")}
+            aria-label={t("abort_aria")}
             disabled={cancelling}
             onClick={() => {
               setCancelling(true);
@@ -138,7 +140,7 @@ export default function ChatJobCard({ spawned }: { spawned: SpawnedRef }) {
                 .finally(() => setCancelling(false));
             }}
           >
-            <XCircle className="h-3 w-3" /> cancel
+            <XCircle className="h-3 w-3" /> {t("common:action.cancel")}
           </button>
         )}
         {vid && (
@@ -146,7 +148,7 @@ export default function ChatJobCard({ spawned }: { spawned: SpawnedRef }) {
             to={`/versions/${vid}`}
             className="ml-auto flex items-center gap-1 text-xs text-brand-400 hover:text-brand-300"
           >
-            version
+            {t("version_link")}
             <ExternalLink className="h-3 w-3" />
           </Link>
         )}
@@ -155,18 +157,18 @@ export default function ChatJobCard({ spawned }: { spawned: SpawnedRef }) {
       {hasLive && (
         <div className="grid grid-cols-2 gap-1.5 px-3 pt-2 sm:grid-cols-4">
           {elapsedS != null && (
-            <StatChip label="elapsed" value={fmtDur(elapsedS)} />
+            <StatChip label={t("elapsed")} value={fmtDur(elapsedS)} />
           )}
           {tokTotal > 0 && (
-            <StatChip label="tokens" value={fmtTokens(tokTotal)} hint={tokHint} />
+            <StatChip label={t("tokens")} value={fmtTokens(tokTotal)} hint={tokHint} />
           )}
           {live.max_iterations != null && live.max_iterations > 0 && (
             <StatChip
-              label="iteration"
+              label={t("iteration")}
               value={`${Math.min(j?.iteration ?? 0, live.max_iterations)}/${live.max_iterations}`}
             />
           )}
-          {eta != null && <StatChip label="eta" value={`~${fmtDur(eta)}`} />}
+          {eta != null && <StatChip label={t("eta")} value={`~${fmtDur(eta)}`} />}
         </div>
       )}
 
@@ -199,7 +201,7 @@ export default function ChatJobCard({ spawned }: { spawned: SpawnedRef }) {
               key={i}
               className="rounded border border-zinc-800 bg-zinc-900 px-1.5 py-0.5 font-mono text-[10px] text-zinc-400"
             >
-              run {r.index ?? i + 1}
+              {t("run_n", { n: r.index ?? i + 1 })}
               {r.achieved != null && ` · volfrac ${r.achieved}`}
               {r.worst_sf != null && ` · SF ${r.worst_sf}`}
             </span>
@@ -214,7 +216,7 @@ export default function ChatJobCard({ spawned }: { spawned: SpawnedRef }) {
           ) : version.data ? (
             <img
               src={api.previewUrl(vid, "iso")}
-              alt="version preview"
+              alt={t("alt_preview")}
               className="h-full w-full object-contain"
             />
           ) : (
@@ -222,7 +224,7 @@ export default function ChatJobCard({ spawned }: { spawned: SpawnedRef }) {
           )}
           <div
             className="absolute right-2 top-2 rounded-full bg-zinc-950/70 backdrop-blur-sm"
-            title="job progress"
+            title={t("job_progress")}
           >
             <ProgressRing value={progress} size={44} />
           </div>
@@ -241,7 +243,7 @@ export default function ChatJobCard({ spawned }: { spawned: SpawnedRef }) {
       {j?.status === "waiting_for_input" && j.questions && (
         <div className="mx-3 mb-3 rounded border border-amber-800/60 bg-amber-950/30 p-2">
           <div className="mb-1 text-xs font-medium text-amber-300">
-            the agent needs your input — answer in the chat
+            {t("agent_needs_input")}
           </div>
           <ul className="list-disc space-y-1 pl-4 text-xs text-amber-200/90">
             {j.questions.map((q, i) => (
@@ -263,7 +265,7 @@ export default function ChatJobCard({ spawned }: { spawned: SpawnedRef }) {
             ) : (
               <ChevronRight className="h-3 w-3" />
             )}
-            log
+            {t("log")}
             {stream.events.length > 0 && (
               <span className="font-mono text-zinc-600">
                 {stream.events.length}
@@ -289,7 +291,7 @@ export default function ChatJobCard({ spawned }: { spawned: SpawnedRef }) {
                     </div>
                   ))}
               {!stream.events.length && !fallbackTail.length && (
-                <div className="text-zinc-600">waiting for job output…</div>
+                <div className="text-zinc-600">{t("waiting_output")}</div>
               )}
             </div>
           )}

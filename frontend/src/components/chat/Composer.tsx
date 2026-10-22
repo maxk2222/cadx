@@ -1,4 +1,5 @@
 import { ImagePlus, SendHorizonal, X } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { useEffect, useRef, useState } from "react";
 import { api, errMsg } from "../../lib/api";
 import type { Asset } from "../../lib/types";
@@ -22,6 +23,7 @@ export default function Composer({
    *  failed send never loses the user's text/attachments */
   onSend: (content: string, assetIds: string[]) => Promise<unknown> | unknown;
 }) {
+  const { t } = useTranslation("chat");
   const [text, setText] = useState("");
   const [staged, setStaged] = useState<Asset[]>([]);
   const [uploading, setUploading] = useState(0);
@@ -41,7 +43,7 @@ export default function Composer({
   const upload = async (files: File[]) => {
     const imgs = files.filter((f) => f.type.startsWith("image/"));
     if (!imgs.length) {
-      setError("only image files are supported in chat");
+      setError(t("err_images_only"));
       return;
     }
     setError("");
@@ -49,7 +51,7 @@ export default function Composer({
     try {
       const pid = projectId ?? (await ensureProject?.()) ?? null;
       if (!pid) {
-        setError("couldn't create a project for the upload");
+        setError(t("err_no_project"));
         return;
       }
       const assets = await api.uploadAssets(pid, imgs);
@@ -105,8 +107,8 @@ export default function Composer({
               <button
                 className="absolute -right-1.5 -top-1.5 hidden h-4 w-4 items-center justify-center rounded-full bg-zinc-700 text-zinc-200 group-hover:flex"
                 onClick={() => setStaged((s) => s.filter((x) => x.id !== a.id))}
-                title="remove attachment"
-                aria-label="remove attachment"
+                title={t("remove_attachment")}
+                aria-label={t("remove_attachment")}
               >
                 <X className="h-3 w-3" />
               </button>
@@ -117,8 +119,8 @@ export default function Composer({
       <div className="flex items-end gap-2 p-2">
         <button
           className="flex h-8 w-8 items-center justify-center rounded-md text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
-          title="attach images"
-          aria-label="attach images"
+          title={t("attach_images")}
+          aria-label={t("attach_images")}
           onClick={() => fileRef.current?.click()}
           disabled={disabled}
         >
@@ -153,7 +155,7 @@ export default function Composer({
             }
           }}
           placeholder={
-            drag ? "drop images here" : "Describe a part, ask for a change… (Enter to send)"
+            drag ? t("drop_images") : t("ph")
           }
           rows={1}
           className="max-h-48 flex-1 resize-none bg-transparent px-1 py-1.5 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none"
@@ -161,8 +163,8 @@ export default function Composer({
         {uploading > 0 && <Spinner className="h-4 w-4 self-center" />}
         <button
           className="flex h-8 w-8 items-center justify-center rounded-md bg-brand-600 text-white transition-colors hover:bg-brand-500 disabled:opacity-40"
-          title="send"
-          aria-label="send message"
+          title={t("send")}
+          aria-label={t("send_aria")}
           onClick={() => void send()}
           disabled={disabled || uploading > 0 || (!text.trim() && !staged.length)}
         >

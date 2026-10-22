@@ -1,19 +1,28 @@
+import i18n from "../i18n";
+
+function locale(): string {
+  return i18n.language || "en";
+}
+
 export function timeAgo(iso: string | null | undefined): string {
   if (!iso) return "—";
   const t = new Date(iso).getTime();
   if (Number.isNaN(t)) return "—";
   const s = Math.max(0, (Date.now() - t) / 1000);
-  if (s < 60) return "just now";
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-  if (s < 86400 * 30) return `${Math.floor(s / 86400)}d ago`;
-  return new Date(t).toLocaleDateString();
+  if (s < 60) return i18n.t("common:time.just_now");
+  if (s < 3600)
+    return i18n.t("common:time.minutes_ago", { count: Math.floor(s / 60) });
+  if (s < 86400)
+    return i18n.t("common:time.hours_ago", { count: Math.floor(s / 3600) });
+  if (s < 86400 * 30)
+    return i18n.t("common:time.days_ago", { count: Math.floor(s / 86400) });
+  return new Date(t).toLocaleDateString(locale());
 }
 
 export function fmtDateTime(iso: string | null | undefined): string {
   if (!iso) return "—";
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
+  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString(locale());
 }
 
 export function fmtBytes(n: number | null | undefined): string {
@@ -47,4 +56,13 @@ export function fmtTokens(n: number | null | undefined): string {
   if (n == null) return "—";
   if (n < 1000) return `${n}`;
   return `${(n / 1000).toFixed(1)}k`;
+}
+
+/** Compact number for chart axes — 1500 → "1.5k" (locale-aware). */
+export function fmtCompact(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return "—";
+  return new Intl.NumberFormat(locale(), {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(n);
 }

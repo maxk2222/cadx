@@ -1,4 +1,5 @@
 import { AlertTriangle, Check, Loader2, Wrench } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { memo, useState } from "react";
 import { fmtDur } from "../../lib/liveStats";
 import { splitMd } from "../../lib/mdText";
@@ -67,12 +68,15 @@ function inlineNodes(s: string): React.ReactNode[] {
   });
 }
 
-function resultSummary(r: Record<string, unknown> | undefined): string {
+function resultSummary(
+  r: Record<string, unknown> | undefined,
+  t: (k: string) => string,
+): string {
   if (!r) return "";
   if (typeof r.error === "string") return r.error;
   if (r.status) return `→ ${r.status}`;
-  if (r.ok === false) return "failed";
-  return "ok";
+  if (r.ok === false) return t("tool_failed");
+  return t("tool_ok");
 }
 
 function ToolChip({
@@ -92,6 +96,7 @@ function ToolChip({
   t_ms?: number;
   assetsById: Map<string, Asset>;
 }) {
+  const { t } = useTranslation("chat");
   const [open, setOpen] = useState(false);
   // ticks only while the call is in flight — shows live elapsed next to spinner
   const now = useNow(1000, !done);
@@ -129,7 +134,7 @@ function ToolChip({
           ) : (
             <Check className="h-3 w-3 text-emerald-400" />
           )}
-          {done && resultSummary(result)}
+          {done && resultSummary(result, t)}
         </span>
       </button>
       {open && (
@@ -162,7 +167,7 @@ function ToolChip({
       {questions.length > 0 && (
         <div className="mx-2 mb-2 rounded border border-amber-800/60 bg-amber-950/30 p-2 text-amber-200/90">
           <div className="mb-0.5 font-medium text-amber-300">
-            clarification needed — answer in the chat below
+            {t("clarify_needed")}
           </div>
           <ul className="list-disc pl-4">
             {questions.map((q, i) => (
@@ -185,6 +190,7 @@ const MessageBubble = memo(function MessageBubble({
   /** live tool events while this message is streaming */
   liveTools?: ToolEvent[];
 }) {
+  const { t } = useTranslation("chat");
   const streaming = !!msg.meta?.streaming;
   const att = (msg.asset_ids ?? [])
     .map((id) => assetsById.get(id))
@@ -233,7 +239,7 @@ const MessageBubble = memo(function MessageBubble({
       <div className="max-w-[85%] rounded-2xl rounded-bl-sm border border-zinc-800 bg-zinc-900 px-3.5 py-2.5">
         {streaming && !msg.content && log.length === 0 && (
           <div className="flex items-center gap-2 text-sm text-zinc-500">
-            <Loader2 className="h-3.5 w-3.5 animate-spin" /> thinking…
+            <Loader2 className="h-3.5 w-3.5 animate-spin" /> {t("thinking")}
           </div>
         )}
         {log.length > 0 && (
@@ -260,7 +266,7 @@ const MessageBubble = memo(function MessageBubble({
           </div>
         )}
         {msg.meta?.cancelled && (
-          <div className="mt-1 text-xs text-zinc-500">turn cancelled</div>
+          <div className="mt-1 text-xs text-zinc-500">{t("turn_cancelled")}</div>
         )}
       </div>
     </div>

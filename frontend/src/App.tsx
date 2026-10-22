@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Suspense, lazy } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Activity,
   BarChart3,
@@ -18,6 +19,7 @@ import {
   useLocation,
 } from "react-router-dom";
 import HealthDots from "./components/HealthDots";
+import LanguageSwitcher from "./components/LanguageSwitcher";
 import Logo from "./components/Logo";
 import { Spinner, ToastProvider } from "./components/ui";
 import { api } from "./lib/api";
@@ -38,7 +40,7 @@ const StatsPage = lazy(() => import("./pages/StatsPage"));
 
 const RouteFallback = () => (
   <div className="flex h-screen items-center justify-center" role="status">
-    <Spinner className="h-6 w-6 text-zinc-500" />
+    <Spinner className="h-6 w-6 text-faint" />
   </div>
 );
 
@@ -61,15 +63,16 @@ function NavItem({
   /** tooltip override (e.g. "N commits behind origin") */
   badgeTitle?: string;
 }) {
+  const { t } = useTranslation();
   return (
     <Link
       to={to}
       title={label}
       aria-current={active ? "page" : undefined}
-      className={`relative mx-2 flex items-center justify-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors md:justify-start ${
+      className={`relative mx-2 flex items-center justify-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150 md:justify-start ${
         active
-          ? "bg-brand-950/70 text-brand-300"
-          : "text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200"
+          ? "glow-accent bg-brand-950/70 text-brand-300"
+          : "text-muted hover:bg-panel hover:text-fg"
       }`}
     >
       {active && (
@@ -79,7 +82,10 @@ function NavItem({
       <span className="hidden md:inline">{label}</span>
       {badge ? (
         <span
-          title={badgeTitle ?? (badgeWarn ? "a job is waiting for input" : "active jobs")}
+          title={
+            badgeTitle ??
+            (badgeWarn ? t("nav:badge.waiting_input") : t("nav:badge.active_jobs"))
+          }
           className={`absolute right-1.5 top-1/2 flex h-4 min-w-4 -translate-y-1/2 items-center justify-center rounded-full px-1 text-[10px] font-semibold text-white md:static md:translate-y-0 ${
             badgeWarn ? "bg-amber-500 text-zinc-950" : "bg-brand-600"
           }`}
@@ -92,6 +98,7 @@ function NavItem({
 }
 
 function SideNav({ jobsLive }: { jobsLive: boolean }) {
+  const { t } = useTranslation();
   const loc = useLocation();
   // the lifecycle stream pushes the active list — the HTTP query is only the
   // pre-snapshot fill; it polls solely while the stream is down (degraded)
@@ -114,11 +121,11 @@ function SideNav({ jobsLive }: { jobsLive: boolean }) {
       ? updateCheck.data.behind
       : undefined;
   return (
-    <aside className="sticky top-0 z-40 flex h-screen w-14 shrink-0 flex-col border-r border-zinc-800/80 bg-zinc-950 md:w-44">
+    <aside className="sticky top-0 z-40 flex h-screen w-14 shrink-0 flex-col border-r border-edge/80 bg-bg md:w-44">
       <Link
         to="/"
-        title="CADX — home"
-        className="mx-2 mb-2 mt-3 flex items-center justify-center rounded-lg py-3 transition-colors hover:bg-zinc-900"
+        title={t("nav:home_title")}
+        className="mx-2 mb-2 mt-3 flex items-center justify-center rounded-lg py-3 transition-colors hover:bg-panel"
       >
         <span className="hidden md:inline">
           <Logo size={56} wordmark />
@@ -131,25 +138,25 @@ function SideNav({ jobsLive }: { jobsLive: boolean }) {
         <NavItem
           to="/"
           icon={Sparkles}
-          label="New part"
+          label={t("nav:new_part")}
           active={loc.pathname === "/"}
         />
         <NavItem
           to="/chat"
           icon={MessagesSquare}
-          label="Chat"
+          label={t("nav:chat")}
           active={loc.pathname.startsWith("/chat")}
         />
         <NavItem
           to="/projects"
           icon={FolderOpen}
-          label="Projects"
+          label={t("nav:projects")}
           active={loc.pathname === "/projects"}
         />
         <NavItem
           to="/jobs"
           icon={Activity}
-          label="Jobs"
+          label={t("nav:jobs")}
           active={loc.pathname === "/jobs"}
           badge={activeJobs.data?.length}
           badgeWarn={waiting}
@@ -157,28 +164,33 @@ function SideNav({ jobsLive }: { jobsLive: boolean }) {
         <NavItem
           to="/stats"
           icon={BarChart3}
-          label="Stats"
+          label={t("nav:stats")}
           active={loc.pathname === "/stats"}
         />
         <NavItem
           to="/library"
           icon={Library}
-          label="Library"
+          label={t("nav:library")}
           active={loc.pathname === "/library"}
         />
         <NavItem
           to="/settings"
           icon={Settings}
-          label="Settings"
+          label={t("nav:settings")}
           active={loc.pathname === "/settings"}
           badge={updatesBehind}
           badgeTitle={
-            updatesBehind ? `${updatesBehind} update${updatesBehind > 1 ? "s" : ""} available` : undefined
+            updatesBehind
+              ? t("nav:badge.updates", { count: updatesBehind })
+              : undefined
           }
         />
       </nav>
-      <div className="mt-auto flex justify-center border-t border-zinc-800/80 py-3 md:justify-start md:px-3">
-        <HealthDots />
+      <div className="mt-auto flex flex-col items-center gap-1 border-t border-edge/80 py-2 md:items-stretch md:px-2">
+        <LanguageSwitcher />
+        <div className="flex justify-center md:justify-start md:px-1">
+          <HealthDots />
+        </div>
       </div>
     </aside>
   );
@@ -196,24 +208,34 @@ export default function App() {
         <div className="flex min-h-screen">
           <JobsLiveBridge />
           <main className="min-w-0 flex-1">
-            <Suspense fallback={<RouteFallback />}>
-              <Routes>
-                <Route path="/" element={<StartPage />} />
-                <Route path="/projects" element={<ProjectsPage />} />
-                <Route path="/projects/:id" element={<ProjectPage />} />
-                <Route path="/chat" element={<ChatPage />} />
-                <Route path="/chat/:chatId" element={<ChatPage />} />
-                <Route path="/versions/:id" element={<VersionPage />} />
-                <Route path="/versions/:id/edit" element={<EditPage />} />
-                <Route path="/jobs" element={<JobsPage />} />
-                <Route path="/stats" element={<StatsPage />} />
-                <Route path="/library" element={<LibraryPage />} />
-                <Route path="/settings" element={<SettingsPage />} />
-              </Routes>
-            </Suspense>
+            <RoutedViews />
           </main>
         </div>
       </ToastProvider>
     </BrowserRouter>
+  );
+}
+
+/** keyed on pathname → every page mount fades in softly */
+function RoutedViews() {
+  const loc = useLocation();
+  return (
+    <div key={loc.pathname} className="anim-fade-in min-w-0">
+      <Suspense fallback={<RouteFallback />}>
+        <Routes location={loc}>
+          <Route path="/" element={<StartPage />} />
+          <Route path="/projects" element={<ProjectsPage />} />
+          <Route path="/projects/:id" element={<ProjectPage />} />
+          <Route path="/chat" element={<ChatPage />} />
+          <Route path="/chat/:chatId" element={<ChatPage />} />
+          <Route path="/versions/:id" element={<VersionPage />} />
+          <Route path="/versions/:id/edit" element={<EditPage />} />
+          <Route path="/jobs" element={<JobsPage />} />
+          <Route path="/stats" element={<StatsPage />} />
+          <Route path="/library" element={<LibraryPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
+        </Routes>
+      </Suspense>
+    </div>
   );
 }

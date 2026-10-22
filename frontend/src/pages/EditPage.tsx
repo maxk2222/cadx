@@ -15,6 +15,7 @@ import {
   Wand2,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import * as THREE from "three";
 import GizmoControls from "../components/editor/GizmoControls";
@@ -72,55 +73,55 @@ type Tool = "boolean" | "slice" | "crop" | "drill" | "clip" | "measure" | null;
 
 const fmt = (n: number) => (Math.abs(n) < 0.01 ? "0" : n.toFixed(2));
 
-function opLabel(o: MeshOp): string {
+function opLabel(o: MeshOp, t: (k: string, o?: Record<string, unknown>) => string): string {
   const a = o.args as Record<string, unknown>;
   switch (o.op) {
     case "set_up":
-      return `orient up=${a.up}`;
+      return t("op.set_up", { up: a.up });
     case "rotate":
-      return `rotate ${a.axis} ${a.deg}°`;
+      return t("op.rotate", { axis: a.axis, deg: a.deg });
     case "mirror":
-      return `mirror ${a.axis}`;
+      return t("op.mirror", { axis: a.axis });
     case "scale":
       return a.factor != null
-        ? `scale ×${a.factor}`
-        : `scale (${fmt(Number(a.x ?? 1))}, ${fmt(Number(a.y ?? 1))}, ${fmt(Number(a.z ?? 1))})`;
+        ? t("op.scale_f", { f: a.factor })
+        : t("op.scale_xyz", { x: fmt(Number(a.x ?? 1)), y: fmt(Number(a.y ?? 1)), z: fmt(Number(a.z ?? 1)) });
     case "flatten_bottom":
-      return `flatten bottom ${a.height_mm}mm`;
+      return t("op.flatten_bottom", { h: a.height_mm });
     case "slice":
-      return `slice ${a.axis}@${fmt(Number(a.at_mm))} keep ${a.keep}`;
+      return t("op.slice", { axis: a.axis, at: fmt(Number(a.at_mm)), keep: a.keep });
     case "crop":
-      return "crop box";
+      return t("op.crop");
     case "decimate":
-      return `decimate → ${a.faces} faces`;
+      return t("op.decimate", { n: a.faces });
     case "smooth":
-      return `smooth ${a.scheme ?? "laplacian"} ×${a.iterations ?? 5}`;
+      return t("op.smooth", { scheme: a.scheme ?? "laplacian", n: a.iterations ?? 5 });
     case "smooth_preserve":
-      return `smooth (preserve) ×${a.iterations ?? 10}`;
+      return t("op.smooth_preserve", { n: a.iterations ?? 10 });
     case "clip_to_outline":
-      return "clip to outline";
+      return t("op.clip_to_outline");
     case "keep_largest":
-      return "keep largest body";
+      return t("op.keep_largest");
     case "drop_small":
-      return `drop small bodies <${Number(a.min_volume_frac ?? 0.02) * 100}%`;
+      return t("op.drop_small", { pct: Number(a.min_volume_frac ?? 0.02) * 100 });
     case "repair":
-      return "repair mesh";
+      return t("op.repair");
     case "clip_height":
-      return `clip height ≤ ${fmt(Number(a.z_max))}mm`;
+      return t("op.clip_height", { z: fmt(Number(a.z_max)) });
     case "symmetrize":
-      return `symmetrize ${a.axis} (${a.keep ?? "auto"})`;
+      return t("op.symmetrize", { axis: a.axis, keep: a.keep ?? "auto" });
     case "remesh":
-      return `remesh voxel ${a.voxel_mm}mm`;
+      return t("op.remesh", { v: a.voxel_mm });
     case "drill_holes":
       return a.from_anchors
-        ? `drill holes from anchors${(a.holes as unknown[] | undefined)?.length ? ` +${(a.holes as unknown[]).length}` : ""}`
-        : `drill ${(a.holes as unknown[] | undefined)?.length ?? 0} hole(s)`;
+        ? t("op.drill_anchors", { n: (a.holes as unknown[] | undefined)?.length ?? 0 })
+        : t("op.drill_holes", { n: (a.holes as unknown[] | undefined)?.length ?? 0 });
     case "shell":
-      return `shell ${a.thickness_mm}mm (${a.opening ?? "bottom"})`;
+      return t("op.shell", { th: a.thickness_mm, opening: a.opening ?? "bottom" });
     case "boolean":
-      return `${a.op === "union" ? "add" : "cut"} ${a.shape}`;
+      return t("op.boolean", { op: a.op === "union" ? t("bool.add") : t("bool.cut"), shape: a.shape });
     case "organic":
-      return `organic ${a.style ?? "gyroid"} (seed ${a.seed ?? 0})`;
+      return t("op.organic", { style: a.style ?? "gyroid", seed: a.seed ?? 0 });
     default:
       return o.op;
   }
@@ -135,7 +136,7 @@ function ToolCard({
   hint,
   children,
   onAdd,
-  addLabel = "+ add op",
+  addLabel,
   disabled,
   active,
   onToggle,
@@ -150,6 +151,7 @@ function ToolCard({
   active?: boolean;
   onToggle?: () => void;
 }) {
+  const { t } = useTranslation("editor");
   return (
     <Card className={`p-3 ${active ? "border-amber-700/60" : ""}`}>
       <div className="mb-1.5 flex items-center justify-between">
@@ -157,13 +159,13 @@ function ToolCard({
           className={`text-xs font-semibold ${active ? "text-amber-300" : "text-zinc-300"} ${onToggle ? "hover:text-zinc-100" : ""}`}
           onClick={onToggle}
           disabled={!onToggle}
-          title={onToggle ? (active ? "deactivate tool overlay" : "activate tool overlay") : undefined}
+          title={onToggle ? (active ? t("tool_off") : t("tool_on")) : undefined}
         >
           {title}
         </button>
         {onAdd && (
           <Btn variant="ghost" className="px-2 py-0.5 text-xs" disabled={disabled} onClick={onAdd}>
-            {addLabel}
+            {addLabel ?? t("add_op")}
           </Btn>
         )}
       </div>
@@ -315,6 +317,7 @@ interface DrillHoleIn {
 /* ------------------------------------------------------------------ */
 
 export default function EditPage() {
+  const { t } = useTranslation("editor");
   const { id = "" } = useParams<{ id: string }>();
   const nav = useNavigate();
   const toast = useToast();
@@ -322,7 +325,7 @@ export default function EditPage() {
 
   const version = useQuery({ queryKey: ["version", id], queryFn: () => api.getVersion(id) });
   const v = version.data;
-  useTitle(v ? `edit v${v.number}` : "Edit");
+  useTitle(v ? t("title_v", { n: v.number }) : t("title"));
 
   // draft ops stack — mesh parents replay their recorded ops on the raw
   // generator mesh; every other version starts empty on the finished STL.
@@ -547,7 +550,7 @@ export default function EditPage() {
       if (seq !== previewSeq.current) return; // stale response
       setPreview(r);
       setPreviewOpsKey(JSON.stringify(ops));
-      if (!r.ok) toast(r.error ?? "preview failed", "error");
+      if (!r.ok) toast(r.error ?? t("preview_failed"), "error");
       else setFitKey((k) => k + 1);
     } catch (e) {
       if (seq === previewSeq.current) toast(errMsg(e), "error");
@@ -609,7 +612,7 @@ export default function EditPage() {
     );
   if (!v)
     return (
-      <div className="p-6 text-sm text-zinc-400">Version not found.</div>
+      <div className="p-6 text-sm text-muted">{t("not_found")}</div>
     );
 
   const editable = v.status === "succeeded" || v.status === "needs_review";
@@ -653,54 +656,54 @@ export default function EditPage() {
         <Crumbs
           items={[
             <Link key="p" to={`/projects/${v.project_id}`} className="hover:text-zinc-300">
-              project
+              {t("crumb_project")}
             </Link>,
-            <span key="v" className="font-medium text-zinc-200">
-              mesh editor
+            <span key="v" className="font-medium text-fg">
+              {t("crumb_editor")}
             </span>,
           ]}
         />
         <Chip tone="zinc" className="uppercase">
           {v.resolved_mode ?? v.kind}
         </Chip>
-        {instantMatrix && <Chip tone="green">instant preview</Chip>}
+        {instantMatrix && <Chip tone="green">{t("instant_preview")}</Chip>}
         {needsServerPreview && preview?.glb_url && (
           <Chip tone={previewStale ? "amber" : "blue"}>
-            {previewStale ? "stale preview" : "preview"}
+            {previewStale ? t("stale_preview") : t("preview")}
           </Chip>
         )}
         <span className="flex-1" />
         {pickMode && (
           <Chip tone="amber">
-            <MousePointer2 className="h-3 w-3" /> click on the model (right-drag orbits) —{" "}
+            <MousePointer2 className="h-3 w-3" /> {t("pick_hint")}{" "}
             {pickMode === "measure"
-              ? "measure"
+              ? t("pick.measure")
               : pickMode === "bool_center"
-                ? "place primitive"
+                ? t("pick.primitive")
                 : pickMode === "drill"
-                  ? "add drill hole"
+                  ? t("pick.drill")
                   : pickMode === "clip_z"
-                    ? "set clip height"
+                    ? t("pick.clip")
                     : pickMode.startsWith("crop")
-                      ? "set crop corner"
-                      : "set slice position"}
+                      ? t("pick.crop")
+                      : t("pick.slice")}
           </Chip>
         )}
-        <Btn variant="ghost" onClick={() => setFitKey((k) => k + 1)} title="re-fit camera">
-          fit
+        <Btn variant="ghost" onClick={() => setFitKey((k) => k + 1)} title={t("fit_hint")}>
+          {t("fit")}
         </Btn>
-        <Btn variant="ghost" onClick={() => setGrid((g) => !g)} title="toggle grid">
-          grid
+        <Btn variant="ghost" onClick={() => setGrid((g) => !g)} title={t("grid_hint")}>
+          {t("grid")}
         </Btn>
         <OpacitySlider value={opacity} onChange={setOpacity} />
-        <label className="flex items-center gap-1.5 text-xs text-zinc-500" title="debounced server preview after stack changes">
+        <label className="flex items-center gap-1.5 text-xs text-muted" title={t("auto_hint")}>
           <input
             type="checkbox"
             className="accent-brand-500"
             checked={autoPreview}
             onChange={(e) => setAutoPreview(e.target.checked)}
           />
-          auto
+          {t("auto")}
         </label>
         <Btn
           variant="ghost"
@@ -708,16 +711,16 @@ export default function EditPage() {
           busy={busy === "preview"}
           onClick={doPreview}
         >
-          <Eye className="h-4 w-4" /> Preview
+          <Eye className="h-4 w-4" /> {t("preview_btn")}
         </Btn>
         <Btn
           variant="success"
           disabled={!editable || !ops.length}
           busy={busy === "apply"}
           onClick={doApply}
-          title={editable ? "apply ops → new child version" : "version is still running"}
+          title={editable ? t("apply_hint") : t("apply_running")}
         >
-          <Wand2 className="h-4 w-4" /> Apply as new version
+          <Wand2 className="h-4 w-4" /> {t("apply_btn")}
         </Btn>
       </div>
 
@@ -867,7 +870,7 @@ export default function EditPage() {
             </ModelCanvas>
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-zinc-500">
-              no mesh artifact to edit
+              {t("no_mesh")}
             </div>
           )}
 
@@ -880,7 +883,7 @@ export default function EditPage() {
                 className="ml-2 text-xs text-zinc-500 hover:text-zinc-300"
                 onClick={() => setMeasurePts([])}
               >
-                clear
+                {t("common:action.clear")}
               </button>
             </div>
           )}
@@ -889,21 +892,21 @@ export default function EditPage() {
           {needsServerPreview && preview?.ok && (
             <div className="absolute bottom-3 right-3 flex flex-wrap gap-1.5">
               {preview.stats.faces != null && (
-                <Chip>faces {preview.stats.faces.toLocaleString()}</Chip>
+                <Chip>{t("faces_n", { n: preview.stats.faces.toLocaleString() })}</Chip>
               )}
               {preview.stats.bbox_size && (
                 <Chip>{preview.stats.bbox_size.map((n) => fmt(n)).join(" × ")} mm</Chip>
               )}
               {preview.stats.watertight != null && (
                 <Chip tone={preview.stats.watertight ? "green" : "amber"}>
-                  {preview.stats.watertight ? "watertight" : "not watertight"}
+                  {preview.stats.watertight ? t("watertight") : t("not_watertight")}
                 </Chip>
               )}
               <button
                 className="text-xs text-zinc-500 underline hover:text-zinc-300"
                 onClick={() => setPreview(null)}
               >
-                back to original
+                {t("back_original")}
               </button>
             </div>
           )}
@@ -914,12 +917,12 @@ export default function EditPage() {
           <div className="flex flex-col gap-3 p-3">
             <SectionTitle>
               <span className="flex items-center gap-1.5">
-                <Layers className="h-3.5 w-3.5" /> tools
+                <Layers className="h-3.5 w-3.5" /> {t("tools")}
               </span>
             </SectionTitle>
 
             {/* orient */}
-            <ToolCard title="Orient" hint="re-ground the part — map a source axis to up (+Z)">
+            <ToolCard title={t("tool.orient")} hint={t("tool.orient_h")}>
               <div className="grid grid-cols-3 gap-1">
                 {UP_DIRS.map((u) => (
                   <button
@@ -927,7 +930,7 @@ export default function EditPage() {
                     className="rounded border border-zinc-700 px-1 py-1 text-[11px] font-semibold uppercase text-zinc-400 hover:border-zinc-500 hover:text-zinc-200"
                     onClick={() => addOp({ op: "set_up", args: { up: u } })}
                   >
-                    {u} up
+                    {t("up_dir", { dir: u })}
                   </button>
                 ))}
               </div>
@@ -935,7 +938,7 @@ export default function EditPage() {
 
             {/* rotate */}
             <ToolCard
-              title="Rotate"
+              title={t("tool.rotate")}
               onAdd={() => addOp({ op: "rotate", args: { axis: rotAxis, deg: rotDeg } })}
             >
               <div className="flex gap-2">
@@ -946,7 +949,7 @@ export default function EditPage() {
 
             {/* scale */}
             <ToolCard
-              title="Scale"
+              title={t("tool.scale")}
               onAdd={() =>
                 addOp({
                   op: "scale",
@@ -993,7 +996,7 @@ export default function EditPage() {
 
             {/* mirror */}
             <ToolCard
-              title="Mirror"
+              title={t("tool.mirror")}
               onAdd={() => addOp({ op: "mirror", args: { axis: mirAxis } })}
             >
               <AxisPicker value={mirAxis} onChange={setMirAxis} />
@@ -1001,20 +1004,20 @@ export default function EditPage() {
 
             {/* flatten bottom */}
             <ToolCard
-              title="Flatten bottom"
-              hint="planes off the lowest mm — flat-back for FDM printing"
+              title={t("tool.flatten")}
+              hint={t("tool.flatten_h")}
               onAdd={() => addOp({ op: "flatten_bottom", args: { height_mm: flatH } })}
               disabled={flatH <= 0 || flatH > 50}
             >
-              <Field label="height (mm)">
+              <Field label={t("fld.height_mm")}>
                 <NumInput value={flatH} onChange={setFlatH} step={0.1} />
               </Field>
             </ToolCard>
 
             {/* slice */}
             <ToolCard
-              title="Slice"
-              hint="cut with an axis plane and keep one side — drag the plane or pick a point"
+              title={t("tool.slice")}
+              hint={t("tool.slice_h")}
               active={activeTool === "slice"}
               onToggle={() => armTool("slice")}
               onAdd={() =>
@@ -1031,7 +1034,7 @@ export default function EditPage() {
                     className={`px-2 py-0.5 text-xs ${pickMode === "slice_at" ? "border border-amber-600 text-amber-300" : ""}`}
                     onClick={() => armPick("slice_at")}
                   >
-                    <CircleDot className="h-3 w-3" /> pick
+                    <CircleDot className="h-3 w-3" /> {t("pick_btn")}
                   </Btn>
                 </div>
                 <div className="flex gap-1">
@@ -1045,7 +1048,7 @@ export default function EditPage() {
                           : "border-zinc-700 text-zinc-500"
                       }`}
                     >
-                      keep {k}
+                      {t("keep_side", { side: k })}
                     </button>
                   ))}
                 </div>
@@ -1054,8 +1057,8 @@ export default function EditPage() {
 
             {/* clip height */}
             <ToolCard
-              title="Clip height"
-              hint="hard ceiling — cut + cap everything above z_max (drag the plane)"
+              title={t("tool.clip")}
+              hint={t("tool.clip_h")}
               active={activeTool === "clip"}
               onToggle={() => armTool("clip")}
               onAdd={() => addOp({ op: "clip_height", args: { z_max: clipZ } })}
@@ -1076,8 +1079,8 @@ export default function EditPage() {
 
             {/* crop */}
             <ToolCard
-              title="Crop box"
-              hint="keep only geometry inside the box — drag the corner handles or pick on the model"
+              title={t("tool.crop")}
+              hint={t("tool.crop_h")}
               active={activeTool === "crop"}
               onToggle={() => armTool("crop")}
               onAdd={() => addOp({ op: "crop", args: { min: cropMin, max: cropMax } })}
@@ -1095,7 +1098,7 @@ export default function EditPage() {
                     setActiveTool("crop");
                   }}
                 >
-                  fit to part
+                  {t("fit_part")}
                 </Btn>
                 {(["min", "max"] as const).map((k) => {
                   const val = k === "min" ? cropMin : cropMax;
@@ -1114,7 +1117,7 @@ export default function EditPage() {
                           }
                         />
                       ))}
-                      <IconBtn title="pick corner on model" onClick={() => armPick(mode)}>
+                      <IconBtn title={t("pick_corner")} onClick={() => armPick(mode)}>
                         <CircleDot
                           className={`h-3.5 w-3.5 ${pickMode === mode ? "text-amber-300" : ""}`}
                         />
@@ -1127,7 +1130,7 @@ export default function EditPage() {
 
             {/* smooth */}
             <ToolCard
-              title="Smooth"
+              title={t("tool.smooth")}
               onAdd={() =>
                 addOp({ op: "smooth", args: { iterations: smoothIter, scheme: smoothScheme } })
               }
@@ -1140,14 +1143,14 @@ export default function EditPage() {
                   onChange={(e) => setSmoothScheme(e.target.value as "laplacian" | "taubin")}
                 >
                   <option value="laplacian">laplacian</option>
-                  <option value="taubin">taubin (shrink-free)</option>
+                  <option value="taubin">{t("opt.taubin")}</option>
                 </select>
               </div>
             </ToolCard>
 
             <ToolCard
-              title="Smooth (preserve features)"
-              hint="edge-aware smoothing — keeps sharp features"
+              title={t("tool.smooth_preserve")}
+              hint={t("tool.smooth_preserve_h")}
               onAdd={() => addOp({ op: "smooth_preserve", args: { iterations: smoothPIter } })}
             >
               <NumInput value={smoothPIter} onChange={setSmoothPIter} className="w-24" />
@@ -1155,32 +1158,32 @@ export default function EditPage() {
 
             {/* decimate */}
             <ToolCard
-              title="Decimate"
-              hint="reduce triangle count — needed before booleans on dense meshes"
+              title={t("tool.decimate")}
+              hint={t("tool.decimate_h")}
               onAdd={() => addOp({ op: "decimate", args: { faces: Math.round(decFaces) } })}
               disabled={decFaces < 100}
             >
-              <Field label="target faces">
+              <Field label={t("fld.target_faces")}>
                 <NumInput value={decFaces} onChange={setDecFaces} step={5000} />
               </Field>
             </ToolCard>
 
             {/* remesh */}
             <ToolCard
-              title="Remesh"
-              hint="uniform voxel remesh — watertight by construction, evens out topology"
+              title={t("tool.remesh")}
+              hint={t("tool.remesh_h")}
               onAdd={() => addOp({ op: "remesh", args: { voxel_mm: remeshVoxel } })}
               disabled={remeshVoxel < 0.05 || remeshVoxel > 5}
             >
-              <Field label="voxel (mm)">
+              <Field label={t("fld.voxel_mm")}>
                 <NumInput value={remeshVoxel} onChange={setRemeshVoxel} step={0.1} />
               </Field>
             </ToolCard>
 
             {/* symmetrize */}
             <ToolCard
-              title="Symmetrize"
-              hint="mirror the better half across the bbox-centre plane"
+              title={t("tool.symmetrize")}
+              hint={t("tool.symmetrize_h")}
               onAdd={() => addOp({ op: "symmetrize", args: { axis: symAxis, keep: symKeep } })}
             >
               <div className="flex flex-col gap-1.5">
@@ -1196,7 +1199,7 @@ export default function EditPage() {
                           : "border-zinc-700 text-zinc-500"
                       }`}
                     >
-                      {k === "auto" ? "auto" : `keep ${k}`}
+                      {k === "auto" ? "auto" : t("keep_side", { side: k })}
                     </button>
                   ))}
                 </div>
@@ -1205,8 +1208,8 @@ export default function EditPage() {
 
             {/* shell */}
             <ToolCard
-              title="Shell"
-              hint="hollow the part — optional opening on a face (FDM-friendly)"
+              title={t("tool.shell")}
+              hint={t("tool.shell_h")}
               onAdd={() => addOp({ op: "shell", args: { thickness_mm: shellTh, opening: shellOpen } })}
               disabled={shellTh < 0.2 || shellTh > 20}
             >
@@ -1218,17 +1221,17 @@ export default function EditPage() {
                   value={shellOpen}
                   onChange={(e) => setShellOpen(e.target.value as typeof shellOpen)}
                 >
-                  <option value="none">sealed</option>
-                  <option value="bottom">open bottom</option>
-                  <option value="top">open top</option>
+                  <option value="none">{t("shell_opt.none")}</option>
+                  <option value="bottom">{t("shell_opt.bottom")}</option>
+                  <option value="top">{t("shell_opt.top")}</option>
                 </select>
               </div>
             </ToolCard>
 
             {/* drill holes */}
             <ToolCard
-              title="Drill holes"
-              hint={`vertical holes at picked XY points${anchors?.length ? ` — ${anchors.length} measured anchor(s) available` : ""}`}
+              title={t("tool.drill")}
+              hint={t("tool.drill_h") + (anchors?.length ? ` — ${t("tool.drill_h_anchors", { n: anchors.length })}` : "")}
               active={activeTool === "drill"}
               onToggle={() => armTool("drill")}
               onAdd={() => {
@@ -1239,23 +1242,23 @@ export default function EditPage() {
             >
               <div className="flex flex-col gap-1.5">
                 <div className="flex items-center gap-1.5">
-                  <span className="w-14 text-[11px] text-zinc-500">dia</span>
+                  <span className="w-14 text-[11px] text-muted">{t("fld.dia")}</span>
                   <NumInput value={drillDia} onChange={setDrillDia} step={0.5} className="flex-1" />
-                  <span className="w-14 text-[11px] text-zinc-500">depth</span>
+                  <span className="w-14 text-[11px] text-muted">{t("fld.depth")}</span>
                   <NumInput value={drillDepth} onChange={setDrillDepth} step={1} className="flex-1" />
                 </div>
                 <div className="flex items-center gap-1.5">
-                  <span className="w-14 text-[11px] text-zinc-500">csk dia</span>
+                  <span className="w-14 text-[11px] text-muted">{t("fld.csk_dia")}</span>
                   <NumInput value={drillCsk} onChange={setDrillCsk} step={0.5} className="flex-1" />
                   <Btn
                     variant="ghost"
                     className={`px-2 py-0.5 text-xs ${pickMode === "drill" ? "border border-amber-600 text-amber-300" : ""}`}
                     onClick={() => armPick("drill")}
                   >
-                    <CircleDot className="h-3 w-3" /> pick holes
+                    <CircleDot className="h-3 w-3" /> {t("pick_holes")}
                   </Btn>
                 </div>
-                <div className="text-[10px] text-zinc-500">depth/csk 0 = through / none</div>
+                <div className="text-[10px] text-muted">{t("drill_note")}</div>
                 {!!drillHoles.length && (
                   <div className="flex flex-col gap-0.5">
                     {drillHoles.map((h, i) => (
@@ -1266,8 +1269,8 @@ export default function EditPage() {
                           {h.csk_dia ? ` · csk Ø${h.csk_dia}` : ""}
                         </span>
                         <button
-                          title="remove drill hole"
-                          aria-label="remove drill hole"
+                          title={t("remove_hole")}
+                          aria-label={t("remove_hole")}
                           className="text-zinc-500 hover:text-red-400"
                           onClick={() => setDrillHoles((hs) => hs.filter((_, j) => j !== i))}
                         >
@@ -1285,7 +1288,7 @@ export default function EditPage() {
                       checked={drillAnchors}
                       onChange={(e) => setDrillAnchors(e.target.checked)}
                     />
-                    use {anchors.length} measured anchor hole(s)
+                    {t("use_anchors", { n: anchors.length })}
                   </label>
                 )}
               </div>
@@ -1293,11 +1296,11 @@ export default function EditPage() {
 
             {/* boolean */}
             <ToolCard
-              title="Boolean add / cut"
+              title={t("tool.boolean")}
               hint={
                 boolTooDense
-                  ? `mesh has ${effFaces?.toLocaleString()} faces (> 200k) — decimate first`
-                  : "place the primitive, then drag/rotate the ghost — 'place' re-arms picking"
+                  ? t("tool.boolean_h_dense", { n: effFaces?.toLocaleString() })
+                  : t("tool.boolean_h")
               }
               active={activeTool === "boolean"}
               onToggle={() => armTool("boolean")}
@@ -1316,7 +1319,7 @@ export default function EditPage() {
                           : "border-zinc-700 text-zinc-500"
                       }`}
                     >
-                      {o === "difference" ? "cut" : "add"}
+                      {o === "difference" ? t("bool.cut") : t("bool.add")}
                     </button>
                   ))}
                 </div>
@@ -1337,7 +1340,7 @@ export default function EditPage() {
                 </div>
                 {boolShape === "box" && (
                   <div className="flex items-center gap-1.5">
-                    <span className="w-14 text-[11px] text-zinc-500">size xyz</span>
+                    <span className="w-14 text-[11px] text-muted">{t("fld.size_xyz")}</span>
                     {boolSizeXYZ.map((n, i) => (
                       <NumInput
                         key={i}
@@ -1353,7 +1356,7 @@ export default function EditPage() {
                 )}
                 {boolShape !== "box" && (
                   <div className="flex items-center gap-1.5">
-                    <span className="w-14 text-[11px] text-zinc-500">radius</span>
+                    <span className="w-14 text-[11px] text-muted">{t("fld.radius")}</span>
                     <NumInput value={boolR} onChange={setBoolR} step={0.5} className="flex-1" />
                     <span className="text-xs text-zinc-500">mm</span>
                   </div>
@@ -1361,7 +1364,7 @@ export default function EditPage() {
                 {boolShape === "cylinder" && (
                   <>
                     <div className="flex items-center gap-1.5">
-                      <span className="w-14 text-[11px] text-zinc-500">height</span>
+                      <span className="w-14 text-[11px] text-muted">{t("fld.height")}</span>
                       <NumInput value={boolH} onChange={setBoolH} step={1} className="flex-1" />
                       <span className="text-xs text-zinc-500">mm</span>
                     </div>
@@ -1369,7 +1372,7 @@ export default function EditPage() {
                   </>
                 )}
                 <div className="flex items-center gap-1.5">
-                  <span className="w-14 text-[11px] text-zinc-500">center</span>
+                  <span className="w-14 text-[11px] text-muted">{t("fld.center")}</span>
                   {boolCenter.map((n, i) => (
                     <NumInput
                       key={i}
@@ -1391,7 +1394,7 @@ export default function EditPage() {
                   </Btn>
                 </div>
                 <div className="flex items-center gap-1.5">
-                  <span className="w-14 text-[11px] text-zinc-500">rotate z</span>
+                  <span className="w-14 text-[11px] text-muted">{t("fld.rot_z")}</span>
                   <NumInput value={boolRotZ} onChange={setBoolRotZ} step={15} className="flex-1" />
                   <span className="text-xs text-zinc-500">°</span>
                   <div className="flex gap-1">
@@ -1405,7 +1408,7 @@ export default function EditPage() {
                             : "border-zinc-700 text-zinc-500"
                         }`}
                       >
-                        {m === "translate" ? "move" : "rot"}
+                        {m === "translate" ? t("bool.move") : t("bool.rot")}
                       </button>
                     ))}
                   </div>
@@ -1414,21 +1417,21 @@ export default function EditPage() {
             </ToolCard>
 
             {/* bodies + repair */}
-            <ToolCard title="Bodies & repair">
+            <ToolCard title={t("tool.bodies")}>
               <div className="flex flex-wrap gap-1.5">
                 <Btn
                   variant="ghost"
                   className="px-2 py-1 text-xs"
                   onClick={() => addOp({ op: "keep_largest", args: {} })}
                 >
-                  keep largest
+                  {t("keep_largest")}
                 </Btn>
                 <Btn
                   variant="ghost"
                   className="px-2 py-1 text-xs"
                   onClick={() => addOp({ op: "repair", args: {} })}
                 >
-                  repair
+                  {t("repair")}
                 </Btn>
                 <div className="flex items-center gap-1">
                   <Btn
@@ -1438,7 +1441,7 @@ export default function EditPage() {
                       addOp({ op: "drop_small", args: { min_volume_frac: dropFrac } })
                     }
                   >
-                    drop small
+                    {t("drop_small")}
                   </Btn>
                   <NumInput
                     value={dropFrac}
@@ -1452,8 +1455,8 @@ export default function EditPage() {
 
             {/* measure */}
             <ToolCard
-              title="Measure"
-              hint="click two surface points — distance in mm (not recorded as an op)"
+              title={t("tool.measure")}
+              hint={t("tool.measure_h")}
             >
               <Btn
                 variant="ghost"
@@ -1463,7 +1466,7 @@ export default function EditPage() {
                   setMeasurePts([]);
                 }}
               >
-                <Ruler className="h-3.5 w-3.5" /> measure distance
+                <Ruler className="h-3.5 w-3.5" /> {t("measure_dist")}
               </Btn>
             </ToolCard>
           </div>
@@ -1474,14 +1477,14 @@ export default function EditPage() {
               right={
                 <div className="flex gap-1">
                   <IconBtn
-                    title="undo last op"
+                    title={t("undo_op")}
                     disabled={!ops.length}
                     onClick={() => setOps((o) => o.slice(0, -1))}
                   >
                     <Undo2 className="h-4 w-4" />
                   </IconBtn>
                   <IconBtn
-                    title="clear all ops"
+                    title={t("clear_ops")}
                     danger
                     disabled={!ops.length}
                     onClick={() => setOps([])}
@@ -1491,11 +1494,11 @@ export default function EditPage() {
                 </div>
               }
             >
-              op stack ({ops.length})
+              {t("op_stack", { n: ops.length })}
             </SectionTitle>
             {!ops.length && (
               <div className="text-xs text-zinc-500">
-                No operations yet — build a stack with the tools, then Preview / Apply.
+                {t("no_ops")}
               </div>
             )}
             <div className="flex max-h-52 flex-col gap-1 overflow-y-auto">
@@ -1512,21 +1515,21 @@ export default function EditPage() {
                     <span className="w-4 text-zinc-500">{i + 1}</span>
                     <button
                       className="min-w-0 flex-1 truncate text-left text-zinc-300 hover:text-zinc-100"
-                      title={`${JSON.stringify(o.args)} — click to edit args`}
+                      title={`${JSON.stringify(o.args)} — ${t("edit_args")}`}
                       onClick={() => setEditIdx(editIdx === i ? null : i)}
                     >
-                      {opLabel(o)}
+                      {opLabel(o, t)}
                     </button>
                     {opReport?.[i] && (
                       <span
                         className={`shrink-0 text-[10px] ${opReport[i].watertight === false ? "text-amber-400" : "text-zinc-500"}`}
-                        title={`faces ${opReport[i].faces_in?.toLocaleString()} → ${opReport[i].faces_out?.toLocaleString()}${opReport[i].watertight === false ? " · not watertight" : ""}`}
+                        title={t("faces_report", { in: opReport[i].faces_in?.toLocaleString(), out: opReport[i].faces_out?.toLocaleString() }) + (opReport[i].watertight === false ? ` · ${t("not_watertight")}` : "")}
                       >
                         {opReport[i].watertight === false ? "!" : "·"}
                       </span>
                     )}
                     <IconBtn
-                      title="duplicate op"
+                      title={t("dup_op")}
                       onClick={() =>
                         setOps((os) => [...os.slice(0, i + 1), o, ...os.slice(i + 1)])
                       }
@@ -1534,7 +1537,7 @@ export default function EditPage() {
                       <Copy className="h-3 w-3" />
                     </IconBtn>
                     <IconBtn
-                      title="move up"
+                      title={t("move_up")}
                       disabled={i === 0}
                       onClick={() =>
                         setOps((os) => {
@@ -1547,7 +1550,7 @@ export default function EditPage() {
                       <ArrowUp className="h-3 w-3" />
                     </IconBtn>
                     <IconBtn
-                      title="move down"
+                      title={t("move_down")}
                       disabled={i === ops.length - 1}
                       onClick={() =>
                         setOps((os) => {
@@ -1560,7 +1563,7 @@ export default function EditPage() {
                       <ArrowDown className="h-3 w-3" />
                     </IconBtn>
                     <IconBtn
-                      title="remove op"
+                      title={t("remove_op")}
                       danger
                       onClick={() => setOps((os) => os.filter((_, j) => j !== i))}
                     >
@@ -1579,12 +1582,12 @@ export default function EditPage() {
             {dirty && (
               <div className="mt-2 flex items-center gap-1.5 text-[11px] text-zinc-500">
                 {saveFailed ? (
-                  <span className="text-amber-400" title="draft changes could not be saved — saving retries automatically">
-                    draft not saved
+                  <span className="text-amber-400" title={t("draft_failed_hint")}>
+                    {t("draft_failed")}
                   </span>
                 ) : (
                   <>
-                    <Check className="h-3 w-3 text-emerald-500" /> draft autosaved
+                    <Check className="h-3 w-3 text-emerald-500" /> {t("draft_saved")}
                   </>
                 )}
                 <button
@@ -1593,7 +1596,7 @@ export default function EditPage() {
                     api.saveEditorState(id, { ops }).then(
                       () => {
                         setSaveFailed(false);
-                        toast("draft saved", "success");
+                        toast(t("draft_saved_toast"), "success");
                         qc.invalidateQueries({ queryKey: ["version", id] });
                       },
                       (e) => {
@@ -1603,7 +1606,7 @@ export default function EditPage() {
                     )
                   }
                 >
-                  save now
+                  {t("save_now")}
                 </button>
               </div>
             )}

@@ -1,5 +1,6 @@
 import { Loader2, Shrink, Wrench } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   CartesianGrid,
   Line,
@@ -33,6 +34,7 @@ export default function TopOptPanel({
   versionId?: string;
   onJobStarted?: (r: { version_id: string; job_id: string }) => void;
 }) {
+  const { t } = useTranslation("version");
   const toast = useToast();
   const [threshold, setThreshold] = useState(topopt.density_threshold ?? 0.5);
   const [minMember, setMinMember] = useState(0);
@@ -94,14 +96,14 @@ export default function TopOptPanel({
     <Card className="p-4">
       <SectionTitle>
         <span className="inline-flex items-center gap-1">
-          <Shrink className="h-3 w-3" /> Topology optimization
+          <Shrink className="h-3 w-3" /> {t("to_title")}
         </span>
       </SectionTitle>
       <div className="mb-2 text-[11px] text-zinc-500">
         {topopt.volfrac_achieved != null &&
-          `volume fraction ${(topopt.volfrac_achieved * 100).toFixed(0)}%`}
-        {topopt.iterations != null && ` · ${topopt.iterations} SIMP iterations`}
-        {topopt.converged != null && ` · ${topopt.converged ? "converged" : "not converged"}`}
+          t("to_volfrac", { v: (topopt.volfrac_achieved * 100).toFixed(0) })}
+        {topopt.iterations != null && ` · ${t("to_iters", { n: topopt.iterations })}`}
+        {topopt.converged != null && ` · ${topopt.converged ? t("to_conv") : t("to_not_conv")}`}
       </div>
       {(topopt.warnings ?? []).map((w, i) => (
         <div key={i} className="mb-1 text-[10px] text-amber-400/90">
@@ -118,7 +120,7 @@ export default function TopOptPanel({
         <div
           className="mb-2 text-[10px] text-zinc-500"
           data-testid="topopt-verification"
-          title="hardened export verification — sf_verified is the worst case across the nominal/eroded/dilated printed-mask realizations; the load-path certificate bounds the thinnest section the load must pass"
+          title={t("to_verif_hint")}
         >
           <span className="mr-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
             verification:
@@ -133,7 +135,7 @@ export default function TopOptPanel({
               topopt.sf_realizations.eroded != null ||
               topopt.sf_realizations.dilated != null) && (
               <span>
-                {` (nom ${topopt.sf_realizations.nominal?.toFixed(2) ?? "—"} / ero ${topopt.sf_realizations.eroded?.toFixed(2) ?? "—"} / dil ${topopt.sf_realizations.dilated?.toFixed(2) ?? "—"})`}
+                {` (t("to_sf_real", { nom: topopt.sf_realizations.nominal?.toFixed(2) ?? "—", ero: topopt.sf_realizations.eroded?.toFixed(2) ?? "—", dil: topopt.sf_realizations.dilated?.toFixed(2) ?? "—" }))`}
               </span>
             )}
           {topopt.sf_homog != null && (
@@ -149,9 +151,9 @@ export default function TopOptPanel({
             </span>
           )}
           {topopt.bottleneck_mm2 != null && (
-            <span> · bottleneck {topopt.bottleneck_mm2.toFixed(1)} mm²</span>
+            <span> · {t("to_bottleneck", { v: topopt.bottleneck_mm2.toFixed(1) })}</span>
           )}
-          {topopt.sf_floor != null && <span> · floor {topopt.sf_floor.toFixed(2)}</span>}
+          {topopt.sf_floor != null && <span> · {t("to_floor", { v: topopt.sf_floor.toFixed(2) })}</span>}
           {topopt.load_path_ok != null && (
             <span
               className={
@@ -159,22 +161,22 @@ export default function TopOptPanel({
                   ? "text-emerald-400"
                   : "font-semibold text-red-400"
               }
-              title="min-cut load-path certificate: every load case reaches its fixtures through the export solid"
+              title={t("to_loadpath_hint")}
             >
               {" "}
-              · load path {topopt.load_path_ok ? "ok" : "BROKEN"}
+              · {t("to_loadpath")} {topopt.load_path_ok ? t("to_ok") : t("to_broken")}
             </span>
           )}
           {topopt.strut_align_deg != null && (
-            <span> · strut align {topopt.strut_align_deg.toFixed(0)}°</span>
+            <span> · {t("to_strut_align", { v: topopt.strut_align_deg.toFixed(0) })}°</span>
           )}
           {topopt.sf_mesh_sensitive && (
             <span
               className="text-amber-400"
-              title="a half-pitch grid shift changes the export SF materially — the result is voxel-grid sensitive"
+              title={t("to_meshsens_hint")}
             >
               {" "}
-              · mesh-sensitive!
+              · {t("to_meshsens")}
             </span>
           )}
         </div>
@@ -182,12 +184,12 @@ export default function TopOptPanel({
       {(topopt.multires || topopt.input_normalized || topopt.base_mesh_relpath) && (
         <div className="mb-2 text-[10px] text-zinc-500">
           {topopt.multires &&
-            `multires coarse pass: ${topopt.multires.coarse_cells ?? "?"} cells @ ${topopt.multires.coarse_pitch_mm ?? "?"}mm, ${topopt.multires.coarse_iterations ?? "?"} it, ${topopt.multires.seconds ?? "?"}s`}
+            t("to_multires", { cells: topopt.multires.coarse_cells ?? "?", pitch: topopt.multires.coarse_pitch_mm ?? "?", it: topopt.multires.coarse_iterations ?? "?", sec: topopt.multires.seconds ?? "?" })}
           {topopt.input_normalized &&
-            ` · input clipped to spec envelope${
-              topopt.input_bbox ? ` (${topopt.input_bbox.map((n) => n.toFixed(1)).join("×")} → ${topopt.spec_bbox?.map((n) => n.toFixed(1)).join("×") ?? "spec"})` : ""
+            ` · ${t("to_clipped")}${
+              topopt.input_bbox ? ` (${topopt.input_bbox.map((n) => n.toFixed(1)).join("×")} → ${topopt.spec_bbox?.map((n) => n.toFixed(1)).join("×") ?? t("to_spec")})` : ""
             }`}
-          {topopt.base_mesh_relpath && ` · base: ${topopt.base_mesh_relpath}`}
+          {topopt.base_mesh_relpath && ` · ${t("to_base", { path: topopt.base_mesh_relpath })}`}
         </div>
       )}
       {(topopt.history?.length ?? 0) > 2 && (
@@ -202,7 +204,7 @@ export default function TopOptPanel({
                 labelStyle={{ color: "#a1a1aa" }}
                 formatter={(v: unknown, name?: unknown) => [
                   typeof v === "number" ? v.toPrecision(4) : String(v),
-                  name === "compliance" ? "compliance (mJ)" : String(name),
+                  name === "compliance" ? t("to_compliance_mj") : String(name),
                 ]}
               />
               <Line type="monotone" dataKey="compliance" stroke="#7c9cf5" dot={false} strokeWidth={1.5} isAnimationActive={false} />
@@ -214,11 +216,11 @@ export default function TopOptPanel({
         <table className="w-full text-xs">
           <thead>
             <tr className="text-left text-[10px] uppercase tracking-wider text-zinc-500">
-              <th className="pb-1 font-medium">run</th>
-              <th className="pb-1 font-medium">volfrac</th>
-              <th className="pb-1 font-medium">worst SF</th>
-              <th className="pb-1 font-medium">iters</th>
-              <th className="pb-1 font-medium">min member</th>
+              <th className="pb-1 font-medium">{t("to_run")}</th>
+              <th className="pb-1 font-medium">{t("to_volfrac_col")}</th>
+              <th className="pb-1 font-medium">{t("to_worst_sf")}</th>
+              <th className="pb-1 font-medium">{t("to_iters_col")}</th>
+              <th className="pb-1 font-medium">{t("to_min_member")}</th>
               <th className="pb-1 font-medium"></th>
             </tr>
           </thead>
@@ -245,7 +247,7 @@ export default function TopOptPanel({
                 <td className="py-1 pr-2">
                   {r.min_member_mm != null ? `${r.min_member_mm.toFixed(1)} mm` : "—"}
                 </td>
-                <td className="py-1 text-right">{r.chosen ? "✓ kept" : ""}</td>
+                <td className="py-1 text-right">{r.chosen ? t("to_kept") : ""}</td>
               </tr>
             ))}
           </tbody>
@@ -260,13 +262,13 @@ export default function TopOptPanel({
         <div className="mt-3 border-t border-zinc-800 pt-2.5">
           <div
             className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500"
-            title="re-slice the saved density field at a new iso threshold — instant, no re-optimization"
+            title={t("to_resample_hint")}
           >
-            re-extract stored density (no new SIMP run)
+            {t("to_resample_title")}
           </div>
           <div className="flex items-center gap-3">
             <label className="flex flex-1 items-center gap-2 text-[11px] text-zinc-400">
-              iso
+              {t("to_iso")}
               <input
                 type="range"
                 min={20}
@@ -296,7 +298,7 @@ export default function TopOptPanel({
               disabled={busy}
               busy={busy}
               onClick={resample}
-              title="re-extract the mesh at this density threshold — creates a child version"
+              title={t("to_resample_btn_hint")}
             >
               {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
               Resample
@@ -307,14 +309,14 @@ export default function TopOptPanel({
       {(refinable || refineEff) && (
         <div className="mt-3 border-t border-zinc-800 pt-2.5">
           <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-            feature finishing
+            {t("to_finishing")}
           </div>
           {refineEff ? (
             <div className="mb-2 text-[11px] text-zinc-400">
               {refineEff.applied?.length
                 ? refineEff.applied.map((f, i) => (
                     <div key={i}>
-                      ✓ {f.kind ?? "feature"}
+                      ✓ {f.kind ?? t("to_feature")}
                       {f.name ? ` ${f.name}` : ""}
                       {f.dia ? ` ⌀${f.dia}mm` : ""}
                       {f.axis ? ` ${f.axis}` : ""}
@@ -333,12 +335,12 @@ export default function TopOptPanel({
                       ) : null}
                     </div>
                   ))
-                : "no features re-cut"}
+                : t("to_none_recut")}
               {!!refineEff.restored_regions &&
-                ` · ${refineEff.restored_regions} keep surface(s) restored`}
+                ` · ${t("to_surfaces_restored", { n: refineEff.restored_regions })}`}
               {!!refineEff.step_features?.length && (
                 <div className="text-emerald-400/90">
-                  STEP: {refineEff.step_features.length} analytic feature cut(s) (
+                  {t("to_step_cuts", { n: refineEff.step_features.length })} (
                   {refineEff.step_features
                     .map((f) => `${f.kind ?? "?"}${f.axis ? ` ${f.axis}` : ""}`)
                     .join(", ")}
@@ -349,16 +351,16 @@ export default function TopOptPanel({
                 <div
                   key={`p${i}`}
                   className={p.open ? "text-emerald-400/90" : "text-red-400/90"}
-                  title="raycast check that a non-through feature is still open after re-cutting"
+                  title={t("to_probe_hint")}
                 >
-                  blind probe {p.name ?? i}: {p.open ? "open" : p.found ? "blocked" : "not found"}
-                  {p.measured_depth_mm != null && ` · depth ${p.measured_depth_mm.toFixed(1)}mm`}
+                  {t("to_probe", { name: p.name ?? i })}: {p.open ? t("to_open") : p.found ? t("to_blocked") : t("to_not_found")}
+                  {p.measured_depth_mm != null && ` · ${t("to_depth", { v: p.measured_depth_mm.toFixed(1) })}`}
                   {p.measured_dia_mm != null && ` · ⌀${p.measured_dia_mm.toFixed(1)}mm`}
                 </div>
               ))}
               {(refineEff.skipped ?? []).map((s, i) => (
                 <div key={`s${i}`} className="text-amber-400/90">
-                  skipped: {s.reason ?? "unmatched"}
+                  {t("to_skipped")}: {s.reason ?? t("to_unmatched")}
                 </div>
               ))}
               {(refineEff.warnings ?? []).map((w, i) => (
@@ -369,8 +371,7 @@ export default function TopOptPanel({
             </div>
           ) : (
             <div className="mb-2 text-[10px] text-zinc-500">
-              re-cuts exact bores / printed threads / inserts at measured anchors and
-              restores keep-region surfaces — FEM re-verified, child version
+              {t("to_refine_note")}
             </div>
           )}
           {refinable && (
@@ -382,7 +383,7 @@ export default function TopOptPanel({
                   checked={restorePlanes}
                   onChange={(e) => setRestorePlanes(e.target.checked)}
                 />
-                restore keep surfaces
+                {t("to_restore_surfaces")}
               </label>
               <label className="flex items-center gap-1.5 text-[11px] text-zinc-400">
                 <input
@@ -391,11 +392,11 @@ export default function TopOptPanel({
                   checked={autoPlane}
                   onChange={(e) => setAutoPlane(e.target.checked)}
                 />
-                auto planar restore
+                {t("to_auto_plane")}
               </label>
               <label
                 className="flex items-center gap-1.5 text-[11px] text-zinc-400"
-                title="cut real helical thread grooves instead of smooth bores (experimental)"
+                title={t("to_helical_hint")}
               >
                 <input
                   type="checkbox"
@@ -403,7 +404,7 @@ export default function TopOptPanel({
                   checked={helicalThreads}
                   onChange={(e) => setHelicalThreads(e.target.checked)}
                 />
-                helical threads
+                {t("to_helical")}
               </label>
               <span className="flex-1" />
               <Btn
@@ -412,10 +413,10 @@ export default function TopOptPanel({
                 disabled={busy}
                 busy={busy}
                 onClick={runRefine}
-                title="re-cut exact features on this mesh — creates a refine child version"
+                title={t("to_finish_hint")}
               >
                 {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wrench className="h-3.5 w-3.5" />}
-                Finish features
+                {t("to_finish")}
               </Btn>
             </div>
           )}

@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { api } from "../lib/api";
 import type { Project } from "../lib/types";
 import { Btn, Field, Modal, inputCls } from "./ui";
@@ -13,6 +14,7 @@ export default function ProjectFormModal({
   project?: Project;
   onCreated?: (p: Project) => void;
 }) {
+  const { t } = useTranslation("projects");
   const qc = useQueryClient();
   const [name, setName] = useState(project?.name ?? "");
   const [desc, setDesc] = useState(project?.description ?? "");
@@ -31,23 +33,23 @@ export default function ProjectFormModal({
   });
 
   return (
-    <Modal open onClose={onClose} title={project ? "Edit project" : "New project"}>
+    <Modal open onClose={onClose} title={project ? t("modal.edit_title") : t("modal.new_title")}>
       <form
         onSubmit={(e) => {
           e.preventDefault();
           if (name.trim()) save.mutate();
         }}
       >
-        <Field label="Name">
+        <Field label={t("common:field.name")}>
           <input
             className={inputCls}
             value={name}
             autoFocus
-            placeholder="e.g. enclosure v2"
+            placeholder={t("modal.name_ph")}
             onChange={(e) => setName(e.target.value)}
           />
         </Field>
-        <Field label="Description" hint="optional">
+        <Field label={t("common:field.description")} hint={t("common:field.optional")}>
           <textarea
             className={`${inputCls} h-20 resize-none`}
             value={desc}
@@ -56,10 +58,10 @@ export default function ProjectFormModal({
         </Field>
         <div className="flex justify-end gap-2">
           <Btn variant="ghost" type="button" onClick={onClose}>
-            Cancel
+            {t("common:action.cancel")}
           </Btn>
           <Btn type="submit" busy={save.isPending} disabled={!name.trim()}>
-            {project ? "Save" : "Create"}
+            {project ? t("common:action.save") : t("common:action.create")}
           </Btn>
         </div>
         {save.isError && <div className="mt-2 text-sm text-red-400">{String(save.error)}</div>}

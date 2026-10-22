@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CircleDot, MessagesSquare, Pencil, Search, Sparkles, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import AssetManager from "../components/AssetManager";
 import ModeSelector from "../components/ModeSelector";
@@ -13,6 +14,7 @@ import {
   ConfirmModal,
   Crumbs,
   EmptyState,
+  PageShell,
   SectionTitle,
   Skeleton,
   inputCls,
@@ -53,6 +55,7 @@ function ProjectShowcase({
   versions: VersionSummary[];
   tick: number;
 }) {
+  const { t } = useTranslation("projects");
   const [bad, setBad] = useState<string | null>(null);
   const [liveOk, setLiveOk] = useState(false);
   const showcase = pickShowcaseVersion(versions);
@@ -84,8 +87,8 @@ function ProjectShowcase({
             onError={() => setBad(baseSrc)}
           />
         ) : (
-          <span className="flex h-full items-center justify-center text-xs text-zinc-700">
-            no render yet
+          <span className="flex h-full items-center justify-center text-xs text-faint/60">
+            {t("no_render")}
           </span>
         )}
         {running && (
@@ -100,7 +103,7 @@ function ProjectShowcase({
               onError={() => setLiveOk(false)}
             />
             <span className="absolute left-2 top-2 flex items-center gap-1 rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-brand-300">
-              <CircleDot className="h-3 w-3 animate-pulse" /> live
+              <CircleDot className="h-3 w-3 animate-pulse" /> {t("live")}
             </span>
           </>
         )}
@@ -109,8 +112,10 @@ function ProjectShowcase({
           {shown.name && <span className="truncate">{shown.name}</span>}
           <span className="ml-auto text-zinc-500">
             {running
-              ? `live · ${running.status}`
-              : `${shown.status}${shown.score != null ? ` · score ${shown.score}` : ""}`}
+              ? t("showcase_live", { status: running.status })
+              : shown.score != null
+                ? t("showcase_scored", { status: shown.status, score: shown.score })
+                : shown.status}
           </span>
         </span>
       </Link>
@@ -119,6 +124,7 @@ function ProjectShowcase({
 }
 
 export default function ProjectPage() {
+  const { t } = useTranslation("projects");
   const { id = "" } = useParams<{ id: string }>();
   const nav = useNavigate();
   const qc = useQueryClient();
@@ -151,7 +157,7 @@ export default function ProjectPage() {
     queryKey: ["project", id],
     queryFn: () => api.getProject(id),
   });
-  useTitle(project.data?.name ?? "Project");
+  useTitle(project.data?.name ?? t("title_fallback"));
   const assets = useQuery({
     queryKey: ["assets", id],
     queryFn: () => api.listAssets(id),
@@ -206,7 +212,7 @@ export default function ProjectPage() {
     mutationFn: () => api.deleteProject(id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["projects"] });
-      toast("project deleted", "success");
+      toast(t("deleted_toast"), "success");
       nav("/projects");
     },
     onError: (e) => toast(errMsg(e), "error"),
@@ -251,48 +257,48 @@ export default function ProjectPage() {
   if (!project.data)
     return (
       <div className="mx-auto max-w-3xl p-6">
-        <EmptyState title="Project not found" hint="It may have been deleted." />
+        <EmptyState title={t("not_found")} hint={t("not_found_hint")} />
       </div>
     );
   const p = project.data;
 
   return (
-    <div className="mx-auto grid max-w-6xl grid-cols-1 gap-5 p-6 lg:grid-cols-3">
+    <PageShell
+      title={p.name}
+      subtitle={p.description}
+      crumbs={
+        <Crumbs
+          items={[
+            <Link key="p" to="/projects" className="hover:text-muted">
+              {t("crumb_projects")}
+            </Link>,
+            <span key="n" className="font-medium text-fg">
+              {p.name}
+            </span>,
+          ]}
+        />
+      }
+      actions={
+        <>
+          <Btn
+            variant="ghost"
+            size="sm"
+            onClick={() => openChat.mutate()}
+            disabled={openChat.isPending}
+          >
+            <MessagesSquare className="h-3.5 w-3.5" /> {t("chat")}
+          </Btn>
+          <Btn variant="ghost" size="sm" onClick={() => setEditOpen(true)}>
+            <Pencil className="h-3.5 w-3.5" /> {t("common:action.edit")}
+          </Btn>
+          <Btn variant="danger" size="sm" onClick={() => setDeleteOpen(true)}>
+            <Trash2 className="h-3.5 w-3.5" /> {t("common:action.delete")}
+          </Btn>
+        </>
+      }
+    >
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
       <div className="flex flex-col gap-5 lg:col-span-2">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <Crumbs
-              items={[
-                <Link key="p" to="/projects" className="hover:text-zinc-300">
-                  projects
-                </Link>,
-                <span key="n" className="font-medium text-zinc-200">
-                  {p.name}
-                </span>,
-              ]}
-            />
-            <h1 className="mt-1 truncate text-2xl font-bold">{p.name}</h1>
-            {p.description && (
-              <div className="mt-0.5 text-sm text-zinc-500">{p.description}</div>
-            )}
-          </div>
-          <div className="flex shrink-0 gap-1">
-            <Btn
-              variant="ghost"
-              size="sm"
-              onClick={() => openChat.mutate()}
-              disabled={openChat.isPending}
-            >
-              <MessagesSquare className="h-3.5 w-3.5" /> chat
-            </Btn>
-            <Btn variant="ghost" size="sm" onClick={() => setEditOpen(true)}>
-              <Pencil className="h-3.5 w-3.5" /> edit
-            </Btn>
-            <Btn variant="danger" size="sm" onClick={() => setDeleteOpen(true)}>
-              <Trash2 className="h-3.5 w-3.5" /> delete
-            </Btn>
-          </div>
-        </div>
 
         <ProjectShowcase
           versions={versions.data ?? []}
@@ -302,18 +308,16 @@ export default function ProjectPage() {
         <Card className="p-4">
           <SectionTitle
             right={
-              <span className="text-[11px] normal-case tracking-normal text-zinc-500">
-                Ctrl+Enter to generate
+              <span className="text-[11px] normal-case tracking-normal text-faint">
+                {t("ctrl_enter_gen")}
               </span>
             }
           >
-            Describe your part
+            {t("describe_title")}
           </SectionTitle>
           <textarea
             className={`${inputCls} h-32 resize-y`}
-            placeholder={
-              "Describe the part: shape, dimensions (X length × Y width × Z height), holes, threads, tolerances, material, process (FDM/CNC)…\n\nExample: Mounting plate 80×60×8mm, four M4 clearance holes at 10mm from corners, countersunk, PLA for FDM."
-            }
+            placeholder={t("describe_ph")}
             value={prompt}
             onChange={(e) => onPromptChange(e.target.value)}
             onKeyDown={(e) => {
@@ -333,7 +337,7 @@ export default function ProjectPage() {
           {(library.data ?? []).length > 0 && (
             <div className="mt-3">
               <div className="mb-1 text-[11px] font-medium uppercase tracking-wider text-zinc-500">
-                Library parts{selectedLib.size ? ` — ${selectedLib.size} selected` : ""}
+                {t("library_parts")}{selectedLib.size ? ` — ${t("selected_n", { count: selectedLib.size })}` : ""}
               </div>
               <div className="flex flex-wrap gap-1.5">
                 {(library.data ?? []).map((p) => {
@@ -372,7 +376,7 @@ export default function ProjectPage() {
             disabled={!prompt.trim()}
           >
             <Sparkles className="h-4 w-4" />
-            Generate model{selected.size ? ` · ${selected.size} asset${selected.size === 1 ? "" : "s"}` : ""}
+            {t("generate")}{selected.size ? ` · ${t("assets_n", { count: selected.size })}` : ""}
           </Btn>
         </Card>
 
@@ -384,12 +388,12 @@ export default function ProjectPage() {
                   className="text-[11px] normal-case tracking-normal text-brand-400 hover:text-brand-300"
                   onClick={() => setSelected(new Set())}
                 >
-                  clear selection ({selected.size})
+                  {t("clear_sel", { count: selected.size })}
                 </button>
               )
             }
           >
-            Reference assets{selected.size ? ` — ${selected.size} selected` : ""}
+            {t("ref_assets")}{selected.size ? ` — ${t("selected_n", { count: selected.size })}` : ""}
           </SectionTitle>
           <AssetManager
             projectId={id}
@@ -421,14 +425,14 @@ export default function ProjectPage() {
         <SectionTitle
           right={<span className="text-[11px] normal-case tracking-normal">{versions.data?.length ?? 0}</span>}
         >
-          Versions
+          {t("versions_title")}
         </SectionTitle>
         {(versions.data?.length ?? 0) > 4 && (
           <div className="relative mb-2">
             <Search className="pointer-events-none absolute left-2 top-2 h-3.5 w-3.5 text-zinc-500" />
             <input
               className={`${inputCls} py-1.5 pl-7 text-xs`}
-              placeholder="filter prompts…"
+              placeholder={t("filter_prompts_ph")}
               value={vFilter}
               onChange={(e) => setVFilter(e.target.value)}
             />
@@ -443,14 +447,14 @@ export default function ProjectPage() {
         onClose={() => setDeleteOpen(false)}
         onConfirm={() => del.mutate()}
         busy={del.isPending}
-        title="Delete project"
+        title={t("delete_title")}
         body={
           <>
-            Delete <b className="text-zinc-200">{p.name}</b> and all of its versions, assets
-            and files? This cannot be undone.
+            {t("delete_body_pre")}<b className="text-fg">{p.name}</b>{t("delete_body_post")}
           </>
         }
       />
     </div>
+    </PageShell>
   );
 }

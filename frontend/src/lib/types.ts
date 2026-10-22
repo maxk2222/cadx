@@ -1091,7 +1091,8 @@ export interface StatsDayBucket {
   jobs: number;
   tokens: number;
   succeeded: number; // jobs finished this day with status=succeeded
-  failed: number; // jobs finished this day failed or cancelled
+  failed: number; // jobs finished this day with status=failed
+  cancelled: number; // jobs finished this day with status=cancelled
   score_avg: number | null; // avg score of versions created this day
 }
 

@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { pickView, sortViews, viewLabel } from "../lib/liveViews";
@@ -23,6 +24,7 @@ export default function LivePreview({
   /** stop polling once the job reached a terminal state */
   active?: boolean;
 }) {
+  const { t } = useTranslation("chat");
   const { data } = useQuery({
     queryKey: ["live-renders", versionId],
     queryFn: () => api.liveRenders(versionId),
@@ -80,7 +82,7 @@ export default function LivePreview({
       {shown && (
         <img
           src={shown}
-          alt="live render preview"
+          alt={t("live_alt")}
           className="absolute inset-0 h-full w-full bg-zinc-950 object-contain"
         />
       )}
@@ -97,17 +99,17 @@ export default function LivePreview({
       )}
       {!shown && waited && (
         <div className="absolute inset-0 flex items-center justify-center px-4 text-center text-xs text-zinc-500">
-          {active ? "waiting for first render…" : "no preview produced"}
+          {active ? t("waiting_render") : t("no_preview")}
         </div>
       )}
       {shown && (
         <span className="absolute left-2 top-2 flex items-center gap-1.5 rounded bg-black/70 px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-brand-300">
-          <Spinner className="h-3 w-3" /> live preview
+          <Spinner className="h-3 w-3" /> {t("live_preview")}
         </span>
       )}
       {shown && data && (data.final || data.iteration != null) && (
         <span className="absolute right-2 top-2 rounded bg-black/70 px-2 py-1 font-mono text-[10px] font-medium text-zinc-300">
-          {data.final ? "final" : `it ${data.iteration}`}
+          {data.final ? t("final") : t("it_short", { n: data.iteration })}
         </span>
       )}
       {shown && views.length > 1 && (

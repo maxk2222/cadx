@@ -14,6 +14,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { useTranslation } from "react-i18next";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import Composer from "../components/chat/Composer";
 import JobLivePanel from "../components/chat/JobLivePanel";
@@ -23,6 +24,7 @@ import Viewer3D from "../components/Viewer3D";
 import {
   Btn,
   Card,
+  PageShell,
   ConfirmModal,
   Crumbs,
   EmptyState,
@@ -50,6 +52,7 @@ import { useTitle } from "../lib/useTitle";
 /* ---------------------------------------------------------------------- */
 
 function ChatIndex() {
+  const { t } = useTranslation("chat");
   const nav = useNavigate();
   const qc = useQueryClient();
   const chats = useQuery({ queryKey: ["chats", "all"], queryFn: api.listAllChats });
@@ -64,19 +67,16 @@ function ChatIndex() {
   });
 
   return (
-    <div className="mx-auto max-w-4xl p-6">
-      <div className="mb-5 mt-0 flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Chat</h1>
-          <div className="mt-0.5 text-xs text-zinc-500">
-            Talk to the agent — it can create projects, generate, edit, analyse
-            and optimise parts.
-          </div>
-        </div>
+    <PageShell
+      maxW="list"
+      title={t("index_title")}
+      subtitle={t("index_sub")}
+      actions={
         <Btn onClick={() => create.mutate()} busy={create.isPending}>
-          <MessageSquarePlus className="h-4 w-4" /> new chat
+          <MessageSquarePlus className="h-4 w-4" /> {t("new_chat")}
         </Btn>
-      </div>
+      }
+    >
       <div className="flex flex-col gap-2">
         {(chats.data ?? []).map((c) => (
           <Card
@@ -88,24 +88,24 @@ function ChatIndex() {
                 {c.title}
               </div>
               <div className="text-xs text-zinc-500">
-                {c.project_name ?? "no project"} ·{" "}
+                {c.project_name ?? t("no_project")} ·{" "}
                 {new Date(c.updated_at).toLocaleString()}
-                {c.turn_running && " · running…"}
+                {c.turn_running && ` · ${t("running")}`}
               </div>
             </Link>
-            <IconBtn title="delete chat" danger onClick={() => del.mutate(c.id)}>
+            <IconBtn title={t("delete_chat")} danger onClick={() => del.mutate(c.id)}>
               <Trash2 className="h-4 w-4" />
             </IconBtn>
           </Card>
         ))}
         {chats.data?.length === 0 && (
           <EmptyState
-            title="No chats yet"
-            hint="Start a new chat — the agent creates a project for you when needed."
+            title={t("empty_title")}
+            hint={t("empty_hint")}
           />
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }
 
@@ -139,24 +139,22 @@ function MeasuredRow({
 /** Header chip shown while a turn is running — mounts on turn start (the
  *  parent renders it only then), so mount time is the turn start. */
 function TurnTimerChip() {
+  const { t } = useTranslation("chat");
   const [since] = useState(() => Date.now());
   const now = useNow(1000);
   return (
     <span className="flex items-center gap-1.5 rounded-full border border-brand-800 bg-brand-950/60 px-2.5 py-0.5 text-xs text-brand-300">
       <span className="pulse-dot h-1.5 w-1.5 rounded-full bg-brand-400" />
-      turn running {fmtDur((now - since) / 1000)}
+      {t("turn_running")} {fmtDur((now - since) / 1000)}
     </span>
   );
 }
 
 /** Clickable starter prompts for an empty thread. */
-const SUGGESTIONS = [
-  "Erstelle eine Winkelhalterung mit 2× Ø5 Löchern",
-  "Optimiere das letzte Teil topologisch (leichter, SF ≥ 2)",
-  "FEM-Analyse der aktuellen Version",
-];
+const SUGGESTION_KEYS = ["sug_1", "sug_2", "sug_3"] as const;
 
 function ChatView({ chatId }: { chatId: string }) {
+  const { t } = useTranslation("chat");
   const qc = useQueryClient();
   const toast = useToast();
   const [show3d, setShow3d] = useState(true);
@@ -181,7 +179,7 @@ function ChatView({ chatId }: { chatId: string }) {
     }
   });
   const { chat, messages, toolEvents, turnRunning, connected } = state;
-  useTitle(chat?.title ?? "Chat");
+  useTitle(chat?.title ?? t("title"));
 
   const project = useQuery({
     queryKey: ["project", chat?.project_id],
@@ -365,7 +363,7 @@ function ChatView({ chatId }: { chatId: string }) {
           <Crumbs
             items={[
               <Link key="c" to="/chat" className="hover:text-zinc-300">
-                chat
+                {t("crumb")}
               </Link>,
               <span key="t" className="font-medium text-zinc-200">
                 {chat?.title ?? "…"}
@@ -376,15 +374,15 @@ function ChatView({ chatId }: { chatId: string }) {
             <Link
               to={`/projects/${chat.project_id}`}
               className="flex items-center gap-1 rounded-full border border-zinc-800 px-2.5 py-0.5 text-xs text-zinc-400 transition-colors hover:border-zinc-600 hover:text-zinc-200"
-              title="bound project"
+              title={t("bound_project")}
             >
               <FolderOpen className="h-3 w-3" />
-              {project.data?.name ?? "project"}
+              {project.data?.name ?? t("project")}
             </Link>
           ) : chat ? (
             <div className="flex items-center gap-1.5">
               <span className="rounded-full border border-dashed border-zinc-700 px-2.5 py-0.5 text-xs text-zinc-500">
-                no project
+                {t("no_project")}
               </span>
               {(projects.data?.length ?? 0) > 0 && (
                 <select
@@ -395,10 +393,10 @@ function ChatView({ chatId }: { chatId: string }) {
                     if (e.target.value) attach.mutate(e.target.value);
                     e.target.value = "";
                   }}
-                  title="bind chat to an existing project"
+                  title={t("bind_hint")}
                 >
                   <option value="" disabled>
-                    bind to…
+                    {t("bind_to")}
                   </option>
                   {(projects.data ?? []).map((p) => (
                     <option key={p.id} value={p.id}>
@@ -411,7 +409,7 @@ function ChatView({ chatId }: { chatId: string }) {
           ) : null}
           <div className="ml-auto flex items-center gap-1.5">
             {!connected && (
-              <span className="text-xs text-amber-500">reconnecting…</span>
+              <span className="text-xs text-amber-500">{t("reconnecting")}</span>
             )}
             {turnRunning && <TurnTimerChip />}
             {turnRunning && (
@@ -421,16 +419,16 @@ function ChatView({ chatId }: { chatId: string }) {
                 onClick={() => cancel.mutate()}
                 busy={cancel.isPending}
               >
-                <Square className="h-3 w-3" /> stop
+                <Square className="h-3 w-3" /> {t("stop")}
               </Btn>
             )}
             <IconBtn
-              title={show3d ? "hide model panel" : "show model panel"}
+              title={show3d ? t("hide_panel") : t("show_panel")}
               onClick={() => setShow3d((v) => !v)}
             >
               <Boxes className="h-4 w-4" />
             </IconBtn>
-            <IconBtn title="delete chat" danger onClick={() => setDeleteOpen(true)}>
+            <IconBtn title={t("delete_chat")} danger onClick={() => setDeleteOpen(true)}>
               <Trash2 className="h-4 w-4" />
             </IconBtn>
           </div>
@@ -445,20 +443,20 @@ function ChatView({ chatId }: { chatId: string }) {
             {messages.length === 0 && !turnRunning && (
               <div className="flex flex-col gap-3">
                 <EmptyState
-                  title="Start the conversation"
-                  hint="Describe a part, attach reference images, or ask the agent to modify an existing version."
+                  title={t("start_title")}
+                  hint={t("start_hint")}
                 />
                 <div className="flex flex-wrap justify-center gap-2">
-                  {SUGGESTIONS.map((s) => (
+                  {SUGGESTION_KEYS.map((k) => (
                     <button
-                      key={s}
+                      key={k}
                       className="rounded-full border border-zinc-800 px-3 py-1.5 text-xs text-zinc-400 transition-colors hover:border-brand-500 hover:text-brand-300 disabled:opacity-40"
                       disabled={send.isPending}
                       onClick={() =>
-                        send.mutateAsync({ content: s, asset_ids: [] })
+                        send.mutateAsync({ content: t(k), asset_ids: [] })
                       }
                     >
-                      {s}
+                      {t(k)}
                     </button>
                   ))}
                 </div>
@@ -513,7 +511,7 @@ function ChatView({ chatId }: { chatId: string }) {
       {show3d && panelVid && (
         <div className="hidden w-[420px] shrink-0 flex-col border-l border-zinc-800 lg:flex">
           <div className="border-b border-zinc-800 px-3 py-2 text-xs font-medium text-zinc-400">
-            latest result
+            {t("latest_result")}
           </div>
           <div className="relative min-h-0 flex-1">
             {glb ? (
@@ -532,9 +530,9 @@ function ChatView({ chatId }: { chatId: string }) {
 
       <ConfirmModal
         open={deleteOpen}
-        title="Delete chat?"
-        body="The conversation history is removed; spawned versions and jobs stay."
-        confirmLabel="delete"
+        title={t("delete_title")}
+        body={t("delete_body")}
+        confirmLabel={t("common:action.delete")}
         onConfirm={() => {
           setDeleteOpen(false);
           del.mutate();

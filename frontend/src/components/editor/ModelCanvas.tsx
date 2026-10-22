@@ -26,10 +26,10 @@ import { applyModelOpacity } from "../../lib/modelOpacity";
 export type ViewPreset = "iso" | "front" | "top" | "side";
 
 export const VIEWS: { id: ViewPreset; dir: [number, number, number]; title: string }[] = [
-  { id: "iso", dir: [1, 0.8, 1], title: "isometric view" },
-  { id: "front", dir: [0, 0.15, 1], title: "front view" },
-  { id: "top", dir: [0.001, 1, 0.001], title: "top view" },
-  { id: "side", dir: [1, 0.15, 0], title: "side view" },
+  { id: "iso", dir: [1, 0.8, 1], title: "view_iso" },
+  { id: "front", dir: [0, 0.15, 1], title: "view_front" },
+  { id: "top", dir: [0.001, 1, 0.001], title: "view_top" },
+  { id: "side", dir: [1, 0.15, 0], title: "view_side" },
 ];
 
 export interface PickInfo {

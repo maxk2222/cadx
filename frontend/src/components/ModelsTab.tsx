@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { api, errMsg } from "../lib/api";
 import { fmtSecs } from "../lib/format";
 import {
@@ -20,15 +21,12 @@ import {
   useToast,
 } from "./ui";
 
-const KIND_GROUPS: { kind: MeshModelInfo["kind"]; label: string }[] = [
-  { kind: "llm", label: "LLM" },
-  { kind: "mesh", label: "Mesh" },
-  { kind: "image", label: "Image" },
-];
+const KINDS: MeshModelInfo["kind"][] = ["llm", "mesh", "image"];
 
 /** Download state cell — polls the transfer status while the model reports
  *  `downloading`, otherwise renders the plain state chip. */
 function StateCell({ m }: { m: MeshModelInfo }) {
+  const { t } = useTranslation("settings");
   const st = useQuery({
     queryKey: ["meshModelDownload", m.id],
     queryFn: () => api.meshModelDownloadStatus(m.id),
@@ -49,10 +47,10 @@ function StateCell({ m }: { m: MeshModelInfo }) {
       />
       <div className="mt-0.5 text-[10px] leading-tight text-zinc-500">
         {d?.status === "error"
-          ? `failed: ${d.error ?? "unknown"}`
+          ? t("mdl_dl_failed", { e: d.error ?? "?" })
           : d
             ? `${fmtDlBytes(d.bytes_done)}${d.bytes_total ? ` / ${fmtDlBytes(d.bytes_total)}` : ""}`
-            : "downloading…"}
+            : t("mdl_downloading")}
       </div>
     </div>
   );
@@ -61,6 +59,7 @@ function StateCell({ m }: { m: MeshModelInfo }) {
 /** "Local models" settings tab — grouped model table with download
  *  management, a custom-HF-repo register form and the live sidecar queue. */
 export default function ModelsTab({ models }: { models: MeshModelInfo[] }) {
+  const { t } = useTranslation("settings");
   const qc = useQueryClient();
   const toast = useToast();
   const [repo, setRepo] = useState("");
@@ -110,7 +109,7 @@ export default function ModelsTab({ models }: { models: MeshModelInfo[] }) {
   const register = useMutation({
     mutationFn: api.meshModelRegister,
     onSuccess: () => {
-      toast("model registered", "success");
+      toast(t("mdl_registered"), "success");
       setRepo("");
       invalidate();
     },
@@ -138,10 +137,10 @@ export default function ModelsTab({ models }: { models: MeshModelInfo[] }) {
         <div className="font-medium text-zinc-200">{m.name || m.id}</div>
         <div className="text-[10px] text-zinc-500">
           {m.id}
-          {m.custom ? " · custom" : ""}
+          {m.custom ? ` · ${t("mdl_custom")}` : ""}
         </div>
         {m.license_note ? (
-          <div className="text-[10px] text-zinc-500">license: {m.license_note}</div>
+          <div className="text-[10px] text-zinc-500">{t("mdl_license")}: {m.license_note}</div>
         ) : null}
         {m.last_error ? (
           <div className="text-[10px] text-red-400">{m.last_error}</div>
@@ -185,7 +184,7 @@ export default function ModelsTab({ models }: { models: MeshModelInfo[] }) {
               disabled={busy}
               onClick={() => deleteWeights.mutate(m.id)}
             >
-              delete weights
+              {t("mdl_del_weights")}
             </Btn>
           )}
           {m.custom && (
@@ -206,12 +205,12 @@ export default function ModelsTab({ models }: { models: MeshModelInfo[] }) {
   const registerForm = (
     <div className="mb-3 rounded-md border border-zinc-800 bg-zinc-900/40 p-2">
       <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-        register custom model
+        {t("mdl_register")}
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <input
           className={`${inputCls} w-48 px-2 py-1 text-xs`}
-          placeholder="org/name (Hugging Face repo)"
+          placeholder={t("mdl_repo_ph")}
           value={repo}
           onChange={(e) => setRepo(e.target.value)}
         />
@@ -219,7 +218,7 @@ export default function ModelsTab({ models }: { models: MeshModelInfo[] }) {
           className={`${inputCls} w-32 px-2 py-1 text-xs`}
           value={backend}
           onChange={(e) => setBackend(e.target.value)}
-          title="serving backend"
+          title={t("mdl_backend_hint")}
         >
           <option value="auto">auto</option>
           <option value="mlx-lm">mlx-lm</option>
@@ -231,7 +230,7 @@ export default function ModelsTab({ models }: { models: MeshModelInfo[] }) {
             checked={vision}
             onChange={(e) => setVision(e.target.checked)}
           />
-          vision-capable
+          {t("mdl_vision")}
         </label>
         <Btn
           size="sm"
@@ -246,7 +245,7 @@ export default function ModelsTab({ models }: { models: MeshModelInfo[] }) {
             })
           }
         >
-          register
+          {t("mdl_register_btn")}
         </Btn>
       </div>
     </div>
@@ -257,26 +256,26 @@ export default function ModelsTab({ models }: { models: MeshModelInfo[] }) {
   return (
     <div className={q ? "grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]" : ""}>
       <Card className="p-4">
-        <SectionTitle>Local models</SectionTitle>
-        {KIND_GROUPS.map((g) => {
-          const rows = models.filter((m) => m.kind === g.kind);
+        <SectionTitle>{t("mdl_title")}</SectionTitle>
+        {KINDS.map((kind) => {
+          const rows = models.filter((m) => m.kind === kind);
           return (
-            <div key={g.kind} className="mb-4 last:mb-0">
+            <div key={kind} className="mb-4 last:mb-0">
               <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
-                {g.label}
+                {t(`mdl_kind_${kind}`)}
               </div>
-              {g.kind === "llm" && registerForm}
+              {kind === "llm" && registerForm}
               {rows.length ? (
                 <div className="overflow-x-auto">
                   <table className="w-full min-w-[34rem] text-left text-xs">
                     <thead>
                       <tr className="text-[10px] uppercase tracking-wider text-zinc-600">
-                        <th className="pb-1 pr-2 font-medium">model</th>
-                        <th className="pb-1 pr-2 font-medium">device</th>
-                        <th className="pb-1 pr-2 font-medium">mem</th>
-                        <th className="pb-1 pr-2 font-medium">size</th>
-                        <th className="pb-1 pr-2 font-medium">state</th>
-                        <th className="pb-1 pr-2 font-medium">flags</th>
+                        <th className="pb-1 pr-2 font-medium">{t("mdl_col_model")}</th>
+                        <th className="pb-1 pr-2 font-medium">{t("mdl_col_device")}</th>
+                        <th className="pb-1 pr-2 font-medium">{t("mdl_col_mem")}</th>
+                        <th className="pb-1 pr-2 font-medium">{t("mdl_col_size")}</th>
+                        <th className="pb-1 pr-2 font-medium">{t("mdl_col_state")}</th>
+                        <th className="pb-1 pr-2 font-medium">{t("mdl_col_flags")}</th>
                         <th className="pb-1 font-medium" />
                       </tr>
                     </thead>
@@ -285,7 +284,7 @@ export default function ModelsTab({ models }: { models: MeshModelInfo[] }) {
                 </div>
               ) : (
                 <div className="text-xs text-zinc-500">
-                  no {g.label.toLowerCase()} models known to the sidecar
+                  {t("mdl_none", { kind })}
                 </div>
               )}
             </div>
@@ -293,7 +292,7 @@ export default function ModelsTab({ models }: { models: MeshModelInfo[] }) {
         })}
         {!models.length && (
           <div className="text-xs text-zinc-500">
-            sidecar unreachable — start it with <code>make mesh-server</code>
+            {t("mdl_unreachable_pre")} <code>make mesh-server</code>
           </div>
         )}
       </Card>
@@ -303,13 +302,13 @@ export default function ModelsTab({ models }: { models: MeshModelInfo[] }) {
           <SectionTitle
             right={
               q.free_mb != null ? (
-                <Chip tone="zinc" title="free host RAM">
-                  free {fmtMemGb(q.free_mb)}
+                <Chip tone="zinc" title={t("mdl_free_ram")}>
+                  {t("mdl_free", { v: fmtMemGb(q.free_mb) })}
                 </Chip>
               ) : undefined
             }
           >
-            Sidecar queue
+            {t("mdl_queue")}
           </SectionTitle>
           {q.jobs.length ? (
             <div className="mb-2 flex flex-col gap-1 text-xs">
@@ -336,7 +335,7 @@ export default function ModelsTab({ models }: { models: MeshModelInfo[] }) {
                       : ""}
                   </span>
                   <span>
-                    waited {fmtSecs(j.waited_s)}
+                    {t("mdl_waited", { t: fmtSecs(j.waited_s) })}
                     {j.est_mem_mb != null ? ` · ${fmtMemGb(j.est_mem_mb)}` : ""}
                   </span>
                   {j.message ? (
@@ -346,18 +345,18 @@ export default function ModelsTab({ models }: { models: MeshModelInfo[] }) {
               ))}
             </div>
           ) : (
-            <div className="mb-2 text-xs text-zinc-500">no queued jobs</div>
+            <div className="mb-2 text-xs text-zinc-500">{t("mdl_queue_empty")}</div>
           )}
           {q.residents.length > 0 && (
             <div className="text-xs text-zinc-500">
-              resident:{" "}
+              {t("mdl_resident")} 
               {q.residents.map((r, i) => (
                 <span key={r.id}>
                   {i > 0 && " · "}
                   <b className="font-medium text-zinc-300">{r.id}</b>{" "}
                   {fmtMemGb(r.mb)} · {r.kind}
-                  {r.pinned ? " · pinned" : ""}
-                  {r.idle_s > 0 ? ` · idle ${fmtSecs(r.idle_s)}` : ""}
+                  {r.pinned ? ` · ${t("mdl_pinned")}` : ""}
+                  {r.idle_s > 0 ? ` · ${t("mdl_idle", { t: fmtSecs(r.idle_s) })}` : ""}
                 </span>
               ))}
             </div>

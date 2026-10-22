@@ -1,3 +1,4 @@
+import i18n from "../i18n";
 import type {
   AnchorsResult,
   Asset,
@@ -90,7 +91,7 @@ const patch = (body: unknown) => ({
 export function errMsg(e: unknown): string {
   const s = e instanceof Error ? e.message : String(e);
   if (/failed to fetch|networkerror|load failed|err_connection/i.test(s))
-    return "server unreachable — is the stack running? (make status)";
+    return i18n.t("common:err_unreachable");
   return s || "unknown error";
 }
 

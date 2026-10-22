@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CircleDot, FolderPlus, Pencil, Search, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Link, useNavigate } from "react-router-dom";
 import Logo from "../components/Logo";
 import ProjectFormModal from "../components/ProjectFormModal";
@@ -10,6 +11,7 @@ import {
   ConfirmModal,
   EmptyState,
   IconBtn,
+  PageShell,
   Skeleton,
   inputCls,
   useDebounced,
@@ -24,6 +26,7 @@ import { useTitle } from "../lib/useTitle";
  *  running version's newest iteration (if any). `tick` cache-busts the live
  *  image on each projects refetch. */
 function ProjectThumb({ p, tick }: { p: Project; tick: number }) {
+  const { t } = useTranslation("projects");
   const [ok, setOk] = useState(false);
   // thumbnail_url may point at the scan-based preview route which 404s when
   // the version truly has no image files — fall back to the placeholder
@@ -39,7 +42,7 @@ function ProjectThumb({ p, tick }: { p: Project; tick: number }) {
           onError={() => setBadUrl(p.latest_thumbnail_url)}
         />
       ) : (
-        <span className="text-xs text-zinc-700">no render yet</span>
+        <span className="text-xs text-faint/60">{t("no_render")}</span>
       )}
       {live && (
         <>
@@ -53,7 +56,7 @@ function ProjectThumb({ p, tick }: { p: Project; tick: number }) {
             onError={() => setOk(false)}
           />
           <span className="absolute left-2 top-2 flex items-center gap-1 rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-brand-300">
-            <CircleDot className="h-3 w-3 animate-pulse" /> live
+            <CircleDot className="h-3 w-3 animate-pulse" /> {t("live")}
           </span>
         </>
       )}
@@ -62,7 +65,8 @@ function ProjectThumb({ p, tick }: { p: Project; tick: number }) {
 }
 
 export default function ProjectsPage() {
-  useTitle("Projects");
+  const { t } = useTranslation("projects");
+  useTitle(t("title"));
   const qc = useQueryClient();
   const nav = useNavigate();
   const toast = useToast();
@@ -84,7 +88,7 @@ export default function ProjectsPage() {
     onSuccess: () => {
       setDeleting(null);
       qc.invalidateQueries({ queryKey: ["projects"] });
-      toast("project deleted", "success");
+      toast(t("deleted_toast"), "success");
     },
     onError: (e) => toast(errMsg(e), "error"),
   });
@@ -101,29 +105,30 @@ export default function ProjectsPage() {
   }, [projects.data, q]);
 
   return (
-    <div className="mx-auto max-w-6xl p-6">
-      <div className="mb-5 flex items-center gap-3">
-        <h1 className="text-2xl font-bold">Projects</h1>
-        <span className="text-sm text-zinc-500">{projects.data?.length ?? 0} total</span>
-        <span className="flex-1" />
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-zinc-500" />
-          <input
-            className={`${inputCls} w-56 pl-8`}
-            placeholder="search projects…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-        </div>
-        <Btn onClick={() => setCreateOpen(true)}>
-          <FolderPlus className="h-4 w-4" /> New project
-        </Btn>
-      </div>
-
+    <PageShell
+      title={t("title")}
+      subtitle={t("count_sub", { count: projects.data?.length ?? 0 })}
+      actions={
+        <>
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-faint" />
+            <input
+              className={`${inputCls} w-56 pl-8`}
+              placeholder={t("search_ph")}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+          <Btn onClick={() => setCreateOpen(true)}>
+            <FolderPlus className="h-4 w-4" /> {t("new_project")}
+          </Btn>
+        </>
+      }
+    >
       {projects.isLoading ? (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {Array.from({ length: 6 }).map((_, i) => (
-            <div key={i} className="overflow-hidden rounded-lg border border-zinc-800">
+            <div key={i} className="overflow-hidden rounded-lg border border-edge">
               <Skeleton className="h-32 rounded-none" />
               <div className="space-y-2 p-3">
                 <Skeleton className="h-4 w-2/3" />
@@ -133,19 +138,19 @@ export default function ProjectsPage() {
           ))}
         </div>
       ) : projects.isError ? (
-        <EmptyState title="Could not load projects" hint="Is the API running?" />
+        <EmptyState title={t("load_error")} hint={t("load_error_hint")} />
       ) : !filtered.length ? (
         <EmptyState
           icon={<Logo size={80} />}
-          title={q ? "No projects match your search" : "No projects yet"}
-          hint={q ? undefined : "Create a project to start generating 3D models."}
+          title={q ? t("empty_search") : t("empty")}
+          hint={q ? undefined : t("empty_hint")}
         />
       ) : (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {filtered.map((p) => (
             <div
               key={p.id}
-              className="group relative overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900 transition-colors hover:border-zinc-600"
+              className="panel panel-hover anim-fade-in-up group relative overflow-hidden"
             >
               <Link to={`/projects/${p.id}`} className="block">
                 <ProjectThumb p={p} tick={projects.dataUpdatedAt} />
@@ -157,17 +162,17 @@ export default function ProjectsPage() {
                     )}
                   </div>
                   {p.description && (
-                    <div className="mt-0.5 truncate text-sm text-zinc-500">{p.description}</div>
+                    <div className="mt-0.5 truncate text-sm text-faint">{p.description}</div>
                   )}
-                  <div className="mt-1.5 text-xs text-zinc-600">
-                    {p.version_count} version{p.version_count === 1 ? "" : "s"} · updated{" "}
-                    {timeAgo(p.updated_at)}
+                  <div className="mt-1.5 text-xs text-faint/70">
+                    {t("versions_count", { count: p.version_count })} ·{" "}
+                    {t("updated", { at: timeAgo(p.updated_at) })}
                   </div>
                 </div>
               </Link>
-              <div className="absolute right-2 top-2 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+              <div className="absolute right-2 top-2 flex gap-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
                 <IconBtn
-                  title="rename / edit"
+                  title={t("rename")}
                   className="bg-black/60 backdrop-blur"
                   onClick={(e) => {
                     e.preventDefault();
@@ -177,7 +182,7 @@ export default function ProjectsPage() {
                   <Pencil className="h-3.5 w-3.5" />
                 </IconBtn>
                 <IconBtn
-                  title="delete project"
+                  title={t("delete_title")}
                   danger
                   className="bg-black/60 backdrop-blur"
                   onClick={(e) => {
@@ -211,15 +216,15 @@ export default function ProjectsPage() {
         onClose={() => setDeleting(null)}
         onConfirm={() => deleting && del.mutate(deleting.id)}
         busy={del.isPending}
-        title="Delete project"
+        title={t("delete_title")}
         body={
           <>
-            Delete <b className="text-zinc-200">{deleting?.name}</b> and all of its versions,
-            assets and files? This cannot be undone.
+            {t("delete_body_pre")}
+            <b className="text-fg">{deleting?.name}</b>
+            {t("delete_body_post")}
           </>
         }
       />
-    </div>
+    </PageShell>
   );
 }
-

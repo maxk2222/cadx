@@ -13,10 +13,12 @@ import {
   X,
 } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 import ModelCanvas from "../components/editor/ModelCanvas";
 import {
   Btn,
+  PageShell,
   Card,
   Chip,
   ConfirmModal,
@@ -39,23 +41,20 @@ const KIND_FILTERS = ["all", "step", "stl", "template"] as const;
 type KindFilter = (typeof KIND_FILTERS)[number];
 
 export default function LibraryPage() {
-  useTitle("Library");
+  const { t } = useTranslation("library");
+  useTitle(t("title"));
   return (
-    <div className="mx-auto max-w-4xl p-6 pb-16">
-      <h1 className="mb-1 text-2xl font-bold">Library</h1>
-      <p className="mb-4 text-sm text-zinc-500">
-        Reusable STEP/STL bodies and parametric code templates — attach them to
-        a generation on the project or version page.
-      </p>
+    <PageShell maxW="list" title={t("title")} subtitle={t("subtitle")} className="pb-16">
       <PartsSection />
       <CatalogBrowser />
-    </div>
+    </PageShell>
   );
 }
 
 /* ---------- user parts ---------- */
 
 function PartsSection() {
+  const { t } = useTranslation("library");
   const qc = useQueryClient();
   const toast = useToast();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -108,7 +107,7 @@ function PartsSection() {
 
   return (
     <Card className="p-4">
-      <SectionTitle>Reusable parts ({parts.data?.length ?? 0})</SectionTitle>
+      <SectionTitle>{t("reusable", { count: parts.data?.length ?? 0 })}</SectionTitle>
 
       {/* upload + toolbar */}
       <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -126,13 +125,13 @@ function PartsSection() {
         />
         <input
           className={inputCls + " w-40 text-xs"}
-          placeholder="name (optional)"
+          placeholder={t("name_ph")}
           value={name}
           onChange={(e) => setName(e.target.value)}
         />
         <input
           className={inputCls + " w-56 text-xs"}
-          placeholder="caption (optional)"
+          placeholder={t("caption_ph")}
           value={caption}
           onChange={(e) => setCaption(e.target.value)}
         />
@@ -141,13 +140,13 @@ function PartsSection() {
           onClick={() => fileRef.current?.click()}
           busy={upload.isPending}
         >
-          <Upload className="h-3.5 w-3.5" /> upload STEP/STL
+          <Upload className="h-3.5 w-3.5" /> {t("upload")}
         </Btn>
         <div className="relative ml-auto">
-          <Search className="pointer-events-none absolute left-2 top-2.5 h-3.5 w-3.5 text-zinc-500" />
+          <Search className="pointer-events-none absolute left-2 top-2.5 h-3.5 w-3.5 text-faint" />
           <input
             className={inputCls + " w-52 pl-7 text-xs"}
-            placeholder="search parts…"
+            placeholder={t("search_ph")}
             value={q}
             onChange={(e) => setQ(e.target.value)}
           />
@@ -164,7 +163,7 @@ function PartsSection() {
                 : "text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
             }`}
           >
-            {k === "all" ? "all" : k}
+            {k === "all" ? t("all") : k}
           </button>
         ))}
       </div>
@@ -175,11 +174,11 @@ function PartsSection() {
         </div>
       ) : filtered.length === 0 ? (
         <EmptyState
-          title={needle || kindFilter !== "all" ? "No matching parts" : "Library is empty"}
+          title={needle || kindFilter !== "all" ? t("empty_filtered") : t("empty")}
           hint={
             needle || kindFilter !== "all"
-              ? "adjust the search or filter"
-              : "upload STEP/STL bodies here or save a version from its page"
+              ? t("empty_filtered_hint")
+              : t("empty_hint")
           }
         />
       ) : (
@@ -205,7 +204,7 @@ function PartsSection() {
                 {p.name}
               </div>
               <div className="truncate text-xs text-zinc-500">
-                {p.filename || "code template"}
+                {p.filename || t("code_template")}
               </div>
               {p.caption && (
                 <div className="mt-1 line-clamp-2 text-xs text-zinc-500">
@@ -213,14 +212,14 @@ function PartsSection() {
                 </div>
               )}
               <div className="mt-2 flex items-center gap-0.5 border-t border-zinc-800/60 pt-2 opacity-60 transition-opacity group-hover:opacity-100">
-                <IconBtn title="details & preview" onClick={(e) => { e.stopPropagation(); setDetail(p); }}>
+                <IconBtn title={t("details")} onClick={(e) => { e.stopPropagation(); setDetail(p); }}>
                   <Boxes className="h-3.5 w-3.5" />
                 </IconBtn>
                 {p.url && (
                   <a
                     href={p.url}
-                    title="download"
-                    aria-label="download"
+                    title={t("common:action.download")}
+                    aria-label={t("common:action.download")}
                     className="inline-flex h-7 w-7 items-center justify-center rounded-md text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
                     onClick={(e) => e.stopPropagation()}
                   >
@@ -229,7 +228,7 @@ function PartsSection() {
                 )}
                 <span className="ml-auto" />
                 <IconBtn
-                  title="delete"
+                  title={t("common:action.delete")}
                   danger
                   onClick={(e) => {
                     e.stopPropagation();
@@ -254,11 +253,10 @@ function PartsSection() {
         open={!!deleting}
         onClose={() => setDeleting(null)}
         onConfirm={() => deleting && del.mutate(deleting.id)}
-        title="Delete library part"
+        title={t("delete_title")}
         body={
           <>
-            Delete <b className="text-zinc-200">{deleting?.name}</b>? It will no
-            longer be available for new generations.
+            {t("delete_body_pre")}<b className="text-fg">{deleting?.name}</b>{t("delete_body_post")}
           </>
         }
         busy={del.isPending}
@@ -270,6 +268,7 @@ function PartsSection() {
 /* ---------- part detail / preview ---------- */
 
 function PartPreview({ part }: { part: LibraryPart }) {
+  const { t } = useTranslation("library");
   const [opacity, setOpacity] = useState(1);
   const needSource = part.kind !== "stl" && !!part.source_version_id;
   const src = useQuery({
@@ -307,7 +306,7 @@ function PartPreview({ part }: { part: LibraryPart }) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-zinc-500">
       <Boxes className="h-8 w-8 text-zinc-700" />
-      no preview available
+      {t("no_preview")}
     </div>
   );
 }
@@ -321,6 +320,7 @@ function PartDetail({
   onClose: () => void;
   onDelete: (p: LibraryPart) => void;
 }) {
+  const { t } = useTranslation("library");
   const qc = useQueryClient();
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState("");
@@ -352,25 +352,25 @@ function PartDetail({
             className={inputCls + " w-44 text-xs"}
             value={editName}
             onChange={(e) => setEditName(e.target.value)}
-            aria-label="Library part name"
-            placeholder="name"
+            aria-label={t("aria_name")}
+            placeholder={t("common:field.name")}
           />
           <input
             className={inputCls + " min-w-40 flex-1 text-xs"}
             value={editCaption}
             onChange={(e) => setEditCaption(e.target.value)}
-            aria-label="Library part caption"
-            placeholder="caption"
+            aria-label={t("aria_caption")}
+            placeholder={t("caption")}
           />
           <IconBtn
-            title="save changes"
+            title={t("common:action.save")}
             disabled={!editName.trim() || update.isPending}
             onClick={() => update.mutate(part.id)}
             className="text-emerald-500 hover:bg-emerald-950/50"
           >
             <Check className="h-3.5 w-3.5" />
           </IconBtn>
-          <IconBtn title="cancel" onClick={() => setEditing(false)}>
+          <IconBtn title={t("common:action.cancel")} onClick={() => setEditing(false)}>
             <X className="h-3.5 w-3.5" />
           </IconBtn>
         </div>
@@ -383,7 +383,7 @@ function PartDetail({
             {part.filename || "code"} {part.caption ? `— ${part.caption}` : ""}
           </span>
           <IconBtn
-            title="edit name/caption"
+            title={t("edit_nc")}
             className="ml-auto"
             onClick={() => {
               setEditing(true);
@@ -401,16 +401,16 @@ function PartDetail({
 
       <div className="mb-3 flex flex-col gap-1 text-xs text-zinc-500">
         <div>
-          added: <span className="text-zinc-300">{fmtDateTime(part.created_at)}</span>
+          {t("added")} <span className="text-zinc-300">{fmtDateTime(part.created_at)}</span>
         </div>
         {part.source_version_id && (
           <div>
-            source:{" "}
+            {t("source")}{" "}
             <Link
               to={`/versions/${part.source_version_id}`}
               className="text-brand-400 hover:underline"
             >
-              version {part.source_version_id.slice(0, 8)}
+              {t("source_version", { id: part.source_version_id.slice(0, 8) })}
             </Link>
           </div>
         )}
@@ -429,7 +429,7 @@ function PartDetail({
         {part.url && (
           <a href={part.url} className="inline-flex">
             <Btn variant="ghost">
-              <Download className="h-3.5 w-3.5" /> download
+              <Download className="h-3.5 w-3.5" /> {t("common:action.download")}
             </Btn>
           </a>
         )}
@@ -438,7 +438,7 @@ function PartDetail({
           className="ml-auto"
           onClick={() => onDelete(part)}
         >
-          <Trash2 className="h-3.5 w-3.5" /> delete
+          <Trash2 className="h-3.5 w-3.5" /> {t("common:action.delete")}
         </Btn>
       </div>
     </Modal>
@@ -448,6 +448,7 @@ function PartDetail({
 /* ---------- standard parts catalog ---------- */
 
 function CatalogBrowser() {
+  const { t } = useTranslation("library");
   const [open, setOpen] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [detail, setDetail] = useState<string | null>(null);
@@ -505,17 +506,17 @@ function CatalogBrowser() {
           <ChevronRight className="h-4 w-4 text-zinc-500" />
         )}
         <Package className="h-4 w-4 text-zinc-500" />
-        <span className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
-          Standard parts catalog (bd_warehouse)
+        <span className="text-xs font-semibold uppercase tracking-wider text-faint">
+          {t("catalog")}
         </span>
       </button>
       {open && (
         <div className="mt-3">
           <div className="relative mb-2">
-            <Search className="pointer-events-none absolute left-2 top-2 h-3.5 w-3.5 text-zinc-500" />
+            <Search className="pointer-events-none absolute left-2 top-2 h-3.5 w-3.5 text-faint" />
             <input
               className={inputCls + " pl-7 text-xs"}
-              placeholder="filter classes, types or sizes (e.g. iso10642, M4, 608…)"
+              placeholder={t("catalog_ph")}
               value={q}
               onChange={(e) => setQ(e.target.value)}
             />
@@ -525,7 +526,7 @@ function CatalogBrowser() {
               <Spinner />
             </div>
           ) : catalog.isError ? (
-            <EmptyState title="Catalog unavailable" hint="requires the executor environment" />
+            <EmptyState title={t("catalog_unavail")} hint={t("catalog_unavail_hint")} />
           ) : (
             Object.entries(filtered).map(([cat, classes]) => (
               <div key={cat} className="mb-1">
@@ -564,7 +565,7 @@ function CatalogBrowser() {
                             {cls}
                           </button>
                           <span className="ml-2 text-zinc-500">
-                            {entry.kind === "parametric" ? "params: " : ""}
+                            {entry.kind === "parametric" ? t("params_prefix") : ""}
                             {preview}
                           </span>
                           {openDetail && (
@@ -578,10 +579,10 @@ function CatalogBrowser() {
                                   </div>
                                 ))}
                               {entry.params && (
-                                <div>params: {entry.params.join(", ")}</div>
+                                <div>{t("params_list", { list: entry.params.join(", ") })}</div>
                               )}
                               {entry.holes && (
-                                <div>holes: {entry.holes.join(", ")}</div>
+                                <div>{t("holes_list", { list: entry.holes.join(", ") })}</div>
                               )}
                             </div>
                           )}

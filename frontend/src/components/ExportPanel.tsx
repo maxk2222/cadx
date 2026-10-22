@@ -1,5 +1,6 @@
 import { Download, RefreshCw } from "lucide-react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { api, errMsg } from "../lib/api";
 import { fmtBytes } from "../lib/format";
 import type { Artifact } from "../lib/types";
@@ -16,6 +17,7 @@ export default function ExportPanel({
   artifacts: Artifact[];
   onRefresh: () => void;
 }) {
+  const { t } = useTranslation("version");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const exports = ORDER.map((k) => artifacts.find((a) => a.kind === k)).filter(
@@ -45,13 +47,13 @@ export default function ExportPanel({
             size="sm"
             busy={busy}
             onClick={reexport}
-            title="re-generate all export formats (STEP/STL/3MF/GLB/DXF/SVG)"
+            title={t("exp_reexport_hint")}
           >
-            <RefreshCw className="h-3.5 w-3.5" /> Re-export
+            <RefreshCw className="h-3.5 w-3.5" /> {t("exp_reexport")}
           </Btn>
         }
       >
-        Exports
+        {t("exp_title")}
       </SectionTitle>
       <div className="flex flex-wrap gap-2">
         {exports.map((a) => (
@@ -60,8 +62,8 @@ export default function ExportPanel({
             href={`${a.url}?download=1`}
             title={
               a.meta?.tessellated
-                ? "STEP export is tessellated (derived from a mesh)"
-                : `download .${a.kind}`
+                ? t("exp_tess_hint")
+                : t("exp_download_hint", { kind: a.kind })
             }
             className="flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm font-medium uppercase transition-colors hover:border-zinc-500 hover:bg-zinc-700"
           >
@@ -71,12 +73,11 @@ export default function ExportPanel({
             <span className="text-[10px] text-zinc-500">{fmtBytes(a.size)}</span>
           </a>
         ))}
-        {!exports.length && <span className="text-sm text-zinc-500">no exports yet</span>}
+        {!exports.length && <span className="text-sm text-zinc-500">{t("exp_empty")}</span>}
       </div>
       {anyTessellated && (
         <div className="mt-1.5 text-[10px] text-zinc-500">
-          <span className="text-amber-400">*</span> tessellated export (derived
-          from a mesh, not an analytic B-Rep)
+          <span className="text-amber-400">*</span> {t("exp_tess_note")}
         </div>
       )}
       {error && <div className="mt-1.5 text-xs text-red-400">{error}</div>}

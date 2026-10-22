@@ -1,6 +1,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type { EditableFeature } from "../lib/types";
@@ -13,6 +14,7 @@ import { Btn, Spinner, inputCls, useToast } from "./ui";
  *  The editable-features scan is deferred behind a disclosure so the panel
  *  doesn't fire a geometry request on every page load. */
 export default function FeatureEditPanel({ versionId }: { versionId: string }) {
+  const { t } = useTranslation("version");
   const nav = useNavigate();
   const toast = useToast();
   const [open, setOpen] = useState(false);
@@ -58,10 +60,10 @@ export default function FeatureEditPanel({ versionId }: { versionId: string }) {
         ) : (
           <ChevronRight className="h-3.5 w-3.5" />
         )}
-        resize a recognised hole
+        {t("feat_title")}
         {!open && (
-          <span className="text-[10px] text-zinc-500">
-            — runs a quick geometry scan
+          <span className="text-[10px] text-muted">
+            {t("feat_scan_note")}
           </span>
         )}
       </button>
@@ -70,14 +72,13 @@ export default function FeatureEditPanel({ versionId }: { versionId: string }) {
         <div className="mt-2">
           {feats.isLoading ? (
             <div className="flex items-center gap-2 text-xs text-zinc-500">
-              <Spinner /> scanning for editable features…
+              <Spinner /> {t("feat_scanning")}
             </div>
           ) : feats.isError ? (
             <div className="text-xs text-red-400">{errMsg(feats.error)}</div>
           ) : !list.length ? (
             <div className="text-xs text-zinc-500">
-              {feats.data?.reason ||
-                "no editable features recognised on this version"}
+              {feats.data?.reason || t("feat_none")}
             </div>
           ) : (
             <>
@@ -90,7 +91,7 @@ export default function FeatureEditPanel({ versionId }: { versionId: string }) {
                       key={String(f.feature_id)}
                       type="button"
                       disabled={dis}
-                      title={dis ? f.refusal || "not editable" : undefined}
+                      title={dis ? f.refusal || t("feat_not_editable") : undefined}
                       onClick={() => {
                         setFeatureId(String(f.feature_id));
                         setDiameter(String(f.diameter));
@@ -106,7 +107,7 @@ export default function FeatureEditPanel({ versionId }: { versionId: string }) {
                       #{f.feature_id} {f.kind} Ø{f.diameter} mm
                       {f.axis ? ` · ${f.axis}` : ""}
                       {f.depth != null ? ` · ${f.depth} mm deep` : ""}
-                      {dis ? ` — ${f.refusal || "not editable"}` : ""}
+                      {dis ? ` — ${f.refusal || t("feat_not_editable")}` : ""}
                     </button>
                   );
                 })}
@@ -117,7 +118,7 @@ export default function FeatureEditPanel({ versionId }: { versionId: string }) {
                   step="0.1"
                   min="0"
                   className={inputCls}
-                  placeholder="new Ø mm"
+                  placeholder={t("feat_dia_ph")}
                   value={diameter}
                   onChange={(e) => setDiameter(e.target.value)}
                 />
@@ -127,11 +128,11 @@ export default function FeatureEditPanel({ versionId }: { versionId: string }) {
                   busy={edit.isPending}
                   disabled={!selected || !(Number(diameter) > 0)}
                 >
-                  Resize hole
+                  {t("feat_resize")}
                 </Btn>
               </div>
               <div className="mt-1 text-[11px] text-zinc-500">
-                verified edit — the gate refuses if the result breaks the part
+                {t("feat_verified_hint")}
               </div>
             </>
           )}

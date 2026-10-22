@@ -1,0 +1,17 @@
+{
+  "new_part": "New part",
+  "chat": "Chat",
+  "projects": "Projects",
+  "jobs": "Jobs",
+  "stats": "Stats",
+  "library": "Library",
+  "settings": "Settings",
+  "home_title": "CADX — home",
+  "badge": {
+    "active_jobs": "active jobs",
+    "waiting_input": "a job is waiting for input",
+    "updates_one": "{{count}} update available",
+    "updates_other": "{{count}} updates available"
+  },
+  "language": "Language"
+}

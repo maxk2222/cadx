@@ -1,9 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import { Download } from "lucide-react";
 import { api } from "../lib/api";
 import { CopyBtn, IconBtn, SectionTitle, Spinner } from "./ui";
 
 export default function CodeView({ versionId }: { versionId: string }) {
+  const { t } = useTranslation("version");
   const code = useQuery({
     queryKey: ["code", versionId],
     queryFn: () => api.getCode(versionId),
@@ -27,14 +29,14 @@ export default function CodeView({ versionId }: { versionId: string }) {
           code.data && (
             <span className="flex gap-1">
               <CopyBtn text={code.data} />
-              <IconBtn title="download model.py" onClick={download}>
+              <IconBtn title={t("code_download")} onClick={download}>
                 <Download className="h-4 w-4" />
               </IconBtn>
             </span>
           )
         }
       >
-        Generated build123d code
+        {t("code_title")}
       </SectionTitle>
       {code.isLoading ? (
         <div className="flex justify-center py-8 text-zinc-500">

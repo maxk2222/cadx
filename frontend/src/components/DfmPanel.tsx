@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import type { DfmWarning } from "../lib/types";
 
 const STYLE: Record<string, string> = {
@@ -7,19 +8,20 @@ const STYLE: Record<string, string> = {
 };
 
 export default function DfmPanel({ warnings }: { warnings: DfmWarning[] }) {
+  const { t } = useTranslation("version");
   if (!warnings.length) {
-    return <div className="text-sm text-emerald-400">No manufacturability warnings (heuristic checks only — not a guarantee).</div>;
+    return <div className="text-sm text-emerald-400">{t("dfm_none")}</div>;
   }
   return (
     <div className="flex flex-col gap-1.5">
       {warnings.map((w, i) => (
         <div key={i} className={`rounded border px-2 py-1.5 text-xs ${STYLE[w.severity] ?? STYLE.low}`}>
-          <span className="font-semibold uppercase">{w.severity}</span>
+          <span className="font-semibold uppercase">{t(`dfm_sev_${w.severity}`)}</span>
           <span className="ml-2 font-mono">{w.code}</span>
           <div>{w.message}</div>
         </div>
       ))}
-      <div className="text-[10px] text-zinc-500">Heuristic checks — always verify before manufacturing.</div>
+      <div className="text-[10px] text-zinc-500">{t("dfm_footer")}</div>
     </div>
   );
 }

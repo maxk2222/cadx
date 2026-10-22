@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { femViewCaption, sortViews, viewLabel } from "../lib/liveViews";
 import type { Artifact } from "../lib/types";
 import { Collapsible, Lightbox } from "./ui";
@@ -41,6 +42,7 @@ function femCaseKey(view: string | null): { caseName: string; rank: number } {
 }
 
 export default function RenderGallery({ artifacts }: { artifacts: Artifact[] }) {
+  const { t } = useTranslation("version");
   const renderOrder = sortViews(
     artifacts.filter((a) => a.kind === "render").map((a) => a.view ?? "")
   );
@@ -83,7 +85,7 @@ export default function RenderGallery({ artifacts }: { artifacts: Artifact[] }) 
   return (
     <div className="flex flex-col gap-4">
       {!!renders.length && (
-        <Collapsible title="Model renders" count={renders.length}>
+        <Collapsible title={t("gal_renders")} count={renders.length}>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             {renders.map((r) => (
               <Thumb
@@ -98,7 +100,7 @@ export default function RenderGallery({ artifacts }: { artifacts: Artifact[] }) 
       )}
 
       {!!sheets.length && (
-        <Collapsible title="Sheets" count={sheets.length} defaultOpen={!renders.length}>
+        <Collapsible title={t("gal_sheets")} count={sheets.length} defaultOpen={!renders.length}>
           <div className="grid grid-cols-1 gap-2">
             {sheets.map((s) => (
               <Thumb
@@ -114,7 +116,7 @@ export default function RenderGallery({ artifacts }: { artifacts: Artifact[] }) 
 
       {!!femImgs.length && (
         <Collapsible
-          title="Structural / FEM renders"
+          title={t("gal_fem")}
           count={femImgs.length}
           defaultOpen={false}
         >
@@ -123,7 +125,7 @@ export default function RenderGallery({ artifacts }: { artifacts: Artifact[] }) 
               <div key={caseName || "fem"}>
                 {femByCase.length > 1 && (
                   <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-zinc-600">
-                    {caseName || "case"}
+                    {caseName || t("gal_case")}
                   </div>
                 )}
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
@@ -136,7 +138,7 @@ export default function RenderGallery({ artifacts }: { artifacts: Artifact[] }) 
                       <Thumb
                         key={a.id}
                         a={a}
-                        caption={femViewCaption(a.view) ?? a.view ?? "fem"}
+                        caption={femViewCaption(a.view) ?? a.view ?? t("gal_fem_kind")}
                         onOpen={setLightbox}
                       />
                     ))}
@@ -148,7 +150,7 @@ export default function RenderGallery({ artifacts }: { artifacts: Artifact[] }) 
       )}
 
       {!!otherImgs.length && (
-        <Collapsible title="Other images" count={otherImgs.length} defaultOpen={false}>
+        <Collapsible title={t("gal_other")} count={otherImgs.length} defaultOpen={false}>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             {otherImgs.map((a) => (
               <Thumb

@@ -1,3 +1,5 @@
+import { useTranslation } from "react-i18next";
+
 const COLORS: Record<string, string> = {
   queued: "bg-zinc-600",
   running: "bg-brand-600 animate-pulse",
@@ -15,12 +17,15 @@ export default function StatusBadge({
   status: string;
   title?: string;
 }) {
+  const { t } = useTranslation();
+  const key = `status.${status}`;
+  const label = t(key);
   return (
     <span
       title={title}
       className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${COLORS[status] ?? "bg-zinc-600"}`}
     >
-      {status.replaceAll("_", " ")}
+      {label === key ? status.replaceAll("_", " ") : label}
     </span>
   );
 }

@@ -13,9 +13,11 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import * as THREE from "three";
 import { Line } from "@react-three/drei";
+import i18n from "../i18n";
 import { api, errMsg } from "../lib/api";
 import { num, readStoredAnchors, readUiEditor } from "../lib/editorState";
 import {
@@ -91,25 +93,25 @@ type FeatureTarget =
 
 const FACES = ["-x", "+x", "-y", "+y", "-z", "+z"] as const;
 const FACE_LABELS: Record<string, string> = {
-  "-x": "left (−X)",
-  "+x": "right (+X)",
-  "-y": "back (−Y)",
-  "+y": "front (+Y)",
-  "-z": "bottom (−Z)",
-  "+z": "top (+Z)",
+  "-x": "nx",
+  "+x": "px",
+  "-y": "ny",
+  "+y": "py",
+  "-z": "nz",
+  "+z": "pz",
 };
 const CYL_AXES = ["x", "y", "z"] as const;
 const ANCHOR_KINDS = new Set(["hole", "anchor", "bore"]);
-const REGION_KINDS: { id: NonNullable<RegionSpec["kind"]>; label: string }[] = [
-  { id: "face", label: "face" },
-  { id: "surface", label: "surface" },
-  { id: "area", label: "area" },
-  { id: "cylinder", label: "cylinder" },
-  { id: "box", label: "box" },
-  { id: "anchor", label: "anchor" },
-  { id: "bore", label: "bore" },
-  { id: "hole", label: "hole" },
-  { id: "all", label: "all" },
+const REGION_KINDS: { id: NonNullable<RegionSpec["kind"]> }[] = [
+  { id: "face" },
+  { id: "surface" },
+  { id: "area" },
+  { id: "cylinder" },
+  { id: "box" },
+  { id: "anchor" },
+  { id: "bore" },
+  { id: "hole" },
+  { id: "all" },
 ];
 
 /** nearest feature anchor to a surface pick: the point must lie inside the
@@ -182,31 +184,33 @@ function newRegion(kind: NonNullable<RegionSpec["kind"]>): RegionSpec {
 }
 
 function regionLabel(r: RegionSpec, anchors?: FeatureAnchor[]): string {
+  const tl = (k: string, v?: Record<string, unknown>) =>
+    i18n.t(`editor:se_rl_${k}`, v);
   switch (r.kind) {
     case "points":
-      return r.description || `painted · ${r.points?.length ?? 0} pts`;
+      return r.description || tl("painted", { n: r.points?.length ?? 0 });
     case "face":
-      return `face ${r.axis ?? "?"}`;
+      return tl("face", { axis: r.axis ?? "?" });
     case "surface":
-      return `surface ${r.axis ?? "?"}`;
+      return tl("surface", { axis: r.axis ?? "?" });
     case "area":
-      return `area Ø${r.diameter_mm ?? "?"}mm`;
+      return tl("area", { d: r.diameter_mm ?? "?" });
     case "cylinder":
-      return `cylinder ${r.axis ?? "z"} Ø${r.diameter_mm ?? "?"}mm`;
+      return tl("cylinder", { axis: r.axis ?? "z", d: r.diameter_mm ?? "?" });
     case "box":
-      return `box Ø${r.diameter_mm ?? "?"}mm`;
+      return tl("box", { d: r.diameter_mm ?? "?" });
     case "hole":
-      return `hole #${r.hole_index ?? "?"}`;
+      return tl("hole", { n: r.hole_index ?? "?" });
     case "anchor":
     case "bore": {
       const a = anchors?.find((x) => x.index === r.hole_index);
       const det = a ? ` ${a.kind} ${a.axis} Ø${a.dia.toFixed(1)}` : "";
-      return `${r.kind} #${r.hole_index ?? "?"}${det}`;
+      return `${i18n.t(`editor:se_rk_${r.kind}`)} #${r.hole_index ?? "?"}${det}`;
     }
     case "all":
-      return "whole part";
+      return tl("all");
     default:
-      return `${r.kind ?? "region"}${r.description ? ` · ${r.description}` : ""}`;
+      return `${r.kind ?? tl("region")}${r.description ? ` · ${r.description}` : ""}`;
   }
 }
 
@@ -223,14 +227,14 @@ type LoadKind =
   | "remote"
   | "gravity";
 
-const LOAD_KINDS: { id: LoadKind; label: string; hint: string }[] = [
-  { id: "force", label: "force", hint: "distributed [N] over the region" },
-  { id: "pressure", label: "pressure", hint: "MPa, follows the region normal" },
-  { id: "bearing", label: "bearing", hint: "cosine bolt/bearing load on a bore wall" },
-  { id: "moment", label: "moment", hint: "pure couple [N·m]" },
-  { id: "preload", label: "preload", hint: "bolt pretension along the bore axis" },
-  { id: "remote", label: "remote", hint: "force applied at a remote point (adds moment)" },
-  { id: "gravity", label: "g-load", hint: "body acceleration in g units" },
+const LOAD_KINDS: { id: LoadKind }[] = [
+  { id: "force" },
+  { id: "pressure" },
+  { id: "bearing" },
+  { id: "moment" },
+  { id: "preload" },
+  { id: "remote" },
+  { id: "gravity" },
 ];
 
 function loadKind(l: LoadSpec): LoadKind {
@@ -317,6 +321,7 @@ function RegionRow({
   onChange: (r: RegionSpec) => void;
   onDelete: () => void;
 }) {
+  const { t } = useTranslation("editor");
   const [open, setOpen] = useState(false);
   const kind = r.kind ?? "face";
   const setA = (patch: Partial<RegionSpec>) => onChange({ ...r, ...patch });
@@ -337,7 +342,7 @@ function RegionRow({
           >
             {FACES.map((f) => (
               <option key={f} value={f}>
-                {kind === "face" ? "face" : "surf"} {FACE_LABELS[f]}
+                {kind === "face" ? i18n.t("editor:se_rk_face") : i18n.t("editor:se_surf")} {i18n.t(`editor:se_ax_${FACE_LABELS[f]}`)}
               </option>
             ))}
           </select>
@@ -349,7 +354,7 @@ function RegionRow({
           >
             {CYL_AXES.map((a) => (
               <option key={a} value={a}>
-                cylinder ∥ {a.toUpperCase()}
+                {t("se_cyl_par")} {a.toUpperCase()}
               </option>
             ))}
           </select>
@@ -358,12 +363,12 @@ function RegionRow({
             <select
               className="rounded bg-zinc-800 px-1 py-0.5 text-[10px] text-zinc-400"
               value={kind}
-              title="ring = material around the mouth, wall = bore wall cells"
+              title={t("se_ring_hint")}
               onChange={(e) => setA({ kind: e.target.value as RegionSpec["kind"] })}
             >
-              <option value="hole">ring</option>
-              <option value="anchor">ring+</option>
-              <option value="bore">wall</option>
+              <option value="hole">{t("se_ring")}</option>
+              <option value="anchor">{t("se_ring_plus")}</option>
+              <option value="bore">{t("se_wall")}</option>
             </select>
             <select
               className={`${inputCls} min-w-0 flex-1 px-1 py-0.5 text-[11px]`}
@@ -382,7 +387,7 @@ function RegionRow({
         ) : (
           <button
             className="min-w-0 flex-1 truncate text-left text-zinc-300 hover:text-zinc-100"
-            title={`${regionLabel(r, anchors)} — click for details`}
+            title={`${regionLabel(r, anchors)} — ${t("se_details_hint")}`}
             onClick={() => setOpen((o) => !o)}
           >
             {r.description || regionLabel(r, anchors)}
@@ -390,8 +395,8 @@ function RegionRow({
         )}
         {hasCenterPick && onPickCenter && (
           <button
-            title="pick region center on the model"
-            aria-label="pick region center on the model"
+            title={t("se_pick_center")}
+            aria-label={t("se_pick_center")}
             onClick={onPickCenter}
             className="rounded p-0.5 text-zinc-500 hover:text-zinc-200"
           >
@@ -400,8 +405,8 @@ function RegionRow({
         )}
         {kind === "points" && onPaint && (
           <button
-            title={painting ? "stop painting" : "paint on the model"}
-            aria-label={painting ? "stop painting" : "paint on the model"}
+            title={t(painting ? "se_stop_paint" : "se_paint_on")}
+            aria-label={t(painting ? "se_stop_paint" : "se_paint_on")}
             onClick={onPaint}
             className={`rounded p-0.5 ${
               painting ? "text-amber-300" : "text-zinc-500 hover:text-zinc-200"
@@ -411,8 +416,8 @@ function RegionRow({
           </button>
         )}
         <button
-          title="remove region"
-          aria-label="remove region"
+          title={t("se_remove_region")}
+          aria-label={t("se_remove_region")}
           onClick={onDelete}
           className="text-zinc-500 hover:text-red-400"
         >
@@ -428,7 +433,7 @@ function RegionRow({
             min={1}
             max={30}
             step={0.5}
-            title={`selection radius ${r.radius_mm ?? 3} mm`}
+            title={t("se_sel_radius", { v: r.radius_mm ?? 3 })}
             className="w-20 accent-brand-500"
             value={r.radius_mm ?? 3}
             onChange={(e) => setA({ radius_mm: num(e.target.value, 3) })}
@@ -438,7 +443,7 @@ function RegionRow({
             className="ml-auto text-[10px] text-zinc-500 underline hover:text-zinc-300"
             onClick={() => setOpen((o) => !o)}
           >
-            details
+            {t("se_details")}
           </button>
         </div>
       )}
@@ -448,38 +453,38 @@ function RegionRow({
         <div className="mt-1 flex flex-col gap-1 border-t border-zinc-800 pl-4 pt-1">
           {showFixMode && (
             <div className="flex items-center gap-1">
-              <span className="w-14 text-[10px] text-zinc-500">support</span>
+              <span className="w-14 text-[10px] text-zinc-500">{t("se_support")}</span>
               <select
                 className={`${inputCls} flex-1 px-1 py-0.5 text-[11px]`}
                 value={r.fix_mode ?? "all"}
                 onChange={(e) => setA({ fix_mode: e.target.value as "all" | "normal" })}
               >
-                <option value="all">encastre (all DOFs)</option>
-                <option value="normal">roller / resting (normal DOF only)</option>
+                <option value="all">{t("se_fix_all")}</option>
+                <option value="normal">{t("se_fix_normal")}</option>
               </select>
             </div>
           )}
           {showMaterial && (
             <div className="flex items-center gap-1">
-              <span className="w-14 text-[10px] text-zinc-500">material</span>
+              <span className="w-14 text-[10px] text-zinc-500">{t("se_material")}</span>
               <select
                 className={`${inputCls} flex-1 px-1 py-0.5 text-[11px]`}
                 value={r.material ?? ""}
                 onChange={(e) => setA({ material: e.target.value || undefined })}
               >
-                <option value="">part material</option>
+                <option value="">{t("se_part_material")}</option>
                 {MATERIAL_OPTIONS.filter((m) => m).map((m) => (
                   <option key={m} value={m}>
                     {m}
                   </option>
                 ))}
               </select>
-              <span className="text-[10px] text-zinc-500">insert</span>
+              <span className="text-[10px] text-zinc-500">{t("se_insert")}</span>
             </div>
           )}
           {(kind === "cylinder" || kind === "box" || kind === "area") && (
             <div className="flex items-center gap-1">
-              <span className="w-14 text-[10px] text-zinc-500">center</span>
+              <span className="w-14 text-[10px] text-zinc-500">{t("se_center")}</span>
               {(r.center ?? [0, 0, 0]).map((c, i) => (
                 <NumInput
                   key={i}
@@ -496,7 +501,7 @@ function RegionRow({
           {(kind === "cylinder" || kind === "box" || kind === "area") && (
             <div className="flex items-center gap-1">
               <span className="w-14 text-[10px] text-zinc-500">
-                {kind === "box" ? "edge" : "dia"}
+                {kind === "box" ? t("se_edge") : t("se_dia")}
               </span>
               <NumInput
                 value={r.diameter_mm ?? 10}
@@ -508,7 +513,7 @@ function RegionRow({
             </div>
           )}
           <div className="flex items-center gap-1">
-            <span className="w-14 text-[10px] text-zinc-500">margin</span>
+            <span className="w-14 text-[10px] text-zinc-500">{t("se_margin")}</span>
             <NumInput
               value={r.margin_mm ?? 2}
               step={0.5}
@@ -518,10 +523,10 @@ function RegionRow({
             <span className="text-[10px] text-zinc-500">mm</span>
           </div>
           <div className="flex items-center gap-1">
-            <span className="w-14 text-[10px] text-zinc-500">label</span>
+            <span className="w-14 text-[10px] text-zinc-500">{t("se_label")}</span>
             <input
               className={`${inputCls} flex-1 px-1.5 py-0.5 text-[11px]`}
-              placeholder="e.g. mounting holes"
+              placeholder={t("se_label_ph")}
               value={r.description ?? ""}
               onChange={(e) => setA({ description: e.target.value })}
             />
@@ -553,6 +558,7 @@ function AddRegionButtons({
   hasAnchors: boolean;
   paintLabel: string;
 }) {
+  const { t } = useTranslation("editor");
   return (
     <div className="mb-2 flex flex-wrap gap-1">
       <button
@@ -563,25 +569,25 @@ function AddRegionButtons({
       </button>
       <button
         className="flex items-center gap-1 rounded border border-dashed border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-400 hover:border-zinc-500 hover:text-zinc-200"
-        title="arm face pick — click surface patches on the model"
+        title={t("se_pick_face")}
         onClick={onPickFace}
       >
-        <Layers className="h-3 w-3" /> face
+        <Layers className="h-3 w-3" /> {t("se_face")}
       </button>
       <button
         className="flex items-center gap-1 rounded border border-dashed border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-400 hover:border-zinc-500 hover:text-zinc-200"
-        title="arm edge pick — click a face to take its boundary loop"
+        title={t("se_pick_edge")}
         onClick={onPickEdge}
       >
-        <Spline className="h-3 w-3" /> edge
+        <Spline className="h-3 w-3" /> {t("se_edge_pick")}
       </button>
       <button
         className="flex items-center gap-1 rounded border border-dashed border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-400 disabled:opacity-40 hover:border-zinc-500 hover:text-zinc-200"
-        title="arm feature pick — click a hole / thread / bore on the model"
+        title={t("se_pick_feature")}
         onClick={onPickFeature}
         disabled={!hasAnchors}
       >
-        <CircleDot className="h-3 w-3" /> hole
+        <CircleDot className="h-3 w-3" /> {t("se_hole")}
       </button>
       {REGION_KINDS.filter((k) => !ANCHOR_KINDS.has(k.id ?? "") || hasAnchors).map((k) => (
         <button
@@ -589,7 +595,7 @@ function AddRegionButtons({
           className="flex items-center gap-1 rounded border border-dashed border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-400 hover:border-zinc-500 hover:text-zinc-200"
           onClick={() => onAdd(newRegion(k.id))}
         >
-          <Plus className="h-3 w-3" /> {k.label}
+          <Plus className="h-3 w-3" /> {t(`se_rk_${k.id}`)}
         </button>
       ))}
     </div>
@@ -873,6 +879,7 @@ export default function StructuralEditor({
   canTopopt: boolean;
   onJobStarted: (r: { version_id: string; job_id: string }) => void;
 }) {
+  const { t } = useTranslation("editor");
   const toast = useToast();
   const qc = useQueryClient();
   const [saveFailed, setSaveFailed] = useState(false);
@@ -1578,7 +1585,7 @@ export default function StructuralEditor({
         // AnchorsPanel key sees the same table
         qc.setQueryData(["anchors", version.id], { ok: true, anchors: r.anchors });
       }
-      if (!r.ok) toast(r.error ?? "region check failed", "error");
+      if (!r.ok) toast(r.error ?? t("se_check_failed"), "error");
     } catch (e) {
       toast(errMsg(e), "error");
     } finally {
@@ -1769,29 +1776,25 @@ export default function StructuralEditor({
     <div className="fixed inset-0 z-50 flex flex-col bg-zinc-950">
       {/* header */}
       <div className="flex items-center gap-3 border-b border-zinc-800 px-4 py-2.5">
-        <h2 className="text-sm font-semibold">Structural editor — v{version.number}</h2>
+        <h2 className="text-sm font-semibold">{t("se_title", { n: version.number })}</h2>
         <span className="text-xs text-zinc-500">
-          paint or click faces / edges / holes — right-drag orbits while a tool is armed
+          {t("se_subtitle")}
         </span>
         <span className="flex-1" />
         {(target || centerPick || featureTarget) && (
           <Chip tone="amber">
             <Brush className="h-3 w-3" />{" "}
             {featureTarget
-              ? "feature pick — click a hole / thread / bore on the model"
+              ? t("se_mode_feature")
               : centerPick
-                ? "click to place region center"
+                ? t("se_mode_center")
                 : mode === "face"
-                  ? "face pick — click faces to add them to the region"
+                  ? t("se_mode_face")
                   : mode === "edge"
-                    ? "edge pick — click near a face edge to take its loop"
-                    : `${mode === "erase" ? "erasing" : "painting"} ${
-                        target!.kind === "fixed"
-                          ? "support"
-                          : target!.kind === "load"
-                            ? "load"
-                            : target!.kind
-                      } — drag on the model`}
+                    ? t("se_mode_edge")
+                    : t(mode === "erase" ? "se_erasing" : "se_painting", {
+                        kind: t(`se_kind_${target!.kind}`),
+                      })}
           </Chip>
         )}
         {target && (mode === "paint" || mode === "erase") && (
@@ -1805,14 +1808,14 @@ export default function StructuralEditor({
                 }`}
               >
                 {m === "paint" ? <Brush className="h-3 w-3" /> : <Eraser className="h-3 w-3" />}
-                {m}
+                {t(`se_mode_${m}`)}
               </button>
             ))}
           </div>
         )}
         {target && (mode === "face" || mode === "edge") && (
           <label className="flex items-center gap-1.5 text-xs text-zinc-400">
-            crease
+            {t("se_crease")}
             <input
               type="range"
               min={10}
@@ -1825,27 +1828,27 @@ export default function StructuralEditor({
             <span className="w-8 tabular-nums">{creaseDeg}°</span>
             {facetBusy && <Loader2 className="h-3 w-3 animate-spin text-zinc-500" />}
             {!facetBusy && facetSets && facetSets.size === 0 && (
-              <span className="text-amber-400">mesh too large for picking</span>
+              <span className="text-amber-400">{t("se_mesh_large")}</span>
             )}
           </label>
         )}
         {target && (
-          <IconBtn title="undo last stroke" onClick={undo} disabled={!undoStack.current.length}>
+          <IconBtn title={t("se_undo")} onClick={undo} disabled={!undoStack.current.length}>
             <Undo2 className="h-3.5 w-3.5" />
           </IconBtn>
         )}
         {(target || centerPick || featureTarget) && (
-          <IconBtn title="done (Esc)" onClick={disarm}>
+          <IconBtn title={t("se_done")} onClick={disarm}>
             <Check className="h-3.5 w-3.5" />
           </IconBtn>
         )}
         {saveFailed && (
-          <Chip tone="amber" title="draft changes could not be saved — saving retries automatically">
-            draft not saved
+          <Chip tone="amber" title={t("se_draft_hint")}>
+            {t("se_draft")}
           </Chip>
         )}
         <label className="flex items-center gap-2 text-xs text-zinc-400">
-          brush
+          {t("se_brush")}
           <input
             type="range"
             min={1}
@@ -1858,7 +1861,7 @@ export default function StructuralEditor({
           <span className="w-10 tabular-nums">{brushR} mm</span>
         </label>
         <OpacitySlider value={opacity} onChange={setOpacity} />
-        <IconBtn title="close (Esc)" onClick={onClose}>
+        <IconBtn title={t("common:action.close_esc")} onClick={onClose}>
           <X className="h-4 w-4" />
         </IconBtn>
       </div>
@@ -1942,7 +1945,7 @@ export default function StructuralEditor({
                     />
                   ))
                 )}
-              {/* resolved cells from the last region check (voxel-domain truth) */}
+              {/* {t("se_resolved")} from the last region check (voxel-domain truth) */}
               {showCells &&
                 preview?.ok &&
                 preview.cells?.map((c, i) => (
@@ -1980,34 +1983,34 @@ export default function StructuralEditor({
             </ModelCanvas>
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-zinc-500">
-              no mesh artifact
+              {t("se_no_mesh")}
             </div>
           )}
           {/* legend */}
           <div className="absolute bottom-3 left-3 flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-950/90 px-3 py-1.5 text-[11px] backdrop-blur">
             <span className="flex items-center gap-1">
               <span className="h-2 w-2 rounded-full" style={{ background: COLORS.fixed }} />
-              support
+              {t("se_leg_support")}
             </span>
             <span className="flex items-center gap-1">
               <span className="h-2 w-2 rounded-full" style={{ background: COLORS.load }} />
-              load
+              {t("se_leg_load")}
             </span>
             <span className="flex items-center gap-1">
               <span className="h-2 w-2 rounded-full" style={{ background: COLORS.keep }} />
-              keep
+              {t("se_leg_keep")}
             </span>
             <span className="flex items-center gap-1">
               <span className="h-2 w-2 rounded-full" style={{ background: COLORS.void }} />
-              void
+              {t("se_leg_void")}
             </span>
             <span className="flex items-center gap-1">
               <span className="h-2 w-2 rounded-full" style={{ background: COLORS.anchor }} />
-              anchors {anchors.length ? `(${anchors.length})` : ""}
+              {t("se_leg_anchors")} {anchors.length ? `(${anchors.length})` : ""}
             </span>
             {fillsCapped && (
-              <span className="text-amber-400" title="paint fills are skipped above 500k vertices">
-                fills hidden — mesh too dense
+              <span className="text-amber-400" title={t("se_fills_hint")}>
+                {t("se_fills_hidden")}
               </span>
             )}
             {preview?.ok && !!preview.cells?.length && (
@@ -2018,7 +2021,7 @@ export default function StructuralEditor({
                   checked={showCells}
                   onChange={(e) => setShowCells(e.target.checked)}
                 />
-                resolved cells
+                {t("se_resolved")}
               </label>
             )}
           </div>
@@ -2038,8 +2041,8 @@ export default function StructuralEditor({
                   <span className="flex-1" />
                   {cases.length > 1 && (
                     <button
-                      title="remove case"
-                      aria-label="remove case"
+                      title={t("se_remove_case")}
+                      aria-label={t("se_remove_case")}
                       className="text-zinc-500 hover:text-red-400"
                       onClick={() => setCases((cs) => cs.filter((_, i) => i !== ci))}
                     >
@@ -2050,7 +2053,7 @@ export default function StructuralEditor({
 
                 {/* fixed regions */}
                 <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-                  support regions
+                  {t("se_support_regions")}
                 </div>
                 {c.fixed.map((r, ri) => (
                   <RegionRow
@@ -2073,7 +2076,7 @@ export default function StructuralEditor({
                   />
                 ))}
                 <AddRegionButtons
-                  paintLabel="paint support"
+                  paintLabel={t("se_paint_support")}
                   hasAnchors={!!anchors?.length}
                   onPaint={() =>
                     startPaint({ kind: "fixed", ci, ri: c.fixed.length }, (r) =>
@@ -2106,7 +2109,7 @@ export default function StructuralEditor({
 
                 {/* loads */}
                 <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-                  loads
+                  {t("se_loads")}
                 </div>
                 {c.loads.map((l, li) => {
                   const force = l.force_n ?? [0, 0, 0];
@@ -2162,14 +2165,14 @@ export default function StructuralEditor({
                         <select
                           className={`${inputCls} w-full px-1 py-0.5 text-[11px]`}
                           value={lk}
-                          title={LOAD_KINDS.find((k) => k.id === lk)?.hint}
+                          title={t(`se_lk_${lk}_h`)}
                           onChange={(e) =>
                             setLoad(blankLoad(e.target.value as LoadKind))
                           }
                         >
                           {LOAD_KINDS.map((k) => (
-                            <option key={k.id} value={k.id} title={k.hint}>
-                              {k.label} — {k.hint}
+                            <option key={k.id} value={k.id} title={t(`se_lk_${k.id}_h`)}>
+                              {t(`se_lk_${k.id}`)} — {t(`se_lk_${k.id}_h`)}
                             </option>
                           ))}
                         </select>
@@ -2184,7 +2187,7 @@ export default function StructuralEditor({
                               onChange={(n) => setLoad({ pressure_mpa: n })}
                             />
                             <span className="text-[10px] text-zinc-500">
-                              MPa — direction follows the region's surface normal
+                              {t("se_pressure_note")}
                             </span>
                           </div>
                         )}
@@ -2198,7 +2201,7 @@ export default function StructuralEditor({
                                 onChange={(n) => setLoad({ bearing_n: n })}
                               />
                               <span className="text-[10px] text-zinc-500">
-                                N — cosine-distributed on the bore wall (needs a bore/anchor region)
+                                {t("se_bearing_note")}
                               </span>
                             </div>
                             {vecRow(
@@ -2227,7 +2230,7 @@ export default function StructuralEditor({
                               onChange={(n) => setLoad({ preload_n: n })}
                             />
                             <span className="text-[10px] text-zinc-500">
-                              N pretension along the bore axis (needs a bore/anchor region)
+                              {t("se_preload_note")}
                             </span>
                           </div>
                         )}
@@ -2249,7 +2252,7 @@ export default function StructuralEditor({
                           )}
                         {(lk === "force" || lk === "bearing") && (
                           <div className="flex items-center gap-1.5">
-                            <span className="text-[10px] text-zinc-500">dir. cone</span>
+                            <span className="text-[10px] text-zinc-500">{t("se_dir_cone")}</span>
                             <NumInput
                               value={l.direction_cone_deg ?? 0}
                               step={5}
@@ -2259,7 +2262,7 @@ export default function StructuralEditor({
                               }
                             />
                             <span className="text-[10px] text-zinc-500">
-                              ° robustness (TopOpt samples directions)
+                              {t("se_dir_cone_note")}
                             </span>
                           </div>
                         )}
@@ -2268,7 +2271,7 @@ export default function StructuralEditor({
                   );
                 })}
                 <AddRegionButtons
-                  paintLabel="paint load"
+                  paintLabel={t("se_paint_load")}
                   hasAnchors={!!anchors?.length}
                   onPaint={() =>
                     startPaint({ kind: "load", ci, li: c.loads.length }, (r) =>
@@ -2312,17 +2315,17 @@ export default function StructuralEditor({
             <button
               className="flex items-center gap-1 text-xs text-zinc-400 hover:text-zinc-200"
               onClick={() =>
-                setCases((cs) => [...cs, { name: `case${cs.length + 1}`, fixed: [], loads: [] }])
+                setCases((cs) => [...cs, { name: `${t("se_case_name")}${cs.length + 1}`, fixed: [], loads: [] }])
               }
             >
-              <Plus className="h-3.5 w-3.5" /> add load case
+              <Plus className="h-3.5 w-3.5" /> {t("se_add_case")}
             </button>
 
             {/* keep regions */}
             {canTopopt && (
               <div className="rounded-lg border border-zinc-800 p-2.5">
                 <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-                  keep regions (TopOpt design-preserve)
+                  {t("se_keep_title")}
                 </div>
                 {keep.map((r, ri) => (
                   <RegionRow
@@ -2345,7 +2348,7 @@ export default function StructuralEditor({
                   />
                 ))}
                 <AddRegionButtons
-                  paintLabel="paint keep region"
+                  paintLabel={t("se_paint_keep")}
                   hasAnchors={!!anchors?.length}
                   onPaint={() =>
                     startPaint({ kind: "keep", ri: keep.length }, (r) => setKeep((k) => [...k, r]))
@@ -2379,7 +2382,7 @@ export default function StructuralEditor({
             {canTopopt && (
               <div className="rounded-lg border border-zinc-800 p-2.5">
                 <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-                  void regions (TopOpt must keep empty)
+                  {t("se_void_title")}
                 </div>
                 {voids.map((r, ri) => (
                   <RegionRow
@@ -2401,7 +2404,7 @@ export default function StructuralEditor({
                   />
                 ))}
                 <AddRegionButtons
-                  paintLabel="paint void region"
+                  paintLabel={t("se_paint_void")}
                   hasAnchors={!!anchors?.length}
                   onPaint={() =>
                     startPaint({ kind: "void", ri: voids.length }, (r) => setVoids((k) => [...k, r]))
@@ -2433,13 +2436,13 @@ export default function StructuralEditor({
 
             {/* settings */}
             <div className="grid grid-cols-2 gap-2">
-              <Field label="Material" hint="empty = project default">
+              <Field label={t("se_material")} hint={t("se_material_h")}>
                 <select
                   className={`${inputCls} px-2 py-1 text-xs`}
                   value={material}
                   onChange={(e) => setMaterial(e.target.value)}
                 >
-                  <option value="">— default —</option>
+                  <option value="">{t("se_default_mat")}</option>
                   {MATERIAL_OPTIONS.map((m) => (
                     <option key={m} value={m}>
                       {m}
@@ -2448,7 +2451,7 @@ export default function StructuralEditor({
                 </select>
               </Field>
               {canTopopt && (
-                <Field label={`Target volume ${Math.round(volfrac * 100)}%`}>
+                <Field label={t("se_volfrac", { pct: Math.round(volfrac * 100) })}>
                   <input
                     type="range"
                     min={10}
@@ -2464,7 +2467,7 @@ export default function StructuralEditor({
 
             {canTopopt && (
               <div className="grid grid-cols-3 gap-2">
-                <Field label="Anchors" hint="auto-keep ring">
+                <Field label={t("se_anchors")} hint={t("se_anchors_h")}>
                   <label className="flex h-7 items-center gap-1.5 text-[11px] text-zinc-400">
                     <input
                       type="checkbox"
@@ -2472,10 +2475,10 @@ export default function StructuralEditor({
                       checked={keepMode === "auto"}
                       onChange={(e) => setKeepMode(e.target.checked ? "auto" : "manual")}
                     />
-                    keep all
+                    {t("se_keep_all")}
                   </label>
                 </Field>
-                <Field label="Min member" hint="mm — printable floor">
+                <Field label={t("se_min_member")} hint={t("se_min_member_h")}>
                   <NumInput
                     value={minMember}
                     step={0.2}
@@ -2483,7 +2486,7 @@ export default function StructuralEditor({
                     onChange={(n) => setMinMember(Math.max(0, n))}
                   />
                 </Field>
-                <Field label="Threshold" hint="density iso (resample)">
+                <Field label={t("se_threshold")} hint={t("se_threshold_h")}>
                   <NumInput
                     value={densityThreshold}
                     step={0.05}
@@ -2491,7 +2494,7 @@ export default function StructuralEditor({
                     onChange={(n) => setDensityThreshold(Math.min(0.9, Math.max(0.2, n)))}
                   />
                 </Field>
-                <Field label="Finishing" hint="re-cut features after">
+                <Field label={t("se_finishing")} hint={t("se_finishing_h")}>
                   <label className="flex h-7 items-center gap-1.5 text-[11px] text-zinc-400">
                     <input
                       type="checkbox"
@@ -2499,10 +2502,10 @@ export default function StructuralEditor({
                       checked={autoRefine}
                       onChange={(e) => setAutoRefine(e.target.checked)}
                     />
-                    auto-refine
+                    {t("se_auto_refine")}
                   </label>
                 </Field>
-                <Field label="45° support" hint="no overhangs (FDM)">
+                <Field label={t("se_selfsup")} hint={t("se_selfsup_h")}>
                   <label className="flex h-7 items-center gap-1.5 text-[11px] text-zinc-400">
                     <input
                       type="checkbox"
@@ -2510,10 +2513,10 @@ export default function StructuralEditor({
                       checked={selfSupport}
                       onChange={(e) => setSelfSupport(e.target.checked)}
                     />
-                    self-supporting
+                    {t("se_selfsup_on")}
                   </label>
                 </Field>
-                <Field label="Print dir" hint="build direction">
+                <Field label={t("se_printdir")} hint={t("se_printdir_h")}>
                   <select
                     className={`${inputCls} px-2 py-1 text-xs`}
                     value={printDir}
@@ -2527,7 +2530,7 @@ export default function StructuralEditor({
                     ))}
                   </select>
                 </Field>
-                <Field label="Multires" hint="coarse warm-start">
+                <Field label={t("se_multires")} hint={t("se_multires_h")}>
                   <label className="flex h-7 items-center gap-1.5 text-[11px] text-zinc-400">
                     <input
                       type="checkbox"
@@ -2535,10 +2538,10 @@ export default function StructuralEditor({
                       checked={multires}
                       onChange={(e) => setMultires(e.target.checked)}
                     />
-                    fast start
+                    {t("se_multires_on")}
                   </label>
                 </Field>
-                <Field label="Mode" hint="simp topology | shell+infill">
+                <Field label={t("se_mode")} hint={t("se_mode_h")}>
                   <select
                     className={`${inputCls} px-2 py-1 text-xs`}
                     value={structureMode}
@@ -2546,13 +2549,13 @@ export default function StructuralEditor({
                       setStructureMode(e.target.value as typeof structureMode)
                     }
                   >
-                    <option value="simp">simp</option>
-                    <option value="infill">infill</option>
+                    <option value="simp">{t("se_mode_simp")}</option>
+                    <option value="infill">{t("se_mode_infill")}</option>
                   </select>
                 </Field>
                 {structureMode === "infill" && (
                   <>
-                    <Field label="Scope" hint="guided = coarse SIMP picks topology">
+                    <Field label={t("se_scope")} hint={t("se_scope_h")}>
                       <select
                         className={`${inputCls} px-2 py-1 text-xs`}
                         value={infillScope}
@@ -2560,11 +2563,11 @@ export default function StructuralEditor({
                           setInfillScope(e.target.value as typeof infillScope)
                         }
                       >
-                        <option value="guided">guided</option>
-                        <option value="full">full</option>
+                        <option value="guided">{t("se_scope_guided")}</option>
+                        <option value="full">{t("se_scope_full")}</option>
                       </select>
                     </Field>
-                    <Field label="Style" hint="lattice geometry">
+                    <Field label={t("se_style")} hint={t("se_style_h")}>
                       <select
                         className={`${inputCls} px-2 py-1 text-xs`}
                         value={infillStyle}
@@ -2572,11 +2575,11 @@ export default function StructuralEditor({
                           setInfillStyle(e.target.value as typeof infillStyle)
                         }
                       >
-                        <option value="gyroid_graded">gyroid</option>
-                        <option value="struts_aligned">struts</option>
+                        <option value="gyroid_graded">{t("se_style_gyroid")}</option>
+                        <option value="struts_aligned">{t("se_style_struts")}</option>
                       </select>
                     </Field>
-                    <Field label="Shell" hint="outer skin mm">
+                    <Field label={t("se_shell")} hint={t("se_shell_h")}>
                       <input
                         type="number"
                         min={0}
@@ -2588,7 +2591,7 @@ export default function StructuralEditor({
                         }
                       />
                     </Field>
-                    <Field label="Period" hint="lattice cell mm">
+                    <Field label={t("se_period")} hint={t("se_period_h")}>
                       <input
                         type="number"
                         min={2}
@@ -2600,7 +2603,7 @@ export default function StructuralEditor({
                         }
                       />
                     </Field>
-                    <Field label="Octet" hint="45° diagonal strut families">
+                    <Field label={t("se_octet")} hint={t("se_octet_h")}>
                       <label className="flex h-7 items-center gap-1.5 text-[11px] text-zinc-400">
                         <input
                           type="checkbox"
@@ -2608,13 +2611,13 @@ export default function StructuralEditor({
                           checked={infillOctet}
                           onChange={(e) => setInfillOctet(e.target.checked)}
                         />
-                        diagonals
+                        {t("se_octet_on")}
                       </label>
                     </Field>
                   </>
                 )}
                 {structureMode === "simp" && (
-                <Field label="Solver" hint="oc fast | mma constraints | beso binary">
+                <Field label={t("se_solver")} hint={t("se_solver_h")}>
                   <select
                     className={`${inputCls} px-2 py-1 text-xs`}
                     value={solver}
@@ -2628,7 +2631,7 @@ export default function StructuralEditor({
                 )}
                 {structureMode === "simp" && solver === "mma" && (
                   <>
-                    <Field label="MinMax" hint="worst-case over load cases">
+                    <Field label={t("se_minmax")} hint={t("se_minmax_h")}>
                       <label className="flex h-7 items-center gap-1.5 text-[11px] text-zinc-400">
                         <input
                           type="checkbox"
@@ -2636,45 +2639,45 @@ export default function StructuralEditor({
                           checked={minmax}
                           onChange={(e) => setMinmax(e.target.checked)}
                         />
-                        robust
+                        {t("se_minmax_on")}
                       </label>
                     </Field>
-                    <Field label="Disp cap" hint="max displacement mm (0=off)">
+                    <Field label={t("se_disp_cap")} hint={t("se_disp_cap_h")}>
                       <input
                         type="number"
                         min={0}
                         step={0.1}
                         className={`${inputCls} w-16 px-2 py-1 text-xs`}
                         value={dispMax || ""}
-                        placeholder="off"
+                        placeholder={t("se_off")}
                         onChange={(e) => setDispMax(parseFloat(e.target.value) || 0)}
                       />
                     </Field>
-                    <Field label="σ cap" hint="max von Mises MPa (0=off)">
+                    <Field label={t("se_stress_cap")} hint={t("se_stress_cap_h")}>
                       <input
                         type="number"
                         min={0}
                         step={1}
                         className={`${inputCls} w-16 px-2 py-1 text-xs`}
                         value={stressMax || ""}
-                        placeholder="off"
+                        placeholder={t("se_off")}
                         onChange={(e) => setStressMax(parseFloat(e.target.value) || 0)}
                       />
                     </Field>
                   </>
                 )}
-                <Field label="Min gap" hint="warn on thin gaps mm (0=off)">
+                <Field label={t("se_min_gap")} hint={t("se_min_gap_h")}>
                   <input
                     type="number"
                     min={0}
                     step={0.5}
                     className={`${inputCls} w-16 px-2 py-1 text-xs`}
                     value={minGap || ""}
-                    placeholder="off"
+                    placeholder={t("se_off")}
                     onChange={(e) => setMinGap(parseFloat(e.target.value) || 0)}
                   />
                 </Field>
-                <Field label="Penal ramp" hint="1.0→target, less stalling">
+                <Field label={t("se_penal")} hint={t("se_penal_h")}>
                   <label className="flex h-7 items-center gap-1.5 text-[11px] text-zinc-400">
                     <input
                       type="checkbox"
@@ -2682,10 +2685,10 @@ export default function StructuralEditor({
                       checked={penalCont}
                       onChange={(e) => setPenalCont(e.target.checked)}
                     />
-                    continue
+                    {t("se_continue")}
                   </label>
                 </Field>
-                <Field label="Vol ramp" hint="0.7→target, broad start">
+                <Field label={t("se_volramp")} hint={t("se_volramp_h")}>
                   <label className="flex h-7 items-center gap-1.5 text-[11px] text-zinc-400">
                     <input
                       type="checkbox"
@@ -2693,10 +2696,10 @@ export default function StructuralEditor({
                       checked={volfracRamp}
                       onChange={(e) => setVolfracRamp(e.target.checked)}
                     />
-                    continue
+                    {t("se_continue")}
                   </label>
                 </Field>
-                <Field label="Warm" hint="loadpath seed, fewer iters">
+                <Field label={t("se_warm")} hint={t("se_warm_h")}>
                   <label className="flex h-7 items-center gap-1.5 text-[11px] text-zinc-400">
                     <input
                       type="checkbox"
@@ -2704,10 +2707,10 @@ export default function StructuralEditor({
                       checked={loadpathStart}
                       onChange={(e) => setLoadpathStart(e.target.checked)}
                     />
-                    loadpath
+                    {t("se_warm_on")}
                   </label>
                 </Field>
-                <Field label="Ramp iters" hint="staged volfrac ramp (40 recommended)">
+                <Field label={t("se_ramp_iters")} hint={t("se_ramp_iters_h")}>
                   <input
                     type="number"
                     min={0}
@@ -2719,46 +2722,46 @@ export default function StructuralEditor({
                     onChange={(e) => setRampIters(parseInt(e.target.value) || 0)}
                   />
                 </Field>
-                <Field label="Corridor" hint="loadpath width mm (2.5×pitch)">
+                <Field label={t("se_corridor")} hint={t("se_corridor_h")}>
                   <input
                     type="number"
                     min={0}
                     step={0.5}
                     className={`${inputCls} w-16 px-2 py-1 text-xs`}
                     value={corridorMm || ""}
-                    placeholder="auto"
+                    placeholder={t("se_auto")}
                     disabled={!loadpathStart}
                     onChange={(e) =>
                       setCorridorMm(parseFloat(e.target.value) || 0)
                     }
                   />
                 </Field>
-                <Field label="MMA beta" hint="sharpen gray result (mma)">
+                <Field label={t("se_mma_beta")} hint={t("se_mma_beta_h")}>
                   <input
                     type="number"
                     min={0}
                     step={1}
                     className={`${inputCls} w-16 px-2 py-1 text-xs`}
                     value={mmaFinalBeta || ""}
-                    placeholder="off"
+                    placeholder={t("se_off")}
                     disabled={solver !== "mma"}
                     onChange={(e) =>
                       setMmaFinalBeta(parseFloat(e.target.value) || 0)
                     }
                   />
                 </Field>
-                <Field label="Grow" hint="add material beyond silhouette mm">
+                <Field label={t("se_grow")} hint={t("se_grow_h")}>
                   <input
                     type="number"
                     min={0}
                     step={0.5}
                     className={`${inputCls} w-16 px-2 py-1 text-xs`}
                     value={growMm || ""}
-                    placeholder="off"
+                    placeholder={t("se_off")}
                     onChange={(e) => setGrowMm(parseFloat(e.target.value) || 0)}
                   />
                 </Field>
-                <Field label="FDM aniso" hint="weaker layer direction">
+                <Field label={t("se_aniso")} hint={t("se_aniso_h")}>
                   <label className="flex h-7 items-center gap-1.5 text-[11px] text-zinc-400">
                     <input
                       type="checkbox"
@@ -2766,7 +2769,7 @@ export default function StructuralEditor({
                       checked={aniso}
                       onChange={(e) => setAniso(e.target.checked)}
                     />
-                    orthotropic
+                    {t("se_aniso_on")}
                   </label>
                 </Field>
               </div>
@@ -2776,15 +2779,14 @@ export default function StructuralEditor({
             {preview && (
               <div className="rounded-lg border border-zinc-800 p-2.5 text-xs">
                 <div className="mb-1 font-semibold text-zinc-300">
-                  region check{" "}
+                  {t("se_check_title")}{" "}
                   {preview.ok
-                    ? `— voxel ${preview.dims.join("×")} @ ${preview.pitch_mm?.toFixed(2)}mm · ${preview.solid_elements} elements`
-                    : "failed"}
+                    ? `— voxel ${preview.dims.join("×")} @ ${preview.pitch_mm?.toFixed(2)}mm · ${preview.solid_elements} ${t("se_elements")}`
+                    : t("se_check_failed")}
                 </div>
                 {preview.cases.map((c, i) => (
                   <div key={i} className="mb-1 text-zinc-400">
-                    <b className="text-zinc-300">{c.case}</b>: {c.fixed_nodes} fixed nodes,{" "}
-                    {c.loaded_nodes} loaded nodes, {c.total_force_n.toFixed(1)} N
+                    <b className="text-zinc-300">{c.case}</b>: {t("se_check_nodes", { f: c.fixed_nodes, l: c.loaded_nodes })} {c.total_force_n.toFixed(1)} N
                     {c.warnings.map((w, j) => (
                       <div key={j} className="text-amber-400">
                         ⚠ {w}
@@ -2810,7 +2812,7 @@ export default function StructuralEditor({
               disabled={!valid || !!busy}
               busy={busy === "preview"}
               onClick={checkRegions}
-              title="resolve regions on the voxel domain — shows hit counts, warnings and a 3D overlay"
+              title={t("se_check_hint")}
             >
               {busy === "preview" ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
               Check regions
@@ -2822,9 +2824,9 @@ export default function StructuralEditor({
               disabled={!valid || !!busy}
               busy={busy === "fem"}
               onClick={runFem}
-              title="run a FEM strength check on this version (no optimization)"
+              title={t("se_fem_hint")}
             >
-              FEM check
+              {t("se_fem_btn")}
             </Btn>
             {canTopopt && (
               <Btn
@@ -2832,15 +2834,15 @@ export default function StructuralEditor({
                 disabled={!valid || !!busy}
                 busy={busy === "opt"}
                 onClick={runTopopt}
-                title="start SIMP topology optimization → new child version"
+                title={t("se_opt_hint")}
               >
-                Optimize
+                {t("se_opt_btn")}
               </Btn>
             )}
           </div>
           {!valid && (
             <div className="border-t border-zinc-800 bg-amber-950/30 px-3 py-1.5 text-[11px] text-amber-300">
-              every case needs at least one support region and one active load
+              {t("se_invalid")}
             </div>
           )}
         </div>

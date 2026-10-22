@@ -1,9 +1,17 @@
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CircleDot, Flag, Inbox, RotateCcw, Square } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Link, useNavigate } from "react-router-dom";
 import StatusBadge from "../components/StatusBadge";
-import { Btn, EmptyState, ProgressBar, inputCls, useToast } from "../components/ui";
+import {
+  Btn,
+  EmptyState,
+  PageShell,
+  ProgressBar,
+  inputCls,
+  useToast,
+} from "../components/ui";
 import { api, errMsg } from "../lib/api";
 import { fmtDuration, timeAgo } from "../lib/format";
 import { stepLabel } from "../lib/steps";
@@ -13,11 +21,11 @@ import { useTitle } from "../lib/useTitle";
 const ACTIVE = new Set(["queued", "running", "waiting_for_input"]);
 
 const STATUS_FILTERS = [
-  { id: "all", label: "all" },
-  { id: "active", label: "running + queued" },
-  { id: "waiting_for_input", label: "needs input" },
-  { id: "failed", label: "failed" },
-  { id: "succeeded", label: "succeeded" },
+  { id: "all" },
+  { id: "active" },
+  { id: "waiting_for_input" },
+  { id: "failed" },
+  { id: "succeeded" },
 ] as const;
 type StatusFilter = (typeof STATUS_FILTERS)[number]["id"];
 
@@ -40,6 +48,7 @@ const JobRow = memo(function JobRow({
   job: JobListItem;
   onChanged: () => void;
 }) {
+  const { t } = useTranslation("jobs");
   const nav = useNavigate();
   const toast = useToast();
   const live = job.live ?? {};
@@ -54,7 +63,7 @@ const JobRow = memo(function JobRow({
       tabIndex={0}
       onClick={() => nav(`/versions/${job.version_id}?job=${job.id}`)}
       onKeyDown={(e) => e.key === "Enter" && nav(`/versions/${job.version_id}?job=${job.id}`)}
-      className="cursor-pointer rounded-lg border border-zinc-800 bg-zinc-900/60 p-3 transition-colors hover:border-zinc-600"
+      className="panel panel-hover cursor-pointer p-3"
     >
       <div className="flex flex-wrap items-center gap-2">
         {active ? (
@@ -62,26 +71,26 @@ const JobRow = memo(function JobRow({
         ) : (
           <StatusBadge status={job.status} />
         )}
-        <span className="text-xs font-medium uppercase text-zinc-400">{job.type}</span>
+        <span className="text-xs font-medium uppercase text-muted">{job.type}</span>
         <Link
           to={`/projects/${job.project_id}`}
           onClick={(e) => e.stopPropagation()}
-          className="text-sm font-medium text-zinc-200 hover:text-brand-300"
+          className="text-sm font-medium text-fg transition-colors hover:text-brand-300"
         >
           {job.project_name}
         </Link>
-        <span className="text-sm text-zinc-500">· v{job.version_number}</span>
+        <span className="text-sm text-faint">· v{job.version_number}</span>
         <StatusBadge status={job.version_status} />
         <span className="flex-1" />
         {best != null && (
           <span
             className={`font-mono text-xs ${best >= 80 ? "text-emerald-400" : best >= 50 ? "text-amber-400" : "text-red-400"}`}
-            title="best critique score"
+            title={t("best_score_title")}
           >
-            best {best}
+            {t("best_score", { n: best })}
           </span>
         )}
-        <span className="font-mono text-xs text-zinc-500">
+        <span className="font-mono text-xs text-faint tabular-nums">
           {active && job.started_at ? (
             <Elapsed since={job.started_at} live />
           ) : job.finished_at ? (
@@ -93,18 +102,18 @@ const JobRow = memo(function JobRow({
       </div>
 
       {job.prompt && (
-        <div className="mt-1 truncate text-xs text-zinc-500">{job.prompt}</div>
+        <div className="mt-1 truncate text-xs text-faint">{job.prompt}</div>
       )}
 
       {active && (
         <div className="mt-2">
-          <div className="mb-1 flex items-center gap-2 text-[11px] text-zinc-400">
+          <div className="mb-1 flex items-center gap-2 text-[11px] text-muted">
             <span className="text-brand-300">
               {job.status === "queued"
-                ? "queued"
+                ? t("queued")
                 : job.status === "waiting_for_input"
-                  ? "needs answers"
-                  : stepLabel(job.step) || "starting"}
+                  ? t("needs_answers")
+                  : stepLabel(job.step) || t("starting")}
             </span>
             {live.max_iterations ? (
               <span className="font-mono text-zinc-300">
@@ -114,7 +123,7 @@ const JobRow = memo(function JobRow({
               <span className="font-mono">it {job.iteration}</span>
             ) : null}
             {live.sub_label && (
-              <span className="truncate font-mono text-zinc-500">
+              <span className="truncate font-mono text-faint">
                 ↳ {live.sub_label}
                 {live.sub_progress != null
                   ? ` ${Math.round(live.sub_progress * 100)}%`
@@ -122,12 +131,16 @@ const JobRow = memo(function JobRow({
               </span>
             )}
             <span className="flex-1" />
-            {job.cancel_requested && <span className="text-red-400">cancelling…</span>}
-            {job.finish_requested && <span className="text-amber-400">finishing…</span>}
+            {job.cancel_requested && (
+              <span className="text-red-400">{t("cancelling")}</span>
+            )}
+            {job.finish_requested && (
+              <span className="text-amber-400">{t("finishing")}</span>
+            )}
             {job.status === "running" && !job.finish_requested && (
               <button
-                className="flex items-center gap-1 rounded px-1.5 py-0.5 text-amber-400 hover:bg-amber-950/50"
-                title="stop after this iteration and keep the best result so far"
+                className="flex items-center gap-1 rounded px-1.5 py-0.5 text-amber-400 transition-colors hover:bg-amber-950/50"
+                title={t("finish_title")}
                 onClick={(e) => {
                   e.stopPropagation();
                   api
@@ -136,13 +149,13 @@ const JobRow = memo(function JobRow({
                     .catch((err) => toast(errMsg(err), "error"));
                 }}
               >
-                <Flag className="h-3 w-3" /> finish
+                <Flag className="h-3 w-3" /> {t("finish")}
               </button>
             )}
             {(job.status === "running" || job.status === "queued") && (
               <button
-                className="flex items-center gap-1 rounded px-1.5 py-0.5 text-red-400 hover:bg-red-950/50"
-                title="abort the job — discards the result"
+                className="flex items-center gap-1 rounded px-1.5 py-0.5 text-red-400 transition-colors hover:bg-red-950/50"
+                title={t("cancel_title")}
                 onClick={(e) => {
                   e.stopPropagation();
                   api
@@ -151,7 +164,7 @@ const JobRow = memo(function JobRow({
                     .catch((err) => toast(errMsg(err), "error"));
                 }}
               >
-                <Square className="h-3 w-3" /> cancel
+                <Square className="h-3 w-3" /> {t("cancel")}
               </button>
             )}
           </div>
@@ -160,10 +173,13 @@ const JobRow = memo(function JobRow({
             tone={job.status === "waiting_for_input" ? "amber" : "blue"}
           />
           {job.status === "waiting_for_input" && firstQuestion && (
-            <div className="mt-1.5 truncate text-[11px] text-amber-300/90" title={firstQuestion}>
+            <div
+              className="mt-1.5 truncate text-[11px] text-amber-300/90"
+              title={firstQuestion}
+            >
               “{firstQuestion}”
               {(job.questions?.length ?? 0) > 1
-                ? ` (+${job.questions!.length - 1} more)`
+                ? ` ${t("more_questions", { count: job.questions!.length - 1 })}`
                 : ""}
             </div>
           )}
@@ -178,7 +194,7 @@ const JobRow = memo(function JobRow({
             variant="subtle"
             size="sm"
             className="shrink-0"
-            title="restart this job — creates a new run"
+            title={t("retry_title")}
             onClick={(e) => {
               e.stopPropagation();
               api
@@ -187,7 +203,7 @@ const JobRow = memo(function JobRow({
                 .catch((err) => toast(errMsg(err), "error"));
             }}
           >
-            <RotateCcw className="h-3 w-3" /> retry
+            <RotateCcw className="h-3 w-3" /> {t("retry")}
           </Btn>
         </div>
       )}
@@ -199,7 +215,8 @@ const RECENT_PAGE = 40;
 const FETCH_PAGE = 200; // matches the server's default limit
 
 export default function JobsPage() {
-  useTitle("Jobs");
+  const { t } = useTranslation("jobs");
+  useTitle(t("title"));
   const qc = useQueryClient();
   const [fetchLimit, setFetchLimit] = useState(FETCH_PAGE);
   const [shown, setShown] = useState(RECENT_PAGE);
@@ -239,15 +256,11 @@ export default function JobsPage() {
   const serverMayHaveMore = items.length >= fetchLimit;
 
   return (
-    <div className="mx-auto max-w-4xl p-6">
-      <div className="mb-3 flex items-center gap-3">
-        <h1 className="text-2xl font-bold">Jobs</h1>
-        <span className="text-sm text-zinc-500">
-          {active.length ? `${active.length} active · ` : ""}
-          {items.length} total
-        </span>
-      </div>
-
+    <PageShell
+      maxW="list"
+      title={t("title")}
+      subtitle={`${active.length ? `${t("active_n", { count: active.length })} · ` : ""}${t("total_n", { count: items.length })}`}
+    >
       <div className="mb-4 flex flex-wrap items-center gap-1.5">
         {STATUS_FILTERS.map((f) => (
           <button
@@ -257,10 +270,10 @@ export default function JobsPage() {
             className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors ${
               statusFilter === f.id
                 ? "border-brand-600 bg-brand-950/60 text-brand-200"
-                : "border-zinc-700 bg-zinc-900 text-zinc-400 hover:border-zinc-600 hover:text-zinc-300"
+                : "border-edge2 bg-panel2 text-muted hover:border-faint/50 hover:text-fg"
             }`}
           >
-            {f.label}
+            {t(`filter_${f.id}`)}
           </button>
         ))}
         {types.length > 1 && (
@@ -268,12 +281,12 @@ export default function JobsPage() {
             className={`${inputCls} ml-auto w-auto px-2 py-1 text-[11px]`}
             value={typeFilter}
             onChange={(e) => setTypeFilter(e.target.value)}
-            aria-label="filter by job type"
+            aria-label={t("type_filter_aria")}
           >
-            <option value="all">all types</option>
-            {types.map((t) => (
-              <option key={t} value={t}>
-                {t}
+            <option value="all">{t("all_types")}</option>
+            {types.map((ty) => (
+              <option key={ty} value={ty}>
+                {ty}
               </option>
             ))}
           </select>
@@ -283,41 +296,40 @@ export default function JobsPage() {
       {jobs.isLoading ? null : !filtered.length ? (
         <EmptyState
           icon={<Inbox className="h-10 w-10" />}
-          title={items.length ? "No jobs match the filters" : "No jobs yet"}
-          hint={
-            items.length
-              ? undefined
-              : "Jobs appear here as soon as a generation, edit or export is queued."
-          }
+          title={items.length ? t("empty_filtered") : t("empty")}
+          hint={items.length ? undefined : t("empty_hint")}
         />
       ) : (
         <div className="flex flex-col gap-2">
           {active.length > 0 && (
-            <h2 className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
-              Active
+            <h2 className="text-xs font-semibold uppercase tracking-wider text-faint">
+              {t("section_active")}
             </h2>
           )}
           {active.map((j) => (
             <JobRow key={j.id} job={j} onChanged={refresh} />
           ))}
           {active.length > 0 && recent.length > 0 && (
-            <h2 className="mt-4 text-xs font-semibold uppercase tracking-wider text-zinc-500">
-              Recent
+            <h2 className="mt-4 text-xs font-semibold uppercase tracking-wider text-faint">
+              {t("section_recent")}
             </h2>
           )}
           {recent.map((j) => (
             <JobRow key={j.id} job={j} onChanged={refresh} />
           ))}
           {(recentAll.length > recent.length || serverMayHaveMore) && (
-            <div className="flex items-center justify-center gap-2 text-[11px] text-zinc-500">
+            <div className="flex items-center justify-center gap-2 text-[11px] text-faint">
               <span>
-                showing {recent.length} of {recentAll.length}
-                {serverMayHaveMore ? "+" : ""} completed jobs
+                {t("showing", {
+                  shown: recent.length,
+                  total: recentAll.length,
+                  more: serverMayHaveMore ? "+" : "",
+                })}
               </span>
               <button
                 type="button"
-                aria-label={`show ${RECENT_PAGE} more completed jobs`}
-                className="rounded-md border border-zinc-700 px-2 py-0.5 text-brand-400 transition-colors hover:border-zinc-500 hover:text-brand-300"
+                aria-label={t("show_more_aria", { n: RECENT_PAGE })}
+                className="rounded-md border border-edge2 px-2 py-0.5 text-brand-400 transition-colors hover:border-faint/60 hover:text-brand-300"
                 onClick={() => {
                   setShown((s) => s + RECENT_PAGE);
                   // everything fetched is already visible — pull the next
@@ -325,12 +337,12 @@ export default function JobsPage() {
                   if (serverMayHaveMore) setFetchLimit((l) => l + FETCH_PAGE);
                 }}
               >
-                show {RECENT_PAGE} more
+                {t("show_more", { n: RECENT_PAGE })}
               </button>
             </div>
           )}
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }
