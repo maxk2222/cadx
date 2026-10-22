@@ -526,7 +526,12 @@ class ProjectToolSession(ToolSession):
             result = {"ok": False, "error": f"tool '{name}' is not available in this session"}
             self.tool_log.append({"name": name, "args": _truncate_args(args), "result": result})
             return result
-        await self._publish("tool_start", {"name": name, "args": _truncate_args(args)})
+        # call_idx = the 0-based index this call will occupy in tool_log —
+        # clients merge live events with persisted meta entries by it
+        await self._publish(
+            "tool_start",
+            {"name": name, "args": _truncate_args(args), "call_idx": len(self.tool_log)},
+        )
         try:
             result = await self._dispatch(name, args)
         except SpawnError as e:
@@ -545,6 +550,7 @@ class ProjectToolSession(ToolSession):
                 "name": name,
                 "ok": bool(result.get("ok", True)),
                 "result": _truncate({k: v for k, v in result.items() if k != "_images"}),
+                "call_idx": len(self.tool_log) - 1,
             },
         )
         return result

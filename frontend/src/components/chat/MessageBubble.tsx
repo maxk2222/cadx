@@ -2,8 +2,9 @@ import { AlertTriangle, Check, Loader2, Wrench } from "lucide-react";
 import { memo, useState } from "react";
 import { fmtDur } from "../../lib/liveStats";
 import { splitMd } from "../../lib/mdText";
+import { mergeToolLogs } from "../../lib/toolMerge";
 import type { ToolEvent } from "../../lib/useChatEvents";
-import type { Asset, ChatMessage, SpawnedRef, ToolLogEntry } from "../../lib/types";
+import type { Asset, ChatMessage, SpawnedRef } from "../../lib/types";
 import { useNow } from "../ui";
 import ChatJobCard from "./ChatJobCard";
 
@@ -174,18 +175,6 @@ function ToolChip({
   );
 }
 
-function toToolEvent(t: ToolLogEntry, i: number): ToolEvent {
-  const r = (t.result ?? {}) as Record<string, unknown>;
-  return {
-    seq: i,
-    name: t.name,
-    args: t.args,
-    ok: r.ok !== false,
-    result: r,
-    done: true,
-  };
-}
-
 const MessageBubble = memo(function MessageBubble({
   msg,
   assetsById,
@@ -200,9 +189,10 @@ const MessageBubble = memo(function MessageBubble({
   const att = (msg.asset_ids ?? [])
     .map((id) => assetsById.get(id))
     .filter((a): a is Asset => !!a);
-  const log: ToolEvent[] = streaming
-    ? (liveTools ?? [])
-    : (msg.meta?.tool_log ?? []).map(toToolEvent);
+  // persisted meta.tool_log (flushed per tool_result) + live events beyond
+  // it, merged by call_idx — a reload mid-turn restores every chip and live
+  // entries appended after reload never double up with persisted ones
+  const log = mergeToolLogs(msg.meta?.tool_log, liveTools, streaming);
   const spawned: SpawnedRef[] = msg.meta?.spawned ?? [];
 
   if (msg.role === "user") {

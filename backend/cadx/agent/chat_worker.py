@@ -491,6 +491,28 @@ async def _run_turns(  # noqa: C901
 
         async def publish_fn(event: str, data: dict[str, Any]) -> None:
             await _chat_emit(chat_id, event, data)
+            if event == "tool_result":
+                # tool_log/spawned live only in session memory until turn_end —
+                # flush them onto the assistant row now so a reload mid-turn
+                # restores the tool chips and spawned job cards from the
+                # snapshot, and emit a meta event so connected clients mount
+                # the card the moment the job is spawned. session/amsg_id are
+                # read at call time — the current turn's binding (as above).
+                meta = {
+                    "streaming": True,
+                    "tool_log": session.tool_log,  # noqa: B023
+                    "spawned": session.spawned,  # noqa: B023
+                }
+                async with session_scope() as db:
+                    m = await db.get(ChatMessage, amsg_id)  # noqa: B023
+                    if m is not None and m.meta.get("streaming"):
+                        m.meta = meta
+                        await db.commit()
+                await _chat_emit(
+                    chat_id,
+                    "meta",
+                    {"message_id": str(amsg_id), "meta": meta},  # noqa: B023
+                )
 
         actx = AgentCtx(
             llm=llm,
@@ -550,7 +572,13 @@ async def _run_turns(  # noqa: C901
                 amsg = await db.get(ChatMessage, amsg_id)
                 if amsg is not None:
                     amsg.content = buf["text"]
-                    amsg.meta = {"streaming": False, "error": str(e)[:400]}
+                    # keep the tool chips + spawned cards visible after a crash
+                    amsg.meta = {
+                        "streaming": False,
+                        "error": str(e)[:400],
+                        "tool_log": session.tool_log,
+                        "spawned": session.spawned,
+                    }
                     await db.commit()
             await _chat_emit(chat_id, "error", {"message": str(e)[:400]})
             raise

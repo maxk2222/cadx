@@ -383,3 +383,73 @@ async def test_turn_end_event_carries_assistant_meta(monkeypatch):
     assert meta["cancelled"] is False
     assert meta["tool_log"] and meta["tool_log"][0]["name"] == "list_versions"
     assert meta["spawned"] == []
+
+
+async def test_tool_result_flushes_meta_mid_turn(monkeypatch):
+    """Every tool_result must persist tool_log/spawned onto the streaming
+    assistant row AND push a `meta` event — a page reload mid-turn restores
+    the tool chips and spawned job cards from the snapshot instead of losing
+    them until turn_end."""
+    _pid, cid = await _mk_chat()
+    fake = FakeLLM(
+        [
+            {"tool_calls": [{"name": "list_versions", "arguments": {}}]},
+            "done",
+        ]
+    )
+    _patch_llm(monkeypatch, fake)
+
+    published: list[dict] = []
+
+    async def capture(_cid: str, event: dict) -> None:
+        published.append(event)
+
+    monkeypatch.setattr(chat_worker.events, "publish_chat", capture)
+
+    res = await chat_worker.run_chat_turn({}, {"chat_id": str(cid)})
+    assert res["ok"]
+
+    metas = [e for e in published if e.get("type") == "meta"]
+    assert metas, "no mid-turn meta event published"
+    # flushed right after the tool_result — before the assistant text ended
+    meta = metas[0]["meta"]
+    assert meta["streaming"] is True
+    assert meta["tool_log"][0]["name"] == "list_versions"
+
+    msgs = await _messages(cid)
+    asst = next(m for m in msgs if m.role == ChatRole.assistant)
+    assert str(asst.id) == metas[0]["message_id"]
+    assert asst.meta["streaming"] is False
+    assert asst.meta["tool_log"][0]["name"] == "list_versions"
+
+
+async def test_error_path_keeps_tool_log_and_spawned(monkeypatch):
+    """A crashed turn must not drop the already-collected tool chips — the
+    error meta carries tool_log/spawned so the cards survive the failure."""
+    _pid, cid = await _mk_chat()
+
+    class CrashLLM(FakeLLM):
+        async def chat(self, *a, **kw):
+            if len(self.calls) >= 2:
+                raise RuntimeError("boom")
+            return await super().chat(*a, **kw)
+
+    fake = CrashLLM([{"tool_calls": [{"name": "list_versions", "arguments": {}}]}])
+    _patch_llm(monkeypatch, fake)
+
+    published: list[dict] = []
+
+    async def capture(_cid: str, event: dict) -> None:
+        published.append(event)
+
+    monkeypatch.setattr(chat_worker.events, "publish_chat", capture)
+
+    res = await chat_worker.run_chat_turn({}, {"chat_id": str(cid)})
+    assert res["ok"] is False
+
+    msgs = await _messages(cid)
+    asst = next(m for m in msgs if m.role == ChatRole.assistant)
+    assert asst.meta["streaming"] is False
+    assert "boom" in asst.meta["error"]
+    assert asst.meta["tool_log"][0]["name"] == "list_versions"
+    assert asst.meta["spawned"] == []

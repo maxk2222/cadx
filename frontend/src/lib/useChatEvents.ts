@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { chatEventsUrl } from "./api";
+import { mergeToolResult } from "./toolMerge";
 import type { Chat, ChatMessage } from "./types";
 
 /** Live tool-call activity shown inside the current assistant turn. */
@@ -10,6 +11,9 @@ export interface ToolEvent {
   ok?: boolean;
   result?: Record<string, unknown>;
   done: boolean;
+  /** server-side index into meta.tool_log — set on tool_start/tool_result;
+   *  merges persisted entries with live events without double-counting */
+  call_idx?: number;
   /** client-side receipt ms of the tool_start — drives the elapsed readout
    *  on running tool chips; survives the tool_result merge (spread keeps it). */
   t_ms?: number;
@@ -163,7 +167,11 @@ export function useChatEvents(
         patch(message_id, (m) => ({ ...m, content }));
       },
       tool_start: (d) => {
-        const t = d as { name: string; args?: Record<string, unknown> };
+        const t = d as {
+          name: string;
+          args?: Record<string, unknown>;
+          call_idx?: number;
+        };
         setState((s) => ({
           ...s,
           toolEvents: [
@@ -172,6 +180,7 @@ export function useChatEvents(
               seq: seqRef.current++,
               name: t.name,
               args: t.args,
+              call_idx: t.call_idx,
               done: false,
               t_ms: Date.now(),
             },
@@ -179,24 +188,32 @@ export function useChatEvents(
         }));
       },
       tool_result: (d) => {
-        const t = d as { name: string; ok: boolean; result?: Record<string, unknown> };
+        const t = d as {
+          name: string;
+          ok: boolean;
+          result?: Record<string, unknown>;
+          call_idx?: number;
+        };
         setState((s) => {
-          const evs = [...s.toolEvents];
-          // merge into the newest open call with the same name
-          for (let i = evs.length - 1; i >= 0; i--) {
-            if (evs[i].name === t.name && !evs[i].done) {
-              evs[i] = { ...evs[i], ok: t.ok, result: t.result, done: true };
-              return { ...s, toolEvents: evs };
-            }
-          }
-          return {
-            ...s,
-            toolEvents: [
-              ...evs,
-              { seq: seqRef.current++, name: t.name, ok: t.ok, result: t.result, done: true },
-            ],
-          };
+          // merge into the newest open call — by call_idx when the server
+          // sent one (dedupes against persisted meta entries), else by name
+          const merged = mergeToolResult(s.toolEvents, t, seqRef.current);
+          if (merged.usedSeq) seqRef.current++;
+          return { ...s, toolEvents: merged.evs };
         });
+      },
+      meta: (d) => {
+        // mid-turn tool_log/spawned flush — mounted job cards and tool chips
+        // render from message meta, so merging it here makes them appear the
+        // moment the tool finishes (and survive a page reload via snapshot)
+        const { message_id, meta } = d as {
+          message_id: string;
+          meta: ChatMessage["meta"];
+        };
+        patch(message_id, (m) => ({
+          ...m,
+          meta: { ...m.meta, ...meta },
+        }));
       },
       chat_update: (d) => {
         // the chat's binding changed (agent create_project/attach or the
