@@ -28,6 +28,13 @@ class VoxelDomain:
     # (design-domain dilation for grow_mm / filter-boundary headroom) —
     # `solid` stays the part mask; the pad ring is False by construction
     pad_cells: int = 0
+    # per-cell fill fraction in [0,1], flat (ncells,) in (i,j,k) ravel order
+    # (same layout as element_centers/element_nodes rows) — the "thin soft
+    # transition" boundary model: interior cells read 1.0, exterior 0.0 and
+    # surface-crossing cells a subsampled partial fraction. `None` unless
+    # voxelize(coverage=True) was requested AND the mesh admitted reliable
+    # containment; consumers must apply it only on `solid` cells.
+    coverage: np.ndarray | None = None
     # memo table for the pure (dims/pitch/origin-derived) geometry tables —
     # element_nodes/element_centers are recomputed per region per load case
     # otherwise (region resolution calls them constantly on big grids)
@@ -230,8 +237,105 @@ def _fill_grid(
     return np.ones(dims, dtype=bool)
 
 
+def _coverage_field(
+    mesh: trimesh.Trimesh,
+    origin: np.ndarray,
+    dims: tuple[int, int, int],
+    pitch: float,
+    solid: np.ndarray,
+) -> np.ndarray | None:
+    """(ncells,) fill fraction in [0,1] — the "thin soft transition" at the
+    part boundary: 1.0 inside, 0.0 outside, a partial fraction on
+    surface-crossing cells.
+
+    Cheap two-tier probe: the cell-corner node containment is sampled once
+    for the whole grid, so cells with uniform corners score 0.0/1.0 for
+    free and only corner-mixed cells pay a 3x3x3 interior subsample.
+    `None` when the mesh admits no reliable containment (non-watertight) —
+    callers then keep the binary boundary model. Non-solid cells keep their
+    partial fractions too; consumers apply coverage only on solid cells.
+    """
+    try:
+        m = mesh
+        if not m.is_watertight:
+            m = m.copy()
+            m.merge_vertices(merge_norm=True)  # split STL vertices -> watertight
+        if not m.is_watertight:
+            return None
+        nx1, ny1, nz1 = dims[0] + 1, dims[1] + 1, dims[2] + 1
+        ii, jj, kk = np.meshgrid(
+            np.arange(nx1), np.arange(ny1), np.arange(nz1), indexing="ij"
+        )
+        pts = (
+            origin[None, :]
+            + pitch * np.stack([ii, jj, kk], axis=-1).reshape(-1, 3).astype(float)
+        )
+        # contains() scales with the mesh's face count — bound each batch to
+        # the same ~256 MB worst-case working set as _fill_grid's chunking
+        chunk = int(
+            np.clip(
+                (256 * 1024 * 1024) // (64 * max(len(m.faces), 1)),
+                512,
+                8192,
+            )
+        )
+
+        def _contains(query: np.ndarray) -> np.ndarray:
+            out = np.zeros(len(query), dtype=bool)
+            for s0 in range(0, len(query), chunk):
+                out[s0 : s0 + chunk] = np.asarray(m.contains(query[s0 : s0 + chunk]))
+            return out
+
+        node_in = _contains(pts).reshape(nx1, ny1, nz1)
+        # count of contained corner nodes per cell (0..8) in Hex8 order
+        c8 = (
+            node_in[:-1, :-1, :-1].astype(np.int16)
+            + node_in[1:, :-1, :-1]
+            + node_in[1:, 1:, :-1]
+            + node_in[:-1, 1:, :-1]
+            + node_in[:-1, :-1, 1:]
+            + node_in[1:, :-1, 1:]
+            + node_in[1:, 1:, 1:]
+            + node_in[:-1, 1:, 1:]
+        )
+        cov = (c8 == 8).astype(np.float64).ravel()
+        # cells needing the 3x3x3 subsample: corner-mixed cells, PLUS solid
+        # cells with all-outside corners — a feature thinner than one cell
+        # (its centre is inside but no corner is) is invisible to the
+        # corner probe; leaving it at 0.0 would give the cell zero
+        # stiffness and a singular K. The subsample grid includes the
+        # cell centre, so every solid cell scores >= 1/27 here.
+        solid_flat = np.asarray(solid, dtype=bool).ravel()
+        mixed = np.flatnonzero(
+            ((c8.ravel() > 0) & (c8.ravel() < 8)) | (solid_flat & (c8.ravel() == 0))
+        )
+        if mixed.size:
+            ci = mixed // (dims[1] * dims[2])
+            rem = mixed % (dims[1] * dims[2])
+            cj = rem // dims[2]
+            ck = rem % dims[2]
+            cell_ijk = np.stack([ci, cj, ck], axis=-1).astype(float)
+            # 3x3x3 subsample at sub-cell centres (fractions 1/6, 3/6, 5/6)
+            sub = (np.arange(3) + 0.5) / 3.0
+            si, sj, sk = np.meshgrid(sub, sub, sub, indexing="ij")
+            offs = np.stack([si, sj, sk], axis=-1).reshape(27, 3)
+            sub_pts = origin[None, None, :] + pitch * (
+                cell_ijk[:, None, :] + offs[None, :, :]
+            )
+            inside = _contains(sub_pts.reshape(-1, 3)).reshape(-1, 27)
+            cov[mixed] = inside.mean(axis=1)
+        return cov
+    except Exception:
+        return None
+
+
 def voxelize(
-    mesh: trimesh.Trimesh, pitch_mm: float, max_elements: int, pad_cells: int = 0
+    mesh: trimesh.Trimesh,
+    pitch_mm: float,
+    max_elements: int,
+    pad_cells: int = 0,
+    *,
+    coverage: bool = False,
 ) -> VoxelDomain:
     """Rasterize the mesh into a filled uniform grid aligned to its bbox.
 
@@ -244,6 +348,12 @@ def voxelize(
     not cover it) so `solid` remains the part mask only. Used for
     design-domain dilation (`grow_mm`): optimizer filters and region
     masks then have void headroom instead of clipping at the part bbox.
+
+    `coverage=True` additionally stores `domain.coverage`: the per-cell
+    fill fraction (1 interior, 0 exterior, partial on surface-crossing
+    cells) for the coverage-weighted boundary-stiffness verification
+    model. The binary `solid` mask is identical either way; coverage
+    returns `None` when the mesh admits no reliable containment.
     """
     bounds = np.asarray(mesh.bounds, dtype=float)
     lo, hi = bounds[0], bounds[1]
@@ -279,6 +389,7 @@ def voxelize(
     if not matrix.any():
         raise ValueError("voxelization produced an empty grid")
 
+    cov = _coverage_field(mesh, origin, dims, pitch, matrix) if coverage else None
     return VoxelDomain(
         origin=origin.astype(float),
         pitch=float(pitch),
@@ -286,6 +397,7 @@ def voxelize(
         solid=matrix,
         pitch_requested=pitch_mm,
         pad_cells=pad,
+        coverage=cov,
     )
 
 

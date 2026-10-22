@@ -299,7 +299,19 @@ def test_fem_renders_are_pass_indexed(monkeypatch, tmp_path: Path) -> None:
     )
     assert res.ok, res.error
     assert "retry" in res.topopt
-    assert suffixes == ["", "_export", "_p2", "_p2_export"]
+    # each pass solves the mask plus the nominal/eroded/dilated export
+    # realizations — every run gets its own suffix, so pass-2 renders can
+    # never clobber pass-1 output
+    assert suffixes == [
+        "",
+        "_export",
+        "_export_ero",
+        "_export_dil",
+        "_p2",
+        "_p2_export",
+        "_p2_export_ero",
+        "_p2_export_dil",
+    ]
 
     # when offscreen rendering is available the files must exist on disk too
     p2 = sorted(p.name for p in (tmp_path / "o" / "fem").glob("*_p2_*"))

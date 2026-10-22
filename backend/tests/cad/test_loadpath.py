@@ -14,6 +14,7 @@ import trimesh
 from scipy import ndimage
 
 from cadx.cad.fem.loadpath import loadpath_field
+from cadx.cad.fem.loadpath_cert import loadpath_certificate
 from cadx.cad.fem.voxelize import VoxelDomain, voxelize
 
 
@@ -170,3 +171,145 @@ def test_voxelize_pad_cells_zero_is_legacy() -> None:
     assert dom.dims == dom0.dims
     np.testing.assert_allclose(dom.origin, dom0.origin)
     assert (dom.solid == dom0.solid).all()
+
+
+# ---------------------------------------------------------------------------
+# loadpath_certificate — the deterministic min-cut export-solid check
+# ---------------------------------------------------------------------------
+
+
+def _bar_domain() -> VoxelDomain:
+    """8x2x2 solid bar, pitch 1 — every cell is a surface cell so the
+    inscribed section is exactly one cell face (1 mm²) and the transverse
+    min cut is 4 mm²."""
+    dims = (8, 2, 2)
+    return VoxelDomain(
+        origin=np.zeros(3), pitch=1.0, dims=dims, solid=np.ones(dims, dtype=bool)
+    )
+
+
+def test_cert_bar_axial_floor() -> None:
+    dom = _bar_domain()
+    fix_cells = np.zeros(dom.dims, dtype=bool)
+    fix_cells[0, :, :] = True
+    load_cells = np.zeros(dom.dims, dtype=bool)
+    load_cells[-1, :, :] = True
+    cert = loadpath_certificate(dom, [_case_on(dom, fix_cells, load_cells)], yield_mpa=25.0)
+    assert cert["load_path_ok"] is True
+    assert cert["bottleneck_mm2"] == pytest.approx(4.0)
+    # 4 mm² * 25 MPa / 50 N applied
+    assert cert["sf_floor"] == pytest.approx(2.0)
+    assert cert["per_case"][0]["reachable"] is True
+    assert not cert["warnings"]
+
+
+def test_cert_neck_throttles_flow() -> None:
+    """A 4x4 bar necked to a single cell: the cut through the neck is
+    1 mm² — far below the 16 mm² ends — so the certificate reports the
+    neck's section, not the part's."""
+    dims = (9, 4, 4)
+    solid = np.zeros(dims, dtype=bool)
+    solid[:4] = True  # wide fixed end
+    solid[6:] = True  # wide load end
+    solid[4:6, 1, 1] = True  # 1-cell-wide neck bridging the gap
+    dom = VoxelDomain(origin=np.zeros(3), pitch=1.0, dims=dims, solid=solid)
+    fix_cells = np.zeros(dims, dtype=bool)
+    fix_cells[0] = True
+    load_cells = np.zeros(dims, dtype=bool)
+    load_cells[-1] = True
+    cert = loadpath_certificate(dom, [_case_on(dom, fix_cells, load_cells)], yield_mpa=50.0)
+    assert cert["load_path_ok"] is True
+    assert cert["bottleneck_mm2"] == pytest.approx(1.0)
+    assert cert["sf_floor"] == pytest.approx(1.0)  # 1 mm² * 50 MPa / 50 N
+
+
+def test_cert_disconnected_solid_fails() -> None:
+    """Load and fixture on separate islands: no path, flow 0 —
+    load_path_ok False, no bottleneck, and a warning names the case."""
+    dims = (9, 2, 2)
+    solid = np.zeros(dims, dtype=bool)
+    solid[:4] = True
+    solid[6:] = True  # second island, gap at x in [4,6)
+    dom = VoxelDomain(origin=np.zeros(3), pitch=1.0, dims=dims, solid=solid)
+    fix_cells = np.zeros(dims, dtype=bool)
+    fix_cells[0] = True
+    load_cells = np.zeros(dims, dtype=bool)
+    load_cells[-1] = True
+    cert = loadpath_certificate(dom, [_case_on(dom, fix_cells, load_cells)], yield_mpa=25.0)
+    assert cert["load_path_ok"] is False
+    assert cert["bottleneck_mm2"] is None
+    assert cert["sf_floor"] is None
+    assert cert["per_case"][0]["reachable"] is False
+    assert any("cannot reach" in w for w in cert["warnings"])
+
+
+def test_cert_zero_load_is_broken() -> None:
+    dom = _bar_domain()
+    fix_cells = np.zeros(dom.dims, dtype=bool)
+    fix_cells[0, :, :] = True
+    fixed, _F = _case_on(dom, fix_cells, np.zeros(dom.dims, dtype=bool))
+    cert = loadpath_certificate(dom, [(fixed, np.zeros_like(_F))], yield_mpa=25.0)
+    assert cert["load_path_ok"] is False
+    assert cert["bottleneck_mm2"] is None
+    assert any("no load or fixture" in w for w in cert["warnings"])
+
+
+def test_cert_shared_cell_is_indeterminate_not_false() -> None:
+    """Load and fixture on the same cells: reachable trivially — the min
+    cut is indeterminate (infinite through the shared arcs), NOT the
+    spurious inf_cap number."""
+    dom = _bar_domain()
+    cells = np.zeros(dom.dims, dtype=bool)
+    cells[3:5] = True
+    fixed, F = _case_on(dom, cells, cells)
+    cert = loadpath_certificate(dom, [(fixed, F)], yield_mpa=25.0)
+    assert cert["load_path_ok"] is True
+    assert cert["per_case"][0]["reachable"] is True
+    assert cert["per_case"][0]["bottleneck_mm2"] is None
+    assert cert["bottleneck_mm2"] is None
+    assert any("indeterminate" in w for w in cert["warnings"])
+
+
+def test_cert_multicase_worst_wins() -> None:
+    """Two cases — one reachable through a wide bar, one disconnected —
+    fail the certificate and the reported bottleneck stays the reachable
+    case's, not None-vs-number ambiguity."""
+    dom = _bar_domain()
+    fix_cells = np.zeros(dom.dims, dtype=bool)
+    fix_cells[0, :, :] = True
+    load_cells = np.zeros(dom.dims, dtype=bool)
+    load_cells[-1, :, :] = True
+    good = _case_on(dom, fix_cells, load_cells)
+    bad = (np.zeros(dom.node_count, dtype=bool), np.zeros(3 * dom.node_count))
+    cert = loadpath_certificate(dom, [good, bad], yield_mpa=25.0)
+    assert cert["load_path_ok"] is False
+    assert cert["bottleneck_mm2"] == pytest.approx(4.0)
+    assert len(cert["per_case"]) == 2
+    assert cert["per_case"][0]["reachable"] is True
+    assert cert["per_case"][1]["reachable"] is False
+
+
+def test_cert_no_cases_and_empty_solid_degrade() -> None:
+    dom = _bar_domain()
+    cert = loadpath_certificate(dom, [], yield_mpa=25.0)
+    assert cert["load_path_ok"] is None
+    empty = VoxelDomain(
+        origin=np.zeros(3), pitch=1.0, dims=(4, 4, 4), solid=np.zeros((4, 4, 4), dtype=bool)
+    )
+    cert = loadpath_certificate(empty, [], yield_mpa=25.0)
+    assert cert["load_path_ok"] is False
+    assert cert["bottleneck_mm2"] is None
+
+
+def test_cert_zero_yield_keeps_bottleneck() -> None:
+    """yield_mpa=0 (unknown material) — geometry still certifies; the SF
+    floor is simply not derivable."""
+    dom = _bar_domain()
+    fix_cells = np.zeros(dom.dims, dtype=bool)
+    fix_cells[0, :, :] = True
+    load_cells = np.zeros(dom.dims, dtype=bool)
+    load_cells[-1, :, :] = True
+    cert = loadpath_certificate(dom, [_case_on(dom, fix_cells, load_cells)], yield_mpa=0.0)
+    assert cert["load_path_ok"] is True
+    assert cert["bottleneck_mm2"] == pytest.approx(4.0)
+    assert cert["sf_floor"] is None

@@ -11,7 +11,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 import trimesh
+from scipy import ndimage
 
+from cadx.cad.fem.analyze import run_fem_domain
 from cadx.cad.fem.anchors3d import merge_anchor_lists, scan_mesh_anchors
 from cadx.cad.fem.loads import (
     body_force,
@@ -26,7 +28,7 @@ from cadx.cad.fem.regions import (
 )
 from cadx.cad.fem.solver import solve
 from cadx.cad.fem.topopt import TopOptParams, passive_solid_mask, simp
-from cadx.cad.fem.voxelize import voxelize
+from cadx.cad.fem.voxelize import VoxelDomain, voxelize
 from cadx.llm.schemas import LoadCase, LoadSpec, RegionSpec
 
 E_PLA = 3500.0
@@ -1259,3 +1261,75 @@ def test_load_region_min_cells_ignores_fixed() -> None:
     )
     _fixed, _F, w = resolve_case_dofs(dom, case)
     assert not any("point-load singularity" in x for x in w)
+
+
+# --------------------------------------------------------------------------- #
+# coverage-weighted voxelization (verify hardening)                            #
+# --------------------------------------------------------------------------- #
+
+
+def test_voxelize_coverage_off_by_default() -> None:
+    """Plain voxelize keeps coverage None — consumers stay on the binary
+    boundary model unless the flag was explicitly requested."""
+    dom = voxelize(_box_mesh(), 3.0, 150_000)
+    assert dom.coverage is None
+
+
+def test_voxelize_coverage_partial_boundary() -> None:
+    """On a curved part the surface cells carry partial fill fractions,
+    interior cells read 1.0 and fully exterior cells 0.0."""
+    sph = trimesh.creation.icosphere(subdivisions=2, radius=10.0)
+    dom = voxelize(sph, 2.0, 150_000, coverage=True)
+    assert dom.coverage is not None
+    cov = np.asarray(dom.coverage, dtype=float).reshape(dom.dims)
+    assert cov.shape == dom.solid.shape
+    assert (cov >= 0.0).all() and (cov <= 1.0).all()
+    # deep-interior cells are full (exactly 1.0 — no subsample rounding)
+    interior = ndimage.binary_erosion(dom.solid, iterations=2)
+    if interior.any():
+        assert (cov[interior] == 1.0).all()
+    # and some boundary cell is genuinely partial — the whole point of the
+    # field is that the binary mask loses this information
+    partial = dom.solid & (cov < 1.0) & (cov > 0.0)
+    assert partial.any()
+
+
+def test_voxelize_coverage_nonwatertight_degrades() -> None:
+    """A mesh that admits no reliable containment returns coverage=None —
+    callers fall back to the binary boundary model, not garbage."""
+    m = _box_mesh()
+    leaky = trimesh.Trimesh(vertices=m.vertices.copy(), faces=m.faces[:-1].copy())
+    assert not leaky.is_watertight
+    dom = voxelize(leaky, 3.0, 150_000, coverage=True)
+    assert dom.coverage is None
+
+
+def test_fem_coverage_scales_element_stiffness() -> None:
+    """run_fem_domain folds domain.coverage into elem_E — a half-covered
+    cell carries half the modulus of a full one."""
+    dom = voxelize(_box_mesh(30.0, 12.0, 12.0), 3.0, 150_000)
+    case = LoadCase(
+        name="t",
+        fixed=[RegionSpec(kind="face", axis="-x")],
+        loads=[
+            LoadSpec(region=RegionSpec(kind="face", axis="+x"), force_n=[0, 0, -50])
+        ],
+    )
+    fo_full: dict = {}
+    run_fem_domain(dom, dom.solid, [case], "pla", fields_out=fo_full)
+    dom_half = VoxelDomain(
+        origin=dom.origin,
+        pitch=dom.pitch,
+        dims=dom.dims,
+        solid=dom.solid.copy(),
+        coverage=np.full(dom.cell_count, 0.5),
+    )
+    fo_half: dict = {}
+    rep = run_fem_domain(dom_half, dom_half.solid, [case], "pla", fields_out=fo_half)
+    assert rep.cases and rep.cases[0].converged
+    solid = dom.solid.ravel()
+    np.testing.assert_allclose(
+        np.asarray(fo_half["elem_E"])[solid],
+        np.asarray(fo_full["elem_E"])[solid] * 0.5,
+        rtol=1e-6,
+    )

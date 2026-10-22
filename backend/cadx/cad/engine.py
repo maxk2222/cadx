@@ -1415,6 +1415,235 @@ def _resolve_topopt_cases(
     return r_resolved, r_weights, r_fixed_nm, r_load_nm, r_unresolved
 
 
+def _verify_export_structure(
+    *,
+    candidate_mesh: Any,
+    cases: list[Any],
+    mat_name: str,
+    mat: Any,
+    design_pitch: float,
+    max_elements: int,
+    keep_list: list[Any],
+    anchors: list[dict] | None,
+    out_dir: Path,
+    suffix: str,
+    s: RuntimeSettings,
+    solver_backend: str,
+    cancelled: Callable[[], bool] | None,
+    verify_robust: bool,
+    source_mesh: Any = None,
+) -> dict[str, Any]:
+    """Shared hardened export verification for the topopt + infill pipelines.
+
+    Re-voxelizes the export candidate at ``design_pitch`` (with
+    coverage-weighted boundary cells when ``fem_verify_coverage_e``), runs
+    the nominal export solve and — when ``verify_robust`` — the eroded /
+    dilated mask realizations on the same grid. ``sf_verified`` is the
+    worst safety factor across the solvable realizations and becomes the
+    headline number downstream (falling back to the nominal export SF when
+    the sweep is off or unproductive). ``fem_verify_mesh_shift`` adds a
+    half-pitch-translated probe whose drift is reported as
+    ``sf_mesh_sensitive``; ``fem_loadpath_cert`` attaches the
+    FEM-independent min-cut certificate.
+
+    The optional steps degrade to ``warnings`` — only a nominal-solve
+    failure propagates, preserving the callers' ``verify_exp = verify``
+    fallback. Returns::
+
+        {report, n_bodies_export, n_bodies_voxel, sf_realizations,
+         sf_verified, bottleneck_mm2, sf_floor, load_path_ok,
+         sf_mesh_sensitive, warnings}
+    """
+    from scipy import ndimage
+
+    from cadx.cad.fem.analyze import run_fem_domain
+    from cadx.cad.fem.loadpath_cert import loadpath_certificate
+    from cadx.cad.fem.regions import resolve_case_dofs
+    from cadx.cad.fem.voxelize import voxelize
+
+    warnings: list[str] = []
+    mem_budget = float(resources.effective_exec_mem_mb(s))
+    skin = candidate_mesh if source_mesh is None else source_mesh
+    use_coverage = bool(getattr(s, "fem_verify_coverage_e", False))
+    export_domain = voxelize(
+        candidate_mesh, design_pitch, max_elements, coverage=use_coverage
+    )
+    # the voxel raster is what the FEM *solves* — nested-but-disconnected
+    # bodies can fuse into one component here; keep it separate from the
+    # physical mesh body count so a fusion is measurable
+    n_bodies_voxel = int(
+        ndimage.label(
+            export_domain.solid,
+            structure=ndimage.generate_binary_structure(3, 1),
+        )[1]
+    )
+    # the printed truth: positive-volume mesh components (inner cavity
+    # walls carry negative volume and are not bodies)
+    n_bodies_export = solid_body_count(candidate_mesh)
+
+    def _solve(
+        mask: np.ndarray,
+        sfx: str,
+        od: Path | None = out_dir,
+        dom: Any = None,
+    ) -> Any:
+        # od=None for the auxiliary realizations — their reports feed
+        # sf_verified only, so skip the unreferenced per-case PNG renders
+        return run_fem_domain(
+            export_domain if dom is None else dom,
+            mask,
+            cases,
+            mat_name,
+            material=mat,
+            out_dir=od,
+            anchors=anchors,
+            keep_regions=keep_list,
+            spsolve_dofs=s.fem_spsolve_dofs,
+            pool_workers=s.exec_pool_workers,
+            mem_budget_mb=mem_budget,
+            suffix=sfx,
+            source_mesh=skin,
+            cancelled=cancelled,
+            solver_backend=solver_backend,
+        )
+
+    report = _solve(export_domain.solid, suffix)
+    sf_realizations: dict[str, float | None] = {
+        "nominal": report.worst_safety_factor
+    }
+    if verify_robust:
+        n_shift = int(getattr(s, "fem_verify_realization_cells", 1) or 1)
+        n_shift = max(1, min(n_shift, 4))
+        for name, mask in (
+            ("eroded", ndimage.binary_erosion(export_domain.solid, iterations=n_shift)),
+            ("dilated", ndimage.binary_dilation(export_domain.solid, iterations=n_shift)),
+        ):
+            sfx = f"{suffix}_ero" if name == "eroded" else f"{suffix}_dil"
+            if not np.asarray(mask).any():
+                sf_realizations[name] = None
+                warnings.append(f"export realization '{name}' is empty — skipped")
+                continue
+            # coverage measures the NOMINAL mesh's fill fractions — on the
+            # dilated mask the newly-solid cells model over-extrusion, so
+            # they print FULL (coverage 1.0), not the ~0 fraction their
+            # nominal-boundary position suggests
+            dom = None
+            if (
+                name == "dilated"
+                and use_coverage
+                and export_domain.coverage is not None
+            ):
+                cov_d = np.asarray(export_domain.coverage, dtype=float).copy()
+                cov_d[(np.asarray(mask) & ~export_domain.solid).ravel()] = 1.0
+                dom = dataclasses.replace(export_domain, coverage=cov_d)
+            try:
+                rep = _solve(mask, sfx, None, dom)
+                sf_realizations[name] = rep.worst_safety_factor
+            except Exception as e:
+                sf_realizations[name] = None
+                warnings.append(f"export realization '{name}' solve failed: {str(e)[:80]}")
+            if sf_realizations[name] is None:
+                warnings.append(
+                    f"export realization '{name}' produced no safety factor"
+                )
+    # sf_verified only exists when the NOMINAL realization solved — the
+    # headline structure itself being unsolvable IS the verdict; a
+    # dilated-only success must never read as "verified". When nominal is
+    # None the gate falls back to the (equally None) report SF and the
+    # structure is flagged for review.
+    solvable = [v for v in sf_realizations.values() if v is not None]
+    sf_verified = min(solvable) if sf_realizations["nominal"] is not None else None
+
+    sf_mesh_sensitive: bool | None = None
+    if getattr(s, "fem_verify_mesh_shift", False):
+        try:
+            shifted = candidate_mesh.copy()
+            shifted.apply_translation(np.full(3, design_pitch / 2.0))
+            dom_sh = voxelize(
+                shifted, design_pitch, max_elements, coverage=use_coverage
+            )
+            rep_sh = run_fem_domain(
+                dom_sh,
+                dom_sh.solid,
+                cases,
+                mat_name,
+                material=mat,
+                out_dir=None,
+                anchors=anchors,
+                keep_regions=keep_list,
+                spsolve_dofs=s.fem_spsolve_dofs,
+                pool_workers=s.exec_pool_workers,
+                mem_budget_mb=mem_budget,
+                suffix="",
+                source_mesh=None,
+                cancelled=cancelled,
+                solver_backend=solver_backend,
+            )
+            sf_sh = rep_sh.worst_safety_factor
+            if sf_sh is not None and sf_verified:
+                delta = abs(sf_sh - sf_verified) / max(sf_verified, 1e-9)
+                sf_mesh_sensitive = bool(delta > 0.2)
+                if sf_mesh_sensitive:
+                    warnings.append(
+                        f"export SF shifts {delta:.0%} under a half-pitch mesh "
+                        f"translation ({sf_verified:.2f} -> {sf_sh:.2f}) — the "
+                        "result is voxel-grid sensitive"
+                    )
+            elif sf_sh is None:
+                warnings.append("mesh-shift verification produced no safety factor")
+        except Exception as e:
+            warnings.append(f"mesh-shift verification failed: {str(e)[:80]}")
+
+    bottleneck_mm2: float | None = None
+    sf_floor: float | None = None
+    load_path_ok: bool | None = None
+    if getattr(s, "fem_loadpath_cert", False):
+        try:
+            cases_res = [
+                resolve_case_dofs(
+                    export_domain,
+                    c,
+                    anchors,
+                    density_g_cm3=getattr(mat, "density_g_cm3", 1.24),
+                )[:2]
+                for c in cases
+            ]
+            cert = loadpath_certificate(
+                export_domain,
+                cases_res,
+                yield_mpa=float(getattr(mat, "yield_mpa", 0.0) or 0.0),
+            )
+            bottleneck_mm2 = cert.get("bottleneck_mm2")
+            sf_floor = cert.get("sf_floor")
+            load_path_ok = cert.get("load_path_ok")
+            warnings.extend(cert.get("warnings") or [])
+        except Exception as e:
+            warnings.append(f"load-path certificate failed: {str(e)[:80]}")
+
+    return {
+        "report": report,
+        "n_bodies_export": n_bodies_export,
+        "n_bodies_voxel": n_bodies_voxel,
+        "sf_realizations": sf_realizations,
+        "sf_verified": sf_verified,
+        "bottleneck_mm2": bottleneck_mm2,
+        "sf_floor": sf_floor,
+        "load_path_ok": load_path_ok,
+        "sf_mesh_sensitive": sf_mesh_sensitive,
+        "warnings": warnings,
+    }
+
+
+def _gate_sf(info: dict[str, Any] | None, report: Any) -> float | None:
+    """Effective export safety factor for gating: the verified worst-case
+    realization when the hardened export sweep produced one, else the
+    report's own worst safety factor (which is the mask-substituted
+    fallback report when the export solve crashed). None-checked, not
+    or-chained — a solved SF of 0.0 IS a verdict."""
+    sf = (info or {}).get("sf_verified")
+    return sf if sf is not None else report.worst_safety_factor
+
+
 def run_fem_pipeline(
     *,
     mesh_path: Path,
@@ -1928,6 +2157,15 @@ def run_topopt_pipeline(  # noqa: C901
         max_displacement_mm=opt.max_displacement_mm,
         max_stress_mpa=opt.max_stress_mpa,
     )
+    # hardened export verification: eroded/nominal/dilated realization
+    # sweep whose worst case is reported as sf_verified (see
+    # _verify_export_structure); the per-run override follows the runtime
+    # setting when unset
+    eff_robust = (
+        opt.verify_robust
+        if opt.verify_robust is not None
+        else bool(s.fem_verify_realizations)
+    )
 
     # robust formulation multiplies the FEM solves per iteration (one per
     # eta realization per load case) — warn when the effective per-iteration
@@ -2214,33 +2452,32 @@ def run_topopt_pipeline(  # noqa: C901
         # export verification: re-voxelize the smoothed mesh that gets printed —
         # at the requested (spec-snapped) pitch, not the possibly
         # auto-coarsened design pitch: the mesh is smooth, so verification
-        # fidelity stays nominal and mask/export share one grid convention
+        # fidelity stays nominal and mask/export share one grid convention.
+        # The shared helper adds the eroded/dilated realization sweep
+        # (sf_verified), optional mesh-shift probe and load-path
+        # certificate on top of the nominal export solve.
         try:
-            domain_exp = voxelize(opt_mesh, design_pitch, max_elements or s.fem_max_elements)
-            out["n_bodies_export"] = int(
-                ndimage.label(
-                    domain_exp.solid,
-                    structure=ndimage.generate_binary_structure(3, 1),
-                )[1]
-            )
-            verify_exp = run_fem_domain(
-                domain_exp,
-                domain_exp.solid,
-                cases,
-                mat_name,
-                material=mat,
-                out_dir=out_dir,
+            info = _verify_export_structure(
+                candidate_mesh=opt_mesh,
+                cases=cases,
+                mat_name=mat_name,
+                mat=mat,
+                design_pitch=design_pitch,
+                max_elements=max_elements or s.fem_max_elements,
+                keep_list=keep_list,
                 anchors=anchors,
-                keep_regions=keep_list,
-                spsolve_dofs=s.fem_spsolve_dofs,
-                pool_workers=s.exec_pool_workers,
-                mem_budget_mb=float(resources.effective_exec_mem_mb(s)),
+                out_dir=out_dir,
                 suffix=f"{fem_suffix}_export",
-                source_mesh=opt_mesh,
-                cancelled=cancelled,
+                s=s,
                 solver_backend=params.solver_backend,
+                cancelled=cancelled,
+                verify_robust=eff_robust,
             )
+            res.topopt.setdefault("warnings", []).extend(info["warnings"])
+            out["n_bodies_export"] = info["n_bodies_export"]
+            verify_exp = info["report"]
         except Exception as e:
+            info = None
             log.warning("topopt.verify_export.failed", error=str(e)[:200])
             # falling back to the MASK report makes sf_export indistinguishable
             # from a real export solve — record it so downstream consumers and
@@ -2252,6 +2489,7 @@ def run_topopt_pipeline(  # noqa: C901
             )
             out["export_solve_ok"] = False
         out["verify_export"] = verify_exp
+        out["export_verify_info"] = info
         return out
 
     p1 = _one_pass(params.volfrac, pass_idx=1)
@@ -2260,6 +2498,7 @@ def run_topopt_pipeline(  # noqa: C901
     best = p1
 
     sf_exp = p1["verify_export"].worst_safety_factor
+    sf_gate1 = _gate_sf(p1.get("export_verify_info"), p1["verify_export"])
     sf_mask_first = p1["verify"].worst_safety_factor
     sf_ratio = (
         max(sf_mask_first, sf_exp) / max(min(sf_mask_first, sf_exp), 1e-9)
@@ -2276,7 +2515,7 @@ def run_topopt_pipeline(  # noqa: C901
         or any((c.compliance_j or 1.0) <= 0 for c in p1["verify_export"].cases)
         or any((c.max_disp_mm or 0.0) > 10 * exp_span for c in p1["verify_export"].cases)
     )
-    safety_retry = exp_degenerate or (sf_exp is not None and sf_exp < opt.safety_factor_min)
+    safety_retry = exp_degenerate or (sf_gate1 is not None and sf_gate1 < opt.safety_factor_min)
     gap_retry = sf_ratio is not None and sf_ratio > 3.0
     connectivity_retry = p1.get("n_bodies_export") is None or int(p1["n_bodies_export"]) > 1
     # Stated spec envelopes intentionally allow a shrunken export; avoid
@@ -2313,6 +2552,7 @@ def run_topopt_pipeline(  # noqa: C901
                 vol_target_scale=retry_vol_scale,
             )
             sf_exp2 = p2["verify_export"].worst_safety_factor
+            sf_gate2 = _gate_sf(p2.get("export_verify_info"), p2["verify_export"])
             trigger_reasons = [
                 reason
                 for enabled, reason in (
@@ -2330,6 +2570,8 @@ def run_topopt_pipeline(  # noqa: C901
                 "volfrac_second": retry_volfrac,
                 "sf_export_first": sf_exp,
                 "sf_export_second": sf_exp2,
+                "sf_verified_first": sf_gate1,
+                "sf_verified_second": sf_gate2,
                 "sf_ratio_first": sf_ratio,
                 "min_member_mm": retry_member,
                 "crisp_extraction": retry_crisp,
@@ -2359,13 +2601,13 @@ def run_topopt_pipeline(  # noqa: C901
                 p1_ok,
                 abs(float(p1["extract"].get("vol_error_pp") or 0.0)) <= 5.0,
                 sf_ratio is None or sf_ratio <= 3.0,
-                float(sf_exp or 0.0),
+                float(sf_gate1 or 0.0),
             )
             p2_quality = (
                 p2_ok,
                 abs(float(p2["extract"].get("vol_error_pp") or 0.0)) <= 5.0,
                 p2_ratio is None or p2_ratio <= 3.0,
-                float(sf_exp2 or 0.0),
+                float(sf_gate2 or 0.0),
             )
             if p2_quality > p1_quality:
                 best = p2
@@ -2380,12 +2622,27 @@ def run_topopt_pipeline(  # noqa: C901
     # how well does the printed geometry realize the SIMP optimum — the
     # numbers the agent should actually judge a run by. Flat dict; extra
     # telemetry keys are only emitted when their source was computed.
+    exp_info = best.get("export_verify_info") or {}
     verification: dict[str, Any] = {
         "compliance_pred_mj": (result.history[-1].get("compliance_mj") if result.history else None),
         "compliance_mask_j": [c.compliance_j for c in verify.cases],
         "compliance_export_j": [c.compliance_j for c in verify_export.cases],
         "sf_mask": verify.worst_safety_factor,
         "sf_export": verify_export.worst_safety_factor,
+        # headline: worst safety factor over the nominal/eroded/dilated
+        # export realizations (the nominal export SF when the sweep was
+        # off); the mask result is the last resort when even the nominal
+        # export solve could not run
+        "sf_verified": (
+            exp_info.get("sf_verified")
+            if exp_info.get("sf_verified") is not None
+            else verify_export.worst_safety_factor
+        ),
+        "sf_realizations": exp_info.get("sf_realizations"),
+        "bottleneck_mm2": exp_info.get("bottleneck_mm2"),
+        "sf_floor": exp_info.get("sf_floor"),
+        "load_path_ok": exp_info.get("load_path_ok"),
+        "sf_mesh_sensitive": exp_info.get("sf_mesh_sensitive"),
         "sf_ratio": (
             max(verify.worst_safety_factor, verify_export.worst_safety_factor)
             / max(min(verify.worst_safety_factor, verify_export.worst_safety_factor), 1e-9)
@@ -2461,6 +2718,14 @@ def run_topopt_pipeline(  # noqa: C901
         )
     else:
         verification["valid"] = True
+    if exp_info.get("load_path_ok") is False:
+        # the geometric certificate found a case whose loads cannot reach
+        # their fixtures through the export solid — structurally broken
+        verification["valid"] = False
+        res.topopt["warnings"].append(
+            "load-path certificate: a load case cannot reach its fixtures "
+            "through the export solid — the part is structurally disconnected"
+        )
     if verification["sf_ratio"] is not None and verification["sf_ratio"] > 3.0:
         verification["valid"] = False
         res.topopt["warnings"].append(
@@ -2482,8 +2747,13 @@ def run_topopt_pipeline(  # noqa: C901
     # the printed part meet the requested safety floor" — report both; the
     # field is omitted when no export SF was measured
     sf_min = getattr(opt, "safety_factor_min", None)
-    if sf_min is not None and verify_export.worst_safety_factor is not None:
-        verification["meets_safety_factor"] = bool(verify_export.worst_safety_factor >= sf_min)
+    # the requested safety floor is judged against the verified worst-case
+    # realization (sf_verified -> sf_export -> sf_mask fallback chain)
+    sf_gate = verification["sf_verified"]
+    if sf_gate is None:
+        sf_gate = verify.worst_safety_factor
+    if sf_min is not None and sf_gate is not None:
+        verification["meets_safety_factor"] = bool(sf_gate >= sf_min)
     if verify.worst_safety_factor is not None and verify_export.worst_safety_factor is not None:
         # >0 means the smoothed export mesh is stiffer than the mask suggests
         verification["sf_gap"] = round(
@@ -2558,10 +2828,17 @@ def run_topopt_pipeline(  # noqa: C901
             "material": mat.name,
             "sf_mask": verify.worst_safety_factor,
             "sf_export": verify_export.worst_safety_factor,
+            "sf_verified": verification["sf_verified"],
+            "sf_realizations": verification["sf_realizations"],
+            "bottleneck_mm2": verification["bottleneck_mm2"],
+            "sf_floor": verification["sf_floor"],
+            "load_path_ok": verification["load_path_ok"],
+            "sf_mesh_sensitive": verification["sf_mesh_sensitive"],
             "min_member_mm": best["min_member_mm"],
             "thin_fraction": round(best["thin_fraction"], 4),
             "n_components": best["n_components"],
             "n_bodies_export": best["n_bodies_export"],
+            "n_bodies_voxel": exp_info.get("n_bodies_voxel"),
             "n_surface_components": best["n_surface_components"],
             "output_envelope": best.get("output_envelope"),
             "output_envelope_ok": best.get("output_envelope_ok", True),
@@ -2685,7 +2962,10 @@ def run_infill_pipeline(  # noqa: C901
     structure in ~2 solves instead of 60+ iterations. scope="guided"
     additionally restricts the lattice to the topology a cheap coarse
     SIMP retains. Verified through the same mask + export FEM path as
-    run_topopt_pipeline — sf_export still describes the printed mesh.
+    run_topopt_pipeline — sf_export still describes the printed mesh,
+    and sf_verified carries the worst case across the eroded/nominal/
+    dilated export realizations plus the homogenized lattice model
+    (sf_homog / sf_micro).
     """
     from scipy import ndimage
 
@@ -2694,7 +2974,6 @@ def run_infill_pipeline(  # noqa: C901
     from cadx.cad.fem.extract import density_to_mesh
     from cadx.cad.fem.infill import (
         InfillParams,
-        element_principal_dirs,
         element_strain_energy,
         infill_field,
     )
@@ -2714,6 +2993,22 @@ def run_infill_pipeline(  # noqa: C901
     s = runtime or RuntimeSettings()
     opt = OptimizeSpec(**(optimize or {}))
     t0 = time.monotonic()
+
+    # per-run overrides follow the runtime settings when unset — the same
+    # tri-state pattern the other optimize flags use
+    eff_octet = (
+        opt.infill_octet if opt.infill_octet is not None else bool(s.infill_octet)
+    )
+    eff_robust = (
+        opt.verify_robust
+        if opt.verify_robust is not None
+        else bool(s.fem_verify_realizations)
+    )
+    eff_homog = (
+        opt.verify_homogenized
+        if opt.verify_homogenized is not None
+        else bool(s.fem_homogenized_infill)
+    )
 
     try:
         mesh = load_triangle_mesh(mesh_path)
@@ -2893,7 +3188,17 @@ def run_infill_pipeline(  # noqa: C901
     energy_w: list[float] = []
     for i, sol in sols_pairs:
         energies.append(
-            element_strain_energy(domain, sol.u, fo["edof"], fo["active"], fo["elem_E"], fo["nu"])
+            element_strain_energy(
+                domain,
+                sol.u,
+                fo["edof"],
+                fo["active"],
+                fo["elem_E"],
+                fo["nu"],
+                aniso=fo.get("aniso"),
+                elem_class=fo.get("elem_class"),
+                class_D=fo.get("class_D"),
+            )
         )
         energy_w.append(float(cases[i].weight) if i < len(cases) else 1.0)
     if not energies:
@@ -2901,20 +3206,43 @@ def run_infill_pipeline(  # noqa: C901
         return res
 
     dirs = None
+    frames = None
     if opt.infill_style == "struts_aligned":
         try:
-            acc = np.zeros((domain.cell_count, 3))
-            wsum = 0.0
-            for (_i, sol), w in zip(sols_pairs, energy_w, strict=True):
-                acc += w * element_principal_dirs(
-                    domain, sol.u, fo["edof"], fo["active"], fo["elem_E"], fo["nu"]
+            # per-case full stress frames -> a single energy-weighted
+            # (evals, evecs) pair per cell; infill_field orients the strut
+            # families from the combined tensor (octet diagonals included)
+            from cadx.cad.fem.infill import (
+                combine_stress_frames,
+                element_principal_frames,
+            )
+
+            frames_list = [
+                element_principal_frames(
+                    domain,
+                    sol.u,
+                    fo["edof"],
+                    fo["active"],
+                    fo["elem_E"],
+                    fo["nu"],
+                    aniso=fo.get("aniso"),
+                    elem_class=fo.get("elem_class"),
+                    class_D=fo.get("class_D"),
                 )
-                wsum += w
-            if wsum > 0:
-                dirs = acc / wsum  # strut_occupancy re-normalizes rows
+                for _i, sol in sols_pairs
+            ]
+            frames = combine_stress_frames(frames_list, energy_w)
+            if frames is not None:
+                # compatibility dirs for the axis-strut path: the dominant
+                # eigenvector of the combined stress ellipsoid
+                _evals, _evecs = frames
+                _dom = np.argmax(np.abs(_evals), axis=1)
+                dirs = _evecs[np.arange(len(_evecs)), :, _dom]
         except Exception as e:
+            frames = None
+            dirs = None
             res.topopt["warnings"].append(
-                f"principal-direction solve failed — struts fall back to gyroid: {e}"
+                f"principal-frame solve failed — struts fall back to gyroid: {e}"
             )
 
     # --- stage 2 (optional): guided scope — a cheap coarse SIMP picks the
@@ -2980,6 +3308,7 @@ def run_infill_pipeline(  # noqa: C901
         style=opt.infill_style,
         scope="guided" if guide_mask is not None else "full",
         seed=int(opt.infill_seed),
+        octet=eff_octet,
     )
     opt_dir = out_dir / "topopt"
     opt_dir.mkdir(parents=True, exist_ok=True)
@@ -2993,6 +3322,10 @@ def run_infill_pipeline(  # noqa: C901
     target_volfrac = float(opt.target_volume_fraction or s.topopt_default_volfrac)
 
     def _build_candidate(density_offset: float, *, crisp: bool = False) -> dict[str, Any]:
+        # fields_out keeps the internal target-density/interior/occupancy
+        # fields — the homogenized verification model re-uses them instead
+        # of re-deriving the lattice layout
+        cand_fields: dict[str, Any] = {}
         rho, _mask, meta = infill_field(
             domain,
             p_infill,
@@ -3003,6 +3336,8 @@ def run_infill_pipeline(  # noqa: C901
             guide_mask=guide_mask,
             weights=energy_w,
             density_offset=density_offset,
+            frames=frames,
+            fields_out=cand_fields,
         )
         candidate_mesh, mask, extract_warnings, components, extract = density_to_mesh(
             domain,
@@ -3075,6 +3410,7 @@ def run_infill_pipeline(  # noqa: C901
             "density_offset": density_offset,
             "output_envelope": output_envelope,
             "output_envelope_ok": output_envelope_ok,
+            "fields": cand_fields,
         }
 
     t_field = time.monotonic()
@@ -3169,46 +3505,40 @@ def run_infill_pipeline(  # noqa: C901
         solver_backend=solver_backend,
     )
 
-    def _verify_export_candidate(candidate: dict[str, Any], suffix: str) -> tuple[Any, int, int]:
-        candidate_mesh = candidate["mesh"]
-        export_domain = voxelize(candidate_mesh, design_pitch, max_elements or s.fem_max_elements)
-        # the voxel raster is what the FEM *solves* — nested-but-disconnected
-        # bodies can fuse into one component here; keep it as n_bodies_voxel
-        # so a fusion is measurable against the physical mesh body count
-        voxel_bodies = int(
-            ndimage.label(
-                export_domain.solid,
-                structure=ndimage.generate_binary_structure(3, 1),
-            )[1]
-        )
-        # the printed truth: positive-volume mesh components (inner cavity
-        # walls carry negative volume and are not bodies)
-        solid_bodies = solid_body_count(candidate_mesh)
-        report = run_fem_domain(
-            export_domain,
-            export_domain.solid,
-            cases,
-            mat_name,
-            material=mat,
-            out_dir=out_dir,
-            anchors=anchors,
-            keep_regions=keep_list,
-            spsolve_dofs=s.fem_spsolve_dofs,
-            pool_workers=s.exec_pool_workers,
-            mem_budget_mb=mem_budget,
-            suffix=suffix,
-            source_mesh=candidate_mesh,
-            cancelled=cancelled,
-            solver_backend=solver_backend,
-        )
-        return report, solid_bodies, voxel_bodies
+    # the homogenized infill model (class-tensor lattice elements) — solved
+    # once `best` settles below; None when disabled or unsolvable
+    verify_h: Any = None
 
     export_solve_ok = True
     n_bodies_voxel: int | None = None
+    exp_info: dict[str, Any] | None = None
     try:
-        verify_exp, n_bodies_export, n_bodies_voxel = _verify_export_candidate(best, "_export")
+        # same hardened export verification as SIMP — coverage-weighted
+        # boundary cells, realization sweep (sf_verified), optional
+        # mesh-shift probe and load-path certificate
+        exp_info = _verify_export_structure(
+            candidate_mesh=best["mesh"],
+            cases=cases,
+            mat_name=mat_name,
+            mat=mat,
+            design_pitch=design_pitch,
+            max_elements=max_elements or s.fem_max_elements,
+            keep_list=keep_list,
+            anchors=anchors,
+            out_dir=out_dir,
+            suffix="_export",
+            s=s,
+            solver_backend=solver_backend,
+            cancelled=cancelled,
+            verify_robust=eff_robust,
+        )
+        verify_exp = exp_info["report"]
+        n_bodies_export = exp_info["n_bodies_export"]
+        n_bodies_voxel = exp_info["n_bodies_voxel"]
+        res.topopt.setdefault("warnings", []).extend(exp_info["warnings"])
     except Exception as e:
         log.warning("infill.verify_export.failed", error=str(e)[:200])
+        exp_info = None
         verify_exp = verify
         export_solve_ok = False
         res.topopt["warnings"].append(
@@ -3241,19 +3571,22 @@ def run_infill_pipeline(  # noqa: C901
         best, verify_exp, n_bodies_export
     )
     sf_export_first = verify_exp.worst_safety_factor
+    sf_verified_first = (exp_info or {}).get("sf_verified")
     volfrac_first = volfrac_export
     ratio_first = sf_ratio
     bodies_first = n_bodies_export
     sf_min = float(opt.safety_factor_min)
+    # the verified worst-case realization gates before the nominal export SF
+    sf_eff = _gate_sf(exp_info, verify_exp)
     retry_needed = (
         initial_gate_failed
         or best.get("output_envelope_ok") is False
         or n_bodies_export is None
         or n_bodies_export > 1
         or not export_solve_ok
-        or verify_exp.worst_safety_factor is None
+        or sf_eff is None
         or (sf_ratio is not None and sf_ratio > 3.0)
-        or (verify_exp.worst_safety_factor is not None and verify_exp.worst_safety_factor < sf_min)
+        or (sf_eff is not None and sf_eff < sf_min)
     )
     if retry_needed and (cancelled is None or not cancelled()):
         retry_reasons = []
@@ -3263,7 +3596,7 @@ def run_infill_pipeline(  # noqa: C901
             retry_reasons.append("multi_body")
         if best.get("output_envelope_ok") is False:
             retry_reasons.append("output_envelope")
-        if not export_solve_ok or verify_exp.worst_safety_factor is None:
+        if not export_solve_ok or sf_eff is None:
             retry_reasons.append("export_solve")
         if sf_ratio is not None and sf_ratio > 3.0:
             retry_reasons.append("sf_divergence")
@@ -3272,18 +3605,37 @@ def run_infill_pipeline(  # noqa: C901
             and abs(float(best["export_fraction"]) - target_volfrac) > volume_tolerance
         ):
             retry_reasons.append("stl_volume")
-        if verify_exp.worst_safety_factor is not None and verify_exp.worst_safety_factor < sf_min:
+        if sf_eff is not None and sf_eff < sf_min:
             retry_reasons.append("safety_factor")
         retry_started = time.monotonic()
         retry_candidate = _build_candidate(float(best["density_offset"]), crisp=True)
+        retry_info: dict[str, Any] | None = None
         retry_voxel_bodies: int | None = None
         try:
-            retry_report, retry_bodies, retry_voxel_bodies = _verify_export_candidate(
-                retry_candidate, "_retry_export"
+            retry_info = _verify_export_structure(
+                candidate_mesh=retry_candidate["mesh"],
+                cases=cases,
+                mat_name=mat_name,
+                mat=mat,
+                design_pitch=design_pitch,
+                max_elements=max_elements or s.fem_max_elements,
+                keep_list=keep_list,
+                anchors=anchors,
+                out_dir=out_dir,
+                suffix="_retry_export",
+                s=s,
+                solver_backend=solver_backend,
+                cancelled=cancelled,
+                verify_robust=eff_robust,
             )
+            retry_report = retry_info["report"]
+            retry_bodies = retry_info["n_bodies_export"]
+            retry_voxel_bodies = retry_info["n_bodies_voxel"]
             retry_export_ok = True
+            res.topopt.setdefault("warnings", []).extend(retry_info["warnings"])
         except Exception as e:
             log.warning("infill.verify_export_retry.failed", error=str(e)[:200])
+            retry_info = None
             retry_report, retry_bodies = verify, None
             retry_export_ok = False
             retry_candidate["warnings"].append(f"crisp export retry FEM failed ({str(e)[:80]})")
@@ -3292,7 +3644,7 @@ def run_infill_pipeline(  # noqa: C901
         )
 
         def _retry_score(
-            report: Any,
+            sf: float | None,
             bodies: int | None,
             ratio: float | None,
             fraction: float,
@@ -3305,18 +3657,18 @@ def run_infill_pipeline(  # noqa: C901
                 int(bodies is not None and bodies <= 1),
                 int(ratio is None or ratio <= 3.0),
                 int(target_infeasible or abs(fraction - target_volfrac) <= volume_tolerance),
-                float(report.worst_safety_factor or 0.0),
+                float(sf or 0.0),
             )
 
         if _retry_score(
-            retry_report,
+            _gate_sf(retry_info, retry_report),
             retry_bodies,
             retry_ratio,
             retry_fraction,
             retry_export_ok,
             retry_candidate.get("output_envelope_ok") is not False,
         ) > _retry_score(
-            verify_exp,
+            sf_eff,
             n_bodies_export,
             sf_ratio,
             volfrac_export,
@@ -3334,6 +3686,8 @@ def run_infill_pipeline(  # noqa: C901
             verify_exp, n_bodies_export = retry_report, retry_bodies
             n_bodies_voxel = retry_voxel_bodies
             export_solve_ok = retry_export_ok
+            exp_info = retry_info
+            sf_eff = _gate_sf(exp_info, verify_exp)
             sf_ratio, volfrac_export = retry_ratio, retry_fraction
         res.topopt["retry"] = {
             "trigger": retry_reasons,
@@ -3342,7 +3696,9 @@ def run_infill_pipeline(  # noqa: C901
             "volfrac_first": volfrac_first,
             "volfrac_second": volfrac_export,
             "sf_export_first": sf_export_first,
-            "sf_export_second": verify_exp.worst_safety_factor,
+            "sf_export_second": retry_report.worst_safety_factor,
+            "sf_verified_first": sf_verified_first,
+            "sf_verified_second": (retry_info or {}).get("sf_verified"),
             "sf_ratio_first": ratio_first,
             "sf_ratio_second": sf_ratio,
             "n_bodies_export_first": bodies_first,
@@ -3357,11 +3713,89 @@ def run_infill_pipeline(  # noqa: C901
     res.topopt["warnings"] += best["warnings"]
     res.timings["verify_s"] = round(time.monotonic() - t, 2)
 
+    # --- homogenized infill verification: the same lattice layout solved
+    # on class tensors — each interior cell carries C_H(rho)/A(rho) from the
+    # unit-cell table instead of resolved strut geometry. Runs alongside
+    # the resolved mask solve; a failure degrades to a warning only.
+    if eff_homog and isinstance(best.get("fields"), dict) and best["fields"].get("d") is not None:
+        try:
+            from cadx.cad.fem.homogenize import infill_homog_elems, lattice_table
+            from cadx.cad.fem.solver import _D
+
+            tbl = lattice_table(
+                str(meta.get("style", "gyroid_graded") or "gyroid_graded"),
+                float(mat.poisson),
+                cell_voxels=int(s.fem_homog_cell_voxels),
+                octet=bool(eff_octet),
+            )
+            base_D = (
+                _D(mat.poisson, mat.aniso_z, mat.aniso_axis) if mat.aniso_z != 1.0 else None
+            )
+            elem_class, class_D, micro_amp = infill_homog_elems(
+                domain,
+                np.asarray(best["fields"]["d"], dtype=float).ravel(),
+                np.asarray(best["fields"]["interior"], dtype=bool),
+                tbl,
+                base_D=base_D,
+            )
+            homog_mask = domain.solid.ravel() & (
+                np.asarray(best["fields"]["d"], dtype=float).ravel() > 0.0
+            )
+            if not homog_mask.any():
+                raise ValueError("homogenized mask is empty")
+            verify_h = run_fem_domain(
+                domain,
+                homog_mask,
+                cases,
+                mat_name,
+                material=mat,
+                out_dir=out_dir,
+                anchors=anchors,
+                keep_regions=keep_list,
+                spsolve_dofs=s.fem_spsolve_dofs,
+                pool_workers=s.exec_pool_workers,
+                mem_budget_mb=mem_budget,
+                suffix="_homog",
+                source_mesh=opt_mesh,
+                cancelled=cancelled,
+                solver_backend=solver_backend,
+                elem_class=elem_class,
+                class_D=class_D,
+                micro_amp=micro_amp,
+                model="homogenized",
+            )
+            res.fem_homog = verify_h.model_dump()
+            report_to_json(verify_h, out_dir / "fem" / "report_homog.json")
+        except Exception as e:
+            verify_h = None
+            log.warning("infill.homog_verify.failed", error=str(e)[:200])
+            res.topopt["warnings"].append(
+                f"homogenized infill verification failed: {str(e)[:80]}"
+            )
+
     verification: dict[str, Any] = {
         "compliance_mask_j": [c.compliance_j for c in verify.cases],
         "compliance_export_j": [c.compliance_j for c in verify_exp.cases],
         "sf_mask": verify.worst_safety_factor,
         "sf_export": verify_exp.worst_safety_factor,
+        # headline: worst case over the nominal/eroded/dilated export
+        # realizations (the nominal export SF when the sweep was off)
+        "sf_verified": (
+            (exp_info or {}).get("sf_verified")
+            if (exp_info or {}).get("sf_verified") is not None
+            else verify_exp.worst_safety_factor
+        ),
+        "sf_realizations": (exp_info or {}).get("sf_realizations"),
+        "bottleneck_mm2": (exp_info or {}).get("bottleneck_mm2"),
+        "sf_floor": (exp_info or {}).get("sf_floor"),
+        "load_path_ok": (exp_info or {}).get("load_path_ok"),
+        "sf_mesh_sensitive": (exp_info or {}).get("sf_mesh_sensitive"),
+        # homogenized lattice model: member-scale SF on C_H(rho) class
+        # tensors (sf_homog) and its micro stress-localized floor
+        # (sf_micro) — None when the homogenized solve did not run
+        "sf_homog": verify_h.worst_safety_factor if verify_h is not None else None,
+        "sf_micro": getattr(verify_h, "worst_safety_factor_micro", None),
+        "strut_align_deg": meta.get("strut_align_deg"),
         "sf_gap": (
             round(verify.worst_safety_factor - verify_exp.worst_safety_factor, 4)
             if verify.worst_safety_factor is not None and verify_exp.worst_safety_factor is not None
@@ -3467,6 +3901,14 @@ def run_infill_pipeline(  # noqa: C901
         )
     else:
         verification["valid"] = True
+    if (exp_info or {}).get("load_path_ok") is False:
+        # the geometric certificate found a case whose loads cannot reach
+        # their fixtures through the export solid — structurally broken
+        verification["valid"] = False
+        res.topopt["warnings"].append(
+            "load-path certificate: a load case cannot reach its fixtures "
+            "through the export solid — the part is structurally disconnected"
+        )
     if sf_ratio is not None and sf_ratio > 3.0:
         verification["valid"] = False
         res.topopt["warnings"].append(
@@ -3505,8 +3947,15 @@ def run_infill_pipeline(  # noqa: C901
             "bounded retry"
         )
     sf_min = getattr(opt, "safety_factor_min", None)
-    if sf_min is not None and verify_exp.worst_safety_factor is not None:
-        verification["meets_safety_factor"] = bool(verify_exp.worst_safety_factor >= sf_min)
+    # the requested safety floor is judged against the verified worst-case
+    # realization (sf_verified -> sf_export -> sf_mask fallback chain)
+    sf_gate = verification["sf_verified"]
+    if sf_gate is None:
+        sf_gate = verify_exp.worst_safety_factor
+    if sf_gate is None:
+        sf_gate = verify.worst_safety_factor
+    if sf_min is not None and sf_gate is not None:
+        verification["meets_safety_factor"] = bool(sf_gate >= sf_min)
     if verify.grid.get("dofs"):
         verification["dofs"] = verify.grid["dofs"]
     if verify.cases:
@@ -3545,6 +3994,15 @@ def run_infill_pipeline(  # noqa: C901
             "material": mat.name,
             "sf_mask": verify.worst_safety_factor,
             "sf_export": verify_exp.worst_safety_factor,
+            "sf_verified": verification["sf_verified"],
+            "sf_realizations": verification["sf_realizations"],
+            "bottleneck_mm2": verification["bottleneck_mm2"],
+            "sf_floor": verification["sf_floor"],
+            "load_path_ok": verification["load_path_ok"],
+            "sf_mesh_sensitive": verification["sf_mesh_sensitive"],
+            "sf_homog": verification["sf_homog"],
+            "sf_micro": verification["sf_micro"],
+            "strut_align_deg": verification["strut_align_deg"],
             "min_member_mm": min_member_mm,
             "thin_fraction": round(thin_fraction, 4),
             "n_components": n_components,
@@ -3658,8 +4116,6 @@ def run_topopt_resample(
     domain from the stored grid meta, extracts + verifies both the exact
     mask and the smoothed export mesh, writes exports + reports.
     """
-    from scipy import ndimage
-
     from cadx import storage
     from cadx.cad.fem.analyze import report_to_json, run_fem_domain
     from cadx.cad.fem.extract import density_to_mesh
@@ -3671,7 +4127,7 @@ def run_topopt_resample(
         resolve_case_dofs,
     )
     from cadx.cad.fem.topopt import passive_solid_mask
-    from cadx.cad.fem.voxelize import VoxelDomain, voxelize
+    from cadx.cad.fem.voxelize import VoxelDomain
     from cadx.llm.schemas import LoadCase, OptimizeSpec
 
     res = ExecResult()
@@ -3827,31 +4283,42 @@ def run_topopt_resample(
         report_to_json(verify, out_dir / "fem" / "report.json")
         res.fem = verify.model_dump()
         try:
-            domain_exp = voxelize(opt_mesh, pitch, max_elements or s.fem_max_elements)
-            res.topopt["n_bodies_export"] = int(
-                ndimage.label(
-                    domain_exp.solid,
-                    structure=ndimage.generate_binary_structure(3, 1),
-                )[1]
-            )
-            verify_exp = run_fem_domain(
-                domain_exp,
-                domain_exp.solid,
-                cases,
-                material or "",
-                out_dir=out_dir,
+            # same hardened export verification as the optimize passes —
+            # sf_verified carries the realization sweep when enabled
+            info = _verify_export_structure(
+                candidate_mesh=opt_mesh,
+                cases=cases,
+                mat_name=material or "",
+                mat=mat,
+                design_pitch=pitch,
+                max_elements=max_elements or s.fem_max_elements,
+                keep_list=keep_list,
                 anchors=anchors,
-                keep_regions=keep_list,
-                pool_workers=s.exec_pool_workers,
-                mem_budget_mb=float(resources.effective_exec_mem_mb(s)),
+                out_dir=out_dir,
                 suffix="_export",
-                source_mesh=opt_mesh,
+                s=s,
+                solver_backend=str(getattr(s, "fem_solver_backend", "auto") or "auto"),
                 cancelled=cancelled,
+                verify_robust=(
+                    opt.verify_robust
+                    if opt.verify_robust is not None
+                    else bool(s.fem_verify_realizations)
+                ),
             )
+            verify_exp = info["report"]
             report_to_json(verify_exp, out_dir / "fem" / "report_export.json")
             res.fem_export = verify_exp.model_dump()
+            res.topopt["n_bodies_export"] = info["n_bodies_export"]
+            res.topopt["n_bodies_voxel"] = info["n_bodies_voxel"]
             res.topopt["sf_mask"] = verify.worst_safety_factor
             res.topopt["sf_export"] = verify_exp.worst_safety_factor
+            res.topopt["sf_verified"] = info["sf_verified"]
+            res.topopt["sf_realizations"] = info["sf_realizations"]
+            res.topopt["bottleneck_mm2"] = info["bottleneck_mm2"]
+            res.topopt["sf_floor"] = info["sf_floor"]
+            res.topopt["load_path_ok"] = info["load_path_ok"]
+            res.topopt["sf_mesh_sensitive"] = info["sf_mesh_sensitive"]
+            res.topopt.setdefault("warnings", []).extend(info["warnings"])
         except Exception as e:
             log.warning("topopt.resample_verify_failed", error=str(e)[:200])
             res.topopt["sf_mask"] = verify.worst_safety_factor

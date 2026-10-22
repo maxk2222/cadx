@@ -190,7 +190,7 @@ async def test_condense_digest_carries_state_lines():
         }
     )
     lines2 = _digest_state_lines(session2, [])
-    assert any("run0" in ln and "sf_export=2.4" in ln for ln in lines2)
+    assert any("run0" in ln and "sf=2.4" in ln for ln in lines2)
 
     # a failed verify surfaces the error, not a stale OK
     bad = [{"name": "verify", "args": {}, "result": {"ok": False, "category": "boom"}}]
