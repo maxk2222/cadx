@@ -94,11 +94,24 @@ class HttpDriver:
             return []
 
     async def wait_job(self, job_id: str, timeout_s: float) -> dict[str, Any]:
-        """Poll until terminal; on timeout cancel and return the last state."""
+        """Poll until terminal; on timeout cancel and return the last state.
+
+        Transient transport errors (dropped keep-alive, one-off connect
+        failure) retry — a single socket hiccup must not fail a stage that
+        polls for tens of minutes."""
         t0 = time.monotonic()
         delay = 1.0
+        transient = 0
         while time.monotonic() - t0 < timeout_s:
-            j = await self.job(job_id)
+            try:
+                j = await self.job(job_id)
+                transient = 0
+            except (httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError):
+                transient += 1
+                if transient >= 10:
+                    raise
+                await asyncio.sleep(2.0)
+                continue
             status = str(j.get("status"))
             if status in _TERMINAL:
                 return j
