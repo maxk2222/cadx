@@ -464,6 +464,7 @@ async def _read_outcome(
         resolved_mode=v.resolved_mode if v else None,
         mode_note="",
         analysis=v.analysis if v else None,
+        features=(v.mesh or {}).get("features") if v and isinstance(v.mesh, dict) else None,
         spec=v.spec if v else None,
         plan=v.plan if v else None,
         code=v.code if v else None,

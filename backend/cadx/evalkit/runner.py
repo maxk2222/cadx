@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from cadx.evalkit.features import ensure_features, needs_features
 from cadx.evalkit.gates import run_gates
 from cadx.evalkit.metrics import harvest
 from cadx.evalkit.models import CaseResult, StageOutcome, StageResult
@@ -277,6 +278,10 @@ async def _run_stages(
                 status="failed", wall_s=time.monotonic() - t0, error=f"{type(e).__name__}: {e}"
             )
         wall = outcome.wall_s or (time.monotonic() - t0)
+        # measured features are not persisted on Version — recover them from
+        # the exported artifacts when a feature-family gate is present
+        if needs_features(stage.gates):
+            await ensure_features(outcome)
         metrics = harvest(outcome)
         gates = run_gates(stage.gates, outcome, wall)
         passed = (

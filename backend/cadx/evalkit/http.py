@@ -272,6 +272,9 @@ class HttpDriver:
             iterations=int(detail.get("iterations") or 0),
             resolved_mode=detail.get("resolved_mode"),
             analysis=detail.get("analysis"),
+            features=(detail.get("mesh") or {}).get("features")
+            if isinstance(detail.get("mesh"), dict)
+            else None,
             spec=detail.get("spec"),
             plan=detail.get("plan"),
             code=detail.get("code"),
