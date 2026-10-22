@@ -24,6 +24,9 @@ class Analysis(BaseModel):
     surface_area: float = 0.0
     center_of_mass: list[float] = Field(default_factory=list)
     solid_count: int = 0
+    # boundary surface components (outer wall + inner cavity walls) —
+    # >solid_count is normal for hollow parts, it is not a defect
+    surface_components: int = 0
     is_valid: bool = False
     watertight: bool | None = None
     watertight_after_repair: bool | None = None

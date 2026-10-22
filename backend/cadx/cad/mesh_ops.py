@@ -168,8 +168,10 @@ def clean(mesh: trimesh.Trimesh, min_component_frac: float = 0.01) -> trimesh.Tr
     try:
         bodies = mesh.split(only_watertight=False)
         if len(bodies) > 1:
-            vols = np.array([max(abs(b.volume), 1e-12) for b in bodies])
-            keep = vols >= vols.max() * min_component_frac
+            # only positive-volume components are bodies — negative ones are
+            # inner cavity walls; dropping them would open the hollow region
+            vols = np.array([float(b.volume) for b in bodies])
+            keep = (vols <= 0.0) | (vols >= vols.max() * min_component_frac)
             bodies = [b for b, k in zip(bodies, keep, strict=True) if k] or [
                 bodies[int(np.argmax(vols))]
             ]
@@ -583,6 +585,65 @@ def smooth_preserve(
     if not out.is_watertight or len(out.faces) == 0:
         return mesh
     return out
+
+
+def solid_body_count(mesh: trimesh.Trimesh) -> int:
+    """Physical solid bodies = positive-signed-volume components.
+
+    A watertight part's boundary splits into one component per enclosed
+    void region plus the outer wall — a closed shell already has two
+    (outer wall + inner cavity wall). Cavity walls carry *negative* signed
+    volume because their normals point into the void, so counting
+    ``mesh.split()`` components as "solids" fails on every hollow part.
+    Falls back to the component count when winding is broken (all volumes
+    non-positive) — erring toward reporting more bodies, not fewer.
+    """
+    try:
+        parts = mesh.split(only_watertight=False)
+    except Exception:
+        return 1
+    if not parts:
+        return 1
+    vols = np.array([float(p.volume) for p in parts])
+    positive = int((vols > 0.0).sum())
+    return positive if positive > 0 else len(parts)
+
+
+def _body_groups(bodies: list[trimesh.Trimesh]) -> list[list[trimesh.Trimesh]]:
+    """Group surface components into physical solids.
+
+    Each positive-volume component is a body; every negative-volume
+    component is an inner cavity wall and is assigned to the positive body
+    whose enclosed volume contains it (unassigned walls stay with the
+    largest body — dropping a wall would open the cavity). A hollow part
+    therefore groups as [outer wall, inner wall(s)], while two detached
+    parts form two single-component groups.
+    """
+    solids = [b for b in bodies if float(b.volume) > 0]
+    walls = [b for b in bodies if float(b.volume) <= 0]
+    if not solids:
+        return [list(bodies)]
+    groups: list[list[trimesh.Trimesh]] = [[b] for b in solids]
+    for w in walls:
+        probe = w.vertices[:: max(1, len(w.vertices) // 64)]
+        owner = next(
+            (i for i, s in enumerate(solids) if bool(np.asarray(s.contains(probe)).all())),
+            None,
+        )
+        if owner is None:
+            owner = int(np.argmax([float(s.volume) for s in solids]))
+        groups[owner].append(w)
+    return groups
+
+
+def _largest_group(
+    groups: list[list[trimesh.Trimesh]],
+) -> list[trimesh.Trimesh]:
+    """The group whose positive body has the largest volume."""
+    return max(
+        groups,
+        key=lambda g: max((float(b.volume) for b in g if float(b.volume) > 0), default=0.0),
+    )
 
 
 def keep_significant_components(
@@ -1123,18 +1184,29 @@ def _op_keep_largest(mesh: trimesh.Trimesh, p: OpKeepLargest) -> trimesh.Trimesh
     bodies = mesh.split(only_watertight=False)
     if len(bodies) <= 1:
         return mesh
-    return bodies[int(np.argmax(_body_sizes(bodies)))]
+    group = _largest_group(_body_groups(bodies))
+    return cast(
+        trimesh.Trimesh,
+        group[0] if len(group) == 1 else trimesh.util.concatenate(group),
+    )
 
 
 def _op_drop_small(mesh: trimesh.Trimesh, p: OpDropSmall) -> trimesh.Trimesh:
     bodies = mesh.split(only_watertight=False)
     if len(bodies) <= 1:
         return mesh
-    vols = _body_sizes(bodies)
-    keep = [b for b, v in zip(bodies, vols, strict=True) if v >= vols.max() * p.min_volume_frac]
+    groups = _body_groups(bodies)
+    vols = np.array(
+        [max((float(b.volume) for b in g if float(b.volume) > 0), default=0.0) for g in groups]
+    )
+    keep = [g for g, v in zip(groups, vols, strict=True) if v >= vols.max() * p.min_volume_frac]
     if not keep:
         raise ValueError("drop_small would remove every body")
-    return cast(trimesh.Trimesh, trimesh.util.concatenate(keep))
+    flat = [b for g in keep for b in g]
+    return cast(
+        trimesh.Trimesh,
+        flat[0] if len(flat) == 1 else trimesh.util.concatenate(flat),
+    )
 
 
 def _op_repair(mesh: trimesh.Trimesh, p: OpRepair) -> trimesh.Trimesh:
@@ -1611,9 +1683,13 @@ MESH_OPS_VERSION = 8  # + silhouette_carve / radial_profile_auto (visual-hull re
 
 
 def _is_single_solid(mesh: trimesh.Trimesh) -> bool:
-    """Watertight and exactly one connected component — the part contract."""
+    """Watertight and exactly one solid body — the part contract.
+
+    A hollow part's boundary has one extra component per enclosed void
+    (inner walls) — those are not separate solids.
+    """
     try:
-        return bool(mesh.is_watertight) and len(mesh.split(only_watertight=False)) <= 1
+        return bool(mesh.is_watertight) and solid_body_count(mesh) <= 1
     except Exception:
         return False
 
@@ -1621,7 +1697,10 @@ def _is_single_solid(mesh: trimesh.Trimesh) -> bool:
 def _salvage_solid(mesh: trimesh.Trimesh) -> trimesh.Trimesh | None:
     """Rescue an op result that broke the single-solid contract.
 
-    Keeps the largest component and runs the watertight repair ladder.
+    Keeps the largest *positive-volume* component and runs the watertight
+    repair ladder. Inner cavity walls (negative volume) belong to their
+    enclosing body — only walls nested inside the kept body survive, so a
+    legitimately hollow part is not gutted into an open shell.
     Returns a valid single solid, or None when the damage is not fixable —
     the caller then reverts the op entirely (a missed flatten/slice is far
     better than a shattered part shipping to export).
@@ -1629,7 +1708,8 @@ def _salvage_solid(mesh: trimesh.Trimesh) -> trimesh.Trimesh | None:
     try:
         bodies = mesh.split(only_watertight=False)
         if len(bodies) > 1:
-            mesh = bodies[int(np.argmax(_body_sizes(bodies)))]
+            group = _largest_group(_body_groups(bodies))
+            mesh = group[0] if len(group) == 1 else trimesh.util.concatenate(group)
         out = _ensure_watertight(mesh)
         return out if _is_single_solid(out) else None
     except Exception:
@@ -1815,11 +1895,12 @@ def _alpha_wrap_repair(m: trimesh.Trimesh, faces_in: int) -> trimesh.Trimesh | N
             return None
         wrapped = alpha_wrap(m)
         # sparse/complex input wraps per component — keep the dominant
-        # body, same policy as the voxel fallback
+        # body, same policy as the voxel fallback; cavity walls stay with it
         try:
             bodies = wrapped.split(only_watertight=False)
             if len(bodies) > 1:
-                wrapped = bodies[int(np.argmax(_body_sizes(bodies)))]
+                group = _largest_group(_body_groups(bodies))
+                wrapped = group[0] if len(group) == 1 else trimesh.util.concatenate(group)
         except Exception:
             pass
         if len(wrapped.faces) > _REBUILD_MAX_FACES:
@@ -1939,7 +2020,8 @@ def _ensure_watertight(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
         try:
             bodies = rem.split(only_watertight=False)
             if len(bodies) > 1:
-                rem = bodies[int(np.argmax(_body_sizes(bodies)))]
+                group = _largest_group(_body_groups(bodies))
+                rem = group[0] if len(group) == 1 else trimesh.util.concatenate(group)
         except Exception:
             pass
         if len(rem.faces) and rem.is_watertight:
@@ -2114,9 +2196,10 @@ def mesh_analysis(mesh: trimesh.Trimesh) -> Analysis:
     if not centered:
         warnings.append("part is not centred at the origin in XY")
     try:
-        solid_count = max(1, len(mesh.split(only_watertight=False)))
+        surface_components = len(mesh.split(only_watertight=False))
+        solid_count = solid_body_count(mesh)
     except Exception:
-        solid_count = 1
+        surface_components, solid_count = 0, 1
     if solid_count != 1:
         warnings.append(f"part has {solid_count} disconnected solids (expected 1)")
     return Analysis(
@@ -2127,6 +2210,7 @@ def mesh_analysis(mesh: trimesh.Trimesh) -> Analysis:
         surface_area=round(float(mesh.area), 3),
         center_of_mass=com,
         solid_count=solid_count,
+        surface_components=surface_components,
         is_valid=watertight,
         watertight=watertight,
         face_count=len(mesh.faces),

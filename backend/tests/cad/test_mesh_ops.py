@@ -1317,3 +1317,77 @@ def test_ensure_watertight_voxel_fallback_keeps_center(monkeypatch):
 
     out = mesh_ops._ensure_watertight(leaky)
     np.testing.assert_allclose(out.bounds.mean(axis=0), leaky.bounds.mean(axis=0), atol=0.5)
+
+
+def _hollow_shell(outer=20.0, inner=12.0):
+    """Watertight hollow box: outer wall + inner cavity wall (negative vol)."""
+    out = trimesh.creation.box(extents=[outer, outer, outer])
+    inn = trimesh.creation.box(extents=[inner, inner, inner])
+    inn.invert()
+    return trimesh.util.concatenate([out, inn])
+
+
+def test_solid_body_count_hollow_shell_is_one():
+    """Boundary components are not bodies: a closed shell splits into
+    outer + inner wall but is ONE solid — the single_valid_solid false
+    positive that failed every shell/infill part."""
+    from cadx.cad.mesh_ops import solid_body_count
+
+    m = _hollow_shell()
+    assert len(m.split(only_watertight=False)) == 2
+    assert solid_body_count(m) == 1
+
+
+def test_solid_body_count_two_bodies_still_two():
+    from cadx.cad.mesh_ops import solid_body_count
+
+    a = _box(10.0, 10.0, 10.0)
+    b = _box(5.0, 5.0, 5.0)
+    b.apply_translation([40.0, 0.0, 0.0])
+    assert solid_body_count(trimesh.util.concatenate([a, b])) == 2
+
+
+def test_solid_body_count_floating_body_in_cavity_is_two():
+    """A genuinely detached body inside the cavity (positive volume) is a
+    second solid — the sign convention does not hide real defects."""
+    from cadx.cad.mesh_ops import solid_body_count
+
+    hollow = _hollow_shell(outer=20.0, inner=14.0)
+    floater = trimesh.creation.box(extents=[4.0, 4.0, 4.0])
+    m = trimesh.util.concatenate([hollow, floater])
+    assert solid_body_count(m) == 2
+
+
+def test_mesh_analysis_hollow_reports_one_solid():
+    a = mesh_analysis(_hollow_shell())
+    assert a.solid_count == 1
+    assert a.surface_components == 2
+    assert not any("disconnected solids" in w for w in a.warnings)
+
+
+def test_clean_preserves_small_cavity_wall():
+    """Regression: a cavity wall below min_component_frac of the outer
+    volume must NOT be dropped — that opened the hollow region to a shell."""
+    outer = trimesh.creation.box(extents=[20.0, 20.0, 20.0])
+    inner = trimesh.creation.box(extents=[4.0, 4.0, 4.0])
+    inner.apply_translation([3.0, 3.0, 3.0])
+    inner.invert()
+    m = trimesh.util.concatenate([outer, inner])
+    assert len(m.split(only_watertight=False)) == 2
+
+    cleaned = clean(m)
+    parts = cleaned.split(only_watertight=False)
+    assert len(parts) == 2  # cavity wall survived
+    assert cleaned.is_watertight
+
+
+def test_keep_largest_keeps_cavity_wall_with_body():
+    """keep_largest on a hollow part must keep the inner wall attached to
+    the outer body — dropping it would open the cavity."""
+    from cadx.cad.mesh_ops import OpKeepLargest, _op_keep_largest
+
+    m = _hollow_shell()
+    out = _op_keep_largest(m, OpKeepLargest())
+    parts = out.split(only_watertight=False)
+    assert len(parts) == 2
+    assert out.is_watertight
