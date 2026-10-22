@@ -168,38 +168,62 @@ def _load_mesh(outcome: StageOutcome) -> Any | None:
     return None
 
 
-def _radial_peak_count(mesh: Any, axis: str = "z", bins: int = 720) -> tuple[int, str]:
-    """Count teeth/lobes from a polar max-radius profile around `axis`."""
+def _radial_peak_count(mesh: Any, axis: str = "z", bins: int = 1440) -> tuple[int, str]:
+    """Count teeth/lobes from a polar max-radius profile around `axis`.
+
+    The profile is built from the tightest non-flat outer-radius band
+    (interior features like bores/windows otherwise dominate the count), and
+    the tooth count is read off the profile autocorrelation — threshold
+    crossings over/under-count on uneven teeth and on helical flanks (one
+    slanted flank → several maxima).
+    """
     import numpy as np
 
     axes = {"x": (1, 2), "y": (0, 2), "z": (0, 1)}
     a1, a2 = axes.get(axis.lower(), (0, 1))
     v = np.asarray(mesh.vertices, dtype=float)
     c1, c2 = (v[:, a1].min() + v[:, a1].max()) / 2, (v[:, a2].min() + v[:, a2].max()) / 2
-    r = np.hypot(v[:, a1] - c1, v[:, a2] - c2)
-    th = np.arctan2(v[:, a2] - c2, v[:, a1] - c1)
-    idx = ((th + np.pi) / (2 * np.pi) * bins).astype(int) % bins
-    prof = np.zeros(bins)
-    np.maximum.at(prof, idx, r)
-    # fill empty bins by neighbour interpolation, light smoothing
-    empty = prof == 0
-    if empty.all():
-        return 0, "empty profile"
-    if empty.any():
-        filled = np.interp(np.arange(bins), np.flatnonzero(~empty), prof[~empty], period=bins)
-        prof = filled
-    k = max(1, bins // 360)
-    prof = np.convolve(np.r_[prof[-k:], prof, prof[:k]], np.ones(2 * k + 1) / (2 * k + 1), "same")[
-        k:-k
-    ]
-    lo, hi = float(prof.min()), float(prof.max())
-    if hi - lo < 0.5:
-        return 0, f"flat profile r∈[{lo:.1f},{hi:.1f}]"
-    thr = lo + 0.35 * (hi - lo)
-    # count rising crossings of the threshold — one per tooth
-    above = prof > thr
-    crossings = int(np.count_nonzero(~above[:-1] & above[1:]) + (above[-1] < above[0]))
-    return crossings, f"r∈[{lo:.1f},{hi:.1f}] thr={thr:.1f}"
+    r_all = np.hypot(v[:, a1] - c1, v[:, a2] - c2)
+    r_max = float(r_all.max())
+    if r_max <= 0:
+        return 0, "degenerate mesh"
+    for frac in np.arange(0.94, 0.79, -0.03):
+        sel = r_all >= frac * r_max
+        if int(sel.sum()) < 24:
+            continue
+        vo = v[sel]
+        r = np.hypot(vo[:, a1] - c1, vo[:, a2] - c2)
+        th = np.arctan2(vo[:, a2] - c2, vo[:, a1] - c1)
+        idx = ((th + np.pi) / (2 * np.pi) * bins).astype(int) % bins
+        prof = np.zeros(bins)
+        np.maximum.at(prof, idx, r)
+        empty = prof == 0
+        if empty.all():
+            continue
+        if empty.any():
+            prof = np.interp(
+                np.arange(bins), np.flatnonzero(~empty), prof[~empty], period=bins
+            )
+        lo, hi = float(prof.min()), float(prof.max())
+        if hi - lo < 0.4:
+            continue
+        p = prof - prof.mean()
+        ac = np.correlate(p, p, "full")[bins - 1 :] / (p @ p + 1e-12)
+        # pitch detection: first strong local maximum of the autocorrelation
+        # after the initial decay — global argmax misfires on flat-topped
+        # profiles (tiny lags correlate well) and on harmonics (helical
+        # flanks inject 2-5x the tooth frequency)
+        lags = [
+            k
+            for k in range(4, bins // 3)
+            if ac[k] >= ac[k - 1] and ac[k] > ac[k + 1] and ac[k] >= 0.30
+        ]
+        if not lags:
+            continue
+        lag = lags[0]
+        n = max(1, round(bins / lag))
+        return n, f"band={frac:.2f} r∈[{lo:.1f},{hi:.1f}] lag={lag} ac={ac[lag]:.2f}"
+    return 0, f"no non-flat radial band (r_max={r_max:.1f})"
 
 
 def _gate_mesh(g: dict[str, Any], outcome: StageOutcome) -> GateResult:
