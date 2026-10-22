@@ -17,7 +17,7 @@ import { Btn, Card, SectionTitle, useToast } from "./ui";
 export type { RefineInfo, TopOptInfo };
 
 function sfTone(sf: number | null | undefined): string {
-  if (sf == null) return "text-zinc-400";
+  if (sf == null) return "text-muted";
   if (sf < 1) return "text-red-400 font-semibold";
   if (sf < 1.5) return "text-amber-400";
   return "text-emerald-400";
@@ -99,7 +99,7 @@ export default function TopOptPanel({
           <Shrink className="h-3 w-3" /> {t("to_title")}
         </span>
       </SectionTitle>
-      <div className="mb-2 text-[11px] text-zinc-500">
+      <div className="mb-2 text-[11px] text-faint">
         {topopt.volfrac_achieved != null &&
           t("to_volfrac", { v: (topopt.volfrac_achieved * 100).toFixed(0) })}
         {topopt.iterations != null && ` · ${t("to_iters", { n: topopt.iterations })}`}
@@ -118,11 +118,11 @@ export default function TopOptPanel({
         topopt.strut_align_deg != null ||
         topopt.sf_mesh_sensitive) && (
         <div
-          className="mb-2 text-[10px] text-zinc-500"
+          className="mb-2 text-[10px] text-faint"
           data-testid="topopt-verification"
           title={t("to_verif_hint")}
         >
-          <span className="mr-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+          <span className="mr-1 text-[10px] font-semibold uppercase tracking-wider text-faint">
             verification:
           </span>
           {topopt.sf_verified != null && (
@@ -182,7 +182,7 @@ export default function TopOptPanel({
         </div>
       )}
       {(topopt.multires || topopt.input_normalized || topopt.base_mesh_relpath) && (
-        <div className="mb-2 text-[10px] text-zinc-500">
+        <div className="mb-2 text-[10px] text-faint">
           {topopt.multires &&
             t("to_multires", { cells: topopt.multires.coarse_cells ?? "?", pitch: topopt.multires.coarse_pitch_mm ?? "?", it: topopt.multires.coarse_iterations ?? "?", sec: topopt.multires.seconds ?? "?" })}
           {topopt.input_normalized &&
@@ -215,7 +215,7 @@ export default function TopOptPanel({
       {runs.length > 0 && (
         <table className="w-full text-xs">
           <thead>
-            <tr className="text-left text-[10px] uppercase tracking-wider text-zinc-500">
+            <tr className="text-left text-[10px] uppercase tracking-wider text-faint">
               <th className="pb-1 font-medium">{t("to_run")}</th>
               <th className="pb-1 font-medium">{t("to_volfrac_col")}</th>
               <th className="pb-1 font-medium">{t("to_worst_sf")}</th>
@@ -228,8 +228,8 @@ export default function TopOptPanel({
             {runs.map((r, i) => (
               <tr
                 key={r.it ?? i}
-                className={`border-t border-zinc-800/60 ${
-                  r.chosen ? "text-emerald-300" : "text-zinc-400"
+                className={`border-t border-edge/60 ${
+                  r.chosen ? "text-emerald-300" : "text-muted"
                 }`}
               >
                 <td className="py-1 pr-2">#{r.it ?? i + 1}</td>
@@ -254,20 +254,20 @@ export default function TopOptPanel({
         </table>
       )}
       {runs.some((r) => r.reasoning) && (
-        <div className="mt-2 text-[10px] italic text-zinc-500">
+        <div className="mt-2 text-[10px] italic text-faint">
           {runs.find((r) => r.chosen)?.reasoning ?? runs[runs.length - 1]?.reasoning}
         </div>
       )}
       {resamplable && (
-        <div className="mt-3 border-t border-zinc-800 pt-2.5">
+        <div className="mt-3 border-t border-edge pt-2.5">
           <div
-            className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500"
+            className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-faint"
             title={t("to_resample_hint")}
           >
             {t("to_resample_title")}
           </div>
           <div className="flex items-center gap-3">
-            <label className="flex flex-1 items-center gap-2 text-[11px] text-zinc-400">
+            <label className="flex flex-1 items-center gap-2 text-[11px] text-muted">
               {t("to_iso")}
               <input
                 type="range"
@@ -280,13 +280,13 @@ export default function TopOptPanel({
               />
               <span className="w-8 tabular-nums">{threshold.toFixed(2)}</span>
             </label>
-            <label className="flex items-center gap-1.5 text-[11px] text-zinc-400">
+            <label className="flex items-center gap-1.5 text-[11px] text-muted">
               min
               <input
                 type="number"
                 min={0}
                 step={0.2}
-                className="w-14 rounded border border-zinc-700 bg-zinc-900 px-1 py-0.5 text-[11px]"
+                className="w-14 rounded border border-edge2 bg-panel px-1 py-0.5 text-[11px]"
                 value={minMember}
                 onChange={(e) => setMinMember(Math.max(0, Number(e.target.value) || 0))}
               />
@@ -294,7 +294,7 @@ export default function TopOptPanel({
             </label>
             <Btn
               variant="ghost"
-              className="border border-zinc-700"
+              className="border border-edge2"
               disabled={busy}
               busy={busy}
               onClick={resample}
@@ -307,12 +307,12 @@ export default function TopOptPanel({
         </div>
       )}
       {(refinable || refineEff) && (
-        <div className="mt-3 border-t border-zinc-800 pt-2.5">
-          <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+        <div className="mt-3 border-t border-edge pt-2.5">
+          <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-faint">
             {t("to_finishing")}
           </div>
           {refineEff ? (
-            <div className="mb-2 text-[11px] text-zinc-400">
+            <div className="mb-2 text-[11px] text-muted">
               {refineEff.applied?.length
                 ? refineEff.applied.map((f, i) => (
                     <div key={i}>
@@ -326,7 +326,7 @@ export default function TopOptPanel({
                           className={
                             Math.abs(f.dia_deviation_mm) > 0.15
                               ? "text-amber-400/90"
-                              : "text-zinc-500"
+                              : "text-faint"
                           }
                         >
                           {" "}→ ⌀{f.measured_dia_mm}mm (Δ
@@ -370,13 +370,13 @@ export default function TopOptPanel({
               ))}
             </div>
           ) : (
-            <div className="mb-2 text-[10px] text-zinc-500">
+            <div className="mb-2 text-[10px] text-faint">
               {t("to_refine_note")}
             </div>
           )}
           {refinable && (
             <div className="flex flex-wrap items-center gap-3">
-              <label className="flex items-center gap-1.5 text-[11px] text-zinc-400">
+              <label className="flex items-center gap-1.5 text-[11px] text-muted">
                 <input
                   type="checkbox"
                   className="accent-brand-500"
@@ -385,7 +385,7 @@ export default function TopOptPanel({
                 />
                 {t("to_restore_surfaces")}
               </label>
-              <label className="flex items-center gap-1.5 text-[11px] text-zinc-400">
+              <label className="flex items-center gap-1.5 text-[11px] text-muted">
                 <input
                   type="checkbox"
                   className="accent-brand-500"
@@ -395,7 +395,7 @@ export default function TopOptPanel({
                 {t("to_auto_plane")}
               </label>
               <label
-                className="flex items-center gap-1.5 text-[11px] text-zinc-400"
+                className="flex items-center gap-1.5 text-[11px] text-muted"
                 title={t("to_helical_hint")}
               >
                 <input
@@ -409,7 +409,7 @@ export default function TopOptPanel({
               <span className="flex-1" />
               <Btn
                 variant="ghost"
-                className="border border-zinc-700"
+                className="border border-edge2"
                 disabled={busy}
                 busy={busy}
                 onClick={runRefine}

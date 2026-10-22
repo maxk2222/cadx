@@ -415,7 +415,7 @@ export default function SettingsPage() {
 
   if (settings.isLoading || !form)
     return (
-      <div className="flex justify-center py-24 text-zinc-500">
+      <div className="flex justify-center py-24 text-faint">
         <Spinner className="h-6 w-6" />
       </div>
     );
@@ -442,7 +442,7 @@ export default function SettingsPage() {
       </Field>
     ) : spec.kind === "bool" ? (
       <Field key={key} label={label} hint={hint}>
-        <label className="flex items-center gap-2 text-sm text-zinc-300">
+        <label className="flex items-center gap-2 text-sm text-fg">
           <input
             type="checkbox"
             checked={form[key] === "true"}
@@ -646,10 +646,10 @@ export default function SettingsPage() {
                 ? "bg-amber-500"
                 : tone === "bad"
                   ? "bg-red-500"
-                  : "bg-zinc-600"
+                  : "bg-edge2"
           }`}
         />
-        <div className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
+        <div className="text-xs font-semibold uppercase tracking-wider text-muted">
           {label}
         </div>
       </div>
@@ -661,7 +661,7 @@ export default function SettingsPage() {
               ? "text-amber-400"
               : tone === "bad"
                 ? "text-red-400"
-                : "text-zinc-500"
+                : "text-faint"
         }`}
         title={title}
       >
@@ -715,7 +715,7 @@ export default function SettingsPage() {
 
       {/* tabs: scrollable strip on narrow screens, sticky sidebar from lg up */}
       <div className="lg:flex lg:items-start lg:gap-5">
-      <div className="mb-4 flex gap-1 overflow-x-auto rounded-lg border border-zinc-800 bg-zinc-900/60 p-1 lg:sticky lg:top-6 lg:mb-0 lg:w-44 lg:shrink-0 lg:flex-col lg:overflow-visible">
+      <div className="mb-4 flex gap-1 overflow-x-auto rounded-lg border border-edge bg-panel/60 p-1 lg:sticky lg:top-6 lg:mb-0 lg:w-44 lg:shrink-0 lg:flex-col lg:overflow-visible">
         {TAB_IDS_LIST.map((tb) => (
           <button
             key={tb}
@@ -740,7 +740,7 @@ export default function SettingsPage() {
       <Card className="p-4">
         <SectionTitle>{t("provider_title")}</SectionTitle>
         {/* backend selector — external OpenAI-compatible API or the local sidecar */}
-        <div className="mb-4 flex gap-1 rounded-lg border border-zinc-800 bg-zinc-900/80 p-1">
+        <div className="mb-4 flex gap-1 rounded-lg border border-edge bg-panel/80 p-1">
           {(
             [
               ["external", t("backend_external")],
@@ -752,8 +752,8 @@ export default function SettingsPage() {
               onClick={() => set("llm_backend", v)}
               className={`flex-1 rounded-md px-3 py-1.5 text-sm transition-colors ${
                 llmBackend === v
-                  ? "bg-zinc-700 font-medium text-zinc-100"
-                  : "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+                  ? "bg-edge2 font-medium text-fg"
+                  : "text-muted hover:bg-panel2 hover:text-fg"
               }`}
             >
               {l}
@@ -800,7 +800,7 @@ export default function SettingsPage() {
           </>
         ) : (
           <>
-            <div className="mb-3 text-xs text-zinc-500">
+            <div className="mb-3 text-xs text-faint">
               {meshHealth.data?.ok
                 ? t("sidecar_online", {
                     n: sidecarLlm.filter((m) => m.downloaded).length,
@@ -834,7 +834,7 @@ export default function SettingsPage() {
           </>
         )}
         {Object.keys(s.llm_detected ?? {}).length > 0 && (
-          <div className="mb-3 text-xs text-zinc-500">
+          <div className="mb-3 text-xs text-faint">
             {t("detected_ctx")}{" "}
             {Object.entries(s.llm_detected)
               .map(([id, n]) => `${id} ${fmtCtx(n)}`)
@@ -943,7 +943,7 @@ export default function SettingsPage() {
             options: CLAR_OPTS.map(([v]) => [v, t(`opt.clar.${v}`)]),
           })}
         </div>
-        <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+        <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-faint">
           {t("grp.budgets")}
         </div>
         <div className={FIELD_GRID}>
@@ -967,7 +967,7 @@ export default function SettingsPage() {
           {field({ key: "agent_feature_feedback", label: t("f.agent_feature_feedback"), kind: "bool" })}
           {field({ key: "agent_critique_reask", label: t("f.agent_critique_reask"), kind: "bool" })}
         </div>
-        <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+        <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-faint">
           {t("grp.tools")}
         </div>
         <div className={FIELD_GRID}>
@@ -976,7 +976,7 @@ export default function SettingsPage() {
           {field({ key: "agent_tool_verify", label: t("f.agent_tool_verify"), kind: "bool" })}
           {field({ key: "agent_tool_verify_max", label: t("f.agent_tool_verify_max"), kind: "number" })}
         </div>
-        <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+        <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-faint">
           {t("grp.mesh_session")}
         </div>
         <div className={FIELD_GRID}>
@@ -1002,7 +1002,7 @@ export default function SettingsPage() {
             kind: "number",
           })}
         </div>
-        <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+        <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-faint">
           {t("grp.chat")}
         </div>
         <div className={FIELD_GRID}>
@@ -1131,10 +1131,10 @@ export default function SettingsPage() {
           {field({ key: "mesh_max_faces_for_cad", label: t("f.mesh_max_faces_for_cad"), kind: "number" })}
         </div>
         {meshModels.length > 0 && (
-          <div className="mb-2 flex flex-col gap-1.5 text-xs text-zinc-500">
+          <div className="mb-2 flex flex-col gap-1.5 text-xs text-faint">
             {meshModels.map((m) => (
               <div key={m.id} className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                <b className="text-zinc-300">{m.id}</b> · {m.device}
+                <b className="text-fg">{m.id}</b> · {m.device}
                 <Chip tone={modelStateTone(m)}>{modelStateLabel(m)}</Chip>
                 {m.est_mem_mb != null && <span>{fmtMemGb(m.est_mem_mb)}</span>}
                 {m.supports_multiview ? ` · ${t("multiview")}` : ""}
@@ -1148,12 +1148,12 @@ export default function SettingsPage() {
             ))}
             <div>
               {t("downloads_hint_pre")}{" "}
-              <b className="text-zinc-400">{t("tab.models")}</b>
+              <b className="text-muted">{t("tab.models")}</b>
             </div>
           </div>
         )}
         {!meshHealth.data?.ok && (
-          <div className="mb-2 text-xs text-zinc-500">
+          <div className="mb-2 text-xs text-faint">
             {t("mesh_offline_pre")} <code>make mesh-server</code>.{" "}
             {t("mesh_offline_post")}
           </div>
@@ -1277,27 +1277,27 @@ export default function SettingsPage() {
           </Field>
         </div>
         {(imageModels.data ?? []).length > 0 ? (
-          <div className="mb-2 flex flex-col gap-1.5 text-xs text-zinc-500">
+          <div className="mb-2 flex flex-col gap-1.5 text-xs text-faint">
             {(imageModels.data ?? []).map((m) => (
               <div key={m.id} className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                <b className="text-zinc-300">{m.id}</b> · {m.device}
+                <b className="text-fg">{m.id}</b> · {m.device}
                 <Chip tone={modelStateTone(m)}>{modelStateLabel(m)}</Chip>
                 {m.supports_edit ? ` · ${m.requires_image ? t("edit_only") : t("edit_capable")}` : ""}
                 {m.last_error ? (
                   <div className="basis-full text-amber-500">last error: {m.last_error}</div>
                 ) : null}
                 {m.license_note ? (
-                  <div className="basis-full text-zinc-500">license: {m.license_note}</div>
+                  <div className="basis-full text-faint">license: {m.license_note}</div>
                 ) : null}
               </div>
             ))}
           </div>
         ) : meshHealth.data && !meshHealth.data.ok ? (
-          <div className="mb-2 text-xs text-zinc-500">
+          <div className="mb-2 text-xs text-faint">
             {t("img_offline_pre")} <code>make mesh-server</code>.
           </div>
         ) : (
-          <div className="mb-2 text-xs text-zinc-500">
+          <div className="mb-2 text-xs text-faint">
             {t("img_none_pre")} <code>docs/image-generation.md</code>{" "}
             {t("img_none_post")}
           </div>
@@ -1335,7 +1335,7 @@ export default function SettingsPage() {
       {tab === "fem" && (
       <Card className="p-4">
         <SectionTitle>{t("fem_title")}</SectionTitle>
-        <div className="mb-3 text-xs text-zinc-500">
+        <div className="mb-3 text-xs text-faint">
           {t("fem_disclaimer")}
         </div>
         <div className={FIELD_GRID}>
@@ -1343,7 +1343,7 @@ export default function SettingsPage() {
           {field({ key: "fem_max_elements", label: t("f.fem_max_elements"), kind: "number" })}
           {field({ key: "fem_timeout_s", label: t("f.fem_timeout_s"), kind: "number" })}
         </div>
-        <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+        <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-faint">
           {t("grp.topopt")}
         </div>
         <div className={FIELD_GRID}>
@@ -1352,7 +1352,7 @@ export default function SettingsPage() {
           {field({ key: "topopt_default_volfrac", label: t("f.topopt_default_volfrac"), kind: "number" })}
           {field({ key: "topopt_default_rmin_mm", label: t("f.topopt_default_rmin_mm"), kind: "number" })}
         </div>
-        <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+        <div className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-faint">
           {t("grp.verification")}
         </div>
         <div className={FIELD_GRID}>
@@ -1440,7 +1440,7 @@ export default function SettingsPage() {
               })}
             </div>
             {Object.keys(s.resources_detected ?? {}).length > 0 && (
-              <div className="mt-2 text-xs text-zinc-500">
+              <div className="mt-2 text-xs text-faint">
                 {t("detected_res")} {s.resources_detected.cpus ?? "?"} cpus ·{" "}
                 {Math.round((s.resources_detected.mem_mb ?? 0) / 1024)}g mem ·{" "}
                 {s.resources_detected.threads ?? "?"} threads/stage ·{" "}
@@ -1450,10 +1450,10 @@ export default function SettingsPage() {
             <div className="mt-2 text-xs text-muted">{t("exec_caps_hint")}</div>
           </Card>
 
-          <Card className="p-4 text-sm text-zinc-400">
+          <Card className="p-4 text-sm text-muted">
             <SectionTitle>{t("runtime_title")}</SectionTitle>
             <div>
-              {t("data_dir")} <code className="text-zinc-300">{s.data_dir}</code>
+              {t("data_dir")} <code className="text-fg">{s.data_dir}</code>
             </div>
             <div>
               {t("runtime_hint")}
@@ -1469,13 +1469,13 @@ export default function SettingsPage() {
       {/* floating save bar — appears while there are unsaved changes */}
       {(dirty || save.isPending || saved || saveError) && (
         <div className="fixed inset-x-0 bottom-5 z-40 flex justify-center px-4">
-          <div className="flex max-w-full items-center gap-3 rounded-full border border-zinc-700 bg-zinc-900/95 py-2 pl-4 pr-2 shadow-2xl shadow-black/50 backdrop-blur">
+          <div className="flex max-w-full items-center gap-3 rounded-full border border-edge2 bg-panel/95 py-2 pl-4 pr-2 shadow-2xl shadow-black/50 backdrop-blur">
             {saveError ? (
               <span className="max-w-md truncate text-xs text-red-400" title={saveError}>
                 {saveError}
               </span>
             ) : (
-              <span className="text-xs text-zinc-400">
+              <span className="text-xs text-muted">
                 {saved && !dirty
                   ? t("saved_done")
                   : t("saved_unsaved")}

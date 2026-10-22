@@ -103,7 +103,7 @@ export default function AssetManager({
     <div>
       <div
         className={`rounded-lg border-2 border-dashed p-4 text-center text-sm transition-colors ${
-          drag ? "border-brand-500 bg-brand-950/20 text-brand-300" : "border-zinc-700 text-zinc-400"
+          drag ? "border-brand-500 bg-brand-950/20 text-brand-300" : "border-edge2 text-muted"
         }`}
         onDragOver={(e) => {
           e.preventDefault();
@@ -160,7 +160,7 @@ export default function AssetManager({
               <div
                 key={a.id}
                 className={`group relative overflow-hidden rounded-md border-2 transition-colors ${
-                  sel ? "border-brand-500" : "border-zinc-800 hover:border-zinc-600"
+                  sel ? "border-brand-500" : "border-edge hover:border-edge2"
                 }`}
               >
                 <button
@@ -174,7 +174,7 @@ export default function AssetManager({
                   {isImage(a.kind) ? (
                     <img src={a.url} className="h-20 w-full object-cover" alt={a.filename} />
                   ) : (
-                    <div className="flex h-20 flex-col items-center justify-center gap-1 text-zinc-500">
+                    <div className="flex h-20 flex-col items-center justify-center gap-1 text-faint">
                       {KIND_ICON[a.kind] ?? <FileBox className="h-5 w-5" />}
                       <span className="max-w-full truncate px-1 text-[10px]">{a.filename}</span>
                     </div>
@@ -217,7 +217,7 @@ export default function AssetManager({
                 )}
                 <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between gap-1 bg-gradient-to-t from-black/85 to-transparent px-1 pb-0.5 pt-4 opacity-0 transition-opacity group-hover:opacity-100">
                   <button
-                    className="min-w-0 flex-1 truncate text-left text-[10px] text-zinc-300 hover:text-white"
+                    className="min-w-0 flex-1 truncate text-left text-[10px] text-fg hover:text-white"
                     title={a.caption ? t("asset.caption_edit", { caption: a.caption }) : t("asset.caption_add")}
                     onClick={() => {
                       setEditingCaption(a.id);
@@ -295,7 +295,7 @@ export default function AssetManager({
             }}
           />
           <button
-            className="rounded bg-zinc-700 px-2 text-xs hover:bg-zinc-600"
+            className="rounded bg-edge2 px-2 text-xs hover:bg-edge2"
             onClick={() =>
               saveCaption.mutate({ id: editingCaption, caption: caption.trim() })
             }

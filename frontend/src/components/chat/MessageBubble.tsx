@@ -18,7 +18,7 @@ function MdText({ text }: { text: string }) {
         s.type === "code" ? (
           <pre
             key={i}
-            className="my-2 overflow-x-auto rounded bg-zinc-950 p-2.5 text-xs text-zinc-200"
+            className="my-2 overflow-x-auto rounded bg-bg p-2.5 text-xs text-fg"
           >
             <code>{s.content}</code>
           </pre>
@@ -40,7 +40,7 @@ function InlineMd({ text }: { text: string }) {
         const nodes = inlineNodes(content);
         return (
           <div key={i} className={bullet ? "flex gap-1.5" : "min-h-[1em]"}>
-            {bullet && <span className="text-zinc-500">•</span>}
+            {bullet && <span className="text-faint">•</span>}
             <span>{nodes}</span>
           </div>
         );
@@ -54,13 +54,13 @@ function inlineNodes(s: string): React.ReactNode[] {
   return s.split(re).map((part, i) => {
     if (part.startsWith("**") && part.endsWith("**"))
       return (
-        <strong key={i} className="font-semibold text-zinc-100">
+        <strong key={i} className="font-semibold text-fg">
           {part.slice(2, -2)}
         </strong>
       );
     if (part.startsWith("`") && part.endsWith("`"))
       return (
-        <code key={i} className="rounded bg-zinc-800 px-1 text-xs text-brand-300">
+        <code key={i} className="rounded bg-panel2 px-1 text-xs text-brand-300">
           {part.slice(1, -1)}
         </code>
       );
@@ -112,14 +112,14 @@ function ToolChip({
     (result?.questions as { question: string }[] | undefined) ?? [];
 
   return (
-    <div className="rounded-md border border-zinc-800 bg-zinc-900/60 text-xs">
+    <div className="rounded-md border border-edge bg-panel/60 text-xs">
       <button
         className="flex w-full items-center gap-1.5 px-2 py-1 text-left"
         onClick={() => setOpen((o) => !o)}
       >
-        <Wrench className="h-3 w-3 text-zinc-500" />
-        <span className="font-mono text-zinc-300">{name}</span>
-        <span className="ml-auto flex items-center gap-1 text-zinc-500">
+        <Wrench className="h-3 w-3 text-faint" />
+        <span className="font-mono text-fg">{name}</span>
+        <span className="ml-auto flex items-center gap-1 text-faint">
           {!done ? (
             <>
               <Loader2 className="h-3 w-3 animate-spin" />
@@ -138,14 +138,14 @@ function ToolChip({
         </span>
       </button>
       {open && (
-        <div className="border-t border-zinc-800 px-2 py-1.5">
+        <div className="border-t border-edge px-2 py-1.5">
           {args && Object.keys(args).length > 0 && (
-            <pre className="mb-1 max-h-32 overflow-auto whitespace-pre-wrap text-zinc-500">
+            <pre className="mb-1 max-h-32 overflow-auto whitespace-pre-wrap text-faint">
               {JSON.stringify(args, null, 1).slice(0, 1200)}
             </pre>
           )}
           {result && (
-            <pre className="max-h-48 overflow-auto whitespace-pre-wrap text-zinc-400">
+            <pre className="max-h-48 overflow-auto whitespace-pre-wrap text-muted">
               {JSON.stringify(result, null, 1).slice(0, 2000)}
             </pre>
           )}
@@ -158,7 +158,7 @@ function ToolChip({
               <img
                 src={a.url}
                 alt={a.filename}
-                className="h-24 rounded border border-zinc-700 object-cover"
+                className="h-24 rounded border border-edge2 object-cover"
               />
             </a>
           ))}
@@ -219,7 +219,7 @@ const MessageBubble = memo(function MessageBubble({
             </div>
           )}
           {msg.content && (
-            <div className="whitespace-pre-wrap text-sm text-zinc-100">
+            <div className="whitespace-pre-wrap text-sm text-fg">
               {msg.content}
             </div>
           )}
@@ -230,15 +230,15 @@ const MessageBubble = memo(function MessageBubble({
 
   if (msg.role === "system") {
     return (
-      <div className="text-center text-xs italic text-zinc-500">{msg.content}</div>
+      <div className="text-center text-xs italic text-faint">{msg.content}</div>
     );
   }
 
   return (
     <div className="anim-fade-in-up flex justify-start">
-      <div className="max-w-[85%] rounded-2xl rounded-bl-sm border border-zinc-800 bg-zinc-900 px-3.5 py-2.5">
+      <div className="max-w-[85%] rounded-2xl rounded-bl-sm border border-edge bg-panel px-3.5 py-2.5">
         {streaming && !msg.content && log.length === 0 && (
-          <div className="flex items-center gap-2 text-sm text-zinc-500">
+          <div className="flex items-center gap-2 text-sm text-faint">
             <Loader2 className="h-3.5 w-3.5 animate-spin" /> {t("thinking")}
           </div>
         )}
@@ -266,7 +266,7 @@ const MessageBubble = memo(function MessageBubble({
           </div>
         )}
         {msg.meta?.cancelled && (
-          <div className="mt-1 text-xs text-zinc-500">{t("turn_cancelled")}</div>
+          <div className="mt-1 text-xs text-faint">{t("turn_cancelled")}</div>
         )}
       </div>
     </div>

@@ -34,9 +34,9 @@ export default function ArtifactsTable({ artifacts }: { artifacts: Artifact[] })
       <SectionTitle right={<span className="normal-case tracking-normal">{t("art_files_n", { count: artifacts.length })}</span>}>
         {t("art_title")}
       </SectionTitle>
-      <div className="overflow-x-auto rounded-lg border border-zinc-800">
+      <div className="overflow-x-auto rounded-lg border border-edge">
         <table className="w-full text-left text-sm">
-          <thead className="bg-zinc-800/60 text-xs text-zinc-400">
+          <thead className="bg-panel2/60 text-xs text-muted">
             <tr>
               <th className="px-3 py-2 font-medium">{t("art_kind")}</th>
               <th className="px-3 py-2 font-medium">{t("art_view")}</th>
@@ -47,7 +47,7 @@ export default function ArtifactsTable({ artifacts }: { artifacts: Artifact[] })
           </thead>
           <tbody>
             {sorted.map((a) => (
-              <tr key={a.id} className="border-t border-zinc-800 text-zinc-300">
+              <tr key={a.id} className="border-t border-edge text-fg">
                 <td className="px-3 py-1.5">
                   <Chip tone={KIND_TONE[a.kind] ?? "zinc"} className="uppercase">
                     {a.kind}
@@ -56,11 +56,11 @@ export default function ArtifactsTable({ artifacts }: { artifacts: Artifact[] })
                     )}
                   </Chip>
                 </td>
-                <td className="px-3 py-1.5 text-zinc-400">{a.view ?? "—"}</td>
-                <td className="max-w-0 truncate px-3 py-1.5 font-mono text-xs text-zinc-500">
+                <td className="px-3 py-1.5 text-muted">{a.view ?? "—"}</td>
+                <td className="max-w-0 truncate px-3 py-1.5 font-mono text-xs text-faint">
                   {a.path.split("/").pop()}
                 </td>
-                <td className="px-3 py-1.5 text-right text-xs text-zinc-400">
+                <td className="px-3 py-1.5 text-right text-xs text-muted">
                   {fmtBytes(a.size)}
                 </td>
                 <td className="px-3 py-1.5">
@@ -74,7 +74,7 @@ export default function ArtifactsTable({ artifacts }: { artifacts: Artifact[] })
                       href={`${a.url}?download=1`}
                       title={t("common:action.download")}
                       aria-label={t("art_download_aria", { name: a.path.split("/").pop() ?? a.kind })}
-                      className="inline-flex h-6 w-6 items-center justify-center rounded-md text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted hover:bg-panel2 hover:text-fg"
                     >
                       <Download className="h-3.5 w-3.5" />
                     </a>

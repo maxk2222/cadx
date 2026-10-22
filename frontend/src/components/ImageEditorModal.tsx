@@ -381,7 +381,7 @@ export default function ImageEditorModal({
   const toolBtn = (t: Tool, icon: React.ReactNode, label: string) => (
     <button
       className={`flex items-center gap-1.5 rounded px-2.5 py-1.5 text-xs ${
-        tool === t ? "bg-brand-600 text-white" : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
+        tool === t ? "bg-brand-600 text-white" : "bg-panel2 text-fg hover:bg-edge2"
       }`}
       onClick={() => {
         setTool(t);
@@ -395,25 +395,25 @@ export default function ImageEditorModal({
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-black/80 backdrop-blur-sm">
-      <div className="flex items-center justify-between border-b border-zinc-800 bg-zinc-900 px-4 py-2">
+      <div className="flex items-center justify-between border-b border-edge bg-panel px-4 py-2">
         <div className="flex items-center gap-2">
           <span className="text-sm font-semibold">{t("asset.ed.title")}</span>
-          <span className="max-w-48 truncate text-xs text-zinc-500">{asset.filename}</span>
+          <span className="max-w-48 truncate text-xs text-faint">{asset.filename}</span>
         </div>
         <IconBtn title={t("action.close")} onClick={onClose}>
           <X className="h-4 w-4" />
         </IconBtn>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 bg-zinc-900/80 px-4 py-2">
+      <div className="flex flex-wrap items-center gap-2 border-b border-edge bg-panel/80 px-4 py-2">
         {toolBtn("crop", <Scissors className="h-3.5 w-3.5" />, t("asset.ed.crop"))}
         {toolBtn("brush", <Paintbrush className="h-3.5 w-3.5" />, t("asset.ed.brush"))}
         {toolBtn("lasso", <Lasso className="h-3.5 w-3.5" />, t("asset.ed.lasso"))}
-        <span className="mx-1 h-5 w-px bg-zinc-700" />
+        <span className="mx-1 h-5 w-px bg-edge2" />
         {tool === "crop" && (
           <>
             <select
-              className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-300"
+              className="rounded bg-panel2 px-2 py-1.5 text-xs text-fg"
               value={aspect === null ? "free" : String(aspect)}
               onChange={(e) =>
                 setAspect(e.target.value === "free" ? null : Number(e.target.value))
@@ -432,7 +432,7 @@ export default function ImageEditorModal({
         )}
         {tool === "brush" && (
           <>
-            <label className="flex items-center gap-1.5 text-xs text-zinc-400">
+            <label className="flex items-center gap-1.5 text-xs text-muted">
               {t("asset.ed.size")}
               <input
                 type="range"
@@ -445,7 +445,7 @@ export default function ImageEditorModal({
             </label>
             <button
               className={`flex items-center gap-1 rounded px-2 py-1.5 text-xs ${
-                erase ? "bg-amber-600 text-white" : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
+                erase ? "bg-amber-600 text-white" : "bg-panel2 text-fg hover:bg-edge2"
               }`}
               onClick={() => setErase((v) => !v)}
             >
@@ -464,7 +464,7 @@ export default function ImageEditorModal({
             {t("asset.ed.keep_sel")}
           </Btn>
         )}
-        <span className="mx-1 h-5 w-px bg-zinc-700" />
+        <span className="mx-1 h-5 w-px bg-edge2" />
         <button
           className="flex items-center gap-1.5 rounded bg-purple-700 px-2.5 py-1.5 text-xs text-white hover:bg-purple-600 disabled:opacity-50"
           onClick={removeBg}
@@ -474,7 +474,7 @@ export default function ImageEditorModal({
           {t("asset.ed.remove_bg")}
         </button>
         <button
-          className="flex items-center gap-1.5 rounded bg-zinc-800 px-2.5 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700 disabled:opacity-40"
+          className="flex items-center gap-1.5 rounded bg-panel2 px-2.5 py-1.5 text-xs text-fg hover:bg-edge2 disabled:opacity-40"
           onClick={undo}
           disabled={!undoN || !!busy}
         >
@@ -503,10 +503,10 @@ export default function ImageEditorModal({
         />
       </div>
 
-      <div className="flex items-center justify-between border-t border-zinc-800 bg-zinc-900 px-4 py-2.5">
-        <div className="text-xs text-zinc-500">
+      <div className="flex items-center justify-between border-t border-edge bg-panel px-4 py-2.5">
+        <div className="text-xs text-faint">
           {busy ? (
-            <span className="inline-flex items-center gap-2 text-zinc-300">
+            <span className="inline-flex items-center gap-2 text-fg">
               <Spinner className="h-3.5 w-3.5" /> {busy}
             </span>
           ) : err ? (

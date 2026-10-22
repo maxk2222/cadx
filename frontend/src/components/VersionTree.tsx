@@ -70,9 +70,9 @@ export default function VersionTree({
               ? `/versions/${v.id}?job=${v.active_job.id}`
               : `/versions/${v.id}`
           }
-          className={`flex items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-zinc-800 ${
-            depth > 0 ? "border-l-2 border-zinc-800" : ""
-          } ${v.id === activeId ? "bg-zinc-800 ring-1 ring-zinc-600" : ""}`}
+          className={`flex items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-panel2 ${
+            depth > 0 ? "border-l-2 border-edge" : ""
+          } ${v.id === activeId ? "bg-panel2 ring-1 ring-faint" : ""}`}
           style={{ marginLeft: depth * 16 }}
         >
           {kids > 0 ? (
@@ -85,7 +85,7 @@ export default function VersionTree({
                 e.stopPropagation();
                 toggleCollapse(v.id);
               }}
-              className="-ml-1 flex h-4 w-4 shrink-0 items-center justify-center rounded text-zinc-500 hover:bg-zinc-700 hover:text-zinc-200"
+              className="-ml-1 flex h-4 w-4 shrink-0 items-center justify-center rounded text-faint hover:bg-edge2 hover:text-fg"
             >
               {isCollapsed ? (
                 <ChevronRight className="h-3.5 w-3.5" />
@@ -99,20 +99,20 @@ export default function VersionTree({
           {v.thumbnail_url ? (
             <img src={v.thumbnail_url} className="h-8 w-8 rounded object-cover" alt="" />
           ) : (
-            <div className="h-8 w-8 rounded bg-zinc-700" />
+            <div className="h-8 w-8 rounded bg-edge2" />
           )}
           <div className="min-w-0 flex-1">
             <div className="truncate">
               <span className="font-medium">v{v.number}</span>
               {v.name && (
-                <span className="ml-1 font-medium text-zinc-300">{v.name}</span>
+                <span className="ml-1 font-medium text-fg">{v.name}</span>
               )}
-              <span className="ml-1 text-zinc-400">{v.kind}</span>
+              <span className="ml-1 text-muted">{v.kind}</span>
               {v.resolved_mode && (
                 <span
                   className={`ml-1 rounded px-1 text-[9px] uppercase ${
                     v.resolved_mode === "cad"
-                      ? "bg-zinc-700 text-zinc-300"
+                      ? "bg-edge2 text-fg"
                       : v.resolved_mode === "mesh"
                         ? "bg-purple-800 text-purple-200"
                         : v.resolved_mode === "topopt"
@@ -124,11 +124,11 @@ export default function VersionTree({
                   {v.resolved_mode}
                 </span>
               )}
-              {v.score != null && <span className="ml-1 text-zinc-500">· {v.score}</span>}
+              {v.score != null && <span className="ml-1 text-faint">· {v.score}</span>}
             </div>
-            <div className="truncate text-xs text-zinc-500">
+            <div className="truncate text-xs text-faint">
               {v.prompt}
-              <span className="ml-1 text-zinc-600">· {timeAgo(v.created_at)}</span>
+              <span className="ml-1 text-faint">· {timeAgo(v.created_at)}</span>
               {v.active_job && (
                 <span
                   className="ml-1 inline-flex items-center gap-1 text-brand-400"

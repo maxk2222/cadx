@@ -7,7 +7,7 @@ export default function LanguageSwitcher({ className = "" }: { className?: strin
   const { i18n, t } = useTranslation();
   return (
     <label
-      className={`flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-zinc-400 transition-colors hover:bg-zinc-900 hover:text-zinc-200 ${className}`}
+      className={`flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted transition-colors hover:bg-panel hover:text-fg ${className}`}
       title={t("nav:language")}
     >
       <Languages className="h-4 w-4 shrink-0" />
@@ -18,7 +18,7 @@ export default function LanguageSwitcher({ className = "" }: { className?: strin
         onChange={(e) => void i18n.changeLanguage(e.target.value as Lang)}
       >
         {SUPPORTED.map((l) => (
-          <option key={l} value={l} className="bg-zinc-900 text-zinc-200">
+          <option key={l} value={l} className="bg-panel text-fg">
             {LANG_LABEL[l]}
           </option>
         ))}

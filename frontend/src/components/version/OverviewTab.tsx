@@ -135,7 +135,7 @@ export default function OverviewTab({
       <div
         className={compareOpen ? "mb-4 grid grid-cols-1 gap-3 lg:grid-cols-2" : "mb-4"}
       >
-        <div className="relative h-[460px] overflow-hidden rounded-lg border border-edge bg-zinc-950">
+        <div className="relative h-[460px] overflow-hidden rounded-lg border border-edge bg-bg">
           {glbUrl || !jobLive ? (
             <Viewer3D url={glbUrl} />
           ) : (
@@ -151,13 +151,13 @@ export default function OverviewTab({
               versions that already carry a glb) */}
           {jobLive && <LivePreview versionId={v.id} />}
           {compareOpen && (
-            <span className="absolute bottom-2 left-2 rounded border border-edge2 bg-panel/80 px-1.5 py-0.5 text-[10px] font-medium text-zinc-300 backdrop-blur">
+            <span className="absolute bottom-2 left-2 rounded border border-edge2 bg-panel/80 px-1.5 py-0.5 text-[10px] font-medium text-fg backdrop-blur">
               a · v{v.number}
             </span>
           )}
         </div>
         {compareOpen && (
-          <div className="relative h-[460px] overflow-hidden rounded-lg border border-brand-900/70 bg-zinc-950">
+          <div className="relative h-[460px] overflow-hidden rounded-lg border border-brand-900/70 bg-bg">
             {otherVersion.isLoading ? (
               <span className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-xs text-muted">
                 <Spinner /> {t("loading_preview")}
@@ -258,7 +258,7 @@ function InfoItem({
   return (
     <div className="flex items-baseline justify-between gap-2" title={title}>
       <dt className="shrink-0 text-xs text-faint">{k}</dt>
-      <dd className="truncate font-mono text-xs text-zinc-300">{children}</dd>
+      <dd className="truncate font-mono text-xs text-fg">{children}</dd>
     </div>
   );
 }

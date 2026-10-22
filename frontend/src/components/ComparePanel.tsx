@@ -63,7 +63,7 @@ export function fmtVecDelta(v: number[] | null | undefined, digits = 1): string 
 
 /** tailwind text class for a signed delta: + green, − red, 0/none muted. */
 export function deltaTone(n: number | null | undefined): string {
-  if (n == null || !Number.isFinite(n) || n === 0) return "text-zinc-500";
+  if (n == null || !Number.isFinite(n) || n === 0) return "text-faint";
   return n > 0 ? "text-emerald-400" : "text-red-400";
 }
 
@@ -91,11 +91,11 @@ function MetricRow({
   tone?: string;
 }) {
   return (
-    <tr className="border-t border-zinc-800/60 text-zinc-300">
-      <td className="py-1 pr-3 text-zinc-500">{label}</td>
+    <tr className="border-t border-edge/60 text-fg">
+      <td className="py-1 pr-3 text-faint">{label}</td>
       <td className="py-1 pr-3 font-mono tabular-nums">{a}</td>
       <td className="py-1 pr-3 font-mono tabular-nums">{b}</td>
-      <td className={`py-1 font-mono tabular-nums ${tone ?? "text-zinc-400"}`}>
+      <td className={`py-1 font-mono tabular-nums ${tone ?? "text-muted"}`}>
         {d}
       </td>
     </tr>
@@ -125,14 +125,14 @@ function CompareBody({
       )}
 
       {r.diff_summary ? (
-        <p className="mb-3 whitespace-pre-wrap text-sm text-zinc-300">
+        <p className="mb-3 whitespace-pre-wrap text-sm text-fg">
           {r.diff_summary}
         </p>
       ) : (
         !s &&
         !r.params_diff.length &&
         r.ok && (
-          <p className="mb-3 text-sm text-zinc-500">
+          <p className="mb-3 text-sm text-faint">
             {t("cmp_no_diff")}
           </p>
         )
@@ -141,7 +141,7 @@ function CompareBody({
       {s ? (
         <div className="mb-4">
           <div className="mb-1 flex flex-wrap items-center gap-2">
-            <h4 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+            <h4 className="text-[11px] font-semibold uppercase tracking-wider text-faint">
               {t("cmp_geometry")}
             </h4>
             {s.boolean !== "ok" && (
@@ -161,7 +161,7 @@ function CompareBody({
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead>
-                <tr className="text-left text-zinc-500">
+                <tr className="text-left text-faint">
                   <th className="pb-1 pr-3 font-medium" />
                   <th className="pb-1 pr-3 font-medium">{aLabel}</th>
                   <th className="pb-1 pr-3 font-medium">{bLabel}</th>
@@ -267,20 +267,20 @@ function CompareBody({
           </div>
         </div>
       ) : (
-        <p className="mb-3 text-xs text-zinc-500">
+        <p className="mb-3 text-xs text-faint">
           {t("cmp_no_geom")}
         </p>
       )}
 
       {r.params_diff.length > 0 && (
         <div>
-          <h4 className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+          <h4 className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-faint">
             {t("cmp_params_n", { n: r.params_diff.length })}
           </h4>
           <div className="overflow-x-auto">
             <table className="w-full table-fixed text-xs">
               <thead>
-                <tr className="text-left text-zinc-500">
+                <tr className="text-left text-faint">
                   <th className="w-1/4 pb-1 pr-3 font-medium">{t("cmp_param")}</th>
                   <th className="pb-1 pr-3 font-medium">{aLabel}</th>
                   <th className="pb-1 font-medium">{bLabel}</th>
@@ -290,9 +290,9 @@ function CompareBody({
                 {r.params_diff.map((d) => (
                   <tr
                     key={d.key}
-                    className="border-t border-zinc-800/60 text-zinc-300"
+                    className="border-t border-edge/60 text-fg"
                   >
-                    <td className="truncate py-1 pr-3 font-mono text-zinc-400">
+                    <td className="truncate py-1 pr-3 font-mono text-muted">
                       {d.key}
                     </td>
                     <td
@@ -345,7 +345,7 @@ export default function ComparePanel({
         right={
           <span className="flex items-center gap-1 normal-case tracking-normal">
             <Chip>{aLabel}</Chip>
-            <ArrowRight className="h-3 w-3 text-zinc-600" />
+            <ArrowRight className="h-3 w-3 text-faint" />
             <Chip tone="blue">{bLabel}</Chip>
             {other && <Chip className="uppercase">{other.kind}</Chip>}
           </span>

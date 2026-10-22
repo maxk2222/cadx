@@ -83,7 +83,7 @@ export default function LivePreview({
         <img
           src={shown}
           alt={t("live_alt")}
-          className="absolute inset-0 h-full w-full bg-zinc-950 object-contain"
+          className="absolute inset-0 h-full w-full bg-bg object-contain"
         />
       )}
       {src && src !== shown && (
@@ -98,7 +98,7 @@ export default function LivePreview({
         />
       )}
       {!shown && waited && (
-        <div className="absolute inset-0 flex items-center justify-center px-4 text-center text-xs text-zinc-500">
+        <div className="absolute inset-0 flex items-center justify-center px-4 text-center text-xs text-faint">
           {active ? t("waiting_render") : t("no_preview")}
         </div>
       )}
@@ -108,7 +108,7 @@ export default function LivePreview({
         </span>
       )}
       {shown && data && (data.final || data.iteration != null) && (
-        <span className="absolute right-2 top-2 rounded bg-black/70 px-2 py-1 font-mono text-[10px] font-medium text-zinc-300">
+        <span className="absolute right-2 top-2 rounded bg-black/70 px-2 py-1 font-mono text-[10px] font-medium text-fg">
           {data.final ? t("final") : t("it_short", { n: data.iteration })}
         </span>
       )}
@@ -119,7 +119,7 @@ export default function LivePreview({
               key={w}
               onClick={() => setView(w)}
               className={`rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
-                w === cur ? "text-brand-300" : "text-zinc-400 hover:text-zinc-200"
+                w === cur ? "text-brand-300" : "text-muted hover:text-fg"
               }`}
             >
               {viewLabel(w)}

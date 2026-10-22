@@ -117,7 +117,7 @@ export default function GenerateImageModal({
               <img
                 src={refAsset.url}
                 alt={refAsset.filename}
-                className="h-10 w-10 rounded border border-zinc-700 object-cover"
+                className="h-10 w-10 rounded border border-edge2 object-cover"
               />
             )}
           </div>
@@ -205,7 +205,7 @@ export default function GenerateImageModal({
             />
           </Field>
         )}
-        <label className="mb-3 flex items-center gap-2 text-xs text-zinc-300">
+        <label className="mb-3 flex items-center gap-2 text-xs text-fg">
           <input
             type="checkbox"
             className="accent-brand-500"
@@ -241,7 +241,7 @@ export default function GenerateImageModal({
           </Btn>
         </div>
         {gen.isPending && (
-          <div className="mt-2 text-xs text-zinc-500">
+          <div className="mt-2 text-xs text-faint">
             {t("asset.gen.slow_note")}
           </div>
         )}

@@ -159,8 +159,8 @@ function PartsSection() {
             onClick={() => setKindFilter(k)}
             className={`rounded-md px-2.5 py-1 text-xs transition-colors ${
               kindFilter === k
-                ? "bg-zinc-700 font-medium text-zinc-100"
-                : "text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
+                ? "bg-edge2 font-medium text-fg"
+                : "text-faint hover:bg-panel2 hover:text-fg"
             }`}
           >
             {k === "all" ? t("all") : k}
@@ -169,7 +169,7 @@ function PartsSection() {
       </div>
 
       {parts.isLoading ? (
-        <div className="flex justify-center py-8 text-zinc-500">
+        <div className="flex justify-center py-8 text-faint">
           <Spinner />
         </div>
       ) : filtered.length === 0 ? (
@@ -190,28 +190,28 @@ function PartsSection() {
               tabIndex={0}
               onClick={() => setDetail(p)}
               onKeyDown={(e) => e.key === "Enter" && setDetail(p)}
-              className="group flex cursor-pointer flex-col rounded-lg border border-zinc-800 bg-zinc-900/40 p-3 text-left transition-colors hover:border-zinc-600 hover:bg-zinc-900"
+              className="group flex cursor-pointer flex-col rounded-lg border border-edge bg-panel/40 p-3 text-left transition-colors hover:border-edge2 hover:bg-panel"
             >
               <div className="mb-1.5 flex items-center gap-2">
                 <Chip tone={p.kind === "template" ? "purple" : "blue"}>
                   {p.kind}
                 </Chip>
-                <span className="ml-auto text-[10px] text-zinc-500">
+                <span className="ml-auto text-[10px] text-faint">
                   {timeAgo(p.created_at)}
                 </span>
               </div>
-              <div className="truncate text-sm font-medium text-zinc-200">
+              <div className="truncate text-sm font-medium text-fg">
                 {p.name}
               </div>
-              <div className="truncate text-xs text-zinc-500">
+              <div className="truncate text-xs text-faint">
                 {p.filename || t("code_template")}
               </div>
               {p.caption && (
-                <div className="mt-1 line-clamp-2 text-xs text-zinc-500">
+                <div className="mt-1 line-clamp-2 text-xs text-faint">
                   {p.caption}
                 </div>
               )}
-              <div className="mt-2 flex items-center gap-0.5 border-t border-zinc-800/60 pt-2 opacity-60 transition-opacity group-hover:opacity-100">
+              <div className="mt-2 flex items-center gap-0.5 border-t border-edge/60 pt-2 opacity-60 transition-opacity group-hover:opacity-100">
                 <IconBtn title={t("details")} onClick={(e) => { e.stopPropagation(); setDetail(p); }}>
                   <Boxes className="h-3.5 w-3.5" />
                 </IconBtn>
@@ -220,7 +220,7 @@ function PartsSection() {
                     href={p.url}
                     title={t("common:action.download")}
                     aria-label={t("common:action.download")}
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted hover:bg-panel2 hover:text-fg"
                     onClick={(e) => e.stopPropagation()}
                   >
                     <Download className="h-3.5 w-3.5" />
@@ -299,13 +299,13 @@ function PartPreview({ part }: { part: LibraryPart }) {
     );
   if (needSource && src.isLoading)
     return (
-      <div className="flex h-full items-center justify-center text-zinc-500">
+      <div className="flex h-full items-center justify-center text-faint">
         <Spinner />
       </div>
     );
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-zinc-500">
-      <Boxes className="h-8 w-8 text-zinc-700" />
+    <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-faint">
+      <Boxes className="h-8 w-8 text-faint" />
       {t("no_preview")}
     </div>
   );
@@ -342,7 +342,7 @@ function PartDetail({
 
   return (
     <Modal open={!!part} onClose={onClose} title={part.name} wide>
-      <div className="mb-3 h-64 overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900">
+      <div className="mb-3 h-64 overflow-hidden rounded-lg border border-edge bg-panel">
         <PartPreview part={part} />
       </div>
 
@@ -379,7 +379,7 @@ function PartDetail({
           <Chip tone={part.kind === "template" ? "purple" : "blue"}>
             {part.kind}
           </Chip>
-          <span className="truncate text-xs text-zinc-500">
+          <span className="truncate text-xs text-faint">
             {part.filename || "code"} {part.caption ? `— ${part.caption}` : ""}
           </span>
           <IconBtn
@@ -399,9 +399,9 @@ function PartDetail({
         <div className="mb-3 text-xs text-red-400">{errMsg(update.error)}</div>
       )}
 
-      <div className="mb-3 flex flex-col gap-1 text-xs text-zinc-500">
+      <div className="mb-3 flex flex-col gap-1 text-xs text-faint">
         <div>
-          {t("added")} <span className="text-zinc-300">{fmtDateTime(part.created_at)}</span>
+          {t("added")} <span className="text-fg">{fmtDateTime(part.created_at)}</span>
         </div>
         {part.source_version_id && (
           <div>
@@ -415,10 +415,10 @@ function PartDetail({
           </div>
         )}
         {part.params && Object.keys(part.params).length > 0 && (
-          <div className="mt-1 rounded border border-zinc-800 bg-zinc-900/60 p-2 font-mono text-[11px] text-zinc-400">
+          <div className="mt-1 rounded border border-edge bg-panel/60 p-2 font-mono text-[11px] text-muted">
             {Object.entries(part.params).map(([k, v]) => (
               <div key={k}>
-                <span className="text-zinc-300">{k}</span>: {JSON.stringify(v)}
+                <span className="text-fg">{k}</span>: {JSON.stringify(v)}
               </div>
             ))}
           </div>
@@ -501,11 +501,11 @@ function CatalogBrowser() {
         onClick={() => setOpen((o) => !o)}
       >
         {open ? (
-          <ChevronDown className="h-4 w-4 text-zinc-500" />
+          <ChevronDown className="h-4 w-4 text-faint" />
         ) : (
-          <ChevronRight className="h-4 w-4 text-zinc-500" />
+          <ChevronRight className="h-4 w-4 text-faint" />
         )}
-        <Package className="h-4 w-4 text-zinc-500" />
+        <Package className="h-4 w-4 text-faint" />
         <span className="text-xs font-semibold uppercase tracking-wider text-faint">
           {t("catalog")}
         </span>
@@ -522,7 +522,7 @@ function CatalogBrowser() {
             />
           </div>
           {catalog.isLoading ? (
-            <div className="flex justify-center py-4 text-zinc-500">
+            <div className="flex justify-center py-4 text-faint">
               <Spinner />
             </div>
           ) : catalog.isError ? (
@@ -531,21 +531,21 @@ function CatalogBrowser() {
             Object.entries(filtered).map(([cat, classes]) => (
               <div key={cat} className="mb-1">
                 <button
-                  className="flex w-full items-center gap-1.5 rounded px-1 py-1 text-sm text-zinc-300 hover:bg-zinc-800"
+                  className="flex w-full items-center gap-1.5 rounded px-1 py-1 text-sm text-fg hover:bg-panel2"
                   onClick={() => toggle(cat)}
                 >
                   {expanded.has(cat) || needle ? (
-                    <ChevronDown className="h-3.5 w-3.5 text-zinc-500" />
+                    <ChevronDown className="h-3.5 w-3.5 text-faint" />
                   ) : (
-                    <ChevronRight className="h-3.5 w-3.5 text-zinc-500" />
+                    <ChevronRight className="h-3.5 w-3.5 text-faint" />
                   )}
                   {cat}
-                  <span className="text-xs text-zinc-500">
+                  <span className="text-xs text-faint">
                     ({Object.keys(classes).length})
                   </span>
                 </button>
                 {(expanded.has(cat) || needle) && (
-                  <div className="ml-6 flex flex-col gap-0.5 border-l border-zinc-800 pl-2">
+                  <div className="ml-6 flex flex-col gap-0.5 border-l border-edge pl-2">
                     {Object.entries(classes).map(([cls, entry]) => {
                       const sizes = entry.types
                         ? Object.values(entry.types).flat()
@@ -559,22 +559,22 @@ function CatalogBrowser() {
                       return (
                         <div key={cls} className="py-0.5 text-xs">
                           <button
-                            className="text-left font-mono text-zinc-300 hover:text-zinc-100"
+                            className="text-left font-mono text-fg hover:text-fg"
                             onClick={() => setDetail(openDetail ? null : cls)}
                           >
                             {cls}
                           </button>
-                          <span className="ml-2 text-zinc-500">
+                          <span className="ml-2 text-faint">
                             {entry.kind === "parametric" ? t("params_prefix") : ""}
                             {preview}
                           </span>
                           {openDetail && (
-                            <div className="my-1 rounded border border-zinc-800 bg-zinc-900/60 p-2 font-mono text-[11px] text-zinc-400">
-                              <div className="mb-1 text-zinc-500">{entry.doc}</div>
+                            <div className="my-1 rounded border border-edge bg-panel/60 p-2 font-mono text-[11px] text-muted">
+                              <div className="mb-1 text-faint">{entry.doc}</div>
                               {entry.types &&
                                 Object.entries(entry.types).map(([t, ss]) => (
                                   <div key={t}>
-                                    <span className="text-zinc-300">{t}</span>:{" "}
+                                    <span className="text-fg">{t}</span>:{" "}
                                     {ss.join(", ")}
                                   </div>
                                 ))}

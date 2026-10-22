@@ -93,8 +93,8 @@ export default function Viewer3D({ url }: { url: string | null }) {
 
   if (!url) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-zinc-500">
-        <Boxes className="h-8 w-8 text-zinc-700" />
+      <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-faint">
+        <Boxes className="h-8 w-8 text-faint" />
         {t("viewer.no_preview")}
       </div>
     );
@@ -111,7 +111,7 @@ export default function Viewer3D({ url }: { url: string | null }) {
       key={key}
       title={title}
       onClick={onClick}
-      className={`bg-zinc-900/80 backdrop-blur ${active ? "text-brand-400" : ""}`}
+      className={`bg-panel/80 backdrop-blur ${active ? "text-brand-400" : ""}`}
     >
       {icon}
     </IconBtn>
@@ -121,7 +121,7 @@ export default function Viewer3D({ url }: { url: string | null }) {
     measurePts.length === 2 ? distMm(measurePts[0], measurePts[1]) : null;
 
   return (
-    <div ref={wrapRef} className="relative h-full w-full bg-zinc-900">
+    <div ref={wrapRef} className="relative h-full w-full bg-panel">
       <ModelCanvas
         url={url}
         autoRotate={autoRotate}
@@ -193,7 +193,7 @@ export default function Viewer3D({ url }: { url: string | null }) {
       {/* measure status chip — hint while picking, distance once both
           surface points are placed (same styling as EditPage's) */}
       {measuring && (
-        <div className="absolute bottom-3 left-3 flex items-center rounded-lg border border-amber-800/60 bg-zinc-950/90 px-3 py-1.5 text-sm text-amber-300 backdrop-blur">
+        <div className="absolute bottom-3 left-3 flex items-center rounded-lg border border-amber-800/60 bg-bg/90 px-3 py-1.5 text-sm text-amber-300 backdrop-blur">
           <Ruler className="mr-1.5 h-3.5 w-3.5" />
           {measureDist != null ? (
             <>
@@ -201,7 +201,7 @@ export default function Viewer3D({ url }: { url: string | null }) {
               <button
                 type="button"
                 aria-label={t("viewer.clear")}
-                className="ml-2 text-xs text-zinc-500 hover:text-zinc-300"
+                className="ml-2 text-xs text-faint hover:text-fg"
                 onClick={() => setMeasurePts([])}
               >
                 {t("viewer.clear")}

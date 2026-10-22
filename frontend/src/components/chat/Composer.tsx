@@ -81,8 +81,8 @@ export default function Composer({
 
   return (
     <div
-      className={`rounded-lg border bg-zinc-900 transition-colors ${
-        drag ? "border-brand-500" : "border-zinc-800"
+      className={`rounded-lg border bg-panel transition-colors ${
+        drag ? "border-brand-500" : "border-edge"
       }`}
       onDragOver={(e) => {
         e.preventDefault();
@@ -102,10 +102,10 @@ export default function Composer({
               <img
                 src={a.url}
                 alt={a.filename}
-                className="h-14 w-14 rounded border border-zinc-700 object-cover"
+                className="h-14 w-14 rounded border border-edge2 object-cover"
               />
               <button
-                className="absolute -right-1.5 -top-1.5 hidden h-4 w-4 items-center justify-center rounded-full bg-zinc-700 text-zinc-200 group-hover:flex"
+                className="absolute -right-1.5 -top-1.5 hidden h-4 w-4 items-center justify-center rounded-full bg-edge2 text-fg group-hover:flex"
                 onClick={() => setStaged((s) => s.filter((x) => x.id !== a.id))}
                 title={t("remove_attachment")}
                 aria-label={t("remove_attachment")}
@@ -118,7 +118,7 @@ export default function Composer({
       )}
       <div className="flex items-end gap-2 p-2">
         <button
-          className="flex h-8 w-8 items-center justify-center rounded-md text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
+          className="flex h-8 w-8 items-center justify-center rounded-md text-muted hover:bg-panel2 hover:text-fg"
           title={t("attach_images")}
           aria-label={t("attach_images")}
           onClick={() => fileRef.current?.click()}
@@ -158,7 +158,7 @@ export default function Composer({
             drag ? t("drop_images") : t("ph")
           }
           rows={1}
-          className="max-h-48 flex-1 resize-none bg-transparent px-1 py-1.5 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none"
+          className="max-h-48 flex-1 resize-none bg-transparent px-1 py-1.5 text-sm text-fg placeholder:text-faint focus:outline-none"
         />
         {uploading > 0 && <Spinner className="h-4 w-4 self-center" />}
         <button

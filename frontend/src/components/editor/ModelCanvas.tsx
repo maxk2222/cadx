@@ -373,7 +373,7 @@ export default function ModelCanvas({
       <Suspense
         fallback={
           <Html center>
-            <Loader2 className="h-6 w-6 animate-spin text-zinc-500" />
+            <Loader2 className="h-6 w-6 animate-spin text-faint" />
           </Html>
         }
       >

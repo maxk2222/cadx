@@ -275,7 +275,7 @@ export default function StartPage() {
                   active
                     ? "glow-accent bg-brand-600 text-white"
                     : reached
-                      ? "bg-panel2 text-zinc-300 hover:bg-edge2"
+                      ? "bg-panel2 text-fg hover:bg-edge2"
                       : "bg-panel text-faint/60"
                 }`}
               >

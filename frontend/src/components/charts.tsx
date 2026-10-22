@@ -324,7 +324,7 @@ export function StatDonut({
         <Tooltip {...TOOLTIP_STYLE} />
         <Legend
           wrapperStyle={{ fontSize: 11 }}
-          formatter={(v: string) => <span className="text-zinc-400">{v}</span>}
+          formatter={(v: string) => <span className="text-muted">{v}</span>}
         />
       </PieChart>
     </ResponsiveContainer>

@@ -53,7 +53,7 @@ export default function FeatureEditPanel({ versionId }: { versionId: string }) {
         type="button"
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center gap-1.5 text-left text-xs text-zinc-400 hover:text-zinc-200"
+        className="flex w-full items-center gap-1.5 text-left text-xs text-muted hover:text-fg"
       >
         {open ? (
           <ChevronDown className="h-3.5 w-3.5" />
@@ -71,13 +71,13 @@ export default function FeatureEditPanel({ versionId }: { versionId: string }) {
       {open && (
         <div className="mt-2">
           {feats.isLoading ? (
-            <div className="flex items-center gap-2 text-xs text-zinc-500">
+            <div className="flex items-center gap-2 text-xs text-faint">
               <Spinner /> {t("feat_scanning")}
             </div>
           ) : feats.isError ? (
             <div className="text-xs text-red-400">{errMsg(feats.error)}</div>
           ) : !list.length ? (
-            <div className="text-xs text-zinc-500">
+            <div className="text-xs text-faint">
               {feats.data?.reason || t("feat_none")}
             </div>
           ) : (
@@ -98,10 +98,10 @@ export default function FeatureEditPanel({ versionId }: { versionId: string }) {
                       }}
                       className={`block w-full rounded border px-2 py-1 text-left text-xs ${
                         dis
-                          ? "cursor-not-allowed border-zinc-800 text-zinc-500"
+                          ? "cursor-not-allowed border-edge text-faint"
                           : on
                             ? "border-brand-600 bg-brand-950/60 text-brand-200"
-                            : "border-zinc-700 text-zinc-300 hover:border-zinc-500"
+                            : "border-edge2 text-fg hover:border-edge2"
                       }`}
                     >
                       #{f.feature_id} {f.kind} Ø{f.diameter} mm
@@ -131,7 +131,7 @@ export default function FeatureEditPanel({ versionId }: { versionId: string }) {
                   {t("feat_resize")}
                 </Btn>
               </div>
-              <div className="mt-1 text-[11px] text-zinc-500">
+              <div className="mt-1 text-[11px] text-faint">
                 {t("feat_verified_hint")}
               </div>
             </>

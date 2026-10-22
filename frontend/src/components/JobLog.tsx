@@ -61,14 +61,14 @@ export const LogRow = memo(function LogRow({
         ? "text-amber-400"
         : /error|fail/i.test(e.message ?? "")
           ? "text-red-300"
-          : "text-zinc-400";
+          : "text-muted";
   return (
     <div className={cls}>
       {e.t_ms != null && t0 != null && (
-        <span className="text-zinc-700">+{fmtSecs((e.t_ms - t0) / 1000)} </span>
+        <span className="text-faint">+{fmtSecs((e.t_ms - t0) / 1000)} </span>
       )}
       {e.step ? (
-        <span className="text-zinc-600">
+        <span className="text-faint">
           [{e.step}
           {e.iteration ? `:${e.iteration}` : ""}]{" "}
         </span>
@@ -125,7 +125,7 @@ function StepsTimeline({
             <span
               key={`${s}-${i}`}
               className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium ${
-                active ? "bg-brand-900/60 text-brand-300" : "bg-zinc-800 text-zinc-400"
+                active ? "bg-brand-900/60 text-brand-300" : "bg-panel2 text-muted"
               }`}
             >
               {active ? (
@@ -163,14 +163,14 @@ function StepsTimeline({
     <div className="flex flex-col gap-1">
       {its.map((it) => (
         <div key={it} className="flex flex-wrap items-center gap-1">
-          <span className="w-9 shrink-0 text-[9px] font-semibold uppercase tracking-wider text-zinc-600">
+          <span className="w-9 shrink-0 text-[9px] font-semibold uppercase tracking-wider text-faint">
             {it > 0 ? t("log_it", { n: it }) : t("log_setup")}
           </span>
           {groups.get(it)!.map((s, i) => (
             <span
               key={i}
               className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium ${
-                s.active ? "bg-brand-900/60 text-brand-300" : "bg-zinc-800 text-zinc-400"
+                s.active ? "bg-brand-900/60 text-brand-300" : "bg-panel2 text-muted"
               }`}
             >
               {s.active ? (
@@ -180,13 +180,13 @@ function StepsTimeline({
               )}
               {stepLabel(s.step)}
               {s.dt != null && (
-                <span className="text-zinc-600">{fmtSecs(s.dt)}</span>
+                <span className="text-faint">{fmtSecs(s.dt)}</span>
               )}
             </span>
           ))}
           {scores.has(it) && (
             <span
-              className={`flex items-center gap-0.5 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] font-semibold ${scoreTone(scores.get(it)!)}`}
+              className={`flex items-center gap-0.5 rounded bg-panel2 px-1.5 py-0.5 text-[10px] font-semibold ${scoreTone(scores.get(it)!)}`}
               title={t("log_score_hint")}
             >
               <Gauge className="h-3 w-3" /> {scores.get(it)}
@@ -281,7 +281,7 @@ export default function JobLog({
     <div className="flex flex-col gap-2">
       {(jobs?.length ?? 0) > 1 && (
         <select
-          className="w-full rounded-md border border-zinc-700 bg-zinc-800/80 px-2 py-1 text-xs text-zinc-300"
+          className="w-full rounded-md border border-edge2 bg-panel2/80 px-2 py-1 text-xs text-fg"
           value={jobId ?? ""}
           onChange={(e) => onSelectJob?.(e.target.value)}
         >
@@ -294,8 +294,8 @@ export default function JobLog({
       )}
 
       {job && (
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-zinc-800 bg-zinc-900/60 px-2 py-1.5 text-[11px] text-zinc-400">
-          <span className="flex items-center gap-1.5 font-medium text-zinc-300">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-edge bg-panel/60 px-2 py-1.5 text-[11px] text-muted">
+          <span className="flex items-center gap-1.5 font-medium text-fg">
             {running && <CircleDot className="h-3 w-3 animate-pulse text-brand-400" />}
             {job.type} · {job.status}
           </span>
@@ -309,13 +309,13 @@ export default function JobLog({
           )}
           {live.max_iterations ? (
             <span
-              className="font-mono font-semibold text-zinc-200"
+              className="font-mono font-semibold text-fg"
               title={t("log_iter_hint")}
             >
               {t("log_iter_n", { n: Math.min(job.iteration, live.max_iterations), max: live.max_iterations })}
             </span>
           ) : job.iteration ? (
-            <span className="font-mono text-zinc-300">{t("log_it", { n: job.iteration })}</span>
+            <span className="font-mono text-fg">{t("log_it", { n: job.iteration })}</span>
           ) : null}
           <span className="flex-1" />
           {bestScore != null && (
@@ -325,12 +325,12 @@ export default function JobLog({
           )}
           <Elapsed job={job} />
           {eta_s != null && (
-            <span className="font-mono text-zinc-500" title={t("log_eta_hint")}>
+            <span className="font-mono text-faint" title={t("log_eta_hint")}>
               {t("log_eta", { t: fmtSecs(eta_s) })}
             </span>
           )}
           {tokens > 0 && (
-            <span className="flex items-center gap-0.5 font-mono text-zinc-500" title={t("log_tokens_hint")}>
+            <span className="flex items-center gap-0.5 font-mono text-faint" title={t("log_tokens_hint")}>
               <Cpu className="h-3 w-3" />
               {fmtTokens(tokens)}
             </span>
@@ -401,12 +401,12 @@ export default function JobLog({
                   : "blue"
           }
         />
-        <span className="w-14 text-right font-mono text-[10px] text-zinc-500">
+        <span className="w-14 text-right font-mono text-[10px] text-faint">
           {job?.started_at ? fmtDuration(job.started_at, job.finished_at) : "—"}
         </span>
       </div>
       {live.sub_label && live.sub_progress != null && (
-        <div className="truncate font-mono text-[10px] text-zinc-500" title={live.sub_label}>
+        <div className="truncate font-mono text-[10px] text-faint" title={live.sub_label}>
           ↳ {live.sub_label}
         </div>
       )}
@@ -414,20 +414,20 @@ export default function JobLog({
       <div
         ref={logBoxRef}
         onScroll={onScroll}
-        className="h-56 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-950 p-2 font-mono text-[11px] leading-5"
+        className="h-56 overflow-y-auto rounded-lg border border-edge bg-bg p-2 font-mono text-[11px] leading-5"
       >
         {events.map((e, i) => (
           <LogRow key={i} e={e} t0={t0} />
         ))}
         {!events.length && (
-          <div className="py-4 text-center text-zinc-600">
+          <div className="py-4 text-center text-faint">
             {jobId ? t("log_connecting") : t("log_no_job")}
           </div>
         )}
         <div />
       </div>
 
-      <div className="flex items-center justify-between text-[10px] text-zinc-600">
+      <div className="flex items-center justify-between text-[10px] text-faint">
         <span>
           {job ? (
             <>
@@ -485,12 +485,12 @@ export default function JobLog({
           </div>
           {job!.questions!.map((q, i) => (
             <div key={i} className="mb-2">
-              <div className="text-xs text-zinc-300">{q.question}</div>
+              <div className="text-xs text-fg">{q.question}</div>
               {q.why_it_matters ? (
-                <div className="text-[10px] text-zinc-500">{q.why_it_matters}</div>
+                <div className="text-[10px] text-faint">{q.why_it_matters}</div>
               ) : null}
               <input
-                className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm"
+                className="mt-1 w-full rounded-md border border-edge2 bg-panel2 px-2 py-1 text-sm"
                 placeholder={q.default_assumption ? t("log_default_ph", { v: q.default_assumption }) : ""}
                 value={answers[i] ?? ""}
                 onChange={(e) =>

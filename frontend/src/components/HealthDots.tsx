@@ -12,7 +12,7 @@ function Dot({ ok, warn, label, title }: { ok: boolean; warn?: boolean; label: s
   return (
     <span className="flex items-center gap-1.5" title={title ?? label}>
       <span className={`h-2 w-2 rounded-full ${cls}`} />
-      <span className="hidden text-[10px] font-medium uppercase tracking-wider text-zinc-500 sm:inline">
+      <span className="hidden text-[10px] font-medium uppercase tracking-wider text-faint sm:inline">
         {label}
       </span>
     </span>
@@ -55,7 +55,7 @@ export default function HealthDots() {
   return (
     <Link
       to="/settings?tab=provider"
-      className="grid grid-cols-2 gap-x-3 gap-y-1.5 rounded-md px-2 py-1 hover:bg-zinc-900"
+      className="grid grid-cols-2 gap-x-3 gap-y-1.5 rounded-md px-2 py-1 hover:bg-panel"
       title={t("health.hint")}
     >
       <Dot ok={apiOk} label="API" title={apiOk ? t("health.api_on") : t("health.api_off")} />

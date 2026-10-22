@@ -100,7 +100,7 @@ export default function ParamsPanel({
           const err = fieldError(p);
           return (
             <label key={p.name} className="block">
-              <span className="text-xs text-zinc-400">
+              <span className="text-xs text-muted">
                 {p.name}
                 {p.unit && p.unit !== "-" ? ` (${p.unit})` : ""}
                 {p.min != null || p.max != null
@@ -108,7 +108,7 @@ export default function ParamsPanel({
                   : ""}
               </span>
               {typeof cur === "boolean" ? (
-                <span className="mt-0.5 flex items-center gap-1.5 px-1 py-1 text-xs text-zinc-400">
+                <span className="mt-0.5 flex items-center gap-1.5 px-1 py-1 text-xs text-muted">
                   <input
                     type="checkbox"
                     className="accent-brand-500"
@@ -135,7 +135,7 @@ export default function ParamsPanel({
               )}
               {err && <div className="mt-0.5 text-[10px] text-red-400">{err}</div>}
               {p.description && (
-                <div className="mt-0.5 text-[10px] text-zinc-500">{p.description}</div>
+                <div className="mt-0.5 text-[10px] text-faint">{p.description}</div>
               )}
             </label>
           );

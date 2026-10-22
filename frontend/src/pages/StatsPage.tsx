@@ -72,7 +72,7 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 
 const TH =
   "px-3 py-1.5 text-left text-[11px] font-medium uppercase tracking-wider text-faint";
-const TD = "px-3 py-1.5 text-sm text-zinc-300";
+const TD = "px-3 py-1.5 text-sm text-fg";
 const TD_MONO = `${TD} font-mono tabular-nums`;
 
 interface Col<T> {
@@ -629,7 +629,7 @@ export default function StatsPage() {
                             </div>
                             {s.failed_steps.map((f) => (
                               <div key={f.name} className="flex justify-between text-sm">
-                                <span className="text-zinc-300">
+                                <span className="text-fg">
                                   {stepLabel(f.name) || f.name}
                                 </span>
                                 <span className="font-mono text-faint">{f.count}</span>

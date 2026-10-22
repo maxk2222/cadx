@@ -321,6 +321,8 @@ export interface RegionSpec {
     | "surface"
     | "area"
     | "cylinder"
+    | "rim"
+    | "border"
     | "box"
     | "hole"
     | "anchor"
@@ -330,10 +332,14 @@ export interface RegionSpec {
   axis?: string;
   center?: number[];
   diameter_mm?: number | null;
+  /** hollow cylinder/annulus inner diameter (cylinder/area/rim). */
+  inner_diameter_mm?: number | null;
   margin_mm?: number;
   polygon?: number[][];
   x_range?: number[];
   y_range?: number[];
+  /** [min,max] mm clip along Z (area/surface/rim/border/cylinder). */
+  z_range?: number[];
   hole_index?: number | null;
   /** anchor kind filter for anchor/bore regions (hole|thread|insert|bearing_seat). */
   anchor_kind?: string;
@@ -357,6 +363,8 @@ export interface LoadSpec {
   bearing_dir?: number[];
   /** pure couple [mx,my,mz] in N·m. */
   moment_nm?: number[];
+  /** total force in N orthogonal to the region surface (+ pushes in, - pulls). */
+  normal_force_n?: number | null;
   /** bolt pretension along the bore axis (N). */
   preload_n?: number | null;
   /** apply force_n at this point — adds the induced moment to the region. */

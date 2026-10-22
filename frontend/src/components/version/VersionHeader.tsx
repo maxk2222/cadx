@@ -86,7 +86,7 @@ export default function VersionHeader({
               setNameDraft(v.name);
               setNameEdit(true);
             }}
-            className="group flex items-center gap-1.5 rounded px-1.5 py-0.5 text-lg text-zinc-300 transition-colors hover:bg-panel2"
+            className="group flex items-center gap-1.5 rounded px-1.5 py-0.5 text-lg text-fg transition-colors hover:bg-panel2"
           >
             {v.name || (
               <span className="text-xs italic text-faint">{t("add_name")}</span>

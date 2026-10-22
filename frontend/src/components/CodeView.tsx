@@ -39,11 +39,11 @@ export default function CodeView({ versionId }: { versionId: string }) {
         {t("code_title")}
       </SectionTitle>
       {code.isLoading ? (
-        <div className="flex justify-center py-8 text-zinc-500">
+        <div className="flex justify-center py-8 text-faint">
           <Spinner />
         </div>
       ) : (
-        <pre className="max-h-[560px] overflow-auto rounded-lg border border-zinc-800 bg-zinc-950 p-3 font-mono text-xs leading-relaxed text-zinc-300">
+        <pre className="max-h-[560px] overflow-auto rounded-lg border border-edge bg-bg p-3 font-mono text-xs leading-relaxed text-fg">
           {code.data || "(empty)"}
         </pre>
       )}

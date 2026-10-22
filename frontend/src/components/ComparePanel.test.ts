@@ -126,8 +126,8 @@ describe("deltaTone", () => {
   it("maps sign to a colour class", () => {
     expect(deltaTone(1)).toBe("text-emerald-400");
     expect(deltaTone(-0.5)).toBe("text-red-400");
-    expect(deltaTone(0)).toBe("text-zinc-500");
-    expect(deltaTone(null)).toBe("text-zinc-500");
+    expect(deltaTone(0)).toBe("text-faint");
+    expect(deltaTone(null)).toBe("text-faint");
   });
 });
 

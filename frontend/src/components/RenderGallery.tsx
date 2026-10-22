@@ -20,7 +20,7 @@ function Thumb({
     <button
       onClick={() => onOpen(a.url)}
       title={a.path.split("/").pop()}
-      className="group relative overflow-hidden rounded-md border border-zinc-800 transition-colors hover:border-zinc-600"
+      className="group relative overflow-hidden rounded-md border border-edge transition-colors hover:border-edge2"
     >
       <img src={a.url} alt={caption} loading="lazy" className="w-full" />
       <span className="absolute bottom-1 left-1 max-w-[calc(100%-0.5rem)] truncate rounded bg-black/60 px-1 text-[10px]">
@@ -124,7 +124,7 @@ export default function RenderGallery({ artifacts }: { artifacts: Artifact[] }) 
             {femByCase.map(([caseName, g]) => (
               <div key={caseName || "fem"}>
                 {femByCase.length > 1 && (
-                  <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-zinc-600">
+                  <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-faint">
                     {caseName || t("gal_case")}
                   </div>
                 )}

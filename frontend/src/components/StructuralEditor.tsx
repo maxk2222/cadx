@@ -107,6 +107,8 @@ const REGION_KINDS: { id: NonNullable<RegionSpec["kind"]> }[] = [
   { id: "surface" },
   { id: "area" },
   { id: "cylinder" },
+  { id: "rim" },
+  { id: "border" },
   { id: "box" },
   { id: "anchor" },
   { id: "bore" },
@@ -168,6 +170,10 @@ function newRegion(kind: NonNullable<RegionSpec["kind"]>): RegionSpec {
       return { kind: "area", center: [0, 0], diameter_mm: 20 };
     case "cylinder":
       return { kind: "cylinder", axis: "z", center: [0, 0, 0], diameter_mm: 10 };
+    case "rim":
+      return { kind: "rim", axis: "+z", margin_mm: 3 };
+    case "border":
+      return { kind: "border", axis: "xy", margin_mm: 4 };
     case "box":
       return { kind: "box", center: [0, 0, 5], diameter_mm: 10 };
     case "hole":
@@ -197,6 +203,10 @@ function regionLabel(r: RegionSpec, anchors?: FeatureAnchor[]): string {
       return tl("area", { d: r.diameter_mm ?? "?" });
     case "cylinder":
       return tl("cylinder", { axis: r.axis ?? "z", d: r.diameter_mm ?? "?" });
+    case "rim":
+      return tl("rim", { axis: r.axis ?? "+z", m: r.margin_mm ?? "?" });
+    case "border":
+      return tl("border", { axis: r.axis ?? "xy", m: r.margin_mm ?? "?" });
     case "box":
       return tl("box", { d: r.diameter_mm ?? "?" });
     case "hole":
@@ -223,6 +233,7 @@ type LoadKind =
   | "pressure"
   | "bearing"
   | "moment"
+  | "normal"
   | "preload"
   | "remote"
   | "gravity";
@@ -232,6 +243,7 @@ const LOAD_KINDS: { id: LoadKind }[] = [
   { id: "pressure" },
   { id: "bearing" },
   { id: "moment" },
+  { id: "normal" },
   { id: "preload" },
   { id: "remote" },
   { id: "gravity" },
@@ -241,6 +253,7 @@ function loadKind(l: LoadSpec): LoadKind {
   if ((l.bearing_n ?? 0) > 0) return "bearing";
   if (l.moment_nm?.some((v) => Math.abs(v) > 1e-9)) return "moment";
   if ((l.preload_n ?? 0) > 0) return "preload";
+  if ((l.normal_force_n ?? 0) !== 0) return "normal";
   if (l.remote_point?.length === 3) return "remote";
   if (l.g_load?.some((v) => Math.abs(v) > 1e-9)) return "gravity";
   if ((l.pressure_mpa ?? 0) > 0 && !(l.force_n?.some((f) => Math.abs(f) > 1e-9))) return "pressure";
@@ -254,6 +267,7 @@ function blankLoad(kind: LoadKind): Partial<LoadSpec> {
     bearing_n: null,
     bearing_dir: undefined,
     moment_nm: undefined,
+    normal_force_n: null,
     preload_n: null,
     remote_point: undefined,
     g_load: undefined,
@@ -268,6 +282,8 @@ function blankLoad(kind: LoadKind): Partial<LoadSpec> {
       return { ...base, bearing_n: 200, bearing_dir: [0, 0, -1] };
     case "moment":
       return { ...base, moment_nm: [0, 0, 1] };
+    case "normal":
+      return { ...base, normal_force_n: 100 };
     case "preload":
       return { ...base, preload_n: 500 };
     case "remote":
@@ -284,6 +300,7 @@ function loadActive(l: LoadSpec): boolean {
     (l.pressure_mpa ?? 0) > 0 ||
     (l.bearing_n ?? 0) > 0 ||
     (l.moment_nm?.some((v) => Math.abs(v) > 1e-9) ?? false) ||
+    (l.normal_force_n ?? 0) !== 0 ||
     (l.preload_n ?? 0) > 0 ||
     (l.g_load?.some((v) => Math.abs(v) > 1e-9) ?? false)
   );
@@ -329,7 +346,7 @@ function RegionRow({
   return (
     <div
       className={`mb-1 rounded border px-1.5 py-1 text-xs ${
-        painting ? "border-amber-600 bg-amber-950/30" : "border-zinc-800 bg-zinc-900/60"
+        painting ? "border-amber-600 bg-amber-950/30" : "border-edge bg-panel/60"
       }`}
     >
       <div className="flex items-center gap-1.5">
@@ -346,13 +363,26 @@ function RegionRow({
               </option>
             ))}
           </select>
-        ) : kind === "cylinder" ? (
+        ) : kind === "cylinder" || kind === "rim" ? (
           <select
             className={`${inputCls} flex-1 px-1 py-0.5 text-[11px]`}
-            value={r.axis ?? "z"}
+            value={r.axis ?? (kind === "rim" ? "+z" : "z")}
             onChange={(e) => setA({ axis: e.target.value })}
           >
-            {CYL_AXES.map((a) => (
+            {(kind === "rim" ? FACES : CYL_AXES).map((a) => (
+              <option key={a} value={a}>
+                {t("se_cyl_par")} {a.toUpperCase()}
+              </option>
+            ))}
+          </select>
+        ) : kind === "border" ? (
+          <select
+            className={`${inputCls} flex-1 px-1 py-0.5 text-[11px]`}
+            value={r.axis ?? "xy"}
+            onChange={(e) => setA({ axis: e.target.value })}
+            title={t("se_border_axes")}
+          >
+            {["x", "y", "z", "xy", "xz", "yz", "xyz"].map((a) => (
               <option key={a} value={a}>
                 {t("se_cyl_par")} {a.toUpperCase()}
               </option>
@@ -361,7 +391,7 @@ function RegionRow({
         ) : ANCHOR_KINDS.has(kind) && anchors?.length ? (
           <>
             <select
-              className="rounded bg-zinc-800 px-1 py-0.5 text-[10px] text-zinc-400"
+              className="rounded bg-panel2 px-1 py-0.5 text-[10px] text-muted"
               value={kind}
               title={t("se_ring_hint")}
               onChange={(e) => setA({ kind: e.target.value as RegionSpec["kind"] })}
@@ -386,7 +416,7 @@ function RegionRow({
           </>
         ) : (
           <button
-            className="min-w-0 flex-1 truncate text-left text-zinc-300 hover:text-zinc-100"
+            className="min-w-0 flex-1 truncate text-left text-fg hover:text-fg"
             title={`${regionLabel(r, anchors)} — ${t("se_details_hint")}`}
             onClick={() => setOpen((o) => !o)}
           >
@@ -398,7 +428,7 @@ function RegionRow({
             title={t("se_pick_center")}
             aria-label={t("se_pick_center")}
             onClick={onPickCenter}
-            className="rounded p-0.5 text-zinc-500 hover:text-zinc-200"
+            className="rounded p-0.5 text-faint hover:text-fg"
           >
             <Crosshair className="h-3.5 w-3.5" />
           </button>
@@ -409,7 +439,7 @@ function RegionRow({
             aria-label={t(painting ? "se_stop_paint" : "se_paint_on")}
             onClick={onPaint}
             className={`rounded p-0.5 ${
-              painting ? "text-amber-300" : "text-zinc-500 hover:text-zinc-200"
+              painting ? "text-amber-300" : "text-faint hover:text-fg"
             }`}
           >
             <Brush className="h-3.5 w-3.5" />
@@ -419,7 +449,7 @@ function RegionRow({
           title={t("se_remove_region")}
           aria-label={t("se_remove_region")}
           onClick={onDelete}
-          className="text-zinc-500 hover:text-red-400"
+          className="text-faint hover:text-red-400"
         >
           <Trash2 className="h-3 w-3" />
         </button>
@@ -438,9 +468,9 @@ function RegionRow({
             value={r.radius_mm ?? 3}
             onChange={(e) => setA({ radius_mm: num(e.target.value, 3) })}
           />
-          <span className="w-10 text-[10px] text-zinc-500">{r.radius_mm ?? 3}mm</span>
+          <span className="w-10 text-[10px] text-faint">{r.radius_mm ?? 3}mm</span>
           <button
-            className="ml-auto text-[10px] text-zinc-500 underline hover:text-zinc-300"
+            className="ml-auto text-[10px] text-faint underline hover:text-fg"
             onClick={() => setOpen((o) => !o)}
           >
             {t("se_details")}
@@ -450,10 +480,10 @@ function RegionRow({
 
       {/* expanded details */}
       {open && (
-        <div className="mt-1 flex flex-col gap-1 border-t border-zinc-800 pl-4 pt-1">
+        <div className="mt-1 flex flex-col gap-1 border-t border-edge pl-4 pt-1">
           {showFixMode && (
             <div className="flex items-center gap-1">
-              <span className="w-14 text-[10px] text-zinc-500">{t("se_support")}</span>
+              <span className="w-14 text-[10px] text-faint">{t("se_support")}</span>
               <select
                 className={`${inputCls} flex-1 px-1 py-0.5 text-[11px]`}
                 value={r.fix_mode ?? "all"}
@@ -466,7 +496,7 @@ function RegionRow({
           )}
           {showMaterial && (
             <div className="flex items-center gap-1">
-              <span className="w-14 text-[10px] text-zinc-500">{t("se_material")}</span>
+              <span className="w-14 text-[10px] text-faint">{t("se_material")}</span>
               <select
                 className={`${inputCls} flex-1 px-1 py-0.5 text-[11px]`}
                 value={r.material ?? ""}
@@ -479,12 +509,12 @@ function RegionRow({
                   </option>
                 ))}
               </select>
-              <span className="text-[10px] text-zinc-500">{t("se_insert")}</span>
+              <span className="text-[10px] text-faint">{t("se_insert")}</span>
             </div>
           )}
           {(kind === "cylinder" || kind === "box" || kind === "area") && (
             <div className="flex items-center gap-1">
-              <span className="w-14 text-[10px] text-zinc-500">{t("se_center")}</span>
+              <span className="w-14 text-[10px] text-faint">{t("se_center")}</span>
               {(r.center ?? [0, 0, 0]).map((c, i) => (
                 <NumInput
                   key={i}
@@ -498,9 +528,9 @@ function RegionRow({
               ))}
             </div>
           )}
-          {(kind === "cylinder" || kind === "box" || kind === "area") && (
+          {(kind === "cylinder" || kind === "box" || kind === "area" || kind === "rim") && (
             <div className="flex items-center gap-1">
-              <span className="w-14 text-[10px] text-zinc-500">
+              <span className="w-14 text-[10px] text-faint">
                 {kind === "box" ? t("se_edge") : t("se_dia")}
               </span>
               <NumInput
@@ -509,21 +539,33 @@ function RegionRow({
                 className="flex-1"
                 onChange={(n) => setA({ diameter_mm: n })}
               />
-              <span className="text-[10px] text-zinc-500">mm</span>
+              <span className="text-[10px] text-faint">mm</span>
+            </div>
+          )}
+          {(kind === "rim" || kind === "cylinder" || kind === "area") && (
+            <div className="flex items-center gap-1">
+              <span className="w-14 text-[10px] text-faint">{t("se_inner_dia")}</span>
+              <NumInput
+                value={r.inner_diameter_mm ?? 0}
+                step={1}
+                className="flex-1"
+                onChange={(n) => setA({ inner_diameter_mm: n > 0 ? n : null })}
+              />
+              <span className="text-[10px] text-faint">{t("se_inner_dia_h")}</span>
             </div>
           )}
           <div className="flex items-center gap-1">
-            <span className="w-14 text-[10px] text-zinc-500">{t("se_margin")}</span>
+            <span className="w-14 text-[10px] text-faint">{t("se_margin")}</span>
             <NumInput
               value={r.margin_mm ?? 2}
               step={0.5}
               className="flex-1"
               onChange={(n) => setA({ margin_mm: n })}
             />
-            <span className="text-[10px] text-zinc-500">mm</span>
+            <span className="text-[10px] text-faint">mm</span>
           </div>
           <div className="flex items-center gap-1">
-            <span className="w-14 text-[10px] text-zinc-500">{t("se_label")}</span>
+            <span className="w-14 text-[10px] text-faint">{t("se_label")}</span>
             <input
               className={`${inputCls} flex-1 px-1.5 py-0.5 text-[11px]`}
               placeholder={t("se_label_ph")}
@@ -562,27 +604,27 @@ function AddRegionButtons({
   return (
     <div className="mb-2 flex flex-wrap gap-1">
       <button
-        className="flex items-center gap-1 rounded border border-dashed border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-400 hover:border-zinc-500 hover:text-zinc-200"
+        className="flex items-center gap-1 rounded border border-dashed border-edge2 px-2 py-0.5 text-[11px] text-muted hover:border-edge2 hover:text-fg"
         onClick={onPaint}
       >
         <Brush className="h-3 w-3" /> {paintLabel}
       </button>
       <button
-        className="flex items-center gap-1 rounded border border-dashed border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-400 hover:border-zinc-500 hover:text-zinc-200"
+        className="flex items-center gap-1 rounded border border-dashed border-edge2 px-2 py-0.5 text-[11px] text-muted hover:border-edge2 hover:text-fg"
         title={t("se_pick_face")}
         onClick={onPickFace}
       >
         <Layers className="h-3 w-3" /> {t("se_face")}
       </button>
       <button
-        className="flex items-center gap-1 rounded border border-dashed border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-400 hover:border-zinc-500 hover:text-zinc-200"
+        className="flex items-center gap-1 rounded border border-dashed border-edge2 px-2 py-0.5 text-[11px] text-muted hover:border-edge2 hover:text-fg"
         title={t("se_pick_edge")}
         onClick={onPickEdge}
       >
         <Spline className="h-3 w-3" /> {t("se_edge_pick")}
       </button>
       <button
-        className="flex items-center gap-1 rounded border border-dashed border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-400 disabled:opacity-40 hover:border-zinc-500 hover:text-zinc-200"
+        className="flex items-center gap-1 rounded border border-dashed border-edge2 px-2 py-0.5 text-[11px] text-muted disabled:opacity-40 hover:border-edge2 hover:text-fg"
         title={t("se_pick_feature")}
         onClick={onPickFeature}
         disabled={!hasAnchors}
@@ -592,7 +634,7 @@ function AddRegionButtons({
       {REGION_KINDS.filter((k) => !ANCHOR_KINDS.has(k.id ?? "") || hasAnchors).map((k) => (
         <button
           key={k.id}
-          className="flex items-center gap-1 rounded border border-dashed border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-400 hover:border-zinc-500 hover:text-zinc-200"
+          className="flex items-center gap-1 rounded border border-dashed border-edge2 px-2 py-0.5 text-[11px] text-muted hover:border-edge2 hover:text-fg"
           onClick={() => onAdd(newRegion(k.id))}
         >
           <Plus className="h-3 w-3" /> {t(`se_rk_${k.id}`)}
@@ -1773,11 +1815,11 @@ export default function StructuralEditor({
     : 1;
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-zinc-950">
+    <div className="fixed inset-0 z-50 flex flex-col bg-bg">
       {/* header */}
-      <div className="flex items-center gap-3 border-b border-zinc-800 px-4 py-2.5">
+      <div className="flex items-center gap-3 border-b border-edge px-4 py-2.5">
         <h2 className="text-sm font-semibold">{t("se_title", { n: version.number })}</h2>
-        <span className="text-xs text-zinc-500">
+        <span className="text-xs text-faint">
           {t("se_subtitle")}
         </span>
         <span className="flex-1" />
@@ -1798,13 +1840,13 @@ export default function StructuralEditor({
           </Chip>
         )}
         {target && (mode === "paint" || mode === "erase") && (
-          <div className="flex overflow-hidden rounded border border-zinc-700 text-[11px]">
+          <div className="flex overflow-hidden rounded border border-edge2 text-[11px]">
             {(["paint", "erase"] as const).map((m) => (
               <button
                 key={m}
                 onClick={() => setMode(m)}
                 className={`flex items-center gap-1 px-2 py-1 ${
-                  mode === m ? "bg-zinc-700 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"
+                  mode === m ? "bg-edge2 text-fg" : "text-faint hover:text-fg"
                 }`}
               >
                 {m === "paint" ? <Brush className="h-3 w-3" /> : <Eraser className="h-3 w-3" />}
@@ -1814,7 +1856,7 @@ export default function StructuralEditor({
           </div>
         )}
         {target && (mode === "face" || mode === "edge") && (
-          <label className="flex items-center gap-1.5 text-xs text-zinc-400">
+          <label className="flex items-center gap-1.5 text-xs text-muted">
             {t("se_crease")}
             <input
               type="range"
@@ -1826,7 +1868,7 @@ export default function StructuralEditor({
               onChange={(e) => setCreaseDeg(num(e.target.value, 30))}
             />
             <span className="w-8 tabular-nums">{creaseDeg}°</span>
-            {facetBusy && <Loader2 className="h-3 w-3 animate-spin text-zinc-500" />}
+            {facetBusy && <Loader2 className="h-3 w-3 animate-spin text-faint" />}
             {!facetBusy && facetSets && facetSets.size === 0 && (
               <span className="text-amber-400">{t("se_mesh_large")}</span>
             )}
@@ -1847,7 +1889,7 @@ export default function StructuralEditor({
             {t("se_draft")}
           </Chip>
         )}
-        <label className="flex items-center gap-2 text-xs text-zinc-400">
+        <label className="flex items-center gap-2 text-xs text-muted">
           {t("se_brush")}
           <input
             type="range"
@@ -1982,12 +2024,12 @@ export default function StructuralEditor({
                 )}
             </ModelCanvas>
           ) : (
-            <div className="flex h-full items-center justify-center text-sm text-zinc-500">
+            <div className="flex h-full items-center justify-center text-sm text-faint">
               {t("se_no_mesh")}
             </div>
           )}
           {/* legend */}
-          <div className="absolute bottom-3 left-3 flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-950/90 px-3 py-1.5 text-[11px] backdrop-blur">
+          <div className="absolute bottom-3 left-3 flex items-center gap-2 rounded-lg border border-edge bg-bg/90 px-3 py-1.5 text-[11px] backdrop-blur">
             <span className="flex items-center gap-1">
               <span className="h-2 w-2 rounded-full" style={{ background: COLORS.fixed }} />
               {t("se_leg_support")}
@@ -2014,7 +2056,7 @@ export default function StructuralEditor({
               </span>
             )}
             {preview?.ok && !!preview.cells?.length && (
-              <label className="ml-2 flex items-center gap-1 text-zinc-500">
+              <label className="ml-2 flex items-center gap-1 text-faint">
                 <input
                   type="checkbox"
                   className="accent-brand-500"
@@ -2028,10 +2070,10 @@ export default function StructuralEditor({
         </div>
 
         {/* right panel */}
-        <div className="flex w-[420px] shrink-0 flex-col overflow-y-auto border-l border-zinc-800">
+        <div className="flex w-[420px] shrink-0 flex-col overflow-y-auto border-l border-edge">
           <div className="flex-1 space-y-3 p-3">
             {cases.map((c, ci) => (
-              <div key={ci} className="rounded-lg border border-zinc-800 p-2.5">
+              <div key={ci} className="rounded-lg border border-edge p-2.5">
                 <div className="mb-2 flex items-center gap-2">
                   <input
                     className={`${inputCls} w-32 px-2 py-1 text-xs`}
@@ -2043,7 +2085,7 @@ export default function StructuralEditor({
                     <button
                       title={t("se_remove_case")}
                       aria-label={t("se_remove_case")}
-                      className="text-zinc-500 hover:text-red-400"
+                      className="text-faint hover:text-red-400"
                       onClick={() => setCases((cs) => cs.filter((_, i) => i !== ci))}
                     >
                       <Trash2 className="h-3.5 w-3.5" />
@@ -2052,7 +2094,7 @@ export default function StructuralEditor({
                 </div>
 
                 {/* fixed regions */}
-                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-faint">
                   {t("se_support_regions")}
                 </div>
                 {c.fixed.map((r, ri) => (
@@ -2108,7 +2150,7 @@ export default function StructuralEditor({
                 />
 
                 {/* loads */}
-                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-faint">
                   {t("se_loads")}
                 </div>
                 {c.loads.map((l, li) => {
@@ -2128,7 +2170,7 @@ export default function StructuralEditor({
                     <div className="flex items-center gap-1">
                       {labels.map((ax, i) => (
                         <label key={ax} className="flex flex-1 items-center gap-0.5">
-                          <span className="text-[9px] uppercase text-zinc-500">{ax}</span>
+                          <span className="text-[9px] uppercase text-faint">{ax}</span>
                           <NumInput
                             value={vec?.[i] ?? 0}
                             step={step}
@@ -2139,7 +2181,7 @@ export default function StructuralEditor({
                           />
                         </label>
                       ))}
-                      <span className="text-[10px] text-zinc-500">{unit}</span>
+                      <span className="text-[10px] text-faint">{unit}</span>
                     </div>
                   );
                   return (
@@ -2186,7 +2228,7 @@ export default function StructuralEditor({
                               className="w-24"
                               onChange={(n) => setLoad({ pressure_mpa: n })}
                             />
-                            <span className="text-[10px] text-zinc-500">
+                            <span className="text-[10px] text-faint">
                               {t("se_pressure_note")}
                             </span>
                           </div>
@@ -2200,7 +2242,7 @@ export default function StructuralEditor({
                                 className="w-24"
                                 onChange={(n) => setLoad({ bearing_n: n })}
                               />
-                              <span className="text-[10px] text-zinc-500">
+                              <span className="text-[10px] text-faint">
                                 {t("se_bearing_note")}
                               </span>
                             </div>
@@ -2221,6 +2263,19 @@ export default function StructuralEditor({
                             0.5,
                             (v) => setLoad({ moment_nm: v })
                           )}
+                        {lk === "normal" && (
+                          <div className="flex items-center gap-1.5">
+                            <NumInput
+                              value={l.normal_force_n ?? 0}
+                              step={25}
+                              className="w-24"
+                              onChange={(n) => setLoad({ normal_force_n: n })}
+                            />
+                            <span className="text-[10px] text-faint">
+                              {t("se_normal_note")}
+                            </span>
+                          </div>
+                        )}
                         {lk === "preload" && (
                           <div className="flex items-center gap-1.5">
                             <NumInput
@@ -2229,7 +2284,7 @@ export default function StructuralEditor({
                               className="w-24"
                               onChange={(n) => setLoad({ preload_n: n })}
                             />
-                            <span className="text-[10px] text-zinc-500">
+                            <span className="text-[10px] text-faint">
                               {t("se_preload_note")}
                             </span>
                           </div>
@@ -2252,7 +2307,7 @@ export default function StructuralEditor({
                           )}
                         {(lk === "force" || lk === "bearing") && (
                           <div className="flex items-center gap-1.5">
-                            <span className="text-[10px] text-zinc-500">{t("se_dir_cone")}</span>
+                            <span className="text-[10px] text-faint">{t("se_dir_cone")}</span>
                             <NumInput
                               value={l.direction_cone_deg ?? 0}
                               step={5}
@@ -2261,7 +2316,7 @@ export default function StructuralEditor({
                                 setLoad({ direction_cone_deg: n > 0 ? Math.min(n, 90) : null })
                               }
                             />
-                            <span className="text-[10px] text-zinc-500">
+                            <span className="text-[10px] text-faint">
                               {t("se_dir_cone_note")}
                             </span>
                           </div>
@@ -2313,7 +2368,7 @@ export default function StructuralEditor({
             ))}
 
             <button
-              className="flex items-center gap-1 text-xs text-zinc-400 hover:text-zinc-200"
+              className="flex items-center gap-1 text-xs text-muted hover:text-fg"
               onClick={() =>
                 setCases((cs) => [...cs, { name: `${t("se_case_name")}${cs.length + 1}`, fixed: [], loads: [] }])
               }
@@ -2323,8 +2378,8 @@ export default function StructuralEditor({
 
             {/* keep regions */}
             {canTopopt && (
-              <div className="rounded-lg border border-zinc-800 p-2.5">
-                <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+              <div className="rounded-lg border border-edge p-2.5">
+                <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-faint">
                   {t("se_keep_title")}
                 </div>
                 {keep.map((r, ri) => (
@@ -2380,8 +2435,8 @@ export default function StructuralEditor({
 
             {/* void regions — material forbidden zones */}
             {canTopopt && (
-              <div className="rounded-lg border border-zinc-800 p-2.5">
-                <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+              <div className="rounded-lg border border-edge p-2.5">
+                <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-faint">
                   {t("se_void_title")}
                 </div>
                 {voids.map((r, ri) => (
@@ -2468,7 +2523,7 @@ export default function StructuralEditor({
             {canTopopt && (
               <div className="grid grid-cols-3 gap-2">
                 <Field label={t("se_anchors")} hint={t("se_anchors_h")}>
-                  <label className="flex h-7 items-center gap-1.5 text-[11px] text-zinc-400">
+                  <label className="flex h-7 items-center gap-1.5 text-[11px] text-muted">
                     <input
                       type="checkbox"
                       className="accent-brand-500"
@@ -2495,7 +2550,7 @@ export default function StructuralEditor({
                   />
                 </Field>
                 <Field label={t("se_finishing")} hint={t("se_finishing_h")}>
-                  <label className="flex h-7 items-center gap-1.5 text-[11px] text-zinc-400">
+                  <label className="flex h-7 items-center gap-1.5 text-[11px] text-muted">
                     <input
                       type="checkbox"
                       className="accent-brand-500"
@@ -2506,7 +2561,7 @@ export default function StructuralEditor({
                   </label>
                 </Field>
                 <Field label={t("se_selfsup")} hint={t("se_selfsup_h")}>
-                  <label className="flex h-7 items-center gap-1.5 text-[11px] text-zinc-400">
+                  <label className="flex h-7 items-center gap-1.5 text-[11px] text-muted">
                     <input
                       type="checkbox"
                       className="accent-brand-500"
@@ -2531,7 +2586,7 @@ export default function StructuralEditor({
                   </select>
                 </Field>
                 <Field label={t("se_multires")} hint={t("se_multires_h")}>
-                  <label className="flex h-7 items-center gap-1.5 text-[11px] text-zinc-400">
+                  <label className="flex h-7 items-center gap-1.5 text-[11px] text-muted">
                     <input
                       type="checkbox"
                       className="accent-brand-500"
@@ -2604,7 +2659,7 @@ export default function StructuralEditor({
                       />
                     </Field>
                     <Field label={t("se_octet")} hint={t("se_octet_h")}>
-                      <label className="flex h-7 items-center gap-1.5 text-[11px] text-zinc-400">
+                      <label className="flex h-7 items-center gap-1.5 text-[11px] text-muted">
                         <input
                           type="checkbox"
                           className="accent-brand-500"
@@ -2632,7 +2687,7 @@ export default function StructuralEditor({
                 {structureMode === "simp" && solver === "mma" && (
                   <>
                     <Field label={t("se_minmax")} hint={t("se_minmax_h")}>
-                      <label className="flex h-7 items-center gap-1.5 text-[11px] text-zinc-400">
+                      <label className="flex h-7 items-center gap-1.5 text-[11px] text-muted">
                         <input
                           type="checkbox"
                           className="accent-brand-500"
@@ -2678,7 +2733,7 @@ export default function StructuralEditor({
                   />
                 </Field>
                 <Field label={t("se_penal")} hint={t("se_penal_h")}>
-                  <label className="flex h-7 items-center gap-1.5 text-[11px] text-zinc-400">
+                  <label className="flex h-7 items-center gap-1.5 text-[11px] text-muted">
                     <input
                       type="checkbox"
                       className="accent-brand-500"
@@ -2689,7 +2744,7 @@ export default function StructuralEditor({
                   </label>
                 </Field>
                 <Field label={t("se_volramp")} hint={t("se_volramp_h")}>
-                  <label className="flex h-7 items-center gap-1.5 text-[11px] text-zinc-400">
+                  <label className="flex h-7 items-center gap-1.5 text-[11px] text-muted">
                     <input
                       type="checkbox"
                       className="accent-brand-500"
@@ -2700,7 +2755,7 @@ export default function StructuralEditor({
                   </label>
                 </Field>
                 <Field label={t("se_warm")} hint={t("se_warm_h")}>
-                  <label className="flex h-7 items-center gap-1.5 text-[11px] text-zinc-400">
+                  <label className="flex h-7 items-center gap-1.5 text-[11px] text-muted">
                     <input
                       type="checkbox"
                       className="accent-brand-500"
@@ -2762,7 +2817,7 @@ export default function StructuralEditor({
                   />
                 </Field>
                 <Field label={t("se_aniso")} hint={t("se_aniso_h")}>
-                  <label className="flex h-7 items-center gap-1.5 text-[11px] text-zinc-400">
+                  <label className="flex h-7 items-center gap-1.5 text-[11px] text-muted">
                     <input
                       type="checkbox"
                       className="accent-brand-500"
@@ -2777,16 +2832,16 @@ export default function StructuralEditor({
 
             {/* region check result */}
             {preview && (
-              <div className="rounded-lg border border-zinc-800 p-2.5 text-xs">
-                <div className="mb-1 font-semibold text-zinc-300">
+              <div className="rounded-lg border border-edge p-2.5 text-xs">
+                <div className="mb-1 font-semibold text-fg">
                   {t("se_check_title")}{" "}
                   {preview.ok
                     ? `— voxel ${preview.dims.join("×")} @ ${preview.pitch_mm?.toFixed(2)}mm · ${preview.solid_elements} ${t("se_elements")}`
                     : t("se_check_failed")}
                 </div>
                 {preview.cases.map((c, i) => (
-                  <div key={i} className="mb-1 text-zinc-400">
-                    <b className="text-zinc-300">{c.case}</b>: {t("se_check_nodes", { f: c.fixed_nodes, l: c.loaded_nodes })} {c.total_force_n.toFixed(1)} N
+                  <div key={i} className="mb-1 text-muted">
+                    <b className="text-fg">{c.case}</b>: {t("se_check_nodes", { f: c.fixed_nodes, l: c.loaded_nodes })} {c.total_force_n.toFixed(1)} N
                     {c.warnings.map((w, j) => (
                       <div key={j} className="text-amber-400">
                         ⚠ {w}
@@ -2797,7 +2852,7 @@ export default function StructuralEditor({
                 {!!preview.pngs?.length && (
                   <div className="mt-2 grid grid-cols-2 gap-1.5">
                     {preview.pngs.map((u) => (
-                      <img key={u} src={u} className="rounded border border-zinc-800" alt="" />
+                      <img key={u} src={u} className="rounded border border-edge" alt="" />
                     ))}
                   </div>
                 )}
@@ -2806,7 +2861,7 @@ export default function StructuralEditor({
           </div>
 
           {/* actions */}
-          <div className="flex items-center gap-2 border-t border-zinc-800 p-3">
+          <div className="flex items-center gap-2 border-t border-edge p-3">
             <Btn
               variant="ghost"
               disabled={!valid || !!busy}
@@ -2841,7 +2896,7 @@ export default function StructuralEditor({
             )}
           </div>
           {!valid && (
-            <div className="border-t border-zinc-800 bg-amber-950/30 px-3 py-1.5 text-[11px] text-amber-300">
+            <div className="border-t border-edge bg-amber-950/30 px-3 py-1.5 text-[11px] text-amber-300">
               {t("se_invalid")}
             </div>
           )}

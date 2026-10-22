@@ -33,7 +33,7 @@ function ProjectThumb({ p, tick }: { p: Project; tick: number }) {
   const [badUrl, setBadUrl] = useState<string | null>(null);
   const live = !!p.running_version_id;
   return (
-    <div className="relative flex h-32 items-center justify-center overflow-hidden bg-zinc-950">
+    <div className="relative flex h-32 items-center justify-center overflow-hidden bg-bg">
       {p.latest_thumbnail_url && badUrl !== p.latest_thumbnail_url ? (
         <img
           src={p.latest_thumbnail_url}

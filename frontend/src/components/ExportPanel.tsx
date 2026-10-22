@@ -65,18 +65,18 @@ export default function ExportPanel({
                 ? t("exp_tess_hint")
                 : t("exp_download_hint", { kind: a.kind })
             }
-            className="flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm font-medium uppercase transition-colors hover:border-zinc-500 hover:bg-zinc-700"
+            className="flex items-center gap-1.5 rounded-md border border-edge2 bg-panel2 px-3 py-1.5 text-sm font-medium uppercase transition-colors hover:border-edge2 hover:bg-edge2"
           >
-            <Download className="h-3.5 w-3.5 text-zinc-500" />
+            <Download className="h-3.5 w-3.5 text-faint" />
             {a.kind}
             {a.meta?.tessellated ? <span className="text-amber-400">*</span> : null}{" "}
-            <span className="text-[10px] text-zinc-500">{fmtBytes(a.size)}</span>
+            <span className="text-[10px] text-faint">{fmtBytes(a.size)}</span>
           </a>
         ))}
-        {!exports.length && <span className="text-sm text-zinc-500">{t("exp_empty")}</span>}
+        {!exports.length && <span className="text-sm text-faint">{t("exp_empty")}</span>}
       </div>
       {anyTessellated && (
-        <div className="mt-1.5 text-[10px] text-zinc-500">
+        <div className="mt-1.5 text-[10px] text-faint">
           <span className="text-amber-400">*</span> {t("exp_tess_note")}
         </div>
       )}

@@ -81,13 +81,13 @@ function ChatIndex() {
         {(chats.data ?? []).map((c) => (
           <Card
             key={c.id}
-            className="flex items-center gap-3 !p-3 transition-colors hover:border-zinc-700"
+            className="flex items-center gap-3 !p-3 transition-colors hover:border-edge2"
           >
             <Link to={`/chat/${c.id}`} className="min-w-0 flex-1">
-              <div className="truncate text-sm font-medium text-zinc-200">
+              <div className="truncate text-sm font-medium text-fg">
                 {c.title}
               </div>
-              <div className="text-xs text-zinc-500">
+              <div className="text-xs text-faint">
                 {c.project_name ?? t("no_project")} ·{" "}
                 {new Date(c.updated_at).toLocaleString()}
                 {c.turn_running && ` · ${t("running")}`}
@@ -359,13 +359,13 @@ function ChatView({ chatId }: { chatId: string }) {
     <div className="flex h-screen min-h-0">
       {/* conversation column */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex items-center gap-3 border-b border-zinc-800 px-4 py-2.5">
+        <div className="flex items-center gap-3 border-b border-edge px-4 py-2.5">
           <Crumbs
             items={[
-              <Link key="c" to="/chat" className="hover:text-zinc-300">
+              <Link key="c" to="/chat" className="hover:text-fg">
                 {t("crumb")}
               </Link>,
-              <span key="t" className="font-medium text-zinc-200">
+              <span key="t" className="font-medium text-fg">
                 {chat?.title ?? "…"}
               </span>,
             ]}
@@ -373,7 +373,7 @@ function ChatView({ chatId }: { chatId: string }) {
           {chat?.project_id ? (
             <Link
               to={`/projects/${chat.project_id}`}
-              className="flex items-center gap-1 rounded-full border border-zinc-800 px-2.5 py-0.5 text-xs text-zinc-400 transition-colors hover:border-zinc-600 hover:text-zinc-200"
+              className="flex items-center gap-1 rounded-full border border-edge px-2.5 py-0.5 text-xs text-muted transition-colors hover:border-edge2 hover:text-fg"
               title={t("bound_project")}
             >
               <FolderOpen className="h-3 w-3" />
@@ -381,12 +381,12 @@ function ChatView({ chatId }: { chatId: string }) {
             </Link>
           ) : chat ? (
             <div className="flex items-center gap-1.5">
-              <span className="rounded-full border border-dashed border-zinc-700 px-2.5 py-0.5 text-xs text-zinc-500">
+              <span className="rounded-full border border-dashed border-edge2 px-2.5 py-0.5 text-xs text-faint">
                 {t("no_project")}
               </span>
               {(projects.data?.length ?? 0) > 0 && (
                 <select
-                  className="rounded-md border border-zinc-800 bg-zinc-900 px-1.5 py-0.5 text-xs text-zinc-400"
+                  className="rounded-md border border-edge bg-panel px-1.5 py-0.5 text-xs text-muted"
                   defaultValue=""
                   disabled={attach.isPending}
                   onChange={(e) => {
@@ -450,7 +450,7 @@ function ChatView({ chatId }: { chatId: string }) {
                   {SUGGESTION_KEYS.map((k) => (
                     <button
                       key={k}
-                      className="rounded-full border border-zinc-800 px-3 py-1.5 text-xs text-zinc-400 transition-colors hover:border-brand-500 hover:text-brand-300 disabled:opacity-40"
+                      className="rounded-full border border-edge px-3 py-1.5 text-xs text-muted transition-colors hover:border-brand-500 hover:text-brand-300 disabled:opacity-40"
                       disabled={send.isPending}
                       onClick={() =>
                         send.mutateAsync({ content: t(k), asset_ids: [] })
@@ -493,7 +493,7 @@ function ChatView({ chatId }: { chatId: string }) {
           </div>
         </div>
 
-        <div className="border-t border-zinc-800 p-3">
+        <div className="border-t border-edge p-3">
           <div className="mx-auto max-w-3xl">
             <Composer
               projectId={chat?.project_id ?? null}
@@ -509,8 +509,8 @@ function ChatView({ chatId }: { chatId: string }) {
 
       {/* right: live model panel + job monitor */}
       {show3d && panelVid && (
-        <div className="hidden w-[420px] shrink-0 flex-col border-l border-zinc-800 lg:flex">
-          <div className="border-b border-zinc-800 px-3 py-2 text-xs font-medium text-zinc-400">
+        <div className="hidden w-[420px] shrink-0 flex-col border-l border-edge lg:flex">
+          <div className="border-b border-edge px-3 py-2 text-xs font-medium text-muted">
             {t("latest_result")}
           </div>
           <div className="relative min-h-0 flex-1">

@@ -108,9 +108,9 @@ export default function ChatJobCard({ spawned }: { spawned: SpawnedRef }) {
     .slice(-40);
 
   return (
-    <div className="overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950">
-      <div className="flex items-center gap-2 border-b border-zinc-800 px-3 py-1.5">
-        <span className="text-xs font-medium text-zinc-300">
+    <div className="overflow-hidden rounded-lg border border-edge bg-bg">
+      <div className="flex items-center gap-2 border-b border-edge px-3 py-1.5">
+        <span className="text-xs font-medium text-fg">
           {spawned.tool ?? spawned.kind ?? t("job")}
         </span>
         {j && <StatusBadge status={j.status} />}
@@ -119,7 +119,7 @@ export default function ChatJobCard({ spawned }: { spawned: SpawnedRef }) {
             <span className="pulse-dot h-1.5 w-1.5 shrink-0 rounded-full bg-brand-400" />
             <span className="truncate">{stepLabel(stepNow)}</span>
             {stepElapsed != null && (
-              <span className="shrink-0 font-mono text-zinc-500">
+              <span className="shrink-0 font-mono text-faint">
                 {fmtDur(stepElapsed)}
               </span>
             )}
@@ -199,7 +199,7 @@ export default function ChatJobCard({ spawned }: { spawned: SpawnedRef }) {
           {live.runs!.map((r, i) => (
             <span
               key={i}
-              className="rounded border border-zinc-800 bg-zinc-900 px-1.5 py-0.5 font-mono text-[10px] text-zinc-400"
+              className="rounded border border-edge bg-panel px-1.5 py-0.5 font-mono text-[10px] text-muted"
             >
               {t("run_n", { n: r.index ?? i + 1 })}
               {r.achieved != null && ` · volfrac ${r.achieved}`}
@@ -210,7 +210,7 @@ export default function ChatJobCard({ spawned }: { spawned: SpawnedRef }) {
       )}
 
       {vid && (
-        <div className="relative m-3 aspect-video overflow-hidden rounded bg-zinc-900">
+        <div className="relative m-3 aspect-video overflow-hidden rounded bg-panel">
           {active ? (
             <LivePreview versionId={vid} active={active} />
           ) : version.data ? (
@@ -223,7 +223,7 @@ export default function ChatJobCard({ spawned }: { spawned: SpawnedRef }) {
             <div className="h-full w-full" />
           )}
           <div
-            className="absolute right-2 top-2 rounded-full bg-zinc-950/70 backdrop-blur-sm"
+            className="absolute right-2 top-2 rounded-full bg-bg/70 backdrop-blur-sm"
             title={t("job_progress")}
           >
             <ProgressRing value={progress} size={44} />
@@ -254,9 +254,9 @@ export default function ChatJobCard({ spawned }: { spawned: SpawnedRef }) {
       )}
 
       {(stream.events.length > 0 || fallbackTail.length > 0 || active) && (
-        <div className="border-t border-zinc-800">
+        <div className="border-t border-edge">
           <button
-            className="flex w-full items-center gap-1.5 px-3 py-1.5 text-[11px] text-zinc-500 transition-colors hover:text-zinc-300"
+            className="flex w-full items-center gap-1.5 px-3 py-1.5 text-[11px] text-faint transition-colors hover:text-fg"
             onClick={() => setLogOpen((o) => !o)}
             aria-expanded={logOpen}
           >
@@ -267,7 +267,7 @@ export default function ChatJobCard({ spawned }: { spawned: SpawnedRef }) {
             )}
             {t("log")}
             {stream.events.length > 0 && (
-              <span className="font-mono text-zinc-600">
+              <span className="font-mono text-faint">
                 {stream.events.length}
               </span>
             )}
@@ -286,12 +286,12 @@ export default function ChatJobCard({ spawned }: { spawned: SpawnedRef }) {
                     <LogRow key={i} e={e} t0={logT0} />
                   ))
                 : fallbackTail.map((l, i) => (
-                    <div key={i} className="text-zinc-400">
+                    <div key={i} className="text-muted">
                       {l}
                     </div>
                   ))}
               {!stream.events.length && !fallbackTail.length && (
-                <div className="text-zinc-600">{t("waiting_output")}</div>
+                <div className="text-faint">{t("waiting_output")}</div>
               )}
             </div>
           )}

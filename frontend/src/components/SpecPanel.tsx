@@ -31,7 +31,7 @@ export default function SpecPanel({ spec }: { spec: PartSpec }) {
   return (
     <Card className="p-4">
       <SectionTitle>{t("spec_title")}</SectionTitle>
-      {spec.summary && <p className="mb-3 text-sm text-zinc-300">{spec.summary}</p>}
+      {spec.summary && <p className="mb-3 text-sm text-fg">{spec.summary}</p>}
 
       <div className="mb-3 flex flex-wrap gap-1.5">
         {dims.map((d) => (
@@ -45,12 +45,12 @@ export default function SpecPanel({ spec }: { spec: PartSpec }) {
 
       {features.length > 0 && (
         <>
-          <h4 className="mb-1.5 text-xs font-semibold text-zinc-400">
+          <h4 className="mb-1.5 text-xs font-semibold text-muted">
             {t("spec_features_n", { n: features.length })}
           </h4>
-          <div className="mb-3 overflow-x-auto rounded border border-zinc-800">
+          <div className="mb-3 overflow-x-auto rounded border border-edge">
             <table className="w-full text-left text-xs">
-              <thead className="bg-zinc-800/60 text-zinc-400">
+              <thead className="bg-panel2/60 text-muted">
                 <tr>
                   <th className="px-2 py-1.5 font-medium">{t("spec_f_feature")}</th>
                   <th className="px-2 py-1.5 font-medium">{t("spec_f_type")}</th>
@@ -61,21 +61,21 @@ export default function SpecPanel({ spec }: { spec: PartSpec }) {
               </thead>
               <tbody>
                 {features.map((f, i) => (
-                  <tr key={i} className="border-t border-zinc-800 text-zinc-300">
+                  <tr key={i} className="border-t border-edge text-fg">
                     <td className="px-2 py-1.5">
                       <div className="font-medium">{f.name || "—"}</div>
                       {f.description && (
-                        <div className="text-[10px] text-zinc-500">{f.description}</div>
+                        <div className="text-[10px] text-faint">{f.description}</div>
                       )}
                     </td>
                     <td className="px-2 py-1.5">
-                      <span className="rounded bg-zinc-800 px-1 font-mono text-[10px]">
+                      <span className="rounded bg-panel2 px-1 font-mono text-[10px]">
                         {f.type ?? t("spec_other")}
                       </span>
                     </td>
                     <td className="px-2 py-1.5">{f.count ?? 1}×</td>
-                    <td className="px-2 py-1.5 text-zinc-400">{f.position || "—"}</td>
-                    <td className="px-2 py-1.5 text-zinc-400">
+                    <td className="px-2 py-1.5 text-muted">{f.position || "—"}</td>
+                    <td className="px-2 py-1.5 text-muted">
                       {f.standard && <div className="text-[10px]">{f.standard}</div>}
                       {f.dims &&
                         Object.entries(f.dims)
@@ -91,16 +91,16 @@ export default function SpecPanel({ spec }: { spec: PartSpec }) {
       )}
 
       {spec.orientation_note && (
-        <div className="mb-2 text-xs text-zinc-500">{t("spec_orientation")}: {spec.orientation_note}</div>
+        <div className="mb-2 text-xs text-faint">{t("spec_orientation")}: {spec.orientation_note}</div>
       )}
       {spec.tolerances_note && (
-        <div className="mb-2 text-xs text-zinc-500">{t("spec_tolerances")}: {spec.tolerances_note}</div>
+        <div className="mb-2 text-xs text-faint">{t("spec_tolerances")}: {spec.tolerances_note}</div>
       )}
 
       {!!spec.must_keep?.length && (
         <div className="mb-2">
-          <h4 className="mb-1 text-xs font-semibold text-zinc-400">{t("spec_must_keep")}</h4>
-          <ul className="list-inside list-disc text-xs text-zinc-400">
+          <h4 className="mb-1 text-xs font-semibold text-muted">{t("spec_must_keep")}</h4>
+          <ul className="list-inside list-disc text-xs text-muted">
             {spec.must_keep.map((m, i) => (
               <li key={i}>{m}</li>
             ))}
@@ -109,8 +109,8 @@ export default function SpecPanel({ spec }: { spec: PartSpec }) {
       )}
       {!!spec.assumptions?.length && (
         <div className="mb-2">
-          <h4 className="mb-1 text-xs font-semibold text-zinc-400">{t("spec_assumptions")}</h4>
-          <ul className="list-inside list-disc text-xs text-zinc-400">
+          <h4 className="mb-1 text-xs font-semibold text-muted">{t("spec_assumptions")}</h4>
+          <ul className="list-inside list-disc text-xs text-muted">
             {spec.assumptions.map((a, i) => (
               <li key={i}>{a}</li>
             ))}
@@ -119,16 +119,16 @@ export default function SpecPanel({ spec }: { spec: PartSpec }) {
       )}
       {!!spec.open_questions?.length && (
         <div>
-          <h4 className="mb-1 text-xs font-semibold text-zinc-400">
+          <h4 className="mb-1 text-xs font-semibold text-muted">
             {t("spec_open_qs", { n: spec.open_questions.length })}
           </h4>
-          <ul className="flex flex-col gap-1 text-xs text-zinc-400">
+          <ul className="flex flex-col gap-1 text-xs text-muted">
             {spec.open_questions.map((q, i) => (
-              <li key={i} className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1">
+              <li key={i} className="rounded border border-edge bg-panel px-2 py-1">
                 {q.blocking && <Chip tone="amber" className="mr-1">{t("spec_blocking")}</Chip>}
                 {q.question}
                 {q.default_assumption && (
-                  <span className="text-zinc-600"> — {t("spec_default")}: {q.default_assumption}</span>
+                  <span className="text-faint"> — {t("spec_default")}: {q.default_assumption}</span>
                 )}
               </li>
             ))}

@@ -156,7 +156,7 @@ function ToolCard({
     <Card className={`p-3 ${active ? "border-amber-700/60" : ""}`}>
       <div className="mb-1.5 flex items-center justify-between">
         <button
-          className={`text-xs font-semibold ${active ? "text-amber-300" : "text-zinc-300"} ${onToggle ? "hover:text-zinc-100" : ""}`}
+          className={`text-xs font-semibold ${active ? "text-amber-300" : "text-fg"} ${onToggle ? "hover:text-fg" : ""}`}
           onClick={onToggle}
           disabled={!onToggle}
           title={onToggle ? (active ? t("tool_off") : t("tool_on")) : undefined}
@@ -169,7 +169,7 @@ function ToolCard({
           </Btn>
         )}
       </div>
-      {hint && <div className="mb-2 text-[11px] text-zinc-500">{hint}</div>}
+      {hint && <div className="mb-2 text-[11px] text-faint">{hint}</div>}
       {children}
     </Card>
   );
@@ -185,7 +185,7 @@ function AxisPicker({ value, onChange }: { value: Axis; onChange: (a: Axis) => v
           className={`flex-1 rounded border px-2 py-1 text-xs font-semibold uppercase ${
             value === a
               ? "border-brand-600 bg-brand-950/60 text-brand-300"
-              : "border-zinc-700 text-zinc-500 hover:text-zinc-300"
+              : "border-edge2 text-faint hover:text-fg"
           }`}
         >
           {a}
@@ -203,13 +203,13 @@ function OpArgEditor({ op, onChange }: { op: MeshOp; onChange: (o: MeshOp) => vo
     if (typeof v === "number") {
       rows.push(
         <label key={i} className="flex items-center gap-1">
-          <span className="w-20 truncate text-[10px] text-zinc-500" title={k}>{k}</span>
+          <span className="w-20 truncate text-[10px] text-faint" title={k}>{k}</span>
           <NumInput value={v} onChange={(n) => setArg(k, n)} step={1} className="flex-1" />
         </label>
       );
     } else if (typeof v === "boolean") {
       rows.push(
-        <label key={i} className="flex items-center gap-1 text-[11px] text-zinc-400">
+        <label key={i} className="flex items-center gap-1 text-[11px] text-muted">
           <input
             type="checkbox"
             checked={v}
@@ -222,7 +222,7 @@ function OpArgEditor({ op, onChange }: { op: MeshOp; onChange: (o: MeshOp) => vo
     } else if (Array.isArray(v) && v.length === 3 && v.every((x) => typeof x === "number")) {
       rows.push(
         <div key={i} className="flex items-center gap-1">
-          <span className="w-20 truncate text-[10px] text-zinc-500" title={k}>{k}</span>
+          <span className="w-20 truncate text-[10px] text-faint" title={k}>{k}</span>
           {v.map((x, j) => (
             <NumInput
               key={j}
@@ -236,20 +236,20 @@ function OpArgEditor({ op, onChange }: { op: MeshOp; onChange: (o: MeshOp) => vo
       );
     } else if (typeof v === "string") {
       rows.push(
-        <div key={i} className="flex items-center gap-1 text-[11px] text-zinc-500">
+        <div key={i} className="flex items-center gap-1 text-[11px] text-faint">
           <span className="w-20 truncate text-[10px]" title={k}>{k}</span>
           <span className="truncate">{v}</span>
         </div>
       );
     } else {
       rows.push(
-        <div key={i} className="truncate text-[10px] text-zinc-500" title={JSON.stringify(v)}>
+        <div key={i} className="truncate text-[10px] text-faint" title={JSON.stringify(v)}>
           {k}: {JSON.stringify(v).slice(0, 80)}
         </div>
       );
     }
   });
-  return <div className="mt-1 flex flex-col gap-1 border-t border-zinc-800 pt-1">{rows}</div>;
+  return <div className="mt-1 flex flex-col gap-1 border-t border-edge pt-1">{rows}</div>;
 }
 
 /* ------------------------------------------------------------------ */
@@ -646,16 +646,16 @@ export default function EditPage() {
   return (
     <div className="flex h-screen flex-col">
       {/* header */}
-      <div className="flex items-center gap-3 border-b border-zinc-800 px-4 py-2.5">
+      <div className="flex items-center gap-3 border-b border-edge px-4 py-2.5">
         <Link
           to={`/versions/${id}`}
-          className="flex items-center gap-1 rounded-md px-2 py-1 text-sm text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+          className="flex items-center gap-1 rounded-md px-2 py-1 text-sm text-muted hover:bg-panel2 hover:text-fg"
         >
           <ArrowLeft className="h-4 w-4" /> v{v.number}
         </Link>
         <Crumbs
           items={[
-            <Link key="p" to={`/projects/${v.project_id}`} className="hover:text-zinc-300">
+            <Link key="p" to={`/projects/${v.project_id}`} className="hover:text-fg">
               {t("crumb_project")}
             </Link>,
             <span key="v" className="font-medium text-fg">
@@ -726,7 +726,7 @@ export default function EditPage() {
 
       <div className="flex min-h-0 flex-1">
         {/* canvas */}
-        <div className="relative min-w-0 flex-1 bg-zinc-950">
+        <div className="relative min-w-0 flex-1 bg-bg">
           {displayUrl ? (
             <ModelCanvas
               url={displayUrl}
@@ -869,18 +869,18 @@ export default function EditPage() {
                 ))}
             </ModelCanvas>
           ) : (
-            <div className="flex h-full items-center justify-center text-sm text-zinc-500">
+            <div className="flex h-full items-center justify-center text-sm text-faint">
               {t("no_mesh")}
             </div>
           )}
 
           {/* measure overlay */}
           {measureDist != null && (
-            <div className="absolute bottom-3 left-3 rounded-lg border border-amber-800/60 bg-zinc-950/90 px-3 py-1.5 text-sm text-amber-300 backdrop-blur">
+            <div className="absolute bottom-3 left-3 rounded-lg border border-amber-800/60 bg-bg/90 px-3 py-1.5 text-sm text-amber-300 backdrop-blur">
               <Ruler className="mr-1.5 inline h-3.5 w-3.5" />
               {measureDist.toFixed(2)} mm
               <button
-                className="ml-2 text-xs text-zinc-500 hover:text-zinc-300"
+                className="ml-2 text-xs text-faint hover:text-fg"
                 onClick={() => setMeasurePts([])}
               >
                 {t("common:action.clear")}
@@ -903,7 +903,7 @@ export default function EditPage() {
                 </Chip>
               )}
               <button
-                className="text-xs text-zinc-500 underline hover:text-zinc-300"
+                className="text-xs text-faint underline hover:text-fg"
                 onClick={() => setPreview(null)}
               >
                 {t("back_original")}
@@ -913,7 +913,7 @@ export default function EditPage() {
         </div>
 
         {/* tools panel */}
-        <div className="flex w-[400px] shrink-0 flex-col overflow-y-auto border-l border-zinc-800 bg-zinc-950">
+        <div className="flex w-[400px] shrink-0 flex-col overflow-y-auto border-l border-edge bg-bg">
           <div className="flex flex-col gap-3 p-3">
             <SectionTitle>
               <span className="flex items-center gap-1.5">
@@ -927,7 +927,7 @@ export default function EditPage() {
                 {UP_DIRS.map((u) => (
                   <button
                     key={u}
-                    className="rounded border border-zinc-700 px-1 py-1 text-[11px] font-semibold uppercase text-zinc-400 hover:border-zinc-500 hover:text-zinc-200"
+                    className="rounded border border-edge2 px-1 py-1 text-[11px] font-semibold uppercase text-muted hover:border-edge2 hover:text-fg"
                     onClick={() => addOp({ op: "set_up", args: { up: u } })}
                   >
                     {t("up_dir", { dir: u })}
@@ -969,7 +969,7 @@ export default function EditPage() {
                     className={`flex-1 rounded border px-2 py-1 text-xs ${
                       scaleMode === m
                         ? "border-brand-600 bg-brand-950/60 text-brand-300"
-                        : "border-zinc-700 text-zinc-500"
+                        : "border-edge2 text-faint"
                     }`}
                   >
                     {m}
@@ -1028,7 +1028,7 @@ export default function EditPage() {
                 <AxisPicker value={sliceAxis} onChange={setSliceAxis} />
                 <div className="flex items-center gap-1.5">
                   <NumInput value={sliceAt} onChange={setSliceAt} step={0.5} className="flex-1" />
-                  <span className="text-xs text-zinc-500">mm</span>
+                  <span className="text-xs text-faint">mm</span>
                   <Btn
                     variant="ghost"
                     className={`px-2 py-0.5 text-xs ${pickMode === "slice_at" ? "border border-amber-600 text-amber-300" : ""}`}
@@ -1045,7 +1045,7 @@ export default function EditPage() {
                       className={`flex-1 rounded border px-2 py-1 text-xs ${
                         sliceKeep === k
                           ? "border-brand-600 bg-brand-950/60 text-brand-300"
-                          : "border-zinc-700 text-zinc-500"
+                          : "border-edge2 text-faint"
                       }`}
                     >
                       {t("keep_side", { side: k })}
@@ -1066,7 +1066,7 @@ export default function EditPage() {
             >
               <div className="flex items-center gap-1.5">
                 <NumInput value={clipZ} onChange={setClipZ} step={0.5} className="flex-1" />
-                <span className="text-xs text-zinc-500">mm</span>
+                <span className="text-xs text-faint">mm</span>
                 <Btn
                   variant="ghost"
                   className={`px-2 py-0.5 text-xs ${pickMode === "clip_z" ? "border border-amber-600 text-amber-300" : ""}`}
@@ -1106,7 +1106,7 @@ export default function EditPage() {
                   const mode: Exclude<PickMode, null> = k === "min" ? "crop_min" : "crop_max";
                   return (
                     <div key={k} className="flex items-center gap-1">
-                      <span className="w-8 text-[10px] uppercase text-zinc-500">{k}</span>
+                      <span className="w-8 text-[10px] uppercase text-faint">{k}</span>
                       {val.map((n, i) => (
                         <NumInput
                           key={i}
@@ -1196,7 +1196,7 @@ export default function EditPage() {
                       className={`flex-1 rounded border px-2 py-1 text-xs ${
                         symKeep === k
                           ? "border-brand-600 bg-brand-950/60 text-brand-300"
-                          : "border-zinc-700 text-zinc-500"
+                          : "border-edge2 text-faint"
                       }`}
                     >
                       {k === "auto" ? "auto" : t("keep_side", { side: k })}
@@ -1215,7 +1215,7 @@ export default function EditPage() {
             >
               <div className="flex items-center gap-1.5">
                 <NumInput value={shellTh} onChange={setShellTh} step={0.2} className="w-20" />
-                <span className="text-xs text-zinc-500">mm</span>
+                <span className="text-xs text-faint">mm</span>
                 <select
                   className={`${inputCls} flex-1 px-2 py-1 text-xs`}
                   value={shellOpen}
@@ -1262,8 +1262,8 @@ export default function EditPage() {
                 {!!drillHoles.length && (
                   <div className="flex flex-col gap-0.5">
                     {drillHoles.map((h, i) => (
-                      <div key={i} className="flex items-center gap-1.5 rounded border border-zinc-800 px-1.5 py-0.5 text-[11px]">
-                        <span className="flex-1 text-zinc-400">
+                      <div key={i} className="flex items-center gap-1.5 rounded border border-edge px-1.5 py-0.5 text-[11px]">
+                        <span className="flex-1 text-muted">
                           Ø{h.dia} @ ({h.x}, {h.y})
                           {h.depth_mm ? ` · ${h.depth_mm}mm` : " · through"}
                           {h.csk_dia ? ` · csk Ø${h.csk_dia}` : ""}
@@ -1271,7 +1271,7 @@ export default function EditPage() {
                         <button
                           title={t("remove_hole")}
                           aria-label={t("remove_hole")}
-                          className="text-zinc-500 hover:text-red-400"
+                          className="text-faint hover:text-red-400"
                           onClick={() => setDrillHoles((hs) => hs.filter((_, j) => j !== i))}
                         >
                           <Trash2 className="h-3 w-3" />
@@ -1281,7 +1281,7 @@ export default function EditPage() {
                   </div>
                 )}
                 {!!anchors?.length && (
-                  <label className="flex items-center gap-1.5 text-[11px] text-zinc-400">
+                  <label className="flex items-center gap-1.5 text-[11px] text-muted">
                     <input
                       type="checkbox"
                       className="accent-brand-500"
@@ -1316,7 +1316,7 @@ export default function EditPage() {
                       className={`flex-1 rounded border px-2 py-1 text-xs ${
                         boolOp === o
                           ? "border-brand-600 bg-brand-950/60 text-brand-300"
-                          : "border-zinc-700 text-zinc-500"
+                          : "border-edge2 text-faint"
                       }`}
                     >
                       {o === "difference" ? t("bool.cut") : t("bool.add")}
@@ -1331,7 +1331,7 @@ export default function EditPage() {
                       className={`flex-1 rounded border px-2 py-1 text-xs ${
                         boolShape === s
                           ? "border-brand-600 bg-brand-950/60 text-brand-300"
-                          : "border-zinc-700 text-zinc-500"
+                          : "border-edge2 text-faint"
                       }`}
                     >
                       {s}
@@ -1358,7 +1358,7 @@ export default function EditPage() {
                   <div className="flex items-center gap-1.5">
                     <span className="w-14 text-[11px] text-muted">{t("fld.radius")}</span>
                     <NumInput value={boolR} onChange={setBoolR} step={0.5} className="flex-1" />
-                    <span className="text-xs text-zinc-500">mm</span>
+                    <span className="text-xs text-faint">mm</span>
                   </div>
                 )}
                 {boolShape === "cylinder" && (
@@ -1366,7 +1366,7 @@ export default function EditPage() {
                     <div className="flex items-center gap-1.5">
                       <span className="w-14 text-[11px] text-muted">{t("fld.height")}</span>
                       <NumInput value={boolH} onChange={setBoolH} step={1} className="flex-1" />
-                      <span className="text-xs text-zinc-500">mm</span>
+                      <span className="text-xs text-faint">mm</span>
                     </div>
                     <AxisPicker value={boolAxis} onChange={setBoolAxis} />
                   </>
@@ -1396,7 +1396,7 @@ export default function EditPage() {
                 <div className="flex items-center gap-1.5">
                   <span className="w-14 text-[11px] text-muted">{t("fld.rot_z")}</span>
                   <NumInput value={boolRotZ} onChange={setBoolRotZ} step={15} className="flex-1" />
-                  <span className="text-xs text-zinc-500">°</span>
+                  <span className="text-xs text-faint">°</span>
                   <div className="flex gap-1">
                     {(["translate", "rotate"] as const).map((m) => (
                       <button
@@ -1405,7 +1405,7 @@ export default function EditPage() {
                         className={`rounded border px-2 py-0.5 text-[10px] ${
                           boolMode === m
                             ? "border-brand-600 text-brand-300"
-                            : "border-zinc-700 text-zinc-500"
+                            : "border-edge2 text-faint"
                         }`}
                       >
                         {m === "translate" ? t("bool.move") : t("bool.rot")}
@@ -1472,7 +1472,7 @@ export default function EditPage() {
           </div>
 
           {/* ops stack */}
-          <div className="mt-auto border-t border-zinc-800 p-3">
+          <div className="mt-auto border-t border-edge p-3">
             <SectionTitle
               right={
                 <div className="flex gap-1">
@@ -1497,7 +1497,7 @@ export default function EditPage() {
               {t("op_stack", { n: ops.length })}
             </SectionTitle>
             {!ops.length && (
-              <div className="text-xs text-zinc-500">
+              <div className="text-xs text-faint">
                 {t("no_ops")}
               </div>
             )}
@@ -1508,13 +1508,13 @@ export default function EditPage() {
                   className={`rounded border px-2 py-1 text-xs ${
                     failedOp === i
                       ? "border-red-600 bg-red-950/30"
-                      : "border-zinc-800 bg-zinc-900/60"
+                      : "border-edge bg-panel/60"
                   }`}
                 >
                   <div className="flex items-center gap-1.5">
-                    <span className="w-4 text-zinc-500">{i + 1}</span>
+                    <span className="w-4 text-faint">{i + 1}</span>
                     <button
-                      className="min-w-0 flex-1 truncate text-left text-zinc-300 hover:text-zinc-100"
+                      className="min-w-0 flex-1 truncate text-left text-fg hover:text-fg"
                       title={`${JSON.stringify(o.args)} — ${t("edit_args")}`}
                       onClick={() => setEditIdx(editIdx === i ? null : i)}
                     >
@@ -1522,7 +1522,7 @@ export default function EditPage() {
                     </button>
                     {opReport?.[i] && (
                       <span
-                        className={`shrink-0 text-[10px] ${opReport[i].watertight === false ? "text-amber-400" : "text-zinc-500"}`}
+                        className={`shrink-0 text-[10px] ${opReport[i].watertight === false ? "text-amber-400" : "text-faint"}`}
                         title={t("faces_report", { in: opReport[i].faces_in?.toLocaleString(), out: opReport[i].faces_out?.toLocaleString() }) + (opReport[i].watertight === false ? ` · ${t("not_watertight")}` : "")}
                       >
                         {opReport[i].watertight === false ? "!" : "·"}
@@ -1580,7 +1580,7 @@ export default function EditPage() {
               ))}
             </div>
             {dirty && (
-              <div className="mt-2 flex items-center gap-1.5 text-[11px] text-zinc-500">
+              <div className="mt-2 flex items-center gap-1.5 text-[11px] text-faint">
                 {saveFailed ? (
                   <span className="text-amber-400" title={t("draft_failed_hint")}>
                     {t("draft_failed")}
@@ -1591,7 +1591,7 @@ export default function EditPage() {
                   </>
                 )}
                 <button
-                  className="underline hover:text-zinc-300"
+                  className="underline hover:text-fg"
                   onClick={() =>
                     api.saveEditorState(id, { ops }).then(
                       () => {

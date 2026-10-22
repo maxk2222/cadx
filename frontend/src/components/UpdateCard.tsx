@@ -108,11 +108,11 @@ export default function UpdateCard() {
       <SectionTitle>{t("upd_title")}</SectionTitle>
 
       <div className="flex flex-wrap items-center gap-2 text-sm">
-        <span className="text-zinc-300">
+        <span className="text-fg">
           v{v?.version ?? "?"}
           {v?.git && (
             <>
-              {" "}· <code className="text-zinc-400">{v.git.sha}</code> · {v.git.branch}
+              {" "}· <code className="text-muted">{v.git.sha}</code> · {v.git.branch}
             </>
           )}
         </span>
@@ -122,18 +122,18 @@ export default function UpdateCard() {
       </div>
 
       {offline ? (
-        <p className="mt-3 text-xs text-zinc-500">
+        <p className="mt-3 text-xs text-faint">
           {t("upd_offline_pre")}{" "}
-          <code className="text-zinc-300">scripts/start.sh</code> {t("upd_offline_mid")}{" "}
-          <code className="text-zinc-300">scripts/update.sh</code>.
+          <code className="text-fg">scripts/start.sh</code> {t("upd_offline_mid")}{" "}
+          <code className="text-fg">scripts/update.sh</code>.
         </p>
       ) : (
         <>
           {/* channel toggle — remote branches from the last check */}
           <div className="mt-3 flex flex-wrap items-center gap-3">
-            <span className="text-xs text-zinc-500">{t("upd_channel")}</span>
+            <span className="text-xs text-faint">{t("upd_channel")}</span>
             {branches.map((b) => (
-              <label key={b} className="flex items-center gap-1.5 text-sm text-zinc-300">
+              <label key={b} className="flex items-center gap-1.5 text-sm text-fg">
                 <input
                   type="radio"
                   name="update-ref"
@@ -153,16 +153,16 @@ export default function UpdateCard() {
           )}
 
           {c?.commits?.length ? (
-            <ul className="mt-2 max-h-32 space-y-1 overflow-y-auto rounded-md border border-zinc-800 bg-zinc-950/60 p-2 text-xs text-zinc-400">
+            <ul className="mt-2 max-h-32 space-y-1 overflow-y-auto rounded-md border border-edge bg-bg/60 p-2 text-xs text-muted">
               {c.commits.slice(0, 8).map((cm) => (
                 <li key={cm.sha} className="flex gap-2">
-                  <code className="shrink-0 text-zinc-500">{cm.sha}</code>
+                  <code className="shrink-0 text-faint">{cm.sha}</code>
                   <span className="truncate">{cm.subject}</span>
-                  <span className="ml-auto shrink-0 text-zinc-600">{cm.date}</span>
+                  <span className="ml-auto shrink-0 text-faint">{cm.date}</span>
                 </li>
               ))}
               {c.commits.length > 8 && (
-                <li className="text-zinc-600">{t("upd_more", { n: c.commits.length - 8 })}</li>
+                <li className="text-faint">{t("upd_more", { n: c.commits.length - 8 })}</li>
               )}
             </ul>
           ) : null}
@@ -172,14 +172,14 @@ export default function UpdateCard() {
             <div className="mt-3">
               <div className="mb-1.5 flex items-center gap-2 text-sm">
                 <RefreshCw className="h-3.5 w-3.5 animate-spin text-brand-400" />
-                <span className="text-zinc-200">
+                <span className="text-fg">
                   {restarting ? t("upd_restarting") : updatePhaseLabel(status.data ?? { state: "running", phase: "starting" })}
                 </span>
                 {status.data?.ref && <Chip>{status.data.ref}</Chip>}
               </div>
               <pre
                 ref={logRef}
-                className="max-h-40 overflow-y-auto rounded-md border border-zinc-800 bg-zinc-950/80 p-2 text-[11px] leading-relaxed text-zinc-500"
+                className="max-h-40 overflow-y-auto rounded-md border border-edge bg-bg/80 p-2 text-[11px] leading-relaxed text-faint"
               >
                 {logTail(status.data?.log_tail) || t("upd_starting")}
               </pre>
@@ -201,7 +201,7 @@ export default function UpdateCard() {
           {failed && (
             <div className="mt-3 rounded-md border border-red-800/60 bg-red-950/40 p-3">
               <p className="text-sm text-red-300">{status.data?.error ?? t("upd_failed")}</p>
-              <pre className="mt-2 max-h-32 overflow-y-auto text-[11px] text-zinc-500">
+              <pre className="mt-2 max-h-32 overflow-y-auto text-[11px] text-faint">
                 {logTail(status.data?.log_tail, 10)}
               </pre>
               <div className="mt-2 flex items-center gap-2">
@@ -214,7 +214,7 @@ export default function UpdateCard() {
                   <RotateCcw className="h-3.5 w-3.5" /> {t("upd_rollback_btn", { sha: status.data?.prev_sha?.slice(0, 10) ?? "?" })}
                 </Btn>
                 {status.data?.log && (
-                  <span className="text-[11px] text-zinc-600">{t("upd_log")}: {status.data.log}</span>
+                  <span className="text-[11px] text-faint">{t("upd_log")}: {status.data.log}</span>
                 )}
               </div>
             </div>
@@ -261,7 +261,7 @@ export default function UpdateCard() {
         body={
           <div className="space-y-2">
             <p>
-                            {t("upd_body_a")} <code className="text-zinc-300">origin/{targetRef}</code>{" "}
+                            {t("upd_body_a")} <code className="text-fg">origin/{targetRef}</code>{" "}
               {t("upd_body_b")}
             </p>
             {jobsWarn > 0 && (
@@ -290,7 +290,7 @@ export default function UpdateCard() {
           <div className="space-y-2">
             <p>
               {t("upd_rb_body_a")}{" "}
-              <code className="text-zinc-300">{status.data?.prev_sha?.slice(0, 10)}</code>{" "}
+              <code className="text-fg">{status.data?.prev_sha?.slice(0, 10)}</code>{" "}
               {t("upd_rb_body_b")}
             </p>
             <p className="text-amber-400">

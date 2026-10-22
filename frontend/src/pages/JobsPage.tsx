@@ -116,7 +116,7 @@ const JobRow = memo(function JobRow({
                   : stepLabel(job.step) || t("starting")}
             </span>
             {live.max_iterations ? (
-              <span className="font-mono text-zinc-300">
+              <span className="font-mono text-fg">
                 it {Math.min(job.iteration, live.max_iterations)}/{live.max_iterations}
               </span>
             ) : job.iteration ? (

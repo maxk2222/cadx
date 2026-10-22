@@ -134,7 +134,7 @@ export default function QualityTab({
                 {v.bom.map((e, i) => (
                   <tr
                     key={i}
-                    className="border-t border-edge/60 text-zinc-300"
+                    className="border-t border-edge/60 text-fg"
                   >
                     <td className="py-1 pr-2 font-mono">{e.count}×</td>
                     <td className="py-1 pr-2 font-mono">{e.part_class}</td>

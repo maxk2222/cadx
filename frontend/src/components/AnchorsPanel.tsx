@@ -23,13 +23,13 @@ export default function AnchorsPanel({ versionId }: { versionId: string }) {
           <Crosshair className="h-3 w-3" /> {t("anch_title")}
         </span>
       </SectionTitle>
-      <div className="mb-2 text-[11px] text-zinc-500">
+      <div className="mb-2 text-[11px] text-faint">
         {t("anch_note")}
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
         <thead>
-          <tr className="text-left text-[10px] uppercase tracking-wider text-zinc-500">
+          <tr className="text-left text-[10px] uppercase tracking-wider text-faint">
             <th className="pb-1 font-medium">#</th>
             <th className="pb-1 font-medium">{t("anch_name")}</th>
             <th className="pb-1 font-medium">{t("anch_kind")}</th>
@@ -46,19 +46,19 @@ export default function AnchorsPanel({ versionId }: { versionId: string }) {
               a.pos?.filter((p): p is number => p != null).map((p) => p.toFixed(1)) ??
               [a.x, a.y, a.z].filter((p): p is number => p != null).map((p) => p.toFixed(1));
             return (
-              <tr key={a.index} className="border-t border-zinc-800/60 text-zinc-300">
-                <td className="py-1 pr-2 font-mono text-zinc-500">{a.index}</td>
+              <tr key={a.index} className="border-t border-edge/60 text-fg">
+                <td className="py-1 pr-2 font-mono text-faint">{a.index}</td>
                 <td className="py-1 pr-2">{a.name ?? "—"}</td>
                 <td className="py-1 pr-2">{a.kind}</td>
                 <td className="py-1 pr-2 font-mono">{a.axis}</td>
-                <td className="py-1 pr-2 font-mono text-zinc-400">
+                <td className="py-1 pr-2 font-mono text-muted">
                   ({pos.join(", ")})
                 </td>
                 <td className="py-1 pr-2 font-mono">{a.dia?.toFixed(1) ?? "—"}</td>
                 <td className="py-1 pr-2 font-mono">
                   {a.depth_mm != null ? `${a.depth_mm.toFixed(0)} mm` : t("anch_through")}
                 </td>
-                <td className="py-1 text-zinc-500">{a.source ?? "—"}</td>
+                <td className="py-1 text-faint">{a.source ?? "—"}</td>
               </tr>
             );
           })}

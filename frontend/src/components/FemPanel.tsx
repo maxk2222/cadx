@@ -5,7 +5,7 @@ import type { Artifact, FemReport } from "../lib/types";
 import { Card, Lightbox, SectionTitle } from "./ui";
 
 function sfTone(sf: number | null): string {
-  if (sf == null) return "text-zinc-400";
+  if (sf == null) return "text-muted";
   if (sf < 1) return "text-red-400 font-semibold";
   if (sf < 1.5) return "text-amber-400";
   return "text-emerald-400";
@@ -50,7 +50,7 @@ export default function FemPanel({
         </span>
       </SectionTitle>
 
-      <div className="mb-2 text-[11px] text-zinc-500">
+      <div className="mb-2 text-[11px] text-faint">
         {(fem.material?.name as string) ?? t("fem_material")}
         {grid.pitch_mm != null && ` · voxel ${grid.pitch_mm} mm`}
         {grid.elements != null && t("fem_elements", { n: grid.elements })}
@@ -65,7 +65,7 @@ export default function FemPanel({
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead>
-            <tr className="text-left text-[10px] uppercase tracking-wider text-zinc-500">
+            <tr className="text-left text-[10px] uppercase tracking-wider text-faint">
               <th className="pb-1 font-medium">{t("fem_case")}</th>
               <th className="pb-1 font-medium" title={t("fem_conv")}>{t("fem_conv_short")}</th>
               <th className="pb-1 font-medium">σ max (MPa)</th>
@@ -75,7 +75,7 @@ export default function FemPanel({
           </thead>
           <tbody>
             {cases.map((c) => (
-              <tr key={c.name} className="border-t border-zinc-800/60 text-zinc-300">
+              <tr key={c.name} className="border-t border-edge/60 text-fg">
                 <td className="py-1 pr-2">{c.name}</td>
                 <td
                   className={`py-1 pr-2 ${c.converged ? "text-emerald-400" : "text-red-400"}`}
@@ -96,8 +96,8 @@ export default function FemPanel({
 
       <div className="mt-1.5 space-y-0.5">
         {cases.map((c) => (
-          <div key={c.name} className="text-[10px] text-zinc-500">
-            <span className="text-zinc-400">{c.name}:</span> {c.solver} ·{" "}
+          <div key={c.name} className="text-[10px] text-faint">
+            <span className="text-muted">{c.name}:</span> {c.solver} ·{" "}
             {t("fem_compliance", { v: c.compliance_j.toPrecision(3) })}
             {c.residual != null && ` · ${t("fem_residual", { v: c.residual.toExponential(1) })}`}
             {!!c.reactions?.length &&
@@ -120,10 +120,10 @@ export default function FemPanel({
             <button
               key={a.id}
               onClick={() => setLightbox(a.url)}
-              className="overflow-hidden rounded-md border border-zinc-800 hover:border-zinc-600"
+              className="overflow-hidden rounded-md border border-edge hover:border-edge2"
             >
               <img src={a.url} alt={a.view ?? a.path} className="w-full" />
-              <div className="px-1 py-0.5 text-left text-[10px] text-zinc-500">
+              <div className="px-1 py-0.5 text-left text-[10px] text-faint">
                 {a.view ?? a.path.split("/").pop()}
               </div>
             </button>
@@ -131,7 +131,7 @@ export default function FemPanel({
         </div>
       )}
 
-      {fem.note && <div className="mt-2 text-[10px] italic text-zinc-500">{fem.note}</div>}
+      {fem.note && <div className="mt-2 text-[10px] italic text-faint">{fem.note}</div>}
       <Lightbox src={lightbox} onClose={() => setLightbox(null)} />
     </Card>
   );

@@ -65,24 +65,24 @@ export default function JobLivePanel({ jobId }: { jobId: string | null }) {
   const active = !!job && !isTerminalStatus(job.status);
 
   return (
-    <div className="border-t border-zinc-800">
+    <div className="border-t border-edge">
       <button
         className="flex w-full items-center gap-2 px-3 py-2 text-left"
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
       >
-        <span className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
+        <span className="text-xs font-semibold uppercase tracking-wider text-faint">
           {t("job_monitor")}
         </span>
         {job ? (
           <StatusBadge status={job.status} />
         ) : (
-          <span className="text-[10px] text-zinc-600">{t("connecting")}</span>
+          <span className="text-[10px] text-faint">{t("connecting")}</span>
         )}
         {connected && active && (
           <span className="pulse-dot h-1.5 w-1.5 rounded-full bg-emerald-400" />
         )}
-        <span className="ml-auto text-zinc-500">
+        <span className="ml-auto text-faint">
           {open ? (
             <ChevronDown className="h-3.5 w-3.5" />
           ) : (
@@ -112,7 +112,7 @@ export default function JobLivePanel({ jobId }: { jobId: string | null }) {
 
           {scoreData.length > 1 && (
             <div>
-              <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-zinc-500">
+              <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-faint">
                 {t("critique_score")}
               </div>
               <StatArea
@@ -126,7 +126,7 @@ export default function JobLivePanel({ jobId }: { jobId: string | null }) {
 
           {tokSeries.length > 1 ? (
             <div>
-              <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-zinc-500">
+              <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-faint">
                 {t("tokens")}
               </div>
               <StatArea
@@ -173,7 +173,7 @@ export default function JobLivePanel({ jobId }: { jobId: string | null }) {
               {runs.map((r, i) => (
                 <span
                   key={i}
-                  className="inline-flex items-center gap-1 rounded border border-zinc-800 bg-zinc-900 px-1.5 py-0.5 font-mono text-[10px] text-zinc-400"
+                  className="inline-flex items-center gap-1 rounded border border-edge bg-panel px-1.5 py-0.5 font-mono text-[10px] text-muted"
                 >
                   {r.type && (
                     <span className="rounded bg-brand-900/60 px-1 text-brand-300">
@@ -190,7 +190,7 @@ export default function JobLivePanel({ jobId }: { jobId: string | null }) {
           )}
 
           {!job && !events.length && (
-            <div className="py-2 text-center text-[11px] text-zinc-600">
+            <div className="py-2 text-center text-[11px] text-faint">
               {t("waiting_stream")}
             </div>
           )}

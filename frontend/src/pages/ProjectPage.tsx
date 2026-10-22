@@ -76,7 +76,7 @@ function ProjectShowcase({
             : `/versions/${shown.id}`
         }
         title={`v${shown.number}${shown.name ? ` · ${shown.name}` : ""}`}
-        className="group relative block h-56 bg-zinc-950"
+        className="group relative block h-56 bg-bg"
       >
         {baseSrc && bad !== baseSrc ? (
           <img
@@ -107,10 +107,10 @@ function ProjectShowcase({
             </span>
           </>
         )}
-        <span className="absolute inset-x-0 bottom-0 flex items-center gap-2 bg-gradient-to-t from-black/80 to-transparent px-3 pb-1.5 pt-6 text-xs text-zinc-300">
+        <span className="absolute inset-x-0 bottom-0 flex items-center gap-2 bg-gradient-to-t from-black/80 to-transparent px-3 pb-1.5 pt-6 text-xs text-fg">
           <span className="font-medium">v{shown.number}</span>
           {shown.name && <span className="truncate">{shown.name}</span>}
-          <span className="ml-auto text-zinc-500">
+          <span className="ml-auto text-faint">
             {running
               ? t("showcase_live", { status: running.status })
               : shown.score != null
@@ -336,7 +336,7 @@ export default function ProjectPage() {
           </div>
           {(library.data ?? []).length > 0 && (
             <div className="mt-3">
-              <div className="mb-1 text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+              <div className="mb-1 text-[11px] font-medium uppercase tracking-wider text-faint">
                 {t("library_parts")}{selectedLib.size ? ` — ${t("selected_n", { count: selectedLib.size })}` : ""}
               </div>
               <div className="flex flex-wrap gap-1.5">
@@ -350,7 +350,7 @@ export default function ProjectPage() {
                       className={`rounded-full border px-2.5 py-1 text-xs transition-colors ${
                         on
                           ? "border-brand-600 bg-brand-950/60 text-brand-200"
-                          : "border-zinc-700 bg-zinc-900 text-zinc-400 hover:border-zinc-600 hover:text-zinc-300"
+                          : "border-edge2 bg-panel text-muted hover:border-edge2 hover:text-fg"
                       }`}
                       onClick={() =>
                         setSelectedLib((s) => {
@@ -362,7 +362,7 @@ export default function ProjectPage() {
                       }
                     >
                       {p.name}
-                      <span className="ml-1 text-[10px] text-zinc-500">{p.kind}</span>
+                      <span className="ml-1 text-[10px] text-faint">{p.kind}</span>
                     </button>
                   );
                 })}
@@ -429,7 +429,7 @@ export default function ProjectPage() {
         </SectionTitle>
         {(versions.data?.length ?? 0) > 4 && (
           <div className="relative mb-2">
-            <Search className="pointer-events-none absolute left-2 top-2 h-3.5 w-3.5 text-zinc-500" />
+            <Search className="pointer-events-none absolute left-2 top-2 h-3.5 w-3.5 text-faint" />
             <input
               className={`${inputCls} py-1.5 pl-7 text-xs`}
               placeholder={t("filter_prompts_ph")}

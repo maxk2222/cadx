@@ -174,7 +174,7 @@ export function SectionCollapsible({
 type Tone = "zinc" | "blue" | "green" | "amber" | "red" | "purple" | "teal";
 
 const CHIP_TONES: Record<Tone, string> = {
-  zinc: "border-edge2 bg-panel2 text-zinc-300",
+  zinc: "border-edge2 bg-panel2 text-fg",
   blue: "border-brand-800 bg-brand-950/60 text-brand-300",
   green: "border-emerald-800 bg-emerald-950/60 text-emerald-300",
   amber: "border-amber-800 bg-amber-950/60 text-amber-300",
@@ -214,7 +214,7 @@ const BTN: Record<BtnVariant, string> = {
   success:
     "bg-gradient-to-b from-emerald-600 to-emerald-700 text-white shadow-sm shadow-emerald-950/50 hover:from-emerald-500 hover:to-emerald-600",
   danger: "bg-red-700 text-white hover:bg-red-600",
-  ghost: "bg-panel2 text-zinc-300 hover:bg-edge hover:text-zinc-100",
+  ghost: "bg-panel2 text-fg hover:bg-edge hover:text-fg",
   subtle: "bg-transparent text-brand-400 hover:bg-brand-950/40 hover:text-brand-300",
 };
 
@@ -637,7 +637,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                 ? "border-emerald-800 bg-emerald-950/90 text-emerald-200"
                 : t.tone === "error"
                   ? "border-red-800 bg-red-950/90 text-red-200"
-                  : "border-edge2 bg-panel/90 text-zinc-300"
+                  : "border-edge2 bg-panel/90 text-fg"
             }`}
           >
             {t.tone === "success" ? (
@@ -853,7 +853,7 @@ export function ProgressRing({
           className="transition-[stroke-dashoffset] duration-500"
         />
       </svg>
-      <span className="absolute font-mono text-xs text-zinc-200">
+      <span className="absolute font-mono text-xs text-fg">
         {label ?? `${Math.round(v * 100)}%`}
       </span>
     </div>

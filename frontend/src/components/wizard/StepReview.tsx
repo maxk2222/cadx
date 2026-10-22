@@ -64,13 +64,13 @@ export default function StepReview({
           <dt className="text-[11px] font-medium uppercase tracking-wider text-faint">
             {t("sum_prompt")}
           </dt>
-          <dd className="mt-0.5 line-clamp-3 text-zinc-300">{prompt}</dd>
+          <dd className="mt-0.5 line-clamp-3 text-fg">{prompt}</dd>
         </div>
         <div>
           <dt className="text-[11px] font-medium uppercase tracking-wider text-faint">
             {t("sum_assets")}
           </dt>
-          <dd className="mt-0.5 text-zinc-300">
+          <dd className="mt-0.5 text-fg">
             {assetCount === 0
               ? t("common:state.none")
               : t("sum_assets_n", { count: assetCount })}
@@ -80,7 +80,7 @@ export default function StepReview({
           <dt className="text-[11px] font-medium uppercase tracking-wider text-faint">
             {t("sum_mode")}
           </dt>
-          <dd className="mt-0.5 text-zinc-300">
+          <dd className="mt-0.5 text-fg">
             <span className="uppercase">{mode}</span>
             {suggested !== mode && (
               <span className="ml-1.5 text-[11px] text-faint/80">

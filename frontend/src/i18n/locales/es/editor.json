@@ -416,5 +416,15 @@
   "se_opt_btn": "optimizar",
   "se_opt_hint": "ejecutar optimización topológica con estos ajustes",
   "se_invalid": "inválido — corrige los campos marcados",
-  "org_source_mesh": "malla de origen"
+  "org_source_mesh": "malla de origen",
+  "se_rk_rim": "anillo",
+  "se_rk_border": "borde",
+  "se_rl_rim": "anillo {{axis}} · {{m}} mm",
+  "se_rl_border": "borde {{axis}} · {{m}} mm",
+  "se_border_axes": "qué bordes exteriores protege la banda (letras, ambos lados)",
+  "se_inner_dia": "Ø int.",
+  "se_inner_dia_h": "0 = sólido — define para anillo",
+  "se_lk_normal": "fuerza normal",
+  "se_lk_normal_h": "fuerza total ortogonal a la superficie de la región (+ empuja, − tira)",
+  "se_normal_note": "ortogonal a la superficie — + empuja hacia dentro, − tira hacia fuera"
 }

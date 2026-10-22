@@ -45,7 +45,7 @@ function StateCell({ m }: { m: MeshModelInfo }) {
         value={pct ?? 0.02}
         className={pct == null ? "animate-pulse" : ""}
       />
-      <div className="mt-0.5 text-[10px] leading-tight text-zinc-500">
+      <div className="mt-0.5 text-[10px] leading-tight text-faint">
         {d?.status === "error"
           ? t("mdl_dl_failed", { e: d.error ?? "?" })
           : d
@@ -132,25 +132,25 @@ export default function ModelsTab({ models }: { models: MeshModelInfo[] }) {
   );
 
   const row = (m: MeshModelInfo) => (
-    <tr key={m.id} className="border-t border-zinc-800/60 align-top">
+    <tr key={m.id} className="border-t border-edge/60 align-top">
       <td className="py-2 pr-2">
-        <div className="font-medium text-zinc-200">{m.name || m.id}</div>
-        <div className="text-[10px] text-zinc-500">
+        <div className="font-medium text-fg">{m.name || m.id}</div>
+        <div className="text-[10px] text-faint">
           {m.id}
           {m.custom ? ` · ${t("mdl_custom")}` : ""}
         </div>
         {m.license_note ? (
-          <div className="text-[10px] text-zinc-500">{t("mdl_license")}: {m.license_note}</div>
+          <div className="text-[10px] text-faint">{t("mdl_license")}: {m.license_note}</div>
         ) : null}
         {m.last_error ? (
           <div className="text-[10px] text-red-400">{m.last_error}</div>
         ) : null}
       </td>
-      <td className="py-2 pr-2 text-zinc-400" title={`${m.backend} · ${m.device}`}>
+      <td className="py-2 pr-2 text-muted" title={`${m.backend} · ${m.device}`}>
         {m.device}
       </td>
-      <td className="py-2 pr-2 text-zinc-400">{fmtMemGb(m.est_mem_mb)}</td>
-      <td className="py-2 pr-2 text-zinc-400">{fmtGb(m.size_gb)}</td>
+      <td className="py-2 pr-2 text-muted">{fmtMemGb(m.est_mem_mb)}</td>
+      <td className="py-2 pr-2 text-muted">{fmtGb(m.size_gb)}</td>
       <td className="py-2 pr-2">
         <StateCell m={m} />
       </td>
@@ -203,8 +203,8 @@ export default function ModelsTab({ models }: { models: MeshModelInfo[] }) {
   );
 
   const registerForm = (
-    <div className="mb-3 rounded-md border border-zinc-800 bg-zinc-900/40 p-2">
-      <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+    <div className="mb-3 rounded-md border border-edge bg-panel/40 p-2">
+      <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-faint">
         {t("mdl_register")}
       </div>
       <div className="flex flex-wrap items-center gap-2">
@@ -224,7 +224,7 @@ export default function ModelsTab({ models }: { models: MeshModelInfo[] }) {
           <option value="mlx-lm">mlx-lm</option>
           <option value="llama.cpp">llama.cpp</option>
         </select>
-        <label className="flex items-center gap-1.5 text-xs text-zinc-400">
+        <label className="flex items-center gap-1.5 text-xs text-muted">
           <input
             type="checkbox"
             checked={vision}
@@ -261,7 +261,7 @@ export default function ModelsTab({ models }: { models: MeshModelInfo[] }) {
           const rows = models.filter((m) => m.kind === kind);
           return (
             <div key={kind} className="mb-4 last:mb-0">
-              <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+              <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-faint">
                 {t(`mdl_kind_${kind}`)}
               </div>
               {kind === "llm" && registerForm}
@@ -269,7 +269,7 @@ export default function ModelsTab({ models }: { models: MeshModelInfo[] }) {
                 <div className="overflow-x-auto">
                   <table className="w-full min-w-[34rem] text-left text-xs">
                     <thead>
-                      <tr className="text-[10px] uppercase tracking-wider text-zinc-600">
+                      <tr className="text-[10px] uppercase tracking-wider text-faint">
                         <th className="pb-1 pr-2 font-medium">{t("mdl_col_model")}</th>
                         <th className="pb-1 pr-2 font-medium">{t("mdl_col_device")}</th>
                         <th className="pb-1 pr-2 font-medium">{t("mdl_col_mem")}</th>
@@ -283,7 +283,7 @@ export default function ModelsTab({ models }: { models: MeshModelInfo[] }) {
                   </table>
                 </div>
               ) : (
-                <div className="text-xs text-zinc-500">
+                <div className="text-xs text-faint">
                   {t("mdl_none", { kind })}
                 </div>
               )}
@@ -291,7 +291,7 @@ export default function ModelsTab({ models }: { models: MeshModelInfo[] }) {
           );
         })}
         {!models.length && (
-          <div className="text-xs text-zinc-500">
+          <div className="text-xs text-faint">
             {t("mdl_unreachable_pre")} <code>make mesh-server</code>
           </div>
         )}
@@ -315,7 +315,7 @@ export default function ModelsTab({ models }: { models: MeshModelInfo[] }) {
               {q.jobs.map((j) => (
                 <div
                   key={j.id}
-                  className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-zinc-400"
+                  className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-muted"
                 >
                   <Chip
                     tone={
@@ -328,7 +328,7 @@ export default function ModelsTab({ models }: { models: MeshModelInfo[] }) {
                   >
                     {j.status}
                   </Chip>
-                  <span className="text-zinc-300">
+                  <span className="text-fg">
                     {j.kind} {j.model}
                     {j.resolved_model && j.resolved_model !== j.model
                       ? ` → ${j.resolved_model}`
@@ -339,21 +339,21 @@ export default function ModelsTab({ models }: { models: MeshModelInfo[] }) {
                     {j.est_mem_mb != null ? ` · ${fmtMemGb(j.est_mem_mb)}` : ""}
                   </span>
                   {j.message ? (
-                    <span className="text-zinc-500">{j.message}</span>
+                    <span className="text-faint">{j.message}</span>
                   ) : null}
                 </div>
               ))}
             </div>
           ) : (
-            <div className="mb-2 text-xs text-zinc-500">{t("mdl_queue_empty")}</div>
+            <div className="mb-2 text-xs text-faint">{t("mdl_queue_empty")}</div>
           )}
           {q.residents.length > 0 && (
-            <div className="text-xs text-zinc-500">
+            <div className="text-xs text-faint">
               {t("mdl_resident")} 
               {q.residents.map((r, i) => (
                 <span key={r.id}>
                   {i > 0 && " · "}
-                  <b className="font-medium text-zinc-300">{r.id}</b>{" "}
+                  <b className="font-medium text-fg">{r.id}</b>{" "}
                   {fmtMemGb(r.mb)} · {r.kind}
                   {r.pinned ? ` · ${t("mdl_pinned")}` : ""}
                   {r.idle_s > 0 ? ` · ${t("mdl_idle", { t: fmtSecs(r.idle_s) })}` : ""}

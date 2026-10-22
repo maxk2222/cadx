@@ -66,7 +66,7 @@ export default function WizardProgress({
         </div>
       )}
 
-      <div className="relative mt-4 h-[340px] overflow-hidden rounded-lg border border-edge bg-zinc-950">
+      <div className="relative mt-4 h-[340px] overflow-hidden rounded-lg border border-edge bg-bg">
         <LivePreview versionId={versionId} active={!done} />
         {!done && (
           <span className="absolute inset-0 -z-10 flex items-center justify-center text-xs text-faint/60">
@@ -87,7 +87,7 @@ export default function WizardProgress({
       {done && status === "succeeded" && (
         <Card className="anim-fade-in-up mt-4 flex flex-wrap items-center gap-3 border-emerald-800/60 bg-emerald-950/20 p-4">
           <CheckCircle2 className="h-5 w-5 text-emerald-400" />
-          <div className="min-w-0 flex-1 text-sm text-zinc-300">
+          <div className="min-w-0 flex-1 text-sm text-fg">
             {t("prog_done_hint")}
           </div>
           <Btn onClick={() => nav(`/versions/${versionId}?job=${jobId}`)}>

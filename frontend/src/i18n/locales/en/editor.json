@@ -416,5 +416,15 @@
   "se_opt_btn": "optimise",
   "se_opt_hint": "run topology optimisation with these settings",
   "se_invalid": "invalid — fix the highlighted fields",
-  "org_source_mesh": "source mesh"
+  "org_source_mesh": "source mesh",
+  "se_rk_rim": "rim",
+  "se_rk_border": "border",
+  "se_rl_rim": "rim {{axis}} · {{m}} mm",
+  "se_rl_border": "border {{axis}} · {{m}} mm",
+  "se_border_axes": "which outer edges the band guards (letter set, both sides each)",
+  "se_inner_dia": "inner Ø",
+  "se_inner_dia_h": "0 = solid — set for an annulus/ring",
+  "se_lk_normal": "normal force",
+  "se_lk_normal_h": "total force orthogonal to the region surface (+ pushes in, − pulls)",
+  "se_normal_note": "orthogonal to the region surface — + pushes in, − pulls out"
 }

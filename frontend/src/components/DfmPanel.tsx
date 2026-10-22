@@ -4,7 +4,7 @@ import type { DfmWarning } from "../lib/types";
 const STYLE: Record<string, string> = {
   high: "border-red-700 bg-red-950/50 text-red-200",
   medium: "border-amber-700 bg-amber-950/50 text-amber-200",
-  low: "border-zinc-600 bg-zinc-900 text-zinc-300",
+  low: "border-edge2 bg-panel text-fg",
 };
 
 export default function DfmPanel({ warnings }: { warnings: DfmWarning[] }) {
@@ -21,7 +21,7 @@ export default function DfmPanel({ warnings }: { warnings: DfmWarning[] }) {
           <div>{w.message}</div>
         </div>
       ))}
-      <div className="text-[10px] text-zinc-500">{t("dfm_footer")}</div>
+      <div className="text-[10px] text-faint">{t("dfm_footer")}</div>
     </div>
   );
 }

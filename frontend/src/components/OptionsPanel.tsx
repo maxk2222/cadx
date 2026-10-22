@@ -136,7 +136,7 @@ function Opt({
       className={`inline-flex items-center gap-1 rounded border px-2 py-1 text-[11px] font-medium transition-colors ${
         active
           ? "border-brand-700 bg-brand-950/60 text-brand-300"
-          : "border-zinc-700 bg-zinc-800/60 text-zinc-400 hover:border-zinc-500 hover:text-zinc-200"
+          : "border-edge2 bg-panel2/60 text-muted hover:border-edge2 hover:text-fg"
       }`}
     >
       {children}
@@ -147,7 +147,7 @@ function Opt({
 function Group({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="mt-3 first:mt-0">
-      <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+      <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-faint">
         {label}
       </div>
       <div className="flex flex-wrap gap-1.5">{children}</div>
@@ -156,7 +156,7 @@ function Group({ label, children }: { label: string; children: ReactNode }) {
 }
 
 const selCls =
-  "rounded border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 text-[11px] text-zinc-200 outline-none focus:border-brand-600";
+  "rounded border border-edge2 bg-panel px-1.5 py-0.5 text-[11px] text-fg outline-none focus:border-brand-600";
 
 /** small labelled select for the backends group — first option is the
  *  "default (settings)" passthrough (empty value). */
@@ -172,7 +172,7 @@ function Sel({
   onChange: (v: string) => void;
 }) {
   return (
-    <label className="flex items-center gap-1.5 rounded border border-zinc-700 bg-zinc-800/60 px-2 py-1 text-[11px] text-zinc-400">
+    <label className="flex items-center gap-1.5 rounded border border-edge2 bg-panel2/60 px-2 py-1 text-[11px] text-muted">
       {label}
       <select
         className={selCls}
@@ -236,11 +236,11 @@ export default function OptionsPanel({
       : "";
 
   return (
-    <div className="rounded-lg border border-zinc-800 bg-zinc-900/40">
+    <div className="rounded-lg border border-edge bg-panel/40">
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-zinc-400 hover:text-zinc-200"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-muted hover:text-fg"
       >
         <Settings2 className="h-3.5 w-3.5" />
         {t("opt.title")}
@@ -257,7 +257,7 @@ export default function OptionsPanel({
         )}
       </button>
       {open && (
-        <div className="border-t border-zinc-800 px-3 pb-3 pt-2">
+        <div className="border-t border-edge px-3 pb-3 pt-2">
           <Group label={t("opt.group_process")}>
             {PROCESS_OPTIONS.map((p) => (
               <Opt
@@ -286,7 +286,7 @@ export default function OptionsPanel({
               </Opt>
             ))}
             <input
-              className="w-32 rounded border border-zinc-700 bg-zinc-800/80 px-2 py-1 text-[11px] text-zinc-200 placeholder-zinc-600 outline-none focus:border-brand-600"
+              className="w-32 rounded border border-edge2 bg-panel2/80 px-2 py-1 text-[11px] text-fg placeholder-faint outline-none focus:border-brand-600"
               placeholder={t("opt.custom_material")}
               value={customMaterial}
               onChange={(e) => set({ material: e.target.value || undefined })}
@@ -321,7 +321,7 @@ export default function OptionsPanel({
 
           {!!value.fem && (
             <input
-              className="mt-2 w-full rounded border border-zinc-700 bg-zinc-800/80 px-2 py-1.5 text-[11px] text-zinc-200 placeholder-zinc-600 outline-none focus:border-brand-600"
+              className="mt-2 w-full rounded border border-edge2 bg-panel2/80 px-2 py-1.5 text-[11px] text-fg placeholder-faint outline-none focus:border-brand-600"
               placeholder={t("opt.fem_note_ph")}
               value={value.fem_note ?? ""}
               onChange={(e) => set({ fem_note: e.target.value || undefined })}
@@ -341,7 +341,7 @@ export default function OptionsPanel({
                   set({ topopt_volfrac: Number(e.target.value) / 100 })
                 }
               />
-              <span className="w-8 text-[11px] text-zinc-300">
+              <span className="w-8 text-[11px] text-fg">
                 {Math.round((value.topopt_volfrac ?? 0.4) * 100)}%
               </span>
             </div>
@@ -417,7 +417,7 @@ export default function OptionsPanel({
             ).map(([key, label, min, max]) => (
               <label
                 key={key}
-                className="flex items-center gap-1.5 rounded border border-zinc-700 bg-zinc-800/60 px-2 py-1 text-[11px] text-zinc-400"
+                className="flex items-center gap-1.5 rounded border border-edge2 bg-panel2/60 px-2 py-1 text-[11px] text-muted"
               >
                 {label}
                 <input
@@ -425,7 +425,7 @@ export default function OptionsPanel({
                   min={min}
                   max={max}
                   step={1}
-                  className="w-16 rounded border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 text-[11px] text-zinc-200 outline-none focus:border-brand-600"
+                  className="w-16 rounded border border-edge2 bg-panel px-1.5 py-0.5 text-[11px] text-fg outline-none focus:border-brand-600"
                   placeholder={t("opt.auto")}
                   value={value[key] ?? ""}
                   onChange={(e) =>

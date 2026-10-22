@@ -416,5 +416,15 @@
   "se_opt_btn": "optimieren",
   "se_opt_hint": "Topologieoptimierung mit diesen Einstellungen starten",
   "se_invalid": "ungültig — markierte Felder korrigieren",
-  "org_source_mesh": "Quell-Mesh"
+  "org_source_mesh": "Quell-Mesh",
+  "se_rk_rim": "Randring",
+  "se_rk_border": "Rand",
+  "se_rl_rim": "Randring {{axis}} · {{m}} mm",
+  "se_rl_border": "Rand {{axis}} · {{m}} mm",
+  "se_border_axes": "welche Außenkanten das Band schützt (Buchstabensatz, beidseitig)",
+  "se_inner_dia": "Innen-Ø",
+  "se_inner_dia_h": "0 = voll — für Ring/Annulus setzen",
+  "se_lk_normal": "Normalkraft",
+  "se_lk_normal_h": "Gesamtkraft orthogonal zur Regionsfläche (+ drückt hinein, − zieht)",
+  "se_normal_note": "orthogonal zur Regionsfläche — + drückt hinein, − zieht heraus"
 }
