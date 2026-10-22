@@ -538,6 +538,7 @@ def smooth_preserve(
     *,
     pin_floor: bool = True,
     floor_tol: float = 0.05,
+    pin_mask: tuple[np.ndarray, float, np.ndarray] | None = None,
 ) -> trimesh.Trimesh:
     """Taubin smoothing that keeps the flat bottom and the envelope fixed.
 
@@ -547,12 +548,34 @@ def smooth_preserve(
     measurably per pass (~20% volume on 2-cell plates), and the Z span is
     exactly the thickness the spec envelope clip enforces. Returns the input
     unchanged when the result is not watertight or degenerate.
+
+    `pin_mask` pins whole voxel cells: ``(origin, pitch, passive_3d)`` with
+    ``origin`` the (3,) world-mm min corner of cell (0,0,0) and
+    ``passive_3d`` a bool array of the domain's ``dims`` — every vertex whose
+    containing cell is marked passive (keep/fix/load zones) is pinned too,
+    so verified mounting surfaces survive smoothing unmoved.
     """
     out = mesh.copy()
     out.merge_vertices()
     pinned = None
     if pin_floor:
         pinned = np.flatnonzero(out.vertices[:, 2] <= out.bounds[0][2] + floor_tol)
+    if pin_mask is not None:
+        try:
+            origin, pitch, passive_3d = pin_mask
+            dims = np.asarray(passive_3d.shape, dtype=int)
+            ijk = np.clip(
+                np.floor(
+                    (out.vertices - np.asarray(origin, dtype=float))
+                    / max(float(pitch), 1e-9)
+                ).astype(int),
+                0,
+                dims - 1,
+            )
+            cell_pinned = np.flatnonzero(passive_3d[ijk[:, 0], ijk[:, 1], ijk[:, 2]])
+            pinned = cell_pinned if pinned is None else np.union1d(pinned, cell_pinned)
+        except Exception:
+            log.warning("mesh.smooth_preserve.pin_mask.failed", exc_info=True)
     try:
         lap = trimesh.smoothing.laplacian_calculation(
             out, equal_weight=True, pinned_vertices=pinned

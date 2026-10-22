@@ -607,13 +607,26 @@ def density_to_mesh(
     iso = float(threshold)
     try:
         if extract_smooth:
-            rho_s = ndimage.gaussian_filter(rho3.astype(np.float64), float(sigma_px))
+            # hard boundary conditions BEFORE the Gaussian: carved voids read
+            # as rho=0 (the blur must pull the iso surface away from them, not
+            # smear their rho=1 neighbourhood across the hole) and pinned
+            # passive cells read as rho=1 so the shell keeps them enclosed
+            rho_in = rho3.astype(np.float64).copy()
+            if void_cells is not None:
+                rho_in[void_cells] = 0.0
+            if passive_solid is not None:
+                rho_in[passive_solid.reshape(domain.dims)] = 1.0
+            rho_s = ndimage.gaussian_filter(rho_in, float(sigma_px))
             # clip the iso field to the mask, dilated by one cell: a hard
             # clip at the mask boundary would put a 0-cliff exactly where
             # the iso must interpolate, biasing the volume low by ~half a
             # boundary layer; the 1-cell shell keeps the interpolation
-            # smooth while still zeroing stray material further out
+            # smooth while still zeroing stray material further out. The
+            # shell must NOT grow back into carved voids — a blurred
+            # rho_s>iso ring inside the hole would close it again
             shell = ndimage.binary_dilation(mask)
+            if void_cells is not None:
+                shell &= ~void_cells
             field = np.where(shell, rho_s, 0.0)
             fmax = float(rho_s.max())
             if volume_preserve:

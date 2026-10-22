@@ -185,6 +185,47 @@ No BuildPart context needed. Parts rest on XY (min Z = 0), centred — place wit
   filters, edges consumed by a previous feature) — an empty selection crashes
   the whole run otherwise.
 
+### safe_chamfer
+
+- `safe_chamfer(edges, length, min_length=0.2)` — chamfer with the same
+  shrink-to-fit fallback as `safe_fillet`: halves the leg length until OCC
+  accepts it, returns the applied length or `0.0`. Builder-mode only —
+  inside `with BuildPart() as p:`, then read `p.part`. For algebra mode use
+  `part, applied_l = safe_chamfer_shape(part, edges, length)`, which returns
+  the new Shape and the accepted length. `safe_chamfer(concave_edges(axis="y"), length=2)`.
+
+## Edge selection — build fillet/chamfer selections without OCP code
+
+`edges() >> Axis.Z` does NOT sort or filter the way it looks like it does —
+use these selectors instead. All accept a Shape/Part or nothing inside an
+active `BuildPart` (reads `p.part`) and return `list[Edge]` — `[]` on no
+match, so pair them with `safe_fillet`/`safe_chamfer`.
+
+### edges_at
+
+- `edges_at(shape=None, *, axis=None, x=None, y=None, z=None, x_range=None,
+  y_range=None, z_range=None, geom=None, tol=0.6)` — filter edges by
+  mid-tangent axis (`"x"/"y"/"z"`, signs ignored), bbox-centre position
+  (`x`/`y`/`z` ±tol or inside `*_range=[lo,hi]`) and geometry kind
+  (`geom="line"|"circle"`).
+  `inner = edges_at(p.part, axis="y", x=-36, z=6, tol=1)`.
+
+### concave_edges / convex_edges
+
+- `concave_edges(shape=None, *, axis=None, x_range=None, y_range=None,
+  z_range=None)` — re-entrant edges only: inner fillet roots, groove/pocket
+  corners, the L-bracket inner join — the edges a fillet is usually meant
+  for. `convex_edges(...)` same signature, proud outer edges (silhouette,
+  boss rims) for exterior rounding/chamfering.
+
+### hole_rim_edges
+
+- `hole_rim_edges(shape=None, *, diameter=None, axis=None, z=None, tol=0.5)`
+  — circular rim edges of bores/counterbores/countersink mouths/boss
+  shoulders; `diameter` matches the rim circle ±tol (a Ø5 bore gives two
+  ~Ø5 rims), `z` the rim height, `axis` the rim-plane normal direction.
+  `rims = hole_rim_edges(diameter=5, axis="z", z=plate_top)`.
+
 ### closed_polyline
 
 - `closed_polyline(pts, tol=1e-3)` — planar Face from a dense sampled outline
@@ -240,3 +281,18 @@ No BuildPart context needed. Parts rest on XY (min Z = 0), centred — place wit
   box in mm. USE THIS instead of touching `bounding_box()` yourself —
   `bb.size` is a Vector with uppercase `.X`/`.Y`/`.Z`, and OCP names like
   `xlen`, `xmax` or `.size.x` do NOT exist in build123d.
+
+## Common pitfalls
+
+- A triangular gusset/"Dreiecksrippe" is `cadlib.rib(...)` — a `strut()` is
+  only the straight bar, never the filled triangle.
+- `shape.translate(...)`/`shape.locate(...)` return a NEW object — keep the
+  return value (`moved = obj.translate((x, y, z))`) or place copies with
+  `Pos(x, y, z) * obj`; calling it bare leaves the original unmoved.
+- A through-hole cutter belongs to its HOST plate: build it inside the
+  plate's context/algebra (`through_hole(depth=host_span+0.5)` on the plate's
+  hi face, or `plate = plate - Pos(...) * cutter`) so it drills only that
+  plate and never struts/ribs sharing the bore line.
+- `edges() >> Axis.Z` neither sorts nor filters the selection the way it
+  reads — use `edges_at`/`concave_edges`/`hole_rim_edges` (above) to build
+  the edge set explicitly.

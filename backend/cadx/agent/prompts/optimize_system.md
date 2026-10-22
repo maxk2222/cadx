@@ -116,15 +116,20 @@ Kinds:
 |------|---------|---------|
 | `anchor`/`hole` | material ring around measured anchor N (any axis) | `{"kind":"anchor","hole_index":1,"margin_mm":2}` |
 | `bore` | the bore WALL of anchor N (for bearing/preload loads) | `{"kind":"bore","hole_index":1}` |
-| `surface` | actual part surface facing `axis` — follows curved shapes | `{"kind":"surface","axis":"+z","margin_mm":1.5}` |
-| `area` | XY sub-area (footprint filter); add `axis` for the surface in that direction | `{"kind":"area","axis":"+z","x_range":[-30,40]}` |
+| `rim` | outer edge band around the `axis` silhouette — tooth rings / gear rims, `margin_mm` is the band width | `{"kind":"rim","axis":"+z","margin_mm":12}` |
+| `border` | perimeter band of the part outline in the plane(s) named by `axis` | `{"kind":"border","axis":"xy","margin_mm":2}` |
+| `surface` | actual part surface facing `axis` — follows curved shapes; `z_range` clips it in height | `{"kind":"surface","axis":"+z","margin_mm":1.5,"z_range":[0,8]}` |
+| `area` | XY sub-area (footprint filter); add `axis` for the surface in that direction, `z_range` for a height window | `{"kind":"area","axis":"+z","x_range":[-30,40]}` |
 | `face` | legacy — same as surface | `{"kind":"face","axis":"-z"}` = bottom |
-| `cylinder` | material within radius around an axis line | `{"kind":"cylinder","axis":"+z","center":[10,0],"diameter_mm":8}` |
+| `cylinder` | material within radius around an axis line; `inner_diameter_mm` turns it into an annulus (ring) | `{"kind":"cylinder","axis":"+z","center":[10,0],"diameter_mm":8}` |
 | `box` | cube around `center` | `{"kind":"box","center":[0,0,4],"diameter_mm":6}` |
 | `all` | the whole solid | `{"kind":"all"}` |
 
 - Prefer `anchor`/`bore` with `hole_index` for mounting features — never type
   coordinates when an index exists.
+- `hole`/`anchor`/`bore` regions feed loads in at the bore's INNER wall
+  automatically and protect a keep ring of material around it — a bolt load
+  on `bore` needs no extra keep region.
 - Fixed regions support `fix_mode`: `"all"` (encastre, default) or
   `"normal"` (constrains only the axis DOF — roller/sliding support).
 - For ergonomic parts keep the skin that touches the hand solid:
@@ -135,6 +140,7 @@ Kinds:
 | situation | load fields | example |
 |-----------|-------------|---------|
 | distributed press | `force_n` or `pressure_mpa` on area/surface | grip: 50–150 N, pressure 0.05–0.2 MPa |
+| force normal to a face | `normal_force_n` — N acting orthogonal to the region's surface, direction follows the surface normal | `{"region":{"kind":"surface","axis":"-z"},"normal_force_n":80}` |
 | bolt/bearing shaft load | `bearing_n` + `bearing_dir` on a `bore` region | `{"region":{"kind":"bore","hole_index":1},"bearing_n":200,"bearing_dir":[0,0,-1]}` |
 | bolt pretension | `preload_n` on a `bore` region | `{"region":{"kind":"bore","hole_index":1},"preload_n":500}` |
 | pure couple / torque | `moment_nm` on any region | `{"moment_nm":[0,0,2]}` |

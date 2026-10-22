@@ -12,13 +12,23 @@ Rules:
 - `fixed` regions = where the part is held/screwed/clamped. Prefer
   `{"kind": "hole", "hole_index": N}` when the spec lists mounting holes —
   the Nth fastener hole in the spec order. `fix_mode: "all"` (encastre) is
-  the default; `"normal"` = roller/resting contact.
+  the default; `"normal"` = roller/resting contact. NEVER put
+  `{"kind": "all"}` in `fixed` — a whole-part fixture freezes the entire
+  domain and makes optimization meaningless; pick the actual contact
+  surface or holes.
 - `loads[].region` = where the force attacks. Use `surface`/`face`/`area`
   for hand/tool pressure, `bore` (hole_index) for bolt loads,
-  `cylinder`/`box`/`all` otherwise. NEVER use `points` — it needs painted
-  coordinates from the GUI and resolves to nothing in a text prompt. A tip
-  load at the part end is `area` with `x_range` (e.g. `[45, 60]`).
-- Load fields: `force_n` [N] vector; `pressure_mpa` on face regions;
+  `cylinder`/`box`/`all` otherwise. For a tooth ring / gear rim
+  ("Zahnkranz", toothed outer edge) use `rim` — e.g.
+  `{"kind": "rim", "axis": "+z", "margin_mm": 12}` — not `cylinder`, which
+  selects a solid column and misses the ring. NEVER use `points` — it needs
+  painted coordinates from the GUI and resolves to nothing in a text
+  prompt. A tip load at the part end is `area` with `x_range` (e.g.
+  `[45, 60]`).
+- Load fields: `force_n` [N] vector; `normal_force_n` [N] for a force
+  acting ORTHOGONAL to the region's surface (direction follows the surface
+  normal — cleaner than guessing a force_n vector on tilted/curved faces);
+  `pressure_mpa` on face regions;
   `bearing_n` + `bearing_dir` for shaft/bolt loads on a bore WALL;
   `preload_n` for bolt pretension (along the bore axis); `moment_nm` [N·m]
   pure couple; `remote_point` [mm] for a levered force; `g_load` in g.

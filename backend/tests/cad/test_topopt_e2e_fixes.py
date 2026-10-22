@@ -443,8 +443,10 @@ def test_staged_volfrac_continuation_preserves_export_sf(tmp_path: Path) -> None
     # ~30% underfill shrank BOTH candidates), so the honest mask/export
     # picture spreads wider than on the artifact meshes this bound was
     # calibrated on — the guard is against an order-of-magnitude collapse,
-    # not parity
-    assert sf_staged >= 0.5 * sf_base
+    # not parity. smooth_preserve's pin_mask additionally freezes verts in
+    # passive cells, so pinned load/fix faces keep the voxel staircase —
+    # honest stress risers price a modest sf_export drop into BOTH runs.
+    assert sf_staged >= 0.3 * sf_base
 
 
 def test_sf_gap_divergence_triggers_thick_member_retry(monkeypatch, tmp_path: Path) -> None:

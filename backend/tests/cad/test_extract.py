@@ -85,20 +85,21 @@ def test_volume_preserve_beats_fixed_iso() -> None:
 
 
 def test_bisect_fallback_on_zero_field() -> None:
-    """Pathological field: a pure passive voxel with rho_s == 0 makes the
-    iso target unreachable -> warning + t = 0.5*max, no crash (quad
-    fallback still yields a solid mesh)."""
+    """Pathological field: a lone passive voxel on a rho == 0 field. The
+    pre-blur passive clamp (rho_in[passive]=1.0) produces a blurred bump so
+    the volume-preserved bisect now finds a real iso instead of the
+    degenerate 0.5*max fallback — the passive voxel must survive and the
+    quad fallback still yields a watertight mesh."""
     dom = _domain()
     passive = np.zeros(dom.dims, dtype=bool)
     passive[3, 3, 3] = True
     rho = np.zeros(dom.dims)
-    mesh, mask, warnings, _nc, info = density_to_mesh(
+    mesh, mask, _warnings, _nc, info = density_to_mesh(
         dom, rho.ravel(), passive_solid=passive.ravel(), smooth_iterations=0
     )
     assert int(mask.sum()) == 1
-    assert any("volume-preserving iso" in w for w in warnings)
     assert mesh.is_watertight
-    assert info["iso"] == 0.0  # 0.5 * field max (= 0)
+    assert info["iso"] > 0.0  # blurred passive bump -> bisect reached a real iso
 
 
 def test_rank_iso_fallback_handles_tied_values() -> None:

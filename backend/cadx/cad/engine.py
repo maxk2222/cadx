@@ -1398,11 +1398,15 @@ def _resolve_topopt_cases(
             # don't pin body-load or whole-part regions — gravity acts on
             # whatever material survives and `all` re-matches the
             # extracted mesh; pinning them would freeze the domain.
+            # normal_force_n via getattr: the field lands with the schema
+            # update and may not exist on older payloads.
             concentrated = bool(
                 load.force_n
+                or load.bearing_n
                 or load.pressure_mpa
                 or load.moment_nm
                 or load.preload_n
+                or getattr(load, "normal_force_n", None)
                 or load.remote_point
             )
             if load.g_load and not concentrated:
@@ -2082,6 +2086,18 @@ def run_topopt_pipeline(  # noqa: C901
         empty_region_warnings(part_domain, list(opt.void_regions), anchors)
     )
     keep_cells = keep_element_mask(part_domain, keep_list, anchors)
+    # anchor keep rings around every bore a case's load/fix region resolves
+    # on — a `bore`/`hole` load region must keep its material ring even when
+    # the agent forgot an explicit keep. Lazy: the helper may not exist yet
+    # on this branch — degrade to the declared keeps only.
+    try:
+        from cadx.cad.fem.regions import case_anchor_keep_mask
+
+        keep_cells |= np.asarray(
+            case_anchor_keep_mask(part_domain, cases, anchors), dtype=bool
+        ).ravel()
+    except Exception:
+        pass
     void_cells = keep_element_mask(part_domain, list(opt.void_regions), anchors)
     # passive pins run on the DESIGN domain: grown cells sharing a
     # fix/load node stay material — the load-introduction patch can use
@@ -2102,6 +2118,24 @@ def run_topopt_pipeline(  # noqa: C901
     volfrac = opt.target_volume_fraction or s.topopt_default_volfrac
     res.topopt["passive_frac"] = round(passive_frac, 4)
     res.topopt["min_feasible_volfrac"] = round(passive_frac, 4)
+    # per-source passive breakdown: which keep region / fix-load patch owns
+    # the pinned floor — the first thing to check when the preflight refuses
+    keep_in_passive = int((keep_cells & passive).sum())
+    res.topopt["passive_breakdown"] = {
+        "keep_cells": keep_in_passive,
+        "fixed_load_cells": int(passive.sum()) - keep_in_passive,
+        "void_cells": int(void_cells.sum()),
+        "design_cells": nsolid,
+        "per_keep_region": [
+            {
+                "kind": r.kind,
+                "axis": r.axis or None,
+                "hole_index": r.hole_index,
+                "cells": int(keep_element_mask(part_domain, [r], anchors).sum()),
+            }
+            for r in keep_list
+        ],
+    }
     if passive_frac > volfrac:
         res.error = (
             f"passive keep/load/fixed cells cover {passive_frac:.0%} of the optimization domain — "
@@ -2388,6 +2422,13 @@ def run_topopt_pipeline(  # noqa: C901
                 opt_mesh,
                 iterations=2 if thin_cells < 4.0 else 4,
                 pin_floor=base_flat,
+                # pin every vertex inside a passive (keep/fix/load) cell —
+                # the surfaces the FEM verified must not drift under Taubin
+                pin_mask=(
+                    design_domain.origin,
+                    design_domain.pitch,
+                    passive.reshape(design_domain.dims),
+                ),
             )
         opt_mesh, output_envelope, output_envelope_ok, envelope_warnings = (
             _clip_export_to_spec_envelope(
@@ -2395,6 +2436,22 @@ def run_topopt_pipeline(  # noqa: C901
             )
         )
         extract_warnings.extend(envelope_warnings)
+        # restore_planes: union the original keep-region surfaces back —
+        # extraction + Taubin shrink bore walls and planar faces ~1 pitch,
+        # so the printed mesh no longer matches the verified mask there.
+        # Runs before export verification so sf_export measures the part
+        # as printed; degrades to a warning, never aborts the pass.
+        if getattr(opt, "restore_planes", False):
+            try:
+                from cadx.cad.fem.refine import restore_keep_surface
+
+                keep_dicts = [r.model_dump() for r in keep_list]
+                opt_mesh, rk_warns, _n_restored = restore_keep_surface(
+                    opt_mesh, mesh, keep_dicts, anchors or []
+                )
+                extract_warnings.extend(rk_warns)
+            except Exception as e:
+                log.warning("topopt.restore_keep_failed", error=str(e)[:160])
         if output_envelope is not None:
             out["output_envelope"] = output_envelope
         out["output_envelope_ok"] = output_envelope_ok
