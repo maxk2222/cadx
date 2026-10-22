@@ -138,6 +138,27 @@ def test_fem_topopt_gates():
     assert not run_gates([{"type": "envelope_within", "dims": [90, 70, 30]}], env, 0)[0].ok
 
 
+def test_dfm_gate():
+    dfm = {
+        "process": "fdm",
+        "summary": "1 high, 2 medium, 0 low",
+        "warnings": [
+            {"code": "thin_wall", "severity": "high"},
+            {"code": "overhang", "severity": "medium"},
+            {"code": "bridge", "severity": "medium"},
+        ],
+    }
+    out = _out(dfm=dfm)
+    assert run_gates([{"type": "dfm", "max_high": 1, "max_medium": 2}], out, 0)[0].ok
+    assert not run_gates([{"type": "dfm", "max_high": 0}], out, 0)[0].ok
+    assert not run_gates([{"type": "dfm", "max_medium": 1}], out, 0)[0].ok
+    assert run_gates([{"type": "dfm", "process": "fdm"}], out, 0)[0].ok
+    assert not run_gates([{"type": "dfm", "process": "cnc3"}], out, 0)[0].ok
+    # missing report fails instead of silently passing
+    res = run_gates([{"type": "dfm"}], _out(dfm=None), 0)[0]
+    assert not res.ok and res.detail
+
+
 def test_misc_gates():
     out = _out(
         issues=[{"what": "hole blocked", "fix_hint": "clear it"}],

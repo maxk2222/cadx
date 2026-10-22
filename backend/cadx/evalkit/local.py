@@ -471,6 +471,7 @@ async def _read_outcome(
         fem=v.fem if v else None,
         mesh=v.mesh if v else None,
         issues=v.issues or [] if v else [],
+        dfm=v.dfm if v else None,
         critique=v.critique if v else None,
         usage=v.usage or {} if v else {},
         artifacts=artifacts,

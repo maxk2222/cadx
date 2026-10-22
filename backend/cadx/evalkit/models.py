@@ -36,6 +36,7 @@ class StageOutcome:
     fem: dict[str, Any] | None = None
     mesh: dict[str, Any] | None = None
     issues: list[dict[str, Any]] = field(default_factory=list)
+    dfm: dict[str, Any] | None = None  # DfmReport dump (process, warnings, summary)
     critique: dict[str, Any] | None = None
     usage: dict[str, Any] = field(default_factory=dict)
     artifacts: dict[str, str] = field(default_factory=dict)  # kind|view -> path/relpath

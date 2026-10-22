@@ -366,6 +366,32 @@ def _gate_outcome(  # noqa: C901
         ]
         return GateResult(name, got == want, measured=got, expected=want, detail=str(fails[:6]))
 
+    if name == "dfm":
+        dfm = outcome.dfm or {}
+        warns = [w for w in (dfm.get("warnings") or []) if isinstance(w, dict)]
+        counts = {
+            sev: sum(1 for w in warns if w.get("severity") == sev)
+            for sev in ("high", "medium", "low")
+        }
+        proc = dfm.get("process")
+        proc_ok = g.get("process") in (None, proc)
+        ok = (
+            bool(dfm)
+            and proc_ok
+            and all(counts[s] <= int(g.get(f"max_{s}", 1 << 30)) for s in counts)
+        )
+        return GateResult(
+            name,
+            ok,
+            measured={
+                "process": proc,
+                "counts": counts,
+                "warnings": [w.get("code") for w in warns[:8]],
+            },
+            expected={k: v for k, v in g.items() if k != "type"},
+            detail="" if dfm else "no dfm report on the version",
+        )
+
     if name == "issue_contains":
         needle = str(g.get("substr") or "").lower()
         texts = [

@@ -290,6 +290,7 @@ class HttpDriver:
             fem=detail.get("fem"),
             mesh=detail.get("mesh"),
             issues=detail.get("issues") or [],
+            dfm=detail.get("dfm"),
             critique=detail.get("critique"),
             usage=detail.get("usage") or {},
             artifacts={

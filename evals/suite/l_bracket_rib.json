@@ -10,6 +10,7 @@
       "type": "generate",
       "mode": "cad",
       "timeout_s": 5400,
+      "options": { "process": "fdm" },
       "prompt": "Aluminium L-bracket (6061), parametric.\n\nFrame: bottom face on the XY plane (z = 0), centred in X and Y. mm.\n- Base plate 80 x 60 x 6.\n- Upright plate at the -X edge on the base top face: 60 wide, 6 thick, 60 tall (top at z = 66).\n- 4 holes dia 8.5: two through the base along Z at (x=25, y=+20) and (x=25, y=-20); two through the upright along X at (y=+20, z=36) and (y=-20, z=36).\n- Triangular rib 4 mm thick in the inner corner, centred in Y, ~40 mm legs.\n- Fillets: r3 in the corner and at the rib, r2 on other edges.\nSymmetric in Y.",
       "gates": [
         { "type": "status", "expect": ["succeeded", "needs_review"] },
@@ -17,6 +18,7 @@
         { "type": "holes", "count": 2, "dia": 8.5, "axis": "z", "positions": [[25, 20], [25, -20]] },
         { "type": "holes", "count": 2, "dia": 8.5, "axis": "x" },
         { "type": "fillet" },
+        { "type": "dfm", "process": "fdm", "max_high": 0 },
         { "type": "contains_point", "xyz": [-15, 0, 10] },
         { "type": "watertight", "expect": true },
         { "type": "verify_spec", "expect": "PASS" }
