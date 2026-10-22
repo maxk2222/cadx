@@ -559,7 +559,7 @@ function CatalogBrowser() {
                       return (
                         <div key={cls} className="py-0.5 text-xs">
                           <button
-                            className="text-left font-mono text-fg hover:text-fg"
+                            className="text-left font-mono text-fg hover:text-white"
                             onClick={() => setDetail(openDetail ? null : cls)}
                           >
                             {cls}

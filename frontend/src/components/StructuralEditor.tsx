@@ -416,7 +416,7 @@ function RegionRow({
           </>
         ) : (
           <button
-            className="min-w-0 flex-1 truncate text-left text-fg hover:text-fg"
+            className="min-w-0 flex-1 truncate text-left text-fg hover:text-white"
             title={`${regionLabel(r, anchors)} — ${t("se_details_hint")}`}
             onClick={() => setOpen((o) => !o)}
           >
@@ -604,27 +604,27 @@ function AddRegionButtons({
   return (
     <div className="mb-2 flex flex-wrap gap-1">
       <button
-        className="flex items-center gap-1 rounded border border-dashed border-edge2 px-2 py-0.5 text-[11px] text-muted hover:border-edge2 hover:text-fg"
+        className="flex items-center gap-1 rounded border border-dashed border-edge2 px-2 py-0.5 text-[11px] text-muted hover:border-faint hover:text-fg"
         onClick={onPaint}
       >
         <Brush className="h-3 w-3" /> {paintLabel}
       </button>
       <button
-        className="flex items-center gap-1 rounded border border-dashed border-edge2 px-2 py-0.5 text-[11px] text-muted hover:border-edge2 hover:text-fg"
+        className="flex items-center gap-1 rounded border border-dashed border-edge2 px-2 py-0.5 text-[11px] text-muted hover:border-faint hover:text-fg"
         title={t("se_pick_face")}
         onClick={onPickFace}
       >
         <Layers className="h-3 w-3" /> {t("se_face")}
       </button>
       <button
-        className="flex items-center gap-1 rounded border border-dashed border-edge2 px-2 py-0.5 text-[11px] text-muted hover:border-edge2 hover:text-fg"
+        className="flex items-center gap-1 rounded border border-dashed border-edge2 px-2 py-0.5 text-[11px] text-muted hover:border-faint hover:text-fg"
         title={t("se_pick_edge")}
         onClick={onPickEdge}
       >
         <Spline className="h-3 w-3" /> {t("se_edge_pick")}
       </button>
       <button
-        className="flex items-center gap-1 rounded border border-dashed border-edge2 px-2 py-0.5 text-[11px] text-muted disabled:opacity-40 hover:border-edge2 hover:text-fg"
+        className="flex items-center gap-1 rounded border border-dashed border-edge2 px-2 py-0.5 text-[11px] text-muted disabled:opacity-40 hover:border-faint hover:text-fg"
         title={t("se_pick_feature")}
         onClick={onPickFeature}
         disabled={!hasAnchors}
@@ -634,7 +634,7 @@ function AddRegionButtons({
       {REGION_KINDS.filter((k) => !ANCHOR_KINDS.has(k.id ?? "") || hasAnchors).map((k) => (
         <button
           key={k.id}
-          className="flex items-center gap-1 rounded border border-dashed border-edge2 px-2 py-0.5 text-[11px] text-muted hover:border-edge2 hover:text-fg"
+          className="flex items-center gap-1 rounded border border-dashed border-edge2 px-2 py-0.5 text-[11px] text-muted hover:border-faint hover:text-fg"
           onClick={() => onAdd(newRegion(k.id))}
         >
           <Plus className="h-3 w-3" /> {t(`se_rk_${k.id}`)}

@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import i18n from "../i18n";
 import { api, errMsg } from "../lib/api";
-import { fmtDuration, fmtSecs, fmtTokens } from "../lib/format";
+import { fmtDuration, fmtSecs, fmtTokens, locale } from "../lib/format";
 import { stepLabel } from "../lib/steps";
 import type { Job, JobLive } from "../lib/types";
 import type { JobEvent, JobStream } from "../lib/useJobEvents";
@@ -287,7 +287,7 @@ export default function JobLog({
         >
           {jobs!.map((j) => (
             <option key={j.id} value={j.id}>
-              {j.type} · {new Date(j.created_at).toLocaleTimeString()} · {j.status}
+              {j.type} · {new Date(j.created_at).toLocaleTimeString(locale())} · {j.status}
             </option>
           ))}
         </select>

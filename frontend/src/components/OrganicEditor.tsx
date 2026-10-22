@@ -15,6 +15,7 @@ import { useTranslation } from "react-i18next";
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { api, errMsg } from "../lib/api";
+import { fmtNum } from "../lib/format";
 import { num, readStoredAnchors } from "../lib/editorState";
 import type {
   FeatureAnchor,
@@ -482,7 +483,7 @@ export default function OrganicEditor({
             )}
             {stats?.faces != null && preview?.ok && !showOriginal && (
               <span className="tabular-nums text-faint">
-                · {t("org_tris", { n: stats.faces.toLocaleString() })}
+                · {t("org_tris", { n: fmtNum(stats.faces) })}
               </span>
             )}
             {stats?.watertight != null && preview?.ok && !showOriginal && (
@@ -529,7 +530,7 @@ export default function OrganicEditor({
                   className={`rounded-md border px-2 py-1.5 text-left text-xs transition-colors ${
                     style === sid
                       ? "border-emerald-600 bg-emerald-950/60 text-emerald-200"
-                      : "border-edge2 bg-panel text-muted hover:border-edge2 hover:text-fg"
+                      : "border-edge2 bg-panel text-muted hover:border-faint hover:text-fg"
                   }`}
                 >
                   {t(`org_style_${sid}`)}
@@ -740,7 +741,7 @@ export default function OrganicEditor({
                     <button
                       key={x.id}
                       onClick={() => setQuality(x.id)}
-                      title={t("org_quality_hint", { v: x.voxel_mm, n: x.max_elements.toLocaleString() })}
+                      title={t("org_quality_hint", { v: x.voxel_mm, n: fmtNum(x.max_elements) })}
                       className={`flex-1 px-2 py-1 ${
                         quality === x.id
                           ? "bg-edge2 text-fg"

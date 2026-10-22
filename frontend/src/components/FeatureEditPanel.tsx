@@ -101,7 +101,7 @@ export default function FeatureEditPanel({ versionId }: { versionId: string }) {
                           ? "cursor-not-allowed border-edge text-faint"
                           : on
                             ? "border-brand-600 bg-brand-950/60 text-brand-200"
-                            : "border-edge2 text-fg hover:border-edge2"
+                            : "border-edge2 text-fg hover:border-faint"
                       }`}
                     >
                       #{f.feature_id} {f.kind} Ø{f.diameter} mm

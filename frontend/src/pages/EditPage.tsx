@@ -35,6 +35,7 @@ import {
   useToast,
 } from "../components/ui";
 import { api, errMsg } from "../lib/api";
+import { fmtNum } from "../lib/format";
 import {
   readStoredAnchors,
   readUiEditor,
@@ -892,7 +893,7 @@ export default function EditPage() {
           {needsServerPreview && preview?.ok && (
             <div className="absolute bottom-3 right-3 flex flex-wrap gap-1.5">
               {preview.stats.faces != null && (
-                <Chip>{t("faces_n", { n: preview.stats.faces.toLocaleString() })}</Chip>
+                <Chip>{t("faces_n", { n: fmtNum(preview.stats.faces) })}</Chip>
               )}
               {preview.stats.bbox_size && (
                 <Chip>{preview.stats.bbox_size.map((n) => fmt(n)).join(" × ")} mm</Chip>
@@ -927,7 +928,7 @@ export default function EditPage() {
                 {UP_DIRS.map((u) => (
                   <button
                     key={u}
-                    className="rounded border border-edge2 px-1 py-1 text-[11px] font-semibold uppercase text-muted hover:border-edge2 hover:text-fg"
+                    className="rounded border border-edge2 px-1 py-1 text-[11px] font-semibold uppercase text-muted hover:border-faint hover:text-fg"
                     onClick={() => addOp({ op: "set_up", args: { up: u } })}
                   >
                     {t("up_dir", { dir: u })}
@@ -1299,7 +1300,7 @@ export default function EditPage() {
               title={t("tool.boolean")}
               hint={
                 boolTooDense
-                  ? t("tool.boolean_h_dense", { n: effFaces?.toLocaleString() })
+                  ? t("tool.boolean_h_dense", { n: effFaces == null ? "?" : fmtNum(effFaces) })
                   : t("tool.boolean_h")
               }
               active={activeTool === "boolean"}
@@ -1514,7 +1515,7 @@ export default function EditPage() {
                   <div className="flex items-center gap-1.5">
                     <span className="w-4 text-faint">{i + 1}</span>
                     <button
-                      className="min-w-0 flex-1 truncate text-left text-fg hover:text-fg"
+                      className="min-w-0 flex-1 truncate text-left text-fg hover:text-white"
                       title={`${JSON.stringify(o.args)} — ${t("edit_args")}`}
                       onClick={() => setEditIdx(editIdx === i ? null : i)}
                     >
@@ -1523,7 +1524,7 @@ export default function EditPage() {
                     {opReport?.[i] && (
                       <span
                         className={`shrink-0 text-[10px] ${opReport[i].watertight === false ? "text-amber-400" : "text-faint"}`}
-                        title={t("faces_report", { in: opReport[i].faces_in?.toLocaleString(), out: opReport[i].faces_out?.toLocaleString() }) + (opReport[i].watertight === false ? ` · ${t("not_watertight")}` : "")}
+                        title={t("faces_report", { in: opReport[i].faces_in == null ? "?" : fmtNum(opReport[i].faces_in), out: opReport[i].faces_out == null ? "?" : fmtNum(opReport[i].faces_out) }) + (opReport[i].watertight === false ? ` · ${t("not_watertight")}` : "")}
                       >
                         {opReport[i].watertight === false ? "!" : "·"}
                       </span>

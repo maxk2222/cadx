@@ -86,8 +86,8 @@ function NavItem({
             badgeTitle ??
             (badgeWarn ? t("nav:badge.waiting_input") : t("nav:badge.active_jobs"))
           }
-          className={`absolute right-1.5 top-1/2 flex h-4 min-w-4 -translate-y-1/2 items-center justify-center rounded-full px-1 text-[10px] font-semibold text-white md:static md:translate-y-0 ${
-            badgeWarn ? "bg-amber-500 text-faint" : "bg-brand-600"
+          className={`absolute right-1.5 top-1/2 flex h-4 min-w-4 -translate-y-1/2 items-center justify-center rounded-full px-1 text-[10px] font-semibold md:static md:translate-y-0 ${
+            badgeWarn ? "bg-amber-500 text-bg" : "bg-brand-600 text-white"
           }`}
         >
           {badge}

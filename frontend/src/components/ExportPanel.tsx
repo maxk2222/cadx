@@ -65,7 +65,7 @@ export default function ExportPanel({
                 ? t("exp_tess_hint")
                 : t("exp_download_hint", { kind: a.kind })
             }
-            className="flex items-center gap-1.5 rounded-md border border-edge2 bg-panel2 px-3 py-1.5 text-sm font-medium uppercase transition-colors hover:border-edge2 hover:bg-edge2"
+            className="flex items-center gap-1.5 rounded-md border border-edge2 bg-panel2 px-3 py-1.5 text-sm font-medium uppercase transition-colors hover:border-faint hover:bg-edge2"
           >
             <Download className="h-3.5 w-3.5 text-faint" />
             {a.kind}

@@ -1,7 +1,11 @@
 import i18n from "../i18n";
 
-function locale(): string {
+export function locale(): string {
   return i18n.language || "en";
+}
+
+export function fmtNum(n: number): string {
+  return n.toLocaleString(locale());
 }
 
 export function timeAgo(iso: string | null | undefined): string {

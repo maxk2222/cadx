@@ -136,7 +136,7 @@ function Opt({
       className={`inline-flex items-center gap-1 rounded border px-2 py-1 text-[11px] font-medium transition-colors ${
         active
           ? "border-brand-700 bg-brand-950/60 text-brand-300"
-          : "border-edge2 bg-panel2/60 text-muted hover:border-edge2 hover:text-fg"
+          : "border-edge2 bg-panel2/60 text-muted hover:border-faint hover:text-fg"
       }`}
     >
       {children}

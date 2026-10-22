@@ -350,7 +350,7 @@ export default function ProjectPage() {
                       className={`rounded-full border px-2.5 py-1 text-xs transition-colors ${
                         on
                           ? "border-brand-600 bg-brand-950/60 text-brand-200"
-                          : "border-edge2 bg-panel text-muted hover:border-edge2 hover:text-fg"
+                          : "border-edge2 bg-panel text-muted hover:border-faint hover:text-fg"
                       }`}
                       onClick={() =>
                         setSelectedLib((s) => {

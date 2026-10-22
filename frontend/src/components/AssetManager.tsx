@@ -295,7 +295,7 @@ export default function AssetManager({
             }}
           />
           <button
-            className="rounded bg-edge2 px-2 text-xs hover:bg-edge2"
+            className="rounded bg-edge2 px-2 text-xs hover:bg-faint"
             onClick={() =>
               saveCaption.mutate({ id: editingCaption, caption: caption.trim() })
             }

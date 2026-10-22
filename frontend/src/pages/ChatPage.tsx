@@ -34,6 +34,7 @@ import {
   useToast,
 } from "../components/ui";
 import { api, errMsg } from "../lib/api";
+import { locale } from "../lib/format";
 import { fmtDur } from "../lib/liveStats";
 import type { Asset } from "../lib/types";
 import { useChatEvents } from "../lib/useChatEvents";
@@ -89,7 +90,7 @@ function ChatIndex() {
               </div>
               <div className="text-xs text-faint">
                 {c.project_name ?? t("no_project")} ·{" "}
-                {new Date(c.updated_at).toLocaleString()}
+                {new Date(c.updated_at).toLocaleString(locale())}
                 {c.turn_running && ` · ${t("running")}`}
               </div>
             </Link>

@@ -214,7 +214,7 @@ const BTN: Record<BtnVariant, string> = {
   success:
     "bg-gradient-to-b from-emerald-600 to-emerald-700 text-white shadow-sm shadow-emerald-950/50 hover:from-emerald-500 hover:to-emerald-600",
   danger: "bg-red-700 text-white hover:bg-red-600",
-  ghost: "bg-panel2 text-fg hover:bg-edge hover:text-fg",
+  ghost: "bg-panel2 text-fg hover:bg-edge hover:text-white",
   subtle: "bg-transparent text-brand-400 hover:bg-brand-950/40 hover:text-brand-300",
 };
 
