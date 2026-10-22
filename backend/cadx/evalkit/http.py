@@ -119,13 +119,19 @@ class HttpDriver:
         j["error"] = f"eval timeout after {timeout_s}s"
         return j
 
-    async def download_artifact(self, url: str, dest_dir: Path) -> Path | None:
+    async def download_artifact(
+        self, url: str, dest_dir: Path, name: str | None = None
+    ) -> Path | None:
         try:
             r = await self._client.get(url if url.startswith("http") else f"{self.base}{url}")
             if r.status_code >= 400:
                 return None
             await asyncio.to_thread(dest_dir.mkdir, parents=True, exist_ok=True)
-            name = url.rstrip("/").rsplit("/", 1)[-1].split("?")[0] or uuid.uuid4().hex[:8]
+            name = (
+                name
+                or url.rstrip("/").rsplit("/", 1)[-1].split("?")[0]
+                or uuid.uuid4().hex[:8]
+            )
             dest = dest_dir / name
             await asyncio.to_thread(dest.write_bytes, r.content)
             return dest
@@ -257,7 +263,10 @@ class HttpDriver:
             adir = ctx.out_dir / "artifacts" / stage.id
             for a in detail.get("artifacts") or []:
                 if a.get("kind") in ("stl", "glb", "3mf", "obj", "step"):
-                    p = await self.download_artifact(str(a.get("url") or ""), adir)
+                    # every artifact url ends in /file — name by kind + basename
+                    # of the storage path or downloads overwrite each other
+                    fname = f"{a.get('kind')}_{Path(str(a.get('path') or 'f')).name}"
+                    p = await self.download_artifact(str(a.get("url") or ""), adir, fname)
                     if p:
                         artifact_files.append(str(p))
 

@@ -1,0 +1,89 @@
+{
+ "name": "helical_pinion_shaft",
+ "project": "eval:helical-pinion-shaft",
+ "difficulty": 2,
+ "description": "Short steel shaft with an 18-tooth helical gear (module 2, 20 deg helix) on the top end — mesh-geometry gates plus a bending FEM check.",
+ "settings": {
+  "gen_mode": "cad"
+ },
+ "stages": [
+  {
+   "id": "codegen",
+   "type": "generate",
+   "mode": "cad",
+   "timeout_s": 5400,
+   "prompt": "Steel pinion shaft, parametric.\n\nFrame: shaft axis along Z, bottom face on the XY plane (z = 0), centred in X and Y. mm.\n- Solid shaft dia 16, total length 50 (z = 0..50).\n- Helical gear on the top section (z = 38..50, face width 12): module 2, 18 teeth, helix angle ~20 deg. Pitch dia 36, tip dia 40, root dia 31.\n- The shaft section below the gear stays dia 16 and smooth.",
+   "gates": [
+    {
+     "type": "status",
+     "expect": ["succeeded", "needs_review"]
+    },
+    {
+     "type": "bbox",
+     "dims": [40, 40, 50],
+     "match": "match",
+     "tol_mm": 3
+    },
+    {
+     "type": "radial_peaks",
+     "count": 18,
+     "tol": 2,
+     "axis": "z"
+    },
+    {
+     "type": "contains_point",
+     "xyz": [0, 0, 20]
+    },
+    {
+     "type": "watertight",
+     "expect": true
+    },
+    {
+     "type": "verify_spec",
+     "expect": "PASS"
+    }
+   ]
+  },
+  {
+   "id": "fem",
+   "type": "fem",
+   "timeout_s": 1800,
+   "material": "steel",
+   "load_cases": [
+    {
+     "name": "gear_bending",
+     "fixed": [
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [0, 0, 3],
+       "diameter_mm": 14,
+       "margin_mm": 3
+      }
+     ],
+     "loads": [
+      {
+       "region": {
+        "kind": "face",
+        "axis": "+z",
+        "margin_mm": 2
+       },
+       "force_n": [400, 0, 0]
+      }
+     ]
+    }
+   ],
+   "gates": [
+    {
+     "type": "status",
+     "expect": ["succeeded"]
+    },
+    {
+     "type": "fem",
+     "field": "sf",
+     "min": 1.2
+    }
+   ]
+  }
+ ]
+}

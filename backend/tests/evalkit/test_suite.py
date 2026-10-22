@@ -20,8 +20,13 @@ from cadx.evalkit.suite import (
 
 def test_shipped_suite_loads_and_validates():
     cases = load_suite()
-    assert [c.name for c in cases] == ["l_bracket_rib", "sprocket_520_45t", "robot_arm_mount"]
-    assert [c.difficulty for c in cases] == [1, 2, 3]
+    assert [c.name for c in cases] == [
+        "l_bracket_rib",
+        "helical_pinion_shaft",
+        "sprocket_520_45t",
+        "robot_arm_mount",
+    ]
+    assert [c.difficulty for c in cases] == [1, 2, 2, 3]
     for c in cases:
         assert c.project.startswith("eval:")
         assert c.stages[0].type in ("generate", "meshgen")
@@ -102,6 +107,11 @@ def test_case_validator_rules(tmp_path):
 
 def test_suite_files_present():
     files = sorted(p.name for p in SUITE_DIR.glob("*.json"))
-    assert files == ["l_bracket_rib.json", "robot_arm_mount.json", "sprocket_520_45t.json"]
+    assert files == [
+        "helical_pinion_shaft.json",
+        "l_bracket_rib.json",
+        "robot_arm_mount.json",
+        "sprocket_520_45t.json",
+    ]
     for p in SUITE_DIR.glob("*.json"):
         json.loads(p.read_text(encoding="utf-8"))  # valid JSON

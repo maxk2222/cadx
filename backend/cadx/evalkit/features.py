@@ -71,15 +71,42 @@ async def ensure_features(outcome: StageOutcome) -> None:
         log.warning("eval.features.unavailable", version=outcome.version_id)
 
 
+_KIND_EXTS = {
+    "step": {".step", ".stp"},
+    "brep": {".brep"},
+    "stl": {".stl"},
+    "glb": {".glb", ".gltf"},
+    "3mf": {".3mf"},
+    "obj": {".obj"},
+}
+
+
 def _kind_path(outcome: StageOutcome, kinds: set[str]) -> Path | None:
-    """Resolve the first artifact of the given kinds to an existing file."""
+    """Resolve the first artifact of the given kinds to an existing file.
+
+    Order: downloaded artifact files (http driver, real extensions), then
+    storage-relative paths from the artifacts map (local driver), then the
+    repo data dir — ``Settings.data_dir`` is CWD-relative, so a driver run
+    from ``backend/`` resolves relpaths under ``backend/data`` and misses.
+    """
+    exts = {e for k in kinds for e in _KIND_EXTS.get(k, ())}
+    for f in outcome.artifact_files or []:
+        p = Path(f)
+        if p.suffix.lower() in exts and p.exists():
+            return p
     from cadx import storage
+    from cadx.evalkit.paths import REPO_ROOT
 
     for key, rel in (outcome.artifacts or {}).items():
-        if str(key).split("|", 1)[0] in kinds:
+        if str(key).split("|", 1)[0] not in kinds:
+            continue
+        try:
             p = storage.resolve(rel)
-            if p.exists():
-                return p
+        except ValueError:
+            p = None
+        for cand in (p, REPO_ROOT / "data" / str(rel)):
+            if cand is not None and cand.exists():
+                return cand
     return None
 
 
