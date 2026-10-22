@@ -204,6 +204,22 @@ export interface TopOptInfo {
   /** stored density field — enables resampling without a new SIMP run. */
   density_relpath?: string;
   density_threshold?: number;
+  /** export-verification hardening: worst-case SF over the eroded/
+   * nominal/dilated export-mask realizations (headline metric). */
+  sf_verified?: number;
+  /** per-realization export SF: {nominal, eroded, dilated} (null = unsolved). */
+  sf_realizations?: { nominal?: number | null; eroded?: number | null; dilated?: number | null };
+  /** half-pitch mesh-shift rerun diverged >20% — voxel-grid sensitivity. */
+  sf_mesh_sensitive?: boolean;
+  /** homogenized infill model: macro SF / member-scale micro SF. */
+  sf_homog?: number;
+  sf_micro?: number;
+  /** min-cut load-path certificate on the export solid. */
+  bottleneck_mm2?: number;
+  sf_floor?: number | null;
+  load_path_ok?: boolean;
+  /** achieved strut-direction alignment (deg; struts_aligned runs). */
+  strut_align_deg?: number;
   warnings?: string[];
 }
 
@@ -439,6 +455,12 @@ export interface OptimizeSpec {
   infill_alpha?: number;
   /** deterministic lattice phase (same seed + mesh = same part). */
   infill_seed?: number;
+  /** body-diagonal strut families for struts_aligned; omit = runtime default. */
+  infill_octet?: boolean;
+  /** export realizations + coverage-E; omit = runtime default. */
+  verify_robust?: boolean;
+  /** homogenized infill verification model; omit = runtime default. */
+  verify_homogenized?: boolean;
   note?: string;
 }
 

@@ -129,6 +129,7 @@ class ExecResult:
         self.verify_spec: dict[str, Any] | None = None
         self.fem: dict[str, Any] = {}
         self.fem_export: dict[str, Any] = {}
+        self.fem_homog: dict[str, Any] = {}
         self.topopt: dict[str, Any] = {}
         self.thread_count: int = 0
         self.bom: list[dict[str, Any]] = []
@@ -155,6 +156,7 @@ class ExecResult:
             "verify_spec": self.verify_spec,
             "fem": self.fem,
             "fem_export": self.fem_export,
+            "fem_homog": self.fem_homog,
             "topopt": self.topopt,
             "thread_count": self.thread_count,
             "bom": self.bom,
@@ -187,6 +189,7 @@ class ExecResult:
         r.verify_spec = d.get("verify_spec")
         r.fem = d.get("fem") or {}
         r.fem_export = d.get("fem_export") or {}
+        r.fem_homog = d.get("fem_homog") or {}
         r.topopt = d.get("topopt") or {}
         r.warnings = list(d.get("warnings") or [])
         r.geometry_at_failure = list(d.get("geometry_at_failure") or [])

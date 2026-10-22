@@ -593,6 +593,14 @@ class SettingsOut(BaseModel):
     fem_spsolve_dofs: int
     fem_solver_backend: str
     fem_max_effective_cases: int
+    fem_verify_realizations: bool
+    fem_verify_realization_cells: int
+    fem_verify_coverage_e: bool
+    fem_verify_mesh_shift: bool
+    fem_loadpath_cert: bool
+    fem_homogenized_infill: bool
+    fem_homog_cell_voxels: int
+    infill_octet: bool
     topopt_timeout_s: int
     topopt_max_iterations: int
     topopt_default_volfrac: float
@@ -721,6 +729,14 @@ class SettingsUpdate(BaseModel):
     fem_spsolve_dofs: int | None = Field(default=None, ge=1_000, le=5_000_000)
     fem_solver_backend: str | None = Field(default=None, max_length=20)
     fem_max_effective_cases: int | None = Field(default=None, ge=1, le=64)
+    fem_verify_realizations: bool | None = None
+    fem_verify_realization_cells: int | None = Field(default=None, ge=1, le=4)
+    fem_verify_coverage_e: bool | None = None
+    fem_verify_mesh_shift: bool | None = None
+    fem_loadpath_cert: bool | None = None
+    fem_homogenized_infill: bool | None = None
+    fem_homog_cell_voxels: int | None = Field(default=None, ge=8, le=48)
+    infill_octet: bool | None = None
     topopt_timeout_s: int | None = Field(default=None, ge=1, le=86_400)
     topopt_max_iterations: int | None = Field(default=None, ge=1, le=1000)
     topopt_default_volfrac: float | None = Field(default=None, gt=0, le=1)

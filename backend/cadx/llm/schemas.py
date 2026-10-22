@@ -430,6 +430,19 @@ class OptimizeSpec(BaseModel):
     infill_seed: int = Field(
         default=0, ge=0, le=2_147_483_647
     )  # deterministic lattice phase — same seed + same mesh = same part
+    infill_octet: bool | None = Field(
+        default=None
+    )  # body-diagonal strut families for struts_aligned (real 45° members
+    # instead of stair-stepped axes); None -> runtime default infill_octet
+    # verification hardening overrides — None follows the runtime settings:
+    verify_robust: bool | None = Field(
+        default=None
+    )  # export-mask realizations (eroded/nominal/dilated) + coverage-weighted
+    # boundary stiffness; None -> fem_verify_realizations/_coverage_e
+    verify_homogenized: bool | None = Field(
+        default=None
+    )  # homogenized C_H(rho) infill verification model alongside the
+    # resolved binary mask; None -> fem_homogenized_infill
     # post-optimization feature finishing (POST /versions/{id}/refine)
     auto_refine_features: bool = (
         False  # auto-enqueue feature re-cut (bores/threads/inserts) after optimize

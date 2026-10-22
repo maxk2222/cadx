@@ -199,6 +199,24 @@ class RuntimeSettings(BaseModel):
         default=8, ge=1, le=64
     )  # cap on load-case expansion (direction cones)
     fem_timeout_s: int = Field(default=600, ge=1, le=86_400)
+    # export-verification hardening (topopt/infill pipelines): realizations
+    # re-solve the export mask eroded/dilated and take the worst SF;
+    # coverage weights boundary-cell E by fill fraction; the min-cut
+    # certificate bounds SF from pure geometry. mesh_shift stays opt-in —
+    # a second full export FEM on a half-pitch-shifted grid is expensive.
+    fem_verify_realizations: bool = True
+    fem_verify_realization_cells: int = Field(default=1, ge=1, le=4)
+    fem_verify_coverage_e: bool = True
+    fem_verify_mesh_shift: bool = False
+    fem_loadpath_cert: bool = True
+    # homogenized infill model: verifies the intended density field with
+    # effective lattice tensors C_H(rho) next to the resolved binary mask
+    fem_homogenized_infill: bool = True
+    fem_homog_cell_voxels: int = Field(default=16, ge=8, le=48)
+    # octet strut families for infill_style="struts_aligned": body-diagonal
+    # families give 45°-dominated stress states real diagonal struts
+    # instead of stair-stepped axis members
+    infill_octet: bool = True
     topopt_timeout_s: int = Field(default=2700, ge=1, le=86_400)
     topopt_max_iterations: int = Field(default=80, ge=1, le=1000)
     topopt_default_volfrac: float = Field(default=0.4, gt=0, le=1)
@@ -362,6 +380,14 @@ _EXECUTOR_FIELDS = {
     "fem_spsolve_dofs",
     "fem_solver_backend",
     "fem_max_effective_cases",
+    "fem_verify_realizations",
+    "fem_verify_realization_cells",
+    "fem_verify_coverage_e",
+    "fem_verify_mesh_shift",
+    "fem_loadpath_cert",
+    "fem_homogenized_infill",
+    "fem_homog_cell_voxels",
+    "infill_octet",
     "topopt_default_volfrac",
     "topopt_default_rmin_mm",
     "topopt_max_iterations",
