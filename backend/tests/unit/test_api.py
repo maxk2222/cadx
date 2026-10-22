@@ -415,3 +415,69 @@ async def test_job_restart_params(client):
     nv = (await client.get(f"/api/versions/{r.json()['version_id']}")).json()
     assert nv["kind"] == "params" and nv["params"]["w"] == 20
     assert nv["parent_id"] == vid
+
+
+async def test_version_rename(client):
+    pid = (await client.post("/api/projects", json={"name": "rename"})).json()["id"]
+    r = await client.post(f"/api/projects/{pid}/generate", json={"prompt": "box"})
+    vid = r.json()["version_id"]
+
+    assert (await client.get(f"/api/versions/{vid}")).json()["name"] == ""
+
+    r = await client.patch(f"/api/versions/{vid}", json={"name": " mount plate v2 "})
+    assert r.status_code == 200
+    assert r.json()["name"] == "mount plate v2"  # trimmed
+
+    # the name surfaces in the project version tree too
+    tree = (await client.get(f"/api/projects/{pid}/versions")).json()
+    assert tree[0]["name"] == "mount plate v2"
+
+    # clearing works; unknown fields are rejected
+    r = await client.patch(f"/api/versions/{vid}", json={"name": ""})
+    assert r.json()["name"] == ""
+    r = await client.patch(f"/api/versions/{vid}", json={"prompt": "nope"})
+    assert r.status_code == 422
+    r = await client.patch(f"/api/versions/{uuid.uuid4()}", json={"name": "x"})
+    assert r.status_code == 404
+
+
+async def test_project_card_best_thumbnail(client):
+    """latest_thumbnail_url comes from the best-scoring succeeded version,
+    not blindly from the newest (which may be a failed, renderless rerun).
+    id/status still track the newest version so the live overlay works."""
+    from cadx.db.models import (
+        Artifact,
+        ArtifactKind,
+        Project,
+        Version,
+        VersionKind,
+        VersionStatus,
+    )
+    from cadx.db.session import session_scope
+
+    pid = (await client.post("/api/projects", json={"name": "cards"})).json()["id"]
+    async with session_scope() as s:
+        p = await s.get(Project, uuid.UUID(pid))
+        v1 = Version(
+            project_id=p.id,
+            number=1,
+            kind=VersionKind.generate,
+            prompt="good",
+            status=VersionStatus.succeeded,
+            score=92,
+        )
+        v2 = Version(
+            project_id=p.id,
+            number=2,
+            kind=VersionKind.edit,
+            prompt="broken rerun",
+            status=VersionStatus.failed,
+        )
+        s.add_all([v1, v2])
+        await s.flush()
+        s.add(Artifact(version_id=v1.id, kind=ArtifactKind.thumbnail, path="x/thumb.png"))
+        await s.commit()
+
+    prj = (await client.get(f"/api/projects/{pid}")).json()
+    assert prj["latest_version_status"] == "failed"  # newest version
+    assert prj["latest_thumbnail_url"].startswith("/api/artifacts/")  # v1's thumb

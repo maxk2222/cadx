@@ -25,14 +25,18 @@ import { useTitle } from "../lib/useTitle";
  *  image on each projects refetch. */
 function ProjectThumb({ p, tick }: { p: Project; tick: number }) {
   const [ok, setOk] = useState(false);
+  // thumbnail_url may point at the scan-based preview route which 404s when
+  // the version truly has no image files — fall back to the placeholder
+  const [badUrl, setBadUrl] = useState<string | null>(null);
   const live = !!p.running_version_id;
   return (
     <div className="relative flex h-32 items-center justify-center overflow-hidden bg-zinc-950">
-      {p.latest_thumbnail_url ? (
+      {p.latest_thumbnail_url && badUrl !== p.latest_thumbnail_url ? (
         <img
           src={p.latest_thumbnail_url}
           alt=""
           className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+          onError={() => setBadUrl(p.latest_thumbnail_url)}
         />
       ) : (
         <span className="text-xs text-zinc-700">no render yet</span>

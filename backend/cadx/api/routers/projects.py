@@ -31,21 +31,41 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 async def _latest_meta(
     project_id: uuid.UUID, db: AsyncSession
 ) -> tuple[uuid.UUID | None, VersionStatus | None, str | None]:
-    """(id, status, thumbnail url) of the highest-numbered version (project cards)."""
-    lv = await db.execute(
-        select(Version)
-        .where(Version.project_id == project_id)
-        .order_by(col(Version.number).desc())
-        .limit(1)
+    """(id, status, image url) for project cards.
+
+    id/status describe the highest-numbered version (drives the live overlay
+    via running_version_id); the image comes from the *best* version — the
+    highest-scoring succeeded/needs_review version, newest as tiebreak, else
+    the latest version — preferring its thumbnail, then a render, then the
+    scan-based preview route which also finds unregistered render files."""
+    rows = list(
+        (await db.execute(select(Version).where(Version.project_id == project_id))).scalars().all()
     )
-    v = lv.scalars().first()
-    if v is None:
+    if not rows:
         return None, None, None
-    t = await db.execute(
-        select(Artifact).where(Artifact.version_id == v.id, Artifact.kind == "thumbnail")
+    latest = max(rows, key=lambda v: v.number)
+    done = [v for v in rows if v.status in (VersionStatus.succeeded, VersionStatus.needs_review)]
+    best = (
+        max(done, key=lambda v: (v.score if v.score is not None else -1, v.number))
+        if done
+        else latest
     )
-    thumb = t.scalars().first()
-    return v.id, v.status, (f"/api/artifacts/{thumb.id}/file" if thumb else None)
+    arts = await db.execute(
+        select(Artifact).where(
+            Artifact.version_id == best.id,
+            col(Artifact.kind).in_(["thumbnail", "render", "contact_sheet"]),
+        )
+    )
+    rank = {"thumbnail": 0, "render": 1, "contact_sheet": 2}
+    picks = sorted(
+        arts.scalars().all(),
+        key=lambda a: (rank.get(str(a.kind), 3), 0 if a.view == "iso" else 1),
+    )
+    if picks:
+        return latest.id, latest.status, f"/api/artifacts/{picks[0].id}/file"
+    # no registered image artifacts — the preview endpoint still resolves
+    # render files on disk (unregistered iteration dirs etc.)
+    return latest.id, latest.status, f"/api/versions/{best.id}/preview"
 
 
 def _out(

@@ -20,6 +20,7 @@ const vs = (over: Partial<VersionSummary> = {}): VersionSummary => ({
   number: 1,
   kind: "generate",
   prompt: "a mounting bracket",
+  name: "",
   status: "succeeded",
   score: null,
   iterations: 1,

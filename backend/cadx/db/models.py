@@ -169,6 +169,7 @@ class Version(SQLModel, table=True):
     number: int
     kind: VersionKind
     prompt: str = ""
+    name: str = ""  # optional user-assigned label
     gen_mode: str = "auto"  # requested: auto | cad | mesh | hybrid | topopt
     resolved_mode: str | None = None  # effective: cad | mesh | hybrid | topopt
     options: dict[str, Any] = SField(default_factory=dict, sa_column=Column(JSON))

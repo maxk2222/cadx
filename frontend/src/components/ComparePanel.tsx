@@ -18,10 +18,11 @@ export function shortId(id: string): string {
   return id.slice(0, 8);
 }
 
-/** picker option label: "v3 · ab12cd34 · edit · make the wall thicker…" */
+/** picker option label: "v3 · mount plate · edit · make the wall thicker…" */
 export function versionLabel(o: VersionSummary, maxLen = 48): string {
   const prompt = o.prompt.trim().replace(/\s+/g, " ") || "(no prompt)";
-  return `v${o.number} · ${shortId(o.id)} · ${o.kind} · ${trunc(prompt, maxLen)}`;
+  const who = o.name || shortId(o.id);
+  return `v${o.number} · ${who} · ${o.kind} · ${trunc(prompt, maxLen)}`;
 }
 
 /** default compare target: the parent when it's in the list, else the

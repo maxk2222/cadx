@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { MessagesSquare, Pencil, Search, Sparkles, Trash2 } from "lucide-react";
+import { CircleDot, MessagesSquare, Pencil, Search, Sparkles, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import AssetManager from "../components/AssetManager";
@@ -20,10 +20,103 @@ import {
   useToast,
 } from "../components/ui";
 import { api, errMsg } from "../lib/api";
-import type { GenMode, RunOptions } from "../lib/types";
+import type { GenMode, RunOptions, VersionSummary } from "../lib/types";
 import { useTitle } from "../lib/useTitle";
 
 const GEN_MODES: GenMode[] = ["auto", "cad", "mesh", "hybrid", "topopt"];
+
+/** Version shown in the project hero render: the highest-scoring
+ *  succeeded/needs_review version (newest wins ties), else simply the
+ *  newest version so a first still-running/failed version still shows up. */
+export function pickShowcaseVersion(
+  versions: VersionSummary[]
+): VersionSummary | null {
+  if (!versions.length) return null;
+  const done = versions.filter(
+    (v) => v.status === "succeeded" || v.status === "needs_review"
+  );
+  const pool = done.length ? done : versions;
+  return pool.reduce((a, b) => {
+    const sa = a.score ?? -1;
+    const sb = b.score ?? -1;
+    return sb > sa || (sb === sa && b.number > a.number) ? b : a;
+  });
+}
+
+/** Hero card on the project page: render of the best version, overlaid with
+ *  the running version's live preview while a job is active (same pattern as
+ *  the project-card thumbnail). */
+function ProjectShowcase({
+  versions,
+  tick,
+}: {
+  versions: VersionSummary[];
+  tick: number;
+}) {
+  const [bad, setBad] = useState<string | null>(null);
+  const [liveOk, setLiveOk] = useState(false);
+  const showcase = pickShowcaseVersion(versions);
+  const running = versions.find(
+    (v) =>
+      !!v.active_job ||
+      ["queued", "running", "waiting_for_input"].includes(v.status)
+  );
+  const shown = running ?? showcase;
+  if (!shown) return null;
+  const baseSrc = showcase ? `${api.previewUrl(showcase.id)}?t=${tick}` : "";
+  return (
+    <Card className="overflow-hidden p-0">
+      <Link
+        to={
+          running?.active_job
+            ? `/versions/${running.id}?job=${running.active_job.id}`
+            : `/versions/${shown.id}`
+        }
+        title={`v${shown.number}${shown.name ? ` · ${shown.name}` : ""}`}
+        className="group relative block h-56 bg-zinc-950"
+      >
+        {baseSrc && bad !== baseSrc ? (
+          <img
+            key={baseSrc}
+            src={baseSrc}
+            alt=""
+            className="h-full w-full object-contain"
+            onError={() => setBad(baseSrc)}
+          />
+        ) : (
+          <span className="flex h-full items-center justify-center text-xs text-zinc-700">
+            no render yet
+          </span>
+        )}
+        {running && (
+          <>
+            <img
+              src={`${api.previewUrl(running.id)}?t=${tick}`}
+              alt=""
+              className={`absolute inset-0 h-full w-full object-contain transition-opacity duration-300 ${
+                liveOk ? "opacity-100" : "opacity-0"
+              }`}
+              onLoad={() => setLiveOk(true)}
+              onError={() => setLiveOk(false)}
+            />
+            <span className="absolute left-2 top-2 flex items-center gap-1 rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-brand-300">
+              <CircleDot className="h-3 w-3 animate-pulse" /> live
+            </span>
+          </>
+        )}
+        <span className="absolute inset-x-0 bottom-0 flex items-center gap-2 bg-gradient-to-t from-black/80 to-transparent px-3 pb-1.5 pt-6 text-xs text-zinc-300">
+          <span className="font-medium">v{shown.number}</span>
+          {shown.name && <span className="truncate">{shown.name}</span>}
+          <span className="ml-auto text-zinc-500">
+            {running
+              ? `live · ${running.status}`
+              : `${shown.status}${shown.score != null ? ` · score ${shown.score}` : ""}`}
+          </span>
+        </span>
+      </Link>
+    </Card>
+  );
+}
 
 export default function ProjectPage() {
   const { id = "" } = useParams<{ id: string }>();
@@ -136,7 +229,11 @@ export default function ProjectPage() {
     const list = versions.data ?? [];
     const needle = vq.trim().toLowerCase();
     if (!needle) return list;
-    return list.filter((v) => v.prompt.toLowerCase().includes(needle));
+    return list.filter(
+      (v) =>
+        v.prompt.toLowerCase().includes(needle) ||
+        v.name.toLowerCase().includes(needle)
+    );
   }, [versions.data, vq]);
 
   if (project.isLoading)
@@ -196,6 +293,11 @@ export default function ProjectPage() {
             </Btn>
           </div>
         </div>
+
+        <ProjectShowcase
+          versions={versions.data ?? []}
+          tick={versions.dataUpdatedAt}
+        />
 
         <Card className="p-4">
           <SectionTitle

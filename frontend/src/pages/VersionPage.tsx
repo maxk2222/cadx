@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, Clock, Cpu, FileBox, Gauge, GitCompareArrows, Layers, PencilRuler, Plus, RotateCcw, Shrink, Sprout, Trash2, TriangleAlert } from "lucide-react";
+import { Activity, Clock, Cpu, FileBox, Gauge, GitCompareArrows, Layers, Pencil, PencilRuler, Plus, RotateCcw, Shrink, Sprout, Trash2, TriangleAlert } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import AnchorsPanel from "../components/AnchorsPanel";
@@ -134,6 +134,8 @@ export default function VersionPage() {
   const [organicOpen, setOrganicOpen] = useState(false);
   const [compareOpen, setCompareOpen] = useState(false);
   const [otherId, setOtherId] = useState<string | null>(null);
+  const [nameEdit, setNameEdit] = useState(false);
+  const [nameDraft, setNameDraft] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
 
   const version = useQuery({
@@ -188,7 +190,9 @@ export default function VersionPage() {
     enabled: compareOpen && !!otherId,
   });
   useTitle(
-    version.data ? `v${version.data.number} · ${project.data?.name ?? ""}` : "Version"
+    version.data
+      ? `v${version.data.number}${version.data.name ? ` · ${version.data.name}` : ""} · ${project.data?.name ?? ""}`
+      : "Version"
   );
 
   // keep the streamed job in sync with the URL — navigating between versions
@@ -260,6 +264,15 @@ export default function VersionPage() {
     setOptimizeOpen(false);
     nav(`/versions/${r.version_id}?job=${r.job_id}`);
   };
+
+  const rename = useMutation({
+    mutationFn: (name: string) => api.updateVersion(id, { name }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["version", id] });
+      qc.invalidateQueries({ queryKey: ["versions", v?.project_id] });
+    },
+    onError: (e) => toast(errMsg(e), "error"),
+  });
 
   const del = useMutation({
     mutationFn: () => api.deleteVersion(id),
@@ -353,6 +366,7 @@ export default function VersionPage() {
               </Link>,
               <span key="v" className="font-medium text-zinc-200">
                 v{v.number}
+                {v.name ? ` · ${v.name}` : ""}
               </span>,
             ]}
           />
@@ -360,6 +374,40 @@ export default function VersionPage() {
 
         <div className="mb-2 flex flex-wrap items-center gap-2">
           <h1 className="text-xl font-bold">v{v.number}</h1>
+          {nameEdit ? (
+            <input
+              autoFocus
+              className={`${inputCls} w-64 py-0.5 text-sm`}
+              placeholder="version name…"
+              maxLength={200}
+              value={nameDraft}
+              onChange={(e) => setNameDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") e.currentTarget.blur();
+                if (e.key === "Escape") setNameEdit(false);
+              }}
+              onBlur={() => {
+                setNameEdit(false);
+                const name = nameDraft.trim();
+                if (name !== v.name) rename.mutate(name);
+              }}
+            />
+          ) : (
+            <button
+              type="button"
+              title="rename version"
+              onClick={() => {
+                setNameDraft(v.name);
+                setNameEdit(true);
+              }}
+              className="group flex items-center gap-1.5 rounded px-1.5 py-0.5 text-lg text-zinc-300 hover:bg-zinc-800"
+            >
+              {v.name || (
+                <span className="text-xs italic text-zinc-600">add name</span>
+              )}
+              <Pencil className="h-3 w-3 text-zinc-700 group-hover:text-zinc-400" />
+            </button>
+          )}
           <StatusBadge status={v.status} />
           <Chip tone="zinc" className="uppercase">{v.kind}</Chip>
           {(v.gen_mode || v.resolved_mode) && (

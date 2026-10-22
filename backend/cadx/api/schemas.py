@@ -418,6 +418,12 @@ class AnswerRequest(BaseModel):
     answers: list[AnswerItem]
 
 
+class VersionUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, max_length=200)
+
+
 class VersionSummary(BaseModel):
     id: uuid.UUID
     project_id: uuid.UUID
@@ -425,6 +431,7 @@ class VersionSummary(BaseModel):
     number: int
     kind: VersionKind
     prompt: str
+    name: str = ""
     status: VersionStatus
     score: int | None
     iterations: int

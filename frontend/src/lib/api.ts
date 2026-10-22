@@ -204,6 +204,8 @@ export const api = {
 
   listVersions: (pid: string) => req<VersionSummary[]>(`/projects/${pid}/versions`),
   getVersion: (id: string) => req<VersionDetail>(`/versions/${id}`),
+  updateVersion: (id: string, body: { name?: string }) =>
+    req<VersionDetail>(`/versions/${id}`, patch(body)),
   compareVersions: (vid: string, otherId: string) =>
     req<CompareResult>(`/versions/${vid}/compare/${otherId}`),
   previewUrl: (id: string, view?: string) =>

@@ -102,6 +102,9 @@ export default function VersionTree({
           <div className="min-w-0 flex-1">
             <div className="truncate">
               <span className="font-medium">v{v.number}</span>
+              {v.name && (
+                <span className="ml-1 font-medium text-zinc-300">{v.name}</span>
+              )}
               <span className="ml-1 text-zinc-400">{v.kind}</span>
               {v.resolved_mode && (
                 <span

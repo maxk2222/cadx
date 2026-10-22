@@ -98,6 +98,8 @@ export interface VersionSummary {
   number: number;
   kind: "generate" | "edit" | "params" | "optimize" | "refine" | "mesh_edit" | "organic";
   prompt: string;
+  /** optional user-assigned label ("" when unset) */
+  name: string;
   status: VersionStatus;
   score: number | null;
   iterations: number;

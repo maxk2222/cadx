@@ -33,6 +33,7 @@ from cadx.api.schemas import (
     TopoptResampleRequest,
     VersionDetail,
     VersionSummary,
+    VersionUpdate,
 )
 from cadx.db.models import (
     AgentTrace,
@@ -104,6 +105,7 @@ async def _summary(v: Version, db: AsyncSession, active_job: Job | None = None) 
         number=v.number,
         kind=v.kind,
         prompt=v.prompt,
+        name=v.name,
         status=v.status,
         score=v.score,
         iterations=v.iterations,
@@ -465,6 +467,20 @@ async def get_version(version_id: uuid.UUID, db: AsyncSession = Depends(get_sess
     v = await db.get(Version, version_id)
     if not v:
         raise HTTPException(404, "version not found")
+    return await _detail(v, db)
+
+
+@router.patch("/versions/{version_id}", response_model=VersionDetail)
+async def update_version(
+    version_id: uuid.UUID, body: VersionUpdate, db: AsyncSession = Depends(get_session)
+):
+    v = await db.get(Version, version_id)
+    if not v:
+        raise HTTPException(404, "version not found")
+    if body.name is not None:
+        v.name = body.name.strip()
+    await db.commit()
+    await db.refresh(v)
     return await _detail(v, db)
 
 
