@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
-from sqlalchemy import JSON, Column
+from sqlalchemy import JSON, Column, event, inspect
 from sqlmodel import Field as SField
 from sqlmodel import SQLModel
 
@@ -302,3 +302,36 @@ class LibraryPart(SQLModel, table=True):
     caption: str = ""
     source_version_id: uuid.UUID | None = None
     created_at: datetime = SField(default_factory=utcnow)
+
+
+# --------------------------------------------------------------------------- #
+# job lifecycle publishing — ONE chokepoint for every Job create/status change #
+# (spawn, worker transitions, cancel endpoint, MCP — current and future).     #
+# Fires inside the flush; the sync publish is ~0.3ms and failure-suppressed,  #
+# so a redis outage never breaks a commit and a rolled-back row can at worst  #
+# cost the client one extra refetch.                                          #
+# --------------------------------------------------------------------------- #
+
+
+def _job_lifecycle(job: Job) -> None:
+    from cadx.events import publish_lifecycle_sync
+
+    publish_lifecycle_sync(
+        job_id=str(job.id),
+        version_id=str(job.version_id),
+        status=job.status.value if isinstance(job.status, JobStatus) else str(job.status),
+        job_type=job.type.value if isinstance(job.type, JobType) else str(job.type),
+    )
+
+
+@event.listens_for(Job, "after_insert")
+def _job_after_insert(mapper: Any, connection: Any, job: Job) -> None:
+    _job_lifecycle(job)
+
+
+@event.listens_for(Job, "after_update")
+def _job_after_update(mapper: Any, connection: Any, job: Job) -> None:
+    # only real status transitions are lifecycle — progress/log/step writes on
+    # the same row are per-job stream material, not global-list changes
+    if inspect(job).attrs.status.history.has_changes():
+        _job_lifecycle(job)

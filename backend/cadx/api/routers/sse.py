@@ -102,3 +102,58 @@ async def job_events(job_id: str, db: AsyncSession = Depends(get_session)):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# --------------------------------------------------------------------------- #
+# global job lifecycle stream — drives the nav badge + status lists            #
+#                                                                              #
+# NOTE: the route lives in `jobs.py` (registered BEFORE `/jobs/{job_id}` so    #
+# 'events' isn't swallowed as a job id); the generator stays here with the     #
+# other SSE machinery.                                                         #
+# --------------------------------------------------------------------------- #
+
+
+def _jobs_payload(items: list) -> dict:
+    return {"items": [it.model_dump() for it in items]}
+
+
+def _active_sig(items: list) -> frozenset:
+    """(id, status) pairs — drift vs. last emit means a lifecycle event was
+    lost on the wire and the keepalive tick repairs it."""
+    return frozenset((str(it.id), str(it.status)) for it in items)
+
+
+async def jobs_lifecycle_stream(db: AsyncSession):
+    """Snapshot of currently-active jobs, then one `jobs` event per lifecycle
+    transition (create/status change — published by the Job model listener on
+    the `jobs:lifecycle` redis channel). The keepalive tick re-checks the DB:
+    a lost message re-emits the active list instead of pinning a stale view."""
+    from cadx.api.routers.jobs import job_list_items
+
+    client, ps = events.subscribe_jobs()
+    try:
+        await ps.subscribe(events.JOBS_CHANNEL)
+        items = await job_list_items(db, active=True, limit=100)
+        sig = _active_sig(items)
+        yield _fmt("jobs", _jobs_payload(items))
+        while True:
+            msg = await ps.get_message(ignore_subscribe_messages=True, timeout=_KEEPALIVE_S)
+            if msg and msg.get("data"):
+                try:
+                    data = json.loads(msg["data"])
+                except Exception:
+                    continue
+                yield _fmt(data.get("type", "event"), data)
+                items = await job_list_items(db, active=True, limit=100)
+                sig = _active_sig(items)
+                yield _fmt("jobs", _jobs_payload(items))
+            else:
+                yield ": keepalive\n\n"
+                items = await job_list_items(db, active=True, limit=100)
+                cur = _active_sig(items)
+                if cur != sig:
+                    sig = cur
+                    yield _fmt("jobs", _jobs_payload(items))
+    finally:
+        await ps.unsubscribe(events.JOBS_CHANNEL)
+        await client.aclose()

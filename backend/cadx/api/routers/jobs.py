@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
@@ -42,6 +43,20 @@ def _out(j: Job) -> JobOut:
     )
 
 
+@router.get("/jobs/events")
+async def jobs_events(db: AsyncSession = Depends(get_session)):
+    """Global job-lifecycle SSE — snapshot of active jobs, then one `jobs`
+    event per create/status transition. MUST register before `/jobs/{job_id}`
+    or 'events' is parsed as a job id."""
+    from cadx.api.routers.sse import jobs_lifecycle_stream
+
+    return StreamingResponse(
+        jobs_lifecycle_stream(db),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @router.get("/jobs/{job_id}", response_model=JobOut)
 async def get_job(job_id: uuid.UUID, db: AsyncSession = Depends(get_session)):
     j = await db.get(Job, job_id)
@@ -50,14 +65,11 @@ async def get_job(job_id: uuid.UUID, db: AsyncSession = Depends(get_session)):
     return _out(j)
 
 
-@router.get("/jobs", response_model=list[JobListItem])
-async def list_jobs(
-    active: bool = False,
-    limit: int = 200,
-    db: AsyncSession = Depends(get_session),
-):
-    """Global job list for the Jobs page — newest first, optionally only
-    non-terminal (queued/running/waiting_for_input) jobs."""
+async def job_list_items(
+    db: AsyncSession, *, active: bool = False, limit: int = 200
+) -> list[JobListItem]:
+    """Shared JobListItem query — the REST list and the `/jobs/events`
+    SSE snapshot emit identical rows."""
     q = (
         select(Job, Version, Project)
         .join(Version, Job.version_id == Version.id)
@@ -85,6 +97,17 @@ async def list_jobs(
             )
         )
     return out
+
+
+@router.get("/jobs", response_model=list[JobListItem])
+async def list_jobs(
+    active: bool = False,
+    limit: int = 200,
+    db: AsyncSession = Depends(get_session),
+):
+    """Global job list for the Jobs page — newest first, optionally only
+    non-terminal (queued/running/waiting_for_input) jobs."""
+    return await job_list_items(db, active=active, limit=limit)
 
 
 @router.get("/versions/{version_id}/jobs", response_model=list[JobOut])
