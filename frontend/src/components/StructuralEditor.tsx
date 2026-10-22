@@ -51,7 +51,7 @@ import {
 import ModelCanvas, { type PickInfo } from "./editor/ModelCanvas";
 import RegionFill, { type RegionFillEntry } from "./editor/RegionFill";
 import { MATERIAL_OPTIONS } from "./OptionsPanel";
-import { Btn, Chip, Field, IconBtn, inputCls, NumInput, useToast } from "./ui";
+import { Btn, Chip, Field, IconBtn, inputCls, NumInput, OpacitySlider, useToast } from "./ui";
 
 /* ------------------------------------------------------------------ */
 /* model                                                               */
@@ -909,6 +909,7 @@ export default function StructuralEditor({
   const [material, setMaterial] = useState("");
   const [anchors, setAnchors] = useState<FeatureAnchor[]>([]);
   const [brushR, setBrushR] = useState(4);
+  const [opacity, setOpacity] = useState(1);
   const [mode, setMode] = useState<Mode>("paint");
   const [target, setTarget] = useState<PaintTarget>(null);
   const [centerPick, setCenterPick] = useState<Exclude<PaintTarget, null> | null>(null);
@@ -1856,6 +1857,7 @@ export default function StructuralEditor({
           />
           <span className="w-10 tabular-nums">{brushR} mm</span>
         </label>
+        <OpacitySlider value={opacity} onChange={setOpacity} />
         <IconBtn title="close (Esc)" onClick={onClose}>
           <X className="h-4 w-4" />
         </IconBtn>
@@ -1867,6 +1869,7 @@ export default function StructuralEditor({
           {glb ? (
             <ModelCanvas
               url={glb.url}
+              opacity={opacity}
               pickEnabled={!!target || !!centerPick || !!featureTarget}
               onPick={onPick}
               onHover={handleHover}

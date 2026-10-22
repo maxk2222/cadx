@@ -1,4 +1,4 @@
-import { Check, CheckCircle2, ChevronDown, Copy, Info, Loader2, X, XCircle } from "lucide-react";
+import { Check, CheckCircle2, ChevronDown, Copy, Ghost, Info, Loader2, X, XCircle } from "lucide-react";
 import {
   createContext,
   useCallback,
@@ -193,6 +193,38 @@ export function IconBtn({
     >
       {children}
     </button>
+  );
+}
+
+
+/** compact model-transparency slider for the 3D viewers' toolbars —
+ *  value 0.1–1; 1 = opaque */
+export function OpacitySlider({
+  value,
+  onChange,
+  className = "",
+}: {
+  value: number;
+  onChange: (v: number) => void;
+  className?: string;
+}) {
+  return (
+    <label
+      title="model opacity — drag left for an x-ray view"
+      className={`flex items-center gap-1.5 rounded-md bg-zinc-900/80 px-2 py-1 text-xs text-zinc-400 backdrop-blur ${className}`}
+    >
+      <Ghost className="h-3.5 w-3.5" />
+      <input
+        type="range"
+        min={0.1}
+        max={1}
+        step={0.05}
+        className="w-24 accent-brand-500"
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+      />
+      <span className="w-8 tabular-nums text-zinc-500">{Math.round(value * 100)}%</span>
+    </label>
   );
 }
 

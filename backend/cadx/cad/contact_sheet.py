@@ -2,11 +2,23 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-ORDER = ["front", "top", "right", "iso", "back", "bottom", "left"]
+# opaque views first, then the translucent xray tiles (render.py GHOST_VIEWS)
+ORDER = [
+    "front",
+    "top",
+    "right",
+    "iso",
+    "back",
+    "bottom",
+    "left",
+    "iso_ghost",
+    "front_ghost",
+]
 TILE = 512
 COLS = 4
 
@@ -18,7 +30,7 @@ def make_contact_sheet(
     if not tiles:
         return None
 
-    rows = 2
+    rows = math.ceil((len(ORDER) + 1) / COLS)
     sheet = Image.new("RGB", (COLS * TILE, rows * TILE), "white")
     draw = ImageDraw.Draw(sheet)
 

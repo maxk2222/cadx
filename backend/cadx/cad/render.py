@@ -12,7 +12,22 @@ from pathlib import Path
 os.environ.setdefault("PYVISTA_OFF_SCREEN", "true")
 
 VIEWS = ["front", "back", "left", "right", "top", "bottom", "iso"]
+
+# extra translucent "xray" shots appended after the opaque views — the
+# critique's contact sheet gains tiles that reveal interior geometry
+# (holes, cavities) without degrading the crisp opaque silhouette views
+GHOST_VIEWS = ("iso", "front")
+GHOST_SUFFIX = "_ghost"
+
 _RENDER_OK: bool | None = None
+
+
+def _ghost_opacity() -> float:
+    """CADX_RENDER_GHOST_OPACITY (default 0.55); 0 or >=1 disables ghost shots."""
+    try:
+        return float(os.environ.get("CADX_RENDER_GHOST_OPACITY", "0.55"))
+    except ValueError:
+        return 0.55
 
 
 def render_available() -> bool:
@@ -73,12 +88,19 @@ def render_views(
     pl = pv.Plotter(off_screen=True, window_size=(size, size))
     try:
         pl.set_background("white")
-        pl.add_mesh(mesh, color="#9aa3ad", smooth_shading=True, split_sharp_edges=True)
+        actor = pl.add_mesh(mesh, color="#9aa3ad", smooth_shading=True, split_sharp_edges=True)
         if edges.n_points:
             pl.add_mesh(edges, color="#222222", line_width=1.5)
         pl.add_mesh(outline, color="#888888", line_width=2)
         pl.add_axes(color="black")
-        for view in VIEWS:
+        ghost = _ghost_opacity()
+        shots: list[tuple[str, float, str]] = [(v, 1.0, "") for v in VIEWS]
+        if 0.0 < ghost < 1.0:
+            # edges + outline stay opaque — translucent faces over crisp
+            # feature edges reads as a proper x-ray view
+            shots += [(v, ghost, GHOST_SUFFIX) for v in GHOST_VIEWS]
+        for view, opacity, suffix in shots:
+            actor.prop.opacity = opacity
             if view == "iso":
                 pl.camera_position = "iso"
             else:
@@ -93,13 +115,14 @@ def render_views(
                 pl.camera.parallel_projection = True
             pl.reset_camera()
             pl.camera.zoom(1.15)
+            tag = " (xray)" if suffix else ""
             label = pl.add_text(
-                f"{view}  -  {title}", position="upper_edge", font_size=14, color="black"
+                f"{view}{tag}  -  {title}", position="upper_edge", font_size=14, color="black"
             )
-            out = out_dir / f"{view}.png"
+            out = out_dir / f"{view}{suffix}.png"
             pl.screenshot(str(out))
             pl.remove_actor(label)
-            results[view] = out
+            results[f"{view}{suffix}"] = out
     finally:
         pl.close()
     return results

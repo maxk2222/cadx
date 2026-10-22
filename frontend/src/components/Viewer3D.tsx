@@ -17,7 +17,7 @@ import ModelCanvas, {
   type PickInfo,
   type ViewPreset,
 } from "./editor/ModelCanvas";
-import { IconBtn } from "./ui";
+import { IconBtn, OpacitySlider } from "./ui";
 
 /** surface marker sphere in displayed-model mm space — same look as
  *  EditPage's measure/drill pins */
@@ -33,6 +33,7 @@ function Marker({ p, color = "#f59e0b" }: { p: Pt3; color?: string }) {
 export default function Viewer3D({ url }: { url: string | null }) {
   const [autoRotate, setAutoRotate] = useState(false);
   const [wireframe, setWireframe] = useState(false);
+  const [opacity, setOpacity] = useState(1);
   const [grid, setGrid] = useState(true);
   const [fullscreen, setFullscreen] = useState(false);
   const [viewCmd, setViewCmd] = useState<{ view: ViewPreset; n: number }>({ view: "iso", n: 0 });
@@ -123,6 +124,7 @@ export default function Viewer3D({ url }: { url: string | null }) {
         url={url}
         autoRotate={autoRotate}
         wireframe={wireframe}
+        opacity={opacity}
         grid={grid}
         viewCmd={viewCmd}
         fitKey={fitKey}
@@ -165,7 +167,8 @@ export default function Viewer3D({ url }: { url: string | null }) {
       </div>
 
       {/* toolbar */}
-      <div className="absolute right-2 top-2 flex gap-1">
+      <div className="absolute right-2 top-2 flex flex-wrap justify-end gap-1">
+        <OpacitySlider value={opacity} onChange={setOpacity} />
         {toolBtn("fit / reset view", false, () => setFitKey((k) => k + 1), <Scan className="h-4 w-4" />)}
         {toolBtn("auto-rotate", autoRotate, () => setAutoRotate((v) => !v), <RotateCw className="h-4 w-4" />)}
         {toolBtn("wireframe", wireframe, () => setWireframe((v) => !v), <Boxes className="h-4 w-4" />)}

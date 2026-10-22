@@ -17,6 +17,8 @@ export const VIEW_PREFER = [
   "left",
   "right",
   "bottom",
+  "iso_ghost",
+  "front_ghost",
 ] as const;
 
 export const isFemView = (v: string) => v.startsWith("fem:");

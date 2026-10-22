@@ -26,7 +26,7 @@ import type {
 import { AnchorMarker, anchorMouth } from "./editor/anchors";
 import ModelCanvas, { type PickInfo } from "./editor/ModelCanvas";
 import RegionFill, { type RegionFillEntry } from "./editor/RegionFill";
-import { Btn, Chip, Field, IconBtn, inputCls, useToast } from "./ui";
+import { Btn, Chip, Field, IconBtn, inputCls, OpacitySlider, useToast } from "./ui";
 
 /* ------------------------------------------------------------------ */
 /* Pseudo-topology "organic" restyle — parameter editor with a live    */
@@ -127,6 +127,7 @@ export default function OrganicEditor({
   /* --- painting ----------------------------------------------------- */
   const [brushMode, setBrushMode] = useState<BrushMode | null>(null);
   const [brushR, setBrushR] = useState(4.0);
+  const [opacity, setOpacity] = useState(1);
   const [model, setModel] = useState<import("three").Group | null>(null);
   const [fillsCapped, setFillsCapped] = useState(false);
   const [hover, setHover] = useState<PickInfo | null>(null);
@@ -409,6 +410,7 @@ export default function OrganicEditor({
             <Loader2 className="h-3 w-3 animate-spin" /> preview…
           </Chip>
         )}
+        <OpacitySlider value={opacity} onChange={setOpacity} />
         <IconBtn title="close (Esc)" onClick={onClose}>
           <X className="h-4 w-4" />
         </IconBtn>
@@ -420,6 +422,7 @@ export default function OrganicEditor({
           {displayUrl ? (
             <ModelCanvas
               url={displayUrl}
+              opacity={opacity}
               pickEnabled={!!brushMode}
               onPick={onPick}
               onHover={setHover}

@@ -63,9 +63,45 @@ def test_render_views(shape, tmp_path):
         pytest.skip("offscreen rendering unavailable")
     stl = quick_stl(shape, tmp_path / "r", name="mesh")
     renders = render_views(stl, tmp_path / "r", [100.0, 60.0, 8.0], size=256)
-    assert len(renders) == 7
+    assert set(renders) == {
+        "front",
+        "back",
+        "left",
+        "right",
+        "top",
+        "bottom",
+        "iso",
+        "iso_ghost",
+        "front_ghost",
+    }
     for p in renders.values():
         assert p.exists() and p.stat().st_size > 1000
+
+
+@pytest.mark.render
+def test_render_views_ghost_disabled(shape, tmp_path, monkeypatch):
+    monkeypatch.setenv("CADX_RENDER_GHOST_OPACITY", "0")
+    if not render_available():
+        pytest.skip("offscreen rendering unavailable")
+    stl = quick_stl(shape, tmp_path / "r", name="mesh")
+    renders = render_views(stl, tmp_path / "r", [100.0, 60.0, 8.0], size=256)
+    assert len(renders) == 7
+    assert not any(k.endswith("_ghost") for k in renders)
+
+
+@pytest.mark.render
+def test_render_ghost_view_shows_interior(shape, tmp_path):
+    """The xray tile must differ from the opaque render — translucent faces
+    expose interior shading the opaque iso hides."""
+    if not render_available():
+        pytest.skip("offscreen rendering unavailable")
+    stl = quick_stl(shape, tmp_path / "r", name="mesh")
+    renders = render_views(stl, tmp_path / "r", [100.0, 60.0, 8.0], size=256)
+    from PIL import Image
+
+    iso = np.asarray(Image.open(renders["iso"]).convert("L"), dtype=np.int16)
+    ghost = np.asarray(Image.open(renders["iso_ghost"]).convert("L"), dtype=np.int16)
+    assert float(np.abs(iso - ghost).mean()) > 0.5
 
 
 @pytest.mark.render

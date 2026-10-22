@@ -23,6 +23,7 @@ import {
   EmptyState,
   IconBtn,
   Modal,
+  OpacitySlider,
   SectionTitle,
   Spinner,
   inputCls,
@@ -269,6 +270,7 @@ function PartsSection() {
 /* ---------- part detail / preview ---------- */
 
 function PartPreview({ part }: { part: LibraryPart }) {
+  const [opacity, setOpacity] = useState(1);
   const needSource = part.kind !== "stl" && !!part.source_version_id;
   const src = useQuery({
     queryKey: ["version", part.source_version_id],
@@ -279,9 +281,23 @@ function PartPreview({ part }: { part: LibraryPart }) {
   });
   const glb = src.data?.artifacts.find((a) => a.kind === "glb");
 
-  if (part.kind === "stl" && part.url)
-    return <ModelCanvas url={part.url} format="stl" />;
-  if (glb) return <ModelCanvas url={glb.url} />;
+  const canvas =
+    part.kind === "stl" && part.url ? (
+      <ModelCanvas url={part.url} format="stl" opacity={opacity} />
+    ) : glb ? (
+      <ModelCanvas url={glb.url} opacity={opacity} />
+    ) : null;
+  if (canvas)
+    return (
+      <div className="relative h-full w-full">
+        {canvas}
+        <OpacitySlider
+          value={opacity}
+          onChange={setOpacity}
+          className="absolute bottom-2 right-2"
+        />
+      </div>
+    );
   if (needSource && src.isLoading)
     return (
       <div className="flex h-full items-center justify-center text-zinc-500">

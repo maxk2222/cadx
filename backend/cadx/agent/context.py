@@ -466,7 +466,15 @@ def renders_block(
             }
         )
     if contact_sheet is not None and contact_sheet.exists():
-        parts.append({"type": "text", "text": "CONTACT SHEET of the generated model:"})
+        parts.append(
+            {
+                "type": "text",
+                "text": (
+                    "CONTACT SHEET of the generated model (tiles labelled 'xray' "
+                    "are translucent views that reveal internal features/holes):"
+                ),
+            }
+        )
         try:
             parts.append(image_part(contact_sheet))
         except Exception:

@@ -40,6 +40,16 @@ describe("sortViews", () => {
       "fem:regions_a",
     ]);
   });
+  it("sorts ghost views after the opaque views, before fem", () => {
+    const views = ["front_ghost", "iso", "fem:vonmises_a", "iso_ghost", "front"];
+    expect(sortViews(views)).toEqual([
+      "iso",
+      "front",
+      "iso_ghost",
+      "front_ghost",
+      "fem:vonmises_a",
+    ]);
+  });
 });
 
 describe("isFemView / viewLabel", () => {

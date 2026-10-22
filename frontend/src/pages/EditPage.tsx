@@ -27,6 +27,7 @@ import {
   Field,
   IconBtn,
   NumInput,
+  OpacitySlider,
   SectionTitle,
   Skeleton,
   inputCls,
@@ -406,6 +407,7 @@ export default function EditPage() {
   const [viewCmd] = useState<{ view: ViewPreset; n: number }>({ view: "iso", n: 0 });
   const [fitKey, setFitKey] = useState(0);
   const [grid, setGrid] = useState(true);
+  const [opacity, setOpacity] = useState(1);
   const [autoPreview, setAutoPreview] = useState(true);
   const [editIdx, setEditIdx] = useState<number | null>(null);
 
@@ -690,6 +692,7 @@ export default function EditPage() {
         <Btn variant="ghost" onClick={() => setGrid((g) => !g)} title="toggle grid">
           grid
         </Btn>
+        <OpacitySlider value={opacity} onChange={setOpacity} />
         <label className="flex items-center gap-1.5 text-xs text-zinc-500" title="debounced server preview after stack changes">
           <input
             type="checkbox"
@@ -725,6 +728,7 @@ export default function EditPage() {
             <ModelCanvas
               url={displayUrl}
               grid={grid}
+              opacity={opacity}
               viewCmd={viewCmd}
               fitKey={fitKey}
               pickEnabled={!!pickMode}

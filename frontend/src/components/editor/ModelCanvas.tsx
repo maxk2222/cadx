@@ -21,6 +21,7 @@ import {
 import * as THREE from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { STLLoader } from "three-stdlib";
+import { applyModelOpacity } from "../../lib/modelOpacity";
 
 export type ViewPreset = "iso" | "front" | "top" | "side";
 
@@ -83,6 +84,29 @@ function Wireframe({ on, model }: { on: boolean; model: RefObject<THREE.Group | 
     });
     invalidate(); // material flag mutation is invisible to the reconciler
   }, [on, model, invalidate]);
+  return null;
+}
+
+/** x-ray slider: mutates only materials inside the pick frame (frameRef) —
+ *  overlay children (markers, gizmos, ghost planes) keep their own
+ *  opacities. `url` in deps re-applies after the model reloads. NOTE:
+ *  materials of the same url are shared via the loader cache, so two
+ *  canvases showing the same model (compare view) mirror each other's
+ *  opacity — same quirk as Wireframe above. */
+function ModelOpacity({
+  value,
+  url,
+  frame,
+}: {
+  value: number;
+  url: string;
+  frame: RefObject<THREE.Group | null>;
+}) {
+  const invalidate = useThree((s) => s.invalidate);
+  useEffect(() => {
+    if (frame.current) applyModelOpacity(frame.current, value);
+    invalidate();
+  }, [value, url, frame, invalidate]);
   return null;
 }
 
@@ -190,6 +214,7 @@ export default function ModelCanvas({
   format = "glb",
   autoRotate = false,
   wireframe = false,
+  opacity = 1,
   grid = true,
   viewCmd,
   fitKey = 0,
@@ -207,6 +232,9 @@ export default function ModelCanvas({
   format?: "glb" | "stl";
   autoRotate?: boolean;
   wireframe?: boolean;
+  /** model transparency 0..1 — <1 renders the part as an x-ray (interior
+   *  geometry visible); overlays keep their own opacities */
+  opacity?: number;
   grid?: boolean;
   viewCmd?: { view: ViewPreset; n: number };
   fitKey?: number;
@@ -341,7 +369,7 @@ export default function ModelCanvas({
       style={{ cursor: pickEnabled ? "crosshair" : undefined }}
     >
       <color attach="background" args={["#18181b"]} />
-      <InvalidateOn deps={[url, format, wireframe, grid, matrix, children, viewCmd, autoRotate]} />
+      <InvalidateOn deps={[url, format, wireframe, opacity, grid, matrix, children, viewCmd, autoRotate]} />
       <Suspense
         fallback={
           <Html center>
@@ -409,6 +437,7 @@ export default function ModelCanvas({
       {grid && <gridHelper args={[200, 40, "#3f3f46", "#27272a"]} position={[0, -0.01, 0]} />}
       {viewCmd && <CameraRig cmd={viewCmd} model={modelRef} controls={controlsRef} />}
       <Wireframe on={wireframe} model={modelRef} />
+      <ModelOpacity value={opacity} url={url} frame={frameRef} />
       {glRef && <GlCapture glRef={glRef} />}
     </Canvas>
   );
