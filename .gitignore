@@ -19,3 +19,5 @@ logs/
 evals/results/
 evals/reports/
 evals/scratch/
+evals/pydeps/
+evals/*.log

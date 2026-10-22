@@ -10,12 +10,13 @@
       "type": "generate",
       "mode": "cad",
       "timeout_s": 5400,
-      "prompt": "Mounting bracket for a robot-arm joint (aluminium 6061), parametric — it will be topology-optimized afterwards.\n\nFrame: base plate on the XY plane, centred at origin; mm units.\n- Base plate 100 (X) x 80 (Y) x 10 (Z) mm.\n- Four M8 clearance holes dia 8.5 mm at (x=+/-42, y=+/-32), through Z.\n- Raised bearing boss on the plate top face: cylinder dia 25 mm, 15 mm tall, centred at origin, with a dia 12 mm through-bore along Z.\n- Opposing connection face: a 30 (X) x 40 (Y) x 8 (Z) flange plate standing at the +X edge of the base plate, with two dia 6.5 mm holes along X.\n- Branching reinforcement ribs on the plate top connecting the boss, the mounting-hole pads and the connection face — organic merged ribs, wall thickness >= 3 mm.\nSymmetric in Y. Mechanically loadable: the four corner holes take the mounting bolts, the bearing bore takes the radial joint load.\nDeclare load case: all four corner holes fixed; 600 N bearing load in -Z on the bore wall.",
+      "prompt": "Mounting bracket for a robot-arm joint (aluminium 6061), fully parametric. The part feeds a later topology-optimization pass, so build it as one clean watertight solid with exactly the interfaces listed.\n\nFrame: bottom face of the base plate lies on the XY plane (z = 0); the part is centred on the origin in X and Y. mm units.\n\n- Base plate: 100 (X) x 80 (Y) x 10 thick, spanning x = -50..+50, y = -40..+40, z = 0..10.\n- Four M8 clearance holes dia 8.5 mm through the base plate along Z at (x=+42, y=+32), (x=+42, y=-32), (x=-42, y=+32), (x=-42, y=-32) — the mounting bolt holes.\n- Bearing boss: cylinder dia 25 mm x 15 mm tall standing on the base top face, centred on the origin (z = 10..25); a dia 12 mm through-bore along Z passes through boss and plate — the radial joint bearing seat.\n- Connection flange: vertical wall standing on the base top face at the +X edge — 8 mm thick in X (x = +42..+50), 40 mm wide in Y (centred, y = -20..+20), 30 mm tall (z = 10..40); two dia 6.5 mm through-holes along X at (y=+12, z=+25) and (y=-12, z=+25).\n- One gusset rib: 5 mm thick plate centred on the XZ mid-plane (y = 0), joining the boss, the base top face and the flange's -X face.\n- Fillets: r = 2 mm where the boss and the flange meet the base plate.\nSymmetric about the XZ mid-plane. Expose all key dimensions as named parameters.",
       "gates": [
         { "type": "status", "expect": ["succeeded", "needs_review"] },
         { "type": "bbox", "dims": [100, 80, 40], "match": "within", "tol_mm": 4 },
         { "type": "holes", "count": 4, "dia": 8.5, "axis": "z", "positions": [[42, 32], [42, -32], [-42, 32], [-42, -32]] },
         { "type": "holes", "count": 1, "dia": 12, "axis": "z" },
+        { "type": "holes", "count": 2, "dia": 6.5, "axis": "x" },
         { "type": "watertight", "expect": true },
         { "type": "verify_spec", "expect": "PASS" }
       ]
@@ -29,16 +30,15 @@
         {
           "name": "joint_radial",
           "fixed": [
-            { "kind": "hole", "hole_index": 1 },
-            { "kind": "hole", "hole_index": 2 },
-            { "kind": "hole", "hole_index": 3 },
-            { "kind": "hole", "hole_index": 4 }
+            { "kind": "cylinder", "axis": "z", "center": [42, 32, 5], "diameter_mm": 14, "margin_mm": 2 },
+            { "kind": "cylinder", "axis": "z", "center": [42, -32, 5], "diameter_mm": 14, "margin_mm": 2 },
+            { "kind": "cylinder", "axis": "z", "center": [-42, 32, 5], "diameter_mm": 14, "margin_mm": 2 },
+            { "kind": "cylinder", "axis": "z", "center": [-42, -32, 5], "diameter_mm": 14, "margin_mm": 2 }
           ],
           "loads": [
             {
-              "region": { "kind": "bore", "center": [0, 0, 20], "diameter_mm": 12 },
-              "bearing_n": 600,
-              "bearing_dir": [0, 0, -1]
+              "region": { "kind": "cylinder", "axis": "z", "center": [0, 0, 15], "diameter_mm": 14, "margin_mm": 2 },
+              "force_n": [0, 0, -600]
             }
           ]
         }
@@ -66,23 +66,22 @@
         {
           "name": "joint_radial",
           "fixed": [
-            { "kind": "hole", "hole_index": 1 },
-            { "kind": "hole", "hole_index": 2 },
-            { "kind": "hole", "hole_index": 3 },
-            { "kind": "hole", "hole_index": 4 }
+            { "kind": "cylinder", "axis": "z", "center": [42, 32, 5], "diameter_mm": 14, "margin_mm": 2 },
+            { "kind": "cylinder", "axis": "z", "center": [42, -32, 5], "diameter_mm": 14, "margin_mm": 2 },
+            { "kind": "cylinder", "axis": "z", "center": [-42, 32, 5], "diameter_mm": 14, "margin_mm": 2 },
+            { "kind": "cylinder", "axis": "z", "center": [-42, -32, 5], "diameter_mm": 14, "margin_mm": 2 }
           ],
           "loads": [
             {
-              "region": { "kind": "bore", "center": [0, 0, 20], "diameter_mm": 12 },
-              "bearing_n": 600,
-              "bearing_dir": [0, 0, -1]
+              "region": { "kind": "cylinder", "axis": "z", "center": [0, 0, 15], "diameter_mm": 14, "margin_mm": 2 },
+              "force_n": [0, 0, -600]
             }
           ]
         }
       ],
       "gates": [
         { "type": "status", "expect": ["succeeded", "needs_review"] },
-        { "type": "topopt", "field": "sf_export", "min": 1.5 },
+        { "type": "topopt", "field": "sf_verified", "min": 1.5 },
         { "type": "volfrac", "min": 0.35, "max": 0.65 },
         { "type": "bodies", "max": 1 },
         { "type": "envelope_within", "dims": [100, 80, 40], "tol_mm": 4 },

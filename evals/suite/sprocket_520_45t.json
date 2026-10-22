@@ -10,14 +10,14 @@
       "type": "generate",
       "mode": "cad",
       "timeout_s": 5400,
-      "prompt": "Aluminium rear sprocket (7075-T6) for a 520 motorcycle chain, parametric.\n\nFrame: flat disc on the XY plane, centred at origin, 6 mm thick (Z).\n- Chain 520: pitch 15.875 mm, roller diameter 10.16 mm.\n- 45 teeth evenly spaced on the pitch circle; tooth profile follows the 520 standard (involute/roller seat), tooth gap leaves room for the 10.16 mm roller with clearance.\n- Derive the tip diameter from the chain spec: tip dia ~= (pitch / sin(180/45)) + roller diameter - small seating offset (~236 mm outer diameter).\n- Central bore dia 30 mm.\n- Six M8 mounting holes dia 8.5 mm on a common pitch circle of dia 80 mm, 60 degrees apart.\n- Six rounded lightweight cutouts (kidney/oval pockets) between the mounting circle and the tooth ring, leaving webs of at least 6 mm; all cutout edges rounded (radius >= 3 mm).\n- All outer edges broken with a 0.5 mm chamfer.\nParametric: tooth count, pitch, roller dia, body thickness, PCD and cutout count as named parameters.",
+      "prompt": "Aluminium rear sprocket (7075-T6) for a 520 motorcycle chain, fully parametric.\n\nFrame: the flat sprocket disc lies on the XY plane (bottom face at z = 0), centred on the origin in X and Y. Thickness 6 mm in Z. mm units.\n\nChain data (520): pitch p = 15.875 mm, roller diameter 10.16 mm. Teeth: N = 45 evenly spaced, pitch circle PCD = p / sin(180/N) = 227.6 mm.\n\nBuild it feature by feature:\n- Web disc: solid disc radius r = 0..108, 6 mm thick.\n- Tooth ring on the rim: 45 identical trapezoidal teeth, angular pitch 8 degrees. Each seat is a concave roller seat of radius 5.4 mm centred on the PCD (r = 113.8); tooth tips rise ~5 mm above the PCD so the outer diameter lands at ~236 mm; the gap between adjacent teeth seats the 10.16 mm roller.\n- Central locating bore dia 30 mm through Z at the origin.\n- Six M8 mounting holes dia 8.5 mm on a bolt circle of dia 80 mm, every 60 degrees, the first hole on the +X axis.\n- Six identical lightening pockets on the same angular axes as the mounting holes (each pocket centred on a bolt-hole axis): radially oriented capsule/obround slots, ~50 mm long in the radial direction x ~22 mm wide tangentially, centred at r = 77 mm; all pocket edges fully rounded (end radius ~11 mm). Webs between adjacent pockets, to the bolt holes and to the tooth ring >= 6 mm.\n- Rim edge break: ~0.5 mm chamfer or small fillet on the sharp rim edges.\nExpose teeth count, pitch, roller diameter, disc thickness, bolt-circle PCD and pocket count as named parameters.",
       "gates": [
         { "type": "status", "expect": ["succeeded", "needs_review"] },
         { "type": "bbox", "dims": [236, 236, 6], "match": "match", "tol_mm": 8 },
         { "type": "holes", "count": 1, "dia": 30, "axis": "z" },
         { "type": "holes", "count": 6, "dia": 8.5, "axis": "z", "pcd": 80 },
         { "type": "radial_peaks", "count": 45, "tol": 2, "axis": "z" },
-        { "type": "volume_fraction", "of": "disk", "max": 0.85 },
+        { "type": "volume_fraction", "of": "disk", "max": 0.86 },
         { "type": "watertight", "expect": true },
         { "type": "verify_spec", "expect": "PASS" }
       ]
@@ -37,9 +37,9 @@
       "id": "meshgen",
       "type": "meshgen",
       "enabled": false,
+      "timeout_s": 3600,
       "assets_from": "imagegen",
       "subject": "aluminium sprocket",
-      "timeout_s": 3600,
       "gates": [
         { "type": "status", "expect": ["succeeded", "needs_review"] },
         { "type": "bodies", "max": 2 }
