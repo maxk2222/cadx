@@ -47,7 +47,11 @@ async def version_code(version_id: uuid.UUID, db: AsyncSession = Depends(get_ses
 
 
 _PREVIEW_PREFER = ("iso", "contact_sheet", "orient_sheet", "thumbnail")
-_VIEW_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+# view names come from render/fem file stems and may contain spaces or parens
+# (load-case names like "chain pull"). The lookup is a dict get() against
+# discovered files — never a path join — so the guard only needs to keep out
+# characters that could confuse routing/logging.
+_VIEW_RE = re.compile(r"^[a-zA-Z0-9_ .()+\-]+$")
 
 
 def _pngs(d: Path) -> list[Path]:
@@ -102,9 +106,12 @@ def _png(p: Path) -> FileResponse:
 async def live_renders(version_id: uuid.UUID, db: AsyncSession = Depends(get_session)):
     """Which render views exist right now (for the running-job live preview).
 
-    Freshest write wins: finalized renders at the version root once the job
-    promotes its winner, otherwise the newest attempt's renders — including
-    per-attempt subdirs under each iteration."""
+    The view list is the union across all sets — the freshest write may be a
+    fem/regions probe carrying no model views at all (its iteration's renders
+    sit in an older set). Each name resolves through `?view=` to its freshest
+    instance, so e.g. `iso` keeps showing the newest model render while the
+    newest writes are fem plots. `mtimes` is per-view so a fem-only write does
+    not needlessly re-fetch an unchanged model frame."""
     v = await db.get(Version, version_id)
     if not v:
         raise HTTPException(404, "version not found")
@@ -112,12 +119,18 @@ async def live_renders(version_id: uuid.UUID, db: AsyncSession = Depends(get_ses
 
     sets = _render_bases(v_dir)
     if not sets:
-        return {"iteration": None, "views": [], "mtime": 0.0, "final": False}
-    _base, it_no, views_map = sets[0]
+        return {"iteration": None, "views": [], "mtime": 0.0, "mtimes": {}, "final": False}
+    _base, it_no, _views = sets[0]
+    merged: dict[str, Path] = {}
+    for _b, _i, views_map in sets:
+        for name, p in views_map.items():
+            merged.setdefault(name, p)
+    mtimes = {name: p.stat().st_mtime for name, p in merged.items()}
     return {
         "iteration": it_no,
-        "views": sorted(views_map),
-        "mtime": max(p.stat().st_mtime for p in views_map.values()),
+        "views": sorted(merged),
+        "mtime": max(mtimes.values()),
+        "mtimes": mtimes,
         "final": it_no is None,
     }
 
@@ -155,6 +168,12 @@ async def version_preview(
             p = views_map.get(name)
             if p is not None:
                 return _png(p)
-        newest = max(views_map.values(), key=lambda p: p.stat().st_mtime)
-        return _png(newest)
-    raise HTTPException(404, "no preview yet")
+    # no canonical view anywhere: prefer an actual model render over
+    # fem/region plots — during FEM probes the freshest set can consist of
+    # fem:* views only, and a part render is the better generic preview
+    for _base, _it, views_map in sets:
+        non_fem = [p for k, p in views_map.items() if not k.startswith("fem:")]
+        if non_fem:
+            return _png(max(non_fem, key=lambda p: p.stat().st_mtime))
+    _base, _it, views_map = sets[0]
+    return _png(max(views_map.values(), key=lambda p: p.stat().st_mtime))

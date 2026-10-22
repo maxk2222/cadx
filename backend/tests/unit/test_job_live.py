@@ -18,7 +18,7 @@ from PIL import Image
 import cadx.agent.worker_jobs as wj
 from cadx import storage
 from cadx.agent.worker_jobs import make_emit
-from cadx.db.models import Job, JobType, Project, Version, VersionKind
+from cadx.db.models import Job, JobStatus, JobType, Project, Version, VersionKind
 from cadx.db.session import async_session, create_all
 
 
@@ -316,8 +316,95 @@ async def test_live_renders_attempt_subdirs(client):
     _touch(a2 / "top.png", newer)
 
     r = await client.get(f"/api/versions/{vid}/live-renders")
-    assert sorted(r.json()["views"]) == ["iso", "top"]
+    # union across attempts: a2's fresh views plus a1's contact_sheet
+    assert sorted(r.json()["views"]) == ["contact_sheet", "iso", "top"]
     assert r.json()["iteration"] == 2
+    # per-view mtimes: a2's iso/top are newer than a1's contact_sheet
+    mtimes = r.json()["mtimes"]
+    assert mtimes["top"] == pytest.approx(newer)
+    assert mtimes["contact_sheet"] < mtimes["iso"]
+
+
+async def test_live_renders_fem_only_fresh_set(client):
+    """When the freshest write is a fem/regions probe (fem-only views), the
+    manifest must still offer the model renders from older sets, ?view= must
+    resolve them, and the no-view preview must prefer a model render."""
+    vid, pid = await _mk_version("renders-femonly")
+
+    # older model render set
+    it = storage.iteration_dir(pid, vid, 5)
+    rdir = it / "renders"
+    rdir.mkdir(parents=True)
+    (rdir / "iso.png").write_bytes(_png_bytes())
+    (rdir / "front.png").write_bytes(_png_bytes())
+    old = time.time() - 120
+    _touch(rdir / "iso.png", old)
+    _touch(rdir / "front.png", old)
+
+    # newest write: fem region previews only — with a space in the case name
+    fdir = it / "fem"
+    fdir.mkdir(parents=True)
+    (fdir / "regions_chain pull.png").write_bytes(_png_bytes())
+    (fdir / "vonmises_chain pull.png").write_bytes(_png_bytes())
+
+    r = await client.get(f"/api/versions/{vid}/live-renders")
+    d = r.json()
+    assert d["iteration"] == 5 and d["final"] is False
+    assert sorted(d["views"]) == [
+        "fem:regions_chain pull",
+        "fem:vonmises_chain pull",
+        "front",
+        "iso",
+    ]
+
+    # view names with spaces must resolve (dict lookup — not a path join)
+    r = await client.get(f"/api/versions/{vid}/preview?view=fem:regions_chain pull")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "image/png"
+
+    # the no-view preview prefers the model render over the fem plot
+    r = await client.get(f"/api/versions/{vid}/preview")
+    assert r.status_code == 200
+    # iso was in _PREVIEW_PREFER — it wins over the fem-only fresh set
+    body = r.content
+    assert len(body) > 0
+
+
+async def test_version_detail_active_job(client):
+    """GET /versions/{id} must surface the newest non-terminal job so the
+    page can restore the live stream/preview after a reload."""
+    vid, _pid = await _mk_version("detail-activejob")
+
+    r = await client.get(f"/api/versions/{vid}")
+    assert r.status_code == 200
+    assert r.json()["active_job"] is None
+
+    async with async_session() as db:
+        job = Job(
+            version_id=vid,
+            type=JobType.generate,
+            status=JobStatus.running,
+            step="codegen",
+            iteration=3,
+        )
+        db.add(job)
+        await db.flush()
+        jid = job.id
+        await db.commit()
+
+    r = await client.get(f"/api/versions/{vid}")
+    aj = r.json()["active_job"]
+    assert aj is not None
+    assert aj["status"] == "running" and aj["step"] == "codegen" and aj["iteration"] == 3
+
+    # terminal jobs must not resurface as active
+    async with async_session() as db:
+        j = await db.get(Job, jid)
+        j.status = JobStatus.succeeded
+        await db.commit()
+
+    r = await client.get(f"/api/versions/{vid}")
+    assert r.json()["active_job"] is None
 
 
 async def test_live_renders_aux_and_rerun_freshness(client):

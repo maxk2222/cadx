@@ -117,7 +117,17 @@ async def _summary(v: Version, db: AsyncSession, active_job: Job | None = None) 
 
 
 async def _detail(v: Version, db: AsyncSession) -> VersionDetail:
-    base = await _summary(v, db)
+    # newest non-terminal job — lets the version page restore the live stream
+    # and preview after a reload (the tree endpoint already does this lookup)
+    jr = await db.execute(
+        select(Job)
+        .where(
+            Job.version_id == v.id,
+            col(Job.status).in_([JobStatus.queued, JobStatus.running, JobStatus.waiting_for_input]),
+        )
+        .order_by(col(Job.created_at).desc())
+    )
+    base = await _summary(v, db, jr.scalars().first())
     rows = await db.execute(select(Artifact).where(Artifact.version_id == v.id))
     return VersionDetail(
         **base.model_dump(),

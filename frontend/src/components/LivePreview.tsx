@@ -1,24 +1,20 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
+import { pickView, sortViews, viewLabel } from "../lib/liveViews";
 import { Spinner } from "./ui";
 
 const HINT_AFTER_MS = 9000;
 const MAX_RETRIES = 3;
 
-function viewLabel(w: string): string {
-  return w
-    .replace("contact_sheet", "sheet")
-    .replace("orient_sheet", "orient")
-    .replace(/^fem:/, "fem ");
-}
-
 /** Provisional render overlay while the job runs — polls the live-renders
- *  manifest (available views + newest iteration) and always shows the
- *  freshest frame. The next image loads off-screen and only swaps in once
- *  decoded, so a mid-write or slow render never blanks the current frame.
- *  `?t=<mtime>` cache-busts when a render is rewritten; a failed frame is
- *  retried a few times via `&r=<n>` in case the executor was mid-write. */
+ *  manifest (union of all render sets: model views + fem plots) and always
+ *  shows the freshest frame. The next image loads off-screen and only swaps
+ *  in once decoded, so a mid-write or slow render never blanks the current
+ *  frame. `?t=<per-view mtime>` cache-busts only when THAT view was
+ *  rewritten; a failed frame is retried a few times via `&r=<n>` in case the
+ *  executor was mid-write, then falls back to the view-less preview (server
+ *  picks the freshest model render) before giving up. */
 export default function LivePreview({
   versionId,
   active = true,
@@ -35,12 +31,14 @@ export default function LivePreview({
   const [view, setView] = useState<string | null>(null);
   const [shown, setShown] = useState<string | null>(null);
   const [retries, setRetries] = useState(0);
+  const [fallback, setFallback] = useState(false);
   const [waited, setWaited] = useState(false);
 
   useEffect(() => {
     setView(null);
     setShown(null);
     setRetries(0);
+    setFallback(false);
     setWaited(false);
   }, [versionId]);
   useEffect(() => {
@@ -50,18 +48,30 @@ export default function LivePreview({
   }, [shown]);
 
   const views = data?.views ?? [];
-  const cur =
-    view && views.includes(view) ? view : views.includes("iso") ? "iso" : views[0];
-  const target = cur
-    ? `${api.previewUrl(versionId, cur)}&t=${data ? data.mtime : 0}`
-    : null;
-  // fresh retry budget whenever a genuinely new frame is targeted
-  useEffect(() => setRetries(0), [target]);
-  const src = target && retries ? `${target}&r=${retries}` : target;
+  const cur = pickView(views, view);
+  // per-view mtime cache-bust: a fem-only rewrite must not re-fetch the
+  // unchanged model frame (and vice versa)
+  const stamp = data ? (data.mtimes?.[cur ?? ""] ?? data.mtime) : 0;
+  const target = cur ? `${api.previewUrl(versionId, cur)}&t=${stamp}` : null;
+  // fresh retry budget + leave fallback whenever a genuinely new frame appears
+  useEffect(() => {
+    setRetries(0);
+    setFallback(false);
+  }, [target]);
+  const src = fallback
+    ? `${api.previewUrl(versionId)}&t=${data ? data.mtime : 0}`
+    : target && retries
+      ? `${target}&r=${retries}`
+      : target;
 
   const onErr = () => {
-    if (active && retries < MAX_RETRIES) {
+    if (!active) return;
+    if (retries < MAX_RETRIES) {
       window.setTimeout(() => setRetries((r) => r + 1), 1500);
+    } else if (!fallback) {
+      // view may have vanished between manifest and load — let the server
+      // pick its freshest model render before declaring the preview dead
+      setFallback(true);
     }
   };
 
@@ -101,8 +111,8 @@ export default function LivePreview({
         </span>
       )}
       {shown && views.length > 1 && (
-        <div className="absolute bottom-2 left-2 flex flex-wrap gap-1">
-          {views.map((w) => (
+        <div className="absolute bottom-2 left-2 flex max-w-[calc(100%-1rem)] flex-wrap gap-1">
+          {sortViews(views).map((w) => (
             <button
               key={w}
               onClick={() => setView(w)}

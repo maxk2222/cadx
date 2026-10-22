@@ -1,4 +1,4 @@
-import { Check, CheckCircle2, Copy, Info, Loader2, X, XCircle } from "lucide-react";
+import { Check, CheckCircle2, ChevronDown, Copy, Info, Loader2, X, XCircle } from "lucide-react";
 import {
   createContext,
   useCallback,
@@ -45,6 +45,54 @@ export function SectionTitle({
         {children}
       </h3>
       {right}
+    </div>
+  );
+}
+
+/** collapsible section — SectionTitle-styled header with a chevron toggle */
+export function Collapsible({
+  title,
+  right,
+  count,
+  defaultOpen = true,
+  className = "",
+  children,
+}: {
+  title: ReactNode;
+  right?: ReactNode;
+  /** optional item count shown as a muted suffix */
+  count?: number;
+  defaultOpen?: boolean;
+  className?: string;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className={className}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="group mb-2 flex w-full items-center justify-between gap-2 text-left"
+      >
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-500 transition-colors group-hover:text-zinc-300">
+          {title}
+          {count != null && (
+            <span className="ml-1.5 font-normal normal-case tracking-normal text-zinc-600">
+              {count}
+            </span>
+          )}
+        </h3>
+        <span className="flex items-center gap-2">
+          {right}
+          <ChevronDown
+            className={`h-3.5 w-3.5 text-zinc-600 transition-transform group-hover:text-zinc-400 ${
+              open ? "" : "-rotate-90"
+            }`}
+          />
+        </span>
+      </button>
+      {open && children}
     </div>
   );
 }

@@ -140,7 +140,11 @@ export default function VersionPage() {
     queryKey: ["version", id],
     queryFn: () => api.getVersion(id),
     refetchInterval: (q) =>
-      ["queued", "running"].includes(q.state.data?.status ?? "") ? 4000 : false,
+      ["queued", "running", "waiting_for_input"].includes(
+        q.state.data?.status ?? ""
+      ) || !!q.state.data?.active_job
+        ? 4000
+        : false,
   });
   const v = version.data;
 
@@ -154,7 +158,11 @@ export default function VersionPage() {
     queryFn: () => api.listVersions(v!.project_id),
     enabled: !!v?.project_id,
     refetchInterval: (q) =>
-      (q.state.data ?? []).some((x) => ["queued", "running"].includes(x.status))
+      (q.state.data ?? []).some(
+        (x) =>
+          ["queued", "running", "waiting_for_input"].includes(x.status) ||
+          !!x.active_job
+      )
         ? 4000
         : false,
   });
@@ -297,7 +305,11 @@ export default function VersionPage() {
       </div>
     );
 
-  const active = ["queued", "running", "waiting_for_input"].includes(v.status);
+  // a live job on this version — active_job survives a page reload (the
+  // detail endpoint resolves it), the status check covers any residual gap
+  const jobLive =
+    !!v.active_job ||
+    ["queued", "running", "waiting_for_input"].includes(v.status);
   const glb = v.artifacts.find((a) => a.kind === "glb");
   const a = v.analysis;
   // newest job on this version (list is sorted newest-first) — restart target
@@ -583,7 +595,7 @@ export default function VersionPage() {
               }
             >
               <div className="relative h-[460px] overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950">
-                {glb || !active ? (
+                {glb || !jobLive ? (
                   <Viewer3D url={glb ? glb.url : null} />
                 ) : (
                   <span className="absolute inset-0 flex flex-col items-center justify-center gap-1 text-xs text-zinc-400">
@@ -595,7 +607,10 @@ export default function VersionPage() {
                     )}
                   </span>
                 )}
-                {active && !glb && <LivePreview versionId={v.id} />}
+                {/* overlay while any job on this version is live — also on top
+                    of an existing model (fem/resample jobs produce renders on
+                    versions that already carry a glb) */}
+                {jobLive && <LivePreview versionId={v.id} />}
                 {compareOpen && (
                   <span className="absolute bottom-2 left-2 rounded border border-zinc-700 bg-zinc-900/80 px-1.5 py-0.5 text-[10px] font-medium text-zinc-300 backdrop-blur">
                     a · v{v.number}

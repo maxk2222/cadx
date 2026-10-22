@@ -789,8 +789,12 @@ export interface JobListItem extends Job {
 /** Available live render views of a version — GET /versions/{id}/live-renders. */
 export interface LiveRenders {
   iteration: number | null;
+  /** union of view names across all render sets (newest instance wins) */
   views: string[];
+  /** max mtime across all views — global freshness signal */
   mtime: number;
+  /** per-view mtime — a fem-only rewrite does not bump the model frames */
+  mtimes?: Record<string, number>;
   final: boolean;
 }
 
