@@ -132,9 +132,10 @@ def run(
                     st = ", ".join(
                         f"{s.stage_id}:{s.status}{'✓' if s.passed else '✗'}" for s in r.stages
                     )
+                    err = f" error={r.error!r}" if r.error else ""
                     print(
                         f"{r.case} [{r.driver}{('/' + r.variant) if r.variant != 'default' else ''}] "
-                        f"passed={r.passed} ({r.wall_s:.0f}s) {st} -> evals/"
+                        f"passed={r.passed} ({r.wall_s:.0f}s) {st}{err} -> evals/"
                         f"{'scratch' if local else 'results'}/{r.case}/{r.run_id}"
                     )
         if json_out:

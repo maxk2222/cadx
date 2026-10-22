@@ -123,7 +123,13 @@ async def test_wipe_db_refuses_with_active_jobs_unless_forced():
     assert (await _counts())["project"] == 0
 
 
-def test_purge_files_dry_run_and_execute(tmp_path):
+def test_purge_files_dry_run_and_execute(tmp_path, monkeypatch):
+    import cadx.evalkit.clean as cl
+
+    # purge targets real eval dirs — isolate so the test never wipes run output
+    monkeypatch.setattr(cl, "RESULTS_DIR", tmp_path / "evals" / "results")
+    monkeypatch.setattr(cl, "SCRATCH_DIR", tmp_path / "evals" / "scratch")
+    monkeypatch.setattr(cl, "REPORTS_DIR", tmp_path / "evals" / "reports")
     data = tmp_path / "data"
     (data / "projects" / "p1").mkdir(parents=True)
     (data / "eval_old.json").write_text("{}")

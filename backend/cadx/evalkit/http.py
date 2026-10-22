@@ -157,12 +157,19 @@ class HttpDriver:
     async def settings_put(self, updates: dict[str, Any]) -> dict[str, Any]:
         return await self._req("PUT", "/settings", json=updates)
 
-    async def health(self) -> bool:
-        try:
-            r = await self._client.get(f"{self.base}/api/health")
-            return r.status_code == 200
-        except Exception:
-            return False
+    async def health(self, *, retries: int = 4) -> bool:
+        """Single dropped request must not abort a case — the api may be busy
+        draining orphan jobs when a case starts."""
+        for attempt in range(retries):
+            try:
+                r = await self._client.get(f"{self.base}/api/health")
+                if r.status_code == 200:
+                    return True
+            except Exception:
+                pass
+            if attempt < retries - 1:
+                await asyncio.sleep(2.0 * (attempt + 1))
+        return False
 
     # -- dispatch ------------------------------------------------------------
 
@@ -261,6 +268,13 @@ class HttpDriver:
             return await self._dispatch_image(stage, ctx, t0)
 
         path, body = await self._spawn_body(stage, ctx)
+        if ctx.parent_version_id is None and "/versions/" in path:
+            # upstream stage produced no version — don't POST to /versions/None/…
+            return StageOutcome(
+                status="failed",
+                wall_s=time.monotonic() - t0,
+                error=f"stage {stage.type} needs a parent version — none available",
+            )
         if self.verbose:
             log.info("eval.http.spawn", stage=stage.id, path=path)
         enq = await self._post(path, json=body)
