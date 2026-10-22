@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
-from sqlalchemy import JSON, Column, event, inspect
+from sqlalchemy import JSON, Column, UniqueConstraint, event, inspect
 from sqlmodel import Field as SField
 from sqlmodel import SQLModel
 
@@ -145,6 +145,26 @@ class Project(SQLModel, table=True):
     updated_at: datetime = SField(default_factory=utcnow)
 
 
+class Part(SQLModel, table=True):
+    """A named part inside a project — owns one or more root version trees.
+
+    Every Version belongs to exactly one part; children inherit their
+    parent's part. Roots spawned without an explicit part auto-create one
+    (see cadx/parts.py + spawn_version_job). `number` is per-project
+    sequential (P1, P2 …) like Version.number is globally sequential."""
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "number", name="uq_part_project_number"),
+    )
+
+    id: uuid.UUID = SField(default_factory=uuid.uuid4, primary_key=True)
+    project_id: uuid.UUID = SField(foreign_key="project.id", index=True)
+    number: int
+    name: str = ""
+    created_at: datetime = SField(default_factory=utcnow)
+    updated_at: datetime = SField(default_factory=utcnow)
+
+
 class Asset(SQLModel, table=True):
     id: uuid.UUID = SField(default_factory=uuid.uuid4, primary_key=True)
     project_id: uuid.UUID = SField(foreign_key="project.id", index=True)
@@ -165,6 +185,7 @@ class Asset(SQLModel, table=True):
 class Version(SQLModel, table=True):
     id: uuid.UUID = SField(default_factory=uuid.uuid4, primary_key=True)
     project_id: uuid.UUID = SField(foreign_key="project.id", index=True)
+    part_id: uuid.UUID = SField(foreign_key="part.id", index=True)
     parent_id: uuid.UUID | None = SField(default=None, foreign_key="version.id")
     number: int
     kind: VersionKind

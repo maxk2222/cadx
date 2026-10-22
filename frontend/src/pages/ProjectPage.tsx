@@ -1,13 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleDot, MessagesSquare, Pencil, Search, Sparkles, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { CircleDot, MessagesSquare, Pencil, Sparkles, Trash2 } from "lucide-react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import AssetManager from "../components/AssetManager";
 import ModeSelector from "../components/ModeSelector";
 import OptionsPanel from "../components/OptionsPanel";
+import PartsSection from "../components/parts/PartsSection";
 import ProjectFormModal from "../components/ProjectFormModal";
-import VersionTree from "../components/VersionTree";
 import {
   Btn,
   Card,
@@ -18,7 +18,6 @@ import {
   SectionTitle,
   Skeleton,
   inputCls,
-  useDebounced,
   useToast,
 } from "../components/ui";
 import { api, errMsg } from "../lib/api";
@@ -137,8 +136,7 @@ export default function ProjectPage() {
   const [modeInit, setModeInit] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [selectedLib, setSelectedLib] = useState<Set<string>>(new Set());
-  const [vFilter, setVFilter] = useState("");
-  const vq = useDebounced(vFilter);
+  const [partSel, setPartSel] = useState("");
   const [editOpen, setEditOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [error, setError] = useState("");
@@ -150,6 +148,7 @@ export default function ProjectPage() {
     setModeInit(false);
     setSelected(new Set());
     setSelectedLib(new Set());
+    setPartSel("");
     setError("");
   }, [id]);
 
@@ -175,6 +174,16 @@ export default function ProjectPage() {
         ? 4000
         : false,
   });
+  const parts = useQuery({
+    queryKey: ["parts", id],
+    queryFn: () => api.listParts(id),
+    refetchInterval: () => {
+      // a running root spawn may auto-create its part mid-flight — the
+      // versions query already polls; piggyback on the same condition
+      const vs = qc.getQueryData<VersionSummary[]>(["versions", id]) ?? [];
+      return vs.some((v) => ["queued", "running"].includes(v.status)) ? 4000 : false;
+    },
+  });
 
   // adopt project default gen mode once loaded
   useEffect(() => {
@@ -188,7 +197,15 @@ export default function ProjectPage() {
 
   const generate = useMutation({
     mutationFn: () =>
-      api.generate(id, prompt, [...selected], mode, options, [...selectedLib]),
+      api.generate(
+        id,
+        prompt,
+        [...selected],
+        mode,
+        options,
+        [...selectedLib],
+        partSel || null
+      ),
     onSuccess: (r) => {
       localStorage.removeItem(`draft:${id}`);
       nav(`/versions/${r.version_id}?job=${r.job_id}`);
@@ -230,17 +247,6 @@ export default function ProjectPage() {
     setPrompt(v);
     localStorage.setItem(`draft:${id}`, v);
   };
-
-  const filteredVersions = useMemo(() => {
-    const list = versions.data ?? [];
-    const needle = vq.trim().toLowerCase();
-    if (!needle) return list;
-    return list.filter(
-      (v) =>
-        v.prompt.toLowerCase().includes(needle) ||
-        v.name.toLowerCase().includes(needle)
-    );
-  }, [versions.data, vq]);
 
   if (project.isLoading)
     return (
@@ -331,6 +337,30 @@ export default function ProjectPage() {
           <div className="mt-3">
             <ModeSelector value={mode} onChange={setMode} />
           </div>
+          {(parts.data ?? []).length > 0 && (
+            <div className="mt-2 flex items-center gap-2">
+              <label
+                htmlFor="gen-part"
+                className="shrink-0 text-[11px] font-medium uppercase tracking-wider text-faint"
+              >
+                {t("gen_into_part")}
+              </label>
+              <select
+                id="gen-part"
+                className={`${inputCls} py-1 text-xs`}
+                value={partSel}
+                onChange={(e) => setPartSel(e.target.value)}
+              >
+                <option value="">{t("gen_new_part")}</option>
+                {(parts.data ?? []).map((p) => (
+                  <option key={p.id} value={p.id}>
+                    P{p.number}
+                    {p.name ? ` · ${p.name}` : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           <div className="mt-2">
             <OptionsPanel value={options} onChange={setOptions} />
           </div>
@@ -421,25 +451,11 @@ export default function ProjectPage() {
         </Card>
       </div>
 
-      <Card className="h-fit p-3">
-        <SectionTitle
-          right={<span className="text-[11px] normal-case tracking-normal">{versions.data?.length ?? 0}</span>}
-        >
-          {t("versions_title")}
-        </SectionTitle>
-        {(versions.data?.length ?? 0) > 4 && (
-          <div className="relative mb-2">
-            <Search className="pointer-events-none absolute left-2 top-2 h-3.5 w-3.5 text-faint" />
-            <input
-              className={`${inputCls} py-1.5 pl-7 text-xs`}
-              placeholder={t("filter_prompts_ph")}
-              value={vFilter}
-              onChange={(e) => setVFilter(e.target.value)}
-            />
-          </div>
-        )}
-        <VersionTree versions={filteredVersions} />
-      </Card>
+      <PartsSection
+        projectId={id}
+        versions={versions.data ?? []}
+        parts={parts.data ?? []}
+      />
 
       {editOpen && <ProjectFormModal project={p} onClose={() => setEditOpen(false)} />}
       <ConfirmModal

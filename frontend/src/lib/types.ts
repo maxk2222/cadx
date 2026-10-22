@@ -6,10 +6,23 @@ export interface Project {
   created_at: string;
   updated_at: string;
   version_count: number;
+  parts_count: number;
   latest_version_status: VersionStatus | null;
   latest_thumbnail_url: string | null;
   latest_version_id: string | null;
   running_version_id: string | null;
+}
+
+/** A named part inside a project — owns one or more root version trees. */
+export interface Part {
+  id: string;
+  project_id: string;
+  /** per-project sequential — shown as `P{n}` */
+  number: number;
+  name: string;
+  version_count: number;
+  thumbnail_url: string | null;
+  created_at: string;
 }
 
 export interface Asset {
@@ -94,9 +107,11 @@ export interface UiEditorState {
 export interface VersionSummary {
   id: string;
   project_id: string;
+  /** owning part — groups this version's tree on the project page */
+  part_id: string;
   parent_id: string | null;
   number: number;
-  kind: "generate" | "edit" | "params" | "optimize" | "refine" | "mesh_edit" | "organic";
+  kind: "generate" | "edit" | "params" | "optimize" | "refine" | "mesh_edit" | "organic" | "code" | "meshgen";
   prompt: string;
   /** optional user-assigned label ("" when unset) */
   name: string;
@@ -794,6 +809,8 @@ export interface JobListItem extends Job {
   prompt: string;
   project_id: string;
   project_name: string;
+  part_id: string | null;
+  part_name: string;
 }
 
 /** Available live render views of a version — GET /versions/{id}/live-renders. */
@@ -1165,6 +1182,7 @@ export interface Stats {
     jobs: number;
     assets: number;
     artifacts: number;
+    parts: number;
     library_parts: number;
     artifact_bytes: number;
     prompt_tokens: number;

@@ -34,6 +34,7 @@ async def _mk_parent(status: VersionStatus = VersionStatus.succeeded) -> Version
         await db.flush()
         v = Version(
             project_id=p.id,
+            part_id=uuid.uuid4(),
             number=1,
             kind=VersionKind.generate,
             prompt="block",

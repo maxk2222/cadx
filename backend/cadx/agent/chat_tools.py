@@ -153,6 +153,8 @@ class ChatToolSession(ProjectToolSession):
                 project,
                 prompt,
                 gen_mode=str(a.get("mode") or ""),
+                part_id=str(a.get("part_id") or "") or None,
+                part_name=str(a.get("part_name") or "") or None,
                 asset_ids=[str(x) for x in a.get("asset_ids") or []],
                 enqueue_fn=self._enqueue_fn,
             )

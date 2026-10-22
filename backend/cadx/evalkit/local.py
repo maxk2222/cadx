@@ -193,9 +193,13 @@ async def import_parent(ctx: LocalCtx, src: Path) -> uuid.UUID:
     if mesh_rel is None:
         raise ValueError(f"--from {src}: no .stl/.brep found")
     async with session_scope() as db:
+        from cadx.parts import create_part
+
+        part = await create_part(db, ctx.project_id, "imported")
         v = Version(
             id=vid,
             project_id=ctx.project_id,
+            part_id=part.id,
             parent_id=None,
             number=1,
             kind=VersionKind.generate,

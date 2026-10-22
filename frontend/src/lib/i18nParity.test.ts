@@ -38,6 +38,36 @@ function keySet(tree: Tree, prefix = ""): Set<string> {
   return out;
 }
 
+/* i18next plural suffixes — languages need different subsets
+ * (en/de/es/fr: one+other · ru/pl: +few+many · zh/ja: other only).
+ * Parity compares *base* keys: the reference language defines which keys
+ * are plural families; every suffixed variant of such a family collapses
+ * to the base, so each language carries exactly its CLDR categories. */
+const PLURAL = /_(zero|one|two|few|many|other)$/;
+
+/** bases that have ≥1 plural-suffixed leaf in the given key set */
+function pluralBases(keys: Set<string>): Set<string> {
+  const bases = new Set<string>();
+  for (const k of keys) {
+    const m = PLURAL.exec(k);
+    if (m) bases.add(k.slice(0, -m[0].length));
+  }
+  return bases;
+}
+
+function baseKeySet(keys: Set<string>, plurals: Set<string>): Set<string> {
+  const out = new Set<string>();
+  for (const k of keys) {
+    const m = PLURAL.exec(k);
+    if (m && plurals.has(k.slice(0, -m[0].length))) {
+      out.add(k.slice(0, -m[0].length));
+    } else {
+      out.add(k);
+    }
+  }
+  return out;
+}
+
 function* walk(dir: string): Generator<string> {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     const p = join(dir, e.name);
@@ -68,8 +98,10 @@ describe("i18n locale parity", () => {
   for (const lang of LANGS.filter((l) => l !== REF)) {
     it(`key set of ${lang} matches ${REF}`, () => {
       for (const ns of namespaces) {
-        const enKeys = keySet(load(REF, ns));
-        const lngKeys = keySet(load(lang, ns));
+        const enFlat = keySet(load(REF, ns));
+        const plurals = pluralBases(enFlat);
+        const enKeys = baseKeySet(enFlat, plurals);
+        const lngKeys = baseKeySet(keySet(load(lang, ns)), plurals);
         const missing = [...enKeys].filter((k) => !lngKeys.has(k));
         const extra = [...lngKeys].filter((k) => !enKeys.has(k));
         expect(

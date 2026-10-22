@@ -70,7 +70,7 @@ async def _mk_running_job() -> str:
         p = Project(name="sse-proj")
         db.add(p)
         await db.flush()
-        v = Version(project_id=p.id, number=1, kind=VersionKind.generate)
+        v = Version(project_id=p.id, part_id=uuid.uuid4(), number=1, kind=VersionKind.generate)
         db.add(v)
         await db.flush()
         job = Job(version_id=v.id, type=JobType.generate, status=JobStatus.running)

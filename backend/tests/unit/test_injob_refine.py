@@ -85,6 +85,7 @@ async def _mk_agent_version() -> tuple[uuid.UUID, uuid.UUID]:
         await db.flush()
         v = Version(
             project_id=p.id,
+            part_id=uuid.uuid4(),
             number=1,
             kind=VersionKind.generate,
             prompt="lightweight bracket with M4 hole",
@@ -267,6 +268,7 @@ async def test_maybe_spawn_refine_skips_committed_injob_refine(monkeypatch):
         await db.flush()
         parent = Version(
             project_id=p.id,
+            part_id=uuid.uuid4(),
             number=1,
             kind=VersionKind.generate,
             prompt="block",
@@ -317,6 +319,7 @@ async def test_runtime_flag_alone_triggers_spawn(monkeypatch):
         await db.flush()
         parent = Version(
             project_id=p.id,
+            part_id=uuid.uuid4(),
             number=1,
             kind=VersionKind.generate,
             prompt="block",
@@ -359,6 +362,7 @@ async def test_maybe_spawn_refine_guard_blocks_featureless(monkeypatch):
         await db.flush()
         parent = Version(
             project_id=p.id,
+            part_id=uuid.uuid4(),
             number=1,
             kind=VersionKind.generate,
             prompt="block",
@@ -448,6 +452,7 @@ async def _mk_refine_child(
         await db.flush()
         parent = Version(
             project_id=p.id,
+            part_id=uuid.uuid4(),
             number=1,
             kind=VersionKind.generate,
             prompt="bracket",
@@ -462,6 +467,7 @@ async def _mk_refine_child(
         (exp / "model.stl").write_text("solid p\nendsolid p\n")
         child = Version(
             project_id=p.id,
+            part_id=uuid.uuid4(),
             parent_id=parent.id,
             number=2,
             kind=VersionKind.refine,
@@ -629,6 +635,7 @@ async def test_maybe_spawn_refine_auto_keep_anchors_flag(monkeypatch):
         await db.flush()
         parent = Version(
             project_id=p.id,
+            part_id=uuid.uuid4(),
             number=1,
             kind=VersionKind.generate,
             prompt="block",
@@ -657,6 +664,7 @@ async def test_maybe_spawn_refine_auto_keep_anchors_flag(monkeypatch):
         await db.flush()
         parent2 = Version(
             project_id=p2.id,
+            part_id=uuid.uuid4(),
             number=1,
             kind=VersionKind.generate,
             prompt="block",

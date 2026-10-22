@@ -11,11 +11,10 @@ from typing import Any
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import delete as sa_delete
-from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
+from cadx import parts as parts_svc
 from cadx.api.deps import enqueue, get_session
 from cadx.api.schemas import (
     ArtifactOut,
@@ -36,7 +35,6 @@ from cadx.api.schemas import (
     VersionUpdate,
 )
 from cadx.db.models import (
-    AgentTrace,
     Artifact,
     ArtifactKind,
     Asset,
@@ -101,6 +99,7 @@ async def _summary(v: Version, db: AsyncSession, active_job: Job | None = None) 
     return VersionSummary(
         id=v.id,
         project_id=v.project_id,
+        part_id=v.part_id,
         parent_id=v.parent_id,
         number=v.number,
         kind=v.kind,
@@ -175,6 +174,8 @@ async def generate(
             project,
             body.prompt,
             gen_mode=body.mode or "",
+            part_id=body.part_id,
+            part_name=body.part_name,
             asset_ids=list(body.asset_ids or []),
             library_part_ids=list(body.library_part_ids or []),
             options=opts,
@@ -211,6 +212,8 @@ async def meshgen(
             model=body.model,
             seed=body.seed,
             post=body.post or None,
+            part_id=body.part_id,
+            part_name=body.part_name,
             prompt=body.prompt,
         )
     except SpawnError as e:
@@ -439,10 +442,15 @@ async def reexport(version_id: uuid.UUID, db: AsyncSession = Depends(get_session
 
 
 @router.get("/projects/{project_id}/versions", response_model=list[VersionSummary])
-async def version_tree(project_id: uuid.UUID, db: AsyncSession = Depends(get_session)):
-    rows = await db.execute(
-        select(Version).where(Version.project_id == project_id).order_by(col(Version.number))
-    )
+async def version_tree(
+    project_id: uuid.UUID,
+    part_id: uuid.UUID | None = None,
+    db: AsyncSession = Depends(get_session),
+):
+    q = select(Version).where(Version.project_id == project_id)
+    if part_id is not None:
+        q = q.where(Version.part_id == part_id)
+    rows = await db.execute(q.order_by(col(Version.number)))
     versions = list(rows.scalars().all())
     vids = [v.id for v in versions]
     active: dict[uuid.UUID, Job] = {}
@@ -621,20 +629,8 @@ async def delete_version(version_id: uuid.UUID, db: AsyncSession = Depends(get_s
     children = await db.execute(select(Version).where(Version.parent_id == v.id))
     if children.scalars().first():
         raise HTTPException(409, "version has children")
-    from cadx import storage
-
-    jids = select(Job.id).where(col(Job.version_id) == v.id)
-    # signal in-flight tasks before deleting their rows — a worker polling
-    # cancel between the two commits stops gracefully; afterwards the
-    # missing job row cancels the task outright (no zombie runs)
-    await db.execute(
-        sa_update(Job).where(col(Job.version_id) == v.id).values(cancel_requested=True)
-    )
-    await db.commit()
-    await db.execute(sa_delete(AgentTrace).where(col(AgentTrace.job_id).in_(jids)))
-    await db.execute(sa_delete(Job).where(col(Job.version_id) == v.id))
-    await db.execute(sa_delete(Artifact).where(col(Artifact.version_id) == v.id))
-    storage.delete_version_dir(v.project_id, v.id)
-    await db.delete(v)
+    # shared leaf cleanup — cancels in-flight jobs (their polling workers
+    # stop gracefully), then removes traces/jobs/artifacts/storage/row
+    await parts_svc.delete_versions_leaf(db, [v])
     await db.commit()
     return {"ok": True}

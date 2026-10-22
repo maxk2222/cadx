@@ -3,6 +3,8 @@ guard, trace isolation, adaptive budget, critique score clamp."""
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 
 import cadx.agent.worker_jobs as wj
@@ -40,7 +42,7 @@ async def _mk_job() -> Job:
         p = Project(name="hardening")
         db.add(p)
         await db.flush()
-        v = Version(project_id=p.id, number=1, kind=VersionKind.generate, prompt="x")
+        v = Version(project_id=p.id, part_id=uuid.uuid4(), number=1, kind=VersionKind.generate, prompt="x")
         db.add(v)
         await db.flush()
         j = Job(version_id=v.id, type=JobType.generate)

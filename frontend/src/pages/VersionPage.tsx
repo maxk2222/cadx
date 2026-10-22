@@ -82,6 +82,11 @@ export default function VersionPage() {
         ? 4000
         : false,
   });
+  const parts = useQuery({
+    queryKey: ["parts", v?.project_id],
+    queryFn: () => api.listParts(v!.project_id),
+    enabled: !!v?.project_id,
+  });
   const assets = useQuery({
     queryKey: ["assets", v?.project_id],
     queryFn: () => api.listAssets(v!.project_id),
@@ -257,6 +262,7 @@ export default function VersionPage() {
           v={v}
           projectName={project.data?.name}
           projectId={v.project_id}
+          part={(parts.data ?? []).find((p) => p.id === v.part_id) ?? null}
           compareOpen={compareOpen}
           canCompare={others.length > 0}
           onToggleCompare={() => {

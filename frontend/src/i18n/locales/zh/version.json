@@ -272,5 +272,6 @@
   "dfm_footer": "启发式检查 — 制造前务必核实。",
   "dfm_sev_high": "高",
   "dfm_sev_medium": "中",
-  "dfm_sev_low": "低"
+  "dfm_sev_low": "低",
+  "part_title": "部件"
 }

@@ -43,5 +43,24 @@
     "edit_title": "Projekt bearbeiten",
     "new_title": "Neues Projekt",
     "name_ph": "z. B. Gehäuse v2"
-  }
+  },
+  "parts_title": "Teile",
+  "part_add": "Teil hinzufügen",
+  "part_add_title": "Leeres Teil anlegen — umbenennen, dann hinein generieren",
+  "part_name_ph": "Teilname",
+  "part_untitled": "Unbenanntes Teil",
+  "part_rename_title": "Teil umbenennen",
+  "part_actions": "Teil-Aktionen",
+  "part_empty": "Noch keine Versionen — generiere in dieses Teil.",
+  "part_delete_title": "Teil löschen?",
+  "parts_empty_hint": "Noch nichts hier — generiere das erste Teil.",
+  "gen_into_part": "In Teil",
+  "gen_new_part": "Neues Teil",
+  "part_delete_body_one": "Löscht {{name}} und die enthaltene Version. Laufende Jobs werden abgebrochen.",
+  "part_delete_body_other": "Löscht {{name}} und alle {{count}} enthaltenen Versionen. Laufende Jobs werden abgebrochen.",
+  "part_deleted_one": "Teil gelöscht — {{count}} Version entfernt.",
+  "part_deleted_other": "Teil gelöscht — {{count}} Versionen entfernt.",
+  "parts_count_one": "{{count}} Teil",
+  "parts_count_other": "{{count}} Teile",
+  "parts_ungrouped": "Ungruppiert"
 }

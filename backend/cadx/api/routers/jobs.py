@@ -15,6 +15,7 @@ from cadx.db.models import (
     AgentTrace,
     Job,
     JobStatus,
+    Part,
     Project,
     Version,
     VersionStatus,
@@ -116,9 +117,10 @@ async def job_list_items(
     """Shared JobListItem query — the REST list and the `/jobs/events`
     SSE snapshot emit identical rows."""
     q = (
-        select(Job, Version, Project)
+        select(Job, Version, Project, Part)
         .join(Version, Job.version_id == Version.id)
         .join(Project, Version.project_id == Project.id)
+        .outerjoin(Part, Version.part_id == Part.id)
         .order_by(col(Job.created_at).desc())
         .limit(limit)
     )
@@ -128,7 +130,7 @@ async def job_list_items(
         )
     rows = await db.execute(q)
     out: list[JobListItem] = []
-    for j, v, p in rows.all():
+    for j, v, p, part in rows.all():
         d = _out(j).model_dump()
         d["log"] = (d.get("log") or "")[-500:]  # tail only — full logs are heavy
         out.append(
@@ -139,6 +141,8 @@ async def job_list_items(
                 prompt=(v.prompt or "")[:140],
                 project_id=p.id,
                 project_name=p.name,
+                part_id=v.part_id,
+                part_name=part.name if part else "",
             )
         )
     return out

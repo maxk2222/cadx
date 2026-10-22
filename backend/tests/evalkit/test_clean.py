@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 
 from cadx.db.models import AgentTrace, Job, JobStatus, Project, Version
@@ -45,7 +47,7 @@ async def _tables():
 async def _seed(project_name="p"):
     async with async_session() as db:
         p = Project(name=project_name)
-        v = Version(project_id=p.id, number=1, kind="generate", prompt="x")
+        v = Version(project_id=p.id, part_id=uuid.uuid4(), number=1, kind="generate", prompt="x")
         j = Job(version_id=v.id, type="generate", status=JobStatus.succeeded)
         t = AgentTrace(job_id=j.id, step="codegen", iteration=1)
         db.add_all([p, v, j, t])

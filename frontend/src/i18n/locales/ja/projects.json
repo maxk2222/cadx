@@ -39,5 +39,21 @@
     "edit_title": "プロジェクトを編集",
     "new_title": "新規プロジェクト",
     "name_ph": "例: enclosure v2"
-  }
+  },
+  "parts_title": "パーツ",
+  "part_add": "パーツを追加",
+  "part_add_title": "空のパーツを作成 — 名前を付けてそこに生成",
+  "part_name_ph": "パーツ名",
+  "part_untitled": "無題のパーツ",
+  "part_rename_title": "パーツ名を変更",
+  "part_actions": "パーツ操作",
+  "part_empty": "バージョンがありません — このパーツに生成してください。",
+  "part_delete_title": "パーツを削除しますか？",
+  "parts_empty_hint": "まだ何もありません — 最初のパーツを生成してください。",
+  "gen_into_part": "パーツへ",
+  "gen_new_part": "新しいパーツ",
+  "part_delete_body_other": "{{name}} とその {{count}} 件のバージョンを削除します。実行中のジョブはキャンセルされます。",
+  "part_deleted_other": "パーツを削除しました — {{count}} 件のバージョンを削除。",
+  "parts_count_other": "{{count}} 個のパーツ",
+  "parts_ungrouped": "未分類"
 }

@@ -47,5 +47,24 @@
     "edit_title": "Editar projeto",
     "new_title": "Novo projeto",
     "name_ph": "ex.: carcaça v2"
-  }
+  },
+  "parts_title": "Peças",
+  "part_add": "Adicionar peça",
+  "part_add_title": "Criar uma peça vazia — renomeie-a e gere dentro dela",
+  "part_name_ph": "Nome da peça",
+  "part_untitled": "Peça sem nome",
+  "part_rename_title": "Renomear peça",
+  "part_actions": "Ações da peça",
+  "part_empty": "Ainda sem versões — gere dentro desta peça.",
+  "part_delete_title": "Excluir peça?",
+  "parts_empty_hint": "Nada aqui ainda — gere a primeira peça.",
+  "gen_into_part": "Na peça",
+  "gen_new_part": "Nova peça",
+  "part_delete_body_one": "Exclui {{name}} e sua {{count}} versão. Trabalhos em execução são cancelados.",
+  "part_delete_body_other": "Exclui {{name}} e todas as suas {{count}} versões. Trabalhos em execução são cancelados.",
+  "part_deleted_one": "Peça excluída — {{count}} versão removida.",
+  "part_deleted_other": "Peça excluída — {{count}} versões removidas.",
+  "parts_count_one": "{{count}} peça",
+  "parts_count_other": "{{count}} peças",
+  "parts_ungrouped": "Não agrupado"
 }

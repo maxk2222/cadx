@@ -47,6 +47,7 @@ async def _new_version(client: AsyncClient, pid: str, prompt: str) -> str:
     async with session_scope() as db:
         v = Version(
             project_id=uuid.UUID(pid),
+            part_id=uuid.uuid4(),
             number=int(uuid.uuid4().int % 1_000_000),
             kind=VersionKind.generate,
             prompt=prompt,

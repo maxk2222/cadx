@@ -165,7 +165,9 @@ export default function ProjectsPage() {
                     <div className="mt-0.5 truncate text-sm text-faint">{p.description}</div>
                   )}
                   <div className="mt-1.5 text-xs text-faint/70">
-                    {t("versions_count", { count: p.version_count })} ·{" "}
+                    {t("versions_count", { count: p.version_count })}
+                    {p.parts_count > 1 && ` · ${t("parts_count", { count: p.parts_count })}`}
+                    {" · "}
                     {t("updated", { at: timeAgo(p.updated_at) })}
                   </div>
                 </div>

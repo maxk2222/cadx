@@ -6,6 +6,7 @@ except redis/arq transport itself.
 
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 
 import pytest
@@ -61,6 +62,7 @@ async def _mk_version() -> tuple[Job, Version]:
         await db.flush()
         v = Version(
             project_id=p.id,
+            part_id=uuid.uuid4(),
             number=1,
             kind=VersionKind.generate,
             prompt="a 40x20x10 block",
@@ -168,6 +170,7 @@ async def test_run_params_job_mesh_parent(_db, monkeypatch):
         await db.flush()
         parent = Version(
             project_id=p.id,
+            part_id=uuid.uuid4(),
             number=1,
             kind=VersionKind.generate,
             prompt="organic knob",
@@ -182,6 +185,7 @@ async def test_run_params_job_mesh_parent(_db, monkeypatch):
         await db.flush()
         child = Version(
             project_id=p.id,
+            part_id=uuid.uuid4(),
             number=2,
             parent_id=parent.id,
             kind=VersionKind.params,
@@ -244,6 +248,7 @@ async def test_run_params_job_mesh_ops_replayed(_db, monkeypatch):
         await db.flush()
         parent = Version(
             project_id=p.id,
+            part_id=uuid.uuid4(),
             number=1,
             kind=VersionKind.generate,
             prompt="organic knob",
@@ -258,6 +263,7 @@ async def test_run_params_job_mesh_ops_replayed(_db, monkeypatch):
         await db.flush()
         child = Version(
             project_id=p.id,
+            part_id=uuid.uuid4(),
             number=2,
             parent_id=parent.id,
             kind=VersionKind.params,

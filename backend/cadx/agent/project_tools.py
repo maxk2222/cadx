@@ -31,6 +31,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from sqlalchemy import func
 from sqlmodel import col, select
 
 from cadx import storage
@@ -52,6 +53,7 @@ from cadx.db.models import (
     Job,
     JobStatus,
     LibraryPart,
+    Part,
     Project,
     ProjectSettings,
     Version,
@@ -121,9 +123,20 @@ CHAT_INFO_TOOLS = [
     _fn(
         "list_versions",
         "List this project's versions (newest first): id, number, kind, "
-        "status, prompt, score. Call before editing so you target a real "
-        "version id.",
-        {"limit": _i("max results, default 20")},
+        "status, prompt, score, part. Call before editing so you target a "
+        "real version id. Pass part_id to scope to one part.",
+        {
+            "limit": _i("max results, default 20"),
+            "part_id": _s("optional — only versions of this part (see list_parts)"),
+        },
+        [],
+    ),
+    _fn(
+        "list_parts",
+        "List this project's parts: id, number (P1, P2…), name, "
+        "version_count. Each part owns an independent version tree — call "
+        "this to decide where NEW geometry belongs.",
+        {},
         [],
     ),
     _fn(
@@ -174,10 +187,11 @@ _WAIT = {
 CHAT_ACTION_TOOLS = [
     _fn(
         "generate_part",
-        "Create a NEW part: spawns a generate job (LLM designs + verifies a "
-        "parametric model, or image→3D mesh generation). mode: auto|cad|mesh|"
-        "hybrid|topopt. Pass asset_ids of uploaded images when the request "
-        "references them.",
+        "Create a NEW version: spawns a generate job (LLM designs + verifies "
+        "a parametric model, or image→3D mesh generation). mode: auto|cad|"
+        "mesh|hybrid|topopt. Pass asset_ids of uploaded images when the "
+        "request references them. With no part the request becomes its own "
+        "new part; pass part_id/part_name to add it to an existing part.",
         {
             "prompt": _s("complete part description — fold in everything the user said"),
             "mode": {
@@ -185,6 +199,14 @@ CHAT_ACTION_TOOLS = [
                 "enum": ["auto", "cad", "mesh", "hybrid", "topopt"],
                 "description": "generation mode, default auto",
             },
+            "part_id": _s(
+                "target part id from list_parts — the new version joins that "
+                "part's tree (default: create a new part)"
+            ),
+            "part_name": _s(
+                "name of a NEW part to create, or the exact name of an "
+                "existing part to reuse"
+            ),
             "asset_ids": {
                 "type": "array",
                 "items": _s("asset id"),
@@ -679,16 +701,49 @@ class ProjectToolSession(ToolSession):
 
     # -- read tools ----------------------------------------------------------- #
 
+    async def _tool_list_parts(self, a: dict[str, Any]) -> dict[str, Any]:
+        async with session_scope() as db:
+            await self._project(db)  # refreshes self._pid from the live binding
+            rows = await db.execute(
+                select(Part).where(Part.project_id == self._pid).order_by(col(Part.number))
+            )
+            parts = list(rows.scalars().all())
+            counts = await db.execute(
+                select(Version.part_id, func.count())
+                .where(Version.project_id == self._pid)
+                .group_by(col(Version.part_id))
+            )
+            by_part = dict(counts.all())
+        return {
+            "ok": True,
+            "parts": [
+                {
+                    "id": str(p.id),
+                    "number": p.number,
+                    "name": p.name,
+                    "version_count": int(by_part.get(p.id, 0)),
+                }
+                for p in parts
+            ],
+        }
+
     async def _tool_list_versions(self, a: dict[str, Any]) -> dict[str, Any]:
         limit = max(1, min(50, int(a.get("limit", 20) or 20)))
         async with session_scope() as db:
             await self._project(db)  # refreshes self._pid from the live binding
-            rows = await db.execute(
+            stmt = (
                 select(Version)
                 .where(Version.project_id == self._pid)
                 .order_by(col(Version.number).desc())
                 .limit(limit)
             )
+            part_filter = str(a.get("part_id") or "").strip()
+            if part_filter:
+                try:
+                    stmt = stmt.where(Version.part_id == uuid.UUID(part_filter))
+                except ValueError:
+                    raise SpawnError("invalid part_id", status=422) from None
+            rows = await db.execute(stmt)
             versions = rows.scalars().all()
             job_rows = await db.execute(
                 select(Job)
@@ -696,6 +751,14 @@ class ProjectToolSession(ToolSession):
                 .order_by(col(Job.created_at).desc())
             )
             jobs = list(job_rows.scalars().all())
+            part_rows = await db.execute(
+                select(Part).where(col(Part.id).in_({v.part_id for v in versions}))
+            )
+            parts = {p.id: p for p in part_rows.scalars().all()}
+        part_label = {
+            pid: f"P{p.number}{f' · {p.name}' if p.name else ''}"
+            for pid, p in parts.items()
+        }
         active = {
             str(j.version_id): str(j.id)
             for j in jobs
@@ -712,6 +775,8 @@ class ProjectToolSession(ToolSession):
                     "prompt": (v.prompt or "")[:120],
                     "score": v.score,
                     "resolved_mode": v.resolved_mode,
+                    "part_id": str(v.part_id),
+                    "part": part_label.get(v.part_id),
                     "active_job": active.get(str(v.id)),
                 }
                 for v in versions

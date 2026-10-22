@@ -45,6 +45,7 @@ class ProjectOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     version_count: int = 0
+    parts_count: int = 0
     latest_version_status: VersionStatus | None = None
     latest_thumbnail_url: str | None = None
     latest_version_id: uuid.UUID | None = None
@@ -102,12 +103,36 @@ class RunOptions(BaseModel):
     image_edit_model: str | None = Field(default=None, max_length=80)
 
 
+class PartCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(default="", max_length=200)
+
+
+class PartUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, max_length=200)
+
+
+class PartOut(BaseModel):
+    id: uuid.UUID
+    project_id: uuid.UUID
+    number: int
+    name: str
+    version_count: int = 0
+    thumbnail_url: str | None = None
+    created_at: datetime
+
+
 class GenerateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     prompt: str
     asset_ids: list[uuid.UUID] = Field(default_factory=list)
     library_part_ids: list[uuid.UUID] = Field(default_factory=list)
+    part_id: uuid.UUID | None = None  # target part; omitted → new auto-named part
+    part_name: str | None = None  # name a NEW part, or reuse an existing by name
     mode: Literal["auto", "cad", "mesh", "hybrid", "topopt"] | None = None
     options: RunOptions | None = None
 
@@ -234,6 +259,8 @@ class MeshgenRequest(BaseModel):
     model: str = Field(default="", max_length=80)
     seed: int = Field(default=0, ge=0)
     post: dict[str, Any] = Field(default_factory=dict)
+    part_id: uuid.UUID | None = None  # target part; omitted → new auto-named part
+    part_name: str | None = None  # name a NEW part, or reuse an existing by name
 
 
 class ParamsRequest(BaseModel):
@@ -427,6 +454,7 @@ class VersionUpdate(BaseModel):
 class VersionSummary(BaseModel):
     id: uuid.UUID
     project_id: uuid.UUID
+    part_id: uuid.UUID
     parent_id: uuid.UUID | None
     number: int
     kind: VersionKind
@@ -529,6 +557,8 @@ class JobListItem(JobOut):
     prompt: str = ""
     project_id: uuid.UUID
     project_name: str = ""
+    part_id: uuid.UUID | None = None
+    part_name: str = ""
 
 
 class EnqueueResponse(BaseModel):
@@ -987,6 +1017,7 @@ class StatsTotals(BaseModel):
     jobs: int = 0
     assets: int = 0
     artifacts: int = 0
+    parts: int = 0
     library_parts: int = 0
     artifact_bytes: int = 0
     prompt_tokens: int = 0

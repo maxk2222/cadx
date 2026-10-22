@@ -39,6 +39,7 @@ from cadx.db.models import (
     Job,
     JobStatus,
     LibraryPart,
+    Part,
     Project,
     Version,
     VersionStatus,
@@ -363,6 +364,7 @@ async def stats(days: int = Query(0, ge=0, le=3650), db: AsyncSession = Depends(
     )
     n_projects = await _count(Project, Project.created_at)
     n_assets = await _count(Asset, Asset.created_at)
+    n_parts = await _count(Part, Part.created_at)
     n_library = await _count(LibraryPart, LibraryPart.created_at)
 
     aq = select(Artifact.kind, func.count(), func.coalesce(func.sum(Artifact.size), 0)).group_by(
@@ -417,6 +419,7 @@ async def stats(days: int = Query(0, ge=0, le=3650), db: AsyncSession = Depends(
             jobs=ja.total,
             assets=n_assets,
             artifacts=sum(int(r[1]) for r in artifact_rows),
+            parts=n_parts,
             library_parts=n_library,
             artifact_bytes=sum(int(r[2]) for r in artifact_rows),
             prompt_tokens=ta.prompt_tokens,

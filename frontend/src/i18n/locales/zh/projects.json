@@ -39,5 +39,21 @@
     "edit_title": "编辑项目",
     "new_title": "新建项目",
     "name_ph": "例如 enclosure v2"
-  }
+  },
+  "parts_title": "部件",
+  "part_add": "添加部件",
+  "part_add_title": "创建空部件——重命名后在其中生成",
+  "part_name_ph": "部件名称",
+  "part_untitled": "未命名部件",
+  "part_rename_title": "重命名部件",
+  "part_actions": "部件操作",
+  "part_empty": "暂无版本——在此部件中生成。",
+  "part_delete_title": "删除部件？",
+  "parts_empty_hint": "这里还没有内容——生成第一个部件。",
+  "gen_into_part": "生成到部件",
+  "gen_new_part": "新部件",
+  "part_delete_body_other": "删除 {{name}} 及其 {{count}} 个版本。进行中的任务将被取消。",
+  "part_deleted_other": "部件已删除——已移除 {{count}} 个版本。",
+  "parts_count_other": "{{count}} 个部件",
+  "parts_ungrouped": "未分组"
 }

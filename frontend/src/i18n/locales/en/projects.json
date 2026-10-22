@@ -43,5 +43,24 @@
     "edit_title": "Edit project",
     "new_title": "New project",
     "name_ph": "e.g. enclosure v2"
-  }
+  },
+  "parts_title": "Parts",
+  "part_add": "Add part",
+  "part_add_title": "Create an empty part — rename it, then generate into it",
+  "part_name_ph": "Part name",
+  "part_untitled": "Untitled part",
+  "part_rename_title": "Rename part",
+  "part_actions": "Part actions",
+  "part_empty": "No versions yet — generate into this part.",
+  "part_delete_title": "Delete part?",
+  "parts_empty_hint": "Nothing here yet — generate the first part.",
+  "gen_into_part": "Into part",
+  "gen_new_part": "New part",
+  "part_delete_body_one": "Deletes {{name}} and its {{count}} version. Running jobs are cancelled.",
+  "part_delete_body_other": "Deletes {{name}} and all {{count}} of its versions. Running jobs are cancelled.",
+  "part_deleted_one": "Part deleted — {{count}} version removed.",
+  "part_deleted_other": "Part deleted — {{count}} versions removed.",
+  "parts_count_one": "{{count}} part",
+  "parts_count_other": "{{count}} parts",
+  "parts_ungrouped": "Ungrouped"
 }

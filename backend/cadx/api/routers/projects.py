@@ -20,6 +20,7 @@ from cadx.db.models import (
     Chat,
     ChatMessage,
     Job,
+    Part,
     Project,
     Version,
     VersionStatus,
@@ -71,6 +72,7 @@ async def _latest_meta(
 def _out(
     p: Project,
     count: int = 0,
+    parts_count: int = 0,
     latest_version_id: uuid.UUID | None = None,
     latest_status: VersionStatus | None = None,
     latest_thumbnail_url: str | None = None,
@@ -83,6 +85,7 @@ def _out(
         created_at=p.created_at,
         updated_at=p.updated_at,
         version_count=count,
+        parts_count=parts_count,
         latest_version_status=latest_status,
         latest_thumbnail_url=latest_thumbnail_url,
         latest_version_id=latest_version_id,
@@ -117,8 +120,11 @@ async def list_projects(db: AsyncSession = Depends(get_session)):
         c = await db.execute(
             select(func.count()).select_from(Version).where(Version.project_id == p.id)
         )
+        pc = await db.execute(
+            select(func.count()).select_from(Part).where(Part.project_id == p.id)
+        )
         vid, status, thumb = await _latest_meta(p.id, db)
-        out.append(_out(p, c.scalar_one(), vid, status, thumb))
+        out.append(_out(p, c.scalar_one(), pc.scalar_one(), vid, status, thumb))
     return out
 
 
@@ -130,8 +136,11 @@ async def get_project(project_id: uuid.UUID, db: AsyncSession = Depends(get_sess
     c = await db.execute(
         select(func.count()).select_from(Version).where(Version.project_id == p.id)
     )
+    pc = await db.execute(
+        select(func.count()).select_from(Part).where(Part.project_id == p.id)
+    )
     vid, status, thumb = await _latest_meta(p.id, db)
-    return _out(p, c.scalar_one(), vid, status, thumb)
+    return _out(p, c.scalar_one(), pc.scalar_one(), vid, status, thumb)
 
 
 @router.patch("/{project_id}", response_model=ProjectOut)
@@ -164,6 +173,7 @@ async def delete_project(project_id: uuid.UUID, db: AsyncSession = Depends(get_s
     await db.execute(sa_delete(Job).where(col(Job.version_id).in_(vids)))
     await db.execute(sa_delete(Artifact).where(col(Artifact.version_id).in_(vids)))
     await db.execute(sa_delete(Version).where(col(Version.project_id) == project_id))
+    await db.execute(sa_delete(Part).where(col(Part.project_id) == project_id))
     await db.execute(sa_delete(Asset).where(col(Asset.project_id) == project_id))
     # chats bound to the project go too — the FK would otherwise fire
     cids = select(Chat.id).where(col(Chat.project_id) == project_id)

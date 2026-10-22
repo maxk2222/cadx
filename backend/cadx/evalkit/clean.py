@@ -51,7 +51,7 @@ async def wipe_db(
 
     Guard: refuses while jobs are queued/running/waiting unless `force`.
     Order follows the model FK graph (verified against delete_project):
-    AgentTrace -> Job -> Artifact -> Version -> Asset -> ChatMessage ->
+    AgentTrace -> Job -> Artifact -> Version -> Part -> Asset -> ChatMessage ->
     Chat -> LibraryPart -> Project.
     """
     from sqlalchemy import delete as sa_delete
@@ -66,6 +66,7 @@ async def wipe_db(
         ChatMessage,
         Job,
         LibraryPart,
+        Part,
         Project,
         Version,
     )
@@ -84,6 +85,7 @@ async def wipe_db(
             ("job", Job),
             ("artifact", Artifact),
             ("version", Version),
+            ("part", Part),
             ("asset", Asset),
             ("chatmessage", ChatMessage),
             ("chat", Chat),

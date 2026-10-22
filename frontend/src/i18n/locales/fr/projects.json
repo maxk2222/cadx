@@ -43,5 +43,24 @@
     "edit_title": "Modifier le projet",
     "new_title": "Nouveau projet",
     "name_ph": "p. ex. boîtier v2"
-  }
+  },
+  "parts_title": "Pièces",
+  "part_add": "Ajouter une pièce",
+  "part_add_title": "Créer une pièce vide — renommez-la puis générez dedans",
+  "part_name_ph": "Nom de la pièce",
+  "part_untitled": "Pièce sans nom",
+  "part_rename_title": "Renommer la pièce",
+  "part_actions": "Actions de la pièce",
+  "part_empty": "Aucune version — générez dans cette pièce.",
+  "part_delete_title": "Supprimer la pièce ?",
+  "parts_empty_hint": "Rien ici — générez la première pièce.",
+  "gen_into_part": "Dans la pièce",
+  "gen_new_part": "Nouvelle pièce",
+  "part_delete_body_one": "Supprime {{name}} et sa {{count}} version. Les tâches en cours sont annulées.",
+  "part_delete_body_other": "Supprime {{name}} et toutes ses {{count}} versions. Les tâches en cours sont annulées.",
+  "part_deleted_one": "Pièce supprimée — {{count}} version supprimée.",
+  "part_deleted_other": "Pièce supprimée — {{count}} versions supprimées.",
+  "parts_count_one": "{{count}} pièce",
+  "parts_count_other": "{{count}} pièces",
+  "parts_ungrouped": "Non groupé"
 }

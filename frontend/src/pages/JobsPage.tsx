@@ -80,6 +80,15 @@ const JobRow = memo(function JobRow({
           {job.project_name}
         </Link>
         <span className="text-sm text-faint">· v{job.version_number}</span>
+        {job.part_name && (
+          <Link
+            to={`/projects/${job.project_id}${job.part_id ? `?part=${job.part_id}` : ""}`}
+            onClick={(e) => e.stopPropagation()}
+            className="text-xs text-faint transition-colors hover:text-brand-300"
+          >
+            · {job.part_name}
+          </Link>
+        )}
         <StatusBadge status={job.version_status} />
         <span className="flex-1" />
         {best != null && (

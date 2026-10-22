@@ -101,6 +101,7 @@ async def test_spawn_code_inherits_parent_inputs():
         await db.flush()
         parent = Version(
             project_id=p.id,
+            part_id=uuid.uuid4(),
             number=1,
             kind=VersionKind.generate,
             prompt="block",
@@ -191,6 +192,7 @@ async def _mk_code_version(code: str = CODE_NO_PARAMS) -> tuple[uuid.UUID, uuid.
         await db.flush()
         v = Version(
             project_id=p.id,
+            part_id=uuid.uuid4(),
             number=1,
             kind=VersionKind.code,
             prompt="run my code",
@@ -285,6 +287,7 @@ async def test_run_params_job_prefers_version_code(monkeypatch):
         await db.flush()
         parent = Version(
             project_id=p.id,
+            part_id=uuid.uuid4(),
             number=1,
             kind=VersionKind.generate,
             prompt="block",
@@ -296,6 +299,7 @@ async def test_run_params_job_prefers_version_code(monkeypatch):
         await db.flush()
         child = Version(
             project_id=p.id,
+            part_id=uuid.uuid4(),
             parent_id=parent.id,
             number=2,
             kind=VersionKind.params,
@@ -335,6 +339,7 @@ async def _mk_terminal_job(
         await db.flush()
         v = Version(
             project_id=p.id,
+            part_id=uuid.uuid4(),
             number=1,
             kind=kind,
             prompt="src",
@@ -414,6 +419,7 @@ async def _mk_parent_and_child(
         await db.flush()
         parent = Version(
             project_id=p.id,
+            part_id=uuid.uuid4(),
             number=1,
             kind=parent_kind,
             prompt="base",
@@ -424,6 +430,7 @@ async def _mk_parent_and_child(
         await db.flush()
         child = Version(
             project_id=p.id,
+            part_id=uuid.uuid4(),
             parent_id=parent.id,
             number=2,
             kind=child_kind,
@@ -559,6 +566,7 @@ async def test_spawn_restart_fem_same_version():
         await db.flush()
         v = Version(
             project_id=p.id,
+            part_id=uuid.uuid4(),
             number=1,
             kind=VersionKind.generate,
             prompt="bracket",
@@ -608,6 +616,7 @@ async def test_spawn_restart_fem_without_stored_request_409s():
         await db.flush()
         v = Version(
             project_id=p.id,
+            part_id=uuid.uuid4(),
             number=1,
             kind=VersionKind.generate,
             prompt="bracket",
@@ -845,6 +854,7 @@ async def test_run_meshgen_job_generates_processes_and_succeeds(monkeypatch):
         await db.flush()
         v = Version(
             project_id=p.id,
+            part_id=uuid.uuid4(),
             number=1,
             kind=VersionKind.meshgen,
             prompt="a knob",

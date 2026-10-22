@@ -277,5 +277,6 @@
   "dfm_footer": "Contrôles heuristiques — vérifiez toujours avant fabrication.",
   "dfm_sev_high": "élevé",
   "dfm_sev_medium": "moyen",
-  "dfm_sev_low": "faible"
+  "dfm_sev_low": "faible",
+  "part_title": "Pièce"
 }

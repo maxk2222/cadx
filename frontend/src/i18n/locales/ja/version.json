@@ -272,5 +272,6 @@
   "dfm_footer": "ヒューリスティックチェック — 製造前に必ず確認してください。",
   "dfm_sev_high": "高",
   "dfm_sev_medium": "中",
-  "dfm_sev_low": "低"
+  "dfm_sev_low": "低",
+  "part_title": "パーツ"
 }

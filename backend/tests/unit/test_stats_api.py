@@ -92,6 +92,7 @@ async def test_stats_seeded(client):
         await db.flush()
         v1 = Version(
             project_id=p.id,
+            part_id=uuid.uuid4(),
             number=1,
             kind=VersionKind.generate,
             prompt="plate",
@@ -111,6 +112,7 @@ async def test_stats_seeded(client):
         )
         v2 = Version(
             project_id=p.id,
+            part_id=uuid.uuid4(),
             number=2,
             kind=VersionKind.edit,
             prompt="plate v2",
@@ -123,6 +125,7 @@ async def test_stats_seeded(client):
         )
         v_old = Version(
             project_id=p.id,
+            part_id=uuid.uuid4(),
             number=3,
             kind=VersionKind.generate,
             prompt="ancient",

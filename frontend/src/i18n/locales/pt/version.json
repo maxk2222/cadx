@@ -282,5 +282,6 @@
   "dfm_footer": "Verificações heurísticas — sempre verifique antes de fabricar.",
   "dfm_sev_high": "alto",
   "dfm_sev_medium": "médio",
-  "dfm_sev_low": "baixo"
+  "dfm_sev_low": "baixo",
+  "part_title": "Peça"
 }

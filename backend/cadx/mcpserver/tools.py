@@ -45,6 +45,7 @@ from cadx.db.models import (
     Job,
     JobStatus,
     JobType,
+    Part,
     Version,
     VersionStatus,
 )
@@ -196,6 +197,14 @@ MCP_TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "description": "PARAMS overrides to bake into the version",
             },
             "parent_version_id": _s("optional parent — creates a child version"),
+            "part_id": _s(
+                "target part id from list_parts (root submissions only — a "
+                "child always inherits its parent's part)"
+            ),
+            "part_name": _s(
+                "name of a NEW part, or exact name of an existing part "
+                "(root submissions only)"
+            ),
             "prompt": _s("version label / provenance note"),
             **_WAIT,
         },
@@ -226,6 +235,10 @@ MCP_TOOL_SCHEMAS: list[dict[str, Any]] = [
             "subject": _s("what the images show — guides adapter selection"),
             "model": _s("adapter id — empty = runtime default (see mesh_health)"),
             "seed": _i("generator seed, default 0"),
+            "part_id": _s("target part id from list_parts — default: a new part"),
+            "part_name": _s(
+                "name of a NEW part, or exact name of an existing part"
+            ),
             "post": {
                 "type": "object",
                 "description": "post-processing overrides (up/front/scale/"
@@ -617,6 +630,8 @@ async def _h_submit_code(session: Any, args: dict[str, Any]) -> dict[str, Any]:
             code,
             params=args.get("params") or None,
             parent=parent,
+            part_id=str(args.get("part_id") or "") or None,
+            part_name=str(args.get("part_name") or "") or None,
             prompt=str(args.get("prompt") or ""),
             enqueue_fn=_enqueue_fn(session),
         )
@@ -687,6 +702,8 @@ async def _h_mesh_generate(session: Any, args: dict[str, Any]) -> dict[str, Any]
             model=str(args.get("model") or ""),
             seed=int(args.get("seed") or 0),
             post=args.get("post") or None,
+            part_id=str(args.get("part_id") or "") or None,
+            part_name=str(args.get("part_name") or "") or None,
             prompt=str(args.get("prompt") or args.get("subject") or "mcp mesh generation"),
             enqueue_fn=_enqueue_fn(session),
         )
@@ -821,13 +838,14 @@ async def _h_list_jobs(session: Any, args: dict[str, Any]) -> dict[str, Any]:
             await session._project(db)
             pid = _session_pid(session)
             rows = await db.execute(
-                select(Job, Version)
+                select(Job, Version, Part)
                 .join(Version, Job.version_id == Version.id)
+                .outerjoin(Part, Version.part_id == Part.id)
                 .where(Version.project_id == pid)
                 .order_by(col(Job.created_at).desc())
                 .limit(limit)
             )
-            pairs = rows.all()
+            triples = rows.all()
     except SpawnError as e:
         return {"ok": False, "error": str(e)}
     return {
@@ -841,9 +859,15 @@ async def _h_list_jobs(session: Any, args: dict[str, Any]) -> dict[str, Any]:
                 "progress": j.progress,
                 "version_id": str(j.version_id),
                 "version_number": v.number,
+                "part_id": str(v.part_id),
+                "part": (
+                    f"P{pt.number}{f' · {pt.name}' if pt.name else ''}"
+                    if pt is not None
+                    else None
+                ),
                 "created_at": j.created_at.isoformat(),
             }
-            for j, v in pairs
+            for j, v, pt in triples
         ],
     }
 

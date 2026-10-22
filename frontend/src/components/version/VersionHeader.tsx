@@ -1,10 +1,10 @@
-import { Gauge, GitCompareArrows, Pencil, Trash2 } from "lucide-react";
+import { Gauge, GitCompareArrows, Package, Pencil, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 import { fmtDuration, fmtSecs, fmtTokens } from "../../lib/format";
 import { stepLabel } from "../../lib/steps";
-import type { Job, VersionDetail } from "../../lib/types";
+import type { Job, Part, VersionDetail } from "../../lib/types";
 import StatusBadge from "../StatusBadge";
 import { OptionChips } from "../OptionsPanel";
 import { Btn, Chip, Crumbs, OverflowMenu, StatRow, inputCls } from "../ui";
@@ -16,6 +16,7 @@ export default function VersionHeader({
   v,
   projectName,
   projectId,
+  part,
   compareOpen,
   canCompare,
   onToggleCompare,
@@ -25,6 +26,8 @@ export default function VersionHeader({
   v: VersionDetail;
   projectName: string | undefined;
   projectId: string;
+  /** owning part — chip links back to its section on the project page */
+  part?: Part | null;
   compareOpen: boolean;
   canCompare: boolean;
   onToggleCompare: () => void;
@@ -98,6 +101,14 @@ export default function VersionHeader({
         <Chip tone="zinc" className="uppercase">
           {v.kind}
         </Chip>
+        {part && (
+          <Link to={`/projects/${projectId}?part=${part.id}`}>
+            <Chip tone="blue" title={t("part_title")}>
+              <Package className="h-3 w-3" /> P{part.number}
+              {part.name ? ` · ${part.name}` : ""}
+            </Chip>
+          </Link>
+        )}
         {(v.gen_mode || v.resolved_mode) && (
           <Chip
             tone={

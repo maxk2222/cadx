@@ -26,6 +26,7 @@ import type {
   MeshQueue,
   OptimizeSpec,
   OrganicParams,
+  Part,
   Project,
   ProviderTestResult,
   RegionSpec,
@@ -161,11 +162,19 @@ export const api = {
     mode?: GenMode,
     options?: RunOptions,
     library_part_ids?: string[],
+    part_id?: string | null,
   ) =>
     req<{ version_id: string; job_id: string }>(
       `/projects/${pid}/generate`,
-      json({ prompt, asset_ids, library_part_ids: library_part_ids ?? [], mode, options })
+      json({ prompt, asset_ids, library_part_ids: library_part_ids ?? [], part_id: part_id ?? null, mode, options })
     ),
+  listParts: (pid: string) => req<Part[]>(`/projects/${pid}/parts`),
+  createPart: (pid: string, name: string) =>
+    req<Part>(`/projects/${pid}/parts`, json({ name })),
+  updatePart: (id: string, name: string) =>
+    req<Part>(`/parts/${id}`, patch({ name })),
+  deletePart: (id: string) =>
+    req<{ ok: boolean; versions_deleted: number }>(`/parts/${id}`, { method: "DELETE" }),
   edit: (vid: string, prompt: string, asset_ids: string[], opts?: { mode?: GenMode; regenerate_mesh?: boolean; options?: RunOptions; library_part_ids?: string[] }) =>
     req<{ version_id: string; job_id: string }>(
       `/versions/${vid}/edit`,
@@ -203,7 +212,10 @@ export const api = {
   saveEditorState: (vid: string, ui_editor: Record<string, unknown>) =>
     req<{ ok: boolean }>(`/versions/${vid}/editor-state`, patch({ ui_editor })),
 
-  listVersions: (pid: string) => req<VersionSummary[]>(`/projects/${pid}/versions`),
+  listVersions: (pid: string, partId?: string) =>
+    req<VersionSummary[]>(
+      `/projects/${pid}/versions${partId ? `?part_id=${encodeURIComponent(partId)}` : ""}`
+    ),
   getVersion: (id: string) => req<VersionDetail>(`/versions/${id}`),
   updateVersion: (id: string, body: { name?: string }) =>
     req<VersionDetail>(`/versions/${id}`, patch(body)),

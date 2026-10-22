@@ -460,6 +460,7 @@ async def test_project_card_best_thumbnail(client):
         p = await s.get(Project, uuid.UUID(pid))
         v1 = Version(
             project_id=p.id,
+            part_id=uuid.uuid4(),
             number=1,
             kind=VersionKind.generate,
             prompt="good",
@@ -468,6 +469,7 @@ async def test_project_card_best_thumbnail(client):
         )
         v2 = Version(
             project_id=p.id,
+            part_id=uuid.uuid4(),
             number=2,
             kind=VersionKind.edit,
             prompt="broken rerun",

@@ -277,5 +277,6 @@
   "dfm_footer": "Heuristische Prüfungen — vor der Fertigung immer verifizieren.",
   "dfm_sev_high": "hoch",
   "dfm_sev_medium": "mittel",
-  "dfm_sev_low": "niedrig"
+  "dfm_sev_low": "niedrig",
+  "part_title": "Teil"
 }

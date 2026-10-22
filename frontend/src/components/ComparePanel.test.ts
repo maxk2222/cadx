@@ -16,6 +16,7 @@ import {
 const vs = (over: Partial<VersionSummary> = {}): VersionSummary => ({
   id: "id-0001",
   project_id: "p",
+  part_id: "pt-1",
   parent_id: null,
   number: 1,
   kind: "generate",

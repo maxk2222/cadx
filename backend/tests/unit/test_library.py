@@ -69,6 +69,7 @@ async def test_save_version_as_template_and_step(client):
     async with session_scope() as db:
         v = Version(
             project_id=uuid.UUID(pid),
+            part_id=uuid.uuid4(),
             number=1,
             kind=VersionKind.generate,
             code="PARAMS = {}\nresult = None\n",

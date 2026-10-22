@@ -1345,6 +1345,7 @@ async def _maybe_spawn_refine(
     ).scalar() or 0
     child = Version(
         project_id=parent.project_id,
+        part_id=parent.part_id,
         parent_id=parent.id,
         number=max_num + 1,
         kind=VersionKind.refine,

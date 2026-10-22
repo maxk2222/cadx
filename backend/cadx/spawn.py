@@ -104,15 +104,40 @@ async def spawn_version_job(
     func: str,
     prompt: str,
     parent: Version | None = None,
+    part_id: uuid.UUID | str | None = None,
+    part_name: str | None = None,
     asset_ids: list[uuid.UUID | str] | None = None,
     library_part_ids: list[uuid.UUID | str] | None = None,
     extra_version: dict | None = None,
     extra_job: dict | None = None,
     enqueue_fn: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None,
 ) -> tuple[Version, Job]:
-    """Generic Version+Job+enqueue — the old `_spawn` moved here verbatim."""
+    """Generic Version+Job+enqueue — the old `_spawn` moved here verbatim.
+
+    Part resolution for NEW ROOTS: `part_id`/`part_name` pick the owning
+    part (validated/created via cadx.parts.resolve_part); omitted → a new
+    part is auto-created from the prompt. Children always inherit
+    `parent.part_id` — part args on a child spawn are rejected."""
+    from cadx import parts as parts_svc  # lazy — parts.py imports SpawnError from here
+
+    if parent is not None:
+        if part_id is not None or part_name:
+            raise SpawnError(
+                "part selection only applies to new root versions", status=409
+            )
+        resolved_part_id = parent.part_id
+    else:
+        resolved = await parts_svc.resolve_part(
+            db,
+            project.id,
+            part_id=part_id,
+            part_name=part_name,
+            prompt_for_name=prompt,
+        )
+        resolved_part_id = resolved.id
     v = Version(
         project_id=project.id,
+        part_id=resolved_part_id,
         parent_id=parent.id if parent else None,
         number=await next_version_number(db, project.id),
         kind=kind,
@@ -148,6 +173,8 @@ async def spawn_generate(
     prompt: str,
     *,
     gen_mode: str = "auto",
+    part_id: uuid.UUID | str | None = None,
+    part_name: str | None = None,
     asset_ids: list[uuid.UUID | str] | None = None,
     library_part_ids: list[uuid.UUID | str] | None = None,
     options: dict | None = None,
@@ -168,6 +195,8 @@ async def spawn_generate(
         job_type=JobType.generate,
         func="run_agent_job",
         prompt=prompt,
+        part_id=part_id,
+        part_name=part_name,
         asset_ids=asset_ids,
         library_part_ids=library_part_ids,
         extra_version={"gen_mode": mode, "options": opts},
@@ -228,6 +257,7 @@ async def spawn_params(
         raise SpawnError("version has no code")
     v = Version(
         project_id=parent.project_id,
+        part_id=parent.part_id,
         parent_id=parent.id,
         number=await next_version_number(db, parent.project_id),
         kind=VersionKind.params,
@@ -272,6 +302,7 @@ async def spawn_optimize(
         )
     v = Version(
         project_id=parent.project_id,
+        part_id=parent.part_id,
         parent_id=parent.id,
         number=await next_version_number(db, parent.project_id),
         kind=VersionKind.optimize,
@@ -332,6 +363,7 @@ async def spawn_resample(
         raise SpawnError("version has no stored density field — run optimize first")
     v = Version(
         project_id=parent.project_id,
+        part_id=parent.part_id,
         parent_id=parent.id,
         number=await next_version_number(db, parent.project_id),
         kind=VersionKind.organic if organic_parent else VersionKind.optimize,
@@ -395,6 +427,7 @@ async def spawn_refine(
         raise SpawnError("version is already refined — refine a sibling instead")
     v = Version(
         project_id=parent.project_id,
+        part_id=parent.part_id,
         parent_id=parent.id,
         number=await next_version_number(db, parent.project_id),
         kind=VersionKind.refine,
@@ -453,6 +486,7 @@ async def spawn_organic(
     _check_editable(parent, "restyle")
     v = Version(
         project_id=parent.project_id,
+        part_id=parent.part_id,
         parent_id=parent.id,
         number=await next_version_number(db, parent.project_id),
         kind=VersionKind.organic,
@@ -484,6 +518,8 @@ async def spawn_code(
     *,
     params: dict[str, Any] | None = None,
     parent: Version | None = None,
+    part_id: uuid.UUID | str | None = None,
+    part_name: str | None = None,
     prompt: str = "",
     enqueue_fn: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None,
 ) -> tuple[Version, Job]:
@@ -515,6 +551,8 @@ async def spawn_code(
         func="run_code_job",
         prompt=prompt[:500],
         parent=parent,
+        part_id=part_id,
+        part_name=part_name,
         asset_ids=([uuid.UUID(a) for a in parent.asset_ids] if parent else None),
         library_part_ids=([uuid.UUID(p) for p in parent.library_part_ids] if parent else None),
         extra_version={
@@ -535,6 +573,8 @@ async def spawn_meshgen(
     model: str = "",
     seed: int = 0,
     post: dict | None = None,
+    part_id: uuid.UUID | str | None = None,
+    part_name: str | None = None,
     prompt: str = "",
     enqueue_fn: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None,
 ) -> tuple[Version, Job]:
@@ -557,6 +597,8 @@ async def spawn_meshgen(
         job_type=JobType.meshgen,
         func="run_meshgen_job",
         prompt=(prompt or subject or "mesh generation")[:500],
+        part_id=part_id,
+        part_name=part_name,
         asset_ids=asset_ids,
         extra_version={
             "gen_mode": "mesh",
@@ -738,6 +780,7 @@ async def spawn_restart(  # noqa: C901
     if v.kind in (VersionKind.generate, VersionKind.edit):
         new_v = Version(
             project_id=v.project_id,
+            part_id=v.part_id,
             parent_id=v.parent_id,
             number=await next_version_number(db, v.project_id),
             kind=v.kind,
@@ -780,6 +823,7 @@ async def spawn_restart(  # noqa: C901
             raise SpawnError("parent version missing — cannot restart")
         new_v = Version(
             project_id=v.project_id,
+            part_id=v.part_id,
             parent_id=v.parent_id,
             number=await next_version_number(db, v.project_id),
             kind=VersionKind.params,
@@ -810,6 +854,7 @@ async def spawn_restart(  # noqa: C901
         req = opts.get("optimize_request") or {}
         new_v = Version(
             project_id=v.project_id,
+            part_id=v.part_id,
             parent_id=parent.id,
             number=await next_version_number(db, v.project_id),
             kind=VersionKind.optimize,
@@ -908,6 +953,7 @@ async def spawn_mesh_edit(
     mesh_edit_source(parent)
     v = Version(
         project_id=parent.project_id,
+        part_id=parent.part_id,
         parent_id=parent.id,
         number=await next_version_number(db, parent.project_id),
         kind=VersionKind.mesh_edit,
@@ -988,6 +1034,7 @@ async def spawn_edit_feature(
     feature_edit_source(parent)
     v = Version(
         project_id=parent.project_id,
+        part_id=parent.part_id,
         parent_id=parent.id,
         number=await next_version_number(db, parent.project_id),
         kind=VersionKind.edit,

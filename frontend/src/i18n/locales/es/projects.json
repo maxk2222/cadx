@@ -43,5 +43,24 @@
     "edit_title": "Editar proyecto",
     "new_title": "Nuevo proyecto",
     "name_ph": "p. ej. carcasa v2"
-  }
+  },
+  "parts_title": "Piezas",
+  "part_add": "Añadir pieza",
+  "part_add_title": "Crear una pieza vacía — renómbrala y genera dentro de ella",
+  "part_name_ph": "Nombre de la pieza",
+  "part_untitled": "Pieza sin título",
+  "part_rename_title": "Renombrar pieza",
+  "part_actions": "Acciones de la pieza",
+  "part_empty": "Aún no hay versiones — genera dentro de esta pieza.",
+  "part_delete_title": "¿Eliminar pieza?",
+  "parts_empty_hint": "Nada por aquí — genera la primera pieza.",
+  "gen_into_part": "En pieza",
+  "gen_new_part": "Nueva pieza",
+  "part_delete_body_one": "Elimina {{name}} y su {{count}} versión. Los trabajos en curso se cancelan.",
+  "part_delete_body_other": "Elimina {{name}} y todas sus {{count}} versiones. Los trabajos en curso se cancelan.",
+  "part_deleted_one": "Pieza eliminada — {{count}} versión eliminada.",
+  "part_deleted_other": "Pieza eliminada — {{count}} versiones eliminadas.",
+  "parts_count_one": "{{count}} pieza",
+  "parts_count_other": "{{count}} piezas",
+  "parts_ungrouped": "Sin agrupar"
 }

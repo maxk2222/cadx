@@ -32,6 +32,7 @@ async def _mk_parent(status: VersionStatus = VersionStatus.succeeded) -> Version
         await db.flush()
         v = Version(
             project_id=p.id,
+            part_id=uuid.uuid4(),
             number=1,
             kind=VersionKind.generate,
             prompt="block",
@@ -152,6 +153,7 @@ async def test_organic_resample_guard_accepts_organic_density(client):
     async with async_session() as db:
         v = Version(
             project_id=parent.project_id,
+            part_id=uuid.uuid4(),
             parent_id=parent.id,
             number=2,
             kind=VersionKind.organic,

@@ -277,5 +277,6 @@
   "dfm_footer": "Heuristic checks — always verify before manufacturing.",
   "dfm_sev_high": "high",
   "dfm_sev_medium": "medium",
-  "dfm_sev_low": "low"
+  "dfm_sev_low": "low",
+  "part_title": "Part"
 }

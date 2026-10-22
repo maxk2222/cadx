@@ -207,7 +207,7 @@ async def _mk_version(
     **kw: Any,
 ) -> Version:
     async with session_scope() as db:
-        v = Version(project_id=pid, number=1, kind=kind, status=status, **kw)
+        v = Version(project_id=pid, part_id=uuid.uuid4(), number=1, kind=kind, status=status, **kw)
         db.add(v)
         await db.commit()
         await db.refresh(v)
