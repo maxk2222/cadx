@@ -54,6 +54,7 @@ from cadx.cad.mesh_ops import (
     mesh_to_solid,
     rest_on_xy_center,
     smooth_preserve,
+    solid_body_count,
 )
 from cadx.cad.mesh_ops import (
     load_mesh as load_triangle_mesh,
@@ -3165,15 +3166,21 @@ def run_infill_pipeline(  # noqa: C901
         solver_backend=solver_backend,
     )
 
-    def _verify_export_candidate(candidate: dict[str, Any], suffix: str) -> tuple[Any, int]:
+    def _verify_export_candidate(candidate: dict[str, Any], suffix: str) -> tuple[Any, int, int]:
         candidate_mesh = candidate["mesh"]
         export_domain = voxelize(candidate_mesh, design_pitch, max_elements or s.fem_max_elements)
-        export_bodies = int(
+        # the voxel raster is what the FEM *solves* — nested-but-disconnected
+        # bodies can fuse into one component here; keep it as n_bodies_voxel
+        # so a fusion is measurable against the physical mesh body count
+        voxel_bodies = int(
             ndimage.label(
                 export_domain.solid,
                 structure=ndimage.generate_binary_structure(3, 1),
             )[1]
         )
+        # the printed truth: positive-volume mesh components (inner cavity
+        # walls carry negative volume and are not bodies)
+        solid_bodies = solid_body_count(candidate_mesh)
         report = run_fem_domain(
             export_domain,
             export_domain.solid,
@@ -3191,11 +3198,12 @@ def run_infill_pipeline(  # noqa: C901
             cancelled=cancelled,
             solver_backend=solver_backend,
         )
-        return report, export_bodies
+        return report, solid_bodies, voxel_bodies
 
     export_solve_ok = True
+    n_bodies_voxel: int | None = None
     try:
-        verify_exp, n_bodies_export = _verify_export_candidate(best, "_export")
+        verify_exp, n_bodies_export, n_bodies_voxel = _verify_export_candidate(best, "_export")
     except Exception as e:
         log.warning("infill.verify_export.failed", error=str(e)[:200])
         verify_exp = verify
@@ -3265,8 +3273,11 @@ def run_infill_pipeline(  # noqa: C901
             retry_reasons.append("safety_factor")
         retry_started = time.monotonic()
         retry_candidate = _build_candidate(float(best["density_offset"]), crisp=True)
+        retry_voxel_bodies: int | None = None
         try:
-            retry_report, retry_bodies = _verify_export_candidate(retry_candidate, "_retry_export")
+            retry_report, retry_bodies, retry_voxel_bodies = _verify_export_candidate(
+                retry_candidate, "_retry_export"
+            )
             retry_export_ok = True
         except Exception as e:
             log.warning("infill.verify_export_retry.failed", error=str(e)[:200])
@@ -3318,6 +3329,7 @@ def run_infill_pipeline(  # noqa: C901
             meta = best["meta"]
             n_surface_components = int(opt_mesh.body_count)
             verify_exp, n_bodies_export = retry_report, retry_bodies
+            n_bodies_voxel = retry_voxel_bodies
             export_solve_ok = retry_export_ok
             sf_ratio, volfrac_export = retry_ratio, retry_fraction
         res.topopt["retry"] = {
@@ -3369,9 +3381,22 @@ def run_infill_pipeline(  # noqa: C901
         <= volume_tolerance,
         "target_infeasible": target_infeasible,
         "output_envelope_ok": best.get("output_envelope_ok", True),
+        # physical bodies in the printed mesh (positive-volume components)
         "n_bodies_export": n_bodies_export,
+        # body count of the re-voxelized FEM raster — a fusion below this
+        # number means the export solve verified a fused phantom
+        "n_bodies_voxel": n_bodies_voxel,
+        # boundary surface components incl. inner cavity walls — diagnostic
+        # only, >n_bodies_export is normal for hollow parts
         "n_surface_components": n_surface_components,
         "solver_used": "infill",
+        "sf_baseline": verify_base.worst_safety_factor,
+        "fixed_nodes_baseline": max(
+            (c.reactions.get("fixed_nodes") for c in verify_base.cases), default=None
+        ),
+        "fixed_nodes_export": max(
+            (c.reactions.get("fixed_nodes") for c in verify_exp.cases), default=None
+        ),
     }
     span = float(np.linalg.norm(domain.pitch * np.asarray(domain.dims)))
     comps = [c for c in verification["compliance_export_j"] if c is not None]
@@ -3410,6 +3435,33 @@ def run_infill_pipeline(  # noqa: C901
             "in the export mesh — sf_export describes only the loaded island, "
             "not a single part"
         )
+    elif (
+        n_bodies_voxel is not None
+        and n_bodies_export is not None
+        and int(n_bodies_voxel) < int(n_bodies_export)
+    ):
+        # the FEM raster fused physically separate bodies into one component
+        # — the solve describes a phantom that does not exist in the print
+        verification["valid"] = False
+        res.topopt["warnings"].append(
+            f"voxel raster fused {n_bodies_export} physical bodies into "
+            f"{n_bodies_voxel} FEM components — sf_export is not trustworthy"
+        )
+    elif (
+        n_bodies_voxel is not None
+        and n_bodies_export is not None
+        and int(n_bodies_voxel) > int(n_bodies_export) + 1
+    ):
+        # the raster fragmented the one real body into many components —
+        # thin members dropped out; the solve sees only the dominant island.
+        # a warning, not a failure: the dominant island still carries the
+        # load path honestly
+        verification["valid"] = True
+        res.topopt["warnings"].append(
+            f"export re-voxelization fragmented into {n_bodies_voxel} "
+            "components — thin lattice members fall below the FEM pitch; "
+            "sf_export describes the dominant island only"
+        )
     else:
         verification["valid"] = True
     if sf_ratio is not None and sf_ratio > 3.0:
@@ -3423,6 +3475,25 @@ def run_infill_pipeline(  # noqa: C901
             f"mask/export safety-factor ratio is {sf_ratio:.1f}x — inspect the "
             "load path on the final STL; sf_export governs"
         )
+    # sanity: removing material cannot add stiffness — a porous infill that
+    # beats its solid baseline signals over-constrained fixtures or fused
+    # phantom connectivity, not a stronger part
+    sf_base = verify_base.worst_safety_factor
+    if sf_base is not None and verify_exp.worst_safety_factor is not None:
+        if verify_exp.worst_safety_factor >= 2.0 * sf_base:
+            verification["valid"] = False
+            res.topopt["warnings"].append(
+                f"export safety factor {verify_exp.worst_safety_factor:.1f} is "
+                f"{verify_exp.worst_safety_factor / max(sf_base, 1e-9):.1f}x the "
+                f"solid baseline {sf_base:.1f} — fixture over-constraint "
+                "suspected; verification invalid"
+            )
+        elif verify_exp.worst_safety_factor > sf_base:
+            res.topopt["warnings"].append(
+                f"export safety factor {verify_exp.worst_safety_factor:.1f} exceeds "
+                f"the solid baseline {sf_base:.1f} — inspect the fixture "
+                "constraint density before trusting it"
+            )
     if not verification["meets_target_volume"] and not target_infeasible:
         verification["valid"] = False
         res.topopt["warnings"].append(

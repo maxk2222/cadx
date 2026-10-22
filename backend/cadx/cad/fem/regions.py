@@ -28,6 +28,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
+from scipy import ndimage
 
 from cadx.cad.fem.voxelize import VoxelDomain, shift_mask
 from cadx.llm.schemas import LoadCase, RegionSpec
@@ -64,14 +65,47 @@ def _nodes_of_cells(domain: VoxelDomain, cell_mask: np.ndarray) -> np.ndarray:
     return mask
 
 
+def _exterior_void(domain: VoxelDomain) -> np.ndarray:
+    """Void cells connected to the domain bbox boundary — the outside air.
+
+    Enclosed cavities (sealed pockets inside shell/infill parts) are NOT
+    exterior: their walls must never receive loads or fixtures — a clamp
+    or press physically contacts the outside skin only.
+    """
+    void = ~domain.solid
+    labels, _ = ndimage.label(void, structure=ndimage.generate_binary_structure(3, 1))
+    border = np.concatenate(
+        [
+            labels[0, :, :].ravel(),
+            labels[-1, :, :].ravel(),
+            labels[:, 0, :].ravel(),
+            labels[:, -1, :].ravel(),
+            labels[:, :, 0].ravel(),
+            labels[:, :, -1].ravel(),
+        ]
+    )
+    outside_ids = set(np.unique(border).tolist()) - {0}
+    return np.asarray(np.isin(labels, list(outside_ids)))
+
+
 def _surface_cells(domain: VoxelDomain, axis: str, margin_mm: float) -> np.ndarray:
-    """Cells forming the actual surface facing `axis` (exposed face outward),
-    plus `margin_mm` worth of layers behind it. Works on curved/organic
-    shapes — unlike a global bbox layer it follows the silhouette."""
+    """Cells forming the actual exterior surface facing `axis` (exposed face
+    outward), plus `margin_mm` worth of layers behind it. Works on
+    curved/organic shapes — unlike a global bbox layer it follows the
+    silhouette. Only void connected to the outside counts as exposure:
+    enclosed cavity walls and internal lattice faces are not fixtures or
+    load faces."""
     idx, sign = _axis_parts(axis)
     d = np.zeros(3, dtype=int)
     d[idx] = sign
-    exposed = domain.solid & ~shift_mask(domain.solid, d)
+    outside = _exterior_void(domain)
+    # a solid cell is exposed in direction `d` when its neighbour cell is
+    # outside air — or it sits on the domain border itself
+    edge = np.zeros(domain.dims, dtype=bool)
+    sl: list[slice] = [slice(None)] * 3
+    sl[idx] = slice(-1, None) if sign > 0 else slice(0, 1)
+    edge[tuple(sl)] = True
+    exposed = domain.solid & (shift_mask(outside, d) | edge)
     lay = _layers(domain, margin_mm)
     out = exposed.copy()
     for k in range(1, lay):

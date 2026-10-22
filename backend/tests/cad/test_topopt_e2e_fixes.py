@@ -563,7 +563,15 @@ def test_thick_infill_export_preserves_nested_lattice_shells(tmp_path: Path) -> 
     mask_fraction = res.topopt["verification"]["volfrac_mask"]
     assert res.topopt["n_surface_components"] >= 2
     assert res.topopt["n_bodies_export"] == 1
-    assert res.topopt["verification"]["valid"] is True
+    ver = res.topopt["verification"]
+    # the fixture region pins ~5x more nodes on the hollow structure than on
+    # the solid baseline — a porous part cannot physically be stiffer than
+    # the full part, so the inflated SF is honestly flagged invalid
+    if ver["sf_baseline"] and ver["sf_export"] and ver["sf_export"] >= 2 * ver["sf_baseline"]:
+        assert ver["valid"] is False
+        assert any("baseline" in w for w in res.topopt["warnings"])
+    else:
+        assert ver["valid"] is True
     assert abs(part_fraction - mask_fraction) <= 0.05
     assert part_fraction < 0.9
 
