@@ -1,0 +1,49 @@
+{
+  "name": "sprocket_520_45t",
+  "project": "eval:sprocket-520-45t",
+  "difficulty": 2,
+  "description": "Aluminium 7075-T6 rear sprocket for a 520 chain — radial tooth repetition, PCD mounting circle and lightweight cutouts.",
+  "settings": { "gen_mode": "cad" },
+  "stages": [
+    {
+      "id": "codegen",
+      "type": "generate",
+      "mode": "cad",
+      "timeout_s": 5400,
+      "prompt": "Aluminium rear sprocket (7075-T6) for a 520 motorcycle chain, parametric.\n\nFrame: flat disc on the XY plane, centred at origin, 6 mm thick (Z).\n- Chain 520: pitch 15.875 mm, roller diameter 10.16 mm.\n- 45 teeth evenly spaced on the pitch circle; tooth profile follows the 520 standard (involute/roller seat), tooth gap leaves room for the 10.16 mm roller with clearance.\n- Derive the tip diameter from the chain spec: tip dia ~= (pitch / sin(180/45)) + roller diameter - small seating offset (~236 mm outer diameter).\n- Central bore dia 30 mm.\n- Six M8 mounting holes dia 8.5 mm on a common pitch circle of dia 80 mm, 60 degrees apart.\n- Six rounded lightweight cutouts (kidney/oval pockets) between the mounting circle and the tooth ring, leaving webs of at least 6 mm; all cutout edges rounded (radius >= 3 mm).\n- All outer edges broken with a 0.5 mm chamfer.\nParametric: tooth count, pitch, roller dia, body thickness, PCD and cutout count as named parameters.",
+      "gates": [
+        { "type": "status", "expect": ["succeeded", "needs_review"] },
+        { "type": "bbox", "dims": [236, 236, 6], "match": "match", "tol_mm": 8 },
+        { "type": "holes", "count": 1, "dia": 30, "axis": "z" },
+        { "type": "holes", "count": 6, "dia": 8.5, "axis": "z", "pcd": 80 },
+        { "type": "radial_peaks", "count": 45, "tol": 2, "axis": "z" },
+        { "type": "volume_fraction", "of": "disk", "max": 0.85 },
+        { "type": "watertight", "expect": true },
+        { "type": "verify_spec", "expect": "PASS" }
+      ]
+    },
+    {
+      "id": "imagegen",
+      "type": "imagegen",
+      "enabled": false,
+      "timeout_s": 600,
+      "image_prompt": "technical product render of an anodized aluminium motorcycle rear sprocket for a 520 chain, 45 teeth, six mounting holes, lightweight pockets, dark studio background",
+      "count": 1,
+      "gates": [
+        { "type": "asset_image", "min": 1 }
+      ]
+    },
+    {
+      "id": "meshgen",
+      "type": "meshgen",
+      "enabled": false,
+      "assets_from": "imagegen",
+      "subject": "aluminium sprocket",
+      "timeout_s": 3600,
+      "gates": [
+        { "type": "status", "expect": ["succeeded", "needs_review"] },
+        { "type": "bodies", "max": 2 }
+      ]
+    }
+  ]
+}

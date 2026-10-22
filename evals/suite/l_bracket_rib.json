@@ -1,0 +1,60 @@
+{
+  "name": "l_bracket_rib",
+  "project": "eval:l-bracket-rib",
+  "difficulty": 1,
+  "description": "Aluminium L-bracket with triangular reinforcement rib — dimensional + feature gates plus a standalone FEM check.",
+  "settings": { "gen_mode": "cad" },
+  "stages": [
+    {
+      "id": "codegen",
+      "type": "generate",
+      "mode": "cad",
+      "timeout_s": 5400,
+      "prompt": "Aluminium L-bracket (6061) with a triangular reinforcement rib, parametric.\n\nFrame: X=length, Y=width, Z=height; base plate rests on the XY plane, centred at origin; mm units.\n- Base flange: 80 (X) x 60 (Y) x 6 (Z) plate.\n- Upright flange: 80 (X) x 60 (Y) x 6 thick plate standing at the -X edge, rising to 66 mm total height above the table.\n- Four M8 clearance holes dia 8.5 mm: two through the base flange along Z at (x=+25, y=+20) and (x=+25, y=-20); two through the upright flange along X at (y=+20, z=+36) and (y=-20, z=+36).\n- Triangular reinforcement rib: 4 mm thick, centred in Y, in the inside corner between base top face and upright inner face; legs ~40 mm long.\n- Fillets: 2 mm at outer edges, 3 mm in the inner L corner and at the rib junctions.\nPart must be symmetric in Y and dimensionally exact; expose the key dimensions as parameters.",
+      "gates": [
+        { "type": "status", "expect": ["succeeded", "needs_review"] },
+        { "type": "bbox", "dims": [80, 60, 66], "match": "match", "tol_mm": 3 },
+        { "type": "holes", "count": 2, "dia": 8.5, "axis": "z", "positions": [[25, 20], [25, -20]] },
+        { "type": "holes", "count": 2, "dia": 8.5, "axis": "x" },
+        { "type": "fillet" },
+        { "type": "contains_point", "xyz": [-15, 0, 10] },
+        { "type": "watertight", "expect": true },
+        { "type": "verify_spec", "expect": "PASS" }
+      ]
+    },
+    {
+      "id": "fem",
+      "type": "fem",
+      "timeout_s": 1800,
+      "material": "aluminum",
+      "load_cases": [
+        {
+          "name": "tip_load",
+          "fixed": [
+            { "kind": "cylinder", "axis": "z", "center": [25, 20, 3], "diameter_mm": 10, "margin_mm": 3 },
+            { "kind": "cylinder", "axis": "z", "center": [25, -20, 3], "diameter_mm": 10, "margin_mm": 3 }
+          ],
+          "loads": [
+            {
+              "region": { "kind": "face", "axis": "+z", "margin_mm": 2 },
+              "force_n": [0, 0, -500]
+            }
+          ]
+        }
+      ],
+      "gates": [
+        { "type": "status", "expect": ["succeeded"] },
+        { "type": "fem", "field": "sf", "min": 1.0 }
+      ]
+    },
+    {
+      "id": "params",
+      "type": "params",
+      "enabled": false,
+      "params": { "plate_thickness": 8 },
+      "gates": [
+        { "type": "status", "expect": ["succeeded"] }
+      ]
+    }
+  ]
+}

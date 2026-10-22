@@ -2,8 +2,9 @@
 """Harvest verified CADX eval runs into SFT pairs (axolotl messages JSONL).
 
 Reads per-run `result.json` summaries under the eval output root
-(`$CADX_EVAL_OUT` / `--root`, default <repo>/data/eval_out), follows each
-`version_dir` into `data/projects/<pid>/versions/<vid>/` and harvests:
+(`$CADX_EVAL_OUT` / `--root`, default <repo>/evals/results), follows each
+stage's `version_id` into `data/projects/<pid>/versions/<vid>/` (or the
+scratch run dir's `data/` subtree for `--local` runs) and harvests:
 
 * ``codegen`` pairs — real stored ``system``+``user`` messages of a
   code-producing step (``codegen`` / ``improve*``) paired with the code it
@@ -32,7 +33,7 @@ flattened to ``<image>`` placeholders and every emitted text field passes
 a ``_contains_secret`` guard — matching rows are dropped and counted.
 
 Usage:
-    python scripts/export_sft.py --root data/eval_out --out sft_pairs.jsonl \
+    python scripts/export_sft.py --root evals/results --out sft_pairs.jsonl \
         [--min-score 85] [--kinds codegen,repair] [--include-project-versions]
 """
 
@@ -410,38 +411,92 @@ def _default_root() -> Path:
     env = os.environ.get("CADX_EVAL_OUT")
     if env:
         return Path(env)
-    for cand in ("data/eval_out", "backend/data/eval_out", "eval_out"):
+    for cand in ("evals/results", "data/eval_out", "backend/data/eval_out"):
         p = REPO_ROOT / cand
         if p.is_dir():
             return p
-    return REPO_ROOT / "data" / "eval_out"
+    return REPO_ROOT / "evals" / "results"
 
 
 def _load_run_ctx(result_path: Path, projects_root: Path) -> VersionCtx | None:
+    ctxs = _load_run_ctxs(result_path, projects_root)
+    return ctxs[0] if ctxs else None
+
+
+def _stage_version_dir(
+    result_path: Path, projects_root: Path, project_id: str | None, version_id: str | None
+) -> Path | None:
+    """v2 results store stage version ids — resolve to a version dir either
+    in the real data root or inside a scratch run dir's data/ subtree."""
+    if not project_id or not version_id:
+        return None
+    for root in (
+        projects_root / project_id / "versions" / version_id,
+        result_path.parent / "data" / "projects" / project_id / "versions" / version_id,
+    ):
+        if root.is_dir():
+            return root
+    return None
+
+
+def _load_run_ctxs(result_path: Path, projects_root: Path) -> list[VersionCtx]:
+    """v1 (eval_out) -> 0..1 ctx; v2 (evalkit result.json) -> one ctx per
+    code-bearing stage with a resolvable version dir."""
     try:
         data = json.loads(result_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        return None
+        return []
+    if data.get("schema_version") == 2:
+        out: list[VersionCtx] = []
+        pid = data.get("project_id")
+        for s in data.get("stages") or []:
+            if not isinstance(s, dict):
+                continue
+            vdir = _stage_version_dir(result_path, projects_root, pid, s.get("version_id"))
+            if vdir is None:
+                continue
+            metrics = s.get("metrics") or {}
+            score = metrics.get("score")
+            vs = (metrics.get("verify_spec") or {}).get("status")
+            out.append(
+                VersionCtx(
+                    version_dir=vdir,
+                    project_id=str(pid or vdir.parent.parent.name),
+                    version_id=vdir.name,
+                    benchmark=f"{data.get('case')}/{s.get('stage_id')}",
+                    variant=str(data.get("variant") or "default"),
+                    run_id=str(data.get("run_id") or result_path.parent.name),
+                    score=float(score) if isinstance(score, int | float) else None,
+                    passed=bool(s.get("passed")),
+                    dim_ok=None,
+                    watertight=metrics.get("watertight"),
+                    code_ok=None if vs is None else vs == "PASS",
+                    features_ok=None,
+                )
+            )
+        return out
     res = data.get("result") or {}
     raw_vd = res.get("version_dir") or data.get("version_dir")
     vdir = _resolve_version_dir(raw_vd, projects_root)
     if vdir is None:
-        return None
+        return []
     score = res.get("score")
-    return VersionCtx(
-        version_dir=vdir,
-        project_id=str(data.get("project_id") or vdir.parent.parent.name),
-        version_id=vdir.name,
-        benchmark=str(res.get("name") or data.get("benchmark") or result_path.parent.name),
-        variant=str(res.get("variant") or data.get("variant") or "default"),
-        run_id=str(data.get("run_id") or result_path.parent.name),
-        score=float(score) if isinstance(score, int | float) else None,
-        passed=bool(res.get("passed")),
-        dim_ok=res.get("dim_ok"),
-        watertight=res.get("watertight"),
-        code_ok=res.get("code_ok"),
-        features_ok=res.get("features_ok"),
-    )
+    return [
+        VersionCtx(
+            version_dir=vdir,
+            project_id=str(data.get("project_id") or vdir.parent.parent.name),
+            version_id=vdir.name,
+            benchmark=str(res.get("name") or data.get("benchmark") or result_path.parent.name),
+            variant=str(res.get("variant") or data.get("variant") or "default"),
+            run_id=str(data.get("run_id") or result_path.parent.name),
+            score=float(score) if isinstance(score, int | float) else None,
+            passed=bool(res.get("passed")),
+            dim_ok=res.get("dim_ok"),
+            watertight=res.get("watertight"),
+            code_ok=res.get("code_ok"),
+            features_ok=res.get("features_ok"),
+        )
+    ]
 
 
 def _critique_verdict(records: list[dict]) -> tuple[bool | None, float | None]:
@@ -515,14 +570,17 @@ def _collect_contexts(
     ctxs: list[VersionCtx] = []
     seen_vdirs: set[Path] = set()
     for rp in result_paths:
-        ctx = _load_run_ctx(rp, projects_root)
-        if ctx is None:
+        loaded = _load_run_ctxs(rp, projects_root)
+        if not loaded:
             print(f"warn: skipping {rp} (unresolvable version_dir)", file=sys.stderr)
             continue
-        seen_vdirs.add(ctx.version_dir)
-        ctx.records = _iter_trace_records(ctx.version_dir)
-        ctx.attempts = _iter_attempts(ctx.version_dir)
-        ctxs.append(ctx)
+        for ctx in loaded:
+            if ctx.version_dir in seen_vdirs:
+                continue
+            seen_vdirs.add(ctx.version_dir)
+            ctx.records = _iter_trace_records(ctx.version_dir)
+            ctx.attempts = _iter_attempts(ctx.version_dir)
+            ctxs.append(ctx)
 
     if args.include_project_versions and projects_root.is_dir():
         for vdir in sorted(projects_root.glob("*/versions/*")):
@@ -570,7 +628,7 @@ def main() -> int:
         "--root",
         type=Path,
         default=None,
-        help="eval output root (default: $CADX_EVAL_OUT or <repo>/data/eval_out)",
+        help="eval output root (default: $CADX_EVAL_OUT or <repo>/evals/results)",
     )
     ap.add_argument(
         "--projects-root",

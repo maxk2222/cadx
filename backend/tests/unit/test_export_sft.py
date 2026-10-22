@@ -264,6 +264,59 @@ def test_secret_guard_drops_rows(export_sft, tmp_path: Path) -> None:
     assert _rows(out) == []
 
 
+def test_v2_evalkit_result_schema(export_sft, tmp_path: Path) -> None:
+    """evalkit result.json (schema_version 2): stage version ids resolve via
+    project_id + projects_root; scratch runs via the run dir's data/ subtree."""
+    root, projects = tmp_path / "results", tmp_path / "projects"
+    pid, vid = "p-eval", "v-codegen"
+    vdir = projects / pid / "versions" / vid
+    vdir.mkdir(parents=True)
+    _write_trace(vdir)
+    _write_attempt(vdir, 1, 1, GOOD_CODE, ok=True)
+    run_dir = root / "l_bracket_rib" / "ts_default"
+    run_dir.mkdir(parents=True)
+    (run_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "case": "l_bracket_rib",
+                "driver": "http",
+                "variant": "default",
+                "run_id": "ts_default",
+                "project_id": pid,
+                "passed": True,
+                "stages": [
+                    {
+                        "stage_id": "codegen",
+                        "version_id": vid,
+                        "passed": True,
+                        "metrics": {"score": 95, "watertight": True,
+                                    "verify_spec": {"status": "PASS"}},
+                    },
+                    {"stage_id": "fem", "version_id": None, "passed": True},
+                ],
+            }
+        )
+    )
+    out = tmp_path / "pairs.jsonl"
+    _run_export(export_sft, root, projects, out, "--kinds", "codegen")
+    rows = _rows(out)
+    assert len(rows) == 1
+    assert rows[0]["meta"]["benchmark"] == "l_bracket_rib/codegen"
+    assert rows[0]["meta"]["score"] == 95
+    # scratch layout: version dir inside the run dir's data/ subtree
+    root2 = tmp_path / "scratch"
+    run2 = root2 / "l_bracket_rib" / "ts_local"
+    svdir = run2 / "data" / "projects" / pid / "versions" / vid
+    svdir.mkdir(parents=True)
+    _write_trace(svdir)
+    _write_attempt(svdir, 1, 1, GOOD_CODE, ok=True)
+    (run2 / "result.json").write_text((run_dir / "result.json").read_text())
+    out2 = tmp_path / "pairs2.jsonl"
+    _run_export(export_sft, root2, projects, out2, "--kinds", "codegen")
+    assert len(_rows(out2)) == 1
+
+
 def test_output_is_valid_jsonl_and_deterministic(export_sft, tmp_path: Path) -> None:
     root, projects = tmp_path / "eval_out", tmp_path / "projects"
     vdir = _make_run(root, projects, repair_record=True)

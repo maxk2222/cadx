@@ -35,7 +35,18 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
 - Full stack (docker):   `make up` → http://localhost:8080
 - Tests:                 `make test`  (or `cd backend && ../.venv/bin/uv run pytest tests -x -q`)
 - Lint/format check:     `make lint`, autofix `make fmt`
-- Eval harness:          `make eval`
+- Evalkit (durable):     `make eval` — runs `evals/suite/*.json` through the live
+  API; every stage spawns real versions/jobs under fixed `eval:*` projects,
+  archives under `evals/results/` (gitignored). Options via `ARGS`, e.g.
+  `make eval ARGS="--case l_bracket_rib --stages codegen"`.
+- Evalkit (scratch):     `make eval-quick` — same suite in-process on a
+  throwaway sqlite+data dir (`evals/scratch/`, ephemeral, excluded from
+  reports/baselines); no API/Redis/Docker needed.
+- Eval reports:          `make eval-cases` (suite overview), `make eval-report`
+  (variant x case table, `ARGS="--include-scratch"` folds in scratch runs),
+  `make eval-baseline ARGS="save <label>"` / `ARGS="diff a b"`,
+  `make eval-clean` (guarded dry-run; `ARGS="--wipe-db --purge-files --yes"`
+  executes — preserves runtime settings/secrets unless `--with-settings`).
 - Mesh sidecar (dev):    `make mesh-sync && make mesh-server`  (own uv env in
   `mesh_server/`; `MESH_FAKE=1` for GPU-free runs; see `docs/mesh-generation.md`)
 - Mesh-server tests:     `cd mesh_server && uv run pytest`
@@ -154,6 +165,24 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
   minutes, never drop that attachment. `mesh_to_solid` returns a
   `UnifySameDomain`-unified solid; anchor bores measured on the image are
   deterministically re-cut by the runner when generated code missed them.
+- Structural verification hardening (`docs/fem-topopt.md`): the headline
+  safety factor is `sf_verified` — the worst case across the nominal /
+  eroded / dilated export-mask realizations solved by
+  `engine._verify_export_structure` (shared by the topopt, infill and
+  resample pipelines). `sf_export` is the nominal printed-mesh value and
+  `sf_mask` the idealized voxel mask — gate on `sf_verified`, never on the
+  mask number alone. `voxelize(coverage=True)` records per-cell fill
+  fractions (`fem_verify_coverage_e`) which scale `elem_E` at the boundary;
+  `fem_loadpath_cert` attaches the FEM-independent min-cut certificate
+  (`load_path_ok`, `bottleneck_mm2`, `sf_floor` — `load_path_ok=false`
+  invalidates the run); `fem_verify_mesh_shift` flags grid sensitivity.
+  Infill runs may add the homogenized lattice model (`sf_homog`,
+  `sf_micro`; `elem_class`/`class_D`/`micro_amp` into `run_fem_domain`,
+  `model="homogenized"`). Every auxiliary layer degrades to warnings —
+  only a nominal-solve failure falls back to the mask report. When adding
+  SF-bearing fields, thread them through `toolloop._METRIC_KEYS` so
+  compaction doesn't drop them, and chain fallbacks on `is None` (a solved
+  SF of 0.0 is a verdict, not a missing value).
 - Commits: one per milestone step, descriptive message.
 
 ## MCP server (`cadx/mcpserver/`)

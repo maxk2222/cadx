@@ -12,7 +12,8 @@ FRONTEND := frontend
 
 .PHONY: help setup lock sync sync-fem dev-api dev-worker dev-executor dev-web infra \
         up down logs logs-dev logs-api logs-worker logs-executor logs-web \
-        test lint fmt eval eval-real migrate build clean clean-all \
+        test lint fmt eval eval-quick eval-cases eval-report eval-clean eval-baseline \
+        migrate build clean clean-all \
         mesh-sync mesh-server mesh-models mesh-test dev-mesh \
         start start-dev stop status restart restart-dev autosetup doctor \
         open update update-check
@@ -149,11 +150,23 @@ fmt: ## ruff autofix + format
 migrate: ## alembic upgrade head
 	cd $(BACKEND) && ../$(VENV)/bin/uv run alembic upgrade head
 
-eval: ## Scripted eval benchmarks
-	cd $(BACKEND) && ../$(VENV)/bin/uv run cadx eval
+eval: ## Evalkit suite via the running API (real DB versions under eval:* projects)
+	cd $(BACKEND) && ../$(VENV)/bin/uv run cadx eval run $(ARGS)
 
-eval-real: ## Eval against the real LLM/mesh stack
-	cd $(BACKEND) && ../$(VENV)/bin/uv run cadx eval --real
+eval-quick: ## Fast scratch run — no API/Redis/real-DB writes, results in evals/scratch
+	cd $(BACKEND) && ../$(VENV)/bin/uv run cadx eval run --local $(ARGS)
+
+eval-cases: ## List suite cases/stages/gates
+	cd $(BACKEND) && ../$(VENV)/bin/uv run cadx eval cases
+
+eval-report: ## Aggregate evals/results into a variant x case table
+	cd $(BACKEND) && ../$(VENV)/bin/uv run cadx eval report $(ARGS)
+
+eval-clean: ## Guarded cleanup (dry-run): --wipe-db --purge-files --yes via ARGS
+	cd $(BACKEND) && ../$(VENV)/bin/uv run cadx eval clean $(ARGS)
+
+eval-baseline: ## Save/diff baselines: ARGS="save <label>" | "diff <a> <b>" | "list"
+	cd $(BACKEND) && ../$(VENV)/bin/uv run cadx eval baseline $(ARGS)
 
 ##@ Mesh sidecar
 

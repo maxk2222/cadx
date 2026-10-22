@@ -182,7 +182,8 @@ sequenceDiagram
   `http.py` (Streamable-HTTP ASGI app + bearer auth), mounted at `/mcp` on
   the api service and as `cadx mcp` stdio — see
   [mcp-server.md](mcp-server.md)
-- `eval/` — benchmark harness (`cadx eval`)
+- `evalkit/` — the evaluation harness (`cadx eval`): suite loader, http +
+  local drivers, gates/metrics, report/baseline/clean — [eval.md](eval.md)
 - `spawn.py` — job-spawn helpers shared by REST, chat and MCP
   (`spawn_generate`…`spawn_edit_feature`, `spawn_restart`,
   `enqueue_resume`, `validate_ops`)

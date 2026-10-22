@@ -24,6 +24,7 @@ from cadx.api.schemas import (
     EditRequest,
     EnqueueResponse,
     GenerateRequest,
+    MeshgenRequest,
     OptimizeRequest,
     OrganicRequest,
     ParamsDiffEntry,
@@ -37,6 +38,8 @@ from cadx.db.models import (
     AgentTrace,
     Artifact,
     ArtifactKind,
+    Asset,
+    AssetKind,
     Job,
     JobStatus,
     JobType,
@@ -49,6 +52,7 @@ from cadx.spawn import (
     spawn_edit,
     spawn_edit_feature,
     spawn_generate,
+    spawn_meshgen,
     spawn_optimize,
     spawn_organic,
     spawn_params,
@@ -162,6 +166,40 @@ async def generate(
             asset_ids=list(body.asset_ids or []),
             library_part_ids=list(body.library_part_ids or []),
             options=opts,
+        )
+    except SpawnError as e:
+        raise HTTPException(e.status, str(e)) from e
+    return EnqueueResponse(version_id=v.id, job_id=job.id)
+
+
+@router.post("/projects/{project_id}/meshgen", response_model=EnqueueResponse)
+async def meshgen(
+    project_id: uuid.UUID, body: MeshgenRequest, db: AsyncSession = Depends(get_session)
+):
+    """Image->mesh generation over REST — same spawn path as the MCP tool."""
+    project = await db.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "project not found")
+    ids = list(dict.fromkeys(body.asset_ids))
+    rows = await db.execute(
+        select(Asset).where(col(Asset.id).in_(ids), Asset.project_id == project_id)
+    )
+    assets = list(rows.scalars().all())
+    if len(assets) != len(ids):
+        raise HTTPException(422, "one or more asset_ids not found in this project")
+    bad = [a.id for a in assets if a.kind not in (AssetKind.image, AssetKind.generated_image)]
+    if bad:
+        raise HTTPException(422, f"assets are not images: {[str(b) for b in bad]}")
+    try:
+        v, job = await spawn_meshgen(
+            db,
+            project,
+            asset_ids=ids,
+            subject=body.subject,
+            model=body.model,
+            seed=body.seed,
+            post=body.post or None,
+            prompt=body.prompt,
         )
     except SpawnError as e:
         raise HTTPException(e.status, str(e)) from e

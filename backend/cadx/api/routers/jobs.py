@@ -12,6 +12,7 @@ from sqlmodel import col, select
 from cadx.api.deps import get_pool, get_session
 from cadx.api.schemas import AnswerRequest, EnqueueResponse, JobListItem, JobOut
 from cadx.db.models import (
+    AgentTrace,
     Job,
     JobStatus,
     Project,
@@ -63,6 +64,50 @@ async def get_job(job_id: uuid.UUID, db: AsyncSession = Depends(get_session)):
     if not j:
         raise HTTPException(404, "job not found")
     return _out(j)
+
+
+@router.get("/jobs/{job_id}/trace")
+async def job_trace(
+    job_id: uuid.UUID,
+    limit: int = 5000,
+    full: bool = False,
+    db: AsyncSession = Depends(get_session),
+):
+    """AgentTrace records of a job — step/iteration/model/token/latency plus
+    the `parsed` extras (thinking flags etc.). `messages`/`response` bulk is
+    omitted unless `full=1` (eval harvesters only need the metrics)."""
+    if not await db.get(Job, job_id):
+        raise HTTPException(404, "job not found")
+    rows = (
+        (
+            await db.execute(
+                select(AgentTrace)
+                .where(AgentTrace.job_id == job_id)
+                .order_by(col(AgentTrace.created_at))
+                .limit(max(1, min(limit, 50_000)))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    out = []
+    for r in rows:
+        d = {
+            "id": str(r.id),
+            "step": r.step,
+            "iteration": r.iteration,
+            "model": r.model,
+            "prompt_tokens": r.prompt_tokens,
+            "completion_tokens": r.completion_tokens,
+            "latency_ms": r.latency_ms,
+            "parsed": r.parsed,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+        if full:
+            d["messages"] = r.messages
+            d["response"] = r.response
+        out.append(d)
+    return out
 
 
 async def job_list_items(

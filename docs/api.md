@@ -15,6 +15,7 @@ POST          /api/projects/{id}/assets                  upload images/STEP/STL/
 POST          /api/projects/{id}/images                  local text-to-image → generated_image assets
 GET           /api/projects/{id}/versions                version tree
 POST          /api/projects/{id}/generate                {prompt, asset_ids, library_part_ids, mode, options}
+POST          /api/projects/{id}/meshgen                 {asset_ids, subject, prompt, model, seed, post} — image→mesh
 ```
 
 ## Assets
@@ -68,6 +69,7 @@ GET           /api/versions/{id}/anchors                 merged measured-anchor 
 ```
 GET           /api/jobs                                  global job list (?active=true, ?limit=N default 200)
 GET           /api/jobs/{id}                             job detail incl. live state + log tail
+GET           /api/jobs/{id}/trace                       AgentTrace records (?limit=N, ?full=1 adds messages/response)
 GET           /api/jobs/{id}/events                      SSE progress stream
 POST          /api/jobs/{id}/answer                      clarification answers → resume a waiting job
 POST          /api/jobs/{id}/cancel                      abort

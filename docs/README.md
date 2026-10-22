@@ -49,7 +49,7 @@
 | [Prompts](prompts.md) | Prompt files under `backend/cadx/agent/prompts/` and their conventions |
 | [HTTP API](api.md) | Backend REST endpoints grouped by router |
 | [mesh-server API](mesh-server-api.md) | Sidecar contract (mesh/image/llm adapters, chat proxy, model management, queue) |
-| [Evaluation](eval.md) | `cadx eval` benchmark harness and benchmark format |
+| [Evaluation](eval.md) | evalkit: suite cases/stages/gates, http+local drivers, baselines, cleanup |
 | [Roadmap](roadmap.md) | Shipped milestones and remaining backlog |
 | [TopOpt audit 2026-10](audit-topopt-2026-10.md) | Point-in-time defect-class audit of the FEM/TopOpt pipeline (German) |
 
