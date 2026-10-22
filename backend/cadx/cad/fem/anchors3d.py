@@ -75,7 +75,7 @@ def _heightfield_axis(
     return H, us, vs
 
 
-def _tunnel_depth(
+def _tunnel_depth_and_center(
     mesh: trimesh.Trimesh,
     axis: str,
     void_cells: np.ndarray,
@@ -84,25 +84,32 @@ def _tunnel_depth(
     vs: np.ndarray,
     span: float,
     max_rays: int = 8,
-) -> float:
-    """Real length of a through-tunnel along `axis` (the pierced wall's
-    thickness), not the whole bbox span.
+) -> tuple[float, float]:
+    """(depth, axial_center) of a through-tunnel along `axis`.
+
+    depth = real length of the tunnel (the pierced wall's thickness), not
+    the whole bbox span. axial_center = median axial mid-point of the
+    longest material run per rim ray — where along the axis the pierced
+    wall actually sits (a bore through a 10 mm flange of a 40 mm part
+    centres at the flange, not at the bbox mid-plane).
 
     Rays at the void cells themselves pass clean through — that is what
     made them voids — so the pierced material is measured on the ring of
     hit cells enclosing the void: per rim ray, the consecutive hit pairs
     are material runs and the longest one is the wall the channel pierces;
-    the median over the rim rays is the tunnel depth. Falls back to `span`
+    the median over the rim rays is the tunnel depth, the median of their
+    pair mid-points the axial centre. Falls back to (`span`, bbox centre)
     when no rim ray resolves.
     """
     import scipy.ndimage as ndi
 
+    ax, au, av = _AXES[axis]
+    fallback = (span, 0.5 * float(mesh.bounds[0][ax] + mesh.bounds[1][ax]))
     rim = ndi.binary_dilation(void_cells) & inside & ~void_cells
     ii, jj = np.nonzero(rim)
     if len(ii) == 0:
-        return span
+        return fallback
     sel = np.linspace(0, len(ii) - 1, min(max_rays, len(ii))).astype(int)
-    ax, au, av = _AXES[axis]
     origins = np.zeros((len(sel), 3))
     origins[:, au] = us[ii[sel]]
     origins[:, av] = vs[jj[sel]]
@@ -114,36 +121,73 @@ def _tunnel_depth(
             ray_origins=origins, ray_directions=directions, multiple_hits=True
         )
     except Exception:
-        return span
+        return fallback
     hits: list[list[float]] = [[] for _ in range(len(sel))]
     for r, loc in zip(ray_ids, locs, strict=True):
         hits[int(r)].append(float(loc[ax]))
     runs: list[float] = []
+    mids: list[float] = []
     for h in hits:
         h.sort()
-        pairs = [h[k + 1] - h[k] for k in range(0, len(h) - 1, 2)]
+        pairs = [
+            (h[k + 1] - h[k], 0.5 * (h[k] + h[k + 1])) for k in range(0, len(h) - 1, 2)
+        ]
         if pairs:
-            runs.append(max(pairs))
+            run, mid = max(pairs, key=lambda p: p[0])
+            runs.append(run)
+            mids.append(mid)
     if not runs:
-        return span
-    return float(min(float(np.median(runs)), span))
+        return fallback
+    return float(min(float(np.median(runs)), span)), float(np.median(mids))
 
 
-def _anchor(axis: str, u: float, v: float, dia: float, depth: float, kind: str) -> dict[str, Any]:
+def _tunnel_depth(
+    mesh: trimesh.Trimesh,
+    axis: str,
+    void_cells: np.ndarray,
+    inside: np.ndarray,
+    us: np.ndarray,
+    vs: np.ndarray,
+    span: float,
+    max_rays: int = 8,
+) -> float:
+    """Real length of a through-tunnel along `axis` (see
+    `_tunnel_depth_and_center`) — depth only."""
+    return _tunnel_depth_and_center(
+        mesh, axis, void_cells, inside, us, vs, span, max_rays
+    )[0]
+
+
+def _anchor(
+    axis: str,
+    u: float,
+    v: float,
+    dia: float,
+    depth: float,
+    kind: str,
+    axial_center: float | None = None,
+) -> dict[str, Any]:
     """Anchor dict for a feature at in-plane (u, v) on `axis`.
 
     `x`/`y` keep the legacy top-view fields; `pos` carries the full 3D
-    in-plane position (the axial coordinate stays None — unknown until FEM
-    places it on the bore)."""
+    position. `axial_center` fills `pos[ax]` (and `z` for +z anchors) when
+    the scan measured where along the axis the pierced wall sits; without
+    it the axial coordinate stays None — unknown until FEM places it on
+    the bore."""
     _ax, au, av = _AXES[axis]
     p: list[float | None] = [None, None, None]
     p[au], p[av] = u, v
+    z: float | None = None
+    if axial_center is not None:
+        p[_ax] = round(float(axial_center), 2)
+        if _ax == 2:
+            z = round(float(axial_center), 2)
     return {
         "x": round(float(u if au == 0 else v if av == 0 else 0.0), 2),
         "y": round(float(u if au == 1 else v if av == 1 else 0.0), 2),
         "dia": round(float(dia), 2),
         "axis": axis,
-        "z": None,
+        "z": z,
         "pos": [round(float(c), 2) if c is not None else None for c in p],
         "depth_mm": round(float(depth), 2),
         "kind": kind,
@@ -188,15 +232,24 @@ def scan_mesh_anchors(
             if area < min_area_mm2:
                 continue
             ii, jj = np.where(cells)
+            mean_u = float(us[ii].mean())
+            mean_v = float(vs[jj].mean())
+            dia = float(2.0 * np.sqrt(area / np.pi) + 0.5 * step_mm)
+            # elongated slots and large off-centre openings are lightweight
+            # WINDOWS, not fastener bores — they must not enter
+            # FASTENER_KINDS or shift the hole_index ordering
+            span_u = float(ii.max() - ii.min() + 1) * step_mm
+            span_v = float(jj.max() - jj.min() + 1) * step_mm
+            aspect = max(span_u, span_v) / max(min(span_u, span_v), step_mm)
+            in_plane_dist = math.hypot(mean_u, mean_v)
+            t_kind = "hole"
+            if aspect > 1.65 or (dia > 24.0 and in_plane_dist > 15.0):
+                t_kind = "window"
+            t_depth, t_mid = _tunnel_depth_and_center(
+                mesh, axis, cells, inside, us, vs, span
+            )
             out.append(
-                _anchor(
-                    axis,
-                    float(us[ii].mean()),
-                    float(vs[jj].mean()),
-                    2.0 * np.sqrt(area / np.pi) + 0.5 * step_mm,
-                    _tunnel_depth(mesh, axis, cells, inside, us, vs, span),
-                    "hole",
-                )
+                _anchor(axis, mean_u, mean_v, dia, t_depth, t_kind, axial_center=t_mid)
             )
 
         # dimples: local dips below the surrounding max (countersinks, pockets)
@@ -233,6 +286,27 @@ def scan_mesh_anchors(
                 )
             )
     return out
+
+
+def _enrich_axial_center(match: dict[str, Any], s: dict[str, Any], s_axis: str) -> None:
+    """Copy the scan's measured axial tunnel centre (pos[ax]/z) onto a
+    matched spec/image anchor that lacks it — spec anchors know the
+    in-plane position but not where along the axis the pierced wall sits,
+    so bore regions and preload mouths would centre on the bbox mid."""
+    s_ax = _AXES.get(s_axis, (2, 0, 1))[0]
+    s_pos = s.get("pos")
+    s_axv = s_pos[s_ax] if isinstance(s_pos, list) and len(s_pos) == 3 else None
+    if s_axv is not None:
+        m_pos = match.get("pos")
+        if isinstance(m_pos, list) and len(m_pos) == 3:
+            if m_pos[s_ax] is None:
+                m_pos[s_ax] = s_axv
+        else:
+            # no pos yet — adopt the scan's full 3D position (same feature,
+            # so its in-plane coords are the match's too)
+            match["pos"] = list(s_pos)
+    if match.get("z") is None and s.get("z") is not None:
+        match["z"] = s["z"]
 
 
 def merge_anchor_lists(
@@ -279,6 +353,7 @@ def merge_anchor_lists(
             match["depth_mm"] = s["depth_mm"]
         if match.get("kind") == "hole" and s.get("kind") != "hole":
             match["kind"] = s["kind"]
+        _enrich_axial_center(match, s, s_axis)
         msrc = str(match.get("source") or "")
         if s.get("source") == "scan" and msrc and "scan" not in msrc:
             match["source"] = f"{msrc}+scan"

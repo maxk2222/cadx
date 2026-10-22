@@ -15,9 +15,15 @@ from typing import Any
 import numpy as np
 import trimesh
 
-from cadx.cad.fem.regions import case_reactions, region_cell_mask, resolve_case_dofs
+from cadx.cad.fem.regions import (
+    _region_fallback,
+    case_reactions,
+    region_cell_mask,
+    region_face_normal,
+    resolve_case_dofs,
+)
 from cadx.cad.fem.voxelize import VoxelDomain
-from cadx.llm.schemas import LoadCase, RegionSpec
+from cadx.llm.schemas import LoadCase, LoadSpec, RegionSpec
 from cadx.logging import get_logger
 
 log = get_logger(__name__)
@@ -76,6 +82,75 @@ _TAG_RGB = {
 }
 
 
+def _load_vec(domain: VoxelDomain, load: LoadSpec, lmask: np.ndarray) -> np.ndarray | None:
+    """Resultant vector for one load spec — direction + magnitude for the
+    preview arrow. Returns None when the load kind draws no arrow."""
+    vec: np.ndarray | None = None
+    if load.force_n and len(load.force_n) >= 3:
+        vec = np.asarray(load.force_n[:3], dtype=float)
+    elif load.bearing_n:
+        d = load.bearing_dir[:3] if len(load.bearing_dir) >= 3 else [0.0, -1.0, 0.0]
+        vec = np.asarray(d, dtype=float) / (np.linalg.norm(d) or 1.0) * float(load.bearing_n)
+    elif getattr(load, "normal_force_n", None):
+        n = region_face_normal(load.region)
+        if n is not None:
+            vec = -n * float(load.normal_force_n)
+    elif load.pressure_mpa is not None:
+        n = region_face_normal(load.region)
+        if n is not None:
+            vec = -n * float(load.pressure_mpa) * int(lmask.sum()) * domain.pitch**2
+    elif load.preload_n:
+        vec = np.array([0.0, 0.0, -float(load.preload_n)])
+    return vec
+
+
+def _load_arrows(
+    domain: VoxelDomain,
+    case: LoadCase,
+    anchors: list[dict] | None,
+    centers3d: np.ndarray,
+    arrow_len: float,
+) -> tuple[list[tuple[Any, Any]], list[str], float]:
+    """(arrows+markers, force legend strings, total N) — every load kind
+    gets a direction arrow + centroid marker, not just point forces:
+    bearing/pressure/preload are just as easy to misplace."""
+    import pyvista as pv
+
+    force_n = 0.0
+    arrows: list[tuple[Any, Any]] = []
+    f_strs: list[str] = []
+    for load in case.loads:
+        lmask = region_cell_mask(domain, load.region, anchors)
+        if not lmask.any():
+            # declared region missed the geometry — draw on the
+            # deterministic fallback patch, not mid-air
+            lmask = _region_fallback(domain, load.region, anchors)[0]
+        vec = _load_vec(domain, load, lmask)
+        if vec is None:
+            continue
+        if load.force_n and len(load.force_n) >= 3:
+            f_strs.append(f"F=({vec[0]:.0f},{vec[1]:.0f},{vec[2]:.0f}) N")
+        n = float(np.linalg.norm(vec))
+        if n <= 0 or not lmask.any():
+            continue
+        force_n += n
+        # arrow TIP lands on the load-region centroid
+        centroid = centers3d[lmask].mean(axis=0)
+        unit = vec / n
+        arrows.append(
+            (
+                pv.Arrow(start=centroid - unit * arrow_len, direction=unit, scale=arrow_len),
+                pv.Sphere(radius=domain.pitch, center=centroid),
+            )
+        )
+    if force_n == 0.0:
+        # moment/g loads draw no single arrow — fall back to the resolved
+        # resultant so the caption isn't "0 N"
+        F = resolve_case_dofs(domain, case, anchors)[1]
+        force_n = float(np.linalg.norm(F.reshape(-1, 3).sum(axis=0)))
+    return arrows, f_strs, force_n
+
+
 def render_regions(
     domain: VoxelDomain,
     cases: list[LoadCase],
@@ -108,47 +183,23 @@ def render_regions(
             fixed_cells, load_cells, keep_cells = case_region_masks(
                 domain, case, keep_regions, anchors
             )
-            force_n = 0.0
-            arrows: list[tuple[Any, Any]] = []  # (arrow, centroid marker)
-            f_strs: list[str] = []
-            for load in case.loads:
-                if load.force_n and len(load.force_n) >= 3:
-                    vec = np.asarray(load.force_n[:3], dtype=float)
-                    n = float(np.linalg.norm(vec))
-                    force_n += n
-                    f_strs.append(f"F=({vec[0]:.0f},{vec[1]:.0f},{vec[2]:.0f}) N")
-                    if n <= 0:
-                        continue
-                    lmask = region_cell_mask(domain, load.region, anchors)
-                    if not lmask.any():
-                        continue
-                    # arrow TIP lands on the load-region centroid
-                    centroid = centers3d[lmask].mean(axis=0)
-                    unit = vec / n
-                    arrows.append(
-                        (
-                            pv.Arrow(
-                                start=centroid - unit * arrow_len,
-                                direction=unit,
-                                scale=arrow_len,
-                            ),
-                            pv.Sphere(radius=domain.pitch, center=centroid),
-                        )
-                    )
-                elif load.pressure_mpa is not None:
-                    force_n += float(load.pressure_mpa) * int(load_cells.sum()) * domain.pitch**2
+            arrows, f_strs, force_n = _load_arrows(
+                domain, case, anchors, centers3d, arrow_len
+            )
 
             tag = np.zeros(domain.dims, dtype=np.uint8)
-            tag[load_cells] = _LOAD
             tag[keep_cells] = _KEEP
+            # loads outrank auto-keep rings so bore loads stay visible
+            tag[load_cells] = _LOAD
             tag[fixed_cells] = _FIXED  # constraints outrank loads on overlap
             grid = pv.ImageData(
                 dimensions=tuple(d + 1 for d in domain.dims),
                 spacing=(domain.pitch,) * 3,
                 origin=tuple(domain.origin),
             )
-            grid.cell_data["solid"] = domain.solid.ravel().astype(np.uint8)
-            grid.cell_data["tag"] = tag.ravel()
+            # cell arrays are (nx,ny,nz) C-order; ImageData wants x-fastest
+            grid.cell_data["solid"] = domain.solid.ravel(order="F").astype(np.uint8)
+            grid.cell_data["tag"] = tag.ravel(order="F")
             body = grid.threshold(0.5, scalars="solid")
 
             # region tags painted onto the smooth part skin — opaque voxel
@@ -156,8 +207,10 @@ def render_regions(
             # 'surface' selection covered most cells and rendered as
             # full-height red stripes)
             skin = _part_surface(source_mesh, body)
-            if getattr(skin, "n_faces", 0) < 8000:
-                with contextlib.suppress(Exception):
+            with contextlib.suppress(Exception):
+                for _ in range(3):
+                    if getattr(skin, "n_faces", 0) >= 12000:
+                        break
                     skin = skin.subdivide(1, subfilter="linear")
             rgb = np.tile(np.asarray(_TAG_RGB[0], dtype=np.uint8), (skin.n_points, 1))
             try:
@@ -190,7 +243,7 @@ def render_regions(
                 # no voxel body ghost — the skin carries the part shape; a
                 # translucent sparse-voxel halo reintroduces the floating-
                 # debris look on thin shells
-                pl.add_mesh(skin, scalars=rgb, rgb=True, opacity=0.95, smooth_shading=True)
+                pl.add_mesh(skin, scalars=rgb, rgb=True, opacity=1.0, smooth_shading=True)
                 for arrow, marker in arrows:
                     pl.add_mesh(arrow, color="darkorange", opacity=1.0)
                     pl.add_mesh(marker, color="orange", opacity=1.0)

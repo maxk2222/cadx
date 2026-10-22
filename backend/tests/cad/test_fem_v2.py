@@ -78,13 +78,13 @@ def test_scan_mesh_anchors_finds_z_bore() -> None:
 
 
 def test_scan_mesh_anchors_finds_side_bore() -> None:
-    """A +x bore reports its in-plane position via `pos` (x unknown)."""
+    """A +x bore reports its full 3D position via `pos` (x = axial wall mid)."""
     anchors = scan_mesh_anchors(_side_bored_mesh(), step_mm=1.0)
     x_anchors = [a for a in anchors if a["axis"] == "+x" and a["kind"] == "hole"]
     assert x_anchors, f"no +x hole found in {anchors}"
     a = x_anchors[0]
     assert a["dia"] == pytest.approx(6.0, rel=0.5)
-    assert a["pos"] is not None and a["pos"][0] is None
+    assert a["pos"] is not None and a["pos"][0] == pytest.approx(0.0, abs=2.0)
     assert a["pos"][1] == pytest.approx(0.0, abs=2.0)
     assert a["pos"][2] == pytest.approx(10.0, abs=2.0)
 

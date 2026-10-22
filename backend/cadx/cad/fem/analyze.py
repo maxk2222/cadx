@@ -99,8 +99,10 @@ def _grid_image(domain: VoxelDomain, elem_scalar: np.ndarray, node_vec: np.ndarr
         spacing=(domain.pitch,) * 3,
         origin=tuple(domain.origin),
     )
-    grid.cell_data["vm"] = elem_scalar
-    grid.cell_data["solid"] = domain.solid.ravel().astype(np.uint8)
+    # cell arrays are (nx,ny,nz) C-order (z fastest); pyvista ImageData
+    # flattens cells x-fastest — reshape+ravel("F") or sections scramble
+    grid.cell_data["vm"] = elem_scalar.reshape(domain.dims).ravel(order="F")
+    grid.cell_data["solid"] = domain.solid.reshape(domain.dims).ravel(order="F").astype(np.uint8)
     grid.point_data["u"] = node_vec
     return grid
 
@@ -189,7 +191,7 @@ def _render_case(
             # debris (observed on the bail handle)
             pl.add_mesh(
                 skin,
-                opacity=0.92,
+                opacity=1.0,
                 smooth_shading=True,
                 show_scalar_bar=show_bar and has_vm,
                 scalar_bar_args={"title": "von Mises [MPa]"} if has_vm else None,
@@ -235,10 +237,21 @@ def _render_case(
         pl.add_text("front", position="upper_left", font_size=10, color="black")
 
         pl.subplot(1, 1)
-        # keep the -Y half: from a +Y camera the cut face exposes the interior
-        section = body.clip(normal="y", origin=tuple(center))
+        # keep the -Y half: from a +Y camera the cut face exposes the interior.
+        # If y=center[1] cuts mostly air, shift the cut plane to the Y slice
+        # with the highest solid voxel count so hollow/ring parts show meat.
+        cut_origin = list(center)
+        y_counts = domain.solid.sum(axis=(0, 2))
+        mid_j = domain.dims[1] // 2
+        if y_counts.size and y_counts[mid_j] < 0.25 * float(y_counts.max()):
+            best_j = int(np.argmax(y_counts))
+            cut_origin[1] = float(domain.origin[1] + (best_j + 0.5) * domain.pitch)
+        section = body.clip(normal="y", origin=tuple(cut_origin))
         pl.add_mesh(section, scalars="vm", cmap="turbo", clim=[0, vmax], show_scalar_bar=False)
-        pl.add_mesh(skin, color="#c8ccd4", opacity=0.28, show_scalar_bar=False)
+        with contextlib.suppress(Exception):
+            skin_half = skin.clip(normal="y", origin=tuple(cut_origin))
+            if getattr(skin_half, "n_points", 0):
+                pl.add_mesh(skin_half, color="#c8ccd4", opacity=0.22, show_scalar_bar=False)
         pl.camera.position = (center[0], center[1] + diag, center[2])
         pl.camera.focal_point = tuple(center)
         pl.camera.up = (0.0, 0.0, 1.0)
