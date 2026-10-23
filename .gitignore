@@ -17,6 +17,7 @@ mesh_server/.src/
 run/
 logs/
 evals/results/
+evals/analysis/
 evals/reports/
 evals/scratch/
 evals/pydeps/
