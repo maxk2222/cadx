@@ -122,6 +122,54 @@ def test_fillet_check_fails_on_reliable_brep(tmp_path: Path) -> None:
     assert checks and checks[0]["status"] == "UNVERIFIED"
 
 
+def test_verify_spec_flags_degraded_topopt_holes() -> None:
+    """Mesh-measured features on the topopt path must reach verify_spec: a
+    spec bore group that shrank/collapsed to fewer members is a MAJOR
+    finding → spec_features FAIL (regression: robot_arm v9 shipped 1 of 2
+    flange holes, verify_spec saw no evidence at all → UNVERIFIED → PASS)."""
+    from cadx.cad.features import MeasuredFeatures, compare_features
+    from cadx.cad.verifyspec import verify_spec
+    from cadx.llm.schemas import Feature
+
+    spec = {
+        "features": [
+            {
+                "name": "flange_holes",
+                "type": "hole",
+                "count": 2,
+                "axis": "+x",
+                "dims": {"diameter": 6.5},
+            }
+        ]
+    }
+    # mesh-measured evidence: one surviving +x bore of wrong diameter —
+    # exactly the degraded shape the v9 run produced
+    measured = MeasuredFeatures(
+        approximate=True,
+        hole_groups=[
+            {
+                "id": "h1",
+                "axis": "+x",
+                "diameter": 3.87,
+                "count": 1,
+                "centers": [[80.0, 20.0]],
+                "depth_class": "through",
+            }
+        ],
+        total_holes=1,
+    )
+    feats = [Feature.model_validate(f) for f in spec["features"]]
+    findings = [f.model_dump() for f in compare_features(feats, measured)]
+    report = verify_spec(
+        spec,
+        {"ok": True, "features": measured.model_dump(), "analysis": {}},
+        feature_findings=findings,
+    )
+    spec_check = next(c for c in report["checks"] if c["name"] == "spec_features")
+    assert spec_check["status"] == "FAIL"
+    assert any(f["severity"] == "major" for f in findings)
+
+
 def test_boss_axis_detected_and_compared() -> None:
     """T8.4: a protruding cylinder (boss/tube) is measured with its axis, and
     a spec asking for a different axis produces a major finding."""

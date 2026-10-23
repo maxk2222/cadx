@@ -82,6 +82,40 @@ def _verify_spec_compact(report: dict[str, Any] | None) -> dict[str, Any] | None
     return out
 
 
+def _hole_groups_compact(features: dict[str, Any] | None) -> list[dict[str, Any]] | None:
+    """Compact hole-group rows from measured features — id/axis/diameter/
+    count, enough for the model to compare against spec-declared bores."""
+    groups = (features or {}).get("hole_groups") or []
+    if not groups:
+        return None
+    out = []
+    for g in groups[:12]:
+        if not isinstance(g, dict):
+            continue
+        out.append(
+            {
+                "id": g.get("id"),
+                "axis": g.get("axis"),
+                "diameter": g.get("diameter"),
+                "count": g.get("count") or len(g.get("centers") or []),
+            }
+        )
+    return out or None
+
+
+def _recut_compact(features: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Post-extraction re-cut summary (applied/skipped/verify_misses) stored
+    under features.refine — surfaces bore-preservation failures compactly."""
+    rep = (features or {}).get("refine")
+    if not isinstance(rep, dict):
+        return None
+    return {
+        "applied": len(rep.get("applied") or []),
+        "skipped": [str(s.get("name") or s) for s in (rep.get("skipped") or [])[:6]],
+        "verify_misses": rep.get("verify_misses"),
+    }
+
+
 def _warning_window(warnings: list[str] | None, n: int = 10) -> list[str]:
     """Validity-critical warnings (degenerate solves, disconnected bodies,
     sf divergence) are appended LAST by the topopt pipeline — a plain
@@ -2774,6 +2808,10 @@ class ToolSession:
             # head-window drops exactly them on noisy runs
             "warnings": _warning_window(top.get("warnings")),
             "verify_spec": _verify_spec_compact(res.get("verify_spec")),
+            # measured feature evidence on the shipped mesh — the agent sees
+            # bore degradation the voxel metrics can't express (Ø8.5 -> 6.9)
+            "features_measured": _hole_groups_compact(res.get("features")),
+            "recut": _recut_compact(res.get("features")),
             "topopt_calls_left": self.topopt_left,
             **self._struct_budget_meta(),
         }

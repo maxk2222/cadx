@@ -2969,6 +2969,21 @@ def run_topopt_pipeline(  # noqa: C901
     res.exports["dxf"] = None
     res.exports["svg"] = None
     res.analysis = mesh_analysis(opt_mesh)
+    # feature evidence for verify_spec / critique / salvage: the topopt path
+    # has no B-Rep, so measure the shipped mesh — hole groups get real
+    # evidence (approximate=True is correct: mesh ray-grid can't see fillets)
+    try:
+        from cadx.cad.features import mesh_features_to_measured
+        from cadx.cad.mesh_features import detect_mesh_features
+
+        mf = mesh_features_to_measured(
+            detect_mesh_features(opt_mesh).model_dump(mode="json")
+        )
+        res.features = {**mf.model_dump(mode="json")}
+        if isinstance(best.get("recut"), dict):
+            res.features["refine"] = best["recut"]
+    except Exception as e:
+        log.warning("features.mesh_measure_failed", error=str(e)[:160])
     _repair_analysis_mesh(res.analysis, stl_path)
     if res.analysis.watertight is False:
         _repair_export_meshes(res.exports, out_dir / "exports")
