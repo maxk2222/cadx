@@ -35,7 +35,81 @@ generated code and rejects fabricated class names (e.g. `HexScrew`), unknown
 type/size strings and wrong call signatures *before* the executor runs —
 errors flow into the repair loop like contract violations.
 
+**Generic constructor validation**: `catalog.constructor_kwargs(class_name,
+fastener_type=, size=, length=, parameters=, simple=, default_length=)` builds
+a validated kwarg dict for any registered class — unknown parameters are
+rejected, `Literal[...]` choices are enforced *with their real type* (a
+`Literal[150, 300]` validates and injects the int), missing required params
+are hard errors, and norm type/size pairs must exist in the size table.
+Known mapping rules: `size` maps onto the class's `size` param, or onto the
+sole remaining required numeric param (e.g. `ShaftKey.size` →
+`shaft_diameter`); `fastener_type` maps onto `fastener_type`/`bearing_type`/
+`o_ring_type`/`bottle_type`; `material` choices are intersected with what the
+installed `bd_materials` registry actually resolves (Pipe's `iron`/`pvc`/
+`steel` literals are unbuildable upstream and are filtered out).
+
 API: `GET /api/catalog`, `GET /api/catalog/search?q=`, `GET /api/catalog/lookup`.
+
+## 1a. Deterministic standard-part recipes (`cad/standard_parts.py`)
+
+For clearly-standard parts the agent can skip free-form codegen entirely:
+`PartSpec.standard_parts` is a list of `StandardPartSpec` entries
+(`class_name` + `fastener_type`/`size` + `length_mm`/`parameters` + quantity,
+placement, axis, `threaded`, `covers_features`). Two paths consume it:
+
+- **`create_standard_part` tool** — validates the spec against the catalog
+  and returns the measured norm data plus a sandbox-ready code recipe.
+- **codegen step 1 shortcut** — when `is_standard_only(spec)` holds (every
+  declared feature is covered by a standard part), the recipe is emitted
+  directly with zero LLM calls.
+
+`build_standard_part_code(parts)` emits a parametric script: every value
+lands in `PARAMS` (parametric like any other candidate), `CADX_FEATURES`
+carries the structured feature records (thread pitch/length/diameter/axis/
+position, catalog geometry adjustments), `CADX_BOM` declares the bill of
+materials — the runner prefers these declarations over namespace scanning.
+Classes whose required params take host objects (`fastener`, `bearing`,
+`ring`, `key` — hole/seat/groove ops) are reported as *context helpers, not
+standalone parts*.
+
+### Thread level-of-detail: `CADX_DETAIL_MODE`
+
+The runner injects `CADX_DETAIL_MODE` (`"preview"` | `"export"`) — an
+executor-controlled flag, never an LLM boolean:
+
+- **preview** (`verify`/`render_model`/iteration runs): threadable classes
+  build with `simple=True` (fast core body); thread classes without a
+  `simple` switch get a plain cylinder proxy. The `CADX_FEATURES` thread
+  records feed a helix-line overlay in the render views plus a `thread_detail`
+  close-up camera — the thread is clearly *visible* as a preview cue without
+  paying for real helix geometry. `preview_thread_count` reports the marker
+  count.
+- **export** (final selected candidate): the orchestrator re-executes the
+  winning code once with `detail_mode="export"`, so fasteners/thread classes
+  build `simple=False` — the real ISO helix. Multi-solid catalog parts are
+  fused per part into single solids. `thread_count` must then match the
+  declared expected count or the run fails — a smooth-shaft preview can
+  never ship as the final artifact. All four formats (STEP/STL/3MF/GLB) are
+  produced from that real geometry.
+
+`verify_spec` has a dedicated `thread_features` check: preview requires a
+thread marker or real thread, export requires the real helix — FAIL
+otherwise. Timing reference (M10×150 ISO 10642, cold): preview ≈ 2.2 s,
+export ≈ 7.3 s sandbox build.
+
+### Applied-feature records
+
+`cadlib.finish_edges(shape, edges, kind="fillet"|"chamfer", size=...)` is the
+reporting wrapper around `safe_fillet_shape`/`safe_chamfer_shape`: it returns
+`(result, {"requested", "applied"})` and **raises** when the radius collapsed
+to 0 instead of silently succeeding — generated code appends the record to
+`CADX_FEATURES` so the run reports what actually landed.
+
+Known limits: context-helper classes (holes/seats/grooves) can't be emitted
+as standalone parts; `Pipe` needs `length_mm` (its `path` Edge is generated
+by the recipe); `CounterSunkScrew` gets a corrected norm-table head profile
+(the catalog class's filleted head deviates from the table dims — the
+adjustment is reported as a `catalog_geometry_adjustment` feature record).
 
 ## 2. cadlib (`cad/cadlib/`)
 
@@ -83,6 +157,8 @@ API: `POST/GET/DELETE /api/library`, `GET /api/library/{id}/file`,
 
 ## BOM (`bom.json` + `Version.bom`)
 
+A declared `CADX_BOM` in generated code (emitted by the standard-part recipe
+builder) is authoritative — explicit part instances, not guesses. Otherwise
 `runner_entry.py` scans the executed namespace for `bd_warehouse` objects and
 groups them by `(class, type, size)` — using the semantic `*_size` attributes
 (`screw_size`, `bearing_size`, `insert_size`, …), since `.size` is an

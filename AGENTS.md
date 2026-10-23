@@ -91,6 +91,13 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
   typing, dataclasses. `cadlib` (`cadx/cad/cadlib/`) is the reviewed helper library —
   extend it deliberately, never import unlisted modules from it (the runtime guard
   treats its internals like generated code).
+- Standard-part contract: `spec.standard_parts` (StandardPartSpec) is the structured
+  catalog intent — `standard_parts.build_standard_part_code` turns it into a
+  sandbox recipe (PARAMS + `CADX_FEATURES` + `CADX_BOM` declarations), never a
+  free-form guess. Threads are level-of-detail split by the executor-injected
+  `CADX_DETAIL_MODE`: "preview" = fast simple body + helix-line render overlay,
+  "export" = real helix (`simple=False`) — the orchestrator re-runs the winning
+  candidate in export mode and fails if `thread_count` falls short.
 - Agent robustness pipeline (local-model friendly): `cad/errordiag.py` classifies
   exec failures, `cad/patch.py` applies `PatchResponse` find/replace hunks
   (contract-validated), `cad/features.py` measures geometry (holes, countersinks,
