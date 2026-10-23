@@ -1446,7 +1446,11 @@ def _mesh_fallback(out: MeasuredFeatures, stl_path: Path, mesh=None) -> None:
             out.hole_groups = out.hole_groups + new
             out.total_holes += len([g for g in new if not g.elongated])
         out.slots = m_slots
-        out.approximate = True
+        # NOT approximate: the analytic B-Rep measurements (round bores,
+        # rounds/fillets, chamfers) stay authoritative — the mesh scan only
+        # ADDED slots/tunnels it could see that the face scan cannot. Setting
+        # approximate here used to downgrade every part with holes-but-no-
+        # slots, turning _fillet_check FAILs into harmless UNVERIFIEDs.
         return
     out.hole_groups = m_groups
     out.total_holes = len(m_groups)

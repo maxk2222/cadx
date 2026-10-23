@@ -83,6 +83,45 @@ def test_extract_features_mesh_fallback(bored_stl: Path) -> None:
     assert with_stl.approximate is True
 
 
+def test_extract_features_merge_keeps_analytic_confidence(bored_stl: Path) -> None:
+    """Merge branch (analytic holes + mesh slot/tunnel scan) must NOT mark
+    the result approximate — the B-Rep measurements stay authoritative and
+    _fillet_check must keep FAILing on a genuinely missing declared fillet
+    (regression: l_bracket shipped without its spec fillets, verify_spec
+    PASSed because the merge branch poisoned `approximate`)."""
+    part = Box(40, 20, 8, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    for x in (-12.0, 0.0, 12.0):
+        part -= Pos(x, 0, 4) * Cylinder(radius=2, height=20)
+    out = extract_features(part, bored_stl)
+    assert out.total_holes == 3
+    assert out.approximate is False
+
+
+def test_fillet_check_fails_on_reliable_brep(tmp_path: Path) -> None:
+    """A spec fillet missing from a reliable analytic solid → FAIL, not
+    UNVERIFIED (the status only survives on approximate evidence)."""
+    from cadx.cad.verifyspec import _fillet_check
+
+    checks: list[dict] = []
+    _fillet_check(
+        0,
+        "edge_fillet",
+        {"type": "fillet", "dims": {"radius": 3.0}},
+        {"rounds": [], "fillets": [], "approximate": False},
+        checks,
+    )
+    assert checks and checks[0]["status"] == "FAIL"
+    checks.clear()
+    _fillet_check(
+        0,
+        "edge_fillet",
+        {"type": "fillet", "dims": {"radius": 3.0}},
+        {"rounds": [], "fillets": [], "approximate": True},
+        checks,
+    )
+    assert checks and checks[0]["status"] == "UNVERIFIED"
+
+
 def test_boss_axis_detected_and_compared() -> None:
     """T8.4: a protruding cylinder (boss/tube) is measured with its axis, and
     a spec asking for a different axis produces a major finding."""
