@@ -194,6 +194,13 @@ No BuildPart context needed. Parts rest on XY (min Z = 0), centred — place wit
   `part, applied_l = safe_chamfer_shape(part, edges, length)`, which returns
   the new Shape and the accepted length. `safe_chamfer(concave_edges(axis="y"), length=2)`.
 
+### finish_edges
+
+- `finish_edges(shape, edges, kind="fillet"|"chamfer", size, min_size=0.2)`
+  — algebra-mode operation returning `(new_shape, applied_record)`. The record
+  contains requested and accepted size; an empty/invalid edge selection raises
+  instead of silently claiming that a round or chamfer was made.
+
 ## Edge selection — build fillet/chamfer selections without OCP code
 
 `edges() >> Axis.Z` does NOT sort or filter the way it looks like it does —

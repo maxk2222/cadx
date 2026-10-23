@@ -2,4 +2,6 @@ You previously produced an incomplete PartSpec. Re-read the USER REQUEST and lis
 geometric feature it names (holes, slots, ribs, fillets, chamfers, countersinks, pockets,
 bosses, threads, inserts, cutouts) as `features` entries with type, numeric dims in mm,
 position and count. Keep the overall dimensions unchanged. Give the part a real `name`
-and a one-sentence `summary` describing it. Respond with JSON matching the schema.
+and a one-sentence `summary` describing it. Preserve catalog components in
+`standard_parts` with exact class/type/size and list all their covered features by name.
+Never simplify a requested thread to a smooth cylinder. Respond with JSON matching the schema.

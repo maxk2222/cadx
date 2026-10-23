@@ -22,6 +22,18 @@ Rules:
   "M8-22-7 ball bearing (608)", "M20x1.5 ISO thread", "M6-1 iso4762 socket head cap screw".
   Lowercase type codes (iso10642, iso4762, …) let the system resolve the norm table.
   For those, dims may be omitted — the library knows the tables.
+- Also emit `standard_parts` for every standalone or assembled catalog component:
+  exact `class_name`, `fastener_type`, `size`, `length_mm` when relevant, constructor
+  `parameters` for parametric families, `quantity`, placements, axis and a `name`.
+  Use exact registered class and size/type strings; never substitute a hand-built
+  cylinder for a standard screw, nut, insert, bearing or gear. Put every feature
+  supplied by that stock component in `covers_features` using the exact corresponding
+  `features[].name`; features not covered by the selected part remain separate.
+- A screw/nut/thread requested as a threaded part stays threaded in the structured
+  intent. Do not rewrite it as a smooth FDM-friendly cylinder. The agent preview is a
+  lightweight display representation; final export builds the real thread. If head
+  style, norm, length, fit or pitch is missing and cannot be resolved safely, record
+  an explicit assumption or ask a focused open question.
 - If an essential dimension is missing: add an open question with a sensible
   `default_assumption`; set `blocking=true` ONLY when a wrong guess would make the part
   useless (otherwise we proceed with the assumption).

@@ -41,6 +41,13 @@ Rules:
 - Look up standard parts and cadlib helpers BEFORE writing the block that uses
   them (`search_catalog`/`lookup_part`/`cadlib_lookup`/`quickref`), and prefer
   cadlib helpers over hand-rolled geometry.
+- If the spec declares `standard_parts`, call `create_standard_part` and use its
+  validated catalog recipe/parameters. Preserve the separate feature list: each
+  feature not listed in `covers_features` still needs its own block.
+- A requested thread must have a display-only preview entry in `CADX_FEATURES`;
+  `CADX_DETAIL_MODE` is `preview` in agent checks/renders and `export` in final
+  execution. Never treat a preview helix as exported solid geometry or drop the
+  real thread in export mode.
 - `verify` calls are budgeted — one per stage, not per guess. `render_model`
   shares the budget; use it when you need to SEE the shape.
 - Do not call `done` until the last verify passed and the file contract is met.

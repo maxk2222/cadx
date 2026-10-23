@@ -127,6 +127,23 @@ class Feature(BaseModel):
     )
 
 
+class StandardPartSpec(BaseModel):
+    model_config = ConfigDict(json_schema_extra={"required": ["class_name"]})
+
+    class_name: S = ""
+    fastener_type: S = ""
+    size: S = ""
+    parameters: dict[str, str | int | float | bool] = Field(default_factory=dict, max_length=20)
+    quantity: int = Field(default=1, ge=1, le=100)
+    length_mm: float | None = Field(default=None, gt=0, le=10000)
+    position_mm: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    placements_mm: list[tuple[float, float, float]] = Field(default_factory=list, max_length=100)
+    axis: Literal["+x", "-x", "+y", "-y", "+z", "-z"] | None = None
+    threaded: bool | None = None
+    covers_features: list[S] = Field(default_factory=list, max_length=20)
+    name: S = ""
+
+
 class ImageRole(BaseModel):
     model_config = ConfigDict(json_schema_extra={"required": ["asset_id", "role"]})
 
@@ -597,6 +614,7 @@ class PartSpec(BaseModel):
                 "width_y",
                 "height_z",
                 "features",
+                "standard_parts",
                 "image_roles",
                 "verification_questions",
             ]
@@ -611,6 +629,7 @@ class PartSpec(BaseModel):
     height_z: Dim
     orientation_note: M = ""
     features: list[Feature] = Field(default_factory=list, max_length=40)
+    standard_parts: list[StandardPartSpec] = Field(default_factory=list, max_length=24)
     # multi-image parts: how the body is built up (layers, gaps, joined parts)
     # — survives the spec->codegen handoff that otherwise flattens structure
     construction_notes: Annotated[str, Field(max_length=600)] = ""

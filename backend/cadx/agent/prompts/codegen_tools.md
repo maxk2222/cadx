@@ -11,3 +11,10 @@ draft the code, check it with `check_snippet`, then finish with `submit_code`.
 Pass `expected_bbox` and, when known, `params` metadata (unit/min/max/
 description per PARAMS key) — the values are taken from the code itself.
 You may also answer directly with the CodeResponse JSON when no lookup is needed.
+
+When `PART SPEC.standard_parts` is non-empty, call `create_standard_part` for
+each catalog component before writing code. Reuse its validated class, exact
+type/size, dimensions and recipe rather than reconstructing stock geometry.
+If the request contains only fully specified catalog parts and their listed
+features, the deterministic codegen path may already have supplied the recipe;
+do not replace it with a hand-built approximation.

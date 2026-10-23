@@ -51,6 +51,15 @@ _LOOKUP_ATTRS = (
     "washer_diameter",
     "washer_thickness",
     "thread_diameter",
+    "thread_pitch",
+    "thread_length",
+    "major_diameter",
+    "pitch",
+    "diameter",
+    "screw_size",
+    "thread_size",
+    "external",
+    "hand",
     "size",
     "fastener_type",
     "bearing_type",
@@ -63,12 +72,16 @@ def _doc(cls: type) -> str:
     return doc.splitlines()[0].strip() if doc else ""
 
 
-def _literal_values(annotation: Any) -> list[str]:
-    """Values of a ``Literal[...]`` annotation (direct or inside Optional etc.)."""
+def _literal_values(annotation: Any) -> list[Any]:
+    """Values of a ``Literal[...]`` annotation (direct or inside Optional etc.).
+
+    Raw literal values — a ``Literal[150, 300]`` must validate *and inject* the
+    int, stringifying it here would pass schema checks yet hand the
+    constructor a type it rejects."""
     args = typing.get_args(annotation)
     if typing.get_origin(annotation) is typing.Literal:
-        return [str(a) for a in args]
-    out: list[str] = []
+        return list(args)
+    out: list[Any] = []
     for a in args:
         out.extend(_literal_values(a))
     return out
@@ -95,6 +108,49 @@ def _sig_params(cls: type) -> list[str]:
             out.append(f"{name}={d}")
         if len(out) >= 12:
             break
+    return out
+
+
+def _resolvable_material_choices(choices: list[str]) -> list[str]:
+    """Pipe's Material literal declares abs/copper/iron/pvc/stainless/steel but
+    the installed bd_materials registry cannot resolve iron/pvc/steel — an
+    upstream mismatch that would hand the agent unbuildable values. Choices
+    for `material` params are intersected with what actually resolves."""
+    out: list[str] = []
+    for choice in choices:
+        try:
+            from bd_materials import resolve as _resolve_material
+
+            _resolve_material(choice)
+            out.append(choice)
+        except Exception:
+            continue
+    return out
+
+
+def _parameter_schema(cls: type) -> dict[str, dict[str, Any]]:
+    try:
+        sig = inspect.signature(cls.__init__)  # type: ignore[misc]
+    except Exception:
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for name, p in sig.parameters.items():
+        if name == "self" or name.startswith("_"):
+            continue
+        if p.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
+            continue
+        row: dict[str, Any] = {"required": p.default is inspect.Parameter.empty}
+        if p.default is not inspect.Parameter.empty:
+            row["default"] = p.default if isinstance(p.default, str | int | float | bool) else repr(p.default)
+        choices = _literal_values(p.annotation)
+        if choices and name == "material":
+            choices = _resolvable_material_choices([str(c) for c in choices]) or choices
+        if choices:
+            row["choices"] = choices
+        annotation = p.annotation
+        if annotation is not inspect.Parameter.empty:
+            row["type"] = getattr(annotation, "__name__", str(annotation).replace("typing.", ""))
+        out[name] = row
     return out
 
 
@@ -176,6 +232,7 @@ def _normed_entry(cls: type, sizes: dict[str, list[str]], category: str) -> dict
         "category": category,
         "doc": _doc(cls),
         "types": sizes,
+        "parameters": _parameter_schema(cls),
         "holes": _holes_for(cls),
     }
 
@@ -186,6 +243,7 @@ def _parametric_entry(cls: type, category: str) -> dict[str, Any]:
         "category": category,
         "doc": _doc(cls),
         "params": _sig_params(cls),
+        "parameters": _parameter_schema(cls),
         "holes": _holes_for(cls),
     }
 
@@ -380,6 +438,131 @@ def validate_part_ref(
     return errors
 
 
+def _constructor_values(
+    class_name: str,
+    schema: dict[str, dict[str, Any]],
+    *,
+    fastener_type: str | None,
+    size: str | None,
+    length: float | None,
+    parameters: dict[str, Any] | None,
+    simple: bool | None,
+    default_length: float | None,
+) -> tuple[dict[str, Any], str | None]:
+    values = dict(parameters or {})
+    unknown = sorted(set(values) - set(schema))
+    if unknown:
+        raise ValueError(f"{class_name}: unsupported parameter(s): {', '.join(unknown)}")
+    selector = next((name for name in _TYPE_KWARGS if name in schema), None)
+    if fastener_type and selector:
+        if selector in values and values[selector] != fastener_type:
+            raise ValueError(f"{class_name}: conflicting {selector} values")
+        values[selector] = fastener_type
+    if size is not None and "size" in schema:
+        if "size" in values and str(values["size"]) != size:
+            raise ValueError(f"{class_name}: conflicting size values")
+        values["size"] = size
+    elif size is not None and "size" not in schema:
+        # e.g. ShaftKey — the norm table's "size" IS its shaft diameter: when
+        # exactly one required numeric param exists besides length, the size
+        # string maps onto it.
+        numeric_required = [
+            name
+            for name, row in schema.items()
+            if row.get("required")
+            and name != "length"
+            and any(t in str(row.get("type") or "") for t in ("int", "float"))
+        ]
+        if len(numeric_required) == 1:
+            with contextlib.suppress(TypeError, ValueError):
+                values[numeric_required[0]] = float(size)
+    if length is not None and "length" in schema:
+        values["length"] = length
+    elif default_length is not None and "length" in schema and "length" not in values:
+        values["length"] = default_length
+    if simple is not None and "simple" in schema:
+        values["simple"] = simple
+    for name, value in list(values.items()):
+        raw_choices = (schema.get(name) or {}).get("choices") or []
+        if raw_choices and value not in raw_choices:
+            typed = next((c for c in raw_choices if str(c) == str(value)), None)
+            if typed is not None:
+                values[name] = typed
+    return values, selector
+
+
+def _validate_constructor_values(
+    class_name: str,
+    cls: type,
+    schema: dict[str, dict[str, Any]],
+    values: dict[str, Any],
+) -> None:
+    signature = inspect.signature(cls.__init__)
+    for name, value in values.items():
+        if not isinstance(value, bool | str | int | float):
+            raise ValueError(f"{class_name}: parameter '{name}' must be a scalar")
+        choices = schema[name].get("choices") or []
+        if choices and str(value) not in {str(c) for c in choices}:
+            raise ValueError(
+                f"{class_name}: parameter '{name}' must be one of "
+                + ", ".join(str(c) for c in choices)
+            )
+        annotation = signature.parameters[name].annotation
+        if annotation not in (str, int, float, bool):
+            continue
+        valid = isinstance(value, annotation) or (
+            annotation is float and isinstance(value, int) and not isinstance(value, bool)
+        )
+        if not valid:
+            raise ValueError(f"{class_name}: parameter '{name}' must be {annotation.__name__}")
+
+
+def _required_constructor_values(
+    class_name: str, schema: dict[str, dict[str, Any]], values: dict[str, Any]
+) -> None:
+    missing = [
+        name
+        for name, row in schema.items()
+        if row["required"] and name not in values and name not in ("rotation", "align", "mode")
+    ]
+    if missing:
+        raise ValueError(f"{class_name}: missing required parameter(s): {', '.join(missing)}")
+
+
+def constructor_kwargs(
+    class_name: str,
+    *,
+    fastener_type: str | None = None,
+    size: str | None = None,
+    length: float | None = None,
+    parameters: dict[str, Any] | None = None,
+    simple: bool | None = None,
+    default_length: float | None = None,
+) -> dict[str, Any]:
+    cls = resolve_class(class_name)
+    if cls is None:
+        raise ValueError(f"unknown class '{class_name}'")
+    schema = _parameter_schema(cls)
+    values, selector = _constructor_values(
+        class_name,
+        schema,
+        fastener_type=fastener_type,
+        size=size,
+        length=length,
+        parameters=parameters,
+        simple=simple,
+        default_length=default_length,
+    )
+    _validate_constructor_values(class_name, cls, schema, values)
+    norm_type = str(values[selector]) if selector and values.get(selector) is not None else None
+    norm_size = values.get("size")
+    errors = validate_part_ref(class_name, fastener_type=norm_type, size=norm_size)
+    if errors:
+        raise ValueError("; ".join(errors))
+    _required_constructor_values(class_name, schema, values)
+    return values
+
+
 def nominal_hole_diameter(metric_mm: int, kind: str = "clearance") -> float | None:
     """Normal clearance / Soft tap drill diameter for M{metric_mm} from the
     bd_warehouse tables — replaces hard-coded plausibility dicts."""
@@ -403,6 +586,8 @@ def lookup_part(
     fastener_type: str | None = None,
     size: str | None = None,
     length: float | None = None,
+    parameters: dict[str, Any] | None = None,
+    simple: bool | None = None,
 ) -> dict[str, Any]:
     """Instantiate a catalog part and return its published dimension data.
 
@@ -411,29 +596,36 @@ def lookup_part(
     cls = resolve_class(class_name)
     if cls is None:
         raise ValueError(f"unknown class '{class_name}'")
-    errors = validate_part_ref(class_name, fastener_type=fastener_type, size=size)
-    if errors:
-        raise ValueError("; ".join(errors))
+    effective_simple = simple
+    if effective_simple is None and "simple" in _parameter_schema(cls):
+        effective_simple = bool((parameters or {}).get("simple", True))
+    kwargs = constructor_kwargs(
+        class_name,
+        fastener_type=fastener_type,
+        size=size,
+        length=length,
+        parameters=parameters,
+        simple=effective_simple,
+        default_length=10.0,
+    )
+    if class_name == "Pipe":
+        pipe_length = float(length or 0.0)
+        if pipe_length <= 0:
+            raise ValueError("Pipe requires length in mm")
+        from build123d import Edge, Vector
 
-    params = set()
-    with contextlib.suppress(Exception):
-        sig = inspect.signature(cls.__init__)  # type: ignore[misc]  # wrapped ctors hide cls signature
-        params = set(sig.parameters)
-
-    kwargs: dict[str, Any] = {}
-    if "size" in params:
-        kwargs["size"] = size
-    for tw in _TYPE_KWARGS:
-        if tw in params and fastener_type:
-            kwargs[tw] = fastener_type
-    if "length" in params:
-        kwargs["length"] = length if length is not None else 10.0
+        kwargs["path"] = Edge.make_line(Vector(0, 0, 0), Vector(0, 0, pipe_length))
     try:
-        obj = cls(**{k: v for k, v in kwargs.items() if v is not None})
+        obj = cls(**kwargs)
     except Exception as e:
         raise ValueError(f"{class_name} construction failed: {e}") from e
 
     data: dict[str, Any] = {"class": class_name}
+    try:
+        bb = obj.bounding_box()
+        data["bbox_size_mm"] = [float(bb.size.X), float(bb.size.Y), float(bb.size.Z)]
+    except Exception:
+        pass
     for attr in _LOOKUP_ATTRS:
         try:
             v = getattr(obj, attr, None)
@@ -451,6 +643,28 @@ def lookup_part(
             data[attr] = v
         except Exception:
             data[attr] = str(v)
+    norm_data = getattr(obj, "screw_data", None) or getattr(obj, "nut_data", None)
+    if isinstance(norm_data, dict):
+        data["norm_dimensions"] = {
+            key: float(value)
+            for key, value in norm_data.items()
+            if key in {"dk", "k", "s", "t", "thread_diameter", "thread_pitch"}
+            and isinstance(value, int | float)
+        }
+        nominal_diameter = data["norm_dimensions"].get("dk")
+        measured_diameter = data.get("head_diameter")
+        if (
+            nominal_diameter is not None
+            and measured_diameter is not None
+            and abs(float(nominal_diameter) - float(measured_diameter)) > 0.25
+        ):
+            data["geometry_mismatches"] = [
+                {
+                    "dimension": "head_diameter",
+                    "nominal": float(nominal_diameter),
+                    "catalog_shape": float(measured_diameter),
+                }
+            ]
     return data
 
 
@@ -474,8 +688,15 @@ def catalog_excerpt(class_names: list[str], *, max_chars: int = 6000, max_sizes:
             lines.append(f"- {name}: NOT IN CATALOG — pick a class from the reference")
             continue
         if entry["kind"] == "parametric":
+            params = entry.get("parameters") or {}
+            shown_params = []
+            for param_name, row in list(params.items())[:10]:
+                label = param_name if row.get("required") else f"{param_name}=<value>"
+                if row.get("choices"):
+                    label += f" ({'|'.join(str(c) for c in row['choices'][:6])})"
+                shown_params.append(label)
             lines.append(
-                f"- {name} ({entry['category']}, parametric): {', '.join(entry['params'][:10])}"
+                f"- {name} ({entry['category']}, parametric): " + ", ".join(shown_params)
             )
             continue
         tys = entry["types"]
@@ -522,6 +743,11 @@ def search(query: str, *, limit: int = 25) -> list[dict[str, Any]]:
                     if q in s.lower():
                         matched_sizes.append(s)
                         score += 1
+            for param_name, row in (e.get("parameters") or {}).items():
+                if q in param_name.lower():
+                    score += 1
+                if any(q in str(choice).lower() for choice in row.get("choices") or []):
+                    score += 1
             if score:
                 hits.append(
                     {

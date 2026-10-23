@@ -262,9 +262,7 @@ def _build123d_digest(compact: bool = False) -> str:
     if compact:
         enums = [n for n in names if _is_enum(getattr(build123d, n, None))]
         hints = [n for n in names if n in _SIG_HINTS and n not in enums]
-        names = tuple(enums) + tuple(hints) + tuple(
-            n for n in names if n not in (*enums, *hints)
-        )
+        names = tuple(enums) + tuple(hints) + tuple(n for n in names if n not in (*enums, *hints))
     lines = [f"build123d {dist_version('build123d')} — core API digest (runtime introspection)"]
     for name in names:
         obj = getattr(build123d, name, None)
@@ -285,15 +283,37 @@ def _import_cadlib() -> Any:
     return cadlib
 
 
+# prompt-facing core surface — the context block truncates the tail, so the
+# helpers the keyword map and most generated code rely on come first
+_CADLIB_FIRST: tuple[str, ...] = (
+    "through_hole",
+    "hole_grid",
+    "safe_fillet",
+    "safe_chamfer",
+    "finish_edges",
+    "edges_at",
+    "profile_body",
+    "closed_polyline",
+    "strut",
+    "rib",
+    "largest_solid",
+)
+
+
 def _cadlib_digest(compact: bool = False) -> str:
     cadlib = _import_cadlib()
     lines = [
         "cadlib — reviewed helpers (import: `from cadlib import <name>`); "
         "cutouts run inside `with BuildPart() as p:`, shapes return a Part to place"
     ]
-    for name in getattr(cadlib, "__all__", None) or sorted(
-        n for n in dir(cadlib) if not n.startswith("_")
-    ):
+    names = list(
+        getattr(cadlib, "__all__", None) or sorted(n for n in dir(cadlib) if not n.startswith("_"))
+    )
+    if compact:
+        names = [n for n in _CADLIB_FIRST if n in names] + [
+            n for n in names if n not in _CADLIB_FIRST
+        ]
+    for name in names:
         obj = getattr(cadlib, name, None)
         if obj is None or not callable(obj):
             continue
@@ -506,7 +526,9 @@ def context_block(topics: tuple[str, ...] = ("cadlib", "build123d"), max_chars: 
     """Compact signature-only digest for prompt-context injection.
 
     Rendered without doc lines to stay small; the model can pull full detail
-    per object via the quickref tool."""
+    per object via the quickref tool. Each topic gets an even share of the
+    budget — a growing cadlib digest must not starve the build123d enums."""
+    note = "… (truncated — call quickref(<topic>) for the full digest)"
     sections: list[str] = []
     for topic in topics:
         builder = _BUILDERS.get(topic)
@@ -518,14 +540,13 @@ def context_block(topics: tuple[str, ...] = ("cadlib", "build123d"), max_chars: 
             log.warning("quickref.context_block_failed", topic=topic, error=str(e))
     if not sections:
         return ""
-    text = (
+    header = (
         "API QUICKREF — exact signatures introspected from the INSTALLED packages\n"
         "(names/sigs below are ground truth; call the quickref tool for full "
-        "detail incl. bd_warehouse type/size tables):\n" + "\n".join(sections)
+        "detail incl. bd_warehouse type/size tables):\n"
     )
-    return _truncate_lines(
-        text, max_chars, "… (truncated — call quickref(<topic>) for the full digest)"
-    )
+    share = max(200, (max_chars - len(header) - len(sections) * (len(note) + 2)) // len(sections))
+    return header + "\n".join(_truncate_lines(s, share, note) for s in sections)
 
 
 # --------------------------------------------------------------------------- #

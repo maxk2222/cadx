@@ -38,7 +38,7 @@ bearing = SingleRowDeepGrooveBallBearing(size="M8-22-7")  # 608
 # Query data:  screw.clearance_hole_diameters -> {'Close':4.3,'Normal':4.5,'Loose':4.8}
 #              screw.tap_hole_diameters -> {'Soft':..., 'Hard':...}
 #              <Cls>.types(), <Cls>.sizes(type), <Cls>.select_by_size("M6-1")
-# simple=True (default) = no real thread geometry (fast); hand="right"|"left".
+# simple=True (default) = no real thread geometry; hand="right"|"left".
 ```
 Common fastener_type values: screws iso10642/iso7046/iso14581 (countersunk), iso4762 (socket head),
 iso4017/iso4014/din931 (hex head), iso7380_1/iso7380_2 (button), iso1207/iso7048/iso14580 (cheese),
@@ -67,7 +67,7 @@ result = p.part
 # hole positions are recorded on fastener.hole_locations -> build assemblies if include_fasteners
 ```
 
-### Real threads (only when the user asks — expensive!)
+### Thread detail contract
 ```python
 core = Cylinder(d / 2 - 0.3, L, align=(Align.CENTER, Align.CENTER, Align.MIN))
 thread = IsoThread(
@@ -77,12 +77,16 @@ thread = IsoThread(
     external=True,
     end_finishes=("fade", "square"),
     manufacturing_compensation=PARAMS.get("thread_comp", 0.0),
+    simple=(CADX_DETAIL_MODE == "preview"),
 )
 result = core + thread  # fuse -> one solid
 # internal: IsoThread(..., external=False) inside a bore of major_diameter,
 #           or ThreadedHole(fastener=..., depth=L, simple=False)
 # bottle cap: PlasticBottleThread(size="M38SP444", external=False)
 # metric trapezoidal (lead screw): MetricTrapezoidalThread(size="Tr16x4", length=L)
+# Include CADX_FEATURES metadata for the thread so preview renders can draw a
+# lightweight visible helix when simple=True. The executor rebuilds final exports
+# with CADX_DETAIL_MODE="export"; there the real helix must be present.
 # end_finishes: ("fade","square") is a good fast default; "chamfer" is ~20x slower.
 ```
 
@@ -111,6 +115,7 @@ pick the nearest valid one and note it in `reasoning`.
 - screw `length` matters only for `include_fasteners` assemblies and blind-hole depth checks.
 - `depth=None` on a hole = through the whole part; give `depth` for blind holes.
 - `HeatSetNut` pairs ONLY with `InsertHole` (other holes raise ValueError).
-- keep `simple=True` unless real threads are requested — simple fasteners are ~50x cheaper
-  and keep exports small.
+- Agent preview uses simple fasteners plus a lightweight visible thread cue. If a
+  thread is part of the requested standard fastener/feature, the final export is
+  rebuilt with real helix geometry; never ship the preview core as the final thread.
 - after fusing thread+core or gear+bore verify the part is still ONE solid.

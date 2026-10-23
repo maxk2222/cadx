@@ -36,6 +36,7 @@ from cadx.agent.types import IMAGE_INPUT_KINDS, AgentCtx, InputAsset
 from cadx.cad import catalog, codeedits
 from cadx.cad.allowlist import check_code
 from cadx.cad.partspec import check_standard_part_calls
+from cadx.llm.schemas import StandardPartSpec
 from cadx.logging import get_logger
 
 log = get_logger(__name__)
@@ -219,6 +220,56 @@ INFO_TOOLS = [
             "fastener_type": _s("norm type string, e.g. iso10642"),
             "size": _s("size string, e.g. M4-0.7"),
             "length": {"type": "number", "description": "part length in mm"},
+            "parameters": {
+                "type": "object",
+                "maxProperties": 20,
+                "additionalProperties": {"type": ["string", "number", "integer", "boolean"]},
+            },
+            "simple": {"type": "boolean", "description": "use lightweight geometry when true"},
+        },
+        ["class_name"],
+    ),
+    _fn(
+        "create_standard_part",
+        "Validate a registered bd_warehouse part against its norm table and return "
+        "a sandbox-ready parametric code recipe plus measured catalog dimensions. "
+        "Use this for actual standard components, not just hole dimensions. Preview "
+        "uses a lightweight visible thread cue; final exports build real threads.",
+        {
+            "class_name": _s("exact registered bd_warehouse class"),
+            "fastener_type": _s("norm type such as iso10642 or iso4762"),
+            "size": _s("exact catalog size such as M10-1.5"),
+            "length_mm": {"type": "number", "description": "nominal component length in mm"},
+            "parameters": {
+                "type": "object",
+                "maxProperties": 20,
+                "additionalProperties": {"type": ["string", "number", "integer", "boolean"]},
+            },
+            "quantity": _i("number of instances"),
+            "position_mm": {
+                "type": "array",
+                "items": {"type": "number"},
+                "minItems": 3,
+                "maxItems": 3,
+            },
+            "placements_mm": {
+                "type": "array",
+                "items": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "minItems": 3,
+                    "maxItems": 3,
+                },
+                "maxItems": 100,
+            },
+            "axis": {"type": "string", "enum": ["+x", "-x", "+y", "-y", "+z", "-z"]},
+            "threaded": {"type": "boolean"},
+            "covers_features": {
+                "type": "array",
+                "items": {"type": "string"},
+                "maxItems": 20,
+            },
+            "name": _s("optional assembly/BOM label"),
         },
         ["class_name"],
     ),
@@ -2058,10 +2109,39 @@ class ToolSession:
                 fastener_type=a.get("fastener_type") or None,
                 size=str(a["size"]) if a.get("size") is not None else None,
                 length=float(a["length"]) if a.get("length") is not None else None,
+                parameters=a.get("parameters") if isinstance(a.get("parameters"), dict) else None,
+                simple=a.get("simple"),
             )
         except ValueError as e:
             return {"ok": False, "error": str(e)}
         return {"ok": True, "part": data}
+
+    def _tool_create_standard_part(self, a: dict[str, Any]) -> dict[str, Any]:
+        try:
+            from cadx.cad.standard_parts import build_standard_part_code, validate_standard_parts
+
+            part = StandardPartSpec.model_validate(a)
+            recipe = build_standard_part_code([part])
+            detail = validate_standard_parts([part])[0]
+            part_data = catalog.lookup_part(
+                part.class_name,
+                fastener_type=part.fastener_type or None,
+                size=part.size or None,
+                length=part.length_mm,
+                parameters=part.parameters,
+            )
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:500]}
+        return {
+            "ok": True,
+            "part": part_data,
+            "thread": detail["thread"],
+            "code": recipe,
+            "detail_policy": {
+                "preview": "lightweight visible thread cue",
+                "exports": "real thread geometry",
+            },
+        }
 
     def _tool_cadlib_lookup(self, a: dict[str, Any]) -> dict[str, Any]:
         try:

@@ -132,14 +132,24 @@
      — instead of drawing your own guessed outline.
    - `IMAGE_PROFILE` is the raw `[[x, y], ...]` outline list for custom
      constructions.
-7. STANDARD PARTS: whenever the user names a screw/nut/insert/bearing/thread size, do
-   NOT type its dimensions by hand. Create the bd_warehouse object and cut the hole with
-   `ClearanceHole` / `TapHole` / `ThreadedHole` / `InsertHole` / `PressFitHole` (see the
-   bd_warehouse reference). Purchased parts (screws, nuts, bearings) are NOT part of
-   `result` unless `include_fasteners` is enabled; only their holes/seats are cut.
-   Threads: use `simple=True` (cosmetic) unless the user asks for printed/machined real
-   threads; real threads must use `end_finishes=("fade","square")` or `("raw","raw")`
-   and `manufacturing_compensation=PARAMS["thread_comp"]` for FDM.
+7. STANDARD PARTS: when `PART SPEC.standard_parts` is non-empty, use the exact
+   catalog class, norm type, size and constructor parameters. Never replace a
+   named screw, nut, insert, bearing, gear or other catalog object with guessed
+   hand-built dimensions. Use `create_standard_part` to get a validated recipe;
+   for a standalone catalog-only spec the codegen pipeline may provide the whole
+   recipe directly. Purchased fasteners are included in `result` when they are
+   declared as standard parts; hole/seat features remain separate cuts.
+   THREAD DETAIL: `CADX_DETAIL_MODE` is injected by the executor. For catalog
+   fasteners with a `simple` option, set `simple=(CADX_DETAIL_MODE == "preview")`
+   only when the structured feature declares a thread. Add a JSON-safe
+   `CADX_FEATURES` entry for each thread with `kind`, `thread_spec`,
+   `major_diameter`, `pitch`, `length`, `start`, `external`, `hand`, `axis`
+   and `position_mm`. Preview mode uses this metadata for a lightweight
+   display-only helix; it must not be treated as physical geometry. Final
+   export mode is rebuilt by the executor with `CADX_DETAIL_MODE == "export"`
+   and must contain the real helix. Never silently export the `simple=True`
+   core when a thread was requested. Keep nominal dimensions separate from
+   FDM compensation.
 8. Keep the code deterministic, under ~200 lines, with a short comment naming the feature
    each block creates.
 9. BOUND FEATURE SNIPPETS: when the context contains "BOUND FEATURE SNIPPETS"

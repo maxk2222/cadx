@@ -36,6 +36,7 @@ from cadx.agent.types import AgentCtx
 from cadx.cad.allowlist import check_code
 from cadx.cad.errordiag import diag_block, diagnose
 from cadx.cad.partspec import check_standard_part_calls
+from cadx.cad.standard_parts import build_standard_part_code, is_standard_only
 from cadx.llm.images import image_part
 from cadx.llm.schemas import (
     CodeResponse,
@@ -226,6 +227,45 @@ async def run(
     render_fn: VerifyFn | None = None,
     features: dict[str, Any] | None = None,
 ) -> CodeResponse:
+    if iteration == 1 and feedback is None and is_standard_only(spec):
+        try:
+            from cadx.llm.schemas import ParamDef
+
+            code = build_standard_part_code(spec.standard_parts)
+            checked = check_code(code)
+            part_errors = check_standard_part_calls(code) if checked.ok else []
+            if checked.ok and not part_errors:
+                params = [
+                    ParamDef(name=name, value=value, description="validated standard-part parameter")
+                    for name, value in (checked.params or {}).items()
+                    if isinstance(value, str | int | float | bool)
+                ]
+                expected_bbox = [
+                    float(spec.length_x.value),
+                    float(spec.width_y.value),
+                    float(spec.height_z.value),
+                ]
+                await ctx.emit(
+                    "codegen",
+                    iteration,
+                    "using validated standard-part recipe "
+                    + ", ".join(part.class_name for part in spec.standard_parts),
+                )
+                return CodeResponse(
+                    reasoning="Agent-selected catalog parts and parameters validated against bd_warehouse.",
+                    params=params,
+                    expected_bbox=expected_bbox,
+                    code=code,
+                )
+            log.warning(
+                "codegen.standard_part_recipe_invalid",
+                errors=(checked.errors + part_errors)[:5],
+            )
+        except (TypeError, ValueError) as e:
+            log.info("codegen.standard_part_recipe_unavailable", error=str(e)[:180])
+            from cadx.llm.structured import LLMFormatError
+
+            raise LLMFormatError(f"standard-part recipe is incomplete: {e}") from e
     if tools_enabled(ctx, "code"):
         n = int(ctx.runtime_settings.agent_codegen_samples)
         # best-of-N on the FIRST codegen attempt only — repairs, improves and

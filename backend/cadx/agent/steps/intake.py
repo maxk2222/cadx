@@ -19,7 +19,15 @@ from cadx.agent.thinking import thinking_body
 from cadx.agent.toolloop import run_session, tools_enabled
 from cadx.agent.toolspecs import ToolSession
 from cadx.agent.types import IMAGE_INPUT_KINDS, AgentCtx
-from cadx.llm.schemas import Feature, LoadCase, OptimizeSpec, PartSpec
+from cadx.llm.schemas import (
+    Dim,
+    Feature,
+    LoadCase,
+    OpenQuestion,
+    OptimizeSpec,
+    PartSpec,
+    StandardPartSpec,
+)
 from cadx.logging import get_logger
 
 log = get_logger(__name__)
@@ -211,6 +219,60 @@ def sanitize_dim_echo(spec: PartSpec, prompt: str) -> list[str]:
     return notes
 
 
+def sanitize_standard_part_dims(spec: PartSpec) -> list[str]:
+    if len(spec.standard_parts) != 1 or spec.standard_parts[0].quantity != 1:
+        return []
+    from cadx.cad.standard_parts import standard_part_bbox
+
+    part = spec.standard_parts[0]
+    try:
+        expected = standard_part_bbox(part)
+    except Exception as e:
+        question = OpenQuestion(
+            question=f"Complete the catalog parameters for {part.class_name}: {str(e)[:180]}",
+            why_it_matters="The registered standard component cannot be generated without these values.",
+            default_assumption="Use only the exact catalog class/type/size and required parameters.",
+            blocking=True,
+        )
+        if not any(q.question == question.question for q in spec.open_questions):
+            spec.open_questions.append(question)
+        return [f"catalog dimensions unavailable for {part.class_name}"]
+    notes: list[str] = []
+    for field, value, axis in (
+        ("length_x", expected[0], "X"),
+        ("width_y", expected[1], "Y"),
+        ("height_z", expected[2], "Z"),
+    ):
+        dim = getattr(spec, field)
+        tolerance = max(0.25, abs(value) * 0.02)
+        if dim.source == "stated" and abs(float(dim.value) - value) > tolerance:
+            question = OpenQuestion(
+                question=(
+                    f"The {part.class_name} catalog dimensions give {axis}={value:g} mm, "
+                    f"but the request states {axis}={dim.value:g} mm. Which should govern?"
+                ),
+                why_it_matters="A catalog part cannot keep both dimensions and the stated norm.",
+                default_assumption="Keep the exact catalog dimensions.",
+                blocking=True,
+            )
+            if not any(q.question == question.question for q in spec.open_questions):
+                spec.open_questions.append(question)
+            notes.append(f"{part.class_name} catalog {axis} dimension conflicts with stated size")
+            continue
+        if dim.source != "stated" and abs(float(dim.value) - value) > tolerance:
+            setattr(
+                spec,
+                field,
+                Dim(value=value, unit="mm", source="inferred"),
+            )
+            notes.append(f"{part.class_name} catalog dimensions set {axis}={value:g} mm")
+    if notes:
+        assumption = f"Nominal dimensions for {part.class_name} come from the installed catalog."
+        if assumption not in spec.assumptions:
+            spec.assumptions.append(assumption)
+    return notes
+
+
 def normalize_feature_positions(spec: PartSpec) -> list[str]:
     """Rewrite model-computed coords in ``feature.position`` when they
     contradict the stated end offset — intake likes to append its own
@@ -267,6 +329,7 @@ def normalize_feature_positions(spec: PartSpec) -> list[str]:
 # --------------------------------------------------------------------------- #
 
 _TOOL_NAMES = {
+    "create_standard_part",
     "search_catalog",
     "lookup_part",
     "cadlib_lookup",
@@ -282,6 +345,11 @@ _FEATURE_WORDS = re.compile(
     r"radius|radien|fillet|verrund|verrundung|fase|chamfer|senk|senkung|"
     r"countersunk|countersink|counter|gewinde|thread|insert|boss|zapfen|"
     r"ausschnitt|cutout|aussparung|recess)\w*",
+    re.I,
+)
+_STANDARD_PART_RE = re.compile(
+    r"\bM\d+(?:[x-]\d+(?:\.\d+)?)?\s*(?:schraube|screw|bolt|mutter|nut)\b|"
+    r"\b(?:heat[- ]set insert|gewindeeinsatz|heatsetnut|heat-set-nut)\b",
     re.I,
 )
 
@@ -510,6 +578,8 @@ def spec_gaps(spec: PartSpec, prompt: str) -> list[str]:
     gaps: list[str] = []
     if spec.name.strip().lower() in _TOOL_NAMES or "catalog search" in spec.summary.lower():
         gaps.append("spec name/summary is a tool echo")
+    if _STANDARD_PART_RE.search(prompt or "") and not spec.standard_parts:
+        gaps.append("prompt names a normed component but spec.standard_parts is empty")
     words = sorted({m.group(0).lower() for m in _FEATURE_WORDS.finditer(prompt or "")})
     if words and not spec.features:
         gaps.append(f"prompt names features ({', '.join(words[:8])}) but spec.features is empty")
@@ -532,6 +602,7 @@ class _FeaturesOut(BaseModel):
     name: str = ""
     summary: str = ""
     features: list[Feature] = Field(default_factory=list)
+    standard_parts: list[StandardPartSpec] = Field(default_factory=list, max_length=24)
 
 
 async def extract_features(ctx: AgentCtx, spec: PartSpec) -> _FeaturesOut:
@@ -543,7 +614,15 @@ async def extract_features(ctx: AgentCtx, spec: PartSpec) -> _FeaturesOut:
         {
             "prompt": ctx.prompt,
             "current_spec": spec.model_dump(
-                include={"name", "summary", "length_x", "width_y", "height_z", "features"}
+                include={
+                    "name",
+                    "summary",
+                    "length_x",
+                    "width_y",
+                    "height_z",
+                    "features",
+                    "standard_parts",
+                }
             ),
         },
         ensure_ascii=False,

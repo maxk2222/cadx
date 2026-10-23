@@ -77,12 +77,14 @@ _CADLIB_ALIASES: dict[str, set[str]] = {
     "nabe": {"tube"},
     "buchse": {"tube"},
     # whenever fillets appear anywhere, safe_fillet earns its tokens
-    "fillet": {"safe_fillet", "safe_fillet_shape"},
-    "round": {"safe_fillet", "safe_fillet_shape"},
-    "radius": {"safe_fillet", "safe_fillet_shape"},
-    "verrund": {"safe_fillet", "safe_fillet_shape"},
-    "fase": {"safe_fillet", "safe_fillet_shape"},
-    "chamfer": {"safe_fillet", "safe_fillet_shape"},
+    "fillet": {"finish_edges", "safe_fillet", "safe_fillet_shape"},
+    "round": {"finish_edges", "safe_fillet", "safe_fillet_shape"},
+    "radius": {"finish_edges", "safe_fillet", "safe_fillet_shape"},
+    "verrund": {"finish_edges", "safe_fillet", "safe_fillet_shape"},
+    "fase": {"finish_edges", "safe_chamfer", "safe_chamfer_shape"},
+    "chamfer": {"finish_edges", "safe_chamfer", "safe_chamfer_shape"},
+    "gewinde": {"hole_grid", "through_hole"},
+    "thread": {"hole_grid", "through_hole"},
     "outline": {"profile_body", "closed_polyline"},
     "profile": {"profile_body", "closed_polyline"},
     "sweep": {"closed_polyline"},
@@ -171,8 +173,12 @@ def _reference_docs(
         parts.append(read_prompt("code_examples.md"))
     parts.append(read_prompt("dfm_rules.md"))
     parts.append(_cadlib_sections(spec))
-    needs_bd = bool(getattr(plan, "standard_parts", None)) or any(
+    needs_bd = (
+        bool(getattr(plan, "standard_parts", None))
+        or bool(getattr(spec, "standard_parts", None))
+        or any(
         getattr(f, "standard", "") for f in (spec.features if spec else [])
+        )
     )
     if needs_bd:
         parts.append(read_prompt("bd_warehouse_reference.md"))
@@ -401,6 +407,11 @@ def catalog_block(plan: Any | None, spec: PartSpec | None) -> str:
     from cadx.cad import catalog
 
     names: list[str] = list(getattr(plan, "standard_parts", None) or [])
+    names.extend(
+        str(part.class_name)
+        for part in (spec.standard_parts if spec else []) or []
+        if getattr(part, "class_name", "")
+    )
     reg = catalog.registry()
     for f in (spec.features if spec else []) or []:
         std = (getattr(f, "standard", "") or "").lower()
