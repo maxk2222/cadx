@@ -9,6 +9,7 @@ harvests the result via ``GET /versions/{id}``, ``GET /jobs/{id}`` and the
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 import uuid
 from pathlib import Path
@@ -70,6 +71,16 @@ class HttpDriver:
     async def find_or_create_project(self, name: str, settings: dict[str, Any]) -> dict[str, Any]:
         for p in await self._get("/projects"):
             if p.get("name") == name:
+                # re-runs must honour the case's declared settings — a stored
+                # project keeps its first-run settings otherwise (api_v8
+                # helical kept min_wall_mm=0.8 and failed the gate despite
+                # the case pinning 0.1)
+                merged = {**(p.get("settings") or {}), **settings}
+                if merged != (p.get("settings") or {}):
+                    with contextlib.suppress(Exception):
+                        p = await self._req(
+                            "PATCH", f"/projects/{p['id']}", json={"settings": merged}
+                        )
                 return p
         body = {"name": name, "description": "evalkit benchmark project", "settings": settings}
         return await self._post("/projects", json=body)
