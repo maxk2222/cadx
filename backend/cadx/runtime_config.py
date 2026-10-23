@@ -179,6 +179,11 @@ class RuntimeSettings(BaseModel):
     agent_struct_tools: bool = True
     agent_topopt_max_runs: int = Field(default=6, ge=0, le=20)
     agent_fem_max_runs: int = Field(default=4, ge=0, le=20)
+    # shared wall-clock budget (s) for ALL in-session structural calls
+    # (analyze_fem + topopt_run + infill_run) — run COUNTS alone don't bound
+    # the damage: one topopt pass can burn ~45 min on a mid-size domain
+    # (api_v8 sprocket codegen: 3 optimize calls ≈ 2 h inside a 90 min stage)
+    agent_struct_budget_s: float = Field(default=1800.0, ge=0.0)  # 0 = unlimited
     # chat agent: which model role drives the conversation. "vision" receives
     # tool-result images (renders, concept images); "code" is text-only.
     chat_model_role: Literal["vision", "code"] = "vision"

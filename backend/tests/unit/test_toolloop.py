@@ -964,6 +964,51 @@ async def test_optimize_budget_drops_tools():
     assert res["ok"] is False
 
 
+async def test_optimize_struct_budget_wallclock():
+    """agent_struct_budget_s is a shared wall-clock budget across fem/topopt —
+    run counts alone let ~45 min topopt calls burn the codegen stage
+    (api_v8 sprocket). After the budget is spent, further calls refuse."""
+
+    async def fem_fn(a):
+        import asyncio
+
+        await asyncio.sleep(0.02)  # 20 ms — exceeds the 1 ms budget below
+        return _FEM_RES
+
+    async def top_fn(a):
+        return _TOP_RES
+
+    from cadx.runtime_config import RuntimeSettings
+
+    ctx = _ctx(FakeLLM([]))
+    ctx.runtime_settings = RuntimeSettings(
+        agent_topopt_max_runs=6, agent_fem_max_runs=4, agent_struct_budget_s=0.001
+    )
+    session = ToolSession(ctx, kind="optimize", fem_fn=fem_fn, topopt_fn=top_fn)
+    res = await session.execute("analyze_fem", {"load_cases": [_LC]})
+    assert res["ok"]  # first call goes through, then consumes the budget
+    res = await session.execute("topopt_run", {})
+    assert res["ok"] is False and "budget" in res["error"]
+    res = await session.execute("analyze_fem", {"load_cases": [_LC]})
+    assert res["ok"] is False and "budget" in res["error"]
+
+
+async def test_optimize_struct_budget_unlimited_when_zero():
+    """agent_struct_budget_s=0 disables the wall-clock cap (count limits stay)."""
+
+    async def top_fn(a):
+        return _TOP_RES
+
+    from cadx.runtime_config import RuntimeSettings
+
+    ctx = _ctx(FakeLLM([]))
+    ctx.runtime_settings = RuntimeSettings(agent_struct_budget_s=0)
+    session = ToolSession(ctx, kind="optimize", topopt_fn=top_fn)
+    assert session.struct_budget_left is None
+    res = await session.execute("topopt_run", {})
+    assert res["ok"]
+
+
 async def test_optimize_fem_requires_cases():
     """analyze_fem without load_cases fails before touching the executor."""
     called = False

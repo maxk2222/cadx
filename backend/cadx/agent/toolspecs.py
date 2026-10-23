@@ -25,6 +25,7 @@ import inspect
 import io
 import json
 import re
+import time
 import tokenize
 import uuid
 from collections.abc import Awaitable, Callable
@@ -1614,6 +1615,14 @@ class ToolSession:
         self.topopt_left = (
             settings.agent_topopt_max_runs if (topopt_fn and settings.agent_struct_tools) else 0
         )
+        # shared wall-clock budget across fem/optimize/infill calls — run
+        # counts alone don't bound the damage when one optimize pass takes
+        # ~45 min on a mid-size domain (api_v8 sprocket/robot_arm codegen)
+        self.struct_budget_left = (
+            float(settings.agent_struct_budget_s)
+            if (settings.agent_struct_tools and settings.agent_struct_budget_s)
+            else None
+        )
         # topopt run results (index, metrics, stored executor result/iteration)
         self.struct_runs: list[dict[str, Any]] = []
         self.edits_applied = 0
@@ -2578,14 +2587,35 @@ class ToolSession:
         _floor_target_warning(out, self.target_volfrac)
         return out
 
+    def _struct_budget_check(self, tool: str) -> dict[str, Any] | None:
+        if self.struct_budget_left is None or self.struct_budget_left > 0:
+            return None
+        return {
+            "ok": False,
+            "error": (
+                f"{tool} not available (structural wall-clock budget exhausted — "
+                "agent_struct_budget_s spent on earlier fem/optimize calls)"
+            ),
+        }
+
+    def _struct_budget_spend(self, t0: float) -> None:
+        if self.struct_budget_left is not None:
+            self.struct_budget_left -= time.monotonic() - t0
+
     async def _tool_analyze_fem(self, a: dict[str, Any]) -> dict[str, Any]:
         if self.fem_fn is None or self.fem_left <= 0:
             return {"ok": False, "error": "analyze_fem not available (budget exhausted)"}
+        if (over := self._struct_budget_check("analyze_fem")) is not None:
+            return over
         cases = self._coerce_obj_list(a.get("load_cases"))
         if not isinstance(cases, list) or not cases:
             return {"ok": False, "error": "load_cases must be a non-empty list"}
         self.fem_left -= 1
-        res = await self.fem_fn({**a, "load_cases": cases})
+        t0 = time.monotonic()
+        try:
+            res = await self.fem_fn({**a, "load_cases": cases})
+        finally:
+            self._struct_budget_spend(t0)
         if not res.get("ok"):
             return {"ok": False, "error": res.get("error") or "FEM failed"}
         fem = res.get("fem") or {}
@@ -2599,14 +2629,20 @@ class ToolSession:
     async def _tool_topopt_run(self, a: dict[str, Any]) -> dict[str, Any]:
         if self.topopt_fn is None or self.topopt_left <= 0:
             return {"ok": False, "error": "topopt_run not available (budget exhausted)"}
+        if (over := self._struct_budget_check("topopt_run")) is not None:
+            return over
         self.topopt_left -= 1
-        res = await self.topopt_fn(
-            {
-                **a,
-                "load_cases": self._coerce_obj_list(a.get("load_cases")),
-                "keep_regions": self._coerce_obj_list(a.get("keep_regions")),
-            }
-        )
+        t0 = time.monotonic()
+        try:
+            res = await self.topopt_fn(
+                {
+                    **a,
+                    "load_cases": self._coerce_obj_list(a.get("load_cases")),
+                    "keep_regions": self._coerce_obj_list(a.get("keep_regions")),
+                }
+            )
+        finally:
+            self._struct_budget_spend(t0)
         if not res.get("ok"):
             top = res.get("topopt") or {}
             out: dict[str, Any] = {"ok": False, "error": res.get("error") or "optimization failed"}
@@ -2718,13 +2754,19 @@ class ToolSession:
         # shell+infill burns an executor run like topopt_run — shared budget
         if self.infill_fn is None or self.topopt_left <= 0:
             return {"ok": False, "error": "infill_run not available (budget exhausted)"}
+        if (over := self._struct_budget_check("infill_run")) is not None:
+            return over
         self.topopt_left -= 1
-        res = await self.infill_fn(
-            {
-                **a,
-                "load_cases": self._coerce_obj_list(a.get("load_cases")),
-            }
-        )
+        t0 = time.monotonic()
+        try:
+            res = await self.infill_fn(
+                {
+                    **a,
+                    "load_cases": self._coerce_obj_list(a.get("load_cases")),
+                }
+            )
+        finally:
+            self._struct_budget_spend(t0)
         if not res.get("ok"):
             return {"ok": False, "error": res.get("error") or "infill generation failed"}
         top = res.get("topopt") or {}
