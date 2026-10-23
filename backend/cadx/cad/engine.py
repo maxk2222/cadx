@@ -550,18 +550,28 @@ def run_pipeline(  # noqa: C901
             if detail_mode == "preview"
             else []
         )
-        render_paths = render_views(
-            stl_path,
-            mesh_dir,
-            res.analysis.bbox_size,
-            thread_features=thread_preview,
-        )
+        try:
+            render_paths = render_views(
+                stl_path,
+                mesh_dir,
+                res.analysis.bbox_size,
+                thread_features=thread_preview,
+            )
+        except Exception as e:
+            # a malformed CADX_FEATURES record must never kill the exec —
+            # re-render bare; the candidate keeps its geometry verdict
+            log.warning("pipeline.thread_overlay_failed", error=str(e)[:200])
+            render_paths = render_views(stl_path, mesh_dir, res.analysis.bbox_size)
         res.renders = {v: p.name for v, p in render_paths.items()}
-        thumb = render_thumbnail(
-            stl_path,
-            out_dir / "thumbnail.png",
-            thread_features=thread_preview,
-        )
+        try:
+            thumb = render_thumbnail(
+                stl_path,
+                out_dir / "thumbnail.png",
+                thread_features=thread_preview,
+            )
+        except Exception as e:
+            log.warning("pipeline.thumbnail_overlay_failed", error=str(e)[:200])
+            thumb = render_thumbnail(stl_path, out_dir / "thumbnail.png")
         res.thumbnail = thumb.name if thumb else None
         stats = [
             f"bbox: {res.analysis.bbox_size[0]:.1f} x {res.analysis.bbox_size[1]:.1f} x {res.analysis.bbox_size[2]:.1f} mm",

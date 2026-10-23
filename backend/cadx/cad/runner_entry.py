@@ -13,6 +13,7 @@ import importlib.abc
 import importlib.machinery
 import io
 import json
+import re
 import sys
 import traceback
 from pathlib import Path
@@ -708,6 +709,32 @@ def main(workdir: Path | None = None) -> int:  # noqa: C901
             # hand-rolled real thread: declared feature + Helix path left in
             # the namespace (the IsoThread-free pattern models fall back to)
             thread_count = min(declared_threads, helix_paths)
+        if thread_count < declared_threads and detail_mode == "export":
+            # the tag is bookkeeping, not the thread itself: a cutter used as
+            # an unnamed temporary (`part - Pos(...) * tapped_hole(...)`) still
+            # cut the real helical groove into the brep — count the calls
+            helper_calls = len(re.findall(r"\btapped_hole\s*\(", code))
+            helper_calls += len(
+                re.findall(r"ThreadedHole\s*\([^)]*simple\s*=\s*False", code, re.S)
+            )
+            if helper_calls:
+                thread_count = max(
+                    thread_count, min(declared_threads, thread_count + helper_calls)
+                )
+        if thread_count and declared_threads and detail_mode == "export":
+            # intent is not geometry: a tagged or source-counted cutter that
+            # never touched the part (disjoint placement) still counts — but
+            # an ISO groove always leaves BSPLINE wall faces; none means the
+            # export carries no real thread whatever the bookkeeping says
+            result_shape = namespace.get("result")
+            try:
+                has_bspline = result_shape is not None and any(
+                    str(f.geom_type).endswith("BSPLINE") for f in result_shape.faces()
+                )
+            except Exception:
+                has_bspline = True  # inspection failed — keep the counted value
+            if not has_bspline:
+                thread_count = 0
 
         params_used = namespace.get("PARAMS", {})
         try:

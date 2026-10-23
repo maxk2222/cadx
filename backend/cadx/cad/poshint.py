@@ -34,6 +34,24 @@ def _norm_numtext(text: str) -> str:
 # machine-readable position hints: "x=12" offsets, "75mm from -x end"
 # end-relative offsets, "centred in y" mid-plane hints, "+y"/"front" face words
 _POS_COORD_RE = re.compile(r"\b([xyz])\s*=\s*([+-]?\d+(?:\.\d+)?)", re.I)
+# symmetric pair declarations — "y=±12" / "x=+/-42" name a mirrored pair, not
+# one position; _POS_COORD_RE cannot represent them (the ± sign isn't a
+# number). Resolved separately so callers that build per-axis want-lists get
+# BOTH values.
+SYM_COORD_RE = re.compile(r"\b([xyz])\s*=\s*(?:±|\+/-|-/\+)\s*(\d+(?:\.\d+)?)", re.I)
+
+
+def parse_symmetric_coords(text: str) -> dict[str, list[float]]:
+    """'y=±12' -> {'y': [12.0, -12.0]} — both members of each declared
+    symmetric pair, per axis. []-valued axes are omitted."""
+    out: dict[str, list[float]] = {}
+    for m in SYM_COORD_RE.finditer(text or ""):
+        ax = m.group(1).lower()
+        v = float(m.group(2))
+        for sgn in (v, -v):
+            if sgn not in out.setdefault(ax, []):
+                out[ax].append(sgn)
+    return {ax: vals for ax, vals in out.items() if vals}
 _POS_END_NUM_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(mm|cm)?", re.I)
 _RANGE_NUM = r"([+-]?\d+(?:\.\d+)?)"
 _AXIS_RANGE_RES = (

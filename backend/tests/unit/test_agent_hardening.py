@@ -768,3 +768,38 @@ def test_mesh_payload_subprocess_surfaces_child_failure(tmp_path):
     d = tasks._run_mesh_payload_subprocess({"project_id": "x", "mode": "final"}, tmp_path)
     assert d["ok"] is False
     assert d["error"]
+
+
+def test_export_lost_holes_detects_dropped_bore():
+    """The export-probe gate: every preview hole group must survive the
+    export-detail rebuild. A `CADX_DETAIL_MODE` fork whose export branch cuts
+    nothing (the observed robot-arm failure: unnamed tapped_hole placed below
+    the part) must surface as a lost hole group, not ship silently."""
+    from cadx.agent.orchestrator import _export_lost_holes
+
+    preview = [
+        {"diameter": 8.5, "axis": "+z", "count": 4},
+        {"diameter": 10.2, "axis": "+z", "count": 1},
+        {"diameter": 6.5, "axis": "+x", "count": 2},
+    ]
+    # identical export groups — nothing lost
+    assert _export_lost_holes(preview, [dict(g) for g in preview]) == []
+
+    # the M12 bore vanished in export (cutter placed below the part)
+    export = [dict(preview[0]), dict(preview[2])]
+    assert _export_lost_holes(preview, export) == ["Ø10.2/zx1"]
+
+    # the helical groove can shift the measured diameter — loose tolerance
+    shifted = [dict(g, diameter=g["diameter"] * 1.08) for g in preview]
+    assert _export_lost_holes(preview, shifted) == []
+
+    # axis mismatch is a loss even at the same diameter
+    wrong_axis = [
+        {"diameter": 8.5, "axis": "+z", "count": 4},
+        {"diameter": 10.2, "axis": "+x", "count": 1},
+        {"diameter": 6.5, "axis": "+x", "count": 2},
+    ]
+    assert _export_lost_holes(preview, wrong_axis) == ["Ø10.2/zx1"]
+
+    # elongated slots are out of scope for the thread-path gate
+    assert _export_lost_holes([{"diameter": 6.0, "axis": "+z", "count": 1, "elongated": True}], []) == []

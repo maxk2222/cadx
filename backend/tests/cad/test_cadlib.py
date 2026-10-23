@@ -758,6 +758,28 @@ def test_tapped_hole_declared_helix_counts_as_real_thread(tmp_path):
     assert out.thread_count == 1
 
 
+def test_tapped_hole_disjoint_cutter_counts_no_thread(tmp_path):
+    """A tapped_hole cutter placed fully outside the part cuts nothing — the
+    tag/source bookkeeping must not count intent as geometry. The export run
+    reports thread_count 0 because the result carries no BSPLINE groove."""
+    code = (
+        "from build123d import *\n"
+        "import cadlib\n"
+        "PARAMS = {}\n"
+        "result = Box(20, 20, 12, align=(Align.CENTER, Align.CENTER, Align.MIN))\n"
+        "tap = cadlib.tapped_hole(8, 1.25, 14)\n"
+        "result = result - Pos(0, 0, -2) * tap\n"
+        "result = result - Pos(0, 0, 12) * Cylinder(3.35, 16)\n"
+        'CADX_FEATURES = [{"kind": "thread", "thread_spec": "M8x1.25-6H",'
+        ' "major_diameter": 8.0, "pitch": 1.25, "length": 14.0,'
+        ' "start": 0.0, "external": False, "hand": "right",'
+        ' "axis": "z", "position_mm": [0.0, 0.0, 12.0]}]\n'
+    )
+    out = run_user_code(code, tmp_path / "work", detail_mode="export")
+    assert out.ok, out.error
+    assert out.thread_count == 0
+
+
 def test_tapped_hole_pitch_and_drill_defaults():
     from cadx.cad.cadlib import ops as cops
 

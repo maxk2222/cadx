@@ -159,6 +159,38 @@ def _select_best_candidate(
     return best, best_issues
 
 
+def _export_lost_holes(
+    preview_groups: list[dict[str, Any]],
+    export_groups: list[dict[str, Any]],
+) -> list[str]:
+    """Preview hole groups with no export counterpart — an export-only code
+    path (a `CADX_DETAIL_MODE` fork) dropped geometry the preview verified.
+
+    Matching is deliberately loose: the helical thread groove can shift a
+    measured bore diameter and re-group members, so a group counts as kept
+    when ANY export group shares its axis letter and a diameter within
+    1.2 mm or 12%. Elongated slots are skipped — they were never the
+    thread-path failure this gate exists for."""
+    lost: list[str] = []
+    for g in preview_groups:
+        if g.get("elongated"):
+            continue
+        dia = float(g.get("diameter") or 0.0)
+        ax = str(g.get("axis") or g.get("through_axis") or "").lstrip("+-")
+        kept = False
+        for e in export_groups:
+            if e.get("elongated"):
+                continue
+            e_dia = float(e.get("diameter") or 0.0)
+            e_ax = str(e.get("axis") or e.get("through_axis") or "").lstrip("+-")
+            if ax == e_ax and dia > 0 and abs(e_dia - dia) <= max(1.2, dia * 0.12):
+                kept = True
+                break
+        if not kept:
+            lost.append(f"Ø{dia:g}/{ax or '?'}x{int(g.get('count') or 1)}")
+    return lost
+
+
 @dataclass
 class RunOutcome:
     status: str = "failed"  # succeeded | needs_review | failed | waiting_for_input | cancelled
@@ -3547,6 +3579,59 @@ async def _run_cad(  # noqa: C901
                     ),
                 }
             )
+        elif expected_threads:
+            # the preview exec never exercises `CADX_DETAIL_MODE == "export"`
+            # branches — probe the same code once in export detail (light:
+            # geometry + feature measurement, no renders/exports) so a broken
+            # export path fails THIS candidate while alternates can still win,
+            # instead of only at the finalize rebuild
+            probe = await ctx.executor.execute(
+                _exec_payload(
+                    ctx,
+                    code,
+                    it,
+                    full_exports=False,
+                    subdir=f"a{next(art_attempt)}",
+                    detail_mode="export",
+                    light=True,
+                )
+            )
+            real_threads = int(probe.get("thread_count") or 0)
+            fail_what = ""
+            if not probe.get("ok"):
+                # an executor-side outage is not a code defect — skip the
+                # probe verdict rather than punish the candidate for infra
+                if not _exec_error_signature(probe).startswith("infra:"):
+                    fail_what = str(probe.get("error") or "unknown executor error").strip()
+            elif real_threads < expected_threads:
+                fail_what = f"{real_threads}/{expected_threads} real thread feature(s) built"
+            else:
+                missing = _export_lost_holes(
+                    (exec_result.get("features") or {}).get("hole_groups") or [],
+                    (probe.get("features") or {}).get("hole_groups") or [],
+                )
+                if missing:
+                    fail_what = (
+                        f"{len(missing)} hole group(s) measured in preview are gone in "
+                        f"export ({', '.join(missing[:3])}) — an export-only code path "
+                        "dropped geometry the preview verified"
+                    )
+            if fail_what:
+                pre_issues.append(
+                    {
+                        "source": "exec",
+                        "severity": "major",
+                        "what": "export-detail rebuild fails where the preview passed: "
+                        + fail_what[:400],
+                        "fix_hint": (
+                            "cadlib.tapped_hole switches preview/export internally — assign "
+                            "the cutter (`_tap = cadlib.tapped_hole(...)`) and place it at "
+                            "the face it drills from (mouth z=0, cuts to -length). Never "
+                            "fork on `CADX_DETAIL_MODE` — the preview never exercises the "
+                            "export branch, so defects there ship unverified"
+                        ),
+                    }
+                )
         if (
             code_resp.expected_bbox
             and len(code_resp.expected_bbox) >= 3

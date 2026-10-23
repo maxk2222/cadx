@@ -33,6 +33,13 @@ Rules:
   shank, tip — always belongs in `covers_features`. Never invent a drive style:
   the norm defines it (iso10642 = hex socket, not Torx); only name a drive or
   recess when the request states it explicitly AND it differs from the norm.
+- `feature.thread_spec` is for REAL thread callouts only — the size string
+  itself (`M4`, `M4x0.5`, `M12x1.75-6H`, ≤16 chars) on a tapped/threaded hole
+  or threaded shaft. A hole that a bolt/screw passes THROUGH is clearance,
+  not a thread: `thread_spec` stays EMPTY even when the bolt's own thread is
+  known ("M8 bolts" → clearance dia 8.5, `standard="clearance for M8"`) —
+  only a hole meant to BE the thread (screwed into the part itself) gets
+  `thread_spec`, and then `dims.diameter` is the tap drill, not the major.
 - A screw/nut/thread requested as a threaded part stays threaded in the structured
   intent. Do not rewrite it as a smooth FDM-friendly cylinder. The agent preview is a
   lightweight display representation; final export builds the real thread. If head

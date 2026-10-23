@@ -68,14 +68,36 @@ def _thread_preview_lines(pv: Any, features: list[dict[str, Any]]) -> list[Any]:
         "+z": (0.0, 0.0, 1.0),
         "-z": (0.0, 0.0, -1.0),
     }
+    def _num(v: Any) -> float | None:
+        # generated CADX_FEATURES records are model output — values arrive
+        # stringified or list-wrapped ([1.75], [[0,0,0]]); coerce what we can
+        # and let the caller skip the feature rather than kill the render pass
+        if isinstance(v, list | tuple):
+            v = v[0] if len(v) == 1 else None
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
     actors = []
     for feature in features:
-        axis = np.asarray(axes.get(str(feature.get("axis") or "+z"), (0.0, 0.0, 1.0)))
-        position = np.asarray(feature.get("position_mm") or (0.0, 0.0, 0.0), dtype=float)
-        pitch = float(feature.get("pitch") or 0.0)
-        length = float(feature.get("length") or 0.0)
-        diameter = float(feature.get("major_diameter") or 0.0)
-        if pitch <= 0 or length <= 0 or diameter <= 0:
+        try:
+            axis = np.asarray(axes.get(str(feature.get("axis") or "+z"), (0.0, 0.0, 1.0)))
+            pos_raw = feature.get("position_mm") or (0.0, 0.0, 0.0)
+            if isinstance(pos_raw, list | tuple) and pos_raw and isinstance(
+                pos_raw[0], list | tuple
+            ):
+                pos_raw = pos_raw[0]
+            position = np.asarray(pos_raw, dtype=float)
+            if position.shape != (3,):
+                continue
+            pitch = _num(feature.get("pitch"))
+            length = _num(feature.get("length"))
+            diameter = _num(feature.get("major_diameter"))
+            if not pitch or not length or not diameter or pitch <= 0 or length <= 0 or diameter <= 0:
+                continue
+            start = _num(feature.get("start")) or 0.0
+        except (TypeError, ValueError):
             continue
         reference = np.asarray((1.0, 0.0, 0.0) if abs(axis[0]) < 0.9 else (0.0, 1.0, 0.0))
         u = np.cross(axis, reference)
@@ -85,7 +107,6 @@ def _thread_preview_lines(pv: Any, features: list[dict[str, Any]]) -> list[Any]:
         steps = min(12000, max(32, math.ceil(turns * 12)))
         radius = diameter / 2 - 0.08 if feature.get("external") is False else diameter / 2 + 0.04
         hand = -1.0 if feature.get("hand") == "left" else 1.0
-        start = float(feature.get("start") or 0.0)
         points = []
         for i in range(steps + 1):
             fraction = i / steps

@@ -47,7 +47,10 @@ Rules:
 - A requested thread must have a display-only preview entry in `CADX_FEATURES`;
   `CADX_DETAIL_MODE` is `preview` in agent checks/renders and `export` in final
   execution. Never treat a preview helix as exported solid geometry or drop the
-  real thread in export mode.
+  real thread in export mode — and never fork geometry on `CADX_DETAIL_MODE`
+  with `if` statements: the preview never exercises the other branch, so
+  defects there ship unverified. `cadlib.tapped_hole` and `simple=` args
+  switch modes internally and stay verified.
 - `verify` calls are budgeted — one per stage, not per guess. `render_model`
   shares the budget; use it when you need to SEE the shape.
 - Do not call `done` until the last verify passed and the file contract is met.

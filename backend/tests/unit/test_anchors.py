@@ -921,3 +921,51 @@ def test_build_anchors_phantom_mesh_hole_cannot_absorb_spec_bore():
     assert ph.axis == "+z" and ph.source == "mesh"
     assert ph.name == "" and ph.bolt_size == ""
     assert "2 spec-declared" in a.note
+
+
+def test_spec_anchors_symmetric_plus_minus_positions():
+    """'y=±12' / 'x=+/-42' declare mirrored PAIRS — before, the sign was
+    dropped and the in-plane axis fell back to 0, so every measured hole
+    missed the phantom mid-plane anchor by exactly the offset."""
+    spec = _plate_spec(
+        [
+            Feature(
+                name="flange hole pair",
+                type="through_hole",
+                dims={"diameter": 6.5},
+                position="at (y=±12, z=7), through x=42..50",
+                axis="x",
+                count=2,
+            ),
+        ]
+    )
+    anchors = _spec_anchors(spec)
+    assert len(anchors) == 2
+    assert all(a.axis == "+x" for a in anchors)
+    # in-plane (y, z) must carry both mirrored positions — x is the range
+    # mid (flange centre), y the ± pair, z the declared height
+    assert sorted(a.y for a in anchors) == [-12.0, 12.0]
+    assert all(a.x == 46.0 and a.pos[2] == 7.0 for a in anchors)
+
+
+def test_spec_anchors_bolt_circle_symmetric_xy():
+    spec = _plate_spec(
+        [
+            Feature(
+                name="bolt circle",
+                type="through_hole",
+                dims={"diameter": 8.5},
+                position="at (x=+/-42, y=+/-16), through z=0..14",
+                axis="z",
+                count=4,
+            ),
+        ]
+    )
+    anchors = _spec_anchors(spec)
+    assert len(anchors) == 4
+    assert sorted((a.x, a.y) for a in anchors) == [
+        (-42.0, -16.0),
+        (-42.0, 16.0),
+        (42.0, -16.0),
+        (42.0, 16.0),
+    ]

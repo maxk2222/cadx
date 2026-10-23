@@ -177,3 +177,69 @@ async def test_standard_only_spec_uses_validated_recipe_without_llm():
     assert "CADX_DETAIL_MODE" in resp.code
     assert resp.expected_bbox == [30.0, 13.0, 13.0]
     assert not llm.calls  # the validated recipe path never consumed the model
+
+
+def test_expected_thread_count_ignores_clearance_fit_notes() -> None:
+    """'clearance for M8' fills thread_spec as a fit note, not a thread
+    callout — the robot_arm_mount eval failed because it counted 7
+    'threads' (4x M8 + 2x M6 clearance + 1 real M12 tap)."""
+    d = lambda v: Dim(value=v, unit="mm", source="stated")  # noqa: E731
+    spec = PartSpec(
+        name="bracket",
+        summary="",
+        units="mm",
+        length_x=d(100),
+        width_y=d(80),
+        height_z=d(40),
+        features=[
+            Feature(
+                name="mounting_holes",
+                type="through_hole",
+                count=4,
+                thread_spec="clearance for M8",
+            ),
+            Feature(
+                name="m12_tapped_bore",
+                type="threaded_hole",
+                thread_spec="M12x1.75 ISO 6H,",
+            ),
+            Feature(
+                name="flange_holes",
+                type="through_hole",
+                count=2,
+                thread_spec="clearance for M6",
+            ),
+        ],
+    )
+    assert expected_thread_count(spec) == 1
+
+
+def test_expected_thread_count_clearance_dia_disambiguates_m_spec() -> None:
+    """Intake may write a valid-looking thread_spec ("M8x1.25-6H") onto a
+    hole whose declared diameter is the M8 CLEARANCE size (8.5), not the
+    tap drill (6.8) — the bolt's thread named, not a thread to build."""
+    d = lambda v: Dim(value=v, unit="mm", source="stated")  # noqa: E731
+    spec = PartSpec(
+        name="bracket",
+        summary="",
+        units="mm",
+        length_x=d(100),
+        width_y=d(80),
+        height_z=d(40),
+        features=[
+            Feature(
+                name="mounting holes",
+                type="through_hole",
+                count=4,
+                thread_spec="M8x1.25-6H",
+                dims={"diameter": 8.5},
+            ),
+            Feature(
+                name="tapped bore",
+                type="blind_hole",
+                thread_spec="M12x1.75-6H",
+                dims={"diameter": 10.2},
+            ),
+        ],
+    )
+    assert expected_thread_count(spec) == 1

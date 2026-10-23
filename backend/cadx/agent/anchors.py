@@ -22,7 +22,12 @@ import numpy as np
 from pydantic import BaseModel
 
 from cadx.agent.spechost import host_span, parse_ranges
-from cadx.cad.poshint import parse_coord_points, parse_position_hints, resolve_end_hint
+from cadx.cad.poshint import (
+    parse_coord_points,
+    parse_position_hints,
+    parse_symmetric_coords,
+    resolve_end_hint,
+)
 from cadx.llm.schemas import Feature, PartSpec
 
 # axis -> (axial index, in-plane u index, in-plane v index) — same layout as
@@ -281,6 +286,16 @@ def _axis_vals(
     end hint wins, agreeing values dedupe."""
     coords, _faces, ends, nears = parse_position_hints(text)
     vals: dict[str, list[tuple[float, bool]]] = {ax: [] for ax in in_plane}
+    # symmetric pair declarations ("y=±12", "x=+/-42") — the flat coords dict
+    # drops the ± sign entirely, so scan for them here and yield BOTH values;
+    # the cross product then produces the real anchor pair instead of a
+    # phantom mid-plane anchor that every measured hole misses by exactly the
+    # offset
+    for ax, sym_vals in parse_symmetric_coords(text).items():
+        if ax in vals:
+            for sgn in sym_vals:
+                if all(sgn != ex for ex, _ in vals[ax]):
+                    vals[ax].append((sgn, False))
     for ax in in_plane:
         end_vals = [
             resolve_end_hint(ax, str(e["end"]), float(e["offset_mm"]), *bounds[ax])
@@ -383,7 +398,12 @@ def _spec_xy(
         return centers
     groups = parse_coord_points(text)
     if len(groups) >= 2:
-        return _pairwise_pts(groups, vals, ("x", "y"))
+        pts = _pairwise_pts(groups, vals, ("x", "y"))
+        if pts:
+            return pts
+        # pairwise can legitimately come up empty (±-pair axes resolved into
+        # vals, not into the flat groups) — fall through to the cross product
+        # rather than dropping resolved positions entirely
     if not vals["x"] or not vals["y"]:
         return []
     return [(x, y, ex or ey) for x, ex in vals["x"] for y, ey in vals["y"]]

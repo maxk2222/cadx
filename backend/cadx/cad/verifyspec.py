@@ -34,7 +34,12 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from cadx.cad.poshint import parse_coord_points, parse_position_hints, resolve_end_hint
+from cadx.cad.poshint import (
+    parse_coord_points,
+    parse_position_hints,
+    parse_symmetric_coords,
+    resolve_end_hint,
+)
 
 Status = str  # "PASS" | "FAIL" | "UNVERIFIED"
 TIER_STRUCTURAL = "structural"
@@ -673,6 +678,7 @@ def _void_pos_wants(
     text = str(f.get("position") or "").strip() or str(f.get("description") or "")
     coords = _position_coords(text)
     _raw_coords, _faces, ends, nears = parse_position_hints(text)
+    sym = parse_symmetric_coords(text)
     count = int(f.get("count") or 1)
     groups = parse_coord_points(text) if count > 1 else []
     structured = _structured_feature_centers(f)
@@ -702,6 +708,11 @@ def _void_pos_wants(
             if end_vals and all(abs(coord_v - v) > 1.0 for v in end_vals):
                 continue
             wants[ax].append(coord_v)
+        # symmetric pairs ("y=±12") — the flat coord parse drops the sign;
+        # both members are declared positions and each needs a measured centre
+        for sgn in sym.get(ax) or []:
+            if (not end_vals or all(abs(sgn - v) <= 1.0 for v in end_vals)) and sgn not in wants[ax]:
+                wants[ax].append(sgn)
         for v in end_vals:
             if v not in wants[ax]:
                 wants[ax].append(v)

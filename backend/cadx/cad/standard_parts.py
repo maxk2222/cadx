@@ -478,6 +478,32 @@ def has_thread_design(spec: Any) -> bool:
     return expected_thread_count(spec) > 0
 
 
+def _thread_spec_clearance_note(feature: Any, size_mm: float) -> bool:
+    """True when an ``M<size>`` thread_spec really names the bolt going
+    through, not a thread to build: the declared bore is closer to the
+    metric clearance diameter than to the tap drill (M8 clearance ≈8.5,
+    M8 tap ≈6.8). With no declared bore the wording decides."""
+    dims = _get(feature, "dims") or {}
+    dia = next(
+        (
+            float(dims[k])
+            for k in ("diameter", "dia", "d", "bore", "hole_d")
+            if isinstance(dims.get(k), int | float) and float(dims[k]) > 0
+        ),
+        None,
+    )
+    if dia is None:
+        return False
+    from cadx.cad import catalog
+
+    size = int(size_mm)
+    tap = catalog.nominal_hole_diameter(size, "tap")
+    clearance = catalog.nominal_hole_diameter(size, "clearance")
+    if tap is None or clearance is None or abs(clearance - tap) < 1e-6:
+        return False
+    return abs(dia - clearance) < abs(dia - tap)
+
+
 def expected_thread_count(spec: Any) -> int:
     expected = 0
     covered: set[str] = set()
@@ -490,6 +516,14 @@ def expected_thread_count(spec: Any) -> int:
         if feature.name in covered:
             continue
         kind = str(getattr(feature, "type", "") or "").lower()
-        if "thread" in kind or getattr(feature, "thread_spec", ""):
+        thread_spec = str(getattr(feature, "thread_spec", "") or "").strip()
+        # a real thread callout starts with the size ("M12x1.75", "M4") —
+        # fit notes like "clearance for M8" also fill thread_spec but are
+        # plain clearance holes, not threads to build
+        is_thread = "thread" in kind or "tapped" in kind
+        m = re.match(r"M\s*(\d+(?:\.\d+)?)", thread_spec)
+        if not is_thread and m:
+            is_thread = not _thread_spec_clearance_note(feature, float(m.group(1)))
+        if is_thread:
             expected += max(1, int(getattr(feature, "count", 1) or 1))
     return expected
