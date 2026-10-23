@@ -157,6 +157,24 @@ def test_fem_topopt_gates():
     assert not run_gates([{"type": "envelope_within", "dims": [90, 70, 30]}], env, 0)[0].ok
 
 
+def test_load_path_gate_rejects_disconnected_and_preserves_unknown():
+    passed = run_gates(
+        [{"type": "load_path", "expect": True}],
+        _out(mesh={"topopt": {"load_path_ok": True}}),
+        0,
+    )[0]
+    failed = run_gates(
+        [{"type": "load_path", "expect": True}],
+        _out(mesh={"topopt": {"load_path_ok": False}}),
+        0,
+    )[0]
+    unknown = run_gates([{"type": "load_path"}], _out(mesh={"topopt": {}}), 0)[0]
+    assert passed.ok is True
+    assert failed.ok is False
+    assert unknown.ok is None
+    assert "unavailable" in unknown.detail
+
+
 def test_dfm_gate():
     dfm = {
         "process": "fdm",

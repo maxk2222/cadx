@@ -498,6 +498,18 @@ def _gate_outcome(  # noqa: C901
         ok = val is not None and (lo is None or float(val) >= float(lo))
         return GateResult(name, ok, measured=val, expected={field: [lo, g.get("max")]})
 
+    if name == "load_path":
+        val = _topopt(outcome).get("load_path_ok")
+        want = bool(g.get("expect", True))
+        ok = None if val is None else bool(val) is want
+        return GateResult(
+            name,
+            ok,
+            measured=val,
+            expected=want,
+            detail="load-path certificate unavailable" if val is None else "",
+        )
+
     if name == "asset_image":
         want = int(g.get("min") or 1)
         return GateResult(name, len(outcome.asset_ids) >= want, measured=len(outcome.asset_ids))

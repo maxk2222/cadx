@@ -54,7 +54,11 @@ def test_enabled_stages_filter():
     case = load_case("robot_arm_mount")
     assert case is not None
     enabled = case.enabled_stages()
-    assert [s.id for s in enabled] == ["codegen", "fem", "topopt"]  # refine disabled
+    assert [s.id for s in enabled] == ["codegen", "fem", "topopt", "refine"]
+    refine = enabled[-1]
+    assert refine.type == "refine"
+    assert refine.load_cases and refine.material == "aluminum"
+    assert {g.get("type") for g in refine.gates} >= {"holes", "fem"}
     only_fem = case.enabled_stages({"fem"})
     assert [s.id for s in only_fem] == ["fem"]
     by_type = case.enabled_stages({"optimize"})

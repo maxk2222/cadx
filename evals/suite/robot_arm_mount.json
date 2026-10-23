@@ -86,16 +86,41 @@
         { "type": "bodies", "max": 1 },
         { "type": "envelope_within", "dims": [100, 80, 40], "tol_mm": 4 },
         { "type": "holes", "count": 4, "dia": 8.5, "axis": "z" },
+        { "type": "load_path", "expect": true },
         { "type": "watertight", "expect": true }
       ]
     },
     {
       "id": "refine",
       "type": "refine",
-      "enabled": false,
+      "enabled": true,
       "timeout_s": 3600,
+      "material": "aluminum",
+      "restore_planes": true,
+      "load_cases": [
+        {
+          "name": "joint_radial",
+          "fixed": [
+            { "kind": "cylinder", "axis": "z", "center": [42, 32, 5], "diameter_mm": 14, "margin_mm": 2 },
+            { "kind": "cylinder", "axis": "z", "center": [42, -32, 5], "diameter_mm": 14, "margin_mm": 2 },
+            { "kind": "cylinder", "axis": "z", "center": [-42, 32, 5], "diameter_mm": 14, "margin_mm": 2 },
+            { "kind": "cylinder", "axis": "z", "center": [-42, -32, 5], "diameter_mm": 14, "margin_mm": 2 }
+          ],
+          "loads": [
+            {
+              "region": { "kind": "cylinder", "axis": "z", "center": [0, 0, 15], "diameter_mm": 14, "margin_mm": 2 },
+              "force_n": [0, 0, -600]
+            }
+          ]
+        }
+      ],
       "gates": [
-        { "type": "status", "expect": ["succeeded", "needs_review"] }
+        { "type": "status", "expect": ["succeeded", "needs_review"] },
+        { "type": "fem", "field": "sf", "min": 0.5 },
+        { "type": "holes", "count": 4, "dia": 8.5, "axis": "z", "positions": [[42, 32], [42, -32], [-42, 32], [-42, -32]] },
+        { "type": "holes", "count": 1, "dia": 12, "axis": "z" },
+        { "type": "holes", "count": 2, "dia": 6.5, "axis": "x" },
+        { "type": "watertight", "expect": true }
       ]
     }
   ]
