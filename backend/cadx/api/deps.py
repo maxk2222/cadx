@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -14,15 +15,30 @@ from cadx.db.session import async_session
 
 AGENT_QUEUE = "agent"
 
+
+def chat_turn_dedup_key(chat_id: Any, msg_id: Any) -> str:
+    """Deterministic arq key for a chat turn — `chat:<chat>:<msg>`.
+
+    Shared by the API (POST/run enqueue), the worker startup reaper and the
+    queue sweeper: they all agree on one key so a live turn provably leaves
+    `arq:job|in-progress:chat:<id>:*` — a random key would defeat both the
+    sweeper's exists-check and its turn-alive scan."""
+    return f"chat:{chat_id}:{msg_id}"
+
+
 _pool: ArqRedis | None = None
+_pool_lock = asyncio.Lock()
 
 
 async def get_pool() -> ArqRedis:
     global _pool
-    if _pool is None:
-        _pool = await arq.create_pool(
-            arq.connections.RedisSettings.from_dsn(get_settings().redis_url)
-        )
+    if _pool is not None:
+        return _pool
+    async with _pool_lock:  # concurrent first-callers must not race two pools
+        if _pool is None:
+            _pool = await arq.create_pool(
+                arq.connections.RedisSettings.from_dsn(get_settings().redis_url)
+            )
     return _pool
 
 
@@ -36,10 +52,19 @@ async def close_pool() -> None:
 async def enqueue(func: str, payload: dict[str, Any], dedup_id: str | None = None) -> str | None:
     """Enqueue on the 'agent' queue; returns the arq job id or None on failure.
 
-    With `dedup_id`, arq enforces job uniqueness (`arq:job:<id>` + recent
-    `arq:result:<id>`); a duplicate is treated as *the entry exists* — success
-    — and the dedup_id is returned. Without it, arq's None return still maps
-    to failure (fresh random ids never legitimately collide)."""
+    The arq key is DETERMINISTIC: `dedup_id` wins, else `payload["job_id"]`
+    (every job payload carries it). Random keys would be invisible to the
+    queue sweeper — a job waiting >grace looks "lost" and gets re-enqueued
+    into a duplicate run. Deterministic keys also make arq's own dedup
+    (`arq:job:<id>` + recent `arq:result:<id>`) a real idempotency guard;
+    a duplicate is treated as *the entry exists* — success — and the
+    dedup_id is returned. Payloads with no job_id (e.g. chat turns keyed
+    per message) still fall back to a random arq id when dedup_id is None.
+    """
+    if dedup_id is None:
+        jid = payload.get("job_id")
+        if isinstance(jid, str) and jid:
+            dedup_id = jid
     try:
         pool = await get_pool()
         job = await pool.enqueue_job(func, payload, _job_id=dedup_id, _queue_name=AGENT_QUEUE)

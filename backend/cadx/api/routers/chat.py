@@ -68,13 +68,14 @@ async def _chat_or_404(db: AsyncSession, chat_id: uuid.UUID) -> Chat:
     return c
 
 
-async def _ensure_turn(chat_id: uuid.UUID) -> None:
+async def _ensure_turn(chat_id: uuid.UUID, msg_id: uuid.UUID | None = None) -> None:
     """Enqueue a turn — the worker's atomic claim deduplicates.
 
     A queue failure is surfaced, not swallowed: the pending user message stays
     durable either way (sweeper/reaper re-enqueues it once redis is back), but
     the client deserves to know the turn could not be scheduled now."""
-    if await deps.enqueue("run_chat_turn", {"chat_id": str(chat_id)}) is None:
+    dedup = deps.chat_turn_dedup_key(chat_id, msg_id) if msg_id is not None else None
+    if await deps.enqueue("run_chat_turn", {"chat_id": str(chat_id)}, dedup_id=dedup) is None:
         raise HTTPException(503, "worker queue unavailable — message stays queued")
 
 
@@ -210,7 +211,7 @@ async def post_message(
     db.add(msg)
     await db.commit()
     await db.refresh(msg)
-    await _ensure_turn(chat.id)
+    await _ensure_turn(chat.id, msg.id)
     with contextlib.suppress(Exception):
         # best-effort — the row is durable; SSE subscribers get it via
         # the snapshot on reconnect anyway
@@ -224,7 +225,21 @@ async def post_message(
 async def run_turn(chat_id: uuid.UUID, db: AsyncSession = Depends(get_session)):
     """Ensure a turn is running — idempotent; used for retry/continue."""
     await _chat_or_404(db, chat_id)
-    await _ensure_turn(chat_id)
+    # key on the newest pending user message when there is one — same dedup
+    # scheme as post_message so the sweeper's liveness scan sees this task
+    latest = (
+        (
+            await db.execute(
+                select(ChatMessage)
+                .where(ChatMessage.chat_id == chat_id, col(ChatMessage.pending).is_(True))
+                .order_by(col(ChatMessage.created_at).desc())
+                .limit(1)
+            )
+        )
+        .scalars()
+        .first()
+    )
+    await _ensure_turn(chat_id, latest.id if latest else None)
     return {"ok": True}
 
 

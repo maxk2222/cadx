@@ -661,25 +661,32 @@ async def reap_orphaned_chats(ctx: dict[str, Any]) -> None:
                 .all()
             )
             pending = (
-                (
-                    await db.execute(
-                        select(ChatMessage.chat_id)
-                        .where(col(ChatMessage.pending).is_(True))
-                        .distinct()
+                await db.execute(
+                    select(ChatMessage.chat_id, ChatMessage.id).where(
+                        col(ChatMessage.pending).is_(True)
                     )
                 )
-                .scalars()
-                .all()
-            )
+            ).all()
             for c in stale:
                 c.turn_running = False
                 log.info("chat.reaper.clear_orphan", chat=str(c.id))
             await db.commit()
         redis = ctx.get("arq_redis")
-        for cid in pending:
-            if redis is not None:
-                await redis.enqueue_job("run_chat_turn", {"chat_id": str(cid)}, _queue_name="agent")
-                log.info("chat.reaper.reenqueued", chat=str(cid))
+        if redis is None:
+            return
+        from cadx.api.deps import chat_turn_dedup_key
+
+        for cid, mid in pending:
+            key = chat_turn_dedup_key(cid, mid)
+            # don't double-fire a turn already queued/running under this key;
+            # a stale result from a claim-lost task must not suppress us either
+            if await redis.exists(f"arq:job:{key}", f"arq:in-progress:{key}"):
+                continue
+            await redis.delete(f"arq:result:{key}")
+            await redis.enqueue_job(
+                "run_chat_turn", {"chat_id": str(cid)}, _job_id=key, _queue_name="agent"
+            )
+            log.info("chat.reaper.reenqueued", chat=str(cid), msg=str(mid))
     except Exception:
         log.exception("chat.reaper_failed")
 

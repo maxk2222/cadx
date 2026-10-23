@@ -672,7 +672,12 @@ def _watchdog() -> None:
     while True:
         time.sleep(WATCHDOG_INTERVAL_S)
         try:
-            _reset_stale_state()
+            # only a DEAD spawned proc makes a `running` state stale — clearing
+            # unconditionally (the bug this fixes) marked a live update failed
+            # every tick, which dropped _wd_suppressed and let the watchdog
+            # fight `docker compose down` mid-update
+            if _proc is None or _proc.poll() is not None:
+                _reset_stale_state()
             if _check_stale():
                 _spawn(["--check"])
             _maybe_self_reexec()

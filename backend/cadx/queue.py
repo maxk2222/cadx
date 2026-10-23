@@ -99,11 +99,17 @@ async def _sweep_once(ctx: dict[str, Any]) -> None:
         return (cutoff - ts).total_seconds()
 
     async def _arq_entry_exists(key_id: str) -> bool:
-        """mirrors arq's own dedup check (job_key + result_key)."""
+        """mirrors arq's own dedup check (job_key + result_key) plus
+        in-progress — job_key already survives the whole run, but a TTL'd
+        job_key with a live in-progress key must still count as alive."""
         if redis is None:
             return True  # can't prove it's missing — don't double-fire
         try:
-            return bool(await redis.exists(f"arq:job:{key_id}", f"arq:result:{key_id}"))
+            return bool(
+                await redis.exists(
+                    f"arq:job:{key_id}", f"arq:result:{key_id}", f"arq:in-progress:{key_id}"
+                )
+            )
         except Exception:
             return True
 
@@ -139,21 +145,52 @@ async def _sweep_once(ctx: dict[str, Any]) -> None:
                     v.status = VersionStatus.failed
                     v.error = "job lost from queue — predates payload capture"
         # chat orphans: flag left running / pending user message never answered
-        await _sweep_chats(db, _age_s, _arq_entry_exists)
+        await _sweep_chats(db, _age_s, redis)
         await db.commit()
 
 
-async def _sweep_chats(db: Any, age_s: Any, exists: Any) -> None:
-    """Clear orphaned turn_running flags and re-enqueue turns for pending
-    user messages the queue lost."""
+async def _chat_turn_alive(redis: Any, chat_id: Any) -> bool:
+    """True when a run_chat_turn task for this chat is queued or in-flight.
+
+    Turns are enqueued under deterministic `chat:<chat>:<msg>` keys, so a
+    live turn leaves `arq:job:chat:<id>:*` (job_key survives until task end)
+    or `arq:in-progress:chat:<id>:*`. Unknown == alive: clearing a flag that
+    a real turn still holds would unlock a second concurrent turn."""
+    if redis is None:
+        return True
+    try:
+        for prefix in ("arq:job:chat:", "arq:in-progress:chat:"):
+            cursor = 0
+            while True:
+                cursor, keys = await redis.scan(cursor, match=f"{prefix}{chat_id}:*", count=200)
+                if keys:
+                    return True
+                if not cursor:
+                    break
+    except Exception:
+        return True
+    return False
+
+
+async def _sweep_chats(db: Any, age_s: Any, redis: Any) -> None:
+    """Re-enqueue turns for pending user messages the queue lost, and clear
+    turn_running flags that no live task owns anymore.
+
+    turn_running can NOT be cleared on age alone: chat.updated_at refreshes
+    only between LLM rounds, so a single slow call (>grace) would look dead
+    while a turn is mid-flight — clearing the flag then unlocks a second
+    concurrent turn (the atomic claim is the only real turn mutex). Only a
+    chat with no live arq key at all is a proven orphan."""
     from sqlmodel import col, select
 
-    from cadx.api.deps import enqueue
+    from cadx.api.deps import chat_turn_dedup_key, enqueue
     from cadx.db.models import Chat, ChatMessage, ChatRole
 
     chats = (await db.execute(select(Chat).where(col(Chat.turn_running).is_(True)))).scalars().all()
     for c in chats:
         if age_s(c.updated_at) < SWEEP_GRACE_S:
+            continue
+        if await _chat_turn_alive(redis, c.id):
             continue
         c.turn_running = False
         log.info("chat.sweeper.clear_orphan", chat=str(c.id))
@@ -172,12 +209,21 @@ async def _sweep_chats(db: Any, age_s: Any, exists: Any) -> None:
     for m in pending_msgs:
         if age_s(m.created_at) < SWEEP_GRACE_S:
             continue
-        if await exists(f"chat:{m.chat_id}:{m.id}"):
-            continue
+        key = chat_turn_dedup_key(m.chat_id, m.id)
+        if redis is not None:
+            try:
+                # arq:result: is deliberately NOT part of the liveness check —
+                # a claim-lost task writes one too, and arq dedup honors it
+                # for ~1h, which would suppress this re-enqueue forever.
+                if await redis.exists(f"arq:job:{key}", f"arq:in-progress:{key}"):
+                    continue
+                await redis.delete(f"arq:result:{key}")
+            except Exception:
+                continue  # redis flaky — retry next sweep
         ok = await enqueue(
             "run_chat_turn",
             {"chat_id": str(m.chat_id)},
-            dedup_id=f"chat:{m.chat_id}:{m.id}",
+            dedup_id=key,
         )
         if ok is not None:
             log.info("chat.sweeper.reenqueued", chat=str(m.chat_id), msg=str(m.id))
@@ -282,8 +328,11 @@ async def cad_startup(ctx: dict[str, Any]) -> None:
 
 
 async def worker_shutdown(ctx: dict[str, Any]) -> None:
-    for t in ctx.get("bg_tasks") or []:
+    tasks = ctx.get("bg_tasks") or []
+    for t in tasks:
         t.cancel()
+    if tasks:  # let the sweeper/heartbeat finish their in-flight iteration
+        await asyncio.gather(*tasks, return_exceptions=True)
     redis = ctx.get("arq_redis")
     if redis is not None:
         await redis.aclose()

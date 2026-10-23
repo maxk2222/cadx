@@ -8,6 +8,16 @@ x-logging: &log-default
     max-size: "20m"
     max-file: "5"
 
+# glibc malloc tuning for the long-running python services — without it every
+# container keeps the RSS of its worst-ever job spike (per-CPU arenas never
+# return freed heap to the kernel). ARENA_MAX caps the arena count so free
+# spans coalesce; TRIM_THRESHOLD makes the top-of-heap trim fire eagerly.
+# Big numpy/OCC allocations use mmap (>=128KB) and are unaffected — this is
+# about the interpreter churn around them.
+x-malloc: &malloc-env
+  MALLOC_ARENA_MAX: ${CADX_MALLOC_ARENAS:-2}
+  MALLOC_TRIM_THRESHOLD_: ${CADX_MALLOC_TRIM:-131072}
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -17,6 +27,16 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-cadx}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cadx}
       POSTGRES_DB: ${POSTGRES_DB:-cadx}
+    # local-production sizing: defaults assume shared hosts (shared_buffers
+    # 128MB + work_mem×200 conns). This DB serves 3 processes — a fraction
+    # is plenty and still leaves planner headroom.
+    command: >
+      postgres
+      -c shared_buffers=${CADX_PG_SHARED_BUFFERS:-48MB}
+      -c work_mem=${CADX_PG_WORK_MEM:-8MB}
+      -c maintenance_work_mem=48MB
+      -c max_connections=50
+      -c effective_cache_size=256MB
     volumes:
       - pgdata:/var/lib/postgresql/data
     networks: [internal]
@@ -51,6 +71,7 @@ services:
     restart: unless-stopped
     logging: *log-default
     environment:
+      <<: *malloc-env
       DATABASE_URL: postgresql://${POSTGRES_USER:-cadx}:${POSTGRES_PASSWORD:-cadx}@postgres:5432/${POSTGRES_DB:-cadx}
       REDIS_URL: redis://redis:6379/0
       DATA_DIR: /data
@@ -90,6 +111,7 @@ services:
     restart: unless-stopped
     logging: *log-default
     environment:
+      <<: *malloc-env
       DATABASE_URL: postgresql://${POSTGRES_USER:-cadx}:${POSTGRES_PASSWORD:-cadx}@postgres:5432/${POSTGRES_DB:-cadx}
       REDIS_URL: redis://redis:6379/0
       DATA_DIR: /data
@@ -119,6 +141,7 @@ services:
     restart: unless-stopped
     logging: *log-default
     environment:
+      <<: *malloc-env
       DATABASE_URL: postgresql://${POSTGRES_USER:-cadx}:${POSTGRES_PASSWORD:-cadx}@postgres:5432/${POSTGRES_DB:-cadx}
       REDIS_URL: redis://redis:6379/0
       DATA_DIR: /data
