@@ -19,12 +19,23 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
   Per-run logs land in `logs/<name>-<ts>.log`. Extend the libs rather than
   duplicating output/detect code in a new script.
 - Self-update: `make update` / `scripts/update.sh` (`--check`, `--ref`,
-  `--rollback`, `--force`) — pull + deps + rebuild + restart + verify, driven
-  on the host by the token-authed updater daemon `scripts/update_server.py`
-  (:8766, survives the restart it drives); the api only proxies it via
-  `/api/system/*` and the GUI card lives in Settings → System. Never put
-  update/git logic inside the api container — it can't see the repo.
-  See `docs/updating.md`.
+  `--rollback`, `--force`) — pull + **pg_dump backup** + deps + rebuild +
+  restart + verify, driven on the host by the token-authed updater daemon
+  `scripts/update_server.py` (:8766, survives the restart it drives); the api
+  only proxies it via `/api/system/*` and the GUI card lives in Settings →
+  System. Never put update/git logic inside the api container — it can't see
+  the repo. See `docs/updating.md`.
+- Local-production hardening (`docs/local-production.md`): the updater daemon
+  doubles as the **watchdog** — stalled-update kill, mesh-server respawn via
+  the `run/mesh-server.env` contract (never adopts foreign processes), compose
+  healing (never resurrects an intentional `stop.sh` down / ExitCode 0), all
+  suppressed mid-update. Job recovery: `Job.payload` envelopes + Redis AOF +
+  a 60s sweeper re-enqueueing lost `queued` rows (deterministic arq job ids).
+  Ops: `make backup` (pg_dump → data/backups), `make prune` (aged logs/tmp +
+  docker dangling), `make autostart` (launchd/systemd supervisor install),
+  `GET /api/system/stack`, `POST /api/system/stack/restart/<svc>`,
+  `run/watchdog.json`. Frontend: ErrorBoundary + webglcontextlost recovery —
+  every user-facing string goes through `t()` in all 9 locales.
 - Setup env once:        `python3 -m venv .venv && .venv/bin/python -m pip install uv`
 - Install backend deps:  `make sync`            (creates backend/.venv via uv)
 - Infra for local dev:   `make infra`           (postgres+redis via docker-compose.dev.yml)
