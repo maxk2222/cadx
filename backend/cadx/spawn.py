@@ -71,7 +71,15 @@ async def _enqueue_or_fail(
 ) -> None:
     """Enqueue the worker task, marking the freshly-spawned rows failed when
     the queue can't take the job — the boot reaper only reaps `running` jobs,
-    so a `queued` row with no arq task would dangle forever."""
+    so a `queued` row with no arq task would dangle forever.
+
+    `job.payload` stores the verbatim {func, args} envelope BEFORE the enqueue
+    attempt — the queue sweeper replays it when redis loses the arq entry."""
+    if job is not None:
+        from cadx.api.deps import payload_envelope
+
+        job.payload = payload_envelope(func, payload)
+        await db.commit()
     try:
         await enqueue(func, payload)
     except Exception:
@@ -122,9 +130,7 @@ async def spawn_version_job(
 
     if parent is not None:
         if part_id is not None or part_name:
-            raise SpawnError(
-                "part selection only applies to new root versions", status=409
-            )
+            raise SpawnError("part selection only applies to new root versions", status=409)
         resolved_part_id = parent.part_id
     else:
         resolved = await parts_svc.resolve_part(
@@ -1149,11 +1155,13 @@ async def enqueue_resume(
     v.status = VersionStatus.queued
     new_job = Job(version_id=v.id, type=JobType.resume, resume_state=job.resume_state)
     db.add(new_job)
+    from cadx.api.deps import payload_envelope
+
+    args = {"job_id": str(new_job.id), "version_id": str(v.id)}
+    new_job.payload = payload_envelope("run_agent_job", args)
     await db.commit()
     try:
-        await (enqueue_fn or _enqueue)(
-            "run_agent_job", {"job_id": str(new_job.id), "version_id": str(v.id)}
-        )
+        await (enqueue_fn or _enqueue)("run_agent_job", args)
     except Exception:
         # fail the new job and put the version back — the original job is
         # still waiting_for_input, so 'failed' would misrepresent it

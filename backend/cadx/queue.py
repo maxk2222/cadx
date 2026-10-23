@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import os
+from datetime import UTC, datetime
 from typing import Any
 
 from arq.connections import RedisSettings
@@ -37,16 +40,167 @@ from cadx.cad.tasks import (
     topopt_resample,
 )
 from cadx.config import get_settings
+from cadx.logging import get_logger
+
+log = get_logger(__name__)
 
 
 def _redis() -> RedisSettings:
     return RedisSettings.from_dsn(get_settings().redis_url)
 
 
-async def _startup_common(ctx: dict[str, Any]) -> None:
+HB_KEY_PREFIX = "cadx:hb:"
+HB_INTERVAL_S = 15.0
+HB_TTL_S = 45
+
+# queued rows this fresh are ignored by the sweeper — a spawn commits the Job
+# row before enqueuing, so a sweep must not race the in-flight enqueue
+SWEEP_INTERVAL_S = 60.0
+SWEEP_GRACE_S = 90.0
+
+
+async def _heartbeat_loop(ctx: dict[str, Any], role: str) -> None:
+    """Publish this worker's liveness to redis (`cadx:hb:<role>`, TTL-gated).
+
+    Runs inside the arq worker loop — if the loop wedges, the key expires and
+    /api/health reports the worker as stale; the host watchdog restarts it.
+    The loop must never crash the worker, so every error is swallowed."""
+    redis = ctx["arq_redis"]
+    while True:
+        with contextlib.suppress(Exception):
+            await redis.setex(f"{HB_KEY_PREFIX}{role}", HB_TTL_S, datetime.now(UTC).isoformat())
+        await asyncio.sleep(HB_INTERVAL_S)
+
+
+async def _sweep_once(ctx: dict[str, Any]) -> None:
+    """Re-enqueue `queued` Job rows whose arq entry is missing (redis loss).
+
+    `payload={"func","args"}` replays verbatim; NULL payloads (pre-migration
+    rows) fail honestly — JobType→func is ambiguous (edit maps to two runners).
+    arq deduplicates on _job_id (job_key OR recent result_key), so re-adding a
+    surviving entry is a no-op. Chats with orphaned turn_running / unanswered
+    pending messages get `run_chat_turn` re-enqueued — dedup rides on the
+    pending message id, so a new user message can never be swallowed by an
+    old arq result key (results linger ~1h)."""
+    from sqlmodel import col, select
+
+    from cadx.api.deps import enqueue
+    from cadx.db.models import Job, JobStatus, Version, VersionStatus
+    from cadx.db.session import session_scope
+
+    redis = ctx.get("arq_redis")
+    cutoff = datetime.now(UTC)
+
+    def _age_s(ts: datetime) -> float:
+        # postgres returns tz-aware; sqlite (tests/dev) stores naive — treat
+        # naive as utc so the grace arithmetic never throws
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=UTC)
+        return (cutoff - ts).total_seconds()
+
+    async def _arq_entry_exists(key_id: str) -> bool:
+        """mirrors arq's own dedup check (job_key + result_key)."""
+        if redis is None:
+            return True  # can't prove it's missing — don't double-fire
+        try:
+            return bool(await redis.exists(f"arq:job:{key_id}", f"arq:result:{key_id}"))
+        except Exception:
+            return True
+
+    async with session_scope() as db:
+        stale = (
+            (await db.execute(select(Job).where(col(Job.status) == JobStatus.queued)))
+            .scalars()
+            .all()
+        )
+        for j in stale:
+            if _age_s(j.created_at) < SWEEP_GRACE_S:
+                continue
+            payload = j.payload or {}
+            func, args = payload.get("func"), payload.get("args")
+            if func and isinstance(args, dict):
+                if await _arq_entry_exists(str(j.id)):
+                    continue  # entry still queued in redis — nothing lost
+                args = {"job_id": str(j.id), "version_id": str(j.version_id), **args}
+                ok = await enqueue(func, args, dedup_id=str(j.id))
+                if ok is None:
+                    continue  # real enqueue failure — next sweep retries
+                j.log = (j.log or "") + "re-enqueued by queue sweeper (queue loss)\n"
+                log.info("queue.sweeper.reenqueued", job=str(j.id), func=func)
+            else:
+                j.status = JobStatus.failed
+                j.finished_at = datetime.now(UTC)
+                j.log = (j.log or "") + ("failed: job lost from queue — predates payload capture\n")
+                v = await db.get(Version, j.version_id)
+                if v is not None and v.status in (
+                    VersionStatus.queued,
+                    VersionStatus.running,
+                ):
+                    v.status = VersionStatus.failed
+                    v.error = "job lost from queue — predates payload capture"
+        # chat orphans: flag left running / pending user message never answered
+        await _sweep_chats(db, _age_s, _arq_entry_exists)
+        await db.commit()
+
+
+async def _sweep_chats(db: Any, age_s: Any, exists: Any) -> None:
+    """Clear orphaned turn_running flags and re-enqueue turns for pending
+    user messages the queue lost."""
+    from sqlmodel import col, select
+
+    from cadx.api.deps import enqueue
+    from cadx.db.models import Chat, ChatMessage, ChatRole
+
+    chats = (await db.execute(select(Chat).where(col(Chat.turn_running).is_(True)))).scalars().all()
+    for c in chats:
+        if age_s(c.updated_at) < SWEEP_GRACE_S:
+            continue
+        c.turn_running = False
+        log.info("chat.sweeper.clear_orphan", chat=str(c.id))
+    pending_msgs = (
+        (
+            await db.execute(
+                select(ChatMessage)
+                .where(col(ChatMessage.pending).is_(True))
+                .where(col(ChatMessage.role) == ChatRole.user)
+                .order_by(col(ChatMessage.created_at))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for m in pending_msgs:
+        if age_s(m.created_at) < SWEEP_GRACE_S:
+            continue
+        if await exists(f"chat:{m.chat_id}:{m.id}"):
+            continue
+        ok = await enqueue(
+            "run_chat_turn",
+            {"chat_id": str(m.chat_id)},
+            dedup_id=f"chat:{m.chat_id}:{m.id}",
+        )
+        if ok is not None:
+            log.info("chat.sweeper.reenqueued", chat=str(m.chat_id), msg=str(m.id))
+
+
+async def _sweep_loop(ctx: dict[str, Any]) -> None:
+    """Periodic orphan repair — startup reaping only covers a *worker* restart,
+    not a redis restart mid-operation."""
+    while True:
+        await asyncio.sleep(SWEEP_INTERVAL_S)
+        try:
+            await _sweep_once(ctx)
+        except Exception:
+            log.exception("queue.sweep_failed")
+
+
+async def _startup_common(ctx: dict[str, Any], role: str) -> None:
     from arq.connections import create_pool
 
     ctx["arq_redis"] = await create_pool(_redis())
+    ctx["bg_tasks"] = [
+        asyncio.create_task(_heartbeat_loop(ctx, role), name=f"hb:{role}"),
+    ]
     try:  # ensure the runtime row exists even if the worker boots before the api
         from cadx.db.session import session_scope
         from cadx.runtime_config import ensure_runtime_seeded
@@ -59,7 +213,7 @@ async def _startup_common(ctx: dict[str, Any]) -> None:
 
 
 async def agent_startup(ctx: dict[str, Any]) -> None:
-    await _startup_common(ctx)
+    await _startup_common(ctx, "agent")
     # reaper: a worker restart orphans in-flight arq tasks (max_tries=1), but
     # their job/version rows keep status='running' forever — fail them here.
     # Only the AGENT-queue worker may reap: every Job row is enqueued on
@@ -96,6 +250,9 @@ async def agent_startup(ctx: dict[str, Any]) -> None:
         pass
     # chat reaper: orphaned turn_running flags + unanswered pending messages
     await reap_orphaned_chats(ctx)
+    # queue sweeper: re-enqueues queued jobs / orphaned chat turns the arq side
+    # lost (redis restart mid-run — startup reaping can't see that)
+    ctx["bg_tasks"].append(asyncio.create_task(_sweep_loop(ctx), name="queue-sweeper"))
 
 
 async def cad_startup(ctx: dict[str, Any]) -> None:
@@ -105,7 +262,7 @@ async def cad_startup(ctx: dict[str, Any]) -> None:
     # or runs in-process (BLAS, OCCT pools, llvmpipe raster)
     resources.configure_thread_env(os.environ)
     resources.log_detected()
-    await _startup_common(ctx)
+    await _startup_common(ctx, "cad")
     # publish the executor's view of the world so the settings API shows the
     # numbers the 0=auto knobs actually resolve to (the api container sees a
     # different cgroup)
@@ -125,6 +282,8 @@ async def cad_startup(ctx: dict[str, Any]) -> None:
 
 
 async def worker_shutdown(ctx: dict[str, Any]) -> None:
+    for t in ctx.get("bg_tasks") or []:
+        t.cancel()
     redis = ctx.get("arq_redis")
     if redis is not None:
         await redis.aclose()

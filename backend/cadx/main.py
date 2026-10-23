@@ -5,8 +5,9 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from cadx.api.routers import (
@@ -70,6 +71,35 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="CADX", version="0.1.0", lifespan=lifespan)
+
+
+# ---------- global error envelope ----------
+# Unhandled exceptions must never leak internals (LLM keys, tracebacks with
+# file paths/env) to clients — log the full context server-side with a
+# correlation id, return a stable JSON body.
+@app.exception_handler(Exception)
+async def _unhandled(request: Request, exc: Exception) -> JSONResponse:
+    import secrets
+
+    from fastapi.responses import JSONResponse
+
+    err_id = secrets.token_hex(6)
+    # NOTE: never log exc.args blobs blindly — LLM payloads can carry keys.
+    # type + bounded str(exc) only; secrets never leave this process.
+    log.error(
+        "api.unhandled",
+        err_id=err_id,
+        method=request.method,
+        path=request.url.path,
+        error=str(exc)[:500],
+        exc_type=type(exc).__name__,
+        exc_info=exc,
+    )
+    return JSONResponse(
+        {"detail": f"internal error — reference {err_id}", "error_id": err_id},
+        status_code=500,
+    )
+
 
 app.add_middleware(
     CORSMiddleware,

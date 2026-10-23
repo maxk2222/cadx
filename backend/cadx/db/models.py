@@ -243,6 +243,9 @@ class Job(SQLModel, table=True):
     live: dict[str, Any] | None = SField(
         default=None, sa_column=Column(JSON)
     )  # structured live state: max_iterations, scores, step timings, tokens
+    payload: dict[str, Any] | None = SField(
+        default=None, sa_column=Column(JSON)
+    )  # verbatim arq envelope {"func","args"} — the queue sweeper replays it
     started_at: datetime | None = None
     finished_at: datetime | None = None
     created_at: datetime = SField(default_factory=utcnow)

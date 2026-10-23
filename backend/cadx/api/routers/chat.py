@@ -20,7 +20,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
 from cadx import events
-from cadx.api.deps import enqueue, get_session
+from cadx.api import deps
+from cadx.api.deps import get_session
 from cadx.api.schemas import (
     ChatAttachIn,
     ChatCreate,
@@ -68,8 +69,13 @@ async def _chat_or_404(db: AsyncSession, chat_id: uuid.UUID) -> Chat:
 
 
 async def _ensure_turn(chat_id: uuid.UUID) -> None:
-    """Enqueue a turn — the worker's atomic claim deduplicates."""
-    await enqueue("run_chat_turn", {"chat_id": str(chat_id)})
+    """Enqueue a turn — the worker's atomic claim deduplicates.
+
+    A queue failure is surfaced, not swallowed: the pending user message stays
+    durable either way (sweeper/reaper re-enqueues it once redis is back), but
+    the client deserves to know the turn could not be scheduled now."""
+    if await deps.enqueue("run_chat_turn", {"chat_id": str(chat_id)}) is None:
+        raise HTTPException(503, "worker queue unavailable — message stays queued")
 
 
 @router.post("/chats", response_model=ChatOut, status_code=201)

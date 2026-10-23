@@ -33,12 +33,19 @@ async def close_pool() -> None:
         _pool = None
 
 
-async def enqueue(func: str, payload: dict[str, Any]) -> str | None:
-    """Enqueue on the 'agent' queue; returns arq job id or None if enqueue failed."""
+async def enqueue(func: str, payload: dict[str, Any], dedup_id: str | None = None) -> str | None:
+    """Enqueue on the 'agent' queue; returns the arq job id or None on failure.
+
+    With `dedup_id`, arq enforces job uniqueness (`arq:job:<id>` + recent
+    `arq:result:<id>`); a duplicate is treated as *the entry exists* — success
+    — and the dedup_id is returned. Without it, arq's None return still maps
+    to failure (fresh random ids never legitimately collide)."""
     try:
         pool = await get_pool()
-        job = await pool.enqueue_job(func, payload, _queue_name=AGENT_QUEUE)
-        return job.job_id if job else None
+        job = await pool.enqueue_job(func, payload, _job_id=dedup_id, _queue_name=AGENT_QUEUE)
+        if job is None:
+            return dedup_id
+        return job.job_id
     except Exception:
         from cadx.logging import get_logger
 
@@ -49,3 +56,17 @@ async def enqueue(func: str, payload: dict[str, Any]) -> str | None:
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
     async with async_session() as s:
         yield s
+
+
+def payload_envelope(func: str, args: dict[str, Any]) -> dict[str, Any] | None:
+    """{func,args} replay envelope for `Job.payload` — the queue sweeper
+    replays it verbatim after queue loss. arq serializes payloads with
+    pickle, so args may contain objects JSON can't express; storing one of
+    those would break the committing transaction. Returns None (→ job.payload
+    stays NULL → sweeper fails honestly) when args aren't JSON-safe."""
+    import json
+
+    try:
+        return json.loads(json.dumps({"func": func, "args": args}))
+    except (TypeError, ValueError):
+        return None

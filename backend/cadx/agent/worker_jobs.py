@@ -1356,26 +1356,29 @@ async def _maybe_spawn_refine(
     )
     db.add(child)
     await db.flush()
+    keep_regions = optimize.get("keep_regions") or []
+    args = {
+        "job_id": "",
+        "version_id": str(child.id),
+        "load_cases": load_cases,
+        "keep_regions": keep_regions,
+        # no explicit keep regions but measured anchors exist — the
+        # executor may auto-derive anchor keep-boxes from them
+        "auto_keep_anchors": bool(not keep_regions and topopt_anchors),
+        "material": material,
+        "helical_threads": bool(optimize.get("helical_threads")),
+        "auto_plane_restore": bool(optimize.get("auto_plane_restore")),
+        "restore_planes": optimize.get("restore_planes", True),
+    }
     rjob = Job(version_id=child.id, type=JobType.refine)
     db.add(rjob)
+    await db.flush()
+    args["job_id"] = str(rjob.id)
+    from cadx.api.deps import payload_envelope
+
+    rjob.payload = payload_envelope("run_refine_job", args)
     await db.commit()
-    keep_regions = optimize.get("keep_regions") or []
-    await enqueue_agent(
-        "run_refine_job",
-        {
-            "job_id": str(rjob.id),
-            "version_id": str(child.id),
-            "load_cases": load_cases,
-            "keep_regions": keep_regions,
-            # no explicit keep regions but measured anchors exist — the
-            # executor may auto-derive anchor keep-boxes from them
-            "auto_keep_anchors": bool(not keep_regions and topopt_anchors),
-            "material": material,
-            "helical_threads": bool(optimize.get("helical_threads")),
-            "auto_plane_restore": bool(optimize.get("auto_plane_restore")),
-            "restore_planes": optimize.get("restore_planes", True),
-        },
-    )
+    await enqueue_agent("run_refine_job", args)
     return True
 
 

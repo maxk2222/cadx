@@ -15,7 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
 from cadx import parts as parts_svc
-from cadx.api.deps import enqueue, get_session
+from cadx.api import deps
+from cadx.api.deps import get_session
 from cadx.api.schemas import (
     ArtifactOut,
     CompareResult,
@@ -427,12 +428,13 @@ async def reexport(version_id: uuid.UUID, db: AsyncSession = Depends(get_session
     if not v:
         raise HTTPException(404, "version not found")
     job = Job(version_id=v.id, type=JobType.reexport)
+    args = {"job_id": str(job.id), "version_id": str(v.id), "iteration": v.iterations or 1}
+    from cadx.api.deps import payload_envelope
+
+    job.payload = payload_envelope("run_reexport_job", args)
     db.add(job)
     await db.commit()
-    jid = await enqueue(
-        "run_reexport_job",
-        {"job_id": str(job.id), "version_id": str(v.id), "iteration": v.iterations or 1},
-    )
+    jid = await deps.enqueue("run_reexport_job", args)
     if jid is None:
         # no worker behind the row — mark it instead of leaving it queued
         job.status = JobStatus.failed
