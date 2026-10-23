@@ -112,6 +112,18 @@ def test_render_markdown_table():
     assert "codegen" in md  # stage pass-rate table
 
 
+def test_report_keeps_inconclusive_separate_from_failures():
+    result = _res(passed=None)
+    rows = aggregate([result])
+    row = rows[0]
+    assert row.passed == 0
+    assert row.inconclusive == 1
+    assert row.stage_inconclusive == {"codegen": 1}
+    md = render_markdown(rows)
+    assert "inconclusive 1" in md
+    assert "inconclusive runs" in md
+
+
 def test_baseline_save_picks_latest_per_cell(tmp_path):
     root = tmp_path / "res"
     out = tmp_path / "base"

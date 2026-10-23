@@ -30,6 +30,8 @@ class StageOutcome:
     mode_note: str = ""
     analysis: dict[str, Any] | None = None  # bbox_size, watertight*, holes, …
     features: dict[str, Any] | None = None  # measured feature dict for feature gates
+    features_available: bool | None = None  # None=not attempted, False=unavailable
+    features_error: str | None = None
     spec: dict[str, Any] | None = None
     plan: dict[str, Any] | None = None
     code: str | None = None
@@ -52,7 +54,7 @@ class StageOutcome:
 @dataclass
 class GateResult:
     name: str
-    ok: bool
+    ok: bool | None  # None = inconclusive/evidence unavailable
     measured: Any = None
     expected: Any = None
     detail: str = ""

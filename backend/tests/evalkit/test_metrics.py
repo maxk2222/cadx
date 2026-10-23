@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from cadx.evalkit.metrics import harvest
 from cadx.evalkit.models import CaseResult, GateResult, StageOutcome, StageResult
-from cadx.evalkit.runner import _persist, _summary_md
+from cadx.evalkit.runner import _aggregate_verdict, _persist, _summary_md
 
 
 def _out(**kw) -> StageOutcome:
@@ -30,6 +30,12 @@ def test_harvest_usage_and_exec_stats():
     assert m["bbox"] == [80.12, 60, 66]
     assert m["watertight"] is True
     assert m["score"] == 88
+
+
+def test_harvest_reports_feature_evidence_availability():
+    m = harvest(_out(features_available=False, features_error="no artifact"))
+    assert m["features_available"] is False
+    assert m["features_error"] == "no artifact"
 
 
 def test_harvest_trace_fallbacks():
@@ -140,3 +146,25 @@ def test_summary_md_lists_failed_gates():
     )
     md = _summary_md(res)
     assert "holes" in md
+
+
+def test_inconclusive_verdict_aggregation_and_report():
+    assert _aggregate_verdict([True, None]) is None
+    assert _aggregate_verdict([None, False]) is False
+    assert _aggregate_verdict([True, True]) is True
+
+    stage = _stage(passed=None)
+    stage.gates = [GateResult("status", True), GateResult("holes", None, detail="no artifact")]
+    res = CaseResult(
+        case="c",
+        driver="local",
+        variant="v",
+        run_id="r",
+        passed=None,
+        wall_s=1.0,
+        stages=[stage],
+    )
+    md = _summary_md(res)
+    assert "INCONCLUSIVE" in md
+    assert "| codegen | generate | succeeded | INCONCLUSIVE |" in md
+    assert "| - | holes |" in md

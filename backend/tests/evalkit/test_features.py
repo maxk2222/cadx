@@ -25,6 +25,7 @@ def test_ensure_features_noop_when_set():
 
     asyncio.run(ensure_features(o))
     assert o.features == {"hole_groups": []}
+    assert o.features_available is True
 
 
 @pytest.mark.asyncio
@@ -65,3 +66,30 @@ async def test_ensure_features_step_path(tmp_path, monkeypatch):
         assert any(abs(float(g.get("diameter") or 0) - 8.0) < 1.0 for g in groups), groups
     finally:
         get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_ensure_features_marks_missing_artifact_unavailable():
+    o = StageOutcome(status="timeout", version_id="v-timeout")
+    await ensure_features(o)
+    assert o.features is None
+    assert o.features_available is False
+    assert "no STEP/STL artifact" in (o.features_error or "")
+
+
+@pytest.mark.asyncio
+async def test_ensure_features_marks_extraction_failure_unavailable(tmp_path, monkeypatch):
+    from cadx.evalkit import features as feature_module
+
+    artifact = tmp_path / "broken.stl"
+    artifact.write_text("not a mesh")
+    monkeypatch.setattr(
+        feature_module,
+        "_measure_mesh",
+        lambda _outcome: (_ for _ in ()).throw(RuntimeError("bad mesh")),
+    )
+    o = StageOutcome(status="succeeded", artifact_files=[str(artifact)])
+    await ensure_features(o)
+    assert o.features is None
+    assert o.features_available is False
+    assert "RuntimeError: bad mesh" in (o.features_error or "")

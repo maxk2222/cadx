@@ -364,10 +364,21 @@ def _gate_outcome(  # noqa: C901
         "features",
     ):
         entries = g.get("entries") if name == "features" else [{**g, "type": name}]
+        if not entries:
+            return GateResult(name, True, expected=entries, detail="no feature assertions")
+        if outcome.features is None or outcome.features_available is False:
+            reason = outcome.features_error or "no measurable artifact or feature evidence"
+            return GateResult(
+                name,
+                None,
+                measured=None,
+                expected=entries,
+                detail=f"feature measurement unavailable — inconclusive: {reason}",
+            )
         ok = features_ok(entries or [], feats)
         return GateResult(
             name,
-            bool(ok),
+            ok,
             measured=feats.get("hole_groups") or feats,
             expected=entries,
         )

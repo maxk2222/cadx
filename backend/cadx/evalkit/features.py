@@ -49,26 +49,42 @@ def needs_features(specs: list[dict[str, Any]] | None) -> bool:
 
 async def ensure_features(outcome: StageOutcome) -> None:
     """Populate ``outcome.features`` from stage artifacts (best-effort, in-place)."""
-    if outcome.features:
+    if outcome.features_available is False:
+        return
+    if outcome.features is not None:
+        outcome.features_available = True
         return
     step = _kind_path(outcome, {"step"})
     stl = _kind_path(outcome, {"stl"})
+    errors: list[str] = []
     if step is not None:
         try:
             measured = await asyncio.to_thread(_measure_step, step, stl)
-            if measured:
+            if measured is not None:
                 outcome.features = measured
+                outcome.features_available = True
                 return
         except Exception as e:  # fall through to the mesh fallback
+            errors.append(f"STEP: {type(e).__name__}: {e}")
             log.warning("eval.features.step_failed", error=f"{type(e).__name__}: {e}")
     try:
         measured = await asyncio.to_thread(_measure_mesh, outcome)
-        if measured:
+        if measured is not None:
             outcome.features = measured
+            outcome.features_available = True
+            return
     except Exception as e:
+        errors.append(f"mesh: {type(e).__name__}: {e}")
         log.warning("eval.features.mesh_failed", error=f"{type(e).__name__}: {e}")
-    if not outcome.features:
-        log.warning("eval.features.unavailable", version=outcome.version_id)
+    outcome.features_available = False
+    outcome.features_error = "; ".join(errors) or (
+        "no STEP/STL artifact available" if step is None and stl is None else "feature extraction returned no evidence"
+    )
+    log.warning(
+        "eval.features.unavailable",
+        version=outcome.version_id,
+        reason=outcome.features_error,
+    )
 
 
 _KIND_EXTS = {

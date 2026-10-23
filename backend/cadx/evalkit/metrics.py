@@ -48,6 +48,12 @@ def harvest(outcome: StageOutcome) -> dict[str, Any]:
         "exec_s": round(float(outcome.extras.get("exec_s") or 0.0), 1),
         "bbox": [round(float(x), 2) for x in bbox] if bbox else None,
         "features": outcome.features,
+        "features_available": (
+            outcome.features_available
+            if outcome.features_available is not None
+            else (True if outcome.features is not None else None)
+        ),
+        "features_error": outcome.features_error,
         "watertight": bool(watertight) if watertight is not None else None,
         "verify_spec": {
             "status": str(report["status"]) if report else None,

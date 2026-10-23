@@ -100,6 +100,25 @@ def test_hole_gate_count_dia_axis_positions_pcd():
     assert not run_gates([{"type": "holes", "count": 6, "pcd": 100}], out6, 0)[0].ok
 
 
+def test_feature_gate_unavailable_is_inconclusive_but_measured_mismatch_fails():
+    unavailable = run_gates(
+        [{"type": "holes", "count": 4, "dia": 8.5}],
+        _out(features=None, features_available=False, features_error="no artifact"),
+        0,
+    )[0]
+    assert unavailable.ok is None
+    assert "measurement unavailable" in unavailable.detail
+    assert "no artifact" in unavailable.detail
+
+    measured_empty = run_gates(
+        [{"type": "holes", "count": 4, "dia": 8.5}],
+        _out(features={}, features_available=True),
+        0,
+    )[0]
+    assert measured_empty.ok is False
+    assert measured_empty.detail == ""
+
+
 def test_fillet_watertight_verify_spec():
     out = _out(
         features={"rounds": [{"radius": 2}]},

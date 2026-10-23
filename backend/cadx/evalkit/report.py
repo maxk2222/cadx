@@ -53,6 +53,7 @@ class ReportRow:
     driver: str
     runs: int
     passed: int
+    inconclusive: int
     mean_score: float | None
     mean_iterations: float | None
     prompt_tokens: int
@@ -61,6 +62,7 @@ class ReportRow:
     mean_wall_s: float | None
     mean_exec_s: float | None
     stage_pass: dict[str, float] = field(default_factory=dict)  # stage -> pass rate
+    stage_inconclusive: dict[str, int] = field(default_factory=dict)
 
 
 def aggregate(results: list[CaseResult]) -> list[ReportRow]:
@@ -72,18 +74,25 @@ def aggregate(results: list[CaseResult]) -> list[ReportRow]:
     rows: list[ReportRow] = []
     for (variant, case, driver), rs in sorted(groups.items()):
         passed = 0
+        inconclusive = 0
         ptok = ctok = thk = 0
         scores: list[float] = []
         iters: list[float] = []
         walls: list[float] = []
         exec_s: list[float] = []
         stage_hits: dict[str, list[bool]] = {}
+        stage_inconclusive: dict[str, int] = {}
         for res in rs:
-            if res.passed:
+            if res.passed is True:
                 passed += 1
+            elif res.passed is None:
+                inconclusive += 1
             walls.append(res.wall_s)
             for s in res.stages:
-                stage_hits.setdefault(s.stage_id, []).append(bool(s.passed))
+                if s.passed is None:
+                    stage_inconclusive[s.stage_id] = stage_inconclusive.get(s.stage_id, 0) + 1
+                else:
+                    stage_hits.setdefault(s.stage_id, []).append(s.passed)
                 m = s.metrics or {}
                 if m.get("score") is not None:
                     scores.append(float(m["score"]))
@@ -103,6 +112,7 @@ def aggregate(results: list[CaseResult]) -> list[ReportRow]:
                 driver=driver,
                 runs=len(rs),
                 passed=passed,
+                inconclusive=inconclusive,
                 mean_score=statistics.fmean(scores) if scores else None,
                 mean_iterations=statistics.fmean(iters) if iters else None,
                 prompt_tokens=ptok,
@@ -111,6 +121,7 @@ def aggregate(results: list[CaseResult]) -> list[ReportRow]:
                 mean_wall_s=statistics.fmean(walls) if walls else None,
                 mean_exec_s=statistics.fmean(exec_s) if exec_s else None,
                 stage_pass={k: sum(v) / len(v) for k, v in sorted(stage_hits.items())},
+                stage_inconclusive=dict(sorted(stage_inconclusive.items())),
             )
         )
     return rows
@@ -152,7 +163,7 @@ def render_markdown(rows: list[ReportRow], *, title: str = "eval report") -> str
                     r.case,
                     r.driver,
                     str(r.runs),
-                    f"{r.passed}/{r.runs}",
+                    f"{r.passed}/{r.runs} (inconclusive {r.inconclusive})",
                     _f(r.mean_score),
                     _f(r.mean_iterations, 1),
                     str(r.prompt_tokens),
@@ -165,11 +176,20 @@ def render_markdown(rows: list[ReportRow], *, title: str = "eval report") -> str
             + " |"
         )
     # per-stage pass rates
-    if any(r.stage_pass for r in rows):
-        lines += ["", "| variant | case | stage | pass rate |", "|---|---|---|---|"]
+    if any(r.stage_pass or r.stage_inconclusive for r in rows):
+        lines += [
+            "",
+            "| variant | case | stage | pass rate (decided runs) | inconclusive runs |",
+            "|---|---|---|---|---|",
+        ]
         for r in rows:
-            for sid, rate in r.stage_pass.items():
-                lines.append(f"| {r.variant} | {r.case} | {sid} | {rate:.0%} |")
+            for sid in sorted(set(r.stage_pass) | set(r.stage_inconclusive)):
+                rate = r.stage_pass.get(sid)
+                rate_text = f"{rate:.0%}" if rate is not None else "-"
+                count = r.stage_inconclusive.get(sid, 0)
+                lines.append(
+                    f"| {r.variant} | {r.case} | {sid} | {rate_text} | {count} |"
+                )
     return "\n".join(lines)
 
 

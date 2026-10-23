@@ -83,21 +83,37 @@ def _summary_md(res: CaseResult) -> str:
     lines = [
         f"# eval {res.case} ({res.driver}, variant={res.variant})",
         "",
-        f"- passed: **{res.passed}**  wall: {res.wall_s:.0f}s  run: `{res.run_id}`",
+        f"- verdict: **{_verdict_label(res.passed)}**  wall: {res.wall_s:.0f}s  "
+        f"run: `{res.run_id}`",
         f"- project: `{res.project}` ({res.project_id or '-'})",
         "",
-        "| stage | type | status | passed | score | wall s | gates failed |",
-        "|---|---|---|---|---|---|---|",
+        "| stage | type | status | verdict | score | wall s | gates failed | inconclusive |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for s in res.stages:
-        fails = [g.name for g in s.gates if not g.ok]
+        fails = [g.name for g in s.gates if g.ok is False]
+        inconclusive = [g.name for g in s.gates if g.ok is None]
         lines.append(
-            f"| {s.stage_id} | {s.stage_type} | {s.status} | {s.passed} | "
-            f"{(s.metrics or {}).get('score')} | {s.wall_s:.0f} | {', '.join(fails) or '-'} |"
+            f"| {s.stage_id} | {s.stage_type} | {s.status} | {_verdict_label(s.passed)} | "
+            f"{(s.metrics or {}).get('score')} | {s.wall_s:.0f} | "
+            f"{', '.join(fails) or '-'} | {', '.join(inconclusive) or '-'} |"
         )
     if res.error:
         lines += ["", f"**error:** {res.error}"]
     return "\n".join(lines)
+
+
+def _verdict_label(value: bool | None) -> str:
+    return "PASS" if value is True else "FAIL" if value is False else "INCONCLUSIVE"
+
+
+def _aggregate_verdict(values: list[bool | None]) -> bool | None:
+    """A definite failure dominates; otherwise preserve any missing verdict."""
+    if any(value is False for value in values):
+        return False
+    if any(value is None for value in values):
+        return None
+    return True
 
 
 async def run_case(
@@ -229,7 +245,7 @@ async def run_case(
                     log.warning("eval.settings_restore_failed", error=str(e)[:120])
             await drv.close()
         res.wall_s = round(time.monotonic() - t0, 1)
-        res.passed = all(s.passed for s in res.stages) if res.stages else None
+        res.passed = _aggregate_verdict([s.passed for s in res.stages]) if res.stages else None
         _persist(res, out)
         return res
 
@@ -239,7 +255,7 @@ async def run_case(
     finally:
         drv.unpatch_executor()
     res.wall_s = round(time.monotonic() - t0, 1)
-    res.passed = all(s.passed for s in res.stages) if res.stages else None
+    res.passed = _aggregate_verdict([s.passed for s in res.stages]) if res.stages else None
     _persist(res, out)
     return res
 
@@ -284,18 +300,12 @@ async def _run_stages(
             await ensure_features(outcome)
         metrics = harvest(outcome)
         gates = run_gates(stage.gates, outcome, wall)
-        passed = (
-            bool(gates)
-            and all(g.ok for g in gates)
-            and outcome.status
-            not in (
-                "failed",
-                "cancelled",
-                "timeout",
-            )
-        )
-        if not gates:
+        if outcome.status in ("failed", "cancelled", "timeout"):
+            passed: bool | None = False
+        elif not gates:
             passed = outcome.status == "succeeded"
+        else:
+            passed = _aggregate_verdict([g.ok for g in gates])
         sres = StageResult(
             stage_id=stage.id,
             stage_type=stage.type,

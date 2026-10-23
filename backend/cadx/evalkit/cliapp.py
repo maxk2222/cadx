@@ -130,7 +130,9 @@ def run(
                         continue
                     results.append(r)
                     st = ", ".join(
-                        f"{s.stage_id}:{s.status}{'✓' if s.passed else '✗'}" for s in r.stages
+                        f"{s.stage_id}:{s.status}"
+                        f"{'✓' if s.passed is True else ('?' if s.passed is None else '✗')}"
+                        for s in r.stages
                     )
                     err = f" error={r.error!r}" if r.error else ""
                     print(
@@ -144,7 +146,7 @@ def run(
             print(f"results written to {json_out}")
         if not results:
             return 1
-        return 0 if all(r.passed for r in results) else 1
+        return 0 if all(r.passed is True for r in results) else 1
 
     raise typer.Exit(asyncio.run(_run()))
 

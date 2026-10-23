@@ -43,19 +43,23 @@ def _case_cell(res: CaseResult) -> dict[str, Any]:
         stages[s.stage_id] = {
             "status": s.status,
             "passed": s.passed,
+            "inconclusive_gates": sum(g.ok is None for g in s.gates),
             "wall_s": s.wall_s,
             "score": (s.metrics or {}).get("score"),
             "gates": {g.name: g.ok for g in s.gates},
         }
-    n = len(res.stages)
+    decided = [s for s in res.stages if s.passed is not None]
     return {
         "passed": res.passed,
+        "inconclusive_runs": int(res.passed is None),
         "run_id": res.run_id,
         "wall_s": res.wall_s,
         "prompt_tokens": ptok,
         "completion_tokens": ctok,
         "score": statistics.fmean(scores) if scores else None,
-        "pass_rate": (sum(1 for s in res.stages if s.passed) / n if n else 0.0),
+        "pass_rate": (
+            sum(1 for s in decided if s.passed is True) / len(decided) if decided else None
+        ),
         "stages": stages,
     }
 
@@ -92,7 +96,7 @@ def load_baseline(label: str, *, out_dir: Path | None = None) -> dict[str, Any]:
 @dataclass
 class Diff:
     cell: str
-    kind: str  # "gate_flip" | "pass_flip" | "metric"
+    kind: str  # "gate_flip" | "gate_inconclusive" | "pass_flip" | "metric"
     detail: str
 
 
@@ -109,7 +113,7 @@ def diff(a: dict[str, Any], b: dict[str, Any]) -> list[Diff]:
         if cb is None:
             out.append(Diff(key, "missing", f"not in {b.get('label')}"))
             continue
-        if bool(ca.get("passed")) != bool(cb.get("passed")):
+        if ca.get("passed") != cb.get("passed"):
             out.append(Diff(key, "pass_flip", f"passed {ca.get('passed')} -> {cb.get('passed')}"))
         for field, (direction, thresh) in _REGRESS_FIELDS.items():
             va, vb = ca.get(field), cb.get(field)
@@ -127,6 +131,14 @@ def diff(a: dict[str, Any], b: dict[str, Any]) -> list[Diff]:
             for gname in sorted(set(ga) | set(gb)):
                 if ga.get(gname) is True and gb.get(gname) is False:
                     out.append(Diff(key, "gate_flip", f"{sid}/{gname}: pass -> fail"))
+                elif ga.get(gname) is True and gb.get(gname) is None:
+                    out.append(
+                        Diff(
+                            key,
+                            "gate_inconclusive",
+                            f"{sid}/{gname}: pass -> evidence unavailable",
+                        )
+                    )
     return out
 
 
