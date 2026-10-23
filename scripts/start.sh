@@ -208,13 +208,19 @@ else
 fi
 
 # ---------- 5. mesh-server ----------
+# run/mesh-server.env is the supervision contract: it exists only when the
+# mesh-server was nohup-spawned by this script — the updater watchdog respawns
+# it on crash/unhealthy and NEVER adopts a foreign process that merely
+# occupies the port. stop.sh removes it so a manual stop stays stopped.
 if [ "${MESH_HOST:-}" != "" ]; then
-  if pidfile_alive mesh-server; then
+  if pidfile_alive mesh-server && [ -f run/mesh-server.env ]; then
     step_begin "mesh-server"
-    step_skip "already running (pid $(pidfile_pid mesh-server))"
-  elif [ "${MESH_ADOPT:-0}" = 1 ]; then
+    step_skip "already running (pid $(pidfile_pid mesh-server), supervised)"
+  elif [ "${MESH_ADOPT:-0}" = 1 ] || pidfile_alive mesh-server; then
     step_begin "mesh-server"
-    step_skip "already serving on :$MESH_PORT (adopted)"
+    # alive but no env contract → foreign/orphaned process, never supervised
+    step_skip "already serving on :$MESH_PORT (not supervised)"
+    rm -f run/mesh-server.env run/mesh-server.pid
   else
     step_begin "mesh-server ($TIER${MODEL:+, model=$MODEL})"
     if [ "$DRY" = 1 ]; then
@@ -229,7 +235,15 @@ if [ "${MESH_HOST:-}" != "" ]; then
         PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-}" \
         nohup mesh_server/.venv/bin/meshserver serve > logs/mesh-server.log 2>&1 &
       echo $! > run/mesh-server.pid
-      step_done "pid $!"
+      # supervision contract — the watchdog respawns with exactly this env
+      {
+        echo "MESH_HOST=$MESH_HOST"; echo "MESH_PORT=$MESH_PORT"
+        echo "MESH_DEVICE=$TIER"; echo "MESH_FAKE=${MESH_FAKE:-}"
+        echo "MESH_JOB_MAX_RSS_MB=${MESH_JOB_MAX_RSS_MB:-}"
+        echo "HSA_OVERRIDE_GFX_VERSION=${HSA_OVERRIDE_GFX_VERSION:-}"
+        echo "PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-}"
+      } > run/mesh-server.env
+      step_done "pid $! (supervised)"
     fi
   fi
   if wait_for_url "http://localhost:$MESH_PORT/v1/health" 60 mesh-server; then
@@ -256,6 +270,7 @@ PY
 else
   step_begin "mesh-server"
   step_skip "$([ "$NO_MESH" = 1 ] && echo '--no-mesh' || echo "tier=$TIER")"
+  rm -f run/mesh-server.env
 fi
 
 # ---------- 5b. updater daemon ----------

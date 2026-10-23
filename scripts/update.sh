@@ -307,6 +307,33 @@ maybe_reexec() {
 }
 
 # ---------- deps / restart / verify ----------
+do_backup() {
+  # pg_dump BEFORE stop/restart — alembic runs at api start, so the dump must
+  # capture the pre-migration schema. run/update-backup.json makes the step
+  # idempotent across an updater self-reexec (same NEW_SHA → skip).
+  set_phase "backup"
+  NEW_SHA=${NEW_SHA:-$(git rev-parse HEAD)}
+  local marker="run/update-backup.json"
+  if [ -f "$marker" ] && python3 - "$marker" "$NEW_SHA" <<'PY' 2>/dev/null
+import json, sys
+print(0 if json.load(open(sys.argv[1])).get("target") == sys.argv[2] else 1)
+sys.exit(0 if json.load(open(sys.argv[1])).get("target") == sys.argv[2] else 1)
+PY
+  then
+    step_begin "db backup"; step_skip "already taken for this update"
+    return 0
+  fi
+  if [ "$DRY" = 1 ]; then step_begin "db backup"; step_skip "dry-run"; return 0; fi
+  run_step "pg_dump (data/backups)" bash scripts/backup.sh \
+    || warn "backup failed — update continues WITHOUT a database snapshot"
+  if [ -f "$marker" ]; then :; else
+    LATEST=$(ls -1t data/backups/cadx-*.dump 2>/dev/null | head -1 || true)
+    [ -n "$LATEST" ] && cat > "$marker" <<EOF
+{"file": "$LATEST", "target": "$NEW_SHA", "taken_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+EOF
+  fi
+}
+
 do_deps() {
   set_phase "deps"
   rm -f "$REEXEC_MARK"
@@ -376,6 +403,14 @@ do_rollback() {
   run_step "reset --hard $PREV_SHA" git reset --hard "$PREV_SHA" \
     || fail_phase "git reset failed"
   NEW_SHA=$(git rev-parse HEAD)
+  # code rolled back — but alembic only moves forward. If the rollback
+  # crossed a migration, the newest pre-update dump is the way back.
+  local dump
+  dump=$(ls -1t data/backups/cadx-*.dump 2>/dev/null | head -1 || true)
+  if [ -n "$dump" ]; then
+    warn "if the rolled-back code predates applied migrations, restore the DB:"
+    warn "  scripts/restore_db.sh $dump   (or: cat $dump | docker compose exec -T postgres pg_restore -U cadx -d cadx --clean)"
+  fi
   do_deps
   do_restart
   U_STATE="done"; U_FINISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -419,6 +454,7 @@ else
   step_begin "resume"; step_done "continuing after updater self-update"
 fi
 
+do_backup
 do_deps
 do_restart
 do_verify

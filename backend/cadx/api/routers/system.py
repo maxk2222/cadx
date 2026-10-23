@@ -128,3 +128,23 @@ async def update_rollback(body: RollbackIn):
         raise HTTPException(400, "confirm required")
     await _call("POST", "/v1/update/rollback", body={"confirm": True})
     return UpdateStartOut()
+
+
+@router.get("/stack")
+async def stack_status() -> dict[str, Any]:
+    """Supervised-stack snapshot from the updater watchdog (compose states,
+    mesh-server supervision, recent heal actions). Returns a stub with
+    updater_ok=false when the daemon is down."""
+    try:
+        return await _call("GET", "/v1/stack/status", timeout_s=10.0)
+    except HTTPException as e:
+        if e.status_code == 503:
+            return {"updater_ok": False, "detail": _OFFLINE}
+        raise
+
+
+@router.post("/stack/restart/{service}")
+async def stack_restart(service: str):
+    """Manual heal — restarts a supervised service through the watchdog
+    (mesh-server respawn or `docker compose restart`)."""
+    return await _call("POST", f"/v1/stack/restart/{service}", timeout_s=200.0)

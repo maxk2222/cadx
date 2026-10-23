@@ -16,7 +16,7 @@ FRONTEND := frontend
         migrate build clean clean-all \
         mesh-sync mesh-server mesh-models mesh-test dev-mesh \
         start start-dev stop status restart restart-dev autosetup doctor \
-        open update update-check
+        open update update-check prune backup autostart
 
 ##@ Setup & run (one command)
 
@@ -59,6 +59,15 @@ update: ## full update: pull + reinstall + rebuild + restart (scripts/update.sh)
 
 update-check: ## report how far behind origin the checkout is
 	bash scripts/update.sh --check
+
+prune: ## conservative disk cleanup (ARGS="--dry-run --days 14 --aggressive")
+	bash scripts/prune.sh $(ARGS)
+
+backup: ## pg_dump into data/backups (ARGS="--keep 10 --required")
+	bash scripts/backup.sh $(ARGS)
+
+autostart: ## install login/boot autostart for the updater supervisor (ARGS="--uninstall")
+	bash scripts/install_autostart.sh $(ARGS)
 
 ##@ Development
 

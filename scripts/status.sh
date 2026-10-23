@@ -108,6 +108,44 @@ except Exception:
 PY
   fi
 
+  # watchdog / supervisor state — token-auth'd endpoint first, run/*.json
+  # fallback when the updater daemon itself is down
+  if [ -f run/watchdog.json ] || [ -f run/mesh-server.env ]; then
+    say "supervisor"
+    python3 - <<'PY' 2>/dev/null || true
+import json, os, urllib.request
+
+try:
+    tok = ""
+    if os.path.exists("run/updater.token"):
+        tok = open("run/updater.token").read().strip()
+    if tok:
+        req = urllib.request.Request(
+            "http://localhost:8766/v1/stack/status",
+            headers={"Authorization": f"Bearer {tok}"})
+        st = json.load(urllib.request.urlopen(req, timeout=4))
+        m = st.get("mesh") or {}
+        sup = "suppressed" if st.get("suppressed") else "active"
+        print(f"   watchdog: {sup} (update_state={st.get('update_state')})")
+        if m:
+            tag = "supervised" if m.get("supervised") else "NOT supervised"
+            health = "healthy" if m.get("healthy") else ("alive" if m.get("alive") else "down")
+            print(f"   mesh-server: {health}, {tag}, pid={m.get('pid')}")
+        for a in (st.get("watchdog") or {}).get("actions", [])[-5:]:
+            print(f"   action: {a.get('action')} — {a.get('detail')}")
+except Exception:
+    if os.path.exists("run/mesh-server.env"):
+        print("   mesh-server: supervised (watchdog unreachable)")
+    if os.path.exists("run/watchdog.json"):
+        try:
+            w = json.load(open("run/watchdog.json"))
+            for a in w.get("actions", [])[-5:]:
+                print(f"   action: {a.get('action')} — {a.get('detail')}")
+        except Exception:
+            pass
+PY
+  fi
+
   say "resources"
   info "data/: $(du -sm data 2>/dev/null | awk '{print $1}') MiB   disk free: $(disk_free_mb .) MiB"
 }

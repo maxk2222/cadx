@@ -22,6 +22,10 @@ done
 
 say "stopping cadx"
 
+# drop the supervision contract FIRST — the updater watchdog would otherwise
+# respawn the mesh-server between our env check and the actual SIGTERM
+rm -f run/mesh-server.env
+
 # native processes — pidfile_stop verifies the pid still belongs to the
 # expected service before signalling (PID-reuse guard)
 update_in_progress() {
