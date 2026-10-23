@@ -59,3 +59,6 @@
   inference sidecar: adapters, install scripts, env configuration, CLI.
 - [`AGENTS.md`](../AGENTS.md) — working rules for coding agents in this repo.
 - [`CONTRIBUTING.md`](../CONTRIBUTING.md) — development setup and conventions.
+- [`capture_screenshots.py`](capture_screenshots.py) — regenerate all
+  `screenshots/` PNGs/GIFs against a running stack (Playwright; `--list`
+  prints candidate demo ids, `all` captures + assembles + installs).

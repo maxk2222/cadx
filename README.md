@@ -115,7 +115,7 @@
 ## Showcase
 
 <p align="center">
-  <img src="docs/screenshots/wizard.gif" width="720" alt="CADX web GUI — guided new-part wizard">
+  <img src="docs/screenshots/walkthrough.gif" width="720" alt="CADX web GUI — walkthrough: projects, versions, editors, jobs and stats">
 </p>
 
 <table>

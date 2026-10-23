@@ -7,6 +7,8 @@ Settings. The UI is
 served by nginx at `:8080` in Docker mode or Vite at `:5173` in native
 development mode.
 
+![GUI tour — start page, projects, project, version, editors, jobs, chat, library and stats](screenshots/walkthrough.gif)
+
 The **Start page** (`/`) is a guided four-step wizard for creating a brand-new
 part: **Describe** the part (with clickable example prompts) → **Images**
 (upload references or generate a concept image — both optional) → **Mode**
