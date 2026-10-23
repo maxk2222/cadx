@@ -186,6 +186,24 @@ Each `topopt_run` reports:
   regions, crashed solver substituted by mask numbers), multiple bodies,
   or no solvable case. A high `sf_export` on an unverified run is
   numerical noise — reject it, do not chase it.
+- `load_path_ok` — the load-path certificate on the exported solid.
+  `false` means at least one load case cannot reach its fixtures through
+  the printed part — structurally disconnected even when `n_bodies` is 1
+  (smoothing can bridge voxel-level gaps into a single surface body that
+  carries nothing). A high `sf_export` on a `load_path_ok=false` run is
+  meaningless: reject it, or re-run with enlarged keep regions / a higher
+  volume fraction. `null` means the certificate was skipped — not a
+  verdict.
+- `features_measured` — bore groups measured on the shipped mesh
+  (id/axis/diameter/count). Compare them against the spec features: a
+  declared Ø8.5 group reading Ø6.9, a wrong axis, or fewer members than
+  declared is degraded — the auto re-cut should have prevented it; enlarge
+  the keep region around that feature and re-run.
+- `recut` — the deterministic finishing pass that re-cuts detected base
+  bores after extraction (applied/skipped/verify_misses). Entries in
+  `skipped` mean keep-restore left no material to bore into — enlarge the
+  matching keep region; `verify_misses` mean a cut produced no real
+  tunnel — same remedy.
 - `sf_gap` — `sf_mask − sf_export`. A large gap means the smoothed
   surface eats strength (or one solve modelled a different structure) —
   raise volfrac or min_member before trusting either number. A ratio
@@ -246,9 +264,10 @@ Each `topopt_run` reports:
    `done` with the best verified run; do not sweep volume fractions
    looking for an impossible value.
 7. `done(run_index)` with the best run — `run_index: -1` keeps the base.
-   Only decline when NO run is connected (n_bodies_export == 1), verified
-   (`verified` true), printable and feature-complete — an SF below
-   target also justifies -1, a comfortable SF does not.
+   Only decline when NO run is connected (n_bodies_export == 1 AND
+   `load_path_ok` not false), verified (`verified` true), printable and
+   feature-complete — an SF below target also justifies -1, a comfortable
+   SF does not.
 
 - Check the SECTION view for internal hotspots the surface view hides.
 - In region previews confirm the orange force arrows land where intended and

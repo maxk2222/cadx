@@ -96,6 +96,7 @@ def _run_summary(r: dict[str, Any], chosen: bool, reasoning: Any) -> dict[str, A
         "n_components": top.get("n_components"),
         "overhang_pct": (top.get("verification") or {}).get("overhang_pct"),
         "n_bodies_export": top.get("n_bodies_export"),
+        "load_path_ok": top.get("load_path_ok"),
         "verify_spec": (res.get("verify_spec") or {}).get("status"),
         "warnings": (top.get("warnings") or [])[:5],
         **refine_block,
@@ -125,6 +126,13 @@ def _best_run_index(session: ToolSession) -> int | None:
         # a canonical FAIL (e.g. the part overshoots the declared envelope)
         # must not win by safety factor either
         if (res.get("verify_spec") or {}).get("status") == "FAIL":
+            continue
+        # a broken load path means at least one case cannot reach its
+        # fixtures through the printed part — structurally disconnected
+        # even when n_bodies reads 1 (smoothing bridges voxel gaps). A
+        # high sf_export on a disconnected part is meaningless; None is
+        # "certificate skipped" and stays eligible.
+        if top.get("load_path_ok") is False:
             continue
         # a refine run whose applied features left no matching tunnel/dimple
         # (bore drilled into a void, wrong diameter) failed the task too —

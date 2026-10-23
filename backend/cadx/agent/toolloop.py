@@ -299,6 +299,36 @@ def _metrics_hint(res: dict[str, Any]) -> str:
     return "; ".join(found)
 
 
+def _optimize_run_row(r: dict[str, Any]) -> str:
+    """`runN sf=.. volfrac=.. [load_path=BROKEN]` row for the STATE digest —
+    the marker survives condensing so a broken-load-path run stays visibly
+    disqualified even when its safety factor reads best."""
+    res = r.get("res") or {}
+    top = res.get("topopt") or {}
+    fem = res.get("fem") or {}
+    sfs = [
+        c.get("safety_factor")
+        for c in fem.get("cases") or []
+        if c.get("safety_factor") is not None
+    ]
+    # the verified worst-case realization is the headline when the hardened
+    # export sweep produced one (sf_verified -> sf_export -> mask fallback
+    # chain; a solved 0.0 IS a verdict — None-check)
+    sf = top.get("sf_verified")
+    if sf is None:
+        sf = top.get("sf_export")
+    if sf is None:
+        sf = min(sfs) if sfs else None
+    row = f"run{r.get('index')}"
+    if sf is not None:
+        row += f" sf={float(sf):g}"
+    if (vf := top.get("volfrac_achieved")) is not None:
+        row += f" volfrac={float(vf):g}"
+    if top.get("load_path_ok") is False:
+        row += " load_path=BROKEN"
+    return row
+
+
 def _digest_state_lines(session: ToolSession, entries: list[dict[str, Any]]) -> list[str]:
     """Synthesized STATE footer for the digest — a bare per-call log reads as
     bookkeeping and doesn't tell the post-condense model what already exists
@@ -350,34 +380,9 @@ def _digest_state_lines(session: ToolSession, entries: list[dict[str, Any]]) -> 
         )
 
     if session.kind == "optimize" and session.struct_runs:
-        rows: list[str] = []
-        for r in session.struct_runs:
-            res = r.get("res") or {}
-            top = res.get("topopt") or {}
-            fem = res.get("fem") or {}
-            sfs = [
-                c.get("safety_factor")
-                for c in fem.get("cases") or []
-                if c.get("safety_factor") is not None
-            ]
-            # the verified worst-case realization is the headline when the
-            # hardened export sweep produced one (sf_verified -> sf_export
-            # -> mask fallback chain; a solved 0.0 IS a verdict — None-check)
-            sf = top.get("sf_verified")
-            if sf is None:
-                sf = top.get("sf_export")
-            if sf is None:
-                sf = min(sfs) if sfs else None
-            vf = top.get("volfrac_achieved")
-            row = f"run{r.get('index')}"
-            if sf is not None:
-                row += f" sf={float(sf):g}"
-            if vf is not None:
-                row += f" volfrac={float(vf):g}"
-            rows.append(row)
         lines.append(
             "STATE optimize runs so far: "
-            + "; ".join(rows)
+            + "; ".join(_optimize_run_row(r) for r in session.struct_runs)
             + " — pass the best index to done(run_index)"
         )
 

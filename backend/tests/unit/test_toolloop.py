@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from cadx.agent.executor_client import InProcessExecutor
-from cadx.agent.toolloop import run_session, tools_enabled
+from cadx.agent.toolloop import _optimize_run_row, run_session, tools_enabled
 from cadx.agent.toolspecs import ToolSession
 from cadx.agent.trace import MemoryTrace
 from cadx.agent.types import AgentCtx, InputAsset
@@ -20,6 +20,22 @@ from cadx.runtime_config import RuntimeSettings
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 BOX_CODE = (FIXTURES / "simple_box.py").read_text()
+
+
+def test_optimize_digest_marks_broken_load_path() -> None:
+    row = _optimize_run_row(
+        {
+            "index": 4,
+            "res": {
+                "topopt": {
+                    "sf_verified": 6.34,
+                    "volfrac_achieved": 0.495,
+                    "load_path_ok": False,
+                }
+            },
+        }
+    )
+    assert row == "run4 sf=6.34 volfrac=0.495 load_path=BROKEN"
 
 
 def _ctx(llm: FakeLLM, **settings_kw) -> AgentCtx:

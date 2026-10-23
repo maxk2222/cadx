@@ -149,6 +149,47 @@ def test_best_run_skips_verify_spec_fail() -> None:
     assert _best_run_index(s) == 1
 
 
+def test_best_run_skips_broken_load_path() -> None:
+    """load_path_ok=false means at least one case cannot reach its fixtures
+    through the printed part — structurally disconnected even when
+    n_bodies reads 1 (smoothing bridges voxel gaps). A stellar sf_export
+    on such a run describes the loaded island, not the part. None means
+    'certificate skipped' and must stay eligible."""
+    s = _session_with_runs()
+    s.struct_runs.append(
+        {
+            "index": 0,
+            "res": {
+                "topopt": {"sf_export": 6.34, "load_path_ok": False, "n_components": 1},
+                "fem": {"cases": [{"safety_factor": 6.34}]},
+            },
+            "params": {},
+        }
+    )
+    s.struct_runs.append(
+        {
+            "index": 1,
+            "res": {
+                "topopt": {"sf_export": 2.1, "load_path_ok": None, "n_components": 1},
+                "fem": {"cases": [{"safety_factor": 2.1}]},
+            },
+            "params": {},
+        }
+    )
+    assert _best_run_index(s) == 1
+    s.struct_runs.append(
+        {
+            "index": 2,
+            "res": {
+                "topopt": {"sf_export": 3.0, "load_path_ok": True, "n_components": 1},
+                "fem": {"cases": [{"safety_factor": 3.0}]},
+            },
+            "params": {},
+        }
+    )
+    assert _best_run_index(s) == 2
+
+
 def test_best_run_ranks_divergent_sf_by_pessimistic_bound() -> None:
     """sf_mask 0.05 / sf_export 1.37 means the load junction is one thin
     voxel wall the smoothing fattened — the part's honest bound is the
