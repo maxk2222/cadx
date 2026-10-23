@@ -283,7 +283,7 @@ def test_optimize_spec_enums_fall_back_to_defaults():
     )
     assert spec.solver == "oc"
     assert spec.case_objective == "weighted"
-    assert spec.filter == "cone"
+    assert spec.filter == "helmholtz+heaviside"
     assert spec.symmetry is None
     # None on a required enum also falls back rather than erroring
     assert OptimizeSpec(solver=None).solver == "oc"  # type: ignore[arg-type]

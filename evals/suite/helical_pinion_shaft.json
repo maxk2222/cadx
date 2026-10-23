@@ -4,7 +4,8 @@
  "difficulty": 2,
  "description": "Short steel shaft with an 18-tooth helical gear (module 2, 20 deg helix) on the top end — mesh-geometry gates plus a bending FEM check.",
  "settings": {
-  "gen_mode": "cad"
+  "gen_mode": "cad",
+  "min_wall_mm": 0.1
  },
  "stages": [
   {

@@ -9,7 +9,7 @@
       "id": "codegen",
       "type": "generate",
       "mode": "cad",
-      "timeout_s": 5400,
+      "timeout_s": 7800,
       "prompt": "Mounting bracket for a robot-arm joint (aluminium 6061), parametric — input for topology optimization.\n\nFrame: base plate on the XY plane (z = 0), centred in X and Y. mm.\n- Base plate 100 x 80 x 10.\n- 4 holes dia 8.5 along Z at (x=+/-42, y=+/-32) — mounting bolts.\n- Bearing boss dia 25 x 15 tall on the plate centre (top at z = 25) with a dia 12 through-bore along Z — bearing seat.\n- Vertical flange at the +X edge on the plate: 8 thick, 40 wide (y-centred), 30 tall (z = 10..40); two dia 6.5 holes along X at (y=+/-12, z=25).\n- One gusset rib 5 mm thick at y = 0 joining boss and flange.\nSymmetric in Y.",
       "gates": [
         { "type": "status", "expect": ["succeeded", "needs_review"] },

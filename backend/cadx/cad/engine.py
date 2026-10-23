@@ -2170,7 +2170,7 @@ def run_topopt_pipeline(  # noqa: C901
         rmin_mm=max(s.topopt_default_rmin_mm, min_member / 2),
         max_iter=opt.max_iterations or s.topopt_max_iterations,
         threshold=float(opt.density_threshold or 0.5),
-        filter=str(getattr(opt, "filter", "cone") or "cone"),
+        filter=str(getattr(opt, "filter", None) or "helmholtz+heaviside"),
         robust=bool(getattr(opt, "robust", False)),
         robust_delta_eta=float(getattr(opt, "robust_delta_eta", 0.25) or 0.25),
         robust_designs=str(getattr(opt, "robust_designs", "edi") or "edi"),

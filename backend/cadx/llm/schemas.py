@@ -366,9 +366,10 @@ class OptimizeSpec(BaseModel):
         "+z"  # build direction for the self-supporting filter (+x/-x/...)
     )
     filter: Literal["cone", "heaviside", "helmholtz", "helmholtz+heaviside"] = (
-        "cone"  # heaviside variants give crisp 0/1 fields (threshold-robust
-        # extraction); helmholtz is the PDE density filter (Lazarov &
-        # Sigmund) with consistent feature size at the domain boundary
+        "helmholtz+heaviside"  # PDE filter (Lazarov & Sigmund) + 0/1
+        # projection: crisp fields and consistent feature size right at the
+        # domain boundary (cone thins edge members) — threshold-robust
+        # extraction; "cone" remains the cheap fallback for debugging
     )
     robust: bool = (
         False  # robust formulation: worst-case over eroded/intermediate/dilated
@@ -524,7 +525,7 @@ class OptimizeSpec(BaseModel):
         defaults: dict[str, Any] = {
             "solver": "oc",
             "case_objective": "weighted",
-            "filter": "cone",
+            "filter": "helmholtz+heaviside",
             "symmetry": None,
             "warmstart": "uniform",
             "structure_mode": "simp",
