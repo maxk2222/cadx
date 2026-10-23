@@ -112,6 +112,31 @@ def detect_mem_mb() -> int:
     return max(512, int(value / (1024 * 1024)))
 
 
+def _cgroup_mem_current_bytes() -> int | None:
+    """Live cgroup usage in bytes — memory.current (v2) / usage_in_bytes
+    (v1); None when unreadable."""
+    for path in (
+        "/sys/fs/cgroup/memory.current",
+        "/sys/fs/cgroup/memory/memory.usage_in_bytes",
+    ):
+        try:
+            return int(Path(path).read_text().strip())
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def mem_headroom_mb() -> float | None:
+    """Free bytes under the cgroup limit in MB (limit - current), or None
+    when either side is unmeasurable (bare metal, no cgroup) — callers must
+    treat None as "unknown", never as "plenty"."""
+    limit = _cgroup_mem_bytes()
+    current = _cgroup_mem_current_bytes()
+    if limit is None or current is None:
+        return None
+    return (limit - current) / (1024 * 1024)
+
+
 def thread_budget(override: int = 0) -> int:
     """Threads one CPU-bound stage may use; ``override <= 0`` = auto."""
     if override > 0:

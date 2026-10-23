@@ -84,6 +84,28 @@ def test_repair_mesh_file_accepts_faithful_voxel_rebuild(tmp_path, monkeypatch):
     assert m.is_watertight and max(m.extents) <= 21.0
 
 
+def test_alpha_wrap_skipped_on_low_cgroup_headroom(monkeypatch):
+    """The alpha-wrap reskin allocates octree+dense mesh up front (observed:
+    36-face input -> 281k faces, executor OOM-killed mid-eval). Under low
+    cgroup headroom the ladder must skip to the bounded voxel rung instead
+    of letting the kernel decide."""
+    import cadx.cad.mesh_ops as mo
+    from cadx.cad import mesh_repair_pml, resources
+
+    calls: list[trimesh.Trimesh] = []
+    monkeypatch.setattr(mesh_repair_pml, "pm_available", lambda: True)
+    monkeypatch.setattr(
+        mesh_repair_pml, "alpha_wrap", lambda m: calls.append(m) or m
+    )
+    monkeypatch.setattr(resources, "mem_headroom_mb", lambda: 500.0)
+    assert mo._alpha_wrap_repair(trimesh.creation.box([10, 10, 10]), 12) is None
+    assert calls == []
+
+    monkeypatch.setattr(resources, "mem_headroom_mb", lambda: None)
+    assert mo._alpha_wrap_repair(trimesh.creation.box([10, 10, 10]), 12) is not None
+    assert len(calls) == 1  # unknown headroom -> wrap allowed
+
+
 def test_export_from_brep_repairs_shipped_meshes(tmp_path, monkeypatch):
     """FINALIZE/reexport goes through export_from_brep — the shipped STL must
     be repaired too, not just the iteration render STL (api_v8 l_bracket

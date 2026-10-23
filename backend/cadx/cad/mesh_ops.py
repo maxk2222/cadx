@@ -754,6 +754,10 @@ _MAX_PRIMITIVE_MM = 2000.0
 # 350^3 cells ≈ 43 MB bool + marching-cubes float scan; beyond that the
 # repair costs more memory than it saves
 _VOXEL_REPAIR_MAX_CELLS = 350.0
+# alpha-wrap reskin needs octree+dense-mesh memory up front; below this
+# cgroup headroom the repair ladder skips straight to the bounded voxel rung
+# — the executor pool runs siblings that already hold gigabytes
+_ALPHA_WRAP_MIN_HEADROOM_MB = 3_000.0
 # trimesh's default "subdivide" voxelization refines the input until every
 # edge < pitch — long/thin faces (boolean seams, generative slivers) explode
 # the count (observed: 33M faces → 1.5 GB edge array → MemoryError). Above
@@ -1906,6 +1910,7 @@ def _alpha_wrap_repair(m: trimesh.Trimesh, faces_in: int) -> trimesh.Trimesh | N
     input face count.
     """
     try:
+        from cadx.cad import resources
         from cadx.cad.mesh_repair_pml import (
             ALPHA_WRAP_DEFAULT_DIV,
             alpha_wrap,
@@ -1915,6 +1920,21 @@ def _alpha_wrap_repair(m: trimesh.Trimesh, faces_in: int) -> trimesh.Trimesh | N
         if not pm_available():
             return None
         if ALPHA_WRAP_DEFAULT_DIV > _VOXEL_REPAIR_MAX_CELLS:
+            return None
+        # alpha-wrap builds an octree at ~bbox/div granularity and reskins to
+        # ~10^5 faces regardless of input size — on a congested container
+        # (sibling FEM/optimize workers share the cgroup) that allocation is
+        # what tips the OOM-kill (observed: executor killed mid-eval twice).
+        # The voxel rung below is strictly bounded, so skip the wrap when
+        # cgroup headroom is measurably low; when it is unmeasurable (None)
+        # the wrap runs as before.
+        headroom = resources.mem_headroom_mb()
+        if headroom is not None and headroom < _ALPHA_WRAP_MIN_HEADROOM_MB:
+            log.warning(
+                "mesh.repair_alpha_wrap_skipped",
+                headroom_mb=round(headroom),
+                faces_in=faces_in,
+            )
             return None
         wrapped = alpha_wrap(m)
         # sparse/complex input wraps per component — keep the dominant
