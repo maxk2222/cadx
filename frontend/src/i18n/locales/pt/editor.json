@@ -322,7 +322,7 @@
   "se_lk_bearing": "mancal",
   "se_lk_bearing_h": "carga de mancal numa face cilíndrica",
   "se_lk_moment": "momento",
-  "se_lk_moment_h": "torque / momento fletor em N·mm",
+  "se_lk_moment_h": "torque / momento fletor em N·m — regra da mão direita sobre o vetor",
   "se_lk_preload": "pré-carga",
   "se_lk_preload_h": "pré-carga de parafuso prendendo a região",
   "se_lk_remote": "remota",
@@ -426,5 +426,13 @@
   "se_inner_dia_h": "0 = sólido — defina para anel/anelar",
   "se_lk_normal": "força normal",
   "se_lk_normal_h": "força total ortogonal à superfície da região (+ empurra, − puxa)",
-  "se_normal_note": "ortogonal à superfície da região — + empurra para dentro, − puxa para fora"
+  "se_normal_note": "ortogonal à superfície da região — + empurra para dentro, − puxa para fora",
+  "se_check_moment": "{{v}} N·m aplicado",
+  "se_check_moment_split": "{{d}} direto + {{i}} alavanca",
+  "se_check_applied": "{{m}} → {{f}} N + {{t}} N·m",
+  "se_mech_add": "+ componente",
+  "se_mech_add_h": "adicionar outro mecanismo de carga a esta região (ex.: força + torque num parafuso)",
+  "se_mech_remove": "remover componente",
+  "se_axis_moment_hint": "definir eixo de torque para ±{{ax}} — regra da mão direita",
+  "se_rhr_hint": "regra da mão direita: o vetor de momento é o eixo de rotação; + gira no sentido anti-horário ao longo do eixo"
 }

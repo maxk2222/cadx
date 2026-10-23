@@ -12,7 +12,7 @@ import {
   Undo2,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import * as THREE from "three";
@@ -258,6 +258,35 @@ function loadKind(l: LoadSpec): LoadKind {
   if (l.g_load?.some((v) => Math.abs(v) > 1e-9)) return "gravity";
   if ((l.pressure_mpa ?? 0) > 0 && !(l.force_n?.some((f) => Math.abs(f) > 1e-9))) return "pressure";
   return "force";
+}
+
+/** which fields make up each mechanism — used to detect "extra" mechanisms
+ *  merged onto a load (multi-mechanism loads: e.g. force + torque on a bolt). */
+const MECH_FIELDS: Record<LoadKind, (keyof LoadSpec)[]> = {
+  force: ["force_n"],
+  pressure: ["pressure_mpa"],
+  bearing: ["bearing_n", "bearing_dir"],
+  moment: ["moment_nm"],
+  normal: ["normal_force_n"],
+  preload: ["preload_n"],
+  remote: ["remote_point", "force_n"],
+  gravity: ["g_load"],
+};
+
+/** is mechanism `k`'s defining field set on this load? (remote is defined by
+ *  remote_point — force_n is shared with the plain force mechanism, so a
+ *  force-only load does NOT count as "remote set" and can still gain a
+ *  remote_point via the component picker) */
+function mechSet(l: LoadSpec, k: LoadKind): boolean {
+  const defining: (keyof LoadSpec)[] =
+    k === "remote" ? ["remote_point"] : k === "bearing" ? ["bearing_n"] : MECH_FIELDS[k];
+  return defining.some((f) => l[f] != null);
+}
+
+/** mechanisms whose fields `lk`'s rendered body already covers — the remote
+ *  body includes the force row, so "force" is not an extra under "remote". */
+function mechCovered(lk: LoadKind): LoadKind[] {
+  return lk === "remote" ? ["remote", "force"] : [lk];
 }
 
 function blankLoad(kind: LoadKind): Partial<LoadSpec> {
@@ -802,19 +831,17 @@ function LoadGizmo({
   box: THREE.Box3 | null;
   gsize: number;
 }) {
-  const kind = loadKind(l);
-  const pos = regionCenter3(
-    kind === "remote" ? { ...l.region } : l.region,
-    anchors,
-    box
-  );
+  const pos = regionCenter3(l.region, anchors, box);
   if (!pos) return null;
   const len = gsize;
-  if (kind === "moment" && l.moment_nm) {
+  const kids: ReactNode[] = [];
+  // multi-mechanism loads draw one gizmo per active mechanism — a force+torque
+  // bolt shows both the arrow and the ring, not just the primary kind
+  if (l.moment_nm?.some((v) => Math.abs(v) > 1e-9)) {
     const q = dirQuat(axisVecFromVec(l.moment_nm));
     const rad = len * 0.45;
-    return (
-      <group position={pos} quaternion={q}>
+    kids.push(
+      <group key="m" position={pos} quaternion={q}>
         <mesh rotation={[Math.PI / 2, 0, 0]}>
           <torusGeometry args={[rad, 0.5, 8, 40, Math.PI * 1.6]} />
           <meshBasicMaterial color={GIZMO_COLORS.moment} depthTest={false} transparent opacity={0.9} />
@@ -826,14 +853,14 @@ function LoadGizmo({
       </group>
     );
   }
-  if (kind === "preload") {
+  if ((l.preload_n ?? 0) > 0) {
     const avec = axisVec(
       l.region.kind && ANCHOR_KINDS.has(l.region.kind)
         ? anchors?.find((x) => x.index === (l.region.hole_index ?? 1))?.axis
         : l.region.axis
     );
-    return (
-      <group>
+    kids.push(
+      <group key="p">
         <Arrow
           pos={[pos[0] - avec[0] * len, pos[1] - avec[1] * len, pos[2] - avec[2] * len]}
           dir={avec}
@@ -849,16 +876,26 @@ function LoadGizmo({
       </group>
     );
   }
-  if (kind === "gravity" && l.g_load) {
-    return <Arrow pos={pos} dir={l.g_load as [number, number, number]} len={len} color={GIZMO_COLORS.force} />;
+  if (l.g_load?.some((v) => Math.abs(v) > 1e-9)) {
+    kids.push(
+      <Arrow
+        key="g"
+        pos={pos}
+        dir={l.g_load as [number, number, number]}
+        len={len}
+        color={GIZMO_COLORS.force}
+      />
+    );
   }
   const dir =
-    kind === "bearing"
+    (l.bearing_n ?? 0) > 0
       ? (l.bearing_dir as [number, number, number]) || (l.force_n as [number, number, number])
       : (l.force_n as [number, number, number]);
-  const at = kind === "remote" && l.remote_point ? (l.remote_point as [number, number, number]) : pos;
-  if (!dir?.length) return null;
-  return <Arrow pos={at} dir={dir} len={len} color={GIZMO_COLORS.force} />;
+  const at =
+    l.remote_point?.length === 3 ? (l.remote_point as [number, number, number]) : pos;
+  if (dir?.some((v) => Math.abs(v) > 1e-9))
+    kids.push(<Arrow key="f" pos={at} dir={dir} len={len} color={GIZMO_COLORS.force} />);
+  return kids.length ? <group>{kids}</group> : null;
 }
 
 /** moment vector → its rotation axis as a dir (for the torus orientation) */
@@ -2218,94 +2255,240 @@ export default function StructuralEditor({
                             </option>
                           ))}
                         </select>
-                        {(lk === "force" || lk === "remote") &&
-                          vecRow(force, ["fx", "fy", "fz"], "N", 5, (v) => setLoad({ force_n: v }))}
-                        {lk === "pressure" && (
-                          <div className="flex items-center gap-1.5">
-                            <NumInput
-                              value={l.pressure_mpa ?? 0}
-                              step={0.5}
-                              className="w-24"
-                              onChange={(n) => setLoad({ pressure_mpa: n })}
-                            />
-                            <span className="text-[10px] text-faint">
-                              {t("se_pressure_note")}
-                            </span>
-                          </div>
-                        )}
-                        {lk === "bearing" && (
-                          <>
-                            <div className="flex items-center gap-1.5">
-                              <NumInput
-                                value={l.bearing_n ?? 0}
-                                step={25}
-                                className="w-24"
-                                onChange={(n) => setLoad({ bearing_n: n })}
-                              />
-                              <span className="text-[10px] text-faint">
-                                {t("se_bearing_note")}
-                              </span>
+                        {/* per-mechanism field block — reused for primary and
+                            extra mechanisms (multi-mechanism loads) */}
+                        {(() => {
+                          const axisPick = (
+                            v: number[],
+                            set: (nv: number[]) => void,
+                            momentary = false
+                          ) => (
+                            <div className="flex items-center gap-0.5">
+                              {(["x", "y", "z"] as const).map((ax, ai) => (
+                                <button
+                                  key={ax}
+                                  type="button"
+                                  className="rounded border border-edge px-1 text-[9px] uppercase text-faint hover:border-edge2 hover:text-fg"
+                                  title={
+                                    momentary
+                                      ? t("se_axis_moment_hint", { ax })
+                                      : `±${ax}`
+                                  }
+                                  onClick={() => {
+                                    const mag =
+                                      Math.hypot(v[0] ?? 0, v[1] ?? 0, v[2] ?? 0) || 1;
+                                    const sgn = (v[ai] ?? 0) < 0 ? -1 : 1;
+                                    set([0, 0, 0].map((_, j) => (j === ai ? sgn * mag : 0)));
+                                  }}
+                                >
+                                  {ax}
+                                </button>
+                              ))}
+                              {momentary && (
+                                <span
+                                  className="ml-0.5 cursor-help text-[9px] text-faint"
+                                  title={t("se_rhr_hint")}
+                                >
+                                  ⓘ
+                                </span>
+                              )}
                             </div>
-                            {vecRow(
-                              l.bearing_dir ?? [0, 0, -1],
-                              ["dx", "dy", "dz"],
-                              "dir",
-                              0.1,
-                              (v) => setLoad({ bearing_dir: v })
-                            )}
-                          </>
-                        )}
-                        {lk === "moment" &&
-                          vecRow(
-                            l.moment_nm ?? [0, 0, 0],
-                            ["mx", "my", "mz"],
-                            "N·m",
-                            0.5,
-                            (v) => setLoad({ moment_nm: v })
-                          )}
-                        {lk === "normal" && (
-                          <div className="flex items-center gap-1.5">
-                            <NumInput
-                              value={l.normal_force_n ?? 0}
-                              step={25}
-                              className="w-24"
-                              onChange={(n) => setLoad({ normal_force_n: n })}
-                            />
-                            <span className="text-[10px] text-faint">
-                              {t("se_normal_note")}
-                            </span>
-                          </div>
-                        )}
-                        {lk === "preload" && (
-                          <div className="flex items-center gap-1.5">
-                            <NumInput
-                              value={l.preload_n ?? 0}
-                              step={50}
-                              className="w-24"
-                              onChange={(n) => setLoad({ preload_n: n })}
-                            />
-                            <span className="text-[10px] text-faint">
-                              {t("se_preload_note")}
-                            </span>
-                          </div>
-                        )}
-                        {lk === "remote" &&
-                          vecRow(
-                            l.remote_point ?? [0, 0, 0],
-                            ["px", "py", "pz"],
-                            "mm",
-                            5,
-                            (v) => setLoad({ remote_point: v })
-                          )}
-                        {lk === "gravity" &&
-                          vecRow(
-                            l.g_load ?? [0, 0, -1],
-                            ["gx", "gy", "gz"],
-                            "g",
-                            0.5,
-                            (v) => setLoad({ g_load: v })
-                          )}
-                        {(lk === "force" || lk === "bearing") && (
+                          );
+                          const mechFields = (k: LoadKind) => {
+                            switch (k) {
+                              case "force":
+                                return (
+                                  <>
+                                    {vecRow(force, ["fx", "fy", "fz"], "N", 5, (v) =>
+                                      setLoad({ force_n: v })
+                                    )}
+                                    {axisPick(force, (v) => setLoad({ force_n: v }))}
+                                  </>
+                                );
+                              case "pressure":
+                                return (
+                                  <div className="flex items-center gap-1.5">
+                                    <NumInput
+                                      value={l.pressure_mpa ?? 0}
+                                      step={0.5}
+                                      className="w-24"
+                                      onChange={(n) => setLoad({ pressure_mpa: n })}
+                                    />
+                                    <span className="text-[10px] text-faint">
+                                      {t("se_pressure_note")}
+                                    </span>
+                                  </div>
+                                );
+                              case "bearing":
+                                return (
+                                  <>
+                                    <div className="flex items-center gap-1.5">
+                                      <NumInput
+                                        value={l.bearing_n ?? 0}
+                                        step={25}
+                                        className="w-24"
+                                        onChange={(n) => setLoad({ bearing_n: n })}
+                                      />
+                                      <span className="text-[10px] text-faint">
+                                        {t("se_bearing_note")}
+                                      </span>
+                                    </div>
+                                    {vecRow(
+                                      l.bearing_dir ?? [0, 0, -1],
+                                      ["dx", "dy", "dz"],
+                                      "dir",
+                                      0.1,
+                                      (v) => setLoad({ bearing_dir: v })
+                                    )}
+                                  </>
+                                );
+                              case "moment":
+                                return (
+                                  <>
+                                    {vecRow(
+                                      l.moment_nm ?? [0, 0, 0],
+                                      ["mx", "my", "mz"],
+                                      "N·m",
+                                      0.5,
+                                      (v) => setLoad({ moment_nm: v })
+                                    )}
+                                    {axisPick(
+                                      l.moment_nm ?? [0, 0, 0],
+                                      (v) => setLoad({ moment_nm: v }),
+                                      true
+                                    )}
+                                  </>
+                                );
+                              case "normal":
+                                return (
+                                  <div className="flex items-center gap-1.5">
+                                    <NumInput
+                                      value={l.normal_force_n ?? 0}
+                                      step={25}
+                                      className="w-24"
+                                      onChange={(n) => setLoad({ normal_force_n: n })}
+                                    />
+                                    <span className="text-[10px] text-faint">
+                                      {t("se_normal_note")}
+                                    </span>
+                                  </div>
+                                );
+                              case "preload":
+                                return (
+                                  <div className="flex items-center gap-1.5">
+                                    <NumInput
+                                      value={l.preload_n ?? 0}
+                                      step={50}
+                                      className="w-24"
+                                      onChange={(n) => setLoad({ preload_n: n })}
+                                    />
+                                    <span className="text-[10px] text-faint">
+                                      {t("se_preload_note")}
+                                    </span>
+                                  </div>
+                                );
+                              case "remote":
+                                // remote levers force_n — as PRIMARY (k === lk)
+                                // it must show the force row; as an EXTRA under
+                                // a force-covered load the row is already there
+                                return (
+                                  <>
+                                    {(k === lk || !mechCovered(lk).includes("force")) &&
+                                      vecRow(force, ["fx", "fy", "fz"], "N", 5, (v) =>
+                                        setLoad({ force_n: v })
+                                      )}
+                                    {vecRow(
+                                      l.remote_point ?? [0, 0, 0],
+                                      ["px", "py", "pz"],
+                                      "mm",
+                                      5,
+                                      (v) => setLoad({ remote_point: v })
+                                    )}
+                                  </>
+                                );
+                              case "gravity":
+                                return vecRow(
+                                  l.g_load ?? [0, 0, -1],
+                                  ["gx", "gy", "gz"],
+                                  "g",
+                                  0.5,
+                                  (v) => setLoad({ g_load: v })
+                                );
+                            }
+                          };
+                          const covered = mechCovered(lk);
+                          const extras = LOAD_KINDS.filter(
+                            (k) => mechSet(l, k.id) && !covered.includes(k.id)
+                          );
+                          const clearMech = (k: LoadKind) => {
+                            // clear only the mechanism's own field — force_n is
+                            // shared (remote levers it) and never cleared here
+                            const patch: Partial<LoadSpec> = {};
+                            for (const f of MECH_FIELDS[k])
+                              if (f !== "force_n")
+                                (patch as Record<string, unknown>)[f] = undefined;
+                            setLoad(patch);
+                          };
+                          const addMech = (k: LoadKind) => {
+                            const d = blankLoad(k);
+                            const patch: Partial<LoadSpec> = {};
+                            for (const f of MECH_FIELDS[k])
+                              if (l[f] == null)
+                                (patch as Record<string, unknown>)[f] = d[f];
+                            setLoad(patch);
+                          };
+                          const addable = LOAD_KINDS.filter((k) => !mechSet(l, k.id));
+                          return (
+                            <>
+                              {mechFields(lk)}
+                              {extras.map((k) => (
+                                <div
+                                  key={k.id}
+                                  className="rounded border border-edge/60 p-1"
+                                >
+                                  <div className="mb-0.5 flex items-center justify-between">
+                                    <span className="text-[9px] uppercase tracking-wide text-faint">
+                                      + {t(`se_lk_${k.id}`)}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      className="px-0.5 text-[10px] leading-none text-faint hover:text-red-400"
+                                      title={t("se_mech_remove")}
+                                      onClick={() => clearMech(k.id)}
+                                    >
+                                      ×
+                                    </button>
+                                  </div>
+                                  {mechFields(k.id)}
+                                </div>
+                              ))}
+                              {addable.length > 0 && (
+                                <select
+                                  className={`${inputCls} w-full px-1 py-0.5 text-[10px] text-faint`}
+                                  value=""
+                                  title={t("se_mech_add_h")}
+                                  onChange={(e) => {
+                                    if (e.target.value)
+                                      addMech(e.target.value as LoadKind);
+                                    e.target.value = "";
+                                  }}
+                                >
+                                  <option value="">{t("se_mech_add")}</option>
+                                  {addable.map((k) => (
+                                    <option key={k.id} value={k.id}>
+                                      {t(`se_lk_${k.id}`)}
+                                    </option>
+                                  ))}
+                                </select>
+                              )}
+                            </>
+                          );
+                        })()}
+                        {(lk === "force" ||
+                          lk === "bearing" ||
+                          lk === "moment" ||
+                          l.moment_nm != null ||
+                          l.bearing_n != null) && (
                           <div className="flex items-center gap-1.5">
                             <span className="text-[10px] text-faint">{t("se_dir_cone")}</span>
                             <NumInput
@@ -2842,6 +3025,25 @@ export default function StructuralEditor({
                 {preview.cases.map((c, i) => (
                   <div key={i} className="mb-1 text-muted">
                     <b className="text-fg">{c.case}</b>: {t("se_check_nodes", { f: c.fixed_nodes, l: c.loaded_nodes })} {c.total_force_n.toFixed(1)} N
+                    {!!c.reactions?.moment_mag_nm &&
+                      ` · ${t("se_check_moment", { v: c.reactions.moment_mag_nm.toFixed(2) })}`}
+                    {!!c.reactions?.moment_mag_induced_nm &&
+                      ` (${t("se_check_moment_split", {
+                        d: (c.reactions.moment_mag_direct_nm ?? 0).toFixed(2),
+                        i: c.reactions.moment_mag_induced_nm.toFixed(2),
+                      })})`}
+                    {c.applied?.map((a, j) => (
+                      <div key={j} className="text-faint">
+                        ↳ {a.kind}
+                        {a.axis ? ` ${a.axis}` : ""}
+                        {a.hole_index != null ? ` #${a.hole_index}` : ""}:{" "}
+                        {t("se_check_applied", {
+                          m: a.mechanisms.join("+"),
+                          f: (a.force_mag_n ?? 0).toFixed(1),
+                          t: (a.couple_mag_nm ?? 0).toFixed(2),
+                        })}
+                      </div>
+                    ))}
                     {c.warnings.map((w, j) => (
                       <div key={j} className="text-amber-400">
                         ⚠ {w}

@@ -18,6 +18,8 @@ N·mm internally since node coords are mm).
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 
 from cadx.cad.fem.voxelize import VoxelDomain
@@ -36,28 +38,34 @@ def spread_force(F: np.ndarray, node_idx: np.ndarray, force_n: np.ndarray) -> No
 
 def spread_moment(
     domain: VoxelDomain, F: np.ndarray, node_idx: np.ndarray, moment_nm: np.ndarray
-) -> float:
-    """Apply a pure couple on the region — returns |M| actually applied (N·m).
+) -> np.ndarray:
+    """Apply a pure couple on the region — returns the ACHIEVED moment (N·m).
 
     Nodal forces t_i = omega x r_i with omega = J^-1 M, J the rigidity tensor
     sum(|r_i|² I - r_i r_i^T). Then sum(r_i x t_i) = J omega = M exactly and
     sum(t_i) = omega x sum(r_i) = 0 (r measured from the node centroid).
+
+    The returned vector is sum(r_i x t_i)/1e3 — what actually landed in F.
+    On degenerate node sets (single node, collinear nodes) the requested
+    couple has components outside J's range; those are silently dropped by
+    the regularised solve, so callers must compare achieved vs requested —
+    reporting |requested| here would hide a partially-applied load.
     """
     if not len(node_idx):
-        return 0.0
+        return np.zeros(3)
     M = np.asarray(moment_nm, dtype=float) * 1e3  # N·m -> N·mm
     if float(np.linalg.norm(M)) < 1e-9:
-        return 0.0
+        return np.zeros(3)
     P = domain.node_coords()[node_idx]
     r = P - P.mean(axis=0)
     J = np.einsum("ij,ij->", r, r) * np.eye(3) - r.T @ r
     try:
         omega = np.linalg.solve(J + 1e-9 * np.eye(3), M)
     except np.linalg.LinAlgError:
-        return 0.0
+        return np.zeros(3)
     t = np.cross(np.broadcast_to(omega, r.shape), r)
     F[3 * node_idx[:, None] + np.arange(3)[None, :]] += t
-    return float(np.linalg.norm(M)) / 1e3
+    return np.cross(r, t).sum(axis=0) / 1e3  # N·mm -> N·m
 
 
 def bearing_load(
@@ -194,3 +202,43 @@ def expand_cone(force_n: np.ndarray, cone_deg: float, samples: int = 4) -> list[
         fn * (np.cos(theta) * u + np.sin(theta) * (np.cos(phi) * t1 + np.sin(phi) * t2))
         for phi in np.linspace(0.0, 2 * np.pi, samples, endpoint=False)
     ]
+
+
+def rot_between(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+    """Rotation matrix taking unit vector `u` to unit vector `v` (Rodrigues).
+
+    Used to rotate every directional field of a load (force_n, moment_nm,
+    bearing_dir) by the SAME rotation a direction-cone sample applies to the
+    primary direction — combined force+couple loads tilt coherently.
+    """
+    u = np.asarray(u, dtype=float)
+    v = np.asarray(v, dtype=float)
+    u /= np.linalg.norm(u) + 1e-12
+    v /= np.linalg.norm(v) + 1e-12
+    k = np.cross(u, v)
+    s = float(np.linalg.norm(k))
+    c = float(np.dot(u, v))
+    if s < 1e-12:
+        if c > 0:
+            return np.eye(3)
+        # antiparallel: 180° about any axis perpendicular to u
+        axis = np.cross(u, [1.0, 0.0, 0.0])
+        if np.linalg.norm(axis) < 1e-6:
+            axis = np.cross(u, [0.0, 1.0, 0.0])
+        axis /= np.linalg.norm(axis)
+        return 2.0 * np.outer(axis, axis) - np.eye(3)
+    K = np.array([[0.0, -k[2], k[1]], [k[2], 0.0, -k[0]], [-k[1], k[0], 0.0]])
+    return np.eye(3) + K + K @ K * ((1.0 - c) / s**2)
+
+
+def primary_dir(load: Any) -> np.ndarray | None:
+    """Reference direction for cone expansion: the first non-zero directional
+    vector of the load — force_n, else moment_nm (pure torque axis), else
+    bearing_dir. None when the load carries only scalar/geometry directions."""
+    for attr in ("force_n", "moment_nm", "bearing_dir"):
+        v = getattr(load, attr, None)
+        if v and len(v) >= 3:
+            a = np.asarray(v[:3], dtype=float)
+            if np.linalg.norm(a) > 1e-9:
+                return a
+    return None

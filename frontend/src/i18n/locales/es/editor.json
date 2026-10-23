@@ -322,7 +322,7 @@
   "se_lk_bearing": "carga de apoyo",
   "se_lk_bearing_h": "carga de apoyo sobre cara cilíndrica",
   "se_lk_moment": "momento",
-  "se_lk_moment_h": "par / momento flector en N·mm",
+  "se_lk_moment_h": "par / momento flector en N·m — regla de la mano derecha sobre el vector",
   "se_lk_preload": "precarga",
   "se_lk_preload_h": "precarga de tornillo que aprieta la región",
   "se_lk_remote": "remota",
@@ -426,5 +426,13 @@
   "se_inner_dia_h": "0 = sólido — define para anillo",
   "se_lk_normal": "fuerza normal",
   "se_lk_normal_h": "fuerza total ortogonal a la superficie de la región (+ empuja, − tira)",
-  "se_normal_note": "ortogonal a la superficie — + empuja hacia dentro, − tira hacia fuera"
+  "se_normal_note": "ortogonal a la superficie — + empuja hacia dentro, − tira hacia fuera",
+  "se_check_moment": "{{v}} N·m aplicado",
+  "se_check_moment_split": "{{d}} directo + {{i}} palanca",
+  "se_check_applied": "{{m}} → {{f}} N + {{t}} N·m",
+  "se_mech_add": "+ componente",
+  "se_mech_add_h": "añadir otro mecanismo de carga a esta región (p. ej. fuerza + par en un tornillo)",
+  "se_mech_remove": "quitar componente",
+  "se_axis_moment_hint": "fijar eje de par a ±{{ax}} — regla de la mano derecha",
+  "se_rhr_hint": "regla de la mano derecha: el vector de momento es el eje de giro; + gira en sentido antihorario mirando a lo largo del eje"
 }

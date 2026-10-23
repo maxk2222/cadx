@@ -539,11 +539,170 @@ def test_spread_moment_and_body_force_direct() -> None:
     F = np.zeros(3 * dom.node_count)
     nodes = np.arange(dom.node_count)
     got = spread_moment(dom, F, nodes, np.array([0.0, 0.0, 1.0]))  # 1 N·m
-    assert got == pytest.approx(1.0)
+    # returns the ACHIEVED couple vector — should equal the request exactly
+    assert np.linalg.norm(got) == pytest.approx(1.0)
+    assert got[2] == pytest.approx(1.0, abs=1e-9)
     F2 = np.zeros(3 * dom.node_count)
     total = body_force(dom, F2, dom.solid.ravel(), np.array([0, 0, -1.0]), 1.24)
     mass_kg = 1.24 * 20.0**3 * 1e-6
     assert total == pytest.approx(mass_kg * 9.81, rel=0.05)
+
+
+def test_applied_report_records_moment() -> None:
+    """applied_out gets one record per resolved load with the MEASURED
+    resultant force and couple — achieved values, not requested ones."""
+    dom = voxelize(_box_mesh(), 3.0, 150_000)
+    case = LoadCase(
+        name="wrench",
+        fixed=[RegionSpec(kind="face", axis="-x")],
+        loads=[
+            LoadSpec(
+                region=RegionSpec(kind="face", axis="+x", margin_mm=2.0),
+                force_n=[0.0, 0.0, -80.0],
+                moment_nm=[1.5, 0.0, 0.0],
+            )
+        ],
+    )
+    applied: list[dict] = []
+    _f, _F, w = resolve_case_dofs(dom, case, applied_out=applied)
+    assert len(applied) == 1
+    rec = applied[0]
+    assert rec["kind"] == "face"
+    assert set(rec["mechanisms"]) == {"force_n", "moment_nm"}
+    assert rec["force_mag_n"] == pytest.approx(80.0, rel=0.02)
+    assert rec["couple_mag_nm"] == pytest.approx(1.5, rel=0.02)
+    # declared couple lands in the direct slot, induced stays ~0
+    assert rec["couple_direct_nm"][0] == pytest.approx(1.5, rel=0.02)
+    assert np.linalg.norm(rec["couple_induced_nm"]) < 0.05
+    assert not any("cannot carry" in x for x in w)
+
+
+def test_remote_point_without_force_warns() -> None:
+    """remote_point alone levers nothing — must warn, not silently no-op."""
+    dom = voxelize(_box_mesh(), 3.0, 150_000)
+    case = LoadCase(
+        name="leverless",
+        fixed=[RegionSpec(kind="face", axis="-x")],
+        loads=[
+            LoadSpec(
+                region=RegionSpec(kind="face", axis="+x"),
+                remote_point=[30.0, 0.0, 30.0],
+            )
+        ],
+    )
+    _f, F, w = resolve_case_dofs(dom, case)
+    assert not np.any(F)
+    assert any("remote_point" in x and "force_n" in x for x in w)
+
+
+def test_cone_without_direction_warns() -> None:
+    """direction_cone_deg on a scalar-only load (pressure/normal) is
+    meaningless — warn instead of silently ignoring it."""
+    dom = voxelize(_box_mesh(), 3.0, 150_000)
+    case = LoadCase(
+        name="coneless",
+        fixed=[RegionSpec(kind="face", axis="-x")],
+        loads=[
+            LoadSpec(
+                region=RegionSpec(kind="face", axis="+x"),
+                pressure_mpa=1.0,
+                direction_cone_deg=15.0,
+            )
+        ],
+    )
+    _f, _F, w = resolve_case_dofs(dom, case)
+    assert any("direction_cone_deg" in x for x in w)
+
+
+def test_case_reactions_split_direct_induced() -> None:
+    """case_reactions splits the applied moment into the declared couple
+    (moment_nm) and the remote-lever induced part (force_n + remote_point)."""
+    from cadx.cad.fem.regions import case_reactions
+
+    dom = voxelize(_box_mesh(), 3.0, 150_000)
+    case = LoadCase(
+        name="split",
+        fixed=[RegionSpec(kind="face", axis="-x")],
+        loads=[
+            LoadSpec(
+                region=RegionSpec(kind="face", axis="+x"),
+                force_n=[0.0, 0.0, -100.0],
+                moment_nm=[1.0, 0.0, 0.0],
+                remote_point=[30.0, 30.0, 6.0],
+            )
+        ],
+    )
+    applied: list[dict] = []
+    fixed3, F, _w = resolve_case_dofs(dom, case, applied_out=applied)
+    r = case_reactions(dom, fixed3, F, applied)
+    # declared 1 N·m couple is direct; the +30mm lever on -100 N adds ~3 N·m induced
+    assert r["moment_mag_direct_nm"] == pytest.approx(1.0, rel=0.1)
+    assert r["moment_mag_induced_nm"] > 1.0
+    # direct + induced ≤ total (the rest is force transport moment)
+    assert r["moment_mag_nm"] >= r["moment_mag_direct_nm"]
+
+
+def test_moment_on_hole_hits_bore_wall() -> None:
+    """moment_nm on a hole/anchor region must land on the bore WALL
+    (tangential traction), not the keep-ring — same redirect as bearing."""
+    dom = voxelize(_bored_mesh(), 1.5, 150_000)
+    anchor = {"x": 10.0, "y": 0.0, "dia": 5.0, "axis": "+z", "depth_mm": 12.0}
+    case = LoadCase(
+        name="shaft",
+        fixed=[RegionSpec(kind="face", axis="-x")],
+        loads=[
+            LoadSpec(
+                region=RegionSpec(kind="hole", hole_index=1),
+                moment_nm=[0.0, 0.0, 0.8],
+            )
+        ],
+    )
+    applied: list[dict] = []
+    _f, F, w = resolve_case_dofs(dom, case, anchors=[anchor], applied_out=applied)
+    assert np.any(F), "couple on the bore wall must produce nodal forces"
+    assert len(applied) == 1
+    # the couple resolves around +z as requested — wall traction transmits it
+    assert applied[0]["couple_mag_nm"] == pytest.approx(0.8, rel=0.25)
+    assert not any("cannot carry" in x for x in w)
+
+
+def test_cone_expand_rotates_all_vectors() -> None:
+    """_cone_expand_case rotates force_n, moment_nm and bearing_dir by the
+    SAME rotation — a combined wrench load stays physically coherent."""
+    from cadx.cad.engine import _cone_expand_case
+    from cadx.cad.fem.loads import rot_between
+
+    case = LoadCase(
+        name="wrench",
+        fixed=[RegionSpec(kind="face", axis="-x")],
+        loads=[
+            LoadSpec(
+                region=RegionSpec(kind="face", axis="+x"),
+                force_n=[0.0, 0.0, -100.0],
+                moment_nm=[0.0, 0.0, 2.0],
+                bearing_dir=[0.0, 0.0, -1.0],
+                direction_cone_deg=20.0,
+            )
+        ],
+    )
+    warns: list[str] = []
+    variants = _cone_expand_case(case, budget=10, warn=True, warn_list=warns)
+    assert len(variants) == 4  # default rim samples
+    f0 = np.array([0.0, 0.0, -100.0])
+    for vc in variants:
+        ld = vc.loads[0]
+        assert ld.direction_cone_deg is None
+        fv = np.asarray(ld.force_n)
+        mv = np.asarray(ld.moment_nm)
+        # force tilted ~20° off nominal, magnitude preserved
+        ang = math.degrees(math.acos(-fv[2] / np.linalg.norm(fv)))
+        assert ang == pytest.approx(20.0, abs=1.0)
+        assert np.linalg.norm(fv) == pytest.approx(100.0, rel=1e-6)
+        # moment axis rotated by the SAME rotation the force took
+        R = rot_between(f0 / np.linalg.norm(f0), fv / np.linalg.norm(fv))
+        assert np.allclose(mv, R @ np.array([0.0, 0.0, 2.0]), atol=1e-9)
+        bd = np.asarray(ld.bearing_dir)
+        assert np.allclose(bd, fv / np.linalg.norm(fv), atol=1e-9)
 
 
 # --------------------------------------------------------------------------- #

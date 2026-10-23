@@ -56,9 +56,12 @@ outside it. Fixed, loaded, and explicit `keep_regions` are held solid.
 
 The optimization minimizes compliance across the supplied load cases under a
 target volume fraction; per-case `weight` scales each case's objective
-contribution, and `LoadSpec.direction_cone_deg` expands a force into sampled
+contribution, and `LoadSpec.direction_cone_deg` expands a load into sampled
 cone directions for direction-robust layouts (capped by
-`fem_max_effective_cases`). The extracted boundary mesh is regularized for
+`fem_max_effective_cases`). Cone expansion tilts ALL directional fields of
+the load — `force_n`, `moment_nm` and `bearing_dir` — by the same rotation,
+so a combined wrench load (force + couple) stays physically coherent under
+the robustness envelope. The extracted boundary mesh is regularized for
 watertight export. FEM verification uses the corresponding voxel mask rather
 than the smoothed export mesh, so export smoothing does not change the
 reported structural result.
@@ -170,12 +173,19 @@ i.e. a near-surface patch of material.
 Load kinds (`LoadSpec` fields): `force_n` (distributed resultant),
 `pressure_mpa` (against the region normal), `bearing_n` + `bearing_dir`
 (cosine-distributed shaft load on a `bore`/`anchor` region — the physically
-correct bolt load), `moment_nm` (pure couple via rigidity tensor),
+correct bolt load), `moment_nm` (pure couple in N·m via rigidity tensor —
+right-hand rule about the vector; needs a region with real extent, and on
+`hole`/`anchor` regions it lands on the bore wall as tangential traction),
 `preload_n` (bolt pretension squeezing the two bore mouths),
-`force_n` + `remote_point` (same resultant plus the induced lever moment),
+`force_n` + `remote_point` (same resultant plus the induced lever moment —
+`remote_point` alone applies nothing and warns),
 `g_load` (body acceleration in g units over the region's mass). Support
 regions take `fix_mode`: `"all"` (encastre) or `"normal"` (pins only the
 axis DOF — roller/resting/symmetry; reported as `(nnodes,3)` DOF masks).
+Resolution reports per-load `applied` records (which mechanisms landed, with
+the *measured* resultant force and couple about the region centroid) and the
+case `reactions` split the applied moment into direct couples vs
+remote-lever induced moments.
 
 Three actions share the declared load cases:
 
@@ -385,7 +395,8 @@ equilibrium sanity.
   settings reference is in [configuration.md](configuration.md).
 
 The agent optimize session offers `list_anchors` (the measured anchor table),
-`check_load` (region resolution + resultant/moment without a solve),
+`check_load` (region resolution + resultant/moment split + per-load
+applied report, without a solve),
 `preview_regions`, `analyze_fem`, `topopt_run`, `infill_run` and `done`.
 
 ### Shell + graded infill (second structural strategy)

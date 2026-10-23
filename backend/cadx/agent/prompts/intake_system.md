@@ -91,7 +91,9 @@ Rules:
   (`diameter_mm` + `center` hint), `box` = cube at `center`, `all` = whole part.
   Load fields: `force_n` [N], `pressure_mpa` (face regions), `bearing_n` +
   `bearing_dir` (shaft load on a bore wall), `preload_n` (bolt pretension),
-  `moment_nm` (pure couple, N·m), `force_n` + `remote_point` (levered load),
+  `moment_nm` (pure couple in N·m — right-hand rule about the vector;
+  shaft torque goes on the `bore`/`hole` wall aligned with its axis),
+  `force_n` + `remote_point` (levered load — remote_point needs force_n),
   `g_load` (body accel in g — `[0,0,-1]` = own weight). Fixed regions accept
   `fix_mode`: `"all"` (default encastre) or `"normal"` (resting/roller).
   Use `bearing_n` on `bore` regions for ANY bolt/screw/pin attachment — a

@@ -288,5 +288,6 @@
   "dfm_sev_high": "wysoka",
   "dfm_sev_medium": "średnia",
   "dfm_sev_low": "niska",
-  "part_title": "Część"
+  "part_title": "Część",
+  "fem_reactions_moment": "moment przyłożony {{v}} N·m"
 }

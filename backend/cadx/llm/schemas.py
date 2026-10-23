@@ -284,11 +284,13 @@ class LoadSpec(BaseModel):
     - preload_n — bolt pretension: compressive axial pair on the two bore
       mouths of a hole/anchor region
     - remote_point [x,y,z] — force_n applied at that point instead of on the
-      region: adds the moment (p-centroid)xF to the region
+      region: adds the moment (p-centroid)xF to the region (needs force_n)
     - g_load [ax,ay,az] — body force in units of g on the region
       ([0,0,-1] = gravity; needs the region's material for mass)
     `direction_cone_deg` > 0 makes the optimizer evaluate the load over a cone
-    of directions around force_n (robustness envelope for TopOpt).
+    of directions around its primary direction (force_n, else moment_nm, else
+    bearing_dir); the sampled rotation tilts ALL directional vectors of the
+    load together so combined force+couple loads stay coherent.
     """
 
     region: RegionSpec = Field(default_factory=RegionSpec)

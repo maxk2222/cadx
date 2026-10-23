@@ -100,8 +100,10 @@ export default function FemPanel({
             <span className="text-muted">{c.name}:</span> {c.solver} ·{" "}
             {t("fem_compliance", { v: c.compliance_j.toPrecision(3) })}
             {c.residual != null && ` · ${t("fem_residual", { v: c.residual.toExponential(1) })}`}
-            {!!c.reactions?.length &&
-              ` · ${t("fem_reactions", { v: c.reactions.map((n) => n.toFixed(1)).join(", ") })}`}
+            {!!c.reactions?.resultant_n?.length &&
+              ` · ${t("fem_reactions", { v: c.reactions.resultant_n.map((n) => n.toFixed(1)).join(", ") })}`}
+            {!!c.reactions?.moment_mag_nm &&
+              ` · ${t("fem_reactions_moment", { v: c.reactions.moment_mag_nm.toFixed(2) })}`}
           </div>
         ))}
       </div>

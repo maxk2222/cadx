@@ -322,7 +322,7 @@
   "se_lk_bearing": "palier",
   "se_lk_bearing_h": "charge de palier sur une face cylindrique",
   "se_lk_moment": "moment",
-  "se_lk_moment_h": "couple / moment de flexion en N·mm",
+  "se_lk_moment_h": "couple / moment de flexion en N·m — règle de la main droite autour du vecteur",
   "se_lk_preload": "précharge",
   "se_lk_preload_h": "précharge de boulon serrant la zone",
   "se_lk_remote": "à distance",
@@ -426,5 +426,13 @@
   "se_inner_dia_h": "0 = plein — à définir pour un anneau",
   "se_lk_normal": "force normale",
   "se_lk_normal_h": "force totale orthogonale à la surface de la zone (+ pousse dedans, − tire)",
-  "se_normal_note": "orthogonale à la surface de la zone — + pousse dedans, − tire dehors"
+  "se_normal_note": "orthogonale à la surface de la zone — + pousse dedans, − tire dehors",
+  "se_check_moment": "{{v}} N·m appliqué",
+  "se_check_moment_split": "{{d}} direct + {{i}} levier",
+  "se_check_applied": "{{m}} → {{f}} N + {{t}} N·m",
+  "se_mech_add": "+ composant",
+  "se_mech_add_h": "ajouter un autre mécanisme de charge sur cette région (p. ex. force + couple sur une vis)",
+  "se_mech_remove": "retirer le composant",
+  "se_axis_moment_hint": "axe de couple sur ±{{ax}} — règle de la main droite",
+  "se_rhr_hint": "règle de la main droite : le vecteur moment est l'axe de rotation ; + tourne anti-horaire le long de l'axe"
 }

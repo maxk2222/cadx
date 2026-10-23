@@ -278,5 +278,6 @@
   "dfm_sev_high": "alta",
   "dfm_sev_medium": "media",
   "dfm_sev_low": "baja",
-  "part_title": "Pieza"
+  "part_title": "Pieza",
+  "fem_reactions_moment": "momento aplicado {{v}} N·m"
 }

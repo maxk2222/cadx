@@ -1322,6 +1322,41 @@ def _compact_history(history: list[dict[str, Any]], cap: int = 200) -> list[dict
     ]
 
 
+def _cone_expand_case(
+    c: Any, budget: int, warn: bool, warn_list: list[str]
+) -> list[Any]:
+    """Tilted copies of case `c`: for every load with direction_cone_deg,
+    each rim sample rotates ALL its directional fields (force_n, moment_nm,
+    bearing_dir) by the same rotation — a combined force+couple load
+    (e.g. a wrench) stays physically coherent. `budget` caps variants."""
+    from cadx.cad.fem.loads import expand_cone, primary_dir, rot_between
+
+    out: list[Any] = []
+    for li, ld in enumerate(c.loads):
+        ref = primary_dir(ld)
+        if (ld.direction_cone_deg or 0) <= 0 or ref is None:
+            continue
+        for fvar in expand_cone(ref, float(ld.direction_cone_deg)):
+            if len(out) >= budget:
+                if warn:
+                    warn_list.append("direction-cone expansion capped by max_cases")
+                return out
+            vc = c.model_copy(deep=True)
+            vc.name = f"{c.name}_cone{len(out) + 1}"
+            R = rot_between(ref, np.asarray(fvar, dtype=float))
+            for attr in ("force_n", "moment_nm", "bearing_dir"):
+                v = getattr(vc.loads[li], attr, None)
+                if v and len(v) == 3 and np.linalg.norm(v) > 1e-9:
+                    setattr(
+                        vc.loads[li],
+                        attr,
+                        [float(x) for x in R @ np.asarray(v, dtype=float)],
+                    )
+            vc.loads[li].direction_cone_deg = None
+            out.append(vc)
+    return out
+
+
 def _resolve_topopt_cases(
     domain: Any,
     cases: list[Any],
@@ -1347,7 +1382,6 @@ def _resolve_topopt_cases(
     expand into extra case variants capped at `max_cases`; load regions
     that carry only body forces or match the whole part are not pinned —
     they would freeze the design domain."""
-    from cadx.cad.fem.loads import expand_cone
     from cadx.cad.fem.regions import region_node_mask, resolve_case_dofs
 
     warn_list = warnings_out if warnings_out is not None else []
@@ -1375,29 +1409,9 @@ def _resolve_topopt_cases(
         r_weights.append(weight)
 
     for c in cases:
-        cone_idx = [
-            li
-            for li, ld in enumerate(c.loads)
-            if (ld.direction_cone_deg or 0) > 0 and ld.force_n and len(ld.force_n) == 3
-        ]
         _add(c, float(c.weight))
-        for li in cone_idx:
-            ld = c.loads[li]
-            variants = expand_cone(
-                np.asarray(ld.force_n, dtype=float), float(ld.direction_cone_deg or 0.0)
-            )
-            for vi, fvar in enumerate(variants):
-                if len(r_resolved) >= max_cases:
-                    if warn:
-                        warn_list.append(f"direction-cone expansion capped at {max_cases} cases")
-                    break
-                vc = c.model_copy(deep=True)
-                vc.name = f"{c.name}_cone{vi + 1}"
-                vc.loads[li].force_n = [float(v) for v in fvar]
-                if vc.loads[li].bearing_dir:
-                    vc.loads[li].bearing_dir = [float(v) for v in fvar]
-                vc.loads[li].direction_cone_deg = None
-                _add(vc, float(c.weight))
+        for vc in _cone_expand_case(c, max_cases - len(r_resolved), warn, warn_list):
+            _add(vc, float(c.weight))
         for load in c.loads:
             # don't pin body-load or whole-part regions — gravity acts on
             # whatever material survives and `all` re-matches the

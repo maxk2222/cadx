@@ -170,3 +170,47 @@ def test_render_regions_bearing_load(tmp_path: Path) -> None:
         assert png.exists() and png.stat().st_size > 0
     summary = resolve_case_summary(dom, case, anchors)
     assert summary["total_force_n"] > 0
+
+
+def test_render_regions_moment_ring(tmp_path: Path) -> None:
+    """A pure `moment_nm` load draws the ring marker (not an arrow) and the
+    summary exposes the applied moment split — moments must be VISIBLE."""
+    pytest.importorskip("pyvista")
+    from cadx.cad.fem.preview import _load_arrows, render_regions, resolve_case_summary
+
+    mesh = _bored_mesh()
+    dom = voxelize(mesh, 2.0, 150_000)
+    anchors = scan_mesh_anchors(mesh, step_mm=1.0)
+    idx = next(
+        i + 1 for i, a in enumerate(anchors) if a["axis"] == "+z" and a["kind"] == "hole"
+    )
+    case = LoadCase(
+        name="shaft_torque",
+        fixed=[RegionSpec(kind="face", axis="-x")],
+        loads=[
+            LoadSpec(
+                region=RegionSpec(kind="bore", hole_index=idx),
+                moment_nm=[0.0, 0.0, 1.2],
+            )
+        ],
+    )
+    centers3d = dom.element_centers().reshape((*dom.dims, 3))
+    arrows, f_strs, force_n = _load_arrows(dom, case, anchors, centers3d, 20.0)
+    assert arrows and len(arrows[0]) == 3  # (geometry, marker, color)
+    assert any("M=" in s for s in f_strs)
+    # the ring uses the moment colour, distinct from force arrows
+    assert arrows[0][2] == "mediumvioletred"
+    # a pure couple has ~zero net force — fallback reports the resolved
+    # resultant, which stays ~0
+    assert force_n < 1e-3
+
+    out = tmp_path / "regions_m"
+    names = render_regions(dom, [case], [], out, anchors=anchors, source_mesh=mesh)
+    for name in names:
+        png = out / name
+        assert png.exists() and png.stat().st_size > 0
+
+    summary = resolve_case_summary(dom, case, anchors)
+    rec = summary["applied"][0]
+    assert "moment_nm" in rec["mechanisms"]
+    assert summary["reactions"]["moment_mag_direct_nm"] == pytest.approx(1.2, rel=0.25)

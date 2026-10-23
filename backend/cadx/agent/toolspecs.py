@@ -587,12 +587,15 @@ _LOAD_SCHEMA = {
     "(total force orthogonal to the region surface — + pushes in, - pulls; the "
     "normal comes from the region axis or its exposed skin), bearing_n "
     "(cosine-distributed bolt/bearing force on a bore wall — needs a "
-    "hole/anchor/bore region), moment_nm (pure couple [mx,my,mz] in N·m), "
+    "hole/anchor/bore region), moment_nm (pure couple [mx,my,mz] in N·m — "
+    "right-hand rule: +mz twists counter-clockwise looking down +z; for shaft "
+    "torque use a bore/cylinder region and align the vector with its axis), "
     "preload_n (bolt pretension — axial squeeze on the two bore mouths), "
-    "remote_point [x,y,z] (apply force_n at that point — adds the induced "
-    "moment to the region), g_load [ax,ay,az] (body force in units of g — "
-    "gravity on the region's mass), direction_cone_deg (robust TopOpt: sample "
-    "the force over a cone of directions)",
+    "remote_point [x,y,z] (REQUIRES force_n — applies it at that mm point and "
+    "adds the induced lever moment to the region), g_load [ax,ay,az] (body "
+    "force in units of g — gravity on the region's mass), direction_cone_deg "
+    "(robust TopOpt: tilts ALL directional vectors of this load — force, "
+    "moment axis, bearing dir — coherently over a cone)",
     "properties": {
         "region": _REGION_SCHEMA,
         "force_n": {
@@ -608,7 +611,12 @@ _LOAD_SCHEMA = {
             "description": "total bearing force on a bore wall (N) — hole/anchor/bore region",
         },
         "bearing_dir": {**_VEC3, "description": "bearing direction (default: force_n)"},
-        "moment_nm": {**_VEC3, "description": "pure couple [mx,my,mz] in N·m"},
+        "moment_nm": {
+            **_VEC3,
+            "description": "pure couple [mx,my,mz] in N·m — right-hand rule "
+            "about the vector; needs a region with real extent (patch/bore "
+            "wall), a single node cannot carry a couple",
+        },
         "normal_force_n": {
             "type": "number",
             "description": "total force in N orthogonal to the region surface "
@@ -620,12 +628,14 @@ _LOAD_SCHEMA = {
         },
         "remote_point": {
             **_VEC3,
-            "description": "apply force_n at this point — adds lever moment",
+            "description": "lever point in mm — REQUIRES force_n; adds the "
+            "induced moment (p-centroid) x F on the region",
         },
         "g_load": {**_VEC3, "description": "body accel in g units, e.g. [0,0,-1]"},
         "direction_cone_deg": {
             "type": "number",
-            "description": "robust TopOpt: sample force directions within this cone (deg)",
+            "description": "robust TopOpt: tilts all directional vectors of "
+            "this load (force/moment/bearing) within this cone (deg)",
         },
     },
 }
@@ -667,9 +677,11 @@ STRUCT_TOOLS = [
     _fn(
         "check_load",
         "Sanity-check a load case WITHOUT solving: resolved node counts, "
-        "resultant force and applied moment about the support centroid, "
-        "warnings for empty regions or unstable supports. Call after writing "
-        "each case — cheaper than a full preview/fem run.",
+        "resultant force and applied moment about the support centroid "
+        "(split into direct couples vs remote-lever induced moments), a "
+        "per-load 'applied' report showing which mechanisms landed with what "
+        "magnitude, plus warnings for empty regions or unstable supports. "
+        "Call after writing each case — cheaper than a full preview/fem run.",
         {
             "load_cases": _LOAD_CASES_SCHEMA,
         },
@@ -2470,23 +2482,36 @@ class ToolSession:
     @staticmethod
     def _fem_compact(fem: dict[str, Any]) -> dict[str, Any]:
         """Compact FEM report for the model: per-case numbers + warnings."""
+        cases = []
+        for c in fem.get("cases") or []:
+            cc: dict[str, Any] = {
+                "name": c.get("name"),
+                "safety_factor": c.get("safety_factor"),
+                "max_vm_mpa": c.get("max_vm_mpa"),
+                "max_disp_mm": c.get("max_disp_mm"),
+                "converged": c.get("converged"),
+                "warnings": c.get("warnings") or [],
+            }
+            r = c.get("reactions")
+            if isinstance(r, dict):
+                # equilibrium report: resultant force + applied moment about
+                # the support centroid — lets the model verify that a couple
+                # it declared actually landed (and where)
+                cc["resultant_n"] = r.get("resultant_n")
+                cc["moment_nm"] = r.get("moment_nm")
+                cc["moment_mag_nm"] = r.get("moment_mag_nm")
+                if r.get("moment_mag_direct_nm") is not None:
+                    cc["moment_direct_nm"] = r.get("moment_direct_nm")
+                    cc["moment_induced_nm"] = r.get("moment_induced_nm")
+            elif r is not None:
+                cc["reactions_n"] = r  # legacy list shape
+            cases.append(cc)
         return {
             "material": (fem.get("material") or {}).get("name"),
             "grid": {k: fem.get("grid", {}).get(k) for k in ("pitch", "elements", "dofs")},
             "pitch_mm": (fem.get("grid") or {}).get("pitch"),
             "pitch_note": fem.get("pitch_note"),
-            "cases": [
-                {
-                    "name": c.get("name"),
-                    "safety_factor": c.get("safety_factor"),
-                    "max_vm_mpa": c.get("max_vm_mpa"),
-                    "max_disp_mm": c.get("max_disp_mm"),
-                    "converged": c.get("converged"),
-                    "reactions_n": c.get("reactions"),
-                    "warnings": c.get("warnings") or [],
-                }
-                for c in fem.get("cases") or []
-            ],
+            "cases": cases,
             "warnings": fem.get("warnings") or [],
             "note": fem.get("note"),
         }

@@ -111,14 +111,15 @@ def _load_arrows(
     anchors: list[dict] | None,
     centers3d: np.ndarray,
     arrow_len: float,
-) -> tuple[list[tuple[Any, Any]], list[str], float]:
+) -> tuple[list[tuple[Any, Any, str]], list[str], float]:
     """(arrows+markers, force legend strings, total N) — every load kind
     gets a direction arrow + centroid marker, not just point forces:
-    bearing/pressure/preload are just as easy to misplace."""
+    bearing/pressure/preload are just as easy to misplace. Pure couples
+    draw a ring around the moment axis instead of an arrow."""
     import pyvista as pv
 
     force_n = 0.0
-    arrows: list[tuple[Any, Any]] = []
+    arrows: list[tuple[Any, Any, str]] = []
     f_strs: list[str] = []
     for load in case.loads:
         lmask = region_cell_mask(domain, load.region, anchors)
@@ -126,6 +127,22 @@ def _load_arrows(
             # declared region missed the geometry — draw on the
             # deterministic fallback patch, not mid-air
             lmask = _region_fallback(domain, load.region, anchors)[0]
+        if load.moment_nm and len(load.moment_nm) == 3 and lmask.any():
+            m_vec = np.asarray(load.moment_nm, dtype=float)
+            m_mag = float(np.linalg.norm(m_vec))
+            if m_mag > 1e-9:
+                centroid = centers3d[lmask].mean(axis=0)
+                ring = pv.Disc(
+                    center=centroid,
+                    inner=0.6 * arrow_len,
+                    outer=0.72 * arrow_len,
+                    normal=m_vec,
+                    c_res=40,
+                )
+                f_strs.append(f"M=({m_vec[0]:.2g},{m_vec[1]:.2g},{m_vec[2]:.2g}) N·m")
+                arrows.append(
+                    (ring, pv.Sphere(radius=domain.pitch, center=centroid), "mediumvioletred")
+                )
         vec = _load_vec(domain, load, lmask)
         if vec is None:
             continue
@@ -142,6 +159,7 @@ def _load_arrows(
             (
                 pv.Arrow(start=centroid - unit * arrow_len, direction=unit, scale=arrow_len),
                 pv.Sphere(radius=domain.pitch, center=centroid),
+                "darkorange",
             )
         )
     if force_n == 0.0:
@@ -245,8 +263,8 @@ def render_regions(
                 # translucent sparse-voxel halo reintroduces the floating-
                 # debris look on thin shells
                 pl.add_mesh(skin, scalars=rgb, rgb=True, opacity=1.0, smooth_shading=True)
-                for arrow, marker in arrows:
-                    pl.add_mesh(arrow, color="darkorange", opacity=1.0)
+                for arrow, marker, acolor in arrows:
+                    pl.add_mesh(arrow, color=acolor, opacity=1.0)
                     pl.add_mesh(marker, color="orange", opacity=1.0)
 
             pl.subplot(0, 0)
@@ -283,7 +301,8 @@ def resolve_case_summary(
 ) -> dict[str, Any]:
     """Compact numbers for one case — region hit counts, resultant force and
     moment about the constraint centroid (sanity check for the caller)."""
-    fixed3, F, warnings = resolve_case_dofs(domain, case, anchors)
+    applied: list[dict[str, Any]] = []
+    fixed3, F, warnings = resolve_case_dofs(domain, case, anchors, applied_out=applied)
     forces = F.reshape(-1, 3)
     loaded = np.linalg.norm(forces, axis=1) > 0
     return {
@@ -291,7 +310,8 @@ def resolve_case_summary(
         "fixed_nodes": int(fixed3.any(axis=1).sum()),
         "loaded_nodes": int(loaded.sum()),
         "total_force_n": round(float(np.linalg.norm(forces[loaded].sum(axis=0))), 2),
-        "reactions": case_reactions(domain, fixed3, F),
+        "reactions": case_reactions(domain, fixed3, F, applied),
+        "applied": applied,
         "per_region": case_region_breakdown(domain, case, anchors),
         "warnings": warnings,
     }

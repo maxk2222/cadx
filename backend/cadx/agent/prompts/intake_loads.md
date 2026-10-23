@@ -31,7 +31,13 @@ Rules:
   `pressure_mpa` on face regions;
   `bearing_n` + `bearing_dir` for shaft/bolt loads on a bore WALL;
   `preload_n` for bolt pretension (along the bore axis); `moment_nm` [N·m]
-  pure couple; `remote_point` [mm] for a levered force; `g_load` in g.
+  pure couple — RIGHT-HAND RULE: the vector is the rotation axis, +mz twists
+  counter-clockwise looking down +z. For torque into a shaft/bolt bore use
+  the `bore`/`hole` region (it lands on the wall as tangential traction) and
+  align the vector with the bore axis. A couple needs a region with real
+  extent — never `points` or a single-node patch; `remote_point` [mm] levers
+  a force (force_n REQUIRED — it adds the induced moment (p-centroid)×F);
+  `g_load` in g.
 - Prefer `bearing_n` on `bore` regions for screw/pin attachments — rim
   point loads badly overstate stress.
 - Directions follow the spec's orientation_note (X=length, Y=width,

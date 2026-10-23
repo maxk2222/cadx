@@ -322,7 +322,7 @@
   "se_lk_bearing": "ベアリング",
   "se_lk_bearing_h": "円柱面へのベアリング荷重",
   "se_lk_moment": "モーメント",
-  "se_lk_moment_h": "トルク / 曲げモーメント（N·mm）",
+  "se_lk_moment_h": "トルク / 曲げモーメント（N·m）— ベクトルまわりの右ねじの法則",
   "se_lk_preload": "プリロード",
   "se_lk_preload_h": "領域を締め付けるボルトプリロード",
   "se_lk_remote": "リモート",
@@ -426,5 +426,13 @@
   "se_inner_dia_h": "0 = 中実 — 環状の場合に設定",
   "se_lk_normal": "法線力",
   "se_lk_normal_h": "領域表面に直交する合力（+ は押し込み、− は引き出し）",
-  "se_normal_note": "領域表面に直交 — + は押し込み、− は引き出し"
+  "se_normal_note": "領域表面に直交 — + は押し込み、− は引き出し",
+  "se_check_moment": "適用 {{v}} N·m",
+  "se_check_moment_split": "{{d}} 直接 + {{i}} てこ",
+  "se_check_applied": "{{m}} → {{f}} N + {{t}} N·m",
+  "se_mech_add": "+ コンポーネント",
+  "se_mech_add_h": "この領域に別の荷重機構を追加（例: ボルトに力 + トルク）",
+  "se_mech_remove": "コンポーネントを削除",
+  "se_axis_moment_hint": "トルク軸を ±{{ax}} に設定 — 右ねじの法則",
+  "se_rhr_hint": "右ねじの法則: モーメントベクトルが回転軸。+ は軸に沿って見て反時計回り"
 }

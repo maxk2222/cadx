@@ -322,7 +322,7 @@
   "se_lk_bearing": "łożyskowe",
   "se_lk_bearing_h": "obciążenie łożyskowe na ścianie walcowej",
   "se_lk_moment": "moment",
-  "se_lk_moment_h": "moment skręcający/zginający w N·mm",
+  "se_lk_moment_h": "moment skręcający/zginający w N·m — reguła prawej dłoni wokół wektora",
   "se_lk_preload": "naciąg wstępny",
   "se_lk_preload_h": "naciąg śruby zaciskający region",
   "se_lk_remote": "zdalne",
@@ -426,5 +426,13 @@
   "se_inner_dia_h": "0 = pełne — ustaw dla pierścienia",
   "se_lk_normal": "siła normalna",
   "se_lk_normal_h": "sumaryczna siła prostopadła do powierzchni regionu (+ wciska, − ciągnie)",
-  "se_normal_note": "prostopadle do powierzchni regionu — + wciska do środka, − ciągnie na zewnątrz"
+  "se_normal_note": "prostopadle do powierzchni regionu — + wciska do środka, − ciągnie na zewnątrz",
+  "se_check_moment": "przyłożono {{v}} N·m",
+  "se_check_moment_split": "{{d}} bezpośredni + {{i}} dźwignia",
+  "se_check_applied": "{{m}} → {{f}} N + {{t}} N·m",
+  "se_mech_add": "+ komponent",
+  "se_mech_add_h": "dodaj kolejny mechanizm obciążenia na tę powierzchnię (np. siła + moment na śrubie)",
+  "se_mech_remove": "usuń komponent",
+  "se_axis_moment_hint": "oś momentu ±{{ax}} — reguła prawej dłoni",
+  "se_rhr_hint": "reguła prawej dłoni: wektor momentu to oś obrotu; + obraca przeciwnie do wskazówek zegara wzdłuż osi"
 }

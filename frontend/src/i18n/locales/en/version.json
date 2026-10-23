@@ -278,5 +278,6 @@
   "dfm_sev_high": "high",
   "dfm_sev_medium": "medium",
   "dfm_sev_low": "low",
-  "part_title": "Part"
+  "part_title": "Part",
+  "fem_reactions_moment": "applied moment {{v}} N·m"
 }

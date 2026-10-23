@@ -143,10 +143,10 @@ Kinds:
 | force normal to a face | `normal_force_n` — N acting orthogonal to the region's surface, direction follows the surface normal | `{"region":{"kind":"surface","axis":"-z"},"normal_force_n":80}` |
 | bolt/bearing shaft load | `bearing_n` + `bearing_dir` on a `bore` region | `{"region":{"kind":"bore","hole_index":1},"bearing_n":200,"bearing_dir":[0,0,-1]}` |
 | bolt pretension | `preload_n` on a `bore` region | `{"region":{"kind":"bore","hole_index":1},"preload_n":500}` |
-| pure couple / torque | `moment_nm` on any region | `{"moment_nm":[0,0,2]}` |
-| remote point load | `force_n` + `remote_point` | motor hung 20 mm off a bracket |
+| pure couple / torque | `moment_nm` on any region with real extent (patch, bore wall) — right-hand rule, axis from `list_anchors` | `{"region":{"kind":"bore","hole_index":1},"moment_nm":[0,0,2]}` = 2 N·m shaft torque about +z |
+| remote point load | `force_n` + `remote_point` (both required) | motor hung 20 mm off a bracket |
 | own weight / accel | `g_load` on `all` | `{"region":{"kind":"all"},"g_load":[0,0,-1]}` |
-| direction-robust | `direction_cone_deg` | `{"force_n":[0,0,-100],"direction_cone_deg":15}` |
+| direction-robust | `direction_cone_deg` — tilts force AND moment axes together | `{"force_n":[0,0,-100],"direction_cone_deg":15}` |
 
 - Bearing loads distribute cosinusoidally on the bore wall — the physically
   correct bolt load, much better than force_n on the rim.

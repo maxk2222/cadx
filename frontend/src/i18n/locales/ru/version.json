@@ -288,5 +288,6 @@
   "dfm_sev_high": "высокая",
   "dfm_sev_medium": "средняя",
   "dfm_sev_low": "низкая",
-  "part_title": "Деталь"
+  "part_title": "Деталь",
+  "fem_reactions_moment": "приложенный момент {{v}} Н·м"
 }

@@ -322,7 +322,7 @@
   "se_lk_bearing": "bearing",
   "se_lk_bearing_h": "bearing load on a cylindrical face",
   "se_lk_moment": "moment",
-  "se_lk_moment_h": "torque / bending moment in N·mm",
+  "se_lk_moment_h": "torque / bending moment in N·m — right-hand rule about the vector",
   "se_lk_preload": "preload",
   "se_lk_preload_h": "bolt preload clamping the region",
   "se_lk_remote": "remote",
@@ -426,5 +426,13 @@
   "se_inner_dia_h": "0 = solid — set for an annulus/ring",
   "se_lk_normal": "normal force",
   "se_lk_normal_h": "total force orthogonal to the region surface (+ pushes in, − pulls)",
-  "se_normal_note": "orthogonal to the region surface — + pushes in, − pulls out"
+  "se_normal_note": "orthogonal to the region surface — + pushes in, − pulls out",
+  "se_check_moment": "{{v}} N·m applied",
+  "se_check_moment_split": "{{d}} direct + {{i}} levered",
+  "se_check_applied": "{{m}} → {{f}} N + {{t}} N·m",
+  "se_mech_add": "+ component",
+  "se_mech_add_h": "add another load mechanism to this region (e.g. force + torque on a bolt)",
+  "se_mech_remove": "remove component",
+  "se_axis_moment_hint": "set torque axis to ±{{ax}} — right-hand rule",
+  "se_rhr_hint": "right-hand rule: the moment vector is the rotation axis; + twists counter-clockwise looking along it"
 }

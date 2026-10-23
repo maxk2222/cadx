@@ -322,7 +322,7 @@
   "se_lk_bearing": "轴承",
   "se_lk_bearing_h": "作用在圆柱面上的轴承载荷",
   "se_lk_moment": "力矩",
-  "se_lk_moment_h": "扭矩/弯矩，单位 N·mm",
+  "se_lk_moment_h": "扭矩/弯矩，单位 N·m — 绕矢量右手定则",
   "se_lk_preload": "预紧",
   "se_lk_preload_h": "螺栓预紧夹紧该区域",
   "se_lk_remote": "远程",
@@ -426,5 +426,13 @@
   "se_inner_dia_h": "0 = 实心 — 环形/圆环时设置",
   "se_lk_normal": "法向力",
   "se_lk_normal_h": "垂直于区域表面的总力（+ 推入，− 拉出）",
-  "se_normal_note": "垂直于区域表面 — + 推入，− 拉出"
+  "se_normal_note": "垂直于区域表面 — + 推入，− 拉出",
+  "se_check_moment": "已施加 {{v}} N·m",
+  "se_check_moment_split": "{{d}} 直接 + {{i}} 杠杆",
+  "se_check_applied": "{{m}} → {{f}} N + {{t}} N·m",
+  "se_mech_add": "+ 组件",
+  "se_mech_add_h": "在此区域上添加另一载荷机制（如螺栓上的力 + 扭矩）",
+  "se_mech_remove": "移除组件",
+  "se_axis_moment_hint": "将扭矩轴设为 ±{{ax}} — 右手定则",
+  "se_rhr_hint": "右手定则：力矩矢量即旋转轴；+ 沿轴看为逆时针"
 }

@@ -606,6 +606,46 @@ export interface MeshPreviewResult {
   error: string | null;
 }
 
+/** Load-case equilibrium report — see cad/fem/regions.py::case_reactions.
+ *  moments are N·m about the constrained-node centroid; the direct/induced
+ *  split separates declared couples (moment_nm) from remote-lever moments
+ *  (force_n + remote_point). */
+export interface FemCaseReactions {
+  resultant_n?: number[];
+  resultant_mag_n?: number;
+  fixed_nodes?: number;
+  fixed_dofs?: number[];
+  /** total applied moment about the support centroid (N·m). */
+  moment_nm?: number[];
+  moment_mag_nm?: number;
+  /** pure-couple share (declared moment_nm), N·m. */
+  moment_direct_nm?: number[];
+  moment_mag_direct_nm?: number;
+  /** remote-lever share ((p-c)×F from force_n + remote_point), N·m. */
+  moment_induced_nm?: number[];
+  moment_mag_induced_nm?: number;
+}
+
+/** Per-load resolution record — what each load region actually received
+ *  (cad/fem/regions.py::resolve_case_dofs applied_out). */
+export interface FemAppliedLoad {
+  kind: string;
+  axis?: string;
+  hole_index?: number | null;
+  nodes: number;
+  cells: number;
+  centroid_mm: number[];
+  mechanisms: string[];
+  /** measured resultant force as applied (N). */
+  force_n?: number[];
+  force_mag_n?: number;
+  /** measured couple about the region centroid as applied (N·m). */
+  couple_nm?: number[];
+  couple_mag_nm?: number;
+  couple_direct_nm?: number[];
+  couple_induced_nm?: number[];
+}
+
 export interface FemPreviewResult {
   ok: boolean;
   pitch_mm: number | null;
@@ -616,8 +656,10 @@ export interface FemPreviewResult {
     fixed_nodes: number;
     loaded_nodes: number;
     total_force_n: number;
-    /** resolved applied moment about the support centroid (N·mm). */
-    applied_moment_nmm?: number[] | null;
+    /** equilibrium report incl. applied moment about the support centroid. */
+    reactions?: FemCaseReactions;
+    /** per-load resolution records — which mechanisms landed, with what. */
+    applied?: FemAppliedLoad[];
     warnings: string[];
   }[];
   /** measured feature anchors (same table as GET /anchors). */
@@ -642,8 +684,8 @@ export interface FemCaseResult {
   compliance_j: number;
   converged: boolean;
   solver: string;
-  /** resultant reaction force at the fixed supports (N) — should balance loads. */
-  reactions?: number[] | null;
+  /** equilibrium report — resultant/moment about the fixed supports. */
+  reactions?: FemCaseReactions | null;
   residual?: number | null;
   warnings: string[];
   vonmises_png?: string | null;

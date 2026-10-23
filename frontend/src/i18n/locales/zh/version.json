@@ -273,5 +273,6 @@
   "dfm_sev_high": "高",
   "dfm_sev_medium": "中",
   "dfm_sev_low": "低",
-  "part_title": "部件"
+  "part_title": "部件",
+  "fem_reactions_moment": "施加力矩 {{v}} N·m"
 }

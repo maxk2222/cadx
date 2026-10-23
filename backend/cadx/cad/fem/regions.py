@@ -850,6 +850,7 @@ def resolve_case_dofs(  # noqa: C901
     case: LoadCase,
     anchors: list[dict] | None = None,
     density_g_cm3: float = 1.24,
+    applied_out: list[dict[str, Any]] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, list[str]]:
     """Resolve a load case into (fixed_dof_mask (nnodes,3), F vector, warnings).
 
@@ -858,10 +859,16 @@ def resolve_case_dofs(  # noqa: C901
     bearing_n (cosine wall distribution), moment_nm (pure couple), preload_n
     (axial bore-mouth pair), normal_force_n (total force along the region's
     inward surface normal), remote_point (force + induced moment) and g_load
-    (body force over the region's mass). bearing_n/preload_n on a hole/anchor
-    region introduce the force on the bore WALL (`_bore_cells`), never on the
-    keep ring; a `kind="all"` fixed region is refused (it would rigid-lock
-    the whole part).
+    (body force over the region's mass). bearing_n/preload_n/moment_nm on a
+    hole/anchor region introduce the load on the bore WALL (`_bore_cells`),
+    never on the keep ring; a `kind="all"` fixed region is refused (it would
+    rigid-lock the whole part).
+
+    `applied_out`, when given a list, receives one record per load region
+    that matched nodes — {"kind","axis","hole_index","nodes","cells",
+    "centroid_mm","mechanisms","force_n","couple_nm","couple_direct_nm",
+    "couple_induced_nm"} — the measured resultant force and couple about the
+    region centroid as actually applied to F (achieved, not requested).
     """
     from cadx.cad.fem import loads as ld
 
@@ -909,10 +916,14 @@ def resolve_case_dofs(  # noqa: C901
     for load in case.loads:
         r = load.region
         m, cells, fb_ax = _nodes_cells(r)
-        if r.kind in ("hole", "anchor") and (load.bearing_n or load.preload_n):
+        if r.kind in ("hole", "anchor") and (
+            load.bearing_n or load.preload_n or load.moment_nm
+        ):
             # a bolt presses on the bore WALL, not on the clamp ring around
             # the hole — re-resolve through _bore_cells (itself falling back
-            # to the hole ring when no wall can be located)
+            # to the hole ring when no wall can be located). A couple on a
+            # hole/anchor is shaft/bolt torque and transmits the same way:
+            # as tangential traction on the wall.
             bore = _bore_cells(domain, r, anchors)
             if bore.any():
                 cells = bore
@@ -968,7 +979,43 @@ def resolve_case_dofs(  # noqa: C901
             )
         idx = np.flatnonzero(m)
 
+        rec: dict[str, Any] | None = None
+        F_before: np.ndarray | None = None
+        direct_nm = np.zeros(3)
+        induced_nm = np.zeros(3)
+        mechs: list[str] = []
+        if applied_out is not None:
+            F_before = F.copy()
+            rec = {
+                "kind": r.kind,
+                "axis": r.axis or "",
+                "hole_index": r.hole_index,
+                "nodes": len(idx),
+                "cells": int(cells.sum()),
+                "centroid_mm": [
+                    round(float(v), 2)
+                    for v in domain.node_coords()[idx].mean(axis=0)
+                ],
+                "mechanisms": mechs,
+            }
+
         applied = False
+        if load.remote_point and len(load.remote_point) >= 3 and not (
+            load.force_n and len(load.force_n) == 3
+        ):
+            warnings.append(
+                f"case '{case.name}': remote_point given without force_n — "
+                "a remote point only levers a force; add force_n"
+            )
+        if load.direction_cone_deg and not (
+            (load.force_n and len(load.force_n) == 3)
+            or (load.moment_nm and len(load.moment_nm) == 3)
+            or (load.bearing_dir and len(load.bearing_dir) == 3)
+        ):
+            warnings.append(
+                f"case '{case.name}': direction_cone_deg on a load with no "
+                "direction vector (force_n/moment_nm/bearing_dir) — ignored"
+            )
         if load.force_n and len(load.force_n) == 3:
             f = np.asarray(load.force_n, dtype=float)
             if load.remote_point and len(load.remote_point) >= 3:
@@ -978,17 +1025,21 @@ def resolve_case_dofs(  # noqa: C901
                 lever = np.asarray(load.remote_point[:3], dtype=float) - c
                 moment = np.cross(lever, f) / 1e3  # N·mm -> N·m
                 ld.spread_force(F, idx, f)
-                got = ld.spread_moment(domain, F, idx, moment)
+                got_v = ld.spread_moment(domain, F, idx, moment)
+                induced_nm += got_v
                 want = float(np.linalg.norm(moment))
-                if want >= 1e-3 and got <= 0:
+                got = float(np.linalg.norm(got_v))
+                if want >= 1e-3 and got < 0.9 * want:
                     warnings.append(
                         f"case '{case.name}': remote force at {load.remote_point[:3]} "
-                        f"should add {want:.2f} N·m but the region cannot carry a "
-                        "couple (too small or degenerate) — only the force applied"
+                        f"should add {want:.2f} N·m but only {got:.2f} N·m applied "
+                        "— the region cannot carry a couple (too small or "
+                        "degenerate); widen the region or use a bore wall"
                     )
             else:
                 ld.spread_force(F, idx, f)
             applied = True
+            mechs.append("force_n")
         if load.bearing_n is not None and load.bearing_n > 0:
             g = _anchor_geometry(domain, r, anchors)
             if g is None:
@@ -1014,14 +1065,24 @@ def resolve_case_dofs(  # noqa: C901
                         "real bore on the current part"
                     )
                 applied = applied or got > 0
+                if got > 0:
+                    mechs.append("bearing_n")
         if load.moment_nm and len(load.moment_nm) == 3:
-            got = ld.spread_moment(domain, F, idx, np.asarray(load.moment_nm, dtype=float))
-            if got <= 0:
+            want_v = np.asarray(load.moment_nm, dtype=float)
+            got_v = ld.spread_moment(domain, F, idx, want_v)
+            direct_nm += got_v
+            want = float(np.linalg.norm(want_v))
+            got = float(np.linalg.norm(got_v))
+            if want >= 1e-3 and got < 0.9 * want:
                 warnings.append(
-                    f"case '{case.name}': moment on {r.kind} produced no torque "
-                    "(region too small or degenerate)"
+                    f"case '{case.name}': moment on {r.kind} applied "
+                    f"{got:.2f} of {want:.2f} N·m — region cannot carry the "
+                    "couple on all axes (too small or degenerate); widen the "
+                    "region or target a bore/cylinder wall"
                 )
             applied = applied or got > 0
+            if got > 0:
+                mechs.append("moment_nm")
         if load.preload_n is not None and load.preload_n > 0:
             g = _anchor_geometry(domain, r, anchors)
             if g is None:
@@ -1036,6 +1097,8 @@ def resolve_case_dofs(  # noqa: C901
                         "found no open bore mouths (blind hole or solid region?)"
                     )
                 applied = applied or got > 0
+                if got > 0:
+                    mechs.append("preload_n")
         if load.normal_force_n is not None and abs(float(load.normal_force_n)) > 0:
             n = region_face_normal(r)
             if n is None:
@@ -1062,6 +1125,7 @@ def resolve_case_dofs(  # noqa: C901
                 else:
                     ld.spread_force(F, idx, f_vec)
                 applied = True
+                mechs.append("normal_force_n")
         if load.g_load and len(load.g_load) == 3:
             rho = density_g_cm3
             if r.material:
@@ -1074,6 +1138,8 @@ def resolve_case_dofs(  # noqa: C901
             else:
                 warnings.append(f"case '{case.name}': gravity on {r.kind} = {got:.1f} N")
             applied = applied or got > 0
+            if got > 0:
+                mechs.append("g_load")
         if load.pressure_mpa is not None:
             n = region_face_normal(r)
             dirs: list[tuple[str, np.ndarray]] = []
@@ -1129,8 +1195,26 @@ def resolve_case_dofs(  # noqa: C901
                         f"{float(load.pressure_mpa) * total_area:.0f} N"
                     )
                     applied = True
+                    mechs.append("pressure_mpa")
         if not applied:
             warnings.append(f"case '{case.name}': load on {r.kind} resolved to zero force")
+        if rec is not None and F_before is not None:
+            dF = (F - F_before).reshape(-1, 3)
+            sel = np.abs(dF).sum(axis=1) > 0
+            res = dF[sel].sum(axis=0) if sel.any() else np.zeros(3)
+            c = np.asarray(rec["centroid_mm"], dtype=float)
+            couple = (
+                np.cross(domain.node_coords()[sel] - c, dF[sel]).sum(axis=0) / 1e3
+                if sel.any()
+                else np.zeros(3)
+            )
+            rec["force_n"] = [round(float(v), 2) for v in res]
+            rec["force_mag_n"] = round(float(np.linalg.norm(res)), 2)
+            rec["couple_nm"] = [round(float(v), 3) for v in couple]
+            rec["couple_mag_nm"] = round(float(np.linalg.norm(couple)), 3)
+            rec["couple_direct_nm"] = [round(float(v), 3) for v in direct_nm]
+            rec["couple_induced_nm"] = [round(float(v), 3) for v in induced_nm]
+            applied_out.append(rec)
 
     if not fixed3.any():
         warnings.append(f"case '{case.name}': no fixed region — case is unsolvable")
@@ -1151,13 +1235,22 @@ def resolve_case(
 
 
 def case_reactions(
-    domain: VoxelDomain, fixed3: np.ndarray, F: np.ndarray
-) -> dict[str, list[float] | float]:
+    domain: VoxelDomain,
+    fixed3: np.ndarray,
+    F: np.ndarray,
+    applied: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Load-case sanity report: applied resultant + moment about the centroid
     of the constrained nodes, plus constrained-DOF counts. Equilibrium needs
-    reactions to balance the resultants."""
+    reactions to balance the resultants.
+
+    `applied` (the per-load records produced by `resolve_case_dofs`) splits
+    the moment into the parts the caller declared: pure couples
+    (`moment_direct_nm`) and remote-lever induced moments
+    (`moment_induced_nm`). The remaining share is the transport moment of
+    the resultant force acting at the load centroids."""
     res = F.reshape(-1, 3).sum(axis=0)
-    out: dict[str, list[float] | float] = {
+    out: dict[str, Any] = {
         "resultant_n": [round(float(v), 2) for v in res],
         "resultant_mag_n": round(float(np.linalg.norm(res)), 2),
         "fixed_nodes": int(fixed3.any(axis=1).sum()),
@@ -1174,6 +1267,16 @@ def case_reactions(
             M = np.cross(r, F.reshape(-1, 3)[sel]).sum(axis=0) / 1e3  # N·mm -> N·m
             out["moment_nm"] = [round(float(v), 3) for v in M]
             out["moment_mag_nm"] = round(float(np.linalg.norm(M)), 3)
+    if applied is not None:
+        direct = np.zeros(3)
+        induced = np.zeros(3)
+        for rec in applied:
+            direct += np.asarray(rec.get("couple_direct_nm") or [0, 0, 0], dtype=float)
+            induced += np.asarray(rec.get("couple_induced_nm") or [0, 0, 0], dtype=float)
+        out["moment_direct_nm"] = [round(float(v), 3) for v in direct]
+        out["moment_induced_nm"] = [round(float(v), 3) for v in induced]
+        out["moment_mag_direct_nm"] = round(float(np.linalg.norm(direct)), 3)
+        out["moment_mag_induced_nm"] = round(float(np.linalg.norm(induced)), 3)
     return out
 
 
@@ -1279,30 +1382,28 @@ def case_region_breakdown(
     """Per-region resolved cell counts for reporting — one entry per fixed
     region and per load region. Lets summaries show WHICH region resolved
     how much instead of only aggregate node counts."""
-    out: list[dict[str, Any]] = []
-    for r in case.fixed:
+    def _entry(role: str, r: RegionSpec) -> dict[str, Any]:
         cells = region_cell_mask(domain, r, anchors)
-        out.append(
-            {
-                "role": "fixed",
-                "kind": r.kind,
-                "axis": r.axis or "",
-                "hole_index": r.hole_index,
-                "cells": int(cells.sum()),
-            }
-        )
-    for ld in case.loads:
-        r = ld.region
-        cells = region_cell_mask(domain, r, anchors)
-        out.append(
-            {
-                "role": "load",
-                "kind": r.kind,
-                "axis": r.axis or "",
-                "hole_index": r.hole_index,
-                "cells": int(cells.sum()),
-            }
-        )
+        nodes = _nodes_of_cells(domain, cells.ravel())
+        idx = np.flatnonzero(nodes)
+        return {
+            "role": role,
+            "kind": r.kind,
+            "axis": r.axis or "",
+            "hole_index": r.hole_index,
+            "cells": int(cells.sum()),
+            "nodes": len(idx),
+            "centroid_mm": (
+                [round(float(v), 2) for v in domain.node_coords()[idx].mean(axis=0)]
+                if len(idx)
+                else None
+            ),
+        }
+
+    out: list[dict[str, Any]] = [
+        *(_entry("fixed", r) for r in case.fixed),
+        *(_entry("load", ld.region) for ld in case.loads),
+    ]
     return out
 
 

@@ -273,5 +273,6 @@
   "dfm_sev_high": "高",
   "dfm_sev_medium": "中",
   "dfm_sev_low": "低",
-  "part_title": "パーツ"
+  "part_title": "パーツ",
+  "fem_reactions_moment": "適用モーメント {{v}} N·m"
 }

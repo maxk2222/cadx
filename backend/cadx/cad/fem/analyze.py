@@ -573,11 +573,12 @@ def _solve_cases(  # noqa: C901
             break
         res = FemCaseResult(name=case.name or f"case{i + 1}")
         results.append(res)
+        applied: list[dict] = []
         fixed3, F, warnings = resolve_case_dofs(
-            domain, case, anchors, density_g_cm3=mat.density_g_cm3
+            domain, case, anchors, density_g_cm3=mat.density_g_cm3, applied_out=applied
         )
         res.warnings += warnings
-        res.reactions = case_reactions(domain, fixed3, F)
+        res.reactions = case_reactions(domain, fixed3, F, applied)
         if not fixed3.any() or not np.any(F):
             continue
         if asm is None:

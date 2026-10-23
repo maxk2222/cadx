@@ -322,7 +322,7 @@
   "se_lk_bearing": "Lagerlast",
   "se_lk_bearing_h": "Lagerlast auf einer Zylinderfläche",
   "se_lk_moment": "Moment",
-  "se_lk_moment_h": "Dreh-/Biegemoment in N·mm",
+  "se_lk_moment_h": "Dreh-/Biegemoment in N·m — Rechte-Hand-Regel um den Vektor",
   "se_lk_preload": "Vorspannung",
   "se_lk_preload_h": "Schraubenvorspannung, die die Region klemmt",
   "se_lk_remote": "Remote",
@@ -426,5 +426,13 @@
   "se_inner_dia_h": "0 = voll — für Ring/Annulus setzen",
   "se_lk_normal": "Normalkraft",
   "se_lk_normal_h": "Gesamtkraft orthogonal zur Regionsfläche (+ drückt hinein, − zieht)",
-  "se_normal_note": "orthogonal zur Regionsfläche — + drückt hinein, − zieht heraus"
+  "se_normal_note": "orthogonal zur Regionsfläche — + drückt hinein, − zieht heraus",
+  "se_check_moment": "{{v}} N·m angreifend",
+  "se_check_moment_split": "{{d}} direkt + {{i}} gehebelt",
+  "se_check_applied": "{{m}} → {{f}} N + {{t}} N·m",
+  "se_mech_add": "+ Komponente",
+  "se_mech_add_h": "weiteren Lastmechanismus auf diese Region legen (z. B. Kraft + Drehmoment an einer Schraube)",
+  "se_mech_remove": "Komponente entfernen",
+  "se_axis_moment_hint": "Drehachse auf ±{{ax}} setzen — Rechte-Hand-Regel",
+  "se_rhr_hint": "Rechte-Hand-Regel: der Momentenvektor ist die Drehachse; + dreht entgegen dem Uhrzeigersinn entlang der Achse"
 }
