@@ -72,6 +72,65 @@ async def _heartbeat_loop(ctx: dict[str, Any], role: str) -> None:
         await asyncio.sleep(HB_INTERVAL_S)
 
 
+async def _arq_live(redis: Any, key_id: str) -> bool:
+    """queued or running: `arq:job:` (survives the whole run) or a TTL'd
+    job_key with a live `arq:in-progress:`. result_key is NOT liveness —
+    see the result-key branch in _sweep_job."""
+    if redis is None:
+        return True  # can't prove it's missing — don't double-fire
+    try:
+        return bool(await redis.exists(f"arq:job:{key_id}", f"arq:in-progress:{key_id}"))
+    except Exception:
+        return True
+
+
+async def _arq_result_exists(redis: Any, key_id: str) -> bool:
+    if redis is None:
+        return False
+    with contextlib.suppress(Exception):
+        return bool(await redis.exists(f"arq:result:{key_id}"))
+    return False
+
+
+async def _fail_lost(db: Any, j: Any, why: str) -> None:
+    from cadx.db.models import JobStatus, Version, VersionStatus
+
+    j.status = JobStatus.failed
+    j.finished_at = datetime.now(UTC)
+    j.log = (j.log or "") + f"failed: {why}\n"
+    v = await db.get(Version, j.version_id)
+    if v is not None and v.status in (VersionStatus.queued, VersionStatus.running):
+        v.status = VersionStatus.failed
+        v.error = why
+
+
+async def _sweep_job(redis: Any, db: Any, j: Any) -> None:
+    """One stale `queued` row: skip live entries, honest-fail finished ones,
+    replay the payload envelope for truly lost ones."""
+    from cadx.api.deps import enqueue
+
+    payload = j.payload or {}
+    func, args = payload.get("func"), payload.get("args")
+    if not (func and isinstance(args, dict)):
+        await _fail_lost(db, j, "job lost from queue — predates payload capture")
+        return
+    if await _arq_live(redis, str(j.id)):
+        return  # entry still queued or running — nothing lost
+    if await _arq_result_exists(redis, str(j.id)):
+        # a result without a live entry means the task RAN and finished —
+        # its DB status write was lost (db outage mid-task). Re-enqueueing
+        # would run the whole job a second time; honest surface is failed.
+        await _fail_lost(db, j, "queue entry finished but status transition lost")
+        log.info("queue.sweeper.lost_transition", job=str(j.id), func=func)
+        return
+    args = {"job_id": str(j.id), "version_id": str(j.version_id), **args}
+    ok = await enqueue(func, args, dedup_id=str(j.id))
+    if ok is None:
+        return  # real enqueue failure — next sweep retries
+    j.log = (j.log or "") + "re-enqueued by queue sweeper (queue loss)\n"
+    log.info("queue.sweeper.reenqueued", job=str(j.id), func=func)
+
+
 async def _sweep_once(ctx: dict[str, Any]) -> None:
     """Re-enqueue `queued` Job rows whose arq entry is missing (redis loss).
 
@@ -84,8 +143,7 @@ async def _sweep_once(ctx: dict[str, Any]) -> None:
     old arq result key (results linger ~1h)."""
     from sqlmodel import col, select
 
-    from cadx.api.deps import enqueue
-    from cadx.db.models import Job, JobStatus, Version, VersionStatus
+    from cadx.db.models import Job, JobStatus
     from cadx.db.session import session_scope
 
     redis = ctx.get("arq_redis")
@@ -98,21 +156,6 @@ async def _sweep_once(ctx: dict[str, Any]) -> None:
             ts = ts.replace(tzinfo=UTC)
         return (cutoff - ts).total_seconds()
 
-    async def _arq_entry_exists(key_id: str) -> bool:
-        """mirrors arq's own dedup check (job_key + result_key) plus
-        in-progress — job_key already survives the whole run, but a TTL'd
-        job_key with a live in-progress key must still count as alive."""
-        if redis is None:
-            return True  # can't prove it's missing — don't double-fire
-        try:
-            return bool(
-                await redis.exists(
-                    f"arq:job:{key_id}", f"arq:result:{key_id}", f"arq:in-progress:{key_id}"
-                )
-            )
-        except Exception:
-            return True
-
     async with session_scope() as db:
         stale = (
             (await db.execute(select(Job).where(col(Job.status) == JobStatus.queued)))
@@ -122,28 +165,7 @@ async def _sweep_once(ctx: dict[str, Any]) -> None:
         for j in stale:
             if _age_s(j.created_at) < SWEEP_GRACE_S:
                 continue
-            payload = j.payload or {}
-            func, args = payload.get("func"), payload.get("args")
-            if func and isinstance(args, dict):
-                if await _arq_entry_exists(str(j.id)):
-                    continue  # entry still queued in redis — nothing lost
-                args = {"job_id": str(j.id), "version_id": str(j.version_id), **args}
-                ok = await enqueue(func, args, dedup_id=str(j.id))
-                if ok is None:
-                    continue  # real enqueue failure — next sweep retries
-                j.log = (j.log or "") + "re-enqueued by queue sweeper (queue loss)\n"
-                log.info("queue.sweeper.reenqueued", job=str(j.id), func=func)
-            else:
-                j.status = JobStatus.failed
-                j.finished_at = datetime.now(UTC)
-                j.log = (j.log or "") + ("failed: job lost from queue — predates payload capture\n")
-                v = await db.get(Version, j.version_id)
-                if v is not None and v.status in (
-                    VersionStatus.queued,
-                    VersionStatus.running,
-                ):
-                    v.status = VersionStatus.failed
-                    v.error = "job lost from queue — predates payload capture"
+            await _sweep_job(redis, db, j)
         # chat orphans: flag left running / pending user message never answered
         await _sweep_chats(db, _age_s, redis)
         await db.commit()
@@ -209,6 +231,8 @@ async def _sweep_chats(db: Any, age_s: Any, redis: Any) -> None:
     for m in pending_msgs:
         if age_s(m.created_at) < SWEEP_GRACE_S:
             continue
+        if await _chat_turn_alive(redis, m.chat_id):
+            continue  # a live turn drains pending messages itself every round
         key = chat_turn_dedup_key(m.chat_id, m.id)
         if redis is not None:
             try:

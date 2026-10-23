@@ -231,7 +231,11 @@ async def run_turn(chat_id: uuid.UUID, db: AsyncSession = Depends(get_session)):
         (
             await db.execute(
                 select(ChatMessage)
-                .where(ChatMessage.chat_id == chat_id, col(ChatMessage.pending).is_(True))
+                .where(
+                    ChatMessage.chat_id == chat_id,
+                    col(ChatMessage.pending).is_(True),
+                    ChatMessage.role == ChatRole.user,
+                )
                 .order_by(col(ChatMessage.created_at).desc())
                 .limit(1)
             )

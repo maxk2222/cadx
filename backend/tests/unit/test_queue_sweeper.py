@@ -153,6 +153,22 @@ async def test_sweeper_fails_payload_less_job(monkeypatch):
         assert "predates payload capture" in (j2.log or "")
 
 
+async def test_sweeper_result_without_live_entry_fails_honestly(monkeypatch):
+    """queued + arq:result but no job/in-progress: the task RAN and its
+    status commit was lost. Re-enqueue would double-run it — the row is
+    failed honestly instead."""
+    j = await _mk_job()
+    calls: list = []
+    monkeypatch.setattr(deps, "enqueue", _rec_enqueue(calls))
+    ctx = {"arq_redis": FakeRedis({f"arq:result:{j.id}"})}
+    await q._sweep_once(ctx)
+    assert not [c for c in calls if c[2] == str(j.id)]  # never re-run a finished task
+    async with session_scope() as db:
+        j2 = await db.get(Job, j.id)
+        assert j2.status == JobStatus.failed
+        assert "status transition lost" in (j2.log or "")
+
+
 async def test_sweeper_respects_grace_period(monkeypatch):
     """Jobs fresher than SWEEP_GRACE_S are left alone — the spawn may still
     be mid-enqueue."""
