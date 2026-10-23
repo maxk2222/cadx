@@ -2602,6 +2602,11 @@ class ToolSession:
         if self.struct_budget_left is not None:
             self.struct_budget_left -= time.monotonic() - t0
 
+    def _struct_budget_meta(self) -> dict[str, float]:
+        if self.struct_budget_left is None:
+            return {}
+        return {"struct_budget_s_left": round(max(0.0, self.struct_budget_left))}
+
     async def _tool_analyze_fem(self, a: dict[str, Any]) -> dict[str, Any]:
         if self.fem_fn is None or self.fem_left <= 0:
             return {"ok": False, "error": "analyze_fem not available (budget exhausted)"}
@@ -2624,6 +2629,7 @@ class ToolSession:
         if images:
             out["_images"] = images
         out["fem_calls_left"] = self.fem_left
+        out.update(self._struct_budget_meta())
         return out
 
     async def _tool_topopt_run(self, a: dict[str, Any]) -> dict[str, Any]:
@@ -2723,6 +2729,7 @@ class ToolSession:
             "warnings": _warning_window(top.get("warnings")),
             "verify_spec": _verify_spec_compact(res.get("verify_spec")),
             "topopt_calls_left": self.topopt_left,
+            **self._struct_budget_meta(),
         }
         images = [str(p) for p in res.get("_images") or []]
         if images:
@@ -2816,6 +2823,7 @@ class ToolSession:
             "warnings": _warning_window(top.get("warnings")),
             "verify_spec": _verify_spec_compact(res.get("verify_spec")),
             "topopt_calls_left": self.topopt_left,
+            **self._struct_budget_meta(),
         }
         images = [str(p) for p in res.get("_images") or []]
         if images:

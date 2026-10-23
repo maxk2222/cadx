@@ -233,6 +233,11 @@ Each `topopt_run` reports:
      pressure, note the change in `done` reasoning.
 6. Stop when `sf_export` ≥ target AND printable AND features intact —
    or when the tool-call budget is low and the best run is acceptable.
+   Every `analyze_fem`/`topopt_run`/`infill_run` call shares ONE wall-clock
+   budget — `struct_budget_s_left` in each result is the seconds remaining.
+   When it shrinks toward zero, finish with the best run you have instead
+   of starting another expensive sweep; exhausted budget blocks the tools
+   entirely (a planned verification FEM is then impossible).
    A high base SF is removal headroom, not a reason to skip: when
    optimization was requested, prefer a valid lighter run over the base.
    If the probe warned that the baseline SF is already below the spec

@@ -987,6 +987,7 @@ async def test_optimize_struct_budget_wallclock():
     session = ToolSession(ctx, kind="optimize", fem_fn=fem_fn, topopt_fn=top_fn)
     res = await session.execute("analyze_fem", {"load_cases": [_LC]})
     assert res["ok"]  # first call goes through, then consumes the budget
+    assert res["struct_budget_s_left"] == 0  # reported so the agent can plan
     res = await session.execute("topopt_run", {})
     assert res["ok"] is False and "budget" in res["error"]
     res = await session.execute("analyze_fem", {"load_cases": [_LC]})
@@ -1007,6 +1008,7 @@ async def test_optimize_struct_budget_unlimited_when_zero():
     assert session.struct_budget_left is None
     res = await session.execute("topopt_run", {})
     assert res["ok"]
+    assert "struct_budget_s_left" not in res  # hidden when unlimited
 
 
 async def test_optimize_fem_requires_cases():
