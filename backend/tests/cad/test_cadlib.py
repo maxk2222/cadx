@@ -658,3 +658,21 @@ def test_arch_bridge_feet_embed_below_foot_z():
     material below the contact plane to bite into."""
     a = cadlib.arch_bridge(60, 25, 12, 8)  # foot_z=0.0 default
     assert a.bounding_box().min.Z <= 0.0 + 0.5
+
+
+def test_finish_edges_returns_applied_radius_and_shape():
+    body = Box(20, 20, 10, align=_ALIGN_MIN)
+    rounded, report = cadlib.finish_edges(
+        body,
+        body.edges().filter_by(Axis.Z),
+        kind="fillet",
+        size=2.0,
+    )
+    assert report == {"kind": "fillet", "requested": 2.0, "applied": 2.0}
+    assert rounded.volume < body.volume
+
+
+def test_finish_edges_does_not_silently_ignore_empty_selection():
+    body = Box(20, 20, 10, align=_ALIGN_MIN)
+    with pytest.raises(ValueError, match="was not applied"):
+        cadlib.finish_edges(body, [], kind="chamfer", size=1.0)

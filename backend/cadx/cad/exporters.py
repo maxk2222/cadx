@@ -79,14 +79,46 @@ def export_3mf_file(
     linear_deflection: float = 0.001,
     angular_deflection: float = 0.1,
 ) -> None:
-    m = Mesher()
-    m.add_shape(
-        shape,
-        part_number=name,
-        linear_deflection=linear_deflection,
-        angular_deflection=angular_deflection,
+    try:
+        m = Mesher()
+        m.add_shape(
+            shape,
+            part_number=name,
+            linear_deflection=linear_deflection,
+            angular_deflection=angular_deflection,
+        )
+        m.write(str(path))
+        return
+    except Exception as e:
+        log.warning("export.3mf_occ_failed", error=str(e)[:200])
+    _export_3mf_via_trimesh(shape, path, linear_deflection, angular_deflection)
+
+
+def _export_3mf_via_trimesh(
+    shape: Shape, path: Path, linear_deflection: float, angular_deflection: float
+) -> None:
+    """trimesh fallback for shapes whose tessellation the OCC Mesher rejects
+    ("3mf mesh is invalid") — helical thread seams routinely trip its strict
+    manifold check while the B-Rep itself is valid. Write the mesh via
+    trimesh; the pipeline's in-place repair still runs on the file after."""
+    import numpy as np
+
+    verts, tris = shape.tessellate(
+        tolerance=linear_deflection, angular_tolerance=angular_deflection
     )
-    m.write(str(path))
+    mesh = trimesh.Trimesh(
+        vertices=np.asarray([[v.X, v.Y, v.Z] for v in verts], dtype=float),
+        faces=np.asarray(tris, dtype=np.int64),
+        process=True,
+    )
+    mesh.merge_vertices()
+    mesh.update_faces(mesh.nondegenerate_faces())
+    mesh.remove_unreferenced_vertices()
+    if not mesh.is_watertight:
+        mesh.fill_holes()
+    mesh.fix_normals()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mesh.export(str(path), file_type="3mf")
 
 
 def export_glb_file(shape: Shape, path: Path, linear_deflection: float = 0.05) -> None:

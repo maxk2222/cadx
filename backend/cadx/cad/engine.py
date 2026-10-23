@@ -132,6 +132,9 @@ class ExecResult:
         self.fem_homog: dict[str, Any] = {}
         self.topopt: dict[str, Any] = {}
         self.thread_count: int = 0
+        self.preview_thread_count: int = 0
+        self.detail_mode: str = "preview"
+        self.design_features: list[dict[str, Any]] = []
         self.bom: list[dict[str, Any]] = []
         self.timings: dict[str, float] = {}
         self.warnings: list[str] = []
@@ -159,6 +162,9 @@ class ExecResult:
             "fem_homog": self.fem_homog,
             "topopt": self.topopt,
             "thread_count": self.thread_count,
+            "preview_thread_count": self.preview_thread_count,
+            "detail_mode": self.detail_mode,
+            "design_features": self.design_features,
             "bom": self.bom,
             "timings": self.timings,
             "warnings": self.warnings,
@@ -178,6 +184,9 @@ class ExecResult:
         r.thumbnail = d.get("thumbnail")
         r.exports = d.get("exports") or {}
         r.thread_count = int(d.get("thread_count") or 0)
+        r.preview_thread_count = int(d.get("preview_thread_count") or 0)
+        r.detail_mode = str(d.get("detail_mode") or "preview")
+        r.design_features = list(d.get("design_features") or [])
         r.bom = list(d.get("bom") or [])
         r.timings = d.get("timings") or {}
         if d.get("analysis"):
@@ -359,6 +368,7 @@ def run_pipeline(  # noqa: C901
     mesh_bbox: list[float] | None = None,
     anchors: dict[str, Any] | None = None,
     light: bool = False,
+    detail_mode: str | None = None,
     spec: dict[str, Any] | None = None,
     cancelled: Callable[[], bool] | None = None,
 ) -> ExecResult:
@@ -371,6 +381,11 @@ def run_pipeline(  # noqa: C901
     res = ExecResult()
     settings = settings or ProjectSettings()
     rt = runtime or RuntimeSettings()
+    detail_mode = detail_mode or ("export" if full_exports else "preview")
+    if detail_mode not in {"preview", "export"}:
+        invalid = ExecResult()
+        invalid.error = f"invalid detail_mode '{detail_mode}'"
+        return invalid
     t0 = time.monotonic()
     # design-intent spec for the verify_spec report — the execute payload
     # carries it inside the free-form anchors dict (cad/tasks.py only forwards
@@ -392,6 +407,7 @@ def run_pipeline(  # noqa: C901
         mesh_solid=mesh_solid,
         mesh_bbox=mesh_bbox,
         anchors=anchors,
+        detail_mode=detail_mode,
         timeout_s=rt.exec_timeout_s,
         mem_mb=rt.exec_mem_limit_mb,
         warm=rt.exec_warm_runner,
@@ -400,6 +416,9 @@ def run_pipeline(  # noqa: C901
     res.stdout = ro.stdout
     res.params_used = ro.params_used
     res.thread_count = ro.thread_count
+    res.preview_thread_count = ro.preview_thread_count
+    res.detail_mode = ro.detail_mode
+    res.design_features = ro.design_features
     res.bom = ro.bom
     res.warnings = list(ro.warnings)
     res.geometry_at_failure = list(ro.geometry_at_failure)
@@ -453,6 +472,13 @@ def run_pipeline(  # noqa: C901
         res.features = extract_features(shape, stl_path).model_dump()
     except Exception as e:
         log.warning("features.extract_failed", error=str(e)[:200])
+    if res.design_features:
+        res.features["design"] = {
+            "detail_mode": detail_mode,
+            "thread_count": res.thread_count,
+            "preview_thread_count": res.preview_thread_count,
+            "records": res.design_features,
+        }
 
     # 4b1. declared connection spans: a "strut from A to B" must carry
     # material along the whole path — a detached bar reads as correctly
@@ -512,9 +538,23 @@ def run_pipeline(  # noqa: C901
     def _do_renders() -> float:
         # 5. renders + contact sheet + thumbnail
         t = time.monotonic()
-        render_paths = render_views(stl_path, mesh_dir, res.analysis.bbox_size)
+        thread_preview = (
+            [feature for feature in res.design_features if feature.get("kind") == "thread"]
+            if detail_mode == "preview"
+            else []
+        )
+        render_paths = render_views(
+            stl_path,
+            mesh_dir,
+            res.analysis.bbox_size,
+            thread_features=thread_preview,
+        )
         res.renders = {v: p.name for v, p in render_paths.items()}
-        thumb = render_thumbnail(stl_path, out_dir / "thumbnail.png")
+        thumb = render_thumbnail(
+            stl_path,
+            out_dir / "thumbnail.png",
+            thread_features=thread_preview,
+        )
         res.thumbnail = thumb.name if thumb else None
         stats = [
             f"bbox: {res.analysis.bbox_size[0]:.1f} x {res.analysis.bbox_size[1]:.1f} x {res.analysis.bbox_size[2]:.1f} mm",

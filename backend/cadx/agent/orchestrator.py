@@ -737,6 +737,8 @@ def _exec_payload(
     full_exports: bool,
     subdir: str = "",
     light: bool = False,
+    detail_mode: str | None = None,
+    params_override: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "job_id": ctx.job_id,
@@ -745,7 +747,7 @@ def _exec_payload(
         "iteration": iteration,
         "subdir": subdir,
         "code": code,
-        "params_override": None,
+        "params_override": params_override,
         "references": [
             {"asset_id": a.asset_id, "path": str(a.path)}
             for a in ctx.assets
@@ -754,6 +756,7 @@ def _exec_payload(
         "settings": ctx.settings.model_dump(),
         "runtime_settings": ctx.runtime_settings.executor_values(),
         "full_exports": full_exports,
+        "detail_mode": detail_mode or ("export" if full_exports else "preview"),
         "light": light,
         "name": "model",
     }
@@ -772,6 +775,7 @@ def _exec_payload(
             "width_y": ctx.spec.width_y.model_dump(),
             "height_z": ctx.spec.height_z.model_dump(),
             "features": [f.model_dump() for f in ctx.spec.features],
+            "standard_parts": [part.model_dump() for part in ctx.spec.standard_parts],
             "min_wall_mm": ctx.settings.min_wall_mm,
         }
     if anchors:
@@ -3519,6 +3523,30 @@ async def _run_cad(  # noqa: C901
                     "so sliver fragments are dropped at the op, not the result",
                 }
             )
+        try:
+            from cadx.cad.standard_parts import expected_thread_count
+
+            expected_threads = expected_thread_count(spec)
+        except Exception as e:
+            expected_threads = 0
+            log.warning("standard_part.thread_spec_failed", error=str(e)[:160])
+        preview_threads = int(exec_result.get("preview_thread_count") or 0)
+        if expected_threads and preview_threads < expected_threads:
+            pre_issues.append(
+                {
+                    "source": "feature",
+                    "severity": "major",
+                    "what": (
+                        f"{expected_threads} thread feature(s) are specified but only "
+                        f"{preview_threads} have visible preview metadata"
+                    ),
+                    "fix_hint": (
+                        "keep the thread in the parametric geometry and add a "
+                        "CADX_FEATURES thread record; preview geometry is display-only, "
+                        "final export must use the real helix"
+                    ),
+                }
+            )
         if (
             code_resp.expected_bbox
             and len(code_resp.expected_bbox) >= 3
@@ -3969,6 +3997,61 @@ async def _run_cad(  # noqa: C901
         outcome.error = "all iterations failed to produce executable code"
         return outcome
 
+    final_exec = best.exec_result
+    expected_threads = 0
+    try:
+        from cadx.cad.standard_parts import expected_thread_count
+
+        expected_threads = expected_thread_count(spec)
+    except Exception as e:
+        log.warning("standard_part.thread_spec_failed", error=str(e)[:160])
+
+    if expected_threads:
+        await ctx.emit(
+            "finalize",
+            best.iteration,
+            "rebuilding selected candidate with real thread geometry",
+        )
+        exact = await ctx.executor.execute(
+            _exec_payload(
+                ctx,
+                best.code_response.code if best.code_response else "",
+                best.iteration,
+                full_exports=False,
+                subdir="final_export",
+                detail_mode="export",
+                params_override=best.exec_result.get("params_used") or None,
+            )
+        )
+        if not exact.get("ok"):
+            outcome.error = (
+                "final real-thread build failed; preview geometry was not exported: "
+                + str(exact.get("error") or "unknown executor error")[:400]
+            )
+            outcome.status = "failed"
+            return outcome
+        actual_threads = int(exact.get("thread_count") or 0)
+        if actual_threads < expected_threads:
+            outcome.error = (
+                f"final export contains {actual_threads} real thread feature(s), "
+                f"but {expected_threads} were requested; preview geometry was not exported"
+            )
+            outcome.status = "failed"
+            outcome.issues.append(
+                {
+                    "source": "feature",
+                    "severity": "major",
+                    "what": outcome.error,
+                }
+            )
+            return outcome
+        final_exec = exact
+        await ctx.emit(
+            "finalize",
+            best.iteration,
+            f"verified {actual_threads} real thread feature(s) for export",
+        )
+
     await ctx.emit("finalize", best.iteration, "exporting all formats")
     exports = await ctx.executor.export_all(
         {
@@ -3976,41 +4059,59 @@ async def _run_cad(  # noqa: C901
             "project_id": str(ctx.project_id),
             "version_id": str(ctx.version_id),
             "iteration": best.iteration,
-            "art_dir": best.exec_result.get("art_dir"),
+            "art_dir": final_exec.get("art_dir"),
             "name": "model",
         }
     )
-    artifacts = _copy_best_artifacts(ctx, best.iteration, best.exec_result)
+    if exports.get("ok") is False:
+        outcome.error = str(exports.get("error") or "final exports failed")[:500]
+        outcome.status = "failed"
+        return outcome
+    if expected_threads:
+        missing_formats = [
+            fmt for fmt in ("step", "stl", "3mf", "glb") if not (exports.get("exports") or {}).get(fmt)
+        ]
+        if missing_formats:
+            outcome.error = (
+                "real-thread export incomplete; missing "
+                + ", ".join(missing_formats)
+                + ". No smooth-thread fallback was accepted."
+            )
+            outcome.status = "failed"
+            return outcome
+    artifacts = _copy_best_artifacts(ctx, best.iteration, final_exec)
     for fmt, rel in (exports.get("exports") or {}).items():
         if rel:
             artifacts[f"export:{fmt}"] = rel
     artifacts.update(_copy_fem_artifacts(ctx, best.iteration))
 
-    outcome.art_dir = best.exec_result.get("art_dir")
+    final_dim_issues = compare_dims(spec, final_exec.get("analysis") or {}, tol_pct, tol_mm)
     outcome.status = (
         "succeeded"
         if (
             best.critique
             and best.critique.passed
             and not best.dim_issues
-            and not _multi_solid(best.exec_result)
+            and not final_dim_issues
+            and (expected_threads > 0 or not _multi_solid(final_exec))
         )
         else "needs_review"
     )
-    outcome.fem = best.exec_result.get("fem")
+    outcome.art_dir = final_exec.get("art_dir")
+    outcome.fem = final_exec.get("fem") or best.exec_result.get("fem")
     outcome.code = best.code_response.code if best.code_response else None
-    outcome.params = dict(best.exec_result.get("params_used") or {})
+    outcome.params = dict(final_exec.get("params_used") or {})
     outcome.params_schema = (
         [p.model_dump() for p in best.code_response.params] if best.code_response else None
     )
-    outcome.analysis = best.exec_result.get("analysis")
-    outcome.features = best.exec_result.get("features")
+    outcome.analysis = final_exec.get("analysis")
+    outcome.features = final_exec.get("features")
     outcome.critique = best.critique.model_dump() if best.critique else None
     if outcome.critique is not None:
         outcome.critique["feature_findings"] = best.feature_findings
         outcome.critique["issues"] = issues
-    outcome.dfm = best.exec_result.get("dfm")
-    outcome.bom = best.exec_result.get("bom")
+    outcome.dfm = final_exec.get("dfm")
+    outcome.bom = final_exec.get("bom")
     outcome.score = best.critique.score if best.critique else None
     outcome.best_iteration = best.iteration
     # declared CAD fallback won (B20b): the final part is an honest
@@ -4029,7 +4130,7 @@ async def _run_cad(  # noqa: C901
         )
     # canonical verify_spec verdict heads the persisted issue list; the
     # per-source issues after it carry the per-finding detail
-    vs_entry = _verify_spec_issue(best.exec_result, stage="cad")
+    vs_entry = _verify_spec_issue(final_exec, stage="cad")
     outcome.issues = [vs_entry, *issues] if vs_entry else issues
     if ctx.resolved_mode == "hybrid" and ctx.mesh_info:
         prep_it = int(ctx.mesh_info.get("_prep_it", 1))
@@ -5816,6 +5917,7 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
     tried_load_extraction = False
     intake_step.sanitize_load_cases(spec)
     dim_notes = intake_step.sanitize_dims(spec, prompt)
+    dim_notes.extend(intake_step.sanitize_standard_part_dims(spec))
     pos_notes = intake_step.normalize_feature_positions(spec)
     if dim_notes or pos_notes:
         outcome.spec = spec.model_dump()
@@ -5845,6 +5947,8 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
                 spec.features = (
                     fixed.features if tool_echo else _merge_features(spec.features, fixed.features)
                 )
+            if fixed.standard_parts:
+                spec.standard_parts = fixed.standard_parts
             if fixed.name.strip() and tool_echo:
                 spec.name, spec.summary = fixed.name, fixed.summary or spec.summary
             outcome.spec = spec.model_dump()
@@ -5898,7 +6002,10 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
 
     # ---------- CLARIFY ----------
     blocking = [q for q in spec.open_questions if q.blocking]
-    if clarify and blocking:
+    norm_part_blocking = any(
+        "registered standard component" in q.why_it_matters for q in blocking
+    )
+    if blocking and (clarify or norm_part_blocking):
         outcome.status = "waiting_for_input"
         outcome.questions = [q.model_dump() for q in spec.open_questions]
         outcome.resume_state = {"spec": spec.model_dump()}

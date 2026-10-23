@@ -118,6 +118,22 @@ def test_multi_solid_fails():
     assert _by_name(verify_spec(_spec(), res))["single_valid_solid"]["status"] == "FAIL"
 
 
+def test_catalog_threaded_fastener_allows_valid_compound_geometry():
+    spec = _spec(
+        standard_parts=[
+            {"class_name": "CounterSunkScrew", "fastener_type": "iso10642", "size": "M10-1.5"}
+        ]
+    )
+    res = _res(
+        analysis={"bbox_size": [100.0, 50.0, 20.0], "solid_count": 24, "is_valid": True},
+        thread_count=1,
+        bom=[{"part_class": "CounterSunkScrew", "type": "iso10642", "size": "M10-1.5", "count": 1}],
+    )
+    check = _by_name(verify_spec(spec, res))["single_valid_solid"]
+    assert check["status"] == "PASS"
+    assert check["evidence"]["declared_standard_component_set"] is True
+
+
 def test_dim_drift_fails_envelope():
     res = _res(analysis={"bbox_size": [100.0, 50.0, 40.0], "solid_count": 1, "is_valid": True})
     report = verify_spec(_spec(), res)
@@ -1142,3 +1158,51 @@ def test_structured_feature_center_is_used_by_position_check():
     assert check["status"] == "UNVERIFIED"
     assert check["evidence"]["expected"]["points"] == [{"x": -28.0, "y": 0.0, "z": 25.0}]
     assert check["evidence"]["unverified"][0]["axes"] == ["x"]
+
+
+def _threaded_spec(**over):
+    spec = _spec(
+        standard_parts=[
+            {
+                "class_name": "CounterSunkScrew",
+                "fastener_type": "iso10642",
+                "size": "M10-1.5",
+                "length_mm": 150,
+            }
+        ],
+    )
+    spec.update(over)
+    return spec
+
+
+def test_export_mode_without_real_thread_fails():
+    res = _res(
+        detail_mode="export",
+        thread_count=0,
+        preview_thread_count=1,
+        bom=[{"part_class": "CounterSunkScrew", "type": "iso10642", "size": "M10-1.5", "count": 1}],
+    )
+    check = _by_name(verify_spec(_threaded_spec(), res))["thread_features"]
+    assert check["status"] == "FAIL"
+    assert "smooth" in check["evidence"]["reason"]
+
+
+def test_export_mode_with_real_thread_passes():
+    res = _res(
+        detail_mode="export",
+        thread_count=1,
+        preview_thread_count=1,
+        bom=[{"part_class": "CounterSunkScrew", "type": "iso10642", "size": "M10-1.5", "count": 1}],
+    )
+    check = _by_name(verify_spec(_threaded_spec(), res))["thread_features"]
+    assert check["status"] == "PASS"
+    assert check["evidence"]["expected"] == 1
+
+
+def test_preview_mode_needs_a_thread_marker_not_geometry():
+    res = _res(detail_mode="preview", thread_count=0, preview_thread_count=1)
+    check = _by_name(verify_spec(_threaded_spec(), res))["thread_features"]
+    assert check["status"] == "PASS"
+    bare = _res(detail_mode="preview", thread_count=0, preview_thread_count=0)
+    check = _by_name(verify_spec(_threaded_spec(), bare))["thread_features"]
+    assert check["status"] == "FAIL"

@@ -6,7 +6,7 @@ crashing the whole run on an empty/stale edge selection.
 """
 
 import math
-from typing import Sequence  # noqa: UP035 — keep cadlib's sandbox import allow-list
+from typing import Literal, Sequence  # noqa: UP035 — keep cadlib's sandbox import allow-list
 
 from build123d import Align, Box, BuildPart, Edge, GeomType, Pos, Shape, chamfer, fillet
 
@@ -286,6 +286,23 @@ def safe_chamfer_shape(
             pass
         r = round(r / 2, 3)
     return shape, 0.0
+
+
+def finish_edges(
+    shape: Shape,
+    edges: Sequence[Edge],
+    *,
+    kind: Literal["fillet", "chamfer"],
+    size: float,
+    min_size: float = 0.2,
+) -> tuple[Shape, dict[str, float | str]]:
+    if kind == "fillet":
+        result, applied = safe_fillet_shape(shape, edges, size, min_radius=min_size)
+    else:
+        result, applied = safe_chamfer_shape(shape, edges, size, min_length=min_size)
+    if applied <= 0:
+        raise ValueError(f"{kind} was not applied to the selected edges")
+    return result, {"kind": kind, "requested": float(size), "applied": float(applied)}
 
 
 def _unwrap_shape(shape_or_builder=None):

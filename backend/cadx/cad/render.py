@@ -8,6 +8,7 @@ from __future__ import annotations
 import math
 import os
 from pathlib import Path
+from typing import Any
 
 os.environ.setdefault("PYVISTA_OFF_SCREEN", "true")
 
@@ -56,8 +57,55 @@ def _camera_for(view: str) -> tuple[str, tuple[float, float, float] | None]:
     return view, up
 
 
+def _thread_preview_lines(pv: Any, features: list[dict[str, Any]]) -> list[Any]:
+    import numpy as np
+
+    axes = {
+        "+x": (1.0, 0.0, 0.0),
+        "-x": (-1.0, 0.0, 0.0),
+        "+y": (0.0, 1.0, 0.0),
+        "-y": (0.0, -1.0, 0.0),
+        "+z": (0.0, 0.0, 1.0),
+        "-z": (0.0, 0.0, -1.0),
+    }
+    actors = []
+    for feature in features:
+        axis = np.asarray(axes.get(str(feature.get("axis") or "+z"), (0.0, 0.0, 1.0)))
+        position = np.asarray(feature.get("position_mm") or (0.0, 0.0, 0.0), dtype=float)
+        pitch = float(feature.get("pitch") or 0.0)
+        length = float(feature.get("length") or 0.0)
+        diameter = float(feature.get("major_diameter") or 0.0)
+        if pitch <= 0 or length <= 0 or diameter <= 0:
+            continue
+        reference = np.asarray((1.0, 0.0, 0.0) if abs(axis[0]) < 0.9 else (0.0, 1.0, 0.0))
+        u = np.cross(axis, reference)
+        u /= np.linalg.norm(u)
+        v = np.cross(axis, u)
+        turns = length / pitch
+        steps = min(12000, max(32, math.ceil(turns * 12)))
+        radius = diameter / 2 - 0.08 if feature.get("external") is False else diameter / 2 + 0.04
+        hand = -1.0 if feature.get("hand") == "left" else 1.0
+        start = float(feature.get("start") or 0.0)
+        points = []
+        for i in range(steps + 1):
+            fraction = i / steps
+            distance = start + length * fraction
+            angle = hand * math.tau * distance / pitch
+            radial = radius * (u * math.cos(angle) + v * math.sin(angle))
+            points.append(position + axis * distance + radial)
+        line = pv.PolyData(np.asarray(points, dtype=float))
+        line.lines = np.asarray([len(points), *range(len(points))], dtype=np.int64)
+        actors.append(line)
+    return actors
+
+
 def render_views(
-    stl_path: Path, out_dir: Path, bbox_size: list[float], size: int = 1024
+    stl_path: Path,
+    out_dir: Path,
+    bbox_size: list[float],
+    size: int = 1024,
+    *,
+    thread_features: list[dict[str, Any]] | None = None,
 ) -> dict[str, Path]:
     """Render the 7 standard views. Returns {view: path}."""
     if not render_available():
@@ -92,6 +140,8 @@ def render_views(
         if edges.n_points:
             pl.add_mesh(edges, color="#222222", line_width=1.5)
         pl.add_mesh(outline, color="#888888", line_width=2)
+        for thread_line in _thread_preview_lines(pv, thread_features or []):
+            pl.add_mesh(thread_line, color="#30343b", line_width=1.8)
         pl.add_axes(color="black")
         ghost = _ghost_opacity()
         shots: list[tuple[str, float, str]] = [(v, 1.0, "") for v in VIEWS]
@@ -117,18 +167,79 @@ def render_views(
             pl.camera.zoom(1.15)
             tag = " (xray)" if suffix else ""
             label = pl.add_text(
-                f"{view}{tag}  -  {title}", position="upper_edge", font_size=14, color="black"
+                f"{view}{tag}  -  {title}"
+                + ("  -  thread preview" if thread_features else ""),
+                position="upper_edge",
+                font_size=14,
+                color="black",
             )
             out = out_dir / f"{view}{suffix}.png"
             pl.screenshot(str(out))
             pl.remove_actor(label)
             results[f"{view}{suffix}"] = out
+        detail = _thread_detail_camera(thread_features or [])
+        if detail is not None:
+            focal, position, up, half_height = detail
+            actor.prop.opacity = 1.0
+            pl.camera.position = position
+            pl.camera.focal_point = focal
+            pl.camera.up = up
+            pl.camera.parallel_projection = True
+            pl.camera.parallel_scale = half_height
+            label = pl.add_text(
+                f"thread detail  -  {title}", position="upper_edge", font_size=14, color="black"
+            )
+            out = out_dir / "thread_detail.png"
+            pl.screenshot(str(out))
+            pl.remove_actor(label)
+            results["thread_detail"] = out
     finally:
         pl.close()
     return results
 
 
-def render_thumbnail(stl_path: Path, out_path: Path, size: int = 256) -> Path | None:
+def _thread_detail_camera(
+    features: list[dict[str, Any]],
+) -> tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float], float] | None:
+    """Side-on close-up of the first thread feature — a 20 mm thread zone on a
+    150 mm part is unreadable at part zoom. Axis up, camera 5 diameters out."""
+    import numpy as np
+
+    axes = {
+        "+x": (1.0, 0.0, 0.0), "-x": (-1.0, 0.0, 0.0),
+        "+y": (0.0, 1.0, 0.0), "-y": (0.0, -1.0, 0.0),
+        "+z": (0.0, 0.0, 1.0), "-z": (0.0, 0.0, -1.0),
+    }
+    for feature in features:
+        axis = np.asarray(axes.get(str(feature.get("axis") or "+z"), (0.0, 0.0, 1.0)))
+        position = np.asarray(feature.get("position_mm") or (0.0, 0.0, 0.0), dtype=float)
+        diameter = float(feature.get("major_diameter") or 0.0)
+        length = float(feature.get("length") or 0.0)
+        if diameter <= 0 or length <= 0:
+            continue
+        start = float(feature.get("start") or 0.0)
+        focal = position + axis * (start + length / 2)
+        reference = np.asarray((1.0, 0.0, 0.0) if abs(axis[0]) < 0.9 else (0.0, 1.0, 0.0))
+        side = np.cross(axis, reference)
+        side /= np.linalg.norm(side)
+        half_height = max(2.5 * diameter, 0.55 * min(length, 80.0))
+        position_cam = focal + side * (5.0 * diameter + length)
+        return (
+            tuple(float(v) for v in focal),
+            tuple(float(v) for v in position_cam),
+            tuple(float(v) for v in axis),
+            float(half_height),
+        )
+    return None
+
+
+def render_thumbnail(
+    stl_path: Path,
+    out_path: Path,
+    size: int = 256,
+    *,
+    thread_features: list[dict[str, Any]] | None = None,
+) -> Path | None:
     if not render_available():
         return None
     import pyvista as pv
@@ -140,6 +251,8 @@ def render_thumbnail(stl_path: Path, out_path: Path, size: int = 256) -> Path | 
     edges = mesh.extract_feature_edges(30)
     if edges.n_points:
         pl.add_mesh(edges, color="#333333", line_width=1)
+    for thread_line in _thread_preview_lines(pv, thread_features or []):
+        pl.add_mesh(thread_line, color="#30343b", line_width=1.8)
     pl.camera_position = "iso"
     pl.reset_camera()
     pl.camera.zoom(1.1)

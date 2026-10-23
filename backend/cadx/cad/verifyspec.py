@@ -1285,7 +1285,72 @@ def _unrequested_voids_check(  # noqa: C901
         checks.append(_check("unrequested_voids", TIER_FEATURES, "PASS", ev))
 
 
-def _structural(res: dict[str, Any], checks: list[dict[str, Any]]) -> None:
+def _threads(res: dict[str, Any], spec: dict[str, Any] | None, checks: list[dict[str, Any]]) -> None:
+    """Explicit thread verification: declared standard parts / thread features
+    must leave geometry evidence matching the executed detail mode — visible
+    preview markers in preview mode, real helix objects in export mode."""
+    declared_parts = [
+        row for row in ((spec or {}).get("standard_parts") or []) if isinstance(row, dict)
+    ]
+    features = [row for row in ((spec or {}).get("features") or []) if isinstance(row, dict)]
+    if not declared_parts and not any(
+        "thread" in str(row.get("type") or "").lower() or row.get("thread_spec")
+        for row in features
+    ):
+        return
+    expected = 0
+    try:
+        from types import SimpleNamespace
+
+        from cadx.cad.standard_parts import expected_thread_count
+        from cadx.llm.schemas import Feature, StandardPartSpec
+
+        spec_obj = SimpleNamespace(
+            standard_parts=[StandardPartSpec.model_validate(row) for row in declared_parts],
+            features=[Feature.model_validate(row) for row in features],
+        )
+        expected = expected_thread_count(spec_obj)
+    except Exception:
+        expected = 0
+    if not expected:
+        return
+    detail_mode = str(res.get("detail_mode") or "preview")
+    real = int(res.get("thread_count") or 0)
+    markers = int(res.get("preview_thread_count") or 0)
+    ev: dict[str, Any] = {
+        "expected": expected,
+        "detail_mode": detail_mode,
+        "thread_count": real,
+        "preview_thread_count": markers,
+        "declared": [
+            {
+                "class": part.get("class_name"),
+                "type": part.get("fastener_type"),
+                "size": part.get("size"),
+            }
+            for part in declared_parts
+        ],
+    }
+    if detail_mode == "export":
+        if real >= expected:
+            checks.append(_check("thread_features", TIER_FEATURES, "PASS", ev))
+        else:
+            ev["reason"] = (
+                f"{real} real thread feature(s) measured; {expected} required "
+                "for export — a smooth/preview shaft must not ship as final"
+            )
+            checks.append(_check("thread_features", TIER_FEATURES, "FAIL", ev))
+        return
+    if real + markers >= expected:
+        checks.append(_check("thread_features", TIER_FEATURES, "PASS", ev))
+    else:
+        ev["reason"] = "no thread geometry and no visible preview-thread metadata"
+        checks.append(_check("thread_features", TIER_FEATURES, "FAIL", ev))
+
+
+def _structural(
+    res: dict[str, Any], checks: list[dict[str, Any]], spec: dict[str, Any] | None = None
+) -> None:
     ok = bool(res.get("ok"))
     evidence: dict[str, Any] = {"ok": ok}
     if res.get("error"):
@@ -1312,14 +1377,34 @@ def _structural(res: dict[str, Any], checks: list[dict[str, Any]]) -> None:
     else:
         solid_count = int(analysis.get("solid_count") or 0)
         is_valid = bool(analysis.get("is_valid"))
+        declared_parts = (spec or {}).get("standard_parts") or []
+        declared_names = {
+            str(part.get("class_name") or "")
+            for part in declared_parts
+            if isinstance(part, dict)
+        }
+        bom_names = {
+            str(part.get("part_class") or "")
+            for part in (res.get("bom") or [])
+            if isinstance(part, dict)
+        }
+        declared_threaded_part = (
+            bool(declared_names & bom_names) and int(res.get("thread_count") or 0) > 0
+        )
+        expected_assembly = len(declared_parts) > 1 or any(
+            isinstance(part, dict) and int(part.get("quantity") or 1) > 1
+            for part in declared_parts
+        )
+        valid_component_set = solid_count == 1 or declared_threaded_part or expected_assembly
         checks.append(
             _check(
                 "single_valid_solid",
                 TIER_STRUCTURAL,
-                "PASS" if is_valid and solid_count == 1 else "FAIL",
+                "PASS" if is_valid and valid_component_set else "FAIL",
                 {
                     "is_valid": is_valid,
                     "solid_count": solid_count,
+                    "declared_standard_component_set": valid_component_set,
                     "watertight": analysis.get(
                         "watertight_after_repair", analysis.get("watertight")
                     ),
@@ -1707,7 +1792,8 @@ def verify_spec(
     checks: list[dict[str, Any]] = []
     measured = measured_features if measured_features is not None else (res.get("features") or {})
 
-    _structural(res, checks)
+    _structural(res, checks, spec)
+    _threads(res, spec, checks)
     _envelope(
         spec, res, dim_tolerance_pct, dim_tolerance_mm, checks, bound_only=envelope_bound_only
     )

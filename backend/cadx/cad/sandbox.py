@@ -42,6 +42,9 @@ class RunnerOutput:
     stdout: str = ""
     params_used: dict[str, object] = field(default_factory=dict)
     thread_count: int = 0
+    preview_thread_count: int = 0
+    detail_mode: str = "preview"
+    design_features: list[dict[str, object]] = field(default_factory=list)
     bom: list[dict[str, object]] = field(default_factory=list)
     brep_path: Path | None = None
     flat_brep_path: Path | None = None
@@ -201,11 +204,14 @@ def run_user_code(
     mesh_solid: Path | None = None,
     mesh_bbox: list[float] | None = None,
     anchors: dict[str, object] | None = None,
+    detail_mode: str = "preview",
     timeout_s: int | None = None,
     mem_mb: int | None = None,
     warm: bool | None = None,
     threads: int | None = None,
 ) -> RunnerOutput:
+    if detail_mode not in {"preview", "export"}:
+        return RunnerOutput(ok=False, error=f"invalid detail_mode '{detail_mode}'")
     settings = RuntimeSettings()
     timeout_s = timeout_s or settings.exec_timeout_s
     mem_mb = mem_mb or resources.effective_exec_mem_mb(settings)
@@ -246,6 +252,7 @@ def run_user_code(
                 "mesh_solid": str(mesh_solid) if mesh_solid else None,
                 "mesh_bbox": mesh_bbox,
                 "anchors": anchors or {},
+                "detail_mode": detail_mode,
             }
         ),
         encoding="utf-8",
@@ -326,6 +333,9 @@ def _result_from_workdir(workdir: Path, duration: float, stderr: str = "") -> Ru
         stdout=data.get("stdout", ""),
         params_used=data.get("params_used", {}) or {},
         thread_count=int(data.get("thread_count", 0)),
+        preview_thread_count=int(data.get("preview_thread_count", 0)),
+        detail_mode=str(data.get("detail_mode") or "preview"),
+        design_features=list(data.get("design_features") or []),
         bom=list(data.get("bom") or []),
         brep_path=(workdir / "model.brep") if (workdir / "model.brep").exists() else None,
         flat_brep_path=(

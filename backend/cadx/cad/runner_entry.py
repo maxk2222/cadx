@@ -108,6 +108,16 @@ def _geometry_snapshot(namespace: dict) -> list[dict]:
     return out
 
 
+def _json_records(value: object) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    try:
+        serialised = json.loads(json.dumps(value, allow_nan=False))
+    except (TypeError, ValueError):
+        return []
+    return [row for row in serialised if isinstance(row, dict)]
+
+
 def _mesh_profile(path: Path, bins: int = 13) -> dict[str, list[list[float]]]:
     """Sample the mesh solid's silhouette per axis: for each bin along x/y
     return [axis_pos, min_a, max_a, min_b, max_b] of the two remaining axes —
@@ -167,6 +177,13 @@ def main(workdir: Path | None = None) -> int:  # noqa: C901
         return 0
 
     params_override = spec.get("params_override") or {}
+    detail_mode = str(spec.get("detail_mode") or "preview")
+    if detail_mode not in ("preview", "export"):
+        result_path.write_text(
+            json.dumps({"ok": False, "error": f"invalid detail_mode '{detail_mode}'"}),
+            encoding="utf-8",
+        )
+        return 0
     references = {r["asset_id"]: r["path"] for r in spec.get("references", [])}
     mesh_solid_path = spec.get("mesh_solid")
     mesh_bbox = spec.get("mesh_bbox")
@@ -407,6 +424,7 @@ def main(workdir: Path | None = None) -> int:  # noqa: C901
         "anchor_holes": anchor_holes,
         "IMAGE_PROFILE": image_profile_pts,
         "load_image_profile": load_image_profile,
+        "CADX_DETAIL_MODE": detail_mode,
     }
 
     # measurement/inspection primitives — bare names in generated code, e.g.
@@ -584,13 +602,23 @@ def main(workdir: Path | None = None) -> int:  # noqa: C901
         # count real (non-simple) thread objects present in the namespace
         thread_count = 0
         bom: dict[tuple, dict] = {}
-        for v in namespace.values():
+        for name, v in namespace.items():
             cls_name = type(v).__name__
             mod = type(v).__module__ or ""
-            if (
-                mod.startswith("bd_warehouse.thread")
-                and cls_name.endswith("Thread")
-                and not getattr(v, "simple", True)
+            if name != "result" and (
+                (
+                    not isinstance(v, type)
+                    and mod.startswith("bd_warehouse.thread")
+                    and cls_name.endswith("Thread")
+                    and not getattr(v, "simple", True)
+                )
+                or (
+                not isinstance(v, type)
+                and cls_name.endswith(("Screw", "Nut"))
+                and getattr(v, "simple", True) is False
+                and getattr(v, "thread_diameter", None) is not None
+                and getattr(v, "thread_pitch", None) is not None
+                )
             ):
                 thread_count += 1
             if not mod.startswith("bd_warehouse"):
@@ -631,20 +659,53 @@ def main(workdir: Path | None = None) -> int:  # noqa: C901
             else:
                 bom[key] = {"part_class": cls_name, "type": key[1], "size": key[2], "count": count}
 
+        if thread_count == 0:
+            v = namespace.get("result")
+            cls_name = type(v).__name__
+            mod = type(v).__module__ or ""
+            if not isinstance(v, type) and (
+                (
+                    mod.startswith("bd_warehouse.thread")
+                    and cls_name.endswith("Thread")
+                    and not getattr(v, "simple", True)
+                )
+                or (
+                    cls_name.endswith(("Screw", "Nut"))
+                    and getattr(v, "simple", True) is False
+                    and getattr(v, "thread_diameter", None) is not None
+                    and getattr(v, "thread_pitch", None) is not None
+                )
+            ):
+                thread_count = 1
+
         params_used = namespace.get("PARAMS", {})
         try:
             params_used = json.loads(json.dumps(params_used, default=str))
         except Exception:
             params_used = {}
 
+        design_features = _json_records(namespace.get("CADX_FEATURES"))
+        declared_bom = _json_records(namespace.get("CADX_BOM"))
+        if any(
+            not isinstance(row.get("part_class"), str)
+            or not isinstance(row.get("count"), int)
+            for row in declared_bom
+        ):
+            declared_bom = []
+        preview_thread_count = sum(
+            1 for feature in design_features if feature.get("kind") == "thread"
+        )
         result.update(
             {
                 "ok": True,
                 "params_used": params_used,
                 "thread_count": thread_count,
+                "preview_thread_count": preview_thread_count,
+                "detail_mode": detail_mode,
+                "design_features": design_features,
                 "solid_count": len(solids),
                 "bom": sorted(
-                    bom.values(),
+                    declared_bom or bom.values(),
                     key=lambda e: (e["part_class"], e["type"] or "", e["size"] or ""),
                 ),
             }

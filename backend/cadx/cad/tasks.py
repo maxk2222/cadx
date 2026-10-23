@@ -126,6 +126,7 @@ def run_execute_payload(
         mesh_bbox=payload.get("mesh_bbox"),
         anchors=payload.get("anchors"),
         light=bool(payload.get("light")),
+        detail_mode=payload.get("detail_mode"),
         **_cancel_kwargs(run_pipeline, cancelled),
     )
 
