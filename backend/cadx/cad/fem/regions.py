@@ -1007,6 +1007,7 @@ def resolve_case_dofs(  # noqa: C901
         max_tries = 6 if couple_req else 3
         tries = 0
         prev_extent = float("inf")
+        stalls = 0
         moment_grew = False
         while tries < max_tries:
             too_small = bool(cells.sum() < min_load_cells)
@@ -1025,8 +1026,15 @@ def resolve_case_dofs(  # noqa: C901
                 weak = ext < 3.0 * domain.pitch or float(
                     np.linalg.norm(deficit)
                 ) > 0.1 * float(np.linalg.norm(req))
-                if weak and too_small is False and tries > 0 and ext <= prev_extent + 1e-9:
-                    break  # growth no longer widens the couple footprint
+                # rasterisation makes extent grow in steps — one flat try is
+                # normal, two consecutive mean growth cannot help (thin plate)
+                if weak and too_small is False and tries > 0:
+                    if ext <= prev_extent + 1e-9:
+                        stalls += 1
+                        if stalls >= 2:
+                            break
+                    else:
+                        stalls = 0
                 prev_extent = ext
             if not (too_small or weak):
                 break
