@@ -2427,11 +2427,15 @@ async def run_fem_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str,
         mesh_rel = storage.best_mesh_relpath(
             version.project_id, version.id, version.iterations or 1
         )
-        load_cases = payload.get("load_cases") or []
+        # the fem request also lives on job.resume_state["fem_request"] —
+        # spawn_restart replays it from there, and local drivers that call
+        # this job directly only carry job_id+version_id in the payload
+        fem_req = (job.resume_state or {}).get("fem_request") or {}
+        load_cases = payload.get("load_cases") or fem_req.get("load_cases") or []
         if mesh_rel is None or not load_cases:
             version.status = prev_status
             version.error = (
-                "no load cases declared" if load_cases else "version has no mesh to analyse"
+                "version has no mesh to analyse" if mesh_rel is None else "no load cases declared"
             )
             job.status = JobStatus.failed
             job.finished_at = datetime.now(UTC)
@@ -2450,8 +2454,8 @@ async def run_fem_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str,
                 "iteration": version.iterations or 1,
                 "mesh_rel": mesh_rel,
                 "load_cases": load_cases,
-                "keep_regions": payload.get("keep_regions") or [],
-                "material": payload.get("material") or "",
+                "keep_regions": payload.get("keep_regions") or fem_req.get("keep_regions") or [],
+                "material": payload.get("material") or fem_req.get("material") or "",
                 "voxel_mm": payload.get("voxel_mm"),
                 "runtime_settings": runtime_settings.executor_values(),
                 "anchors": (version.analysis or {}).get("anchors", {}).get("holes"),

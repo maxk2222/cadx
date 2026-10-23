@@ -548,11 +548,25 @@ class LocalDriver:
         import cadx.agent.worker_jobs as wj
 
         run_fn = getattr(wj, func)
+        # spawn_* stores the verbatim {func,args} envelope on job.payload —
+        # replay it exactly like arq would, so job functions that read request
+        # fields (load_cases/optimize/material/...) see the full payload, not
+        # just job_id+version_id
+        run_args: dict[str, Any] = {"job_id": str(jid), "version_id": str(vid)}
+        if jid is not None:
+            from cadx.db.models import Job
+            from cadx.db.session import session_scope
+
+            async with session_scope() as db:
+                env = await db.get(Job, jid)
+                args = (env.payload or {}).get("args") if env else None
+                if isinstance(args, dict) and args.get("job_id"):
+                    run_args = args
         if self.verbose:
             log.info("eval.local.job", stage=stage.id, func=func, version=str(vid)[:8])
         try:
             await asyncio.wait_for(
-                run_fn({"arq_redis": None}, {"job_id": str(jid), "version_id": str(vid)}),
+                run_fn({"arq_redis": None}, run_args),
                 timeout=stage.timeout_s,
             )
         except TimeoutError:

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import time
 import uuid
 from pathlib import Path
 
@@ -99,6 +100,21 @@ def best_mesh_relpath(
 ) -> str | None:
     """Best available triangle-mesh file of a version (relpath), for mesh-level
     operations on any version kind (edit, FEM, optimize, exports)."""
+    for attempt in range(2):
+        rel = _best_mesh_relpath_once(project_id, version_id, iterations)
+        if rel is not None:
+            return rel
+        if attempt == 0:
+            # bind-mounted data dirs (virtiofs/fakeowner) can hand out a stale
+            # negative stat for a file the writer committed moments earlier —
+            # one delayed rescan converts that transient miss into a hit
+            time.sleep(0.4)
+    return None
+
+
+def _best_mesh_relpath_once(
+    project_id: uuid.UUID | str, version_id: uuid.UUID | str, iterations: int
+) -> str | None:
     v_dir = version_dir(project_id, version_id)
     for cand in (
         v_dir / "exports" / "model.stl",
