@@ -84,6 +84,34 @@ def test_repair_mesh_file_accepts_faithful_voxel_rebuild(tmp_path, monkeypatch):
     assert m.is_watertight and max(m.extents) <= 21.0
 
 
+def test_export_from_brep_repairs_shipped_meshes(tmp_path, monkeypatch):
+    """FINALIZE/reexport goes through export_from_brep — the shipped STL must
+    be repaired too, not just the iteration render STL (api_v8 l_bracket
+    shipped a leaky exports/model.stl while watertight_after_repair was True).
+    """
+    pytest.importorskip("build123d")
+    from build123d import Box, export_brep
+
+    import cadx.cad.engine as eng
+    from cadx.cad.engine import export_from_brep
+
+    brep = tmp_path / "model.brep"
+    export_brep(Box(10, 10, 10), str(brep))
+    out_dir = tmp_path / "exports"
+
+    def _leaky_export_all_3d(_shape, o_dir, name="model", **kw):
+        o_dir.mkdir(parents=True, exist_ok=True)
+        leaky = o_dir / f"{name}.stl"
+        _leaky_box(leaky)
+        return {"step": None, "stl": leaky.name, "3mf": None, "glb": None}
+
+    monkeypatch.setattr(eng, "export_all_3d", _leaky_export_all_3d)
+    monkeypatch.setattr(eng, "export_2d", lambda *a, **k: {})
+    out = export_from_brep(brep, out_dir)
+    m = trimesh.load(str(out_dir / out["stl"]), force="mesh")
+    assert m.is_watertight and m.is_winding_consistent
+
+
 def test_run_pipeline_reports_watertight_after_repair(tmp_path):
     pytest.importorskip("build123d")
     from cadx.cad.engine import run_pipeline

@@ -31,7 +31,13 @@ def common_checks(
                 message=f"part has {analysis.solid_count} disconnected solids",
             )
         )
-    if analysis.watertight is False:
+    # post-repair flag wins — a raw tessellation seam already closed by
+    # repair_mesh_file must not read as "may fail slicing" (the shipped
+    # exports go through the same repair); only a FAILED repair is high.
+    watertight = analysis.watertight_after_repair
+    if watertight is None:
+        watertight = analysis.watertight
+    if watertight is False:
         warnings.append(
             DfmWarning(
                 code="not_watertight",

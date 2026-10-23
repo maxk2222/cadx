@@ -597,6 +597,9 @@ def export_from_brep(
     shape = import_brep(str(brep_path))
     out = export_all_3d(shape, out_dir, name=name)
     out.update(export_2d(shape, out_dir, name, flat_brep))
+    # finalize/reexport bypasses the run_code fan-out repair — the shipped
+    # STL/3MF/GLB must not leak a tessellation seam to the slicer
+    _repair_export_meshes(out, out_dir)
     return out
 
 
@@ -608,6 +611,7 @@ def export_from_mesh(
     out = export_mesh_all(mesh, out_dir, name=name, max_faces=max_faces)
     out["dxf"] = None
     out["svg"] = None
+    _repair_export_meshes(out, out_dir)
     return out
 
 
