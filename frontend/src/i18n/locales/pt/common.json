@@ -261,6 +261,17 @@
     "clear": "limpar",
     "measure_hint": "clique em dois pontos da superfície",
     "measure_2nd": "clique num segundo ponto da superfície",
-    "measure_orbit": "arrastar com botão direito orbita · Esc sai"
+    "measure_orbit": "arrastar com botão direito orbita · Esc sai",
+    "preview_failed": "falha ao carregar a pré-visualização 3D",
+    "context_lost": "contexto 3D perdido",
+    "context_lost_hint": "o contexto gráfico foi reiniciado — recarregue a visualização para continuar",
+    "context_lost_reload": "recarregar visualização"
+  },
+  "error_boundary": {
+    "title": "Algo deu errado",
+    "hint": "A visualização travou inesperadamente. Seu trabalho está salvo — você pode tentar novamente ou recarregar o app.",
+    "details": "detalhes técnicos",
+    "inline": "esta seção não pôde ser renderizada",
+    "reload": "recarregar app"
   }
 }

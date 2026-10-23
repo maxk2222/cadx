@@ -256,6 +256,17 @@
     "clear": "löschen",
     "measure_hint": "zwei Oberflächenpunkte klicken",
     "measure_2nd": "zweiten Oberflächenpunkt klicken",
-    "measure_orbit": "Rechtsklick-Ziehen rotiert · Esc beendet"
+    "measure_orbit": "Rechtsklick-Ziehen rotiert · Esc beendet",
+    "preview_failed": "3D-Vorschau konnte nicht geladen werden",
+    "context_lost": "3D-Kontext verloren",
+    "context_lost_hint": "Der Grafikkontext wurde zurückgesetzt — Ansicht neu laden, um fortzufahren",
+    "context_lost_reload": "Ansicht neu laden"
+  },
+  "error_boundary": {
+    "title": "Etwas ist schiefgelaufen",
+    "hint": "Die Ansicht ist unerwartet abgestürzt. Deine Arbeit ist gespeichert — du kannst es erneut versuchen oder die App neu laden.",
+    "details": "technische Details",
+    "inline": "dieser Bereich konnte nicht dargestellt werden",
+    "reload": "App neu laden"
   }
 }

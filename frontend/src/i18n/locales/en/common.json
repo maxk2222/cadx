@@ -256,6 +256,17 @@
     "clear": "clear",
     "measure_hint": "click two surface points",
     "measure_2nd": "click a second surface point",
-    "measure_orbit": "right-drag orbits · Esc exits"
+    "measure_orbit": "right-drag orbits · Esc exits",
+    "preview_failed": "failed to load 3D preview",
+    "context_lost": "3D context lost",
+    "context_lost_hint": "the graphics context was reset — reload the view to continue",
+    "context_lost_reload": "reload view"
+  },
+  "error_boundary": {
+    "title": "Something went wrong",
+    "hint": "The view crashed unexpectedly. Your work is saved — you can retry or reload the app.",
+    "details": "technical details",
+    "inline": "this section failed to render",
+    "reload": "reload app"
   }
 }

@@ -256,6 +256,17 @@
     "clear": "limpiar",
     "measure_hint": "clic en dos puntos de superficie",
     "measure_2nd": "clic en un segundo punto",
-    "measure_orbit": "arrastrar con botón derecho orbita · Esc sale"
+    "measure_orbit": "arrastrar con botón derecho orbita · Esc sale",
+    "preview_failed": "no se pudo cargar la vista previa 3D",
+    "context_lost": "contexto 3D perdido",
+    "context_lost_hint": "el contexto gráfico se reinició — recarga la vista para continuar",
+    "context_lost_reload": "recargar vista"
+  },
+  "error_boundary": {
+    "title": "Algo salió mal",
+    "hint": "La vista falló inesperadamente. Tu trabajo está guardado: puedes reintentar o recargar la aplicación.",
+    "details": "detalles técnicos",
+    "inline": "esta sección no pudo renderizarse",
+    "reload": "recargar aplicación"
   }
 }

@@ -256,6 +256,17 @@
     "clear": "effacer",
     "measure_hint": "cliquez deux points de surface",
     "measure_2nd": "cliquez un second point de surface",
-    "measure_orbit": "clic droit + glisser pour orbiter · Échap quitte"
+    "measure_orbit": "clic droit + glisser pour orbiter · Échap quitte",
+    "preview_failed": "échec du chargement de l'aperçu 3D",
+    "context_lost": "contexte 3D perdu",
+    "context_lost_hint": "le contexte graphique a été réinitialisé — rechargez la vue pour continuer",
+    "context_lost_reload": "recharger la vue"
+  },
+  "error_boundary": {
+    "title": "Une erreur est survenue",
+    "hint": "La vue a planté de façon inattendue. Votre travail est sauvegardé — réessayez ou rechargez l'application.",
+    "details": "détails techniques",
+    "inline": "cette section n'a pas pu s'afficher",
+    "reload": "recharger l'application"
   }
 }

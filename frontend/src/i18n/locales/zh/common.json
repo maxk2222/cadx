@@ -251,6 +251,17 @@
     "clear": "清除",
     "measure_hint": "点击两个表面点",
     "measure_2nd": "点击第二个表面点",
-    "measure_orbit": "右键拖动旋转 · Esc 退出"
+    "measure_orbit": "右键拖动旋转 · Esc 退出",
+    "preview_failed": "3D ",
+    "context_lost": "3D ",
+    "context_lost_hint": "——",
+    "context_lost_reload": ""
+  },
+  "error_boundary": {
+    "title": "",
+    "hint": "。——。",
+    "details": "",
+    "inline": "",
+    "reload": ""
   }
 }

@@ -251,6 +251,17 @@
     "clear": "クリア",
     "measure_hint": "表面の 2 点をクリック",
     "measure_2nd": "2 点目の表面点をクリック",
-    "measure_orbit": "右ドラッグでオービット · Esc で終了"
+    "measure_orbit": "右ドラッグでオービット · Esc で終了",
+    "preview_failed": "3Dプレビューをみめませんでした",
+    "context_lost": "3Dコンテキストがわれました",
+    "context_lost_hint": "グラフィックコンテキストがリセットされました。ビューをみみしてしてください",
+    "context_lost_reload": "ビューをみみ"
+  },
+  "error_boundary": {
+    "title": "がしました",
+    "hint": "ビューがせずクラッシュしました。はされています。するかアプリをみみしてください。",
+    "details": "な",
+    "inline": "このセクションをできませんでした",
+    "reload": "アプリをみみ"
   }
 }

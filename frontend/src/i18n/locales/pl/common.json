@@ -266,6 +266,17 @@
     "clear": "wyczyść",
     "measure_hint": "kliknij dwa punkty powierzchni",
     "measure_2nd": "kliknij drugi punkt powierzchni",
-    "measure_orbit": "prawy przycisk — orbita · Esc kończy"
+    "measure_orbit": "prawy przycisk — orbita · Esc kończy",
+    "preview_failed": "nie udało się wczytać podglądu 3D",
+    "context_lost": "utracono kontekst 3D",
+    "context_lost_hint": "kontekst graficzny został zresetowany — przeładuj widok, aby kontynuować",
+    "context_lost_reload": "przeładuj widok"
+  },
+  "error_boundary": {
+    "title": "Coś poszło nie tak",
+    "hint": "Widok nieoczekiwanie uległ awarii. Twoja praca jest zapisana — możesz spróbować ponownie lub przeładować aplikację.",
+    "details": "szczegóły techniczne",
+    "inline": "tej sekcji nie udało się wyrenderować",
+    "reload": "przeładuj aplikację"
   }
 }

@@ -8,19 +8,21 @@ import {
   OrbitControls,
 } from "@react-three/drei";
 import { Canvas, useLoader, useThree, type ThreeEvent } from "@react-three/fiber";
-import { Loader2 } from "lucide-react";
+import { Loader2, TriangleAlert } from "lucide-react";
 import {
   Component,
   Suspense,
   useEffect,
   useMemo,
   useRef,
+  useState,
   type ReactNode,
   type RefObject,
 } from "react";
 import * as THREE from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { STLLoader } from "three-stdlib";
+import i18n from "../../i18n";
 import { applyModelOpacity } from "../../lib/modelOpacity";
 
 export type ViewPreset = "iso" | "front" | "top" | "side";
@@ -141,7 +143,7 @@ class GlBoundary extends Component<{ children: ReactNode }, { err: boolean }> {
       return (
         <Html center>
           <div className="whitespace-nowrap text-sm text-red-400">
-            failed to load 3D preview
+            {i18n.t("viewer.preview_failed")}
           </div>
         </Html>
       );
@@ -262,6 +264,10 @@ export default function ModelCanvas({
   const dragging = useRef(false);
   const hoverPending = useRef<PickInfo | null>(null);
   const raf = useRef(0);
+  // WebGL context loss (GPU reset / driver crash / tab reclaim) leaves the
+  // canvas frozen — a remount (key bump) is the only reliable recovery
+  const [ctxLost, setCtxLost] = useState(false);
+  const [canvasKey, setCanvasKey] = useState(0);
 
   const emitHover = () => {
     raf.current = 0;
@@ -356,18 +362,28 @@ export default function ModelCanvas({
   );
 
   return (
-    <Canvas
-      // demand frameloop — render only on invalidation. Declarative commits
-      // and drei OrbitControls/Bounds invalidate themselves; imperative
-      // mutations (wireframe flag, STL normals, RegionFill colours) call
-      // invalidate() explicitly, with InvalidateOn as the catch-all.
-      // NOTE: no useLoader cache cleanup on unmount — the suspense cache is
-      // shared across canvases and transient preview URLs are not re-fetchable.
-      frameloop="demand"
-      camera={{ position: [60, 45, 60], fov: 40 }}
-      gl={{ preserveDrawingBuffer }}
-      style={{ cursor: pickEnabled ? "crosshair" : undefined }}
-    >
+    <div className="relative h-full w-full">
+      <Canvas
+        key={canvasKey}
+        // demand frameloop — render only on invalidation. Declarative commits
+        // and drei OrbitControls/Bounds invalidate themselves; imperative
+        // mutations (wireframe flag, STL normals, RegionFill colours) call
+        // invalidate() explicitly, with InvalidateOn as the catch-all.
+        // NOTE: no useLoader cache cleanup on unmount — the suspense cache is
+        // shared across canvases and transient preview URLs are not re-fetchable.
+        frameloop="demand"
+        camera={{ position: [60, 45, 60], fov: 40 }}
+        gl={{ preserveDrawingBuffer }}
+        style={{ cursor: pickEnabled ? "crosshair" : undefined }}
+        onCreated={({ gl }) => {
+          // preventDefault keeps the browser from discarding the context
+          // object; we remount the whole canvas on user confirm
+          gl.domElement.addEventListener("webglcontextlost", (e) => {
+            e.preventDefault();
+            setCtxLost(true);
+          });
+        }}
+      >
       <color attach="background" args={["#18181b"]} />
       <InvalidateOn deps={[url, format, wireframe, opacity, grid, matrix, children, viewCmd, autoRotate]} />
       <Suspense
@@ -439,6 +455,26 @@ export default function ModelCanvas({
       <Wireframe on={wireframe} model={modelRef} />
       <ModelOpacity value={opacity} url={url} frame={frameRef} />
       {glRef && <GlCapture glRef={glRef} />}
-    </Canvas>
+      </Canvas>
+      {ctxLost && (
+        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-bg/85 text-center backdrop-blur-sm">
+          <TriangleAlert className="h-8 w-8 text-amber-400" />
+          <div className="text-sm font-medium text-fg">{i18n.t("viewer.context_lost")}</div>
+          <div className="max-w-xs text-xs text-muted">
+            {i18n.t("viewer.context_lost_hint")}
+          </div>
+          <button
+            type="button"
+            className="rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500"
+            onClick={() => {
+              setCtxLost(false);
+              setCanvasKey((k) => k + 1);
+            }}
+          >
+            {i18n.t("viewer.context_lost_reload")}
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
