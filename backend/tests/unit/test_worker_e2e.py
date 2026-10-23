@@ -136,7 +136,7 @@ async def test_run_agent_job_waiting_then_resume(_db, monkeypatch):
     monkeypatch.setattr(wj, "QueueExecutor", lambda *a, **k: InProcessExecutor())
     spec = dict(SPEC)
     spec["open_questions"] = [{"question": "wall?", "blocking": True, "default_assumption": "2"}]
-    llm = FakeLLM([spec])
+    llm = FakeLLM([spec, PLAN, CODE, CRITIQUE])
     monkeypatch.setattr(wj, "_make_llm", lambda rt, **kw: llm)
     job, version = await _mk_version()
     # force clarification_mode=ask via project settings
@@ -155,6 +155,40 @@ async def test_run_agent_job_waiting_then_resume(_db, monkeypatch):
         assert v.status == VersionStatus.waiting_for_input
         assert j.questions and j.questions[0]["blocking"]
         assert j.resume_state["spec"]
+
+    # --- resume: answers unblock the spec and the original job is consumed ---
+    from cadx.spawn import SpawnError, enqueue_resume
+
+    async def _enqueue(_name: str, _args: dict) -> None:
+        pass
+
+    async with async_session() as db:
+        j = await db.get(Job, job.id)
+        _v, resume = await enqueue_resume(db, j, "Q: wall?\nA: 2", enqueue_fn=_enqueue)
+
+        # the answered job is superseded — its form must not stay answerable
+        assert j.status == JobStatus.succeeded
+        assert j.finished_at is not None
+        assert resume.type == JobType.resume
+        with pytest.raises(SpawnError):
+            await enqueue_resume(db, j, "Q: wall?\nA: 2", enqueue_fn=_enqueue)
+
+    # llm script continues with PLAN/CODE/CRITIQUE — resume skips intake
+    result = await wj.run_agent_job(
+        {}, {"job_id": str(resume.id), "version_id": str(version.id)}
+    )
+    assert result["status"] == "succeeded", result
+
+    async with async_session() as db:
+        r = await db.get(Job, resume.id)
+        v = await db.get(Version, version.id)
+        assert r.status == JobStatus.succeeded
+        assert v.status == VersionStatus.succeeded
+        # the clarified spec ran to completion — no second waiting cycle
+        assert not (r.questions or [])
+        assert any(
+            "Clarification answers" in a for a in (v.spec or {}).get("assumptions", [])
+        )
 
 
 @pytest.mark.slow

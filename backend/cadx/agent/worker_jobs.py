@@ -442,6 +442,24 @@ def _parent_ctx(version: Version, parent: Version | None) -> ParentContext:
     )
 
 
+def _apply_clarification_answers(spec: PartSpec, prompt: str) -> None:
+    """Consume the questions a resume job was spawned to answer.
+
+    A `resume` job only exists because the user answered (or accepted the
+    default for) every blocking question the previous job presented — but
+    the spec restored from resume_state still carries those questions with
+    blocking=True, so the clarify gate would wait again and enqueue another
+    resume forever. Mark them answered and mirror the user's Q/A tail into
+    spec.assumptions so spec-driven paths (not only the prompt) can see the
+    decisions."""
+    for q in spec.open_questions:
+        q.blocking = False
+    _sep, _hdr, tail = prompt.partition("Clarification answers:")
+    tail = tail.strip()
+    if tail and len(spec.assumptions) < 20:
+        spec.assumptions.append(f"Clarification answers: {tail}"[:500])
+
+
 # --------------------------------------------------------------------------- #
 # job runners                                                                  #
 # --------------------------------------------------------------------------- #
@@ -573,6 +591,7 @@ async def run_agent_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[st
         )
         if job.type == JobType.resume and job.resume_state and job.resume_state.get("spec"):
             actx.spec = PartSpec(**job.resume_state["spec"])
+            _apply_clarification_answers(actx.spec, version.prompt or "")
 
         try:
             outcome = await run_generation(actx)

@@ -13,6 +13,7 @@ import asyncio
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -1155,6 +1156,12 @@ async def enqueue_resume(
     v.status = VersionStatus.queued
     new_job = Job(version_id=v.id, type=JobType.resume, resume_state=job.resume_state)
     db.add(new_job)
+    # the waiting job's lifecycle ends here — its continuation is the resume.
+    # Leaving it waiting_for_input keeps the answer form live and lets a
+    # double-submit (or a stale UI) spawn parallel resumes on the same spec.
+    job.status = JobStatus.succeeded
+    job.finished_at = datetime.now(UTC)
+    job.log = (job.log or "") + f"answered — continued as job {new_job.id}\n"
     from cadx.api.deps import payload_envelope
 
     args = {"job_id": str(new_job.id), "version_id": str(v.id)}
@@ -1163,11 +1170,14 @@ async def enqueue_resume(
     try:
         await (enqueue_fn or _enqueue)("run_agent_job", args)
     except Exception:
-        # fail the new job and put the version back — the original job is
-        # still waiting_for_input, so 'failed' would misrepresent it
+        # fail the new job and put the version + original job back — the
+        # original job is still waiting_for_input, so 'failed'/'succeeded'
+        # would misrepresent it
         try:
             new_job.status = JobStatus.failed
             v.status = VersionStatus.waiting_for_input
+            job.status = JobStatus.waiting_for_input
+            job.finished_at = None
             await db.commit()
         except Exception:  # never mask the original enqueue error
             log.warning("enqueue_failure_mark_failed_error", func="run_agent_job")

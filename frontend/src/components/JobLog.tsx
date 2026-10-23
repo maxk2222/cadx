@@ -224,6 +224,7 @@ export default function JobLog({
   } = stream;
   const { t } = useTranslation("jobs");
   const [restarting, setRestarting] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const nav = useNavigate();
   const toast = useToast();
   const { boxRef: logBoxRef, onScroll } = useStickyBottom(events);
@@ -258,7 +259,8 @@ export default function JobLog({
     : 0;
 
   const submitAnswers = (useDefaults = false) => {
-    if (!job?.questions) return;
+    if (!job?.questions || submitting) return;
+    setSubmitting(true);
     api
       .answerJob(
         jobId!,
@@ -270,11 +272,15 @@ export default function JobLog({
         })),
       )
       .then((r) => {
+        setSubmitting(false);
         setJob(null);
         onSelectJob?.(r.job_id); // answering spawns a resume job
         onDone?.();
       })
-      .catch((e) => toast(errMsg(e), "error"));
+      .catch((e) => {
+        setSubmitting(false);
+        toast(errMsg(e), "error");
+      });
   };
 
   return (
@@ -504,10 +510,16 @@ export default function JobLog({
               type="submit"
               variant="primary"
               className="bg-amber-600 hover:bg-amber-500"
+              disabled={submitting}
             >
               {t("log_submit")}
             </Btn>
-            <Btn type="button" variant="ghost" onClick={() => submitAnswers(true)}>
+            <Btn
+              type="button"
+              variant="ghost"
+              disabled={submitting}
+              onClick={() => submitAnswers(true)}
+            >
               use defaults
             </Btn>
           </div>
