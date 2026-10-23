@@ -272,7 +272,14 @@ def _attach_verify_spec(
             and rt.agent_feature_feedback
         ):
             try:
-                feats = [Feature.model_validate(f) for f in spec_dict["features"]]
+                from cadx.cad.standard_parts import covered_feature_indices
+
+                covered = covered_feature_indices(spec_dict)
+                feats = [
+                    Feature.model_validate(f)
+                    for i, f in enumerate(spec_dict["features"])
+                    if i not in covered
+                ]
                 feature_findings = [
                     f.model_dump() for f in compare_features(feats, MeasuredFeatures(**measured))
                 ]

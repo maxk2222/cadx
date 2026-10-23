@@ -7,6 +7,8 @@ import math
 import re
 from typing import Any
 
+from build123d import Rot
+
 from cadx.cad import catalog
 from cadx.llm.schemas import PartSpec, StandardPartSpec
 
@@ -18,6 +20,17 @@ _AXIS_ROTATIONS = {
     "+z": (0.0, 0.0, 0.0),
     "-z": (180.0, 0.0, 0.0),
 }
+# head-datum catalog classes (screws: head face at local z=0, body extends
+# -Z) — the declared axis is the shank direction, so the transform maps
+# local -Z onto the axis and a standing screw seats on its head
+_DOWN_AXIS_ROTATIONS = {
+    "+x": (0.0, -90.0, 0.0),
+    "-x": (0.0, 90.0, 0.0),
+    "+y": (90.0, 0.0, 0.0),
+    "-y": (-90.0, 0.0, 0.0),
+    "+z": (180.0, 0.0, 0.0),
+    "-z": (0.0, 0.0, 0.0),
+}
 _THREAD_SIZE_RE = re.compile(r"^M(?P<diameter>\d+(?:\.\d+)?)[x-](?P<pitch>\d+(?:\.\d+)?)$", re.I)
 # Constructor params that take a host/object, not a scalar — the class is a
 # feature op on an existing part (hole for a fastener, seat for a bearing…)
@@ -28,8 +41,9 @@ _CONTEXT_REQUIRED_PARAMS = {"fastener", "bearing", "ring", "key"}
 def _part_axis(part: StandardPartSpec) -> str:
     if part.axis:
         return part.axis
-    category = (catalog.find_entry(part.class_name) or {}).get("category")
-    return "+x" if category in {"screws", "threads", "pipes", "shaft_keys"} else "+z"
+    # frame contract: standalone parts rest on XY with their axis up — a
+    # screw/pipe lies flat only when the spec explicitly asks for ±x/±y
+    return "+z"
 
 
 def _literal(value: Any) -> str:
@@ -74,11 +88,13 @@ def _part_values(part: StandardPartSpec) -> tuple[type, dict[str, Any], dict[str
         size=part.size or None,
         parameters=parameters,
     )
-    schema = (entry.get("parameters") or {})
+    schema = entry.get("parameters") or {}
     return cls, values, schema
 
 
-def _thread_data(part: StandardPartSpec, cls: type, values: dict[str, Any]) -> dict[str, Any] | None:
+def _thread_data(
+    part: StandardPartSpec, cls: type, values: dict[str, Any]
+) -> dict[str, Any] | None:
     entry = catalog.find_entry(part.class_name) or {}
     category = entry.get("category")
     threadable = category == "threads" or (
@@ -100,9 +116,7 @@ def _thread_data(part: StandardPartSpec, cls: type, values: dict[str, Any]) -> d
             simple=True,
         )
     diameter = (
-        report.get("thread_diameter")
-        or report.get("major_diameter")
-        or report.get("diameter")
+        report.get("thread_diameter") or report.get("major_diameter") or report.get("diameter")
     )
     pitch = report.get("thread_pitch") or report.get("pitch")
     size = str(part.size or values.get("size") or "")
@@ -189,29 +203,82 @@ def standard_part_bbox(part: StandardPartSpec) -> list[float]:
     return [x, y, z]
 
 
+# anatomy a fastener class supplies by definition — an intake spec that lists
+# "Torx drive recess" or "threaded shank" as its own feature must not drop the
+# recipe path: the catalog part already carries that geometry (a wrong
+# description surfaces later via verify_spec on the measured solid, honestly)
+_INTRINSIC_FASTENER_FEATURES = re.compile(
+    r"head|counter\s*sunk|drive|recess|socket|torx|hex|allen|phillips|"
+    r"thread|shank|tip|washer",
+    re.I,
+)
+_FASTENER_CATEGORIES = {"screws", "nuts", "washers", "standoffs", "inserts"}
+
+
+def _is_intrinsic_fastener_feature(feature: Any) -> bool:
+    text = f"{_get(feature, 'name') or ''} {_get(feature, 'type') or ''}"
+    return bool(_INTRINSIC_FASTENER_FEATURES.search(text))
+
+
+def _get(obj: Any, key: str, default: Any = None) -> Any:
+    """dict- and attribute-tolerant field access — the spec reaches callers
+    both as a PartSpec and as a plain spec_dict through the executor."""
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def covered_feature_indices(spec: Any) -> set[int]:
+    """Indices into ``spec.features`` that a catalog standard part supplies —
+    a screw's head/shank/drive recess are intrinsic catalog geometry, not
+    independent machining ops to cut, anchor or measure."""
+    parts = _get(spec, "standard_parts") or []
+    if not parts:
+        return set()
+    has_fastener = any(
+        (catalog.find_entry(_get(part, "class_name")) or {}).get("category")
+        in _FASTENER_CATEGORIES
+        for part in parts
+    )
+    covered: set[int] = set()
+    for i, feature in enumerate(_get(spec, "features") or []):
+        name = _get(feature, "name")
+        if any(name and name in (_get(part, "covers_features") or []) for part in parts) or (
+            has_fastener and name and _is_intrinsic_fastener_feature(feature)
+        ):
+            covered.add(i)
+    return covered
+
+
 def is_standard_only(spec: PartSpec) -> bool:
     if not spec.standard_parts or any(question.blocking for question in spec.open_questions):
         return False
-    feature_names = {feature.name for feature in spec.features if feature.name}
-    covered = {name for part in spec.standard_parts for name in part.covers_features}
-    if feature_names - covered:
+    covered = covered_feature_indices(spec)
+    if any(
+        feature.name and i not in covered for i, feature in enumerate(spec.features)
+    ):
         return False
     try:
         reports = validate_standard_parts(spec.standard_parts)
     except (TypeError, ValueError):
         return True
     for row in reports:
-        part: StandardPartSpec = row["part"]
         thread = row["thread"]
         if thread is None:
             continue
-        for feature in spec.features:
-            if feature.name not in part.covers_features:
+        for i, feature in enumerate(spec.features):
+            if i not in covered:
                 continue
             feature_kind = str(feature.type or "").lower()
             if "thread" not in feature_kind and not feature.thread_spec:
                 continue
             requested_pitch = feature.dims.get("thread_pitch")
+            # dims on covered features are sanitized away — a conflicting
+            # pitch must still be caught via the free-text thread_spec
+            if requested_pitch is None:
+                m = _THREAD_SIZE_RE.match(str(feature.thread_spec or "").strip())
+                if m:
+                    requested_pitch = float(m.group("pitch"))
             requested_length = feature.dims.get("thread_length") or feature.dims.get("length")
             if requested_pitch and abs(float(requested_pitch) - thread["pitch"]) > 1e-6:
                 return False
@@ -222,13 +289,36 @@ def is_standard_only(spec: PartSpec) -> bool:
     return True
 
 
+def _measure_placement(
+    cls: type, values: dict[str, Any], schema: dict[str, Any], axis: str
+) -> tuple[tuple[float, float, float], float, float]:
+    """(rotation_xyz, z_lift, local_min_z) for one catalog part.
+
+    Catalog conventions differ: fasteners are built head-datum-first (body
+    extends local -Z) while washers/nuts sit on/centre the XY plane. Measure
+    the prototype once so the emitted transform points the declared axis
+    correctly AND seats the part on XY — a head-up flip is the difference
+    between "standing on the head" and "impaled on its own tip"."""
+    rotation = _AXIS_ROTATIONS[axis]
+    try:
+        proto_kwargs = {k: v for k, v in values.items() if k != "simple"}
+        if "simple" in schema:
+            proto_kwargs["simple"] = True
+        proto = cls(**proto_kwargs)
+        bb = proto.bounding_box()
+        if bb.max.Z <= 1e-6 and bb.min.Z < -1e-6:
+            rotation = _DOWN_AXIS_ROTATIONS[axis]
+        z_lift = -float((Rot(*rotation) * proto).bounding_box().min.Z)
+        return rotation, z_lift, float(bb.min.Z)
+    except Exception:
+        return rotation, 0.0, 0.0
+
+
 def build_standard_part_code(parts: list[StandardPartSpec]) -> str:
     reports = validate_standard_parts(parts)
     imports: dict[str, list[str]] = {}
     uses_pipe = any(row["part"].class_name == "Pipe" for row in reports)
-    needs_countersunk_profile = any(
-        row["part"].class_name == "CounterSunkScrew" for row in reports
-    )
+    needs_countersunk_profile = any(row["part"].class_name == "CounterSunkScrew" for row in reports)
     for row in reports:
         cls = row["class"]
         module = str(cls.__module__)
@@ -255,6 +345,7 @@ def build_standard_part_code(parts: list[StandardPartSpec]) -> str:
         schema: dict[str, Any] = (catalog.find_entry(part.class_name) or {}).get("parameters") or {}
         thread = row["thread"]
         threaded = thread is not None
+        rotation, z_lift, proto_min_z = _measure_placement(cls, values, schema, axis)
         kwargs: list[str] = []
         for name, value in values.items():
             if name == "simple":
@@ -266,8 +357,7 @@ def build_standard_part_code(parts: list[StandardPartSpec]) -> str:
             path_key = f"part_{counter}_path_length"
             params[path_key] = float(part.length_mm or 0.0)
             kwargs.append(
-                "path=Edge.make_line(Vector(0, 0, 0), "
-                f"Vector(0, 0, PARAMS[{_literal(path_key)}]))"
+                f"path=Edge.make_line(Vector(0, 0, 0), Vector(0, 0, PARAMS[{_literal(path_key)}]))"
             )
         if "simple" in schema:
             simple_value = '(CADX_DETAIL_MODE == "preview")' if threaded else "True"
@@ -299,8 +389,8 @@ def build_standard_part_code(parts: list[StandardPartSpec]) -> str:
                 params[dia_key] = thread["major_diameter"]
                 params[length_key] = thread["length"]
                 constructors.append(
-                    f"if CADX_DETAIL_MODE == \"preview\":\n"
-                    f"    {ident} = Cylinder("
+                    f'if CADX_DETAIL_MODE == "preview":\n'
+                    f"    {ident} = Pos(0.0, 0.0, {proto_min_z}) * Cylinder("
                     f"radius=PARAMS[{_literal(dia_key)}] / 2, "
                     f"height=PARAMS[{_literal(length_key)}], "
                     "align=(Align.CENTER, Align.CENTER, Align.MIN))\n"
@@ -309,9 +399,8 @@ def build_standard_part_code(parts: list[StandardPartSpec]) -> str:
                 )
             else:
                 constructors.append(f"{ident} = {constructor}")
-            rotation = _AXIS_ROTATIONS[axis]
             placed = (
-                f"Pos({position[0]}, {position[1]}, {position[2]}) * "
+                f"Pos({position[0]}, {position[1]}, {position[2] + z_lift}) * "
                 f"Rot({rotation[0]}, {rotation[1]}, {rotation[2]}) * {ident}"
             )
             placements.append(placed)

@@ -22,6 +22,7 @@ from build123d import (
     GridLocations,
     Locations,
     Mode,
+    Part,
     Plane,
     Polygon,
     Pos,
@@ -172,6 +173,91 @@ def through_hole(
                 Cylinder(radius=cbore_dia / 2, height=cd, mode=Mode.SUBTRACT)
 
     _in_scope(on, make)
+
+
+_COARSE_PITCH: dict[int, float] = {
+    3: 0.5,
+    4: 0.7,
+    5: 0.8,
+    6: 1.0,
+    7: 1.0,
+    8: 1.25,
+    10: 1.5,
+    12: 1.75,
+    14: 2.0,
+    16: 2.0,
+    18: 2.5,
+    20: 2.5,
+    22: 2.5,
+    24: 3.0,
+    27: 3.0,
+    30: 3.5,
+}
+
+
+def tapped_hole(
+    major_d: float,
+    pitch: float | None = None,
+    length: float | None = None,
+    *,
+    hand: str = "right",
+    drill_dia: float | None = None,
+) -> Part:
+    """ISO internal-thread cutter — subtract the returned solid:
+
+        result = result - Pos(0, 0, face_z) * tapped_hole(8, 1.25, 20)
+
+    The cutter's mouth sits at z=0 and the hole extends to ``z=-length``;
+    it overshoots the mouth by 0.5 mm so a Pos on the opening face cuts
+    cleanly. ``pitch`` defaults to the ISO coarse table for ``major_d``;
+    ``drill_dia`` defaults to ``major_d - pitch`` (standard tap drill).
+
+    Detail-mode aware: in preview the cutter is the smooth tap-drill bore
+    (the thread shows via the CADX_FEATURES overlay — do NOT model a cue,
+    it hides the bore from feature measurement). In export the cutter is
+    the bore fused with the helical groove — an ``IsoThread(external=True)``
+    ridge solid, which is exactly what ``ThreadedHole`` subtracts: external
+    ridge shape == groove channel for the symmetric V profile. In export the
+    returned solid is tagged ``_cadx_thread`` so the runner can count the
+    real thread — assign it a name (``tap = tapped_hole(...)``), don't drop
+    it."""
+    from build123d import Compound
+
+    from .ops import detail_mode as _mode
+
+    major_d = float(major_d)
+    if pitch is None:
+        pitch = _COARSE_PITCH[min(_COARSE_PITCH, key=lambda k: abs(k - major_d))]
+    pitch = float(pitch)
+    if length is None:
+        raise ValueError("tapped_hole: pass length=hole depth (part span + margin for through)")
+    length = float(length)
+    drill = float(drill_dia) if drill_dia is not None else major_d - pitch
+    bore = Pos(0, 0, -length / 2) * Cylinder(drill / 2, length + 1)
+    if _mode() != "export":
+        return bore
+    from bd_warehouse.thread import IsoThread
+
+    groove = IsoThread(
+        major_diameter=major_d,
+        pitch=pitch,
+        length=length + pitch,
+        external=True,
+        hand=hand,
+        end_finishes=("square", "square"),
+        interference=0.15,
+        simple=False,
+    ).move(Pos(0, 0, -(length + pitch / 2)))
+    cutter = Compound(children=[bore, *groove.solids()])
+    cutter._cadx_thread = {  # type: ignore[attr-defined]
+        "kind": "thread",
+        "major_diameter": major_d,
+        "pitch": pitch,
+        "length": length,
+        "external": False,
+        "hand": hand,
+    }
+    return cutter
 
 
 def insert_pocket(

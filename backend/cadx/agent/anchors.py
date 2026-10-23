@@ -155,6 +155,20 @@ def _bolt_size(text: str) -> str:
     return m.group(0) if m else ""
 
 
+def _independent_features(spec: PartSpec) -> list[Feature]:
+    """Spec features that are NOT supplied by a catalog standard part — a
+    countersunk head or threaded shank on a catalog screw is intrinsic part
+    geometry, never a bore to anchor, re-cut or measure."""
+    try:
+        from cadx.cad.standard_parts import covered_feature_indices
+    except Exception:
+        return list(spec.features)
+    covered = covered_feature_indices(spec)
+    if not covered:
+        return list(spec.features)
+    return [f for i, f in enumerate(spec.features) if i not in covered]
+
+
 def _hole_like(f: Feature) -> bool:
     """Spec feature that is (or carries) a bore: hole-ish type, a hole-ish
     name ('hole'/'bore'/'loch'/'bohrung' — intake writes EN and DE names), or
@@ -218,7 +232,7 @@ def _hole_dia(f: Feature) -> float | None:
 def _spec_hole_dias(spec: PartSpec) -> list[tuple[float, str]]:
     """(diameter, name) of spec features that look like holes, sorted by name."""
     out = []
-    for f in spec.features:
+    for f in _independent_features(spec):
         if not _hole_like(f):
             continue
         dia = _hole_dia(f)
@@ -533,7 +547,7 @@ def _spec_anchors(spec: PartSpec) -> list[Anchor]:
     if bounds is None:
         return []  # no declared envelope — end-relative hints unresolvable
     out: list[Anchor] = []
-    for f in spec.features:
+    for f in _independent_features(spec):
         if not _hole_like(f):
             continue
         text = str(f.position or "").strip() or str(f.description or "")
@@ -667,7 +681,7 @@ def _typed_bore_geo(
     phantom absorb a +y bore's name."""
     out: list[tuple[Feature, str, float, list[tuple[float, float]]]] = []
     bounds = _spec_bounds(spec)
-    for f in spec.features:
+    for f in _independent_features(spec):
         if not _hole_like(f):
             continue
         text = str(f.position or "").strip() or str(f.description or "")

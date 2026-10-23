@@ -246,16 +246,30 @@ def sanitize_standard_part_dims(spec: PartSpec) -> list[str]:
         dim = getattr(spec, field)
         tolerance = max(0.25, abs(value) * 0.02)
         if dim.source == "stated" and abs(float(dim.value) - value) > tolerance:
+            question_text = (
+                f"The {part.class_name} catalog dimensions give {axis}={value:g} mm, "
+                f"but the request states {axis}={dim.value:g} mm. Which should govern?"
+            )
+            existing = next((q for q in spec.open_questions if q.question == question_text), None)
+            if existing is not None and not existing.blocking:
+                # resolved with the default ("keep catalog dims") — apply it,
+                # otherwise verify keeps flagging stated-vs-catalog forever
+                setattr(
+                    spec,
+                    field,
+                    Dim(value=value, unit="mm", source="assumed"),
+                )
+                notes.append(
+                    f"{part.class_name} catalog {axis}={value:g} mm governs (question resolved)"
+                )
+                continue
             question = OpenQuestion(
-                question=(
-                    f"The {part.class_name} catalog dimensions give {axis}={value:g} mm, "
-                    f"but the request states {axis}={dim.value:g} mm. Which should govern?"
-                ),
+                question=question_text,
                 why_it_matters="A catalog part cannot keep both dimensions and the stated norm.",
                 default_assumption="Keep the exact catalog dimensions.",
                 blocking=True,
             )
-            if not any(q.question == question.question for q in spec.open_questions):
+            if existing is None:
                 spec.open_questions.append(question)
             notes.append(f"{part.class_name} catalog {axis} dimension conflicts with stated size")
             continue
@@ -270,6 +284,49 @@ def sanitize_standard_part_dims(spec: PartSpec) -> list[str]:
         assumption = f"Nominal dimensions for {part.class_name} come from the installed catalog."
         if assumption not in spec.assumptions:
             spec.assumptions.append(assumption)
+    notes.extend(_sanitize_covered_features(spec, part.class_name))
+    return notes
+
+
+def _sanitize_covered_features(spec: PartSpec, class_name: str) -> list[str]:
+    """Hallucinated dims on catalog-covered features (a stated "head_diameter
+    10" vs the real dk=18.8) contradict the norm table forever — the catalog
+    governs every intrinsic dimension, so strip them instead of letting
+    critique/improve fight the standard's geometry. Thread-pitch conflicts
+    are still caught by is_standard_only via the free-text thread_spec."""
+    from cadx.cad.standard_parts import covered_feature_indices
+
+    covered = covered_feature_indices(spec)
+    notes: list[str] = []
+    if not covered:
+        return notes
+    for i, feature in enumerate(spec.features):
+        if i in covered and feature.dims:
+            feature.dims = {}
+            notes.append(f"catalog {class_name} governs '{feature.name}' dimensions")
+    # verification questions that quote a covered feature's hallucinated
+    # numbers ("is the head diameter <= 10 mm?") can never pass — the
+    # catalog answer is norm-defined. Keep questions about the part as a
+    # whole (seating, orientation, presence).
+    covered_words = {
+        w
+        for i, feature in enumerate(spec.features)
+        if i in covered
+        for w in re.findall(r"[a-zA-Z]{4,}", f"{feature.name or ''} {feature.type or ''}")
+    }
+    if not covered_words:
+        return notes
+
+    def _about_covered(question_text: str) -> bool:
+        q_words = set(re.findall(r"[a-zA-Z]{4,}", question_text.lower()))
+        return any(qw[:5] == cw.lower()[:5] for qw in q_words for cw in covered_words)
+
+    kept = [vq for vq in spec.verification_questions if not _about_covered(str(vq))]
+    for vq in spec.verification_questions:
+        if _about_covered(str(vq)):
+            notes.append(f"dropped catalog-internal check: {str(vq)[:80]}")
+    if len(kept) != len(spec.verification_questions):
+        spec.verification_questions = kept
     return notes
 
 

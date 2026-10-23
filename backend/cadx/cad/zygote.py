@@ -82,6 +82,9 @@ def _reply(msg: dict) -> None:
 def main() -> int:
     # --- warmup: pull in the expensive modules so children get them via fork
     sys.path.insert(0, str(Path(__file__).resolve().parent))  # cadlib import
+    # package root too: `import cadx.cad.*` must resolve to this tree — under
+    # -I, PYTHONPATH is ignored and a stale install would shadow the live code
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     try:
         import build123d  # noqa: F401
     except Exception:

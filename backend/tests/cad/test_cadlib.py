@@ -676,3 +676,95 @@ def test_finish_edges_does_not_silently_ignore_empty_selection():
     body = Box(20, 20, 10, align=_ALIGN_MIN)
     with pytest.raises(ValueError, match="was not applied"):
         cadlib.finish_edges(body, [], kind="chamfer", size=1.0)
+
+
+def test_tapped_hole_preview_is_smooth_bore(tmp_path):
+    """Preview mode: the cutter is a plain tap-drill cylinder — the thread
+    visual comes from CADX_FEATURES overlays, and a smooth bore wall keeps
+    hole measurement working."""
+    code = (
+        "from build123d import *\n"
+        "import cadlib\n"
+        "PARAMS = {}\n"
+        "result = Box(20, 20, 12, align=(Align.CENTER, Align.CENTER, Align.MIN))\n"
+        "tap = cadlib.tapped_hole(8, 1.25, 14)\n"
+        "result = result - Pos(0, 0, 12) * tap\n"
+    )
+    out = run_user_code(code, tmp_path / "work")
+    assert out.ok, out.error
+    assert out.detail_mode == "preview"
+    assert out.thread_count == 0
+    brep = tmp_path / "work" / "model.brep"
+    assert brep.exists()
+    from build123d import GeomType, import_brep
+
+    body = import_brep(str(brep))
+    cyls = [f for f in body.faces() if f.geom_type == GeomType.CYLINDER]
+    assert cyls, "preview tapped hole must keep a clean cylindrical wall"
+
+
+def test_tapped_hole_export_builds_real_groove_and_counts(tmp_path):
+    """Export mode: bore + IsoThread groove cutter, tagged _cadx_thread —
+    the runner counts one real thread."""
+    code = (
+        "from build123d import *\n"
+        "import cadlib\n"
+        "PARAMS = {}\n"
+        "result = Box(20, 20, 12, align=(Align.CENTER, Align.CENTER, Align.MIN))\n"
+        "tap = cadlib.tapped_hole(8, 1.25, 14)\n"
+        "result = result - Pos(0, 0, 12) * tap\n"
+        'CADX_FEATURES = [{"kind": "thread", "thread_spec": "M8x1.25-6H",'
+        ' "major_diameter": 8.0, "pitch": 1.25, "length": 14.0,'
+        ' "start": 0.0, "external": False, "hand": "right",'
+        ' "axis": "z", "position_mm": [0.0, 0.0, 12.0]}]\n'
+    )
+    out = run_user_code(code, tmp_path / "work", detail_mode="export")
+    assert out.ok, out.error
+    assert out.detail_mode == "export"
+    assert out.thread_count == 1
+    from build123d import GeomType, import_brep
+
+    body = import_brep(str(tmp_path / "work" / "model.brep"))
+    bsplines = [f for f in body.faces() if f.geom_type == GeomType.BSPLINE]
+    assert bsplines, "export tapped hole must carry helical groove faces"
+
+
+def test_tapped_hole_declared_helix_counts_as_real_thread(tmp_path):
+    """Hand-rolled Helix sweep + declared thread feature — the export run
+    counts it as a real thread instead of failing the finalize gate."""
+    code = (
+        "from build123d import *\n"
+        "PARAMS = {}\n"
+        "result = Box(20, 20, 12, align=(Align.CENTER, Align.CENTER, Align.MIN))\n"
+        "bore = Pos(0, 0, 6) * Cylinder(3.4, 16)\n"
+        "result = result - bore\n"
+        "minor_r, pitch, helix_h = 3.4, 1.25, 12.0\n"
+        "with BuildSketch(Plane.XZ.offset(minor_r)) as ts:\n"
+        "    with BuildLine():\n"
+        "        Polyline((minor_r - 0.35, -pitch / 2 + 0.1), (3.9, -0.3),"
+        " (3.9, 0.3), (minor_r - 0.35, pitch / 2 - 0.1), close=True)\n"
+        "    make_face()\n"
+        "path = Helix(pitch=pitch, height=helix_h, radius=minor_r)\n"
+        "with BuildPart() as tp:\n"
+        "    sweep(sections=ts.sketch, path=path, is_frenet=True)\n"
+        "result = result - tp.part\n"
+        'CADX_FEATURES = [{"kind": "thread", "thread_spec": "M8x1.25-6H",'
+        ' "major_diameter": 8.0, "pitch": 1.25, "length": 12.0,'
+        ' "start": 0.0, "external": False, "hand": "right",'
+        ' "axis": "z", "position_mm": [0.0, 0.0, 12.0]}]\n'
+    )
+    out = run_user_code(code, tmp_path / "work", detail_mode="export")
+    assert out.ok, out.error
+    assert out.thread_count == 1
+
+
+def test_tapped_hole_pitch_and_drill_defaults():
+    from cadx.cad.cadlib import ops as cops
+
+    cops.set_detail_mode("preview")
+    c = cadlib.tapped_hole(8, length=14)
+    bb = c.bounding_box()
+    # M8 -> coarse 1.25 -> drill 6.75
+    assert pytest.approx(6.75, abs=0.01) == bb.size.X
+    assert pytest.approx(0.5, abs=0.01) == bb.max.Z
+    cops.set_detail_mode("preview")

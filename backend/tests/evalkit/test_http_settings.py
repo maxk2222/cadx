@@ -12,8 +12,7 @@ from cadx.evalkit.http import HttpDriver
 
 @pytest.fixture
 def driver(monkeypatch: pytest.MonkeyPatch) -> HttpDriver:
-    d = HttpDriver("http://testserver")
-    return d
+    return HttpDriver("http://testserver")
 
 
 def _handler(captured: dict):

@@ -3617,10 +3617,15 @@ async def _run_cad(  # noqa: C901
         if s.agent_feature_feedback and features and spec.features:
             try:
                 from cadx.cad.features import MeasuredFeatures
+                from cadx.cad.standard_parts import covered_feature_indices
 
+                covered = covered_feature_indices(spec)
                 feature_findings = [
                     f.model_dump()
-                    for f in compare_features(spec.features, MeasuredFeatures(**features))
+                    for f in compare_features(
+                        [f for i, f in enumerate(spec.features) if i not in covered],
+                        MeasuredFeatures(**features),
+                    )
                 ]
             except Exception as e:
                 log.warning("features.compare_failed", error=str(e)[:200])
@@ -4012,17 +4017,110 @@ async def _run_cad(  # noqa: C901
             best.iteration,
             "rebuilding selected candidate with real thread geometry",
         )
-        exact = await ctx.executor.execute(
-            _exec_payload(
-                ctx,
-                best.code_response.code if best.code_response else "",
-                best.iteration,
-                full_exports=False,
-                subdir="final_export",
-                detail_mode="export",
-                params_override=best.exec_result.get("params_used") or None,
+        base_code = best.code_response.code if best.code_response else ""
+        params_ovr = best.exec_result.get("params_used") or None
+
+        async def _export_rebuild(code: str, subdir: str = "final_export") -> dict[str, Any]:
+            return await ctx.executor.execute(
+                _exec_payload(
+                    ctx,
+                    code,
+                    best.iteration,
+                    full_exports=False,
+                    subdir=subdir,
+                    detail_mode="export",
+                    params_override=params_ovr,
+                )
             )
-        )
+
+        exact = await _export_rebuild(base_code)
+        if (
+            base_code
+            and (not exact.get("ok") or int(exact.get("thread_count") or 0) < expected_threads)
+        ):
+            # export-only failure class: the preview build passed, so the defect
+            # is usually a fragile construction that only the real helical groove
+            # exposes (helical bore edges defeat `edges() >> Axis.Z` selections —
+            # that operator sorts, it does not filter). Feed it back as ONE
+            # bounded improve pass — a failed export must never silently ship
+            # preview geometry.
+            err_text = (
+                str(exact.get("error") or "").strip()
+                or f"only {int(exact.get('thread_count') or 0)}/{expected_threads} "
+                "real thread feature(s) built"
+            )
+            await ctx.emit(
+                "improve",
+                best.iteration,
+                "export-detail rebuild failed — one repair pass",
+            )
+            issue = {
+                "source": "exec",
+                "severity": "major",
+                "what": (
+                    "EXPORT-detail rebuild of the selected candidate failed while "
+                    "the preview build passed: " + err_text[:400]
+                ),
+                "fix_hint": (
+                    "export detail runs the identical code but cadlib.tapped_hole "
+                    "builds a real helical groove, adding helical bore edges — "
+                    "select fillet/chamfer edges with edges_at(axis='z', geom='line') "
+                    "(never `edges() >> Axis.Z`, which sorts without filtering), and "
+                    "keep the tapped_hole cutter assignment so its thread tag survives"
+                ),
+            }
+            new_code: str | None = None
+            patch_errors: list[str] | None = None
+            for attempt in range(1, s.agent_patch_retries + 1):
+                try:
+                    presp = await improve_step.run(
+                        ctx,
+                        spec,
+                        plan,
+                        base_code=base_code,
+                        issues=[issue],
+                        features=best.exec_result.get("features") or None,
+                        patch_errors=patch_errors,
+                        attempts=attempt_log,
+                        iteration=best.iteration,
+                        attempt=attempt,
+                        verify_fn=_session_verify_fn(ctx, best.iteration, art_attempt),
+                        render_fn=_session_render_fn(ctx, best.iteration, art_attempt),
+                    )
+                except Exception as e:
+                    log.warning("agent.finalize_repair_failed", error=repr(e))
+                    break
+                new_code, patch_errors = _resolve_patch(base_code, presp, patch_mode)
+                if new_code is not None:
+                    _log_attempt(attempt_log, "export repair", base_code, new_code)
+                    break
+            if new_code is not None:
+                # preview sanity: a repair that breaks the preview build cannot
+                # become the export candidate
+                sanity = await ctx.executor.execute(
+                    _exec_payload(
+                        ctx,
+                        new_code,
+                        best.iteration,
+                        full_exports=False,
+                        subdir=f"a{next(art_attempt)}",
+                        light=True,
+                        params_override=params_ovr,
+                    )
+                )
+                if sanity.get("ok"):
+                    retry = await _export_rebuild(new_code, subdir="final_export_repair")
+                    if retry.get("ok") and int(retry.get("thread_count") or 0) >= expected_threads:
+                        if best.code_response is not None:
+                            best.code_response = best.code_response.model_copy(
+                                update={"code": new_code}
+                            )
+                        exact = retry
+                        await ctx.emit(
+                            "finalize",
+                            best.iteration,
+                            "export repair applied — real thread geometry verified",
+                        )
         if not exact.get("ok"):
             outcome.error = (
                 "final real-thread build failed; preview geometry was not exported: "
@@ -4069,7 +4167,9 @@ async def _run_cad(  # noqa: C901
         return outcome
     if expected_threads:
         missing_formats = [
-            fmt for fmt in ("step", "stl", "3mf", "glb") if not (exports.get("exports") or {}).get(fmt)
+            fmt
+            for fmt in ("step", "stl", "3mf", "glb")
+            if not (exports.get("exports") or {}).get(fmt)
         ]
         if missing_formats:
             outcome.error = (
@@ -4219,8 +4319,15 @@ async def _run_mesh(  # noqa: C901
 
                 measured = mesh_features_to_measured(mesh_feats)
                 if spec.features:
+                    from cadx.cad.standard_parts import covered_feature_indices
+
+                    covered = covered_feature_indices(spec)
                     feature_findings += [
-                        f.model_dump() for f in compare_features(spec.features, measured)
+                        f.model_dump()
+                        for f in compare_features(
+                            [f for i, f in enumerate(spec.features) if i not in covered],
+                            measured,
+                        )
                     ]
                 if ctx.anchors:
                     anchor_findings = [
@@ -6002,9 +6109,7 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
 
     # ---------- CLARIFY ----------
     blocking = [q for q in spec.open_questions if q.blocking]
-    norm_part_blocking = any(
-        "registered standard component" in q.why_it_matters for q in blocking
-    )
+    norm_part_blocking = any("registered standard component" in q.why_it_matters for q in blocking)
     if blocking and (clarify or norm_part_blocking):
         outcome.status = "waiting_for_input"
         outcome.questions = [q.model_dump() for q in spec.open_questions]
@@ -6016,6 +6121,25 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
             max_iterations=max_iterations,
         )
         return outcome
+    # not asking (assume/proceed): unresolved blocking questions must not
+    # shadow-gate downstream paths (is_standard_only, recipes) — consume them
+    # with their declared default assumption, same as a resume would
+    resolved_any = False
+    for question in spec.open_questions:
+        if question.blocking:
+            question.blocking = False
+            resolved_any = True
+            default = question.default_assumption
+            if default and default not in spec.assumptions:
+                spec.assumptions.append(default)
+    if resolved_any:
+        # apply the consequences of the defaults — a resolved "catalog dims
+        # govern" question must actually update the spec dims, or verify keeps
+        # flagging the stated-vs-catalog mismatch on every iteration
+        resolved_notes = intake_step.sanitize_standard_part_dims(spec)
+        outcome.spec = spec.model_dump()
+        for note in resolved_notes:
+            await ctx.emit("intake", 0, note)
 
     # ---------- PLAN ----------
     plan = ctx.plan

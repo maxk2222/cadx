@@ -80,8 +80,14 @@ thread = IsoThread(
     simple=(CADX_DETAIL_MODE == "preview"),
 )
 result = core + thread  # fuse -> one solid
-# internal: IsoThread(..., external=False) inside a bore of major_diameter,
-#           or ThreadedHole(fastener=..., depth=L, simple=False)
+# internal (tapped hole in ANY part): subtract the cadlib cutter —
+#   result = result - Pos(0, 0, face_z) * cadlib.tapped_hole(8, 1.25, depth)
+#   (tap-drill bore in preview, real ISO groove in export; assign a name so
+#   the runner counts it). Equivalent inside BuildPart:
+#   ThreadedHole(fastener=..., depth=L, simple=(CADX_DETAIL_MODE == "preview"))
+#   NOTE: the internal groove cutter is IsoThread(external=TRUE) — the
+#   external ridge solid is the groove channel; IsoThread(external=False)
+#   is nut material and produces an inverted thread if subtracted.
 # bottle cap: PlasticBottleThread(size="M38SP444", external=False)
 # metric trapezoidal (lead screw): MetricTrapezoidalThread(size="Tr16x4", length=L)
 # Include CADX_FEATURES metadata for the thread so preview renders can draw a

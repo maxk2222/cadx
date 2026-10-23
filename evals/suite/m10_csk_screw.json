@@ -1,0 +1,43 @@
+{
+ "name": "m10_csk_screw",
+ "project": "eval:m10-csk-screw",
+ "difficulty": 1,
+ "description": "ISO 10642 M10x1.5 countersunk screw, 30 mm — standard-part recipe path; export must carry the real thread helix.",
+ "settings": {
+  "gen_mode": "cad",
+  "min_wall_mm": 0.1
+ },
+ "stages": [
+  {
+   "id": "codegen",
+   "type": "generate",
+   "mode": "cad",
+   "timeout_s": 1200,
+   "prompt": "Countersunk head screw M10, ISO 10642, thread M10x1.5, total length 30 mm, fully threaded shaft. Single standard fastener, mm units, head at the bottom on the XY plane, axis along Z.",
+   "gates": [
+    {
+     "type": "status",
+     "expect": ["succeeded", "needs_review"]
+    },
+    {
+     "type": "bbox",
+     "dims": [18.8, 18.8, 30],
+     "match": "match",
+     "tol_mm": 3
+    },
+    {
+     "type": "watertight",
+     "expect": true
+    },
+    {
+     "type": "verify_spec",
+     "expect": "PASS"
+    },
+    {
+     "type": "max_wall_s",
+     "s": 600
+    }
+   ]
+  }
+ ]
+}

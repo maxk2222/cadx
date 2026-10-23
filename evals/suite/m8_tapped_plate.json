@@ -1,0 +1,59 @@
+{
+ "name": "m8_tapped_plate",
+ "project": "eval:m8-tapped-plate",
+ "difficulty": 1,
+ "description": "Simple plate 60x40x10 with one centered M8 tapped through-hole and R2 rounded outer edges — internal-thread feature path; export must carry a real groove.",
+ "settings": {
+  "gen_mode": "cad",
+  "min_wall_mm": 0.1
+ },
+ "stages": [
+  {
+   "id": "codegen",
+   "type": "generate",
+   "mode": "cad",
+   "timeout_s": 1800,
+   "prompt": "Rectangular mounting plate, parametric, mm units. Plate 60 long (X) x 40 wide (Y) x 10 thick (Z), resting on the XY plane, centred in X and Y.\n- One M8 tapped (internal thread, M8x1.25) hole straight through the plate, centred at x=0, y=0, axis along Z. Model the hole at tap-drill size and declare the thread; the export rebuild carries the real thread groove.\n- Round the four vertical outer edges, radius 2.\nNo other features.",
+   "gates": [
+    {
+     "type": "status",
+     "expect": ["succeeded", "needs_review"]
+    },
+    {
+     "type": "bbox",
+     "dims": [60, 40, 10],
+     "match": "match",
+     "tol_mm": 2
+    },
+    {
+     "type": "features",
+     "entries": [
+      {
+       "type": "hole",
+       "count": 1,
+       "axis": "z",
+       "dia": 6.8,
+       "positions": [[0, 0]]
+      },
+      {
+       "type": "fillet",
+       "count": 1
+      }
+     ]
+    },
+    {
+     "type": "watertight",
+     "expect": true
+    },
+    {
+     "type": "verify_spec",
+     "expect": "PASS"
+    },
+    {
+     "type": "max_wall_s",
+     "s": 900
+    }
+   ]
+  }
+ ]
+}

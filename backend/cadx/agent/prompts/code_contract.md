@@ -144,12 +144,19 @@
    only when the structured feature declares a thread. Add a JSON-safe
    `CADX_FEATURES` entry for each thread with `kind`, `thread_spec`,
    `major_diameter`, `pitch`, `length`, `start`, `external`, `hand`, `axis`
-   and `position_mm`. Preview mode uses this metadata for a lightweight
-   display-only helix; it must not be treated as physical geometry. Final
-   export mode is rebuilt by the executor with `CADX_DETAIL_MODE == "export"`
-   and must contain the real helix. Never silently export the `simple=True`
-   core when a thread was requested. Keep nominal dimensions separate from
-   FDM compensation.
+   and `position_mm`. Preview mode renders the helix FROM THIS METADATA —
+   never subtract or fuse any thread cue/ridge/groove in preview mode: a
+   helical bore wall hides the underlying hole from feature measurement and
+   fails verification. Preview threads live in metadata only. For INTERNAL
+   threads on any part, subtract `cadlib.tapped_hole(major_d, pitch, length)`
+   and assign it a name — it returns the right cutter per mode (smooth
+   tap-drill bore in preview, real ISO groove in export); do not hand-roll
+   Helix sweeps. `ThreadedHole(fastener=..., depth=..., simple=...)`
+   inside BuildPart is the fastener-bound equivalent. Final export mode is
+   rebuilt by the executor with `CADX_DETAIL_MODE == "export"` and must
+   contain the real helix. Never silently export the `simple=True` core
+   when a thread was requested. Keep nominal dimensions separate from FDM
+   compensation.
 8. Keep the code deterministic, under ~200 lines, with a short comment naming the feature
    each block creates.
 9. BOUND FEATURE SNIPPETS: when the context contains "BOUND FEATURE SNIPPETS"

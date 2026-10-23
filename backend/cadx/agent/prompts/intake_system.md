@@ -29,6 +29,10 @@ Rules:
   cylinder for a standard screw, nut, insert, bearing or gear. Put every feature
   supplied by that stock component in `covers_features` using the exact corresponding
   `features[].name`; features not covered by the selected part remain separate.
+  Anatomy intrinsic to the catalog class — head, drive recess/socket, thread,
+  shank, tip — always belongs in `covers_features`. Never invent a drive style:
+  the norm defines it (iso10642 = hex socket, not Torx); only name a drive or
+  recess when the request states it explicitly AND it differs from the norm.
 - A screw/nut/thread requested as a threaded part stays threaded in the structured
   intent. Do not rewrite it as a smooth FDM-friendly cylinder. The agent preview is a
   lightweight display representation; final export builds the real thread. If head

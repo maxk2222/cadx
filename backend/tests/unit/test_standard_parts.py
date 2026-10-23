@@ -33,9 +33,9 @@ def test_m10_catalog_recipe_is_sandbox_code_and_norm_sized() -> None:
     spec = PartSpec(
         name="M10 countersunk screw",
         summary="M10x150 ISO 10642",
-        length_x=_dims(150, 20, 20)[0],
-        width_y=_dims(150, 20, 20)[1],
-        height_z=_dims(150, 20, 20)[2],
+        length_x=_dims(20, 20, 150)[0],
+        width_y=_dims(20, 20, 150)[1],
+        height_z=_dims(20, 20, 150)[2],
         features=[
             Feature(name="head", type="cone"),
             Feature(name="thread", type="thread"),
@@ -47,7 +47,8 @@ def test_m10_catalog_recipe_is_sandbox_code_and_norm_sized() -> None:
     assert checked.ok, checked.errors
     assert check_standard_part_calls(code) == []
     assert is_standard_only(spec)
-    assert standard_part_bbox(part) == pytest.approx([150.0, 20.0, 20.0], abs=0.01)
+    # frame contract: standalone parts rest on XY with their axis up (+z)
+    assert standard_part_bbox(part) == pytest.approx([20.0, 20.0, 150.0], abs=0.01)
     assert expected_thread_count(spec) == 1
     assert 'CADX_DETAIL_MODE == "preview"' in code
     assert "'length': 32.0" in code

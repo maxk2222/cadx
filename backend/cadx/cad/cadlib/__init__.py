@@ -20,6 +20,7 @@ from .cutouts import (
     oblong_slot,
     slot_cutter,
     t_slot,
+    tapped_hole,
     through_hole,
 )
 from .ops import (
@@ -94,6 +95,7 @@ __all__ = [
     "snap_fit_cantilever",
     "strut",
     "t_slot",
+    "tapped_hole",
     "text_label",
     "through_hole",
     "trim_below",

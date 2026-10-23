@@ -1720,15 +1720,31 @@ def _robustness(
         )
     else:
         high = [w for w in warnings if w.get("severity") == "high"]
+        # a fully-catalog standard part is bought to a norm, not printed —
+        # its geometry is catalog-defined, so a printability warning (the
+        # ISO 10642 countersunk cone reads as a large overhang) is
+        # informational evidence, not a conformance failure. A spec with
+        # independent machining features keeps the strict verdict.
+        catalog_part = bool((spec or {}).get("standard_parts"))
+        if catalog_part:
+            try:
+                from cadx.cad.standard_parts import covered_feature_indices
+
+                covered = covered_feature_indices(spec)
+                spec_feats = (spec or {}).get("features") or []
+                catalog_part = all(i in covered for i in range(len(spec_feats)))
+            except Exception:
+                catalog_part = False
         checks.append(
             _check(
                 "dfm",
                 TIER_ROBUSTNESS,
-                "FAIL" if high else "PASS",
+                "FAIL" if high and not catalog_part else "PASS",
                 {
                     "warnings": len(warnings),
                     "high": len(high),
                     "high_warnings": [str(w.get("message")) for w in high[:4]],
+                    "standard_part": catalog_part,
                 },
             )
         )

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from build123d import import_brep, import_step
+from build123d import Axis, Plane, import_brep, import_step
 from PIL import Image
 
 from cadx.cad import catalog
@@ -68,16 +68,25 @@ def test_m10_preview_and_exact_export_have_distinct_thread_geometry(tmp_path):
     exact_shape = import_brep(str(exact.brep_path))
     preview_bb = preview_shape.bounding_box().size
     exact_bb = exact_shape.bounding_box().size
-    assert pytest.approx([150, 20, 20], abs=0.2) == [
+    assert pytest.approx([20, 20, 150], abs=0.2) == [
         preview_bb.X,
         preview_bb.Y,
         preview_bb.Z,
     ]
-    assert pytest.approx([150, 20, 20], abs=0.2) == [
+    assert pytest.approx([20, 20, 150], abs=0.2) == [
         exact_bb.X,
         exact_bb.Y,
         exact_bb.Z,
     ]
+    # frame contract: the screw stands on its countersunk head — the catalog
+    # builds it head-datum-first (body extends local -Z), so the recipe must
+    # flip it, not just translate it: min z = 0 and the wide head sits at the
+    # bottom, the M10 shank tip at the top
+    for shape in (preview_shape, exact_shape):
+        bb = shape.bounding_box()
+        assert bb.min.Z == pytest.approx(0.0, abs=0.05)
+        head = shape.faces().filter_by(Plane.XY).sort_by(Axis.Z)[0]
+        assert head.bounding_box().size.X == pytest.approx(20.0, abs=0.5)
     assert exact_shape.volume > preview_shape.volume
 
     exports = export_all_3d(exact_shape, tmp_path / "exports")

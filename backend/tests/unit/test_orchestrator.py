@@ -294,8 +294,9 @@ def _exec_res(np_pass: int, n_fail: int, bbox=None) -> dict:
 class _ScriptedExec:
     """Executor port stub: pops scripted execute() results, exports nothing."""
 
-    def __init__(self, results: list[dict]) -> None:
+    def __init__(self, results: list[dict], exports: dict | None = None) -> None:
         self._script = list(results)
+        self._exports = exports or {}
         self.exec_calls = 0
 
     async def execute(self, payload):
@@ -305,7 +306,7 @@ class _ScriptedExec:
         return self._script[0]
 
     async def export_all(self, payload):
-        return {"exports": {}}
+        return {"exports": self._exports}
 
 
 def _box_code() -> str:
@@ -338,7 +339,7 @@ def _pass_critique():
 
 
 async def _drive_cad(
-    llm, results, emitted, *, max_iterations, patience, hybrid=False, max_repairs=0
+    llm, results, emitted, *, max_iterations, patience, hybrid=False, max_repairs=0, spec=None
 ):
     """Run _run_cad with a scripted FakeLLM + scripted executor."""
     import time
@@ -360,7 +361,12 @@ async def _drive_cad(
 
     ctx = AgentCtx(
         llm=llm,
-        executor=_ScriptedExec(results),
+        executor=_ScriptedExec(
+            results,
+            exports={fmt: "model." + fmt for fmt in ("step", "stl", "3mf", "glb")}
+            if spec
+            else None,
+        ),
         trace=MemoryTrace(),
         emit=emit,
         check_cancel=no_cancel,
@@ -381,7 +387,7 @@ async def _drive_cad(
         # gates the hybrid guard, the scripted executor never reads it
         ctx.hybrid_solid = Path("/tmp/fake_solid.brep")
         ctx.resolved_mode = "hybrid"
-    spec = PartSpec.model_validate(_SPEC)
+    spec = PartSpec.model_validate(spec or _SPEC)
     plan = ModelingPlan(approach="cad", approach_reason="r")
     outcome = RunOutcome()
     return await _run_cad(
@@ -1160,3 +1166,92 @@ async def test_hybrid_failure_keeps_mesh_rescue_for_organic(monkeypatch):
     assert calls == ["mesh"]
     assert outcome.resolved_mode == "mesh"
     assert "mesh-only result" in outcome.mode_note
+
+
+async def test_export_repair_rescues_failed_thread_rebuild():
+    """Finalize: the preview candidate passed but the export-detail rebuild
+    failed (observed: m8 plate — `edges() >> Axis.Z` kept the helical groove
+    edges and the fillet died). One bounded improve pass must get a chance to
+    repair the code before the run is declared failed."""
+    from cadx.llm.fake import FakeLLM
+
+    box_code = _box_code()
+    spec = {
+        **_SPEC,
+        "features": [
+            {
+                "name": "M8 tapped hole",
+                "type": "thread",
+                "thread_spec": "M8x1.25-6H",
+            }
+        ],
+    }
+    llm = FakeLLM(
+        [
+            {"reasoning": "v", "params": [], "expected_bbox": [40, 20, 10], "code": box_code},
+            _pass_critique(),
+            {"reasoning": "fix", "params": [], "edits": [], "full_code": box_code},
+        ]
+    )
+    emitted: list = []
+    outcome, _ctx = await _drive_cad(
+        llm,
+        [
+            _exec_res(6, 0),  # it1 preview candidate passes
+            {"ok": False, "error": "safe_fillet returned 0 mm"},  # export rebuild fails
+            {"ok": True, "analysis": {"bbox_size": [40.0, 20.0, 10.0]}},  # sanity preview
+            {  # export retry: real helix present
+                **_exec_res(6, 0),
+                "thread_count": 1,
+                "detail_mode": "export",
+            },
+        ],
+        emitted,
+        max_iterations=3,
+        patience=1,
+        spec=spec,
+    )
+    assert outcome.status == "succeeded", outcome.error
+    assert outcome.code == box_code
+    assert any(
+        s == "improve" and "export-detail rebuild failed" in m for s, _i, m in emitted
+    )
+    assert any(
+        s == "finalize" and "export repair applied" in m for s, _i, m in emitted
+    )
+
+
+async def test_export_repair_still_fails_honestly_when_unfixable():
+    """If the repair pass cannot produce export-detail geometry, the run must
+    still fail — preview geometry must never ship as the 'real thread' export."""
+    from cadx.llm.fake import FakeLLM
+
+    box_code = _box_code()
+    spec = {
+        **_SPEC,
+        "features": [{"name": "M8 tapped hole", "type": "thread", "thread_spec": "M8x1.25"}],
+    }
+    llm = FakeLLM(
+        [
+            {"reasoning": "v", "params": [], "expected_bbox": [40, 20, 10], "code": box_code},
+            _pass_critique(),
+            {"reasoning": "fix", "params": [], "edits": [], "full_code": box_code},
+            {"reasoning": "fix2", "params": [], "edits": [], "full_code": box_code},
+        ]
+    )
+    emitted: list = []
+    outcome, _ctx = await _drive_cad(
+        llm,
+        [
+            _exec_res(6, 0),
+            {"ok": True, "thread_count": 0, "detail_mode": "export"},  # no helix built
+            {"ok": True, "analysis": {"bbox_size": [40.0, 20.0, 10.0]}},  # sanity
+            {"ok": True, "thread_count": 0, "detail_mode": "export"},  # retry still 0
+        ],
+        emitted,
+        max_iterations=3,
+        patience=1,
+        spec=spec,
+    )
+    assert outcome.status == "failed"
+    assert "real thread" in outcome.error

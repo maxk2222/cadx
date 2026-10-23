@@ -76,6 +76,24 @@ to apply at that workplane (usually a face, e.g. `p.faces().sort_by(Axis.Z)[-1]`
 - `dovetail_slot(width_top, width_bottom, height, length)` — returns a cutter
   Part (not a context call): `p.part -= Pos(x, y, z) * dovetail_slot(...)`.
 
+### tapped_hole
+
+- `tapped_hole(major_d, pitch=None, length=None, *, hand="right",
+  drill_dia=None)` — ISO internal-thread cutter as a solid for algebra-style
+  bodies: `result = result - Pos(0, 0, face_z) * tapped_hole(8, 1.25, 20)`.
+  Mouth at z=0, hole extends to `-length`; `pitch` defaults to the ISO
+  coarse table, `drill_dia` to `major_d - pitch`. Detail-mode aware —
+  preview returns the smooth tap-drill bore (thread visuals come from the
+  CADX_FEATURES overlay — never model a preview cue, a helical wall hides
+  the bore from feature measurement), export returns the bore fused with
+  the real helical groove (IsoThread ridge). USE THIS for every Mx tapped
+  hole — never hand-roll Helix sweeps; assign it a name so the runner
+  counts the real thread (`tap = tapped_hole(...)`).
+  The export groove leaves helical edges inside the bore — they break
+  "fillet everything" selections. Always pick fillet/chamfer targets with
+  `edges_at(axis="z", geom="line")` (outer verticals) or `hole_rim_edges`
+  (mouth rims); `edges() >> Axis.Z` only sorts and keeps the helices in.
+
 ## Shapes — pure factories, return a Part you position yourself
 
 No BuildPart context needed. Parts rest on XY (min Z = 0), centred — place with

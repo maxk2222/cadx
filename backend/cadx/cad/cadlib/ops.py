@@ -31,6 +31,23 @@ def set_boolean_backend(fn) -> None:
     _BOOLEAN_BACKEND = fn
 
 
+_DETAIL_MODE = "preview"
+
+
+def set_detail_mode(mode: str) -> None:
+    """Runner injects ``CADX_DETAIL_MODE`` so cadlib helpers can pick preview
+    vs export geometry (tapped_hole builds a real helix only in export).
+    Same injection pattern as ``set_boolean_backend`` — called from the
+    trusted runner frame, never from generated code."""
+    global _DETAIL_MODE
+    _DETAIL_MODE = "export" if str(mode) == "export" else "preview"
+
+
+def detail_mode() -> str:
+    """Effective detail mode for this run — ``"preview"`` or ``"export"``."""
+    return _DETAIL_MODE
+
+
 def _backend_boolean(body, tool, kind: str):
     """Backend boolean or None — unavailable/injected-off/failed all fold to
     the OCC fallback path in the caller."""

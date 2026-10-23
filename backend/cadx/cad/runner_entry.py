@@ -17,6 +17,13 @@ import sys
 import traceback
 from pathlib import Path
 
+# Resolve `cadx` against THIS tree before any cadx import: under `python -I`
+# PYTHONPATH is ignored and a stale site-packages/editable install would
+# otherwise shadow the live code (mixed-mount eval containers hit exactly that)
+_repo_root = Path(__file__).resolve().parents[2]
+if str(_repo_root) not in sys.path:
+    sys.path.insert(0, str(_repo_root))
+
 ALLOWED_MODULES = {
     "build123d",
     "bd_warehouse",
@@ -195,6 +202,19 @@ def main(workdir: Path | None = None) -> int:  # noqa: C901
     # python -I strips the script dir; add it back so `import cadlib` resolves.
     # Other modules on this path are still blocked by _ImportGuard.
     sys.path.insert(0, str(Path(__file__).resolve().parent))
+    # the package root too: `import cadx.cad.inspect_tools` must resolve to the
+    # same tree this script lives in — under -I, PYTHONPATH is ignored and a
+    # stale site-packages/editable install would otherwise shadow it
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+    # tell cadlib which detail tier to build (preview proxies vs real helix) —
+    # imported from this runner frame so the import guard permits it
+    try:
+        import cadlib.ops as _cops_detail
+
+        _cops_detail.set_detail_mode(detail_mode)
+    except Exception:
+        pass
 
     # module-top import may have failed when `cadx` isn't installed (bare
     # sandbox path) — resolve the sibling module now that cad/ is on sys.path.
@@ -562,8 +582,7 @@ def main(workdir: Path | None = None) -> int:  # noqa: C901
             else [
                 h
                 for h in anchor_holes_list
-                if isinstance(h, dict)
-                and str(h.get("source") or "") in ("image", "image+mesh")
+                if isinstance(h, dict) and str(h.get("source") or "") in ("image", "image+mesh")
             ]
         )
         if mesh_boolean is not None and recut_anchors:
@@ -599,7 +618,14 @@ def main(workdir: Path | None = None) -> int:  # noqa: C901
         if isinstance(flat, Shape):
             export_brep(flat, str(workdir / "flat_profile.brep"))
 
-        # count real (non-simple) thread objects present in the namespace
+        # count real (non-simple) thread objects present in the namespace —
+        # bd_warehouse thread/fastener objects, cadlib cutters tagged
+        # `_cadx_thread`, or a `Helix` path a declared thread was built from
+        design_features = _json_records(namespace.get("CADX_FEATURES"))
+        declared_threads = sum(1 for feature in design_features if feature.get("kind") == "thread")
+        helix_paths = sum(
+            1 for v in namespace.values() if not isinstance(v, type) and type(v).__name__ == "Helix"
+        )
         thread_count = 0
         bom: dict[tuple, dict] = {}
         for name, v in namespace.items():
@@ -613,12 +639,13 @@ def main(workdir: Path | None = None) -> int:  # noqa: C901
                     and not getattr(v, "simple", True)
                 )
                 or (
-                not isinstance(v, type)
-                and cls_name.endswith(("Screw", "Nut"))
-                and getattr(v, "simple", True) is False
-                and getattr(v, "thread_diameter", None) is not None
-                and getattr(v, "thread_pitch", None) is not None
+                    not isinstance(v, type)
+                    and cls_name.endswith(("Screw", "Nut"))
+                    and getattr(v, "simple", True) is False
+                    and getattr(v, "thread_diameter", None) is not None
+                    and getattr(v, "thread_pitch", None) is not None
                 )
+                or (not isinstance(v, type) and getattr(v, "_cadx_thread", None) is not None)
             ):
                 thread_count += 1
             if not mod.startswith("bd_warehouse"):
@@ -677,6 +704,10 @@ def main(workdir: Path | None = None) -> int:  # noqa: C901
                 )
             ):
                 thread_count = 1
+        if thread_count == 0 and declared_threads and helix_paths:
+            # hand-rolled real thread: declared feature + Helix path left in
+            # the namespace (the IsoThread-free pattern models fall back to)
+            thread_count = min(declared_threads, helix_paths)
 
         params_used = namespace.get("PARAMS", {})
         try:
@@ -684,11 +715,9 @@ def main(workdir: Path | None = None) -> int:  # noqa: C901
         except Exception:
             params_used = {}
 
-        design_features = _json_records(namespace.get("CADX_FEATURES"))
         declared_bom = _json_records(namespace.get("CADX_BOM"))
         if any(
-            not isinstance(row.get("part_class"), str)
-            or not isinstance(row.get("count"), int)
+            not isinstance(row.get("part_class"), str) or not isinstance(row.get("count"), int)
             for row in declared_bom
         ):
             declared_bom = []

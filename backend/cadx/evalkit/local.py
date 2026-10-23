@@ -74,6 +74,14 @@ async def bootstrap(out_dir: Path) -> str | None:
     function-local for that reason.
     """
     prev_url = os.environ.get("DATABASE_URL")
+    # multi-case runs re-enter bootstrap after the first case already pointed
+    # DATABASE_URL at its scratch sqlite — pin the real URL once so every
+    # case snapshots the live runtime settings instead of falling back to
+    # code defaults (which then dial e.g. OpenAI without a key)
+    if prev_url and not prev_url.startswith("sqlite"):
+        os.environ.setdefault("CADX_REAL_DATABASE_URL", prev_url)
+    else:
+        prev_url = os.environ.get("CADX_REAL_DATABASE_URL")
     (out_dir / "data").mkdir(parents=True, exist_ok=True)
     os.environ["DATABASE_URL"] = f"sqlite:///{out_dir / 'eval.db'}"
     os.environ["DATA_DIR"] = str(out_dir / "data")
