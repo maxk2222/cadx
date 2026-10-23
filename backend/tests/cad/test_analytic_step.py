@@ -19,6 +19,7 @@ import math
 import pytest
 import trimesh
 
+from cadx.cad.engine import _post_extract_finish
 from cadx.cad.fem.refine import (
     RefineFeature,
     applied_refine_features,
@@ -148,6 +149,75 @@ def test_refine_verify_through_hole_passes():
         "applied": [{"name": "b1", "kind": "hole", "axis": "+z", "x": 10.0, "y": 0.0, "dia": 6.0}]
     }
     assert refine_verify(_bored(10.0, 6.0), report) == []
+
+
+def test_topopt_post_extract_recuts_real_base_bore() -> None:
+    """The shared TopOpt finishing step restores/re-cuts a real base tunnel
+    before verification, and reports the applied cut with no verification
+    miss."""
+    base = _bored(10.0, 6.0)
+    degraded = _bored(10.0, 3.0)
+    anchors = [
+        {
+            "kind": "hole",
+            "axis": "+z",
+            "x": 10.0,
+            "y": 0.0,
+            "pos": [10.0, 0.0, 6.0],
+            "dia": 6.0,
+            "depth_mm": 12.0,
+            "source": "scan",
+        }
+    ]
+
+    out, report, warnings = _post_extract_finish(
+        degraded,
+        base_mesh=base,
+        keep_regions=[],
+        anchors=anchors,
+        spec_features=[],
+        recut_bores=True,
+        restore_keeps=True,
+    )
+
+    assert report is not None, warnings
+    assert report["applied"]
+    assert report["verify_misses"] == []
+    assert refine_verify(out, report, anchors=anchors) == []
+    from cadx.cad.mesh_features import detect_mesh_features
+
+    holes = detect_mesh_features(out).holes
+    assert any(h.axis == "z" and abs(h.dia - 6.0) < 0.6 for h in holes)
+
+
+def test_topopt_post_extract_does_not_drill_base_dimple() -> None:
+    """A scanned anchor without a real base-mesh tunnel is not admitted for
+    re-cut; this guards against turning mesh dimples into through-holes."""
+    solid = _box()
+    anchor = {
+        "kind": "hole",
+        "axis": "+z",
+        "x": 10.0,
+        "y": 0.0,
+        "pos": [10.0, 0.0, 6.0],
+        "dia": 6.0,
+        "depth_mm": 2.0,
+        "source": "scan",
+    }
+
+    out, report, warnings = _post_extract_finish(
+        solid,
+        base_mesh=solid,
+        keep_regions=[],
+        anchors=[anchor],
+        spec_features=[],
+        recut_bores=True,
+        restore_keeps=False,
+    )
+
+    assert report is not None, warnings
+    assert not report["applied"]
+    assert out.volume == pytest.approx(solid.volume)
 
 
 def test_refine_verify_missing_feature_flagged():

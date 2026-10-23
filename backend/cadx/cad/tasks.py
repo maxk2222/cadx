@@ -966,6 +966,11 @@ def run_topopt_resample_payload(
         density_relpath=payload["density_relpath"],
         out_dir=out_dir,
         load_cases=payload.get("load_cases") or [],
+        base_mesh_path=(
+            storage.resolve(payload["base_mesh_relpath"])
+            if payload.get("base_mesh_relpath")
+            else None
+        ),
         optimize=payload.get("optimize"),
         material=payload.get("material") or "",
         max_elements=payload.get("max_elements"),

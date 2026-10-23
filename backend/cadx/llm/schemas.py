@@ -495,6 +495,7 @@ class OptimizeSpec(BaseModel):
         False  # auto-detect dominant planar base faces and restore them after TopOpt
     )
     helical_threads: bool = False  # refine: cut real helical thread grooves (experimental, FDM)
+    recut_bores: bool = True  # restore keep surfaces and deterministically re-cut real base bores
     note: M = ""
 
     @field_validator(

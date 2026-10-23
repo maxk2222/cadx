@@ -1278,12 +1278,17 @@ def _parent_stl(parent: Version) -> str | None:
 
 
 def _injob_refine_committed(version: Version) -> bool:
-    """True when the version's chosen topopt agent run is a REFINE output —
-    the in-job optimize session already finished features (`refine_features`
-    runs land in `mesh.topopt.agent_runs` with `params.refine_of` set; the
-    entry marked `chosen` is the committed result). Spawning a standalone
-    refine child on top would redo the same re-cuts."""
+    """True when feature finishing already succeeded in the optimize job.
+
+    This includes legacy agent-selected `refine_features` runs and the
+    deterministic post-extraction re-cut now performed by `topopt_run`.
+    Spawning a standalone auto-refine child on top would repeat the same
+    restore/cuts; failed/missed in-pipeline cuts still allow the child path.
+    """
     top = (version.mesh or {}).get("topopt") or {}
+    recut = top.get("recut") or {}
+    if (recut.get("applied") or []) and not (recut.get("verify_misses") or []):
+        return True
     runs = top.get("agent_runs") or []
     return any(
         isinstance(r, dict)
@@ -1710,6 +1715,8 @@ async def run_topopt_resample_job(ctx: dict[str, Any], payload: dict[str, Any]) 
         emit = make_emit(job_id)
 
         organic_parent = parent.kind == VersionKind.organic
+        base_version = await db.get(Version, parent.parent_id) if parent.parent_id else None
+        base_mesh_relpath = _parent_stl(base_version) if base_version is not None else None
         density_rel = ((parent.mesh or {}).get("topopt") or {}).get("density_relpath") or (
             (parent.mesh or {}).get("organic") or {}
         ).get("density_relpath")
@@ -1759,6 +1766,7 @@ async def run_topopt_resample_job(ctx: dict[str, Any], payload: dict[str, Any]) 
                 "version_id": str(version.id),
                 "iteration": 1,
                 "density_relpath": density_rel,
+                "base_mesh_relpath": base_mesh_relpath,
                 "load_cases": load_cases,
                 "optimize": optimize,
                 "material": material,

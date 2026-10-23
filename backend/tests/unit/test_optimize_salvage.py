@@ -4,7 +4,7 @@ executor work and re-running the deterministic single-shot path."""
 
 from __future__ import annotations
 
-from cadx.agent.steps.optimize import _best_run_index
+from cadx.agent.steps.optimize import _best_run_index, _opt_overrides
 from cadx.agent.toolspecs import ToolSession
 
 
@@ -13,6 +13,31 @@ def _session_with_runs() -> ToolSession:
     from tests.unit.test_session_condense import _ctx
 
     return ToolSession(_ctx(FakeLLM([{"content": "x"}])), kind="optimize")
+
+
+def test_recut_bores_defaults_on_and_can_be_disabled() -> None:
+    from cadx.llm.schemas import OptimizeSpec
+
+    assert OptimizeSpec().recut_bores is True
+    assert _opt_overrides({"recut_bores": False}) == {"recut_bores": False}
+
+
+def test_successful_in_pipeline_recut_prevents_duplicate_auto_refine() -> None:
+    import uuid
+
+    from cadx.agent.worker_jobs import _injob_refine_committed
+    from cadx.db.models import Version, VersionKind
+
+    version = Version(
+        project_id=uuid.uuid4(),
+        part_id=uuid.uuid4(),
+        number=2,
+        kind=VersionKind.optimize,
+        mesh={"topopt": {"recut": {"applied": [{"name": "mount"}], "verify_misses": []}}},
+    )
+    assert _injob_refine_committed(version) is True
+    version.mesh["topopt"]["recut"]["verify_misses"] = [{"name": "mount"}]
+    assert _injob_refine_committed(version) is False
 
 
 def test_best_run_prefers_sf_export() -> None:

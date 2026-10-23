@@ -283,6 +283,68 @@ def _attach_verify_spec(
     return res
 
 
+def _post_extract_finish(
+    opt_mesh: trimesh.Trimesh,
+    *,
+    base_mesh: trimesh.Trimesh | None,
+    keep_regions: list[Any],
+    anchors: list[dict[str, Any]] | None,
+    spec_features: list[dict[str, Any]] | None,
+    recut_bores: bool,
+    restore_keeps: bool,
+    helical_threads: bool = False,
+) -> tuple[trimesh.Trimesh, dict[str, Any] | None, list[str]]:
+    """Restore kept surfaces and deterministically re-cut real base bores.
+
+    Keep this after extraction/smoothing but before every structural
+    verification/export so the reported SF and connectivity certify the
+    mesh that will ship. `resolve_refine_features` requires base-mesh tunnel
+    evidence for scanned anchors, preventing dimples from becoming bores.
+    """
+    if not (recut_bores or restore_keeps):
+        return opt_mesh, None, []
+    if base_mesh is None:
+        return opt_mesh, None, ["post-extraction restore/re-cut skipped: base mesh unavailable"]
+
+    try:
+        from cadx.cad.fem.refine import apply_refine, refine_verify, resolve_refine_features
+
+        features: list[Any] = []
+        warnings: list[str] = []
+        if recut_bores:
+            features, resolve_warnings = resolve_refine_features(
+                anchors,
+                spec_features,
+                None,
+                base_mesh=base_mesh,
+            )
+            warnings.extend(resolve_warnings)
+        keep_dicts = [
+            r.model_dump(mode="json") if hasattr(r, "model_dump") else dict(r)
+            for r in keep_regions
+        ]
+        refined, report = apply_refine(
+            opt_mesh,
+            features,
+            base_mesh=base_mesh,
+            keep_regions=keep_dicts,
+            anchors=anchors or [],
+            restore_keeps=restore_keeps,
+            helical_threads=helical_threads,
+        )
+        report_dict = dataclasses.asdict(report)
+        warnings.extend(report.warnings)
+        if recut_bores and report.applied:
+            report_dict["verify_misses"] = refine_verify(
+                refined,
+                report_dict,
+                anchors=anchors,
+            )
+        return refined, report_dict, warnings
+    except Exception as e:
+        return opt_mesh, None, [f"post-extraction restore/re-cut failed: {str(e)[:180]}"]
+
+
 def run_pipeline(  # noqa: C901
     *,
     code: str,
@@ -2454,22 +2516,21 @@ def run_topopt_pipeline(  # noqa: C901
             )
         )
         extract_warnings.extend(envelope_warnings)
-        # restore_planes: union the original keep-region surfaces back —
-        # extraction + Taubin shrink bore walls and planar faces ~1 pitch,
-        # so the printed mesh no longer matches the verified mask there.
-        # Runs before export verification so sf_export measures the part
-        # as printed; degrades to a warning, never aborts the pass.
-        if getattr(opt, "restore_planes", False):
-            try:
-                from cadx.cad.fem.refine import restore_keep_surface
-
-                keep_dicts = [r.model_dump() for r in keep_list]
-                opt_mesh, rk_warns, _n_restored = restore_keep_surface(
-                    opt_mesh, mesh, keep_dicts, anchors or []
-                )
-                extract_warnings.extend(rk_warns)
-            except Exception as e:
-                log.warning("topopt.restore_keep_failed", error=str(e)[:160])
+        # Restore + re-cut before FEM/export verification: sf_verified,
+        # load_path_ok and feature evidence must describe the shipped mesh.
+        opt_mesh, recut_report, finish_warnings = _post_extract_finish(
+            opt_mesh,
+            base_mesh=mesh,
+            keep_regions=keep_list,
+            anchors=anchors,
+            spec_features=(spec or {}).get("features"),
+            recut_bores=bool(opt.recut_bores),
+            restore_keeps=bool(opt.restore_planes),
+            helical_threads=False,
+        )
+        extract_warnings.extend(finish_warnings)
+        if recut_report is not None:
+            out["recut"] = recut_report
         if output_envelope is not None:
             out["output_envelope"] = output_envelope
         out["output_envelope_ok"] = output_envelope_ok
@@ -2919,6 +2980,7 @@ def run_topopt_pipeline(  # noqa: C901
             "output_envelope_ok": best.get("output_envelope_ok", True),
             "extract": best["extract"],
             "verification": verification,
+            "recut": best.get("recut"),
         }
     )
 
@@ -4185,11 +4247,12 @@ def run_infill_pipeline(  # noqa: C901
     return res
 
 
-def run_topopt_resample(
+def run_topopt_resample(  # noqa: C901
     *,
     density_relpath: str,
     out_dir: Path,
     load_cases: list[dict[str, Any]],
+    base_mesh_path: Path | None = None,
     optimize: dict[str, Any] | None = None,
     material: str = "",
     max_elements: int | None = None,
@@ -4341,6 +4404,27 @@ def run_topopt_resample(
     res.topopt["output_envelope_ok"] = output_envelope_ok
     res.topopt["n_surface_components"] = int(opt_mesh.body_count)
     res.topopt["n_bodies_export"] = None
+    base_mesh = None
+    if base_mesh_path is not None:
+        try:
+            base_mesh = load_triangle_mesh(base_mesh_path)
+        except Exception as e:
+            res.topopt.setdefault("warnings", []).append(
+                f"resample base mesh unavailable for restore/re-cut: {str(e)[:140]}"
+            )
+    opt_mesh, recut_report, finish_warnings = _post_extract_finish(
+        opt_mesh,
+        base_mesh=base_mesh,
+        keep_regions=keep_list,
+        anchors=anchors,
+        spec_features=(spec or {}).get("features"),
+        recut_bores=bool(opt.recut_bores),
+        restore_keeps=bool(opt.restore_planes),
+        helical_threads=False,
+    )
+    res.topopt.setdefault("warnings", []).extend(finish_warnings)
+    if recut_report is not None:
+        res.topopt["recut"] = recut_report
 
     run_dir = out_dir / "_run"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -4426,6 +4510,18 @@ def run_topopt_resample(
     res.exports["dxf"] = None
     res.exports["svg"] = None
     res.analysis = mesh_analysis(opt_mesh)
+    try:
+        from cadx.cad.features import mesh_features_to_measured
+        from cadx.cad.mesh_features import detect_mesh_features
+
+        mf = mesh_features_to_measured(
+            detect_mesh_features(opt_mesh).model_dump(mode="json")
+        )
+        res.features = mf.model_dump(mode="json")
+        if recut_report is not None:
+            res.features["refine"] = recut_report
+    except Exception as e:
+        log.warning("features.mesh_measure_failed", error=str(e)[:160])
     res.mesh = {
         "pipeline": "topopt_resample",
         "triangles": len(opt_mesh.faces),

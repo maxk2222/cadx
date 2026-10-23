@@ -763,7 +763,9 @@ STRUCT_TOOLS = [
         "result. Returns run_index, achieved volume fraction, iterations, "
         "the verified worst-case safety factor (sf_verified — the worst "
         "across the nominal/eroded/dilated export realizations) and a render "
-        "of the optimized shape. Vary "
+        "of the optimized shape. Real base bores are deterministically "
+        "re-cut after extraction before FEM export verification (recut_bores, "
+        "default true). Vary "
         "target_volume_fraction / keep_regions / material between runs and "
         "pick the best one with done(run_index).",
         {
@@ -788,6 +790,12 @@ STRUCT_TOOLS = [
                 "type": "string",
                 "enum": ["manual", "auto"],
                 "description": "'auto' adds a keep ring around EVERY detected anchor",
+            },
+            "recut_bores": {
+                "type": "boolean",
+                "description": "after extraction, restore keep surfaces then "
+                "re-cut real base-mesh bores at their exact feature diameters "
+                "before export FEM verification (default true)",
             },
             "min_member_mm": {
                 "type": "number",

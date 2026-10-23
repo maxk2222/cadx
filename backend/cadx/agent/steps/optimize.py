@@ -433,6 +433,7 @@ def _opt_overrides(a: dict[str, Any]) -> dict[str, Any]:
         "infill_octet",
         "verify_robust",
         "verify_homogenized",
+        "recut_bores",
     ):
         if a.get(k) is not None:
             opt[k] = bool(a[k])
