@@ -3032,18 +3032,26 @@ export default function StructuralEditor({
                         d: (c.reactions.moment_mag_direct_nm ?? 0).toFixed(2),
                         i: c.reactions.moment_mag_induced_nm.toFixed(2),
                       })})`}
-                    {c.applied?.map((a, j) => (
-                      <div key={j} className="text-faint">
-                        ↳ {a.kind}
-                        {a.axis ? ` ${a.axis}` : ""}
-                        {a.hole_index != null ? ` #${a.hole_index}` : ""}:{" "}
-                        {t("se_check_applied", {
-                          m: a.mechanisms.join("+"),
-                          f: (a.force_mag_n ?? 0).toFixed(1),
-                          t: (a.couple_mag_nm ?? 0).toFixed(2),
-                        })}
-                      </div>
-                    ))}
+                    {c.applied?.map((a, j) => {
+                      const deficit = a.couple_deficit_nm
+                        ? Math.hypot(...a.couple_deficit_nm)
+                        : 0;
+                      return (
+                        <div key={j} className={deficit > 0.05 ? "text-amber-400" : "text-faint"}>
+                          ↳ {a.kind}
+                          {a.axis ? ` ${a.axis}` : ""}
+                          {a.hole_index != null ? ` #${a.hole_index}` : ""}:{" "}
+                          {t("se_check_applied", {
+                            m: a.mechanisms.join("+"),
+                            f: (a.force_mag_n ?? 0).toFixed(1),
+                            t: (a.couple_mag_nm ?? 0).toFixed(2),
+                          })}
+                          {deficit > 0.05
+                            ? ` · ${t("se_check_deficit", { v: deficit.toFixed(2) })}`
+                            : ""}
+                        </div>
+                      );
+                    })}
                     {c.warnings.map((w, j) => (
                       <div key={j} className="text-amber-400">
                         ⚠ {w}

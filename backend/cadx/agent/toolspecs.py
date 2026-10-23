@@ -614,8 +614,10 @@ _LOAD_SCHEMA = {
         "moment_nm": {
             **_VEC3,
             "description": "pure couple [mx,my,mz] in N·m — right-hand rule "
-            "about the vector; needs a region with real extent (patch/bore "
-            "wall), a single node cannot carry a couple",
+            "about the vector; lands as tangential traction on the region's "
+            "skin; needs a region with real extent (patch/bore wall), a "
+            "single node cannot carry a couple — the solver auto-widens a "
+            "too-small patch and reports couple_deficit_nm in 'applied'",
         },
         "normal_force_n": {
             "type": "number",
@@ -678,10 +680,13 @@ STRUCT_TOOLS = [
         "check_load",
         "Sanity-check a load case WITHOUT solving: resolved node counts, "
         "resultant force and applied moment about the support centroid "
-        "(split into direct couples vs remote-lever induced moments), a "
-        "per-load 'applied' report showing which mechanisms landed with what "
-        "magnitude, plus warnings for empty regions or unstable supports. "
-        "Call after writing each case — cheaper than a full preview/fem run.",
+        "(split into direct couples vs remote-lever induced moments, plus "
+        "moment_deficit_nm = requested minus achieved), a per-load 'applied' "
+        "report showing which mechanisms landed with what magnitude "
+        "(couple_requested_nm/couple_deficit_nm/couple_footprint_mm for "
+        "moment loads), plus warnings for empty regions, degenerate couple "
+        "footprints or unstable supports. Call after writing each case — "
+        "cheaper than a full preview/fem run.",
         {
             "load_cases": _LOAD_CASES_SCHEMA,
         },
@@ -2503,8 +2508,24 @@ class ToolSession:
                 if r.get("moment_mag_direct_nm") is not None:
                     cc["moment_direct_nm"] = r.get("moment_direct_nm")
                     cc["moment_induced_nm"] = r.get("moment_induced_nm")
+                if r.get("moment_mag_deficit_nm") is not None:
+                    cc["moment_deficit_nm"] = r.get("moment_deficit_nm")
             elif r is not None:
                 cc["reactions_n"] = r  # legacy list shape
+            deficits = [
+                {
+                    "region": a.get("kind"),
+                    "axis": a.get("axis"),
+                    "hole_index": a.get("hole_index"),
+                    "couple_deficit_nm": a.get("couple_deficit_nm"),
+                    "couple_footprint_mm": a.get("couple_footprint_mm"),
+                }
+                for a in (c.get("applied") or [])
+                if a.get("couple_deficit_nm")
+                and max(abs(float(v)) for v in a["couple_deficit_nm"]) > 0.05
+            ]
+            if deficits:
+                cc["load_moment_deficits"] = deficits
             cases.append(cc)
         return {
             "material": (fem.get("material") or {}).get("name"),

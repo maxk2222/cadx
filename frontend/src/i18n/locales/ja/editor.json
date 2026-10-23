@@ -430,6 +430,7 @@
   "se_check_moment": "適用 {{v}} N·m",
   "se_check_moment_split": "{{d}} 直接 + {{i}} てこ",
   "se_check_applied": "{{m}} → {{f}} N + {{t}} N·m",
+  "se_check_deficit": "{{v}} N·m 未適用",
   "se_mech_add": "+ コンポーネント",
   "se_mech_add_h": "この領域に別の荷重機構を追加（例: ボルトに力 + トルク）",
   "se_mech_remove": "コンポーネントを削除",

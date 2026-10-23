@@ -430,6 +430,7 @@
   "se_check_moment": "已施加 {{v}} N·m",
   "se_check_moment_split": "{{d}} 直接 + {{i}} 杠杆",
   "se_check_applied": "{{m}} → {{f}} N + {{t}} N·m",
+  "se_check_deficit": "{{v}} N·m 未施加",
   "se_mech_add": "+ 组件",
   "se_mech_add_h": "在此区域上添加另一载荷机制（如螺栓上的力 + 扭矩）",
   "se_mech_remove": "移除组件",

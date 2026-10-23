@@ -624,6 +624,10 @@ export interface FemCaseReactions {
   /** remote-lever share ((p-c)×F from force_n + remote_point), N·m. */
   moment_induced_nm?: number[];
   moment_mag_induced_nm?: number;
+  /** requested minus achieved couple — nonzero only when a region could
+   *  not carry part of its moment (N·m). */
+  moment_deficit_nm?: number[];
+  moment_mag_deficit_nm?: number;
 }
 
 /** Per-load resolution record — what each load region actually received
@@ -644,6 +648,16 @@ export interface FemAppliedLoad {
   couple_mag_nm?: number;
   couple_direct_nm?: number[];
   couple_induced_nm?: number[];
+  /** region node span per axis (mm). */
+  extent_mm?: number[];
+  /** declared moment + remote-lever request (N·m) — only when a couple
+   *  was requested. */
+  couple_requested_nm?: number[];
+  /** requested minus achieved couple (N·m); nonzero = the region could
+   *  not carry that share. */
+  couple_deficit_nm?: number[];
+  /** span perpendicular to the couple axis (mm). */
+  couple_footprint_mm?: number;
 }
 
 export interface FemPreviewResult {
@@ -686,6 +700,8 @@ export interface FemCaseResult {
   solver: string;
   /** equilibrium report — resultant/moment about the fixed supports. */
   reactions?: FemCaseReactions | null;
+  /** per-load resolution records (same shape as the preview's applied). */
+  applied?: FemAppliedLoad[];
   residual?: number | null;
   warnings: string[];
   vonmises_png?: string | null;

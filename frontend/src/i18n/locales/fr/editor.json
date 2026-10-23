@@ -430,6 +430,7 @@
   "se_check_moment": "{{v}} N·m appliqué",
   "se_check_moment_split": "{{d}} direct + {{i}} levier",
   "se_check_applied": "{{m}} → {{f}} N + {{t}} N·m",
+  "se_check_deficit": "{{v}} N·m non appliqué",
   "se_mech_add": "+ composant",
   "se_mech_add_h": "ajouter un autre mécanisme de charge sur cette région (p. ex. force + couple sur une vis)",
   "se_mech_remove": "retirer le composant",

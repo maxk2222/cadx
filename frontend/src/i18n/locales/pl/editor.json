@@ -430,6 +430,7 @@
   "se_check_moment": "przyłożono {{v}} N·m",
   "se_check_moment_split": "{{d}} bezpośredni + {{i}} dźwignia",
   "se_check_applied": "{{m}} → {{f}} N + {{t}} N·m",
+  "se_check_deficit": "brakuje {{v}} N·m",
   "se_mech_add": "+ komponent",
   "se_mech_add_h": "dodaj kolejny mechanizm obciążenia na tę powierzchnię (np. siła + moment na śrubie)",
   "se_mech_remove": "usuń komponent",

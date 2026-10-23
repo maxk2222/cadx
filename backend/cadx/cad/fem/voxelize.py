@@ -16,6 +16,17 @@ import numpy as np
 import trimesh
 from scipy import ndimage
 
+# Corner ids of each cell face in element_nodes() Hex8 order
+# (-,-,-) (+,-,-) (+,+,-) (-,+,-) / (-,-,+) (+,-,+) (+,+,+) (-,+,+):
+# FACE_CORNERS[axis][side] — side 0 is the -axis face, 1 the +axis face.
+# NOTE: the corner index does NOT decompose axis-aligned by bit — bit tests
+# like `(c >> axis) & 1` pick the parity-diagonal set for x; use this table.
+FACE_CORNERS: tuple[tuple[tuple[int, ...], tuple[int, ...]], ...] = (
+    ((0, 3, 4, 7), (1, 2, 5, 6)),  # x: -face, +face
+    ((0, 1, 4, 5), (2, 3, 6, 7)),  # y: -face, +face
+    ((0, 1, 2, 3), (4, 5, 6, 7)),  # z: -face, +face
+)
+
 
 @dataclass
 class VoxelDomain:

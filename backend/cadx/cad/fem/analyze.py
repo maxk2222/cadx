@@ -54,6 +54,10 @@ class FemCaseResult(BaseModel):
     # applied resultant force / moment about the constraint centroid —
     # sanity check the resolved loads did what was requested
     reactions: dict = Field(default_factory=dict)
+    # per-load resolution records — which mechanisms landed with what
+    # resultant/couple (resolve_case_dofs applied_out; includes
+    # couple_requested/deficit for moment loads)
+    applied: list[dict] = Field(default_factory=list)
     # homogenized-infill estimate: macro von Mises amplified by the cell's
     # stress-localization factor A(rho) — the member-scale micro stress
     micro_vm_mpa: float | None = None
@@ -579,6 +583,7 @@ def _solve_cases(  # noqa: C901
         )
         res.warnings += warnings
         res.reactions = case_reactions(domain, fixed3, F, applied)
+        res.applied = applied
         if not fixed3.any() or not np.any(F):
             continue
         if asm is None:

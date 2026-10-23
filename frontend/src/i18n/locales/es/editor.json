@@ -430,6 +430,7 @@
   "se_check_moment": "{{v}} N·m aplicado",
   "se_check_moment_split": "{{d}} directo + {{i}} palanca",
   "se_check_applied": "{{m}} → {{f}} N + {{t}} N·m",
+  "se_check_deficit": "{{v}} N·m no aplicado",
   "se_mech_add": "+ componente",
   "se_mech_add_h": "añadir otro mecanismo de carga a esta región (p. ej. fuerza + par en un tornillo)",
   "se_mech_remove": "quitar componente",

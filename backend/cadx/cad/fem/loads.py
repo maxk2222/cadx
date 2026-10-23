@@ -22,7 +22,7 @@ from typing import Any
 
 import numpy as np
 
-from cadx.cad.fem.voxelize import VoxelDomain
+from cadx.cad.fem.voxelize import FACE_CORNERS, VoxelDomain
 
 G_MM_S2 = 9810.0  # gravity in mm/s² for kg·mm/s² -> mN handling below
 
@@ -36,20 +36,54 @@ def spread_force(F: np.ndarray, node_idx: np.ndarray, force_n: np.ndarray) -> No
         F[3 * node_idx + c] += share[c]
 
 
+def _couple_solve(
+    P: np.ndarray, M: np.ndarray, w: np.ndarray | None = None
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Solve the couple field over node positions P for moment M (N·mm).
+
+    Returns (omega, r, w_used): the angular field omega satisfying
+    J_w omega = M, the node offsets r measured from the WEIGHTED centroid
+    (so sum_i w_i r_i = 0 -> sum t_i = 0 for t_i = w_i (omega x r_i)), and
+    the normalised weight vector actually used. J_w is the weighted
+    rigidity tensor sum w_i (|r_i|² I - r_i r_i^T). `w=None`, a
+    length-mismatched or all-zero weight vector falls back to uniform —
+    a volumetric couple on every node instead of a skin traction.
+    """
+    n = len(P)
+    if w is None or len(w) != n or float(np.sum(w)) <= 1e-12:
+        wv = np.full(n, 1.0 / n)
+    else:
+        wv = np.asarray(w, dtype=float) / float(np.sum(w))
+    r = P - (P * wv[:, None]).sum(axis=0)
+    J = np.einsum("i,ij,ij->", wv, r, r) * np.eye(3) - (r * wv[:, None]).T @ r
+    try:
+        omega = np.linalg.solve(J + 1e-9 * np.eye(3), M)
+    except np.linalg.LinAlgError:
+        omega = np.zeros(3)
+    return omega, r, wv
+
+
 def spread_moment(
-    domain: VoxelDomain, F: np.ndarray, node_idx: np.ndarray, moment_nm: np.ndarray
+    domain: VoxelDomain,
+    F: np.ndarray,
+    node_idx: np.ndarray,
+    moment_nm: np.ndarray,
+    weights: np.ndarray | None = None,
 ) -> np.ndarray:
     """Apply a pure couple on the region — returns the ACHIEVED moment (N·m).
 
-    Nodal forces t_i = omega x r_i with omega = J^-1 M, J the rigidity tensor
-    sum(|r_i|² I - r_i r_i^T). Then sum(r_i x t_i) = J omega = M exactly and
-    sum(t_i) = omega x sum(r_i) = 0 (r measured from the node centroid).
+    Nodal forces t_i = w_i (omega x r_i) with omega = J_w^-1 M; J_w the
+    weighted rigidity tensor sum w_i(|r_i|² I - r_i r_i^T). With per-node
+    `weights` (e.g. each node's share of the region's exposed surface)
+    the tangential traction lands on the skin — a surface couple instead
+    of a body moment smeared through the volume. Then sum(r_i x t_i) =
+    J_w omega = M exactly and sum(t_i) = 0.
 
     The returned vector is sum(r_i x t_i)/1e3 — what actually landed in F.
     On degenerate node sets (single node, collinear nodes) the requested
-    couple has components outside J's range; those are silently dropped by
-    the regularised solve, so callers must compare achieved vs requested —
-    reporting |requested| here would hide a partially-applied load.
+    couple has components outside J_w's range; those are silently dropped
+    by the regularised solve, so callers must compare achieved vs
+    requested — reporting |requested| here would hide a partial load.
     """
     if not len(node_idx):
         return np.zeros(3)
@@ -57,15 +91,37 @@ def spread_moment(
     if float(np.linalg.norm(M)) < 1e-9:
         return np.zeros(3)
     P = domain.node_coords()[node_idx]
-    r = P - P.mean(axis=0)
-    J = np.einsum("ij,ij->", r, r) * np.eye(3) - r.T @ r
-    try:
-        omega = np.linalg.solve(J + 1e-9 * np.eye(3), M)
-    except np.linalg.LinAlgError:
+    omega, r, w = _couple_solve(P, M, weights)
+    if not np.any(omega):
         return np.zeros(3)
-    t = np.cross(np.broadcast_to(omega, r.shape), r)
+    t = w[:, None] * np.cross(np.broadcast_to(omega, r.shape), r)
     F[3 * node_idx[:, None] + np.arange(3)[None, :]] += t
     return np.cross(r, t).sum(axis=0) / 1e3  # N·mm -> N·m
+
+
+def moment_deficit(
+    domain: VoxelDomain,
+    node_idx: np.ndarray,
+    moment_nm: np.ndarray,
+    weights: np.ndarray | None = None,
+) -> np.ndarray:
+    """(3,) N·m of `moment_nm` the node set CANNOT carry — M - achieved.
+
+    Mirrors spread_moment's solve without touching F: the unachievable
+    remainder names the axis a region fails on (e.g. the collinear axis
+    of a line of nodes). ~zero for any healthy cell-derived patch — kept
+    as a guard for degenerate/synthetic node sets and as the structured
+    couple_deficit_nm report field.
+    """
+    if not len(node_idx):
+        return np.asarray(moment_nm, dtype=float)
+    M = np.asarray(moment_nm, dtype=float) * 1e3  # N·m -> N·mm
+    if float(np.linalg.norm(M)) < 1e-9:
+        return np.zeros(3)
+    P = domain.node_coords()[node_idx]
+    omega, r, w = _couple_solve(P, M, weights)
+    t = w[:, None] * np.cross(np.broadcast_to(omega, r.shape), r)
+    return (M - np.cross(r, t).sum(axis=0)) / 1e3  # N·mm -> N·m
 
 
 def bearing_load(
@@ -136,9 +192,11 @@ def bolt_preload(
     pos_face = cells & ~shift_mask(domain.solid, d)  # +axis surface of the region
     neg_face = cells & ~shift_mask(domain.solid, -d)  # -axis surface
     en = domain.element_nodes()
-    # corner nodes on the outward faces of each mouth cell
-    pos_corners = [c for c in range(8) if ((c >> ax) & 1) == (sgn > 0)]
-    neg_corners = [c for c in range(8) if ((c >> ax) & 1) != (sgn > 0)]
+    # corner nodes on the outward faces of each mouth cell — FACE_CORNERS
+    # maps (axis, hi/lo) onto the Hex8 corner ordering; a bit test on the
+    # corner id picks the wrong (parity-diagonal) node set for the x axis
+    pos_corners = list(FACE_CORNERS[ax][int(sgn > 0)])
+    neg_corners = list(FACE_CORNERS[ax][int(sgn < 0)])
 
     def _apply(face: np.ndarray, corners: list[int], sign: float) -> int:
         sel = np.flatnonzero(face.ravel())

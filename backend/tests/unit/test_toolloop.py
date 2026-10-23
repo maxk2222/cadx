@@ -1107,6 +1107,71 @@ async def test_fem_compact_surfaces_applied_moments():
     assert c["resultant_n"] == [0.0, 0.0, -80.0]
 
 
+async def test_fem_compact_surfaces_moment_deficit():
+    """A couple that only partially landed must reach the model — per-load
+    couple_deficit_nm plus the case-level moment_deficit_nm."""
+
+    fem_res = {
+        "ok": True,
+        "fem": {
+            "material": {"name": "PLA"},
+            "grid": {"pitch": 1.5, "elements": 100, "dofs": 300},
+            "cases": [
+                {
+                    "name": "torque",
+                    "safety_factor": 2.1,
+                    "max_vm_mpa": 10.0,
+                    "max_disp_mm": 0.2,
+                    "converged": True,
+                    "reactions": {
+                        "resultant_n": [0.0, 0.0, 0.0],
+                        "resultant_mag_n": 0.0,
+                        "fixed_nodes": 120,
+                        "moment_nm": [0.0, 0.0, 1.2],
+                        "moment_mag_nm": 1.2,
+                        "moment_direct_nm": [0.0, 0.0, 1.2],
+                        "moment_mag_direct_nm": 1.2,
+                        "moment_induced_nm": [0.0, 0.0, 0.0],
+                        "moment_mag_induced_nm": 0.0,
+                        "moment_deficit_nm": [0.0, 0.0, 0.8],
+                        "moment_mag_deficit_nm": 0.8,
+                    },
+                    "applied": [
+                        {
+                            "kind": "face",
+                            "axis": "+x",
+                            "hole_index": None,
+                            "nodes": 90,
+                            "cells": 32,
+                            "centroid_mm": [29.0, 0.0, 6.0],
+                            "mechanisms": ["moment_nm"],
+                            "couple_nm": [0.0, 0.0, 1.2],
+                            "couple_mag_nm": 1.2,
+                            "couple_requested_nm": [0.0, 0.0, 2.0],
+                            "couple_deficit_nm": [0.0, 0.0, 0.8],
+                            "couple_footprint_mm": 4.5,
+                        }
+                    ],
+                    "warnings": [],
+                }
+            ],
+            "warnings": [],
+        },
+    }
+
+    async def fem_fn(a):
+        return fem_res
+
+    ctx = _ctx(FakeLLM([]))
+    session = ToolSession(ctx, kind="optimize", fem_fn=fem_fn)
+    res = await session.execute("analyze_fem", {"load_cases": [_LC]})
+    assert res["ok"]
+    c = res["cases"][0]
+    assert c["moment_deficit_nm"] == [0.0, 0.0, 0.8]
+    assert c["load_moment_deficits"][0]["region"] == "face"
+    assert c["load_moment_deficits"][0]["couple_deficit_nm"] == [0.0, 0.0, 0.8]
+
+
 async def test_mesh_session_measure_section_overlay(tmp_path):
     """New inspect tools: measure vs spec/anchors, section + overlay images."""
     from cadx.llm.schemas import Dim, PartSpec

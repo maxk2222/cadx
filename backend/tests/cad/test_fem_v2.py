@@ -18,6 +18,7 @@ from cadx.cad.fem.anchors3d import merge_anchor_lists, scan_mesh_anchors
 from cadx.cad.fem.loads import (
     body_force,
     expand_cone,
+    moment_deficit,
     spread_moment,
 )
 from cadx.cad.fem.regions import (
@@ -25,6 +26,7 @@ from cadx.cad.fem.regions import (
     region_node_mask,
     resolve_case,
     resolve_case_dofs,
+    surface_area_per_node,
 )
 from cadx.cad.fem.solver import solve
 from cadx.cad.fem.topopt import TopOptParams, passive_solid_mask, simp
@@ -664,6 +666,127 @@ def test_moment_on_hole_hits_bore_wall() -> None:
     # the couple resolves around +z as requested — wall traction transmits it
     assert applied[0]["couple_mag_nm"] == pytest.approx(0.8, rel=0.25)
     assert not any("cannot carry" in x for x in w)
+
+
+def test_moment_surface_weighted() -> None:
+    """A couple is a SKIN traction: region nodes without exposed surface get
+    exactly zero force while the couple resultant stays exact."""
+    dom = voxelize(_box_mesh(), 3.0, 150_000)
+    region = RegionSpec(kind="face", axis="+x", margin_mm=2.0)
+    case = LoadCase(
+        name="torsion",
+        fixed=[RegionSpec(kind="face", axis="-x")],
+        loads=[LoadSpec(region=region, moment_nm=[2.0, 0.0, 0.0])],
+    )
+    _f3, F, _w = resolve_case_dofs(dom, case)
+    cells = region_cell_mask(dom, region)
+    idx = np.flatnonzero(region_node_mask(dom, region))
+    areas = np.zeros(dom.node_count)
+    for ax in ("+x", "-x", "+y", "-y", "+z", "-z"):
+        areas += surface_area_per_node(dom, cells, ax)
+    fx = F.reshape(-1, 3)
+    skin = areas[idx] > 0
+    assert (~skin).sum() > 0, "test needs interior nodes to be meaningful"
+    assert np.all(fx[idx][~skin] == 0.0)  # interior nodes carry no traction
+    assert np.abs(fx[idx][skin]).sum() > 0
+    # pure-couple invariants: zero net force, exact couple about any point
+    assert np.linalg.norm(fx.sum(axis=0)) < 1e-6
+    c = dom.node_coords()[idx].mean(axis=0)
+    m_applied = np.cross(dom.node_coords()[idx] - c, fx[idx]).sum(axis=0)
+    assert m_applied[0] == pytest.approx(2000.0, rel=0.15)
+
+
+def test_moment_deficit_names_unresolvable_axis() -> None:
+    """A collinear node set cannot carry a couple about its own axis —
+    moment_deficit returns the unapplied share (guard for degenerate sets,
+    unreachable via cell-derived region nodes)."""
+    dom = voxelize(_box_mesh(), 3.0, 150_000)
+    coords = dom.node_coords()
+    row = np.flatnonzero((coords[:, 1] == coords[0, 1]) & (coords[:, 2] == coords[0, 2]))
+    assert len(row) >= 3
+    # couple ALONG the collinear row cannot be produced — full deficit there
+    d_axial = moment_deficit(dom, row, np.array([1.0, 0.0, 0.0]))
+    assert d_axial[0] == pytest.approx(1.0, rel=0.05)
+    # a couple perpendicular to the row resolves fully
+    d_perp = moment_deficit(dom, row, np.array([0.0, 0.0, 1.0]))
+    assert np.linalg.norm(d_perp) < 0.01
+
+
+def test_applied_report_couple_fields() -> None:
+    """applied records expose couple_requested/deficit/footprint/extent and
+    case_reactions sums the deficit — ~0 on a healthy patch."""
+    from cadx.cad.fem.regions import case_reactions
+
+    dom = voxelize(_box_mesh(), 3.0, 150_000)
+    case = LoadCase(
+        name="wrench",
+        fixed=[RegionSpec(kind="face", axis="-x")],
+        loads=[
+            LoadSpec(
+                region=RegionSpec(kind="face", axis="+x", margin_mm=2.0),
+                moment_nm=[1.5, 0.0, 0.0],
+            )
+        ],
+    )
+    applied: list[dict] = []
+    fixed3, F, _w = resolve_case_dofs(dom, case, applied_out=applied)
+    rec = applied[0]
+    assert rec["couple_requested_nm"][0] == pytest.approx(1.5)
+    assert np.linalg.norm(rec["couple_deficit_nm"]) < 0.05
+    assert rec["couple_footprint_mm"] > 0
+    assert len(rec["extent_mm"]) == 3
+    r = case_reactions(dom, fixed3, F, applied)
+    assert r["moment_mag_deficit_nm"] == pytest.approx(0.0, abs=0.05)
+
+
+def test_moment_footprint_growth() -> None:
+    """A couple on a compact patch (enough cells for a force, too narrow
+    for a couple) widens the region until the footprint perpendicular to
+    the couple axis reaches ~3 pitches — beyond the min-cells growth a
+    pure force gets on the same region."""
+    dom = voxelize(_box_mesh(), 3.0, 150_000)
+    fixed = [RegionSpec(kind="face", axis="-x")]
+    # ~2x2x2 cells just behind the +x face: >= min_load_cells but only
+    # ~6 mm extent perpendicular to a z-couple -> couple-driven growth
+    spot = RegionSpec(kind="box", center=[27.0, 0.0, 6.0], diameter_mm=6.0)
+    app_f: list[dict] = []
+    resolve_case_dofs(
+        dom,
+        LoadCase(name="f", fixed=fixed, loads=[LoadSpec(region=spot, force_n=[0, 0, -10])]),
+        applied_out=app_f,
+    )
+    app_m: list[dict] = []
+    _f3, _F, w = resolve_case_dofs(
+        dom,
+        LoadCase(
+            name="m",
+            fixed=fixed,
+            loads=[LoadSpec(region=spot, moment_nm=[0.0, 0.0, 2.0])],
+        ),
+        applied_out=app_m,
+    )
+    assert app_m[0]["cells"] > app_f[0]["cells"]
+    assert app_m[0]["couple_footprint_mm"] >= 3.0 * dom.pitch - 1e-6
+    assert any("widened" in x for x in w)
+
+
+def test_moment_bore_no_concentration_warning() -> None:
+    """Bolt torque on a small bore is concentrated BY DESIGN — the bore is
+    the physical interface; no footprint warning may fire for it."""
+    dom = voxelize(_bored_mesh(), 1.5, 150_000)
+    anchor = {"x": 10.0, "y": 0.0, "dia": 5.0, "axis": "+z", "depth_mm": 12.0}
+    case = LoadCase(
+        name="shaft",
+        fixed=[RegionSpec(kind="face", axis="-x")],
+        loads=[
+            LoadSpec(
+                region=RegionSpec(kind="hole", hole_index=1),
+                moment_nm=[0.0, 0.0, 0.8],
+            )
+        ],
+    )
+    _f, _F, w = resolve_case_dofs(dom, case, anchors=[anchor])
+    assert not any("footprint" in x or "concentrate" in x for x in w)
 
 
 def test_cone_expand_rotates_all_vectors() -> None:

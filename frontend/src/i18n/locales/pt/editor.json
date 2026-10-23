@@ -430,6 +430,7 @@
   "se_check_moment": "{{v}} N·m aplicado",
   "se_check_moment_split": "{{d}} direto + {{i}} alavanca",
   "se_check_applied": "{{m}} → {{f}} N + {{t}} N·m",
+  "se_check_deficit": "{{v}} N·m não aplicado",
   "se_mech_add": "+ componente",
   "se_mech_add_h": "adicionar outro mecanismo de carga a esta região (ex.: força + torque num parafuso)",
   "se_mech_remove": "remover componente",

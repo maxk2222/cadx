@@ -36,7 +36,7 @@ from typing import Any
 import numpy as np
 from scipy import ndimage
 
-from cadx.cad.fem.voxelize import VoxelDomain, shift_mask
+from cadx.cad.fem.voxelize import FACE_CORNERS, VoxelDomain, shift_mask
 from cadx.llm.schemas import LoadCase, RegionSpec
 from cadx.logging import get_logger
 
@@ -780,7 +780,7 @@ def surface_area_per_node(domain: VoxelDomain, cell_mask: np.ndarray, axis: str)
     d = np.zeros(3, dtype=int)
     d[idx_a] = sign
     face_cells = cell_mask & ~shift_mask(domain.solid, d)
-    face_corners = [c for c in range(8) if ((c >> idx_a) & 1) == (sign > 0)]
+    face_corners = list(FACE_CORNERS[idx_a][int(sign > 0)])
     areas = np.zeros(domain.node_count, dtype=float)
     sel = np.flatnonzero(face_cells.ravel())
     if len(sel):
@@ -788,6 +788,23 @@ def surface_area_per_node(domain: VoxelDomain, cell_mask: np.ndarray, axis: str)
         nodes = en[sel][:, face_corners].ravel()
         np.add.at(areas, nodes, domain.pitch**2 / len(face_corners))
     return areas
+
+
+def _couple_weights(domain: VoxelDomain, cells: np.ndarray) -> np.ndarray | None:
+    """(nnodes,) normalised exposed-surface share for a couple's traction.
+
+    A moment on a patch is a tangential SURFACE traction, not a body load
+    — weight each node by its share of the region's exposed skin (summed
+    over all six axes, like normal_force_n does per-axis). None when the
+    region is fully buried (no skin) — callers then apply a uniform
+    volumetric couple. Bore-wall cells expose faces to the bore void, so
+    hole/anchor torques weight onto the wall automatically.
+    """
+    areas = np.zeros(domain.node_count)
+    for ax in ("+x", "-x", "+y", "-y", "+z", "-z"):
+        areas += surface_area_per_node(domain, cells, ax)
+    tot = float(areas.sum())
+    return areas / tot if tot > 0 else None
 
 
 def _grow_load_spec(r: RegionSpec, pitch: float) -> RegionSpec | None:
@@ -867,8 +884,10 @@ def resolve_case_dofs(  # noqa: C901
     `applied_out`, when given a list, receives one record per load region
     that matched nodes — {"kind","axis","hole_index","nodes","cells",
     "centroid_mm","mechanisms","force_n","couple_nm","couple_direct_nm",
-    "couple_induced_nm"} — the measured resultant force and couple about the
-    region centroid as actually applied to F (achieved, not requested).
+    "couple_induced_nm","extent_mm"} plus, when a couple was requested,
+    {"couple_requested_nm","couple_deficit_nm","couple_footprint_mm"} —
+    the measured resultant force and couple about the region centroid as
+    actually applied to F (achieved, not requested).
     """
     from cadx.cad.fem import loads as ld
 
@@ -935,16 +954,95 @@ def resolve_case_dofs(  # noqa: C901
         # a load patch of only a few cells concentrates a point-load
         # singularity — grow the declared region by ~one pitch at a time
         # (centre kept) until it covers a ~2-pitch block; warn when it
-        # still can't (never applied to case.fixed regions)
+        # still can't (never applied to case.fixed regions). A couple
+        # additionally needs a ~3-pitch footprint perpendicular to its
+        # axis — smaller patches concentrate near-singular nodal forces
+        # (~M/footprint); growth gets a few extra tries but stops early
+        # when the footprint cannot widen (e.g. a thin plate's margin
+        # only grows in-plane).
         min_load_cells = max(8, round(0.5 * (2 * domain.pitch) ** 3 / domain.pitch**3))
+        want_cpl = (
+            np.asarray(load.moment_nm, dtype=float)
+            if load.moment_nm and len(load.moment_nm) == 3
+            else np.zeros(3)
+        )
+        lever_pt = (
+            np.asarray(load.remote_point[:3], dtype=float)
+            if load.remote_point
+            and len(load.remote_point) >= 3
+            and load.force_n
+            and len(load.force_n) == 3
+            else None
+        )
+        force_v = (
+            np.asarray(load.force_n[:3], dtype=float) if lever_pt is not None else None
+        )
+
+        def _req_couple(
+            m_now: np.ndarray,
+            _want: np.ndarray = want_cpl,
+            _lever: np.ndarray | None = lever_pt,
+            _force: np.ndarray | None = force_v,
+        ) -> np.ndarray:
+            """Requested couple (N·m): declared moment + remote-lever part
+            about the CURRENT node set's centroid (it moves as the patch
+            grows — same reference the apply code uses below). Defaults pin
+            this load's vectors (B023 — the closure outlives the loop var)."""
+            req = _want.copy()
+            if _lever is not None and _force is not None:
+                c = domain.node_coords()[np.flatnonzero(m_now)].mean(axis=0)
+                req += np.cross(_lever - c, _force) / 1e3
+            return req
+
+        def _extent_perp(m_now: np.ndarray, req: np.ndarray) -> float:
+            """Span (mm) of the node set perpendicular to the couple axis —
+            the lever the traction field can work with."""
+            u = req / np.linalg.norm(req)
+            P = domain.node_coords()[np.flatnonzero(m_now)]
+            rp = P - P.mean(axis=0)
+            rp = rp - np.outer(rp @ u, u)
+            return float(np.ptp(rp))
+
+        couple_req = float(np.linalg.norm(_req_couple(m))) >= 1e-3
+        max_tries = 6 if couple_req else 3
         tries = 0
-        while cells.sum() < min_load_cells and tries < 3:
+        prev_extent = float("inf")
+        moment_grew = False
+        while tries < max_tries:
+            too_small = bool(cells.sum() < min_load_cells)
+            weak = False
+            if couple_req:
+                req = _req_couple(m)
+                ext = _extent_perp(m, req)
+                idx_now = np.flatnonzero(m)
+                w_now = _couple_weights(domain, cells)
+                deficit = ld.moment_deficit(
+                    domain,
+                    idx_now,
+                    req,
+                    weights=w_now[idx_now] if w_now is not None else None,
+                )
+                weak = ext < 3.0 * domain.pitch or float(
+                    np.linalg.norm(deficit)
+                ) > 0.1 * float(np.linalg.norm(req))
+                if weak and too_small is False and tries > 0 and ext <= prev_extent + 1e-9:
+                    break  # growth no longer widens the couple footprint
+                prev_extent = ext
+            if not (too_small or weak):
+                break
             grown = _grow_load_spec(r, domain.pitch)
             if grown is None:
                 break  # kinds that cannot grow this way (hole/bore/all)
             r = grown
             m, cells, fb_ax = _nodes_cells(r)
             tries += 1
+            moment_grew = moment_grew or weak
+        if moment_grew:
+            warnings.append(
+                f"case '{case.name}': widened the {r.kind} region to "
+                f"{int(cells.sum())} cells so the couple spreads over a "
+                "~3-pitch footprint"
+            )
         if fb_ax:
             warnings.append(
                 f"case '{case.name}': region_fallback — load region {r.kind} {tag} "
@@ -978,11 +1076,16 @@ def resolve_case_dofs(  # noqa: C901
                 f"{int(cells.sum())} cells — point-load singularity risk"
             )
         idx = np.flatnonzero(m)
+        # a couple is a surface traction — weight the tangential field by
+        # each node's exposed-area share (uniform fallback when buried)
+        w_skin = _couple_weights(domain, cells) if couple_req else None
+        w_idx = w_skin[idx] if w_skin is not None else None
 
         rec: dict[str, Any] | None = None
         F_before: np.ndarray | None = None
         direct_nm = np.zeros(3)
         induced_nm = np.zeros(3)
+        req_nm = np.zeros(3)  # declared moment + remote-lever request
         mechs: list[str] = []
         if applied_out is not None:
             F_before = F.copy()
@@ -1024,17 +1127,20 @@ def resolve_case_dofs(  # noqa: C901
                 c = domain.node_coords()[idx].mean(axis=0)
                 lever = np.asarray(load.remote_point[:3], dtype=float) - c
                 moment = np.cross(lever, f) / 1e3  # N·mm -> N·m
+                req_nm += moment
                 ld.spread_force(F, idx, f)
-                got_v = ld.spread_moment(domain, F, idx, moment)
+                got_v = ld.spread_moment(domain, F, idx, moment, weights=w_idx)
                 induced_nm += got_v
                 want = float(np.linalg.norm(moment))
                 got = float(np.linalg.norm(got_v))
+                miss = float(np.linalg.norm(moment - got_v))
                 if want >= 1e-3 and got < 0.9 * want:
                     warnings.append(
                         f"case '{case.name}': remote force at {load.remote_point[:3]} "
                         f"should add {want:.2f} N·m but only {got:.2f} N·m applied "
-                        "— the region cannot carry a couple (too small or "
-                        "degenerate); widen the region or use a bore wall"
+                        f"— the {_dominant_axis(moment - got_v)} component could not "
+                        f"resolve ({miss:.2f} N·m short; region lacks extent normal "
+                        "to it); widen the region or use a bore wall"
                     )
             else:
                 ld.spread_force(F, idx, f)
@@ -1069,16 +1175,20 @@ def resolve_case_dofs(  # noqa: C901
                     mechs.append("bearing_n")
         if load.moment_nm and len(load.moment_nm) == 3:
             want_v = np.asarray(load.moment_nm, dtype=float)
-            got_v = ld.spread_moment(domain, F, idx, want_v)
+            req_nm += want_v
+            got_v = ld.spread_moment(domain, F, idx, want_v, weights=w_idx)
             direct_nm += got_v
             want = float(np.linalg.norm(want_v))
             got = float(np.linalg.norm(got_v))
+            miss = float(np.linalg.norm(want_v - got_v))
             if want >= 1e-3 and got < 0.9 * want:
                 warnings.append(
                     f"case '{case.name}': moment on {r.kind} applied "
-                    f"{got:.2f} of {want:.2f} N·m — region cannot carry the "
-                    "couple on all axes (too small or degenerate); widen the "
-                    "region or target a bore/cylinder wall"
+                    f"{got:.2f} of {want:.2f} N·m — the "
+                    f"{_dominant_axis(want_v - got_v)} component could not "
+                    f"resolve ({miss:.2f} N·m short; region lacks extent "
+                    "normal to it); widen the region or target a "
+                    "bore/cylinder wall"
                 )
             applied = applied or got > 0
             if got > 0:
@@ -1198,6 +1308,20 @@ def resolve_case_dofs(  # noqa: C901
                     mechs.append("pressure_mpa")
         if not applied:
             warnings.append(f"case '{case.name}': load on {r.kind} resolved to zero force")
+        cpl_mag = float(np.linalg.norm(req_nm))
+        cpl_extent = 0.0
+        if cpl_mag >= 1e-3:
+            cpl_extent = _extent_perp(m, req_nm)
+            if r.kind not in ("hole", "anchor", "bore") and cpl_extent < 3.0 * domain.pitch:
+                # bolt torque on a small bore is legitimately concentrated —
+                # the physical interface IS that small; surface patches are not
+                peak_n = cpl_mag * 1e3 / max(cpl_extent, 1e-6)
+                warnings.append(
+                    f"case '{case.name}': couple {cpl_mag:.2f} N·m on {r.kind} "
+                    f"{tag} concentrates on a ~{cpl_extent:.0f} mm footprint — "
+                    f"≈{peak_n:.0f} N nodal forces; widen the region if this "
+                    "isn't the real contact patch"
+                )
         if rec is not None and F_before is not None:
             dF = (F - F_before).reshape(-1, 3)
             sel = np.abs(dF).sum(axis=1) > 0
@@ -1214,6 +1338,16 @@ def resolve_case_dofs(  # noqa: C901
             rec["couple_mag_nm"] = round(float(np.linalg.norm(couple)), 3)
             rec["couple_direct_nm"] = [round(float(v), 3) for v in direct_nm]
             rec["couple_induced_nm"] = [round(float(v), 3) for v in induced_nm]
+            rec["extent_mm"] = [
+                round(float(v), 2)
+                for v in np.ptp(domain.node_coords()[idx], axis=0)
+            ]
+            if cpl_mag >= 1e-3:
+                rec["couple_requested_nm"] = [round(float(v), 3) for v in req_nm]
+                rec["couple_deficit_nm"] = [
+                    round(float(v), 3) for v in req_nm - (direct_nm + induced_nm)
+                ]
+                rec["couple_footprint_mm"] = round(cpl_extent, 2)
             applied_out.append(rec)
 
     if not fixed3.any():
@@ -1270,13 +1404,19 @@ def case_reactions(
     if applied is not None:
         direct = np.zeros(3)
         induced = np.zeros(3)
+        deficit = np.zeros(3)
         for rec in applied:
             direct += np.asarray(rec.get("couple_direct_nm") or [0, 0, 0], dtype=float)
             induced += np.asarray(rec.get("couple_induced_nm") or [0, 0, 0], dtype=float)
+            deficit += np.asarray(rec.get("couple_deficit_nm") or [0, 0, 0], dtype=float)
         out["moment_direct_nm"] = [round(float(v), 3) for v in direct]
         out["moment_induced_nm"] = [round(float(v), 3) for v in induced]
         out["moment_mag_direct_nm"] = round(float(np.linalg.norm(direct)), 3)
         out["moment_mag_induced_nm"] = round(float(np.linalg.norm(induced)), 3)
+        # requested minus achieved — nonzero only when a region could not
+        # represent part of its couple (axis named in the case warnings)
+        out["moment_deficit_nm"] = [round(float(v), 3) for v in deficit]
+        out["moment_mag_deficit_nm"] = round(float(np.linalg.norm(deficit)), 3)
     return out
 
 

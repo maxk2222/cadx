@@ -173,9 +173,14 @@ i.e. a near-surface patch of material.
 Load kinds (`LoadSpec` fields): `force_n` (distributed resultant),
 `pressure_mpa` (against the region normal), `bearing_n` + `bearing_dir`
 (cosine-distributed shaft load on a `bore`/`anchor` region — the physically
-correct bolt load), `moment_nm` (pure couple in N·m via rigidity tensor —
-right-hand rule about the vector; needs a region with real extent, and on
-`hole`/`anchor` regions it lands on the bore wall as tangential traction),
+correct bolt load), `moment_nm` (pure couple in N·m via the *weighted*
+rigidity tensor `J_w` — tangential nodal forces `tᵢ = wᵢ(ω×rᵢ)` land on the
+region's SKIN, weighted by each node's exposed-area share, so the couple is
+a surface traction rather than a body moment through the volume; needs a
+region with real extent — a point cannot carry a couple — so degenerate
+patches are auto-widened until the footprint ⊥ to the moment axis reaches
+~3 pitches (bounded, centre kept), and on `hole`/`anchor` regions it lands
+on the bore wall as tangential traction),
 `preload_n` (bolt pretension squeezing the two bore mouths),
 `force_n` + `remote_point` (same resultant plus the induced lever moment —
 `remote_point` alone applies nothing and warns),
@@ -183,9 +188,12 @@ right-hand rule about the vector; needs a region with real extent, and on
 regions take `fix_mode`: `"all"` (encastre) or `"normal"` (pins only the
 axis DOF — roller/resting/symmetry; reported as `(nnodes,3)` DOF masks).
 Resolution reports per-load `applied` records (which mechanisms landed, with
-the *measured* resultant force and couple about the region centroid) and the
-case `reactions` split the applied moment into direct couples vs
-remote-lever induced moments.
+the *measured* resultant force and couple about the region centroid, plus
+`couple_requested_nm`/`couple_deficit_nm`/`couple_footprint_mm` for moment
+loads — a residual deficit names the unresolvable axis in the warnings, and
+a still-narrow footprint warns with its mm extent and ~peak nodal force);
+the case `reactions` split the applied moment into direct couples vs
+remote-lever induced moments and report the summed `moment_deficit_nm`.
 
 Three actions share the declared load cases:
 

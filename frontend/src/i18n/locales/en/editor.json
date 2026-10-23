@@ -430,6 +430,7 @@
   "se_check_moment": "{{v}} N·m applied",
   "se_check_moment_split": "{{d}} direct + {{i}} levered",
   "se_check_applied": "{{m}} → {{f}} N + {{t}} N·m",
+  "se_check_deficit": "{{v}} N·m not applied",
   "se_mech_add": "+ component",
   "se_mech_add_h": "add another load mechanism to this region (e.g. force + torque on a bolt)",
   "se_mech_remove": "remove component",
