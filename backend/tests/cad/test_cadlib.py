@@ -814,6 +814,44 @@ def test_tapped_holes_built_in_loop_all_count(tmp_path):
     assert bsplines, "four cut grooves must leave helical faces"
 
 
+def test_unfused_thread_fragments_fail_the_gate(tmp_path):
+    """Regression for the CSK-screw quilted-render failure: an old
+    `_cadx_fuse_solids` swallowed fuse exceptions and exported the raw
+    79-solid turn compound — geometrically present but unusable (overlapping
+    shells render as triangle noise, volume is double-counted). The export
+    gate must reject a result whose solid count explodes past the part
+    count; a legit multi-body result (disjoint bodies) must still pass."""
+    feature = (
+        '{"kind": "thread", "thread_spec": "M8x1.25", "major_diameter": 8.0,'
+        ' "pitch": 1.25, "length": 12.0, "start": 0.0, "external": False,'
+        ' "hand": "right", "axis": "+z", "position_mm": [0, 0, 0]}'
+    )
+    code = (
+        "from build123d import *\n"
+        "import cadlib\n"
+        "PARAMS = {}\n"
+        f"CADX_FEATURES = [{feature}]\n"
+        "tap = cadlib.tapped_hole(8, 1.25, 12)\n"
+        "result = Compound(children=[Box(20, 20, 10)] + [cadlib.tapped_hole(8, 1.25, 12) for _ in range(8)])\n"
+    )
+    out = run_user_code(code, tmp_path / "work", detail_mode="export")
+    assert out.ok, out.error
+    assert out.thread_count == 0  # 9 loose shells are not a fused thread part
+
+    ok_code = (
+        "from build123d import *\n"
+        "import cadlib\n"
+        "PARAMS = {}\n"
+        f"CADX_FEATURES = [{feature}]\n"
+        "part = Box(20, 20, 12, align=(Align.CENTER, Align.CENTER, Align.MIN))\n"
+        "part = part - cadlib.tapped_hole(8, 1.25, 12)\n"
+        "result = Compound(children=[part, Pos(60, 0, 0) * Box(5, 5, 5)])\n"
+    )
+    out = run_user_code(ok_code, tmp_path / "work2", detail_mode="export")
+    assert out.ok, out.error
+    assert out.thread_count == 1
+
+
 def test_tapped_hole_pitch_and_drill_defaults():
     from cadx.cad.cadlib import ops as cops
 

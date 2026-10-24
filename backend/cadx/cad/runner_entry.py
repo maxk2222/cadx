@@ -752,6 +752,20 @@ def main(workdir: Path | None = None) -> int:  # noqa: C901
                 has_bspline = True  # inspection failed — keep the counted value
             if not has_bspline:
                 thread_count = 0
+            else:
+                # a failed `_cadx_fuse_solids` used to return the raw turn
+                # compound: the thread then ships as dozens of separate
+                # solids, rendering as a quilted mess instead of one fused
+                # part. A consolidated thread part holds at most one solid
+                # per BOM/namespace part — far more means the turns were
+                # never fused (slack covers a few legit extra bodies).
+                try:
+                    n_solids = len(list(result_shape.solids()))
+                except Exception:
+                    n_solids = 0
+                expected_solids = max(1, sum(int(r["count"]) for r in bom.values()))
+                if n_solids > expected_solids + 4:
+                    thread_count = 0
 
         params_used = namespace.get("PARAMS", {})
         try:
