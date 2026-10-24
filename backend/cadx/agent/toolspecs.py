@@ -638,18 +638,26 @@ _VEC3 = {
 _REGION_SCHEMA = {
     "type": "object",
     "description": "geometric region: surface (part skin facing axis, follows "
-    "curves), area (XY sub-area via polygon/x_range/y_range/center+diameter_mm, "
-    "optionally restricted to the surface facing axis), rim (outer radial band "
-    "of width margin_mm following the part silhouette around axis — the "
-    "gear/sprocket tooth ring; diameter_mm+inner_diameter_mm give an exact "
-    "annulus), border (band of width margin_mm at the bbox outer edges along "
-    "the axes named in axis — letters or signed, default 'xy'), hole/anchor "
-    "(measured feature anchor via hole_index — any axis; use list_anchors "
-    "first; loads/constraints apply on the bore wall and a keep ring of "
-    "margin_mm is auto-protected), bore (the bore WALL of an anchor — for "
-    "bearing/preload loads), face (legacy surface alias), cylinder (around an "
-    "axis — needs axis+diameter_mm; inner_diameter_mm for a hollow ring), box "
-    "(center+diameter_mm edge) or all (whole part — never in fixed regions)",
+    "curves — the right choice on organic shapes), area (XY sub-area via "
+    "polygon/x_range/y_range/center+diameter_mm, optionally restricted to the "
+    "surface facing axis), rim (outer radial band of width margin_mm following "
+    "the part silhouette around axis — the gear/sprocket tooth ring; "
+    "diameter_mm+inner_diameter_mm give an exact annulus), border (band of "
+    "width margin_mm at the bbox outer edges along the axes named in axis — "
+    "letters or signed, default 'xy'), hole/anchor (measured feature anchor "
+    "via hole_index — any axis; use list_anchors first; loads/constraints "
+    "apply on the bore wall and a keep ring of margin_mm is auto-protected), "
+    "bore (the bore WALL of an anchor — for bearing/preload loads), face "
+    "(legacy surface alias), cylinder (around an axis — needs "
+    "axis+diameter_mm; inner_diameter_mm for a hollow ring), box "
+    "(center+diameter_mm edge), plane (NODE-EXACT locus for fixtures — AND "
+    "over axis letters: '+x'/'-x' = that extreme plane, 'x' = both, 'xy' = "
+    "edge lines where x- AND y-conditions hold, 'xyz' = corner points; "
+    "center[i] replaces letter i's extreme with an interior mm coordinate — "
+    "{'axis':'x','center':[0]} = the x=0 symmetry cut; x/y/z_range clip the "
+    "free axes; margin_mm ignored — exactness is the contract. Use for clamp "
+    "planes, symmetry cuts, knife-edge supports; for loads prefer surface/"
+    "face/area) or all (whole part — never in fixed regions)",
     "properties": {
         "kind": {
             "type": "string",
@@ -664,14 +672,21 @@ _REGION_SCHEMA = {
                 "hole",
                 "anchor",
                 "bore",
+                "plane",
                 "all",
             ],
         },
         "axis": _s(
-            "axis, e.g. -z — face normal or cylinder/rim axis; border also "
-            "accepts letter sets like 'x'/'xy'/'xyz' (both sides each)"
+            "axis, e.g. -z — face normal or cylinder/rim axis; border/plane "
+            "also accept letter sets like 'x'/'xy'/'xyz'/'+x-y' (border: OR "
+            "band both sides each; plane: AND intersection — 'xy' = edges)"
         ),
-        "center": {**_VEC3, "description": "optional mm hint, e.g. hole position"},
+        "center": {
+            **_VEC3,
+            "description": "optional mm hint, e.g. hole position; plane: "
+            "center[i] replaces the i-th axis letter's extreme — "
+            "{'axis':'x','center':[0]} = interior x=0 plane",
+        },
         "diameter_mm": {"type": "number", "description": "cylinder diameter / box edge"},
         "inner_diameter_mm": {
             "type": "number",
@@ -708,7 +723,10 @@ _REGION_SCHEMA = {
             "type": "string",
             "enum": ["all", "normal"],
             "description": "fixed regions only: 'all' = encastre (default); "
-            "'normal' = pin only the axis DOF — roller/sliding/symmetry",
+            "'normal' = pin only the axis DOF — roller/sliding/symmetry; "
+            "on plane regions it pins the named letters' DOFs — "
+            "'x' = ux (symmetry cut), 'xy' = ux+uy (knife edge), "
+            "'xyz' = point support",
         },
         "material": _s(
             "keep regions only: override material inside the region "
@@ -777,6 +795,14 @@ _LOAD_SCHEMA = {
             "description": "robust TopOpt: tilts all directional vectors of "
             "this load (force/moment/bearing) within this cone (deg)",
         },
+        "spread_mode": {
+            "type": "string",
+            "enum": ["nodes", "area"],
+            "description": "force_n distribution over the region — 'nodes' "
+            "(default) = even split per node; 'area' = weighted by each "
+            "node's exposed-skin share (physical surface traction — pick "
+            "this for loads spread over a face)",
+        },
     },
 }
 
@@ -811,6 +837,16 @@ STRUCT_TOOLS = [
         "diameter, depth, kind and bolt size. hole_index in hole/anchor/bore "
         "regions refers to this table. Call FIRST — never guess coordinates "
         "when a measured anchor exists. Free (no FEM budget).",
+        {},
+        [],
+    ),
+    _fn(
+        "suggest_load_cases",
+        "Draft load cases deterministically: fixed = anchor regions at the "
+        "measured mounting features (fallback: the -z surface), loads = a "
+        "template normal force + own weight — or the spec's declared cases "
+        "when they exist. This is a STARTING POINT: edit magnitudes, "
+        "directions and regions to match the prompt, then check_load. Free.",
         {},
         [],
     ),
@@ -1785,6 +1821,7 @@ class ToolSession:
         topopt_fn: StructFn | None = None,
         preview_fn: StructFn | None = None,
         anchors_fn: StructFn | None = None,
+        suggest_fn: StructFn | None = None,
         refine_fn: StructFn | None = None,
         infill_fn: StructFn | None = None,
         # spec features for the submission audit — [{"type":..., "name":...}];
@@ -1804,6 +1841,7 @@ class ToolSession:
         self.topopt_fn = topopt_fn
         self.preview_fn = preview_fn
         self.anchors_fn = anchors_fn
+        self.suggest_fn = suggest_fn
         self.refine_fn = refine_fn
         self.infill_fn = infill_fn
         self.spec_features = spec_features
@@ -1940,6 +1978,7 @@ class ToolSession:
                 or (t["function"]["name"] == "preview_regions" and self.preview_fn)
                 or (t["function"]["name"] == "check_load" and self.preview_fn)
                 or (t["function"]["name"] == "list_anchors" and self.anchors_fn)
+                or (t["function"]["name"] == "suggest_load_cases" and self.suggest_fn)
                 or (
                     t["function"]["name"] == "refine_features"
                     and self.refine_fn
@@ -2976,6 +3015,11 @@ class ToolSession:
             ],
             "note": "hole_index in hole/anchor/bore regions refers to these indices",
         }
+
+    async def _tool_suggest_load_cases(self, a: dict[str, Any]) -> dict[str, Any]:
+        if self.suggest_fn is None:
+            return {"ok": False, "error": "suggest_load_cases not available"}
+        return await self.suggest_fn(a)
 
     async def _tool_check_load(self, a: dict[str, Any]) -> dict[str, Any]:
         """Region resolution + resultant force/moment WITHOUT a render or a

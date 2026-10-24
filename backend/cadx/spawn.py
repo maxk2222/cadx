@@ -1197,6 +1197,76 @@ TERMINAL_JOB_STATES = {
 }
 
 
+def _compact_fem(fem: dict[str, Any]) -> dict[str, Any]:
+    """Agent-sized FemReport digest — per-case verdict + where the loads
+    and supports actually landed (resultant + centroids are the self-check
+    for BC mistakes)."""
+    cases = []
+    for c in (fem.get("cases") or [])[:6]:
+        rx = c.get("reactions") or {}
+        cases.append(
+            {
+                "name": c.get("name"),
+                "safety_factor": c.get("safety_factor"),
+                "max_vm_mpa": c.get("max_vm_mpa"),
+                "max_disp_mm": c.get("max_disp_mm"),
+                "work_disp_mm": c.get("work_disp_mm"),
+                "converged": c.get("converged"),
+                "resultant_n": rx.get("resultant_n"),
+                "fixed_centroid_mm": rx.get("fixed_centroid_mm"),
+                "load_centroid_mm": _load_centroid(c.get("applied") or []),
+                "warnings": (c.get("warnings") or [])[:4],
+                "feature_peaks": (c.get("feature_peaks") or [])[:6],
+            }
+        )
+    return {
+        "worst_safety_factor": fem.get("worst_safety_factor"),
+        "model": fem.get("model"),
+        "cases": cases,
+        "warnings": (fem.get("warnings") or [])[:5],
+    }
+
+
+def _load_centroid(applied: list[dict]) -> list[float] | None:
+    """Force-weighted mean of the applied-load centroids — where the load
+    actually attacked (vs. where it was declared)."""
+    tot = 0.0
+    acc = [0.0, 0.0, 0.0]
+    for rec in applied:
+        w = float(rec.get("force_mag_n") or 0.0)
+        p = rec.get("centroid_mm")
+        if w <= 0 or not isinstance(p, (list, tuple)) or len(p) < 3:
+            continue
+        for i in range(3):
+            acc[i] += w * float(p[i])
+        tot += w
+    if tot <= 0:
+        return None
+    return [round(v / tot, 2) for v in acc]
+
+
+def _compact_topopt(top: dict[str, Any]) -> dict[str, Any]:
+    """Agent-sized TopOpt digest — headline safety factors + the flags
+    that change the verdict (uniform baseline, load path, solver used)."""
+    out = {
+        "solver_used": top.get("solver_used") or (top.get("verification") or {}).get("solver_used"),
+        "status": top.get("status"),
+        "converged": top.get("converged"),
+        "volfrac_achieved": top.get("volfrac_achieved"),
+        "volfrac_export": top.get("volfrac_export"),
+        "sf_verified": top.get("sf_verified"),
+        "sf_export": top.get("sf_export"),
+        "sf_mask": top.get("sf_mask"),
+        "load_path_ok": top.get("load_path_ok"),
+        "worse_than_uniform": top.get("worse_than_uniform"),
+        "uniform_compliance_mj": top.get("uniform_compliance_mj"),
+        "min_member_mm": top.get("min_member_mm"),
+        "n_bodies_export": top.get("n_bodies_export"),
+        "warnings": (top.get("warnings") or [])[:6],
+    }
+    return {k: v for k, v in out.items() if v is not None}
+
+
 def _job_summary(job: Job, v: Version | None) -> dict[str, Any]:
     out: dict[str, Any] = {
         "ok": job.status in (JobStatus.succeeded, JobStatus.waiting_for_input),
@@ -1221,6 +1291,15 @@ def _job_summary(job: Job, v: Version | None) -> dict[str, Any]:
             out["volume_mm3"] = a["volume"]
         if v.issues:
             out["issues"] = [i.get("what", "") for i in v.issues[:8]]
+        # structural evidence the agent must see — a fem/optimize job's
+        # verdict lives on the version, not the job row; without these
+        # blocks fem_check/optimize_version returned a bare status
+        if job.type == JobType.fem and (v.fem or {}).get("cases"):
+            out["fem"] = _compact_fem(v.fem or {})
+        if job.type in (JobType.optimize, JobType.resample, JobType.refine):
+            top = (v.mesh or {}).get("topopt") or {}
+            if top:
+                out["topopt"] = _compact_topopt(top)
     if job.status == JobStatus.waiting_for_input:
         out["questions"] = job.questions or []
         out["note"] = (

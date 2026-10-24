@@ -654,6 +654,63 @@ def _make_anchors_fn(ops: _SessionOps) -> Any:
     return anchors_fn
 
 
+def _make_suggest_fn(ops: _SessionOps) -> Any:
+    async def suggest_fn(a: dict[str, Any]) -> dict[str, Any]:
+        """Deterministic load-case draft from the measured anchors + spec —
+        a starting POINT the model edits (magnitudes/directions), never a
+        finished answer. When the spec already declares cases it hands them
+        back for refinement instead of inventing new ones."""
+        anchors = ops.base.get("anchors")
+        if not anchors:
+            res = await _make_anchors_fn(ops)(a)
+            if res.get("ok"):
+                anchors = res.get("anchors")
+        anchors = anchors or []
+        if ops.spec_cases:
+            return {
+                "ok": True,
+                "load_cases": ops.spec_cases,
+                "n_anchors": len(anchors),
+                "hints": [
+                    "the spec already declares these load cases — EDIT the "
+                    "magnitudes/directions to match the prompt exactly, then "
+                    "check_load",
+                ],
+            }
+        fixed = [
+            {"kind": "anchor", "hole_index": int(a2["index"]), "margin_mm": 2.0}
+            for a2 in anchors
+            if a2.get("index")
+        ] or [{"kind": "surface", "axis": "-z"}]
+        case = {
+            "name": "draft",
+            "fixed": fixed,
+            "loads": [
+                {"region": {"kind": "surface", "axis": "+z"}, "normal_force_n": 50.0},
+                {"region": {"kind": "all"}, "g_load": [0, 0, -1]},
+            ],
+        }
+        return {
+            "ok": True,
+            "load_cases": [case],
+            "n_anchors": len(anchors),
+            "hints": [
+                "PLACEHOLDER draft — replace magnitudes/directions with what "
+                "the prompt states (kg -> ~10 N per kg)",
+                "fixed = the measured mounting anchors (hole_index); drop the "
+                "ones the prompt doesn't constrain, or swap to a surface/plane "
+                "fixture when it says clamped/supported",
+                "loads = template: normal_force on the +z skin + own weight — "
+                "bolt loads belong on bore regions, couples need real extent",
+                "exact fixture planes/symmetry cuts -> kind=plane (node-exact); "
+                "load faces -> surface/area",
+                "then check_load the edited cases before analyze_fem/topopt_run",
+            ],
+        }
+
+    return suggest_fn
+
+
 def _setup_session(
     ctx: AgentCtx,
     *,
@@ -695,6 +752,7 @@ def _setup_session(
         topopt_fn=_make_topopt_fn(ops),
         preview_fn=_make_preview_fn(ops),
         anchors_fn=_make_anchors_fn(ops),
+        suggest_fn=_make_suggest_fn(ops),
         refine_fn=_make_refine_fn(ops),
         infill_fn=_make_infill_fn(ops),
         target_volfrac=target_volfrac,

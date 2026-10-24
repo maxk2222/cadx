@@ -834,14 +834,63 @@ class ProjectToolSession(ToolSession):
                     if (v.analysis or {}).get(k) is not None
                 },
                 "fem": {
+                    "worst_safety_factor": (v.fem or {}).get("worst_safety_factor"),
                     "cases": [
                         {
                             "name": c.get("name"),
                             "safety_factor": c.get("safety_factor"),
                             "max_vm_mpa": c.get("max_vm_mpa"),
+                            "max_disp_mm": c.get("max_disp_mm"),
+                            "work_disp_mm": c.get("work_disp_mm"),
+                            "converged": c.get("converged"),
+                            "reactions": {
+                                k: (c.get("reactions") or {}).get(k)
+                                for k in (
+                                    "resultant_n",
+                                    "resultant_mag_n",
+                                    "moment_nm",
+                                    "fixed_centroid_mm",
+                                    "fixed_nodes",
+                                )
+                                if (c.get("reactions") or {}).get(k) is not None
+                            },
+                            "applied": [
+                                {
+                                    k: r.get(k)
+                                    for k in (
+                                        "kind",
+                                        "axis",
+                                        "centroid_mm",
+                                        "force_n",
+                                        "force_mag_n",
+                                        "mechanisms",
+                                        "nodes",
+                                        "spread",
+                                    )
+                                    if r.get(k) is not None
+                                }
+                                for r in (c.get("applied") or [])[:8]
+                            ],
+                            "supports": [
+                                {
+                                    k: r.get(k)
+                                    for k in (
+                                        "kind",
+                                        "axis",
+                                        "centroid_mm",
+                                        "fix_mode",
+                                        "dofs_pinned",
+                                        "nodes",
+                                    )
+                                    if r.get(k) is not None
+                                }
+                                for r in (c.get("supports") or [])[:8]
+                            ],
+                            "feature_peaks": (c.get("feature_peaks") or [])[:8],
+                            "warnings": (c.get("warnings") or [])[:5],
                         }
                         for c in (v.fem or {}).get("cases") or []
-                    ]
+                    ],
                 },
                 "issues": [i.get("what", "") for i in (v.issues or [])[:8]],
                 "has_code": bool(v.code),

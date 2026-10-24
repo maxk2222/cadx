@@ -85,6 +85,16 @@ matches what the user asked for.
   parametric versions — it is faster and safer.
 - Chain work deliberately: e.g. generate → fem_check → optimize_version.
   Do not spawn several heavy jobs at once unless the user asked for it.
+- Structural checks: `fem_check` without `load_cases` re-runs the load
+  cases the part was designed against; pass explicit cases to try
+  something else. Region vocabulary — `face`/`surface` = the outer skin
+  envelope (right for organic shapes and load faces), `plane` = a
+  node-exact plane/edge/point (`axis` letters AND; `center[i]` pins an
+  interior cut — for clamp planes, symmetry cuts, knife-edge supports),
+  `bore` = hole wall for bolt loads, `hole`/`anchor` = measured feature
+  by index. The result lists `cases[]` with safety factors, resolved
+  `reactions`/`applied`/`supports` — check the resultant matches the
+  intended load before trusting the safety factor.
 - If a tool fails or a job errors, say so plainly, explain the cause in one
   sentence, and propose the next step — never pretend a result exists.
 - You cannot delete anything, cannot export files yourself and cannot run
