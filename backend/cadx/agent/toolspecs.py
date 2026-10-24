@@ -656,8 +656,10 @@ _REGION_SCHEMA = {
     "center[i] replaces letter i's extreme with an interior mm coordinate — "
     "{'axis':'x','center':[0]} = the x=0 symmetry cut; x/y/z_range clip the "
     "free axes; margin_mm ignored — exactness is the contract. Use for clamp "
-    "planes, symmetry cuts, knife-edge supports; for loads prefer surface/"
-    "face/area) or all (whole part — never in fixed regions)",
+    "planes, symmetry cuts, knife-edge supports AND loads on an exact END "
+    "FACE (tip face, 'the +X end' — surface/face envelopes also catch stepped "
+    "shoulders of that silhouette); for loads on a contiguous skin prefer "
+    "surface/face/area) or all (whole part — never in fixed regions)",
     "properties": {
         "kind": {
             "type": "string",

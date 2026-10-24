@@ -116,6 +116,12 @@ Rules:
   — one per scenario with
   `fixed` regions (where the part is constrained) and `loads`. Region kinds:
   `face`/`surface` = outer layer on a bbox side (axis +x|-x|+y|-y|+z|-z),
+  `plane` = the exact extreme node plane (same axis letters) — for an exact
+  END FACE ("tip face", "Stirnfläche", "the +X end") use `plane +x`, NOT
+  `face +x`: the face envelope also catches stepped shoulders of that
+  silhouette (a flange's +x shoulder next to a thinner bar lands the load
+  at the step, not the tip). Same for a clamped end face or symmetry cut —
+  `plane` with `fix_mode` pins exactly that plane.
   `anchor`/`hole`/`bore` = measured feature anchor via `hole_index` (bore =
   the bore WALL — for bolt loads), `cylinder` = around an axis line
   (`diameter_mm` + `center` hint), `box` = cube at `center`, `all` = whole part.
