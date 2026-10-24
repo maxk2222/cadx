@@ -1,0 +1,33 @@
+{
+  "name": "knife_edge_beam",
+  "tier": "fast",
+  "kind": "exact",
+  "geometry": {"builder": "box", "args": {"x": 120, "y": 24, "z": 12}},
+  "material": {"E": 3500.0, "nu": 0.36},
+  "pitch_mm": 2.0,
+  "cases": [
+    {
+      "name": "three_point",
+      "fixed": [
+        {"kind": "plane", "axis": "xz", "center": [-60.0, 0.0],
+         "description": "left pin — knife-edge line (x=-60, z=0), ux+uy+uz"},
+        {"kind": "plane", "axis": "-z", "x_range": [59.5, 61.0], "fix_mode": "normal",
+         "description": "right roller — bottom line at x=+60, uz only (x free)"}
+      ],
+      "loads": [
+        {"region": {"kind": "plane", "axis": "xz", "center": [0.0, 12.0],
+         "description": "centre load line (x=0, z=12)"},
+         "force_n": [0, 0, -100]}
+      ]
+    }
+  ],
+  "expect": [
+    {"probe": "resultant_n", "axis": "z", "ref": -100.0, "tol_abs": 1e-6},
+    {"probe": "max_disp_mm", "ref": 0.307, "tol_rel": 0.12},
+    {"probe": "disp_at", "xyz": [0, 0, 0], "axis": "z", "ref": -0.307, "tol_rel": 0.12},
+    {"probe": "stress_at", "xyz": [10, 0, 11], "comp": "sx", "ref": -3.615, "tol_rel": 0.10},
+    {"probe": "stress_at", "xyz": [0, 0, 1], "comp": "sx", "ref": 4.34, "tol_rel": 0.12}
+  ],
+  "source": "3-point bending on NODE-EXACT knife-edge supports (plane regions): pin = ux+uy+uz on the left edge line, roller = uz-only on the right line (x_range clip). EB delta=FL^3/48EI=0.297mm + Timoshenko shear FL/4kGA=0.0097 -> 0.307mm (L=120, I=3456mm4, k=5/6, G=1286.8MPa). sigma_x top fibre at x=10 = -M(50)*5/I = -2500*5/3456 = -3.615 MPa; bottom mid fibre +4.34 MPa.",
+  "notes": "Measured @ pitch 2: delta=0.312 (+1.6%), sigma_x(10,0,11)=-3.59. Knife-edge supports are single edge LINES — a cell-band region spans >=2 node planes and measured ~2.4x over-stiff in earlier probing. IMPORTANT: pinning ux on BOTH lines (fix_mode all twice) doubles the stiffness via membrane restraint (immovable supports) — a textbook roller must leave the axial DOF free, hence the '-z' + x_range single-DOF region on the right."
+}

@@ -18,6 +18,12 @@ Region kinds (see llm.schemas.RegionSpec):
 - border:   band of width `margin_mm` at the bbox outer edges along the
             axes named in `axis` (letters or signed; default "xy")
 - points:   painted surface patch (GUI brush)
+- plane:    node-exact locus — AND over axis letters (signed = one extreme
+            plane, unsigned = both, multi-letter = edge/corner
+            intersection); `center[i]` replaces letter i's extreme with an
+            interior coordinate; `margin_mm` ignored — fixture planes,
+            symmetry cuts and knife-edge supports need exact nodes, not a
+            >=2-node cell band
 - all:      the whole solid
 
 `resolve_case` keeps the legacy node-mask signature; `resolve_case_dofs`
@@ -31,6 +37,7 @@ LLM loads step or to continue without that region).
 from __future__ import annotations
 
 import math
+import re
 from typing import Any
 
 import numpy as np
@@ -72,6 +79,62 @@ def _nodes_of_cells(domain: VoxelDomain, cell_mask: np.ndarray) -> np.ndarray:
     mask = np.zeros(domain.node_count, dtype=bool)
     mask[np.unique(en[cell_mask])] = True
     return mask
+
+
+_PLANE_LETTER = re.compile(r"([+-]?)([xyz])")
+
+
+def _plane_axes(axis: str) -> list[tuple[int, int | None]]:
+    """[(coord_index, sign)] per axis letter, in declaration order —
+    sign +1/-1 for signed extremes, None for unsigned (both sides)."""
+    out: list[tuple[int, int | None]] = []
+    for m in _PLANE_LETTER.finditer((axis or "").lower()):
+        sign_s = m.group(1)
+        sign = None if not sign_s else (1 if sign_s == "+" else -1)
+        out.append((_AXIS_IDX[m.group(2)], sign))
+    return out
+
+
+def _plane_locus(domain: VoxelDomain, region: RegionSpec) -> np.ndarray:
+    """(nnodes,) bool — nodes on the exact locus: AND over axis conditions.
+
+    Each axis letter contributes one plane condition and the locus is their
+    intersection ("x" = both extreme node planes of the solid, "+x" = the
+    +x extreme only, "xy" = the up-to-4 edge lines where an x- and a
+    y-condition meet, "xyz" = corner points). `center[i]` replaces the
+    i-th letter's extreme with an interior coordinate (a symmetry cut);
+    x/y/z_range clip the free coordinates. `margin_mm` is deliberately
+    ignored — the exact locus IS the contract; a half-pitch tolerance
+    keeps one node plane even when `center` lands mid-cell (it can then
+    select the two adjacent planes — still symmetric). Only nodes attached
+    to solid cells count — the locus never pins air.
+    """
+    letters = _plane_axes(region.axis)
+    if not letters:
+        return np.zeros(domain.node_count, dtype=bool)
+    solid_nodes = _solid_node_mask(domain)
+    if not solid_nodes.any():
+        return solid_nodes
+    coords = domain.node_coords()
+    sel = solid_nodes.copy()
+    half = 0.5 * domain.pitch + 1e-9
+    for i, (ax_i, sign) in enumerate(letters):
+        c = coords[:, ax_i]
+        if i < len(region.center):
+            cond = np.abs(c - float(region.center[i])) <= half
+        else:
+            lo_v = float(c[solid_nodes].min())
+            hi_v = float(c[solid_nodes].max())
+            if sign is None:
+                cond = (np.abs(c - lo_v) <= half) | (np.abs(c - hi_v) <= half)
+            else:
+                cond = np.abs(c - (hi_v if sign > 0 else lo_v)) <= half
+        sel &= cond
+    for i, rng in enumerate((region.x_range, region.y_range, region.z_range)):
+        if len(rng) == 2:
+            lo, hi = sorted(float(v) for v in rng)
+            sel &= (coords[:, i] >= lo - 1e-9) & (coords[:, i] <= hi + 1e-9)
+    return np.asarray(sel & solid_nodes, dtype=bool)
 
 
 def _exterior_void(domain: VoxelDomain) -> np.ndarray:
@@ -629,6 +692,14 @@ def region_cell_mask(
         return _box_cells(domain, region.center, edge)
     if kind == "points":
         return _points_cells(domain, region)
+    if kind == "plane":
+        # the locus itself is node-exact; the cell view is the incident
+        # solid-cell layer (load-patch sizing, coverage counts, preview)
+        locus = _plane_locus(domain, region)
+        if not locus.any():
+            return np.zeros(domain.dims, dtype=bool)
+        incident = locus[domain.element_nodes()].any(axis=1)
+        return np.asarray(incident.reshape(domain.dims) & domain.solid, dtype=bool)
     return np.zeros(domain.dims, dtype=bool)
 
 
@@ -636,6 +707,8 @@ def region_node_mask(
     domain: VoxelDomain, region: RegionSpec, anchors: list[dict] | None = None
 ) -> np.ndarray:
     """Bool (nnodes,) over all grid nodes belonging to the region."""
+    if region.kind == "plane":
+        return _plane_locus(domain, region)
     cells = region_cell_mask(domain, region, anchors)
     if not cells.any():
         return np.zeros(domain.node_count, dtype=bool)
@@ -802,6 +875,17 @@ def region_face_normal(region: RegionSpec) -> np.ndarray | None:
         v = np.zeros(3)
         v[idx] = float(sign)
         return v
+    if region.kind == "plane":
+        # a single signed letter ("+x") faces that way — usable for
+        # pressure/normal loads; unsigned, multi-letter or center-
+        # shifted loci have no unique outward normal
+        letters = _plane_axes(region.axis)
+        if len(letters) == 1 and letters[0][1] is not None and not len(region.center):
+            ax_i, sign_i = letters[0]
+            v = np.zeros(3)
+            v[ax_i] = 1.0 if sign_i == 1 else -1.0
+            return v
+        return None
     if region.kind not in ("face", "surface", "area"):
         return None
     idx, sign = _axis_parts(region.axis or "+z")
@@ -893,6 +977,14 @@ def _fixed_dof_mask(domain: VoxelDomain, region: RegionSpec, node_mask: np.ndarr
     """
     out = np.zeros((domain.node_count, 3), dtype=bool)
     if region.fix_mode == "normal":
+        if region.kind == "plane":
+            # per-letter DOFs: "x" pins ux (symmetry), "xy" pins ux+uy
+            # (knife-edge line support), "xyz" all three (point support)
+            letters = _plane_axes(region.axis)
+            if letters:
+                for ax_i, _sign in letters:
+                    out[node_mask, ax_i] = True
+                return out
         axis = region.axis or (region.normal[:3] if len(region.normal) >= 3 else "") or "+z"
         idx = _AXIS3.get(str(axis).lower(), 2)
         if len(region.normal) >= 3 and not region.axis:
@@ -909,6 +1001,7 @@ def resolve_case_dofs(  # noqa: C901
     anchors: list[dict] | None = None,
     density_g_cm3: float = 1.24,
     applied_out: list[dict[str, Any]] | None = None,
+    fixed_out: list[dict[str, Any]] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, list[str]]:
     """Resolve a load case into (fixed_dof_mask (nnodes,3), F vector, warnings).
 
@@ -928,7 +1021,10 @@ def resolve_case_dofs(  # noqa: C901
     "couple_induced_nm","extent_mm"} plus, when a couple was requested,
     {"couple_requested_nm","couple_deficit_nm","couple_footprint_mm"} —
     the measured resultant force and couple about the region centroid as
-    actually applied to F (achieved, not requested).
+    actually applied to F (achieved, not requested). `fixed_out` mirrors
+    that for the fixture regions — {"kind","axis","hole_index","nodes",
+    "cells","centroid_mm","fix_mode","dofs_pinned","fallback_ax"?} —
+    where the supports actually landed.
     """
     from cadx.cad.fem import loads as ld
 
@@ -941,6 +1037,11 @@ def resolve_case_dofs(  # noqa: C901
         """(node_mask, cell_mask, fallback_axis): the region's own cells, or
         a deterministic bbox boundary patch when it resolves to nothing."""
         cells = np.asarray(region_cell_mask(domain, r, anchors), dtype=bool)
+        if r.kind == "plane":
+            # exact locus — a bbox patch fallback would silently pin the
+            # wrong DOFs (e.g. widen a symmetry cut to a boundary band);
+            # report empty and let the warning name the miss
+            return _plane_locus(domain, r), cells, ""
         if cells.any():
             return _nodes_of_cells(domain, cells.ravel()), cells, ""
         fb, ax = _region_fallback(domain, r, anchors)
@@ -966,7 +1067,25 @@ def resolve_case_dofs(  # noqa: C901
                 f"unresolved on the geometry; pinned {fb_ax} boundary patch "
                 f"({int(cells.sum())} cells)" + _anchor_note(domain, r, anchors)
             )
-        fixed3 |= _fixed_dof_mask(domain, r, m)
+        dofs = _fixed_dof_mask(domain, r, m)
+        fixed3 |= dofs
+        if fixed_out is not None:
+            fidx = np.flatnonzero(m)
+            rec: dict[str, Any] = {
+                "kind": r.kind,
+                "axis": r.axis or "",
+                "hole_index": r.hole_index,
+                "nodes": int(m.sum()),
+                "cells": int(cells.sum()),
+                "centroid_mm": [
+                    round(float(v), 2) for v in domain.node_coords()[fidx].mean(axis=0)
+                ],
+                "fix_mode": r.fix_mode,
+                "dofs_pinned": [int(dofs[:, c].sum()) for c in range(3)],
+            }
+            if fb_ax:
+                rec["fallback_ax"] = fb_ax
+            fixed_out.append(rec)
         if r.fix_mode == "normal":
             warnings.append(
                 f"case '{case.name}': '{r.description or r.kind}' is a roller/symmetry "
@@ -1125,6 +1244,26 @@ def resolve_case_dofs(  # noqa: C901
         # each node's exposed-area share (uniform fallback when buried)
         w_skin = _couple_weights(domain, cells) if couple_req else None
         w_idx = w_skin[idx] if w_skin is not None else None
+        # force_n spread: "area" distributes by exposed-skin share (the
+        # physical traction a pad/face transmits — works on bore walls
+        # too); "nodes" is the legacy even split
+        w_force: np.ndarray | None = None
+        if load.spread_mode == "area":
+            w_force = _couple_weights(domain, cells)
+            if w_force is None:
+                warnings.append(
+                    f"case '{case.name}': spread_mode 'area' on buried region "
+                    f"{r.kind} {tag} — fell back to even node split"
+                )
+
+        def _spread(f: np.ndarray) -> None:
+            if w_force is not None:
+                widx = w_force[idx]
+                tot = float(widx.sum())
+                if tot > 0:
+                    F.reshape(-1, 3)[idx] += f[None, :] * (widx / tot)[:, None]
+                    return
+            ld.spread_force(F, idx, f)
 
         rec: dict[str, Any] | None = None
         F_before: np.ndarray | None = None
@@ -1172,7 +1311,7 @@ def resolve_case_dofs(  # noqa: C901
                 lever = np.asarray(load.remote_point[:3], dtype=float) - c
                 moment = np.cross(lever, f) / 1e3  # N·mm -> N·m
                 req_nm += moment
-                ld.spread_force(F, idx, f)
+                _spread(f)
                 got_v = ld.spread_moment(domain, F, idx, moment, weights=w_idx)
                 induced_nm += got_v
                 want = float(np.linalg.norm(moment))
@@ -1187,7 +1326,7 @@ def resolve_case_dofs(  # noqa: C901
                         "to it); widen the region or use a bore wall"
                     )
             else:
-                ld.spread_force(F, idx, f)
+                _spread(f)
             applied = True
             mechs.append("force_n")
         if load.bearing_n is not None and load.bearing_n > 0:
@@ -1378,6 +1517,8 @@ def resolve_case_dofs(  # noqa: C901
             )
             rec["force_n"] = [round(float(v), 2) for v in res]
             rec["force_mag_n"] = round(float(np.linalg.norm(res)), 2)
+            if "force_n" in mechs:
+                rec["spread"] = "area" if w_force is not None else "nodes"
             rec["couple_nm"] = [round(float(v), 3) for v in couple]
             rec["couple_mag_nm"] = round(float(np.linalg.norm(couple)), 3)
             rec["couple_direct_nm"] = [round(float(v), 3) for v in direct_nm]
@@ -1438,6 +1579,10 @@ def case_reactions(
     nodes = np.flatnonzero(fixed3.any(axis=1))
     if len(nodes):
         c = domain.node_coords()[nodes].mean(axis=0)
+        # where the supports actually landed — eval gates and the agent's
+        # self-check read this (a support centroid in the wrong place is
+        # the most common BC misconfiguration)
+        out["fixed_centroid_mm"] = [round(float(v), 2) for v in c]
         sel = np.flatnonzero(np.abs(F.reshape(-1, 3)).sum(axis=1) > 0)
         if len(sel):
             r = domain.node_coords()[sel] - c
@@ -1568,7 +1713,7 @@ def case_region_breakdown(
 
     def _entry(role: str, r: RegionSpec) -> dict[str, Any]:
         cells = region_cell_mask(domain, r, anchors)
-        nodes = _nodes_of_cells(domain, cells.ravel())
+        nodes = region_node_mask(domain, r, anchors)
         idx = np.flatnonzero(nodes)
         return {
             "role": role,

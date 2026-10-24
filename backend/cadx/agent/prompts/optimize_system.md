@@ -134,6 +134,7 @@ Kinds:
 | `surface` | actual part surface facing `axis` — follows curved shapes; `z_range` clips it in height | `{"kind":"surface","axis":"+z","margin_mm":1.5,"z_range":[0,8]}` |
 | `area` | XY sub-area (footprint filter); add `axis` for the surface in that direction, `z_range` for a height window | `{"kind":"area","axis":"+z","x_range":[-30,40]}` |
 | `face` | legacy — same as surface | `{"kind":"face","axis":"-z"}` = bottom |
+| `plane` | NODE-EXACT locus — AND over `axis` letters: `"+x"` = the +x extreme plane, `"x"` = both extremes, `"xy"` = the edges where x- AND y-conditions hold, `"xyz"` = corners; `center[i]` replaces letter i's extreme with an interior mm coordinate | `{"kind":"plane","axis":"-x"}` = clamp end plane; `{"kind":"plane","axis":"x","center":[0],"fix_mode":"normal"}` = x=0 symmetry cut (pins ux only); `{"kind":"plane","axis":"xy","fix_mode":"normal"}` = knife-edge line support |
 | `cylinder` | material within radius around an axis line; `inner_diameter_mm` turns it into an annulus (ring) | `{"kind":"cylinder","axis":"+z","center":[10,0],"diameter_mm":8}` |
 | `box` | cube around `center` | `{"kind":"box","center":[0,0,4],"diameter_mm":6}` |
 | `all` | the whole solid | `{"kind":"all"}` |
@@ -144,7 +145,13 @@ Kinds:
   automatically and protect a keep ring of material around it — a bolt load
   on `bore` needs no extra keep region.
 - Fixed regions support `fix_mode`: `"all"` (encastre, default) or
-  `"normal"` (constrains only the axis DOF — roller/sliding support).
+  `"normal"` (constrains only the axis DOF — roller/sliding support). On
+  `plane` regions `"normal"` pins exactly the named letters' DOFs —
+  `"x"` = ux (symmetry cut), `"xy"` = ux+uy (knife edge), `"xyz"` = all
+  three (point support).
+- `plane` is for FIXTURES (clamp/symmetry/knife-edge), `face`/`surface`/
+  `area` for loads — a load patch on a node-exact locus is a line/point
+  load and triggers the singularity warning on purpose.
 - For ergonomic parts keep the skin that touches the hand solid:
   `keep_regions=[{"kind":"surface","axis":"+z","margin_mm":1.5}]`.
 
@@ -152,7 +159,7 @@ Kinds:
 
 | situation | load fields | example |
 |-----------|-------------|---------|
-| distributed press | `force_n` or `pressure_mpa` on area/surface | grip: 50–150 N, pressure 0.05–0.2 MPa |
+| distributed press | `force_n` (add `"spread_mode":"area"` for skin-area weighting) or `pressure_mpa` on area/surface | grip: 50–150 N, pressure 0.05–0.2 MPa |
 | force normal to a face | `normal_force_n` — N acting orthogonal to the region's surface, direction follows the surface normal | `{"region":{"kind":"surface","axis":"-z"},"normal_force_n":80}` |
 | bolt/bearing shaft load | `bearing_n` + `bearing_dir` on a `bore` region | `{"region":{"kind":"bore","hole_index":1},"bearing_n":200,"bearing_dir":[0,0,-1]}` |
 | bolt pretension | `preload_n` on a `bore` region | `{"region":{"kind":"bore","hole_index":1},"preload_n":500}` |

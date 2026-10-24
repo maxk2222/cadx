@@ -58,6 +58,16 @@ class FemCaseResult(BaseModel):
     # resultant/couple (resolve_case_dofs applied_out; includes
     # couple_requested/deficit for moment loads)
     applied: list[dict] = Field(default_factory=list)
+    # per-fixture resolution records — where each support actually landed
+    # (kind/axis/centroid_mm/dofs_pinned); the counterpart of `applied`
+    supports: list[dict] = Field(default_factory=list)
+    # resultant-weighted mean displacement in load direction
+    # (compliance / |F|) — the robust stiffness metric for spread loads,
+    # unlike max_disp_mm it doesn't track a boundary-layer spike
+    work_disp_mm: float | None = None
+    # per-anchor local von Mises peak — "95 MPa at bore B2" beats a bare
+    # global maximum for locating the failure site
+    feature_peaks: list[dict] = Field(default_factory=list)
     # homogenized-infill estimate: macro von Mises amplified by the cell's
     # stress-localization factor A(rho) — the member-scale micro stress
     micro_vm_mpa: float | None = None
@@ -456,6 +466,56 @@ def run_fem_domain(
     return report
 
 
+def _feature_peaks(
+    domain: VoxelDomain, anchors: list[dict] | None, elem_vm: np.ndarray
+) -> list[dict]:
+    """Per-anchor local von Mises maximum — one entry per measured feature
+    so the report can say "92 MPa at bore #2" instead of only a global
+    max. The search sphere is max(dia, 2*pitch) around the anchor's 3D
+    position (mid-plane fill for missing components, same convention as
+    `_anchor_geometry`); only solid cells count."""
+    if not anchors:
+        return []
+    centers = domain.element_centers()
+    lo = np.asarray(domain.origin, dtype=float)
+    hi = lo + domain.pitch * np.asarray(domain.dims, dtype=float)
+    mid = (lo + hi) / 2
+    solid = np.asarray(domain.solid, dtype=bool).ravel()
+    vm = np.asarray(elem_vm, dtype=float).ravel()
+    peaks: list[dict] = []
+    for i, a in enumerate(anchors[:24]):
+        pos = a.get("pos")
+        if isinstance(pos, (list, tuple)) and len(pos) == 3:
+            p = np.array(
+                [float(v) if v is not None else float(mid[j]) for j, v in enumerate(pos)],
+                dtype=float,
+            )
+        else:
+            p = np.array(
+                [
+                    float(a["x"]) if a.get("x") is not None else float(mid[0]),
+                    float(a["y"]) if a.get("y") is not None else float(mid[1]),
+                    float(a["z"]) if a.get("z") is not None else float(mid[2]),
+                ],
+                dtype=float,
+            )
+        dia = float(a.get("dia") or 0.0)
+        radius = max(dia, 2.0 * domain.pitch)
+        sel = solid & (np.sum((centers - p[None, :]) ** 2, axis=1) <= radius * radius)
+        if not sel.any():
+            continue
+        peaks.append(
+            {
+                "index": int(a.get("index") or i + 1),
+                "kind": str(a.get("kind") or ""),
+                "pos": [round(float(v), 2) for v in p],
+                "radius_mm": round(radius, 2),
+                "vm_mpa": round(float(vm[sel].max()), 3),
+            }
+        )
+    return peaks
+
+
 _POOL: dict[str, Any] = {}
 
 
@@ -578,12 +638,19 @@ def _solve_cases(  # noqa: C901
         res = FemCaseResult(name=case.name or f"case{i + 1}")
         results.append(res)
         applied: list[dict] = []
+        supports: list[dict] = []
         fixed3, F, warnings = resolve_case_dofs(
-            domain, case, anchors, density_g_cm3=mat.density_g_cm3, applied_out=applied
+            domain,
+            case,
+            anchors,
+            density_g_cm3=mat.density_g_cm3,
+            applied_out=applied,
+            fixed_out=supports,
         )
         res.warnings += warnings
         res.reactions = case_reactions(domain, fixed3, F, applied)
         res.applied = applied
+        res.supports = supports
         if not fixed3.any() or not np.any(F):
             continue
         if asm is None:
@@ -617,6 +684,12 @@ def _solve_cases(  # noqa: C901
         res.converged = sol.converged
         res.solver = sol.solver
         res.safety_factor = round(mat.yield_mpa / sol.max_vm_mpa, 2) if sol.max_vm_mpa > 0 else None
+        # work-conjugate displacement: resultant-weighted mean |u| along
+        # the load direction — robust for spread loads where a nodal
+        # maximum sits in the application boundary layer
+        mag = float((res.reactions or {}).get("resultant_mag_n") or 0.0)
+        res.work_disp_mm = round(sol.compliance_j / mag, 4) if mag > 1e-9 else None
+        res.feature_peaks = _feature_peaks(domain, anchors, sol.elem_vm)
         if res.safety_factor is not None and res.safety_factor < 1.0:
             res.warnings.append(f"safety factor {res.safety_factor} < 1 — likely failure")
         if micro_amp is not None:

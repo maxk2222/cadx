@@ -9,11 +9,13 @@
   "cases": [
     {
       "name": "tension",
-      "fixed": [],
-      "manual_pins": [
-        {"dof": "x", "sel": {"x": 0.0}},
-        {"dof": "y", "sel": {"y": 0.0}},
-        {"dof": "z", "sel": {"z": 1.0}}
+      "fixed": [
+        {"kind": "plane", "axis": "x", "center": [0.0], "fix_mode": "normal",
+         "description": "ux=0 symmetry cut AB (x=0)"},
+        {"kind": "plane", "axis": "y", "center": [0.0], "fix_mode": "normal",
+         "description": "uy=0 symmetry cut DC (y=0)"},
+        {"kind": "plane", "axis": "z", "center": [1.0], "fix_mode": "normal",
+         "description": "uz=0 mid-plane — approximates plane stress"}
       ],
       "manual_loads": [
         {"pressure_mpa": -10.0, "dirs": ["+x", "+y"], "cell_sel": {"rxy_min": 26.5}}

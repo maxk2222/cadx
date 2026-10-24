@@ -12,10 +12,15 @@ Rules:
 - `fixed` regions = where the part is held/screwed/clamped. Prefer
   `{"kind": "hole", "hole_index": N}` when the spec lists mounting holes —
   the Nth fastener hole in the spec order. `fix_mode: "all"` (encastre) is
-  the default; `"normal"` = roller/resting contact. NEVER put
-  `{"kind": "all"}` in `fixed` — a whole-part fixture freezes the entire
-  domain and makes optimization meaningless; pick the actual contact
-  surface or holes.
+  the default; `"normal"` = roller/resting contact. For EXACT planes the
+  prompt states (a clamped end face, a symmetry cut, a knife-edge
+  support) use `{"kind": "plane"}` — `"axis":"-x"` = the -x end plane,
+  `"axis":"x","center":[0]` = the interior x=0 plane, `"xy"` = edge lines;
+  combined with `fix_mode:"normal"` it pins only the named axes' DOFs.
+  Only use `plane` with coordinates the prompt actually gives — never
+  guess a cut location. NEVER put `{"kind": "all"}` in `fixed` — a
+  whole-part fixture freezes the entire domain and makes optimization
+  meaningless; pick the actual contact surface or holes.
 - `loads[].region` = where the force attacks. Use `surface`/`face`/`area`
   for hand/tool pressure, `bore` (hole_index) for bolt loads,
   `cylinder`/`box`/`all` otherwise. For a tooth ring / gear rim

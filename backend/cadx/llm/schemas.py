@@ -201,12 +201,28 @@ class RegionSpec(BaseModel):
     - points:   surface patch painted in the GUI — solid cells within
                 `radius_mm` of any of `points` ([x,y,z] mm); `normal` is the
                 averaged surface normal at the pick (drives pressure loads)
+    - plane:    node-exact locus — AND over the per-axis conditions named
+                in `axis`: a signed letter ("+x"/"-z") selects that extreme
+                node plane of the solid, an unsigned letter ("x") BOTH
+                extremes, multiple letters intersect ("xy" = the edges
+                where the x- and y-conditions hold, "xyz" = corner points,
+                "+x-y" mixed signs allowed); `center[i]` (mm) replaces the
+                i-th axis letter's extreme with an interior coordinate —
+                `{"axis":"x","center":[0]}` is the x=0 symmetry cut;
+                x/y/z_range clip the free coordinates; `margin_mm` is
+                ignored (exactness is the contract — use box/cylinder for
+                bands). Nodes resolve to the locus itself — fixture planes,
+                symmetry cuts, knife-edge supports; cells resolve to the
+                incident layer (loads/preview/coverage counts only)
     - all:      the whole solid
 
     `fix_mode` applies when the region is used in `LoadCase.fixed`:
     - "all"    pins all 3 translational DOFs (encastre / glued, the default)
     - "normal" pins only the DOF along `axis` — a roller/sliding support or a
-               symmetry plane (the part rests on a face but can still slide)
+               symmetry plane (the part rests on a face but can still slide);
+               on `plane` regions it pins exactly the named axis letters'
+               DOFs — "x" = ux (symmetry), "xy" = ux+uy (knife edge),
+               "xyz" = all three (point support)
     `material` on a keep-region overrides the base material inside the region
     (e.g. "aluminum"/"brass" for a threaded insert) for FEM and TopOpt.
     """
@@ -223,6 +239,7 @@ class RegionSpec(BaseModel):
         "anchor",
         "bore",
         "points",
+        "plane",
         "all",
     ] = "face"
     axis: Annotated[str, Field(max_length=8)] = (
@@ -334,6 +351,11 @@ class LoadSpec(BaseModel):
     direction_cone_deg: float | None = Field(
         default=None, ge=0.0, le=180.0
     )  # robust TopOpt: sample load directions within this cone
+    spread_mode: Literal["nodes", "area"] = (
+        "nodes"  # force_n distribution — "nodes" = even split per node
+        # (legacy); "area" = weighted by each node's exposed-skin share
+        # (physical surface traction; works on bore walls too)
+    )
 
 
 class LoadCase(BaseModel):
