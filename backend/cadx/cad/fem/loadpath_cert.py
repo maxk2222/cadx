@@ -39,10 +39,14 @@ from cadx.logging import get_logger
 log = get_logger(__name__)
 
 # Flow capacities are integer-scaled mm² — `csgraph.maximum_flow` only
-# accepts integral capacities. 1e-4 mm² resolution is far below the
-# certificate's physical accuracy and keeps huge grids far away from the
-# int64 range.
+# accepts integral capacities. The target resolution is 1e-4 mm² — far
+# below the certificate's physical accuracy — but the *total* scaled
+# capacity must stay under int32 (~2.1e9): scipy's flow internals overflow
+# past that and silently return 0 on a perfectly connected part, which
+# reads as a broken load path. `_eff_scale` shrinks the unit when the
+# domain is large.
 _SCALE = 10_000.0
+_INT32_SAFE_SUM = 1_000_000_000.0
 
 # the flow network is rebuilt per case — refuse domains where the
 # augmented graph would dwarf the FEM solve it shadows
@@ -103,6 +107,29 @@ def _node_adjacent_graph(
             np.empty(0, dtype=np.int64),
         )
     return np.concatenate(rows), np.concatenate(cols), np.concatenate(shared)
+
+
+def _unit_reachable(
+    g_row: np.ndarray,
+    g_col: np.ndarray,
+    n: int,
+    load_cells: np.ndarray,
+    fix_cells: np.ndarray,
+) -> bool:
+    """Cheap undirected reachability between endpoint cells on the 26-conn
+    cell graph — the sanity check behind the max-flow verdict: integer
+    scaling can make the flow solver return 0 on a part that provably has
+    a path, and only this check separates 'broken' from 'solver glitch'."""
+    from scipy import sparse
+    from scipy.sparse import csgraph
+
+    g = sparse.csr_matrix(
+        (np.ones(g_row.size, dtype=np.int8), (g_row, g_col)), shape=(n, n)
+    )
+    dist = csgraph.dijkstra(
+        g, directed=False, indices=fix_cells, min_only=True
+    )
+    return bool(np.isfinite(dist[load_cells]).any())
 
 
 def loadpath_certificate(
@@ -172,7 +199,11 @@ def loadpath_certificate(
     # the inscribed square section (2·half)² — exactly one cell face for
     # surface cells, so thin members bound the flow by their real section
     cap_mm2 = (2.0 * half_mm) ** 2
-    cap_int = np.round(cap_mm2 * _SCALE).astype(np.int64)
+    # scipy's maximum_flow silently returns 0 once any capacity or the
+    # capacity sum exceeds int32 — keep the whole scaled network below
+    # ~1e9 so a fine grid can never overflow into a false "unreachable".
+    eff_scale = min(_SCALE, _INT32_SAFE_SUM / max(float(cap_mm2.sum()), 1.0))
+    cap_int = np.round(cap_mm2 * eff_scale).astype(np.int64)
     # node-split flow network: solid cell i becomes (2i in, 2i+1 out) with
     # the inscribed-section capacity on the in->out arc — that is what
     # makes the min cut read a physical cross-section. Without it, a
@@ -259,17 +290,30 @@ def loadpath_certificate(
         )
         try:
             res = csgraph.maximum_flow(flow_net, src_node, sink_node)
-            flow_mm2 = float(res.flow_value) / _SCALE
+            flow_mm2 = float(res.flow_value) / eff_scale
         except Exception as e:
             warnings.append(f"case {ci}: max-flow solve failed: {e}")
             log.warning("loadpath_cert.flow_failed", case=ci, error=str(e))
+            rec["reachable"] = None
             out["per_case"].append(rec)
             continue
         if flow_mm2 <= 1e-9:
-            warnings.append(
-                f"case {ci}: loads cannot reach the fixtures through the solid"
-            )
-            log.warning("loadpath_cert.unreachable", case=ci)
+            # connectivity cross-check: the int-scaled solver returning 0
+            # is a numerical artifact on a genuinely connected part — only
+            # a missing cell-graph path makes the verdict real
+            reach = _unit_reachable(g_row, g_col, n, load_cells, fix_cells)
+            if reach:
+                warnings.append(
+                    f"case {ci}: max-flow returned 0 though the cell graph is "
+                    "connected — solver anomaly, certificate inconclusive"
+                )
+                log.warning("loadpath_cert.flow_anomaly", case=ci)
+                rec["reachable"] = None
+            else:
+                warnings.append(
+                    f"case {ci}: loads cannot reach the fixtures through the solid"
+                )
+                log.warning("loadpath_cert.unreachable", case=ci)
             out["per_case"].append(rec)
             continue
         rec["reachable"] = True
@@ -279,9 +323,18 @@ def loadpath_certificate(
             rec["sf_floor"] = round(flow_mm2 * float(yield_mpa) / f_mag, 4)
         out["per_case"].append(rec)
 
-    out["load_path_ok"] = bool(out["per_case"]) and all(
-        r["reachable"] for r in out["per_case"]
-    )
+    # reachable=None marks solver-inconclusive cases: they must not pull
+    # the verdict down to False the way a proven disconnect does — the
+    # certificate is unknown for the run, never a broken-path verdict.
+    verdicts = [r["reachable"] for r in out["per_case"]]
+    if not verdicts:
+        out["load_path_ok"] = None
+    elif any(v is False for v in verdicts):
+        out["load_path_ok"] = False
+    elif all(verdicts):
+        out["load_path_ok"] = True
+    else:
+        out["load_path_ok"] = None
     bottlenecks = [
         r["bottleneck_mm2"] for r in out["per_case"] if r["bottleneck_mm2"] is not None
     ]

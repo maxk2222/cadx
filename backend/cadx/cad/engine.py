@@ -3100,7 +3100,7 @@ def run_topopt_pipeline(  # noqa: C901
         failed_cases = [
             str(c.get("case_name") or c.get("case"))
             for c in (exp_info.get("load_path_cases") or [])
-            if not c.get("reachable")
+            if c.get("reachable") is False
         ]
         res.topopt["warnings"].append(
             "load-path certificate: a load case cannot reach its fixtures "
@@ -4319,7 +4319,7 @@ def run_infill_pipeline(  # noqa: C901
         failed_cases = [
             str(c.get("case_name") or c.get("case"))
             for c in ((exp_info or {}).get("load_path_cases") or [])
-            if not c.get("reachable")
+            if c.get("reachable") is False
         ]
         res.topopt["warnings"].append(
             "load-path certificate: a load case cannot reach its fixtures "

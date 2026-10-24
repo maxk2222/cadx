@@ -313,3 +313,48 @@ def test_cert_zero_yield_keeps_bottleneck() -> None:
     assert cert["load_path_ok"] is True
     assert cert["bottleneck_mm2"] == pytest.approx(4.0)
     assert cert["sf_floor"] is None
+
+
+def test_cert_large_domain_stays_int32_safe() -> None:
+    """A chunky solid scales every cell's inscribed cap past int32 when the
+    fixed 1e4 unit is kept — scipy's maximum_flow then silently returned 0
+    and the certificate lied 'unreachable' on a fully connected part. The
+    dynamic unit keeps the scaled network under 1e9 and the verdict stays
+    truthful."""
+    dims = (20, 20, 20)
+    dom = VoxelDomain(
+        origin=np.zeros(3), pitch=1.0, dims=dims, solid=np.ones(dims, dtype=bool)
+    )
+    fix_cells = np.zeros(dims, dtype=bool)
+    fix_cells[0] = True
+    load_cells = np.zeros(dims, dtype=bool)
+    load_cells[-1] = True
+    cert = loadpath_certificate(dom, [_case_on(dom, fix_cells, load_cells)], yield_mpa=25.0)
+    assert cert["load_path_ok"] is True
+    assert cert["per_case"][0]["reachable"] is True
+    assert cert["bottleneck_mm2"] is not None and cert["bottleneck_mm2"] > 0.0
+    assert not any("cannot reach" in w for w in cert["warnings"])
+
+
+def test_cert_flow_anomaly_is_inconclusive_not_broken(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the solver ever returns 0 on a part whose cell graph IS
+    connected, the verdict must be 'inconclusive' (None) — a proven
+    disconnect reads False, a solver glitch must not."""
+    from types import SimpleNamespace
+
+    from scipy.sparse import csgraph
+
+    dom = _bar_domain()
+    fix_cells = np.zeros(dom.dims, dtype=bool)
+    fix_cells[0, :, :] = True
+    load_cells = np.zeros(dom.dims, dtype=bool)
+    load_cells[-1, :, :] = True
+    monkeypatch.setattr(
+        csgraph, "maximum_flow", lambda *a, **k: SimpleNamespace(flow_value=0)
+    )
+    cert = loadpath_certificate(dom, [_case_on(dom, fix_cells, load_cells)], yield_mpa=25.0)
+    assert cert["load_path_ok"] is None
+    assert cert["per_case"][0]["reachable"] is None
+    assert any("solver anomaly" in w for w in cert["warnings"])

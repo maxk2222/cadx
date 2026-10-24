@@ -337,7 +337,7 @@ def _optimize_run_row(r: dict[str, Any]) -> str:
         failed = [
             str(c.get("case_name") or c.get("case"))
             for c in (top.get("load_path_cases") or [])
-            if not c.get("reachable")
+            if c.get("reachable") is False
         ]
         if failed:
             row += f"({','.join(failed)})"
