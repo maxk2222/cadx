@@ -2203,8 +2203,10 @@ def _scan_has_feature(
             if len(tpos) > max(au, av) and tpos[au] is not None and tpos[av] is not None:
                 du, dv = float(tpos[au]) - uv[0], float(tpos[av]) - uv[1]
             elif axis in ("+z", "-z"):
-                du = float(t.get("x") or 0.0) - uv[0]
-                dv = float(t.get("y") or 0.0) - uv[1]
+                if t.get("x") is None or t.get("y") is None:
+                    continue
+                du = float(t["x"]) - uv[0]
+                dv = float(t["y"]) - uv[1]
             else:
                 continue
         except (TypeError, ValueError):
