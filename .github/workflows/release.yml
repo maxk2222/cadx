@@ -1,0 +1,114 @@
+name: release
+
+# Tag-gated prerelease pipeline: v* tag → quality gate → source tarball →
+# GitHub pre-release (no container registry, no `latest` promotion).
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # gh release create
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: quality gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "latest"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: version consistency (tag <-> VERSION <-> manifests)
+        run: bash scripts/check_version.sh --tag "$GITHUB_REF_NAME"
+
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck install.sh scripts/*.sh scripts/lib/*.sh
+
+      - name: backend deps + tests
+        run: |
+          cd backend
+          uv sync
+          uv run pytest tests -x -q -m "not verify"
+
+      - name: backend lint
+        run: |
+          cd backend
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: mesh_server tests (MESH_FAKE — no GPU)
+        run: |
+          cd mesh_server
+          uv sync
+          MESH_FAKE=1 uv run pytest tests -x -q
+
+      - name: frontend lint + typecheck + tests + build
+        run: |
+          cd frontend
+          npm ci
+          npm run lint
+          npx tsc -b --noEmit
+          npm run test -- --run
+          npm run build
+
+  package:
+    name: tarball + pre-release
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: build source tarball (tracked files only — no .env*/data/venvs)
+        id: pkg
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          asset="cadx-${ver}.tar.gz"
+          # git archive ships tracked files only — .env, data/, run/, logs/,
+          # venvs, node_modules, dist/ and eval results can never leak in.
+          git archive --format=tar.gz --prefix="cadx-${ver}/" -o "$asset" HEAD
+          sha256sum "$asset" > SHA256SUMS.txt
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+          tar tzf "$asset" | head -5
+          tar tzf "$asset" | grep -E '(^|/)\.env($|\.)' | grep -v '\.env\.example$' \
+            && { echo "FATAL: .env leaked into tarball"; exit 1; } || true
+          tar tzf "$asset" | grep -E '^cadx-[^/]+/(data|run|logs)/' \
+            && { echo "FATAL: runtime dirs leaked into tarball"; exit 1; } || true
+
+      - name: create pre-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          notes="docs/release-notes/${ver}.md"
+          if [ ! -f "$notes" ]; then
+            notes="$(mktemp --suffix=.md)"
+            printf 'CADX %s — see CHANGELOG.md.\n' "$ver" > "$notes"
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            --prerelease \
+            --latest=false \
+            --title "CADX $ver" \
+            --notes-file "$notes" \
+            "${{ steps.pkg.outputs.asset }}" \
+            SHA256SUMS.txt \
+            install.sh

@@ -140,7 +140,8 @@ fetch_release() { # <tag> <destdir> — download + verify + extract into destdir
     warn "no SHA256SUMS.txt on the release — skipping verification"
   fi
   mkdir -p "$dest"
-  tar xzf "$tmp/$asset" -C "$dest"
+  # release tarballs carry a cadx-<ver>/ root — strip it (BSD + GNU tar)
+  tar xzf "$tmp/$asset" -C "$dest" --strip-components 1
   rm -rf "$tmp"
 }
 
