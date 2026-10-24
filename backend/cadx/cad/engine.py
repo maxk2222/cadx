@@ -1785,6 +1785,31 @@ def _gate_sf(info: dict[str, Any] | None, report: Any) -> float | None:
     return sf if sf is not None else report.worst_safety_factor
 
 
+def _pitch_feature_warn(res: Any, domain: Any, anchors: list[dict] | None) -> None:
+    """Feature-vs-pitch check: a bore only survives the design grid when its
+    diameter spans a few cells — auto-coarsening past ~dia/3.5 rasterizes
+    anchored holes down to ~3 cells and the extracted mesh comes out
+    undersized no matter how good the optimizer is."""
+    anchor_dias = [
+        float(a.get("dia") or 0.0) for a in (anchors or []) if float(a.get("dia") or 0.0) > 0
+    ]
+    if not anchor_dias:
+        return
+    min_anchor_dia = min(anchor_dias)
+    if domain.pitch * 3.5 <= min_anchor_dia:
+        return
+    res.topopt["pitch_feature_warn"] = {
+        "pitch_mm": round(float(domain.pitch), 4),
+        "min_anchor_dia_mm": round(min_anchor_dia, 2),
+    }
+    res.topopt.setdefault("warnings", []).append(
+        f"design pitch {domain.pitch:.2f}mm under-resolves the smallest anchored "
+        f"bore Ø{min_anchor_dia:.1f}mm (needs ~{min_anchor_dia / 3.5:.1f}mm) — "
+        "anchored holes may extract undersized; raise fem_spsolve_dofs or "
+        "request a coarser min_member for a finer grid"
+    )
+
+
 def run_fem_pipeline(
     *,
     mesh_path: Path,
@@ -1942,6 +1967,7 @@ def run_topopt_pipeline(  # noqa: C901
     from cadx.cad.fem.preview import render_regions
     from cadx.cad.fem.regions import (
         auto_keep_regions,
+        auto_void_regions,
         empty_region_warnings,
         keep_element_mask,
         material_cell_factors,
@@ -2225,6 +2251,7 @@ def run_topopt_pipeline(  # noqa: C901
     keep_cells = keep_element_mask(part_domain, keep_list, anchors)
     # anchor keep rings around every bore a case's load/fix region resolves
     # on — a `bore`/`hole` load region must keep its material ring even when
+    _pitch_feature_warn(res, domain, anchors)
     # the agent forgot an explicit keep. Lazy: the helper may not exist yet
     # on this branch — degrade to the declared keeps only.
     try:
@@ -2235,7 +2262,12 @@ def run_topopt_pipeline(  # noqa: C901
         ).ravel()
     except Exception:
         pass
-    void_cells = keep_element_mask(part_domain, list(opt.void_regions), anchors)
+    void_list = list(opt.void_regions)
+    if grow_mm > 0:
+        # grown cells are designable — without an explicit void they let the
+        # optimizer fill anchored bores back up
+        void_list += auto_void_regions(anchors)
+    void_cells = keep_element_mask(part_domain, void_list, anchors)
     # passive pins run on the DESIGN domain: grown cells sharing a
     # fix/load node stay material — the load-introduction patch can use
     # the extra design space (masks share the grid, resolved on the part)
@@ -2437,7 +2469,7 @@ def run_topopt_pipeline(  # noqa: C901
                     )
                 else:
                     keep_c = keep_element_mask(coarse, keep_list, anchors)
-                    void_c = keep_element_mask(coarse, list(opt.void_regions), anchors)
+                    void_c = keep_element_mask(coarse, void_list, anchors)
                     passive_c = passive_solid_mask(coarse_design, [keep_c], fix_c, load_nm_c)
                     E0_c = mat.elastic_modulus_mpa * material_cell_factors(
                         coarse, keep_list, anchors, mat.elastic_modulus_mpa
@@ -3190,6 +3222,7 @@ def run_infill_pipeline(  # noqa: C901
     from cadx.cad.fem.preview import render_regions
     from cadx.cad.fem.regions import (
         auto_keep_regions,
+        auto_void_regions,
         empty_region_warnings,
         keep_element_mask,
         material_cell_factors,
@@ -4332,6 +4365,7 @@ def run_topopt_resample(  # noqa: C901
     from cadx.cad.fem.materials import resolve_material
     from cadx.cad.fem.regions import (
         auto_keep_regions,
+        auto_void_regions,
         keep_element_mask,
         region_node_mask,
         resolve_case_dofs,

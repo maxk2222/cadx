@@ -368,17 +368,19 @@ def _z_tunnels_near(mesh: trimesh.Trimesh, x: float, radius: float = 4.0) -> lis
 def test_recut_snaps_to_existing_tunnel():
     """DOUBLE-HOLE regression: the bore sits at x=-35.13 but the anchor
     measured on the smoothed mesh reports x=-35.16 — the re-cut must snap
-    onto the measured tunnel centre and ream it, leaving ONE hole."""
+    onto the measured tunnel centre, plug the wavy channel and drill ONE
+    clean hole at the anchor diameter."""
     mesh = _bored_wide(-35.13, 6.8)
     feat = RefineFeature(name="b", kind="hole", axis="+z", u=-35.16, v=0.0, dia=6.75)
     out, rep = apply_refine(mesh, [feat], restore_keeps=False)
     assert len(rep.applied) == 1
+    assert rep.applied[0].get("plugged") is True
 
     tunnels = _z_tunnels_near(out, -35.15)
     assert len(tunnels) == 1  # no figure-8 / sliver second void
     assert tunnels[0]["x"] == pytest.approx(-35.15, abs=0.5)
-    # requested 6.75 reamed ~+0.4 -> ~7.15 (scan dia reads within ~0.5·step)
-    assert tunnels[0]["dia"] == pytest.approx(7.15, abs=0.7)
+    # plugged then drilled at the anchor's 6.75 — not a wavy +0.4 ream
+    assert tunnels[0]["dia"] == pytest.approx(6.75, abs=0.7)
 
 
 def test_recut_snaps_via_base_mesh():
@@ -409,15 +411,48 @@ def test_recut_spec_dia_plugs_then_drills_nominal():
     assert tunnels[0]["dia"] == pytest.approx(5.5, abs=0.7)
 
 
-def test_recut_non_spec_keeps_ream_fallback():
-    """Scanned (non-spec) anchors still get the +0.4 ream — cleanliness beats
-    nominal diameter when no spec pins the size."""
+def test_recut_non_spec_plugs_real_mesh_tunnel():
+    """Scanned anchors over a real mesh tunnel also plug+drill — the wavy
+    channel gets sealed and re-drilled at the anchor diameter instead of a
+    +0.4 ream that keeps degraded walls."""
     mesh = _bored_wide(-35.13, 6.8)
     feat = RefineFeature(name="b", kind="hole", axis="+z", u=-35.16, v=0.0, dia=6.75)
-    _out, rep = apply_refine(mesh, [feat], restore_keeps=False)
+    out, rep = apply_refine(mesh, [feat], restore_keeps=False)
     assert len(rep.applied) == 1
-    assert not rep.applied[0].get("plugged")
-    assert rep.applied[0]["ream_extra_mm"] == pytest.approx(0.4)
+    assert rep.applied[0].get("plugged") is True
+    tunnels = _z_tunnels_near(out, -35.15)
+    assert len(tunnels) == 1
+    assert tunnels[0]["dia"] == pytest.approx(6.75, abs=0.7)
+
+
+def test_recut_spec_never_snaps_to_drifted_channel():
+    """A spec'd bore whose channel drifted >1mm keeps the DECLARED position:
+    the drifted void is plugged at its measured centre, the drill cuts at
+    (u, v) — never snapped onto the measurement."""
+    mesh = _bored_wide(-34.0, 6.8)  # channel ~1.2mm off the declared x=-35.16
+    feat = RefineFeature(name="m5", kind="hole", axis="+z", u=-35.16, v=0.0, dia=5.5, source="spec")
+    out, rep = apply_refine(mesh, [feat], restore_keeps=False)
+    assert len(rep.applied) == 1
+    assert rep.applied[0].get("plugged") is True
+    # the declared bore emerges at x≈-35.2 — the drifted -34 void is gone
+    tunnels = _z_tunnels_near(out, -35.16)
+    assert len(tunnels) == 1
+    assert tunnels[0]["dia"] == pytest.approx(5.5, abs=0.7)
+    assert not _z_tunnels_near(out, -34.0, radius=0.8)
+
+
+def test_recut_non_spec_large_drift_plugs_channel_keeps_position():
+    """Non-spec anchor with a >1mm drifted channel: plug at the measured
+    centre, drill at the declared spot — same never-snap rule as spec."""
+    mesh = _bored_wide(-34.0, 6.8)
+    feat = RefineFeature(name="b", kind="hole", axis="+z", u=-35.16, v=0.0, dia=6.75)
+    out, rep = apply_refine(mesh, [feat], restore_keeps=False)
+    assert len(rep.applied) == 1
+    assert rep.applied[0].get("plugged") is True
+    tunnels = _z_tunnels_near(out, -35.16)
+    assert len(tunnels) == 1
+    assert tunnels[0]["dia"] == pytest.approx(6.75, abs=0.7)
+    assert not _z_tunnels_near(out, -34.0, radius=0.8)
 
 
 def test_dedup_merges_near_concentric_anchors():

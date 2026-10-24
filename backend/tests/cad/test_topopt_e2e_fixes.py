@@ -885,3 +885,26 @@ def test_spec_dims_snap_keeps_requested_pitch_when_it_fits(tmp_path: Path) -> No
     assert res.ok, res.error
     assert res.topopt["domain_pitch"]["design_mm"] == pytest.approx(2.0)
     assert res.topopt["domain_spec_overshoot_mm"] == pytest.approx([0.0, 0.0, 0.0], abs=0.05)
+
+
+def test_pitch_feature_warn_flags_coarsened_grid():
+    """Anchored bores need ~Ø/3.5 cells of pitch — auto-coarsening past that
+    must surface a warning + structured field the optimize agent can read."""
+    from types import SimpleNamespace
+
+    from cadx.cad.engine import _pitch_feature_warn
+
+    res = SimpleNamespace(topopt={})
+    domain = SimpleNamespace(pitch=2.9)
+    _pitch_feature_warn(res, domain, [{"dia": 8.5}, {"dia": 6.0}])
+    assert res.topopt["pitch_feature_warn"]["min_anchor_dia_mm"] == 6.0
+    assert any("under-resolves" in w for w in res.topopt["warnings"])
+
+    res2 = SimpleNamespace(topopt={})
+    _pitch_feature_warn(res2, SimpleNamespace(pitch=1.5), [{"dia": 8.5}])
+    assert "pitch_feature_warn" not in res2.topopt
+    assert "warnings" not in res2.topopt  # no warn key materialized at all
+
+    res3 = SimpleNamespace(topopt={})
+    _pitch_feature_warn(res3, SimpleNamespace(pitch=5.0), [])
+    assert "pitch_feature_warn" not in res3.topopt

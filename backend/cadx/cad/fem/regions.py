@@ -657,6 +657,21 @@ def _region_hint_point(
     return None
 
 
+def _hint_has_axis(region: RegionSpec, anchor: dict | None, idx: int) -> bool:
+    """Whether the position hint actually carries the AXIAL coordinate.
+    `_region_hint_point` fills missing components with the domain mid-plane —
+    a 2-component `center` means the caller never stated an elevation, so
+    the band filter must not trust that component."""
+    if anchor is not None:
+        pos = anchor.get("pos")
+        if isinstance(pos, (list, tuple)) and len(pos) == 3 and pos[idx] is not None:
+            return True
+        return idx == 2 and anchor.get("z") is not None
+    if len(region.center) >= 3 and region.center[idx] is not None:
+        return True
+    return any(len(p) >= 3 and p[idx] is not None for p in region.points)
+
+
 def _region_fallback(
     domain: VoxelDomain, region: RegionSpec, anchors: list[dict] | None
 ) -> tuple[np.ndarray, str]:
@@ -697,6 +712,7 @@ def _region_fallback(
     idx, _sign = _axis_parts(ax_s)
     margin = max(float(region.margin_mm), domain.pitch)
     face = _surface_cells(domain, ax_s, margin)
+    face = np.asarray(_z_clip(domain, region, face), dtype=bool)
     if hint is not None:
         centers = domain.element_centers().reshape((*domain.dims, 3))
         dia = float((anchor or {}).get("dia") or region.diameter_mm or 0.0)
@@ -704,6 +720,19 @@ def _region_fallback(
         others = [i for i in range(3) if i != idx]
         d2 = sum((centers[..., o] - float(hint[o])) ** 2 for o in others)
         clipped = face & (d2 <= r_clip * r_clip)
+        # the hint's AXIAL coordinate matters too: a declared boss-top surface
+        # must not bind the lower same-axis face that happens to share the
+        # in-plane disc (e.g. a plate shoulder under a boss). Keep only the
+        # axial band nearest the hint when cells exist at that elevation —
+        # but only when the hint actually carried that component: 2-part
+        # centers default the axis coord to the mid-plane, which would
+        # exclude every real surface cell.
+        if clipped.any() and _hint_has_axis(region, anchor, idx):
+            band = clipped & (
+                np.abs(centers[..., idx] - float(hint[idx])) <= max(2.0 * domain.pitch, margin)
+            )
+            if band.any():
+                clipped = band
         if clipped.any():
             return np.asarray(clipped, dtype=bool), ax_s
     return np.asarray(face, dtype=bool), ax_s
@@ -1571,6 +1600,33 @@ def auto_keep_regions(anchors: list[dict] | None, margin_mm: float = 3.0) -> lis
                 hole_index=idx,
                 margin_mm=margin_mm,
                 description=f"auto-keep {label} #{idx}",
+            )
+        )
+    return out
+
+
+def auto_void_regions(anchors: list[dict] | None) -> list[RegionSpec]:
+    """Void regions INSIDE every fastener anchor's bore — for grow_mm>0 runs
+    where the dilated design domain would otherwise let the optimizer fill
+    anchored bores back up. The cylinder is slightly narrower than the
+    measured bore so the wall cells stay designable/kept."""
+    out: list[RegionSpec] = []
+    for a in anchors or []:
+        idx = int(a.get("index") or 0)
+        dia = float(a.get("dia") or 0.0)
+        if idx < 1 or dia <= 0:
+            continue
+        center = a.get("pos")
+        if not (isinstance(center, (list, tuple)) and len(center) == 3):
+            center = [a.get("x"), a.get("y"), a.get("z")]
+        out.append(
+            RegionSpec(
+                kind="cylinder",
+                axis=str(a.get("axis") or "+z"),
+                center=[float(c) if c is not None else 0.0 for c in center],
+                diameter_mm=dia * 0.9,
+                margin_mm=0.0,
+                description=f"auto-void bore #{idx}",
             )
         )
     return out

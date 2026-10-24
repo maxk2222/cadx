@@ -62,6 +62,9 @@ pick the best one.
   - `min_member_mm`: enforce minimum member thickness (≈1.6 for FDM).
   - `self_supporting` + `print_direction`: 45° AM support filter — every
     cell needs supported material below it; use for support-free FDM prints.
+    On cantilevered or edge-clamped parts it can starve the structure into
+    disconnected struts — always re-check `n_bodies` and `load_path_ok`
+    after a self-supporting run.
   - `multires`: coarse 2×-pitch SIMP warm-starts the fine grid — ~3× faster
     on large parts, use when a run would be slow.
   - `filter:"heaviside"`: crisp near-0/1 density — better surfaces and
@@ -163,7 +166,11 @@ Each `topopt_run` reports:
   so the thinnest stated dim lands on an integer cell count (`snapped:
   true` in `domain_pitch`); positive per-axis overshoot means the FEM
   domain still exceeds the spec envelope and the export clip will remove
-  material the mask verified — treat >half a cell as suspect.
+  material the mask verified — treat >half a cell as suspect. A
+  `pitch_feature_warn` entry means auto-coarsening outran the anchored
+  bores (pitch > Ø/3.5): holes will extract undersized — the deterministic
+  re-cut restores nominal bores, but prefer a coarser `min_member_mm` or a
+  `voxel_mm` request that keeps the grid honest when bores are critical.
 - `sf_mask` — safety factor on the exact voxel structure. On an
   auto-coarsened grid it reads systematically ~1.5-2× optimistic (the coarse
   pitch under-resolves thin junctions) — never rank a run by it alone.

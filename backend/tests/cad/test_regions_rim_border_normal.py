@@ -360,3 +360,79 @@ def test_case_anchor_keep_mask_unions_bore_rings() -> None:
         ],
     )
     assert not case_anchor_keep_mask(dom, [case2], anchors).any()
+
+
+def _boss_on_plate_domain() -> VoxelDomain:
+    """Plate 40x40x10 with a centred 10x10x15 boss — +z surfaces exist at
+    z~8.75 (plate shoulder ring) and z~23.75 (boss top)."""
+    pitch = 2.5
+    dims = (16, 16, 10)
+    origin = np.array([-20.0, -20.0, 0.0])
+    ii, jj, kk = np.meshgrid(*[np.arange(d) for d in dims], indexing="ij")
+    cx = origin[0] + (ii + 0.5) * pitch
+    cy = origin[1] + (jj + 0.5) * pitch
+    cz = origin[2] + (kk + 0.5) * pitch
+    plate = cz < 10.0
+    boss = (np.abs(cx) <= 5.0) & (np.abs(cy) <= 5.0) & (cz < 25.0)
+    return VoxelDomain(origin=origin, pitch=pitch, dims=dims, solid=plate | boss)
+
+
+def test_region_fallback_prefers_hint_elevation():
+    """+z fallback hinted at a boss top must not bind the plate shoulder —
+    the axial band around the hint wins over the shared in-plane disc."""
+    from cadx.cad.fem.regions import _region_fallback
+
+    dom = _boss_on_plate_domain()
+    r = RegionSpec(kind="surface", axis="+z", center=[0.0, 0.0, 25.0], margin_mm=2.0)
+    mask, ax = _region_fallback(dom, r, None)
+    assert ax == "+z" and mask.any()
+    zsel = dom.element_centers().reshape((*dom.dims, 3))[..., 2][mask]
+    assert zsel.min() > 15.0  # boss-top band only — plate shoulder excluded
+
+
+def test_region_fallback_z_range_filters_face():
+    """z_range clips the fallback face before the hint band is applied."""
+    from cadx.cad.fem.regions import _region_fallback
+
+    dom = _boss_on_plate_domain()
+    r = RegionSpec(
+        kind="surface",
+        axis="+z",
+        center=[0.0, 0.0, 25.0],
+        z_range=[18.0, 30.0],
+        margin_mm=2.0,
+    )
+    mask, _ = _region_fallback(dom, r, None)
+    assert mask.any()
+    zsel = dom.element_centers().reshape((*dom.dims, 3))[..., 2][mask]
+    assert zsel.min() >= 18.0
+
+
+def test_auto_void_regions_pins_bore_cylinders():
+    """Anchored bores become empty-pinned cylinders so a grown design domain
+    cannot fill their interior."""
+    from cadx.cad.fem.regions import auto_void_regions
+
+    anchors = [
+        {"index": 1, "axis": "+z", "x": 10.0, "y": -5.0, "z": 4.0, "dia": 8.5},
+        {"index": 2, "axis": "+x", "x": 0.0, "y": 1.0, "z": 2.0, "dia": 6.0},
+    ]
+    voids = auto_void_regions(anchors)
+    assert len(voids) == 2
+    z0 = voids[0]
+    assert z0.kind == "cylinder" and z0.axis == "+z"
+    assert z0.center == [10.0, -5.0, 4.0]
+    assert z0.diameter_mm == pytest.approx(8.5 * 0.9)
+    # hole anchors must never become void cells material — diameter stays
+    # strictly below the measured bore so the wall ring survives
+    x1 = voids[1]
+    assert x1.axis == "+x" and x1.diameter_mm == pytest.approx(6.0 * 0.9)
+
+
+def test_auto_void_regions_skips_bad_anchors():
+    from cadx.cad.fem.regions import auto_void_regions
+
+    assert auto_void_regions([]) == []
+    assert auto_void_regions([{"index": 1, "axis": "+z", "x": 1.0, "y": 0.0}]) == []
+    assert auto_void_regions([{"index": 1, "axis": "+z", "dia": 0.0}]) == []
+    assert auto_void_regions([{"axis": "+z", "x": 1.0, "y": 0.0, "dia": 5.0}]) == []  # no index

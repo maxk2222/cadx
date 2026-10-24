@@ -2795,7 +2795,7 @@ async def _persist_outcome(
         ).scalar_one_or_none()
         job.log = (current_log or "") + f"mode: {outcome.mode_note}\n"
 
-    if outcome.code or outcome.params is not None:
+    if outcome.code or outcome.params is not None or outcome.spec is not None:
         import json
 
         v_dir = storage.ensure(storage.version_dir(version.project_id, version.id))
@@ -2804,6 +2804,13 @@ async def _persist_outcome(
         (v_dir / "params.json").write_text(
             json.dumps(_json_safe(outcome.params) or {}, indent=2), encoding="utf-8"
         )
+        # the spec is the version's declared intent — persisting it next to the
+        # exports lets later tooling (eval --from imports, offline analysis)
+        # replay/refine against the real target instead of scanned guesses
+        if outcome.spec is not None:
+            (v_dir / "spec.json").write_text(
+                json.dumps(_json_safe(outcome.spec) or {}, indent=2), encoding="utf-8"
+            )
 
     mapping = {
         "succeeded": (VersionStatus.succeeded, JobStatus.succeeded),

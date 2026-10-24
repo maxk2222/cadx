@@ -108,6 +108,11 @@ class RefineFeature:
     # a void, so without the plug the cutter reams +0.4 past every wall
     # bulge; the plug restores nominal-diameter walls
     plug_first: bool = False
+    # internal: plug centre override — when the drill must land at the
+    # DECLARED position but the wavy channel drifted (topopt keep-rings hold
+    # the ring, the channel itself wanders), the plug seals the channel at
+    # its measured centre and the drill cuts at (u, v)
+    plug_uv: tuple[float, float] | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -795,14 +800,15 @@ def _plug_cylinder(mesh: trimesh.Trimesh, feat: RefineFeature) -> trimesh.Trimes
     Axial span covers the two part surfaces at the bore centre."""
     ax, au, av = _AXES[feat.axis]
     opp = ("-" if feat.axis[0] == "+" else "+") + feat.axis[1]
+    pu, pv = feat.plug_uv or (feat.u, feat.v)
     # channel span along the axis — the centre ray of a through-channel hits
     # nothing, so surface coords are sampled on rings around the bore
     side_a: list[float] = []
     side_b: list[float] = []
     for r_probe in (feat.dia * 0.5 + 1.2, feat.dia * 0.5 + 2.5):
         for ang in np.linspace(0.0, 2.0 * np.pi, 12, endpoint=False):
-            uu = feat.u + r_probe * math.cos(ang)
-            vv = feat.v + r_probe * math.sin(ang)
+            uu = pu + r_probe * math.cos(ang)
+            vv = pv + r_probe * math.sin(ang)
             e = _entry_point(mesh, feat.axis, uu, vv)
             if e is not None:
                 side_a.append(e)
@@ -823,7 +829,7 @@ def _plug_cylinder(mesh: trimesh.Trimesh, feat: RefineFeature) -> trimesh.Trimes
     n_rays = 24
     angs = np.linspace(0.0, 2.0 * np.pi, n_rays, endpoint=False)
     origin = np.zeros(3)
-    origin[au], origin[av], origin[ax] = feat.u, feat.v, mid
+    origin[au], origin[av], origin[ax] = pu, pv, mid
     origins = np.tile(origin, (n_rays, 1))
     dirs = np.zeros((n_rays, 3))
     dirs[:, au] = np.cos(angs)
@@ -833,24 +839,91 @@ def _plug_cylinder(mesh: trimesh.Trimesh, feat: RefineFeature) -> trimesh.Trimes
     )
     first = np.full(n_rays, np.inf)
     last = np.zeros(n_rays)
+    origin_uv = np.zeros(3)  # in-plane distance only — no axial component
+    origin_uv[au], origin_uv[av] = pu, pv
     for loc, ri in zip(locs, ray_ids, strict=True):
         p = np.zeros(3)
         p[au], p[av] = loc[au], loc[av]
-        d = float(np.linalg.norm(p - origin))
+        d = float(np.linalg.norm(p - origin_uv))
         first[int(ri)] = min(first[int(ri)], d)
         last[int(ri)] = max(last[int(ri)], d)
     finite = np.isfinite(first)
     if not finite.any():
         return None
+    # channel-scale gate: when the NEAREST surface is already far beyond the
+    # nominal bore, the "channel" is really an open interior cavity (hollow
+    # SIMP shells) — plugging it would re-solidify the part core, and the
+    # +0.4 weld margin on `first.max()` would poke past the exterior
+    # silhouette the probe mistook for a channel wall. Refine only re-cuts
+    # the nominal bore there — nothing to seal.
+    if float(first[finite].min()) > feat.dia * 0.9:
+        return None
     r_void = float(first[finite].max()) + 0.4  # widest bulge + weld margin
-    r_part = float(last[finite].min()) - 0.3  # never protrude the silhouette
+    # silhouette bound: `last` is the farthest surface along each ray — but a
+    # ray with NO hits means that direction is open void to the outside
+    # (sparse/cage parts: the channel gap connects straight to the exterior).
+    # Such directions bound the plug to the nominal bore radius — anything
+    # past the missing wall would protrude out of the part silhouette.
+    limit = np.where(finite, last, feat.dia / 2.0)
+    r_part = float(limit.min()) - 0.3  # never protrude the silhouette
     plug_r = min(r_void, r_part)
     if plug_r <= feat.dia / 2.0 + 0.05:
         return None
-    plug = trimesh.creation.cylinder(radius=plug_r, height=span_ax + 0.6, sections=48)
+    # axial span: cover the measured channel mouth-to-mouth — inset 0.05mm
+    # on both faces so the plug can never protrude past the silhouette (a
+    # spec-envelope clip already ran upstream; sticking out would
+    # re-introduce the overshoot it removed)
+    plug = trimesh.creation.cylinder(radius=plug_r, height=span_ax - 0.1, sections=48)
     plug.apply_translation([0, 0, -span_ax / 2.0])
-    _orient_cutter(plug, feat.axis, feat.u, feat.v, entry)
+    _orient_cutter(plug, feat.axis, pu, pv, entry)
     return plug
+
+
+def _resolve_snap(
+    feat: RefineFeature,
+    mesh: trimesh.Trimesh,
+    base_mesh: trimesh.Trimesh | None,
+    report: RefineReport,
+) -> tuple[float, float] | None:
+    """Snap/plug decision for one feature over a measured tunnel.
+
+    - the wavy channel is real (mesh tunnel) → plug_first seals it before the
+      nominal drill — for spec'd features AND scanned anchors whose diameter
+      was measured on the base mesh (a plain difference can't shrink a void)
+    - spec positions are authoritative: never snap onto a drifted channel —
+      the plug seals it at its measured centre, the drill cuts at (u, v)
+    - drift >1mm likewise: plug at the channel, drill at the declared spot
+    - small drift (<1mm): snap onto the tunnel centre outright
+    """
+    r = _merge_radius(feat.dia)
+    c = _tunnel_center(mesh, feat.axis, feat.u, feat.v, r, feat.dia)
+    mesh_tunnel = c is not None
+    if c is None and base_mesh is not None and base_mesh is not mesh:
+        c = _tunnel_center(base_mesh, feat.axis, feat.u, feat.v, r, feat.dia)
+    if c is None:
+        return None
+    spec_dia = "spec" in str(feat.source)
+    drift = math.hypot(c[0] - feat.u, c[1] - feat.v)
+    if spec_dia or mesh_tunnel:
+        feat.plug_first = True
+    if spec_dia or drift > 1.0:
+        if drift > 0.02:
+            report.warnings.append(
+                f"feature '{feat.name}': channel drifted {drift:.1f}mm to "
+                f"({c[0]:.2f}, {c[1]:.2f}) — plugging it there, drilling at "
+                f"the declared position ({feat.u:.2f}, {feat.v:.2f})"
+            )
+        feat.plug_uv = c
+    else:
+        if drift > 0.02:
+            report.warnings.append(
+                f"feature '{feat.name}': re-cut snapped to measured tunnel "
+                f"centre ({c[0]:.2f}, {c[1]:.2f}), plugged then drilled"
+            )
+        feat.u, feat.v = c
+    if not feat.plug_first:
+        feat.dia_extra = max(feat.dia_extra, 0.4)
+    return c
 
 
 def _snap_dedup_features(
@@ -875,26 +948,9 @@ def _snap_dedup_features(
         if feat.kind not in _CUTABLE:
             resolved.append(feat)
             continue
-        r = _merge_radius(feat.dia)
-        c = _tunnel_center(mesh, feat.axis, feat.u, feat.v, r, feat.dia)
-        if c is None and base_mesh is not None and base_mesh is not mesh:
-            c = _tunnel_center(base_mesh, feat.axis, feat.u, feat.v, r, feat.dia)
+        c = _resolve_snap(feat, mesh, base_mesh, report)
         if c is not None:
-            spec_dia = feat.source == "spec"
-            if math.hypot(c[0] - feat.u, c[1] - feat.v) > 0.02:
-                report.warnings.append(
-                    f"feature '{feat.name}': re-cut snapped to measured tunnel "
-                    f"centre ({c[0]:.2f}, {c[1]:.2f})"
-                    + (", plugged then drilled at spec dia" if spec_dia else ", reamed +0.4 mm")
-                )
-            feat.u, feat.v = c
             snapped[id(feat)] = c
-            if spec_dia:
-                # spec'd diameter is authoritative: fill the wavy channel
-                # then drill nominal — a +0.4 ream would oversize the bore
-                feat.plug_first = True
-            else:
-                feat.dia_extra = max(feat.dia_extra, 0.4)
         resolved.append(feat)
 
     merged: list[RefineFeature] = []
@@ -918,16 +974,21 @@ def _snap_dedup_features(
         keep, drop = target, feat
         if _effective_dia(feat) > _effective_dia(target):
             keep, drop = feat, target
-        keep.u, keep.v = (
-            snapped.get(id(keep))
-            or snapped.get(id(drop))
-            or (
-                (keep.u + drop.u) / 2.0,
-                (keep.v + drop.v) / 2.0,
-            )
+        # spec-sourced keeps drill at their declared position — only measured
+        # centres merge; the channel seal tracks whichever tunnel was found
+        keep_declared = "spec" in str(keep.source)
+        uv = snapped.get(id(keep)) or snapped.get(id(drop)) or (
+            (keep.u + drop.u) / 2.0,
+            (keep.v + drop.v) / 2.0,
         )
+        if keep_declared:
+            keep.plug_uv = uv
+        else:
+            keep.u, keep.v = uv
         keep.dia_extra = max(keep.dia_extra, drop.dia_extra)
         keep.plug_first = keep.plug_first or drop.plug_first
+        if keep.plug_uv is None:
+            keep.plug_uv = drop.plug_uv
         if keep.plug_first:
             keep.dia_extra = 0.0  # plugged bores drill nominal — no ream
         merged[target_i] = keep

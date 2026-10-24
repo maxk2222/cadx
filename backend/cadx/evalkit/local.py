@@ -17,6 +17,7 @@ Keep cadx imports function-local: bootstrap must run before the first
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -200,6 +201,24 @@ async def import_parent(ctx: LocalCtx, src: Path) -> uuid.UUID:
                 mesh_rel = storage.relpath(dest)
     if mesh_rel is None:
         raise ValueError(f"--from {src}: no .stl/.brep found")
+    # the persisted spec (written next to model.py/params.json on finalize)
+    # carries declared features — downstream refine/spec_features paths then
+    # re-cut to nominal instead of degrading to scanned-anchor reams
+    spec: dict[str, Any] | None = None
+    for cand in (src / "spec.json", src.parent / "spec.json"):
+        if cand.exists():
+            try:
+                spec = json.loads(cand.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                spec = None
+            break
+    if spec is None:
+        specs = await asyncio.to_thread(lambda: sorted(src.rglob("spec.json")))
+        if specs:
+            try:
+                spec = json.loads(specs[0].read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                spec = None
     async with session_scope() as db:
         from cadx.parts import create_part
 
@@ -216,6 +235,7 @@ async def import_parent(ctx: LocalCtx, src: Path) -> uuid.UUID:
             resolved_mode="cad",
             status=VersionStatus.succeeded,
             iterations=1,
+            spec=spec,
         )
         db.add(v)
         await db.commit()
@@ -399,6 +419,47 @@ async def _spawn(stage: EvalStage, ctx: LocalCtx) -> tuple[uuid.UUID, uuid.UUID 
         return v.id, j.id
 
 
+def _mesh_artifact_files(v: Any, arts: list[Any]) -> list[str]:
+    """Mesh files authoritative-first — the committed stl_relpath, then the
+    version-level export, then the latest iteration dir, then raw artifact
+    rows (registered during intermediate runs). Mesh gates must measure the
+    FINAL committed mesh, not the first STL that happened to be registered."""
+    from cadx import storage
+
+    cands: list[Path] = []
+    if v is not None:
+        v_dir = storage.version_dir(v.project_id, v.id)
+        vmesh = getattr(v, "mesh", None)
+        stl_rel = (vmesh or {}).get("stl_relpath") if isinstance(vmesh, dict) else None
+        if stl_rel:
+            with contextlib.suppress(ValueError):
+                cands.append(storage.resolve(stl_rel))
+        cands.append(v_dir / "exports" / "model.stl")
+        it_root = v_dir / "iterations"
+        if it_root.exists():
+            for it in sorted(
+                (d for d in it_root.iterdir() if d.is_dir() and d.name.isdigit()),
+                key=lambda d: int(d.name),
+                reverse=True,
+            ):
+                cands.append(it / "exports" / "model.stl")
+                cands.append(it / "_run" / "model.stl")
+        cands.append(v_dir / "mesh" / "mesh_clean.stl")
+    for a in arts:
+        if str(a.kind) in ("stl", "glb", "3mf", "obj"):
+            try:
+                cands.append(storage.resolve(a.path))
+            except ValueError:
+                continue
+    for p in cands:
+        try:
+            if p.exists():
+                return [str(p)]
+        except OSError:
+            continue
+    return []
+
+
 async def _read_outcome(
     vid: uuid.UUID, jid: uuid.UUID | None, wall: float, *, same_version: bool
 ) -> StageOutcome:
@@ -440,18 +501,11 @@ async def _read_outcome(
                 }
                 for r in rows
             ]
-    artifact_files: list[str] = []
+    artifact_files: list[str] = _mesh_artifact_files(v, arts)
     artifacts: dict[str, str] = {}
     for a in arts:
         key = f"{a.kind}|{a.view or ''}"
         artifacts[key] = a.path
-        if str(a.kind) in ("stl", "glb", "3mf", "obj"):
-            try:
-                p = storage.resolve(a.path)
-                if p.exists():
-                    artifact_files.append(str(p))
-            except ValueError:
-                pass
     # fall back to the working STL when no mesh artifact row exists
     if not artifact_files:
         rel = storage.best_mesh_relpath(

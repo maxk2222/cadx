@@ -299,14 +299,23 @@ class HttpDriver:
         artifact_files: list[str] = []
         if ctx.out_dir:
             adir = ctx.out_dir / "artifacts" / stage.id
-            for a in detail.get("artifacts") or []:
-                if a.get("kind") in ("stl", "glb", "3mf", "obj", "step"):
-                    # every artifact url ends in /file — name by kind + basename
-                    # of the storage path or downloads overwrite each other
-                    fname = f"{a.get('kind')}_{Path(str(a.get('path') or 'f')).name}"
-                    p = await self.download_artifact(str(a.get("url") or ""), adir, fname)
-                    if p:
-                        artifact_files.append(str(p))
+            rows = [
+                a
+                for a in (detail.get("artifacts") or [])
+                if a.get("kind") in ("stl", "glb", "3mf", "obj", "step")
+            ]
+            # the version's committed mesh pointer first — artifact rows are
+            # registered during intermediate runs, so row order is not
+            # authoritative (mirrors the local driver's _mesh_artifact_files)
+            stl_rel = (detail.get("mesh") or {}).get("stl_relpath")
+            rows.sort(key=lambda a: 0 if stl_rel and a.get("path") == stl_rel else 1)
+            for a in rows:
+                # every artifact url ends in /file — name by kind + basename
+                # of the storage path or downloads overwrite each other
+                fname = f"{a.get('kind')}_{Path(str(a.get('path') or 'f')).name}"
+                p = await self.download_artifact(str(a.get("url") or ""), adir, fname)
+                if p:
+                    artifact_files.append(str(p))
 
         status = str(job.get("status") or detail.get("status") or "failed")
         if status == "queued":
