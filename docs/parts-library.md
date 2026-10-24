@@ -87,10 +87,21 @@ executor-controlled flag, never an LLM boolean:
 - **export** (final selected candidate): the orchestrator re-executes the
   winning code once with `detail_mode="export"`, so fasteners/thread classes
   build `simple=False` — the real ISO helix. Multi-solid catalog parts are
-  fused per part into single solids. `thread_count` must then match the
-  declared expected count or the run fails — a smooth-shaft preview can
-  never ship as the final artifact. All four formats (STEP/STL/3MF/GLB) are
-  produced from that real geometry.
+  fused per part into single solids — chunk-wise: a real thread arrives as
+  one solid per helix turn (≈76 on an M10×120 full thread), and a single
+  N-way boolean over all of them runs O(n²) section work that crashed OCC in
+  the executor (exit -11); `_cadx_fuse_solids` fuses contiguous groups of ≤8
+  instead, which also preserves the helical BSPLINE faces the runner's
+  thread check counts on (`glue=True` collapses them — never use it here).
+  `thread_count` must then match the declared expected count or the run
+  fails — a smooth-shaft preview can never ship as the final artifact. All
+  four formats (STEP/STL/3MF/GLB) are produced from that real geometry.
+
+`CADX_FEATURES` coordinates are emitted in the **final part frame** — the
+placement transform (axis rotation + XY seating lift) is baked into
+`position_mm`/`start`, so the helix overlay lands on the rendered body even
+when the recipe flips a head-datum part upside down (`start` then measures
+axis distance from the head datum, not the catalog's local z).
 
 `verify_spec` has a dedicated `thread_features` check: preview requires a
 thread marker or real thread, export requires the real helix — FAIL

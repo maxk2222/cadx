@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import ast
+import re
+
 import numpy as np
 import pytest
 from build123d import Axis, Plane, import_brep, import_step
@@ -95,6 +98,64 @@ def test_m10_preview_and_exact_export_have_distinct_thread_geometry(tmp_path):
         assert (tmp_path / "exports" / exports[fmt]).stat().st_size > 0
     step = import_step(str(tmp_path / "exports" / exports["step"]))
     assert step.volume == pytest.approx(exact_shape.volume, rel=0.01)
+
+
+def _m10_full_thread_code() -> str:
+    return build_standard_part_code(
+        [
+            StandardPartSpec(
+                class_name="CounterSunkScrew",
+                fastener_type="iso10642",
+                size="M10-1.5",
+                length_mm=120.0,
+                full_thread=True,
+            )
+        ]
+    )
+
+
+def test_m10_full_thread_120mm_export_fuses_without_crashing(tmp_path):
+    """Regression for the live ISO-10642 M10x120 full-thread SIGSEGV: 79
+    separate helix-turn solids fused in one N-way boolean crashed OCC in the
+    executor (exit -11). The recipe now fuses contiguous chunks so every
+    boolean stays small — the run must return a single solid that still
+    carries real helical (BSPLINE) thread faces."""
+    code = _m10_full_thread_code()
+    exact = run_user_code(
+        code,
+        tmp_path / "exact",
+        detail_mode="export",
+        warm=False,
+        threads=4,
+        timeout_s=180,
+        mem_mb=4096,
+    )
+    assert exact.ok, exact.error
+    assert exact.thread_count == 1
+    shape = import_brep(str(exact.brep_path))
+    solids = shape.solids()
+    assert len(solids) == 1
+    bb = shape.bounding_box()
+    assert pytest.approx([20.0, 20.0, 120.0], abs=0.3) == [bb.size.X, bb.size.Y, bb.size.Z]
+    bspline_faces = sum(1 for f in shape.faces() if str(f.geom_type).endswith("BSPLINE"))
+    assert bspline_faces > 100
+
+
+def test_thread_feature_start_is_in_final_part_frame():
+    """The helix overlay is drawn in the final frame, but feature records used
+    to carry catalog-frame coordinates — a countersunk screw flipped by
+    Rot(180) rendered its thread 120 mm BELOW the part. start/position_mm
+    must be transformed with the placement."""
+    code = _m10_full_thread_code()
+    match = re.search(r"CADX_FEATURES = (\[.*\])\n", code)
+    assert match is not None
+    features = ast.literal_eval(match.group(1))
+    thread = next(f for f in features if f.get("kind") == "thread")
+    # full thread on a 120 mm countersunk screw: head at z=0, thread from
+    # under the head (z≈5.5) to the tip — catalog frame reports start=-120
+    assert thread["start"] == pytest.approx(5.5, abs=0.5)
+    assert thread["length"] == pytest.approx(114.5, abs=0.5)
+    assert 0.0 <= thread["position_mm"][2] <= 120.0
 
 
 @pytest.mark.render

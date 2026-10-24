@@ -365,15 +365,18 @@ def is_standard_only(spec: PartSpec) -> bool:
 
 def _measure_placement(
     cls: type, values: dict[str, Any], schema: dict[str, Any], axis: str
-) -> tuple[tuple[float, float, float], float, float]:
-    """(rotation_xyz, z_lift, local_min_z) for one catalog part.
+) -> tuple[tuple[float, float, float], float, float, bool]:
+    """(rotation_xyz, z_lift, local_min_z, head_down) for one catalog part.
 
     Catalog conventions differ: fasteners are built head-datum-first (body
     extends local -Z) while washers/nuts sit on/centre the XY plane. Measure
     the prototype once so the emitted transform points the declared axis
     correctly AND seats the part on XY — a head-up flip is the difference
-    between "standing on the head" and "impaled on its own tip"."""
+    between "standing on the head" and "impaled on its own tip". `head_down`
+    marks that convention: local +Z maps onto the NEGATIVE declared axis, so
+    feature distances measured along the axis run opposite to local z."""
     rotation = _AXIS_ROTATIONS[axis]
+    head_down = False
     try:
         proto_kwargs = {k: v for k, v in values.items() if k != "simple"}
         if "simple" in schema:
@@ -382,10 +385,11 @@ def _measure_placement(
         bb = proto.bounding_box()
         if bb.max.Z <= 1e-6 and bb.min.Z < -1e-6:
             rotation = _DOWN_AXIS_ROTATIONS[axis]
+            head_down = True
         z_lift = -float((Rot(*rotation) * proto).bounding_box().min.Z)
-        return rotation, z_lift, float(bb.min.Z)
+        return rotation, z_lift, float(bb.min.Z), head_down
     except Exception:
-        return rotation, 0.0, 0.0
+        return rotation, 0.0, 0.0, False
 
 
 def build_standard_part_code(parts: list[StandardPartSpec]) -> str:  # noqa: C901
@@ -463,7 +467,9 @@ def build_standard_part_code(parts: list[StandardPartSpec]) -> str:  # noqa: C90
         schema: dict[str, Any] = (catalog.find_entry(part.class_name) or {}).get("parameters") or {}
         thread = row["thread"]
         threaded = thread is not None
-        rotation, z_lift, proto_min_z = _measure_placement(cls, values, schema, axis)
+        rotation, z_lift, proto_min_z, head_down = _measure_placement(
+            cls, values, schema, axis
+        )
         kwargs: list[str] = []
         for name, value in values.items():
             if name == "simple":
@@ -544,13 +550,20 @@ def build_standard_part_code(parts: list[StandardPartSpec]) -> str:  # noqa: C90
             )
             placements.append(placed)
             if thread is not None:
-                design_features.append(
-                    {
-                        **thread,
-                        "axis": axis,
-                        "position_mm": list(position),
-                    }
-                )
+                feature = {
+                    **thread,
+                    "axis": axis,
+                    # the renderer draws position + axis*distance in the FINAL
+                    # frame — bake the placement transform into the record or
+                    # the helix overlay floats in catalog-frame space
+                    "position_mm": [position[0], position[1], position[2] + z_lift],
+                }
+                if head_down:
+                    # head-datum: local -Z maps onto the declared axis, so a
+                    # local thread span [start, start+length] lands at axis
+                    # distance [-start-length, -start] from the head datum
+                    feature["start"] = -float(thread["start"]) - float(thread["length"])
+                design_features.append(feature)
             counter += 1
         bom.append(
             {
@@ -587,11 +600,22 @@ def build_standard_part_code(parts: list[StandardPartSpec]) -> str:  # noqa: C90
         "        return obj",
         "    try:",
         "        solids = obj.solids()",
-        "        if len(solids) > 1:",
-        "            return solids[0].fuse(*solids[1:])",
         "    except Exception:",
-        "        pass",
-        "    return obj",
+        "        return obj",
+        "    # a single N-way boolean over dozens of separate thread turns blows",
+        "    # up in OCC (pairwise section work is O(n²); long full threads have",
+        "    # segfaulted the executor) — fuse contiguous chunks of turns first",
+        "    # so every operation stays small and the helix faces survive",
+        "    while len(solids) > 1:",
+        "        try:",
+        "            merged = []",
+        "            for i in range(0, len(solids), 8):",
+        "                group = solids[i : i + 8]",
+        "                merged.append(group[0] if len(group) == 1 else group[0].fuse(*group[1:]))",
+        "            solids = merged",
+        "        except Exception:",
+        "            return obj",
+        "    return solids[0]",
         "",
     ]
     body_lines = [
