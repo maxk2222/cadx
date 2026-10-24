@@ -849,8 +849,10 @@ STRUCT_TOOLS = [
     _fn(
         "analyze_fem",
         "Run FEM on the BASE part with the given load cases — returns per-case "
-        "safety factor, max von-Mises stress and displacement, warnings, and "
-        "stress renders. Runs at a coarser default voxel pitch (2x) for speed: "
+        "safety factor, max von-Mises stress and displacement, warnings, "
+        "stress renders, and recommended_mode (infill|guided|topopt) — a "
+        "routing hint for which structural strategy fits this part. Runs at "
+        "a coarser default voxel pitch (2x) for speed: "
         "the probe SF is a coarse estimate — the topopt_run export verification "
         "solves finer. Use to check the design before optimizing or to "
         "compare load-case variants.",
@@ -869,7 +871,9 @@ STRUCT_TOOLS = [
         "across the nominal/eroded/dilated export realizations) and a render "
         "of the optimized shape. Real base bores are deterministically "
         "re-cut after extraction before FEM export verification (recut_bores, "
-        "default true). Vary "
+        "default true). Warm-starts automatically from a previous run's "
+        "density field — or from a guided infill run's coarse layout "
+        "(warm_start reports the source). Vary "
         "target_volume_fraction / keep_regions / material between runs and "
         "pick the best one with done(run_index).",
         {
@@ -1082,6 +1086,15 @@ STRUCT_TOOLS = [
                 "description": "'full' = infill the whole part; 'guided' = a "
                 "coarse SIMP picks the retained topology and the lattice "
                 "only fills what it keeps (stiffer result, slower)",
+            },
+            "infill_guide_solver": {
+                "type": "string",
+                "enum": ["oc", "beso"],
+                "description": "guided scope only: solver for the coarse "
+                "topology pass — 'beso' (default) returns a natively binary "
+                "layout that maps straight onto the guide mask; 'oc' keeps "
+                "the classic SIMP guide. The guide's density field is "
+                "persisted and can warm-start a follow-up topopt_run",
             },
             "infill_style": {
                 "type": "string",
@@ -2885,6 +2898,10 @@ class ToolSession:
             "grid": {k: fem.get("grid", {}).get(k) for k in ("pitch", "elements", "dofs")},
             "pitch_mm": (fem.get("grid") or {}).get("pitch"),
             "pitch_note": fem.get("pitch_note"),
+            # routing hint for the multi-stage structural pipeline — which
+            # structure_mode a follow-up run should start with
+            "recommended_mode": fem.get("recommended_mode"),
+            "recommended_reasons": fem.get("recommended_reasons"),
             "cases": cases,
             "warnings": fem.get("warnings") or [],
             "note": fem.get("note"),

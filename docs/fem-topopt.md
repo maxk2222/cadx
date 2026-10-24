@@ -291,6 +291,16 @@ equilibrium sanity.
   linear-ramp evals had similar compliance but `sf_export` ~8× lower.
   Compare against no continuation on stress-critical parts; short schedules
   (<40) may advance stages before the stress layout settles.
+- `optimize.warm_density_relpath` seeds `x0` from a stored `density.npz`
+  (same grid required) or a `guide_density.npz` at ~2× pitch (upsampled to
+  the fine grid). The sentinel `"auto:parent"` resolves at spawn time to the
+  parent version's newest compatible field — converged `simp`/`beso` fields
+  first, then a guided-infill `guide_density.npz`; `kind="infill"`/`"organic"`
+  fields are skipped since a binary lattice/organic field is not a
+  continuous SIMP seed. Without an explicit path, `_auto_warm_density`
+  chains the previous iteration's `topopt/density.npz`, then the
+  version-level `topopt/density.npz`, then a `guide_density.npz` at ~2×
+  pitch — provenance is reported as `topopt.warm_start` (storage-relative).
 - `optimize.warmstart: "loadpath"` seeds the initial density from a
   deterministic load-path field: for every case a multi-source Dijkstra on
   the 6-connected solid grid finds least-cost corridors between load
@@ -407,6 +417,14 @@ The agent optimize session offers `list_anchors` (the measured anchor table),
 applied report, without a solve),
 `preview_regions`, `analyze_fem`, `topopt_run`, `infill_run` and `done`.
 
+`analyze_fem` (and the persisted `v.fem` payload) reports
+`recommended_mode` + `recommended_reasons` — a routing hint computed from
+the baseline solve alone: a failing baseline (SF < 1.5) recommends `topopt`
+(material removal cannot fix it), thin-walled parts (fill ratio ≤ 0.35) or
+large SF headroom (≥ 3) recommend `infill`, a bulky part with pinned
+features recommends `guided` infill, and a bulky part with open design
+freedom recommends `topopt`. Advisory only — the agent decides.
+
 ### Shell + graded infill (second structural strategy)
 
 `optimize.structure_mode: "infill"` (tool `infill_run`) replaces SIMP with a
@@ -426,7 +444,15 @@ physics-graded lattice instead of open-cell "hole cheese":
    three axis families, so diagonal stress states grow real members;
    `strut_align_deg` in the report measures achieved alignment.
 4. `infill_scope`: `"full"` fills the whole interior; `"guided"` first runs a
-   coarse SIMP and lattices only what it retains (topology-aware lightening).
+   coarse guide pass and lattices only what it retains (topology-aware
+   lightening). `infill_guide_solver` picks the guide optimizer: `"beso"`
+   (default — a binary field needs no extraction threshold, and its
+   volume-ramp step `beso_er` is raised automatically so the guide actually
+   reaches `target_volume_fraction` inside the `max_iter/3` coarse budget) or
+   `"oc"` (classic SIMP). The coarse layout persists as
+   `topopt/guide_density.npz` (`kind` tag = solver), reported under
+   `topopt.guide` / `guide_solver` — and doubles as the warm start when a
+   later SIMP run escalates from the infill baseline.
 5. A closed outer shell of `infill_shell_mm` (default 2 mm) wraps everything;
    a bonding band at full density fuses lattice to shell, keep/passive regions
    stay solid, void regions stay void. `infill_seed` fixes the lattice phase —
@@ -450,6 +476,22 @@ failure. Tuning: `infill_period_mm`
 (lattice cell size, default 8), `infill_min_density`/`infill_max_density`
 (occupancy bounds). The lattice cannot redistribute load paths the way SIMP
 can — for thin shells or aggressive volume targets prefer `topopt_run`.
+
+### Export island rescue
+
+The voxel mask is connectivity-normalized (islands dropped or
+corridor-bridged), so extra bodies on the smoothed export mesh are
+*extraction* artifacts — zero-volume marching-cubes sheets, or sub-voxel
+pinch-offs where smoothing eroded a thin corridor below raster thickness.
+`drop_island_components` runs on every structural candidate (SIMP, infill,
+resample) after finishing and sliver cleanup, before verification: islands
+below `max(1 mm³, 2 % of the dominant body)` are dropped — unless a vertex
+sits inside a pinned keep/load/fix/corridor cell, in which case removing it
+would silently delete structurally declared material and the island is
+kept. Islands at or above the fraction are real design outcomes — kept and
+reported so the bodies gate still fails honestly. Flat telemetry lands in
+`res.topopt` (`rescue_islands`, `rescue_dropped`, `rescue_dropped_frac`)
+and warnings; `n_bodies_export` is measured on the post-rescue mesh.
 
 ### Hardened export verification
 

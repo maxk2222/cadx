@@ -419,6 +419,7 @@ def _opt_overrides(a: dict[str, Any]) -> dict[str, Any]:
         "robust_designs",
         "warmstart",
         "infill_scope",
+        "infill_guide_solver",
         "infill_style",
     ):
         if a.get(k):

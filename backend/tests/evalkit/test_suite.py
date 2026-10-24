@@ -29,9 +29,11 @@ def test_shipped_suite_loads_and_validates():
         "helical_pinion_shaft",
         "m8_hex_screw_threadlen",
         "sprocket_520_45t",
+        "robot_arm_infill_escalate",
+        "robot_arm_infill_guided",
         "robot_arm_mount",
     ]
-    assert [c.difficulty for c in cases] == [1, 1, 1, 2, 2, 2, 2, 2, 3]
+    assert [c.difficulty for c in cases] == [1, 1, 1, 2, 2, 2, 2, 2, 3, 3, 3]
     for c in cases:
         assert c.project.startswith("eval:")
         assert c.stages[0].type in ("generate", "meshgen")
@@ -124,6 +126,8 @@ def test_suite_files_present():
         "m10_csk_screw.json",
         "m8_hex_screw_threadlen.json",
         "m8_tapped_plate.json",
+        "robot_arm_infill_escalate.json",
+        "robot_arm_infill_guided.json",
         "robot_arm_mount.json",
         "sprocket_520_45t.json",
     ]

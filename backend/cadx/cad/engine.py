@@ -1345,34 +1345,110 @@ def _clip_export_to_spec_envelope(
     return clipped, report, not bool(report.get("warning")), warnings
 
 
-def _auto_warm_density(out_dir: Path, domain: Any) -> tuple[np.ndarray | None, str | None]:
-    """Opportunistic SIMP warm start: reuse a previous optimize run's
-    ``density.npz`` when its voxel grid is *identical* (same origin, pitch
-    and dims) to the current domain — a size-only match on a shifted or
-    differently-pitched domain would misalign the field.
+def _guide_beso_er(volfrac: float, iters: int, er_min: float = 0.02) -> float:
+    """Adaptive BESO evolutionary ratio for a guide pass.
 
-    Candidates: the previous iteration dir of this version (agent optimize
-    sessions chain SIMP runs on the same base mesh, so run N benefits from
-    run N-1's converged field), then the version-level ``topopt/density.npz``
-    copied up from an earlier optimize on the same version."""
-    cands: list[Path] = []
+    The kept-volume ramp is ``V_{k+1} = max(volfrac, V_k·(1-ER))`` starting
+    from a full field — the classic 2% step needs ~45 iterations to reach
+    volfrac 0.4, so under a coarse-pass budget (~10-20) the guide would
+    still sit near 80% fill and provide almost no guidance. Scale ER so
+    the ramp can actually arrive at the target inside `iters`.
+    """
+    if iters <= 0 or volfrac <= 0:
+        return er_min
+    return max(float(er_min), 1.0 - float(volfrac) ** (1.0 / iters))
+
+
+@dataclasses.dataclass
+class _GridRef:
+    """Minimal VoxelDomain-shaped grid descriptor for resampling a persisted
+    density field — only the attributes `_upsample_density` reads."""
+
+    origin: np.ndarray
+    pitch: float
+    dims: tuple[int, ...]
+
+
+# density.npz field kinds that must never seed a SIMP x0 — a binary
+# lattice/occupancy field pins hollow cells at the density floor instead of
+# letting the optimizer regrow material there. Missing `kind` (files from
+# before provenance tagging) is treated as a compatible legacy field.
+_NO_WARM_KINDS = frozenset({"infill", "organic"})
+
+
+def _npz_kind(npz: Any) -> str:
+    try:
+        return str(np.asarray(npz["kind"]).item())
+    except Exception:
+        return ""
+
+
+def _auto_warm_density(out_dir: Path, domain: Any) -> tuple[np.ndarray | None, str | None]:
+    """Opportunistic SIMP warm start, three candidate tiers in order:
+
+    1. the previous iteration dir's ``topopt/density.npz`` (agent optimize
+       sessions chain SIMP runs on the same base mesh, so run N benefits
+       from run N-1's converged field),
+    2. the version-level ``topopt/density.npz`` copied up from an earlier
+       optimize on the same version,
+    3. a ``guide_density.npz`` written by a guided-infill pass — a ~2x-pitch
+       coarse layout field upsampled to the fine grid (the macro topology
+       the coarse solve already verified).
+
+    Tiers 1-2 require an *identical* voxel grid (same origin, pitch and
+    dims) — a size-only match on a shifted or differently-pitched domain
+    would misalign the field; tier 3 accepts a coarse grid whose pitch is
+    1.5-2.5x the fine pitch and resamples through ``_upsample_density``.
+    Infill/organic density fields are skipped via the ``kind`` tag —
+    binary occupancy is not a continuous SIMP seed.
+    """
+    same_grid: list[Path] = []
+    guide_grid: list[Path] = []
     if out_dir.name.isdigit() and int(out_dir.name) > 1:
-        cands.append(out_dir.parent / str(int(out_dir.name) - 1) / "topopt" / "density.npz")
+        prev = out_dir.parent / str(int(out_dir.name) - 1) / "topopt"
+        same_grid.append(prev / "density.npz")
+        guide_grid.append(prev / "guide_density.npz")
     if len(out_dir.parents) > 1:
-        cands.append(out_dir.parents[1] / "topopt" / "density.npz")
-    for p in cands:
+        ver = out_dir.parents[1] / "topopt"
+        same_grid.append(ver / "density.npz")
+        guide_grid.append(ver / "guide_density.npz")
+    for p in same_grid:
         if not p.exists():
             continue
         try:
             with np.load(p) as npz:
+                if _npz_kind(npz) in _NO_WARM_KINDS:
+                    continue
                 dims = tuple(int(v) for v in npz["dims"])
-                same_grid = (
+                same = (
                     dims == tuple(domain.dims)
                     and np.allclose(np.asarray(npz["origin"], dtype=float), domain.origin)
                     and abs(float(npz["pitch"]) - float(domain.pitch)) < 1e-9
                 )
-                if same_grid:
+                if same:
                     return np.asarray(npz["density"], dtype=float), str(p)
+        except Exception:
+            continue
+    for p in guide_grid:
+        if not p.exists():
+            continue
+        try:
+            with np.load(p) as npz:
+                pitch_c = float(npz["pitch"])
+                ratio = pitch_c / float(domain.pitch)
+                if not (1.5 <= ratio <= 2.5):
+                    continue
+                dom_c = _GridRef(
+                    origin=np.asarray(npz["origin"], dtype=float),
+                    pitch=pitch_c,
+                    dims=tuple(int(v) for v in npz["dims"]),
+                )
+                x0 = _upsample_density(
+                    np.asarray(npz["density"], dtype=float).reshape(dom_c.dims),
+                    dom_c,
+                    domain,
+                )
+                return x0, f"guide@2x:{p}"
         except Exception:
             continue
     return None, None
@@ -1888,6 +1964,63 @@ def _pitch_feature_warn(res: Any, domain: Any, anchors: list[dict] | None) -> No
     )
 
 
+def _recommend_structure_mode(
+    report: Any,
+    *,
+    keep_regions: list[Any] | None,
+    anchors: list[Any] | None,
+) -> tuple[str, list[str]]:
+    """Routing hint for the agent — which structure_mode a follow-up
+    optimize run should start with.
+
+    Mechanical inputs only: the baseline solve's fill ratio (solid volume
+    over bbox volume), its worst safety factor, and the presence of pinned
+    features (keep regions / feature anchors). The agent combines the hint
+    with user intent — it is a recommendation, never a routing decision.
+    """
+    grid = getattr(report, "grid", None) or {}
+    dims = grid.get("dims") or []
+    pitch = float(grid.get("pitch_mm") or 0.0)
+    vol = float(grid.get("volume_mm3") or 0.0)
+    bbox_vol = float(np.prod(dims)) * pitch**3 if dims and pitch > 0 else 0.0
+    fill_ratio = vol / bbox_vol if bbox_vol > 0 else None
+    fr = f"{fill_ratio:.2f}" if fill_ratio is not None else "unknown"
+    sfs = [
+        float(c.safety_factor)
+        for c in (getattr(report, "cases", None) or [])
+        if getattr(c, "safety_factor", None) is not None
+    ]
+    sf_min = min(sfs) if sfs else None
+    n_pinned = len(keep_regions or []) + len(anchors or [])
+    if sf_min is not None and sf_min < 1.5:
+        return "topopt", [
+            f"baseline worst SF {sf_min:.2f} below the 1.5 default target — "
+            "removing material cannot fix a failing baseline; full topology "
+            "work (or a geometry edit first) is required"
+        ]
+    if fill_ratio is not None and fill_ratio <= 0.35:
+        return "infill", [
+            f"thin-walled part (fill ratio {fr} <= 0.35) — the silhouette is "
+            "already near-optimal; shell+infill costs ~2 solves and is "
+            "watertight by construction"
+        ]
+    if sf_min is not None and sf_min >= 3.0:
+        return "infill", [
+            f"large SF headroom ({sf_min:.1f} >= 2x the 1.5 target) — graded "
+            "infill captures most of the benefit without a SIMP run"
+        ]
+    if n_pinned:
+        return "guided", [
+            f"bulky part (fill ratio {fr}) with {n_pinned} pinned "
+            "feature(s) — a coarse guide picks the retained topology and "
+            "the lattice preserves the features"
+        ]
+    return "topopt", [
+        f"bulky part (fill ratio {fr}) with open design freedom — "
+        "full SIMP redistribution pays here"
+    ]
+
+
 def run_fem_pipeline(
     *,
     mesh_path: Path,
@@ -2003,7 +2136,13 @@ def run_fem_pipeline(
         cancelled=cancelled,
     )
     report_to_json(report, out_dir / "fem" / "report.json")
-    return {"ok": True, "fem": report.model_dump()}
+    fem_d = report.model_dump()
+    mode, reasons = _recommend_structure_mode(
+        report, keep_regions=keep, anchors=anchors
+    )
+    fem_d["recommended_mode"] = mode
+    fem_d["recommended_reasons"] = reasons
+    return {"ok": True, "fem": fem_d}
 
 
 def run_topopt_pipeline(  # noqa: C901
@@ -2040,7 +2179,7 @@ def run_topopt_pipeline(  # noqa: C901
     from cadx import storage
     from cadx.cad.fem.analyze import report_to_json, run_fem_domain
     from cadx.cad.fem.beso import beso
-    from cadx.cad.fem.extract import density_to_mesh
+    from cadx.cad.fem.extract import density_to_mesh, drop_island_components
     from cadx.cad.fem.loadpath import loadpath_field
     from cadx.cad.fem.preview import render_regions
     from cadx.cad.fem.regions import (
@@ -2476,8 +2615,29 @@ def run_topopt_pipeline(  # noqa: C901
             warm = np.load(storage.resolve(opt.warm_density_relpath))
             x0 = np.asarray(warm["density"], dtype=float)
             if x0.size != domain.cell_count:
-                res.topopt["warnings"].append("warm-start density has a different grid — ignored")
+                # a ~2x-pitch coarse field (guided-infill guide_density.npz,
+                # a multires coarse pass) upsamples to the fine grid instead
+                # of being dropped — the macro layout is the useful seed
                 x0 = None
+                try:
+                    pitch_c = float(warm["pitch"])
+                    ratio = pitch_c / float(domain.pitch)
+                    if 1.5 <= ratio <= 2.5:
+                        dom_c = _GridRef(
+                            origin=np.asarray(warm["origin"], dtype=float),
+                            pitch=pitch_c,
+                            dims=tuple(int(v) for v in warm["dims"]),
+                        )
+                        x0 = _upsample_density(
+                            x0.reshape(dom_c.dims), dom_c, design_domain
+                        )
+                        warm_src = f"guide@2x:{opt.warm_density_relpath}"
+                except Exception:
+                    pass
+                if x0 is None:
+                    res.topopt["warnings"].append(
+                        "warm-start density has a different grid — ignored"
+                    )
             else:
                 warm_src = opt.warm_density_relpath
         except Exception as e:
@@ -2672,6 +2832,14 @@ def run_topopt_pipeline(  # noqa: C901
             extract_warnings.append(
                 f"dropped {dropped_slivers} near-zero-volume mesh sliver components"
             )
+        # pinned cells for smoothing + island rescue: keep/load/fix cells
+        # plus any bridge-corridor cells the mask builder added — the
+        # connectivity glue must not erode below raster thickness between
+        # mask and export, and an island carrying pinned material is
+        # structurally declared (never silently dropped)
+        pin3 = passive.reshape(design_domain.dims).copy()
+        if bridged3 is not None:
+            pin3 |= np.asarray(bridged3, dtype=bool).reshape(design_domain.dims)
         # floor-pinned smoothing: keeps a flat manufacturing base flat.
         # Taubin shrinks thin members measurably per pass — on parts only a
         # few cells thick, cap iterations so the export keeps the volume
@@ -2680,12 +2848,6 @@ def run_topopt_pipeline(  # noqa: C901
         # threshold must not flip the smoothing regime between passes.
         if not crisp_extraction:
             thin_cells = float(eff_span.min()) / max(design_domain.pitch, 1e-6)
-            pin3 = passive.reshape(design_domain.dims).copy()
-            if bridged3 is not None:
-                # corridor cells added by island-bridging pin like passive —
-                # they are the part's connectivity glue and must not erode
-                # below raster thickness between mask and export
-                pin3 |= np.asarray(bridged3, dtype=bool).reshape(design_domain.dims)
             opt_mesh = smooth_preserve(
                 opt_mesh,
                 iterations=2 if thin_cells < 4.0 else 4,
@@ -2727,6 +2889,24 @@ def run_topopt_pipeline(  # noqa: C901
             extract_warnings.append(
                 f"dropped {dropped_slivers} near-zero-volume post-finish sliver components"
             )
+        # structural island rescue: the mask is connectivity-normalized, so
+        # extra bodies here are extraction artifacts — sub-voxel pinch-offs
+        # on thin corridors (the p16 export measured 2 bodies where the
+        # mask verified 1). Drop islands below the fraction cutoff unless
+        # they carry pinned keep/load/fix material; bigger islands stay
+        # and keep the bodies-gate verdict honest
+        opt_mesh, island_rescue = drop_island_components(
+            opt_mesh,
+            max_island_frac=0.02,
+            pin_mask=(design_domain.origin, design_domain.pitch, pin3),
+        )
+        if island_rescue["dropped"]:
+            extract_warnings.append(
+                f"dropped {island_rescue['dropped']} disconnected island(s) "
+                f"({island_rescue['dropped_vol_frac']:.4%} of export volume) "
+                "— sub-voxel extraction pinch-off"
+            )
+        out["island_rescue"] = island_rescue
         if recut_report is not None:
             out["recut"] = recut_report
         if output_envelope is not None:
@@ -3263,6 +3443,12 @@ def run_topopt_pipeline(  # noqa: C901
             "extract": best["extract"],
             "verification": verification,
             "recut": best.get("recut"),
+            # flat rescue telemetry so gates can assert on the numbers
+            # (dropping a big island silently would hide a real defect)
+            "rescue": best.get("island_rescue"),
+            "rescue_islands": (best.get("island_rescue") or {}).get("islands_found"),
+            "rescue_dropped": (best.get("island_rescue") or {}).get("dropped"),
+            "rescue_dropped_frac": (best.get("island_rescue") or {}).get("dropped_vol_frac"),
         }
     )
 
@@ -3280,6 +3466,10 @@ def run_topopt_pipeline(  # noqa: C901
         pitch=np.float64(design_domain.pitch),
         dims=np.asarray(design_domain.dims),
         flat_bottom=np.bool_(base_flat),
+        # field provenance: _auto_warm_density only seeds SIMP from
+        # continuous/binary optimizer fields — an infill lattice rho would
+        # pin cavities at the density floor instead of regrowing them
+        kind=np.str_("beso" if params.solver == "beso" else "simp"),
     )
     # compact convergence trace alongside the per-iteration progress files —
     # tasks.py points topopt["history_relpath"] here
@@ -3405,7 +3595,8 @@ def run_infill_pipeline(  # noqa: C901
 
     from cadx import storage
     from cadx.cad.fem.analyze import report_to_json, run_fem_domain
-    from cadx.cad.fem.extract import density_to_mesh
+    from cadx.cad.fem.beso import beso
+    from cadx.cad.fem.extract import density_to_mesh, drop_island_components
     from cadx.cad.fem.infill import (
         InfillParams,
         element_strain_energy,
@@ -3679,9 +3870,12 @@ def run_infill_pipeline(  # noqa: C901
                 f"principal-frame solve failed — struts fall back to gyroid: {e}"
             )
 
-    # --- stage 2 (optional): guided scope — a cheap coarse SIMP picks the
-    # retained topology and the lattice only fills what it keeps
+    # --- stage 2 (optional): guided scope — a cheap coarse optimizer picks
+    # the retained topology and the lattice only fills what it keeps.
+    # BESO is the default guide solver: its natively binary output maps
+    # straight onto the binary guide_mask without a thresholded gray zone.
     guide_mask: np.ndarray | None = None
+    guide_field: dict[str, Any] | None = None  # persisted for warm starts
     if opt.infill_scope == "guided":
         try:
             coarse = voxelize(mesh, domain.pitch * 2.0, max_elements or s.fem_max_elements)
@@ -3695,15 +3889,26 @@ def run_infill_pipeline(  # noqa: C901
                 E0_c = mat.elastic_modulus_mpa * material_cell_factors(
                     coarse, keep_list, anchors, mat.elastic_modulus_mpa
                 )
+                iters_c = max(10, (opt.max_iterations or s.topopt_max_iterations) // 3)
                 pc = TopOptParams(
                     volfrac=opt.target_volume_fraction or s.topopt_default_volfrac,
                     rmin_mm=max(s.topopt_default_rmin_mm, min_member / 2),
-                    max_iter=max(10, (opt.max_iterations or s.topopt_max_iterations) // 3),
+                    max_iter=iters_c,
                     filter="cone",
                     solver_backend=solver_backend,
                     aniso=(mat.aniso_z, float(mat.aniso_axis)) if mat.aniso_z != 1.0 else None,
                 )
-                guide_r = simp(
+                guide_solver = getattr(opt, "infill_guide_solver", "beso") or "beso"
+                if guide_solver == "beso":
+                    # the V_k·(1-ER) volume ramp must actually REACH volfrac
+                    # inside the coarse iteration budget — the classic 2%
+                    # step needs ~45 iterations to get from a full field to
+                    # 0.4, so the guide ER scales up to the budget
+                    pc.beso_er = _guide_beso_er(pc.volfrac, iters_c, pc.beso_er)
+                    guide_fn = beso
+                else:
+                    guide_fn = simp
+                guide_r = guide_fn(
                     coarse,
                     E0_c,
                     mat.poisson,
@@ -3722,9 +3927,23 @@ def run_infill_pipeline(  # noqa: C901
                     >= 0.5
                 )
                 res.topopt["guide"] = {
+                    "solver": guide_solver,
                     "coarse_pitch_mm": round(float(coarse.pitch), 4),
                     "coarse_iterations": guide_r.iterations,
                     "kept_cells": int(guide_mask.sum()),
+                }
+                # flat scalar so eval gates/reports can see the guide solver
+                res.topopt["guide_solver"] = guide_solver
+                if guide_solver == "beso":
+                    res.topopt["guide"]["er_eff"] = round(pc.beso_er, 4)
+                # keep the coarse layout field: a later topopt_run on the
+                # same version warm-starts SIMP from this macro topology
+                guide_field = {
+                    "density": guide_r.density.reshape(coarse.dims).astype(np.float32),
+                    "origin": np.asarray(coarse.origin, dtype=float),
+                    "pitch": np.float64(coarse.pitch),
+                    "dims": np.asarray(coarse.dims),
+                    "kind": np.str_(guide_solver),
                 }
             else:
                 res.topopt["warnings"].append(
@@ -3747,6 +3966,15 @@ def run_infill_pipeline(  # noqa: C901
     opt_dir = out_dir / "topopt"
     opt_dir.mkdir(parents=True, exist_ok=True)
     base_flat = is_flat_bottom(mesh)
+
+    if guide_field is not None:
+        try:
+            np.savez_compressed(opt_dir / "guide_density.npz", **guide_field)
+            res.topopt["guide"]["guide_density_relpath"] = storage.relpath(
+                opt_dir / "guide_density.npz"
+            )
+        except Exception as e:
+            res.topopt["warnings"].append(f"guide density persist failed: {e}")
 
     part_volume = (
         abs(float(mesh.volume))
@@ -3789,14 +4017,14 @@ def run_infill_pipeline(  # noqa: C901
         # ndarray telemetry must not reach the persisted extract dict —
         # it kills the version-row JSON flush
         bridged3 = extract.pop("bridged_mask", None)
+        pin3 = passive.reshape(domain.dims).copy()
+        if bridged3 is not None:
+            # corridor cells added by island-bridging pin like passive —
+            # the connectivity glue must not erode below raster
+            # thickness between mask and export
+            pin3 |= np.asarray(bridged3, dtype=bool).reshape(domain.dims)
         if not crisp:
             thin_cells = float(eff_span.min()) / max(domain.pitch, 1e-6)
-            pin3 = passive.reshape(domain.dims).copy()
-            if bridged3 is not None:
-                # corridor cells added by island-bridging pin like passive —
-                # the connectivity glue must not erode below raster
-                # thickness between mask and export
-                pin3 |= np.asarray(bridged3, dtype=bool).reshape(domain.dims)
             candidate_mesh = smooth_preserve(
                 candidate_mesh,
                 iterations=2 if thin_cells < 4.0 else 4,
@@ -3807,6 +4035,17 @@ def run_infill_pipeline(  # noqa: C901
         warnings = list(extract_warnings)
         if dropped_slivers:
             warnings.append(f"dropped {dropped_slivers} near-zero-volume mesh sliver components")
+        candidate_mesh, island_rescue = drop_island_components(
+            candidate_mesh,
+            max_island_frac=0.02,
+            pin_mask=(domain.origin, domain.pitch, pin3),
+        )
+        if island_rescue["dropped"]:
+            warnings.append(
+                f"dropped {island_rescue['dropped']} disconnected island(s) "
+                f"({island_rescue['dropped_vol_frac']:.4%} of export volume) "
+                "— sub-voxel extraction pinch-off"
+            )
         candidate_mesh, output_envelope, output_envelope_ok, envelope_warnings = (
             _clip_export_to_spec_envelope(
                 candidate_mesh,
@@ -3842,6 +4081,7 @@ def run_infill_pipeline(  # noqa: C901
                 "guided SIMP retained no interior cells for lattice — the export is shell-only; "
                 "use infill_scope='full' or revise the guided topology"
             )
+        meta["island_rescue"] = island_rescue
         return {
             "rho": rho,
             "mask": mask,
@@ -4462,6 +4702,11 @@ def run_infill_pipeline(  # noqa: C901
             "n_surface_components": n_surface_components,
             "extract": extract_info,
             "verification": verification,
+            "rescue_islands": (meta.get("island_rescue") or {}).get("islands_found"),
+            "rescue_dropped": (meta.get("island_rescue") or {}).get("dropped"),
+            "rescue_dropped_frac": (meta.get("island_rescue") or {}).get(
+                "dropped_vol_frac"
+            ),
         }
     )
 
@@ -4476,6 +4721,7 @@ def run_infill_pipeline(  # noqa: C901
         pitch=np.float64(domain.pitch),
         dims=np.asarray(domain.dims),
         flat_bottom=np.bool_(base_flat),
+        kind=np.str_("infill"),
     )
     with contextlib.suppress(Exception):
         (opt_dir / "infill_meta.json").write_text(
@@ -4925,6 +5171,7 @@ def run_organic_pipeline(
         pitch=np.float64(out.domain.pitch),
         dims=np.asarray(out.domain.dims),
         flat_bottom=np.bool_(is_flat_bottom(mesh)),
+        kind=np.str_("organic"),
     )
 
     # --- artifacts: STL/GLB/3MF + STL copy used for renders/analysis -------

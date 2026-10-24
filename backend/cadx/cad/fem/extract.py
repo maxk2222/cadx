@@ -709,3 +709,75 @@ def density_to_mesh(
         "bridged_mask": bridged_mask,
     }
     return mesh, mask, warnings, n_components, extract_info
+
+
+def drop_island_components(
+    mesh: trimesh.Trimesh,
+    *,
+    max_island_frac: float = 0.02,
+    min_volume_mm3: float = 1.0,
+    pin_mask: tuple[Any, float, np.ndarray] | None = None,
+) -> tuple[trimesh.Trimesh, dict[str, Any]]:
+    """Drop small disconnected islands the sub-voxel extraction left behind.
+
+    The voxel mask is already connectivity-normalized (non-required islands
+    removed, required ones corridor-bridged), so extra bodies on the export
+    mesh are extraction artifacts — zero-volume sheets, or sub-voxel
+    pinch-offs where a thin corridor eroded below raster thickness. A
+    component is dropped when ``|volume|`` is below
+    ``max(min_volume_mm3, max_island_frac * dominant_volume)`` — unless a
+    vertex sits inside a pinned keep/load/fix cell (``pin_mask``), in which
+    case removing it would silently drop structurally declared material
+    and it is kept + reported instead. Islands at or above the fraction
+    threshold are real design outcomes — kept and reported.
+
+    Returns ``(mesh, report)`` with ``islands_found`` (extra bodies seen),
+    ``dropped``, ``dropped_vol_frac``, ``kept_islands`` (volumes of
+    retained islands, for gating).
+    """
+    report: dict[str, Any] = {
+        "islands_found": 0,
+        "dropped": 0,
+        "dropped_vol_frac": 0.0,
+        "kept_islands": [],
+    }
+    parts = mesh.split(only_watertight=False)
+    if len(parts) <= 1:
+        return mesh, report
+    vols = [abs(float(p.volume)) for p in parts]
+    dominant = max(vols)
+    if dominant <= 0:
+        return mesh, report
+    cutoff = max(float(min_volume_mm3), dominant * float(max_island_frac))
+    origin = pitch = None
+    pin3 = None
+    if pin_mask is not None:
+        origin = np.asarray(pin_mask[0], dtype=float)
+        pitch = float(pin_mask[1])
+        pin3 = np.asarray(pin_mask[2], dtype=bool)
+
+    def _pinned(part: trimesh.Trimesh) -> bool:
+        if pin3 is None or origin is None or pitch is None or pitch <= 0:
+            return False
+        idx = np.floor((np.asarray(part.vertices) - origin) / pitch).astype(np.int64)
+        inb = np.all((idx >= 0) & (idx < np.asarray(pin3.shape)), axis=1)
+        return bool(pin3[tuple(idx[inb].T)].any()) if bool(inb.any()) else False
+
+    kept: list[trimesh.Trimesh] = []
+    dropped_vol = 0.0
+    for part, vol in zip(parts, vols, strict=True):
+        if vol < cutoff and not _pinned(part):
+            dropped_vol += vol
+            report["dropped"] += 1
+        else:
+            kept.append(part)
+            if vol < dominant:  # retained island — report, don't hide it
+                report["kept_islands"].append(round(vol, 3))
+    report["islands_found"] = len(parts) - 1
+    report["dropped_vol_frac"] = (
+        round(dropped_vol / sum(vols), 6) if sum(vols) > 0 else 0.0
+    )
+    if report["dropped"] == 0:
+        return mesh, report
+    out = kept[0] if len(kept) == 1 else trimesh.util.concatenate(kept)
+    return out, report

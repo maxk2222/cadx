@@ -151,6 +151,32 @@ def test_fem_topopt_gates():
     # sf falls back fem -> topopt.sf_verified
     both = _out(fem={}, mesh={"topopt": {"sf_verified": 1.7}})
     assert run_gates([{"type": "fem", "field": "sf", "min": 1.5}], both, 0)[0].ok
+    # expect: exact match for non-numeric fem fields (recommended_mode)
+    rec = _out(fem={"recommended_mode": "guided"})
+    assert run_gates(
+        [{"type": "fem", "field": "recommended_mode", "expect": "guided"}], rec, 0
+    )[0].ok
+    assert not run_gates(
+        [{"type": "fem", "field": "recommended_mode", "expect": "infill"}], rec, 0
+    )[0].ok
+    assert not run_gates(
+        [{"type": "fem", "field": "recommended_mode", "expect": "guided"}],
+        _out(fem={}),
+        0,
+    )[0].ok
+    # topopt gate honours an upper bound (rescue_dropped_frac etc.)
+    r = _out(mesh={"topopt": {"rescue_dropped_frac": 0.01, "warm_start": "x.npz"}})
+    assert run_gates(
+        [{"type": "topopt", "field": "rescue_dropped_frac", "max": 0.02}], r, 0
+    )[0].ok
+    assert not run_gates(
+        [{"type": "topopt", "field": "rescue_dropped_frac", "max": 0.005}], r, 0
+    )[0].ok
+    # string fields pass a bare presence check
+    assert run_gates([{"type": "topopt", "field": "warm_start"}], r, 0)[0].ok
+    assert not run_gates(
+        [{"type": "topopt", "field": "guide_solver"}], r, 0
+    )[0].ok
     # envelope_within reads analysis bbox vs envelope dims
     env = _out(analysis={"bbox_size": [98, 78, 38]})
     assert run_gates([{"type": "envelope_within", "dims": [100, 80, 40]}], env, 0)[0].ok

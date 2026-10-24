@@ -34,6 +34,9 @@ def harvest(outcome: StageOutcome) -> dict[str, Any]:
                 "n_bodies",
                 "bottleneck_mm2",
                 "load_path_ok",
+                "warm_start",
+                "guide_solver",
+                "rescue_dropped_frac",
             )
             if k in top
         }

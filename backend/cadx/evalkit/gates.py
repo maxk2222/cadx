@@ -482,6 +482,12 @@ def _gate_outcome(  # noqa: C901
     if name == "fem":
         field = str(g.get("field") or "sf")
         val = _fem_field(outcome, field)
+        # expect = exact match for non-numeric fields (e.g. recommended_mode);
+        # min/max keep the numeric range semantics
+        if "expect" in g:
+            return GateResult(
+                name, val == g.get("expect"), measured=val, expected=g.get("expect")
+            )
         lo, hi = g.get("min"), g.get("max")
         ok = (
             val is not None
@@ -518,9 +524,13 @@ def _gate_outcome(  # noqa: C901
             return GateResult(name, ok, measured=actual, expected=dims)
         field = str(g.get("field") or "sf_export")
         val = top.get(field)
-        lo = g.get("min")
-        ok = val is not None and (lo is None or float(val) >= float(lo))
-        return GateResult(name, ok, measured=val, expected={field: [lo, g.get("max")]})
+        lo, hi = g.get("min"), g.get("max")
+        ok = (
+            val is not None
+            and (lo is None or float(val) >= float(lo))
+            and (hi is None or float(val) <= float(hi))
+        )
+        return GateResult(name, ok, measured=val, expected={field: [lo, hi]})
 
     if name == "load_path":
         val = _topopt(outcome).get("load_path_ok")

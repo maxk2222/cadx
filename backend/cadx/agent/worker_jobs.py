@@ -1315,6 +1315,38 @@ def _parent_stl(parent: Version) -> str | None:
     return storage.best_mesh_relpath(parent.project_id, parent.id, parent.iterations or 1)
 
 
+def _latest_parent_density(parent: Version) -> str | None:
+    """Newest warm-start-able density field on the parent version (relpath).
+
+    Escalation path: a converged simp/beso field is the best seed; an infill
+    run's binary `rho` is skipped (`kind=infill`) — its persisted
+    `guide_density.npz` (coarse layout) is the compatible warm start instead.
+    """
+    vdir = storage.iteration_dir(parent.project_id, parent.id, 1).parent
+    if not vdir.exists():
+        return None
+    it_dirs = sorted(
+        (p for p in vdir.iterdir() if p.is_dir() and p.name.isdigit()),
+        key=lambda p: int(p.name),
+        reverse=True,
+    )
+    for itdir in it_dirs:
+        tdir = itdir / "topopt"
+        for name in ("density.npz", "guide_density.npz"):
+            p = tdir / name
+            if not p.exists():
+                continue
+            try:
+                with np.load(p) as npz:
+                    kind = str(np.asarray(npz["kind"]).item()) if "kind" in npz else ""
+            except Exception:
+                continue
+            if name == "density.npz" and kind in ("infill", "organic"):
+                continue
+            return storage.relpath(p)
+    return None
+
+
 def _injob_refine_committed(version: Version) -> bool:
     """True when feature finishing already succeeded in the optimize job.
 
@@ -1560,6 +1592,15 @@ async def run_optimize_job(  # noqa: C901
         material = (
             payload.get("material") or settings.fem_material or (spec.material if spec else "")
         )
+        # "auto:parent" — escalate from the parent version's stored density
+        # (infill → SIMP continuation warm-starts from the parent's field);
+        # a failed lookup degrades to a cold start, never a job failure
+        if optimize.get("warm_density_relpath") == "auto:parent":
+            optimize.pop("warm_density_relpath")
+            with contextlib.suppress(Exception):
+                rel = _latest_parent_density(parent)
+                if rel:
+                    optimize["warm_density_relpath"] = rel
 
         executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=runtime_settings)
         result_it = 1

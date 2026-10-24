@@ -473,6 +473,12 @@ class OptimizeSpec(BaseModel):
         "guided"  # full: infill the whole part | guided: coarse SIMP picks
         # the retained topology, infill only fills what it keeps
     )
+    infill_guide_solver: Literal["oc", "beso"] = (
+        "beso"  # guided scope: which solver runs the coarse topology pass —
+        # beso's natively binary field maps straight onto the binary
+        # guide_mask (no gray-zone threshold); its ER ramp is auto-scaled
+        # to the coarse iteration budget so the target volfrac is reachable
+    )
     infill_style: Literal["gyroid_graded", "struts_aligned"] = (
         "gyroid_graded"  # struts_aligned orients the lattice to the solved
         # principal stress directions
@@ -530,6 +536,7 @@ class OptimizeSpec(BaseModel):
         "warmstart",
         "structure_mode",
         "infill_scope",
+        "infill_guide_solver",
         "infill_style",
         mode="before",
     )
@@ -547,6 +554,7 @@ class OptimizeSpec(BaseModel):
             "warmstart": ("uniform", "loadpath"),
             "structure_mode": ("simp", "infill"),
             "infill_scope": ("full", "guided"),
+            "infill_guide_solver": ("oc", "beso"),
             "infill_style": ("gyroid_graded", "struts_aligned"),
         }
         defaults: dict[str, Any] = {
@@ -557,6 +565,7 @@ class OptimizeSpec(BaseModel):
             "warmstart": "uniform",
             "structure_mode": "simp",
             "infill_scope": "guided",
+            "infill_guide_solver": "beso",
             "infill_style": "gyroid_graded",
         }
         s = v.strip().lower() if isinstance(v, str) else v

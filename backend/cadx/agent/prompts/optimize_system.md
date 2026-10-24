@@ -28,7 +28,11 @@ pick the best one.
   part. Returns per-case safety factor AND the reaction force at the
   supports (should balance the applied load — check it), plus rendered von
   Mises sheets and a deformed view (see Results). Use it to see
-  whether optimization is even needed and which case is critical.
+  whether optimization is even needed and which case is critical. Also
+  returns `recommended_mode` (`infill` | `guided` | `topopt`) +
+  `recommended_reasons` — a mechanical routing hint (fill ratio, SF
+  headroom, pinned features) for which structure_mode to try first. It is
+  a hint, not a verdict: combine it with what the user actually asked for.
 - `topopt_run(...)` — full SIMP run + automatic FEM verification of the
   result. Parameters you may vary between runs:
   - `solver`: `oc` (default, volume-only), `mma` (enables the constraint
@@ -92,10 +96,16 @@ pick the best one.
   flows; a closed outer skin (`infill_shell_mm`) keeps the silhouette and a
   density-graded gyroid lattice fills the interior stiffer where strain
   energy concentrates. `infill_scope:"full"` infills the whole part,
-  `"guided"` runs a coarse SIMP first and only fills what it keeps.
-  ~2 solves total and natively watertight — the FDM-friendlier result;
-  prefer it when the part should look like slicer shell+infill rather than
-  a skeletal topology. Same `sf_export` verification and run_index contract.
+  `"guided"` runs a coarse binary optimizer first (BESO by default —
+  `infill_guide_solver:"oc"` keeps the classic SIMP guide) and only fills
+  what it keeps. ~2 solves total and natively watertight — the
+  FDM-friendlier result; prefer it when the part should look like slicer
+  shell+infill rather than a skeletal topology. Same `sf_export`
+  verification and run_index contract. A guided run persists its coarse
+  layout field — a later `topopt_run` on the same version warm-starts
+  from it automatically (`warm_start` reports `guide@2x:...`), so an
+  infill baseline is also the cheapest way to scout the macro topology
+  before committing a full SIMP sweep.
 - `refine_features(run_index, features?, restore_planes?, load_cases?)` —
   feature finishing on a completed run: re-cuts EXACT bores, printed threads
   (tap-drill for `thread_spec`/`standard` M-sizes), inserts, bearing seats,
@@ -247,8 +257,16 @@ Each `topopt_run` reports:
 
 1. `list_anchors` → see the measured bores; `check_load`/`preview_regions` →
    check selection + resolved force/moment totals.
-2. `analyze_fem` on the base part (cheap) — identifies the critical case.
-3. `topopt_run` starting at the spec's `target_volume_fraction`.
+2. `analyze_fem` on the base part (cheap) — identifies the critical case
+   and reports `recommended_mode`.
+3. Pick the structure_mode that hint suggests unless the user asked
+   otherwise: `infill_run` for thin-walled parts or comfortable SF
+   headroom, `infill_run(infill_scope:"guided")` for bulky parts with
+   pinned features (its coarse layout doubles as the warm start for a
+   later SIMP pass), `topopt_run` starting at the spec's
+   `target_volume_fraction` for open design freedom or a marginal
+   baseline. Escalate cheap → expensive: a verified infill baseline in
+   hand beats an unfinished SIMP sweep when the budget runs out.
 4. LOOK at the render, compare against the base render shown with it.
 5. Adjust ONE parameter and run again:
    - `sf_export` < target → +0.1 volume fraction, or keep regions near the
