@@ -52,7 +52,18 @@
 | [mesh-server API](mesh-server-api.md) | Sidecar contract (mesh/image/llm adapters, chat proxy, model management, queue) |
 | [Evaluation](eval.md) | evalkit: suite cases/stages/gates, http+local drivers, baselines, cleanup |
 | [Roadmap](roadmap.md) | Shipped milestones and remaining backlog |
-| [TopOpt audit 2026-10](audit-topopt-2026-10.md) | Point-in-time defect-class audit of the FEM/TopOpt pipeline (German) |
+| [Local production](local-production.md) | Single-user production hardening: updater/watchdog, job recovery, autostart, backups |
+| [Releasing](releasing.md) | Maintainer runbook: version contract, screenshots, release workflow, rulesets |
+| [Release notes](release-notes/) | Curated per-release notes (`0.1.0-alpha.1`) |
+| [TopOpt audit 2026-10](audit-topopt-2026-10.md) | Point-in-time defect-class audit of the FEM/TopOpt pipeline (historical record — findings since fixed) |
+
+## Repo root
+
+- [`CHANGELOG.md`](../CHANGELOG.md) — keep-a-changelog release history
+- [`SECURITY.md`](../SECURITY.md) — security policy & vulnerability reporting
+- [`CONTRIBUTING.md`](../CONTRIBUTING.md) — dev setup, conventions, test rules
+- [`AGENTS.md`](../AGENTS.md) — working rules for AI agents in this repo
+- [`install.sh`](../install.sh) — bootstrap/in-tree installer
 
 ## Component READMEs
 

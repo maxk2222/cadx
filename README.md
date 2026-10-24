@@ -64,6 +64,14 @@ Most image→3D tools hand you a mesh and wish you luck. CADX closes the loop.
 
 ## Quickstart
 
+From a release (no git clone needed — installs to `./cadx`):
+
+```bash
+curl -fsSL https://github.com/maxk2222/cadx/releases/download/v0.1.0-alpha.1/install.sh | bash
+```
+
+Inside this checkout:
+
 ```bash
 ./scripts/start.sh    # or: make start
 ```
