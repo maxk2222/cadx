@@ -6,8 +6,9 @@ Gate specs live in the suite JSON (`stages[].gates`) as
 - **outcome gates** — status/score/bbox/features/watertight/verify_spec/
   fem/topopt/tokens/wall time, read off the normalized outcome;
 - **mesh gates** — `radial_peaks`, `volume(_fraction)`, `contains_point`,
-  `bodies` — computed with trimesh on the stage's first mesh artifact
-  (STL/GLB/3MF), skipped with detail when no mesh is available.
+  `bodies` — computed with trimesh on the stage's final committed mesh
+  (STL/GLB/3MF, authoritative-first via `_mesh_artifact_files`), skipped
+  with detail when no mesh is available.
 """
 
 from __future__ import annotations
