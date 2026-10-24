@@ -2,26 +2,32 @@
   <img src="frontend/public/brand/hero.png" width="100%" alt="CADX">
 </p>
 
-<h3 align="center">Text &amp; photos in — verified, parametric, manufacturing-ready CAD out.</h3>
+<h2 align="center">Photos &amp; a prompt in — verified, parametric, manufacturing-ready CAD out.</h2>
 
 <p align="center">
-  CADX is a local, open-weights multimodal agent: feed it reference photos, drawings
-  or sketches plus a prompt with dimensions, and it iterates — generate, execute,
-  measure, critique, repair — until the part checks out. The result is parametric
-  CAD with real manufacturing exports, not just a mesh.
+  CADX is a <b>local-first, open-weights</b> multimodal CAD agent. Feed it reference
+  photos, drawings or sketches plus a prompt with dimensions — it iterates
+  <i>generate → execute → measure → critique → repair</i> until the part checks out
+  against your spec. The result is parametric build123d <b>code</b> with real
+  manufacturing exports — not just a mesh.
 </p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm--Noncommercial-blue.svg" alt="License: PolyForm Noncommercial"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue.svg" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/docker-compose-2496ED.svg?logo=docker&logoColor=white" alt="Docker Compose">
+  <img src="https://img.shields.io/badge/GPU-MLX%20%C2%B7%20CUDA%20%C2%B7%20ROCm%20%C2%B7%20CPU-76B900.svg" alt="GPU: MLX · CUDA · ROCm · CPU">
   <img src="https://img.shields.io/badge/LLM-any%20OpenAI--compatible-412991.svg" alt="LLM: any OpenAI-compatible">
+  <img src="https://img.shields.io/badge/MCP-server-8A2BE2.svg" alt="MCP server">
 </p>
 
 <p align="center">
   <a href="#quickstart">Quickstart</a> ·
+  <a href="#why-cadx">Why CADX</a> ·
   <a href="#showcase">Showcase</a> ·
+  <a href="#features">Features</a> ·
   <a href="#modes">Modes</a> ·
+  <a href="#mcp-server">MCP</a> ·
   <a href="#documentation">Documentation</a> ·
   <a href="#license">License</a>
 </p>
@@ -44,108 +50,17 @@
 
 ---
 
-## Highlights
+## Why CADX
 
-<table>
-  <tr>
-    <td width="50%">
-      <b>Parametric, not just a mesh</b><br>
-      Output is diffable build123d <i>code</i> with named parameters — versioned,
-      re-runnable and editable, so "make it 5 mm taller" is a one-line change.
-    </td>
-    <td width="50%">
-      <b>Open-weights &amp; local-first</b><br>
-      Local or external inference per subsystem: image→3D on the sidecar
-      (TRELLIS.2, Hunyuan3D-2.1, TripoSG) or Tripo3D cloud; text-to-image via
-      local FLUX/Qwen/SDXL or an OpenAI images API; the agent LLM via any
-      OpenAI-compatible endpoint (Ollama, vLLM, hosted) or a local model the
-      sidecar hosts itself (mlx-lm, llama.cpp). Model downloads and HF-repo
-      registration live in Settings → Models.
-    </td>
-  </tr>
-  <tr>
-    <td width="50%">
-      <b>Five generation modes</b><br>
-      <code>auto</code> · <code>cad</code> · <code>mesh</code> · <code>hybrid</code> ·
-      <code>topopt</code> — analytic B-Rep CAD, organic mesh shapes or
-      FEM-verified topology optimization — plus deterministic organic restyling
-      (gyroid / trabecular / voronoi / branches).
-    </td>
-    <td width="50%">
-      <b>Verified by construction</b><br>
-      Generated code runs in a sealed sandbox; measured geometry checks
-      (through-holes, countersinks, inserts), multi-view renders and a vision
-      critique drive an automatic repair loop — dimension autofixes and
-      patch-based edits included.
-    </td>
-  </tr>
-  <tr>
-    <td width="50%">
-      <b>Structural analysis built in</b><br>
-      Voxel FEM with explicit load cases, safety factors and stress/deformation
-      reports; SIMP topology optimization with self-support filtering,
-      multi-resolution solving and feature re-cutting (<code>refine</code>).
-    </td>
-    <td width="50%">
-      <b>Manufacturing output</b><br>
-      STEP, STL, 3MF, GLB, DXF and SVG exports; FDM/CNC DfM heuristics; and a
-      BOM for real standard parts — fasteners, heat-set inserts, bearings —
-      from the <code>bd_warehouse</code> catalog.
-    </td>
-  </tr>
-  <tr>
-    <td width="50%">
-      <b>Edit everything</b><br>
-      Prompt and image edits, parameter-only reruns, a visual mesh editor
-      (slice, shell, drill, boolean, smooth…), a paint-on structural editor and
-      a reusable library for STEP/STL bodies and parametric templates.
-    </td>
-    <td width="50%">
-      <b>A real web app</b><br>
-      Guided new-part wizard, live progress with in-loop renders, jobs
-      dashboard, statistics, asset image editing and local concept-image
-      generation — served from a single compose stack.
-    </td>
-  </tr>
-</table>
+Most image→3D tools hand you a mesh and wish you luck. CADX closes the loop.
 
-> DfM results are engineering heuristics, not a manufacturing guarantee — always
-> verify dimensions and process limits yourself before cutting or printing.
-
-## Showcase
-
-<p align="center">
-  <img src="docs/screenshots/walkthrough.gif" width="720" alt="CADX web GUI — walkthrough: projects, versions, editors, jobs and stats">
-</p>
-
-<table>
-  <tr>
-    <td width="50%"><img src="docs/screenshots/start-wizard.png" alt="Guided new-part wizard — mode selection"></td>
-    <td width="50%"><img src="docs/screenshots/version-cad.png" alt="Version detail — CAD result with agent activity"></td>
-  </tr>
-  <tr>
-    <td align="center"><sub>Guided new-part wizard — describe, images, mode, review</sub></td>
-    <td align="center"><sub>Version detail — CAD result, agent activity, measured geometry</sub></td>
-  </tr>
-  <tr>
-    <td width="50%"><img src="docs/screenshots/organic-editor.png" alt="Organic structure editor with live preview"></td>
-    <td width="50%"><img src="docs/screenshots/editor.png" alt="Visual mesh editor"></td>
-  </tr>
-  <tr>
-    <td align="center"><sub>Organic restyling — gyroid / voronoi / branches, live preview</sub></td>
-    <td align="center"><sub>Visual mesh editor — live-previewed operations</sub></td>
-  </tr>
-  <tr>
-    <td width="50%"><img src="docs/screenshots/stats.png" alt="Statistics dashboard"></td>
-    <td width="50%"><img src="docs/screenshots/jobs.png" alt="Jobs dashboard with live progress"></td>
-  </tr>
-  <tr>
-    <td align="center"><sub>Statistics — tokens, scores and job performance</sub></td>
-    <td align="center"><sub>Jobs — live progress, scores and control across projects</sub></td>
-  </tr>
-</table>
-
-Full GUI walkthrough: **[docs/webgui-ux.md](docs/webgui-ux.md)**.
+| Typical AI→3D tools | CADX |
+|---|---|
+| A frozen triangle mesh | **Parametric build123d code** — diffable, re-runnable, "make it 5 mm taller" is a one-line edit |
+| "Looks about right" | **Measured and critiqued** — holes ray-checked for real through-paths, features verified, renders vision-scored, `verify_spec` reports PASS / FAIL / UNVERIFIED |
+| Whatever the mesh happened to produce | **Real machining intent** — catalog standard parts, true ISO threads on export, counterbores/sinks, heat-set inserts, bearings — with a BOM |
+| No idea whether it survives | **Voxel FEM + topology optimization** — explicit load cases, safety factors verified on the exported solid |
+| Cloud API or nothing | **Open-weights, local-first** — MLX on Apple Silicon, CUDA, ROCm, or CPU-only CAD; your LLM endpoint, your keys |
 
 ## Quickstart
 
@@ -172,6 +87,68 @@ scripts/setup.sh --doctor    # diagnostics
 
 Full install, dev-mode and migration docs:
 **[docs/getting-started.md](docs/getting-started.md)**.
+
+## Showcase
+
+<p align="center">
+  <img src="docs/screenshots/walkthrough.gif" width="780" alt="CADX web GUI — walkthrough: projects, versions, editors, jobs and stats">
+</p>
+
+<table>
+  <tr>
+    <td width="33%"><img src="docs/screenshots/start-wizard.png" alt="Guided new-part wizard — mode selection"></td>
+    <td width="33%"><img src="docs/screenshots/version-cad.png" alt="Version detail — CAD result with agent activity"></td>
+    <td width="33%"><img src="docs/screenshots/organic-editor.png" alt="Organic structure editor with live preview"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Guided new-part wizard</sub></td>
+    <td align="center"><sub>Version detail — measured geometry</sub></td>
+    <td align="center"><sub>Organic restyle — live preview</sub></td>
+  </tr>
+  <tr>
+    <td width="33%"><img src="docs/screenshots/editor.png" alt="Visual mesh editor"></td>
+    <td width="33%"><img src="docs/screenshots/structural-editor.png" alt="Structural editor — paint-on load and fixture regions"></td>
+    <td width="33%"><img src="docs/screenshots/chat.png" alt="Chat agent"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Visual mesh editor</sub></td>
+    <td align="center"><sub>Structural editor — paint-on regions</sub></td>
+    <td align="center"><sub>Chat agent</sub></td>
+  </tr>
+  <tr>
+    <td width="33%"><img src="docs/screenshots/stats.png" alt="Statistics dashboard"></td>
+    <td width="33%"><img src="docs/screenshots/jobs.png" alt="Jobs dashboard with live progress"></td>
+    <td width="33%"><img src="docs/screenshots/library.png" alt="Reusable parts library"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Statistics — tokens, scores, FEM</sub></td>
+    <td align="center"><sub>Jobs — live progress and control</sub></td>
+    <td align="center"><sub>Library — reusable parts</sub></td>
+  </tr>
+</table>
+
+Full GUI walkthrough: **[docs/webgui-ux.md](docs/webgui-ux.md)**.
+
+## Features
+
+Everything that ships in the box, at a glance:
+
+| | |
+|---|---|
+| 🧩 **Generation** | Five modes — `auto` · `cad` · `mesh` · `hybrid` · `topopt` — plus deterministic **organic restyle** (gyroid / trabecular / voronoi / branches) and **mesh→parametric** reconstruction that turns a mesh back into editable code |
+| 🖼️ **Inputs** | Reference photos · marked sketches routed to scribble adapters · multi-view sets · locally generated concept/hero images with vision verification · STEP/STL reference bodies and library parts |
+| 🔁 **Agent loop** | intake → plan → codegen → sandboxed exec → measure → critique → repair; patch-based edits, dimension autofix without an LLM call, staged feature-by-feature builds, adaptive reasoning escalation |
+| ✅ **Verification** | Measured geometry (through-holes proven by tunnel rays, countersinks, threads, wall thickness), spec-conformance report, multi-view vision critique, STEP roundtrip gate, design audits that perturb `PARAMS` |
+| ⚙️ **Real CAD** | Parametric build123d B-Rep · standard-parts catalog + BOM (screws, nuts, inserts, bearings) · true ISO threads in export mode · reviewed `cadlib` helper library · parameter-only reruns |
+| 🏗️ **Structural** | Voxel FEM with explicit load cases and safety factors (CHOLMOD / SuperLU / PyAMG) · SIMP + BESO topology optimization (MMA, robust 3-realization, Helmholtz/Heaviside filters, self-support, multires, symmetry, load-path certificate) · shell+infill lattices · **refine** re-cuts bores/threads as analytic faces |
+| 🛠️ **Editors** | Visual mesh editor (slice · clip · crop · boolean · drill · shell · remesh · symmetrize — live preview, reorderable op stack) · paint-on structural editor (load/fix/keep regions, 3D FEM overlay) · organic editor · measured-feature resize · param panel |
+| 🤖 **Models** | Open-weights sidecar — image→3D: TripoSG (+scribble), Hunyuan3D-2.1 / 2mv / Omni, Step1X-3D, TRELLIS.2, Tripo3D cloud · text→image/edit: Z-Image-Turbo, FLUX.1-schnell/Kontext, FLUX.2-klein, Qwen-Image(+Edit Lightning), SDXL, SD1.5 · local LLM hosting via mlx-lm / mlx-vlm / llama.cpp |
+| 🖥️ **Web app** | Guided wizard · version tree with compare · live in-loop renders and job log (tokens, ETA, step timeline) · jobs + stats dashboards · asset image editor (crop/mask/bg-removal) · parts library · chat agent · **9 locales** |
+| 🔌 **Integrations** | REST + SSE API · **MCP server** (stdio + Streamable HTTP, strictly LLM-free) · `cadx` CLI · evalkit with durable runs, gates and baselines |
+| 🔄 **Ops** | One-command start with GPU autodetect · self-update from GitHub with rollback · watchdog + job recovery · pg_dump backups · Fernet-encrypted secrets · cgroup-aware CPU/RAM budgets |
+
+> DfM results are engineering heuristics, not a manufacturing guarantee — always
+> verify dimensions and process limits yourself before cutting or printing.
 
 ## Modes
 
@@ -242,8 +219,10 @@ audience:
 
 - **Run it** — [Getting started](docs/getting-started.md) ·
   [Configuration](docs/configuration.md) ·
+  [Updating](docs/updating.md) ·
   [Troubleshooting](docs/troubleshooting.md)
 - **Use it** — [Web GUI](docs/webgui-ux.md) ·
+  [Chat agent](docs/chat.md) ·
   [Image editing](docs/image-editing.md) ·
   [Image generation](docs/image-generation.md) ·
   [Parts library](docs/parts-library.md) ·
