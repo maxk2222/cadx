@@ -2487,13 +2487,13 @@ def _verify_entry(
     depth_frac: float,
     log: Any,
 ) -> tuple[bool, dict[str, Any] | None]:
-    """One applied entry → (verified, probe record). The scan is
-    authoritative for through-features; blind ones get the pocket probe."""
+    """One applied entry → (verified, probe record). The scan is the first
+    authority; the axial-openness probe rescues whatever it misses — for
+    through features ``open`` means the channel is clear, which is exactly
+    the through verdict."""
     want = {"hole"} if through else {"dimple"}
     if _scan_has_feature(scanned, uv, dia, want, xy_tol_mm, dia_tol_frac, axis):
         return True, None
-    if through:
-        return False, None
     verdict, probe_rec = _probe_blind_feature(
         mesh,
         entry,
