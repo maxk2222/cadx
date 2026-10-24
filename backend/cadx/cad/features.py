@@ -561,6 +561,88 @@ def _bore_open_local(mesh, center: list[float], axis: int, r: float, vspan: floa
     return True
 
 
+def _bore_fit_diameter(
+    mesh: Any, axis: int, a1: int, a2: int, cu: float, cv: float, dia_est: float
+) -> float:
+    """Fitted bore diameter around a tunnel centre.
+
+    The zero-hit column underreports bores whose void column is shadowed by
+    a tighter interior cavity or whose mouth blends into a wider bay (the
+    centroid then drifts off the bore axis). The binding diameter for a
+    fastener is the bore rim: cast one dense raster of rays along the axis
+    per side — a ray is rim-blocked when its FIRST surface hit lands on the
+    face band (entry mouth level), while zero-hit and deep-entry rays pass
+    through the bore. For each candidate centre the largest all-clear ring
+    radius is the inscribed bore radius; the bore's true centre maximises
+    it (max over candidates) and the mouth side always finds the true rim
+    (min over sides).
+    """
+    import numpy as np
+
+    mn, mx = mesh.bounds
+    r_max = dia_est / 2.0 + 4.0
+    step = 0.3
+    ext = r_max + 2.0
+    g1 = np.arange(cu - ext, cu + ext + step, step)
+    g2 = np.arange(cv - ext, cv + ext + step, step)
+    if not len(g1) or not len(g2):
+        return 0.0
+    uu, vv = np.meshgrid(g1, g2, indexing="ij")
+    ang = np.linspace(0, 2 * math.pi, 16, endpoint=False)
+    radii = np.arange(0.7, r_max, step)
+    side_best: list[float] = []
+    for side in (0, 1):  # 0: rays +axis from mn side; 1: rays -axis from mx side
+        origins = np.zeros((uu.size, 3))
+        origins[:, a1] = uu.ravel()
+        origins[:, a2] = vv.ravel()
+        origins[:, axis] = (mn[axis] - 1.0) if side == 0 else (mx[axis] + 1.0)
+        d = np.zeros(3)
+        d[axis] = 1.0 if side == 0 else -1.0
+        locs, ray_ids, _ = mesh.ray.intersects_location(origins, np.tile(d, (len(origins), 1)))
+        first = np.full(uu.size, np.nan)
+        for rid in np.unique(ray_ids):
+            hit_ax = locs[ray_ids == rid][:, axis]
+            first[rid] = hit_ax.min() if side == 0 else hit_ax.max()
+        first = first.reshape(uu.shape)
+        finite = first[np.isfinite(first)]
+        if len(finite) < 6:
+            continue  # no face on this side — nothing to fit against
+        face = float(np.percentile(finite, 10) if side == 0 else np.percentile(finite, 90))
+        # the face band only makes sense near the part's outer surface — on
+        # an open side (bay/cutaway) first hits land deep in the interior
+        # and would fake a face: recessed real faces are < ~20 mm inside
+        bbox_face = float(mn[axis]) if side == 0 else float(mx[axis])
+        if abs(face - bbox_face) > min(20.0, 0.3 * float(mx[axis] - mn[axis])):
+            continue
+        blocked = np.isfinite(first) & (
+            (first <= face + 0.8) if side == 0 else (first >= face - 0.8)
+        )
+        cand_best = 0.0
+        for du in np.arange(-2.0, 2.0 + step, step):
+            for dv in np.arange(-2.0, 2.0 + step, step):
+                for r in radii:
+                    iu = np.clip(
+                        np.round((cu + du + r * np.cos(ang) - g1[0]) / step).astype(int),
+                        0,
+                        uu.shape[0] - 1,
+                    )
+                    iv = np.clip(
+                        np.round((cv + dv + r * np.sin(ang) - g2[0]) / step).astype(int),
+                        0,
+                        uu.shape[1] - 1,
+                    )
+                    # rim = radius where a solid fraction of ring directions
+                    # blocks; a single grazing ray (thread groove lip, seam)
+                    # must not cut the fit short, and a mouth blending into
+                    # a bay leaves part of the ring unconstrained
+                    if float(blocked[iu, iv].mean()) >= 0.3:
+                        break
+                    cand_best = max(cand_best, float(r))
+        side_best.append(cand_best)
+    r_fit = min(side_best, default=0.0)
+    return float(2.0 * r_fit) if r_fit > 0 else 0.0
+
+
 def _mesh_through_holes(stl_path: Path, mesh=None) -> tuple[list[MeasuredHoleGroup], int, int]:
     """Detect through-holes on a faceted solid via ray casting.
 
@@ -628,6 +710,16 @@ def _mesh_through_holes(stl_path: Path, mesh=None) -> tuple[list[MeasuredHoleGro
             center[a1] = mn[a1] + step / 2 + cu * step
             center[a2] = mn[a2] + step / 2 + cv * step
             center[axis] = (mn[axis] + mx[axis]) / 2
+            if not is_slot:
+                # the zero-hit column can be narrower than the actual bore —
+                # a mouth blending into an exterior bay or a tighter interior
+                # cavity shrinks the mask. The tunnel's narrowest section is
+                # the binding diameter and can only lift an underreport.
+                sec = _bore_fit_diameter(
+                    mesh, axis, a1, a2, float(center[a1]), float(center[a2]), dia
+                )
+                if sec > dia:
+                    dia = sec
             if is_slot:
                 slot_count += 1
             center_xyz: list[float | None] = [None, None, None]

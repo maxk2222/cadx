@@ -202,9 +202,7 @@ def _feature_axis(f: dict[str, Any]) -> str:
 
 def _spec_feature_text(sf: dict[str, Any]) -> str:
     """Free-text fields that may carry machine-readable position hints."""
-    return " ".join(
-        str(sf.get(k) or "") for k in ("position", "description", "note", "name")
-    )
+    return " ".join(str(sf.get(k) or "") for k in ("position", "description", "note", "name"))
 
 
 def _spec_axis(sf: dict[str, Any], text: str) -> str | None:
@@ -336,7 +334,14 @@ def _anchor_material(mesh: trimesh.Trimesh, u: float, v: float, axis: str) -> bo
     return not _tunnel_open_mesh(mesh, u, v, axis)
 
 
-def _bore_ring_material(mesh: trimesh.Trimesh, axis: str, u: float, v: float, dia: float) -> bool:
+def _bore_ring_material(
+    mesh: trimesh.Trimesh,
+    axis: str,
+    u: float,
+    v: float,
+    dia: float,
+    depth_mm: float | None = None,
+) -> bool:
     """True when solid material rings the (u, v) position on `axis` — the
     discriminating test for an entry-less feature: an open channel that
     refine should re-cut still has wall material around it; a SIMP-eaten
@@ -371,6 +376,11 @@ def _bore_ring_material(mesh: trimesh.Trimesh, axis: str, u: float, v: float, di
     for r_id, loc in zip(ray_ids, locs, strict=True):
         hits[int(r_id)].append(float(loc[ax]))
     blocked_min = max(1.0, 0.2 * span)
+    if depth_mm:
+        # the feature's declared span bounds the search: an 8 mm flange
+        # wall can never reach 20% of a 100 mm part span, but it is still
+        # all the host the bore needs
+        blocked_min = min(blocked_min, max(1.5, 0.5 * depth_mm))
     far = lo if sgn > 0 else hi
     material = 0
     for z in hits:
@@ -524,13 +534,17 @@ def resolve_refine_features(  # noqa: C901
     # --- auto: spec features with declared positions -------------------------
     used_anchors: set[int] = set()
 
-    def _from_spec(sf: dict[str, Any], stype: str, dims: dict[str, Any], u: float, v: float,
-                   axis: str, anchor: dict[str, Any] | None) -> RefineFeature | None:
+    def _from_spec(
+        sf: dict[str, Any],
+        stype: str,
+        dims: dict[str, Any],
+        u: float,
+        v: float,
+        axis: str,
+        anchor: dict[str, Any] | None,
+    ) -> RefineFeature | None:
         dia = float(
-            dims.get("diameter")
-            or dims.get("bore_diameter")
-            or (anchor or {}).get("dia")
-            or 0
+            dims.get("diameter") or dims.get("bore_diameter") or (anchor or {}).get("dia") or 0
         )
         if dia <= 0:
             return None
@@ -545,8 +559,7 @@ def resolve_refine_features(  # noqa: C901
             str(sf.get(k) or "") for k in ("position", "description", "name")
         ).lower()
         through = (
-            "through" in low_text
-            or str((anchor or {}).get("kind") or "") in ("hole", "tunnel")
+            "through" in low_text or str((anchor or {}).get("kind") or "") in ("hole", "tunnel")
         ) and stype != "insert"
         return RefineFeature(
             name=str(sf.get("name") or (anchor or {}).get("name") or "spec feature"),
@@ -591,9 +604,7 @@ def resolve_refine_features(  # noqa: C901
                     used_anchors.add(id(anchor))
                 f = _from_spec(sf, stype, dims, pu, pv, axis, anchor)
                 if f is None:
-                    warnings.append(
-                        f"refine feature '{sf.get('name')}' has no diameter — skipped"
-                    )
+                    warnings.append(f"refine feature '{sf.get('name')}' has no diameter — skipped")
                     continue
                 feats.append(f)
             continue
@@ -620,7 +631,9 @@ def resolve_refine_features(  # noqa: C901
             continue
         used_anchors.add(id(anchor))
         dims["thread_spec"] = _thread_spec_from(
-            sf, dia, allow_dia_snap=stype in ("thread", "tap", "insert") or bool(dims.get("thread_spec"))
+            sf,
+            dia,
+            allow_dia_snap=stype in ("thread", "tap", "insert") or bool(dims.get("thread_spec")),
         )
         f = _from_anchor(anchor, kind=stype, dims=dims)
         if f:
@@ -743,11 +756,17 @@ def _cutter_mesh(
 ) -> trimesh.Trimesh:
     """Cutting solid for one feature, built with bore axis along +Z, entry at
     local z=0, bore going -Z. Caller rotates/translates into place."""
-    over_out = 2.0  # overshoot above the entry face
+    # overshoot above the entry face must reach the part's outer face —
+    # a plug-seated entry is INTERIOR (channel surface), and any channel
+    # material between it and the bbox face (restored cap, wavy mouth)
+    # otherwise survives as an undersized constriction above the cut
+    over_out = span + 2.0
     depth = (
         depth_override
         if depth_override is not None
-        else feat.depth_mm if feat.depth_mm is not None else span + 2.0
+        else feat.depth_mm
+        if feat.depth_mm is not None
+        else span + 2.0
     )
     dia = _effective_dia(feat) + feat.dia_extra
     tools: list[trimesh.Trimesh] = []
@@ -768,7 +787,10 @@ def _cutter_mesh(
                 pitch=pitch,
                 depth=depth,
             )
-            groove.apply_translation([0, 0, over_out * 0.5])
+            # anchor the groove at the entry face (starts ~1 mm above it),
+            # independent of the outward overshoot — it must thread the
+            # bore wall, not the empty space above
+            groove.apply_translation([0, 0, 1.0])
             tools.append(groove)
         except Exception as e:
             log.warning(
@@ -1189,9 +1211,13 @@ def _snap_dedup_features(
         # spec-sourced keeps drill at their declared position — only measured
         # centres merge; the channel seal tracks whichever tunnel was found
         keep_declared = "spec" in str(keep.source)
-        uv = snapped.get(id(keep)) or snapped.get(id(drop)) or (
-            (keep.u + drop.u) / 2.0,
-            (keep.v + drop.v) / 2.0,
+        uv = (
+            snapped.get(id(keep))
+            or snapped.get(id(drop))
+            or (
+                (keep.u + drop.u) / 2.0,
+                (keep.v + drop.v) / 2.0,
+            )
         )
         if keep_declared:
             keep.plug_uv = uv
@@ -1502,8 +1528,7 @@ def _bridging_keep_patches(
                 cy = float((b[0][1] + b[1][1]) / 2)
                 cz = float((b[0][2] + b[1][2]) / 2)
                 warnings.append(
-                    f"{tag} at ({cx:.0f}, {cy:.0f}, {cz:.0f}) would float — "
-                    "region left smoothed"
+                    f"{tag} at ({cx:.0f}, {cy:.0f}, {cz:.0f}) would float — region left smoothed"
                 )
                 continue
         patches.append((patch, is_auto))
@@ -1620,7 +1645,9 @@ def _try_difference(
     return res, ""
 
 
-def _feature_host_main(mesh: trimesh.Trimesh, feat: RefineFeature, entry: float, span: float) -> bool | None:
+def _feature_host_main(
+    mesh: trimesh.Trimesh, feat: RefineFeature, entry: float, span: float
+) -> bool | None:
     """True when the material ringing the bore belongs to the mesh's
     largest body — a keep-restored ring floating in an emptied region
     still 'measures' a perfect bore but carries no load. None = could not
@@ -1722,7 +1749,7 @@ def _plug_channel(
     entry: float,
     span: float,
     report: RefineReport,
-) -> tuple[trimesh.Trimesh, float]:
+) -> tuple[trimesh.Trimesh, float, bool]:
     """spec'd bore over a wavy channel: fill the measured void first so the
     nominal drill leaves exact walls — a plain cut can only widen, never
     shrink, an existing tunnel. On plug failure fall back to the +0.4
@@ -1736,7 +1763,7 @@ def _plug_channel(
             f"feature '{feat.name}': no plug geometry at measured tunnel — "
             "reamed +0.4 mm instead of drilling at spec dia"
         )
-        return out, entry
+        return out, entry, False
     try:
         filled = out.union(plug, engine="manifold")
         if filled is None or not len(getattr(filled, "faces", [])):
@@ -1750,25 +1777,44 @@ def _plug_channel(
             f"feature '{feat.name}': channel plug union failed — "
             "reamed +0.4 mm instead of drilling at spec dia"
         )
-        return out, entry
+        return out, entry, False
     out = filled
     # seat the drill on the plug surface — the channel surface
     # entry measured above is gone now
     new_entry = _entry_point(out, feat.axis, feat.u, feat.v)
     if new_entry is not None:
         entry = new_entry
-    else:
-        entry = float(out.bounds[1][ax] if feat.axis[0] == "+" else out.bounds[0][ax])
-    return out, entry
+        return out, entry, True
+    entry = float(out.bounds[1][ax] if feat.axis[0] == "+" else out.bounds[0][ax])
+    return out, entry, False
 
 
-def _apply_cut(out: trimesh.Trimesh, feat: RefineFeature, report: RefineReport) -> trimesh.Trimesh:
+def _apply_cut(
+    out: trimesh.Trimesh,
+    feat: RefineFeature,
+    report: RefineReport,
+    *,
+    entry_override: float | None = None,
+) -> trimesh.Trimesh:
     """One re-cut: build the cutter, difference it, retry a failed helical
     groove as a plain tap-drill bore (the bore is never lost), and record the
-    outcome. Returns the (possibly unchanged) mesh."""
+    outcome. Returns the (possibly unchanged) mesh.
+
+    `entry_override` seats the cutter at an explicit axis coordinate (the
+    post-repair re-cut path seats on the bbox face so the ray can't land on
+    material behind an open tunnel) — the through-depth logic still limits
+    the cut to the declared reach."""
     ax, _, _ = _AXES[feat.axis]
-    entry = _entry_point(out, feat.axis, feat.u, feat.v)
     entry_reseated = False
+    if entry_override is not None:
+        entry = entry_override
+    else:
+        entry = _entry_point(out, feat.axis, feat.u, feat.v)
+        if entry is not None and feat.through and _tunnel_open_mesh(out, feat.u, feat.v, feat.axis):
+            # centre ray pierced an already-open tunnel — the entry it found
+            # sits on unrelated material BEHIND the channel; a through
+            # feature is seated at the bbox face instead
+            entry = None
     if entry is None:
         # ray at the bore centre hits nothing — the channel is already
         # open (tunnel through the part) OR the region was fully
@@ -1778,7 +1824,7 @@ def _apply_cut(out: trimesh.Trimesh, feat: RefineFeature, report: RefineReport) 
         # cutter at the bbox face would shave a nick off an unrelated
         # surface and report it as the spec's bore (the eval's Ø3.8 mm
         # hole 43 mm off-anchor). Skip honestly instead.
-        if not _bore_ring_material(out, feat.axis, feat.u, feat.v, feat.dia):
+        if not _bore_ring_material(out, feat.axis, feat.u, feat.v, feat.dia, feat.depth_mm):
             report.skipped.append(
                 {
                     "name": feat.name,
@@ -1803,7 +1849,12 @@ def _apply_cut(out: trimesh.Trimesh, feat: RefineFeature, report: RefineReport) 
         )
     span = float(out.bounds[1][ax] - out.bounds[0][ax])
     if feat.plug_first:
-        out, entry = _plug_channel(out, feat, entry, span, report)
+        out, entry, plug_seated = _plug_channel(out, feat, entry, span, report)
+        if plug_seated:
+            # the plug surfaced a real entry face — the seat is no longer a
+            # bbox-face guess, so the reach-limited depth applies and the
+            # cutter stops before unrelated material behind the channel
+            entry_reseated = False
     depth_override: float | None = None
     if feat.through:
         if entry_reseated:
@@ -1975,13 +2026,126 @@ def apply_refine(
             )
             report.warnings.append(f"feature '{feat.name}' cut failed: {e}")
 
-    # cleanup pass — booleans can leave slivers
+    out = _post_cut_cleanup(out, report)
+    pre = out
+    out = _watertight_postpass(out, report)
+    out = _postpass_recut(out, pre, features, report)
+    return out, report
+
+
+def _post_cut_cleanup(out: trimesh.Trimesh, report: RefineReport) -> trimesh.Trimesh:
+    """Degenerate-face cleanup + boolean sliver drop between cut pass and
+    watertight postpass.
+
+    Dropping degenerate faces can open seam leaks (manifold3d slivers cover
+    the union seam), so the cleaned result is adopted only when
+    watertightness survives — otherwise the postpass reskins the whole body
+    and erodes every fresh bore wall by ~one wrap cell. Sub-mm³ shell
+    fragments (inverted normals) ride along as a second body and trip the
+    bodies/watertight gates — drop them without touching real patches
+    (>= _MIN_BRIDGE_MM3).
+    """
     try:
-        out.update_faces(out.nondegenerate_faces())
-        out.remove_unreferenced_vertices()
+        cleaned = out.copy()
+        cleaned.update_faces(cleaned.nondegenerate_faces())
+        cleaned.remove_unreferenced_vertices()
+        if not out.is_watertight or cleaned.is_watertight:
+            out = cleaned
     except Exception:
         pass
-    return _watertight_postpass(out, report), report
+    try:
+        parts = [p for p in out.split(only_watertight=False) if len(getattr(p, "faces", []))]
+        if len(parts) > 1:
+            vols = [abs(float(getattr(p, "volume", 0) or 0)) for p in parts]
+            main_v = max(vols, default=0.0)
+            floor = max(_MIN_BRIDGE_MM3, 1e-4 * main_v)
+            keep = [p for p, v in zip(parts, vols, strict=True) if v >= floor]
+            if 0 < len(keep) < len(parts):
+                merged = keep[0] if len(keep) == 1 else trimesh.util.concatenate(keep)
+                if not out.is_watertight or merged.is_watertight:
+                    report.warnings.append(
+                        f"dropped {len(parts) - len(keep)} sliver fragment(s) (< {floor:.2f} mm³)"
+                    )
+                    out = merged
+    except Exception:
+        pass
+    return out
+
+
+def _postpass_recut(
+    out: trimesh.Trimesh,
+    pre: trimesh.Trimesh,
+    features: list[RefineFeature],
+    report: RefineReport,
+) -> trimesh.Trimesh:
+    """Re-cut through-features the watertight postpass damaged.
+
+    A reskin postpass (alpha-wrap ≈ bbox/200 granularity ≈ 0.7 mm on this
+    part class) erodes fresh bore walls — a Ø6.5 cut re-measures Ø5.5 and
+    a thin restored wall can seal entirely. The surface scan later catches
+    it as a verify-miss, but the bore is already lost. When the postpass
+    returned a different mesh (any repair ran), probe each applied
+    through-feature the same way the verifier does — sealed, not open,
+    or measurably undersized -> re-apply the cut once, then re-run the
+    postpass (a no-op while the boolean output stays watertight).
+    """
+    if out is pre:
+        return out
+    try:
+        from cadx.cad.fem import anchors3d
+
+        scanned = anchors3d.scan_mesh_anchors(out)
+    except Exception:
+        return out
+    applied_names = {str(e.get("name") or "") for e in report.applied}
+    recut = 0
+    for feat in features:
+        if feat.name not in applied_names or not feat.through or feat.kind not in _CUTABLE:
+            continue
+        try:
+            # the same measurement channel the verifier/gates use: a scanned
+            # hole at the applied (u, v) — a reskin that sealed the bore or
+            # shrank it under the gate bar counts as degraded
+            m_dia: float | None = None
+            for t in scanned:
+                if str(t.get("axis") or "+z") != feat.axis:
+                    continue
+                tuv = _verify_uv(t, feat.axis)
+                if tuv is None or str(t.get("kind") or "") != "hole":
+                    continue
+                if math.hypot(tuv[0] - feat.u, tuv[1] - feat.v) <= 2.0:
+                    m_dia = float(t.get("dia") or 0.0)
+                    break
+            degraded = m_dia is None or (feat.dia > 0 and m_dia < 0.95 * feat.dia)
+            if not degraded:
+                continue
+            ax = _AXES[feat.axis][0]
+            rec = next((e for e in reversed(report.applied) if e.get("name") == feat.name), {})
+            # seat on the bbox face with the reach the first cut needed —
+            # covers the reskinned wall but leaves material behind the
+            # channel (e.g. the gusset rib) untouched
+            span = float(out.bounds[1][ax] - out.bounds[0][ax])
+            rec_depth = float(rec.get("cut_depth_mm") or feat.depth_mm or span)
+            entry_face = float(out.bounds[1][ax] if feat.axis[0] == "+" else out.bounds[0][ax])
+            before = len(report.applied)
+            out = _apply_cut(
+                out,
+                replace(feat, plug_first=False, depth_mm=rec_depth),
+                report,
+                entry_override=entry_face,
+            )
+            if len(report.applied) > before:
+                recut += 1
+                report.applied[-1]["postpass_recut"] = True
+                report.warnings.append(
+                    f"feature '{feat.name}': re-cut after watertight repair — "
+                    f"postpass degraded the bore (scanned dia {m_dia} vs {feat.dia})"
+                )
+        except Exception as e:
+            report.warnings.append(f"feature '{feat.name}': post-repair re-cut failed: {e}")
+    if recut:
+        out = _watertight_postpass(out, report)
+    return out
 
 
 def _watertight_postpass(out: trimesh.Trimesh, report: RefineReport) -> trimesh.Trimesh:
