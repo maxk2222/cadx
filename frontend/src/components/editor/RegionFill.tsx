@@ -117,7 +117,16 @@ export default function RegionFill({
         targets.forEach((j, i) => {
           const arr = perMesh[i];
           if (!arr) return;
-          j.mesh.geometry.setAttribute("color", new THREE.BufferAttribute(arr, 3));
+          const geo = j.mesh.geometry;
+          // the fill writes the `color` attribute — save whatever the model
+          // already carried (GLBs ship COLOR_0 vertex colours) so cleanup()
+          // restores it instead of leaving the attribute deleted while the
+          // material still has vertexColors=true → renders black.
+          const rec = geo.userData as Record<string, unknown>;
+          if (!("__rfOrigColor" in rec)) {
+            rec.__rfOrigColor = geo.getAttribute("color") ?? null;
+          }
+          geo.setAttribute("color", new THREE.BufferAttribute(arr, 3));
           forEachMat(j.mesh, (m) => {
             if ("vertexColors" in m) {
               m.userData.__rfPrev = m.vertexColors;
@@ -186,7 +195,20 @@ function forEachMat(mesh: THREE.Mesh, fn: (m: THREE.Material) => void) {
 
 function cleanup(meshes: THREE.Mesh[]) {
   for (const mesh of meshes) {
-    mesh.geometry.deleteAttribute("color");
+    // only touch `color` if a fill actually overwrote it — unconditionally
+    // deleting it destroys the model's own vertex colours (vertexColors
+    // stays true on the material → renders black, shared loader geometry
+    // corrupts other canvases too).
+    const rec = mesh.geometry.userData as Record<string, unknown>;
+    if ("__rfOrigColor" in rec) {
+      const orig = rec.__rfOrigColor as
+        | THREE.BufferAttribute
+        | THREE.InterleavedBufferAttribute
+        | null;
+      if (orig) mesh.geometry.setAttribute("color", orig);
+      else mesh.geometry.deleteAttribute("color");
+      delete rec.__rfOrigColor;
+    }
     forEachMat(mesh, (m) => {
       if ("vertexColors" in m && m.userData.__rfPrev !== undefined) {
         m.vertexColors = m.userData.__rfPrev;
