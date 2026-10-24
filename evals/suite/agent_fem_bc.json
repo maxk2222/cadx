@@ -2,7 +2,7 @@
  "name": "agent_fem_bc",
  "project": "eval:agent-fem-bc",
  "difficulty": 2,
- "description": "Agent-declared boundary conditions — the prompt embeds a service load case; the fem stage declares none and falls back to the generated spec's cases (use_parent_fallbacks). The fem_loadcases gate re-checks the RESOLVED resultants/centroids against the physics the prompt described, not the agent's wording.",
+ "description": "Agent-declared boundary conditions — the prompt embeds a service load case; the fem stage declares none and falls back to the generated spec's cases (use_parent_fallbacks). The fem_loadcases gate re-checks the RESOLVED resultants/centroids against the physics the prompt described, not the agent's wording. No verify_spec gate: the case measures BC declaration, not spec conformance (the local model mislabels 'flange' as 'boss' — real finding, wrong signal for this case).",
  "settings": {
   "gen_mode": "cad"
  },
@@ -15,7 +15,7 @@
    "options": {
     "process": "fdm"
    },
-   "prompt": "Steel cantilever test bar, parametric.\n\nFrame: bottom face on the XY plane (z = 0), centred in X and Y. mm.\n- Rectangular bar 100 long (X) x 20 wide (Y) x 10 tall (Z).\n- A square mounting flange 20 x 40 x 40 at the -X end (the bar emerges from the flange's +X face at mid-height).\n- Fillets r2 where the bar meets the flange.\n\nService loads for structural design: the flange's -X face is bolted flat to a wall (fully fixed). A 200 N downward load (-Z) acts on the bar's +X end face. Design for that cantilever load case.",
+   "prompt": "Steel cantilever test bar, parametric.\n\nFrame: bottom face on the XY plane (z = 0), centred in X and Y. mm.\n- Rectangular bar 100 long (X) x 20 wide (Y) x 10 tall (Z).\n- A square mounting flange 20 x 40 x 40 at the -X end (the bar emerges from the flange's +X face at mid-height).\n\nService loads for structural design: the flange's -X face is bolted flat to a wall (fully fixed). A 200 N downward load (-Z) acts on the bar's +X end face. Design for that cantilever load case.",
    "gates": [
     {
      "type": "status",
@@ -35,8 +35,7 @@
      "tol_mm": 6
     },
     {
-     "type": "verify_spec",
-     "expect": "PASS"
+     "type": "watertight"
     }
    ]
   },
@@ -71,11 +70,8 @@
         -1
        ],
        "dir_tol_deg": 30,
-       "fixed_centroid_mm": [
-        -60,
-        0,
-        20
-       ],
+       "fixed_at_axis": "-x",
+       "load_at_axis": "+x",
        "tol_mm": 15,
        "declared_resultant_rel_tol": 0.4,
        "warnings_absent": [

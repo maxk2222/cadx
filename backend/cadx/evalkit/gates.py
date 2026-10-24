@@ -294,6 +294,12 @@ def _v3(v: Any) -> list[float] | None:
     return None
 
 
+def _axis_index(v: Any) -> int | None:
+    """"+x"/"x" → 0, "-y"/"y" → 1, "+z"/"z" → 2."""
+    s = str(v or "").strip().lower().lstrip("+-")
+    return {"x": 0, "y": 1, "z": 2}.get(s)
+
+
 def _unit(v: list[float]) -> list[float] | None:
     n = math.sqrt(sum(x * x for x in v))
     return [x / n for x in v] if n > 1e-9 else None
@@ -436,6 +442,29 @@ def _gate_fem_loadcases(g: dict[str, Any], outcome: StageOutcome) -> GateResult:
                 problems.append(
                     f"{tag}: fixed centroid {[round(x, 1) for x in got]} "
                     f"deviates >{tol_mm} mm from {want}"
+                )
+        # axis-extremum variants — "fixed at the -X end" / "load on the +Z
+        # face" without pinning absolute coordinates (the part need not be
+        # centred for the physics to be right)
+        for key, label in (("fixed_at_axis", "fixed"), ("load_at_axis", "load")):
+            if key not in chk:
+                continue
+            got = _v3(rxn.get("fixed_centroid_mm")) if label == "fixed" else _load_centroid(
+                applied
+            )
+            ax = _axis_index(chk[key])
+            lo = _v3((outcome.analysis or {}).get("bbox_min"))
+            hi = _v3((outcome.analysis or {}).get("bbox_max"))
+            measured[f"{tag}.{key}"] = {"centroid": got, "axis": chk[key]}
+            if got is None or ax is None or lo is None or hi is None:
+                inconclusive.append(f"{tag}: {label} centroid/bbox unavailable")
+                continue
+            extreme = hi[ax] if str(chk[key]).startswith("+") else lo[ax]
+            if abs(got[ax] - extreme) > tol_mm:
+                problems.append(
+                    f"{tag}: {label} centroid {got[ax]:.1f} is "
+                    f"{abs(got[ax] - extreme):.1f} mm off the {chk[key]} extreme "
+                    f"({extreme:.1f})"
                 )
         if "mechanisms" in chk:
             have = {str(m) for a in applied for m in (a.get("mechanisms") or [])}

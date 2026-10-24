@@ -21,15 +21,19 @@ Rules:
   guess a cut location. NEVER put `{"kind": "all"}` in `fixed` — a
   whole-part fixture freezes the entire domain and makes optimization
   meaningless; pick the actual contact surface or holes.
-- `loads[].region` = where the force attacks. Use `surface`/`face`/`area`
-  for hand/tool pressure, `bore` (hole_index) for bolt loads,
+- `loads[].region` = where the force attacks. For an exact END FACE — the
+  tip face, "Stirnfläche", "the +X end" — use `{"kind":"plane","axis":"+x"}`:
+  `surface`/`face` envelopes also catch STEPPED SHOULDERS of that silhouette
+  (a flange's +x shoulder next to a thinner bar lands load at the step, not
+  the tip). Use `surface`/`face`/`area` for pressure spread over a whole
+  contiguous skin, `bore` (hole_index) for bolt loads,
   `cylinder`/`box`/`all` otherwise. For a tooth ring / gear rim
   ("Zahnkranz", toothed outer edge) use `rim` — e.g.
   `{"kind": "rim", "axis": "+z", "margin_mm": 12}` — not `cylinder`, which
   selects a solid column and misses the ring. NEVER use `points` — it needs
   painted coordinates from the GUI and resolves to nothing in a text
-  prompt. A tip load at the part end is `area` with `x_range` (e.g.
-  `[45, 60]`).
+  prompt. A tip load SPREAD over the last section is `area` with `x_range`
+  (e.g. `[45, 60]`).
 - Load fields: `force_n` [N] vector; `normal_force_n` [N] for a force
   acting ORTHOGONAL to the region's surface (direction follows the surface
   normal — cleaner than guessing a force_n vector on tilted/curved faces);

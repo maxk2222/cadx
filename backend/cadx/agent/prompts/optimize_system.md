@@ -149,9 +149,13 @@ Kinds:
   `plane` regions `"normal"` pins exactly the named letters' DOFs —
   `"x"` = ux (symmetry cut), `"xy"` = ux+uy (knife edge), `"xyz"` = all
   three (point support).
-- `plane` is for FIXTURES (clamp/symmetry/knife-edge), `face`/`surface`/
-  `area` for loads — a load patch on a node-exact locus is a line/point
-  load and triggers the singularity warning on purpose.
+- `plane` is mainly for FIXTURES (clamp/symmetry/knife-edge) — but it is
+  also the right LOAD region for an exact end face ("the +X end",
+  "Stirnfläche", tip face): `face`/`surface` envelopes also catch stepped
+  shoulders of that silhouette (a flange shoulder next to a thinner bar
+  lands the load at the step, not the tip). A full plane of nodes spreads
+  the load fine; a degenerate line/point locus triggers the singularity
+  warning on purpose.
 - For ergonomic parts keep the skin that touches the hand solid:
   `keep_regions=[{"kind":"surface","axis":"+z","margin_mm":1.5}]`.
 

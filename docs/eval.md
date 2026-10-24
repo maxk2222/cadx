@@ -85,7 +85,10 @@ Per-stage declarative checks in the suite JSON, evaluated in
   `resultant_n {min,max}`, `resultant_dir` (+`dir_tol_deg`),
   `load_centroid_mm` (force-weighted applied-load centroid),
   `fixed_centroid_mm` (where the supports actually landed — both
-  `tol_mm`), `mechanisms` (subset of the applied load kinds),
+  `tol_mm`), `fixed_at_axis`/`load_at_axis` (centroid within `tol_mm` of
+  the bbox extreme along `+x`/`-z`/… — "clamped at the -X end" without
+  pinning absolute coordinates), `mechanisms` (subset of the applied
+  load kinds),
   `warnings_absent` (substrings that must not appear),
   `sf_min`/`sf_max`, and `declared_resultant_rel_tol` (resolved resultant
   vs. the spec-declared `force_n` sum — catches "asked 200 N down, got

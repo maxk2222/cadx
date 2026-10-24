@@ -90,7 +90,9 @@ matches what the user asked for.
   something else. Region vocabulary — `face`/`surface` = the outer skin
   envelope (right for organic shapes and load faces), `plane` = a
   node-exact plane/edge/point (`axis` letters AND; `center[i]` pins an
-  interior cut — for clamp planes, symmetry cuts, knife-edge supports),
+  interior cut — for clamp planes, symmetry cuts, knife-edge supports,
+  and exact END FACES like a tip load — the envelope also grabs stepped
+  shoulders, so "+x end face" means `plane` `axis:"+x"`, not `surface`),
   `bore` = hole wall for bolt loads, `hole`/`anchor` = measured feature
   by index. The result lists `cases[]` with safety factors, resolved
   `reactions`/`applied`/`supports` — check the resultant matches the
