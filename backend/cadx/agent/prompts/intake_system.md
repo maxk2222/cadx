@@ -33,6 +33,13 @@ Rules:
   shank, tip — always belongs in `covers_features`. Never invent a drive style:
   the norm defines it (iso10642 = hex socket, not Torx); only name a drive or
   recess when the request states it explicitly AND it differs from the norm.
+- Thread reach on a screw is a structured knob, not prose: set
+  `full_thread=true` for "Vollgewinde"/"full thread"/"Gewinde über die ganze
+  Länge" (the recipe threads the shank to the mechanical limit — for an
+  M10x100 that is 94.5 mm, not the norm's default partial reach). Set
+  `thread_length_mm` for an explicit reach ("50 mm Gewinde"). Leave both
+  empty for the catalog's norm default. Never rely on a feature description
+  to carry the request — text there is ignored by the recipe.
 - `feature.thread_spec` is for REAL thread callouts only — the size string
   itself (`M4`, `M4x0.5`, `M12x1.75-6H`, ≤16 chars) on a tapped/threaded hole
   or threaded shaft. A hole that a bolt/screw passes THROUGH is clearance,

@@ -6109,6 +6109,7 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
     tried_load_extraction = False
     intake_step.sanitize_load_cases(spec)
     dim_notes = intake_step.sanitize_dims(spec, prompt)
+    dim_notes.extend(intake_step.resolve_thread_intents(spec))
     dim_notes.extend(intake_step.sanitize_standard_part_dims(spec))
     pos_notes = intake_step.normalize_feature_positions(spec)
     if dim_notes or pos_notes:
@@ -6159,6 +6160,10 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
                     spec.optimize = opt
                 outcome.spec = spec.model_dump()
                 await ctx.emit("intake", 0, f"recovered {len(cases)} load case(s) missed by intake")
+        # recovery may have replaced standard_parts — re-resolve thread
+        # intents (idempotent: skips parts whose knobs are already set)
+        for note in intake_step.resolve_thread_intents(spec):
+            await ctx.emit("intake", 0, note)
 
     # ---------- MEASURE ----------
     try:
@@ -6221,7 +6226,8 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
         # apply the consequences of the defaults — a resolved "catalog dims
         # govern" question must actually update the spec dims, or verify keeps
         # flagging the stated-vs-catalog mismatch on every iteration
-        resolved_notes = intake_step.sanitize_standard_part_dims(spec)
+        resolved_notes = intake_step.resolve_thread_intents(spec)
+        resolved_notes += intake_step.sanitize_standard_part_dims(spec)
         outcome.spec = spec.model_dump()
         for note in resolved_notes:
             await ctx.emit("intake", 0, note)

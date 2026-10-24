@@ -219,6 +219,91 @@ def sanitize_dim_echo(spec: PartSpec, prompt: str) -> list[str]:
     return notes
 
 
+_FULL_THREAD_RE = re.compile(
+    r"vollgewinde|voll(?:es|en)?\s*gewinde|ganz(?:es|en)?\s*gewinde|"
+    r"full[\s_-]*thread|entire(?:ly)?\s*thread|thread(?:ed)?\s+(?:over\s+)?"
+    r"(?:the\s+)?(?:full|entire|whole)\s+length|"
+    r"über\s+(?:die\s+)?(?:ganze|gesamte)\s+länge\s*(?:gewinde|thread|ver(?:sehen|telt)|gängig)?|"
+    r"gewinde\s+über\s+(?:die\s+)?(?:ganze|gesamte)\s+länge",
+    re.I,
+)
+
+
+def resolve_thread_intents(spec: PartSpec) -> list[str]:
+    """Map free-text thread-reach wording onto StandardPartSpec knobs.
+
+    Intake may write "Vollgewinde"/"full thread" only inside a covered
+    feature's description — bd_warehouse would then emit the norm's partial
+    thread (e.g. ISO 888 b=2d+6 = 32 mm on an M10x100) while the user asked
+    for the full shank. Detect the wording (and a covered feature's numeric
+    thread_length/length dim before dims get stripped) and set the recipe
+    knobs the code emitter honours."""
+    if not spec.standard_parts:
+        return []
+    from cadx.cad.standard_parts import (
+        _is_intrinsic_fastener_feature,
+        covered_feature_indices,
+    )
+    from cadx.cad import catalog
+
+    covered = covered_feature_indices(spec)
+    # an intrinsically-covered thread feature is only attributable when a
+    # single screw-class part exists — otherwise explicit covers_features
+    # has to disambiguate which part's reach it means
+    screw_parts = [
+        part
+        for part in spec.standard_parts
+        if (catalog.find_entry(part.class_name) or {}).get("category") == "screws"
+    ]
+    notes: list[str] = []
+    for part in spec.standard_parts:
+        if (
+            part.full_thread is not None
+            or part.thread_length_mm is not None
+            or (part.parameters or {}).get("thread_length") is not None
+        ):
+            continue
+        covers = set(part.covers_features or [])
+        want_full = False
+        want_len: float | None = None
+        for i, feature in enumerate(spec.features):
+            if covered and i not in covered:
+                continue
+            owned = bool(feature.name and feature.name in covers) or (
+                len(screw_parts) == 1
+                and part is screw_parts[0]
+                and _is_intrinsic_fastener_feature(feature)
+            )
+            if not owned:
+                continue
+            if not (
+                "thread" in str(feature.type or "").lower() or feature.thread_spec
+            ):
+                continue
+            text = f"{feature.name or ''} {feature.description or ''}"
+            if _FULL_THREAD_RE.search(text):
+                want_full = True
+            for key in ("thread_length", "length"):
+                raw = (feature.dims or {}).get(key)
+                if isinstance(raw, int | float) and not isinstance(raw, bool) and raw > 0:
+                    want_len = max(want_len or 0.0, float(raw))
+        if not (want_full or want_len):
+            continue
+        if want_len:
+            part.thread_length_mm = want_len
+            notes.append(
+                f"{part.class_name}: covered feature asks thread length "
+                f"{want_len:g} mm — recipe emits a thread-length override"
+            )
+        if want_full:
+            part.full_thread = True
+            notes.append(
+                f"{part.class_name}: 'Vollgewinde/full thread' wording detected "
+                "— recipe emits full shank thread"
+            )
+    return notes
+
+
 def sanitize_standard_part_dims(spec: PartSpec) -> list[str]:
     if len(spec.standard_parts) != 1 or spec.standard_parts[0].quantity != 1:
         return []

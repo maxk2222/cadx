@@ -59,6 +59,45 @@ def _literal(value: Any) -> str:
     raise ValueError(f"unsupported literal value type: {type(value).__name__}")
 
 
+_RECIPE_LEVEL_PARAMS = {"thread_length", "thread_length_mm", "full_thread"}
+
+
+def _ctor_params(part: StandardPartSpec) -> dict[str, Any]:
+    """`parameters` minus recipe-level keys (thread overrides are method
+    overrides, never constructor kwargs)."""
+    return {k: v for k, v in dict(part.parameters).items() if k not in _RECIPE_LEVEL_PARAMS}
+
+
+def _thread_length_request(part: StandardPartSpec) -> float | str | None:
+    """Recipe-level thread-reach override → mm value or "full" sentinel.
+
+    `thread_length_mm`/`full_thread` are StandardPartSpec fields (and may
+    also arrive inside `parameters` when a model writes them there) — they
+    map to a `calculate_thread_length` method override, never a ctor kwarg.
+    """
+    params = part.parameters or {}
+    raw = params.get("thread_length", params.get("thread_length_mm"))
+    if raw is not None:
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            val = 0.0
+        if val <= 0:
+            raise ValueError(f"thread_length {raw!r} must be a positive mm value")
+        return val
+    if part.thread_length_mm is not None:
+        return float(part.thread_length_mm)
+    for flag in (part.full_thread, params.get("full_thread")):
+        if flag is None:
+            continue
+        if flag in (True, "true", "True", "1", 1):
+            return "full"
+        if flag in (False, "false", "False", "0", 0):
+            return None
+        raise ValueError(f"full_thread {flag!r} must be a boolean")
+    return None
+
+
 def _part_values(part: StandardPartSpec) -> tuple[type, dict[str, Any], dict[str, Any]]:
     if not part.class_name:
         raise ValueError("standard part class_name is required")
@@ -71,7 +110,7 @@ def _part_values(part: StandardPartSpec) -> tuple[type, dict[str, Any], dict[str
     category = entry.get("category")
     if category == "machining" or required & _CONTEXT_REQUIRED_PARAMS:
         raise ValueError(f"{part.class_name} is a context helper, not a standalone part")
-    parameters = dict(part.parameters)
+    parameters = _ctor_params(part)
     if category == "pipes" and part.length_mm is None:
         raise ValueError("Pipe requires length_mm")
     if part.length_mm is not None and category != "pipes" and "length" not in schema:
@@ -89,6 +128,13 @@ def _part_values(part: StandardPartSpec) -> tuple[type, dict[str, Any], dict[str
         parameters=parameters,
     )
     schema = entry.get("parameters") or {}
+    if _thread_length_request(part) is not None and not hasattr(
+        cls, "calculate_thread_length"
+    ):
+        raise ValueError(
+            f"{part.class_name}: thread_length/full_thread only applies to "
+            "screw parts with a norm-derived thread reach"
+        )
     return cls, values, schema
 
 
@@ -129,10 +175,27 @@ def _thread_data(
         return None
     external = category == "screws" or bool(values.get("external", category == "threads"))
     hand = str(values.get("hand") or "right")
+    requested = _thread_length_request(part) if category == "screws" else None
     if category == "screws":
         total_length = float(part.length_mm or values.get("length") or 0.0)
         length = float(report.get("thread_length") or total_length)
         start = -total_length
+        if requested is not None:
+            # the recipe emits a `calculate_thread_length` override — report
+            # the EFFECTIVE reach so is_standard_only/compare stays honest
+            max_len = total_length
+            try:
+                proto = cls(**{k: v for k, v in values.items() if k != "simple"})
+                max_len = float(getattr(proto, "max_thread_length") or total_length)
+            except Exception:
+                pass
+            want = max_len if requested == "full" else float(requested)
+            length = min(want, max_len)
+            if length <= 0:
+                raise ValueError(
+                    f"{part.class_name}: thread_length {want:g} exceeds the "
+                    f"available shank {max_len:g} mm"
+                )
     elif category == "nuts":
         length = float(report.get("nut_thickness") or report.get("head_height") or 0.0)
         start = 0.0
@@ -141,7 +204,7 @@ def _thread_data(
         start = 0.0
     if length <= 0:
         return None
-    return {
+    out = {
         "kind": "thread",
         "thread_spec": size,
         "major_diameter": float(diameter),
@@ -151,6 +214,11 @@ def _thread_data(
         "external": external,
         "hand": hand,
     }
+    if requested is not None:
+        out["thread_length_requested"] = "full" if requested == "full" else float(requested)
+        out["thread_length_default"] = float(report.get("thread_length") or 0.0)
+        out["max_thread_length"] = float(max_len)
+    return out
 
 
 def validate_standard_parts(parts: list[StandardPartSpec]) -> list[dict[str, Any]]:
@@ -184,7 +252,7 @@ def standard_part_bbox(part: StandardPartSpec) -> list[float]:
         fastener_type=part.fastener_type or None,
         size=part.size or None,
         length=part.length_mm,
-        parameters=part.parameters,
+        parameters=_ctor_params(part),
         simple=True,
     )
     local = measured.get("bbox_size_mm")
@@ -282,7 +350,13 @@ def is_standard_only(spec: PartSpec) -> bool:
             requested_length = feature.dims.get("thread_length") or feature.dims.get("length")
             if requested_pitch and abs(float(requested_pitch) - thread["pitch"]) > 1e-6:
                 return False
-            if requested_length and abs(float(requested_length) - thread["length"]) > max(
+            # a request beyond the mechanical maximum is honoured by clamping
+            # ("Vollgewinde" = 100 mm on an M10x100 means max_thread_length
+            # 94.5) — only an achievable shortfall fails the fast path
+            want_len = float(requested_length) if requested_length else 0.0
+            if want_len and thread.get("max_thread_length"):
+                want_len = min(want_len, float(thread["max_thread_length"]))
+            if want_len and abs(want_len - thread["length"]) > max(
                 0.1, thread["length"] * 0.01
             ):
                 return False
@@ -318,15 +392,56 @@ def build_standard_part_code(parts: list[StandardPartSpec]) -> str:
     reports = validate_standard_parts(parts)
     imports: dict[str, list[str]] = {}
     uses_pipe = any(row["part"].class_name == "Pipe" for row in reports)
-    needs_countersunk_profile = any(row["part"].class_name == "CounterSunkScrew" for row in reports)
+    # parts needing a generated subclass: CounterSunkScrew always (norm
+    # head profile), plus any screw with a thread-length request — bd_warehouse
+    # computes the reach in `calculate_thread_length`, not a ctor kwarg.
+    # Parts sharing (class, methods, request) share one subclass named after
+    # the catalog class; a second distinct group gets a numeric suffix.
+    def _part_methods(part: StandardPartSpec, cls: type) -> set[str]:
+        methods: set[str] = set()
+        if part.class_name == "CounterSunkScrew":
+            methods.add("head_profile")
+        if _thread_length_request(part) is not None and hasattr(
+            cls, "calculate_thread_length"
+        ):
+            methods.add("calculate_thread_length")
+        return methods
+
+    group_names: dict[tuple[str, frozenset[str], str], str] = {}
+    for row in reports:
+        cls = row["class"]
+        methods = _part_methods(row["part"], cls)
+        if not methods:
+            continue
+        key = (
+            cls.__name__,
+            frozenset(methods),
+            repr(_thread_length_request(row["part"])),
+        )
+        if key in group_names:
+            continue
+        taken = set(group_names.values())
+        name = cls.__name__
+        i = 2
+        while name in taken:
+            name = f"{cls.__name__}_{i}"
+            i += 1
+        group_names[key] = name
+
+    subclassed: set[str] = {
+        cls.__name__
+        for row in reports
+        for cls in [row["class"]]
+        if _part_methods(row["part"], cls)
+    }
     for row in reports:
         cls = row["class"]
         module = str(cls.__module__)
         if not module.startswith("bd_warehouse."):
             raise ValueError(f"{row['part'].class_name} is not a registered bd_warehouse class")
         import_name = (
-            f"{cls.__name__} as _CatalogCounterSunkScrew"
-            if cls.__name__ == "CounterSunkScrew"
+            f"{cls.__name__} as _Catalog{cls.__name__}"
+            if cls.__name__ in subclassed
             else cls.__name__
         )
         imports.setdefault(module, []).append(import_name)
@@ -336,6 +451,9 @@ def build_standard_part_code(parts: list[StandardPartSpec]) -> str:
     placements: list[str] = []
     design_features: list[dict[str, Any]] = []
     bom: list[dict[str, Any]] = []
+    subclass_bodies: dict[str, list[str]] = {}
+    sub_name_map: dict[str, str] = {}
+    subclass_method_names: dict[str, set[str]] = {}
     counter = 0
     for row in reports:
         part: StandardPartSpec = row["part"]
@@ -359,6 +477,27 @@ def build_standard_part_code(parts: list[StandardPartSpec]) -> str:
             kwargs.append(
                 f"path=Edge.make_line(Vector(0, 0, 0), Vector(0, 0, PARAMS[{_literal(path_key)}]))"
             )
+        thread_req = _thread_length_request(part)
+        thread_expr: str | None = None
+        if thread_req == "full":
+            thread_expr = "self.max_thread_length"
+        elif isinstance(thread_req, int | float):
+            tl_key = f"part_{counter}_thread_len_req"
+            params[tl_key] = float(thread_req)
+            thread_expr = f"min(PARAMS[{_literal(tl_key)}], self.max_thread_length)"
+        methods = _part_methods(part, cls)
+        group_key = (cls.__name__, frozenset(methods), repr(thread_req))
+        sub_name = group_names.get(group_key) or (
+            f"_Catalog{cls.__name__}" if cls.__name__ in subclassed else cls.__name__
+        )
+        if methods:
+            sub_name_map[sub_name] = cls.__name__
+            subclass_method_names[sub_name] = methods
+        if thread_expr is not None and methods and sub_name not in subclass_bodies:
+            subclass_bodies[sub_name] = [
+                "    def calculate_thread_length(self):\n"
+                f"        return {thread_expr}"
+            ]
         if "simple" in schema:
             simple_value = '(CADX_DETAIL_MODE == "preview")' if threaded else "True"
             kwargs.append(f"simple={simple_value}")
@@ -368,7 +507,7 @@ def build_standard_part_code(parts: list[StandardPartSpec]) -> str:
                 fastener_type=part.fastener_type or None,
                 size=part.size or None,
                 length=part.length_mm,
-                parameters=part.parameters,
+                parameters=_ctor_params(part),
                 simple=True,
             )
             for mismatch in measured.get("geometry_mismatches") or []:
@@ -382,7 +521,7 @@ def build_standard_part_code(parts: list[StandardPartSpec]) -> str:
                 )
         for position in row["placements"]:
             ident = f"_standard_part_{counter}"
-            constructor = f"{cls.__name__}({', '.join(kwargs)})"
+            constructor = f"{sub_name}({', '.join(kwargs)})"
             if thread is not None and "simple" not in schema:
                 dia_key = f"part_{counter}_thread_diameter"
                 length_key = f"part_{counter}_thread_length"
@@ -427,20 +566,21 @@ def build_standard_part_code(parts: list[StandardPartSpec]) -> str:
         f"from {module} import {', '.join(sorted(set(names)))}"
         for module, names in sorted(imports.items())
     ]
-    countersunk_profile = (
-        [
-            "class CounterSunkScrew(_CatalogCounterSunkScrew):",
-            "    def head_profile(self):",
-            "        a, k, dk = (self.screw_data[key] for key in ('a', 'k', 'dk'))",
-            "        with BuildSketch(Plane.XZ) as profile:",
-            "            Trapezoid(dk, k, 90 - a / 2, align=(Align.CENTER, Align.MAX), rotation=180)",
-            "            split(bisect_by=Plane.YZ)",
-            "        return profile.sketch.face()",
-            "",
-        ]
-        if needs_countersunk_profile
-        else []
-    )
+    head_profile_lines = [
+        "    def head_profile(self):",
+        "        a, k, dk = (self.screw_data[key] for key in ('a', 'k', 'dk'))",
+        "        with BuildSketch(Plane.XZ) as profile:",
+        "            Trapezoid(dk, k, 90 - a / 2, align=(Align.CENTER, Align.MAX), rotation=180)",
+        "            split(bisect_by=Plane.YZ)",
+        "        return profile.sketch.face()",
+    ]
+    subclass_defs: list[str] = []
+    for sub_name in sorted(sub_name_map):
+        subclass_defs.append(f"class {sub_name}(_Catalog{sub_name_map[sub_name]}):")
+        if "head_profile" in subclass_method_names[sub_name]:
+            subclass_defs += head_profile_lines
+        subclass_defs += subclass_bodies.get(sub_name, [])
+        subclass_defs.append("")
     fuse_helper = [
         "def _cadx_fuse_solids(obj):",
         '    if CADX_DETAIL_MODE != "export":',
@@ -458,7 +598,7 @@ def build_standard_part_code(parts: list[StandardPartSpec]) -> str:
         "from build123d import Align, BuildSketch, Compound, Cylinder, Plane, Pos, Rot, Trapezoid, split"
         + (", Edge, Vector" if uses_pipe else ""),
         *import_lines,
-        *countersunk_profile,
+        *subclass_defs,
         "",
         f"PARAMS = {_literal(params)}",
         f"CADX_FEATURES = {_literal(design_features)}",

@@ -243,3 +243,158 @@ def test_expected_thread_count_clearance_dia_disambiguates_m_spec() -> None:
         ],
     )
     assert expected_thread_count(spec) == 1
+
+
+def _m10_100_spec(**part_kwargs) -> PartSpec:
+    part = StandardPartSpec(
+        class_name="CounterSunkScrew",
+        fastener_type="iso10642",
+        size="M10-1.5",
+        length_mm=100,
+        covers_features=["head", "thread"],
+        **part_kwargs,
+    )
+    d = lambda v: Dim(value=v, unit="mm", source="stated")  # noqa: E731
+    return PartSpec(
+        name="M10 countersunk screw",
+        summary="M10x100 ISO 10642 full thread",
+        length_x=d(20),
+        width_y=d(20),
+        height_z=d(100),
+        features=[Feature(name="head", type="cone"), Feature(name="thread", type="thread")],
+        standard_parts=[part],
+    )
+
+
+def test_full_thread_request_overrides_norm_reach() -> None:
+    """The M10x100 failure mode: 'Vollgewinde' silently produced the ISO 888
+    default b=2d+6=32 mm. `full_thread` must emit a calculate_thread_length
+    override returning max_thread_length (=94.5: shank minus head)."""
+    spec = _m10_100_spec(full_thread=True)
+    code = build_standard_part_code(spec.standard_parts)
+    checked = check_code(code)
+    assert checked.ok, checked.errors
+    assert check_standard_part_calls(code) == []
+    assert "def calculate_thread_length" in code
+    assert "return self.max_thread_length" in code
+    assert is_standard_only(spec)
+    from cadx.cad.standard_parts import validate_standard_parts
+
+    thread = validate_standard_parts(spec.standard_parts)[0]["thread"]
+    assert thread["length"] == pytest.approx(94.5, abs=0.01)
+    assert thread["thread_length_requested"] == "full"
+    assert thread["thread_length_default"] == pytest.approx(32.0, abs=0.01)
+    assert thread["max_thread_length"] == pytest.approx(94.5, abs=0.01)
+
+
+def test_numeric_thread_length_emits_clamped_override() -> None:
+    spec = _m10_100_spec(thread_length_mm=50)
+    code = build_standard_part_code(spec.standard_parts)
+    checked = check_code(code)
+    assert checked.ok, checked.errors
+    assert "min(PARAMS[" in code and "self.max_thread_length" in code
+    from cadx.cad.standard_parts import validate_standard_parts
+
+    thread = validate_standard_parts(spec.standard_parts)[0]["thread"]
+    assert thread["length"] == pytest.approx(50.0, abs=0.01)
+    assert thread["thread_length_requested"] == 50.0
+
+
+def test_thread_length_in_parameters_is_recipe_level_not_ctor_kwarg() -> None:
+    """Models may write thread_length inside `parameters` — it must reach the
+    method override, never the bd_warehouse constructor (unsupported kwarg)."""
+    spec = _m10_100_spec(parameters={"thread_length": 60})
+    code = build_standard_part_code(spec.standard_parts)
+    checked = check_code(code)
+    assert checked.ok, checked.errors
+    assert "thread_length=PARAMS" not in code
+
+
+def test_thread_length_request_rejected_on_non_screw() -> None:
+    part = StandardPartSpec(
+        class_name="PlainWasher", fastener_type="iso7093", size="M10", full_thread=True
+    )
+    with pytest.raises(ValueError, match="only applies to screw parts"):
+        build_standard_part_code([part])
+
+
+def test_same_class_parts_with_distinct_thread_requests_get_own_subclass() -> None:
+    from cadx.cad.standard_parts import validate_standard_parts
+
+    parts = [
+        StandardPartSpec(
+            class_name="HexHeadScrew",
+            fastener_type="iso4017",
+            size="M8-1.25",
+            length_mm=40,
+            covers_features=["t1"],
+            full_thread=True,
+        ),
+        StandardPartSpec(
+            class_name="HexHeadScrew",
+            fastener_type="iso4017",
+            size="M8-1.25",
+            length_mm=40,
+            position_mm=[30, 0, 0],
+            covers_features=["t2"],
+            thread_length_mm=20,
+        ),
+    ]
+    code = build_standard_part_code(parts)
+    checked = check_code(code)
+    assert checked.ok, checked.errors
+    assert "class HexHeadScrew(" in code
+    assert "class HexHeadScrew_2(" in code
+    threads = [row["thread"]["length"] for row in validate_standard_parts(parts)]
+    assert threads == pytest.approx([40.0, 20.0], abs=0.01)
+
+
+def test_resolve_thread_intents_maps_vollgewinde_wording() -> None:
+    from cadx.agent.steps.intake import resolve_thread_intents
+
+    spec = _m10_100_spec()
+    spec.features[1].description = "Vollgewinde über die gesamte Länge"
+    notes = resolve_thread_intents(spec)
+    assert spec.standard_parts[0].full_thread is True
+    assert any("full" in n.lower() or "voll" in n.lower() for n in notes)
+    # an untouched part keeps the catalog default — no knob, no note
+    spec2 = _m10_100_spec()
+    spec2.features[1].description = "ISO metric thread"
+    assert resolve_thread_intents(spec2) == []
+    assert spec2.standard_parts[0].full_thread is None
+
+
+def test_resolve_thread_intents_ignores_ambiguous_features() -> None:
+    """A thread feature owned by NO part's covers_features must not drive a
+    screw-level override once a second screw exists — 'Vollgewinde' would be
+    ambiguous between them and is better handled downstream than guessed."""
+    from cadx.agent.steps.intake import resolve_thread_intents
+
+    spec = _m10_100_spec()
+    spec.standard_parts[0].covers_features = ["head"]
+    spec.standard_parts.append(
+        StandardPartSpec(
+            class_name="SocketHeadCapScrew",
+            fastener_type="iso4762",
+            size="M8-1.25",
+            length_mm=30,
+            position_mm=[30, 0, 0],
+            covers_features=["other head"],
+        )
+    )
+    spec.features[1].description = "Vollgewinde"
+    resolve_thread_intents(spec)
+    assert spec.standard_parts[0].full_thread is None
+    assert spec.standard_parts[1].full_thread is None
+
+
+def test_resolve_thread_intents_uses_intrinsic_attribution() -> None:
+    """...but with a single screw, an intrinsically-covered thread feature
+    belongs to it even when covers_features forgot to list it."""
+    from cadx.agent.steps.intake import resolve_thread_intents
+
+    spec = _m10_100_spec()
+    spec.standard_parts[0].covers_features = ["head"]
+    spec.features[1].description = "Vollgewinde"
+    resolve_thread_intents(spec)
+    assert spec.standard_parts[0].full_thread is True

@@ -140,6 +140,13 @@ class StandardPartSpec(BaseModel):
     placements_mm: list[tuple[float, float, float]] = Field(default_factory=list, max_length=100)
     axis: Literal["+x", "-x", "+y", "-y", "+z", "-z"] | None = None
     threaded: bool | None = None
+    # thread reach on the shank — bd_warehouse derives it from the product
+    # norm (e.g. ISO 888 b=2d+6), NOT a constructor kwarg: the recipe emits a
+    # `calculate_thread_length` method override. `full_thread` requests
+    # max_thread_length ("Vollgewinde"), `thread_length_mm` an explicit
+    # reach (clamped at the part's maximum).
+    full_thread: bool | None = None
+    thread_length_mm: float | None = Field(default=None, gt=0, le=10000)
     covers_features: list[S] = Field(default_factory=list, max_length=20)
     name: S = ""
 
