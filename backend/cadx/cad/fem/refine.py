@@ -91,6 +91,11 @@ class RefineFeature:
     v: float = 0.0
     dia: float = 4.0
     depth_mm: float | None = None  # None = through
+    # through-intent: the bore pierces every solid interval within the
+    # declared reach (a restored cap or a plugged channel above/below the
+    # original surfaces must never seal the cut). False = genuine blind
+    # depth (insert pockets, blind bores declared without "through").
+    through: bool = True
     csk_dia: float | None = None
     csk_angle_deg: float = 90.0
     cbore_dia: float | None = None
@@ -440,6 +445,12 @@ def resolve_refine_features(  # noqa: C901
             v=uv[1],
             dia=dia,
             depth_mm=dims.get("depth") or (a.get("depth_mm") or None),
+            # a scanned hole/tunnel is a real through-void; a dimple/pocket
+            # or an explicit depth override is a genuine blind stop
+            through=(
+                str(a.get("kind") or "hole") not in ("dimple", "pocket", "insert")
+                and dims.get("depth") is None
+            ),
             csk_dia=dims.get("countersink_diameter"),
             csk_angle_deg=float(dims.get("countersink_angle") or 90.0),
             cbore_dia=dims.get("counterbore_diameter"),
@@ -490,6 +501,9 @@ def resolve_refine_features(  # noqa: C901
                     v=float(uv[1]),
                     dia=dia,
                     depth_mm=merged.get("depth_mm") or merged.get("depth"),
+                    through=bool(merged["through"])
+                    if merged.get("through") is not None
+                    else (merged.get("depth_mm") or merged.get("depth")) is None,
                     csk_dia=merged.get("csk_dia") or merged.get("countersink_diameter"),
                     csk_angle_deg=float(
                         merged.get("csk_angle_deg") or merged.get("countersink_angle") or 90.0
@@ -524,6 +538,16 @@ def resolve_refine_features(  # noqa: C901
         # a Ø5.5 M5-clearance hole silently picks up an 'M5' spec
         threadish = stype in ("thread", "tap", "insert") or bool(dims.get("thread_spec"))
         spec_txt = _thread_spec_from(sf, dia, allow_dia_snap=threadish)
+        # through-intent: the spec's own words ('through holes', 'through
+        # x=42..50') mark it; a scanned through-anchor does too; a declared
+        # depth WITHOUT 'through' is a genuine blind stop
+        low_text = " ".join(
+            str(sf.get(k) or "") for k in ("position", "description", "name")
+        ).lower()
+        through = (
+            "through" in low_text
+            or str((anchor or {}).get("kind") or "") in ("hole", "tunnel")
+        ) and stype != "insert"
         return RefineFeature(
             name=str(sf.get("name") or (anchor or {}).get("name") or "spec feature"),
             kind=_upgrade_kind("hole", stype, dims),
@@ -532,6 +556,7 @@ def resolve_refine_features(  # noqa: C901
             v=v,
             dia=dia,
             depth_mm=dims.get("depth") or (anchor or {}).get("depth_mm") or None,
+            through=through,
             csk_dia=dims.get("countersink_diameter"),
             csk_angle_deg=float(dims.get("countersink_angle") or 90.0),
             cbore_dia=dims.get("counterbore_diameter"),
@@ -713,11 +738,17 @@ def _thread_groove_solid(r_in: float, r_out: float, pitch: float, depth: float) 
     return m
 
 
-def _cutter_mesh(feat: RefineFeature, entry: float, span: float) -> trimesh.Trimesh:
+def _cutter_mesh(
+    feat: RefineFeature, entry: float, span: float, depth_override: float | None = None
+) -> trimesh.Trimesh:
     """Cutting solid for one feature, built with bore axis along +Z, entry at
     local z=0, bore going -Z. Caller rotates/translates into place."""
     over_out = 2.0  # overshoot above the entry face
-    depth = feat.depth_mm if feat.depth_mm is not None else span + 2.0
+    depth = (
+        depth_override
+        if depth_override is not None
+        else feat.depth_mm if feat.depth_mm is not None else span + 2.0
+    )
     dia = _effective_dia(feat) + feat.dia_extra
     tools: list[trimesh.Trimesh] = []
     cyl = trimesh.creation.cylinder(radius=dia / 2.0, height=depth + over_out, sections=48)
@@ -764,6 +795,67 @@ def _cutter_mesh(feat: RefineFeature, entry: float, span: float) -> trimesh.Trim
         bore.apply_translation([0, 0, -cd / 2.0 + over_out / 2.0])
         tools.append(bore)
     return trimesh.util.concatenate(tools)
+
+
+def _through_cut_depth(
+    mesh: trimesh.Trimesh, feat: RefineFeature, entry: float, span: float
+) -> float:
+    """Effective cutter depth for a through-intent feature.
+
+    The declared ``depth_mm`` is the *intended* material span — the bore must
+    still pierce every solid interval that reach crosses: a keep-restored cap
+    can sit above the channel, a plugged channel fills it to its far mouth,
+    and the far wall's inner face can land a fraction of a mm past the
+    declared depth. Any of those left standing seals the 'through' bore.
+
+    The ray at (u, v) from the entry face inward yields solid intervals; the
+    target is the far side of the deepest interval overlapping the declared
+    reach (``entry → entry + inward·declared``), plus a small margin so the
+    inner face can't survive as a membrane. Intervals beyond the reach
+    (unrelated structure deeper along the line — a web behind a drilled
+    flange wall) stay untouched. ``declared`` unchanged when nothing overlaps.
+    """
+    declared = feat.depth_mm if feat.depth_mm is not None else span + 2.0
+    ax, au, av = _AXES[feat.axis]
+    inward = -1.0 if feat.axis[0] == "+" else 1.0
+    origin = np.zeros(3)
+    origin[au], origin[av], origin[ax] = feat.u, feat.v, entry + inward * 0.02
+    d = np.zeros(3)
+    d[ax] = inward
+    try:
+        locs, _, _ = mesh.ray.intersects_location(
+            ray_origins=np.array([origin]),
+            ray_directions=np.array([d]),
+            multiple_hits=True,
+        )
+    except Exception:
+        return declared
+    if not len(locs):
+        return declared
+    hits = sorted(float(loc[ax]) for loc in locs)
+    # the ray starts ε inside the entry face — when that face is material
+    # (normal seat, plug surface) the hit count is odd and the first solid
+    # interval runs from the outermost hit back to the origin. Insert the
+    # origin at the ray-facing end so pairing sees that interval too —
+    # otherwise the plate under a plug is invisible and the declared depth
+    # survives as a sealing membrane.
+    if len(hits) % 2 == 1:
+        if inward < 0:
+            hits.append(float(origin[ax]))
+        else:
+            hits.insert(0, float(origin[ax]))
+    r_lo = min(entry, entry + inward * declared)
+    r_hi = max(entry, entry + inward * declared)
+    fars: list[float] = []
+    for i in range(0, len(hits) - 1, 2):
+        lo, hi = hits[i], hits[i + 1]  # solid segment the ray crosses
+        if hi >= r_lo and lo <= r_hi:
+            fars.append(lo if inward < 0 else hi)
+    if not fars:
+        return declared
+    far = min(fars) if inward < 0 else max(fars)
+    need = (entry - far) * (-inward) + 0.3  # past the far wall, plus margin
+    return max(declared, need)
 
 
 def _measure_feature_dia(
@@ -1568,7 +1660,12 @@ def _feature_host_main(mesh: trimesh.Trimesh, feat: RefineFeature, entry: float,
 
 
 def _record_applied(
-    report: RefineReport, feat: RefineFeature, mesh: trimesh.Trimesh, entry: float, span: float
+    report: RefineReport,
+    feat: RefineFeature,
+    mesh: trimesh.Trimesh,
+    entry: float,
+    span: float,
+    cut_depth_mm: float | None = None,
 ) -> None:
     """Applied-feature report entry + post-cut diameter sanity measurement."""
     entry_rec: dict[str, Any] = {
@@ -1579,8 +1676,13 @@ def _record_applied(
         "v": round(feat.v, 3),
         "dia": round(feat.dia, 2),
         "depth_mm": feat.depth_mm,
+        "through": bool(feat.through),
         "source": feat.source,
     }
+    if cut_depth_mm is not None and (
+        feat.depth_mm is None or abs(cut_depth_mm - feat.depth_mm) > 0.05
+    ):
+        entry_rec["cut_depth_mm"] = round(cut_depth_mm, 2)
     if feat.thread_spec:
         entry_rec["thread_spec"] = feat.thread_spec
     if feat.helical is not None:
@@ -1614,12 +1716,59 @@ def _record_applied(
     report.applied.append(entry_rec)
 
 
+def _plug_channel(
+    out: trimesh.Trimesh,
+    feat: RefineFeature,
+    entry: float,
+    span: float,
+    report: RefineReport,
+) -> tuple[trimesh.Trimesh, float]:
+    """spec'd bore over a wavy channel: fill the measured void first so the
+    nominal drill leaves exact walls — a plain cut can only widen, never
+    shrink, an existing tunnel. On plug failure fall back to the +0.4
+    ream (oversized but clean) rather than cutting ragged walls."""
+    ax = _AXES[feat.axis][0]
+    plug = _plug_cylinder(out, feat)
+    if plug is None:
+        feat.plug_first = False
+        feat.dia_extra = max(feat.dia_extra, 0.4)
+        report.warnings.append(
+            f"feature '{feat.name}': no plug geometry at measured tunnel — "
+            "reamed +0.4 mm instead of drilling at spec dia"
+        )
+        return out, entry
+    try:
+        filled = out.union(plug, engine="manifold")
+        if filled is None or not len(getattr(filled, "faces", [])):
+            filled = None
+    except Exception:
+        filled = None
+    if filled is None:
+        feat.plug_first = False
+        feat.dia_extra = max(feat.dia_extra, 0.4)
+        report.warnings.append(
+            f"feature '{feat.name}': channel plug union failed — "
+            "reamed +0.4 mm instead of drilling at spec dia"
+        )
+        return out, entry
+    out = filled
+    # seat the drill on the plug surface — the channel surface
+    # entry measured above is gone now
+    new_entry = _entry_point(out, feat.axis, feat.u, feat.v)
+    if new_entry is not None:
+        entry = new_entry
+    else:
+        entry = float(out.bounds[1][ax] if feat.axis[0] == "+" else out.bounds[0][ax])
+    return out, entry
+
+
 def _apply_cut(out: trimesh.Trimesh, feat: RefineFeature, report: RefineReport) -> trimesh.Trimesh:
     """One re-cut: build the cutter, difference it, retry a failed helical
     groove as a plain tap-drill bore (the bore is never lost), and record the
     outcome. Returns the (possibly unchanged) mesh."""
     ax, _, _ = _AXES[feat.axis]
     entry = _entry_point(out, feat.axis, feat.u, feat.v)
+    entry_reseated = False
     if entry is None:
         # ray at the bore centre hits nothing — the channel is already
         # open (tunnel through the part) OR the region was fully
@@ -1647,46 +1796,31 @@ def _apply_cut(out: trimesh.Trimesh, feat: RefineFeature, report: RefineReport) 
         # the point of refine, so seat the cutter at the bbox face and
         # let the boolean decide; warn so the report stays honest.
         entry = float(out.bounds[1][ax] if feat.axis[0] == "+" else out.bounds[0][ax])
+        entry_reseated = True
         report.warnings.append(
             f"feature '{feat.name}': no entry surface — channel already "
             "open; re-cutting from the bbox face"
         )
     span = float(out.bounds[1][ax] - out.bounds[0][ax])
     if feat.plug_first:
-        # spec'd bore over a wavy channel: fill the measured void first so the
-        # nominal drill leaves exact walls — a plain cut can only widen, never
-        # shrink, an existing tunnel. On plug failure fall back to the +0.4
-        # ream (oversized but clean) rather than cutting ragged walls.
-        plug = _plug_cylinder(out, feat)
-        if plug is not None:
-            try:
-                filled = out.union(plug, engine="manifold")
-                if filled is None or not len(getattr(filled, "faces", [])):
-                    filled = None
-            except Exception:
-                filled = None
-            if filled is not None:
-                out = filled
-                # seat the drill on the plug surface — the channel surface
-                # entry measured above is gone now
-                entry = _entry_point(out, feat.axis, feat.u, feat.v)
-                if entry is None:
-                    entry = float(out.bounds[1][ax] if feat.axis[0] == "+" else out.bounds[0][ax])
-            else:
-                feat.plug_first = False
-                feat.dia_extra = max(feat.dia_extra, 0.4)
-                report.warnings.append(
-                    f"feature '{feat.name}': channel plug union failed — "
-                    "reamed +0.4 mm instead of drilling at spec dia"
-                )
+        out, entry = _plug_channel(out, feat, entry, span, report)
+    depth_override: float | None = None
+    if feat.through:
+        if entry_reseated:
+            # open channel on the centre ray — only the walls carry
+            # material; a full-span cutter recuts them wherever they are
+            depth_override = span + 2.0
         else:
-            feat.plug_first = False
-            feat.dia_extra = max(feat.dia_extra, 0.4)
-            report.warnings.append(
-                f"feature '{feat.name}': no plug geometry at measured tunnel — "
-                "reamed +0.4 mm instead of drilling at spec dia"
-            )
-    cutter = _cutter_mesh(feat, entry, span)
+            declared = feat.depth_mm if feat.depth_mm is not None else span + 2.0
+            needed = _through_cut_depth(out, feat, entry, span)
+            if needed > declared + 0.05:
+                depth_override = needed
+                report.warnings.append(
+                    f"feature '{feat.name}': through-cut extended to "
+                    f"{needed:.1f} mm — material below the declared span "
+                    "would seal the bore"
+                )
+    cutter = _cutter_mesh(feat, entry, span, depth_override=depth_override)
     _orient_cutter(cutter, feat.axis, feat.u, feat.v, entry)
     # overlap sanity: AABBs must intersect (cheap) — a fully disjoint
     # cutter would boolean fine but remove nothing
@@ -1704,7 +1838,9 @@ def _apply_cut(out: trimesh.Trimesh, feat: RefineFeature, report: RefineReport) 
             f"feature '{feat.name}': helical groove boolean failed "
             f"({bool_err or 'empty result'}) — retried as a plain tap-drill bore"
         )
-        cutter = _cutter_mesh(replace(feat, helical=False), entry, span)
+        cutter = _cutter_mesh(
+            replace(feat, helical=False), entry, span, depth_override=depth_override
+        )
         _orient_cutter(cutter, feat.axis, feat.u, feat.v, entry)
         res, bool_err = _try_difference(out, cutter)
     if res is None:
@@ -1714,7 +1850,14 @@ def _apply_cut(out: trimesh.Trimesh, feat: RefineFeature, report: RefineReport) 
         report.skipped.append({"name": feat.name, "kind": feat.kind, "reason": reason})
         return out
     out = res
-    _record_applied(report, feat, out, entry, span)
+    _record_applied(
+        report,
+        feat,
+        out,
+        entry,
+        span,
+        cut_depth_mm=depth_override if depth_override is not None else feat.depth_mm,
+    )
     return out
 
 
@@ -1898,8 +2041,17 @@ def applied_refine_features(
 
 
 def _verify_uv(a: dict[str, Any], axis: str) -> tuple[float, float] | None:
-    """In-plane (u, v) coords of an applied-entry/anchor/request dict for `axis`."""
+    """In-plane (u, v) coords of an applied-entry/anchor/request dict for `axis`.
+
+    Applied refine records carry the cut position as ``u``/``v`` — those are
+    already the in-plane components for `axis` and win over any ``pos``
+    triple (whose components the dict may not even fill)."""
     _ax, au, av = _AXES.get(axis, _AXES["+z"])
+    if a.get("u") is not None and a.get("v") is not None:
+        try:
+            return float(a["u"]), float(a["v"])
+        except (TypeError, ValueError):
+            pass
     pos = a.get("pos") or []
     try:
         if len(pos) > max(au, av) and pos[au] is not None and pos[av] is not None:
@@ -2126,24 +2278,64 @@ def refine_verify(
                 {"entry": entry, "x": uv[0], "y": uv[1], "dia": dia, "reason": "host_fragmented"}
             )
             continue
-        want = {"dimple"} if entry.get("depth_mm") else {"hole"}
-        found = _scan_has_feature(scanned, uv, dia, want, xy_tol_mm, dia_tol_frac, axis)
-        if not found:
-            verdict, probe_rec = _probe_blind_feature(
-                mesh,
-                entry,
-                axis,
-                uv,
-                dia,
-                depth_frac=depth_frac,
-                dia_tol_frac=dia_tol_frac,
-                log=logger,
-            )
-            if probe_rec is not None:
-                probes.append({**probe_rec, "verified": bool(verdict)})
-            found = bool(verdict)  # None (probe unavailable/crashed) keeps the miss
+        # through-features verify on a real through-tunnel — a cavity probe
+        # cannot distinguish 'bore pierced the part' from 'pocket exists',
+        # so the surface scan is authoritative for them. Blind features get
+        # the pocket probe rescue the scan can't see.
+        through = entry.get("through")
+        if through is None:
+            through = not entry.get("depth_mm")
+        found, probe_rec = _verify_entry(
+            mesh,
+            scanned,
+            entry,
+            axis,
+            uv,
+            dia,
+            through,
+            xy_tol_mm=xy_tol_mm,
+            dia_tol_frac=dia_tol_frac,
+            depth_frac=depth_frac,
+            log=logger,
+        )
+        if probe_rec is not None:
+            probes.append({**probe_rec, "verified": found})
         if not found:
             misses.append({"entry": entry, "x": uv[0], "y": uv[1], "dia": dia})
     if probes:
         refine_report["probes"] = probes
     return misses
+
+
+def _verify_entry(
+    mesh: trimesh.Trimesh,
+    scanned: list[dict[str, Any]],
+    entry: dict[str, Any],
+    axis: str,
+    uv: tuple[float, float],
+    dia: float,
+    through: bool,
+    *,
+    xy_tol_mm: float,
+    dia_tol_frac: float,
+    depth_frac: float,
+    log: Any,
+) -> tuple[bool, dict[str, Any] | None]:
+    """One applied entry → (verified, probe record). The scan is
+    authoritative for through-features; blind ones get the pocket probe."""
+    want = {"hole"} if through else {"dimple"}
+    if _scan_has_feature(scanned, uv, dia, want, xy_tol_mm, dia_tol_frac, axis):
+        return True, None
+    if through:
+        return False, None
+    verdict, probe_rec = _probe_blind_feature(
+        mesh,
+        entry,
+        axis,
+        uv,
+        dia,
+        depth_frac=depth_frac,
+        dia_tol_frac=dia_tol_frac,
+        log=log,
+    )
+    return bool(verdict), probe_rec  # None (probe unavailable) keeps the miss

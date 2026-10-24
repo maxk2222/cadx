@@ -21,9 +21,12 @@ from cadx.cad.fem.refine import (
     _spec_axis,
     _spec_uv_positions,
     _thread_spec_from,
+    _through_cut_depth,
     _tunnel_open_mesh,
     _verify_expected_uv,
+    _verify_uv,
     apply_refine,
+    refine_verify,
     resolve_refine_features,
     restore_keep_surface,
 )
@@ -980,3 +983,131 @@ def test_feature_host_main_flags_floating_puck():
     assert _feature_host_main(floating, feat, entry=14.0, span=14.0) is False
     # same feature on the single-body slab → connected
     assert _feature_host_main(base, feat, entry=14.0, span=14.0) is True
+
+
+# --------------------------------------------------------------------------- #
+# through-intent cuts + verification                                            #
+# --------------------------------------------------------------------------- #
+
+
+def test_through_feature_pierces_past_declared_depth():
+    """M12 eval regression: 'through z=0..25' carried depth_mm=25, but a
+    keep-restored cap pushed the real span to ~28 — a cutter stopped at the
+    declared depth left a sealing membrane. The effective depth must reach
+    the far wall of every solid interval the reach overlaps."""
+    slab = _slab(z=25.0)  # solid 60x40x25 — no bore
+    feat = RefineFeature(
+        name="m12", kind="hole", axis="+z", u=0.0, v=0.0, dia=8.0,
+        depth_mm=10.0, through=True, source="spec",
+    )
+    out, rep = apply_refine(slab, [feat], restore_keeps=False)
+    assert rep.applied and not rep.skipped
+    # the cut ran deeper than declared — and the bore axis sees daylight
+    assert rep.applied[0]["cut_depth_mm"] > 20.0
+    assert any("through-cut extended" in w for w in rep.warnings)
+    locs, _, _ = out.ray.intersects_location(
+        [[0.0, 0.0, -10.0]], [[0.0, 0.0, 1.0]], multiple_hits=True
+    )
+    assert not len(locs)
+
+
+def test_blind_feature_still_stops_at_declared_depth():
+    """The counter-case: without through-intent the declared depth is a
+    hard stop — a blind pocket must NOT pierce the slab."""
+    slab = _slab(z=25.0)
+    feat = RefineFeature(
+        name="pocket", kind="hole", axis="+z", u=0.0, v=0.0, dia=8.0,
+        depth_mm=10.0, through=False, source="spec",
+    )
+    out, rep = apply_refine(slab, [feat], restore_keeps=False)
+    assert rep.applied
+    assert rep.applied[0]["through"] is False
+    locs, _, _ = out.ray.intersects_location(
+        [[0.0, 0.0, -10.0]], [[0.0, 0.0, 1.0]], multiple_hits=True
+    )
+    assert len(locs) >= 2  # pocket floor + slab bottom still stand
+
+
+def test_through_cut_depth_spans_plug_extent():
+    """Unit-level: entry seated on a plug face ABOVE the part — the reach
+    must cover the plug's far side, not stop at the declared depth."""
+    # plate z=0..10 + a cap z=24..28 (the 'plug'/restored dome scenario)
+    plate = _slab(z=10.0)
+    cap = trimesh.creation.box(extents=[20.0, 20.0, 4.0])
+    cap.apply_translation([0.0, 0.0, 26.0])
+    mesh = trimesh.util.concatenate([plate, cap])
+    feat = RefineFeature(
+        name="m12", kind="hole", axis="+z", u=0.0, v=0.0, dia=10.0,
+        depth_mm=25.0, through=True,
+    )
+    depth = _through_cut_depth(mesh, feat, entry=28.0, span=28.0)
+    # reach entry→entry-25 = z∈[3,28]; the plate's far wall is z=0 → ~28.3
+    assert depth == pytest.approx(28.3, abs=0.6)
+
+
+def test_verify_uv_reads_zero_uv_coords():
+    """Regression: applied records carry ``u``/``v`` — the M12 bore at
+    (0, 0) was verified against the nearest corner anchor because only
+    ``pos``/``x``/``y`` were read and 0.0 looked 'missing'."""
+    assert _verify_uv({"u": 0.0, "v": 0.0}, "+z") == (0.0, 0.0)
+    assert _verify_uv({"u": 12.0, "v": 25.0}, "+x") == (12.0, 25.0)
+    # pos triple still resolves when u/v are absent
+    assert _verify_uv({"pos": [10.0, 0.0, 7.0]}, "+z") == (10.0, 0.0)
+
+
+def test_verify_uses_recorded_uv_at_part_centre():
+    """The M12 eval regression end-to-end: a through-bore at (0, 0) must
+    verify at ITS position — not be re-seated onto a corner anchor of
+    similar diameter."""
+    mesh = _slab_bored(0.0, 10.0)  # Ø10 bore at the slab centre
+    anchors = [
+        {"index": 1, "kind": "hole", "axis": "+z", "x": -25.0, "y": 0.0,
+         "pos": [-25.0, 0.0, 7.0], "dia": 9.9, "source": "scan"},
+    ]
+    report = {
+        "applied": [
+            {"name": "m12", "kind": "hole", "axis": "+z", "u": 0.0, "v": 0.0,
+             "dia": 10.0, "through": True, "depth_mm": 25.0, "source": "spec"},
+        ]
+    }
+    assert refine_verify(mesh, report, anchors=anchors) == []
+
+
+def test_verify_through_bore_over_pocket_is_a_miss():
+    """A 'through' bore that only left a blind pocket must NOT verify —
+    the pocket probe cannot tell 'pierced' from 'dimple exists', so
+    through-features rely on the surface scan alone."""
+    plate = _slab(z=14.0)
+    pocket = trimesh.creation.cylinder(radius=5.0, height=5.0, sections=48)
+    pocket.apply_translation([10.0, 0.0, 11.5])
+    mesh = plate.difference(pocket, engine="manifold")  # Ø10 pocket, 5 deep
+    report = {
+        "applied": [
+            {"name": "m", "kind": "hole", "axis": "+z", "u": 10.0, "v": 0.0,
+             "dia": 10.0, "through": True, "depth_mm": 14.0, "source": "spec"},
+        ]
+    }
+    misses = refine_verify(mesh, report)
+    assert len(misses) == 1
+    # the same entry without through-intent verifies against the pocket
+    report2 = {
+        "applied": [
+            {"name": "m", "kind": "hole", "axis": "+z", "u": 10.0, "v": 0.0,
+             "dia": 10.0, "through": False, "depth_mm": 5.0, "source": "spec"},
+        ]
+    }
+    assert refine_verify(mesh, report2) == []
+
+
+def test_spec_position_text_marks_through_intent():
+    """'through z=0..25'/'through x=42..50' in the spec's own words set
+    through=True even with a numeric declared depth; a spec declaring
+    only 'depth 8' stays a blind stop."""
+    feats, _ = resolve_refine_features([], _ROBOT_SPEC, None, base_mesh=_slab(z=40.0))
+    assert feats and all(f.through for f in feats)
+    blind = [
+        {"type": "hole", "name": "dowel", "position": "x=10, y=0",
+         "dims": {"diameter": 6.0, "depth": 8.0}},
+    ]
+    feats2, _ = resolve_refine_features([], blind, None, base_mesh=_slab())
+    assert len(feats2) == 1 and feats2[0].through is False
