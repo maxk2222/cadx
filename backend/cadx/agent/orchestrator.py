@@ -1143,12 +1143,7 @@ async def _run_topopt_phase(
         top = {**top, "verify_spec": res["verify_spec"]}
     outcome.mesh = {**(outcome.mesh or {}), "pipeline": "topopt", "topopt": top}
     outcome.resolved_mode = "topopt"
-    sfs = [
-        c.get("safety_factor")
-        for c in (outcome.fem or {}).get("cases", [])
-        if c.get("safety_factor") is not None
-    ]
-    worst = min(sfs) if sfs else None
+    worst = _topopt_headline_sf(top, outcome.fem)
     if worst is not None and worst < 1.0:
         outcome.status = "needs_review"
         outcome.mode_note += f" | optimized part fails: SF {worst:.2f} < 1"
@@ -1168,6 +1163,51 @@ async def _run_topopt_phase(
         f"worst SF {worst}, {top.get('iterations')} iterations",
     )
     return outcome
+
+
+def _prompt_hints_optimize(prompt: str) -> bool:
+    """The prompt itself asking for optimization is a valid trigger — weak
+    models regularly leave plan.optimize / spec.optimize unset."""
+    return bool(re.search(r"optimi|topolog|leicht|light|gewicht|weight", prompt or "", re.I))
+
+
+def _wants_optimize(ctx: AgentCtx, plan: Any, spec: Any, prompt_hints_opt: bool) -> bool:
+    """Decide whether the OPTIMIZE phase runs after base generation.
+
+    Trigger channels: an explicit topopt request (gen_mode=topopt →
+    ctx.topopt_requested), the planner's plan.optimize, spec.optimize.enabled,
+    or the prompt mentioning optimization/weight. An explicitly forced
+    gen_mode (cad/mesh/hybrid) wins over every channel: the caller chose the
+    deliverable pipeline — "input for topology optimization" in the prompt
+    describes intent, not a command — so the phase stays off and the caller
+    can still run a dedicated optimize job."""
+    if ctx.gen_mode not in (None, "auto", "topopt"):
+        return False
+    return bool(
+        ctx.topopt_requested
+        or (plan is not None and plan.optimize)
+        or (spec is not None and spec.optimize is not None and spec.optimize.enabled)
+        or prompt_hints_opt
+    )
+
+
+def _topopt_headline_sf(top: dict[str, Any], fem: dict[str, Any] | None) -> float | None:
+    """Headline SF for a topopt outcome: the verified realization worst-case,
+    then the printed-geometry export SF, then the voxel-mask report — the
+    mask number alone must never acquit a part whose printed export erodes
+    to failure (docs/fem-topopt.md: gate on sf_verified). A solved 0.0 is a
+    verdict, not a missing value — None-checks, never or-chains."""
+    worst = top.get("sf_verified")
+    if worst is None:
+        worst = top.get("sf_export")
+    if worst is None:
+        mask_sfs = [
+            c.get("safety_factor")
+            for c in (fem or {}).get("cases", [])
+            if c.get("safety_factor") is not None
+        ]
+        worst = min(mask_sfs) if mask_sfs else None
+    return worst
 
 
 def _write_mesh_json(project_id: Any, version_id: Any, info: dict[str, Any]) -> None:
@@ -4119,9 +4159,8 @@ async def _run_cad(  # noqa: C901
             )
 
         exact = await _export_rebuild(base_code)
-        if (
-            base_code
-            and (not exact.get("ok") or int(exact.get("thread_count") or 0) < expected_threads)
+        if base_code and (
+            not exact.get("ok") or int(exact.get("thread_count") or 0) < expected_threads
         ):
             # export-only failure class: the preview build passed, so the defect
             # is usually a fragile construction that only the real helical groove
@@ -6278,15 +6317,9 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
     )
 
     # ---------- OPTIMIZE (topopt mode: SIMP + FEM verify on the base part) --
-    # the prompt itself asking for optimization is a valid trigger too —
-    # weak models regularly leave plan.optimize / spec.optimize unset
-    prompt_hints_opt = bool(re.search(r"optimi|topolog|leicht|light|gewicht|weight", prompt, re.I))
-    wants_opt = (
-        ctx.topopt_requested
-        or (plan is not None and plan.optimize)
-        or (spec.optimize is not None and spec.optimize.enabled)
-        or prompt_hints_opt
-    )
+    forced_mode = ctx.gen_mode not in (None, "auto", "topopt")
+    prompt_hints_opt = _prompt_hints_optimize(prompt)
+    wants_opt = _wants_optimize(ctx, plan, spec, prompt_hints_opt)
     if (
         wants_opt
         and not spec.load_cases
@@ -6320,6 +6353,17 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
             why = "prompt asks for loads/optimization"
         await ctx.emit("optimize", 0, f"topology optimization: {why}")
         outcome = await _run_topopt_phase(ctx, outcome, spec, t0)
+    elif forced_mode and (
+        (plan is not None and plan.optimize)
+        or (spec.optimize is not None and spec.optimize.enabled)
+        or prompt_hints_opt
+    ):
+        await ctx.emit(
+            "optimize",
+            0,
+            f"note: optimization requested but gen_mode={ctx.gen_mode} "
+            "— skipped (select topopt mode or run an optimize job)",
+        )
     elif plan is not None and not plan.optimize and prompt_hints_loads:
         await ctx.emit(
             "optimize",

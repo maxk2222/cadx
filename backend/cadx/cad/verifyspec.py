@@ -711,7 +711,9 @@ def _void_pos_wants(
         # symmetric pairs ("y=±12") — the flat coord parse drops the sign;
         # both members are declared positions and each needs a measured centre
         for sgn in sym.get(ax) or []:
-            if (not end_vals or all(abs(sgn - v) <= 1.0 for v in end_vals)) and sgn not in wants[ax]:
+            if (not end_vals or all(abs(sgn - v) <= 1.0 for v in end_vals)) and sgn not in wants[
+                ax
+            ]:
                 wants[ax].append(sgn)
         for v in end_vals:
             if v not in wants[ax]:
@@ -831,9 +833,7 @@ def _void_position_check(  # noqa: C901
             # "through z=0..6" parses as z=3.0 but a tunnel's z centre is
             # never measured (centers_xyz marks it None)
             coords.pop(want_ax, None)
-            text_groups = [
-                {k: v for k, v in g.items() if k != want_ax} for g in text_groups
-            ]
+            text_groups = [{k: v for k, v in g.items() if k != want_ax} for g in text_groups]
     groups = structured or text_groups
     base: dict[str, Any] = {"feature": name, "position": pos[:160] or None}
     if not structured and not coords and not faces and not ends and not nears:
@@ -1033,12 +1033,19 @@ def _feature_placement(
     tol_pct: float,
     tol_mm: float,
     checks: list[dict[str, Any]],
+    *,
+    optimized: bool = False,
 ) -> None:
     """Per-feature placement checks — the l_bracket trap class: a part can
     satisfy the overall envelope while a slot is bored through the wrong
     axis or a rib stands proud of the stated width. Each spec feature gets
     its own check(s); evidence always carries expected AND measured values
-    (measured entries cited by their stable ``id``) for the improve step."""
+    (measured entries cited by their stable ``id``) for the improve step.
+
+    ``optimized`` marks bound-semantics artifacts (topopt/infill/resample/
+    refine): per-feature checks stay — keep regions must preserve declared
+    features — but the unrequested-voids sweep cannot run there since
+    optimization-introduced openings are the deliverable."""
     spec_feats = (spec or {}).get("features") or []
     groups = [g for g in (measured or {}).get("hole_groups") or [] if isinstance(g, dict)]
     round_groups = [g for g in groups if not g.get("elongated")]
@@ -1106,12 +1113,28 @@ def _feature_placement(
         if "slot" in ftype or "langloch" in ftype:
             _slot_orientation_check(i, name, ftype, f, pos_cands, checks)
 
-    _unrequested_voids_check(
-        spec_feats,
-        round_groups + slot_groups + hole_pats,
-        _bbox_bounds(bbox_min, bbox_max),
-        checks,
-    )
+    if optimized:
+        checks.append(
+            _check(
+                "unrequested_voids",
+                TIER_FEATURES,
+                "UNVERIFIED",
+                {
+                    "reason": (
+                        "optimization-introduced openings are the deliverable — "
+                        "the void inventory cannot be attributed against the "
+                        "base spec on a bound-semantics result"
+                    )
+                },
+            )
+        )
+    else:
+        _unrequested_voids_check(
+            spec_feats,
+            round_groups + slot_groups + hole_pats,
+            _bbox_bounds(bbox_min, bbox_max),
+            checks,
+        )
 
 
 def _fillet_check(
@@ -1296,17 +1319,28 @@ def _unrequested_voids_check(  # noqa: C901
         checks.append(_check("unrequested_voids", TIER_FEATURES, "PASS", ev))
 
 
-def _threads(res: dict[str, Any], spec: dict[str, Any] | None, checks: list[dict[str, Any]]) -> None:
+def _threads(
+    res: dict[str, Any],
+    spec: dict[str, Any] | None,
+    checks: list[dict[str, Any]],
+    *,
+    deferred: bool = False,
+) -> None:
     """Explicit thread verification: declared standard parts / thread features
     must leave geometry evidence matching the executed detail mode — visible
-    preview markers in preview mode, real helix objects in export mode."""
+    preview markers in preview mode, real helix objects in export mode.
+
+    ``deferred`` marks bound-semantics artifacts (topopt/infill/resample/
+    refine mesh results): a faceted optimization output cannot carry helical
+    evidence — the declared thread is re-established in the parametric
+    rebuild — so absent evidence reads UNVERIFIED instead of FAIL. Measured
+    evidence still verifies normally."""
     declared_parts = [
         row for row in ((spec or {}).get("standard_parts") or []) if isinstance(row, dict)
     ]
     features = [row for row in ((spec or {}).get("features") or []) if isinstance(row, dict)]
     if not declared_parts and not any(
-        "thread" in str(row.get("type") or "").lower() or row.get("thread_spec")
-        for row in features
+        "thread" in str(row.get("type") or "").lower() or row.get("thread_spec") for row in features
     ):
         return
     expected = 0
@@ -1354,6 +1388,12 @@ def _threads(res: dict[str, Any], spec: dict[str, Any] | None, checks: list[dict
         return
     if real + markers >= expected:
         checks.append(_check("thread_features", TIER_FEATURES, "PASS", ev))
+    elif deferred:
+        ev["reason"] = (
+            "no helical evidence on the faceted optimization output — the "
+            "declared thread is re-established in the parametric rebuild"
+        )
+        checks.append(_check("thread_features", TIER_FEATURES, "UNVERIFIED", ev))
     else:
         ev["reason"] = "no thread geometry and no visible preview-thread metadata"
         checks.append(_check("thread_features", TIER_FEATURES, "FAIL", ev))
@@ -1390,9 +1430,7 @@ def _structural(
         is_valid = bool(analysis.get("is_valid"))
         declared_parts = (spec or {}).get("standard_parts") or []
         declared_names = {
-            str(part.get("class_name") or "")
-            for part in declared_parts
-            if isinstance(part, dict)
+            str(part.get("class_name") or "") for part in declared_parts if isinstance(part, dict)
         }
         bom_names = {
             str(part.get("part_class") or "")
@@ -1403,8 +1441,7 @@ def _structural(
             bool(declared_names & bom_names) and int(res.get("thread_count") or 0) > 0
         )
         expected_assembly = len(declared_parts) > 1 or any(
-            isinstance(part, dict) and int(part.get("quantity") or 1) > 1
-            for part in declared_parts
+            isinstance(part, dict) and int(part.get("quantity") or 1) > 1 for part in declared_parts
         )
         valid_component_set = solid_count == 1 or declared_threaded_part or expected_assembly
         checks.append(
@@ -1809,9 +1846,12 @@ def verify_spec(
     ``feature_findings`` are the already-computed ``compare_features`` results;
     ``measured_features`` overrides ``res["features"]`` as the feature-tier
     evidence source (mesh pipeline passes the adapted mesh measurements).
-    ``envelope_bound_only`` switches the envelope tier to bound semantics for
-    topopt/refine results — stated dims are upper bounds the optimized part
-    must fit inside, not targets to match.
+    ``envelope_bound_only`` switches the report to bound semantics for
+    topopt/infill/resample/refine results — stated dims are upper bounds the
+    optimized part must fit inside, the unrequested-voids sweep does not run
+    (optimization openings are the deliverable), and a declared thread with
+    no faceted-mesh evidence is UNVERIFIED (re-established in the parametric
+    rebuild), not FAIL.
 
     Returns ``{"status": "PASS"|"FAIL"|"UNVERIFIED", "checks": [...],
     "summary": str}`` — plain JSON-serializable dicts only.
@@ -1820,7 +1860,7 @@ def verify_spec(
     measured = measured_features if measured_features is not None else (res.get("features") or {})
 
     _structural(res, checks, spec)
-    _threads(res, spec, checks)
+    _threads(res, spec, checks, deferred=envelope_bound_only)
     _envelope(
         spec, res, dim_tolerance_pct, dim_tolerance_mm, checks, bound_only=envelope_bound_only
     )
@@ -1836,6 +1876,7 @@ def verify_spec(
             dim_tolerance_pct,
             dim_tolerance_mm,
             checks,
+            optimized=envelope_bound_only,
         )
     _robustness(spec, res, checks)
 

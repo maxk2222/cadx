@@ -1213,12 +1213,8 @@ async def test_export_repair_rescues_failed_thread_rebuild():
     )
     assert outcome.status == "succeeded", outcome.error
     assert outcome.code == box_code
-    assert any(
-        s == "improve" and "export-detail rebuild failed" in m for s, _i, m in emitted
-    )
-    assert any(
-        s == "finalize" and "export repair applied" in m for s, _i, m in emitted
-    )
+    assert any(s == "improve" and "export-detail rebuild failed" in m for s, _i, m in emitted)
+    assert any(s == "finalize" and "export repair applied" in m for s, _i, m in emitted)
 
 
 async def test_export_repair_still_fails_honestly_when_unfixable():
@@ -1255,3 +1251,63 @@ async def test_export_repair_still_fails_honestly_when_unfixable():
     )
     assert outcome.status == "failed"
     assert "real thread" in outcome.error
+
+
+def test_topopt_headline_sf_prefers_verified_realization():
+    """The post-topopt verdict must follow sf_verified — a part whose printed
+    realization erodes to 0.4 is failing even when the voxel mask solved a
+    comfortable 7.95 (gate on sf_verified, never the mask alone)."""
+    from cadx.agent.orchestrator import _topopt_headline_sf
+
+    fem = {"cases": [{"safety_factor": 7.95}, {"safety_factor": 16.0}]}
+    top = {"sf_verified": 0.4, "sf_export": 6.6, "sf_mask": 7.95}
+    assert _topopt_headline_sf(top, fem) == 0.4
+
+    # a solved 0.0 is a verdict — None-checks, never or-chains
+    assert _topopt_headline_sf({"sf_verified": 0.0}, fem) == 0.0
+
+    # cascade: verified -> export -> mask minimum
+    assert _topopt_headline_sf({"sf_export": 6.6}, fem) == 6.6
+    assert _topopt_headline_sf({}, fem) == 7.95
+    assert _topopt_headline_sf({"sf_mask": 0.0}, {}) is None
+    assert _topopt_headline_sf({}, {"cases": [{"safety_factor": None}]}) is None
+
+
+def test_wants_optimize_forced_mode_wins_over_prompt_hints():
+    """A prompt asking for "input for topology optimization" must not convert
+    the deliverable under an explicitly forced gen_mode — the caller chose
+    the pipeline; gen_mode=topopt is the request channel."""
+    from types import SimpleNamespace
+
+    from cadx.agent.orchestrator import _prompt_hints_optimize, _wants_optimize
+
+    ctx = SimpleNamespace(gen_mode="cad", topopt_requested=False)
+    hints = _prompt_hints_optimize("bracket — input for topology optimization, 50 N load")
+    assert hints is True
+    spec = SimpleNamespace(optimize=None)
+    plan = SimpleNamespace(optimize=True, optimize_reason="lightweight request")
+
+    # every heuristic channel is suppressed under forced cad
+    assert _wants_optimize(ctx, plan, spec, hints) is False
+    ctx.gen_mode = "mesh"
+    assert _wants_optimize(ctx, plan, spec, hints) is False
+    ctx.gen_mode = "hybrid"
+    assert _wants_optimize(ctx, plan, spec, hints) is False
+
+    # auto/None/topopt keep all channels live
+    ctx.gen_mode = "auto"
+    assert _wants_optimize(ctx, plan, spec, hints) is True
+    ctx.gen_mode = None
+    assert _wants_optimize(ctx, plan, spec, hints) is True
+    # plan says no and the prompt stays silent → no phase
+    assert _wants_optimize(ctx, SimpleNamespace(optimize=False), spec, False) is False
+    # explicit request still wins under auto
+    ctx.topopt_requested = True
+    assert _wants_optimize(ctx, None, spec, False) is True
+    # spec.optimize.enabled alone triggers under auto
+    ctx.topopt_requested = False
+    spec_opt = SimpleNamespace(optimize=SimpleNamespace(enabled=True))
+    assert _wants_optimize(ctx, None, spec_opt, False) is True
+    # …but not under forced cad
+    ctx.gen_mode = "cad"
+    assert _wants_optimize(ctx, None, spec_opt, False) is False

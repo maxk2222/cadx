@@ -1206,3 +1206,54 @@ def test_preview_mode_needs_a_thread_marker_not_geometry():
     bare = _res(detail_mode="preview", thread_count=0, preview_thread_count=0)
     check = _by_name(verify_spec(_threaded_spec(), bare))["thread_features"]
     assert check["status"] == "FAIL"
+
+
+# ---------------------------------------------------------------------------
+# bound semantics on derived results (topopt/infill/resample/refine meshes)
+# ---------------------------------------------------------------------------
+
+
+def test_bound_semantics_extra_voids_are_unverified():
+    """A topopt result legitimately carries openings no spec feature asked
+    for — the void inventory cannot be attributed on a derived artifact, so
+    the sweep must read UNVERIFIED, never FAIL."""
+    spec = _spec(features=[_feat(name="mount", type="hole", dims={"diameter": 8.0})])
+    res = _res_bbox90(
+        features={
+            "hole_groups": [
+                _hole_group(id="h1", diameter=8.0, centers=[[30.0, 0.0]]),
+                _hole_group(id="h2", diameter=18.4, centers=[[-22.0, 0.0]]),
+                _hole_group(id="h3", diameter=20.8, centers=[[-20.0, 24.0]]),
+            ]
+        }
+    )
+    report = verify_spec(spec, res, feature_findings=[], envelope_bound_only=True)
+    c = _by_name(report)["unrequested_voids"]
+    assert c["status"] == "UNVERIFIED"
+    assert "optimization" in c["evidence"]["reason"]
+    # the same measured set FAILS on a primary (non-derived) result
+    report = verify_spec(spec, res, feature_findings=[])
+    assert _by_name(report)["unrequested_voids"]["status"] == "FAIL"
+
+
+def test_bound_semantics_absent_thread_is_unverified_not_failed():
+    """A declared thread cannot leave helical evidence on a faceted topopt
+    mesh — the check defers to the parametric rebuild (UNVERIFIED); measured
+    evidence still verifies."""
+    res = _res(detail_mode="preview", thread_count=0, preview_thread_count=0)
+    report = verify_spec(_threaded_spec(), res, envelope_bound_only=True)
+    c = _by_name(report)["thread_features"]
+    assert c["status"] == "UNVERIFIED"
+    assert "parametric rebuild" in c["evidence"]["reason"]
+
+    good = _res(detail_mode="preview", thread_count=0, preview_thread_count=1)
+    report = verify_spec(_threaded_spec(), good, envelope_bound_only=True)
+    assert _by_name(report)["thread_features"]["status"] == "PASS"
+
+
+def test_bound_semantics_export_mode_thread_still_strict():
+    """An export-mode derived run that claims real thread geometry still has
+    to show it — bound semantics does not loosen the export contract."""
+    res = _res(detail_mode="export", thread_count=0, preview_thread_count=0)
+    report = verify_spec(_threaded_spec(), res, envelope_bound_only=True)
+    assert _by_name(report)["thread_features"]["status"] == "FAIL"
