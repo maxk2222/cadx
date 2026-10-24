@@ -1256,14 +1256,16 @@ def resolve_case_dofs(  # noqa: C901
                     f"{r.kind} {tag} — fell back to even node split"
                 )
 
-        def _spread(f: np.ndarray) -> None:
-            if w_force is not None:
-                widx = w_force[idx]
+        def _spread(
+            f: np.ndarray, *, _w: np.ndarray | None = w_force, _idx: np.ndarray = idx
+        ) -> None:
+            if _w is not None:
+                widx = _w[_idx]
                 tot = float(widx.sum())
                 if tot > 0:
-                    F.reshape(-1, 3)[idx] += f[None, :] * (widx / tot)[:, None]
+                    F.reshape(-1, 3)[_idx] += f[None, :] * (widx / tot)[:, None]
                     return
-            ld.spread_force(F, idx, f)
+            ld.spread_force(F, _idx, f)
 
         rec: dict[str, Any] | None = None
         F_before: np.ndarray | None = None

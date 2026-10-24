@@ -9,7 +9,6 @@ BC misconfiguration, and feature_peaks turns a bare global sigma max into
 
 from __future__ import annotations
 
-import numpy as np
 import trimesh
 
 from cadx.cad.fem.analyze import run_fem_domain

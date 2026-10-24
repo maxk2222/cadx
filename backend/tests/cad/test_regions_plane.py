@@ -111,13 +111,9 @@ def test_plane_fixed_dofs():
     case = LoadCase(
         name="sym",
         fixed=[_plane("x", center=[0.0], fix_mode="normal")],
-        loads=[
-            LoadSpec(
-                region=RegionSpec(kind="surface", axis="+x"), force_n=[0.0, 0.0, -50.0]
-            )
-        ],
+        loads=[LoadSpec(region=RegionSpec(kind="surface", axis="+x"), force_n=[0.0, 0.0, -50.0])],
     )
-    fixed3, F, warnings = resolve_case_dofs(dom, case, [], fixed_out=[])
+    fixed3, _F, _w = resolve_case_dofs(dom, case, [], fixed_out=[])
     m = _plane_locus(dom, _plane("x", center=[0.0]))
     assert fixed3[m].tolist() == [[True, False, False]] * int(m.sum())  # ux only
     # knife-edge: "xy" pins ux+uy — rotation about z stays free
@@ -138,11 +134,7 @@ def test_plane_no_fallback_and_supports_record():
     case = LoadCase(
         name="miss",
         fixed=[_plane("x", center=[10.0], x_range=[100.0, 200.0], fix_mode="normal")],
-        loads=[
-            LoadSpec(
-                region=RegionSpec(kind="surface", axis="+x"), force_n=[0.0, 0.0, -50.0]
-            )
-        ],
+        loads=[LoadSpec(region=RegionSpec(kind="surface", axis="+x"), force_n=[0.0, 0.0, -50.0])],
     )
     _f3, _F, warnings = resolve_case_dofs(dom, case, [], fixed_out=supports)
     assert any("matched no nodes" in w for w in warnings)
@@ -151,7 +143,7 @@ def test_plane_no_fallback_and_supports_record():
 
     supports = []
     case.fixed = [_plane("-x", fix_mode="all")]
-    fixed3, _F, _w = resolve_case_dofs(dom, case, [], fixed_out=supports)
+    _f3, _F, _w = resolve_case_dofs(dom, case, [], fixed_out=supports)
     assert len(supports) == 1
     rec = supports[0]
     assert rec["kind"] == "plane" and rec["fix_mode"] == "all"
@@ -164,13 +156,9 @@ def test_plane_no_fallback_and_supports_record():
 def test_spread_mode_area_resultant_and_weights():
     dom = _dom()
     fixed = [RegionSpec(kind="plane", axis="-x")]
-    load_kw: dict = dict(
-        region=RegionSpec(kind="surface", axis="+x"), force_n=[100.0, 0.0, 0.0]
-    )
+    load_kw: dict = dict(region=RegionSpec(kind="surface", axis="+x"), force_n=[100.0, 0.0, 0.0])
     case_n = LoadCase(name="n", fixed=fixed, loads=[LoadSpec(**load_kw)])
-    case_a = LoadCase(
-        name="a", fixed=fixed, loads=[LoadSpec(**load_kw, spread_mode="area")]
-    )
+    case_a = LoadCase(name="a", fixed=fixed, loads=[LoadSpec(**load_kw, spread_mode="area")])
     app_n: list[dict] = []
     app_a: list[dict] = []
     _f, F_n, _w = resolve_case_dofs(dom, case_n, [], applied_out=app_n)
@@ -218,13 +206,9 @@ def test_plane_load_resultant():
     case = LoadCase(
         name="l",
         fixed=[RegionSpec(kind="plane", axis="-z")],
-        loads=[
-            LoadSpec(
-                region=RegionSpec(kind="plane", axis="+z"), force_n=[0.0, 0.0, -40.0]
-            )
-        ],
+        loads=[LoadSpec(region=RegionSpec(kind="plane", axis="+z"), force_n=[0.0, 0.0, -40.0])],
     )
     app: list[dict] = []
-    fixed3, F, _w = resolve_case_dofs(dom, case, [], applied_out=app)
+    _f3, F, _w = resolve_case_dofs(dom, case, [], applied_out=app)
     assert np.allclose(F.reshape(-1, 3).sum(axis=0), [0.0, 0.0, -40.0])
     assert app[0]["kind"] == "plane" and app[0]["nodes"] == 9 * 11
