@@ -50,7 +50,10 @@ def test_m10_catalog_recipe_is_sandbox_code_and_norm_sized() -> None:
     # frame contract: standalone parts rest on XY with their axis up (+z)
     assert standard_part_bbox(part) == pytest.approx([20.0, 20.0, 150.0], abs=0.01)
     assert expected_thread_count(spec) == 1
-    assert 'CADX_DETAIL_MODE == "preview"' in code
+    # LoD split: simple body always, real thread ridge only in export mode
+    # (swept-helix block; bd simple=False as its fallback lane)
+    assert 'CADX_DETAIL_MODE == "export"' in code
+    assert "simple=True" in code
     assert "'length': 32.0" in code
 
 
