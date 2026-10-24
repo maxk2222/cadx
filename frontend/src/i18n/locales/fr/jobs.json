@@ -21,6 +21,8 @@
   "show_more_aria": "afficher {{n}} tâches terminées de plus",
   "best_score": "meilleur {{n}}",
   "best_score_title": "meilleur score de critique",
+  "job_status_title": "statut du job",
+  "version_status_title": "statut de la version — l'artefact produit",
   "queued": "en file",
   "needs_answers": "attend des réponses",
   "starting": "démarrage",

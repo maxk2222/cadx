@@ -19,6 +19,8 @@
   "show_more_aria": "完了したジョブをさらに {{n}} 件表示",
   "best_score": "ベスト {{n}}",
   "best_score_title": "最高批評スコア",
+  "job_status_title": "ジョブ状態",
+  "version_status_title": "バージョン状態 — このジョブが生成した成果物",
   "queued": "キュー待ち",
   "needs_answers": "回答が必要",
   "starting": "開始中",

@@ -25,6 +25,8 @@
   "show_more_aria": "pokaż {{n}} więcej ukończonych zadań",
   "best_score": "najlepszy {{n}}",
   "best_score_title": "najlepsza ocena krytyki",
+  "job_status_title": "status zadania",
+  "version_status_title": "status wersji — wyprodukowany artefakt",
   "queued": "w kolejce",
   "needs_answers": "wymaga odpowiedzi",
   "starting": "uruchamianie",

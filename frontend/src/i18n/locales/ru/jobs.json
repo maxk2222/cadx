@@ -25,6 +25,8 @@
   "show_more_aria": "показать ещё {{n}} завершённых задач",
   "best_score": "лучший {{n}}",
   "best_score_title": "лучшая оценка критики",
+  "job_status_title": "статус задачи",
+  "version_status_title": "статус версии — созданный артефакт",
   "queued": "в очереди",
   "needs_answers": "нужны ответы",
   "starting": "запуск",

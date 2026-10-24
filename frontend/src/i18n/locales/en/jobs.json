@@ -21,6 +21,8 @@
   "show_more_aria": "show {{n}} more completed jobs",
   "best_score": "best {{n}}",
   "best_score_title": "best critique score",
+  "job_status_title": "job status",
+  "version_status_title": "version status — the artifact this job produced",
   "queued": "queued",
   "needs_answers": "needs answers",
   "starting": "starting",

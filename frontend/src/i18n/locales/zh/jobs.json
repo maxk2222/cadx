@@ -19,6 +19,8 @@
   "show_more_aria": "再显示 {{n}} 个已完成任务",
   "best_score": "最佳 {{n}}",
   "best_score_title": "最佳评审分数",
+  "job_status_title": "任务状态",
+  "version_status_title": "版本状态 — 该任务生成的产物",
   "queued": "排队中",
   "needs_answers": "需要回答",
   "starting": "启动中",

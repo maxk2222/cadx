@@ -69,7 +69,7 @@ const JobRow = memo(function JobRow({
         {active ? (
           <CircleDot className="h-3.5 w-3.5 animate-pulse text-brand-400" />
         ) : (
-          <StatusBadge status={job.status} />
+          <StatusBadge status={job.status} title={t("job_status_title")} />
         )}
         <span className="text-xs font-medium uppercase text-muted">{job.type}</span>
         <Link
@@ -89,7 +89,14 @@ const JobRow = memo(function JobRow({
             · {job.part_name}
           </Link>
         )}
-        <StatusBadge status={job.version_status} />
+        {/* version badge only when it diverges — identical job/version
+            states would render as a duplicated badge */}
+        {job.version_status !== job.status && (
+          <StatusBadge
+            status={job.version_status}
+            title={t("version_status_title")}
+          />
+        )}
         <span className="flex-1" />
         {best != null && (
           <span

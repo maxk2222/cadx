@@ -21,6 +21,8 @@
   "show_more_aria": "{{n}} weitere abgeschlossene Jobs anzeigen",
   "best_score": "best {{n}}",
   "best_score_title": "bester Kritik-Score",
+  "job_status_title": "Job-Status",
+  "version_status_title": "Versions-Status — das erzeugte Artefakt",
   "queued": "in Warteschlange",
   "needs_answers": "braucht Antworten",
   "starting": "startet",

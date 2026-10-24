@@ -21,6 +21,8 @@
   "show_more_aria": "mostrar {{n}} trabajos completados más",
   "best_score": "mejor {{n}}",
   "best_score_title": "mejor puntuación de crítica",
+  "job_status_title": "estado del job",
+  "version_status_title": "estado de la versión — el artefacto producido",
   "queued": "en cola",
   "needs_answers": "necesita respuestas",
   "starting": "iniciando",
