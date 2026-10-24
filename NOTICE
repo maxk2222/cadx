@@ -1,0 +1,13 @@
+CADX — LLM-driven CAD agent
+Copyright (C) 2026 Maximilian Koch
+
+This program is licensed under the GNU Affero General Public License,
+version 3 or later (AGPL-3.0-or-later). See the LICENSE file for the full
+license text.
+
+Commercial licensing is available for use cases that cannot comply with
+the AGPL — contact the copyright holder via the GitHub project page:
+https://github.com/maxk2222/cadx
+
+Note: downloadable model weights carry their own licenses (see README,
+"License" section). The code license does not cover model weights.

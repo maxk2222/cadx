@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm--Noncommercial-blue.svg" alt="License: PolyForm Noncommercial"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" alt="License: AGPL-3.0"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue.svg" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/docker-compose-2496ED.svg?logo=docker&logoColor=white" alt="Docker Compose">
   <img src="https://img.shields.io/badge/GPU-MLX%20%C2%B7%20CUDA%20%C2%B7%20ROCm%20%C2%B7%20CPU-76B900.svg" alt="GPU: MLX · CUDA · ROCm · CPU">
@@ -289,8 +289,12 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow and
 
 ## License
 
-[PolyForm Noncommercial 1.0.0](LICENSE) — free for personal, research,
-educational and other noncommercial use; commercial use requires a separate
-license (contact the author). Note that downloadable generation models carry
-their own licenses (Hunyuan Community License excludes the EU/UK/South Korea);
-TRELLIS.2, TripoSG and FLUX.1-schnell are MIT/Apache-2.0.
+[GNU AGPLv3](LICENSE) (or later) — free to use, modify and self-host, including
+commercially, as long as you share source of modified versions offered over a
+network. Commercial licensing is available for cases that can't comply with
+the AGPL — contact the copyright holder via GitHub.
+
+Note that downloadable generation models carry their own licenses (Hunyuan
+Community License excludes the EU/UK/South Korea; FLUX.1-dev is
+non-commercial); TRELLIS.2, TripoSG and FLUX.1-schnell are MIT/Apache-2.0.
+The code license does not cover model weights.

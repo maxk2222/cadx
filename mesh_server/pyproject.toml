@@ -2,6 +2,8 @@
 name = "meshserver"
 version = "0.1.0"
 description = "Local image-to-3D mesh generation sidecar (Hunyuan3D / TRELLIS.2 / TripoSG adapters)"
+license = "AGPL-3.0-or-later"
+authors = [{name = "Maximilian Koch"}]
 requires-python = ">=3.11,<3.13"
 dependencies = [
     "fastapi>=0.115",
