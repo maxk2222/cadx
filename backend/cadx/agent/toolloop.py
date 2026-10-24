@@ -334,6 +334,13 @@ def _optimize_run_row(r: dict[str, Any]) -> str:
         row += f" volfrac={float(vf):g}"
     if top.get("load_path_ok") is False:
         row += " load_path=BROKEN"
+        failed = [
+            str(c.get("case_name") or c.get("case"))
+            for c in (top.get("load_path_cases") or [])
+            if not c.get("reachable")
+        ]
+        if failed:
+            row += f"({','.join(failed)})"
     return row
 
 

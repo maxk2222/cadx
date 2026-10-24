@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import func
 from sqlmodel import col, select
@@ -75,13 +76,21 @@ def _u(s: str | uuid.UUID) -> uuid.UUID:
 
 
 def _json_safe(obj: Any) -> Any:
-    """Replace NaN/±Inf recursively (Postgres JSON rejects non-finite floats)."""
+    """Replace NaN/±Inf recursively (Postgres JSON rejects non-finite floats).
+
+    Also unwraps numpy scalars/arrays — FEM telemetry dicts occasionally
+    carry them and a bare ndarray kills the version-row JSON flush.
+    """
     if isinstance(obj, float) and not math.isfinite(obj):
         return None
     if isinstance(obj, dict):
         return {k: _json_safe(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
         return [_json_safe(v) for v in obj]
+    if isinstance(obj, np.generic):
+        return obj.item()
+    if isinstance(obj, np.ndarray):
+        return _json_safe(obj.tolist())
     return obj
 
 
@@ -1279,7 +1288,7 @@ async def _try_optimize_session(
         mesh["topopt_kept_base"] = {
             "kept_base": True,
             "reasoning": agent.reasoning or "",
-            "rejected_runs": agent.runs,
+            "rejected_runs": _json_safe(agent.runs),
         }
         version.mesh = mesh
         job = await db.get(Job, job_id)
@@ -1666,11 +1675,13 @@ async def run_optimize_job(  # noqa: C901
         version.resolved_mode = "topopt"
         version.spec = parent.spec
         version.fem = fem or None
-        version.mesh = {
-            **(result.get("mesh") or {}),
-            "topopt": {**topopt, **({"agent_runs": agent_runs} if agent_runs else {})},
-            "from_optimize_of": str(parent.id),
-        }
+        version.mesh = _json_safe(
+            {
+                **(result.get("mesh") or {}),
+                "topopt": {**topopt, **({"agent_runs": agent_runs} if agent_runs else {})},
+                "from_optimize_of": str(parent.id),
+            }
+        )
         version.analysis = result.get("analysis")
         version.params = {"optimize": optimize, "load_cases": load_cases, "material": material}
         version.iterations = result_it
@@ -1871,13 +1882,15 @@ async def run_topopt_resample_job(ctx: dict[str, Any], payload: dict[str, Any]) 
             version.resolved_mode = "topopt"
         version.spec = parent.spec
         version.fem = fem or None
-        version.mesh = {
-            **(result.get("mesh") or {}),
-            "topopt": topopt,
-            "resampled_from": str(parent.id),
-            # the density field is shared with the parent run
-            "density_relpath": density_rel,
-        }
+        version.mesh = _json_safe(
+            {
+                **(result.get("mesh") or {}),
+                "topopt": topopt,
+                "resampled_from": str(parent.id),
+                # the density field is shared with the parent run
+                "density_relpath": density_rel,
+            }
+        )
         version.mesh["topopt"]["density_relpath"] = density_rel
         version.analysis = result.get("analysis")
         version.params = {
@@ -2071,11 +2084,13 @@ async def run_refine_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[s
         version.resolved_mode = parent.resolved_mode
         version.spec = parent.spec
         version.fem = fem or None
-        version.mesh = {
-            **(result.get("mesh") or {}),
-            "refine": refine_report,
-            "refined_from": str(parent.id),
-        }
+        version.mesh = _json_safe(
+            {
+                **(result.get("mesh") or {}),
+                "refine": refine_report,
+                "refined_from": str(parent.id),
+            }
+        )
         version.analysis = result.get("analysis")
         version.params = {
             "refine": {
@@ -2253,11 +2268,13 @@ async def run_organic_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[
         version.gen_mode = "mesh"  # tessellated output — ops-only edits apply
         version.resolved_mode = "mesh"
         version.spec = parent.spec
-        version.mesh = {
-            **(result.get("mesh") or {}),
-            "organic": org,
-            "from_organic_of": str(parent.id),
-        }
+        version.mesh = _json_safe(
+            {
+                **(result.get("mesh") or {}),
+                "organic": org,
+                "from_organic_of": str(parent.id),
+            }
+        )
         version.analysis = result.get("analysis")
         version.params = {"organic": organic}
         version.iterations = 1

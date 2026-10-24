@@ -1631,7 +1631,7 @@ def _verify_export_structure(
     # meaningful safety factor — skip the nominal+realization sweep (each
     # costs a full solve) and report the broken path instead of burning the
     # structural budget on a doomed part.
-    bottleneck_mm2, sf_floor, load_path_ok = _early_loadpath_cert(
+    bottleneck_mm2, sf_floor, load_path_ok, cert_per_case = _early_loadpath_cert(
         export_domain, cases, anchors, mat, s, warnings
     )
     if load_path_ok is False:
@@ -1654,6 +1654,7 @@ def _verify_export_structure(
             "bottleneck_mm2": bottleneck_mm2,
             "sf_floor": sf_floor,
             "load_path_ok": load_path_ok,
+            "load_path_cases": cert_per_case,
             "sf_mesh_sensitive": None,
             "warnings": warnings,
         }
@@ -1780,6 +1781,7 @@ def _verify_export_structure(
         "bottleneck_mm2": bottleneck_mm2,
         "sf_floor": sf_floor,
         "load_path_ok": load_path_ok,
+        "load_path_cases": cert_per_case,
         "sf_mesh_sensitive": sf_mesh_sensitive,
         "warnings": warnings,
     }
@@ -1792,37 +1794,50 @@ def _early_loadpath_cert(
     mat: Any,
     s: Any,
     warnings: list[str],
-) -> tuple[float | None, float | None, bool | None]:
+) -> tuple[float | None, float | None, bool | None, list[dict] | None]:
     """Run the min-cut load-path certificate before any FEM solve.
 
-    Returns ``(bottleneck_mm2, sf_floor, load_path_ok)`` — the last one
-    ``False`` when a case's load cannot reach its fixtures through the
-    voxelized export, which no solve can rescue."""
+    Returns ``(bottleneck_mm2, sf_floor, load_path_ok, per_case)`` — the
+    last one ``False`` when a case's load cannot reach its fixtures
+    through the voxelized export, which no solve can rescue."""
     if not getattr(s, "fem_loadpath_cert", False):
-        return None, None, None
+        return None, None, None, None
     from cadx.cad.fem.loadpath_cert import loadpath_certificate
     from cadx.cad.fem.regions import resolve_case_dofs
 
     try:
-        cases_res = [
-            resolve_case_dofs(
+        cases_res = []
+        for c in cases:
+            fixed3, F, w = resolve_case_dofs(
                 export_domain,
                 c,
                 anchors,
                 density_g_cm3=getattr(mat, "density_g_cm3", 1.24),
-            )[:2]
-            for c in cases
-        ]
+            )
+            cases_res.append((fixed3, F))
+            # region-resolution warnings explain WHY an endpoint came back
+            # empty (fallback pinned a void patch) — surface them next to the
+            # certificate's own reachability verdicts
+            warnings.extend(w[:4])
         cert = loadpath_certificate(
             export_domain,
             cases_res,
             yield_mpa=float(getattr(mat, "yield_mpa", 0.0) or 0.0),
         )
         warnings.extend(cert.get("warnings") or [])
-        return cert.get("bottleneck_mm2"), cert.get("sf_floor"), cert.get("load_path_ok")
+        per_case = cert.get("per_case")
+        if isinstance(per_case, list):
+            for rec, case in zip(per_case, cases, strict=False):
+                rec["case_name"] = getattr(case, "name", None) or str(rec.get("case"))
+        return (
+            cert.get("bottleneck_mm2"),
+            cert.get("sf_floor"),
+            cert.get("load_path_ok"),
+            per_case,
+        )
     except Exception as e:
         warnings.append(f"load-path certificate failed: {str(e)[:80]}")
-        return None, None, None
+        return None, None, None, None
 
 
 def _gate_sf(info: dict[str, Any] | None, report: Any) -> float | None:
@@ -2628,6 +2643,9 @@ def run_topopt_pipeline(  # noqa: C901
             volume_preserve=opt.volume_preserve,
             vol_target_scale=vol_target_scale,
         )
+        # ndarray telemetry must not reach the persisted extract dict —
+        # it kills the version-row JSON flush
+        bridged3 = extract_info.pop("bridged_mask", None)
         out["n_components"] = n_components
         out["extract"] = extract_info
         # floor-pinned smoothing: keeps a flat manufacturing base flat.
@@ -2638,7 +2656,6 @@ def run_topopt_pipeline(  # noqa: C901
         # threshold must not flip the smoothing regime between passes.
         if not crisp_extraction:
             thin_cells = float(eff_span.min()) / max(design_domain.pitch, 1e-6)
-            bridged3 = extract_info.get("bridged_mask")
             pin3 = passive.reshape(design_domain.dims).copy()
             if bridged3 is not None:
                 # corridor cells added by island-bridging pin like passive —
@@ -2985,6 +3002,7 @@ def run_topopt_pipeline(  # noqa: C901
         "bottleneck_mm2": exp_info.get("bottleneck_mm2"),
         "sf_floor": exp_info.get("sf_floor"),
         "load_path_ok": exp_info.get("load_path_ok"),
+        "load_path_cases": exp_info.get("load_path_cases"),
         # post-extraction early flags: regions the optimizer emptied
         # entirely (their load path can never verify) and pinned cells the
         # extraction dropped (a bug signal — passive is not designable)
@@ -3079,9 +3097,15 @@ def run_topopt_pipeline(  # noqa: C901
         # the geometric certificate found a case whose loads cannot reach
         # their fixtures through the export solid — structurally broken
         verification["valid"] = False
+        failed_cases = [
+            str(c.get("case_name") or c.get("case"))
+            for c in (exp_info.get("load_path_cases") or [])
+            if not c.get("reachable")
+        ]
         res.topopt["warnings"].append(
             "load-path certificate: a load case cannot reach its fixtures "
             "through the export solid — the part is structurally disconnected"
+            + (f" (failing: {', '.join(failed_cases)})" if failed_cases else "")
         )
     if verification["sf_ratio"] is not None and verification["sf_ratio"] > 3.0:
         verification["valid"] = False
@@ -3190,6 +3214,7 @@ def run_topopt_pipeline(  # noqa: C901
             "bottleneck_mm2": verification["bottleneck_mm2"],
             "sf_floor": verification["sf_floor"],
             "load_path_ok": verification["load_path_ok"],
+            "load_path_cases": exp_info.get("load_path_cases"),
             "sf_mesh_sensitive": verification["sf_mesh_sensitive"],
             "min_member_mm": best["min_member_mm"],
             "thin_fraction": round(best["thin_fraction"], 4),
@@ -3727,9 +3752,11 @@ def run_infill_pipeline(  # noqa: C901
             sigma_px=0.0 if crisp else opt.extract_sigma_px,
             volume_preserve=opt.volume_preserve,
         )
+        # ndarray telemetry must not reach the persisted extract dict —
+        # it kills the version-row JSON flush
+        bridged3 = extract.pop("bridged_mask", None)
         if not crisp:
             thin_cells = float(eff_span.min()) / max(domain.pitch, 1e-6)
-            bridged3 = extract.get("bridged_mask")
             pin3 = passive.reshape(domain.dims).copy()
             if bridged3 is not None:
                 # corridor cells added by island-bridging pin like passive —
@@ -4172,6 +4199,7 @@ def run_infill_pipeline(  # noqa: C901
         "bottleneck_mm2": (exp_info or {}).get("bottleneck_mm2"),
         "sf_floor": (exp_info or {}).get("sf_floor"),
         "load_path_ok": (exp_info or {}).get("load_path_ok"),
+        "load_path_cases": (exp_info or {}).get("load_path_cases"),
         "sf_mesh_sensitive": (exp_info or {}).get("sf_mesh_sensitive"),
         # homogenized lattice model: member-scale SF on C_H(rho) class
         # tensors (sf_homog) and its micro stress-localized floor
@@ -4288,9 +4316,15 @@ def run_infill_pipeline(  # noqa: C901
         # the geometric certificate found a case whose loads cannot reach
         # their fixtures through the export solid — structurally broken
         verification["valid"] = False
+        failed_cases = [
+            str(c.get("case_name") or c.get("case"))
+            for c in ((exp_info or {}).get("load_path_cases") or [])
+            if not c.get("reachable")
+        ]
         res.topopt["warnings"].append(
             "load-path certificate: a load case cannot reach its fixtures "
             "through the export solid — the part is structurally disconnected"
+            + (f" (failing: {', '.join(failed_cases)})" if failed_cases else "")
         )
     if sf_ratio is not None and sf_ratio > 3.0:
         verification["valid"] = False
@@ -4382,6 +4416,7 @@ def run_infill_pipeline(  # noqa: C901
             "bottleneck_mm2": verification["bottleneck_mm2"],
             "sf_floor": verification["sf_floor"],
             "load_path_ok": verification["load_path_ok"],
+            "load_path_cases": verification.get("load_path_cases"),
             "sf_mesh_sensitive": verification["sf_mesh_sensitive"],
             "sf_homog": verification["sf_homog"],
             "sf_micro": verification["sf_micro"],
@@ -4619,7 +4654,10 @@ def run_topopt_resample(  # noqa: C901
     # flag stored in the density field
     from cadx.cad.mesh_ops import smooth_preserve
 
-    bridged3 = extract_info.get("bridged_mask")
+    # ndarray telemetry must not reach the persisted extract dict —
+    # it kills the version-row JSON flush (already stored in res.topopt
+    # above, so pop it off the shared dict)
+    bridged3 = extract_info.pop("bridged_mask", None)
     pin3 = passive.reshape(domain.dims).copy()
     if bridged3 is not None:
         # corridor cells added by island-bridging pin like passive — the
@@ -4731,6 +4769,7 @@ def run_topopt_resample(  # noqa: C901
             res.topopt["bottleneck_mm2"] = info["bottleneck_mm2"]
             res.topopt["sf_floor"] = info["sf_floor"]
             res.topopt["load_path_ok"] = info["load_path_ok"]
+            res.topopt["load_path_cases"] = info.get("load_path_cases")
             res.topopt["sf_mesh_sensitive"] = info["sf_mesh_sensitive"]
             res.topopt.setdefault("warnings", []).extend(info["warnings"])
         except Exception as e:

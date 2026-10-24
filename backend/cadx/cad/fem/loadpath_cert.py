@@ -198,13 +198,22 @@ def loadpath_certificate(
             fixed_nodes = fixed_nodes.any(axis=1)
         F3 = np.asarray(F, dtype=float).reshape(-1, 3)
         load_nodes = np.abs(F3).sum(axis=1) > 0
+        rec["load_nodes"] = int(load_nodes.sum())
+        rec["fix_nodes"] = int(fixed_nodes.sum())
         load_cells = _cells_at_nodes(domain, load_nodes, solid)
         fix_cells = _cells_at_nodes(domain, fixed_nodes, solid)
+        rec["load_cells"] = int(load_cells.size)
+        rec["fix_cells"] = int(fix_cells.size)
         if load_cells.size == 0 or fix_cells.size == 0:
             warnings.append(
                 f"case {ci}: no load or fixture cells on this grid — load path broken"
             )
-            log.warning("loadpath_cert.endpoint_missing", case=ci)
+            log.warning(
+                "loadpath_cert.endpoint_missing",
+                case=ci,
+                load_cells=int(load_cells.size),
+                fix_cells=int(fix_cells.size),
+            )
             out["per_case"].append(rec)
             continue
         if np.intersect1d(load_cells, fix_cells).size:
