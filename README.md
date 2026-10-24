@@ -271,8 +271,13 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow and
 - Developed and tested on Apple Silicon (64 GB, MLX/MPS) only; the CUDA and
   ROCm paths are implemented but not yet validated on real GPU hardware.
 - Single-user, local operation (no auth) — don't expose it to a network.
-- FEM/TopOpt is a simplified linear-elastic voxel analysis, not a certified
-  structural solver; organic restyling is aesthetic only —
+- Structural analysis is **linear-elastic Hex8 FEM** on a voxel grid (opt-in
+  FDM layer anisotropy) — no plasticity, contact, buckling or fatigue. Real
+  solvers (CHOLMOD/SuperLU/AMG), TopOpt via OC/MMA/BESO with stress,
+  displacement and minmax constraints, and `sf_verified` as worst case
+  across eroded/dilated realizations plus a mesh-free load-path certificate
+  — still design feedback, not a certification solver. Organic restyling is
+  aesthetic only —
   [docs/fem-topopt.md](docs/fem-topopt.md) ·
   [docs/organic.md](docs/organic.md).
 - Mesh/hybrid STEP base bodies are tessellated (faceted); the refine pass
