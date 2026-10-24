@@ -1135,3 +1135,38 @@ def test_post_cut_cleanup_drops_sliver_keeps_real_bodies():
     mesh2 = trimesh.util.concatenate([main, real])
     out2 = _post_cut_cleanup(mesh2, RefineReport())
     assert len([p for p in out2.split(only_watertight=False) if len(p.faces)]) == 2
+
+
+def test_apply_refine_drops_sliver_minted_by_postpass(monkeypatch):
+    """The reskin/re-cut stage runs after `_post_cut_cleanup` — a zero-volume
+    sheet it mints (observed on the robot-arm flange wall) must still be
+    dropped so the shipped mesh reports one body."""
+    import cadx.cad.fem.refine as rf
+
+    base = trimesh.creation.box(extents=[20, 20, 10])
+
+    def slivered_postpass(out, report):
+        out = out.copy()
+        # degenerate zero-area face pair riding the +x face — volume 0
+        out = trimesh.util.concatenate(
+            [
+                out,
+                trimesh.Trimesh(
+                    vertices=[
+                        [12.0, 1.0, 5.0],
+                        [18.0, 1.0, 5.0],
+                        [10.0, 1.0, 5.0],
+                        [19.0, 1.0, 5.0],
+                    ],
+                    faces=[[0, 1, 2], [1, 3, 2]],
+                    process=False,
+                ),
+            ]
+        )
+        return out
+
+    monkeypatch.setattr(rf, "_watertight_postpass", slivered_postpass)
+    out, rep = rf.apply_refine(base, [], base_mesh=base, keep_regions=[], anchors=[])
+    bodies = [p for p in out.split(only_watertight=False) if len(p.faces)]
+    assert len(bodies) == 1
+    assert any("sliver" in w for w in rep.warnings)

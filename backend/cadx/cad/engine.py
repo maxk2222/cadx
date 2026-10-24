@@ -2648,6 +2648,17 @@ def run_topopt_pipeline(  # noqa: C901
         bridged3 = extract_info.pop("bridged_mask", None)
         out["n_components"] = n_components
         out["extract"] = extract_info
+        # marching-cubes can leave zero-volume face-plane slivers — they
+        # count as extra bodies downstream even though they carry no mass.
+        # min_fraction mirrors the refine sliver floor (~1e-4 of the main
+        # body): the default 0.5% would drop real sealed cavities
+        opt_mesh, dropped_slivers = keep_significant_components(
+            opt_mesh, min_fraction=1e-4
+        )
+        if dropped_slivers:
+            extract_warnings.append(
+                f"dropped {dropped_slivers} near-zero-volume mesh sliver components"
+            )
         # floor-pinned smoothing: keeps a flat manufacturing base flat.
         # Taubin shrinks thin members measurably per pass — on parts only a
         # few cells thick, cap iterations so the export keeps the volume
@@ -2693,6 +2704,16 @@ def run_topopt_pipeline(  # noqa: C901
             helical_threads=False,
         )
         extract_warnings.extend(finish_warnings)
+        # last-mile sliver drop: the finish path (restore unions, reskin,
+        # re-cut booleans) can mint zero-volume sheets that survive as a
+        # phantom second body and trip the bodies gate on the shipped mesh
+        opt_mesh, dropped_slivers = keep_significant_components(
+            opt_mesh, min_fraction=1e-4
+        )
+        if dropped_slivers:
+            extract_warnings.append(
+                f"dropped {dropped_slivers} near-zero-volume post-finish sliver components"
+            )
         if recut_report is not None:
             out["recut"] = recut_report
         if output_envelope is not None:

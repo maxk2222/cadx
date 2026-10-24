@@ -2030,6 +2030,10 @@ def apply_refine(
     pre = out
     out = _watertight_postpass(out, report)
     out = _postpass_recut(out, pre, features, report)
+    # the reskin/re-cut booleans can mint fresh zero-volume slivers after the
+    # pre-postpass cleanup already ran — drop again so the shipped mesh's
+    # body count only counts real solids
+    out = _drop_sliver_parts(out, report)
     return out, report
 
 
@@ -2053,6 +2057,11 @@ def _post_cut_cleanup(out: trimesh.Trimesh, report: RefineReport) -> trimesh.Tri
             out = cleaned
     except Exception:
         pass
+    return _drop_sliver_parts(out, report)
+
+
+def _drop_sliver_parts(out: trimesh.Trimesh, report: RefineReport) -> trimesh.Trimesh:
+    """Drop sub-mm³ disconnected fragments, keeping real bodies/patches."""
     try:
         parts = [p for p in out.split(only_watertight=False) if len(getattr(p, "faces", []))]
         if len(parts) > 1:
