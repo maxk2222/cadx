@@ -271,7 +271,9 @@ def _gate_mesh(g: dict[str, Any], outcome: StageOutcome) -> GateResult:
 
     if name == "bodies":
         try:
-            n = len(mesh.split(only_watertight=False))
+            from cadx.cad.mesh_ops import solid_body_count
+
+            n = solid_body_count(mesh)
         except Exception:
             n = 1
         maxb = int(g.get("max") or 1)

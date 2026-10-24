@@ -252,6 +252,38 @@ def test_mesh_gates(tmp_path):
     assert res.ok is False and res.detail
 
 
+def test_bodies_gate_ignores_zero_volume_slivers(tmp_path):
+    """Degenerate flap/sliver faces left by extraction must not count as
+    bodies — the gate measures physical solids (positive-volume
+    components), matching the pipeline's ``n_bodies_export`` metric."""
+    import numpy as np
+
+    box = trimesh.creation.box(extents=(20, 20, 20))
+    # a zero-area closed "sliver": two triangles over three collinear
+    # vertices, the artifact marching-cubes/booleans leave at recut planes
+    sliver = trimesh.Trimesh(
+        vertices=np.array([[40.0, 0.0, 0.0], [46.0, 0.0, 0.0], [43.0, 0.0, 0.0]], dtype=float),
+        faces=np.array([[0, 2, 1], [0, 1, 2]]),
+        process=False,
+    )
+    mesh = trimesh.util.concatenate([box, sliver])
+    assert len(mesh.split(only_watertight=False)) == 2  # raw split sees the flake
+    p = tmp_path / "slivered.stl"
+    mesh.export(p)
+    out = _out(artifact_files=[str(p)])
+    g = run_gates([{"type": "bodies", "max": 1}], out, 0)[0]
+    assert g.ok, g.detail
+    # a real second solid still trips the gate
+    mesh2 = trimesh.util.concatenate(
+        [box, trimesh.creation.box(extents=(5, 5, 5)).apply_translation((50, 0, 0))]
+    )
+    p2 = tmp_path / "two.stl"
+    mesh2.export(p2)
+    out2 = _out(artifact_files=[str(p2)])
+    g2 = run_gates([{"type": "bodies", "max": 1}], out2, 0)[0]
+    assert not g2.ok and g2.measured == 2
+
+
 def test_radial_peaks_counts_lobes(tmp_path):
     import numpy as np
 

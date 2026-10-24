@@ -94,9 +94,7 @@ def test_alpha_wrap_skipped_on_low_cgroup_headroom(monkeypatch):
 
     calls: list[trimesh.Trimesh] = []
     monkeypatch.setattr(mesh_repair_pml, "pm_available", lambda: True)
-    monkeypatch.setattr(
-        mesh_repair_pml, "alpha_wrap", lambda m: calls.append(m) or m
-    )
+    monkeypatch.setattr(mesh_repair_pml, "alpha_wrap", lambda m: calls.append(m) or m)
     monkeypatch.setattr(resources, "mem_headroom_mb", lambda: 500.0)
     assert mo._alpha_wrap_repair(trimesh.creation.box([10, 10, 10]), 12) is None
     assert calls == []
@@ -132,6 +130,29 @@ def test_export_from_brep_repairs_shipped_meshes(tmp_path, monkeypatch):
     out = export_from_brep(brep, out_dir)
     m = trimesh.load(str(out_dir / out["stl"]), force="mesh")
     assert m.is_watertight and m.is_winding_consistent
+
+
+def test_repair_mesh_file_drops_degenerate_flaps(tmp_path):
+    """Zero-area duplicate-face flaps (recut/boolean debris at keep planes)
+    split off as phantom bodies — the shipped file must lose them even when
+    the in-memory analysis looked watertight (robot-arm-mount eval)."""
+    import numpy as np
+
+    box = trimesh.creation.box([20, 20, 20])
+    flap_verts = np.array(
+        [[43.75, 9.19, 3.375], [50.0, 9.19, 3.375], [47.65, 9.19, 3.375]],
+        dtype=float,
+    )
+    flap = trimesh.Trimesh(
+        vertices=flap_verts, faces=np.array([[0, 2, 1], [0, 1, 2]]), process=False
+    )
+    mesh = trimesh.util.concatenate([box, flap])
+    stl = tmp_path / "flapped.stl"
+    mesh.export(str(stl))
+    assert len(trimesh.load(str(stl), force="mesh").split(only_watertight=False)) == 2
+    assert repair_mesh_file(stl) is True
+    m = trimesh.load(str(stl), force="mesh")
+    assert m.is_watertight and len(m.split(only_watertight=False)) == 1
 
 
 def test_run_pipeline_reports_watertight_after_repair(tmp_path):

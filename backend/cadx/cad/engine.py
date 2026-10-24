@@ -208,15 +208,17 @@ class ExecResult:
 def _repair_analysis_mesh(analysis: Analysis, stl_path: Path) -> None:
     """A leaky tessellation must not be handed to the slicer as-is — repair the
     analysis STL in place so downstream consumers (renders, DfM, critique)
-    see the post-repair state."""
-    if analysis.watertight is False:
-        try:
-            analysis.watertight_after_repair = repair_mesh_file(stl_path)
-        except Exception as e:
-            log.warning("export.repair_failed", error=str(e)[:200])
-            analysis.watertight_after_repair = False
-    else:
+    see the post-repair state. Runs unconditionally: the STL roundtrip can
+    degrade a watertight in-memory mesh (non-manifold flap faces splitting
+    into phantom bodies) — repair_mesh_file's heavy steps stay conditional
+    on the file-level state it actually finds."""
+    if analysis.watertight is not False:
         analysis.watertight_after_repair = analysis.watertight
+    try:
+        analysis.watertight_after_repair = repair_mesh_file(stl_path)
+    except Exception as e:
+        log.warning("export.repair_failed", error=str(e)[:200])
+        analysis.watertight_after_repair = False
 
 
 def _repair_export_meshes(exports: dict[str, str | None], exp_dir: Path) -> None:
@@ -1082,8 +1084,10 @@ def run_mesh_pipeline(  # noqa: C901
                 res.exports["step"] = None
         res.exports["dxf"] = None
         res.exports["svg"] = None
-        if res.analysis.watertight is False:
-            _repair_export_meshes(res.exports, out_dir / "exports")
+        # unconditional: the in-memory watertight flag does not guarantee
+        # the round-tripped files are clean — slivers/flaps can split off
+        # as phantom bodies; heavy repair stays conditional inside
+        _repair_export_meshes(res.exports, out_dir / "exports")
     else:
         res.exports = {"stl": None}
     res.timings["export_s"] = round(time.monotonic() - t, 2)
@@ -3622,8 +3626,11 @@ def run_topopt_pipeline(  # noqa: C901
     except Exception as e:
         log.warning("features.mesh_measure_failed", error=str(e)[:160])
     _repair_analysis_mesh(res.analysis, stl_path)
-    if res.analysis.watertight is False:
-        _repair_export_meshes(res.exports, out_dir / "exports")
+    # unconditional: the in-memory watertight flag does not guarantee the
+    # round-tripped files are clean — non-manifold flap faces / zero-volume
+    # slivers can split off as phantom bodies; heavy repair stays
+    # conditional inside repair_mesh_file
+    _repair_export_meshes(res.exports, out_dir / "exports")
     res.mesh = {
         "pipeline": "topopt",
         "triangles": len(opt_mesh.faces),
@@ -4847,8 +4854,10 @@ def run_infill_pipeline(  # noqa: C901
     res.exports["svg"] = None
     res.analysis = mesh_analysis(opt_mesh)
     _repair_analysis_mesh(res.analysis, stl_path)
-    if res.analysis.watertight is False:
-        _repair_export_meshes(res.exports, out_dir / "exports")
+    # unconditional: in-memory watertight does not guarantee the shipped
+    # files — flap/sliver debris can split off as phantom bodies; heavy
+    # repair stays conditional inside repair_mesh_file
+    _repair_export_meshes(res.exports, out_dir / "exports")
     res.mesh = {
         "pipeline": "infill",
         "triangles": len(opt_mesh.faces),
@@ -5291,8 +5300,10 @@ def run_organic_pipeline(
     res.exports["svg"] = None
     res.analysis = mesh_analysis(opt_mesh)
     _repair_analysis_mesh(res.analysis, stl_path)
-    if res.analysis.watertight is False:
-        _repair_export_meshes(res.exports, out_dir / "exports")
+    # unconditional: in-memory watertight does not guarantee the shipped
+    # files — flap/sliver debris can split off as phantom bodies; heavy
+    # repair stays conditional inside repair_mesh_file
+    _repair_export_meshes(res.exports, out_dir / "exports")
     res.mesh = {
         "pipeline": "organic",
         "triangles": len(opt_mesh.faces),
@@ -5522,8 +5533,10 @@ def run_refine(
     res.exports["svg"] = None
     res.analysis = mesh_analysis(out)
     _repair_analysis_mesh(res.analysis, stl_path)
-    if res.analysis.watertight is False:
-        _repair_export_meshes(res.exports, out_dir / "exports")
+    # unconditional: in-memory watertight does not guarantee the shipped
+    # files — flap/sliver debris can split off as phantom bodies; heavy
+    # repair stays conditional inside repair_mesh_file
+    _repair_export_meshes(res.exports, out_dir / "exports")
     if _is_cancelled(cancelled):
         _mark_cancelled(res)
         return res
