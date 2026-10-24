@@ -561,6 +561,59 @@ BUILD_TOOLS = [
     ),
 ]
 
+_MACHINE_OPS = ("drill", "tap", "cbore", "csk", "spotface", "pocket", "boss")
+
+BUILD_MACHINE_TOOLS = [
+    _fn(
+        "describe_faces",
+        "List the faces of the LAST VERIFIED part (index, kind, area, center, "
+        "normal) — the deterministic inventory for targeting machining ops. "
+        "Indices match machine_feature's face index. Run verify() first so "
+        "the listing reflects the current body.",
+        {},
+        [],
+    ),
+    _fn(
+        "machine_feature",
+        "Apply a standard machining operation ON a named face — no Pos/Rot "
+        "math: the face resolves semantically, the pick point projects onto "
+        "the skin (works on planes, cylinders, spheres, slopes) and cadlib "
+        "builds the canonical cutter. The call lands as a `## block:` in the "
+        "buffer and is auto-verified. 'fläche x, innengewinde M8 orthogonal, "
+        "tiefe 25' = machine_feature(face='left', op='tap', "
+        "dims={major_d:8, pitch:1.25, depth:25}).",
+        {
+            "face": {
+                "description": "face descriptor: word (top/bottom/front/back/"
+                "left/right), signed axis ('+z','-x',…), describe_faces index, "
+                "surface kind ('planar','cylindrical','spherical','largest'), "
+                "or an [x,y,z] pick point (nearest face, machined AT that point)",
+            },
+            "op": {
+                "type": "string",
+                "enum": list(_MACHINE_OPS),
+                "description": "drill|tap|cbore|csk|spotface|pocket|boss",
+            },
+            "at": {
+                "description": "optional [u,v] tangent-mm offsets on the face "
+                "(re-projected onto curved skin) or an [x,y,z] pick point",
+            },
+            "axis": {
+                "description": "optional approach-axis override ('+z','-x' or "
+                "[x,y,z]) — default is the face normal (orthogonal to face)",
+            },
+            "on": _s("variable holding the part to machine (default 'result')"),
+            "dims": {
+                "type": "object",
+                "description": "op parameters in mm: dia, depth (blind — omit "
+                "for through), major_d, pitch, hand, drill_dia, cbore_dia, "
+                "cbore_depth, csk_dia, csk_angle, width, length, entry_chamfer",
+            },
+        },
+        ["face", "op", "dims"],
+    ),
+]
+
 _BLOCK_RE = re.compile(r"^## block:\s*(\S+)", re.M)
 _MAX_CHECKPOINTS = 8
 
@@ -1409,6 +1462,44 @@ MESH_TRANSFORM_TOOLS = [
         [],
     ),
     _fn(
+        "mesh_machine_feature",
+        "Semantic machining on a SURFACE — the mesh analogue of machine_feature "
+        "in build sessions. Target the entry surface once, then the cutter is "
+        "built and oriented automatically (normal to the skin, any direction — "
+        "not just x/y/z): "
+        'face="top|bottom|front|back|left|right|±x|±y|±z" casts a ray from the '
+        "bbox extreme at at=[u,v] (default in-plane centre); face or at as "
+        "[x,y,z] is a pick point resolved to the nearest surface point + its "
+        "outward normal. axis overrides the normal as the approach direction. "
+        "op: drill|tap|cbore|csk|insert|bearing_seat|tunnel — e.g. an M8 "
+        "tapped bore into the left sidewall: "
+        '{"op":"tap","face":"left","at":[0,12],"major_d":8,"pitch":1.25,'
+        '"depth":20}. tap cuts the tap-drill bore plus the real helical ISO '
+        "groove (helical=false → implied thread, plain bore). depth omitted "
+        "→ through.",
+        {
+            "op": {
+                "type": "string",
+                "enum": ["drill", "tap", "cbore", "csk", "insert", "bearing_seat", "tunnel"],
+                "description": "machining operation",
+            },
+            "face": {
+                "type": ["string", "array"],
+                "description": "'top|bottom|front|back|left|right|±x|±y|±z' or [x,y,z] pick",
+            },
+            "at": {"type": "array", "description": "[u,v] on the face or [x,y,z] pick"},
+            "axis": {"type": ["string", "array"], "description": "approach dir 'x|y|z' or [x,y,z]"},
+            "dia": {"type": "number", "description": "bore Ø mm (tap: pilot; else required)"},
+            "major_d": {"type": "number", "description": "tap: thread major Ø"},
+            "pitch": {"type": "number", "description": "tap: thread pitch (default ISO coarse)"},
+            "depth": {"type": "number", "description": "mm; omit = through"},
+            "cbore_dia": {"type": "number"}, "cbore_depth": {"type": "number"},
+            "csk_dia": {"type": "number"}, "csk_angle": {"type": "number"},
+            "helical": {"type": "boolean", "description": "tap: real groove (default true)"},
+        },
+        ["op"],
+    ),
+    _fn(
         "mesh_radial_profile",
         "Sculpt the OUTER shape along an axis without primitives: scales the "
         "cross-section radially at stations (0..1 along `axis`). r1/r2 are "
@@ -1802,7 +1893,7 @@ class ToolSession:
                 *CHECK_SNIPPET_TOOLS,
             ]
             out += self._verify_render_tools()
-            return out + DONE_TOOLS + BUILD_TOOLS + IMAGE_TOOLS
+            return out + DONE_TOOLS + BUILD_TOOLS + BUILD_MACHINE_TOOLS + IMAGE_TOOLS
         if self.kind == "inspect":
             return [*CODE_READ_TOOLS, *INFO_TOOLS, *LIBRARY_INFO_TOOLS, *IMAGE_TOOLS]
         if self.kind == "mesh":
@@ -2092,6 +2183,146 @@ class ToolSession:
         res["lines_total"] = len(self.buffer.splitlines())
         res["blocks"] = self._block_names()
         return res
+
+    # -- semantic machining (build kind only) ----------------------------------- #
+
+    def _load_session_part(self) -> tuple[Any | None, str | None]:
+        """Last verified B-Rep as a solid — worker-side introspection, no
+        sandbox call. Returns (part, error): exactly one is set."""
+        rel = self._session_brep_rel()
+        if rel is None:
+            return None, "no verified geometry yet — run verify() first"
+        try:
+            from build123d import import_brep
+
+            part = import_brep(str(storage.resolve(rel)))
+        except Exception as e:
+            return None, f"could not load the verified B-Rep: {e}"
+        return part, None
+
+    def _tool_describe_faces(self, a: dict[str, Any]) -> dict[str, Any]:
+        if self.kind != "build":
+            return {"ok": False, "error": "describe_faces is only available in build sessions"}
+        part, err = self._load_session_part()
+        if err:
+            return {"ok": False, "error": err}
+        from cadx.cad import cadlib
+
+        faces = cadlib.describe_faces(part)
+        return {
+            "ok": True,
+            "faces": faces,
+            "note": "indices match machine_feature's face parameter — or use "
+            "a word ('top','left'), axis ('+z'), kind ('cylindrical') or an "
+            "[x,y,z] pick point",
+        }
+
+    async def _tool_machine_feature(self, a: dict[str, Any]) -> dict[str, Any]:
+        if self.kind != "build":
+            return {"ok": False, "error": "machine_feature is only available in build sessions"}
+        op = str(a.get("op") or "").strip().lower()
+        if op not in _MACHINE_OPS:
+            return {
+                "ok": False,
+                "error": f"op must be one of {list(_MACHINE_OPS)}",
+            }
+        dims = a.get("dims") or {}
+        if not isinstance(dims, dict):
+            return {"ok": False, "error": "dims must be an object of mm values"}
+        on = str(a.get("on") or "result").strip() or "result"
+        if not re.match(r"^[A-Za-z_]\w*$", on):
+            return {"ok": False, "error": "on must be a variable name"}
+        face = a.get("face")
+        at = a.get("at")
+        axis = a.get("axis")
+
+        # worker-side preview on the last verified BRep — resolve the face
+        # and land point so the answer can say WHERE the op will land before
+        # the block commits (bad descriptor → error before editing)
+        preview: dict[str, Any] = {}
+        part, perr = self._load_session_part()
+        if part is not None:
+            try:
+                from cadx.cad import cadlib
+
+                resolved = cadlib.resolve_face(part, face)
+                pick = at if isinstance(at, list | tuple) and len(at) == 3 else None
+                uv = (
+                    (float(at[0]), float(at[1]))
+                    if isinstance(at, list | tuple) and len(at) == 2
+                    else None
+                )
+                frame = cadlib.face_frame(resolved, point=pick, at=uv)
+                pos, nrm = frame.location.position, frame.z_dir
+                preview["lands_at_mm"] = [round(pos.X, 3), round(pos.Y, 3), round(pos.Z, 3)]
+                preview["approach_normal"] = [round(nrm.X, 4), round(nrm.Y, 4), round(nrm.Z, 4)]
+            except Exception as e:
+                return {"ok": False, "error": f"face {face!r} did not resolve: {e}"}
+        elif perr:
+            preview["note"] = perr
+
+        code, cerr = self._machine_block_code(op, on, face, at, axis, dims)
+        if cerr:
+            return {"ok": False, "error": cerr}
+        assert code is not None
+
+        add = self._tool_add_block({"name": f"machine_{op}", "code": code})
+        if not add.get("ok"):
+            return add
+        out: dict[str, Any] = {
+            "ok": True,
+            "block": add["block"],
+            "emitted_code": code,
+            **preview,
+        }
+        # auto-verify costs the normal verify budget — a bad block surfaces
+        # immediately instead of at done
+        if self.verify_left > 0:
+            verify = await self._tool_verify({})
+            out["verify"] = verify
+            if not verify.get("ok"):
+                out["ok"] = False
+                out["note"] = (
+                    f"block '{add['block']}' appended but FAILED verify — fix it "
+                    "in place or rollback to the last checkpoint"
+                )
+        else:
+            out["note"] = "verify budget spent — block appended unverified"
+        return out
+
+    def _machine_block_code(
+        self,
+        op: str,
+        on: str,
+        face: Any,
+        at: Any,
+        axis: Any,
+        dims: dict[str, Any],
+    ) -> tuple[str | None, str | None]:
+        """Emit the canonical `cadlib.machine_on_face` block — the buffer
+        re-resolves the face deterministically at exec, so what verified is
+        what ships."""
+        feat_name = f"_feat_{op}_{len(self._block_names())}"
+        lines = [f"{on}, {feat_name} = cadlib.machine_on_face(", f"    {on}, face={face!r},"]
+        if isinstance(at, list | tuple) and len(at) in (2, 3):
+            lines.append(f"    at={[float(v) for v in at]!r},")
+        if axis is not None:
+            lines.append(f"    axis={axis!r},")
+        for key, value in dims.items():
+            if not re.match(r"^[A-Za-z_]\w*$", str(key)):
+                return None, f"invalid dims key {key!r}"
+            if not isinstance(value, int | float | str | bool):
+                return None, f"dims.{key} must be a number or string"
+            lines.append(f"    {key}={value!r},")
+        lines.append(f"    op={op!r})")
+        if "CADX_FEATURES" in self.buffer:
+            lines.append(f"CADX_FEATURES = CADX_FEATURES + [{feat_name}]")
+        else:
+            lines.append(f"CADX_FEATURES = [{feat_name}]")
+        code = "\n".join(lines)
+        if "import cadlib" not in self.buffer:
+            code = "import cadlib\n" + code
+        return code, None
 
     # -- info tools ------------------------------------------------------------ #
 

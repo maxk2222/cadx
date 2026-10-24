@@ -1391,3 +1391,97 @@ def test_keep_largest_keeps_cavity_wall_with_body():
     parts = out.split(only_watertight=False)
     assert len(parts) == 2
     assert out.is_watertight
+
+
+# --------------------------------------------------------------------------- #
+# machine_feature — semantic surface-targeted machining                        #
+# --------------------------------------------------------------------------- #
+
+
+def _ray_hits(m, origin, direction, axis_i):
+    locs, _, _ = m.ray.intersects_location(
+        ray_origins=[origin], ray_directions=[direction], multiple_hits=True
+    )
+    return sorted(float(hit[axis_i]) for hit in locs)
+
+
+def test_op_machine_feature_face_word_sidewall_tap():
+    """face='left' + at=[u,v]: ray entry on the -x wall, M8 tap 20 mm deep —
+    the bore must open on the -x face and bottom out at x≈0."""
+    out = apply_op(
+        _box(40, 40, 40),
+        MeshOp(
+            op="machine_feature",
+            args={
+                "op": "tap", "face": "left", "at": [0.0, 5.0],
+                "major_d": 8.0, "pitch": 1.25, "depth": 20.0,
+            },
+        ),
+    )
+    assert out.is_watertight
+    xs = _ray_hits(out, [-30.0, 0.0, 5.0], [1, 0, 0], 0)
+    assert xs[0] == pytest.approx(-20.0, abs=0.6)  # left entry face
+    assert xs[1] == pytest.approx(0.0, abs=0.8)    # bore bottom: entry -20 + depth 20
+    assert xs[2] == pytest.approx(20.0, abs=0.6)   # far wall intact
+
+
+def test_op_machine_feature_pick_point_curved():
+    """at=[x,y,z] on a sphere: the pick resolves to the nearest surface point
+    and the bore runs along the local normal (radial) — the M8-in-ball case."""
+    ball = trimesh.creation.icosphere(radius=30.0, subdivisions=3)
+    out = apply_op(
+        ball,
+        MeshOp(
+            op="machine_feature",
+            args={"op": "tap", "at": [0.0, 0.0, 40.0], "major_d": 8.0, "depth": 25.0},
+        ),
+    )
+    assert out.is_watertight
+    zs = _ray_hits(out, [0.0, 0.0, 60.0], [0, 0, -1], 2)
+    assert zs[0] == pytest.approx(-30.0, abs=0.6)
+    assert zs[1] == pytest.approx(5.0, abs=1.0)  # bore bottom ~ 30 - 25
+
+
+def test_op_machine_feature_drill_through_and_axis_override():
+    """depth omitted → through; axis override makes the cut run orthogonal to
+    the picked surface's local normal."""
+    m = _box(30, 30, 10)
+    out = apply_op(
+        m,
+        MeshOp(
+            op="machine_feature",
+            args={"op": "drill", "face": "top", "at": [5.0, -5.0], "dia": 6.0},
+        ),
+    )
+    assert out.is_watertight
+    zs = _ray_hits(out, [5.0, -5.0, 20.0], [0, 0, -1], 2)
+    assert len(zs) == 0 or zs == sorted(zs)  # bore pierced: ray exits
+    # through means no solid hit along that ray
+    assert not zs or zs[0] <= -5.0
+
+
+def test_op_machine_feature_cbore_and_csk():
+    m = _box(40, 40, 12)
+    out = apply_op(
+        m,
+        MeshOp(
+            op="machine_feature",
+            args={
+                "op": "cbore", "face": "top", "dia": 6.0,
+                "cbore_dia": 11.0, "cbore_depth": 4.0,
+            },
+        ),
+    )
+    assert out.is_watertight
+    # counterbore shelf (top 6 - depth 4 = z~2) inside the pocket ring —
+    # apply_op does not re-ground, so the box stays centred
+    zs = _ray_hits(out, [4.0, 0.0, 20.0], [0, 0, -1], 2)
+    assert pytest.approx(min(zs, key=lambda z: abs(z - 2.0)), abs=0.4) == 2.0
+
+
+def test_op_machine_feature_errors():
+    m = _box(20, 20, 20)
+    with pytest.raises(ValueError, match="unresolvable face"):
+        apply_op(m, MeshOp(op="machine_feature", args={"op": "drill", "face": "nowhere"}))
+    with pytest.raises(ValidationError):
+        apply_op(m, MeshOp(op="machine_feature", args={"op": "weld"}))

@@ -942,6 +942,37 @@ class OpDrillHoles(BaseModel):
     from_anchors: bool = False
 
 
+class OpMachineFeature(BaseModel):
+    """Semantic surface-targeted machining op — the mesh analogue of
+    `cadlib.machine.machine_on_face`.
+
+    Target resolution (first match wins):
+    - `at` [x,y,z] pick point → nearest surface point + outward face normal
+    - `face` [x,y,z] → same (pick-point shorthand)
+    - `face` "+x"|"-x"|"+y"|"-y"|"+z"|"-z" → ray cast from the bbox extreme
+      inward at `at`(u,v) or the in-plane bbox centre → first surface hit
+
+    `axis` overrides the resolved normal as the approach direction
+    ([x,y,z] vector — NOT the inward cut direction; the cutter always
+    advances from the surface along -normal). Cutter stack reuses the
+    refine-side construction: pilot bore (+ helical ISO groove for `tap`),
+    countersink cone, counterbore, insert pocket."""
+
+    op: Literal["drill", "tap", "cbore", "csk", "insert", "bearing_seat", "tunnel"] = "drill"
+    face: str | list[float] | None = None
+    at: list[float] | None = None
+    axis: str | list[float] | None = None
+    dia: float | None = Field(default=None, gt=0.05, le=500.0)
+    major_d: float | None = Field(default=None, gt=0.05, le=500.0)
+    pitch: float | None = Field(default=None, gt=0.05, le=20.0)
+    depth: float | None = Field(default=None, gt=0.05, le=1000.0)  # None = through
+    cbore_dia: float | None = Field(default=None, gt=0.05, le=500.0)
+    cbore_depth: float | None = Field(default=None, gt=0.05, le=200.0)
+    csk_dia: float | None = Field(default=None, gt=0.05, le=500.0)
+    csk_angle: float = Field(default=90.0, gt=30.0, lt=180.0)
+    helical: bool = True  # False = plain tap-drill bore (thread implied)
+
+
 class OpShell(BaseModel):
     """Hollow the part: erode an inner solid by `thickness_mm` and subtract it.
 
@@ -1456,6 +1487,126 @@ def _op_drill_holes(mesh: trimesh.Trimesh, p: OpDrillHoles) -> trimesh.Trimesh:
     return out
 
 
+_MACHINE_KIND: dict[str, str] = {
+    "drill": "hole",
+    "tap": "tap",
+    "cbore": "counterbore",
+    "csk": "countersink",
+    "insert": "insert",
+    "bearing_seat": "bearing_seat",
+    "tunnel": "tunnel",
+}
+
+_FACE_WORDS: dict[str, str] = {
+    "top": "+z", "bottom": "-z", "front": "+y", "back": "-y",
+    "right": "+x", "left": "-x",
+    "+x": "+x", "-x": "-x", "+y": "+y", "-y": "-y", "+z": "+z", "-z": "-z",
+}
+
+
+def _unit_vec(v: Sequence[float] | np.ndarray) -> np.ndarray:
+    a = np.asarray(v, dtype=float)
+    n = float(np.linalg.norm(a))
+    if n < 1e-9:
+        raise ValueError("machine_feature: zero-length direction")
+    return a / n
+
+
+def _mesh_target(mesh: trimesh.Trimesh, p: OpMachineFeature) -> tuple[np.ndarray, np.ndarray]:
+    """Resolve (entry_point, outward_normal) on the mesh skin."""
+    pick = None
+    for c in (p.at, p.face):
+        if isinstance(c, (list, tuple)) and len(c) == 3:
+            pick = np.asarray(c, dtype=float)
+            break
+    if pick is not None:
+        pts, _, tids = mesh.nearest.on_surface([pick])
+        n = _unit_vec(mesh.face_normals[int(tids[0])])
+        return np.asarray(pts[0], dtype=float), n
+    word = _FACE_WORDS.get(str(p.face or "+z").lower())
+    if word is None:
+        raise ValueError(
+            f"machine_feature: unresolvable face '{p.face}' — use a pick point "
+            "or one of top|bottom|front|back|left|right|±x|±y|±z"
+        )
+    ai = "xyz".index(word[-1])
+    sign = 1.0 if word[0] == "+" else -1.0
+    lo, hi = mesh.bounds[0], mesh.bounds[1]
+    ui, vi = (i for i in (0, 1, 2) if i != ai)
+    u, v = (
+        (float(p.at[0]), float(p.at[1]))
+        if isinstance(p.at, (list, tuple)) and len(p.at) == 2
+        else (float((lo[ui] + hi[ui]) / 2.0), float((lo[vi] + hi[vi]) / 2.0))
+    )
+    origin = np.zeros(3)
+    origin[ui], origin[vi] = u, v
+    origin[ai] = hi[ai] + 1.0 if sign > 0 else lo[ai] - 1.0
+    d = np.zeros(3)
+    d[ai] = -sign
+    locs, _, tids = mesh.ray.intersects_location(
+        ray_origins=np.array([origin]), ray_directions=np.array([d]), multiple_hits=True
+    )
+    if not len(locs):
+        raise ValueError(f"machine_feature: no surface on {word} at u={u:.1f}, v={v:.1f}")
+    k = int(np.argmin(locs[:, ai] * sign) if sign < 0 else np.argmax(locs[:, ai] * sign))
+    n = _unit_vec(mesh.face_normals[int(tids[k])])
+    return np.asarray(locs[k], dtype=float), n
+
+
+def _op_machine_feature(mesh: trimesh.Trimesh, p: OpMachineFeature) -> trimesh.Trimesh:
+    if len(mesh.faces) > BOOLEAN_MAX_FACES:
+        raise ValueError(
+            f"mesh too dense for machine_feature ({len(mesh.faces)} faces > "
+            f"{BOOLEAN_MAX_FACES}) — run mesh_decimate first"
+        )
+    if not (mesh.is_watertight and mesh.is_winding_consistent):
+        mesh = _ensure_watertight(mesh)
+    entry, normal = _mesh_target(mesh, p)
+    if p.axis is not None:
+        av = _AXES[p.axis] if isinstance(p.axis, str) and p.axis in _AXES else p.axis
+        normal = _unit_vec(np.asarray(av, dtype=float))
+    span = float(max(mesh.extents))
+    if p.op == "tap":
+        d_maj = float(p.major_d or p.dia or 6.0)
+        pitch = float(p.pitch) if p.pitch else _metric_pitch(d_maj)
+        dia = float(p.dia or (d_maj - pitch))
+        thread_spec = f"M{d_maj:g}-{pitch:g}"
+    else:
+        dia = float(p.dia or 4.0)
+        thread_spec = ""
+    from cadx.cad.fem.refine import RefineFeature, _cutter_mesh
+
+    feat = RefineFeature(
+        name=f"machine_{p.op}",
+        kind=_MACHINE_KIND[p.op],
+        dia=dia,
+        depth_mm=p.depth,
+        through=p.depth is None,
+        csk_dia=p.csk_dia,
+        csk_angle_deg=p.csk_angle,
+        cbore_dia=p.cbore_dia,
+        cbore_depth_mm=p.cbore_depth,
+        thread_spec=thread_spec,
+        helical=p.helical if p.op == "tap" else None,
+    )
+    cutter = _cutter_mesh(feat, 0.0, span)
+    cutter.apply_transform(trimesh.geometry.align_vectors([0, 0, 1], normal.tolist()))
+    cutter.apply_translation(entry)
+    try:
+        res = mesh.difference(cutter, engine="manifold")
+    except Exception as e:
+        raise ValueError(f"machine_feature {p.op} failed: {e} — try mesh_repair") from e
+    if res is None or not len(getattr(res, "faces", [])):
+        raise ValueError(f"machine_feature {p.op} produced an empty mesh")
+    return cast(trimesh.Trimesh, res)
+
+
+def _metric_pitch(dia: float) -> float:
+    from cadx.cad.fem.refine import _metric_pitch as _mp
+
+    return _mp(dia)
+
+
 def _op_shell(mesh: trimesh.Trimesh, p: OpShell) -> trimesh.Trimesh:
     import scipy.ndimage as ndi
 
@@ -1697,6 +1848,7 @@ OPS_REGISTRY: dict[str, tuple[type[BaseModel], _OpFn]] = {
     "symmetrize": (OpSymmetrize, _op_symmetrize),
     "remesh": (OpRemesh, _op_remesh),
     "drill_holes": (OpDrillHoles, _op_drill_holes),
+    "machine_feature": (OpMachineFeature, _op_machine_feature),
     "shell": (OpShell, _op_shell),
     "radial_profile": (OpRadialProfile, _op_radial_profile),
     "radial_profile_auto": (OpRadialProfileAuto, _op_radial_profile_auto),
