@@ -194,8 +194,13 @@ async def delete_versions_leaf(db: Any, versions: list[Version]) -> None:
     await db.execute(sa_delete(Artifact).where(col(Artifact.version_id).in_(vids)))
     for v in versions:
         storage.delete_version_dir(v.project_id, v.id)
+    # immediate per-row deletes, children before parents (number is issued
+    # sequentially → descendants always sort higher). ORM `db.delete(v)`
+    # must not be used here: the version.parent_id self-FK puts version
+    # deletes into the unit-of-work's cyclic group, flushed AFTER the part
+    # delete — fk_version_part violation on Postgres
     for v in sorted(versions, key=lambda x: x.number, reverse=True):
-        await db.delete(v)
+        await db.execute(sa_delete(Version).where(Version.id == v.id))
 
 
 async def delete_part(db: Any, part: Part) -> int:

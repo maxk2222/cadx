@@ -200,6 +200,77 @@ async def test_empty_part_delete(client):
     assert r.status_code == 200 and r.json()["versions_deleted"] == 0
 
 
+async def test_part_cascade_fk_ordering():
+    """Regression: version.parent_id is a self-FK — ORM `db.delete` puts
+    version rows into the unit-of-work's cyclic group, flushed AFTER the
+    part delete (fk_version_part violation on Postgres). The service must
+    emit immediate ordered deletes instead. Runs on an in-memory engine
+    with real FK enforcement — the shared test engine leaves FKs off."""
+    from sqlalchemy import event, func, select
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+    from cadx.db.models import (
+        Job,
+        JobStatus,
+        Part,
+        Project,
+        SQLModel,
+        Version,
+        VersionKind,
+        VersionStatus,
+    )
+    from cadx.parts import delete_part
+
+    eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+
+    @event.listens_for(eng.sync_engine, "connect")
+    def _fk_on(dbapi_conn, _rec):
+        dbapi_conn.execute("PRAGMA foreign_keys=ON")
+
+    async with eng.begin() as c:
+        await c.run_sync(SQLModel.metadata.create_all)
+    sm = async_sessionmaker(eng, class_=AsyncSession, expire_on_commit=False)
+
+    async with sm() as db:
+        proj = Project(name="fk-repro")
+        db.add(proj)
+        await db.flush()
+        part = Part(project_id=proj.id, number=1, name="p")
+        db.add(part)
+        await db.flush()
+        v1 = Version(
+            project_id=proj.id,
+            part_id=part.id,
+            number=1,
+            kind=VersionKind.generate,
+            status=VersionStatus.succeeded,
+        )
+        db.add(v1)
+        await db.flush()
+        v2 = Version(
+            project_id=proj.id,
+            part_id=part.id,
+            parent_id=v1.id,
+            number=2,
+            kind=VersionKind.edit,
+            status=VersionStatus.cancelled,
+        )
+        db.add(v2)
+        await db.flush()
+        db.add(
+            Job(version_id=v2.id, type="generate", status=JobStatus.cancelled, payload="{}")
+        )
+        await db.commit()
+        pid = part.id
+
+    async with sm() as db:
+        part = await db.get(Part, pid)
+        assert await delete_part(db, part) == 2
+        left = await db.execute(select(func.count()).select_from(Version))
+        assert left.scalar_one() == 0
+    await eng.dispose()
+
+
 # --------------------------------------------------------------------------- #
 # service unit checks                                                          #
 # --------------------------------------------------------------------------- #
