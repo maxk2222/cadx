@@ -340,6 +340,11 @@ def repair_mesh_file(
             m = rebuilt
         else:
             log.warning("export.repair_drift", reason=drift, path=path.name)
+    # repair ladders don't drop disconnected debris — a zero-volume sliver
+    # sheet ships as a phantom second body and trips the bodies gate
+    from cadx.cad.mesh_ops import keep_significant_components
+
+    m, _ = keep_significant_components(m, min_fraction=1e-4)
     m.export(str(path))
     return bool(m.is_watertight and m.is_winding_consistent)
 
