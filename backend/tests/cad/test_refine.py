@@ -1111,3 +1111,27 @@ def test_spec_position_text_marks_through_intent():
     ]
     feats2, _ = resolve_refine_features([], blind, None, base_mesh=_slab())
     assert len(feats2) == 1 and feats2[0].through is False
+
+
+def test_post_cut_cleanup_drops_sliver_keeps_real_bodies():
+    """A sub-mm³ inverted boolean sliver riding along the main body is
+    dropped (it trips the shipped bodies/watertight gates), while a real
+    disconnected body above the bridge floor survives."""
+    from cadx.cad.fem.refine import RefineReport, _post_cut_cleanup
+
+    main = trimesh.creation.box(extents=[20, 20, 20])
+    sliver = trimesh.creation.icosphere(subdivisions=1, radius=0.4)
+    sliver.apply_translation([8, 8, 8])
+    sliver.invert()  # negative-volume boolean artifact
+    mesh = trimesh.util.concatenate([main, sliver])
+    rep = RefineReport()
+    out = _post_cut_cleanup(mesh, rep)
+    bodies = [p for p in out.split(only_watertight=False) if len(p.faces)]
+    assert len(bodies) == 1
+    assert any("sliver" in w for w in rep.warnings)
+
+    real = trimesh.creation.box(extents=[4, 4, 4])  # 64 mm³ — meaningful
+    real.apply_translation([30, 0, 0])
+    mesh2 = trimesh.util.concatenate([main, real])
+    out2 = _post_cut_cleanup(mesh2, RefineReport())
+    assert len([p for p in out2.split(only_watertight=False) if len(p.faces)]) == 2

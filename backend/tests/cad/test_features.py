@@ -597,3 +597,31 @@ def test_round_hole_group_reports_through_axis_only():
     assert g.through_axis == g.axis
     assert g.elong_axis == ""
     assert g.width_mm == 0.0 and g.length_mm == 0.0
+
+
+def test_mesh_holes_bore_fit_lifts_shadowed_column(tmp_path):
+    """Mesh-path regression: a Ø6.5 wall bore whose void column is partly
+    shadowed by interior material reads ~Ø5 from the zero-hit raster —
+    the ring-ray bore fit must lift the group back toward the true bore
+    (the robot-arm flange defect: gate measured Ø5.3 on a real Ø6.5)."""
+    import math
+
+    import trimesh
+
+    from cadx.cad.features import _mesh_through_holes
+
+    wall = trimesh.creation.box(extents=[8, 40, 40])
+    wall.apply_translation([46, 0, 0])
+    rib = trimesh.creation.box(extents=[10, 5.0, 8])
+    rib.apply_translation([35, 3.5, 0])  # shadows bore rays for y > 1
+    bore = trimesh.creation.cylinder(radius=3.25, height=25, sections=64)
+    bore.apply_transform(trimesh.transformations.rotation_matrix(math.pi / 2, [0, 1, 0]))
+    bore.apply_translation([42, 0, 0])
+    part = wall.difference(bore, engine="manifold").union(rib, engine="manifold")
+    stl = tmp_path / "shadowed_bore.stl"
+    part.export(str(stl))
+    groups, _, _ = _mesh_through_holes(stl)
+    bore_groups = [g for g in groups if g.axis == "+x" and not g.elongated]
+    assert len(bore_groups) == 1
+    # true bore is Ø6.5; the shadowed void column alone reads ~Ø5
+    assert bore_groups[0].diameter == pytest.approx(6.5, abs=0.6)
