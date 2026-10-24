@@ -458,7 +458,20 @@ def run_pipeline(  # noqa: C901
     t = time.monotonic()
     mesh_dir = out_dir / "renders"
     try:
-        stl_path = quick_stl(shape, mesh_dir, name="mesh")
+        # a real thread in export mode tessellated at the coarse render
+        # settings reads as disconnected "fins" — match the export STL
+        # tolerances so the helix renders as a helix (preview keeps the
+        # cheap mesh + CADX_FEATURES helix overlay)
+        fine_thread_mesh = detail_mode == "export" and any(
+            feature.get("kind") == "thread" for feature in res.design_features
+        )
+        stl_path = quick_stl(
+            shape,
+            mesh_dir,
+            name="mesh",
+            tolerance=0.01 if fine_thread_mesh else 0.05,
+            angular_tolerance=0.1 if fine_thread_mesh else 0.2,
+        )
     except Exception as e:
         res.error = f"tessellation failed: {e}"
         return _attach_verify_spec(res, spec_dict, settings, rt)

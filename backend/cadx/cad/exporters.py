@@ -293,7 +293,14 @@ def export_all_3d(
     return results
 
 
-def quick_stl(shape: Shape, out_dir: Path, name: str = "mesh") -> Path:
+def quick_stl(
+    shape: Shape,
+    out_dir: Path,
+    name: str = "mesh",
+    *,
+    tolerance: float = 0.05,
+    angular_tolerance: float = 0.2,
+) -> Path:
     """STL used for renders/mesh analysis (coarser than the export STL)."""
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"{name}.stl"
@@ -303,7 +310,7 @@ def quick_stl(shape: Shape, out_dir: Path, name: str = "mesh") -> Path:
         # OCC re-meshing of a sewn 40k-face solid costs minutes
         src.export(str(path))
         return path
-    export_stl(shape, str(path), tolerance=0.05, angular_tolerance=0.2)
+    export_stl(shape, str(path), tolerance=tolerance, angular_tolerance=angular_tolerance)
     return path
 
 
