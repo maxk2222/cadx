@@ -1,0 +1,15 @@
+# Release-notes categorization for `gh release create --generate-notes`.
+changelog:
+  categories:
+    - title: "🚀 Features"
+      labels: [feature, enhancement]
+    - title: "🐛 Fixes"
+      labels: [bug, fix]
+    - title: "📚 Documentation"
+      labels: [docs, documentation]
+    - title: "🧪 Tests & CI"
+      labels: [test, tests, ci]
+    - title: "🔧 Maintenance"
+      labels: [chore, refactor, deps, maintenance]
+    - title: "Other changes"
+      labels: ["*"]
