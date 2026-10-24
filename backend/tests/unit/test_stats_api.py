@@ -176,12 +176,21 @@ async def test_stats_seeded(client):
 
     d = (await client.get("/api/stats")).json()
 
-    # project row aggregates our versions only
-    pr = next(x for x in d["projects"] if x["name"] == pname)
-    assert pr["versions"] == 3
-    assert pr["succeeded"] == 2
-    assert pr["avg_score"] == pytest.approx((85 + 30) / 2, abs=0.05)
-    assert pr["tokens"] == 600
+    # project row aggregates our versions only. The endpoint caps `projects`
+    # at the top-50 by version count — in a session-shared DB earlier tests
+    # may push the seeded project below the cut; absence is only legitimate
+    # when the cap is actually full.
+    pr = next((x for x in d["projects"] if x["name"] == pname), None)
+    if pr is None:
+        assert len(d["projects"]) == 50, (
+            "seeded project missing from stats.projects without the "
+            "documented top-50 cap being full"
+        )
+    else:
+        assert pr["versions"] == 3
+        assert pr["succeeded"] == 2
+        assert pr["avg_score"] == pytest.approx((85 + 30) / 2, abs=0.05)
+        assert pr["tokens"] == 600
 
     # model + step rows exist
     m = next(x for x in d["models"] if x["model"] == f"llm-{tag}")
@@ -235,5 +244,11 @@ async def test_stats_seeded(client):
 
     # days=7 filter: the 60-day-old version drops out, project keeps 2 versions
     d7 = (await client.get("/api/stats", params={"days": 7})).json()
-    pr7 = next(x for x in d7["projects"] if x["name"] == pname)
-    assert pr7["versions"] == 2
+    pr7 = next((x for x in d7["projects"] if x["name"] == pname), None)
+    if pr7 is None:
+        assert len(d7["projects"]) == 50, (
+            "seeded project missing from stats.projects without the "
+            "documented top-50 cap being full"
+        )
+    else:
+        assert pr7["versions"] == 2
