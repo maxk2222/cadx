@@ -363,11 +363,26 @@ def _unit(v: list[float]) -> list[float]:
     return [c / n for c in v]
 
 
-def _inside_fraction(shape: Shape, center: list[float], axis: list[float], r: float) -> float:
-    """Fraction of radial samples (on a circle of radius ~1.35r around the axis
-    point) that lie inside material. Holes score ~1.0 (wall surrounded by
-    material), edge fillets score ~0.25-0.5 (open to air on most sides)."""
-    # build an orthonormal basis in the plane perpendicular to the axis
+def _mesh_contains_fn(mesh: Any):
+    """Vectorised point-containment over the analysis tessellation.
+
+    trimesh `contains` (ray parity) costs ~50 µs/point; OCC `is_inside` costs
+    ~200 ms/point on curved B-Reps — on helical thread solids the per-face
+    sampling below used to grind the analyze band for minutes (observed live:
+    77 cylinder faces x 8 samples x 0.19 s ≈ 120 s on a screw)."""
+    import numpy as np
+
+    def contains(pts: list[list[float]]):
+        try:
+            return np.asarray(mesh.contains(np.asarray(pts)), dtype=bool)
+        except Exception:
+            return None
+
+    return contains
+
+
+def _inside_fraction_pts(center: list[float], axis: list[float], r: float) -> list[list[float]]:
+    """Radial sample points on a circle of radius ~1.35r around `center`."""
     a = axis
     ref = [1.0, 0.0, 0.0] if abs(a[0]) < 0.9 else [0.0, 1.0, 0.0]
     u = [
@@ -383,10 +398,39 @@ def _inside_fraction(shape: Shape, center: list[float], axis: list[float], r: fl
         a[0] * u[1] - a[1] * u[0],
     ]
     rr = r * 1.35
-    inside = 0
+    out = []
     for i in range(_SAMPLE_DIRS):
         ang = 2.0 * math.pi * i / _SAMPLE_DIRS
-        pt = [center[j] + rr * (math.cos(ang) * u[j] + math.sin(ang) * w[j]) for j in range(3)]
+        out.append(
+            [center[j] + rr * (math.cos(ang) * u[j] + math.sin(ang) * w[j]) for j in range(3)]
+        )
+    return out
+
+
+def _inside_fraction(
+    shape: Shape,
+    center: list[float],
+    axis: list[float],
+    r: float,
+    *,
+    contains: Any = None,
+    cancelled: Any = None,
+) -> float:
+    """Fraction of radial samples (on a circle of radius ~1.35r around the axis
+    point) that lie inside material. Holes score ~1.0 (wall surrounded by
+    material), edge fillets score ~0.25-0.5 (open to air on most sides)."""
+    pts = _inside_fraction_pts(center, axis, r)
+    if contains is not None:
+        try:
+            flags = contains(pts)
+            if flags is not None:
+                return float(sum(bool(f) for f in flags)) / _SAMPLE_DIRS
+        except Exception:
+            pass
+    inside = 0
+    for pt in pts:
+        if cancelled is not None and cancelled():
+            break
         try:
             if shape.is_inside(pt):
                 inside += 1
@@ -849,7 +893,9 @@ def _face_interior_dir(face: Any, pe: list[float], tang: list[float]) -> list[fl
     return None
 
 
-def _edge_convexity(shape: Shape, edge: Any, f1: Any, f2: Any) -> tuple[str, dict[str, Any]]:
+def _edge_convexity(
+    shape: Shape, edge: Any, f1: Any, f2: Any, *, contains: Any = None
+) -> tuple[str, dict[str, Any]]:
     """Convexity of the adjacency edge between two faces.
 
     Method (documented, simplest reliable): compute each face's interior
@@ -881,13 +927,19 @@ def _edge_convexity(shape: Shape, edge: Any, f1: Any, f2: Any) -> tuple[str, dic
     delta = max(0.15, min(1.0, 0.15 * math.sqrt(min(float(f1.area), float(f2.area)))))
     q = [pe[i] + delta * bdir[i] for i in range(3)]
     try:
-        inside = shape.is_inside(q)
+        if contains is not None:
+            flags = contains([q])
+            if flags is None:
+                return "unknown", {}
+            inside = bool(flags[0])
+        else:
+            inside = shape.is_inside(q)
     except Exception:
         return "unknown", {}
     return ("convex" if inside else "concave"), {"a1": a1, "a2": a2}
 
 
-def _build_face_adjacency(shape: Shape):
+def _build_face_adjacency(shape: Shape, *, contains: Any = None):
     """Face-adjacency graph: nodes = faces (surface type, area, normal,
     centre); edges = interior brep edges shared by exactly 2 faces, labelled
     by convexity. OCP's TopExp_MapShapesAndAncestors map type is not bound in
@@ -933,7 +985,7 @@ def _build_face_adjacency(shape: Shape):
         )
     for edge, fidx in (b for b in edge_faces.values() if len(b[1]) == 2):
         i, j = fidx
-        conv, adir = _edge_convexity(shape, edge, faces[i], faces[j])
+        conv, adir = _edge_convexity(shape, edge, faces[i], faces[j], contains=contains)
         adir["lo"] = i  # a1 always belongs to the lower of the two indices
         graph.add_edge(i, j, conv=conv, adir=adir)
     return graph
@@ -978,6 +1030,8 @@ def _opening_coord(
 
 def _detect_structural_features(  # noqa: C901 — graph pattern matching
     shape: Shape,
+    *,
+    contains: Any = None,
 ) -> tuple[list[MeasuredPocket], list[MeasuredGroove], list[MeasuredNotch]]:
     """Recognise pockets, grooves and notches on the face-adjacency graph.
 
@@ -1001,7 +1055,7 @@ def _detect_structural_features(  # noqa: C901 — graph pattern matching
     faces = shape.faces()
     if not faces or len(faces) > _AAG_MAX_FACES:
         return pockets, grooves, notches
-    graph = _build_face_adjacency(shape)
+    graph = _build_face_adjacency(shape, contains=contains)
     nodes = graph.nodes
 
     def is_planar(i: int) -> bool:
@@ -1253,11 +1307,11 @@ def _cross_v(a: list[float], b: list[float]) -> list[float]:
     ]
 
 
-def _extract_structural(shape: Shape, out: MeasuredFeatures) -> None:
+def _extract_structural(shape: Shape, out: MeasuredFeatures, *, contains: Any = None) -> None:
     """Run the AAG pass best-effort: any OCP/networkx failure simply leaves
     the structural fields empty (the analytic measurements already stand)."""
     try:
-        pockets, grooves, notches = _detect_structural_features(shape)
+        pockets, grooves, notches = _detect_structural_features(shape, contains=contains)
     except Exception:
         return
     out.pockets = pockets
@@ -1266,11 +1320,21 @@ def _extract_structural(shape: Shape, out: MeasuredFeatures) -> None:
 
 
 def extract_features(  # noqa: C901 — sequential measurement passes
-    shape: Shape, stl_path: Path | None = None
+    shape: Shape,
+    stl_path: Path | None = None,
+    *,
+    mesh: Any | None = None,
+    cancelled: Any = None,
+    recognition: bool = True,
 ) -> MeasuredFeatures:
     """Measure hole groups, countersinks, counterbores, fillet rounds and
     chamfer-like faces from a solid. Faceted mesh solids degrade gracefully —
-    cylinders only survive if the mesh kept them near-circular."""
+    cylinders only survive if the mesh kept them near-circular.
+
+    `mesh` is the pipeline's analysis tessellation (one load, shared by every
+    ray-parity consumer); `cancelled` aborts the OCC fallbacks promptly —
+    the executor's timeout cannot kill a worker thread, so the expensive
+    passes must yield cooperatively."""
     out = MeasuredFeatures(approximate=False)
     bb = shape.bounding_box()
     extent = [
@@ -1279,14 +1343,14 @@ def extract_features(  # noqa: C901 — sequential measurement passes
         float(bb.max.Z - bb.min.Z),
     ]
 
-    mesh = None
-    if stl_path is not None:
+    if mesh is None and stl_path is not None:
         try:
             mesh = _load_watertight_mesh(stl_path)
         except Exception:
             mesh = None
-        if mesh is not None and not mesh.is_watertight:
-            out.approximate = True
+    if mesh is not None and not mesh.is_watertight:
+        out.approximate = True
+    contains = _mesh_contains_fn(mesh) if mesh is not None else None
 
     cyl_faces, cones, tori, chamfer_planes = _scan_faces(shape)
     if len(shape.faces()) > _FACET_FACE_CAP:
@@ -1297,8 +1361,10 @@ def extract_features(  # noqa: C901 — sequential measurement passes
     # Fillets only wrap ~90° of the circle; a boss wraps the full 2π.
     holes: list[tuple[float, list[float], list[float], float]] = []
     for r, axis, center, vspan, uspan in cyl_faces:
+        if cancelled is not None and cancelled():
+            return out
         try:
-            frac = _inside_fraction(shape, center, axis, r)
+            frac = _inside_fraction(shape, center, axis, r, contains=contains, cancelled=cancelled)
         except Exception:
             frac = 0.0
         if frac >= _INSIDE_FRACTION_HOLE:
@@ -1417,17 +1483,21 @@ def extract_features(  # noqa: C901 — sequential measurement passes
     # structural features on the face-adjacency graph (pockets/grooves/
     # notches — the classes a hole/boss scan cannot see). B-Rep only;
     # skipped entirely on heavily faceted solids
-    _extract_structural(shape, out)
+    _extract_structural(shape, out, contains=contains)
 
     # quiddity feature recognition (optional dep): enriches with pattern and
     # relationship evidence the face scan cannot express. Additive only —
-    # plain bores/bosses stay owned by the analytic scan above.
-    try:
-        from cadx.cad.recognition import build_recognition_evidence
+    # plain bores/bosses stay owned by the analytic scan above. `recognition`
+    # lets the caller skip it where it cannot add evidence (declared thread
+    # export solids — the helical faces make it crawl without adding anything
+    # the declaration did not already state).
+    if recognition:
+        try:
+            from cadx.cad.recognition import build_recognition_evidence
 
-        _merge_recognition(out, build_recognition_evidence(shape))
-    except Exception:
-        pass
+            _merge_recognition(out, build_recognition_evidence(shape, cancelled=cancelled))
+        except Exception:
+            pass
     # stable selector ids — must run last so every detector's entries get one
     assign_feature_ids(out)
     return out

@@ -14,12 +14,18 @@ degrades to ``{}`` instead of raising.
 
 from __future__ import annotations
 
+import contextlib
+import os
 import re
+import time
 from typing import Any
 
 from build123d import Shape
 
 from cadx.cad.features import _coaxial, _dominant_axis
+from cadx.logging import get_logger
+
+log = get_logger(__name__)
 
 try:  # optional dependency — the executor image may lag pyproject
     import quiddity
@@ -29,6 +35,13 @@ except Exception:
 # faceted/hybrid solids carry thousands of tiny faces: recognition is slow and
 # wrong there — the mesh fallback in features.py owns that case
 _MAX_RECOGNITION_FACES = 5000
+# wall-clock budget for one recognition run. quiddity is advisory-only yet its
+# per-face analysis explodes on helical thread B-Reps (measured >6 min on a
+# 929-face screw) — it runs in a SPAWNED child (fork deadlocks the OCC child
+# on inherited locks) so a timeout can be HARD-killed — a worker thread
+# cannot, and the leftover grind used to starve every other pipeline call in
+# the container. 0 disables the subprocess and keeps the in-process call.
+_RECOGNITION_BUDGET_S = float(os.environ.get("CADX_RECOGNITION_BUDGET_S", "45") or 45)
 # cap emitted records so a pathological part cannot bloat res.features JSON
 _MAX_RECORDS = 64
 # a countersink cone quiddity also reports as a hole's `cbore` step is the same
@@ -252,12 +265,108 @@ def _try(fn: Any, default: Any) -> Any:
         return default
 
 
-def build_recognition_evidence(shape: Shape) -> dict[str, Any]:
+_WARMED = False
+
+
+def _warm_quiddity() -> None:
+    """Pay quiddity's lazy first-call init once, early — the first recognition
+    call in a fresh executor process otherwise pays it inside a measured
+    context (spawned children re-import anyway, but the in-process fallback
+    path must not surprise the pipeline with a multi-second init)."""
+    global _WARMED
+    if _WARMED:
+        return
+    _WARMED = True
+    try:
+        from build123d import Box
+
+        quiddity.build_recognition_result(Box(1, 1, 1))
+    except Exception:
+        pass
+
+
+def _recognition_child(brep_path: str, out_path: str) -> None:
+    """Spawned worker: rebuilds the solid from its BREP file, runs quiddity,
+    writes the evidence dict as JSON.
+
+    Spawn (fresh interpreter) is mandatory — a forked child inherits OCC /
+    allocator locks held by dead threads and deadlocks before quiddity even
+    starts (observed: ~0 CPU for the full budget on a trivial part). A spawned
+    child re-imports cleanly and can be hard-killed on timeout; a crash inside
+    it only costs the advisory evidence, never the pipeline."""
+    import json
+    from pathlib import Path
+
+    from build123d import import_brep
+
+    try:
+        shape = import_brep(brep_path)
+        rec = _evidence_dict(quiddity.build_recognition_result(shape))
+    except Exception:
+        rec = {}
+    with contextlib.suppress(Exception):
+        Path(out_path).write_text(json.dumps(rec))
+
+
+def _run_budgeted(shape: Shape, budget_s: float, cancelled: Any = None) -> dict[str, Any] | None:
+    """Run recognition in a spawned child with a hard wall-clock budget.
+
+    Returns the evidence dict, ``{}`` on child failure/timeout, or ``None``
+    when the spawn path is unavailable (caller may then run in-process)."""
+    import json
+    import multiprocessing as mp
+    import tempfile
+    from pathlib import Path
+
+    from build123d import export_brep
+
+    try:
+        ctx = mp.get_context("spawn")
+    except ValueError:
+        return None
+    try:
+        with tempfile.TemporaryDirectory(prefix="cadx-recognition-") as td:
+            brep = Path(td) / "shape.brep"
+            out = Path(td) / "rec.json"
+            export_brep(shape, str(brep))
+            proc = ctx.Process(target=_recognition_child, args=(str(brep), str(out)), daemon=True)
+            try:
+                proc.start()
+            except Exception:
+                return None  # spawn unavailable — caller falls back in-process
+            deadline = time.monotonic() + budget_s
+            while proc.is_alive() and time.monotonic() < deadline:
+                proc.join(min(1.0, max(0.05, deadline - time.monotonic())))
+                if cancelled is not None and cancelled():
+                    break
+            if proc.is_alive():
+                proc.terminate()
+                proc.join(5.0)
+                log.warning(
+                    "recognition.budget_exceeded",
+                    budget_s=budget_s,
+                    faces=len(shape.faces()) if hasattr(shape, "faces") else -1,
+                )
+                return {}
+            try:
+                rec = json.loads(out.read_text())
+            except Exception:
+                rec = {}
+            return rec if isinstance(rec, dict) else {}
+    except Exception:
+        return {}
+
+
+def build_recognition_evidence(
+    shape: Shape, *, budget_s: float | None = None, cancelled: Any = None
+) -> dict[str, Any]:
     """Run quiddity on a B-Rep solid and return measured-feature evidence.
 
     Returns ``{}`` when quiddity is not installed, the shape is too large for
     bounded recognition (> _MAX_RECOGNITION_FACES faces — faceted/hybrid
-    solids stay owned by the mesh fallback), or recognition itself fails.
+    solids stay owned by the mesh fallback), recognition itself fails, or the
+    run exceeds ``budget_s`` (default ``_RECOGNITION_BUDGET_S``; the advisory
+    pass must never grind the pipeline past its deadline).
     Otherwise returns the additive MeasuredFeatures fields as plain dicts plus
     union-summary keys consumed by ``features._merge_recognition``.
     """
@@ -268,11 +377,23 @@ def build_recognition_evidence(shape: Shape) -> dict[str, Any]:
             return {}
     except Exception:
         return {}
+    _warm_quiddity()
+    budget = _RECOGNITION_BUDGET_S if budget_s is None else float(budget_s)
+    if budget > 0:
+        rec = _run_budgeted(shape, budget, cancelled=cancelled)
+        if rec is not None:
+            return rec
+        # spawn unavailable — in-process fallback keeps the evidence on hosts
+        # where the child cannot be started (budget cannot be enforced there)
     try:
         result = quiddity.build_recognition_result(shape)
     except Exception:
         return {}
+    return _evidence_dict(result)
 
+
+def _evidence_dict(result: Any) -> dict[str, Any]:
+    """Plain-dict projection of a quiddity recognition result."""
     holes = _try(lambda: list(getattr(result, "holes", ()) or ()), [])
     bosses = _try(lambda: list(getattr(result, "bosses", ()) or ()), [])
     countersinks = _try(lambda: list(getattr(result, "countersinks", ()) or ()), [])

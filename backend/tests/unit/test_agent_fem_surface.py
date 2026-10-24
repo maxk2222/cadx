@@ -10,7 +10,7 @@ import uuid
 from types import SimpleNamespace
 from typing import Any
 
-from cadx.agent.steps.optimize import _SessionOps, _make_suggest_fn
+from cadx.agent.steps.optimize import _make_suggest_fn, _SessionOps
 from cadx.agent.toolloop import _metrics_hint
 from cadx.db.models import JobStatus, JobType
 from cadx.spawn import _job_summary
@@ -162,11 +162,11 @@ def test_metrics_hint_keeps_new_structural_keys() -> None:
         "topopt": {
             "sf_verified_first": 0.57,
             "worse_than_uniform": True,
-            "uniform_compliance_mj": 5914.0,
+            "uniform_baseline_compliance_mj": 5914.0,
             "other": "x",
         }
     }
     hint = _metrics_hint(res)
     assert "sf_verified_first=0.57" in hint
     assert "worse_than_uniform=True" in hint
-    assert "uniform_compliance_mj=5914.0" in hint
+    assert "uniform_baseline_compliance_mj=5914.0" in hint

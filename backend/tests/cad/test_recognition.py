@@ -168,7 +168,17 @@ def test_recognition_failure_degrades(monkeypatch):
         "build_recognition_result",
         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
     )
-    assert recognition.build_recognition_evidence(_flange()) == {}
+    # budget_s=0 pins the in-process path — a monkeypatched quiddity cannot
+    # cross the spawned child's import boundary
+    assert recognition.build_recognition_evidence(_flange(), budget_s=0) == {}
+
+
+@requires_quiddity
+def test_recognition_budget_timeout_degrades():
+    """A child that overruns its budget is hard-killed and reported as {} —
+    no spawned interpreter can import + run quiddity inside 50 ms, so this
+    exercises the terminate path deterministically."""
+    assert recognition.build_recognition_evidence(_flange(), budget_s=0.05) == {}
 
 
 @requires_quiddity
@@ -196,3 +206,70 @@ def test_pattern_check_silent_without_recognition():
     m = MeasuredFeatures(total_holes=6, recognition_ran=False)
     spec = [Feature(name="bolt circle", type="pattern", count=6)]
     assert all("pattern" not in f.feature for f in compare_features(spec, m))
+
+
+def _fork_ctx_patcher(monkeypatch):
+    """Force the budget child onto the FORK context so a monkeypatched
+    quiddity reaches it (spawn children are fresh interpreters and can't see
+    the patch). fork availability is a given on the POSIX test envs."""
+    import multiprocessing as mp
+
+    real_get_context = mp.get_context
+    monkeypatch.setattr(
+        mp, "get_context", lambda method=None: real_get_context("fork")
+    )
+
+
+def test_budget_hard_kills_slow_recognition(monkeypatch):
+    """A recognition run past its budget is terminated, not awaited — the
+    advisory pass may never grind the pipeline (observed: quiddity on a
+    929-face thread solid burned >6 min inside the analyze band)."""
+    import time
+    import types
+
+    _fork_ctx_patcher(monkeypatch)
+
+    def slow_result(_shape):
+        time.sleep(30)
+        return object()
+
+    monkeypatch.setattr(
+        recognition, "quiddity", types.SimpleNamespace(build_recognition_result=slow_result)
+    )
+    t = time.monotonic()
+    ev = recognition.build_recognition_evidence(Box(10, 10, 10), budget_s=2.0)
+    assert ev == {}
+    assert time.monotonic() - t < 12
+
+
+@requires_quiddity
+def test_budgeted_child_returns_real_evidence():
+    """The fork path is lossless: a small shape returns the full evidence dict
+    from the child, not an empty fallback."""
+    ev = recognition.build_recognition_evidence(Box(10, 10, 10), budget_s=20)
+    assert isinstance(ev, dict)
+    # keys exist even when the lists are empty — the dict shape is the contract
+    assert "hole_patterns" in ev and "fillet_radii" in ev
+
+
+def test_cancelled_budget_returns_promptly(monkeypatch):
+    """Cancel flag wins over the budget — a cooperative cancellation must not
+    wait for the full budget before dropping the advisory pass."""
+    import time
+    import types
+
+    _fork_ctx_patcher(monkeypatch)
+
+    def slow_result(_shape):
+        time.sleep(30)
+        return object()
+
+    monkeypatch.setattr(
+        recognition, "quiddity", types.SimpleNamespace(build_recognition_result=slow_result)
+    )
+    t = time.monotonic()
+    ev = recognition.build_recognition_evidence(
+        Box(10, 10, 10), budget_s=60.0, cancelled=lambda: True
+    )
+    assert ev == {}
+    assert time.monotonic() - t < 15

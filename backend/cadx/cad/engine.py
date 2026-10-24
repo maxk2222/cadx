@@ -484,11 +484,37 @@ def run_pipeline(  # noqa: C901
         _mark_cancelled(res)
         return _attach_verify_spec(res, spec_dict, settings, rt)
 
+    # the analysis tessellation doubles as the ray-parity containment oracle
+    # for every point-in-solid probe below — OCC is_inside costs ~200 ms/pt on
+    # curved B-Reps (helical thread solids ground this band for minutes;
+    # pipeline_hang step=analyze). Load once, share by reference.
+    analysis_mesh = None
+    try:
+        from cadx.cad.features import _load_watertight_mesh
+
+        analysis_mesh = _load_watertight_mesh(stl_path) if stl_path is not None else None
+    except Exception:
+        analysis_mesh = None
+
     # 4b. deterministic feature extraction (feedback-only, never blocks)
+    _mark_step(step_key, "features")
     try:
         from cadx.cad.features import extract_features
 
-        res.features = extract_features(shape, stl_path).model_dump()
+        # quiddity adds nothing on a declared thread's real-helix rebuild —
+        # the helical faces only make it crawl (its evidence stays advisory,
+        # the declaration already answers what the part is)
+        run_recognition = not (
+            detail_mode == "export"
+            and any(f.get("kind") == "thread" for f in (res.design_features or []))
+        )
+        res.features = extract_features(
+            shape,
+            stl_path,
+            mesh=analysis_mesh,
+            cancelled=cancelled,
+            recognition=run_recognition,
+        ).model_dump()
     except Exception as e:
         log.warning("features.extract_failed", error=str(e)[:200])
     if res.design_features:
@@ -498,10 +524,14 @@ def run_pipeline(  # noqa: C901
             "preview_thread_count": res.preview_thread_count,
             "records": res.design_features,
         }
+    if _is_cancelled(cancelled):
+        _mark_cancelled(res)
+        return _attach_verify_spec(res, spec_dict, settings, rt)
 
     # 4b1. declared connection spans: a "strut from A to B" must carry
     # material along the whole path — a detached bar reads as correctly
     # connected to the visual critic, so the centreline is sampled here
+    _mark_step(step_key, "spans")
     try:
         spec_feats = (spec_dict or {}).get("features") or []
         if spec_feats:
@@ -509,12 +539,23 @@ def run_pipeline(  # noqa: C901
 
             if not isinstance(res.features, dict):
                 res.features = {}
-            res.features["spans"] = span_checks(shape, spec_feats)
+            res.features["spans"] = span_checks(
+                shape, spec_feats, mesh=analysis_mesh, cancelled=cancelled
+            )
             from cadx.cad.spans import plate_checks
 
-            res.features["plates"] = plate_checks(shape, spec_feats, spec_dict=spec_dict)
+            res.features["plates"] = plate_checks(
+                shape,
+                spec_feats,
+                spec_dict=spec_dict,
+                mesh=analysis_mesh,
+                cancelled=cancelled,
+            )
     except Exception as e:
         log.warning("features.span_checks_failed", error=str(e)[:200])
+    if _is_cancelled(cancelled):
+        _mark_cancelled(res)
+        return _attach_verify_spec(res, spec_dict, settings, rt)
 
     # 4b2. invalid B-Rep → locate defects so repair feedback gets coordinates
     # (WHERE geometry is broken), not just "is_valid: false". On faceted

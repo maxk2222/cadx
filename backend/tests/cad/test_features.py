@@ -625,3 +625,66 @@ def test_mesh_holes_bore_fit_lifts_shadowed_column(tmp_path):
     assert len(bore_groups) == 1
     # true bore is Ø6.5; the shadowed void column alone reads ~Ø5
     assert bore_groups[0].diameter == pytest.approx(6.5, abs=0.6)
+
+
+def test_inside_fraction_prefers_mesh_contains():
+    """The mesh contains() oracle replaces OCC is_inside (~200 ms/pt on curved
+    B-Reps). A stub callable proves the vectorised path is taken and controls
+    the verdict."""
+    from cadx.cad.features import _inside_fraction
+
+    part = _plate(with_chamfer=False)
+    seen: list[int] = []
+
+    def contains(pts):
+        seen.append(len(pts))
+        return [True] * len(pts)
+
+    frac = _inside_fraction(part, [0, 0, 4], [0, 0, 1], 2.0, contains=contains)
+    assert frac == 1.0 and seen == [8]
+    frac = _inside_fraction(
+        part, [0, 0, 4], [0, 0, 1], 2.0, contains=lambda pts: [False] * len(pts)
+    )
+    assert frac == 0.0
+
+
+def test_inside_fraction_mesh_real_stl(tmp_path):
+    """End-to-end: a through bore classifies as hole via the real STL mesh —
+    same verdict the OCC path produced, ~4000x cheaper per point."""
+    from build123d import export_stl
+
+    from cadx.cad.features import _inside_fraction, _load_watertight_mesh, _mesh_contains_fn
+
+    part = _plate(with_chamfer=False)
+    stl = tmp_path / "plate.stl"
+    export_stl(part, str(stl))
+    mesh = _load_watertight_mesh(stl)
+    assert mesh is not None
+    # hole centre: a radial sample ring around it sits inside the wall material
+    frac = _inside_fraction(part, [40, 20, 4], [0, 0, 1], 2.25, contains=_mesh_contains_fn(mesh))
+    assert frac >= 0.7
+
+
+def test_extract_features_accepts_preloaded_mesh(tmp_path):
+    """The pipeline loads the analysis STL once and shares it — the kwarg path
+    must yield the same measurements as the from-path load."""
+    from build123d import export_stl
+
+    from cadx.cad.features import _load_watertight_mesh
+
+    part = _plate(with_chamfer=False)
+    stl = tmp_path / "plate.stl"
+    export_stl(part, str(stl))
+    m1 = extract_features(part, stl)
+    m2 = extract_features(part, stl, mesh=_load_watertight_mesh(stl))
+    assert m1.total_holes == m2.total_holes == 4
+    assert m1.hole_groups[0].diameter == pytest.approx(m2.hole_groups[0].diameter)
+
+
+def test_extract_features_cancelled_returns_early(tmp_path):
+    """Cooperative cancellation: the OCC-heavy passes must yield on the
+    cancelled flag — the executor cannot kill a timed-out thread."""
+    part = _plate(with_chamfer=False)
+    m = extract_features(part, cancelled=lambda: True)
+    assert m.total_holes == 0
+    assert m.hole_groups == []

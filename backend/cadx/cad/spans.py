@@ -78,13 +78,13 @@ def declared_spans(features: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def span_coverage(shape: Any, p0: list[float], p1: list[float]) -> float:
+def span_coverage(shape: Any, p0: list[float], p1: list[float], *, mesh: Any = None) -> float:
     """Fraction of centreline samples inside the solid (0..1)."""
     import numpy as np
 
     ts = [i / (_N_SAMPLES - 1) for i in range(_N_SAMPLES)]
     pts = [[p0[k] + t * (p1[k] - p0[k]) for k in range(3)] for t in ts]
-    mesh = getattr(shape, "_cadx_mesh", None)
+    mesh = mesh if mesh is not None else getattr(shape, "_cadx_mesh", None)
     if mesh is not None:
         # trimesh ray-parity containment — OCC is_inside on a sewn faceted
         # solid costs ~200ms/point and grinds the analyze step for minutes
@@ -103,12 +103,20 @@ def span_coverage(shape: Any, p0: list[float], p1: list[float]) -> float:
     return inside / _N_SAMPLES
 
 
-def span_checks(shape: Any, features: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def span_checks(
+    shape: Any,
+    features: list[dict[str, Any]],
+    *,
+    mesh: Any = None,
+    cancelled: Any = None,
+) -> list[dict[str, Any]]:
     """[{name, coverage, points, ok}] per declared connection span."""
     out: list[dict[str, Any]] = []
     for sp in declared_spans(features):
+        if cancelled is not None and cancelled():
+            break
         pts = sp["points"]
-        covs = [span_coverage(shape, a, b) for a, b in itertools.pairwise(pts)]
+        covs = [span_coverage(shape, a, b, mesh=mesh) for a, b in itertools.pairwise(pts)]
         cov = min(covs) if covs else 1.0
         out.append(
             {
@@ -176,10 +184,12 @@ def _band_extent(
     xs: list[float],
     ys: list[float],
     zmid: float,
+    *,
+    mesh: Any = None,
 ) -> tuple[float, float] | None:
     """(x_span, y_span) of material at the horizontal band plane z=zmid
     inside the sampling window."""
-    mesh = getattr(shape, "_cadx_mesh", None)
+    mesh = mesh if mesh is not None else getattr(shape, "_cadx_mesh", None)
     cells = (
         _band_cells_mesh(mesh, xs, ys, zmid)
         if mesh is not None
@@ -217,7 +227,12 @@ def _stated_dim(spec_dict: dict[str, Any] | None, key: str) -> float | None:
 
 
 def plate_checks(
-    shape: Any, features: list[dict[str, Any]], spec_dict: dict[str, Any] | None = None
+    shape: Any,
+    features: list[dict[str, Any]],
+    spec_dict: dict[str, Any] | None = None,
+    *,
+    mesh: Any = None,
+    cancelled: Any = None,
 ) -> list[dict[str, Any]]:
     """[{name, declared, measured, ok}] — plates/pads whose declared x/y/z
     ranges bound a flat host. Material at the plate's band mid-height must
@@ -242,6 +257,8 @@ def plate_checks(
     )
     out: list[dict[str, Any]] = []
     for f in features:
+        if cancelled is not None and cancelled():
+            break
         if str(f.get("type") or "").lower() in _VOID_TYPES:
             continue
         text = " ".join(str(f.get(k) or "") for k in ("position", "description", "name"))
@@ -272,7 +289,7 @@ def plate_checks(
             continue
         xs = [x0 + i * _BAND_PITCH_MM for i in range(int((x1 - x0) / _BAND_PITCH_MM) + 1)]
         ys = [y0 + i * _BAND_PITCH_MM for i in range(int((y1 - y0) / _BAND_PITCH_MM) + 1)]
-        ext = _band_extent(shape, xs, ys, zmid)
+        ext = _band_extent(shape, xs, ys, zmid, mesh=mesh)
         if ext is None:
             continue
         over_x = ext[0] - (dx[1] - dx[0])

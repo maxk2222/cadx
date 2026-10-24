@@ -205,3 +205,28 @@ def test_plate_checks_mesh_extent_beyond_stated_envelope_still_flags():
     res = plate_checks(shape, _organic_pad_feature(), spec_dict=spec)
     assert len(res) == 1
     assert not res[0]["ok"]
+
+
+def test_span_checks_accept_analysis_mesh(tmp_path):
+    """The pipeline hands its analysis tessellation to the span checks —
+    a CAD solid without _cadx_mesh then uses ray-parity containment instead
+    of per-point OCC is_inside (~200 ms/pt on curved B-Reps)."""
+    import trimesh
+    from build123d import export_stl
+
+    leg = Pos(-57.5, 0, 50) * Box(5, 30, 100)
+    arm = Pos(0, 0, 97.5) * Box(120, 30, 5)
+    part = leg + arm + cadlib.strut((-55, 0, 35), (15, 0, 95), 10, 6)
+    stl = tmp_path / "strut.stl"
+    export_stl(part, str(stl))
+    mesh = trimesh.load(str(stl), force="mesh", process=False)
+    mesh.merge_vertices()
+    assert mesh.is_watertight
+    # same verdict as the _cadx_mesh path — but the mesh came in via kwarg
+    cov = span_coverage(part, [-55, 0, 35], [15, 0, 95], mesh=mesh)
+    assert cov >= 0.85
+    feats = _features(
+        "from (x=-55, z=35) on the leg to (x=+15, z=95) on the arm underside, centred in Y"
+    )
+    res = span_checks(part, feats, mesh=mesh)
+    assert len(res) == 1 and res[0]["ok"] and res[0]["coverage"] >= 0.85

@@ -174,6 +174,17 @@ async def execute_version(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[
             step=hb[0] if hb else None,
             step_s=round(time.monotonic() - hb[1], 1) if hb else None,
         )
+        # the pipeline thread survives this timeout (cannot be killed) — set
+        # the TASK-level cancel flag so its cooperative cancel polls exit the
+        # OCC grind instead of starving every later call in this container
+        # (observed: a zombie thread left a 1.5 s analyze band stretched to
+        # the full 480 s deadline on a concurrent job for ~8 min per call)
+        try:
+            keys = [k for k in cancel_keys if k != f"cancel:{payload.get('job_id')}"]
+            if keys:
+                await ctx["redis"].setex(keys[0], 3600, b"1")
+        except Exception:
+            pass
         r = ExecResult()
         r.error = f"executor pipeline exceeded {deadline}s — worker thread may be stuck"
         if hb:
