@@ -1,0 +1,26 @@
+{
+  "name": "pure_bending",
+  "tier": "fast",
+  "kind": "exact",
+  "geometry": {"builder": "box", "args": {"x": 60, "y": 24, "z": 12}},
+  "material": {"E": 3500.0, "nu": 0.36},
+  "pitch_mm": 2.0,
+  "cases": [
+    {
+      "name": "moment",
+      "fixed": [{"kind": "face", "axis": "-x"}],
+      "loads": [
+        {"region": {"kind": "face", "axis": "+x", "margin_mm": 2.0}, "moment_nm": [0, 1.0, 0]}
+      ]
+    }
+  ],
+  "expect": [
+    {"probe": "max_disp_mm", "ref": 0.14881, "tol_rel": 0.15},
+    {"probe": "vm_at", "xyz": [0, 0, 11], "ref": 1.446, "tol_rel": 0.10},
+    {"probe": "vm_at", "xyz": [0, 0, 1], "ref": 1.446, "tol_rel": 0.10},
+    {"probe": "stress_at", "xyz": [0, 0, 11], "comp": "sx", "ref": 1.446, "tol_rel": 0.10},
+    {"probe": "stress_at", "xyz": [0, 0, 1], "comp": "sx", "ref": -1.446, "tol_rel": 0.10}
+  ],
+  "source": "Pure couple M=1N·m=1000N·mm about y: σ=Mc/I=1.446MPa at cell-centre depth c=5 (constant along beam, pure moment); δ_tip=ML²/2EI=0.1488mm",
+  "notes": "moment_nm is N·m (schema doc). Top/bottom fibres mirror each other; probes at mid-span cell centres z=11/1 → c=±5mm, not the surface fibre c=6."
+}

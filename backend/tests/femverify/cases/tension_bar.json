@@ -1,0 +1,27 @@
+{
+  "name": "tension_bar",
+  "tier": "fast",
+  "kind": "exact",
+  "geometry": {"builder": "box", "args": {"x": 60, "y": 12, "z": 12}},
+  "material": {"E": 3500.0, "nu": 0.36},
+  "pitch_mm": 2.0,
+  "cases": [
+    {
+      "name": "axial",
+      "fixed": [{"kind": "face", "axis": "-x"}],
+      "loads": [
+        {"region": {"kind": "face", "axis": "+x", "margin_mm": 1.0}, "force_n": [1000, 0, 0]}
+      ]
+    }
+  ],
+  "expect": [
+    {"probe": "resultant_n", "axis": "x", "ref": 1000.0, "tol_abs": 1e-6},
+    {"probe": "max_disp_mm", "ref": 0.119048, "tol_rel": 0.03},
+    {"probe": "disp_diff", "sel1": {"x": 20.0}, "sel2": {"x": -20.0},
+     "axis": "x", "ref": 0.079365, "tol_rel": 0.02},
+    {"probe": "vm_at", "xyz": [0, 0, 6], "ref": 6.9444, "tol_rel": 0.03},
+    {"probe": "vm_at", "xyz": [15, 4, 10], "ref": 6.9444, "tol_rel": 0.08}
+  ],
+  "source": "σ=F/A, δ=FL/EA — patch-test property: interior stress must be uniform",
+  "notes": "Box x∈[-30,30], y∈[-6,6], z∈[0,12]. Interior stress/strain is exact. Absolute tip displacement runs ~5% low at pitch 2: the clamped face kills ~1.5 element layers of strain and nodal-force spreading under-excites the loaded-face layer (consistent-load boundary effect). disp_diff measures the clean interior gradient and is the accurate probe; the deficit shrinks with pitch."
+}

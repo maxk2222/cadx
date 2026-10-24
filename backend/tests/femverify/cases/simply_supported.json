@@ -1,0 +1,32 @@
+{
+  "name": "simply_supported_point",
+  "tier": "fast",
+  "kind": "reference",
+  "geometry": {"builder": "box", "args": {"x": 80, "y": 16, "z": 8}},
+  "material": {"E": 3500.0, "nu": 0.36},
+  "pitch_mm": 2.0,
+  "cases": [
+    {
+      "name": "mid",
+      "fixed": [],
+      "manual_pins": [
+        {"dof": "z", "sel": {"x": "min", "z": "min"}},
+        {"dof": "z", "sel": {"x": "max", "z": "min"}},
+        {"dof": "x", "sel": {"x": -40.0, "y": 0.0, "z": 4.0}},
+        {"dof": "y", "sel": {"x": -40.0, "y": 0.0, "z": 0.0}},
+        {"dof": "y", "sel": {"x": 40.0, "y": 0.0, "z": 4.0}}
+      ],
+      "loads": [
+        {"region": {"kind": "area", "x_range": [-3, 3], "axis": "+z"},
+         "force_n": [0, 0, -100]}
+      ]
+    }
+  ],
+  "expect": [
+    {"probe": "resultant_n", "axis": "z", "ref": -100.0, "tol_abs": 0.5},
+    {"probe": "disp_at", "xyz": [0, 0, 0], "axis": "z", "ref": -0.461, "tol_rel": 0.12},
+    {"probe": "converged", "ref": 1.0, "tol_abs": 0.5}
+  ],
+  "source": "Euler-Bernoulli + Timoshenko simply supported beam, central point load: delta = P L^3/(48 E I) + P L/(4 kappa G A) = 0.446 + 0.015 mm, span 80 mm, knife-edge lines at the bottom edges of both end faces.",
+  "notes": "manual_pins apply textbook knife-edge supports: the region system always pins >= 2 node planes (cell granularity), which adds ~2.4x artificial clamping stiffness here — documented limitation, see docs/fem-verification.md. Solver accuracy vs theory is ~5% under this BC."
+}

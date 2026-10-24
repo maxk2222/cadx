@@ -1,0 +1,29 @@
+{
+  "name": "cantilever_eb_ts",
+  "tier": "fast",
+  "kind": "exact",
+  "geometry": {"builder": "box", "args": {"x": 60, "y": 24, "z": 12}},
+  "material": {"E": 3500.0, "nu": 0.36},
+  "pitch_mm": 2.0,
+  "cases": [
+    {
+      "name": "tip",
+      "fixed": [{"kind": "face", "axis": "-x"}],
+      "loads": [
+        {"region": {"kind": "face", "axis": "+x", "margin_mm": 1.0}, "force_n": [0, 0, -100]}
+      ]
+    }
+  ],
+  "expect": [
+    {"probe": "resultant_n", "axis": "z", "ref": -100.0, "tol_abs": 1e-6},
+    {"probe": "max_disp_mm", "ref": 0.6147, "tol_rel": 0.20},
+    {"probe": "disp_at", "xyz": [30, 0, 6], "axis": "z", "ref": -0.6147, "tol_rel": 0.20},
+    {"probe": "vm_at", "xyz": [0, 0, 11], "ref": 4.34, "tol_rel": 0.15},
+    {"probe": "vm_at", "xyz": [0, 0, 1], "ref": 4.34, "tol_rel": 0.15},
+    {"probe": "stress_at", "xyz": [0, 0, 11], "comp": "sx", "ref": 4.34, "tol_rel": 0.15},
+    {"probe": "stress_at", "xyz": [0, 0, 5], "comp": "sx", "ref": -0.868, "tol_rel": 0.18},
+    {"probe": "stress_at", "xyz": [0, 0, 1], "comp": "sx", "ref": -4.34, "tol_rel": 0.15}
+  ],
+  "source": "Euler–Bernoulli + Timoshenko shear: δ=FL³/3EI+FL/κGA=0.5952+0.0194=0.6147mm (I=3456mm⁴, κ=5/6, G=1286.8MPa); σx(z)=M(x)·(z-6)/I, M(0)=3000N·mm",
+  "notes": "Fully-integrated Hex8 is over-stiff in bending → underpredicts δ ~16% at pitch 2 (6 cells through thickness) — documented accuracy, beam_convergence case tracks it to the reference. Stress probes sit at mid-span, far from clamp/tip end effects, and use cell-centre depth (z=11 → c=5mm, not the surface fibre). sx-probes verify the linear bending profile through the section; vm near the neutral axis is dominated by transverse shear τ (≈1.2MPa at z=5), not σx."
+}

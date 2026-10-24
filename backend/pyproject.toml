@@ -130,4 +130,5 @@ filterwarnings = ["ignore::DeprecationWarning"]
 markers = [
     "render: tests that need offscreen rendering",
     "slow: long-running tests",
+    "verify: heavy FEM verification cases (make fem-verify)",
 ]

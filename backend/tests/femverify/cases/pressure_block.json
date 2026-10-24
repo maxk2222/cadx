@@ -1,0 +1,27 @@
+{
+  "name": "pressure_block",
+  "tier": "fast",
+  "kind": "exact",
+  "geometry": {"builder": "box", "args": {"x": 20, "y": 20, "z": 40}},
+  "material": {"E": 3500.0, "nu": 0.36},
+  "pitch_mm": 2.0,
+  "cases": [
+    {
+      "name": "squash",
+      "fixed": [{"kind": "face", "axis": "-z"}],
+      "loads": [
+        {"region": {"kind": "face", "axis": "+z"}, "pressure_mpa": 2.0}
+      ]
+    }
+  ],
+  "expect": [
+    {"probe": "resultant_n", "axis": "z", "ref": -800.0, "tol_abs": 2.0},
+    {"probe": "vm_at", "xyz": [0, 0, 20], "ref": 2.0, "tol_rel": 0.03},
+    {"probe": "stress_at", "xyz": [0, 0, 20], "comp": "sz", "ref": -2.0, "tol_rel": 0.03},
+    {"probe": "disp_diff", "sel1": {"z": 35.0}, "sel2": {"z": 15.0},
+     "axis": "z", "ref": -0.011429, "tol_rel": 0.04},
+    {"probe": "converged", "ref": 1.0, "tol_abs": 0.5}
+  ],
+  "source": "Uniaxial compression: resultant = p*A = 2 MPa * 400 mm^2 = 800 N, sigma_z = -p, eps = p/E = 5.714e-4. Pressure spreads by real tributary face area (surface_area_per_node) — a different code path than force_n.",
+  "notes": "Pressure acts against the outward normal of face +z → compression. Interior stress is uniform; boundary layers at support/loaded face same as tension_bar."
+}

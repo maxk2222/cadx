@@ -146,7 +146,10 @@ build: ## Build all docker images
 ##@ Quality
 
 test: ## Backend test suite
-	cd $(BACKEND) && ../$(VENV)/bin/uv run pytest tests -x -q
+	cd $(BACKEND) && ../$(VENV)/bin/uv run pytest tests -x -q -m "not verify"
+
+fem-verify: ## FEM verification suite (benchmarks, convergence, MMS, ccx opt-in)
+	cd $(BACKEND) && ../$(VENV)/bin/uv run pytest tests/femverify -x -q
 
 lint: ## ruff + frontend typecheck
 	cd $(BACKEND) && ../$(VENV)/bin/uv run ruff check .
