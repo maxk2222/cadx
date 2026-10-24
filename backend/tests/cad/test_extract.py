@@ -57,7 +57,7 @@ def test_extract_smooth_off_is_legacy_path() -> None:
     _mesh, mask_legacy, _w, _nc, info = density_to_mesh(
         dom, rho.ravel(), smooth_iterations=0, extract_smooth=False
     )
-    mask_ref, _w_ref, _nc_ref = density_to_mask(dom, rho.ravel())
+    mask_ref, _w_ref, _nc_ref, _b_ref = density_to_mask(dom, rho.ravel())
     np.testing.assert_array_equal(mask_legacy, mask_ref)
     assert info["smooth"] is False
     assert info["iso"] == 0.5

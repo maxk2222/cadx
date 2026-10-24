@@ -1196,7 +1196,7 @@ def test_min_member_thickens_isolated_voxels() -> None:
     rho = np.zeros(dom.cell_count)
     # 1-voxel-thick member — well below min_member 5mm (2*pitch measures 4mm)
     rho.reshape(dom.dims)[3:9, 5, 4] = 1.0
-    mask, warnings, _nc = density_to_mask(dom, rho, threshold=0.5, min_member_mm=5.0)
+    mask, warnings, _nc, _bm = density_to_mask(dom, rho, threshold=0.5, min_member_mm=5.0)
     assert mask.sum() > 6  # thickened beyond the raw selection
     assert any("thickened" in w for w in warnings)
 

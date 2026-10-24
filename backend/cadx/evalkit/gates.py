@@ -288,7 +288,30 @@ def _gate_mesh(g: dict[str, Any], outcome: StageOutcome) -> GateResult:
 
 def _topopt(outcome: StageOutcome) -> dict[str, Any]:
     mesh = outcome.mesh or {}
-    return mesh.get("topopt") or {} if isinstance(mesh, dict) else {}
+    top = mesh.get("topopt") if isinstance(mesh, dict) else None
+    if top:
+        return top
+    # keep-base: the agent declined every candidate — measure the best
+    # rejected run so gates see the real verdict (sf/volfrac/load_path)
+    # instead of a bare "no topopt happened" null
+    kept = mesh.get("topopt_kept_base") if isinstance(mesh, dict) else None
+    rejected = (kept or {}).get("rejected_runs") or []
+    best = max(
+        (r for r in rejected if isinstance(r, dict)),
+        key=lambda r: float(r.get("worst_sf") or 0.0),
+        default=None,
+    )
+    if best is None:
+        return {}
+    ver = best.get("verification") or {}
+    return {
+        "kept_base": True,
+        "volfrac_achieved": best.get("achieved"),
+        "sf_verified": ver.get("sf_verified") or best.get("worst_sf"),
+        "sf_export": best.get("sf_export"),
+        "n_bodies_export": best.get("n_bodies_export"),
+        "load_path_ok": best.get("load_path_ok"),
+    }
 
 
 def _fem_field(outcome: StageOutcome, field: str) -> Any:

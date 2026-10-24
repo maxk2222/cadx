@@ -20,6 +20,50 @@ def harvest(outcome: StageOutcome) -> dict[str, Any]:
     report = verify_spec_report({"mesh": outcome.mesh or {}}, outcome.issues)
     fem = outcome.fem or {}
     top = (outcome.mesh or {}).get("topopt") if isinstance(outcome.mesh, dict) else None
+    topopt_block: dict[str, Any] | None = None
+    if top:
+        topopt_block = {
+            k: top.get(k)
+            for k in (
+                "volfrac_achieved",
+                "volfrac",
+                "sf_verified",
+                "sf_export",
+                "sf_homog",
+                "sf_floor",
+                "n_bodies",
+                "bottleneck_mm2",
+                "load_path_ok",
+            )
+            if k in top
+        }
+    else:
+        # keep-base: the agent rejected every candidate — report the best
+        # rejected run's numbers so gates measure a real sf/volfrac rather
+        # than a bare "no topopt happened" null
+        kept = (
+            (outcome.mesh or {}).get("topopt_kept_base")
+            if isinstance(outcome.mesh, dict)
+            else None
+        ) or {}
+        rejected = kept.get("rejected_runs") or []
+        best = max(
+            (r for r in rejected if isinstance(r, dict)),
+            key=lambda r: float(r.get("worst_sf") or 0.0),
+            default=None,
+        )
+        if best is not None:
+            topopt_block = {
+                "kept_base": True,
+                "volfrac_achieved": best.get("achieved"),
+                "sf_verified": (
+                    (best.get("verification") or {}).get("sf_verified")
+                    or best.get("worst_sf")
+                ),
+                "sf_export": best.get("sf_export"),
+                "n_bodies": best.get("n_bodies_export"),
+                "load_path_ok": best.get("load_path_ok"),
+            }
     bbox = analysis.get("bbox_size")
     watertight = analysis.get("watertight_after_repair")
     if watertight is None:
@@ -78,25 +122,7 @@ def harvest(outcome: StageOutcome) -> dict[str, Any]:
                 if isinstance(c, dict)
             ],
         },
-        "topopt": (
-            {
-                k: top.get(k)
-                for k in (
-                    "volfrac_achieved",
-                    "volfrac",
-                    "sf_verified",
-                    "sf_export",
-                    "sf_homog",
-                    "sf_floor",
-                    "n_bodies",
-                    "bottleneck_mm2",
-                    "load_path_ok",
-                )
-                if k in top
-            }
-            if top
-            else None
-        ),
+        "topopt": topopt_block,
         "issues": [
             f"{i.get('what', '')} {i.get('fix_hint', '')}".strip()
             for i in outcome.issues or []

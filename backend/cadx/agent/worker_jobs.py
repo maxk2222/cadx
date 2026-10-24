@@ -1272,6 +1272,16 @@ async def _try_optimize_session(
     if agent.chosen_run == -1:
         version.status = VersionStatus.needs_review
         version.error = f"agent kept the base part: {agent.reasoning or 'no note'}"
+        # keep the rejected candidates on the record — the eval/driver would
+        # otherwise see an empty topopt block and report "no optimization
+        # happened" instead of "every candidate was honestly rejected"
+        mesh = dict(version.mesh or {})
+        mesh["topopt_kept_base"] = {
+            "kept_base": True,
+            "reasoning": agent.reasoning or "",
+            "rejected_runs": agent.runs,
+        }
+        version.mesh = mesh
         job = await db.get(Job, job_id)
         if job is not None:
             job.status = JobStatus.succeeded

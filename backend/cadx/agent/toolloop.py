@@ -268,6 +268,8 @@ _METRIC_KEYS = (
     "bottleneck_mm2",
     "sf_mask",
     "n_bodies_export",
+    "regions_lost",
+    "passive_cells_lost",
     "thin_fraction",
     "domain_pitch",
     "domain_spec_overshoot_mm",

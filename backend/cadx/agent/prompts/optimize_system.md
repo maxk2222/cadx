@@ -200,7 +200,18 @@ Each `topopt_run` reports:
   carries nothing). A high `sf_export` on a `load_path_ok=false` run is
   meaningless: reject it, or re-run with enlarged keep regions / a higher
   volume fraction. `null` means the certificate was skipped — not a
-  verdict.
+  verdict. When `n_bodies_voxel` exceeds `n_bodies_export` the mesh is one
+  body but the FEM raster splits it — junctions thinner than the voxel
+  pitch carry no load; raise `min_member_mm` (≥2×pitch) or re-run crisp.
+- `regions_lost` — load/fixed regions whose cells the optimizer removed
+  ENTIRELY from the extracted mask (`passive_cells_lost` counts pinned
+  cells dropped by extraction — a bug signal). Each entry names the case
+  and region: that endpoint can never verify. Put an explicit
+  `keep_regions` entry on the lost region (larger margin, or a wall/slab
+  region carrying it) and re-run — a retry alone repeats the loss.
+- `retry.trigger` may read `regions_lost`/`load_path` — the engine already
+  re-ran once with more volume + a thicker member floor; if the verdict
+  persists, the fix is region/keep geometry, not more retries.
 - `features_measured` — bore groups measured on the shipped mesh
   (id/axis/diameter/count). Compare them against the spec features: a
   declared Ø8.5 group reading Ø6.9, a wrong axis, or fewer members than
@@ -254,6 +265,12 @@ Each `topopt_run` reports:
      keep/load/fixed floor alone exceeds the volume budget; no run can reach
      it. Shrink `keep_regions` (smaller margin, fewer auto-keeps) or raise
      `target_volume_fraction` above the reported floor — don't retry as-is.
+   - `load_path_ok=false` / `regions_lost` — an endpoint or its host wall
+     vanished. Change the STRUCTURE not just the volume:
+     `warmstart:"loadpath"` seeds load→fixture corridors, `solver:"beso"`
+     bonds load/fix-bearing components each iteration, and an explicit
+     keep on the lost region's host wall (slab/box spanning it, not just a
+     bore ring) keeps the path designable.
    - unrealistic load (e.g. thousands of N by accident) → fix the region/
      pressure, note the change in `done` reasoning.
 6. Stop when `sf_export` ≥ target AND printable AND features intact —

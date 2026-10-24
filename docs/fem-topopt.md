@@ -491,6 +491,25 @@ nominal-solve failure propagates to the mask fallback):
   fails verification outright (`verification.valid = false`). It is a
   geometric bound — optimistic for bending-dominated parts — always read
   alongside the FEM numbers, never alone.
+  The certificate runs BEFORE the nominal+realization FEM sweep: a provably
+  broken path (`load_path_ok = false`) skips every solve and reports an
+  empty report — no budget is burned verifying a disconnected part. It
+  also feeds the bounded retry: a `load_path`/`regions_lost` trigger
+  re-runs once with +0.1 volfrac, a `min(2·pitch, min_member)` floor and
+  crisp extraction.
+- **Post-extraction region survival** (`regions_lost`,
+  `passive_cells_lost`): right after `density_to_mesh`, each case's fixed /
+  load region is re-resolved on the design domain and checked against
+  `final_mask` — a region whose cells the optimizer emptied entirely can
+  never carry its load, so it is named in `regions_lost`, flagged
+  `verification.valid = false` and triggers the retry. Pinned cells the
+  extraction dropped (`passive_cells_lost`) count as a bug signal —
+  passive material is not designable.
+- **Connectivity glue pinning**: cells added by island-bridging
+  (`_bridge_components`) are returned as `extract.bridged_mask`, forced to
+  `rho=1` in the extraction Gaussian and pinned through `smooth_preserve`
+  like passive cells — a 1-voxel corridor must not erode below raster
+  thickness between the verified mask and the shipped mesh.
 
 `n_bodies_export` counts physical mesh solids, `n_bodies_voxel` the
 re-voxelized raster's components — a raster fusion (voxel < export) means

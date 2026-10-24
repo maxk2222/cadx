@@ -679,3 +679,89 @@ async def test_preview_and_check_load_warn_floor_above_target() -> None:
     session = _opt_session(preview_fn=fake_preview, target_volfrac=0.8)
     out = await session.execute("preview_regions", {"load_cases": [{"name": "c"}]})
     assert "infeasible_target" not in out
+
+
+# ---------------------------------------------------------------------------
+# early load-path certificate: provably disconnected exports skip the sweep
+# ---------------------------------------------------------------------------
+
+
+def test_early_loadpath_cert_skips_fem_on_disconnected_export(
+    tmp_path: Path,
+) -> None:
+    """Two disjoint bodies: the load sits on one, the fixture on the other.
+    The min-cut certificate proves the path broken before any FEM solve —
+    _verify_export_structure must return load_path_ok=False with an empty
+    report instead of burning the realization sweep on a doomed part."""
+    from cadx.cad.engine import _verify_export_structure
+    from cadx.cad.fem.materials import resolve_material
+
+    a = trimesh.creation.box(extents=[10.0, 10.0, 10.0])
+    a.apply_translation([-8.0, 0.0, 5.0])
+    b = trimesh.creation.box(extents=[10.0, 10.0, 10.0])
+    b.apply_translation([8.0, 0.0, 5.0])
+    candidate = trimesh.util.concatenate([a, b])
+    case = LoadCase(
+        name="broken",
+        fixed=[RegionSpec(kind="cylinder", axis="z", center=[8.0, 0.0, 5.0], diameter_mm=4.0)],
+        loads=[
+            LoadSpec(
+                region=RegionSpec(
+                    kind="cylinder", axis="z", center=[-8.0, 0.0, 5.0], diameter_mm=4.0
+                ),
+                force_n=[0.0, 0.0, -50.0],
+            )
+        ],
+    )
+    s = RuntimeSettings(fem_loadpath_cert=True)
+    info = _verify_export_structure(
+        candidate_mesh=candidate,
+        cases=[case],
+        mat_name="pla",
+        mat=resolve_material("pla"),
+        design_pitch=2.0,
+        max_elements=200_000,
+        keep_list=[],
+        anchors=[],
+        out_dir=tmp_path,
+        suffix="_t",
+        s=s,
+        solver_backend="auto",
+        cancelled=None,
+        verify_robust=True,
+    )
+    assert info["load_path_ok"] is False
+    assert info["sf_verified"] is None
+    assert info["n_bodies_export"] == 2
+    assert info["n_bodies_voxel"] == 2
+    # no FEM case ran — the sweep is skipped on a provably broken part
+    assert info["report"].cases == []
+    assert any("cannot reach" in w or "skipped" in w for w in info["warnings"])
+
+
+def test_early_loadpath_cert_runs_fem_on_connected_export(tmp_path: Path) -> None:
+    """A connected single body passes the certificate and the nominal solve
+    still runs — the early check must not disable verification wholesale."""
+    from cadx.cad.engine import _verify_export_structure
+    from cadx.cad.fem.materials import resolve_material
+
+    candidate = _box_mesh(24.0, 12.0, 12.0)
+    s = RuntimeSettings(fem_loadpath_cert=True, fem_spsolve_dofs=60_000)
+    info = _verify_export_structure(
+        candidate_mesh=candidate,
+        cases=[_cantilever()],
+        mat_name="pla",
+        mat=resolve_material("pla"),
+        design_pitch=3.0,
+        max_elements=200_000,
+        keep_list=[],
+        anchors=[],
+        out_dir=tmp_path,
+        suffix="_t",
+        s=s,
+        solver_backend="auto",
+        cancelled=None,
+        verify_robust=False,
+    )
+    assert info["load_path_ok"] is not False
+    assert info["report"].cases, "nominal solve must run on a connected part"

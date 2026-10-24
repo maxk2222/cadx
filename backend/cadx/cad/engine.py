@@ -1597,9 +1597,7 @@ def _verify_export_structure(
     """
     from scipy import ndimage
 
-    from cadx.cad.fem.analyze import run_fem_domain
-    from cadx.cad.fem.loadpath_cert import loadpath_certificate
-    from cadx.cad.fem.regions import resolve_case_dofs
+    from cadx.cad.fem.analyze import FemReport, run_fem_domain
     from cadx.cad.fem.voxelize import voxelize
 
     warnings: list[str] = []
@@ -1621,6 +1619,44 @@ def _verify_export_structure(
     # the printed truth: positive-volume mesh components (inner cavity
     # walls carry negative volume and are not bodies)
     n_bodies_export = solid_body_count(candidate_mesh)
+    if n_bodies_voxel > n_bodies_export:
+        warnings.append(
+            f"export rasterizes into {n_bodies_voxel} disconnected bodies on the "
+            f"FEM grid though the mesh is {n_bodies_export} — connections thinner "
+            "than the voxel pitch cannot carry load"
+        )
+
+    # cheap load-path certificate FIRST: when a case's resolved load and
+    # fixture cells provably share no component, no FEM solve can produce a
+    # meaningful safety factor — skip the nominal+realization sweep (each
+    # costs a full solve) and report the broken path instead of burning the
+    # structural budget on a doomed part.
+    bottleneck_mm2, sf_floor, load_path_ok = _early_loadpath_cert(
+        export_domain, cases, anchors, mat, s, warnings
+    )
+    if load_path_ok is False:
+        warnings.append(
+            "load-path certificate: load(s) cannot reach fixtures on the export "
+            "grid — FEM sweep skipped on a provably disconnected part"
+        )
+        return {
+            "report": FemReport(
+                grid={
+                    "pitch": design_pitch,
+                    "dims": list(export_domain.dims),
+                    "elements": int(export_domain.solid.sum()),
+                }
+            ),
+            "n_bodies_export": n_bodies_export,
+            "n_bodies_voxel": n_bodies_voxel,
+            "sf_realizations": {},
+            "sf_verified": None,
+            "bottleneck_mm2": bottleneck_mm2,
+            "sf_floor": sf_floor,
+            "load_path_ok": load_path_ok,
+            "sf_mesh_sensitive": None,
+            "warnings": warnings,
+        }
 
     def _solve(
         mask: np.ndarray,
@@ -1735,32 +1771,6 @@ def _verify_export_structure(
         except Exception as e:
             warnings.append(f"mesh-shift verification failed: {str(e)[:80]}")
 
-    bottleneck_mm2: float | None = None
-    sf_floor: float | None = None
-    load_path_ok: bool | None = None
-    if getattr(s, "fem_loadpath_cert", False):
-        try:
-            cases_res = [
-                resolve_case_dofs(
-                    export_domain,
-                    c,
-                    anchors,
-                    density_g_cm3=getattr(mat, "density_g_cm3", 1.24),
-                )[:2]
-                for c in cases
-            ]
-            cert = loadpath_certificate(
-                export_domain,
-                cases_res,
-                yield_mpa=float(getattr(mat, "yield_mpa", 0.0) or 0.0),
-            )
-            bottleneck_mm2 = cert.get("bottleneck_mm2")
-            sf_floor = cert.get("sf_floor")
-            load_path_ok = cert.get("load_path_ok")
-            warnings.extend(cert.get("warnings") or [])
-        except Exception as e:
-            warnings.append(f"load-path certificate failed: {str(e)[:80]}")
-
     return {
         "report": report,
         "n_bodies_export": n_bodies_export,
@@ -1773,6 +1783,46 @@ def _verify_export_structure(
         "sf_mesh_sensitive": sf_mesh_sensitive,
         "warnings": warnings,
     }
+
+
+def _early_loadpath_cert(
+    export_domain: Any,
+    cases: list[Any],
+    anchors: list[dict] | None,
+    mat: Any,
+    s: Any,
+    warnings: list[str],
+) -> tuple[float | None, float | None, bool | None]:
+    """Run the min-cut load-path certificate before any FEM solve.
+
+    Returns ``(bottleneck_mm2, sf_floor, load_path_ok)`` — the last one
+    ``False`` when a case's load cannot reach its fixtures through the
+    voxelized export, which no solve can rescue."""
+    if not getattr(s, "fem_loadpath_cert", False):
+        return None, None, None
+    from cadx.cad.fem.loadpath_cert import loadpath_certificate
+    from cadx.cad.fem.regions import resolve_case_dofs
+
+    try:
+        cases_res = [
+            resolve_case_dofs(
+                export_domain,
+                c,
+                anchors,
+                density_g_cm3=getattr(mat, "density_g_cm3", 1.24),
+            )[:2]
+            for c in cases
+        ]
+        cert = loadpath_certificate(
+            export_domain,
+            cases_res,
+            yield_mpa=float(getattr(mat, "yield_mpa", 0.0) or 0.0),
+        )
+        warnings.extend(cert.get("warnings") or [])
+        return cert.get("bottleneck_mm2"), cert.get("sf_floor"), cert.get("load_path_ok")
+    except Exception as e:
+        warnings.append(f"load-path certificate failed: {str(e)[:80]}")
+        return None, None, None
 
 
 def _gate_sf(info: dict[str, Any] | None, report: Any) -> float | None:
@@ -1971,6 +2021,7 @@ def run_topopt_pipeline(  # noqa: C901
         empty_region_warnings,
         keep_element_mask,
         material_cell_factors,
+        region_cell_mask,
     )
     from cadx.cad.fem.topopt import TopOptParams, passive_solid_mask, simp
     from cadx.cad.fem.voxelize import dilate_solid, grid_bounds_mm, snapped_pitch, voxelize
@@ -2587,6 +2638,13 @@ def run_topopt_pipeline(  # noqa: C901
         # threshold must not flip the smoothing regime between passes.
         if not crisp_extraction:
             thin_cells = float(eff_span.min()) / max(design_domain.pitch, 1e-6)
+            bridged3 = extract_info.get("bridged_mask")
+            pin3 = passive.reshape(design_domain.dims).copy()
+            if bridged3 is not None:
+                # corridor cells added by island-bridging pin like passive —
+                # they are the part's connectivity glue and must not erode
+                # below raster thickness between mask and export
+                pin3 |= np.asarray(bridged3, dtype=bool).reshape(design_domain.dims)
             opt_mesh = smooth_preserve(
                 opt_mesh,
                 iterations=2 if thin_cells < 4.0 else 4,
@@ -2596,7 +2654,7 @@ def run_topopt_pipeline(  # noqa: C901
                 pin_mask=(
                     design_domain.origin,
                     design_domain.pitch,
-                    passive.reshape(design_domain.dims),
+                    pin3,
                 ),
             )
         opt_mesh, output_envelope, output_envelope_ok, envelope_warnings = (
@@ -2637,6 +2695,38 @@ def run_topopt_pipeline(  # noqa: C901
         out["crisp_extraction"] = crisp_extraction
         out["opt_mesh"] = opt_mesh
         out["final_mask"] = final_mask
+        # Post-extraction region survival: a case region whose cells the
+        # optimizer removed entirely can never carry its load — flag it now
+        # so the agent sees the honest verdict early instead of reading a
+        # min-cut failure after the FEM sweep. Pinned cells disappearing is
+        # a separate tell — passive material is not designable.
+        lost_regions: list[str] = []
+        for ci, case in enumerate(cases):
+            regs = [("fixed", r) for r in (case.fixed or [])]
+            regs += [("load", ld.region) for ld in (case.loads or [])]
+            for role, reg in regs:
+                try:
+                    cells = region_cell_mask(design_domain, reg, anchors).reshape(
+                        design_domain.dims
+                    )
+                except Exception:
+                    continue
+                if cells.any() and not bool((cells & final_mask).any()):
+                    label = getattr(reg, "description", None) or getattr(reg, "kind", "?")
+                    lost_regions.append(f"case {ci} {role} '{label}'")
+                    extract_warnings.append(
+                        f"case {ci}: {role} region '{label}' fully removed by "
+                        "the optimizer — its load path cannot verify"
+                    )
+        if lost_regions:
+            out["regions_lost"] = lost_regions
+        passive_lost = int((passive.reshape(design_domain.dims) & ~final_mask).sum())
+        if passive_lost:
+            out["passive_cells_lost"] = passive_lost
+            extract_warnings.append(
+                f"{passive_lost} pinned keep/fix/load cell(s) removed in extraction "
+                "— passive material is not designable"
+            )
         # Surface components include nested cavity walls. The physical body
         # count is updated from the re-voxelized export solid below.
         out["n_surface_components"] = int(opt_mesh.body_count)
@@ -2740,9 +2830,23 @@ def run_topopt_pipeline(  # noqa: C901
         or any((c.compliance_j or 1.0) <= 0 for c in p1["verify_export"].cases)
         or any((c.max_disp_mm or 0.0) > 10 * exp_span for c in p1["verify_export"].cases)
     )
-    safety_retry = exp_degenerate or (sf_gate1 is not None and sf_gate1 < opt.safety_factor_min)
+    exp_info1 = p1.get("export_verify_info") or {}
+    loadpath_retry = exp_info1.get("load_path_ok") is False
+    safety_retry = (
+        exp_degenerate
+        or (sf_gate1 is not None and sf_gate1 < opt.safety_factor_min)
+        or bool(p1.get("regions_lost"))
+        or loadpath_retry
+    )
     gap_retry = sf_ratio is not None and sf_ratio > 3.0
-    connectivity_retry = p1.get("n_bodies_export") is None or int(p1["n_bodies_export"]) > 1
+    connectivity_retry = (
+        p1.get("n_bodies_export") is None
+        or int(p1["n_bodies_export"]) > 1
+        # sub-voxel bridges: the mesh reads as one body but the FEM raster
+        # splits it — only a thicker member floor can re-join the grid
+        or int(exp_info1.get("n_bodies_voxel") or 1) > 1
+        or loadpath_retry
+    )
     # Stated spec envelopes intentionally allow a shrunken export; avoid
     # replacing that geometry with a crisp full-boundary retry. A real
     # volume *deficit* on a spec'd part instead retries at a raised
@@ -2753,12 +2857,17 @@ def run_topopt_pipeline(  # noqa: C901
     retry_needed = safety_retry or gap_retry or connectivity_retry or volume_retry
     if retry_needed and (cancelled is None or not cancelled()):
         retry_volfrac = params.volfrac + 0.1 if safety_retry else params.volfrac
+        regions_retry = bool(p1.get("regions_lost"))
         retry_member = (
             max(min_member, 2.0 * design_domain.pitch)
-            if gap_retry or connectivity_retry
+            if gap_retry or connectivity_retry or regions_retry
             else min_member
         )
-        retry_crisp = not dims_spec and (gap_retry or connectivity_retry or volume_retry)
+        # crisp extraction also when a case region vanished: Taubin can
+        # dissolve the thin bridge a lost region needs to stay reachable
+        retry_crisp = not dims_spec and (
+            gap_retry or connectivity_retry or volume_retry or regions_retry
+        )
         # compensate the measured deficit: vol_error_pp is relative to the
         # design-space volume, so scale the mask-volume target by that
         # fraction of the mask plus a small margin, bounded at 1.5x
@@ -2781,9 +2890,18 @@ def run_topopt_pipeline(  # noqa: C901
             trigger_reasons = [
                 reason
                 for enabled, reason in (
-                    (safety_retry, "safety"),
+                    (regions_retry, "regions_lost"),
+                    (loadpath_retry, "load_path"),
+                    (
+                        exp_degenerate
+                        or (sf_gate1 is not None and sf_gate1 < opt.safety_factor_min),
+                        "safety",
+                    ),
                     (gap_retry, "sf_gap"),
-                    (connectivity_retry, "connectivity"),
+                    (
+                        connectivity_retry and not loadpath_retry,
+                        "connectivity",
+                    ),
                     (volume_retry, "volume_preserve"),
                 )
                 if enabled
@@ -2867,6 +2985,11 @@ def run_topopt_pipeline(  # noqa: C901
         "bottleneck_mm2": exp_info.get("bottleneck_mm2"),
         "sf_floor": exp_info.get("sf_floor"),
         "load_path_ok": exp_info.get("load_path_ok"),
+        # post-extraction early flags: regions the optimizer emptied
+        # entirely (their load path can never verify) and pinned cells the
+        # extraction dropped (a bug signal — passive is not designable)
+        "regions_lost": best.get("regions_lost"),
+        "passive_cells_lost": best.get("passive_cells_lost"),
         "sf_mesh_sensitive": exp_info.get("sf_mesh_sensitive"),
         "sf_ratio": (
             max(verify.worst_safety_factor, verify_export.worst_safety_factor)
@@ -2943,6 +3066,15 @@ def run_topopt_pipeline(  # noqa: C901
         )
     else:
         verification["valid"] = True
+    if verification.get("regions_lost"):
+        # a case region vanished entirely in extraction — the load-path
+        # certificate will agree, but flag it here with the region names
+        verification["valid"] = False
+        res.topopt["warnings"].append(
+            "optimizer removed region(s) outright: "
+            + ", ".join(verification["regions_lost"])
+            + " — load path cannot verify"
+        )
     if exp_info.get("load_path_ok") is False:
         # the geometric certificate found a case whose loads cannot reach
         # their fixtures through the export solid — structurally broken
@@ -3063,6 +3195,8 @@ def run_topopt_pipeline(  # noqa: C901
             "thin_fraction": round(best["thin_fraction"], 4),
             "n_components": best["n_components"],
             "n_bodies_export": best["n_bodies_export"],
+            "regions_lost": verification["regions_lost"],
+            "passive_cells_lost": verification["passive_cells_lost"],
             "n_bodies_voxel": exp_info.get("n_bodies_voxel"),
             "n_surface_components": best["n_surface_components"],
             "output_envelope": best.get("output_envelope"),
@@ -3222,7 +3356,6 @@ def run_infill_pipeline(  # noqa: C901
     from cadx.cad.fem.preview import render_regions
     from cadx.cad.fem.regions import (
         auto_keep_regions,
-        auto_void_regions,
         empty_region_warnings,
         keep_element_mask,
         material_cell_factors,
@@ -3596,10 +3729,18 @@ def run_infill_pipeline(  # noqa: C901
         )
         if not crisp:
             thin_cells = float(eff_span.min()) / max(domain.pitch, 1e-6)
+            bridged3 = extract.get("bridged_mask")
+            pin3 = passive.reshape(domain.dims).copy()
+            if bridged3 is not None:
+                # corridor cells added by island-bridging pin like passive —
+                # the connectivity glue must not erode below raster
+                # thickness between mask and export
+                pin3 |= np.asarray(bridged3, dtype=bool).reshape(domain.dims)
             candidate_mesh = smooth_preserve(
                 candidate_mesh,
                 iterations=2 if thin_cells < 4.0 else 4,
                 pin_floor=base_flat,
+                pin_mask=(domain.origin, domain.pitch, pin3),
             )
         candidate_mesh, dropped_slivers = keep_significant_components(candidate_mesh)
         warnings = list(extract_warnings)
@@ -4365,7 +4506,6 @@ def run_topopt_resample(  # noqa: C901
     from cadx.cad.fem.materials import resolve_material
     from cadx.cad.fem.regions import (
         auto_keep_regions,
-        auto_void_regions,
         keep_element_mask,
         region_node_mask,
         resolve_case_dofs,
@@ -4479,8 +4619,17 @@ def run_topopt_resample(  # noqa: C901
     # flag stored in the density field
     from cadx.cad.mesh_ops import smooth_preserve
 
+    bridged3 = extract_info.get("bridged_mask")
+    pin3 = passive.reshape(domain.dims).copy()
+    if bridged3 is not None:
+        # corridor cells added by island-bridging pin like passive — the
+        # connectivity glue must not erode below raster thickness
+        pin3 |= np.asarray(bridged3, dtype=bool).reshape(domain.dims)
     opt_mesh = smooth_preserve(
-        opt_mesh, iterations=4, pin_floor=bool(npz.get("flat_bottom", False))
+        opt_mesh,
+        iterations=4,
+        pin_floor=bool(npz.get("flat_bottom", False)),
+        pin_mask=(domain.origin, domain.pitch, pin3),
     )
     dims_spec = (optimize or {}).get("spec_dims_mm") or _spec_dims_from_dict(spec)
     opt_mesh, output_envelope, output_envelope_ok, envelope_warnings = (

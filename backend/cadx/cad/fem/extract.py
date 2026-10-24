@@ -102,7 +102,7 @@ def _bridge_components(
     mask: np.ndarray,
     walkable: np.ndarray,
     max_added_frac: float = 0.15,
-) -> tuple[np.ndarray, int]:
+) -> tuple[np.ndarray, int, np.ndarray]:
     """Reconnect disjoint mask components with minimal void-cell corridors.
 
     Keep/load-region islands each carry `required` cells, so connectivity
@@ -115,11 +115,15 @@ def _bridge_components(
     multi-body defect is more honest than a bridge thicker than the
     optimized structure.
 
-    Returns (mask, cells_added).
+    Returns (mask, cells_added, added_mask) — the last one marks exactly the
+    cells the corridors added so callers can pin them through smoothing:
+    they are the part's connectivity glue and must not erode below raster
+    thickness.
     """
     face = ndimage.generate_binary_structure(3, 1)
     budget = max(1, round(float(mask.sum()) * max_added_frac))
     added = 0
+    added_mask = np.zeros_like(mask)
     while added < budget:
         labels, n = ndimage.label(mask, structure=face)
         if n <= 1:
@@ -145,8 +149,9 @@ def _bridge_components(
         if added + n_new > budget:
             break
         mask = mask | corridor
+        added_mask |= corridor
         added += n_new
-    return mask, added
+    return mask, added, added_mask
 
 
 def _regularize_mask(mask: np.ndarray, max_passes: int = 6) -> np.ndarray:
@@ -347,7 +352,7 @@ def density_to_mask(
     min_member_mm: float = 0.0,
     min_gap_mm: float = 0.0,
     bridge_islands: bool = True,
-) -> tuple[np.ndarray, list[str], int]:
+) -> tuple[np.ndarray, list[str], int, np.ndarray]:
     """Threshold + clean the density field into a final solid mask (nx,ny,nz).
 
     Applies passive-region union, optional min-member thickening,
@@ -361,6 +366,10 @@ def density_to_mask(
     minimal void-cell corridor — a structural part must be one body. Pass
     False for purely-aesthetic density fields (organic styling) where
     disjoint bodies are valid output.
+
+    Returns (mask, warnings, n_components, bridged_mask): the last marks the
+    cells corridor-bridging added — the connectivity glue that smoothing
+    must not erode below raster thickness.
     """
     warnings: list[str] = []
     void3 = void_cells if void_cells is not None else None
@@ -403,11 +412,12 @@ def density_to_mask(
     # with a minimal corridor before regularization (which only adds
     # material, so it cannot break the bridge again)
     structure = ndimage.generate_binary_structure(3, 1)
+    bridged_mask = np.zeros_like(mask)
     if bridge_islands and int(ndimage.label(mask, structure=structure)[1]) > 1:
         walkable = domain.solid & ~mask
         if void3 is not None:
             walkable &= ~void3
-        mask, bridged = _bridge_components(mask, walkable)
+        mask, bridged, bridged_mask = _bridge_components(mask, walkable)
         if bridged:
             warnings.append(
                 f"reconnected disjoint keep/load islands with {bridged} bridge "
@@ -427,7 +437,7 @@ def density_to_mask(
             f"{n_components} disconnected bodies — a keep/load region is not "
             f"connected to the main structure (enlarge keep regions or raise volfrac)"
         )
-    return mask, warnings, n_components
+    return mask, warnings, n_components, bridged_mask
 
 
 def _volume_preserved_iso(
@@ -591,7 +601,7 @@ def density_to_mesh(
     (share of solid cells with 0.1 < rho < 0.9 — design sharpness),
     `smooth` and `sigma_px`.
     """
-    mask, warnings, n_components = density_to_mask(
+    mask, warnings, n_components, bridged_mask = density_to_mask(
         domain,
         density,
         threshold=threshold,
@@ -610,12 +620,17 @@ def density_to_mesh(
             # hard boundary conditions BEFORE the Gaussian: carved voids read
             # as rho=0 (the blur must pull the iso surface away from them, not
             # smear their rho=1 neighbourhood across the hole) and pinned
-            # passive cells read as rho=1 so the shell keeps them enclosed
+            # passive cells read as rho=1 so the shell keeps them enclosed.
+            # Bridge-corridor cells get the same treatment: they are the
+            # connectivity glue between pinned islands — a blurred rho<1
+            # there pinches the iso surface off and the "connected" mask
+            # exports as sub-voxel-separated bodies.
             rho_in = rho3.astype(np.float64).copy()
             if void_cells is not None:
                 rho_in[void_cells] = 0.0
             if passive_solid is not None:
                 rho_in[passive_solid.reshape(domain.dims)] = 1.0
+            rho_in[bridged_mask] = 1.0
             rho_s = ndimage.gaussian_filter(rho_in, float(sigma_px))
             # clip the iso field to the mask, dilated by one cell: a hard
             # clip at the mask boundary would put a 0-cliff exactly where
@@ -689,5 +704,8 @@ def density_to_mesh(
         "sigma_px": float(sigma_px),
         "vol_error_pct": round(100.0 * (float(mesh.volume) - mask_vol) / mask_vol, 3),
         "gray_fraction": round(gray_fraction, 4),
+        # cells the island-bridge added — callers pin them through the
+        # export smoothing so the verified connectivity survives to print
+        "bridged_mask": bridged_mask,
     }
     return mesh, mask, warnings, n_components, extract_info

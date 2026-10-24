@@ -105,7 +105,7 @@ def _bond_keep(
     # or support; the shared extraction helper then drops only true debris.
     required_or_main = required3 | (labels == main_label)
     bonded, n_debris = _connectivity_mask(keep3, required_or_main)
-    bonded, n_bridged = _bridge_components(bonded, walkable3)
+    bonded, n_bridged, _bridge_mask = _bridge_components(bonded, walkable3)
     return bonded, n_debris, n_bridged, n_islands
 
 
