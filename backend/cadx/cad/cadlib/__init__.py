@@ -52,7 +52,6 @@ from .ops import (
     trim_below,
 )
 from .profile import closed_polyline, profile_body
-from .threads import helical_thread
 from .shapes import (
     arch_bridge,
     boss,
@@ -67,6 +66,7 @@ from .shapes import (
     text_label,
     tube,
 )
+from .threads import helical_thread
 
 __all__ = [
     "arch_bridge",
@@ -85,8 +85,8 @@ __all__ = [
     "face_frame",
     "filleted_box",
     "finish_edges",
-    "hole_grid",
     "helical_thread",
+    "hole_grid",
     "hole_rim_edges",
     "insert_pocket",
     "keyhole_slot",

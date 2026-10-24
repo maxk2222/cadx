@@ -692,8 +692,7 @@ _REGION_SCHEMA = {
         "diameter_mm": {"type": "number", "description": "cylinder diameter / box edge"},
         "inner_diameter_mm": {
             "type": "number",
-            "description": "cylinder/area/rim: inner diameter in mm for a "
-            "hollow ring/annulus",
+            "description": "cylinder/area/rim: inner diameter in mm for a hollow ring/annulus",
         },
         "margin_mm": {"type": "number", "description": "selection depth, default 2"},
         "polygon": {
@@ -1544,8 +1543,10 @@ MESH_TRANSFORM_TOOLS = [
             "major_d": {"type": "number", "description": "tap: thread major Ø"},
             "pitch": {"type": "number", "description": "tap: thread pitch (default ISO coarse)"},
             "depth": {"type": "number", "description": "mm; omit = through"},
-            "cbore_dia": {"type": "number"}, "cbore_depth": {"type": "number"},
-            "csk_dia": {"type": "number"}, "csk_angle": {"type": "number"},
+            "cbore_dia": {"type": "number"},
+            "cbore_depth": {"type": "number"},
+            "csk_dia": {"type": "number"},
+            "csk_angle": {"type": "number"},
             "helical": {"type": "boolean", "description": "tap: real groove (default true)"},
         },
         ["op"],

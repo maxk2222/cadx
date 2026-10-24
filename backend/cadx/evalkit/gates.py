@@ -295,7 +295,7 @@ def _v3(v: Any) -> list[float] | None:
 
 
 def _axis_index(v: Any) -> int | None:
-    """"+x"/"x" → 0, "-y"/"y" → 1, "+z"/"z" → 2."""
+    """ "+x"/"x" → 0, "-y"/"y" → 1, "+z"/"z" → 2."""
     s = str(v or "").strip().lower().lstrip("+-")
     return {"x": 0, "y": 1, "z": 2}.get(s)
 
@@ -449,9 +449,7 @@ def _gate_fem_loadcases(g: dict[str, Any], outcome: StageOutcome) -> GateResult:
         for key, label in (("fixed_at_axis", "fixed"), ("load_at_axis", "load")):
             if key not in chk:
                 continue
-            got = _v3(rxn.get("fixed_centroid_mm")) if label == "fixed" else _load_centroid(
-                applied
-            )
+            got = _v3(rxn.get("fixed_centroid_mm")) if label == "fixed" else _load_centroid(applied)
             ax = _axis_index(chk[key])
             lo = _v3((outcome.analysis or {}).get("bbox_min"))
             hi = _v3((outcome.analysis or {}).get("bbox_max"))

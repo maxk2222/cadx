@@ -421,9 +421,7 @@ def test_fem_loadcases_source_and_inconclusive():
 def test_fem_loadcases_axis_extremum_checks():
     """`fixed_at_axis`/`load_at_axis` assert the centroid sits at the bbox
     extreme — 'clamped at the -X end' without pinning absolute coordinates."""
-    out = _fem_out(
-        analysis={"bbox_min": [-100.0, -20.0, 0.0], "bbox_max": [60.0, 20.0, 10.0]}
-    )
+    out = _fem_out(analysis={"bbox_min": [-100.0, -20.0, 0.0], "bbox_max": [60.0, 20.0, 10.0]})
     ok = run_gates(
         [
             {
@@ -436,9 +434,7 @@ def test_fem_loadcases_axis_extremum_checks():
     )[0]
     # fixed at x=-50 vs min-x=-100 -> 50 off; load at x=+50 vs max-x=60 -> 10 off
     assert ok.ok is False and "fixed centroid" in ok.detail
-    out2 = _fem_out(
-        analysis={"bbox_min": [-51.0, -20.0, 0.0], "bbox_max": [51.0, 20.0, 10.0]}
-    )
+    out2 = _fem_out(analysis={"bbox_min": [-51.0, -20.0, 0.0], "bbox_max": [51.0, 20.0, 10.0]})
     ok2 = run_gates(
         [
             {
