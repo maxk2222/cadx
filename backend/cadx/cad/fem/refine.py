@@ -47,6 +47,10 @@ _AXIS_VEC: dict[str, np.ndarray] = {
     "-z": np.array([0.0, 0.0, -1.0]),
 }
 
+# restored keep-patch must overlap the optimized body by at least this
+# much real volume — less means it lands in an emptied region and floats
+_MIN_BRIDGE_MM3 = 1.0
+
 # ISO metric coarse pitch — thread_spec is preferred, this is the fallback
 _COARSE_PITCH: dict[float, float] = {
     1.6: 0.35,
@@ -189,6 +193,68 @@ def _feature_axis(f: dict[str, Any]) -> str:
     if a in ("x", "y", "z"):
         a = "+" + a
     return a if a in _AXES else "+z"
+
+
+def _spec_feature_text(sf: dict[str, Any]) -> str:
+    """Free-text fields that may carry machine-readable position hints."""
+    return " ".join(
+        str(sf.get(k) or "") for k in ("position", "description", "note", "name")
+    )
+
+
+def _spec_axis(sf: dict[str, Any], text: str) -> str | None:
+    """Drill axis declared by a spec feature: an explicit ``axis`` field,
+    else the ``through <axis>`` word of its position text ('through
+    x=42..50' bores across x). The through-range midpoint picks the entry
+    side (parts are centred — mid > 0 drills from +). None = undeclared;
+    callers fall back to the feature's default axis."""
+    import re
+
+    a = str(sf.get("axis") or "").strip().lower()
+    if a in ("x", "y", "z"):
+        a = "+" + a
+    if a in _AXES:
+        return a
+    m = re.search(r"\bthrough\s+([xyz])\b", text, re.I)
+    if not m:
+        return None
+    letter = m.group(1)
+    from cadx.cad.poshint import parse_axis_ranges
+
+    rng = parse_axis_ranges(text).get(letter)
+    mid = (rng[0] + rng[1]) / 2.0 if rng else 0.0
+    return ("-" if mid < 0 else "+") + letter
+
+
+def _spec_uv_positions(text: str, axis: str) -> list[tuple[float, float]]:
+    """Declared in-plane ``(u, v)`` bore positions from spec position text.
+
+    Point hints ('x=0, y=0' and multi-point lists) come from
+    ``parse_coord_points``; ``x=+/-42`` symmetric pairs expand to both
+    members; a point missing an in-plane axis borrows that axis' symmetric
+    values (mounting-hole grids declare +/-42 x +/-32 once for four bores).
+    ``[]`` when the text declares no in-plane coordinates — the caller
+    then keeps dia+axis anchor matching."""
+    from cadx.cad.poshint import (
+        parse_coord_points,
+        parse_position_hints,
+        parse_symmetric_coords,
+    )
+
+    _ax, au, av = _AXES[axis]
+    aul, avl = "xyz"[au], "xyz"[av]
+    sym = parse_symmetric_coords(text)
+    points = parse_coord_points(text) or [parse_position_hints(text)[0]]
+    out: list[tuple[float, float]] = []
+    for p in points:
+        uvals = [p[aul]] if aul in p else sym.get(aul, [])
+        vvals = [p[avl]] if avl in p else sym.get(avl, [])
+        for u in uvals:
+            for v in vvals:
+                uv = (float(u), float(v))
+                if uv not in out:
+                    out.append(uv)
+    return out
 
 
 def _anchor_uv(a: dict[str, Any]) -> tuple[float, float] | None:
@@ -339,9 +405,13 @@ def resolve_refine_features(  # noqa: C901
     anchors = [a for a in (anchors or []) if is_fastener_anchor(a)]
     spec_features = spec_features or []
 
-    def _nearest_anchor(u: float, v: float, axis: str) -> dict[str, Any] | None:
+    def _nearest_anchor(
+        u: float, v: float, axis: str, used: set[int] | None = None
+    ) -> dict[str, Any] | None:
         best, best_d = None, match_tol_mm
         for a in anchors:
+            if used is not None and id(a) in used:
+                continue
             if _feature_axis(a) != axis:
                 continue
             uv = _anchor_uv(a)
@@ -437,8 +507,40 @@ def resolve_refine_features(  # noqa: C901
             )
         return feats, warnings
 
-    # --- auto: anchors upgraded by nearby spec features ----------------------
+    # --- auto: spec features with declared positions -------------------------
     used_anchors: set[int] = set()
+
+    def _from_spec(sf: dict[str, Any], stype: str, dims: dict[str, Any], u: float, v: float,
+                   axis: str, anchor: dict[str, Any] | None) -> RefineFeature | None:
+        dia = float(
+            dims.get("diameter")
+            or dims.get("bore_diameter")
+            or (anchor or {}).get("dia")
+            or 0
+        )
+        if dia <= 0:
+            return None
+        # dia-snap only when the feature actually means a thread — otherwise
+        # a Ø5.5 M5-clearance hole silently picks up an 'M5' spec
+        threadish = stype in ("thread", "tap", "insert") or bool(dims.get("thread_spec"))
+        spec_txt = _thread_spec_from(sf, dia, allow_dia_snap=threadish)
+        return RefineFeature(
+            name=str(sf.get("name") or (anchor or {}).get("name") or "spec feature"),
+            kind=_upgrade_kind("hole", stype, dims),
+            axis=axis,
+            u=u,
+            v=v,
+            dia=dia,
+            depth_mm=dims.get("depth") or (anchor or {}).get("depth_mm") or None,
+            csk_dia=dims.get("countersink_diameter"),
+            csk_angle_deg=float(dims.get("countersink_angle") or 90.0),
+            cbore_dia=dims.get("counterbore_diameter"),
+            cbore_depth_mm=dims.get("counterbore_depth"),
+            thread_spec=spec_txt,
+            helical=_opt_bool(dims.get("helical", (anchor or {}).get("helical"))),
+            source="spec",
+        )
+
     for sf in spec_features:
         stype = str(sf.get("type") or "").lower()
         if (
@@ -449,10 +551,29 @@ def resolve_refine_features(  # noqa: C901
             continue
         dims = dict(sf.get("dims") or {})
         dia = float(dims.get("diameter") or dims.get("bore_diameter") or 0)
-        axis = _feature_axis(sf)
+        text = _spec_feature_text(sf)
+        axis = _spec_axis(sf, text) or _feature_axis(sf)
+        positions = _spec_uv_positions(text, axis)
+        if positions:
+            # declared positions are authoritative — a nearby anchor only
+            # supplies tunnel evidence (plug target) and a dia fallback;
+            # the bore keeps the declared (u, v), never the measured one.
+            # Without this, dia+axis matching once bound an M12 spec bore
+            # to a corner anchor 57 mm off its declared centre.
+            for pu, pv in positions:
+                anchor = _nearest_anchor(pu, pv, axis, used_anchors)
+                if anchor is not None:
+                    used_anchors.add(id(anchor))
+                f = _from_spec(sf, stype, dims, pu, pv, axis, anchor)
+                if f is None:
+                    warnings.append(
+                        f"refine feature '{sf.get('name')}' has no diameter — skipped"
+                    )
+                    continue
+                feats.append(f)
+            continue
+        # no parseable declared position — match by diameter+axis
         anchor = None
-        # spec features have no numeric position — match by diameter+axis
-        # against unclaimed anchors (closest dia wins)
         cands = [a for a in anchors if id(a) not in used_anchors and _feature_axis(a) == axis]
         if not cands:
             cands = [a for a in anchors if id(a) not in used_anchors]
@@ -473,10 +594,9 @@ def resolve_refine_features(  # noqa: C901
         if anchor is None:
             continue
         used_anchors.add(id(anchor))
-        # dia-snap only when the feature actually means a thread — otherwise
-        # a Ø5.5 M5-clearance hole silently picks up an 'M5' spec
-        threadish = stype in ("thread", "tap", "insert") or bool(dims.get("thread_spec"))
-        dims["thread_spec"] = _thread_spec_from(sf, dia, allow_dia_snap=threadish)
+        dims["thread_spec"] = _thread_spec_from(
+            sf, dia, allow_dia_snap=stype in ("thread", "tap", "insert") or bool(dims.get("thread_spec"))
+        )
         f = _from_anchor(anchor, kind=stype, dims=dims)
         if f:
             f.name = str(sf.get("name") or f.name)
@@ -1214,33 +1334,30 @@ def restore_keep_surface(
                 _auto_anchor_keep_regions(anchors), anchors, base.bounds, span, margin_mm
             )
         ]
-    # Merge all keep boxes into a SINGLE patch before unioning: adjacent
-    # regions (e.g. a bore ring overlapping a thread ring) otherwise create
-    # one coincident-face seam per union — float32-quantized manifold output
-    # leaves T-junction slivers there that sew into boolean-dead B-Reps.
-    # One `base ∩ (union of boxes)` patch + one union = exactly one seam.
+    # Build each keep patch once — reused by the merged union and the
+    # per-patch fallback.
+    tagged_patches = _bridging_keep_patches(out, base, tagged, warnings)
+    # Merge all surviving patches into a SINGLE body before unioning:
+    # adjacent regions (e.g. a bore ring overlapping a thread ring)
+    # otherwise create one coincident-face seam per union — float32-quantized
+    # manifold output leaves T-junction slivers there that sew into
+    # boolean-dead B-Reps. One merged patch + one union = exactly one seam.
     merged_done = False
-    if len(tagged) > 1 and out.is_volume:
+    if len(tagged_patches) > 1 and out.is_volume:
         try:
-            box_union = _box_mesh(tagged[0][0])
-            for b, _ in tagged[1:]:
-                box_union = box_union.union(_box_mesh(b), engine="manifold")
-            patch = base.intersection(box_union, engine="manifold")
-            if patch is not None and len(getattr(patch, "faces", [])):
-                if not patch.is_volume:
-                    with contextlib.suppress(Exception):
-                        patch = _ensure_watertight(patch)
-                if patch.is_volume:
-                    merged = out.union(patch, engine="manifold")
-                    if merged is not None and len(getattr(merged, "faces", [])):
-                        out = merged
-                        restored += len(tagged)
-                        auto_restored += sum(1 for _, a in tagged if a)
-                        merged_done = True
+            merged_patch = tagged_patches[0][0]
+            for p, _ in tagged_patches[1:]:
+                merged_patch = merged_patch.union(p, engine="manifold")
+            merged = out.union(merged_patch, engine="manifold")
+            if merged is not None and len(getattr(merged, "faces", [])):
+                out = merged
+                restored += len(tagged_patches)
+                auto_restored += sum(1 for _, a in tagged_patches if a)
+                merged_done = True
         except Exception as e:
             warnings.append(f"merged keep-restore failed ({e}) — trying per-region")
     if not merged_done:
-        out, warnings2, restored2, auto2 = _union_keep_patches(out, base, tagged)
+        out, warnings2, restored2, auto2 = _union_keep_patches(out, tagged_patches)
         warnings += warnings2
         restored += restored2
         auto_restored += auto2
@@ -1254,30 +1371,64 @@ def restore_keep_surface(
     return out, warnings, restored
 
 
-def _union_keep_patches(
+def _bridging_keep_patches(
     out: trimesh.Trimesh,
     base: trimesh.Trimesh,
     tagged: list[tuple[np.ndarray, bool]],
-) -> tuple[trimesh.Trimesh, list[str], int, int]:
-    """Per-region fallback: `out union (base ∩ grown_keep_box)` per box."""
+    warnings: list[str],
+) -> list[tuple[trimesh.Trimesh, bool]]:
+    """`base ∩ box` per keep box — but only patches that overlap `out` by
+    real volume. A keep-ring restored into a region the optimizer emptied
+    completely floats in air and ships a loose fragment with a
+    nominal-looking bore (observed: corner mounting pads restored onto
+    nothing became free pucks the verify still reported as Ø8.5-true)."""
     from cadx.cad.mesh_ops import _ensure_watertight
 
-    warnings: list[str] = []
-    restored = 0
-    auto_restored = 0
+    patches: list[tuple[trimesh.Trimesh, bool]] = []
     for b, is_auto in tagged:
         tag = "auto keep-restore" if is_auto else "keep-region"
         try:
             patch = base.intersection(_box_mesh(b), engine="manifold")
-            if patch is None or not len(getattr(patch, "faces", [])):
+        except Exception:
+            patch = None
+        if patch is None or not len(getattr(patch, "faces", [])):
+            continue
+        if not patch.is_volume:
+            with contextlib.suppress(Exception):
+                patch = _ensure_watertight(patch)
+        if not patch.is_volume:
+            warnings.append(f"{tag} patch is not a volume — region left smoothed")
+            continue
+        if out.is_volume:
+            overlap_vol = None
+            with contextlib.suppress(Exception):
+                overlap_vol = float(
+                    getattr(out.intersection(patch, engine="manifold"), "volume", 0) or 0
+                )
+            if overlap_vol is not None and overlap_vol < _MIN_BRIDGE_MM3:
+                cx = float((b[0][0] + b[1][0]) / 2)
+                cy = float((b[0][1] + b[1][1]) / 2)
+                cz = float((b[0][2] + b[1][2]) / 2)
+                warnings.append(
+                    f"{tag} at ({cx:.0f}, {cy:.0f}, {cz:.0f}) would float — "
+                    "region left smoothed"
+                )
                 continue
-            if not patch.is_volume:
-                # thin sliver / open shell — try one repair, else skip
-                with contextlib.suppress(Exception):
-                    patch = _ensure_watertight(patch)
-            if not patch.is_volume:
-                warnings.append(f"{tag} patch is not a volume — region left smoothed")
-                continue
+        patches.append((patch, is_auto))
+    return patches
+
+
+def _union_keep_patches(
+    out: trimesh.Trimesh,
+    tagged_patches: list[tuple[trimesh.Trimesh, bool]],
+) -> tuple[trimesh.Trimesh, list[str], int, int]:
+    """Per-region fallback: `out union patch` per precomputed keep patch."""
+    warnings: list[str] = []
+    restored = 0
+    auto_restored = 0
+    for patch, is_auto in tagged_patches:
+        tag = "auto keep-restore" if is_auto else "keep-region"
+        try:
             if not out.is_volume:
                 warnings.append("optimized mesh lost volume-ness — restore aborted")
                 break
@@ -1377,6 +1528,45 @@ def _try_difference(
     return res, ""
 
 
+def _feature_host_main(mesh: trimesh.Trimesh, feat: RefineFeature, entry: float, span: float) -> bool | None:
+    """True when the material ringing the bore belongs to the mesh's
+    largest body — a keep-restored ring floating in an emptied region
+    still 'measures' a perfect bore but carries no load. None = could not
+    tell (split/proximity failure) — callers then keep the benefit of the
+    doubt."""
+    try:
+        parts = [p for p in mesh.split(only_watertight=False) if len(getattr(p, "faces", []))]
+    except Exception:
+        return None
+    if len(parts) <= 1:
+        return True
+    ax, au, av = _AXES[feat.axis]
+    inward = -1.0 if feat.axis[0] == "+" else 1.0
+    depth = min(feat.depth_mm or span, span)
+    centre = np.zeros(3)
+    centre[au], centre[av] = feat.u, feat.v
+    centre[ax] = entry + inward * depth * 0.5
+    ring_r = feat.dia / 2.0 + 0.75
+    probes = []
+    for d_ax in (au, av):
+        for sgn in (1.0, -1.0):
+            pt = centre.copy()
+            pt[d_ax] += sgn * ring_r
+            probes.append(pt)
+    probe_arr = np.array(probes)
+    main = max(parts, key=lambda p: float(getattr(p, "volume", 0) or 0))
+    best_d, host = np.inf, None
+    for p in parts:
+        try:
+            dists = np.abs(trimesh.proximity.signed_distance(p, probe_arr))
+        except Exception:
+            continue
+        d = float(dists.min())
+        if d < best_d:
+            best_d, host = d, p
+    return None if host is None else bool(host is main)
+
+
 def _record_applied(
     report: RefineReport, feat: RefineFeature, mesh: trimesh.Trimesh, entry: float, span: float
 ) -> None:
@@ -1414,6 +1604,13 @@ def _record_applied(
                 )
     except Exception:
         pass  # measurement is informational — never fail a cut on it
+    host = _feature_host_main(mesh, feat, entry, span)
+    if host is False:
+        entry_rec["host_fragmented"] = True
+        report.warnings.append(
+            f"feature '{feat.name}': bore sits in a disconnected fragment — "
+            "the region was optimized away and the restored ring floats free"
+        )
     report.applied.append(entry_rec)
 
 
@@ -1921,6 +2118,14 @@ def refine_verify(
         if uv is None:
             continue  # no position to check against — cannot verify
         dia = float(entry.get("requested_dia_mm") or entry.get("dia") or 0.0)
+        if entry.get("host_fragmented"):
+            # a hole measured on a floating fragment is not a feature of
+            # the part — count it as a miss even when the surface scan
+            # sees the bore
+            misses.append(
+                {"entry": entry, "x": uv[0], "y": uv[1], "dia": dia, "reason": "host_fragmented"}
+            )
+            continue
         want = {"dimple"} if entry.get("depth_mm") else {"hole"}
         found = _scan_has_feature(scanned, uv, dia, want, xy_tol_mm, dia_tol_frac, axis)
         if not found:

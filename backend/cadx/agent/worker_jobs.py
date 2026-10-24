@@ -1629,6 +1629,29 @@ async def run_optimize_job(  # noqa: C901
 
         topopt = result.get("topopt") or {}
         fem = result.get("fem") or {}
+        # recount bodies on the shipped artifact — float32 STL export can
+        # break a sliver bridge the in-memory candidate still counted as
+        # fused, and the eval gates measure the file, not the candidate
+        stl_rel = (result.get("mesh") or {}).get("stl_relpath")
+        if stl_rel:
+            shipped = storage.data_root() / str(stl_rel)
+            if shipped.exists():
+                try:
+                    import trimesh
+
+                    from cadx.cad.mesh_ops import solid_body_count
+
+                    nb = int(solid_body_count(trimesh.load(str(shipped), force="mesh")))
+                    prev = topopt.get("n_bodies_export")
+                    if prev is None or int(prev) != nb:
+                        topopt["n_bodies_candidate"] = prev
+                        topopt["n_bodies_export"] = nb
+                        topopt.setdefault("warnings", []).append(
+                            f"shipped mesh has {nb} bod{'ies' if nb != 1 else 'y'} "
+                            f"(candidate reported {prev}) — export split a sliver bridge"
+                        )
+                except Exception:
+                    pass  # recount is informational — never fail the job on it
         version.gen_mode = "topopt"
         version.resolved_mode = "topopt"
         version.spec = parent.spec

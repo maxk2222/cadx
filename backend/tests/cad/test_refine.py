@@ -15,8 +15,11 @@ from cadx.cad.fem.refine import (
     _bore_ring_material,
     _cutter_mesh,
     _entry_point,
+    _feature_host_main,
     _metric_pitch,
     _parse_spec,
+    _spec_axis,
+    _spec_uv_positions,
     _thread_spec_from,
     _tunnel_open_mesh,
     _verify_expected_uv,
@@ -606,12 +609,34 @@ def _bore_anchor(idx: int = 1, *, source: str = "spec+scan", dia: float = 10.0) 
     }
 
 
-def test_auto_keep_restores_eaten_bore_ring():
-    """SIMP ate the material ring around a Ø10 bore and the refine job
-    forwarded keep_regions=[] — an auto keep ring per anchor must restore
-    the base surface first so the re-cut leaves ONE clean Ø10 tunnel."""
+def test_auto_keep_drops_floating_bore_ring():
+    """SIMP ate the material ring around a Ø10 bore AND everything the
+    keep box could bridge to — the auto keep patch must be dropped, not
+    pasted back: a ring floating in a void still 'measures' a nominal
+    bore but ships a loose fragment with zero load path."""
     base = _slab_bored(10.0, 10.0)
     opt = _scooped_opt(base, 10.0, 15.0)
+    anchors = [_bore_anchor()]
+    feats, _ = resolve_refine_features(anchors, None, None, base_mesh=base)
+    assert len(feats) == 1
+
+    out, rep = apply_refine(opt, feats, base_mesh=base, keep_regions=[], anchors=anchors)
+    assert rep.restored_regions == 0
+    assert any("would float" in w for w in rep.warnings)
+    # nothing to drill into — the cut skips honestly instead of producing
+    # a free puck with a perfect-looking Ø10 hole
+    assert not rep.applied
+    assert any("no material" in s["reason"] for s in rep.skipped)
+    assert out.volume == pytest.approx(opt.volume)
+
+
+def test_auto_keep_restores_partially_eaten_bore_ring():
+    """The common case: SIMP ate MOST of the ring but the keep box still
+    overlaps surviving material — the patch bridges and the bore re-cuts."""
+    base = _slab_bored(10.0, 10.0)
+    # smaller scoop: eats the bore walls but leaves the keep box rim
+    # overlapping the slab — the ring restores and bridges to the body
+    opt = _scooped_opt(base, 10.0, 9.5)
     anchors = [_bore_anchor()]
     feats, _ = resolve_refine_features(anchors, None, None, base_mesh=base)
     assert len(feats) == 1
@@ -621,20 +646,17 @@ def test_auto_keep_restores_eaten_bore_ring():
     assert any("auto keep-restore" in w for w in rep.warnings)
     assert len(rep.applied) == 1 and not rep.skipped
     assert _tunnel_open_mesh(out, 10.0, 0.0, "+z")
-    # the scan may also see the scooped opening itself as a tunnel — the
-    # requirement is exactly one ~Ø10 bore at the anchor position
     bores = [t for t in _z_tunnels_near(out, 10.0, radius=4.0) if t["dia"] <= 15.0]
     assert len(bores) == 1
-    # requested Ø10, possibly reamed +0.4 after snapping onto the restored bore
     assert bores[0]["dia"] == pytest.approx(10.0, abs=1.5)
 
 
 def test_spec_anchor_recut_after_auto_restore():
     """Spec-declared anchor over SOLID base (no base tunnel): resolve defers
-    the verdict, auto keep-restore pastes the ring back, and the bore is cut
-    — not dropped by the d1d1836 tunnel allowlist."""
+    the verdict; the keep ring still bridges surviving material, restores,
+    and the bore is cut — not dropped by the d1d1836 tunnel allowlist."""
     base = _slab()  # solid — the spec bore was never in the scan
-    opt = _scooped_opt(base, 10.0, 15.0)
+    opt = _scooped_opt(base, 10.0, 9.5)
     anchors = [_bore_anchor(source="spec")]
     feats, _ = resolve_refine_features(anchors, None, None, base_mesh=base)
     assert len(feats) == 1
@@ -647,6 +669,21 @@ def test_spec_anchor_recut_after_auto_restore():
     bores = [t for t in _z_tunnels_near(out, 10.0, radius=4.0) if t["dia"] <= 15.0]
     assert len(bores) == 1
     assert bores[0]["dia"] == pytest.approx(10.0, abs=1.5)
+
+
+def test_spec_anchor_no_material_when_patch_floats():
+    """Same deferred spec anchor, but the whole keep box was eaten — the
+    restore patch would float, so it drops and the deferred cut skips."""
+    base = _slab()
+    opt = _scooped_opt(base, 10.0, 15.0)
+    anchors = [_bore_anchor(source="spec")]
+    feats, _ = resolve_refine_features(anchors, None, None, base_mesh=base)
+    assert len(feats) == 1 and feats[0].admit_on_material
+
+    _out, rep = apply_refine(opt, feats, base_mesh=base, keep_regions=[], anchors=anchors)
+    assert rep.restored_regions == 0
+    assert not rep.applied
+    assert any("no material" in s["reason"] for s in rep.skipped)
 
 
 def test_spec_anchor_deferred_but_no_material_skipped():
@@ -830,3 +867,116 @@ def test_run_refine_verify_passes_clean(tmp_path):
     )
     assert res.ok
     assert not res.features["refine"].get("verify_misses")
+
+
+# --------------------------------------------------------------------------- #
+# spec-declared positions — declared (u,v) beats dia-matched anchor position   #
+# --------------------------------------------------------------------------- #
+
+
+_ROBOT_SPEC = [
+    {
+        "type": "hole",
+        "name": "mounting holes",
+        "position": "at (x=+/-42, y=+/-32), through z=0..10",
+        "dims": {"diameter": 8.5, "depth": 10.0},
+        "thread_spec": "M8x1.25-6H",
+    },
+    {
+        "type": "hole",
+        "name": "M12 tapped through-bore",
+        "position": "x=0, y=0, through z=0..25",
+        "dims": {"diameter": 10.2, "depth": 25.0},
+        "thread_spec": "M12x1.75-6H",
+    },
+    {
+        "type": "hole",
+        "name": "flange holes",
+        "position": "y=+/-12, z=25, through x=42..50",
+        "dims": {"diameter": 6.5, "depth": 8.0},
+    },
+]
+
+
+def test_spec_axis_parses_through_axis():
+    assert _spec_axis(_ROBOT_SPEC[0], _ROBOT_SPEC[0]["position"]) == "+z"
+    assert _spec_axis(_ROBOT_SPEC[1], _ROBOT_SPEC[1]["position"]) == "+z"
+    # the flange bores run across x on the +x wall
+    assert _spec_axis(_ROBOT_SPEC[2], _ROBOT_SPEC[2]["position"]) == "+x"
+
+
+def test_spec_uv_positions_expand_symmetric_grid():
+    text = _ROBOT_SPEC[0]["position"]
+    pos = _spec_uv_positions(text, "+z")
+    assert sorted(pos) == sorted([(42, 32), (42, -32), (-42, 32), (-42, -32)])
+
+
+def test_spec_uv_positions_single_center():
+    pos = _spec_uv_positions(_ROBOT_SPEC[1]["position"], "+z")
+    assert pos == [(0.0, 0.0)]
+
+
+def test_spec_uv_positions_other_axis_plane():
+    # +x bores: in-plane axes are y (u) and z (v)
+    pos = _spec_uv_positions(_ROBOT_SPEC[2]["position"], "+x")
+    assert sorted(pos) == sorted([(12.0, 25.0), (-12.0, 25.0)])
+
+
+def test_spec_uv_positions_empty_when_undeclared():
+    assert _spec_uv_positions("somewhere on the plate", "+z") == []
+
+
+def test_resolve_spec_features_keep_declared_positions():
+    """Eval regression: the M12 spec bore bound by dia+axis to a corner
+    anchor 57 mm off its declared centre. Declared positions must win —
+    anchors only supply tunnel evidence."""
+    anchors = [
+        {"index": 1, "kind": "hole", "axis": "+z", "x": 0.0, "y": 0.5, "dia": 10.4,
+         "source": "scan", "pos": [0.0, 0.5, 12.0]},
+        {"index": 2, "kind": "hole", "axis": "+z", "x": -42.0, "y": 31.9, "dia": 9.9,
+         "source": "scan", "pos": [-42.0, 31.9, 5.0]},
+        {"index": 3, "kind": "hole", "axis": "+z", "x": 42.0, "y": -32.0, "dia": 8.9,
+         "source": "scan", "pos": [42.0, -32.0, 5.0]},
+        {"index": 4, "kind": "hole", "axis": "+z", "x": 42.0, "y": 32.0, "dia": 8.9,
+         "source": "scan", "pos": [42.0, 32.0, 5.0]},
+    ]
+    feats, _warns = resolve_refine_features(
+        anchors, _ROBOT_SPEC, None, base_mesh=_slab_bored(10.0, 10.0)
+    )
+    m12 = [f for f in feats if "M12" in f.name]
+    assert len(m12) == 1
+    assert (m12[0].u, m12[0].v) == (0.0, 0.0)  # declared centre, NOT (-42, 32)
+    assert m12[0].source == "spec" and m12[0].dia == pytest.approx(10.2)
+    mounts = [f for f in feats if f.name == "mounting holes"]
+    assert len(mounts) == 4
+    assert sorted((f.u, f.v) for f in mounts) == sorted(
+        [(42.0, 32.0), (42.0, -32.0), (-42.0, 32.0), (-42.0, -32.0)]
+    )
+    flange = [f for f in feats if f.name == "flange holes"]
+    assert len(flange) == 2 and all(f.axis == "+x" for f in flange)
+
+
+def test_resolve_spec_falls_back_to_dia_match_without_position():
+    """A spec hole with no parseable position keeps the legacy dia+axis
+    anchor match."""
+    anchors = [
+        {"index": 1, "kind": "hole", "axis": "+z", "x": 10.0, "y": 0.0, "dia": 6.1,
+         "source": "scan", "pos": [10.0, 0.0, 6.0]},
+    ]
+    spec = [{"type": "hole", "name": "m6 bore", "position": "", "dims": {"diameter": 6.0}}]
+    feats, _ = resolve_refine_features(anchors, spec, None, base_mesh=_slab_bored(10.0, 6.0))
+    assert len(feats) == 1
+    assert (feats[0].u, feats[0].v) == (10.0, 0.0)
+
+
+def test_feature_host_main_flags_floating_puck():
+    """Bore re-cut into a keep-restored ring that floats free of the body —
+    the dia still measures nominal, but the host is a fragment."""
+    base = _slab_bored(10.0, 10.0)
+    puck = trimesh.creation.annulus(r_min=5.0, r_max=8.0, height=14.0)
+    puck.apply_translation([10.0, 0.0, 0.0])
+    floating = trimesh.util.concatenate([base, puck])
+    feat = RefineFeature(name="m", kind="hole", axis="+z", u=10.0, v=0.0, dia=10.0)
+    assert _feature_host_main(floating, feat, entry=14.0, span=14.0) is False
+    # same feature on the single-body slab → connected
+    assert _feature_host_main(base, feat, entry=14.0, span=14.0) is True
