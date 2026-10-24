@@ -22,6 +22,8 @@ export interface Part {
   name: string;
   version_count: number;
   thumbnail_url: string | null;
+  /** user-verified master version of this part (null when none accepted) */
+  accepted_version_id?: string | null;
   created_at: string;
 }
 
@@ -121,6 +123,8 @@ export interface VersionSummary {
   error: string | null;
   gen_mode: GenMode;
   resolved_mode: "cad" | "mesh" | "hybrid" | "topopt" | null;
+  /** non-null while this version is the user-verified master of its part */
+  accepted_at?: string | null;
   created_at: string;
   thumbnail_url: string | null;
   /** newest non-terminal job on this version — live step/iteration state */

@@ -34,6 +34,7 @@ from cadx.db.models import (
     Part,
     Version,
     VersionStatus,
+    utcnow,
 )
 from cadx.spawn import SpawnError
 
@@ -125,13 +126,18 @@ async def part_meta(db: Any, part: Part) -> dict[str, Any]:
     project-card thumbnail."""
     versions = await _subtree_versions(db, part)
     if not versions:
-        return {"version_count": 0, "thumbnail_url": None}
+        return {"version_count": 0, "thumbnail_url": None, "accepted_version_id": None}
     done = [
         v for v in versions if v.status in (VersionStatus.succeeded, VersionStatus.needs_review)
     ]
-    pick = max(
-        done or versions,
-        key=lambda v: (v.score if v.score is not None else -1, v.number),
+    accepted = next((v for v in versions if v.accepted_at is not None), None)
+    # the user-verified master is the part's representative once it has
+    # geometry; a still-running accepted version falls back to the best pick
+    pick = (
+        accepted
+        if accepted is not None
+        and accepted.status in (VersionStatus.succeeded, VersionStatus.needs_review)
+        else max(done or versions, key=lambda v: (v.score if v.score is not None else -1, v.number))
     )
     arts = await db.execute(
         select(Artifact).where(
@@ -145,7 +151,28 @@ async def part_meta(db: Any, part: Part) -> dict[str, Any]:
         key=lambda a: (rank.get(str(a.kind), 3), 0 if a.view == "iso" else 1),
     )
     thumb = f"/api/artifacts/{picks[0].id}/file" if picks else f"/api/versions/{pick.id}/preview"
-    return {"version_count": len(versions), "thumbnail_url": thumb}
+    return {
+        "version_count": len(versions),
+        "thumbnail_url": thumb,
+        "accepted_version_id": accepted.id if accepted else None,
+    }
+
+
+async def set_version_accepted(db: Any, v: Version, accepted: bool) -> None:
+    """Mark/unmark a version as the user-verified master of its part.
+
+    At most one version per part is accepted — accepting clears every other
+    version in the same part in the same transaction (last writer wins).
+    The caller commits. Idempotent: re-accepting refreshes the timestamp."""
+    if accepted:
+        await db.execute(
+            sa_update(Version)
+            .where(Version.part_id == v.part_id, Version.id != v.id)
+            .values(accepted_at=None)
+        )
+        v.accepted_at = utcnow()
+    else:
+        v.accepted_at = None
 
 
 async def delete_versions_leaf(db: Any, versions: list[Version]) -> None:

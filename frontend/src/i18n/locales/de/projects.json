@@ -49,6 +49,7 @@
   "part_add_title": "Leeres Teil anlegen — umbenennen, dann hinein generieren",
   "part_name_ph": "Teilname",
   "part_untitled": "Unbenanntes Teil",
+  "part_master": "akzeptierte Masterversion dieses Teils",
   "part_rename_title": "Teil umbenennen",
   "part_actions": "Teil-Aktionen",
   "part_empty": "Noch keine Versionen — generiere in dieses Teil.",

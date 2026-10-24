@@ -217,7 +217,7 @@ export const api = {
       `/projects/${pid}/versions${partId ? `?part_id=${encodeURIComponent(partId)}` : ""}`
     ),
   getVersion: (id: string) => req<VersionDetail>(`/versions/${id}`),
-  updateVersion: (id: string, body: { name?: string }) =>
+  updateVersion: (id: string, body: { name?: string; accepted?: boolean }) =>
     req<VersionDetail>(`/versions/${id}`, patch(body)),
   compareVersions: (vid: string, otherId: string) =>
     req<CompareResult>(`/versions/${vid}/compare/${otherId}`),

@@ -122,6 +122,8 @@ class PartOut(BaseModel):
     name: str
     version_count: int = 0
     thumbnail_url: str | None = None
+    # user-verified master version of this part (null when none accepted)
+    accepted_version_id: uuid.UUID | None = None
     created_at: datetime
 
 
@@ -449,6 +451,9 @@ class VersionUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str | None = Field(default=None, max_length=200)
+    # set/unset the user-verified master flag — accepting clears every other
+    # version in the same part (one master per part)
+    accepted: bool | None = None
 
 
 class VersionSummary(BaseModel):
@@ -466,6 +471,8 @@ class VersionSummary(BaseModel):
     error: str | None
     gen_mode: str = "auto"
     resolved_mode: str | None = None
+    # non-null while this version is the user-verified master of its part
+    accepted_at: datetime | None = None
     created_at: datetime
     thumbnail_url: str | None = None
     # newest non-terminal job on this version (queued/running/waiting) —

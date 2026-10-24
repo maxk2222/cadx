@@ -134,8 +134,10 @@ CHAT_INFO_TOOLS = [
     _fn(
         "list_parts",
         "List this project's parts: id, number (P1, P2…), name, "
-        "version_count. Each part owns an independent version tree — call "
-        "this to decide where NEW geometry belongs.",
+        "version_count, accepted_version_id (the user-verified master "
+        "version, when set). Each part owns an independent version tree — "
+        "call this to decide where NEW geometry belongs or which version an "
+        "assembly should use.",
         {},
         [],
     ),
@@ -411,6 +413,22 @@ CHAT_ACTION_TOOLS = [
             },
         },
         ["version_id", "name"],
+    ),
+    _fn(
+        "accept_version",
+        "Mark/unmark a version as the user-VERIFIED master of its part — at "
+        "most one per part, so accepting another version there unmarks the "
+        "previous one. Call when the user asks to accept/approve/keep a "
+        "version, or to pick the master version an assembly should use. "
+        "list_parts/list_versions show the flag as 'accepted'.",
+        {
+            **_VER_REF,
+            "accepted": {
+                "type": "boolean",
+                "description": "default true — false removes the master mark",
+            },
+        },
+        ["version_id"],
     ),
 ]
 
@@ -714,6 +732,12 @@ class ProjectToolSession(ToolSession):
                 .group_by(col(Version.part_id))
             )
             by_part = dict(counts.all())
+            acc_rows = await db.execute(
+                select(Version.part_id, Version.id, Version.number).where(
+                    Version.project_id == self._pid, col(Version.accepted_at).is_not(None)
+                )
+            )
+            accepted_by_part = {pid: (vid, num) for pid, vid, num in acc_rows.all()}
         return {
             "ok": True,
             "parts": [
@@ -722,6 +746,13 @@ class ProjectToolSession(ToolSession):
                     "number": p.number,
                     "name": p.name,
                     "version_count": int(by_part.get(p.id, 0)),
+                    # user-verified master version of this part, when set
+                    "accepted_version_id": (
+                        str(accepted_by_part[p.id][0]) if p.id in accepted_by_part else None
+                    ),
+                    "accepted_version": (
+                        f"v{accepted_by_part[p.id][1]}" if p.id in accepted_by_part else None
+                    ),
                 }
                 for p in parts
             ],
@@ -777,6 +808,8 @@ class ProjectToolSession(ToolSession):
                     "resolved_mode": v.resolved_mode,
                     "part_id": str(v.part_id),
                     "part": part_label.get(v.part_id),
+                    # user-verified master of its part
+                    "accepted": v.accepted_at is not None,
                     "active_job": active.get(str(v.id)),
                 }
                 for v in versions
@@ -793,6 +826,7 @@ class ProjectToolSession(ToolSession):
                 "kind": v.kind.value,
                 "status": v.status.value,
                 "resolved_mode": v.resolved_mode,
+                "accepted": v.accepted_at is not None,
                 "params": v.params or {},
                 "analysis": {
                     k: (v.analysis or {}).get(k)
@@ -1174,4 +1208,23 @@ class ProjectToolSession(ToolSession):
                 "part_id": str(part.id),
                 "name": part.name,
                 "kind": part.kind,
+            }
+
+    async def _tool_accept_version(self, a: dict[str, Any]) -> dict[str, Any]:
+        accepted = a.get("accepted", True)
+        if not isinstance(accepted, bool):
+            return {"ok": False, "error": "accepted must be a boolean"}
+        async with session_scope() as db:
+            v = await self._version(db, str(a.get("version_id", "")))
+            from cadx import parts as parts_svc
+
+            await parts_svc.set_version_accepted(db, v, accepted)
+            await db.commit()
+            return {
+                "ok": True,
+                "version_id": str(v.id),
+                "number": v.number,
+                "part_id": str(v.part_id),
+                "accepted": accepted,
+                "note": "master version of this part" if accepted else "master mark removed",
             }

@@ -45,6 +45,7 @@
   "part_add_title": "空のパーツを作成 — 名前を付けてそこに生成",
   "part_name_ph": "パーツ名",
   "part_untitled": "無題のパーツ",
+  "part_master": "このパーツの承認済みマスターバージョン",
   "part_rename_title": "パーツ名を変更",
   "part_actions": "パーツ操作",
   "part_empty": "バージョンがありません — このパーツに生成してください。",

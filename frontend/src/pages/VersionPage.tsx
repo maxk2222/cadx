@@ -193,6 +193,17 @@ export default function VersionPage() {
     onError: (e) => toast(errMsg(e), "error"),
   });
 
+  const accept = useMutation({
+    mutationFn: (accepted: boolean) => api.updateVersion(id, { accepted }),
+    onSuccess: (nv) => {
+      qc.invalidateQueries({ queryKey: ["version", id] });
+      qc.invalidateQueries({ queryKey: ["versions", v?.project_id] });
+      qc.invalidateQueries({ queryKey: ["parts", v?.project_id] });
+      toast(t(nv.accepted_at ? "accepted_toast" : "unaccepted_toast"), "success");
+    },
+    onError: (e) => toast(errMsg(e), "error"),
+  });
+
   const del = useMutation({
     mutationFn: () => api.deleteVersion(id),
     onSuccess: () => {
@@ -271,6 +282,8 @@ export default function VersionPage() {
           }}
           onRename={(name) => rename.mutate(name)}
           onDelete={() => setDeleteOpen(true)}
+          onToggleAccept={() => accept.mutate(!v.accepted_at)}
+          acceptBusy={accept.isPending}
         />
 
         <div className="mb-3 text-sm text-muted">{v.prompt}</div>
@@ -427,6 +440,9 @@ export default function VersionPage() {
             {t("delete_body_pre")}
             <b className="text-fg">v{v.number}</b>
             {t("delete_body_post")}
+            {v.accepted_at && (
+              <p className="mt-2 text-amber-300">{t("delete_master_warn")}</p>
+            )}
           </>
         }
       />

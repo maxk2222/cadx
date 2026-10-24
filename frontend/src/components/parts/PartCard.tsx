@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, CircleDot, Pencil, Trash2 } from "lucide-react";
+import { BadgeCheck, ChevronDown, CircleDot, Pencil, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { api, errMsg } from "../../lib/api";
@@ -106,6 +106,9 @@ export default function PartCard({
 
   // synthetic grouping for versions whose part row is unknown (fetch skew)
   const synthetic = part.number === 0;
+  // user-verified master version of this part (max one) — resolve its number
+  // from the grouped versions; missing entry = fetch skew, hide the chip
+  const master = versions.find((v) => v.id === part.accepted_version_id);
 
   return (
     <div ref={ref}>
@@ -152,6 +155,11 @@ export default function PartCard({
                 )}
               </span>
             </button>
+          )}
+          {master && (
+            <Chip tone="green" className="shrink-0" title={t("part_master")}>
+              <BadgeCheck className="h-3 w-3" /> v{master.number}
+            </Chip>
           )}
           <span className="shrink-0 text-[11px] text-faint/70">
             {synthetic ? versions.length : part.version_count}

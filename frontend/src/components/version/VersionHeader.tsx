@@ -1,4 +1,4 @@
-import { Gauge, GitCompareArrows, Package, Pencil, Trash2 } from "lucide-react";
+import { BadgeCheck, Gauge, GitCompareArrows, Package, Pencil, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
@@ -22,6 +22,8 @@ export default function VersionHeader({
   onToggleCompare,
   onRename,
   onDelete,
+  onToggleAccept,
+  acceptBusy,
 }: {
   v: VersionDetail;
   projectName: string | undefined;
@@ -33,6 +35,9 @@ export default function VersionHeader({
   onToggleCompare: () => void;
   onRename: (name: string) => void;
   onDelete: () => void;
+  /** toggle the user-verified master flag (one per part) */
+  onToggleAccept: () => void;
+  acceptBusy?: boolean;
 }) {
   const { t } = useTranslation("version");
   const [nameEdit, setNameEdit] = useState(false);
@@ -132,7 +137,23 @@ export default function VersionHeader({
             <Gauge className="h-3 w-3" /> {t("score", { n: v.score })}
           </Chip>
         )}
+        {v.accepted_at && (
+          <Chip tone="green" title={t("master_title")}>
+            <BadgeCheck className="h-3 w-3" /> {t("master_badge")}
+          </Chip>
+        )}
         <span className="flex-1" />
+        <Btn
+          variant={v.accepted_at ? "success" : "subtle"}
+          size="sm"
+          aria-pressed={!!v.accepted_at}
+          title={v.accepted_at ? t("unaccept_title") : t("accept_title")}
+          busy={acceptBusy}
+          onClick={onToggleAccept}
+        >
+          <BadgeCheck className="h-3.5 w-3.5" />
+          {v.accepted_at ? t("unaccept") : t("accept")}
+        </Btn>
         <Btn
           variant="subtle"
           size="sm"

@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, CircleDot } from "lucide-react";
+import { BadgeCheck, ChevronDown, ChevronRight, CircleDot } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
@@ -104,6 +104,15 @@ export default function VersionTree({
           <div className="min-w-0 flex-1">
             <div className="truncate">
               <span className="font-medium">v{v.number}</span>
+              {v.accepted_at && (
+                <span title={t("tree_accepted")}>
+                  <BadgeCheck
+                    className="ml-1 inline h-3.5 w-3.5 text-emerald-400"
+                    role="img"
+                    aria-label={t("tree_accepted")}
+                  />
+                </span>
+              )}
               {v.name && (
                 <span className="ml-1 font-medium text-fg">{v.name}</span>
               )}

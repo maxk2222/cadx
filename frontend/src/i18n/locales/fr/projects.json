@@ -49,6 +49,7 @@
   "part_add_title": "Créer une pièce vide — renommez-la puis générez dedans",
   "part_name_ph": "Nom de la pièce",
   "part_untitled": "Pièce sans nom",
+  "part_master": "version maître acceptée de cette pièce",
   "part_rename_title": "Renommer la pièce",
   "part_actions": "Actions de la pièce",
   "part_empty": "Aucune version — générez dans cette pièce.",

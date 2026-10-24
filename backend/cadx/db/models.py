@@ -213,6 +213,7 @@ class Version(SQLModel, table=True):
     score: int | None = None
     usage: dict[str, Any] = SField(default_factory=dict, sa_column=Column(JSON))
     error: str | None = None
+    accepted_at: datetime | None = None  # user-verified master version (max one per part)
     created_at: datetime = SField(default_factory=utcnow)
 
 

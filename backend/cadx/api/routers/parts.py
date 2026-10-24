@@ -35,6 +35,7 @@ async def _out(db: AsyncSession, part: Part) -> PartOut:
         name=part.name,
         version_count=meta["version_count"],
         thumbnail_url=meta["thumbnail_url"],
+        accepted_version_id=meta["accepted_version_id"],
         created_at=part.created_at,
     )
 

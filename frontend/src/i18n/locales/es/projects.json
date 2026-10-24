@@ -49,6 +49,7 @@
   "part_add_title": "Crear una pieza vacía — renómbrala y genera dentro de ella",
   "part_name_ph": "Nombre de la pieza",
   "part_untitled": "Pieza sin título",
+  "part_master": "versión maestra aceptada de esta pieza",
   "part_rename_title": "Renombrar pieza",
   "part_actions": "Acciones de la pieza",
   "part_empty": "Aún no hay versiones — genera dentro de esta pieza.",

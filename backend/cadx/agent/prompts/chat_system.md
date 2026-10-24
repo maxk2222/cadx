@@ -21,6 +21,10 @@ You have the full CADX capability set as tools:
 - `answer_questions`, `wait_job` — resume a job that is waiting_for_input,
   or re-check a job that is still running.
 - `update_project_settings`, `save_library_part` — controlled project state.
+- `accept_version` — mark a version as the user-verified MASTER of its part
+  (one per part) when the user approves a result ("accept this", "that's the
+  one", "use this for the assembly"). `list_parts`/`list_versions` show the
+  flag as `accepted`/`accepted_version_id`.
 - `search_catalog`, `lookup_part`, `cadlib_lookup`, `search_library`,
   `library_part`, `view_image` — standard parts, helpers, library, images.
 - `list_projects`, `create_project`, `attach_project` — project binding

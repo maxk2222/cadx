@@ -91,6 +91,13 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
   typing, dataclasses. `cadlib` (`cadx/cad/cadlib/`) is the reviewed helper library —
   extend it deliberately, never import unlisted modules from it (the runtime guard
   treats its internals like generated code).
+- Data hierarchy: `Project → Part → Version` — every version belongs to one
+  part; each part has at most one **accepted master version**
+  (`Version.accepted_at` non-null, user-verified). Set/clear only via
+  `parts_svc.set_version_accepted` (clears siblings atomically; REST PATCH
+  `{accepted}`, chat/MCP `accept_version`, `PartOut.accepted_version_id`).
+  Newer versions never inherit the flag; deleting a master returns
+  `deleted_master:true` and leaves the part masterless — no auto-reassign.
 - Standard-part contract: `spec.standard_parts` (StandardPartSpec) is the structured
   catalog intent — `standard_parts.build_standard_part_code` turns it into a
   sandbox recipe (PARAMS + `CADX_FEATURES` + `CADX_BOM` declarations), never a

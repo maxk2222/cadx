@@ -53,6 +53,7 @@
   "part_add_title": "Criar uma peça vazia — renomeie-a e gere dentro dela",
   "part_name_ph": "Nome da peça",
   "part_untitled": "Peça sem nome",
+  "part_master": "versão mestre aceita desta peça",
   "part_rename_title": "Renomear peça",
   "part_actions": "Ações da peça",
   "part_empty": "Ainda sem versões — gere dentro desta peça.",

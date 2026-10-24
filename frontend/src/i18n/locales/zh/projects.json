@@ -45,6 +45,7 @@
   "part_add_title": "创建空部件——重命名后在其中生成",
   "part_name_ph": "部件名称",
   "part_untitled": "未命名部件",
+  "part_master": "此部件已接受的主版本",
   "part_rename_title": "重命名部件",
   "part_actions": "部件操作",
   "part_empty": "暂无版本——在此部件中生成。",

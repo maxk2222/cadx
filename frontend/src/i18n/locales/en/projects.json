@@ -49,6 +49,7 @@
   "part_add_title": "Create an empty part — rename it, then generate into it",
   "part_name_ph": "Part name",
   "part_untitled": "Untitled part",
+  "part_master": "accepted master version of this part",
   "part_rename_title": "Rename part",
   "part_actions": "Part actions",
   "part_empty": "No versions yet — generate into this part.",

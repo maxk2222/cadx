@@ -71,7 +71,7 @@ flowchart LR
 | Assets & images | `list_assets`, `upload_asset`, `view_image`, `remove_bg`, `generate_image` |
 | System | `settings_get`, `mesh_health`, `image_models`, `stats` |
 | Projects | `use_project` (alias `attach_project`), `create_project`, `list_projects` |
-| Inherited deterministic tools | `list_parts`, `list_versions`, `version_details`, `view_render`, `project_settings`, `update_project_settings`, `set_params`, `mesh_edit`, `fem_check`, `optimize_version`, `topopt_resample`, `refine_version`, `organic_restyle`, `search_catalog`, `lookup_part`, `cadlib_lookup`, `quickref`, `search_library`, `library_part`, `save_library_part` |
+| Inherited deterministic tools | `list_parts`, `list_versions`, `version_details`, `accept_version`, `view_render`, `project_settings`, `update_project_settings`, `set_params`, `mesh_edit`, `fem_check`, `optimize_version`, `topopt_resample`, `refine_version`, `organic_restyle`, `search_catalog`, `lookup_part`, `cadlib_lookup`, `quickref`, `search_library`, `library_part`, `save_library_part` |
 
 Most tools need a **bound project** — call `use_project(project_id)` or
 `create_project(name)` first (`list_projects` finds ids). Unbound calls return
@@ -83,6 +83,14 @@ to file a root under an existing part; omitted, a new part is auto-created
 from the prompt. Child operations (`parent_version_id`, restarts, edits)
 always stay in the parent's part. `list_parts` enumerates them; `list_jobs`
 returns `part_id`/`part` per row.
+
+Each part has at most one **accepted master version** — the user-verified
+pick an assembly should use. `list_parts` returns it as
+`accepted_version_id`/`accepted_version` ("v3"); `list_versions` and
+`version_details` carry a boolean `accepted` per version. Set or clear it
+with `accept_version(version_id, accepted?)` (default true — accepting
+another version in the same part unmarks the previous one; newer versions
+never inherit the flag automatically).
 
 Spawn tools (`submit_code`, `mesh_generate`, `edit_feature`, `restart_job` and
 the inherited `wait`-capable actions) default to **`wait: false`** over MCP —

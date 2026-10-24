@@ -112,6 +112,7 @@ async def _summary(v: Version, db: AsyncSession, active_job: Job | None = None) 
         error=v.error,
         gen_mode=v.gen_mode,
         resolved_mode=v.resolved_mode,
+        accepted_at=v.accepted_at,
         created_at=v.created_at,
         thumbnail_url=f"/api/artifacts/{t.id}/file" if t else None,
         active_job=_active_job_dict(active_job),
@@ -489,6 +490,9 @@ async def update_version(
         raise HTTPException(404, "version not found")
     if body.name is not None:
         v.name = body.name.strip()
+    if body.accepted is not None:
+        # one master per part — the service clears siblings atomically
+        await parts_svc.set_version_accepted(db, v, body.accepted)
     await db.commit()
     await db.refresh(v)
     return await _detail(v, db)
@@ -631,8 +635,11 @@ async def delete_version(version_id: uuid.UUID, db: AsyncSession = Depends(get_s
     children = await db.execute(select(Version).where(Version.parent_id == v.id))
     if children.scalars().first():
         raise HTTPException(409, "version has children")
+    was_master = v.accepted_at is not None
     # shared leaf cleanup — cancels in-flight jobs (their polling workers
     # stop gracefully), then removes traces/jobs/artifacts/storage/row
     await parts_svc.delete_versions_leaf(db, [v])
     await db.commit()
-    return {"ok": True}
+    # deleting an accepted version leaves the part without a master — surface
+    # it so callers/UI can warn (no auto-reassignment, the choice is manual)
+    return {"ok": True, "deleted_master": was_master}

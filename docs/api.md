@@ -16,6 +16,18 @@ POST          /api/projects/{id}/images                  local text-to-image →
 GET           /api/projects/{id}/versions                version tree
 POST          /api/projects/{id}/generate                {prompt, asset_ids, library_part_ids, mode, options}
 POST          /api/projects/{id}/meshgen                 {asset_ids, subject, prompt, model, seed, post} — image→mesh
+GET           /api/projects/{id}/parts                   parts incl. version_count, thumbnail, accepted_version_id
+```
+
+## Parts
+
+Every version belongs to exactly one part; a part has at most one
+**accepted master version** (the user-verified pick an assembly should
+use — `accepted_version_id`, null when unset).
+
+```
+GET|POST      /api/projects/{id}/parts                   list / create
+PATCH|DELETE  /api/parts/{id}                          rename / cascade-delete versions+jobs
 ```
 
 ## Assets
@@ -31,7 +43,10 @@ DELETE        /api/assets/{id}
 ## Versions
 
 ```
-GET|DELETE    /api/versions/{id}                         full detail (BOM/FEM/artifacts) / delete
+GET|DELETE    /api/versions/{id}                         full detail (BOM/FEM/artifacts) / delete —
+                                                         response `deleted_master:true` when the accepted master was removed
+PATCH         /api/versions/{id}                         {name?, accepted?} — accepted:true marks the version as
+                                                         the part's user-verified master (clears siblings)
 POST          /api/versions/{id}/edit                    {prompt, asset_ids, library_part_ids, mode, regenerate_mesh, options}
 POST          /api/versions/{id}/params                  {params} — re-run code/ops without an LLM call
 GET           /api/versions/{id}/editable-features       recognised through-holes the parametric editor can resize

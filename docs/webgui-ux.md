@@ -93,6 +93,14 @@ booleans are skipped the panel still shows the partial result with a
 surface-distance **measure** tool (the same one the mesh editor
 documents).
 
+Any version can be marked as the **master** of its part (header toggle) —
+the user-verified pick an assembly agent later selects. At most one per
+part: accepting another version unmarks the previous one, and newer
+versions never inherit the flag. Accepted versions show a green check badge
+in the version tree, the part card displays a `v{n}` master chip, and the
+delete dialog warns before removing a master (the part is left without
+one — reassignment is a manual choice).
+
 ![Version detail — 3D viewer, spec prompt, agent activity timeline](screenshots/version-cad.png)
 
 ![Guided new-part wizard](screenshots/wizard.gif)
