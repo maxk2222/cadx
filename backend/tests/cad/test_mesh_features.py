@@ -68,6 +68,31 @@ def _bored_body(axis: str) -> trimesh.Trimesh:
     return mesh
 
 
+def test_tunnel_dia_survives_grazing_backdrop():
+    """A bore measured through its host wall must read full size even when
+    unrelated geometry grazes its full-part sightline — a boss rim behind
+    the flange bore shrank a Ø6.4 bore to Ø5.6 (robot-arm-mount eval)."""
+    import numpy as np
+
+    # 8mm flange plate in the YZ plane at x=42..50, Ø6.5 bore along X at (y=0, z=0)
+    flange = trimesh.creation.box(extents=[8, 40, 30])
+    flange.apply_translation([46, 0, 0])
+    bore = trimesh.creation.cylinder(radius=3.25, height=30, sections=48)
+    bore.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [0, 1, 0]))
+    bore.apply_translation([46, 0, 0])
+    part = flange.difference(bore, engine="manifold")
+    # unrelated boss behind the flange whose rim grazes the bore's lower
+    # sightline — the old whole-part no-hit test read the bore ~14% small
+    backdrop = trimesh.creation.cylinder(radius=3.0, height=10, sections=32)
+    backdrop.apply_translation([0, 0, -4.9])  # rim just inside the bore's shadow edge
+    mesh = trimesh.util.concatenate([part, backdrop])
+    feats = detect_mesh_features(mesh)
+    tunnels = [h for h in feats.holes if h.kind == "tunnel" and h.axis == "x"]
+    assert tunnels, "bore not detected"
+    bore_h = min(tunnels, key=lambda h: abs(h.dia - 6.5))
+    assert bore_h.dia == pytest.approx(6.5, abs=0.7)
+
+
 @pytest.mark.parametrize("axis", ["x", "y", "z"])
 def test_detect_tunnel_each_axis(axis):
     """T8.1: through-bores must be found on every principal axis — a Z-only

@@ -56,6 +56,30 @@ def _heightfield(
     return H, xs, ys
 
 
+def _hitgrid(
+    mesh: trimesh.Trimesh, step_mm: float, axis: int
+) -> tuple[list[list[float]], np.ndarray, np.ndarray, tuple[int, ...]]:
+    """Per-cell hit coordinates along `axis` for the plane spanned by the
+    other two axes — the full sightline, not just the surface height."""
+    i, j = (a for a in range(3) if a != axis)
+    xs = np.arange(mesh.bounds[0][i], mesh.bounds[1][i] + step_mm, step_mm)
+    ys = np.arange(mesh.bounds[0][j], mesh.bounds[1][j] + step_mm, step_mm)
+    xx, yy = np.meshgrid(xs, ys, indexing="ij")
+    origins = np.zeros((xx.size, 3))
+    origins[:, i] = xx.ravel()
+    origins[:, j] = yy.ravel()
+    origins[:, axis] = mesh.bounds[1][axis] + 10.0
+    directions = np.zeros((xx.size, 3))
+    directions[:, axis] = -1.0
+    locs, ray_ids, _ = mesh.ray.intersects_location(
+        ray_origins=origins, ray_directions=directions, multiple_hits=True
+    )
+    hits: list[list[float]] = [[] for _ in range(xx.size)]
+    for r, loc in zip(ray_ids, locs, strict=True):
+        hits[int(r)].append(float(loc[axis]))
+    return hits, xs, ys, xx.shape
+
+
 def _tunnels_for_axis(
     mesh: trimesh.Trimesh, step_mm: float, axis: int
 ) -> tuple[list[MeshHole], np.ndarray]:
@@ -64,8 +88,8 @@ def _tunnels_for_axis(
     no-hit cells are through-voids along `axis`."""
     import scipy.ndimage as ndi
 
-    H, xs, ys = _heightfield(mesh, step_mm, axis)
-    inside = ~np.isnan(H)
+    hits, xs, ys, shape = _hitgrid(mesh, step_mm, axis)
+    inside = np.fromiter((bool(h) for h in hits), bool, shape[0] * shape[1]).reshape(shape)
     footprint = ndi.binary_fill_holes(inside)
     tunnel = footprint & ~inside
     span = float(mesh.bounds[1][axis] - mesh.bounds[0][axis])
@@ -73,6 +97,25 @@ def _tunnels_for_axis(
     lab, n = ndi.label(tunnel)
     for i in range(1, n + 1):
         cells = lab == i
+        # measure the bore inside its local host band: the ring of material
+        # enclosing the void fixes the wall's span along the axis, and cells
+        # whose only hits lie OUTSIDE that span still pierce the wall that
+        # hosts the bore. The plain no-hit test under-measures when an
+        # unrelated feature grazes the bore's full-part sightline (a boss
+        # rim behind a flange bore shrank a 6.4 mm bore to a 5.6 mm read).
+        ring = ndi.binary_dilation(cells) & inside & ~cells
+        ridx = np.nonzero(ring.ravel())[0]
+        if ridx.size:
+            lo = float(np.median([min(hits[r]) for r in ridx]))
+            hi = float(np.median([max(hits[r]) for r in ridx]))
+            margin = 0.6 * step_mm
+            clear = np.zeros(shape, dtype=bool)
+            for r in np.nonzero(footprint.ravel())[0]:
+                if not any(lo - margin <= h <= hi + margin for h in hits[r]):
+                    clear.ravel()[r] = True
+            lab2, _ = ndi.label(clear & footprint)
+            seed = lab2[np.nonzero(cells)[0][0], np.nonzero(cells)[1][0]]
+            cells = lab2 == seed
         area = float(cells.sum()) * step_mm * step_mm
         if area < 3.0:
             continue
