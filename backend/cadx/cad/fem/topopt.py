@@ -768,6 +768,72 @@ def _solve_u(
     return u, "cg"
 
 
+def uniform_compliance(
+    domain: VoxelDomain,
+    elem_E0: float | np.ndarray,
+    nu: float,
+    cases: list[tuple[np.ndarray, np.ndarray]],
+    passive_solid: np.ndarray,
+    params: TopOptParams,
+    *,
+    volfrac: float | None = None,
+    case_weights: np.ndarray | list[float] | None = None,
+    spsolve_dofs: int = 120_000,
+) -> float | None:
+    """Weighted compliance (mJ) of a UNIFORM-density design — every solid
+    cell at `volfrac`, pinned cells at 1 — solved on the same domain and
+    cases. The 'spread the mass evenly' baseline any topology must beat:
+    a result above it is worse than doing nothing clever. One K assembly
+    + one solve per case (<1% of a SIMP run). Returns None on failure."""
+    from cadx.cad.fem.solver import _fixed_dofs
+
+    try:
+        solid = domain.solid.ravel()
+        ncells = domain.cell_count
+        E0 = np.broadcast_to(np.asarray(elem_E0, dtype=float), ncells).copy()
+        Emin = E0 * E_MIN_FRAC
+        p = np.full(ncells, RHO_MIN)
+        p[solid] = float(params.volfrac if volfrac is None else volfrac)
+        p[np.asarray(passive_solid, dtype=bool).ravel() & solid] = 1.0
+        E_e = Emin + np.power(p, params.penal) * (E0 - Emin)
+        edof = element_dofs(domain.element_nodes())
+        ij_cache = (np.repeat(edof, 24, axis=1).ravel(), np.tile(edof, (1, 24)).ravel())
+        K, _, _ = assemble(
+            domain, E_e, nu, np.ones(ncells, dtype=bool), ij=ij_cache, aniso=params.aniso
+        )
+        used_dofs = np.unique(edof.ravel())
+        weights = (
+            np.ones(len(cases))
+            if case_weights is None
+            else np.asarray(case_weights, dtype=float)[: len(cases)]
+        )
+        total = 0.0
+        for ci, (f, F) in enumerate(cases):
+            fd = np.unique(_fixed_dofs(f, domain.node_count))
+            free = used_dofs[~np.isin(used_dofs, fd, assume_unique=True)]
+            if not free.size:
+                continue
+            Kf = K[free][:, free].tocsr()
+            factor_i, M_i = _prepare_solve(
+                Kf, spsolve_dofs, params.solver_backend, domain=domain, free=free
+            )
+            u, _ = _solve_u(
+                domain,
+                Kf,
+                F,
+                free,
+                None,
+                factor=factor_i,
+                M=M_i,
+                cg_rtol=1e-5,
+                solver_backend=params.solver_backend,
+            )
+            total += float(weights[ci]) * float(F[free] @ u[free])
+        return total
+    except Exception:
+        return None
+
+
 def simp(  # noqa: C901
     domain: VoxelDomain,
     elem_E0: float | np.ndarray,
@@ -1121,9 +1187,11 @@ def simp(  # noqa: C901
                 phase_t["factorize_s"] += time.monotonic() - t_fac
                 # cholmod->splu fallbacks land in the iteration record so
                 # evals see non-PD realizations instead of silent slowness
-                phase_t["solver_fallbacks"] = phase_t.get(
-                    "solver_fallbacks", 0.0
-                ) + _solver_mod.solver_fallback_count() - fallbacks_before
+                phase_t["solver_fallbacks"] = (
+                    phase_t.get("solver_fallbacks", 0.0)
+                    + _solver_mod.solver_fallback_count()
+                    - fallbacks_before
+                )
                 ctx = _CaseCtx(free=free_i, Kf=Kf_i, factor=factor_i, M=M_i)
                 ctx_cache[free_i.tobytes()] = ctx
             ctxs.append(ctx)

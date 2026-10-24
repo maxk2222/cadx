@@ -336,8 +336,7 @@ def _post_extract_finish(
             )
             warnings.extend(resolve_warnings)
         keep_dicts = [
-            r.model_dump(mode="json") if hasattr(r, "model_dump") else dict(r)
-            for r in keep_regions
+            r.model_dump(mode="json") if hasattr(r, "model_dump") else dict(r) for r in keep_regions
         ]
         refined, report = apply_refine(
             opt_mesh,
@@ -1359,6 +1358,54 @@ def _guide_beso_er(volfrac: float, iters: int, er_min: float = 0.02) -> float:
     return max(float(er_min), 1.0 - float(volfrac) ** (1.0 / iters))
 
 
+def _uniform_baseline_check(
+    solver: str,
+    design_domain: Any,
+    E0_arr: np.ndarray,
+    nu: float,
+    resolved: list[Any],
+    passive: np.ndarray,
+    p: Any,
+    *,
+    case_weights: Any = None,
+    spsolve_dofs: int = 120_000,
+    history: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """BESO honesty check — compare the converged binary field's compliance
+    against the uniform-density baseline on the same domain/cases. Hard-kill
+    ESO can settle on a worse local optimum than spreading the mass evenly;
+    the flag surfaces that verdict instead of a bare 'converged'."""
+    out: dict[str, Any] = {}
+    if solver != "beso":
+        return out
+    from cadx.cad.fem.topopt import uniform_compliance
+
+    base_c = uniform_compliance(
+        design_domain,
+        E0_arr,
+        nu,
+        resolved,
+        passive,
+        p,
+        case_weights=case_weights,
+        spsolve_dofs=spsolve_dofs,
+    )
+    if base_c is None:
+        return out
+    out["uniform_baseline_compliance_mj"] = round(float(base_c), 4)
+    achieved_c = next(
+        (
+            float(h["compliance_mj"])
+            for h in reversed(history or [])
+            if isinstance(h, dict) and h.get("compliance_mj") is not None
+        ),
+        None,
+    )
+    if achieved_c is not None:
+        out["worse_than_uniform"] = bool(achieved_c > base_c * 1.02)
+    return out
+
+
 @dataclasses.dataclass
 class _GridRef:
     """Minimal VoxelDomain-shaped grid descriptor for resampling a persisted
@@ -1535,9 +1582,7 @@ def _compact_history(history: list[dict[str, Any]], cap: int = 200) -> list[dict
     ]
 
 
-def _cone_expand_case(
-    c: Any, budget: int, warn: bool, warn_list: list[str]
-) -> list[Any]:
+def _cone_expand_case(c: Any, budget: int, warn: bool, warn_list: list[str]) -> list[Any]:
     """Tilted copies of case `c`: for every load with direction_cone_deg,
     each rim sample rotates ALL its directional fields (force_n, moment_nm,
     bearing_dir) by the same rotation — a combined force+couple load
@@ -1698,9 +1743,7 @@ def _verify_export_structure(
     mem_budget = float(resources.effective_exec_mem_mb(s))
     skin = candidate_mesh if source_mesh is None else source_mesh
     use_coverage = bool(getattr(s, "fem_verify_coverage_e", False))
-    export_domain = voxelize(
-        candidate_mesh, design_pitch, max_elements, coverage=use_coverage
-    )
+    export_domain = voxelize(candidate_mesh, design_pitch, max_elements, coverage=use_coverage)
     # the voxel raster is what the FEM *solves* — nested-but-disconnected
     # bodies can fuse into one component here; keep it separate from the
     # physical mesh body count so a fusion is measurable
@@ -1780,9 +1823,7 @@ def _verify_export_structure(
         )
 
     report = _solve(export_domain.solid, suffix)
-    sf_realizations: dict[str, float | None] = {
-        "nominal": report.worst_safety_factor
-    }
+    sf_realizations: dict[str, float | None] = {"nominal": report.worst_safety_factor}
     if verify_robust:
         n_shift = int(getattr(s, "fem_verify_realization_cells", 1) or 1)
         n_shift = max(1, min(n_shift, 4))
@@ -1800,11 +1841,7 @@ def _verify_export_structure(
             # they print FULL (coverage 1.0), not the ~0 fraction their
             # nominal-boundary position suggests
             dom = None
-            if (
-                name == "dilated"
-                and use_coverage
-                and export_domain.coverage is not None
-            ):
+            if name == "dilated" and use_coverage and export_domain.coverage is not None:
                 cov_d = np.asarray(export_domain.coverage, dtype=float).copy()
                 cov_d[(np.asarray(mask) & ~export_domain.solid).ravel()] = 1.0
                 dom = dataclasses.replace(export_domain, coverage=cov_d)
@@ -1815,9 +1852,7 @@ def _verify_export_structure(
                 sf_realizations[name] = None
                 warnings.append(f"export realization '{name}' solve failed: {str(e)[:80]}")
             if sf_realizations[name] is None:
-                warnings.append(
-                    f"export realization '{name}' produced no safety factor"
-                )
+                warnings.append(f"export realization '{name}' produced no safety factor")
     # sf_verified only exists when the NOMINAL realization solved — the
     # headline structure itself being unsolvable IS the verdict; a
     # dilated-only success must never read as "verified". When nominal is
@@ -1831,9 +1866,7 @@ def _verify_export_structure(
         try:
             shifted = candidate_mesh.copy()
             shifted.apply_translation(np.full(3, design_pitch / 2.0))
-            dom_sh = voxelize(
-                shifted, design_pitch, max_elements, coverage=use_coverage
-            )
+            dom_sh = voxelize(shifted, design_pitch, max_elements, coverage=use_coverage)
             rep_sh = run_fem_domain(
                 dom_sh,
                 dom_sh.solid,
@@ -2142,9 +2175,7 @@ def run_fem_pipeline(
     )
     report_to_json(report, out_dir / "fem" / "report.json")
     fem_d = report.model_dump()
-    mode, reasons = _recommend_structure_mode(
-        report, keep_regions=keep, anchors=anchors
-    )
+    mode, reasons = _recommend_structure_mode(report, keep_regions=keep, anchors=anchors)
     fem_d["recommended_mode"] = mode
     fem_d["recommended_reasons"] = reasons
     return {"ok": True, "fem": fem_d}
@@ -2588,9 +2619,7 @@ def run_topopt_pipeline(  # noqa: C901
     # _verify_export_structure); the per-run override follows the runtime
     # setting when unset
     eff_robust = (
-        opt.verify_robust
-        if opt.verify_robust is not None
-        else bool(s.fem_verify_realizations)
+        opt.verify_robust if opt.verify_robust is not None else bool(s.fem_verify_realizations)
     )
 
     # robust formulation multiplies the FEM solves per iteration (one per
@@ -2638,9 +2667,7 @@ def run_topopt_pipeline(  # noqa: C901
                                 dims=tuple(int(v) for v in warm["dims"]),
                             )
                             x0 = _upsample_density(
-                                np.asarray(warm["density"], dtype=float).reshape(
-                                    dom_w.dims
-                                ),
+                                np.asarray(warm["density"], dtype=float).reshape(dom_w.dims),
                                 dom_w,
                                 design_domain,
                             )
@@ -2812,6 +2839,23 @@ def run_topopt_pipeline(  # noqa: C901
         out["simp_s"] = round(time.monotonic() - t, 2)
         out["result"] = result
         out["params"] = p
+        # hard-kill ESO can settle on a local optimum worse than spreading
+        # the mass evenly — the baseline check flags that verdict (a no-op
+        # for non-BESO solvers; costs one K assembly + case solves)
+        out.update(
+            _uniform_baseline_check(
+                p.solver,
+                design_domain,
+                E0_arr,
+                mat.poisson,
+                resolved,
+                passive,
+                p,
+                case_weights=case_weights,
+                spsolve_dofs=s.fem_spsolve_dofs,
+                history=result.history,
+            )
+        )
 
         opt_mesh, final_mask, extract_warnings, n_components, extract_info = density_to_mesh(
             design_domain,
@@ -2838,9 +2882,7 @@ def run_topopt_pipeline(  # noqa: C901
         # count as extra bodies downstream even though they carry no mass.
         # min_fraction mirrors the refine sliver floor (~1e-4 of the main
         # body): the default 0.5% would drop real sealed cavities
-        opt_mesh, dropped_slivers = keep_significant_components(
-            opt_mesh, min_fraction=1e-4
-        )
+        opt_mesh, dropped_slivers = keep_significant_components(opt_mesh, min_fraction=1e-4)
         if dropped_slivers:
             extract_warnings.append(
                 f"dropped {dropped_slivers} near-zero-volume mesh sliver components"
@@ -2895,9 +2937,7 @@ def run_topopt_pipeline(  # noqa: C901
         # last-mile sliver drop: the finish path (restore unions, reskin,
         # re-cut booleans) can mint zero-volume sheets that survive as a
         # phantom second body and trip the bodies gate on the shipped mesh
-        opt_mesh, dropped_slivers = keep_significant_components(
-            opt_mesh, min_fraction=1e-4
-        )
+        opt_mesh, dropped_slivers = keep_significant_components(opt_mesh, min_fraction=1e-4)
         if dropped_slivers:
             extract_warnings.append(
                 f"dropped {dropped_slivers} near-zero-volume post-finish sliver components"
@@ -3409,6 +3449,12 @@ def run_topopt_pipeline(  # noqa: C901
             f"{params.print_direction} — rerun with self_supporting=True "
             "for a support-free variant, or accept support material"
         )
+    if best.get("worse_than_uniform"):
+        res.topopt["warnings"].append(
+            "BESO converged to a layout less stiff than a uniform field of "
+            "the same mass — treat it as a warm-start heuristic and prefer "
+            "OC/MMA for the final topology"
+        )
 
     res.topopt.update(
         {
@@ -3443,6 +3489,11 @@ def run_topopt_pipeline(  # noqa: C901
             "load_path_ok": verification["load_path_ok"],
             "load_path_cases": exp_info.get("load_path_cases"),
             "sf_mesh_sensitive": verification["sf_mesh_sensitive"],
+            # BESO honesty check — top-level so _metrics_hint/compaction
+            # keep it: a converged binary field that loses to the uniform
+            # baseline is a verdict, not a detail
+            "uniform_baseline_compliance_mj": best.get("uniform_baseline_compliance_mj"),
+            "worse_than_uniform": best.get("worse_than_uniform"),
             "min_member_mm": best["min_member_mm"],
             "thin_fraction": round(best["thin_fraction"], 4),
             "n_components": best["n_components"],
@@ -3523,9 +3574,7 @@ def run_topopt_pipeline(  # noqa: C901
         from cadx.cad.features import mesh_features_to_measured
         from cadx.cad.mesh_features import detect_mesh_features
 
-        mf = mesh_features_to_measured(
-            detect_mesh_features(opt_mesh).model_dump(mode="json")
-        )
+        mf = mesh_features_to_measured(detect_mesh_features(opt_mesh).model_dump(mode="json"))
         res.features = {**mf.model_dump(mode="json")}
         if isinstance(best.get("recut"), dict):
             res.features["refine"] = best["recut"]
@@ -3634,13 +3683,9 @@ def run_infill_pipeline(  # noqa: C901
 
     # per-run overrides follow the runtime settings when unset — the same
     # tri-state pattern the other optimize flags use
-    eff_octet = (
-        opt.infill_octet if opt.infill_octet is not None else bool(s.infill_octet)
-    )
+    eff_octet = opt.infill_octet if opt.infill_octet is not None else bool(s.infill_octet)
     eff_robust = (
-        opt.verify_robust
-        if opt.verify_robust is not None
-        else bool(s.fem_verify_realizations)
+        opt.verify_robust if opt.verify_robust is not None else bool(s.fem_verify_realizations)
     )
     eff_homog = (
         opt.verify_homogenized
@@ -4425,9 +4470,7 @@ def run_infill_pipeline(  # noqa: C901
                 cell_voxels=int(s.fem_homog_cell_voxels),
                 octet=bool(eff_octet),
             )
-            base_D = (
-                _D(mat.poisson, mat.aniso_z, mat.aniso_axis) if mat.aniso_z != 1.0 else None
-            )
+            base_D = _D(mat.poisson, mat.aniso_z, mat.aniso_axis) if mat.aniso_z != 1.0 else None
             elem_class, class_D, micro_amp = infill_homog_elems(
                 domain,
                 np.asarray(best["fields"]["d"], dtype=float).ravel(),
@@ -4466,9 +4509,7 @@ def run_infill_pipeline(  # noqa: C901
         except Exception as e:
             verify_h = None
             log.warning("infill.homog_verify.failed", error=str(e)[:200])
-            res.topopt["warnings"].append(
-                f"homogenized infill verification failed: {str(e)[:80]}"
-            )
+            res.topopt["warnings"].append(f"homogenized infill verification failed: {str(e)[:80]}")
 
     verification: dict[str, Any] = {
         "compliance_mask_j": [c.compliance_j for c in verify.cases],
@@ -4717,9 +4758,7 @@ def run_infill_pipeline(  # noqa: C901
             "verification": verification,
             "rescue_islands": (meta.get("island_rescue") or {}).get("islands_found"),
             "rescue_dropped": (meta.get("island_rescue") or {}).get("dropped"),
-            "rescue_dropped_frac": (meta.get("island_rescue") or {}).get(
-                "dropped_vol_frac"
-            ),
+            "rescue_dropped_frac": (meta.get("island_rescue") or {}).get("dropped_vol_frac"),
         }
     )
 
@@ -4868,6 +4907,18 @@ def run_topopt_resample(  # noqa: C901
     mat = resolve_material(material or "")
     cases = [LoadCase(**c) for c in load_cases]
     threshold = float(opt.density_threshold or 0.5)
+    # a hard-kill (BESO/crisp) field has no gray zone to re-threshold —
+    # different cut levels carve the same part; say so instead of silently
+    # returning an identical mesh (the contract stays valid, the knob does
+    # nothing)
+    rho_solid = density[solid.ravel()] if density.size == solid.size else density
+    frac_gray = float(np.mean((rho_solid > 1e-3) & (rho_solid < 1.0 - 1e-3)))
+    if rho_solid.size and frac_gray < 0.01:
+        res.topopt.setdefault("warnings", []).append(
+            f"density field is binary ({frac_gray:.1%} gray cells) — a "
+            "different threshold re-extracts the same part; threshold "
+            "sweeps only matter on continuous (OC/MMA) fields"
+        )
     min_member = float(opt.min_member_mm or s.topopt_min_member_mm or 0.0)
     min_gap = float(opt.min_gap_mm or min_member or 0.0)
 
@@ -5086,9 +5137,7 @@ def run_topopt_resample(  # noqa: C901
         from cadx.cad.features import mesh_features_to_measured
         from cadx.cad.mesh_features import detect_mesh_features
 
-        mf = mesh_features_to_measured(
-            detect_mesh_features(opt_mesh).model_dump(mode="json")
-        )
+        mf = mesh_features_to_measured(detect_mesh_features(opt_mesh).model_dump(mode="json"))
         res.features = mf.model_dump(mode="json")
         if recut_report is not None:
             res.features["refine"] = recut_report

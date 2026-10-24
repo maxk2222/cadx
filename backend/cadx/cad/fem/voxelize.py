@@ -190,12 +190,106 @@ def snapped_pitch(
     return float(p_snap), None
 
 
+def _scanline_contains(
+    mesh: trimesh.Trimesh,
+    origin: np.ndarray,
+    n_pts: tuple[int, int, int],
+    pitch: float,
+    *,
+    offset: float,
+) -> np.ndarray | None:
+    """(prod(n_pts),) containment for a regular point lattice via axis
+    scanlines — one ray per lattice line along the LONGEST axis, hit
+    positions sorted, inside = odd crossing count.
+
+    ``contains()`` issues one ray per *point* against the whole mesh; a
+    scanline needs only dims[other1]x dims[other2] rays total and reuses
+    each hit list for every point on that line — ~dims-fold fewer
+    ray/triangle tests on the same geometry (the R-tree containment path
+    dominates voxelize on dense organic meshes). Points sit at
+    ``origin + pitch*(index + offset)`` — 0.5 for cell centres, 0.0 for
+    the node grid.
+
+    Returns ``None`` when ray queries are unavailable — callers fall back
+    to chunked ``contains()``. ``CADX_VOXEL_CONTAINS=1`` forces that
+    fallback (escape hatch if a pathological mesh defeats the scanline).
+
+    Boundary conventions (matched to contains()'s observed behavior so the
+    coverage model sees the same corner masks): the ray's perpendicular
+    coords are jittered by eps so it never runs *coplanar* with an
+    axis-aligned face, and a query point sitting on a crossing position
+    counts as outside."""
+    import os
+
+    if os.environ.get("CADX_VOXEL_CONTAINS"):
+        return None
+    try:
+        ax = int(np.argmax(n_pts))
+        oa, ob = (a for a in range(3) if a != ax)
+        na, nb = n_pts[oa], n_pts[ob]
+        eps = pitch * 1e-3  # same-surface collapse + face-plane jitter
+        ja, jb = np.meshgrid(np.arange(na), np.arange(nb), indexing="ij")
+        origins = np.zeros((na * nb, 3))
+        origins[:, oa] = origin[oa] + pitch * (ja.ravel() + offset) + eps
+        origins[:, ob] = origin[ob] + pitch * (jb.ravel() + offset) + eps
+        # start BEFORE the mesh bbox — the grid origin can sit inside the
+        # part (padded/lo grids); a ray born inside only sees the exit
+        # crossing and every point reads 'outside'
+        origins[:, ax] = float(mesh.bounds[0, ax]) - 2.0 * pitch
+        directions = np.zeros_like(origins)
+        directions[:, ax] = 1.0
+        q_axis = origin[ax] + pitch * (np.arange(n_pts[ax]) + offset)
+
+        # same ~256 MB batch bound as the contains() path — rays allocate
+        # per-candidate buffers against the face count too
+        chunk = int(np.clip((256 * 1024 * 1024) // (64 * max(len(mesh.faces), 1)), 256, 8192))
+        inside = np.zeros((len(origins), n_pts[ax]), dtype=bool)
+        for s0 in range(0, len(origins), chunk):
+            locs, ray_idx, _tri = mesh.ray.intersects_location(
+                origins[s0 : s0 + chunk],
+                directions[s0 : s0 + chunk],
+                multiple_hits=True,
+            )
+            if not len(locs):
+                continue
+            order = np.lexsort((locs[:, ax], ray_idx))
+            r_sorted = ray_idx[order]
+            x_sorted = locs[order, ax]
+            # collapse duplicate hits at (numerically) the same position —
+            # an edge/vertex shared by triangles must toggle parity once
+            same_ray = np.diff(r_sorted) == 0
+            dup = np.concatenate([[False], same_ray & (np.diff(x_sorted) < eps)])
+            r_u, x_u = r_sorted[~dup], x_sorted[~dup]
+            # per-ray even/odd fill — ray_idx is local to this chunk's batch
+            n_chunk = min(chunk, len(origins) - s0)
+            for r_local in range(n_chunk):
+                hits = x_u[
+                    np.searchsorted(r_u, r_local - 0.5) : np.searchsorted(r_u, r_local + 0.5)
+                ]
+                if len(hits):
+                    # hits strictly below the query position — a query
+                    # sitting ON a crossing is boundary → outside (the
+                    # convention contains() shows on surface points, and
+                    # the coverage corner-count depends on it)
+                    pos = np.searchsorted(hits, q_axis, side="left")
+                    on_hit = pos < len(hits)
+                    on_hit[on_hit] = hits[pos[on_hit]] - q_axis[on_hit] < eps
+                    inside[s0 + r_local] = (pos % 2 == 1) & ~on_hit
+        # reshape back to (n0, n1, n2) — lines ran over axes (oa, ob)
+        lines = inside.reshape(na, nb, n_pts[ax])
+        grid = np.moveaxis(lines, (0, 1, 2), (oa, ob, ax))
+        return grid.ravel()
+    except Exception:
+        return None
+
+
 def _fill_grid(
     mesh: trimesh.Trimesh, origin: np.ndarray, dims: tuple[int, int, int], pitch: float
 ) -> np.ndarray:
     """Solid mask over an exact-bounds grid.
 
-    Watertight meshes use cell-center containment (no systematic growth).
+    Watertight meshes use cell-center containment (no systematic growth) —
+    axis scanlines first, per-point contains() as the fallback.
     Non-watertight meshes fall back to surface voxelization + hole filling.
     """
     ii, jj, kk = np.meshgrid(
@@ -209,6 +303,9 @@ def _fill_grid(
             m = m.copy()
             m.merge_vertices(merge_norm=True)  # split STL vertices -> watertight
         if m.is_watertight:
+            scan = _scanline_contains(m, origin, dims, pitch, offset=0.5)
+            if scan is not None and scan.any():
+                return scan.reshape(dims)
             # contains() allocates per-ray candidate buffers that scale with
             # the mesh's face count — unchunked on dense organic meshes it
             # peaks >14 GB. Bound each batch to ~256 MB of worst-case working
@@ -295,7 +392,15 @@ def _coverage_field(
                 out[s0 : s0 + chunk] = np.asarray(m.contains(query[s0 : s0 + chunk]))
             return out
 
-        node_in = _contains(pts).reshape(nx1, ny1, nz1)
+        # the node grid is a regular lattice too — axis scanlines amortize
+        # one ray per line instead of one per node (contains() fallback for
+        # meshes the scanline can't classify)
+        node_scan = _scanline_contains(m, origin, (nx1, ny1, nz1), pitch, offset=0.0)
+        node_in = (
+            node_scan.reshape(nx1, ny1, nz1)
+            if node_scan is not None
+            else _contains(pts).reshape(nx1, ny1, nz1)
+        )
         # count of contained corner nodes per cell (0..8) in Hex8 order
         c8 = (
             node_in[:-1, :-1, :-1].astype(np.int16)

@@ -271,7 +271,7 @@ _METRIC_KEYS = (
     "work_disp_mm",
     "max_disp_mm",
     "worse_than_uniform",
-    "uniform_compliance_mj",
+    "uniform_baseline_compliance_mj",
     "n_bodies_export",
     "regions_lost",
     "passive_cells_lost",
@@ -320,9 +320,7 @@ def _optimize_run_row(r: dict[str, Any]) -> str:
     top = res.get("topopt") or {}
     fem = res.get("fem") or {}
     sfs = [
-        c.get("safety_factor")
-        for c in fem.get("cases") or []
-        if c.get("safety_factor") is not None
+        c.get("safety_factor") for c in fem.get("cases") or [] if c.get("safety_factor") is not None
     ]
     # the verified worst-case realization is the headline when the hardened
     # export sweep produced one (sf_verified -> sf_export -> mask fallback
