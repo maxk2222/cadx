@@ -161,9 +161,28 @@ def test_auto_warm_guide_upsample(tmp_path) -> None:
     )
     x0, src = _auto_warm_density(it2, fine)
     assert x0 is not None
-    assert src is not None and src.startswith("guide@2x:")
+    assert src is not None and src.startswith("guide@")
     assert x0.shape == (512,)
     assert np.allclose(x0, 0.8)
+
+
+def test_auto_warm_guide_resamples_near_pitch(tmp_path) -> None:
+    """Guide pitch ~1.02x the domain pitch (the infill coarse grid is only
+    ~2x the INFILL domain — unrelated to a SIMP domain's pitch) still
+    resamples instead of being dropped."""
+    it1 = tmp_path / "1"
+    it2 = tmp_path / "2"
+    fine = SimpleNamespace(dims=(8, 8, 8), origin=np.zeros(3), pitch=1.0, cell_count=512)
+    _write_npz(
+        it1 / "topopt" / "guide_density.npz",
+        density=np.ones(2197) * 0.7,
+        dims=(13, 13, 13),
+        pitch=1.02,
+        kind="beso",
+    )
+    x0, src = _auto_warm_density(it2, fine)
+    assert x0 is not None and src is not None and src.startswith("guide@")
+    assert x0.shape == (512,)
 
 
 def test_auto_warm_same_grid_beats_guide(tmp_path) -> None:

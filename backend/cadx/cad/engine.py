@@ -1391,14 +1391,16 @@ def _auto_warm_density(out_dir: Path, domain: Any) -> tuple[np.ndarray | None, s
        from run N-1's converged field),
     2. the version-level ``topopt/density.npz`` copied up from an earlier
        optimize on the same version,
-    3. a ``guide_density.npz`` written by a guided-infill pass — a ~2x-pitch
-       coarse layout field upsampled to the fine grid (the macro topology
-       the coarse solve already verified).
+    3. a ``guide_density.npz`` written by a guided-infill pass — the coarse
+       layout field resampled onto the fine grid (the macro topology the
+       coarse solve already verified; the guide pitch is ~2x the *infill*
+       grid's pitch, so the ratio vs this domain is measured, not assumed).
 
     Tiers 1-2 require an *identical* voxel grid (same origin, pitch and
     dims) — a size-only match on a shifted or differently-pitched domain
-    would misalign the field; tier 3 accepts a coarse grid whose pitch is
-    1.5-2.5x the fine pitch and resamples through ``_upsample_density``.
+    would misalign the field; tier 3 resamples through
+    ``_upsample_density`` whenever the stored pitch is within 0.25-8x of
+    the design pitch.
     Infill/organic density fields are skipped via the ``kind`` tag —
     binary occupancy is not a continuous SIMP seed.
     """
@@ -1436,7 +1438,10 @@ def _auto_warm_density(out_dir: Path, domain: Any) -> tuple[np.ndarray | None, s
             with np.load(p) as npz:
                 pitch_c = float(npz["pitch"])
                 ratio = pitch_c / float(domain.pitch)
-                if not (1.5 <= ratio <= 2.5):
+                # the guide pitch is ~2x the INFILL grid's pitch — against
+                # this domain the ratio is unconstrained, so accept any
+                # plausible resample scale and report the measured factor
+                if not (0.25 <= ratio <= 8.0):
                     continue
                 dom_c = _GridRef(
                     origin=np.asarray(npz["origin"], dtype=float),
@@ -1448,7 +1453,7 @@ def _auto_warm_density(out_dir: Path, domain: Any) -> tuple[np.ndarray | None, s
                     dom_c,
                     domain,
                 )
-                return x0, f"guide@2x:{p}"
+                return x0, f"guide@{ratio:.2f}x:{p}"
         except Exception:
             continue
     return None, None
@@ -2612,34 +2617,42 @@ def run_topopt_pipeline(  # noqa: C901
     warm_src: str | None = None
     if opt.warm_density_relpath:
         try:
-            warm = np.load(storage.resolve(opt.warm_density_relpath))
-            x0 = np.asarray(warm["density"], dtype=float)
-            if x0.size != domain.cell_count:
-                # a ~2x-pitch coarse field (guided-infill guide_density.npz,
-                # a multires coarse pass) upsamples to the fine grid instead
-                # of being dropped — the macro layout is the useful seed
-                x0 = None
-                try:
-                    pitch_c = float(warm["pitch"])
-                    ratio = pitch_c / float(domain.pitch)
-                    if 1.5 <= ratio <= 2.5:
-                        dom_c = _GridRef(
-                            origin=np.asarray(warm["origin"], dtype=float),
-                            pitch=pitch_c,
-                            dims=tuple(int(v) for v in warm["dims"]),
+            with np.load(storage.resolve(opt.warm_density_relpath)) as warm:
+                x0 = np.asarray(warm["density"], dtype=float)
+                if x0.size != domain.cell_count:
+                    # grid mismatch — resample the stored field onto the
+                    # design grid instead of dropping it. Covers guided-infill
+                    # guide_density.npz (~2x the INFILL pitch, which is not a
+                    # fixed ratio vs this domain), multires coarse fields and
+                    # same-pitch grids with shifted origins/dims. A
+                    # coarse binary (beso) field resamples into a gray seed —
+                    # still a useful macro layout.
+                    x0 = None
+                    try:
+                        pitch_w = float(warm["pitch"])
+                        ratio = pitch_w / float(domain.pitch)
+                        if 0.25 <= ratio <= 8.0:
+                            dom_w = _GridRef(
+                                origin=np.asarray(warm["origin"], dtype=float),
+                                pitch=pitch_w,
+                                dims=tuple(int(v) for v in warm["dims"]),
+                            )
+                            x0 = _upsample_density(
+                                np.asarray(warm["density"], dtype=float).reshape(
+                                    dom_w.dims
+                                ),
+                                dom_w,
+                                design_domain,
+                            )
+                            warm_src = f"resampled@{ratio:.2f}x:{opt.warm_density_relpath}"
+                    except Exception:
+                        pass
+                    if x0 is None:
+                        res.topopt["warnings"].append(
+                            "warm-start density has a different grid — ignored"
                         )
-                        x0 = _upsample_density(
-                            x0.reshape(dom_c.dims), dom_c, design_domain
-                        )
-                        warm_src = f"guide@2x:{opt.warm_density_relpath}"
-                except Exception:
-                    pass
-                if x0 is None:
-                    res.topopt["warnings"].append(
-                        "warm-start density has a different grid — ignored"
-                    )
-            else:
-                warm_src = opt.warm_density_relpath
+                else:
+                    warm_src = opt.warm_density_relpath
         except Exception as e:
             res.topopt["warnings"].append(f"warm-start density unreadable: {e}")
     elif str(getattr(opt, "warmstart", "") or "") == "loadpath":
