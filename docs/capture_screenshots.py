@@ -71,8 +71,8 @@ DISPLAY_NAMES = {
 
 P_CAD_VIEW = "97e6e728-36de-4dee-b31c-f2bc646312fe"   # pinion — project.png's richer sibling
 V_CAD_VIEW = "1e91cd34-1aa5-4d3b-bf39-af13f6b6fac5"  # pinion v4 — version-cad + mesh editor
-V_FEM = "284f848c-b622-4cd7-83ef-a7338a58eae9"       # arm mount v3 — FEM code+quality, editors
-V_TOPOPT = "aad64fa1-e185-4d51-979d-86f814956282"    # arm mount v4 — TopOpt refine (chat panel)
+V_FEM = "bb80cd44-7855-4654-8daa-10dd5b906b3e"       # arm mount v16 — FEM code+quality, editors
+V_TOPOPT = "ab669d40-99aa-4a18-98b0-5d56d29b4feb"    # arm mount v18 — TopOpt refine (chat panel)
 P_FEM = "065d895d-8bba-4f06-ad59-d702f1089ce5"       # Robot Arm Mount — project.png + chat home
 
 # prompts typed into the wizard (the wizard's mode suggestion follows content)
@@ -90,7 +90,7 @@ CHAT_MESSAGES = [  # (role, content, meta)
      {}),
     ("assistant",
      "Understood — I drafted the spec (L=70 mm base, four M4 anchors, 50 N "
-     "downward on the top pad, PLA) and spawned a generation job. Once v3 "
+     "downward on the top pad, PLA) and spawned a generation job. Once v16 "
      "lands I'll check the anchors and run the FEM verification.",
      {"tool_log": [
          {"name": "ask_questions", "args": {"n": 0},
@@ -101,14 +101,14 @@ CHAT_MESSAGES = [  # (role, content, meta)
       # {tool, kind, job_id, version_id, version_number, status} — job_id is
       # filled in at seed time from the jobs API
       "spawned": [{"tool": "spawn_generate", "kind": "job",
-                   "version_id": V_FEM, "version_number": 3, "status": "succeeded"}]}),
+                   "version_id": V_FEM, "version_number": 16, "status": "succeeded"}]}),
     ("assistant",
-     "Generation finished — v3 verified PASS (score 93, all four M4 anchors "
+     "Generation finished — v16 verified PASS (score 93, all four M4 anchors "
      "measured). FEM: SF 2.4 under the 50 N case, worst hot-spot at the bore "
      "rim. I've spawned a TopOpt refine targeting 40% volume with the load "
-     "case pinned — it remeshes v3 into the organic bracket.",
+     "case pinned — it remeshes v16 into the organic bracket.",
      {"spawned": [{"tool": "spawn_edit", "kind": "job",
-                   "version_id": V_TOPOPT, "version_number": 4, "status": "needs_review"}]}),
+                   "version_id": V_TOPOPT, "version_number": 18, "status": "needs_review"}]}),
 ]
 
 # output geometry — CSS viewport x deviceScaleFactor = pixel size
@@ -298,11 +298,41 @@ async def drop_wizard_draft(page, base: str) -> None:
             pass  # the end-of-run snapshot diff still catches it
 
 
+async def _editor_shot(page, out_png: str) -> None:
+    """Screenshot an editor dialog after its preview/mesh is actually rendered.
+    The preview spinner may mount late (executor roundtrip) and run >30s —
+    wait for it to appear AND disappear before shooting."""
+    await wait_model(page, 2000)
+    try:  # give a late-mounting preview spinner a chance to appear
+        await page.wait_for_selector(".animate-spin", state="attached", timeout=5000)
+    except Exception:
+        pass
+    try:  # then wait it out
+        await page.wait_for_selector(".animate-spin", state="detached", timeout=120000)
+    except Exception:
+        pass
+    await settle(page, 1000)
+    # demand-frameloop: the environment cubemap resolves over several frames
+    # after mount and nothing invalidates afterwards in the dialog — a tiny
+    # orbit drag forces a post-env re-render, else the model stays unlit.
+    try:
+        box = await page.locator("canvas").last.bounding_box()
+        if box:
+            cx, cy = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+            await page.mouse.move(cx, cy)
+            await page.mouse.down()
+            await page.mouse.move(cx + 6, cy + 3, steps=3)
+            await page.mouse.up()
+            await settle(page, 900)
+    except Exception:
+        pass
+    await page.screenshot(path=out_png)
+
+
 async def open_structural(page, out_png: str) -> None:
     await page.get_by_text("Structural editor (FEM / TopOpt)").first.click()
     await settle(page, 800)
-    await wait_model(page, 4500)
-    await page.screenshot(path=out_png)
+    await _editor_shot(page, out_png)
     await page.keyboard.press("Escape")
     await settle(page, 500)
 
@@ -310,8 +340,7 @@ async def open_structural(page, out_png: str) -> None:
 async def open_organic(page, out_png: str) -> None:
     await page.get_by_text("Organic structure").first.click()
     await settle(page, 800)
-    await wait_model(page, 4500)
-    await page.screenshot(path=out_png)
+    await _editor_shot(page, out_png)
     await page.keyboard.press("Escape")
     await settle(page, 500)
 
@@ -361,7 +390,7 @@ async def pngs(pw, base: str, out: Path, chat_id: str | None) -> None:
     await page.goto(base + "/settings", wait_until="domcontentloaded")
     await settle(page, 2500)
     # never screenshot a real endpoint host
-    await page.evaluate("""() => {
+    mask_urls = """() => {
         for (const el of document.querySelectorAll('input')) {
             const v = el.value || '';
             if (/^https?:\\/\\//.test(v) && !/example\\.com|localhost|127\\./.test(v)) {
@@ -371,9 +400,17 @@ async def pngs(pw, base: str, out: Path, chat_id: str | None) -> None:
                 el.dispatchEvent(new Event('input', {bubbles: true}));
             }
         }
-    }""")
+    }"""
+    await page.evaluate(mask_urls)
     await settle(page, 400)
     await page.screenshot(path=png / "settings.png")
+
+    # models tab: HF-token card + local-model download catalog
+    await page.goto(base + "/settings?tab=models", wait_until="domcontentloaded")
+    await settle(page, 2500)
+    await page.evaluate(mask_urls)
+    await settle(page, 400)
+    await page.screenshot(path=png / "settings-models.png")
 
     await page.goto(base + f"/versions/{V_CAD_VIEW}/edit", wait_until="domcontentloaded")
     await wait_model(page, 4000)
