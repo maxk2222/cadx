@@ -103,6 +103,7 @@ def _export_3mf_via_trimesh(
     trimesh; the pipeline's in-place repair still runs on the file after."""
     import numpy as np
 
+    _ensure_face_meshes(shape, linear_deflection, angular_deflection)
     verts, tris = shape.tessellate(
         tolerance=linear_deflection, angular_tolerance=angular_deflection
     )
@@ -132,6 +133,7 @@ def export_glb_file(shape: Shape, path: Path, linear_deflection: float = 0.05) -
     """
     import numpy as np
 
+    _ensure_face_meshes(shape, linear_deflection, 0.3)
     verts, tris = shape.tessellate(tolerance=linear_deflection, angular_tolerance=0.3)
     mesh = trimesh.Trimesh(
         vertices=np.asarray([[v.X, v.Y, v.Z] for v in verts], dtype=float),
@@ -214,6 +216,29 @@ def export_2d(
     return results
 
 
+def _ensure_face_meshes(
+    shape: Shape, linear_deflection: float, angular_deflection: float
+) -> None:
+    """Mesh every face individually.
+
+    Whole-shape ``BRepMesh_IncrementalMesh`` leaves some faces without
+    triangulation: boolean results carry faces that share TShapes across
+    locations, so the stored-mesh check skips a face whose lookup key then
+    finds nothing — ``tessellate()`` later crashes on it (``poly.NbNodes``
+    on None, seen on fused helical threads). Per-face meshing lands the
+    data under each face's own key; faces already meshed at the requested
+    deflection are cheap no-ops."""
+    try:
+        from OCP.BRepMesh import BRepMesh_IncrementalMesh
+
+        for face in shape.faces():
+            BRepMesh_IncrementalMesh(
+                face.wrapped, linear_deflection, False, angular_deflection, True
+            )
+    except Exception:
+        pass
+
+
 def _premesh(shape: Shape, linear_deflection: float, angular_deflection: float) -> None:
     """Tessellate once at the finest deflection the exporters will ask for.
 
@@ -224,18 +249,7 @@ def _premesh(shape: Shape, linear_deflection: float, angular_deflection: float) 
     satisfies a requested deflection, so meshing once at the tightest
     tolerance lets all three consumers read the same OCC triangulation.
     Best-effort: a failed premesh just means each export meshes on its own."""
-    try:
-        from OCP.BRepMesh import BRepMesh_IncrementalMesh
-
-        BRepMesh_IncrementalMesh(
-            shape.wrapped,
-            linear_deflection,
-            True,
-            angular_deflection,
-            True,
-        )
-    except Exception:
-        pass
+    _ensure_face_meshes(shape, linear_deflection, angular_deflection)
 
 
 def export_all_3d(

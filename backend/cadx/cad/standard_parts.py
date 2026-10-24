@@ -7,6 +7,7 @@ import math
 import re
 from typing import Any
 
+from bd_warehouse.fastener import Screw
 from build123d import Rot
 
 from cadx.cad import catalog
@@ -392,6 +393,54 @@ def _measure_placement(
         return rotation, 0.0, 0.0, False
 
 
+def _swept_thread_block(
+    ident: str, cls: type, sub_name: str, kwargs: list[str]
+) -> str:
+    """Emitted `CADX_DETAIL_MODE == "export"` block for headed screws.
+
+    Adds the cadlib helical-sweep ridge onto the simple body; on any sweep
+    failure the block falls back to bd_warehouse's own per-turn compound so
+    the recipe keeps the old (slow but proven) lane instead of failing. Only
+    screws qualify: a nut's internal ridge overshoot would poke past the nut
+    faces, and a SetScrew's threads end at two free faces — both keep the
+    bd path (their threads are ~5 turns, the fuse is cheap there anyway)."""
+    fb_kwargs = ["simple=False" if k.startswith("simple=") else k for k in kwargs]
+    fallback = f"{sub_name}({', '.join(fb_kwargs)})"
+    ends = f'("fade", "fade" if {ident}.thread_offset > 0 else "raw")'
+    thr = (
+        f"_cadx_thread_solid(major_diameter={ident}.thread_diameter, "
+        f"pitch={ident}.thread_pitch, length={ident}.thread_length, "
+        f"hand={ident}.hand, external=True, end_finishes={ends})"
+    )
+    tip = (
+        f"-{ident}.length_offset() - {ident}.grip_length "
+        f"- {ident}.thread_offset - {ident}.thread_length"
+    )
+    # the swept profile is 3*pitch/8 wide axially beyond the helix span at
+    # each end — lift by that half-width so the ridge's bottom face lands
+    # flush on the thread-tip plane; the top overshoot buries into the
+    # shank/head (turned to the major diameter, taper invisible there).
+    # The fuse runs HERE in catalog frame, before the placement transform:
+    # a Rot(180,0,0)-located loft compound makes OCC's boolean silently
+    # return zero solids, and the failure must stay inside this try so the
+    # bd fallback catches it.
+    comp = (
+        f"Compound(children=[{ident}, "
+        f"Pos(0, 0, {tip} + 0.375 * {ident}.thread_pitch) * _thr_{ident}])"
+    )
+    return (
+        'if CADX_DETAIL_MODE == "export":\n'
+        "    try:\n"
+        f"        _thr_{ident} = {thr}\n"
+        f"        _fused_{ident} = _cadx_fuse_solids({comp})\n"
+        f"        if not _fused_{ident}.solids():\n"
+        '            raise RuntimeError("thread fuse produced no solids")\n'
+        f"        {ident} = _fused_{ident}\n"
+        "    except Exception:\n"
+        f"        {ident} = {fallback}"
+    )
+
+
 def build_standard_part_code(parts: list[StandardPartSpec]) -> str:  # noqa: C901
     reports = validate_standard_parts(parts)
     imports: dict[str, list[str]] = {}
@@ -458,6 +507,7 @@ def build_standard_part_code(parts: list[StandardPartSpec]) -> str:  # noqa: C90
     subclass_bodies: dict[str, list[str]] = {}
     sub_name_map: dict[str, str] = {}
     subclass_method_names: dict[str, set[str]] = {}
+    uses_swept_thread = False
     counter = 0
     for row in reports:
         part: StandardPartSpec = row["part"]
@@ -504,8 +554,24 @@ def build_standard_part_code(parts: list[StandardPartSpec]) -> str:  # noqa: C90
                 "    def calculate_thread_length(self):\n"
                 f"        return {thread_expr}"
             ]
+        # Headed screws with a real thread: always emit simple=True (the cheap
+        # body — preview used it anyway) and let the per-placement block add
+        # the swept helical ridge in export. bd_warehouse's own thread is a
+        # per-turn loft compound (~76 rings) whose chunked fuse costs ~30 s
+        # in the executor; the cadlib sweep is ONE solid and one boolean.
+        # Nuts and SetScrews stay on the bd lane: their threads end at free
+        # faces where the sweep's overshoot fins would be visible — and their
+        # turn counts are small, so the per-turn fuse is cheap anyway.
+        swept_thread = (
+            threaded
+            and "simple" in schema
+            and issubclass(cls, Screw)
+            and cls.__name__ != "SetScrew"
+        )
         if "simple" in schema:
-            simple_value = '(CADX_DETAIL_MODE == "preview")' if threaded else "True"
+            simple_value = "True" if (swept_thread or not threaded) else (
+                '(CADX_DETAIL_MODE == "preview")'
+            )
             kwargs.append(f"simple={simple_value}")
         if part.class_name == "CounterSunkScrew":
             measured = catalog.lookup_part(
@@ -544,6 +610,11 @@ def build_standard_part_code(parts: list[StandardPartSpec]) -> str:  # noqa: C90
                 )
             else:
                 constructors.append(f"{ident} = {constructor}")
+                if swept_thread:
+                    constructors.append(
+                        _swept_thread_block(ident, cls, sub_name, kwargs)
+                    )
+                    uses_swept_thread = True
             placed = (
                 f"Pos({position[0]}, {position[1]}, {position[2] + z_lift}) * "
                 f"Rot({rotation[0]}, {rotation[1]}, {rotation[2]}) * {ident}"
@@ -579,6 +650,10 @@ def build_standard_part_code(parts: list[StandardPartSpec]) -> str:  # noqa: C90
         f"from {module} import {', '.join(sorted(set(names)))}"
         for module, names in sorted(imports.items())
     ]
+    if uses_swept_thread:
+        import_lines.append(
+            "from cadlib.threads import helical_thread as _cadx_thread_solid"
+        )
     head_profile_lines = [
         "    def head_profile(self):",
         "        a, k, dk = (self.screw_data[key] for key in ('a', 'k', 'dk'))",

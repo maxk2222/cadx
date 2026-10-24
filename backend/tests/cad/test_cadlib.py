@@ -852,6 +852,107 @@ def test_unfused_thread_fragments_fail_the_gate(tmp_path):
     assert out.thread_count == 1
 
 
+def test_helical_thread_builds_few_tagged_valid_pieces():
+    """Multi-turn loft pieces replace ~76 per-turn lofts: a 32 mm M10
+    thread becomes ~6 valid solids carrying BSPLINE flank faces, with the
+    _cadx_thread tag the runner's thread_count scan picks up."""
+    from build123d import GeomType
+
+    from cadx.cad.cadlib.threads import helical_thread
+
+    th = helical_thread(10, 1.5, 32, end_finishes=("fade", "raw"))
+    pieces = th.solids()
+    assert 1 < len(pieces) <= 6  # 21 turns, <=4 turns per piece
+    assert all(p.is_valid for p in pieces)
+    assert any(f.geom_type == GeomType.BSPLINE for f in th.faces())
+    tag = getattr(th, "_cadx_thread", None)
+    assert tag and tag["external"] is True and tag["pitch"] == 1.5
+
+
+def test_helical_thread_internal_swaps_apex_root():
+    """internal=True sweeps the nut-style ridge: the root radius sits
+    OUTSIDE the major radius (the ridge wraps the bore channel)."""
+    from cadx.cad.cadlib.threads import helical_thread
+
+    th = helical_thread(10, 1.5, 12, external=False)
+    assert th.is_valid
+    assert th.bounding_box().size.X / 2 > 5.0  # root beyond the major radius
+
+
+def test_helical_thread_left_hand_mirrors_the_ridge():
+    """A left-hand ridge winds the other way: at a quarter turn up it sits
+    at -Y where the right-hand ridge sits at +Y."""
+    from cadx.cad.cadlib.threads import helical_thread
+
+    right = helical_thread(10, 1.5, 30, hand="right")
+    left = helical_thread(10, 1.5, 30, hand="left")
+    assert right.is_valid and left.is_valid
+    assert right.volume == pytest.approx(left.volume, rel=0.02)
+    assert right.is_inside((0, 4.4, 0.4)) and not right.is_inside((0, -4.4, 0.4))
+    assert left.is_inside((0, -4.4, 0.4)) and not left.is_inside((0, 4.4, 0.4))
+
+
+def test_helical_thread_rejects_bad_args():
+    from cadx.cad.cadlib.threads import helical_thread
+
+    with pytest.raises(ValueError):
+        helical_thread(10, 1.5, 0)
+    with pytest.raises(ValueError):
+        helical_thread(10, 1.5, 10, hand="sideways")
+    with pytest.raises(ValueError):
+        helical_thread(10, 1.5, 10, end_finishes=("raw", "bogus"))  # type: ignore[arg-type]
+
+
+def test_helical_thread_fuses_valid_onto_screw_core():
+    """Regression for the P2 investigation: the swept ridge must fuse onto
+    a headless core AND a real bd_warehouse screw body as ONE valid solid
+    (the earlier split/loft variants produced invalid boundary patches).
+    The ridge overshoots each helix end by half the profile width, so the
+    caller lifts it 0.375*pitch to land the bottom face on the tip plane."""
+    from bd_warehouse.fastener import CounterSunkScrew
+
+    from cadx.cad.cadlib.threads import helical_thread
+
+    body = CounterSunkScrew(
+        size="M10-1.5", length=120, fastener_type="iso10642", simple=True
+    )
+    bs = body.solids()[0]
+    pitch = body.thread_pitch
+    tip = (
+        -body.length_offset() - body.grip_length
+        - body.thread_offset - body.thread_length
+    )
+    th = helical_thread(
+        body.thread_diameter, pitch, body.thread_length,
+        hand=body.hand, external=True,
+    )
+    fused = bs.fuse(Pos(0, 0, tip + 0.375 * pitch) * th)
+    solids = fused.solids()
+    assert len(solids) == 1
+    assert fused.is_valid
+    # body + real ridge, not the double-counted interpenetrating compound
+    assert fused.volume > bs.volume + 0.5 * th.volume
+    assert fused.volume < bs.volume + th.volume
+
+
+def test_tapped_hole_export_cuts_real_groove():
+    """tapped_hole's export cutter (bore + IsoThread ring compound) cuts a
+    real helical channel — BSPLINE walls, not a smooth bore."""
+    from build123d import GeomType
+
+    from cadx.cad.cadlib.ops import set_detail_mode
+
+    set_detail_mode("export")
+    try:
+        tap = cadlib.tapped_hole(10, 1.5, 12)
+    finally:
+        set_detail_mode("preview")
+    plate = Pos(0, 0, -6) * Box(30, 30, 12)
+    cut = (plate - Pos(0, 0, 6.5) * tap).solids()[0]
+    assert cut.is_valid
+    assert any(f.geom_type == GeomType.BSPLINE for f in cut.faces())
+
+
 def test_tapped_hole_pitch_and_drill_defaults():
     from cadx.cad.cadlib import ops as cops
 

@@ -117,9 +117,9 @@ def _m10_full_thread_code() -> str:
 def test_m10_full_thread_120mm_export_fuses_without_crashing(tmp_path):
     """Regression for the live ISO-10642 M10x120 full-thread SIGSEGV: 79
     separate helix-turn solids fused in one N-way boolean crashed OCC in the
-    executor (exit -11). The recipe now fuses contiguous chunks so every
-    boolean stays small — the run must return a single solid that still
-    carries real helical (BSPLINE) thread faces."""
+    executor (exit -11). The recipe now sweeps ONE continuous helical ridge
+    and fuses it in a single boolean — the run must return a single valid
+    solid that still carries real helical (BSPLINE) thread faces."""
     code = _m10_full_thread_code()
     exact = run_user_code(
         code,
@@ -135,10 +135,76 @@ def test_m10_full_thread_120mm_export_fuses_without_crashing(tmp_path):
     shape = import_brep(str(exact.brep_path))
     solids = shape.solids()
     assert len(solids) == 1
+    assert shape.is_valid
     bb = shape.bounding_box()
     assert pytest.approx([20.0, 20.0, 120.0], abs=0.3) == [bb.size.X, bb.size.Y, bb.size.Z]
+    # the continuous sweep produces a handful of helical flank surfaces, not
+    # the per-turn patchwork the old chunked path left (>100 fragments)
     bspline_faces = sum(1 for f in shape.faces() if str(f.geom_type).endswith("BSPLINE"))
-    assert bspline_faces > 100
+    assert bspline_faces > 0
+
+
+def test_screw_recipe_emits_swept_thread_with_bd_fallback():
+    """Headed screws take the cadlib single-sweep lane: simple=True body +
+    one helical_thread ridge under a try/except that rebuilds the bd
+    per-turn compound (simple=False) when the sweep fails."""
+    code = _m10_code()
+    assert "simple=True" in code
+    assert "from cadlib.threads import helical_thread as _cadx_thread_solid" in code
+    assert "_thr__standard_part_0 = _cadx_thread_solid(" in code
+    assert "except Exception:" in code
+    assert "simple=False" in code  # fallback lane
+
+
+def test_nut_and_setscrew_stay_on_per_turn_lane():
+    """Nuts and SetScrews keep bd_warehouse's per-turn compound: their
+    threads end at free faces where the sweep's end overshoot would poke
+    out as fins — and their turn counts are small anyway."""
+    for spec in (
+        StandardPartSpec(class_name="HexNut", fastener_type="iso4032", size="M8-1.25"),
+        StandardPartSpec(class_name="SetScrew", fastener_type="iso4026", size="M8-1.25",
+                         length_mm=16),
+    ):
+        code = build_standard_part_code([spec])
+        assert "_cadx_thread_solid" not in code, spec.class_name
+        assert 'simple=(CADX_DETAIL_MODE == "preview")' in code, spec.class_name
+
+
+def test_swept_screw_thread_sits_flush_at_tip(tmp_path):
+    """The +0.375*pitch lift must put the ridge's bottom face on the
+    thread-tip plane: no helical fin may hang below the screw's tip."""
+    code = _m10_full_thread_code()  # 120mm, thread reaches the tip
+    out = run_user_code(
+        code, tmp_path / "work", detail_mode="export", warm=False,
+        threads=1, timeout_s=180, mem_mb=4096,
+    )
+    assert out.ok, out.error
+    shape = import_brep(str(out.brep_path))
+    assert shape.is_valid
+    bb = shape.bounding_box()
+    # head-down placement: tip at z=120 top, head at z=0 — nothing may
+    # extend past the 120.3 nominal envelope
+    assert bb.max.Z < 120.5
+
+
+def test_fallback_lane_still_counts_the_thread(tmp_path):
+    """If the sweep raises inside generated code the recipe rebuilds the
+    screw simple=False — that object itself satisfies the thread_count
+    scan, so the gate sees a real thread either way."""
+    code = _m10_code().replace(
+        "from cadlib.threads import helical_thread as _cadx_thread_solid",
+        "def _cadx_thread_solid(*a, **k):\n    raise RuntimeError('sweep broke')",
+    )
+    out = run_user_code(
+        code, tmp_path / "work", detail_mode="export", warm=False,
+        threads=1, timeout_s=180, mem_mb=4096,
+    )
+    assert out.ok, out.error
+    assert out.thread_count == 1
+    shape = import_brep(str(out.brep_path))
+    assert len(shape.solids()) == 1
+    bspline_faces = sum(1 for f in shape.faces() if str(f.geom_type).endswith("BSPLINE"))
+    assert bspline_faces > 0
 
 
 def test_thread_feature_start_is_in_final_part_frame():
