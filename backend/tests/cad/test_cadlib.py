@@ -780,6 +780,40 @@ def test_tapped_hole_disjoint_cutter_counts_no_thread(tmp_path):
     assert out.thread_count == 0
 
 
+def test_tapped_holes_built_in_loop_all_count(tmp_path):
+    """Regression for the M10 corner-taps export gate failure: cutters built
+    in a nested loop and collected in `taps` — the namespace scan saw only
+    the last `tap` variable and counted 2 of 4. The scan now descends into
+    containers (deduped by id), and an un-moved leftover next to the list is
+    capped at the declared count."""
+    code = (
+        "from build123d import *\n"
+        "import cadlib\n"
+        "PARAMS = {}\n"
+        "part = Box(60, 60, 12, align=(Align.CENTER, Align.CENTER, Align.MIN))\n"
+        "taps = []\n"
+        "CADX_FEATURES = []\n"
+        "for _hx in (-20, 20):\n"
+        "    for _hy in (-20, 20):\n"
+        "        tap = cadlib.tapped_hole(8, 1.25, 12)\n"
+        "        taps.append(tap.moved(Location(Vector(_hx, _hy, 12))))\n"
+        '        CADX_FEATURES.append({"kind": "thread", "thread_spec": "M8x1.25-6H",'
+        ' "major_diameter": 8.0, "pitch": 1.25, "length": 12.0,'
+        ' "start": 0.0, "external": False, "hand": "right",'
+        ' "axis": "-z", "position_mm": [_hx, _hy, 12.0]})\n'
+        "part = part - Compound(taps)\n"
+        "result = part\n"
+    )
+    out = run_user_code(code, tmp_path / "work", detail_mode="export")
+    assert out.ok, out.error
+    assert out.thread_count == 4
+    from build123d import GeomType, import_brep
+
+    body = import_brep(str(tmp_path / "work" / "model.brep"))
+    bsplines = [f for f in body.faces() if f.geom_type == GeomType.BSPLINE]
+    assert bsplines, "four cut grooves must leave helical faces"
+
+
 def test_tapped_hole_pitch_and_drill_defaults():
     from cadx.cad.cadlib import ops as cops
 

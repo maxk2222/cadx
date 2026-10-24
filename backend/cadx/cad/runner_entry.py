@@ -624,12 +624,23 @@ def main(workdir: Path | None = None) -> int:  # noqa: C901
         # `_cadx_thread`, or a `Helix` path a declared thread was built from
         design_features = _json_records(namespace.get("CADX_FEATURES"))
         declared_threads = sum(1 for feature in design_features if feature.get("kind") == "thread")
+        # loop-built threads land inside a container (`taps.append(tap)`) —
+        # flatten one level so every tagged cutter counts; dedupe by id so
+        # the loop variable aliasing the last one isn't double-counted
+        flat_objs: list[tuple[str, object]] = []
+        seen_ids: set[int] = set()
+        for name, v in namespace.items():
+            items = v if isinstance(v, list | tuple | set | frozenset) else (v,)
+            for obj in items:
+                if id(obj) not in seen_ids:
+                    seen_ids.add(id(obj))
+                    flat_objs.append((name, obj))
         helix_paths = sum(
-            1 for v in namespace.values() if not isinstance(v, type) and type(v).__name__ == "Helix"
+            1 for _name, v in flat_objs if type(v).__name__ == "Helix" and not isinstance(v, type)
         )
         thread_count = 0
         bom: dict[tuple, dict] = {}
-        for name, v in namespace.items():
+        for name, v in flat_objs:
             cls_name = type(v).__name__
             mod = type(v).__module__ or ""
             if name != "result" and (
@@ -687,6 +698,12 @@ def main(workdir: Path | None = None) -> int:  # noqa: C901
             else:
                 bom[key] = {"part_class": cls_name, "type": key[1], "size": key[2], "count": count}
 
+        if declared_threads and thread_count > declared_threads:
+            # un-consumed temporaries inflate the flat scan — e.g. an
+            # un-placed cutter left bound to the loop variable next to the
+            # `taps` list holding all four moved copies. The part carries at
+            # most the declared set; extra bookkeeping objects add none.
+            thread_count = declared_threads
         if thread_count == 0:
             v = namespace.get("result")
             cls_name = type(v).__name__

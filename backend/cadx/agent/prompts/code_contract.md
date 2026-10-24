@@ -145,7 +145,12 @@
    `CADX_FEATURES` entry for each thread with `kind`, `thread_spec`,
    `major_diameter`, `pitch`, `length`, `start`, `external`, `hand`, `axis`
    and `position_mm` — `start`/`pitch`/`length`/`major_diameter` are scalar
-   mm numbers, `position_mm` the [x, y, z] mouth centre. Preview mode renders the helix FROM THIS METADATA —
+   mm numbers, `position_mm` the [x, y, z] mouth centre. The overlay is
+   drawn as `position_mm + axis * (start … start+length)`: `start` is the
+   axial distance ALONG `axis` from `position_mm` to the first turn, NOT an
+   absolute z — a top-face bore opening downward takes `axis: "-z"`,
+   `start: 0.0`, `position_mm` at the mouth, and a thread ending flush
+   reports `length` = hole depth. Preview mode renders the helix FROM THIS METADATA —
    never subtract or fuse any thread cue/ridge/groove in preview mode: a
    helical bore wall hides the underlying hole from feature measurement and
    fails verification. Preview threads live in metadata only. For INTERNAL
