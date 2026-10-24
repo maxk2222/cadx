@@ -322,6 +322,47 @@ _HOLEISH_RE = re.compile(r"hole|bore|bohrung|loch", re.I)
 # is a curved cap, never measurable as a protruding cylinder.
 _BOSS_TYPES = {"boss", "tube", "pin", "post", "stud", "standoff"}
 _BOSS_RE = re.compile(r"\b(tube|pipe|boss|rohr|stutzen|buchse|nabe)\b", re.I)
+# declared classes that can never be a protruding cylinder — a "boss" word in
+# their prose ("rib joining the bearing boss") must not conjure a tube check
+_NON_BOSS_TYPES = {
+    "hole",
+    "bore",
+    "slot",
+    "pocket",
+    "cutout",
+    "groove",
+    "notch",
+    "thread",
+    "insert",
+    "nut",
+    "washer",
+    "tap",
+    "fillet",
+    "round",
+    "chamfer",
+    "bevel",
+    "rib",
+    "gusset",
+    "wall",
+    "web",
+    "strut",
+    "brace",
+    "frame",
+    "plate",
+    "block",
+    "flange",
+    "base",
+    "bed",
+    "rim",
+    "lip",
+    "shell",
+    "bearing_seat",
+    "gear",
+    "text",
+    "pattern",
+    "knurl",
+    "cut",
+}
 _TAP_RE = re.compile(r"\btap(ped)?\b|gewinde|thread", re.I)
 _M_RE = re.compile(r"\bM\s*(\d+)", re.I)
 _AXIS_LETTER_RE = re.compile(
@@ -1888,7 +1929,9 @@ def _check_boss_features(
     for f in spec_features:
         ftype = (f.type or "").lower()
         text = f"{f.name or ''} {f.description or ''}".lower()
-        if ftype not in _BOSS_TYPES and not _BOSS_RE.search(text):
+        # a declared non-cylinder class wins over stray "boss" words in the
+        # prose — the regex only rescues untyped/cylinder-adjacent features
+        if ftype not in _BOSS_TYPES and (ftype in _NON_BOSS_TYPES or not _BOSS_RE.search(text)):
             continue
         want_axis = _feature_axis_hint(f)
         if not want_axis:

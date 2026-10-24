@@ -202,6 +202,37 @@ def test_boss_axis_detected_and_compared() -> None:
     assert compare_features([feat], mf) == []
 
 
+def test_typed_rib_with_boss_in_prose_is_not_a_tube_demand() -> None:
+    """Regression (robot_arm_mount E2E): a `type:"rib"` feature whose
+    description references another boss ("rib joining the bearing boss")
+    must NOT be reclassified by the text regex into a boss-axis demand.
+    Untyped/other features keep the rescue path."""
+    from types import SimpleNamespace
+
+    from cadx.cad.features import compare_features
+
+    base = Pos(0, 0, 4) * Box(60, 20, 8)
+    tube_z = Pos(0, 0, 15) * Cylinder(radius=6, height=20)
+    mf = extract_features(base + tube_z)  # only a +z boss exists
+    kw = dict(dims={}, position="", axis="x", count=1, standard="")
+
+    rib = SimpleNamespace(
+        name="gusset rib",
+        type="rib",
+        description="gusset joining the bearing boss to the flange",
+        **kw,
+    )
+    assert not any("boss/tube" in f.expected for f in compare_features([rib], mf))
+
+    untyped = SimpleNamespace(
+        name="lagerstutzen",
+        type="other",
+        description="cylindrical boss for the shaft",
+        **kw,
+    )
+    assert any("boss/tube" in f.expected for f in compare_features([untyped], mf))
+
+
 def test_fillet_does_not_register_as_boss() -> None:
     """Edge fillets wrap ~90° — they must stay in `rounds`, not become bosses."""
     from build123d import Axis, fillet

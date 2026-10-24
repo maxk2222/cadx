@@ -11,7 +11,9 @@ Rules:
   `g_load: [0,0,-1]` when gravity matters.
 - `fixed` regions = where the part is held/screwed/clamped. Prefer
   `{"kind": "hole", "hole_index": N}` when the spec lists mounting holes —
-  the Nth fastener hole in the spec order. `fix_mode: "all"` (encastre) is
+  the Nth hole-type feature in spec declaration order, **1-based** (spec
+  holes #1..#n — an out-of-range index resolves to nothing). `fix_mode:
+  "all"` (encastre) is
   the default; `"normal"` = roller/resting contact. For EXACT planes the
   prompt states (a clamped end face, a symmetry cut, a knife-edge
   support) use `{"kind": "plane"}` — `"axis":"-x"` = the -x end plane,
@@ -21,7 +23,11 @@ Rules:
   guess a cut location. NEVER put `{"kind": "all"}` in `fixed` — a
   whole-part fixture freezes the entire domain and makes optimization
   meaningless; pick the actual contact surface or holes.
-- `loads[].region` = where the force attacks. For an exact END FACE — the
+- `loads[].region` = where the force attacks. A `bore`/`hole` region also
+  uses `hole_index` — the same 1-based spec-order count as `fixed` (count
+  the spec's `type:"hole"` features, top to bottom). To load TWO holes of
+  one flange emit two `loads` entries, one per index — one region can't
+  span two bores. For an exact END FACE — the
   tip face, "Stirnfläche", "the +X end" — use `{"kind":"plane","axis":"+x"}`:
   `surface`/`face` envelopes also catch STEPPED SHOULDERS of that silhouette
   (a flange's +x shoulder next to a thinner bar lands load at the step, not
