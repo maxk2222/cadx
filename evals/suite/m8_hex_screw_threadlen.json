@@ -1,0 +1,24 @@
+{
+  "name": "m8_hex_screw_threadlen",
+  "project": "eval:m8-hex-screw-threadlen",
+  "difficulty": 2,
+  "description": "Hex head screw M8x50 ISO 4014 with EXPLICIT thread reach 30 mm — exercises the structured thread_length_mm recipe knob (not the ISO-888 default).",
+  "settings": { "gen_mode": "cad" },
+  "stages": [
+    {
+      "id": "codegen",
+      "type": "generate",
+      "mode": "cad",
+      "timeout_s": 5400,
+      "options": { "process": "fdm" },
+      "prompt": "Hex head screw M8, ISO 4014, total length under head 50 mm, thread length 30 mm (partial thread — 20 mm unthreaded shank under the head). Single standard fastener, mm units, head at the bottom on the XY plane, axis along Z.",
+      "gates": [
+        { "type": "status", "expect": ["succeeded", "needs_review"] },
+        { "type": "bbox", "dims": [14.4, 14.4, 56], "match": "match", "tol_mm": 3 },
+        { "type": "watertight", "expect": true },
+        { "type": "verify_spec", "expect": "PASS" },
+        { "type": "max_wall_s", "s": 900 }
+      ]
+    }
+  ]
+}

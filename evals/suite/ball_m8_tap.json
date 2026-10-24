@@ -1,0 +1,27 @@
+{
+  "name": "ball_m8_tap",
+  "project": "eval:ball-m8-tap",
+  "difficulty": 2,
+  "description": "Sphere with an M8 tapped bore on the pole — semantic surface targeting on a fully curved skin (the case that produced the freehand Pos*tap placement).",
+  "settings": { "gen_mode": "cad" },
+  "stages": [
+    {
+      "id": "codegen",
+      "type": "generate",
+      "mode": "cad",
+      "timeout_s": 5400,
+      "options": { "process": "fdm" },
+      "prompt": "Solid steel ball, parametric, mm units. Sphere diameter 60, resting on the XY plane, centred in X and Y (top pole at z=60).\n- One M8 tapped (internal thread, M8x1.25) blind bore, 25 mm deep, opening exactly at the top pole, axis along Z, normal to the surface.\nNo other features.",
+      "gates": [
+        { "type": "status", "expect": ["succeeded", "needs_review"] },
+        { "type": "bbox", "dims": [60, 60, 60], "match": "match", "tol_mm": 2 },
+        { "type": "features", "entries": [
+          { "type": "hole", "count": 1, "axis": "z", "dia": 6.8 }
+        ] },
+        { "type": "watertight", "expect": true },
+        { "type": "verify_spec", "expect": "PASS" },
+        { "type": "max_wall_s", "s": 900 }
+      ]
+    }
+  ]
+}

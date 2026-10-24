@@ -1,0 +1,27 @@
+{
+  "name": "block_sidewall_tap",
+  "project": "eval:block-sidewall-tap",
+  "difficulty": 2,
+  "description": "Block with an M8 tapped bore into a vertical SIDEWALL — the placement that forced freehand normal maths (Pos*Rot*tap on a -X face).",
+  "settings": { "gen_mode": "cad" },
+  "stages": [
+    {
+      "id": "codegen",
+      "type": "generate",
+      "mode": "cad",
+      "timeout_s": 5400,
+      "options": { "process": "fdm" },
+      "prompt": "Steel cube 40 x 40 x 40, parametric, mm units, resting on the XY plane, centred in X and Y.\n- One M8 tapped (internal thread, M8x1.25) blind bore, 20 mm deep, into the LEFT side face (the -X face), centred on that face (y=0, z=20), bore axis along X, opening normal to the wall.\nNo other features.",
+      "gates": [
+        { "type": "status", "expect": ["succeeded", "needs_review"] },
+        { "type": "bbox", "dims": [40, 40, 40], "match": "match", "tol_mm": 2 },
+        { "type": "features", "entries": [
+          { "type": "hole", "count": 1, "axis": "x", "dia": 6.8 }
+        ] },
+        { "type": "watertight", "expect": true },
+        { "type": "verify_spec", "expect": "PASS" },
+        { "type": "max_wall_s", "s": 900 }
+      ]
+    }
+  ]
+}
