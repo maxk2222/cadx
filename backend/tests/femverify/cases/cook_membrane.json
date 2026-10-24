@@ -1,0 +1,30 @@
+{
+  "name": "cook_membrane",
+  "tier": "verify",
+  "kind": "reference",
+  "geometry": {"builder": "cook_panel", "args": {"t": 4.0}},
+  "material": {"E": 1000.0, "nu": 0.3333},
+  "pitch_mm": 2.0,
+  "cases": [
+    {
+      "name": "shear",
+      "fixed": [],
+      "manual_pins": [
+        {"dof": "x", "sel": {"x": 0.0}},
+        {"dof": "y", "sel": {"x": 0.0}},
+        {"dof": "z", "sel": {"x": 0.0}}
+      ],
+      "loads": [],
+      "manual_loads": [
+        {"force_n": [0, 100, 0], "sel": {"x": "max", "ymin": 44.0}}
+      ]
+    }
+  ],
+  "expect": [
+    {"probe": "resultant_n", "axis": "y", "ref": 100.0, "tol_abs": 0.5},
+    {"probe": "disp_nodes", "sel": {"x": "max"}, "axis": "y", "ref": 0.5978, "tol_rel": 0.15},
+    {"probe": "converged", "ref": 1.0, "tol_abs": 0.5}
+  ],
+  "source": "Cook's membrane (Simo & Rifai / COMSOL convention): panel (0,0)(48,16)(48,32)(0,44) x t, clamped left edge, upward shear on the right edge. Published normalized tip deflection u_y*E*t/P = 23.91 (plane stress); ref = 23.91*P/(E*t) = 0.5978 mm, measured as the loaded-edge mean.",
+  "notes": "Slanted top/bottom edges voxelize as staircases — systematic under-read of the tip deflection, tightening with pitch. Extruded 3D slab with free z-faces approximates plane stress. Shear + clamp ride on manual_* selections: 'face -x'/'surface -x' envelope semantics pin the top-right corner cell (sole cell of the y>44 columns) — the benchmark needs the strict x=0 clamp and the x=48 shear edge only."
+}

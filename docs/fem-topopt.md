@@ -600,7 +600,11 @@ The native regression suite includes a cantilever comparison against the
 Euler–Bernoulli beam solution, region-resolution checks, SIMP volume-fraction
 and convergence checks, watertight extraction checks, executor-pipeline tests,
 API tests, and a FakeLLM agent-loop test that exercises automatic TopOpt mode.
-Run from `backend/`:
+On top of that, `tests/femverify/` holds a declarative verification suite:
+published benchmarks (Cook, Kirsch, Lamé, NAFEMS LE1/LE10), pitch-swept
+convergence trends, a manufactured-solution order check, TopOpt invariants
+and an opt-in CalculiX same-mesh cross-check — see
+[FEM verification](fem-verification.md). Run from `backend/`:
 
 ```bash
 .venv/bin/python -m pytest tests/cad/test_fem.py tests/unit/test_agent_modes.py tests/unit/test_api.py -q

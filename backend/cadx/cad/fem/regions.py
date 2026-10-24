@@ -101,20 +101,27 @@ def _surface_cells(domain: VoxelDomain, axis: str, margin_mm: float) -> np.ndarr
     """Cells forming the actual exterior surface facing `axis` (exposed face
     outward), plus `margin_mm` worth of layers behind it. Works on
     curved/organic shapes — unlike a global bbox layer it follows the
-    silhouette. Only void connected to the outside counts as exposure:
-    enclosed cavity walls and internal lattice faces are not fixtures or
-    load faces."""
+    silhouette.
+
+    The surface is the outer envelope: per (transverse) grid column the
+    extreme solid cell in the signed direction. Cells whose exposed face
+    looks into a through-hole or an internal channel are NOT picked —
+    they are interior walls of the void, not the part's `axis` face
+    (bore/cylinder/hole regions target those explicitly). An open recess
+    (cup floor, pocket bottom) keeps its face because it is the extreme
+    cell in its column; enclosed cavities stay excluded regardless."""
     idx, sign = _axis_parts(axis)
     d = np.zeros(3, dtype=int)
     d[idx] = sign
-    outside = _exterior_void(domain)
-    # a solid cell is exposed in direction `d` when its neighbour cell is
-    # outside air — or it sits on the domain border itself
-    edge = np.zeros(domain.dims, dtype=bool)
-    sl: list[slice] = [slice(None)] * 3
-    sl[idx] = slice(-1, None) if sign > 0 else slice(0, 1)
-    edge[tuple(sl)] = True
-    exposed = domain.solid & (shift_mask(outside, d) | edge)
+    pos = np.broadcast_to(
+        np.arange(domain.dims[idx]).reshape([-1 if i == idx else 1 for i in range(3)]),
+        domain.dims,
+    )
+    if sign > 0:
+        extreme = np.where(domain.solid, pos, -1).max(axis=idx, keepdims=True)
+    else:
+        extreme = np.where(domain.solid, pos, domain.dims[idx]).min(axis=idx, keepdims=True)
+    exposed = domain.solid & (pos == extreme)
     lay = _layers(domain, margin_mm)
     out = exposed.copy()
     for k in range(1, lay):
@@ -123,8 +130,15 @@ def _surface_cells(domain: VoxelDomain, axis: str, margin_mm: float) -> np.ndarr
 
 
 def _face_cells(domain: VoxelDomain, axis: str, margin_mm: float) -> np.ndarray:
-    """Legacy 'face' region — alias of `_surface_cells` (real surface cells,
-    not a global bbox layer, so curved tops/bottoms work)."""
+    """Legacy 'face' region — alias of `_surface_cells` (the per-column
+    extreme envelope, real surface cells, not a global bbox layer, so
+    curved tops/bottoms and tapered ends work).
+
+    The envelope semantics is what fixtures and loads need on organic
+    shapes: "the -x face" is the whole left skin, not just the cells
+    touching the extreme bbox plane — on a tapered tip a strict plane
+    band degenerates to a knife-edge support. Internal walls are
+    excluded either way (they are never a column's extreme)."""
     return _surface_cells(domain, axis, margin_mm)
 
 
@@ -175,9 +189,7 @@ def _area_cells(domain: VoxelDomain, region: RegionSpec) -> np.ndarray:
     return np.asarray(sel & inside)
 
 
-def _axial_wall_mid(
-    domain: VoxelDomain, idx: int, center: np.ndarray, dia: float
-) -> float | None:
+def _axial_wall_mid(domain: VoxelDomain, idx: int, center: np.ndarray, dia: float) -> float | None:
     """Axial centre of the wall a bore pierces, estimated on the voxel grid.
 
     Anchors without a measured axial position (no `z`/`pos[ax]`) used to
@@ -964,9 +976,7 @@ def resolve_case_dofs(  # noqa: C901
     for load in case.loads:
         r = load.region
         m, cells, fb_ax = _nodes_cells(r)
-        if r.kind in ("hole", "anchor") and (
-            load.bearing_n or load.preload_n or load.moment_nm
-        ):
+        if r.kind in ("hole", "anchor") and (load.bearing_n or load.preload_n or load.moment_nm):
             # a bolt presses on the bore WALL, not on the clamp ring around
             # the hole — re-resolve through _bore_cells (itself falling back
             # to the hole ring when no wall can be located). A couple on a
@@ -1003,9 +1013,7 @@ def resolve_case_dofs(  # noqa: C901
             and len(load.force_n) == 3
             else None
         )
-        force_v = (
-            np.asarray(load.force_n[:3], dtype=float) if lever_pt is not None else None
-        )
+        force_v = np.asarray(load.force_n[:3], dtype=float) if lever_pt is not None else None
 
         def _req_couple(
             m_now: np.ndarray,
@@ -1052,9 +1060,9 @@ def resolve_case_dofs(  # noqa: C901
                     req,
                     weights=w_now[idx_now] if w_now is not None else None,
                 )
-                weak = ext < 3.0 * domain.pitch or float(
-                    np.linalg.norm(deficit)
-                ) > 0.1 * float(np.linalg.norm(req))
+                weak = ext < 3.0 * domain.pitch or float(np.linalg.norm(deficit)) > 0.1 * float(
+                    np.linalg.norm(req)
+                )
                 # rasterisation makes extent grow in steps — one flat try is
                 # normal, two consecutive mean growth cannot help (thin plate)
                 if weak and too_small is False and tries > 0:
@@ -1132,16 +1140,15 @@ def resolve_case_dofs(  # noqa: C901
                 "hole_index": r.hole_index,
                 "nodes": len(idx),
                 "cells": int(cells.sum()),
-                "centroid_mm": [
-                    round(float(v), 2)
-                    for v in domain.node_coords()[idx].mean(axis=0)
-                ],
+                "centroid_mm": [round(float(v), 2) for v in domain.node_coords()[idx].mean(axis=0)],
                 "mechanisms": mechs,
             }
 
         applied = False
-        if load.remote_point and len(load.remote_point) >= 3 and not (
-            load.force_n and len(load.force_n) == 3
+        if (
+            load.remote_point
+            and len(load.remote_point) >= 3
+            and not (load.force_n and len(load.force_n) == 3)
         ):
             warnings.append(
                 f"case '{case.name}': remote_point given without force_n — "
@@ -1376,8 +1383,7 @@ def resolve_case_dofs(  # noqa: C901
             rec["couple_direct_nm"] = [round(float(v), 3) for v in direct_nm]
             rec["couple_induced_nm"] = [round(float(v), 3) for v in induced_nm]
             rec["extent_mm"] = [
-                round(float(v), 2)
-                for v in np.ptp(domain.node_coords()[idx], axis=0)
+                round(float(v), 2) for v in np.ptp(domain.node_coords()[idx], axis=0)
             ]
             if cpl_mag >= 1e-3:
                 rec["couple_requested_nm"] = [round(float(v), 3) for v in req_nm]
@@ -1559,6 +1565,7 @@ def case_region_breakdown(
     """Per-region resolved cell counts for reporting — one entry per fixed
     region and per load region. Lets summaries show WHICH region resolved
     how much instead of only aggregate node counts."""
+
     def _entry(role: str, r: RegionSpec) -> dict[str, Any]:
         cells = region_cell_mask(domain, r, anchors)
         nodes = _nodes_of_cells(domain, cells.ravel())

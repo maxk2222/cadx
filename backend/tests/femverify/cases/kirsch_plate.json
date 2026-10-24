@@ -1,0 +1,26 @@
+{
+  "name": "kirsch_plate",
+  "tier": "verify",
+  "kind": "reference",
+  "geometry": {"builder": "plate_hole", "args": {"w": 60.0, "h": 60.0, "t": 4.0, "dia": 20.0}},
+  "material": {"E": 3500.0, "nu": 0.36},
+  "pitch_mm": 2.0,
+  "cases": [
+    {
+      "name": "tension_x",
+      "fixed": [{"kind": "face", "axis": "-x"}],
+      "loads": [
+        {"region": {"kind": "face", "axis": "+x"}, "force_n": [2400, 0, 0]}
+      ]
+    }
+  ],
+  "expect": [
+    {"probe": "resultant_n", "axis": "x", "ref": 2400.0, "tol_abs": 0.5},
+    {"probe": "stress_at", "xyz": [0.5, 10.5, 2.0], "comp": "sx", "ref": 24.2, "tol_rel": 0.15},
+    {"probe": "vm_at", "xyz": [25, 25, 2], "ref": 10.0, "tol_rel": 0.08},
+    {"probe": "stress_at", "xyz": [0, 28, 2], "comp": "sx", "ref": 10.0, "tol_rel": 0.08},
+    {"probe": "converged", "ref": 1.0, "tol_abs": 0.5}
+  ],
+  "source": "Kirsch plate with circular hole, uniaxial tension sigma0 = F/(w*t) = 2400/240 = 10 MPa. Stress concentration Kt=3 at the hole edge (theta=90deg): sigma_xx(r) at the top of the hole; ref is the first-cell value at r~10.5-11 (Kirsch sigma_theta = sigma0/2*(1+a^2/r^2+1+3a^4/r^4) -> ~23.5), not the 30 MPa boundary peak — staircased hole + cell-centre sampling.",
+  "notes": "Far-field checks sit on the diagonal (25,25) and top-centre (0,28) — points on the y=0 ray near the loaded face see spurious transverse stress from the force_n spread + hole shadow (Saint-Venant end layer) and are not usable as a uniaxial reference."
+}

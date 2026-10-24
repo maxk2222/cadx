@@ -13,7 +13,7 @@ Probe tolerance model:
   be inside `tol_rel` AND no worse than the coarsest error (converges toward
   the reference instead of away), allowing a 10% noise slack per step
 - `kind: convergence` — same sweep, but every step must stay within the
-  previous error × (1 + slack) — monotone approach, final inside tol
+  previous error x (1 + slack) — monotone approach, final inside tol
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from typing import Any
 
 import numpy as np
 
+from cadx.cad.fem.regions import _axis_parts, surface_area_per_node
 from cadx.cad.fem.solver import (
     FemSolution,
     assemble,
@@ -82,9 +83,7 @@ def case_files(tier: str | None = None) -> list[Path]:
     return out
 
 
-def _solved_case(
-    spec: dict[str, Any], case_name: str | None = None
-) -> LoadCase:
+def _solved_case(spec: dict[str, Any], case_name: str | None = None) -> LoadCase:
     cases = [LoadCase.model_validate(c) for c in spec["cases"]]
     if case_name is None:
         return cases[0]
@@ -114,6 +113,7 @@ def run_spec(spec: dict[str, Any], pitch_mm: float | None = None) -> RunResult:
         case = LoadCase.model_validate(lc)
         fixed3, F, warns = resolve_case_dofs(dom, case, anchors)
         apply_manual_pins(dom, fixed3, lc.get("manual_pins") or spec.get("manual_pins") or [])
+        apply_manual_loads(dom, F, lc.get("manual_loads") or spec.get("manual_loads") or [])
         ctx = reduce_case(dom, K, edof, fixed3)
         sol = solve_reduced(dom, ctx, edof, active, F, elem_E, nu)
         solved.append(SolvedCase(case.name, fixed3, F, sol, warns))
@@ -134,35 +134,110 @@ def sig_for(rr: RunResult, idx: int) -> np.ndarray:
     E = float(mat.get("E", 3500.0))
     nu = float(mat.get("nu", 0.36))
     elem_E = np.full(rr.domain.cell_count, E)
-    K, edof, active = assemble(rr.domain, elem_E, nu, solid)
-    _, sig = recover_elem_stress(
-        rr.domain, rr.cases[idx].sol.u, edof, active, elem_E, nu
-    )
+    _, edof, active = assemble(rr.domain, elem_E, nu, solid)
+    _, sig = recover_elem_stress(rr.domain, rr.cases[idx].sol.u, edof, active, elem_E, nu)
     out = np.zeros((rr.domain.cell_count, 6))
     out[active] = sig
     return out
 
 
-def select_nodes(dom: VoxelDomain, sel: dict[str, Any]) -> np.ndarray:
-    """Node indices matching coordinate predicates — shared by
-    ``manual_pins`` and node-set probes. ``"min"``/``"max"`` select the
-    outermost node plane of the solid (within half a pitch), a float
-    selects nodes within half a pitch of that coordinate; all selectors
+def _coord_mask(
+    coords: np.ndarray, sel: dict[str, Any], tol: float, cmin: np.ndarray, cmax: np.ndarray
+) -> np.ndarray:
+    """Shared predicate engine for nodes and cell centres.
+
+    Keys per axis: ``x``/``y``/``z`` = "min"|"max" (outermost plane of
+    the point set) or float (within ``tol``); ``xmin``/``xmax`` etc. =
+    half-open float bounds; ``rxy_min``/``rxy_max`` = radial distance in
+    the xy plane from the origin; ``ell_a``/``ell_b`` + ``ell_r_min``/
+    ``ell_r_max`` = bounds on the elliptical radius sqrt((x/a)^2+(y/b)^2)
+    — selects near a specific ellipse, immune to cut planes. All keys
     AND together."""
-    en = dom.element_nodes()
-    used = np.unique(en[dom.solid.ravel()])
-    nc = dom.node_coords()[used]
-    mask = np.ones(len(used), dtype=bool)
-    tol = dom.pitch * 0.51 + 1e-9
-    for ax_key, v in sel.items():
-        c = nc[:, _AXIS_IDX[ax_key]]
-        if v == "min":
-            mask &= c <= c.min() + tol
+    mask = np.ones(len(coords), dtype=bool)
+    ell_a = float(sel.get("ell_a", 0.0))
+    ell_b = float(sel.get("ell_b", 0.0))
+    if ell_a > 0 and ell_b > 0:
+        ell_r = np.hypot(coords[:, 0] / ell_a, coords[:, 1] / ell_b)
+        if "ell_r_min" in sel:
+            mask &= ell_r >= float(sel["ell_r_min"])
+        if "ell_r_max" in sel:
+            mask &= ell_r <= float(sel["ell_r_max"])
+    for key, v in sel.items():
+        if key in ("ell_a", "ell_b", "ell_r_min", "ell_r_max"):
+            continue
+        if key.startswith("rxy_"):
+            r = np.hypot(coords[:, 0], coords[:, 1])
+            mask &= r >= float(v) - tol if key == "rxy_min" else r <= float(v) + tol
+            continue
+        bound = key[-3:]
+        ax_key = key[: -len(bound)] if bound in ("min", "max") else key
+        c = coords[:, _AXIS_IDX[ax_key]]
+        if bound == "min":
+            mask &= c >= float(v) - tol
+        elif bound == "max":
+            mask &= c <= float(v) + tol
+        elif v == "min":
+            mask &= c <= cmin[_AXIS_IDX[ax_key]] + tol
         elif v == "max":
-            mask &= c >= c.max() - tol
+            mask &= c >= cmax[_AXIS_IDX[ax_key]] - tol
         else:
             mask &= np.abs(c - float(v)) <= tol
-    return used[mask]
+    return mask
+
+
+def lateral_boundary_nodes(dom: VoxelDomain, axes: tuple[int, ...] = (0, 1)) -> np.ndarray:
+    """Node indices on the solid's lateral silhouette — nodes of cells that
+    have at least one void face-neighbour along `axes` (default ±x/±y).
+    Picks up outer rims AND hole walls; combine with ``rxy_min``/``rxy_max``
+    in the sel dict to separate them."""
+    solid = dom.solid
+    bnd = np.zeros_like(solid)
+    for ax in axes:
+        for sgn in (-1, 1):
+            shifted = np.roll(solid, sgn, axis=ax)
+            if sgn == 1:
+                shifted[(slice(None),) * ax + (0,)] = False
+            else:
+                shifted[(slice(None),) * ax + (-1,)] = False
+            bnd |= solid & ~shifted
+    en = dom.element_nodes()
+    return np.unique(en[bnd.ravel()])
+
+
+def select_nodes(dom: VoxelDomain, sel: dict[str, Any]) -> np.ndarray:
+    """Node indices matching coordinate predicates — shared by
+    ``manual_pins`` and node-set probes. See ``_coord_mask`` for keys.
+
+    Special key ``bnd_xy``: true/false restricts to the lateral silhouette
+    (see ``lateral_boundary_nodes``) — real edge faces on staircased
+    boundaries, where ``rxy``-bounds alone would bite into the interior."""
+    sel = dict(sel)
+    bnd = sel.pop("bnd_xy", None)
+    en = dom.element_nodes()
+    used = np.unique(en[dom.solid.ravel()])
+    if bnd:
+        used = np.intersect1d(used, lateral_boundary_nodes(dom), assume_unique=True)
+    nc = dom.node_coords()
+    return used[
+        _coord_mask(nc[used], sel, dom.pitch * 0.51 + 1e-9, nc[used].min(0), nc[used].max(0))
+    ]
+
+
+def select_cells(dom: VoxelDomain, sel: dict[str, Any]) -> np.ndarray:
+    """(dims,) solid-cell mask matching coordinate predicates on cell
+    centres — used by ``manual_loads`` pressure application."""
+    centers = dom.element_centers()
+    solid = dom.solid.ravel()
+    mask = _coord_mask(
+        centers[solid],
+        sel,
+        dom.pitch * 0.51 + 1e-9,
+        centers[solid].min(0),
+        centers[solid].max(0),
+    )
+    out = np.zeros(dom.solid.size, dtype=bool)
+    out[np.flatnonzero(solid)] = mask
+    return out.reshape(dom.dims)
 
 
 def apply_manual_pins(dom: VoxelDomain, fixed3: np.ndarray, pins: list[dict[str, Any]]) -> None:
@@ -170,11 +245,37 @@ def apply_manual_pins(dom: VoxelDomain, fixed3: np.ndarray, pins: list[dict[str,
     coordinate predicates — knife-edge lines and point supports that
     region kinds cannot express (a cell always spans ≥2 node planes).
 
-    Pin spec: {"dof": "x|y|z", "sel": {"x": "min"|"max"|float, ...}} —
-    one DOF per pin entry; see ``select_nodes`` for sel syntax.
+    Pin spec: {"dof": "x|y|z", "sel": {...}} — one DOF per pin entry;
+    see ``select_nodes`` for sel syntax.
     """
     for pin in pins:
         fixed3[select_nodes(dom, pin["sel"]), _AXIS_IDX[pin["dof"]]] = True
+
+
+def apply_manual_loads(dom: VoxelDomain, F: np.ndarray, loads: list[dict[str, Any]]) -> None:
+    """Loads the region system cannot express faithfully.
+
+    ``{"pressure_mpa": p, "dirs": ["+x","+y"], "cell_sel": {...}}`` —
+    uniform pressure on the exposed faces of selected cells, one axis
+    direction at a time via ``surface_area_per_node`` (real tributary
+    area). On a staircased curved boundary this reproduces -p·n̂·dA on
+    every facet — elliptical/cylindrical rims the ``surface``/``face``
+    kinds cannot select. Negative p pulls outward (tension).
+
+    ``{"force_n": [fx,fy,fz], "sel": {...}}`` — nodal force spread
+    uniformly over selected nodes.
+    """
+    for load in loads:
+        if (p := load.get("pressure_mpa")) is not None:
+            cells = select_cells(dom, load["cell_sel"])
+            for axis in load["dirs"]:
+                idx, sign = _axis_parts(axis)
+                areas = surface_area_per_node(dom, cells, axis)
+                F[idx::3] -= sign * float(p) * areas
+        elif (f := load.get("force_n")) is not None:
+            nodes = select_nodes(dom, load["sel"])
+            if len(nodes):
+                F[3 * nodes[:, None] + np.arange(3)[None, :]] += np.asarray(f, float) / len(nodes)
 
 
 def _nearest_solid_cell(dom: VoxelDomain, xyz: list[float]) -> int:
@@ -189,8 +290,7 @@ def _nearest_used_node(dom: VoxelDomain, xyz: list[float]) -> int:
     en = dom.element_nodes()
     used = np.unique(en[dom.solid.ravel()])
     coords = dom.node_coords()[used]
-    n = int(used[int(np.linalg.norm(coords - np.asarray(xyz, dtype=float), axis=1).argmin())])
-    return n
+    return int(used[int(np.linalg.norm(coords - np.asarray(xyz, dtype=float), axis=1).argmin())])
 
 
 def probe_value(rr: RunResult, probe: dict[str, Any]) -> float:
@@ -238,7 +338,23 @@ def probe_value(rr: RunResult, probe: dict[str, Any]) -> float:
         return float(sol.elem_vm[_nearest_solid_cell(rr.domain, probe["xyz"])])
     if kind == "stress_at":
         sig = sig_for(rr, ci)
-        return float(sig[_nearest_solid_cell(rr.domain, probe["xyz"]), _STRESS_COMPS[probe["comp"]]])
+        return float(
+            sig[_nearest_solid_cell(rr.domain, probe["xyz"]), _STRESS_COMPS[probe["comp"]]]
+        )
+    if kind == "stress_near":
+        # extremum of a stress component over solid cells within ``radius``
+        # of ``xyz`` — samples a boundary peak that a fixed cell-centre
+        # probe drifts away from under refinement
+        sig = sig_for(rr, ci)
+        centers = rr.domain.element_centers()
+        solid = rr.domain.solid.ravel()
+        idx = np.flatnonzero(solid)
+        near = idx[
+            np.linalg.norm(centers[idx] - np.asarray(probe["xyz"], float), axis=1)
+            <= float(probe.get("radius", rr.domain.pitch * 2.0))
+        ]
+        col = sig[near, _STRESS_COMPS[probe["comp"]]]
+        return float(col.min() if probe.get("agg", "min") == "min" else col.max())
     if kind == "resultant_n":
         return float(sc.F.reshape(-1, 3).sum(axis=0)[_AXIS_IDX[probe.get("axis", "z")]])
     raise ValueError(f"unknown probe kind '{kind}'")
@@ -260,14 +376,23 @@ def check_probe(spec: dict[str, Any], expect: dict[str, Any], rr: RunResult) -> 
     name = f"{spec['name']}:{expect['probe']}"
     if "min" in expect or "max" in expect:
         ok = got >= expect.get("min", -np.inf) and got <= expect.get("max", np.inf)
-        return ProbeResult(name, expect["probe"], None, got, None, ok,
-                           f"bounds [{expect.get('min')},{expect.get('max')}]")
+        return ProbeResult(
+            name,
+            expect["probe"],
+            None,
+            got,
+            None,
+            ok,
+            f"bounds [{expect.get('min')},{expect.get('max')}]",
+        )
     ref = float(expect["ref"])
     tol_rel = float(expect.get("tol_rel", 0.10))
     tol_abs = expect.get("tol_abs")
     err = got - ref
     rel = abs(err) / abs(ref) if abs(ref) > 1e-12 else abs(err)
-    ok = rel <= tol_rel if tol_abs is None else (abs(err) <= max(float(tol_abs), tol_rel * abs(ref)))
+    ok = (
+        rel <= tol_rel if tol_abs is None else (abs(err) <= max(float(tol_abs), tol_rel * abs(ref)))
+    )
     return ProbeResult(name, expect["probe"], ref, got, rel, ok)
 
 
@@ -280,14 +405,20 @@ def evaluate(spec: dict[str, Any]) -> list[ProbeResult]:
 
 
 def evaluate_trend(spec: dict[str, Any]) -> list[ProbeResult]:
-    """Sweep pitches; assert the probe approaches its reference."""
+    """Sweep pitches; assert the probe approaches its reference.
+
+    ``expect`` entries (resultants, sanity probes) are checked once on the
+    finest-pitch run — they must hold at every resolution anyway."""
     trend = spec["trend"]
     probe = trend["probe"]
+    if isinstance(probe, str):
+        probe = {"probe": probe}
     ref = float(trend["ref"])
     tol_rel = float(trend.get("tol_rel", 0.15))
     monotone = spec.get("kind") == "convergence"
     errs: list[float] = []
     vals: list[float] = []
+    rr = None
     for p in spec["pitches_mm"]:
         rr = run_spec(spec, pitch_mm=float(p))
         v = probe_value(rr, probe)
@@ -298,11 +429,19 @@ def evaluate_trend(spec: dict[str, Any]) -> list[ProbeResult]:
         ok = ok and all(e <= errs[i] * 1.15 + 0.01 for i, e in enumerate(errs[1:], 1))
     name = f"{spec['name']}:{probe['probe']}"
     res = ProbeResult(
-        name, probe["probe"], ref, vals[-1], errs[-1], ok,
-        f"pitches {spec['pitches_mm']} → vals {[round(v,4) for v in vals]}",
+        name,
+        probe["probe"],
+        ref,
+        vals[-1],
+        errs[-1],
+        ok,
+        f"pitches {spec['pitches_mm']} → vals {[round(v, 4) for v in vals]}",
     )
-    record(spec, [res], None)
-    return [res]
+    results = [res]
+    if rr is not None:
+        results += [check_probe(spec, e, rr) for e in spec.get("expect", [])]
+    record(spec, results, None)
+    return results
 
 
 def record(spec: dict[str, Any], results: list[ProbeResult], rr: RunResult | None) -> None:

@@ -1,0 +1,35 @@
+{
+  "name": "nafems_le10",
+  "tier": "verify",
+  "kind": "convergence",
+  "geometry": {"builder": "elliptic_annulus", "args": {"ai": 20.0, "bi": 10.0, "ao": 32.5, "bo": 27.5, "t": 6.0}},
+  "material": {"E": 210000.0, "nu": 0.3},
+  "pitch_mm": 1.0,
+  "pitches_mm": [1.5, 1.0, 0.7, 0.5],
+  "cases": [
+    {
+      "name": "pressure",
+      "fixed": [],
+      "manual_pins": [
+        {"dof": "x", "sel": {"x": 0.0}},
+        {"dof": "y", "sel": {"y": 0.0}},
+        {"dof": "x", "sel": {"bnd_xy": true, "ell_a": 32.5, "ell_b": 27.5, "ell_r_min": 0.92}},
+        {"dof": "y", "sel": {"bnd_xy": true, "ell_a": 32.5, "ell_b": 27.5, "ell_r_min": 0.92}},
+        {"dof": "z", "sel": {"bnd_xy": true, "ell_a": 32.5, "ell_b": 27.5, "ell_r_min": 0.92, "z": 3.0}}
+      ],
+      "loads": [
+        {"region": {"kind": "face", "axis": "+z"}, "pressure_mpa": 1.0}
+      ]
+    }
+  ],
+  "trend": {
+    "probe": {"probe": "stress_near", "xyz": [20.0, 0.0, 6.0], "comp": "sy", "agg": "min", "radius": 2.0},
+    "ref": -5.38,
+    "tol_rel": 0.22
+  },
+  "expect": [
+    {"probe": "resultant_n", "axis": "z", "ref": -544.8, "tol_rel": 0.05}
+  ],
+  "source": "NAFEMS TNSB Rev.3 LE10 thick plate pressure. Quarter annulus: outer ellipse (3.25,2.75) m, inner (2.0,1.0) m, t=0.6 m, scaled x1/100 to mm. E=210 GPa, nu=0.3, p=1 MPa on the upper face. Symmetry cuts ux=0 (x=0) / uy=0 (y=0) as node-plane pins; outer edge face ux=uy=0 on silhouette nodes (bnd_xy + elliptical radius >= 0.92) + uz=0 on its mid-plane line. Reference sigma_yy at D=(2000,0,600) mm = -5.38 MPa; fino HEXA20 reports -5.36013.",
+  "notes": "Resultant ref = p * quarter-annulus area = 1 * pi/4*(32.5*27.5-20*10) = 544.8 N. D is on the free inner edge: the top-fibre hoop compression converges from below (-3.10 -> -3.81 -> -4.33 @ pitch 0.5, ~-4.7 @ 0.4) — the staircased rim shaves the boundary peak; trend is asserted monotone toward -5.38."
+}

@@ -196,9 +196,26 @@ def test_region_surface_follows_curved_shape() -> None:
     z_idxs = np.nonzero(cells.any(axis=(0, 1)))[0]
     # cells on the sloping flanks sit well below the top of the dome
     assert z_idxs.min() < 0.6 * (dom.dims[2] - 1)
-    # face is an alias with identical coverage now
-    face = region_cell_mask(dom, RegionSpec(kind="face", axis="+z", margin_mm=1.5))
-    assert (cells == face).all()
+
+
+def test_region_face_surface_envelope_excludes_hole_wall() -> None:
+    """'face'/'surface' share the envelope semantics (per-column extreme):
+    on a plate with a through-hole neither may reach the internal wall —
+    the hole wall is `bore`/`hole` territory, not an outer face.
+    Regression: femverify kirsch_plate once loaded 31% of the edge
+    traction onto the bore wall (old exposed-face implementation)."""
+    from shapely.geometry import Point, Polygon
+
+    plate = Polygon([(-15, -15), (15, -15), (15, 15), (-15, 15)])
+    hole = Point(0, 0).buffer(5, resolution=64)
+    plate_m = trimesh.creation.extrude_polygon(plate.difference(hole), 4)
+    dom = voxelize(plate_m, 1.0, 150_000)
+    centers = dom.element_centers().reshape((*dom.dims, 3))
+    for kind in ("face", "surface"):
+        sel = region_cell_mask(dom, RegionSpec(kind=kind, axis="+x", margin_mm=1.0))
+        assert centers[..., 0][sel].min() > 10.0  # no cell near the hole wall (|x|<=5)
+        # envelope on a flat side == the whole side layer
+        assert centers[..., 0][sel].max() == pytest.approx(14.5, abs=dom.pitch)
 
 
 def test_region_area_selects_xy_subregion() -> None:

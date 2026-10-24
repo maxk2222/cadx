@@ -1,0 +1,34 @@
+{
+  "name": "nafems_le1",
+  "tier": "verify",
+  "kind": "convergence",
+  "geometry": {"builder": "elliptic_annulus", "args": {"ai": 20.0, "bi": 10.0, "ao": 32.5, "bo": 27.5, "t": 2.0}},
+  "material": {"E": 210000.0, "nu": 0.3},
+  "pitch_mm": 1.0,
+  "pitches_mm": [1.5, 1.0, 0.7, 0.5],
+  "cases": [
+    {
+      "name": "tension",
+      "fixed": [],
+      "manual_pins": [
+        {"dof": "x", "sel": {"x": 0.0}},
+        {"dof": "y", "sel": {"y": 0.0}},
+        {"dof": "z", "sel": {"z": 1.0}}
+      ],
+      "manual_loads": [
+        {"pressure_mpa": -10.0, "dirs": ["+x", "+y"], "cell_sel": {"rxy_min": 26.5}}
+      ]
+    }
+  ],
+  "trend": {
+    "probe": {"probe": "stress_near", "xyz": [20.0, 0.0, 1.0], "comp": "sy", "agg": "max", "radius": 2.0},
+    "ref": 92.7,
+    "tol_rel": 0.06
+  },
+  "expect": [
+    {"probe": "resultant_n", "axis": "x", "ref": 550.0, "tol_rel": 0.08},
+    {"probe": "resultant_n", "axis": "y", "ref": 650.0, "tol_rel": 0.08}
+  ],
+  "source": "NAFEMS TNSB Rev.3 LE1 elliptic membrane (plane stress). Quarter annulus, SAME planform as LE10: outer ellipse (3.25,2.75) m, inner (2.0,1.0) m — scaled x10 to mm, thickness 2 mm. Uniform outward tension p=10 MPa on the outer edge BC (manual_loads negative pressure on exposed +x/+y facets of the rim band). Symmetry: ux=0 on the x=0 cut (AB), uy=0 on the y=0 cut (DC) as exact node-plane pins, mid-plane uz=0 approximates plane stress. Reference sigma_yy at D=(2000,0) = 92.7 MPa; fino (quad9) and sparselizard (AMR) both land at 92.69.",
+  "notes": "Resultants: Rx = p*t*bo = 10*2*27.5 = 550 N, Ry = p*t*ao = 650 N. stress_near probes the inner-edge peak in a 2 mm ball — a single cell-centre sample under-reads at coarse pitch and the staircase rim overshoots at mid refinement (59.8 -> 79.3 -> 101.2 -> 95.7, converging to ~92.7)."
+}

@@ -1,0 +1,22 @@
+{
+  "name": "cantilever_conv",
+  "tier": "verify",
+  "kind": "convergence",
+  "geometry": {"builder": "box", "args": {"x": 60, "y": 24, "z": 12}},
+  "material": {"E": 3500.0, "nu": 0.36},
+  "pitch_mm": 2.0,
+  "pitches_mm": [3.0, 2.0, 1.5],
+  "cases": [
+    {
+      "name": "tip",
+      "fixed": [{"kind": "face", "axis": "-x"}],
+      "loads": [
+        {"region": {"kind": "face", "axis": "+x"}, "force_n": [0, 0, -100]}
+      ]
+    }
+  ],
+  "trend": {"probe": "max_disp_mm", "ref": 0.6147, "tol_rel": 0.15},
+  "expect": [],
+  "source": "Euler-Bernoulli + Timoshenko tip deflection of the 60x24x12 cantilever at -100 N: 0.5724 + 0.0423 = 0.6147 mm. Fully-integrated Hex8 over-stiffens at coarse pitch — convergence must be monotone toward the reference.",
+  "notes": "kind=convergence: asserts the error shrinks (within 10%) at every refinement step and the finest pitch lands within tol_rel."
+}

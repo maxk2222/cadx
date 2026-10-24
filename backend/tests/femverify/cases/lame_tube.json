@@ -1,0 +1,30 @@
+{
+  "name": "lame_tube",
+  "tier": "verify",
+  "kind": "reference",
+  "geometry": {"builder": "lame_tube", "args": {"ri": 10.0, "ro": 20.0, "h": 20.0}},
+  "material": {"E": 3500.0, "nu": 0.36},
+  "pitch_mm": 1.5,
+  "cases": [
+    {
+      "name": "internal_pressure",
+      "fixed": [],
+      "manual_pins": [
+        {"dof": "z", "sel": {"z": "min", "rxy_min": 14.0}},
+        {"dof": "x", "sel": {"x": 0.0, "y": "max", "z": 0.0}},
+        {"dof": "y", "sel": {"x": "max", "y": 0.0, "z": 0.0}}
+      ],
+      "manual_loads": [
+        {"pressure_mpa": 10.0, "dirs": ["+x", "-x", "+y", "-y"], "cell_sel": {"rxy_max": 11.0}}
+      ]
+    }
+  ],
+  "expect": [
+    {"probe": "stress_at", "xyz": [15.0, 0.5, 10.0], "comp": "sy", "ref": 9.26, "tol_rel": 0.15},
+    {"probe": "stress_at", "xyz": [10.5, 0.5, 10.0], "comp": "sy", "ref": 16.67, "tol_rel": 0.30},
+    {"probe": "disp_at", "xyz": [20.0, 0.0, 10.0], "axis": "x", "ref": 0.0381, "tol_rel": 0.20},
+    {"probe": "converged", "ref": 1.0, "tol_abs": 0.5}
+  ],
+  "source": "Lame thick-walled cylinder, internal pressure p=10 MPa, ri=10 ro=20: sigma_theta(r) = p*ri^2/(ro^2-ri^2)*(1+ro^2/r^2) -> 16.67 MPa at bore, 9.26 at r=15, 6.67 at outer wall. u_r(ro)=0.0381 mm. At (r,0) the hoop direction is y -> comp sy.",
+  "notes": "Cylindrical wall voxelizes as staircase: inner-wall peak under-reads. 3-2-1 style minimal supports (bottom ring uz + two point pins) leave radial expansion free."
+}

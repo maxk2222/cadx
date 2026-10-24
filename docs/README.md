@@ -37,6 +37,7 @@
 |-----|----------|
 | [Mesh generation](mesh-generation.md) | `cad`/`mesh`/`hybrid`/`auto` modes, adapters, candidate screening, post-processing |
 | [FEM & TopOpt](fem-topopt.md) | Voxel FEM, SIMP topology optimization, load-case contract, limitations |
+| [FEM verification](fem-verification.md) | femverify suite: benchmark cases, convergence trends, MMS, TopOpt invariants, CalculiX lane |
 | [Organic structures](organic.md) | Pseudo-topology organic restyling — gyroid/trabecular/voronoi/branches (aesthetic, not structural) |
 | [DfM checks](dfm.md) | FDM/CNC manufacturability heuristics |
 

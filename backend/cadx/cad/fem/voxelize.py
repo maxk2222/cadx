@@ -239,7 +239,10 @@ def _fill_grid(
             dist[s : s + 512] = mesh.nearest.on_surface(centers[s : s + 512])[1]
         m = (dist <= pitch * 0.75).reshape(dims)
         m = ndimage.binary_fill_holes(m)
-        m = ndimage.binary_closing(m, iterations=1)
+        # border_value=1: outside-the-grid counts as solid, otherwise the
+        # erosion half of the closing strips the outermost cell row on every
+        # grid edge (boundary cells have no neighbour beyond the array)
+        m = ndimage.binary_closing(m, iterations=1, border_value=1)
         if m.any():
             return np.asarray(m, dtype=bool)
     except Exception:
@@ -274,13 +277,8 @@ def _coverage_field(
         if not m.is_watertight:
             return None
         nx1, ny1, nz1 = dims[0] + 1, dims[1] + 1, dims[2] + 1
-        ii, jj, kk = np.meshgrid(
-            np.arange(nx1), np.arange(ny1), np.arange(nz1), indexing="ij"
-        )
-        pts = (
-            origin[None, :]
-            + pitch * np.stack([ii, jj, kk], axis=-1).reshape(-1, 3).astype(float)
-        )
+        ii, jj, kk = np.meshgrid(np.arange(nx1), np.arange(ny1), np.arange(nz1), indexing="ij")
+        pts = origin[None, :] + pitch * np.stack([ii, jj, kk], axis=-1).reshape(-1, 3).astype(float)
         # contains() scales with the mesh's face count — bound each batch to
         # the same ~256 MB worst-case working set as _fill_grid's chunking
         chunk = int(
@@ -330,9 +328,7 @@ def _coverage_field(
             sub = (np.arange(3) + 0.5) / 3.0
             si, sj, sk = np.meshgrid(sub, sub, sub, indexing="ij")
             offs = np.stack([si, sj, sk], axis=-1).reshape(27, 3)
-            sub_pts = origin[None, None, :] + pitch * (
-                cell_ijk[:, None, :] + offs[None, :, :]
-            )
+            sub_pts = origin[None, None, :] + pitch * (cell_ijk[:, None, :] + offs[None, :, :])
             inside = _contains(sub_pts.reshape(-1, 3)).reshape(-1, 27)
             cov[mixed] = inside.mean(axis=1)
         return cov

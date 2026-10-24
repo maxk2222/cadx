@@ -45,6 +45,11 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
 - Run frontend dev:      `cd frontend && npm install && npm run dev`
 - Full stack (docker):   `make up` → http://localhost:8080
 - Tests:                 `make test`  (or `cd backend && ../.venv/bin/uv run pytest tests -x -q`)
+- FEM verification:      `make fem-verify` — `tests/femverify/` declarative
+  suite (fast analytical cases + `verify`-marked heavy benchmarks/convergence
+  trends + MMS order check + TopOpt invariants; opt-in CalculiX same-mesh
+  cross-check via `CCX_PATH`). Cases are JSON in `tests/femverify/cases/`;
+  see `docs/fem-verification.md`.
 - Lint/format check:     `make lint`, autofix `make fmt`
 - Evalkit (durable):     `make eval` — runs `evals/suite/*.json` through the live
   API; every stage spawns real versions/jobs under fixed `eval:*` projects,
