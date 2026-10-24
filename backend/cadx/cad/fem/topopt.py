@@ -1102,7 +1102,10 @@ def simp(  # noqa: C901
             free_i = case_free[ci]
             ctx = ctx_cache.get(free_i.tobytes())
             if ctx is None:
+                from cadx.cad.fem import solver as _solver_mod
+
                 t_fac = time.monotonic()
+                fallbacks_before = _solver_mod.solver_fallback_count()
                 if free_i.size:
                     Kf_i = K[free_i][:, free_i].tocsr()
                     factor_i, M_i = _prepare_solve(
@@ -1116,6 +1119,11 @@ def simp(  # noqa: C901
                     Kf_i = sparse.csr_matrix((0, 0))
                     factor_i = M_i = None
                 phase_t["factorize_s"] += time.monotonic() - t_fac
+                # cholmod->splu fallbacks land in the iteration record so
+                # evals see non-PD realizations instead of silent slowness
+                phase_t["solver_fallbacks"] = phase_t.get(
+                    "solver_fallbacks", 0.0
+                ) + _solver_mod.solver_fallback_count() - fallbacks_before
                 ctx = _CaseCtx(free=free_i, Kf=Kf_i, factor=factor_i, M=M_i)
                 ctx_cache[free_i.tobytes()] = ctx
             ctxs.append(ctx)

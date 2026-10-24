@@ -440,6 +440,14 @@ def _elastic_preconditioner(
 
 _CHOLMOD_AVAILABLE: bool | None = None
 _TIER_LOGGED = False
+_SOLVER_FALLBACKS = 0
+
+
+def solver_fallback_count() -> int:
+    """cholmod factorizations that fell through to splu in this process —
+    non-PD matrices (eroded/dilated realizations can lose definiteness)
+    make CHOLMOD raise; callers diff this counter to see fallback activity."""
+    return _SOLVER_FALLBACKS
 
 
 def _cholmod_available() -> bool:
@@ -554,8 +562,10 @@ def factor_symmetric(
                 fac.factorize(kf)
                 return CholmodFactor(fac, kf)
             return CholmodFactor(cholmod.cholesky(kf), kf)
-        except Exception:
-            pass
+        except Exception as exc:
+            global _SOLVER_FALLBACKS
+            _SOLVER_FALLBACKS += 1
+            log.info("fem.solver_fallback", backend="cholmod", error=str(exc)[:160])
     try:
         return spla.splu(Kf.tocsc(), options={"SymmetricMode": True}).solve
     except Exception:
