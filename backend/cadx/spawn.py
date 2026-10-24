@@ -1099,11 +1099,21 @@ async def spawn_fem(
     material: str | None = None,
     enqueue_fn: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None,
 ) -> Job:
-    """Standalone FEM run on the SAME version (no child version)."""
+    """Standalone FEM run on the SAME version (no child version).
+
+    `load_cases` falls back to the version's spec-declared cases — the same
+    cascade optimize uses (explicit request wins, else what the part was
+    designed against). `load_cases_source` records which supplied them so
+    restarts and eval reports can tell request cases from spec cases."""
     _check_editable(version, "analyse")
     if storage.best_mesh_relpath(version.project_id, version.id, version.iterations or 1) is None:
         raise SpawnError("version has no mesh artifact to analyse")
-    if not load_cases:
+    lcs = load_cases or None
+    source = "request" if lcs else "spec"
+    if not lcs:
+        spec_cases = (version.spec or {}).get("load_cases") or []
+        lcs = [dict(c) for c in spec_cases if isinstance(c, dict)] or None
+    if not lcs:
         raise SpawnError("at least one load case is required", status=422)
     job = Job(
         version_id=version.id,
@@ -1112,9 +1122,10 @@ async def spawn_fem(
         # live on the job row so spawn_restart can replay it
         resume_state={
             "fem_request": {
-                "load_cases": load_cases,
+                "load_cases": lcs,
                 "keep_regions": keep_regions,
                 "material": material,
+                "load_cases_source": source,
             }
         },
     )
@@ -1129,7 +1140,7 @@ async def spawn_fem(
         {
             "job_id": str(job.id),
             "version_id": str(version.id),
-            "load_cases": load_cases,
+            "load_cases": lcs,
             "keep_regions": keep_regions,
             "material": material,
         },

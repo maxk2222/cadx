@@ -202,9 +202,7 @@ def _radial_peak_count(mesh: Any, axis: str = "z", bins: int = 1440) -> tuple[in
         if empty.all():
             continue
         if empty.any():
-            prof = np.interp(
-                np.arange(bins), np.flatnonzero(~empty), prof[~empty], period=bins
-            )
+            prof = np.interp(np.arange(bins), np.flatnonzero(~empty), prof[~empty], period=bins)
         lo, hi = float(prof.min()), float(prof.max())
         if hi - lo < 0.4:
             continue
@@ -285,6 +283,214 @@ def _gate_mesh(g: dict[str, Any], outcome: StageOutcome) -> GateResult:
 # ---------------------------------------------------------------------------
 # outcome gates
 # ---------------------------------------------------------------------------
+
+
+def _v3(v: Any) -> list[float] | None:
+    if isinstance(v, list | tuple) and len(v) == 3:
+        try:
+            return [float(x) for x in v]
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _unit(v: list[float]) -> list[float] | None:
+    n = math.sqrt(sum(x * x for x in v))
+    return [x / n for x in v] if n > 1e-9 else None
+
+
+def _fem_case(fem: dict[str, Any], key: Any) -> dict[str, Any] | None:
+    """Match a check's `case` selector — case name, 0-based index, or the
+    first case when unset."""
+    cases = fem.get("cases") or []
+    if not cases:
+        return None
+    if key is None:
+        return cases[0]
+    if isinstance(key, int):
+        return cases[key] if 0 <= key < len(cases) else None
+    for c in cases:
+        if isinstance(c, dict) and str(c.get("name")) == str(key):
+            return c
+    return None
+
+
+def _load_centroid(applied: list[dict[str, Any]]) -> list[float] | None:
+    """Force-weighted centroid of the applied-load records — where the load
+    actually landed on the part (region centroid weighted by the resolved
+    force it carries, so a dominant load outweighs a small one)."""
+    num = [0.0, 0.0, 0.0]
+    den = 0.0
+    for a in applied:
+        c = _v3(a.get("centroid_mm"))
+        w = float(a.get("force_mag_n") or 0.0)
+        if c is not None and w > 1e-9:
+            for i in range(3):
+                num[i] += w * c[i]
+            den += w
+    return [x / den for x in num] if den > 1e-9 else None
+
+
+def _declared_resultant(spec: dict[str, Any] | None, case_name: str) -> list[float] | None:
+    """Sum the declared `force_n` vectors of the spec's matching load case —
+    what the agent *said* the case should apply (non-vector load kinds like
+    pressure/bearing can't be summed without mesh normals and are skipped)."""
+    for lc in (spec or {}).get("load_cases") or []:
+        if not isinstance(lc, dict) or str(lc.get("name")) != case_name:
+            continue
+        res = [0.0, 0.0, 0.0]
+        hit = False
+        for ld in lc.get("loads") or []:
+            f = _v3((ld or {}).get("force_n"))
+            if f is not None:
+                for i in range(3):
+                    res[i] += f[i]
+                hit = True
+        return res if hit else None
+    return None
+
+
+def _gate_fem_loadcases(g: dict[str, Any], outcome: StageOutcome) -> GateResult:  # noqa: C901
+    """Semantic boundary-condition gate — re-checks the *resolved* load
+    cases rather than trusting the request: resultant magnitude/direction,
+    where the load landed (load centroid) vs. where the supports sit
+    (fixed centroid), which load mechanisms were applied, warnings, and
+    the SF band. Missing evidence (no fem report, no reactions, no
+    declared spec case) makes a check inconclusive, not a failure."""
+    name = "fem_loadcases"
+    fem = outcome.fem or {}
+    cases = fem.get("cases") or []
+    problems: list[str] = []
+    inconclusive: list[str] = []
+    measured: dict[str, Any] = {"n_cases": len(cases)}
+
+    if not fem:
+        return GateResult(name, None, measured=measured, detail="no fem report — inconclusive")
+
+    min_cases = g.get("min_cases")
+    if min_cases is not None and len(cases) < int(min_cases):
+        problems.append(f"cases={len(cases)} < min_cases={min_cases}")
+
+    src_expect = g.get("source")
+    if src_expect and src_expect != "any":
+        src = outcome.extras.get("load_cases_source")
+        measured["load_cases_source"] = src
+        if src is None:
+            inconclusive.append("load_cases_source not recorded")
+        elif src != src_expect:
+            problems.append(f"load_cases_source={src} != expected {src_expect}")
+
+    for chk in g.get("checks") or []:
+        c = _fem_case(fem, chk.get("case"))
+        if c is None:
+            problems.append(f"case {chk.get('case')!r} not resolved")
+            continue
+        tag = str(c.get("name") or chk.get("case"))
+        rxn = c.get("reactions") or {}
+        applied = [a for a in (c.get("applied") or []) if isinstance(a, dict)]
+        warnings = [str(w) for w in (c.get("warnings") or [])]
+        warnings += [str(w) for w in (fem.get("warnings") or [])]
+        tol_mm = float(chk.get("tol_mm", 5.0))
+
+        if "resultant_n" in chk:
+            band = chk["resultant_n"] or {}
+            mag = rxn.get("resultant_mag_n")
+            measured[f"{tag}.resultant_n"] = rxn.get("resultant_n")
+            if mag is None:
+                inconclusive.append(f"{tag}: no reactions record")
+            else:
+                lo, hi = band.get("min"), band.get("max")
+                if (lo is not None and float(mag) < float(lo)) or (
+                    hi is not None and float(mag) > float(hi)
+                ):
+                    problems.append(f"{tag}: resultant {float(mag):.1f} N outside [{lo},{hi}]")
+        if "resultant_dir" in chk:
+            res, want = _v3(rxn.get("resultant_n")), _v3(chk["resultant_dir"])
+            if res is None or want is None:
+                inconclusive.append(f"{tag}: resultant direction unavailable")
+            else:
+                u, w = _unit(res), _unit(want)
+                cos_tol = math.cos(math.radians(float(chk.get("dir_tol_deg", 20.0))))
+                if u is None or w is None:
+                    inconclusive.append(f"{tag}: zero resultant — no direction to check")
+                elif sum(a * b for a, b in zip(u, w, strict=True)) < cos_tol:
+                    problems.append(f"{tag}: resultant dir {res} deviates from {want}")
+        if "load_centroid_mm" in chk:
+            want = _v3(chk["load_centroid_mm"])
+            got = _load_centroid(applied)
+            measured[f"{tag}.load_centroid_mm"] = got
+            if want is None or got is None:
+                inconclusive.append(f"{tag}: load centroid unavailable")
+            elif max(abs(a - b) for a, b in zip(got, want, strict=True)) > tol_mm:
+                problems.append(
+                    f"{tag}: load centroid {[round(x, 1) for x in got]} "
+                    f"deviates >{tol_mm} mm from {want}"
+                )
+        if "fixed_centroid_mm" in chk:
+            want = _v3(chk["fixed_centroid_mm"])
+            got = _v3(rxn.get("fixed_centroid_mm"))
+            measured[f"{tag}.fixed_centroid_mm"] = got
+            if want is None or got is None:
+                inconclusive.append(f"{tag}: fixed centroid unavailable")
+            elif max(abs(a - b) for a, b in zip(got, want, strict=True)) > tol_mm:
+                problems.append(
+                    f"{tag}: fixed centroid {[round(x, 1) for x in got]} "
+                    f"deviates >{tol_mm} mm from {want}"
+                )
+        if "mechanisms" in chk:
+            have = {str(m) for a in applied for m in (a.get("mechanisms") or [])}
+            want = {str(m) for m in (chk["mechanisms"] or [])}
+            missing = sorted(want - have)
+            measured[f"{tag}.mechanisms"] = sorted(have)
+            if not applied:
+                inconclusive.append(f"{tag}: no applied-load records")
+            elif missing:
+                problems.append(f"{tag}: load mechanisms missing: {missing}")
+        if "warnings_absent" in chk:
+            hits = [
+                w
+                for w in warnings
+                for needle in chk["warnings_absent"]
+                if str(needle).lower() in w.lower()
+            ]
+            if hits:
+                problems.append(f"{tag}: forbidden warnings present: {hits[:3]}")
+        if "sf_min" in chk or "sf_max" in chk:
+            sf = c.get("safety_factor")
+            measured[f"{tag}.safety_factor"] = sf
+            if sf is None:
+                inconclusive.append(f"{tag}: no safety factor solved")
+            else:
+                if "sf_min" in chk and float(sf) < float(chk["sf_min"]):
+                    problems.append(f"{tag}: sf {float(sf):.2f} < {chk['sf_min']}")
+                if "sf_max" in chk and float(sf) > float(chk["sf_max"]):
+                    problems.append(f"{tag}: sf {float(sf):.2f} > {chk['sf_max']}")
+        if "declared_resultant_rel_tol" in chk:
+            # the agent's declared load vs. what actually resolved — catches
+            # 'asked for 100 N down, got 40 N sideways' misconfiguration
+            declared = _declared_resultant(outcome.spec, str(c.get("name") or ""))
+            res = _v3(rxn.get("resultant_n"))
+            if declared is None or res is None:
+                inconclusive.append(f"{tag}: no declared/resolved resultant to compare")
+            else:
+                dn = math.sqrt(sum(x * x for x in declared))
+                if dn < 1e-9:
+                    inconclusive.append(f"{tag}: declared resultant is zero")
+                else:
+                    err = math.sqrt(sum((a - b) ** 2 for a, b in zip(res, declared, strict=True)))
+                    rel = err / dn
+                    measured[f"{tag}.declared_vs_resultant"] = round(rel, 3)
+                    if rel > float(chk["declared_resultant_rel_tol"]):
+                        problems.append(
+                            f"{tag}: resolved resultant {res} deviates "
+                            f"{rel:.0%} from declared {declared}"
+                        )
+
+    if problems:
+        return GateResult(name, False, measured=measured, detail="; ".join(problems[:8]))
+    if inconclusive:
+        return GateResult(name, None, measured=measured, detail="; ".join(inconclusive[:8]))
+    return GateResult(name, True, measured=measured)
 
 
 def _topopt(outcome: StageOutcome) -> dict[str, Any]:
@@ -485,9 +691,7 @@ def _gate_outcome(  # noqa: C901
         # expect = exact match for non-numeric fields (e.g. recommended_mode);
         # min/max keep the numeric range semantics
         if "expect" in g:
-            return GateResult(
-                name, val == g.get("expect"), measured=val, expected=g.get("expect")
-            )
+            return GateResult(name, val == g.get("expect"), measured=val, expected=g.get("expect"))
         lo, hi = g.get("min"), g.get("max")
         ok = (
             val is not None
@@ -495,6 +699,9 @@ def _gate_outcome(  # noqa: C901
             and (hi is None or float(val) <= float(hi))
         )
         return GateResult(name, ok, measured=val, expected={field: [lo, hi]})
+
+    if name == "fem_loadcases":
+        return _gate_fem_loadcases(g, outcome)
 
     if name in ("topopt", "volfrac", "envelope_within"):
         top = _topopt(outcome)

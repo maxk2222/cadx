@@ -2520,9 +2520,13 @@ async def run_fem_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str,
         )
         # the fem request also lives on job.resume_state["fem_request"] —
         # spawn_restart replays it from there, and local drivers that call
-        # this job directly only carry job_id+version_id in the payload
+        # this job directly only carry job_id+version_id in the payload;
+        # the spec-declared cases are the last resort — the same cascade
+        # run_optimize_job applies (explicit wins, else what the part was
+        # designed against)
         fem_req = (job.resume_state or {}).get("fem_request") or {}
-        load_cases = payload.get("load_cases") or fem_req.get("load_cases") or []
+        spec_cases = [dict(c) for c in (version.spec or {}).get("load_cases") or []]
+        load_cases = payload.get("load_cases") or fem_req.get("load_cases") or spec_cases or []
         if mesh_rel is None or not load_cases:
             version.status = prev_status
             version.error = (

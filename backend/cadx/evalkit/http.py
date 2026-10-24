@@ -151,11 +151,7 @@ class HttpDriver:
             if r.status_code >= 400:
                 return None
             await asyncio.to_thread(dest_dir.mkdir, parents=True, exist_ok=True)
-            name = (
-                name
-                or url.rstrip("/").rsplit("/", 1)[-1].split("?")[0]
-                or uuid.uuid4().hex[:8]
-            )
+            name = name or url.rstrip("/").rsplit("/", 1)[-1].split("?")[0] or uuid.uuid4().hex[:8]
             dest = dest_dir / name
             await asyncio.to_thread(dest.write_bytes, r.content)
             return dest
@@ -184,16 +180,59 @@ class HttpDriver:
 
     # -- dispatch ------------------------------------------------------------
 
+    async def _parent_fallback_lcs(
+        self, stage: EvalStage, ctx: DriverCtx
+    ) -> tuple[list[dict[str, Any]] | None, str | None]:
+        """Resolve parent-derived load cases for ``use_parent_fallbacks``
+        stages — mirrors the job-layer cascade (resample/refine read parent
+        params then spec; fem/optimize read spec only — worker_jobs.py)."""
+        if stage.load_cases or not stage.use_parent_fallbacks or not ctx.parent_version_id:
+            return None, None
+        t = stage.type
+        if t not in ("fem", "optimize", "resample", "refine"):
+            return None, None
+        try:
+            detail = await self.version(ctx.parent_version_id)
+        except EvalApiError:
+            return None, None
+        spec_lcs = [
+            dict(c)
+            for c in ((detail.get("spec") or {}).get("load_cases") or [])
+            if isinstance(c, dict)
+        ]
+        params_lcs = [
+            dict(c)
+            for c in ((detail.get("params") or {}).get("load_cases") or [])
+            if isinstance(c, dict)
+        ]
+        if t in ("resample", "refine"):
+            if params_lcs:
+                return params_lcs, "parent_params"
+            if spec_lcs:
+                return spec_lcs, "parent_spec"
+        elif spec_lcs:
+            return spec_lcs, "parent_spec"
+        return None, None
+
     async def _spawn_body(  # noqa: C901
         self, stage: EvalStage, ctx: DriverCtx
-    ) -> tuple[str, dict[str, Any]]:
-        """(path, json body) for a stage type."""
+    ) -> tuple[str, dict[str, Any], dict[str, Any]]:
+        """(path, json body, meta) for a stage type — meta carries the
+        provenance the driver injected (``load_cases_source``) so the
+        outcome's extras can tell stage-declared cases from
+        parent-derived ones."""
         t = stage.type
         pid = ctx.project_id
         parent = ctx.parent_version_id
         asset_ids = list(ctx.case_assets)
         if stage.assets_from:
             asset_ids += ctx.stage_assets.get(stage.assets_from, [])
+        meta: dict[str, Any] = {}
+        lcs, lcs_src = await self._parent_fallback_lcs(stage, ctx)
+        if lcs is None:
+            lcs = stage.load_cases or None
+        elif lcs_src:
+            meta["load_cases_source"] = lcs_src
 
         if t == "generate":
             body: dict[str, Any] = {"prompt": stage.prompt, "asset_ids": asset_ids}
@@ -201,34 +240,38 @@ class HttpDriver:
                 body["mode"] = stage.mode
             if stage.options:
                 body["options"] = stage.options
-            return f"/projects/{pid}/generate", body
+            return f"/projects/{pid}/generate", body, meta
         if t == "edit":
             body = {"prompt": stage.prompt, "asset_ids": asset_ids}
             if stage.mode:
                 body["mode"] = stage.mode
             if stage.options:
                 body["options"] = stage.options
-            return f"/versions/{parent}/edit", body
+            return f"/versions/{parent}/edit", body, meta
         if t == "params":
-            return f"/versions/{parent}/params", {"params": stage.params or {}}
+            return f"/versions/{parent}/params", {"params": stage.params or {}}, meta
         if t == "edit_feature":
-            return f"/versions/{parent}/edit-feature", dict(stage.feature or {})
+            return f"/versions/{parent}/edit-feature", dict(stage.feature or {}), meta
         if t == "optimize":
-            return f"/versions/{parent}/optimize", {
-                "load_cases": stage.load_cases,
-                "optimize": stage.optimize,
-                "material": stage.material,
-            }
+            return (
+                f"/versions/{parent}/optimize",
+                {
+                    "load_cases": lcs,
+                    "optimize": stage.optimize,
+                    "material": stage.material,
+                },
+                meta,
+            )
         if t == "resample":
-            body = {"load_cases": stage.load_cases, "material": stage.material}
+            body = {"load_cases": lcs, "material": stage.material}
             if stage.keep_regions:
                 body["keep_regions"] = stage.keep_regions
             body.update(stage.resample or {})
-            return f"/versions/{parent}/topopt-resample", body
+            return f"/versions/{parent}/topopt-resample", body, meta
         if t == "refine":
             body = {
                 "features": stage.features,
-                "load_cases": stage.load_cases,
+                "load_cases": lcs,
                 "keep_regions": stage.keep_regions,
                 "material": stage.material,
             }
@@ -236,32 +279,40 @@ class HttpDriver:
                 body["voxel_mm"] = stage.voxel_mm
             if stage.restore_planes is not None:
                 body["restore_planes"] = stage.restore_planes
-            return f"/versions/{parent}/refine", body
+            return f"/versions/{parent}/refine", body, meta
         if t == "organic":
-            return f"/versions/{parent}/organic", dict(stage.organic or {})
+            return f"/versions/{parent}/organic", dict(stage.organic or {}), meta
         if t == "reexport":
-            return f"/versions/{parent}/reexport", dict(stage.options or {})
+            return f"/versions/{parent}/reexport", dict(stage.options or {}), meta
         if t == "fem":
-            return f"/versions/{parent}/fem", {
-                "load_cases": stage.load_cases,
-                "keep_regions": stage.keep_regions,
-                "material": stage.material,
-            }
+            return (
+                f"/versions/{parent}/fem",
+                {
+                    "load_cases": lcs,
+                    "keep_regions": stage.keep_regions,
+                    "material": stage.material,
+                },
+                meta,
+            )
         if t == "mesh_edit":
             body = {"ops": stage.ops, "note": stage.prompt or f"eval {stage.id}"}
             if stage.post:
                 body["post"] = stage.post
-            return f"/versions/{parent}/mesh-edit", body
+            return f"/versions/{parent}/mesh-edit", body, meta
         if t == "meshgen":
             ids = asset_ids or self._ref_assets(stage, ctx)
-            return f"/projects/{pid}/meshgen", {
-                "asset_ids": ids,
-                "subject": stage.subject or stage.prompt,
-                "model": stage.model,
-                "seed": stage.seed,
-                "post": stage.post or {},
-                "prompt": stage.prompt,
-            }
+            return (
+                f"/projects/{pid}/meshgen",
+                {
+                    "asset_ids": ids,
+                    "subject": stage.subject or stage.prompt,
+                    "model": stage.model,
+                    "seed": stage.seed,
+                    "post": stage.post or {},
+                    "prompt": stage.prompt,
+                },
+                meta,
+            )
         raise EvalApiError(f"no spawn route for stage type {t}")
 
     @staticmethod
@@ -278,7 +329,7 @@ class HttpDriver:
         if stage.type in ASSET_STAGES:
             return await self._dispatch_image(stage, ctx, t0)
 
-        path, body = await self._spawn_body(stage, ctx)
+        path, body, meta = await self._spawn_body(stage, ctx)
         if ctx.parent_version_id is None and "/versions/" in path:
             # upstream stage produced no version — don't POST to /versions/None/…
             return StageOutcome(
@@ -351,6 +402,8 @@ class HttpDriver:
             wall_s=wall,
             error=job.get("error") or detail.get("error"),
         )
+        if meta.get("load_cases_source"):
+            out.extras["load_cases_source"] = meta["load_cases_source"]
         # advance the chain: child-version stages produce a new parent,
         # same-version stages (fem/reexport) keep it
         if stage.type in ("fem", "reexport"):

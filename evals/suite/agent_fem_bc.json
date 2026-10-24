@@ -1,0 +1,94 @@
+{
+ "name": "agent_fem_bc",
+ "project": "eval:agent-fem-bc",
+ "difficulty": 2,
+ "description": "Agent-declared boundary conditions — the prompt embeds a service load case; the fem stage declares none and falls back to the generated spec's cases (use_parent_fallbacks). The fem_loadcases gate re-checks the RESOLVED resultants/centroids against the physics the prompt described, not the agent's wording.",
+ "settings": {
+  "gen_mode": "cad"
+ },
+ "stages": [
+  {
+   "id": "codegen",
+   "type": "generate",
+   "mode": "cad",
+   "timeout_s": 5400,
+   "options": {
+    "process": "fdm"
+   },
+   "prompt": "Steel cantilever test bar, parametric.\n\nFrame: bottom face on the XY plane (z = 0), centred in X and Y. mm.\n- Rectangular bar 100 long (X) x 20 wide (Y) x 10 tall (Z).\n- A square mounting flange 20 x 40 x 40 at the -X end (the bar emerges from the flange's +X face at mid-height).\n- Fillets r2 where the bar meets the flange.\n\nService loads for structural design: the flange's -X face is bolted flat to a wall (fully fixed). A 200 N downward load (-Z) acts on the bar's +X end face. Design for that cantilever load case.",
+   "gates": [
+    {
+     "type": "status",
+     "expect": [
+      "succeeded",
+      "needs_review"
+     ]
+    },
+    {
+     "type": "bbox",
+     "dims": [
+      120,
+      40,
+      40
+     ],
+     "match": "within",
+     "tol_mm": 6
+    },
+    {
+     "type": "verify_spec",
+     "expect": "PASS"
+    }
+   ]
+  },
+  {
+   "id": "fem",
+   "type": "fem",
+   "timeout_s": 1800,
+   "material": "steel",
+   "use_parent_fallbacks": true,
+   "gates": [
+    {
+     "type": "status",
+     "expect": [
+      "succeeded",
+      "needs_review"
+     ]
+    },
+    {
+     "type": "fem_loadcases",
+     "min_cases": 1,
+     "source": "parent_spec",
+     "checks": [
+      {
+       "case": 0,
+       "resultant_n": {
+        "min": 50,
+        "max": 2000
+       },
+       "resultant_dir": [
+        0,
+        0,
+        -1
+       ],
+       "dir_tol_deg": 30,
+       "fixed_centroid_mm": [
+        -60,
+        0,
+        20
+       ],
+       "tol_mm": 15,
+       "declared_resultant_rel_tol": 0.4,
+       "warnings_absent": [
+        "no fixed region",
+        "resolved to zero",
+        "unsolvable"
+       ],
+       "sf_min": 0.2,
+       "sf_max": 60
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

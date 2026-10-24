@@ -252,6 +252,34 @@ async def _noop_enqueue(func: str, payload: dict[str, Any]) -> None:
     return None
 
 
+def _parent_lcs(stage: EvalStage, parent: Any) -> tuple[list[dict[str, Any]] | None, str | None]:
+    """Resolve parent-derived load cases for ``use_parent_fallbacks`` stages —
+    mirrors the job-layer cascade (resample/refine read parent params then
+    spec; fem/optimize read spec only — worker_jobs.py). Returns
+    (load_cases, source) or (None, None)."""
+    if (
+        stage.load_cases
+        or not stage.use_parent_fallbacks
+        or parent is None
+        or stage.type not in ("fem", "optimize", "resample", "refine")
+    ):
+        return None, None
+    spec_lcs = [
+        dict(c) for c in ((parent.spec or {}).get("load_cases") or []) if isinstance(c, dict)
+    ]
+    params_lcs = [
+        dict(c) for c in ((parent.params or {}).get("load_cases") or []) if isinstance(c, dict)
+    ]
+    if stage.type in ("resample", "refine"):
+        if params_lcs:
+            return params_lcs, "parent_params"
+        if spec_lcs:
+            return spec_lcs, "parent_spec"
+    elif spec_lcs:
+        return spec_lcs, "parent_spec"
+    return None, None
+
+
 _JOB_FNS = {
     "generate": "run_agent_job",
     "edit": "run_agent_job",
@@ -268,9 +296,13 @@ _JOB_FNS = {
 }
 
 
-async def _spawn(stage: EvalStage, ctx: LocalCtx) -> tuple[uuid.UUID, uuid.UUID | None]:
+async def _spawn(  # noqa: C901 — one branch per stage type, like _spawn_body
+    stage: EvalStage, ctx: LocalCtx
+) -> tuple[uuid.UUID, uuid.UUID | None, dict[str, Any]]:
     """Create the Version+Job rows in scratch DB — production spawn path
-    with the enqueue replaced by a no-op. Returns (version_id, job_id)."""
+    with the enqueue replaced by a no-op. Returns (version_id, job_id, meta)
+    where meta carries the provenance the driver injected (e.g.
+    ``load_cases_source``) for the outcome's extras."""
     from cadx.db.models import Job, JobType, Version
     from cadx.db.session import session_scope
     from cadx.spawn import (
@@ -295,6 +327,13 @@ async def _spawn(stage: EvalStage, ctx: LocalCtx) -> tuple[uuid.UUID, uuid.UUID 
         asset_ids = [uuid.UUID(a) for a in ctx.case_assets]
         if stage.assets_from:
             asset_ids += [uuid.UUID(a) for a in ctx.stage_assets.get(stage.assets_from, [])]
+
+        meta: dict[str, Any] = {}
+        lcs, lcs_src = _parent_lcs(stage, parent)
+        if lcs is None:
+            lcs = stage.load_cases or None
+        elif lcs_src:
+            meta["load_cases_source"] = lcs_src
 
         if t == "generate":
             from cadx.db.models import Project
@@ -335,7 +374,7 @@ async def _spawn(stage: EvalStage, ctx: LocalCtx) -> tuple[uuid.UUID, uuid.UUID 
             v, j = await spawn_optimize(
                 db,
                 parent,
-                load_cases=stage.load_cases or None,
+                load_cases=lcs,
                 optimize=stage.optimize or None,
                 material=stage.material or None,
                 allow_reopt=bool(stage.options.get("allow_reopt")),
@@ -349,7 +388,7 @@ async def _spawn(stage: EvalStage, ctx: LocalCtx) -> tuple[uuid.UUID, uuid.UUID 
                 density_threshold=r.get("density_threshold"),
                 min_member_mm=r.get("min_member_mm"),
                 material=stage.material or None,
-                load_cases=stage.load_cases or None,
+                load_cases=lcs,
                 keep_regions=stage.keep_regions or None,
                 enqueue_fn=_noop_enqueue,
             )
@@ -358,7 +397,7 @@ async def _spawn(stage: EvalStage, ctx: LocalCtx) -> tuple[uuid.UUID, uuid.UUID 
                 db,
                 parent,
                 features=stage.features or None,
-                load_cases=stage.load_cases or None,
+                load_cases=lcs,
                 keep_regions=stage.keep_regions or None,
                 material=stage.material or None,
                 voxel_mm=stage.voxel_mm,
@@ -371,17 +410,17 @@ async def _spawn(stage: EvalStage, ctx: LocalCtx) -> tuple[uuid.UUID, uuid.UUID 
             j = await spawn_fem(
                 db,
                 parent,
-                load_cases=stage.load_cases or None,
+                load_cases=lcs,
                 keep_regions=stage.keep_regions or None,
                 material=stage.material or None,
                 enqueue_fn=_noop_enqueue,
             )
-            return parent.id, j.id
+            return parent.id, j.id, meta
         elif t == "reexport":
             j = Job(version_id=parent.id, type=JobType.reexport)
             db.add(j)
             await db.commit()
-            return parent.id, j.id
+            return parent.id, j.id, meta
         elif t == "mesh_edit":
             v, j = await spawn_mesh_edit(
                 db,
@@ -416,7 +455,7 @@ async def _spawn(stage: EvalStage, ctx: LocalCtx) -> tuple[uuid.UUID, uuid.UUID 
             )
         else:
             raise ValueError(f"local driver: unsupported stage type {t}")
-        return v.id, j.id
+        return v.id, j.id, meta
 
 
 def _mesh_artifact_files(v: Any, arts: list[Any]) -> list[str]:
@@ -597,7 +636,7 @@ class LocalDriver:
         t0 = time.monotonic()
         if stage.type in ASSET_STAGES:
             return await self._dispatch_image(stage, ctx, t0)
-        vid, jid = await _spawn(stage, ctx)
+        vid, jid, meta = await _spawn(stage, ctx)
         func = _JOB_FNS[stage.type]
         import cadx.agent.worker_jobs as wj
 
@@ -616,6 +655,19 @@ class LocalDriver:
                 args = (env.payload or {}).get("args") if env else None
                 if isinstance(args, dict) and args.get("job_id"):
                     run_args = args
+                # spawn_fem records which supplied the cases — surface the
+                # provenance the driver didn't inject itself so fem gates see
+                # request- vs spec-derived boundary conditions
+                fem_src = (
+                    ((env.resume_state or {}).get("fem_request") or {}).get("load_cases_source")
+                    if env is not None
+                    else None
+                )
+                if fem_src and "load_cases_source" not in meta:
+                    meta["load_cases_source"] = {
+                        "request": "stage",
+                        "spec": "parent_spec",
+                    }.get(str(fem_src), str(fem_src))
         if self.verbose:
             log.info("eval.local.job", stage=stage.id, func=func, version=str(vid)[:8])
         try:
@@ -641,6 +693,8 @@ class LocalDriver:
         out = await _read_outcome(vid, jid, wall, same_version=stage.type in ("fem", "reexport"))
         out.extras["execs"] = self.exec_stats["n"]
         out.extras["exec_s"] = self.exec_stats["s"]
+        if meta.get("load_cases_source"):
+            out.extras["load_cases_source"] = meta["load_cases_source"]
         if stage.type not in ("fem", "reexport"):
             ctx.parent_version_id = vid
         # dump trace records for the archive

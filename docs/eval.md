@@ -32,6 +32,7 @@ cadx eval run --local --case robot_arm_mount --stages fem --from <dir>
 | `l_bracket_rib` | 1 | aluminium L-bracket + triangular rib | `codegen` → `fem` (+ `params`, disabled) |
 | `sprocket_520_45t` | 2 | 7075-T6 rear sprocket, 45 teeth, 520 chain | `codegen` (+ `imagegen` → `meshgen`, disabled) |
 | `robot_arm_mount` | 3 | topopt-ready robot-arm mount | `codegen` → `fem` → `topopt` (+ `refine`, disabled) |
+| `agent_fem_bc` | 2 | agent-declared boundary conditions (cantilever bar) | `codegen` → `fem` (spec fallback + `fem_loadcases`) |
 
 Each stage maps to exactly one pipeline phase and entity outcome:
 
@@ -49,6 +50,22 @@ optimizes from it. `--stages` selects a subset (ids or types);
 parent. Disabled stages (`"enabled": false`) are skipped unless explicitly
 selected by id.
 
+### `use_parent_fallbacks` (default `true`)
+
+`fem`/`optimize`/`resample`/`refine` stages may leave `load_cases` empty —
+the drivers then resolve the parent's declared cases exactly like the job
+layer does (`worker_jobs.py`): `fem`/`optimize` read `parent.spec`
+→ `load_cases`, `resample`/`refine` read `parent.params` first (the
+previous run's actual inputs) then `parent.spec`. The outcome's
+`extras.load_cases_source` records the provenance (`parent_spec` /
+`parent_params` / `stage`). Setting the flag `false` skips the driver
+injection only — the product-side fallbacks still apply (`spawn_fem` and
+`run_fem_job` resolve `spec.load_cases` themselves, so a fem stage without
+cases behaves exactly like the GUI/API path). This is what makes
+"the agent must pick the BCs itself" cases possible: the suite declares no
+cases, the generated spec carries them, and `fem_loadcases` grades what
+resolved.
+
 ## Gates
 
 Per-stage declarative checks in the suite JSON, evaluated in
@@ -62,6 +79,19 @@ Per-stage declarative checks in the suite JSON, evaluated in
   `sf_verified` → `sf_export` → per-case), `topopt` (`field`/`min`),
   `volfrac`, `envelope_within`, `asset_image`, `execs_min`, `max_wall_s`,
   `max_prompt_tokens`.
+  `fem_loadcases` is the **semantic BC gate** — it re-checks the *resolved*
+  load cases (not the request): `min_cases`, `source` (asserts
+  `extras.load_cases_source`), and per-case `checks` on
+  `resultant_n {min,max}`, `resultant_dir` (+`dir_tol_deg`),
+  `load_centroid_mm` (force-weighted applied-load centroid),
+  `fixed_centroid_mm` (where the supports actually landed — both
+  `tol_mm`), `mechanisms` (subset of the applied load kinds),
+  `warnings_absent` (substrings that must not appear),
+  `sf_min`/`sf_max`, and `declared_resultant_rel_tol` (resolved resultant
+  vs. the spec-declared `force_n` sum — catches "asked 200 N down, got
+  40 N sideways"). Missing evidence (no fem report, no reactions, no
+  declared case) makes a check inconclusive (`ok=null`), never a silent
+  pass or a noise failure.
 - **mesh gates** — `radial_peaks` (tooth/lobe count on a polar radius
   profile), `volume`, `volume_fraction` (`of: bbox|disk`), `contains_point`
   (rib/gusset probe), `bodies`. Computed with trimesh on the stage's mesh

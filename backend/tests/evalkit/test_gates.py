@@ -153,9 +153,9 @@ def test_fem_topopt_gates():
     assert run_gates([{"type": "fem", "field": "sf", "min": 1.5}], both, 0)[0].ok
     # expect: exact match for non-numeric fem fields (recommended_mode)
     rec = _out(fem={"recommended_mode": "guided"})
-    assert run_gates(
-        [{"type": "fem", "field": "recommended_mode", "expect": "guided"}], rec, 0
-    )[0].ok
+    assert run_gates([{"type": "fem", "field": "recommended_mode", "expect": "guided"}], rec, 0)[
+        0
+    ].ok
     assert not run_gates(
         [{"type": "fem", "field": "recommended_mode", "expect": "infill"}], rec, 0
     )[0].ok
@@ -166,17 +166,13 @@ def test_fem_topopt_gates():
     )[0].ok
     # topopt gate honours an upper bound (rescue_dropped_frac etc.)
     r = _out(mesh={"topopt": {"rescue_dropped_frac": 0.01, "warm_start": "x.npz"}})
-    assert run_gates(
-        [{"type": "topopt", "field": "rescue_dropped_frac", "max": 0.02}], r, 0
-    )[0].ok
-    assert not run_gates(
-        [{"type": "topopt", "field": "rescue_dropped_frac", "max": 0.005}], r, 0
-    )[0].ok
+    assert run_gates([{"type": "topopt", "field": "rescue_dropped_frac", "max": 0.02}], r, 0)[0].ok
+    assert not run_gates([{"type": "topopt", "field": "rescue_dropped_frac", "max": 0.005}], r, 0)[
+        0
+    ].ok
     # string fields pass a bare presence check
     assert run_gates([{"type": "topopt", "field": "warm_start"}], r, 0)[0].ok
-    assert not run_gates(
-        [{"type": "topopt", "field": "guide_solver"}], r, 0
-    )[0].ok
+    assert not run_gates([{"type": "topopt", "field": "guide_solver"}], r, 0)[0].ok
     # envelope_within reads analysis bbox vs envelope dims
     env = _out(analysis={"bbox_size": [98, 78, 38]})
     assert run_gates([{"type": "envelope_within", "dims": [100, 80, 40]}], env, 0)[0].ok
@@ -271,3 +267,152 @@ def test_radial_peaks_counts_lobes(tmp_path):
     out = _out(artifact_files=[str(p)])
     g = run_gates([{"type": "radial_peaks", "count": 8, "tol": 1, "axis": "z"}], out, 0)[0]
     assert g.ok, g.detail
+
+
+def _fem_out(**kw) -> StageOutcome:
+    """Outcome with one resolved case carrying the M2/M3 evidence fields."""
+    fem = {
+        "cases": [
+            {
+                "name": "tip_load",
+                "safety_factor": 1.8,
+                "reactions": {
+                    "resultant_n": [0.0, 0.0, -200.0],
+                    "resultant_mag_n": 200.0,
+                    "fixed_centroid_mm": [-50.0, 0.0, 5.0],
+                },
+                "applied": [
+                    {
+                        "kind": "surface",
+                        "axis": "+x",
+                        "mechanisms": ["force_n"],
+                        "centroid_mm": [50.0, 0.0, 5.0],
+                        "force_n": [0.0, 0.0, -200.0],
+                        "force_mag_n": 200.0,
+                    }
+                ],
+                "warnings": [],
+            }
+        ]
+    }
+    spec = {
+        "load_cases": [
+            {
+                "name": "tip_load",
+                "loads": [{"force_n": [0, 0, -200]}],
+            }
+        ]
+    }
+    return _out(fem=fem, spec=spec, **kw)
+
+
+def test_fem_loadcases_resultant_direction_centroids():
+    out = _fem_out()
+    ok = run_gates(
+        [
+            {
+                "type": "fem_loadcases",
+                "min_cases": 1,
+                "checks": [
+                    {
+                        "case": "tip_load",
+                        "resultant_n": {"min": 150, "max": 250},
+                        "resultant_dir": [0, 0, -1],
+                        "dir_tol_deg": 20,
+                        "load_centroid_mm": [50, 0, 5],
+                        "fixed_centroid_mm": [-50, 0, 5],
+                        "tol_mm": 3,
+                        "mechanisms": ["force_n"],
+                        "sf_min": 1.0,
+                        "sf_max": 5.0,
+                        "declared_resultant_rel_tol": 0.1,
+                    }
+                ],
+            }
+        ],
+        out,
+        0,
+    )[0]
+    assert ok.ok, ok.detail
+
+
+def test_fem_loadcases_catches_wrong_bc_placement():
+    out = _fem_out()
+    # support centroid expected on +x (agent pinned the wrong face)
+    bad = run_gates(
+        [
+            {
+                "type": "fem_loadcases",
+                "checks": [{"fixed_centroid_mm": [50, 0, 5], "tol_mm": 3}],
+            }
+        ],
+        out,
+        0,
+    )[0]
+    assert bad.ok is False and "fixed centroid" in bad.detail
+    # wrong load direction
+    bad2 = run_gates(
+        [
+            {
+                "type": "fem_loadcases",
+                "checks": [{"resultant_dir": [0, 0, 1], "dir_tol_deg": 20}],
+            }
+        ],
+        out,
+        0,
+    )[0]
+    assert bad2.ok is False and "dir" in bad2.detail
+    # forbidden warning surfaces
+    w = _fem_out()
+    w.fem["cases"][0]["warnings"] = ["case 'x': no fixed region — case is unsolvable"]
+    bad3 = run_gates(
+        [
+            {
+                "type": "fem_loadcases",
+                "checks": [{"warnings_absent": ["no fixed region"]}],
+            }
+        ],
+        w,
+        0,
+    )[0]
+    assert bad3.ok is False and "warnings" in bad3.detail
+    # declared-vs-resolved mismatch: spec says +200 N down, resolved went up
+    bad4 = _fem_out()
+    bad4.fem["cases"][0]["reactions"]["resultant_n"] = [0.0, 0.0, 50.0]
+    r = run_gates(
+        [
+            {
+                "type": "fem_loadcases",
+                "checks": [{"declared_resultant_rel_tol": 0.1}],
+            }
+        ],
+        bad4,
+        0,
+    )[0]
+    assert r.ok is False and "declared" in r.detail
+
+
+def test_fem_loadcases_source_and_inconclusive():
+    out = _fem_out()
+    out.extras["load_cases_source"] = "parent_spec"
+    ok = run_gates([{"type": "fem_loadcases", "source": "parent_spec", "min_cases": 1}], out, 0)[0]
+    assert ok.ok
+    out.extras["load_cases_source"] = "stage"
+    bad = run_gates([{"type": "fem_loadcases", "source": "parent_spec"}], out, 0)[0]
+    assert bad.ok is False and "load_cases_source" in bad.detail
+    # no recorded source -> inconclusive, not a failure
+    out2 = _fem_out()
+    inc = run_gates([{"type": "fem_loadcases", "source": "parent_spec"}], out2, 0)[0]
+    assert inc.ok is None and "not recorded" in inc.detail
+    # no fem report at all -> inconclusive
+    none = run_gates([{"type": "fem_loadcases", "min_cases": 1}], _out(), 0)[0]
+    assert none.ok is None
+    # min_cases with fewer resolved cases fails hard
+    short = run_gates([{"type": "fem_loadcases", "min_cases": 3}], out2, 0)[0]
+    assert short.ok is False
+    # missing reactions evidence -> inconclusive
+    bare = _out(fem={"cases": [{"name": "x"}]})
+    inc2 = run_gates([{"type": "fem_loadcases", "checks": [{"resultant_n": {"min": 1}}]}], bare, 0)[
+        0
+    ]
+    assert inc2.ok is None
