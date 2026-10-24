@@ -77,6 +77,8 @@ keep ring around every detected anchor (`topopt_auto_keep_margin_mm`),
 `density_threshold` sets the extraction iso. The stored `topopt/density.npz`
 field can be re-extracted at a different threshold/min-member without a new
 SIMP run via `POST /versions/{id}/topopt-resample` (`JobType.resample`).
+Re-sampling a **binary** (BESO/0-1) field warns — a different threshold
+extracts the same part.
 
 Printability and filter options (`optimize.*`):
 
@@ -218,8 +220,26 @@ Selections, material and target volume persist on the version under
 Coordinates are millimeters; forces are Newtons; pressure and stress are MPa
 (N/mm²). Each case contains fully fixed regions and one or more loads. Regions
 can be a bounding-box face, cylinder, box, hole anchor, painted surface patch
-(`points`), or the whole domain. Axes use
+(`points`), a `border` band, or the whole domain. Axes use
 `+x`, `-x`, `+y`, `-y`, `+z`, `-z`.
+
+`face`/`surface` pick the outer **envelope** (follows the silhouette);
+`plane` is the node-exact counterpart — it selects the nodes of an
+axis-aligned plane, or an edge/corner when several letters are ANDed
+(`axis: "x"` = both extreme x-planes, `"+x"` = one side, `"xy"` = the edge
+line where an x- and a y-plane meet, `"xyz"` = corners). `center[i]` (per
+axis letter, i.e. `center[0]` binds `"x"`) moves that letter's plane to an
+interior coordinate for symmetry cuts; `x_range`/`y_range`/`z_range` clip
+the free axes so a line support can span only part of an edge. On a `plane`
+support, `fix_mode: "normal"` pins exactly the DOFs named by the axis
+letters — `"x"` is a symmetry plane (ux only), `"xy"` a knife edge
+(ux+uy, free along z), `"xyz"` a point support. A `plane` that matches no
+nodes reports honestly — it never widens to a bbox patch.
+
+`LoadSpec.spread_mode`: `"nodes"` (default, legacy) splits a `force_n`
+resultant equally over the region's nodes; `"area"` weights the split by
+each node's exposed-surface share — the honest uniform traction on
+non-planar selections.
 
 Example request fragment:
 
@@ -249,8 +269,15 @@ averaged surface normal for this. For generated parts, make the physical
 attachment/load locations explicit (for example, clamp the mounting holes
 rather than an unrelated outer face) — prefer `bore`/`anchor` regions with
 `bearing_n` for bolts and pins. The FEM report adds per-case `reactions`
-(resultant at the supports) — compare it against the applied resultant for
-equilibrium sanity.
+(resultant at the supports, `fixed_centroid_mm` — where the structure is
+actually held — and per-DOF constrained counts) and `supports` records
+(which fixed regions resolved, with node counts and centroids) — compare
+reaction resultants against the applied resultant for equilibrium sanity.
+`work_disp_mm` (compliance/‖F‖) reports the work-equivalent displacement —
+the robust stiffness probe for spread loads where `max_disp` is
+dominated by boundary-layer noise — and `feature_peaks` lists the von-Mises
+extremum within `r_mm` of each anchor so results read as
+"σmax = X MPa at bore B2" rather than a bare scalar.
 
 ## Numerical method and outputs
 
@@ -281,6 +308,12 @@ equilibrium sanity.
   `optimize.mma_final_beta` (e.g. 8) projects an `mma` run's converged
   blueprint through a sharp Heaviside for the returned density — collapses
   residual gray fields a cone-filtered MMA can leave behind.
+  **BESO honesty check**: every `beso` run also solves a uniform-density
+  field at the same volfrac (`uniform_baseline_compliance_mj` — one K
+  assembly + case solves, <1 % of runtime) and flags `worse_than_uniform`
+  when the converged binary design loses to it (hard-kill ESO is greedy —
+  the femverify suite measured optima above the baseline on coarse grids).
+  Treat BESO as the warm-start/guide solver; OC/MMA own the final topology.
 - `optimize.penal_init` < `penal` enables penal continuation (ramp
   `penal_init`→`penal` over `penal_ramp_iters` = 30 iterations, escapes
   grayscale local minima); `optimize.volfrac_init` > target enables the

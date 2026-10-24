@@ -67,9 +67,18 @@ the final error **and** a monotone approach to the reference (see
 
 ## Selectors (`manual_pins`, `manual_loads`, `sel`)
 
-Region kinds select cells — a cell always spans ≥ 2 node planes, which makes
-region-based knife-edge supports and exact symmetry planes impossible. The
-harness therefore supports node/cell coordinate predicates:
+Most exact boundary conditions now go through the product region path —
+`kind: "plane"` selects the **node-exact** locus: AND over axis letters
+(`"x"` = both extreme planes, `"+x"` = one side, `"xy"` = the edge
+intersection, `"xyz"` = corners), `center[i]` binds an interior coordinate
+for symmetry cuts, `x_range`/`y_range`/`z_range` clip the free axes, and
+`fix_mode: "normal"` pins exactly the named letters' DOFs (`x` = symmetry
+ux, `xy` = knife-edge ux+uy, `xyz` = point support). A `plane` miss warns
+honestly — it never falls back to a bbox patch. LE1's three support
+planes and LE10's symmetry cuts run over it.
+
+For what `plane` can't express the harness still supports node/cell
+coordinate predicates:
 
 - `x`/`y`/`z`: exact value, or `"min"`/`"max"` (outermost used-node plane)
 - `xmin`/`xmax`/…: bounds
@@ -77,8 +86,8 @@ harness therefore supports node/cell coordinate predicates:
 - `ell_a`/`ell_b` + `ell_r_min`/`ell_r_max`: elliptical radius `sqrt((x/a)²+(y/b)²)`
 - `boundary: true` (cells): has a void/exterior neighbour in-plane
 
-Use them for: textbook pin supports, symmetry planes, strict end-plane loads
-(Cook), elliptical rim BCs (NAFEMS LE10), pressure on staircased rims.
+Use them for: elliptical rim BCs (NAFEMS LE10's outer edge), strict
+staircased-rim pressure bands (Cook), and anything a plane can't name.
 
 ## Verified references (measured)
 
@@ -107,10 +116,17 @@ not a failure.
 - `voxelize._fill_grid` fallback: `binary_closing` erased the outermost cell
   rows on non-watertight meshes (`border_value=0`); boundary material is now
   preserved — LE1/LE10 symmetry pins land on the real edge.
+- `knife_edge_beam`: pinning ux on *both* supports doubles the measured
+  stiffness (membrane restraint) — the textbook pin+roller model needs
+  normal-only pinning on the roller, which `plane` expresses.
+- `voxelize._scanline_contains`: axis-scanline containment replaces
+  per-point `contains()` on regular lattices (~dims-fold fewer ray tests,
+  identical results; `CADX_VOXEL_CONTAINS=1` falls back).
 - `test_topopt_inv.test_invariant_beso_contract` documents that soft-kill
   BESO is a greedy heuristic whose optima can sit above uniform-field
   compliance on coarse grids — the invariant asserts its contract (volume +
-  one connected load path), not optimality.
+  one connected load path), and production runs now measure that baseline
+  (`uniform_baseline_compliance_mj` / `worse_than_uniform`).
 
 ## Cross-solver lane (CalculiX)
 
