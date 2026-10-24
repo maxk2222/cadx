@@ -94,6 +94,38 @@ to apply at that workplane (usually a face, e.g. `p.faces().sort_by(Axis.Z)[-1]`
   `edges_at(axis="z", geom="line")` (outer verticals) or `hole_rim_edges`
   (mouth rims); `edges() >> Axis.Z` only sorts and keeps the helices in.
 
+## Machining — surface-targeted ops (PREFER over hand-computed cutter placement)
+
+- `machine_on_face(part, face, at=None, axis=None, op="drill", **dims)` —
+  ONE call for "drill into / tap a hole on surface X at point Y": resolves
+  the face, lands the cutter normal to the surface (works on flat AND curved
+  skin — a sphere pole, a sloped rib face, a sidewall), cuts, and returns
+  `(new_part, feature_dict)`. ALWAYS append the feature to `CADX_FEATURES`
+  when the op produces a thread: `part, feat = machine_on_face(part, ...)`
+  then `CADX_FEATURES = CADX_FEATURES + [feat]` — the runner counts real
+  threads from it and the export gate verifies them.
+  - `face`: semantic word `"top"|"bottom"|"front"|"back"|"left"|"right"|"+x"|"-x"|"+y"|"-y"|"-z"`,
+    `"largest"|"smallest"|"planar"|"cylindrical"|"normal"|"parallel"` (e.g.
+    `"normal:+z"` = face whose normal points +z), `"at:x,y,z"` (face nearest
+    a point), `"index:N"`, or a build123d `Face` object.
+  - `at`: `[x,y,z]` pick point → surface lands at the projection (radial on
+    a sphere — `at=[0,0,60]` on an r30 ball drills straight down through the
+    pole); `[u,v]` offsets in the face's tangent plane.
+  - `axis`: `[x,y,z]` overrides the resolved normal (e.g. drill a vertical
+    hole through a sloped top face).
+  - `op` + `dims`: `drill(dia, depth|through)`, `tap(major_d, pitch?, depth|through, hand?)`,
+    `cbore(dia, cbore_dia, cbore_depth?, depth|through)`, `csk(dia, csk_dia, csk_angle?)`,
+    `spotface(dia, csk_dia, csk_depth?)`, `pocket(width, length, depth)`,
+    `boss(dia, height)` (additive).
+  - `op="tap"` emits a REAL helical thread in export mode (pilot bore +
+    IsoThread groove with runout taper) — use it for every Mx tapped bore;
+    in preview the groove becomes a smooth bore (feature overlay shows it).
+- `resolve_face(part, spec)` / `face_frame(face, point=None, at=None)` —
+  the same resolution standalone when you need the frame yourself
+  (`frame.z_dir` = approach normal, `frame.location` = land point).
+- `cutter_for(op, **dims)` — the oriented cutting solid alone (local frame:
+  mouth at z=0, cut along −z) for custom placements.
+
 ## Shapes — pure factories, return a Part you position yourself
 
 No BuildPart context needed. Parts rest on XY (min Z = 0), centred — place with

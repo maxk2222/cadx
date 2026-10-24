@@ -49,6 +49,14 @@ Common problems and their fixes:
   the plane perpendicular to it (axis="x" → x=y-coord, y=z-coord of the
   centreline). Bores are exactly what image→3D cannot generate — drill them
   instead of regenerating.
+- A bore that is NOT axis-aligned, opens on a curved/sloped skin, or needs a
+  real thread → `mesh_machine_feature`: `face="top|left|…"` casts onto the
+  surface at `at=[u,v]`, `at=[x,y,z]` picks the nearest surface point — the
+  cutter lands normal to the skin in ANY direction (an M8 tap into the pole
+  of a sphere: `op="tap", at=[0,0,40], major_d=8, depth=25`). `axis` pins
+  the approach direction when the local normal is not what is wanted.
+  Prefer `mesh_drill_holes` for simple axis-aligned holes — it is cheaper
+  and stays inside the verified anchor vocabulary.
 - Part must be left/right symmetric (spec says so or the shape obviously is)
   → mesh_symmetrize mirrors the better half — removes asymmetric generator
   noise. Verify with mesh_measure/mesh_overlay afterwards.

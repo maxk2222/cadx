@@ -44,6 +44,20 @@ Rules:
 - If the spec declares `standard_parts`, call `create_standard_part` and use its
   validated catalog recipe/parameters. Preserve the separate feature list: each
   feature not listed in `covers_features` still needs its own block.
+- For ANY machining on a surface — holes, tapped bores, counterbores,
+  countersinks, pockets, bosses — prefer the `machine_feature` TOOL over a
+  hand-written block: one call names the surface semantically
+  (`face="top|left|…"` or a `face_id` from `describe_faces`), lands the cutter
+  normal to the skin (curved surfaces included — no normal maths, no
+  `Pos*Rot` chains) and registers the feature automatically. Example —
+  "M8 tapped bore, 25 mm deep, into the left sidewall at y=0,z=12":
+  `machine_feature(op="tap", face="left", at=[0,12],
+  dims={major_d:8, pitch:1.25, depth:25})`. Use `describe_faces` first when
+  you are unsure which face word picks the surface (e.g. "the big curved
+  top") — it lists every face with index/area/centroid/normal so you can
+  target `face=2` exactly. Hand-rolled cutter placement is the fallback
+  for shapes machine_feature does not cover (keyways, angled multi-axis
+  slots, feature-on-feature).
 - A requested thread must have a display-only preview entry in `CADX_FEATURES`;
   `CADX_DETAIL_MODE` is `preview` in agent checks/renders and `export` in final
   execution. Never treat a preview helix as exported solid geometry or drop the
