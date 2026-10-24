@@ -84,9 +84,9 @@ def test_m10_preview_and_exact_export_have_distinct_thread_geometry(tmp_path):
     # bottom, the M10 shank tip at the top
     for shape in (preview_shape, exact_shape):
         bb = shape.bounding_box()
-        assert bb.min.Z == pytest.approx(0.0, abs=0.05)
+        assert pytest.approx(0.0, abs=0.05) == bb.min.Z
         head = shape.faces().filter_by(Plane.XY).sort_by(Axis.Z)[0]
-        assert head.bounding_box().size.X == pytest.approx(20.0, abs=0.5)
+        assert pytest.approx(20.0, abs=0.5) == head.bounding_box().size.X
     assert exact_shape.volume > preview_shape.volume
 
     exports = export_all_3d(exact_shape, tmp_path / "exports")

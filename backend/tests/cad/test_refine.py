@@ -1148,7 +1148,7 @@ def test_apply_refine_drops_sliver_minted_by_postpass(monkeypatch):
     def slivered_postpass(out, report):
         out = out.copy()
         # degenerate zero-area face pair riding the +x face — volume 0
-        out = trimesh.util.concatenate(
+        return trimesh.util.concatenate(
             [
                 out,
                 trimesh.Trimesh(
@@ -1163,7 +1163,6 @@ def test_apply_refine_drops_sliver_minted_by_postpass(monkeypatch):
                 ),
             ]
         )
-        return out
 
     monkeypatch.setattr(rf, "_watertight_postpass", slivered_postpass)
     out, rep = rf.apply_refine(base, [], base_mesh=base, keep_regions=[], anchors=[])

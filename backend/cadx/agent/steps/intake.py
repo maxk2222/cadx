@@ -240,11 +240,11 @@ def resolve_thread_intents(spec: PartSpec) -> list[str]:
     knobs the code emitter honours."""
     if not spec.standard_parts:
         return []
+    from cadx.cad import catalog
     from cadx.cad.standard_parts import (
         _is_intrinsic_fastener_feature,
         covered_feature_indices,
     )
-    from cadx.cad import catalog
 
     covered = covered_feature_indices(spec)
     # an intrinsically-covered thread feature is only attributable when a

@@ -186,7 +186,7 @@ def _thread_data(
             max_len = total_length
             try:
                 proto = cls(**{k: v for k, v in values.items() if k != "simple"})
-                max_len = float(getattr(proto, "max_thread_length") or total_length)
+                max_len = float(proto.max_thread_length or total_length)
             except Exception:
                 pass
             want = max_len if requested == "full" else float(requested)
@@ -388,7 +388,7 @@ def _measure_placement(
         return rotation, 0.0, 0.0
 
 
-def build_standard_part_code(parts: list[StandardPartSpec]) -> str:
+def build_standard_part_code(parts: list[StandardPartSpec]) -> str:  # noqa: C901
     reports = validate_standard_parts(parts)
     imports: dict[str, list[str]] = {}
     uses_pipe = any(row["part"].class_name == "Pipe" for row in reports)
