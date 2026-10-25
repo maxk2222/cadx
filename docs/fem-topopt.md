@@ -148,6 +148,11 @@ enriches measured anchors with real depth. Anchor fields: `index` (1-based),
 (3D in-plane position), `z` (axial centre), `dia`, `depth_mm`,
 `bolt_size`. `GET /versions/{id}/anchors` returns the merged table.
 
+A region binds its anchor by `hole_index` when set, else deterministically
+by its `(axis, diameter_mm, center)` hint — nearest anchor on the same axis
+within a diameter/distance gate (declared load cases can't name a scan-order
+index; a miss warns instead of silently binding the wrong bore).
+
 ### Manual optimization and FEM check (structural editor)
 
 On a completed version, **Structural editor** opens a full-screen 3D editor

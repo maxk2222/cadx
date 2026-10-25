@@ -41,9 +41,9 @@ triangle + a dia-30 bearing bore) and a maximum envelope — the agent is
 free to pick the seed topology, the optimizer designs the actual
 structure (`keep_mode:"auto"` preserves the interfaces), and the
 boundary conditions are declared deterministically in the stage
-`load_cases` (a cylinder-annulus region on the bore wall approximates
-the radial bearing load — `bearing_n` isn't deterministic enough here
-since it binds by `hole_index`).
+`load_cases`: the radial case drives `bearing_n` on a `bore` region
+bound by its `(axis, dia, center)` hint — no `hole_index`, so the
+binding survives any scan-order or topology change.
 
 Each stage maps to exactly one pipeline phase and entity outcome:
 

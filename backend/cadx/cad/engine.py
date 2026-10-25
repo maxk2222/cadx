@@ -5537,6 +5537,9 @@ def run_refine(
         return res
     cases = [LoadCase(**c) for c in (load_cases or [])]
     if cases:
+        # the verify solve runs on `out` — scan ITS anchors so bore/anchor
+        # regions bind even when the parent carried none (imported STL,
+        # missing analysis); passed-in anchors merge in, like run_fem_pipeline
         verify = run_fem(
             out,
             cases,
@@ -5544,7 +5547,7 @@ def run_refine(
             voxel_mm=voxel_mm or s.fem_voxel_mm,
             max_elements=max_elements or s.fem_max_elements,
             out_dir=out_dir,
-            anchors=anchors,
+            anchors=_scan_anchors(out, anchors),
             spsolve_dofs=s.fem_spsolve_dofs,
             mem_budget_mb=float(resources.effective_exec_mem_mb(s)),
             pool_workers=s.exec_pool_workers,

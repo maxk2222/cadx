@@ -955,6 +955,48 @@ def test_run_refine_verify_passes_clean(tmp_path):
     assert not res.features["refine"].get("verify_misses")
 
 
+def test_run_refine_fem_verify_scans_refined_mesh_anchors(tmp_path):
+    """The refine FEM re-verify solves on the REFINED mesh — its anchors must
+    be scanned there (run_fem_pipeline parity), not inherited from the
+    parent. With anchors=None (imported STL / missing analysis) a hint-bound
+    `bore` region otherwise falls back to a 1-cell boundary patch."""
+    from cadx.cad.engine import run_refine
+
+    p = tmp_path / "bored.stl"
+    _slab_bored(x0=10.0, dia=10.0).export(str(p))
+    res = run_refine(
+        mesh_path=p,
+        out_dir=tmp_path / "out",
+        features=[{"name": "m10", "kind": "hole", "axis": "+z", "x": 10.0, "y": 0.0, "dia": 10.0}],
+        anchors=None,
+        load_cases=[
+            {
+                "name": "radial",
+                "fixed": [{"kind": "plane", "axis": "-z"}],
+                "loads": [
+                    {
+                        "region": {
+                            "kind": "bore",
+                            "axis": "+z",
+                            "center": [10.0, 0.0, 7.0],
+                            "diameter_mm": 10.0,
+                        },
+                        "bearing_n": 500.0,
+                        "bearing_dir": [1.0, 0.0, 0.0],
+                    }
+                ],
+            }
+        ],
+        voxel_mm=3.0,
+    )
+    assert res.ok
+    case = res.fem["cases"][0]
+    applied = case.get("applied") or []
+    assert applied and "bearing_n" in (applied[0].get("mechanisms") or [])
+    warns = case.get("warnings") or []
+    assert not any("region_fallback" in w or "resolved to zero" in w for w in warns)
+
+
 # --------------------------------------------------------------------------- #
 # spec-declared positions — declared (u,v) beats dia-matched anchor position   #
 # --------------------------------------------------------------------------- #
