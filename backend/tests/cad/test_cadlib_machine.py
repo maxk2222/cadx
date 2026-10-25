@@ -40,8 +40,12 @@ def test_describe_faces_orders_by_area_and_reports_kind_normal() -> None:
 
 def test_resolve_face_axis_word_index_and_pick() -> None:
     box = Box(60, 40, 20)
-    for word, want in (("top", [0, 0, 1]), ("+z", [0, 0, 1]), ("left", [-1, 0, 0]),
-                       ("front", [0, 1, 0])):
+    for word, want in (
+        ("top", [0, 0, 1]),
+        ("+z", [0, 0, 1]),
+        ("left", [-1, 0, 0]),
+        ("front", [0, 1, 0]),
+    ):
         f = machine.resolve_face(box, word)
         n = f.normal_at(f.center())
         assert [round(v, 2) for v in (n.X, n.Y, n.Z)] == want, word
@@ -81,9 +85,7 @@ def test_machine_tap_on_side_wall_is_normal_not_vertical() -> None:
     """The regression: a wall tap must follow the face normal (-x), not the
     global -z the agent would get from `Pos(x,y,z)*tap` guesswork."""
     box = Box(60, 40, 20)
-    out, rec = machine.machine_on_face(
-        box, face="left", op="tap", major_d=8, pitch=1.25, depth=15
-    )
+    out, rec = machine.machine_on_face(box, face="left", op="tap", major_d=8, pitch=1.25, depth=15)
     assert rec["normal"] == pytest.approx([-1, 0, 0], abs=1e-3)
     assert rec["position_mm"] == pytest.approx([-30, 0, 0], abs=1e-3)
     assert out.is_valid
@@ -93,9 +95,7 @@ def test_machine_tap_on_side_wall_is_normal_not_vertical() -> None:
 
 def test_machine_drill_through_on_top_face_with_uv_offset() -> None:
     box = Box(60, 40, 20)
-    out, rec = machine.machine_on_face(
-        box, face="top", op="drill", dia=5, at=(10, 5)
-    )
+    out, rec = machine.machine_on_face(box, face="top", op="drill", dia=5, at=(10, 5))
     assert rec["position_mm"] == pytest.approx([10, 5, 10], abs=1e-3)
     assert out.is_valid
     # through hole: both the top and bottom face gained a rim — volume loss
@@ -126,9 +126,7 @@ def test_machine_on_sloped_face_follows_the_surface_normal() -> None:
     # the slope normal tilts off +z — a fixed "+z" guess would miss this
     assert pytest.approx(math.cos(math.radians(30)), abs=0.1) == n.Z
     assert abs(n.X) > 0.4
-    out, rec = machine.machine_on_face(
-        sloped, face=(0, 0, 12), op="drill", dia=4, depth=8
-    )
+    out, rec = machine.machine_on_face(sloped, face=(0, 0, 12), op="drill", dia=4, depth=8)
     assert out.is_valid
     assert rec["normal"] == pytest.approx([n.X, n.Y, n.Z], abs=1e-3)
 

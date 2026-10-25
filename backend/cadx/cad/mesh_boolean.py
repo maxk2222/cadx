@@ -614,9 +614,7 @@ def recut_missing_holes(
             # a bounded anchor only owes an open tunnel across its declared
             # bore interval — a body further along the same ray is not a
             # blockage and must not trigger a re-cut that pierces it
-            if tunnel_open(
-                shape, uv[0], uv[1], axis, _declared_axial_span(h, idx)
-            ):
+            if tunnel_open(shape, uv[0], uv[1], axis, _declared_axial_span(h, idx)):
                 continue
             blocked.append((h, idx, uv[0], uv[1]))
         except Exception:

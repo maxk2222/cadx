@@ -934,14 +934,46 @@ def test_resolve_spec_features_keep_declared_positions():
     anchor 57 mm off its declared centre. Declared positions must win —
     anchors only supply tunnel evidence."""
     anchors = [
-        {"index": 1, "kind": "hole", "axis": "+z", "x": 0.0, "y": 0.5, "dia": 10.4,
-         "source": "scan", "pos": [0.0, 0.5, 12.0]},
-        {"index": 2, "kind": "hole", "axis": "+z", "x": -42.0, "y": 31.9, "dia": 9.9,
-         "source": "scan", "pos": [-42.0, 31.9, 5.0]},
-        {"index": 3, "kind": "hole", "axis": "+z", "x": 42.0, "y": -32.0, "dia": 8.9,
-         "source": "scan", "pos": [42.0, -32.0, 5.0]},
-        {"index": 4, "kind": "hole", "axis": "+z", "x": 42.0, "y": 32.0, "dia": 8.9,
-         "source": "scan", "pos": [42.0, 32.0, 5.0]},
+        {
+            "index": 1,
+            "kind": "hole",
+            "axis": "+z",
+            "x": 0.0,
+            "y": 0.5,
+            "dia": 10.4,
+            "source": "scan",
+            "pos": [0.0, 0.5, 12.0],
+        },
+        {
+            "index": 2,
+            "kind": "hole",
+            "axis": "+z",
+            "x": -42.0,
+            "y": 31.9,
+            "dia": 9.9,
+            "source": "scan",
+            "pos": [-42.0, 31.9, 5.0],
+        },
+        {
+            "index": 3,
+            "kind": "hole",
+            "axis": "+z",
+            "x": 42.0,
+            "y": -32.0,
+            "dia": 8.9,
+            "source": "scan",
+            "pos": [42.0, -32.0, 5.0],
+        },
+        {
+            "index": 4,
+            "kind": "hole",
+            "axis": "+z",
+            "x": 42.0,
+            "y": 32.0,
+            "dia": 8.9,
+            "source": "scan",
+            "pos": [42.0, 32.0, 5.0],
+        },
     ]
     feats, _warns = resolve_refine_features(
         anchors, _ROBOT_SPEC, None, base_mesh=_slab_bored(10.0, 10.0)
@@ -963,8 +995,16 @@ def test_resolve_spec_falls_back_to_dia_match_without_position():
     """A spec hole with no parseable position keeps the legacy dia+axis
     anchor match."""
     anchors = [
-        {"index": 1, "kind": "hole", "axis": "+z", "x": 10.0, "y": 0.0, "dia": 6.1,
-         "source": "scan", "pos": [10.0, 0.0, 6.0]},
+        {
+            "index": 1,
+            "kind": "hole",
+            "axis": "+z",
+            "x": 10.0,
+            "y": 0.0,
+            "dia": 6.1,
+            "source": "scan",
+            "pos": [10.0, 0.0, 6.0],
+        },
     ]
     spec = [{"type": "hole", "name": "m6 bore", "position": "", "dims": {"diameter": 6.0}}]
     feats, _ = resolve_refine_features(anchors, spec, None, base_mesh=_slab_bored(10.0, 6.0))
@@ -997,8 +1037,15 @@ def test_through_feature_pierces_past_declared_depth():
     the far wall of every solid interval the reach overlaps."""
     slab = _slab(z=25.0)  # solid 60x40x25 — no bore
     feat = RefineFeature(
-        name="m12", kind="hole", axis="+z", u=0.0, v=0.0, dia=8.0,
-        depth_mm=10.0, through=True, source="spec",
+        name="m12",
+        kind="hole",
+        axis="+z",
+        u=0.0,
+        v=0.0,
+        dia=8.0,
+        depth_mm=10.0,
+        through=True,
+        source="spec",
     )
     out, rep = apply_refine(slab, [feat], restore_keeps=False)
     assert rep.applied and not rep.skipped
@@ -1016,8 +1063,15 @@ def test_blind_feature_still_stops_at_declared_depth():
     hard stop — a blind pocket must NOT pierce the slab."""
     slab = _slab(z=25.0)
     feat = RefineFeature(
-        name="pocket", kind="hole", axis="+z", u=0.0, v=0.0, dia=8.0,
-        depth_mm=10.0, through=False, source="spec",
+        name="pocket",
+        kind="hole",
+        axis="+z",
+        u=0.0,
+        v=0.0,
+        dia=8.0,
+        depth_mm=10.0,
+        through=False,
+        source="spec",
     )
     out, rep = apply_refine(slab, [feat], restore_keeps=False)
     assert rep.applied
@@ -1037,8 +1091,14 @@ def test_through_cut_depth_spans_plug_extent():
     cap.apply_translation([0.0, 0.0, 26.0])
     mesh = trimesh.util.concatenate([plate, cap])
     feat = RefineFeature(
-        name="m12", kind="hole", axis="+z", u=0.0, v=0.0, dia=10.0,
-        depth_mm=25.0, through=True,
+        name="m12",
+        kind="hole",
+        axis="+z",
+        u=0.0,
+        v=0.0,
+        dia=10.0,
+        depth_mm=25.0,
+        through=True,
     )
     depth = _through_cut_depth(mesh, feat, entry=28.0, span=28.0)
     # reach entry→entry-25 = z∈[3,28]; the plate's far wall is z=0 → ~28.3
@@ -1061,13 +1121,30 @@ def test_verify_uses_recorded_uv_at_part_centre():
     similar diameter."""
     mesh = _slab_bored(0.0, 10.0)  # Ø10 bore at the slab centre
     anchors = [
-        {"index": 1, "kind": "hole", "axis": "+z", "x": -25.0, "y": 0.0,
-         "pos": [-25.0, 0.0, 7.0], "dia": 9.9, "source": "scan"},
+        {
+            "index": 1,
+            "kind": "hole",
+            "axis": "+z",
+            "x": -25.0,
+            "y": 0.0,
+            "pos": [-25.0, 0.0, 7.0],
+            "dia": 9.9,
+            "source": "scan",
+        },
     ]
     report = {
         "applied": [
-            {"name": "m12", "kind": "hole", "axis": "+z", "u": 0.0, "v": 0.0,
-             "dia": 10.0, "through": True, "depth_mm": 25.0, "source": "spec"},
+            {
+                "name": "m12",
+                "kind": "hole",
+                "axis": "+z",
+                "u": 0.0,
+                "v": 0.0,
+                "dia": 10.0,
+                "through": True,
+                "depth_mm": 25.0,
+                "source": "spec",
+            },
         ]
     }
     assert refine_verify(mesh, report, anchors=anchors) == []
@@ -1083,8 +1160,17 @@ def test_verify_through_bore_over_pocket_is_a_miss():
     mesh = plate.difference(pocket, engine="manifold")  # Ø10 pocket, 5 deep
     report = {
         "applied": [
-            {"name": "m", "kind": "hole", "axis": "+z", "u": 10.0, "v": 0.0,
-             "dia": 10.0, "through": True, "depth_mm": 14.0, "source": "spec"},
+            {
+                "name": "m",
+                "kind": "hole",
+                "axis": "+z",
+                "u": 10.0,
+                "v": 0.0,
+                "dia": 10.0,
+                "through": True,
+                "depth_mm": 14.0,
+                "source": "spec",
+            },
         ]
     }
     misses = refine_verify(mesh, report)
@@ -1092,8 +1178,17 @@ def test_verify_through_bore_over_pocket_is_a_miss():
     # the same entry without through-intent verifies against the pocket
     report2 = {
         "applied": [
-            {"name": "m", "kind": "hole", "axis": "+z", "u": 10.0, "v": 0.0,
-             "dia": 10.0, "through": False, "depth_mm": 5.0, "source": "spec"},
+            {
+                "name": "m",
+                "kind": "hole",
+                "axis": "+z",
+                "u": 10.0,
+                "v": 0.0,
+                "dia": 10.0,
+                "through": False,
+                "depth_mm": 5.0,
+                "source": "spec",
+            },
         ]
     }
     assert refine_verify(mesh, report2) == []
@@ -1106,8 +1201,12 @@ def test_spec_position_text_marks_through_intent():
     feats, _ = resolve_refine_features([], _ROBOT_SPEC, None, base_mesh=_slab(z=40.0))
     assert feats and all(f.through for f in feats)
     blind = [
-        {"type": "hole", "name": "dowel", "position": "x=10, y=0",
-         "dims": {"diameter": 6.0, "depth": 8.0}},
+        {
+            "type": "hole",
+            "name": "dowel",
+            "position": "x=10, y=0",
+            "dims": {"diameter": 6.0, "depth": 8.0},
+        },
     ]
     feats2, _ = resolve_refine_features([], blind, None, base_mesh=_slab())
     assert len(feats2) == 1 and feats2[0].through is False

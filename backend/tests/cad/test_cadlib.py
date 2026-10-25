@@ -913,18 +913,16 @@ def test_helical_thread_fuses_valid_onto_screw_core():
 
     from cadx.cad.cadlib.threads import helical_thread
 
-    body = CounterSunkScrew(
-        size="M10-1.5", length=120, fastener_type="iso10642", simple=True
-    )
+    body = CounterSunkScrew(size="M10-1.5", length=120, fastener_type="iso10642", simple=True)
     bs = body.solids()[0]
     pitch = body.thread_pitch
-    tip = (
-        -body.length_offset() - body.grip_length
-        - body.thread_offset - body.thread_length
-    )
+    tip = -body.length_offset() - body.grip_length - body.thread_offset - body.thread_length
     th = helical_thread(
-        body.thread_diameter, pitch, body.thread_length,
-        hand=body.hand, external=True,
+        body.thread_diameter,
+        pitch,
+        body.thread_length,
+        hand=body.hand,
+        external=True,
     )
     fused = bs.fuse(Pos(0, 0, tip + 0.375 * pitch) * th)
     solids = fused.solids()

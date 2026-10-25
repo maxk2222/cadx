@@ -731,13 +731,9 @@ def main(workdir: Path | None = None) -> int:  # noqa: C901
             # an unnamed temporary (`part - Pos(...) * tapped_hole(...)`) still
             # cut the real helical groove into the brep — count the calls
             helper_calls = len(re.findall(r"\btapped_hole\s*\(", code))
-            helper_calls += len(
-                re.findall(r"ThreadedHole\s*\([^)]*simple\s*=\s*False", code, re.S)
-            )
+            helper_calls += len(re.findall(r"ThreadedHole\s*\([^)]*simple\s*=\s*False", code, re.S))
             if helper_calls:
-                thread_count = max(
-                    thread_count, min(declared_threads, thread_count + helper_calls)
-                )
+                thread_count = max(thread_count, min(declared_threads, thread_count + helper_calls))
         if thread_count and declared_threads and detail_mode == "export":
             # intent is not geometry: a tagged or source-counted cutter that
             # never touched the part (disjoint placement) still counts — but

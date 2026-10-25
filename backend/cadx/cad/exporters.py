@@ -216,9 +216,7 @@ def export_2d(
     return results
 
 
-def _ensure_face_meshes(
-    shape: Shape, linear_deflection: float, angular_deflection: float
-) -> None:
+def _ensure_face_meshes(shape: Shape, linear_deflection: float, angular_deflection: float) -> None:
     """Mesh every face individually.
 
     Whole-shape ``BRepMesh_IncrementalMesh`` leaves some faces without

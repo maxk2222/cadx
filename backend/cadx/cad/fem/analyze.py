@@ -98,9 +98,7 @@ class FemReport(BaseModel):
     @computed_field
     @property
     def worst_safety_factor_micro(self) -> float | None:
-        sfs = [
-            c.safety_factor_micro for c in self.cases if c.safety_factor_micro is not None
-        ]
+        sfs = [c.safety_factor_micro for c in self.cases if c.safety_factor_micro is not None]
         return min(sfs) if sfs else None
 
 

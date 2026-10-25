@@ -45,9 +45,7 @@ def test_smooth_preserve_pin_mask_holds_passive_cells() -> None:
     in_pinned_cell = passive[ijk[:, 0], ijk[:, 1], ijk[:, 2]]
     assert in_pinned_cell.any()
 
-    out = smooth_preserve(
-        m, iterations=5, pin_floor=False, pin_mask=(origin, 2.0, passive)
-    )
+    out = smooth_preserve(m, iterations=5, pin_floor=False, pin_mask=(origin, 2.0, passive))
     assert out.is_watertight
     # bbox extents preserved exactly (pinned extremes -> no rescale fired)
     np.testing.assert_allclose(out.extents, m.extents, atol=1e-9)

@@ -42,7 +42,9 @@ async def _mk_job() -> Job:
         p = Project(name="hardening")
         db.add(p)
         await db.flush()
-        v = Version(project_id=p.id, part_id=uuid.uuid4(), number=1, kind=VersionKind.generate, prompt="x")
+        v = Version(
+            project_id=p.id, part_id=uuid.uuid4(), number=1, kind=VersionKind.generate, prompt="x"
+        )
         db.add(v)
         await db.flush()
         j = Job(version_id=v.id, type=JobType.generate)
@@ -802,4 +804,7 @@ def test_export_lost_holes_detects_dropped_bore():
     assert _export_lost_holes(preview, wrong_axis) == ["Ø10.2/zx1"]
 
     # elongated slots are out of scope for the thread-path gate
-    assert _export_lost_holes([{"diameter": 6.0, "axis": "+z", "count": 1, "elongated": True}], []) == []
+    assert (
+        _export_lost_holes([{"diameter": 6.0, "axis": "+z", "count": 1, "elongated": True}], [])
+        == []
+    )

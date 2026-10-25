@@ -45,9 +45,7 @@ def harvest(outcome: StageOutcome) -> dict[str, Any]:
         # rejected run's numbers so gates measure a real sf/volfrac rather
         # than a bare "no topopt happened" null
         kept = (
-            (outcome.mesh or {}).get("topopt_kept_base")
-            if isinstance(outcome.mesh, dict)
-            else None
+            (outcome.mesh or {}).get("topopt_kept_base") if isinstance(outcome.mesh, dict) else None
         ) or {}
         rejected = kept.get("rejected_runs") or []
         best = max(
@@ -60,8 +58,7 @@ def harvest(outcome: StageOutcome) -> dict[str, Any]:
                 "kept_base": True,
                 "volfrac_achieved": best.get("achieved"),
                 "sf_verified": (
-                    (best.get("verification") or {}).get("sf_verified")
-                    or best.get("worst_sf")
+                    (best.get("verification") or {}).get("sf_verified") or best.get("worst_sf")
                 ),
                 "sf_export": best.get("sf_export"),
                 "n_bodies": best.get("n_bodies_export"),

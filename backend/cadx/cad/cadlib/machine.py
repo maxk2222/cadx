@@ -185,9 +185,7 @@ def resolve_face(part: Any, spec: Any) -> Face:
     faces = _sorted_faces(part)
     if isinstance(spec, int) and not isinstance(spec, bool):
         if not 0 <= spec < len(faces):
-            raise ValueError(
-                f"face index {spec} out of range — describe_faces lists {len(faces)}"
-            )
+            raise ValueError(f"face index {spec} out of range — describe_faces lists {len(faces)}")
         return faces[spec]
     if isinstance(spec, str):
         return _face_by_word(faces, spec)
@@ -251,8 +249,20 @@ def face_frame(face: Face, point: Any = None, at: tuple[float, float] | None = N
     return Plane(origin=surf, x_dir=x_dir, z_dir=n)
 
 
-_CUT_OPS = {"drill", "hole", "clearance", "tap", "tapped_hole", "cbore", "counterbore",
-            "csk", "countersink", "spotface", "pocket", "slot_pocket"}
+_CUT_OPS = {
+    "drill",
+    "hole",
+    "clearance",
+    "tap",
+    "tapped_hole",
+    "cbore",
+    "counterbore",
+    "csk",
+    "countersink",
+    "spotface",
+    "pocket",
+    "slot_pocket",
+}
 _ADD_OPS = {"boss"}
 
 
@@ -321,39 +331,49 @@ def cutter_for(
         if major_d is None:
             raise ValueError("tap needs major_d (e.g. 8 for M8)")
         depth = float(depth if depth is not None else span)
-        cutter = tapped_hole(
-            major_d, pitch, depth + 0.5, hand=hand, drill_dia=drill_dia
-        )
+        cutter = tapped_hole(major_d, pitch, depth + 0.5, hand=hand, drill_dia=drill_dia)
         # mouth chamfer: a real tapped hole opens with a small countersink;
         # it also keeps the groove ridge from ending in ragged concentric
         # steps where a curved entry surface clips the helix
         if entry_chamfer > 0:
-            drill = float(drill_dia) if drill_dia is not None else (
-                float(major_d) - float(pitch or 1.0)
+            drill = (
+                float(drill_dia)
+                if drill_dia is not None
+                else (float(major_d) - float(pitch or 1.0))
             )
             ch = float(entry_chamfer)
             cutter += Pos(0, 0, -ch / 2) * Cone(
                 bottom_radius=drill / 2, top_radius=drill / 2 + ch, height=ch
             )
         return cutter
-    if op in ("drill", "hole", "clearance", "cbore", "counterbore", "csk",
-              "countersink", "spotface"):
+    if op in (
+        "drill",
+        "hole",
+        "clearance",
+        "cbore",
+        "counterbore",
+        "csk",
+        "countersink",
+        "spotface",
+    ):
         return _drill_cutter(
-            op, dia=dia, depth=depth, span=span, cbore_dia=cbore_dia,
-            cbore_depth=cbore_depth, csk_dia=csk_dia, csk_angle=csk_angle,
+            op,
+            dia=dia,
+            depth=depth,
+            span=span,
+            cbore_dia=cbore_dia,
+            cbore_depth=cbore_depth,
+            csk_dia=csk_dia,
+            csk_angle=csk_angle,
         )
     if op in ("pocket", "slot_pocket"):
         if depth is None:
             raise ValueError("pocket needs a depth")
         d = float(depth)
         if width is not None and length is not None:
-            return Pos(0, 0, (1.0 - d) / 2) * Box(
-                float(width), float(length), d + 1.0
-            )
+            return Pos(0, 0, (1.0 - d) / 2) * Box(float(width), float(length), d + 1.0)
         if dia is not None:
-            return Pos(0, 0, (1.0 - d) / 2) * Cylinder(
-                radius=float(dia) / 2, height=d + 1.0
-            )
+            return Pos(0, 0, (1.0 - d) / 2) * Cylinder(radius=float(dia) / 2, height=d + 1.0)
         raise ValueError("pocket needs width+length or dia")
     if op == "boss":
         if dia is None:
@@ -361,9 +381,7 @@ def cutter_for(
         h = float(depth if depth is not None else 10.0)
         # additive: base sits flush on the surface plane, extends +Z OUT
         return Pos(0, 0, h / 2 - 0.5) * Cylinder(radius=float(dia) / 2, height=h + 0.5)
-    raise ValueError(
-        f"unknown op {op!r} — drill|tap|cbore|csk|spotface|pocket|boss"
-    )
+    raise ValueError(f"unknown op {op!r} — drill|tap|cbore|csk|spotface|pocket|boss")
 
 
 def _span(part: Any) -> float:

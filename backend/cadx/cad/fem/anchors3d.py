@@ -129,9 +129,7 @@ def _tunnel_depth_and_center(
     mids: list[float] = []
     for h in hits:
         h.sort()
-        pairs = [
-            (h[k + 1] - h[k], 0.5 * (h[k] + h[k + 1])) for k in range(0, len(h) - 1, 2)
-        ]
+        pairs = [(h[k + 1] - h[k], 0.5 * (h[k] + h[k + 1])) for k in range(0, len(h) - 1, 2)]
         if pairs:
             run, mid = max(pairs, key=lambda p: p[0])
             runs.append(run)
@@ -153,9 +151,7 @@ def _tunnel_depth(
 ) -> float:
     """Real length of a through-tunnel along `axis` (see
     `_tunnel_depth_and_center`) — depth only."""
-    return _tunnel_depth_and_center(
-        mesh, axis, void_cells, inside, us, vs, span, max_rays
-    )[0]
+    return _tunnel_depth_and_center(mesh, axis, void_cells, inside, us, vs, span, max_rays)[0]
 
 
 def _anchor(
@@ -245,12 +241,8 @@ def scan_mesh_anchors(
             t_kind = "hole"
             if aspect > 1.65 or (dia > 24.0 and in_plane_dist > 15.0):
                 t_kind = "window"
-            t_depth, t_mid = _tunnel_depth_and_center(
-                mesh, axis, cells, inside, us, vs, span
-            )
-            out.append(
-                _anchor(axis, mean_u, mean_v, dia, t_depth, t_kind, axial_center=t_mid)
-            )
+            t_depth, t_mid = _tunnel_depth_and_center(mesh, axis, cells, inside, us, vs, span)
+            out.append(_anchor(axis, mean_u, mean_v, dia, t_depth, t_kind, axial_center=t_mid))
 
         # dimples: local dips below the surrounding max (countersinks, pockets)
         Hf = np.nan_to_num(H, nan=0.0)

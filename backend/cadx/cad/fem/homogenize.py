@@ -67,7 +67,12 @@ def _voigt_vm(s: np.ndarray) -> float:
     return float(
         math.sqrt(
             max(
-                sx**2 + sy**2 + sz**2 - sx * sy - sy * sz - sz * sx
+                sx**2
+                + sy**2
+                + sz**2
+                - sx * sy
+                - sy * sz
+                - sz * sx
                 + 3.0 * (txy**2 + tyz**2 + tzx**2),
                 0.0,
             )
@@ -113,9 +118,7 @@ class LatticeTable:
         envelope, clamped to >= 1 — the macro estimate can never read
         stiffer/safer than the resolved micro field)."""
         env = np.minimum.accumulate(np.asarray(self.A_grid, dtype=float))
-        val = np.interp(
-            float(rho), np.asarray(self.rho_grid, dtype=float), env
-        )
+        val = np.interp(float(rho), np.asarray(self.rho_grid, dtype=float), env)
         return float(max(val, 1.0))
 
 
@@ -189,9 +192,7 @@ def _unit_cell_domain(
             solid = lab == int(sizes.argmax())
     else:
         solid = np.zeros((v, v, v), dtype=bool)
-    return VoxelDomain(
-        origin=base.origin, pitch=pitch, dims=(v, v, v), solid=np.asarray(solid)
-    )
+    return VoxelDomain(origin=base.origin, pitch=pitch, dims=(v, v, v), solid=np.asarray(solid))
 
 
 def homogenize_cell(cell_domain: VoxelDomain, nu: float) -> tuple[np.ndarray, float]:
@@ -251,9 +252,7 @@ def _homog_root() -> Path:
     return storage.data_root() / "homog"
 
 
-def _load_table(
-    path: Path, rhos: np.ndarray
-) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+def _load_table(path: Path, rhos: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
     """Load a cached (rho_grid, C_grid, A_grid) triple — validated on key,
     shape and the requested grid; any problem recomputes."""
     try:
@@ -304,9 +303,7 @@ def lattice_table(
     C_H is scale-free in cell size, so the synthetic cell runs at pitch
     1 mm (cell_mm = cell_voxels).
     """
-    rhos = np.asarray(
-        tuple(densities) if densities is not None else DEFAULT_RHO_GRID, dtype=float
-    )
+    rhos = np.asarray(tuple(densities) if densities is not None else DEFAULT_RHO_GRID, dtype=float)
     if rhos.ndim != 1 or not rhos.size or not (rhos > 0).all():
         raise ValueError("densities must be a non-empty grid of positive values")
     root = Path(cache_dir) if cache_dir is not None else _homog_root()
@@ -320,9 +317,7 @@ def lattice_table(
     C_grid = np.zeros((rhos.size, 6, 6))
     A_grid = np.ones(rhos.size)
     for i, rho in enumerate(rhos):
-        cell = _unit_cell_domain(
-            style, cell_mm, int(cell_voxels), float(rho), bool(octet)
-        )
+        cell = _unit_cell_domain(style, cell_mm, int(cell_voxels), float(rho), bool(octet))
         C_H, A = homogenize_cell(cell, float(nu))
         C_grid[i] = C_H
         A_grid[i] = A

@@ -80,8 +80,7 @@ def _node_adjacent_graph(
         for di in (-1, 0, 1)
         for dj in (-1, 0, 1)
         for dk in (-1, 0, 1)
-        if (di, dj, dk) != (0, 0, 0)
-        and (di > 0 or (di == 0 and (dj > 0 or (dj == 0 and dk > 0))))
+        if (di, dj, dk) != (0, 0, 0) and (di > 0 or (di == 0 and (dj > 0 or (dj == 0 and dk > 0))))
     ]
     for di, dj, dk in dirs:
         inside = (
@@ -123,12 +122,8 @@ def _unit_reachable(
     from scipy import sparse
     from scipy.sparse import csgraph
 
-    g = sparse.csr_matrix(
-        (np.ones(g_row.size, dtype=np.int8), (g_row, g_col)), shape=(n, n)
-    )
-    dist = csgraph.dijkstra(
-        g, directed=False, indices=fix_cells, min_only=True
-    )
+    g = sparse.csr_matrix((np.ones(g_row.size, dtype=np.int8), (g_row, g_col)), shape=(n, n))
+    dist = csgraph.dijkstra(g, directed=False, indices=fix_cells, min_only=True)
     return bool(np.isfinite(dist[load_cells]).any())
 
 
@@ -179,9 +174,7 @@ def loadpath_certificate(
     if n > _MAX_CERT_CELLS:
         # skipped rather than failed — `load_path_ok` stays unknown (None)
         out["load_path_ok"] = None
-        warnings.append(
-            f"domain too large for the load-path certificate ({n} cells) — skipped"
-        )
+        warnings.append(f"domain too large for the load-path certificate ({n} cells) — skipped")
         return out
     if not cases_resolved:
         out["load_path_ok"] = None
@@ -236,9 +229,7 @@ def loadpath_certificate(
         rec["load_cells"] = int(load_cells.size)
         rec["fix_cells"] = int(fix_cells.size)
         if load_cells.size == 0 or fix_cells.size == 0:
-            warnings.append(
-                f"case {ci}: no load or fixture cells on this grid — load path broken"
-            )
+            warnings.append(f"case {ci}: no load or fixture cells on this grid — load path broken")
             log.warning(
                 "loadpath_cert.endpoint_missing",
                 case=ci,
@@ -254,8 +245,7 @@ def loadpath_certificate(
             # the min cut is just indeterminate for this case.
             rec["reachable"] = True
             warnings.append(
-                f"case {ci}: load and fixture share cells — reachable, "
-                "bottleneck indeterminate"
+                f"case {ci}: load and fixture share cells — reachable, bottleneck indeterminate"
             )
             out["per_case"].append(rec)
             continue
@@ -310,9 +300,7 @@ def loadpath_certificate(
                 log.warning("loadpath_cert.flow_anomaly", case=ci)
                 rec["reachable"] = None
             else:
-                warnings.append(
-                    f"case {ci}: loads cannot reach the fixtures through the solid"
-                )
+                warnings.append(f"case {ci}: loads cannot reach the fixtures through the solid")
                 log.warning("loadpath_cert.unreachable", case=ci)
             out["per_case"].append(rec)
             continue
@@ -335,9 +323,7 @@ def loadpath_certificate(
         out["load_path_ok"] = True
     else:
         out["load_path_ok"] = None
-    bottlenecks = [
-        r["bottleneck_mm2"] for r in out["per_case"] if r["bottleneck_mm2"] is not None
-    ]
+    bottlenecks = [r["bottleneck_mm2"] for r in out["per_case"] if r["bottleneck_mm2"] is not None]
     floors = [r["sf_floor"] for r in out["per_case"] if r["sf_floor"] is not None]
     out["bottleneck_mm2"] = min(bottlenecks) if bottlenecks else None
     out["sf_floor"] = min(floors) if floors else None

@@ -248,9 +248,7 @@ def test_recommend_thin_walled() -> None:
 
 
 def test_recommend_headroom() -> None:
-    mode, _ = _recommend_structure_mode(
-        _report(fill=0.6, sf=4.0), keep_regions=[], anchors=[]
-    )
+    mode, _ = _recommend_structure_mode(_report(fill=0.6, sf=4.0), keep_regions=[], anchors=[])
     assert mode == "infill"
 
 
@@ -262,9 +260,7 @@ def test_recommend_guided_with_keeps() -> None:
 
 
 def test_recommend_topopt_open_freedom() -> None:
-    mode, _ = _recommend_structure_mode(
-        _report(fill=0.7, sf=2.0), keep_regions=[], anchors=[]
-    )
+    mode, _ = _recommend_structure_mode(_report(fill=0.7, sf=2.0), keep_regions=[], anchors=[])
     assert mode == "topopt"
 
 
@@ -311,12 +307,8 @@ def test_latest_parent_density_picks_simp_field(tmp_path, monkeypatch) -> None:
     import cadx.agent.worker_jobs as wj
 
     vdir = tmp_path / "v2"
-    _write_npz(
-        vdir / "1" / "topopt" / "density.npz", density=np.ones(64) * 0.5, kind="simp"
-    )
-    _write_npz(
-        vdir / "2" / "topopt" / "density.npz", density=np.ones(64) * 0.9, kind="beso"
-    )
+    _write_npz(vdir / "1" / "topopt" / "density.npz", density=np.ones(64) * 0.5, kind="simp")
+    _write_npz(vdir / "2" / "topopt" / "density.npz", density=np.ones(64) * 0.9, kind="beso")
     _write_npz(
         vdir / "2" / "topopt" / "guide_density.npz",
         density=np.ones(64) * 0.8,

@@ -129,9 +129,7 @@ def _part_values(part: StandardPartSpec) -> tuple[type, dict[str, Any], dict[str
         parameters=parameters,
     )
     schema = entry.get("parameters") or {}
-    if _thread_length_request(part) is not None and not hasattr(
-        cls, "calculate_thread_length"
-    ):
+    if _thread_length_request(part) is not None and not hasattr(cls, "calculate_thread_length"):
         raise ValueError(
             f"{part.class_name}: thread_length/full_thread only applies to "
             "screw parts with a norm-derived thread reach"
@@ -305,8 +303,7 @@ def covered_feature_indices(spec: Any) -> set[int]:
     if not parts:
         return set()
     has_fastener = any(
-        (catalog.find_entry(_get(part, "class_name")) or {}).get("category")
-        in _FASTENER_CATEGORIES
+        (catalog.find_entry(_get(part, "class_name")) or {}).get("category") in _FASTENER_CATEGORIES
         for part in parts
     )
     covered: set[int] = set()
@@ -323,9 +320,7 @@ def is_standard_only(spec: PartSpec) -> bool:
     if not spec.standard_parts or any(question.blocking for question in spec.open_questions):
         return False
     covered = covered_feature_indices(spec)
-    if any(
-        feature.name and i not in covered for i, feature in enumerate(spec.features)
-    ):
+    if any(feature.name and i not in covered for i, feature in enumerate(spec.features)):
         return False
     try:
         reports = validate_standard_parts(spec.standard_parts)
@@ -357,9 +352,7 @@ def is_standard_only(spec: PartSpec) -> bool:
             want_len = float(requested_length) if requested_length else 0.0
             if want_len and thread.get("max_thread_length"):
                 want_len = min(want_len, float(thread["max_thread_length"]))
-            if want_len and abs(want_len - thread["length"]) > max(
-                0.1, thread["length"] * 0.01
-            ):
+            if want_len and abs(want_len - thread["length"]) > max(0.1, thread["length"] * 0.01):
                 return False
     return True
 
@@ -393,9 +386,7 @@ def _measure_placement(
         return rotation, 0.0, 0.0, False
 
 
-def _swept_thread_block(
-    ident: str, cls: type, sub_name: str, kwargs: list[str]
-) -> str:
+def _swept_thread_block(ident: str, cls: type, sub_name: str, kwargs: list[str]) -> str:
     """Emitted `CADX_DETAIL_MODE == "export"` block for headed screws.
 
     Adds the cadlib helical-sweep ridge onto the simple body; on any sweep
@@ -445,6 +436,7 @@ def build_standard_part_code(parts: list[StandardPartSpec]) -> str:  # noqa: C90
     reports = validate_standard_parts(parts)
     imports: dict[str, list[str]] = {}
     uses_pipe = any(row["part"].class_name == "Pipe" for row in reports)
+
     # parts needing a generated subclass: CounterSunkScrew always (norm
     # head profile), plus any screw with a thread-length request — bd_warehouse
     # computes the reach in `calculate_thread_length`, not a ctor kwarg.
@@ -454,9 +446,7 @@ def build_standard_part_code(parts: list[StandardPartSpec]) -> str:  # noqa: C90
         methods: set[str] = set()
         if part.class_name == "CounterSunkScrew":
             methods.add("head_profile")
-        if _thread_length_request(part) is not None and hasattr(
-            cls, "calculate_thread_length"
-        ):
+        if _thread_length_request(part) is not None and hasattr(cls, "calculate_thread_length"):
             methods.add("calculate_thread_length")
         return methods
 
@@ -482,10 +472,7 @@ def build_standard_part_code(parts: list[StandardPartSpec]) -> str:  # noqa: C90
         group_names[key] = name
 
     subclassed: set[str] = {
-        cls.__name__
-        for row in reports
-        for cls in [row["class"]]
-        if _part_methods(row["part"], cls)
+        cls.__name__ for row in reports for cls in [row["class"]] if _part_methods(row["part"], cls)
     }
     for row in reports:
         cls = row["class"]
@@ -517,9 +504,7 @@ def build_standard_part_code(parts: list[StandardPartSpec]) -> str:  # noqa: C90
         schema: dict[str, Any] = (catalog.find_entry(part.class_name) or {}).get("parameters") or {}
         thread = row["thread"]
         threaded = thread is not None
-        rotation, z_lift, proto_min_z, head_down = _measure_placement(
-            cls, values, schema, axis
-        )
+        rotation, z_lift, proto_min_z, head_down = _measure_placement(cls, values, schema, axis)
         kwargs: list[str] = []
         for name, value in values.items():
             if name == "simple":
@@ -551,8 +536,7 @@ def build_standard_part_code(parts: list[StandardPartSpec]) -> str:  # noqa: C90
             subclass_method_names[sub_name] = methods
         if thread_expr is not None and methods and sub_name not in subclass_bodies:
             subclass_bodies[sub_name] = [
-                "    def calculate_thread_length(self):\n"
-                f"        return {thread_expr}"
+                f"    def calculate_thread_length(self):\n        return {thread_expr}"
             ]
         # Headed screws with a real thread: always emit simple=True (the cheap
         # body — preview used it anyway) and let the per-placement block add
@@ -569,8 +553,8 @@ def build_standard_part_code(parts: list[StandardPartSpec]) -> str:  # noqa: C90
             and cls.__name__ != "SetScrew"
         )
         if "simple" in schema:
-            simple_value = "True" if (swept_thread or not threaded) else (
-                '(CADX_DETAIL_MODE == "preview")'
+            simple_value = (
+                "True" if (swept_thread or not threaded) else ('(CADX_DETAIL_MODE == "preview")')
             )
             kwargs.append(f"simple={simple_value}")
         if part.class_name == "CounterSunkScrew":
@@ -611,9 +595,7 @@ def build_standard_part_code(parts: list[StandardPartSpec]) -> str:  # noqa: C90
             else:
                 constructors.append(f"{ident} = {constructor}")
                 if swept_thread:
-                    constructors.append(
-                        _swept_thread_block(ident, cls, sub_name, kwargs)
-                    )
+                    constructors.append(_swept_thread_block(ident, cls, sub_name, kwargs))
                     uses_swept_thread = True
             placed = (
                 f"Pos({position[0]}, {position[1]}, {position[2] + z_lift}) * "
@@ -651,9 +633,7 @@ def build_standard_part_code(parts: list[StandardPartSpec]) -> str:  # noqa: C90
         for module, names in sorted(imports.items())
     ]
     if uses_swept_thread:
-        import_lines.append(
-            "from cadlib.threads import helical_thread as _cadx_thread_solid"
-        )
+        import_lines.append("from cadlib.threads import helical_thread as _cadx_thread_solid")
     head_profile_lines = [
         "    def head_profile(self):",
         "        a, k, dk = (self.screw_data[key] for key in ('a', 'k', 'dk'))",

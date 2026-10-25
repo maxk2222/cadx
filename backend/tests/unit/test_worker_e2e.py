@@ -174,9 +174,7 @@ async def test_run_agent_job_waiting_then_resume(_db, monkeypatch):
             await enqueue_resume(db, j, "Q: wall?\nA: 2", enqueue_fn=_enqueue)
 
     # llm script continues with PLAN/CODE/CRITIQUE — resume skips intake
-    result = await wj.run_agent_job(
-        {}, {"job_id": str(resume.id), "version_id": str(version.id)}
-    )
+    result = await wj.run_agent_job({}, {"job_id": str(resume.id), "version_id": str(version.id)})
     assert result["status"] == "succeeded", result
 
     async with async_session() as db:
@@ -186,9 +184,7 @@ async def test_run_agent_job_waiting_then_resume(_db, monkeypatch):
         assert v.status == VersionStatus.succeeded
         # the clarified spec ran to completion — no second waiting cycle
         assert not (r.questions or [])
-        assert any(
-            "Clarification answers" in a for a in (v.spec or {}).get("assumptions", [])
-        )
+        assert any("Clarification answers" in a for a in (v.spec or {}).get("assumptions", []))
 
 
 @pytest.mark.slow

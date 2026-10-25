@@ -187,9 +187,7 @@ def render_markdown(rows: list[ReportRow], *, title: str = "eval report") -> str
                 rate = r.stage_pass.get(sid)
                 rate_text = f"{rate:.0%}" if rate is not None else "-"
                 count = r.stage_inconclusive.get(sid, 0)
-                lines.append(
-                    f"| {r.variant} | {r.case} | {sid} | {rate_text} | {count} |"
-                )
+                lines.append(f"| {r.variant} | {r.case} | {sid} | {rate_text} | {count} |")
     return "\n".join(lines)
 
 

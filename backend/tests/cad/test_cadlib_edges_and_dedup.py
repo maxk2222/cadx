@@ -51,9 +51,7 @@ def _drilled_plate():
 def test_concave_edges_finds_l_bracket_inner_corner():
     edges = concave_edges(_l_bracket(), axis="y")
     assert edges, "inner join edge not classified concave"
-    assert any(
-        abs(e.center().X + 36.0) < 0.5 and abs(e.center().Z - 6.0) < 0.5 for e in edges
-    )
+    assert any(abs(e.center().X + 36.0) < 0.5 and abs(e.center().Z - 6.0) < 0.5 for e in edges)
 
 
 def test_convex_edges_finds_outer_silhouette():
@@ -134,8 +132,7 @@ def test_list_edges_inventory():
     assert out["by_axis"]
     assert out["convex"]
     assert any(
-        abs(e["center"][0] + 36.0) < 0.5 and abs(e["center"][2] - 6.0) < 0.5
-        for e in out["concave"]
+        abs(e["center"][0] + 36.0) < 0.5 and abs(e["center"][2] - 6.0) < 0.5 for e in out["concave"]
     )
     y_only = inspect_tools.list_edges(part, axis="y")
     assert y_only["total"] < out["total"]
@@ -165,18 +162,14 @@ def test_mesh_fallback_dedups_side_holes(tmp_path):
     wall = Pos(-38, 0, 6) * Box(4, 60, 20, align=(Align.CENTER, Align.CENTER, Align.MIN))
     part = plate + wall
     for y in (20.0, -20.0):
-        part -= Pos(25, y, -1) * Cylinder(
-            2.5, 10, align=(Align.CENTER, Align.CENTER, Align.MIN)
-        )
+        part -= Pos(25, y, -1) * Cylinder(2.5, 10, align=(Align.CENTER, Align.CENTER, Align.MIN))
     for y in (15.0, -15.0):
         part -= Pos(-38, y, 16) * Rot(0, 90, 0) * Cylinder(2.5, 10)
     stl = tmp_path / "part.stl"
     export_stl(part, str(stl))
     m = extract_features(part, stl)
     assert m.total_holes == 4
-    axes = sorted(
-        (g.axis or "").lstrip("+-") for g in m.hole_groups if not g.elongated
-    )
+    axes = sorted((g.axis or "").lstrip("+-") for g in m.hole_groups if not g.elongated)
     assert axes == ["x", "z"]
 
 
@@ -206,9 +199,7 @@ def test_verifyspec_through_axis_position_pass():
     cleanly against measured (x, y) centres."""
     plate = Box(80, 60, 6, align=(Align.CENTER, Align.CENTER, Align.MIN))
     for y in (20.0, -20.0):
-        plate -= Pos(25, y, -1) * Cylinder(
-            2.5, 10, align=(Align.CENTER, Align.CENTER, Align.MIN)
-        )
+        plate -= Pos(25, y, -1) * Cylinder(2.5, 10, align=(Align.CENTER, Align.CENTER, Align.MIN))
     measured = extract_features(plate).model_dump()
     spec = {
         "name": "plate",

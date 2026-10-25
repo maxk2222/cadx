@@ -98,9 +98,7 @@ async def test_unaccept_and_reaccept(client):
     assert r.json()["accepted_at"] is not None
 
     # combined rename + accept in one PATCH works
-    r = await client.patch(
-        f"/api/versions/{vid}", json={"name": "final", "accepted": True}
-    )
+    r = await client.patch(f"/api/versions/{vid}", json={"name": "final", "accepted": True})
     assert r.status_code == 200 and r.json()["name"] == "final"
 
 

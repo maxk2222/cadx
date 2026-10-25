@@ -206,8 +206,7 @@ CHAT_ACTION_TOOLS = [
                 "part's tree (default: create a new part)"
             ),
             "part_name": _s(
-                "name of a NEW part to create, or the exact name of an "
-                "existing part to reuse"
+                "name of a NEW part to create, or the exact name of an existing part to reuse"
             ),
             "asset_ids": {
                 "type": "array",
@@ -787,8 +786,7 @@ class ProjectToolSession(ToolSession):
             )
             parts = {p.id: p for p in part_rows.scalars().all()}
         part_label = {
-            pid: f"P{p.number}{f' · {p.name}' if p.name else ''}"
-            for pid, p in parts.items()
+            pid: f"P{p.number}{f' · {p.name}' if p.name else ''}" for pid, p in parts.items()
         }
         active = {
             str(j.version_id): str(j.id)

@@ -202,9 +202,7 @@ def render_regions(
             fixed_cells, load_cells, keep_cells = case_region_masks(
                 domain, case, keep_regions, anchors
             )
-            arrows, f_strs, force_n = _load_arrows(
-                domain, case, anchors, centers3d, arrow_len
-            )
+            arrows, f_strs, force_n = _load_arrows(domain, case, anchors, centers3d, arrow_len)
 
             tag = np.zeros(domain.dims, dtype=np.uint8)
             tag[keep_cells] = _KEEP

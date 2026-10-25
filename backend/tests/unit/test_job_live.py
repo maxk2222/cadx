@@ -33,7 +33,9 @@ async def _mk_job(project_name: str = "live") -> Job:
         p = Project(name=project_name)
         db.add(p)
         await db.flush()
-        v = Version(project_id=p.id, part_id=uuid.uuid4(), number=1, kind=VersionKind.generate, prompt="x")
+        v = Version(
+            project_id=p.id, part_id=uuid.uuid4(), number=1, kind=VersionKind.generate, prompt="x"
+        )
         db.add(v)
         await db.flush()
         j = Job(version_id=v.id, type=JobType.generate)
@@ -224,7 +226,9 @@ async def test_live_renders_and_view_selection(client):
         p = Project(name="renders")
         db.add(p)
         await db.flush()
-        v = Version(project_id=p.id, part_id=uuid.uuid4(), number=1, kind=VersionKind.generate, prompt="x")
+        v = Version(
+            project_id=p.id, part_id=uuid.uuid4(), number=1, kind=VersionKind.generate, prompt="x"
+        )
         db.add(v)
         await db.flush()
         vid, pid = v.id, p.id
@@ -271,7 +275,9 @@ async def _mk_version(name: str) -> tuple[uuid.UUID, uuid.UUID]:
         p = Project(name=name)
         db.add(p)
         await db.flush()
-        v = Version(project_id=p.id, part_id=uuid.uuid4(), number=1, kind=VersionKind.generate, prompt="x")
+        v = Version(
+            project_id=p.id, part_id=uuid.uuid4(), number=1, kind=VersionKind.generate, prompt="x"
+        )
         db.add(v)
         await db.flush()
         vid, pid = v.id, p.id

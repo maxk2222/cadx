@@ -183,9 +183,7 @@ def _bar_domain() -> VoxelDomain:
     inscribed section is exactly one cell face (1 mm²) and the transverse
     min cut is 4 mm²."""
     dims = (8, 2, 2)
-    return VoxelDomain(
-        origin=np.zeros(3), pitch=1.0, dims=dims, solid=np.ones(dims, dtype=bool)
-    )
+    return VoxelDomain(origin=np.zeros(3), pitch=1.0, dims=dims, solid=np.ones(dims, dtype=bool))
 
 
 def test_cert_bar_axial_floor() -> None:
@@ -322,9 +320,7 @@ def test_cert_large_domain_stays_int32_safe() -> None:
     dynamic unit keeps the scaled network under 1e9 and the verdict stays
     truthful."""
     dims = (20, 20, 20)
-    dom = VoxelDomain(
-        origin=np.zeros(3), pitch=1.0, dims=dims, solid=np.ones(dims, dtype=bool)
-    )
+    dom = VoxelDomain(origin=np.zeros(3), pitch=1.0, dims=dims, solid=np.ones(dims, dtype=bool))
     fix_cells = np.zeros(dims, dtype=bool)
     fix_cells[0] = True
     load_cells = np.zeros(dims, dtype=bool)
@@ -351,9 +347,7 @@ def test_cert_flow_anomaly_is_inconclusive_not_broken(
     fix_cells[0, :, :] = True
     load_cells = np.zeros(dom.dims, dtype=bool)
     load_cells[-1, :, :] = True
-    monkeypatch.setattr(
-        csgraph, "maximum_flow", lambda *a, **k: SimpleNamespace(flow_value=0)
-    )
+    monkeypatch.setattr(csgraph, "maximum_flow", lambda *a, **k: SimpleNamespace(flow_value=0))
     cert = loadpath_certificate(dom, [_case_on(dom, fix_cells, load_cells)], yield_mpa=25.0)
     assert cert["load_path_ok"] is None
     assert cert["per_case"][0]["reachable"] is None

@@ -68,6 +68,7 @@ def _thread_preview_lines(pv: Any, features: list[dict[str, Any]]) -> list[Any]:
         "+z": (0.0, 0.0, 1.0),
         "-z": (0.0, 0.0, -1.0),
     }
+
     def _num(v: Any) -> float | None:
         # generated CADX_FEATURES records are model output — values arrive
         # stringified or list-wrapped ([1.75], [[0,0,0]]); coerce what we can
@@ -84,8 +85,10 @@ def _thread_preview_lines(pv: Any, features: list[dict[str, Any]]) -> list[Any]:
         try:
             axis = np.asarray(axes.get(str(feature.get("axis") or "+z"), (0.0, 0.0, 1.0)))
             pos_raw = feature.get("position_mm") or (0.0, 0.0, 0.0)
-            if isinstance(pos_raw, list | tuple) and pos_raw and isinstance(
-                pos_raw[0], list | tuple
+            if (
+                isinstance(pos_raw, list | tuple)
+                and pos_raw
+                and isinstance(pos_raw[0], list | tuple)
             ):
                 pos_raw = pos_raw[0]
             position = np.asarray(pos_raw, dtype=float)
@@ -94,7 +97,14 @@ def _thread_preview_lines(pv: Any, features: list[dict[str, Any]]) -> list[Any]:
             pitch = _num(feature.get("pitch"))
             length = _num(feature.get("length"))
             diameter = _num(feature.get("major_diameter"))
-            if not pitch or not length or not diameter or pitch <= 0 or length <= 0 or diameter <= 0:
+            if (
+                not pitch
+                or not length
+                or not diameter
+                or pitch <= 0
+                or length <= 0
+                or diameter <= 0
+            ):
                 continue
             start = _num(feature.get("start")) or 0.0
         except (TypeError, ValueError):
@@ -188,8 +198,7 @@ def render_views(
             pl.camera.zoom(1.15)
             tag = " (xray)" if suffix else ""
             label = pl.add_text(
-                f"{view}{tag}  -  {title}"
-                + ("  -  thread preview" if thread_features else ""),
+                f"{view}{tag}  -  {title}" + ("  -  thread preview" if thread_features else ""),
                 position="upper_edge",
                 font_size=14,
                 color="black",
@@ -221,15 +230,21 @@ def render_views(
 
 def _thread_detail_camera(
     features: list[dict[str, Any]],
-) -> tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float], float] | None:
+) -> (
+    tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float], float]
+    | None
+):
     """Side-on close-up of the first thread feature — a 20 mm thread zone on a
     150 mm part is unreadable at part zoom. Axis up, camera 5 diameters out."""
     import numpy as np
 
     axes = {
-        "+x": (1.0, 0.0, 0.0), "-x": (-1.0, 0.0, 0.0),
-        "+y": (0.0, 1.0, 0.0), "-y": (0.0, -1.0, 0.0),
-        "+z": (0.0, 0.0, 1.0), "-z": (0.0, 0.0, -1.0),
+        "+x": (1.0, 0.0, 0.0),
+        "-x": (-1.0, 0.0, 0.0),
+        "+y": (0.0, 1.0, 0.0),
+        "-y": (0.0, -1.0, 0.0),
+        "+z": (0.0, 0.0, 1.0),
+        "-z": (0.0, 0.0, -1.0),
     }
     for feature in features:
         axis = np.asarray(axes.get(str(feature.get("axis") or "+z"), (0.0, 0.0, 1.0)))

@@ -87,7 +87,9 @@ def test_beso_reaches_target_volume_without_runaway_compliance() -> None:
 def test_beso_density_is_binary() -> None:
     """BESO produces a 0/1 design — >=99% of design cells at the floor or 1."""
     dom, fixed, F = _case()
-    passive = passive_solid_mask(dom, [], [fixed], [region_node_mask(dom, _cantilever().loads[0].region)])
+    passive = passive_solid_mask(
+        dom, [], [fixed], [region_node_mask(dom, _cantilever().loads[0].region)]
+    )
     res = beso(dom, E_PLA, NU, [(fixed, F)], passive, _params())
     design = dom.solid.ravel() & ~passive
     rho = res.density[design]
@@ -315,9 +317,7 @@ def test_beso_connectivity_optout_disables_guard() -> None:
         _params(max_iter=3, beso_connectivity=False),
         x0=x0,
     )
-    on = beso(
-        dom, E_PLA, NU, [(fixed, F)], passive, _params(max_iter=3), x0=x0
-    )
+    on = beso(dom, E_PLA, NU, [(fixed, F)], passive, _params(max_iter=3), x0=x0)
     for r in off.history:
         assert "n_bridged" not in r
         assert "n_debris_dropped" not in r
@@ -335,9 +335,7 @@ def test_beso_connectivity_optout_normal_run() -> None:
     dom, fixed, F = _case()
     passive = np.zeros(dom.cell_count, dtype=bool)
     on = beso(dom, E_PLA, NU, [(fixed, F)], passive, _params())
-    off = beso(
-        dom, E_PLA, NU, [(fixed, F)], passive, _params(beso_connectivity=False)
-    )
+    off = beso(dom, E_PLA, NU, [(fixed, F)], passive, _params(beso_connectivity=False))
     assert on.status in {"converged", "limit_cycle"}
     assert off.converged
     # bounded compliance in both — the guard keeps the objective physical

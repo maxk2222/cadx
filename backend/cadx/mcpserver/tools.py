@@ -202,8 +202,7 @@ MCP_TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "child always inherits its parent's part)"
             ),
             "part_name": _s(
-                "name of a NEW part, or exact name of an existing part "
-                "(root submissions only)"
+                "name of a NEW part, or exact name of an existing part (root submissions only)"
             ),
             "prompt": _s("version label / provenance note"),
             **_WAIT,
@@ -236,9 +235,7 @@ MCP_TOOL_SCHEMAS: list[dict[str, Any]] = [
             "model": _s("adapter id — empty = runtime default (see mesh_health)"),
             "seed": _i("generator seed, default 0"),
             "part_id": _s("target part id from list_parts — default: a new part"),
-            "part_name": _s(
-                "name of a NEW part, or exact name of an existing part"
-            ),
+            "part_name": _s("name of a NEW part, or exact name of an existing part"),
             "post": {
                 "type": "object",
                 "description": "post-processing overrides (up/front/scale/"
@@ -861,9 +858,7 @@ async def _h_list_jobs(session: Any, args: dict[str, Any]) -> dict[str, Any]:
                 "version_number": v.number,
                 "part_id": str(v.part_id),
                 "part": (
-                    f"P{pt.number}{f' · {pt.name}' if pt.name else ''}"
-                    if pt is not None
-                    else None
+                    f"P{pt.number}{f' · {pt.name}' if pt.name else ''}" if pt is not None else None
                 ),
                 "created_at": j.created_at.isoformat(),
             }

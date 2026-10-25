@@ -48,9 +48,7 @@ def _strut_cell(v: int, rho: float, phase: np.ndarray | None = None) -> VoxelDom
         octet=False,
         normalize=True,
     )
-    return VoxelDomain(
-        origin=base.origin, pitch=base.pitch, dims=base.dims, solid=occ
-    )
+    return VoxelDomain(origin=base.origin, pitch=base.pitch, dims=base.dims, solid=occ)
 
 
 # --------------------------------------------------------------------------- #
@@ -118,14 +116,10 @@ def test_lattice_table_caching_deterministic(tmp_path) -> None:
     """The disk cache returns the identical table on a second call — and
     interpolation yields sane entries."""
     rhos = (0.25, 0.50)
-    t1 = lattice_table(
-        "struts_aligned", NU, cell_voxels=8, densities=rhos, cache_dir=tmp_path
-    )
+    t1 = lattice_table("struts_aligned", NU, cell_voxels=8, densities=rhos, cache_dir=tmp_path)
     files = list(tmp_path.glob("*.npz"))
     assert len(files) == 1
-    t2 = lattice_table(
-        "struts_aligned", NU, cell_voxels=8, densities=rhos, cache_dir=tmp_path
-    )
+    t2 = lattice_table("struts_aligned", NU, cell_voxels=8, densities=rhos, cache_dir=tmp_path)
     np.testing.assert_array_equal(t1.C_grid, t2.C_grid)
     np.testing.assert_array_equal(t1.A_grid, t2.A_grid)
     np.testing.assert_array_equal(t1.rho_grid, t2.rho_grid)
@@ -162,13 +156,14 @@ def test_infill_homog_elems_buckets(tmp_path) -> None:
     """Interior densities bucket into <= n_buckets classes on top of the
     base class 0; micro_amp carries A(rho_b) on interior cells, 1 outside."""
     t = lattice_table(
-        "struts_aligned", NU, cell_voxels=8,
-        densities=(0.15, 0.30, 0.50, 0.75), cache_dir=tmp_path,
+        "struts_aligned",
+        NU,
+        cell_voxels=8,
+        densities=(0.15, 0.30, 0.50, 0.75),
+        cache_dir=tmp_path,
     )
     dom = _full_cell(4)
-    d = np.where(
-        np.indices(dom.dims)[0].ravel() < 2, 0.4, 0.0
-    )  # half interior at d=0.4, half void
+    d = np.where(np.indices(dom.dims)[0].ravel() < 2, 0.4, 0.0)  # half interior at d=0.4, half void
     interior = np.indices(dom.dims)[0].ravel() < 2
     ec, cd, amp = infill_homog_elems(dom, d, interior, t, n_buckets=2)
 
@@ -194,8 +189,11 @@ def test_infill_homog_elems_buckets(tmp_path) -> None:
 def test_infill_homog_elems_base_D_passthrough(tmp_path) -> None:
     """base_D (e.g. the aniso base tensor) is installed as class_D[0]."""
     t = lattice_table(
-        "struts_aligned", NU, cell_voxels=8,
-        densities=(0.3, 0.6), cache_dir=tmp_path,
+        "struts_aligned",
+        NU,
+        cell_voxels=8,
+        densities=(0.3, 0.6),
+        cache_dir=tmp_path,
     )
     dom = _full_cell(4)
     interior = np.zeros(dom.cell_count, dtype=bool)

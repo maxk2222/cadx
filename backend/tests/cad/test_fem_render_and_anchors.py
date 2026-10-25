@@ -145,9 +145,7 @@ def test_render_regions_bearing_load(tmp_path: Path) -> None:
     mesh = _bored_mesh()
     dom = voxelize(mesh, 2.0, 150_000)
     anchors = scan_mesh_anchors(mesh, step_mm=1.0)
-    idx = next(
-        i + 1 for i, a in enumerate(anchors) if a["axis"] == "+z" and a["kind"] == "hole"
-    )
+    idx = next(i + 1 for i, a in enumerate(anchors) if a["axis"] == "+z" and a["kind"] == "hole")
     case = LoadCase(
         name="bearing",
         fixed=[RegionSpec(kind="face", axis="-z")],
@@ -181,9 +179,7 @@ def test_render_regions_moment_ring(tmp_path: Path) -> None:
     mesh = _bored_mesh()
     dom = voxelize(mesh, 2.0, 150_000)
     anchors = scan_mesh_anchors(mesh, step_mm=1.0)
-    idx = next(
-        i + 1 for i, a in enumerate(anchors) if a["axis"] == "+z" and a["kind"] == "hole"
-    )
+    idx = next(i + 1 for i, a in enumerate(anchors) if a["axis"] == "+z" and a["kind"] == "hole")
     case = LoadCase(
         name="shaft_torque",
         fixed=[RegionSpec(kind="face", axis="-x")],

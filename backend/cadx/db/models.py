@@ -153,9 +153,7 @@ class Part(SQLModel, table=True):
     (see cadx/parts.py + spawn_version_job). `number` is per-project
     sequential (P1, P2 …) like Version.number is globally sequential."""
 
-    __table_args__ = (
-        UniqueConstraint("project_id", "number", name="uq_part_project_number"),
-    )
+    __table_args__ = (UniqueConstraint("project_id", "number", name="uq_part_project_number"),)
 
     id: uuid.UUID = SField(default_factory=uuid.uuid4, primary_key=True)
     project_id: uuid.UUID = SField(foreign_key="project.id", index=True)

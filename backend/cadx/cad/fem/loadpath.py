@@ -58,9 +58,7 @@ def _solid_graph(domain: VoxelDomain) -> sparse.csr_matrix:
         cols.append(np.concatenate([b, a]))
     r = np.concatenate(rows) if rows else np.empty(0, dtype=np.int64)
     c = np.concatenate(cols) if cols else np.empty(0, dtype=np.int64)
-    return sparse.coo_matrix(
-        (np.full(r.size, float(domain.pitch)), (r, c)), shape=(n, n)
-    ).tocsr()
+    return sparse.coo_matrix((np.full(r.size, float(domain.pitch)), (r, c)), shape=(n, n)).tocsr()
 
 
 def _cells_at_nodes(domain: VoxelDomain, node_mask: np.ndarray, solid: np.ndarray) -> np.ndarray:
@@ -74,9 +72,7 @@ def _cells_at_nodes(domain: VoxelDomain, node_mask: np.ndarray, solid: np.ndarra
     return np.flatnonzero(touch & solid)
 
 
-def _multi_source_dist(
-    graph: sparse.csr_matrix, sources: np.ndarray
-) -> np.ndarray:
+def _multi_source_dist(graph: sparse.csr_matrix, sources: np.ndarray) -> np.ndarray:
     """(n,) shortest distance from the nearest source node — inf where
     unreachable (other solid components, non-solid cells)."""
     if sources.size == 0:
@@ -142,9 +138,7 @@ def loadpath_field(
     rho[solid] = base_rho
 
     graph = _solid_graph(domain)
-    norms = np.array(
-        [float(np.abs(np.asarray(F, dtype=float)).sum()) for _, F in cases_resolved]
-    )
+    norms = np.array([float(np.abs(np.asarray(F, dtype=float)).sum()) for _, F in cases_resolved])
     w_max = float(norms.max()) if norms.size else 0.0
     if w_max <= 0.0:
         norms = np.ones(len(cases_resolved))

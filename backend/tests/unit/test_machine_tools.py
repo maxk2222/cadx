@@ -67,9 +67,7 @@ async def _real_verify(code: str):
 
 
 def _write_session_brep(ctx: AgentCtx, part) -> None:
-    it_dir = (
-        storage.version_dir(ctx.project_id, ctx.version_id) / "iterations" / "0" / "_run"
-    )
+    it_dir = storage.version_dir(ctx.project_id, ctx.version_id) / "iterations" / "0" / "_run"
     it_dir.mkdir(parents=True, exist_ok=True)
     export_brep(part, str(it_dir / "model.brep"))
 
@@ -107,9 +105,7 @@ async def test_machine_feature_tap_registers_thread_in_cadx_features():
     assert res["approach_normal"] == pytest.approx([-1, 0, 0], abs=1e-3)
     assert "CADX_FEATURES = [_feat_tap_0]" in session.buffer
     # the emitted record carries the thread fields the export gate counts
-    assert "kind': 'thread'" in res["emitted_code"] or "machine_on_face" in res[
-        "emitted_code"
-    ]
+    assert "kind': 'thread'" in res["emitted_code"] or "machine_on_face" in res["emitted_code"]
     verify = res["verify"]
     assert verify["ok"], verify
     feats = (verify.get("features") or {}).get("design_features") or []
@@ -120,9 +116,7 @@ async def test_machine_feature_rejects_bad_op_and_bad_face():
     ctx = _ctx(agent_build_verify_max=4)
     session = ToolSession(ctx, kind="build", code=SEED, verify_fn=_real_verify)
     _write_session_brep(ctx, Box(60, 40, 20))
-    res = await session.execute(
-        "machine_feature", {"face": "top", "op": "weld", "dims": {}}
-    )
+    res = await session.execute("machine_feature", {"face": "top", "op": "weld", "dims": {}})
     assert not res["ok"] and "one of" in res["error"]
     res = await session.execute(
         "machine_feature",

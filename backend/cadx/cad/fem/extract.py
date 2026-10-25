@@ -774,9 +774,7 @@ def drop_island_components(
             if vol < dominant:  # retained island — report, don't hide it
                 report["kept_islands"].append(round(vol, 3))
     report["islands_found"] = len(parts) - 1
-    report["dropped_vol_frac"] = (
-        round(dropped_vol / sum(vols), 6) if sum(vols) > 0 else 0.0
-    )
+    report["dropped_vol_frac"] = round(dropped_vol / sum(vols), 6) if sum(vols) > 0 else 0.0
     if report["dropped"] == 0:
         return mesh, report
     out = kept[0] if len(kept) == 1 else trimesh.util.concatenate(kept)

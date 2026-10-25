@@ -78,7 +78,9 @@ async def ensure_features(outcome: StageOutcome) -> None:
         log.warning("eval.features.mesh_failed", error=f"{type(e).__name__}: {e}")
     outcome.features_available = False
     outcome.features_error = "; ".join(errors) or (
-        "no STEP/STL artifact available" if step is None and stl is None else "feature extraction returned no evidence"
+        "no STEP/STL artifact available"
+        if step is None and stl is None
+        else "feature extraction returned no evidence"
     )
     log.warning(
         "eval.features.unavailable",

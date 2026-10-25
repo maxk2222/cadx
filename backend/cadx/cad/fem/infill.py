@@ -469,12 +469,9 @@ def _line_dist(x: np.ndarray, period: float) -> np.ndarray:
 
 
 _AXIS_FAMILIES = np.eye(3)
-_OCTET_FAMILIES = (
-    np.array(
-        [[1.0, 1.0, 1.0], [1.0, 1.0, -1.0], [1.0, -1.0, 1.0], [-1.0, 1.0, 1.0]]
-    )
-    / math.sqrt(3.0)
-)
+_OCTET_FAMILIES = np.array(
+    [[1.0, 1.0, 1.0], [1.0, 1.0, -1.0], [1.0, -1.0, 1.0], [-1.0, 1.0, 1.0]]
+) / math.sqrt(3.0)
 
 
 def _strut_families(octet: bool) -> np.ndarray:
@@ -482,11 +479,7 @@ def _strut_families(octet: bool) -> np.ndarray:
     the 4 body-diagonal families when `octet` (the octet-truss lattice:
     45°-dominated stress states get real diagonal members instead of
     stair-stepped axis pairs)."""
-    return (
-        np.concatenate([_AXIS_FAMILIES, _OCTET_FAMILIES], axis=0)
-        if octet
-        else _AXIS_FAMILIES
-    )
+    return np.concatenate([_AXIS_FAMILIES, _OCTET_FAMILIES], axis=0) if octet else _AXIS_FAMILIES
 
 
 def _perp_lattice_basis(f: np.ndarray) -> np.ndarray:
@@ -566,9 +559,7 @@ def _strut_family_widths(
     return np.clip(w, 0.0, 1.0)
 
 
-def _strut_family_dists(
-    centers: np.ndarray, p: float, fams: np.ndarray
-) -> np.ndarray:
+def _strut_family_dists(centers: np.ndarray, p: float, fams: np.ndarray) -> np.ndarray:
     """(n, nfam) normalized distance to the nearest strut line per family —
     0 on a strut axis, 1 at the in-plane mid-point between struts. Axis
     families use the square-rod Chebyshev distance on the p-grid; diagonal
@@ -581,9 +572,7 @@ def _strut_family_dists(
         f = fams[fi]
         if fi < 3:
             o0, o1 = tuple(i for i in range(3) if i != fi)
-            dists[:, fi] = np.maximum(
-                _line_dist(centers[:, o0], p), _line_dist(centers[:, o1], p)
-            )
+            dists[:, fi] = np.maximum(_line_dist(centers[:, o0], p), _line_dist(centers[:, o1], p))
         else:
             xu = centers / p  # period units
             xp = xu - (xu @ f)[:, None] * f[None, :]
@@ -844,9 +833,7 @@ def infill_field(
             fa_e = np.zeros((domain.cell_count, 3))
             fa_e[:, 2] = (vn > 1e-9).astype(float)
             fa_v = np.zeros((domain.cell_count, 3, 3))
-            fa_v[:, :, 2] = np.where(
-                vn[:, None] > 1e-9, vv / np.maximum(vn[:, None], 1e-30), 0.0
-            )
+            fa_v[:, :, 2] = np.where(vn[:, None] > 1e-9, vv / np.maximum(vn[:, None], 1e-30), 0.0)
         align_deg = strut_alignment_deg(domain, occ3, fa_e, fa_v, octet=p.octet)["mean"]
 
     if fields_out is not None:

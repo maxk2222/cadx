@@ -566,8 +566,7 @@ def smooth_preserve(
             dims = np.asarray(passive_3d.shape, dtype=int)
             ijk = np.clip(
                 np.floor(
-                    (out.vertices - np.asarray(origin, dtype=float))
-                    / max(float(pitch), 1e-9)
+                    (out.vertices - np.asarray(origin, dtype=float)) / max(float(pitch), 1e-9)
                 ).astype(int),
                 0,
                 dims - 1,
@@ -1498,9 +1497,18 @@ _MACHINE_KIND: dict[str, str] = {
 }
 
 _FACE_WORDS: dict[str, str] = {
-    "top": "+z", "bottom": "-z", "front": "+y", "back": "-y",
-    "right": "+x", "left": "-x",
-    "+x": "+x", "-x": "-x", "+y": "+y", "-y": "-y", "+z": "+z", "-z": "-z",
+    "top": "+z",
+    "bottom": "-z",
+    "front": "+y",
+    "back": "-y",
+    "right": "+x",
+    "left": "-x",
+    "+x": "+x",
+    "-x": "-x",
+    "+y": "+y",
+    "-y": "-y",
+    "+z": "+z",
+    "-z": "-z",
 }
 
 

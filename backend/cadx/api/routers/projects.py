@@ -120,9 +120,7 @@ async def list_projects(db: AsyncSession = Depends(get_session)):
         c = await db.execute(
             select(func.count()).select_from(Version).where(Version.project_id == p.id)
         )
-        pc = await db.execute(
-            select(func.count()).select_from(Part).where(Part.project_id == p.id)
-        )
+        pc = await db.execute(select(func.count()).select_from(Part).where(Part.project_id == p.id))
         vid, status, thumb = await _latest_meta(p.id, db)
         out.append(_out(p, c.scalar_one(), pc.scalar_one(), vid, status, thumb))
     return out
@@ -136,9 +134,7 @@ async def get_project(project_id: uuid.UUID, db: AsyncSession = Depends(get_sess
     c = await db.execute(
         select(func.count()).select_from(Version).where(Version.project_id == p.id)
     )
-    pc = await db.execute(
-        select(func.count()).select_from(Part).where(Part.project_id == p.id)
-    )
+    pc = await db.execute(select(func.count()).select_from(Part).where(Part.project_id == p.id))
     vid, status, thumb = await _latest_meta(p.id, db)
     return _out(p, c.scalar_one(), pc.scalar_one(), vid, status, thumb)
 

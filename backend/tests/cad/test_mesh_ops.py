@@ -1413,16 +1413,20 @@ def test_op_machine_feature_face_word_sidewall_tap():
         MeshOp(
             op="machine_feature",
             args={
-                "op": "tap", "face": "left", "at": [0.0, 5.0],
-                "major_d": 8.0, "pitch": 1.25, "depth": 20.0,
+                "op": "tap",
+                "face": "left",
+                "at": [0.0, 5.0],
+                "major_d": 8.0,
+                "pitch": 1.25,
+                "depth": 20.0,
             },
         ),
     )
     assert out.is_watertight
     xs = _ray_hits(out, [-30.0, 0.0, 5.0], [1, 0, 0], 0)
     assert xs[0] == pytest.approx(-20.0, abs=0.6)  # left entry face
-    assert xs[1] == pytest.approx(0.0, abs=0.8)    # bore bottom: entry -20 + depth 20
-    assert xs[2] == pytest.approx(20.0, abs=0.6)   # far wall intact
+    assert xs[1] == pytest.approx(0.0, abs=0.8)  # bore bottom: entry -20 + depth 20
+    assert xs[2] == pytest.approx(20.0, abs=0.6)  # far wall intact
 
 
 def test_op_machine_feature_pick_point_curved():
@@ -1467,8 +1471,11 @@ def test_op_machine_feature_cbore_and_csk():
         MeshOp(
             op="machine_feature",
             args={
-                "op": "cbore", "face": "top", "dia": 6.0,
-                "cbore_dia": 11.0, "cbore_depth": 4.0,
+                "op": "cbore",
+                "face": "top",
+                "dia": 6.0,
+                "cbore_dia": 11.0,
+                "cbore_depth": 4.0,
             },
         ),
     )

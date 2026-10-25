@@ -69,9 +69,7 @@ def test_ke_from_D_matches_ke_unit() -> None:
     """The extracted Gauss loop must reproduce `_ke_unit` exactly —
     bit-for-bit on iso and aniso tensors."""
     for pitch in (1.0, 2.5):
-        np.testing.assert_array_equal(
-            _ke_from_D(_D(NU), pitch), _ke_unit(NU, pitch)
-        )
+        np.testing.assert_array_equal(_ke_from_D(_D(NU), pitch), _ke_unit(NU, pitch))
         np.testing.assert_array_equal(
             _ke_from_D(_D(NU, 0.5, 2), pitch), _ke_unit(NU, pitch, 0.5, 2)
         )
@@ -141,12 +139,16 @@ def test_two_material_series_bar_recovers_stress() -> None:
 
     f = 1_600.0
     fixed3, F = _axial_case(dom, f)
-    sol, edof, active = _solve_bar(
-        dom, elem_E, fixed3, F, elem_class=elem_class, class_D=class_D
-    )
+    sol, edof, active = _solve_bar(dom, elem_E, fixed3, F, elem_class=elem_class, class_D=class_D)
     _vm, sig = recover_elem_stress(
-        dom, sol.u, edof, active, elem_E, NU,
-        elem_class=elem_class, class_D=class_D,
+        dom,
+        sol.u,
+        edof,
+        active,
+        elem_E,
+        NU,
+        elem_class=elem_class,
+        class_D=class_D,
     )
     sxx = sig[:, 0]
     expected = f / (4.0 * 4.0)  # 100 MPa
@@ -171,9 +173,7 @@ def test_two_material_series_bar_recovers_stress() -> None:
     # ~E_stiff/E_soft — the bug this table exists to fix
     _vm_l, sig_l = recover_elem_stress(dom, sol.u, edof, active, elem_E, NU, E_ref=E_soft)
     assert sig_l[m1, 0].mean() == pytest.approx(expected * E_soft / E_stiff, rel=0.1)
-    assert sxx[m1].mean() / sig_l[m1, 0].mean() == pytest.approx(
-        E_stiff / E_soft, rel=0.1
-    )
+    assert sxx[m1].mean() / sig_l[m1, 0].mean() == pytest.approx(E_stiff / E_soft, rel=0.1)
 
 
 # --------------------------------------------------------------------------- #
@@ -218,12 +218,16 @@ def test_poisson_ratio_classes_hydrostatic() -> None:
 
     for cls_id, nu_c in ((0, nu0), (1, nu1)):
         elem_class = np.full(dom.cell_count, cls_id, dtype=np.int64)
-        u, edof, active = _hydrostatic_solve(
-            dom, elem_E, elem_class=elem_class, class_D=class_D
-        )
+        u, edof, active = _hydrostatic_solve(dom, elem_E, elem_class=elem_class, class_D=class_D)
         _vm, sig = recover_elem_stress(
-            dom, u, edof, active, elem_E, NU,
-            elem_class=elem_class, class_D=class_D,
+            dom,
+            u,
+            edof,
+            active,
+            elem_E,
+            NU,
+            elem_class=elem_class,
+            class_D=class_D,
         )
         # the affine field is the exact solution -> every element's
         # centroid stress equals the analytic hydrostatic value
@@ -243,9 +247,7 @@ def test_poisson_ratio_classes_two_zone_split() -> None:
     class_D = np.stack([_D(nu0), _D(nu1)])
     elem_E = np.ones(dom.cell_count)
 
-    u, edof, active = _hydrostatic_solve(
-        dom, elem_E, elem_class=elem_class, class_D=class_D
-    )
+    u, edof, active = _hydrostatic_solve(dom, elem_E, elem_class=elem_class, class_D=class_D)
     _vm, sig = recover_elem_stress(
         dom, u, edof, active, elem_E, NU, elem_class=elem_class, class_D=class_D
     )
@@ -273,12 +275,8 @@ def test_material_cell_classes_maps_zones() -> None:
     zc, _zc2 = material_cell_classes(dom, [], None)
     assert zc is None  # no material zones -> no classes
 
-    steel = RegionSpec(
-        kind="box", center=[2.0, 4.0, 4.0], diameter_mm=4.0, material="steel"
-    )
-    pla_zone = RegionSpec(
-        kind="box", center=[6.0, 4.0, 4.0], diameter_mm=4.0, material="petg"
-    )
+    steel = RegionSpec(kind="box", center=[2.0, 4.0, 4.0], diameter_mm=4.0, material="steel")
+    pla_zone = RegionSpec(kind="box", center=[6.0, 4.0, 4.0], diameter_mm=4.0, material="petg")
     zc, cds = material_cell_classes(dom, [steel, pla_zone], None)
     assert zc is not None and zc.shape == (dom.cell_count,)
     assert zc.dtype == np.int32
@@ -318,14 +316,8 @@ def test_solve_passthrough_matches_manual_path() -> None:
     elem_E = np.where(x >= 4, 210_000.0, 3_500.0)
     fixed3, F = _axial_case(dom, 500.0)
 
-    sol_api = solve(
-        dom, elem_E, NU, fixed3, F, elem_class=elem_class, class_D=class_D
-    )
-    sol_man, _, _ = _solve_bar(
-        dom, elem_E, fixed3, F, elem_class=elem_class, class_D=class_D
-    )
+    sol_api = solve(dom, elem_E, NU, fixed3, F, elem_class=elem_class, class_D=class_D)
+    sol_man, _, _ = _solve_bar(dom, elem_E, fixed3, F, elem_class=elem_class, class_D=class_D)
     assert sol_api.converged
     np.testing.assert_allclose(sol_api.u, sol_man.u, rtol=1e-12, atol=1e-12)
-    np.testing.assert_allclose(
-        sol_api.elem_vm, sol_man.elem_vm, rtol=1e-12, atol=1e-9
-    )
+    np.testing.assert_allclose(sol_api.elem_vm, sol_man.elem_vm, rtol=1e-12, atol=1e-9)

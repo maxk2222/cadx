@@ -98,9 +98,7 @@ async def test_explicit_part_id_and_name_resolution(client):
 async def test_part_id_validation(client):
     pid = await _project(client, "bad-part")
     other = await _project(client, "other-proj")
-    foreign = (
-        await client.post(f"/api/projects/{other}/parts", json={"name": "x"})
-    ).json()
+    foreign = (await client.post(f"/api/projects/{other}/parts", json={"name": "x"})).json()
 
     # cross-project reference → 404
     r = await client.post(
@@ -143,16 +141,12 @@ async def test_child_inherits_parent_part(client):
 async def test_versions_part_filter(client):
     pid = await _project(client, "filter-part")
     p1 = (await client.post(f"/api/projects/{pid}/parts", json={"name": "a"})).json()
-    await client.post(
-        f"/api/projects/{pid}/generate", json={"prompt": "one", "part_id": p1["id"]}
-    )
+    await client.post(f"/api/projects/{pid}/generate", json={"prompt": "one", "part_id": p1["id"]})
     await client.post(f"/api/projects/{pid}/generate", json={"prompt": "two"})
 
     tree = (await client.get(f"/api/projects/{pid}/versions")).json()
     assert len(tree) == 2
-    scoped = (
-        await client.get(f"/api/projects/{pid}/versions?part_id={p1['id']}")
-    ).json()
+    scoped = (await client.get(f"/api/projects/{pid}/versions?part_id={p1['id']}")).json()
     assert len(scoped) == 1 and scoped[0]["part_id"] == p1["id"]
 
 
@@ -257,9 +251,7 @@ async def test_part_cascade_fk_ordering():
         )
         db.add(v2)
         await db.flush()
-        db.add(
-            Job(version_id=v2.id, type="generate", status=JobStatus.cancelled, payload="{}")
-        )
+        db.add(Job(version_id=v2.id, type="generate", status=JobStatus.cancelled, payload="{}"))
         await db.commit()
         pid = part.id
 
@@ -355,16 +347,13 @@ def test_mcp_part_surface_boundary():
     assert "list_parts" in info_names
 
     props = {
-        t["function"]["name"]: t["function"]["parameters"]["properties"]
-        for t in MCP_TOOL_SCHEMAS
+        t["function"]["name"]: t["function"]["parameters"]["properties"] for t in MCP_TOOL_SCHEMAS
     }
     assert "part_id" in props["submit_code"] and "part_name" in props["submit_code"]
     assert "part_id" in props["mesh_generate"] and "part_name" in props["mesh_generate"]
 
     # hard boundary: no LLM-driven or delete tools on MCP
-    assert MCP_TOOL_NAMES.isdisjoint(
-        {"generate_part", "edit_version", "answer_questions"}
-    )
+    assert MCP_TOOL_NAMES.isdisjoint({"generate_part", "edit_version", "answer_questions"})
     assert not any(n.startswith("delete_") for n in MCP_TOOL_NAMES)
 
 
@@ -396,6 +385,7 @@ async def test_backfill_groups_trees_and_orphans():
 
         def h(u: uuid.UUID) -> str:
             return u.hex
+
         await c.exec_driver_sql(f"INSERT INTO project VALUES ('{h(proj)}')")
         v1, v2, v3, v4, v5, v6 = (uuid.uuid4() for _ in range(6))
         rows = [
@@ -410,30 +400,32 @@ async def test_backfill_groups_trees_and_orphans():
             await c.exec_driver_sql(
                 "INSERT INTO version (id, project_id, part_id, parent_id, number,"
                 " prompt, name) VALUES (:id, :p, NULL, :par, :n, :pr, :na)",
-                {"id": h(vid), "p": h(proj), "par": h(par) if par else None,
-                 "n": num, "pr": prompt, "na": name},
+                {
+                    "id": h(vid),
+                    "p": h(proj),
+                    "par": h(par) if par else None,
+                    "n": num,
+                    "pr": prompt,
+                    "na": name,
+                },
             )
 
         await c.run_sync(backfill_parts)
 
-        parts = (
-            await c.exec_driver_sql(
-                "SELECT id, number, name FROM part ORDER BY number"
-            )
-        ).all()
+        parts = (await c.exec_driver_sql("SELECT id, number, name FROM part ORDER BY number")).all()
         assert len(parts) == 3
+
         # sa.Uuid may hand back UUID objects or hex strings depending on the
         # dialect path — normalise to 32-hex for comparison
         def norm(x):
             return x.hex if isinstance(x, uuid.UUID) else x
-        by_number = {r[1]: (norm(r[0]), r[2]) for r in parts}
-        assert by_number[1][1] == "bracket 40x20"      # derived from root prompt
-        assert by_number[2][1] == "Main housing"       # root version name wins
-        assert by_number[3][1] == "dangling"           # orphan → own part
 
-        vs = (
-            await c.exec_driver_sql("SELECT id, part_id FROM version")
-        ).all()
+        by_number = {r[1]: (norm(r[0]), r[2]) for r in parts}
+        assert by_number[1][1] == "bracket 40x20"  # derived from root prompt
+        assert by_number[2][1] == "Main housing"  # root version name wins
+        assert by_number[3][1] == "dangling"  # orphan → own part
+
+        vs = (await c.exec_driver_sql("SELECT id, part_id FROM version")).all()
         part_of = {norm(r[0]): norm(r[1]) for r in vs}
         for vid in (h(v1), h(v2), h(v3)):
             assert part_of[vid] == by_number[1][0]

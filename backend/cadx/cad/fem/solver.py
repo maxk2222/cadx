@@ -270,9 +270,7 @@ def assemble(
             raise ValueError("class_D requires elem_class (per-cell class index)")
         cls = np.asarray(elem_class, dtype=np.int64).ravel()
         if cls.shape != (domain.cell_count,):
-            raise ValueError(
-                f"elem_class must have shape ({domain.cell_count},), got {cls.shape}"
-            )
+            raise ValueError(f"elem_class must have shape ({domain.cell_count},), got {cls.shape}")
         ncls = int(class_D.shape[0])
         if ncls < 1 or cls.min(initial=0) < 0 or cls.max(initial=0) >= ncls:
             raise ValueError(f"elem_class values must lie in [0, {ncls})")
@@ -364,9 +362,7 @@ def _pyamg_available() -> bool:
     return _PYAMG_AVAILABLE
 
 
-def _amg_preconditioner(
-    Kf: sparse.csr_matrix, coords_mm: np.ndarray
-) -> spla.LinearOperator | None:
+def _amg_preconditioner(Kf: sparse.csr_matrix, coords_mm: np.ndarray) -> spla.LinearOperator | None:
     """Smoothed-aggregation AMG preconditioner for 3D elasticity.
 
     `B` carries the 6 rigid-body modes (3 translations + 3 infinitesimal
@@ -476,11 +472,7 @@ def solver_tier(backend: str = "auto") -> str:
     want = backend if backend != "auto" else os.environ.get("CADX_FEM_DIRECT_SOLVER", "auto")
     want = str(want).strip().lower()
     # auto / cholmod / unknown names prefer cholmod when importable
-    tier = (
-        "splu"
-        if want in ("splu", "superlu") or not _cholmod_available()
-        else "cholmod"
-    )
+    tier = "splu" if want in ("splu", "superlu") or not _cholmod_available() else "cholmod"
     if not _TIER_LOGGED:
         _TIER_LOGGED = True
         log.info("fem.solver_tier", backend=tier)

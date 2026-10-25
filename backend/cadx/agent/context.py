@@ -180,9 +180,7 @@ def _reference_docs(
     needs_bd = (
         bool(getattr(plan, "standard_parts", None))
         or bool(getattr(spec, "standard_parts", None))
-        or any(
-        getattr(f, "standard", "") for f in (spec.features if spec else [])
-        )
+        or any(getattr(f, "standard", "") for f in (spec.features if spec else []))
     )
     if needs_bd:
         parts.append(read_prompt("bd_warehouse_reference.md"))

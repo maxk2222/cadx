@@ -215,9 +215,7 @@ def _fork_ctx_patcher(monkeypatch):
     import multiprocessing as mp
 
     real_get_context = mp.get_context
-    monkeypatch.setattr(
-        mp, "get_context", lambda method=None: real_get_context("fork")
-    )
+    monkeypatch.setattr(mp, "get_context", lambda method=None: real_get_context("fork"))
 
 
 def test_budget_hard_kills_slow_recognition(monkeypatch):

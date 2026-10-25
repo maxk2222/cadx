@@ -276,9 +276,7 @@ def resolve_thread_intents(spec: PartSpec) -> list[str]:
             )
             if not owned:
                 continue
-            if not (
-                "thread" in str(feature.type or "").lower() or feature.thread_spec
-            ):
+            if not ("thread" in str(feature.type or "").lower() or feature.thread_spec):
                 continue
             text = f"{feature.name or ''} {feature.description or ''}"
             if _FULL_THREAD_RE.search(text):

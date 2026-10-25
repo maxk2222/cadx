@@ -471,7 +471,6 @@ def test_infill_field_guided_scope(solved_cantilever) -> None:
         infill_field(dom, InfillParams(scope="guided"), [w], None, None, None)
 
 
-
 def test_empty_guided_scope_is_not_misreported_as_thin_part(solved_cantilever) -> None:
     """An empty coarse-SIMP guide means shell-only, not a physically thin
     part; keep the geometric core count distinct from eligible guide cells."""
@@ -712,9 +711,7 @@ def test_infill_field_frames_path_meta(solved_cantilever) -> None:
 
     _r2, _m2, meta3 = infill_field(
         dom,
-        InfillParams(
-            style="struts_aligned", shell_mm=2.0, infill_cell_mm=8.0, octet=False
-        ),
+        InfillParams(style="struts_aligned", shell_mm=2.0, infill_cell_mm=8.0, octet=False),
         [w],
         None,
         None,
@@ -731,16 +728,22 @@ def test_infill_field_fields_out(solved_cantilever) -> None:
     w = element_strain_energy(dom, sol.u, edof, active, elem_E, NU)
     fo: dict = {}
     _rho, mask, _meta = infill_field(
-        dom, InfillParams(shell_mm=2.0, infill_cell_mm=8.0),
-        [w], None, None, None, fields_out=fo,
+        dom,
+        InfillParams(shell_mm=2.0, infill_cell_mm=8.0),
+        [w],
+        None,
+        None,
+        None,
+        fields_out=fo,
     )
     assert set(fo) >= {"d", "interior", "occ3"}
     assert fo["d"].shape == (dom.cell_count,)
     assert fo["interior"].dtype == bool and fo["interior"].shape == (dom.cell_count,)
     assert fo["occ3"].dtype == bool and fo["occ3"].shape == (dom.cell_count,)
     # the occupancy is exactly what landed in the mask interior
-    np.testing.assert_array_equal(fo["occ3"].reshape(dom.dims) & ~_skin_mask(dom, 2.0),
-                                  mask & ~_skin_mask(dom, 2.0))
+    np.testing.assert_array_equal(
+        fo["occ3"].reshape(dom.dims) & ~_skin_mask(dom, 2.0), mask & ~_skin_mask(dom, 2.0)
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -774,8 +777,6 @@ def test_element_strain_energy_aniso_and_class_consistency() -> None:
     cd = _D(NU, 0.6, 2)[None]
     K2, _, _ = assemble(dom, elem_E, NU, elem_class=ec, class_D=cd)
     assert (K - K2).nnz == 0
-    w2 = element_strain_energy(
-        dom, sol.u, edof, active, elem_E, NU, elem_class=ec, class_D=cd
-    )
+    w2 = element_strain_energy(dom, sol.u, edof, active, elem_E, NU, elem_class=ec, class_D=cd)
     np.testing.assert_allclose(w2, w, rtol=1e-10)
     assert w2.sum() == pytest.approx(sol.compliance_j, rel=1e-4)

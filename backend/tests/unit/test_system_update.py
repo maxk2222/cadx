@@ -31,7 +31,9 @@ async def _mk_job(status: JobStatus = JobStatus.running) -> Job:
         p = Project(name=f"upd-{uuid.uuid4().hex[:6]}")
         db.add(p)
         await db.flush()
-        v = Version(project_id=p.id, part_id=uuid.uuid4(), number=1, kind=VersionKind.generate, prompt="x")
+        v = Version(
+            project_id=p.id, part_id=uuid.uuid4(), number=1, kind=VersionKind.generate, prompt="x"
+        )
         db.add(v)
         await db.flush()
         j = Job(version_id=v.id, type=JobType.generate, status=status)

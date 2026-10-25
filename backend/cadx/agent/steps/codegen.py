@@ -236,7 +236,9 @@ async def run(
             part_errors = check_standard_part_calls(code) if checked.ok else []
             if checked.ok and not part_errors:
                 params = [
-                    ParamDef(name=name, value=value, description="validated standard-part parameter")
+                    ParamDef(
+                        name=name, value=value, description="validated standard-part parameter"
+                    )
                     for name, value in (checked.params or {}).items()
                     if isinstance(value, str | int | float | bool)
                 ]

@@ -91,9 +91,7 @@ def _stepped_domain() -> VoxelDomain:
     cy = origin[1] + (jj + 0.5) * pitch
     cz = origin[2] + (kk + 0.5) * pitch
     solid = cz <= 10.0
-    solid |= (
-        (cx >= -40.0) & (cx <= -10.0) & (np.abs(cy) <= 15.0) & (cz > 10.0)
-    )
+    solid |= (cx >= -40.0) & (cx <= -10.0) & (np.abs(cy) <= 15.0) & (cz > 10.0)
     solid &= np.hypot(cx - 25.0, cy) > 4.0  # Ø8 bore through the plate
     return VoxelDomain(origin=origin, pitch=pitch, dims=dims, solid=solid)
 

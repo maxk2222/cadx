@@ -52,6 +52,8 @@ def parse_symmetric_coords(text: str) -> dict[str, list[float]]:
             if sgn not in out.setdefault(ax, []):
                 out[ax].append(sgn)
     return {ax: vals for ax, vals in out.items() if vals}
+
+
 _POS_END_NUM_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(mm|cm)?", re.I)
 _RANGE_NUM = r"([+-]?\d+(?:\.\d+)?)"
 _AXIS_RANGE_RES = (

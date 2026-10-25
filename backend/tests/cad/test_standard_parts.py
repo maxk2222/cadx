@@ -162,8 +162,9 @@ def test_nut_and_setscrew_stay_on_per_turn_lane():
     out as fins — and their turn counts are small anyway."""
     for spec in (
         StandardPartSpec(class_name="HexNut", fastener_type="iso4032", size="M8-1.25"),
-        StandardPartSpec(class_name="SetScrew", fastener_type="iso4026", size="M8-1.25",
-                         length_mm=16),
+        StandardPartSpec(
+            class_name="SetScrew", fastener_type="iso4026", size="M8-1.25", length_mm=16
+        ),
     ):
         code = build_standard_part_code([spec])
         assert "_cadx_thread_solid" not in code, spec.class_name
@@ -175,8 +176,13 @@ def test_swept_screw_thread_sits_flush_at_tip(tmp_path):
     thread-tip plane: no helical fin may hang below the screw's tip."""
     code = _m10_full_thread_code()  # 120mm, thread reaches the tip
     out = run_user_code(
-        code, tmp_path / "work", detail_mode="export", warm=False,
-        threads=1, timeout_s=180, mem_mb=4096,
+        code,
+        tmp_path / "work",
+        detail_mode="export",
+        warm=False,
+        threads=1,
+        timeout_s=180,
+        mem_mb=4096,
     )
     assert out.ok, out.error
     shape = import_brep(str(out.brep_path))
@@ -196,8 +202,13 @@ def test_fallback_lane_still_counts_the_thread(tmp_path):
         "def _cadx_thread_solid(*a, **k):\n    raise RuntimeError('sweep broke')",
     )
     out = run_user_code(
-        code, tmp_path / "work", detail_mode="export", warm=False,
-        threads=1, timeout_s=180, mem_mb=4096,
+        code,
+        tmp_path / "work",
+        detail_mode="export",
+        warm=False,
+        threads=1,
+        timeout_s=180,
+        mem_mb=4096,
     )
     assert out.ok, out.error
     assert out.thread_count == 1

@@ -134,7 +134,7 @@ def helical_thread(
         raise ValueError(f'hand must be "right" or "left", not {hand!r}')
     for fin in end_finishes:
         if fin not in {"raw", "square", "fade"}:
-            raise ValueError(f'end_finishes entries must be raw/square/fade, not {fin!r}')
+            raise ValueError(f"end_finishes entries must be raw/square/fade, not {fin!r}")
     length = float(length)
     if length <= 0:
         raise ValueError(f"length must be positive, not {length}")

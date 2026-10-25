@@ -183,17 +183,13 @@ def beso(  # noqa: C901
             "densities are binary by construction; the PDE/cone stage still applies"
         )
     if params.robust:
-        warnings.append(
-            "beso ignores robust=True — no projection thresholds on a binary design"
-        )
+        warnings.append("beso ignores robust=True — no projection thresholds on a binary design")
     if params.self_supporting:
         warnings.append("beso ignores self_supporting — the AM support filter needs densities")
     if params.max_stress_mpa:
         warnings.append("beso ignores max_stress_mpa — stress constraints need solver=mma")
     if params.max_displacement_mm:
-        warnings.append(
-            "beso ignores max_displacement_mm — displacement caps need solver=mma"
-        )
+        warnings.append("beso ignores max_displacement_mm — displacement caps need solver=mma")
     if params.case_objective == "minmax":
         warnings.append("beso ignores case_objective='minmax' — cases combine by weight")
     if params.penal_init is not None:
@@ -236,9 +232,7 @@ def beso(  # noqa: C901
     if params.beso_connectivity:
         edof = domain_edof(domain)
         for fixed, F in cases:
-            anchor_dofs = np.concatenate(
-                [_fixed_dofs(fixed, F.size // 3), np.flatnonzero(F)]
-            )
+            anchor_dofs = np.concatenate([_fixed_dofs(fixed, F.size // 3), np.flatnonzero(F)])
             if anchor_dofs.size:
                 required_flat |= np.isin(edof, anchor_dofs).any(axis=1)
     required3 = required_flat.reshape(domain.dims)
@@ -286,7 +280,9 @@ def beso(  # noqa: C901
     if len(weights) < len(cases):
         weights = np.concatenate([weights, np.ones(len(cases) - len(weights))])
 
-    aniso_z, aniso_ax = (1.0, 2) if params.aniso is None else (float(params.aniso[0]), int(params.aniso[1]))
+    aniso_z, aniso_ax = (
+        (1.0, 2) if params.aniso is None else (float(params.aniso[0]), int(params.aniso[1]))
+    )
     ke = _ke_unit(nu, domain.pitch, aniso_z, aniso_ax)
     edof = domain_edof(domain)
     # BESO — like SIMP — assembles ALL cells every iteration (removed cells
@@ -488,15 +484,11 @@ def beso(  # noqa: C901
                 # mirror the pins like the sensitivity symmetrization so the
                 # corridor survives on both sides of the mid-plane (same
                 # asymmetry caveat as the passive re-pinning)
-                bridge_pin |= np.flip(
-                    bridge_pin.reshape(domain.dims), axis=sym_axis
-                ).ravel()
+                bridge_pin |= np.flip(bridge_pin.reshape(domain.dims), axis=sym_axis).ravel()
                 bridge_pin &= design
             keep = bonded | bridge_pin
             structure = ndimage.generate_binary_structure(3, 1)
-            n_resid = int(
-                ndimage.label(keep.reshape(domain.dims), structure=structure)[1]
-            )
+            n_resid = int(ndimage.label(keep.reshape(domain.dims), structure=structure)[1])
             if n_resid > 1 and not resid_warned:
                 warnings.append(
                     f"connectivity guard left {n_resid} disconnected components "
@@ -586,8 +578,7 @@ def beso(  # noqa: C901
         n_comp = int(ndimage.label(keep.reshape(domain.dims), structure=structure)[1])
         if n_comp > 1:
             warnings.append(
-                f"final keep set has {n_comp} disconnected components — "
-                "export may drop islands"
+                f"final keep set has {n_comp} disconnected components — export may drop islands"
             )
 
     # ---- outcome ----------------------------------------------------------
@@ -604,7 +595,10 @@ def beso(  # noqa: C901
         # passive floor alone exceeds the request: infeasible by
         # construction, not an optimum (same check simp() runs)
         achieved = float(density[solid_idx].sum()) / nsolid
-        if achieved > params.volfrac + 0.02 and float(density[design].max(initial=0.0)) <= _FLOOR_PIN:
+        if (
+            achieved > params.volfrac + 0.02
+            and float(density[design].max(initial=0.0)) <= _FLOOR_PIN
+        ):
             converged = False
             status = "infeasible_target"
             warnings.append(
@@ -619,9 +613,7 @@ def beso(  # noqa: C901
             f"target volfrac {params.volfrac:.0%} unreachable; floor ≈ {passive_frac:.0%}"
         )
     elif ndesign < 0.05 * nsolid:
-        warnings.append(
-            "very few free design cells (<5%) — keep regions cover most of the part"
-        )
+        warnings.append("very few free design cells (<5%) — keep regions cover most of the part")
     log.debug(
         "beso.done",
         iterations=it,

@@ -141,7 +141,9 @@ def _parameter_schema(cls: type) -> dict[str, dict[str, Any]]:
             continue
         row: dict[str, Any] = {"required": p.default is inspect.Parameter.empty}
         if p.default is not inspect.Parameter.empty:
-            row["default"] = p.default if isinstance(p.default, str | int | float | bool) else repr(p.default)
+            row["default"] = (
+                p.default if isinstance(p.default, str | int | float | bool) else repr(p.default)
+            )
         choices = _literal_values(p.annotation)
         if choices and name == "material":
             choices = _resolvable_material_choices([str(c) for c in choices]) or choices
@@ -695,9 +697,7 @@ def catalog_excerpt(class_names: list[str], *, max_chars: int = 6000, max_sizes:
                 if row.get("choices"):
                     label += f" ({'|'.join(str(c) for c in row['choices'][:6])})"
                 shown_params.append(label)
-            lines.append(
-                f"- {name} ({entry['category']}, parametric): " + ", ".join(shown_params)
-            )
+            lines.append(f"- {name} ({entry['category']}, parametric): " + ", ".join(shown_params))
             continue
         tys = entry["types"]
         parts = []

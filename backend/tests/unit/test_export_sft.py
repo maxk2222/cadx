@@ -290,8 +290,11 @@ def test_v2_evalkit_result_schema(export_sft, tmp_path: Path) -> None:
                         "stage_id": "codegen",
                         "version_id": vid,
                         "passed": True,
-                        "metrics": {"score": 95, "watertight": True,
-                                    "verify_spec": {"status": "PASS"}},
+                        "metrics": {
+                            "score": 95,
+                            "watertight": True,
+                            "verify_spec": {"status": "PASS"},
+                        },
                     },
                     {"stage_id": "fem", "version_id": None, "passed": True},
                 ],

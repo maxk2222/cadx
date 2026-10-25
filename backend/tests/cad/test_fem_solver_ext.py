@@ -94,9 +94,7 @@ def test_solver_tier_env(monkeypatch) -> None:
     assert solver_tier() == ("cholmod" if solver._cholmod_available() else "splu")
     # explicit backend arg overrides the env (topopt's solver_backend knob)
     assert solver_tier("superlu") == "splu"
-    assert solver_tier("cholmod") == (
-        "cholmod" if solver._cholmod_available() else "splu"
-    )
+    assert solver_tier("cholmod") == ("cholmod" if solver._cholmod_available() else "splu")
 
 
 def test_backend_vocabulary_contract() -> None:
@@ -127,9 +125,7 @@ def test_cholmod_factor_matches_splu(monkeypatch) -> None:
     f_splu = factor_symmetric(Kf)
     assert callable(f_splu) and not isinstance(f_splu, CholmodFactor)
 
-    np.testing.assert_allclose(
-        np.asarray(f_chol(Ff)), np.asarray(f_splu(Ff)), rtol=1e-9, atol=1e-9
-    )
+    np.testing.assert_allclose(np.asarray(f_chol(Ff)), np.asarray(f_splu(Ff)), rtol=1e-9, atol=1e-9)
 
 
 def test_cholmod_refactorize_density_rescale() -> None:
