@@ -152,6 +152,104 @@ class _Rebinder:
                 return out
         return [ld.model_copy(update={"region": rebound}) if rebound is not r else ld]
 
+    def _face_fix_candidates(self, spec: PartSpec, axis: str, used_loads: set[int]) -> list[int]:
+        """Mounting-hole anchors whose bore mouths open on the named face
+        side — encastre on a skin is wrong when bolts carry the fixture."""
+        letter = axis.lstrip("+-")
+        neg = axis.startswith("-")
+        dim = {"x": spec.length_x, "y": spec.width_y, "z": spec.height_z}.get(letter)
+        try:
+            half = float(dim.value or 0) / 2.0 if dim is not None else None
+        except (TypeError, ValueError, AttributeError):
+            half = None
+        out: list[int] = []
+        for i, a in enumerate(self.anchors):
+            if str(a.axis or "").lstrip("+-") != letter:
+                continue
+            if a.kind not in ("hole", ""):
+                continue  # tapped/threaded bores are load seats, not bolts
+            if (i + 1) in used_loads:
+                continue  # already a load region in this case
+            if half:
+                axc = a.z
+                if axc is not None:
+                    on_side = float(axc) <= half if neg else float(axc) >= half
+                    if not on_side:
+                        continue
+            out.append(i + 1)
+        return out
+
+    def _sanitize_case_geometry(self, spec: PartSpec, case: Any) -> None:
+        """Region category repairs the index pass can't express: a `g_load`
+        is a body force — a skin region (face/plane/bore wall…) is a category
+        error; a whole-face encastre fixture on a bolted part pins the skin
+        instead of the holes (~27% of the domain at coarse pitch); a pure
+        moment on an untapped clearance hole has nothing to react it."""
+        where = f"case '{case.name}'"
+        for ld in case.loads or []:
+            r = getattr(ld, "region", None)
+            if r is None:
+                continue
+            if getattr(ld, "g_load", None) and str(r.kind) not in ("all", "cylinder", "box"):
+                self.notes.append(
+                    f"{where}: g_load on '{r.kind}' region → 'all' (body force needs material volume)"
+                )
+                ld.region = r.model_copy(update={"kind": "all"})
+                r = ld.region
+            if getattr(ld, "moment_nm", None) and str(r.kind) in ("hole", "anchor", "bore"):
+                tapped = [
+                    i + 1
+                    for i, a in enumerate(self.anchors)
+                    if a.kind in ("thread", "tap", "insert", "bearing_seat")
+                ]
+                if tapped:
+                    big = max(tapped, key=lambda i: float(self.anchors[i - 1].dia or 0))
+                    cur = (
+                        self.anchors[r.hole_index - 1]
+                        if r.hole_index and 1 <= r.hole_index <= self.n
+                        else None
+                    )
+                    if r.hole_index != big and (
+                        cur is None or cur.kind not in ("thread", "tap", "insert", "bearing_seat")
+                    ):
+                        self.notes.append(
+                            f"{where}: moment_nm on untapped bore #{r.hole_index} → "
+                            f"#{big} '{self.anchors[big - 1].name}' (only a threaded seat reacts torque)"
+                        )
+                        ld.region = r.model_copy(update={"hole_index": big})
+        used_loads = {
+            int(getattr(getattr(ld, "region", None), "hole_index", 0) or 0)
+            for ld in case.loads or []
+        }
+        new_fixed: list[Any] = []
+        for r in case.fixed or []:
+            if (
+                str(r.kind) in ("plane", "face", "surface", "border")
+                and getattr(r, "fix_mode", "all") == "all"
+                and str(r.axis or "") in ("+x", "-x", "+y", "-y", "+z", "-z")
+            ):
+                cands = self._face_fix_candidates(spec, str(r.axis), used_loads)
+                if len(cands) >= 2:
+                    self.notes.append(
+                        f"{where}: whole-face {r.kind} {r.axis} encastre → holes "
+                        + ", ".join(f"#{i}" for i in cands[:6])
+                        + " (mount bolts carry the fixture, not the skin)"
+                    )
+                    new_fixed += [
+                        r.model_copy(
+                            update={
+                                "kind": "hole",
+                                "axis": "",
+                                "hole_index": i,
+                                "center": [],
+                            }
+                        )
+                        for i in cands[:6]
+                    ]
+                    continue
+            new_fixed.append(r)
+        case.fixed = new_fixed
+
     def run(self, spec: PartSpec) -> list[str]:
         for case in spec.load_cases:
             where = f"case '{case.name}'"
@@ -165,6 +263,7 @@ class _Rebinder:
                 new_loads += self._rebind_load(ld, r, where, case.name or "")
             if new_loads:
                 case.loads = new_loads
+            self._sanitize_case_geometry(spec, case)
         if spec.optimize is not None:
             spec.optimize.keep_regions = [
                 self._rebind(r, "keep_regions", is_fixed=False)

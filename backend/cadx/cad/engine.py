@@ -1663,6 +1663,27 @@ def _cone_expand_case(c: Any, budget: int, warn: bool, warn_list: list[str]) -> 
     return out
 
 
+def _load_pins_nodes(load: Any) -> bool:
+    """Whether a load's region must be pinned in the passive mask — a
+    g_load-only body force travels WITH the design (pinning it would freeze
+    the whole domain), and an 'all' region is the domain itself. Only
+    concentrated loads need their attachment nodes preserved.
+    `normal_force_n` via getattr: the field lands with the schema update
+    and may not exist on older payloads."""
+    concentrated = bool(
+        load.force_n
+        or load.bearing_n
+        or load.pressure_mpa
+        or load.moment_nm
+        or load.preload_n
+        or getattr(load, "normal_force_n", None)
+        or load.remote_point
+    )
+    if load.g_load and not concentrated:
+        return False
+    return getattr(load.region, "kind", "") != "all"
+
+
 def _resolve_topopt_cases(
     domain: Any,
     cases: list[Any],
@@ -1722,22 +1743,8 @@ def _resolve_topopt_cases(
             # don't pin body-load or whole-part regions — gravity acts on
             # whatever material survives and `all` re-matches the
             # extracted mesh; pinning them would freeze the domain.
-            # normal_force_n via getattr: the field lands with the schema
-            # update and may not exist on older payloads.
-            concentrated = bool(
-                load.force_n
-                or load.bearing_n
-                or load.pressure_mpa
-                or load.moment_nm
-                or load.preload_n
-                or getattr(load, "normal_force_n", None)
-                or load.remote_point
-            )
-            if load.g_load and not concentrated:
-                continue
-            if getattr(load.region, "kind", "") == "all":
-                continue
-            r_load_nm.append(region_node_mask(domain, load.region, anchors))
+            if _load_pins_nodes(load):
+                r_load_nm.append(region_node_mask(domain, load.region, anchors))
     for f3, _ in r_resolved:
         r_fixed_nm.append(np.asarray(f3).any(axis=1) if np.ndim(f3) == 2 else f3)
     return r_resolved, r_weights, r_fixed_nm, r_load_nm, r_unresolved
@@ -2608,13 +2615,33 @@ def run_topopt_pipeline(  # noqa: C901
         ],
     }
     if passive_frac > volfrac:
+        fl_cells = res.topopt["passive_breakdown"]["fixed_load_cells"]
+        if fl_cells > keep_in_passive:
+            hint = (
+                f" Fixed/load case regions own {fl_cells} of {int(passive.sum())}"
+                " pinned cells — check for whole-face plane/face/skin fixtures"
+                " or loads pinning voxel layers (a g_load belongs on 'all'; a"
+                " bolted mount belongs on its hole anchors, not a face encastre)."
+            )
+        else:
+            tops = sorted(
+                res.topopt["passive_breakdown"]["per_keep_region"],
+                key=lambda d: -d["cells"],
+            )[:3]
+            hint = (
+                " Largest keep regions: "
+                + ", ".join(
+                    f"{d['kind']}#{d['hole_index'] or d['axis']}={d['cells']}" for d in tops
+                )
+                + "."
+            )
         res.error = (
             f"passive keep/load/fixed cells cover {passive_frac:.0%} of the optimization domain — "
             f"above the requested volume fraction {volfrac:.0%}; the target is "
             "unreachable regardless of optimization. Reduce keep/auto-keep "
             "regions or set target_volume_fraction >= "
             f"{min(0.95, passive_frac + 0.02):.2f}"
-        )
+        ) + hint
         res.topopt["infeasible_preflight"] = True
         return res
     if passive_frac > 0.3:
@@ -4983,7 +5010,8 @@ def run_topopt_resample(  # noqa: C901
         res.topopt.setdefault("warnings", []).extend(_w)
         fixed_node_masks.append(np.asarray(fixed3).any(axis=1))
         for ld in c.loads:
-            load_node_masks.append(region_node_mask(domain, ld.region, anchors))
+            if _load_pins_nodes(ld):
+                load_node_masks.append(region_node_mask(domain, ld.region, anchors))
     keep_list = list(opt.keep_regions)
     # same auto-keep rule as run_topopt_pipeline: keep_mode="manual" only
     # opts out via the runtime `topopt_auto_keep` flag

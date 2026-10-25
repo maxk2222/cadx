@@ -175,3 +175,102 @@ def test_sanitize_drops_degenerate_clamps_weight_records_notes():
     assert spec.load_cases[0].weight == 1.0
     assert {ld.region.hole_index for ld in spec.load_cases[0].loads} == {6, 7}
     assert any("rebound" in a for a in spec.assumptions)
+
+
+def test_rebind_g_load_on_skin_region_becomes_all():
+    """g_load is a body force — a face/plane skin region is a category error
+    that pins whole voxel layers as passive (97%+ of the domain)."""
+    spec = _mount_spec()
+    spec.load_cases = [
+        LoadCase(
+            name="own weight",
+            fixed=[RegionSpec(kind="plane", axis="-z")],
+            loads=[
+                LoadSpec(
+                    region=RegionSpec(kind="face", axis="+z"),
+                    g_load=[0.0, 0.0, -1.0],
+                )
+            ],
+        )
+    ]
+    sanitize_load_cases(spec)
+    ld = spec.load_cases[0].loads[0]
+    assert ld.region.kind == "all"
+
+
+def test_rebind_face_encastre_replaced_by_mount_holes():
+    """'plane -z' encastre on a bolted plate pins ~27% as fixture skin — the
+    corner mounting holes carry the fixture, rewrite deterministically."""
+    spec = _mount_spec()
+    spec.load_cases = [
+        LoadCase(
+            name="own weight",
+            fixed=[RegionSpec(kind="plane", axis="-z")],
+            loads=[LoadSpec(region=RegionSpec(kind="all"), g_load=[0.0, 0.0, -1.0])],
+        )
+    ]
+    sanitize_load_cases(spec)
+    fixed = spec.load_cases[0].fixed
+    kinds = {r.kind for r in fixed}
+    idxs = {r.hole_index for r in fixed}
+    assert kinds == {"hole"}
+    assert idxs == {1, 2, 3, 4}  # corner bolts, not the M12 thread seat
+    assert any("encastre" in a for a in spec.assumptions)
+
+
+def test_rebind_face_encastre_kept_without_bolt_pattern():
+    """A whole-face fixture stays when no matching mount-hole pattern exists
+    (glued/clamped face is a real fixture then — never silently dropped)."""
+    spec = _mount_spec()
+    spec.features = [
+        f for f in spec.features if str(f.position or "").startswith("z=")
+    ]
+    spec.load_cases = [
+        LoadCase(
+            name="clamped",
+            fixed=[RegionSpec(kind="face", axis="-z")],
+            loads=[LoadSpec(region=RegionSpec(kind="all"), g_load=[0.0, 0.0, -1.0])],
+        )
+    ]
+    sanitize_load_cases(spec)
+    assert spec.load_cases[0].fixed[0].kind == "face"
+
+
+def test_rebind_moment_on_clearance_hole_moves_to_thread():
+    """A pure moment needs a seat that reacts torque — an untapped clearance
+    bore can't; rewire to the largest threaded anchor."""
+    spec = _mount_spec()
+    spec.load_cases = [
+        LoadCase(
+            name="shaft torque reaction",
+            fixed=[RegionSpec(kind="hole", hole_index=1)],
+            loads=[
+                LoadSpec(
+                    region=RegionSpec(kind="bore", hole_index=7),
+                    moment_nm=[0.0, 15.0, 0.0],
+                )
+            ],
+        )
+    ]
+    sanitize_load_cases(spec)
+    ld = spec.load_cases[0].loads[0]
+    assert ld.region.hole_index == 5  # M12 thread seat
+    assert any("torque" in a or "thread" in a for a in spec.assumptions)
+
+
+def test_rebind_moment_on_thread_seat_untouched():
+    spec = _mount_spec()
+    spec.load_cases = [
+        LoadCase(
+            name="shaft torque",
+            fixed=[RegionSpec(kind="hole", hole_index=1)],
+            loads=[
+                LoadSpec(
+                    region=RegionSpec(kind="bore", hole_index=5),
+                    moment_nm=[0.0, 15.0, 0.0],
+                )
+            ],
+        )
+    ]
+    sanitize_load_cases(spec)
+    assert spec.load_cases[0].loads[0].region.hole_index == 5

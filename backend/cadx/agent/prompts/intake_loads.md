@@ -62,6 +62,20 @@ Rules:
   point loads badly overstate stress.
 - Directions follow the spec's orientation_note (X=length, Y=width,
   Z=height, part rests on XY).
+- Region discipline — three category errors that silently wreck FEM/TopOpt:
+  * `g_load` is a BODY force acting on material volume — put it on `all`
+    (or a `cylinder`/`box` of real material). Never on `face`/`surface`/
+    `plane`/`bore`/`hole`: a skin region pins whole voxel layers as
+    passive keep material and can block the entire design domain.
+  * A whole-face `plane`/`face` encastre (`fix_mode:"all"`) is only right
+    when the prompt literally says the face is glued/clamped/welded. A
+    part held by bolts/screws is fixed through its mounting HOLES —
+    declare `{"kind":"hole","hole_index":N}` for each mount anchor.
+    `fix_mode:"normal"` on a plane is the legit "rests on" roller contact.
+  * `moment_nm` needs a seat that reacts torque: a threaded/tapped bore
+    (`kind` thread/tap/insert in the anchor table) or a `bearing_seat`.
+    A plain clearance hole cannot react a couple — pick the threaded
+    anchor's hole_index (e.g. the M12/M8 row), not the nearest hole.
 
 Also fill `optimize` when the prompt asks for weight reduction / topology
 optimization / lightness: enabled=true, target_volume_fraction (stated %,

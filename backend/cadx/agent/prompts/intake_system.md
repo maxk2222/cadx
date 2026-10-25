@@ -135,8 +135,14 @@ Rules:
   `moment_nm` (pure couple in N·m — right-hand rule about the vector;
   shaft torque goes on the `bore`/`hole` wall aligned with its axis),
   `force_n` + `remote_point` (levered load — remote_point needs force_n),
-  `g_load` (body accel in g — `[0,0,-1]` = own weight). Fixed regions accept
+  `g_load` (body accel in g — `[0,0,-1]` = own weight — put it on `all`
+  or a material `cylinder`/`box`, NEVER a face/surface/plane/bore skin:
+  body force acts on volume). Fixed regions accept
   `fix_mode`: `"all"` (default encastre) or `"normal"` (resting/roller).
+  A whole-face `plane`/`face` encastre is only for faces the prompt says
+  are glued/clamped — a bolted part is fixed through its mounting HOLES.
+  `moment_nm` needs a torque-reacting seat: a thread/tap/insert/bearing
+  bore, never a plain clearance hole.
   Use `bearing_n` on `bore` regions for ANY bolt/screw/pin attachment — a
   rim point-load badly overstates the stress.
 - When the user asks for a lightweight, material-saving or topology-optimised
