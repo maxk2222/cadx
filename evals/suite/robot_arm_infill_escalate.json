@@ -59,7 +59,7 @@
           ],
           "loads": [
             {
-              "region": { "kind": "bore", "axis": "+z", "center": [0, 0, 15], "diameter_mm": 10.25, "description": "M12 seat wall (hint-bound)" },
+              "region": { "kind": "cylinder", "axis": "z", "center": [0, 0, 15], "diameter_mm": 14, "z_range": [10, 25], "description": "boss section (shaft-seat couple)" },
               "moment_nm": [0, 100, 0]
             }
           ]
@@ -135,7 +135,7 @@
           ],
           "loads": [
             {
-              "region": { "kind": "bore", "axis": "+z", "center": [0, 0, 15], "diameter_mm": 10.25, "description": "M12 seat wall (hint-bound)" },
+              "region": { "kind": "cylinder", "axis": "z", "center": [0, 0, 15], "diameter_mm": 14, "z_range": [10, 25], "description": "boss section (shaft-seat couple)" },
               "moment_nm": [0, 100, 0]
             }
           ]

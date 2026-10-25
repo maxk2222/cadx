@@ -31,7 +31,7 @@ cadx eval run --local --case robot_arm_mount --stages fem --from <dir>
 |------|-----------|--------|-------------|
 | `l_bracket_rib` | 1 | aluminium L-bracket + triangular rib | `codegen` → `fem` (+ `params`, disabled) |
 | `sprocket_520_45t` | 2 | 7075-T6 rear sprocket, 45 teeth, 520 chain | `codegen` (+ `imagegen` → `meshgen`, disabled) |
-| `robot_arm_mount` | 3 | topopt-ready robot-arm mount | `codegen` → `fem` → `topopt` (+ `refine`, disabled) |
+| `robot_arm_mount` | 3 | topopt-ready robot-arm mount | `codegen` → `fem` → `topopt` → `refine` |
 | `bearing_bracket_topopt` | 3 | generative-design bearing bracket — interfaces-only prompt | `codegen` → `fem` → `topopt` → `refine` |
 | `agent_fem_bc` | 2 | agent-declared boundary conditions (cantilever bar) | `codegen` → `fem` (spec fallback + `fem_loadcases`) |
 
@@ -44,6 +44,17 @@ boundary conditions are declared deterministically in the stage
 `load_cases`: the radial case drives `bearing_n` on a `bore` region
 bound by its `(axis, dia, center)` hint — no `hole_index`, so the
 binding survives any scan-order or topology change.
+
+`robot_arm_mount` (and the `robot_arm_infill_*` A/B cases) declare the
+same boundary conditions in every stage: `axial` puts the 600 N arm
+weight on the hint-bound M12 seat wall (`bore`), `overturn` applies a
+100 N·m couple spread over the boss section (`cylinder` clipped to
+`z_range [10,25]` — the dominant real load; the thin bore-wall ring
+would concentrate the couple into a discretization artifact), and
+`link` pulls on the two Ø6.5 flange pin holes (`hole` regions) so the
+flange is structurally necessary. The `fem_loadcases` gate asserts the
+resolved physics — resultant/centroid/mechanism per case plus the
+`moment_mag_nm` band for the pure-couple case.
 
 Each stage maps to exactly one pipeline phase and entity outcome:
 
