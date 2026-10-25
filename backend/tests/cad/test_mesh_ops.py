@@ -379,6 +379,79 @@ def test_mesh_analysis_open_mesh_flagged():
 
 
 # --------------------------------------------------------------------------- #
+# hairline boundary stitch (_ensure_watertight rung)                            #
+# --------------------------------------------------------------------------- #
+
+
+def _split_vertex_crack(*, sliver: bool = False) -> trimesh.Trimesh:
+    """Watertight box with a micron hairline crack: a corner vertex is
+    duplicated at +2µm and one incident face moved to the twin — the lips
+    form a boundary loop of coincident-pair edges, exactly what boolean
+    re-cuts leave on organic surfaces. `sliver` adds the degenerate face
+    spanning the twins that collapses the loop to the observed 3-edge form
+    (fill_holes cannot triangulate it)."""
+    m = trimesh.creation.box(extents=[60.0, 40.0, 20.0])
+    v = int(np.argmax(m.vertices[:, 2] + m.vertices[:, 0]))
+    verts = np.vstack([m.vertices, m.vertices[v] + [2e-3, 0, 0]])
+    v2 = len(verts) - 1
+    faces = np.asarray(m.faces).copy()
+    fi = int(np.flatnonzero((faces == v).any(axis=1))[0])
+    others = [int(x) for x in faces[fi] if x != v]
+    faces[fi][faces[fi] == v] = v2
+    if sliver:
+        faces = np.vstack([faces, [[v, v2, others[0]]]])
+    return trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+
+
+def test_stitch_hairline_boundary_closes_split_vertex_crack():
+    from cadx.cad.mesh_ops import _stitch_hairline_boundary
+
+    m = _split_vertex_crack()
+    assert not m.is_watertight
+    out = _stitch_hairline_boundary(m, tol=0.05)
+    assert out.is_watertight
+    # only the twin pair merged — the envelope is untouched
+    np.testing.assert_allclose(out.extents, m.extents, atol=1e-6)
+
+
+def test_stitch_hairline_boundary_closes_three_edge_sliver_loop():
+    """The bearing-seat regression: a 3-edge loop whose two corners are
+    coincident twins — fill_holes' triangulate_quads rejects the ~zero
+    area patch, a tolerance weld would mint count-4 edges."""
+    from cadx.cad.mesh_ops import _stitch_hairline_boundary
+
+    m = _split_vertex_crack(sliver=True)
+    rows = trimesh.grouping.group_rows(m.edges_sorted, require_count=1)
+    assert len(rows) == 3
+    out = _stitch_hairline_boundary(m, tol=0.05)
+    assert out.is_watertight
+
+
+def test_stitch_hairline_boundary_leaves_real_openings():
+    """An open cylinder's rim loops have no near-coincident twins — the
+    stitch must return the input untouched."""
+    from cadx.cad.mesh_ops import _stitch_hairline_boundary
+
+    open_box = _box(10, 10, 10)
+    open_box.faces = open_box.faces[:-2]  # one whole side removed
+    assert not open_box.is_watertight
+    assert _stitch_hairline_boundary(open_box) is open_box
+
+
+def test_ensure_watertight_stitches_hairline_before_rebuild(monkeypatch):
+    """With fill_holes neutralised (it can patch a small crack into a
+    non-manifold band-aid), the stitch rung alone must close the mesh —
+    local, before the manifold3d/alpha/voxel fallbacks."""
+    from cadx.cad.mesh_ops import _ensure_watertight
+
+    monkeypatch.setattr(trimesh.repair, "fill_holes", lambda m: 0)
+    out = _ensure_watertight(_split_vertex_crack(sliver=True))
+    assert out.is_watertight
+    # local stitch — not the voxel rebuild: the face set stays the input's
+    assert len(out.faces) <= 40
+
+
+# --------------------------------------------------------------------------- #
 # agent ops — apply_op / apply_ops / registry                                  #
 # --------------------------------------------------------------------------- #
 

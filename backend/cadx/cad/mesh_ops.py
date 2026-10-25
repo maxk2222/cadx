@@ -2148,14 +2148,131 @@ def _rebuild_drift(
     return None
 
 
-def _ensure_watertight(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+def _boundary_rows(mesh: trimesh.Trimesh) -> np.ndarray:
+    """Row indices into ``mesh.edges`` of boundary half-edges (one incident
+    face). ``edges_sorted`` dedupes the two directions of a shared edge."""
+    try:
+        return np.asarray(
+            trimesh.grouping.group_rows(mesh.edges_sorted, require_count=1), dtype=np.int64
+        )
+    except Exception:
+        return np.zeros(0, dtype=np.int64)
+
+
+def _nonmanifold_count(mesh: trimesh.Trimesh) -> int:
+    """Edges with >2 incident faces — the failure mode a global tolerance
+    weld produces; the local stitch must never add to it."""
+    try:
+        groups = trimesh.grouping.group_rows(mesh.edges_sorted)
+        return int(sum(1 for g in groups if len(g) > 2))
+    except Exception:
+        return 0
+
+
+def _stitch_hairline_boundary(  # noqa: C901
+    mesh: trimesh.Trimesh, *, tol: float | None = None, max_passes: int = 6
+) -> trimesh.Trimesh:
+    """Weld hairline boundary cracks lip-to-lip and return the repaired mesh.
+
+    Boolean re-cuts on organic surfaces leave micron-thin cracks: two
+    surface lips carry parallel boundary half-edges whose endpoints are
+    near-coincident but distinct vertices. ``fill_holes`` can't patch the
+    degenerate loop (the spanning triangle is ~zero-area) and a global
+    tolerance weld mints count-4 non-manifold edges by fusing unrelated
+    nearby geometry. Instead we pair only DIRECTED boundary half-edges
+    whose reversed twin exists within ``tol`` — (a->b) against (c->d)
+    where a~d and b~c — and weld exactly those endpoint pairs. Welding
+    turns the pair into one interior edge; the orphaned sliver triangle
+    collapses and its two neighbours pair up the same way, so a chain of
+    stitches walks a crack shut. Each pass is accepted only if it strictly
+    reduces boundary edges without adding non-manifold edges — otherwise
+    the mesh falls through to the heavier repair rungs unchanged."""
+    m = mesh.copy()
+    tol = (
+        float(tol)
+        if tol is not None
+        else float(np.clip(float(m.scale) * 1e-4, 1e-3, 0.1))
+    )
+    n_b0 = len(_boundary_rows(m))
+    if not n_b0:
+        return mesh
+    nm0 = _nonmanifold_count(m)
+    try:
+        tree = m.kdtree
+    except Exception:
+        return mesh
+
+    def _score(mm: trimesh.Trimesh) -> tuple[int, int]:
+        return len(_boundary_rows(mm)), _nonmanifold_count(mm)
+
+    cur = (n_b0, nm0)
+    for _ in range(max_passes):
+        rows = _boundary_rows(m)
+        if not len(rows):
+            break
+        bedges = np.asarray(m.edges[rows], dtype=np.int64)
+        verts = np.asarray(m.vertices, dtype=float)
+        incoming: dict[int, list[int]] = {}
+        for i in range(len(bedges)):
+            incoming.setdefault(int(bedges[i][1]), []).append(i)
+        pairs: set[tuple[int, int]] = set()
+        for i in range(len(bedges)):
+            a, b = int(bedges[i][0]), int(bedges[i][1])
+            if np.linalg.norm(verts[a] - verts[b]) <= tol:
+                # sub-tolerance boundary edge — collapse it outright
+                pairs.add((a, b))
+            for d in tree.query_ball_point(verts[a], tol):
+                for j in incoming.get(int(d), []):
+                    if j == i:
+                        continue
+                    c = int(bedges[j][0])
+                    if np.linalg.norm(verts[b] - verts[c]) <= tol:
+                        pairs.add((a, int(d)))
+                        pairs.add((b, c))
+        if not pairs:
+            break
+        parent = np.arange(len(verts))
+
+        def _find(x: int, _p: np.ndarray = parent) -> int:
+            # _p pins the pass's union table (B023 — the closure outlives
+            # the loop variable)
+            while _p[x] != x:
+                _p[x] = _p[_p[x]]
+                x = _p[x]
+            return int(x)
+
+        for a, b in pairs:
+            ra, rb = _find(a), _find(b)
+            if ra != rb:
+                parent[rb] = ra
+        remap = np.array([_find(i) for i in range(len(verts))], dtype=np.int64)
+        faces = remap[np.asarray(m.faces, dtype=np.int64)]
+        keep = (
+            (faces[:, 0] != faces[:, 1])
+            & (faces[:, 1] != faces[:, 2])
+            & (faces[:, 2] != faces[:, 0])
+        )
+        cand = trimesh.Trimesh(vertices=verts, faces=faces[keep], process=False)
+        cand.remove_unreferenced_vertices()
+        score = _score(cand)
+        # strictly fewer open edges, never more non-manifold — else keep
+        # what we had and let the next ladder rung try
+        if score[0] >= cur[0] or score[1] > cur[1]:
+            break
+        m, cur = cand, score
+        tree = m.kdtree
+    return m if cur != (n_b0, nm0) else mesh
+
+
+def _ensure_watertight(mesh: trimesh.Trimesh) -> trimesh.Trimesh:  # noqa: C901
     """Best-effort repair ladder before boolean/B-Rep conversion.
 
     1) process + merge + fill_holes + normals (cheap, preserves detail)
-    2) manifold3d roundtrip (enforces 2-manifold where possible)
-    3) pymeshlab alpha-wrap reskin (watertight/2-manifold by construction;
+    2) local hairline-crack stitch (welds near-coincident boundary lips)
+    3) manifold3d roundtrip (enforces 2-manifold where possible)
+    4) pymeshlab alpha-wrap reskin (watertight/2-manifold by construction;
        optional dep — skipped entirely when pymeshlab is not installed)
-    4) voxel remesh (always closed; lossy — last resort)
+    5) voxel remesh (always closed; lossy — last resort)
     Returns the repaired mesh or raises ValueError when nothing works.
     """
     if mesh.is_watertight and mesh.is_winding_consistent:
@@ -2173,6 +2290,16 @@ def _ensure_watertight(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
             fn()
     if m.is_watertight and m.is_winding_consistent:
         return m
+    # micron-scale boundary cracks survive the loop above — stitch them
+    # lip-to-lip before paying for reskin/voxel rebuilds
+    m2 = _stitch_hairline_boundary(m)
+    if m2 is not m:
+        m = m2
+        with contextlib.suppress(Exception):
+            trimesh.repair.fill_holes(m)
+            m.fix_normals()
+        if m.is_watertight and m.is_winding_consistent:
+            return m
     try:
         from manifold3d import Manifold
         from manifold3d import Mesh as MMesh
