@@ -289,6 +289,61 @@ def _axial_wall_mid(domain: VoxelDomain, idx: int, center: np.ndarray, dia: floa
     return float(np.median(mids))
 
 
+def _anchor_center3d(a: dict[str, Any]) -> np.ndarray:
+    """Anchor centre as (x, y, z) — `pos` components override the x/y/z
+    fields when present (scanned anchors keep the through-axis None)."""
+    c = np.array(
+        [float(a.get("x") or 0.0), float(a.get("y") or 0.0), float(a.get("z") or 0.0)]
+    )
+    pos = a.get("pos")
+    if isinstance(pos, (list, tuple)) and len(pos) == 3:
+        for i in range(3):
+            if pos[i] is not None:
+                c[i] = float(pos[i])
+    return c
+
+
+def _pick_anchor_by_hint(
+    anchors: list[dict], region: RegionSpec, pitch: float
+) -> dict[str, Any] | None:
+    """Nearest measured anchor matching the declared (axis, dia, center) hint.
+
+    Deterministic alternative to `hole_index` for stage-declared regions:
+    candidates must share the axis letter and (when both diameters are given)
+    roughly the diameter; the in-plane distance to `region.center` decides,
+    with dia deviation and anchor index as stable tie-breaks. The axis
+    coordinate is ignored on purpose — anchors often carry no measured
+    through-centre there. Returns None when nothing is close enough so the
+    caller warns instead of silently binding the wrong bore."""
+    if not region.center or len(region.center) < 3:
+        return None
+    want_axis = str(region.axis or "").lower().lstrip("+-")[-1:]
+    want_dia = float(region.diameter_mm or 0.0)
+    hint = np.asarray(region.center[:3], dtype=float)
+
+    cands: list[tuple[float, float, int, dict[str, Any]]] = []
+    for i, a in enumerate(anchors):
+        aax = str(a.get("axis") or "").lower().lstrip("+-")[-1:]
+        if want_axis and aax and aax != want_axis:
+            continue
+        dia = float(a.get("dia") or 0.0)
+        dia_dev = abs(dia - want_dia) if (dia > 0 and want_dia > 0) else 0.0
+        if dia_dev > max(1.0, 0.15 * want_dia):
+            continue
+        ac = _anchor_center3d(a)
+        ax_idx = _AXIS_IDX.get(aax or want_axis or "z", 2)
+        d2 = float(sum((hint[j] - ac[j]) ** 2 for j in range(3) if j != ax_idx))
+        cands.append((d2, dia_dev, i, a))
+    if not cands:
+        return None
+    cands.sort(key=lambda t: (t[0], t[1], t[2]))
+    d2, _, _, best = cands[0]
+    limit = max(2.0 * pitch, 0.3 * want_dia, 3.0)
+    if d2 > limit * limit:
+        return None
+    return best
+
+
 def _anchor_geometry(
     domain: VoxelDomain, region: RegionSpec, anchors: list[dict] | None
 ) -> tuple[np.ndarray, np.ndarray, float, float | None] | None:
@@ -298,12 +353,21 @@ def _anchor_geometry(
     `axis` and `z`. The centre coordinate along the axis defaults to the part
     mid-plane. `half` (mm) limits the axial extent of the selection when the
     anchor knows its depth; None = whole part span along the axis.
-    """
-    if not anchors or not region.hole_index or region.hole_index < 1:
+
+    Binding: `hole_index` (1-based into the measured anchors) wins when set;
+    otherwise the (axis, diameter_mm, center) hint picks the nearest matching
+    anchor — deterministic for stage-declared cases where the anchor order
+    depends on the mesh scan."""
+    if not anchors:
         return None
-    if region.hole_index > len(anchors):
-        return None
-    a = anchors[region.hole_index - 1]
+    if region.hole_index and region.hole_index >= 1:
+        if region.hole_index > len(anchors):
+            return None
+        a = anchors[region.hole_index - 1]
+    else:
+        a = _pick_anchor_by_hint(anchors, region, float(domain.pitch))
+        if a is None:
+            return None
     axis = str(a.get("axis") or region.axis or "+z")
     idx = _AXIS3.get(axis.lower(), 2)
     sign = -1.0 if axis.startswith("-") else 1.0
@@ -1101,7 +1165,9 @@ def resolve_case_dofs(  # noqa: C901
     for load in case.loads:
         r = load.region
         m, cells, fb_ax = _nodes_cells(r)
-        if r.kind in ("hole", "anchor") and (load.bearing_n or load.preload_n or load.moment_nm):
+        if r.kind in ("hole", "anchor", "bore") and (
+            load.bearing_n or load.preload_n or load.moment_nm
+        ):
             # a bolt presses on the bore WALL, not on the clamp ring around
             # the hole — re-resolve through _bore_cells (itself falling back
             # to the hole ring when no wall can be located). A couple on a
@@ -1354,11 +1420,12 @@ def resolve_case_dofs(  # noqa: C901
                 )
                 got = ld.bearing_load(domain, F, idx, avec, center, dvec, float(load.bearing_n))
                 if got <= 0:
+                    aid = f"#{r.hole_index}" if r.hole_index else f"{r.kind} hint"
                     warnings.append(
                         f"case '{case.name}': bearing load on anchor "
-                        f"#{r.hole_index} at ({center[0]:.1f}, {center[1]:.1f}, "
+                        f"{aid} at ({center[0]:.1f}, {center[1]:.1f}, "
                         f"{center[2]:.1f}) Ø{_dia:g} produced no force — no bore "
-                        "wall resolved there; check that hole_index maps to a "
+                        "wall resolved there; check that the anchor maps to a "
                         "real bore on the current part"
                     )
                 applied = applied or got > 0
