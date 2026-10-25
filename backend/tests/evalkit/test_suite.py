@@ -30,11 +30,12 @@ def test_shipped_suite_loads_and_validates():
         "helical_pinion_shaft",
         "m8_hex_screw_threadlen",
         "sprocket_520_45t",
+        "bearing_bracket_topopt",
         "robot_arm_infill_escalate",
         "robot_arm_infill_guided",
         "robot_arm_mount",
     ]
-    assert [c.difficulty for c in cases] == [1, 1, 1, 2, 2, 2, 2, 2, 2, 3, 3, 3]
+    assert [c.difficulty for c in cases] == [1, 1, 1, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3]
     for c in cases:
         assert c.project.startswith("eval:")
         assert c.stages[0].type in ("generate", "meshgen")
@@ -122,6 +123,7 @@ def test_suite_files_present():
     assert files == [
         "agent_fem_bc.json",
         "ball_m8_tap.json",
+        "bearing_bracket_topopt.json",
         "block_sidewall_tap.json",
         "helical_pinion_shaft.json",
         "l_bracket_rib.json",
