@@ -44,11 +44,13 @@ jobs:
           # have pre-existing info-level findings and are not part of this gate
           shellcheck install.sh scripts/check_version.sh
 
-      - name: backend deps + tests
+      - name: backend deps + tests (xvfb — real GLX for pyvista/VTK renders)
         run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb libgl1-mesa-dri libglx-mesa0 libglu1-mesa
           cd backend
           uv sync
-          uv run pytest tests -x -q -m "not verify"
+          xvfb-run -a -s "-screen 0 1280x800x24" uv run pytest tests -x -q -m "not verify"
 
       - name: backend lint
         run: |

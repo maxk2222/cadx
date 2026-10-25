@@ -698,11 +698,14 @@ def run_pipeline(  # noqa: C901
         _mark_step(step_key, "export")
         t = time.monotonic()
         try:
-            with ThreadPoolExecutor(max_workers=3) as pool:
-                f_ren = pool.submit(_do_renders)
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                # VTK/GL contexts are not thread-safe — the render probe ran
+                # on this thread, so renders must stay here; only the pure
+                # python/CGAL-side tasks (dfm, exports) go to pool workers.
                 f_dfm = pool.submit(_do_dfm)
                 f_exp = pool.submit(_do_exports)
-                render_s, dfm_s, export_s = f_ren.result(), f_dfm.result(), f_exp.result()
+                render_s = _do_renders()
+                dfm_s, export_s = f_dfm.result(), f_exp.result()
         except Exception as e:  # a crashed fan-out retries serially
             log.warning("pipeline.fanout_failed", error=str(e)[:200])
             render_s, dfm_s, export_s = _do_renders(), _do_dfm(), _do_exports()
