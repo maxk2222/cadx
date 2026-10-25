@@ -10,17 +10,23 @@ from __future__ import annotations
 import contextlib
 
 import pytest
-import torch
 from meshserver.adapters.base import MeshAdapter
 from meshserver.adapters.image_base import ImageAdapter
 from meshserver.config import ServerConfig
 from meshserver.registry import Registry, detect_device
 from meshserver.torch_util import TorchDevice, is_rocm, torch_backend
 
+try:
+    import torch
+except ImportError:
+    torch = None  # torch is an optional dep — fixture users skip below
+
 
 @pytest.fixture
 def rocm_torch(monkeypatch):
     """Make the installed (CPU) torch look like a ROCm/HIP build."""
+    if torch is None:
+        pytest.skip("torch not installed")
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.version, "hip", "6.4.2", raising=False)
     return torch
@@ -29,6 +35,8 @@ def rocm_torch(monkeypatch):
 @pytest.fixture
 def cuda_torch(monkeypatch):
     """Real NVIDIA build: cuda available, no hip."""
+    if torch is None:
+        pytest.skip("torch not installed")
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.version, "hip", None, raising=False)
     return torch

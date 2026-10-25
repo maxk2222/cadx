@@ -52,11 +52,17 @@ def test_available_does_not_crash():
 
 def test_step1x_unavailable_without_cuda():
     """No NVIDIA CUDA on this dev box -> step1x-3d must stay unavailable."""
-    import torch
-
     from meshserver.adapters.step1x_3d import Step1X3DAdapter
 
-    if torch.cuda.is_available() and not getattr(torch.version, "hip", None):
+    try:
+        import torch
+    except ImportError:
+        torch = None  # no torch at all -> adapter is certainly unavailable
+    if (
+        torch is not None
+        and torch.cuda.is_available()
+        and not getattr(torch.version, "hip", None)
+    ):
         return  # real CUDA host: adapter may legitimately be available
     assert Step1X3DAdapter.available(_cfg()) is False
 
