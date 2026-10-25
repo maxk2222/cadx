@@ -56,6 +56,7 @@
 | [Releasing](releasing.md) | Maintainer runbook: version contract, screenshots, release workflow, rulesets |
 | [Release notes](release-notes/) | Curated per-release notes (`0.1.0-alpha.1`) |
 | [TopOpt audit 2026-10](audit-topopt-2026-10.md) | Point-in-time defect-class audit of the FEM/TopOpt pipeline (historical record — findings since fixed) |
+| [Deferred dep findings](security-deferred-deps.md) | Dependabot findings deferred by design (tailwind 4, transformers 5, diskcache) |
 
 ## Repo root
 
