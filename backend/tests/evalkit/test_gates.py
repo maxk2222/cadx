@@ -442,6 +442,51 @@ def test_fem_loadcases_source_and_inconclusive():
     # min_cases with fewer resolved cases fails hard
     short = run_gates([{"type": "fem_loadcases", "min_cases": 3}], out2, 0)[0]
     assert short.ok is False
+
+
+def test_fem_loadcases_moment_band():
+    """moment_mag_nm checks the resolved couple band — the moment a pure
+    couple actually transmitted to the supports (no force resultant exists
+    to check on a moment-only case)."""
+    out = _fem_out()
+    out.fem["cases"][0]["reactions"]["moment_mag_nm"] = 98.5
+    ok = run_gates(
+        [
+            {
+                "type": "fem_loadcases",
+                "checks": [{"moment_mag_nm": {"min": 70, "max": 140}}],
+            }
+        ],
+        out,
+        0,
+    )[0]
+    assert ok.ok, ok.detail
+    assert ok.measured["tip_load.moment_mag_nm"] == 98.5
+    out.fem["cases"][0]["reactions"]["moment_mag_nm"] = 12.0
+    bad = run_gates(
+        [
+            {
+                "type": "fem_loadcases",
+                "checks": [{"moment_mag_nm": {"min": 70, "max": 140}}],
+            }
+        ],
+        out,
+        0,
+    )[0]
+    assert bad.ok is False and "moment" in bad.detail
+    # no reaction record -> inconclusive, not a failure
+    inc_out = _fem_out()
+    inc = run_gates(
+        [
+            {
+                "type": "fem_loadcases",
+                "checks": [{"moment_mag_nm": {"min": 70}}],
+            }
+        ],
+        inc_out,
+        0,
+    )[0]
+    assert inc.ok is None
     # missing reactions evidence -> inconclusive
     bare = _out(fem={"cases": [{"name": "x"}]})
     inc2 = run_gates([{"type": "fem_loadcases", "checks": [{"resultant_n": {"min": 1}}]}], bare, 0)[

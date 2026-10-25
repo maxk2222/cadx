@@ -412,6 +412,20 @@ def _gate_fem_loadcases(g: dict[str, Any], outcome: StageOutcome) -> GateResult:
                     hi is not None and float(mag) > float(hi)
                 ):
                     problems.append(f"{tag}: resultant {float(mag):.1f} N outside [{lo},{hi}]")
+        if "moment_mag_nm" in chk:
+            band = chk["moment_mag_nm"] or {}
+            mag = rxn.get("moment_mag_nm")
+            measured[f"{tag}.moment_mag_nm"] = mag
+            if mag is None:
+                inconclusive.append(f"{tag}: no moment reaction record")
+            else:
+                lo, hi = band.get("min"), band.get("max")
+                if (lo is not None and float(mag) < float(lo)) or (
+                    hi is not None and float(mag) > float(hi)
+                ):
+                    problems.append(
+                        f"{tag}: moment {float(mag):.1f} N·m outside [{lo},{hi}]"
+                    )
         if "resultant_dir" in chk:
             res, want = _v3(rxn.get("resultant_n")), _v3(chk["resultant_dir"])
             if res is None or want is None:
