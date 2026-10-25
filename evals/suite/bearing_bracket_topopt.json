@@ -15,7 +15,7 @@
       "options": {
         "process": "fdm"
       },
-      "prompt": "Design-space seed for a topology-optimized bearing bracket (aluminium 6061), parametric.\n\nThis body is the design envelope for a topology optimization — it is NOT the final part. Build ONE watertight solid that fills the envelope as fully as practical; a plain block is a perfectly good answer. Do NOT add ribs, pockets, thin webs, chamfers or fillets — the optimizer decides where material stays.\n\nFrame: mounting face on the XY plane (z = 0), centred in X and Y. mm.\n- Envelope (maximum design space): 120 x 70 x 90 (x × y × z).\n- Interfaces, exactly:\n  - 3 through-holes dia 8.5 along Z on the mounting plane at (x=-46, y=+22), (x=+46, y=+22) and (x=0, y=-22) — M8 bolts to the base.\n  - 1 through-bore dia 30 along Y centred at (x=0, z=65) — bearing/shaft seat.\n- Nothing else: no shape features beyond the interfaces.\nSymmetric across x = 0 (left-right).\n\nService context for the spec: bolted down through the three holes; the bore carries a ~1.5 kN radial shaft load downward plus a ~0.6 kN axial thrust along +Y.",
+      "prompt": "Design-space seed for a topology-optimized bearing bracket (aluminium 6061), parametric.\n\nThis body is the design envelope for a topology optimization — it is NOT the final part. Build ONE watertight solid that fills the envelope as fully as practical; a plain block is a perfectly good answer. Do NOT add ribs, pockets, thin webs, chamfers or fillets — the optimizer decides where material stays.\n\nFrame: mounting face on the XY plane (z = 0), centred in X and Y. mm.\n- Envelope (maximum design space): 120 x 70 x 90 (x × y × z).\n- Interfaces, exactly:\n  - 3 through-holes dia 8.5 along Z on the mounting plane at (x=-46, y=+22), (x=+46, y=+22) and (x=0, y=-22) — M8 bolts to the base.\n  - 1 through-bore dia 30 along Y centred at (x=0, z=65) — bearing/shaft seat.\n- Nothing else: no shape features beyond the interfaces.\nSymmetric across x = 0 (left-right).\n\nService context for the spec: bolted down through the three holes; the bore carries a ~8 kN radial shaft load downward plus a ~3 kN axial thrust along +Y.",
       "gates": [
         {
           "type": "status",
@@ -149,7 +149,7 @@
               "force_n": [
                 0,
                 0,
-                -1500
+                -8000
               ]
             }
           ]
@@ -223,7 +223,7 @@
               },
               "force_n": [
                 0,
-                600,
+                3000,
                 0
               ]
             }
@@ -249,8 +249,8 @@
             {
               "case": "radial",
               "resultant_n": {
-                "min": 1300,
-                "max": 1700
+                "min": 7000,
+                "max": 9000
               },
               "resultant_dir": [
                 0,
@@ -279,8 +279,8 @@
             {
               "case": "axial",
               "resultant_n": {
-                "min": 500,
-                "max": 700
+                "min": 2600,
+                "max": 3400
               },
               "resultant_dir": [
                 0,
@@ -381,7 +381,7 @@
               "force_n": [
                 0,
                 0,
-                -1500
+                -8000
               ]
             }
           ]
@@ -455,7 +455,7 @@
               },
               "force_n": [
                 0,
-                600,
+                3000,
                 0
               ]
             }
@@ -614,7 +614,7 @@
               "force_n": [
                 0,
                 0,
-                -1500
+                -8000
               ]
             }
           ]
@@ -688,7 +688,7 @@
               },
               "force_n": [
                 0,
-                600,
+                3000,
                 0
               ]
             }
