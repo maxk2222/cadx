@@ -36,14 +36,15 @@ cadx eval run --local --case robot_arm_mount --stages fem --from <dir>
 | `agent_fem_bc` | 2 | agent-declared boundary conditions (cantilever bar) | `codegen` → `fem` (spec fallback + `fem_loadcases`) |
 
 `bearing_bracket_topopt` is the *interfaces-only* / generative-design
-pattern: the prompt declares just the mounting interfaces (3×M8 bolt
-triangle + a dia-30 bearing bore) and a maximum envelope — the agent is
-free to pick the seed topology, the optimizer designs the actual
-structure (`keep_mode:"auto"` preserves the interfaces), and the
-boundary conditions are declared deterministically in the stage
-`load_cases`: the radial case drives `bearing_n` on a `bore` region
-bound by its `(axis, dia, center)` hint — no `hole_index`, so the
-binding survives any scan-order or topology change.
+pattern: the prompt declares just the mounting interfaces (3×M8 blind
+taps in the base face + a dia-30 bearing bore) and a solid design-space
+block — the optimizer designs the actual structure while declared
+`keep_regions` (cylinder annuli around the tap walls and the bearing
+seat) plus `keep_mode:"auto"` preserve the interfaces. The boundary
+conditions are declared deterministically in the stage `load_cases`:
+the radial case drives `bearing_n` on a `bore` region bound by its
+`(axis, dia, center)` hint — no `hole_index`, so the binding survives
+any scan-order or topology change.
 
 `robot_arm_mount` (and the `robot_arm_infill_*` A/B cases) declare the
 same boundary conditions in every stage: `axial` puts the 600 N arm
