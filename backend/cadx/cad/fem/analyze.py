@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import math
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -515,6 +516,10 @@ def _feature_peaks(
 
 
 _POOL: dict[str, Any] = {}
+# Outer bound on the whole case-solve pool wait — long enough that a slow
+# legitimate case still wins, short enough that a wedged fork child turns
+# into the serial fallback instead of deadlocking the task.
+_POOL_WAIT_S = 900.0
 
 
 def _solve_case_child(i: int) -> tuple[int, FemSolution]:
@@ -729,7 +734,7 @@ def _solve_cases(  # noqa: C901
         K, edof, active = asm
         try:
             import multiprocessing as mp
-            from concurrent.futures import ProcessPoolExecutor, as_completed
+            from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 
             _POOL.clear()
             _POOL.update(
@@ -746,13 +751,29 @@ def _solve_cases(  # noqa: C901
                 elem_class=elem_class,
                 class_D=class_D,
             )
-            with ProcessPoolExecutor(
-                max_workers=workers, mp_context=mp.get_context("fork")
-            ) as pool:
+            # fork inside a threaded async process can leave a child wedged on
+            # an inherited lock — a silent hang, not a raised error. Bound the
+            # pool wait and let the serial fallback below re-solve whatever the
+            # pool never returned.
+            pool = ProcessPoolExecutor(max_workers=workers, mp_context=mp.get_context("fork"))
+            try:
                 futures = {pool.submit(_solve_case_child, i): i for i in preps}
-                for fut in as_completed(futures):
-                    i, case_sol = fut.result()
-                    solved[i] = case_sol
+                deadline = time.monotonic() + _POOL_WAIT_S
+                pending = set(futures)
+                while pending:
+                    done, pending = wait(
+                        pending,
+                        timeout=max(1.0, deadline - time.monotonic()),
+                        return_when=FIRST_COMPLETED,
+                    )
+                    if not done:
+                        log.warning("fem.solve_pool_timeout", pending=len(pending))
+                        break
+                    for fut in done:
+                        i, case_sol = fut.result()
+                        solved[i] = case_sol
+            finally:
+                pool.shutdown(wait=False, cancel_futures=True)
         except Exception as e:
             log.warning("fem.solve_pool_failed", error=str(e)[:200])
         finally:
