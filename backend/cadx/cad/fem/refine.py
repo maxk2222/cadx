@@ -23,7 +23,7 @@ import numpy as np
 import trimesh
 
 from cadx.cad.fem import anchors3d
-from cadx.cad.fem.anchors3d import is_fastener_anchor
+from cadx.cad.fem.anchors3d import _SIGNED_AXES, is_fastener_anchor
 from cadx.logging import get_logger
 
 log = get_logger(__name__)
@@ -46,6 +46,10 @@ _AXIS_VEC: dict[str, np.ndarray] = {
     "+z": np.array([0.0, 0.0, 1.0]),
     "-z": np.array([0.0, 0.0, -1.0]),
 }
+
+# in-plane index triples are sign-invariant — signed axes appear on
+# request/spec-declared features (entry face on the negative side)
+_AXES_ANY = {**_AXES, **{f"-{k[1:]}": v for k, v in _AXES.items()}}
 
 # restored keep-patch must overlap the optimized body by at least this
 # much real volume — less means it lands in an emptied region and floats
@@ -198,11 +202,12 @@ def _thread_spec_from(sf: dict[str, Any], dia: float, *, allow_dia_snap: bool = 
 
 
 def _feature_axis(f: dict[str, Any]) -> str:
-    """Normalize a spec Feature.axis ('x'|'+x'|'z'...) to signed axis."""
+    """Normalize a spec Feature.axis ('x'|'+x'|'z'|'-z'...) to signed axis —
+    the sign selects the entry face ('-z' opens on the bottom face)."""
     a = str(f.get("axis") or "").strip().lower()
     if a in ("x", "y", "z"):
         a = "+" + a
-    return a if a in _AXES else "+z"
+    return a if a in _SIGNED_AXES else "+z"
 
 
 def _spec_feature_text(sf: dict[str, Any]) -> str:
@@ -221,7 +226,7 @@ def _spec_axis(sf: dict[str, Any], text: str) -> str | None:
     a = str(sf.get("axis") or "").strip().lower()
     if a in ("x", "y", "z"):
         a = "+" + a
-    if a in _AXES:
+    if a in _SIGNED_AXES:
         return a
     m = re.search(r"\bthrough\s+([xyz])\b", text, re.I)
     if not m:
@@ -249,7 +254,7 @@ def _spec_uv_positions(text: str, axis: str) -> list[tuple[float, float]]:
         parse_symmetric_coords,
     )
 
-    _ax, au, av = _AXES[axis]
+    _ax, au, av = _AXES_ANY[axis]
     aul, avl = "xyz"[au], "xyz"[av]
     sym = parse_symmetric_coords(text)
     points = parse_coord_points(text) or [parse_position_hints(text)[0]]
@@ -269,7 +274,7 @@ def _anchor_uv(a: dict[str, Any]) -> tuple[float, float] | None:
     """In-plane (u, v) of an anchor on its own axis."""
     pos = a.get("pos") or []
     axis = _feature_axis(a)
-    _ax, au, av = _AXES[axis]
+    _ax, au, av = _AXES_ANY[axis]
     try:
         u = pos[au] if len(pos) > au else None
         v = pos[av] if len(pos) > av else None
@@ -307,7 +312,7 @@ def _tunnel_open_mesh(
     when the blocked length is ≤ max(1 mm, `open_frac`·span) — enough slack
     for tessellation wobble on bore walls, far below the ~full span a
     dimple/pocket or solid junk position blocks."""
-    ax = _AXES[axis][0]
+    ax = _AXES_ANY[axis][0]
     lo, hi = float(mesh.bounds[0][ax]), float(mesh.bounds[1][ax])
     span = hi - lo
     if span <= 0:
@@ -318,7 +323,7 @@ def _tunnel_open_mesh(
 def _channel_blocked_mm(mesh: trimesh.Trimesh, u: float, v: float, axis: str) -> float:
     """Material thickness the centre ray at (u, v) crosses along `axis` —
     ~0 for a clean through-channel; membranes add their thickness."""
-    ax, au, av = _AXES[axis]
+    ax, au, av = _AXES_ANY[axis]
     lo, hi = float(mesh.bounds[0][ax]), float(mesh.bounds[1][ax])
     origin = np.zeros(3)
     origin[au], origin[av] = u, v
@@ -365,7 +370,7 @@ def _bore_ring_material(
     counts "material" when its blocked span exceeds the same threshold
     `_tunnel_open_mesh` uses (short grazes are noise); >=40% material rays
     means enough host survives to cut into."""
-    ax, au, av = _AXES[axis]
+    ax, au, av = _AXES_ANY[axis]
     lo, hi = float(mesh.bounds[0][ax]), float(mesh.bounds[1][ax])
     span = hi - lo
     if span <= 0:
@@ -495,7 +500,7 @@ def resolve_refine_features(  # noqa: C901
             uv = _anchor_uv(merged) or (None, None)
             if uv[0] is None:
                 # request may carry raw in-plane coords
-                _ax, au, av = _AXES[axis]
+                _ax, au, av = _AXES_ANY[axis]
                 p = merged.get("pos") or []
                 if len(p) > max(au, av) and p[au] is not None and p[av] is not None:
                     uv = (float(p[au]), float(p[av]))
@@ -720,7 +725,7 @@ def _entry_point(mesh: trimesh.Trimesh, axis: str, u: float, v: float) -> float 
 
     The feature opens on the signed side of the axis; we cast from beyond the
     bounds inward and take the first hit — that is the entry plane."""
-    ax, au, av = _AXES[axis]
+    ax, au, av = _AXES_ANY[axis]
     dvec = -_AXIS_VEC[axis]  # inward
     origin = np.zeros(3)
     origin[au], origin[av] = u, v
@@ -872,7 +877,7 @@ def _through_cut_depth(
     flange wall) stay untouched. ``declared`` unchanged when nothing overlaps.
     """
     declared = feat.depth_mm if feat.depth_mm is not None else span + 2.0
-    ax, au, av = _AXES[feat.axis]
+    ax, au, av = _AXES_ANY[feat.axis]
     inward = -1.0 if feat.axis[0] == "+" else 1.0
     origin = np.zeros(3)
     origin[au], origin[av], origin[ax] = feat.u, feat.v, entry + inward * 0.02
@@ -920,7 +925,7 @@ def _measure_feature_dia(
     """Measured bore diameter after the cut — cross-section rays through the
     axis point at ~half the cut depth. Returns None when the rays escape
     (e.g. the cut merged into a larger void or channel)."""
-    ax, au, av = _AXES[feat.axis]
+    ax, au, av = _AXES_ANY[feat.axis]
     inward = -1.0 if feat.axis[0] == "+" else 1.0
     depth = min(feat.depth_mm or span, span)
     origin = np.zeros(3)
@@ -948,7 +953,7 @@ def _measure_feature_dia(
 
 def _orient_cutter(cutter: trimesh.Trimesh, axis: str, u: float, v: float, entry: float) -> None:
     """Map local +Z onto the outward axis direction and seat entry at z=0."""
-    ax, au, av = _AXES[axis]
+    ax, au, av = _AXES_ANY[axis]
     dvec = _AXIS_VEC[axis]  # outward = entry side
     R = trimesh.geometry.align_vectors(np.array([0.0, 0.0, 1.0]), dvec)
     if R is not None:
@@ -982,7 +987,7 @@ def _tunnel_center(
     then in-plane rays to the bore walls at mid-depth refine it. Returns
     None when the measured centre lands outside `r_max` — the opening found
     is a different feature, not this bore."""
-    ax, au, av = _AXES[axis]
+    ax, au, av = _AXES_ANY[axis]
     lo, hi = float(mesh.bounds[0][ax]), float(mesh.bounds[1][ax])
     span = hi - lo
     if span <= 0 or r_max <= 0:
@@ -1066,7 +1071,7 @@ def _plug_cylinder(mesh: trimesh.Trimesh, feat: RefineFeature) -> trimesh.Trimes
     directions) plus weld margin, capped by the part silhouette (last-hit
     radius) so the plug can never stick out through an open channel mouth.
     Axial span covers the two part surfaces at the bore centre."""
-    ax, au, av = _AXES[feat.axis]
+    ax, au, av = _AXES_ANY[feat.axis]
     opp = ("-" if feat.axis[0] == "+" else "+") + feat.axis[1]
     pu, pv = feat.plug_uv or (feat.u, feat.v)
     # channel span along the axis — the centre ray of a through-channel hits
@@ -1335,8 +1340,8 @@ def _region_box(region: dict[str, Any], bounds: np.ndarray) -> np.ndarray | None
 
     if kind == "all":
         return np.stack([lo, hi])
-    if kind in ("face", "surface") and axis in _AXES:
-        ax, _, _ = _AXES[axis]
+    if kind in ("face", "surface") and axis in _AXES_ANY:
+        ax, _, _ = _AXES_ANY[axis]
         b = np.stack([lo.copy(), hi.copy()])
         if axis[0] == "+":
             b[0][ax] = bounds[1][ax] - margin
@@ -1354,8 +1359,8 @@ def _region_box(region: dict[str, Any], bounds: np.ndarray) -> np.ndarray | None
             b[0][0], b[0][1] = poly[:, 0].min() - margin, poly[:, 1].min() - margin
             b[1][0], b[1][1] = poly[:, 0].max() + margin, poly[:, 1].max() + margin
         return b
-    if kind == "cylinder" and axis in _AXES:
-        ax, au, av = _AXES[axis]
+    if kind == "cylinder" and axis in _AXES_ANY:
+        ax, au, av = _AXES_ANY[axis]
         c = region.get("center") or []
         d = float(region.get("diameter_mm") or 0) / 2.0 + margin
         b = np.stack([lo.copy(), hi.copy()])
@@ -1385,7 +1390,7 @@ def _anchor_keep_prism(
     if uv is None:
         return None
     axis = _feature_axis(anchor)
-    ax, _au, _av = _AXES[axis]
+    ax, _au, _av = _AXES_ANY[axis]
     r = max(float(anchor.get("dia") or 0.0), float(anchor.get("pad_dia") or 0.0)) / 2.0 + margin
     return {"shape": "cyl", "ax": ax, "uv": uv, "r": r, "span": span_axis}
 
@@ -1397,8 +1402,8 @@ def _region_prism(region: dict[str, Any], bounds: np.ndarray) -> dict[str, Any] 
     kind = str(region.get("kind") or "face")
     if kind == "cylinder":
         axis = str(region.get("axis") or "")
-        if axis in _AXES:
-            ax, au, av = _AXES[axis]
+        if axis in _AXES_ANY:
+            ax, au, av = _AXES_ANY[axis]
             c = region.get("center") or []
             margin = float(region.get("margin_mm") or 2.0)
             r = float(region.get("diameter_mm") or 0.0) / 2.0 + margin
@@ -1764,7 +1769,7 @@ def _feature_host_main(
         return None
     if len(parts) <= 1:
         return True
-    ax, au, av = _AXES[feat.axis]
+    ax, au, av = _AXES_ANY[feat.axis]
     inward = -1.0 if feat.axis[0] == "+" else 1.0
     depth = min(feat.depth_mm or span, span)
     centre = np.zeros(3)
@@ -1859,7 +1864,7 @@ def _plug_channel(
     nominal drill leaves exact walls — a plain cut can only widen, never
     shrink, an existing tunnel. On plug failure fall back to the +0.4
     ream (oversized but clean) rather than cutting ragged walls."""
-    ax = _AXES[feat.axis][0]
+    ax = _AXES_ANY[feat.axis][0]
     plug = _plug_cylinder(out, feat)
     if plug is None:
         feat.plug_first = False
@@ -1909,7 +1914,7 @@ def _apply_cut(
     post-repair re-cut path seats on the bbox face so the ray can't land on
     material behind an open tunnel) — the through-depth logic still limits
     the cut to the declared reach."""
-    ax, _, _ = _AXES[feat.axis]
+    ax, _, _ = _AXES_ANY[feat.axis]
     entry_reseated = False
     if entry_override is not None:
         entry = entry_override
@@ -2130,7 +2135,7 @@ def apply_refine(  # noqa: C901
         if feat.kind not in _CUTABLE or not feat.plug_first:
             continue
         try:
-            ax = _AXES[feat.axis][0]
+            ax = _AXES_ANY[feat.axis][0]
             entry = _entry_point(out, feat.axis, feat.u, feat.v)
             if entry is None:
                 entry = float(out.bounds[1][ax] if feat.axis[0] == "+" else out.bounds[0][ax])
@@ -2170,7 +2175,7 @@ def apply_refine(  # noqa: C901
         if not feat.through or feat.kind not in _CUTABLE or feat.name not in applied_names:
             continue
         try:
-            ax = _AXES[feat.axis][0]
+            ax = _AXES_ANY[feat.axis][0]
             span = float(out.bounds[1][ax] - out.bounds[0][ax])
             if _channel_blocked_mm(out, feat.u, feat.v, feat.axis) <= max(0.3, 0.005 * span):
                 continue
@@ -2303,7 +2308,7 @@ def _postpass_recut(
             degraded = m_dia is None or (feat.dia > 0 and m_dia < 0.95 * feat.dia)
             if not degraded:
                 continue
-            ax = _AXES[feat.axis][0]
+            ax = _AXES_ANY[feat.axis][0]
             rec = next((e for e in reversed(report.applied) if e.get("name") == feat.name), {})
             # seat on the bbox face with the reach the first cut needed —
             # covers the reskinned wall but leaves material behind the
@@ -2394,7 +2399,7 @@ def _verify_uv(a: dict[str, Any], axis: str) -> tuple[float, float] | None:
     Applied refine records carry the cut position as ``u``/``v`` — those are
     already the in-plane components for `axis` and win over any ``pos``
     triple (whose components the dict may not even fill)."""
-    _ax, au, av = _AXES.get(axis, _AXES["+z"])
+    _ax, au, av = _AXES_ANY.get(axis, _AXES_ANY["+z"])
     if a.get("u") is not None and a.get("v") is not None:
         try:
             return float(a["u"]), float(a["v"])
@@ -2488,7 +2493,7 @@ def _probe_blind_feature(
     probe = getattr(anchors3d, "probe_blind_features", None)
     if not callable(probe):
         return None, None
-    _ax, au, av = _AXES[axis]
+    _ax, au, av = _AXES_ANY[axis]
     pos: list[Any] = [None, None, None]
     pos[au], pos[av] = uv[0], uv[1]
     depth_req = entry.get("depth_mm")
@@ -2542,7 +2547,7 @@ def _scan_has_feature(
     axis: str = "+z",
 ) -> bool:
     """A scanned anchor of a wanted kind sits within tolerance of (u, v)."""
-    _ax, au, av = _AXES.get(axis, _AXES["+z"])
+    _ax, au, av = _AXES_ANY.get(axis, _AXES_ANY["+z"])
     for t in scanned:
         if str(t.get("axis") or "+z") != axis or str(t.get("kind") or "") not in want:
             continue
@@ -2614,7 +2619,7 @@ def refine_verify(
         if str(entry.get("kind") or "hole") not in _VERIFY_KINDS:
             continue
         axis = str(entry.get("axis") or "+z")
-        if axis not in _AXES:
+        if axis not in _AXES_ANY:
             continue
         uv = _verify_expected_uv(entry, anchors, request_features, axis)
         if uv is None:

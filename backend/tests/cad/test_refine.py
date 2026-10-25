@@ -311,6 +311,55 @@ def test_entry_point_top_and_side():
     assert _entry_point(mesh, "+z", 999.0, 0.0) is None
 
 
+def test_resolve_request_signed_entry_axis():
+    """A request feature declaring axis '-z' must keep the sign — it opens on
+    the bottom face (e.g. base-side tapped holes), not the top."""
+    feats, warnings = resolve_refine_features(
+        anchors=None,
+        spec_features=None,
+        request_features=[
+            {
+                "type": "tap",
+                "axis": "-z",
+                "x": -46,
+                "y": 22,
+                "dia": 6.8,
+                "depth": 10,
+                "thread_spec": "M8x1.25",
+                "name": "M8 tap",
+            }
+        ],
+        base_mesh=_box(),
+    )
+    assert warnings == []
+    assert feats[0].axis == "-z"
+    assert feats[0].u == pytest.approx(-46.0) and feats[0].v == pytest.approx(22.0)
+    assert feats[0].depth_mm == 10 and not feats[0].through
+
+
+def test_apply_refine_drills_from_negative_face():
+    """End-to-end: a '-z' blind tap cuts upward from the bottom face."""
+    mesh = _box()
+    feats, _ = resolve_refine_features(
+        anchors=None,
+        spec_features=None,
+        request_features=[
+            {"type": "tap", "axis": "-z", "x": 0.0, "y": 0.0, "dia": 6.0, "depth": 5.0}
+        ],
+        base_mesh=mesh,
+    )
+    out, rep = apply_refine(mesh, feats, restore_keeps=False)
+    assert rep.applied and not rep.skipped
+    # ray straight down the bore: a bottom-entry blind hole shows its floor
+    # face at z ~= 5; had it drilled from the top, the ray would exit through
+    # the bottom face at z ~= 0 instead
+    loc, *_ = out.ray.intersects_location(
+        np.array([[0.0, 0.0, 6.0]]), np.array([[0.0, 0.0, -1.0]])
+    )
+    assert len(loc) >= 1
+    assert loc[:, 2].max() == pytest.approx(5.0, abs=1.0)
+
+
 # --------------------------------------------------------------------------- #
 # keep-region restore                                                           #
 # --------------------------------------------------------------------------- #
