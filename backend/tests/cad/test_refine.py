@@ -1092,6 +1092,49 @@ def test_resolve_spec_falls_back_to_dia_match_without_position():
     assert (feats[0].u, feats[0].v) == (10.0, 0.0)
 
 
+def test_spec_type_bore_normalizes_to_cuttable_hole():
+    """Bearing-bracket regression: spec type 'bore' was outside the spec
+    allowlist, so the Ø30 seat silently vanished from the cutter list and
+    the optimized web stayed shut. 'bore' must normalize to 'hole'."""
+    spec = [
+        {
+            "type": "bore",
+            "name": "bearing seat",
+            "position": "x=0, z=65, through y=-35..35",
+            "dims": {"diameter": 30.0},
+        }
+    ]
+    feats, warns = resolve_refine_features([], spec, None, base_mesh=_slab())
+    assert len(feats) == 1
+    assert feats[0].kind == "hole" and feats[0].dia == pytest.approx(30.0)
+    assert feats[0].axis == "+y" and (feats[0].u, feats[0].v) == (0.0, 65.0)
+    assert feats[0].through
+    assert any("normalized" in w for w in warns)
+
+
+def test_spec_type_tunnel_and_bearing_alias():
+    """'tunnel' maps to a through hole, 'bearing' to the seated variant —
+    neither may be silently dropped."""
+    spec = [
+        {
+            "type": "tunnel",
+            "name": "through",
+            "position": "x=5, y=5, through z=0..14",
+            "dims": {"diameter": 8.0},
+        },
+        {
+            "type": "bearing",
+            "name": "seat",
+            "position": "x=0, z=30, through y=-20..20",
+            "dims": {"diameter": 30.0},
+        },
+    ]
+    feats, warns = resolve_refine_features([], spec, None, base_mesh=_slab())
+    kinds = {f.name: f.kind for f in feats}
+    assert kinds == {"through": "hole", "seat": "bearing_seat"}
+    assert sum("normalized" in w for w in warns) == 2
+
+
 def test_feature_host_main_flags_floating_puck():
     """Bore re-cut into a keep-restored ring that floats free of the body —
     the dia still measures nominal, but the host is a fragment."""

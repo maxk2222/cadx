@@ -581,11 +581,28 @@ def resolve_refine_features(  # noqa: C901
 
     for sf in spec_features:
         stype = str(sf.get("type") or "").lower()
+        # declared-type spellings of cuttable features — normalize so the
+        # feature is re-cut instead of silently dropped (a dropped 'bore'
+        # once left an optimized web sealing the Ø30 seat). 'bearing_seat'
+        # stays the explicit seated variant.
+        stype = {"bore": "hole", "tunnel": "hole", "bearing": "bearing_seat"}.get(
+            stype, stype
+        )
+        if stype != str(sf.get("type") or "").lower():
+            warnings.append(
+                f"refine feature '{sf.get('name')}': spec type "
+                f"'{sf.get('type')}' normalized to '{stype}'"
+            )
         if (
-            stype not in ("hole", "thread", "insert", "bearing_seat")
+            stype not in ("hole", "thread", "tap", "insert", "bearing_seat")
             and not (sf.get("dims") or {}).get("countersink_diameter")
             and not (sf.get("dims") or {}).get("counterbore_diameter")
         ):
+            if stype in _CUTABLE:
+                warnings.append(
+                    f"refine feature '{sf.get('name')}' has unsupported spec "
+                    f"type '{sf.get('type')}' — skipped"
+                )
             continue
         dims = dict(sf.get("dims") or {})
         dia = float(dims.get("diameter") or dims.get("bore_diameter") or 0)
