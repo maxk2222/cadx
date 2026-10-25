@@ -219,9 +219,12 @@ class QueueExecutor:
 
     async def refine(self, payload: dict[str, Any]) -> dict[str, Any]:
         # booleans + optional FEM verify + optional analytic STEP export —
-        # a maxed FEM followed by a maxed STEP stage must still fit
+        # feature finishing is exec-class work of its own (plug/drill/restore
+        # booleans), so a maxed finishing stage must fit alongside the maxed
+        # FEM and STEP stages
         timeout = (
-            self.runtime_settings.fem_timeout_s
+            self.runtime_settings.exec_timeout_s
+            + self.runtime_settings.fem_timeout_s
             + self.runtime_settings.analytic_step_timeout_s
             + 120
         )
