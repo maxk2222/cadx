@@ -705,6 +705,13 @@ def _bore_fit_diameter(
         cand_best = 0.0
         for du in np.arange(-2.0, 2.0 + step, step):
             for dv in np.arange(-2.0, 2.0 + step, step):
+                # rim = radius where the ring's face-blocked fraction crosses
+                # 50% — the last-all-clear-ring estimator underreports by a
+                # grid step whenever the rim lands between sampled radii,
+                # and the 30% break then quantizes the answer low
+                frac_prev = 0.0
+                r_prev = radii[0]
+                cand_r = 0.0
                 for r in radii:
                     iu = np.clip(
                         np.round((cu + du + r * np.cos(ang) - g1[0]) / step).astype(int),
@@ -716,13 +723,18 @@ def _bore_fit_diameter(
                         0,
                         uu.shape[1] - 1,
                     )
-                    # rim = radius where a solid fraction of ring directions
-                    # blocks; a single grazing ray (thread groove lip, seam)
-                    # must not cut the fit short, and a mouth blending into
-                    # a bay leaves part of the ring unconstrained
-                    if float(blocked[iu, iv].mean()) >= 0.3:
+                    frac = float(blocked[iu, iv].mean())
+                    # a mouth blending into a bay leaves part of the ring
+                    # unconstrained — the crossing only counts once a solid
+                    # fraction actually blocks
+                    if frac >= 0.5:
+                        t = (0.5 - frac_prev) / max(frac - frac_prev, 1e-9)
+                        cand_r = r_prev + t * (float(r) - r_prev)
                         break
-                    cand_best = max(cand_best, float(r))
+                    if frac < 0.3:
+                        cand_r = float(r)
+                    frac_prev, r_prev = frac, float(r)
+                cand_best = max(cand_best, cand_r)
         side_best.append(cand_best)
     r_fit = min(side_best, default=0.0)
     return float(2.0 * r_fit) if r_fit > 0 else 0.0
