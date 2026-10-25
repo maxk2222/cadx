@@ -260,7 +260,9 @@ export default function VersionPage() {
       : null;
   const dfmCount = v.dfm?.warnings?.length ?? 0;
   // compare: candidate versions (never self), the selected one, its glb url
-  const others = (versions.data ?? []).filter((x) => x.id !== v.id);
+  const others = (versions.data ?? [])
+    .filter((x) => x.id !== v.id)
+    .sort((a, b) => b.number - a.number);
   const otherSel = others.find((x) => x.id === otherId) ?? null;
   const otherGlb =
     otherVersion.data?.artifacts.find((a) => a.kind === "glb")?.url ?? null;
@@ -403,6 +405,7 @@ export default function VersionPage() {
         stream={stream}
         jobs={jobs.data}
         versions={versions.data ?? []}
+        parts={parts.data ?? []}
         assets={assets.data ?? []}
         library={library.data ?? []}
         onSelectJob={setJobId}

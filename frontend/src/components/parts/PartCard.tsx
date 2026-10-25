@@ -28,6 +28,7 @@ export default function PartCard({
   activeId,
   forceOpen,
   startEditing,
+  readonly = false,
 }: {
   group: PartGroup;
   projectId: string;
@@ -37,6 +38,8 @@ export default function PartCard({
   forceOpen?: boolean;
   /** open the name editor immediately (freshly created part). */
   startEditing?: boolean;
+  /** hide rename/delete admin actions (inspector view on the version page) */
+  readonly?: boolean;
 }) {
   const { t } = useTranslation("projects");
   const qc = useQueryClient();
@@ -175,7 +178,7 @@ export default function PartCard({
           {active && (
             <CircleDot className="h-3.5 w-3.5 shrink-0 animate-pulse text-brand-400" />
           )}
-          {!synthetic && (
+          {!synthetic && !readonly && (
             <>
               <button
                 type="button"
@@ -228,7 +231,7 @@ export default function PartCard({
       </Card>
 
       <ConfirmModal
-        open={deleteOpen}
+        open={!readonly && deleteOpen}
         onClose={() => setDeleteOpen(false)}
         onConfirm={() => del.mutate()}
         busy={del.isPending}

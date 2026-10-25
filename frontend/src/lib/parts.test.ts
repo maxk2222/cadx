@@ -34,23 +34,26 @@ const vs = (over: Partial<VersionSummary> = {}): VersionSummary => ({
 });
 
 describe("groupVersionsByPart", () => {
-  it("groups versions under their part and marks active parts", () => {
+  it("groups versions under their part, newest first at every level", () => {
     const p1 = part({ id: "pt-1", number: 1 });
     const p2 = part({ id: "pt-2", number: 2, name: "housing" });
     const { groups, orphans } = groupVersionsByPart(
       [
-        vs({ id: "v1", part_id: "pt-1", status: "succeeded" }),
-        vs({ id: "v2", part_id: "pt-1", status: "running" }),
-        vs({ id: "v3", part_id: "pt-2", status: "failed" }),
+        vs({ id: "v1", part_id: "pt-1", number: 1, status: "succeeded" }),
+        vs({ id: "v2", part_id: "pt-1", number: 2, status: "running" }),
+        vs({ id: "v3", part_id: "pt-2", number: 3, status: "failed" }),
       ],
       [p1, p2],
     );
     expect(orphans).toEqual([]);
     expect(groups).toHaveLength(2);
-    expect(groups[0].part).toBe(p1);
-    expect(groups[0].versions.map((v) => v.id)).toEqual(["v1", "v2"]);
-    expect(groups[0].active).toBe(true);
-    expect(groups[1].active).toBe(false);
+    // newest part (highest P number) leads regardless of input order
+    expect(groups[0].part).toBe(p2);
+    expect(groups[1].part).toBe(p1);
+    // versions inside a group are newest-first
+    expect(groups[1].versions.map((v) => v.id)).toEqual(["v2", "v1"]);
+    expect(groups[1].active).toBe(true);
+    expect(groups[0].active).toBe(false);
   });
 
   it("keeps parts without versions and collects orphaned versions", () => {

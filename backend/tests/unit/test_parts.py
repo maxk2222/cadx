@@ -51,10 +51,10 @@ async def test_root_generate_auto_creates_part(client):
     v = (await client.get(f"/api/versions/{vid}")).json()
     assert v["part_id"] == parts[0]["id"]
 
-    # second root, different prompt → its own part P2
+    # second root, different prompt → its own part P2 (list is newest-first)
     await client.post(f"/api/projects/{pid}/generate", json={"prompt": "a knob"})
     parts = (await client.get(f"/api/projects/{pid}/parts")).json()
-    assert len(parts) == 2 and parts[1]["number"] == 2
+    assert len(parts) == 2 and parts[0]["number"] == 2 and parts[1]["number"] == 1
     p = (await client.get(f"/api/projects/{pid}")).json()
     assert p["parts_count"] == 2
 
@@ -92,7 +92,7 @@ async def test_explicit_part_id_and_name_resolution(client):
         json={"prompt": "x", "part_name": "housing"},
     )
     parts = (await client.get(f"/api/projects/{pid}/parts")).json()
-    assert len(parts) == 2 and parts[1]["name"] == "housing"
+    assert len(parts) == 2 and parts[0]["name"] == "housing"
 
 
 async def test_part_id_validation(client):
@@ -146,6 +146,8 @@ async def test_versions_part_filter(client):
 
     tree = (await client.get(f"/api/projects/{pid}/versions")).json()
     assert len(tree) == 2
+    # newest version first
+    assert [v["number"] for v in tree] == [2, 1]
     scoped = (await client.get(f"/api/projects/{pid}/versions?part_id={p1['id']}")).json()
     assert len(scoped) == 1 and scoped[0]["part_id"] == p1["id"]
 

@@ -106,6 +106,9 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
   `{accepted}`, chat/MCP `accept_version`, `PartOut.accepted_version_id`).
   Newer versions never inherit the flag; deleting a master returns
   `deleted_master:true` and leaves the part masterless — no auto-reassign.
+  List endpoints (`/projects/{id}/versions`, `/projects/{id}/parts`) and all
+  version trees are newest-first (number desc); `buildVersionRows` /
+  `groupVersionsByPart` enforce the same order client-side.
 - Standard-part contract: `spec.standard_parts` (StandardPartSpec) is the structured
   catalog intent — `standard_parts.build_standard_part_code` turns it into a
   sandbox recipe (PARAMS + `CADX_FEATURES` + `CADX_BOM` declarations), never a

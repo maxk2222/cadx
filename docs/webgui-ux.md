@@ -78,7 +78,9 @@ The Version page provides:
 - Side panel: job progress/log and history, prompt/image edits, mode/options,
   inherited or selected library parts, parameter-only reruns, parametric
   through-hole resize (FeatureEditPanel), manual topology optimization for
-  eligible versions, and the version tree with per-subtree collapse.
+  eligible versions, and the part-grouped version tree — same collapsible
+  part cards as the project page (read-only), newest first at every level
+  with per-subtree collapse.
 
 Edits create child versions. Library selections are carried forward by default
 and can be changed in the edit form. The API distinguishes an omitted selection

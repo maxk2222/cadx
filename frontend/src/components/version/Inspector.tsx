@@ -13,17 +13,19 @@ import type {
   GenMode,
   Job,
   LibraryPart,
+  Part,
   RunOptions,
   VersionDetail,
   VersionSummary,
 } from "../../lib/types";
+import { groupVersionsByPart } from "../../lib/parts";
 import type { JobStream } from "../../lib/useJobEvents";
 import FeatureEditPanel from "../FeatureEditPanel";
 import JobLog from "../JobLog";
 import ModeSelector from "../ModeSelector";
 import OptionsPanel from "../OptionsPanel";
 import ParamsPanel from "../ParamsPanel";
-import VersionTree from "../VersionTree";
+import PartCard from "../parts/PartCard";
 import { Btn, SectionCollapsible, inputCls } from "../ui";
 
 /** uniform secondary-action row used inside the Actions inspector section */
@@ -248,6 +250,7 @@ export default function Inspector({
   stream,
   jobs,
   versions,
+  parts,
   assets,
   library,
   onSelectJob,
@@ -262,6 +265,7 @@ export default function Inspector({
   stream: JobStream;
   jobs: Job[] | undefined;
   versions: VersionSummary[];
+  parts: Part[];
   assets: Asset[];
   library: LibraryPart[];
   onSelectJob: (id: string) => void;
@@ -275,6 +279,8 @@ export default function Inspector({
   const finished =
     v.status === "succeeded" || v.status === "needs_review";
   const hasGlb = v.artifacts.some((a) => a.kind === "glb");
+  // part-grouped version list — same cards as the project page, read-only
+  const { groups, orphans } = groupVersionsByPart(versions, parts);
 
   return (
     <div className="flex flex-col gap-4">
@@ -374,7 +380,39 @@ export default function Inspector({
         persistKey="ver:tree"
         pad="p-3"
       >
-        <VersionTree versions={versions} activeId={v.id} />
+        <div className="flex flex-col gap-3">
+          {groups.map((g) => (
+            <PartCard
+              key={g.part.id}
+              group={g}
+              projectId={v.project_id}
+              activeId={v.id}
+              readonly
+              forceOpen={g.versions.some((x) => x.id === v.id)}
+            />
+          ))}
+          {orphans.length > 0 && (
+            <PartCard
+              group={{
+                part: {
+                  id: "__orphans__",
+                  project_id: v.project_id,
+                  number: 0,
+                  name: t("projects:parts_ungrouped"),
+                  version_count: orphans.length,
+                  thumbnail_url: null,
+                  created_at: "",
+                },
+                versions: orphans,
+                active: false,
+              }}
+              projectId={v.project_id}
+              activeId={v.id}
+              readonly
+              forceOpen={orphans.some((x) => x.id === v.id)}
+            />
+          )}
+        </div>
       </SectionCollapsible>
     </div>
   );

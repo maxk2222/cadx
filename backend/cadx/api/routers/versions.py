@@ -453,7 +453,7 @@ async def version_tree(
     q = select(Version).where(Version.project_id == project_id)
     if part_id is not None:
         q = q.where(Version.part_id == part_id)
-    rows = await db.execute(q.order_by(col(Version.number)))
+    rows = await db.execute(q.order_by(col(Version.number).desc()))
     versions = list(rows.scalars().all())
     vids = [v.id for v in versions]
     active: dict[uuid.UUID, Job] = {}

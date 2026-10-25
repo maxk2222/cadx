@@ -5,6 +5,7 @@ import { Link } from "react-router-dom";
 import { timeAgo } from "../lib/format";
 import { stepLabel } from "../lib/steps";
 import type { VersionSummary } from "../lib/types";
+import { buildVersionRows } from "../lib/versionTree";
 import StatusBadge from "./StatusBadge";
 
 export default function VersionTree({
@@ -25,42 +26,18 @@ export default function VersionTree({
       return next;
     });
 
-  const byParent = new Map<string | null, VersionSummary[]>();
+  const rows = buildVersionRows(versions, collapsed);
+  // rebuild the same sibling map the row builder used, for the kids count
+  const byParent = new Map<string | null, number>();
   for (const v of versions) {
     const key = v.parent_id ?? null;
-    byParent.set(key, [...(byParent.get(key) ?? []), v]);
+    byParent.set(key, (byParent.get(key) ?? 0) + 1);
   }
-  const rows: { v: VersionSummary; depth: number }[] = [];
-  const walk = (parent: string | null, depth: number) => {
-    for (const v of byParent.get(parent) ?? []) {
-      rows.push({ v, depth });
-      if (!collapsed.has(v.id)) walk(v.id, depth + 1);
-    }
-  };
-  walk(null, 0);
-  // orphan safety: versions never reached by the walk. Descendants hidden
-  // behind a collapsed ancestor are NOT orphans — walk the parent chain to
-  // tell them apart (also covers missing parents and parent cycles).
-  const seen = new Set(rows.map((r) => r.v.id));
-  const byId = new Map(versions.map((v) => [v.id, v]));
-  const hiddenByCollapse = (v: VersionSummary) => {
-    const guard = new Set<string>();
-    let p = v.parent_id;
-    while (p) {
-      if (collapsed.has(p)) return true;
-      if (guard.has(p)) return false; // parent cycle — treat as orphan
-      guard.add(p);
-      p = byId.get(p)?.parent_id ?? null; // absent parent ends the chain
-    }
-    return false;
-  };
-  for (const v of versions)
-    if (!seen.has(v.id) && !hiddenByCollapse(v)) rows.push({ v, depth: 0 });
 
   return (
     <div className="flex flex-col gap-1">
       {rows.map(({ v, depth }) => {
-        const kids = byParent.get(v.id)?.length ?? 0;
+        const kids = byParent.get(v.id) ?? 0;
         const isCollapsed = collapsed.has(v.id);
         return (
         <Link

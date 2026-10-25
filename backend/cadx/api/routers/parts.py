@@ -43,7 +43,7 @@ async def _out(db: AsyncSession, part: Part) -> PartOut:
 @router.get("/projects/{project_id}/parts", response_model=list[PartOut])
 async def list_parts(project_id: uuid.UUID, db: AsyncSession = Depends(get_session)):
     rows = await db.execute(
-        select(Part).where(Part.project_id == project_id).order_by(col(Part.number))
+        select(Part).where(Part.project_id == project_id).order_by(col(Part.number).desc())
     )
     return [await _out(db, p) for p in rows.scalars().all()]
 
