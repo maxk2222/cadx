@@ -59,7 +59,9 @@
        "axis": "z",
        "center": [0, 0, 3],
        "diameter_mm": 14,
-       "margin_mm": 3
+       "margin_mm": 3,
+       "z_range": [0, 8],
+       "description": "shaft seat — clamped stub below the gear"
       }
      ],
      "loads": [
@@ -83,6 +85,29 @@
      "type": "fem",
      "field": "sf",
      "min": 1.2
+    },
+    {
+     "type": "fem_loadcases",
+     "min_cases": 1,
+     "checks": [
+      {
+       "case": 0,
+       "resultant_n": { "min": 300, "max": 500 },
+       "resultant_dir": [1, 0, 0],
+       "dir_tol_deg": 30,
+       "load_at_axis": "+z",
+       "fixed_at_axis": "-z",
+       "tol_mm": 15,
+       "warnings_absent": [
+        "no fixed region",
+        "resolved to zero",
+        "unsolvable",
+        "point-load"
+       ],
+       "sf_min": 1.2,
+       "sf_max": 60
+      }
+     ]
     }
    ]
   }
