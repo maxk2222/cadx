@@ -132,7 +132,7 @@ async def seed_project(ctx: LocalCtx, name: str, settings: dict[str, Any], runti
 
     async with session_scope() as db:
         db.add(AppSetting(key="runtime", value=runtime.to_storage()))
-        merged = {"_eval": True, "clarification_mode": "assume", **(settings or {})}
+        merged = {"eval_mode": True, "clarification_mode": "assume", **(settings or {})}
         db.add(
             Project(
                 id=ctx.project_id,

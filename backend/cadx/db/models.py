@@ -102,6 +102,9 @@ class ProjectSettings(BaseModel):
     process: ProcessType = "fdm"
     material: str = ""
     clarification_mode: Literal["assume", "ask"] | None = None
+    # evaluator runs (evalkit) — never park on waiting_for_input; blocking
+    # questions resolve via their declared default_assumption
+    eval_mode: bool = False
     max_iterations: int | None = None
     max_repairs: int | None = None
     pass_score: int | None = None

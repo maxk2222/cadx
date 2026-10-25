@@ -221,7 +221,7 @@ async def run_case(
                 return res
         try:
             proj = await drv.find_or_create_project(
-                case.project, {"_eval": True, "clarification_mode": "assume", **case.settings}
+                case.project, {"eval_mode": True, "clarification_mode": "assume", **case.settings}
             )
             hctx.project_id = str(proj["id"])
             res.project_id = hctx.project_id

@@ -188,6 +188,44 @@ async def test_run_agent_job_waiting_then_resume(_db, monkeypatch):
 
 
 @pytest.mark.slow
+async def test_eval_mode_never_waits_for_input(_db, monkeypatch):
+    """evalkit projects must never park on waiting_for_input — a blocking
+    'registered standard component' question resolves via its declared
+    default_assumption instead of cancelling the eval stage."""
+    monkeypatch.setattr(wj, "QueueExecutor", lambda *a, **k: InProcessExecutor())
+    spec = dict(SPEC)
+    spec["open_questions"] = [
+        {
+            "question": "Complete the catalog parameters for Bolt?",
+            "why_it_matters": (
+                "The registered standard component cannot be generated without these values."
+            ),
+            "default_assumption": "Use only the exact catalog class/type/size.",
+            "blocking": True,
+        }
+    ]
+    llm = FakeLLM([spec, PLAN, CODE, CRITIQUE])
+    monkeypatch.setattr(wj, "_make_llm", lambda rt, **kw: llm)
+    job, version = await _mk_version()
+    async with async_session() as db:
+        p = await db.get(Project, version.project_id)
+        p.settings = {"eval_mode": True, "clarification_mode": "assume"}
+        await db.commit()
+
+    result = await wj.run_agent_job({}, {"job_id": str(job.id), "version_id": str(version.id)})
+    assert result["status"] == "succeeded", result
+
+    async with async_session() as db:
+        j = await db.get(Job, job.id)
+        v = await db.get(Version, version.id)
+        assert j.status == JobStatus.succeeded
+        assert not (j.questions or [])
+        assert "Use only the exact catalog class/type/size." in (v.spec or {}).get(
+            "assumptions", []
+        )
+
+
+@pytest.mark.slow
 async def test_run_params_job_mesh_parent(_db, monkeypatch):
     """Params job on a mesh version re-runs the post-pipeline without an LLM."""
     import trimesh

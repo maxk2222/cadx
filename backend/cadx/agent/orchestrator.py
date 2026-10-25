@@ -6240,7 +6240,7 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
     # ---------- CLARIFY ----------
     blocking = [q for q in spec.open_questions if q.blocking]
     norm_part_blocking = any("registered standard component" in q.why_it_matters for q in blocking)
-    if blocking and (clarify or norm_part_blocking):
+    if blocking and not ctx.settings.eval_mode and (clarify or norm_part_blocking):
         outcome.status = "waiting_for_input"
         outcome.questions = [q.model_dump() for q in spec.open_questions]
         outcome.resume_state = {"spec": spec.model_dump()}
