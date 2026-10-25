@@ -542,6 +542,24 @@ def grid_bounds_mm(domain: VoxelDomain) -> tuple[np.ndarray, np.ndarray]:
     return lo, hi
 
 
+def solid_bounds_mm(domain: VoxelDomain) -> tuple[np.ndarray, np.ndarray]:
+    """World-mm bounds of the solid cells' union — the part's bbox, tighter
+    than `grid_bounds_mm` whenever the grid was grown with pad_cells. Falls
+    back to the grid bounds on an empty mask."""
+    s = domain.solid
+    if not s.any():
+        return grid_bounds_mm(domain)
+    lo_i, hi_i = [], []
+    for ax in range(3):
+        others = tuple(a for a in range(3) if a != ax)
+        nz = np.flatnonzero(s.any(axis=others))
+        lo_i.append(int(nz[0]))
+        hi_i.append(int(nz[-1]))
+    lo = domain.origin + domain.pitch * np.asarray(lo_i, dtype=float)
+    hi = domain.origin + domain.pitch * (np.asarray(hi_i, dtype=float) + 1.0)
+    return lo, hi
+
+
 def volume_of_solid(domain: VoxelDomain) -> float:
     return float(domain.solid_count) * math.pow(domain.pitch, 3)
 

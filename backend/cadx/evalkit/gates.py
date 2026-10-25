@@ -455,6 +455,12 @@ def _gate_fem_loadcases(g: dict[str, Any], outcome: StageOutcome) -> GateResult:
             ax = _axis_index(chk[key])
             lo = _v3((outcome.analysis or {}).get("bbox_min"))
             hi = _v3((outcome.analysis or {}).get("bbox_max"))
+            if lo is None or hi is None:
+                # fem stages carry no geometry analysis — the FEM report's
+                # solid-cell bbox is the honest part-bounds evidence
+                grid = fem.get("grid") or {}
+                lo = lo or _v3(grid.get("bbox_min_mm"))
+                hi = hi or _v3(grid.get("bbox_max_mm"))
             measured[f"{tag}.{key}"] = {"centroid": got, "axis": chk[key]}
             if got is None or ax is None or lo is None or hi is None:
                 inconclusive.append(f"{tag}: {label} centroid/bbox unavailable")

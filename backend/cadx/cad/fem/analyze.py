@@ -35,7 +35,7 @@ from cadx.cad.fem.solver import (
     reduce_case,
     solve_reduced,
 )
-from cadx.cad.fem.voxelize import VoxelDomain, volume_of_solid, voxelize
+from cadx.cad.fem.voxelize import VoxelDomain, solid_bounds_mm, volume_of_solid, voxelize
 from cadx.llm.schemas import LoadCase
 from cadx.logging import get_logger
 
@@ -565,6 +565,10 @@ def _solve_cases(  # noqa: C901
         "dims": list(domain.dims),
         "solid_elements": domain.solid_count,
         "volume_mm3": round(volume_of_solid(domain), 1),
+        # world-mm bounds of the SOLID cells (not the possibly padded grid)
+        # — eval gates use this as the part's bbox evidence
+        "bbox_min_mm": [round(float(v), 2) for v in solid_bounds_mm(domain)[0]],
+        "bbox_max_mm": [round(float(v), 2) for v in solid_bounds_mm(domain)[1]],
     }
 
     if not load_cases:

@@ -486,3 +486,30 @@ def test_fem_loadcases_axis_extremum_checks():
         0,
     )[0]
     assert inc.ok is None and "bbox" in inc.detail
+
+
+def test_fem_loadcases_axis_extremum_grid_fallback():
+    """fem stages carry no `analysis` bbox — the report's solid-cell bbox
+    (`grid.bbox_min_mm/bbox_max_mm`) is the fallback evidence."""
+    out = _fem_out()  # no analysis; fixed x=-50, load x=+50
+    out.fem["grid"] = {"bbox_min_mm": [-51.0, -20.0, 0.0], "bbox_max_mm": [51.0, 20.0, 10.0]}
+    ok = run_gates(
+        [
+            {
+                "type": "fem_loadcases",
+                "checks": [{"fixed_at_axis": "-x", "load_at_axis": "+x", "tol_mm": 3}],
+            }
+        ],
+        out,
+        0,
+    )[0]
+    assert ok.ok, ok.detail
+
+    # grid bounds that disagree with the support position still fail hard
+    out.fem["grid"] = {"bbox_min_mm": [-90.0, -20.0, 0.0], "bbox_max_mm": [90.0, 20.0, 10.0]}
+    bad = run_gates(
+        [{"type": "fem_loadcases", "checks": [{"fixed_at_axis": "-x", "tol_mm": 3}]}],
+        out,
+        0,
+    )[0]
+    assert bad.ok is False and "fixed centroid" in bad.detail
