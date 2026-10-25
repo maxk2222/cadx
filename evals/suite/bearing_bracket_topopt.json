@@ -56,13 +56,15 @@
               0,
               -22
             ]
-          ]
+          ],
+          "depth_class": "through"
         },
         {
           "type": "holes",
           "count": 1,
           "dia": 30,
-          "axis": "y"
+          "axis": "y",
+          "depth_class": "through"
         },
         {
           "type": "watertight",
@@ -512,13 +514,15 @@
               0,
               -22
             ]
-          ]
+          ],
+          "depth_class": "through"
         },
         {
           "type": "holes",
           "count": 1,
           "dia": 30,
-          "axis": "y"
+          "axis": "y",
+          "depth_class": "through"
         },
         {
           "type": "contains_point",
@@ -726,13 +730,15 @@
               0,
               -22
             ]
-          ]
+          ],
+          "depth_class": "through"
         },
         {
           "type": "holes",
           "count": 1,
           "dia": 30,
-          "axis": "y"
+          "axis": "y",
+          "depth_class": "through"
         },
         {
           "type": "watertight",
