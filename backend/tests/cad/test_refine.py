@@ -14,6 +14,7 @@ from cadx.cad.fem.anchors3d import scan_mesh_anchors
 from cadx.cad.fem.refine import (
     RefineFeature,
     _bore_ring_material,
+    _channel_blocked_mm,
     _cutter_mesh,
     _entry_point,
     _feature_host_main,
@@ -282,16 +283,18 @@ def test_apply_refine_skips_out_of_bounds_feature():
 
 def test_apply_refine_recuts_open_channel():
     """A feature over an EXISTING hole (no entry surface — ray passes through)
-    must still cut: reaming the wavy voxel tunnel is refine's core job."""
+    must still cut: reaming the wavy voxel tunnel is refine's core job. The
+    phase-1 plug seals the measured channel, so the drill finds a real
+    entry on the plug face and re-bores at the nominal diameter."""
     mesh = _box()
     feats = [RefineFeature(name="b", kind="bore", axis="+z", u=0.0, v=0.0, dia=8.0)]
     out, rep = apply_refine(mesh, feats, restore_keeps=False)
     assert rep.applied  # now the hole exists — second pass has no entry surface
     feats2 = [RefineFeature(name="b2", kind="bore", axis="+z", u=0.0, v=0.0, dia=6.0)]
     out2, rep2 = apply_refine(out, feats2, restore_keeps=False)
-    assert rep2.applied  # falls back to the bbox face, cleans the tunnel walls
-    assert any("no entry surface" in w for w in rep2.warnings)
+    assert rep2.applied  # plugged, then drilled at the declared position
     assert out2.is_watertight
+    assert _channel_blocked_mm(out2, 0.0, 0.0, "+z") <= 0.3
 
 
 def test_apply_refine_rejects_noncuttable():
@@ -1203,6 +1206,38 @@ def test_blind_feature_still_stops_at_declared_depth():
         [[0.0, 0.0, -10.0]], [[0.0, 0.0, 1.0]], multiple_hits=True
     )
     assert len(locs) >= 2  # pocket floor + slab bottom still stand
+
+
+def test_plugs_run_before_drills_no_mount_bore_membrane():
+    """Bearing-bracket regression: the Ø30 seat's channel plug overlaps the
+    Ø8.5 Z-bore radially — plugged AFTER the Z-drill it left a ~0.7 mm
+    membrane sealing the fresh bore (verify caught it, gates didn't).
+    All plugs must union before any cutter runs."""
+    block = trimesh.creation.box(extents=[120.0, 70.0, 90.0])
+    block.apply_translation([0.0, 0.0, 45.0])
+    chan = trimesh.creation.cylinder(radius=16.0, height=100.0, sections=48)
+    chan.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0]))
+    chan.apply_translation([0.0, 0.0, 65.0])
+    opt = block.difference(chan, engine="manifold")
+    feats = [
+        # mount bore FIRST — the order the observed run cut it in
+        RefineFeature(
+            name="mount", kind="hole", axis="+z", u=0.0, v=-22.0,
+            dia=8.5, through=True, source="spec",
+        ),
+        RefineFeature(
+            name="seat", kind="hole", axis="+y", u=0.0, v=65.0,
+            dia=30.0, through=True, source="spec",
+        ),
+    ]
+    out, rep = apply_refine(opt, feats, restore_keeps=False)
+    names = {str(e.get("name") or "") for e in rep.applied}
+    assert "mount" in names and "seat" in names
+    # the mount bore's centre ray sees daylight — no plug membrane
+    blocked = _channel_blocked_mm(out, 0.0, -22.0, "+z")
+    assert blocked <= 0.3, f"mount bore sealed by {blocked:.2f} mm of plug"
+    # and the seat itself is open at the declared position
+    assert _channel_blocked_mm(out, 0.0, 65.0, "+y") <= 0.3
 
 
 def test_through_cut_depth_spans_plug_extent():

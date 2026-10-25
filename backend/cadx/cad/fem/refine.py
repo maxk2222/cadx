@@ -107,6 +107,11 @@ class RefineFeature:
     helical: bool | None = None
     source: str = "anchor"  # anchor|spec|request (+ scanned source tags like "spec+scan")
     dia_extra: float = 0.0  # internal: ream bump after snapping onto an existing tunnel
+    # internal: the channel plug actually unioned (phase-1 of apply_refine,
+    # or inline in _apply_cut for direct callers) — recorded as `plugged`
+    # on the applied entry; plug_first alone can't say it any more because
+    # phase 1 clears the flag before the drill runs
+    plugged: bool = False
     # internal: spec-sourced anchor admitted WITHOUT a base-mesh tunnel —
     # apply_refine re-verifies real material at the anchor AFTER keep-restore
     # before cutting (a scoop whose ring was eaten and never restored leaves
@@ -302,11 +307,19 @@ def _tunnel_open_mesh(
     when the blocked length is ≤ max(1 mm, `open_frac`·span) — enough slack
     for tessellation wobble on bore walls, far below the ~full span a
     dimple/pocket or solid junk position blocks."""
-    ax, au, av = _AXES[axis]
+    ax = _AXES[axis][0]
     lo, hi = float(mesh.bounds[0][ax]), float(mesh.bounds[1][ax])
     span = hi - lo
     if span <= 0:
         return False
+    return _channel_blocked_mm(mesh, u, v, axis) <= max(1.0, open_frac * span)
+
+
+def _channel_blocked_mm(mesh: trimesh.Trimesh, u: float, v: float, axis: str) -> float:
+    """Material thickness the centre ray at (u, v) crosses along `axis` —
+    ~0 for a clean through-channel; membranes add their thickness."""
+    ax, au, av = _AXES[axis]
+    lo, hi = float(mesh.bounds[0][ax]), float(mesh.bounds[1][ax])
     origin = np.zeros(3)
     origin[au], origin[av] = u, v
     origin[ax] = hi + 5.0 if axis[0] == "+" else lo - 5.0
@@ -316,14 +329,13 @@ def _tunnel_open_mesh(
         multiple_hits=True,
     )
     if not len(locs):
-        return True
+        return 0.0
     zc = np.sort(locs[:, ax])
     if len(zc) % 2:
         # odd count (non-watertight or tangent graze) — count the dangling
         # stretch to the far bound as blocked, erring on "not a tunnel"
         zc = np.append(zc, lo if axis[0] == "+" else hi)
-    blocked = float(zc[1::2].sum() - zc[0::2].sum())
-    return blocked <= max(1.0, open_frac * span)
+    return float(zc[1::2].sum() - zc[0::2].sum())
 
 
 def _anchor_material(mesh: trimesh.Trimesh, u: float, v: float, axis: str) -> bool:
@@ -1809,7 +1821,7 @@ def _record_applied(
         entry_rec["helical"] = feat.helical
     if feat.dia_extra:
         entry_rec["ream_extra_mm"] = round(feat.dia_extra, 2)
-    if feat.plug_first:
+    if feat.plug_first or feat.plugged:
         entry_rec["plugged"] = True
     try:
         requested = _effective_dia(feat) + feat.dia_extra
@@ -1943,6 +1955,7 @@ def _apply_cut(
     span = float(out.bounds[1][ax] - out.bounds[0][ax])
     if feat.plug_first:
         out, entry, plug_seated = _plug_channel(out, feat, entry, span, report)
+        feat.plugged = feat.plugged or bool(feat.plug_first)
         if plug_seated:
             # the plug surfaced a real entry face — the seat is no longer a
             # bbox-face guess, so the reach-limited depth applies and the
@@ -2032,7 +2045,7 @@ def _repaired_input_mesh(opt_mesh: trimesh.Trimesh, report: RefineReport) -> tri
     return repaired
 
 
-def apply_refine(
+def apply_refine(  # noqa: C901
     opt_mesh: trimesh.Trimesh,
     features: list[RefineFeature],
     *,
@@ -2048,9 +2061,11 @@ def apply_refine(
     Order is fixed and load-bearing: keep-surface RESTORE runs FIRST (unions
     `base_mesh ∩ keep_box` back; with no explicit `keep_regions` one auto
     ring per anchor is synthesized), then re-cuts are SNAPPED onto measured
-    post-restore tunnel centres, then each feature is CUT. Snapping before
-    restore would miss bore walls SIMP ate; cutting before restore would be
-    buried by the restored patch.
+    post-restore tunnel centres, then ALL channel plugs run, then each
+    feature is CUT, then a through-channel sweep pierces any bore a plug or
+    restore sealed. Snapping before restore would miss bore walls SIMP ate;
+    cutting before restore would be buried by the restored patch; drilling
+    before all plugs are in lets a later plug reseal the fresh bore.
 
     `helical_threads` is the auto-default for thread/tap features whose
     `helical` field is unset: when a pitch is derivable the re-cut adds the
@@ -2107,6 +2122,33 @@ def apply_refine(
         if feat.kind in ("thread", "tap") and feat.helical is None:
             feat.helical = bool(helical_threads) and _thread_pitch(feat) is not None
 
+    # phase 1 — every channel plug BEFORE any cut: a plug unions material
+    # back and must never seal a bore drilled earlier it overlaps radially
+    # (observed: the Ø30 seat's plug left a 0.68 mm membrane over an
+    # already-cut Ø8.5 mounting bore — verify caught it, the gates didn't)
+    for feat in features:
+        if feat.kind not in _CUTABLE or not feat.plug_first:
+            continue
+        try:
+            ax = _AXES[feat.axis][0]
+            entry = _entry_point(out, feat.axis, feat.u, feat.v)
+            if entry is None:
+                entry = float(out.bounds[1][ax] if feat.axis[0] == "+" else out.bounds[0][ax])
+            span = float(out.bounds[1][ax] - out.bounds[0][ax])
+            out, _, _ = _plug_channel(out, feat, entry, span, report)
+            # _plug_channel clears plug_first on failure — whatever is still
+            # set is a plug that actually unioned
+            feat.plugged = feat.plugged or bool(feat.plug_first)
+        except Exception as e:
+            feat.dia_extra = max(feat.dia_extra, 0.4)
+            report.warnings.append(
+                f"feature '{feat.name}': channel plug failed ({e}) — "
+                "reamed +0.4 mm instead of drilling at spec dia"
+            )
+        feat.plug_first = False  # plug (or its ream fallback) is done
+
+    # phase 2 — the cuts; every plug is already in, so each drill pierces
+    # whatever fills sit across its channel
     for feat in features:
         if feat.kind not in _CUTABLE:
             report.skipped.append({"name": feat.name, "kind": feat.kind, "reason": "not cuttable"})
@@ -2118,6 +2160,46 @@ def apply_refine(
                 {"name": feat.name, "kind": feat.kind, "reason": f"cut failed: {e}"}
             )
             report.warnings.append(f"feature '{feat.name}' cut failed: {e}")
+
+    # through-channel sweep: a plug or keep-restored patch may still sit
+    # across a declared through-bore (intersecting channels, near-miss
+    # snapping) — pierce any applied feature whose channel holds more
+    # than tessellation dust (a sub-mm membrane is still a sealed bore)
+    applied_names = {str(e.get("name") or "") for e in report.applied}
+    for feat in features:
+        if not feat.through or feat.kind not in _CUTABLE or feat.name not in applied_names:
+            continue
+        try:
+            ax = _AXES[feat.axis][0]
+            span = float(out.bounds[1][ax] - out.bounds[0][ax])
+            if _channel_blocked_mm(out, feat.u, feat.v, feat.axis) <= max(0.3, 0.005 * span):
+                continue
+            report.warnings.append(
+                f"feature '{feat.name}': through-channel sealed after all "
+                "cuts — piercing once more"
+            )
+            # a sealed thread gets the plain tap-drill ream — re-cutting the
+            # helical groove a second time would deepen it, not open it
+            sw = (
+                replace(feat, helical=False, plug_first=False)
+                if feat.kind in ("thread", "tap")
+                else replace(feat, plug_first=False)
+            )
+            out = _apply_cut(out, sw, report)
+        except Exception as e:
+            report.warnings.append(f"feature '{feat.name}' channel sweep failed: {e}")
+    # the sweep may have re-applied a feature — keep the latest record per
+    # name so applied stays one-entry-per-cut for verify/gates
+    seen: dict[str, int] = {}
+    deduped: list[dict[str, Any]] = []
+    for e in report.applied:
+        n = str(e.get("name") or "")
+        if n in seen:
+            deduped[seen[n]] = e
+        else:
+            seen[n] = len(deduped)
+            deduped.append(e)
+    report.applied = deduped
 
     out = _post_cut_cleanup(out, report)
     pre = out
