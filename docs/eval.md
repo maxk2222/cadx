@@ -32,7 +32,18 @@ cadx eval run --local --case robot_arm_mount --stages fem --from <dir>
 | `l_bracket_rib` | 1 | aluminium L-bracket + triangular rib | `codegen` → `fem` (+ `params`, disabled) |
 | `sprocket_520_45t` | 2 | 7075-T6 rear sprocket, 45 teeth, 520 chain | `codegen` (+ `imagegen` → `meshgen`, disabled) |
 | `robot_arm_mount` | 3 | topopt-ready robot-arm mount | `codegen` → `fem` → `topopt` (+ `refine`, disabled) |
+| `bearing_bracket_topopt` | 3 | generative-design bearing bracket — interfaces-only prompt | `codegen` → `fem` → `topopt` → `refine` |
 | `agent_fem_bc` | 2 | agent-declared boundary conditions (cantilever bar) | `codegen` → `fem` (spec fallback + `fem_loadcases`) |
+
+`bearing_bracket_topopt` is the *interfaces-only* / generative-design
+pattern: the prompt declares just the mounting interfaces (3×M8 bolt
+triangle + a dia-30 bearing bore) and a maximum envelope — the agent is
+free to pick the seed topology, the optimizer designs the actual
+structure (`keep_mode:"auto"` preserves the interfaces), and the
+boundary conditions are declared deterministically in the stage
+`load_cases` (a cylinder-annulus region on the bore wall approximates
+the radial bearing load — `bearing_n` isn't deterministic enough here
+since it binds by `hole_index`).
 
 Each stage maps to exactly one pipeline phase and entity outcome:
 

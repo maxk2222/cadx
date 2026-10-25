@@ -1,0 +1,744 @@
+{
+  "name": "bearing_bracket_topopt",
+  "project": "eval:bearing-bracket-topopt",
+  "difficulty": 3,
+  "description": "Generative design — prompt declares ONLY the interfaces (3x M8 bolt pattern + dia-30 bearing bore) inside a 120x70x90 envelope; codegen builds a solid design-space seed, FEM sanity-checks the case, SIMP (keep_mode auto, yz symmetry) designs the structure, refine restores exact bores/planes.",
+  "settings": {
+    "gen_mode": "cad"
+  },
+  "stages": [
+    {
+      "id": "codegen",
+      "type": "generate",
+      "mode": "cad",
+      "timeout_s": 5400,
+      "options": {
+        "process": "fdm"
+      },
+      "prompt": "Design-space seed for a topology-optimized bearing bracket (aluminium 6061), parametric.\n\nThis body is the design envelope for a topology optimization — it is NOT the final part. Build ONE watertight solid that fills the envelope as fully as practical; a plain block is a perfectly good answer. Do NOT add ribs, pockets, thin webs, chamfers or fillets — the optimizer decides where material stays.\n\nFrame: mounting face on the XY plane (z = 0), centred in X and Y. mm.\n- Envelope (maximum design space): 120 x 70 x 90 (x × y × z).\n- Interfaces, exactly:\n  - 3 through-holes dia 8.5 along Z on the mounting plane at (x=-46, y=+22), (x=+46, y=+22) and (x=0, y=-22) — M8 bolts to the base.\n  - 1 through-bore dia 30 along Y centred at (x=0, z=65) — bearing/shaft seat.\n- Nothing else: no shape features beyond the interfaces.\nSymmetric across x = 0 (left-right).\n\nService context for the spec: bolted down through the three holes; the bore carries a ~1.5 kN radial shaft load downward plus a ~0.6 kN axial thrust along +Y.",
+      "gates": [
+        {
+          "type": "status",
+          "expect": [
+            "succeeded",
+            "needs_review"
+          ]
+        },
+        {
+          "type": "bbox",
+          "dims": [
+            120,
+            70,
+            90
+          ],
+          "match": "within",
+          "tol_mm": 5
+        },
+        {
+          "type": "volume",
+          "min_mm3": 450000
+        },
+        {
+          "type": "holes",
+          "count": 3,
+          "dia": 8.5,
+          "axis": "z",
+          "positions": [
+            [
+              -46,
+              22
+            ],
+            [
+              46,
+              22
+            ],
+            [
+              0,
+              -22
+            ]
+          ]
+        },
+        {
+          "type": "holes",
+          "count": 1,
+          "dia": 30,
+          "axis": "y"
+        },
+        {
+          "type": "watertight",
+          "expect": true
+        },
+        {
+          "type": "verify_spec",
+          "expect": "PASS"
+        }
+      ]
+    },
+    {
+      "id": "fem",
+      "type": "fem",
+      "timeout_s": 1800,
+      "material": "aluminum",
+      "load_cases": [
+        {
+          "name": "radial",
+          "fixed": [
+            {
+              "kind": "cylinder",
+              "axis": "z",
+              "center": [
+                -46,
+                22,
+                5
+              ],
+              "diameter_mm": 14,
+              "margin_mm": 2,
+              "z_range": [
+                0,
+                10
+              ],
+              "description": "bolt pad -X"
+            },
+            {
+              "kind": "cylinder",
+              "axis": "z",
+              "center": [
+                46,
+                22,
+                5
+              ],
+              "diameter_mm": 14,
+              "margin_mm": 2,
+              "z_range": [
+                0,
+                10
+              ],
+              "description": "bolt pad +X"
+            },
+            {
+              "kind": "cylinder",
+              "axis": "z",
+              "center": [
+                0,
+                -22,
+                5
+              ],
+              "diameter_mm": 14,
+              "margin_mm": 2,
+              "z_range": [
+                0,
+                10
+              ],
+              "description": "bolt pad -Y"
+            }
+          ],
+          "loads": [
+            {
+              "region": {
+                "kind": "cylinder",
+                "axis": "y",
+                "center": [
+                  0,
+                  0,
+                  65
+                ],
+                "inner_diameter_mm": 30,
+                "diameter_mm": 38,
+                "description": "bearing bore wall"
+              },
+              "force_n": [
+                0,
+                0,
+                -1500
+              ]
+            }
+          ]
+        },
+        {
+          "name": "axial",
+          "weight": 0.6,
+          "fixed": [
+            {
+              "kind": "cylinder",
+              "axis": "z",
+              "center": [
+                -46,
+                22,
+                5
+              ],
+              "diameter_mm": 14,
+              "margin_mm": 2,
+              "z_range": [
+                0,
+                10
+              ],
+              "description": "bolt pad -X"
+            },
+            {
+              "kind": "cylinder",
+              "axis": "z",
+              "center": [
+                46,
+                22,
+                5
+              ],
+              "diameter_mm": 14,
+              "margin_mm": 2,
+              "z_range": [
+                0,
+                10
+              ],
+              "description": "bolt pad +X"
+            },
+            {
+              "kind": "cylinder",
+              "axis": "z",
+              "center": [
+                0,
+                -22,
+                5
+              ],
+              "diameter_mm": 14,
+              "margin_mm": 2,
+              "z_range": [
+                0,
+                10
+              ],
+              "description": "bolt pad -Y"
+            }
+          ],
+          "loads": [
+            {
+              "region": {
+                "kind": "cylinder",
+                "axis": "y",
+                "center": [
+                  0,
+                  0,
+                  65
+                ],
+                "inner_diameter_mm": 30,
+                "diameter_mm": 38,
+                "description": "bearing bore wall"
+              },
+              "force_n": [
+                0,
+                600,
+                0
+              ]
+            }
+          ]
+        }
+      ],
+      "gates": [
+        {
+          "type": "status",
+          "expect": [
+            "succeeded"
+          ]
+        },
+        {
+          "type": "fem",
+          "field": "sf",
+          "min": 1.0
+        },
+        {
+          "type": "fem_loadcases",
+          "min_cases": 2,
+          "checks": [
+            {
+              "case": "radial",
+              "resultant_n": {
+                "min": 1300,
+                "max": 1700
+              },
+              "resultant_dir": [
+                0,
+                0,
+                -1
+              ],
+              "dir_tol_deg": 25,
+              "fixed_centroid_mm": [
+                0,
+                7.3,
+                5
+              ],
+              "load_centroid_mm": [
+                0,
+                0,
+                65
+              ],
+              "tol_mm": 12,
+              "warnings_absent": [
+                "no fixed region",
+                "resolved to zero",
+                "unsolvable"
+              ],
+              "sf_min": 0.5
+            },
+            {
+              "case": "axial",
+              "resultant_n": {
+                "min": 500,
+                "max": 700
+              },
+              "resultant_dir": [
+                0,
+                1,
+                0
+              ],
+              "dir_tol_deg": 30,
+              "sf_min": 0.2
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "topopt",
+      "type": "optimize",
+      "timeout_s": 10800,
+      "material": "aluminum",
+      "optimize": {
+        "enabled": true,
+        "target_volume_fraction": 0.35,
+        "safety_factor_min": 1.5,
+        "min_member_mm": 3,
+        "keep_mode": "auto",
+        "filter": "helmholtz+heaviside",
+        "symmetry": "yz",
+        "warmstart": "loadpath",
+        "loadpath_corridor_mm": 4,
+        "max_iterations": 200
+      },
+      "load_cases": [
+        {
+          "name": "radial",
+          "fixed": [
+            {
+              "kind": "cylinder",
+              "axis": "z",
+              "center": [
+                -46,
+                22,
+                5
+              ],
+              "diameter_mm": 14,
+              "margin_mm": 2,
+              "z_range": [
+                0,
+                10
+              ],
+              "description": "bolt pad -X"
+            },
+            {
+              "kind": "cylinder",
+              "axis": "z",
+              "center": [
+                46,
+                22,
+                5
+              ],
+              "diameter_mm": 14,
+              "margin_mm": 2,
+              "z_range": [
+                0,
+                10
+              ],
+              "description": "bolt pad +X"
+            },
+            {
+              "kind": "cylinder",
+              "axis": "z",
+              "center": [
+                0,
+                -22,
+                5
+              ],
+              "diameter_mm": 14,
+              "margin_mm": 2,
+              "z_range": [
+                0,
+                10
+              ],
+              "description": "bolt pad -Y"
+            }
+          ],
+          "loads": [
+            {
+              "region": {
+                "kind": "cylinder",
+                "axis": "y",
+                "center": [
+                  0,
+                  0,
+                  65
+                ],
+                "inner_diameter_mm": 30,
+                "diameter_mm": 38,
+                "description": "bearing bore wall"
+              },
+              "force_n": [
+                0,
+                0,
+                -1500
+              ]
+            }
+          ]
+        },
+        {
+          "name": "axial",
+          "weight": 0.6,
+          "fixed": [
+            {
+              "kind": "cylinder",
+              "axis": "z",
+              "center": [
+                -46,
+                22,
+                5
+              ],
+              "diameter_mm": 14,
+              "margin_mm": 2,
+              "z_range": [
+                0,
+                10
+              ],
+              "description": "bolt pad -X"
+            },
+            {
+              "kind": "cylinder",
+              "axis": "z",
+              "center": [
+                46,
+                22,
+                5
+              ],
+              "diameter_mm": 14,
+              "margin_mm": 2,
+              "z_range": [
+                0,
+                10
+              ],
+              "description": "bolt pad +X"
+            },
+            {
+              "kind": "cylinder",
+              "axis": "z",
+              "center": [
+                0,
+                -22,
+                5
+              ],
+              "diameter_mm": 14,
+              "margin_mm": 2,
+              "z_range": [
+                0,
+                10
+              ],
+              "description": "bolt pad -Y"
+            }
+          ],
+          "loads": [
+            {
+              "region": {
+                "kind": "cylinder",
+                "axis": "y",
+                "center": [
+                  0,
+                  0,
+                  65
+                ],
+                "inner_diameter_mm": 30,
+                "diameter_mm": 38,
+                "description": "bearing bore wall"
+              },
+              "force_n": [
+                0,
+                600,
+                0
+              ]
+            }
+          ]
+        }
+      ],
+      "gates": [
+        {
+          "type": "status",
+          "expect": [
+            "succeeded",
+            "needs_review"
+          ]
+        },
+        {
+          "type": "topopt",
+          "field": "sf_verified",
+          "min": 1.5
+        },
+        {
+          "type": "volfrac",
+          "min": 0.25,
+          "max": 0.5
+        },
+        {
+          "type": "bodies",
+          "max": 1
+        },
+        {
+          "type": "envelope_within",
+          "dims": [
+            120,
+            70,
+            90
+          ],
+          "tol_mm": 4
+        },
+        {
+          "type": "holes",
+          "count": 3,
+          "dia": 8.5,
+          "axis": "z",
+          "positions": [
+            [
+              -46,
+              22
+            ],
+            [
+              46,
+              22
+            ],
+            [
+              0,
+              -22
+            ]
+          ]
+        },
+        {
+          "type": "holes",
+          "count": 1,
+          "dia": 30,
+          "axis": "y"
+        },
+        {
+          "type": "contains_point",
+          "xyz": [
+            0,
+            0,
+            48
+          ]
+        },
+        {
+          "type": "load_path",
+          "expect": true
+        },
+        {
+          "type": "watertight",
+          "expect": true
+        }
+      ]
+    },
+    {
+      "id": "refine",
+      "type": "refine",
+      "enabled": true,
+      "timeout_s": 3600,
+      "material": "aluminum",
+      "restore_planes": true,
+      "load_cases": [
+        {
+          "name": "radial",
+          "fixed": [
+            {
+              "kind": "cylinder",
+              "axis": "z",
+              "center": [
+                -46,
+                22,
+                5
+              ],
+              "diameter_mm": 14,
+              "margin_mm": 2,
+              "z_range": [
+                0,
+                10
+              ],
+              "description": "bolt pad -X"
+            },
+            {
+              "kind": "cylinder",
+              "axis": "z",
+              "center": [
+                46,
+                22,
+                5
+              ],
+              "diameter_mm": 14,
+              "margin_mm": 2,
+              "z_range": [
+                0,
+                10
+              ],
+              "description": "bolt pad +X"
+            },
+            {
+              "kind": "cylinder",
+              "axis": "z",
+              "center": [
+                0,
+                -22,
+                5
+              ],
+              "diameter_mm": 14,
+              "margin_mm": 2,
+              "z_range": [
+                0,
+                10
+              ],
+              "description": "bolt pad -Y"
+            }
+          ],
+          "loads": [
+            {
+              "region": {
+                "kind": "cylinder",
+                "axis": "y",
+                "center": [
+                  0,
+                  0,
+                  65
+                ],
+                "inner_diameter_mm": 30,
+                "diameter_mm": 38,
+                "description": "bearing bore wall"
+              },
+              "force_n": [
+                0,
+                0,
+                -1500
+              ]
+            }
+          ]
+        },
+        {
+          "name": "axial",
+          "weight": 0.6,
+          "fixed": [
+            {
+              "kind": "cylinder",
+              "axis": "z",
+              "center": [
+                -46,
+                22,
+                5
+              ],
+              "diameter_mm": 14,
+              "margin_mm": 2,
+              "z_range": [
+                0,
+                10
+              ],
+              "description": "bolt pad -X"
+            },
+            {
+              "kind": "cylinder",
+              "axis": "z",
+              "center": [
+                46,
+                22,
+                5
+              ],
+              "diameter_mm": 14,
+              "margin_mm": 2,
+              "z_range": [
+                0,
+                10
+              ],
+              "description": "bolt pad +X"
+            },
+            {
+              "kind": "cylinder",
+              "axis": "z",
+              "center": [
+                0,
+                -22,
+                5
+              ],
+              "diameter_mm": 14,
+              "margin_mm": 2,
+              "z_range": [
+                0,
+                10
+              ],
+              "description": "bolt pad -Y"
+            }
+          ],
+          "loads": [
+            {
+              "region": {
+                "kind": "cylinder",
+                "axis": "y",
+                "center": [
+                  0,
+                  0,
+                  65
+                ],
+                "inner_diameter_mm": 30,
+                "diameter_mm": 38,
+                "description": "bearing bore wall"
+              },
+              "force_n": [
+                0,
+                600,
+                0
+              ]
+            }
+          ]
+        }
+      ],
+      "gates": [
+        {
+          "type": "status",
+          "expect": [
+            "succeeded",
+            "needs_review"
+          ]
+        },
+        {
+          "type": "fem",
+          "field": "sf",
+          "min": 1.0
+        },
+        {
+          "type": "holes",
+          "count": 3,
+          "dia": 8.5,
+          "axis": "z",
+          "positions": [
+            [
+              -46,
+              22
+            ],
+            [
+              46,
+              22
+            ],
+            [
+              0,
+              -22
+            ]
+          ]
+        },
+        {
+          "type": "holes",
+          "count": 1,
+          "dia": 30,
+          "axis": "y"
+        },
+        {
+          "type": "watertight",
+          "expect": true
+        }
+      ]
+    }
+  ]
+}
