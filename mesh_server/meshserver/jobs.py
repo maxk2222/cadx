@@ -597,7 +597,7 @@ class JobManager:
             else:
                 rc, kill_reason, peak_rss_mb = await self._dispatch_cold(job, work)
 
-            if rc == 0:
+            if rc == 0 and kill_reason is None:
                 self._finish_proc_ok(job, work, peak_rss_mb)
                 self._record_peak(job, peak_rss_mb)
                 return
@@ -808,9 +808,13 @@ class JobManager:
             done_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await done_task
-        if proc.returncode is not None or done["tok"] in ("eof", "wrong-model", None):
-            # worker died mid-job or rejected the model — drop it; the job
-            # result path treats this exactly like a cold rc != 0
+        if (
+            kill_reason is not None
+            or proc.returncode is not None
+            or done["tok"] in ("eof", "wrong-model", None)
+        ):
+            # worker died mid-job, got watchdog-killed, or rejected the model —
+            # drop it; the job result path treats this like a cold rc != 0
             await self._drop_warm(warm)
             if done["tok"] == "wrong-model":
                 return 4, kill_reason, peak_rss_mb

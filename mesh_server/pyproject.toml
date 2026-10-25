@@ -21,6 +21,9 @@ dependencies = [
     # health endpoint, RSS watchdog and memory headroom checks degrade without
     # it — tiny pure wheel, keep it a base dep
     "psutil>=5.9",
+    # trimesh splits/sections silently no-op without scipy (graph traversal) —
+    # postprocess.clean_mesh floater removal and bench section metrics need it
+    "scipy>=1.12",
 ]
 
 [project.optional-dependencies]
