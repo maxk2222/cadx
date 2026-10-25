@@ -707,10 +707,15 @@ def _entry_point(mesh: trimesh.Trimesh, axis: str, u: float, v: float) -> float 
 
 
 def _effective_dia(feat: RefineFeature) -> float:
-    """Diameter actually cut — tap-drill (D - pitch) for threads."""
+    """Diameter actually cut — tap-drill (D - pitch) for threads.
+
+    With a parsed spec the pilot bore is major - pitch. WITHOUT a spec the
+    declared diameter already IS the bore the user expects (the tap drill —
+    the helical groove then opens outward to the major radius): shrinking
+    it again cuts e.g. a Ø9 bore for a declared Ø10.2 M12 seat."""
     if feat.kind in ("thread", "tap"):
         parsed = _parse_spec(feat.thread_spec)
-        return (parsed[0] - parsed[1]) if parsed else max(feat.dia * 0.85, feat.dia - 1.0)
+        return (parsed[0] - parsed[1]) if parsed else feat.dia
     return feat.dia
 
 
