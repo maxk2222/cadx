@@ -324,14 +324,15 @@ def _fem_case(fem: dict[str, Any], key: Any) -> dict[str, Any] | None:
 
 
 def _load_centroid(applied: list[dict[str, Any]]) -> list[float] | None:
-    """Force-weighted centroid of the applied-load records — where the load
+    """Load-weighted centroid of the applied-load records — where the load
     actually landed on the part (region centroid weighted by the resolved
-    force it carries, so a dominant load outweighs a small one)."""
+    force it carries; a pure-couple record weights by its moment, so
+    moment-only cases still get a landing point)."""
     num = [0.0, 0.0, 0.0]
     den = 0.0
     for a in applied:
         c = _v3(a.get("centroid_mm"))
-        w = float(a.get("force_mag_n") or 0.0)
+        w = float(a.get("force_mag_n") or 0.0) + float(a.get("couple_mag_nm") or 0.0)
         if c is not None and w > 1e-9:
             for i in range(3):
                 num[i] += w * c[i]

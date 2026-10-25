@@ -487,6 +487,34 @@ def test_fem_loadcases_moment_band():
         0,
     )[0]
     assert inc.ok is None
+
+
+def test_fem_loadcases_moment_only_load_centroid():
+    """A pure-couple case has no force magnitude — the load centroid must
+    still resolve from the couple magnitude (else every moment case is
+    inconclusive)."""
+    out = _fem_out()
+    out.fem["cases"][0]["applied"] = [
+        {
+            "kind": "bore",
+            "mechanisms": ["moment_nm"],
+            "centroid_mm": [0.0, 0.0, 12.75],
+            "force_mag_n": 0.0,
+            "couple_mag_nm": 100.0,
+        }
+    ]
+    g = run_gates(
+        [
+            {
+                "type": "fem_loadcases",
+                "checks": [{"load_centroid_mm": [0, 0, 12], "tol_mm": 3}],
+            }
+        ],
+        out,
+        0,
+    )[0]
+    assert g.ok, g.detail
+    assert g.measured["tip_load.load_centroid_mm"] == pytest.approx([0, 0, 12.75])
     # missing reactions evidence -> inconclusive
     bare = _out(fem={"cases": [{"name": "x"}]})
     inc2 = run_gates([{"type": "fem_loadcases", "checks": [{"resultant_n": {"min": 1}}]}], bare, 0)[
