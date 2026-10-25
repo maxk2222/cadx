@@ -15,7 +15,7 @@
       "options": {
         "process": "fdm"
       },
-      "prompt": "Parametric seed body for a topology-optimized bearing bracket (aluminium 6061).\nThis is NOT the finished bracket — it is the solid design space the optimizer will carve.\n\nBUILD THIS — nothing more:\n1. One solid rectangular block, 120 (X) x 70 (Y) x 90 (Z) mm. Base face on the\n   XY plane at z = 0, centred at the origin in X and Y. Solid material\n   throughout: no ribs, no pockets, no cutouts, no webs, no chamfers, no\n   fillets, no hollow sections.\n2. Three M8 threaded holes (coarse thread) in the BOTTOM face z = 0, blind,\n   10 mm deep: at (x=-46, y=+22), (x=+46, y=+22) and (x=0, y=-22).\n   Do NOT drill through.\n3. One through-bore dia 30 mm along Y at x = 0, z = 65 — the bearing seat.\n   Open on both the +y and -y faces.\n\nCHECK BEFORE FINISHING:\n- Each M8 hole opens only on the bottom face and ends inside the block.\n- The dia-30 bore is open on both y faces.\n- The block contains no other voids or features.\n\nService context for the spec: the bracket screws onto a base plate through the\nthree M8 taps; the bore carries ~8 kN radial shaft load downward plus ~3 kN\naxial thrust along +Y. Symmetric across x = 0.",
+      "prompt": "Parametric seed body for a topology-optimized bearing bracket (aluminium 6061).\nThis is NOT the finished bracket — it is the solid design space the optimizer will carve.\n\nBUILD THIS — nothing more:\n1. One solid rectangular block, 120 (X) x 70 (Y) x 90 (Z) mm. Base face on the\n   XY plane at z = 0, centred at the origin in X and Y. Solid material\n   throughout: no ribs, no pockets, no cutouts, no webs, no chamfers, no\n   fillets, no hollow sections.\n2. Three blind holes, dia 6.8 mm, drilled from the BOTTOM face z = 0 to a\n   depth of 10 mm — they end inside the block: at (x=-46, y=+22),\n   (x=+46, y=+22) and (x=0, y=-22). Do NOT drill through.\n3. One through-bore dia 30 mm along Y at x = 0, z = 65 — the bearing seat.\n   Open on both the +y and -y faces.\n\nCHECK BEFORE FINISHING:\n- Each dia-6.8 hole opens only on the bottom face and ends inside the block.\n- The dia-30 bore is open on both y faces.\n- The block contains no other voids or features.\n\nService context for the spec: the bracket mounts to a base plate through the\nthree bottom holes; the bore carries ~8 kN radial shaft load downward plus\n~3 kN axial thrust along +Y. Symmetric across x = 0.",
       "gates": [
         {
           "type": "status",
@@ -585,6 +585,46 @@
       "timeout_s": 3600,
       "material": "aluminum",
       "restore_planes": true,
+      "features": [
+        {
+          "type": "tap",
+          "axis": "-z",
+          "x": -46,
+          "y": 22,
+          "dia": 6.8,
+          "depth": 10,
+          "thread_spec": "M8x1.25",
+          "name": "M8 tap -X"
+        },
+        {
+          "type": "tap",
+          "axis": "-z",
+          "x": 46,
+          "y": 22,
+          "dia": 6.8,
+          "depth": 10,
+          "thread_spec": "M8x1.25",
+          "name": "M8 tap +X"
+        },
+        {
+          "type": "tap",
+          "axis": "-z",
+          "x": 0,
+          "y": -22,
+          "dia": 6.8,
+          "depth": 10,
+          "thread_spec": "M8x1.25",
+          "name": "M8 tap -Y"
+        },
+        {
+          "type": "bore",
+          "axis": "+y",
+          "pos": [0, 0, 65],
+          "dia": 30,
+          "through": true,
+          "name": "bearing bore"
+        }
+      ],
       "load_cases": [
         {
           "name": "radial",
