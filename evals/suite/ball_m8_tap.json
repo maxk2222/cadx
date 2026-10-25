@@ -16,7 +16,7 @@
         { "type": "status", "expect": ["succeeded", "needs_review"] },
         { "type": "bbox", "dims": [60, 60, 60], "match": "match", "tol_mm": 2 },
         { "type": "features", "entries": [
-          { "type": "hole", "count": 1, "axis": "z", "dia": 6.8 }
+          { "type": "hole", "count": 1, "axis": "z", "dia": 6.8, "positions": [[0, 0]], "depth_class": "blind" }
         ] },
         { "type": "watertight", "expect": true },
         { "type": "verify_spec", "expect": "PASS" },

@@ -96,7 +96,27 @@ def _feature_entry_ok(  # noqa: C901
             matching = [
                 g for g in matching if abs(float(g.get("diameter") or 0) - float(dia)) <= tol
             ]
-        centers = [c for g in matching for c in (g.get("centers") or [])]
+        depth_class = ef.get("depth_class")
+        if depth_class:
+            matching = [
+                g for g in matching if str(g.get("depth_class") or "") == str(depth_class)
+            ]
+        centers = []
+        ax_idx = {"x": 0, "y": 1, "z": 2}.get(str(want_axis or ""))
+        for g in matching:
+            xyz_rows = g.get("centers_xyz") or []
+            if xyz_rows:
+                # transverse coords only — `centers` mixes the through-axis
+                # coordinate in for non-Z holes (legacy projection pair)
+                for row in xyz_rows:
+                    if ax_idx is not None and len(row) == 3:
+                        centers.append(
+                            [c for i, c in enumerate(row) if i != ax_idx and c is not None]
+                        )
+                    else:
+                        centers.append([c for c in row if c is not None])
+            else:
+                centers.extend(g.get("centers") or [])
         n_matching = sum(int(g.get("count") or 0) for g in matching)
         if n_matching < want:
             return False

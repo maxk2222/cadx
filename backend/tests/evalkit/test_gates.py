@@ -100,6 +100,49 @@ def test_hole_gate_count_dia_axis_positions_pcd():
     assert not run_gates([{"type": "holes", "count": 6, "pcd": 100}], out6, 0)[0].ok
 
 
+def test_hole_gate_depth_class_and_centers_xyz_positions():
+    feats = {
+        "hole_groups": [
+            {
+                "count": 1,
+                "diameter": 6.8,
+                "axis": "x",
+                "centers": [[-8.75, 0.0]],
+                "centers_xyz": [[None, 0.0, 20.0]],
+                "depth_class": "blind",
+                "blocked": 1,
+            },
+            {
+                "count": 1,
+                "diameter": 6.8,
+                "axis": "z",
+                "centers": [[0.0, 0.0]],
+                "centers_xyz": [[0.0, 0.0, None]],
+                "depth_class": "through",
+                "blocked": 0,
+            },
+        ]
+    }
+    out = _out(features=feats)
+    # depth_class filter: blind x-bore matches only "blind", not "through"
+    blind = {"type": "holes", "count": 1, "axis": "x", "dia": 6.8, "depth_class": "blind"}
+    assert run_gates([blind], out, 0)[0].ok
+    assert not run_gates([{**blind, "depth_class": "through"}], out, 0)[0].ok
+    # x-axis positions assert the transverse (y,z) pair from centers_xyz —
+    # the legacy `centers` pair mixes in the through-axis coordinate
+    pos = {"type": "holes", "count": 1, "axis": "x", "dia": 6.8, "positions": [[0, 20]]}
+    assert run_gates([pos], out, 0)[0].ok
+    assert not run_gates([{**pos, "positions": [[20, 0]]}], out, 0)[0].ok
+    assert not run_gates([{**pos, "positions": [[0, 0]]}], out, 0)[0].ok
+    # z-axis positions still assert (x,y)
+    posz = {"type": "holes", "count": 1, "axis": "z", "dia": 6.8, "positions": [[0, 0]]}
+    assert run_gates([posz], out, 0)[0].ok
+    assert not run_gates([{**posz, "positions": [[5, 5]]}], out, 0)[0].ok
+    # legacy groups without centers_xyz keep the `centers` fallback
+    legacy = _out(features={"hole_groups": _hole_groups(1, 6.8, "z", [[7, 7]])})
+    assert run_gates([{"type": "holes", "count": 1, "positions": [[7, 7]]}], legacy, 0)[0].ok
+
+
 def test_feature_gate_unavailable_is_inconclusive_but_measured_mismatch_fails():
     unavailable = run_gates(
         [{"type": "holes", "count": 4, "dia": 8.5}],
