@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import uuid
@@ -78,14 +79,17 @@ def create_app(cfg: ServerConfig | None = None) -> FastAPI:
 
     @app.get("/v1/health", response_model=Health)
     async def health() -> Health:
-        import psutil
+        mem_free_mb: int | None = None
+        with contextlib.suppress(Exception):
+            import psutil
 
+            mem_free_mb = int(psutil.virtual_memory().available / 1e6)
         return Health(
             ok=True,
             device=registry.device,
             backend="local",
             models=registry.models(),
-            mem_free_mb=int(psutil.virtual_memory().available / 1e6),
+            mem_free_mb=mem_free_mb,
         )
 
     @app.get("/v1/models", response_model=dict)
