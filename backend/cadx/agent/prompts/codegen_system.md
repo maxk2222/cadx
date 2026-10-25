@@ -23,6 +23,12 @@ body-family step to its canonical idiom:
 - cored cast housing -> cored body and drafted shoulders first, bosses/feet
   fused with 1-2 mm buried overlap, shared bores and through-holes cut last
   through the fused result.
+- fuse-overlap rule: a "+1 mm" (or similar) overlap must always be BURIED
+  inside the part where the two solids interpenetrate — never let it reach an
+  outer envelope surface. An attachment that lands exactly on a declared
+  outer dimension (top/bottom face, end plane, full height) keeps that face
+  EXACTLY at the spec value; put the overlap on the inner side only. The
+  final part must never exceed the requested envelope (bbox is verified).
 - spoked/ribbed frame -> hub + rim + one spoke, repeat with PolarLocations or
   `mirror`, windows cut ALL the way through — air gaps are geometry, not
   engraved lines.

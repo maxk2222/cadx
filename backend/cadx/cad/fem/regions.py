@@ -402,9 +402,15 @@ def _hole_cells(domain: VoxelDomain, region: RegionSpec, anchors: list[dict] | N
     if not _anchor_has_void(domain, axis, ctr, dia):
         return np.zeros(domain.dims, dtype=bool)
     # keep-ring floor: a bore used as a fixture/load point needs meat around
-    # it — at least 2 mm or a fifth of the bore diameter, whichever is more
+    # it — at least 2 mm or a fifth of the bore diameter, whichever is more.
+    # A bore through a declared boss/collar keeps the whole pad (pad_dia on
+    # the anchor) — the ring-only keep would let TopOpt eat the boss while
+    # preserving a useless skinny sleeve around the bore.
+    pad = 0.0
+    if anchors and region.hole_index and 1 <= int(region.hole_index) <= len(anchors):
+        pad = float(anchors[int(region.hole_index) - 1].get("pad_dia") or 0.0)
     margin = max(float(region.margin_mm), 2.0, 0.2 * dia, domain.pitch)
-    radius = dia / 2 + margin
+    radius = max(dia, pad) / 2 + margin
     cells = _cylinder_cells(domain, axis, ctr, radius)
     for _ in range(4):
         if cells.any():

@@ -3,6 +3,7 @@ keep-region restore, boolean robustness (`cad/fem/refine.py`)."""
 
 from __future__ import annotations
 
+import contextlib
 import math
 
 import numpy as np
@@ -346,6 +347,85 @@ def test_restore_anchor_keep_box():
 
 
 # --------------------------------------------------------------------------- #
+# keep-prism geometry — round holes restore round pads, never square blocks   #
+# (the robot-arm-mount eval pasted `base ∩ AABB` — visible cubes on render)  #
+# --------------------------------------------------------------------------- #
+
+
+def test_anchor_keep_prism_is_cylinder_not_box():
+    from cadx.cad.fem.refine import _anchor_keep_prism
+
+    a = {"index": 1, "axis": "+z", "pos": [10.0, 0.0, 6.0], "x": 10.0, "y": 0.0, "dia": 8.5}
+    p = _anchor_keep_prism(a, margin=3.0, span_axis=(0.0, 10.0))
+    assert p["shape"] == "cyl"
+    assert p["ax"] == 2
+    assert p["r"] == pytest.approx(8.5 / 2 + 3.0)
+
+
+def test_anchor_keep_prism_pad_dia_keeps_whole_boss():
+    """A bore drilled through a Ø25 boss keeps the whole pad — the ring-only
+    keep let TopOpt eat the boss and left a useless sleeve around the M12."""
+    from cadx.cad.fem.refine import _anchor_keep_prism
+
+    a = {
+        "index": 1,
+        "axis": "+z",
+        "pos": [0.0, 0.0, 12.5],
+        "x": 0.0,
+        "y": 0.0,
+        "dia": 10.2,
+        "pad_dia": 25.0,
+    }
+    p = _anchor_keep_prism(a, margin=3.0, span_axis=(10.0, 25.0))
+    assert p["r"] == pytest.approx(25.0 / 2 + 3.0)
+
+
+def test_prism_mesh_side_axis_is_cylinder_along_x():
+    """+x flange bores rotate the cylinder to the bore axis — extent along X
+    is the span, the Y/Z cross-section stays round."""
+    from cadx.cad.fem.refine import _prism_mesh
+
+    p = {"shape": "cyl", "ax": 0, "uv": (12.0, 25.0), "r": 5.25, "span": (42.0, 50.0)}
+    m = _prism_mesh(p)
+    ex = m.bounds[1] - m.bounds[0]
+    assert ex[0] == pytest.approx(8.0, abs=0.3)
+    assert ex[1] == pytest.approx(10.5, abs=0.5)
+    assert ex[2] == pytest.approx(10.5, abs=0.5)
+    assert m.bounds[0][1] == pytest.approx(12.0 - 5.25, abs=0.5)
+    assert m.bounds[0][2] == pytest.approx(25.0 - 5.25, abs=0.5)
+
+
+def test_restore_anchor_keep_restores_round_pad_not_square():
+    """End-to-end on the eval defect: a keep region over a round hole must
+    restore a CYLINDER pad — the old `base ∩ AABB` pasted square columns
+    around every hole (the blocks on the mount render). Probe the square
+    corner (inside the old box, outside the cylinder) vs inside the pad."""
+    base = _box()
+    anchors = _anchors()
+    opt = base.difference(
+        trimesh.creation.cylinder(radius=2.0, height=20, sections=32).apply_translation(
+            [10.0, 0.0, 10.0]
+        ),
+        engine="manifold",
+    )
+    keeps = [{"kind": "anchor", "hole_index": 1, "margin_mm": 2.0}]
+    out, _, n = restore_keep_surface(opt, base, keeps, anchors, margin_mm=0.0)
+    assert n == 1
+    # corner probe: (3.4, 3.4) off-centre is at radius 4.8 > pad r 4.5 —
+    # inside the old square pad, outside the cylinder. Must hold NO material.
+    corner = trimesh.creation.icosphere(subdivisions=2, radius=1.0)
+    corner.apply_translation([10.0 + 3.4, 0.0 + 3.4, 9.0])
+    with contextlib.suppress(Exception):
+        assert float(out.intersection(corner, engine="manifold").volume or 0) < 0.4
+    # inside probe: 1 mm off-centre — inside the pad and inside the notch,
+    # so the restore must fill it back to base material.
+    inner = trimesh.creation.icosphere(subdivisions=2, radius=1.0)
+    inner.apply_translation([11.0, 0.0, 9.0])
+    vol = float(out.intersection(inner, engine="manifold").volume or 0)
+    assert vol > 3.0
+
+
+# --------------------------------------------------------------------------- #
 # re-cut snap / dedup — the "double hole" defect                                #
 # --------------------------------------------------------------------------- #
 
@@ -634,12 +714,12 @@ def test_auto_keep_drops_floating_bore_ring():
 
 
 def test_auto_keep_restores_partially_eaten_bore_ring():
-    """The common case: SIMP ate MOST of the ring but the keep box still
-    overlaps surviving material — the patch bridges and the bore re-cuts."""
+    """The common case: SIMP ate the bore + inner walls but material survives
+    inside the keep prism — the patch bridges and the bore re-cuts."""
     base = _slab_bored(10.0, 10.0)
-    # smaller scoop: eats the bore walls but leaves the keep box rim
-    # overlapping the slab — the ring restores and bridges to the body
-    opt = _scooped_opt(base, 10.0, 9.5)
+    # scoop r6.5 < keep r8.8 (dia/2 + margin + grow): the prism rim overlaps
+    # surviving slab — the cylindrical patch restores and bridges to the body
+    opt = _scooped_opt(base, 10.0, 6.5)
     anchors = [_bore_anchor()]
     feats, _ = resolve_refine_features(anchors, None, None, base_mesh=base)
     assert len(feats) == 1
@@ -659,7 +739,7 @@ def test_spec_anchor_recut_after_auto_restore():
     the verdict; the keep ring still bridges surviving material, restores,
     and the bore is cut — not dropped by the d1d1836 tunnel allowlist."""
     base = _slab()  # solid — the spec bore was never in the scan
-    opt = _scooped_opt(base, 10.0, 9.5)
+    opt = _scooped_opt(base, 10.0, 6.5)
     anchors = [_bore_anchor(source="spec")]
     feats, _ = resolve_refine_features(anchors, None, None, base_mesh=base)
     assert len(feats) == 1

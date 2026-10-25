@@ -1339,22 +1339,89 @@ def _region_box(region: dict[str, Any], bounds: np.ndarray) -> np.ndarray | None
     return None
 
 
-def _anchor_keep_box(
+def _anchor_keep_prism(
     anchor: dict[str, Any], margin: float, span_axis: tuple[float, float]
-) -> np.ndarray | None:
-    """Box around an anchor: the bore channel plus `margin` around it."""
+) -> dict[str, Any] | None:
+    """Cylinder along the anchor axis: the bore channel plus `margin` around
+    it — or the whole boss pad when the anchor carries ``pad_dia`` (a bore
+    through a Ø25 boss keeps the pad, not a Ø16 sleeve). A box here would
+    paste corner material the SIMP keep-ring never held — the square blocks
+    visible on finished mounts came from exactly that."""
     uv = _anchor_uv(anchor)
     if uv is None:
         return None
     axis = _feature_axis(anchor)
-    ax, au, av = _AXES[axis]
-    r = float(anchor.get("dia") or 0) / 2.0 + margin
-    lo = np.full(3, -np.inf)
-    hi = np.full(3, np.inf)
-    lo[au], hi[au] = uv[0] - r, uv[0] + r
-    lo[av], hi[av] = uv[1] - r, uv[1] + r
-    lo[ax], hi[ax] = span_axis
-    return np.stack([lo, hi])
+    ax, _au, _av = _AXES[axis]
+    r = max(float(anchor.get("dia") or 0.0), float(anchor.get("pad_dia") or 0.0)) / 2.0 + margin
+    return {"shape": "cyl", "ax": ax, "uv": uv, "r": r, "span": span_axis}
+
+
+def _region_prism(region: dict[str, Any], bounds: np.ndarray) -> dict[str, Any] | None:
+    """Prism descriptor for a keep region — `cylinder` regions stay
+    cylindrical for the same reason anchor keeps do. Everything else keeps
+    its axis-aligned box."""
+    kind = str(region.get("kind") or "face")
+    if kind == "cylinder":
+        axis = str(region.get("axis") or "")
+        if axis in _AXES:
+            ax, au, av = _AXES[axis]
+            c = region.get("center") or []
+            margin = float(region.get("margin_mm") or 2.0)
+            r = float(region.get("diameter_mm") or 0.0) / 2.0 + margin
+            if len(c) >= 3 and r > 0:
+                lo, hi = float(bounds[0][ax]) - 0.5, float(bounds[1][ax]) + 0.5
+                zr = region.get("z_range")
+                if zr and len(zr) >= 2:
+                    lo, hi = float(zr[0]) - 0.5, float(zr[1]) + 0.5
+                return {
+                    "shape": "cyl",
+                    "ax": ax,
+                    "uv": (float(c[au]), float(c[av])),
+                    "r": r,
+                    "span": (lo, hi),
+                }
+        return None
+    b = _region_box(region, bounds)
+    return None if b is None else {"shape": "box", "box": b}
+
+
+def _prism_mesh(p: dict[str, Any]) -> trimesh.Trimesh:
+    if p["shape"] == "cyl":
+        span = p["span"]
+        cyl = trimesh.creation.cylinder(
+            radius=float(p["r"]), height=max(float(span[1] - span[0]), 0.05), sections=48
+        )
+        ax = int(p["ax"])
+        if ax == 0:
+            cyl.apply_transform(
+                trimesh.transformations.rotation_matrix(math.pi / 2, [0.0, 1.0, 0.0])
+            )
+        elif ax == 1:
+            cyl.apply_transform(
+                trimesh.transformations.rotation_matrix(-math.pi / 2, [1.0, 0.0, 0.0])
+            )
+        ctr = np.zeros(3)
+        uax, vax = {0: (1, 2), 1: (0, 2), 2: (0, 1)}[ax]
+        ctr[uax], ctr[vax] = float(p["uv"][0]), float(p["uv"][1])
+        ctr[ax] = (float(span[0]) + float(span[1])) / 2.0
+        cyl.apply_translation(ctr)
+        return cyl
+    return _box_mesh(p["box"])
+
+
+def _prism_center(p: dict[str, Any]) -> tuple[float, float, float]:
+    if p["shape"] == "cyl":
+        uax, vax = {0: (1, 2), 1: (0, 2), 2: (0, 1)}[int(p["ax"])]
+        c = [0.0, 0.0, 0.0]
+        c[uax], c[vax] = float(p["uv"][0]), float(p["uv"][1])
+        c[int(p["ax"])] = (float(p["span"][0]) + float(p["span"][1])) / 2.0
+        return c[0], c[1], c[2]
+    b = p["box"]
+    return (
+        float((b[0][0] + b[1][0]) / 2),
+        float((b[0][1] + b[1][1]) / 2),
+        float((b[0][2] + b[1][2]) / 2),
+    )
 
 
 def _box_mesh(box: np.ndarray) -> trimesh.Trimesh:
@@ -1442,13 +1509,13 @@ def restore_keep_surface(
         if snapped:
             restored += len(plane_boxes)
             warnings.append(f"plane-snap keep-restore: {snapped} vertices restored")
-    tagged: list[tuple[np.ndarray, bool]] = [
-        (b, False) for b in _keep_boxes(union_regions, anchors, base.bounds, span, margin_mm)
+    tagged: list[tuple[dict[str, Any], bool]] = [
+        (p, False) for p in _keep_prisms(union_regions, anchors, base.bounds, span, margin_mm)
     ]
     if not keep_regions:
         tagged += [
-            (b, True)
-            for b in _keep_boxes(
+            (p, True)
+            for p in _keep_prisms(
                 _auto_anchor_keep_regions(anchors), anchors, base.bounds, span, margin_mm
             )
         ]
@@ -1492,10 +1559,10 @@ def restore_keep_surface(
 def _bridging_keep_patches(
     out: trimesh.Trimesh,
     base: trimesh.Trimesh,
-    tagged: list[tuple[np.ndarray, bool]],
+    tagged: list[tuple[dict[str, Any], bool]],
     warnings: list[str],
 ) -> list[tuple[trimesh.Trimesh, bool]]:
-    """`base ∩ box` per keep box — but only patches that overlap `out` by
+    """`base ∩ prism` per keep prism — but only patches that overlap `out` by
     real volume. A keep-ring restored into a region the optimizer emptied
     completely floats in air and ships a loose fragment with a
     nominal-looking bore (observed: corner mounting pads restored onto
@@ -1503,10 +1570,10 @@ def _bridging_keep_patches(
     from cadx.cad.mesh_ops import _ensure_watertight
 
     patches: list[tuple[trimesh.Trimesh, bool]] = []
-    for b, is_auto in tagged:
+    for p, is_auto in tagged:
         tag = "auto keep-restore" if is_auto else "keep-region"
         try:
-            patch = base.intersection(_box_mesh(b), engine="manifold")
+            patch = base.intersection(_prism_mesh(p), engine="manifold")
         except Exception:
             patch = None
         if patch is None or not len(getattr(patch, "faces", [])):
@@ -1524,9 +1591,7 @@ def _bridging_keep_patches(
                     getattr(out.intersection(patch, engine="manifold"), "volume", 0) or 0
                 )
             if overlap_vol is not None and overlap_vol < _MIN_BRIDGE_MM3:
-                cx = float((b[0][0] + b[1][0]) / 2)
-                cy = float((b[0][1] + b[1][1]) / 2)
-                cz = float((b[0][2] + b[1][2]) / 2)
+                cx, cy, cz = _prism_center(p)
                 warnings.append(
                     f"{tag} at ({cx:.0f}, {cy:.0f}, {cz:.0f}) would float — region left smoothed"
                 )
@@ -1589,15 +1654,16 @@ def _snap_plane_verts(out: trimesh.Trimesh, plane_boxes: list[Any], base_bounds:
     return snapped
 
 
-def _keep_boxes(
+def _keep_prisms(
     keep_regions: list[dict[str, Any]],
     anchors: list[dict[str, Any]],
     bounds: np.ndarray,
     span: tuple[float, float],
     margin_mm: float,
-) -> list[np.ndarray]:
-    """Resolve keep regions (incl. `_plane_box` auto-restore) to grown AABBs."""
-    boxes: list[np.ndarray] = []
+) -> list[dict[str, Any]]:
+    """Resolve keep regions (incl. `_plane_box` auto-restore) to grown prisms
+    — cylinders for hole/anchor/bore/cylinder kinds, boxes for the rest."""
+    prisms: list[dict[str, Any]] = []
     for r in keep_regions:
         if r.get("kind") == "_plane_box" and r.get("box") is not None:
             continue  # handled by _snap_plane_verts — no boolean union
@@ -1606,17 +1672,22 @@ def _keep_boxes(
         if str(r.get("kind")) in ("hole", "anchor", "bore") and hi_idx is not None:
             idx = int(hi_idx)
             if 1 <= idx <= len(anchors):
-                b = _anchor_keep_box(anchors[idx - 1], float(r.get("margin_mm") or margin_mm), span)
-                if b is not None:
-                    boxes.append(b)
+                p = _anchor_keep_prism(
+                    anchors[idx - 1], float(r.get("margin_mm") or margin_mm), span
+                )
+                if p is not None:
+                    prisms.append(p)
             continue
-        b = _region_box(r, bounds)
-        if b is not None:
-            boxes.append(b)
-    for b in boxes:
-        b[0] -= margin_mm * 0.5
-        b[1] += margin_mm * 0.5
-    return boxes
+        p = _region_prism(r, bounds)
+        if p is not None:
+            prisms.append(p)
+    for p in prisms:
+        if p["shape"] == "cyl":
+            p["r"] += margin_mm * 0.5
+        else:
+            p["box"][0] -= margin_mm * 0.5
+            p["box"][1] += margin_mm * 0.5
+    return prisms
 
 
 # --------------------------------------------------------------------------- #

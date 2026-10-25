@@ -6197,6 +6197,7 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
                     and (spec.optimize is None or not spec.optimize.enabled)
                 ):
                     spec.optimize = opt
+                intake_step.sanitize_load_cases(spec)
                 outcome.spec = spec.model_dump()
                 await ctx.emit("intake", 0, f"recovered {len(cases)} load case(s) missed by intake")
         # recovery may have replaced standard_parts — re-resolve thread

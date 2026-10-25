@@ -40,11 +40,168 @@ class _LoadCasesOut(BaseModel):
     optimize: OptimizeSpec | None = None
 
 
+_ANCHOR_INTENT_RE = re.compile(
+    r"\bm\d+\b|flange|corner|boss|seat|insert|tapped?|thread|gewinde|"
+    r"mount|plate|bracket|\barm\b|joint|rib|rim|lug|\bear\b",
+    re.IGNORECASE,
+)
+
+
+def _anchor_intent_tokens(text: str) -> set[str]:
+    """Distinctive tokens a case name / region description carries — bolt
+    sizes normalise to 'm<number>' to match anchor bolt_size/name."""
+    low = (text or "").lower()
+    out = {f"m{m}" for m in re.findall(r"\bm(\d+)\b", low)}
+    out |= {t.group(0).lower() for t in _ANCHOR_INTENT_RE.finditer(low)}
+    return out
+
+
+class _Rebinder:
+    """State for one `hole_index` rebind pass over a spec's load cases."""
+
+    def __init__(self, anchors: list[Any]) -> None:
+        self.anchors = anchors
+        self.n = len(anchors)
+        self.a_toks = [
+            _anchor_intent_tokens(f"{a.name or ''} {a.bolt_size or ''}") for a in anchors
+        ]
+        self.notes: list[str] = []
+
+    def _best_matches(self, tokens: set[str]) -> list[int]:
+        """Indices (1-based) of anchors sharing the most intent tokens."""
+        best = 0
+        out: list[int] = []
+        for i, t in enumerate(self.a_toks):
+            s = len(tokens & t)
+            if s > best:
+                best, out = s, [i + 1]
+            elif s == best and s:
+                out.append(i + 1)
+        return out
+
+    def _rebind(self, r: Any, where: str, *, is_fixed: bool) -> Any:
+        if r is None or getattr(r, "hole_index", None) is None:
+            return r
+        if str(getattr(r, "kind", "")) not in ("hole", "anchor", "bore"):
+            return r
+        idx = int(r.hole_index)
+        in_range = 1 <= idx <= self.n
+        # a case name describes the LOAD side ("arm load on flange holes") —
+        # fixtures named by it are coincidence: only out-of-range fixed
+        # refs get re-pointed; an in-range fixture stays where it is.
+        if is_fixed and in_range:
+            return r
+        cur = self.a_toks[idx - 1] if in_range else set()
+        tokens = _anchor_intent_tokens(f"{where} {getattr(r, 'description', '') or ''}")
+        if not tokens:
+            return r  # nothing to disambiguate by — trust the index
+        cur_score = len(tokens & cur)
+        matches = self._best_matches(tokens)
+        best_score = len(tokens & self.a_toks[matches[0] - 1]) if matches else 0
+        if best_score <= cur_score:
+            return r
+        names = ", ".join(f"#{i} '{self.anchors[i - 1].name}'" for i in matches[:4])
+        self.notes.append(
+            f"{where}: hole_index {idx} "
+            + ("out of range " if not in_range else "pointed at the wrong anchor ")
+            + f"(max {self.n}) — rebound to {names}"
+        )
+        return r.model_copy(update={"hole_index": matches[0]})
+
+    def _split(self, ld: Any, r: Any, where: str, matches: list[int]) -> list[Any]:
+        self.notes.append(
+            f"{where}: load split over anchors "
+            + ", ".join(f"#{m} '{self.anchors[m - 1].name}'" for m in matches[:4])
+        )
+        return [
+            ld.model_copy(update={"region": r.model_copy(update={"hole_index": m})})
+            for m in matches[:4]
+        ]
+
+    def _rebind_load(self, ld: Any, r: Any, where: str, case_name: str) -> list[Any]:
+        """One load entry → one-or-more rewritten entries (plural intent
+        splits across every anchor the text names)."""
+        tokens = _anchor_intent_tokens(f"{case_name} {r.description or ''}")
+        rebound = self._rebind(r, where, is_fixed=False)
+        # plural intent ("holes", "both", "all") + several matching anchors
+        # → one load entry per anchor — a single bore region can't span two
+        plural = bool(
+            re.search(
+                r"holes|bohrungen|both|all\b|beide",
+                f"{case_name} {r.description or ''}",
+                re.I,
+            )
+        )
+        anchor_ref = getattr(r, "hole_index", None) is not None and str(getattr(r, "kind", "")) in (
+            "hole",
+            "anchor",
+            "bore",
+        )
+        if rebound is r and anchor_ref:
+            matches = self._best_matches(tokens)
+            if plural and len(matches) > 1:
+                return self._split(ld, r, where, matches)
+        elif rebound is not r and plural:
+            extra = [m for m in self._best_matches(tokens) if m != rebound.hole_index]
+            if extra:
+                out = [ld.model_copy(update={"region": rebound})]
+                out += [
+                    ld.model_copy(update={"region": r.model_copy(update={"hole_index": m})})
+                    for m in extra[:3]
+                ]
+                return out
+        return [ld.model_copy(update={"region": rebound}) if rebound is not r else ld]
+
+    def run(self, spec: PartSpec) -> list[str]:
+        for case in spec.load_cases:
+            where = f"case '{case.name}'"
+            case.fixed = [self._rebind(r, where, is_fixed=True) for r in (case.fixed or [])]
+            new_loads: list[Any] = []
+            for ld in case.loads or []:
+                r = getattr(ld, "region", None)
+                if r is None:
+                    new_loads.append(ld)
+                    continue
+                new_loads += self._rebind_load(ld, r, where, case.name or "")
+            if new_loads:
+                case.loads = new_loads
+        if spec.optimize is not None:
+            spec.optimize.keep_regions = [
+                self._rebind(r, "keep_regions", is_fixed=False)
+                for r in (spec.optimize.keep_regions or [])
+            ]
+        return self.notes
+
+
+def rebind_case_anchors(spec: PartSpec) -> list[str]:
+    """Re-point load-case `hole_index` refs at the anchors they were meant for.
+
+    `hole_index` counts the spec's hole-like features top to bottom — a weak
+    model routinely miscounts (observed: `bore #8` on a 7-anchor part — dead
+    case — and `bore #4` for the M12 seat — a 15 N·m torque applied to a
+    corner mounting hole). The spec-order anchor table is authoritative:
+    when the case text names an anchor the index does NOT point at (e.g.
+    "M12"/"flange" in the case name vs the indexed anchor's feature name),
+    rewire it; a load naming several anchors splits into one entry each.
+    Out-of-range refs with no name match stay — the FEM warning is honest.
+    """
+    from cadx.agent.anchors import _spec_anchors
+
+    anchors = _spec_anchors(spec)
+    if not anchors:
+        return []
+    return _Rebinder(anchors).run(spec)
+
+
 def sanitize_load_cases(spec: PartSpec) -> None:
     """Drop degenerate cases (no supports and no loads) a weak model emits as
     `{"name":"","fixed":[],"loads":[]}` — truthy lists of those would skip the
     extraction fallback and produce unsolvable FEM runs. Also clamps bogus
-    negative case weights back to neutral."""
+    negative case weights back to neutral, and rebinds `hole_index` region
+    refs onto the anchors the case text actually names."""
+    for note in rebind_case_anchors(spec):
+        log.info("intake.case_anchor_rebound", note=note)
+        spec.assumptions = (spec.assumptions or []) + [note]
     kept: list[LoadCase] = []
     for c in spec.load_cases:
         if not c.fixed and not c.loads:
@@ -806,8 +963,30 @@ async def extract_load_cases(
     `load_cases` although the user described forces/optimization. Small
     one-shot call on prompt+spec — cheaper than re-running full intake.
     Also recovers the `optimize` block when intake left it empty."""
+    from cadx.agent.anchors import _spec_anchors
+
+    # the model cannot see the mesh — hand it the resolved anchor table so
+    # `hole_index` refs land on real anchors instead of a miscount
+    anchors = _spec_anchors(spec)
+    anchor_table = [
+        {
+            "hole_index": i + 1,
+            "name": a.name,
+            "kind": a.kind,
+            "axis": a.axis,
+            "dia": a.dia,
+            "pad_dia": a.pad_dia,
+            "bolt_size": a.bolt_size,
+            "pos": [round(p, 2) if p is not None else None for p in (a.pos or [a.x, a.y, a.z])],
+        }
+        for i, a in enumerate(anchors)
+    ]
     user_text = json.dumps(
-        {"prompt": ctx.prompt, "spec": spec.model_dump(exclude={"load_cases", "optimize"})},
+        {
+            "prompt": ctx.prompt,
+            "spec": spec.model_dump(exclude={"load_cases", "optimize"}),
+            "anchor_table": anchor_table,
+        },
         ensure_ascii=False,
     )
     messages: list[dict[str, Any]] = [

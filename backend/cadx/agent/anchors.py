@@ -118,6 +118,11 @@ class Anchor(BaseModel):
     bolt_size: str = ""  # matched spec feature standard, e.g. "M5"
     # full 3D in-plane position for non-+z anchors (axial coord may be None)
     pos: list[float | None] | None = None
+    # footprint of an enclosing spec boss/collar — a bore drilled through a
+    # Ø25 boss keeps the whole pad, not just its own ring. Drives the TopOpt
+    # keep-ring radius and the refine keep-prism size (NOT the bore wall —
+    # load regions still resolve on `dia`).
+    pad_dia: float | None = None
 
 
 class FeatureAnchors(BaseModel):
@@ -544,6 +549,50 @@ def _spec_bounds(spec: PartSpec) -> dict[str, tuple[float, float]] | None:
     }
 
 
+_BOSS_RE = re.compile(r"\bboss\b|bund|collar|nosse|sockel|nabe", re.IGNORECASE)
+
+
+def _spec_bosses(spec: PartSpec) -> list[tuple[float, float, float]]:
+    """``(x, y, dia)`` of spec boss/collar features — raised pads that carry a
+    bore through them. Only +z bores get pads: a side-face boss's footprint is
+    not an in-plane disc on the anchor's own plane."""
+    bounds = _spec_bounds(spec)
+    if bounds is None:
+        return []
+    out: list[tuple[float, float, float]] = []
+    for f in _independent_features(spec):
+        blob = f"{f.type or ''} {f.name or ''} {f.description or ''}".lower()
+        if not _BOSS_RE.search(blob):
+            continue
+        try:
+            dia = float((f.dims or {}).get("diameter") or (f.dims or {}).get("dia") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if dia <= 0:
+            continue
+        for x, y, _est in _spec_xy(f, bounds, dia):
+            out.append((x, y, dia))
+    return out
+
+
+def _stamp_boss_pads(spec: PartSpec, anchors: list[Anchor]) -> None:
+    """Set ``anchor.pad_dia`` for bores that sit inside a declared boss
+    footprint — their keep ring must cover the whole pad, otherwise TopOpt
+    eats the boss the bore depends on."""
+    bosses = _spec_bosses(spec)
+    if not bosses:
+        return
+    for a in anchors:
+        if str(a.axis or "+z").lstrip("+-") != "z":
+            continue
+        uv = _anchor_plane_uv(a)
+        if uv is None:
+            continue
+        for bx, by, bdia in bosses:
+            if float(np.hypot(uv[0] - bx, uv[1] - by)) <= bdia / 2.0 + 0.75:
+                a.pad_dia = max(float(a.pad_dia or 0.0), bdia)
+
+
 def _spec_anchors(spec: PartSpec) -> list[Anchor]:
     """Anchors synthesized from spec features with resolvable positions.
 
@@ -655,6 +704,7 @@ def _spec_anchors(spec: PartSpec) -> list[Anchor]:
                     bolt_size=bolt,
                 )
             )
+    _stamp_boss_pads(spec, out)
     return out
 
 
@@ -907,6 +957,10 @@ def build_anchors(  # noqa: C901
         anchors = ordered + [a for i, a in enumerate(anchors) if i not in claimed]
     for i, a in enumerate(anchors):
         a.index = i + 1
+
+    # measured-only anchors inside a declared boss footprint get the pad too
+    # (a spec anchor that merged onto a measured one inherits via max())
+    _stamp_boss_pads(spec, anchors)
 
     # typing runs AFTER the spec merge: a measured anchor may inherit a
     # feature's name/bolt_size/kind only on an axis+position match — never

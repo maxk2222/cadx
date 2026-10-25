@@ -122,8 +122,13 @@ Rules:
   silhouette (a flange's +x shoulder next to a thinner bar lands the load
   at the step, not the tip). Same for a clamped end face or symmetry cut —
   `plane` with `fix_mode` pins exactly that plane.
-  `anchor`/`hole`/`bore` = measured feature anchor via `hole_index` (bore =
-  the bore WALL — for bolt loads), `cylinder` = around an axis line
+  `anchor`/`hole`/`bore` = measured feature anchor via `hole_index`
+  (**1-based**: `hole_index:N` addresses the Nth hole-like feature — hole /
+  thread / insert / bore — in YOUR `features` list, counted top to bottom in
+  declaration order; bosses/ribs/blocks do NOT count. A tapped M12 bore that
+  is the 5th hole-like feature is `hole_index:5`, never 4 or 8 — count
+  carefully, an out-of-range index resolves to nothing and kills the case)
+  (bore = the bore WALL — for bolt loads), `cylinder` = around an axis line
   (`diameter_mm` + `center` hint), `box` = cube at `center`, `all` = whole part.
   Load fields: `force_n` [N], `pressure_mpa` (face regions), `bearing_n` +
   `bearing_dir` (shaft load on a bore wall), `preload_n` (bolt pretension),

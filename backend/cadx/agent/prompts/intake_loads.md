@@ -1,6 +1,11 @@
 You extract STRUCTURAL LOAD CASES for FEM verification / topology optimization.
 
-Input (JSON): {"prompt": <original user request>, "spec": <the extracted PartSpec>}.
+Input (JSON): {"prompt": <original user request>, "spec": <the extracted PartSpec>,
+"anchor_table": [{"hole_index": 1..n, "name", "kind", "axis", "dia", "pos"}]}.
+`anchor_table` is the RESOLVED, already-enumerated anchor list: `hole_index`
+is **1-based** into exactly this table — never count spec features yourself,
+never emit an index outside `1..len(anchor_table)`. To target e.g. the M12
+bore, find the row whose name/bolt_size says M12 and use its hole_index.
 The first pass produced no `load_cases` — but the user described forces,
 mounting or optimization. Derive the missing load cases NOW.
 
@@ -10,9 +15,9 @@ Rules:
   given, convert (1 kg ≈ 10 N) and add the part's own weight via
   `g_load: [0,0,-1]` when gravity matters.
 - `fixed` regions = where the part is held/screwed/clamped. Prefer
-  `{"kind": "hole", "hole_index": N}` when the spec lists mounting holes —
-  the Nth hole-type feature in spec declaration order, **1-based** (spec
-  holes #1..#n — an out-of-range index resolves to nothing). `fix_mode:
+  `{"kind": "hole", "hole_index": N}` — N is the row number in
+  `anchor_table`, **1-based** (an out-of-range index resolves to nothing
+  and kills the case). `fix_mode:
   "all"` (encastre) is
   the default; `"normal"` = roller/resting contact. For EXACT planes the
   prompt states (a clamped end face, a symmetry cut, a knife-edge
@@ -24,8 +29,8 @@ Rules:
   whole-part fixture freezes the entire domain and makes optimization
   meaningless; pick the actual contact surface or holes.
 - `loads[].region` = where the force attacks. A `bore`/`hole` region also
-  uses `hole_index` — the same 1-based spec-order count as `fixed` (count
-  the spec's `type:"hole"` features, top to bottom). To load TWO holes of
+  uses `hole_index` — the same 1-based `anchor_table` row number as
+  `fixed` (never count features; use the table). To load TWO holes of
   one flange emit two `loads` entries, one per index — one region can't
   span two bores. For an exact END FACE — the
   tip face, "Stirnfläche", "the +X end" — use `{"kind":"plane","axis":"+x"}`:
