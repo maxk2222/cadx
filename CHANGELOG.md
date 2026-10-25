@@ -4,6 +4,49 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-alpha.2] - 2026-10-25
+
+End-to-end validated on the live Docker stack: the `robot_arm_mount` eval
+case (codegen → FEM → TopOpt → refine → export) passes all gates, including
+the FEM verify on the refined mesh.
+
+### Added
+
+- Anchor `pad_dia` + boss detection: TopOpt auto-keeps now preserve boss
+  discs and bore rings as round prisms instead of rectangular patches.
+- Load-case anchor rebinding: out-of-range or semantically mismatched
+  `hole_index` references are deterministically rebound to the correct
+  anchors; anchor tables are injected into the load-extraction prompt.
+- Refine verify FEM anchored on the *refined* mesh: bore/anchor regions
+  bind by (axis, dia, center) hint without `hole_index`.
+- `eval_mode` flag so eval runs never park on `waiting_for_input`.
+- Version list UI: parts grouped, newest-first ordering.
+- EvalKit: `fem_loadcases` gate with couple-magnitude weighting and
+  `moment_mag_nm` band check; `depth_class` filter + axis-correct
+  positions for hole gates.
+
+### Fixed
+
+- `_effective_dia` no longer subtracts the thread pitch twice from an
+  already-declared pilot/tap-drill diameter (M12 bore restored to nominal).
+- Rim-fit hole measurement interpolates the 50%-blocked ring crossing
+  instead of the last fully-clear ring — under-measurement of bores next
+  to occluding geometry (e.g. flange bores near the boss) fixed.
+- Load-case region categories corrected: `g_load` binds to `all` (body
+  force, not skin), broad fixtures with ≥2 mount holes rebind to the
+  mount holes, moments rebind to threaded anchors; passive pinning now
+  skips `g_load`/`all` regions consistently (incl. resample path).
+- Refine channel plugs run before drills + through-channel sweep;
+  signed entry axes for declared features (bottom-face taps).
+- Queue-side refine timeout now counts exec-class feature finishing
+  alongside FEM + STEP export stages.
+- Mesh `_ensure_watertight` stitches hairline boundary cracks.
+
+### Changed
+
+- `intake_loads`/`intake_system`/`codegen_system` prompts: anchor tables,
+  envelope-overlap rule, forbidden load/fixture anti-patterns.
+
 ## [0.1.0-alpha.1] - 2026-10-25
 
 First public alpha — local, single-user CAD agent that turns images and text
