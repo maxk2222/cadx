@@ -33,12 +33,12 @@
         {
           "name": "tip_load",
           "fixed": [
-            { "kind": "cylinder", "axis": "z", "center": [25, 20, 3], "diameter_mm": 10, "margin_mm": 3 },
-            { "kind": "cylinder", "axis": "z", "center": [25, -20, 3], "diameter_mm": 10, "margin_mm": 3 }
+            { "kind": "cylinder", "axis": "z", "center": [25, 20, 3], "diameter_mm": 10, "margin_mm": 3, "z_range": [0, 6], "description": "bolt ring in the base plate" },
+            { "kind": "cylinder", "axis": "z", "center": [25, -20, 3], "diameter_mm": 10, "margin_mm": 3, "z_range": [0, 6], "description": "bolt ring in the base plate" }
           ],
           "loads": [
             {
-              "region": { "kind": "face", "axis": "+z", "margin_mm": 2 },
+              "region": { "kind": "face", "axis": "+z", "margin_mm": 2, "z_range": [60, 66], "description": "upright top edge — the bracket tip" },
               "force_n": [0, 0, -500]
             }
           ]
@@ -46,7 +46,30 @@
       ],
       "gates": [
         { "type": "status", "expect": ["succeeded"] },
-        { "type": "fem", "field": "sf", "min": 1.0 }
+        { "type": "fem", "field": "sf", "min": 1.0 },
+        {
+          "type": "fem_loadcases",
+          "min_cases": 1,
+          "checks": [
+            {
+              "case": 0,
+              "resultant_n": { "min": 400, "max": 600 },
+              "resultant_dir": [0, 0, -1],
+              "dir_tol_deg": 30,
+              "load_at_axis": "+z",
+              "fixed_centroid_mm": [25, 0, 3],
+              "tol_mm": 10,
+              "warnings_absent": [
+                "no fixed region",
+                "resolved to zero",
+                "unsolvable",
+                "point-load"
+              ],
+              "sf_min": 1.0,
+              "sf_max": 60
+            }
+          ]
+        }
       ]
     },
     {
