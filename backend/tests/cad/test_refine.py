@@ -521,6 +521,24 @@ def test_restore_keep_surface_cylinder_unsigned_axis():
     assert out.volume > opt.volume
 
 
+def test_entry_face_ring_seats_on_mouth_face_not_interior_seal():
+    """A blind channel whose mouth is open but plugged deeper inside:
+    the centre ray hits the plug (z≈6), the face around the mouth is at
+    z=0 — the ring probe must seat the entry on the surrounding face."""
+    from cadx.cad.fem.refine import _entry_face_ring, _entry_point
+
+    base = _box()
+    # blind channel Ø6 opening at z=0, then a plug from z=6 up
+    chan = trimesh.creation.cylinder(radius=3.0, height=6.0, sections=32)
+    chan.apply_translation([25.0, 10.0, 3.0])
+    opt = base.difference(chan, engine="manifold")
+    # centre ray first-hits the plug floor at z≈6
+    centre = _entry_point(opt, "-z", 25.0, 10.0)
+    assert centre == pytest.approx(6.0, abs=0.5)
+    ring = _entry_face_ring(opt, "-z", 25.0, 10.0, 4.5)
+    assert ring == pytest.approx(0.0, abs=0.3)
+
+
 # --------------------------------------------------------------------------- #
 # re-cut snap / dedup — the "double hole" defect                                #
 # --------------------------------------------------------------------------- #

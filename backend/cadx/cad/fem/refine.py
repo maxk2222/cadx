@@ -740,6 +740,30 @@ def _entry_point(mesh: trimesh.Trimesh, axis: str, u: float, v: float) -> float 
     return float(locs[:, ax].max() if axis[0] == "+" else locs[:, ax].min())
 
 
+def _entry_face_ring(
+    mesh: trimesh.Trimesh, axis: str, u: float, v: float, r_probe: float
+) -> float | None:
+    """Median surface coordinate on a ray ring just outside the cutter.
+
+    The centre-ray entry can land on an *interior* surface — a blind-hole
+    channel sealed by iso-extraction bulge still has open void below it, so
+    the first hit sits mid-part (observed: -z tap seated at z=6.5 on the
+    seal instead of the z=0 pad → cut twice as deep as declared). The face
+    the feature opens on is carried by the material AROUND the mouth;
+    sampling a ring outside the cutter radius returns that face."""
+    hits: list[float] = []
+    for ang in np.linspace(0.0, 2.0 * np.pi, 12, endpoint=False):
+        e = _entry_point(
+            mesh,
+            axis,
+            u + r_probe * math.cos(ang),
+            v + r_probe * math.sin(ang),
+        )
+        if e is not None:
+            hits.append(e)
+    return float(np.median(hits)) if hits else None
+
+
 def _effective_dia(feat: RefineFeature) -> float:
     """Diameter actually cut — tap-drill (D - pitch) for threads.
 
@@ -1922,6 +1946,12 @@ def _apply_cut(
         entry = entry_override
     else:
         entry = _entry_point(out, feat.axis, feat.u, feat.v)
+        ring = _entry_face_ring(out, feat.axis, feat.u, feat.v, feat.dia * 0.5 + 1.5)
+        if ring is not None and (entry is None or (feat.axis[0] == "-" and ring < entry) or (feat.axis[0] == "+" and ring > entry)):
+            # the face around the mouth sits further out than whatever the
+            # centre ray hit — the ray landed on an interior seal/ledge, not
+            # on the surface the feature opens from
+            entry = ring
         if entry is not None and feat.through and _tunnel_open_mesh(out, feat.u, feat.v, feat.axis):
             # centre ray pierced an already-open tunnel — the entry it found
             # sits on unrelated material BEHIND the channel; a through
