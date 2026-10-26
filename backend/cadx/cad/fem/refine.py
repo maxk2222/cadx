@@ -472,11 +472,14 @@ def resolve_refine_features(  # noqa: C901
             v=uv[1],
             dia=dia,
             depth_mm=dims.get("depth") or (a.get("depth_mm") or None),
-            # a scanned hole/tunnel is a real through-void; a dimple/pocket
-            # or an explicit depth override is a genuine blind stop
+            # a scanned hole/tunnel is a real through-void; a dimple/pocket,
+            # a `blind` marker or an explicit spec depth is a genuine blind
+            # stop (scanned anchors always carry depth_mm — tunnels too —
+            # so depth alone cannot decide)
             through=(
                 str(a.get("kind") or "hole") not in ("dimple", "pocket", "insert")
-                and dims.get("depth") is None
+                and not a.get("blind")
+                and (dims.get("depth") if dims else None) is None
             ),
             csk_dia=dims.get("countersink_diameter"),
             csk_angle_deg=float(dims.get("countersink_angle") or 90.0),
@@ -691,6 +694,20 @@ def resolve_refine_features(  # noqa: C901
                 f.admit_on_material = True
                 deferred.append(f.name)
                 feats.append(f)
+                continue
+            # blind scan anchor (bottom-face tap / deep dimple — the tunnel
+            # probe can never see it): admit only when probe_blind_features
+            # finds a REAL cavity in the pre-optimization mesh; mesh noise
+            # must never trigger drilling
+            if a.get("blind") or not f.through:
+                _probe = getattr(anchors3d, "probe_blind_features", None)
+                probe = _probe(base_mesh, [a]) if _probe else []
+                if probe and probe[0].get("found"):
+                    f.through = False
+                    f.source = f"{f.source}+probe"
+                    feats.append(f)
+                    continue
+                no_tunnel.append(f.name)
                 continue
             # scanned anchor with no real through-feature in the
             # pre-optimization part — a surface dimple / noise void, not a

@@ -115,7 +115,7 @@ class Feature(BaseModel):
     # older specs/fixtures still parse
     centers: list[FeatureCenter] = Field(default_factory=list, max_length=24)
     axis: Annotated[str, Field(max_length=8)] = (
-        ""  # x|y|z — direction a hole goes through / a slope or taper varies along
+        ""  # x|y|z (or signed +x|-x|...|-z for the entry face) — direction a hole goes through / a slope or taper varies along
     )
     count: int = 1
     source: Annotated[str, Field(max_length=16)] = "stated"
@@ -268,6 +268,14 @@ class RegionSpec(BaseModel):
     fix_mode: Literal["all", "normal"] = "all"  # encastre vs roller/symmetry (fixed regions)
     material: Annotated[str, Field(max_length=40)] = ""  # material override (keep zones)
     description: M = ""  # human label, e.g. "mounting holes"
+    attach: dict[str, Any] | None = Field(
+        default=None
+    )  # named-interface sugar: {"name": "M8 tap left"} or
+    # {"hole_index": 2} or {"kind": "tap", "dia": 6.8, "pos": [x,y,z]} —
+    # expands to a hole/bore region bound to the resolved anchor
+    # (deterministic; unresolvable attaches fail loudly, never fall back to
+    # a wrong face). PREFERRED over hand-rolled cylinder/face regions for
+    # fastener/bearing interfaces.
 
     @model_validator(mode="after")
     def _axis_from_description(self) -> Self:
@@ -356,6 +364,40 @@ class LoadSpec(BaseModel):
         # (legacy); "area" = weighted by each node's exposed-skin share
         # (physical surface traction; works on bore walls too)
     )
+    # --- named-interface sugar ------------------------------------------------
+    # mechanism + attach on `region.attach` let the agent pick the INTERFACE
+    # ("the bearing bore", "the M8 tap") and the MECHANISM; the resolver maps
+    # it onto the correct standard application surface automatically
+    # (bore wall for bearing/radial, bore mouths for clamp preload, etc.):
+    # - clamp        bolt pretension: compressive axial pair on the two bore
+    #                mouths → preload_n = value_n
+    # - axial_pull   axial tension pulling the fastener OUT of its feature
+    #                (toward the entry face) → force_n = axis·value_n on the
+    #                bore wall
+    # - axial_push   axial compression INTO the part → force_n = -axis·value_n
+    # - bearing/radial shaft load on a bore/seat → bearing_n = value_n with
+    #                bearing_dir = dir on the bore wall
+    # - torque       pure couple around the feature axis → moment_nm =
+    #                axis·value_nm (threaded/seated features only)
+    # - press        pressure pushing INTO the interface → normal_force_n =
+    #                value_n on the feature surface
+    # - shear        transverse force → force_n = dir·value_n on the bore wall
+    mechanism: (
+        Literal[
+            "clamp",
+            "axial_pull",
+            "axial_push",
+            "radial",
+            "bearing",
+            "torque",
+            "press",
+            "shear",
+        ]
+        | None
+    ) = None
+    value_n: float | None = None  # mechanism magnitude (N)
+    value_nm: float | None = None  # mechanism magnitude for torque (N·m)
+    dir: list[float] = Field(default_factory=list, max_length=3)  # mechanism dir (bearing/shear)
 
 
 class LoadCase(BaseModel):

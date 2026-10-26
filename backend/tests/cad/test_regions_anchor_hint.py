@@ -141,3 +141,259 @@ def test_bearing_n_hint_miss_warns_not_binds(domain) -> None:
     _fixed3, _F, warnings = resolve_case_dofs(domain, case, _ANCHORS, applied_out=applied)
     assert any("bearing_n" in w for w in warnings)
     assert not applied or "bearing_n" not in applied[0]["mechanisms"]
+
+
+# --- interface_regions: unified keep/void protection per fastener anchor -----
+
+from cadx.cad.fem.regions import interface_regions  # noqa: E402
+
+
+def test_interface_regions_blind_signed_axis() -> None:
+    """A -z blind tap (bottom-face M8: mouth z=0, depth 10, feature mid
+    z=5) must emit a keep ring, a bounded void and a floor slab — never a
+    full-height shaft."""
+    anchors = [
+        {
+            "kind": "tap",
+            "index": 1,
+            "name": "M8",
+            "axis": "-z",
+            "pos": [-46.0, 22.0, 5.0],
+            "dia": 6.8,
+            "depth_mm": 10.0,
+            "blind": True,
+            "source": "spec",
+        }
+    ]
+    keeps, voids = interface_regions(anchors, margin_mm=3.0)
+    assert len(voids) == 1
+    void = voids[0]
+    assert void.kind == "cylinder" and void.axis == "-z"
+    assert void.diameter_mm == pytest.approx(6.8 * 0.9)
+    assert sorted(void.z_range) == [pytest.approx(0.0), pytest.approx(10.0)]
+    # keep ring binds the anchor by index; blind floor slab sits behind the
+    # bore bottom (bottom = axc - sgn*depth/2 = 5 + 5 = 10; slab [10, 13])
+    assert any(k.kind == "hole" and k.hole_index == 1 for k in keeps)
+    slabs = [k for k in keeps if k.kind == "cylinder"]
+    assert len(slabs) == 1
+    assert sorted(slabs[0].z_range) == [pytest.approx(10.0), pytest.approx(13.0)]
+
+
+def test_interface_regions_tunnel_no_slab() -> None:
+    """Through tunnels get keep+void but no floor slab."""
+    anchors = [
+        {
+            "kind": "tunnel",
+            "index": 1,
+            "axis": "+y",
+            "pos": [0.0, 0.0, 65.0],
+            "dia": 30.0,
+            "depth_mm": 70.0,
+            "source": "scan+spec",
+        }
+    ]
+    keeps, voids = interface_regions(anchors, margin_mm=3.0)
+    assert [k.kind for k in keeps] == ["hole"]
+    assert len(voids) == 1
+    # z_range bounds the CYLINDER AXIS coordinate — for a +y tunnel that is
+    # the y span (pos[1]=0 ± 70/2), not literal z
+    assert sorted(voids[0].z_range) == [pytest.approx(-35.0), pytest.approx(35.0)]
+
+
+def test_interface_regions_spec_only_filter() -> None:
+    """spec_only restricts protection to spec-sourced anchors — pure
+    scan/mesh extras stay designable; unmarked anchors err on protection."""
+    anchors = [
+        {"kind": "hole", "index": 1, "axis": "+z", "pos": [0, 0, 5], "dia": 5.0, "source": "spec"},
+        {"kind": "hole", "index": 2, "axis": "+z", "pos": [9, 9, 5], "dia": 5.0, "source": "scan"},
+        {
+            "kind": "pocket",
+            "index": 3,
+            "axis": "+z",
+            "pos": [3, 3, 5],
+            "dia": 9.0,
+            "source": "scan",
+        },
+        {"kind": "hole", "index": 4, "axis": "+z", "pos": [-9, -9, 5], "dia": 4.0},
+    ]
+    keeps, voids = interface_regions(anchors, margin_mm=3.0, spec_only=True)
+    assert all(k.hole_index in (1, 4) for k in keeps)
+    assert len(voids) == 2
+    # without spec_only the scan hole is protected too, the pocket never is
+    keeps_all, voids_all = interface_regions(anchors, margin_mm=3.0)
+    assert {k.hole_index for k in keeps_all} == {1, 2, 4}
+    assert len(voids_all) == 3
+
+
+# --- expand_attaches: attach/mechanism sugar → concrete regions -------------
+
+from cadx.cad.fem.regions import expand_attaches  # noqa: E402
+
+_ATT_ANCHORS = [
+    {
+        "kind": "tap",
+        "index": 1,
+        "name": "M8 tap left",
+        "axis": "-z",
+        "pos": [-46.0, 22.0, 5.0],
+        "x": -46.0,
+        "y": 22.0,
+        "dia": 6.8,
+        "depth_mm": 10.0,
+        "blind": True,
+        "source": "spec",
+    },
+    {
+        "kind": "bearing_seat",
+        "index": 2,
+        "name": "bearing bore",
+        "axis": "+y",
+        "pos": [0.0, 0.0, 65.0],
+        "dia": 30.0,
+        "depth_mm": 20.0,
+        "source": "spec+scan",
+    },
+]
+
+
+def test_expand_attaches_fixed_hole_index() -> None:
+    case = LoadCase(
+        name="mounts",
+        fixed=[RegionSpec(attach={"name": "m8 tap left"})],
+        loads=[],
+    )
+    out, warnings = expand_attaches(case, _ATT_ANCHORS)
+    r = out.fixed[0]
+    assert r.kind == "hole" and r.hole_index == 1 and r.axis == "-z"
+    assert r.attach is None
+    assert any("anchor #1" in w for w in warnings)
+
+
+def test_expand_attaches_bearing_mechanism() -> None:
+    case = LoadCase(
+        name="radial",
+        fixed=[RegionSpec(kind="face", axis="-z")],
+        loads=[
+            LoadSpec(
+                region=RegionSpec(attach={"name": "bearing"}),
+                mechanism="bearing",
+                value_n=8000.0,
+                dir=[0, 0, -1],
+            )
+        ],
+    )
+    out, _warnings = expand_attaches(case, _ATT_ANCHORS)
+    ld = out.loads[0]
+    assert ld.region.kind == "bore" and ld.region.hole_index == 2
+    assert ld.bearing_n == 8000.0 and ld.bearing_dir == [0, 0, -1]
+    assert ld.mechanism is None
+
+
+def test_expand_attaches_clamp_and_axial_pull() -> None:
+    case = LoadCase(
+        name="bolt",
+        fixed=[RegionSpec(kind="face", axis="-z")],
+        loads=[
+            LoadSpec(
+                region=RegionSpec(attach={"hole_index": 1}),
+                mechanism="clamp",
+                value_n=3500.0,
+            ),
+            LoadSpec(
+                region=RegionSpec(attach={"hole_index": 1}),
+                mechanism="axial_pull",
+                value_n=1200.0,
+            ),
+        ],
+    )
+    out, _ = expand_attaches(case, _ATT_ANCHORS)
+    clamp, pull = out.loads
+    # clamp keeps the material-ring region and sets preload
+    assert clamp.region.kind == "hole" and clamp.preload_n == 3500.0
+    # pull on a -z tap: force points toward the entry face (-z)
+    assert pull.region.kind == "bore"
+    assert pull.force_n == pytest.approx([0.0, 0.0, -1200.0])
+
+
+def test_expand_attaches_axial_push_and_torque() -> None:
+    case = LoadCase(
+        name="t",
+        fixed=[RegionSpec(kind="face", axis="-z")],
+        loads=[
+            LoadSpec(
+                region=RegionSpec(attach={"hole_index": 2}),
+                mechanism="axial_push",
+                value_n=900.0,
+            ),
+            LoadSpec(
+                region=RegionSpec(attach={"hole_index": 2}),
+                mechanism="torque",
+                value_nm=4.0,
+            ),
+        ],
+    )
+    out, warnings = expand_attaches(case, _ATT_ANCHORS)
+    push, tor = out.loads
+    # push into the part on a +y bore: -y
+    assert push.force_n == pytest.approx([0.0, -900.0, 0.0])
+    # torque around the +y feature axis on a bearing seat — allowed kind
+    assert tor.moment_nm == pytest.approx([0.0, 4.0, 0.0])
+    assert not any("torque" in w for w in warnings)
+
+
+def test_expand_attaches_torque_rejects_plain_hole() -> None:
+    anchors = [dict(_ATT_ANCHORS[0], kind="hole")]
+    case = LoadCase(
+        name="t",
+        fixed=[RegionSpec(kind="face", axis="-z")],
+        loads=[
+            LoadSpec(
+                region=RegionSpec(attach={"hole_index": 1}),
+                mechanism="torque",
+                value_nm=4.0,
+            )
+        ],
+    )
+    out, warnings = expand_attaches(case, anchors)
+    assert out.loads[0].moment_nm == []  # not expanded
+    assert any("torque" in w and "threaded" in w for w in warnings)
+
+
+def test_expand_attaches_unresolvable_fails_loud() -> None:
+    """An attach that matches nothing must not bind a wrong surface — the
+    expanded hole_index lands out of range so the region resolves empty and
+    the unresolved-region checks fire."""
+    case = LoadCase(
+        name="x",
+        fixed=[RegionSpec(attach={"name": "no-such-feature"})],
+        loads=[],
+    )
+    out, warnings = expand_attaches(case, _ATT_ANCHORS)
+    assert any("unresolvable" in w for w in warnings)
+    assert out.fixed[0].hole_index == len(_ATT_ANCHORS) + 999
+
+
+def test_expand_attaches_ambiguous_name_warns() -> None:
+    anchors = [
+        *_ATT_ANCHORS,
+        dict(_ATT_ANCHORS[0], index=3, name="M8 tap right", pos=[46.0, 22.0, 5.0]),
+    ]
+    case = LoadCase(
+        name="x",
+        fixed=[RegionSpec(attach={"name": "m8 tap"})],
+        loads=[],
+    )
+    out, warnings = expand_attaches(case, anchors)
+    assert any("ambiguous" in w for w in warnings)
+    assert out.fixed[0].hole_index == len(anchors) + 999
+
+
+def test_expand_attaches_pos_hint() -> None:
+    case = LoadCase(
+        name="x",
+        fixed=[RegionSpec(attach={"pos": [-46.5, 22.3, 0], "axis": "-z", "dia": 6.8})],
+        loads=[],
+    )
+    out, warnings = expand_attaches(case, _ATT_ANCHORS)
+    assert out.fixed[0].hole_index == 1
+    assert any("anchor #1" in w for w in warnings)

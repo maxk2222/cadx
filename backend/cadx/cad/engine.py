@@ -2274,8 +2274,6 @@ def run_topopt_pipeline(  # noqa: C901
     from cadx.cad.fem.loadpath import loadpath_field
     from cadx.cad.fem.preview import render_regions
     from cadx.cad.fem.regions import (
-        auto_keep_regions,
-        auto_void_regions,
         empty_region_warnings,
         keep_element_mask,
         material_cell_factors,
@@ -2283,7 +2281,7 @@ def run_topopt_pipeline(  # noqa: C901
     )
     from cadx.cad.fem.topopt import TopOptParams, passive_solid_mask, simp
     from cadx.cad.fem.voxelize import dilate_solid, grid_bounds_mm, snapped_pitch, voxelize
-    from cadx.llm.schemas import LoadCase, OptimizeSpec
+    from cadx.llm.schemas import LoadCase, OptimizeSpec, RegionSpec
 
     res = ExecResult()
     s = runtime or RuntimeSettings()
@@ -2540,16 +2538,23 @@ def run_topopt_pipeline(  # noqa: C901
         return res
 
     # --- non-design zones ----------------------------------------------------
+    # interface protection: every fastener anchor (declared bore/tap/insert/
+    # bearing seat) gets a bounded keep ring + channel void + blind-floor
+    # slab via interface_regions. keep_mode="auto" protects all of them;
+    # "manual" + the runtime flag still protects the SPEC-DECLARED ones
+    # (scan extras stay designable — the declared interface contract is not
+    # negotiable).
     keep_list = list(opt.keep_regions)
-    # the runtime `topopt_auto_keep` flag (default on) is the opt-out:
-    # keep_mode="manual" still gets anchor keeps on top of declared regions
-    # unless the flag disables them; "auto" requests them explicitly
     n_auto_keeps = 0
-    if anchors and (opt.keep_mode == "auto" or (opt.keep_mode == "manual" and s.topopt_auto_keep)):
+    auto_interface_voids: list[RegionSpec] = []
+    if anchors and (opt.keep_mode == "auto" or s.topopt_auto_keep):
+        from cadx.cad.fem.regions import interface_regions
+
         margin = opt.auto_keep_margin_mm or s.topopt_auto_keep_margin_mm
-        auto_keeps = auto_keep_regions(anchors, margin)
-        keep_list += auto_keeps
-        n_auto_keeps = len(auto_keeps)
+        ik, iv = interface_regions(anchors, margin, spec_only=(opt.keep_mode != "auto"))
+        keep_list += ik
+        auto_interface_voids = iv
+        n_auto_keeps = len(ik)
     res.topopt["auto_keep_applied"] = bool(n_auto_keeps)
     res.topopt.setdefault("warnings", []).extend(
         empty_region_warnings(part_domain, keep_list, anchors)
@@ -2571,12 +2576,10 @@ def run_topopt_pipeline(  # noqa: C901
         ).ravel()
     except Exception:
         pass
-    void_list = list(opt.void_regions)
-    if grow_mm > 0:
-        # grown cells are designable — without an explicit void they let the
-        # optimizer fill anchored bores back up
-        void_list += auto_void_regions(anchors)
-    void_cells = keep_element_mask(part_domain, void_list, anchors)
+    void_list = list(opt.void_regions) + auto_interface_voids
+    # voids resolve on the DESIGN domain — grown ring cells inside a bore
+    # channel must stay empty too (part_domain only sees original solid)
+    void_cells = keep_element_mask(design_domain, void_list, anchors)
     # passive pins run on the DESIGN domain: grown cells sharing a
     # fix/load node stay material — the load-introduction patch can use
     # the extra design space (masks share the grid, resolved on the part)
@@ -2604,6 +2607,18 @@ def run_topopt_pipeline(  # noqa: C901
         "fixed_load_cells": int(passive.sum()) - keep_in_passive,
         "void_cells": int(void_cells.sum()),
         "design_cells": nsolid,
+        # cells the auto interface protection pinned — the answer to "did
+        # the declared interfaces get their ring", distinct from the case
+        # regions and hand-declared keeps
+        "auto_interface_cells": int(
+            keep_element_mask(
+                part_domain,
+                [r for r in keep_list if str(r.description or "").startswith("auto-keep")],
+                anchors,
+            ).sum()
+        )
+        if n_auto_keeps
+        else 0,
         "per_keep_region": [
             {
                 "kind": r.kind,
@@ -3745,14 +3760,13 @@ def run_infill_pipeline(  # noqa: C901
     from cadx.cad.fem.materials import resolve_material
     from cadx.cad.fem.preview import render_regions
     from cadx.cad.fem.regions import (
-        auto_keep_regions,
         empty_region_warnings,
         keep_element_mask,
         material_cell_factors,
     )
     from cadx.cad.fem.topopt import TopOptParams, passive_solid_mask, simp
     from cadx.cad.fem.voxelize import grid_bounds_mm, snapped_pitch, voxelize
-    from cadx.llm.schemas import LoadCase, OptimizeSpec
+    from cadx.llm.schemas import LoadCase, OptimizeSpec, RegionSpec
 
     res = ExecResult()
     s = runtime or RuntimeSettings()
@@ -3897,15 +3911,19 @@ def run_infill_pipeline(  # noqa: C901
         return res
 
     keep_list = list(opt.keep_regions)
-    if anchors and (opt.keep_mode == "auto" or (opt.keep_mode == "manual" and s.topopt_auto_keep)):
+    iface_voids: list[RegionSpec] = []
+    if anchors and (opt.keep_mode == "auto" or s.topopt_auto_keep):
+        from cadx.cad.fem.regions import interface_regions
+
         margin = opt.auto_keep_margin_mm or s.topopt_auto_keep_margin_mm
-        keep_list += auto_keep_regions(anchors, margin)
+        ik, iface_voids = interface_regions(anchors, margin, spec_only=(opt.keep_mode != "auto"))
+        keep_list += ik
     res.topopt.setdefault("warnings", []).extend(empty_region_warnings(domain, keep_list, anchors))
     res.topopt.setdefault("warnings", []).extend(
         empty_region_warnings(domain, list(opt.void_regions), anchors)
     )
     keep_cells = keep_element_mask(domain, keep_list, anchors)
-    void_cells = keep_element_mask(domain, list(opt.void_regions), anchors)
+    void_cells = keep_element_mask(domain, list(opt.void_regions) + iface_voids, anchors)
     passive = passive_solid_mask(domain, [keep_cells], fixed_node_masks, load_node_masks)
 
     res.topopt["regions_png"] = render_regions(
@@ -4952,14 +4970,13 @@ def run_topopt_resample(  # noqa: C901
     from cadx.cad.fem.extract import density_to_mesh
     from cadx.cad.fem.materials import resolve_material
     from cadx.cad.fem.regions import (
-        auto_keep_regions,
         keep_element_mask,
         region_node_mask,
         resolve_case_dofs,
     )
     from cadx.cad.fem.topopt import passive_solid_mask
     from cadx.cad.fem.voxelize import VoxelDomain
-    from cadx.llm.schemas import LoadCase, OptimizeSpec
+    from cadx.llm.schemas import LoadCase, OptimizeSpec, RegionSpec
 
     res = ExecResult()
     s = runtime or RuntimeSettings()
@@ -5013,14 +5030,18 @@ def run_topopt_resample(  # noqa: C901
             if _load_pins_nodes(ld):
                 load_node_masks.append(region_node_mask(domain, ld.region, anchors))
     keep_list = list(opt.keep_regions)
-    # same auto-keep rule as run_topopt_pipeline: keep_mode="manual" only
-    # opts out via the runtime `topopt_auto_keep` flag
+    # same interface-protection rule as run_topopt_pipeline: keep_mode="auto"
+    # covers every fastener anchor, "manual" protects spec-declared ones when
+    # the runtime flag is on; scan extras stay designable
     n_auto_keeps = 0
-    if anchors and (opt.keep_mode == "auto" or (opt.keep_mode == "manual" and s.topopt_auto_keep)):
+    iface_voids: list[RegionSpec] = []
+    if anchors and (opt.keep_mode == "auto" or s.topopt_auto_keep):
+        from cadx.cad.fem.regions import interface_regions
+
         margin = opt.auto_keep_margin_mm or s.topopt_auto_keep_margin_mm
-        auto_keeps = auto_keep_regions(anchors, margin)
-        keep_list += auto_keeps
-        n_auto_keeps = len(auto_keeps)
+        ik, iface_voids = interface_regions(anchors, margin, spec_only=(opt.keep_mode != "auto"))
+        keep_list += ik
+        n_auto_keeps = len(ik)
     res.topopt["auto_keep_applied"] = bool(n_auto_keeps)
     keep_cells = keep_element_mask(domain, keep_list, anchors)
     passive = passive_solid_mask(domain, [keep_cells], fixed_node_masks, load_node_masks)
@@ -5036,8 +5057,8 @@ def run_topopt_resample(  # noqa: C901
     void_flat: np.ndarray | None = None
     if "voids" in npz:
         void_flat = np.asarray(npz["voids"], dtype=bool).ravel()
-    elif opt.void_regions:
-        void_flat = keep_element_mask(domain, list(opt.void_regions), anchors)
+    elif opt.void_regions or iface_voids:
+        void_flat = keep_element_mask(domain, list(opt.void_regions) + iface_voids, anchors)
 
     try:
         opt_mesh, final_mask, extract_warnings, n_components, extract_info = density_to_mesh(

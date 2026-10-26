@@ -75,10 +75,14 @@ class Anchor(BaseModel):
     """Measured hole/feature anchor in mm (part frame, origin = bbox center).
 
     `axis` is the bore/feature axis — "+z" for the classic top-view holes; the
-    FEM mesh scan (`cad.fem.anchors3d`) also reports +x/+y side anchors. `z`
-    is the centre coordinate along the bore axis (unset = part mid-depth).
-    `kind`/`bolt_size` type the feature when spec.features match (thread,
-    heatset insert, bearing seat...); FEM keep/bearing logic uses them.
+    FEM mesh scan (`cad.fem.anchors3d`) also reports ±x/±y/-z anchors. The
+    SIGN selects the entry face the feature opens on ("-z" = bottom face) —
+    it is load-bearing for blind features and the deterministic re-cut. `z`
+    (legacy) and `pos[ax]` carry the centre coordinate along the bore axis —
+    for blind features the FEATURE mid (mouth + depth/2), for tunnels the
+    pierced wall's mid. `kind`/`bolt_size` type the feature when
+    spec.features match (thread, heatset insert, bearing seat...); FEM
+    keep/bearing logic uses them.
     """
 
     index: int
@@ -107,7 +111,7 @@ class Anchor(BaseModel):
         "scan+spec",
     ]
     name: str = ""
-    axis: str = "+z"  # +x | +y | +z — bore/feature axis
+    axis: str = "+z"  # signed +x|-x|+y|-y|+z|-z — bore axis + entry face
     z: float | None = None  # centre coord along the bore axis (None = part mid)
     depth_mm: float | None = None  # bore length along `axis`
     # True only when the spec DECLARES a bottomed bore ("blind", "Sackloch",
@@ -208,6 +212,14 @@ def _is_blind(f: Feature) -> bool:
     return any(k in dims and dims[k] for k in ("depth", "depth_mm", "tiefe", "bore_depth"))
 
 
+def _declared_depth(f: Feature) -> float | None:
+    """Declared blind-bore depth (dims.depth/depth_mm/tiefe/bore_depth)."""
+    for dk in ("depth", "depth_mm", "tiefe", "bore_depth"):
+        if (f.dims or {}).get(dk):
+            return float(f.dims[dk])
+    return None
+
+
 def _hole_dia(f: Feature) -> float | None:
     """Declared bore diameter of a spec feature (diameter|dia|bore_diameter).
 
@@ -252,28 +264,35 @@ def _spec_hole_dias(spec: PartSpec) -> list[tuple[float, str]]:
 
 
 def _declared_bore_axis(f: Feature, text: str) -> str:
-    """'x'|'y'|'z' bore axis declared by the feature — the ``axis`` field
-    first, then a narrow axis phrase in the position/description text, then
-    a single face token ("an der +X-Seite") — a bore enters a face along its
-    normal."""
-    axis = str(f.axis or "").strip().lower().lstrip("+-")
-    if not axis:
-        m = _AXIS_TEXT_RE.search(text)
-        if m:
-            axis = next(g for g in m.groups() if g).lower()
+    """SIGNED bore axis ('+x'/'-z'/...) declared by the feature — the sign
+    picks the ENTRY face ('-z' opens on the bottom face, '+x' on the +x
+    end). Resolution order: the ``axis`` field first (bare letters default
+    to '+'), then a narrow axis phrase in the position/description text,
+    then a single signed face token ("an der -X-Seite" / "bottom face" ->
+    "-z"), then a lone declared range (unsigned — the pierced plate's span
+    implies no entry side)."""
+    axis = str(f.axis or "").strip().lower()
+    if axis in ("x", "y", "z"):
+        axis = "+" + axis
+    if axis in ("+x", "-x", "+y", "-y", "+z", "-z"):
+        return axis
+    axis = ""
+    m = _AXIS_TEXT_RE.search(text)
+    if m:
+        axis = "+" + next(g for g in m.groups() if g).lower()
     if not axis:
         from cadx.cad.poshint import parse_position_hints
 
         _c, faces, _e, _n = parse_position_hints(text)
         if len(faces) == 1:
-            axis = faces[0].lstrip("+-")
+            axis = faces[0]  # already signed ("-z", "+y", ...)
     if not axis:
         # a through-bore's axial coordinate is declared as the pierced
         # plate's SPAN ("x=-60 bis x=-55" -> bore along x) — a single
         # declared range identifies the axis even without an axis word
         rng = parse_ranges(text)
         if len(rng) == 1:
-            axis = next(iter(rng))
+            axis = "+" + next(iter(rng))
     return axis
 
 
@@ -593,7 +612,7 @@ def _stamp_boss_pads(spec: PartSpec, anchors: list[Anchor]) -> None:
                 a.pad_dia = max(float(a.pad_dia or 0.0), bdia)
 
 
-def _spec_anchors(spec: PartSpec) -> list[Anchor]:
+def _spec_anchors(spec: PartSpec) -> list[Anchor]:  # noqa: C901
     """Anchors synthesized from spec features with resolvable positions.
 
     A spec feature with a machine-readable position ("75mm from -X end,
@@ -642,12 +661,27 @@ def _spec_anchors(spec: PartSpec) -> list[Anchor]:
             or _bolt_size(f.thread_spec or "")
             or _bolt_size(f.name or "")
         )
-        if axis in ("x", "y"):
+        letter = axis[-1] if axis else "z"
+        signed = axis or "+z"
+        if letter in ("x", "y"):
             # side-face bore — resolve on the perpendicular plane; scan-format
             # pos[] carries in-plane u/v at their coordinate slots
-            in_plane = ("y", "z") if axis == "x" else ("x", "z")
+            in_plane = ("y", "z") if letter == "x" else ("x", "z")
             pts, axial, axial_depth = _spec_plane(spec, f, bounds, dia, in_plane)
-            _ax, au, av = _AXES[f"+{axis}"]
+            _ax, au, av = _AXES[f"+{letter}"]
+            blind = _is_blind(f)
+            if blind:
+                d = _declared_depth(f)
+                if d:
+                    axial_depth = d
+                    if axial is None:
+                        # no explicit end offset declared — a bottomed bore's
+                        # pos[ax] is the FEATURE mid, half a depth in from the
+                        # signed entry face ("-x" tap on the left face
+                        # centres at x_lo + depth/2)
+                        sgn = -1.0 if signed.startswith("-") else 1.0
+                        face = bounds[letter][0] if sgn < 0 else bounds[letter][1]
+                        axial = face - sgn * d / 2.0
             for u, v, est in pts:
                 pos: list[float | None] = [None, None, None]
                 pos[au], pos[av] = round(u, 2), round(v, 2)
@@ -659,39 +693,48 @@ def _spec_anchors(spec: PartSpec) -> list[Anchor]:
                         x=round(pos[0] or 0.0, 2),
                         y=round(pos[1] or 0.0, 2),
                         dia=round(dia, 2),
-                        axis=f"+{axis}",
+                        axis=signed,
                         z=round(axial, 2) if axial is not None else None,
                         depth_mm=round(axial_depth, 2) if axial_depth else None,
                         pos=pos,
                         source="spec-est" if est else "spec",
                         name=f.name or "",
                         kind=kind,
-                        blind=_is_blind(f),
+                        blind=blind,
                         bolt_size=bolt,
                     )
                 )
             continue
         blind = _is_blind(f)
         for x, y, est in _spec_xy(f, bounds, dia):
-            # a +z bore bound to ONE declared plate carries the plate's axial
+            # a z bore bound to ONE declared plate carries the plate's axial
             # centre + span so the deterministic re-cut drills the plate only —
             # a full-length cutter would pierce a strut/rib on the same ray
             rng = parse_ranges(text).get("z") or host_span(spec, f, "z")
             z_mid = (rng[0] + rng[1]) / 2.0 if rng is not None else None
             depth_mm = rng[1] - rng[0] if rng is not None else None
-            if blind and depth_mm is None:
-                # declared blind depth (dims.depth) — never fall through to a
-                # full-length cut for a bottomed bore
-                for dk in ("depth", "depth_mm", "tiefe", "bore_depth"):
-                    if (f.dims or {}).get(dk):
-                        depth_mm = float(f.dims[dk])
-                        break
+            if blind:
+                declared_depth = _declared_depth(f)
+                if declared_depth:
+                    depth_mm = declared_depth
+                    # pos[ax] is the FEATURE mid: the mouth sits on the signed
+                    # entry face — the host's low face for "-z", its high face
+                    # for "+z" (a tap on the BOTTOM face of an elevated plate
+                    # mouths at the plate's low bound, not the part's) — and
+                    # the centre lies half a depth INTO the part
+                    sgn = -1.0 if signed == "-z" else 1.0
+                    if rng is not None:
+                        entry = rng[0] if sgn < 0 else rng[1]
+                    else:
+                        entry = bounds["z"][0] if sgn < 0 else bounds["z"][1]
+                    z_mid = entry - sgn * declared_depth / 2.0
             out.append(
                 Anchor(
                     index=0,  # re-indexed by build_anchors
                     x=round(x, 2),
                     y=round(y, 2),
                     dia=round(dia, 2),
+                    axis=signed,
                     z=round(z_mid, 2) if z_mid is not None else None,
                     depth_mm=round(depth_mm, 2) if depth_mm else None,
                     pos=(
@@ -712,7 +755,10 @@ def _anchor_plane_uv(a: Anchor) -> tuple[float, float] | None:
     """In-plane (u, v) of an anchor on its own declared axis — the ``pos``
     slots first, then the legacy x/y pair for +z anchors. ``None`` when the
     anchor carries no usable in-plane position."""
-    _ax, au, av = _AXES.get(str(a.axis or "+z").lower(), _AXES["+z"])
+    axis = str(a.axis or "+z").lower()
+    if axis not in _AXES:
+        axis = "+" + axis.lstrip("+-")[-1:] if axis.lstrip("+-") else "+z"
+    _ax, au, av = _AXES.get(axis, _AXES["+z"])
     pos = a.pos
     if isinstance(pos, list) and len(pos) == 3 and pos[au] is not None and pos[av] is not None:
         return float(pos[au]), float(pos[av])
@@ -755,7 +801,7 @@ def _typed_bore_geo(
         if not _hole_like(f):
             continue
         text = str(f.position or "").strip() or str(f.description or "")
-        axis = _declared_bore_axis(f, text)
+        axis = _declared_bore_axis(f, text).lstrip("+-")
         if axis not in ("x", "y", "z"):
             continue
         dia = (
@@ -934,7 +980,7 @@ def build_anchors(  # noqa: C901
                     (i, a)
                     for i, a in enumerate(anchors)
                     if i not in claimed
-                    and a.axis == sa.axis
+                    and str(a.axis or "+z").lstrip("+-") == str(sa.axis or "+z").lstrip("+-")
                     and sa_uv is not None
                     and (a_uv := _anchor_plane_uv(a)) is not None
                     and float(np.hypot(a_uv[0] - sa_uv[0], a_uv[1] - sa_uv[1])) <= _SPEC_MERGE_MM

@@ -43,8 +43,9 @@ from typing import Any
 import numpy as np
 from scipy import ndimage
 
+from cadx.cad.fem.anchors3d import is_fastener_anchor
 from cadx.cad.fem.voxelize import FACE_CORNERS, VoxelDomain, shift_mask
-from cadx.llm.schemas import LoadCase, RegionSpec
+from cadx.llm.schemas import LoadCase, LoadSpec, RegionSpec
 from cadx.logging import get_logger
 
 log = get_logger(__name__)
@@ -427,17 +428,35 @@ def _cylinder_disc_cells(
     return np.asarray(d2 <= radius * radius)
 
 
-def _anchor_has_void(domain: VoxelDomain, axis: str, center: list[float], dia: float) -> bool:
+def _anchor_has_void(
+    domain: VoxelDomain,
+    axis: str,
+    center: list[float],
+    dia: float,
+    axc: float | None = None,
+    half: float | None = None,
+) -> bool:
     """True when the interior cylinder of the measured bore is mostly
     void — the anchor sits on a real hole. An anchor inside solid material
     (phantom mesh feature, stale hole_index) has no void to clamp a ring
     around and must resolve to nothing rather than pin a material column.
     A bore too small for the grid (no cell centre inside the interior
-    radius) is inconclusive and passes — the grow loop handles it."""
+    radius) is inconclusive and passes — the grow loop handles it.
+
+    The check is bounded to the feature's axial span (`axc` ± `half`) — a
+    BLIND bore is void only between its mouth and its bottom; an unbounded
+    column reads the solid body above it and falsely reports a phantom.
+    Without a declared span the column is still clipped to ±max(dia,
+    2*pitch) around `axc` so mid-body air above a real bore cannot mask a
+    phantom either."""
     if dia <= 0:
         return True
     r_inner = max(dia / 2 - domain.pitch, domain.pitch)
     inner = _cylinder_disc_cells(domain, axis, center, r_inner)
+    if axc is not None:
+        idx, _ = _axis_parts(axis)
+        bound = half if half is not None else max(dia, 2.0 * domain.pitch)
+        inner &= _axial_slab(domain, idx, axc, bound)
     if not inner.any():
         return True
     solid_frac = float((inner & domain.solid).sum()) / float(inner.sum())
@@ -461,7 +480,7 @@ def _hole_cells(domain: VoxelDomain, region: RegionSpec, anchors: list[dict] | N
     idx = int(np.argmax(np.abs(avec)))
     axis = f"+{'xyz'[idx]}"
     ctr = [float(v) for v in center]
-    if not _anchor_has_void(domain, axis, ctr, dia):
+    if not _anchor_has_void(domain, axis, ctr, dia, axc=center[idx], half=half):
         return np.zeros(domain.dims, dtype=bool)
     # keep-ring floor: a bore used as a fixture/load point needs meat around
     # it — at least 2 mm or a fifth of the bore diameter, whichever is more.
@@ -500,7 +519,7 @@ def _bore_cells(domain: VoxelDomain, region: RegionSpec, anchors: list[dict] | N
     # same void check as _hole_cells, BEFORE the wall ring — a phantom
     # anchor must not fall through to the hole grow loop and resurrect a
     # material column out of solid material
-    if not _anchor_has_void(domain, axis, ctr, dia):
+    if not _anchor_has_void(domain, axis, ctr, dia, axc=center[idx], half=half):
         return np.zeros(domain.dims, dtype=bool)
     # solid cells whose radial distance is within [0.5*dia, 0.5*dia + band]
     band = max(domain.pitch * 1.6, 0.35 * dia, 1.0)
@@ -707,10 +726,46 @@ def _dominant_axis(normal: list[float] | np.ndarray) -> str:
     return f"{'-' if n[idx] < 0 else '+'}{'xyz'[idx]}"
 
 
-def region_cell_mask(
+def attach_to_region(
+    region: RegionSpec, anchors: list[dict] | None, want_wall: bool = False
+) -> tuple[RegionSpec, str | None]:
+    """Expand a `region.attach` dict into a hole/bore region bound to the
+    resolved anchor — the region-level half of the attach contract (the
+    mechanism half lives on LoadSpec). Returns (region, note); an
+    unresolvable attach yields an out-of-range hole_index that resolves
+    empty (loud miss downstream, never a wrong surface)."""
+    if not region.attach:
+        return region, None
+    i0, a, reason = _attach_anchor(region.attach, anchors)
+    kind = "bore" if want_wall else "hole"
+    if a is None:
+        return (
+            region.model_copy(update={"kind": kind, "hole_index": len(anchors or []) + 999}),
+            f"attach {region.attach} unresolvable — {reason}",
+        )
+    return (
+        region.model_copy(
+            update={
+                "kind": kind,
+                "hole_index": int(a.get("index") or i0 + 1),
+                "axis": str(a.get("axis") or region.axis or ""),
+                "attach": None,
+            }
+        ),
+        f"attach {region.attach.get('name') or region.attach} → anchor "
+        f"#{a.get('index', i0 + 1)} ({a.get('kind')}, {a.get('axis')}, "
+        f"Ø{a.get('dia'):g}) as {kind} region",
+    )
+
+
+def region_cell_mask(  # noqa: C901
     domain: VoxelDomain, region: RegionSpec, anchors: list[dict] | None = None
 ) -> np.ndarray:
     """Bool (nx,ny,nz) over cells: which solid cells belong to the region."""
+    if region.attach:
+        # attach sugar that bypassed expand_attaches (keep/void lists take
+        # the same funnel) — resolve to the anchor's material ring
+        region, _ = attach_to_region(region, anchors)
     kind = region.kind
     if kind == "all":
         return domain.solid.copy()
@@ -1063,6 +1118,214 @@ def _fixed_dof_mask(domain: VoxelDomain, region: RegionSpec, node_mask: np.ndarr
     return out
 
 
+def _attach_anchor(  # noqa: C901
+    attach: dict[str, Any], anchors: list[dict] | None
+) -> tuple[int, dict | None, str]:
+    """(index0, anchor, reason) — deterministic attach resolution.
+
+    Binding precedence: `hole_index`/`anchor_index` direct > `name`
+    substring (spec-sourced first, ties = ambiguous) > `pos`/`dia`/`axis`
+    hint nearest-match. Never guesses a fallback — the reason string tells
+    the caller what to warn."""
+    if not anchors:
+        return -1, None, "no anchors resolved on the part"
+    if not isinstance(attach, dict) or not attach:
+        return -1, None, "empty attach"
+    for key in ("hole_index", "anchor_index", "index"):
+        if attach.get(key) is not None:
+            try:
+                i = int(attach[key])
+            except (TypeError, ValueError):
+                return -1, None, f"attach {key}={attach[key]!r} not an index"
+            if 1 <= i <= len(anchors):
+                return i - 1, anchors[i - 1], ""
+            return -1, None, (f"attach {key}={i} out of range ({len(anchors)} anchors)")
+    name = str(attach.get("name") or attach.get("anchor") or "").strip().lower()
+    if name:
+        cands = []
+        for i, a in enumerate(anchors):
+            blob = " ".join(
+                str(a.get(k) or "") for k in ("name", "bolt_size", "kind", "thread_spec")
+            ).lower()
+            if name in blob:
+                cands.append((i, a))
+        if not cands:
+            return -1, None, f"attach name '{name}' matched no anchor"
+        spec_tier = [c for c in cands if "spec" in str(c[1].get("source") or "")]
+        pool = spec_tier or cands
+        if len(pool) > 1:
+            tags = ", ".join(
+                f"#{a.get('index', i + 1)}({a.get('kind')}/{a.get('axis')})" for i, a in pool[:4]
+            )
+            return (
+                -1,
+                None,
+                (
+                    f"attach name '{name}' is ambiguous — {len(pool)} anchors "
+                    f"match ({tags}); name the feature uniquely or add pos/dia"
+                ),
+            )
+        return pool[0][0], pool[0][1], ""
+    # geometric hint: axis letter + dia + in-plane distance to pos/center
+    hint_center = attach.get("pos") or attach.get("center")
+    if isinstance(hint_center, (list, tuple)) and len(hint_center) >= 2:
+        best_i, best_d = -1, float("inf")
+        want_raw = str(attach.get("axis") or "").lower()
+        want_axis = want_raw.lstrip("+-")[-1:]
+        want_sgn = "-" if want_raw.startswith("-") else ("+" if want_raw.startswith("+") else "")
+        want_dia = float(attach.get("dia") or attach.get("diameter_mm") or 0.0)
+        want_kind = str(attach.get("kind") or "").lower()
+        hint = np.asarray(hint_center[:3], dtype=float)
+        for i, a in enumerate(anchors):
+            aax_raw = str(a.get("axis") or "").lower()
+            aax = aax_raw.lstrip("+-")[-1:]
+            if want_axis and aax and aax != want_axis:
+                continue
+            if want_sgn and aax_raw and not aax_raw.startswith(want_sgn):
+                # declared sign is part of the interface contract — a -z
+                # bottom tap never binds a +z top feature at the same (u, v)
+                continue
+            if want_kind and want_kind != str(a.get("kind") or "").lower():
+                continue
+            dia = float(a.get("dia") or 0.0)
+            if dia > 0 and want_dia > 0 and abs(dia - want_dia) > max(1.0, 0.2 * want_dia):
+                continue
+            ac = _anchor_center3d(a)
+            ax_idx = _AXIS_IDX.get(aax or want_axis or "z", 2)
+            d = float(math.sqrt(sum((hint[j] - ac[j]) ** 2 for j in range(3) if j != ax_idx)))
+            if d < best_d:
+                best_i, best_d = i, d
+        if best_i >= 0 and best_d <= max(0.5 * want_dia, 5.0):
+            return best_i, anchors[best_i], ""
+        if best_i >= 0:
+            reason = (
+                f"attach hint (axis={want_axis} dia={want_dia:g}) nearest "
+                f"anchor {best_d:.1f} mm off"
+            )
+        else:
+            reason = (
+                f"attach hint matched no anchor "
+                f"(kind={want_kind or 'any'} axis={want_axis or 'any'} dia={want_dia:g})"
+            )
+        return -1, None, reason
+    return -1, None, "attach has neither name, hole_index nor pos hint"
+
+
+def expand_attaches(  # noqa: C901
+    case: LoadCase, anchors: list[dict] | None
+) -> tuple[LoadCase, list[str]]:
+    """Expand `attach`/`mechanism` sugar into concrete regions + load fields.
+
+    `attach` on a fixed RegionSpec or a LoadSpec's region binds to a declared
+    anchor ({name | hole_index | kind+dia+pos}) and expands to a hole/bore
+    region with `hole_index` — deterministic, and an unresolvable attach
+    degrades to a region that resolves EMPTY so the existing unresolved-
+    region warnings fire loudly (never silently onto a wrong face).
+
+    `mechanism` picks the standard application surface for the interface:
+    clamp → preload_n on the bore mouths; axial_pull/push → force_n along
+    the signed axis on the bore wall; bearing/radial → bearing_n + dir;
+    torque → moment_nm around the feature axis (threaded/seated kinds
+    only); press → normal_force_n; shear → force_n along `dir`.
+    """
+    warnings: list[str] = []
+    if not any(r.attach for r in case.fixed) and not any(
+        (ld.region and ld.region.attach) or ld.mechanism for ld in case.loads
+    ):
+        return case, warnings
+
+    def _expand_region(r: RegionSpec, want_wall: bool) -> RegionSpec:
+        if not r.attach:
+            return r
+        expanded, note = attach_to_region(r, anchors, want_wall)
+        if note:
+            warnings.append(f"case '{case.name}': {note}")
+        return expanded
+
+    fixed = [_expand_region(r, want_wall=False) for r in case.fixed]
+
+    loads: list[LoadSpec] = []
+    for ld_spec in case.loads:
+        mech = ld_spec.mechanism
+        if mech is None and not (ld_spec.region and ld_spec.region.attach):
+            loads.append(ld_spec)
+            continue
+        want_wall = mech in (
+            "axial_pull",
+            "axial_push",
+            "radial",
+            "bearing",
+            "torque",
+            "press",
+            "shear",
+        )
+        region = _expand_region(ld_spec.region, want_wall=want_wall)
+        # an attach without mechanism keeps the region kind only — fields
+        # stay as the agent declared them
+        updates: dict[str, Any] = {"region": region}
+        if mech is not None:
+            _i0, a, _r = _attach_anchor(ld_spec.region.attach or {}, anchors)
+            axis_vec: list[float] | None = None
+            if a is not None:
+                idx, sgn = _axis_parts(str(a.get("axis") or "+z"))
+                v = [0.0, 0.0, 0.0]
+                v[idx] = float(sgn)
+                axis_vec = v
+            val_n = float(ld_spec.value_n or 0.0)
+            val_nm = float(ld_spec.value_nm or 0.0)
+            if mech == "clamp":
+                updates["preload_n"] = val_n
+            elif mech in ("axial_pull", "axial_push"):
+                if axis_vec is not None and val_n > 0:
+                    sgn = 1.0 if mech == "axial_pull" else -1.0
+                    # pull = TOWARD the entry face (signed axis direction),
+                    # push = into the part
+                    updates["force_n"] = [sgn * val_n * c for c in axis_vec]
+                else:
+                    warnings.append(
+                        f"case '{case.name}': mechanism '{mech}' needs "
+                        "a resolved anchor + value_n — skipped"
+                    )
+            elif mech in ("radial", "bearing"):
+                if len(ld_spec.dir) >= 3 and val_n > 0:
+                    updates["bearing_n"] = val_n
+                    updates["bearing_dir"] = list(ld_spec.dir[:3])
+                else:
+                    warnings.append(
+                        f"case '{case.name}': mechanism '{mech}' needs value_n + dir — skipped"
+                    )
+            elif mech == "torque":
+                kinds = {"tap", "thread", "insert", "bearing", "bearing_seat"}
+                if a is None or str(a.get("kind") or "") not in kinds:
+                    warnings.append(
+                        f"case '{case.name}': mechanism 'torque' needs a "
+                        "threaded/seated anchor (tap/thread/insert/bearing) "
+                        f"— got kind={None if a is None else a.get('kind')!r}"
+                    )
+                elif val_nm > 0 and axis_vec is not None:
+                    updates["moment_nm"] = [val_nm * c for c in axis_vec]
+                else:
+                    warnings.append(
+                        f"case '{case.name}': mechanism 'torque' needs value_nm — skipped"
+                    )
+            elif mech == "press":
+                if val_n > 0:
+                    updates["normal_force_n"] = val_n
+                else:
+                    warnings.append(f"case '{case.name}': mechanism 'press' needs value_n")
+            elif mech == "shear":
+                if len(ld_spec.dir) >= 3 and val_n > 0:
+                    updates["force_n"] = [val_n * c for c in ld_spec.dir[:3]]
+                else:
+                    warnings.append(
+                        f"case '{case.name}': mechanism 'shear' needs value_n + dir — skipped"
+                    )
+            updates["mechanism"] = None
+        loads.append(ld_spec.model_copy(update=updates))
+
+    return case.model_copy(update={"fixed": fixed, "loads": loads}), warnings
+
+
 def resolve_case_dofs(  # noqa: C901
     domain: VoxelDomain,
     case: LoadCase,
@@ -1096,7 +1359,8 @@ def resolve_case_dofs(  # noqa: C901
     """
     from cadx.cad.fem import loads as ld
 
-    warnings: list[str] = []
+    case, attach_warnings = expand_attaches(case, anchors)
+    warnings: list[str] = list(attach_warnings)
     nn = domain.node_count
     fixed3 = np.zeros((nn, 3), dtype=bool)
     F = np.zeros(3 * nn)
@@ -1767,6 +2031,10 @@ def case_anchor_keep_mask(
     optimized away."""
     out = np.zeros(domain.dims, dtype=bool)
     for case in cases or []:
+        # attach sugar expands to hole/bore regions before the kind check —
+        # an attached bore must pin its ring too (warnings are dropped here;
+        # resolve_case_dofs reports them)
+        case, _ = expand_attaches(case, anchors)
         regions: list[RegionSpec] = list(case.fixed)
         regions += [ld.region for ld in case.loads]
         for r in regions:
@@ -1812,14 +2080,47 @@ def case_region_breakdown(
 def auto_keep_regions(anchors: list[dict] | None, margin_mm: float = 3.0) -> list[RegionSpec]:
     """Keep regions around every detected fastener anchor — for
     OptimizeSpec.keep_mode="auto" so mounts/bores/inserts survive TopOpt."""
-    out: list[RegionSpec] = []
+    return interface_regions(anchors, margin_mm)[0]
+
+
+def interface_regions(
+    anchors: list[dict] | None,
+    margin_mm: float = 3.0,
+    spec_only: bool = False,
+) -> tuple[list[RegionSpec], list[RegionSpec]]:
+    """(keeps, voids) — the unified interface-protection contract for
+    fastener anchors (bores, taps, inserts, bearing seats).
+
+    Per anchor:
+    - keep: a ``hole`` region resolving to the material ring around the
+      feature — axially bounded to the feature span by `_anchor_geometry`
+      (mouth → depth for blind bores, the pierced wall for tunnels), so
+      a bottom-face tap protects its pad instead of a mid-body ring.
+    - void: an interior cylinder (~0.9·dia) bounded to the feature span —
+      for grow_mm>0 runs the dilated domain cannot refill the channel;
+      under grow_mm=0 the bore interior is already empty so the void is a
+      no-op there but still opens the channel at extraction.
+    - blind features additionally get a floor slab just behind the bore
+      bottom ([bottom, bottom + margin] along the bore direction) so the
+      hole stays visibly closed.
+
+    `spec_only` restricts protection to spec-declared anchors — the
+    keep_mode="manual" tier: scan/mesh-only extras (source mentions "scan"
+    or "mesh" but not "spec") stay designable; spec-declared and unmarked
+    anchors are always protected (unknown provenance errs on protection)."""
+    keeps: list[RegionSpec] = []
+    voids: list[RegionSpec] = []
     for a in anchors or []:
         idx = int(a.get("index") or 0)
-        if idx < 1:
+        if idx < 1 or not is_fastener_anchor(a):
             continue
+        if spec_only:
+            src = str(a.get("source") or "")
+            if ("scan" in src or "mesh" in src) and "spec" not in src:
+                continue
         kind = str(a.get("kind") or "hole")
         label = a.get("bolt_size") or a.get("name") or kind
-        out.append(
+        keeps.append(
             RegionSpec(
                 kind="hole",
                 hole_index=idx,
@@ -1827,34 +2128,56 @@ def auto_keep_regions(anchors: list[dict] | None, margin_mm: float = 3.0) -> lis
                 description=f"auto-keep {label} #{idx}",
             )
         )
-    return out
+        dia = float(a.get("dia") or 0.0)
+        if dia <= 0:
+            continue
+        axis = str(a.get("axis") or "+z")
+        ax_idx, sgn = _axis_parts(axis)
+        center = a.get("pos")
+        if not (isinstance(center, (list, tuple)) and len(center) == 3):
+            center = [a.get("x"), a.get("y"), a.get("z")]
+        cvals = [float(c) if c is not None else 0.0 for c in center]
+        depth = float(a.get("depth_mm") or 0.0)
+        axc = cvals[ax_idx]
+        span: list[float] = []
+        if depth > 0:
+            span = [axc - depth / 2.0, axc + depth / 2.0]
+        voids.append(
+            RegionSpec(
+                kind="cylinder",
+                axis=axis,
+                center=cvals,
+                diameter_mm=dia * 0.9,
+                margin_mm=0.0,
+                z_range=span,
+                description=f"auto-void {label} #{idx}",
+            )
+        )
+        if a.get("blind") and depth > 0:
+            # the bore travels INTO the part from the signed entry face —
+            # its bottom sits at axc - sgn*depth/2; keep a slab of material
+            # behind it so the hole stays visibly closed
+            bottom = axc - sgn * depth / 2.0
+            keeps.append(
+                RegionSpec(
+                    kind="cylinder",
+                    axis=axis,
+                    center=cvals,
+                    diameter_mm=dia,
+                    margin_mm=margin_mm,
+                    z_range=sorted([bottom, bottom - sgn * margin_mm]),
+                    description=f"auto-keep {label} #{idx} bottom slab",
+                )
+            )
+    return keeps, voids
 
 
 def auto_void_regions(anchors: list[dict] | None) -> list[RegionSpec]:
     """Void regions INSIDE every fastener anchor's bore — for grow_mm>0 runs
     where the dilated design domain would otherwise let the optimizer fill
-    anchored bores back up. The cylinder is slightly narrower than the
-    measured bore so the wall cells stay designable/kept."""
-    out: list[RegionSpec] = []
-    for a in anchors or []:
-        idx = int(a.get("index") or 0)
-        dia = float(a.get("dia") or 0.0)
-        if idx < 1 or dia <= 0:
-            continue
-        center = a.get("pos")
-        if not (isinstance(center, (list, tuple)) and len(center) == 3):
-            center = [a.get("x"), a.get("y"), a.get("z")]
-        out.append(
-            RegionSpec(
-                kind="cylinder",
-                axis=str(a.get("axis") or "+z"),
-                center=[float(c) if c is not None else 0.0 for c in center],
-                diameter_mm=dia * 0.9,
-                margin_mm=0.0,
-                description=f"auto-void bore #{idx}",
-            )
-        )
-    return out
+    anchored bores back up. Thin wrapper over `interface_regions` (same
+    bounded-span semantics); kept for callers that only want the voids."""
+    return interface_regions(anchors)[1]
 
 
 def empty_region_warnings(

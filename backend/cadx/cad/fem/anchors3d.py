@@ -42,7 +42,17 @@ _IN_PLANE: dict[int, tuple[int, int]] = {0: (1, 2), 1: (0, 2), 2: (0, 1)}
 
 # anchor kinds a fastener/load can attach to (dimples/pockets are excluded —
 # RegionSpec.hole_index counts only these, in list order)
-FASTENER_KINDS = {"hole", "thread", "insert", "bearing", "bearing_seat", "tunnel", "boss"}
+FASTENER_KINDS = {
+    "hole",
+    "tap",
+    "clearance",
+    "thread",
+    "insert",
+    "bearing",
+    "bearing_seat",
+    "tunnel",
+    "boss",
+}
 
 
 def is_fastener_anchor(a: dict[str, Any]) -> bool:
@@ -52,17 +62,23 @@ def is_fastener_anchor(a: dict[str, Any]) -> bool:
 def _heightfield_axis(
     mesh: trimesh.Trimesh, axis: str, step_mm: float
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """(H, us, vs): max hit coord along `axis` per (u, v) cell, NaN where no hit."""
-    ax, au, av = _AXES[axis]
+    """(H, us, vs): ENTRY-side hit coord along signed `axis` per (u, v) cell,
+    NaN where no hit — the first surface a ray cast from that face meets.
+    "+z" rays drop from above and keep the max hit; "-z" rays rise from
+    below and keep the min hit (bottom face + pockets opening downward)."""
+    letter = axis.lstrip("+-")[-1:]
+    ax, au, av = _AXES["+" + letter]
+    sign = -1.0 if axis.startswith("-") else 1.0
     us = np.arange(mesh.bounds[0][au], mesh.bounds[1][au] + step_mm, step_mm)
     vs = np.arange(mesh.bounds[0][av], mesh.bounds[1][av] + step_mm, step_mm)
     uu, vv = np.meshgrid(us, vs, indexing="ij")
     origins = np.zeros((uu.size, 3))
     origins[:, au] = uu.ravel()
     origins[:, av] = vv.ravel()
-    origins[:, ax] = mesh.bounds[1][ax] + 10.0
+    # rays start just OUTSIDE the entry face and travel INTO the part
+    origins[:, ax] = mesh.bounds[1][ax] + 10.0 if sign > 0 else mesh.bounds[0][ax] - 10.0
     directions = np.zeros((uu.size, 3))
-    directions[:, ax] = -1.0
+    directions[:, ax] = -sign
     locs, ray_ids, _ = mesh.ray.intersects_location(
         ray_origins=origins, ray_directions=directions, multiple_hits=True
     )
@@ -70,7 +86,8 @@ def _heightfield_axis(
     for r, loc in zip(ray_ids, locs, strict=True):
         i, j = np.unravel_index(r, uu.shape)
         z = loc[ax]
-        if np.isnan(H[i, j]) or z > H[i, j]:
+        better = z > H[i, j] if sign > 0 else z < H[i, j]
+        if np.isnan(H[i, j]) or better:
             H[i, j] = z
     return H, us, vs
 
@@ -103,7 +120,7 @@ def _tunnel_depth_and_center(
     """
     import scipy.ndimage as ndi
 
-    ax, au, av = _AXES[axis]
+    ax, au, av = _AXES["+" + axis.lstrip("+-")[-1:]]
     fallback = (span, 0.5 * float(mesh.bounds[0][ax] + mesh.bounds[1][ax]))
     rim = ndi.binary_dilation(void_cells) & inside & ~void_cells
     ii, jj = np.nonzero(rim)
@@ -162,15 +179,16 @@ def _anchor(
     depth: float,
     kind: str,
     axial_center: float | None = None,
+    blind: bool = False,
 ) -> dict[str, Any]:
     """Anchor dict for a feature at in-plane (u, v) on `axis`.
 
     `x`/`y` keep the legacy top-view fields; `pos` carries the full 3D
-    position. `axial_center` fills `pos[ax]` (and `z` for +z anchors) when
+    position. `axial_center` fills `pos[ax]` (and `z` for ±z anchors) when
     the scan measured where along the axis the pierced wall sits; without
     it the axial coordinate stays None — unknown until FEM places it on
     the bore."""
-    _ax, au, av = _AXES[axis]
+    _ax, au, av = _AXES["+" + axis.lstrip("+-")[-1:]]
     p: list[float | None] = [None, None, None]
     p[au], p[av] = u, v
     z: float | None = None
@@ -178,7 +196,7 @@ def _anchor(
         p[_ax] = round(float(axial_center), 2)
         if _ax == 2:
             z = round(float(axial_center), 2)
-    return {
+    out = {
         "x": round(float(u if au == 0 else v if av == 0 else 0.0), 2),
         "y": round(float(u if au == 1 else v if av == 1 else 0.0), 2),
         "dia": round(float(dia), 2),
@@ -189,6 +207,9 @@ def _anchor(
         "kind": kind,
         "source": "scan",
     }
+    if blind:
+        out["blind"] = True
+    return out
 
 
 def scan_mesh_anchors(
@@ -197,7 +218,14 @@ def scan_mesh_anchors(
     min_area_mm2: float = 3.0,
     dimple_depth_mm: float = 1.5,
 ) -> list[dict[str, Any]]:
-    """Detect hole/dimple anchors on +x/+y/+z. Returns anchor dicts (unindexed)."""
+    """Detect hole/dimple anchors on all six face directions (±x/±y/±z).
+
+    Through-tunnels are only reported on the +axes — their void columns are
+    identical from the low side, and scanning them twice would only duplicate
+    anchors (merge_anchor_lists keys on the unsigned axis letter). The
+    negative-axis scans exist for BLIND features opening on the low faces —
+    a bottom-face tapped hole is invisible to the +z top-heightfield.
+    Returns anchor dicts (unindexed)."""
     import scipy.ndimage as ndi
     from skimage.measure import regionprops
 
@@ -207,7 +235,9 @@ def scan_mesh_anchors(
             return []
         mesh = loaded
     out: list[dict[str, Any]] = []
-    for axis in _AXES:
+    for axis in ("+x", "+y", "+z", "-x", "-y", "-z"):
+        neg = axis.startswith("-")
+        letter = axis[-1]
         try:
             H, us, vs = _heightfield_axis(mesh, axis, step_mm)
         except Exception:
@@ -215,40 +245,50 @@ def scan_mesh_anchors(
         inside = ~np.isnan(H)
         footprint = ndi.binary_fill_holes(inside)
         rim = inside & ~ndi.binary_erosion(inside)
-        ax = _AXES[axis][0]
+        ax = _AXES["+" + letter][0]
         span = float(mesh.bounds[1][ax] - mesh.bounds[0][ax])
 
-        # tunnels: void cells fully enclosed by material. Rays on boundary
-        # cells still clip the bore wall, so the void area under-reports the
-        # diameter by ~one bin — add half a step back.
-        lab, n = ndi.label(footprint & ~inside)
-        for i in range(1, n + 1):
-            cells = lab == i
-            area = float(cells.sum()) * step_mm * step_mm
-            if area < min_area_mm2:
-                continue
-            ii, jj = np.where(cells)
-            mean_u = float(us[ii].mean())
-            mean_v = float(vs[jj].mean())
-            dia = float(2.0 * np.sqrt(area / np.pi) + 0.5 * step_mm)
-            # elongated slots and large off-centre openings are lightweight
-            # WINDOWS, not fastener bores — they must not enter
-            # FASTENER_KINDS or shift the hole_index ordering
-            span_u = float(ii.max() - ii.min() + 1) * step_mm
-            span_v = float(jj.max() - jj.min() + 1) * step_mm
-            aspect = max(span_u, span_v) / max(min(span_u, span_v), step_mm)
-            in_plane_dist = math.hypot(mean_u, mean_v)
-            t_kind = "hole"
-            if aspect > 1.65 or (dia > 24.0 and in_plane_dist > 15.0):
-                t_kind = "window"
-            t_depth, t_mid = _tunnel_depth_and_center(mesh, axis, cells, inside, us, vs, span)
-            out.append(_anchor(axis, mean_u, mean_v, dia, t_depth, t_kind, axial_center=t_mid))
+        if not neg:
+            # tunnels: void cells fully enclosed by material. Rays on boundary
+            # cells still clip the bore wall, so the void area under-reports
+            # the diameter by ~one bin — add half a step back.
+            lab, n = ndi.label(footprint & ~inside)
+            for i in range(1, n + 1):
+                cells = lab == i
+                area = float(cells.sum()) * step_mm * step_mm
+                if area < min_area_mm2:
+                    continue
+                ii, jj = np.where(cells)
+                mean_u = float(us[ii].mean())
+                mean_v = float(vs[jj].mean())
+                dia = float(2.0 * np.sqrt(area / np.pi) + 0.5 * step_mm)
+                # elongated slots and large off-centre openings are lightweight
+                # WINDOWS, not fastener bores — they must not enter
+                # FASTENER_KINDS or shift the hole_index ordering
+                span_u = float(ii.max() - ii.min() + 1) * step_mm
+                span_v = float(jj.max() - jj.min() + 1) * step_mm
+                aspect = max(span_u, span_v) / max(min(span_u, span_v), step_mm)
+                in_plane_dist = math.hypot(mean_u, mean_v)
+                t_kind = "hole"
+                if aspect > 1.65 or (dia > 24.0 and in_plane_dist > 15.0):
+                    t_kind = "window"
+                t_depth, t_mid = _tunnel_depth_and_center(mesh, axis, cells, inside, us, vs, span)
+                out.append(_anchor(axis, mean_u, mean_v, dia, t_depth, t_kind, axial_center=t_mid))
 
-        # dimples: local dips below the surrounding max (countersinks, pockets)
-        Hf = np.nan_to_num(H, nan=0.0)
+        # surface pockets — "+": dips below the local max; "-": raised floor
+        # above the local min (a bottom-face bore's ceiling is a local HIGH
+        # on the min-hit heightfield). NaN cells are filled beyond the exit
+        # face so tunnels can't masquerade as pockets next to real surface.
+        fill = float(mesh.bounds[1][ax] + span) if neg else 0.0
+        Hf = np.nan_to_num(H, nan=fill)
         win = max(round(7.0 / step_mm), 3)
-        local_max = ndi.maximum_filter(Hf, size=win)
-        lab, n = ndi.label(((local_max - Hf) > dimple_depth_mm) & inside)
+        if neg:
+            local = ndi.minimum_filter(Hf, size=win)
+            dip = Hf - local
+        else:
+            local = ndi.maximum_filter(Hf, size=win)
+            dip = local - Hf
+        lab, n = ndi.label((dip > dimple_depth_mm) & inside)
         for prop in regionprops(lab):
             area = float(prop.area) * step_mm * step_mm
             if not (8.0 <= area <= 200.0):
@@ -262,21 +302,50 @@ def scan_mesh_anchors(
             if (cells & rim).any():
                 continue
             ii, jj = np.where(cells)
-            depth = float((local_max[cells] - Hf[cells]).mean())
-            # a dip whose bottom reaches the far face is a through-feature
-            # (e.g. a countersunk bore whose cone swallowed the void column)
-            near_face = float(mesh.bounds[0][ax]) + step_mm
-            kind = "hole" if float(Hf[cells].min()) <= near_face else "dimple"
-            out.append(
-                _anchor(
-                    axis,
-                    float(us[ii].mean()),
-                    float(vs[jj].mean()),
-                    2.0 * np.sqrt(area / np.pi) + 0.5 * step_mm,
-                    depth,
-                    kind,
+            depth = float(dip[cells].mean())
+            dia = 2.0 * np.sqrt(area / np.pi) + 0.5 * step_mm
+            if neg:
+                # the pocket's inner wall reaching the far (+) face means the
+                # "blind" feature actually pierced through
+                far_face = float(mesh.bounds[1][ax]) - step_mm
+                through = float(Hf[cells].max()) >= far_face
+                # a genuinely deep pocket on the low face is a fastener-grade
+                # blind bore (bottom-face tap); shallow texture stays "dimple"
+                kind = "hole" if (through or depth >= max(3.0, 0.5 * dia)) else "dimple"
+                # pos[ax] = feature mid — mouth on the low face + half depth
+                mid = float(mesh.bounds[0][ax]) + depth / 2.0
+                out.append(
+                    _anchor(
+                        axis,
+                        float(us[ii].mean()),
+                        float(vs[jj].mean()),
+                        dia,
+                        depth,
+                        kind,
+                        axial_center=mid,
+                        blind=not through,
+                    )
                 )
-            )
+            else:
+                # a dip whose bottom reaches the far face is a through-feature
+                # (e.g. a countersunk bore whose cone swallowed the void column)
+                near_face = float(mesh.bounds[0][ax]) + step_mm
+                pierces = float(Hf[cells].min()) <= near_face
+                kind = "hole" if pierces else "dimple"
+                # pos[ax] = feature mid — floor (min-hit height) + half depth
+                mid = float(Hf[cells].mean()) + depth / 2.0 if not pierces else None
+                out.append(
+                    _anchor(
+                        axis,
+                        float(us[ii].mean()),
+                        float(vs[jj].mean()),
+                        dia,
+                        depth,
+                        kind,
+                        axial_center=mid,
+                        blind=not pierces,
+                    )
+                )
     return out
 
 
@@ -285,7 +354,7 @@ def _enrich_axial_center(match: dict[str, Any], s: dict[str, Any], s_axis: str) 
     matched spec/image anchor that lacks it — spec anchors know the
     in-plane position but not where along the axis the pierced wall sits,
     so bore regions and preload mouths would centre on the bbox mid."""
-    s_ax = _AXES.get(s_axis, (2, 0, 1))[0]
+    s_ax = _AXES.get("+" + s_axis.lstrip("+-")[-1:], (2, 0, 1))[0]
     s_pos = s.get("pos")
     s_axv = s_pos[s_ax] if isinstance(s_pos, list) and len(s_pos) == 3 else None
     if s_axv is not None:
@@ -314,7 +383,8 @@ def merge_anchor_lists(
     """
 
     def _plane(a: dict[str, Any]) -> tuple[float, float]:
-        _ax, au, av = _AXES.get(str(a.get("axis") or "+z"), (2, 0, 1))
+        raw = str(a.get("axis") or "+z")
+        _ax, au, av = _AXES.get("+" + raw.lstrip("+-")[-1:], (2, 0, 1))
         pos = a.get("pos")
         if isinstance(pos, list) and len(pos) == 3:
             p = [float(c) if c is not None else 0.0 for c in pos]
@@ -332,7 +402,10 @@ def merge_anchor_lists(
         su, sv = _plane(s)
         match = None
         for e in merged:
-            if str(e.get("axis") or "+z") != s_axis:
+            # match on the UNSIGNED axis letter — a "-z" spec anchor and a
+            # "+z" scan anchor at the same (u, v) are the same feature; the
+            # declared sign survives on the existing entry
+            if str(e.get("axis") or "+z").lstrip("+-") != s_axis.lstrip("+-"):
                 continue
             eu, ev = _plane(e)
             if float(np.hypot(eu - su, ev - sv)) <= tol_mm:
