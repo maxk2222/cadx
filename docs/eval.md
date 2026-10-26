@@ -38,13 +38,14 @@ cadx eval run --local --case robot_arm_mount --stages fem --from <dir>
 `bearing_bracket_topopt` is the *interfaces-only* / generative-design
 pattern: the prompt declares just the mounting interfaces (3×M8 blind
 taps in the base face + a dia-30 bearing bore) and a solid design-space
-block — the optimizer designs the actual structure while declared
-`keep_regions` (cylinder annuli around the tap walls and the bearing
-seat) plus `keep_mode:"auto"` preserve the interfaces. The boundary
-conditions are declared deterministically in the stage `load_cases`:
-the radial case drives `bearing_n` on a `bore` region bound by its
-`(axis, dia, center)` hint — no `hole_index`, so the binding survives
-any scan-order or topology change.
+block — the optimizer designs the actual structure while
+`keep_mode:"auto"` + `interface_regions` (bounded keep ring + channel
+void + blind floor slab per fastener anchor) preserve the interfaces.
+The boundary conditions use `attach`/`mechanism` sugar: fixtures are
+`{"attach": {"pos", "axis":"-z", "dia"}}` on each tap (the evaluator
+binds the anchor and expands it to the material-ring region), loads are
+`{"attach": bore-hint}` + `mechanism:"bearing"` / `"axial_pull"` — the
+binding survives scan-order and topology changes by construction.
 
 `robot_arm_mount` (and the `robot_arm_infill_*` A/B cases) declare the
 same boundary conditions in every stage: `axial` puts the 600 N arm

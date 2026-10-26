@@ -2119,7 +2119,18 @@ def interface_regions(
             if ("scan" in src or "mesh" in src) and "spec" not in src:
                 continue
         kind = str(a.get("kind") or "hole")
-        label = a.get("bolt_size") or a.get("name") or kind
+        # strip signed-axis tokens ("-X"/"+z") out of the label — the
+        # description axis-recovery validator would otherwise misread them
+        # as a declared region axis
+        label = (
+            re.sub(
+                r"(?<![A-Za-z0-9_])[+-][xyz](?![A-Za-z0-9_])",
+                "",
+                str(a.get("bolt_size") or a.get("name") or kind),
+                flags=re.IGNORECASE,
+            ).strip()
+            or kind
+        )
         keeps.append(
             RegionSpec(
                 kind="hole",
