@@ -287,7 +287,7 @@
     "enabled": true,
     "target_volume_fraction": 0.25,
     "safety_factor_min": 1.5,
-    "min_member_mm": 7,
+    "min_member_mm": 3,
     "keep_mode": "auto",
     "filter": "helmholtz+heaviside",
     "symmetry": "yz",
