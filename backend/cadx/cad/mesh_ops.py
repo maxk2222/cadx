@@ -2188,11 +2188,7 @@ def _stitch_hairline_boundary(  # noqa: C901
     reduces boundary edges without adding non-manifold edges — otherwise
     the mesh falls through to the heavier repair rungs unchanged."""
     m = mesh.copy()
-    tol = (
-        float(tol)
-        if tol is not None
-        else float(np.clip(float(m.scale) * 1e-4, 1e-3, 0.1))
-    )
+    tol = float(tol) if tol is not None else float(np.clip(float(m.scale) * 1e-4, 1e-3, 0.1))
     n_b0 = len(_boundary_rows(m))
     if not n_b0:
         return mesh

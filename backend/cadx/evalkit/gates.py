@@ -98,9 +98,7 @@ def _feature_entry_ok(  # noqa: C901
             ]
         depth_class = ef.get("depth_class")
         if depth_class:
-            matching = [
-                g for g in matching if str(g.get("depth_class") or "") == str(depth_class)
-            ]
+            matching = [g for g in matching if str(g.get("depth_class") or "") == str(depth_class)]
         centers = []
         ax_idx = {"x": 0, "y": 1, "z": 2}.get(str(want_axis or ""))
         for g in matching:
@@ -444,9 +442,7 @@ def _gate_fem_loadcases(g: dict[str, Any], outcome: StageOutcome) -> GateResult:
                 if (lo is not None and float(mag) < float(lo)) or (
                     hi is not None and float(mag) > float(hi)
                 ):
-                    problems.append(
-                        f"{tag}: moment {float(mag):.1f} N·m outside [{lo},{hi}]"
-                    )
+                    problems.append(f"{tag}: moment {float(mag):.1f} N·m outside [{lo},{hi}]")
         if "resultant_dir" in chk:
             res, want = _v3(rxn.get("resultant_n")), _v3(chk["resultant_dir"])
             if res is None or want is None:

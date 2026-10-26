@@ -548,6 +548,11 @@ def _analytic_cutters(feat: Any, mesh: trimesh.Trimesh) -> list[Any] | None:
     depth_req = _feat_field(feat, "depth_mm")
     try:
         entry = rf._entry_point(mesh, axis, u, v)
+        ring = rf._entry_face_ring(mesh, axis, u, v, dia * 0.5 + 1.5)
+        if ring is not None and (
+            entry is None or (neg and ring < entry) or (not neg and ring > entry)
+        ):
+            entry = ring
     except Exception:
         entry = None
     if entry is None:
@@ -573,7 +578,7 @@ def _analytic_cutters(feat: Any, mesh: trimesh.Trimesh) -> list[Any] | None:
             v,
         )
     ]
-    if kind in _STEP_THREAD_KINDS:
+    if kind in _STEP_THREAD_KINDS and _feat_field(feat, "helical") is not False:
         try:
             groove = _thread_groove_cutter(feat, height)
         except Exception:

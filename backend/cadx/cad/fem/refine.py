@@ -602,9 +602,7 @@ def resolve_refine_features(  # noqa: C901
         # feature is re-cut instead of silently dropped (a dropped 'bore'
         # once left an optimized web sealing the Ø30 seat). 'bearing_seat'
         # stays the explicit seated variant.
-        stype = {"bore": "hole", "tunnel": "hole", "bearing": "bearing_seat"}.get(
-            stype, stype
-        )
+        stype = {"bore": "hole", "tunnel": "hole", "bearing": "bearing_seat"}.get(stype, stype)
         if stype != str(sf.get("type") or "").lower():
             warnings.append(
                 f"refine feature '{sf.get('name')}': spec type "
@@ -1947,7 +1945,11 @@ def _apply_cut(
     else:
         entry = _entry_point(out, feat.axis, feat.u, feat.v)
         ring = _entry_face_ring(out, feat.axis, feat.u, feat.v, feat.dia * 0.5 + 1.5)
-        if ring is not None and (entry is None or (feat.axis[0] == "-" and ring < entry) or (feat.axis[0] == "+" and ring > entry)):
+        if ring is not None and (
+            entry is None
+            or (feat.axis[0] == "-" and ring < entry)
+            or (feat.axis[0] == "+" and ring > entry)
+        ):
             # the face around the mouth sits further out than whatever the
             # centre ray hit — the ray landed on an interior seal/ledge, not
             # on the surface the feature opens from
@@ -2212,8 +2214,7 @@ def apply_refine(  # noqa: C901
             if _channel_blocked_mm(out, feat.u, feat.v, feat.axis) <= max(0.3, 0.005 * span):
                 continue
             report.warnings.append(
-                f"feature '{feat.name}': through-channel sealed after all "
-                "cuts — piercing once more"
+                f"feature '{feat.name}': through-channel sealed after all cuts — piercing once more"
             )
             # a sealed thread gets the plain tap-drill ream — re-cutting the
             # helical groove a second time would deepen it, not open it

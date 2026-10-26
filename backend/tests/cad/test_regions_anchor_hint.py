@@ -28,16 +28,31 @@ def _block_with_bores() -> trimesh.Trimesh:
     bolt = trimesh.creation.cylinder(radius=4.25, height=100.0, sections=32)
     bolt.apply_translation([0.0, -22.0, 45.0])
     out = block.difference(bore, engine="manifold")
-    out = out.difference(bolt, engine="manifold")
-    return out
+    return out.difference(bolt, engine="manifold")
 
 
 # scanned anchors in an arbitrary order — the Ø30 seat is NOT index 1
 _ANCHORS = [
-    {"kind": "hole", "index": 1, "name": "bolt", "x": 0.0, "y": -22.0, "z": 45.0,
-     "dia": 8.5, "axis": "+z"},
-    {"kind": "hole", "index": 2, "name": "bearing", "x": 0.0, "y": 0.0, "z": 65.0,
-     "dia": 30.0, "axis": "+y"},
+    {
+        "kind": "hole",
+        "index": 1,
+        "name": "bolt",
+        "x": 0.0,
+        "y": -22.0,
+        "z": 45.0,
+        "dia": 8.5,
+        "axis": "+z",
+    },
+    {
+        "kind": "hole",
+        "index": 2,
+        "name": "bearing",
+        "x": 0.0,
+        "y": 0.0,
+        "z": 65.0,
+        "dia": 30.0,
+        "axis": "+y",
+    },
 ]
 
 
@@ -92,9 +107,7 @@ def test_bearing_n_load_via_hint(domain) -> None:
         fixed=[RegionSpec(kind="face", axis="-z")],
         loads=[
             LoadSpec(
-                region=RegionSpec(
-                    kind="bore", axis="+y", center=[0, 0, 65], diameter_mm=30.0
-                ),
+                region=RegionSpec(kind="bore", axis="+y", center=[0, 0, 65], diameter_mm=30.0),
                 bearing_n=8000.0,
                 bearing_dir=[0, 0, -1],
             )
@@ -118,15 +131,13 @@ def test_bearing_n_hint_miss_warns_not_binds(domain) -> None:
         fixed=[RegionSpec(kind="face", axis="-z")],
         loads=[
             LoadSpec(
-                region=RegionSpec(
-                    kind="bore", axis="+y", center=[0, 0, 20], diameter_mm=30.0
-                ),
+                region=RegionSpec(kind="bore", axis="+y", center=[0, 0, 20], diameter_mm=30.0),
                 bearing_n=8000.0,
                 bearing_dir=[0, 0, -1],
             )
         ],
     )
     applied: list[dict] = []
-    _fixed3, F, warnings = resolve_case_dofs(domain, case, _ANCHORS, applied_out=applied)
+    _fixed3, _F, warnings = resolve_case_dofs(domain, case, _ANCHORS, applied_out=applied)
     assert any("bearing_n" in w for w in warnings)
     assert not applied or "bearing_n" not in applied[0]["mechanisms"]

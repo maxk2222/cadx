@@ -353,9 +353,7 @@ def test_apply_refine_drills_from_negative_face():
     # ray straight down the bore: a bottom-entry blind hole shows its floor
     # face at z ~= 5; had it drilled from the top, the ray would exit through
     # the bottom face at z ~= 0 instead
-    loc, *_ = out.ray.intersects_location(
-        np.array([[0.0, 0.0, 6.0]]), np.array([[0.0, 0.0, -1.0]])
-    )
+    loc, *_ = out.ray.intersects_location(np.array([[0.0, 0.0, 6.0]]), np.array([[0.0, 0.0, -1.0]]))
     assert len(loc) >= 1
     assert loc[:, 2].max() == pytest.approx(5.0, abs=1.0)
 
@@ -1375,12 +1373,24 @@ def test_plugs_run_before_drills_no_mount_bore_membrane():
     feats = [
         # mount bore FIRST — the order the observed run cut it in
         RefineFeature(
-            name="mount", kind="hole", axis="+z", u=0.0, v=-22.0,
-            dia=8.5, through=True, source="spec",
+            name="mount",
+            kind="hole",
+            axis="+z",
+            u=0.0,
+            v=-22.0,
+            dia=8.5,
+            through=True,
+            source="spec",
         ),
         RefineFeature(
-            name="seat", kind="hole", axis="+y", u=0.0, v=65.0,
-            dia=30.0, through=True, source="spec",
+            name="seat",
+            kind="hole",
+            axis="+y",
+            u=0.0,
+            v=65.0,
+            dia=30.0,
+            through=True,
+            source="spec",
         ),
     ]
     out, rep = apply_refine(opt, feats, restore_keeps=False)

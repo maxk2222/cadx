@@ -625,6 +625,7 @@
       "features": [
         {
           "type": "tap",
+          "helical": false,
           "axis": "-z",
           "x": -46,
           "y": 22,
@@ -635,6 +636,7 @@
         },
         {
           "type": "tap",
+          "helical": false,
           "axis": "-z",
           "x": 46,
           "y": 22,
@@ -645,6 +647,7 @@
         },
         {
           "type": "tap",
+          "helical": false,
           "axis": "-z",
           "x": 0,
           "y": -22,

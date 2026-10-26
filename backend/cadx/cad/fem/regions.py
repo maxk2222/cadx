@@ -292,9 +292,7 @@ def _axial_wall_mid(domain: VoxelDomain, idx: int, center: np.ndarray, dia: floa
 def _anchor_center3d(a: dict[str, Any]) -> np.ndarray:
     """Anchor centre as (x, y, z) — `pos` components override the x/y/z
     fields when present (scanned anchors keep the through-axis None)."""
-    c = np.array(
-        [float(a.get("x") or 0.0), float(a.get("y") or 0.0), float(a.get("z") or 0.0)]
-    )
+    c = np.array([float(a.get("x") or 0.0), float(a.get("y") or 0.0), float(a.get("z") or 0.0)])
     pos = a.get("pos")
     if isinstance(pos, (list, tuple)) and len(pos) == 3:
         for i in range(3):

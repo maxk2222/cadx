@@ -222,9 +222,7 @@ def test_rebind_face_encastre_kept_without_bolt_pattern():
     """A whole-face fixture stays when no matching mount-hole pattern exists
     (glued/clamped face is a real fixture then — never silently dropped)."""
     spec = _mount_spec()
-    spec.features = [
-        f for f in spec.features if str(f.position or "").startswith("z=")
-    ]
+    spec.features = [f for f in spec.features if str(f.position or "").startswith("z=")]
     spec.load_cases = [
         LoadCase(
             name="clamped",
