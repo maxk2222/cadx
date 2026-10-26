@@ -272,28 +272,33 @@ def _declared_bore_axis(f: Feature, text: str) -> str:
     "-z"), then a lone declared range (unsigned — the pierced plate's span
     implies no entry side)."""
     axis = str(f.axis or "").strip().lower()
-    if axis in ("x", "y", "z"):
-        axis = "+" + axis
     if axis in ("+x", "-x", "+y", "-y", "+z", "-z"):
         return axis
-    axis = ""
-    m = _AXIS_TEXT_RE.search(text)
-    if m:
-        axis = "+" + next(g for g in m.groups() if g).lower()
-    if not axis:
-        from cadx.cad.poshint import parse_position_hints
+    # a bare letter ("z") declares the bore axis but NOT the entry side —
+    # keep it as an unsigned letter and let a signed face token on the same
+    # axis pin the sign ("drilled from -z face" upgrades "z" to "-z")
+    letter = axis if axis in ("x", "y", "z") else ""
+    if not letter:
+        m = _AXIS_TEXT_RE.search(text)
+        if m:
+            letter = next(g for g in m.groups() if g).lower()
+    from cadx.cad.poshint import parse_position_hints
 
-        _c, faces, _e, _n = parse_position_hints(text)
-        if len(faces) == 1:
-            axis = faces[0]  # already signed ("-z", "+y", ...)
-    if not axis:
-        # a through-bore's axial coordinate is declared as the pierced
-        # plate's SPAN ("x=-60 bis x=-55" -> bore along x) — a single
-        # declared range identifies the axis even without an axis word
-        rng = parse_ranges(text)
-        if len(rng) == 1:
-            axis = "+" + next(iter(rng))
-    return axis
+    _c, faces, _e, _n = parse_position_hints(text)
+    if letter:
+        for face in faces:
+            if face[-1:] == letter:
+                return face  # signed — e.g. "z" + "-z face" -> "-z"
+        return "+" + letter
+    if len(faces) == 1:
+        return faces[0]  # already signed ("-z", "+y", ...)
+    # a through-bore's axial coordinate is declared as the pierced
+    # plate's SPAN ("x=-60 bis x=-55" -> bore along x) — a single
+    # declared range identifies the axis even without an axis word
+    rng = parse_ranges(text)
+    if len(rng) == 1:
+        return "+" + next(iter(rng))
+    return ""
 
 
 def _axis_vals(

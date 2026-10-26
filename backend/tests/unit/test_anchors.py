@@ -969,3 +969,63 @@ def test_spec_anchors_bolt_circle_symmetric_xy():
         (42.0, -16.0),
         (42.0, 16.0),
     ]
+
+
+def test_spec_anchors_unsigned_axis_inherits_signed_face_hint():
+    """`axis="z"` (bare letter) + "drilled from -z face" — the field declares
+    the bore axis, the face hint pins the ENTRY side. Before, the bare letter
+    was defaulted to "+z" and the face token never consulted, so a bottom-face
+    blind tap anchored at the TOP (pos z = hi - depth/2 = 85 on a 90 mm block)
+    and every "-z" attach/fix rejected the unsigned anchor."""
+    spec = PartSpec(
+        name="block",
+        summary="",
+        units="mm",
+        length_x=Dim(value=120, unit="mm", source="stated"),
+        width_y=Dim(value=70, unit="mm", source="stated"),
+        height_z=Dim(value=90, unit="mm", source="stated"),
+        features=[
+            Feature(
+                name="mounting hole 1 (blind)",
+                type="blind hole",
+                dims={"diameter": 6.8, "depth": 10.0},
+                axis="z",
+                position="x=-46, y=+22, drilled from -z face",
+            ),
+        ],
+        image_roles=[],
+    )
+    anchors = _spec_anchors(spec)
+    assert len(anchors) == 1
+    a = anchors[0]
+    assert a.axis == "-z"
+    # blind feature centre = mouth (z=0) + depth/2 into the part
+    assert a.pos == [-46.0, 22.0, 5.0]
+    assert a.blind is True
+    assert a.depth_mm == 10.0
+
+
+def test_spec_anchors_signed_axis_field_wins_over_face_hint():
+    """An explicit signed field stays authoritative — a stray face token on
+    the same axis must not flip it."""
+    spec = PartSpec(
+        name="block",
+        summary="",
+        units="mm",
+        length_x=Dim(value=120, unit="mm", source="stated"),
+        width_y=Dim(value=70, unit="mm", source="stated"),
+        height_z=Dim(value=90, unit="mm", source="stated"),
+        features=[
+            Feature(
+                name="top blind",
+                type="blind hole",
+                dims={"diameter": 6.8, "depth": 10.0},
+                axis="+z",
+                position="x=0, y=0",
+            ),
+        ],
+        image_roles=[],
+    )
+    (a,) = _spec_anchors(spec)
+    assert a.axis == "+z"
+    assert a.pos[2] == 85.0
