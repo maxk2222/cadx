@@ -397,3 +397,23 @@ def test_expand_attaches_pos_hint() -> None:
     out, warnings = expand_attaches(case, _ATT_ANCHORS)
     assert out.fixed[0].hole_index == 1
     assert any("anchor #1" in w for w in warnings)
+
+
+def test_bore_region_is_a_wall_shell_not_a_sleeve(domain) -> None:
+    """The bore load region doubles as the TopOpt passive pin — a band of
+    0.35·dia froze a Ø51 sleeve around a Ø30 seat (~19% of the domain). The
+    shell must stay ~1.5 cells / 0.15·dia thick: cells exist on the wall but
+    the radial extent stays bounded."""
+    from cadx.cad.fem.regions import _bore_cells
+
+    r = RegionSpec(kind="bore", axis="+y", center=[0, 0, 65], diameter_mm=30.0)
+    cells = _bore_cells(domain, r, _ANCHORS)
+    assert cells.any()
+    centers = domain.element_centers().reshape((*domain.dims, 3))[cells]
+    # radial distance from the +y bore axis through (x=0, z=65)
+    rad = np.sqrt((centers[:, 0] - 0.0) ** 2 + (centers[:, 2] - 65.0) ** 2)
+    band = max(domain.pitch * 1.5, 0.15 * 30.0, 2.0)
+    assert rad.min() >= 15.0 - domain.pitch  # wall side of the channel
+    assert rad.max() <= 15.0 + band + domain.pitch  # thin shell, not a sleeve
+    # regression guard: old 0.35·dia band would reach r≈25.5 on this domain
+    assert rad.max() < 15.0 + 0.35 * 30.0

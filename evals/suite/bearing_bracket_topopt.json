@@ -15,7 +15,7 @@
    "options": {
     "process": "fdm"
    },
-   "prompt": "Parametric seed body for a topology-optimized bearing bracket (aluminium 6061).\nThis is NOT the finished bracket \u2014 it is the solid design space the optimizer will carve.\n\nBUILD THIS \u2014 nothing more:\n1. One solid rectangular block, 120 (X) x 70 (Y) x 90 (Z) mm. Base face on the\n   XY plane at z = 0, centred at the origin in X and Y. Solid material\n   throughout: no ribs, no pockets, no cutouts, no webs, no chamfers, no\n   fillets, no hollow sections.\n2. Three blind holes, dia 6.8 mm, drilled from the BOTTOM face z = 0 to a\n   depth of 10 mm \u2014 they end inside the block: at (x=-46, y=+22),\n   (x=+46, y=+22) and (x=0, y=-22). Do NOT drill through.\n3. One through-bore dia 30 mm along Y at x = 0, z = 65 \u2014 the bearing seat.\n   Open on both the +y and -y faces.\n\nCHECK BEFORE FINISHING:\n- Each dia-6.8 hole opens only on the bottom face and ends inside the block.\n- The dia-30 bore is open on both y faces.\n- The block contains no other voids or features.\n\nService context for the spec: the bracket mounts to a base plate through the\nthree bottom holes; the bore carries ~8 kN radial shaft load downward plus\n~3 kN axial thrust along +Y. Symmetric across x = 0.",
+   "prompt": "Parametric seed body for a topology-optimized bearing bracket (aluminium 6061).\nThis is NOT the finished bracket \u2014 it is the solid design space the optimizer will carve.\n\nBUILD THIS \u2014 nothing more:\n1. One solid rectangular block, 120 (X) x 70 (Y) x 90 (Z) mm. Base face on the\n   XY plane at z = 0, centred at the origin in X and Y. Solid material\n   throughout: no ribs, no pockets, no cutouts, no webs, no chamfers, no\n   fillets, no hollow sections.\n2. Three M8 threaded mounting holes (M8x1.25). Model each as the M8\n   tap-drill pilot: a blind hole, dia 6.8 mm, drilled from the BOTTOM face\n   z = 0 to a depth of 10 mm \u2014 it ends inside the block: at (x=-46,\n   y=+22), (x=+46, y=+22) and (x=0, y=-22). Do NOT drill through. Declare\n   each as a tapped/threaded M8 hole in the spec.\n3. One through-bore dia 30 mm along Y at x = 0, z = 65 \u2014 the bearing seat.\n   Open on both the +y and -y faces.\n\nCHECK BEFORE FINISHING:\n- Each dia-6.8 hole opens only on the bottom face and ends inside the block.\n- The dia-30 bore is open on both y faces.\n- The block contains no other voids or features.\n\nService context for the spec: the bracket mounts to a base plate through the\nthree bottom M8 threaded holes; the bore carries ~8 kN radial shaft load\ndownward plus ~3 kN axial thrust along +Y. Symmetric across x = 0.",
    "gates": [
     {
      "type": "status",
@@ -287,7 +287,7 @@
     "enabled": true,
     "target_volume_fraction": 0.25,
     "safety_factor_min": 1.5,
-    "min_member_mm": 3,
+    "min_member_mm": 7,
     "keep_mode": "auto",
     "filter": "helmholtz+heaviside",
     "symmetry": "yz",
@@ -515,7 +515,7 @@
    "features": [
     {
      "type": "tap",
-     "helical": false,
+     "helical": true,
      "axis": "-z",
      "x": -46,
      "y": 22,
@@ -526,7 +526,7 @@
     },
     {
      "type": "tap",
-     "helical": false,
+     "helical": true,
      "axis": "-z",
      "x": 46,
      "y": 22,
@@ -537,7 +537,7 @@
     },
     {
      "type": "tap",
-     "helical": false,
+     "helical": true,
      "axis": "-z",
      "x": 0,
      "y": -22,

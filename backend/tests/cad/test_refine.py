@@ -1589,3 +1589,54 @@ def test_apply_refine_drops_sliver_minted_by_postpass(monkeypatch):
     bodies = [p for p in out.split(only_watertight=False) if len(p.faces)]
     assert len(bodies) == 1
     assert any("sliver" in w for w in rep.warnings)
+
+
+def test_anchor_keep_prism_blind_anchor_bounds_to_feature_span():
+    """The full-column defect: a 10 mm blind tap keep-restored a Ø12 solid
+    cylinder through the WHOLE part because the prism span ignored
+    `depth_mm`. Bounded anchors restore only mouth→bottom + grow."""
+    from cadx.cad.fem.refine import _anchor_keep_prism
+
+    bounds = np.array([[-60.0, -35.0, 0.0], [60.0, 35.0, 90.0]])
+    a = {
+        "index": 1,
+        "axis": "-z",
+        "pos": [-46.0, 22.0, 5.0],
+        "dia": 6.8,
+        "depth_mm": 10.0,
+        "blind": True,
+    }
+    p = _anchor_keep_prism(a, margin=3.0, span_axis=(-61.0, 91.0), bounds=bounds)
+    assert p["shape"] == "cyl"
+    # feature centre z=5 ± depth/2 ± grow (margin*0.5 + 1.0 = 2.5)
+    assert p["span"][0] == pytest.approx(-2.5)
+    assert p["span"][1] == pytest.approx(12.5)
+
+
+def test_anchor_keep_prism_through_anchor_falls_back_to_axis_bounds():
+    """No depth/axial position → axis-specific bounds (not the global
+    min/max scalar span): a +y bore on a 120x70x90 part spans Y, not -61..91."""
+    from cadx.cad.fem.refine import _anchor_keep_prism
+
+    bounds = np.array([[-60.0, -35.0, 0.0], [60.0, 35.0, 90.0]])
+    a = {"index": 4, "axis": "+y", "pos": [0.0, None, 65.0], "dia": 30.0}
+    p = _anchor_keep_prism(a, margin=3.0, span_axis=(-61.0, 91.0), bounds=bounds)
+    assert p["span"] == pytest.approx((-35.5, 35.5))
+
+
+def test_anchor_keep_prism_measured_tunnel_bounds_to_wall():
+    """A through hole scanned with its pierced-wall thickness carries
+    depth_mm too — the prism bounds to the wall it was measured on."""
+    from cadx.cad.fem.refine import _anchor_keep_prism
+
+    bounds = np.array([[-60.0, -35.0, 0.0], [60.0, 35.0, 90.0]])
+    a = {
+        "index": 1,
+        "axis": "+z",
+        "pos": [0.0, 0.0, 45.0],
+        "dia": 8.5,
+        "depth_mm": 20.0,
+        "blind": False,
+    }
+    p = _anchor_keep_prism(a, margin=2.0, span_axis=(-61.0, 91.0), bounds=bounds)
+    assert p["span"] == pytest.approx((45.0 - 10.0 - 2.0, 45.0 + 10.0 + 2.0))

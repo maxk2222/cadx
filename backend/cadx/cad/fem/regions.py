@@ -522,7 +522,12 @@ def _bore_cells(domain: VoxelDomain, region: RegionSpec, anchors: list[dict] | N
     if not _anchor_has_void(domain, axis, ctr, dia, axc=center[idx], half=half):
         return np.zeros(domain.dims, dtype=bool)
     # solid cells whose radial distance is within [0.5*dia, 0.5*dia + band]
-    band = max(domain.pitch * 1.6, 0.35 * dia, 1.0)
+    # — the wall SHELL a pin/bearing actually presses on. The band doubles
+    # as the TopOpt passive pin (cells touching load nodes pin solid), so
+    # a fat annulus freezes a whole sleeve: 0.35·dia turned a Ø30 seat into
+    # a Ø51 cylinder worth ~19% of the design domain. ~1.5 cells resolves
+    # the contact surface; 0.15·dia scales with the bore.
+    band = max(domain.pitch * 1.5, 0.15 * dia, 2.0)
     in_cyl = _cylinder_cells(domain, axis, ctr, dia / 2 + band) & ~_cylinder_cells(
         domain, axis, ctr, max(dia / 2 - domain.pitch, 0.0)
     )

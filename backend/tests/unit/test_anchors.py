@@ -1029,3 +1029,37 @@ def test_spec_anchors_signed_axis_field_wins_over_face_hint():
     (a,) = _spec_anchors(spec)
     assert a.axis == "+z"
     assert a.pos[2] == 85.0
+
+
+def test_spec_anchors_tapped_hole_bottom_face_m8():
+    """`tapped_hole` + M8 thread spec → kind="tap", bolt_size="M8" — the
+    threaded-interface designation must survive into the anchor so keep
+    rings, refine features and reports all see a tap, not a generic hole.
+    Blind from the bottom face: feature centre at z = depth/2."""
+    spec = PartSpec(
+        name="block",
+        summary="",
+        units="mm",
+        length_x=Dim(value=120, unit="mm", source="stated"),
+        width_y=Dim(value=70, unit="mm", source="stated"),
+        height_z=Dim(value=90, unit="mm", source="stated"),
+        features=[
+            Feature(
+                name="M8 tap -X",
+                type="tapped_hole",
+                dims={"diameter": 6.8, "depth": 10.0},
+                axis="z",
+                position="x=-46, y=+22, drilled from -z face",
+                standard="M8",
+                thread_spec="M8x1.25",
+            ),
+        ],
+        image_roles=[],
+    )
+    (a,) = _spec_anchors(spec)
+    assert a.kind == "tap"
+    assert a.bolt_size == "M8"
+    assert a.axis == "-z"
+    assert a.pos == [-46.0, 22.0, 5.0]
+    assert a.blind is True
+    assert a.depth_mm == 10.0

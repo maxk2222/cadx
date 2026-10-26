@@ -1418,20 +1418,42 @@ def _region_box(region: dict[str, Any], bounds: np.ndarray) -> np.ndarray | None
 
 
 def _anchor_keep_prism(
-    anchor: dict[str, Any], margin: float, span_axis: tuple[float, float]
+    anchor: dict[str, Any],
+    margin: float,
+    span_axis: tuple[float, float],
+    bounds: np.ndarray | None = None,
 ) -> dict[str, Any] | None:
     """Cylinder along the anchor axis: the bore channel plus `margin` around
     it — or the whole boss pad when the anchor carries ``pad_dia`` (a bore
     through a Ø25 boss keeps the pad, not a Ø16 sleeve). A box here would
     paste corner material the SIMP keep-ring never held — the square blocks
-    visible on finished mounts came from exactly that."""
+    visible on finished mounts came from exactly that.
+
+    The axial span is bounded to the FEATURE, mirroring the voxel keep
+    semantics (`regions._anchor_geometry` ``half``): an anchor carrying
+    ``pos[ax]`` + ``depth_mm`` restores only its own span (mouth → bottom
+    for blind bores, the pierced wall for measured tunnels) plus a small
+    grow — otherwise restoring ``base ∩ cyl`` pastes a full-height solid
+    column through the optimized body (observed on 10 mm blind taps
+    restored as Ø12 cylinders across the whole part). Only anchors without
+    an axial bound fall back to the part's axis extent."""
     uv = _anchor_uv(anchor)
     if uv is None:
         return None
     axis = _feature_axis(anchor)
     ax, _au, _av = _AXES_ANY[axis]
     r = max(float(anchor.get("dia") or 0.0), float(anchor.get("pad_dia") or 0.0)) / 2.0 + margin
-    return {"shape": "cyl", "ax": ax, "uv": uv, "r": r, "span": span_axis}
+    pos = anchor.get("pos") or []
+    axc = pos[ax] if len(pos) > ax else None
+    depth = float(anchor.get("depth_mm") or 0.0)
+    if axc is not None and depth > 0:
+        grow = margin * 0.5 + 1.0
+        span = (float(axc) - depth / 2.0 - grow, float(axc) + depth / 2.0 + grow)
+    elif bounds is not None:
+        span = (float(bounds[0][ax]) - 0.5, float(bounds[1][ax]) + 0.5)
+    else:
+        span = span_axis
+    return {"shape": "cyl", "ax": ax, "uv": uv, "r": r, "span": span}
 
 
 def _region_prism(region: dict[str, Any], bounds: np.ndarray) -> dict[str, Any] | None:
@@ -1753,7 +1775,7 @@ def _keep_prisms(
             idx = int(hi_idx)
             if 1 <= idx <= len(anchors):
                 p = _anchor_keep_prism(
-                    anchors[idx - 1], float(r.get("margin_mm") or margin_mm), span
+                    anchors[idx - 1], float(r.get("margin_mm") or margin_mm), span, bounds
                 )
                 if p is not None:
                     prisms.append(p)
