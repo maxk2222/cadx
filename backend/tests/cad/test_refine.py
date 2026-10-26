@@ -477,6 +477,50 @@ def test_restore_anchor_keep_restores_round_pad_not_square():
     assert vol > 3.0
 
 
+def test_region_prism_accepts_unsigned_axis():
+    """RegionSpec serializes axes bare ("z"); the prism path must normalize —
+    a silent None skip left eval keep regions unrestored (restored=0)."""
+    from cadx.cad.fem.refine import _region_prism
+
+    bounds = np.array([[-60.0, -35.0, 0.0], [60.0, 35.0, 90.0]])
+    for axis in ("x", "y", "z", "+z", "-z"):
+        p = _region_prism(
+            {
+                "kind": "cylinder",
+                "axis": axis,
+                "center": [-46.0, 22.0, 6.0],
+                "inner_diameter_mm": 6.8,
+                "diameter_mm": 14.0,
+                "margin_mm": 0.0,
+                "z_range": [0.0, 12.0],
+            },
+            bounds,
+        )
+        assert p is not None and p["shape"] == "cyl", axis
+
+
+def test_restore_keep_surface_cylinder_unsigned_axis():
+    """End-to-end: an unsigned-axis cylinder keep restores a shrunken pad."""
+    base = _box()
+    notch = trimesh.creation.box(extents=[14.0, 14.0, 14.0])
+    notch.apply_translation([25.0, 10.0, 5.0])
+    opt = base.difference(notch, engine="manifold")
+    keeps = [
+        {
+            "kind": "cylinder",
+            "axis": "z",
+            "center": [25.0, 10.0, 5.0],
+            "inner_diameter_mm": 6.8,
+            "diameter_mm": 14.0,
+            "margin_mm": 0.0,
+            "z_range": [0.0, 12.0],
+        }
+    ]
+    out, _, n = restore_keep_surface(opt, base, keeps, [])
+    assert n == 1
+    assert out.volume > opt.volume
+
+
 # --------------------------------------------------------------------------- #
 # re-cut snap / dedup — the "double hole" defect                                #
 # --------------------------------------------------------------------------- #

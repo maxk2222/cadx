@@ -1402,6 +1402,8 @@ def _region_prism(region: dict[str, Any], bounds: np.ndarray) -> dict[str, Any] 
     kind = str(region.get("kind") or "face")
     if kind == "cylinder":
         axis = str(region.get("axis") or "")
+        if axis and axis[0] not in "+-" and f"+{axis}" in _AXES_ANY:
+            axis = f"+{axis}"
         if axis in _AXES_ANY:
             ax, au, av = _AXES_ANY[axis]
             c = region.get("center") or []
