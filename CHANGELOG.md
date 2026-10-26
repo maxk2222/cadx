@@ -23,7 +23,8 @@ the FEM verify on the refined mesh.
 - Version list UI: parts grouped, newest-first ordering.
 - EvalKit: `fem_loadcases` gate with couple-magnitude weighting and
   `moment_mag_nm` band check; `depth_class` filter + axis-correct
-  positions for hole gates.
+  positions for hole gates; `refine_verify` gate asserting the refine
+  job's own feature-cut verification.
 
 ### Fixed
 
@@ -41,6 +42,11 @@ the FEM verify on the refined mesh.
 - Queue-side refine timeout now counts exec-class feature finishing
   alongside FEM + STEP export stages.
 - Mesh `_ensure_watertight` stitches hairline boundary cracks.
+- Keep-restore no longer silently skips declared keep regions whose axis
+  lacks an explicit sign (unsigned axes now resolve both directions).
+- Refine seats feature entry on the mouth face instead of interior
+  seals; exporters skip the helical groove for non-helical taps and use
+  ring-aware entry geometry.
 
 ### Changed
 
