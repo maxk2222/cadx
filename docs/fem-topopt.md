@@ -151,7 +151,38 @@ enriches measured anchors with real depth. Anchor fields: `index` (1-based),
 A region binds its anchor by `hole_index` when set, else deterministically
 by its `(axis, diameter_mm, center)` hint — nearest anchor on the same axis
 within a diameter/distance gate (declared load cases can't name a scan-order
-index; a miss warns instead of silently binding the wrong bore).
+index; a miss warns instead of silently binding the wrong bore). Anchor
+`axis` may be SIGNED (`+z`/`-z`/…): the sign marks the entry face and
+`pos[axis]` carries the feature's axial centre (a blind bottom-face tap
+sits at `mouth + depth/2`, not the part mid-plane).
+
+**Attach/mechanism sugar** — the preferred way to point a load case at a
+named interface without hand-picking region kinds: `RegionSpec.attach`
+(`{"hole_index": N}` / `{"name": "M8 tap"}` / `{"pos":…, "axis":"-z",
+"dia":…}`) binds the region to the resolved anchor and expands to a
+`hole` (fixture ring) or `bore` (loaded wall) region inside
+`expand_attaches` — the single expansion point at the head of
+`resolve_case_dofs`, so FEM, TopOpt, resample and refine-verify all see
+it. `LoadSpec.mechanism` + `value_n`/`value_nm`/`dir` then maps the
+interface to its standard application surface: `clamp`→`preload_n` on the
+bore mouths, `axial_pull`/`axial_push`→axial `force_n` on the bore wall
+(pull = toward the signed entry face), `bearing`/`radial`→`bearing_n`+`dir`,
+`torque`→`moment_nm` about the feature axis (threaded/seated anchors only),
+`press`→`normal_force_n`, `shear`→`force_n·dir`. An unresolvable or
+ambiguous attach expands to an out-of-range `hole_index` — the case fails
+loudly through the normal unresolved-region checks rather than landing on
+a wrong face.
+
+**Interface protection contract** (`interface_regions`, driven by
+`keep_mode:"auto"` — or by `topopt_auto_keep` under `"manual"` for
+spec-declared anchors only): every fastener anchor gets (a) a keep ring
+bounded to the feature's axial span (a blind tap protects its pad at the
+mouth, not a mid-body ring), (b) a bounded void cylinder (~0.9·dia inside
+`[mouth, mouth+depth]`) so `grow_mm` dilation cannot refill the channel,
+and (c) for blind features a floor slab just behind the bore bottom so the
+hole stays visibly closed. Scanned blind anchors additionally feed refine
+re-cuts — a `blind`/`dimple` anchor is admitted only when
+`probe_blind_features` finds a real cavity in the base mesh.
 
 ### Manual optimization and FEM check (structural editor)
 

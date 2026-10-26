@@ -60,6 +60,27 @@ Rules:
   `g_load` in g.
 - Prefer `bearing_n` on `bore` regions for screw/pin attachments — rim
   point loads badly overstate stress.
+- ATTACH/MECHANISM SUGAR (preferred for named interfaces): instead of
+  hand-picking region kind + geometry, put `attach` on the region and let
+  the resolver pick the standard application surface:
+  `{"region": {"attach": {"hole_index": N}}}` or `{"attach": {"name":
+  "M8"}}` or `{"attach": {"pos": [x,y,z], "axis": "-z", "dia": 6.8}}` —
+  resolution is deterministic (name→spec anchors first, pos+dia+axis
+  nearest match); an unresolvable attach FAILS the case loudly instead of
+  landing on a wrong face. On `loads`, add `mechanism` + `value_n`/`value_nm`
+  + `dir` and the correct load fields are derived automatically:
+  * "clamp"        → preload_n=value_n on the bore mouths
+  * "axial_pull"   → force_n toward the entry face (fastener pulled OUT)
+  * "axial_push"   → force_n into the part along the feature axis
+  * "bearing"/"radial" → bearing_n=value_n + dir on the bore wall
+  * "torque"       → moment_nm=value_nm around the feature axis (only on
+                     tap/thread/insert/bearing anchors — never plain holes)
+  * "press"        → normal_force_n=value_n into the interface surface
+  * "shear"        → force_n=value_n·dir on the bore wall
+  Example — bolted flange held by M8 taps, shaft load on a bearing seat:
+  fixed: [{"attach": {"hole_index": 1}, "fix_mode": "all"}, ...],
+  loads: [{"region": {"attach": {"name": "bearing"}},
+           "mechanism": "bearing", "value_n": 8000, "dir": [0,0,-1]}]
 - Directions follow the spec's orientation_note (X=length, Y=width,
   Z=height, part rests on XY).
 - Region discipline — three category errors that silently wreck FEM/TopOpt:

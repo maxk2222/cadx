@@ -1,907 +1,723 @@
 {
-  "name": "bearing_bracket_topopt",
-  "project": "eval:bearing-bracket-topopt",
-  "difficulty": 3,
-  "description": "Generative design — prompt declares ONLY the interfaces (3x M8 blind taps + dia-30 bearing bore) inside a 120x70x90 envelope; codegen builds a solid design-space block, FEM sanity-checks, SIMP (declared keeps + auto, yz symmetry) carves the structure, refine restores exact interfaces.",
-  "settings": {
-    "gen_mode": "cad"
-  },
-  "stages": [
+ "name": "bearing_bracket_topopt",
+ "project": "eval:bearing-bracket-topopt",
+ "difficulty": 3,
+ "description": "Generative design \u2014 prompt declares ONLY the interfaces (3x M8 blind taps + dia-30 bearing bore) inside a 120x70x90 envelope; codegen builds a solid design-space block, FEM sanity-checks, SIMP (keep_mode:auto interface protection, yz symmetry) carves the structure, refine restores exact interfaces. Load cases use attach/mechanism sugar \u2014 the evaluator picks the standard application surfaces.",
+ "settings": {
+  "gen_mode": "cad"
+ },
+ "stages": [
+  {
+   "id": "codegen",
+   "type": "generate",
+   "mode": "cad",
+   "timeout_s": 5400,
+   "options": {
+    "process": "fdm"
+   },
+   "prompt": "Parametric seed body for a topology-optimized bearing bracket (aluminium 6061).\nThis is NOT the finished bracket \u2014 it is the solid design space the optimizer will carve.\n\nBUILD THIS \u2014 nothing more:\n1. One solid rectangular block, 120 (X) x 70 (Y) x 90 (Z) mm. Base face on the\n   XY plane at z = 0, centred at the origin in X and Y. Solid material\n   throughout: no ribs, no pockets, no cutouts, no webs, no chamfers, no\n   fillets, no hollow sections.\n2. Three blind holes, dia 6.8 mm, drilled from the BOTTOM face z = 0 to a\n   depth of 10 mm \u2014 they end inside the block: at (x=-46, y=+22),\n   (x=+46, y=+22) and (x=0, y=-22). Do NOT drill through.\n3. One through-bore dia 30 mm along Y at x = 0, z = 65 \u2014 the bearing seat.\n   Open on both the +y and -y faces.\n\nCHECK BEFORE FINISHING:\n- Each dia-6.8 hole opens only on the bottom face and ends inside the block.\n- The dia-30 bore is open on both y faces.\n- The block contains no other voids or features.\n\nService context for the spec: the bracket mounts to a base plate through the\nthree bottom holes; the bore carries ~8 kN radial shaft load downward plus\n~3 kN axial thrust along +Y. Symmetric across x = 0.",
+   "gates": [
     {
-      "id": "codegen",
-      "type": "generate",
-      "mode": "cad",
-      "timeout_s": 5400,
-      "options": {
-        "process": "fdm"
-      },
-      "prompt": "Parametric seed body for a topology-optimized bearing bracket (aluminium 6061).\nThis is NOT the finished bracket — it is the solid design space the optimizer will carve.\n\nBUILD THIS — nothing more:\n1. One solid rectangular block, 120 (X) x 70 (Y) x 90 (Z) mm. Base face on the\n   XY plane at z = 0, centred at the origin in X and Y. Solid material\n   throughout: no ribs, no pockets, no cutouts, no webs, no chamfers, no\n   fillets, no hollow sections.\n2. Three blind holes, dia 6.8 mm, drilled from the BOTTOM face z = 0 to a\n   depth of 10 mm — they end inside the block: at (x=-46, y=+22),\n   (x=+46, y=+22) and (x=0, y=-22). Do NOT drill through.\n3. One through-bore dia 30 mm along Y at x = 0, z = 65 — the bearing seat.\n   Open on both the +y and -y faces.\n\nCHECK BEFORE FINISHING:\n- Each dia-6.8 hole opens only on the bottom face and ends inside the block.\n- The dia-30 bore is open on both y faces.\n- The block contains no other voids or features.\n\nService context for the spec: the bracket mounts to a base plate through the\nthree bottom holes; the bore carries ~8 kN radial shaft load downward plus\n~3 kN axial thrust along +Y. Symmetric across x = 0.",
-      "gates": [
-        {
-          "type": "status",
-          "expect": [
-            "succeeded",
-            "needs_review"
-          ]
-        },
-        {
-          "type": "bbox",
-          "dims": [
-            120,
-            70,
-            90
-          ],
-          "match": "within",
-          "tol_mm": 5
-        },
-        {
-          "type": "volume",
-          "min_mm3": 650000
-        },
-        {
-          "type": "holes",
-          "count": 3,
-          "dia": 6.8,
-          "axis": "z",
-          "positions": [
-            [
-              -46,
-              22
-            ],
-            [
-              46,
-              22
-            ],
-            [
-              0,
-              -22
-            ]
-          ],
-          "depth_class": "blind"
-        },
-        {
-          "type": "holes",
-          "count": 1,
-          "dia": 30,
-          "axis": "y",
-          "depth_class": "through"
-        },
-        {
-          "type": "watertight",
-          "expect": true
-        },
-        {
-          "type": "verify_spec",
-          "expect": "PASS"
-        }
-      ]
+     "type": "status",
+     "expect": [
+      "succeeded",
+      "needs_review"
+     ]
     },
     {
-      "id": "fem",
-      "type": "fem",
-      "timeout_s": 1800,
-      "material": "aluminum",
-      "load_cases": [
-        {
-          "name": "radial",
-          "fixed": [
-            {
-              "kind": "cylinder",
-              "axis": "z",
-              "center": [
-                -46,
-                22,
-                5
-              ],
-              "diameter_mm": 14,
-              "margin_mm": 2,
-              "z_range": [
-                0,
-                10
-              ],
-              "description": "bolt pad -X"
-            },
-            {
-              "kind": "cylinder",
-              "axis": "z",
-              "center": [
-                46,
-                22,
-                5
-              ],
-              "diameter_mm": 14,
-              "margin_mm": 2,
-              "z_range": [
-                0,
-                10
-              ],
-              "description": "bolt pad +X"
-            },
-            {
-              "kind": "cylinder",
-              "axis": "z",
-              "center": [
-                0,
-                -22,
-                5
-              ],
-              "diameter_mm": 14,
-              "margin_mm": 2,
-              "z_range": [
-                0,
-                10
-              ],
-              "description": "bolt pad -Y"
-            }
-          ],
-          "loads": [
-            {
-              "region": {
-                "kind": "bore",
-                "axis": "+y",
-                "center": [
-                  0,
-                  0,
-                  65
-                ],
-                "diameter_mm": 30,
-                "description": "bearing seat wall (hint-bound)"
-              },
-              "bearing_n": 8000,
-              "bearing_dir": [
-                0,
-                0,
-                -1
-              ]
-            }
-          ]
-        },
-        {
-          "name": "axial",
-          "weight": 0.6,
-          "fixed": [
-            {
-              "kind": "cylinder",
-              "axis": "z",
-              "center": [
-                -46,
-                22,
-                5
-              ],
-              "diameter_mm": 14,
-              "margin_mm": 2,
-              "z_range": [
-                0,
-                10
-              ],
-              "description": "bolt pad -X"
-            },
-            {
-              "kind": "cylinder",
-              "axis": "z",
-              "center": [
-                46,
-                22,
-                5
-              ],
-              "diameter_mm": 14,
-              "margin_mm": 2,
-              "z_range": [
-                0,
-                10
-              ],
-              "description": "bolt pad +X"
-            },
-            {
-              "kind": "cylinder",
-              "axis": "z",
-              "center": [
-                0,
-                -22,
-                5
-              ],
-              "diameter_mm": 14,
-              "margin_mm": 2,
-              "z_range": [
-                0,
-                10
-              ],
-              "description": "bolt pad -Y"
-            }
-          ],
-          "loads": [
-            {
-              "region": {
-                "kind": "bore",
-                "axis": "+y",
-                "center": [
-                  0,
-                  0,
-                  65
-                ],
-                "diameter_mm": 30,
-                "description": "bearing seat wall (hint-bound)"
-              },
-              "force_n": [
-                0,
-                3000,
-                0
-              ]
-            }
-          ]
-        }
-      ],
-      "gates": [
-        {
-          "type": "status",
-          "expect": [
-            "succeeded"
-          ]
-        },
-        {
-          "type": "fem",
-          "field": "sf",
-          "min": 1.0
-        },
-        {
-          "type": "fem_loadcases",
-          "min_cases": 2,
-          "checks": [
-            {
-              "case": "radial",
-              "resultant_n": {
-                "min": 7000,
-                "max": 9000
-              },
-              "resultant_dir": [
-                0,
-                0,
-                -1
-              ],
-              "dir_tol_deg": 25,
-              "fixed_centroid_mm": [
-                0,
-                7.3,
-                5
-              ],
-              "load_centroid_mm": [
-                0,
-                0,
-                65
-              ],
-              "tol_mm": 12,
-              "mechanisms": [
-                "bearing_n"
-              ],
-              "warnings_absent": [
-                "no fixed region",
-                "resolved to zero",
-                "unsolvable"
-              ],
-              "sf_min": 0.5
-            },
-            {
-              "case": "axial",
-              "resultant_n": {
-                "min": 2600,
-                "max": 3400
-              },
-              "resultant_dir": [
-                0,
-                1,
-                0
-              ],
-              "dir_tol_deg": 30,
-              "sf_min": 0.2
-            }
-          ]
-        }
-      ]
+     "type": "bbox",
+     "dims": [
+      120,
+      70,
+      90
+     ],
+     "match": "within",
+     "tol_mm": 5
     },
     {
-      "id": "topopt",
-      "type": "optimize",
-      "timeout_s": 10800,
-      "material": "aluminum",
-      "optimize": {
-        "enabled": true,
-        "target_volume_fraction": 0.35,
-        "safety_factor_min": 1.5,
-        "min_member_mm": 3,
-        "keep_mode": "auto",
-        "filter": "helmholtz+heaviside",
-        "symmetry": "yz",
-        "warmstart": "loadpath",
-        "loadpath_corridor_mm": 4,
-        "max_iterations": 200,
-        "keep_regions": [
-          {
-            "kind": "cylinder",
-            "axis": "z",
-            "center": [
-              -46,
-              22,
-              6
-            ],
-            "inner_diameter_mm": 6.8,
-            "diameter_mm": 14,
-            "z_range": [
-              0,
-              12
-            ],
-            "description": "M8 tap wall -X"
-          },
-          {
-            "kind": "cylinder",
-            "axis": "z",
-            "center": [
-              46,
-              22,
-              6
-            ],
-            "inner_diameter_mm": 6.8,
-            "diameter_mm": 14,
-            "z_range": [
-              0,
-              12
-            ],
-            "description": "M8 tap wall +X"
-          },
-          {
-            "kind": "cylinder",
-            "axis": "z",
-            "center": [
-              0,
-              -22,
-              6
-            ],
-            "inner_diameter_mm": 6.8,
-            "diameter_mm": 14,
-            "z_range": [
-              0,
-              12
-            ],
-            "description": "M8 tap wall -Y"
-          },
-          {
-            "kind": "cylinder",
-            "axis": "y",
-            "center": [
-              0,
-              0,
-              65
-            ],
-            "inner_diameter_mm": 30,
-            "diameter_mm": 38,
-            "description": "bearing seat ring"
-          }
-        ],
-        "void_regions": [
-          {
-            "kind": "cylinder",
-            "axis": "z",
-            "center": [
-              -46,
-              22,
-              5
-            ],
-            "diameter_mm": 6.8,
-            "z_range": [
-              0,
-              10
-            ],
-            "margin_mm": 0,
-            "description": "M8 tap channel -X"
-          },
-          {
-            "kind": "cylinder",
-            "axis": "z",
-            "center": [
-              46,
-              22,
-              5
-            ],
-            "diameter_mm": 6.8,
-            "z_range": [
-              0,
-              10
-            ],
-            "margin_mm": 0,
-            "description": "M8 tap channel +X"
-          },
-          {
-            "kind": "cylinder",
-            "axis": "z",
-            "center": [
-              0,
-              -22,
-              5
-            ],
-            "diameter_mm": 6.8,
-            "z_range": [
-              0,
-              10
-            ],
-            "margin_mm": 0,
-            "description": "M8 tap channel -Y"
-          },
-          {
-            "kind": "cylinder",
-            "axis": "y",
-            "center": [
-              0,
-              0,
-              65
-            ],
-            "diameter_mm": 29,
-            "margin_mm": 0,
-            "description": "bearing bore channel"
-          }
-        ]
-      },
-      "load_cases": [
-        {
-          "name": "radial",
-          "fixed": [
-            {
-              "kind": "cylinder",
-              "axis": "z",
-              "center": [
-                -46,
-                22,
-                5
-              ],
-              "diameter_mm": 14,
-              "margin_mm": 2,
-              "z_range": [
-                0,
-                10
-              ],
-              "description": "bolt pad -X"
-            },
-            {
-              "kind": "cylinder",
-              "axis": "z",
-              "center": [
-                46,
-                22,
-                5
-              ],
-              "diameter_mm": 14,
-              "margin_mm": 2,
-              "z_range": [
-                0,
-                10
-              ],
-              "description": "bolt pad +X"
-            },
-            {
-              "kind": "cylinder",
-              "axis": "z",
-              "center": [
-                0,
-                -22,
-                5
-              ],
-              "diameter_mm": 14,
-              "margin_mm": 2,
-              "z_range": [
-                0,
-                10
-              ],
-              "description": "bolt pad -Y"
-            }
-          ],
-          "loads": [
-            {
-              "region": {
-                "kind": "bore",
-                "axis": "+y",
-                "center": [
-                  0,
-                  0,
-                  65
-                ],
-                "diameter_mm": 30,
-                "description": "bearing seat wall (hint-bound)"
-              },
-              "bearing_n": 8000,
-              "bearing_dir": [
-                0,
-                0,
-                -1
-              ]
-            }
-          ]
-        },
-        {
-          "name": "axial",
-          "weight": 0.6,
-          "fixed": [
-            {
-              "kind": "cylinder",
-              "axis": "z",
-              "center": [
-                -46,
-                22,
-                5
-              ],
-              "diameter_mm": 14,
-              "margin_mm": 2,
-              "z_range": [
-                0,
-                10
-              ],
-              "description": "bolt pad -X"
-            },
-            {
-              "kind": "cylinder",
-              "axis": "z",
-              "center": [
-                46,
-                22,
-                5
-              ],
-              "diameter_mm": 14,
-              "margin_mm": 2,
-              "z_range": [
-                0,
-                10
-              ],
-              "description": "bolt pad +X"
-            },
-            {
-              "kind": "cylinder",
-              "axis": "z",
-              "center": [
-                0,
-                -22,
-                5
-              ],
-              "diameter_mm": 14,
-              "margin_mm": 2,
-              "z_range": [
-                0,
-                10
-              ],
-              "description": "bolt pad -Y"
-            }
-          ],
-          "loads": [
-            {
-              "region": {
-                "kind": "bore",
-                "axis": "+y",
-                "center": [
-                  0,
-                  0,
-                  65
-                ],
-                "diameter_mm": 30,
-                "description": "bearing seat wall (hint-bound)"
-              },
-              "force_n": [
-                0,
-                3000,
-                0
-              ]
-            }
-          ]
-        }
-      ],
-      "gates": [
-        {
-          "type": "status",
-          "expect": [
-            "succeeded",
-            "needs_review"
-          ]
-        },
-        {
-          "type": "topopt",
-          "field": "sf_verified",
-          "min": 1.5
-        },
-        {
-          "type": "volfrac",
-          "min": 0.25,
-          "max": 0.5
-        },
-        {
-          "type": "bodies",
-          "max": 1
-        },
-        {
-          "type": "envelope_within",
-          "dims": [
-            120,
-            70,
-            90
-          ],
-          "tol_mm": 4
-        },
-        {
-          "type": "contains_point",
-          "xyz": [
-            -51,
-            22,
-            6
-          ]
-        },
-        {
-          "type": "contains_point",
-          "xyz": [
-            51,
-            22,
-            6
-          ]
-        },
-        {
-          "type": "contains_point",
-          "xyz": [
-            5,
-            -22,
-            6
-          ]
-        },
-        {
-          "type": "holes",
-          "count": 1,
-          "dia": 30,
-          "axis": "y",
-          "depth_class": "through"
-        },
-        {
-          "type": "contains_point",
-          "xyz": [
-            0,
-            0,
-            48
-          ]
-        },
-        {
-          "type": "load_path",
-          "expect": true
-        },
-        {
-          "type": "watertight",
-          "expect": true
-        }
-      ]
+     "type": "volume",
+     "min_mm3": 650000
     },
     {
-      "id": "refine",
-      "type": "refine",
-      "enabled": true,
-      "timeout_s": 3600,
-      "material": "aluminum",
-      "restore_planes": true,
-      "features": [
-        {
-          "type": "tap",
-          "helical": false,
-          "axis": "-z",
-          "x": -46,
-          "y": 22,
-          "dia": 6.8,
-          "depth": 10,
-          "thread_spec": "M8x1.25",
-          "name": "M8 tap -X"
-        },
-        {
-          "type": "tap",
-          "helical": false,
-          "axis": "-z",
-          "x": 46,
-          "y": 22,
-          "dia": 6.8,
-          "depth": 10,
-          "thread_spec": "M8x1.25",
-          "name": "M8 tap +X"
-        },
-        {
-          "type": "tap",
-          "helical": false,
-          "axis": "-z",
-          "x": 0,
-          "y": -22,
-          "dia": 6.8,
-          "depth": 10,
-          "thread_spec": "M8x1.25",
-          "name": "M8 tap -Y"
-        },
-        {
-          "type": "bore",
-          "axis": "+y",
-          "pos": [
-            0,
-            0,
-            65
-          ],
-          "dia": 30,
-          "through": true,
-          "name": "bearing bore"
-        }
+     "type": "holes",
+     "count": 3,
+     "dia": 6.8,
+     "axis": "z",
+     "positions": [
+      [
+       -46,
+       22
       ],
-      "load_cases": [
-        {
-          "name": "radial",
-          "fixed": [
-            {
-              "kind": "cylinder",
-              "axis": "z",
-              "center": [
-                -46,
-                22,
-                5
-              ],
-              "diameter_mm": 14,
-              "margin_mm": 2,
-              "z_range": [
-                0,
-                10
-              ],
-              "description": "bolt pad -X"
-            },
-            {
-              "kind": "cylinder",
-              "axis": "z",
-              "center": [
-                46,
-                22,
-                5
-              ],
-              "diameter_mm": 14,
-              "margin_mm": 2,
-              "z_range": [
-                0,
-                10
-              ],
-              "description": "bolt pad +X"
-            },
-            {
-              "kind": "cylinder",
-              "axis": "z",
-              "center": [
-                0,
-                -22,
-                5
-              ],
-              "diameter_mm": 14,
-              "margin_mm": 2,
-              "z_range": [
-                0,
-                10
-              ],
-              "description": "bolt pad -Y"
-            }
-          ],
-          "loads": [
-            {
-              "region": {
-                "kind": "bore",
-                "axis": "+y",
-                "center": [
-                  0,
-                  0,
-                  65
-                ],
-                "diameter_mm": 30,
-                "description": "bearing seat wall (hint-bound)"
-              },
-              "bearing_n": 8000,
-              "bearing_dir": [
-                0,
-                0,
-                -1
-              ]
-            }
-          ]
-        },
-        {
-          "name": "axial",
-          "weight": 0.6,
-          "fixed": [
-            {
-              "kind": "cylinder",
-              "axis": "z",
-              "center": [
-                -46,
-                22,
-                5
-              ],
-              "diameter_mm": 14,
-              "margin_mm": 2,
-              "z_range": [
-                0,
-                10
-              ],
-              "description": "bolt pad -X"
-            },
-            {
-              "kind": "cylinder",
-              "axis": "z",
-              "center": [
-                46,
-                22,
-                5
-              ],
-              "diameter_mm": 14,
-              "margin_mm": 2,
-              "z_range": [
-                0,
-                10
-              ],
-              "description": "bolt pad +X"
-            },
-            {
-              "kind": "cylinder",
-              "axis": "z",
-              "center": [
-                0,
-                -22,
-                5
-              ],
-              "diameter_mm": 14,
-              "margin_mm": 2,
-              "z_range": [
-                0,
-                10
-              ],
-              "description": "bolt pad -Y"
-            }
-          ],
-          "loads": [
-            {
-              "region": {
-                "kind": "bore",
-                "axis": "+y",
-                "center": [
-                  0,
-                  0,
-                  65
-                ],
-                "diameter_mm": 30,
-                "description": "bearing seat wall (hint-bound)"
-              },
-              "force_n": [
-                0,
-                3000,
-                0
-              ]
-            }
-          ]
-        }
+      [
+       46,
+       22
       ],
-      "gates": [
-        {
-          "type": "status",
-          "expect": [
-            "succeeded",
-            "needs_review"
-          ]
-        },
-        {
-          "type": "refine_verify",
-          "min_applied": 4
-        },
-        {
-          "type": "fem",
-          "field": "sf",
-          "min": 1.0
-        },
-        {
-          "type": "holes",
-          "count": 1,
-          "dia": 30,
-          "axis": "y",
-          "depth_class": "through"
-        },
-        {
-          "type": "watertight",
-          "expect": true
-        }
+      [
+       0,
+       -22
       ]
+     ],
+     "depth_class": "blind"
+    },
+    {
+     "type": "holes",
+     "count": 1,
+     "dia": 30,
+     "axis": "y",
+     "depth_class": "through"
+    },
+    {
+     "type": "watertight",
+     "expect": true
+    },
+    {
+     "type": "verify_spec",
+     "expect": "PASS"
     }
-  ]
+   ]
+  },
+  {
+   "id": "fem",
+   "type": "fem",
+   "timeout_s": 1800,
+   "material": "aluminum",
+   "load_cases": [
+    {
+     "name": "radial",
+     "fixed": [
+      {
+       "attach": {
+        "pos": [
+         -46,
+         22,
+         0
+        ],
+        "axis": "-z",
+        "dia": 6.8
+       },
+       "fix_mode": "all",
+       "description": "M8 tap -X"
+      },
+      {
+       "attach": {
+        "pos": [
+         46,
+         22,
+         0
+        ],
+        "axis": "-z",
+        "dia": 6.8
+       },
+       "fix_mode": "all",
+       "description": "M8 tap +X"
+      },
+      {
+       "attach": {
+        "pos": [
+         0,
+         -22,
+         0
+        ],
+        "axis": "-z",
+        "dia": 6.8
+       },
+       "fix_mode": "all",
+       "description": "M8 tap -Y"
+      }
+     ],
+     "loads": [
+      {
+       "region": {
+        "attach": {
+         "pos": [
+          0,
+          0,
+          65
+         ],
+         "axis": "y",
+         "dia": 30
+        }
+       },
+       "mechanism": "bearing",
+       "value_n": 8000,
+       "dir": [
+        0,
+        0,
+        -1
+       ]
+      }
+     ]
+    },
+    {
+     "name": "axial",
+     "weight": 0.6,
+     "fixed": [
+      {
+       "attach": {
+        "pos": [
+         -46,
+         22,
+         0
+        ],
+        "axis": "-z",
+        "dia": 6.8
+       },
+       "fix_mode": "all",
+       "description": "M8 tap -X"
+      },
+      {
+       "attach": {
+        "pos": [
+         46,
+         22,
+         0
+        ],
+        "axis": "-z",
+        "dia": 6.8
+       },
+       "fix_mode": "all",
+       "description": "M8 tap +X"
+      },
+      {
+       "attach": {
+        "pos": [
+         0,
+         -22,
+         0
+        ],
+        "axis": "-z",
+        "dia": 6.8
+       },
+       "fix_mode": "all",
+       "description": "M8 tap -Y"
+      }
+     ],
+     "loads": [
+      {
+       "region": {
+        "attach": {
+         "pos": [
+          0,
+          0,
+          65
+         ],
+         "axis": "y",
+         "dia": 30
+        }
+       },
+       "mechanism": "axial_pull",
+       "value_n": 3000
+      }
+     ]
+    }
+   ],
+   "gates": [
+    {
+     "type": "status",
+     "expect": [
+      "succeeded"
+     ]
+    },
+    {
+     "type": "fem",
+     "field": "sf",
+     "min": 1.0
+    },
+    {
+     "type": "fem_loadcases",
+     "min_cases": 2,
+     "checks": [
+      {
+       "case": "radial",
+       "resultant_n": {
+        "min": 7000,
+        "max": 9000
+       },
+       "resultant_dir": [
+        0,
+        0,
+        -1
+       ],
+       "dir_tol_deg": 25,
+       "fixed_centroid_mm": [
+        0,
+        7.3,
+        5
+       ],
+       "load_centroid_mm": [
+        0,
+        0,
+        65
+       ],
+       "tol_mm": 12,
+       "mechanisms": [
+        "bearing_n"
+       ],
+       "warnings_absent": [
+        "no fixed region",
+        "resolved to zero",
+        "unsolvable"
+       ],
+       "sf_min": 0.5
+      },
+      {
+       "case": "axial",
+       "resultant_n": {
+        "min": 2600,
+        "max": 3400
+       },
+       "resultant_dir": [
+        0,
+        1,
+        0
+       ],
+       "dir_tol_deg": 30,
+       "sf_min": 0.2
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "topopt",
+   "type": "optimize",
+   "timeout_s": 10800,
+   "material": "aluminum",
+   "optimize": {
+    "enabled": true,
+    "target_volume_fraction": 0.25,
+    "safety_factor_min": 1.5,
+    "min_member_mm": 3,
+    "keep_mode": "auto",
+    "filter": "helmholtz+heaviside",
+    "symmetry": "yz",
+    "warmstart": "loadpath",
+    "loadpath_corridor_mm": 4,
+    "max_iterations": 200
+   },
+   "load_cases": [
+    {
+     "name": "radial",
+     "fixed": [
+      {
+       "attach": {
+        "pos": [
+         -46,
+         22,
+         0
+        ],
+        "axis": "-z",
+        "dia": 6.8
+       },
+       "fix_mode": "all",
+       "description": "M8 tap -X"
+      },
+      {
+       "attach": {
+        "pos": [
+         46,
+         22,
+         0
+        ],
+        "axis": "-z",
+        "dia": 6.8
+       },
+       "fix_mode": "all",
+       "description": "M8 tap +X"
+      },
+      {
+       "attach": {
+        "pos": [
+         0,
+         -22,
+         0
+        ],
+        "axis": "-z",
+        "dia": 6.8
+       },
+       "fix_mode": "all",
+       "description": "M8 tap -Y"
+      }
+     ],
+     "loads": [
+      {
+       "region": {
+        "attach": {
+         "pos": [
+          0,
+          0,
+          65
+         ],
+         "axis": "y",
+         "dia": 30
+        }
+       },
+       "mechanism": "bearing",
+       "value_n": 8000,
+       "dir": [
+        0,
+        0,
+        -1
+       ]
+      }
+     ]
+    },
+    {
+     "name": "axial",
+     "weight": 0.6,
+     "fixed": [
+      {
+       "attach": {
+        "pos": [
+         -46,
+         22,
+         0
+        ],
+        "axis": "-z",
+        "dia": 6.8
+       },
+       "fix_mode": "all",
+       "description": "M8 tap -X"
+      },
+      {
+       "attach": {
+        "pos": [
+         46,
+         22,
+         0
+        ],
+        "axis": "-z",
+        "dia": 6.8
+       },
+       "fix_mode": "all",
+       "description": "M8 tap +X"
+      },
+      {
+       "attach": {
+        "pos": [
+         0,
+         -22,
+         0
+        ],
+        "axis": "-z",
+        "dia": 6.8
+       },
+       "fix_mode": "all",
+       "description": "M8 tap -Y"
+      }
+     ],
+     "loads": [
+      {
+       "region": {
+        "attach": {
+         "pos": [
+          0,
+          0,
+          65
+         ],
+         "axis": "y",
+         "dia": 30
+        }
+       },
+       "mechanism": "axial_pull",
+       "value_n": 3000
+      }
+     ]
+    }
+   ],
+   "gates": [
+    {
+     "type": "status",
+     "expect": [
+      "succeeded",
+      "needs_review"
+     ]
+    },
+    {
+     "type": "topopt",
+     "field": "sf_verified",
+     "min": 1.5
+    },
+    {
+     "type": "volfrac",
+     "min": 0.2,
+     "max": 0.45
+    },
+    {
+     "type": "bodies",
+     "max": 1
+    },
+    {
+     "type": "envelope_within",
+     "dims": [
+      120,
+      70,
+      90
+     ],
+     "tol_mm": 4
+    },
+    {
+     "type": "contains_point",
+     "xyz": [
+      -51,
+      22,
+      6
+     ]
+    },
+    {
+     "type": "contains_point",
+     "xyz": [
+      51,
+      22,
+      6
+     ]
+    },
+    {
+     "type": "contains_point",
+     "xyz": [
+      5,
+      -22,
+      6
+     ]
+    },
+    {
+     "type": "holes",
+     "count": 1,
+     "dia": 30,
+     "axis": "y",
+     "depth_class": "through"
+    },
+    {
+     "type": "contains_point",
+     "xyz": [
+      0,
+      0,
+      48
+     ]
+    },
+    {
+     "type": "load_path",
+     "expect": true
+    },
+    {
+     "type": "watertight",
+     "expect": true
+    }
+   ]
+  },
+  {
+   "id": "refine",
+   "type": "refine",
+   "enabled": true,
+   "timeout_s": 3600,
+   "material": "aluminum",
+   "restore_planes": true,
+   "features": [
+    {
+     "type": "tap",
+     "helical": false,
+     "axis": "-z",
+     "x": -46,
+     "y": 22,
+     "dia": 6.8,
+     "depth": 10,
+     "thread_spec": "M8x1.25",
+     "name": "M8 tap -X"
+    },
+    {
+     "type": "tap",
+     "helical": false,
+     "axis": "-z",
+     "x": 46,
+     "y": 22,
+     "dia": 6.8,
+     "depth": 10,
+     "thread_spec": "M8x1.25",
+     "name": "M8 tap +X"
+    },
+    {
+     "type": "tap",
+     "helical": false,
+     "axis": "-z",
+     "x": 0,
+     "y": -22,
+     "dia": 6.8,
+     "depth": 10,
+     "thread_spec": "M8x1.25",
+     "name": "M8 tap -Y"
+    },
+    {
+     "type": "bore",
+     "axis": "+y",
+     "pos": [
+      0,
+      0,
+      65
+     ],
+     "dia": 30,
+     "through": true,
+     "name": "bearing bore"
+    }
+   ],
+   "load_cases": [
+    {
+     "name": "radial",
+     "fixed": [
+      {
+       "attach": {
+        "pos": [
+         -46,
+         22,
+         0
+        ],
+        "axis": "-z",
+        "dia": 6.8
+       },
+       "fix_mode": "all",
+       "description": "M8 tap -X"
+      },
+      {
+       "attach": {
+        "pos": [
+         46,
+         22,
+         0
+        ],
+        "axis": "-z",
+        "dia": 6.8
+       },
+       "fix_mode": "all",
+       "description": "M8 tap +X"
+      },
+      {
+       "attach": {
+        "pos": [
+         0,
+         -22,
+         0
+        ],
+        "axis": "-z",
+        "dia": 6.8
+       },
+       "fix_mode": "all",
+       "description": "M8 tap -Y"
+      }
+     ],
+     "loads": [
+      {
+       "region": {
+        "attach": {
+         "pos": [
+          0,
+          0,
+          65
+         ],
+         "axis": "y",
+         "dia": 30
+        }
+       },
+       "mechanism": "bearing",
+       "value_n": 8000,
+       "dir": [
+        0,
+        0,
+        -1
+       ]
+      }
+     ]
+    },
+    {
+     "name": "axial",
+     "weight": 0.6,
+     "fixed": [
+      {
+       "attach": {
+        "pos": [
+         -46,
+         22,
+         0
+        ],
+        "axis": "-z",
+        "dia": 6.8
+       },
+       "fix_mode": "all",
+       "description": "M8 tap -X"
+      },
+      {
+       "attach": {
+        "pos": [
+         46,
+         22,
+         0
+        ],
+        "axis": "-z",
+        "dia": 6.8
+       },
+       "fix_mode": "all",
+       "description": "M8 tap +X"
+      },
+      {
+       "attach": {
+        "pos": [
+         0,
+         -22,
+         0
+        ],
+        "axis": "-z",
+        "dia": 6.8
+       },
+       "fix_mode": "all",
+       "description": "M8 tap -Y"
+      }
+     ],
+     "loads": [
+      {
+       "region": {
+        "attach": {
+         "pos": [
+          0,
+          0,
+          65
+         ],
+         "axis": "y",
+         "dia": 30
+        }
+       },
+       "mechanism": "axial_pull",
+       "value_n": 3000
+      }
+     ]
+    }
+   ],
+   "gates": [
+    {
+     "type": "status",
+     "expect": [
+      "succeeded",
+      "needs_review"
+     ]
+    },
+    {
+     "type": "refine_verify",
+     "min_applied": 4
+    },
+    {
+     "type": "fem",
+     "field": "sf",
+     "min": 1.0
+    },
+    {
+     "type": "holes",
+     "count": 1,
+     "dia": 30,
+     "axis": "y",
+     "depth_class": "through"
+    },
+    {
+     "type": "watertight",
+     "expect": true
+    }
+   ]
+  }
+ ]
 }
