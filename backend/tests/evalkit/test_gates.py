@@ -629,3 +629,34 @@ def test_fem_loadcases_axis_extremum_grid_fallback():
         0,
     )[0]
     assert bad.ok is False and "fixed centroid" in bad.detail
+
+
+def test_refine_verify_gate():
+    """The refine probe evidence — blind cuts invisible to extract_features —
+    is the authoritative feature check on a recut stage."""
+    rep = {
+        "refine": {
+            "applied": [{"name": "tap -X"}, {"name": "tap +X"}, {"name": "bore"}],
+            "verify_misses": [],
+            "probes": [
+                {"name": "tap -X", "verified": True},
+                {"name": "tap +X", "verified": True},
+            ],
+        }
+    }
+    ok = run_gates([{"type": "refine_verify", "min_applied": 3}], _out(mesh=rep), 0)[0]
+    assert ok.ok is True, ok.detail
+
+    misses = {"refine": {"applied": [{}], "verify_misses": [{"entry": {"name": "tap"}}]}}
+    bad = run_gates([{"type": "refine_verify"}], _out(mesh=misses), 0)[0]
+    assert bad.ok is False and "tap" in bad.detail
+
+    unver = {"refine": {"applied": [{}], "probes": [{"name": "p", "verified": False}]}}
+    assert run_gates([{"type": "refine_verify"}], _out(mesh=unver), 0)[0].ok is False
+
+    short = {"refine": {"applied": [{}]}}
+    assert (
+        run_gates([{"type": "refine_verify", "min_applied": 2}], _out(mesh=short), 0)[0].ok is False
+    )
+    # no refine report at all -> inconclusive, not a pass
+    assert run_gates([{"type": "refine_verify"}], _out(mesh={}), 0)[0].ok is None

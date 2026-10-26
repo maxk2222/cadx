@@ -318,34 +318,59 @@
           {
             "kind": "cylinder",
             "axis": "z",
-            "center": [-46, 22, 6],
+            "center": [
+              -46,
+              22,
+              6
+            ],
             "inner_diameter_mm": 6.8,
             "diameter_mm": 14,
-            "z_range": [0, 12],
+            "z_range": [
+              0,
+              12
+            ],
             "description": "M8 tap wall -X"
           },
           {
             "kind": "cylinder",
             "axis": "z",
-            "center": [46, 22, 6],
+            "center": [
+              46,
+              22,
+              6
+            ],
             "inner_diameter_mm": 6.8,
             "diameter_mm": 14,
-            "z_range": [0, 12],
+            "z_range": [
+              0,
+              12
+            ],
             "description": "M8 tap wall +X"
           },
           {
             "kind": "cylinder",
             "axis": "z",
-            "center": [0, -22, 6],
+            "center": [
+              0,
+              -22,
+              6
+            ],
             "inner_diameter_mm": 6.8,
             "diameter_mm": 14,
-            "z_range": [0, 12],
+            "z_range": [
+              0,
+              12
+            ],
             "description": "M8 tap wall -Y"
           },
           {
             "kind": "cylinder",
             "axis": "y",
-            "center": [0, 0, 65],
+            "center": [
+              0,
+              0,
+              65
+            ],
             "inner_diameter_mm": 30,
             "diameter_mm": 38,
             "description": "bearing seat ring"
@@ -355,33 +380,62 @@
           {
             "kind": "cylinder",
             "axis": "z",
-            "center": [-46, 22, 5],
+            "center": [
+              -46,
+              22,
+              5
+            ],
             "diameter_mm": 6.8,
-            "z_range": [0, 10],
-            "margin_mm": 0, "description": "M8 tap channel -X"
+            "z_range": [
+              0,
+              10
+            ],
+            "margin_mm": 0,
+            "description": "M8 tap channel -X"
           },
           {
             "kind": "cylinder",
             "axis": "z",
-            "center": [46, 22, 5],
+            "center": [
+              46,
+              22,
+              5
+            ],
             "diameter_mm": 6.8,
-            "z_range": [0, 10],
-            "margin_mm": 0, "description": "M8 tap channel +X"
+            "z_range": [
+              0,
+              10
+            ],
+            "margin_mm": 0,
+            "description": "M8 tap channel +X"
           },
           {
             "kind": "cylinder",
             "axis": "z",
-            "center": [0, -22, 5],
+            "center": [
+              0,
+              -22,
+              5
+            ],
             "diameter_mm": 6.8,
-            "z_range": [0, 10],
-            "margin_mm": 0, "description": "M8 tap channel -Y"
+            "z_range": [
+              0,
+              10
+            ],
+            "margin_mm": 0,
+            "description": "M8 tap channel -Y"
           },
           {
             "kind": "cylinder",
             "axis": "y",
-            "center": [0, 0, 65],
+            "center": [
+              0,
+              0,
+              65
+            ],
             "diameter_mm": 29,
-            "margin_mm": 0, "description": "bearing bore channel"
+            "margin_mm": 0,
+            "description": "bearing bore channel"
           }
         ]
       },
@@ -659,7 +713,11 @@
         {
           "type": "bore",
           "axis": "+y",
-          "pos": [0, 0, 65],
+          "pos": [
+            0,
+            0,
+            65
+          ],
           "dia": 30,
           "through": true,
           "name": "bearing bore"
@@ -824,30 +882,13 @@
           ]
         },
         {
+          "type": "refine_verify",
+          "min_applied": 4
+        },
+        {
           "type": "fem",
           "field": "sf",
           "min": 1.0
-        },
-        {
-          "type": "holes",
-          "count": 3,
-          "dia": 6.8,
-          "axis": "z",
-          "positions": [
-            [
-              -46,
-              22
-            ],
-            [
-              46,
-              22
-            ],
-            [
-              0,
-              -22
-            ]
-          ],
-          "depth_class": "blind"
         },
         {
           "type": "holes",

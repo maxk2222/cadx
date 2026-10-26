@@ -679,6 +679,36 @@ def _gate_outcome(  # noqa: C901
             expected=entries,
         )
 
+    if name == "refine_verify":
+        # the refine job's own post-cut verification: applied feature entries
+        # are re-scanned on the shipped mesh (tunnel/dimple probes at the
+        # declared positions). This is the authoritative evidence for
+        # recut features — extract_features cannot see blind holes on a
+        # heavily faceted solid at all (facet-cap skips the cylinder scan;
+        # the mesh fallback detects through-tunnels only).
+        rep = (outcome.mesh or {}).get("refine") or {}
+        misses = rep.get("verify_misses") or []
+        probes = rep.get("probes") or []
+        applied = rep.get("applied") or []
+        unverified = [p for p in probes if not p.get("verified")]
+        min_applied = int(g.get("min_applied", 0) or 0)
+        ok = bool(rep) and not misses and not unverified and len(applied) >= min_applied
+        return GateResult(
+            name,
+            ok if rep else None,
+            measured={
+                "applied": len(applied),
+                "verify_misses": len(misses),
+                "probes_verified": sum(1 for p in probes if p.get("verified")),
+                "probes_total": len(probes),
+            },
+            expected={"verify_misses": 0, "min_applied": min_applied},
+            detail=""
+            if ok
+            else f"misses={[str(m.get('entry', {}).get('name')) for m in misses[:5]]} "
+            f"unverified={[str(p.get('name')) for p in unverified[:5]]}",
+        )
+
     if name == "watertight":
         wt = analysis.get("watertight_after_repair")
         if wt is None:
