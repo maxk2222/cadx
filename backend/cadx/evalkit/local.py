@@ -84,10 +84,13 @@ async def bootstrap(out_dir: Path) -> str | None:
     else:
         prev_url = os.environ.get("CADX_REAL_DATABASE_URL")
     (out_dir / "data").mkdir(parents=True, exist_ok=True)
-    os.environ["DATABASE_URL"] = f"sqlite:///{out_dir / 'eval.db'}"
-    os.environ["DATA_DIR"] = str(out_dir / "data")
+    # remember the pre-redirect data dir so the settings snapshot can probe
+    # its .settings.key when unsealing the real DB's enc:v1 secrets
     from cadx.config import get_settings
 
+    os.environ.setdefault("CADX_PREV_DATA_DIR", get_settings().data_dir)
+    os.environ["DATABASE_URL"] = f"sqlite:///{out_dir / 'eval.db'}"
+    os.environ["DATA_DIR"] = str(out_dir / "data")
     get_settings.cache_clear()
     url = os.environ["DATABASE_URL"]
     _rebind_session(url)
@@ -97,11 +100,61 @@ async def bootstrap(out_dir: Path) -> str | None:
     return prev_url
 
 
+def _seed_secret_key(stored: dict[str, Any]) -> None:
+    """Pick the .settings.key that actually unseals the real DB's secrets.
+
+    DATA_DIR already points at the scratch tree when the snapshot runs, so
+    secrets_crypto would resolve (or generate) a scratch key and fail every
+    enc:v1 decrypt. Probe the known key-file locations — the repo-root data
+    dir the docker stack mounts first, then the CWD data dir of host-dev
+    setups — and write the working key into the scratch data dir.
+    """
+    secrets = (stored or {}).get("settings") or stored or {}
+    ct = next(
+        (
+            str(v)
+            for f in ("llm_api_key", "tripo_api_key", "image_api_key", "hf_token")
+            for v in [secrets.get(f)]
+            if str(v or "").startswith("enc:v1:")
+        ),
+        "",
+    )
+    if not ct:
+        return  # nothing sealed — the key is irrelevant
+    from cryptography.fernet import Fernet
+
+    from cadx.config import get_settings
+    from cadx.evalkit.paths import REPO_ROOT
+
+    data_dir = Path(get_settings().data_dir)
+    candidates = [
+        REPO_ROOT / "data" / ".settings.key",
+        Path(os.environ["CADX_PREV_DATA_DIR"]) / ".settings.key"
+        if os.environ.get("CADX_PREV_DATA_DIR")
+        else None,
+        data_dir / ".settings.key",
+    ]
+    for src in dict.fromkeys(c for c in candidates if c is not None):
+        try:
+            key = src.read_bytes().strip()
+            ok = bool(key) and Fernet(key).decrypt(ct[len("enc:v1:") :].encode())
+        except Exception:
+            continue
+        if ok:
+            dst = data_dir / ".settings.key"
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_bytes(key)
+            dst.chmod(0o600)
+            return
+    log.info("eval.local.secret_key_not_found — real secrets will snapshot as empty")
+
+
 async def snapshot_runtime(real_url: str | None) -> Any:
     """Read-only RuntimeSettings snapshot from the real DB when reachable;
     code defaults otherwise. Uses a standalone engine — never the module one."""
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from cadx.db.models import AppSetting
     from cadx.db.session import make_engine
     from cadx.runtime_config import RuntimeSettings, load_runtime_settings
 
@@ -116,6 +169,8 @@ async def snapshot_runtime(real_url: str | None) -> Any:
     try:
         sm = async_sessionmaker(eng, class_=AsyncSession, expire_on_commit=False)
         async with sm() as db:
+            row = await db.get(AppSetting, "runtime")
+            _seed_secret_key((row.value or {}) if row else {})
             return await load_runtime_settings(db)
     except Exception as e:
         log.info("eval.local.runtime_snapshot_failed", error=str(e)[:120])

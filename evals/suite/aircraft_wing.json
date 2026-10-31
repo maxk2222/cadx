@@ -1,0 +1,168 @@
+{
+ "name": "aircraft_wing",
+ "project": "eval:aircraft-wing",
+ "difficulty": 2,
+ "description": "Tapered NACA-0015 cantilever aircraft wing (aluminium 6061, 200 mm span, 80->48 mm chord) — airfoil loft + volume-fraction gates plus a two-case aerodynamic lift/neg-g FEM check.",
+ "settings": {
+  "gen_mode": "cad",
+  "min_wall_mm": 0.1
+ },
+ "stages": [
+  {
+   "id": "codegen",
+   "type": "generate",
+   "mode": "cad",
+   "timeout_s": 5400,
+   "options": {
+    "process": "fdm"
+   },
+   "prompt": "Tapered cantilever aircraft wing, parametric — symmetric NACA 0015 airfoil.\n\nFrame: span along X, chord along Y, thickness along Z; bottom of the root section rests on the XY plane (z = 0); centred in X and Y. mm.\n- Span 200 along X from the root at x = -100 to the tip at x = +100 (centred in X).\n- Linearly tapered planform centred on y = 0 (the mid-chord line is the X axis):\n  * Root chord at x = -100: 80 (y = -40..+40; leading edge y = -40, trailing edge y = +40).\n  * Tip chord at x = +100: 48 (y = -24..+24; leading edge y = -24, trailing edge y = +24).\n- Symmetric NACA 0015 airfoil (t = 0.15) with the chord plane at z = 6.0:\n  * Half-thickness: z_t(s) = 5 * 0.15 * c * (0.2969*sqrt(s) - 0.1260*s - 0.3516*s^2 + 0.2843*s^3 - 0.1036*s^4), s in [0,1] from leading edge (y = -c/2) to closed trailing edge (y = +c/2); upper surface z = 6.0 + z_t, lower surface z = 6.0 - z_t.\n  * Root (c = 80): max thickness 12.0 -> z = 0..12 (touches the XY plane at z = 0). Tip (c = 48): max thickness 7.2 -> z = 2.4..9.6.\n  * Loft across >= 4 spanwise sections (x = -100, -33.3, +33.3, +100) with >= 40 points per surface (smooth loft, solid interior), flat planar root and tip end caps at x = -100 and x = +100.\n- Overall bounding box exactly 200 (X) x 80 (Y) x 12 (Z). No holes, cutouts, fillets or chamfers.",
+   "gates": [
+    {
+     "type": "status",
+     "expect": ["succeeded", "needs_review"]
+    },
+    {
+     "type": "bbox",
+     "dims": [200, 80, 12],
+     "match": "match",
+     "tol_mm": 3
+    },
+    {
+     "type": "volume_fraction",
+     "of": "bbox",
+     "min": 0.25,
+     "max": 0.62
+    },
+    {
+     "type": "contains_point",
+     "xyz": [0, 0, 6]
+    },
+    {
+     "type": "contains_point",
+     "xyz": [-80, 20, 6]
+    },
+    {
+     "type": "bodies",
+     "max": 1
+    },
+    {
+     "type": "watertight",
+     "expect": true
+    },
+    {
+     "type": "verify_spec",
+     "expect": "PASS",
+     "ignore": ["dfm"]
+    }
+   ]
+  },
+  {
+   "id": "fem",
+   "type": "fem",
+   "timeout_s": 1800,
+   "material": "aluminum",
+   "load_cases": [
+    {
+     "name": "lift",
+     "fixed": [
+      {
+       "kind": "plane",
+       "axis": "-x",
+       "description": "wing root clamp at x = -100"
+      }
+     ],
+     "loads": [
+      {
+       "region": {
+        "kind": "area",
+        "axis": "+z",
+        "x_range": [0, 100],
+        "margin_mm": 2,
+        "description": "outboard upper wing skin"
+       },
+       "force_n": [0, 0, 300],
+       "spread_mode": "area"
+      }
+     ]
+    },
+    {
+     "name": "neg_g",
+     "weight": 0.5,
+     "fixed": [
+      {
+       "kind": "plane",
+       "axis": "-x",
+       "description": "wing root clamp at x = -100"
+      }
+     ],
+     "loads": [
+      {
+       "region": {
+        "kind": "area",
+        "axis": "-z",
+        "x_range": [0, 100],
+        "margin_mm": 2,
+        "description": "outboard lower wing skin"
+       },
+       "force_n": [0, 0, -150],
+       "spread_mode": "area"
+      }
+     ]
+    }
+   ],
+   "gates": [
+    {
+     "type": "status",
+     "expect": ["succeeded"]
+    },
+    {
+     "type": "fem",
+     "field": "sf",
+     "min": 0.8
+    },
+    {
+     "type": "fem_loadcases",
+     "min_cases": 2,
+     "checks": [
+      {
+       "case": "lift",
+       "resultant_n": { "min": 250, "max": 350 },
+       "resultant_dir": [0, 0, 1],
+       "dir_tol_deg": 25,
+       "fixed_at_axis": "-x",
+       "load_centroid_mm": [50, 0, 8],
+       "tol_mm": 18,
+       "mechanisms": ["force_n"],
+       "warnings_absent": [
+        "no fixed region",
+        "resolved to zero",
+        "unsolvable",
+        "point-load"
+       ],
+       "sf_min": 0.8,
+       "sf_max": 80
+      },
+      {
+       "case": "neg_g",
+       "resultant_n": { "min": 120, "max": 180 },
+       "resultant_dir": [0, 0, -1],
+       "dir_tol_deg": 25,
+       "fixed_at_axis": "-x",
+       "tol_mm": 18,
+       "mechanisms": ["force_n"],
+       "warnings_absent": [
+        "no fixed region",
+        "resolved to zero",
+        "unsolvable",
+        "point-load"
+       ],
+       "sf_min": 0.8,
+       "sf_max": 120
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

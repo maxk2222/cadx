@@ -143,3 +143,67 @@ async def test_resample_stage_falls_through_to_spec(tmp_path):
     stage = EvalStage(id="rs", type="resample")
     _, _jid, meta = await _spawn(stage, _ctx(tmp_path, pid, vid))
     assert meta["load_cases_source"] == "parent_spec"
+
+
+def _fernet_stored(key: bytes) -> dict:
+    from cryptography.fernet import Fernet
+
+    ct = Fernet(key).encrypt(b"tok").decode()
+    return {"settings": {"llm_api_key": "enc:v1:" + ct}}
+
+
+def test_seed_secret_key_picks_working_key(tmp_path, monkeypatch):
+    from cryptography.fernet import Fernet
+
+    from cadx import config
+    from cadx.evalkit import local, paths
+
+    good = Fernet.generate_key()
+    bad = Fernet.generate_key()
+    scratch = tmp_path / "scratch"
+    prev = tmp_path / "prev_data"
+    root_data = tmp_path / "root" / "data"
+    for d in (scratch, prev, root_data):
+        d.mkdir(parents=True)
+    (root_data / ".settings.key").write_bytes(bad)
+    (prev / ".settings.key").write_bytes(good)
+    monkeypatch.setenv("DATA_DIR", str(scratch))
+    monkeypatch.setenv("CADX_PREV_DATA_DIR", str(prev))
+    config.get_settings.cache_clear()
+    monkeypatch.setattr(paths, "REPO_ROOT", tmp_path / "root")
+
+    local._seed_secret_key(_fernet_stored(good))
+    assert (scratch / ".settings.key").read_bytes() == good
+
+
+def test_seed_secret_key_no_match_leaves_scratch(tmp_path, monkeypatch):
+    from cryptography.fernet import Fernet
+
+    from cadx import config
+    from cadx.evalkit import local, paths
+
+    good = Fernet.generate_key()
+    scratch = tmp_path / "scratch"
+    prev = tmp_path / "prev_data"
+    for d in (scratch, prev):
+        d.mkdir(parents=True)
+    (prev / ".settings.key").write_bytes(Fernet.generate_key())
+    monkeypatch.setenv("DATA_DIR", str(scratch))
+    monkeypatch.setenv("CADX_PREV_DATA_DIR", str(prev))
+    config.get_settings.cache_clear()
+    monkeypatch.setattr(paths, "REPO_ROOT", tmp_path / "missing")
+
+    local._seed_secret_key(_fernet_stored(good))
+    assert not (scratch / ".settings.key").exists()
+
+
+def test_seed_secret_key_plaintext_noop(tmp_path, monkeypatch):
+    from cadx import config
+    from cadx.evalkit import local
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("CADX_PREV_DATA_DIR", raising=False)
+    config.get_settings.cache_clear()
+
+    local._seed_secret_key({"settings": {"llm_api_key": "plain-key"}})
+    assert not (tmp_path / ".settings.key").exists()

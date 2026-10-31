@@ -183,6 +183,33 @@ def test_fillet_watertight_verify_spec():
     assert [g.ok for g in res] == [False, False, False]
 
 
+def test_verify_spec_ignore_recomputes_verdict():
+    report = {
+        "status": "FAIL",
+        "checks": [
+            {"name": "envelope", "status": "PASS"},
+            {"name": "features", "status": "PASS"},
+            {"name": "dfm", "status": "FAIL"},
+        ],
+    }
+    out = _out(mesh={"topopt": {"verify_spec": report}})
+    strict = run_gates([{"type": "verify_spec", "expect": "PASS"}], out, 0)[0]
+    assert strict.ok is False
+    assert strict.measured == "FAIL"
+    assert "dfm" in strict.detail
+    relaxed = run_gates([{"type": "verify_spec", "expect": "PASS", "ignore": ["dfm"]}], out, 0)[0]
+    assert relaxed.ok is True
+    assert relaxed.measured == "PASS"
+    assert relaxed.detail == "[]"
+    # a real failure outside the ignored check still fails
+    still_bad = run_gates(
+        [{"type": "verify_spec", "expect": "PASS", "ignore": ["envelope", "features"]}],
+        out,
+        0,
+    )[0]
+    assert still_bad.ok is False
+
+
 def test_fem_topopt_gates():
     out = _out(fem={"worst_safety_factor": 2.1, "cases": [{"safety_factor": 2.1}]})
     assert run_gates([{"type": "fem", "field": "sf", "min": 1.5}], out, 0)[0].ok
@@ -342,6 +369,32 @@ def test_radial_peaks_counts_lobes(tmp_path):
     out = _out(artifact_files=[str(p)])
     g = run_gates([{"type": "radial_peaks", "count": 8, "tol": 1, "axis": "z"}], out, 0)[0]
     assert g.ok, g.detail
+
+
+def test_radial_peaks_counts_propeller_blades(tmp_path):
+    """Wide open-water gaps between blades must stay valleys — flat
+    tip-to-tip interpolation reads a 4-blade rotor as 0 peaks, and
+    autocorrelation ripples inside the zero-lag lobe read it as dozens."""
+    hub = trimesh.creation.cylinder(radius=14, height=24, sections=180)
+    hub.apply_translation((0, 0, 12))
+    blades = []
+    for i in range(4):
+        blade = trimesh.creation.box(extents=(50, 18, 3))
+        blade.apply_translation((36, 0, 12))  # radial span r ~11..61, z ~10.5..13.5
+        # ~25 deg helical pitch about the radial station, then station angle
+        blade.apply_transform(
+            trimesh.transformations.rotation_matrix(math.radians(25), [0, 1, 0], point=[36, 0, 12])
+        )
+        blade.apply_transform(trimesh.transformations.rotation_matrix(i * math.pi / 2, [0, 0, 1]))
+        blade = blade.subdivide().subdivide()  # vertices across the faces
+        blades.append(blade)
+    mesh = trimesh.util.concatenate([hub, *blades])
+    p = tmp_path / "prop.stl"
+    mesh.export(p)
+    out = _out(artifact_files=[str(p)])
+    g = run_gates([{"type": "radial_peaks", "count": 4, "tol": 1, "axis": "z"}], out, 0)[0]
+    assert g.ok, g.detail
+    assert g.measured == 4
 
 
 def _fem_out(**kw) -> StageOutcome:

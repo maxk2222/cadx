@@ -1,0 +1,180 @@
+{
+ "name": "marine_propeller",
+ "project": "eval:marine-propeller",
+ "difficulty": 2,
+ "description": "4-blade marine propeller (aluminium bronze / 6061) — cylindrical hub with shaft through-bore and 4 twisted, skewed hydrofoil blades; radial_peaks=4 + bore/envelope gates plus thrust & torque FEM.",
+ "settings": {
+  "gen_mode": "cad",
+  "min_wall_mm": 0.1
+ },
+ "stages": [
+  {
+   "id": "codegen",
+   "type": "generate",
+   "mode": "cad",
+   "timeout_s": 5400,
+   "options": {
+    "process": "fdm"
+   },
+   "prompt": "4-blade marine propeller, parametric.\n\nFrame: hub axis along Z, bottom face on the XY plane (z = 0), centred in X and Y. mm.\n- Overall bounding box exactly 120 (X) x 120 (Y) x 24 (Z): z = 0..24.\n- Central cylindrical hub: outer dia 28 (r = 14), height 24 (z = 0..24).\n- Concentric through-bore dia 10 (r = 5) along Z through (0,0), open on both z = 0 and z = 24; the cut must span the full hub height — use a bore cylinder centred at (0,0,12) with height ~30 so it clears both faces (a centred tool shifted to z = -1 leaves the top half solid).\n- 4 identical twisted hydrofoil blades spaced 0/90/180/270 deg around Z:\n  * Each blade runs radially from r = 8 (root station 6 mm inside the r = 14 hub wall — a fat union overlap; still 3 mm clear of the r = 5 bore) out to tip radius r = 60 (propeller dia 120 — bound the tip to the r = 60 cylinder).\n  * Loft each blade across >= 3 radial stations (e.g. r = 8, 35, 60) using thin hydrofoil/elliptical sections: chord ~18-22 mm, max thickness ~3.0-3.5 mm, with progressive helicoidal pitch twist (~32 deg at the root to ~18 deg at the tip).\n  * Keep ALL blade geometry strictly inside z = 2..22 so the flat hub faces define the exact z = 0..24 height.\n- Union the 4 blades with the hub, then cut the dia-10 centre through-bore. Blades are SOLID bodies — do not cut slots, channels, weight pockets or voids into them. No fillets, no chamfers; the result must be a single watertight solid.",
+   "gates": [
+    {
+     "type": "status",
+     "expect": ["succeeded", "needs_review"]
+    },
+    {
+     "type": "bbox",
+     "dims": [120, 120, 24],
+     "match": "match",
+     "tol_mm": 5
+    },
+    {
+     "type": "holes",
+     "count": 1,
+     "dia": 10,
+     "axis": "z",
+     "positions": [[0, 0]],
+     "depth_class": "through"
+    },
+    {
+     "type": "radial_peaks",
+     "count": 4,
+     "tol": 1,
+     "axis": "z"
+    },
+    {
+     "type": "bodies",
+     "max": 1
+    },
+    {
+     "type": "volume",
+     "min_mm3": 15000,
+     "max_mm3": 95000
+    },
+    {
+     "type": "volume_fraction",
+     "of": "disk",
+     "min": 0.06,
+     "max": 0.40
+    },
+    {
+     "type": "watertight",
+     "expect": true
+    },
+    {
+     "type": "verify_spec",
+     "expect": "PASS",
+     "ignore": ["dfm"]
+    }
+   ]
+  },
+  {
+   "id": "fem",
+   "type": "fem",
+   "timeout_s": 1800,
+   "material": "aluminum",
+   "load_cases": [
+    {
+     "name": "thrust",
+     "fixed": [
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [0, 0, 12],
+       "diameter_mm": 16,
+       "inner_diameter_mm": 8,
+       "z_range": [0, 24],
+       "description": "hub shaft bore sleeve"
+      }
+     ],
+     "loads": [
+      {
+       "region": {
+        "kind": "rim",
+        "axis": "+z",
+        "diameter_mm": 120,
+        "inner_diameter_mm": 70,
+        "description": "outer blade annulus"
+       },
+       "force_n": [0, 0, 400],
+       "spread_mode": "area"
+      }
+     ]
+    },
+    {
+     "name": "torque",
+     "weight": 0.7,
+     "fixed": [
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [0, 0, 12],
+       "diameter_mm": 16,
+       "inner_diameter_mm": 8,
+       "z_range": [0, 24],
+       "description": "hub shaft bore sleeve"
+      }
+     ],
+     "loads": [
+      {
+       "region": {
+        "kind": "rim",
+        "axis": "+z",
+        "diameter_mm": 120,
+        "inner_diameter_mm": 70,
+        "description": "outer blade annulus"
+       },
+       "moment_nm": [0, 0, -15]
+      }
+     ]
+    }
+   ],
+   "gates": [
+    {
+     "type": "status",
+     "expect": ["succeeded"]
+    },
+    {
+     "type": "fem",
+     "field": "sf",
+     "min": 0.3
+    },
+    {
+     "type": "fem_loadcases",
+     "min_cases": 2,
+     "checks": [
+      {
+       "case": "thrust",
+       "resultant_n": { "min": 320, "max": 480 },
+       "resultant_dir": [0, 0, 1],
+       "dir_tol_deg": 25,
+       "fixed_centroid_mm": [0, 0, 12],
+       "tol_mm": 10,
+       "mechanisms": ["force_n"],
+       "warnings_absent": [
+        "no fixed region",
+        "resolved to zero",
+        "unsolvable",
+        "point-load"
+       ],
+       "sf_min": 0.3,
+       "sf_max": 150
+      },
+      {
+       "case": "torque",
+       "moment_mag_nm": { "min": 11, "max": 19 },
+       "mechanisms": ["moment_nm"],
+       "warnings_absent": [
+        "no fixed region",
+        "resolved to zero",
+        "unsolvable"
+       ],
+       "sf_min": 0.3,
+       "sf_max": 150
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

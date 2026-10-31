@@ -31,6 +31,8 @@ cadx eval run --local --case robot_arm_mount --stages fem --from <dir>
 |------|-----------|--------|-------------|
 | `l_bracket_rib` | 1 | aluminium L-bracket + triangular rib | `codegen` → `fem` (+ `params`, disabled) |
 | `sprocket_520_45t` | 2 | 7075-T6 rear sprocket, 45 teeth, 520 chain | `codegen` (+ `imagegen` → `meshgen`, disabled) |
+| `marine_propeller` | 2 | 4-blade marine propeller, hub + shaft bore | `codegen` → `fem` (thrust + torque cases) |
+| `aircraft_wing` | 2 | tapered NACA-0015 cantilever wing | `codegen` → `fem` (lift + neg-g cases) |
 | `robot_arm_mount` | 3 | topopt-ready robot-arm mount | `codegen` → `fem` → `topopt` → `refine` |
 | `bearing_bracket_topopt` | 3 | generative-design bearing bracket — interfaces-only prompt | `codegen` → `fem` → `topopt` → `refine` |
 | `agent_fem_bc` | 2 | agent-declared boundary conditions (cantilever bar) | `codegen` → `fem` (spec fallback + `fem_loadcases`) |
@@ -98,7 +100,9 @@ Per-stage declarative checks in the suite JSON, evaluated in
 - **outcome gates** — `status`, `score`, `bbox` (`match`/`within`,
   `tol_mm`), feature gates (`holes`/`tunnel`/`slot`/`countersink`/
   `counterbore`/`fillet`/`chamfer` with `count`/`dia`/`axis`/`positions`/
-  `pcd`), `watertight`, `verify_spec`, `issue_contains`, `code`, `mode`,
+  `pcd`), `watertight`, `verify_spec` (`expect`, plus `ignore` — a list of
+  sub-check names like `dfm` dropped before the verdict is recomputed),
+  `issue_contains`, `code`, `mode`,
   `fem` (`field`/`min`/`max`, resolves across `worst_safety_factor` →
   `sf_verified` → `sf_export` → per-case), `topopt` (`field`/`min`),
   `volfrac`, `envelope_within`, `asset_image`, `execs_min`, `max_wall_s`,

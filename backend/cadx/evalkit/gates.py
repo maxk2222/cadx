@@ -206,7 +206,21 @@ def _radial_peak_count(mesh: Any, axis: str = "z", bins: int = 1440) -> tuple[in
     r_max = float(r_all.max())
     if r_max <= 0:
         return 0, "degenerate mesh"
-    for frac in np.arange(0.94, 0.79, -0.03):
+    # full-mesh silhouette floor: per-bin max radius over ALL vertices,
+    # interpolated across its own gaps. Wide empty bands in an outer profile
+    # fall back to this (the hub/lower-blade silhouette in open water)
+    # instead of being bridged flat tip-to-tip by np.interp.
+    th_all = np.arctan2(v[:, a2] - c2, v[:, a1] - c1)
+    idx_all = ((th_all + np.pi) / (2 * np.pi) * bins).astype(int) % bins
+    prof_all = np.zeros(bins)
+    np.maximum.at(prof_all, idx_all, r_all)
+    nz_all = np.flatnonzero(prof_all > 0)
+    if not nz_all.size:
+        return 0, "degenerate mesh"
+    floor = np.interp(np.arange(bins), nz_all, prof_all[nz_all], period=bins)
+    # tight outer bands first; 0.50 is the deep-hub fallback for rotors
+    # whose lobes never reach the usual band
+    for frac in [*np.arange(0.94, 0.79, -0.03), 0.50]:
         sel = r_all >= frac * r_max
         if int(sel.sum()) < 24:
             continue
@@ -220,24 +234,52 @@ def _radial_peak_count(mesh: Any, axis: str = "z", bins: int = 1440) -> tuple[in
         if empty.all():
             continue
         if empty.any():
-            prof = np.interp(np.arange(bins), np.flatnonzero(~empty), prof[~empty], period=bins)
+            filled = prof.copy()
+            short = np.zeros(bins, dtype=bool)
+            nz = np.flatnonzero(~empty)
+            for i in range(len(nz)):
+                a, b = int(nz[i]), int(nz[(i + 1) % len(nz)])
+                gap = (b - a - 1) % bins
+                if not gap:
+                    continue
+                ks = (a + 1 + np.arange(gap)) % bins
+                if gap <= 12:  # <=3° — tessellation speckle, interpolate
+                    short[ks] = True
+                else:  # real gap (inter-blade water) — flat hub-floor valley
+                    filled[ks] = floor[ks].min()
+            if short.any():
+                filled[short] = np.interp(
+                    np.flatnonzero(short),
+                    np.flatnonzero(~short),
+                    filled[~short],
+                    period=bins,
+                )
+            prof = filled
         lo, hi = float(prof.min()), float(prof.max())
         if hi - lo < 0.4:
             continue
         p = prof - prof.mean()
         ac = np.correlate(p, p, "full")[bins - 1 :] / (p @ p + 1e-12)
         # pitch detection: first strong local maximum of the autocorrelation
-        # after the initial decay — global argmax misfires on flat-topped
-        # profiles (tiny lags correlate well) and on harmonics (helical
-        # flanks inject 2-5x the tooth frequency)
+        # AFTER the zero-lag lobe has decayed — a wide-lobe profile keeps ac
+        # high for tens of bins and any tessellation ripple inside the lobe
+        # reads as a false high-frequency peak. The upper bound leaves head-
+        # room for 2-/3-blade rotors (lag 720/480 at bins=1440).
+        decayed = np.flatnonzero(ac[4:] <= 0.15)
+        k_min = 4 + int(decayed[0]) if decayed.size else int(bins * 0.55)
         lags = [
             k
-            for k in range(4, bins // 3)
+            for k in range(k_min, int(bins * 0.55))
             if ac[k] >= ac[k - 1] and ac[k] > ac[k + 1] and ac[k] >= 0.30
         ]
         if not lags:
             continue
-        lag = lags[0]
+        # first lag reaching 70% of the strongest repeat — multiples of the
+        # true pitch match it in strength, so the earliest "nearly dominant"
+        # peak is the pitch (first-max misfires on the bumpy rising flank of
+        # a sparse-blade profile; global argmax misfires on equal multiples)
+        k_best = max(lags, key=lambda k: ac[k])
+        lag = next(k for k in lags if ac[k] >= 0.70 * ac[k_best])
         n = max(1, round(bins / lag))
         return n, f"band={frac:.2f} r∈[{lo:.1f},{hi:.1f}] lag={lag} ac={ac[lag]:.2f}"
     return 0, f"no non-flat radial band (r_max={r_max:.1f})"
@@ -719,12 +761,19 @@ def _gate_outcome(  # noqa: C901
     if name == "verify_spec":
         report = verify_spec_report({"mesh": outcome.mesh or {}}, outcome.issues)
         want = str(g.get("expect") or "PASS")
-        got = str(report["status"]) if report else None
-        fails = [
-            c.get("name")
-            for c in (report or {}).get("checks") or []
-            if isinstance(c, dict) and c.get("status") == "FAIL"
-        ]
+        # "ignore": ["check", ...] — recompute the verdict with named checks
+        # dropped (e.g. the DfM hint tier on a shape whose manufacturability
+        # warning is intrinsic, like a flat-printed airfoil)
+        checks = [c for c in (report or {}).get("checks") or [] if isinstance(c, dict)]
+        ignore = {str(x) for x in (g.get("ignore") or [])}
+        if ignore:
+            checks = [c for c in checks if c.get("name") not in ignore]
+            n_fail = sum(1 for c in checks if c.get("status") == "FAIL")
+            n_pass = sum(1 for c in checks if c.get("status") == "PASS")
+            got = "FAIL" if n_fail else ("PASS" if n_pass else "UNVERIFIED")
+        else:
+            got = str(report["status"]) if report else None
+        fails = [c.get("name") for c in checks if c.get("status") == "FAIL"]
         return GateResult(name, got == want, measured=got, expected=want, detail=str(fails[:6]))
 
     if name == "dfm":
