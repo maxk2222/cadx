@@ -25,19 +25,19 @@ def test_shipped_suite_loads_and_validates():
         "m10_csk_screw",
         "m8_tapped_plate",
         "agent_fem_bc",
-        "aircraft_wing",
         "ball_m8_tap",
         "block_sidewall_tap",
         "helical_pinion_shaft",
         "m8_hex_screw_threadlen",
-        "marine_propeller",
         "sprocket_520_45t",
+        "aircraft_wing",
         "bearing_bracket_topopt",
+        "marine_propeller",
         "robot_arm_infill_escalate",
         "robot_arm_infill_guided",
         "robot_arm_mount",
     ]
-    assert [c.difficulty for c in cases] == [1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3]
+    assert [c.difficulty for c in cases] == [1, 1, 1, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3]
     for c in cases:
         assert c.project.startswith("eval:")
         assert c.stages[0].type in ("generate", "meshgen")

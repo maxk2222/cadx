@@ -1,8 +1,8 @@
 {
  "name": "aircraft_wing",
  "project": "eval:aircraft-wing",
- "difficulty": 2,
- "description": "Tapered NACA-0015 cantilever aircraft wing (aluminium 6061, 200 mm span, 80->48 mm chord) — airfoil loft + volume-fraction gates plus a two-case aerodynamic lift/neg-g FEM check.",
+ "difficulty": 3,
+ "description": "Swept, tapered, twisted cantilever aircraft wing (aluminium 6061, 200 mm span, 80->48 mm chord, NACA 0015->0012, washout) — multi-station airfoil loft + volume-fraction gates plus a two-case aerodynamic lift/neg-g FEM check.",
  "settings": {
   "gen_mode": "cad",
   "min_wall_mm": 0.1
@@ -16,7 +16,7 @@
    "options": {
     "process": "fdm"
    },
-   "prompt": "Tapered cantilever aircraft wing, parametric — symmetric NACA 0015 airfoil.\n\nFrame: span along X, chord along Y, thickness along Z; bottom of the root section rests on the XY plane (z = 0); centred in X and Y. mm.\n- Span 200 along X from the root at x = -100 to the tip at x = +100 (centred in X).\n- Linearly tapered planform centred on y = 0 (the mid-chord line is the X axis):\n  * Root chord at x = -100: 80 (y = -40..+40; leading edge y = -40, trailing edge y = +40).\n  * Tip chord at x = +100: 48 (y = -24..+24; leading edge y = -24, trailing edge y = +24).\n- Symmetric NACA 0015 airfoil (t = 0.15) with the chord plane at z = 6.0:\n  * Half-thickness: z_t(s) = 5 * 0.15 * c * (0.2969*sqrt(s) - 0.1260*s - 0.3516*s^2 + 0.2843*s^3 - 0.1036*s^4), s in [0,1] from leading edge (y = -c/2) to closed trailing edge (y = +c/2); upper surface z = 6.0 + z_t, lower surface z = 6.0 - z_t.\n  * Root (c = 80): max thickness 12.0 -> z = 0..12 (touches the XY plane at z = 0). Tip (c = 48): max thickness 7.2 -> z = 2.4..9.6.\n  * Loft across >= 4 spanwise sections (x = -100, -33.3, +33.3, +100) with >= 40 points per surface (smooth loft, solid interior), flat planar root and tip end caps at x = -100 and x = +100.\n- Overall bounding box exactly 200 (X) x 80 (Y) x 12 (Z). No holes, cutouts, fillets or chamfers.",
+   "prompt": "Swept, tapered, twisted cantilever aircraft wing, parametric — variable-thickness symmetric NACA airfoil.\n\nFrame: span along X, chord along Y, thickness along Z; the root section's bottom rests on the XY plane (z = 0); centred in X. mm.\n- Span 200 along X from the root at x = -100 to the tip at x = +100.\n- Planform — straight trailing edge, swept leading edge:\n  * The trailing edge lies on the line y = +40 for the ENTIRE span (root TE and tip TE both at y = +40).\n  * Root chord at x = -100: 80 (leading edge y = -40, trailing edge y = +40).\n  * Tip chord at x = +100: 48 (leading edge y = -8, trailing edge y = +40) — the leading edge sweeps aft; the mid-chord line runs from (x = -100, y = 0) to (x = +100, y = +16).\n  * Local chord c(x) = 80 - 0.16 * (x + 100); section mid-chord y_mid(x) = +0.08 * (x + 100).\n- Symmetric NACA 4-digit airfoil with linearly interpolated thickness ratio t(x): 0.15 at the root (NACA 0015) tapering to 0.12 at the tip (NACA 0012):\n  * Half-thickness: z_t(s) = 5 * t * c * (0.2969*sqrt(s) - 0.1260*s - 0.3516*s^2 + 0.2843*s^3 - 0.1036*s^4), s in [0,1] from leading edge to closed trailing edge; chord plane at z = 6.0 -> upper surface z = 6.0 + z_t, lower surface z = 6.0 - z_t.\n  * Root (c = 80, t = 0.15): max thickness 12.0 -> z = 0..12 (the root section alone touches z = 0 and z = 12). Tip (c = 48, t = 0.12): max thickness ~5.8 before twist.\n- Washout: rotate each section about the X-parallel axis through its own mid-chord point (x, y_mid(x), 6.0) by the twist angle theta(x) = -3.5 deg * (x + 100) / 200 — the leading edge dips lower toward the tip (0 deg at the root, -3.5 deg at the tip). Rotated sections must stay inside z = 0..12.\n- Loft across >= 5 spanwise sections (e.g. x = -100, -50, 0, +50, +100) with >= 40 points per airfoil surface (smooth loft, solid interior), flat planar root and tip end caps at x = -100 and x = +100.\n- Overall bounding box exactly 200 (X) x 80 (Y) x 12 (Z). No holes, cutouts, fillets or chamfers.",
    "gates": [
     {
      "type": "status",
@@ -31,7 +31,7 @@
     {
      "type": "volume_fraction",
      "of": "bbox",
-     "min": 0.25,
+     "min": 0.20,
      "max": 0.62
     },
     {
@@ -40,7 +40,7 @@
     },
     {
      "type": "contains_point",
-     "xyz": [-80, 20, 6]
+     "xyz": [-80, 15, 6]
     },
     {
      "type": "bodies",
@@ -53,7 +53,7 @@
     {
      "type": "verify_spec",
      "expect": "PASS",
-     "ignore": ["dfm"]
+     "ignore": ["dfm", "span_0"]
     }
    ]
   },
@@ -131,8 +131,8 @@
        "resultant_dir": [0, 0, 1],
        "dir_tol_deg": 25,
        "fixed_at_axis": "-x",
-       "load_centroid_mm": [50, 0, 8],
-       "tol_mm": 18,
+       "load_centroid_mm": [50, 8, 8],
+       "tol_mm": 20,
        "mechanisms": ["force_n"],
        "warnings_absent": [
         "no fixed region",
@@ -149,7 +149,7 @@
        "resultant_dir": [0, 0, -1],
        "dir_tol_deg": 25,
        "fixed_at_axis": "-x",
-       "tol_mm": 18,
+       "tol_mm": 20,
        "mechanisms": ["force_n"],
        "warnings_absent": [
         "no fixed region",

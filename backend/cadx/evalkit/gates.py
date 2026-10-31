@@ -187,6 +187,20 @@ def _load_mesh(outcome: StageOutcome) -> Any | None:
     return None
 
 
+def _ac_harmonic_ok(ac: Any, k: int, k_min: int, bins: int) -> bool:
+    """True if lag `k`'s multiples keep a strong autocorrelation peak.
+
+    The true blade pitch repeats at 2k/3k; a sparse-blade profile's
+    fragment-spacing peaks (high-pitch blades scattering vertices ~20 bins
+    apart) decay at their multiples — dropping those lets deeper bands win.
+    """
+    for m in (m * k for m in (2, 3) if m * k < int(bins * 0.55)):
+        w = max(5, int(0.03 * m))
+        if float(ac[max(k_min, m - w) : m + w + 1].max()) < 0.25:
+            return False
+    return True
+
+
 def _radial_peak_count(mesh: Any, axis: str = "z", bins: int = 1440) -> tuple[int, str]:
     """Count teeth/lobes from a polar max-radius profile around `axis`.
 
@@ -267,11 +281,16 @@ def _radial_peak_count(mesh: Any, axis: str = "z", bins: int = 1440) -> tuple[in
         # room for 2-/3-blade rotors (lag 720/480 at bins=1440).
         decayed = np.flatnonzero(ac[4:] <= 0.15)
         k_min = 4 + int(decayed[0]) if decayed.size else int(bins * 0.55)
+        # counts above ~64 lags/rotor are implausible for these parts and a
+        # short-lag cutoff keeps tessellation ripple out of the candidates
+        k_min = max(k_min, int(bins / 64))
         lags = [
             k
             for k in range(k_min, int(bins * 0.55))
             if ac[k] >= ac[k - 1] and ac[k] > ac[k + 1] and ac[k] >= 0.30
         ]
+
+        lags = [k for k in lags if _ac_harmonic_ok(ac, k, k_min, bins)]
         if not lags:
             continue
         # first lag reaching 70% of the strongest repeat — multiples of the

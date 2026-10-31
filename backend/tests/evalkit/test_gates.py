@@ -397,6 +397,35 @@ def test_radial_peaks_counts_propeller_blades(tmp_path):
     assert g.measured == 4
 
 
+def test_radial_peaks_counts_high_pitch_five_blades(tmp_path):
+    """High-pitch blades scatter the outer band into fragments ~20 bins
+    apart — the autocorrelation's dominant peak there is fragment spacing,
+    not blade pitch. The harmonic filter must reject those bands so the
+    deep-band profile (true 5-fold pitch) wins."""
+    hub = trimesh.creation.cylinder(radius=14, height=24, sections=180)
+    hub.apply_translation((0, 0, 12))
+    blades = []
+    for i in range(5):
+        blade = trimesh.creation.box(extents=(50, 20, 3))
+        blade.apply_translation((36, 0, 12))
+        # ~45 deg helical pitch — outer-band profile fragments per blade
+        blade.apply_transform(
+            trimesh.transformations.rotation_matrix(math.radians(45), [0, 1, 0], point=[36, 0, 12])
+        )
+        blade.apply_transform(
+            trimesh.transformations.rotation_matrix(i * 2 * math.pi / 5, [0, 0, 1])
+        )
+        blade = blade.subdivide().subdivide()
+        blades.append(blade)
+    mesh = trimesh.util.concatenate([hub, *blades])
+    p = tmp_path / "prop5.stl"
+    mesh.export(p)
+    out = _out(artifact_files=[str(p)])
+    g = run_gates([{"type": "radial_peaks", "count": 5, "tol": 1, "axis": "z"}], out, 0)[0]
+    assert g.ok, g.detail
+    assert g.measured == 5
+
+
 def _fem_out(**kw) -> StageOutcome:
     """Outcome with one resolved case carrying the M2/M3 evidence fields."""
     fem = {
