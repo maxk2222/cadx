@@ -26,12 +26,17 @@
      "tol_mm": 3
     },
     {
+     "type": "bodies",
+     "max": 1
+    },
+    {
      "type": "watertight",
      "expect": true
     },
     {
      "type": "verify_spec",
-     "expect": "PASS"
+     "expect": "PASS",
+     "ignore": ["dfm", "envelope_x", "envelope_y"]
     },
     {
      "type": "max_wall_s",

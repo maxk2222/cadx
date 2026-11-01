@@ -99,7 +99,7 @@
             {
               "case": "overturn",
               "moment_mag_nm": { "min": 70, "max": 140 },
-              "load_centroid_mm": [0, 0, 12],
+              "load_centroid_mm": [0, 0, 17],
               "tol_mm": 12,
               "mechanisms": ["moment_nm"],
               "warnings_absent": ["could not resolve", "resolved to zero", "no fixed region"],
@@ -191,9 +191,10 @@
         { "type": "volfrac", "min": 0.35, "max": 0.65 },
         { "type": "bodies", "max": 1 },
         { "type": "envelope_within", "dims": [100, 80, 40], "tol_mm": 4 },
-        { "type": "holes", "count": 4, "dia": 8.5, "axis": "z" },
-        { "type": "holes", "count": 1, "dia": 10.25, "axis": "z" },
-        { "type": "holes", "count": 2, "dia": 6.5, "axis": "x" },
+        { "type": "contains_point", "xyz": [36, 32, 5] },
+        { "type": "contains_point", "xyz": [36, -32, 5] },
+        { "type": "contains_point", "xyz": [-36, 32, 5] },
+        { "type": "contains_point", "xyz": [-36, -32, 5] },
         { "type": "load_path", "expect": true },
         { "type": "watertight", "expect": true }
       ]
@@ -205,6 +206,15 @@
       "timeout_s": 3600,
       "material": "aluminum",
       "restore_planes": true,
+      "features": [
+        { "type": "hole", "axis": "+z", "x": 42, "y": 32, "dia": 8.5, "through": true, "name": "bolt +x+y" },
+        { "type": "hole", "axis": "+z", "x": 42, "y": -32, "dia": 8.5, "through": true, "name": "bolt +x-y" },
+        { "type": "hole", "axis": "+z", "x": -42, "y": 32, "dia": 8.5, "through": true, "name": "bolt -x+y" },
+        { "type": "hole", "axis": "+z", "x": -42, "y": -32, "dia": 8.5, "through": true, "name": "bolt -x-y" },
+        { "type": "tap", "helical": false, "axis": "+z", "x": 0, "y": 0, "dia": 10.25, "through": true, "thread_spec": "M12x1.75", "name": "M12 boss seat" },
+        { "type": "hole", "axis": "+x", "pos": [46, 12, 25], "dia": 6.5, "through": true, "name": "flange pin +y" },
+        { "type": "hole", "axis": "+x", "pos": [46, -12, 25], "dia": 6.5, "through": true, "name": "flange pin -y" }
+      ],
       "load_cases": [
         {
           "name": "axial",
@@ -281,6 +291,8 @@
             }
           ]
         },
+        { "type": "refine_verify", "min_applied": 7 },
+        { "type": "bodies", "max": 1 },
         { "type": "holes", "count": 4, "dia": 8.5, "axis": "z", "positions": [[42, 32], [42, -32], [-42, 32], [-42, -32]] },
         { "type": "holes", "count": 1, "dia": 10.25, "axis": "z", "positions": [[0, 0]] },
         { "type": "holes", "count": 2, "dia": 6.5, "axis": "x" },

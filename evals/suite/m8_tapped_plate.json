@@ -13,7 +13,7 @@
    "type": "generate",
    "mode": "cad",
    "timeout_s": 1800,
-   "prompt": "Rectangular mounting plate, parametric, mm units. Plate 60 long (X) x 40 wide (Y) x 10 thick (Z), resting on the XY plane, centred in X and Y.\n- One M8 tapped (internal thread, M8x1.25) hole straight through the plate, centred at x=0, y=0, axis along Z. Model the hole at tap-drill size and declare the thread; the export rebuild carries the real thread groove.\n- Round the four vertical outer edges, radius 2.\nNo other features.",
+   "prompt": "Rectangular mounting plate, parametric, mm units. Plate 60 long (X) x 40 wide (Y) x 10 thick (Z: z = 0..10 strictly), resting on the XY plane, centred in X and Y.\n- One M8 tapped (internal thread, M8x1.25) hole straight through the plate, centred at x=0, y=0, axis along Z. Model the hole at tap-drill size (dia 6.8 mm) and declare the thread via cadlib.tapped_hole so the export rebuild subtracts the thread groove strictly inside the 10 mm plate height (z = 0..10).\n- Round the four vertical outer edges, radius 2.\nNo other features.",
    "gates": [
     {
      "type": "status",
@@ -33,13 +33,18 @@
        "count": 1,
        "axis": "z",
        "dia": 6.8,
-       "positions": [[0, 0]]
+       "positions": [[0, 0]],
+       "depth_class": "through"
       },
       {
        "type": "fillet",
        "count": 1
       }
      ]
+    },
+    {
+     "type": "bodies",
+     "max": 1
     },
     {
      "type": "watertight",

@@ -2,24 +2,126 @@
   "name": "sprocket_520_45t",
   "project": "eval:sprocket-520-45t",
   "difficulty": 2,
-  "description": "Motorrad-Hinterrad-Kettenrad 520/45Z (Aluminium 7075-T6) — Zentrierbohrung, 5er-Lochkreis, Leichtbau-Fenster, gestanzte Zähne.",
-  "settings": { "gen_mode": "cad" },
+  "description": "Motorrad-Hinterrad-Kettenrad 520/45Z (Aluminium 7075-T6) — Zentrierbohrung, 5er-Lochkreis, Leichtbau-Fenster, gestanzte Zähne + Kettenzug-/Drehmoment-FEM.",
+  "settings": { "gen_mode": "cad", "min_wall_mm": 0.1 },
   "stages": [
     {
       "id": "codegen",
       "type": "generate",
       "mode": "cad",
       "timeout_s": 5400,
-      "prompt": "Motorcycle rear sprocket for a 520 chain (45 teeth), parametric — flat 6 mm plate.\n\nFrame: plate on the XY plane (z = 0), centred in X and Y. mm.\n- 45 evenly spaced trapezoidal teeth around the rim; outer diameter ~236 mm (520 chain: pitch 15.875, roller 10.16 -> pitch circle 227.6).\n- Solid web plate out to the tooth band.\n- Centre pilot bore dia 76.\n- 5 holes dia 10.5 on a bolt circle dia 100, evenly spaced.\n- 5 rounded lightening windows between the bolt holes, centred at r ~79 mm; webs >= 6 mm.",
+      "prompt": "Motorcycle rear sprocket for a 520 chain (45 teeth), parametric — flat 6 mm plate.\n\nFrame: plate on the XY plane (z = 0), centred in X and Y. mm.\n- 45 evenly spaced trapezoidal teeth around the rim; outer diameter ~236 mm (520 chain: pitch 15.875, roller 10.16 -> pitch circle 227.6).\n- Solid web plate out to the tooth band.\n- Centre pilot through-bore dia 76.\n- 5 through-holes dia 10.5 on a bolt circle dia 100, evenly spaced.\n- 5 rounded lightening windows between the bolt holes, centred at r ~79 mm; webs >= 6 mm.",
       "gates": [
         { "type": "status", "expect": ["succeeded", "needs_review"] },
         { "type": "bbox", "dims": [236, 236, 6], "match": "match", "tol_mm": 8 },
-        { "type": "holes", "count": 1, "dia": 76, "axis": "z" },
-        { "type": "holes", "count": 5, "dia": 10.5, "axis": "z", "pcd": 100 },
+        { "type": "holes", "count": 1, "dia": 76, "axis": "z", "depth_class": "through" },
+        { "type": "holes", "count": 5, "dia": 10.5, "axis": "z", "pcd": 100, "depth_class": "through" },
         { "type": "radial_peaks", "count": 45, "tol": 2, "axis": "z" },
         { "type": "volume_fraction", "of": "disk", "max": 0.86 },
+        { "type": "bodies", "max": 1 },
         { "type": "watertight", "expect": true },
         { "type": "verify_spec", "expect": "PASS" }
+      ]
+    },
+    {
+      "id": "fem",
+      "type": "fem",
+      "timeout_s": 1800,
+      "material": "aluminum",
+      "load_cases": [
+        {
+          "name": "chain_pull",
+          "fixed": [
+            {
+              "kind": "cylinder",
+              "axis": "z",
+              "center": [0, 0, 3],
+              "diameter_mm": 112,
+              "inner_diameter_mm": 88,
+              "z_range": [0, 6],
+              "description": "PCD 100 bolt circle clamp ring"
+            }
+          ],
+          "loads": [
+            {
+              "region": {
+                "kind": "area",
+                "x_range": [-35, 35],
+                "y_range": [98, 120],
+                "z_range": [0, 6],
+                "description": "upper tooth engagement arc"
+              },
+              "force_n": [-1800, 0, 0]
+            }
+          ]
+        },
+        {
+          "name": "rim_torque",
+          "weight": 0.7,
+          "fixed": [
+            {
+              "kind": "cylinder",
+              "axis": "z",
+              "center": [0, 0, 3],
+              "diameter_mm": 112,
+              "inner_diameter_mm": 88,
+              "z_range": [0, 6],
+              "description": "PCD 100 bolt circle clamp ring"
+            }
+          ],
+          "loads": [
+            {
+              "region": {
+                "kind": "rim",
+                "axis": "+z",
+                "diameter_mm": 238,
+                "inner_diameter_mm": 208,
+                "description": "outer tooth ring"
+              },
+              "moment_nm": [0, 0, -200]
+            }
+          ]
+        }
+      ],
+      "gates": [
+        { "type": "status", "expect": ["succeeded"] },
+        { "type": "fem", "field": "sf", "min": 1.0 },
+        {
+          "type": "fem_loadcases",
+          "min_cases": 2,
+          "checks": [
+            {
+              "case": "chain_pull",
+              "resultant_n": { "min": 1500, "max": 2100 },
+              "resultant_dir": [-1, 0, 0],
+              "dir_tol_deg": 25,
+              "fixed_centroid_mm": [0, 0, 3],
+              "load_centroid_mm": [0, 108, 3],
+              "tol_mm": 15,
+              "mechanisms": ["force_n"],
+              "warnings_absent": [
+                "no fixed region",
+                "resolved to zero",
+                "unsolvable",
+                "point-load"
+              ],
+              "sf_min": 1.0,
+              "sf_max": 120
+            },
+            {
+              "case": "rim_torque",
+              "moment_mag_nm": { "min": 160, "max": 240 },
+              "mechanisms": ["moment_nm"],
+              "warnings_absent": [
+                "no fixed region",
+                "resolved to zero",
+                "unsolvable"
+              ],
+              "sf_min": 1.0,
+              "sf_max": 120
+            }
+          ]
+        }
       ]
     },
     {

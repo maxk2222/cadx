@@ -2,7 +2,7 @@
  "name": "helical_pinion_shaft",
  "project": "eval:helical-pinion-shaft",
  "difficulty": 2,
- "description": "Short steel shaft with an 18-tooth helical gear (module 2, 20 deg helix) on the top end — mesh-geometry gates plus a bending FEM check.",
+ "description": "Short steel shaft with an 18-tooth helical gear (module 2, 20 deg helix) on the top end — mesh-geometry gates plus bending & torsion FEM checks.",
  "settings": {
   "gen_mode": "cad",
   "min_wall_mm": 0.1
@@ -34,6 +34,14 @@
     {
      "type": "contains_point",
      "xyz": [0, 0, 20]
+    },
+    {
+     "type": "volume",
+     "min_mm3": 14000
+    },
+    {
+     "type": "bodies",
+     "max": 1
     },
     {
      "type": "watertight",
@@ -74,6 +82,34 @@
        "force_n": [400, 0, 0]
       }
      ]
+    },
+    {
+     "name": "gear_torque",
+     "weight": 0.7,
+     "fixed": [
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [0, 0, 3],
+       "diameter_mm": 14,
+       "margin_mm": 3,
+       "z_range": [0, 8],
+       "description": "shaft seat — clamped stub below the gear"
+      }
+     ],
+     "loads": [
+      {
+       "region": {
+        "kind": "rim",
+        "axis": "+z",
+        "diameter_mm": 40,
+        "inner_diameter_mm": 28,
+        "z_range": [38, 50],
+        "description": "helical gear tooth ring"
+       },
+       "moment_nm": [0, 0, 25]
+      }
+     ]
     }
    ],
    "gates": [
@@ -88,10 +124,10 @@
     },
     {
      "type": "fem_loadcases",
-     "min_cases": 1,
+     "min_cases": 2,
      "checks": [
       {
-       "case": 0,
+       "case": "gear_bending",
        "resultant_n": { "min": 300, "max": 500 },
        "resultant_dir": [1, 0, 0],
        "dir_tol_deg": 30,
@@ -106,6 +142,18 @@
        ],
        "sf_min": 1.2,
        "sf_max": 60
+      },
+      {
+       "case": "gear_torque",
+       "moment_mag_nm": { "min": 20, "max": 30 },
+       "mechanisms": ["moment_nm"],
+       "warnings_absent": [
+        "no fixed region",
+        "resolved to zero",
+        "unsolvable"
+       ],
+       "sf_min": 1.2,
+       "sf_max": 120
       }
      ]
     }

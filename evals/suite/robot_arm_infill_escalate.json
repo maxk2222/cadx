@@ -14,6 +14,10 @@
       "gates": [
         { "type": "status", "expect": ["succeeded", "needs_review"] },
         { "type": "bbox", "dims": [100, 80, 40], "match": "within", "tol_mm": 4 },
+        { "type": "holes", "count": 4, "dia": 8.5, "axis": "z", "positions": [[42, 32], [42, -32], [-42, 32], [-42, -32]] },
+        { "type": "holes", "count": 1, "dia": 10.25, "axis": "z", "positions": [[0, 0]] },
+        { "type": "holes", "count": 2, "dia": 6.5, "axis": "x" },
+        { "type": "bodies", "max": 1 },
         { "type": "watertight", "expect": true },
         { "type": "verify_spec", "expect": "PASS" }
       ]

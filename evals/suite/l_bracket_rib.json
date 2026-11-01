@@ -11,15 +11,16 @@
       "mode": "cad",
       "timeout_s": 5400,
       "options": { "process": "fdm" },
-      "prompt": "Aluminium L-bracket (6061), parametric.\n\nFrame: bottom face on the XY plane (z = 0), centred in X and Y. mm.\n- Base plate 80 x 60 x 6.\n- Upright plate at the -X edge on the base top face: 60 wide, 6 thick, 60 tall (top at z = 66).\n- 4 holes dia 8.5: two through the base along Z at (x=25, y=+20) and (x=25, y=-20); two through the upright along X at (y=+20, z=36) and (y=-20, z=36).\n- Triangular rib 4 mm thick in the inner corner, centred in Y, ~40 mm legs.\n- Fillets: r3 in the corner and at the rib, r2 on other edges.\nSymmetric in Y.",
+      "prompt": "Aluminium L-bracket (6061), parametric.\n\nFrame: bottom face on the XY plane (z = 0), centred in X and Y. mm.\n- Base plate 80 (X: -40..+40) x 60 (Y: -30..+30) x 6 (Z: 0..6).\n- Upright plate at the -X edge on the base top face: 60 wide (Y: -30..+30), 6 thick (X: -40..-34), 60 tall (Z: 6..66, overall height 66).\n- 4 through-holes dia 8.5: two through the base along Z at (x=25, y=+20) and (x=25, y=-20); two completely through the 6 mm upright wall along X at (y=+20, z=36) and (y=-20, z=36).\n- Triangular gusset rib 4 mm thick in the inner corner (x = -34..+6, z = 6..46), centred in Y (y = -2..+2), ~40 mm legs.\n- Fillets: round the two vertical outer corners of the base plate at x = +40 (r = 3 mm) and the two top corners of the upright at z = 66 (r = 2 mm); do not fillet the 3-way rib junction edges.\nSymmetric in Y.",
       "gates": [
         { "type": "status", "expect": ["succeeded", "needs_review"] },
         { "type": "bbox", "dims": [80, 60, 66], "match": "match", "tol_mm": 3 },
-        { "type": "holes", "count": 2, "dia": 8.5, "axis": "z", "positions": [[25, 20], [25, -20]] },
-        { "type": "holes", "count": 2, "dia": 8.5, "axis": "x" },
+        { "type": "holes", "count": 2, "dia": 8.5, "axis": "z", "positions": [[25, 20], [25, -20]], "depth_class": "through" },
+        { "type": "holes", "count": 2, "dia": 8.5, "axis": "x", "positions": [[20, 36], [-20, 36]], "depth_class": "through" },
         { "type": "fillet" },
         { "type": "dfm", "process": "fdm", "max_high": 0 },
         { "type": "contains_point", "xyz": [-15, 0, 10] },
+        { "type": "bodies", "max": 1 },
         { "type": "watertight", "expect": true },
         { "type": "verify_spec", "expect": "PASS" }
       ]

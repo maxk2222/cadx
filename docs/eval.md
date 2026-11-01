@@ -30,7 +30,7 @@ cadx eval run --local --case robot_arm_mount --stages fem --from <dir>
 | Case | Difficulty | Object | Stage chain |
 |------|-----------|--------|-------------|
 | `l_bracket_rib` | 1 | aluminium L-bracket + triangular rib | `codegen` → `fem` (+ `params`, disabled) |
-| `sprocket_520_45t` | 2 | 7075-T6 rear sprocket, 45 teeth, 520 chain | `codegen` (+ `imagegen` → `meshgen`, disabled) |
+| `sprocket_520_45t` | 2 | 7075-T6 rear sprocket, 45 teeth, 520 chain | `codegen` → `fem` (+ `imagegen` → `meshgen`, disabled) |
 | `marine_propeller` | 3 | 5-blade high-pitch skewed marine propeller, hub + shaft bore | `codegen` → `fem` (thrust + torque cases) |
 | `aircraft_wing` | 3 | swept+tapered+twisted NACA 0015→0012 cantilever wing | `codegen` → `fem` (lift + neg-g cases) |
 | `robot_arm_mount` | 3 | topopt-ready robot-arm mount | `codegen` → `fem` → `topopt` → `refine` |
