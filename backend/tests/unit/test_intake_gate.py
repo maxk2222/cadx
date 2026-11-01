@@ -499,10 +499,7 @@ def test_axis_extents_leave_inside_coordinates() -> None:
     from cadx.agent.steps.intake import sanitize_prompt_axis_extents
 
     s = _cube_spec(z=40.0)
-    assert (
-        sanitize_prompt_axis_extents(s, "block 40 x 40 x 40; blind bore opens at z=20")
-        == []
-    )
+    assert sanitize_prompt_axis_extents(s, "block 40 x 40 x 40; blind bore opens at z=20") == []
 
 
 def test_axis_extents_centred_xy_span() -> None:

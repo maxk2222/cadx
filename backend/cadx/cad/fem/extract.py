@@ -321,7 +321,7 @@ def _orient_nested_shells(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
     (``solid_body_count``, ``_body_groups``, the evalkit ``bodies`` gate)
     then counts a hollow part as two bodies (observed on the guided-infill
     export: the 30k mm³ inner wall was counted as a second solid). Even
-    nesting depth wants +volume, odd wants −volume."""
+    nesting depth wants +volume, odd wants -volume."""
     try:
         parts = mesh.split(only_watertight=False)
     except Exception:
@@ -340,6 +340,40 @@ def _orient_nested_shells(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
     if out.volume < 0:
         out.invert()
     return out
+
+
+def _pinned_taubin(
+    mesh: trimesh.Trimesh,
+    domain: VoxelDomain,
+    iterations: int,
+    passive_solid: np.ndarray | None,
+    bridged_mask: np.ndarray,
+    pin_cells: np.ndarray | None,
+) -> None:
+    """Taubin-smooth with verified structure pinned in place — unsmoothed
+    extraction otherwise erodes thin passive/keep regions (observed: a
+    flange pin ring lost enough material that refine could no longer
+    re-seat its cutter) and lattice bond cells before the outer
+    smooth_preserve can pin them."""
+    try:
+        pin3 = np.zeros(domain.dims, dtype=bool)
+        if passive_solid is not None:
+            pin3 |= np.asarray(passive_solid, dtype=bool).reshape(domain.dims)
+        pin3 |= bridged_mask
+        if pin_cells is not None:
+            pin3 |= np.asarray(pin_cells, dtype=bool).reshape(domain.dims)
+        pinned = _cell_pinned_vertices(mesh, domain, pin3)
+        if pinned is not None and len(pinned):
+            lap = trimesh.smoothing.laplacian_calculation(
+                mesh, equal_weight=True, pinned_vertices=pinned
+            )
+            trimesh.smoothing.filter_taubin(
+                mesh, lamb=0.5, nu=-0.53, iterations=iterations, laplacian_operator=lap
+            )
+        else:
+            trimesh.smoothing.filter_taubin(mesh, lamb=0.5, nu=-0.53, iterations=iterations)
+    except Exception:
+        log.warning("topopt.smooth_failed", exc_info=True)
 
 
 def _enforce_min_member(
@@ -759,36 +793,7 @@ def density_to_mesh(
         # finish as the marching-cubes surface
         smooth_iterations += 1
     if smooth_iterations > 0:
-        try:
-            # verified structure must survive the internal Taubin pass —
-            # unsmoothed extraction otherwise erodes thin passive/keep
-            # regions (observed: a flange pin ring lost enough material
-            # that refine could no longer re-seat its cutter) and lattice
-            # bond cells before the outer smooth_preserve can pin them
-            pin3 = np.zeros(domain.dims, dtype=bool)
-            if passive_solid is not None:
-                pin3 |= np.asarray(passive_solid, dtype=bool).reshape(domain.dims)
-            pin3 |= bridged_mask
-            if pin_cells is not None:
-                pin3 |= np.asarray(pin_cells, dtype=bool).reshape(domain.dims)
-            pinned = _cell_pinned_vertices(mesh, domain, pin3)
-            if pinned is not None and len(pinned):
-                lap = trimesh.smoothing.laplacian_calculation(
-                    mesh, equal_weight=True, pinned_vertices=pinned
-                )
-                trimesh.smoothing.filter_taubin(
-                    mesh,
-                    lamb=0.5,
-                    nu=-0.53,
-                    iterations=smooth_iterations,
-                    laplacian_operator=lap,
-                )
-            else:
-                trimesh.smoothing.filter_taubin(
-                    mesh, lamb=0.5, nu=-0.53, iterations=smooth_iterations
-                )
-        except Exception:
-            log.warning("topopt.smooth_failed", exc_info=True)
+        _pinned_taubin(mesh, domain, smooth_iterations, passive_solid, bridged_mask, pin_cells)
     mask_vol = float(mask.sum()) * domain.pitch**3
     extract_info: dict[str, Any] = {
         "iso": float(iso),
