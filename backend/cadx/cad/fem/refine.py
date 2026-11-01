@@ -2407,6 +2407,12 @@ def apply_refine(  # noqa: C901
     # pre-postpass cleanup already ran — drop again so the shipped mesh's
     # body count only counts real solids
     out = _drop_sliver_parts(out, report)
+    # weld slivers left vertex-joined on union seams — they split into
+    # standalone fragments on the STL round-trip (vertices decouple) and
+    # then read as non-watertight + phantom material to the voxelizer
+    from cadx.cad.mesh_ops import heal_seam_slivers
+
+    out = heal_seam_slivers(out)
     return out, report
 
 
