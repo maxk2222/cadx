@@ -407,6 +407,115 @@ def test_dim_echo_leaves_ambiguous_contradiction() -> None:
     assert s.height_z.value == 70.0
 
 
+def _cube_spec(z: float = 20.0) -> PartSpec:
+    return PartSpec(
+        name="Block",
+        summary="block",
+        length_x={"value": 40.0, "source": "stated"},
+        width_y={"value": 40.0, "source": "stated"},
+        height_z={"value": z, "source": "stated"},
+        features=[
+            {
+                "name": "bore",
+                "type": "blind hole",
+                "dims": {"diameter": 8.0, "depth": 20.0},
+                "position": "-X face centre, axis along X",
+            }
+        ],
+        image_roles=[],
+    )
+
+
+def test_dimset_fixes_feature_depth_smear() -> None:
+    """Observed E2E (block_sidewall_tap, twice): intake wrote the bore
+    depth (20) as height_z for a '40 x 40 x 40' cube — the explicit
+    prompt triplet is the stronger statement."""
+    from cadx.agent.steps.intake import sanitize_dimset
+
+    s = _cube_spec()
+    notes = sanitize_dimset(s, "Steel cube 40 x 40 x 40, parametric, mm units")
+    assert notes
+    assert s.height_z.value == 40.0
+
+
+def test_dimset_never_lowers_a_stated_dim() -> None:
+    """'base plate 100 x 80 x 10' inside a 40-tall part: the triplet is a
+    feature envelope, not the part — a correct height_z=40 must survive."""
+    from cadx.agent.steps.intake import sanitize_dimset
+
+    s = _cube_spec()
+    s.length_x = s.length_x.model_copy(update={"value": 100.0})
+    s.width_y = s.width_y.model_copy(update={"value": 80.0})
+    s.height_z = s.height_z.model_copy(update={"value": 40.0})
+    assert sanitize_dimset(s, "Base plate 100 x 80 x 10.") == []
+    assert s.height_z.value == 40.0
+
+
+def test_dimset_skips_thread_designation_triplets() -> None:
+    """'M10x1.5x100' is a screw designation, not an envelope."""
+    from cadx.agent.steps.intake import sanitize_dimset
+
+    s = _cube_spec()
+    s.height_z = s.height_z.model_copy(update={"value": 5.0})
+    assert sanitize_dimset(s, "Hex screw M10x1.5x100, ISO 4014") == []
+    assert s.height_z.value == 5.0
+
+
+def test_dimset_largest_product_triplet_wins() -> None:
+    """Multiple triplets: the largest-volume one is the envelope."""
+    from cadx.agent.steps.intake import sanitize_dimset
+
+    s = _cube_spec()
+    notes = sanitize_dimset(s, "Part envelope 60 x 40 x 40; boss 8 x 40 x 30")
+    assert notes
+    assert s.length_x.value == 60.0
+    assert s.height_z.value == 40.0
+
+
+def test_axis_extents_raise_understated_height() -> None:
+    """Observed E2E (ball_m8_tap): 'top pole at z=60' vs height_z=25 —
+    an explicit prompt coordinate cannot sit outside the envelope."""
+    from cadx.agent.steps.intake import sanitize_prompt_axis_extents
+
+    s = PartSpec(
+        name="Ball",
+        summary="ball",
+        length_x={"value": 60.0, "source": "stated"},
+        width_y={"value": 60.0, "source": "stated"},
+        height_z={"value": 25.0, "source": "stated"},
+        features=[],
+        image_roles=[],
+    )
+    notes = sanitize_prompt_axis_extents(
+        s, "Sphere dia 60 resting on XY, top pole at z=60, bore 25 deep"
+    )
+    assert notes
+    assert s.height_z.value == 60.0
+
+
+def test_axis_extents_leave_inside_coordinates() -> None:
+    """A feature coordinate inside the stated span is a position, not an
+    envelope statement — nothing to change."""
+    from cadx.agent.steps.intake import sanitize_prompt_axis_extents
+
+    s = _cube_spec(z=40.0)
+    assert (
+        sanitize_prompt_axis_extents(s, "block 40 x 40 x 40; blind bore opens at z=20")
+        == []
+    )
+
+
+def test_axis_extents_centred_xy_span() -> None:
+    """x/y are centred: a coordinate at |x| means half the declared span."""
+    from cadx.agent.steps.intake import sanitize_prompt_axis_extents
+
+    s = _cube_spec(z=40.0)
+    s.length_x = s.length_x.model_copy(update={"value": 80.0})
+    notes = sanitize_prompt_axis_extents(s, "bracket; mounting pad face at x=60")
+    assert notes
+    assert s.length_x.value == 120.0
+
+
 def test_mirror_host_gap_detects_dropped_hole() -> None:
     """Observed E2E: intake emitted lugs at x=±45 but only the -x through-
     hole — 'je eine Bohrung' makes the +x hole a real spec gap."""

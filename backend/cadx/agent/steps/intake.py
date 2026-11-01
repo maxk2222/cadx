@@ -59,8 +59,9 @@ def _anchor_intent_tokens(text: str) -> set[str]:
 class _Rebinder:
     """State for one `hole_index` rebind pass over a spec's load cases."""
 
-    def __init__(self, anchors: list[Any]) -> None:
+    def __init__(self, anchors: list[Any], spec: Any | None = None) -> None:
         self.anchors = anchors
+        self.spec = spec
         self.n = len(anchors)
         self.a_toks = [
             _anchor_intent_tokens(f"{a.name or ''} {a.bolt_size or ''}") for a in anchors
@@ -79,6 +80,39 @@ class _Rebinder:
                 out.append(i + 1)
         return out
 
+    def _feature_pos_match(self, idx: int) -> int | None:
+        """Out-of-range `hole_index` rescue via spec feature position.
+
+        Weak models sometimes count `spec.features` positions instead of
+        anchor indices — observed keep_regions #8/#9 on a 7-anchor part
+        where `spec.features[8]`/`[9]` (0-based) ARE the intended flange
+        holes. Try the 0-based then the 1-based feature position; when it
+        is hole-like and names exactly one anchor, that is the intended
+        anchor. Ambiguous or non-hole hits return None — a dead index
+        stays honest."""
+        feats = list(getattr(self.spec, "features", None) or [])
+        if not feats:
+            return None
+        from cadx.agent.anchors import _hole_like
+
+        for j in (idx, idx - 1):
+            if not (0 <= j < len(feats)):
+                continue
+            f = feats[j]
+            if not _hole_like(f):
+                continue
+            name = " ".join(str(getattr(f, "name", "") or "").lower().split())
+            if not name:
+                continue
+            hits = [
+                i + 1
+                for i, a in enumerate(self.anchors)
+                if " ".join(str(getattr(a, "name", "") or "").lower().split()) == name
+            ]
+            if len(hits) == 1:
+                return hits[0]
+        return None
+
     def _rebind(self, r: Any, where: str, *, is_fixed: bool) -> Any:
         if r is None or getattr(r, "hole_index", None) is None:
             return r
@@ -93,12 +127,19 @@ class _Rebinder:
             return r
         cur = self.a_toks[idx - 1] if in_range else set()
         tokens = _anchor_intent_tokens(f"{where} {getattr(r, 'description', '') or ''}")
-        if not tokens:
-            return r  # nothing to disambiguate by — trust the index
         cur_score = len(tokens & cur)
-        matches = self._best_matches(tokens)
+        matches = self._best_matches(tokens) if tokens else []
         best_score = len(tokens & self.a_toks[matches[0] - 1]) if matches else 0
         if best_score <= cur_score:
+            if not in_range:
+                m = self._feature_pos_match(idx)
+                if m is not None:
+                    self.notes.append(
+                        f"{where}: hole_index {idx} out of range (max {self.n}) — "
+                        f"rebound to #{m} '{self.anchors[m - 1].name}' "
+                        "(spec feature position)"
+                    )
+                    return r.model_copy(update={"hole_index": m})
             return r
         names = ", ".join(f"#{i} '{self.anchors[i - 1].name}'" for i in matches[:4])
         self.notes.append(
@@ -289,7 +330,7 @@ def rebind_case_anchors(spec: PartSpec) -> list[str]:
     anchors = _spec_anchors(spec)
     if not anchors:
         return []
-    return _Rebinder(anchors).run(spec)
+    return _Rebinder(anchors, spec).run(spec)
 
 
 def sanitize_load_cases(spec: PartSpec) -> None:
@@ -471,6 +512,104 @@ def sanitize_dim_echo(spec: PartSpec, prompt: str) -> list[str]:
             spec,
             {"x": "length_x", "y": "width_y", "z": "height_z"}[ax],
             d.model_copy(update={"value": new_v}),
+        )
+    return notes
+
+
+_DIMSET_ANY_RE = re.compile(
+    r"(\d+(?:[.,]\d+)?)\s*[x\u00d7]\s*(\d+(?:[.,]\d+)?)\s*[x\u00d7]\s*(\d+(?:[.,]\d+)?)",
+    re.IGNORECASE,
+)
+
+
+def _dimset_triplets(prompt: str) -> list[tuple[float, float, float]]:
+    """Explicit ``A x B x C`` triplets in the prompt (mm optional).
+
+    Thread/size designations like ``M10x1.5x100`` or ``Ø26x8x4`` are
+    excluded — the first number glued to a leading M/m/Ø is a nominal
+    diameter, not an envelope."""
+    trips: list[tuple[float, float, float]] = []
+    for m in _DIMSET_ANY_RE.finditer(prompt or ""):
+        before = (prompt or "")[: m.start()].rstrip()
+        if before[-1:].upper() in ("M", "\u00d8", "\u2300"):
+            continue
+        trips.append(tuple(float(g.replace(",", ".")) for g in m.groups()))
+    return trips
+
+
+def sanitize_dimset(spec: PartSpec, prompt: str) -> list[str]:
+    """Raise an understated envelope dim to an explicit prompt triplet.
+
+    Weak models smear a feature dimension into an envelope dim — observed
+    twice: "Steel cube 40 x 40 x 40, bore 20 deep" parsed as height_z=20
+    (the bore depth), producing a 40x40x20 slab. An explicitly written
+    triplet is strong evidence for the envelope. Correction is raise-only:
+    a stated dim larger than the triplet member is left alone — prompts may
+    carry feature triplets ("base plate 100 x 80 x 10" in a taller part)
+    and the smear failure mode is always understatement. When several
+    triplets appear, the largest-volume one anchors the check."""
+    notes: list[str] = []
+    trips = _dimset_triplets(prompt)
+    if not trips:
+        return notes
+    env = max(trips, key=lambda t: t[0] * t[1] * t[2])
+    dims = {"x": spec.length_x, "y": spec.width_y, "z": spec.height_z}
+    for ax, want in zip("xyz", env, strict=True):
+        d = dims[ax]
+        if d is None:
+            continue
+        have = float(d.value or 0)
+        if have > 0 and want <= have + max(0.5, 0.02 * have):
+            continue
+        notes.append(
+            f"{ax} dim {have:g} ({d.source}) below prompt triplet "
+            f"{' x '.join(f'{v:g}' for v in env)} — re-stated {ax}={want:g}"
+        )
+        setattr(
+            spec,
+            {"x": "length_x", "y": "width_y", "z": "height_z"}[ax],
+            d.model_copy(update={"value": want, "source": "stated"}),
+        )
+    return notes
+
+
+def sanitize_prompt_axis_extents(spec: PartSpec, prompt: str) -> list[str]:
+    """Raise an understated envelope dim to fit explicit prompt coordinates.
+
+    Observed: "sphere D=60 ... top pole at z=60" parsed as height_z=25 (the
+    bore depth) — codegen then centred the bore at z=12.5 inside a 25 mm
+    part. Prompt ``z=``/``x=``/``y=`` tokens are explicit user statements;
+    any coordinate exceeding the declared span is a spec contradiction.
+    Only ever raises a dim — a coordinate inside the envelope is just a
+    feature position. z is 0-based so the extent IS the height; x/y are
+    centred so the span is twice the largest |coord|."""
+    notes: list[str] = []
+    ext: dict[str, float] = {"x": 0.0, "y": 0.0, "z": 0.0}
+    for m in _AXIS_RANGE_RE.finditer(prompt or ""):
+        ax = m.group(1).lower()
+        ext[ax] = max(ext[ax], abs(float(m.group(2))), abs(float(m.group(3))))
+    for m in _AXIS_COORD_RE.finditer(prompt or ""):
+        ext[m.group(1).lower()] = max(ext[m.group(1).lower()], abs(float(m.group(2))))
+    dims = {"x": spec.length_x, "y": spec.width_y, "z": spec.height_z}
+    for ax, e in ext.items():
+        if not e:
+            continue
+        want = e if ax == "z" else 2.0 * e
+        d = dims[ax]
+        if d is None:
+            continue
+        have = float(d.value or 0)
+        tol = max(0.5, 0.02 * max(have, want))
+        if want <= have + tol:
+            continue
+        notes.append(
+            f"{ax} dim {have:g} ({d.source}) below explicit prompt coordinate "
+            f"{ax}={e:g} — re-stated {ax}={want:g}"
+        )
+        setattr(
+            spec,
+            {"x": "length_x", "y": "width_y", "z": "height_z"}[ax],
+            d.model_copy(update={"value": want, "source": "stated"}),
         )
     return notes
 
@@ -1176,6 +1315,13 @@ async def run(ctx: AgentCtx) -> PartSpec:
         sanitize_material(spec, ctx.prompt or "")
         for note in sanitize_dim_echo(spec, ctx.prompt or ""):
             log.info("intake.dim_echo_fixed", note=note)
+        # explicit prompt triplets / axis coordinates are the strongest
+        # stated evidence — they run last so dim_echo's feature-extent
+        # guesses cannot silently undo them
+        for note in sanitize_dimset(spec, ctx.prompt or ""):
+            log.info("intake.dimset_fixed", note=note)
+        for note in sanitize_prompt_axis_extents(spec, ctx.prompt or ""):
+            log.info("intake.axis_extents_fixed", note=note)
         if not spec.process:
             spec.process = ctx.settings.process
         ctx.spec = spec
@@ -1206,6 +1352,13 @@ async def run(ctx: AgentCtx) -> PartSpec:
     sanitize_material(spec, ctx.prompt or "")
     for note in sanitize_dim_echo(spec, ctx.prompt or ""):
         log.info("intake.dim_echo_fixed", note=note)
+    # explicit prompt triplets / axis coordinates are the strongest
+    # stated evidence — they run last so dim_echo's feature-extent
+    # guesses cannot silently undo them
+    for note in sanitize_dimset(spec, ctx.prompt or ""):
+        log.info("intake.dimset_fixed", note=note)
+    for note in sanitize_prompt_axis_extents(spec, ctx.prompt or ""):
+        log.info("intake.axis_extents_fixed", note=note)
     if not spec.process:
         spec.process = ctx.settings.process
     ctx.spec = spec

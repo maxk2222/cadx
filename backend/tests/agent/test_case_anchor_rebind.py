@@ -153,6 +153,113 @@ def test_rebind_keep_regions_use_their_own_description():
     assert spec.optimize.keep_regions[0].hole_index == 5
 
 
+def _real_mount_spec() -> PartSpec:
+    """The eval spec's real feature ORDER: block, four mounts, boss, M12,
+    wall, two flange bores, rib — the model's keep_regions numbered
+    `hole_index` as 0-based positions into this list (#8/#9 → flange bores,
+    0-based spec.features[8]/[9]) instead of anchor indices (#6/#7)."""
+    return PartSpec(
+        name="robot arm mount",
+        summary="",
+        length_x={"value": 100},
+        width_y={"value": 80},
+        height_z={"value": 40},
+        features=[
+            Feature(
+                name="base plate",
+                type="block",
+                description="",
+                dims={},
+                position="",
+                count=1,
+                source="text",
+            ),
+            _hole("mounting hole -x -y", 8.5, "x=-42 y=-32"),
+            _hole("mounting hole -x +y", 8.5, "x=-42 y=32"),
+            _hole("mounting hole +x -y", 8.5, "x=42 y=-32"),
+            _hole("mounting hole +x +y", 8.5, "x=42 y=32"),
+            Feature(
+                name="bearing boss",
+                type="boss",
+                description="",
+                dims={"diameter": 25},
+                position="x=0 y=0",
+                count=1,
+                source="text",
+            ),
+            Feature(
+                name="M12 tapped through-bore",
+                type="thread",
+                description="",
+                dims={"diameter": 10.2},
+                position="x=0 y=0",
+                count=1,
+                source="text",
+                standard="M12",
+            ),
+            Feature(
+                name="vertical flange",
+                type="wall",
+                description="",
+                dims={},
+                position="",
+                count=1,
+                source="text",
+            ),
+            _hole("flange hole -y", 6.5, "z=25 y=-12", axis="x"),
+            _hole("flange hole +y", 6.5, "z=25 y=12", axis="x"),
+            Feature(
+                name="gusset rib",
+                type="rib",
+                description="",
+                dims={},
+                position="",
+                count=1,
+                source="text",
+            ),
+        ],
+        standard_parts=[],
+        image_roles=[],
+        verification_questions=[],
+    )
+
+
+def test_rebind_keep_region_out_of_range_via_feature_position():
+    """The eval's actual keep-region failure: descriptionless regions with
+    `hole_index` counted as spec.features positions — #8/#9 must rebound to
+    the flange bore anchors #6/#7, not die silently in `_keep_prisms`."""
+    spec = _real_mount_spec()
+    spec.optimize = OptimizeSpec(
+        enabled=True,
+        keep_regions=[RegionSpec(kind="hole", hole_index=i) for i in (1, 2, 3, 4)]
+        + [RegionSpec(kind="bore", hole_index=5)]
+        + [RegionSpec(kind="hole", hole_index=i) for i in (8, 9)],
+    )
+    notes = rebind_case_anchors(spec)
+    assert [r.hole_index for r in spec.optimize.keep_regions] == [1, 2, 3, 4, 5, 6, 7]
+    assert any("spec feature position" in n for n in notes)
+
+
+def test_rebind_keep_region_dead_index_without_hole_feature_stays():
+    """An out-of-range index landing on a NON-hole feature stays dead —
+    the rescue only re-points at hole-like features."""
+    spec = _real_mount_spec()
+    spec.optimize = OptimizeSpec(
+        enabled=True,
+        keep_regions=[RegionSpec(kind="hole", hole_index=7)],  # features[7] = wall
+    )
+    rebind_case_anchors(spec)
+    # 7 is in range (7 anchors) — no change at all
+    assert spec.optimize.keep_regions[0].hole_index == 7
+    spec2 = _real_mount_spec()
+    spec2.optimize = OptimizeSpec(
+        enabled=True,
+        keep_regions=[RegionSpec(kind="hole", hole_index=11)],  # features[10]=rib/[11] OOB
+    )
+    rebind_case_anchors(spec2)
+    assert spec2.optimize.keep_regions[0].hole_index == 11
+
+
 def test_sanitize_drops_degenerate_clamps_weight_records_notes():
     spec = _mount_spec()
     spec.load_cases = [
