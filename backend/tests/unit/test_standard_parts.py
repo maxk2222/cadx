@@ -248,6 +248,76 @@ def test_expected_thread_count_clearance_dia_disambiguates_m_spec() -> None:
     assert expected_thread_count(spec) == 1
 
 
+def test_expected_thread_count_rejects_smeared_non_hole_kinds() -> None:
+    """The sprocket_520_45t failure: intake copied the bolt-hole callout
+    ("M10x1.25-6H") onto the lightening windows — a `slot` with no bore
+    diameter must never become a thread request."""
+    d = lambda v: Dim(value=v, unit="mm", source="stated")  # noqa: E731
+    spec = PartSpec(
+        name="sprocket",
+        summary="",
+        units="mm",
+        length_x=d(236),
+        width_y=d(236),
+        height_z=d(6),
+        features=[
+            Feature(
+                name="bolt hole",
+                type="hole",
+                count=5,
+                thread_spec="M10x1.25-6H",
+                dims={"diameter": 10.5},
+            ),
+            Feature(
+                name="lightening window",
+                type="slot",
+                count=5,
+                thread_spec="M10x1.25-6H",
+                dims={"width": 26.0},
+            ),
+        ],
+    )
+    assert expected_thread_count(spec) == 0
+
+
+def test_expected_thread_count_rejects_leaked_label_on_other_size_hole() -> None:
+    """The robot_arm_mount failure: 4x dia-8.5 + 2x dia-6.5 clearance holes
+    inherited the one real callout ("M12x1.75-6H") — neither lands on the
+    M12 tap drill (~10.25), so only the explicit thread feature counts."""
+    d = lambda v: Dim(value=v, unit="mm", source="stated")  # noqa: E731
+    spec = PartSpec(
+        name="bracket",
+        summary="",
+        units="mm",
+        length_x=d(100),
+        width_y=d(80),
+        height_z=d(40),
+        features=[
+            Feature(
+                name="mounting holes",
+                type="hole",
+                count=4,
+                thread_spec="M12x1.75-6H",
+                dims={"diameter": 8.5},
+            ),
+            Feature(
+                name="flange holes",
+                type="hole",
+                count=2,
+                thread_spec="M12x1.75-6H",
+                dims={"diameter": 6.5},
+            ),
+            Feature(
+                name="M12 tapped through-bore",
+                type="thread",
+                thread_spec="M12x1.75-6H",
+                dims={"diameter": 10.25},
+            ),
+        ],
+    )
+    assert expected_thread_count(spec) == 1
+
+
 def _m10_100_spec(**part_kwargs) -> PartSpec:
     part = StandardPartSpec(
         class_name="CounterSunkScrew",

@@ -1068,11 +1068,24 @@ def _feature_placement(
     notches = _tagged("notches", "notch")
     stated_env = _stated_envelope(spec)
 
+    # features a catalog standard part claims via covers_features are built
+    # by the recipe path — they are not measurable voids/protrusions and
+    # must not be forced through void-kind checks (an external thread on a
+    # screw is typed `thread` but has no void evidence by design)
+    covered = {
+        str(n).strip().lower()
+        for sp in (spec or {}).get("standard_parts") or []
+        if isinstance(sp, dict)
+        for n in (sp.get("covers_features") or [])
+    }
+
     for i, f in enumerate(spec_feats):
         if not isinstance(f, dict):
             continue
         ftype = str(f.get("type") or "").lower()
         name = str(f.get("name") or f.get("type") or f"feature_{i}")
+        if name.strip().lower() in covered:
+            continue
         if ftype in {"fillet", "round"}:
             _fillet_check(i, name, f, measured, checks)
             continue

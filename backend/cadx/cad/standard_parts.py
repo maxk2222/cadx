@@ -722,6 +722,35 @@ def _thread_spec_clearance_note(feature: Any, size_mm: float) -> bool:
     return abs(dia - clearance) < abs(dia - tap)
 
 
+def _implicit_thread_plausible(feature: Any, kind: str, size_mm: float) -> bool:
+    """Guard for features that are NOT explicitly a thread yet carry an
+    ``M<size>`` spec: intake sometimes smears the one real callout onto
+    every nearby feature (an M12 label on the M8 clearance holes around
+    it, or onto a lightening window). Only hole-like kinds may implicitly
+    declare a thread, and a declared bore diameter must land on that
+    size's tap drill — a diameter far from both tap and clearance means
+    the label leaked from a different feature."""
+    if not any(token in kind for token in ("hole", "bore", "tap")):
+        return False
+    dims = _get(feature, "dims") or {}
+    dia = next(
+        (
+            float(dims[k])
+            for k in ("diameter", "dia", "d", "bore", "hole_d")
+            if isinstance(dims.get(k), int | float) and float(dims[k]) > 0
+        ),
+        None,
+    )
+    if dia is None:
+        return True
+    from cadx.cad import catalog
+
+    tap = catalog.nominal_hole_diameter(int(size_mm), "tap")
+    if tap is None:
+        return True
+    return abs(dia - tap) <= max(1.0, 0.15 * tap)
+
+
 def expected_thread_count(spec: Any) -> int:
     expected = 0
     covered: set[str] = set()
@@ -742,6 +771,8 @@ def expected_thread_count(spec: Any) -> int:
         m = re.match(r"M\s*(\d+(?:\.\d+)?)", thread_spec)
         if not is_thread and m:
             is_thread = not _thread_spec_clearance_note(feature, float(m.group(1)))
+            if is_thread and not _implicit_thread_plausible(feature, kind, float(m.group(1))):
+                is_thread = False
         if is_thread:
             expected += max(1, int(getattr(feature, "count", 1) or 1))
     return expected
