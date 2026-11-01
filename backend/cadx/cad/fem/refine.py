@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import math
+import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -498,6 +499,35 @@ def resolve_refine_features(  # noqa: C901
             base: dict[str, Any] = {}
             if idx is not None and 1 <= int(idx) <= len(anchors):
                 base = dict(anchors[int(idx) - 1])
+            if not base:
+                # no explicit binding — adopt the nearest same-axis anchor
+                # inside the merge radius so measured evidence (depth_mm,
+                # blind) reaches the feature: without it the ring test
+                # compares an 8 mm flange wall against 20% of the part span
+                # and wrongly reports "region optimized away" (observed:
+                # flange pin bores skipped on the robot-arm mount).
+                axis_r = _feature_axis(r)
+                uv_r = _anchor_uv(r)
+                if uv_r is None:
+                    _ax, au, av = _AXES_ANY[axis_r]
+                    p = r.get("pos") or []
+                    if len(p) > max(au, av) and p[au] is not None and p[av] is not None:
+                        uv_r = (float(p[au]), float(p[av]))
+                if uv_r is not None:
+                    best: tuple[float, dict[str, Any]] | None = None
+                    for a in anchors or []:
+                        if _feature_axis(a) != axis_r:
+                            continue
+                        a_uv = _anchor_uv(a)
+                        if a_uv is None:
+                            continue
+                        dist = float(math.hypot(a_uv[0] - uv_r[0], a_uv[1] - uv_r[1]))
+                        if dist <= _merge_radius(float(r.get("dia") or a.get("dia") or 0)) and (
+                            best is None or dist < best[0]
+                        ):
+                            best = (dist, a)
+                    if best is not None:
+                        base = dict(best[1])
             merged = {**base, **{k: v for k, v in r.items() if v is not None}}
             axis = _feature_axis(merged)
             uv = _anchor_uv(merged) or (None, None)
@@ -1612,13 +1642,19 @@ def restore_keep_surface(
             restored += len(plane_boxes)
             warnings.append(f"plane-snap keep-restore: {snapped} vertices restored")
     tagged: list[tuple[dict[str, Any], bool]] = [
-        (p, False) for p in _keep_prisms(union_regions, anchors, base.bounds, span, margin_mm)
+        (p, False)
+        for p in _keep_prisms(union_regions, anchors, base.bounds, span, margin_mm, warnings)
     ]
     if not keep_regions:
         tagged += [
             (p, True)
             for p in _keep_prisms(
-                _auto_anchor_keep_regions(anchors), anchors, base.bounds, span, margin_mm
+                _auto_anchor_keep_regions(anchors),
+                anchors,
+                base.bounds,
+                span,
+                margin_mm,
+                warnings,
             )
         ]
     # Build each keep patch once — reused by the merged union and the
@@ -1756,12 +1792,92 @@ def _snap_plane_verts(out: trimesh.Trimesh, plane_boxes: list[Any], base_bounds:
     return snapped
 
 
+def _feature_dict_holeish(f: dict[str, Any]) -> bool:
+    """Dict-form `_hole_like` — spec features reach refine as plain dicts."""
+    blob = " ".join(
+        str(f.get(k) or "") for k in ("type", "name", "description", "standard")
+    ).lower()
+    hole_types = {
+        "hole",
+        "thread",
+        "insert",
+        "bearing_seat",
+        "through_hole",
+        "blind_hole",
+        "countersink_hole",
+        "counterbore_hole",
+        "through_hole_with_countersink",
+        "clearance_hole",
+        "tapped_hole",
+        "threaded_hole",
+        "threaded_bore",
+        "tap_hole",
+        "bore",
+        "tap",
+    }
+    return str(f.get("type") or "") in hole_types or bool(
+        re.search(r"hole|bore|loch|bohr|thread|gewinde|tap|durchgang|senk|m\d+", blob)
+    )
+
+
+def rebind_keep_hole_indices(
+    keep_regions: list[dict[str, Any]],
+    spec_features: list[dict[str, Any]] | None,
+    anchors: list[dict[str, Any]],
+    warnings: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Rescue out-of-range `hole_index` keep regions via feature position.
+
+    The intake rebinder fixes this at spec-authoring time, but specs that
+    predate it — or bypassed intake — reach refine with a `hole_index` the
+    model counted as a `spec.features` position (observed: #8/#9 on a
+    7-anchor part → `features[8]`/`[9]` are the flange holes). Try the
+    0-based then 1-based feature position; when it is hole-like and names
+    exactly one anchor, rebind. Anything else stays — `_keep_prisms` then
+    reports the dead reference instead of silently dropping it."""
+    n = len(anchors or [])
+    feats = list(spec_features or [])
+    out: list[dict[str, Any]] = []
+    for r in keep_regions or []:
+        idx = r.get("hole_index")
+        if (
+            str(r.get("kind")) in ("hole", "anchor", "bore")
+            and idx is not None
+            and not (1 <= int(idx) <= n)
+            and feats
+        ):
+            for j in (int(idx), int(idx) - 1):
+                if not (0 <= j < len(feats)):
+                    continue
+                f = feats[j]
+                if not _feature_dict_holeish(f):
+                    continue
+                name = " ".join(str(f.get("name") or "").lower().split())
+                hits = [
+                    i + 1
+                    for i, a in enumerate(anchors or [])
+                    if name and " ".join(str(a.get("name") or "").lower().split()) == name
+                ]
+                if len(hits) == 1:
+                    if warnings is not None:
+                        warnings.append(
+                            f"keep-region hole_index {idx} out of range "
+                            f"({n} anchor(s)) — rebound to #{hits[0]} '{name}' "
+                            "(spec feature position)"
+                        )
+                    r = {**r, "hole_index": hits[0]}
+                    break
+        out.append(r)
+    return out
+
+
 def _keep_prisms(
     keep_regions: list[dict[str, Any]],
     anchors: list[dict[str, Any]],
     bounds: np.ndarray,
     span: tuple[float, float],
     margin_mm: float,
+    warnings: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Resolve keep regions (incl. `_plane_box` auto-restore) to grown prisms
     — cylinders for hole/anchor/bore/cylinder kinds, boxes for the rest."""
@@ -1779,6 +1895,11 @@ def _keep_prisms(
                 )
                 if p is not None:
                     prisms.append(p)
+            elif warnings is not None:
+                warnings.append(
+                    f"keep-region hole_index {idx} out of range "
+                    f"({len(anchors)} anchor(s)) — region skipped"
+                )
             continue
         p = _region_prism(r, bounds)
         if p is not None:

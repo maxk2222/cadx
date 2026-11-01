@@ -325,7 +325,12 @@ def _post_extract_finish(
         return opt_mesh, None, ["post-extraction restore/re-cut skipped: base mesh unavailable"]
 
     try:
-        from cadx.cad.fem.refine import apply_refine, refine_verify, resolve_refine_features
+        from cadx.cad.fem.refine import (
+            apply_refine,
+            rebind_keep_hole_indices,
+            refine_verify,
+            resolve_refine_features,
+        )
 
         features: list[Any] = []
         warnings: list[str] = []
@@ -340,6 +345,9 @@ def _post_extract_finish(
         keep_dicts = [
             r.model_dump(mode="json") if hasattr(r, "model_dump") else dict(r) for r in keep_regions
         ]
+        keep_dicts = rebind_keep_hole_indices(
+            keep_dicts, spec_features or [], anchors or [], warnings
+        )
         refined, report = apply_refine(
             opt_mesh,
             features,
@@ -4167,6 +4175,10 @@ def run_infill_pipeline(  # noqa: C901
             extract_smooth=opt.extract_smooth and not crisp,
             sigma_px=0.0 if crisp else opt.extract_sigma_px,
             volume_preserve=opt.volume_preserve,
+            # the lattice occupancy is FEM-verified structure — its strut
+            # cross-sections and the skin bond must not erode under the
+            # internal Taubin pass
+            pin_cells=cand_fields.get("occ3"),
         )
         # ndarray telemetry must not reach the persisted extract dict —
         # it kills the version-row JSON flush
@@ -4177,6 +4189,11 @@ def run_infill_pipeline(  # noqa: C901
             # the connectivity glue must not erode below raster
             # thickness between mask and export
             pin3 |= np.asarray(bridged3, dtype=bool).reshape(domain.dims)
+        occ3 = cand_fields.get("occ3")
+        if occ3 is not None:
+            # same for the lattice occupancy — verified strut material must
+            # reach the shipped mesh, not just the voxel mask
+            pin3 |= np.asarray(occ3, dtype=bool).reshape(domain.dims)
         if not crisp:
             thin_cells = float(eff_span.min()) / max(domain.pitch, 1e-6)
             candidate_mesh = smooth_preserve(
@@ -5453,6 +5470,7 @@ def run_refine(
     from cadx.cad.fem.analyze import report_to_json, run_fem
     from cadx.cad.fem.refine import (
         apply_refine,
+        rebind_keep_hole_indices,
         refine_verify,
         resolve_refine_features,
     )
@@ -5481,6 +5499,9 @@ def run_refine(
         anchors, spec_features, features, base_mesh=base_mesh
     )
     keep_regions = list(keep_regions or [])
+    keep_regions = rebind_keep_hole_indices(
+        keep_regions, spec_features or [], anchors or [], res_warnings
+    )
     if auto_keep_anchors and not keep_regions and anchors:
         # worker-declared gap: TopOpt ran without explicit keep regions so
         # fastener islands may have been eaten — restore each anchor's

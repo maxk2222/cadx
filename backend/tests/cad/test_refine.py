@@ -166,6 +166,182 @@ def test_resolve_request_missing_position_warns():
     assert any("no position" in w for w in warns)
 
 
+def test_resolve_request_adopts_nearest_anchor_depth():
+    """A request hole without `anchor_index` must inherit `depth_mm` from the
+    nearest same-axis anchor — the robot-arm mount's flange pins skipped
+    because `depth_mm=None` made the ring test demand 20% of a 100 mm span
+    for an 8 mm flange wall."""
+    anchors = [
+        {
+            "index": 6,
+            "kind": "hole",
+            "axis": "+x",
+            "pos": [46.0, -12.0, 25.0],
+            "dia": 6.5,
+            "depth_mm": 8.0,
+            "blind": True,
+            "name": "flange hole -y",
+        },
+        {
+            "index": 7,
+            "kind": "hole",
+            "axis": "+x",
+            "pos": [46.0, 12.0, 25.0],
+            "dia": 6.5,
+            "depth_mm": 8.0,
+            "blind": True,
+            "name": "flange hole +y",
+        },
+    ]
+    feats, _ = resolve_refine_features(
+        anchors,
+        None,
+        [
+            {
+                "type": "hole",
+                "axis": "+x",
+                "pos": [46, 12, 25],
+                "dia": 6.5,
+                "through": True,
+                "name": "flange pin +y",
+            },
+            {
+                "type": "hole",
+                "axis": "+x",
+                "pos": [46, -12, 25],
+                "dia": 6.5,
+                "through": True,
+                "name": "flange pin -y",
+            },
+        ],
+    )
+    assert len(feats) == 2
+    assert {f.name for f in feats} == {"flange pin +y", "flange pin -y"}
+    assert all(f.depth_mm == 8.0 for f in feats)
+    # request `through` wins over the anchor's `blind` marker
+    assert all(f.through for f in feats)
+
+
+def test_resolve_request_distant_anchor_not_adopted():
+    """A same-axis anchor BEYOND the merge radius must not leak its depth —
+    adopting it would thin a genuinely span-deep test."""
+    anchors = [
+        {
+            "index": 1,
+            "kind": "hole",
+            "axis": "+z",
+            "pos": [10.0, 0.0, 6.0],
+            "dia": 5.0,
+            "depth_mm": 8.0,
+            "name": "far hole",
+        }
+    ]
+    feats, _ = resolve_refine_features(
+        anchors,
+        None,
+        [
+            {
+                "type": "hole",
+                "axis": "+z",
+                "pos": [-25.0, 0.0, 6.0],
+                "dia": 4.0,
+                "through": True,
+                "name": "far away",
+            }
+        ],
+    )
+    assert len(feats) == 1 and feats[0].depth_mm is None
+
+
+def test_bore_ring_material_thin_wall_with_depth():
+    """A bore through a thin flange wall must pass the ring test when the
+    feature depth is known — without `depth_mm` the default 20%-of-span
+    threshold can never be met by a wall a few mm thick."""
+    # the mount's silhouette: a 100 mm base plate carrying a thin +x wall —
+    # a +x ray at the bore's ring crosses ONLY the ~10 mm wall
+    base = trimesh.creation.box(extents=[100.0, 80.0, 10.0])
+    base.apply_translation([0.0, 0.0, 5.0])
+    wall = trimesh.creation.box(extents=[10.0, 40.0, 25.0])
+    wall.apply_translation([45.0, 0.0, 22.5])
+    mesh = base.union(wall, engine="manifold")
+    chan = trimesh.creation.cylinder(radius=3.25, height=30.0, sections=24)
+    chan.apply_transform(trimesh.transformations.rotation_matrix(math.pi / 2, [0, 1, 0]))
+    chan.apply_translation([45.0, 0.0, 25.0])
+    mesh = mesh.difference(chan, engine="manifold")
+    # without depth evidence the 20%-of-span rule (20 mm) rejects the
+    # 10 mm wall — with the anchor's measured depth it clears
+    assert not _bore_ring_material(mesh, "+x", 0.0, 25.0, 6.5, None)
+    assert _bore_ring_material(mesh, "+x", 0.0, 25.0, 6.5, 10.0)
+
+
+def test_keep_prisms_warns_out_of_range_hole_index():
+    """A dead `hole_index` must surface as a warning — the mount eval lost
+    two keep rings to a silent skip."""
+    from cadx.cad.fem.refine import _keep_prisms
+
+    warns: list[str] = []
+    prisms = _keep_prisms(
+        [{"kind": "hole", "hole_index": 9}],
+        _anchors(),
+        np.array([[-30.0, -15.0, 0.0], [30.0, 15.0, 12.0]]),
+        (-40.0, 40.0),
+        1.6,
+        warns,
+    )
+    assert prisms == []
+    assert warns and "out of range" in warns[0]
+
+
+def test_rebind_keep_hole_indices_feature_position():
+    """`rebind_keep_hole_indices` rescues stored specs: #8/#9 counted as
+    0-based `spec.features` positions rebind to the flange anchors #6/#7."""
+    from cadx.cad.fem.refine import rebind_keep_hole_indices
+
+    feats = [
+        {"type": "block", "name": "base plate"},
+        {"type": "hole", "name": "mounting hole -x -y"},
+        {"type": "hole", "name": "mounting hole -x +y"},
+        {"type": "hole", "name": "mounting hole +x -y"},
+        {"type": "hole", "name": "mounting hole +x +y"},
+        {"type": "boss", "name": "bearing boss"},
+        {"type": "thread", "name": "M12 tapped through-bore"},
+        {"type": "wall", "name": "vertical flange"},
+        {"type": "hole", "name": "flange hole -y"},
+        {"type": "hole", "name": "flange hole +y"},
+        {"type": "rib", "name": "gusset rib"},
+    ]
+    anchors = [
+        {"index": i, "name": n, "axis": ax}
+        for i, (n, ax) in enumerate(
+            [
+                ("mounting hole -x -y", "+z"),
+                ("mounting hole -x +y", "+z"),
+                ("mounting hole +x -y", "+z"),
+                ("mounting hole +x +y", "+z"),
+                ("M12 tapped through-bore", "+z"),
+                ("flange hole -y", "+x"),
+                ("flange hole +y", "+x"),
+            ],
+            start=1,
+        )
+    ]
+    warns: list[str] = []
+    out = rebind_keep_hole_indices(
+        [{"kind": "hole", "hole_index": i} for i in (1, 2, 3, 4)]
+        + [{"kind": "bore", "hole_index": 5}]
+        + [{"kind": "hole", "hole_index": i} for i in (8, 9)],
+        feats,
+        anchors,
+        warns,
+    )
+    assert [r["hole_index"] for r in out] == [1, 2, 3, 4, 5, 6, 7]
+    assert sum("rebound" in w for w in warns) == 2
+    # a dead index pointing at a non-hole feature stays dead (honest warning)
+    warns2: list[str] = []
+    out2 = rebind_keep_hole_indices([{"kind": "hole", "hole_index": 11}], feats, anchors, warns2)
+    assert out2[0]["hole_index"] == 11
+
+
 # --------------------------------------------------------------------------- #
 # base-mesh tunnel gate on leftover anchors                                     #
 # --------------------------------------------------------------------------- #
