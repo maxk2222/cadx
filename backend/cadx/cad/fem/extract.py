@@ -274,7 +274,72 @@ def _surface_mesh_mc(domain: VoxelDomain, field: np.ndarray, iso: float = 0.5) -
     mesh.remove_unreferenced_vertices()
     if mesh.volume < 0:  # belt & suspenders: never export inverted solids
         mesh.invert()
-    return mesh
+    return _orient_nested_shells(mesh)
+
+
+def _cell_pinned_vertices(
+    mesh: trimesh.Trimesh, domain: VoxelDomain, pin3: np.ndarray
+) -> np.ndarray | None:
+    """Indices of mesh vertices whose containing domain cell is pinned —
+    the same vertex→cell mapping mesh_ops.smooth_preserve uses."""
+    try:
+        ijk = np.clip(
+            np.floor(
+                (mesh.vertices - np.asarray(domain.origin, dtype=float))
+                / max(float(domain.pitch), 1e-9)
+            ).astype(int),
+            0,
+            np.asarray(domain.dims, dtype=int) - 1,
+        )
+        return np.flatnonzero(pin3[ijk[:, 0], ijk[:, 1], ijk[:, 2]])
+    except Exception:
+        return None
+
+
+def _nesting_depths(parts: list[trimesh.Trimesh]) -> list[int]:
+    """Shell-nesting depth per component — how many bigger components fully
+    contain it. Solid/void alternate with depth: 0 = body, 1 = its cavity
+    wall, 2 = an island inside that cavity (a real second solid)."""
+    order = sorted(range(len(parts)), key=lambda i: -abs(float(parts[i].volume)))
+    depth = [0] * len(parts)
+    for rank, i in enumerate(order):
+        probe = parts[i].vertices[:: max(1, len(parts[i].vertices) // 16)]
+        for j in order[:rank]:
+            try:
+                if bool(np.asarray(parts[j].contains(probe)).all()):
+                    depth[i] += 1
+            except Exception:
+                break
+    return depth
+
+
+def _orient_nested_shells(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+    """Orient each boundary component by shell parity.
+
+    A uniform winding flip can only fix the outermost shell — nested
+    cavity walls keep positive signed volume and every downstream consumer
+    (``solid_body_count``, ``_body_groups``, the evalkit ``bodies`` gate)
+    then counts a hollow part as two bodies (observed on the guided-infill
+    export: the 30k mm³ inner wall was counted as a second solid). Even
+    nesting depth wants +volume, odd wants −volume."""
+    try:
+        parts = mesh.split(only_watertight=False)
+    except Exception:
+        return mesh
+    if len(parts) <= 1:
+        return mesh
+    depth = _nesting_depths(parts)
+    changed = False
+    for i, d in enumerate(depth):
+        if (float(parts[i].volume) > 0.0) != (d % 2 == 0):
+            parts[i].invert()
+            changed = True
+    if not changed:
+        return mesh
+    out = trimesh.util.concatenate(parts)
+    if out.volume < 0:
+        out.invert()
+    return out
 
 
 def _enforce_min_member(
@@ -576,6 +641,7 @@ def density_to_mesh(
     volume_preserve: bool = True,
     vol_target_scale: float = 1.0,
     bridge_islands: bool = True,
+    pin_cells: np.ndarray | None = None,
 ) -> tuple[trimesh.Trimesh, np.ndarray, list[str], int, dict[str, Any]]:
     """Convert the optimized density field into a trimesh.
 
@@ -694,7 +760,33 @@ def density_to_mesh(
         smooth_iterations += 1
     if smooth_iterations > 0:
         try:
-            trimesh.smoothing.filter_taubin(mesh, lamb=0.5, nu=-0.53, iterations=smooth_iterations)
+            # verified structure must survive the internal Taubin pass —
+            # unsmoothed extraction otherwise erodes thin passive/keep
+            # regions (observed: a flange pin ring lost enough material
+            # that refine could no longer re-seat its cutter) and lattice
+            # bond cells before the outer smooth_preserve can pin them
+            pin3 = np.zeros(domain.dims, dtype=bool)
+            if passive_solid is not None:
+                pin3 |= np.asarray(passive_solid, dtype=bool).reshape(domain.dims)
+            pin3 |= bridged_mask
+            if pin_cells is not None:
+                pin3 |= np.asarray(pin_cells, dtype=bool).reshape(domain.dims)
+            pinned = _cell_pinned_vertices(mesh, domain, pin3)
+            if pinned is not None and len(pinned):
+                lap = trimesh.smoothing.laplacian_calculation(
+                    mesh, equal_weight=True, pinned_vertices=pinned
+                )
+                trimesh.smoothing.filter_taubin(
+                    mesh,
+                    lamb=0.5,
+                    nu=-0.53,
+                    iterations=smooth_iterations,
+                    laplacian_operator=lap,
+                )
+            else:
+                trimesh.smoothing.filter_taubin(
+                    mesh, lamb=0.5, nu=-0.53, iterations=smooth_iterations
+                )
         except Exception:
             log.warning("topopt.smooth_failed", exc_info=True)
     mask_vol = float(mask.sum()) * domain.pitch**3
