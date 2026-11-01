@@ -801,6 +801,19 @@ def _gate_outcome(  # noqa: C901
         want = bool(g.get("expect", True))
         return GateResult(name, wt is want, measured=wt, expected=want)
 
+    if name == "sits_on_xy":
+        # frame contract: the part must rest on the XY plane (min z = 0).
+        # bbox/verify_spec only prove dims — a mirrored or floating part
+        # slips through them (observed: wing built at z=-12..0).
+        sits = analysis.get("sits_on_xy")
+        bb_min = analysis.get("bbox_min")
+        if sits is None and isinstance(bb_min, list | tuple) and len(bb_min) == 3:
+            sits = abs(float(bb_min[2])) < 0.1
+        if sits is None:
+            return GateResult(name, None, measured=None, detail="no frame measurement")
+        want = bool(g.get("expect", True))
+        return GateResult(name, bool(sits) is want, measured=sits, expected=want)
+
     if name == "verify_spec":
         report = verify_spec_report({"mesh": outcome.mesh or {}}, outcome.issues)
         want = str(g.get("expect") or "PASS")

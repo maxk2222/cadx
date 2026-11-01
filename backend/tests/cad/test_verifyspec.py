@@ -1257,3 +1257,47 @@ def test_bound_semantics_export_mode_thread_still_strict():
     res = _res(detail_mode="export", thread_count=0, preview_thread_count=0)
     report = verify_spec(_threaded_spec(), res, envelope_bound_only=True)
     assert _by_name(report)["thread_features"]["status"] == "FAIL"
+
+
+def test_frame_min_z_catches_mirrored_part():
+    """Observed E2E (aircraft_wing): the model mirrored the wing below the
+    XY plane — bbox_size matched (200x80x12) but min_z was -12. Dims alone
+    cannot see that; the frame contract can."""
+    res = _res()
+    res["analysis"]["bbox_min"] = [-100.0, -40.0, -12.0]
+    report = verify_spec(_spec(), res, feature_findings=[])
+    c = _by_name(report)["frame_min_z"]
+    assert c["status"] == "FAIL"
+    assert report["status"] == "FAIL"
+
+
+def test_frame_min_z_resting_part_passes():
+    res = _res()
+    res["analysis"]["bbox_min"] = [-50.0, -25.0, 0.0]
+    c = _by_name(verify_spec(_spec(), res, feature_findings=[]))["frame_min_z"]
+    assert c["status"] == "PASS"
+
+
+def test_frame_min_z_tolerates_loft_noise():
+    res = _res()
+    res["analysis"]["bbox_min"] = [-50.0, -25.0, -0.0014]
+    c = _by_name(verify_spec(_spec(), res, feature_findings=[]))["frame_min_z"]
+    assert c["status"] == "PASS"
+
+
+def test_frame_min_z_skipped_for_bound_results():
+    """Optimized exports may legitimately carve the base away — the check
+    is codegen-only; evalkit gates assert frame for derived results."""
+    res = _res()
+    res["analysis"]["bbox_min"] = [-50.0, -25.0, -12.0]
+    report = verify_spec(_spec(), res, feature_findings=[], envelope_bound_only=True)
+    assert "frame_min_z" not in _by_name(report)
+
+
+def test_frame_min_z_floating_part_fails():
+    """Resting means min z = 0 — a part floating above the plane violates
+    the contract too."""
+    res = _res()
+    res["analysis"]["bbox_min"] = [-50.0, -25.0, 5.0]
+    c = _by_name(verify_spec(_spec(), res, feature_findings=[]))["frame_min_z"]
+    assert c["status"] == "FAIL"

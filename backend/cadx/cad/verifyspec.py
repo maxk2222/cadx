@@ -1655,6 +1655,48 @@ def _envelope(
         )
 
 
+def _frame(
+    spec: dict[str, Any] | None,
+    res: dict[str, Any],
+    checks: list[dict[str, Any]],
+    tol_pct: float,
+    tol_mm: float,
+) -> None:
+    """Frame contract: the part rests on the XY plane (min z = 0).
+
+    ``bbox_size`` matching the stated dims says nothing about placement —
+    observed: an aircraft wing mirrored below XY (bbox_min.z = -12) passed
+    every envelope check while sitting entirely under the build plate.
+    Optimized/bound-mode results skip this — carving the base away is a
+    legitimate optimization outcome handled by evalkit gates instead."""
+    analysis = res.get("analysis") or {}
+    bbox_min = analysis.get("bbox_min")
+    if not (
+        isinstance(bbox_min, list | tuple)
+        and len(bbox_min) == 3
+        and all(isinstance(v, int | float) for v in bbox_min)
+    ):
+        checks.append(
+            _check("frame_min_z", TIER_ENVELOPE, "UNVERIFIED", {"reason": "no measured bbox_min"})
+        )
+        return
+    min_z = float(bbox_min[2])
+    stated_z = _dim_value((spec or {}).get("height_z"))
+    tol = max(tol_mm * 0.2, (stated_z or 0.0) * tol_pct / 100.0 * 0.25)
+    checks.append(
+        _check(
+            "frame_min_z",
+            TIER_ENVELOPE,
+            "PASS" if abs(min_z) <= tol else "FAIL",
+            {
+                "min_z_mm": round(min_z, 4),
+                "tol_mm": round(tol, 3),
+                "contract": "part rests on the XY plane (min z = 0)",
+            },
+        )
+    )
+
+
 def _features(
     spec: dict[str, Any] | None,
     measured: dict[str, Any],
@@ -1877,6 +1919,8 @@ def verify_spec(
     _envelope(
         spec, res, dim_tolerance_pct, dim_tolerance_mm, checks, bound_only=envelope_bound_only
     )
+    if not envelope_bound_only:
+        _frame(spec, res, checks, dim_tolerance_pct, dim_tolerance_mm)
     _features(spec, measured, feature_findings, checks)
     if (spec or {}).get("features"):
         analysis = res.get("analysis") or {}

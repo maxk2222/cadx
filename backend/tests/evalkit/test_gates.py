@@ -203,6 +203,22 @@ def test_fillet_watertight_verify_spec():
     assert [g.ok for g in res] == [False, False, False]
 
 
+def test_sits_on_xy_gate():
+    """Observed E2E (aircraft_wing): a part mirrored below XY passed bbox +
+    verify_spec — the frame gate sees what dims cannot."""
+    out = _out(analysis={"sits_on_xy": True, "bbox_min": [-100, -40, 0.0]})
+    assert run_gates([{"type": "sits_on_xy"}], out, 0)[0].ok is True
+    mirrored = _out(analysis={"sits_on_xy": False, "bbox_min": [-100, -40, -12.0]})
+    assert run_gates([{"type": "sits_on_xy"}], mirrored, 0)[0].ok is False
+    # no sits_on_xy flag: derive from bbox_min
+    derived = _out(analysis={"bbox_min": [-50, -25, -0.0014]})
+    assert run_gates([{"type": "sits_on_xy"}], derived, 0)[0].ok is True
+    derived_bad = _out(analysis={"bbox_min": [-50, -25, -12.0]})
+    assert run_gates([{"type": "sits_on_xy"}], derived_bad, 0)[0].ok is False
+    # no measurement at all: inconclusive
+    assert run_gates([{"type": "sits_on_xy"}], _out(analysis={}), 0)[0].ok is None
+
+
 def test_verify_spec_ignore_recomputes_verdict():
     report = {
         "status": "FAIL",

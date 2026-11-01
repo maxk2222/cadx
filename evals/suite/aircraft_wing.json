@@ -47,6 +47,10 @@
      "max": 1
     },
     {
+     "type": "sits_on_xy",
+     "expect": true
+    },
+    {
      "type": "watertight",
      "expect": true
     },
