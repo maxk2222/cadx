@@ -29,13 +29,21 @@ cadx eval run --local --case robot_arm_mount --stages fem --from <dir>
 
 | Case | Difficulty | Object | Stage chain |
 |------|-----------|--------|-------------|
+| `m8_tapped_plate` | 1 | 60×40×10 plate, centered M8 tapped through-hole, R2 edges | `codegen` |
+| `m10_csk_screw` | 1 | ISO 10642 M10×1.5 countersunk screw, 30 mm — standard-part recipe | `codegen` |
 | `l_bracket_rib` | 1 | aluminium L-bracket + triangular rib | `codegen` → `fem` (+ `params`, disabled) |
+| `m8_hex_screw_threadlen` | 2 | M8×50 ISO 4014 hex screw, explicit 30 mm thread reach | `codegen` |
+| `ball_m8_tap` | 2 | sphere with M8 tapped bore on the pole — surface targeting on curved geometry | `codegen` |
+| `block_sidewall_tap` | 2 | block with M8 tapped bore into a vertical sidewall | `codegen` |
+| `helical_pinion_shaft` | 2 | steel shaft + 18-tooth helical pinion (module 2, 20° helix) | `codegen` → `fem` (bending + torque) |
 | `sprocket_520_45t` | 2 | 7075-T6 rear sprocket, 45 teeth, 520 chain | `codegen` → `fem` (+ `imagegen` → `meshgen`, disabled) |
+| `agent_fem_bc` | 2 | agent-declared boundary conditions (cantilever bar) | `codegen` → `fem` (spec fallback + `fem_loadcases`) |
 | `marine_propeller` | 3 | 5-blade high-pitch skewed marine propeller, hub + shaft bore | `codegen` → `fem` (thrust + torque cases) |
 | `aircraft_wing` | 3 | swept+tapered+twisted NACA 0015→0012 cantilever wing | `codegen` → `fem` (lift + neg-g cases) |
 | `robot_arm_mount` | 3 | topopt-ready robot-arm mount | `codegen` → `fem` → `topopt` → `refine` |
 | `bearing_bracket_topopt` | 3 | generative-design bearing bracket — interfaces-only prompt | `codegen` → `fem` → `topopt` → `refine` |
-| `agent_fem_bc` | 2 | agent-declared boundary conditions (cantilever bar) | `codegen` → `fem` (spec fallback + `fem_loadcases`) |
+| `robot_arm_infill_guided` | 3 | same mount via guided shell+infill — BESO coarse guide | `codegen` → `fem` → `topopt` (guided-infill params) |
+| `robot_arm_infill_escalate` | 3 | guided-infill baseline → full OC warm-started escalation | `codegen` → `infill` → `simp_warm` |
 
 `bearing_bracket_topopt` is the *interfaces-only* / generative-design
 pattern: the prompt declares just the mounting interfaces (3×M8 blind
@@ -108,7 +116,9 @@ Per-stage declarative checks in the suite JSON, evaluated in
   `issue_contains`, `code`, `mode`,
   `fem` (`field`/`min`/`max`, resolves across `worst_safety_factor` →
   `sf_verified` → `sf_export` → per-case), `topopt` (`field`/`min`),
-  `volfrac`, `envelope_within`, `asset_image`, `execs_min`, `max_wall_s`,
+  `volfrac`, `envelope_within`, `sits_on_xy` (the frame contract —
+  `bbox_min.z ≈ 0`, catches parts built below the XY plane that pure
+  bbox-dim gates cannot see), `asset_image`, `execs_min`, `max_wall_s`,
   `max_prompt_tokens`.
   `fem_loadcases` is the **semantic BC gate** — it re-checks the *resolved*
   load cases (not the request): `min_cases`, `source` (asserts
