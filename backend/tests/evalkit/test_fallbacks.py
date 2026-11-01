@@ -207,3 +207,24 @@ def test_seed_secret_key_plaintext_noop(tmp_path, monkeypatch):
 
     local._seed_secret_key({"settings": {"llm_api_key": "plain-key"}})
     assert not (tmp_path / ".settings.key").exists()
+
+
+async def test_import_parent_canonicalizes_mesh_name(tmp_path):
+    """`--from DIR` parents must be discoverable by spawn_fem's
+    best_mesh_relpath — which only scans exports/model.stl, not a renamed
+    stl_model.stl coming from an evals/results artifacts dir."""
+    from cadx.evalkit.local import import_parent
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "stl_model.stl").write_text("solid m\nendsolid m\n")
+    async with async_session() as db:
+        p = Project(name="imp-eval")
+        db.add(p)
+        await db.commit()
+        pid = p.id
+    ctx = LocalCtx(tmp_path)
+    ctx.project_id = pid
+    vid = await import_parent(ctx, src)
+    assert (storage.export_dir(pid, vid) / "model.stl").exists()
+    assert storage.best_mesh_relpath(pid, vid, 1) is not None

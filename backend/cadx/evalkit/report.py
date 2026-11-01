@@ -21,6 +21,8 @@ log = get_logger(__name__)
 
 RESULT_FILE = "result.json"
 
+_SKIP_PARTS = {"data", "_run", "iterations", "artifacts", "stages"}
+
 
 def load_results(*roots: Path) -> list[CaseResult]:
     """Read every result.json under the given roots; malformed files are
@@ -30,6 +32,8 @@ def load_results(*roots: Path) -> list[CaseResult]:
         if not root.is_dir():
             continue
         for p in sorted(root.rglob(RESULT_FILE)):
+            if _SKIP_PARTS.intersection(p.relative_to(root).parts[:-1]):
+                continue
             try:
                 d = json.loads(p.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as e:

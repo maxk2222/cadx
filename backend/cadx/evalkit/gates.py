@@ -115,7 +115,11 @@ def _feature_entry_ok(  # noqa: C901
                         centers.append([c for c in row if c is not None])
             else:
                 centers.extend(g.get("centers") or [])
-        n_matching = sum(int(g.get("count") or 0) for g in matching)
+        must_open = ftype == "through-hole" or str(depth_class or "") == "through"
+        n_matching = sum(
+            max(0, int(g.get("count") or 0) - (int(g.get("blocked") or 0) if must_open else 0))
+            for g in matching
+        )
         if n_matching < want:
             return False
         positions = ef.get("positions")
@@ -733,10 +737,30 @@ def _gate_outcome(  # noqa: C901
                 detail=f"feature measurement unavailable — inconclusive: {reason}",
             )
         ok = features_ok(entries or [], feats)
+        if name in ("fillet", "round"):
+            meas: Any = {
+                "rounds": feats.get("rounds") or [],
+                "fillets": feats.get("fillets") or [],
+            }
+        elif name == "chamfer":
+            meas = {
+                "chamfer_faces": feats.get("chamfer_faces") or 0,
+                "chamfers": feats.get("chamfers") or [],
+            }
+        elif name == "slot":
+            meas = {
+                "slots": feats.get("slots") or 0,
+                "hole_groups": [g for g in (feats.get("hole_groups") or []) if g.get("elongated")],
+            }
+        elif name in ("countersink", "counterbore"):
+            key = "countersinks" if name == "countersink" else "counterbores"
+            meas = {key: feats.get(key) or 0}
+        else:
+            meas = feats.get("hole_groups") or feats
         return GateResult(
             name,
             ok,
-            measured=feats.get("hole_groups") or feats,
+            measured=meas,
             expected=entries,
         )
 
@@ -895,7 +919,13 @@ def _gate_outcome(  # noqa: C901
             return GateResult(name, ok, measured=actual, expected=dims)
         field = str(g.get("field") or "sf_export")
         val = top.get(field)
+        if "expect" in g:
+            return GateResult(
+                name, val == g.get("expect"), measured=val, expected={field: g.get("expect")}
+            )
         lo, hi = g.get("min"), g.get("max")
+        if lo is None and hi is None:
+            return GateResult(name, bool(val), measured=val, expected={field: "truthy"})
         ok = (
             val is not None
             and (lo is None or float(val) >= float(lo))

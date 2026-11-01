@@ -141,6 +141,26 @@ def test_hole_gate_depth_class_and_centers_xyz_positions():
     # legacy groups without centers_xyz keep the `centers` fallback
     legacy = _out(features={"hole_groups": _hole_groups(1, 6.8, "z", [[7, 7]])})
     assert run_gates([{"type": "holes", "count": 1, "positions": [[7, 7]]}], legacy, 0)[0].ok
+    # blocked through-holes must not satisfy depth_class="through"
+    blocked_th = _out(
+        features={
+            "hole_groups": [
+                {
+                    "count": 2,
+                    "diameter": 8.5,
+                    "axis": "x",
+                    "centers": [[20, 36], [-20, 36]],
+                    "depth_class": "through",
+                    "blocked": 1,
+                }
+            ]
+        }
+    )
+    assert not run_gates(
+        [{"type": "holes", "count": 2, "dia": 8.5, "axis": "x", "depth_class": "through"}],
+        blocked_th,
+        0,
+    )[0].ok
 
 
 def test_feature_gate_unavailable_is_inconclusive_but_measured_mismatch_fails():
@@ -240,9 +260,24 @@ def test_fem_topopt_gates():
     assert not run_gates([{"type": "topopt", "field": "rescue_dropped_frac", "max": 0.005}], r, 0)[
         0
     ].ok
-    # string fields pass a bare presence check
+    # string/bool fields pass a bare presence check only when truthy, or match expect
     assert run_gates([{"type": "topopt", "field": "warm_start"}], r, 0)[0].ok
     assert not run_gates([{"type": "topopt", "field": "guide_solver"}], r, 0)[0].ok
+    assert not run_gates(
+        [{"type": "topopt", "field": "warm_start"}],
+        _out(mesh={"topopt": {"warm_start": ""}}),
+        0,
+    )[0].ok
+    assert run_gates(
+        [{"type": "topopt", "field": "guide_solver", "expect": "beso"}],
+        _out(mesh={"topopt": {"guide_solver": "beso"}}),
+        0,
+    )[0].ok
+    assert not run_gates(
+        [{"type": "topopt", "field": "guide_solver", "expect": "beso"}],
+        _out(mesh={"topopt": {"guide_solver": "oc"}}),
+        0,
+    )[0].ok
     # envelope_within reads analysis bbox vs envelope dims
     env = _out(analysis={"bbox_size": [98, 78, 38]})
     assert run_gates([{"type": "envelope_within", "dims": [100, 80, 40]}], env, 0)[0].ok

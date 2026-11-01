@@ -242,6 +242,7 @@ async def import_parent(ctx: LocalCtx, src: Path) -> uuid.UUID:
     mesh_rel = None
     stls = await asyncio.to_thread(lambda: sorted(src.rglob("*.stl")))
     breps = await asyncio.to_thread(lambda: sorted(src.rglob("*.brep")))
+    mesh_src: Path | None = None
     for cand in (
         src / "exports" / "model.stl",
         src / "model.stl",
@@ -254,8 +255,15 @@ async def import_parent(ctx: LocalCtx, src: Path) -> uuid.UUID:
             await asyncio.to_thread(shutil.copy2, cand, dest)
             if dest.suffix == ".stl" and mesh_rel is None:
                 mesh_rel = storage.relpath(dest)
+                mesh_src = dest
     if mesh_rel is None:
         raise ValueError(f"--from {src}: no .stl/.brep found")
+    # best_mesh_relpath (used by spawn_fem/optimize) only scans
+    # exports/model.stl — a renamed source like results/**/stl_model.stl
+    # must additionally land under the canonical name
+    canon = vdir / "exports" / "model.stl"
+    if mesh_src is not None and not canon.exists():
+        await asyncio.to_thread(shutil.copy2, mesh_src, canon)
     # the persisted spec (written next to model.py/params.json on finalize)
     # carries declared features — downstream refine/spec_features paths then
     # re-cut to nominal instead of degrading to scanned-anchor reams

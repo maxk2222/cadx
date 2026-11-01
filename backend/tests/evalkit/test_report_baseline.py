@@ -168,3 +168,26 @@ def test_baseline_missing_cell_flagged(tmp_path):
     bl.save("b", root=root, out_dir=out)
     diffs = bl.diff(bl.load_baseline("a", out_dir=out), bl.load_baseline("b", out_dir=out))
     assert any(d.kind == "missing" and "c2" in d.cell for d in diffs)
+
+
+def test_load_results_ignores_sandbox_run_dirs_inside_scratch(tmp_path):
+    scratch = tmp_path / "scratch"
+    _write(scratch, _res(case="c1", run="s1", driver="local"))
+    nested = (
+        scratch
+        / "c1"
+        / "s1"
+        / "data"
+        / "projects"
+        / "p1"
+        / "versions"
+        / "v1"
+        / "iterations"
+        / "1"
+        / "a1"
+        / "_run"
+    )
+    nested.mkdir(parents=True)
+    (nested / "result.json").write_text('{"ok": true, "analysis": {}}', encoding="utf-8")
+    out = load_results(scratch)
+    assert len(out) == 1 and out[0].run_id == "s1"
