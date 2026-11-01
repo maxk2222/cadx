@@ -205,6 +205,11 @@ class _SessionOps:
     alloc: Any
     contact_sheet: Path | None
     deadline: float | None = None  # monotonic timestamp — job-timeout bound
+    # request-level declared optimize fields (eval stage config / optimize
+    # dialog) — the baseline under tool args: fields the tool cannot
+    # express (structure_mode, warm_density_relpath) must not be dropped
+    # just because the agent called topopt_run instead of infill_run
+    request_opt: dict[str, Any] = field(default_factory=dict)
 
 
 def _budget_exceeded(ops: _SessionOps, needed_s: float) -> dict[str, Any] | None:
@@ -453,7 +458,7 @@ def _make_topopt_fn(ops: _SessionOps) -> Any:
         ) is not None:
             return guard
         it = next(ops.alloc)
-        opt = _opt_overrides(a)
+        opt = {**ops.request_opt, **_opt_overrides(a)}
         keep, kerr = _valid_regions(a.get("keep_regions"))
         if kerr:
             return {"ok": False, "error": kerr}
@@ -500,7 +505,7 @@ def _make_infill_fn(ops: _SessionOps) -> Any:
         ) is not None:
             return guard
         it = next(ops.alloc)
-        opt = _opt_overrides(a)
+        opt = {**ops.request_opt, **_opt_overrides(a)}
         opt["structure_mode"] = "infill"
         await ctx.emit(
             "optimize",
@@ -723,6 +728,7 @@ def _setup_session(
     contact_sheet: Path | None,
     deadline: float | None = None,
     target_volfrac: float | None = None,
+    request_opt: dict[str, Any] | None = None,
 ) -> ToolSession:
     """ToolSession with fem/topopt/preview callbacks; each executor call
     allocates its own iteration dir and attaches renders as `_images`."""
@@ -744,6 +750,7 @@ def _setup_session(
         alloc=itertools.count(base_it + 1),
         contact_sheet=contact_sheet,
         deadline=deadline,
+        request_opt=request_opt or {},
     )
     return ToolSession(
         ctx,
@@ -862,6 +869,7 @@ async def run(
         contact_sheet=contact_sheet,
         deadline=deadline,
         target_volfrac=target_volfrac,
+        request_opt=req_opt,
     )
     messages = _opt_messages(ctx, spec, request, analysis, contact_sheet)
 

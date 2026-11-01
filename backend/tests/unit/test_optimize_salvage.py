@@ -22,6 +22,72 @@ def test_recut_bores_defaults_on_and_can_be_disabled() -> None:
     assert _opt_overrides({"recut_bores": False}) == {"recut_bores": False}
 
 
+async def test_topopt_run_merges_request_opt_for_unexpressible_fields(tmp_path) -> None:
+    """The robot_arm_infill_guided failure: the eval stage declares
+    structure_mode='infill' + infill_scope='guided' but the agent called
+    topopt_run — request fields the tool cannot express must survive into
+    the executor payload instead of silently degrading to plain SIMP."""
+    import itertools
+    import uuid
+    from typing import Any
+
+    from cadx.agent.steps.optimize import _make_topopt_fn, _SessionOps
+    from cadx.llm.fake import FakeLLM
+    from cadx.llm.schemas import Dim, PartSpec
+    from tests.unit.test_session_condense import _ctx
+
+    captured: dict[str, Any] = {}
+
+    class _CaptureExec:
+        async def optimize(self, payload):
+            captured.update(payload)
+            return {"ok": True}
+
+    ctx = _ctx(FakeLLM([]))
+    ctx.executor = _CaptureExec()
+    spec = PartSpec(
+        name="bracket",
+        summary="",
+        length_x=Dim(value=100, source="stated"),
+        width_y=Dim(value=80, source="stated"),
+        height_z=Dim(value=40, source="stated"),
+    )
+    ops = _SessionOps(
+        ctx=ctx,
+        base={
+            "job_id": "t",
+            "project_id": str(uuid.uuid4()),
+            "version_id": str(uuid.uuid4()),
+            "mesh_rel": "x",
+            "runtime_settings": {},
+            "name": "model",
+        },
+        spec=spec,
+        spec_cases=[],
+        default_material="",
+        alloc=itertools.count(1),
+        contact_sheet=None,
+        request_opt={
+            "structure_mode": "infill",
+            "infill_scope": "guided",
+            "infill_guide_solver": "beso",
+            "target_volume_fraction": 0.5,
+        },
+    )
+    fn = _make_topopt_fn(ops)
+    res = await fn({"load_cases": []})
+    assert res["ok"] is True
+    opt = captured["optimize"]
+    assert opt["structure_mode"] == "infill"
+    assert opt["infill_scope"] == "guided"
+    assert opt["infill_guide_solver"] == "beso"
+    assert opt["target_volume_fraction"] == 0.5
+    # tool args still override the request baseline
+    res = await fn({"load_cases": [], "infill_scope": "full"})
+    assert res["ok"] is True
+    assert captured["optimize"]["infill_scope"] == "full"
+
+
 def test_successful_in_pipeline_recut_prevents_duplicate_auto_refine() -> None:
     import uuid
 
