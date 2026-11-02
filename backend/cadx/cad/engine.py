@@ -483,8 +483,8 @@ def run_pipeline(  # noqa: C901
             shape,
             mesh_dir,
             name="mesh",
-            tolerance=0.01 if fine_thread_mesh else 0.05,
-            angular_tolerance=0.1 if fine_thread_mesh else 0.2,
+            tolerance=0.01 if fine_thread_mesh else None,
+            angular_tolerance=0.1 if fine_thread_mesh else None,
         )
     except Exception as e:
         res.error = f"tessellation failed: {e}"
@@ -1146,21 +1146,22 @@ def run_mesh_candidates(*, mesh_path: Path, out_dir: Path, size: int = 512) -> d
         out["error"] = "offscreen rendering unavailable"
         return out
 
-    import tempfile
-
     import pyvista as pv
     from PIL import Image, ImageDraw
 
     cand_dir = out_dir / "orient"
     cand_dir.mkdir(parents=True, exist_ok=True)
     tiles: list[tuple[str, Path]] = []
-    with tempfile.TemporaryDirectory() as td:
-        stl = Path(td) / "cand.stl"
+    # one GL context for all six candidates; the per-iteration Plotter +
+    # STL roundtrip cost dominated this helper (~1 s Plotter init each)
+    pl: Any = pv.Plotter(off_screen=True, window_size=[size, size])
+    pl.set_background("white")
+    try:
         for up, m in candidate_meshes(mesh).items():
-            m.export(str(stl), file_type="stl")
-            pvm = pv.read(str(stl))
-            pl: Any = pv.Plotter(off_screen=True, window_size=[size, size])
-            pl.set_background("white")
+            faces = np.hstack([np.full((len(m.faces), 1), 3), m.faces]).ravel()
+            # weld the facet soup so smooth shading/feature edges behave
+            pvm = pv.PolyData(np.asarray(m.vertices, dtype=float), faces).clean()
+            pl.clear()
             pl.add_mesh(pvm, color="#9aa3ad", smooth_shading=True, split_sharp_edges=True)
             fedges = pvm.extract_feature_edges(30)
             if fedges.n_points:
@@ -1172,9 +1173,10 @@ def run_mesh_candidates(*, mesh_path: Path, out_dir: Path, size: int = 512) -> d
             pl.add_axes(color="black")
             png = cand_dir / f"up_{up.replace('+', 'p').replace('-', 'm')}.png"
             pl.screenshot(str(png))
-            pl.close()
             tiles.append((up, png))
             out["candidates"][up] = png.name
+    finally:
+        pl.close()
 
     # labelled contact sheet: 3x2
     cols, rows = 3, 2

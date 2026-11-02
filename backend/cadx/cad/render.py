@@ -23,6 +23,18 @@ GHOST_SUFFIX = "_ghost"
 _RENDER_OK: bool | None = None
 
 
+def _load_for_render(stl_path: Path) -> Any:
+    """pv.read + point weld — OCC STLs are per-facet triangle soups (every
+    triangle carries its own three vertices). Rendering the raw soup makes
+    smooth_shading collapse into flat shading (no shared normals to blend)
+    and extract_feature_edges marks every triangle boundary as a feature —
+    threads read as jagged noise instead of a clean helix. clean() merges
+    coincident points so both behave."""
+    import pyvista as pv
+
+    return pv.read(str(stl_path)).clean()
+
+
 def _ghost_opacity() -> float:
     """CADX_RENDER_GHOST_OPACITY (default 0.55); 0 or >=1 disables ghost shots."""
     try:
@@ -144,7 +156,7 @@ def render_views(
     import pyvista as pv
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    mesh = pv.read(str(stl_path))
+    mesh = _load_for_render(stl_path)
     edges = mesh.extract_feature_edges(30)
     outline = mesh.outline()
     x, y, z = bbox_size
@@ -209,8 +221,20 @@ def render_views(
             results[f"{view}{suffix}"] = out
         detail = _thread_detail_camera(thread_features or [])
         if detail is not None:
-            focal, position, up, half_height = detail
+            focal, position, up, half_height, clip_normal = detail
             actor.prop.opacity = 1.0
+            render_actor = actor
+            if clip_normal is not None:
+                # clip() keeps the -normal side: the camera-side half is
+                # cut away so the bore cross-section faces the camera
+                clipped = mesh.clip(normal=clip_normal, origin=focal)
+                pl.remove_actor(actor)
+                render_actor = pl.add_mesh(
+                    clipped,
+                    color="#9aa3ad",
+                    smooth_shading=True,
+                    split_sharp_edges=True,
+                )
             pl.camera.position = position
             pl.camera.focal_point = focal
             pl.camera.up = up
@@ -222,6 +246,8 @@ def render_views(
             out = out_dir / "thread_detail.png"
             pl.screenshot(str(out))
             pl.remove_actor(label)
+            if render_actor is not actor:
+                pl.remove_actor(render_actor)
             results["thread_detail"] = out
     finally:
         pl.close()
@@ -260,11 +286,18 @@ def _thread_detail_camera(
         side /= np.linalg.norm(side)
         half_height = max(2.5 * diameter, 0.55 * min(length, 80.0))
         position_cam = focal + side * (5.0 * diameter + length)
+        # internal threads sit inside a bore — a side-on camera only sees
+        # the flat block face. Clip away the camera-side half so the
+        # cross-section exposes the helical thread inside.
+        clip = (
+            tuple(float(v) for v in side) if feature.get("external") is False else None
+        )
         return (
             tuple(float(v) for v in focal),
             tuple(float(v) for v in position_cam),
             tuple(float(v) for v in axis),
             float(half_height),
+            clip,
         )
     return None
 
@@ -280,7 +313,7 @@ def render_thumbnail(
         return None
     import pyvista as pv
 
-    mesh = pv.read(str(stl_path))
+    mesh = _load_for_render(stl_path)
     pl = pv.Plotter(off_screen=True, window_size=(size, size))
     pl.set_background("white")
     pl.add_mesh(mesh, color="#9aa3ad", smooth_shading=True, split_sharp_edges=True)

@@ -14,8 +14,9 @@ from build123d import (
     import_step,
 )
 
+import cadx.cad.exporters as exporters_mod
 from cadx.cad.exporters import export_2d, export_all_3d, quick_stl
-from cadx.cad.render import render_available, render_views
+from cadx.cad.render import _load_for_render, _thread_detail_camera, render_available, render_views
 from cadx.cad.sandbox import run_user_code
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
@@ -125,3 +126,96 @@ def test_render_flat_face_has_no_shading_gradient(tmp_path):
     # 64x64 patch on the planar top face, clear of the bore and the outline
     patch = gray[64:128, 96:160]
     assert float(patch.std()) < 4.0
+
+
+def test_load_for_render_welds_facet_soup(tmp_path):
+    """OCC STLs arrive as per-facet triangle soups (3 verts per triangle) —
+    VTK's STL reader welds on read but the render loader must keep the
+    weld invariant explicit: a soup PolyData breaks smooth shading and
+    marks every triangle boundary as a feature edge (the jagged-thread
+    regression)."""
+    with BuildPart() as p:
+        Box(20, 10, 5)
+    stl = quick_stl(p.part, tmp_path / "r", name="b")
+    welded = _load_for_render(stl)
+    # a tessellated box welds to its 8 corners; any soup would leave 36
+    assert welded.n_points == 8
+
+
+def test_part_surface_welds_trimesh_soup():
+    """FEM overlays build PolyData straight from trimesh arrays — trimesh
+    keeps per-facet duplicated vertices, so the weld must happen there."""
+    from cadx.cad.fem.analyze import _part_surface
+
+    base = trimesh.creation.box()
+    soup = trimesh.Trimesh(  # OCC-style: every facet carries its own vertices
+        vertices=base.vertices[base.faces].reshape(-1, 3),
+        faces=np.arange(3 * len(base.faces)).reshape(-1, 3),
+        process=False,
+    )
+    assert len(soup.vertices) == 3 * len(soup.faces)  # raw soup precondition
+    poly = _part_surface(soup, None)
+    assert poly.n_points == 8
+
+
+def test_thread_detail_camera_clips_internal_threads():
+    """A side-on camera on an internal thread only sees the flat block face
+    — the detail shot must clip the camera-side half to expose the bore."""
+    internal = _thread_detail_camera(
+        [
+            {
+                "axis": "+z",
+                "position_mm": [0, 0, 0],
+                "major_diameter": 8,
+                "length": 20,
+                "external": False,
+            }
+        ]
+    )
+    assert internal is not None
+    assert internal[4] is not None
+
+    external = _thread_detail_camera(
+        [
+            {
+                "axis": "+z",
+                "position_mm": [0, 0, 0],
+                "major_diameter": 8,
+                "length": 20,
+                "external": True,
+            }
+        ]
+    )
+    assert external is not None
+    assert external[4] is None
+
+
+def test_quick_stl_adapts_tolerance_to_part_size(tmp_path, monkeypatch):
+    """A fixed 0.05mm chord tolerance under-resolves mm-scale features on
+    small parts — tolerance scales with the smallest bbox dim."""
+    captured: dict = {}
+
+    def _fake(shape, path, **kw):
+        captured.update(kw)
+        Path(path).write_text("solid s\nendsolid s\n")
+
+    monkeypatch.setattr(exporters_mod, "export_stl", _fake)
+
+    with BuildPart() as p:
+        Box(5, 5, 5)
+    quick_stl(p.part, tmp_path)
+    assert captured["tolerance"] == pytest.approx(0.005)
+    assert captured["angular_tolerance"] == pytest.approx(0.05)
+
+    captured.clear()
+    with BuildPart() as p2:
+        Box(120, 80, 40)
+    quick_stl(p2.part, tmp_path)
+    assert captured["tolerance"] == pytest.approx(0.04)
+    assert captured["angular_tolerance"] == pytest.approx(0.16)
+
+    # explicit values still win (detail_mode="export" threads stay 0.01/0.1)
+    captured.clear()
+    quick_stl(p2.part, tmp_path, tolerance=0.01, angular_tolerance=0.1)
+    assert captured["tolerance"] == 0.01
+    assert captured["angular_tolerance"] == 0.1

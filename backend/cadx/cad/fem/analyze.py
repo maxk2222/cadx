@@ -130,7 +130,9 @@ def _part_surface(mesh: trimesh.Trimesh | None, body: Any) -> Any:
     if mesh is not None and faces is not None and len(faces):
         try:
             faces = np.hstack([np.full((len(mesh.faces), 1), 3), mesh.faces]).ravel()
-            return pv.PolyData(np.asarray(mesh.vertices, dtype=float), faces)
+            # OCC-exported meshes arrive as per-facet triangle soups — weld
+            # coincident points so smooth shading and feature edges work
+            return pv.PolyData(np.asarray(mesh.vertices, dtype=float), faces).clean()
         except Exception:
             pass
     return body.extract_surface(algorithm="dataset_surface")

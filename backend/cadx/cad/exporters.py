@@ -314,10 +314,15 @@ def quick_stl(
     out_dir: Path,
     name: str = "mesh",
     *,
-    tolerance: float = 0.05,
-    angular_tolerance: float = 0.2,
+    tolerance: float | None = None,
+    angular_tolerance: float | None = None,
 ) -> Path:
-    """STL used for renders/mesh analysis (coarser than the export STL)."""
+    """STL used for renders/mesh analysis (coarser than the export STL).
+
+    Tolerance adapts to the part's smallest bbox dim when not given —
+    a fixed 0.05 mm chord tolerance under-resolves mm-scale features
+    (threads, knurls) on small parts while wasting facets on large ones.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"{name}.stl"
     src = getattr(shape, "_cadx_mesh", None)
@@ -326,6 +331,15 @@ def quick_stl(
         # OCC re-meshing of a sewn 40k-face solid costs minutes
         src.export(str(path))
         return path
+    if tolerance is None or angular_tolerance is None:
+        try:
+            min_dim = float(min(shape.bounding_box().size))
+        except Exception:
+            min_dim = 50.0
+        if tolerance is None:
+            tolerance = min(0.05, max(0.005, min_dim * 0.001))
+        if angular_tolerance is None:
+            angular_tolerance = min(0.2, max(0.05, tolerance * 4.0))
     export_stl(shape, str(path), tolerance=tolerance, angular_tolerance=angular_tolerance)
     return path
 
