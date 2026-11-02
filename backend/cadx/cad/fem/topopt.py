@@ -191,6 +191,40 @@ def _sealed_pocket_mask(material: np.ndarray) -> np.ndarray:
     return filled & ~mask
 
 
+def _detect_new_void_pins(
+    material_mask: np.ndarray,
+    *,
+    solid: np.ndarray,
+    passive_solid: np.ndarray,
+    pvoid: np.ndarray,
+    dims: tuple[int, int, int],
+    sym_axis: int | None,
+) -> tuple[np.ndarray, int]:
+    """Sealed-pocket cells that still may be pinned to solid.
+
+    `material_mask` is the field's material interpretation (OC passes the
+    raw blueprint — cells at exactly 0 count as empty; MMA passes the
+    thresholded physical density since its blueprint never drops below
+    RHO_MIN). Returns (newly_pinned_flat, n_mirrored): under `sym_axis`
+    the pin set is mirrored like the density field itself — an asymmetric
+    pin set would break the symmetry the optimizer is asked to hold
+    (mirrors landing in pvoid/non-solid stay unpinned)."""
+    pocket = _sealed_pocket_mask(material_mask).ravel()
+    newly = pocket & solid & ~passive_solid & ~pvoid
+    n_mirrored = 0
+    if sym_axis is not None:
+        mirrored = (
+            np.flip(newly.reshape(dims), axis=sym_axis).ravel()
+            & solid
+            & ~passive_solid
+            & ~pvoid
+            & ~newly
+        )
+        n_mirrored = int(mirrored.sum())
+        newly |= mirrored
+    return newly, n_mirrored
+
+
 def _symmetrize_density(
     x: np.ndarray,
     dims: tuple[int, int, int],
@@ -875,10 +909,10 @@ def simp(  # noqa: C901
     from cadx.cad.fem.solver import _fixed_dofs
 
     warnings: list[str] = []
-    prevent_sealed_voids = bool(params.prevent_sealed_voids and params.solver == "oc")
-    if params.prevent_sealed_voids and params.solver != "oc":
+    prevent_sealed_voids = bool(params.prevent_sealed_voids and params.solver in ("oc", "mma"))
+    if params.prevent_sealed_voids and params.solver not in ("oc", "mma"):
         warnings.append(
-            "prevent_sealed_voids currently runs in the OC SIMP loop only; "
+            "prevent_sealed_voids runs in the OC and MMA SIMP loops only; "
             f"solver={params.solver!r} was not modified"
         )
     void_pinned_cells_total = 0
@@ -1254,6 +1288,9 @@ def simp(  # noqa: C901
             "solver=oc ignores max_displacement_mm/max_stress_mpa/minmax "
             "objective — set solver=mma to enforce them"
         )
+    mma_void_stats: dict[str, int] | None = (
+        {"total": 0, "iters": 0, "mirrored": 0} if prevent_sealed_voids else None
+    )
     if params.solver == "mma":
         try:
             mma_x, it, converged, change, mma_status = _run_mma(
@@ -1294,6 +1331,7 @@ def simp(  # noqa: C901
                 symmetrize_fn=_symmetrize if sym_axis is not None else None,
                 phase_t=phase_t,
                 phase_timings=_phase_timings,
+                void_stats=mma_void_stats,
             )
         except ImportError:
             warnings.append("mma solver unavailable (nlopt missing) — fell back to oc")
@@ -1314,7 +1352,17 @@ def simp(  # noqa: C901
                 warnings=warnings,
                 passive_frac=passive_frac,
                 blueprint=x.copy(),
+                void_pinned_cells_total=void_pinned_cells_total
+                + (mma_void_stats or {}).get("total", 0),
+                void_pin_iters=void_pin_iters + (mma_void_stats or {}).get("iters", 0),
+                void_pin_sym_mirrored=void_pin_sym_mirrored
+                + (mma_void_stats or {}).get("mirrored", 0),
+                void_pinning_applied=prevent_sealed_voids,
             )
+    if mma_void_stats:
+        void_pinned_cells_total += mma_void_stats["total"]
+        void_pin_iters += mma_void_stats["iters"]
+        void_pin_sym_mirrored += mma_void_stats["mirrored"]
     if mma_x is not None:
         warnings_out = warnings
         passive_frac = float(passive_solid.sum()) / nsolid
@@ -1368,6 +1416,10 @@ def simp(  # noqa: C901
             warnings=warnings_out,
             passive_frac=passive_frac,
             blueprint=mma_x.copy(),
+            void_pinned_cells_total=void_pinned_cells_total,
+            void_pin_iters=void_pin_iters,
+            void_pin_sym_mirrored=void_pin_sym_mirrored,
+            void_pinning_applied=prevent_sealed_voids,
         )
 
     # A multires-warmed field can satisfy change<=tol almost immediately;
@@ -1452,23 +1504,15 @@ def simp(  # noqa: C901
         x_prev = x
         x = xnew
         if prevent_sealed_voids and it % max(1, int(params.sealed_void_check_iters)) == 0:
-            pocket = _sealed_pocket_mask(x.reshape(domain.dims)).ravel()
-            newly_pinned = pocket & solid & ~passive_solid & ~pvoid
-            if sym_axis is not None:
-                # mirror the pins across the symmetry plane like the density
-                # itself — an asymmetric pin set would break the symmetry the
-                # optimizer is asked to hold (same caveat as the bridge pins:
-                # mirrors landing in pvoid/non-solid stay unpinned)
-                mirrored = (
-                    np.flip(newly_pinned.reshape(domain.dims), axis=sym_axis).ravel()
-                    & solid
-                    & ~passive_solid
-                    & ~pvoid
-                    & ~newly_pinned
-                )
-                if mirrored.any():
-                    void_pin_sym_mirrored += int(mirrored.sum())
-                    newly_pinned |= mirrored
+            newly_pinned, n_mirrored = _detect_new_void_pins(
+                x.reshape(domain.dims),
+                solid=solid,
+                passive_solid=passive_solid,
+                pvoid=pvoid,
+                dims=domain.dims,
+                sym_axis=sym_axis,
+            )
+            void_pin_sym_mirrored += n_mirrored
             if newly_pinned.any():
                 n_new = int(newly_pinned.sum())
                 passive_solid[newly_pinned] = True
@@ -1904,6 +1948,7 @@ def _run_mma(  # noqa: C901
     symmetrize_fn: Callable[[np.ndarray], np.ndarray] | None = None,
     phase_t: dict[str, float] | None = None,
     phase_timings: Callable[[], dict[str, float]] | None = None,
+    void_stats: dict[str, int] | None = None,
 ) -> tuple[np.ndarray, int, bool, float, str]:
     """MMA driver (Svanberg, via nlopt LD_MMA).
 
@@ -2010,6 +2055,48 @@ def _run_mma(  # noqa: C901
         # the enforced volume is the dilated realization's — computed via the
         # projection chain (no extra FEM solve needed)
         p_vol = project_fn(xb, eta_vol)[1]
+        if (
+            void_stats is not None
+            and params.prevent_sealed_voids
+            and it_box[0] % max(1, int(params.sealed_void_check_iters)) == 0
+        ):
+            # sealed-void prevention, MMA flavour: the blueprint is floored
+            # at RHO_MIN (>0) so emptiness must be measured on the THRESHOLDED
+            # physical density, not a bool cast of xb. Pinning mutates the
+            # shared passive_solid — _unpack re-clamps it to 1.0 from the next
+            # evaluation on (the pinned variables stay in v as dead DOFs;
+            # nlopt variable indexing is never touched mid-optimization).
+            newly, n_mir = _detect_new_void_pins(
+                np.asarray(p_vol.reshape(domain.dims) >= 0.5),
+                solid=solid_mask,
+                passive_solid=passive_solid,
+                pvoid=pvoid,
+                dims=domain.dims,
+                sym_axis=sym_axis,
+            )
+            void_stats["mirrored"] += n_mir
+            if newly.any():
+                n_new = int(newly.sum())
+                passive_solid[newly] = True
+                void_stats["total"] += n_new
+                void_stats["iters"] += 1
+                warnings.append(
+                    f"sealed-void prevention pinned {n_new} cells to solid at "
+                    f"evaluation {it_box[0]} ({void_stats['total']} total)"
+                )
+                pf = float(passive_solid.sum()) / nsolid
+                if pf > 0.8 * params.volfrac:
+                    warnings.append(
+                        f"sealed-void pins plus keep/load/fix regions consume "
+                        f"{pf:.0%} of the domain, above 80% of the "
+                        f"{params.volfrac:.0%} volume budget"
+                    )
+                if pf > params.volfrac:
+                    warnings.append(
+                        f"sealed-void prevention made target volfrac "
+                        f"{params.volfrac:.0%} infeasible (pinned floor "
+                        f"{pf:.0%})"
+                    )
         rec = {
             "iteration": it_box[0],
             "compliance_mj": round(max(obj_ds), 3),

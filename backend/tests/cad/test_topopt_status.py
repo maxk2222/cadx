@@ -194,27 +194,47 @@ def test_simp_void_pins_mirror_across_symmetry_plane(monkeypatch: pytest.MonkeyP
     assert result.void_pin_sym_mirrored == 1
 
 
-def test_simp_mma_void_prevention_reports_unsupported() -> None:
-    """prevent_sealed_voids is OC/BESO machinery — an MMA request must say
-    so in warnings and report void_pinning_applied=False (whether nlopt is
-    installed or the run fell back to OC)."""
-    dom, fixed, F = _case()
-    res = simp(
+def test_simp_mma_void_prevention_pins_like_oc(monkeypatch: pytest.MonkeyPatch) -> None:
+    """prevent_sealed_voids now runs inside the MMA loop too: sealed pockets
+    detected on the thresholded physical density (xb never drops below
+    RHO_MIN, so a bool cast would see all-solid) get pinned via the shared
+    passive mask — _unpack re-clamps them, the nlopt variable vector is
+    never re-indexed."""
+    dims = (8, 4, 4)
+    dom = VoxelDomain(
+        origin=np.zeros(3),
+        pitch=1.0,
+        dims=dims,
+        solid=np.ones(dims, dtype=bool),
+    )
+    nodes = np.arange(dom.node_count).reshape(tuple(n + 1 for n in dims))
+    fixed = np.zeros(dom.node_count, dtype=bool)
+    fixed[nodes[0, :, :].ravel()] = True
+    force = np.zeros(3 * dom.node_count)
+    force[3 * int(nodes[-1, dims[1] // 2, dims[2] // 2]) + 2] = -10.0
+    pocket = np.zeros(dims, dtype=bool)
+    pocket[4, 2, 2] = True
+    monkeypatch.setattr(topopt_mod, "_sealed_pocket_mask", lambda _mask: pocket.copy())
+
+    result = simp(
         dom,
         E_PLA,
         NU,
-        [(fixed, F)],
+        [(fixed, force)],
         np.zeros(dom.cell_count, dtype=bool),
         TopOptParams(
-            volfrac=0.4,
+            volfrac=0.6,
             rmin_mm=2.0,
-            max_iter=4,
+            max_iter=6,
             solver="mma",
             prevent_sealed_voids=True,
+            sealed_void_check_iters=1,
         ),
     )
-    assert res.void_pinning_applied is False
-    assert any("prevent_sealed_voids" in w for w in res.warnings)
+    assert result.void_pinning_applied is True
+    assert result.void_pinned_cells_total >= 1
+    assert result.void_pin_iters >= 1
+    assert any("pinned" in w for w in result.warnings)
 
 
 def test_status_no_design_cells_infeasible() -> None:
