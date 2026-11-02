@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import math
+import re
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -156,8 +157,11 @@ def _render_case(
     except Exception:
         return None, None
 
-    vm_png = f"vonmises{suffix}_{case_name}.png"
-    def_png = f"deformed{suffix}_{case_name}.png"
+    # case names may carry prose ("flange reaction / arm torque") — a bare
+    # slash would silently turn the filename into a missing subdirectory
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(case_name)).strip("_")
+    vm_png = f"vonmises{suffix}_{safe}.png"
+    def_png = f"deformed{suffix}_{safe}.png"
     try:
         grid = _grid_image(domain, sol.elem_vm, sol.node_disp)
         body = grid.threshold(0.5, scalars="solid")

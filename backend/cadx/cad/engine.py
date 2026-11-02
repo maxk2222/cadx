@@ -3582,6 +3582,7 @@ def run_topopt_pipeline(  # noqa: C901
         "sf_realization_detail": exp_info.get("sf_realization_detail"),
         "sf_verified_basis": exp_info.get("sf_verified_basis"),
         "enclosed_void_mm3": exp_info.get("enclosed_void_mm3"),
+        "void_frac_of_solid": exp_info.get("void_frac_of_solid"),
         "n_sealed_cavities": exp_info.get("n_sealed_cavities"),
         "largest_void_mm3": exp_info.get("largest_void_mm3"),
         "sealed_cavities_mm3": exp_info.get("sealed_cavities_mm3"),
@@ -3809,6 +3810,7 @@ def run_topopt_pipeline(  # noqa: C901
             "sf_realization_detail": verification.get("sf_realization_detail"),
             "sf_verified_basis": exp_info.get("sf_verified_basis"),
             "enclosed_void_mm3": verification.get("enclosed_void_mm3"),
+            "void_frac_of_solid": verification.get("void_frac_of_solid"),
             "n_sealed_cavities": verification.get("n_sealed_cavities"),
             "largest_void_mm3": verification.get("largest_void_mm3"),
             "sealed_cavities_mm3": verification.get("sealed_cavities_mm3"),
@@ -4882,6 +4884,7 @@ def run_infill_pipeline(  # noqa: C901
         "sf_realization_detail": (exp_info or {}).get("sf_realization_detail"),
         "sf_verified_basis": (exp_info or {}).get("sf_verified_basis"),
         "enclosed_void_mm3": (exp_info or {}).get("enclosed_void_mm3"),
+        "void_frac_of_solid": (exp_info or {}).get("void_frac_of_solid"),
         "n_sealed_cavities": (exp_info or {}).get("n_sealed_cavities"),
         "largest_void_mm3": (exp_info or {}).get("largest_void_mm3"),
         "sealed_cavities_mm3": (exp_info or {}).get("sealed_cavities_mm3"),
@@ -5108,6 +5111,7 @@ def run_infill_pipeline(  # noqa: C901
             "sf_realization_detail": verification.get("sf_realization_detail"),
             "sf_verified_basis": verification.get("sf_verified_basis"),
             "enclosed_void_mm3": verification.get("enclosed_void_mm3"),
+            "void_frac_of_solid": verification.get("void_frac_of_solid"),
             "n_sealed_cavities": verification.get("n_sealed_cavities"),
             "largest_void_mm3": verification.get("largest_void_mm3"),
             "sealed_cavities_mm3": verification.get("sealed_cavities_mm3"),
@@ -5505,6 +5509,7 @@ def run_topopt_resample(  # noqa: C901
             res.topopt["sf_realization_detail"] = info.get("sf_realization_detail")
             res.topopt["sf_verified_basis"] = info.get("sf_verified_basis")
             res.topopt["enclosed_void_mm3"] = info.get("enclosed_void_mm3")
+            res.topopt["void_frac_of_solid"] = info.get("void_frac_of_solid")
             res.topopt["n_sealed_cavities"] = info.get("n_sealed_cavities")
             res.topopt["largest_void_mm3"] = info.get("largest_void_mm3")
             res.topopt["sealed_cavities_mm3"] = info.get("sealed_cavities_mm3")

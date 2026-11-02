@@ -8,6 +8,7 @@ agent can sanity-check where forces land before spending a SIMP run.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -274,7 +275,8 @@ def render_regions(
             pl.camera.parallel_projection = True
             pl.add_text("top", position="upper_left", font_size=9, color="black")
 
-            png = out_dir / f"regions_{case.name}.png"
+            safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(case.name)).strip("_")
+            png = out_dir / f"regions_{safe}.png"
             pl.screenshot(str(png))
             pl.close()
             written.append(png.name)
