@@ -904,6 +904,68 @@ def _gate_outcome(  # noqa: C901
     if name == "fem_loadcases":
         return _gate_fem_loadcases(g, outcome)
 
+    if name == "sealed_voids":
+        top = _topopt(outcome)
+        measured: dict[str, Any] = {
+            key: top.get(key)
+            for key in (
+                "n_sealed_cavities",
+                "enclosed_void_mm3",
+                "largest_void_mm3",
+            )
+            if top.get(key) is not None
+        }
+        limits = {
+            "max_count": g.get("max_count"),
+            "max_mm3": g.get("max_mm3"),
+            "largest_mm3": g.get("largest_mm3"),
+        }
+        checks: list[bool] = []
+        missing: list[str] = []
+        field_for_limit = {
+            "max_count": "n_sealed_cavities",
+            "max_mm3": "enclosed_void_mm3",
+            "largest_mm3": "largest_void_mm3",
+        }
+        for limit_name, limit in limits.items():
+            if limit is None:
+                continue
+            field = field_for_limit[limit_name]
+            value = top.get(field)
+            if value is None:
+                missing.append(field)
+            else:
+                checks.append(float(value) <= float(limit))
+        max_frac = g.get("max_frac")
+        if max_frac is not None:
+            value = top.get("enclosed_void_mm3")
+            grid = top.get("export_grid") or {}
+            domain_volume = grid.get("domain_volume_mm3")
+            if value is None or not domain_volume or float(domain_volume) <= 0:
+                missing.append("enclosed_void_mm3/export_grid.domain_volume_mm3")
+            else:
+                fraction = float(value) / float(domain_volume)
+                measured["void_fraction"] = round(fraction, 6)
+                checks.append(fraction <= float(max_frac))
+        if not any(limit is not None for limit in limits.values()) and max_frac is None:
+            checks.append(top.get("enclosed_void_mm3") == 0)
+            if top.get("enclosed_void_mm3") is None:
+                missing.append("enclosed_void_mm3")
+        expected = {key: val for key, val in limits.items() if val is not None}
+        if max_frac is not None:
+            expected["max_frac"] = max_frac
+        if any(check is False for check in checks):
+            return GateResult(name, False, measured=measured, expected=expected)
+        if missing:
+            return GateResult(
+                name,
+                None,
+                measured=measured,
+                expected=expected,
+                detail=f"sealed-void telemetry unavailable: {', '.join(missing)}",
+            )
+        return GateResult(name, True, measured=measured, expected=expected)
+
     if name in ("topopt", "volfrac", "envelope_within"):
         top = _topopt(outcome)
         if name == "volfrac":

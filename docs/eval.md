@@ -116,7 +116,8 @@ Per-stage declarative checks in the suite JSON, evaluated in
   `issue_contains`, `code`, `mode`,
   `fem` (`field`/`min`/`max`, resolves across `worst_safety_factor` →
   `sf_verified` → `sf_export` → per-case), `topopt` (`field`/`min`),
-  `volfrac`, `envelope_within`, `sits_on_xy` (the frame contract —
+  `volfrac`, `sealed_voids` (`max_count`/`max_mm3`/`largest_mm3`/
+  `max_frac`), `envelope_within`, `sits_on_xy` (the frame contract —
   `bbox_min.z ≈ 0`, catches parts built below the XY plane that pure
   bbox-dim gates cannot see), `asset_image`, `execs_min`, `max_wall_s`,
   `max_prompt_tokens`.

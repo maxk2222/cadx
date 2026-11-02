@@ -219,6 +219,56 @@ def test_sits_on_xy_gate():
     assert run_gates([{"type": "sits_on_xy"}], _out(analysis={}), 0)[0].ok is None
 
 
+def test_sealed_voids_gate_thresholds_fraction_and_legacy_runs():
+    out = _out(
+        mesh={
+            "topopt": {
+                "n_sealed_cavities": 2,
+                "enclosed_void_mm3": 100.0,
+                "largest_void_mm3": 75.0,
+                "export_grid": {"domain_volume_mm3": 10_000.0},
+            }
+        }
+    )
+    passed = run_gates(
+        [
+            {
+                "type": "sealed_voids",
+                "max_count": 2,
+                "max_mm3": 100,
+                "largest_mm3": 75,
+                "max_frac": 0.02,
+            }
+        ],
+        out,
+        0,
+    )[0]
+    assert passed.ok is True
+    assert passed.measured["void_fraction"] == 0.01
+
+    failed = run_gates(
+        [{"type": "sealed_voids", "max_mm3": 50}],
+        out,
+        0,
+    )[0]
+    assert failed.ok is False
+
+    over_fraction = run_gates(
+        [{"type": "sealed_voids", "max_frac": 0.005}],
+        out,
+        0,
+    )[0]
+    assert over_fraction.ok is False
+
+    legacy = run_gates(
+        [{"type": "sealed_voids", "max_frac": 0.02}],
+        _out(mesh={"topopt": {}}),
+        0,
+    )[0]
+    assert legacy.ok is None
+    assert "telemetry unavailable" in legacy.detail
+
+
 def test_verify_spec_ignore_recomputes_verdict():
     report = {
         "status": "FAIL",

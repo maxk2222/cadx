@@ -439,6 +439,10 @@
      "min": 1.5
     },
     {
+     "type": "sealed_voids",
+     "max_frac": 0.02
+    },
+    {
      "type": "volfrac",
      "min": 0.2,
      "max": 0.45
