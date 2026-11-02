@@ -64,6 +64,16 @@ def test_harvest_fem_topopt_verify_spec():
             "topopt": {
                 "sf_export": 1.8,
                 "volfrac_achieved": 0.5,
+                "sf_verified_basis": "mechanism",
+                "enclosed_void_mm3": 123.4,
+                "n_sealed_cavities": 2,
+                "largest_void_mm3": 100.0,
+                "sealed_cavities_mm3": [100.0, 23.4],
+                "sealed_voids_filled_mm3": 23.4,
+                "shell_min_wall_mm": 1.5,
+                "void_pinned_cells_total": 3,
+                "void_pinned_mm3": 27.0,
+                "void_pin_iters": 1,
                 "verify_spec": {"status": "FAIL", "checks": [{"name": "hole_1", "status": "FAIL"}]},
             }
         },
@@ -72,6 +82,9 @@ def test_harvest_fem_topopt_verify_spec():
     m = harvest(o)
     assert m["fem"]["worst_safety_factor"] == 1.9
     assert m["topopt"]["sf_export"] == 1.8
+    assert m["topopt"]["enclosed_void_mm3"] == 123.4
+    assert m["topopt"]["n_sealed_cavities"] == 2
+    assert m["topopt"]["sf_verified_basis"] == "mechanism"
     assert m["verify_spec"]["status"] == "FAIL"
     assert m["verify_spec"]["fails"] == ["hole_1"]
     assert m["issues"] == ["hole broken keep it"]
