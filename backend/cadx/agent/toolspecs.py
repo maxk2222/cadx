@@ -1476,7 +1476,7 @@ MESH_TRANSFORM_TOOLS = [
         {
             "voxel_mm": {
                 "type": "number",
-                "description": "voxel pitch in mm (0.05-5) — keep <= smallest anchored bore dia/3.5 or anchored holes extract undersized; the engine clamps the design pitch to that feature floor (finer is safe, it only costs solver time)",
+                "description": "voxel pitch in mm (0.05-5) — keep below ~bore_dia/3.5 through holed regions or the remesh rounds holes undersized",
             }
         },
         ["voxel_mm"],

@@ -100,7 +100,7 @@ async def test_render_model_fast_path_reuses_stored_mesh():
     # a third identical call still finds it there
     assert session._last_art_dir == "proj/ver/iterations/1/a1"
 
-    third = await session._tool_render_model({})
+    await session._tool_render_model({})
     assert calls == {"full": 1, "existing": 2}
 
     # buffer change -> stale key -> full pipeline again

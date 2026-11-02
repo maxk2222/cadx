@@ -211,10 +211,11 @@ def radial_blade(
                 if section == "naca":
                     # naca4's yt max is 0.5*t of chord — rescale so the
                     # declared `thick` is the real full thickness
+                    # (half-thickness 0.5·naca_t → thick/2 ⇒ scale thick/naca_t)
                     outline = [
                         (
                             (x - 0.5) * st["chord"],
-                            y * st["thick"] / max(0.5 * naca_t, 1e-9),
+                            y * st["thick"] / max(naca_t, 1e-9),
                         )
                         for x, y in naca4(naca_t)
                     ]

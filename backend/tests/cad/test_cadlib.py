@@ -1043,6 +1043,23 @@ def test_radial_blade_naca_section_builds():
     assert all(s.is_valid for s in b.solids())
 
 
+def test_radial_blade_naca_thickness_matches_declared():
+    """naca4's yt max is 0.5·t — the rescale must yield the DECLARED full
+    thickness, matching the ellipse branch's y_radius=thick/2 semantics."""
+    flat = cadlib.radial_blade(
+        n_blades=1,
+        root_r=10.0,
+        tip_r=40.0,
+        section="naca",
+        chord=(20.0, 12.0),
+        thickness=(4.0, 4.0),
+        pitch_root_deg=0,
+        pitch_tip_deg=0,
+        skew_tip_deg=0,
+    )
+    assert pytest.approx(4.0, abs=0.05) == flat.bounding_box().size.Z
+
+
 def test_radial_blade_stations_override():
     """Explicit station dicts drive the same loft — here a 3-station custom
     schedule must reach the declared tip."""
