@@ -573,6 +573,79 @@ def sanitize_dimset(spec: PartSpec, prompt: str) -> list[str]:
     return notes
 
 
+_VOID_FEATURE_TYPES = {
+    "hole",
+    "bore",
+    "void",
+    "slot",
+    "pocket",
+    "cutout",
+    "tunnel",
+    "channel",
+    "opening",
+    "insert",
+    "thread",
+    "bearing_seat",
+    "through_hole",
+    "blind_hole",
+    "countersink_hole",
+    "counterbore_hole",
+    "clearance_hole",
+    "tapped_hole",
+    "notch",
+    "groove",
+    "recess",
+    "cavity",
+}
+_SOLID_LEAD_RE = re.compile(r"\b(?:solid|massiv|voll)\b", re.I)
+_SOLID_NOUN_RE = re.compile(
+    r"\b(?:shaft|body|boss|rib|plate|web|wall|flange|collar|spacer|lug|arm|"
+    r"post|stud|pin|block|slug|rod|bar|core|deck|frame|gusset|hub|"
+    r"welle|koerper|k\u00f6rper|rippe|platte|flansch|bolzen|steg|wand)\b",
+    re.I,
+)
+_VOID_CONTEXT_RE = re.compile(
+    r"\b(?:hole|holes|bore|void|opening|drill|drilled|tap|tapped|thread|"
+    r"slot|pocket|cutout|cut\s*out|through|throughout|clearance|recess|"
+    r"cavity|tunnel|channel|notch|groove|bohrung|loch|aussparung|"
+    r"durchgang|senkung|gewinde|fenster)\b",
+    re.I,
+)
+
+
+def sanitize_feature_kinds(spec: PartSpec) -> list[str]:
+    """Re-type void-kind features that actually describe solid material.
+
+    Weak intake models label a declared SOLID element as ``hole`` when its
+    only dimension is a diameter — observed: "shaft body … dia 16" became
+    a 16 mm hole feature; the verify layer then demanded the missing void
+    and failed the part the model built correctly (the critique itself
+    flagged the finding as a false positive). A void type plus an
+    unambiguous solid description — 'solid', or a body noun in the name
+    (shaft/body/boss/plate/…) with no void word anywhere in the text —
+    is retyped ``other`` so the spec stops requesting a hole that was
+    never meant to exist. Anything with a void word in name or
+    description ("hole for the shaft") is left alone.
+    """
+    notes: list[str] = []
+    for f in spec.features or []:
+        ftype = str(getattr(f, "type", "") or "").lower()
+        if ftype not in _VOID_FEATURE_TYPES:
+            continue
+        name = str(getattr(f, "name", "") or "")
+        desc = str(getattr(f, "description", "") or "")
+        if _VOID_CONTEXT_RE.search(f"{name} {desc}"):
+            continue
+        if not (_SOLID_LEAD_RE.search(f"{name} {desc}") or _SOLID_NOUN_RE.search(name)):
+            continue
+        f.type = "other"
+        notes.append(
+            f"feature '{name or ftype}' described solid material but was "
+            f"typed {ftype} — retyped 'other'"
+        )
+    return notes
+
+
 def sanitize_prompt_axis_extents(spec: PartSpec, prompt: str) -> list[str]:
     """Raise an understated envelope dim to fit explicit prompt coordinates.
 
@@ -697,6 +770,29 @@ def resolve_thread_intents(spec: PartSpec) -> list[str]:
     return notes
 
 
+def sanitize_standard_part_names(spec: PartSpec) -> list[str]:
+    """Canonicalise near-miss standard_part class names.
+
+    Weak intake models invent plausible-but-wrong names ('HexScrew' for
+    HexHeadScrew); an unresolvable name silently drops the whole
+    standard-part path — no recipe, no catalog dims, no catalog-covered
+    feature dims — and the request's own numbers then fight the geometry
+    at verify time (m8_hex: stated x=50 vs the 13 mm hex head). The
+    resolver only accepts unambiguous token-cover matches."""
+    from cadx.cad import catalog
+
+    notes: list[str] = []
+    for part in spec.standard_parts or []:
+        canonical = catalog.resolve_class_name(
+            str(getattr(part, "class_name", "") or ""),
+            fastener_type=getattr(part, "fastener_type", None),
+        )
+        if canonical and canonical != part.class_name:
+            notes.append(f"standard part '{part.class_name}' resolved to '{canonical}'")
+            part.class_name = canonical
+    return notes
+
+
 def sanitize_standard_part_dims(spec: PartSpec) -> list[str]:
     if len(spec.standard_parts) != 1 or spec.standard_parts[0].quantity != 1:
         return []
@@ -724,6 +820,25 @@ def sanitize_standard_part_dims(spec: PartSpec) -> list[str]:
         dim = getattr(spec, field)
         tolerance = max(0.25, abs(value) * 0.02)
         if dim.source == "stated" and abs(float(dim.value) - value) > tolerance:
+            nominal = [
+                float(v)
+                for v in (
+                    getattr(part, "length_mm", None),
+                    getattr(part, "thread_length_mm", None),
+                )
+                if isinstance(v, int | float) and float(v) > 0
+            ]
+            if any(abs(float(dim.value) - v) <= tolerance for v in nominal):
+                # the stated number restates the fastener's catalog nominal
+                # length (under-head shank length — never a bbox extent):
+                # not this axis's envelope at all, so there is no real
+                # conflict to escalate — the catalog bbox governs.
+                setattr(spec, field, Dim(value=value, unit="mm", source="assumed"))
+                notes.append(
+                    f"{axis}={dim.value:g} restates the {part.class_name} nominal "
+                    f"length, not an envelope extent — catalog {axis}={value:g} governs"
+                )
+                continue
             question_text = (
                 f"The {part.class_name} catalog dimensions give {axis}={value:g} mm, "
                 f"but the request states {axis}={dim.value:g} mm. Which should govern?"
@@ -1273,6 +1388,27 @@ def _repair_image_roles(spec: PartSpec, ctx: AgentCtx) -> None:
             r.asset_id = a.asset_id
 
 
+def _sanitize_spec(spec: PartSpec, ctx: AgentCtx) -> PartSpec:
+    sanitize_load_cases(spec)
+    sanitize_dims(spec, ctx.prompt or "")
+    sanitize_material(spec, ctx.prompt or "")
+    for note in sanitize_dim_echo(spec, ctx.prompt or ""):
+        log.info("intake.dim_echo_fixed", note=note)
+    # explicit prompt triplets / axis coordinates are the strongest
+    # stated evidence — they run last so dim_echo's feature-extent
+    # guesses cannot silently undo them
+    for note in sanitize_dimset(spec, ctx.prompt or ""):
+        log.info("intake.dimset_fixed", note=note)
+    for note in sanitize_prompt_axis_extents(spec, ctx.prompt or ""):
+        log.info("intake.axis_extents_fixed", note=note)
+    for note in sanitize_feature_kinds(spec):
+        log.info("intake.feature_kind_fixed", note=note)
+    if not spec.process:
+        spec.process = ctx.settings.process
+    ctx.spec = spec
+    return spec
+
+
 async def run(ctx: AgentCtx) -> PartSpec:
     user_content: list[dict[str, Any]] = [
         {"type": "text", "text": user_block(ctx.prompt, ctx.settings, ctx.mode)}
@@ -1310,22 +1446,7 @@ async def run(ctx: AgentCtx) -> PartSpec:
             raise LLMFormatError("intake session produced no spec")
         spec = res.response.parsed
         _repair_image_roles(spec, ctx)
-        sanitize_load_cases(spec)
-        sanitize_dims(spec, ctx.prompt or "")
-        sanitize_material(spec, ctx.prompt or "")
-        for note in sanitize_dim_echo(spec, ctx.prompt or ""):
-            log.info("intake.dim_echo_fixed", note=note)
-        # explicit prompt triplets / axis coordinates are the strongest
-        # stated evidence — they run last so dim_echo's feature-extent
-        # guesses cannot silently undo them
-        for note in sanitize_dimset(spec, ctx.prompt or ""):
-            log.info("intake.dimset_fixed", note=note)
-        for note in sanitize_prompt_axis_extents(spec, ctx.prompt or ""):
-            log.info("intake.axis_extents_fixed", note=note)
-        if not spec.process:
-            spec.process = ctx.settings.process
-        ctx.spec = spec
-        return spec
+        return _sanitize_spec(spec, ctx)
     resp = await ctx.llm.chat(
         "vision",
         messages,
@@ -1347,19 +1468,4 @@ async def run(ctx: AgentCtx) -> PartSpec:
     )
     spec = resp.parsed
     _repair_image_roles(spec, ctx)
-    sanitize_load_cases(spec)
-    sanitize_dims(spec, ctx.prompt or "")
-    sanitize_material(spec, ctx.prompt or "")
-    for note in sanitize_dim_echo(spec, ctx.prompt or ""):
-        log.info("intake.dim_echo_fixed", note=note)
-    # explicit prompt triplets / axis coordinates are the strongest
-    # stated evidence — they run last so dim_echo's feature-extent
-    # guesses cannot silently undo them
-    for note in sanitize_dimset(spec, ctx.prompt or ""):
-        log.info("intake.dimset_fixed", note=note)
-    for note in sanitize_prompt_axis_extents(spec, ctx.prompt or ""):
-        log.info("intake.axis_extents_fixed", note=note)
-    if not spec.process:
-        spec.process = ctx.settings.process
-    ctx.spec = spec
-    return spec
+    return _sanitize_spec(spec, ctx)

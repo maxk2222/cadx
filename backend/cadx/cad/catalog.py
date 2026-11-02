@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import inspect
+import re
 import typing
 from typing import Any
 
@@ -378,6 +379,53 @@ def resolve_class(name: str) -> type | None:
     """Look up a catalog class by name."""
     build_catalog()
     return _REGISTRY.get(name)
+
+
+def _name_tokens(name: str) -> list[str]:
+    """Split CamelCase/snake/space class names into lowercase tokens."""
+    parts = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", name)
+    return [p.lower() for p in re.split(r"[\s_\-]+", parts) if len(p) >= 2]
+
+
+def resolve_class_name(name: str, *, fastener_type: str | None = None) -> str | None:
+    """Canonical catalog name for a close-but-wrong ``class_name``, or None.
+
+    Weak intake models invent near-miss names ('HexScrew' for
+    HexHeadScrew); an unresolvable name silently drops the standard-part
+    path (no recipe, no catalog dims — observed on m8_hex_screw_threadlen).
+    Rescue is conservative by design: exact/case-insensitive match, else
+    candidates whose name covers every token of the given name; a
+    surviving tie is broken by ``fastener_type`` then shortest name —
+    anything still ambiguous returns None and the unknown name flows to
+    normal validation."""
+    if not name:
+        return None
+    names = sorted(registry())
+    if name in names:
+        return name
+    lower = name.lower()
+    exact = [n for n in names if n.lower() == lower]
+    if exact:
+        return exact[0]
+    tokens = _name_tokens(name)
+    if not tokens:
+        return None
+
+    def _covers(candidate: str) -> bool:
+        cl = candidate.lower()
+        return all(t in cl for t in tokens)
+
+    cands = [n for n in names if _covers(n)]
+    if not cands:
+        return None
+    if fastener_type:
+        typed = [n for n in cands if fastener_type in valid_types(n)]
+        if typed:
+            cands = typed
+    if len(cands) == 1:
+        return cands[0]
+    shortest = min(cands, key=len)
+    return shortest if sum(len(n) == len(shortest) for n in cands) == 1 else None
 
 
 def find_entry(class_name: str) -> dict[str, Any] | None:

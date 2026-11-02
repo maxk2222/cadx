@@ -44,6 +44,26 @@ def test_both_face_signs_cancel():
     assert faces == []
 
 
+def test_bottom_endpoint_is_not_a_face():
+    """'bottom at x=0' / 'bottom of the bore' name the END of a hole along
+    its axis — not the part's -z face (block_sidewall feat_0_position
+    false-fail: the centre z=20 was compared against the face plane)."""
+    _c, faces, _e, _n = parse_position_hints(
+        "centred on -X face: y=0, z=20; opens at x=-20, bottom at x=0"
+    )
+    assert faces == ["-x"]
+    _c, faces, _e, _n = parse_position_hints("slot at the bottom of the pocket")
+    assert faces == []
+    # endpoint phrasing alongside real face words keeps the real hint
+    _c, faces, _e, _n = parse_position_hints(
+        "hole opens on the front face, blind bottom at x=12"
+    )
+    assert faces == ["+y"]
+    # real face usage is unaffected
+    _c, faces, _e, _n = parse_position_hints("blind bore on the bottom face")
+    assert faces == ["-z"]
+
+
 @pytest.mark.parametrize(
     "text,end",
     [

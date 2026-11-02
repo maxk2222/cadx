@@ -84,6 +84,67 @@ def test_standard_thread_feature_does_not_hide_length_conflict() -> None:
     assert not is_standard_only(spec)
 
 
+def test_resolve_class_name_rescues_near_miss_names() -> None:
+    """m8_hex_screw_threadlen: intake wrote 'HexScrew' — unresolvable, so the
+    standard-part path dropped out and stated x=50 fought the geometry."""
+    assert catalog.resolve_class_name("HexScrew", fastener_type="iso4014") == "HexHeadScrew"
+    assert catalog.resolve_class_name("Hex Nut") == "HexNut"
+    assert catalog.resolve_class_name("CapScrew") == "SocketHeadCapScrew"
+    assert catalog.resolve_class_name("HexHeadWithFlangeScrew") == "HexHeadWithFlangeScrew"
+    # no token cover → no rescue, never a guess
+    assert catalog.resolve_class_name("HexBolt") is None
+    assert catalog.resolve_class_name("HexSocket") is None
+
+
+def test_sanitize_standard_part_names_rewrites_spec() -> None:
+    from cadx.agent.steps.intake import sanitize_standard_part_names
+
+    part = StandardPartSpec(
+        class_name="HexScrew",
+        fastener_type="iso4014",
+        size="M8-1.25",
+        length_mm=50,
+    )
+    spec = PartSpec(
+        name="M8 hex screw",
+        summary="M8x50",
+        length_x=Dim(value=50.0, source="stated"),
+        width_y=Dim(value=13.7, source="inferred"),
+        height_z=Dim(value=65.3, source="inferred"),
+        standard_parts=[part],
+    )
+    notes = sanitize_standard_part_names(spec)
+    assert notes
+    assert spec.standard_parts[0].class_name == "HexHeadScrew"
+
+
+def test_nominal_length_is_not_an_envelope_dim() -> None:
+    """'M8x50' put the catalog nominal length into length_x stated while the
+    screw stands on Z — the 50 is the under-head nominal, never an extent."""
+    from cadx.agent.steps.intake import sanitize_standard_part_dims
+
+    part = StandardPartSpec(
+        class_name="HexHeadScrew",
+        fastener_type="iso4014",
+        size="M8-1.25",
+        length_mm=50,
+        thread_length_mm=30,
+    )
+    spec = PartSpec(
+        name="M8 hex screw",
+        summary="M8x50 ISO 4014",
+        length_x=Dim(value=50.0, source="stated"),
+        width_y=Dim(value=13.7, source="inferred"),
+        height_z=Dim(value=65.3, source="inferred"),
+        standard_parts=[part],
+    )
+    notes = sanitize_standard_part_dims(spec)
+    assert any("nominal" in n for n in notes)
+    assert spec.length_x.source != "stated"
+    assert spec.length_x.value == pytest.approx(15.011, abs=0.01)
+    assert not any(q.blocking for q in spec.open_questions)
+
+
 def test_catalog_lookup_supports_parametric_classes_and_rejects_unknown_args() -> None:
     gear = catalog.lookup_part(
         "SpurGear",
@@ -246,6 +307,38 @@ def test_expected_thread_count_clearance_dia_disambiguates_m_spec() -> None:
         ],
     )
     assert expected_thread_count(spec) == 1
+
+
+def test_expected_thread_count_skips_declared_tap_drill_pilots() -> None:
+    """bearing_bracket_topopt: the seed spec models three blind Ø6.8
+    'tap-drill pilot' holes with an M8x1.25 thread_spec. They ARE tap
+    drills — the refine stage cuts the helix later — so the codegen
+    export must not demand real threads."""
+    d = lambda v: Dim(value=v, unit="mm", source="stated")  # noqa: E731
+    pilot = lambda n: Feature(  # noqa: E731
+        name=f"M8 tapped mounting hole {n} (tap-drill pilot)",
+        type="hole",
+        description="Blind hole dia 6.8 mm (M8x1.25 tap drill), "
+        "drilled from bottom face z=0 to 10 mm depth. "
+        "Represents an M8x1.25 tapped mounting hole.",
+        thread_spec="M8x1.25",
+        dims={"diameter": 6.8, "depth": 10.0},
+    )
+    spec = PartSpec(
+        name="bearing bracket seed",
+        summary="",
+        units="mm",
+        length_x=d(120),
+        width_y=d(70),
+        height_z=d(90),
+        features=[pilot(n) for n in (1, 2, 3)],
+    )
+    assert expected_thread_count(spec) == 0
+    # wording removed → the very same dims DO count as implicit threads
+    for f in spec.features:
+        f.name = "M8 tapped hole"
+        f.description = "Blind M8 tapped hole, 10 mm deep"
+    assert expected_thread_count(spec) == 3
 
 
 def test_expected_thread_count_rejects_smeared_non_hole_kinds() -> None:

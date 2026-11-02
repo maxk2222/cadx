@@ -310,6 +310,64 @@ def test_normalize_positions_multi_offset_untouched() -> None:
     assert not notes
 
 
+def test_sanitize_feature_kinds_retypes_solid_shaft() -> None:
+    """helical_pinion_shaft: 'shaft body … dia 16' was typed hole — the
+    verifier then demanded a void the model correctly never built."""
+    from cadx.agent.steps.intake import sanitize_feature_kinds
+    from cadx.llm.schemas import Feature
+
+    s = _plate90(
+        [
+            Feature(
+                name="shaft body",
+                type="hole",
+                description="Solid cylindrical shaft, dia 16, from z=0 to z=38, "
+                "smooth, concentric with gear axis",
+                dims={"diameter": 16.0, "depth": 38.0},
+                position="x=0, y=0, z=0..38",
+            )
+        ]
+    )
+    notes = sanitize_feature_kinds(s)
+    assert notes
+    assert s.features[0].type == "other"
+
+
+def test_sanitize_feature_kinds_keeps_real_holes() -> None:
+    from cadx.agent.steps.intake import sanitize_feature_kinds
+    from cadx.llm.schemas import Feature
+
+    for name, desc in (
+        ("bolt hole", "through hole for the shaft, dia 10"),
+        ("M8 tapped hole", "blind hole dia 6.8, M8x1.25 thread"),
+        ("pin bore", "hole receiving the hinge pin"),
+    ):
+        s = _plate90([Feature(name=name, type="hole", description=desc)])
+        notes = sanitize_feature_kinds(s)
+        assert not notes, name
+        assert s.features[0].type == "hole", name
+
+
+def test_sanitize_feature_kinds_needs_solid_evidence() -> None:
+    """A void type with no solid wording stays — no guessing."""
+    from cadx.agent.steps.intake import sanitize_feature_kinds
+    from cadx.llm.schemas import Feature
+
+    s = _plate90(
+        [
+            Feature(
+                name="feature 1",
+                type="hole",
+                description="diameter 16 cut",
+                dims={"diameter": 16.0},
+            )
+        ]
+    )
+    notes = sanitize_feature_kinds(s)
+    assert not notes
+    assert s.features[0].type == "hole"
+
+
 def _handle_spec() -> PartSpec:
     """The observed mis-parse: '120 x 40 x 30' -> height_z=120 (echoing
     length_x) while every feature says z <= 30."""

@@ -150,6 +150,26 @@ def _normalize_range_coords(coords: dict[str, float], text: str) -> dict[str, fl
     return coords
 
 
+# "bottom at x=0" / "bottom of the bore" name the END of a hole or void
+# along its axis, not the part's -z face — endpoint phrasing is not a
+# face hint ('bottom face' / 'on the bottom' still are)
+_FACE_ENDPOINT_RE = re.compile(
+    r"\s+(?:at\b|of\s+(?:the\s+)?(?:bore|hole|tap|pocket|slot|counterbore|"
+    r"countersink|thread|channel|void|tunnel)\b)",
+    re.I,
+)
+
+
+def _face_words(work: str) -> set[str]:
+    out = set()
+    for word, ax in _POS_FACE_WORDS.items():
+        for m in re.finditer(rf"\b{re.escape(word)}\b", work):
+            if not _FACE_ENDPOINT_RE.match(work[m.end() :]):
+                out.add(ax)
+                break
+    return out
+
+
 def parse_position_hints(
     text: str,
 ) -> tuple[dict[str, float], list[str], list[dict[str, Any]], list[dict[str, Any]]]:
@@ -221,9 +241,7 @@ def parse_position_hints(
         _mask(m.span())
     work = "".join(masked)
     faces = {m.group(1) for m in _POS_FACE_TOKEN_RE.finditer(work)}
-    for word, ax in _POS_FACE_WORDS.items():
-        if re.search(rf"\b{re.escape(word)}\b", work):
-            faces.add(ax)
+    faces |= _face_words(work)
     for letter in "xyz":
         if f"+{letter}" in faces and f"-{letter}" in faces:
             faces.discard(f"+{letter}")

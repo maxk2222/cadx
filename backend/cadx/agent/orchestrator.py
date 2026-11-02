@@ -6149,6 +6149,7 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
     intake_step.sanitize_load_cases(spec)
     dim_notes = intake_step.sanitize_dims(spec, prompt)
     dim_notes.extend(intake_step.resolve_thread_intents(spec))
+    dim_notes.extend(intake_step.sanitize_standard_part_names(spec))
     dim_notes.extend(intake_step.sanitize_standard_part_dims(spec))
     pos_notes = intake_step.normalize_feature_positions(spec)
     if dim_notes or pos_notes:
@@ -6267,6 +6268,7 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
         # govern" question must actually update the spec dims, or verify keeps
         # flagging the stated-vs-catalog mismatch on every iteration
         resolved_notes = intake_step.resolve_thread_intents(spec)
+        resolved_notes += intake_step.sanitize_standard_part_names(spec)
         resolved_notes += intake_step.sanitize_standard_part_dims(spec)
         outcome.spec = spec.model_dump()
         for note in resolved_notes:

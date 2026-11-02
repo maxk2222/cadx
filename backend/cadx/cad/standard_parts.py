@@ -751,6 +751,23 @@ def _implicit_thread_plausible(feature: Any, kind: str, size_mm: float) -> bool:
     return abs(dia - tap) <= max(1.0, 0.15 * tap)
 
 
+_PILOT_WORDS = re.compile(
+    r"tap[-\s]?drill|pilot|core\s*hole|kernloch|vorbohr|pre[-\s]?drill", re.I
+)
+
+
+def _pilot_hole_feature(feature: Any) -> bool:
+    """True when the feature itself declares it is the tap-drill pilot /
+    core hole, not the finished thread: topopt seeds model the blind
+    Ø-tap-drill bore now and let a later refine stage cut the helix —
+    demanding real thread geometry on the seed wrongly blocks export
+    (observed: bearing_bracket_topopt, "tap-drill pilot" holes)."""
+    text = " ".join(
+        str(_get(feature, k) or "") for k in ("name", "description", "notes", "note")
+    )
+    return bool(_PILOT_WORDS.search(text))
+
+
 def expected_thread_count(spec: Any) -> int:
     expected = 0
     covered: set[str] = set()
@@ -761,6 +778,8 @@ def expected_thread_count(spec: Any) -> int:
             expected += int(part.quantity)
     for feature in getattr(spec, "features", []) or []:
         if feature.name in covered:
+            continue
+        if _pilot_hole_feature(feature):
             continue
         kind = str(getattr(feature, "type", "") or "").lower()
         thread_spec = str(getattr(feature, "thread_spec", "") or "").strip()
