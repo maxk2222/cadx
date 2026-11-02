@@ -21,6 +21,7 @@ Tool sets per step:
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import inspect
 import io
 import json
@@ -1819,6 +1820,9 @@ class ToolSession:
         # full-pipeline variant of verify_fn (renders+dfm) — used by
         # render_model only; verify itself runs the light pipeline
         render_fn: VerifyFn | None = None,
+        # render-only fast path: takes the source attempt art_dir (not code)
+        # and renders PNGs from its stored mesh.stl — no sandbox rerun
+        render_existing_fn: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
         workbench: Any = None,
         fem_fn: StructFn | None = None,
         topopt_fn: StructFn | None = None,
@@ -1839,6 +1843,7 @@ class ToolSession:
         self.buffer = code
         self.verify_fn = verify_fn
         self.render_fn = render_fn
+        self.render_existing_fn = render_existing_fn
         self.workbench = workbench
         self.fem_fn = fem_fn
         self.topopt_fn = topopt_fn
@@ -1888,6 +1893,10 @@ class ToolSession:
         # last buffer that passed a sandbox verify/render — the rescue path
         # submits this instead of a possibly-broken head on exhaustion
         self._last_good: str | None = None
+        # render-model fast path: hash of the code the last successful exec
+        # actually ran + the attempt dir holding its mesh.stl
+        self._last_exec_key: str | None = None
+        self._last_art_dir: str | None = None
         # build sessions: named buffer snapshots for rollback()
         self._checkpoints: dict[str, str] = {}
         # sha1 of every image file already sent to the model — an identical
@@ -2758,6 +2767,7 @@ class ToolSession:
             return {"ok": False, "error": f"verify execution failed: {e}"}
         if res.get("ok"):
             self._last_good = self.buffer
+            self._track_exec(res)
             ana = res.get("analysis") or {}
             out: dict[str, Any] = {
                 "ok": True,
@@ -2775,6 +2785,21 @@ class ToolSession:
             return out
         return self._exec_diag(res, "verify")
 
+    def _exec_key(self) -> str:
+        return hashlib.sha256(self.buffer.encode()).hexdigest()
+
+    def _track_exec(self, res: dict[str, Any]) -> None:
+        """Remember which attempt dir rendered the current buffer — a later
+        render_model on identical code reuses its mesh.stl instead of paying
+        a full sandbox rerun."""
+        if res.get("art_dir"):
+            self._last_exec_key = self._exec_key()
+            self._last_art_dir = str(res["art_dir"])
+        else:
+            # no stored attempt dir -> nothing safe to fast-path
+            self._last_exec_key = None
+            self._last_art_dir = None
+
     async def _tool_render_model(self, a: dict[str, Any]) -> dict[str, Any]:
         """verify + vision: same sandbox run, but the contact-sheet render is
         attached via `_images` so the model can see the geometry. Uses the
@@ -2785,13 +2810,37 @@ class ToolSession:
         if err := self._require_buffer():
             return err
         self.verify_left -= 1
-        try:
-            res = await fn(self.buffer)
-        except Exception as e:
-            return {"ok": False, "error": f"render execution failed: {e}"}
+        key = self._exec_key()
+        res: dict[str, Any] | None = None
+        # fast path: identical buffer was already executed — re-render the
+        # stored mesh.stl rather than paying a full ~50s sandbox pipeline
+        if (
+            self.render_existing_fn is not None
+            and self._last_exec_key == key
+            and self._last_art_dir
+        ):
+            try:
+                res = await self.render_existing_fn(self._last_art_dir)
+                if res.get("ok"):
+                    res["render_fast_path"] = True
+                else:
+                    res = None  # stale source attempt — full render below
+            except Exception:
+                res = None
+        if res is None:
+            try:
+                res = await fn(self.buffer)
+            except Exception as e:
+                return {"ok": False, "error": f"render execution failed: {e}"}
         if not res.get("ok"):
             return self._exec_diag(res, "render")
         self._last_good = self.buffer
+        if res.get("render_fast_path"):
+            # the source attempt still holds the canonical mesh.stl — keep
+            # pointing at it so the next identical render stays cheap
+            self._last_exec_key = key
+        else:
+            self._track_exec(res)
         images: list[str] = []
         if sheet := res.get("contact_sheet"):
             with contextlib.suppress(ValueError):
@@ -2804,6 +2853,8 @@ class ToolSession:
             "is_valid": ana.get("is_valid"),
             "watertight": ana.get("watertight"),
         }
+        if res.get("render_fast_path"):
+            out["render_fast_path"] = True
         if images:
             out["_images"] = images
             out["render"] = "contact sheet attached — compare with the spec and references"

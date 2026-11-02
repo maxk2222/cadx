@@ -56,6 +56,59 @@ async def _ok_verify(code: str):
     return {"ok": True, "analysis": {"bbox_size": [10, 10, 5], "is_valid": True}}
 
 
+async def test_render_model_fast_path_reuses_stored_mesh():
+    """An identical buffer must not pay a second sandbox pipeline — the
+    render-only path renders PNGs from the stored mesh.stl of the last
+    exec, tracked via the art_dir it returned."""
+    ctx = _ctx(FakeLLM([]), agent_build_verify_max=10, agent_tool_verify=True)
+    calls = {"full": 0, "existing": 0}
+
+    async def render_fn(code: str):
+        calls["full"] += 1
+        return {
+            "ok": True,
+            "art_dir": "proj/ver/iterations/1/a1",
+            "analysis": {"bbox_size": [10, 10, 5]},
+            "contact_sheet": "proj/ver/iterations/1/a1/contact_sheet.png",
+        }
+
+    async def existing_fn(art_dir: str):
+        calls["existing"] += 1
+        assert art_dir == "proj/ver/iterations/1/a1"
+        return {
+            "ok": True,
+            "art_dir": "proj/ver/iterations/1/a9",
+            "analysis": {"bbox_size": [10, 10, 5]},
+            "contact_sheet": "proj/ver/iterations/1/a9/contact_sheet.png",
+        }
+
+    session = ToolSession(
+        ctx,
+        kind="build",
+        code=SEED,
+        verify_fn=render_fn,
+        render_fn=render_fn,
+        render_existing_fn=existing_fn,
+    )
+    first = await session._tool_render_model({})
+    assert first["ok"] and calls == {"full": 1, "existing": 0}
+
+    second = await session._tool_render_model({})
+    assert second["ok"] and calls == {"full": 1, "existing": 1}
+    assert second.get("render_fast_path") is True
+    # the canonical mesh.stl stays anchored at the ORIGINAL exec dir —
+    # a third identical call still finds it there
+    assert session._last_art_dir == "proj/ver/iterations/1/a1"
+
+    third = await session._tool_render_model({})
+    assert calls == {"full": 1, "existing": 2}
+
+    # buffer change -> stale key -> full pipeline again
+    session.buffer = SEED + "\n# changed\n"
+    await session._tool_render_model({})
+    assert calls["full"] == 2
+
+
 def test_build_tools_schema():
     """build kind offers the code suite + build tools; submit_code is gone —
     the buffer itself is the submission."""

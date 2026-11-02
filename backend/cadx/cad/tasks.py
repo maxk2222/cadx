@@ -113,22 +113,34 @@ def run_execute_payload(
         Reference(asset_id=r["asset_id"], path=r["path"]) for r in payload.get("references", [])
     ]
 
-    result = run_pipeline(
-        code=payload["code"],
-        out_dir=out_dir,
-        params_override=payload.get("params_override"),
-        references=references,
-        settings=settings,
-        runtime=_runtime(payload),
-        full_exports=bool(payload.get("full_exports")),
-        name=payload.get("name", "model"),
-        mesh_solid=Path(payload["mesh_solid"]) if payload.get("mesh_solid") else None,
-        mesh_bbox=payload.get("mesh_bbox"),
-        anchors=payload.get("anchors"),
-        light=bool(payload.get("light")),
-        detail_mode=payload.get("detail_mode"),
-        **_cancel_kwargs(run_pipeline, cancelled),
-    )
+    render_from = payload.get("render_from")
+    if render_from:
+        # render-only fast path: reuse the mesh.stl an earlier attempt
+        # produced — skips the sandbox rerun + tessellation + analysis
+        from cadx.cad.engine import render_existing
+
+        result = render_existing(
+            storage.resolve(str(render_from)),
+            out_dir,
+            detail_mode=str(payload.get("detail_mode") or "preview"),
+        )
+    else:
+        result = run_pipeline(
+            code=payload["code"],
+            out_dir=out_dir,
+            params_override=payload.get("params_override"),
+            references=references,
+            settings=settings,
+            runtime=_runtime(payload),
+            full_exports=bool(payload.get("full_exports")),
+            name=payload.get("name", "model"),
+            mesh_solid=Path(payload["mesh_solid"]) if payload.get("mesh_solid") else None,
+            mesh_bbox=payload.get("mesh_bbox"),
+            anchors=payload.get("anchors"),
+            light=bool(payload.get("light")),
+            detail_mode=payload.get("detail_mode"),
+            **_cancel_kwargs(run_pipeline, cancelled),
+        )
 
     d = result.to_dict()
     it_rel = storage.relpath(out_dir)

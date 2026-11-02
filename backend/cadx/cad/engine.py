@@ -786,6 +786,90 @@ def run_pipeline(  # noqa: C901
     return _attach_verify_spec(res, spec_dict, settings, rt)
 
 
+def render_existing(
+    source_dir: Path,
+    out_dir: Path,
+    *,
+    detail_mode: str = "preview",
+) -> ExecResult:
+    """Render-only pipeline — reuses the ``renders/mesh.stl`` + runner
+    metadata an earlier attempt already produced instead of re-running the
+    sandbox + tessellation + analysis (~50s full pipeline -> a few seconds).
+
+    ``source_dir`` is an attempt dir (``iterations/N/aM``); PNGs land in
+    ``out_dir`` like a normal run's artifacts. Geometry facts come from the
+    STL itself — no OCC analysis pass."""
+    res = ExecResult()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    t0 = time.monotonic()
+    stl_path = source_dir / "renders" / "mesh.stl"
+    if not stl_path.exists():
+        res.error = f"render_existing: no mesh.stl under {source_dir}"
+        return res
+    runner_json = source_dir / "_run" / "result.json"
+    if runner_json.exists():
+        with contextlib.suppress(Exception):
+            runner = json.loads(runner_json.read_text())
+            res.design_features = list(runner.get("design_features") or [])
+            res.thread_count = int(runner.get("thread_count") or 0)
+            res.params_used = dict(runner.get("params_used") or {})
+            res.stdout = str(runner.get("stdout") or "")
+            res.detail_mode = str(runner.get("detail_mode") or detail_mode)
+    try:
+        mesh = load_triangle_mesh(stl_path)
+    except Exception as e:
+        res.error = f"render_existing: failed to load {stl_path}: {e}"
+        return res
+    merged = mesh.copy()
+    merged.merge_vertices()
+    res.analysis = Analysis(
+        bbox_min=[float(v) for v in mesh.bounds[0]],
+        bbox_max=[float(v) for v in mesh.bounds[1]],
+        bbox_size=[float(v) for v in mesh.extents],
+        volume=float(abs(mesh.volume)),
+        surface_area=float(mesh.area),
+        solid_count=len(merged.split(only_watertight=False)),
+        watertight=bool(mesh.is_watertight),
+        watertight_after_repair=bool(merged.is_watertight),
+        triangle_count=len(mesh.faces),
+        source="mesh",
+    )
+    thread_preview = (
+        [f for f in res.design_features if f.get("kind") == "thread"]
+        if res.detail_mode == "preview"
+        else []
+    )
+    render_dir = out_dir / "renders"
+    try:
+        render_paths = render_views(
+            stl_path, render_dir, res.analysis.bbox_size, thread_features=thread_preview
+        )
+    except Exception as e:
+        log.warning("render_existing.thread_overlay_failed", error=str(e)[:200])
+        render_paths = render_views(stl_path, render_dir, res.analysis.bbox_size)
+    res.renders = {v: p.name for v, p in render_paths.items()}
+    try:
+        thumb = render_thumbnail(
+            stl_path, out_dir / "thumbnail.png", thread_features=thread_preview
+        )
+    except Exception as e:
+        log.warning("render_existing.thumbnail_failed", error=str(e)[:200])
+        thumb = render_thumbnail(stl_path, out_dir / "thumbnail.png")
+    res.thumbnail = thumb.name if thumb else None
+    stats = [
+        f"bbox: {res.analysis.bbox_size[0]:.1f} x {res.analysis.bbox_size[1]:.1f} x "
+        f"{res.analysis.bbox_size[2]:.1f} mm",
+        f"volume: {res.analysis.volume:.0f} mm^3",
+        f"triangles: {res.analysis.triangle_count}",
+        f"watertight: {res.analysis.watertight_after_repair}",
+    ]
+    sheet = make_contact_sheet(render_paths, out_dir / "contact_sheet.png", stats)
+    res.contact_sheet = sheet.name if sheet else None
+    res.ok = True
+    res.timings["total_s"] = round(time.monotonic() - t0, 2)
+    return res
+
+
 def export_from_brep(
     brep_path: Path, out_dir: Path, name: str = "model", flat_brep: Path | None = None
 ) -> dict[str, str | None]:

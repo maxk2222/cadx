@@ -676,6 +676,21 @@ def _session_render_fn(ctx: AgentCtx, iteration: int, attempt: Any):
     return run
 
 
+def _session_render_existing_fn(ctx: AgentCtx, iteration: int, attempt: Any):
+    """render_model fast path: render PNGs from the mesh.stl a previous
+    exec already produced — no sandbox rerun. The session only calls this
+    when the buffer hash proves the source attempt ran identical code."""
+
+    def run(source_art_dir: str):
+        payload = _exec_payload(
+            ctx, "", iteration, full_exports=False, subdir=f"a{next(attempt)}"
+        )
+        payload["render_from"] = source_art_dir
+        return ctx.executor.execute(payload)
+
+    return run
+
+
 def _params_vs_spec(
     spec: PartSpec, literal_params: dict[str, Any], *, mode: str = "cad"
 ) -> list[dict[str, Any]]:
@@ -3361,6 +3376,7 @@ async def _run_cad(  # noqa: C901
                         attempt=attempt,
                         verify_fn=_session_verify_fn(ctx, it, art_attempt),
                         render_fn=_session_render_fn(ctx, it, art_attempt),
+                        render_existing_fn=_session_render_existing_fn(ctx, it, art_attempt),
                     )
                 except Exception as e:
                     log.warning("agent.improve_failed", iteration=it, error=repr(e))
@@ -3392,6 +3408,7 @@ async def _run_cad(  # noqa: C901
                     feedback=issues_text(actionable) if actionable else None,
                     verify_fn=_session_verify_fn(ctx, it, art_attempt),
                     render_fn=_session_render_fn(ctx, it, art_attempt),
+                    render_existing_fn=_session_render_existing_fn(ctx, it, art_attempt),
                     features=features,
                 )
                 force_fresh = False
@@ -3503,6 +3520,7 @@ async def _run_cad(  # noqa: C901
                         prefer_full_code=stalled,
                         geometry=exec_result.get("geometry_at_failure"),
                         render_fn=_session_render_fn(ctx, it, art_attempt),
+                        render_existing_fn=_session_render_existing_fn(ctx, it, art_attempt),
                         error_history=history or None,
                     )
                 except Exception as e:
@@ -3529,6 +3547,7 @@ async def _run_cad(  # noqa: C901
                             prefer_full_code=True,
                             geometry=exec_result.get("geometry_at_failure"),
                             render_fn=_session_render_fn(ctx, it, art_attempt),
+                            render_existing_fn=_session_render_existing_fn(ctx, it, art_attempt),
                             error_history=history or None,
                         )
                         new_code, perrs = _resolve_patch(code, presp, "never")
@@ -4210,6 +4229,7 @@ async def _run_cad(  # noqa: C901
                         attempt=attempt,
                         verify_fn=_session_verify_fn(ctx, best.iteration, art_attempt),
                         render_fn=_session_render_fn(ctx, best.iteration, art_attempt),
+                        render_existing_fn=_session_render_existing_fn(ctx, best.iteration, art_attempt),
                     )
                 except Exception as e:
                     log.warning("agent.finalize_repair_failed", error=repr(e))
