@@ -259,6 +259,10 @@ class HttpDriver:
                     "load_cases": lcs,
                     "optimize": stage.optimize,
                     "material": stage.material,
+                    # the local driver forwards this — dropping it here made a
+                    # reopt stage (e.g. simp warm-start after a successful
+                    # infill) hit the 409 already-optimized gate
+                    "allow_reopt": bool(stage.options.get("allow_reopt")),
                 },
                 meta,
             )

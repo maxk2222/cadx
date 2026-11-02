@@ -66,6 +66,47 @@ async def test_existing_project_gets_case_settings_patch(driver, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_optimize_body_forwards_allow_reopt(driver, monkeypatch):
+    """escalate/simp_warm regression: the local driver forwards
+    options.allow_reopt but the http body dropped it — a reopt stage
+    after a successful optimize hits the 409 already-optimized gate."""
+    from cadx.evalkit.http import DriverCtx
+    from cadx.evalkit.suite import EvalStage
+
+    async def _no_fallback(s, c):
+        return None, None
+
+    monkeypatch.setattr(driver, "_parent_fallback_lcs", _no_fallback)
+    stage = EvalStage(
+        id="simp_warm",
+        type="optimize",
+        options={"allow_reopt": True},
+        optimize={"enabled": True, "structure_mode": "simp"},
+        material="aluminum",
+    )
+    ctx = DriverCtx()
+    ctx.project_id = "p"
+    ctx.parent_version_id = "v"
+    _path, body, _meta = await driver._spawn_body(stage, ctx)
+    assert body["allow_reopt"] is True
+
+
+@pytest.mark.asyncio
+async def test_optimize_body_defaults_allow_reopt_false(driver, monkeypatch):
+    from cadx.evalkit.http import DriverCtx
+    from cadx.evalkit.suite import EvalStage
+
+    async def _no_fallback(s, c):
+        return None, None
+
+    monkeypatch.setattr(driver, "_parent_fallback_lcs", _no_fallback)
+    stage = EvalStage(id="infill", type="optimize", optimize={"enabled": True})
+    ctx = DriverCtx()
+    _path, body, _meta = await driver._spawn_body(stage, ctx)
+    assert body["allow_reopt"] is False
+
+
+@pytest.mark.asyncio
 async def test_existing_project_same_settings_no_patch(driver, monkeypatch):
     captured: dict = {}
     driver._client = httpx.AsyncClient(
