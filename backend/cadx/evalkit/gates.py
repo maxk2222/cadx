@@ -642,10 +642,14 @@ def _topopt(outcome: StageOutcome) -> dict[str, Any]:
     if best is None:
         return {}
     ver = best.get("verification") or {}
+    # a solved sf_verified of 0.0 IS a verdict — never or-chain it away
+    sf_verified = ver.get("sf_verified")
+    if sf_verified is None:
+        sf_verified = best.get("worst_sf")
     return {
         "kept_base": True,
         "volfrac_achieved": best.get("achieved"),
-        "sf_verified": ver.get("sf_verified") or best.get("worst_sf"),
+        "sf_verified": sf_verified,
         "sf_export": best.get("sf_export"),
         "n_bodies_export": best.get("n_bodies_export"),
         "load_path_ok": best.get("load_path_ok"),
@@ -947,13 +951,29 @@ def _gate_outcome(  # noqa: C901
                 fraction = float(value) / float(domain_volume)
                 measured["void_fraction"] = round(fraction, 6)
                 checks.append(fraction <= float(max_frac))
-        if not any(limit is not None for limit in limits.values()) and max_frac is None:
+        # material-relative share — comparable across parts whose bounding
+        # grid is mostly air (max_frac uses the whole grid as denominator)
+        max_solid_frac = g.get("max_solid_frac")
+        if max_solid_frac is not None:
+            value = top.get("void_frac_of_solid")
+            if value is None:
+                missing.append("void_frac_of_solid")
+            else:
+                measured["void_frac_of_solid"] = float(value)
+                checks.append(float(value) <= float(max_solid_frac))
+        if (
+            not any(limit is not None for limit in limits.values())
+            and max_frac is None
+            and max_solid_frac is None
+        ):
             checks.append(top.get("enclosed_void_mm3") == 0)
             if top.get("enclosed_void_mm3") is None:
                 missing.append("enclosed_void_mm3")
         expected = {key: val for key, val in limits.items() if val is not None}
         if max_frac is not None:
             expected["max_frac"] = max_frac
+        if max_solid_frac is not None:
+            expected["max_solid_frac"] = max_solid_frac
         if any(check is False for check in checks):
             return GateResult(name, False, measured=measured, expected=expected)
         if missing:

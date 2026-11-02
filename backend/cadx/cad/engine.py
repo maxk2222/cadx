@@ -288,6 +288,7 @@ def _attach_verify_spec(
                 ]
             except Exception as e:
                 log.warning("verify_spec.compare_failed", error=str(e)[:200])
+        _tvs = time.monotonic()
         res.verify_spec = verify_spec(
             spec_dict,
             res.to_dict(),
@@ -297,6 +298,7 @@ def _attach_verify_spec(
             dim_tolerance_mm=tol_mm,
             envelope_bound_only=envelope_bound_only,
         )
+        res.timings["verify_spec_s"] = round(time.monotonic() - _tvs, 2)
     except Exception as e:
         log.warning("verify_spec.failed", error=str(e)[:200])
     return res
@@ -446,11 +448,13 @@ def run_pipeline(  # noqa: C901
         return _attach_verify_spec(res, spec_dict, settings, rt)
 
     # 2. load shape
+    t = time.monotonic()
     try:
         shape = import_brep(str(ro.brep_path))
     except Exception as e:
         res.error = f"failed to load generated shape: {e}"
         return _attach_verify_spec(res, spec_dict, settings, rt)
+    res.timings["brep_s"] = round(time.monotonic() - t, 2)
 
     # hybrid: the runner ships the result's manifold mesh next to the brep —
     # re-attach it so tessellation/analysis skip re-meshing the faceted solid
@@ -489,8 +493,10 @@ def run_pipeline(  # noqa: C901
 
     # 4. analysis
     _mark_step(step_key, "analyze")
+    t = time.monotonic()
     res.analysis = analyze(shape, stl_path)
     _repair_analysis_mesh(res.analysis, stl_path)
+    res.timings["analyze_s"] = round(time.monotonic() - t, 2)
     if _is_cancelled(cancelled):
         _mark_cancelled(res)
         return _attach_verify_spec(res, spec_dict, settings, rt)
@@ -519,6 +525,7 @@ def run_pipeline(  # noqa: C901
             detail_mode == "export"
             and any(f.get("kind") == "thread" for f in (res.design_features or []))
         )
+        t = time.monotonic()
         res.features = extract_features(
             shape,
             stl_path,
@@ -526,6 +533,7 @@ def run_pipeline(  # noqa: C901
             cancelled=cancelled,
             recognition=run_recognition,
         ).model_dump()
+        res.timings["features_s"] = round(time.monotonic() - t, 2)
     except Exception as e:
         log.warning("features.extract_failed", error=str(e)[:200])
     if res.design_features:
@@ -545,6 +553,7 @@ def run_pipeline(  # noqa: C901
     _mark_step(step_key, "spans")
     try:
         spec_feats = (spec_dict or {}).get("features") or []
+        t = time.monotonic()
         if spec_feats:
             from cadx.cad.spans import span_checks
 
@@ -562,6 +571,7 @@ def run_pipeline(  # noqa: C901
                 mesh=analysis_mesh,
                 cancelled=cancelled,
             )
+        res.timings["spans_s"] = round(time.monotonic() - t, 2)
     except Exception as e:
         log.warning("features.span_checks_failed", error=str(e)[:200])
     if _is_cancelled(cancelled):
@@ -1859,6 +1869,16 @@ def _verify_export_structure(  # noqa: C901
     use_coverage = bool(getattr(s, "fem_verify_coverage_e", False))
     export_domain = voxelize(candidate_mesh, design_pitch, max_elements, coverage=use_coverage)
     void_metrics = sealed_void_metrics(export_domain.solid, export_domain.pitch)
+    _solid_vol = float(export_domain.solid.sum() * export_domain.pitch**3)
+    if _solid_vol > 0:
+        # material-relative share — max_frac (grid norm) alone is not
+        # comparable across open/thin parts where the bounding grid is
+        # mostly air
+        void_metrics["void_frac_of_solid"] = round(
+            float(void_metrics["enclosed_void_mm3"]) / _solid_vol, 6
+        )
+    else:
+        void_metrics["void_frac_of_solid"] = None
     export_grid = {
         "pitch": float(export_domain.pitch),
         "dims": list(export_domain.dims),
@@ -3685,6 +3705,8 @@ def run_topopt_pipeline(  # noqa: C901
             "shell_min_wall_mm": best["extract"].get("shell_min_wall_mm"),
             "void_pinned_cells_total": result.void_pinned_cells_total,
             "void_pin_iters": result.void_pin_iters,
+            "void_pin_sym_mirrored": result.void_pin_sym_mirrored,
+            "void_pinning_applied": result.void_pinning_applied,
             "void_pinned_mm3": round(result.void_pinned_cells_total * design_domain.pitch**3, 3),
             "bottleneck_mm2": verification["bottleneck_mm2"],
             "sf_floor": verification["sf_floor"],
@@ -4979,6 +5001,8 @@ def run_infill_pipeline(  # noqa: C901
             "shell_min_wall_mm": extract_info.get("shell_min_wall_mm"),
             "void_pinned_cells_total": 0,
             "void_pin_iters": 0,
+            "void_pin_sym_mirrored": 0,
+            "void_pinning_applied": False,
             "void_pinned_mm3": 0.0,
             "bottleneck_mm2": verification["bottleneck_mm2"],
             "sf_floor": verification["sf_floor"],

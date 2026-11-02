@@ -38,12 +38,15 @@ def harvest(outcome: StageOutcome) -> dict[str, Any]:
                 "enclosed_void_mm3",
                 "n_sealed_cavities",
                 "largest_void_mm3",
+                "void_frac_of_solid",
                 "sealed_cavities_mm3",
                 "sealed_voids_filled_mm3",
                 "shell_min_wall_mm",
                 "void_pinned_cells_total",
                 "void_pinned_mm3",
                 "void_pin_iters",
+                "void_pin_sym_mirrored",
+                "void_pinning_applied",
                 "warm_start",
                 "guide_solver",
                 "rescue_dropped_frac",
@@ -64,12 +67,15 @@ def harvest(outcome: StageOutcome) -> dict[str, Any]:
             default=None,
         )
         if best is not None:
+            # a solved sf_verified of 0.0 IS a verdict — never or-chain it away
+            ver = best.get("verification") or {}
+            sf_verified = ver.get("sf_verified")
+            if sf_verified is None:
+                sf_verified = best.get("worst_sf")
             topopt_block = {
                 "kept_base": True,
                 "volfrac_achieved": best.get("achieved"),
-                "sf_verified": (
-                    (best.get("verification") or {}).get("sf_verified") or best.get("worst_sf")
-                ),
+                "sf_verified": sf_verified,
                 "sf_export": best.get("sf_export"),
                 "n_bodies": best.get("n_bodies_export"),
                 "load_path_ok": best.get("load_path_ok"),
