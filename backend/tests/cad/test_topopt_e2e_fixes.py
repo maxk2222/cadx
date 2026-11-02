@@ -37,14 +37,17 @@ from cadx.runtime_config import RuntimeSettings
 
 VOXEL_MM = 1.5  # 24 mm cube -> 16^3 voxel domain — small enough for a fast SIMP
 
-# synthetic fastener anchor in the part centre (bore axis +z, dia 4 mm)
+# synthetic fastener anchor in the part centre (bore axis +z, dia 8.5 mm —
+# the M8-class anchor keeps the dia/3.5 feature floor above the 1.5 mm test
+# pitch so these e2e runs exercise their OWN contract, not the floor's;
+# floor behaviour has dedicated tests in test_topopt_status.py)
 _ANCHOR: dict[str, Any] = {
     "index": 1,
     "kind": "hole",
     "axis": "+z",
     "x": 0.0,
     "y": 0.0,
-    "dia": 4.0,
+    "dia": 8.5,
 }
 # auto_keep_regions() resolves the margin from opt.auto_keep_margin_mm or
 # RuntimeSettings.topopt_auto_keep_margin_mm — 3.0 in all runs below
@@ -199,7 +202,10 @@ def test_design_domain_auto_coarsens_to_direct_solver(tmp_path: Path) -> None:
     assert ac["dofs"] <= 5000
     # the density field must live on the coarsened grid, matching the report
     npz = np.load(tmp_path / "c" / "topopt" / "density.npz")
-    assert float(npz["pitch"]) == pytest.approx(ac["design_pitch_mm"], abs=1e-6)
+    # design_pitch_mm is a 4-decimal report field — the npz stores the full
+    # float (the feature-floor pitch dia/3.5 is a repeating decimal), so the
+    # comparison tolerance is the report precision, not float exactness
+    assert float(npz["pitch"]) == pytest.approx(ac["design_pitch_mm"], abs=1e-3)
 
 
 def test_topopt_result_carries_bound_verify_spec(tmp_path: Path) -> None:
@@ -258,7 +264,10 @@ def test_export_mesh_all_writes_step(tmp_path: Path) -> None:
     step = tmp_path / "e" / res["step"]
     assert step.exists() and step.stat().st_size > 100
     solid = import_step(str(step))
-    assert abs(solid.volume - 24.0**3) / 24.0**3 < 0.05
+    # the fixture is a bored cube — compare against the mesh's own volume,
+    # not the nominal 24³ (the bore legitimately subtracts ~10%)
+    expected = _box_mesh().volume
+    assert abs(solid.volume - expected) / expected < 0.05
 
 
 def test_export_mesh_all_try_step_off(tmp_path: Path) -> None:
@@ -372,8 +381,12 @@ def test_multires_reports_iterations_total(tmp_path: Path) -> None:
     res = _run(
         src,
         tmp_path / "mr",
-        # force the coarse pass below the default 4000-cell payoff floor
-        RuntimeSettings(topopt_multires_min_cells=100),
+        # force the coarse pass below the default 4000-cell payoff floor;
+        # 0.8 target + auto_keep off: on an 8^3 coarse grid the fix/load
+        # surface masks alone pin ~53% of the domain — a 0.5 target would
+        # exit the coarse pass infeasible at iteration 0
+        RuntimeSettings(topopt_multires_min_cells=100, topopt_auto_keep=False),
+        target_volume_fraction=0.8,
     )
     assert res.ok, res.error
     mr = res.topopt.get("multires")
