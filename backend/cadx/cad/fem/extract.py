@@ -81,23 +81,22 @@ def thin_walled_sealed_voids(
     material = np.asarray(mask, dtype=bool)
     if material.ndim != 3 or pitch <= 0 or min_shell_mm < 0:
         raise ValueError("mask must be 3D and pitch/min_shell_mm must be non-negative")
+    # pad the grid with one layer of outside air — without it a part filling
+    # the export grid has no exterior component and wall distances to
+    # "outside" collapse to a meaningless grid-edge distance
+    orig_shape = material.shape
+    material = np.pad(material, 1, constant_values=False)
     empty = ~material
     face = ndimage.generate_binary_structure(3, 1)
     labels, _ = ndimage.label(empty, structure=face)
-    boundary = np.zeros(material.shape, dtype=bool)
-    for axis in range(3):
-        lo = [slice(None)] * 3
-        hi = [slice(None)] * 3
-        lo[axis] = 0
-        hi[axis] = -1
-        boundary[tuple(lo)] = True
-        boundary[tuple(hi)] = True
-    open_labels = np.unique(labels[boundary])
-    sealed_labels = [label for label in range(1, int(labels.max()) + 1) if label not in open_labels]
+    exterior_label = int(labels[0, 0, 0])
+    sealed_labels = [
+        label for label in range(1, int(labels.max()) + 1) if label != exterior_label
+    ]
     if not sealed_labels:
-        return np.zeros_like(material), None
+        return np.zeros(orig_shape, dtype=bool), None
 
-    exterior = np.isin(labels, open_labels) & empty
+    exterior = labels == exterior_label
     distance_to_exterior = ndimage.distance_transform_edt(~exterior, sampling=pitch)
     thin_pockets = np.zeros_like(material)
     wall_minima = []
@@ -110,7 +109,8 @@ def thin_walled_sealed_voids(
         wall_minima.append(wall_mm)
         if wall_mm < min_shell_mm:
             thin_pockets |= pocket
-    return thin_pockets, min(wall_minima) if wall_minima else None
+    core = (slice(1, -1),) * 3
+    return thin_pockets[core], min(wall_minima) if wall_minima else None
 
 
 def _connectivity_mask(mask: np.ndarray, required: np.ndarray) -> tuple[np.ndarray, int]:

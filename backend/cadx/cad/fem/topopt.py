@@ -161,6 +161,10 @@ class TopOptResult:
     )
     void_pinned_cells_total: int = 0
     void_pin_iters: int = 0
+    void_pin_sym_mirrored: int = 0
+    # True only when the sealed-void pin machinery actually ran in this
+    # solver — requested-but-unsupported (MMA) stays False
+    void_pinning_applied: bool = False
 
 
 _AXES = {"+x": 0, "-x": 0, "+y": 1, "-y": 1, "+z": 2, "-z": 2}
@@ -879,6 +883,7 @@ def simp(  # noqa: C901
         )
     void_pinned_cells_total = 0
     void_pin_iters = 0
+    void_pin_sym_mirrored = 0
     solid = domain.solid.ravel()
     pvoid = (
         np.zeros(domain.cell_count, dtype=bool)
@@ -1449,6 +1454,21 @@ def simp(  # noqa: C901
         if prevent_sealed_voids and it % max(1, int(params.sealed_void_check_iters)) == 0:
             pocket = _sealed_pocket_mask(x.reshape(domain.dims)).ravel()
             newly_pinned = pocket & solid & ~passive_solid & ~pvoid
+            if sym_axis is not None:
+                # mirror the pins across the symmetry plane like the density
+                # itself — an asymmetric pin set would break the symmetry the
+                # optimizer is asked to hold (same caveat as the bridge pins:
+                # mirrors landing in pvoid/non-solid stay unpinned)
+                mirrored = (
+                    np.flip(newly_pinned.reshape(domain.dims), axis=sym_axis).ravel()
+                    & solid
+                    & ~passive_solid
+                    & ~pvoid
+                    & ~newly_pinned
+                )
+                if mirrored.any():
+                    void_pin_sym_mirrored += int(mirrored.sum())
+                    newly_pinned |= mirrored
             if newly_pinned.any():
                 n_new = int(newly_pinned.sum())
                 passive_solid[newly_pinned] = True
@@ -1754,6 +1774,8 @@ def simp(  # noqa: C901
         blueprint=x.copy(),
         void_pinned_cells_total=void_pinned_cells_total,
         void_pin_iters=void_pin_iters,
+        void_pin_sym_mirrored=void_pin_sym_mirrored,
+        void_pinning_applied=prevent_sealed_voids,
     )
 
 

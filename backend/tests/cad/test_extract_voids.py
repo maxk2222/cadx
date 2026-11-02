@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from cadx.cad.fem.extract import (
     density_to_mesh,
@@ -85,6 +86,23 @@ def test_thin_walled_sealed_voids_flags_only_subminimum_walls():
     thick_pockets, thickest = thin_walled_sealed_voids(thick, 1.0, 3.0)
     assert not thick_pockets.any()
     assert thickest is not None and thickest >= 3.0
+
+
+def test_thin_walled_sealed_voids_measures_to_real_exterior_at_grid_edge():
+    # a part filling the whole export grid has no empty boundary cell —
+    # without exterior padding the wall distance degenerated into a bogus
+    # grid-diagonal measurement instead of the true pocket->outside span
+    mask = np.ones((7, 7, 7), dtype=bool)
+    mask[3, 3, 3] = False
+    pockets, thinest = thin_walled_sealed_voids(mask, 1.0, 5.0)
+    assert pockets.any()
+    assert thinest == pytest.approx(3.0)
+
+    mask = np.ones((11, 11, 11), dtype=bool)
+    mask[4:7, 4:7, 4:7] = False
+    pockets, thinest = thin_walled_sealed_voids(mask, 1.0, 0.0)
+    assert thinest == pytest.approx(4.0)
+    assert not pockets.any()
 
 
 def test_density_to_mesh_opt_in_void_fill_and_shell_warning():

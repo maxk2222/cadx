@@ -99,7 +99,32 @@ def test_beso_can_pin_detected_sealed_void_cells(monkeypatch: pytest.MonkeyPatch
     )
     assert res.void_pinned_cells_total == 1
     assert res.void_pin_iters == 1
+    assert res.void_pinning_applied is True
     assert any("pinned 1 BESO cells" in warning for warning in res.warnings)
+
+
+def test_beso_void_pins_mirror_across_symmetry_plane(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pins mirror across the symmetry plane like the bridge pins — an
+    asymmetric pin set would silently break the requested symmetry."""
+    dom, fixed, F = _case(pitch=2.0)
+    pocket = np.zeros(dom.dims, dtype=bool)
+    pocket[dom.dims[0] // 3, dom.dims[1] // 2, dom.dims[2] // 2] = True
+    monkeypatch.setattr(beso_mod, "_sealed_pocket_mask", lambda _mask: pocket.copy())
+    res = beso(
+        dom,
+        E_PLA,
+        NU,
+        [(fixed, F)],
+        np.zeros(dom.cell_count, dtype=bool),
+        _params(
+            max_iter=1,
+            prevent_sealed_voids=True,
+            sealed_void_check_iters=1,
+            symmetry="yz",
+        ),
+    )
+    assert res.void_pinned_cells_total == 2
+    assert res.void_pin_sym_mirrored == 1
 
 
 def test_beso_density_is_binary() -> None:

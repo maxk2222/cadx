@@ -136,6 +136,7 @@ def beso(  # noqa: C901
     warnings: list[str] = []
     void_pinned_cells_total = 0
     void_pin_iters = 0
+    void_pin_sym_mirrored = 0
     solid = domain.solid.ravel()
     pvoid = (
         np.zeros(domain.cell_count, dtype=bool)
@@ -502,6 +503,19 @@ def beso(  # noqa: C901
         if params.prevent_sealed_voids and it % max(1, int(params.sealed_void_check_iters)) == 0:
             pockets = _sealed_pocket_mask(keep.reshape(domain.dims)).ravel()
             newly_pinned = pockets & solid & ~passive_solid & ~pvoid
+            if sym_axis is not None:
+                # mirror the pins like the bridge pins above — asymmetric
+                # pins would break the symmetry the run is asked to hold
+                mirrored = (
+                    np.flip(newly_pinned.reshape(domain.dims), axis=sym_axis).ravel()
+                    & solid
+                    & ~passive_solid
+                    & ~pvoid
+                    & ~newly_pinned
+                )
+                if mirrored.any():
+                    void_pin_sym_mirrored += int(mirrored.sum())
+                    newly_pinned |= mirrored
             if newly_pinned.any():
                 n_new = int(newly_pinned.sum())
                 passive_solid[newly_pinned] = True
@@ -668,4 +682,6 @@ def beso(  # noqa: C901
         blueprint=density.copy(),
         void_pinned_cells_total=void_pinned_cells_total,
         void_pin_iters=void_pin_iters,
+        void_pin_sym_mirrored=void_pin_sym_mirrored,
+        void_pinning_applied=params.prevent_sealed_voids,
     )
