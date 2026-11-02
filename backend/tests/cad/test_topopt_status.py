@@ -941,3 +941,120 @@ def test_early_loadpath_cert_runs_fem_on_connected_export(tmp_path: Path) -> Non
     )
     assert info["load_path_ok"] is not False
     assert info["report"].cases, "nominal solve must run on a connected part"
+
+
+# ---------------------------------------------------------------------------
+# Feature floor — anchored bores cap the design-grid pitch (M1)
+# ---------------------------------------------------------------------------
+
+
+def test_feature_floor_pitch_helper() -> None:
+    from cadx.cad.engine import _feature_floor_pitch
+
+    assert _feature_floor_pitch(None) is None
+    assert _feature_floor_pitch([]) is None
+    assert _feature_floor_pitch([{"dia": 0.0}, {}]) is None
+    assert _feature_floor_pitch([{"dia": 6.5}, {"dia": 13.0}]) == pytest.approx(6.5 / 3.5)
+
+
+def test_snap_pitch_under_floor_clamps_round_down_overshoot() -> None:
+    """snapped_pitch can round the thin-axis cell count DOWN and land above
+    the floor — the clamp must return a pitch <= floor either way."""
+    from cadx.cad.engine import _snap_pitch_under_floor
+
+    # span_min 7.2 / floor 3.0 -> n=round(2.4)=2 -> p_snap 3.6 > floor
+    p, _warn = _snap_pitch_under_floor(
+        np.asarray([7.2, 40.0, 40.0]), 3.0, min_cells=1, mesh_volume=0.0, max_elements=0
+    )
+    assert p <= 3.0
+
+
+def test_topopt_pipeline_clamps_pitch_to_feature_floor(tmp_path: Path) -> None:
+    """A requested coarse pitch must be clamped to min_anchor_dia/3.5 so
+    anchored bores still span ~3.5 cells on the design grid."""
+    from cadx.cad.engine import run_topopt_pipeline
+
+    src = tmp_path / "b.stl"
+    _box_mesh(24.0, 24.0, 24.0).export(str(src))
+    res = run_topopt_pipeline(
+        mesh_path=src,
+        out_dir=tmp_path / "o",
+        load_cases=[_cantilever().model_dump()],
+        optimize={
+            "target_volume_fraction": 0.5,
+            "max_iterations": 2,
+            "safety_factor_min": 1.5,
+            "keep_mode": "manual",
+        },
+        material="pla",
+        voxel_mm=4.0,  # coarse request: snapped 4.0 >> floor 1.857
+        anchors=[{"x": 0.0, "y": 0.0, "z": 12.0, "axis": "+z", "dia": 6.5}],
+        scan_anchors=False,
+        runtime=RuntimeSettings(),
+    )
+    assert res.ok, res.error
+    pitch = res.topopt["domain_pitch"]
+    assert pitch["feature_floor_mm"] == pytest.approx(6.5 / 3.5, abs=1e-3)
+    assert pitch["feature_floor_clamped"] is True
+    assert pitch["design_mm"] <= 6.5 / 3.5 + 1e-6
+
+
+def test_topopt_coarsen_holds_feature_floor_over_dof_cap(tmp_path: Path) -> None:
+    """The DOF cap must NOT coarsen past the feature floor — the grid holds
+    at min_dia/3.5 and reports feature_floor_hit instead of silently
+    under-resolving the anchored bore (the mount kept-base regression)."""
+    from cadx.cad.engine import run_topopt_pipeline
+
+    src = tmp_path / "b.stl"
+    _box_mesh(24.0, 12.0, 12.0).export(str(src))
+    res = run_topopt_pipeline(
+        mesh_path=src,
+        out_dir=tmp_path / "o",
+        load_cases=[_cantilever().model_dump()],
+        optimize={
+            "target_volume_fraction": 0.5,
+            "max_iterations": 1,
+            "safety_factor_min": 1.5,
+            "keep_mode": "manual",
+        },
+        material="pla",
+        voxel_mm=1.0,
+        anchors=[{"x": 0.0, "y": 0.0, "z": 6.0, "axis": "+z", "dia": 6.5}],
+        scan_anchors=False,
+        runtime=RuntimeSettings(fem_spsolve_dofs=1_000),  # tiny cap forces coarsening
+    )
+    assert res.ok, res.error
+    ac = res.topopt["auto_coarsen"]
+    assert ac["feature_floor_hit"] is True
+    assert ac["feature_floor_mm"] == pytest.approx(6.5 / 3.5, abs=1e-3)
+    assert ac["design_pitch_mm"] == pytest.approx(6.5 / 3.5, abs=1e-3)
+    # DOFs stay above the cap — surfaced via flag+warning, not silently coarsened
+    assert ac["dofs"] > 1_000
+    assert any("feature floor" in w for w in res.topopt["warnings"])
+
+
+def test_infill_pipeline_clamps_pitch_to_feature_floor(tmp_path: Path) -> None:
+    """run_infill_pipeline shares the same snapped_pitch exposure — the same
+    floor clamp must apply there (no coarsen loop, single solve)."""
+    from cadx.cad.engine import run_infill_pipeline
+
+    src = tmp_path / "b.stl"
+    _box_mesh(24.0, 24.0, 24.0).export(str(src))
+    res = run_infill_pipeline(
+        mesh_path=src,
+        out_dir=tmp_path / "o",
+        load_cases=[_cantilever().model_dump()],
+        optimize={
+            "target_volume_fraction": 0.5,
+            "safety_factor_min": 1.5,
+            "keep_mode": "manual",
+        },
+        material="pla",
+        voxel_mm=4.0,
+        anchors=[{"x": 0.0, "y": 0.0, "z": 12.0, "axis": "+z", "dia": 6.5}],
+        runtime=RuntimeSettings(),
+    )
+    assert res.ok, res.error
+    pitch = res.topopt["domain_pitch"]
+    assert pitch["feature_floor_clamped"] is True
+    assert pitch["design_mm"] <= 6.5 / 3.5 + 1e-6

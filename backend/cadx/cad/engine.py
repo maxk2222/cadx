@@ -2250,6 +2250,47 @@ def _gate_sf(info: dict[str, Any] | None, report: Any) -> float | None:
     return sf if sf is not None else report.worst_safety_factor
 
 
+# an anchored bore needs ~3.5 cells across its diameter to survive the
+# rasterize -> optimize -> extract round trip (below that ratio exported
+# holes come out undersized / the export FEM degenerates — observed on the
+# robot-arm mount: auto-coarsen pushed 1.5 -> 2.9 mm against Ø6.5 bores)
+_FEATURE_CELLS_PER_DIA = 3.5
+
+
+def _feature_floor_pitch(anchors: list[dict] | None) -> float | None:
+    """Upper bound the design pitch must keep so the smallest anchored bore
+    still spans ~3.5 cells. None when no anchor carries a measured diameter
+    — the pitch is then feature-agnostic (requested / span-snap / DOF cap
+    only)."""
+    dias = [float(a.get("dia") or 0.0) for a in (anchors or []) if float(a.get("dia") or 0.0) > 0]
+    return min(dias) / _FEATURE_CELLS_PER_DIA if dias else None
+
+
+def _snap_pitch_under_floor(
+    eff_span: np.ndarray,
+    floor: float,
+    *,
+    min_cells: int,
+    mesh_volume: float,
+    max_elements: int,
+) -> tuple[float, str | None]:
+    """Re-snap a design pitch that overshot the anchor feature floor.
+    snapped_pitch may round the thin-axis cell count DOWN (p_snap > p0),
+    landing above the floor. Re-snapping AT the floor keeps integer cells
+    where possible; the result is still clamped to the floor — bore
+    resolution wins over the exact integer-cell fit."""
+    from cadx.cad.fem.voxelize import snapped_pitch
+
+    p, warn = snapped_pitch(
+        eff_span,
+        floor,
+        min_cells=min_cells,
+        mesh_volume=mesh_volume,
+        max_elements=max_elements,
+    )
+    return min(float(p), float(floor)), warn
+
+
 def _pitch_feature_warn(res: Any, domain: Any, anchors: list[dict] | None) -> None:
     """Feature-vs-pitch check: a bore only survives the design grid when its
     diameter spans a few cells — auto-coarsening past ~dia/3.5 rasterizes
@@ -2261,7 +2302,7 @@ def _pitch_feature_warn(res: Any, domain: Any, anchors: list[dict] | None) -> No
     if not anchor_dias:
         return
     min_anchor_dia = min(anchor_dias)
-    if domain.pitch * 3.5 <= min_anchor_dia:
+    if domain.pitch * _FEATURE_CELLS_PER_DIA <= min_anchor_dia:
         return
     res.topopt["pitch_feature_warn"] = {
         "pitch_mm": round(float(domain.pitch), 4),
@@ -2572,6 +2613,12 @@ def run_topopt_pipeline(  # noqa: C901
                 spec_bbox=norm_rep["spec_bbox"],
             )
 
+    # scan anchors BEFORE the design pitch is chosen — the smallest anchored
+    # bore caps the grid resolution (feature floor below); running the scan
+    # only after voxelization could warn but never prevent the damage
+    anchors = _scan_anchors(mesh, anchors, enabled=scan_anchors)
+    res.topopt["anchors"] = anchors
+
     # --- design domain -------------------------------------------------------
     req_voxel = voxel_mm or s.fem_voxel_mm
     # spec-aware pitch snap: rasterize on a pitch that lands on an integer
@@ -2596,10 +2643,29 @@ def run_topopt_pipeline(  # noqa: C901
     )
     if snap_warn:
         res.topopt.setdefault("warnings", []).append(snap_warn)
+    # feature floor: an anchored bore must span ~3.5 cells or the export
+    # extracts it undersized — snapped_pitch may land ABOVE the floor (its
+    # thin-axis snap can round the cell count down), so clamp here AND in
+    # the auto-coarsen loop below
+    feature_floor = _feature_floor_pitch(anchors)
+    floor_clamped = False
+    if feature_floor is not None and design_pitch > feature_floor:
+        design_pitch, floor_warn = _snap_pitch_under_floor(
+            eff_span,
+            feature_floor,
+            min_cells=int(opt.min_cells_thinnest or 3),
+            mesh_volume=abs(float(mesh.volume)) if mesh.is_watertight else 0.0,
+            max_elements=max_elements or s.fem_max_elements,
+        )
+        floor_clamped = True
+        if floor_warn:
+            res.topopt.setdefault("warnings", []).append(floor_warn)
     res.topopt["domain_pitch"] = {
         "requested_mm": round(req_voxel, 4),
         "design_mm": round(design_pitch, 4),
         "snapped": abs(design_pitch - req_voxel) > 1e-6,
+        "feature_floor_mm": round(feature_floor, 4) if feature_floor is not None else None,
+        "feature_floor_clamped": floor_clamped,
     }
     # grow_mm: pad the grid so the optimizer can also ADD material beyond the
     # part silhouette — the pad ring stays void in `domain.solid` and becomes
@@ -2628,33 +2694,56 @@ def run_topopt_pipeline(  # noqa: C901
     # the grid it was optimized on.
     dofs_cap = int(getattr(s, "fem_spsolve_dofs", 120_000) or 120_000)
     coarsen_steps = 0
+    floor_hit = False
     while 3 * domain.node_count > dofs_cap and coarsen_steps < 4:
+        new_pitch = domain.pitch * 1.4
+        if feature_floor is not None and new_pitch > feature_floor:
+            if domain.pitch >= feature_floor - 1e-9:
+                # already on the floor — coarsening further would rasterize
+                # the smallest anchored bore away; hold the grid and let the
+                # solver fall back to CG/AMG on the large system instead
+                floor_hit = True
+                break
+            new_pitch = feature_floor  # last allowed step, right onto the floor
         coarsen_steps += 1
         try:
             domain = voxelize(
                 mesh,
-                domain.pitch * 1.4,
+                new_pitch,
                 max_elements or s.fem_max_elements,
-                pad_cells=_pad_cells(domain.pitch * 1.4),
+                pad_cells=_pad_cells(new_pitch),
             )
         except Exception:
             break
-    if coarsen_steps:
+    if coarsen_steps or floor_hit:
         res.topopt["auto_coarsen"] = {
             "requested_pitch_mm": round(req_voxel, 4),
             "design_pitch_mm": round(float(domain.pitch), 4),
             "dofs": int(3 * domain.node_count),
+            "coarsen_steps": coarsen_steps,
+            "feature_floor_mm": round(feature_floor, 4) if feature_floor is not None else None,
+            "feature_floor_hit": floor_hit,
         }
         log.info(
             "topopt.auto_coarsen",
             pitch=round(float(domain.pitch), 4),
             dofs=int(3 * domain.node_count),
+            feature_floor_hit=floor_hit,
         )
     if 3 * domain.node_count > dofs_cap:
-        res.topopt.setdefault("warnings", []).append(
-            f"design grid {int(3 * domain.node_count)} DOFs exceeds the direct-solve "
-            f"cutoff {dofs_cap} after coarsening — CG fallback, expect slow iterations"
-        )
+        if floor_hit:
+            res.topopt.setdefault("warnings", []).append(
+                f"design grid held at the anchor feature floor "
+                f"{float(domain.pitch):.2f}mm — {int(3 * domain.node_count)} DOFs "
+                f"stay above the direct-solve cutoff {dofs_cap}; the solver "
+                "engages CG/AMG on the large system, expect slow iterations "
+                "(raise fem_spsolve_dofs for a direct factorization)"
+            )
+        else:
+            res.topopt.setdefault("warnings", []).append(
+                f"design grid {int(3 * domain.node_count)} DOFs exceeds the direct-solve "
+                f"cutoff {dofs_cap} after coarsening — CG fallback, expect slow iterations"
+            )
     d_lo, d_hi = grid_bounds_mm(domain)
     res.topopt["domain_bbox"] = [
         [round(float(v), 3) for v in d_lo],
@@ -2718,9 +2807,6 @@ def run_topopt_pipeline(  # noqa: C901
                 "exec_mem_limit_mb"
             )
             return res
-
-    anchors = _scan_anchors(mesh, anchors, enabled=scan_anchors)
-    res.topopt["anchors"] = anchors
 
     # --- resolve load cases (with direction-cone expansion for robustness) ---
     max_cases = s.fem_max_effective_cases
@@ -4072,6 +4158,12 @@ def run_infill_pipeline(  # noqa: C901
         if norm_rep.get("warning"):
             res.topopt.setdefault("warnings", []).append(norm_rep["warning"])
 
+    # scan anchors BEFORE the design pitch is chosen — same feature-floor
+    # contract as run_topopt_pipeline (the smallest anchored bore caps the
+    # grid resolution)
+    anchors = _scan_anchors(mesh, anchors, enabled=True)
+    res.topopt["anchors"] = anchors
+
     req_voxel = voxel_mm or s.fem_voxel_mm
     # same spec-aware pitch snap as run_topopt_pipeline — the domain must
     # model the thickness the envelope clip enforces on the export
@@ -4092,10 +4184,27 @@ def run_infill_pipeline(  # noqa: C901
     )
     if snap_warn:
         res.topopt.setdefault("warnings", []).append(snap_warn)
+    # feature floor — same contract as run_topopt_pipeline: the snapped
+    # pitch may overshoot the smallest anchored bore's resolution bound
+    feature_floor = _feature_floor_pitch(anchors)
+    floor_clamped = False
+    if feature_floor is not None and design_pitch > feature_floor:
+        design_pitch, floor_warn = _snap_pitch_under_floor(
+            eff_span,
+            feature_floor,
+            min_cells=int(opt.min_cells_thinnest or 3),
+            mesh_volume=abs(float(mesh.volume)) if mesh.is_watertight else 0.0,
+            max_elements=max_elements or s.fem_max_elements,
+        )
+        floor_clamped = True
+        if floor_warn:
+            res.topopt.setdefault("warnings", []).append(floor_warn)
     res.topopt["domain_pitch"] = {
         "requested_mm": round(req_voxel, 4),
         "design_mm": round(design_pitch, 4),
         "snapped": abs(design_pitch - req_voxel) > 1e-6,
+        "feature_floor_mm": round(feature_floor, 4) if feature_floor is not None else None,
+        "feature_floor_clamped": floor_clamped,
     }
     try:
         domain = voxelize(mesh, design_pitch, max_elements or s.fem_max_elements)
@@ -4136,9 +4245,6 @@ def run_infill_pipeline(  # noqa: C901
                 "exec_mem_limit_mb"
             )
             return res
-
-    anchors = _scan_anchors(mesh, anchors, enabled=True)
-    res.topopt["anchors"] = anchors
 
     resolved, _cw, fixed_node_masks, load_node_masks, unresolved = _resolve_topopt_cases(
         domain,
