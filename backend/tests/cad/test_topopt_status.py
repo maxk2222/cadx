@@ -739,6 +739,39 @@ def test_early_loadpath_cert_skips_fem_on_disconnected_export(
     assert any("cannot reach" in w or "skipped" in w for w in info["warnings"])
 
 
+def test_realization_detail_records_per_case_audit(tmp_path: Path) -> None:
+    """sf_verified alone cannot say WHICH case collapsed on the eroded
+    realization — the guided-infill failure showed eroded=0.27 with no
+    audit trail. The detail map must carry per-case sf/disp/warnings for
+    every solved realization."""
+    from cadx.cad.engine import _verify_export_structure
+    from cadx.cad.fem.materials import resolve_material
+
+    candidate = _box_mesh(24.0, 12.0, 12.0)
+    s = RuntimeSettings(fem_spsolve_dofs=60_000)
+    info = _verify_export_structure(
+        candidate_mesh=candidate,
+        cases=[_cantilever()],
+        mat_name="pla",
+        mat=resolve_material("pla"),
+        design_pitch=3.0,
+        max_elements=200_000,
+        keep_list=[],
+        anchors=[],
+        out_dir=tmp_path,
+        suffix="_t",
+        s=s,
+        solver_backend="auto",
+        cancelled=None,
+        verify_robust=True,
+    )
+    detail = info["sf_realization_detail"]
+    assert set(info["sf_realizations"]) == set(detail)
+    for _name, cases in detail.items():
+        assert cases and all("case" in c and "sf" in c for c in cases)
+        assert all("disp_mm" in c and "vm_mpa" in c and "warnings" in c for c in cases)
+
+
 def test_early_loadpath_cert_runs_fem_on_connected_export(tmp_path: Path) -> None:
     """A connected single body passes the certificate and the nominal solve
     still runs — the early check must not disable verification wholesale."""

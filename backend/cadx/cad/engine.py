@@ -52,6 +52,7 @@ from cadx.cad.mesh_ops import (
     keep_significant_components,
     mesh_analysis,
     mesh_to_solid,
+    orient_nested_shells,
     rest_on_xy_center,
     smooth_preserve,
     solid_body_count,
@@ -942,6 +943,7 @@ def run_mesh_pipeline(  # noqa: C901
                 mesh.merge_vertices()
                 mesh.fix_normals()
                 trimesh.repair.fill_holes(mesh)
+                mesh = orient_nested_shells(mesh)
             except Exception:
                 pass
     mesh = rest_on_xy_center(mesh)
@@ -1758,7 +1760,7 @@ def _resolve_topopt_cases(
     return r_resolved, r_weights, r_fixed_nm, r_load_nm, r_unresolved
 
 
-def _verify_export_structure(
+def _verify_export_structure(  # noqa: C901
     *,
     candidate_mesh: Any,
     cases: list[Any],
@@ -1794,8 +1796,8 @@ def _verify_export_structure(
     fallback. Returns::
 
         {report, n_bodies_export, n_bodies_voxel, sf_realizations,
-         sf_verified, bottleneck_mm2, sf_floor, load_path_ok,
-         sf_mesh_sensitive, warnings}
+         sf_verified, sf_realization_detail, bottleneck_mm2, sf_floor,
+         load_path_ok, sf_mesh_sensitive, warnings}
     """
     from scipy import ndimage
 
@@ -1850,6 +1852,7 @@ def _verify_export_structure(
             "n_bodies_export": n_bodies_export,
             "n_bodies_voxel": n_bodies_voxel,
             "sf_realizations": {},
+            "sf_realization_detail": {},
             "sf_verified": None,
             "bottleneck_mm2": bottleneck_mm2,
             "sf_floor": sf_floor,
@@ -1886,7 +1889,27 @@ def _verify_export_structure(
         )
 
     report = _solve(export_domain.solid, suffix)
+
+    def _realization_detail(rep: Any) -> list[dict[str, Any]]:
+        """Per-case audit trail for a realization — the bare min-SF in
+        `sf_realizations` cannot say WHICH case collapsed or whether its
+        solve was degenerate/under-resolved (observed: a guided-infill
+        export sweep reporting eroded=0.27 with no way to tell artifact
+        from verdict)."""
+        return [
+            {
+                "case": c.name,
+                "sf": c.safety_factor,
+                "disp_mm": c.max_disp_mm,
+                "vm_mpa": c.max_vm_mpa,
+                "converged": c.converged,
+                "warnings": [w for w in (c.warnings or [])][:6],
+            }
+            for c in rep.cases
+        ]
+
     sf_realizations: dict[str, float | None] = {"nominal": report.worst_safety_factor}
+    sf_realization_detail: dict[str, Any] = {"nominal": _realization_detail(report)}
     if verify_robust:
         n_shift = int(getattr(s, "fem_verify_realization_cells", 1) or 1)
         n_shift = max(1, min(n_shift, 4))
@@ -1911,6 +1934,7 @@ def _verify_export_structure(
             try:
                 rep = _solve(mask, sfx, None, dom)
                 sf_realizations[name] = rep.worst_safety_factor
+                sf_realization_detail[name] = _realization_detail(rep)
             except Exception as e:
                 sf_realizations[name] = None
                 warnings.append(f"export realization '{name}' solve failed: {str(e)[:80]}")
@@ -1967,6 +1991,7 @@ def _verify_export_structure(
         "n_bodies_export": n_bodies_export,
         "n_bodies_voxel": n_bodies_voxel,
         "sf_realizations": sf_realizations,
+        "sf_realization_detail": sf_realization_detail,
         "sf_verified": sf_verified,
         "bottleneck_mm2": bottleneck_mm2,
         "sf_floor": sf_floor,
@@ -3364,6 +3389,7 @@ def run_topopt_pipeline(  # noqa: C901
             else verify_export.worst_safety_factor
         ),
         "sf_realizations": exp_info.get("sf_realizations"),
+        "sf_realization_detail": exp_info.get("sf_realization_detail"),
         "bottleneck_mm2": exp_info.get("bottleneck_mm2"),
         "sf_floor": exp_info.get("sf_floor"),
         "load_path_ok": exp_info.get("load_path_ok"),
@@ -3582,6 +3608,7 @@ def run_topopt_pipeline(  # noqa: C901
             "sf_export": verify_export.worst_safety_factor,
             "sf_verified": verification["sf_verified"],
             "sf_realizations": verification["sf_realizations"],
+            "sf_realization_detail": verification.get("sf_realization_detail"),
             "bottleneck_mm2": verification["bottleneck_mm2"],
             "sf_floor": verification["sf_floor"],
             "load_path_ok": verification["load_path_ok"],
@@ -4637,6 +4664,7 @@ def run_infill_pipeline(  # noqa: C901
             else verify_exp.worst_safety_factor
         ),
         "sf_realizations": (exp_info or {}).get("sf_realizations"),
+        "sf_realization_detail": (exp_info or {}).get("sf_realization_detail"),
         "bottleneck_mm2": (exp_info or {}).get("bottleneck_mm2"),
         "sf_floor": (exp_info or {}).get("sf_floor"),
         "load_path_ok": (exp_info or {}).get("load_path_ok"),
@@ -4854,6 +4882,7 @@ def run_infill_pipeline(  # noqa: C901
             "sf_export": verify_exp.worst_safety_factor,
             "sf_verified": verification["sf_verified"],
             "sf_realizations": verification["sf_realizations"],
+            "sf_realization_detail": verification.get("sf_realization_detail"),
             "bottleneck_mm2": verification["bottleneck_mm2"],
             "sf_floor": verification["sf_floor"],
             "load_path_ok": verification["load_path_ok"],
@@ -5229,6 +5258,7 @@ def run_topopt_resample(  # noqa: C901
             res.topopt["sf_export"] = verify_exp.worst_safety_factor
             res.topopt["sf_verified"] = info["sf_verified"]
             res.topopt["sf_realizations"] = info["sf_realizations"]
+            res.topopt["sf_realization_detail"] = info.get("sf_realization_detail")
             res.topopt["bottleneck_mm2"] = info["bottleneck_mm2"]
             res.topopt["sf_floor"] = info["sf_floor"]
             res.topopt["load_path_ok"] = info["load_path_ok"]

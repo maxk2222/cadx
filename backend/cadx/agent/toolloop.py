@@ -260,6 +260,8 @@ _METRIC_KEYS = (
     "safety_factor",
     "worst_safety_factor",
     "sf_verified",
+    "sf_realizations",
+    "sf_realization_detail",
     "sf_export",
     "sf_micro",
     "sf_homog",
