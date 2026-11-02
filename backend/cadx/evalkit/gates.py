@@ -653,6 +653,14 @@ def _topopt(outcome: StageOutcome) -> dict[str, Any]:
         "sf_export": best.get("sf_export"),
         "n_bodies_export": best.get("n_bodies_export"),
         "load_path_ok": best.get("load_path_ok"),
+        # sealed-void telemetry of the best rejected run — same "measure the
+        # closest produced candidate" semantics as sf/volfrac on kept base
+        "enclosed_void_mm3": ver.get("enclosed_void_mm3"),
+        "n_sealed_cavities": ver.get("n_sealed_cavities"),
+        "largest_void_mm3": ver.get("largest_void_mm3"),
+        "sealed_cavities_mm3": ver.get("sealed_cavities_mm3"),
+        "void_frac_of_solid": ver.get("void_frac_of_solid"),
+        "export_grid": ver.get("export_grid"),
     }
 
 

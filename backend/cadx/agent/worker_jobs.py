@@ -1290,6 +1290,19 @@ async def _try_optimize_session(
             "reasoning": agent.reasoning or "",
             "rejected_runs": _json_safe(agent.runs),
         }
+        # the version SHIPS the base geometry — copy the parent STL in so
+        # the version carries a loadable artifact (UI preview + eval mesh
+        # gates) instead of looking like a geometry-less optimize output
+        if mesh_rel:
+            src = storage.resolve(mesh_rel)
+            if src.exists():
+                import shutil
+
+                m_dir = storage.ensure(storage.version_dir(version.project_id, version.id) / "mesh")
+                shutil.copy2(src, m_dir / "base.stl")
+                rel = storage.relpath(m_dir / "base.stl")
+                mesh["stl_relpath"] = rel
+                register_artifacts(db, version.id, {"export:stl": rel})
         version.mesh = mesh
         job = await db.get(Job, job_id)
         if job is not None:

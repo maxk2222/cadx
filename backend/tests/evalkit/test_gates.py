@@ -299,6 +299,50 @@ def test_sealed_voids_gate_solid_fraction():
     assert "void_frac_of_solid" in legacy.detail
 
 
+def test_sealed_voids_gate_kept_base_fallback():
+    """kept_base: the agent declined every candidate — the gate measures the
+    best rejected run's verification block, same as sf/volfrac."""
+    out = _out(
+        mesh={
+            "topopt_kept_base": {
+                "kept_base": True,
+                "rejected_runs": [
+                    {
+                        "worst_sf": 4.42,
+                        "achieved": 0.64,
+                        "verification": {
+                            "sf_verified": 4.42,
+                            "enclosed_void_mm3": 0.0,
+                            "n_sealed_cavities": 0,
+                            "largest_void_mm3": 0.0,
+                            "void_frac_of_solid": 0.0,
+                            "export_grid": {"domain_volume_mm3": 320_000.0},
+                        },
+                    }
+                ],
+            }
+        }
+    )
+    g = run_gates(
+        [{"type": "sealed_voids", "max_frac": 0.02, "max_solid_frac": 0.05}],
+        out,
+        0,
+    )[0]
+    assert g.ok is True
+    assert g.measured["enclosed_void_mm3"] == 0.0
+    assert g.measured["void_frac_of_solid"] == 0.0
+
+    # a rejected run whose void telemetry exceeds the limits still fails
+    out.mesh["topopt_kept_base"]["rejected_runs"][0]["verification"]["enclosed_void_mm3"] = 33_000.0
+    out.mesh["topopt_kept_base"]["rejected_runs"][0]["verification"]["void_frac_of_solid"] = 0.58
+    g = run_gates(
+        [{"type": "sealed_voids", "max_frac": 0.02, "max_solid_frac": 0.05}],
+        out,
+        0,
+    )[0]
+    assert g.ok is False
+
+
 def test_verify_spec_ignore_recomputes_verdict():
     report = {
         "status": "FAIL",
