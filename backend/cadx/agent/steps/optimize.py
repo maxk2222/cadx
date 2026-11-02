@@ -257,8 +257,10 @@ def _topopt_images(
     it_dir: Path,
 ) -> list[str]:
     """Priority-ordered image set for a topopt_run result, capped at the
-    budget: base sheet → run sheet/thumb → region previews → shape views →
-    vonmises overlays → deformed views (first dropped)."""
+    budget: base sheet → run sheet/thumb → region previews → vonmises
+    overlays → deformed views → shape views (first dropped — the contact
+    sheet already covers geometry; the stress pictures are what the model
+    cannot reconstruct on its own)."""
     head: list[str] = []
     if ops.contact_sheet:
         head.append(str(ops.contact_sheet))
@@ -275,11 +277,8 @@ def _topopt_images(
                 head.append(str(p))
     views = _render_view_images(res)
     von, deformed = _fem_case_images(res, it_dir)
-    images = head + views + von
-    if len(images) < _TOPOPT_IMAGE_BUDGET:
-        images += deformed[: _TOPOPT_IMAGE_BUDGET - len(images)]
-    else:
-        images = images[:_TOPOPT_IMAGE_BUDGET]
+    images = head + von + deformed + views
+    images = images[:_TOPOPT_IMAGE_BUDGET]
     if omitted := (len(head) + len(views) + len(von) + len(deformed)) - len(images):
         res.setdefault("warnings", []).append(
             f"{omitted} render image(s) omitted from this result (context budget) — "

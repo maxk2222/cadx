@@ -8,7 +8,6 @@ agent can sanity-check where forces land before spending a SIMP run.
 
 from __future__ import annotations
 
-import contextlib
 from pathlib import Path
 from typing import Any
 
@@ -219,31 +218,19 @@ def render_regions(
             grid.cell_data["tag"] = tag.ravel(order="F")
             body = grid.threshold(0.5, scalars="solid")
 
-            # region tags painted onto the smooth part skin — opaque voxel
-            # dumps turned unreadable on thin shells (a legitimately large
-            # 'surface' selection covered most cells and rendered as
-            # full-height red stripes)
+            # crisp region patches: threshold the tagged voxel cells
+            # directly and draw them as solid color surfaces — the previous
+            # nearest-boundary-cell paint smeared selections over whole
+            # faces (block domains showed one big red wash). The part skin
+            # stays translucent so interior selections remain readable.
+            patches: list[tuple[Any, tuple[int, int, int]]] = []
+            for value, color in _TAG_RGB.items():
+                if value == 0:
+                    continue
+                sel = body.threshold([value - 0.5, value + 0.5], scalars="tag")
+                if getattr(sel, "n_cells", 0):
+                    patches.append((sel.extract_surface(algorithm="dataset_surface"), color))
             skin = _part_surface(source_mesh, body)
-            with contextlib.suppress(Exception):
-                for _ in range(3):
-                    if getattr(skin, "n_faces", 0) >= 12000:
-                        break
-                    skin = skin.subdivide(1, subfilter="linear")
-            rgb = np.tile(np.asarray(_TAG_RGB[0], dtype=np.uint8), (skin.n_points, 1))
-            try:
-                from scipy import ndimage
-                from scipy.spatial import cKDTree
-
-                # only boundary cells carry surface paint — nearest-ANY-cell
-                # lookups hit untagged interior cells and speckle the overlay
-                boundary = domain.solid & ~ndimage.binary_erosion(domain.solid)
-                flat = centers3d.reshape(-1, 3)[boundary.ravel()]
-                nn = cKDTree(flat).query(np.asarray(skin.points))[1]
-                ptag = tag.ravel()[np.flatnonzero(boundary.ravel())[nn]]
-                for value, color in _TAG_RGB.items():
-                    rgb[ptag == value] = color
-            except Exception:
-                pass
 
             caption = (
                 f"{case.name}: fixed {int(fixed_cells.sum())} | load "
@@ -255,12 +242,16 @@ def render_regions(
             pl.set_background("white")
 
             def _add_regions(
-                pl: Any = pl, skin: Any = skin, rgb: Any = rgb, arrows: Any = arrows
+                pl: Any = pl,
+                skin: Any = skin,
+                patches: Any = patches,
+                arrows: Any = arrows,
             ) -> None:
-                # no voxel body ghost — the skin carries the part shape; a
-                # translucent sparse-voxel halo reintroduces the floating-
-                # debris look on thin shells
-                pl.add_mesh(skin, scalars=rgb, rgb=True, opacity=1.0, smooth_shading=True)
+                pl.add_mesh(
+                    skin, color="lightsteelblue", opacity=0.30, smooth_shading=True
+                )
+                for pmesh, color in patches:
+                    pl.add_mesh(pmesh, color=color, opacity=0.9)
                 for arrow, marker, acolor in arrows:
                     pl.add_mesh(arrow, color=acolor, opacity=1.0)
                     pl.add_mesh(marker, color="orange", opacity=1.0)
