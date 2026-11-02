@@ -182,7 +182,7 @@ def clean(mesh: trimesh.Trimesh, min_component_frac: float = 0.01) -> trimesh.Tr
         mesh.merge_vertices,
         mesh.remove_unreferenced_vertices,
         mesh.remove_infinite_values,
-        lambda: (mesh.fix_normals() if not mesh.is_winding_consistent else None),
+        lambda: mesh.fix_normals() if not mesh.is_winding_consistent else None,
         lambda: trimesh.repair.fill_holes(mesh),
     ):
         try:
@@ -687,9 +687,7 @@ def solid_body_count(mesh: trimesh.Trimesh) -> int:
             # parity decides enclosure, volume decides solidity — a
             # zero-area sliver at depth 0 is still not a body
             n = sum(
-                1
-                for d, p in zip(depth, parts, strict=True)
-                if d % 2 == 0 and float(p.volume) > 0.0
+                1 for d, p in zip(depth, parts, strict=True) if d % 2 == 0 and float(p.volume) > 0.0
             )
             if n > 0:
                 return n

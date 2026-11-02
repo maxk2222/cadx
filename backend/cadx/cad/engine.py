@@ -1621,6 +1621,54 @@ def _export_degeneracy(
     return valid, warnings
 
 
+def _realization_case_details(
+    report: Any, *, span_mm: float, yield_mpa: float | None
+) -> list[dict[str, Any]]:
+    """Serialize FEM cases and annotate solves outside the linear regime."""
+    details = []
+    for case in report.cases:
+        valid, deg_warnings = _export_degeneracy(
+            disp_mm=case.max_disp_mm,
+            max_vm_mpa=case.max_vm_mpa,
+            span_mm=span_mm,
+            yield_mpa=yield_mpa,
+        )
+        details.append(
+            {
+                "case": case.name,
+                "sf": case.safety_factor,
+                "disp_mm": case.max_disp_mm,
+                "vm_mpa": case.max_vm_mpa,
+                "converged": case.converged,
+                "degenerate": not valid,
+                "warnings": [w for w in (case.warnings or [])][:6] + deg_warnings,
+            }
+        )
+    return details
+
+
+def _sf_basis(
+    sf_realizations: dict[str, float | None],
+    sf_realization_detail: dict[str, list[dict[str, Any]]],
+    sf_verified: float | None,
+    load_path_ok: bool | None,
+) -> str:
+    if load_path_ok is False:
+        return "loadpath"
+    if sf_verified is not None and any(
+        sf_realizations.get(realization) == sf_verified
+        and any(
+            case.get("degenerate")
+            and case.get("sf") is not None
+            and float(case["sf"]) == sf_verified
+            for case in cases
+        )
+        for realization, cases in sf_realization_detail.items()
+    ):
+        return "mechanism"
+    return "stress"
+
+
 def _compact_history(history: list[dict[str, Any]], cap: int = 200) -> list[dict[str, Any]]:
     """Frontend chart series for a SIMP run: one ``{it, compliance, volfrac,
     change, solve_s}`` dict per iteration, decimated to `cap` entries (first
@@ -1802,6 +1850,7 @@ def _verify_export_structure(  # noqa: C901
     from scipy import ndimage
 
     from cadx.cad.fem.analyze import FemReport, run_fem_domain
+    from cadx.cad.fem.extract import sealed_void_metrics
     from cadx.cad.fem.voxelize import voxelize
 
     warnings: list[str] = []
@@ -1809,6 +1858,14 @@ def _verify_export_structure(  # noqa: C901
     skin = candidate_mesh if source_mesh is None else source_mesh
     use_coverage = bool(getattr(s, "fem_verify_coverage_e", False))
     export_domain = voxelize(candidate_mesh, design_pitch, max_elements, coverage=use_coverage)
+    void_metrics = sealed_void_metrics(export_domain.solid, export_domain.pitch)
+    export_grid = {
+        "pitch": float(export_domain.pitch),
+        "dims": list(export_domain.dims),
+        "elements": int(export_domain.solid.sum()),
+        "domain_volume_mm3": float(np.prod(export_domain.dims) * export_domain.pitch**3),
+        "solid_volume_mm3": float(export_domain.solid.sum() * export_domain.pitch**3),
+    }
     # the voxel raster is what the FEM *solves* — nested-but-disconnected
     # bodies can fuse into one component here; keep it separate from the
     # physical mesh body count so a fusion is measurable
@@ -1854,6 +1911,9 @@ def _verify_export_structure(  # noqa: C901
             "sf_realizations": {},
             "sf_realization_detail": {},
             "sf_verified": None,
+            "sf_verified_basis": "loadpath",
+            **void_metrics,
+            "export_grid": export_grid,
             "bottleneck_mm2": bottleneck_mm2,
             "sf_floor": sf_floor,
             "load_path_ok": load_path_ok,
@@ -1890,23 +1950,12 @@ def _verify_export_structure(  # noqa: C901
 
     report = _solve(export_domain.solid, suffix)
 
+    span = float(np.linalg.norm(export_domain.pitch * np.asarray(export_domain.dims)))
+    yield_mpa = getattr(mat, "yield_mpa", None)
+
     def _realization_detail(rep: Any) -> list[dict[str, Any]]:
-        """Per-case audit trail for a realization — the bare min-SF in
-        `sf_realizations` cannot say WHICH case collapsed or whether its
-        solve was degenerate/under-resolved (observed: a guided-infill
-        export sweep reporting eroded=0.27 with no way to tell artifact
-        from verdict)."""
-        return [
-            {
-                "case": c.name,
-                "sf": c.safety_factor,
-                "disp_mm": c.max_disp_mm,
-                "vm_mpa": c.max_vm_mpa,
-                "converged": c.converged,
-                "warnings": [w for w in (c.warnings or [])][:6],
-            }
-            for c in rep.cases
-        ]
+        """Keep per-case SFs auditable, including solves outside linear validity."""
+        return _realization_case_details(rep, span_mm=span, yield_mpa=yield_mpa)
 
     sf_realizations: dict[str, float | None] = {"nominal": report.worst_safety_factor}
     sf_realization_detail: dict[str, Any] = {"nominal": _realization_detail(report)}
@@ -1947,6 +1996,7 @@ def _verify_export_structure(  # noqa: C901
     # structure is flagged for review.
     solvable = [v for v in sf_realizations.values() if v is not None]
     sf_verified = min(solvable) if sf_realizations["nominal"] is not None else None
+    sf_verified_basis = _sf_basis(sf_realizations, sf_realization_detail, sf_verified, load_path_ok)
 
     sf_mesh_sensitive: bool | None = None
     if getattr(s, "fem_verify_mesh_shift", False):
@@ -1993,6 +2043,9 @@ def _verify_export_structure(  # noqa: C901
         "sf_realizations": sf_realizations,
         "sf_realization_detail": sf_realization_detail,
         "sf_verified": sf_verified,
+        "sf_verified_basis": sf_verified_basis,
+        **void_metrics,
+        "export_grid": export_grid,
         "bottleneck_mm2": bottleneck_mm2,
         "sf_floor": sf_floor,
         "load_path_ok": load_path_ok,
@@ -2736,6 +2789,8 @@ def run_topopt_pipeline(  # noqa: C901
         case_objective=str(getattr(opt, "case_objective", "weighted") or "weighted"),
         max_displacement_mm=opt.max_displacement_mm,
         max_stress_mpa=opt.max_stress_mpa,
+        prevent_sealed_voids=bool(opt.prevent_sealed_voids),
+        sealed_void_check_iters=opt.sealed_void_check_iters,
     )
     # hardened export verification: eroded/nominal/dilated realization
     # sweep whose worst case is reported as sf_verified (see
@@ -2995,6 +3050,9 @@ def run_topopt_pipeline(  # noqa: C901
             sigma_px=0.0 if crisp_extraction else opt.extract_sigma_px,
             volume_preserve=opt.volume_preserve,
             vol_target_scale=vol_target_scale,
+            fill_sealed_voids=opt.fill_sealed_voids,
+            min_shell_mm=opt.min_shell_mm,
+            fill_thin_walled_voids=True,
         )
         # ndarray telemetry must not reach the persisted extract dict —
         # it kills the version-row JSON flush
@@ -3390,6 +3448,12 @@ def run_topopt_pipeline(  # noqa: C901
         ),
         "sf_realizations": exp_info.get("sf_realizations"),
         "sf_realization_detail": exp_info.get("sf_realization_detail"),
+        "sf_verified_basis": exp_info.get("sf_verified_basis"),
+        "enclosed_void_mm3": exp_info.get("enclosed_void_mm3"),
+        "n_sealed_cavities": exp_info.get("n_sealed_cavities"),
+        "largest_void_mm3": exp_info.get("largest_void_mm3"),
+        "sealed_cavities_mm3": exp_info.get("sealed_cavities_mm3"),
+        "export_grid": exp_info.get("export_grid"),
         "bottleneck_mm2": exp_info.get("bottleneck_mm2"),
         "sf_floor": exp_info.get("sf_floor"),
         "load_path_ok": exp_info.get("load_path_ok"),
@@ -3413,6 +3477,8 @@ def run_topopt_pipeline(  # noqa: C901
         "max_vm_export_mpa": max((c.max_vm_mpa for c in verify_export.cases), default=None),
         "gray_fraction": best["extract"].get("gray_fraction"),
         "vol_error_pct": best["extract"].get("vol_error_pct"),
+        "sealed_voids_filled_mm3": best["extract"].get("sealed_voids_filled_mm3", 0.0),
+        "shell_min_wall_mm": best["extract"].get("shell_min_wall_mm"),
         # solid fraction of the design space the extracted mask actually keeps
         "volfrac_mask": round(float(final_mask.sum()) / max(int(design_domain.solid.sum()), 1), 4),
         "solver_used": params.solver,
@@ -3609,6 +3675,17 @@ def run_topopt_pipeline(  # noqa: C901
             "sf_verified": verification["sf_verified"],
             "sf_realizations": verification["sf_realizations"],
             "sf_realization_detail": verification.get("sf_realization_detail"),
+            "sf_verified_basis": exp_info.get("sf_verified_basis"),
+            "enclosed_void_mm3": verification.get("enclosed_void_mm3"),
+            "n_sealed_cavities": verification.get("n_sealed_cavities"),
+            "largest_void_mm3": verification.get("largest_void_mm3"),
+            "sealed_cavities_mm3": verification.get("sealed_cavities_mm3"),
+            "export_grid": verification.get("export_grid"),
+            "sealed_voids_filled_mm3": best["extract"].get("sealed_voids_filled_mm3", 0.0),
+            "shell_min_wall_mm": best["extract"].get("shell_min_wall_mm"),
+            "void_pinned_cells_total": result.void_pinned_cells_total,
+            "void_pin_iters": result.void_pin_iters,
+            "void_pinned_mm3": round(result.void_pinned_cells_total * design_domain.pitch**3, 3),
             "bottleneck_mm2": verification["bottleneck_mm2"],
             "sf_floor": verification["sf_floor"],
             "load_path_ok": verification["load_path_ok"],
@@ -4206,6 +4283,7 @@ def run_infill_pipeline(  # noqa: C901
             # cross-sections and the skin bond must not erode under the
             # internal Taubin pass
             pin_cells=cand_fields.get("occ3"),
+            min_shell_mm=opt.min_shell_mm,
         )
         # ndarray telemetry must not reach the persisted extract dict —
         # it kills the version-row JSON flush
@@ -4665,6 +4743,12 @@ def run_infill_pipeline(  # noqa: C901
         ),
         "sf_realizations": (exp_info or {}).get("sf_realizations"),
         "sf_realization_detail": (exp_info or {}).get("sf_realization_detail"),
+        "sf_verified_basis": (exp_info or {}).get("sf_verified_basis"),
+        "enclosed_void_mm3": (exp_info or {}).get("enclosed_void_mm3"),
+        "n_sealed_cavities": (exp_info or {}).get("n_sealed_cavities"),
+        "largest_void_mm3": (exp_info or {}).get("largest_void_mm3"),
+        "sealed_cavities_mm3": (exp_info or {}).get("sealed_cavities_mm3"),
+        "export_grid": (exp_info or {}).get("export_grid"),
         "bottleneck_mm2": (exp_info or {}).get("bottleneck_mm2"),
         "sf_floor": (exp_info or {}).get("sf_floor"),
         "load_path_ok": (exp_info or {}).get("load_path_ok"),
@@ -4700,6 +4784,8 @@ def run_infill_pipeline(  # noqa: C901
         "output_envelope_ok": best.get("output_envelope_ok", True),
         # physical bodies in the printed mesh (positive-volume components)
         "n_bodies_export": n_bodies_export,
+        "shell_min_wall_mm": extract_info.get("shell_min_wall_mm"),
+        "sealed_voids_filled_mm3": extract_info.get("sealed_voids_filled_mm3", 0.0),
         # body count of the re-voxelized FEM raster — a fusion below this
         # number means the export solve verified a fused phantom
         "n_bodies_voxel": n_bodies_voxel,
@@ -4883,6 +4969,17 @@ def run_infill_pipeline(  # noqa: C901
             "sf_verified": verification["sf_verified"],
             "sf_realizations": verification["sf_realizations"],
             "sf_realization_detail": verification.get("sf_realization_detail"),
+            "sf_verified_basis": verification.get("sf_verified_basis"),
+            "enclosed_void_mm3": verification.get("enclosed_void_mm3"),
+            "n_sealed_cavities": verification.get("n_sealed_cavities"),
+            "largest_void_mm3": verification.get("largest_void_mm3"),
+            "sealed_cavities_mm3": verification.get("sealed_cavities_mm3"),
+            "export_grid": verification.get("export_grid"),
+            "sealed_voids_filled_mm3": extract_info.get("sealed_voids_filled_mm3", 0.0),
+            "shell_min_wall_mm": extract_info.get("shell_min_wall_mm"),
+            "void_pinned_cells_total": 0,
+            "void_pin_iters": 0,
+            "void_pinned_mm3": 0.0,
             "bottleneck_mm2": verification["bottleneck_mm2"],
             "sf_floor": verification["sf_floor"],
             "load_path_ok": verification["load_path_ok"],
@@ -5127,6 +5224,9 @@ def run_topopt_resample(  # noqa: C901
             extract_smooth=opt.extract_smooth,
             sigma_px=opt.extract_sigma_px,
             volume_preserve=opt.volume_preserve,
+            fill_sealed_voids=opt.fill_sealed_voids,
+            min_shell_mm=opt.min_shell_mm,
+            fill_thin_walled_voids=True,
         )
     except Exception as e:
         res.error = f"re-extraction failed: {e}"
@@ -5139,6 +5239,8 @@ def run_topopt_resample(  # noqa: C901
             "n_components": n_components,
             "resampled_from": density_relpath,
             "extract": extract_info,
+            "sealed_voids_filled_mm3": extract_info.get("sealed_voids_filled_mm3", 0.0),
+            "shell_min_wall_mm": extract_info.get("shell_min_wall_mm"),
         }
     )
 
@@ -5259,6 +5361,12 @@ def run_topopt_resample(  # noqa: C901
             res.topopt["sf_verified"] = info["sf_verified"]
             res.topopt["sf_realizations"] = info["sf_realizations"]
             res.topopt["sf_realization_detail"] = info.get("sf_realization_detail")
+            res.topopt["sf_verified_basis"] = info.get("sf_verified_basis")
+            res.topopt["enclosed_void_mm3"] = info.get("enclosed_void_mm3")
+            res.topopt["n_sealed_cavities"] = info.get("n_sealed_cavities")
+            res.topopt["largest_void_mm3"] = info.get("largest_void_mm3")
+            res.topopt["sealed_cavities_mm3"] = info.get("sealed_cavities_mm3")
+            res.topopt["export_grid"] = info.get("export_grid")
             res.topopt["bottleneck_mm2"] = info["bottleneck_mm2"]
             res.topopt["sf_floor"] = info["sf_floor"]
             res.topopt["load_path_ok"] = info["load_path_ok"]

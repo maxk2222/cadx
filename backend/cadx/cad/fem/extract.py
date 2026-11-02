@@ -26,6 +26,93 @@ from cadx.logging import get_logger
 log = get_logger(__name__)
 
 
+def sealed_void_metrics(solid: np.ndarray, pitch: float) -> dict[str, Any]:
+    """Measure 6-connected empty components that do not touch the grid boundary."""
+    material = np.asarray(solid, dtype=bool)
+    if material.ndim != 3 or pitch <= 0:
+        raise ValueError("solid must be a 3D mask and pitch must be positive")
+    empty_labels, _ = ndimage.label(
+        ~material,
+        structure=ndimage.generate_binary_structure(3, 1),
+    )
+    boundary = np.zeros(material.shape, dtype=bool)
+    for axis in range(3):
+        low = [slice(None)] * 3
+        high = [slice(None)] * 3
+        low[axis] = 0
+        high[axis] = -1
+        boundary[tuple(low)] = True
+        boundary[tuple(high)] = True
+    open_labels = np.unique(empty_labels[boundary])
+    counts = np.bincount(empty_labels.ravel())
+    sealed = [
+        int(count)
+        for label, count in enumerate(counts)
+        if label > 0 and count > 0 and label not in open_labels
+    ]
+    volumes = sorted((count * float(pitch) ** 3 for count in sealed), reverse=True)
+    return {
+        "enclosed_void_mm3": round(float(sum(volumes)), 3),
+        "n_sealed_cavities": len(volumes),
+        "largest_void_mm3": round(volumes[0], 3) if volumes else 0.0,
+        "sealed_cavities_mm3": [round(v, 3) for v in volumes[:10]],
+    }
+
+
+def fill_enclosed_voids(
+    mask: np.ndarray, void_cells: np.ndarray | None = None
+) -> tuple[np.ndarray, np.ndarray]:
+    """Fill sealed empty components while preserving explicitly carved cells."""
+    material = np.asarray(mask, dtype=bool)
+    filled = ndimage.binary_fill_holes(
+        material,
+        structure=ndimage.generate_binary_structure(material.ndim, 1),
+    )
+    if void_cells is not None:
+        filled &= ~np.asarray(void_cells, dtype=bool)
+    added = filled & ~material
+    return filled, added
+
+
+def thin_walled_sealed_voids(
+    mask: np.ndarray, pitch: float, min_shell_mm: float
+) -> tuple[np.ndarray, float | None]:
+    """Return sealed pocket voxels whose surrounding wall is below the limit."""
+    material = np.asarray(mask, dtype=bool)
+    if material.ndim != 3 or pitch <= 0 or min_shell_mm < 0:
+        raise ValueError("mask must be 3D and pitch/min_shell_mm must be non-negative")
+    empty = ~material
+    face = ndimage.generate_binary_structure(3, 1)
+    labels, _ = ndimage.label(empty, structure=face)
+    boundary = np.zeros(material.shape, dtype=bool)
+    for axis in range(3):
+        lo = [slice(None)] * 3
+        hi = [slice(None)] * 3
+        lo[axis] = 0
+        hi[axis] = -1
+        boundary[tuple(lo)] = True
+        boundary[tuple(hi)] = True
+    open_labels = np.unique(labels[boundary])
+    sealed_labels = [label for label in range(1, int(labels.max()) + 1) if label not in open_labels]
+    if not sealed_labels:
+        return np.zeros_like(material), None
+
+    exterior = np.isin(labels, open_labels) & empty
+    distance_to_exterior = ndimage.distance_transform_edt(~exterior, sampling=pitch)
+    thin_pockets = np.zeros_like(material)
+    wall_minima = []
+    for label in sealed_labels:
+        pocket = labels == label
+        wall = ndimage.binary_dilation(pocket, structure=face) & material
+        if not wall.any():
+            continue
+        wall_mm = float(distance_to_exterior[wall].min())
+        wall_minima.append(wall_mm)
+        if wall_mm < min_shell_mm:
+            thin_pockets |= pocket
+    return thin_pockets, min(wall_minima) if wall_minima else None
+
+
 def _connectivity_mask(mask: np.ndarray, required: np.ndarray) -> tuple[np.ndarray, int]:
     """Keep components touching `required`; largest component as fallback."""
     structure = ndimage.generate_binary_structure(3, 1)  # 6-connectivity
@@ -615,6 +702,43 @@ def _volume_bisect_mesh(
     return best_mesh, best_iso, warn
 
 
+def _apply_void_controls(
+    mask: np.ndarray,
+    *,
+    pitch: float,
+    void_cells: np.ndarray | None,
+    fill_sealed_voids: bool,
+    min_shell_mm: float | None,
+    fill_thin_walled_voids: bool,
+) -> tuple[np.ndarray, list[str], float | None, float]:
+    warnings: list[str] = []
+    filled_cells = np.zeros_like(mask)
+    shell_min_wall_mm = None
+    if min_shell_mm is not None:
+        thin_pockets, shell_min_wall_mm = thin_walled_sealed_voids(mask, pitch, float(min_shell_mm))
+        if thin_pockets.any():
+            if fill_thin_walled_voids:
+                filled_cells = thin_pockets & ~mask
+                if void_cells is not None:
+                    filled_cells &= ~np.asarray(void_cells, dtype=bool)
+                mask |= filled_cells
+                warnings.append(
+                    f"filled {int(filled_cells.sum())} voxels in sealed pockets "
+                    f"with walls below min_shell_mm={min_shell_mm:g}"
+                )
+            else:
+                warnings.append(
+                    f"sealed pocket wall below min_shell_mm={min_shell_mm:g} "
+                    f"(minimum measured {shell_min_wall_mm:.3g} mm)"
+                )
+    if fill_sealed_voids:
+        mask, added = fill_enclosed_voids(mask, void_cells)
+        filled_cells |= added
+        if added.any():
+            warnings.append(f"filled {int(added.sum())} sealed-void voxels")
+    return mask, warnings, shell_min_wall_mm, float(filled_cells.sum()) * pitch**3
+
+
 def density_to_mesh(
     domain: VoxelDomain,
     density: np.ndarray,
@@ -631,6 +755,9 @@ def density_to_mesh(
     vol_target_scale: float = 1.0,
     bridge_islands: bool = True,
     pin_cells: np.ndarray | None = None,
+    fill_sealed_voids: bool = False,
+    min_shell_mm: float | None = None,
+    fill_thin_walled_voids: bool = False,
 ) -> tuple[trimesh.Trimesh, np.ndarray, list[str], int, dict[str, Any]]:
     """Convert the optimized density field into a trimesh.
 
@@ -666,6 +793,15 @@ def density_to_mesh(
         min_gap_mm=min_gap_mm,
         bridge_islands=bridge_islands,
     )
+    mask, void_warnings, shell_min_wall_mm, filled_void_mm3 = _apply_void_controls(
+        mask,
+        pitch=domain.pitch,
+        void_cells=void_cells,
+        fill_sealed_voids=fill_sealed_voids,
+        min_shell_mm=min_shell_mm,
+        fill_thin_walled_voids=fill_thin_walled_voids,
+    )
+    warnings.extend(void_warnings)
     rho3 = density.reshape(domain.dims)
     solid_rho = rho3[mask]
     gray_fraction = float(((solid_rho > 0.1) & (solid_rho < 0.9)).mean())
@@ -756,6 +892,10 @@ def density_to_mesh(
         "sigma_px": float(sigma_px),
         "vol_error_pct": round(100.0 * (float(mesh.volume) - mask_vol) / mask_vol, 3),
         "gray_fraction": round(gray_fraction, 4),
+        "sealed_voids_filled_mm3": round(filled_void_mm3, 3),
+        "shell_min_wall_mm": (
+            round(shell_min_wall_mm, 3) if shell_min_wall_mm is not None else None
+        ),
         # cells the island-bridge added — callers pin them through the
         # export smoothing so the verified connectivity survives to print
         "bridged_mask": bridged_mask,

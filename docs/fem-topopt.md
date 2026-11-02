@@ -649,6 +649,42 @@ honest degrade to the faceted STEP (with a warning) when a region is
 boolean-pathological. DXF and SVG remain unavailable from the voxel TopOpt
 result.
 
+### Sealed voids and wall controls
+
+`_verify_export_structure` reports sealed-void telemetry from the exact
+re-voxelized export grid: `enclosed_void_mm3` (total enclosed air volume),
+`n_sealed_cavities`, `largest_void_mm3`, and up to ten largest component
+volumes in `sealed_cavities_mm3`. Empty components use 6-connectivity;
+components reaching the grid boundary are open air and are excluded.
+`export_grid.domain_volume_mm3` is the denominator for the declarative
+`sealed_voids` gate's `max_frac`. A missing metric on a legacy result makes
+that gate inconclusive rather than silently passing.
+
+Examples:
+
+```json
+{"type": "sealed_voids", "max_frac": 0.02}
+{"type": "sealed_voids", "max_count": 8, "max_mm3": 500}
+```
+
+`OptimizeSpec.fill_sealed_voids` is opt-in and fills enclosed components in
+the final SIMP/resample extraction mask; explicit `void_regions` still win.
+`min_shell_mm` fills only SIMP sealed pockets whose measured voxel wall is
+below the requested minimum. Infill keeps its shell+lattice structure and
+reports `shell_min_wall_mm` plus a warning instead of filling the lattice.
+`prevent_sealed_voids` pins enclosed pockets to solid during OC SIMP at
+`sealed_void_check_iters` cadence (default 10); the added mass is reported
+as `void_pinned_cells_total`, `void_pinned_mm3`, and `void_pin_iters`. Online
+pinning is supported by OC and BESO; MMA is warned and left unchanged because
+its design-variable set is fixed during an nlopt run. If the passive floor
+exceeds the volume target, the optimizer reports `infeasible_target`.
+
+Each export realization's FEM case detail includes `degenerate` and the
+associated warnings when `_export_degeneracy` detects a mechanism-scale
+displacement or an invalid linear solve. `sf_verified_basis` distinguishes
+`stress`, `mechanism`, and `loadpath`; the numeric `sf_verified` remains the
+conservative worst-case value.
+
 ## Limits and interpretation
 
 This is design-feedback FEM, not a certification solver. Print-direction

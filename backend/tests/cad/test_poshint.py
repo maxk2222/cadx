@@ -55,9 +55,7 @@ def test_bottom_endpoint_is_not_a_face():
     _c, faces, _e, _n = parse_position_hints("slot at the bottom of the pocket")
     assert faces == []
     # endpoint phrasing alongside real face words keeps the real hint
-    _c, faces, _e, _n = parse_position_hints(
-        "hole opens on the front face, blind bottom at x=12"
-    )
+    _c, faces, _e, _n = parse_position_hints("hole opens on the front face, blind bottom at x=12")
     assert faces == ["+y"]
     # real face usage is unaffected
     _c, faces, _e, _n = parse_position_hints("blind bore on the bottom face")

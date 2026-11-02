@@ -60,6 +60,7 @@ from cadx.cad.fem.topopt import (
     _build_filter_ops,
     _CaseCtx,
     _prepare_solve,
+    _sealed_pocket_mask,
     _solve_u,
     _windowed_compliance_improvement,
 )
@@ -133,6 +134,8 @@ def beso(  # noqa: C901
     vocabulary (converged / infeasible_target / limit_cycle / degenerate /
     budget_exhausted)."""
     warnings: list[str] = []
+    void_pinned_cells_total = 0
+    void_pin_iters = 0
     solid = domain.solid.ravel()
     pvoid = (
         np.zeros(domain.cell_count, dtype=bool)
@@ -336,7 +339,7 @@ def beso(  # noqa: C901
     flip_streak = 0  # consecutive iterations with the mask still churning
     at_target_iters = 0  # iterations since the volume ramp reached volfrac
     change = 1.0  # last iteration's flip fraction (drives the CG tolerance)
-    stop: str | None = None  # None | cancelled | limit_cycle | degenerate
+    stop: str | None = None  # None | cancelled | limit_cycle | degenerate | infeasible_target
     settled = False
     t0 = time.monotonic()
 
@@ -496,6 +499,37 @@ def beso(  # noqa: C901
                     "export may drop islands"
                 )
                 resid_warned = True
+        if params.prevent_sealed_voids and it % max(1, int(params.sealed_void_check_iters)) == 0:
+            pockets = _sealed_pocket_mask(keep.reshape(domain.dims)).ravel()
+            newly_pinned = pockets & solid & ~passive_solid & ~pvoid
+            if newly_pinned.any():
+                n_new = int(newly_pinned.sum())
+                passive_solid[newly_pinned] = True
+                design[newly_pinned] = False
+                keep[newly_pinned] = True
+                npassive += n_new
+                ndesign -= n_new
+                des_idx = np.flatnonzero(design)
+                void_pinned_cells_total += n_new
+                void_pin_iters += 1
+                passive_frac = float(npassive) / nsolid
+                warnings.append(
+                    f"sealed-void prevention pinned {n_new} BESO cells to solid "
+                    f"at iteration {it} ({void_pinned_cells_total} total)"
+                )
+                if passive_frac > 0.8 * params.volfrac:
+                    warnings.append(
+                        f"sealed-void pins plus keep/load/fix regions consume "
+                        f"{passive_frac:.0%} of the domain, above 80% of the "
+                        f"{params.volfrac:.0%} volume budget"
+                    )
+                if passive_frac > params.volfrac:
+                    warnings.append(
+                        f"sealed-void prevention made target volfrac "
+                        f"{params.volfrac:.0%} infeasible (pinned floor "
+                        f"{passive_frac:.0%})"
+                    )
+                    stop = "infeasible_target"
         change = float(np.mean(keep[des_idx] != keep_prev[des_idx]))
         vol_now = float(keep.sum()) / nsolid
 
@@ -526,6 +560,8 @@ def beso(  # noqa: C901
                 progress_file.write_text(
                     json.dumps({"history": history}, indent=1), encoding="utf-8"
                 )
+        if stop == "infeasible_target":
+            break
 
         # termination — same vocabulary as simp()'s O2 detection:
         # * settled: the kept set stopped churning (flip fraction < tol for
@@ -630,4 +666,6 @@ def beso(  # noqa: C901
         warnings=warnings,
         passive_frac=passive_frac,
         blueprint=density.copy(),
+        void_pinned_cells_total=void_pinned_cells_total,
+        void_pin_iters=void_pin_iters,
     )

@@ -436,6 +436,10 @@ class OptimizeSpec(BaseModel):
     auto_keep_margin_mm: float | None = Field(default=None, ge=0.0, le=50.0)
     min_member_mm: float | None = Field(default=None, ge=0.0, le=100.0)
     min_gap_mm: float | None = Field(default=None, ge=0.0, le=100.0)
+    fill_sealed_voids: bool = False  # SIMP extraction only; carved void regions remain empty
+    min_shell_mm: float | None = Field(default=None, ge=0.0, le=50.0)
+    prevent_sealed_voids: bool = False  # pin enclosed SIMP pockets to solid during OC iterations
+    sealed_void_check_iters: int = Field(default=10, ge=1, le=100)
     density_threshold: float | None = Field(default=None, ge=0.2, le=0.9)
     extract_smooth: bool = (
         True  # sub-voxel extraction: marching cubes on the smoothed density field

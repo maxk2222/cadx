@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
-from scipy import sparse
+from scipy import ndimage, sparse
 from scipy.sparse import linalg as spla
 from scipy.spatial import cKDTree
 
@@ -133,6 +133,8 @@ class TopOptParams:
     # are re-pinned after averaging, so asymmetric BCs still produce an
     # (acceptably) asymmetric physics response.
     symmetry: str | None = None
+    prevent_sealed_voids: bool = False
+    sealed_void_check_iters: int = 10
 
 
 @dataclass
@@ -157,6 +159,8 @@ class TopOptResult:
         # the design under shifted Heaviside thresholds (robust formulation
         # analysis); None for early-exit paths with no optimized field
     )
+    void_pinned_cells_total: int = 0
+    void_pin_iters: int = 0
 
 
 _AXES = {"+x": 0, "-x": 0, "+y": 1, "-y": 1, "+z": 2, "-z": 2}
@@ -174,6 +178,13 @@ def _heaviside(x: np.ndarray, beta: float, eta: float = _ETA) -> np.ndarray:
 def _heaviside_d(x: np.ndarray, beta: float, eta: float = _ETA) -> np.ndarray:
     den = math.tanh(beta * eta) + math.tanh(beta * (1.0 - eta))
     return beta * (1.0 - np.tanh(beta * (x - eta)) ** 2) / den
+
+
+def _sealed_pocket_mask(material: np.ndarray) -> np.ndarray:
+    """Cells inside 6-connected empty components that do not reach the domain edge."""
+    mask = np.asarray(material, dtype=bool)
+    filled = ndimage.binary_fill_holes(mask, structure=ndimage.generate_binary_structure(3, 1))
+    return filled & ~mask
 
 
 def _symmetrize_density(
@@ -860,6 +871,14 @@ def simp(  # noqa: C901
     from cadx.cad.fem.solver import _fixed_dofs
 
     warnings: list[str] = []
+    prevent_sealed_voids = bool(params.prevent_sealed_voids and params.solver == "oc")
+    if params.prevent_sealed_voids and params.solver != "oc":
+        warnings.append(
+            "prevent_sealed_voids currently runs in the OC SIMP loop only; "
+            f"solver={params.solver!r} was not modified"
+        )
+    void_pinned_cells_total = 0
+    void_pin_iters = 0
     solid = domain.solid.ravel()
     pvoid = (
         np.zeros(domain.cell_count, dtype=bool)
@@ -1427,6 +1446,37 @@ def simp(  # noqa: C901
         change_box[0] = change
         x_prev = x
         x = xnew
+        if prevent_sealed_voids and it % max(1, int(params.sealed_void_check_iters)) == 0:
+            pocket = _sealed_pocket_mask(x.reshape(domain.dims)).ravel()
+            newly_pinned = pocket & solid & ~passive_solid & ~pvoid
+            if newly_pinned.any():
+                n_new = int(newly_pinned.sum())
+                passive_solid[newly_pinned] = True
+                design[newly_pinned] = False
+                x[newly_pinned] = 1.0
+                ndesign -= n_new
+                void_pinned_cells_total += n_new
+                void_pin_iters += 1
+                passive_frac = float(passive_solid.sum()) / nsolid
+                prev_mask = None
+                warnings.append(
+                    f"sealed-void prevention pinned {n_new} cells to solid at "
+                    f"iteration {it} ({void_pinned_cells_total} total)"
+                )
+                if passive_frac > 0.8 * params.volfrac:
+                    warnings.append(
+                        f"sealed-void pins plus keep/load/fix regions consume "
+                        f"{passive_frac:.0%} of the domain, above 80% of the "
+                        f"{params.volfrac:.0%} volume budget"
+                    )
+                if passive_frac > params.volfrac:
+                    warnings.append(
+                        f"sealed-void prevention made target volfrac "
+                        f"{params.volfrac:.0%} infeasible (pinned floor "
+                        f"{passive_frac:.0%})"
+                    )
+                    stop = "infeasible_target"
+                    break
         phys_now = _physical(x, eta=eta_vol)[solid_idx]
         vol_now = float(phys_now.sum()) / nsolid
         # mask churn — fraction of design cells whose 0.5-thresholded
@@ -1702,6 +1752,8 @@ def simp(  # noqa: C901
         warnings=warnings_out,
         passive_frac=passive_frac,
         blueprint=x.copy(),
+        void_pinned_cells_total=void_pinned_cells_total,
+        void_pin_iters=void_pin_iters,
     )
 
 

@@ -751,9 +751,7 @@ def _implicit_thread_plausible(feature: Any, kind: str, size_mm: float) -> bool:
     return abs(dia - tap) <= max(1.0, 0.15 * tap)
 
 
-_PILOT_WORDS = re.compile(
-    r"tap[-\s]?drill|pilot|core\s*hole|kernloch|vorbohr|pre[-\s]?drill", re.I
-)
+_PILOT_WORDS = re.compile(r"tap[-\s]?drill|pilot|core\s*hole|kernloch|vorbohr|pre[-\s]?drill", re.I)
 
 
 def _pilot_hole_feature(feature: Any) -> bool:
@@ -762,9 +760,7 @@ def _pilot_hole_feature(feature: Any) -> bool:
     Ø-tap-drill bore now and let a later refine stage cut the helix —
     demanding real thread geometry on the seed wrongly blocks export
     (observed: bearing_bracket_topopt, "tap-drill pilot" holes)."""
-    text = " ".join(
-        str(_get(feature, k) or "") for k in ("name", "description", "notes", "note")
-    )
+    text = " ".join(str(_get(feature, k) or "") for k in ("name", "description", "notes", "note"))
     return bool(_PILOT_WORDS.search(text))
 
 

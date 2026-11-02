@@ -84,6 +84,24 @@ def test_beso_reaches_target_volume_without_runaway_compliance() -> None:
     assert res.history[-1]["compliance_mj"] < 1e4
 
 
+def test_beso_can_pin_detected_sealed_void_cells(monkeypatch: pytest.MonkeyPatch) -> None:
+    dom, fixed, F = _case(pitch=2.0)
+    pocket = np.zeros(dom.dims, dtype=bool)
+    pocket[dom.dims[0] // 2, dom.dims[1] // 2, dom.dims[2] // 2] = True
+    monkeypatch.setattr(beso_mod, "_sealed_pocket_mask", lambda _mask: pocket.copy())
+    res = beso(
+        dom,
+        E_PLA,
+        NU,
+        [(fixed, F)],
+        np.zeros(dom.cell_count, dtype=bool),
+        _params(max_iter=1, prevent_sealed_voids=True, sealed_void_check_iters=1),
+    )
+    assert res.void_pinned_cells_total == 1
+    assert res.void_pin_iters == 1
+    assert any("pinned 1 BESO cells" in warning for warning in res.warnings)
+
+
 def test_beso_density_is_binary() -> None:
     """BESO produces a 0/1 design — >=99% of design cells at the floor or 1."""
     dom, fixed, F = _case()

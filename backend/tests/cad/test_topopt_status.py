@@ -23,6 +23,7 @@ B17 — preview_regions/check_load emit structured cell counts
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -38,7 +39,7 @@ from cadx.cad.fem.topopt import (
     _windowed_compliance_improvement,
     simp,
 )
-from cadx.cad.fem.voxelize import voxelize
+from cadx.cad.fem.voxelize import VoxelDomain, voxelize
 from cadx.llm.schemas import LoadCase, LoadSpec, RegionSpec
 from cadx.runtime_config import RuntimeSettings
 
@@ -113,6 +114,43 @@ def test_status_infeasible_target() -> None:
     assert res.iterations == 0
     assert res.passive_frac == pytest.approx(0.62, abs=0.01)
     assert any("passive" in w and "floor" in w for w in res.warnings)
+
+
+def test_simp_can_pin_detected_sealed_void_cells(monkeypatch: pytest.MonkeyPatch) -> None:
+    dims = (8, 4, 4)
+    dom = VoxelDomain(
+        origin=np.zeros(3),
+        pitch=1.0,
+        dims=dims,
+        solid=np.ones(dims, dtype=bool),
+    )
+    nodes = np.arange(dom.node_count).reshape(tuple(n + 1 for n in dims))
+    fixed = np.zeros(dom.node_count, dtype=bool)
+    fixed[nodes[0, :, :].ravel()] = True
+    force = np.zeros(3 * dom.node_count)
+    load_node = int(nodes[-1, dims[1] // 2, dims[2] // 2])
+    force[3 * load_node + 2] = -10.0
+    pocket = np.zeros(dims, dtype=bool)
+    pocket[4, 2, 2] = True
+    monkeypatch.setattr(topopt_mod, "_sealed_pocket_mask", lambda _mask: pocket.copy())
+
+    result = simp(
+        dom,
+        E_PLA,
+        NU,
+        [(fixed, force)],
+        np.zeros(dom.cell_count, dtype=bool),
+        TopOptParams(
+            volfrac=0.6,
+            rmin_mm=2.0,
+            max_iter=8,
+            prevent_sealed_voids=True,
+            sealed_void_check_iters=1,
+        ),
+    )
+    assert result.void_pinned_cells_total == 1
+    assert result.void_pin_iters == 1
+    assert any("pinned 1 cells" in warning for warning in result.warnings)
 
 
 def test_status_no_design_cells_infeasible() -> None:
@@ -304,7 +342,7 @@ def test_limit_cycle_still_improving_runs_on() -> None:
 
 
 def test_export_degeneracy_thresholds() -> None:
-    from cadx.cad.engine import _export_degeneracy
+    from cadx.cad.engine import _export_degeneracy, _realization_case_details, _sf_basis
 
     # sane numbers -> valid, silent
     valid, warns = _export_degeneracy(0.01 * 100.0, 20.0, 100.0, 50.0)
@@ -339,6 +377,47 @@ def test_export_degeneracy_thresholds() -> None:
     # no measurements -> valid, silent
     valid, warns = _export_degeneracy(None, None, 100.0, 50.0)
     assert valid and not warns
+
+    # The realization audit distinguishes a mechanism verdict from a
+    # conventional stress-limited safety factor without changing the SF.
+    assert (
+        _sf_basis(
+            {"nominal": 0.01, "eroded": 0.2},
+            {
+                "nominal": [{"sf": 0.01, "degenerate": True}],
+                "eroded": [{"sf": 0.2, "degenerate": False}],
+            },
+            0.01,
+            True,
+        )
+        == "mechanism"
+    )
+    assert _sf_basis({"nominal": 0.01}, {}, 0.01, False) == "loadpath"
+    assert (
+        _sf_basis(
+            {"nominal": 1.5},
+            {"nominal": [{"sf": 1.5, "degenerate": False}]},
+            1.5,
+            True,
+        )
+        == "stress"
+    )
+    report = SimpleNamespace(
+        cases=[
+            SimpleNamespace(
+                name="overturn",
+                safety_factor=0.01,
+                max_disp_mm=2204.0,
+                max_vm_mpa=157.0,
+                converged=True,
+                warnings=[],
+            )
+        ]
+    )
+    detail = _realization_case_details(report, span_mm=100.0, yield_mpa=250.0)
+    assert detail[0]["sf"] == 0.01
+    assert detail[0]["degenerate"] is True
+    assert any("degenerate" in warning for warning in detail[0]["warnings"])
 
 
 def test_pipeline_emits_status_and_meets_safety_factor(tmp_path: Path) -> None:
