@@ -247,9 +247,7 @@ def render_regions(
                 patches: Any = patches,
                 arrows: Any = arrows,
             ) -> None:
-                pl.add_mesh(
-                    skin, color="lightsteelblue", opacity=0.30, smooth_shading=True
-                )
+                pl.add_mesh(skin, color="lightsteelblue", opacity=0.30, smooth_shading=True)
                 for pmesh, color in patches:
                     pl.add_mesh(pmesh, color=color, opacity=0.9)
                 for arrow, marker, acolor in arrows:

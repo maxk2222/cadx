@@ -874,9 +874,7 @@ def render_existing(
         )
     res.renders = {v: p.name for v, p in render_paths.items()}
     try:
-        thumb = render_thumbnail(
-            merged, out_dir / "thumbnail.png", thread_features=thread_preview
-        )
+        thumb = render_thumbnail(merged, out_dir / "thumbnail.png", thread_features=thread_preview)
     except Exception as e:
         log.warning("render_existing.thumbnail_failed", error=str(e)[:200])
         thumb = render_thumbnail(stl_path, out_dir / "thumbnail.png")

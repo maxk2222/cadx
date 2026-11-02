@@ -682,9 +682,7 @@ def _session_render_existing_fn(ctx: AgentCtx, iteration: int, attempt: Any):
     when the buffer hash proves the source attempt ran identical code."""
 
     def run(source_art_dir: str):
-        payload = _exec_payload(
-            ctx, "", iteration, full_exports=False, subdir=f"a{next(attempt)}"
-        )
+        payload = _exec_payload(ctx, "", iteration, full_exports=False, subdir=f"a{next(attempt)}")
         payload["render_from"] = source_art_dir
         return ctx.executor.execute(payload)
 
@@ -4253,7 +4251,9 @@ async def _run_cad(  # noqa: C901
                         attempt=attempt,
                         verify_fn=_session_verify_fn(ctx, best.iteration, art_attempt),
                         render_fn=_session_render_fn(ctx, best.iteration, art_attempt),
-                        render_existing_fn=_session_render_existing_fn(ctx, best.iteration, art_attempt),
+                        render_existing_fn=_session_render_existing_fn(
+                            ctx, best.iteration, art_attempt
+                        ),
                     )
                 except Exception as e:
                     log.warning("agent.finalize_repair_failed", error=repr(e))

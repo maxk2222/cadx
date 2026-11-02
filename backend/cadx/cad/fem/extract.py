@@ -90,9 +90,7 @@ def thin_walled_sealed_voids(
     face = ndimage.generate_binary_structure(3, 1)
     labels, _ = ndimage.label(empty, structure=face)
     exterior_label = int(labels[0, 0, 0])
-    sealed_labels = [
-        label for label in range(1, int(labels.max()) + 1) if label != exterior_label
-    ]
+    sealed_labels = [label for label in range(1, int(labels.max()) + 1) if label != exterior_label]
     if not sealed_labels:
         return np.zeros(orig_shape, dtype=bool), None
 

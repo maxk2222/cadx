@@ -305,9 +305,7 @@ def _thread_detail_camera(
         # internal threads sit inside a bore — a side-on camera only sees
         # the flat block face. Clip away the camera-side half so the
         # cross-section exposes the helical thread inside.
-        clip = (
-            tuple(float(v) for v in side) if feature.get("external") is False else None
-        )
+        clip = tuple(float(v) for v in side) if feature.get("external") is False else None
         return (
             tuple(float(v) for v in focal),
             tuple(float(v) for v in position_cam),
