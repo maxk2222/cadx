@@ -1,304 +1,1354 @@
 {
-  "name": "robot_arm_mount",
-  "project": "eval:robot-arm-mount",
-  "difficulty": 3,
-  "description": "Topology-optimized robot-arm mount — base part codegen (incl. an M12 tapped boss bore), baseline FEM (axial arm weight on the seat wall + 100 N·m overturning couple + pin loads on the flange holes), then SIMP optimization with keep-region/SF/volfrac gates.",
-  "settings": { "gen_mode": "cad" },
-  "stages": [
+ "name": "robot_arm_mount",
+ "project": "eval:robot-arm-mount",
+ "difficulty": 3,
+ "description": "Topology-optimized robot-arm mount — base part codegen (incl. an M12 tapped boss bore), baseline FEM (axial arm weight on the seat wall + 100 N·m overturning couple + pin loads on the flange holes), then SIMP optimization with keep-region/SF/volfrac gates.",
+ "settings": {
+  "gen_mode": "cad"
+ },
+ "stages": [
+  {
+   "id": "codegen",
+   "type": "generate",
+   "mode": "cad",
+   "timeout_s": 7800,
+   "prompt": "Mounting bracket for a robot-arm joint (aluminium 6061), parametric — input for topology optimization.\n\nFrame: base plate on the XY plane (z = 0), centred in X and Y. mm.\n- Base plate 100 x 80 x 10.\n- 4 holes dia 8.5 along Z at (x=+/-42, y=+/-32) — mounting bolts.\n- Bearing boss dia 25 x 15 tall on the plate centre (top at z = 25) with an M12 tapped (internal thread, M12x1.75) through-bore along Z — model the bore at tap-drill size and declare the thread; the export rebuild carries the real thread groove — threaded shaft seat.\n- Vertical flange at the +X edge on the plate: 8 thick, 40 wide (y-centred), 30 tall (z = 10..40); two dia 6.5 holes along X at (y=+/-12, z=25).\n- One gusset rib 5 mm thick at y = 0 joining boss and flange.\nSymmetric in Y.",
+   "gates": [
     {
-      "id": "codegen",
-      "type": "generate",
-      "mode": "cad",
-      "timeout_s": 7800,
-      "prompt": "Mounting bracket for a robot-arm joint (aluminium 6061), parametric — input for topology optimization.\n\nFrame: base plate on the XY plane (z = 0), centred in X and Y. mm.\n- Base plate 100 x 80 x 10.\n- 4 holes dia 8.5 along Z at (x=+/-42, y=+/-32) — mounting bolts.\n- Bearing boss dia 25 x 15 tall on the plate centre (top at z = 25) with an M12 tapped (internal thread, M12x1.75) through-bore along Z — model the bore at tap-drill size and declare the thread; the export rebuild carries the real thread groove — threaded shaft seat.\n- Vertical flange at the +X edge on the plate: 8 thick, 40 wide (y-centred), 30 tall (z = 10..40); two dia 6.5 holes along X at (y=+/-12, z=25).\n- One gusset rib 5 mm thick at y = 0 joining boss and flange.\nSymmetric in Y.",
-      "gates": [
-        { "type": "status", "expect": ["succeeded", "needs_review"] },
-        { "type": "bbox", "dims": [100, 80, 40], "match": "within", "tol_mm": 4 },
-        { "type": "holes", "count": 4, "dia": 8.5, "axis": "z", "positions": [[42, 32], [42, -32], [-42, 32], [-42, -32]] },
-        { "type": "holes", "count": 1, "dia": 10.25, "axis": "z", "positions": [[0, 0]] },
-        { "type": "holes", "count": 2, "dia": 6.5, "axis": "x" },
-        { "type": "watertight", "expect": true },
-        { "type": "verify_spec", "expect": "PASS" }
-      ]
+     "type": "status",
+     "expect": [
+      "succeeded",
+      "needs_review"
+     ]
     },
     {
-      "id": "fem",
-      "type": "fem",
-      "timeout_s": 1800,
-      "material": "aluminum",
-      "load_cases": [
-        {
-          "name": "axial",
-          "fixed": [
-            { "kind": "cylinder", "axis": "z", "center": [42, 32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" },
-            { "kind": "cylinder", "axis": "z", "center": [42, -32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" },
-            { "kind": "cylinder", "axis": "z", "center": [-42, 32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" },
-            { "kind": "cylinder", "axis": "z", "center": [-42, -32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" }
-          ],
-          "loads": [
-            {
-              "region": { "kind": "bore", "axis": "+z", "center": [0, 0, 15], "diameter_mm": 10.25, "description": "M12 seat wall (hint-bound)" },
-              "force_n": [0, 0, -600]
-            }
-          ]
-        },
-        {
-          "name": "overturn",
-          "fixed": [
-            { "kind": "cylinder", "axis": "z", "center": [42, 32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" },
-            { "kind": "cylinder", "axis": "z", "center": [42, -32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" },
-            { "kind": "cylinder", "axis": "z", "center": [-42, 32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" },
-            { "kind": "cylinder", "axis": "z", "center": [-42, -32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" }
-          ],
-          "loads": [
-            {
-              "region": { "kind": "cylinder", "axis": "z", "center": [0, 0, 15], "diameter_mm": 14, "z_range": [10, 25], "description": "boss section (shaft-seat couple)" },
-              "moment_nm": [0, 100, 0]
-            }
-          ]
-        },
-        {
-          "name": "link",
-          "fixed": [
-            { "kind": "cylinder", "axis": "z", "center": [42, 32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" },
-            { "kind": "cylinder", "axis": "z", "center": [42, -32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" },
-            { "kind": "cylinder", "axis": "z", "center": [-42, 32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" },
-            { "kind": "cylinder", "axis": "z", "center": [-42, -32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" }
-          ],
-          "loads": [
-            {
-              "region": { "kind": "hole", "axis": "+x", "center": [46, 12, 25], "diameter_mm": 6.5, "description": "flange pin +y (hint-bound)" },
-              "force_n": [0, 0, -150]
-            },
-            {
-              "region": { "kind": "hole", "axis": "+x", "center": [46, -12, 25], "diameter_mm": 6.5, "description": "flange pin -y (hint-bound)" },
-              "force_n": [0, 0, -150]
-            }
-          ]
-        }
-      ],
-      "gates": [
-        { "type": "status", "expect": ["succeeded"] },
-        { "type": "fem", "field": "sf", "min": 1.0 },
-        {
-          "type": "fem_loadcases",
-          "min_cases": 3,
-          "checks": [
-            {
-              "case": "axial",
-              "resultant_n": { "min": 550, "max": 650 },
-              "resultant_dir": [0, 0, -1],
-              "dir_tol_deg": 25,
-              "load_centroid_mm": [0, 0, 12],
-              "fixed_centroid_mm": [0, 0, 5],
-              "tol_mm": 12,
-              "mechanisms": ["force_n"],
-              "warnings_absent": ["no fixed region", "resolved to zero", "unresolved", "unsolvable"],
-              "sf_min": 0.5
-            },
-            {
-              "case": "overturn",
-              "moment_mag_nm": { "min": 70, "max": 140 },
-              "load_centroid_mm": [0, 0, 17],
-              "tol_mm": 12,
-              "mechanisms": ["moment_nm"],
-              "warnings_absent": ["could not resolve", "resolved to zero", "no fixed region"],
-              "sf_min": 0.5
-            },
-            {
-              "case": "link",
-              "resultant_n": { "min": 250, "max": 350 },
-              "resultant_dir": [0, 0, -1],
-              "dir_tol_deg": 25,
-              "load_centroid_mm": [46, 0, 25],
-              "tol_mm": 10,
-              "mechanisms": ["force_n"],
-              "warnings_absent": ["no fixed region", "resolved to zero", "unresolved"],
-              "sf_min": 0.5
-            }
-          ]
-        }
-      ]
+     "type": "bbox",
+     "dims": [
+      100,
+      80,
+      40
+     ],
+     "match": "within",
+     "tol_mm": 4
     },
     {
-      "id": "topopt",
-      "type": "optimize",
-      "timeout_s": 7200,
-      "material": "aluminum",
-      "optimize": {
-        "enabled": true,
-        "target_volume_fraction": 0.5,
-        "safety_factor_min": 1.5,
-        "min_member_mm": 3,
-        "filter": "helmholtz+heaviside",
-        "keep_mode": "auto",
-        "max_iterations": 200
-      },
-      "load_cases": [
-        {
-          "name": "axial",
-          "fixed": [
-            { "kind": "cylinder", "axis": "z", "center": [42, 32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" },
-            { "kind": "cylinder", "axis": "z", "center": [42, -32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" },
-            { "kind": "cylinder", "axis": "z", "center": [-42, 32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" },
-            { "kind": "cylinder", "axis": "z", "center": [-42, -32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" }
-          ],
-          "loads": [
-            {
-              "region": { "kind": "bore", "axis": "+z", "center": [0, 0, 15], "diameter_mm": 10.25, "description": "M12 seat wall (hint-bound)" },
-              "force_n": [0, 0, -600]
-            }
-          ]
-        },
-        {
-          "name": "overturn",
-          "fixed": [
-            { "kind": "cylinder", "axis": "z", "center": [42, 32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" },
-            { "kind": "cylinder", "axis": "z", "center": [42, -32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" },
-            { "kind": "cylinder", "axis": "z", "center": [-42, 32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" },
-            { "kind": "cylinder", "axis": "z", "center": [-42, -32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" }
-          ],
-          "loads": [
-            {
-              "region": { "kind": "cylinder", "axis": "z", "center": [0, 0, 15], "diameter_mm": 14, "z_range": [10, 25], "description": "boss section (shaft-seat couple)" },
-              "moment_nm": [0, 100, 0]
-            }
-          ]
-        },
-        {
-          "name": "link",
-          "fixed": [
-            { "kind": "cylinder", "axis": "z", "center": [42, 32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" },
-            { "kind": "cylinder", "axis": "z", "center": [42, -32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" },
-            { "kind": "cylinder", "axis": "z", "center": [-42, 32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" },
-            { "kind": "cylinder", "axis": "z", "center": [-42, -32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" }
-          ],
-          "loads": [
-            {
-              "region": { "kind": "hole", "axis": "+x", "center": [46, 12, 25], "diameter_mm": 6.5, "description": "flange pin +y (hint-bound)" },
-              "force_n": [0, 0, -150]
-            },
-            {
-              "region": { "kind": "hole", "axis": "+x", "center": [46, -12, 25], "diameter_mm": 6.5, "description": "flange pin -y (hint-bound)" },
-              "force_n": [0, 0, -150]
-            }
-          ]
-        }
+     "type": "holes",
+     "count": 4,
+     "dia": 8.5,
+     "axis": "z",
+     "positions": [
+      [
+       42,
+       32
       ],
-      "gates": [
-        { "type": "status", "expect": ["succeeded", "needs_review"] },
-        { "type": "topopt", "field": "sf_verified", "min": 1.5 },
-        { "type": "sealed_voids", "max_frac": 0.02, "max_solid_frac": 0.05 },
-        { "type": "volfrac", "min": 0.35, "max": 0.65 },
-        { "type": "bodies", "max": 1 },
-        { "type": "envelope_within", "dims": [100, 80, 40], "tol_mm": 4 },
-        { "type": "contains_point", "xyz": [36, 32, 5] },
-        { "type": "contains_point", "xyz": [36, -32, 5] },
-        { "type": "contains_point", "xyz": [-36, 32, 5] },
-        { "type": "contains_point", "xyz": [-36, -32, 5] },
-        { "type": "load_path", "expect": true },
-        { "type": "watertight", "expect": true }
+      [
+       42,
+       -32
+      ],
+      [
+       -42,
+       32
+      ],
+      [
+       -42,
+       -32
       ]
+     ]
     },
     {
-      "id": "refine",
-      "type": "refine",
-      "enabled": true,
-      "timeout_s": 3600,
-      "material": "aluminum",
-      "restore_planes": true,
-      "features": [
-        { "type": "hole", "axis": "+z", "x": 42, "y": 32, "dia": 8.5, "through": true, "name": "bolt +x+y" },
-        { "type": "hole", "axis": "+z", "x": 42, "y": -32, "dia": 8.5, "through": true, "name": "bolt +x-y" },
-        { "type": "hole", "axis": "+z", "x": -42, "y": 32, "dia": 8.5, "through": true, "name": "bolt -x+y" },
-        { "type": "hole", "axis": "+z", "x": -42, "y": -32, "dia": 8.5, "through": true, "name": "bolt -x-y" },
-        { "type": "tap", "helical": false, "axis": "+z", "x": 0, "y": 0, "dia": 10.25, "through": true, "thread_spec": "M12x1.75", "name": "M12 boss seat" },
-        { "type": "hole", "axis": "+x", "pos": [46, 12, 25], "dia": 6.5, "through": true, "name": "flange pin +y" },
-        { "type": "hole", "axis": "+x", "pos": [46, -12, 25], "dia": 6.5, "through": true, "name": "flange pin -y" }
-      ],
-      "load_cases": [
-        {
-          "name": "axial",
-          "fixed": [
-            { "kind": "cylinder", "axis": "z", "center": [42, 32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" },
-            { "kind": "cylinder", "axis": "z", "center": [42, -32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" },
-            { "kind": "cylinder", "axis": "z", "center": [-42, 32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" },
-            { "kind": "cylinder", "axis": "z", "center": [-42, -32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" }
-          ],
-          "loads": [
-            {
-              "region": { "kind": "bore", "axis": "+z", "center": [0, 0, 15], "diameter_mm": 10.25, "description": "M12 seat wall (hint-bound)" },
-              "force_n": [0, 0, -600]
-            }
-          ]
-        },
-        {
-          "name": "overturn",
-          "fixed": [
-            { "kind": "cylinder", "axis": "z", "center": [42, 32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" },
-            { "kind": "cylinder", "axis": "z", "center": [42, -32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" },
-            { "kind": "cylinder", "axis": "z", "center": [-42, 32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" },
-            { "kind": "cylinder", "axis": "z", "center": [-42, -32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" }
-          ],
-          "loads": [
-            {
-              "region": { "kind": "cylinder", "axis": "z", "center": [0, 0, 15], "diameter_mm": 14, "z_range": [10, 25], "description": "boss section (shaft-seat couple)" },
-              "moment_nm": [0, 100, 0]
-            }
-          ]
-        },
-        {
-          "name": "link",
-          "fixed": [
-            { "kind": "cylinder", "axis": "z", "center": [42, 32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" },
-            { "kind": "cylinder", "axis": "z", "center": [42, -32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" },
-            { "kind": "cylinder", "axis": "z", "center": [-42, 32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" },
-            { "kind": "cylinder", "axis": "z", "center": [-42, -32, 5], "diameter_mm": 14, "margin_mm": 2, "z_range": [0, 10], "description": "bolt pad" }
-          ],
-          "loads": [
-            {
-              "region": { "kind": "hole", "axis": "+x", "center": [46, 12, 25], "diameter_mm": 6.5, "description": "flange pin +y (hint-bound)" },
-              "force_n": [0, 0, -150]
-            },
-            {
-              "region": { "kind": "hole", "axis": "+x", "center": [46, -12, 25], "diameter_mm": 6.5, "description": "flange pin -y (hint-bound)" },
-              "force_n": [0, 0, -150]
-            }
-          ]
-        }
-      ],
-      "gates": [
-        { "type": "status", "expect": ["succeeded", "needs_review"] },
-        { "type": "fem", "field": "sf", "min": 1.0 },
-        {
-          "type": "fem_loadcases",
-          "min_cases": 3,
-          "checks": [
-            {
-              "case": "axial",
-              "mechanisms": ["force_n"],
-              "warnings_absent": ["no fixed region", "resolved to zero", "unresolved"]
-            },
-            {
-              "case": "overturn",
-              "moment_mag_nm": { "min": 60 },
-              "mechanisms": ["moment_nm"],
-              "warnings_absent": ["could not resolve", "resolved to zero"]
-            },
-            {
-              "case": "link",
-              "mechanisms": ["force_n"],
-              "warnings_absent": ["no fixed region", "resolved to zero", "unresolved"]
-            }
-          ]
-        },
-        { "type": "refine_verify", "min_applied": 7 },
-        { "type": "bodies", "max": 1 },
-        { "type": "holes", "count": 4, "dia": 8.5, "axis": "z", "positions": [[42, 32], [42, -32], [-42, 32], [-42, -32]] },
-        { "type": "holes", "count": 1, "dia": 10.25, "axis": "z", "positions": [[0, 0]] },
-        { "type": "holes", "count": 2, "dia": 6.5, "axis": "x" },
-        { "type": "watertight", "expect": true }
+     "type": "holes",
+     "count": 1,
+     "dia": 10.25,
+     "axis": "z",
+     "positions": [
+      [
+       0,
+       0
       ]
+     ]
+    },
+    {
+     "type": "holes",
+     "count": 2,
+     "dia": 6.5,
+     "axis": "x"
+    },
+    {
+     "type": "watertight",
+     "expect": true
+    },
+    {
+     "type": "verify_spec",
+     "expect": "PASS"
     }
-  ]
+   ]
+  },
+  {
+   "id": "fem",
+   "type": "fem",
+   "timeout_s": 1800,
+   "material": "aluminum",
+   "load_cases": [
+    {
+     "name": "axial",
+     "fixed": [
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        42,
+        32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      },
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        42,
+        -32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      },
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        -42,
+        32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      },
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        -42,
+        -32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      }
+     ],
+     "loads": [
+      {
+       "region": {
+        "kind": "bore",
+        "axis": "+z",
+        "center": [
+         0,
+         0,
+         15
+        ],
+        "diameter_mm": 10.25,
+        "description": "M12 seat wall (hint-bound)"
+       },
+       "force_n": [
+        0,
+        0,
+        -600
+       ]
+      }
+     ]
+    },
+    {
+     "name": "overturn",
+     "fixed": [
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        42,
+        32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      },
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        42,
+        -32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      },
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        -42,
+        32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      },
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        -42,
+        -32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      }
+     ],
+     "loads": [
+      {
+       "region": {
+        "kind": "cylinder",
+        "axis": "z",
+        "center": [
+         0,
+         0,
+         15
+        ],
+        "diameter_mm": 14,
+        "z_range": [
+         10,
+         25
+        ],
+        "description": "boss section (shaft-seat couple)"
+       },
+       "moment_nm": [
+        0,
+        100,
+        0
+       ]
+      }
+     ]
+    },
+    {
+     "name": "link",
+     "fixed": [
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        42,
+        32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      },
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        42,
+        -32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      },
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        -42,
+        32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      },
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        -42,
+        -32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      }
+     ],
+     "loads": [
+      {
+       "region": {
+        "kind": "hole",
+        "axis": "+x",
+        "center": [
+         46,
+         12,
+         25
+        ],
+        "diameter_mm": 6.5,
+        "description": "flange pin +y (hint-bound)"
+       },
+       "force_n": [
+        0,
+        0,
+        -150
+       ]
+      },
+      {
+       "region": {
+        "kind": "hole",
+        "axis": "+x",
+        "center": [
+         46,
+         -12,
+         25
+        ],
+        "diameter_mm": 6.5,
+        "description": "flange pin -y (hint-bound)"
+       },
+       "force_n": [
+        0,
+        0,
+        -150
+       ]
+      }
+     ]
+    }
+   ],
+   "gates": [
+    {
+     "type": "status",
+     "expect": [
+      "succeeded"
+     ]
+    },
+    {
+     "type": "fem",
+     "field": "sf",
+     "min": 1.0
+    },
+    {
+     "type": "fem_loadcases",
+     "min_cases": 3,
+     "checks": [
+      {
+       "case": "axial",
+       "resultant_n": {
+        "min": 550,
+        "max": 650
+       },
+       "resultant_dir": [
+        0,
+        0,
+        -1
+       ],
+       "dir_tol_deg": 25,
+       "load_centroid_mm": [
+        0,
+        0,
+        12
+       ],
+       "fixed_centroid_mm": [
+        0,
+        0,
+        5
+       ],
+       "tol_mm": 12,
+       "mechanisms": [
+        "force_n"
+       ],
+       "warnings_absent": [
+        "no fixed region",
+        "resolved to zero",
+        "unresolved",
+        "unsolvable"
+       ],
+       "sf_min": 0.5
+      },
+      {
+       "case": "overturn",
+       "moment_mag_nm": {
+        "min": 70,
+        "max": 140
+       },
+       "load_centroid_mm": [
+        0,
+        0,
+        17
+       ],
+       "tol_mm": 12,
+       "mechanisms": [
+        "moment_nm"
+       ],
+       "warnings_absent": [
+        "could not resolve",
+        "resolved to zero",
+        "no fixed region"
+       ],
+       "sf_min": 0.5
+      },
+      {
+       "case": "link",
+       "resultant_n": {
+        "min": 250,
+        "max": 350
+       },
+       "resultant_dir": [
+        0,
+        0,
+        -1
+       ],
+       "dir_tol_deg": 25,
+       "load_centroid_mm": [
+        46,
+        0,
+        25
+       ],
+       "tol_mm": 10,
+       "mechanisms": [
+        "force_n"
+       ],
+       "warnings_absent": [
+        "no fixed region",
+        "resolved to zero",
+        "unresolved"
+       ],
+       "sf_min": 0.5
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "topopt",
+   "type": "optimize",
+   "timeout_s": 7200,
+   "material": "aluminum",
+   "optimize": {
+    "enabled": true,
+    "target_volume_fraction": 0.5,
+    "safety_factor_min": 1.5,
+    "min_member_mm": 3,
+    "filter": "helmholtz+heaviside",
+    "keep_mode": "auto",
+    "max_iterations": 200
+   },
+   "load_cases": [
+    {
+     "name": "axial",
+     "fixed": [
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        42,
+        32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      },
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        42,
+        -32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      },
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        -42,
+        32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      },
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        -42,
+        -32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      }
+     ],
+     "loads": [
+      {
+       "region": {
+        "kind": "bore",
+        "axis": "+z",
+        "center": [
+         0,
+         0,
+         15
+        ],
+        "diameter_mm": 10.25,
+        "description": "M12 seat wall (hint-bound)"
+       },
+       "force_n": [
+        0,
+        0,
+        -600
+       ]
+      }
+     ]
+    },
+    {
+     "name": "overturn",
+     "fixed": [
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        42,
+        32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      },
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        42,
+        -32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      },
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        -42,
+        32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      },
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        -42,
+        -32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      }
+     ],
+     "loads": [
+      {
+       "region": {
+        "kind": "cylinder",
+        "axis": "z",
+        "center": [
+         0,
+         0,
+         15
+        ],
+        "diameter_mm": 14,
+        "z_range": [
+         10,
+         25
+        ],
+        "description": "boss section (shaft-seat couple)"
+       },
+       "moment_nm": [
+        0,
+        100,
+        0
+       ]
+      }
+     ]
+    },
+    {
+     "name": "link",
+     "fixed": [
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        42,
+        32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      },
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        42,
+        -32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      },
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        -42,
+        32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      },
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        -42,
+        -32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      }
+     ],
+     "loads": [
+      {
+       "region": {
+        "kind": "hole",
+        "axis": "+x",
+        "center": [
+         46,
+         12,
+         25
+        ],
+        "diameter_mm": 6.5,
+        "description": "flange pin +y (hint-bound)"
+       },
+       "force_n": [
+        0,
+        0,
+        -150
+       ]
+      },
+      {
+       "region": {
+        "kind": "hole",
+        "axis": "+x",
+        "center": [
+         46,
+         -12,
+         25
+        ],
+        "diameter_mm": 6.5,
+        "description": "flange pin -y (hint-bound)"
+       },
+       "force_n": [
+        0,
+        0,
+        -150
+       ]
+      }
+     ]
+    }
+   ],
+   "gates": [
+    {
+     "type": "status",
+     "expect": [
+      "succeeded",
+      "needs_review"
+     ]
+    },
+    {
+     "type": "topopt",
+     "field": "sf_verified",
+     "min": 1.5
+    },
+    {
+     "type": "sealed_voids",
+     "max_frac": 0.02,
+     "max_solid_frac": 0.05
+    },
+    {
+     "type": "volfrac",
+     "min": 0.35,
+     "max": 0.65
+    },
+    {
+     "type": "bodies",
+     "max": 1
+    },
+    {
+     "type": "envelope_within",
+     "dims": [
+      100,
+      80,
+      40
+     ],
+     "tol_mm": 4
+    },
+    {
+     "type": "contains_point",
+     "xyz": [
+      36,
+      32,
+      5
+     ]
+    },
+    {
+     "type": "contains_point",
+     "xyz": [
+      36,
+      -32,
+      5
+     ]
+    },
+    {
+     "type": "contains_point",
+     "xyz": [
+      -36,
+      32,
+      5
+     ]
+    },
+    {
+     "type": "contains_point",
+     "xyz": [
+      -36,
+      -32,
+      5
+     ]
+    },
+    {
+     "type": "load_path",
+     "expect": true
+    },
+    {
+     "type": "watertight",
+     "expect": true
+    }
+   ]
+  },
+  {
+   "id": "refine",
+   "type": "refine",
+   "enabled": true,
+   "timeout_s": 3600,
+   "material": "aluminum",
+   "restore_planes": true,
+   "features": [
+    {
+     "type": "hole",
+     "axis": "+z",
+     "x": 42,
+     "y": 32,
+     "dia": 8.5,
+     "through": true,
+     "name": "bolt +x+y"
+    },
+    {
+     "type": "hole",
+     "axis": "+z",
+     "x": 42,
+     "y": -32,
+     "dia": 8.5,
+     "through": true,
+     "name": "bolt +x-y"
+    },
+    {
+     "type": "hole",
+     "axis": "+z",
+     "x": -42,
+     "y": 32,
+     "dia": 8.5,
+     "through": true,
+     "name": "bolt -x+y"
+    },
+    {
+     "type": "hole",
+     "axis": "+z",
+     "x": -42,
+     "y": -32,
+     "dia": 8.5,
+     "through": true,
+     "name": "bolt -x-y"
+    },
+    {
+     "type": "tap",
+     "helical": false,
+     "axis": "+z",
+     "x": 0,
+     "y": 0,
+     "dia": 10.25,
+     "through": true,
+     "thread_spec": "M12x1.75",
+     "name": "M12 boss seat"
+    },
+    {
+     "type": "hole",
+     "axis": "+x",
+     "pos": [
+      46,
+      12,
+      25
+     ],
+     "dia": 6.5,
+     "through": true,
+     "name": "flange pin +y"
+    },
+    {
+     "type": "hole",
+     "axis": "+x",
+     "pos": [
+      46,
+      -12,
+      25
+     ],
+     "dia": 6.5,
+     "through": true,
+     "name": "flange pin -y"
+    }
+   ],
+   "load_cases": [
+    {
+     "name": "axial",
+     "fixed": [
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        42,
+        32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      },
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        42,
+        -32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      },
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        -42,
+        32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      },
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        -42,
+        -32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      }
+     ],
+     "loads": [
+      {
+       "region": {
+        "kind": "bore",
+        "axis": "+z",
+        "center": [
+         0,
+         0,
+         15
+        ],
+        "diameter_mm": 10.25,
+        "description": "M12 seat wall (hint-bound)"
+       },
+       "force_n": [
+        0,
+        0,
+        -600
+       ]
+      }
+     ]
+    },
+    {
+     "name": "overturn",
+     "fixed": [
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        42,
+        32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      },
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        42,
+        -32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      },
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        -42,
+        32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      },
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        -42,
+        -32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      }
+     ],
+     "loads": [
+      {
+       "region": {
+        "kind": "cylinder",
+        "axis": "z",
+        "center": [
+         0,
+         0,
+         15
+        ],
+        "diameter_mm": 14,
+        "z_range": [
+         10,
+         25
+        ],
+        "description": "boss section (shaft-seat couple)"
+       },
+       "moment_nm": [
+        0,
+        100,
+        0
+       ]
+      }
+     ]
+    },
+    {
+     "name": "link",
+     "fixed": [
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        42,
+        32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      },
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        42,
+        -32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      },
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        -42,
+        32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      },
+      {
+       "kind": "cylinder",
+       "axis": "z",
+       "center": [
+        -42,
+        -32,
+        5
+       ],
+       "diameter_mm": 14,
+       "margin_mm": 2,
+       "z_range": [
+        0,
+        10
+       ],
+       "description": "bolt pad"
+      }
+     ],
+     "loads": [
+      {
+       "region": {
+        "kind": "hole",
+        "axis": "+x",
+        "center": [
+         46,
+         12,
+         25
+        ],
+        "diameter_mm": 6.5,
+        "description": "flange pin +y (hint-bound)"
+       },
+       "force_n": [
+        0,
+        0,
+        -150
+       ]
+      },
+      {
+       "region": {
+        "kind": "hole",
+        "axis": "+x",
+        "center": [
+         46,
+         -12,
+         25
+        ],
+        "diameter_mm": 6.5,
+        "description": "flange pin -y (hint-bound)"
+       },
+       "force_n": [
+        0,
+        0,
+        -150
+       ]
+      }
+     ]
+    }
+   ],
+   "gates": [
+    {
+     "type": "status",
+     "expect": [
+      "succeeded",
+      "needs_review"
+     ]
+    },
+    {
+     "type": "fem",
+     "field": "sf",
+     "min": 1.0
+    },
+    {
+     "type": "fem_loadcases",
+     "min_cases": 3,
+     "checks": [
+      {
+       "case": "axial",
+       "mechanisms": [
+        "force_n"
+       ],
+       "warnings_absent": [
+        "no fixed region",
+        "resolved to zero",
+        "unresolved"
+       ]
+      },
+      {
+       "case": "overturn",
+       "moment_mag_nm": {
+        "min": 60
+       },
+       "mechanisms": [
+        "moment_nm"
+       ],
+       "warnings_absent": [
+        "could not resolve",
+        "resolved to zero"
+       ]
+      },
+      {
+       "case": "link",
+       "mechanisms": [
+        "force_n"
+       ],
+       "warnings_absent": [
+        "no fixed region",
+        "resolved to zero",
+        "unresolved"
+       ]
+      }
+     ]
+    },
+    {
+     "type": "refine_verify",
+     "min_applied": 7
+    },
+    {
+     "type": "bodies",
+     "max": 1
+    },
+    {
+     "type": "holes",
+     "count": 4,
+     "dia": 8.5,
+     "axis": "z",
+     "positions": [
+      [
+       42,
+       32
+      ],
+      [
+       42,
+       -32
+      ],
+      [
+       -42,
+       32
+      ],
+      [
+       -42,
+       -32
+      ]
+     ]
+    },
+    {
+     "type": "holes",
+     "count": 1,
+     "dia": 10.25,
+     "axis": "z",
+     "positions": [
+      [
+       0,
+       0
+      ]
+     ]
+    },
+    {
+     "type": "holes",
+     "count": 2,
+     "dia": 6.5,
+     "axis": "x"
+    },
+    {
+     "type": "watertight",
+     "expect": true
+    }
+   ]
+  }
+ ],
+ "runtime": {
+  "fem_spsolve_dofs": 400000
+ }
 }
