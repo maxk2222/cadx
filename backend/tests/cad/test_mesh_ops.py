@@ -1431,6 +1431,84 @@ def test_solid_body_count_floating_body_in_cavity_is_two():
     assert solid_body_count(m) == 2
 
 
+def _flipped_inner_wall(m):
+    """What fix_normals does to nested shells: every component +volume."""
+    parts = m.split(only_watertight=False)
+    inner = min(parts, key=lambda p: abs(p.volume))
+    inner.invert()
+    return trimesh.util.concatenate(parts)
+
+
+def test_solid_body_count_counts_parity_not_sign():
+    """A cavity wall that lost its negative winding to a normals repair is
+    still a wall — nesting parity, not the sign, decides body counting."""
+    from cadx.cad.mesh_ops import solid_body_count
+
+    damaged = _flipped_inner_wall(_hollow_shell())
+    assert all(p.volume > 0 for p in damaged.split(only_watertight=False))
+    assert solid_body_count(damaged) == 1
+
+
+def test_orient_nested_shells_restores_wall_sign():
+    from cadx.cad.mesh_ops import orient_nested_shells, solid_body_count
+
+    damaged = _flipped_inner_wall(_hollow_shell())
+    out = orient_nested_shells(damaged)
+    vols = sorted(float(p.volume) for p in out.split(only_watertight=False))
+    assert vols[0] < 0 < vols[1]
+    assert solid_body_count(out) == 1
+
+
+def test_orient_nested_shells_keeps_real_island_positive():
+    """An island floating inside the cavity sits at nesting depth 2 — it is
+    a real second body and must not be flipped negative."""
+    from cadx.cad.mesh_ops import orient_nested_shells, solid_body_count
+
+    hollow = _hollow_shell(outer=20.0, inner=14.0)
+    floater = trimesh.creation.box(extents=[4.0, 4.0, 4.0])
+    out = orient_nested_shells(trimesh.util.concatenate([hollow, floater]))
+    vols = sorted(float(p.volume) for p in out.split(only_watertight=False))
+    assert len(vols) == 3
+    assert vols[0] < 0 < vols[1] < vols[2]
+    assert solid_body_count(out) == 2
+
+
+def test_body_groups_keeps_flipped_wall_with_parent():
+    """Salvage consumers must not see a +wound cavity wall as a droppable
+    second solid — parity groups it with the enclosing body."""
+    from cadx.cad.mesh_ops import _body_groups
+
+    damaged = _flipped_inner_wall(_hollow_shell())
+    groups = _body_groups(list(damaged.split(only_watertight=False)))
+    assert len(groups) == 1
+    assert len(groups[0]) == 2
+
+
+def test_clean_preserves_nested_wall_sign():
+    from cadx.cad.mesh_ops import clean, solid_body_count
+
+    out = clean(_hollow_shell())
+    vols = [float(p.volume) for p in out.split(only_watertight=False)]
+    assert min(vols) < 0
+    assert solid_body_count(out) == 1
+
+
+def test_ensure_watertight_preserves_nested_shell_sign():
+    """The repair ladder's fix_normals flips nested walls — the wrapper must
+    restore parity before the mesh reaches boolean/export consumers."""
+    from cadx.cad.mesh_ops import _ensure_watertight, solid_body_count
+
+    parts = _hollow_shell().split(only_watertight=False)
+    outer = max(parts, key=lambda p: abs(p.volume))
+    inner = min(parts, key=lambda p: abs(p.volume))
+    leaky_outer = outer.submesh([list(range(len(outer.faces) - 1))], append=True)
+    leaky = trimesh.util.concatenate([leaky_outer, inner])
+    out = _ensure_watertight(leaky)
+    vols = sorted(float(p.volume) for p in out.split(only_watertight=False))
+    assert len(vols) == 2 and vols[0] < 0 < vols[1]
+    assert solid_body_count(out) == 1
+
+
 def test_mesh_analysis_hollow_reports_one_solid():
     a = mesh_analysis(_hollow_shell())
     assert a.solid_count == 1

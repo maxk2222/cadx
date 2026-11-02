@@ -28,6 +28,26 @@ def test_repair_mesh_file_fixes_open_stl(tmp_path):
     assert m.is_watertight and m.is_winding_consistent
 
 
+def test_repair_mesh_file_preserves_nested_cavity_winding(tmp_path):
+    """Regression (infill/topopt bodies gate): an unconditional fix_normals
+    flipped the cavity wall to +volume — the gate then counted a hollow
+    part as two solids. The wall must stay negative through file repair."""
+    from cadx.cad.mesh_ops import solid_body_count
+
+    stl = tmp_path / "hollow.stl"
+    outer = trimesh.creation.box([20, 20, 20])
+    inner = trimesh.creation.box([14, 14, 14])
+    inner.invert()
+    trimesh.util.concatenate([outer, inner]).export(str(stl))
+    assert repair_mesh_file(stl) is True
+    m = trimesh.load(str(stl), force="mesh")
+    parts = m.split(only_watertight=False)
+    assert len(parts) == 2
+    vols = sorted(float(p.volume) for p in parts)
+    assert vols[0] < 0 < vols[1]
+    assert solid_body_count(m) == 1
+
+
 def test_repair_mesh_file_already_watertight(tmp_path):
     stl = tmp_path / "box.stl"
     trimesh.creation.box([10, 10, 10]).export(str(stl))

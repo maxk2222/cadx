@@ -117,7 +117,11 @@ def _export_3mf_via_trimesh(
     mesh.remove_unreferenced_vertices()
     if not mesh.is_watertight:
         mesh.fill_holes()
-    mesh.fix_normals()
+    if not mesh.is_winding_consistent:
+        mesh.fix_normals()
+    from cadx.cad.mesh_ops import orient_nested_shells
+
+    mesh = orient_nested_shells(mesh)
     path.parent.mkdir(parents=True, exist_ok=True)
     mesh.export(str(path), file_type="3mf")
 
@@ -347,7 +351,11 @@ def repair_mesh_file(
     m.remove_unreferenced_vertices()
     if not m.is_watertight:
         m.fill_holes()
-    m.fix_normals()
+    if not m.is_winding_consistent:
+        # fix_normals orients every component to +volume — destructive on
+        # nested shells (a hollow part's cavity wall MUST stay negative or
+        # downstream body counting sees a phantom second solid)
+        m.fix_normals()
     if not m.is_watertight:
         from cadx.cad.mesh_ops import _ensure_watertight, _rebuild_drift
 
@@ -361,9 +369,10 @@ def repair_mesh_file(
             log.warning("export.repair_drift", reason=drift, path=path.name)
     # repair ladders don't drop disconnected debris — a zero-volume sliver
     # sheet ships as a phantom second body and trips the bodies gate
-    from cadx.cad.mesh_ops import keep_significant_components
+    from cadx.cad.mesh_ops import keep_significant_components, orient_nested_shells
 
     m, _ = keep_significant_components(m, min_fraction=1e-4)
+    m = orient_nested_shells(m)
     m.export(str(path))
     return bool(m.is_watertight and m.is_winding_consistent)
 
@@ -1681,7 +1690,9 @@ def _decimate_for_analytic(mesh: trimesh.Trimesh, logger: Any) -> trimesh.Trimes
             dec.fill_holes()
             dec.fix_normals()
         if dec.is_watertight or not mesh.is_watertight:
-            return dec
+            from cadx.cad.mesh_ops import orient_nested_shells
+
+            return orient_nested_shells(dec)
         logger.warning(
             "export.analytic_step_decimate_dropped",
             faces_in=len(mesh.faces),

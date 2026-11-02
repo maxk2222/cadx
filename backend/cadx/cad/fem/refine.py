@@ -2571,7 +2571,9 @@ def _watertight_postpass(out: trimesh.Trimesh, report: RefineReport) -> trimesh.
             report.warnings.append(f"watertight repair failed: {e}")
     if not out.is_watertight:
         report.warnings.append("refined mesh is not watertight — STEP/analytic cuts may degrade")
-    return out
+    from cadx.cad.mesh_ops import orient_nested_shells
+
+    return orient_nested_shells(out)
 
 
 # --------------------------------------------------------------------------- #

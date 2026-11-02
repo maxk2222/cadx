@@ -182,14 +182,14 @@ def clean(mesh: trimesh.Trimesh, min_component_frac: float = 0.01) -> trimesh.Tr
         mesh.merge_vertices,
         mesh.remove_unreferenced_vertices,
         mesh.remove_infinite_values,
-        mesh.fix_normals,
+        lambda: (mesh.fix_normals() if not mesh.is_winding_consistent else None),
         lambda: trimesh.repair.fill_holes(mesh),
     ):
         try:
             fn()
         except Exception:
             log.debug("mesh.clean.step_skipped", fn=getattr(fn, "__name__", "?"))
-    return mesh
+    return orient_nested_shells(mesh)
 
 
 def decimate(mesh: trimesh.Trimesh, target_faces: int) -> trimesh.Trimesh:
@@ -609,6 +609,58 @@ def smooth_preserve(
     return out
 
 
+def _nesting_depths(parts: list[trimesh.Trimesh]) -> list[int] | None:
+    """Shell-nesting depth per component — how many bigger components fully
+    contain it. Solid/void alternate with depth: 0 = body, 1 = its cavity
+    wall, 2 = an island inside that cavity (a real second solid). Returns
+    None when containment probing fails (non-watertight outer shells make
+    ray tests unreliable) so callers can degrade to sign-based rules."""
+    order = sorted(range(len(parts)), key=lambda i: -abs(float(parts[i].volume)))
+    depth = [0] * len(parts)
+    for rank, i in enumerate(order):
+        probe = parts[i].vertices[:: max(1, len(parts[i].vertices) // 16)]
+        for j in order[:rank]:
+            try:
+                if bool(np.asarray(parts[j].contains(probe)).all()):
+                    depth[i] += 1
+            except Exception:
+                log.debug("mesh.nesting_depth.probe_failed", part=i, container=j)
+                return None
+    return depth
+
+
+def orient_nested_shells(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+    """Orient each boundary component by shell parity.
+
+    A uniform winding flip can only fix the outermost shell — nested
+    cavity walls keep positive signed volume and every downstream consumer
+    (``solid_body_count``, ``_body_groups``, the evalkit ``bodies`` gate)
+    then counts a hollow part as two bodies. Even nesting depth wants
+    +volume, odd wants -volume. Repair steps that re-orient components
+    (``fix_normals`` and friends) must be followed by this so a healthy
+    nested-shell mesh keeps its parity."""
+    try:
+        parts = mesh.split(only_watertight=False)
+    except Exception:
+        return mesh
+    if len(parts) <= 1:
+        return mesh
+    depth = _nesting_depths(parts)
+    if depth is None:
+        return mesh
+    changed = False
+    for i, d in enumerate(depth):
+        if (float(parts[i].volume) > 0.0) != (d % 2 == 0):
+            parts[i].invert()
+            changed = True
+    if not changed:
+        return mesh
+    out = trimesh.util.concatenate(parts)
+    if out.volume < 0:
+        out.invert()
+    return cast(trimesh.Trimesh, out)
+
+
 def solid_body_count(mesh: trimesh.Trimesh) -> int:
     """Physical solid bodies = positive-signed-volume components.
 
@@ -619,6 +671,9 @@ def solid_body_count(mesh: trimesh.Trimesh) -> int:
     ``mesh.split()`` components as "solids" fails on every hollow part.
     Falls back to the component count when winding is broken (all volumes
     non-positive) — erring toward reporting more bodies, not fewer.
+    Nesting parity beats winding when it can be probed: a cavity wall that
+    lost its negative winding to a normals-repair still sits at odd depth
+    and is not a body.
     """
     try:
         parts = mesh.split(only_watertight=False)
@@ -626,6 +681,20 @@ def solid_body_count(mesh: trimesh.Trimesh) -> int:
         return 1
     if not parts:
         return 1
+    if len(parts) > 1:
+        depth = _nesting_depths(parts)
+        if depth is not None:
+            # parity decides enclosure, volume decides solidity — a
+            # zero-area sliver at depth 0 is still not a body
+            n = sum(
+                1
+                for d, p in zip(depth, parts, strict=True)
+                if d % 2 == 0 and float(p.volume) > 0.0
+            )
+            if n > 0:
+                return n
+            # nothing at even depth — winding is likely inverted wholesale;
+            # fall through to the sign-based pessimistic count
     vols = np.array([float(p.volume) for p in parts])
     positive = int((vols > 0.0).sum())
     return positive if positive > 0 else len(parts)
@@ -639,10 +708,18 @@ def _body_groups(bodies: list[trimesh.Trimesh]) -> list[list[trimesh.Trimesh]]:
     whose enclosed volume contains it (unassigned walls stay with the
     largest body — dropping a wall would open the cavity). A hollow part
     therefore groups as [outer wall, inner wall(s)], while two detached
-    parts form two single-component groups.
+    parts form two single-component groups. Nesting parity decides when it
+    can be probed — a cavity wall that lost its negative winding to a
+    normals-repair is still a wall, never its own droppable solid.
     """
-    solids = [b for b in bodies if float(b.volume) > 0]
-    walls = [b for b in bodies if float(b.volume) <= 0]
+    depth = _nesting_depths(list(bodies))
+    if depth is not None and len(bodies) > 1:
+        solids, walls = [], []
+        for b, d in zip(bodies, depth, strict=True):
+            (solids if d % 2 == 0 and float(b.volume) > 0.0 else walls).append(b)
+    else:
+        solids = [b for b in bodies if float(b.volume) > 0]
+        walls = [b for b in bodies if float(b.volume) <= 0]
     if not solids:
         return [list(bodies)]
     groups: list[list[trimesh.Trimesh]] = [[b] for b in solids]
@@ -2260,7 +2337,13 @@ def _stitch_hairline_boundary(  # noqa: C901
     return m if cur != (n_b0, nm0) else mesh
 
 
-def _ensure_watertight(mesh: trimesh.Trimesh) -> trimesh.Trimesh:  # noqa: C901
+def _ensure_watertight(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+    """Repair ladder plus shell-parity: whatever rung fixed the mesh, the
+    result keeps nested cavity walls negatively wound."""
+    return orient_nested_shells(_ensure_watertight_impl(mesh))
+
+
+def _ensure_watertight_impl(mesh: trimesh.Trimesh) -> trimesh.Trimesh:  # noqa: C901
     """Best-effort repair ladder before boolean/B-Rep conversion.
 
     1) process + merge + fill_holes + normals (cheap, preserves detail)
