@@ -1078,3 +1078,31 @@ def test_infill_pipeline_clamps_pitch_to_feature_floor(tmp_path: Path) -> None:
     pitch = res.topopt["domain_pitch"]
     assert pitch["feature_floor_clamped"] is True
     assert pitch["design_mm"] <= 6.5 / 3.5 + 1e-6
+
+
+async def test_topopt_run_tool_surfaces_recovery_hints() -> None:
+    """recovery_hints translate the run status into next-run knobs — a
+    floor-hit + limit_cycle run must name both remedies."""
+
+    async def fake_topopt(a: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "topopt": {
+                "status": "limit_cycle",
+                "converged": False,
+                "passive_frac": 0.3,
+                "volfrac_achieved": 0.5,
+                "iterations": 40,
+                "sf_export": 0.2,
+                "auto_coarsen": {"feature_floor_hit": True, "feature_floor_mm": 1.86},
+                "verification": {"valid": False, "meets_safety_factor": False},
+                "warnings": ["mask still churning at beta cap"],
+            },
+            "fem": {"cases": [{"safety_factor": 0.2}]},
+        }
+
+    session = _opt_session(topopt_fn=fake_topopt)
+    out = await session.execute("topopt_run", {"load_cases": [{"name": "c"}]})
+    hints = out.get("recovery_hints") or []
+    assert any("feature floor" in h for h in hints)
+    assert any("limit_cycle" in h for h in hints)

@@ -647,8 +647,11 @@ _REGION_SCHEMA = {
     "width margin_mm at the bbox outer edges along the axes named in axis — "
     "letters or signed, default 'xy'), hole/anchor (measured feature anchor "
     "via hole_index — any axis; use list_anchors first; loads/constraints "
-    "apply on the bore wall and a keep ring of margin_mm is auto-protected), "
-    "bore (the bore WALL of an anchor — for bearing/preload loads), face "
+    "apply on the bore wall and a keep ring of margin_mm is auto-protected. "
+    "MUST bind via hole_index OR an axis+center hint — an unbound hole "
+    "region resolves to 0 cells and degenerates the solve), "
+    "bore (the bore WALL of an anchor — same binding rule — for "
+    "bearing/preload loads), face "
     "(legacy surface alias), cylinder (around an axis — needs "
     "axis+diameter_mm; inner_diameter_mm for a hollow ring), box "
     "(center+diameter_mm edge), plane (NODE-EXACT locus for fixtures — AND "
@@ -897,7 +900,10 @@ STRUCT_TOOLS = [
         {
             "load_cases": _LOAD_CASES_SCHEMA,
             "material": _s("material name, e.g. PLA, PETG, aluminum — empty = spec default"),
-            "voxel_mm": {"type": "number", "description": "FEM voxel pitch in mm"},
+            "voxel_mm": {
+                "type": "number",
+                "description": "FEM voxel pitch in mm — keep <= smallest anchored bore dia/3.5 or anchored holes extract undersized; the engine clamps the design pitch to that feature floor (finer is safe, it only costs solver time)",
+            },
         },
         ["load_cases"],
     ),
@@ -1101,7 +1107,10 @@ STRUCT_TOOLS = [
             },
             "load_cases": _LOAD_CASES_SCHEMA,
             "material": _s("material name — empty = spec default"),
-            "voxel_mm": {"type": "number", "description": "voxel pitch in mm"},
+            "voxel_mm": {
+                "type": "number",
+                "description": "voxel pitch in mm — keep <= smallest anchored bore dia/3.5 or anchored holes extract undersized; the engine clamps the design pitch to that feature floor (finer is safe, it only costs solver time)",
+            },
         },
         [],
     ),
@@ -1211,7 +1220,10 @@ STRUCT_TOOLS = [
             },
             "load_cases": _LOAD_CASES_SCHEMA,
             "material": _s("material name — empty = spec default"),
-            "voxel_mm": {"type": "number", "description": "voxel pitch in mm"},
+            "voxel_mm": {
+                "type": "number",
+                "description": "voxel pitch in mm — keep <= smallest anchored bore dia/3.5 or anchored holes extract undersized; the engine clamps the design pitch to that feature floor (finer is safe, it only costs solver time)",
+            },
         },
         [],
     ),
@@ -1461,7 +1473,12 @@ MESH_TRANSFORM_TOOLS = [
         "mesh_remesh",
         "Uniform voxel remesh — watertight by construction, evens topology. "
         "Use before booleans on organic meshes or when faces are uneven.",
-        {"voxel_mm": {"type": "number", "description": "voxel pitch in mm (0.05-5)"}},
+        {
+            "voxel_mm": {
+                "type": "number",
+                "description": "voxel pitch in mm (0.05-5) — keep <= smallest anchored bore dia/3.5 or anchored holes extract undersized; the engine clamps the design pitch to that feature floor (finer is safe, it only costs solver time)",
+            }
+        },
         ["voxel_mm"],
     ),
     _fn(
@@ -3253,6 +3270,36 @@ class ToolSession:
             "topopt_calls_left": self.topopt_left,
             **self._struct_budget_meta(),
         }
+        # machine-readable recovery: next-run knobs keyed off how THIS run
+        # ended — the status names the failure, not the fix
+        recovery: list[str] = []
+        status = top.get("status")
+        ac = top.get("auto_coarsen") or {}
+        if ac.get("feature_floor_hit"):
+            recovery.append(
+                "grid held at the anchor feature floor — raise "
+                "fem_spsolve_dofs (settings) or accept CG solve time; do NOT "
+                "raise voxel_mm, that under-resolves the anchored bores the "
+                "floor protects"
+            )
+        if status == "limit_cycle":
+            recovery.append(
+                "limit_cycle — try symmetry=<plane>, filter='cone', or "
+                "solver='mma' + mma_final_beta to break the mask oscillation"
+            )
+        if status == "degenerate":
+            recovery.append(
+                "degenerate solve — check each load/fixed region resolves to "
+                ">0 cells; 'hole'/'anchor'/'bore' regions need hole_index or "
+                "an axis+center hint or they bind nothing"
+            )
+        if status == "infeasible_target":
+            recovery.append(
+                "infeasible_target — the passive floor already exceeds "
+                "volfrac; raise target_volume_fraction or relax keep regions"
+            )
+        if recovery:
+            out["recovery_hints"] = recovery
         images = [str(p) for p in res.get("_images") or []]
         if images:
             out["_images"] = images
