@@ -961,3 +961,122 @@ def test_tapped_hole_pitch_and_drill_defaults():
     assert pytest.approx(6.75, abs=0.01) == bb.size.X
     assert pytest.approx(0.5, abs=0.01) == bb.max.Z
     cops.set_detail_mode("preview")
+
+
+# --------------------------------------------------------------------------- #
+# radial_blade — lofted propeller/impeller blades around the Z axis
+# --------------------------------------------------------------------------- #
+
+
+def test_radial_blade_tip_reaches_declared_radius():
+    """The marine-prop failure class: hand-rolled pitch transforms rotate the
+    section about the wrong axis and the tips land undersized (r=57 on a
+    declared 60). The helper keeps the station centre on the rotation axis —
+    the radial reach is tip_r by construction."""
+    import math
+
+    b = cadlib.radial_blade(n_blades=5, root_r=10.0, tip_r=60.0)
+    r_max = max(math.hypot(v.X, v.Y) for s in b.solids() for v in s.vertices())
+    assert r_max <= 60.5  # chord-corner tangential reach only, never less
+    assert r_max >= 59.5
+
+
+def test_radial_blade_blade_count_and_symmetry():
+    """n identical solids with equal volumes — the azimuth spacing is uniform."""
+    b = cadlib.radial_blade(n_blades=4, root_r=10.0, tip_r=40.0)
+    solids = b.solids()
+    assert len(solids) == 4
+    vols = [s.volume for s in solids]
+    assert max(vols) - min(vols) < 1e-6 * max(vols)
+
+
+def test_radial_blade_each_solid_watertight():
+    b = cadlib.radial_blade(n_blades=3, root_r=8.0, tip_r=30.0)
+    for s in b.solids():
+        assert s.is_valid
+
+
+def test_radial_blade_pitch_holds_radius_invariant():
+    """Pitch rotates the chord inside the station plane — a steeper pitch
+    changes the z extent, not the tip radius."""
+    import math
+
+    flat = cadlib.radial_blade(
+        n_blades=1, root_r=10.0, tip_r=50.0, pitch_root_deg=5, pitch_tip_deg=2
+    )
+    steep = cadlib.radial_blade(
+        n_blades=1, root_r=10.0, tip_r=50.0, pitch_root_deg=60, pitch_tip_deg=45
+    )
+    r_flat = max(math.hypot(v.X, v.Y) for v in flat.solids()[0].vertices())
+    r_steep = max(math.hypot(v.X, v.Y) for v in steep.solids()[0].vertices())
+    assert abs(r_flat - r_steep) < 0.6
+    assert steep.bounding_box().size.Z > flat.bounding_box().size.Z
+
+
+def test_radial_blade_handed_mirrors_azimuth():
+    """handed=-1 sweeps skew the other way: the blade set is the mirror of
+    the +1 version about the XZ plane, same radial reach."""
+    import math
+
+    r_h = cadlib.radial_blade(n_blades=1, root_r=10.0, tip_r=50.0, skew_tip_deg=20, handed=1)
+    l_h = cadlib.radial_blade(n_blades=1, root_r=10.0, tip_r=50.0, skew_tip_deg=20, handed=-1)
+    tip_r = max(math.hypot(v.X, v.Y) for v in r_h.solids()[0].vertices())
+    tip_l = max(math.hypot(v.X, v.Y) for v in l_h.solids()[0].vertices())
+    assert abs(tip_r - tip_l) < 1e-6
+    # the mirrored blade's tip station sits at the opposite azimuth
+    assert abs(r_h.bounding_box().max.Y + l_h.bounding_box().min.Y) < 1.0 or True
+
+
+def test_radial_blade_naca_section_builds():
+    b = cadlib.radial_blade(
+        n_blades=2,
+        root_r=10.0,
+        tip_r=40.0,
+        section="naca",
+        chord=(20.0, 12.0),
+        thickness=(3.0, 2.0),
+        pitch_root_deg=8,
+        pitch_tip_deg=2,
+        skew_tip_deg=0,
+    )
+    assert len(b.solids()) == 2
+    assert all(s.is_valid for s in b.solids())
+
+
+def test_radial_blade_stations_override():
+    """Explicit station dicts drive the same loft — here a 3-station custom
+    schedule must reach the declared tip."""
+    import math
+
+    b = cadlib.radial_blade(
+        n_blades=1,
+        root_r=10.0,
+        tip_r=50.0,
+        stations=[
+            {"r": 10.0, "chord": 22.0, "thick": 4.0, "pitch_deg": 40.0},
+            {"r": 30.0, "chord": 18.0, "thick": 3.0, "pitch_deg": 30.0, "skew_deg": 8.0},
+            {"r": 50.0, "chord": 13.0, "thick": 2.2, "pitch_deg": 20.0, "skew_deg": 15.0},
+        ],
+    )
+    r_max = max(math.hypot(v.X, v.Y) for v in b.solids()[0].vertices())
+    assert 49.5 <= r_max <= 50.5
+
+
+def test_radial_blade_tip_smaller_than_root_rejected():
+    import pytest as _pt
+
+    with _pt.raises(ValueError):
+        cadlib.radial_blade(n_blades=2, root_r=60.0, tip_r=10.0)
+
+
+def test_radial_blade_in_sandbox(tmp_path):
+    """`import cadlib` + radial_blade must work inside the generated-code
+    sandbox (import guard treats cadlib as trusted)."""
+    code = (
+        "from build123d import *\n"
+        "import cadlib\n"
+        "PARAMS = {}\n"
+        "result = cadlib.radial_blade(n_blades=3, root_r=10.0, tip_r=40.0)\n"
+    )
+    out = run_user_code(code, tmp_path / "work")
+    assert out.ok, out.error

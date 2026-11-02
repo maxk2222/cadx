@@ -176,6 +176,29 @@ No BuildPart context needed. Parts rest on XY (min Z = 0), centred — place wit
   `Plane(normal=...)` is not valid build123d (use `z_dir`). `strut` stays
   the choice for STRAIGHT braces: `part += arch_bridge(90, 25, 8, 6)`.
 
+### radial_blade
+
+- `radial_blade(n_blades=4, root_r=8, tip_r=60, *, chord=(22, 14),
+  thickness=(4, 2.5), pitch_root_deg=45, pitch_tip_deg=28, skew_tip_deg=15,
+  n_stations=7, section="ellipse", naca_t=0.12, handed=1, z=0.0,
+  stations=None)` — lofted propeller/impeller blades around the Z axis,
+  centred on it. `chord`/`thickness` take a scalar or `(root, tip)` taper;
+  `pitch_*_deg` is the blade-angle schedule (angle between chord and the
+  rotation plane), `skew_tip_deg` sweeps the tip azimuth back; `handed=-1`
+  mirrors pitch+skew; `section="naca"` builds symmetric airfoil blades;
+  `stations=[{"r","chord","thick","pitch_deg","skew_deg","z"}, ...]`
+  overrides the whole schedule. USE THIS for propellers, fans, impellers —
+  hand-rolled blade transforms are the single most common geometry failure:
+  rotating the section about global Z (instead of the radial axis through
+  its own centre) shrinks the tip radius by cos(pitch) — blades land at
+  r=57 on a declared r=60 — and compounding azimuth+pitch rotations
+  double-transforms sections off the stacking line. The helper keeps the
+  station centre on the rotation axis so the tip radius is exact. Bury
+  `root_r` inside the hub radius so the fuse overlaps:
+  `part += Pos(0, 0, hub_mid_z) * radial_blade(5, root_r=10, tip_r=60,
+  chord=(24, 15), thickness=(4, 2.5), pitch_root_deg=42, pitch_tip_deg=24,
+  skew_tip_deg=18)`.
+
 ### mounting_ear
 
 - `mounting_ear(length, width, thickness, hole_d=None, hole_offset=0,

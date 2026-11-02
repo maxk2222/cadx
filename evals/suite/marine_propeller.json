@@ -16,15 +16,22 @@
    "options": {
     "process": "fdm"
    },
-   "prompt": "5-blade high-pitch marine propeller, parametric — built for high volume flow.\n\nFrame: hub axis along Z, bottom face on the XY plane (z = 0), centred in X and Y. mm.\n- Ø120 propeller: blade tips touch the r = 60 cylinder; overall bounding box ~118-120 in X and Y (a 5-fold rotor cannot put tips on both + and - of one axis, so XY reads ~117-120, centred on the origin) and exactly 24 in Z: z = 0..24.\n- Central cylindrical hub: outer dia 28 (r = 14), height 24 (z = 0..24).\n- Concentric through-bore dia 10 (r = 5) along Z through (0,0), open on both z = 0 and z = 24; the cut must span the full hub height — use a bore cylinder centred at (0,0,12) with height ~30 so it clears both faces (a centred tool shifted to z = -1 leaves the top half solid).\n- 5 identical skewed, strongly twisted hydrofoil blades spaced 0/72/144/216/288 deg around Z (odd blade count is standard for quiet marine runners):\n  * Each blade runs radially from r = 8 (root station 6 mm inside the r = 14 hub wall — a fat union overlap; still 3 mm clear of the r = 5 bore) out to tip radius r = 60 (propeller dia 120 — bound the tip to the r = 60 cylinder).\n  * Loft each blade across >= 4 radial stations (e.g. r = 8, 25, 45, 60) using thin hydrofoil/elliptical sections: chord ~22-26 mm, thickness at every station >= 3.0 mm (target 3.0-3.5 mm).\n  * HIGH PITCH for high volume flow: progressive helicoidal twist ~45 deg at the root station decreasing to ~28 deg at the tip (pitch measured between the section chord line and the XY plane). Rotate each section about its own RADIAL stacking axis — the line from the hub axis through the section's mid-chord point — so pitch only changes a point's (tangential, z) position and NEVER its radius.\n  * SKEW: each section's mid-chord point additionally lags backwards tangentially, 0 deg at the root growing to ~15 deg at the tip (blade tips trail the rotation direction like a real skewed propeller). Apply skew as a PURE ROTATION about the Z axis through (0,0): rotate every point of the section by the skew angle — never translate tangentially — so each station keeps its exact radius and the tip stays pinned to the r = 60 cylinder. Pitch+skew leave radii invariant — if tips over- or undershoot the Ø120 envelope, the section's radial extent (not the rotations) is wrong.\n  * Keep ALL blade geometry strictly inside z = 2..22 so the flat hub faces define the exact z = 0..24 height.\n- Union the 5 blades with the hub, then cut the dia-10 centre through-bore. Blades are SOLID bodies — do not cut slots, channels, weight pockets or voids into them. No fillets, no chamfers; the result must be a single watertight, VALID solid centred on the origin. Before finishing verify result.bounding_box() spans -60..+60 on both X and Y (tip sections bound the r = 60 cylinder) and is symmetric about (0,0) — adjust the tip station's radial extent, not the hub; if the fused body has invalid faces rebuild the loft with smoother/fewer sections or deeper root overlap.",
+   "prompt": "5-blade high-pitch marine propeller, parametric — built for high volume flow.\n\nFrame: hub axis along Z, bottom face on the XY plane (z = 0), centred in X and Y. mm.\n- Ø120 propeller: blade tips touch the r = 60 cylinder; overall bounding box ~118-120 in X and Y (a 5-fold rotor cannot put tips on both + and - of one axis, so XY reads ~117-120, centred on the origin) and exactly 24 in Z: z = 0..24.\n- Central cylindrical hub: outer dia 28 (r = 14), height 24 (z = 0..24).\n- Concentric through-bore dia 10 (r = 5) along Z through (0,0), open on both z = 0 and z = 24; the cut must span the full hub height — use a bore cylinder centred at (0,0,12) with height ~30 so it clears both faces (a centred tool shifted to z = -1 leaves the top half solid).\n- 5 identical skewed, strongly twisted hydrofoil blades spaced 0/72/144/216/288 deg around Z (odd blade count is standard for quiet marine runners):\n  * Each blade runs radially from r = 8 (root station 6 mm inside the r = 14 hub wall — a fat union overlap; still 3 mm clear of the r = 5 bore) out to tip radius r = 60 (propeller dia 120 — bound the tip to the r = 60 cylinder).\n  * Loft each blade across >= 4 radial stations (e.g. r = 8, 25, 45, 60) using thin hydrofoil/elliptical sections: chord ~22-26 mm, thickness at every station >= 3.0 mm (target 3.0-3.5 mm).\n  * HIGH PITCH for high volume flow: progressive helicoidal twist ~45 deg at the root station decreasing to ~28 deg at the tip (pitch measured between the section chord line and the XY plane). Rotate each section about its own RADIAL stacking axis — the line from the hub axis through the section's mid-chord point — so pitch only changes a point's (tangential, z) position and NEVER its radius.\n  * SKEW: each section's mid-chord point additionally lags backwards tangentially, 0 deg at the root growing to ~15 deg at the tip (blade tips trail the rotation direction like a real skewed propeller). Apply skew as a PURE ROTATION about the Z axis through (0,0): rotate every point of the section by the skew angle — never translate tangentially — so each station keeps its exact radius and the tip stays pinned to the r = 60 cylinder. Pitch+skew leave radii invariant — if tips over- or undershoot the Ø120 envelope, the section's radial extent (not the rotations) is wrong.\n  * Keep ALL blade geometry strictly inside z = 2..22 so the flat hub faces define the exact z = 0..24 height.\n  * Prefer the reviewed helper over hand-rolled section transforms: cadlib.radial_blade(n_blades=5, root_r=8.0, tip_r=60.0, chord=(26.0, 18.0), thickness=(3.5, 3.0), pitch_root_deg=45.0, pitch_tip_deg=28.0, skew_tip_deg=15.0, z=12.0) encodes exactly this radial-axis pitch + pure-azimuth skew by construction (the tip radius stays invariant); only fall back to manual lofts if the helper cannot express the section you need.\n- Union the 5 blades with the hub, then cut the dia-10 centre through-bore. Blades are SOLID bodies — do not cut slots, channels, weight pockets or voids into them. No fillets, no chamfers; the result must be a single watertight, VALID solid centred on the origin. Before finishing verify result.bounding_box() spans -60..+60 on both X and Y (tip sections bound the r = 60 cylinder) and is symmetric about (0,0) — adjust the tip station's radial extent, not the hub; if the fused body has invalid faces rebuild the loft with smoother/fewer sections or deeper root overlap.",
    "gates": [
     {
      "type": "status",
-     "expect": ["succeeded", "needs_review"]
+     "expect": [
+      "succeeded",
+      "needs_review"
+     ]
     },
     {
      "type": "bbox",
-     "dims": [120, 120, 24],
+     "dims": [
+      120,
+      120,
+      24
+     ],
      "match": "match",
      "tol_mm": 5
     },
@@ -33,7 +40,12 @@
      "count": 1,
      "dia": 10,
      "axis": "z",
-     "positions": [[0, 0]],
+     "positions": [
+      [
+       0,
+       0
+      ]
+     ],
      "depth_class": "through"
     },
     {
@@ -64,7 +76,12 @@
     {
      "type": "verify_spec",
      "expect": "PASS",
-     "ignore": ["dfm", "hole_patterns", "envelope_x", "envelope_y"]
+     "ignore": [
+      "dfm",
+      "hole_patterns",
+      "envelope_x",
+      "envelope_y"
+     ]
     }
    ]
   },
@@ -80,10 +97,17 @@
       {
        "kind": "cylinder",
        "axis": "z",
-       "center": [0, 0, 12],
+       "center": [
+        0,
+        0,
+        12
+       ],
        "diameter_mm": 16,
        "inner_diameter_mm": 8,
-       "z_range": [0, 24],
+       "z_range": [
+        0,
+        24
+       ],
        "description": "hub shaft bore sleeve"
       }
      ],
@@ -96,7 +120,11 @@
         "inner_diameter_mm": 70,
         "description": "outer blade annulus"
        },
-       "force_n": [0, 0, 500],
+       "force_n": [
+        0,
+        0,
+        500
+       ],
        "spread_mode": "area"
       }
      ]
@@ -108,10 +136,17 @@
       {
        "kind": "cylinder",
        "axis": "z",
-       "center": [0, 0, 12],
+       "center": [
+        0,
+        0,
+        12
+       ],
        "diameter_mm": 16,
        "inner_diameter_mm": 8,
-       "z_range": [0, 24],
+       "z_range": [
+        0,
+        24
+       ],
        "description": "hub shaft bore sleeve"
       }
      ],
@@ -124,7 +159,11 @@
         "inner_diameter_mm": 70,
         "description": "outer blade annulus"
        },
-       "moment_nm": [0, 0, -20]
+       "moment_nm": [
+        0,
+        0,
+        -20
+       ]
       }
      ]
     }
@@ -132,7 +171,9 @@
    "gates": [
     {
      "type": "status",
-     "expect": ["succeeded"]
+     "expect": [
+      "succeeded"
+     ]
     },
     {
      "type": "fem",
@@ -145,12 +186,25 @@
      "checks": [
       {
        "case": "thrust",
-       "resultant_n": { "min": 420, "max": 580 },
-       "resultant_dir": [0, 0, 1],
+       "resultant_n": {
+        "min": 420,
+        "max": 580
+       },
+       "resultant_dir": [
+        0,
+        0,
+        1
+       ],
        "dir_tol_deg": 25,
-       "fixed_centroid_mm": [0, 0, 12],
+       "fixed_centroid_mm": [
+        0,
+        0,
+        12
+       ],
        "tol_mm": 10,
-       "mechanisms": ["force_n"],
+       "mechanisms": [
+        "force_n"
+       ],
        "warnings_absent": [
         "no fixed region",
         "resolved to zero",
@@ -162,8 +216,13 @@
       },
       {
        "case": "torque",
-       "moment_mag_nm": { "min": 15, "max": 25 },
-       "mechanisms": ["moment_nm"],
+       "moment_mag_nm": {
+        "min": 15,
+        "max": 25
+       },
+       "mechanisms": [
+        "moment_nm"
+       ],
        "warnings_absent": [
         "no fixed region",
         "resolved to zero",

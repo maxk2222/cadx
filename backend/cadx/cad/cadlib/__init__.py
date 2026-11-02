@@ -11,6 +11,7 @@ Constraint (enforced by the sandbox import guard): cadlib itself may only
 import build123d / bd_warehouse.* / math / numpy / typing / dataclasses.
 """
 
+from .blades import naca4, radial_blade
 from .cutouts import (
     bearing_seat,
     dovetail_slot,
@@ -100,9 +101,11 @@ __all__ = [
     "mesh_fuse",
     "mesh_intersect",
     "mounting_ear",
+    "naca4",
     "oblong_slot",
     "profile_body",
     "project_to_face",
+    "radial_blade",
     "resolve_face",
     "rib",
     "safe_chamfer",
