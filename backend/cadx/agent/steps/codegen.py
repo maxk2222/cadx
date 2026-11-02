@@ -225,6 +225,7 @@ async def run(
     feedback: str | None = None,
     verify_fn: VerifyFn | None = None,
     render_fn: VerifyFn | None = None,
+    render_existing_fn: VerifyFn | None = None,
     features: dict[str, Any] | None = None,
 ) -> CodeResponse:
     if iteration == 1 and feedback is None and is_standard_only(spec):
@@ -283,6 +284,7 @@ async def run(
                 feedback=feedback,
                 verify_fn=verify_fn,
                 render_fn=render_fn,
+                render_existing_fn=render_existing_fn,
             )
         return await _codegen_session(
             ctx,
@@ -292,6 +294,7 @@ async def run(
             feedback=feedback,
             verify_fn=verify_fn,
             render_fn=render_fn,
+            render_existing_fn=render_existing_fn,
             features=features,
         )
     messages: list[dict[str, Any]] = [
@@ -347,6 +350,7 @@ async def repair(
     prefer_full_code: bool = False,
     geometry: list[dict[str, Any]] | None = None,
     render_fn: VerifyFn | None = None,
+    render_existing_fn: VerifyFn | None = None,
     error_history: str | None = None,
 ) -> PatchResponse:
     """Ask the model to fix broken code — tool session when the provider
@@ -382,6 +386,7 @@ async def repair(
             verify_fn=verify_fn,
             max_calls=ctx.runtime_settings.agent_tool_max_calls,
             render_fn=render_fn,
+            render_existing_fn=render_existing_fn,
             prefer_full_code=prefer_full_code,
         )
     if prefer_full_code:
@@ -470,12 +475,18 @@ async def _repair_session(
     verify_fn: VerifyFn | None,
     max_calls: int,
     render_fn: VerifyFn | None = None,
+    render_existing_fn: VerifyFn | None = None,
     prefer_full_code: bool = False,
 ) -> PatchResponse:
     from cadx.agent.context import system_prompt
 
     session = ToolSession(
-        ctx, kind="edit", code=prev_code, verify_fn=verify_fn, render_fn=render_fn
+        ctx,
+        kind="edit",
+        code=prev_code,
+        verify_fn=verify_fn,
+        render_fn=render_fn,
+        render_existing_fn=render_existing_fn,
     )
     # stalled flag means minimal edits kept producing the same error —
     # asking for another minimal edit contradicts the diagnosis
@@ -572,6 +583,7 @@ async def _codegen_session(
     feedback: str | None,
     verify_fn: VerifyFn | None = None,
     render_fn: VerifyFn | None = None,
+    render_existing_fn: VerifyFn | None = None,
     out: dict[str, Any] | None = None,
     features: dict[str, Any] | None = None,
     _audit_retry: int = 0,
@@ -611,6 +623,7 @@ async def _codegen_session(
             verify_fn=verify_fn,
             spec_features=spec_feats,
             render_fn=render_fn,
+            render_existing_fn=render_existing_fn,
         )
         system = codegen_build_system(
             plan=plan, spec=spec, fresh=True, hybrid=ctx.hybrid_solid is not None
@@ -843,6 +856,7 @@ async def _codegen_tournament(
     feedback: str | None,
     verify_fn: VerifyFn | None,
     render_fn: VerifyFn | None,
+    render_existing_fn: VerifyFn | None = None,
 ) -> CodeResponse:
     """Best-of-N codegen (AlphaCode-lite generate-then-filter).
 
@@ -872,6 +886,7 @@ async def _codegen_tournament(
             feedback=feedback,
             verify_fn=verify_fn,
             render_fn=render_fn,
+            render_existing_fn=render_existing_fn,
             out=slots[i],
         )
 

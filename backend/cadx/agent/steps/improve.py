@@ -181,6 +181,7 @@ async def run(
     attempt: int = 1,
     verify_fn: VerifyFn | None = None,
     render_fn: VerifyFn | None = None,
+    render_existing_fn: VerifyFn | None = None,
 ) -> PatchResponse:
     issues = _actionable(issues)
     if not issues:
@@ -211,6 +212,7 @@ async def run(
             attempt=attempt,
             verify_fn=verify_fn,
             render_fn=render_fn if hard else None,
+            render_existing_fn=render_existing_fn if hard else None,
             max_calls=mc,
             step=step,
         )
@@ -274,11 +276,17 @@ async def _run_session(
     attempt: int,
     verify_fn: VerifyFn | None,
     render_fn: VerifyFn | None = None,
+    render_existing_fn: VerifyFn | None = None,
     max_calls: int,
     step: str = STEP,
 ) -> PatchResponse:
     session = ToolSession(
-        ctx, kind="edit", code=base_code, verify_fn=verify_fn, render_fn=render_fn
+        ctx,
+        kind="edit",
+        code=base_code,
+        verify_fn=verify_fn,
+        render_fn=render_fn,
+        render_existing_fn=render_existing_fn,
     )
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": _session_system(ctx, spec, plan)},
