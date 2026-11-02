@@ -269,6 +269,36 @@ def test_sealed_voids_gate_thresholds_fraction_and_legacy_runs():
     assert "telemetry unavailable" in legacy.detail
 
 
+def test_sealed_voids_gate_solid_fraction():
+    """max_solid_frac normalizes against the actual material volume —
+    comparable across parts whose bounding grid is mostly air."""
+    out = _out(
+        mesh={
+            "topopt": {
+                "enclosed_void_mm3": 100.0,
+                "void_frac_of_solid": 0.04,
+                "export_grid": {"domain_volume_mm3": 10_000.0},
+            }
+        }
+    )
+    passed = run_gates([{"type": "sealed_voids", "max_solid_frac": 0.05}], out, 0)[0]
+    assert passed.ok is True
+    assert passed.measured["void_frac_of_solid"] == 0.04
+
+    failed = run_gates([{"type": "sealed_voids", "max_solid_frac": 0.03}], out, 0)[0]
+    assert failed.ok is False
+    assert failed.expected["max_solid_frac"] == 0.03
+
+    # missing telemetry -> inconclusive, not a silent pass
+    legacy = run_gates(
+        [{"type": "sealed_voids", "max_solid_frac": 0.05}],
+        _out(mesh={"topopt": {"enclosed_void_mm3": 100.0}}),
+        0,
+    )[0]
+    assert legacy.ok is None
+    assert "void_frac_of_solid" in legacy.detail
+
+
 def test_verify_spec_ignore_recomputes_verdict():
     report = {
         "status": "FAIL",

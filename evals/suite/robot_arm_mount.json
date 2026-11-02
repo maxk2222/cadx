@@ -188,7 +188,7 @@
       "gates": [
         { "type": "status", "expect": ["succeeded", "needs_review"] },
         { "type": "topopt", "field": "sf_verified", "min": 1.5 },
-        { "type": "sealed_voids", "max_frac": 0.02 },
+        { "type": "sealed_voids", "max_frac": 0.02, "max_solid_frac": 0.05 },
         { "type": "volfrac", "min": 0.35, "max": 0.65 },
         { "type": "bodies", "max": 1 },
         { "type": "envelope_within", "dims": [100, 80, 40], "tol_mm": 4 },
