@@ -85,6 +85,10 @@ class RuntimeSettings(BaseModel):
     # max edge cut the per-image token cost substantially
     llm_image_detail: Literal["high", "low"] = "high"
     llm_image_max_edge: int = Field(default=1568, ge=256, le=4096)
+    # FEM/topopt result images are auxiliary diagnostics — a topopt run can
+    # attach up to 8 renders, so they default to cheap "low" detail while
+    # user-facing references keep `llm_image_detail`
+    llm_fem_image_detail: Literal["high", "low"] = "low"
     agent_max_iterations: int = Field(default=3, ge=1, le=200)
     agent_max_repairs: int = Field(default=3, ge=0, le=200)
     agent_pass_score: int = Field(default=80, ge=0, le=100)

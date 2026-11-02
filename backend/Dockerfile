@@ -12,6 +12,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       libgl1 libegl1 libopengl0 libxrender1 libgomp1 libglu1-mesa curl \
+      libxcursor1 \
       libsuitesparse-dev \
       libharfbuzz0b \
     && rm -rf /var/lib/apt/lists/*

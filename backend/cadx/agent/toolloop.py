@@ -611,7 +611,11 @@ def _result_messages(
     a byte-identical re-render becomes a text stub instead of resending the
     same image — only repeats are stubbed, the first send always goes out."""
     images = result.get("_images") or []
-    body = json.dumps({k: v for k, v in result.items() if k != "_images"}, default=str)
+    detail = result.get("_image_detail")  # e.g. llm_fem_image_detail for FEM runs
+    body = json.dumps(
+        {k: v for k, v in result.items() if k not in ("_images", "_image_detail")},
+        default=str,
+    )
     out: list[dict[str, Any]] = []
     if native:
         out.append({"role": "tool", "tool_call_id": tc.id, "content": body})
@@ -637,7 +641,7 @@ def _result_messages(
                             )
                             continue
                         seen_hashes.add(digest)
-                parts.append(image_part(path))
+                parts.append(image_part(path, detail=detail))
             except Exception:
                 continue
         if len(parts) > 1:

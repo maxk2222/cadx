@@ -927,6 +927,30 @@ def _copy_mesh_artifacts(
     return out
 
 
+def _clean_losing_attempts(ctx: AgentCtx, keep_rel: str | None) -> int:
+    """Drop sibling attempt dirs that lost the bake-off — each keeps ~3MB
+    of renders/STLs the promoted copies at version root already cover.
+    Scoped to the winner's own iteration dir: FEM/topopt attempts under
+    other iterations may still be referenced by their result artifacts."""
+    if not keep_rel:
+        return 0
+    try:
+        keep = storage.resolve(keep_rel).resolve()
+    except (ValueError, OSError):
+        return 0
+    it_dir = keep.parent
+    if it_dir.parent.name != "iterations":
+        return 0
+    removed = 0
+    for sub in it_dir.iterdir():
+        if sub.is_dir() and sub.resolve() != keep:
+            shutil.rmtree(sub, ignore_errors=True)
+            removed += 1
+    if removed:
+        log.info("agent.attempt_cleanup", removed=removed, kept=keep_rel)
+    return removed
+
+
 def _promote_topopt_exports(ctx: AgentCtx, iteration: int, res: dict[str, Any]) -> dict[str, str]:
     """Copy the winning optimize iteration's ``exports/model.*`` up to the
     version-level ``exports/`` dir so API/UI serve the optimized part, not the
@@ -4342,6 +4366,7 @@ async def _run_cad(  # noqa: C901
         else "needs_review"
     )
     outcome.art_dir = final_exec.get("art_dir")
+    _clean_losing_attempts(ctx, outcome.art_dir)
     outcome.fem = final_exec.get("fem") or best.exec_result.get("fem")
     outcome.code = best.code_response.code if best.code_response else None
     outcome.params = dict(final_exec.get("params_used") or {})
@@ -5081,6 +5106,7 @@ async def _run_mesh(  # noqa: C901
         else "needs_review"
     )
     outcome.art_dir = best.exec_result.get("art_dir")
+    _clean_losing_attempts(ctx, outcome.art_dir)
     rec = ctx.mesh_info.get("parametric")
     if rec:
         # accepted parametric reconstruction replaces the mesh-op params —

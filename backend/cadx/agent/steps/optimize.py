@@ -378,6 +378,7 @@ def _make_fem_fn(ops: _SessionOps) -> Any:
             if p and (fem_dir / p).exists()
         ]
         res["_images"] = [str(p) for p in images]
+        res["_image_detail"] = ctx.runtime_settings.llm_fem_image_detail
         return res
 
     return fem_fn
@@ -487,6 +488,7 @@ def _make_topopt_fn(ops: _SessionOps) -> Any:
         res["_iteration"] = it
         it_dir = storage.iteration_dir(ctx.project_id, ctx.version_id, it)
         res["_images"] = _topopt_images(ops, res, it_dir)
+        res["_image_detail"] = ctx.runtime_settings.llm_fem_image_detail
         return res
 
     return topopt_fn
@@ -524,6 +526,7 @@ def _make_infill_fn(ops: _SessionOps) -> Any:
         res["_iteration"] = it
         it_dir = storage.iteration_dir(ctx.project_id, ctx.version_id, it)
         res["_images"] = _topopt_images(ops, res, it_dir)
+        res["_image_detail"] = ctx.runtime_settings.llm_fem_image_detail
         return res
 
     return infill_fn
@@ -562,6 +565,7 @@ def _make_preview_fn(ops: _SessionOps) -> Any:
                 if p.exists():
                     images.append(str(p))
         res["_images"] = images
+        res["_image_detail"] = ctx.runtime_settings.llm_fem_image_detail
         return res
 
     return preview_fn
@@ -638,6 +642,7 @@ def _make_refine_fn(ops: _SessionOps) -> Any:
                 "they are written under the iteration dir"
             )
         res["_images"] = images
+        res["_image_detail"] = ctx.runtime_settings.llm_fem_image_detail
         return res
 
     return refine_fn

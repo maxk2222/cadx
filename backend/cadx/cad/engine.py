@@ -373,6 +373,13 @@ def _post_extract_finish(
         return opt_mesh, None, [f"post-extraction restore/re-cut failed: {str(e)[:180]}"]
 
 
+def _render_quality(detail_mode: str) -> tuple[int, bool]:
+    """(size, ghosts) for attempt vs export renders — preview attempts are
+    judged on the contact sheet (512px tiles anyway) and internal x-ray
+    shots only pay off on the winning export re-render."""
+    return (1024, True) if detail_mode == "export" else (512, False)
+
+
 def run_pipeline(  # noqa: C901
     *,
     code: str,
@@ -624,22 +631,30 @@ def run_pipeline(  # noqa: C901
             if detail_mode == "preview"
             else []
         )
+        rsize, rghosts = _render_quality(detail_mode)
+        # the watertight-merged analysis mesh doubles as the render mesh —
+        # skips re-parsing the STL soup twice (views + thumbnail)
+        rsrc = analysis_mesh if analysis_mesh is not None else stl_path
         try:
             render_paths = render_views(
-                stl_path,
+                rsrc,
                 mesh_dir,
                 res.analysis.bbox_size,
+                size=rsize,
                 thread_features=thread_preview,
+                ghosts=rghosts,
             )
         except Exception as e:
             # a malformed CADX_FEATURES record must never kill the exec —
             # re-render bare; the candidate keeps its geometry verdict
             log.warning("pipeline.thread_overlay_failed", error=str(e)[:200])
-            render_paths = render_views(stl_path, mesh_dir, res.analysis.bbox_size)
+            render_paths = render_views(
+                rsrc, mesh_dir, res.analysis.bbox_size, size=rsize, ghosts=rghosts
+            )
         res.renders = {v: p.name for v, p in render_paths.items()}
         try:
             thumb = render_thumbnail(
-                stl_path,
+                rsrc,
                 out_dir / "thumbnail.png",
                 thread_features=thread_preview,
             )
@@ -814,7 +829,9 @@ def render_existing(
             res.thread_count = int(runner.get("thread_count") or 0)
             res.params_used = dict(runner.get("params_used") or {})
             res.stdout = str(runner.get("stdout") or "")
-            res.detail_mode = str(runner.get("detail_mode") or detail_mode)
+    # the caller's requested mode wins — a stored "preview" must not veto a
+    # deliberate export re-render of the same attempt dir
+    res.detail_mode = detail_mode
     try:
         mesh = load_triangle_mesh(stl_path)
     except Exception as e:
@@ -840,17 +857,25 @@ def render_existing(
         else []
     )
     render_dir = out_dir / "renders"
+    rsize, rghosts = _render_quality(res.detail_mode)
     try:
         render_paths = render_views(
-            stl_path, render_dir, res.analysis.bbox_size, thread_features=thread_preview
+            merged,
+            render_dir,
+            res.analysis.bbox_size,
+            size=rsize,
+            thread_features=thread_preview,
+            ghosts=rghosts,
         )
     except Exception as e:
         log.warning("render_existing.thread_overlay_failed", error=str(e)[:200])
-        render_paths = render_views(stl_path, render_dir, res.analysis.bbox_size)
+        render_paths = render_views(
+            merged, render_dir, res.analysis.bbox_size, size=rsize, ghosts=rghosts
+        )
     res.renders = {v: p.name for v, p in render_paths.items()}
     try:
         thumb = render_thumbnail(
-            stl_path, out_dir / "thumbnail.png", thread_features=thread_preview
+            merged, out_dir / "thumbnail.png", thread_features=thread_preview
         )
     except Exception as e:
         log.warning("render_existing.thumbnail_failed", error=str(e)[:200])
@@ -1110,7 +1135,10 @@ def run_mesh_pipeline(  # noqa: C901
     # 9. renders + contact sheet + thumbnail
     t = time.monotonic()
     render_dir = out_dir / "renders"
-    render_paths = render_views(stl_path, render_dir, res.analysis.bbox_size)
+    _rq_size, _rq_ghosts = _render_quality(res.detail_mode)
+    render_paths = render_views(
+        stl_path, render_dir, res.analysis.bbox_size, size=_rq_size, ghosts=_rq_ghosts
+    )
     res.renders = {v: p.name for v, p in render_paths.items()}
     thumb = render_thumbnail(stl_path, out_dir / "thumbnail.png")
     res.thumbnail = thumb.name if thumb else None
@@ -3907,7 +3935,10 @@ def run_topopt_pipeline(  # noqa: C901
     # renders
     t = time.monotonic()
     render_dir = out_dir / "renders"
-    render_paths = render_views(stl_path, render_dir, res.analysis.bbox_size)
+    _rq_size, _rq_ghosts = _render_quality(res.detail_mode)
+    render_paths = render_views(
+        stl_path, render_dir, res.analysis.bbox_size, size=_rq_size, ghosts=_rq_ghosts
+    )
     res.renders = {v: p.name for v, p in render_paths.items()}
     thumb = render_thumbnail(stl_path, out_dir / "thumbnail.png")
     res.thumbnail = thumb.name if thumb else None
@@ -5169,7 +5200,10 @@ def run_infill_pipeline(  # noqa: C901
 
     t = time.monotonic()
     render_dir = out_dir / "renders"
-    render_paths = render_views(stl_path, render_dir, res.analysis.bbox_size)
+    _rq_size, _rq_ghosts = _render_quality(res.detail_mode)
+    render_paths = render_views(
+        stl_path, render_dir, res.analysis.bbox_size, size=_rq_size, ghosts=_rq_ghosts
+    )
     res.renders = {v: p.name for v, p in render_paths.items()}
     thumb = render_thumbnail(stl_path, out_dir / "thumbnail.png")
     res.thumbnail = thumb.name if thumb else None
@@ -5518,9 +5552,12 @@ def run_topopt_resample(  # noqa: C901
         "pitch_mm": pitch,
     }
     render_dir = out_dir / "renders"
-    render_paths = render_views(stl_path, render_dir, res.analysis.bbox_size)
+    _rq_size, _rq_ghosts = _render_quality(res.detail_mode)
+    render_paths = render_views(
+        opt_mesh, render_dir, res.analysis.bbox_size, size=_rq_size, ghosts=_rq_ghosts
+    )
     res.renders = {v: p.name for v, p in render_paths.items()}
-    thumb = render_thumbnail(stl_path, out_dir / "thumbnail.png")
+    thumb = render_thumbnail(opt_mesh, out_dir / "thumbnail.png")
     res.thumbnail = thumb.name if thumb else None
     res.ok = True
     _attach_verify_spec(res, spec, ProjectSettings(), s, envelope_bound_only=True)
@@ -5636,7 +5673,10 @@ def run_organic_pipeline(
     if _is_cancelled(cancelled):
         _mark_cancelled(res)
         return res
-    render_paths = render_views(stl_path, render_dir, res.analysis.bbox_size)
+    _rq_size, _rq_ghosts = _render_quality(res.detail_mode)
+    render_paths = render_views(
+        stl_path, render_dir, res.analysis.bbox_size, size=_rq_size, ghosts=_rq_ghosts
+    )
     res.renders = {v: p.name for v, p in render_paths.items()}
     thumb = render_thumbnail(stl_path, out_dir / "thumbnail.png")
     res.thumbnail = thumb.name if thumb else None
@@ -5872,9 +5912,12 @@ def run_refine(
         "volume_mm3": round(float(out.volume), 1),
     }
     render_dir = out_dir / "renders"
-    render_paths = render_views(stl_path, render_dir, res.analysis.bbox_size)
+    _rq_size, _rq_ghosts = _render_quality(res.detail_mode)
+    render_paths = render_views(
+        out, render_dir, res.analysis.bbox_size, size=_rq_size, ghosts=_rq_ghosts
+    )
     res.renders = {v: p.name for v, p in render_paths.items()}
-    thumb = render_thumbnail(stl_path, out_dir / "thumbnail.png")
+    thumb = render_thumbnail(out, out_dir / "thumbnail.png")
     res.thumbnail = thumb.name if thumb else None
     if not out.is_watertight:
         warnings.append("refined mesh is not watertight — inspect before manufacturing")

@@ -91,6 +91,27 @@ def test_render_views_ghost_disabled(shape, tmp_path, monkeypatch):
 
 
 @pytest.mark.render
+def test_render_views_ghost_param(shape, tmp_path):
+    """ghosts=False drops xray shots regardless of the env opacity — the
+    attempt/preview path uses it to halve per-run render cost."""
+    if not render_available():
+        pytest.skip("offscreen rendering unavailable")
+    stl = quick_stl(shape, tmp_path / "r", name="mesh")
+    renders = render_views(stl, tmp_path / "r", [100.0, 60.0, 8.0], size=256, ghosts=False)
+    assert len(renders) == 7
+    assert not any(k.endswith("_ghost") for k in renders)
+
+
+def test_render_quality_modes():
+    """Attempt renders: 512px no ghosts; export re-render: full res + xray."""
+    from cadx.cad.engine import _render_quality
+
+    assert _render_quality("preview") == (512, False)
+    assert _render_quality("export") == (1024, True)
+    assert _render_quality("anything-else") == (512, False)
+
+
+@pytest.mark.render
 def test_render_ghost_view_shows_interior(shape, tmp_path):
     """The xray tile must differ from the opaque render — translucent faces
     expose interior shading the opaque iso hides."""

@@ -23,16 +23,26 @@ GHOST_SUFFIX = "_ghost"
 _RENDER_OK: bool | None = None
 
 
-def _load_for_render(stl_path: Path) -> Any:
+def _load_for_render(src: Any) -> Any:
     """pv.read + point weld — OCC STLs are per-facet triangle soups (every
     triangle carries its own three vertices). Rendering the raw soup makes
     smooth_shading collapse into flat shading (no shared normals to blend)
     and extract_feature_edges marks every triangle boundary as a feature —
     threads read as jagged noise instead of a clean helix. clean() merges
-    coincident points so both behave."""
-    import pyvista as pv
+    coincident points so both behave.
 
-    return pv.read(str(stl_path)).clean()
+    `src` may be an STL path, a trimesh (the caller's already-loaded
+    analysis/optimisation mesh skips a second disk parse), or PolyData."""
+    import numpy as np
+    import pyvista as pv
+    import trimesh
+
+    if isinstance(src, pv.PolyData):
+        return src.clean()
+    if isinstance(src, trimesh.Trimesh):
+        faces = np.column_stack([np.full(len(src.faces), 3), src.faces]).ravel()
+        return pv.PolyData(np.asarray(src.vertices), faces).clean()
+    return pv.read(str(src)).clean()
 
 
 def _ghost_opacity() -> float:
@@ -143,14 +153,20 @@ def _thread_preview_lines(pv: Any, features: list[dict[str, Any]]) -> list[Any]:
 
 
 def render_views(
-    stl_path: Path,
+    stl_path: Path | Any,
     out_dir: Path,
     bbox_size: list[float],
     size: int = 1024,
     *,
     thread_features: list[dict[str, Any]] | None = None,
+    ghosts: bool = True,
 ) -> dict[str, Path]:
-    """Render the 7 standard views. Returns {view: path}."""
+    """Render the 7 standard views. Returns {view: path}.
+
+    `ghosts=False` skips the translucent x-ray shots — attempt renders on
+    the critique loop pay full tessellation + GL cost per PNG while the
+    model mostly reads the contact sheet, so previews skip them; the
+    export re-render keeps them for internal-feature inspection."""
     if not render_available():
         return {}
     import pyvista as pv
@@ -186,7 +202,7 @@ def render_views(
         for thread_line in _thread_preview_lines(pv, thread_features or []):
             pl.add_mesh(thread_line, color="#30343b", line_width=1.8)
         pl.add_axes(color="black")
-        ghost = _ghost_opacity()
+        ghost = _ghost_opacity() if ghosts else 0.0
         shots: list[tuple[str, float, str]] = [(v, 1.0, "") for v in VIEWS]
         if 0.0 < ghost < 1.0:
             # edges + outline stay opaque — translucent faces over crisp
@@ -303,7 +319,7 @@ def _thread_detail_camera(
 
 
 def render_thumbnail(
-    stl_path: Path,
+    stl_path: Path | Any,
     out_path: Path,
     size: int = 256,
     *,
