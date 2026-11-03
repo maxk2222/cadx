@@ -25,9 +25,18 @@ log = get_logger(__name__)
 
 _TERMINAL = {"succeeded", "failed", "cancelled"}
 
+# idempotent methods whose replay cannot double-enqueue work — POST is
+# deliberately absent (a retry could spawn a second job)
+_IDEMPOTENT = {"GET", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
+# transient gateway codes while a container restarts — bounded retries let a
+# long-running eval survive `docker compose up -d api` mid-stage
+_5XX_MAX_RETRIES = 5
+
 
 class EvalApiError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, status: int = 0) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 class DriverCtx:
@@ -55,10 +64,30 @@ class HttpDriver:
     # -- low-level -----------------------------------------------------------
 
     async def _req(self, method: str, path: str, **kw: Any) -> Any:
-        r = await self._client.request(method, f"{self.api}{path}", **kw)
-        if r.status_code >= 400:
-            raise EvalApiError(f"{method} {path}: {r.status_code} {r.text[:300]}")
-        return r.json() if r.content else None
+        delay = 1.0
+        for attempt in range(_5XX_MAX_RETRIES + 1):
+            r = await self._client.request(method, f"{self.api}{path}", **kw)
+            if r.status_code < 400:
+                return r.json() if r.content else None
+            if (
+                r.status_code >= 500
+                and method in _IDEMPOTENT
+                and attempt < _5XX_MAX_RETRIES
+            ):
+                log.warning(
+                    "eval.http.transient_status",
+                    method=method,
+                    path=path,
+                    status=r.status_code,
+                    retry=attempt + 1,
+                )
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 16.0)
+                continue
+            raise EvalApiError(
+                f"{method} {path}: {r.status_code} {r.text[:300]}", status=r.status_code
+            )
+        raise EvalApiError(f"{method} {path}: unreachable")
 
     async def _get(self, path: str, **kw: Any) -> Any:
         return await self._req("GET", path, **kw)
@@ -253,11 +282,21 @@ class HttpDriver:
         if t == "edit_feature":
             return f"/versions/{parent}/edit-feature", dict(stage.feature or {}), meta
         if t == "optimize":
+            # stage-level keep_regions follow the resample/refine/fem
+            # convention — merge them into the OptimizeSpec block the
+            # endpoint actually forwards (keeps declared inside `optimize`
+            # pass through unchanged)
+            body_opt = dict(stage.optimize or {})
+            if stage.keep_regions:
+                body_opt["keep_regions"] = [
+                    *(body_opt.get("keep_regions") or []),
+                    *stage.keep_regions,
+                ]
             return (
                 f"/versions/{parent}/optimize",
                 {
                     "load_cases": lcs,
-                    "optimize": stage.optimize,
+                    "optimize": body_opt,
                     "material": stage.material,
                     # the local driver forwards this — dropping it here made a
                     # reopt stage (e.g. simp warm-start after a successful

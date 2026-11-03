@@ -117,3 +117,87 @@ async def test_existing_project_same_settings_no_patch(driver, monkeypatch):
         {"gen_mode": "cad", "clarification_mode": "assume", "min_wall_mm": 0.8},
     )
     assert "patch_body" not in captured
+
+
+@pytest.mark.asyncio
+async def test_optimize_body_merges_stage_keep_regions(driver, monkeypatch):
+    """Stage-level keep_regions follow the resample/refine convention —
+    the driver merges them into the OptimizeSpec the endpoint forwards."""
+    from cadx.evalkit.http import DriverCtx
+    from cadx.evalkit.suite import EvalStage
+
+    async def _no_fallback(s, c):
+        return None, None
+
+    monkeypatch.setattr(driver, "_parent_fallback_lcs", _no_fallback)
+    pad = {"kind": "cylinder", "axis": "z", "center": [42, 32, 0], "diameter_mm": 16}
+    stage = EvalStage(
+        id="topopt",
+        type="optimize",
+        optimize={"enabled": True, "keep_regions": [dict(pad, description="declared")]},
+        keep_regions=[dict(pad, description="stage")],
+    )
+    ctx = DriverCtx()
+    _path, body, _meta = await driver._spawn_body(stage, ctx)
+    keeps = body["optimize"]["keep_regions"]
+    assert [k["description"] for k in keeps] == ["declared", "stage"]
+
+
+@pytest.mark.asyncio
+async def test_req_retries_transient_5xx(driver, monkeypatch):
+    """A 502/503/504 during a container restart must not kill a stage —
+    idempotent calls retry with bounded backoff."""
+    calls = {"n": 0}
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            return httpx.Response(502, text="Bad Gateway")
+        return httpx.Response(200, json={"status": "succeeded"})
+
+    driver._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handle), base_url="http://testserver", timeout=5.0
+    )
+    import cadx.evalkit.http as http_mod
+
+    async def fast_sleep(_s):
+        return None
+
+    # keep the test fast — real backoff is 1+2+4+8+16s
+    monkeypatch.setattr(http_mod.asyncio, "sleep", fast_sleep)
+    out = await driver._req("GET", "/jobs/j1")
+    assert out == {"status": "succeeded"}
+    assert calls["n"] == 3
+
+
+@pytest.mark.asyncio
+async def test_req_no_retry_on_post_or_4xx(driver):
+    calls = {"n": 0}
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(503, text="unavailable")
+
+    driver._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handle), base_url="http://testserver", timeout=5.0
+    )
+    from cadx.evalkit.http import EvalApiError
+
+    with pytest.raises(EvalApiError) as exc:
+        await driver._req("POST", "/projects")
+    assert exc.value.status == 503
+    assert calls["n"] == 1  # POST never retries — double-enqueue risk
+
+    calls["n"] = 0
+
+    def handle_404(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(404, text="nope")
+
+    driver._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handle_404), base_url="http://testserver", timeout=5.0
+    )
+    with pytest.raises(EvalApiError) as exc:
+        await driver._req("GET", "/versions/v1")
+    assert exc.value.status == 404
+    assert calls["n"] == 1
