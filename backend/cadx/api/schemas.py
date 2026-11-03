@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import copy
 import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from cadx.db.models import (
     ArtifactKind,
@@ -19,6 +20,7 @@ from cadx.db.models import (
     VersionStatus,
 )
 from cadx.llm.schemas import OrganicParams
+from cadx.runtime_config import _SECRET_FIELDS, RuntimeSettings
 
 
 class ProjectCreate(BaseModel):
@@ -580,270 +582,51 @@ class CatalogEntry(BaseModel):
     signature: str = ""
 
 
-class SettingsOut(BaseModel):
-    llm_base_url: str
-    llm_backend: Literal["external", "sidecar"]
-    llm_sidecar_model: str
-    llm_model_vision: str
-    llm_model_code: str
-    llm_json_mode: str
-    llm_api_key_set: bool
-    llm_temperature_code: float
-    llm_context_tokens: int
-    llm_max_tokens: int
-    llm_timeout_s: float
-    llm_stream: bool
-    llm_idle_timeout_s: float
-    llm_degenerate_stall_s: float
-    llm_total_timeout_s: float
-    llm_extra_body: str
-    llm_tools: Literal["auto", "on", "off"]
-    llm_thinking: Literal["off", "auto", "always"]
-    llm_thinking_body_on: str
-    llm_thinking_body_off: str
-    llm_thinking_body_medium: str
-    llm_thinking_body_high: str
-    llm_thinking_hard_steps: str
-    llm_thinking_escalate_after: int
-    llm_thinking_max_calls: int
-    llm_thinking_max_tokens: int
-    agent_max_iterations: int
-    agent_max_repairs: int
-    agent_pass_score: int
-    agent_dim_tolerance_pct: float
-    agent_dim_tolerance_mm: float
-    agent_clarification_mode: Literal["assume", "ask"]
-    agent_max_input_images: int
-    agent_context_budget_frac: float
-    agent_max_tokens_per_job: int
-    agent_max_wall_s: float
-    agent_default_gen_mode: Literal["auto", "cad", "mesh", "hybrid", "topopt"]
-    agent_param_autofix: bool
-    agent_patch_mode: Literal["auto", "always", "never"]
-    agent_patch_retries: int
-    agent_feature_feedback: bool
-    agent_critique_reask: bool
-    agent_tool_max_calls: int
-    agent_tool_max_calls_info: int
-    agent_tool_max_calls_improve: int
-    agent_tool_max_turns_edit: int
-    agent_tool_verify: bool
-    agent_tool_verify_max: int
-    agent_staged_build: Literal["auto", "on", "off"]
-    agent_build_verify_max: int
-    agent_tool_max_calls_build: int
-    agent_quickref_context: bool
-    agent_design_audit: bool
-    agent_plan_mode: Literal["full", "lite", "auto"]
-    agent_mesh_tools: bool
-    agent_mesh_max_ops: int
-    agent_mesh_preview_max: int
-    agent_mesh_refine_rounds: int
-    agent_mesh_hard_fail_score: int
-    agent_mesh_hard_fail_limit: int
-    agent_stall_patience: int
-    chat_model_role: Literal["vision", "code"]
-    chat_tool_max_calls: int
-    chat_max_turns: int
-    chat_spawn_timeout_s: int
-    chat_history_messages: int
-    chat_image_max: int
-    fem_voxel_mm: float
-    fem_max_elements: int
-    fem_timeout_s: int
-    fem_spsolve_dofs: int
-    fem_solver_backend: str
-    fem_max_effective_cases: int
-    fem_verify_realizations: bool
-    fem_verify_realization_cells: int
-    fem_verify_coverage_e: bool
-    fem_verify_mesh_shift: bool
-    fem_loadpath_cert: bool
-    fem_homogenized_infill: bool
-    fem_homog_cell_voxels: int
-    infill_octet: bool
-    topopt_timeout_s: int
-    topopt_max_iterations: int
-    topopt_default_volfrac: float
-    topopt_default_rmin_mm: float
-    topopt_smooth_iterations: int
-    topopt_min_member_mm: float
-    topopt_auto_keep: bool
-    topopt_auto_keep_margin_mm: float
-    topopt_multires_min_cells: int
-    refine_helical_threads: bool
-    mesh_base_url: str
-    mesh_model: str
-    mesh_backend: Literal["sidecar", "tripo"]
-    image_backend: Literal["sidecar", "openai"]
-    tripo_api_base: str
-    tripo_model: str
-    tripo_api_key_set: bool
-    image_openai_model: str
-    image_api_base: str
-    image_api_key_set: bool
-    hf_token_set: bool
-    image_model: str
-    image_edit_model: str
-    image_steps: int | None
-    image_guidance: float | None
-    image_max_side: int
-    image_max_count: int
-    image_autogen_mesh: bool
-    image_tool_budget: int
-    image_timeout_s: int
-    image_default_strength: float
-    mesh_timeout_s: int
-    mesh_stall_timeout_s: int
-    mesh_min_free_mb: int
-    mesh_decimate_faces: int
-    mesh_max_faces_for_cad: int
-    exec_timeout_s: int
-    exec_mem_limit_mb: int
-    exec_warm_runner: bool
-    exec_threads: int
-    exec_pool_workers: int
-    audit_parallel_runs: int
-    data_dir: str
+# SettingsOut/SettingsUpdate are DERIVED from RuntimeSettings — the runtime
+# config model is the single source of truth for the settings surface; adding
+# a field there automatically exposes it via GET /settings and makes it
+# settable via PUT (bounded by the Field metadata on the model itself). The
+# previous hand-maintained mirror drifted (28 fields missing, e.g.
+# agent_codegen_samples) and blocked eval --variant overrides with 422s.
+# Secrets stay write-only through explicit fields + clear_* flags.
+
+
+def _settings_fields(*, optional: bool) -> dict[str, Any]:
+    """(name -> (annotation, FieldInfo)) for every non-secret runtime field.
+
+    Copying the FieldInfo carries the ge/le/max_length constraints; optional
+    mode rewrites the default to None so an absent key means 'leave as-is'
+    (PATCH semantics via model_fields_set)."""
+    out: dict[str, Any] = {}
+    for name, fi in RuntimeSettings.model_fields.items():
+        if name in _SECRET_FIELDS:
+            continue
+        fi2 = copy.copy(fi)
+        fi2.default = None if optional else ...
+        out[name] = (fi.annotation | None if optional else fi.annotation, fi2)
+    return out
+
+
+SettingsOut = create_model(
+    "SettingsOut",
+    __config__=ConfigDict(extra="ignore"),
+    **_settings_fields(optional=False),
+    **{f"{n}_set": (bool, ...) for n in _SECRET_FIELDS},
+    data_dir=(str, ...),
     # detected executor resources (cgroup-aware) — read-only, resolved by
     # cad/resources.py at GET time; the 0=auto fields resolve against it
-    resources_detected: dict[str, int] = Field(default_factory=dict)
-    # detected context windows per model id — from the llm_caps cache row,
-    # read-only for the UI (override via llm_context_tokens)
-    llm_detected: dict[str, int] = Field(default_factory=dict)
-
-
-class SettingsUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    llm_base_url: str | None = None
-    llm_api_key: str | None = Field(default=None, max_length=4000)
-    clear_llm_api_key: bool = False
-    llm_backend: Literal["external", "sidecar"] | None = None
-    llm_sidecar_model: str | None = Field(default=None, max_length=200)
-    llm_model_vision: str | None = Field(default=None, max_length=200)
-    llm_model_code: str | None = Field(default=None, max_length=200)
-    llm_json_mode: Literal["json_object", "json_schema", "none"] | None = None
-    llm_temperature_code: float | None = Field(default=None, ge=0, le=2)
-    llm_context_tokens: int | None = Field(default=None, ge=0, le=8_000_000)
-    llm_max_tokens: int | None = Field(default=None, ge=0, le=2_000_000)
-    llm_timeout_s: float | None = Field(default=None, gt=0)
-    llm_stream: bool | None = None
-    llm_idle_timeout_s: float | None = Field(default=None, gt=0)
-    llm_degenerate_stall_s: float | None = Field(default=None, gt=0)
-    llm_total_timeout_s: float | None = Field(default=None, gt=0)
-    llm_extra_body: str | None = Field(default=None, max_length=20_000)
-    llm_tools: Literal["auto", "on", "off"] | None = None
-    llm_thinking: Literal["off", "auto", "always"] | None = None
-    llm_thinking_body_on: str | None = Field(default=None, max_length=20_000)
-    llm_thinking_body_off: str | None = Field(default=None, max_length=20_000)
-    llm_thinking_body_medium: str | None = Field(default=None, max_length=20_000)
-    llm_thinking_body_high: str | None = Field(default=None, max_length=20_000)
-    llm_thinking_hard_steps: str | None = Field(default=None, max_length=200)
-    llm_thinking_escalate_after: int | None = Field(default=None, ge=1, le=50)
-    llm_thinking_max_calls: int | None = Field(default=None, ge=0, le=10_000)
-    llm_thinking_max_tokens: int | None = Field(default=None, ge=0, le=2_000_000)
-    agent_max_iterations: int | None = Field(default=None, ge=1, le=200)
-    agent_max_repairs: int | None = Field(default=None, ge=0, le=200)
-    agent_pass_score: int | None = Field(default=None, ge=0, le=100)
-    agent_dim_tolerance_pct: float | None = Field(default=None, ge=0, le=100)
-    agent_dim_tolerance_mm: float | None = Field(default=None, ge=0, le=1000)
-    agent_clarification_mode: Literal["assume", "ask"] | None = None
-    agent_max_input_images: int | None = Field(default=None, ge=0, le=100)
-    agent_context_budget_frac: float | None = Field(default=None, gt=0.1, le=0.95)
-    agent_max_tokens_per_job: int | None = Field(default=None, ge=1)
-    agent_max_wall_s: float | None = Field(default=None, gt=0)
-    agent_default_gen_mode: Literal["auto", "cad", "mesh", "hybrid", "topopt"] | None = None
-    agent_param_autofix: bool | None = None
-    agent_patch_mode: Literal["auto", "always", "never"] | None = None
-    agent_patch_retries: int | None = Field(default=None, ge=0, le=20)
-    agent_feature_feedback: bool | None = None
-    agent_critique_reask: bool | None = None
-    agent_tool_max_calls: int | None = Field(default=None, ge=1, le=100)
-    agent_tool_max_calls_info: int | None = Field(default=None, ge=1, le=100)
-    agent_tool_max_calls_improve: int | None = Field(default=None, ge=1, le=100)
-    agent_tool_max_turns_edit: int | None = Field(default=None, ge=1, le=200)
-    agent_tool_verify: bool | None = None
-    agent_tool_verify_max: int | None = Field(default=None, ge=0, le=20)
-    agent_staged_build: Literal["auto", "on", "off"] | None = None
-    agent_build_verify_max: int | None = Field(default=None, ge=0, le=20)
-    agent_tool_max_calls_build: int | None = Field(default=None, ge=1, le=100)
-    agent_quickref_context: bool | None = None
-    agent_design_audit: bool | None = None
-    agent_plan_mode: Literal["full", "lite", "auto"] | None = None
-    agent_mesh_tools: bool | None = None
-    agent_mesh_max_ops: int | None = Field(default=None, ge=1, le=200)
-    agent_mesh_preview_max: int | None = Field(default=None, ge=0, le=20)
-    agent_mesh_refine_rounds: int | None = Field(default=None, ge=0, le=10)
-    agent_mesh_hard_fail_score: int | None = Field(default=None, ge=0, le=100)
-    agent_mesh_hard_fail_limit: int | None = Field(default=None, ge=1, le=20)
-    agent_stall_patience: int | None = Field(default=None, ge=0, le=50)
-    chat_model_role: Literal["vision", "code"] | None = None
-    chat_tool_max_calls: int | None = Field(default=None, ge=1, le=200)
-    chat_max_turns: int | None = Field(default=None, ge=1, le=200)
-    chat_spawn_timeout_s: int | None = Field(default=None, ge=60, le=86_400)
-    chat_history_messages: int | None = Field(default=None, ge=4, le=500)
-    chat_image_max: int | None = Field(default=None, ge=0, le=50)
-    fem_voxel_mm: float | None = Field(default=None, gt=0, le=100)
-    fem_max_elements: int | None = Field(default=None, ge=1, le=5_000_000)
-    fem_timeout_s: int | None = Field(default=None, ge=1, le=86_400)
-    fem_spsolve_dofs: int | None = Field(default=None, ge=1_000, le=5_000_000)
-    fem_solver_backend: str | None = Field(default=None, max_length=20)
-    fem_max_effective_cases: int | None = Field(default=None, ge=1, le=64)
-    fem_verify_realizations: bool | None = None
-    fem_verify_realization_cells: int | None = Field(default=None, ge=1, le=4)
-    fem_verify_coverage_e: bool | None = None
-    fem_verify_mesh_shift: bool | None = None
-    fem_loadpath_cert: bool | None = None
-    fem_homogenized_infill: bool | None = None
-    fem_homog_cell_voxels: int | None = Field(default=None, ge=8, le=48)
-    infill_octet: bool | None = None
-    topopt_timeout_s: int | None = Field(default=None, ge=1, le=86_400)
-    topopt_max_iterations: int | None = Field(default=None, ge=1, le=1000)
-    topopt_default_volfrac: float | None = Field(default=None, gt=0, le=1)
-    topopt_default_rmin_mm: float | None = Field(default=None, gt=0, le=1000)
-    topopt_smooth_iterations: int | None = Field(default=None, ge=0, le=30)
-    topopt_min_member_mm: float | None = Field(default=None, ge=0, le=50)
-    topopt_auto_keep: bool | None = None
-    topopt_auto_keep_margin_mm: float | None = Field(default=None, gt=0, le=50)
-    topopt_multires_min_cells: int | None = Field(default=None, ge=0, le=10_000_000)
-    refine_helical_threads: bool | None = None
-    mesh_base_url: str | None = None
-    mesh_model: str | None = Field(default=None, max_length=200)
-    mesh_backend: Literal["sidecar", "tripo"] | None = None
-    image_backend: Literal["sidecar", "openai"] | None = None
-    tripo_api_key: str | None = Field(default=None, max_length=4000)
-    clear_tripo_api_key: bool = False
-    tripo_api_base: str | None = Field(default=None, max_length=500)
-    tripo_model: str | None = Field(default=None, max_length=200)
-    image_api_key: str | None = Field(default=None, max_length=4000)
-    clear_image_api_key: bool = False
-    hf_token: str | None = Field(default=None, max_length=4000)
-    clear_hf_token: bool = False
-    image_api_base: str | None = Field(default=None, max_length=500)
-    image_openai_model: str | None = Field(default=None, max_length=200)
-    image_model: str | None = Field(default=None, max_length=200)
-    image_edit_model: str | None = Field(default=None, max_length=200)
-    image_default_strength: float | None = Field(default=None, gt=0, le=1)
-    image_steps: int | None = Field(default=None, ge=1, le=200)
-    image_guidance: float | None = Field(default=None, ge=0, le=50)
-    image_max_side: int | None = Field(default=None, ge=64, le=4096)
-    image_max_count: int | None = Field(default=None, ge=1, le=16)
-    image_autogen_mesh: bool | None = None
-    image_tool_budget: int | None = Field(default=None, ge=0, le=50)
-    image_timeout_s: int | None = Field(default=None, ge=1, le=86_400)
-    mesh_timeout_s: int | None = Field(default=None, ge=1, le=86_400)
-    mesh_stall_timeout_s: int | None = Field(default=None, ge=1, le=86_400)
-    mesh_min_free_mb: int | None = Field(default=None, ge=0)
-    mesh_decimate_faces: int | None = Field(default=None, ge=1)
-    mesh_max_faces_for_cad: int | None = Field(default=None, ge=1)
-    exec_timeout_s: int | None = Field(default=None, ge=1, le=86_400)
-    exec_mem_limit_mb: int | None = Field(default=None, ge=0, le=1_048_576)
-    exec_warm_runner: bool | None = None
-    exec_threads: int | None = Field(default=None, ge=0, le=64)
-    exec_pool_workers: int | None = Field(default=None, ge=0, le=16)
-    audit_parallel_runs: int | None = Field(default=None, ge=0, le=8)
-
+    resources_detected=(dict[str, int], Field(default_factory=dict)),
+    # detected context windows per model id — read-only for the UI
+    # (override via llm_context_tokens)
+    llm_detected=(dict[str, int], Field(default_factory=dict)),
+)
+SettingsUpdate = create_model(
+    "SettingsUpdate",
+    __config__=ConfigDict(extra="forbid"),
+    **_settings_fields(optional=True),
+    **{n: (str | None, Field(default=None, max_length=4000)) for n in _SECRET_FIELDS},
+    **{f"clear_{n}": (bool, False) for n in _SECRET_FIELDS},
+)
 
 class MeshModelOut(BaseModel):
     id: str
