@@ -73,6 +73,48 @@ async def _cancelled(ctx: dict[str, Any], key: str | list[str] | None) -> bool:
         return False
 
 
+async def _cancelled_scope(ctx: dict[str, Any], payload: dict[str, Any]) -> str:
+    """Which cancel flag fired: ``"job"`` (user pressed cancel — always
+    honoured, result discarded) or ``"task"`` (the wait-deadline flag the
+    worker's _run_task sets on ITS timeout — a task that still completed may
+    return its partial result rather than nothing). ``"none"`` otherwise."""
+    try:
+        redis = ctx["redis"]
+        if payload.get("job_id") and await redis.exists(f"cancel:{payload['job_id']}"):
+            return "job"
+        if payload.get("_task_id") and await redis.exists(f"cancel:{payload['_task_id']}"):
+            return "task"
+    except Exception:
+        return "none"
+    return "none"
+
+
+def _salvage_task_result(d: dict[str, Any]) -> dict[str, Any]:
+    """Task-timeout salvage: the pipeline finished despite the cancel flag —
+    its result (artifacts, exports, topopt/fem metrics) is worth more than a
+    bare 'cancelled'. Returns d marked partial, or d nuked when it carries
+    nothing usable."""
+    has_result = bool(
+        d.get("exports")
+        or d.get("topopt")
+        or d.get("fem")
+        or (d.get("mesh") or {}).get("stl_relpath")
+        or d.get("artifacts")
+    )
+    if not has_result:
+        d["ok"] = False
+        d["error"] = "cancelled"
+        return d
+    d["ok"] = True
+    d.pop("error", None)
+    d["timed_out"] = True
+    d["status"] = "partial"
+    warns = d.setdefault("warnings", [])
+    if isinstance(warns, list):
+        warns.append("task hit its wait deadline — partial result returned")
+    return d
+
+
 def _cancel_kwargs(fn: Callable[..., Any], cancelled: Callable[[], bool] | None) -> dict[str, Any]:
     """Kwargs bridge for the engine ``cancelled=`` contract: forwards the
     checker only to entry points that already accept it — the kwarg is being
@@ -203,9 +245,12 @@ async def execute_version(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[
             r.error += f" (last step: {hb[0]})"
         return r.to_dict()
 
-    if await _cancelled(ctx, cancel_keys):
+    scope = await _cancelled_scope(ctx, payload)
+    if scope == "job":
         d["ok"] = False
         d["error"] = "cancelled"
+    elif scope == "task":
+        d = _salvage_task_result(d)
     return d
 
 
@@ -292,9 +337,12 @@ async def audit_params(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str
             "error": f"audit pipeline exceeded {deadline}s — worker thread may be stuck",
         }
 
-    if await _cancelled(ctx, cancel_keys):
+    scope = await _cancelled_scope(ctx, payload)
+    if scope == "job":
         d["ok"] = False
         d["error"] = "cancelled"
+    elif scope == "task":
+        d = _salvage_task_result(d)
     return d
 
 
@@ -601,9 +649,12 @@ async def process_mesh(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str
     # job_id inside the child instead
     d = await asyncio.to_thread(_run_mesh_payload_subprocess, payload, workdir)
 
-    if await _cancelled(ctx, cancel_keys):
+    scope = await _cancelled_scope(ctx, payload)
+    if scope == "job":
         d["ok"] = False
         d["error"] = "cancelled"
+    elif scope == "task":
+        d = _salvage_task_result(d)
     return d
 
 
@@ -761,9 +812,12 @@ async def parametrize_mesh(ctx: dict[str, Any], payload: dict[str, Any]) -> dict
             "error": f"parametrize pipeline exceeded {deadline}s — worker thread may be stuck",
         }
 
-    if await _cancelled(ctx, cancel_keys):
+    scope = await _cancelled_scope(ctx, payload)
+    if scope == "job":
         d["ok"] = False
         d["error"] = "cancelled"
+    elif scope == "task":
+        d = _salvage_task_result(d)
     return d
 
 
@@ -968,9 +1022,12 @@ async def optimize(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, An
     d = await asyncio.to_thread(
         run_optimize_payload, payload, cancelled=_sync_cancel_checker(cancel_keys)
     )
-    if await _cancelled(ctx, cancel_keys):
+    scope = await _cancelled_scope(ctx, payload)
+    if scope == "job":
         d["ok"] = False
         d["error"] = "cancelled"
+    elif scope == "task":
+        d = _salvage_task_result(d)
     return d
 
 

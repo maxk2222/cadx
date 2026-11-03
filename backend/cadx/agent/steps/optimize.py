@@ -486,6 +486,13 @@ def _make_topopt_fn(ops: _SessionOps) -> Any:
             }
         )
         res["_iteration"] = it
+        if res.get("timed_out") or res.get("status") == "partial":
+            res["recovery_hint"] = (
+                f"run hit the time budget but a partial density was exported as "
+                f"run_index={it} — do NOT re-run the same call: verify it with "
+                f"analyze_fem, finish it with refine_features(run_index), or "
+                f"accept it with done(run_index)"
+            )
         it_dir = storage.iteration_dir(ctx.project_id, ctx.version_id, it)
         res["_images"] = _topopt_images(ops, res, it_dir)
         res["_image_detail"] = ctx.runtime_settings.llm_fem_image_detail

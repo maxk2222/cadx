@@ -85,6 +85,18 @@ def _nodes_of_cells(domain: VoxelDomain, cell_mask: np.ndarray) -> np.ndarray:
 _PLANE_LETTER = re.compile(r"([+-]?)([xyz])")
 
 
+def _pad_range_band(lo: float, hi: float, pitch: float) -> tuple[float, float]:
+    """Expand a sub-voxel band to the nearest cell layer. A declared range
+    like ``z_range=[25,25]`` means "the layer at z≈25" — at finite pitch an
+    exact band selects no cell centres (observed: 400 N load resolving to 0
+    nodes → 'all loads resolved to zero force')."""
+    if hi - lo >= pitch:
+        return lo, hi
+    c = (lo + hi) / 2.0
+    h = pitch / 2.0
+    return c - h, c + h
+
+
 def _plane_axes(axis: str) -> list[tuple[int, int | None]]:
     """[(coord_index, sign)] per axis letter, in declaration order —
     sign +1/-1 for signed extremes, None for unsigned (both sides)."""
@@ -134,6 +146,7 @@ def _plane_locus(domain: VoxelDomain, region: RegionSpec) -> np.ndarray:
     for i, rng in enumerate((region.x_range, region.y_range, region.z_range)):
         if len(rng) == 2:
             lo, hi = sorted(float(v) for v in rng)
+            lo, hi = _pad_range_band(lo, hi, domain.pitch)
             sel &= (coords[:, i] >= lo - 1e-9) & (coords[:, i] <= hi + 1e-9)
     return np.asarray(sel & solid_nodes, dtype=bool)
 
@@ -647,6 +660,7 @@ def _cylinder_cells(
     if z_range is not None and len(z_range) == 2:
         # the range bounds the CYLINDER axis coordinate (idx), not literal z
         lo_z, hi_z = sorted(float(v) for v in z_range)
+        lo_z, hi_z = _pad_range_band(lo_z, hi_z, domain.pitch)
         mask &= (centers[..., idx] >= lo_z) & (centers[..., idx] <= hi_z)
     return np.asarray(mask)
 
@@ -660,6 +674,7 @@ def _range_clip(domain: VoxelDomain, region: RegionSpec, sel: np.ndarray) -> np.
     for i, rng in enumerate(ranges):
         if len(rng) == 2:
             lo, hi = sorted(float(v) for v in rng)
+            lo, hi = _pad_range_band(lo, hi, domain.pitch)
             sel &= (centers[..., i] >= lo) & (centers[..., i] <= hi)
     return sel
 
@@ -670,6 +685,7 @@ def _z_clip(domain: VoxelDomain, region: RegionSpec, sel: np.ndarray) -> np.ndar
         return sel
     centers = domain.element_centers().reshape((*domain.dims, 3))
     lo, hi = sorted(float(v) for v in region.z_range)
+    lo, hi = _pad_range_band(lo, hi, domain.pitch)
     return np.asarray(sel & (centers[..., 2] >= lo) & (centers[..., 2] <= hi))
 
 
@@ -1519,6 +1535,15 @@ def resolve_case_dofs(  # noqa: C901
     for load in case.loads:
         r = load.region
         m, cells, fb_ax = _nodes_cells(r)
+        for ax_name, rng in (("x", r.x_range), ("y", r.y_range), ("z", r.z_range)):
+            if len(rng) == 2:
+                lo_v, hi_v = sorted(float(v) for v in rng)
+                if hi_v - lo_v < domain.pitch:
+                    warnings.append(
+                        f"case '{case.name}': {r.kind} {ax_name}_range "
+                        f"[{lo_v:g}, {hi_v:g}] is thinner than one voxel — "
+                        "snapped to the nearest cell layer"
+                    )
         if r.kind in ("hole", "anchor", "bore") and (
             load.bearing_n or load.preload_n or load.moment_nm
         ):

@@ -567,6 +567,16 @@ def beso(  # noqa: C901
             rec["n_islands_residual"] = n_resid
         rec.update(_phase_timings())
         history.append(rec)
+        log.info(
+            "beso.iter",
+            iteration=it,
+            volfrac=round(vol_now, 4),
+            target=round(v_k, 4),
+            change=round(change, 5),
+            compliance_mj=round(objective, 2),
+            elapsed_s=round(time.monotonic() - t0, 1),
+            s_per_iter=round((time.monotonic() - t0) / it, 1),
+        )
         if progress_cb:
             progress_cb(it, rec)
         if progress_file:

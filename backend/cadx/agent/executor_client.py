@@ -179,6 +179,26 @@ class QueueExecutor:
             await pool.setex(f"cancel:{job_id}", 3600, b"1")
         except Exception:  # best-effort — report the timeout either way
             log.warning("executor.cancel_flag_failed", func=func, job_id=str(job_id))
+        # grace poll: the task honours the flag at its next checkpoint and
+        # typically returns a partial result seconds later — worth waiting a
+        # bounded window instead of reporting a bare timeout (an optimize run
+        # exports its partial density on the way out)
+        grace = min(120.0, timeout_s * 0.15)
+        g_waited = 0.0
+        while g_waited < grace:
+            status = await job.status()
+            if status == JobStatus.complete:
+                try:
+                    result = await job.result()
+                except Exception as e:
+                    return {"ok": False, "error": f"executor task failed: {e}"}
+                if isinstance(result, dict):
+                    result["timed_out"] = True
+                    result.setdefault("status", "partial")
+                    return result
+                return {"ok": False, "timed_out": True, "error": "bad result"}
+            await asyncio.sleep(5.0)
+            g_waited += 5.0
         return {
             "ok": False,
             "timed_out": True,

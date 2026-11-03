@@ -1578,6 +1578,15 @@ def simp(  # noqa: C901
         if pde_filter and ncells > 200_000:
             rec["helmholtz_solve_s"] = round(fops.stats.get("solve_s", 0.0), 2)
         history.append(rec)
+        log.info(
+            "simp.iter",
+            iteration=it,
+            volfrac=round(vol_now, 4),
+            change=round(change, 5),
+            compliance_mj=round(objective, 2),
+            elapsed_s=round(time.monotonic() - t0, 1),
+            s_per_iter=round((time.monotonic() - t0) / it, 1),
+        )
         if progress_cb:
             progress_cb(it, rec)
         if progress_file:
@@ -2110,6 +2119,14 @@ def _run_mma(  # noqa: C901
         if robust:
             rec["obj_per_design"] = [round(o, 3) for o in obj_ds]
         history.append(rec)
+        log.info(
+            "mma.iter",
+            iteration=it_box[0],
+            volfrac=rec["volfrac"],
+            compliance_mj=rec["compliance_mj"],
+            elapsed_s=rec["elapsed_s"],
+            s_per_iter=round((time.monotonic() - t0) / max(1, it_box[0]), 1),
+        )
         if progress_cb:
             progress_cb(it_box[0], rec)
         if progress_file:
