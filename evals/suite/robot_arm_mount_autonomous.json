@@ -1,0 +1,224 @@
+{
+  "name": "robot_arm_mount_autonomous",
+  "project": "eval:robot-arm-mount-auto",
+  "difficulty": 4,
+  "description": "Fully autonomous structural workflow — the prompt describes geometry + service context only. The agent must derive ALL boundary conditions itself (fixed supports, loads, moments, bearing seat) and declare them in spec.load_cases, plus declare the machined interfaces in spec.features. fem/optimize/refine stages declare NOTHING (use_parent_fallbacks): fem_loadcases verifies the resolved physics of the agent's own load model, topopt optimizes on it, refine re-cuts the agent-declared features via spec_features fallback.",
+  "settings": {
+    "gen_mode": "cad"
+  },
+  "stages": [
+    {
+      "id": "codegen",
+      "type": "generate",
+      "mode": "cad",
+      "timeout_s": 7800,
+      "prompt": "Mounting bracket for a robot-arm joint (aluminium 6061), parametric — input for topology optimization.\n\nFrame: base plate on the XY plane (z = 0), centred in X and Y. mm.\n- Base plate 100 x 80 x 10.\n- 4 holes dia 8.5 along Z at (x=+/-42, y=+/-32) — mounting bolts.\n- Bearing boss dia 25 x 15 tall on the plate centre (top at z = 25) with an M12 tapped (internal thread, M12x1.75) through-bore along Z — model the bore at tap-drill size and declare the thread; the export rebuild carries the real thread groove — threaded shaft seat.\n- Vertical flange at the +X edge on the plate: 8 thick, 40 wide (y-centred), 30 tall (z = 10..40); two dia 6.5 holes along X at (y=+/-12, z=25).\n- One gusset rib 5 mm thick at y = 0 joining boss and flange.\nSymmetric in Y.\n\nSERVICE CONTEXT — derive the structural model yourself: the bracket is bolted to a rigid frame through the four base holes; the boss bore is the shaft seat that carries the arm — typical service is a downward arm weight of several hundred N on the seat plus an occasional overturning moment on the order of 100 Nm; the two flange pin holes carry link forces of a few hundred N each. YOU decide the load cases, the fixed supports, the load regions/mechanisms and the magnitudes — declare them all in spec.load_cases (fixed regions on the bolt interfaces, loads on the seat/bore/flange features). Also declare every machined interface (bolt holes, tapped bore, flange pin holes) in spec.features with position, axis, diameter and depth so the post-optimization refinement can re-cut them exactly.",
+      "gates": [
+        {
+          "type": "status",
+          "expect": [
+            "succeeded",
+            "needs_review"
+          ]
+        },
+        {
+          "type": "bbox",
+          "dims": [
+            100,
+            80,
+            40
+          ],
+          "match": "within",
+          "tol_mm": 4
+        },
+        {
+          "type": "holes",
+          "count": 4,
+          "dia": 8.5,
+          "axis": "z",
+          "positions": [
+            [
+              42,
+              32
+            ],
+            [
+              42,
+              -32
+            ],
+            [
+              -42,
+              32
+            ],
+            [
+              -42,
+              -32
+            ]
+          ]
+        },
+        {
+          "type": "holes",
+          "count": 1,
+          "dia": 10.25,
+          "axis": "z",
+          "positions": [
+            [
+              0,
+              0
+            ]
+          ]
+        },
+        {
+          "type": "holes",
+          "count": 2,
+          "dia": 6.5,
+          "axis": "x"
+        },
+        {
+          "type": "watertight",
+          "expect": true
+        },
+        {
+          "type": "verify_spec",
+          "expect": "PASS"
+        }
+      ]
+    },
+    {
+      "id": "fem",
+      "type": "fem",
+      "timeout_s": 1800,
+      "material": "aluminum",
+      "gates": [
+        {
+          "type": "status",
+          "expect": [
+            "succeeded",
+            "needs_review"
+          ]
+        },
+        {
+          "type": "fem_loadcases",
+          "min_cases": 2,
+          "source": "parent_spec",
+          "checks": [
+            {
+              "case": 0,
+              "resultant_n": {
+                "min": 50,
+                "max": 3000
+              },
+              "warnings_absent": [
+                "no fixed region",
+                "resolved to zero",
+                "unsolvable"
+              ],
+              "sf_min": 0.2,
+              "sf_max": 100
+            },
+            {
+              "case": 1,
+              "warnings_absent": [
+                "no fixed region",
+                "resolved to zero",
+                "unsolvable"
+              ],
+              "sf_min": 0.2,
+              "sf_max": 100
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "topopt",
+      "type": "optimize",
+      "timeout_s": 7200,
+      "material": "aluminum",
+      "optimize": {
+        "enabled": true,
+        "target_volume_fraction": 0.5,
+        "safety_factor_min": 1.5,
+        "min_member_mm": 3,
+        "filter": "helmholtz+heaviside",
+        "keep_mode": "auto",
+        "max_iterations": 200
+      },
+      "gates": [
+        {
+          "type": "status",
+          "expect": [
+            "succeeded",
+            "needs_review"
+          ]
+        },
+        {
+          "type": "topopt",
+          "field": "sf_verified",
+          "min": 1.2
+        },
+        {
+          "type": "sealed_voids",
+          "max_frac": 0.02,
+          "max_solid_frac": 0.05
+        },
+        {
+          "type": "volfrac",
+          "min": 0.35,
+          "max": 0.65
+        },
+        {
+          "type": "bodies",
+          "max": 1
+        },
+        {
+          "type": "envelope_within",
+          "dims": [
+            100,
+            80,
+            40
+          ],
+          "tol_mm": 4
+        },
+        {
+          "type": "load_path",
+          "expect": true
+        },
+        {
+          "type": "watertight",
+          "expect": true
+        }
+      ]
+    },
+    {
+      "id": "refine",
+      "type": "refine",
+      "timeout_s": 3600,
+      "material": "aluminum",
+      "restore_planes": true,
+      "gates": [
+        {
+          "type": "status",
+          "expect": [
+            "succeeded",
+            "needs_review"
+          ]
+        },
+        {
+          "type": "refine_verify",
+          "min_applied": 3
+        },
+        {
+          "type": "holes",
+          "count": 1,
+          "dia": 10.25,
+          "axis": "z",
+          "depth_class": "through"
+        },
+        {
+          "type": "watertight",
+          "expect": true
+        }
+      ]
+    }
+  ]
+}

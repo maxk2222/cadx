@@ -290,6 +290,49 @@ def _axial_wall_mid(domain: VoxelDomain, idx: int, center: np.ndarray, dia: floa
     return float(np.median(mids))
 
 
+def _axial_void_run(
+    domain: VoxelDomain,
+    axis: str,
+    center: list[float],
+    dia: float,
+    axc: float | None,
+) -> tuple[float, float] | None:
+    """Axial span (lo, hi) mm of the void channel an anchor sits on.
+
+    A keep ring must cover the FEATURE's span — the material run the void
+    actually pierces — not the whole part height. Measure contiguous void
+    runs inside the bore radius along the axis: a through bore yields its
+    full wall span, a blind hole the mouth→bottom run, a shallow attach
+    dimple just the pad at the face. Selection order: the run containing
+    the measured axial centre, else the run reaching the domain boundary
+    the signed axis opens onto (the feature's entry face — "-z" taps sit
+    on the low-z face, "+y" bores enter at the low-y face). None when the
+    column is entirely solid."""
+    idx, sgn = _axis_parts(axis)
+    others = [i for i in range(3) if i != idx]
+    centers = domain.element_centers().reshape((*domain.dims, 3))
+    du = centers[..., others[0]] - float(center[others[0]])
+    dv = centers[..., others[1]] - float(center[others[1]])
+    r_inner = max(dia / 2.0 - domain.pitch, domain.pitch)
+    void = ~domain.solid & (du * du + dv * dv <= r_inner * r_inner)
+    prof = np.moveaxis(void, idx, -1).reshape(-1, domain.dims[idx]).any(axis=0)
+    if not prof.any():
+        return None
+    padded = np.concatenate([[False], prof, [False]])
+    starts = np.flatnonzero(~padded[:-1] & padded[1:])
+    ends = np.flatnonzero(padded[:-1] & ~padded[1:])
+    zc = domain.origin[idx] + (np.arange(domain.dims[idx]) + 0.5) * domain.pitch
+    runs = [(float(zc[s]), float(zc[e - 1])) for s, e in zip(starts, ends, strict=True)]
+    if axc is not None:
+        tol = 0.5 * domain.pitch
+        for r in runs:
+            if r[0] - tol <= axc <= r[1] + tol:
+                return r
+    if sgn < 0:
+        return min(runs, key=lambda r: r[0])
+    return max(runs, key=lambda r: r[1])
+
+
 def _anchor_center3d(a: dict[str, Any]) -> np.ndarray:
     """Anchor centre as (x, y, z) — `pos` components override the x/y/z
     fields when present (scanned anchors keep the through-axis None)."""
@@ -454,6 +497,18 @@ def _anchor_has_void(
     r_inner = max(dia / 2 - domain.pitch, domain.pitch)
     inner = _cylinder_disc_cells(domain, axis, center, r_inner)
     if axc is not None:
+        # a measured void run near the anchor is direct evidence — a shallow
+        # attach dimple would otherwise read as phantom inside a window full
+        # of solid cells
+        run = _axial_void_run(domain, axis, center, dia, axc)
+        if run is not None:
+            gap = (
+                0.0
+                if run[0] <= axc <= run[1]
+                else min(abs(run[0] - axc), abs(run[1] - axc))
+            )
+            if gap <= max(dia, 3.0 * domain.pitch):
+                return True
         idx, _ = _axis_parts(axis)
         bound = half if half is not None else max(dia, 2.0 * domain.pitch)
         inner &= _axial_slab(domain, idx, axc, bound)
@@ -498,9 +553,42 @@ def _hole_cells(domain: VoxelDomain, region: RegionSpec, anchors: list[dict] | N
             break
         radius += margin
         cells = _cylinder_cells(domain, axis, ctr, radius)
-    if half is not None:
-        cells &= _axial_slab(domain, idx, center[idx], half)
+    cells &= _keep_span(domain, region, axis, idx, center, dia, half, grow=margin)
     return cells
+
+
+def _keep_span(
+    domain: VoxelDomain,
+    region: RegionSpec,
+    axis: str,
+    idx: int,
+    center: np.ndarray,
+    dia: float,
+    half: float | None,
+    grow: float,
+) -> np.ndarray:
+    """Axial keep bound: the feature's measured span, never a free column.
+
+    `half` (from `depth_mm`) wins — mouth→bottom of a blind bore or the
+    declared span. Without depth the MEASURED void run bounds the keep:
+    a through bore keeps its full pierced wall, a shallow attach dimple
+    keeps only the pad at the face. When nothing is measurable the bound
+    degrades to an interface pad of ~2x margin around the axial centre —
+    an unbounded column pastes a full-height material pillar that renders
+    as a phantom bore on the opposite face (bearing-bracket taps)."""
+    if half is not None:
+        return _axial_slab(domain, idx, center[idx], half)
+    run = _axial_void_run(domain, axis, [float(v) for v in center], dia, float(center[idx]))
+    if run is not None:
+        mid = 0.5 * (run[0] + run[1])
+        return _axial_slab(domain, idx, mid, 0.5 * (run[1] - run[0]) + grow)
+    log.info(
+        "fem.keep_pad_fallback",
+        kind=region.kind,
+        axis=axis,
+        reason="anchor has no depth_mm and no measurable void run — bounding to interface pad",
+    )
+    return _axial_slab(domain, idx, center[idx], max(2.0 * grow, 2.5 * domain.pitch))
 
 
 def _bore_cells(domain: VoxelDomain, region: RegionSpec, anchors: list[dict] | None) -> np.ndarray:
@@ -531,8 +619,7 @@ def _bore_cells(domain: VoxelDomain, region: RegionSpec, anchors: list[dict] | N
     in_cyl = _cylinder_cells(domain, axis, ctr, dia / 2 + band) & ~_cylinder_cells(
         domain, axis, ctr, max(dia / 2 - domain.pitch, 0.0)
     )
-    if half is not None:
-        in_cyl &= _axial_slab(domain, idx, center[idx], half)
+    in_cyl &= _keep_span(domain, region, axis, idx, center, dia, half, grow=band)
     if in_cyl.any():
         return np.asarray(in_cyl, dtype=bool)
     return np.asarray(_hole_cells(domain, region, anchors), dtype=bool)

@@ -1465,8 +1465,10 @@ def _anchor_keep_prism(
     for blind bores, the pierced wall for measured tunnels) plus a small
     grow — otherwise restoring ``base ∩ cyl`` pastes a full-height solid
     column through the optimized body (observed on 10 mm blind taps
-    restored as Ø12 cylinders across the whole part). Only anchors without
-    an axial bound fall back to the part's axis extent."""
+    restored as Ø12 cylinders across the whole part). Blind anchors that
+    locate the mouth (``pos[ax]``) but miss ``depth_mm`` bound to an
+    interface pad instead; only through/unknown anchors fall back to the
+    part's axis extent."""
     uv = _anchor_uv(anchor)
     if uv is None:
         return None
@@ -1479,6 +1481,12 @@ def _anchor_keep_prism(
     if axc is not None and depth > 0:
         grow = margin * 0.5 + 1.0
         span = (float(axc) - depth / 2.0 - grow, float(axc) + depth / 2.0 + grow)
+    elif axc is not None and anchor.get("blind"):
+        # blind feature without a measured depth — restore the interface pad
+        # at the anchor plane; the full-extent fallback would paste a solid
+        # column to the opposite face (the documented blind-tap bug)
+        pad = max(2.0 * margin, 4.0)
+        span = (float(axc) - pad, float(axc) + pad)
     elif bounds is not None:
         span = (float(bounds[0][ax]) - 0.5, float(bounds[1][ax]) + 0.5)
     else:
@@ -2772,7 +2780,7 @@ def _scan_has_feature(
     return False
 
 
-def refine_verify(
+def refine_verify(  # noqa: C901
     mesh: trimesh.Trimesh | str | Path,
     refine_report: dict[str, Any],
     *,
@@ -2858,9 +2866,98 @@ def refine_verify(
             probes.append({**probe_rec, "verified": found})
         if not found:
             misses.append({"entry": entry, "x": uv[0], "y": uv[1], "dia": dia})
+        elif through:
+            _check_bore_obstruction(mesh, entry, uv, axis, dia, probes, misses)
     if probes:
         refine_report["probes"] = probes
     return misses
+
+
+def _check_bore_obstruction(
+    mesh: trimesh.Trimesh,
+    entry: dict[str, Any],
+    uv: tuple[float, float],
+    axis: str,
+    dia: float,
+    probes: list[dict[str, Any]],
+    misses: list[dict[str, Any]],
+) -> None:
+    """Keep-patch slivers/fins inside a bore interior slip the tunnel probe's
+    20% slack — measure the bore's actual ray occupancy on verified-through
+    features and flag obstructions as misses."""
+    frac, nsol = _bore_obstruction_frac(mesh, uv[0], uv[1], axis, dia)
+    if frac <= 0.01 or nsol < 3:
+        return
+    probes.append(
+        {
+            "feature": entry.get("name") or entry.get("kind"),
+            "kind": "bore_obstruction",
+            "verified": False,
+            "bore_solid_frac": round(frac, 4),
+            "bore_solid_n": nsol,
+        }
+    )
+    misses.append(
+        {
+            "entry": entry,
+            "x": uv[0],
+            "y": uv[1],
+            "dia": dia,
+            "reason": "bore_obstructed",
+            "bore_solid_frac": round(frac, 4),
+        }
+    )
+
+
+def _bore_obstruction_frac(
+    mesh: trimesh.Trimesh, u: float, v: float, axis: str, dia: float
+) -> tuple[float, int]:
+    """Fraction of bore-interior rays blocked by material — catches
+    keep-patch slivers/fins the tunnel probe's 20% slack tolerates. Casts
+    a ray grid along the bore axis inside r = 0.35·dia (walls excluded);
+    a ray counts as obstructed when its blocked span exceeds ~2 mm —
+    point-contains misses sub-voxel fins lying on the sampling plane but
+    a ray always sees them. Returns (obstructed_ray_frac, n_obstructed)."""
+    ax, au, av = _AXES_ANY[axis]
+    lo, hi = float(mesh.bounds[0][ax]), float(mesh.bounds[1][ax])
+    span = hi - lo
+    if span <= 0 or dia <= 0:
+        return 0.0, 0
+    r = 0.35 * dia
+    step = max(1.5, min(3.0, dia / 10.0))
+    offs = np.arange(-r, r + 1e-6, step)
+    du, dv = np.meshgrid(offs, offs, indexing="ij")
+    sel = (du * du + dv * dv) <= r * r
+    du, dv = du[sel], dv[sel]
+    n_pts = int(du.size)
+    if n_pts == 0:
+        return 0.0, 0
+    origins = np.zeros((n_pts, 3))
+    origins[:, au] = u + du
+    origins[:, av] = v + dv
+    origins[:, ax] = lo - 1.0
+    directions = np.zeros((n_pts, 3))
+    directions[:, ax] = 1.0
+    try:
+        locs, ray_ids, _ = mesh.ray.intersects_location(
+            ray_origins=origins, ray_directions=directions, multiple_hits=True
+        )
+    except Exception:
+        return 0.0, 0
+    blocked = np.zeros(n_pts)
+    by_ray: dict[int, list[float]] = {}
+    for rid, loc in zip(ray_ids, locs, strict=True):
+        by_ray.setdefault(int(rid), []).append(float(loc[ax]))
+    limit = max(2.0, 0.04 * span)
+    for rid, zs in by_ray.items():
+        zs = sorted(zs)
+        if len(zs) % 2:
+            zs.append(hi + 1.0)
+        # inside-material segments are hit pairs (enter, exit)
+        blk = float(sum(zs[i + 1] - zs[i] for i in range(0, len(zs) - 1, 2)))
+        blocked[rid] = blk
+    n = int((blocked > limit).sum())
+    return float(n) / float(n_pts), n
 
 
 def _verify_entry(
