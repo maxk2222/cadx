@@ -69,11 +69,7 @@ class HttpDriver:
             r = await self._client.request(method, f"{self.api}{path}", **kw)
             if r.status_code < 400:
                 return r.json() if r.content else None
-            if (
-                r.status_code >= 500
-                and method in _IDEMPOTENT
-                and attempt < _5XX_MAX_RETRIES
-            ):
+            if r.status_code >= 500 and method in _IDEMPOTENT and attempt < _5XX_MAX_RETRIES:
                 log.warning(
                     "eval.http.transient_status",
                     method=method,

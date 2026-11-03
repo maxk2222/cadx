@@ -628,6 +628,7 @@ SettingsUpdate = create_model(
     **{f"clear_{n}": (bool, False) for n in _SECRET_FIELDS},
 )
 
+
 class MeshModelOut(BaseModel):
     id: str
     name: str = ""

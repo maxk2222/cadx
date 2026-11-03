@@ -1983,9 +1983,7 @@ def _verify_export_structure(  # noqa: C901
     # same memory-aware tier policy as the pipeline guard: the verification
     # solves run per-case factorizations too — a too-large direct solve here
     # is just as OOM-prone as inside the SIMP loop
-    spsolve_eff_v, tier_info_v = _solver_tier_gate(
-        export_domain, len(cases) or 1, s, mem_budget
-    )
+    spsolve_eff_v, tier_info_v = _solver_tier_gate(export_domain, len(cases) or 1, s, mem_budget)
     if warn := _tier_warning(tier_info_v):
         warnings.append(warn)
     void_metrics = sealed_void_metrics(export_domain.solid, export_domain.pitch)
@@ -2863,9 +2861,7 @@ def run_topopt_pipeline(  # noqa: C901
     if warn := _tier_warning(tier_info):
         res.topopt.setdefault("warnings", []).append(warn)
     if mem_budget:
-        est_mb = estimate_fem_memory_mb(
-            domain, n_eff, direct=tier_info["tier"] == "direct"
-        )
+        est_mb = estimate_fem_memory_mb(domain, n_eff, direct=tier_info["tier"] == "direct")
         if est_mb > mem_budget * 0.75:
             res.error = (
                 f"predicted FEM memory ~{est_mb:.0f} MB exceeds the executor "
@@ -4309,9 +4305,7 @@ def run_infill_pipeline(  # noqa: C901
     if warn := _tier_warning(tier_info):
         res.topopt.setdefault("warnings", []).append(warn)
     if mem_budget:
-        est_mb = estimate_fem_memory_mb(
-            domain, n_eff, direct=tier_info["tier"] == "direct"
-        )
+        est_mb = estimate_fem_memory_mb(domain, n_eff, direct=tier_info["tier"] == "direct")
         if est_mb > mem_budget * 0.75:
             res.error = (
                 f"predicted FEM memory ~{est_mb:.0f} MB exceeds the executor "
