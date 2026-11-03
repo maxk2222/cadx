@@ -60,8 +60,11 @@ _MAX_EVIDENCE = 8
 # mirrors features._HOLE_TYPES (kept local, dependency-light)
 _HOLE_KIND_TYPES = {
     "hole",
+    "bore",
+    "tunnel",
     "insert",
     "thread",
+    "bearing",
     "bearing_seat",
     "through_hole",
     "blind_hole",

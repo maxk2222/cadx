@@ -6,6 +6,9 @@
   "settings": {
     "gen_mode": "cad"
   },
+  "runtime": {
+    "topopt_timeout_s": 4800
+  },
   "stages": [
     {
       "id": "codegen",

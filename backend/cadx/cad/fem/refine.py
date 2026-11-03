@@ -2886,7 +2886,10 @@ def _check_bore_obstruction(
     20% slack — measure the bore's actual ray occupancy on verified-through
     features and flag obstructions as misses."""
     frac, nsol = _bore_obstruction_frac(mesh, uv[0], uv[1], axis, dia)
-    if frac <= 0.01 or nsol < 3:
+    # obstruction = PARTIAL blockage (sliver/fin/cap inside an open bore).
+    # frac ≈ 1.0 means the bore was never cut — that's a missing-feature
+    # miss the caller's open-probe already covers, not an obstruction.
+    if frac <= 0.01 or frac >= 0.9 or nsol < 3:
         return
     probes.append(
         {
