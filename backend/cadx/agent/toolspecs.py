@@ -118,6 +118,25 @@ def _recut_compact(features: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
+def _optimize_run_qualifies(run: dict[str, Any]) -> bool:
+    """A topopt/infill run that satisfies the done() contract: connected,
+    verified, feature-complete and meeting the target SF. Per the optimize
+    prompt, done(-1) — keep the base — is only legitimate when NO such run
+    exists; discarding a valid optimized result after running it wastes the
+    whole stage budget."""
+    res = run.get("res") or {}
+    top = res.get("topopt") or {}
+    ver = top.get("verification") or {}
+    recut = top.get("recut") or (res.get("features") or {}).get("refine") or {}
+    return (
+        top.get("n_bodies_export") == 1
+        and top.get("load_path_ok") is not False
+        and bool(ver.get("valid"))
+        and ver.get("meets_safety_factor") is True
+        and not (recut.get("verify_misses") or [])
+    )
+
+
 def _warning_window(warnings: list[str] | None, n: int = 10) -> list[str]:
     """Validity-critical warnings (degenerate solves, disconnected bodies,
     sf divergence) are appended LAST by the topopt pipeline — a plain
@@ -3517,6 +3536,20 @@ class ToolSession:
                     "ok": False,
                     "error": f"run_index must be -1 or 0..{len(self.struct_runs) - 1}",
                 }
+            if idx == -1:
+                qualified = [r for r in self.struct_runs if _optimize_run_qualifies(r)]
+                if qualified:
+                    return {
+                        "ok": False,
+                        "error": (
+                            f"run_index -1 declined: {len(qualified)} run(s) are "
+                            "connected, verified, printable and feature-complete "
+                            f"— pick the best (e.g. run_index "
+                            f"{qualified[-1]['index']}). -1 is only for when no "
+                            "run satisfies that — e.g. every run is disconnected, "
+                            "unverified or below the target safety factor."
+                        ),
+                    }
             self.submitted = {
                 "chosen_run": idx,
                 "reasoning": str(a.get("reasoning", "")),

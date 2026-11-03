@@ -961,6 +961,60 @@ async def test_optimize_done_invalid_index_rejected():
     assert res["ok"] and session.submitted["chosen_run"] == -1
 
 
+_TOP_RES_QUALIFIED = {
+    "ok": True,
+    "topopt": {
+        "volfrac_target": 0.4,
+        "volfrac_achieved": 0.41,
+        "iterations": 20,
+        "converged": True,
+        "n_bodies_export": 1,
+        "load_path_ok": True,
+        "verification": {"valid": True, "meets_safety_factor": True},
+        "recut": {"verify_misses": []},
+        "warnings": [],
+    },
+    "fem": {"cases": [{"name": "c1", "safety_factor": 1.8}], "warnings": []},
+    "_iteration": 3,
+}
+
+
+async def test_optimize_done_minus1_rejected_when_run_qualifies():
+    """Autonomous-eval regression: the agent ran two SIMPs, then declined
+    with done(-1) — 'SF already above target' — leaving the stage with no
+    artifact. A connected/verified/feature-complete/SF-ok run now forces
+    done(run_index) instead of discarding the stage budget."""
+
+    async def top_fn(a):
+        return _TOP_RES_QUALIFIED
+
+    session = ToolSession(_ctx(FakeLLM([])), kind="optimize", topopt_fn=top_fn)
+    await session.execute("topopt_run", {"target_volume_fraction": 0.4})
+    res = await session.execute("done", {"run_index": -1})
+    assert res["ok"] is False
+    assert "run_index 0" in res["error"]
+    res = await session.execute("done", {"run_index": 0})
+    assert res["ok"] and session.submitted["chosen_run"] == 0
+
+
+async def test_optimize_done_minus1_allowed_when_no_run_qualifies():
+    """-1 stays legitimate when every run is worse than the base — e.g.
+    verified but below the target safety factor."""
+
+    async def top_fn(a):
+        res = dict(_TOP_RES_QUALIFIED)
+        res["topopt"] = dict(
+            _TOP_RES_QUALIFIED["topopt"],
+            verification={"valid": True, "meets_safety_factor": False},
+        )
+        return res
+
+    session = ToolSession(_ctx(FakeLLM([])), kind="optimize", topopt_fn=top_fn)
+    await session.execute("topopt_run", {"target_volume_fraction": 0.4})
+    res = await session.execute("done", {"run_index": -1})
+    assert res["ok"] and session.submitted["chosen_run"] == -1
+
+
 async def test_optimize_budget_drops_tools():
     """Exhausted budgets remove the tools from the schema."""
     from cadx.runtime_config import RuntimeSettings
