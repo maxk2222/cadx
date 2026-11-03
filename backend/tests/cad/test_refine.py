@@ -21,6 +21,7 @@ from cadx.cad.fem.refine import (
     _metric_pitch,
     _parse_spec,
     _spec_axis,
+    _spec_feature_text,
     _spec_uv_positions,
     _thread_spec_from,
     _through_cut_depth,
@@ -1337,6 +1338,131 @@ def test_spec_uv_positions_other_axis_plane():
 
 def test_spec_uv_positions_empty_when_undeclared():
     assert _spec_uv_positions("somewhere on the plate", "+z") == []
+
+
+# --------------------------------------------------------------------------- #
+# unsigned axis letter + signed face token (bearing-bracket regression)        #
+# --------------------------------------------------------------------------- #
+
+
+def test_spec_axis_unsigned_letter_upgrades_on_face_token():
+    """Bearing-bracket regression: spec 'axis: z' + 'drilled from -z face'
+    must select the bottom face. The bare letter alone defaulted to '+z'
+    and mirrored a Ø6.8 blind pocket onto the top face above every bottom
+    tap — the phantom top holes in the topopt exports."""
+    sf = {
+        "type": "hole",
+        "axis": "z",
+        "name": "M8 tap-drill pilot",
+        "position": "x=-46, y=+22, drilled from -z face",
+        "description": "Blind hole drilled from bottom face z=0 upward, depth 10 mm",
+        "dims": {"diameter": 6.8, "depth": 10.0},
+    }
+    assert _spec_axis(sf, _spec_feature_text(sf)) == "-z"
+
+
+def test_spec_axis_unsigned_letter_top_face_token():
+    sf = {
+        "type": "hole",
+        "axis": "z",
+        "position": "x=0, y=0, drilled from +z face",
+        "dims": {"diameter": 6.0, "depth": 5.0},
+    }
+    assert _spec_axis(sf, _spec_feature_text(sf)) == "+z"
+
+
+def test_spec_axis_unsigned_letter_defaults_positive_without_hint():
+    sf = {"type": "hole", "axis": "z", "position": "x=0, y=0", "dims": {"diameter": 6.0}}
+    assert _spec_axis(sf, _spec_feature_text(sf)) == "+z"
+
+
+def test_spec_axis_signed_field_wins_over_contradicting_text():
+    sf = {
+        "type": "hole",
+        "axis": "+z",
+        "position": "x=0, y=0, drilled from -z face",
+        "dims": {"diameter": 6.0},
+    }
+    assert _spec_axis(sf, _spec_feature_text(sf)) == "+z"
+
+
+def test_spec_axis_lone_face_token_without_axis_field():
+    sf = {
+        "type": "hole",
+        "position": "y=5, z=0, drilled from -x face",
+        "dims": {"diameter": 4.0},
+    }
+    assert _spec_axis(sf, _spec_feature_text(sf)) == "-x"
+
+
+def test_resolve_spec_feature_unsigned_axis_binds_signed_anchor():
+    """Before the fix the '+z' spec feature matched no '-z' anchor, so BOTH
+    survived: the anchor's bottom re-cut AND a mirrored top pocket. Now the
+    spec feature resolves '-z', binds the anchor and emits one feature."""
+    anchors = [
+        {
+            "index": 1,
+            "kind": "thread",
+            "axis": "-z",
+            "pos": [-46.0, 22.0, 5.0],
+            "x": -46.0,
+            "y": 22.0,
+            "dia": 6.8,
+            "depth_mm": 10.0,
+            "blind": True,
+            "source": "spec",
+            "name": "M8 tap 1",
+        }
+    ]
+    spec = [
+        {
+            "type": "thread",
+            "axis": "z",
+            "name": "M8 tap 1",
+            "position": "x=-46, y=+22, drilled from -z face",
+            "dims": {"diameter": 6.8, "depth": 10.0},
+        }
+    ]
+    feats, _ = resolve_refine_features(anchors, spec, None, base_mesh=None)
+    assert len(feats) == 1
+    assert feats[0].axis == "-z"
+    assert feats[0].through is False
+    assert feats[0].depth_mm == 10.0
+
+
+def test_apply_refine_unsigned_axis_request_uses_face_token():
+    """End-to-end: a request carrying bare 'axis: z' + '-z face' text cuts
+    from the bottom, leaving the top face flat."""
+    mesh = _box()
+    feats, _ = resolve_refine_features(
+        anchors=None,
+        spec_features=None,
+        request_features=[
+            {
+                "type": "tap",
+                "axis": "z",
+                "x": 0.0,
+                "y": 0.0,
+                "dia": 6.0,
+                "depth": 5.0,
+                "position": "x=0, y=0, drilled from -z face",
+            }
+        ],
+        base_mesh=mesh,
+    )
+    out, rep = apply_refine(mesh, feats, restore_keeps=False)
+    assert rep.applied and not rep.skipped
+    # blind floor at z ~= 5 below the intact top face (z = 12)
+    loc, *_ = out.ray.intersects_location(
+        np.array([[0.0, 0.0, 11.0]]), np.array([[0.0, 0.0, -1.0]])
+    )
+    assert len(loc) >= 1
+    assert loc[:, 2].max() == pytest.approx(5.0, abs=1.0)
+    # the mirrored pocket must NOT exist: the top face is still flat
+    loc_top, *_ = out.ray.intersects_location(
+        np.array([[0.0, 0.0, 30.0]]), np.array([[0.0, 0.0, -1.0]])
+    )
+    assert loc_top[:, 2].max() == pytest.approx(12.0, abs=0.5)
 
 
 def test_resolve_spec_features_keep_declared_positions():

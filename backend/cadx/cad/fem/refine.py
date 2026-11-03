@@ -217,27 +217,45 @@ def _spec_feature_text(sf: dict[str, Any]) -> str:
 
 
 def _spec_axis(sf: dict[str, Any], text: str) -> str | None:
-    """Drill axis declared by a spec feature: an explicit ``axis`` field,
-    else the ``through <axis>`` word of its position text ('through
-    x=42..50' bores across x). The through-range midpoint picks the entry
-    side (parts are centred — mid > 0 drills from +). None = undeclared;
-    callers fall back to the feature's default axis."""
+    """Drill axis declared by a spec feature: an explicit signed ``axis``
+    field; an unsigned axis letter upgraded by a signed face token in the
+    position text (``axis 'z'`` + "drilled from -z face" → ``'-z'`` — the
+    sign selects the entry face, so a bare letter alone is ambiguous and
+    must not blindly open the + side); else the ``through <axis>`` word of
+    its position text ('through x=42..50' bores across x, the range
+    midpoint picking the entry side); else a lone signed face token.
+    None = undeclared; callers fall back to the feature's default axis.
+
+    Mirrors ``agent/anchors._declared_bore_axis`` — the two resolutions must
+    agree or the FEM anchor (``-z`` bottom tap) and the refine re-cut
+    (``+z``) would cut the SAME feature from opposite faces, mirroring a
+    blind pocket onto the opposite wall (observed: 3x M8 tap-drill pilots
+    re-cut as Ø6.8 pockets into the top face)."""
     import re
 
     a = str(sf.get("axis") or "").strip().lower()
-    if a in ("x", "y", "z"):
-        a = "+" + a
     if a in _SIGNED_AXES:
         return a
-    m = re.search(r"\bthrough\s+([xyz])\b", text, re.I)
-    if not m:
-        return None
-    letter = m.group(1)
-    from cadx.cad.poshint import parse_axis_ranges
+    letter = a if a in ("x", "y", "z") else ""
+    from cadx.cad.poshint import parse_position_hints
 
-    rng = parse_axis_ranges(text).get(letter)
-    mid = (rng[0] + rng[1]) / 2.0 if rng else 0.0
-    return ("-" if mid < 0 else "+") + letter
+    _c, faces, _e, _n = parse_position_hints(text)
+    if letter:
+        for face in faces:
+            if face[-1:] == letter:
+                return face  # signed — "z" + "-z face" -> "-z"
+        return "+" + letter
+    m = re.search(r"\bthrough\s+([xyz])\b", text, re.I)
+    if m:
+        letter = m.group(1)
+        from cadx.cad.poshint import parse_axis_ranges
+
+        rng = parse_axis_ranges(text).get(letter)
+        mid = (rng[0] + rng[1]) / 2.0 if rng else 0.0
+        return ("-" if mid < 0 else "+") + letter
+    if len(faces) == 1:
+        return faces[0]  # already signed ("-z", "+y", ...)
+    return None
 
 
 def _spec_uv_positions(text: str, axis: str) -> list[tuple[float, float]]:
@@ -529,7 +547,10 @@ def resolve_refine_features(  # noqa: C901
                     if best is not None:
                         base = dict(best[1])
             merged = {**base, **{k: v for k, v in r.items() if v is not None}}
-            axis = _feature_axis(merged)
+            # a bare-letter axis on the request resolves through the same
+            # face-token upgrade as spec features — "axis 'z'" alone must
+            # not silently pick the top face when the text says '-z face'
+            axis = _spec_axis(merged, _spec_feature_text(merged)) or _feature_axis(merged)
             uv = _anchor_uv(merged) or (None, None)
             if uv[0] is None:
                 # request may carry raw in-plane coords
@@ -2922,7 +2943,10 @@ def _bore_obstruction_frac(
     point-contains misses sub-voxel fins lying on the sampling plane but
     a ray always sees them. Returns (obstructed_ray_frac, n_obstructed)."""
     ax, au, av = _AXES_ANY[axis]
-    lo, hi = float(mesh.bounds[0][ax]), float(mesh.bounds[1][ax])
+    bounds = mesh.bounds
+    if bounds is None or not len(getattr(mesh, "faces", ())):
+        return 0.0, 0
+    lo, hi = float(bounds[0][ax]), float(bounds[1][ax])
     span = hi - lo
     if span <= 0 or dia <= 0:
         return 0.0, 0
