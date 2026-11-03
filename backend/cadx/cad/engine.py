@@ -2861,7 +2861,9 @@ def run_topopt_pipeline(  # noqa: C901
     if warn := _tier_warning(tier_info):
         res.topopt.setdefault("warnings", []).append(warn)
     if mem_budget:
-        est_mb = estimate_fem_memory_mb(domain, n_eff, direct=tier_info["tier"] == "direct")
+        est_mb = estimate_fem_memory_mb(
+            domain, n_eff, direct=tier_info["tier"] == "direct", n_factors=len(cases)
+        )
         if est_mb > mem_budget * 0.75:
             res.error = (
                 f"predicted FEM memory ~{est_mb:.0f} MB exceeds the executor "
@@ -4305,7 +4307,9 @@ def run_infill_pipeline(  # noqa: C901
     if warn := _tier_warning(tier_info):
         res.topopt.setdefault("warnings", []).append(warn)
     if mem_budget:
-        est_mb = estimate_fem_memory_mb(domain, n_eff, direct=tier_info["tier"] == "direct")
+        est_mb = estimate_fem_memory_mb(
+            domain, n_eff, direct=tier_info["tier"] == "direct", n_factors=len(cases)
+        )
         if est_mb > mem_budget * 0.75:
             res.error = (
                 f"predicted FEM memory ~{est_mb:.0f} MB exceeds the executor "

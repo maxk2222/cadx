@@ -564,27 +564,34 @@ def volume_of_solid(domain: VoxelDomain) -> float:
     return float(domain.solid_count) * math.pow(domain.pitch, 3)
 
 
-def estimate_fem_memory_mb(domain: VoxelDomain, n_cases: int = 1, direct: bool = True) -> float:
+def estimate_fem_memory_mb(
+    domain: VoxelDomain,
+    n_cases: int = 1,
+    direct: bool = True,
+    n_factors: int | None = None,
+) -> float:
     """Predictive peak-memory estimate for a FEM solve on this domain (MB).
 
     Model: transient COO assembly (576 triplets per cell, 24 B each),
     the CSR stiffness matrix (~60 nnz per cell, 16 B each), u/F vectors
     (~3+ncases), and — for a direct solve — the LU/Cholesky fill-in.
-    The direct term scales with n_cases: the case-solve ctx_cache holds one
-    factor per distinct free-set at once (3 load cases ≈ 3 simultaneous
-    factors). Fill-in for 3-D nested-dissection is ~32x the matrix data —
-    the earlier 12x model under-predicted a ~100k-cell/315k-DOF mount solve
-    at ~2 GB where reality killed a 16 GB executor (rc=137). The iterative
-    path needs the matrix plus the AMG hierarchy (~0.5x) and CG work
-    vectors. Conservative on purpose: better to degrade to CG than to be
-    OOM-killed mid-iteration (a killed worker loses the whole job)."""
+    The direct term scales with ``n_factors``: the case-solve ctx_cache
+    holds one factor per distinct free-set at once — the DECLARED case
+    count, not the effective-case expansion used for vectors (a 2-case
+    bracket holds 2 factors, not 4). Fill-in for 3-D nested-dissection is
+    ~32x the matrix data — the earlier 12x model under-predicted a
+    ~100k-cell/315k-DOF mount solve at ~2 GB where reality killed a 16 GB
+    executor (rc=137). The iterative path needs the matrix plus the AMG
+    hierarchy (~0.5x) and CG work vectors. Conservative on purpose: better
+    to degrade to CG than to be OOM-killed mid-iteration (a killed worker
+    loses the whole job)."""
     cells = domain.cell_count
     nodes = domain.node_count
     coo_mb = cells * 576 * 24 / 1e6
     csr_mb = cells * 60 * 16 / 1e6
     vec_mb = nodes * 3 * 8 * (3 + max(1, n_cases)) / 1e6
     if direct:
-        solve_mb = cells * 60 * 8 * 32 / 1e6 * max(1, n_cases)
+        solve_mb = cells * 60 * 8 * 32 / 1e6 * max(1, n_factors if n_factors is not None else n_cases)
     else:
         solve_mb = csr_mb * 0.5 + nodes * 3 * 8 * 8 / 1e6
     return coo_mb + csr_mb + vec_mb + solve_mb

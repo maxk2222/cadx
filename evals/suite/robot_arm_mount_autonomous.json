@@ -1,7 +1,7 @@
 {
   "name": "robot_arm_mount_autonomous",
   "project": "eval:robot-arm-mount-auto",
-  "difficulty": 4,
+  "difficulty": 3,
   "description": "Fully autonomous structural workflow — the prompt describes geometry + service context only. The agent must derive ALL boundary conditions itself (fixed supports, loads, moments, bearing seat) and declare them in spec.load_cases, plus declare the machined interfaces in spec.features. fem/optimize/refine stages declare NOTHING (use_parent_fallbacks): fem_loadcases verifies the resolved physics of the agent's own load model, topopt optimizes on it, refine re-cuts the agent-declared features via spec_features fallback.",
   "settings": {
     "gen_mode": "cad"
