@@ -676,7 +676,13 @@ def _cut_volume_ok(solid: Any, tool: Any, res: Any) -> bool:
     return s - tool_vol * 1.2 - 1e-3 <= v <= s * 1.005 + 1e-3
 
 
-def _occ_cut(solid: Any, tool: Any, *, fuzzy_levels: tuple[float, ...] = (0.05, 0.2)) -> Any | None:
+def _occ_cut(
+    solid: Any,
+    tool: Any,
+    *,
+    fuzzy_levels: tuple[float, ...] = (0.05, 0.2),
+    plain_first: bool = True,
+) -> Any | None:
     """Boolean difference with a fuzzy-tolerance rescue for sewn solids.
 
     A B-Rep sewn from tessellation has facet-edge vertices at float32
@@ -688,13 +694,17 @@ def _occ_cut(solid: Any, tool: Any, *, fuzzy_levels: tuple[float, ...] = (0.05, 
     sane (``_cut_volume_ok``) — too-large fuzzies "heal" the cut into an
     uncut or grown solid. Every OCC boolean on a large sewn solid costs
     minutes, so secondary cutters (thread grooves, counters) pass fewer
-    levels to bound worst-case runtime."""
-    try:
-        res = solid - tool
-        if res is not None and res.solids() and _cut_volume_ok(solid, tool, res):
-            return res
-    except Exception:
-        pass
+    levels to bound worst-case runtime. ``plain_first=False`` skips the
+    doomed plain attempt on known-sewn inputs — on the analytic-step path
+    every solid is a sew checkpoint, so the plain boolean burned a full
+    multi-second OCC pass per feature only to come back empty."""
+    if plain_first:
+        try:
+            res = solid - tool
+            if res is not None and res.solids() and _cut_volume_ok(solid, tool, res):
+                return res
+        except Exception:
+            pass
     if not fuzzy_levels:
         return None
     try:
@@ -777,7 +787,7 @@ def _cut_analytic_features(
             levels = (0.05, 0.2) if i == 0 else (0.05,)
             t_cut = time.monotonic()
             try:
-                res = _occ_cut(solid, tool, fuzzy_levels=levels)
+                res = _occ_cut(solid, tool, fuzzy_levels=levels, plain_first=False)
             except Exception:
                 res = None
             _cut_seconds = round(time.monotonic() - t_cut, 1)
@@ -1370,7 +1380,7 @@ def _analytic_step_worker(
     else:
         for i, tool in enumerate(cutters):
             try:
-                res = _occ_cut(solid, tool, fuzzy_levels=(0.05,))
+                res = _occ_cut(solid, tool, fuzzy_levels=(0.05,), plain_first=False)
             except Exception:
                 res = None
             if res is not None and res.solids() and res.volume >= solid.volume * 0.3:
