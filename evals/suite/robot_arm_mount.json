@@ -495,7 +495,41 @@
         "min_member_mm": 3,
         "filter": "helmholtz+heaviside",
         "keep_mode": "auto",
-        "max_iterations": 200
+        "max_iterations": 200,
+        "keep_regions": [
+          {
+            "kind": "cylinder",
+            "axis": "z",
+            "center": [42, 32, 5],
+            "diameter_mm": 16,
+            "z_range": [0, 10],
+            "description": "bolt pad keep +x+y"
+          },
+          {
+            "kind": "cylinder",
+            "axis": "z",
+            "center": [42, -32, 5],
+            "diameter_mm": 16,
+            "z_range": [0, 10],
+            "description": "bolt pad keep +x-y"
+          },
+          {
+            "kind": "cylinder",
+            "axis": "z",
+            "center": [-42, 32, 5],
+            "diameter_mm": 16,
+            "z_range": [0, 10],
+            "description": "bolt pad keep -x+y"
+          },
+          {
+            "kind": "cylinder",
+            "axis": "z",
+            "center": [-42, -32, 5],
+            "diameter_mm": 16,
+            "z_range": [0, 10],
+            "description": "bolt pad keep -x-y"
+          }
+        ]
       },
       "load_cases": [
         {
