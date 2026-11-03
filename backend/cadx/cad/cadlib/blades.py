@@ -223,10 +223,18 @@ def radial_blade(
                 else:
                     Ellipse(x_radius=st["chord"] / 2.0, y_radius=st["thick"] / 2.0)
             sketches.append(sk.sketch)
-        try:
-            blades.append(loft(sketches, ruled=False))
-        except TypeError:
-            blades.append(loft(sketches))
+        # Multi-section ThruSections lofts flip cap orientation
+        # non-deterministically on twisted section sequences (observed: the
+        # tip or root cap sewn inward → the solid passes is_valid but every
+        # downstream boolean treats it as a void; the eval propeller fused
+        # to a bare hub). Two-section lofts orient consistently, so build
+        # the blade as a chain of segment lofts fused on the shared station
+        # faces.
+        segs = [loft([sa, sb]) for sa, sb in itertools.pairwise(sketches)]
+        blade_l = segs[0]
+        for sgmt in segs[1:]:
+            blade_l = blade_l + sgmt
+        blades.append(blade_l)
     out = blades[0]
     for bl in blades[1:]:
         out += bl

@@ -996,6 +996,35 @@ def test_radial_blade_each_solid_watertight():
         assert s.is_valid
 
 
+def test_radial_blade_fuses_into_hub_adding_material():
+    """Regression: multi-section ThruSections lofts can sew an end cap
+    inward — the blade still passes is_valid but `hub + blade` then treats
+    it as a void and the fused solid collapses to the bare hub (eval
+    propeller shipped a hub-only STL, bbox 28x28). The fused volume must
+    exceed the hub's, and the envelope must keep the blade reach."""
+    import math
+
+    from build123d import Pos
+
+    hub = Pos(0, 0, 0) * cadlib.boss(diameter=28.0, height=24.0)
+    blades = cadlib.radial_blade(
+        n_blades=5,
+        root_r=8.0,
+        tip_r=60.0,
+        chord=(26.0, 18.0),
+        thickness=(3.5, 3.0),
+        pitch_root_deg=45.0,
+        pitch_tip_deg=28.0,
+        skew_tip_deg=15.0,
+        z=12.0,
+    )
+    fused = hub + blades
+    assert fused.is_valid
+    assert fused.volume > hub.volume
+    r_max = max(math.hypot(v.X, v.Y) for v in fused.vertices())
+    assert r_max > 55.0
+
+
 def test_radial_blade_pitch_holds_radius_invariant():
     """Pitch rotates the chord inside the station plane — a steeper pitch
     changes the z extent, not the tip radius."""
