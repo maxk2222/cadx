@@ -366,6 +366,20 @@ def run_fem(
 
         direct = 3 * domain.node_count <= spsolve_dofs
         est = estimate_fem_memory_mb(domain, len(load_cases), direct)
+        if direct and est > mem_budget_mb * 0.75:
+            # an uncatchable kernel OOM mid-factorization is worse than a
+            # slow solve — degrade to CG/AMG when the iterative estimate
+            # fits instead of skipping the verification outright
+            est_direct = est
+            est = estimate_fem_memory_mb(domain, len(load_cases), direct=False)
+            if est <= mem_budget_mb * 0.75:
+                report.warnings.append(
+                    f"direct solve predicted ~{est_direct:.0f} MB — exceeds the executor "
+                    f"budget ({mem_budget_mb:.0f} MB); falling back to CG/AMG "
+                    "(raise exec_mem_limit_mb for a direct factorization)"
+                )
+                spsolve_dofs = 0
+                direct = False
         if est > mem_budget_mb * 0.75:
             report.warnings.append(
                 f"predicted FEM memory ~{est:.0f} MB exceeds the executor budget "

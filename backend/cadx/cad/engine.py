@@ -1980,6 +1980,14 @@ def _verify_export_structure(  # noqa: C901
     skin = candidate_mesh if source_mesh is None else source_mesh
     use_coverage = bool(getattr(s, "fem_verify_coverage_e", False))
     export_domain = voxelize(candidate_mesh, design_pitch, max_elements, coverage=use_coverage)
+    # same memory-aware tier policy as the pipeline guard: the verification
+    # solves run per-case factorizations too — a too-large direct solve here
+    # is just as OOM-prone as inside the SIMP loop
+    spsolve_eff_v, tier_info_v = _solver_tier_gate(
+        export_domain, len(cases) or 1, s, mem_budget
+    )
+    if warn := _tier_warning(tier_info_v):
+        warnings.append(warn)
     void_metrics = sealed_void_metrics(export_domain.solid, export_domain.pitch)
     _solid_vol = float(export_domain.solid.sum() * export_domain.pitch**3)
     if _solid_vol > 0:
@@ -2071,7 +2079,7 @@ def _verify_export_structure(  # noqa: C901
             out_dir=od,
             anchors=anchors,
             keep_regions=keep_list,
-            spsolve_dofs=s.fem_spsolve_dofs,
+            spsolve_dofs=spsolve_eff_v,
             pool_workers=s.exec_pool_workers,
             mem_budget_mb=mem_budget,
             suffix=sfx,
@@ -2145,7 +2153,7 @@ def _verify_export_structure(  # noqa: C901
                 out_dir=None,
                 anchors=anchors,
                 keep_regions=keep_list,
-                spsolve_dofs=s.fem_spsolve_dofs,
+                spsolve_dofs=spsolve_eff_v,
                 pool_workers=s.exec_pool_workers,
                 mem_budget_mb=mem_budget,
                 suffix="",
@@ -2371,6 +2379,56 @@ def _recommend_structure_mode(
         f"bulky part (fill ratio {fr}) with open design freedom — "
         "full SIMP redistribution pays here"
     ]
+
+
+def _solver_tier_gate(
+    domain: Any, n_cases: int, s: RuntimeSettings, mem_budget: float
+) -> tuple[int, dict[str, Any]]:
+    """Effective direct-solve DOF cutoff honoring the memory budget.
+
+    A kernel OOM kill mid-factorization is uncatchable (rc=137 loses the
+    whole job and the worker process), so the direct tier is allowed only
+    when the predicted factorization memory fits the budget AND the live
+    cgroup headroom. Otherwise returns 0: ``_prepare_solve`` then takes the
+    CG/AMG path for every case solve — a slow legitimate solve always beats
+    a killed worker. Returns ``(spsolve_dofs_eff, info)`` where ``info``
+    feeds ``solver_tier`` telemetry + warnings."""
+    from cadx.cad.fem.voxelize import estimate_fem_memory_mb
+
+    cap = int(getattr(s, "fem_spsolve_dofs", 120_000) or 120_000)
+    dofs = 3 * domain.node_count
+    info: dict[str, Any] = {
+        "dofs": int(dofs),
+        "cap": cap,
+        "budget_mb": round(mem_budget, 1) if mem_budget else None,
+    }
+    if dofs > cap:
+        info.update(tier="iterative", reason="dofs_cap")
+        return 0, info
+    est = estimate_fem_memory_mb(domain, n_cases, direct=True)
+    headroom = resources.mem_headroom_mb()
+    info["est_direct_mb"] = round(est, 1)
+    info["headroom_mb"] = round(headroom, 1) if headroom is not None else None
+    if mem_budget and est > mem_budget * 0.75:
+        info.update(tier="iterative", reason="mem_budget")
+        return 0, info
+    if headroom is not None and est > headroom * 0.8:
+        info.update(tier="iterative", reason="cgroup_headroom")
+        return 0, info
+    info["tier"] = "direct"
+    return cap, info
+
+
+def _tier_warning(info: dict[str, Any]) -> str | None:
+    """Human-readable reason the direct tier was skipped (None when direct)."""
+    if info.get("tier") != "iterative" or info.get("reason") == "dofs_cap":
+        return None
+    return (
+        f"direct solve skipped — predicted ~{info.get('est_direct_mb', 0):.0f} MB "
+        f"factorization exceeds {info['reason']} "
+        f"(budget {info.get('budget_mb')} MB, headroom {info.get('headroom_mb')} MB) — "
+        "CG/AMG tier engages, expect slower iterations"
+    )
 
 
 def run_fem_pipeline(
@@ -2790,15 +2848,23 @@ def run_topopt_pipeline(  # noqa: C901
             design_cells=int(design_domain.solid_count),
         )
 
-    # predictive memory budget — an OOM kill mid-SIMP loses the whole job;
-    # better to refuse early with a pointer to the knobs that fix it
+    # predictive memory budget + solver-tier gate — an OOM kill mid-SIMP
+    # loses the whole job, so the direct tier only runs when the predicted
+    # factorization fits; otherwise the loop degrades to CG/AMG and only a
+    # CG solve that still cannot fit is refused outright
     from cadx.cad.fem.voxelize import estimate_fem_memory_mb
 
     mem_budget = float(resources.effective_exec_mem_mb(s))
+    n_eff = min(len(cases) * 2, s.fem_max_effective_cases)
+    # the tier gate counts SIMULTANEOUS factors — the case-solve ctx_cache
+    # holds one per load case, not per effective case
+    spsolve_eff, tier_info = _solver_tier_gate(domain, len(cases), s, mem_budget)
+    res.topopt["solver_tier"] = tier_info
+    if warn := _tier_warning(tier_info):
+        res.topopt.setdefault("warnings", []).append(warn)
     if mem_budget:
-        n_eff = min(len(cases) * 2, s.fem_max_effective_cases)
         est_mb = estimate_fem_memory_mb(
-            domain, n_eff, direct=3 * domain.node_count <= s.fem_spsolve_dofs
+            domain, n_eff, direct=tier_info["tier"] == "direct"
         )
         if est_mb > mem_budget * 0.75:
             res.error = (
@@ -3171,7 +3237,7 @@ def run_topopt_pipeline(  # noqa: C901
                         pc,
                         passive_void=void_c,
                         case_weights=np.asarray(w_c),
-                        spsolve_dofs=s.fem_spsolve_dofs,
+                        spsolve_dofs=spsolve_eff,
                         cancelled=cancelled,
                     )
                     x0 = _upsample_density(
@@ -3228,7 +3294,7 @@ def run_topopt_pipeline(  # noqa: C901
             passive_void=void_cells,
             case_weights=case_weights,
             x0=x0 if warm is None else warm,
-            spsolve_dofs=s.fem_spsolve_dofs,
+            spsolve_dofs=spsolve_eff,
             cancelled=cancelled,
             progress_file=opt_dir / f"history_{volfrac:.2f}.json",
         )
@@ -3248,7 +3314,7 @@ def run_topopt_pipeline(  # noqa: C901
                 passive,
                 p,
                 case_weights=case_weights,
-                spsolve_dofs=s.fem_spsolve_dofs,
+                spsolve_dofs=spsolve_eff,
                 history=result.history,
             )
         )
@@ -3436,7 +3502,7 @@ def run_topopt_pipeline(  # noqa: C901
             out_dir=out_dir,
             anchors=anchors,
             keep_regions=keep_list,
-            spsolve_dofs=s.fem_spsolve_dofs,
+            spsolve_dofs=spsolve_eff,
             pool_workers=s.exec_pool_workers,
             mem_budget_mb=float(resources.effective_exec_mem_mb(s)),
             suffix=fem_suffix,
@@ -4230,13 +4296,21 @@ def run_infill_pipeline(  # noqa: C901
                 "clip removes material the mask FEM verified"
             )
 
+    # predictive memory budget + solver-tier gate — same policy as the
+    # topopt pipeline: direct only when the predicted factorization fits,
+    # CG/AMG otherwise, hard error only when even CG cannot fit
     from cadx.cad.fem.voxelize import estimate_fem_memory_mb
 
     mem_budget = float(resources.effective_exec_mem_mb(s))
+    n_eff = min(len(cases) * 2, s.fem_max_effective_cases)
+    # simultaneous factor count = load cases (ctx_cache), not effective cases
+    spsolve_eff, tier_info = _solver_tier_gate(domain, len(cases), s, mem_budget)
+    res.topopt["solver_tier"] = tier_info
+    if warn := _tier_warning(tier_info):
+        res.topopt.setdefault("warnings", []).append(warn)
     if mem_budget:
-        n_eff = min(len(cases) * 2, s.fem_max_effective_cases)
         est_mb = estimate_fem_memory_mb(
-            domain, n_eff, direct=3 * domain.node_count <= s.fem_spsolve_dofs
+            domain, n_eff, direct=tier_info["tier"] == "direct"
         )
         if est_mb > mem_budget * 0.75:
             res.error = (
@@ -4304,7 +4378,7 @@ def run_infill_pipeline(  # noqa: C901
         out_dir=out_dir,
         anchors=anchors,
         keep_regions=keep_list,
-        spsolve_dofs=s.fem_spsolve_dofs,
+        spsolve_dofs=spsolve_eff,
         pool_workers=s.exec_pool_workers,
         mem_budget_mb=mem_budget,
         suffix="_baseline",
@@ -4428,7 +4502,7 @@ def run_infill_pipeline(  # noqa: C901
                     pc,
                     passive_void=void_c,
                     case_weights=np.asarray(w_c),
-                    spsolve_dofs=s.fem_spsolve_dofs,
+                    spsolve_dofs=spsolve_eff,
                     cancelled=cancelled,
                 )
                 guide_mask = (
@@ -4702,7 +4776,7 @@ def run_infill_pipeline(  # noqa: C901
         out_dir=out_dir,
         anchors=anchors,
         keep_regions=keep_list,
-        spsolve_dofs=s.fem_spsolve_dofs,
+        spsolve_dofs=spsolve_eff,
         pool_workers=s.exec_pool_workers,
         mem_budget_mb=mem_budget,
         source_mesh=opt_mesh,
@@ -4955,7 +5029,7 @@ def run_infill_pipeline(  # noqa: C901
                 out_dir=out_dir,
                 anchors=anchors,
                 keep_regions=keep_list,
-                spsolve_dofs=s.fem_spsolve_dofs,
+                spsolve_dofs=spsolve_eff,
                 pool_workers=s.exec_pool_workers,
                 mem_budget_mb=mem_budget,
                 suffix="_homog",
