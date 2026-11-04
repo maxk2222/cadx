@@ -3785,7 +3785,7 @@ async def _run_cad(  # noqa: C901
                 from cadx.cad.features import MeasuredFeatures
                 from cadx.cad.standard_parts import covered_feature_indices
 
-                covered = covered_feature_indices(spec)
+                covered = covered_feature_indices(spec, keep_host_voids=True)
                 feature_findings = [
                     f.model_dump()
                     for f in compare_features(
@@ -4490,7 +4490,7 @@ async def _run_mesh(  # noqa: C901
                 if spec.features:
                     from cadx.cad.standard_parts import covered_feature_indices
 
-                    covered = covered_feature_indices(spec)
+                    covered = covered_feature_indices(spec, keep_host_voids=True)
                     feature_findings += [
                         f.model_dump()
                         for f in compare_features(

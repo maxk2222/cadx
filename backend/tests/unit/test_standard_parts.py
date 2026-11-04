@@ -564,3 +564,35 @@ def test_resolve_thread_intents_uses_intrinsic_attribution() -> None:
     spec.features[1].description = "Vollgewinde"
     resolve_thread_intents(spec)
     assert spec.standard_parts[0].full_thread is True
+
+
+def test_covered_host_voids_stay_independent() -> None:
+    """keep_host_voids: a hole claimed in covers_features (a ThreadedHole
+    part covering its pilots) is host geometry — it stays verifiable,
+    anchorable and re-cuttable; only genuine catalog anatomy is covered."""
+    from cadx.cad.standard_parts import covered_feature_indices, is_host_void_feature
+
+    spec = PartSpec(
+        name="bracket",
+        summary="",
+        length_x=Dim(value=120, source="stated"),
+        width_y=Dim(value=70, source="stated"),
+        height_z=Dim(value=90, source="stated"),
+        features=[
+            Feature(name="M8 tap pilot", type="hole", dims={"diameter": 6.8}),
+            Feature(name="stud thread", type="thread", dims={"diameter": 8.0}),
+        ],
+        standard_parts=[
+            StandardPartSpec(
+                class_name="ThreadedHole",
+                size="M8x1.25",
+                covers_features=["M8 tap pilot", "stud thread"],
+            )
+        ],
+    )
+    assert covered_feature_indices(spec) == {0, 1}
+    assert covered_feature_indices(spec, keep_host_voids=True) == {1}
+    assert is_host_void_feature(spec.features[0])
+    assert not is_host_void_feature(spec.features[1])
+    assert is_host_void_feature({"type": "counterbore_hole"})
+    assert not is_host_void_feature({"type": "cone"})

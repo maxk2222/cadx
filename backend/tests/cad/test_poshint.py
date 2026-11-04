@@ -211,3 +211,31 @@ def test_nbsp_and_dash_offsets_parse():
     an end hint, both normalize away."""
     _c, _f, ends, _n = parse_position_hints("5\u00a0mm from \u2212x end")
     assert [(e["end"], e["offset_mm"]) for e in ends] == [("-x", 5.0)]
+
+
+def test_direction_token_is_not_a_face_hint():
+    """'drilled from z=0 along +z' names the bore's travel direction — the
+    +z token must not read as an entry-face hint (r7 bracket: a bottom-mouth
+    blind tap anchored mid-air at the +z end when it did)."""
+    _coords, faces, _ends, _nears = parse_position_hints(
+        "x=-46, y=+22, drilled from z=0 along +z to z=10"
+    )
+    assert faces == []
+
+
+@pytest.mark.parametrize(
+    "text,want",
+    [
+        ("opens on the +z face", ["+z"]),
+        ("drilled from -z face upward to depth 10", ["-z"]),
+        ("hole along the +y axis", []),
+        ("in +x direction, from -x end 20mm", ["-x"]),
+        ("extends +z from bottom face", ["-z"]),
+        ("+z face, centred in y", ["+z"]),
+        ("loads act in -z direction", []),
+        ("Richtung +z gebohrt", []),
+    ],
+)
+def test_direction_vs_face_phrasing(text, want):
+    _c, faces, _e, _n = parse_position_hints(text)
+    assert faces == want

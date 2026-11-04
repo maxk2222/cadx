@@ -172,12 +172,14 @@ def _bolt_size(text: str) -> str:
 def _independent_features(spec: PartSpec) -> list[Feature]:
     """Spec features that are NOT supplied by a catalog standard part — a
     countersunk head or threaded shank on a catalog screw is intrinsic part
-    geometry, never a bore to anchor, re-cut or measure."""
+    geometry, never a bore to anchor, re-cut or measure. Void-typed features
+    (the tap hole a fastener screws into) stay independent: coverage may
+    delegate how they are built, they are still host geometry to anchor."""
     try:
         from cadx.cad.standard_parts import covered_feature_indices
     except Exception:
         return list(spec.features)
-    covered = covered_feature_indices(spec)
+    covered = covered_feature_indices(spec, keep_host_voids=True)
     if not covered:
         return list(spec.features)
     return [f for i, f in enumerate(spec.features) if i not in covered]
@@ -699,6 +701,17 @@ def _spec_anchors(spec: PartSpec) -> list[Anchor]:  # noqa: C901
     bounds = _spec_bounds(spec)
     if bounds is None:
         return []  # no declared envelope — end-relative hints unresolvable
+
+    def _dedupe(pts: list[tuple[float, float, bool]]) -> list[tuple[float, float, bool]]:
+        seen: set[tuple[float, float]] = set()
+        keep: list[tuple[float, float, bool]] = []
+        for x, y, est in pts:
+            key = (round(x, 3), round(y, 3))
+            if key not in seen:
+                seen.add(key)
+                keep.append((x, y, est))
+        return keep
+
     out: list[Anchor] = []
     for f in _independent_features(spec):
         if not _hole_like(f):
@@ -765,7 +778,7 @@ def _spec_anchors(spec: PartSpec) -> list[Anchor]:  # noqa: C901
                                     face, sgn = fc
                                     signed = "-" + letter if sgn < 0 else "+" + letter
                                     axial = face - sgn * d / 2.0
-            for u, v, est in pts:
+            for u, v, est in _dedupe(pts):
                 pos: list[float | None] = [None, None, None]
                 pos[au], pos[av] = round(u, 2), round(v, 2)
                 if axial is not None:
@@ -788,7 +801,7 @@ def _spec_anchors(spec: PartSpec) -> list[Anchor]:  # noqa: C901
                     )
                 )
             continue
-        for x, y, est in _spec_xy(f, bounds, dia):
+        for x, y, est in _dedupe(_spec_xy(f, bounds, dia)):
             # a z bore bound to ONE declared plate carries the plate's axial
             # centre + span so the deterministic re-cut drills the plate only —
             # a full-length cutter would pierce a strut/rib on the same ray

@@ -1410,3 +1410,69 @@ def test_plain_hole_measured_open_through_passes():
     c = _by_name(report)["feat_0_void_depth"]
     assert c["status"] == "PASS"
     assert c["evidence"]["expected"] == "through"
+
+
+def test_covered_hole_feature_still_void_checked():
+    """r7 bracket trap: a ThreadedHole standard part claiming the tap holes
+    in covers_features hid them from every void check — the part passed
+    verify_spec with three declared bores physically absent. Coverage
+    delegates HOW a host void is built, never WHETHER it must exist."""
+    spec = _spec(
+        features=[
+            _feat(
+                name="M8 tap pilot",
+                type="hole",
+                dims={"diameter": 6.8, "depth": 10.0},
+                description="blind tap from bottom face",
+            )
+        ],
+        standard_parts=[
+            {
+                "class_name": "ThreadedHole",
+                "size": "M8x1.25",
+                "quantity": 1,
+                "covers_features": ["M8 tap pilot"],
+            }
+        ],
+    )
+    res = _res(features={"hole_groups": [], "total_holes": 0})
+    findings = [
+        {
+            "feature": "M8 tap pilot",
+            "expected": "1 hole dia 6.8",
+            "actual": "missing",
+            "severity": "major",
+        }
+    ]
+    report = verify_spec(spec, res, feature_findings=findings)
+    checks = _by_name(report)
+    feat_checks = [n for n in checks if n.startswith("feat_0_")]
+    assert feat_checks, "covered host void must keep its per-feature checks"
+    assert checks["feat_0_kind"]["status"] == "UNVERIFIED"
+    assert report["status"] == "FAIL"
+
+
+def test_covered_intrinsic_thread_still_skipped():
+    """A covered 'thread'-typed feature is genuine part anatomy (the screw's
+    own thread) — the coverage skip still applies to it."""
+    spec = _spec(
+        features=[
+            _feat(
+                name="stud thread",
+                type="thread",
+                dims={"diameter": 8.0},
+            )
+        ],
+        standard_parts=[
+            {
+                "class_name": "HexScrew",
+                "size": "M8-1.25",
+                "length_mm": 20.0,
+                "covers_features": ["stud thread"],
+            }
+        ],
+    )
+    res = _res(features={"hole_groups": [], "total_holes": 0})
+    report = verify_spec(spec, res, feature_findings=[])
+    checks = _by_name(report)
+    assert not any(n.startswith("feat_0_") for n in checks)

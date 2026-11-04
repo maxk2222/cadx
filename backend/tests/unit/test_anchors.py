@@ -7,7 +7,7 @@ from pathlib import Path
 
 from cadx.agent.anchors import Anchor, _spec_anchors, _type_anchors, build_anchors
 from cadx.agent.spechost import host_body, host_range, host_span, parse_ranges
-from cadx.llm.schemas import Dim, Feature, FeatureCenter, PartSpec
+from cadx.llm.schemas import Dim, Feature, FeatureCenter, PartSpec, StandardPartSpec
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "specs"
 
@@ -1220,3 +1220,100 @@ def test_spec_anchors_face_coordinate_midair_stays_unbound():
     (a,) = _spec_anchors(spec)
     assert a.blind is True
     assert a.z is None and a.pos is None
+
+
+def test_spec_anchors_drilled_along_direction_not_entry_face():
+    """'drilled from z=0 along +z to z=10' — the +z is the drill direction,
+    not the entry face: the mouth coordinate z=0 anchors the -z face and the
+    centre lands at depth/2 (r7 regression: the '+z' token read as an entry
+    face put a blind bottom tap's centre at z=85, mid-air near the top)."""
+    spec = PartSpec(
+        name="block",
+        summary="",
+        units="mm",
+        length_x=Dim(value=120, unit="mm", source="stated"),
+        width_y=Dim(value=70, unit="mm", source="stated"),
+        height_z=Dim(value=90, unit="mm", source="stated"),
+        features=[
+            Feature(
+                name="M8 tap pilot",
+                type="hole",
+                dims={"diameter": 6.8, "depth": 10.0},
+                position="x=-46, y=+22, drilled from z=0 along +z to z=10",
+                description="blind tap-drill pilot from bottom face",
+            ),
+        ],
+        image_roles=[],
+    )
+    (a,) = _spec_anchors(spec)
+    assert a.axis == "-z"
+    assert a.blind is True
+    assert a.pos == [-46.0, 22.0, 5.0]
+    assert a.depth_mm == 10.0
+
+
+def test_spec_anchors_covered_host_void_still_emits():
+    """A hole-typed feature claimed in covers_features — a ThreadedHole part
+    covering its pilot holes — is host geometry, not catalog anatomy: it
+    must still anchor (r7: coverage hid three missing taps from anchors,
+    verify_spec checks and FEM binding alike)."""
+    spec = PartSpec(
+        name="block",
+        summary="",
+        units="mm",
+        length_x=Dim(value=120, unit="mm", source="stated"),
+        width_y=Dim(value=70, unit="mm", source="stated"),
+        height_z=Dim(value=90, unit="mm", source="stated"),
+        features=[
+            Feature(
+                name="M8 tap pilot",
+                type="hole",
+                dims={"diameter": 6.8, "depth": 10.0},
+                position="x=-46, y=+22, drilled from z=0 upward",
+                description="blind tap-drill pilot from bottom face",
+            ),
+        ],
+        standard_parts=[
+            StandardPartSpec(
+                class_name="ThreadedHole",
+                size="M8x1.25",
+                quantity=1,
+                covers_features=["M8 tap pilot"],
+            )
+        ],
+        image_roles=[],
+    )
+    (a,) = _spec_anchors(spec)
+    assert a.axis == "-z"
+    assert a.pos == [-46.0, 22.0, 5.0]
+
+
+def test_spec_anchors_covered_intrinsic_thread_stays_excluded():
+    """A covered 'thread'-typed feature is still catalog anatomy — the
+    anchoring exemption holds for genuine part-supplied anatomy."""
+    spec = PartSpec(
+        name="plate",
+        summary="",
+        units="mm",
+        length_x=Dim(value=40, unit="mm", source="stated"),
+        width_y=Dim(value=40, unit="mm", source="stated"),
+        height_z=Dim(value=10, unit="mm", source="stated"),
+        features=[
+            Feature(
+                name="stud thread",
+                type="thread",
+                dims={"diameter": 8.0},
+                position="x=0, y=0",
+            ),
+        ],
+        standard_parts=[
+            StandardPartSpec(
+                class_name="HexScrew",
+                size="M8-1.25",
+                length_mm=20.0,
+                covers_features=["stud thread"],
+            )
+        ],
+        image_roles=[],
+    )
+    assert _spec_anchors(spec) == []

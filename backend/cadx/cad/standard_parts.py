@@ -295,10 +295,53 @@ def _get(obj: Any, key: str, default: Any = None) -> Any:
     return getattr(obj, key, default)
 
 
-def covered_feature_indices(spec: Any) -> set[int]:
+# a covered feature that is itself a HOST VOID — the tap hole a fastener
+# screws into, the seat a bearing presses into, the bore a ThreadedHole part
+# cuts — is measurable part geometry: coverage delegates HOW it is built,
+# never WHETHER it must exist. These stay verifiable, anchorable and
+# re-cuttable even when a standard part claims them.
+_HOST_VOID_TYPES = {
+    "hole",
+    "bore",
+    "tunnel",
+    "through_hole",
+    "blind_hole",
+    "countersink_hole",
+    "counterbore_hole",
+    "tap_hole",
+    "threaded_hole",
+    "clearance_hole",
+    "press_fit_hole",
+    "bearing_seat",
+    "slot",
+    "langloch",
+    "notch",
+    "pocket",
+    "cutout",
+}
+# bare 'thread'/'insert' stay exempt — a covered 'thread' is usually the
+# fastener's own anatomy and 'insert' may name the part itself
+_HOST_VOID_EXEMPT = {"thread", "insert"}
+
+
+def is_host_void_feature(feature: Any) -> bool:
+    """True when a spec feature describes a void in the host part — hole,
+    bore, seat, slot, pocket — rather than anatomy of a catalog object."""
+    ftype = str(_get(feature, "type") or "").lower()
+    if ftype in _HOST_VOID_EXEMPT:
+        return False
+    return ftype in _HOST_VOID_TYPES or "hole" in ftype
+
+
+def covered_feature_indices(spec: Any, keep_host_voids: bool = False) -> set[int]:
     """Indices into ``spec.features`` that a catalog standard part supplies —
     a screw's head/shank/drive recess are intrinsic catalog geometry, not
-    independent machining ops to cut, anchor or measure."""
+    independent machining ops to cut, anchor or measure.
+
+    ``keep_host_voids`` drops void-typed features from the covered set: a
+    covered tap hole or bearing seat is still host geometry that must be
+    anchored, measured and verified — only genuine part anatomy (head,
+    drive, the fastener's own thread) counts as supplied."""
     parts = _get(spec, "standard_parts") or []
     if not parts:
         return set()
@@ -307,12 +350,15 @@ def covered_feature_indices(spec: Any) -> set[int]:
         for part in parts
     )
     covered: set[int] = set()
-    for i, feature in enumerate(_get(spec, "features") or []):
+    features = _get(spec, "features") or []
+    for i, feature in enumerate(features):
         name = _get(feature, "name")
         if any(name and name in (_get(part, "covers_features") or []) for part in parts) or (
             has_fastener and name and _is_intrinsic_fastener_feature(feature)
         ):
             covered.add(i)
+    if keep_host_voids and covered:
+        covered = {i for i in covered if not is_host_void_feature(features[i])}
     return covered
 
 

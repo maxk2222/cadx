@@ -1187,6 +1187,22 @@ def _protrusion_check(
         checks.append(_check(check_name, TIER_FEATURES, "UNVERIFIED", ev))
 
 
+def _catalog_covered_skip(f: dict[str, Any], name: str, covered: set[str]) -> bool:
+    """A feature claimed by a standard part via covers_features skips the
+    per-feature void checks ONLY when it is anatomy of the catalog object
+    (head/drive/shank, the screw's own thread). A covered host void (tap
+    hole, bearing seat, the bore a ThreadedHole part cuts) is measurable
+    part geometry — coverage delegates how it is built, not whether it
+    exists, so it keeps every check."""
+    if name.strip().lower() not in covered:
+        return False
+    try:
+        from cadx.cad.standard_parts import is_host_void_feature
+    except Exception:
+        return True
+    return not is_host_void_feature(f)
+
+
 def _feature_placement(
     spec: dict[str, Any],
     measured: dict[str, Any],
@@ -1234,7 +1250,10 @@ def _feature_placement(
     # features a catalog standard part claims via covers_features are built
     # by the recipe path — they are not measurable voids/protrusions and
     # must not be forced through void-kind checks (an external thread on a
-    # screw is typed `thread` but has no void evidence by design)
+    # screw is typed `thread` but has no void evidence by design). A covered
+    # feature that is itself a host void (the tap hole a fastener screws
+    # into, the bore a ThreadedHole part cuts) stays measurable geometry —
+    # coverage may delegate how it is built, never whether it exists.
     covered = {
         str(n).strip().lower()
         for sp in (spec or {}).get("standard_parts") or []
@@ -1247,7 +1266,7 @@ def _feature_placement(
             continue
         ftype = str(f.get("type") or "").lower()
         name = str(f.get("name") or f.get("type") or f"feature_{i}")
-        if name.strip().lower() in covered:
+        if _catalog_covered_skip(f, name, covered):
             continue
         if ftype in {"fillet", "round"}:
             _fillet_check(i, name, f, measured, checks)

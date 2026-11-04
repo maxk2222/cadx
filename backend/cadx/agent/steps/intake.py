@@ -714,7 +714,7 @@ def resolve_thread_intents(spec: PartSpec) -> list[str]:
         covered_feature_indices,
     )
 
-    covered = covered_feature_indices(spec)
+    covered = covered_feature_indices(spec, keep_host_voids=True)
     # an intrinsically-covered thread feature is only attributable when a
     # single screw-class part exists — otherwise explicit covers_features
     # has to disambiguate which part's reach it means
@@ -889,7 +889,7 @@ def _sanitize_covered_features(spec: PartSpec, class_name: str) -> list[str]:
     are still caught by is_standard_only via the free-text thread_spec."""
     from cadx.cad.standard_parts import covered_feature_indices
 
-    covered = covered_feature_indices(spec)
+    covered = covered_feature_indices(spec, keep_host_voids=True)
     notes: list[str] = []
     if not covered:
         return notes

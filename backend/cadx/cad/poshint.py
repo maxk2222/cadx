@@ -107,6 +107,17 @@ _POS_MID_RE = re.compile(
     re.I,
 )
 _POS_FACE_TOKEN_RE = re.compile(r"(?<![\w])([+-][xyz])(?![\w])")
+# "drilled along +z" / "in -x direction" / "extends +z" name a bore's travel
+# DIRECTION, not the face it opens on — masked before the bare-token scan so
+# a direction phrase cannot masquerade as an entry-face hint ("the +z face"
+# and "+z side" remain face hints)
+_POS_DIRECTION_TOKEN_RE = re.compile(
+    r"(?:\b(?:along|entlang|towards?|extends?|runs?)\s+(?:the\s+|der\s+|den\s+)?"
+    r"|\b(?:in\s+)?(?:positive\s+|negative\s+)?(?:direction|richtung)\s+)"
+    r"[+-][xyz](?![\w])"
+    r"|[+-][xyz][\s-]*(?:direction|richtung)\b",
+    re.I,
+)
 _POS_FACE_WORDS = {
     "top": "+z",
     "upper": "+z",
@@ -238,6 +249,8 @@ def parse_position_hints(
     for m in _POS_MID_RE.finditer("".join(masked)):
         ax = next(g for g in m.groups() if g).lower()
         coords.setdefault(ax, 0.0)
+        _mask(m.span())
+    for m in _POS_DIRECTION_TOKEN_RE.finditer("".join(masked)):
         _mask(m.span())
     work = "".join(masked)
     faces = {m.group(1) for m in _POS_FACE_TOKEN_RE.finditer(work)}
