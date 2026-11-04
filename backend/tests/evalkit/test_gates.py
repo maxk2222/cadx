@@ -917,3 +917,42 @@ def test_refine_verify_gate():
     )
     # no refine report at all -> inconclusive, not a pass
     assert run_gates([{"type": "refine_verify"}], _out(mesh={}), 0)[0].ok is None
+
+
+def test_fem_loadcases_region_fallback_fails_without_checks():
+    """A declared region resolving to a boundary-patch fallback means the
+    declared BC was never applied — the gate must fail even when the case
+    carries NO explicit checks list (fallbacks are never 'fine')."""
+    out = _fem_out()
+    out.fem["cases"][0]["warnings"] = [
+        "region_fallback: region 'mount_holes' unresolved — boundary patch applied"
+    ]
+    bad = run_gates([{"type": "fem_loadcases", "min_cases": 1}], out, 0)[0]
+    assert bad.ok is False
+    assert "unresolved" in bad.detail
+
+
+def test_fem_loadcases_region_fallback_fires_per_case():
+    out = _fem_out()
+    out.fem["cases"].append(
+        {
+            "name": "moment_case",
+            "safety_factor": 3.0,
+            "reactions": {"resultant_n": [0.0, 0.0, 0.0], "resultant_mag_n": 0.0},
+            "applied": [],
+            "warnings": [
+                "region_fallback: 'leg' unresolved",
+                "region_fallback: 'boss_face' unresolved",
+            ],
+        }
+    )
+    bad = run_gates([{"type": "fem_loadcases"}], out, 0)[0]
+    assert bad.ok is False
+    assert bad.measured["unresolved_regions"] == 2
+    assert "moment_case" in bad.detail
+
+
+def test_fem_loadcases_clean_case_passes():
+    out = _fem_out()
+    ok = run_gates([{"type": "fem_loadcases", "min_cases": 1}], out, 0)[0]
+    assert ok.ok, ok.detail

@@ -1063,3 +1063,103 @@ def test_spec_anchors_tapped_hole_bottom_face_m8():
     assert a.pos == [-46.0, 22.0, 5.0]
     assert a.blind is True
     assert a.depth_mm == 10.0
+
+
+def _mount_spec() -> PartSpec:
+    """Autonomous-mount shape: 10 mm base plate + 4 clearance holes whose
+    declared depth equals the plate span (through, NOT blind)."""
+    return PartSpec(
+        name="mount",
+        summary="",
+        units="mm",
+        length_x=Dim(value=100, unit="mm", source="stated"),
+        width_y=Dim(value=80, unit="mm", source="stated"),
+        height_z=Dim(value=40, unit="mm", source="stated"),
+        features=[
+            Feature(
+                name="base_plate",
+                type="block",
+                dims={"length": 100, "width": 80, "thickness": 10},
+                position="x=-50..50, y=-40..40, z=0..10",
+            ),
+            Feature(
+                name="mounting_hole_1",
+                type="hole",
+                dims={"diameter": 8.5, "depth": 10.0},
+                axis="z",
+                position="x=-42, y=-32",
+                description="Clearance hole for M8 bolt",
+            ),
+        ],
+        image_roles=[],
+    )
+
+
+def test_spec_anchors_depth_equal_host_span_is_through():
+    """depth=10 on a hole through a 10 mm plate is the HOST bound, not
+    blind intent: anchor binds the plate via XY containment (name/preposition
+    host resolution fails for 'mounting_hole_1') and sits at the plate mid."""
+    (a,) = _spec_anchors(_mount_spec())
+    assert a.blind is False
+    assert a.axis == "+z"
+    assert a.pos == [-42.0, -32.0, 5.0]
+    assert a.depth_mm == 10.0
+
+
+def test_spec_anchors_unbound_unsigned_blind_keeps_no_face():
+    """A blind +z bore bound to no host AND carrying no signed face
+    declaration must not fabricate its mouth at the part's top face —
+    pos-z stays None instead of pointing into air."""
+    spec = PartSpec(
+        name="mount",
+        summary="",
+        units="mm",
+        length_x=Dim(value=100, unit="mm", source="stated"),
+        width_y=Dim(value=80, unit="mm", source="stated"),
+        height_z=Dim(value=40, unit="mm", source="stated"),
+        features=[
+            Feature(
+                name="oddball_hole",
+                type="hole",
+                dims={"diameter": 5.0, "depth": 8.0},
+                axis="z",
+                position="x=-42, y=-32",
+                description="blind recess",
+            ),
+        ],
+        image_roles=[],
+    )
+    (a,) = _spec_anchors(spec)
+    assert a.blind is True
+    assert a.x == -42.0 and a.y == -32.0
+    assert a.z is None and a.pos is None  # no fabricated envelope-top entry
+    assert a.depth_mm == 8.0
+
+
+def test_spec_anchors_signed_face_unbound_keeps_envelope_entry():
+    """A declared '-z face' on an unbound blind bore legitimates the
+    envelope's low face as the mouth — pos-z = depth/2 (bearing-tap path)."""
+    spec = PartSpec(
+        name="mount",
+        summary="",
+        units="mm",
+        length_x=Dim(value=100, unit="mm", source="stated"),
+        width_y=Dim(value=80, unit="mm", source="stated"),
+        height_z=Dim(value=40, unit="mm", source="stated"),
+        features=[
+            Feature(
+                name="bottom_tap",
+                type="hole",
+                dims={"diameter": 6.8, "depth": 10.0},
+                axis="z",
+                position="x=-42, y=-32, drilled from -z face",
+                description="blind tap",
+            ),
+        ],
+        image_roles=[],
+    )
+    (a,) = _spec_anchors(spec)
+    assert a.axis == "-z"
+    assert a.blind is True
+    assert a.pos == [-42.0, -32.0, 5.0]
+    assert a.depth_mm == 10.0

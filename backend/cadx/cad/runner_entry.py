@@ -50,6 +50,25 @@ except Exception:
     _inspect = None
 
 
+def _bounded_spec_anchor(h: object, mesh_boolean) -> bool:
+    """True when a spec-sourced anchor carries a DECLARED axial span (pos +
+    depth_mm — e.g. a mount hole bound to its 10 mm base plate): the bore
+    interval bounds the deterministic re-cut, so a sealed/missing spec bore
+    gets re-cut safely without blindly piercing the whole part envelope.
+    Unbounded spec anchors stay codegen-owned and are not re-cut."""
+    if not isinstance(h, dict):
+        return False
+    if "spec" not in str(h.get("source") or ""):
+        return False
+    if mesh_boolean is None:
+        return False
+    ax = str(h.get("axis") or "+z").lstrip("+-")
+    idx = {"x": 0, "y": 1, "z": 2}.get(ax)
+    if idx is None:
+        return False
+    return mesh_boolean._declared_axial_span(h, idx) is not None
+
+
 class _ImportGuard(importlib.abc.MetaPathFinder):
     """Second line of defence: block imports issued *by generated code* outside
     the allow-list. Imports triggered internally by build123d/bd_warehouse are
@@ -577,13 +596,21 @@ def main(workdir: Path | None = None) -> int:  # noqa: C901
         # mode (no mesh solid) only image-measured anchors qualify — spec
         # and mesh-derived anchors are declared intent the codegen owns;
         # cutting them blind drills through features it placed deliberately.
+        # Exception: spec anchors carrying a DECLARED axial span (pos +
+        # depth_mm — e.g. a mount hole bound to its 10 mm base plate) bound
+        # the cutter to the declared bore interval, so a sealed/missing spec
+        # bore gets re-cut safely instead of failing verify_spec later.
         recut_anchors = (
             anchor_holes_list
             if mesh_solid_path
             else [
                 h
                 for h in anchor_holes_list
-                if isinstance(h, dict) and str(h.get("source") or "") in ("image", "image+mesh")
+                if isinstance(h, dict)
+                and (
+                    str(h.get("source") or "") in ("image", "image+mesh")
+                    or _bounded_spec_anchor(h, mesh_boolean)
+                )
             ]
         )
         if mesh_boolean is not None and recut_anchors:

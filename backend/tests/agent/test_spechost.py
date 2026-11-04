@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from cadx.agent.spechost import host_body, host_range, parse_ranges
+from cadx.agent.spechost import host_body, host_range, host_span, parse_ranges, xy_host_zspan
 from cadx.llm.schemas import Feature, PartSpec
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "specs"
@@ -95,3 +95,115 @@ def test_fixture_without_centers_roundtrips(bracket: PartSpec):
     assert all(f.centers == [] for f in bracket.features)
     again = PartSpec.model_validate(bracket.model_dump())
     assert again == bracket
+
+
+def _envelope() -> dict:
+    d = lambda v: {"value": v, "unit": "mm", "source": "stated"}  # noqa: E731
+    return {
+        "name": "p",
+        "summary": "",
+        "units": "mm",
+        "length_x": d(100),
+        "width_y": d(80),
+        "height_z": d(40),
+        "features": [],
+        "image_roles": [],
+    }
+
+
+def test_host_span_end_anchored_minus_x():
+    """'senkrechter Schenkel am -X-Ende, thickness 5' → x ∈ [env_lo, env_lo+5]."""
+    spec = PartSpec.model_validate(
+        {
+            **_envelope(),
+            "features": [
+                {
+                    "name": "vertical leg",
+                    "type": "wall",
+                    "dims": {"thickness": 5},
+                    "position": "am -X-Ende",
+                },
+                {"name": "pin bore", "type": "hole", "position": "in the vertical"},
+            ],
+        }
+    )
+    f = spec.features[1]
+    assert host_span(spec, f, "x") == (-50.0, -45.0)
+
+
+def test_host_span_end_anchored_top_plate():
+    """'top plate, thickness 4' → z ∈ [env_hi-4, env_hi] via Oberkante-Word."""
+    spec = PartSpec.model_validate(
+        {
+            **_envelope(),
+            "features": [
+                {
+                    "name": "top arm",
+                    "type": "plate",
+                    "dims": {"thickness": 4},
+                    "position": "an der Oberkante",
+                },
+                {"name": "bore", "type": "hole", "position": "in the top"},
+            ],
+        }
+    )
+    f = spec.features[1]
+    assert host_span(spec, f, "z") == (36.0, 40.0)
+
+
+def test_host_span_ambiguous_ends_returns_none():
+    """Both ends named → no honest span (a wrong bound is worse than none)."""
+    spec = PartSpec.model_validate(
+        {
+            **_envelope(),
+            "features": [
+                {
+                    "name": "leg",
+                    "type": "wall",
+                    "dims": {"thickness": 5},
+                    "position": "between -X end and +X end",
+                },
+                {"name": "bore", "type": "hole", "position": "through the leg"},
+            ],
+        }
+    )
+    f = spec.features[1]
+    assert host_span(spec, f, "x") is None
+
+
+def test_host_span_thicknessless_end_anchor_returns_none():
+    spec = PartSpec.model_validate(
+        {
+            **_envelope(),
+            "features": [
+                {"name": "leg", "type": "wall", "position": "am -X-Ende"},
+                {"name": "bore", "type": "hole", "position": "through the leg"},
+            ],
+        }
+    )
+    f = spec.features[1]
+    assert host_span(spec, f, "x") is None
+
+
+def test_xy_host_zspan_picks_lowest_containing_solid():
+    """Mount-hole XY inside plate AND flange/boss footprints → the lowest
+    z-span wins (the bore pierces the plate first)."""
+    spec = PartSpec.model_validate(
+        {
+            **_envelope(),
+            "features": [
+                {
+                    "name": "base_plate",
+                    "type": "block",
+                    "position": "x=-50..50, y=-40..40, z=0..10",
+                },
+                {"name": "boss", "type": "boss", "position": "x=-10..10, y=-10..10, z=10..40"},
+            ],
+        }
+    )
+    hole = Feature(name="mounting_hole", type="hole", position="x=-42, y=-32")
+    assert xy_host_zspan(spec, hole, -42.0, -32.0) == (0.0, 10.0)
+    # XY inside the boss footprint but not the plate x/y? plate covers all →
+    # still plate (lowest). A point outside both → None.
+    assert xy_host_zspan(spec, hole, 0.0, 0.0) == (0.0, 10.0)
+    assert xy_host_zspan(spec, hole, 90.0, 0.0) is None

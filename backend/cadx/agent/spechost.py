@@ -224,3 +224,34 @@ def host_span(spec: PartSpec, f: Feature, axis: str) -> tuple[float, float] | No
     if declared is not None:
         return declared
     return _host_end_span(host, spec, letter)
+
+
+def xy_host_zspan(
+    spec: PartSpec,
+    f: Feature,
+    x: float,
+    y: float,
+) -> tuple[float, float] | None:
+    """Z-host bound via XY containment — the fallback when neither free
+    text nor the feature's own name binds a host ("mounting_hole_1" at
+    "x=-42, y=-32" names no plate).
+
+    A vertical bore physically pierces the lowest solid covering its XY:
+    among features whose declared x/y ranges contain (x, y), the one with
+    the lowest z-span wins (a mount hole starts in the base plate, not in
+    the flange/boss standing on it). Only solids declaring ranges on all
+    three axes qualify — range-less rounds (a "central boss") would bind
+    by accident otherwise."""
+    best: tuple[float, float] | None = None
+    for g in spec.features or []:
+        if g is f or (g.type or "").lower() not in _SOLID_TYPES:
+            continue
+        rng = parse_ranges(f"{g.position or ''} {g.description or ''}")
+        xs, ys, zs = rng.get("x"), rng.get("y"), rng.get("z")
+        if xs is None or ys is None or zs is None:
+            continue
+        if not (xs[0] - 1e-6 <= x <= xs[1] + 1e-6 and ys[0] - 1e-6 <= y <= ys[1] + 1e-6):
+            continue
+        if best is None or zs[0] < best[0]:
+            best = zs
+    return best

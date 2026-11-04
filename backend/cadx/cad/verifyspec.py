@@ -312,6 +312,8 @@ def _void_kind_axis_check(
                 },
             )
         )
+        if ftype in _HOLE_KIND_TYPES or "hole" in ftype or "bore" in ftype:
+            _void_depth_check(i, name, ftype, f, cands, checks)
         return
     slotish = "slot" in ftype or "langloch" in ftype
     matching = [
@@ -339,6 +341,8 @@ def _void_kind_axis_check(
     else:
         ev["reason"] = f"no measured {ftype} runs along the {want_ax} axis"
         checks.append(_check(check_name, TIER_FEATURES, "FAIL", ev))
+    if ftype in _HOLE_KIND_TYPES or "hole" in ftype or "bore" in ftype:
+        _void_depth_check(i, name, ftype, f, matching or cands, checks)
 
 
 def _slot_orientation_check(
@@ -399,6 +403,162 @@ def _slot_orientation_check(
         return
     ev["reason"] = f"slot elongated along +{elong_axes[0]}, spec declares {want}"
     checks.append(_check(check_name, TIER_FEATURES, "FAIL", ev))
+
+
+# declared through-ness of a void feature — a declared through-hole sealed
+# by a 1 mm membrane still passes dia/axis/position checks, so depth_class
+# and the tunnel-verified `blocked` count must gate it separately
+_VOID_THROUGH_TYPES = {
+    "through_hole",
+    "tunnel",
+    "clearance_hole",
+    "through_hole_with_countersink",
+}
+_VOID_BLIND_TYPES = {"blind_hole", "dimple"}
+# taps/inserts are blind unless text says through — and then only with a
+# declared depth (a "tapped through hole" declares it openly)
+_VOID_BLINDISH_TYPES = {"tap", "tapped_hole", "thread", "insert", "heatset"}
+# blind markers — checked BEFORE through: "do NOT drill through" and
+# "ends inside the block" contain 'through'/'inside' words but mean blind
+_VOID_BLIND_RE = re.compile(
+    r"\bblind\b|sackloch|sackbohr|grundbohr|grundloch|bottomed|"
+    r"ends?\s+(?:inside|within)|stops?\s+(?:inside|within|at)|"
+    r"(?:do\s+not|don'?t|not|nicht|no|kein\w*)\W{0,20}(?:drill|bore|go|cut|through)|"
+    r"nicht\s+durchg\w*|partial[ -]?depth",
+    re.I,
+)
+_VOID_THROUGH_RE = re.compile(r"\bthrough\b|durchg\w*|open\s+on\s+both|\btunnel\b", re.I)
+
+
+def _spec_void_depth_intent(f: dict[str, Any]) -> str | None:
+    """'through' | 'blind' | None — the declared depth intent of a void
+    spec feature. Undecorated hole-ish types default to 'through': in
+    mechanical specs an unmarked hole is through, a bottomed bore is the
+    exception the author must declare."""
+    ftype = str(f.get("type") or "").lower()
+    blob = " ".join(
+        str(f.get(k) or "") for k in ("type", "name", "position", "description", "standard")
+    ).lower()
+    if ftype in _VOID_THROUGH_TYPES:
+        return "through"
+    if ftype in _VOID_BLIND_TYPES:
+        return "blind"
+    if _VOID_BLIND_RE.search(blob):
+        return "blind"
+    if _VOID_THROUGH_RE.search(blob):
+        return "through"
+    dims = f.get("dims") or {}
+    has_depth = any(dims.get(k) for k in ("depth", "depth_mm", "tiefe", "bore_depth"))
+    if ftype in _VOID_BLINDISH_TYPES and has_depth:
+        return "blind"
+    if ftype in _HOLE_KIND_TYPES or "hole" in ftype or "bore" in ftype:
+        return "through"
+    return None
+
+
+def _void_pos_matched(f: dict[str, Any], cands: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Narrow candidates to voids whose measured centres sit on the
+    feature's declared in-plane point(s) — the depth verdict must not pool
+    a through bore at x=0 with the sealed mounts at x=±42. Falls back to
+    the full set when no point is declared or no centre was measured."""
+    text = str(f.get("position") or "") or str(f.get("description") or "")
+    coords = _position_coords(text)
+    pts: list[dict[str, float]] = _structured_feature_centers(f) or []
+    if not pts and int(f.get("count") or 1) > 1:
+        pts = [{k: v for k, v in g.items()} for g in parse_coord_points(text)]
+    if not pts and coords:
+        pts = [dict(coords)]
+    want_ax = _spec_axis(f)
+    pts = [{k: v for k, v in p.items() if k != want_ax} for p in pts]
+    pts = [p for p in pts if p]
+    if not pts:
+        return cands
+    matched = []
+    for g in cands:
+        for c in _void_center_maps(g):
+            for p in pts:
+                if all(k in c and abs(c[k] - v) <= _POS_TOL_MM for k, v in p.items()):
+                    matched.append(g)
+                    break
+            else:
+                continue
+            break
+    return matched or cands
+
+
+def _void_depth_check(
+    i: int,
+    name: str,
+    ftype: str,
+    f: dict[str, Any],
+    cands: list[dict[str, Any]],
+    checks: list[dict[str, Any]],
+) -> None:
+    """Declared through-ness vs measured ``depth_class``/``blocked``.
+
+    The sealed-mount-hole trap: a 1 mm recess satisfies the dia/axis/
+    position checks while the declared through-hole is physically sealed —
+    this check turns the measured membrane evidence into a FAIL."""
+    want = _spec_void_depth_intent(f)
+    if want is None or not cands:
+        return
+    cands = _void_pos_matched(f, cands)
+    base: dict[str, Any] = {"feature": name, "feature_type": ftype, "expected": want}
+    blocked_n = sum(int(g.get("blocked") or 0) for g in cands)
+    blind_g = [g for g in cands if str(g.get("depth_class") or "") == "blind"]
+    open_g = [
+        g
+        for g in cands
+        if str(g.get("depth_class") or "") == "through" and not int(g.get("blocked") or 0)
+    ]
+    ev = {
+        **base,
+        "measured_depth": sorted({str(g.get("depth_class")) for g in cands}),
+        "blocked": blocked_n,
+        "measured_ids": _measured_ids(cands),
+    }
+    if want == "through" and (blocked_n or (blind_g and not open_g)):
+        checks.append(
+            _check(
+                f"feat_{i}_void_depth",
+                TIER_FEATURES,
+                "FAIL",
+                {
+                    **ev,
+                    "reason": (
+                        "declared through-hole measured sealed/blind — the "
+                        "bore is closed (verify the cutter pierces the host: "
+                        "through_hole's depth= cuts BELOW the workplane, a "
+                        "through hole needs no depth bound)"
+                    ),
+                },
+            )
+        )
+        return
+    if want == "blind" and open_g and not blind_g:
+        checks.append(
+            _check(
+                f"feat_{i}_void_depth",
+                TIER_FEATURES,
+                "FAIL",
+                {**ev, "reason": "declared blind bore measured open/through"},
+            )
+        )
+        return
+    if (want == "through" and open_g) or (want == "blind" and blind_g):
+        checks.append(_check(f"feat_{i}_void_depth", TIER_FEATURES, "PASS", ev))
+        return
+    checks.append(
+        _check(
+            f"feat_{i}_void_depth",
+            TIER_FEATURES,
+            "UNVERIFIED",
+            {
+                **ev,
+                "reason": "no measured void reports a depth class — through-ness unverifiable",
+            },
+        )
+    )
 
 
 def _bbox_bounds(bbox_min: Any, bbox_max: Any) -> dict[str, tuple[float, float]]:

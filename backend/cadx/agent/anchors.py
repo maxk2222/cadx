@@ -21,7 +21,7 @@ from typing import Any, Literal
 import numpy as np
 from pydantic import BaseModel
 
-from cadx.agent.spechost import host_span, parse_ranges
+from cadx.agent.spechost import host_span, parse_ranges, xy_host_zspan
 from cadx.cad.poshint import (
     parse_coord_points,
     parse_position_hints,
@@ -218,6 +218,34 @@ def _declared_depth(f: Feature) -> float | None:
         if (f.dims or {}).get(dk):
             return float(f.dims[dk])
     return None
+
+
+def _depth_is_host_span(f: Feature, span: float | None) -> bool:
+    """True when the declared 'depth' equals the resolved host's span — a
+    through-hole through a 10 mm plate also carries depth=10: that number
+    is the host bound, NOT blind intent. The field doc on `blind` already
+    says host-span depths must not mark a bore bottomed."""
+    if span is None:
+        return False
+    d = _declared_depth(f)
+    if d is None or span <= 0:
+        return False
+    return abs(d - span) <= max(0.5, 0.02 * span)
+
+
+def _signed_face_declared(f: Feature, text: str, signed: str) -> bool:
+    """True when the bore's signed entry face is DECLARED — a signed axis
+    field ("-z") or a face token in the position text ("drilled from -z
+    face"). The default '+' of an unsigned axis letter ("z") is no entry
+    declaration — an unbound +z blind bore must not inherit the part's top
+    face as its mouth."""
+    ax = str(getattr(f, "axis", "") or "").strip().lower()
+    if ax == signed:
+        return True
+    try:
+        return signed in (parse_position_hints(text)[1] or [])
+    except Exception:
+        return False
 
 
 def _hole_dia(f: Feature) -> float | None:
@@ -678,15 +706,22 @@ def _spec_anchors(spec: PartSpec) -> list[Anchor]:  # noqa: C901
             if blind:
                 d = _declared_depth(f)
                 if d:
-                    axial_depth = d
-                    if axial is None:
-                        # no explicit end offset declared — a bottomed bore's
-                        # pos[ax] is the FEATURE mid, half a depth in from the
-                        # signed entry face ("-x" tap on the left face
-                        # centres at x_lo + depth/2)
-                        sgn = -1.0 if signed.startswith("-") else 1.0
-                        face = bounds[letter][0] if sgn < 0 else bounds[letter][1]
-                        axial = face - sgn * d / 2.0
+                    # a declared depth matching the host's through-span is a
+                    # through-bore carrying its plate thickness, not a blind
+                    # intent (flange bore: depth=8 in an 8 mm flange)
+                    span = host_span(spec, f, letter)
+                    if span is not None and _depth_is_host_span(f, span[1] - span[0]):
+                        blind = False
+                    else:
+                        axial_depth = d
+                        if axial is None:
+                            # no explicit end offset declared — a bottomed
+                            # bore's pos[ax] is the FEATURE mid, half a depth
+                            # in from the signed entry face ("-x" tap on the
+                            # left face centres at x_lo + depth/2)
+                            sgn = -1.0 if signed.startswith("-") else 1.0
+                            face = bounds[letter][0] if sgn < 0 else bounds[letter][1]
+                            axial = face - sgn * d / 2.0
             for u, v, est in pts:
                 pos: list[float | None] = [None, None, None]
                 pos[au], pos[av] = round(u, 2), round(v, 2)
@@ -710,29 +745,39 @@ def _spec_anchors(spec: PartSpec) -> list[Anchor]:  # noqa: C901
                     )
                 )
             continue
-        blind = _is_blind(f)
         for x, y, est in _spec_xy(f, bounds, dia):
             # a z bore bound to ONE declared plate carries the plate's axial
             # centre + span so the deterministic re-cut drills the plate only —
             # a full-length cutter would pierce a strut/rib on the same ray
-            rng = parse_ranges(text).get("z") or host_span(spec, f, "z")
+            rng = (
+                parse_ranges(text).get("z")
+                or host_span(spec, f, "z")
+                or xy_host_zspan(spec, f, x, y)
+            )
             z_mid = (rng[0] + rng[1]) / 2.0 if rng is not None else None
             depth_mm = rng[1] - rng[0] if rng is not None else None
+            blind = _is_blind(f) and not _depth_is_host_span(
+                f, (rng[1] - rng[0]) if rng is not None else None
+            )
             if blind:
                 declared_depth = _declared_depth(f)
                 if declared_depth:
                     depth_mm = declared_depth
-                    # pos[ax] is the FEATURE mid: the mouth sits on the signed
-                    # entry face — the host's low face for "-z", its high face
-                    # for "+z" (a tap on the BOTTOM face of an elevated plate
-                    # mouths at the plate's low bound, not the part's) — and
-                    # the centre lies half a depth INTO the part
+                    # pos[ax] is the FEATURE mid: the mouth sits on the
+                    # signed entry face — the host's low face for "-z",
+                    # its high face for "+z" (a tap on the BOTTOM face of
+                    # an elevated plate mouths at the plate's low bound,
+                    # not the part's) — and the centre lies half a depth
+                    # INTO the part. An unbound bore keeps its face only
+                    # when the sign was explicitly declared — a default
+                    # "+z" must not fabricate a mouth at the part's top.
                     sgn = -1.0 if signed == "-z" else 1.0
                     if rng is not None:
                         entry = rng[0] if sgn < 0 else rng[1]
-                    else:
+                        z_mid = entry - sgn * declared_depth / 2.0
+                    elif _signed_face_declared(f, text, signed):
                         entry = bounds["z"][0] if sgn < 0 else bounds["z"][1]
-                    z_mid = entry - sgn * declared_depth / 2.0
+                        z_mid = entry - sgn * declared_depth / 2.0
             out.append(
                 Anchor(
                     index=0,  # re-indexed by build_anchors

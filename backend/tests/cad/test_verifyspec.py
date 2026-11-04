@@ -1301,3 +1301,112 @@ def test_frame_min_z_floating_part_fails():
     res["analysis"]["bbox_min"] = [-50.0, -25.0, 5.0]
     c = _by_name(verify_spec(_spec(), res, feature_findings=[]))["frame_min_z"]
     assert c["status"] == "FAIL"
+
+
+def test_declared_through_hole_measured_sealed_fails():
+    """robot_arm_mount trap: 1 mm recesses satisfy dia/axis checks while the
+    declared through-hole is physically sealed by a membrane — depth_class
+    'blind' + blocked>0 must turn this into a FAIL."""
+    spec = _spec(
+        features=[
+            _feat(
+                name="mounting holes",
+                type="hole",
+                dims={"diameter": 8.5, "depth": 10.0},
+                axis="z",
+                count=4,
+                description="Clearance holes for M8 bolts",
+            )
+        ]
+    )
+    res = _res(
+        features={
+            "hole_groups": [
+                _hole_group(
+                    id="h2", diameter=8.5, count=4, axis="+z", depth_class="blind", blocked=4
+                )
+            ],
+            "total_holes": 4,
+        }
+    )
+    report = verify_spec(spec, res, feature_findings=[])
+    c = _by_name(report)["feat_0_void_depth"]
+    assert c["status"] == "FAIL"
+    assert c["evidence"]["expected"] == "through"
+    assert c["evidence"]["blocked"] == 4
+    assert report["status"] == "FAIL"
+
+
+def test_declared_blind_tap_measured_blind_passes():
+    """bearing_bracket taps: 'drilled from -z face, do NOT drill through' +
+    depth → blind intent; a measured blind group satisfies it."""
+    spec = _spec(
+        features=[
+            _feat(
+                name="M8 tap",
+                type="tapped_hole",
+                dims={"diameter": 6.8, "depth": 10.0},
+                axis="z",
+                position="drilled from -z face, do NOT drill through",
+            )
+        ]
+    )
+    res = _res(
+        features={
+            "hole_groups": [
+                _hole_group(
+                    id="t1", diameter=6.8, count=1, axis="-z", depth_class="blind", blocked=0
+                )
+            ],
+            "total_holes": 1,
+        }
+    )
+    report = verify_spec(spec, res, feature_findings=[])
+    c = _by_name(report)["feat_0_void_depth"]
+    assert c["status"] == "PASS"
+    assert c["evidence"]["expected"] == "blind"
+
+
+def test_declared_blind_measured_through_fails():
+    """A bottomed bore drilled clean through loses its floor — declared
+    blind intent fails against a measured open through-void."""
+    spec = _spec(
+        features=[
+            _feat(
+                name="blind recess",
+                type="hole",
+                dims={"diameter": 5.0, "depth": 8.0},
+                description="blind hole, ends inside the block",
+            )
+        ]
+    )
+    res = _res(
+        features={
+            "hole_groups": [
+                _hole_group(
+                    id="h1", diameter=5.0, count=1, axis="+z", depth_class="through", blocked=0
+                )
+            ],
+            "total_holes": 1,
+        }
+    )
+    report = verify_spec(spec, res, feature_findings=[])
+    c = _by_name(report)["feat_0_void_depth"]
+    assert c["status"] == "FAIL"
+    assert "blind" in c["evidence"]["reason"]
+
+
+def test_plain_hole_measured_open_through_passes():
+    """An unmarked hole defaults to through intent — a clean open through
+    group passes the depth check with no blind evidence."""
+    spec = _spec(features=[_feat(name="mount", type="hole", dims={"diameter": 5.0})])
+    res = _res(
+        features={
+            "hole_groups": [_hole_group(id="h1", diameter=5.0, axis="+z", depth_class="through")],
+            "total_holes": 1,
+        }
+    )
+    report = verify_spec(spec, res, feature_findings=[])
+    c = _by_name(report)["feat_0_void_depth"]
+    assert c["status"] == "PASS"
+    assert c["evidence"]["expected"] == "through"

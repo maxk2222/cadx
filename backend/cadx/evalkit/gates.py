@@ -472,6 +472,23 @@ def _gate_fem_loadcases(g: dict[str, Any], outcome: StageOutcome) -> GateResult:
         elif src != src_expect:
             problems.append(f"load_cases_source={src} != expected {src_expect}")
 
+    # a declared region resolving to a boundary-patch fallback means the
+    # declared BC was NOT applied (phantom anchors, sealed holes) — the
+    # solved SF describes different physics; count across all cases so the
+    # gate also fires when no explicit check names the affected case
+    fb_total = 0
+    for c in cases:
+        fb = [w for w in (c.get("warnings") or []) if "region_fallback" in str(w)]
+        if fb:
+            fb_total += len(fb)
+            tag = str(c.get("name") or "?")
+            problems.append(
+                f"{tag}: {len(fb)} declared region(s) unresolved — "
+                "fallback boundary patch applied instead"
+            )
+    if fb_total:
+        measured["unresolved_regions"] = fb_total
+
     for chk in g.get("checks") or []:
         c = _fem_case(fem, chk.get("case"))
         if c is None:
