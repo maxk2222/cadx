@@ -248,6 +248,38 @@ def _signed_face_declared(f: Feature, text: str, signed: str) -> bool:
         return False
 
 
+def _face_coordinate(
+    text: str,
+    letter: str,
+    bounds: dict[str, tuple[float, float]],
+    depth: float | None,
+) -> tuple[float, float] | None:
+    """(entry_face, sign) when the text declares the bore MOUTH as an axial
+    coordinate on an envelope face — "drilled from z=0 upward" carries no
+    face token but states the mouth elevation explicitly: z=0 is the part's
+    -z face, the bore extends +z. The coordinate must sit nearer a bound
+    than the opposite face and within the declared depth of it (a mid-air
+    'mouth' is a pocket, not a face-mounted bore → None)."""
+    if depth is None or depth <= 0:
+        return None
+    try:
+        v = (parse_position_hints(text)[0] or {}).get(letter)
+    except Exception:
+        return None
+    if v is None:
+        return None
+    lo, hi = bounds.get(letter) or (None, None)
+    if lo is None:
+        return None
+    span = hi - lo
+    reach = max(depth, 0.25 * span)
+    if abs(v - lo) <= reach and abs(v - lo) <= abs(v - hi):
+        return lo, -1.0
+    if abs(v - hi) <= reach:
+        return hi, +1.0
+    return None
+
+
 def _hole_dia(f: Feature) -> float | None:
     """Declared bore diameter of a spec feature (diameter|dia|bore_diameter).
 
@@ -718,10 +750,21 @@ def _spec_anchors(spec: PartSpec) -> list[Anchor]:  # noqa: C901
                             # no explicit end offset declared — a bottomed
                             # bore's pos[ax] is the FEATURE mid, half a depth
                             # in from the signed entry face ("-x" tap on the
-                            # left face centres at x_lo + depth/2)
+                            # left face centres at x_lo + depth/2). Only a
+                            # DECLARED face (signed axis/face token or a
+                            # face-bound axial coordinate like 'x=50') may
+                            # anchor the envelope face — a bare axis letter
+                            # leaves the mouth unresolved (None).
                             sgn = -1.0 if signed.startswith("-") else 1.0
-                            face = bounds[letter][0] if sgn < 0 else bounds[letter][1]
-                            axial = face - sgn * d / 2.0
+                            if _signed_face_declared(f, text, signed):
+                                face = bounds[letter][0] if sgn < 0 else bounds[letter][1]
+                                axial = face - sgn * d / 2.0
+                            else:
+                                fc = _face_coordinate(text, letter, bounds, d)
+                                if fc is not None:
+                                    face, sgn = fc
+                                    signed = "-" + letter if sgn < 0 else "+" + letter
+                                    axial = face - sgn * d / 2.0
             for u, v, est in pts:
                 pos: list[float | None] = [None, None, None]
                 pos[au], pos[av] = round(u, 2), round(v, 2)
@@ -756,6 +799,7 @@ def _spec_anchors(spec: PartSpec) -> list[Anchor]:  # noqa: C901
             )
             z_mid = (rng[0] + rng[1]) / 2.0 if rng is not None else None
             depth_mm = rng[1] - rng[0] if rng is not None else None
+            signed_pt = signed
             blind = _is_blind(f) and not _depth_is_host_span(
                 f, (rng[1] - rng[0]) if rng is not None else None
             )
@@ -778,13 +822,19 @@ def _spec_anchors(spec: PartSpec) -> list[Anchor]:  # noqa: C901
                     elif _signed_face_declared(f, text, signed):
                         entry = bounds["z"][0] if sgn < 0 else bounds["z"][1]
                         z_mid = entry - sgn * declared_depth / 2.0
+                    else:
+                        fc = _face_coordinate(text, "z", bounds, declared_depth)
+                        if fc is not None:
+                            entry, sgn = fc
+                            signed_pt = "-z" if sgn < 0 else "+z"
+                            z_mid = entry - sgn * declared_depth / 2.0
             out.append(
                 Anchor(
                     index=0,  # re-indexed by build_anchors
                     x=round(x, 2),
                     y=round(y, 2),
                     dia=round(dia, 2),
-                    axis=signed,
+                    axis=signed_pt,
                     z=round(z_mid, 2) if z_mid is not None else None,
                     depth_mm=round(depth_mm, 2) if depth_mm else None,
                     pos=(

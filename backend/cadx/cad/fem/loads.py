@@ -139,7 +139,12 @@ def bearing_load(
     the bore axis) gets force w_i * u_i * s with w_i = max(0, u_i . d):
     the pin presses into the half of the wall facing the load direction.
     The scale s is solved so the resultant equals `total_n` along `d`.
-    """
+
+    A load direction with an AXIAL component splits honestly: the radial
+    share presses the wall by the cosine law, the axial share distributes
+    uniformly over the wall nodes — a thrust bearing (seat carrying an
+    axial load) rather than a silently dropped component. An axis-parallel
+    direction therefore still resolves `total_n` instead of 0."""
     if not len(node_idx) or abs(total_n) < 1e-9:
         return 0.0
     P = domain.node_coords()[node_idx]
@@ -151,20 +156,28 @@ def bearing_load(
     ok = norm > 1e-9
     u = np.zeros_like(rad)
     u[ok] = rad[ok] / norm[ok, None]
-    d = np.asarray(direction_n, dtype=float)
-    d = d - (d @ a) * a  # only the in-plane component presses the wall
+    d_raw = np.asarray(direction_n, dtype=float)
+    d_norm = float(np.linalg.norm(d_raw))
+    if d_norm < 1e-9:
+        return 0.0
+    d_hat = d_raw / d_norm
+    ax_cos = float(d_hat @ a)
+    d = d_hat - ax_cos * a  # only the in-plane component presses the wall
     dn = float(np.linalg.norm(d))
-    if dn < 1e-9:
-        return 0.0
-    d /= dn
-    w = np.clip(u @ d, 0.0, None)
-    denom = float(w @ (u @ d))
-    if denom < 1e-9:
-        return 0.0
-    s = total_n / denom
-    t = w[:, None] * u * s
-    F[3 * node_idx[:, None] + np.arange(3)[None, :]] += t
-    return float(np.linalg.norm(t.sum(axis=0)))
+    applied = np.zeros((len(node_idx), 3))
+    if dn > 1e-9:
+        d /= dn
+        w = np.clip(u @ d, 0.0, None)
+        denom = float(w @ (u @ d))
+        if denom > 1e-9:
+            s = total_n * dn / denom  # radial share: total_n * cos(theta)
+            applied += w[:, None] * u * s
+    if abs(ax_cos) > 1e-9:
+        # axial (thrust) share: uniform over the wall nodes — the ring end
+        # approximates the seat face the thrust actually presses on
+        applied += (total_n * ax_cos / len(node_idx)) * a[None, :]
+    F[3 * node_idx[:, None] + np.arange(3)[None, :]] += applied
+    return float(np.linalg.norm(applied.sum(axis=0)))
 
 
 def bolt_preload(

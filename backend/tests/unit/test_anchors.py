@@ -1163,3 +1163,60 @@ def test_spec_anchors_signed_face_unbound_keeps_envelope_entry():
     assert a.blind is True
     assert a.pos == [-42.0, -32.0, 5.0]
     assert a.depth_mm == 10.0
+
+
+def test_spec_anchors_face_coordinate_mouth():
+    """'drilled from z=0 upward' declares the mouth as a coordinate, not a
+    face token — on a blind tap this is the -z face: axis upgrades to -z
+    and the centre lands at depth/2, exactly like '-z face' wording."""
+    spec = PartSpec(
+        name="block",
+        summary="",
+        units="mm",
+        length_x=Dim(value=120, unit="mm", source="stated"),
+        width_y=Dim(value=70, unit="mm", source="stated"),
+        height_z=Dim(value=90, unit="mm", source="stated"),
+        features=[
+            Feature(
+                name="M8 tap pilot hole 1",
+                type="hole",
+                dims={"diameter": 6.8, "depth": 10.0},
+                axis="z",
+                position="x=-46, y=+22, drilled from z=0 upward",
+                description="tap-drill blind pilot, 10 mm deep from bottom face z=0",
+            ),
+        ],
+        image_roles=[],
+    )
+    (a,) = _spec_anchors(spec)
+    assert a.axis == "-z"
+    assert a.blind is True
+    assert a.pos == [-46.0, 22.0, 5.0]
+    assert a.depth_mm == 10.0
+
+
+def test_spec_anchors_face_coordinate_midair_stays_unbound():
+    """A mouth coordinate NOT near an envelope face ('z=45' on a 90 block)
+    is a mid-air pocket, not a face-mounted bore — pos-z stays None."""
+    spec = PartSpec(
+        name="block",
+        summary="",
+        units="mm",
+        length_x=Dim(value=120, unit="mm", source="stated"),
+        width_y=Dim(value=70, unit="mm", source="stated"),
+        height_z=Dim(value=90, unit="mm", source="stated"),
+        features=[
+            Feature(
+                name="recess",
+                type="hole",
+                dims={"diameter": 5.0, "depth": 8.0},
+                axis="z",
+                position="x=0, y=0, z=45",
+                description="blind recess",
+            ),
+        ],
+        image_roles=[],
+    )
+    (a,) = _spec_anchors(spec)
+    assert a.blind is True
+    assert a.z is None and a.pos is None

@@ -1615,3 +1615,50 @@ def test_fem_coverage_scales_element_stiffness() -> None:
         np.asarray(fo_full["elem_E"])[solid] * 0.5,
         rtol=1e-6,
     )
+
+
+def test_bearing_load_axial_dir_applies_thrust() -> None:
+    """bearing_dir parallel to the bore axis = a thrust load on the seat —
+    it must resolve the declared magnitude axially, not drop to zero."""
+    dom = voxelize(_bored_mesh(), 1.5, 150_000)
+    anchor = {"x": 10.0, "y": 0.0, "dia": 5.0, "axis": "+z", "depth_mm": 12.0}
+    case = LoadCase(
+        name="seat_weight",
+        fixed=[RegionSpec(kind="face", axis="-x")],
+        loads=[
+            LoadSpec(
+                region=RegionSpec(kind="bore", hole_index=1),
+                bearing_n=400.0,
+                bearing_dir=[0.0, 0.0, -1.0],
+            )
+        ],
+    )
+    _f, F, w = resolve_case_dofs(dom, case, anchors=[anchor])
+    total = F.reshape(-1, 3).sum(axis=0)
+    assert total[2] == pytest.approx(-400.0, rel=0.05)
+    assert abs(total[0]) < 20 and abs(total[1]) < 20
+    assert not any("produced no force" in x for x in w)
+
+
+def test_bearing_load_mixed_dir_splits_magnitude() -> None:
+    """A 45° bearing direction splits radial cosine + axial thrust — the
+    combined resultant still equals the declared magnitude along the dir."""
+    dom = voxelize(_bored_mesh(), 1.5, 150_000)
+    anchor = {"x": 10.0, "y": 0.0, "dia": 5.0, "axis": "+z", "depth_mm": 12.0}
+    d = np.array([0.0, -1.0, -1.0]) / np.sqrt(2.0)
+    case = LoadCase(
+        name="mixed",
+        fixed=[RegionSpec(kind="face", axis="-x")],
+        loads=[
+            LoadSpec(
+                region=RegionSpec(kind="bore", hole_index=1),
+                bearing_n=200.0,
+                bearing_dir=list(d),
+            )
+        ],
+    )
+    _f, F, _w = resolve_case_dofs(dom, case, anchors=[anchor])
+    total = F.reshape(-1, 3).sum(axis=0)
+    assert float(np.linalg.norm(total)) == pytest.approx(200.0, rel=0.1)
+    cos = float(total @ d) / float(np.linalg.norm(total))
+    assert cos == pytest.approx(1.0, abs=0.05)
