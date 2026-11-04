@@ -948,6 +948,56 @@ async def test_issue_fingerprint_resets_when_issue_changes():
     assert not any(i.get("artifact") for i in outcome.issues)
 
 
+async def test_issue_fingerprint_keeps_deterministic_findings_actionable():
+    """A repeated MEASURED finding is a real defect, not a phantom — only
+    LLM-subjective repeats (critique echoes) may be artifact-flagged.
+    Regression for the observed doom: a spec feature the code never built
+    (dead PARAM) was flagged after iteration 2 while verify_spec kept
+    gating on it — the patcher never saw the blocker again and the run
+    burned its remaining iterations on advisory issues."""
+    from cadx.llm.fake import FakeLLM
+
+    box_code = _box_code()
+    broken_span = {
+        "spans": [
+            {"name": "gusset", "ok": False, "coverage": 0.0, "points": [[0, 0, 0], [8, 0, 6]]}
+        ]
+    }
+
+    def _res(np_pass: int, n_fail: int) -> dict:
+        r = _exec_res(np_pass, n_fail)
+        r["features"] = broken_span
+        return r
+
+    llm = FakeLLM(
+        [
+            {"reasoning": "v", "params": [], "expected_bbox": [40, 20, 10], "code": box_code},
+            _fail_critique(),  # it1
+            {"reasoning": "imp", "params": [], "edits": [], "full_code": box_code},
+            _fail_critique(),  # it2: same echoes + same span finding
+            {"reasoning": "imp2", "params": [], "edits": [], "full_code": box_code},
+            _fail_critique(),  # it3
+        ]
+    )
+    emitted: list = []
+    outcome, _ctx = await _drive_cad(
+        llm,
+        [_res(2, 4), _res(4, 2), _res(4, 2)],  # it2 wins on dq -> its (flagged) issues persist
+        emitted,
+        max_iterations=3,
+        patience=50,
+    )
+    # deterministic features finding: repeated, gate-relevant — never flagged
+    feat_issues = [i for i in outcome.issues if i.get("source") == "features"]
+    assert feat_issues and all(not i.get("artifact") for i in feat_issues)
+    # critique echoes on unchanged geometry: still flagged (P10 preserved)
+    critique_issues = [i for i in outcome.issues if i.get("source") == "critique"]
+    assert critique_issues and all(i.get("artifact") for i in critique_issues)
+    # actionable issues remained -> the loop kept patching instead of
+    # converging on an all-artifact list
+    assert len(llm.calls) == 6
+
+
 async def test_infra_exec_error_skips_repair(monkeypatch):
     """Executor-side failures (schema skew, sandbox outage) are not code
     bugs — the repair loop must not spend an LLM call on them, and the

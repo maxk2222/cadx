@@ -515,11 +515,7 @@ def _anchor_has_void(
         # of solid cells
         run = _axial_void_run(domain, axis, center, dia, axc)
         if run is not None:
-            gap = (
-                0.0
-                if run[0] <= axc <= run[1]
-                else min(abs(run[0] - axc), abs(run[1] - axc))
-            )
+            gap = 0.0 if run[0] <= axc <= run[1] else min(abs(run[0] - axc), abs(run[1] - axc))
             if gap <= max(dia, 3.0 * domain.pitch):
                 return True
         idx, _ = _axis_parts(axis)

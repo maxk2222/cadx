@@ -591,7 +591,9 @@ def estimate_fem_memory_mb(
     csr_mb = cells * 60 * 16 / 1e6
     vec_mb = nodes * 3 * 8 * (3 + max(1, n_cases)) / 1e6
     if direct:
-        solve_mb = cells * 60 * 8 * 32 / 1e6 * max(1, n_factors if n_factors is not None else n_cases)
+        solve_mb = (
+            cells * 60 * 8 * 32 / 1e6 * max(1, n_factors if n_factors is not None else n_cases)
+        )
     else:
         solve_mb = csr_mb * 0.5 + nodes * 3 * 8 * 8 / 1e6
     return coo_mb + csr_mb + vec_mb + solve_mb

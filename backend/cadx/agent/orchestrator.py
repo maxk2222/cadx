@@ -4045,9 +4045,19 @@ async def _run_cad(  # noqa: C901
         # text appears in 2+ consecutive iterations while the measured
         # geometry did not change is a phantom — a measurement artifact,
         # not a code defect. Flag it (the issue stays on the persisted
-        # list for honesty) so the improve feed above skips it.
+        # list for honesty) so the improve feed above skips it. Two guards:
+        # the hash covers EVERY measured feature class (an old 3-key subset
+        # reported "geometry unchanged" while fillets/bosses/pockets moved),
+        # and only LLM-subjective repeats are phantom candidates — a
+        # deterministic finding (measured features, dims, FEM, DFM, solids)
+        # that verify_spec re-measures at gate time is either a real defect
+        # the patcher must keep seeing or a detector bug the gate fails on
+        # anyway, so suppressing it either strands a fixable defect or saves
+        # nothing (observed: a never-built spec fillet flagged as artifact
+        # after it2, patcher never saw it again, codegen gate doomed).
+        flaggable = {"critique", "verify_question"}
         feat_hash = json.dumps(
-            {k: features.get(k) for k in ("hole_groups", "plates", "slots")},
+            {k: v for k, v in features.items() if k not in ("recognition_ran", "approximate")},
             sort_keys=True,
             default=str,
         )
@@ -4056,7 +4066,11 @@ async def _run_cad(  # noqa: C901
         for issue in cur_issues:
             fp = re.sub(r"[\d.]+", "#", (issue.get("what") or "").lower().strip())
             cur_fps[fp] = prev_issue_fps.get(fp, 0) + 1
-            if cur_fps[fp] >= 2 and feat_hash == prev_features_hash:
+            if (
+                cur_fps[fp] >= 2
+                and issue.get("source") in flaggable
+                and feat_hash == prev_features_hash
+            ):
                 issue["artifact"] = True
                 stalled_issues += 1
         if stalled_issues:

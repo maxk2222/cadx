@@ -45,9 +45,7 @@ def test_blind_tap_keep_binds_to_void_run_not_part_height() -> None:
     the top face — the flat column top is what renders as a phantom bore."""
     dom = _block()
     _void_column(dom.solid, 2, (10.0, 20.0), 3.4, 0.0, 10.0)  # 10 mm blind tap
-    anchors = [
-        {"index": 1, "kind": "tap", "axis": "-z", "pos": [10.0, 20.0, 0.0], "dia": 6.8}
-    ]
+    anchors = [{"index": 1, "kind": "tap", "axis": "-z", "pos": [10.0, 20.0, 0.0], "dia": 6.8}]
     keeps, _voids = interface_regions(anchors, margin_mm=3.0)
     keep = keep_element_mask(dom, keeps, anchors).reshape(dom.dims)
     assert keep[:, :, :6].any()  # ring pinned around the hole mouth
@@ -59,9 +57,7 @@ def test_through_bore_keep_covers_full_wall_span() -> None:
     not under-protect the dominant case."""
     dom = _block()
     _void_column(dom.solid, 1, (20.0, 30.0), 7.5, -1.0, 41.0)  # y-bore Ø15 through
-    anchors = [
-        {"index": 1, "kind": "hole", "axis": "+y", "pos": [20.0, None, 30.0], "dia": 15.0}
-    ]
+    anchors = [{"index": 1, "kind": "hole", "axis": "+y", "pos": [20.0, None, 30.0], "dia": 15.0}]
     keeps, _ = interface_regions(anchors, margin_mm=3.0)
     keep = keep_element_mask(dom, keeps, anchors).reshape(dom.dims)
     assert keep[:, 0:3, :].any() and keep[:, -3:, :].any()
@@ -74,9 +70,7 @@ def test_tap_keep_survives_bore_crossing() -> None:
     dom = _block()
     _void_column(dom.solid, 2, (10.0, 20.0), 3.4, 0.0, 2.0)  # shallow tap dimple
     _void_column(dom.solid, 1, (10.0, 30.0), 7.5, -1.0, 41.0)  # y-bore crossing at z=30
-    anchors = [
-        {"index": 1, "kind": "tap", "axis": "-z", "pos": [10.0, 20.0, 0.0], "dia": 6.8}
-    ]
+    anchors = [{"index": 1, "kind": "tap", "axis": "-z", "pos": [10.0, 20.0, 0.0], "dia": 6.8}]
     keeps, _ = interface_regions(anchors, margin_mm=3.0)
     keep = keep_element_mask(dom, keeps, anchors).reshape(dom.dims)
     assert keep[:, :, :5].any()

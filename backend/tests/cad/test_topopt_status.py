@@ -1163,9 +1163,7 @@ def test_mma_mechanism_stop_restores_best_design(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(topopt_mod, "_MECH_PATIENCE", 2)
 
     dims = (4, 3, 3)
-    dom = VoxelDomain(
-        origin=np.zeros(3), pitch=1.0, dims=dims, solid=np.ones(dims, dtype=bool)
-    )
+    dom = VoxelDomain(origin=np.zeros(3), pitch=1.0, dims=dims, solid=np.ones(dims, dtype=bool))
     ncells = dom.cell_count
     solid_idx = np.arange(ncells)
     des = np.arange(ncells)
