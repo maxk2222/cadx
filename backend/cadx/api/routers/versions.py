@@ -346,6 +346,7 @@ async def optimize(
             optimize=body.optimize,
             material=body.material,
             allow_reopt=body.allow_reopt,
+            stage_timeout_s=body.stage_timeout_s,
         )
     except SpawnError as e:
         raise HTTPException(e.status, str(e)) from e

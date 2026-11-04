@@ -4,6 +4,8 @@ executor work and re-running the deterministic single-shot path."""
 
 from __future__ import annotations
 
+import pytest
+
 from cadx.agent.steps.optimize import _best_run_index, _opt_overrides
 from cadx.agent.toolspecs import ToolSession
 
@@ -503,6 +505,85 @@ async def test_run_task_tolerates_transient_status_errors(monkeypatch) -> None:
     assert job.status_calls == 3
 
 
+async def test_run_task_runtime_budget_starts_when_job_is_in_progress(monkeypatch) -> None:
+    from arq.jobs import JobStatus
+
+    import cadx.agent.executor_client as ec
+    from cadx.agent.executor_client import QueueExecutor
+
+    clock = [0.0]
+    monkeypatch.setattr(ec.time, "monotonic", lambda: clock[0])
+
+    async def sleep(delay: float) -> None:
+        clock[0] += delay
+
+    monkeypatch.setattr(ec.asyncio, "sleep", sleep)
+    job = _FakeJob(
+        [JobStatus.queued, JobStatus.queued, JobStatus.in_progress, JobStatus.complete],
+        {"ok": True},
+    )
+    monkeypatch.setattr(ec, "Job", lambda *a, **k: job)
+
+    result = await QueueExecutor(pool=_FakePool())._run_task("optimize", {}, 2.0)
+
+    assert result["ok"] is True
+    assert result["queued_s"] == 1.25
+    assert result["queue_start_observed"] is True
+
+
+async def test_run_task_queue_wait_has_independent_hard_cap(monkeypatch) -> None:
+    import cadx.agent.executor_client as ec
+    from cadx.agent.executor_client import QueueExecutor
+
+    clock = [0.0]
+    monkeypatch.setattr(ec.time, "monotonic", lambda: clock[0])
+
+    async def sleep(delay: float) -> None:
+        clock[0] += delay
+
+    monkeypatch.setattr(ec.asyncio, "sleep", sleep)
+    job = _FakeJob([ec.JobStatus.queued])
+    monkeypatch.setattr(ec, "Job", lambda *a, **k: job)
+
+    class _Pool(_FakePool):
+        cancel_at: float | None = None
+
+        async def setex(self, *a, **kw):
+            self.cancel_at = clock[0]
+
+    pool = _Pool()
+    result = await QueueExecutor(pool=pool)._run_task("optimize", {}, 2.0)
+
+    assert result["ok"] is False
+    assert result["queue_timed_out"] is True
+    assert result["queued_s"] == 3.0
+    assert pool.cancel_at == 3.0
+
+
+async def test_run_task_times_out_after_dequeue_runtime(monkeypatch) -> None:
+    from arq.jobs import JobStatus
+
+    import cadx.agent.executor_client as ec
+    from cadx.agent.executor_client import QueueExecutor
+
+    clock = [0.0]
+    monkeypatch.setattr(ec.time, "monotonic", lambda: clock[0])
+
+    async def sleep(delay: float) -> None:
+        clock[0] += delay
+
+    monkeypatch.setattr(ec.asyncio, "sleep", sleep)
+    job = _FakeJob([JobStatus.queued, JobStatus.in_progress])
+    monkeypatch.setattr(ec, "Job", lambda *a, **k: job)
+    pool = _FakePool()
+
+    result = await QueueExecutor(pool=pool)._run_task("optimize", {}, 2.0)
+
+    assert result["queue_timed_out"] is False
+    assert result["timed_out"] is True
+    assert result["queued_s"] == 0.5
+
+
 async def test_run_task_marks_maybe_running_after_poll_patience(monkeypatch) -> None:
     """Past the tolerated streak the result must say MAYBE-running so the
     agent never resubmits a duplicate behind its own live task."""
@@ -543,3 +624,31 @@ async def test_run_task_result_fetch_retries_once(monkeypatch) -> None:
 
     res = await ex._run_task("optimize", {}, 60.0)
     assert res["ok"] is True
+
+
+def test_stage_deadline_caps_agent_optimize_budget() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from cadx.agent.worker_jobs import _agent_optimize_budget_s
+
+    now = datetime(2026, 11, 4, 12, tzinfo=UTC)
+    payload = {"_stage_deadline_at": (now + timedelta(seconds=1000)).isoformat()}
+
+    assert _agent_optimize_budget_s(payload, 10_000, now_utc=now) == 880.0
+    assert _agent_optimize_budget_s({}, 10_000, now_utc=now) == 9700.0
+    expired = {"_stage_deadline_at": (now + timedelta(seconds=60)).isoformat()}
+    assert _agent_optimize_budget_s(expired, 10_000, now_utc=now) == 0.0
+    assert _agent_optimize_budget_s({"_stage_deadline_at": "invalid"}, 10_000) == 0.0
+
+
+def test_optimize_request_accepts_optional_bounded_stage_timeout() -> None:
+    from pydantic import ValidationError
+
+    from cadx.api.schemas import OptimizeRequest
+
+    assert OptimizeRequest().stage_timeout_s is None
+    assert OptimizeRequest(stage_timeout_s=7200).stage_timeout_s == 7200
+    with pytest.raises(ValidationError):
+        OptimizeRequest(stage_timeout_s=0)
+    with pytest.raises(ValidationError):
+        OptimizeRequest(stage_timeout_s=172801)

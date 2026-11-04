@@ -83,6 +83,7 @@ def _run_summary(r: dict[str, Any], chosen: bool, reasoning: Any) -> dict[str, A
         "volfrac_requested": top.get("volfrac_requested"),
         "achieved": top.get("volfrac_achieved"),
         "iterations": top.get("iterations"),
+        "queued_s": top.get("queued_s"),
         # B18 outcome vocabulary + O6 pitch label on the run digest
         "status": top.get("status"),
         "pitch_mm": (res.get("mesh") or {}).get("pitch_mm"),
@@ -205,7 +206,7 @@ class _SessionOps:
     default_material: str
     alloc: Any
     contact_sheet: Path | None
-    deadline: float | None = None  # monotonic timestamp — job-timeout bound
+    deadline: float | None = None  # monotonic timestamp — job/stage wall-clock bound
     # request-level declared optimize fields (eval stage config / optimize
     # dialog) — the baseline under tool args: fields the tool cannot
     # express (structure_mode, warm_density_relpath) must not be dropped
@@ -221,7 +222,7 @@ def _budget_exceeded(ops: _SessionOps, needed_s: float) -> dict[str, Any] | None
     return {
         "ok": False,
         "error": (
-            "job time budget exhausted — no new run can finish in time; "
+            "job/stage time budget exhausted — no new run can finish in time; "
             "call done(run_index) with the best completed run (or -1 to keep the base)"
         ),
     }

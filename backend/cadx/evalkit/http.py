@@ -376,12 +376,19 @@ class HttpDriver:
                 wall_s=time.monotonic() - t0,
                 error=f"stage {stage.type} needs a parent version — none available",
             )
+        wait_timeout_s = stage.timeout_s
+        if stage.type == "optimize":
+            remaining_s = max(0.1, stage.timeout_s - (time.monotonic() - t0))
+            body["stage_timeout_s"] = remaining_s
+            wait_timeout_s = remaining_s
         if self.verbose:
             log.info("eval.http.spawn", stage=stage.id, path=path)
         enq = await self._post(path, json=body)
         vid, jid = str(enq.get("version_id")), str(enq.get("job_id"))
 
-        job = await self.wait_job(jid, stage.timeout_s)
+        if stage.type == "optimize":
+            wait_timeout_s = max(0.0, stage.timeout_s - (time.monotonic() - t0))
+        job = await self.wait_job(jid, wait_timeout_s)
         wall = time.monotonic() - t0
         detail = await self.version(vid)
         records = await self.trace(jid)

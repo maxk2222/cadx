@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from typing import Any
 
@@ -140,6 +141,132 @@ _OPT_TAIL_S = 900.0
 # then queues BEHIND its own still-running task (observed: one blip →
 # double-submit → 45min queue delay → stage timeout)
 _POLL_FAIL_PATIENCE_S = 120.0
+_QUEUE_HARD_FACTOR = 1.5
+
+
+def _remaining_task_budget(
+    timeout_s: float, queue_cap_s: float, enqueued_at: float, started_at: float | None
+) -> float:
+    now = time.monotonic()
+    return (
+        timeout_s - (now - started_at)
+        if started_at is not None
+        else queue_cap_s - (now - enqueued_at)
+    )
+
+
+def _with_queue_meta(
+    result: dict[str, Any],
+    enqueued_at: float,
+    started_at: float | None,
+    *,
+    queue_timed_out: bool | None = None,
+    queued_s: float | None = None,
+) -> dict[str, Any]:
+    if queued_s is None:
+        if started_at is not None:
+            queued_s = started_at - enqueued_at
+        elif result.get("queue_timed_out"):
+            queued_s = time.monotonic() - enqueued_at
+    result.setdefault("queued_s", round(queued_s, 2) if queued_s is not None else None)
+    result.setdefault("queue_start_observed", started_at is not None)
+    if queue_timed_out is not None:
+        result.setdefault("queue_timed_out", queue_timed_out)
+    return result
+
+
+async def _fetch_job_result(job: Job, *, retry: bool = True) -> dict[str, Any]:
+    try:
+        result = await job.result()
+    except Exception as e:
+        if retry:
+            try:
+                await asyncio.sleep(2.0)
+                result = await job.result()
+            except Exception:
+                return {"ok": False, "error": f"executor task failed: {e}"}
+        else:
+            return {"ok": False, "error": f"executor task failed: {e}"}
+    return result if isinstance(result, dict) else {"ok": False, "error": "bad result"}
+
+
+async def _cancel_task_and_wait(
+    pool: ArqRedis,
+    job: Job,
+    job_id: str,
+    func: str,
+    timeout_s: float,
+    enqueued_at: float,
+    started_at: float | None,
+) -> dict[str, Any]:
+    # the cad task is still running — set the TASK-level cancel flag it
+    # polls between stages (and mid-SIMP) so the timeout doesn't leave it
+    # burning a cad slot until it finishes on its own. The job-level key
+    # cancel:{payload['job_id']} belongs to user cancellation only —
+    # setting it here bricked every subsequent task of the job (observed:
+    # one pipeline_hang turned all later iterations into 'cancelled').
+    try:
+        await pool.setex(f"cancel:{job_id}", 3600, b"1")
+    except Exception:
+        log.warning("executor.cancel_flag_failed", func=func, job_id=str(job_id))
+    queue_timed_out = started_at is None
+    queued_s = time.monotonic() - enqueued_at if queue_timed_out else started_at - enqueued_at
+    # grace poll: the task honours the flag at its next checkpoint and
+    # typically returns a partial result seconds later — worth waiting a
+    # bounded window instead of reporting a bare timeout (an optimize run
+    # exports its partial density on the way out)
+    grace = min(120.0, timeout_s * 0.15)
+    g_waited = 0.0
+    while g_waited < grace:
+        try:
+            status = await job.status()
+        except Exception:
+            status = None
+        if status == JobStatus.in_progress and started_at is None:
+            started_at = time.monotonic()
+            queued_s = started_at - enqueued_at
+        if status == JobStatus.complete:
+            try:
+                result = await job.result()
+            except Exception as e:
+                result = {"ok": False, "error": f"executor task failed: {e}"}
+                return _with_queue_meta(
+                    result,
+                    enqueued_at,
+                    started_at,
+                    queue_timed_out=queue_timed_out,
+                    queued_s=queued_s,
+                )
+            if isinstance(result, dict):
+                result["timed_out"] = True
+                result.setdefault("status", "partial")
+            else:
+                result = {"ok": False, "timed_out": True, "error": "bad result"}
+            return _with_queue_meta(
+                result,
+                enqueued_at,
+                started_at,
+                queue_timed_out=queue_timed_out,
+                queued_s=queued_s,
+            )
+        await asyncio.sleep(5.0)
+        g_waited += 5.0
+    timeout_phase = "queue" if queue_timed_out else "execution"
+    return _with_queue_meta(
+        {
+            "ok": False,
+            "timed_out": True,
+            "task_maybe_running": True,
+            "queue_timed_out": queue_timed_out,
+            "queued_s": round(queued_s, 2),
+            "error": f"executor task '{func}' timed out in {timeout_phase} after "
+            f"{timeout_s}s budget (queued {queued_s:.1f}s)",
+        },
+        enqueued_at,
+        started_at,
+        queue_timed_out=queue_timed_out,
+        queued_s=queued_s,
+    )
 
 
 class QueueExecutor:
@@ -167,6 +294,7 @@ class QueueExecutor:
         # kill THIS task only, never the whole cadx job (a job-level flag
         # silently cancelled every later execute for an hour)
         payload["_task_id"] = job_id
+        enqueued_at = time.monotonic()
         try:
             await pool.enqueue_job(func, payload, _queue_name=CAD_QUEUE, _job_id=job_id)
         except Exception as e:
@@ -177,12 +305,17 @@ class QueueExecutor:
                 "error": f"executor submit failed — task not running, safe to retry: {e!r}",
             }
         job = Job(job_id, pool)
-        waited = 0.0
+        started_at: float | None = None
+        queue_cap_s = timeout_s * _QUEUE_HARD_FACTOR
+
         # capped exponential backoff: fast tasks answer on the first short
         # polls, long ones settle to a 5s cadence instead of 1 Hz for hours
         delay = 0.5
         poll_fail_waited = 0.0
-        while waited < timeout_s:
+        while True:
+            remaining = _remaining_task_budget(timeout_s, queue_cap_s, enqueued_at, started_at)
+            if remaining <= 0:
+                break
             try:
                 status = await job.status()
             except Exception as e:
@@ -193,70 +326,44 @@ class QueueExecutor:
                 # never resubmits a duplicate.
                 poll_fail_waited += delay
                 if poll_fail_waited >= _POLL_FAIL_PATIENCE_S:
-                    return {
-                        "ok": False,
-                        "task_maybe_running": True,
-                        "error": f"executor status poll failed ({e!r}) — task may "
-                        "still be running, do NOT resubmit",
-                    }
-                await asyncio.sleep(delay)
-                waited += delay
+                    return _with_queue_meta(
+                        {
+                            "ok": False,
+                            "task_maybe_running": True,
+                            "error": f"executor status poll failed ({e!r}) — task may "
+                            "still be running, do NOT resubmit",
+                        },
+                        enqueued_at,
+                        started_at,
+                    )
+                await asyncio.sleep(
+                    min(
+                        delay,
+                        max(
+                            0.0,
+                            _remaining_task_budget(timeout_s, queue_cap_s, enqueued_at, started_at),
+                        ),
+                    )
+                )
                 continue
             poll_fail_waited = 0.0
             if status == JobStatus.complete:
-                try:
-                    result = await job.result()
-                except Exception as e:
-                    # one retry: a transport blip on the fetch must not mask a
-                    # finished task; a real task failure reports identically
-                    try:
-                        await asyncio.sleep(2.0)
-                        result = await job.result()
-                    except Exception:
-                        return {"ok": False, "error": f"executor task failed: {e}"}
-                return result if isinstance(result, dict) else {"ok": False, "error": "bad result"}
-            await asyncio.sleep(delay)
-            waited += delay
+                return _with_queue_meta(await _fetch_job_result(job), enqueued_at, started_at)
+            if status == JobStatus.in_progress and started_at is None:
+                started_at = time.monotonic()
+            await asyncio.sleep(
+                min(
+                    delay,
+                    max(
+                        0.0,
+                        _remaining_task_budget(timeout_s, queue_cap_s, enqueued_at, started_at),
+                    ),
+                )
+            )
             delay = min(delay * 1.5, 5.0)
-        # the cad task is still running — set the TASK-level cancel flag it
-        # polls between stages (and mid-SIMP) so the timeout doesn't leave it
-        # burning a cad slot until it finishes on its own. The job-level key
-        # cancel:{payload['job_id']} belongs to user cancellation only —
-        # setting it here bricked every subsequent task of the job (observed:
-        # one pipeline_hang turned all later iterations into 'cancelled').
-        try:
-            await pool.setex(f"cancel:{job_id}", 3600, b"1")
-        except Exception:  # best-effort — report the timeout either way
-            log.warning("executor.cancel_flag_failed", func=func, job_id=str(job_id))
-        # grace poll: the task honours the flag at its next checkpoint and
-        # typically returns a partial result seconds later — worth waiting a
-        # bounded window instead of reporting a bare timeout (an optimize run
-        # exports its partial density on the way out)
-        grace = min(120.0, timeout_s * 0.15)
-        g_waited = 0.0
-        while g_waited < grace:
-            try:
-                status = await job.status()
-            except Exception:
-                status = None  # same tolerance as the main poll — blip keeps waiting
-            if status == JobStatus.complete:
-                try:
-                    result = await job.result()
-                except Exception as e:
-                    return {"ok": False, "error": f"executor task failed: {e}"}
-                if isinstance(result, dict):
-                    result["timed_out"] = True
-                    result.setdefault("status", "partial")
-                    return result
-                return {"ok": False, "timed_out": True, "error": "bad result"}
-            await asyncio.sleep(5.0)
-            g_waited += 5.0
-        return {
-            "ok": False,
-            "timed_out": True,
-            "task_maybe_running": True,
-            "error": f"executor task '{func}' timed out after {timeout_s}s",
-        }
+        return await _cancel_task_and_wait(
+            pool, job, job_id, func, timeout_s, enqueued_at, started_at
+        )
 
     async def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
         timeout = self.runtime_settings.exec_timeout_s * 2 + 120
@@ -290,7 +397,10 @@ class QueueExecutor:
         # optimizer budget returns the verified artifact AFTER the caller
         # already reported a bare timeout with no run_index.
         timeout = self.runtime_settings.topopt_timeout_s + _OPT_TAIL_S + 120
-        return await self._run_task("optimize", payload, timeout)
+        result = await self._run_task("optimize", payload, timeout)
+        if result.get("queued_s") is not None and isinstance(result.get("topopt"), dict):
+            result["topopt"]["queued_s"] = result["queued_s"]
+        return result
 
     async def topopt_resample(self, payload: dict[str, Any]) -> dict[str, Any]:
         # re-extraction + FEM verify only — no SIMP loop, much cheaper

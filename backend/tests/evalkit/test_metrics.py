@@ -64,6 +64,7 @@ def test_harvest_fem_topopt_verify_spec():
             "topopt": {
                 "sf_export": 1.8,
                 "volfrac_achieved": 0.5,
+                "queued_s": 12.5,
                 "sf_verified_basis": "mechanism",
                 "enclosed_void_mm3": 123.4,
                 "n_sealed_cavities": 2,
@@ -82,6 +83,7 @@ def test_harvest_fem_topopt_verify_spec():
     m = harvest(o)
     assert m["fem"]["worst_safety_factor"] == 1.9
     assert m["topopt"]["sf_export"] == 1.8
+    assert m["topopt"]["queued_s"] == 12.5
     assert m["topopt"]["enclosed_void_mm3"] == 123.4
     assert m["topopt"]["n_sealed_cavities"] == 2
     assert m["topopt"]["sf_verified_basis"] == "mechanism"

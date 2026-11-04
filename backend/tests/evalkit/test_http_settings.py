@@ -107,6 +107,53 @@ async def test_optimize_body_defaults_allow_reopt_false(driver, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_optimize_dispatch_passes_remaining_stage_timeout(driver, monkeypatch):
+    from cadx.evalkit.http import DriverCtx
+    from cadx.evalkit.suite import EvalStage
+
+    async def _no_fallback(s, c):
+        return None, None
+
+    captured: dict = {}
+
+    async def _post(path, *, json):
+        captured["path"] = path
+        captured["body"] = json
+        return {"version_id": "child", "job_id": "job"}
+
+    async def _wait_job(job_id, timeout_s):
+        captured["wait_timeout_s"] = timeout_s
+        return {"status": "succeeded"}
+
+    async def _version(version_id):
+        return {"status": "succeeded", "score": 90}
+
+    async def _trace(job_id):
+        return []
+
+    monkeypatch.setattr(driver, "_parent_fallback_lcs", _no_fallback)
+    monkeypatch.setattr(driver, "_post", _post)
+    monkeypatch.setattr(driver, "wait_job", _wait_job)
+    monkeypatch.setattr(driver, "version", _version)
+    monkeypatch.setattr(driver, "trace", _trace)
+    stage = EvalStage(
+        id="topopt",
+        type="optimize",
+        timeout_s=60.0,
+        optimize={"enabled": True},
+    )
+    ctx = DriverCtx()
+    ctx.parent_version_id = "parent"
+    ctx.project_id = "project"
+
+    outcome = await driver.dispatch(stage, ctx)
+
+    assert outcome.status == "succeeded"
+    assert 0 < captured["body"]["stage_timeout_s"] <= 60.0
+    assert 0 <= captured["wait_timeout_s"] <= 60.0
+
+
+@pytest.mark.asyncio
 async def test_existing_project_same_settings_no_patch(driver, monkeypatch):
     captured: dict = {}
     driver._client = httpx.AsyncClient(

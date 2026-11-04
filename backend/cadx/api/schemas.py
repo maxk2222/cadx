@@ -300,6 +300,7 @@ class OptimizeRequest(BaseModel):
     load_cases: list[dict[str, Any]] = Field(default_factory=list)
     optimize: dict[str, Any] = Field(default_factory=dict)
     material: str = ""
+    stage_timeout_s: float | None = Field(default=None, gt=0, le=172800)
     # allow optimizing an already-optimized version again (e.g. warm-start
     # from the stored density, different void/keep regions, or a second pass
     # over the resampled mesh)

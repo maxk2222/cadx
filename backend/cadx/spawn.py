@@ -13,7 +13,7 @@ import asyncio
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -298,9 +298,12 @@ async def spawn_optimize(
     optimize: dict | None,
     material: str | None,
     allow_reopt: bool = False,
+    stage_timeout_s: float | None = None,
     enqueue_fn: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None,
 ) -> tuple[Version, Job]:
     _check_editable(parent, "optimize")
+    if stage_timeout_s is not None and not 0 < stage_timeout_s <= 172800:
+        raise SpawnError("stage_timeout_s must be between 0 and 172800 seconds")
     if parent.resolved_mode == "topopt" and not allow_reopt:
         raise SpawnError(
             "version is already topology-optimized — pass allow_reopt to "
@@ -331,17 +334,22 @@ async def spawn_optimize(
     job = Job(version_id=v.id, type=JobType.optimize)
     db.add(job)
     await db.commit()
+    payload = {
+        "job_id": str(job.id),
+        "version_id": str(v.id),
+        "load_cases": load_cases,
+        "optimize": optimize,
+        "material": material,
+    }
+    if stage_timeout_s is not None:
+        payload["_stage_deadline_at"] = (
+            datetime.now(UTC) + timedelta(seconds=stage_timeout_s)
+        ).isoformat()
     await _enqueue_or_fail(
         db,
         enqueue_fn or _enqueue,
         "run_optimize_job",
-        {
-            "job_id": str(job.id),
-            "version_id": str(v.id),
-            "load_cases": load_cases,
-            "optimize": optimize,
-            "material": material,
-        },
+        payload,
         version=v,
         job=job,
     )

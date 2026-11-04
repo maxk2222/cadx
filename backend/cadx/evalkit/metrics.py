@@ -27,6 +27,7 @@ def harvest(outcome: StageOutcome) -> dict[str, Any]:
             for k in (
                 "volfrac_achieved",
                 "volfrac",
+                "queued_s",
                 "sf_verified",
                 "sf_export",
                 "sf_homog",

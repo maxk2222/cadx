@@ -1203,6 +1203,32 @@ def _minimal_spec(parent: Version) -> PartSpec:
     )
 
 
+_AGENT_JOB_FINALIZE_MARGIN_S = 300.0
+_OPTIMIZE_FINALIZE_MARGIN_S = 120.0
+
+
+def _agent_optimize_budget_s(
+    payload: dict[str, Any],
+    job_timeout_s: float,
+    *,
+    now_utc: datetime | None = None,
+) -> float:
+    budget = max(0.0, float(job_timeout_s) - _AGENT_JOB_FINALIZE_MARGIN_S)
+    deadline_raw = payload.get("_stage_deadline_at")
+    if not deadline_raw:
+        return budget
+    try:
+        stage_deadline = datetime.fromisoformat(str(deadline_raw))
+        if stage_deadline.tzinfo is None:
+            stage_deadline = stage_deadline.replace(tzinfo=UTC)
+    except ValueError:
+        return 0.0
+    stage_remaining = (
+        stage_deadline - (now_utc or datetime.now(UTC))
+    ).total_seconds() - _OPTIMIZE_FINALIZE_MARGIN_S
+    return min(budget, max(0.0, stage_remaining))
+
+
 async def _try_optimize_session(
     db: AsyncSession,
     ctx: dict[str, Any],
@@ -1269,9 +1295,8 @@ async def _try_optimize_session(
                 "optimize": payload.get("optimize"),
                 "material": payload.get("material"),
             },
-            # bound by the arq job timeout minus a finalize margin — a chain
-            # of full-length SIMP runs must not outlive the job
-            deadline=time.monotonic() + get_settings().agent_job_timeout_s - 300,
+            deadline=time.monotonic()
+            + _agent_optimize_budget_s(payload, get_settings().agent_job_timeout_s),
         )
     except Exception as e:
         log.warning("optimize.agent_session_failed", error=str(e)[:300])

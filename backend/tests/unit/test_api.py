@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -238,7 +239,7 @@ async def test_catalog(client):
 
 
 async def test_optimize_endpoint(client):
-    from cadx.db.models import Version, VersionStatus
+    from cadx.db.models import Job, Version, VersionStatus
     from cadx.db.session import session_scope
 
     r = await client.post("/api/projects", json={"name": "opt"})
@@ -269,6 +270,7 @@ async def test_optimize_endpoint(client):
                 }
             ],
             "optimize": {"target_volume_fraction": 0.4},
+            "stage_timeout_s": 600,
         },
     )
     assert r.status_code == 200, r.text
@@ -278,6 +280,10 @@ async def test_optimize_endpoint(client):
     assert v2["gen_mode"] == "topopt"
     assert v2["parent_id"] == vid
     assert v2["options"].get("topopt") is True
+    async with session_scope() as db:
+        job = await db.get(Job, uuid.UUID(r.json()["job_id"]))
+        stage_deadline = datetime.fromisoformat(job.payload["args"]["_stage_deadline_at"])
+    assert 590 < (stage_deadline - datetime.now(UTC)).total_seconds() <= 600
 
 
 async def test_404s(client):
