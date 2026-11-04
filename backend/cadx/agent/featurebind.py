@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from cadx.agent.spechost import host_body, host_span
 from cadx.cad.features import _feature_axis_hint
 from cadx.cad.poshint import parse_coord_points
+from cadx.cad.spec_features import active_features
 from cadx.llm.schemas import Feature, PartSpec
 
 _MAX_BINDINGS = 12
@@ -837,10 +838,10 @@ def bind_features(spec: PartSpec | None) -> list[BoundFeature]:
     block would crowd out the reference docs and later features fall back to
     the model's own wording anyway.
     """
-    if spec is None or not spec.features:
+    if spec is None or not active_features(spec):
         return []
     out: list[BoundFeature] = []
-    for f in spec.features:
+    for f in active_features(spec):
         # a strut/brace binds before the type dispatch — intake calls it
         # "box"/"rib"/"gusset" but it is always the straight bar
         binder = _bind_strut if _is_strut(f) else _BINDERS.get((f.type or "").lower().strip())

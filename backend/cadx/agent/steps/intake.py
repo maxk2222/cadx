@@ -1445,6 +1445,7 @@ async def run(ctx: AgentCtx) -> PartSpec:
 
             raise LLMFormatError("intake session produced no spec")
         spec = res.response.parsed
+        spec.feature_drops = []
         _repair_image_roles(spec, ctx)
         return _sanitize_spec(spec, ctx)
     resp = await ctx.llm.chat(
@@ -1467,5 +1468,6 @@ async def run(ctx: AgentCtx) -> PartSpec:
         latency_ms=resp.latency_ms,
     )
     spec = resp.parsed
+    spec.feature_drops = []
     _repair_image_roles(spec, ctx)
     return _sanitize_spec(spec, ctx)

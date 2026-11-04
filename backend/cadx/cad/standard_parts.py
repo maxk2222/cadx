@@ -11,6 +11,7 @@ from bd_warehouse.fastener import Screw
 from build123d import Rot
 
 from cadx.cad import catalog
+from cadx.cad.spec_features import active_feature_rows, dropped_feature_indices
 from cadx.llm.schemas import PartSpec, StandardPartSpec
 
 _AXIS_ROTATIONS = {
@@ -366,8 +367,10 @@ def is_standard_only(spec: PartSpec) -> bool:
     if not spec.standard_parts or any(question.blocking for question in spec.open_questions):
         return False
     covered = covered_feature_indices(spec)
-    if any(feature.name and i not in covered for i, feature in enumerate(spec.features)):
+    active = active_feature_rows(spec)
+    if any(feature.name and i not in covered for i, feature in active):
         return False
+    dropped = dropped_feature_indices(spec)
     try:
         reports = validate_standard_parts(spec.standard_parts)
     except (TypeError, ValueError):
@@ -377,7 +380,7 @@ def is_standard_only(spec: PartSpec) -> bool:
         if thread is None:
             continue
         for i, feature in enumerate(spec.features):
-            if i not in covered:
+            if i not in covered or i in dropped:
                 continue
             feature_kind = str(feature.type or "").lower()
             if "thread" not in feature_kind and not feature.thread_spec:

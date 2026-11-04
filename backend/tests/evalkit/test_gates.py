@@ -52,6 +52,23 @@ def test_status_score_code_gates():
     assert run_gates([{"type": "score", "min": 95}], _out(), 1.0)[0].ok is False
 
 
+def test_spec_features_dropped_gate_is_strict_and_reports_unavailable():
+    gate = {"type": "spec_features_dropped", "max": 0}
+    assert run_gates([gate], _out(spec={"feature_drops": []}), 0)[0].ok is True
+    dropped = [
+        {
+            "feature_index": 1,
+            "feature": {"name": "optional round", "type": "fillet"},
+            "reason": "unsupported concave edge",
+        }
+    ]
+    failed = run_gates([gate], _out(spec={"feature_drops": dropped}), 0)[0]
+    assert failed.ok is False
+    assert failed.measured["count"] == 1
+    assert failed.measured["drops"] == dropped
+    assert run_gates([gate], _out(), 0)[0].ok is None
+
+
 def test_bbox_gate_match_and_within():
     out = _out(analysis={"bbox_size": [80, 60, 66]})
     assert run_gates(

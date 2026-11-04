@@ -36,6 +36,11 @@ Rules:
 - `quickref("build123d.<symbol>")` returns the INSTALLED API signature — when
   a call failed on args or name, look it up there instead of guessing again.
 - Keep PARAMS keys stable and the coordinate frame contract intact.
+- If a declared spec feature truly cannot be constructed, use
+  `drop_spec_feature(feature_index, reason)` with its zero-based
+  `spec.features` index and a concrete technical explanation. This records an
+  auditable withdrawal; do not silently omit the feature, and do not use the
+  tool to evade a prompt-required feature or an independent geometry gate.
 - Do not add imports outside the allow-list.
 - Batch INDEPENDENT calls in one response (multiple read_lines/search_code/lookups at once). A call that DEPENDS on another's result (edit→verify, read→edit-range, add_block→checkpoint) must wait for it. Do not write prose around tool calls.
 - If you cannot emit native tool calls, answer with exactly ONE JSON object:

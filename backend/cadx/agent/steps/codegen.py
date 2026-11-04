@@ -24,6 +24,7 @@ from cadx.agent.context import (
     spec_block,
 )
 from cadx.agent.docfetch import docs_for_error
+from cadx.agent.specdrops import drop_spec_feature
 from cadx.agent.thinking import thinking_body
 from cadx.agent.toolloop import run_session, tools_enabled
 from cadx.agent.toolspecs import (
@@ -36,6 +37,7 @@ from cadx.agent.types import AgentCtx
 from cadx.cad.allowlist import check_code
 from cadx.cad.errordiag import diag_block, diagnose
 from cadx.cad.partspec import check_standard_part_calls
+from cadx.cad.spec_features import active_feature_rows, active_features
 from cadx.cad.standard_parts import build_standard_part_code, is_standard_only
 from cadx.llm.images import image_part
 from cadx.llm.schemas import (
@@ -487,6 +489,25 @@ async def _repair_session(
         verify_fn=verify_fn,
         render_fn=render_fn,
         render_existing_fn=render_existing_fn,
+        spec_features=(
+            [
+                {"index": i, "type": f.type, "name": f.name}
+                for i, f in active_feature_rows(spec)
+            ]
+            if spec is not None
+            else None
+        ),
+        spec_drop_fn=(
+            lambda feature_index, reason: drop_spec_feature(
+                spec,
+                feature_index,
+                reason,
+                iteration=iteration,
+                session="repair",
+            )
+            if spec is not None
+            else None
+        ),
     )
     # stalled flag means minimal edits kept producing the same error —
     # asking for another minimal edit contradicts the diagnosis
@@ -569,7 +590,7 @@ def _feature_audit(code: str, spec: PartSpec | None) -> list[str]:
         code,
         [
             {"type": getattr(f, "type", ""), "name": getattr(f, "name", "")}
-            for f in spec.features or []
+            for f in active_features(spec)
         ],
     )
 
@@ -609,12 +630,22 @@ async def _codegen_session(
     )
     spec_feats = (
         [
-            {"type": getattr(f, "type", ""), "name": getattr(f, "name", "")}
-            for f in spec.features or []
+            {"index": i, "type": getattr(f, "type", ""), "name": getattr(f, "name", "")}
+            for i, f in active_feature_rows(spec)
         ]
         if spec is not None
         else None
     )
+    def spec_drop_fn(feature_index: int, reason: str) -> dict[str, Any] | None:
+        if spec is None:
+            return None
+        return drop_spec_feature(
+            spec,
+            feature_index,
+            reason,
+            iteration=iteration,
+            session="codegen",
+        )
     if staged:
         session = ToolSession(
             ctx,
@@ -622,6 +653,7 @@ async def _codegen_session(
             code=_BUILD_SEED,
             verify_fn=verify_fn,
             spec_features=spec_feats,
+            spec_drop_fn=spec_drop_fn,
             render_fn=render_fn,
             render_existing_fn=render_existing_fn,
         )
@@ -629,7 +661,9 @@ async def _codegen_session(
             plan=plan, spec=spec, fresh=True, hybrid=ctx.hybrid_solid is not None
         )
     else:
-        session = ToolSession(ctx, kind="codegen", spec_features=spec_feats)
+        session = ToolSession(
+            ctx, kind="codegen", spec_features=spec_feats, spec_drop_fn=spec_drop_fn
+        )
         system = codegen_tools_system(
             plan=plan, spec=spec, fresh=True, hybrid=ctx.hybrid_solid is not None
         )
@@ -878,9 +912,11 @@ async def _codegen_tournament(
     slots: list[dict[str, Any]] = [{} for _ in range(n)]
 
     async def _one(i: int) -> CodeResponse:
+        candidate_spec = spec.model_copy(deep=True)
+        slots[i]["spec"] = candidate_spec
         return await _codegen_session(
             ctx,
-            spec,
+            candidate_spec,
             plan,
             iteration=iteration,
             feedback=feedback,
@@ -927,6 +963,9 @@ async def _codegen_tournament(
         c.contract_errors = _candidate_contract_errors(ctx, code)
 
     winner, why = _pick_candidate(candidates)
+    winner_spec = slots[winner.index].get("spec")
+    if isinstance(winner_spec, PartSpec):
+        spec.feature_drops = [drop.model_copy(deep=True) for drop in winner_spec.feature_drops]
     summary = [
         {
             "i": c.index,

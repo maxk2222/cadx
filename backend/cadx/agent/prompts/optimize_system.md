@@ -116,6 +116,12 @@ pick the best one.
   re-verified; returns a NEW run_index usable in `done()`. Call it on your
   best candidate BEFORE committing whenever the spec declares holes/bores —
   not only for threads or precision fits.
+- `drop_spec_feature(feature_index, reason)` — withdraw a declared feature
+  only when it is genuinely unsupported by the design you can deliver. Use
+  the zero-based position in `spec.features` and explain the technical
+  limitation; the original feature and reason remain in the audit trail.
+  This does not override independent geometry gates or justify hiding a
+  prompt-required feature.
 - `done(run_index, reasoning)` — commit one run as the version result.
   `run_index: -1` keeps the base part unoptimized (e.g. when every run
   weakened it below the target safety factor or destroyed required features).

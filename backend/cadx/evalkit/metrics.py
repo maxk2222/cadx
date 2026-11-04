@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from cadx.cad.spec_features import feature_drop_count, feature_drop_records
 from cadx.evalkit.gates import verify_spec_report
 from cadx.evalkit.models import StageOutcome
 from cadx.evalkit.stats import iterations, step_stats
@@ -137,6 +138,8 @@ def harvest(outcome: StageOutcome) -> dict[str, Any]:
                 if isinstance(c, dict) and c.get("status") == "UNVERIFIED"
             ],
         },
+        "spec_features_dropped": feature_drop_count(outcome.spec),
+        "spec_feature_drops": feature_drop_records(outcome.spec),
         "fem": {
             "worst_safety_factor": fem.get("worst_safety_factor"),
             "safety_factor": fem.get("safety_factor"),

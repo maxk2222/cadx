@@ -92,6 +92,21 @@ def test_harvest_fem_topopt_verify_spec():
     assert m["issues"] == ["hole broken keep it"]
 
 
+def test_harvest_persists_spec_feature_drop_audit():
+    drops = [
+        {
+            "feature_index": 2,
+            "feature": {"name": "fillet", "type": "fillet"},
+            "reason": "edge radius unsupported",
+            "iteration": 1,
+            "session": "codegen",
+        }
+    ]
+    metrics = harvest(_out(spec={"features": [], "feature_drops": drops}))
+    assert metrics["spec_features_dropped"] == 1
+    assert metrics["spec_feature_drops"] == drops
+
+
 def _stage(sid="codegen", passed=True):
     return StageResult(
         stage_id=sid,

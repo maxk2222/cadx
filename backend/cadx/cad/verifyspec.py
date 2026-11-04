@@ -40,6 +40,7 @@ from cadx.cad.poshint import (
     parse_symmetric_coords,
     resolve_end_hint,
 )
+from cadx.cad.spec_features import active_feature_rows, feature_drop_records
 
 Status = str  # "PASS" | "FAIL" | "UNVERIFIED"
 TIER_STRUCTURAL = "structural"
@@ -1261,9 +1262,10 @@ def _feature_placement(
         for n in (sp.get("covers_features") or [])
     }
 
-    for i, f in enumerate(spec_feats):
+    for local_i, f in enumerate(spec_feats):
         if not isinstance(f, dict):
             continue
+        i = int(f.get("_spec_index", local_i))
         ftype = str(f.get("type") or "").lower()
         name = str(f.get("name") or f.get("type") or f"feature_{i}")
         if _catalog_covered_skip(f, name, covered):
@@ -2094,6 +2096,23 @@ def verify_spec(
     "summary": str}`` — plain JSON-serializable dicts only.
     """
     checks: list[dict[str, Any]] = []
+    dropped_features = feature_drop_records(spec)
+    if spec is not None:
+        source_spec = spec if isinstance(spec, dict) else spec.model_dump(mode="json")
+        spec = {
+            **source_spec,
+            "features": [
+                {
+                    **(
+                        feature
+                        if isinstance(feature, dict)
+                        else feature.model_dump(mode="json")
+                    ),
+                    "_spec_index": index,
+                }
+                for index, feature in active_feature_rows(spec)
+            ],
+        }
     measured = measured_features if measured_features is not None else (res.get("features") or {})
 
     _structural(res, checks, spec)
@@ -2130,4 +2149,9 @@ def verify_spec(
         summary += f"; failing: {', '.join(failing[:4])}"
     if n_unv:
         summary += " (UNVERIFIED = evidence absent, not a failure)"
-    return {"status": status, "checks": checks, "summary": summary}
+    return {
+        "status": status,
+        "checks": checks,
+        "summary": summary,
+        "dropped_features": dropped_features,
+    }

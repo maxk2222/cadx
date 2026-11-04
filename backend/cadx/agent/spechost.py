@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 
 from cadx.cad.poshint import parse_axis_ranges
+from cadx.cad.spec_features import active_features
 from cadx.llm.schemas import Feature, PartSpec
 
 
@@ -111,7 +112,7 @@ def host_body(spec: PartSpec, f: Feature) -> Feature | None:
     ranged: list[Feature] = []
     if words:
         terms = _expand(words)
-        for g in spec.features or []:
+        for g in active_features(spec):
             if g is f:
                 continue
             ghay = f"{g.name or ''} {g.description or ''}".lower()
@@ -127,7 +128,7 @@ def host_body(spec: PartSpec, f: Feature) -> Feature | None:
     if not fname:
         return None
     ftokens = {t for t in re.findall(r"[a-zäöü]+", fname.lower()) if len(t) > 2}
-    for g in spec.features or []:
+    for g in active_features(spec):
         if g is f:
             continue
         gtokens = {
@@ -243,7 +244,7 @@ def xy_host_zspan(
     three axes qualify — range-less rounds (a "central boss") would bind
     by accident otherwise."""
     best: tuple[float, float] | None = None
-    for g in spec.features or []:
+    for g in active_features(spec):
         if g is f or (g.type or "").lower() not in _SOLID_TYPES:
             continue
         rng = parse_ranges(f"{g.position or ''} {g.description or ''}")

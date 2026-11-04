@@ -763,6 +763,9 @@ def _setup_session(
 ) -> ToolSession:
     """ToolSession with fem/topopt/preview callbacks; each executor call
     allocates its own iteration dir and attaches renders as `_images`."""
+    from cadx.agent.specdrops import drop_spec_feature
+    from cadx.cad.spec_features import active_feature_rows
+
     ops = _SessionOps(
         ctx=ctx,
         spec=spec,
@@ -783,6 +786,19 @@ def _setup_session(
         deadline=deadline,
         request_opt=request_opt or {},
     )
+
+    def spec_drop_fn(feature_index: int, reason: str) -> dict[str, Any]:
+        result = drop_spec_feature(
+            spec,
+            feature_index,
+            reason,
+            iteration=base_it + len(ops.struct_runs),
+            session="optimize",
+        )
+        if result.get("ok"):
+            ops.base["spec"] = spec.model_dump(mode="json")
+        return result
+
     return ToolSession(
         ctx,
         kind="optimize",
@@ -793,6 +809,11 @@ def _setup_session(
         suggest_fn=_make_suggest_fn(ops),
         refine_fn=_make_refine_fn(ops),
         infill_fn=_make_infill_fn(ops),
+        spec_features=[
+            {"index": index, "type": feature.type, "name": feature.name}
+            for index, feature in active_feature_rows(spec)
+        ],
+        spec_drop_fn=spec_drop_fn,
         target_volfrac=target_volfrac,
     )
 

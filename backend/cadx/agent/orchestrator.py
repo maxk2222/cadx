@@ -27,6 +27,7 @@ from cadx.agent.autofix import propose_fixes
 from cadx.agent.executor_client import exec_error
 from cadx.agent.mesh_client import MeshGenError, MeshGenRequest, MeshGenVariant
 from cadx.agent.quality import det_quality
+from cadx.agent.specdrops import feature_drop_issues
 from cadx.agent.steps import codegen as codegen_step
 from cadx.agent.steps import critique as critique_step
 from cadx.agent.steps import improve as improve_step
@@ -54,6 +55,11 @@ from cadx.cad.mesh_ops import (
 )
 from cadx.cad.partspec import check_standard_part_calls
 from cadx.cad.patch import apply_patch, diff_summary
+from cadx.cad.spec_features import (
+    active_features,
+    dropped_feature_indices,
+    feature_drop_records,
+)
 from cadx.llm.schemas import (
     CodeResponse,
     Critique,
@@ -251,7 +257,7 @@ def adaptive_max_iterations(
     if organic or n_images >= 2:
         return requested
     stated = stated_dim_count(spec)
-    n_features = len(spec.features)
+    n_features = len(active_features(spec))
     if stated >= 2 and n_features <= 2:
         return min(requested, 5)
     if stated >= 1 and n_features <= 6:
@@ -290,7 +296,9 @@ def compare_dims(
                 break
     # a rib/gusset protruding past the outer face inflates the bbox — name the
     # usual suspect so the repair prompt doesn't chase the base body
-    has_ribs = any("rib" in str(getattr(f, "type", "")).lower() for f in spec.features or [])
+    has_ribs = any(
+        "rib" in str(getattr(f, "type", "")).lower() for f in active_features(spec)
+    )
     if issues and has_ribs:
         issues.append(
             "note: the spec includes ribs — check they sit INSIDE the envelope "
@@ -814,12 +822,33 @@ def _exec_payload(
     # unknown anchor keys; ctx.anchors itself is never mutated)
     anchors = dict(ctx.anchors or {})
     if ctx.spec is not None:
+        dropped_names = {
+            str((record.get("feature") or {}).get(key) or "").strip().casefold()
+            for record in feature_drop_records(ctx.spec)
+            for key in ("name", "type")
+        }
+        dropped_names.discard("")
+        if dropped_names and isinstance(anchors.get("holes"), list):
+            holes = []
+            for anchor in anchors["holes"]:
+                item = dict(anchor) if isinstance(anchor, dict) else anchor
+                source = str(item.get("source") or "") if isinstance(item, dict) else ""
+                independent = any(
+                    token in source.split("+")
+                    for token in ("image", "image-approx", "mesh", "scan")
+                )
+                name = str(item.get("name") or "").strip().casefold() if isinstance(item, dict) else ""
+                if "spec" in source and not independent and name in dropped_names:
+                    item["dropped_feature"] = True
+                holes.append(item)
+            anchors["holes"] = holes
         anchors["spec"] = {
             "name": ctx.spec.name,
             "length_x": ctx.spec.length_x.model_dump(),
             "width_y": ctx.spec.width_y.model_dump(),
             "height_z": ctx.spec.height_z.model_dump(),
-            "features": [f.model_dump() for f in ctx.spec.features],
+            "features": [f.model_dump() for f in active_features(ctx.spec)],
+            "feature_drops": feature_drop_records(ctx.spec),
             "standard_parts": [part.model_dump() for part in ctx.spec.standard_parts],
             "min_wall_mm": ctx.settings.min_wall_mm,
         }
@@ -3780,16 +3809,21 @@ async def _run_cad(  # noqa: C901
         # ---------- feature verification (feedback only) ----------
         feature_findings: list[dict[str, Any]] = []
         features = exec_result.get("features") or {}
-        if s.agent_feature_feedback and features and spec.features:
+        if s.agent_feature_feedback and features and active_features(spec):
             try:
                 from cadx.cad.features import MeasuredFeatures
                 from cadx.cad.standard_parts import covered_feature_indices
 
                 covered = covered_feature_indices(spec, keep_host_voids=True)
+                dropped = dropped_feature_indices(spec)
                 feature_findings = [
                     f.model_dump()
                     for f in compare_features(
-                        [f for i, f in enumerate(spec.features) if i not in covered],
+                        [
+                            f
+                            for i, f in enumerate(spec.features)
+                            if i not in covered and i not in dropped
+                        ],
                         MeasuredFeatures(**features),
                     )
                 ]
@@ -4414,7 +4448,8 @@ async def _run_cad(  # noqa: C901
     # canonical verify_spec verdict heads the persisted issue list; the
     # per-source issues after it carry the per-finding detail
     vs_entry = _verify_spec_issue(final_exec, stage="cad")
-    outcome.issues = [vs_entry, *issues] if vs_entry else issues
+    drop_issues = feature_drop_issues(spec)
+    outcome.issues = ([vs_entry] if vs_entry else []) + drop_issues + issues
     if ctx.resolved_mode == "hybrid" and ctx.mesh_info:
         prep_it = int(ctx.mesh_info.get("_prep_it", 1))
         artifacts.update(
@@ -4501,14 +4536,19 @@ async def _run_mesh(  # noqa: C901
                 )
 
                 measured = mesh_features_to_measured(mesh_feats)
-                if spec.features:
+                if active_features(spec):
                     from cadx.cad.standard_parts import covered_feature_indices
 
                     covered = covered_feature_indices(spec, keep_host_voids=True)
+                    dropped = dropped_feature_indices(spec)
                     feature_findings += [
                         f.model_dump()
                         for f in compare_features(
-                            [f for i, f in enumerate(spec.features) if i not in covered],
+                            [
+                                f
+                                for i, f in enumerate(spec.features)
+                                if i not in covered and i not in dropped
+                            ],
                             measured,
                         )
                     ]
@@ -5381,7 +5421,7 @@ def _spec_drill_ops(spec: PartSpec, exec_result: dict[str, Any]) -> list[MeshOp]
     if len(bb) != 3:
         return []
     holes: list[dict[str, Any]] = []
-    for f in spec.features or []:
+    for f in active_features(spec):
         if str(getattr(f, "type", "") or "").lower() not in ("hole", "bore", "through-hole"):
             continue
         dia = (f.dims or {}).get("diameter") or (f.dims or {}).get("bore_diameter")
@@ -5427,7 +5467,7 @@ _FLAT_BOTTOM_CUE = re.compile(
 def _spec_wants_flat_bottom(spec: PartSpec) -> bool:
     """Text cue: spec demands a planar -z face (mounting/flat back)."""
     texts = [spec.name or "", spec.summary or ""]
-    texts += [f"{f.name} {f.description}" for f in spec.features]
+    texts += [f"{f.name} {f.description}" for f in active_features(spec)]
     return any(_FLAT_BOTTOM_CUE.search(t) for t in texts)
 
 
@@ -6189,6 +6229,7 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
         except Exception as e:
             outcome.error = f"intake failed: {e}"
             return outcome
+    ctx.spec = spec
     outcome.spec = spec.model_dump()
 
     # ---- structural-load second chance ----
@@ -6438,4 +6479,5 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
         outcome.analysis = {**(outcome.analysis or {}), "measurements": ctx.measurements}
     if ctx.anchors:
         outcome.analysis = {**(outcome.analysis or {}), "anchors": ctx.anchors}
+    outcome.spec = spec.model_dump()
     return outcome

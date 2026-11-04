@@ -28,6 +28,7 @@ from cadx.cad.poshint import (
     parse_symmetric_coords,
     resolve_end_hint,
 )
+from cadx.cad.spec_features import dropped_feature_indices
 from cadx.llm.schemas import Feature, PartSpec
 
 # axis -> (axial index, in-plane u index, in-plane v index) — same layout as
@@ -175,14 +176,13 @@ def _independent_features(spec: PartSpec) -> list[Feature]:
     geometry, never a bore to anchor, re-cut or measure. Void-typed features
     (the tap hole a fastener screws into) stay independent: coverage may
     delegate how they are built, they are still host geometry to anchor."""
+    dropped = dropped_feature_indices(spec)
     try:
         from cadx.cad.standard_parts import covered_feature_indices
     except Exception:
-        return list(spec.features)
+        return [f for i, f in enumerate(spec.features) if i not in dropped]
     covered = covered_feature_indices(spec, keep_host_voids=True)
-    if not covered:
-        return list(spec.features)
-    return [f for i, f in enumerate(spec.features) if i not in covered]
+    return [f for i, f in enumerate(spec.features) if i not in covered and i not in dropped]
 
 
 def _hole_like(f: Feature) -> bool:

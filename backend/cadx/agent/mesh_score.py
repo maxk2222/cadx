@@ -13,6 +13,8 @@ import math
 import re
 from typing import Any
 
+from cadx.cad.spec_features import active_features
+
 # spec wording that implies a revolve/round body — shared with the
 # orchestrator's deterministic silhouette ops (radial_profile_auto)
 _ROUND_RE = re.compile(
@@ -29,7 +31,7 @@ def spec_suggests_revolve(spec: Any) -> bool:
         str(getattr(spec, "symmetry", "") or ""),
         str(getattr(spec, "orientation_note", "") or ""),
     ]
-    for f in getattr(spec, "features", None) or []:
+    for f in active_features(spec):
         texts.append(f"{getattr(f, 'name', '')} {getattr(f, 'description', '')}")
     return any(_ROUND_RE.search(t) for t in texts)
 
@@ -144,7 +146,7 @@ def score_mesh_candidate(
 
     spec_holes = sum(
         int(getattr(f, "count", 1) or 1)
-        for f in (spec.features or [])
+        for f in active_features(spec)
         if "hole" in str(getattr(f, "type", "")).lower()
     )
     tunnels = [h for h in feats.get("holes") or [] if h.get("kind") == "tunnel"]
@@ -254,7 +256,7 @@ def score_raw_mesh(
 
     spec_holes = sum(
         int(getattr(f, "count", 1) or 1)
-        for f in (spec.features or [])
+        for f in active_features(spec)
         if "hole" in str(getattr(f, "type", "")).lower()
     )
     tunnels = [h for h in feats.holes if h.kind == "tunnel"]

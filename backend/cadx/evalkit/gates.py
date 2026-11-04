@@ -17,6 +17,7 @@ import math
 from pathlib import Path
 from typing import Any
 
+from cadx.cad.spec_features import feature_drop_count, feature_drop_records
 from cadx.evalkit.models import GateResult, StageOutcome
 
 
@@ -893,6 +894,19 @@ def _gate_outcome(  # noqa: C901
             f"{i.get('what', '')} {i.get('fix_hint', '')}".strip() for i in outcome.issues or []
         ]
         return GateResult(name, any(needle in t.lower() for t in texts), measured=texts[:6])
+
+    if name == "spec_features_dropped":
+        if outcome.spec is None:
+            return GateResult(name, None, detail="spec/drop audit is unavailable")
+        count = feature_drop_count(outcome.spec)
+        expected = int(g.get("max", g.get("max_count", 0)))
+        details = feature_drop_records(outcome.spec)
+        return GateResult(
+            name,
+            count <= expected,
+            measured={"count": count, "drops": details},
+            expected={"max": expected},
+        )
 
     if name == "code":
         want = bool(g.get("expect", True))

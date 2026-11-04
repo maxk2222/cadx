@@ -322,7 +322,7 @@ def test_report_is_json_serializable():
     report = verify_spec(_spec(), _res())
     assert json.loads(json.dumps(report)) == report
     keys = set(report)
-    assert keys == {"status", "checks", "summary"}
+    assert keys == {"status", "checks", "summary", "dropped_features"}
     for c in report["checks"]:
         assert set(c) == {"name", "tier", "status", "evidence"}
         assert c["status"] in ("PASS", "FAIL", "UNVERIFIED")

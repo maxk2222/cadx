@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from cadx.agent.types import IMAGE_INPUT_KINDS, InputAsset
+from cadx.cad.spec_features import active_features
 from cadx.db.models import ProjectSettings
 from cadx.llm.images import image_part
 from cadx.llm.schemas import PartSpec
@@ -123,12 +124,13 @@ def _cadlib_sections(spec: PartSpec | None) -> str:
     unlisted helpers stay discoverable. With no spec (or no features) the
     full reference is returned — codegen from scratch gets the toolbox."""
     text = read_prompt("cadlib_reference.md")
-    if spec is None or not spec.features:
+    features = active_features(spec)
+    if spec is None or not features:
         return text
     words: set[str] = set()
     haystack = " ".join(
         [str(spec.name or ""), str(spec.summary or "")]
-        + [f"{f.type} {f.name}" for f in spec.features]
+        + [f"{f.type} {f.name}" for f in features]
     )
     for w in re.split(r"[^a-z]+", haystack.lower()):
         if w:
@@ -180,7 +182,7 @@ def _reference_docs(
     needs_bd = (
         bool(getattr(plan, "standard_parts", None))
         or bool(getattr(spec, "standard_parts", None))
-        or any(getattr(f, "standard", "") for f in (spec.features if spec else []))
+        or any(getattr(f, "standard", "") for f in active_features(spec))
     )
     if needs_bd:
         parts.append(read_prompt("bd_warehouse_reference.md"))
@@ -415,7 +417,7 @@ def catalog_block(plan: Any | None, spec: PartSpec | None) -> str:
         if getattr(part, "class_name", "")
     )
     reg = catalog.registry()
-    for f in (spec.features if spec else []) or []:
+    for f in active_features(spec):
         std = (getattr(f, "standard", "") or "").lower()
         if not std:
             continue

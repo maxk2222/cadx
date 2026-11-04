@@ -62,6 +62,7 @@ from cadx.cad.mesh_ops import (
 )
 from cadx.cad.render import render_thumbnail, render_views
 from cadx.cad.sandbox import Reference, RunnerOutput, run_user_code
+from cadx.cad.spec_features import active_features, dropped_feature_indices
 from cadx.db.models import ProjectSettings
 from cadx.llm.schemas import PartSpec
 from cadx.logging import get_logger
@@ -276,18 +277,19 @@ def _attach_verify_spec(
         if (
             feature_findings is None
             and spec_dict
-            and spec_dict.get("features")
+            and active_features(spec_dict)
             and measured
             and rt.agent_feature_feedback
         ):
             try:
                 from cadx.cad.standard_parts import covered_feature_indices
 
-                covered = covered_feature_indices(spec_dict)
+                covered = covered_feature_indices(spec_dict, keep_host_voids=True)
+                dropped = dropped_feature_indices(spec_dict)
                 feats = [
                     Feature.model_validate(f)
                     for i, f in enumerate(spec_dict["features"])
-                    if i not in covered
+                    if i not in covered and i not in dropped
                 ]
                 feature_findings = [
                     f.model_dump() for f in compare_features(feats, MeasuredFeatures(**measured))
@@ -981,8 +983,9 @@ def run_mesh_pipeline(  # noqa: C901
                 m = mesh_features_to_measured(mf) if mf else None
                 if m is not None:
                     measured = m.model_dump()
-                    if spec.features and rt.agent_feature_feedback:
-                        findings = [f.model_dump() for f in compare_features(spec.features, m)]
+                    current = active_features(spec)
+                    if current and rt.agent_feature_feedback:
+                        findings = [f.model_dump() for f in compare_features(current, m)]
             except Exception as e:
                 log.warning("verify_spec.mesh_features_failed", error=str(e)[:200])
         spec_dict = spec.model_dump() if spec is not None else None
@@ -3576,7 +3579,7 @@ def run_topopt_pipeline(  # noqa: C901
             base_mesh=mesh,
             keep_regions=keep_list,
             anchors=anchors,
-            spec_features=(spec or {}).get("features"),
+            spec_features=active_features(spec),
             recut_bores=bool(opt.recut_bores),
             restore_keeps=bool(opt.restore_planes),
             helical_threads=False,
@@ -5887,7 +5890,7 @@ def run_topopt_resample(  # noqa: C901
         base_mesh=base_mesh,
         keep_regions=keep_list,
         anchors=anchors,
-        spec_features=(spec or {}).get("features"),
+        spec_features=active_features(spec),
         recut_bores=bool(opt.recut_bores),
         restore_keeps=bool(opt.restore_planes),
         helical_threads=False,

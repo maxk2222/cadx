@@ -58,6 +58,8 @@ def _bounded_spec_anchor(h: object, mesh_boolean) -> bool:
     Unbounded spec anchors stay codegen-owned and are not re-cut."""
     if not isinstance(h, dict):
         return False
+    if h.get("dropped_feature"):
+        return False
     if "spec" not in str(h.get("source") or ""):
         return False
     if mesh_boolean is None:
@@ -600,12 +602,17 @@ def main(workdir: Path | None = None) -> int:  # noqa: C901
         # depth_mm — e.g. a mount hole bound to its 10 mm base plate) bound
         # the cutter to the declared bore interval, so a sealed/missing spec
         # bore gets re-cut safely instead of failing verify_spec later.
+        active_anchor_holes = [
+            h
+            for h in anchor_holes_list
+            if not (isinstance(h, dict) and h.get("dropped_feature"))
+        ]
         recut_anchors = (
-            anchor_holes_list
+            active_anchor_holes
             if mesh_solid_path
             else [
                 h
-                for h in anchor_holes_list
+                for h in active_anchor_holes
                 if isinstance(h, dict)
                 and (
                     str(h.get("source") or "") in ("image", "image+mesh")

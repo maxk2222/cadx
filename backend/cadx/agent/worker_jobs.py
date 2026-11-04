@@ -28,6 +28,7 @@ from cadx.agent.executor_client import QueueExecutor, exec_error
 from cadx.agent.image_client import ImagePort, make_image_client
 from cadx.agent.mesh_client import MeshGenRequest, MeshPort, make_mesh_client
 from cadx.agent.orchestrator import RunOutcome, run_generation
+from cadx.agent.specdrops import feature_drop_issues
 from cadx.agent.trace import MemoryTrace, sanitize_messages
 from cadx.agent.types import AgentCtx, InputAsset, ParentContext
 from cadx.cad.allowlist import check_code
@@ -1315,6 +1316,9 @@ async def _try_optimize_session(
             "reasoning": agent.reasoning or "",
             "rejected_runs": _json_safe(agent.runs),
         }
+        if spec is not None:
+            version.spec = _json_safe(spec.model_dump(mode="json"))
+            version.issues = [*(version.issues or []), *feature_drop_issues(spec)]
         # the version SHIPS the base geometry — copy the parent STL in so
         # the version carries a loadable artifact (UI preview + eval mesh
         # gates) instead of looking like a geometry-less optimize output
@@ -1440,7 +1444,10 @@ async def _maybe_spawn_refine(
             reason="refine already applied in generation job",
         )
         return False
-    has_features = bool(spec and spec.features)
+    from cadx.cad.spec_features import active_features
+
+    active_spec_features = active_features(spec) if spec else []
+    has_features = bool(active_spec_features)
     topopt_anchors = ((parent.mesh or {}).get("topopt") or {}).get("anchors") or []
     if not (has_features or topopt_anchors):
         log.info(
@@ -1752,7 +1759,9 @@ async def run_optimize_job(  # noqa: C901
                     pass  # recount is informational — never fail the job on it
         version.gen_mode = "topopt"
         version.resolved_mode = "topopt"
-        version.spec = parent.spec
+        version.spec = _json_safe(spec.model_dump(mode="json")) if spec else parent.spec
+        if spec is not None:
+            version.issues = [*(version.issues or []), *feature_drop_issues(spec)]
         version.fem = fem or None
         version.mesh = _json_safe(
             {
@@ -2080,8 +2089,10 @@ async def run_refine_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[s
             or ((parent.mesh or {}).get("topopt") or {}).get("anchors")
             or (parent.analysis or {}).get("anchors", {}).get("holes")
         )
+        from cadx.cad.spec_features import active_features
+
         spec_features = payload.get("spec_features") or [
-            f.model_dump() for f in (spec.features if spec else [])
+            f.model_dump() for f in (active_features(spec) if spec else [])
         ]
 
         runtime_settings = await load_runtime_settings(db)

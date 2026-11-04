@@ -26,6 +26,10 @@
           ]
         },
         {
+          "type": "spec_features_dropped",
+          "max": 0
+        },
+        {
           "type": "bbox",
           "dims": [
             100,
@@ -154,6 +158,10 @@
             "succeeded",
             "needs_review"
           ]
+        },
+        {
+          "type": "spec_features_dropped",
+          "max": 0
         },
         {
           "type": "topopt",

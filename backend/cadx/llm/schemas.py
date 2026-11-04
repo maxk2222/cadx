@@ -14,6 +14,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from pydantic.json_schema import SkipJsonSchema
 
 # Short/Medium/Long string bounds — guided decoding honours `maxLength`, which
 # stops a weak model looping inside an unbounded string field (observed: an
@@ -125,6 +126,15 @@ class Feature(BaseModel):
     thread_spec: Annotated[str, Field(max_length=16)] = (
         ""  # 'M4' | 'M4x0.5' — re-cut as exact thread after topopt finishing
     )
+
+
+class FeatureDrop(BaseModel):
+    feature_index: int = Field(ge=0, le=39)
+    feature: Feature
+    reason: Annotated[str, Field(min_length=12, max_length=500)]
+    iteration: int = Field(ge=0)
+    session: Literal["codegen", "repair", "optimize"]
+    recorded_at: Annotated[str, Field(max_length=40)]
 
 
 class StandardPartSpec(BaseModel):
@@ -713,6 +723,7 @@ class PartSpec(BaseModel):
     height_z: Dim
     orientation_note: M = ""
     features: list[Feature] = Field(default_factory=list, max_length=40)
+    feature_drops: SkipJsonSchema[list[FeatureDrop]] = Field(default_factory=list)
     standard_parts: list[StandardPartSpec] = Field(default_factory=list, max_length=24)
     # multi-image parts: how the body is built up (layers, gaps, joined parts)
     # — survives the spec->codegen handoff that otherwise flattens structure

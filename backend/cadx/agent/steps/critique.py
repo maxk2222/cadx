@@ -22,6 +22,7 @@ from cadx.agent.thinking import thinking_body
 from cadx.agent.toolloop import run_session, tools_enabled
 from cadx.agent.toolspecs import ToolSession
 from cadx.agent.types import AgentCtx
+from cadx.cad.spec_features import active_features
 from cadx.llm.schemas import Critique, Discrepancy, Feature, PartSpec
 
 STEP = "critique"
@@ -454,7 +455,7 @@ def _finalize_critique(
         + int((features or {}).get("countersinks") or 0)
         + int((features or {}).get("counterbores") or 0)
     )
-    if _FEATURE_WORDS.search(ctx.prompt or "") and measured_n == 0 and not spec.features:
+    if _FEATURE_WORDS.search(ctx.prompt or "") and measured_n == 0 and not active_features(spec):
         critique.discrepancies.append(
             Discrepancy(
                 what="the request names features (holes/slots/ribs/fillets) but "
@@ -675,11 +676,12 @@ def _spec_feature_for(spec: PartSpec, name: str) -> Feature | None:
     guessing which feature was meant must never drive a refute."""
     if not name:
         return None
-    for f in spec.features:
+    features = active_features(spec)
+    for f in features:
         if (f.name or "").lower() == name:
             return f
     cand = [
-        f for f in spec.features if f.name and (f.name.lower() in name or name in f.name.lower())
+        f for f in features if f.name and (f.name.lower() in name or name in f.name.lower())
     ]
     return cand[0] if len(cand) == 1 else None
 
@@ -750,7 +752,7 @@ def _declared_plate_volume(spec: PartSpec) -> float:
     >= 2 plate dims (length*width*thickness or length*width*height) per
     declared instance count."""
     total = 0.0
-    for f in spec.features:
+    for f in active_features(spec):
         if not _plate_like(f):
             continue
         dims = f.dims or {}
@@ -786,7 +788,7 @@ def _structure_hit(what: str, spec: PartSpec) -> bool:
     words = set(_NAME_WORD_RE.findall(what.lower()))
     if words & _PLATE_LIKE:
         return True
-    return any(_name_words(f.name) & words for f in spec.features if _plate_like(f))
+    return any(_name_words(f.name) & words for f in active_features(spec) if _plate_like(f))
 
 
 def _drop_facet_dia_noise(critique: Critique, spec: PartSpec, features: dict[str, Any]) -> None:
@@ -799,7 +801,7 @@ def _drop_facet_dia_noise(critique: Critique, spec: PartSpec, features: dict[str
         return
     stated = [
         float(f.dims["diameter"])
-        for f in spec.features
+        for f in active_features(spec)
         if isinstance(f.dims, dict) and f.dims.get("diameter")
     ]
     measured = [
@@ -849,7 +851,7 @@ def _verify_missing_verdicts(critique: Critique, spec: PartSpec, features: dict[
 
     Unmeasurable kinds ('rib', 'texture', ...) stay LLM-judged.
     """
-    spec_types = {f.name.lower(): (f.type or "") for f in spec.features}
+    spec_types = {f.name.lower(): (f.type or "") for f in active_features(spec)}
     refuted: list[str] = []
     for fv in critique.feature_verdicts:
         if fv.status != "missing":
@@ -896,7 +898,7 @@ def _verify_wrong_verdicts(critique: Critique, spec: PartSpec, features: dict[st
     met. Position/surface quality remain unverifiable, so the verdict falls
     back to 'unsure' (never 'present') and major discrepancies to minor.
     """
-    spec_by_name = {f.name.lower(): f for f in spec.features}
+    spec_by_name = {f.name.lower(): f for f in active_features(spec)}
     groups = [g for g in (features.get("hole_groups") or []) if not g.get("elongated")]
     refuted: list[str] = []
     for fv in critique.feature_verdicts:

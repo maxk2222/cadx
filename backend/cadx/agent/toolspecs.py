@@ -44,6 +44,7 @@ log = get_logger(__name__)
 
 VerifyFn = Callable[[str], Awaitable[dict[str, Any]]]
 StructFn = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
+SpecDropFn = Callable[[int, str], dict[str, Any]]
 
 _DONE_TOOLS = ("done", "submit_code", "regenerate")
 
@@ -412,6 +413,26 @@ CHECK_SNIPPET_TOOLS = [
         {"code": _s("complete code file to check")},
         ["code"],
     ),
+]
+
+SPEC_FEATURE_TOOLS = [
+    _fn(
+        "drop_spec_feature",
+        "Withdraw ONE declared spec feature you cannot construct, using its "
+        "zero-based index from spec.features and a concrete reason (minimum 12 "
+        "characters). The feature remains in the audit record; never use this "
+        "to bypass a prompt-required feature or an Evalkit geometry gate.",
+        {
+            "feature_index": _i("zero-based position in spec.features"),
+            "reason": {
+                "type": "string",
+                "minLength": 12,
+                "maxLength": 500,
+                "description": "specific technical reason this declared feature cannot be built",
+            },
+        },
+        ["feature_index", "reason"],
+    )
 ]
 
 VERIFY_TOOLS = [
@@ -1870,6 +1891,7 @@ class ToolSession:
         # spec features for the submission audit — [{"type":..., "name":...}];
         # submit_code/done reject stubs that build none of them
         spec_features: list[dict[str, Any]] | None = None,
+        spec_drop_fn: SpecDropFn | None = None,
         # optimize sessions: the session's volume target — preview/check_load
         # warn when the passive floor already exceeds it
         target_volfrac: float | None = None,
@@ -1889,6 +1911,7 @@ class ToolSession:
         self.refine_fn = refine_fn
         self.infill_fn = infill_fn
         self.spec_features = spec_features
+        self.spec_drop_fn = spec_drop_fn
         self.target_volfrac = target_volfrac
         self._refined_runs: set[int] = set()
         settings = ctx.runtime_settings
@@ -1971,12 +1994,14 @@ class ToolSession:
             ]
             if getattr(self.ctx.executor, "edit_feature", None) is not None:
                 out += FEATURE_EDIT_TOOLS
-            return out + DONE_TOOLS + IMAGE_TOOLS
+            spec_tools = SPEC_FEATURE_TOOLS if self.spec_drop_fn is not None else []
+            return out + spec_tools + DONE_TOOLS + IMAGE_TOOLS
         if self.kind == "codegen":
             return [
                 *INFO_TOOLS,
                 *LIBRARY_TOOLS,
                 *CHECK_SNIPPET_TOOLS,
+                *(SPEC_FEATURE_TOOLS if self.spec_drop_fn is not None else []),
                 *SUBMIT_CODE_TOOLS,
                 *IMAGE_TOOLS,
             ]
@@ -1992,6 +2017,8 @@ class ToolSession:
                 *CHECK_SNIPPET_TOOLS,
             ]
             out += self._verify_render_tools()
+            if self.spec_drop_fn is not None:
+                out += SPEC_FEATURE_TOOLS
             return out + DONE_TOOLS + BUILD_TOOLS + BUILD_MACHINE_TOOLS + IMAGE_TOOLS
         if self.kind == "inspect":
             return [*CODE_READ_TOOLS, *INFO_TOOLS, *LIBRARY_INFO_TOOLS, *IMAGE_TOOLS]
@@ -2033,7 +2060,8 @@ class ToolSession:
                     and self.struct_runs
                 )
             ]
-            return out + OPTIMIZE_DONE_TOOLS + IMAGE_TOOLS
+            spec_tools = SPEC_FEATURE_TOOLS if self.spec_drop_fn is not None else []
+            return out + spec_tools + OPTIMIZE_DONE_TOOLS + IMAGE_TOOLS
         # info sessions (intake/plan): catalog/library lookups + image gen
         out = [*INFO_TOOLS, *LIBRARY_TOOLS, *IMAGE_TOOLS]
         if self.image_left > 0:
@@ -3534,6 +3562,23 @@ class ToolSession:
         return out
 
     # -- submission ------------------------------------------------------------ #
+
+    def _tool_drop_spec_feature(self, a: dict[str, Any]) -> dict[str, Any]:
+        if self.spec_drop_fn is None:
+            return {"ok": False, "error": "drop_spec_feature is not available in this session"}
+        index = a.get("feature_index")
+        if isinstance(index, bool) or not isinstance(index, int):
+            return {"ok": False, "error": "feature_index must be a zero-based integer"}
+        reason = a.get("reason")
+        if not isinstance(reason, str) or len(reason.strip()) < 12:
+            return {
+                "ok": False,
+                "error": "reason must explain the limitation in at least 12 characters",
+            }
+        result = self.spec_drop_fn(index, reason)
+        if result.get("ok") and isinstance(result.get("active_features"), list):
+            self.spec_features = result["active_features"]
+        return result
 
     def _tool_done(self, a: dict[str, Any]) -> dict[str, Any]:
         if self.kind == "optimize":
