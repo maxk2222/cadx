@@ -151,8 +151,13 @@ def test_case_result_legacy_v2_status_migration():
     # schema<=2 files never recorded a lifecycle: finished_at was refreshed
     # on EVERY intermediate persist, so it cannot prove completion.
     base = {
-        "case": "c", "driver": "http", "variant": "v", "run_id": "r",
-        "wall_s": 5.0, "schema_version": 2, "finished_at": "t",
+        "case": "c",
+        "driver": "http",
+        "variant": "v",
+        "run_id": "r",
+        "wall_s": 5.0,
+        "schema_version": 2,
+        "finished_at": "t",
         "stages": [],
     }
     done = CaseResult.from_dict({**base, "passed": True})

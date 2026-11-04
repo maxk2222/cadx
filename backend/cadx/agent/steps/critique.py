@@ -680,9 +680,7 @@ def _spec_feature_for(spec: PartSpec, name: str) -> Feature | None:
     for f in features:
         if (f.name or "").lower() == name:
             return f
-    cand = [
-        f for f in features if f.name and (f.name.lower() in name or name in f.name.lower())
-    ]
+    cand = [f for f in features if f.name and (f.name.lower() in name or name in f.name.lower())]
     return cand[0] if len(cand) == 1 else None
 
 

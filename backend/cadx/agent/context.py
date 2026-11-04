@@ -129,8 +129,7 @@ def _cadlib_sections(spec: PartSpec | None) -> str:
         return text
     words: set[str] = set()
     haystack = " ".join(
-        [str(spec.name or ""), str(spec.summary or "")]
-        + [f"{f.type} {f.name}" for f in features]
+        [str(spec.name or ""), str(spec.summary or "")] + [f"{f.type} {f.name}" for f in features]
     )
     for w in re.split(r"[^a-z]+", haystack.lower()):
         if w:

@@ -41,7 +41,10 @@ def drop_spec_feature(
         return {"ok": False, "error": f"feature {feature_index} is already dropped"}
     note = str(reason or "").strip()
     if len(note) < 12:
-        return {"ok": False, "error": "reason must explain the limitation in at least 12 characters"}
+        return {
+            "ok": False,
+            "error": "reason must explain the limitation in at least 12 characters",
+        }
     if len(note) > 500:
         return {"ok": False, "error": "reason must be 500 characters or fewer"}
     if session not in {"codegen", "repair", "optimize"}:

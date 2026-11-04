@@ -296,9 +296,7 @@ def compare_dims(
                 break
     # a rib/gusset protruding past the outer face inflates the bbox — name the
     # usual suspect so the repair prompt doesn't chase the base body
-    has_ribs = any(
-        "rib" in str(getattr(f, "type", "")).lower() for f in active_features(spec)
-    )
+    has_ribs = any("rib" in str(getattr(f, "type", "")).lower() for f in active_features(spec))
     if issues and has_ribs:
         issues.append(
             "note: the spec includes ribs — check they sit INSIDE the envelope "
@@ -837,7 +835,9 @@ def _exec_payload(
                     token in source.split("+")
                     for token in ("image", "image-approx", "mesh", "scan")
                 )
-                name = str(item.get("name") or "").strip().casefold() if isinstance(item, dict) else ""
+                name = (
+                    str(item.get("name") or "").strip().casefold() if isinstance(item, dict) else ""
+                )
                 if "spec" in source and not independent and name in dropped_names:
                     item["dropped_feature"] = True
                 holes.append(item)

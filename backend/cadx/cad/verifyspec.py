@@ -2103,11 +2103,7 @@ def verify_spec(
             **source_spec,
             "features": [
                 {
-                    **(
-                        feature
-                        if isinstance(feature, dict)
-                        else feature.model_dump(mode="json")
-                    ),
+                    **(feature if isinstance(feature, dict) else feature.model_dump(mode="json")),
                     "_spec_index": index,
                 }
                 for index, feature in active_feature_rows(spec)

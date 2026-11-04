@@ -198,9 +198,7 @@ async def run_case(
     if driver == "local":
         drv, dctx = None, None
         try:
-            drv, dctx = await _setup_local(
-                case, res, out, variant_overrides, from_dir, verbose
-            )
+            drv, dctx = await _setup_local(case, res, out, variant_overrides, from_dir, verbose)
         except Exception as e:
             if drv is not None:
                 with contextlib.suppress(Exception):

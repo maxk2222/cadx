@@ -41,17 +41,20 @@ def test_feature_drop_is_hidden_from_llm_schema_and_survives_json_roundtrip() ->
 
 def test_drop_requires_a_valid_unique_active_index_and_reason() -> None:
     spec = _spec()
-    assert drop_spec_feature(spec, True, "valid enough reason", iteration=0, session="codegen")[
-        "ok"
-    ] is False
-    assert drop_spec_feature(spec, 4, "valid enough reason", iteration=0, session="codegen")[
-        "ok"
-    ] is False
+    assert (
+        drop_spec_feature(spec, True, "valid enough reason", iteration=0, session="codegen")["ok"]
+        is False
+    )
+    assert (
+        drop_spec_feature(spec, 4, "valid enough reason", iteration=0, session="codegen")["ok"]
+        is False
+    )
     assert drop_spec_feature(spec, 1, "too short", iteration=0, session="codegen")["ok"] is False
     assert drop_spec_feature(spec, 1, "not enough reason", iteration=0, session="codegen")["ok"]
-    assert drop_spec_feature(spec, 1, "another detailed reason", iteration=1, session="repair")[
-        "ok"
-    ] is False
+    assert (
+        drop_spec_feature(spec, 1, "another detailed reason", iteration=1, session="repair")["ok"]
+        is False
+    )
 
 
 def test_verifyspec_skips_active_checks_but_reports_drops() -> None:

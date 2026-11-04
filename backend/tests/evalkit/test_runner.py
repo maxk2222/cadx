@@ -91,9 +91,7 @@ async def test_mid_run_snapshot_is_running_not_finished(monkeypatch, tmp_path):
         return StageOutcome(status="succeeded", wall_s=1.0)
 
     _http_stub(monkeypatch, tmp_path, dispatch)
-    res = await run_case(
-        _case([_stage("gen1"), _stage("gen2")]), driver="http", api_url="http://x"
-    )
+    res = await run_case(_case([_stage("gen1"), _stage("gen2")]), driver="http", api_url="http://x")
 
     assert mid["status"] == "running"
     assert len(mid["stages"]) == 1
@@ -217,9 +215,7 @@ async def test_atomic_persist_leaves_no_tmp_files(monkeypatch, tmp_path):
         return StageOutcome(status="succeeded", wall_s=1.0)
 
     _http_stub(monkeypatch, tmp_path, dispatch)
-    res = await run_case(
-        _case([_stage("s1"), _stage("s2")]), driver="http", api_url="http://x"
-    )
+    res = await run_case(_case([_stage("s1"), _stage("s2")]), driver="http", api_url="http://x")
 
     out = tmp_path / "t_case" / res.run_id
     assert not list(out.rglob("*.tmp"))

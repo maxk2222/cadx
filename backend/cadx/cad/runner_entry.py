@@ -603,9 +603,7 @@ def main(workdir: Path | None = None) -> int:  # noqa: C901
         # the cutter to the declared bore interval, so a sealed/missing spec
         # bore gets re-cut safely instead of failing verify_spec later.
         active_anchor_holes = [
-            h
-            for h in anchor_holes_list
-            if not (isinstance(h, dict) and h.get("dropped_feature"))
+            h for h in anchor_holes_list if not (isinstance(h, dict) and h.get("dropped_feature"))
         ]
         recut_anchors = (
             active_anchor_holes

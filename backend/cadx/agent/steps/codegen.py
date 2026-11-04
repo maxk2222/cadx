@@ -490,23 +490,22 @@ async def _repair_session(
         render_fn=render_fn,
         render_existing_fn=render_existing_fn,
         spec_features=(
-            [
-                {"index": i, "type": f.type, "name": f.name}
-                for i, f in active_feature_rows(spec)
-            ]
+            [{"index": i, "type": f.type, "name": f.name} for i, f in active_feature_rows(spec)]
             if spec is not None
             else None
         ),
         spec_drop_fn=(
-            lambda feature_index, reason: drop_spec_feature(
-                spec,
-                feature_index,
-                reason,
-                iteration=iteration,
-                session="repair",
+            lambda feature_index, reason: (
+                drop_spec_feature(
+                    spec,
+                    feature_index,
+                    reason,
+                    iteration=iteration,
+                    session="repair",
+                )
+                if spec is not None
+                else None
             )
-            if spec is not None
-            else None
         ),
     )
     # stalled flag means minimal edits kept producing the same error —
@@ -636,6 +635,7 @@ async def _codegen_session(
         if spec is not None
         else None
     )
+
     def spec_drop_fn(feature_index: int, reason: str) -> dict[str, Any] | None:
         if spec is None:
             return None
@@ -646,6 +646,7 @@ async def _codegen_session(
             iteration=iteration,
             session="codegen",
         )
+
     if staged:
         session = ToolSession(
             ctx,
