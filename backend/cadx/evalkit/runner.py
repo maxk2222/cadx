@@ -8,10 +8,13 @@ dir (evals/results/<case>/<ts>_<label> for http, evals/scratch for local).
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import hashlib
 import json
+import os
 import subprocess
+import tempfile
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -74,17 +77,36 @@ def _resolve_images(paths: list[str]) -> list[Path]:
     return out
 
 
+def _atomic_write(path: Path, text: str) -> None:
+    """Crash-safe file write: temp file in the same dir + fsync + os.replace.
+
+    A crash mid-write leaves either the previous version or the new one —
+    never a truncated file. Temp names are unique per call so concurrent
+    writers cannot collide."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        Path(tmp).replace(path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            Path(tmp).unlink()
+        raise
+
+
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, default=str, indent=1), encoding="utf-8")
+    _atomic_write(path, json.dumps(payload, default=str, indent=1))
 
 
 def _summary_md(res: CaseResult) -> str:
     lines = [
         f"# eval {res.case} ({res.driver}, variant={res.variant})",
         "",
-        f"- verdict: **{_verdict_label(res.passed)}**  wall: {res.wall_s:.0f}s  "
-        f"run: `{res.run_id}`",
+        f"- status: **{res.status}**  verdict: **{_verdict_label(res.passed)}**  "
+        f"wall: {res.wall_s:.0f}s  run: `{res.run_id}`",
         f"- project: `{res.project}` ({res.project_id or '-'})",
         "",
         "| stage | type | status | verdict | score | wall s | gates failed | inconclusive |",
@@ -163,63 +185,51 @@ async def run_case(
     stages = case.enabled_stages(stages_filter)
     if not stages:
         res.error = "no enabled stages selected"
-        _persist(res, out)
+        res.status = "failed"
+        _persist(res, out, final=True)
         return res
+
+    # persist the run as `running` BEFORE potentially long driver setup —
+    # a crash afterwards must still show an in-progress run, not a missing
+    # or finished-looking result.
+    _persist(res, out)
 
     # ---- driver setup -----------------------------------------------------
     if driver == "local":
-        from cadx.evalkit.local import (
-            LocalCtx,
-            LocalDriver,
-            bootstrap,
-            import_parent,
-            seed_project,
-            snapshot_runtime,
-            stage_assets,
-        )
-
-        lctx = LocalCtx(out)
-        prev_url = await bootstrap(out)
-        runtime = await snapshot_runtime(prev_url)
-        overrides = {**(variant_overrides or {}), **case.runtime}
-        if overrides:
-            runtime = runtime.model_copy(update=overrides)
-            res.meta["runtime_overrides"] = overrides
-        await seed_project(lctx, case.project, case.settings, runtime)
-        res.project_id = str(lctx.project_id)
-        # case images -> scratch assets
-        img_paths = _resolve_images(case.images)
-        if img_paths:
-            lctx.case_assets = await stage_assets(lctx, img_paths)
-        if from_dir:
-            await import_parent(lctx, Path(from_dir))
-        drv: Any = LocalDriver(verbose=verbose)
-        drv.patch_executor()
-        dctx: Any = lctx
+        drv, dctx = None, None
+        try:
+            drv, dctx = await _setup_local(
+                case, res, out, variant_overrides, from_dir, verbose
+            )
+        except Exception as e:
+            if drv is not None:
+                with contextlib.suppress(Exception):
+                    drv.unpatch_executor()
+            res.status = "failed"
+            res.error = f"{type(e).__name__}: {e}"
+            res.wall_s = round(time.monotonic() - t0, 1)
+            _persist(res, out, final=True)
+            return res
     else:
         from cadx.evalkit.http import DriverCtx, HttpDriver
 
         hctx = DriverCtx()
         hctx.out_dir = out
         drv = HttpDriver(api_url, verbose=verbose)
-        if not await drv.health():
-            res.error = f"api unreachable at {api_url}"
-            _persist(res, out)
-            return res
         # variant swap: settings backup -> apply -> restore in finally
-        backup: dict[str, Any] | None = None
         overrides = {**(variant_overrides or {}), **case.runtime}
-        if overrides or settings_overrides:
-            try:
-                backup = await drv.settings_get()
-                _write_json(out / "settings.backup.json", backup)
-                await drv.settings_put({**overrides, **(settings_overrides or {})})
-                res.meta["runtime_overrides"] = {**overrides, **(settings_overrides or {})}
-            except Exception as e:
-                res.error = f"settings swap failed: {e}"
-                _persist(res, out)
-                return res
+        backup: dict[str, Any] | None = None
         try:
+            if not await drv.health():
+                res.error = f"api unreachable at {api_url}"
+                res.status = "failed"
+                _persist(res, out, final=True)
+                return res
+            backup = await _swap_settings(drv, res, out, overrides, settings_overrides)
+            if res.error:
+                res.status = "failed"
+                _persist(res, out, final=True)
+                return res
             proj = await drv.find_or_create_project(
                 case.project, {"eval_mode": True, "clarification_mode": "assume", **case.settings}
             )
@@ -234,6 +244,11 @@ async def run_case(
             dctx = hctx
 
             await _run_stages(case, stages, drv, dctx, res, out, fail_fast, verbose)
+        except Exception as e:
+            # unexpected runner/driver error — the run is failed, NOT merely
+            # a gate failure; persist whatever partial state exists.
+            res.status = "failed"
+            res.error = f"{type(e).__name__}: {e}"
         finally:
             if backup is not None:
                 try:
@@ -244,20 +259,91 @@ async def run_case(
                 except Exception as e:
                     log.warning("eval.settings_restore_failed", error=str(e)[:120])
             await drv.close()
+        if res.status == "running":
+            res.status = "finished"
         res.wall_s = round(time.monotonic() - t0, 1)
         res.passed = _aggregate_verdict([s.passed for s in res.stages]) if res.stages else None
-        _persist(res, out)
+        _persist(res, out, final=True)
         return res
 
     # local driver path
     try:
         await _run_stages(case, stages, drv, dctx, res, out, fail_fast, verbose)
+    except Exception as e:
+        res.status = "failed"
+        res.error = f"{type(e).__name__}: {e}"
     finally:
         drv.unpatch_executor()
+    if res.status == "running":
+        res.status = "finished"
     res.wall_s = round(time.monotonic() - t0, 1)
     res.passed = _aggregate_verdict([s.passed for s in res.stages]) if res.stages else None
-    _persist(res, out)
+    _persist(res, out, final=True)
     return res
+
+
+async def _swap_settings(
+    drv: Any,
+    res: CaseResult,
+    out: Path,
+    overrides: dict[str, Any],
+    settings_overrides: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Backup live settings, apply eval overrides; returns the backup (None
+    when nothing needed swapping). On failure sets res.error."""
+    if not overrides and not settings_overrides:
+        return None
+    backup: dict[str, Any] | None = None
+    try:
+        backup = await drv.settings_get()
+        _write_json(out / "settings.backup.json", backup)
+        await drv.settings_put({**overrides, **(settings_overrides or {})})
+        res.meta["runtime_overrides"] = {**overrides, **(settings_overrides or {})}
+    except Exception as e:
+        res.error = f"settings swap failed: {e}"
+    # return the backup even on failure — a put that errored after the server
+    # committed still needs restoring
+    return backup
+
+
+async def _setup_local(
+    case: EvalCase,
+    res: CaseResult,
+    out: Path,
+    variant_overrides: dict[str, Any] | None,
+    from_dir: Path | None,
+    verbose: bool,
+) -> tuple[Any, Any]:
+    """Bootstrap the scratch (local) driver: project, runtime overrides,
+    assets, patched executor. Returns (driver, driver ctx)."""
+    from cadx.evalkit.local import (
+        LocalCtx,
+        LocalDriver,
+        bootstrap,
+        import_parent,
+        seed_project,
+        snapshot_runtime,
+        stage_assets,
+    )
+
+    lctx = LocalCtx(out)
+    prev_url = await bootstrap(out)
+    runtime = await snapshot_runtime(prev_url)
+    overrides = {**(variant_overrides or {}), **case.runtime}
+    if overrides:
+        runtime = runtime.model_copy(update=overrides)
+        res.meta["runtime_overrides"] = overrides
+    await seed_project(lctx, case.project, case.settings, runtime)
+    res.project_id = str(lctx.project_id)
+    # case images -> scratch assets
+    img_paths = _resolve_images(case.images)
+    if img_paths:
+        lctx.case_assets = await stage_assets(lctx, img_paths)
+    if from_dir:
+        await import_parent(lctx, Path(from_dir))
+    drv: Any = LocalDriver(verbose=verbose)
+    drv.patch_executor()
+    return drv, lctx
 
 
 async def _run_stages(
@@ -271,7 +357,7 @@ async def _run_stages(
     verbose: bool,
 ) -> None:
     last_id: str | None = None
-    for stage in stages:
+    for pos, stage in enumerate(stages):
         if verbose:
             log.info("eval.stage", case=case.name, stage=stage.id, type=stage.type)
         # per-stage images -> assets (http uploads; local scratch rows)
@@ -325,12 +411,27 @@ async def _run_stages(
         last_id = stage.id
         if fail_fast and passed is False:
             res.error = f"stage {stage.id} failed — stopping (fail-fast)"
+            # remaining stages never ran — record them explicitly instead of
+            # silently omitting them from the report
+            for skipped in stages[pos + 1 :]:
+                res.stages.append(
+                    StageResult(
+                        stage_id=skipped.id,
+                        stage_type=skipped.type,
+                        status="skipped",
+                        passed=None,
+                        wall_s=0.0,
+                    )
+                )
             break
     _ = last_id
 
 
-def _persist(res: CaseResult, out: Path) -> None:
-    res.finished_at = datetime.now(UTC).isoformat(timespec="seconds")
+def _persist(res: CaseResult, out: Path, *, final: bool = False) -> None:
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+    res.updated_at = now
+    if final:
+        res.finished_at = now
     _write_json(out / "result.json", res.to_dict())
     _write_json(out / "meta.json", res.meta)
-    (out / "summary.md").write_text(_summary_md(res), encoding="utf-8")
+    _atomic_write(out / "summary.md", _summary_md(res))

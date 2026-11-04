@@ -77,7 +77,13 @@ class StageResult:
 
 @dataclass
 class CaseResult:
-    """Serialized as `result.json` per run — the report/baseline data unit."""
+    """Serialized as `result.json` per run — the report/baseline data unit.
+
+    `status` is the runner LIFECYCLE (running|finished|failed), `passed`
+    the independent gate/benchmark verdict — a normally completed run is
+    ``status="finished"`` even when its gates fail. `finished_at` is set
+    only on terminal completion; `updated_at` marks intermediate persists.
+    """
 
     case: str
     driver: str  # "http" | "local"
@@ -85,15 +91,17 @@ class CaseResult:
     run_id: str
     passed: bool | None
     wall_s: float
+    status: str = "running"  # running|finished|failed — lifecycle, not verdict
     project: str = ""
     project_id: str | None = None
     stages: list[StageResult] = field(default_factory=list)
     error: str | None = None
     finished_at: str = ""
+    updated_at: str = ""
     meta: dict[str, Any] = field(default_factory=dict)
     variant_overrides: dict[str, Any] = field(default_factory=dict)
     settings_overrides: dict[str, Any] = field(default_factory=dict)
-    schema_version: int = 2
+    schema_version: int = 3
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -124,10 +132,12 @@ class CaseResult:
             "run_id",
             "passed",
             "wall_s",
+            "status",
             "project",
             "project_id",
             "error",
             "finished_at",
+            "updated_at",
             "meta",
             "variant_overrides",
             "settings_overrides",
@@ -139,4 +149,14 @@ class CaseResult:
         kwargs.setdefault("variant", "default")
         kwargs.setdefault("run_id", "?")
         kwargs.setdefault("wall_s", 0.0)
+        if "status" not in d:
+            # legacy files (schema<=2) never recorded a lifecycle and
+            # refreshed finished_at on every intermediate persist, so it
+            # cannot prove completion — derive conservatively instead.
+            if kwargs.get("passed") is not None:
+                kwargs["status"] = "finished"
+            elif kwargs.get("error"):
+                kwargs["status"] = "failed"
+            else:
+                kwargs["status"] = "running"
         return CaseResult(stages=stages, **kwargs)

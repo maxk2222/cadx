@@ -123,7 +123,7 @@ def _stage(sid="codegen", passed=True):
     )
 
 
-def test_case_result_roundtrip_schema_v2():
+def test_case_result_roundtrip_schema_v3():
     res = CaseResult(
         case="l_bracket_rib",
         driver="http",
@@ -139,12 +139,31 @@ def test_case_result_roundtrip_schema_v2():
         variant_overrides={"exec_mem_limit_mb": 4096},
     )
     d = res.to_dict()
-    assert d["schema_version"] == 2
+    assert d["schema_version"] == 3
     res2 = CaseResult.from_dict(d)
     assert res2.case == "l_bracket_rib"
     assert len(res2.stages) == 2
     assert res2.stages[0].gates[0].name == "status"
     assert res2.variant_overrides == {"exec_mem_limit_mb": 4096}
+
+
+def test_case_result_legacy_v2_status_migration():
+    # schema<=2 files never recorded a lifecycle: finished_at was refreshed
+    # on EVERY intermediate persist, so it cannot prove completion.
+    base = {
+        "case": "c", "driver": "http", "variant": "v", "run_id": "r",
+        "wall_s": 5.0, "schema_version": 2, "finished_at": "t",
+        "stages": [],
+    }
+    done = CaseResult.from_dict({**base, "passed": True})
+    assert done.status == "finished"
+    crashed = CaseResult.from_dict({**base, "passed": None})
+    assert crashed.status == "running"  # honest: it was running when last persisted
+    failed = CaseResult.from_dict({**base, "passed": None, "error": "setup blew up"})
+    assert failed.status == "failed"
+    # gate-failed legacy run: finished lifecycle, failed verdict — distinct axes
+    gatefail = CaseResult.from_dict({**base, "passed": False})
+    assert gatefail.status == "finished" and gatefail.passed is False
 
 
 def test_persist_writes_result_meta_summary(tmp_path):
