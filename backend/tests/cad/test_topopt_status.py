@@ -1148,6 +1148,96 @@ def test_mechanism_explosion_ignores_normal_and_degenerate_baselines() -> None:
     assert _mechanism_explosion(zero, 5.0) is None
 
 
+def test_mma_mechanism_stop_restores_best_design(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The MMA path shares the mechanism guard: a compliance explosion inside
+    the nlopt eval loop must ForcedStop the optimizer, surface status
+    'mechanism' and restore the best-seen variable vector — the point nlopt
+    last stepped to is already the broken design (observed live: the
+    autonomous mount's MMA pass ran 245 -> 53M mJ past the guard)."""
+    pytest.importorskip("nlopt")
+    import time
+
+    # shrink the streak gates — a stub-physics nlopt run settles in ~5 evals;
+    # _mechanism_explosion's window logic is covered by dedicated tests
+    monkeypatch.setattr(topopt_mod, "_MECH_MIN_ITER", 1)
+    monkeypatch.setattr(topopt_mod, "_MECH_PATIENCE", 2)
+
+    dims = (4, 3, 3)
+    dom = VoxelDomain(
+        origin=np.zeros(3), pitch=1.0, dims=dims, solid=np.ones(dims, dtype=bool)
+    )
+    ncells = dom.cell_count
+    solid_idx = np.arange(ncells)
+    des = np.arange(ncells)
+    volfrac = 0.5
+    seen_xb: list[np.ndarray] = []
+    evals = [0]
+
+    def eval_fn(xb: np.ndarray, eta: float = 0.5):
+        evals[0] += 1
+        seen_xb.append(xb.copy())
+        # decaying objective keeps nlopt stepping — a flat one ftol-stops
+        # before the explosion eval
+        comp = 100.0 * 0.98 ** evals[0] if evals[0] <= 2 else 1e9
+        return (xb, xb, xb, None, [comp], [], [])
+
+    def project_fn(xb: np.ndarray, eta: float):
+        return xb, xb.copy(), xb
+
+    def chain_fn(d, xp, p, xt, xb, oc_filter=False, eta=None):
+        return d
+
+    def sens_fn(xb, ev, oc_filter=False, eta=None):
+        return [np.full(ncells, -0.01)]
+
+    warnings: list[str] = []
+    history: list[dict[str, Any]] = []
+    x_out, it, converged, _change, status = topopt_mod._run_mma(
+        np.full(ncells, 0.8),
+        des=des,
+        eval_fn=eval_fn,
+        project_fn=project_fn,
+        chain_fn=chain_fn,
+        sens_fn=sens_fn,
+        etas=(1.0,),
+        eta_vol=1.0,
+        solid_idx=solid_idx,
+        weights=np.ones(1),
+        params=TopOptParams(volfrac=volfrac, solver="mma", max_iter=60),
+        nsolid=ncells,
+        v_target=volfrac * ncells,
+        nu=0.36,
+        domain=dom,
+        edof=np.zeros((0, 8), dtype=int),
+        ke=np.zeros((0, 8, 8)),
+        E0=np.zeros(0),
+        Emin=np.zeros(0),
+        cases=[(np.zeros(dom.node_count, dtype=bool), np.zeros(3 * dom.node_count))],
+        warnings=warnings,
+        history=history,
+        heaviside=False,
+        beta0=1.0,
+        cancelled=None,
+        progress_cb=None,
+        progress_file=None,
+        t0=time.monotonic(),
+        penal_now=lambda: 3.0,
+        set_beta=lambda b: None,
+        it_box=[0],
+        passive_solid=np.zeros(ncells, dtype=bool),
+        pvoid=np.zeros(ncells, dtype=bool),
+    )
+    assert status == "mechanism"
+    assert converged is False
+    assert it < 60
+    assert any("compliance exploded" in w for w in warnings)
+    assert any("mechanism stop" in w for w in warnings)
+    # restored to the last improving design (eval 2 — the explosion evals
+    # never improve the objective); the volume constraint drags each step
+    # below the previous, so the restored field differs from the broken one
+    np.testing.assert_allclose(x_out[des], np.clip(seen_xb[1][des], 1e-4, 1.0))
+
+
 async def test_topopt_run_tool_surfaces_mechanism_hint() -> None:
     """status='mechanism' maps to a retry-shaped recovery hint — the agent
     should re-run with more volume / a loadpath corridor, not give up."""

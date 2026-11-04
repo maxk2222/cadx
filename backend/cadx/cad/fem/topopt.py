@@ -2106,6 +2106,13 @@ def _run_mma(  # noqa: C901
     if change_box is None:
         change_box = last_change
     prev_xb = [None]
+    # mechanism salvage mirrors the OC loop: the near-singular break lands a
+    # few evaluations past the load-path cut, so the point nlopt last stepped
+    # to is already the broken design — keep the best-seen variable vector
+    mech_stop = [False]
+    mech_streak_box = [0]
+    best_obj = [float("inf")]
+    best_v: list[np.ndarray | None] = [None]
 
     def _unpack(v: np.ndarray) -> np.ndarray:
         xb = np.full(ncells, RHO_MIN)
@@ -2133,6 +2140,10 @@ def _run_mma(  # noqa: C901
             change_box[0] = last_change[0]  # eval_fn's cg_rtol reads this live
         prev_xb[0] = xb
         obj_ds = [_wsum(ev[4]) for ev in evs]
+        obj_now = max(obj_ds)
+        if obj_now < best_obj[0]:
+            best_obj[0] = obj_now
+            best_v[0] = np.asarray(v, dtype=float).copy()
         # the enforced volume is the dilated realization's — computed via the
         # projection chain (no extra FEM solve needed)
         p_vol = project_fn(xb, eta_vol)[1]
@@ -2208,6 +2219,23 @@ def _run_mma(  # noqa: C901
                 )
         cache.update(v=np.asarray(v, dtype=float).copy(), evs=evs, xb=xb)
         if cancelled and cancelled():
+            raise nlopt.ForcedStop()
+        # mechanism detection — same signature as the OC loop: compliance
+        # exploding _MECH_FACTOR times over the recent window means the
+        # optimizer cut the load path and the stiffness solve went
+        # near-singular. nlopt has no per-evaluation status channel, so stop
+        # through ForcedStop and let the driver restore the best-seen design
+        mech_base = _mechanism_explosion(history, obj_now)
+        mech_streak_box[0] = mech_streak_box[0] + 1 if mech_base is not None else 0
+        if it_box[0] >= _MECH_MIN_ITER and mech_streak_box[0] >= _MECH_PATIENCE:
+            warnings.append(
+                f"compliance exploded {obj_now / max(mech_base or 1e-9, 1e-9):.0f}x "
+                f"over the recent window at evaluation {it_box[0]} — the optimizer "
+                "cut the load path (near-singular solve); extracting the best "
+                "recorded design. Retry with a higher target_volume_fraction "
+                "or loadpath_corridor_mm"
+            )
+            mech_stop[0] = True
             raise nlopt.ForcedStop()
         return evs, xb
 
@@ -2370,7 +2398,16 @@ def _run_mma(  # noqa: C901
             converged = True
             mma_status = "converged"
         except nlopt.ForcedStop:
-            warnings.append(f"cancelled after {it_box[0]} MMA evaluations")
+            if mech_stop[0]:
+                warnings.append(
+                    f"mechanism stop after {it_box[0]} MMA evaluations — "
+                    f"restoring the design at {best_obj[0]:.1f} mJ"
+                )
+                if best_v[0] is not None:
+                    v = best_v[0]
+                mma_status = "mechanism"
+            else:
+                warnings.append(f"cancelled after {it_box[0]} MMA evaluations")
             break
         except Exception as e:
             warnings.append(f"mma stopped ({type(e).__name__}: {e})")
