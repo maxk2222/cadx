@@ -832,6 +832,13 @@ def _relpath_exports(d: dict[str, Any], result: ExecResult, out_dir: Path) -> di
     return d
 
 
+def _set_existing_relpath(row: dict[str, Any], key: str, path: Path) -> None:
+    if path.is_file():
+        row[key] = storage.relpath(path)
+    else:
+        row.pop(key, None)
+
+
 def run_fem_payload(
     payload: dict[str, Any], cancelled: Callable[[], bool] | None = None
 ) -> dict[str, Any]:
@@ -951,14 +958,12 @@ def run_optimize_payload(
     d = _relpath_exports(d, result, out_dir)
     it_rel = storage.relpath(out_dir)
     d.setdefault("topopt", {})
-    d["topopt"]["density_relpath"] = f"{it_rel}/topopt/density.npz"
-    d["topopt"]["history_relpath"] = f"{it_rel}/topopt/history.json"
+    _set_existing_relpath(d["topopt"], "density_relpath", out_dir / "topopt" / "density.npz")
+    _set_existing_relpath(d["topopt"], "history_relpath", out_dir / "topopt" / "history.json")
     d["topopt"]["regions_png"] = [f"{it_rel}/fem/{n}" for n in result.topopt.get("regions_png", [])]
-    d["fem_report_relpath"] = f"{it_rel}/fem/report.json" if result.fem else None
-    d["fem_report_export_relpath"] = (
-        f"{it_rel}/fem/report_export.json" if result.fem_export else None
-    )
-    d.setdefault("mesh", {})["stl_relpath"] = f"{it_rel}/_run/model.stl"
+    _set_existing_relpath(d, "fem_report_relpath", out_dir / "fem" / "report.json")
+    _set_existing_relpath(d, "fem_report_export_relpath", out_dir / "fem" / "report_export.json")
+    _set_existing_relpath(d.setdefault("mesh", {}), "stl_relpath", out_dir / "_run" / "model.stl")
     log.info(
         "optimize",
         version=payload.get("version_id"),
@@ -994,14 +999,11 @@ def run_infill_payload(
     )
     d = result.to_dict()
     d = _relpath_exports(d, result, out_dir)
-    it_rel = storage.relpath(out_dir)
     d.setdefault("topopt", {})
-    d["topopt"]["density_relpath"] = f"{it_rel}/topopt/density.npz"
-    d["fem_report_relpath"] = f"{it_rel}/fem/report.json" if result.fem else None
-    d["fem_report_export_relpath"] = (
-        f"{it_rel}/fem/report_export.json" if result.fem_export else None
-    )
-    d.setdefault("mesh", {})["stl_relpath"] = f"{it_rel}/_run/model.stl"
+    _set_existing_relpath(d["topopt"], "density_relpath", out_dir / "topopt" / "density.npz")
+    _set_existing_relpath(d, "fem_report_relpath", out_dir / "fem" / "report.json")
+    _set_existing_relpath(d, "fem_report_export_relpath", out_dir / "fem" / "report_export.json")
+    _set_existing_relpath(d.setdefault("mesh", {}), "stl_relpath", out_dir / "_run" / "model.stl")
     log.info(
         "infill",
         version=payload.get("version_id"),

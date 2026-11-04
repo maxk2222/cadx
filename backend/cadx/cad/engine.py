@@ -111,6 +111,12 @@ def _mark_cancelled(res: ExecResult) -> None:
     res.error = "cancelled"
 
 
+def _cancelled_pipeline_result(res: ExecResult, phase: str) -> ExecResult:
+    _mark_cancelled(res)
+    res.topopt["cancelled_phase"] = phase
+    return res
+
+
 class ExecResult:
     def __init__(self) -> None:
         self.ok: bool = False
@@ -1979,7 +1985,11 @@ def _verify_export_structure(  # noqa: C901
     mem_budget = float(resources.effective_exec_mem_mb(s))
     skin = candidate_mesh if source_mesh is None else source_mesh
     use_coverage = bool(getattr(s, "fem_verify_coverage_e", False))
+    if _is_cancelled(cancelled):
+        return {"cancelled": True, "phase": "before_export_voxelize", "warnings": warnings}
     export_domain = voxelize(candidate_mesh, design_pitch, max_elements, coverage=use_coverage)
+    if _is_cancelled(cancelled):
+        return {"cancelled": True, "phase": "after_export_voxelize", "warnings": warnings}
     # same memory-aware tier policy as the pipeline guard: the verification
     # solves run per-case factorizations too — a too-large direct solve here
     # is just as OOM-prone as inside the SIMP loop
@@ -2031,6 +2041,8 @@ def _verify_export_structure(  # noqa: C901
     bottleneck_mm2, sf_floor, load_path_ok, cert_per_case = _early_loadpath_cert(
         export_domain, cases, anchors, mat, s, warnings
     )
+    if _is_cancelled(cancelled):
+        return {"cancelled": True, "phase": "after_loadpath_certificate", "warnings": warnings}
     if load_path_ok is False:
         warnings.append(
             "load-path certificate: load(s) cannot reach fixtures on the export "
@@ -2087,6 +2099,13 @@ def _verify_export_structure(  # noqa: C901
         )
 
     report = _solve(export_domain.solid, suffix)
+    if _is_cancelled(cancelled):
+        return {
+            "cancelled": True,
+            "phase": "after_nominal_export_verify",
+            "report": report,
+            "warnings": warnings,
+        }
 
     span = float(np.linalg.norm(export_domain.pitch * np.asarray(export_domain.dims)))
     yield_mpa = getattr(mat, "yield_mpa", None)
@@ -2104,6 +2123,13 @@ def _verify_export_structure(  # noqa: C901
             ("eroded", ndimage.binary_erosion(export_domain.solid, iterations=n_shift)),
             ("dilated", ndimage.binary_dilation(export_domain.solid, iterations=n_shift)),
         ):
+            if _is_cancelled(cancelled):
+                return {
+                    "cancelled": True,
+                    "phase": f"before_{name}_export_verify",
+                    "report": report,
+                    "warnings": warnings,
+                }
             sfx = f"{suffix}_ero" if name == "eroded" else f"{suffix}_dil"
             if not np.asarray(mask).any():
                 sf_realizations[name] = None
@@ -2125,6 +2151,13 @@ def _verify_export_structure(  # noqa: C901
             except Exception as e:
                 sf_realizations[name] = None
                 warnings.append(f"export realization '{name}' solve failed: {str(e)[:80]}")
+            if _is_cancelled(cancelled):
+                return {
+                    "cancelled": True,
+                    "phase": f"after_{name}_export_verify",
+                    "report": report,
+                    "warnings": warnings,
+                }
             if sf_realizations[name] is None:
                 warnings.append(f"export realization '{name}' produced no safety factor")
     # sf_verified only exists when the NOMINAL realization solved — the
@@ -2138,6 +2171,13 @@ def _verify_export_structure(  # noqa: C901
 
     sf_mesh_sensitive: bool | None = None
     if getattr(s, "fem_verify_mesh_shift", False):
+        if _is_cancelled(cancelled):
+            return {
+                "cancelled": True,
+                "phase": "before_mesh_shift_verify",
+                "report": report,
+                "warnings": warnings,
+            }
         try:
             shifted = candidate_mesh.copy()
             shifted.apply_translation(np.full(3, design_pitch / 2.0))
@@ -2159,6 +2199,13 @@ def _verify_export_structure(  # noqa: C901
                 cancelled=cancelled,
                 solver_backend=solver_backend,
             )
+            if _is_cancelled(cancelled):
+                return {
+                    "cancelled": True,
+                    "phase": "after_mesh_shift_verify",
+                    "report": report,
+                    "warnings": warnings,
+                }
             sf_sh = rep_sh.worst_safety_factor
             if sf_sh is not None and sf_verified:
                 delta = abs(sf_sh - sf_verified) / max(sf_verified, 1e-9)
@@ -2173,6 +2220,13 @@ def _verify_export_structure(  # noqa: C901
                 warnings.append("mesh-shift verification produced no safety factor")
         except Exception as e:
             warnings.append(f"mesh-shift verification failed: {str(e)[:80]}")
+        if _is_cancelled(cancelled):
+            return {
+                "cancelled": True,
+                "phase": "after_mesh_shift_verify",
+                "report": report,
+                "warnings": warnings,
+            }
 
     return {
         "report": report,
@@ -2244,6 +2298,37 @@ def _early_loadpath_cert(
     except Exception as e:
         warnings.append(f"load-path certificate failed: {str(e)[:80]}")
         return None, None, None, None
+
+
+def _record_lost_load_regions(
+    domain: Any,
+    cases: list[Any],
+    anchors: list[dict] | None,
+    final_mask: np.ndarray,
+    out: dict[str, Any],
+    warnings: list[str],
+) -> None:
+    from cadx.cad.fem.regions import region_cell_mask
+
+    lost: list[tuple[int, str, str]] = []
+    for case_i, case in enumerate(cases):
+        regions = [("fixed", region) for region in (case.fixed or [])]
+        regions.extend(("load", load.region) for load in (case.loads or []))
+        for role, region in regions:
+            try:
+                cells = region_cell_mask(domain, region, anchors).reshape(domain.dims)
+            except Exception:
+                continue
+            if cells.any() and not bool((cells & final_mask).any()):
+                label = getattr(region, "description", None) or getattr(region, "kind", "?")
+                lost.append((case_i, role, label))
+    if lost:
+        out["regions_lost"] = [f"case {case_i} {role} '{label}'" for case_i, role, label in lost]
+        for case_i, role, label in lost:
+            warnings.append(
+                f"case {case_i}: {role} region '{label}' fully removed by "
+                "the optimizer — its load path cannot verify"
+            )
 
 
 def _gate_sf(info: dict[str, Any] | None, report: Any) -> float | None:
@@ -2592,7 +2677,6 @@ def run_topopt_pipeline(  # noqa: C901
         empty_region_warnings,
         keep_element_mask,
         material_cell_factors,
-        region_cell_mask,
     )
     from cadx.cad.fem.topopt import TopOptParams, passive_solid_mask, simp
     from cadx.cad.fem.voxelize import dilate_solid, grid_bounds_mm, snapped_pitch, voxelize
@@ -3064,6 +3148,8 @@ def run_topopt_pipeline(  # noqa: C901
     res.topopt["regions_png"] = render_regions(
         part_domain, cases, keep_list, out_dir / "fem", anchors, source_mesh=mesh
     )
+    if _is_cancelled(cancelled):
+        return _cancelled_pipeline_result(res, "after_region_render")
 
     min_member = float(opt.min_member_mm or s.topopt_min_member_mm or 0.0)
     min_gap = float(opt.min_gap_mm or min_member or 0.0)
@@ -3276,6 +3362,74 @@ def run_topopt_pipeline(  # noqa: C901
     opt_dir.mkdir(parents=True, exist_ok=True)
     base_flat = is_flat_bottom(mesh)
 
+    def _cancelled_pass(out: dict[str, Any], phase: str) -> ExecResult:
+        _mark_cancelled(res)
+        res.topopt["cancelled_phase"] = phase
+        result = out.get("result")
+        if result is not None:
+            density_path = opt_dir / f"partial_density_pass{out.get('pass_idx', 1)}.npz"
+            np.savez_compressed(density_path, density=result.density.astype(np.float32))
+            res.topopt["partial_density_relpath"] = storage.relpath(density_path)
+            res.topopt["partial_optimizer"] = {
+                "status": result.status,
+                "iterations": result.iterations,
+                "history": _compact_history(result.history),
+                "warnings": result.warnings,
+            }
+        if out.get("verify") is not None:
+            res.fem = out["verify"].model_dump()
+        export_report = out.get("cancelled_report") or out.get("verify_export")
+        if export_report is not None:
+            res.fem_export = export_report.model_dump()
+        opt_mesh = out.get("opt_mesh")
+        if opt_mesh is not None:
+            run_dir = out_dir / "_run"
+            run_dir.mkdir(parents=True, exist_ok=True)
+            stl_path = run_dir / "model.stl"
+            with contextlib.suppress(Exception):
+                opt_mesh.export(str(stl_path), file_type="stl")
+                res.mesh = {
+                    "pipeline": "topopt",
+                    "partial": True,
+                    "stl_relpath": storage.relpath(stl_path),
+                    "triangles": len(opt_mesh.faces),
+                    "volume_mm3": round(float(opt_mesh.volume), 1),
+                }
+        return res
+
+    def _verify_one_pass_export(
+        opt_mesh: Any, fem_suffix: str, p: TopOptParams, verify: Any
+    ) -> tuple[dict[str, Any] | None, Any]:
+        try:
+            info = _verify_export_structure(
+                candidate_mesh=opt_mesh,
+                cases=cases,
+                mat_name=mat_name,
+                mat=mat,
+                design_pitch=design_pitch,
+                max_elements=max_elements or s.fem_max_elements,
+                keep_list=keep_list,
+                anchors=anchors,
+                out_dir=out_dir,
+                suffix=f"{fem_suffix}_export",
+                s=s,
+                solver_backend=p.solver_backend,
+                cancelled=cancelled,
+                verify_robust=eff_robust,
+            )
+            if not info.get("cancelled"):
+                res.topopt.setdefault("warnings", []).extend(info["warnings"])
+            return info, info.get("report", verify)
+        except Exception as e:
+            if _is_cancelled(cancelled):
+                return {"cancelled": True, "phase": "during_export_verify"}, verify
+            log.warning("topopt.verify_export.failed", error=str(e)[:200])
+            res.topopt.setdefault("warnings", []).append(
+                f"export FEM solve failed ({str(e)[:80]}) — sf_export "
+                "duplicates the voxel-mask result, not the printed mesh"
+            )
+            return None, verify
+
     def _one_pass(
         volfrac: float,
         pass_idx: int = 1,
@@ -3321,6 +3475,10 @@ def run_topopt_pipeline(  # noqa: C901
         out["simp_s"] = round(time.monotonic() - t, 2)
         out["result"] = result
         out["params"] = p
+        out["pass_idx"] = pass_idx
+        if _is_cancelled(cancelled):
+            out["cancelled_phase"] = "after_optimizer"
+            return out
         # hard-kill ESO can settle on a local optimum worse than spreading
         # the mass evenly — the baseline check flags that verdict (a no-op
         # for non-BESO solvers; costs one K assembly + case solves)
@@ -3358,6 +3516,11 @@ def run_topopt_pipeline(  # noqa: C901
             min_shell_mm=opt.min_shell_mm,
             fill_thin_walled_voids=True,
         )
+        out["opt_mesh"] = opt_mesh
+        out["final_mask"] = final_mask
+        if _is_cancelled(cancelled):
+            out["cancelled_phase"] = "after_density_extraction"
+            return out
         # ndarray telemetry must not reach the persisted extract dict —
         # it kills the version-row JSON flush
         bridged3 = extract_info.pop("bridged_mask", None)
@@ -3418,6 +3581,10 @@ def run_topopt_pipeline(  # noqa: C901
             restore_keeps=bool(opt.restore_planes),
             helical_threads=False,
         )
+        out["opt_mesh"] = opt_mesh
+        if _is_cancelled(cancelled):
+            out["cancelled_phase"] = "after_post_extract_finish"
+            return out
         extract_warnings.extend(finish_warnings)
         # last-mile sliver drop: the finish path (restore unions, reskin,
         # re-cut booleans) can mint zero-volume sheets that survive as a
@@ -3469,26 +3636,7 @@ def run_topopt_pipeline(  # noqa: C901
         # so the agent sees the honest verdict early instead of reading a
         # min-cut failure after the FEM sweep. Pinned cells disappearing is
         # a separate tell — passive material is not designable.
-        lost_regions: list[str] = []
-        for ci, case in enumerate(cases):
-            regs = [("fixed", r) for r in (case.fixed or [])]
-            regs += [("load", ld.region) for ld in (case.loads or [])]
-            for role, reg in regs:
-                try:
-                    cells = region_cell_mask(design_domain, reg, anchors).reshape(
-                        design_domain.dims
-                    )
-                except Exception:
-                    continue
-                if cells.any() and not bool((cells & final_mask).any()):
-                    label = getattr(reg, "description", None) or getattr(reg, "kind", "?")
-                    lost_regions.append(f"case {ci} {role} '{label}'")
-                    extract_warnings.append(
-                        f"case {ci}: {role} region '{label}' fully removed by "
-                        "the optimizer — its load path cannot verify"
-                    )
-        if lost_regions:
-            out["regions_lost"] = lost_regions
+        _record_lost_load_regions(design_domain, cases, anchors, final_mask, out, extract_warnings)
         passive_lost = int((passive.reshape(design_domain.dims) & ~final_mask).sum())
         if passive_lost:
             out["passive_cells_lost"] = passive_lost
@@ -3540,43 +3688,22 @@ def run_topopt_pipeline(  # noqa: C901
         # The shared helper adds the eroded/dilated realization sweep
         # (sf_verified), optional mesh-shift probe and load-path
         # certificate on top of the nominal export solve.
-        try:
-            info = _verify_export_structure(
-                candidate_mesh=opt_mesh,
-                cases=cases,
-                mat_name=mat_name,
-                mat=mat,
-                design_pitch=design_pitch,
-                max_elements=max_elements or s.fem_max_elements,
-                keep_list=keep_list,
-                anchors=anchors,
-                out_dir=out_dir,
-                suffix=f"{fem_suffix}_export",
-                s=s,
-                solver_backend=params.solver_backend,
-                cancelled=cancelled,
-                verify_robust=eff_robust,
-            )
-            res.topopt.setdefault("warnings", []).extend(info["warnings"])
+        info, verify_exp = _verify_one_pass_export(opt_mesh, fem_suffix, params, verify)
+        if info and info.get("cancelled"):
+            out["cancelled_phase"] = info.get("phase", "export_verify")
+            out["cancelled_report"] = info.get("report")
+            return out
+        if info is not None:
             out["n_bodies_export"] = info["n_bodies_export"]
-            verify_exp = info["report"]
-        except Exception as e:
-            info = None
-            log.warning("topopt.verify_export.failed", error=str(e)[:200])
-            # falling back to the MASK report makes sf_export indistinguishable
-            # from a real export solve — record it so downstream consumers and
-            # the agent see the substitution instead of trusting the number
-            verify_exp = verify
-            res.topopt.setdefault("warnings", []).append(
-                f"export FEM solve failed ({str(e)[:80]}) — sf_export "
-                "duplicates the voxel-mask result, not the printed mesh"
-            )
+        else:
             out["export_solve_ok"] = False
         out["verify_export"] = verify_exp
         out["export_verify_info"] = info
         return out
 
     p1 = _one_pass(params.volfrac, pass_idx=1)
+    if p1.get("cancelled_phase"):
+        return _cancelled_pass(p1, p1["cancelled_phase"])
     res.timings["simp_s"] = p1["simp_s"]
     res.timings["verify_s"] = p1["verify_s"]
     best = p1
@@ -3658,6 +3785,8 @@ def run_topopt_pipeline(  # noqa: C901
                 crisp_extraction=retry_crisp,
                 vol_target_scale=retry_vol_scale,
             )
+            if p2.get("cancelled_phase"):
+                return _cancelled_pass(best, p2["cancelled_phase"])
             sf_exp2 = p2["verify_export"].worst_safety_factor
             sf_gate2 = _gate_sf(p2.get("export_verify_info"), p2["verify_export"])
             trigger_reasons = [
@@ -4036,6 +4165,8 @@ def run_topopt_pipeline(  # noqa: C901
         }
     )
 
+    if _is_cancelled(cancelled):
+        return _cancelled_pass(best, "before_final_density_persist")
     np.savez_compressed(
         opt_dir / "density.npz",
         density=result.density.astype(np.float32),
@@ -4067,6 +4198,8 @@ def run_topopt_pipeline(  # noqa: C901
     res.fem_export = verify_export.model_dump()
 
     # --- artifacts: STL/GLB/3MF + STL copy used for renders/analysis ----------
+    if _is_cancelled(cancelled):
+        return _cancelled_pass(best, "before_final_exports")
     run_dir = out_dir / "_run"
     run_dir.mkdir(parents=True, exist_ok=True)
     stl_path = run_dir / "model.stl"
@@ -4115,6 +4248,8 @@ def run_topopt_pipeline(  # noqa: C901
     }
 
     # renders
+    if _is_cancelled(cancelled):
+        return _cancelled_pipeline_result(res, "before_render")
     t = time.monotonic()
     render_dir = out_dir / "renders"
     _rq_size, _rq_ghosts = _render_quality(res.detail_mode)
@@ -4138,6 +4273,8 @@ def run_topopt_pipeline(  # noqa: C901
     sheet = make_contact_sheet(render_paths, out_dir / "contact_sheet.png", stats)
     res.contact_sheet = sheet.name if sheet else None
     res.timings["render_s"] = round(time.monotonic() - t, 2)
+    if _is_cancelled(cancelled):
+        return _cancelled_pipeline_result(res, "after_render")
 
     if not opt_mesh.is_watertight:
         res.topopt["warnings"].append(
@@ -4407,6 +4544,8 @@ def run_infill_pipeline(  # noqa: C901
     res.topopt["regions_png"] = render_regions(
         domain, cases, keep_list, out_dir / "fem", anchors, source_mesh=mesh
     )
+    if _is_cancelled(cancelled):
+        return _cancelled_pipeline_result(res, "after_region_render")
 
     min_member = float(opt.min_member_mm or s.topopt_min_member_mm or 0.0)
     min_gap = float(opt.min_gap_mm or min_member or 0.0)
@@ -4434,8 +4573,11 @@ def run_infill_pipeline(  # noqa: C901
         solver_backend=solver_backend,
         fields_out=fo,
     )
-    res.timings["baseline_fem_s"] = round(time.monotonic() - t, 2)
+    res.fem = verify_base.model_dump()
     report_to_json(verify_base, out_dir / "fem" / "report_baseline.json")
+    res.timings["baseline_fem_s"] = round(time.monotonic() - t, 2)
+    if _is_cancelled(cancelled):
+        return _cancelled_pipeline_result(res, "after_baseline_fem")
 
     # solutions index the RAW case list (run_fem_domain resolves each
     # declared case once — cone expansion lives in the optimizer's resolved
@@ -4552,6 +4694,14 @@ def run_infill_pipeline(  # noqa: C901
                     spsolve_dofs=spsolve_eff,
                     cancelled=_opt_cancelled,
                 )
+                if _is_cancelled(cancelled):
+                    res.topopt["guide"] = {
+                        "solver": guide_solver,
+                        "status": guide_r.status,
+                        "iterations": guide_r.iterations,
+                        "warnings": guide_r.warnings,
+                    }
+                    return _cancelled_pipeline_result(res, "after_guided_optimizer")
                 guide_mask = (
                     _upsample_density(guide_r.density.reshape(coarse.dims), coarse, domain).reshape(
                         domain.dims
@@ -4601,6 +4751,30 @@ def run_infill_pipeline(  # noqa: C901
     opt_dir.mkdir(parents=True, exist_ok=True)
     base_flat = is_flat_bottom(mesh)
 
+    def _cancelled_candidate(candidate: dict[str, Any], phase: str) -> ExecResult:
+        _mark_cancelled(res)
+        res.topopt["cancelled_phase"] = phase
+        rho_part = candidate.get("rho")
+        if rho_part is not None:
+            density_path = opt_dir / "partial_infill_density.npz"
+            np.savez_compressed(density_path, density=np.asarray(rho_part, dtype=np.float32))
+            res.topopt["partial_density_relpath"] = storage.relpath(density_path)
+        candidate_mesh = candidate.get("mesh")
+        if candidate_mesh is not None:
+            run_dir = out_dir / "_run"
+            run_dir.mkdir(parents=True, exist_ok=True)
+            stl_path = run_dir / "model.stl"
+            with contextlib.suppress(Exception):
+                candidate_mesh.export(str(stl_path), file_type="stl")
+                res.mesh = {
+                    "pipeline": "infill",
+                    "partial": True,
+                    "stl_relpath": storage.relpath(stl_path),
+                    "triangles": len(candidate_mesh.faces),
+                    "volume_mm3": round(float(candidate_mesh.volume), 1),
+                }
+        return res
+
     if guide_field is not None:
         try:
             np.savez_compressed(opt_dir / "guide_density.npz", **guide_field)
@@ -4635,6 +4809,8 @@ def run_infill_pipeline(  # noqa: C901
             frames=frames,
             fields_out=cand_fields,
         )
+        if _is_cancelled(cancelled):
+            return {"cancelled_phase": "after_infill_field", "rho": rho}
         candidate_mesh, mask, extract_warnings, components, extract = density_to_mesh(
             domain,
             rho,
@@ -4653,6 +4829,13 @@ def run_infill_pipeline(  # noqa: C901
             pin_cells=cand_fields.get("occ3"),
             min_shell_mm=opt.min_shell_mm,
         )
+        if _is_cancelled(cancelled):
+            return {
+                "cancelled_phase": "after_density_extraction",
+                "rho": rho,
+                "mask": mask,
+                "mesh": candidate_mesh,
+            }
         # ndarray telemetry must not reach the persisted extract dict —
         # it kills the version-row JSON flush
         bridged3 = extract.pop("bridged_mask", None)
@@ -4743,6 +4926,8 @@ def run_infill_pipeline(  # noqa: C901
 
     t_field = time.monotonic()
     best = _build_candidate(0.0)
+    if best.get("cancelled_phase"):
+        return _cancelled_candidate(best, best["cancelled_phase"])
     target_min: float | None = None
     target_max: float | None = None
     target_infeasible = False
@@ -4751,7 +4936,11 @@ def run_infill_pipeline(  # noqa: C901
         offset_min = p_infill.dmin - p_infill.dmax
         offset_max = p_infill.dmax - p_infill.dmin
         low = _build_candidate(offset_min)
+        if low.get("cancelled_phase"):
+            return _cancelled_candidate(low, low["cancelled_phase"])
         high = _build_candidate(offset_max)
+        if high.get("cancelled_phase"):
+            return _cancelled_candidate(high, high["cancelled_phase"])
         low_fraction = float(low["export_fraction"])
         high_fraction = float(high["export_fraction"])
         target_min, target_max = sorted((low_fraction, high_fraction))
@@ -4768,6 +4957,8 @@ def run_infill_pipeline(  # noqa: C901
             for _ in range(12):
                 mid = 0.5 * (lo + hi)
                 trial = _build_candidate(mid)
+                if trial.get("cancelled_phase"):
+                    return _cancelled_candidate(best, trial["cancelled_phase"])
                 trial_fraction = float(trial["export_fraction"])
                 if abs(trial_fraction - target_volfrac) < abs(
                     float(best["export_fraction"]) - target_volfrac
@@ -4832,6 +5023,10 @@ def run_infill_pipeline(  # noqa: C901
         cancelled=cancelled,
         solver_backend=solver_backend,
     )
+    res.fem = verify.model_dump()
+    report_to_json(verify, out_dir / "fem" / "report.json")
+    if _is_cancelled(cancelled):
+        return _cancelled_candidate(best, "after_mask_verify")
 
     # the homogenized infill model (class-tensor lattice elements) — solved
     # once `best` settles below; None when disabled or unsolvable
@@ -4860,11 +5055,18 @@ def run_infill_pipeline(  # noqa: C901
             cancelled=cancelled,
             verify_robust=eff_robust,
         )
+        if exp_info.get("cancelled"):
+            if exp_info.get("report") is not None:
+                res.fem_export = exp_info["report"].model_dump()
+                report_to_json(exp_info["report"], out_dir / "fem" / "report_export.json")
+            return _cancelled_candidate(best, exp_info.get("phase", "export_verify"))
         verify_exp = exp_info["report"]
         n_bodies_export = exp_info["n_bodies_export"]
         n_bodies_voxel = exp_info["n_bodies_voxel"]
         res.topopt.setdefault("warnings", []).extend(exp_info["warnings"])
     except Exception as e:
+        if _is_cancelled(cancelled):
+            return _cancelled_candidate(best, "during_export_verify")
         log.warning("infill.verify_export.failed", error=str(e)[:200])
         exp_info = None
         verify_exp = verify
@@ -4937,6 +5139,8 @@ def run_infill_pipeline(  # noqa: C901
             retry_reasons.append("safety_factor")
         retry_started = time.monotonic()
         retry_candidate = _build_candidate(float(best["density_offset"]), crisp=True)
+        if retry_candidate.get("cancelled_phase"):
+            return _cancelled_candidate(best, retry_candidate["cancelled_phase"])
         retry_info: dict[str, Any] | None = None
         retry_voxel_bodies: int | None = None
         try:
@@ -4956,12 +5160,21 @@ def run_infill_pipeline(  # noqa: C901
                 cancelled=cancelled,
                 verify_robust=eff_robust,
             )
+            if retry_info.get("cancelled"):
+                if retry_info.get("report") is not None:
+                    res.fem_export = retry_info["report"].model_dump()
+                    report_to_json(
+                        retry_info["report"], out_dir / "fem" / "report_export_retry.json"
+                    )
+                return _cancelled_candidate(best, retry_info.get("phase", "retry_export_verify"))
             retry_report = retry_info["report"]
             retry_bodies = retry_info["n_bodies_export"]
             retry_voxel_bodies = retry_info["n_bodies_voxel"]
             retry_export_ok = True
             res.topopt.setdefault("warnings", []).extend(retry_info["warnings"])
         except Exception as e:
+            if _is_cancelled(cancelled):
+                return _cancelled_candidate(best, "during_retry_export_verify")
             log.warning("infill.verify_export_retry.failed", error=str(e)[:200])
             retry_info = None
             retry_report, retry_bodies = verify, None
@@ -5090,6 +5303,8 @@ def run_infill_pipeline(  # noqa: C901
                 micro_amp=micro_amp,
                 model="homogenized",
             )
+            if _is_cancelled(cancelled):
+                return _cancelled_candidate(best, "after_homogenized_verify")
             res.fem_homog = verify_h.model_dump()
             report_to_json(verify_h, out_dir / "fem" / "report_homog.json")
         except Exception as e:
@@ -5373,6 +5588,8 @@ def run_infill_pipeline(  # noqa: C901
         }
     )
 
+    if _is_cancelled(cancelled):
+        return _cancelled_candidate(best, "before_final_density_persist")
     np.savez_compressed(
         opt_dir / "density.npz",
         density=rho.astype(np.float32),
@@ -5401,6 +5618,8 @@ def run_infill_pipeline(  # noqa: C901
     run_dir = out_dir / "_run"
     run_dir.mkdir(parents=True, exist_ok=True)
     stl_path = run_dir / "model.stl"
+    if _is_cancelled(cancelled):
+        return _cancelled_candidate(best, "before_final_exports")
     try:
         opt_mesh.export(str(stl_path), file_type="stl")
     except Exception as e:
@@ -5429,6 +5648,8 @@ def run_infill_pipeline(  # noqa: C901
         "pitch_mm": domain.pitch,
     }
 
+    if _is_cancelled(cancelled):
+        return _cancelled_pipeline_result(res, "before_render")
     t = time.monotonic()
     render_dir = out_dir / "renders"
     _rq_size, _rq_ghosts = _render_quality(res.detail_mode)
@@ -5450,6 +5671,8 @@ def run_infill_pipeline(  # noqa: C901
     sheet = make_contact_sheet(render_paths, out_dir / "contact_sheet.png", stats)
     res.contact_sheet = sheet.name if sheet else None
     res.timings["render_s"] = round(time.monotonic() - t, 2)
+    if _is_cancelled(cancelled):
+        return _cancelled_pipeline_result(res, "after_render")
 
     if not opt_mesh.is_watertight:
         res.topopt["warnings"].append(
@@ -5726,6 +5949,8 @@ def run_topopt_resample(  # noqa: C901
                     else bool(s.fem_verify_realizations)
                 ),
             )
+            if info.get("cancelled"):
+                return _cancelled_pipeline_result(res, info.get("phase", "resample_export_verify"))
             verify_exp = info["report"]
             report_to_json(verify_exp, out_dir / "fem" / "report_export.json")
             res.fem_export = verify_exp.model_dump()
@@ -5750,6 +5975,8 @@ def run_topopt_resample(  # noqa: C901
             res.topopt["sf_mesh_sensitive"] = info["sf_mesh_sensitive"]
             res.topopt.setdefault("warnings", []).extend(info["warnings"])
         except Exception as e:
+            if _is_cancelled(cancelled):
+                return _cancelled_pipeline_result(res, "during_resample_export_verify")
             log.warning("topopt.resample_verify_failed", error=str(e)[:200])
             res.topopt["sf_mask"] = verify.worst_safety_factor
 

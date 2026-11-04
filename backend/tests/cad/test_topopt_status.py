@@ -963,6 +963,62 @@ def test_early_loadpath_cert_runs_fem_on_connected_export(tmp_path: Path) -> Non
     assert info["report"].cases, "nominal solve must run on a connected part"
 
 
+@pytest.mark.parametrize(
+    ("cancel_at", "expected_solves", "expected_phase"),
+    [
+        (4, 1, "after_nominal_export_verify"),
+        (6, 2, "after_eroded_export_verify"),
+    ],
+)
+def test_export_verification_stops_between_realizations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cancel_at: int,
+    expected_solves: int,
+    expected_phase: str,
+) -> None:
+    from cadx.cad.engine import _verify_export_structure
+    from cadx.cad.fem.analyze import FemCaseResult, FemReport
+    from cadx.cad.fem.materials import resolve_material
+
+    candidate = _box_mesh(24.0, 12.0, 12.0)
+    report = FemReport(cases=[FemCaseResult(name="tip", safety_factor=10.0, compliance_j=1.0)])
+    solves = 0
+    polls = 0
+
+    def run_fem_domain(*_args: Any, **_kwargs: Any) -> FemReport:
+        nonlocal solves
+        solves += 1
+        return report
+
+    def cancelled() -> bool:
+        nonlocal polls
+        polls += 1
+        return polls >= cancel_at
+
+    monkeypatch.setattr("cadx.cad.fem.analyze.run_fem_domain", run_fem_domain)
+    info = _verify_export_structure(
+        candidate_mesh=candidate,
+        cases=[_cantilever()],
+        mat_name="pla",
+        mat=resolve_material("pla"),
+        design_pitch=3.0,
+        max_elements=200_000,
+        keep_list=[],
+        anchors=[],
+        out_dir=tmp_path,
+        suffix="_cancel",
+        s=RuntimeSettings(fem_loadpath_cert=False),
+        solver_backend="auto",
+        cancelled=cancelled,
+        verify_robust=True,
+    )
+
+    assert info["cancelled"] is True
+    assert info["phase"] == expected_phase
+    assert solves == expected_solves
+
+
 # ---------------------------------------------------------------------------
 # Feature floor — anchored bores cap the design-grid pitch (M1)
 # ---------------------------------------------------------------------------

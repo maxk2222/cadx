@@ -10,9 +10,11 @@ look like hard failures and provoked blind retries.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
-from cadx.cad.tasks import _cancelled_scope, _salvage_task_result
+from cadx.cad.tasks import _cancelled_scope, _salvage_task_result, _set_existing_relpath
 
 
 class _FakeRedis:
@@ -80,3 +82,19 @@ def test_salvage_nukes_empty_result() -> None:
 def test_salvage_fem_result_counts_as_usable() -> None:
     d = _salvage_task_result({"fem": {"worst_sf": 7.4}})
     assert d["ok"] is True and d["status"] == "partial"
+
+
+def test_existing_relpath_omits_unwritten_partial_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cadx import storage
+
+    monkeypatch.setattr(storage, "relpath", lambda path: f"relative/{path.name}")
+    row = {"stl_relpath": "stale.stl"}
+    _set_existing_relpath(row, "stl_relpath", tmp_path / "missing.stl")
+    assert "stl_relpath" not in row
+
+    artifact = tmp_path / "model.stl"
+    artifact.write_bytes(b"stl")
+    _set_existing_relpath(row, "stl_relpath", artifact)
+    assert row["stl_relpath"] == "relative/model.stl"
