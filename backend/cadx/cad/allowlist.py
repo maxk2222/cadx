@@ -832,6 +832,146 @@ def _parse_params(tree: ast.Module) -> tuple[dict[str, object], list[str]]:
     return params, ["missing top-level PARAMS = {...} dict literal"]
 
 
+def _param_targets(node: ast.AST) -> list[ast.expr]:
+    if isinstance(node, ast.Assign):
+        return node.targets
+    if isinstance(node, (ast.AnnAssign, ast.NamedExpr)):
+        return [node.target]
+    return []
+
+
+def _param_aliases(nodes: list[ast.AST]) -> set[str]:
+    aliases = {"PARAMS"}
+    changed = True
+    while changed:
+        changed = False
+        for node in nodes:
+            value = getattr(node, "value", None)
+            targets = _param_targets(node)
+            if (
+                isinstance(value, ast.Name)
+                and value.id in aliases
+                and targets
+                and all(isinstance(target, ast.Name) for target in targets)
+            ):
+                for target in targets:
+                    if isinstance(target, ast.Name) and target.id not in aliases:
+                        aliases.add(target.id)
+                        changed = True
+    return aliases
+
+
+def _param_subscript_use(
+    node: ast.Subscript, aliases: set[str], params: dict[str, object]
+) -> tuple[set[str], bool]:
+    if not isinstance(node.value, ast.Name) or node.value.id not in aliases:
+        return set(), False
+    if not isinstance(node.ctx, ast.Load):
+        return set(), True
+    key = node.slice.value if isinstance(node.slice, ast.Constant) else None
+    if isinstance(key, str) and key in params:
+        return {key}, False
+    return set(), key is None
+
+
+def _param_call_use(
+    node: ast.Call, aliases: set[str], params: dict[str, object]
+) -> tuple[set[str], bool]:
+    func = node.func
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+        if func.value.id not in aliases:
+            return set(), False
+        if func.attr not in {"get", "pop", "setdefault"} or not node.args:
+            return set(), True
+        arg = node.args[0]
+        key = arg.value if isinstance(arg, ast.Constant) else None
+        if isinstance(key, str) and key in params:
+            return {key}, False
+        return set(), True
+    args = [*node.args, *(kw.value for kw in node.keywords)]
+    return set(), any(isinstance(arg, ast.Name) and arg.id in aliases for arg in args)
+
+
+def _bare_param_use(node: ast.Name, aliases: set[str], parents: dict[ast.AST, ast.AST]) -> bool:
+    if node.id not in aliases or not isinstance(node.ctx, ast.Load):
+        return False
+    parent = parents.get(node)
+    if isinstance(parent, ast.Subscript) and parent.value is node:
+        return False
+    if isinstance(parent, ast.Attribute) and parent.value is node:
+        grandparent = parents.get(parent)
+        return not (isinstance(grandparent, ast.Call) and grandparent.func is parent)
+    return not (
+        isinstance(parent, (ast.Assign, ast.AnnAssign, ast.NamedExpr))
+        and getattr(parent, "value", None) is node
+        and all(isinstance(target, ast.Name) for target in _param_targets(parent))
+    )
+
+
+def _unused_params(tree: ast.Module, params: dict[str, object]) -> list[str]:
+    params_node = next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == "PARAMS" for target in node.targets
+            )
+            and isinstance(node.value, ast.Dict)
+        ),
+        None,
+    )
+    if not params or params_node is None:
+        return []
+
+    nodes = list(ast.walk(tree))
+    parents = {child: parent for parent in nodes for child in ast.iter_child_nodes(parent)}
+    aliases = _param_aliases(nodes)
+    used: set[str] = set()
+    all_used = False
+    for node in nodes:
+        if isinstance(node, ast.Subscript):
+            keys, escapes = _param_subscript_use(node, aliases, params)
+            used.update(keys)
+            all_used |= escapes
+        elif isinstance(node, ast.Call):
+            keys, escapes = _param_call_use(node, aliases, params)
+            used.update(keys)
+            all_used |= escapes
+        elif isinstance(node, ast.Name):
+            all_used |= _bare_param_use(node, aliases, parents)
+        if all_used:
+            return []
+
+    families = (
+        "fillet",
+        "chamfer",
+        "hole",
+        "slot",
+        "pocket",
+        "boss",
+        "rib",
+        "thread",
+        "bearing",
+        "gear",
+        "insert",
+    )
+    warnings = []
+    for key in params:
+        if key in used:
+            continue
+        value = params[key]
+        if not isinstance(value, int | float) or isinstance(value, bool):
+            continue
+        feature = next((family for family in families if family in key.casefold()), None)
+        hint = f" (possibly intended for a {feature} feature)" if feature else ""
+        warnings.append(
+            f"line {params_node.lineno}: PARAMS['{key}'] is declared but never referenced{hint}; "
+            "if it drives a spec feature, that feature may not be constructed"
+        )
+    return warnings
+
+
 def check_code(code: str, *, sigcheck: bool = False) -> CheckResult:
     """Static check of user code. Returns CheckResult(ok, errors, params).
 
@@ -856,6 +996,7 @@ def check_code(code: str, *, sigcheck: bool = False) -> CheckResult:
     # (ctor dims for the fillet heuristic, param aliases) depends on them
     checker._param_values = params
     checker.visit(tree)
+    checker.warnings.extend(_unused_params(tree, params))
     errors = checker.errors + param_errors
     if not checker.has_result:
         errors.append("missing assignment to `result` (a build123d Part/Solid/Compound)")

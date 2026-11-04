@@ -17,6 +17,56 @@ def test_good_code_passes():
     assert r.params == {"length": 10.0, "name": "a", "flag": True}
 
 
+def test_unused_params_warn_with_key_and_declaration_line():
+    code = 'PARAMS = {"fillet_r": 2.0}\nresult = Box(10, 10, 10)\n'
+    r = check_code(code)
+    assert r.ok
+    assert any(
+        "line 1" in w and "PARAMS['fillet_r']" in w and "spec feature" in w for w in r.warnings
+    )
+
+
+def test_unused_params_direct_and_get_accesses_are_tracked():
+    code = (
+        'PARAMS = {"length": 10.0, "fillet_r": 2.0}\n'
+        'result = Box(PARAMS["length"], 10, 10)\n'
+        'r = PARAMS.get("fillet_r", 0)\n'
+    )
+    assert not any("PARAMS[" in w for w in check_code(code).warnings)
+
+
+def test_unused_params_tracks_simple_aliases_and_helper_values():
+    code = (
+        'PARAMS = {"length": 10.0, "fillet_r": 2.0, "width": 4.0}\n'
+        "p = PARAMS\n"
+        'r = p["fillet_r"]\n'
+        'result = Box(make_length(PARAMS["length"]), p.get("width"))\n'
+    )
+    assert not check_code(code).warnings
+
+
+def test_unused_params_suppresses_ambiguous_map_and_dynamic_accesses():
+    codes = [
+        'PARAMS = {"length": 10.0, "width": 5.0}\nresult = Box(*PARAMS.values())\n',
+        'PARAMS = {"length": 10.0, "width": 5.0}\nresult = Box(PARAMS[key], 1, 1)\n',
+        'PARAMS = {"length": 10.0, "width": 5.0}\np = PARAMS\nresult = build(p)\n',
+        'PARAMS = {"length": 10.0, "width": 5.0}\np = {**PARAMS}\nresult = Box(p["length"], 1, 1)\n',
+    ]
+    for code in codes:
+        assert not any("never referenced" in w for w in check_code(code).warnings)
+
+
+def test_unused_params_counts_export_only_reference():
+    code = (
+        'PARAMS = {"thread_pitch": 1.75}\n'
+        'if CADX_DETAIL_MODE == "export":\n'
+        '    result = helix(PARAMS["thread_pitch"])\n'
+        "else:\n"
+        "    result = Box(10, 10, 10)\n"
+    )
+    assert not any("never referenced" in w for w in check_code(code).warnings)
+
+
 def test_bd_warehouse_import_allowed():
     code = (
         GOOD
