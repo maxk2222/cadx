@@ -186,8 +186,12 @@ class RuntimeSettings(BaseModel):
     # shared wall-clock budget (s) for ALL in-session structural calls
     # (analyze_fem + topopt_run + infill_run) — run COUNTS alone don't bound
     # the damage: one topopt pass can burn ~45 min on a mid-size domain
-    # (api_v8 sprocket codegen: 3 optimize calls ≈ 2 h inside a 90 min stage)
-    agent_struct_budget_s: float = Field(default=1800.0, ge=0.0)  # 0 = unlimited
+    # (api_v8 sprocket codegen: 3 optimize calls ≈ 2 h inside a 90 min stage).
+    # Must cover at least ONE full optimize envelope (topopt_timeout_s +
+    # ~1020 tail/wait allowance) plus fem probes — a smaller budget lets a
+    # single maxed call kill every remaining structural tool, even when the
+    # call committed a usable run.
+    agent_struct_budget_s: float = Field(default=4500.0, ge=0.0)  # 0 = unlimited
     # chat agent: which model role drives the conversation. "vision" receives
     # tool-result images (renders, concept images); "code" is text-only.
     chat_model_role: Literal["vision", "code"] = "vision"
@@ -400,6 +404,10 @@ _EXECUTOR_FIELDS = {
     "topopt_default_volfrac",
     "topopt_default_rmin_mm",
     "topopt_max_iterations",
+    # the OPTIMIZER wall-clock bound inside the topopt/infill pipelines —
+    # shipped so a case-level override reaches the task, not just the
+    # agent-side wait
+    "topopt_timeout_s",
     "topopt_smooth_iterations",
     "topopt_min_member_mm",
     "topopt_auto_keep",

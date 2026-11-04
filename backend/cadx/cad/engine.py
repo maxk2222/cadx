@@ -2603,6 +2603,28 @@ def run_topopt_pipeline(  # noqa: C901
     opt = OptimizeSpec(**(optimize or {}))
     t0 = time.monotonic()
 
+    # topopt_timeout_s bounds the OPTIMIZER wall-clock across all passes
+    # (warm-start, SIMP/BESO/MMA and the safety retry). The agent-side
+    # caller adds a tail allowance for extraction/export/verification on
+    # top — without an internal bound a single run-away pass eats the
+    # whole caller wait and the finished artifact lands past the wait
+    # deadline (observed: a verified result discarded ~3min after the
+    # caller timed out). The stop reuses the cancelled path: an honest
+    # 'budget_exhausted' status while the partial density is still
+    # extracted, verified and committed. Verification solves keep the raw
+    # flag — they belong to the post-optimizer tail, not the budget.
+    _opt_deadline = t0 + float(s.topopt_timeout_s) if s.topopt_timeout_s else None
+    _deadline_hit = False
+
+    def _opt_cancelled() -> bool:
+        nonlocal _deadline_hit
+        if _is_cancelled(cancelled):
+            return True
+        if _opt_deadline is not None and time.monotonic() > _opt_deadline:
+            _deadline_hit = True
+            return True
+        return False
+
     try:
         mesh = load_triangle_mesh(mesh_path)
     except Exception as e:
@@ -3236,7 +3258,7 @@ def run_topopt_pipeline(  # noqa: C901
                         passive_void=void_c,
                         case_weights=np.asarray(w_c),
                         spsolve_dofs=spsolve_eff,
-                        cancelled=cancelled,
+                        cancelled=_opt_cancelled,
                     )
                     x0 = _upsample_density(
                         warm_r.density.reshape(coarse.dims), coarse, design_domain
@@ -3293,7 +3315,7 @@ def run_topopt_pipeline(  # noqa: C901
             case_weights=case_weights,
             x0=x0 if warm is None else warm,
             spsolve_dofs=spsolve_eff,
-            cancelled=cancelled,
+            cancelled=_opt_cancelled,
             progress_file=opt_dir / f"history_{volfrac:.2f}.json",
         )
         out["simp_s"] = round(time.monotonic() - t, 2)
@@ -3602,7 +3624,11 @@ def run_topopt_pipeline(  # noqa: C901
     p1_vol_err_pp = float(p1["extract"].get("vol_error_pp") or 0.0)
     volume_retry = p1_vol_err_pp < -5.0 if dims_spec else abs(p1_vol_err_pp) > 5.0
     retry_needed = safety_retry or gap_retry or connectivity_retry or volume_retry
-    if retry_needed and (cancelled is None or not cancelled()):
+    # a retry only helps when the optimizer window still fits a meaningful
+    # warm-start pass — under ~2min it just re-enters the same dead end and
+    # burns the tail reserve the committed artifact needs
+    retry_room = _opt_deadline is None or _opt_deadline - time.monotonic() > 120.0
+    if retry_needed and retry_room and not _opt_cancelled():
         retry_volfrac = params.volfrac + 0.1 if safety_retry else params.volfrac
         regions_retry = bool(p1.get("regions_lost"))
         retry_member = (
@@ -3702,6 +3728,12 @@ def run_topopt_pipeline(  # noqa: C901
             if p2_quality > p1_quality:
                 best = p2
 
+    if _deadline_hit:
+        res.topopt.setdefault("warnings", []).append(
+            f"optimizer reached the {s.topopt_timeout_s}s run budget — the "
+            "partial density was still extracted, verified and committed as "
+            "'budget_exhausted'"
+        )
     result = best["result"]
     opt_mesh = best["opt_mesh"]
     final_mask = best["final_mask"]
@@ -4174,6 +4206,23 @@ def run_infill_pipeline(  # noqa: C901
     opt = OptimizeSpec(**(optimize or {}))
     t0 = time.monotonic()
 
+    # same optimizer wall-clock bound as run_topopt_pipeline: the guide
+    # solve (BESO/SIMP on the coarse grid) must stop inside
+    # topopt_timeout_s so the candidate builds + verification land inside
+    # the caller's wait + tail allowance. Reuses the cancelled mechanism —
+    # a stopped guide still yields a usable density field.
+    _opt_deadline = t0 + float(s.topopt_timeout_s) if s.topopt_timeout_s else None
+    _deadline_hit = False
+
+    def _opt_cancelled() -> bool:
+        nonlocal _deadline_hit
+        if _is_cancelled(cancelled):
+            return True
+        if _opt_deadline is not None and time.monotonic() > _opt_deadline:
+            _deadline_hit = True
+            return True
+        return False
+
     # per-run overrides follow the runtime settings when unset — the same
     # tri-state pattern the other optimize flags use
     eff_octet = opt.infill_octet if opt.infill_octet is not None else bool(s.infill_octet)
@@ -4501,7 +4550,7 @@ def run_infill_pipeline(  # noqa: C901
                     passive_void=void_c,
                     case_weights=np.asarray(w_c),
                     spsolve_dofs=spsolve_eff,
-                    cancelled=cancelled,
+                    cancelled=_opt_cancelled,
                 )
                 guide_mask = (
                     _upsample_density(guide_r.density.reshape(coarse.dims), coarse, domain).reshape(
@@ -4515,6 +4564,8 @@ def run_infill_pipeline(  # noqa: C901
                     "coarse_iterations": guide_r.iterations,
                     "kept_cells": int(guide_mask.sum()),
                 }
+                if _deadline_hit:
+                    res.topopt["guide"]["deadline_stop"] = True
                 # flat scalar so eval gates/reports can see the guide solver
                 res.topopt["guide_solver"] = guide_solver
                 if guide_solver == "beso":

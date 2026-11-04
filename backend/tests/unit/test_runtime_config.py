@@ -68,4 +68,8 @@ async def test_seed_uses_env_once(clean_settings, monkeypatch):
 def test_executor_values_subset():
     vals = RuntimeSettings().executor_values()
     assert "exec_timeout_s" in vals and "fem_voxel_mm" in vals
+    # the optimizer wall-clock bound must reach the task, not just the
+    # agent-side wait — a case-level override that only shipped to the
+    # caller would silently fall back to the default inside the pipeline
+    assert "topopt_timeout_s" in vals
     assert "llm_api_key" not in vals and "llm_base_url" not in vals

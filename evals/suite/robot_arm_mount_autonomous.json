@@ -7,7 +7,8 @@
     "gen_mode": "cad"
   },
   "runtime": {
-    "topopt_timeout_s": 4800
+    "topopt_timeout_s": 4800,
+    "agent_struct_budget_s": 6600
   },
   "stages": [
     {

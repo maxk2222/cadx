@@ -1106,3 +1106,69 @@ async def test_topopt_run_tool_surfaces_recovery_hints() -> None:
     hints = out.get("recovery_hints") or []
     assert any("feature floor" in h for h in hints)
     assert any("limit_cycle" in h for h in hints)
+
+
+# ---------------------------------------------------------------------------
+# Mechanism guard — a compliance explosion (load path cut) stops the run
+# early instead of burning the remaining budget on a dead structure
+# ---------------------------------------------------------------------------
+
+
+def test_mechanism_explosion_flags_load_path_cut() -> None:
+    """A 200x compliance jump over the recent window is a mechanism — the
+    signature observed on the autonomous mount run (560 -> 120307 mJ with a
+    near-singular solver warning). The helper returns the baseline."""
+    from cadx.cad.fem.topopt import _mechanism_explosion
+
+    history = [{"compliance_mj": 560.0} for _ in range(10)] + [{"compliance_mj": 120_307.0}]
+    assert _mechanism_explosion(history, 120_307.0) == pytest.approx(560.0)
+
+
+def test_mechanism_explosion_ignores_stage_transitions() -> None:
+    """Volfrac stage transitions produce ~2x jumps — far below the factor;
+    they must NOT trigger the mechanism break."""
+    from cadx.cad.fem.topopt import _MECH_FACTOR, _mechanism_explosion
+
+    history = [{"compliance_mj": 343.0} for _ in range(10)] + [{"compliance_mj": 630.0}]
+    assert _mechanism_explosion(history, 630.0) is None
+    # just under the factor is still tolerated
+    history = [{"compliance_mj": 500.0} for _ in range(10)] + [{"compliance_mj": 0.0}]
+    assert _mechanism_explosion(history, 500.0 * (_MECH_FACTOR - 1.0)) is None
+
+
+def test_mechanism_explosion_ignores_normal_and_degenerate_baselines() -> None:
+    """A decaying run never fires; a ~0 baseline is degenerate in itself and
+    must not amplify noise into a mechanism verdict."""
+    from cadx.cad.fem.topopt import _mechanism_explosion
+
+    ramp = [{"compliance_mj": 700.0 - i * 20.0} for i in range(10)] + [{"compliance_mj": 480.0}]
+    assert _mechanism_explosion(ramp, 480.0) is None
+    assert _mechanism_explosion([], 1e6) is None
+    zero = [{"compliance_mj": 1e-12} for _ in range(10)] + [{"compliance_mj": 5.0}]
+    assert _mechanism_explosion(zero, 5.0) is None
+
+
+async def test_topopt_run_tool_surfaces_mechanism_hint() -> None:
+    """status='mechanism' maps to a retry-shaped recovery hint — the agent
+    should re-run with more volume / a loadpath corridor, not give up."""
+
+    async def fake_topopt(a: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "topopt": {
+                "status": "mechanism",
+                "converged": False,
+                "passive_frac": 0.1,
+                "volfrac_achieved": 0.5,
+                "iterations": 33,
+                "sf_export": 0.4,
+                "verification": {"valid": False, "meets_safety_factor": False},
+                "warnings": ["compliance exploded 215x over the recent window"],
+            },
+            "fem": {"cases": [{"safety_factor": 0.4}]},
+        }
+
+    session = _opt_session(topopt_fn=fake_topopt)
+    out = await session.execute("topopt_run", {"load_cases": [{"name": "c"}]})
+    hints = out.get("recovery_hints") or []
+    assert any("mechanism" in h for h in hints)

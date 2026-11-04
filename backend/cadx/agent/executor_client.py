@@ -127,6 +127,14 @@ class InProcessExecutor:
         return await asyncio.to_thread(_run)
 
 
+# post-optimizer pipeline allowance for optimize tasks — extraction,
+# multi-realization export verification, finishing and serialize happen
+# AFTER the optimizer's own topopt_timeout_s bound (see
+# engine.run_topopt_pipeline). Sized for the heaviest observed tail
+# (3 robust realizations x several load cases on a dense grid).
+_OPT_TAIL_S = 900.0
+
+
 class QueueExecutor:
     """Enqueues work on the 'cad' arq queue and polls the job until complete."""
 
@@ -229,7 +237,14 @@ class QueueExecutor:
         return await self._run_task("fem_analyze", payload, timeout)
 
     async def optimize(self, payload: dict[str, Any]) -> dict[str, Any]:
-        timeout = self.runtime_settings.topopt_timeout_s + 120
+        # topopt_timeout_s bounds the OPTIMIZER wall-clock inside the task
+        # (all SIMP/BESO/MMA passes incl. the safety retry). The pipeline's
+        # post-optimizer tail — extraction, nominal/eroded/dilated export
+        # verification, finishing, serialize — needs its own allowance
+        # (observed ~400-800s); otherwise a run that lands exactly at its
+        # optimizer budget returns the verified artifact AFTER the caller
+        # already reported a bare timeout with no run_index.
+        timeout = self.runtime_settings.topopt_timeout_s + _OPT_TAIL_S + 120
         return await self._run_task("optimize", payload, timeout)
 
     async def topopt_resample(self, payload: dict[str, Any]) -> dict[str, Any]:

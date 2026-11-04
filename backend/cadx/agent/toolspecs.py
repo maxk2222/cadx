@@ -3312,6 +3312,13 @@ class ToolSession:
                 ">0 cells; 'hole'/'anchor'/'bore' regions need hole_index or "
                 "an axis+center hint or they bind nothing"
             )
+        if status == "mechanism":
+            recovery.append(
+                "mechanism — compliance exploded mid-run; the optimizer cut "
+                "the load path. Retry with a higher target_volume_fraction, "
+                "loadpath_corridor_mm, or tighter keep regions around the "
+                "load path"
+            )
         if status == "infeasible_target":
             recovery.append(
                 "infeasible_target — the passive floor already exceeds "

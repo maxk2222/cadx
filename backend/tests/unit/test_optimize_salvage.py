@@ -363,3 +363,85 @@ def test_topopt_images_capped_at_budget(tmp_path) -> None:
     assert len(images) == _TOPOPT_IMAGE_BUDGET
     assert all((img_dir / f"v{i}.png").exists() for i in range(12))
     assert any("omitted" in w for w in res.get("warnings") or [])
+
+
+# ---------------------------------------------------------------------------
+# Optimize call envelope — caller wait covers optimizer budget + tail, and
+# the shared struct budget covers at least one full call
+# ---------------------------------------------------------------------------
+
+
+async def test_optimize_wait_covers_optimizer_budget_plus_tail() -> None:
+    """The agent-side wait must outlast the whole task envelope:
+    topopt_timeout_s bounds the OPTIMIZER inside the pipeline; extraction,
+    multi-realization export verification, finishing and serialize still
+    run afterwards (observed tail ~400-800s). A wait of timeout+120 alone
+    discarded a verified artifact ~3min before it returned."""
+    from cadx.agent.executor_client import _OPT_TAIL_S, QueueExecutor
+    from cadx.runtime_config import RuntimeSettings
+
+    ex = QueueExecutor(runtime_settings=RuntimeSettings(topopt_timeout_s=4800))
+    seen: dict = {}
+
+    async def fake_run(func, payload, timeout_s):
+        seen["timeout_s"] = timeout_s
+        return {"ok": True}
+
+    ex._run_task = fake_run  # type: ignore[assignment]
+    assert await ex.optimize({"optimize": {}}) == {"ok": True}
+    assert seen["timeout_s"] == 4800 + _OPT_TAIL_S + 120
+
+
+def test_struct_budget_covers_a_full_optimize_call() -> None:
+    """agent_struct_budget_s must afford ONE full optimize envelope —
+    smaller defaults let a single maxed call zero the session's remaining
+    structural tools even when the call committed a usable run."""
+    from cadx.runtime_config import RuntimeSettings
+
+    s = RuntimeSettings()
+    assert s.agent_struct_budget_s >= s.topopt_timeout_s + 1020.0
+
+
+async def test_topopt_fn_refuses_call_that_cannot_land(tmp_path) -> None:
+    """The ops budget guard must estimate the FULL call envelope
+    (topopt_timeout_s + tail + wait) — a smaller estimate would let the
+    agent start a call that cannot return before the job deadline."""
+    import itertools
+    import time
+    import uuid
+
+    from cadx.agent.steps.optimize import _make_topopt_fn, _SessionOps
+    from cadx.llm.fake import FakeLLM
+    from cadx.llm.schemas import Dim, PartSpec
+    from tests.unit.test_session_condense import _ctx
+
+    ctx = _ctx(FakeLLM([]))
+    spec = PartSpec(
+        name="bracket",
+        summary="",
+        length_x=Dim(value=100, source="stated"),
+        width_y=Dim(value=80, source="stated"),
+        height_z=Dim(value=40, source="stated"),
+    )
+    ops = _SessionOps(
+        ctx=ctx,
+        base={
+            "job_id": "t",
+            "project_id": str(uuid.uuid4()),
+            "version_id": str(uuid.uuid4()),
+            "mesh_rel": "x",
+            "runtime_settings": {},
+            "name": "model",
+        },
+        spec=spec,
+        spec_cases=[{"name": "c", "loads": [], "fixed": []}],
+        default_material="",
+        alloc=itertools.count(1),
+        contact_sheet=None,
+        deadline=time.monotonic() + 100.0,  # less than one full envelope
+        request_opt={},
+    )
+    fn = _make_topopt_fn(ops)
+    res = await fn({"load_cases": [{"name": "c", "loads": [], "fixed": []}]})
+    assert res["ok"] is False
+    assert "budget" in (res.get("error") or "")

@@ -701,6 +701,40 @@ _BETA_DWELL = 10  # max iterations spent on one Heaviside sharpness level —
 # a stable mask), which would freeze the ramp mid-way. One full window per
 # level guarantees the ramp reaches beta_max while budget remains to sharpen.
 
+# mechanism detection: a compliance explosion orders of magnitude beyond
+# anything the run produced means the optimizer removed the load path —
+# the stiffness matrix goes near-singular and every later iteration is
+# noise on a broken structure (observed: 560 -> 120307 mJ overnight, the
+# solver warning "Matrix is nearly singular"). Change/flips-based
+# detectors can't see it: once broken, the field barely moves. Volfrac
+# stage transitions produce ~2x jumps; _MECH_FACTOR sits far above any
+# legitimate transition and below a real mechanism.
+_MECH_FACTOR = 25.0
+_MECH_WINDOW = 10  # baseline = best compliance of the last N iterations
+_MECH_PATIENCE = 3  # consecutive exploding iters — a lone spike can be a
+# transient singular solve the optimizer repairs next step
+_MECH_MIN_ITER = 10  # let the field form a load path before judging it
+
+
+def _mechanism_explosion(history: list[dict[str, Any]], objective: float) -> float | None:
+    """The recent-window baseline when the current objective exploded
+    _MECH_FACTOR times over it — the signature of the optimizer cutting
+    the load path (near-singular solve) — else None. ``history`` already
+    carries the current iteration's record; the baseline window excludes
+    it. A ~0 baseline is degenerate in itself — noise over it is not a
+    mechanism."""
+    base = min(
+        (
+            r["compliance_mj"]
+            for r in history[-(_MECH_WINDOW + 1) : -1]
+            if r.get("compliance_mj") is not None
+        ),
+        default=None,
+    )
+    if base is not None and base > 1e-6 and objective > _MECH_FACTOR * base:
+        return base
+    return None
+
 
 def _windowed_compliance_improvement(history: list[dict[str, Any]], window: int) -> float | None:
     """Relative compliance improvement, (c_old - c_now)/c_old, over the last
@@ -1142,10 +1176,15 @@ def simp(  # noqa: C901
     change_box = [change]  # shared with _run_mma: cg_rtol reads the live value
     it = 0
     stall = 0
-    stop: str | None = None  # how the loop ended: None | cancelled | limit_cycle | degenerate
+    stop: str | None = (
+        None  # how the loop ended: None | cancelled | limit_cycle | degenerate | mechanism
+    )
     move_streak = 0  # consecutive iterations with change saturated at the move cap
     move_sat_streak = 0  # O2 early detection: streak at >= _MOVE_SAT_FRAC of move
     flip_streak = 0  # O2: consecutive iterations with the mask still churning
+    mech_streak = 0  # consecutive iterations of exploded (near-singular) compliance
+    best_obj = float("inf")  # min objective seen — baseline for the best field
+    x_best: np.ndarray | None = None  # blueprint at best_obj (mechanism salvage)
     beta_age = 0  # iterations spent on the current Heaviside sharpness level
     prev_objective: float | None = None
     prev_mask: np.ndarray | None = None  # thresholded design set, for flip count
@@ -1457,6 +1496,13 @@ def simp(  # noqa: C901
         eta_w = etas[wi]
         xp, p, _xt, ce_cases = evs[wi][0], evs[wi][1], evs[wi][2], evs[wi][3]
         objective = obj_designs[wi]
+        # best-seen blueprint for the mechanism salvage — the break fires a
+        # few iterations PAST the load-path cut, so the current x is already
+        # the broken field; the min-compliance blueprint still carries the
+        # last working structure
+        if objective < best_obj:
+            best_obj = objective
+            x_best = x.copy()
 
         # sensitivity w.r.t. physical density, then chain-rule back through
         # the filters to the blueprint variable x
@@ -1597,6 +1643,23 @@ def simp(  # noqa: C901
         if volfrac_continuation:
             volfrac_stage_age += 1
         volume_stage_active = _volfrac_schedule_active()
+        # mechanism detection: compliance exploding _MECH_FACTOR times over
+        # the recent window means the optimizer cut the load path — the
+        # stiffness solve went near-singular and the rest of the budget is
+        # spent on a dead structure. Extract now so the caller's retry (or
+        # the honest 'mechanism' status) still fits the time budget.
+        mech_base = _mechanism_explosion(history, objective)
+        mech_streak = mech_streak + 1 if mech_base is not None else 0
+        if it >= _MECH_MIN_ITER and mech_streak >= _MECH_PATIENCE:
+            warnings.append(
+                f"compliance exploded {objective / max(mech_base or 1e-9, 1e-9):.0f}x "
+                f"over the recent window at iteration {it} — the optimizer cut "
+                "the load path (near-singular solve); extracting the current "
+                "density. Retry with a higher target_volume_fraction or "
+                "loadpath_corridor_mm"
+            )
+            stop = "mechanism"
+            break
         # limit-cycle detection: change saturating the OC move cap for many
         # consecutive iterations means the density field bounces between
         # competing layouts rather than converging — surface it once so the
@@ -1791,6 +1854,15 @@ def simp(  # noqa: C901
 
             if _gray(x_prev) < _gray(x):
                 x = x_prev
+        elif stop == "mechanism" and x_best is not None:
+            # the break lands _MECH_PATIENCE iterations past the load-path
+            # cut — x is already the broken field. Extract the best-seen
+            # structure (min compliance): it still has a working load path
+            # and may verify on its own, not just as a retry warm-start
+            x = x_best
+            warnings_out.append(
+                f"restored the density field from the best iteration (compliance {best_obj:.1f} mJ)"
+            )
     elif not converged:
         status = "budget_exhausted"
     elif it > 0:

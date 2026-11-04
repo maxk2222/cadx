@@ -33,6 +33,7 @@ from cadx.agent.context import (
     spec_block,
     system_prompt,
 )
+from cadx.agent.executor_client import _OPT_TAIL_S
 from cadx.agent.toolloop import run_session, tools_enabled
 from cadx.agent.toolspecs import ToolSession
 from cadx.agent.types import AgentCtx
@@ -454,7 +455,9 @@ def _make_topopt_fn(ops: _SessionOps) -> Any:
         if err:
             return {"ok": False, "error": err}
         if (
-            guard := _budget_exceeded(ops, ctx.runtime_settings.topopt_timeout_s + 180)
+            guard := _budget_exceeded(
+                ops, ctx.runtime_settings.topopt_timeout_s + _OPT_TAIL_S + 120
+            )
         ) is not None:
             return guard
         it = next(ops.alloc)
@@ -509,7 +512,9 @@ def _make_infill_fn(ops: _SessionOps) -> Any:
         if err:
             return {"ok": False, "error": err}
         if (
-            guard := _budget_exceeded(ops, ctx.runtime_settings.topopt_timeout_s + 180)
+            guard := _budget_exceeded(
+                ops, ctx.runtime_settings.topopt_timeout_s + _OPT_TAIL_S + 120
+            )
         ) is not None:
             return guard
         it = next(ops.alloc)

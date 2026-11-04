@@ -316,3 +316,45 @@ def test_symmetry_plane_mismatch_warns() -> None:
         TopOptParams(volfrac=0.5, rmin_mm=1.5, max_iter=3, symmetry="yz"),
     )
     assert not any("not symmetric" in w for w in res_ok.warnings)
+
+
+# ---------------------------------------------------------------------------
+# Optimizer wall-clock bound — topopt_timeout_s applies INSIDE the pipeline
+# ---------------------------------------------------------------------------
+
+
+def test_optimizer_deadline_stops_simp_and_still_commits(tmp_path: Path) -> None:
+    """The pipeline bounds the optimizer to topopt_timeout_s measured from
+    pipeline start — a run that would eat the whole caller wait now stops
+    early as 'budget_exhausted' and still extracts/commits its partial
+    density, so the verified artifact lands inside the caller's patience
+    (before this, a maxed pass returned its result ~3min after the caller
+    timed out)."""
+    import time as _time
+
+    from cadx.cad.engine import run_topopt_pipeline
+
+    src = tmp_path / "b.stl"
+    _box(20.0, 8.0, 8.0).export(str(src))
+    t0 = _time.monotonic()
+    res = run_topopt_pipeline(
+        mesh_path=src,
+        out_dir=tmp_path / "out",
+        load_cases=[_cantilever_case()],
+        optimize={
+            "target_volume_fraction": 0.5,
+            # far more iterations than a 1s budget could ever run — only
+            # the internal deadline can end this run
+            "max_iterations": 500,
+            "keep_mode": "manual",
+        },
+        material="pla",
+        voxel_mm=VOXEL_MM,
+        scan_anchors=False,
+        runtime=RuntimeSettings(topopt_timeout_s=1),
+    )
+    assert res.ok, res.error
+    assert res.topopt["status"] == "budget_exhausted"
+    assert res.topopt["iterations"] < 500
+    assert _time.monotonic() - t0 < 240.0, "deadline-stopped run must not run away"
+    assert any("run budget" in w for w in res.topopt.get("warnings") or [])

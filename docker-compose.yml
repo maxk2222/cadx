@@ -150,6 +150,11 @@ services:
       HOME: /tmp
       MPLCONFIGDIR: /tmp/mpl
       XDG_CACHE_HOME: /tmp/.cache
+      # 1 = serial cad tasks: a resubmitted optimize after a caller-side
+      # timeout must queue behind the still-running original, never run a
+      # second SIMP concurrently — two runs OOM-killed the 12g container
+      # (rc=137, eval r5). Raise only with matching CADX_EXECUTOR_MEM.
+      CADX_CAD_MAX_JOBS: ${CADX_CAD_MAX_JOBS:-1}
     volumes:
       - ./data:/data
     depends_on:
