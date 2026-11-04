@@ -496,6 +496,13 @@ def _make_topopt_fn(ops: _SessionOps) -> Any:
                 f"analyze_fem, finish it with refine_features(run_index), or "
                 f"accept it with done(run_index)"
             )
+        elif res.get("task_maybe_running") and not res.get("ok"):
+            res["recovery_hint"] = (
+                "the executor lost sight of this task but it may STILL be running "
+                "server-side — do NOT resubmit an identical run: it queues behind "
+                "the live one and burns the struct budget. Prefer waiting, a light "
+                "analyze_fem check, or done() on an earlier run_index"
+            )
         it_dir = storage.iteration_dir(ctx.project_id, ctx.version_id, it)
         res["_images"] = _topopt_images(ops, res, it_dir)
         res["_image_detail"] = ctx.runtime_settings.llm_fem_image_detail
@@ -536,6 +543,13 @@ def _make_infill_fn(ops: _SessionOps) -> Any:
             }
         )
         res["_iteration"] = it
+        if res.get("task_maybe_running") and not res.get("ok"):
+            res["recovery_hint"] = (
+                "the executor lost sight of this task but it may STILL be running "
+                "server-side — do NOT resubmit an identical run: it queues behind "
+                "the live one and burns the struct budget. Prefer waiting, a light "
+                "analyze_fem check, or done() on an earlier run_index"
+            )
         it_dir = storage.iteration_dir(ctx.project_id, ctx.version_id, it)
         res["_images"] = _topopt_images(ops, res, it_dir)
         res["_image_detail"] = ctx.runtime_settings.llm_fem_image_detail

@@ -134,6 +134,13 @@ class InProcessExecutor:
 # (3 robust realizations x several load cases on a dense grid).
 _OPT_TAIL_S = 900.0
 
+# consecutive poll failures tolerated before giving up — a redis blip must
+# not strand a multi-hour cad task: surfacing the transport error tells the
+# agent "call failed" while the arq job keeps running, and the agent's retry
+# then queues BEHIND its own still-running task (observed: one blip →
+# double-submit → 45min queue delay → stage timeout)
+_POLL_FAIL_PATIENCE_S = 120.0
+
 
 class QueueExecutor:
     """Enqueues work on the 'cad' arq queue and polls the job until complete."""
@@ -160,19 +167,53 @@ class QueueExecutor:
         # kill THIS task only, never the whole cadx job (a job-level flag
         # silently cancelled every later execute for an hour)
         payload["_task_id"] = job_id
-        await pool.enqueue_job(func, payload, _queue_name=CAD_QUEUE, _job_id=job_id)
+        try:
+            await pool.enqueue_job(func, payload, _queue_name=CAD_QUEUE, _job_id=job_id)
+        except Exception as e:
+            # submit never reached the queue — no task exists, a retry is
+            # safe and must be told so explicitly (see poll-failure case)
+            return {
+                "ok": False,
+                "error": f"executor submit failed — task not running, safe to retry: {e!r}",
+            }
         job = Job(job_id, pool)
         waited = 0.0
         # capped exponential backoff: fast tasks answer on the first short
         # polls, long ones settle to a 5s cadence instead of 1 Hz for hours
         delay = 0.5
+        poll_fail_waited = 0.0
         while waited < timeout_s:
-            status = await job.status()
+            try:
+                status = await job.status()
+            except Exception as e:
+                # transport/redis error — the task itself is unaffected, so a
+                # blip must not surface as "call failed" (the agent's blind
+                # retry would queue behind this very task). Tolerate a
+                # bounded streak; past it, report MAYBE-running so the agent
+                # never resubmits a duplicate.
+                poll_fail_waited += delay
+                if poll_fail_waited >= _POLL_FAIL_PATIENCE_S:
+                    return {
+                        "ok": False,
+                        "task_maybe_running": True,
+                        "error": f"executor status poll failed ({e!r}) — task may "
+                        "still be running, do NOT resubmit",
+                    }
+                await asyncio.sleep(delay)
+                waited += delay
+                continue
+            poll_fail_waited = 0.0
             if status == JobStatus.complete:
                 try:
                     result = await job.result()
                 except Exception as e:
-                    return {"ok": False, "error": f"executor task failed: {e}"}
+                    # one retry: a transport blip on the fetch must not mask a
+                    # finished task; a real task failure reports identically
+                    try:
+                        await asyncio.sleep(2.0)
+                        result = await job.result()
+                    except Exception:
+                        return {"ok": False, "error": f"executor task failed: {e}"}
                 return result if isinstance(result, dict) else {"ok": False, "error": "bad result"}
             await asyncio.sleep(delay)
             waited += delay
@@ -194,7 +235,10 @@ class QueueExecutor:
         grace = min(120.0, timeout_s * 0.15)
         g_waited = 0.0
         while g_waited < grace:
-            status = await job.status()
+            try:
+                status = await job.status()
+            except Exception:
+                status = None  # same tolerance as the main poll — blip keeps waiting
             if status == JobStatus.complete:
                 try:
                     result = await job.result()
@@ -210,6 +254,7 @@ class QueueExecutor:
         return {
             "ok": False,
             "timed_out": True,
+            "task_maybe_running": True,
             "error": f"executor task '{func}' timed out after {timeout_s}s",
         }
 

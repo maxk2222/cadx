@@ -445,3 +445,101 @@ async def test_topopt_fn_refuses_call_that_cannot_land(tmp_path) -> None:
     res = await fn({"load_cases": [{"name": "c", "loads": [], "fixed": []}]})
     assert res["ok"] is False
     assert "budget" in (res.get("error") or "")
+
+
+# ---------------------------------------------------------------------------
+# queue poll must tolerate transient redis/transport blips — surfacing them
+# strands a running task and invites a double-submit that queues behind it
+# ---------------------------------------------------------------------------
+
+
+class _FakeJob:
+    def __init__(self, script: list, result=None) -> None:
+        self._script = list(script)
+        self._result = result if result is not None else {"ok": True}
+        self.status_calls = 0
+
+    async def status(self):
+        self.status_calls += 1
+        item = self._script.pop(0) if len(self._script) > 1 else self._script[0]
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+    async def result(self):
+        if isinstance(self._result, BaseException):
+            err, self._result = self._result, {"ok": True}
+            raise err
+        return self._result
+
+
+class _FakePool:
+    def __init__(self, enqueue_exc: Exception | None = None) -> None:
+        self._enqueue_exc = enqueue_exc
+
+    async def enqueue_job(self, *a, **kw):
+        if self._enqueue_exc is not None:
+            raise self._enqueue_exc
+
+    async def setex(self, *a, **kw):
+        pass
+
+
+async def test_run_task_tolerates_transient_status_errors(monkeypatch) -> None:
+    """A redis blip mid-wait must NOT surface as call failure — the arq task
+    keeps running server-side, and an agent retry would queue behind it."""
+    from arq.jobs import JobStatus
+
+    import cadx.agent.executor_client as ec
+    from cadx.agent.executor_client import QueueExecutor
+
+    blip = ConnectionError("Timeout connecting to server")
+    job = _FakeJob([blip, blip, JobStatus.complete], {"ok": True, "sf": 3.0})
+    monkeypatch.setattr(ec, "Job", lambda *a, **k: job)
+    ex = QueueExecutor(pool=_FakePool())
+
+    res = await ex._run_task("optimize", {}, 60.0)
+    assert res["ok"] is True and res["sf"] == 3.0
+    assert job.status_calls == 3
+
+
+async def test_run_task_marks_maybe_running_after_poll_patience(monkeypatch) -> None:
+    """Past the tolerated streak the result must say MAYBE-running so the
+    agent never resubmits a duplicate behind its own live task."""
+    import cadx.agent.executor_client as ec
+    from cadx.agent.executor_client import QueueExecutor
+
+    monkeypatch.setattr(ec, "_POLL_FAIL_PATIENCE_S", 2.0)
+    job = _FakeJob([ConnectionError("down")])
+    monkeypatch.setattr(ec, "Job", lambda *a, **k: job)
+    ex = QueueExecutor(pool=_FakePool())
+
+    res = await ex._run_task("optimize", {}, 600.0)
+    assert res["ok"] is False and res["task_maybe_running"] is True
+    assert "do NOT resubmit" in res["error"]
+
+
+async def test_run_task_submit_failure_says_safe_to_retry() -> None:
+    """A failed enqueue means no task exists — the agent can and should be
+    told a retry is safe (the opposite of the poll-failure case)."""
+    from cadx.agent.executor_client import QueueExecutor
+
+    ex = QueueExecutor(pool=_FakePool(enqueue_exc=ConnectionError("refused")))
+    res = await ex._run_task("fem_analyze", {}, 60.0)
+    assert res["ok"] is False
+    assert "safe to retry" in res["error"]
+
+
+async def test_run_task_result_fetch_retries_once(monkeypatch) -> None:
+    """A blip on job.result() must not mask a finished task — retry once."""
+    from arq.jobs import JobStatus
+
+    import cadx.agent.executor_client as ec
+    from cadx.agent.executor_client import QueueExecutor
+
+    job = _FakeJob([JobStatus.complete], result=ConnectionError("blip"))
+    monkeypatch.setattr(ec, "Job", lambda *a, **k: job)
+    ex = QueueExecutor(pool=_FakePool())
+
+    res = await ex._run_task("optimize", {}, 60.0)
+    assert res["ok"] is True
